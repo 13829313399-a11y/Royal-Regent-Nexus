@@ -112,6 +112,9 @@ def upsert(conn, factory, key, item, *, batch=None, fingerprint='', schema=''):
     item = {**item, 'id': identity, 'factory': factory}
     if existing:
         previous = json.loads(existing['payload'])
+        if (previous.get('sourceKind') == 'review' and 'inspectionDateSource' in previous
+                and item.get('sourceKind') == 'review' and 'inspectionDateSource' not in item):
+            raise HTTPException(409, '审核日期快照版本不兼容，已保留原汇总；请核对审核历史')
         if previous.get('sourceKind') in {'submission','review'} and item.get('sourceKind')=='workbook':return identity
         item['firstSeenAt'] = previous.get('firstSeenAt', existing['created_at'])
         if item['status'] == 'archived':
@@ -143,8 +146,32 @@ def canonical_result(value):
     return 'FAIL' if value == 'REJ' else value
 
 
+def resolve_inspection_date(item):
+    """Called only by explicit confirmation, using the task's captured plan."""
+    actual = workflow.source_date(item.get('actualDate'))
+    planned = workflow.source_date(item.get('dateFrom'))
+    return {'inspectionDate': actual or planned,
+            'inspectionDateSource': 'qc_manual' if actual else 'schedule' if planned else None}
+
+
+def confirmed_date(item):
+    """Read a frozen decision, refusing malformed markers before projection writes."""
+    if 'inspectionDateSource' not in item:
+        return business_date(item.get('actualDate'))
+    value = item.get('inspectionDate')
+    origin = item['inspectionDateSource']
+    if (not isinstance(value, str) or origin not in ('qc_manual', 'schedule', None)
+            or (origin is None and value != '')
+            or (origin is not None and (not value or workflow.source_date(value) != value))):
+        raise HTTPException(409, '已确认日期快照不完整，已保留原记录；请核对审核历史后重试')
+    return value
+
+
 def review_item(item):
-    return {**item,'entryId':item['id'],'inspectionDate':business_date(item.get('actualDate')),
+    # Absence of the marker means a historical confirmation: retain its old semantics.
+    # In particular, recovery must not call the resolver or backfill historical blanks.
+    final_date = confirmed_date(item)
+    return {**item,'entryId':item['id'],'inspectionDate':final_date,
         'stockNo':'','inspectionType':item.get('agency') or '待确认','status':'approved',
         'sourceKind':'review','sourceLabel':'审核中心确认','verificationIssues':[],'archivedAt':''}
 
@@ -597,7 +624,7 @@ def export_excel(factory, params):
     ws.freeze_panes = 'D2'
     ws.auto_filter.ref = ws.dimensions
     context = wb.create_sheet('筛选与来源说明')
-    context.append(['口径', ('页面筛选按关联排期验货日期；Excel实际验货日期列保留原值，未用排期日期回填' if params.get('dateBasis')=='schedule' else '实际验货日期，Asia/Shanghai；缺失日期不以排期日期代替')])
+    context.append(['口径', ('筛选按关联排期日期；日期列使用已保存的最终验货日期' if params.get('dateBasis')=='schedule' else '筛选、排序和日期列统一使用已保存的最终验货日期，Asia/Shanghai')+'；新审核确认采用QC填写日期，未填写时采用计划开始日期；历史确认保留原值，缺失日期不使用当天补位'])
     context.append(['匹配记录数', result['total']])
     context.append(['筛选', dump(result['filters'])])
     context.append(['状态', '历史待核实不代表审核通过；库号缺失留空，与货号分列。'])
