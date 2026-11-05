@@ -107,7 +107,11 @@ export function readYinhuiElectronicSources(sheets: XlsxParsedSheet[]): YinhuiEl
       const title = row.map(text).join(' ')
       const model = title.match(/产品编号|產品編號|产品型号|產品型號/)
       if (model) {
-        identity = title.slice(model.index! + model[0].length).match(/^\s*[:：#]?\s*([\w-]+)/)?.[1] || ''
+        // Read the whole identifier field before separating the model and role.
+        // Chinese descriptors must not truncate "88578-红外 TX" to "88578-",
+        // and a TX/RX in another title field must not select the parent group.
+        identity = title.slice(model.index! + model[0].length).replace(/^\s*[:：#]?\s*/, '')
+          .split(/\s*(?:客户|客戶|报价日期|報價日期|产品名称|產品名稱|日期)\s*[:：]/, 1)[0]!.trim()
         group = undefined; columns = undefined
       }
       const keys = row.map(yinhuiHeaderKey)
@@ -122,7 +126,9 @@ export function readYinhuiElectronicSources(sheets: XlsxParsedSheet[]): YinhuiEl
           columns = undefined
           group = undefined
         } else {
-          const match = identity.match(/^(.+?)[-_](TX|RX)$/i)
+          // Only the observed infrared descriptor is separable from a model.
+          // Preserve real alphanumeric suffixes and leave unknown text unmatched.
+          const match = identity.match(/^([A-Z0-9][\w-]*?)(?:[-_\s]+(?:红外|紅外))?[-_\s]+(TX|RX)$/i)
           group = { model: match?.[1] || identity, role: (match?.[2]?.toUpperCase() || '') as YinhuiElectronicSource['role'], source: `${sheet.name}!${index + 1}`, chips: [] }
           groups.push(group)
           columns = { kind, description, quantity, unit, amount, currency }
