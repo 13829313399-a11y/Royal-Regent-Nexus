@@ -1028,7 +1028,7 @@ function changeReportType(select) {
 }
 
 function showPage(name, focusReportType = false) {
-  if(window.QcInspectionSheet?.navigationState().dirty){showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
+  if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
   if (window.QcInspectionSummary?.busy) { showToast('历史导入正在保存，请稍候', 'warning'); return; }
   if (window.QcWorkflow?.navigationState().busy) { showToast('正在处理验货记录，请稍候再切换页面', 'error'); return; }
   if (name === 'report-center') name = reportCenterLandingPage() || name;
@@ -2254,6 +2254,7 @@ function clearRecordsDates() {
   filterRecords(); closeRecordsDates();
 }
 function resetRecordsFilters() {
+  window.QcInspectionSheet?.resetTaskFilters();
   ['searchInput','filterResult','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('filterSort').value = window.QcInspectionSheet ? 'date-asc' : 'mod-desc';
   document.getElementById('recordsDateFilter').open = false;
