@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue'
 import { isCuttingPoTestBridgeEnabled } from '@/features/cutting-operations/poTestBridge'
 
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.useRealTimers()
+})
 
 const customerOrderApiMock = vi.hoisted(() => ({
   previewBuzzbeeBatch: vi.fn(),
@@ -57,6 +60,113 @@ describe('customer order center static frontend', () => {
     resetLedgerApi()
     customerOrderApiMock.synchronizeWarehouseSchedule.mockResolvedValue({ batch_id: 'warehouse-retry', duplicate: false, message: '排期已自动同步到纸箱仓库' })
   })
+
+  async function mountDickieExportPreview() {
+    customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
+      customer_code: 'dickie', factory_id: 'huaxing', preview_fingerprint: 'dickie-export-feedback',
+      po_file_count: 1, po_file_names: ['release.pdf'], po_file_name: 'release.pdf',
+      schedule_file_name: 'schedule.xlsx', output_file_name: 'new-schedule.xlsx',
+      input_template: 'DICKIE_SIMBA_RELEASE_ORDER_PDF_V1', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 }, rows: [], warnings: [],
+      warehouse_sync: { status: 'SUCCESS', message: '原排期已同步' },
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴厂' },
+    })
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    for (const [index, file] of [new File(['po'], 'release.pdf'), new File(['schedule'], 'schedule.xlsx')].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find(button => button.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ activeSection: 'preview' })
+    return wrapper
+  }
+
+  it('keeps export failures on the preview, clears busy state, and only retries on an explicit click', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = await mountDickieExportPreview()
+    let fail!: (reason: Error) => void
+    customerOrderApiMock.exportDickieBatch.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+    const generate = wrapper.get('[data-testid="preview-next-step"] .button')
+    await generate.trigger('click')
+    expect(generate.text()).toContain('正在生成')
+    expect(generate.attributes('disabled')).toBeDefined()
+
+    fail(new Error('订单处理超时，任务已停止。请缩小批次或整理排期后重试。'))
+    await flushPromises()
+    const alert = wrapper.get('[data-testid="preview-export-alert"]')
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toContain('排期生成未完成')
+    expect(alert.text()).toContain('订单处理超时')
+    expect(generate.attributes('disabled')).toBeUndefined()
+    expect(generate.text()).not.toContain('正在生成')
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="generated-schedule-output"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(3500)
+    expect(wrapper.find('.order-toast').exists()).toBe(false)
+    expect(alert.text()).toContain('订单处理超时')
+
+    let complete!: (value: unknown) => void
+    customerOrderApiMock.exportDickieBatch.mockReturnValueOnce(new Promise(resolve => { complete = resolve }))
+    await alert.get('[data-testid="retry-schedule-export"]').trigger('click')
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(generate.text()).toContain('正在生成')
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(2)
+    expect(customerOrderApiMock.exportDickieBatch.mock.calls[1]).toEqual(customerOrderApiMock.exportDickieBatch.mock.calls[0])
+    complete({ blob: new Blob(['xlsx']), fileName: 'new-schedule.xlsx', passwordRequired: false,
+      warehouseSync: { status: 'SUCCESS', message: '已同步' } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="generated-schedule-output"]').text()).toContain('new-schedule.xlsx')
+    expect(wrapper.text()).not.toContain('正在生成')
+    wrapper.unmount()
+  })
+
+  it.each(['factory', 'file'] as const)('discards a late export failure after the %s changes', async scope => {
+    const wrapper = await mountDickieExportPreview()
+    let fail!: (reason: Error) => void
+    customerOrderApiMock.exportDickieBatch.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+    await wrapper.get('[data-testid="preview-next-step"] .button').trigger('click')
+    if (scope === 'factory') {
+      await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A' })
+    } else {
+      await wrapper.setProps({ activeSection: 'import' })
+      const input = wrapper.findAll('input[type="file"]')[1]!
+      Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['new'], 'replacement.xlsx')] })
+      await input.trigger('change')
+      await wrapper.setProps({ activeSection: 'preview' })
+    }
+    fail(new Error('旧批次的延迟导出错误'))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('旧批次的延迟导出错误')
+    expect(wrapper.text()).not.toContain('正在生成')
+    wrapper.unmount()
+  })
+
+  it.each(['factory', 'file'] as const)('clears a displayed export failure when the %s changes', async scope => {
+    const wrapper = await mountDickieExportPreview()
+    customerOrderApiMock.exportDickieBatch.mockRejectedValueOnce(new Error('旧批次错误'))
+    await wrapper.get('[data-testid="preview-next-step"] .button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="preview-export-alert"]').text()).toContain('旧批次错误')
+    if (scope === 'factory') {
+      await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A' })
+    } else {
+      await wrapper.setProps({ activeSection: 'import' })
+      const input = wrapper.findAll('input[type="file"]')[0]!
+      Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['new'], 'replacement.pdf')] })
+      await input.trigger('change')
+      await wrapper.setProps({ activeSection: 'preview' })
+    }
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('旧批次错误')
+    wrapper.unmount()
+  })
+
   it('keeps a failed automatic handoff visible and retries its exact schedule, discarding results after a factory change', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       customer_code: '360', factory_id: 'huakang-a', preview_fingerprint: 'sync-retry',

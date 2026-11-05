@@ -738,6 +738,19 @@ def _rewrite_formula_for_insert(
     """Apply Excel-like row insertion updates to references targeting the edited sheet."""
     from openpyxl.formula.tokenizer import Tokenizer
 
+    if formula_sheet.casefold() != target_sheet.casefold():
+        # Other sheets' local references cannot move. A direct reference to the
+        # edited sheet must contain its name, optionally with doubled apostrophes.
+        # Keep the tokenizer path whenever the name occurs, including in strings,
+        # INDIRECT, external or 3-D references; this is only a negative filter.
+        folded_formula = formula.casefold()
+        folded_target = target_sheet.casefold()
+        if (
+            folded_target not in folded_formula
+            and folded_target.replace("'", "''") not in folded_formula
+        ):
+            return formula
+
     tokenizer = Tokenizer(formula)
     for token in tokenizer.items:
         if token.type != "OPERAND" or token.subtype != "RANGE":

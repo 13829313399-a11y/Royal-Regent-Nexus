@@ -2213,6 +2213,26 @@ onBeforeUnmount(() => {
         </header>
 
         <article
+          v-if="exportFailureMessage"
+          class="persistent-parse-alert persistent-parse-alert--preview"
+          data-testid="preview-export-alert"
+          role="alert"
+        >
+          <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+          <div class="persistent-parse-alert__content">
+            <h3>排期生成未完成</h3>
+            <p>{{ exportFailureMessage }}</p>
+          </div>
+          <button
+            type="button"
+            class="button button--secondary"
+            data-testid="retry-schedule-export"
+            :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'"
+            @click="confirmAndGenerateSchedule"
+          >重试生成排期</button>
+        </article>
+
+        <article
           v-if="blockingIssueDetails.length"
           class="persistent-parse-alert persistent-parse-alert--preview"
           data-testid="preview-blocker-alert"
