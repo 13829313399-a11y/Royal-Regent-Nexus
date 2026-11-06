@@ -69,6 +69,7 @@ The manuals distinguish document approval from production/subcontract line execu
 
 Use these entry points before relying on documentation or memory:
 
+- Mainland invoice offline source: `tools/mainland-invoice-offline/` preserves the independent React tool for Xingxin, Huakang A/B/D, Huaxing and Huadeng. It is not a main-site route or authorization grant and is excluded from the main Docker context. Private templates, records, outputs and embedded offline HTML stay local and ignored; only source, configuration and bounded tests are tracked. Its algorithms and dependency lock are a source snapshot, maintained separately from any online integration. See its README for required local assets and verification limits.
 - Image/PDF translation: the independently built React workspace under `shinobu-web/` is opened from the Vue shared tool center at `/image-translation/`; it originated as a source snapshot and does not sync with the original project. Entry and deployment details are in `shinobu-web/README_FOR_RR.md` and `docs/document-tools/image-translation.md`.
 - Frontend bootstrap and navigation: `src/main.ts`, `src/router/index.ts`
 - Page-entry policy: `src/config/pageAccessPolicy.ts`
