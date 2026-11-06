@@ -24,6 +24,7 @@ class Upload(BaseModel):
     target: Target | None = None
     targets: list[Target] = Field(default_factory=list, max_length=100)
     shared_factory_ids: list[str] = Field(default_factory=list, max_length=20)
+    sharing_mode: Literal['SUPPLIER','INTERNAL'] | None = None
     status: Literal['DRAFT','PENDING','READY','HISTORY'] = 'PENDING'
     previous_asset_id: str = Field(default='',max_length=96)
     previous_revision: int | None = Field(default=None,ge=1)
@@ -50,3 +51,10 @@ class Sharing(BaseModel):
     revision: int = Field(ge=1)
     request_id: str = Field(min_length=8,max_length=96,pattern=r'^[A-Za-z0-9_-]+$')
     shared_factory_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class Audience(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: int = Field(ge=1)
+    request_id: str = Field(min_length=8,max_length=96,pattern=r'^[A-Za-z0-9_-]+$')
+    sharing_mode: Literal['SUPPLIER','INTERNAL']

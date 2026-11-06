@@ -252,12 +252,18 @@ const yinhuiConversionResult = ref<YinhuiConversionResult | null>(null)
 const yinhuiConfirmed = ref(false)
 const yinhuiDraft = ref<YinhuiDraft | null>(null)
 watch(yinhuiConversionResult, result => { if (yinhuiDraft.value?.result !== result) yinhuiDraft.value = null })
+function yinhuiDraftStatus(result: YinhuiConversionResult) {
+  const issues = result.quoteData.importIssues || []
+  const pending = issues.filter(issue => issue.code === 'blank_amount').length
+  const blocking = issues.length - pending
+  return ['银辉导入草稿', blocking ? `${blocking} 项原表问题待补正` : '待核对确认', pending ? `${pending} 项待补价，知悉后可确认输出` : ''].filter(Boolean).join(' · ')
+}
 function updateYinhuiDraft(draft: YinhuiDraft) {
   yinhuiConfirmed.value = false
   yinhuiDraft.value = draft
   yinhuiConversionResult.value = draft.result
   importedWorkbookSheets.value = draft.result.sheets
-  if (importedFileSize.value) importedFileSize.value = `${importedFileSize.value.split(' · ')[0]} · 银辉导入草稿 · ${draft.result.quoteData.importIssues?.length || 0} 项原表问题待补正`
+  if (importedFileSize.value) importedFileSize.value = `${importedFileSize.value.split(' · ')[0]} · ${yinhuiDraftStatus(draft.result)}`
   exportErrorMessage.value = ''
 }
 function downloadYinhuiDraft() {
@@ -659,7 +665,7 @@ const canExportCustomerQuote = computed(() => {
   }
   if (selectedCustomer.value.id === 'yinhui') {
     if (isImportingInternalQuote.value || !selectedImportMatchesCurrentChoice.value || !yinhuiConversionResult.value || !yinhuiConfirmed.value) return false
-    try { validateYinhuiExport(yinhuiConversionResult.value.quoteData); return true } catch { return false }
+    try { validateYinhuiExport(yinhuiConversionResult.value.quoteData, { reviewNoticesConfirmed: yinhuiConfirmed.value }); return true } catch { return false }
   }
 
   return visibleConversionRows.value.length > 0 && Boolean(selectedImportFileName.value)
@@ -1183,7 +1189,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       huaxing360Result.value = null
       importedWorkbookSheets.value = result.sheets
-      importedFileSize.value = `${formatFileSize(file.size)} · 银辉导入草稿 · ${result.quoteData.importIssues?.length || 0} 项原表问题待补正`
+      importedFileSize.value = `${formatFileSize(file.size)} · ${yinhuiDraftStatus(result)}`
     } else if (customer.id === 'three-sixty') {
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
         throw new Error('360 当前支持 .xlsx P4 最终放行文件或原专用多 Sheet 工作簿，旧 .xls 请先另存为 .xlsx')
@@ -1392,7 +1398,7 @@ async function exportCustomerQuoteExcel() {
       const conversion = yinhuiConversionResult.value
       const templateBuffer = await fetchTemplateBuffer(yinhuiTemplateUrl(conversion.quoteData.templateId), '银辉报客')
       if (!isCurrentExportRequest() || isImportingInternalQuote.value || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
-      const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
+      const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value, reviewNoticesConfirmed: yinhuiConfirmed.value })
       fileName = sourceVersionFileName(buildYinhuiCustomerQuoteFileName(conversion))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'three-sixty-huaxing' && huaxing360Result.value) {

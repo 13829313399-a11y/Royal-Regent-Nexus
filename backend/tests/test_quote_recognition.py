@@ -26,6 +26,29 @@ def valid_output(choice="TOOL PLAN!48"):
     return {"items": [{"task_id": "tool:0", "choice_id": choice, "reason": "需核对部件名称"}]}
 
 
+def test_missing_amount_choices_are_text_only_and_cannot_invent_prices():
+    service, schema = modules()
+    data = payload()
+    task = data["tasks"][0]
+    task.update(id="blank:明细!D62", kind="missing_amount", target="空白金额的原文费用归属",
+                source={"sheet": "明细", "cell": "C62", "text": "白咭由彩托搭"},
+                choices=[{"id": "pending", "label": "保留空白，待补价"},
+                         {"id": "included", "label": "费用已含，用户确认后按0保留"}])
+    request = schema.model_validate(data)
+    for choice in ["pending", "included", None]:
+        raw = json.dumps({"items": [{"task_id": task["id"], "choice_id": choice, "reason": "核对原文费用归属"}]})
+        result = service.validate_recognition_output(raw, request)
+        assert result[0]["choice_id"] == choice
+        assert result[0]["evidence"][0]["cell"] == "C62"
+    with pytest.raises(service.QuoteRecognitionError):
+        service.validate_recognition_output(json.dumps({"items": [{"task_id": task["id"], "choice_id": "price:1.2", "reason": "猜测价格"}]}), request)
+    task["amount"] = 0
+    with pytest.raises(ValidationError):
+        schema.model_validate(data)
+    assert "missing_amount" in service.PROMPT
+    assert "不能把空白金额" in service.PROMPT
+
+
 def configure(monkeypatch, service, protocol="dashscope"):
     monkeypatch.setattr(service.settings, "document_tools_enabled", True)
     monkeypatch.setattr(service.settings, "document_tools_ai_mode", "auto")

@@ -244,6 +244,32 @@ def test_same_day_return_preserves_original_count_and_still_blocks_overreturn(cu
     assert read(p)['issues'][0]['remaining_quantity']=='0.5'
 
 
+def test_warehouse_return_limit_matches_posting_and_historical_count(custody):
+    p = custody
+    consume(p, day='2026-10-11')
+    url = '/api/warehouse-operations/fabric'
+    params = {'factory_id': 'huakang-c', 'issue_id': p.issue_id}
+
+    def limit(day):
+        response = p.get(url + '/return-limit', params=params | {'day': day})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    historical = limit('2026-10-10')
+    assert historical['quantity'] == '0' and '后续盘余' in historical['reason']
+    assert limit('2026-10-11')['quantity'] == '1.5'
+    warehouse_post(p, 'RETURN', original_id=p.issue_id, quantity='1.5', location_id='bin', business_date='2026-10-11')
+    exhausted = limit('2026-10-11')
+    assert exhausted['quantity'] == '0' and '没有可退' in exhausted['reason']
+    response = p.get(url, params={'factory_id': 'huakang-c', 'include_cutting_returns': True})
+    assert response.status_code == 200, response.text
+    issue_row = next(row for row in response.json()['documents'] if row['id'] == p.issue_id)
+    assert issue_row['cutting_return_limit'] == limit(issue_row['cutting_return_limit']['day'])
+    warehouse_post(p, 'RETURN', 409, original_id=p.issue_id, quantity='0.000001', location_id='bin', business_date='2026-10-11')
+    p.cutting_auth['user'] = actor('usage_write', warehouse=False)
+    assert p.get(url + '/return-limit', params=params | {'day': '2026-10-11'}).status_code == 403
+
+
 def test_same_day_later_signature_is_after_the_count_snapshot(custody):
     p=custody
     send(p,'void',decision(p,{'id':p.receipt_id}))

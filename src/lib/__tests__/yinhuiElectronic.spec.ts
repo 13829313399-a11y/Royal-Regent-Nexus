@@ -32,6 +32,15 @@ describe('Yinhui supplier IC source evidence', () => {
     expect(rows.reduce((total, row) => total + row.amountHkd, 0)).toBeCloseTo(17.759, 12)
     expect(rows.reduce((total, row) => total + row.internalHkd, 0)).toBeCloseTo(14, 12)
   })
+  it('retains an unpriced parent while splitting only the known group and still rejects duplicate sources', () => {
+    const input = parents().map((row, i) => i === 0 ? { ...row, pricePending: true, amountHkd: 0, internalHkd: 0 } : row)
+    const result = splitYinhuiLegacyElectronics(input, [sheet()], main, '88052')
+    expect(result).toHaveLength(4)
+    expect(result[0]).toEqual(input[0])
+    expect(result.slice(1).map(row => row.description)).toEqual(['RX 主机电子*2pcs', 'IC,DRIVER,SA8301', 'IC,OTP,JTP'])
+    expect(result.reduce((total, row) => total + row.amountHkd, 0)).toBeCloseTo(input[1]!.amountHkd, 12)
+    expect(() => splitYinhuiLegacyElectronics(input, [sheet(), sheet()], main, '88052')).toThrow(/唯一/)
+  })
   it('rejects duplicate groups, unmatched models, ambiguous parents and missing FX', () => {
     expect(() => splitYinhuiLegacyElectronics(parents(), [sheet(), sheet()], main, '88052')).toThrow(/唯一/)
     expect(() => splitYinhuiLegacyElectronics(parents(), [sheet()], main, '88490')).toThrow(/型号/)
@@ -61,6 +70,29 @@ describe('Yinhui supplier IC source evidence', () => {
     expect(groups).toHaveLength(2)
     expect(groups[0]).toMatchObject({ model: '88052', role: 'TX', chips: [{ quantity: 1, amount: .5, currency: 'RMB', source: '電子 報價!E3' }] })
     expect(groups[1]).toMatchObject({ model: '88052', role: 'RX', chips: [{ quantity: 2, amount: .2, currency: 'HKD' }, { quantity: 1, amount: .7 }] })
+  })
+  it.each(['红外', '紅外'])('reads %s descriptions without losing the model or TX/RX group', label => {
+    const source = sheet()
+    source.rows[0] = [`产品名称:迷你腊肠狗 产品编号：88052-${label} TX 客户：华兴 报价日期：2026/10/24`]
+    source.rows[4] = [`產品編號：88052-${label} RX 客戶：华兴`]
+    expect(readYinhuiElectronicSources([source]).map(g => [g.model, g.role])).toEqual([['88052', 'TX'], ['88052', 'RX']])
+    const input = parents().reverse()
+    const result = splitYinhuiLegacyElectronics(input, [source], main, '88052')
+    expect(result.map(r => r.source)).toEqual(['明细!D2', '電子 報價!E7', '電子 報價!E8', '明细!D1', '電子 報價!E3'])
+    expect(result.slice(0, 3).reduce((sum, r) => sum + r.amountHkd, 0)).toBeCloseTo(input[0]!.amountHkd, 12)
+    expect(result.slice(3).reduce((sum, r) => sum + r.amountHkd, 0)).toBeCloseTo(input[1]!.amountHkd, 12)
+  })
+  it.each(['88052-A-红外 TX', '880520-红外 TX', '88052-改版 TX', '88052-红外 TX/RX', '88052-红外 TX2', '88052-红外'])('does not discard conflicting or ambiguous identity %s', identity => {
+    const source = sheet()
+    source.rows[0] = [`产品编号：${identity} 客户：华兴`]
+    expect(() => splitYinhuiLegacyElectronics(parents(), [source], main, '88052')).toThrow(/型号|唯一/)
+  })
+  it('keeps real model suffixes and excludes roles in other title fields', () => {
+    const source = sheet()
+    source.rows[0] = ['产品名称:RX 测试 产品编号：88052-A-红外 TX 客户：RX 报价日期：2026/10/24']
+    expect(readYinhuiElectronicSources([source])[0]).toMatchObject({ model: '88052-A', role: 'TX' })
+    source.rows[0] = ['产品编号：88052 客户：TX']
+    expect(readYinhuiElectronicSources([source])[0]).toMatchObject({ model: '88052', role: '' })
   })
   it('loads electronic source rows beyond the discovery preview', () => {
     const source = sheet()

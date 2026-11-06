@@ -5,8 +5,8 @@
    依赖：jsPDF 2.x  +  html2canvas 1.x
    调用：exportReportPDF('daily' | 'weekly')
    输出：A4 横向  297mm × 210mm
-         品质日报_YYYY-MM-DD.pdf
-         品质周报_YYYY-MM-DD.pdf
+         验货日报_YYYY-MM-DD.pdf
+         验货周报_YYYY-MM-DD.pdf
 ══════════════════════════════════════════════════════ */
 
 'use strict';
@@ -55,6 +55,7 @@ function _rptUpdateOverlay(msg, sub) {
 ───────────────────────────────────────── */
 async function exportReportPDF(type) {
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
+  const selectedDailyDate = type === 'daily' ? document.getElementById('dailyDate')?.value || _todayStr() : '';
   /* 检查依赖 */
   const missing = _rptCheckDeps();
   if (missing.length) {
@@ -147,9 +148,9 @@ async function exportReportPDF(type) {
       document.body.removeChild(canvas);
 
       const dateStr2 = document.getElementById('weeklyDate')?.value || _todayStr();
-      pdf2.save(`品质周报_${dateStr2}.pdf`);
+      pdf2.save(`验货周报_${dateStr2}.pdf`);
       _rptHideOverlay();
-      showToast(`✓ 品质周报_${dateStr2}.pdf 已生成`, 'success');
+      showToast(`✓ 验货周报_${dateStr2}.pdf 已生成`, 'success');
       if (btn) { btn.disabled = false; btn.textContent = '⬇ 导出 PDF'; }
       return;   /* ← 周报独立处理完，提前返回 */
 
@@ -210,10 +211,10 @@ async function exportReportPDF(type) {
     /* 文件名 */
     let prefix, dateStr;
     if (type === 'daily') {
-      prefix  = '品质日报';
-      dateStr = document.getElementById('dailyDate')?.value || _todayStr();
+      prefix  = '验货日报';
+      dateStr = selectedDailyDate;
     } else if (type === 'weekly') {
-      prefix  = '品质周报';
+      prefix  = '验货周报';
       dateStr = document.getElementById('weeklyDate')?.value || _todayStr();
     } else {
       const sName = document.getElementById('supplierSelect')?.value || '供应商';
@@ -364,9 +365,10 @@ function _svgLine(values, w=280, h=60, color='#1a5f8a') {
 }
 
 /* ─────────────────────────────────────────
-   §A  品质日报 HTML 画布构建
+   §A  验货日报 HTML 画布构建
 ───────────────────────────────────────── */
 function _buildDailyCanvas() {
+  if (window.QcDailyReport?.enabled()) return window.QcDailyReport.pdfCanvas();
   const date    = document.getElementById('dailyDate')?.value || _todayStr();
   const allData = _getData();
   const data    = allData.filter(r => r.date === date || r.inspDate === date);
@@ -438,7 +440,7 @@ function _buildDailyCanvas() {
     <div class="rpt-header">
       <div>
         <div class="rpt-co-name">${getReportCompanyLabel()}</div>
-        <div class="rpt-doc-type">品 质 日 报</div>
+        <div class="rpt-doc-type">验 货 日 报</div>
       </div>
       <div class="rpt-doc-no">
         <div><strong>报告日期：</strong>${date}</div>
@@ -613,7 +615,7 @@ function _buildDailyCanvas() {
 }
 
 /* ─────────────────────────────────────────
-   §B  品质周报 HTML 画布构建
+   §B  验货周报 HTML 画布构建
    ──────────────────────────────────────
    管理版（默认）：KPI + 供应商排名 + TOP不良 +
                    REJ明细 + 结论 ≈ 2~3页
@@ -753,7 +755,7 @@ function _buildWeeklyCanvas(withAppendix) {
     <div class="rpt-header">
       <div>
         <div class="rpt-co-name">${getReportCompanyLabel()}</div>
-        <div class="rpt-doc-type">品 质 周 报</div>
+        <div class="rpt-doc-type">验 货 周 报</div>
       </div>
       <div class="rpt-doc-no">
         <div><strong>统计周期：</strong>${ws} ～ ${we}</div>

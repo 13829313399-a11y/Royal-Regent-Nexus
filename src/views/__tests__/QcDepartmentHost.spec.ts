@@ -2,6 +2,8 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { reactive, nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { compileStyle, parse } from '@vue/compiler-sfc'
 
 const state = vi.hoisted(() => ({
   route: { path: '/modules/qc/inspection-operations', hash: '', query: {} as Record<string, string> },
@@ -187,4 +189,161 @@ it('restores the QC module from the URL and preserves factory on navigation', as
   await flushPromises()
   expect(state.route.query).toEqual({ factory: 'huaxing', qcPage: 'review' })
   wrapper.unmount()
+})
+
+it('tracks rotation, browser chrome and keyboard viewport without recreating the frame; removes listeners on leave', async () => {
+  state.route.query.factory='huaxing';health()
+  const viewport=new EventTarget() as EventTarget & {height:number;scale:number;offsetTop:number}
+  Object.assign(viewport,{height:720,scale:1,offsetTop:0})
+  const previous=Object.getOwnPropertyDescriptor(window,'visualViewport')
+  Object.defineProperty(window,'visualViewport',{configurable:true,value:viewport})
+  const raf=vi.spyOn(window,'requestAnimationFrame').mockImplementation(cb=>{cb(0);return 1})
+  const cancel=vi.spyOn(window,'cancelAnimationFrame').mockImplementation(()=>{})
+  const wrapper=mount(Host)
+  try{
+    await flushPromises();const frame=wrapper.get('iframe').element
+    expect(document.documentElement.classList.contains('qc-viewport-locked')).toBe(true)
+    expect(wrapper.attributes('style')).toContain('--qc-viewport-height: 720px')
+    viewport.height=320;window.dispatchEvent(new Event('orientationchange'));await nextTick()
+    expect(wrapper.attributes('style')).toContain('--qc-viewport-height: 320px')
+    viewport.height=220;viewport.offsetTop=35;viewport.dispatchEvent(new Event('resize'));await nextTick()
+    expect(wrapper.attributes('style')).toContain('--qc-viewport-height: 220px')
+    expect(wrapper.attributes('style')).toContain('--qc-viewport-top: 35px')
+    viewport.scale=2;viewport.height=110;viewport.dispatchEvent(new Event('resize'));await nextTick()
+    expect(wrapper.attributes('style')).toContain('--qc-viewport-height: 220px')
+    expect(wrapper.get('iframe').element).toBe(frame);expect(state.get).toHaveBeenCalledTimes(1)
+    wrapper.unmount();raf.mockClear();viewport.dispatchEvent(new Event('resize'));window.dispatchEvent(new Event('resize'))
+    expect(raf).not.toHaveBeenCalled();expect(document.documentElement.classList.contains('qc-viewport-locked')).toBe(false)
+  }finally{
+    wrapper.unmount();raf.mockRestore();cancel.mockRestore()
+    if(previous)Object.defineProperty(window,'visualViewport',previous);else Reflect.deleteProperty(window,'visualViewport')
+  }
+})
+
+it('uses a native header in both phone tables, synchronizes columns and preserves drafts through layout changes', async () => {
+  state.route.query = { factory: 'huaxing', qcPage: 'records' }; health()
+  const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { cb(0); return 1 })
+  const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+  const disconnect = vi.fn()
+  let resized = () => {}
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) { resized = callback }
+    observe() {}
+    disconnect = disconnect
+  })
+  const wrapper = mount(Host)
+  try {
+    await flushPromises()
+    const { iframe } = bridgeFor(wrapper)
+    const doc = document.implementation.createHTMLDocument('QC')
+    Object.defineProperty(doc, 'defaultView', { value: window })
+    doc.documentElement.classList.add('qc-mobile')
+    doc.body.innerHTML = '<div class="main-wrap"><section id="page-records" class="page active"><div class="qis-wrap"><table class="qis-table"><thead><tr><th data-column="customer" style="left:0px">客户</th><th data-column="poNo" style="left:79px">PO#</th><th data-column="result">验货结果</th></tr></thead><tbody><tr><td><input value="保留正在填写的内容"></td></tr></tbody></table></div></section><section id="page-review" class="page"></section></div>'
+    const main = doc.querySelector('.main-wrap')!
+    const input = doc.querySelector('input')!
+    const sheet = doc.querySelector<HTMLElement>('.qis-wrap')!
+    const table = doc.querySelector('table')!
+    const head = table.tHead!
+    Object.defineProperty(iframe, 'offsetTop', { value: 48 })
+    Object.defineProperty(sheet, 'clientWidth', { value: 320 })
+    head.querySelectorAll('th').forEach((th, index) => vi.spyOn(th, 'getBoundingClientRect').mockReturnValue({ width: [79, 97, 128][index], height: 34 } as DOMRect))
+    let contentHeight = 1000, frameTop = 48
+    const measureMain = vi.spyOn(main, 'getBoundingClientRect').mockImplementation(() => ({ height: contentHeight } as DOMRect))
+    vi.spyOn(iframe, 'getBoundingClientRect').mockImplementation(() => ({ top: frameTop, bottom: frameTop + contentHeight } as DOMRect))
+    vi.spyOn(head, 'getBoundingClientRect').mockReturnValue({ top: 100, bottom: 134 } as DOMRect)
+    vi.spyOn(table, 'getBoundingClientRect').mockImplementation(() => ({ bottom: contentHeight } as DOMRect))
+    Object.assign(iframe.contentWindow!, { document: doc })
+    await wrapper.get('iframe').trigger('load'); await flushPromises()
+    expect(document.documentElement.classList.contains('qc-document-scroll')).toBe(true)
+    expect(document.documentElement.classList.contains('qc-viewport-locked')).toBe(false)
+    expect(doc.documentElement.classList.contains('qc-page-scroll')).toBe(true)
+    expect(iframe.style.height).toBe('1000px')
+    const bounds = wrapper.get('.qc-table-header-bounds').element as HTMLElement
+    const strip = wrapper.get('.qc-table-header-strip').element as HTMLElement
+    expect(bounds.hidden).toBe(false)
+    expect(bounds.style.top).toBe('148px')
+    expect(bounds.style.height).toBe('900px') // Native sticky cannot outlive its table.
+    expect(bounds.style.width).toBe('320px')
+    expect(bounds.getAttribute('aria-hidden')).toBe('true')
+    expect(bounds.hasAttribute('inert')).toBe(true)
+    expect(bounds.querySelectorAll('input,button,select,[id],th')).toHaveLength(0)
+    expect(Array.from(strip.children).map(el => (el as HTMLElement).style.width)).toEqual(['79px', '97px', '128px'])
+    expect((strip.children[1] as HTMLElement).style.left).toBe('79px')
+    sheet.scrollLeft = 240; sheet.dispatchEvent(new Event('scroll'))
+    expect(strip.scrollLeft).toBe(240)
+    const headerNode = strip.firstChild
+    measureMain.mockClear()
+    frameTop = -350
+    window.dispatchEvent(new Event('scroll')); await nextTick()
+    expect(doc.documentElement.style.getPropertyValue('--qc-visible-top')).toBe('350px')
+    expect(doc.documentElement.style.getPropertyValue('--qc-visible-height')).toBe(`${Math.min(window.innerHeight, 650)}px`)
+    expect(bounds.style.top).toBe('148px') // No per-scroll header motion or remeasurement.
+    expect(measureMain).not.toHaveBeenCalled()
+    expect(strip.firstChild).toBe(headerNode)
+    frameTop = -1100; window.dispatchEvent(new Event('scroll')); await nextTick()
+    expect(bounds.style.top).toBe('148px')
+    frameTop = -350
+    contentHeight = 300; resized(); await nextTick()
+    expect(iframe.style.height).toBe('300px') // Filtering must release the old blank tail.
+    expect(bounds.style.height).toBe('200px')
+    expect(wrapper.get('iframe').element).toBe(iframe)
+    expect(doc.querySelector('input')).toBe(input)
+    expect(input.value).toBe('保留正在填写的内容')
+    head.querySelector('[data-column=result]')!.textContent = '更新后的标题'
+    await flushPromises()
+    expect(strip.textContent).toContain('更新后的标题') // Same-height replacement is observed.
+    doc.body.classList.add('qc-sidebar-open'); await flushPromises()
+    expect(bounds.hidden).toBe(true)
+    doc.body.classList.remove('qc-sidebar-open'); await flushPromises()
+    expect(bounds.hidden).toBe(false)
+    const dialog = doc.createElement('dialog'); doc.body.append(dialog)
+    dialog.setAttribute('open', ''); await flushPromises()
+    expect(bounds.hidden).toBe(true)
+    dialog.remove(); await flushPromises()
+    expect(bounds.hidden).toBe(false)
+    // Switching out of inspection, or back to desktop, restores the existing workspace.
+    doc.querySelector('#page-records')!.classList.remove('active'); await flushPromises()
+    expect(iframe.style.height).toBe('')
+    expect(document.documentElement.classList.contains('qc-viewport-locked')).toBe(true)
+    expect(bounds.hidden).toBe(true)
+    doc.querySelector('#page-review')!.classList.add('active'); await flushPromises()
+    expect(iframe.style.height).toBe('300px')
+    const reviewSheet = sheet.cloneNode(true) as HTMLElement
+    reviewSheet.querySelector('[data-column=result]')!.textContent = '审核结果'
+    doc.querySelector('#page-review')!.append(reviewSheet); await flushPromises()
+    expect(bounds.hidden).toBe(false)
+    expect(strip.textContent).toContain('审核结果')
+    reviewSheet.scrollLeft = 460; reviewSheet.dispatchEvent(new Event('scroll'))
+    expect(strip.scrollLeft).toBe(460)
+    sheet.scrollLeft = 900; sheet.dispatchEvent(new Event('scroll'))
+    expect(strip.scrollLeft).toBe(460) // The previous page's listener has been removed.
+    doc.documentElement.classList.remove('qc-mobile'); await flushPromises()
+    expect(iframe.style.height).toBe('')
+    expect(doc.documentElement.classList.contains('qc-page-scroll')).toBe(false)
+    expect(bounds.hidden).toBe(true)
+    expect(strip.children).toHaveLength(0)
+    expect(state.get).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    expect(disconnect).toHaveBeenCalled()
+    expect(document.documentElement.classList.contains('qc-document-scroll')).toBe(false)
+    raf.mockClear(); window.dispatchEvent(new Event('scroll'))
+    expect(raf).not.toHaveBeenCalled()
+  } finally {
+    wrapper.unmount(); raf.mockRestore(); cancel.mockRestore(); vi.unstubAllGlobals()
+  }
+})
+
+it('compiles mobile host styles onto the host instead of leaving a fixed outer viewport', () => {
+  const source = readFileSync('src/views/QcOperationsCenterView.vue', 'utf8')
+  const css = compileStyle({ source: parse(source).descriptor.styles[0]!.content, filename: 'QcOperationsCenterView.vue', id: 'data-v-scroll-test', scoped: true }).code
+  const style = document.createElement('style'); style.textContent = css; document.head.append(style)
+  const host = document.createElement('main'); host.className = 'qc-department-host'; host.setAttribute('data-v-scroll-test', ''); document.body.append(host)
+  try {
+    document.documentElement.classList.add('qc-document-scroll')
+    expect(getComputedStyle(host).position).toBe('relative')
+    expect(getComputedStyle(host).height).toBe('auto')
+    expect(getComputedStyle(host).overflow).toBe('visible')
+    document.documentElement.classList.remove('qc-document-scroll')
+    expect(getComputedStyle(host).position).toBe('fixed')
+  } finally { host.remove(); style.remove(); document.documentElement.classList.remove('qc-document-scroll') }
 })

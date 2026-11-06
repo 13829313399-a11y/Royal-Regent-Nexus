@@ -4,6 +4,7 @@ import type { CartonMarkAssetWorkflow } from '@/api/cartonMark'
 export type AssetDepartment = 'sales-business' | 'pmc-warehouse' | 'carton' | 'supplier'
 export type QuickAssetStatus = 'DRAFT' | 'PENDING' | 'READY' | 'HISTORY'
 export type QuickTargetScope = 'ALL' | 'PENDING_SCHEDULE'
+export type QuickAssetAudience = 'SUPPLIER' | 'INTERNAL'
 export interface QuickTarget {
   kind: 'REGULAR' | 'SCHEDULE' | 'SAMPLE' | 'MISC'
   id: string
@@ -19,6 +20,9 @@ export interface QuickTarget {
 }
 export type QuickTargetRef = Pick<QuickTarget, 'kind' | 'id' | 'sheet' | 'row' | 'fingerprint'>
 export interface QuickAsset {
+  sharing_mode?: QuickAssetAudience | 'ORDER_BOUND'
+  shared_supplier_name?: string
+  can_change_audience?: boolean
   can_classify?: boolean
   allowed_statuses?: QuickAssetStatus[]
   can_associate?: boolean
@@ -45,6 +49,7 @@ export interface QuickAsset {
   warning: string
 }
 export interface QuickUploadBody {
+  sharing_mode?: QuickAssetAudience
   request_id: string
   owner_department: AssetDepartment
   text: string
@@ -86,6 +91,7 @@ export function createCartonQuickAssetsApi(client = http) {
       })
       scoped(data, factory)
       if (data.owner_department !== body.owner_department || data.purpose !== 'MATERIAL') throw new Error('保存结果归属不一致，请原样重试核实。')
+      if (body.sharing_mode && data.sharing_mode !== body.sharing_mode) throw new Error('共享范围保存结果不一致，请原样重试核实。')
       return data
     },
     async confirm(factory: string, asset: Pick<QuickAsset, 'id' | 'revision'>, requestId: string, signal?: AbortSignal) {
@@ -115,6 +121,14 @@ export function createCartonQuickAssetsApi(client = http) {
         revision: asset.revision, request_id: requestId, shared_factory_ids: factories,
       }, { params: { factory_id: factory }, signal })
       return scoped(data, factory)
+    },
+    async audience(factory: string, asset: Pick<QuickAsset, 'id' | 'revision'>, mode: QuickAssetAudience, requestId: string, signal?: AbortSignal) {
+      const { data } = await client.post<QuickAsset>(BASE + '/' + encodeURIComponent(asset.id) + '/audience', {
+        revision: asset.revision, request_id: requestId, sharing_mode: mode,
+      }, { params: { factory_id: factory }, signal })
+      scoped(data, factory)
+      if (data.id !== asset.id) throw new Error('保存结果与当前资料不一致，请原样重试核实。')
+      return data
     },
     async document(factory: string, identifier: string, supplier: boolean, signal?: AbortSignal) {
       return (await client.get<Blob>(BASE + '/' + encodeURIComponent(identifier) + '/document', {
