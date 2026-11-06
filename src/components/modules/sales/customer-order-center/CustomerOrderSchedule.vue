@@ -11,6 +11,7 @@ import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
 import type { FeedbackContext } from '@/api/moduleFeedback'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
+import CasdonWorkbookTools from './CasdonWorkbookTools.vue'
 
 const props = defineProps<{ factoryId: string; factoryName: string }>()
 const emit = defineEmits<{ import: []; feedback: [context: FeedbackContext] }>()
@@ -360,6 +361,8 @@ watch(() => props.factoryId, () => {
         <ul v-if="organizeReport.warnings.length" class="customer-schedule__organize-warnings"><li v-for="(warning, index) in organizeReport.warnings" :key="index">{{ warning }}</li></ul>
       </div>
     </section>
+
+    <CasdonWorkbookTools v-if="factoryId === 'huadeng' && draft.customerCode === 'casdon'" :key="factoryId + draft.customerCode" :factory-id="factoryId" />
 
     <template v-if="schedule">
       <section class="customer-schedule__summary" aria-label="订单汇总">

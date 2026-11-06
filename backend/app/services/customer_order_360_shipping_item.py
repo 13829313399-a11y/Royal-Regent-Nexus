@@ -46,7 +46,8 @@ def _key(value):
 
 
 def _history_value(item):
-    return _text((_get(item, "extras", {}) or {}).get("shipping_item"))
+    value = _text((_get(item, "extras", {}) or {}).get("shipping_item"))
+    return '' if value.upper() in {'#REF!', '#N/A', '#DIV/0!', '#VALUE!', '#NAME?', '#NUM!', '#NULL!', '#SPILL!', '#CALC!'} else value
 
 
 def _history_source(items):
@@ -56,29 +57,32 @@ def _history_source(items):
     ))
 
 
-def _resolve(product, history, reference=None):
+def _resolve(product, history, reference=None, shipping_map=None):
     matches = [item for item in history if _key(_get(item, "product_no")) == _key(product)
                and _history_value(item)] if _text(product) else []
-    match_label = "同完整货号"
-    if reference:
-        same_order = [item for item in matches if _key(_get(item, "reference_no")) == _key(reference)]
-        if same_order:
-            matches = same_order
-            match_label = "同Release及完整货号"
-    values = {_history_value(item) for item in matches}
-    if len(values) > 1:
-        return "", "conflict", f"{_history_source(matches)}{match_label}的出货货号不一致，留空核对"
-    if values:
-        return next(iter(values)), "history", f"{_history_source(matches)} · {match_label}的唯一历史出货货号"
+    mapped = [item for item in shipping_map or [] if _key(_get(item, 'product_no')) == _key(product)
+              and _history_value(item)] if _text(product) else []
+    same_order = lambda items: [item for item in items if reference and _key(_get(item, 'reference_no')) == _key(reference)]
+    for candidates, label, reason in (
+        (same_order(matches), '同Release及完整货号', 'history'),
+        (same_order(mapped), '映射表同Release及完整货号', 'mapping'),
+        (matches, '同完整货号', 'history'),
+        (mapped, '映射表同完整货号', 'mapping'),
+    ):
+        values = {_history_value(item) for item in candidates}
+        if len(values) > 1:
+            return '', 'conflict', f'{_history_source(candidates)}{label}的出货货号不一致，留空核对'
+        if values:
+            return next(iter(values)), reason, f'{_history_source(candidates)} · {label}的唯一出货货号'
     value = derive_shipping_item(product)
     if value:
         return value, "rule", "旧排期格式规则：11位数字取前7位；10位数字的小数尾去除；7/10位数字保留"
     return "", "unknown", "完整产品编号不属于已确认的出货货号格式，留空核对"
 
 
-def prepare_shipping_item(row, history):
+def prepare_shipping_item(row, history, shipping_map=None):
     """Recompute after a product correction, retaining a single optional edit issue."""
-    value, _, source = _resolve(row.get("product_no"), history, row.get("reference_no"))
+    value, _, source = _resolve(row.get("product_no"), history, row.get("reference_no"), shipping_map)
     row["shipping_item"] = value
     row.setdefault("lineage", {})["shipping_item"] = source
     issues = row.setdefault("issues", [])
@@ -148,7 +152,7 @@ def ensure_shipping_item_column(workbook, factory_id="huakang-a", customer_code=
 
 def _literal(sheet, row, column):
     cell = sheet._cells.get((row, column))
-    return _text(cell.value) if cell is not None and cell.data_type != "f" else ""
+    return _text(cell.value) if cell is not None and cell.data_type not in ("f", "e") else ""
 
 
 def _order_identity(sheet, row):
@@ -177,7 +181,7 @@ def _rows_and_boundaries(sheet):
     return rows, targets
 
 
-def backfill_shipping_items(workbook, factory_id="huakang-a", customer_code="360") -> dict:
+def backfill_shipping_items(workbook, factory_id="huakang-a", customer_code="360", *, shipping_map=None) -> dict:
     """Fill blank pending/explicitly date-completed rows; never overwrite history."""
     report = {"applied": False, "column": None, "filled": 0, "preserved": 0,
               "unresolved": [], "warnings": []}
@@ -186,6 +190,12 @@ def backfill_shipping_items(workbook, factory_id="huakang-a", customer_code="360
     if "ITEM表" not in workbook.sheetnames:
         raise ShippingItemError("360 出货货号：缺少 ITEM表，未补填。")
     sheet = workbook["ITEM表"]
+    from .customer_order_360_shipping_mapping import read_mapping, ShippingMappingError
+    try:
+        if shipping_map is None:
+            shipping_map = read_mapping(workbook)
+    except ShippingMappingError as exc:
+        raise ShippingItemError(str(exc)) from exc
     # Validate the section layout before adding a column or writing any values.
     rows, targets = _rows_and_boundaries(sheet)
     column = ensure_shipping_item_column(workbook, factory_id, customer_code)
@@ -208,7 +218,7 @@ def backfill_shipping_items(workbook, factory_id="huakang-a", customer_code="360
         if any(area.min_row <= row <= area.max_row and area.min_col <= column <= area.max_col
                for area in sheet.merged_cells.ranges):
             raise ShippingItemError(f"360 出货货号：ITEM表!{coordinate} 位于合并区域，未覆盖。")
-        value, reason, source = _resolve(product, history)
+        value, reason, source = _resolve(product, history, reference, shipping_map)
         if not value:
             detail = {"sheet": sheet.title, "row": row, "cell": coordinate,
                       "reference_no": reference, "product_no": product, "reason": reason}

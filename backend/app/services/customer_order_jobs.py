@@ -20,6 +20,7 @@ MAX_RESULT_BYTES = 128 * 1024 * 1024
 LOCK_PATH = Path(tempfile.gettempdir()) / "rr-customer-order-job.lock"
 _local_slot = BoundedSemaphore(1)
 OPERATIONS = frozenset({
+    "_casdon_preview", "_casdon_export",
     "_create_unified_single_preview", "_export_unified_single_schedule",
     "_create_special_batch_preview", "_export_special_batch_schedule",
     "_create_mapped_customer_preview", "_export_mapped_customer_schedule",
