@@ -170,6 +170,10 @@ def ensure_unified_schedule(
         raise CustomerOrderUnifiedError("客户排期超过 35MB 限制")
     workbook = _load_workbook(schedule_content)
     try:
+        if factory_id == 'huaxing' and customer_code == 'yinhui':
+            from .customer_order_yinhui_unified import validate
+            validate(workbook)
+            return
         item_names = huaxing.item_sheets(workbook, customer_code) if huaxing.enabled(factory_id, customer_code) else [ITEM_SHEET]
         missing = [name for name in (ORDER_SHEET, REVIEW_SHEET, *item_names) if name not in workbook.sheetnames]
         if missing:
@@ -762,6 +766,8 @@ def _parse_huaxing_rows(
         seen: set[tuple[str, ...]] = set()
         for file_name, content in po_files:
             parsed = yinhui_po_parser.parse_po(content, file_name)
+            if not parsed.get('rows'):
+                raise CustomerOrderUnifiedError(f'{file_name}：未识别到银辉 PO 明细，请核对原单；本批不会仅导出其他文件')
             warnings.extend(f"{file_name}：{message}" for message in parsed.get("warnings", []))
             for record in parsed.get("rows", []):
                 identity = tuple(_key(record.get(field)) for field in (
@@ -1376,6 +1382,9 @@ def create_unified_customer_preview(
         if (factory_id, customer_code) == ('huadeng', 'casdon'):
             warnings[0] = 'Casdon 新单按完整货号归入未走货区，接单表和正单评审表关联实际 ITEM 行；不同后缀不混组。'
             warnings.append('ITEM金额关联唯一的接单表记录；美金按各摘要表P1现有汇率换算，单价不提前取两位。走货归档由业务手动确认，不按日期推断。')
+        if factory_id == 'huaxing' and customer_code == 'yinhui':
+            warnings[0] = '银辉三表按实际表头写入，兼容接单表没有订单类型、ITEM增加放版及抽版日期的排期；两项手填日期保留。'
+            warnings[1] = '新单在各表首个合计、取消或已走货边界前追加；数量、价格和日期关联实际列，源排期不会被覆盖。'
         if customer_code == 'edu':
             warnings[0] = 'EDU 新单按货号归组到绿色备料行上方，摘要关联实际 ITEM 行，同时更新 PO订单。'
             warnings[2] = 'EDU 按客户完整合同/PO＋产品查重，EDUHX 仅为内部编号；不同客户订单独立续编号，源排期不会被覆盖。'
@@ -1384,7 +1393,7 @@ def create_unified_customer_preview(
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
     preview = {
-        "preview_schema_version": PREVIEW_SCHEMA_VERSION,
+        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else ''),
         "customer_code": customer_code,
         "factory_id": factory_id,
         "po_file_name": file_names[0] if len(file_names) == 1 else f"{len(file_names)}个文件",
@@ -1491,7 +1500,9 @@ def _ensure_output_slots(workbook, count: int) -> list[int]:
 def _fit_generated_text(worksheet, row_number: int, linked_values: dict[int, Any] | None = None) -> None:
     """Expand only new rows when wrapped customer/product text needs more room."""
     height = worksheet.row_dimensions[row_number].height or 15
-    for cell in worksheet[row_number]:
+    for cell in tuple(worksheet._cells.values()):
+        if cell.row != row_number:
+            continue
         value = (linked_values or {}).get(cell.column, cell.value)
         if not isinstance(value, str) or value.startswith('=') or not cell.alignment.wrap_text:
             continue

@@ -85,7 +85,7 @@
       {
         "path": "backend/app/services/carton_supplier_portal.py",
         "symbol": "link_shipment_line",
-        "sha256": "29105799e5ca05a66d63ca4bf5d3a1be48bd53017fc1ddb9428ab4945022e467"
+        "sha256": "8d648c206279059041de0da504f1fa1603d07954931375e475b6c5d2ddbe6283"
       },
       {
         "path": "backend/app/services/carton_contract_merge.py",

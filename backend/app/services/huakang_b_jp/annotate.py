@@ -31,7 +31,7 @@ def annotate(result, schedule_ref, price_table):
         else:
             # 新货号：按排期表「货号 名称」「货号 后缀」的格式用邮件内容拼
             o['item_t'] = baby
-            suffix = long_code.split('-')[-1] if long_code else ''
+            suffix = long_code.split('-')[-1] if '-' in long_code else ''
             o['sub_item_t'] = (baby + ' ' + suffix).strip()
             desc = str(o.get('description') or '').strip()
             o['product_t'] = (baby + ' ' + desc).strip()
@@ -129,10 +129,10 @@ def annotate(result, schedule_ref, price_table):
             o['country'] = suggest
         if version:
             cur_pkg = str(o.get('pkg') or '').strip()
-            if not cur_pkg:
+            if not cur_pkg and not o.get('reply_package_conflict'):
                 o['pkg'] = version
                 o['pkg_from_ref'] = True
-            elif cur_pkg.upper() != version.upper():
+            elif cur_pkg and cur_pkg.upper() != version.upper():
                 if o.get('quoted_original'):
                     result['warnings'].append(
                         f'货号 {baby} 最新回复包装 {cur_pkg} 与排期历史 {version} 不同，保留最新回复，请人工核对')
