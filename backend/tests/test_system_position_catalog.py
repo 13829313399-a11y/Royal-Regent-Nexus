@@ -73,6 +73,12 @@ def test_fixed_system_position_definition_contract():
     assert all(not (set(definition.permission_codes) & set(permission_codes.UV_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.SPRAY_OPS_PERMISSION_CODES) == 14
     assert all(not (set(definition.permission_codes) & set(permission_codes.SPRAY_OPS_PERMISSION_CODES)) for definition in definitions)
+    for gated_codes in (
+        permission_codes.ENGINEERING_BOM_PERMISSION_CODES,
+        permission_codes.MATERIAL_PLAN_PERMISSION_CODES,
+        permission_codes.MATERIAL_PURCHASE_PERMISSION_CODES,
+    ):
+        assert all(not set(definition.permission_codes) & set(gated_codes) for definition in definitions)
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 8
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
