@@ -59,6 +59,10 @@ def test_fixed_system_position_definition_contract():
     assert len(permission_codes.APPLICATION_PERMISSION_CODES) == len(registered_codes)
     assert permission_codes.MAINLAND_INVOICE_PERMISSION_CODES == ("mainland_invoice:generate",)
     assert all("mainland_invoice:generate" not in definition.permission_codes for definition in definitions)
+    independently_granted = set(permission_codes.ENGINEERING_BOM_PERMISSION_CODES) | set(
+        permission_codes.MATERIAL_PLAN_PERMISSION_CODES
+    ) | set(permission_codes.MATERIAL_PURCHASE_PERMISSION_CODES)
+    assert all(not (set(definition.permission_codes) & independently_granted) for definition in definitions)
     assert all(not (set(definition.permission_codes) & set(permission_codes.CUTTING_OPS_PERMISSION_CODES)) for definition in definitions)
     assert "system:feedback_manage" in permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES
     assert "system:feedback_manage" not in permission_codes.BUSINESS_PERMISSION_CODES
@@ -119,6 +123,9 @@ def test_fixed_system_position_definition_contract():
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
             *permission_codes.SPRAY_OPS_PERMISSION_CODES,
             *permission_codes.CUTTING_OPS_PERMISSION_CODES,
+            *permission_codes.ENGINEERING_BOM_PERMISSION_CODES,
+            *permission_codes.MATERIAL_PLAN_PERMISSION_CODES,
+            *permission_codes.MATERIAL_PURCHASE_PERMISSION_CODES,
             *permission_codes.UV_OPS_PERMISSION_CODES,
             *permission_codes.CARTON_SUPPLIER_PERMISSION_CODES,
             *permission_codes.CARTON_ASSET_PERMISSION_CODES,

@@ -6,7 +6,7 @@ describe('mainland invoice integration boundaries', () => {
   it('adds one independent business card without moving existing cards', () => {
     const sales = departmentModuleRegistry['sales-business'].modules
     expect(sales.map(module => module.id)).toEqual([
-      'internal-quote-desk', 'customer-price-conversion',
+      'material-planning', 'internal-quote-desk', 'customer-price-conversion',
       'indonesia-material-shipment', 'po-schedule-intake', 'mainland-invoice',
     ])
     const invoice = sales.at(-1)!
