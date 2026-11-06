@@ -469,10 +469,13 @@ describe('customer order center static frontend', () => {
       await inputs[index]!.trigger('change')
     }
     await wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))!.trigger('click')
+    expect(wrapper.get('[role="progressbar"]').attributes('aria-busy')).toBe('true')
+    expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBeUndefined()
     if (scenario === 'factory-switch') await wrapper.setProps({ factoryId: 'huaxing' })
     resolvePreview({ factory_id: scenario === 'factory-switch' ? 'huakang-d' : 'huaxing', rows: [] })
     await flushPromises()
     if (scenario === 'mismatched-response') expect(wrapper.text()).toContain('已拒绝展示')
+    expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('0')
     expect(wrapper.emitted('navigate')).toBeUndefined()
     await wrapper.setProps({ activeSection: 'schedule' })
     await flushPromises()
@@ -683,7 +686,7 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('源排期文件未被覆盖')
     expect(workspaceSource).toContain('ITEM去向')
 
-    expect(wrapper.text()).toContain('真实文件试用')
+    expect(wrapper.find('.prototype-badge').text()).toContain('华兴厂')
     expect(wrapper.text()).toContain('解析并进入预览')
     expect(workspaceSource).toContain('customerOrderApi.previewBuzzbeeBatch')
     expect(workspaceSource).toContain('customerOrderApi.exportBuzzbeeBatch')
@@ -1495,7 +1498,7 @@ describe('customer order center static frontend', () => {
 
     await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
-    expect(wrapper.text()).toContain('彩星 V2')
+    expect(wrapper.get('.prototype-badge').text()).toBe('华兴厂 · 彩星')
     expect(wrapper.text()).toContain('重复订单是否允许确认以当前环境策略和预览结果为准')
     expect(wrapper.text()).toContain('华兴 彩星 最新统一排期（含 ITEM 分类页）')
     const inputs = wrapper.findAll('input[type="file"]')
