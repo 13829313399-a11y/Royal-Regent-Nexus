@@ -1,5 +1,6 @@
 """Read-only approval preparation, using isolated engineering databases."""
 from copy import deepcopy
+from decimal import Decimal
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -7,6 +8,7 @@ from app.models.engineering_bom import EngineeringEvent, EngineeringBom
 from app.models.fabric_master import FabricMasterRecord
 from app.models.fabric_procurement import FabricProcurementState
 from test_engineering_bom import client, material, bom, post, command, user, BASE
+from app.services import engineering_bom as service
 
 
 def check(c, draft, **params):
@@ -20,6 +22,60 @@ def state(c):
                 [(r.id, r.version, r.effective_version) for r in db.scalars(select(EngineeringBom))],
                 [(r.id, r.revision, r.status, r.data_json) for r in db.scalars(select(FabricMasterRecord))],
                 [(r.factory_id, r.revision) for r in db.scalars(select(FabricProcurementState))])
+
+
+def test_customer_loss_blocks_save_and_legacy_approval_without_rewriting_history(client, monkeypatch):
+    m = material(client, attribute='客供'); payload = bom(m)
+    payload['data']['nodes'].append(dict(payload['data']['nodes'][0], key='supplied', parent='root',
+        exempt_loss=True, source={'物料属性': '外购'}))  # Source text cannot override pinned identity.
+    before = state(client)
+    response = client.post(BASE + '/boms', json=payload)
+    assert response.status_code == 422 and '客供' in response.text
+    assert state(client) == before
+    # Model an existing pre-rule draft without altering immutable database events.
+    with monkeypatch.context() as legacy:
+        legacy.setattr(service, 'validate_material_loss', lambda *args: None)
+        draft = post(client, '/boms', payload)
+    old = client.get(BASE + f"/history/{draft['id']}?factory_id=huakang-c").json()['items'][0]
+    before = state(client)
+    report = check(client, draft).json()
+    assert not report['ready_for_approval'] and not report['can_release']
+    assert report['issues'][0]['key'] == 'supplied' and '客供' in report['issues'][0]['message']
+    assert client.post(BASE + f"/boms/{draft['id']}/approve", json=command(expected_version=1)).status_code == 422
+    assert state(client) == before
+    # Even changing the current catalog to 外购 must not erase the pinned 客供 rule.
+    newer = post(client, '/materials', command(id=m['id'], code=m['code'], group='01-01', name=m['name'],
+        unit='码', department='裁床', attribute='外购', expected_version=m['version']))
+    post(client, f"/materials/{m['id']}/approve", command(expected_version=newer['version']))
+    assert not check(client, draft).json()['ready_for_approval']
+    fixed = deepcopy(draft['data']); fixed['nodes'][1]['exempt_loss'] = False
+    saved = post(client, f"/boms/{draft['id']}", command(expected_version=1, data=fixed))
+    assert check(client, saved).json()['ready_for_approval']
+    post(client, f"/boms/{draft['id']}/approve", command(expected_version=2))
+    history = client.get(BASE + f"/history/{draft['id']}?factory_id=huakang-c").json()['items']
+    assert history[-1] == old
+
+
+@pytest.mark.parametrize('handwork', [False, True])
+def test_both_finished_structures_approve_and_expand_without_duplicate_sewing_inputs(client, handwork):
+    m = material(client); payload = bom(m); root = payload['data']['nodes'][0]
+    root['process'] = '手工' if handwork else '车缝'
+    nodes = payload['data']['nodes']; sewing = 'sewing' if handwork else 'root'
+    if handwork:
+        nodes.append(dict(root, key=sewing, parent='root', process='车缝'))
+        nodes.append(dict(root, key='manual-thread', parent='root', process='手工', numerator='0.2'))
+    nodes.extend([dict(root, key='cut', parent=sewing, process='裁床', numerator='2'),
+        dict(root, key='fabric', parent='cut', process='裁床', numerator='0.0297', denominator='2'),
+        dict(root, key='sewing-thread', parent=sewing, process='车缝', numerator='0.8')])
+    saved = post(client, '/boms', payload)
+    assert check(client, saved).json()['ready_for_approval']
+    approved = post(client, f"/boms/{saved['id']}/approve", command(expected_version=1))
+    expanded = {row['key']: row['quantity'] for row in service.expansion(approved['data'])}
+    assert Decimal(expanded['fabric']) == Decimal('0.0297')
+    assert Decimal(expanded['sewing-thread']) == Decimal('0.8')
+    assert len(approved['data']['nodes']) == (6 if handwork else 4)
+    if not handwork:
+        assert all(n['process'] != '手工' for n in approved['data']['nodes'])
 
 
 def test_check_is_read_only_and_does_not_authorize_approval(client):

@@ -204,6 +204,11 @@ def validate_tree(data):
     return by_id
 
 
+def validate_material_loss(attribute, exempt, label=''):
+    require(not (attribute == '客供' and exempt),
+            f'{label}：客供物料必须按订单统一损耗率计损耗，不可设置免损耗'.lstrip('：'), 422)
+
+
 def pin_materials(db, data, previous=None, publishing=False):
     snapshots = {}
     old = (previous or {}).get('materials', {})
@@ -220,6 +225,8 @@ def pin_materials(db, data, previous=None, publishing=False):
             require(json.loads(r.data_json).get('engineering', {}).get('approval') == 'APPROVED', '物料尚未通过工程审核', 422)
             snapshots[key] = material_view(r)
         require(n['unit'] == snapshots[key]['data'].get('unit'), '用量单位与物料版本不一致；请核对单位', 422)
+        if n['parent']:
+            validate_material_loss(snapshots[key]['data']['engineering']['attribute'], n['exempt_loss'], n['key'])
         if publishing:
             require(r.status == 'ACTIVE', '物料已停用或待审，暂不能审核 BOM', 422)
         require(not publishing or not n['review_required'] or n['review_note'].strip(), '导入差异须填写核对说明', 422)

@@ -13,6 +13,7 @@ from app.services.material_plan_workflow import apply
 from app.schemas.material_plan import DatesRequest
 from app.schemas.engineering_bom import Command
 from fastapi import HTTPException
+from app.services import engineering_bom as engineering
 
 
 def owner(identity='sales-1'):
@@ -41,6 +42,24 @@ def submitted(c):
     return act(c, draft, 'submit')
 
 
+@pytest.mark.parametrize('engineering_material_attribute', ['客供'], indirect=True)
+@pytest.mark.parametrize('action', ['submit', 'self-review'])
+def test_legacy_customer_exemption_cannot_advance_workflow(flow, monkeypatch, action):
+    with monkeypatch.context() as legacy:
+        legacy.setattr(engineering, 'validate_material_loss', lambda *args: None)
+        saved = request(flow, '/drafts', body(flow, loss_exemptions={'fabric': True}))
+        if action == 'self-review':
+            saved = act(flow, saved, 'submit'); flow.engineering_auth['user'] = purchaser()
+            saved = act(flow, saved, 'dates', dates={'裁床': '2026-11-12', '车缝': '2026-11-15'})
+            flow.engineering_auth['user'] = owner()
+    history_url = BASE + f"/drafts/{saved['id']}/history?factory_id=huakang-c"
+    before = flow.get(history_url).json()
+    response = flow.post(BASE + f"/drafts/{saved['id']}/{action}", json=command(expected_version=saved['version']))
+    assert response.status_code == 422 and '客供' in response.text
+    assert flow.get(history_url).json() == before
+
+
+@pytest.mark.parametrize('engineering_material_attribute', ['外购', '客供'], indirect=True)
 def test_complete_flow_and_reopen_keep_immutable_history_and_never_release(flow):
     saved = submitted(flow)
     assert saved['status'] == DATES

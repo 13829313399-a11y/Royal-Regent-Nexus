@@ -44,6 +44,32 @@ beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(window, 'confirm').mockReturnV
 afterEach(() => { wrapper?.unmount() })
 
 describe('material trial workspace', () => {
+  it('new selections include customer loss even if the saved engineering default was exempt', async () => {
+    const b = attributedBom(); b.materials['m:1']!.data.engineering!.attribute = '客供'
+    await start([], [b]); await button('新建试算').trigger('click'); await bomSelect().setValue('bom-1:2')
+    const boxes = wrapper.findAll('input[type="checkbox"]')
+    expect(boxes).toHaveLength(2)
+    for (const box of boxes) { expect(box.attributes('disabled')).toBeDefined(); expect(box.element).toHaveProperty('checked', false) }
+    const save = vi.spyOn(api, 'save').mockResolvedValue(draft())
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(save.mock.calls[0]![1]).toMatchObject({ data: { loss_exemptions: { fabric: false, sew: false } } })
+    expect(b.data.nodes[1]!.exempt_loss).toBe(true)
+  })
+
+  it('keeps legacy customer evidence visible until explicit correction and save', async () => {
+    const saved = draft(); saved.bom = attributedBom(); saved.bom.materials['m:1']!.data.engineering!.attribute = '客供'
+    saved.inputs.loss_exemptions = { fabric: true, sew: true }
+    await start([saved], [saved.bom]); await button('查看／编辑').trigger('click')
+    const boxes = wrapper.findAll('input[type="checkbox"]')
+    for (const box of boxes) { expect(box.attributes('disabled')).toBeDefined(); expect(box.element).toHaveProperty('checked', true) }
+    const save = vi.spyOn(api, 'save').mockResolvedValue({ ...saved, version: 2 })
+    expect(save).not.toHaveBeenCalled()
+    for (const action of wrapper.findAll('button').filter(b => b.text() === '改为计损耗')) await action.trigger('click')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(save.mock.calls[0]![1]).toMatchObject({ data: { loss_exemptions: { fabric: false, sew: false } } })
+    expect(saved.inputs.loss_exemptions).toEqual({ fabric: true, sew: true })
+  })
+
   it('submits the saved revision, locks its inputs, and keeps new draft creation available', async () => {
     const saved = draft(); saved.inputs.order = { line_id: 'order-1', revision: 3 }
     await start([saved], [frozen()], true, 'huakang-c', true, true)

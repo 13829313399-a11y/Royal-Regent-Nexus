@@ -86,6 +86,7 @@ def calculate(frozen, inputs):
                     '业务可调整自制／委外；外购及客供属性沿用工程依据', 422)
         base = quantity * per_unit(n)
         exempt = overrides.get(n['key'], n['exempt_loss'])
+        bom.validate_material_loss(attribute, exempt, n['key'])
         loss = Fraction(0) if exempt else base * rate
         gross = base + loss
         metadata = dict(material_id=material['id'], material_version=material['version'], code=material['code'],

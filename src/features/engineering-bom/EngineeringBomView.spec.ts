@@ -31,6 +31,72 @@ beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(window, 'confirm').mockReturnV
 afterEach(() => { wrapper?.unmount() })
 
 describe('engineering BOM editor', () => {
+  it('distinguishes same-name parent occurrences by their actual editor row', async () => {
+    const existing = fixture()
+    existing.data.nodes.push(...['part-a', 'part-b'].map(key => ({ ...newNode(), key, parent: 'root', process: '车缝', source_name: '同名部件' })),
+      { ...newNode(), key: 'fabric', parent: 'part-b', process: '裁床' })
+    await start([existing]); await button('查看／维护').trigger('click')
+    const options = wrapper.get('[aria-label="第4行上级"]').findAll('option')
+    expect(options.find(o => o.attributes('value') === 'part-a')!.text()).toBe('第2行 · 车缝 · 同名部件')
+    expect(options.find(o => o.attributes('value') === 'part-b')!.text()).toBe('第3行 · 车缝 · 同名部件')
+  })
+
+  it.each(['手工', '车缝'] as const)('starts a %s finished BOM and adds children under the chosen occurrence', async process => {
+    await start([])
+    await wrapper.get('[aria-label="新建成品结构"]').setValue(process)
+    await button('新建 BOM').trigger('click')
+    const rootChildren = wrapper.findAll('[aria-label$="行上级"]')
+    expect(rootChildren).toHaveLength(process === '手工' ? 2 : 1)
+    const parentRow = process === '手工' ? 2 : 1
+    const filter = wrapper.findAll('label').find(l => l.text().startsWith('按工序查看'))!.get('select')
+    await filter.setValue('车缝')
+    await wrapper.get(`[aria-label="第${parentRow}行新增下级"]`).trigger('click')
+    expect(filter.element).toHaveProperty('value', '')
+    expect(wrapper.get(`[aria-label="第${parentRow + 1}行上级"]`).isVisible()).toBe(true)
+    const save = vi.spyOn(api, 'post').mockResolvedValue(fixture())
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    const body = save.mock.calls[0]![1] as { data: Bom['data'] }
+    const nodes = body.data.nodes
+    expect(nodes[0]).toMatchObject({ parent: '', process, numerator: '1', denominator: '1' })
+    expect(nodes.at(-1)!.parent).toBe(nodes[parentRow - 1]!.key)
+    if (process === '手工') expect(nodes[1]).toMatchObject({ parent: nodes[0]!.key, process: '车缝' })
+    else expect(nodes.some(n => n.process === '手工')).toBe(false)
+    expect(new Set(nodes.map(n => n.key)).size).toBe(nodes.length)
+  })
+
+  it.each([false, true])('requires explicit correction of pinned customer exemptions, including copying (%s)', async copy => {
+    const existing = fixture()
+    const m: Material = { id: 'supply', version: 2, code: '03-001', name: '供料件', status: 'ACTIVE',
+      data: { unit: '个', engineering: { group: '03', department: '供料车间', attribute: '客供', approval: 'APPROVED' } } }
+    existing.materials['supply:2'] = m
+    existing.data.nodes.push({ ...newNode(), key: 'supply-row', parent: 'root', material_id: m.id, material_version: 2,
+      source_name: m.name, source_code: m.code, unit: m.data.unit, exempt_loss: true, process: '手工' })
+    const newer: Material = { ...m, version: 3, data: { ...m.data, engineering: { ...m.data.engineering!, attribute: '外购' } } }
+    await start([existing], [newer])
+    const save = vi.spyOn(api, 'post').mockResolvedValue({ ...existing, version: 2 })
+    await button(copy ? '复制新货号' : '查看／维护').trigger('click')
+    const checkbox = wrapper.get('[aria-label="第2行不计损耗"]')
+    expect(checkbox.attributes('disabled')).toBeDefined()
+    expect(checkbox.element).toHaveProperty('checked', true)
+    expect(save).not.toHaveBeenCalled()
+    await wrapper.get('[aria-label="第2行改为计损耗"]').trigger('click')
+    expect(checkbox.element).toHaveProperty('checked', false)
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(save.mock.calls[0]![1]).toMatchObject({ data: { nodes: [existing.data.nodes[0], { ...existing.data.nodes[1], exempt_loss: false }] } })
+    expect(existing.data.nodes[1]!.exempt_loss).toBe(true)
+  })
+
+  it('clears an exemption when explicitly selecting a customer material', async () => {
+    const existing = fixture(), m: Material = { id: 's', version: 1, code: '03-001', name: '供料', status: 'ACTIVE',
+      data: { unit: '个', engineering: { group: '03', department: '其它车间', attribute: '客供', approval: 'APPROVED' } } }
+    existing.data.nodes.push({ ...newNode(), parent: 'root', exempt_loss: true })
+    await start([existing], [m]); await button('查看／维护').trigger('click')
+    await wrapper.get('[aria-label="第2行物料"]').setValue('s:1')
+    expect(wrapper.get('[aria-label="第2行不计损耗"]').element).toHaveProperty('checked', false)
+    expect(wrapper.get('[aria-label="第2行不计损耗"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('客供物料已设为计损耗')
+  })
+
   it('fills only selected unmatched rows locally and preserves evidence until explicit save', async () => {
     const existing = fixture(), m: Material = { id: 'm1', code: '01-01-00001', name: '测试布', version: 2, status: 'ACTIVE',
       data: { unit: '码', engineering: { group: '01-01', attribute: '外购', department: '裁床', approval: 'APPROVED' } } }

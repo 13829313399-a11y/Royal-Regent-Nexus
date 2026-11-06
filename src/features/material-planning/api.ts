@@ -42,3 +42,10 @@ export function defaultAttributes(bom: FrozenBom): Record<string, MaterialAttrib
     return attribute && ['外购', '自制', '委外', '客供'].includes(attribute) ? [[n.key, attribute as MaterialAttribute]] : []
   }))
 }
+
+/** New selections apply today's rule; opening saved evidence must not rewrite old inputs. */
+export function defaultLossExemptions(bom: FrozenBom): Record<string, boolean> {
+  const attributes = defaultAttributes(bom)
+  return Object.fromEntries(bom.data.nodes.filter(n => n.parent).map(n =>
+    [n.key, attributes[n.key] === '客供' ? false : n.exempt_loss]))
+}
