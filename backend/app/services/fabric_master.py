@@ -96,6 +96,8 @@ def save(db, actor, payload):
     record = db.scalar(select(FabricMasterRecord).where(FabricMasterRecord.factory_id == source.FACTORY, FabricMasterRecord.id == payload.id)) if payload.id else None
     if payload.id and not record:
         raise HTTPException(404, "找不到该厂区的基础资料")
+    if record and record.kind == 'MATERIAL' and json.loads(record.data_json).get('engineering'):
+        raise HTTPException(409, '该物料由工程建档审核，请在工程 BOM 物料档案维护，避免覆盖工程版本')
     if record and is_deleted(record):
         raise HTTPException(409, "仓位已删除，请在已删除仓位中恢复后再修改")
     if payload.expected_revision != (record.revision if record else 0) or (record and record.kind != payload.kind):

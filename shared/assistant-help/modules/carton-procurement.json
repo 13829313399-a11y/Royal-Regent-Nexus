@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "d1311859ef562a4fcc000b2092e1abbe2b0fc33466b0600e2578f208a459c435"
+        "sha256": "b2267e2e0a5c33d5c707bc1be6138344e875adaf1e742b5db9afa691029e8cf7"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -85,7 +85,7 @@
       {
         "path": "backend/app/services/carton_supplier_portal.py",
         "symbol": "link_shipment_line",
-        "sha256": "29105799e5ca05a66d63ca4bf5d3a1be48bd53017fc1ddb9428ab4945022e467"
+        "sha256": "8d648c206279059041de0da504f1fa1603d07954931375e475b6c5d2ddbe6283"
       },
       {
         "path": "backend/app/services/carton_contract_merge.py",
@@ -533,8 +533,8 @@
         "sha256": "4c34b5e121584d382e7ab461c0d9d3b1b7ad02a01b30653cfd646a2aebe8fb8e"
       }
     ],
-    "knowledge_version": "2026-11-04-carton-audience-and-staff-reads",
-    "verified_commit": "Source review: explicit supplier audience, receiving read guards and independent factory reads",
+    "knowledge_version": "2026-11-05-huakang-c-and-carton-source-review",
+    "verified_commit": "Source review: supplier audience, receiving guards and independent factory reads retained; Huakang C engineering and material workflow routes added without changing carton permissions",
     "status": "verified"
   }
 ]

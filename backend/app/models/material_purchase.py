@@ -1,0 +1,28 @@
+"""Unreleased purchase preparation and immutable workflow evidence."""
+from sqlalchemy import CheckConstraint, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+from app.db import Base
+
+
+class MaterialPurchase(Base):
+    __tablename__ = 'material_purchase_documents'
+    __table_args__ = (CheckConstraint("factory_id = 'huakang-c'"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+
+
+class MaterialPurchaseEvent(Base):
+    __tablename__ = 'material_purchase_events'
+    __table_args__ = (UniqueConstraint('factory_id', 'operation_id'), UniqueConstraint('entity_id', 'version'),
+        CheckConstraint("factory_id = 'huakang-c'"))
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    operation_id: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    result_json: Mapped[str] = mapped_column(Text)
+    actor_id: Mapped[str] = mapped_column(String(64))
+    occurred_at: Mapped[str] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(String(500))
