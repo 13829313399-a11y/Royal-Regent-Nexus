@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
+    mainland_invoice_enabled: bool = False
+    mainland_invoice_template_dir: str = str(BACKEND_DIR / "data" / "mainland-invoice-templates")
     online_documents_enabled: bool = False
     onlyoffice_jwt_secret: SecretStr = SecretStr("")
     onlyoffice_internal_url: str = "http://onlyoffice"

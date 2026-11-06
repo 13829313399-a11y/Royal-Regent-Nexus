@@ -217,6 +217,20 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/sales-business/mainland-invoice',
+    name: 'mainland-invoice',
+    component: () => import('@/views/MainlandInvoiceView.vue'),
+    meta: {
+      title: '大陆发票',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['mainland_invoice:generate'],
+      permissionDepartment: 'sales-business',
+      enforcePermissions: true,
+      strictPermissions: true,
+    },
+  },
+  {
     path: '/modules/sales-business/customer-price-conversion',
     name: 'customer-price-conversion',
     component: () => import('@/views/CustomerPriceConversionView.vue'),
