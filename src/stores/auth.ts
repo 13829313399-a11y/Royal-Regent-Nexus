@@ -34,6 +34,10 @@ const positionDepartmentAliasGroups = [
 ]
 
 const positionDepartmentSensitivePermissions = new Set([
+  'material_purchase:read', 'material_purchase:write', 'material_purchase:approve', 'material_purchase:release',
+  'material_plan:read', 'material_plan:draft_write', 'material_plan:submit', 'material_plan:self_review', 'material_plan:dates_read', 'material_plan:dates_write',
+  'engineering_bom:read', 'engineering_bom:material_write', 'engineering_bom:material_approve',
+  'engineering_bom:bom_write', 'engineering_bom:bom_approve', 'engineering_bom:import',
   'carton_asset:read',
   'carton_asset:manage',
   'carton_asset:confirm',

@@ -752,6 +752,22 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     panelSubtitle: '按仓库办理业务，各入口标明当前开放范围',
     modules: [
       {
+        id: 'material-purchasing', title: '采购制单与审核', owner: '华康 C · 采购',
+        summary: '固定需求制单、负责人内部审核、取消与改量申请',
+        status: '流程基础', statusTone: 'teal', stats: '内部审核 · 资料未齐不下发',
+        icon: Calculator, route: '/modules/pmc-warehouse/material-purchasing', factoryIds: ['huakang-c'],
+        strictAccess: true, permissions: ['material_purchase:read'], permissionDepartment: 'pmc-warehouse',
+        statusMetrics: [], todos: [], children: [{ label: '采购准备', summary: '不生成有效在途或仓库收货来源' }],
+      },
+      {
+        id: 'process-material-dates', title: '工序物料期', owner: '华康 C · 采购',
+        summary: '按业务已提交需求，分别填写裁床、车缝等工序物料期',
+        status: '流程基础', statusTone: 'teal', stats: '采购填期 · 原业务自审 · 尚不采购下发',
+        icon: Calculator, route: '/modules/pmc-warehouse/process-material-dates', factoryIds: ['huakang-c'],
+        strictAccess: true, permissions: ['material_plan:dates_read'], permissionDepartment: 'pmc-warehouse',
+        statusMetrics: [], todos: [], children: [{ label: '工序物料期', summary: '仅处理已提交需求，需独立授权' }],
+      },
+      {
         id: 'fabric-warehouse', title: '布料仓', owner: '华康C · 仓管',
         summary: '采购来源、布料辅料收发、批次与缸号库存，沿用纸箱工作区操作方式',
         status: '采购与入库可用', statusTone: 'teal', stats: '七个工作区 · 追货与实收入库',
@@ -1156,6 +1172,14 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     panelTitle: '业务部模块',
     panelSubtitle: '优先承接内部报价协作、客价转换、送印尼物料和 PO 入排期',
     modules: [
+      {
+        id: 'material-planning', title: '需求试算草稿', owner: '华康 C · 业务部',
+        summary: '关联订单、核对用料和损耗，提交采购填期后由原业务自审',
+        status: '试算工作区', statusTone: 'teal', stats: '待库存、在途与物料期资料核实',
+        icon: Calculator, route: '/modules/sales-business/material-planning', factoryIds: ['huakang-c'],
+        strictAccess: true, permissions: ['material_plan:read'], permissionDepartment: 'sales-business',
+        statusMetrics: [], todos: [], children: [{ label: '用料试算', summary: '工序明细与同料汇总；尚不生成采购单' }],
+      },
       {
         id: 'internal-quote-desk',
         title: '内部报价台',
