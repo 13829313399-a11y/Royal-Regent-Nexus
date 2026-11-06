@@ -2206,9 +2206,29 @@ onBeforeUnmount(() => {
               {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : blockingResolutionItems.some(({ issue }) => issue.severity === 'warning' && issue.can_edit) ? '更正日期/补录字段' : '查看已处理阻断项' }}
             </button>
             <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || savingOrder" @click="confirmAndSaveOrder">{{ savingOrder ? '正在保存…' : '确认并保存订单' }}</button>
-            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
+            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : warehouseSync.state === 'pending' ? '正在同步仓库，请稍候…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
         </header>
+
+        <article
+          v-if="exportFailureMessage"
+          class="persistent-parse-alert persistent-parse-alert--preview"
+          data-testid="preview-export-alert"
+          role="alert"
+        >
+          <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+          <div class="persistent-parse-alert__content">
+            <h3>排期生成未完成</h3>
+            <p>{{ exportFailureMessage }}</p>
+          </div>
+          <button
+            type="button"
+            class="button button--secondary"
+            data-testid="retry-schedule-export"
+            :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'"
+            @click="confirmAndGenerateSchedule"
+          >{{ warehouseSync.state === 'pending' ? '正在同步仓库，请稍候…' : '重试生成排期' }}</button>
+        </article>
 
         <article
           v-if="blockingIssueDetails.length"
@@ -2334,7 +2354,7 @@ onBeforeUnmount(() => {
             @click="confirmAndGenerateSchedule"
           >
             <Download aria-hidden="true" />
-            {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : '生成并下载客户排期' }}
+            {{ exportingSchedule ? '正在生成…' : warehouseSync.state === 'pending' ? '正在同步仓库，请稍候…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : '生成并下载客户排期' }}
           </button>
           <button
             type="button"

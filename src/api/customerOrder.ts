@@ -265,7 +265,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
       appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
-        client, '/customer-orders/dickie/export-batch', payload, 240_000,
+        client, '/customer-orders/dickie/export-batch', payload, 300_000,
       )
       return {
         blob: response.data,

@@ -1,11 +1,14 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue'
 import { isCuttingPoTestBridgeEnabled } from '@/features/cutting-operations/poTestBridge'
 
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.useRealTimers()
+})
 
 const customerOrderApiMock = vi.hoisted(() => ({
   previewBuzzbeeBatch: vi.fn(),
@@ -57,6 +60,181 @@ describe('customer order center static frontend', () => {
     resetLedgerApi()
     customerOrderApiMock.synchronizeWarehouseSchedule.mockResolvedValue({ batch_id: 'warehouse-retry', duplicate: false, message: '排期已自动同步到纸箱仓库' })
   })
+
+  async function mountDickieExportPreview(options: { withWarning?: boolean; warehouseError?: boolean } = {}) {
+    const rows = options.withWarning ? [{
+      id: 'synthetic-warning', status: 'warning', status_label: '需复核', received_date: '2026-11-05',
+      po_no: 'SYNTHETIC-PO', contract_no: 'SYNTHETIC-CONTRACT', customer_country: 'Dickie / 测试',
+      customer_name: 'Dickie', country: '测试', product_no: 'SYNTHETIC-ITEM',
+      product_name_zh: '合成测试玩具', product_name_en: 'Synthetic test toy', quantity: '96', units_per_carton: '8',
+      carton_count: '12', standard: '', unit_price_hkd: '1', amount_hkd: '96', packaging: '', line_q: '', customer_q: '',
+      requested_ship_date: '2027-01-01', input_template: 'DICKIE', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+      item_sheet_name: 'ITEM表', source_po_file_name: 'release.pdf', lineage: {},
+      issues: [{ severity: 'warning', code: 'missing_date_code', field: 'date_code', message: '日期码可选补录',
+        can_skip: true, skip_key: 'synthetic-date-code', skip_label: '', can_edit: true, edit_field: 'date_code', edit_label: '日期码' }],
+    }] : []
+    customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
+      customer_code: 'dickie', factory_id: 'huaxing', preview_fingerprint: 'dickie-export-feedback',
+      po_file_count: 1, po_file_names: ['release.pdf'], po_file_name: 'release.pdf',
+      schedule_file_name: 'schedule.xlsx', output_file_name: 'new-schedule.xlsx',
+      input_template: 'DICKIE_SIMBA_RELEASE_ORDER_PDF_V1', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+      summary: { total: rows.length, valid: 0, warning: rows.length, blocked: 0 }, rows, warnings: [],
+      warehouse_sync: options.warehouseError
+        ? { status: 'ERROR', message: '合成测试同步未完成' }
+        : { status: 'SUCCESS', message: '原排期已同步' },
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴厂' },
+    })
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    for (const [index, file] of [new File(['po'], 'release.pdf'), new File(['schedule'], 'schedule.xlsx')].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find(button => button.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ activeSection: 'preview' })
+    return wrapper
+  }
+
+  it.each(['success', 'failure'] as const)('explains why all export actions wait for warehouse sync and restores them after %s', async outcome => {
+    const wrapper = await mountDickieExportPreview({ withWarning: true, warehouseError: true })
+    onTestFinished(() => wrapper.unmount())
+    const headerButton = wrapper.get('[data-testid="order-preview"] > .view-heading .button--primary')
+    const nextStepButton = wrapper.get('[data-testid="preview-next-step"] .button')
+    expect(headerButton.text()).toContain('确认警告并生成客户排期')
+    expect(headerButton.attributes('disabled')).toBeUndefined()
+    customerOrderApiMock.exportDickieBatch.mockRejectedValueOnce(new Error('合成测试导出失败'))
+    await headerButton.trigger('click')
+    await flushPromises()
+    const retryButton = wrapper.get('[data-testid="retry-schedule-export"]')
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(1)
+
+    let finishSync!: (value: unknown) => void
+    let failSync!: (reason: Error) => void
+    customerOrderApiMock.synchronizeWarehouseSchedule.mockReturnValueOnce(new Promise((resolve, reject) => {
+      finishSync = resolve
+      failSync = reject
+    }))
+    await wrapper.get('[data-testid="warehouse-schedule-sync"] button').trigger('click')
+    const exportButtons = [headerButton, nextStepButton, retryButton]
+    for (const button of exportButtons) {
+      expect(button.text()).toContain('正在同步仓库，请稍候')
+      const element = button.element as HTMLButtonElement
+      expect(element.disabled).toBe(true)
+      element.click()
+    }
+    await flushPromises()
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="preview-export-alert"]').text()).toContain('合成测试导出失败')
+
+    if (outcome === 'success') finishSync({ batch_id: 'synthetic-sync', duplicate: false, message: '同步已完成' })
+    else failSync(new Error('合成测试同步失败'))
+    await flushPromises()
+    expect(headerButton.text()).toContain('确认警告并生成客户排期')
+    expect(nextStepButton.text()).toContain('生成并下载客户排期')
+    expect(retryButton.text()).toBe('重试生成排期')
+    for (const button of exportButtons) expect((button.element as HTMLButtonElement).disabled).toBe(false)
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(1)
+
+    const downloadedNames: string[] = []
+    const download = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloadedNames.push(this.download)
+    })
+    onTestFinished(() => download.mockRestore())
+    customerOrderApiMock.exportDickieBatch.mockResolvedValueOnce({ blob: new Blob(['synthetic xlsx']),
+      fileName: 'new-schedule.xlsx', passwordRequired: false, warehouseSync: { status: 'SUCCESS', message: '已同步' } })
+    await (outcome === 'success' ? headerButton : retryButton).trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(2)
+    expect(downloadedNames).toEqual(['new-schedule.xlsx'])
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="generated-schedule-output"]').text()).toContain('new-schedule.xlsx')
+  })
+
+  it('keeps export failures on the preview, clears busy state, and only retries on an explicit click', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = await mountDickieExportPreview()
+    let fail!: (reason: Error) => void
+    customerOrderApiMock.exportDickieBatch.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+    const generate = wrapper.get('[data-testid="preview-next-step"] .button')
+    await generate.trigger('click')
+    expect(generate.text()).toContain('正在生成')
+    expect(generate.attributes('disabled')).toBeDefined()
+
+    fail(new Error('订单处理超时，任务已停止。请缩小批次或整理排期后重试。'))
+    await flushPromises()
+    const alert = wrapper.get('[data-testid="preview-export-alert"]')
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toContain('排期生成未完成')
+    expect(alert.text()).toContain('订单处理超时')
+    expect(generate.attributes('disabled')).toBeUndefined()
+    expect(generate.text()).not.toContain('正在生成')
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="generated-schedule-output"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(3500)
+    expect(wrapper.find('.order-toast').exists()).toBe(false)
+    expect(alert.text()).toContain('订单处理超时')
+
+    let complete!: (value: unknown) => void
+    customerOrderApiMock.exportDickieBatch.mockReturnValueOnce(new Promise(resolve => { complete = resolve }))
+    await alert.get('[data-testid="retry-schedule-export"]').trigger('click')
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(generate.text()).toContain('正在生成')
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(2)
+    expect(customerOrderApiMock.exportDickieBatch.mock.calls[1]).toEqual(customerOrderApiMock.exportDickieBatch.mock.calls[0])
+    complete({ blob: new Blob(['xlsx']), fileName: 'new-schedule.xlsx', passwordRequired: false,
+      warehouseSync: { status: 'SUCCESS', message: '已同步' } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="generated-schedule-output"]').text()).toContain('new-schedule.xlsx')
+    expect(wrapper.text()).not.toContain('正在生成')
+    wrapper.unmount()
+  })
+
+  it.each(['factory', 'file'] as const)('discards a late export failure after the %s changes', async scope => {
+    const wrapper = await mountDickieExportPreview()
+    let fail!: (reason: Error) => void
+    customerOrderApiMock.exportDickieBatch.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+    await wrapper.get('[data-testid="preview-next-step"] .button').trigger('click')
+    if (scope === 'factory') {
+      await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A' })
+    } else {
+      await wrapper.setProps({ activeSection: 'import' })
+      const input = wrapper.findAll('input[type="file"]')[1]!
+      Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['new'], 'replacement.xlsx')] })
+      await input.trigger('change')
+      await wrapper.setProps({ activeSection: 'preview' })
+    }
+    fail(new Error('旧批次的延迟导出错误'))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('旧批次的延迟导出错误')
+    expect(wrapper.text()).not.toContain('正在生成')
+    wrapper.unmount()
+  })
+
+  it.each(['factory', 'file'] as const)('clears a displayed export failure when the %s changes', async scope => {
+    const wrapper = await mountDickieExportPreview()
+    customerOrderApiMock.exportDickieBatch.mockRejectedValueOnce(new Error('旧批次错误'))
+    await wrapper.get('[data-testid="preview-next-step"] .button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="preview-export-alert"]').text()).toContain('旧批次错误')
+    if (scope === 'factory') {
+      await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A' })
+    } else {
+      await wrapper.setProps({ activeSection: 'import' })
+      const input = wrapper.findAll('input[type="file"]')[0]!
+      Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['new'], 'replacement.pdf')] })
+      await input.trigger('change')
+      await wrapper.setProps({ activeSection: 'preview' })
+    }
+    expect(wrapper.find('[data-testid="preview-export-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('旧批次错误')
+    wrapper.unmount()
+  })
+
   it('keeps a failed automatic handoff visible and retries its exact schedule, discarding results after a factory change', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       customer_code: '360', factory_id: 'huakang-a', preview_fingerprint: 'sync-retry',
