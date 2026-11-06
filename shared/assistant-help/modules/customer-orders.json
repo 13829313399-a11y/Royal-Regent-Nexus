@@ -275,7 +275,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue",
         "symbol": "async function confirmAndGenerateSchedule",
-        "sha256": "78f7cd50fa20d4906fe45451e5595a8bd7af370d73a07cfe1129c15f46fd5678"
+        "sha256": "28d9d819da01cae741933d41c553e016cf47dbdafb7701583ff26b46c4dbbce4"
       },
       {
         "path": "src/api/customerOrder.ts",
@@ -288,8 +288,8 @@
         "sha256": "ff6a16dc5176e1b0063dc2939caac45bff5301d1ae44bc5ec26a01b77cc60eb2"
       }
     ],
-    "knowledge_version": "2026-11-05-dickie-export-feedback",
-    "verified_commit": "working-tree: Dickie export formula equivalence and preview failure/retry regressions reviewed; browser download acceptance pending",
+    "knowledge_version": "2026-11-06-order-feedback-integration",
+    "verified_commit": "Integrated Casdon/360, JP/Silverlit and Dickie source contracts with shared order UI; conflict resolution independently reviewed and source regressions verified, production/browser/native Excel acceptance remains separate",
     "status": "verified"
   }
 ]
