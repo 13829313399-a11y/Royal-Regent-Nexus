@@ -6,7 +6,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import TrialResults from './TrialResults.vue'
-import { trialApi as api, blankTrial, defaultAttributes, statusText, type Access, type FrozenBom, type TrialDraft, type TrialInput, type TrialResult, type OrderBasis } from './api'
+import { trialApi as api, blankTrial, defaultAttributes, defaultLossExemptions, statusText, type Access, type FrozenBom, type TrialDraft, type TrialInput, type TrialResult, type OrderBasis } from './api'
 
 const auth = useAuthStore(), route = useRoute()
 const access = ref<Access | null>(null), boms = ref<FrozenBom[]>([]), drafts = ref<TrialDraft[]>([])
@@ -100,7 +100,7 @@ function chooseBom(event: Event) {
   if (bomKey.value && control.value !== bomKey.value && !window.confirm('更换 BOM 将重置免损项及本次物料属性，请重新核对用料。是否继续？')) { control.value = bomKey.value; return }
   inputs.value = { ...inputs.value, bom_id: b.id, bom_version: b.version,
     material_attributes: defaultAttributes(b),
-    loss_exemptions: Object.fromEntries(b.data.nodes.filter(n => n.parent).map(n => [n.key, n.exempt_loss])) }
+    loss_exemptions: defaultLossExemptions(b) }
 }
 function payload() { return { factory_id: 'huakang-c', operation_id: crypto.randomUUID(), expected_version: selected.value?.version || 0, reason: reason.value, data: clone(inputs.value) } }
 async function preview() {
@@ -197,7 +197,7 @@ onBeforeUnmount(() => { epoch++; window.removeEventListener('beforeunload', befo
               <p v-else class="text-sm text-amber-800">{{ access?.can_read_orders ? '订单数据结构尚未部署，暂不能关联。' : '关联订单需要客户订单查看权限。' }}</p>
             </div>
             <p v-if="displayBom" class="mt-3">货号：{{ displayBom.data.item_no }} · 规格：{{ displayBom.data.specification || '未填写' }}</p>
-            <div v-if="displayBom" class="my-4 overflow-x-auto"><table><caption>物料属性与免损项（默认沿用工程设置，逐行确认）</caption><thead><tr><th>工序</th><th>物料</th><th>工程默认属性</th><th>本次物料属性</th><th>工程默认免损</th><th>本次不计损耗</th></tr></thead><tbody><tr v-for="n in displayBom.data.nodes.filter(n => n.parent)" :key="n.key"><td>{{ n.process }}</td><td>{{ n.source_code }} {{ n.source_name }}</td><td>{{ engineeringAttributes[n.key] || '待核对' }}</td><td><select v-if="['自制', '委外'].includes(engineeringAttributes[n.key] || '')" v-model="inputs.material_attributes[n.key]" :aria-label="`${n.source_name || n.source_code} ${n.process} 本次物料属性`"><option value="自制">自制</option><option value="委外">委外</option></select><span v-else>{{ engineeringAttributes[n.key] || '待核对' }}</span></td><td>{{ n.exempt_loss ? '免损' : '计损耗' }}</td><td><input v-model="inputs.loss_exemptions[n.key]" type="checkbox" :aria-label="`${n.source_name || n.source_code} ${n.process} 不计损耗`" /></td></tr></tbody></table></div>
+            <div v-if="displayBom" class="my-4 overflow-x-auto"><table><caption>物料属性与免损项（默认沿用工程设置，逐行确认）</caption><thead><tr><th>工序</th><th>物料</th><th>工程默认属性</th><th>本次物料属性</th><th>工程默认免损</th><th>本次不计损耗</th></tr></thead><tbody><tr v-for="n in displayBom.data.nodes.filter(n => n.parent)" :key="n.key"><td>{{ n.process }}</td><td>{{ n.source_code }} {{ n.source_name }}</td><td>{{ engineeringAttributes[n.key] || '待核对' }}</td><td><select v-if="['自制', '委外'].includes(engineeringAttributes[n.key] || '')" v-model="inputs.material_attributes[n.key]" :aria-label="`${n.source_name || n.source_code} ${n.process} 本次物料属性`"><option value="自制">自制</option><option value="委外">委外</option></select><span v-else>{{ engineeringAttributes[n.key] || '待核对' }}</span></td><td>{{ n.exempt_loss ? '免损' : '计损耗' }}</td><td><input v-model="inputs.loss_exemptions[n.key]" type="checkbox" :disabled="engineeringAttributes[n.key] === '客供'" :aria-label="`${n.source_name || n.source_code} ${n.process} 不计损耗`" /><template v-if="engineeringAttributes[n.key] === '客供'"><small>客供必须计损耗</small><Button v-if="inputs.loss_exemptions[n.key]" type="button" variant="outline" size="sm" :aria-label="`${n.source_name || n.source_code} ${n.process} 改为计损耗`" @click="inputs.loss_exemptions[n.key] = false">改为计损耗</Button></template></td></tr></tbody></table></div>
             <div class="mt-4 flex flex-wrap gap-2"><Button type="button" variant="outline" :disabled="previewBusy || !currentBom" @click="preview">{{ previewBusy ? '正在试算…' : '计算用料' }}</Button><Button type="submit" :disabled="!currentBom">保存试算草稿</Button></div>
           </fieldset>
         </form>

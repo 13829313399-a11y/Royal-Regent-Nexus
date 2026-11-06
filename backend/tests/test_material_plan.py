@@ -9,6 +9,7 @@ from importlib.util import spec_from_file_location, module_from_spec
 from pathlib import Path
 from uuid import uuid4
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -75,6 +76,42 @@ def request(client, path, body):
 
 def exact(amount):
     return Fraction(int(amount['numerator']), int(amount['denominator']))
+
+
+@pytest.mark.parametrize('engineering_material_attribute', ['客供'], indirect=True)
+def test_customer_supply_always_includes_loss_and_rejects_new_exemptions(client):
+    for percent in ('0', '5'):
+        for path in ('/preview', '/drafts'):
+            response = client.post(BASE + path, json=payload(client, loss_percent=percent, loss_exemptions={'fabric': True}))
+            assert response.status_code == 422 and '客供' in response.text
+    result = request(client, '/preview', payload(client))
+    assert [line['gross']['value'] for line in result['lines']] == ['105', '21']
+    assert result['finished_quantity']['value'] == '100'
+    assert not result['release_gate']['can_release'] and result['net_purchase_quantity'] is None
+    frozen = deepcopy(client.published)
+    frozen['data']['nodes'][2]['exempt_loss'] = True
+    before = deepcopy(frozen)
+    with pytest.raises(HTTPException, match='客供'):
+        service.calculate(frozen, payload(client)['data'])
+    calculated = service.calculate(frozen, payload(client, loss_exemptions={'fabric': False})['data'])
+    assert calculated['lines'][1]['gross']['value'] == '21' and frozen == before
+
+
+@pytest.mark.parametrize('engineering_material_attribute', ['客供'], indirect=True)
+def test_legacy_customer_exemption_receipt_and_history_remain_immutable(client, monkeypatch):
+    body = payload(client, loss_exemptions={'fabric': True})
+    with monkeypatch.context() as legacy:
+        legacy.setattr(service.bom, 'validate_material_loss', lambda *args: None)
+        old = request(client, '/drafts', body)
+    assert old['result']['lines'][1]['gross']['value'] == '20'
+    assert request(client, '/drafts', body) == old  # Completed retries return evidence, not a fresh calculation.
+    rejected = client.post(BASE + f"/drafts/{old['id']}", json=payload(client, loss_exemptions={'fabric': True}) | {'expected_version': 1})
+    assert rejected.status_code == 422
+    fixed = request(client, f"/drafts/{old['id']}", payload(client, loss_exemptions={'fabric': False}) | {'expected_version': 1})
+    assert fixed['result']['lines'][1]['gross']['value'] == '21'
+    assert not fixed['result']['release_gate']['can_release']
+    history = client.get(BASE + f"/drafts/{old['id']}/history?factory_id=huakang-c").json()['items']
+    assert history == [fixed, old]
 
 
 def test_gross_loss_is_once_per_occurrence_and_unknown_supply_is_not_zero(client):
