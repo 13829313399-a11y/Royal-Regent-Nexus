@@ -98,6 +98,144 @@ describe('customer order center static frontend', () => {
     return wrapper
   }
 
+  it.each(['save', 'export', 'sync', 'parse'] as const)('keeps file actions mutually exclusive while %s is pending, including direct repeated events', async action => {
+    const wrapper = await mountDickieExportPreview({ warehouseError: true })
+    onTestFinished(() => wrapper.unmount())
+    const save = wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary')
+    const generate = wrapper.get('[data-testid="order-preview"] > .view-heading .button--primary')
+    const neverFinishes = new Promise(() => {})
+    if (action === 'save') {
+      customerOrderLedgerApiMock.importConfirmed.mockReturnValueOnce(neverFinishes)
+      // Fire before Vue updates disabled attributes as well as after the update.
+      save.element.dispatchEvent(new Event('click'))
+      generate.element.dispatchEvent(new Event('click'))
+    } else if (action === 'export') {
+      customerOrderApiMock.exportDickieBatch.mockReturnValueOnce(neverFinishes)
+      generate.element.dispatchEvent(new Event('click'))
+      save.element.dispatchEvent(new Event('click'))
+    } else if (action === 'sync') {
+      customerOrderApiMock.synchronizeWarehouseSchedule.mockReturnValueOnce(neverFinishes)
+      await wrapper.get('[data-testid="warehouse-schedule-sync"] button').trigger('click')
+    } else {
+      customerOrderApiMock.previewDickieBatch.mockReturnValueOnce(neverFinishes)
+      await wrapper.setProps({ activeSection: 'import' })
+      await wrapper.findAll('button').find(button => button.text().includes('解析并进入预览'))!.trigger('click')
+      await wrapper.setProps({ activeSection: 'preview' })
+    }
+    await flushPromises()
+    const expectedLabel = { save: '正在保存订单，请稍候', export: '正在生成', sync: '正在同步仓库，请稍候', parse: '正在解析' }[action]
+    const controls = wrapper.findAll('[data-testid="order-preview"] > .view-heading .button, [data-testid="preview-next-step"] .button')
+    expect(controls.length).toBeGreaterThanOrEqual(2)
+    for (const button of controls) {
+      expect((button.element as HTMLButtonElement).disabled).toBe(true)
+      expect(button.text()).toContain(expectedLabel)
+      button.element.dispatchEvent(new Event('click'))
+    }
+    const warehouseRetry = wrapper.find('[data-testid="warehouse-schedule-sync"] button')
+    if (warehouseRetry.exists()) {
+      expect((warehouseRetry.element as HTMLButtonElement).disabled).toBe(true)
+      warehouseRetry.element.dispatchEvent(new Event('click'))
+    }
+    await wrapper.setProps({ activeSection: 'import' })
+    const parse = wrapper.get('.parse-banner .button--primary')
+    expect((parse.element as HTMLButtonElement).disabled).toBe(true)
+    expect(parse.text()).toContain(expectedLabel)
+    parse.element.dispatchEvent(new Event('click'))
+    await flushPromises()
+    expect(customerOrderLedgerApiMock.importConfirmed).toHaveBeenCalledTimes(action === 'save' ? 1 : 0)
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(action === 'export' ? 1 : 0)
+    expect(customerOrderApiMock.synchronizeWarehouseSchedule).toHaveBeenCalledTimes(action === 'sync' ? 1 : 0)
+    expect(customerOrderApiMock.previewDickieBatch).toHaveBeenCalledTimes(action === 'parse' ? 2 : 1)
+  })
+
+  it.each([
+    { code: 'ECONNABORTED', status: undefined, unknown: true },
+    { code: 'ERR_NETWORK', status: undefined, unknown: true },
+    { code: '', status: 500, unknown: true },
+    { code: '', status: 502, unknown: true },
+    { code: '', status: 504, unknown: true },
+    { code: '', status: 422, unknown: false },
+  ])('keeps save feedback for $code / $status and distinguishes unknown outcomes without automatic retries', async ({ code, status, unknown }) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = await mountDickieExportPreview()
+    onTestFinished(() => wrapper.unmount())
+    customerOrderLedgerApiMock.importConfirmed.mockRejectedValueOnce({ isAxiosError: true, code, config: { method: 'post' },
+      response: status ? { status, data: { detail: '合成测试保存提示' } } : undefined })
+    await wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary').trigger('click')
+    await flushPromises()
+    const alert = wrapper.get('[data-testid="preview-save-alert"]')
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.get('h3').text()).toBe(unknown ? '保存结果待核对' : '订单保存未完成')
+    expect(alert.text().includes('订单可能已经保存')).toBe(unknown)
+    expect(alert.text()).not.toContain('保存订单失败')
+    expect(wrapper.vm.feedbackContext().error_message).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(3500)
+    expect(wrapper.find('.order-toast').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="preview-save-alert"]').exists()).toBe(true)
+    expect(customerOrderLedgerApiMock.importConfirmed).toHaveBeenCalledTimes(1)
+    await alert.get('[data-testid="check-saved-orders"]').trigger('click')
+    expect(wrapper.emitted('navigate')?.at(-1)).toEqual(['ledger'])
+    // A later explicit save retains the originals and can clear the error on success.
+    customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 0, existing_count: 1, reconciled_count: 0,
+      warehouse_sync: { status: 'SUCCESS', message: '已同步' } })
+    await wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary').trigger('click')
+    await flushPromises()
+    expect(customerOrderLedgerApiMock.importConfirmed).toHaveBeenCalledTimes(2)
+    const originalPayload = customerOrderLedgerApiMock.importConfirmed.mock.calls[0]![1] as FormData
+    const retryPayload = customerOrderLedgerApiMock.importConfirmed.mock.calls[1]![1] as FormData
+    expect([...retryPayload.entries()]).toEqual([...originalPayload.entries()])
+    expect(wrapper.find('[data-testid="preview-save-alert"]').exists()).toBe(false)
+  })
+
+  it.each(['factory', 'file', 'date', 'customer'].flatMap(scope => [
+    { scope, outcome: 'success' }, { scope, outcome: 'failure' },
+  ]))('discards a late save $outcome after the $scope changes', async ({ scope, outcome }) => {
+    const wrapper = await mountDickieExportPreview()
+    onTestFinished(() => wrapper.unmount())
+    let fail!: (reason: Error) => void
+    let finish!: (value: unknown) => void
+    customerOrderLedgerApiMock.importConfirmed.mockReturnValueOnce(new Promise((resolve, reject) => { finish = resolve; fail = reject }))
+    await wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary').trigger('click')
+    if (scope === 'factory') {
+      await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A' })
+    } else {
+      await wrapper.setProps({ activeSection: 'import' })
+      if (scope === 'file') {
+        const input = wrapper.findAll('input[type="file"]')[1]!
+        Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['new'], 'replacement.xlsx')] })
+        await input.trigger('change')
+      } else if (scope === 'date') {
+        await wrapper.get('input[aria-label="来单日期"]').setValue('2027-02-01')
+      } else {
+        await wrapper.get('[data-testid="customer-choice-buzzbee"]').trigger('click')
+      }
+    }
+    if (outcome === 'failure') fail(new Error('旧批次的保存超时'))
+    else finish({ items: [], created_count: 1, existing_count: 0, reconciled_count: 0, warehouse_sync: { status: 'SUCCESS', message: '旧批次已同步' } })
+    await flushPromises()
+    await wrapper.setProps({ activeSection: 'preview' })
+    expect(wrapper.find('[data-testid="preview-save-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('旧批次的保存超时')
+    expect(wrapper.text()).not.toContain('旧批次已同步')
+    expect(wrapper.text()).not.toContain('订单已确认并保存')
+    expect(wrapper.text()).not.toContain('正在保存')
+  })
+
+  it('keeps a successful ledger save separate from a failed warehouse sync', async () => {
+    const wrapper = await mountDickieExportPreview()
+    onTestFinished(() => wrapper.unmount())
+    customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 1, existing_count: 0, reconciled_count: 0,
+      warehouse_sync: { status: 'ERROR', message: '订单处理超时，任务已停止' } })
+    await wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('订单已确认并保存：新增 1 条')
+    expect(wrapper.find('[data-testid="preview-save-alert"]').exists()).toBe(false)
+    const sync = wrapper.get('[data-testid="warehouse-schedule-sync"]')
+    expect(sync.text()).toContain('仓库同步未完成')
+    expect(sync.text()).toContain('已保存的订单无需再次保存')
+    expect(customerOrderLedgerApiMock.importConfirmed).toHaveBeenCalledTimes(1)
+  })
+
   it.each(['success', 'failure'] as const)('explains why all export actions wait for warehouse sync and restores them after %s', async outcome => {
     const wrapper = await mountDickieExportPreview({ withWarning: true, warehouseError: true })
     onTestFinished(() => wrapper.unmount())

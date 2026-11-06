@@ -1,4 +1,5 @@
 from typing import Literal
+from copy import deepcopy
 from datetime import date
 from hashlib import sha256
 import json
@@ -318,15 +319,19 @@ async def import_orders(customer_code: str, request: Request, factory_id: str = 
     kwargs = dict(customer_code=customer_code, factory_id=factory_id, received_date=received_date,
         po_files=files, schedule_file_name=schedule_file.filename or "", schedule_content=schedule_content)
     try:
-        create_preview = mapping._create_special_batch_preview if special else mapping._create_mapped_customer_preview
-        preview = await run_order_job(create_preview, db=db, **kwargs)
+        # Every writer rebuilds the authoritative preview from these exact files.
+        # Reuse it instead of parsing the PO and schedule in a second worker.
+        # Nothing is persisted until the existing confirmation checks below pass.
+        export = mapping._export_special_batch_schedule if special else mapping._export_mapped_customer_schedule
+        output, file_name, resolved = await run_order_job(export, db=db, **kwargs,
+            skipped_issue_keys=resolution_keys, manual_overrides=overrides)
+        # Confirmation policy can alter display status; retain the writer's
+        # original resolved rows for the ledger's existing payload contract.
+        preview = deepcopy(resolved)
         mapping._finalize_preview(preview, received_date=received_date, current_user=current_user, factory_id=factory_id)
         mapping._ensure_preview_fingerprint(preview, received_date, preview_fingerprint)
         actual_keys = mapping._actual_confirmed_issue_keys(preview, resolution_keys)
         mapping._actual_manual_overrides(preview, overrides)
-        # Validate and apply manual inputs using the exact existing writer. Its source files remain unchanged.
-        export = mapping._export_special_batch_schedule if special else mapping._export_mapped_customer_schedule
-        output, file_name, resolved = await run_order_job(export, db=db, **kwargs, skipped_issue_keys=actual_keys, manual_overrides=overrides)
     except (mapping.CustomerOrderWorkbookError, mapping.HuaxingCustomerOrderError,
             mapping.HuadengCustomerOrderError, mapping.HuakangACustomerOrderError, mapping.HuakangCCustomerOrderError) as exc:
         raise HTTPException(400, str(exc)) from exc
