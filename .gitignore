@@ -24,6 +24,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+/backend/.venv
 backend/.venv/
 backend/.venv*/
 backend/.pytest-tmp/

@@ -235,7 +235,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   body.qstats-shell :is(.summary-card,.chart-card,.section-card,.supplier-card,
     .backup-card,.import-info-bar,.import-zone,.table-wrap,.qsum-table-wrap,
     .qs-table-scroll,.qwf-workspace,.toolbar,.report-toolbar,.qsum-filters),
-  body.qstats-shell #page-sales-schedule :is(.qs-source,.qs-toolbar),
+  body.qstats-shell #page-sales-schedule .qs-toolbar,
   body.qstats-shell #page-records .records-toolbar,
   body.qstats-shell #qis-review-controls {
     border:1px solid var(--border);

@@ -59,11 +59,25 @@ test('sync failure freezes subsequent queued writes until a reload', async () =>
 for (const [source, name] of [[app, 'exportPDF'], [app, 'exportMonthlyReportPDF'], [app, 'exportYearlyReportPDF'], [reports, 'exportReportPDF'], [reports, 'exportIQCReport']]) {
   test(name + ' refuses export before reading records or touching canvas', async () => {
     const messages = [];
-    const context = { can: () => false, showToast: value => messages.push(value) };
+    const context = { window: {}, can: () => false, showToast: value => messages.push(value) };
     await vm.runInNewContext(functionSource(source, name) + `;${name}();`, context);
     assert.deepEqual(messages, ['当前账号没有导出权限']);
   });
 }
+
+test('period monthly export keeps the shared permission guard before data or canvas access', async () => {
+  const messages = [];
+  const context = {
+    window: { QcPeriodReports: { monthly: { enabled: () => true } } },
+    can: () => false,
+    showToast: value => messages.push(value),
+    document: { getElementById() { throw new Error('must not access report controls'); } },
+    _rptCheckDeps() { throw new Error('must not touch PDF dependencies'); },
+  };
+  await vm.runInNewContext(functionSource(reports, 'exportReportPDF') + '\n' +
+    functionSource(app, 'exportMonthlyReportPDF') + ';exportMonthlyReportPDF();', context);
+  assert.deepEqual(messages, ['当前账号没有导出权限']);
+});
 
 test('JSON export rejects missing export permission before reading any records', () => {
   const messages = [];

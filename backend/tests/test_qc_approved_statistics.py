@@ -317,3 +317,21 @@ def test_report_empty_undecided_missing_dates_and_removed_selections(db):
 def test_report_invalid_filters_do_not_create_stores(params):
     with pytest.raises(HTTPException) as error:stats.report('huaxing',params)
     assert error.value.status_code==422 and not Path(wf.settings.qc_department_data_dir).exists()
+
+
+def test_period_reports_share_daily_snapshot_source_and_include_exact_boundaries(db):
+    days = ['2026-10-31', '2026-11-01', '2026-11-02', '2026-11-08',
+            '2026-11-09', '2026-11-30', '2026-12-01']
+    for n, day in enumerate(days):
+        approval(db, n, actual=day)
+    week = daily.report('huaxing', '2026-11-06', 'weekly')
+    month = daily.report('huaxing', '2026-11-06', 'monthly')
+    assert (week['dateFrom'], week['dateTo'], week['total']) == ('2026-11-02', '2026-11-08', 2)
+    assert (month['dateFrom'], month['dateTo'], month['total']) == ('2026-11-01', '2026-11-30', 5)
+    assert {r['values'][3] for r in week['rows']} == {'ITEM-2', 'ITEM-3'}
+    assert month['passed'] == 5 and month['rate'] == 100
+    assert daily.period_bounds('2024-02-20', 'monthly') == ('2024-02-01', '2024-02-29')
+    assert daily.period_bounds('2026-01-01', 'weekly') == ('2025-12-29', '2026-01-04')
+    assert daily.report('huaxing', '2026-11-06')['total'] == 0
+    with pytest.raises(HTTPException):
+        daily.report('huaxing', '2026-11-06', 'yearly')

@@ -60,7 +60,7 @@ const PERM_GROUPS = [
     { k: 'suppliers', label: '供应商&客户管理' },
   ]},
   { group: '报告', menus: [
-    { k: 'daily',           label: '验货日报' },
+    { k: 'daily',           label: '月内报表' },
     { k: 'weekly',          label: '验货周报' },
     { k: 'monthly',         label: '验货月报' },
     { k: 'yearly',          label: '验货年报' },
@@ -994,7 +994,7 @@ const PAGE_TITLES = {
   'inspection-summary': '验货汇总',
   analysis:         '验货年报',
   suppliers:        '供应商&客户管理',
-  daily:            '验货日报',
+  daily:            '月内报表',
   weekly:           '验货周报',
   monthly:          '验货月报',
   yearly:           '验货年报',
@@ -1005,6 +1005,10 @@ const PAGE_TITLES = {
 };
 
 const REPORT_CENTER_PAGES = ['weekly', 'daily', 'monthly', 'analysis'];
+let lastIntraReportPage = 'weekly';
+function intraReportLandingPage() {
+  return canView(lastIntraReportPage) ? lastIntraReportPage : REPORT_CENTER_PAGES.find(page => page !== 'analysis' && canView(page));
+}
 
 function reportCenterLandingPage() {
   return REPORT_CENTER_PAGES.find(page => canView(page));
@@ -1013,17 +1017,50 @@ function reportCenterLandingPage() {
 function mountReportTypeSelect(page, name) {
   const slot = page?.querySelector('[data-report-type-slot]');
   const select = document.getElementById('reportTypeSelect');
-  if (!slot || !select) return;
+  const control = document.getElementById('reportPeriodSwitch');
+  if (!slot || !select || !control) return;
+  const glass = control.querySelector('.report-period-glass');
+  // Preserve the in-flight visual position before moving the shared control.
+  const previousTransform = control._previousTransform ?? getComputedStyle(glass).transform;
+  const wasVisible = control._wasVisible ?? (glass.getBoundingClientRect().width > 0);
+  delete control._previousTransform;
+  delete control._wasVisible;
+  const previousPage = control.dataset.page;
+  if (previousPage !== name) glass.getAnimations?.().forEach(animation => animation.cancel());
   for (const option of select.options) {
-    option.hidden = option.disabled = !canView(option.value);
+    const allowed = option.value === 'intra-month' ? !!intraReportLandingPage() : canView(option.value);
+    option.hidden = option.disabled = !allowed;
   }
+  const buttons = [...control.querySelectorAll('[data-report-page]')];
+  for (const button of buttons) {
+    button.hidden = button.disabled = !canView(button.dataset.reportPage);
+    button.setAttribute('aria-pressed', String(button.dataset.reportPage === name));
+  }
+  const visible = buttons.filter(button => !button.hidden);
+  const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
+  control.style.setProperty('--report-period-count', String(visible.length || 1));
+  if (control.parentElement !== slot) slot.append(control);
   if (select.parentElement !== slot) slot.append(select);
-  select.value = name;
+  control.hidden = name === 'analysis';
+  if (name !== 'analysis') lastIntraReportPage = name;
+  select.value = name === 'analysis' ? 'analysis' : 'intra-month';
+  control.dataset.page = name;
+  glass.style.transform = 'translateX(' + index * 100 + '%)';
+  if (wasVisible && previousPage !== name && glass.animate &&
+      !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    glass.animate([{transform: previousTransform}, {transform: 'translateX(' + index * 100 + '%)'}],
+      {duration:260, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
+  }
+}
+
+function changeReportPeriod(button) {
+  if (button.disabled || button.dataset.reportPage === currentPage) return;
+  showPage(button.dataset.reportPage, true);
 }
 
 function changeReportType(select) {
-  const nextPage = select.value;
-  select.value = currentPage;
+  const nextPage = select.value === 'intra-month' ? intraReportLandingPage() : select.value;
+  select.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
   if (REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, true);
 }
 
@@ -1044,6 +1081,12 @@ function showPage(name, focusReportType = false) {
   currentPage = name;
   window.QcApprovedStatistics?.pageChanged(name);
   window.__QC_PAGE_CHANGED?.(name);
+  const periodControl = document.getElementById('reportPeriodSwitch');
+  const periodGlass = periodControl?.querySelector('.report-period-glass');
+  if (periodGlass && REPORT_CENTER_PAGES.includes(name)) {
+    periodControl._previousTransform = getComputedStyle(periodGlass).transform;
+    periodControl._wasVisible = periodGlass.getBoundingClientRect().width > 0;
+  }
   /* 切换 active page */
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1064,6 +1107,7 @@ function showPage(name, focusReportType = false) {
    */
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
+      if (currentPage !== name) return;
       try {
         if (name === 'dashboard')        renderDashboard();
         if (name === 'sales-schedule') window.renderSalesSchedule();
@@ -1082,7 +1126,7 @@ function showPage(name, focusReportType = false) {
         if (name === 'users')            renderUsersPage();
         if (name === 'defectlib')        renderDefectLibPage();
         if (focusReportType && inReportCenter && currentPage === name) {
-          document.getElementById('reportTypeSelect')?.focus({ preventScroll: true });
+          (document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]') || document.getElementById('reportTypeSelect'))?.focus({ preventScroll: true });
         }
       } catch(e) { console.error('[showPage] render error:', e); }
     });
@@ -5358,7 +5402,7 @@ function renderDailyReport() {
     <div class="report-body">
       <div class="report-company-header">
         <div class="report-company-name">${getReportCompanyLabel()}</div>
-        <div class="report-doc-title">验货日报 · ${getReportCompanyLabel()}</div>
+        <div class="report-doc-title">月内报表 · ${getReportCompanyLabel()}</div>
       </div>
       <div class="report-meta">
         <div class="meta-item"><div class="meta-label">报告日期</div><div class="meta-value">${date}</div></div>
@@ -5406,6 +5450,7 @@ function renderDailyReport() {
 }
 
 function renderWeeklyReport() {
+  if (window.QcPeriodReports?.weekly.enabled()) return window.QcPeriodReports.weekly.load();
   const dateEl = document.getElementById('weeklyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = weekStart();
@@ -7313,6 +7358,7 @@ function _mrChart(id, option) {
    §19.1  验货月报
 ───────────────────────────────────────*/
 function renderMonthlyReport() {
+  if (window.QcPeriodReports?.monthly.enabled()) return window.QcPeriodReports.monthly.load();
   const el = document.getElementById('monthlyMonth');
   if (!el) return;
   /* 初始化默认月份 */
@@ -8369,6 +8415,7 @@ function _pdfOptYearDefRate(months, mAvgRates) {
    §20.1  验货月报 PDF  （全新实现：独立 ECharts 实例）
 ══════════════════════════════════════════════════════════ */
 async function exportMonthlyReportPDF() {
+  if (window.QcPeriodReports?.monthly.enabled()) return exportReportPDF('monthly');
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
   if (!window.html2canvas) {
     alert('html2canvas 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');

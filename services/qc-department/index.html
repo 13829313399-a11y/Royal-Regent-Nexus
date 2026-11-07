@@ -168,7 +168,6 @@
       <div class="qs-heading">
         <div class="qs-actions"><label class="qs-button qs-select-all"><input type="checkbox" id="qsSelectAll" disabled>全选当前筛选</label><button type="button" id="qsPush" class="qs-button qs-primary" disabled>确认推送验货</button><button type="button" id="qsRefresh" class="qs-button">刷新数据</button><button type="button" id="qsExport" class="qs-button qs-primary" disabled>导出 Excel</button></div>
       </div>
-      <div class="qs-source" id="qsSourcePanel"><div><strong id="qsSourceLabel">数据来源：业务部 · 各客排期</strong><span id="qsSourceStatus" class="qs-source-badge">待接通</span></div><p id="qsNotice" role="status">业务部排期接通后自动读取</p></div>
       <div class="qs-toolbar" id="qsToolbar">
       <div class="qs-filters" aria-label="客排期筛选">
         <label class="qs-filter-field qs-search"><span class="qs-sr-only">搜索 PO、客 PO、货号或产品名称</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="qsSearch" placeholder="搜索 PO / 客 PO / 货号 / 产品名称"/></label>
@@ -191,9 +190,9 @@
       </div>
       <div class="qs-table-scroll" tabindex="0" role="region" aria-label="客排期表格，可横向滚动">
         <table class="qs-table"><caption class="qs-sr-only">客户验货排期，业务部维护订单信息，完成情况由验货台只读回显，备注读取业务部原文</caption>
-          <colgroup><col data-column="date" style="width:155px"/><col data-column="customer" style="width:110px"/><col data-column="poNo" style="width:165px"/><col style="width:120px"/><col style="width:135px"/><col style="width:170px"/><col style="width:85px"/><col style="width:70px"/><col style="width:70px"/><col style="width:80px"/><col style="width:80px"/><col style="width:145px"/><col style="width:135px"/><col style="width:235px"/></colgroup>
-          <thead><tr><th scope="col" data-column="date">日期</th><th scope="col" data-column="customer">客户</th><th scope="col" data-column="poNo">PO#</th><th scope="col">出口国</th><th scope="col">货号</th><th scope="col">产品名称</th><th scope="col">数量</th><th scope="col">装箱</th><th scope="col">箱数</th><th scope="col">生产</th><th scope="col">机构</th><th scope="col">客PO#</th><th scope="col">完成情况</th><th scope="col">备注</th></tr></thead>
-          <tbody id="qsRows"><tr><td colspan="14"><div class="qs-empty"><strong>业务部数据尚未接通</strong><p>接通后按此模板显示排期，当前不显示示例订单。</p></div></td></tr></tbody>
+          <colgroup><col style="width:36px"/><col data-column="date" style="width:119px"/><col data-column="customer" style="width:110px"/><col data-column="poNo" style="width:165px"/><col style="width:120px"/><col style="width:135px"/><col style="width:170px"/><col style="width:85px"/><col style="width:70px"/><col style="width:70px"/><col style="width:80px"/><col style="width:80px"/><col style="width:145px"/><col style="width:135px"/><col style="width:235px"/></colgroup>
+          <thead><tr><th scope="col"><span class="qs-sr-only">选择</span></th><th scope="col" data-column="date">排期日期</th><th scope="col" data-column="customer">客户</th><th scope="col" data-column="poNo">PO#</th><th scope="col">出口国</th><th scope="col">货号</th><th scope="col">产品名称</th><th scope="col">数量</th><th scope="col">装箱</th><th scope="col">箱数</th><th scope="col">生产</th><th scope="col">机构</th><th scope="col">客PO#</th><th scope="col">完成情况</th><th scope="col">备注</th></tr></thead>
+          <tbody id="qsRows"><tr><td colspan="15"><div class="qs-empty"><strong>业务部数据尚未接通</strong><p>接通后按此模板显示排期，当前不显示示例订单。</p></div></td></tr></tbody>
         </table>
       </div>
       <!-- 暂停展示回填区域；保留控件供现有脚本初始化，历史数据不变。 -->
@@ -408,12 +407,16 @@
           <button class="btn-primary" id="btnExportWeekly" onclick="exportReportPDF('weekly')">⬇ 导出 PDF</button>
         </div>
         <div class="report-type-slot" data-report-type-slot>
-          <select id="reportTypeSelect" aria-label="报告类型" onchange="changeReportType(this)">
-            <option value="daily">日报</option>
-            <option value="weekly" selected>周报</option>
-            <option value="monthly">月报</option>
-            <option value="analysis">年报</option>
-          </select>
+          <div id="reportPeriodSwitch" class="report-period-switch" role="group" aria-label="报告周期">
+            <span class="report-period-glass" aria-hidden="true"></span>
+            <button type="button" data-report-page="daily" aria-label="日报" aria-pressed="false" onclick="changeReportPeriod(this)">日</button>
+            <button type="button" data-report-page="weekly" aria-label="周报" aria-pressed="true" onclick="changeReportPeriod(this)">周</button>
+            <button type="button" data-report-page="monthly" aria-label="月报" aria-pressed="false" onclick="changeReportPeriod(this)">月</button>
+          </div>
+            <select id="reportTypeSelect" aria-label="报告类型" onchange="changeReportType(this)">
+              <option value="intra-month" selected>月内报告</option>
+              <option value="analysis">年报</option>
+            </select>
         </div>
       </div>
       <div id="weeklyReportBody"></div>
@@ -452,7 +455,8 @@
           <input type="month" id="monthlyMonth" onchange="renderMonthlyReport()" />
         </label>
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn-primary" onclick="exportMonthlyReportPDF()">⬇ 导出 PDF</button>
+          <button class="btn-secondary" onclick="window.print()">🖨 打印</button>
+          <button class="btn-primary" id="btnExportMonthly" onclick="exportMonthlyReportPDF()">⬇ 导出 PDF</button>
         </div>
         <div class="report-type-slot" data-report-type-slot></div>
       </div>

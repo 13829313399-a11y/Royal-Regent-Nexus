@@ -1,5 +1,7 @@
 """Huaxing daily report from the validated current approval snapshot."""
 from copy import deepcopy
+from datetime import date, timedelta
+from calendar import monthrange
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -39,13 +41,30 @@ def _report_row(item, date_source):
     return dict(values=values, improvement=_text(item.get('improvement')), dateSource=date_source)
 
 
-def report(factory, day):
+def period_bounds(day, period='daily'):
+    if not approved._date(day) or period not in {'daily', 'weekly', 'monthly'}:
+        raise HTTPException(422, '请选择有效的报告日期和周期')
+    selected = date.fromisoformat(day)
+    if period == 'weekly':
+        start = selected - timedelta(days=selected.weekday())
+        try:
+            end = start + timedelta(days=6)
+        except OverflowError as exc:
+            raise HTTPException(422, '报告周期超出有效日期范围') from exc
+    elif period == 'monthly':
+        start = selected.replace(day=1)
+        end = selected.replace(day=monthrange(selected.year, selected.month)[1])
+    else:
+        start = end = selected
+    return start.isoformat(), end.isoformat()
+
+
+def report(factory, day, period='daily'):
     if factory != 'huaxing':
         raise HTTPException(404, '当前厂区未配置华兴日报模板')
-    if not approved._date(day):
-        raise HTTPException(422, '请选择有效的报告日期')
+    start, end = period_bounds(day, period)
     snapshots = []
-    source = approved.query(factory, {'from': day, 'to': day}, _report_snapshots=snapshots)
+    source = approved.query(factory, {'from': start, 'to': end}, _report_snapshots=snapshots)
     if source['excluded'].get('missingProjection') or source['excluded'].get('invalidLineage'):
         raise HTTPException(503, '已审核记录与汇总未对齐，请核对后再生成日报')
     rows = [_report_row(item, date_source) for item, date_source in snapshots if not (
@@ -53,8 +72,8 @@ def report(factory, day):
     total = len(rows)
     passed = sum(row['values'][8] == 'PASS' for row in rows)
     failed = sum(row['values'][8] in {'FAIL', 'REJ'} for row in rows)
-    revision = sha256(dump([day, rows]).encode()).hexdigest()
-    return dict(date=day, headers=HEADERS, rows=rows, revision=revision,
+    revision = sha256(dump([day, period, start, end, rows]).encode()).hexdigest()
+    return dict(date=day, period=period, dateFrom=start, dateTo=end, headers=HEADERS, rows=rows, revision=revision,
                 total=total, passed=passed, failed=failed, other=total-passed-failed,
                 rate=round(passed/total*100, 1) if total else None,
                 scheduleCount=sum(row['dateSource'] == 'schedule' for row in rows))
@@ -64,6 +83,8 @@ def workbook(report_data):
     package = Package(TEMPLATE.read_bytes())
     name = package.names()[0]
     sheet_name = '.'.join(str(int(part)) for part in report_data['date'][5:].split('-'))
+    if report_data.get('period') in {'weekly', 'monthly'}:
+        sheet_name = ('周报' if report_data['period'] == 'weekly' else '月报') + report_data['dateFrom']
     package.sheets[0].set('name', sheet_name)
     package.original_order = [sheet_name]
     sheet = package.sheet(sheet_name)

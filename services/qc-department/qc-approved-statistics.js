@@ -63,7 +63,7 @@
     for (const name of ['month-rows','month-total','detail-rows']) el(name).replaceChildren();
     el('detail-count').textContent='';el('page').textContent='';
     el('root').querySelectorAll('.qc-bar-fill').forEach(fill=>{fill.style.height='0%';fill.style.backgroundColor='transparent';fill.dataset.band='empty';fill.querySelector('.qc-bar-label').textContent='';});
-    el('root').querySelectorAll('button,.qc-filter-fields select').forEach(c=>c.disabled=true);
+    el('root').querySelectorAll('button:not([data-report-page]),.qc-filter-fields select').forEach(c=>c.disabled=true);
     el('refresh').disabled=false;
     el('chart-detail').textContent=text;
   }
@@ -73,7 +73,7 @@
   function redraw() {
     if (!active() || !state.data) return;
     const data=state.data, f=data.filters, t=data.totals;
-    el('root').querySelectorAll('button,.qc-filter-fields select').forEach(c=>c.disabled=false);
+    el('root').querySelectorAll('button:not([data-report-page]),.qc-filter-fields select').forEach(c=>c.disabled=false);
     options(el('year'),data.options.years,data.options.years.length?'':'暂无年份',f.year,'年');el('year').disabled=!data.options.years.length;
     options(el('month'),data.options.months,'全年',f.month,'月');el('month').disabled=!data.options.months.length;
     options(el('day'),data.options.days,f.month?'全部日期':'先选择月份',f.day,'日');el('day').disabled=!f.month||!data.options.days.length;

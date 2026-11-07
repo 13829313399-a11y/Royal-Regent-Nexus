@@ -77,6 +77,7 @@ async function exportReportPDF(type) {
   /* 更新按钮状态 */
   const btnId = type === 'daily' ? 'btnExportDaily'
               : type === 'weekly' ? 'btnExportWeekly'
+              : type === 'monthly' ? 'btnExportMonthly'
               : 'btnExportSupplier';
   const btn = document.getElementById(btnId);
   if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
@@ -88,7 +89,9 @@ async function exportReportPDF(type) {
 
     /* 生成 HTML 画布 */
     let canvas;
-    if (type === 'daily') {
+    if (window.QcPeriodReports?.[type]?.enabled()) {
+      canvas = window.QcPeriodReports[type].pdfCanvas();
+    } else if (type === 'daily') {
       canvas = _buildDailyCanvas();
     } else if (type === 'weekly') {
       const withAppendix = document.getElementById('weeklyAppendix')?.checked === true;
@@ -216,6 +219,9 @@ async function exportReportPDF(type) {
     } else if (type === 'weekly') {
       prefix  = '验货周报';
       dateStr = document.getElementById('weeklyDate')?.value || _todayStr();
+    } else if (type === 'monthly') {
+      prefix = '验货月报';
+      dateStr = document.getElementById('monthlyMonth')?.value || _todayStr().slice(0,7);
     } else {
       const sName = document.getElementById('supplierSelect')?.value || '供应商';
       prefix  = `供应商质量报告_${sName}`;
