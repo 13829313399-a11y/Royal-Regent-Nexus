@@ -55,22 +55,41 @@ test('report center defaults to weekly and switches reports even while annual da
     assert.equal(nav.textContent.trim(),'报告中心');
     assert.equal(p.d.querySelectorAll('#sidebar [data-page]:is([data-page="daily"],[data-page="weekly"],[data-page="monthly"],[data-page="yearly"],[data-page="analysis"])').length,0);
     p.w.showPage('report-center');flush();
-    assert.equal(select.value,'weekly');
+    assert.equal(select.value,'intra-month');
     assert.equal(select.closest('.page.active').id,'page-weekly');
     assert(nav.classList.contains('active'));
     p.w.fetch=()=>new Promise(()=>{});
-    for(const key of ['daily','monthly','analysis','weekly']){
-      select.value=key;
-      p.w.changeReportType(select);flush();
-      assert.equal(select.value,key);
+    assert.deepEqual(Array.from(select.options, option=>option.textContent),['月内报告','年报']);
+    for(const key of ['daily','monthly','analysis','monthly','weekly']){
+      if(key==='analysis' || select.value==='analysis') {
+        select.value=key==='analysis' ? 'analysis' : 'intra-month';
+        p.w.changeReportType(select);
+      } else p.w.changeReportPeriod(p.d.querySelector('[data-report-page="'+key+'"]'));
+      flush();
+      assert.equal(select.value,key==='analysis' ? 'analysis' : 'intra-month');
+      assert.equal(p.d.getElementById('reportPeriodSwitch').hidden,key==='analysis');
       assert.equal(select.closest('.page.active').id,'page-'+key);
-      assert.equal(p.d.activeElement,select);
+      if(key==='analysis') assert.equal(p.d.activeElement,select);
+      else assert.equal(p.d.activeElement.dataset.reportPage,key);
+      assert.equal(p.d.activeElement.disabled,false);
+      if(key!=='analysis') assert.equal(p.d.activeElement.getAttribute('aria-pressed'),'true');
       assert(!select.disabled);
     }
+    const rendered=[];
+    p.w.renderDailyReport=()=>rendered.push('daily');
+    p.w.renderWeeklyReport=()=>rendered.push('weekly');
+    p.w.renderMonthlyReport=()=>rendered.push('monthly');
+    for(const key of ['daily','monthly','weekly']) {
+      p.w.changeReportPeriod(p.d.querySelector('[data-report-page="'+key+'"]'));
+    }
+    flush();
+    assert.deepEqual(rendered,['weekly']);
+    assert.equal(select.value,'intra-month');
     p.w._saveUsers([{username:'test-admin',role:'admin',perms:{weekly:{v:0},monthly:{v:0},analysis:{v:0}}}]);
     p.w.showPage('report-center');flush();
-    assert.equal(select.value,'daily');
-    assert.deepEqual(Array.from(select.options).filter(option=>!option.disabled).map(option=>option.value),['daily']);
+    assert.equal(select.value,'intra-month');
+    assert.deepEqual(Array.from(p.d.querySelectorAll('[data-report-page]')).filter(b=>!b.hidden).map(b=>b.dataset.reportPage),['daily']);
+    assert.deepEqual(Array.from(select.options).filter(option=>!option.disabled).map(option=>option.value),['intra-month']);
   }finally{p.dom.window.close();}
 });
 test('five colors use exact boundaries; null stays blank and true zero stays red',async()=>{
