@@ -181,17 +181,20 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
         keys = {"date", "revision"} if exporting else {"date"}
+        if "period" in request.query_params:
+            keys.add("period")
         if set(request.query_params) != keys or any(len(request.query_params.getlist(key)) != 1 for key in keys):
             raise HTTPException(422, "日报参数不正确")
         if exporting:
             _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
-        report = await run_in_threadpool(qc_daily_report.report, factory_id, request.query_params["date"])
+        report = await run_in_threadpool(qc_daily_report.report, factory_id, request.query_params["date"], request.query_params.get("period", "daily"))
         if not exporting:
             return JSONResponse(report, headers=NO_CACHE)
         if request.query_params["revision"] != report["revision"] or not report["total"]:
             raise HTTPException(409, "日报记录已变化或为空，请重新读取后导出")
         content = await run_in_threadpool(qc_daily_report.workbook, report)
-        name = quote(f"每日验货情况统计表_{report['date']}.xlsx", safe="")
+        label = {"daily": "每日", "weekly": "每周", "monthly": "每月"}[report["period"]]
+        name = quote(f"{label}验货情况统计表_{report['dateFrom']}_{report['dateTo']}.xlsx", safe="")
         return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
             "Content-Disposition": "attachment; filename=QC-daily.xlsx; filename*=UTF-8''" + name})
     if asset_path in {"api/approved-statistics", "api/approved-statistics/report"} and request.method == "GET":
