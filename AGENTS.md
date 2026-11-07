@@ -87,9 +87,15 @@ Report:
 
 ## Git Operations
 
-Do not run `git commit`, create commits, push branches, or open pull requests unless the user explicitly asks for that Git operation in the current turn.
+For modules other than QC, do not create commits, push branches, or open pull requests unless the user explicitly requests those Git operations. Otherwise leave changes in the working tree and report verification results.
 
-When code changes are made without an explicit Git operation request, leave them as working-tree changes and report the changed files plus verification results.
+### Fixed QC Workspace and Release Workflow
+
+The user has authorized the recurring QC release workflow. On this Mac, the sole QC Git/development directory is `/Users/chris/Desktop/QC_test/qc-update-20261107`, and the permanent branch is `codex/qc-development`. Keep local `main` as the ERP synchronization baseline. Do not treat the parent `QC_test` or older source copies as repositories, create duplicate clones/worktrees, or rename the QC branch for each release.
+
+For requested QC updates, preserve all local modifications, additions and intentional deletions, fetch latest remote `main`, integrate it into the fixed QC branch, repair actual failures, run the complete QC suites and application build, commit, publish using the authenticated GitHub Desktop/browser, create a non-draft PR, enable auto-merge, satisfy repository checks, verify the merged remote tree, then synchronize local `main` and the fixed QC branch for the next cycle. A newer explicit read-only or no-release instruction overrides this standing authorization.
+
+Never overwrite other departments, skip real failures, commit Python environments (including `backend/.venv` symlinks), upload private data/credentials, or force-push. Check deletions and the final PR diff. After squash merging, reconcile the fixed branch with latest `main` so the next PR contains only new changes; preserve unpublished work before any local history realignment. Delete only explicitly approved old QC branches after proving they are merged, have no unfinished PR and contain no unique valid work. Do not delete the fixed QC branch after merging. Production deployment and business-data migration require their own explicit scope; a merged PR does not establish either.
 
 ## Project Memory Maintenance
 

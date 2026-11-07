@@ -83,7 +83,9 @@ test('records and review use original layout while the schedule controls remain'
  const p=await page();try{
   assert.equal(p.d.getElementById('recordsTableWrap').closest('details.qwf-legacy'),null);assert.equal(p.d.getElementById('reviewTableWrap').closest('details.qwf-legacy'),null);
   assert.equal(p.d.getElementById('qwf-records'),null);assert.equal(p.d.getElementById('qwf-review'),null);assert.ok(p.d.getElementById('qsPush'));assert.ok(p.d.getElementById('qsSelectAll'));
-  assert.equal(p.d.querySelectorAll('.qs-table thead tr:last-child th').length,14);assert.ok(p.d.getElementById('btnExportInspectionExcel'));assert.ok(p.d.getElementById('page-daily'));
+  const headers=Array.from(p.d.querySelectorAll('.qs-table thead tr:last-child th'), th=>th.textContent.trim());
+  assert.deepEqual(headers,['选择','排期日期','客户','PO#','出口国','货号','产品名称','数量','装箱','箱数','生产','机构','客PO#','完成情况','备注']);
+  assert.ok(p.d.getElementById('btnExportInspectionExcel'));assert.ok(p.d.getElementById('page-daily'));
  }finally{p.dom.window.close();}
 });
 

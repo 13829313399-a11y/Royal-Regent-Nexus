@@ -31,6 +31,22 @@ function session(overrides: Partial<AuthMeResponse> = {}): AuthMeResponse {
 describe('authStore scoped permission decisions', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it.each(['engineering', 'pmc-warehouse'])('keeps material trial permissions out of an unrestricted %s position', department => {
+    const store = useAuthStore(), permissions = ['material_plan:read', 'material_plan:draft_write']
+    store.applySession(session({ permissions, grants: [{ role_id: 'position_test', role_name: 'Test', factory_id: 'huakang-c',
+      department, permissions, unrestricted_department: true, data_scope: 'factory' }] }))
+    expect(store.can('material_plan:read', 'huakang-c', 'sales-business')).toBe(false)
+    expect(store.can('material_plan:draft_write', 'huakang-c', 'sales-business')).toBe(false)
+  })
+
+  it('keeps engineering BOM grants within Engineering even on an unrestricted warehouse position', () => {
+    const store = useAuthStore(), permissions = ['engineering_bom:read', 'engineering_bom:bom_approve']
+    store.applySession(session({ permissions, grants: [{ role_id: 'position_warehouse_clerk', role_name: '仓库',
+      factory_id: 'huakang-c', department: 'pmc-warehouse', permissions, unrestricted_department: true, data_scope: 'factory' }] }))
+    expect(store.can('engineering_bom:read', 'huakang-c', 'engineering')).toBe(false)
+    expect(store.can('engineering_bom:bom_approve', 'huakang-c', 'engineering')).toBe(false)
+  })
+
   it('accepts shipping read grants through the two-department route without bypassing factory-wide denies', () => {
     const store = useAuthStore()
     const permissions = ['indonesia_material:read']

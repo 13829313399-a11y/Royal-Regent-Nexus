@@ -207,7 +207,7 @@ describe('customer order api', () => {
     expect(post.mock.calls[1]![0]).toBe('/customer-orders/dickie/export-batch')
     expect(post.mock.calls[1]![2]).toEqual(expect.objectContaining({
       responseType: 'blob',
-      timeout: 240_000,
+      timeout: 300_000,
     }))
   })
 

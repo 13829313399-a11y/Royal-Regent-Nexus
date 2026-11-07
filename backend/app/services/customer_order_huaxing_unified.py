@@ -60,7 +60,7 @@ def _extension_column(sheet, header, *, after=19):
     return column
 
 
-def _mark_generated_row(sheet, number, *, duplicate=False, blue=False):
+def _mark_generated_row(sheet, number, *, duplicate=False, blue=False, last_column=None):
     if not duplicate and not blue:
         return
     from copy import copy
@@ -68,7 +68,9 @@ def _mark_generated_row(sheet, number, *, duplicate=False, blue=False):
     from openpyxl.formatting.rule import FormulaRule
     from openpyxl.utils import get_column_letter
     color = 'FFFF0000' if duplicate else 'FF0000FF'
-    for cell in sheet[number]:
+    last_column = last_column or sheet.max_column
+    for column in range(1, last_column + 1):
+        cell = sheet.cell(number, column)
         font = copy(cell.font)
         font.color = color
         cell.font = font
@@ -79,7 +81,7 @@ def _mark_generated_row(sheet, number, *, duplicate=False, blue=False):
             rule.priority += 1
     rule = FormulaRule(formula=['TRUE'], font=Font(color=color), stopIfTrue=True)
     rule.priority = 1
-    sheet.conditional_formatting.add(f'A{number}:{get_column_letter(sheet.max_column)}{number}', rule)
+    sheet.conditional_formatting.add(f'A{number}:{get_column_letter(last_column)}{number}', rule)
 
 
 def _repair_dickie_duplicate_rules(workbook):
@@ -191,6 +193,9 @@ def allocate_edu_references(records, next_number):
 
 
 def read_history(workbook, customer_code):
+    if customer_code == 'yinhui':
+        from .customer_order_yinhui_unified import read_history as read_yinhui
+        return read_yinhui(workbook)
     from app.services.customer_order_unified import UnifiedHistoryRow, _text
     from app.services.customer_order_regional import history_number
     fields = {1: 'received_date', 2: 'order_type', 3: 'production_no', 4: 'contract_no',
@@ -237,7 +242,15 @@ def map_record(row, record, customer_code):
     elif customer_code == 'yinhui':
         so, po = get('so_no'), get('contract_no')
         row.update(reference_no=re.sub(r'^SO\s*', '', so, flags=re.I), contract_no='',
-                   po_no=re.sub(r'^PO\s*', '', po, flags=re.I), packaging=get('packaging'), standard=get('standard'))
+                   po_no=re.sub(r'^PO\s*', '', po, flags=re.I), packaging=get('packaging'), standard=get('standard'),
+                   unit_price_usd=get('unit_price_usd'))
+        from .customer_order_unified import _issue
+        for flag in record.get('source_review_flags', []):
+            issue = _issue(flag['severity'], flag['code'], flag['field'], flag['text'])
+            issue.update(can_edit=True, edit_field='units_per_carton', edit_label='装箱数', edit_input_type='number')
+            if flag['code'] == 'case_pack_source_conflict':
+                issue['skip_label'] = '已对照原单核对并确认装箱数'
+            row.setdefault('issues', []).append(issue)
     elif customer_code == 'disney':
         row.update(reference_no=get('po_number'), contract_no='', standard=get('standard'))
     elif customer_code in {'maxx', 'shushupapa', 'barter'}:
@@ -430,6 +443,9 @@ def _repair_shushupapa_summary_amounts(workbook, order_row, review_row, row):
 
 
 def export_rows(workbook, rows):
+    if rows and all(row.get('_huaxing_customer') == 'yinhui' for row in rows):
+        from .customer_order_yinhui_unified import export_rows as export_yinhui
+        return export_yinhui(workbook, rows)
     if rows and all(row.get('_huaxing_customer') == 'edu' for row in rows):
         from app.services.huaxing_order_legacy.edu_grouped_export import export_rows as export_edu
         return export_edu(workbook, rows)

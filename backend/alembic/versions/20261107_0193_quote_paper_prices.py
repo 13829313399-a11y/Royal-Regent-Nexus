@@ -1,8 +1,8 @@
 """Add optional factory paper-price catalogue; preserve legacy quotation factors."""
 from alembic import op
 import sqlalchemy as sa
-revision = '20261107_0190'
-down_revision = '20261102_0189'
+revision = '20261107_0193'
+down_revision = '20261104_0192'
 branch_labels = None
 depends_on = None
 

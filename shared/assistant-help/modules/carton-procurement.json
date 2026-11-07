@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "d1311859ef562a4fcc000b2092e1abbe2b0fc33466b0600e2578f208a459c435"
+        "sha256": "ca23873e8638df94b6cd5ae79f32c90e704093c2f79130e1e60ee83cc6f97bd3"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -533,8 +533,8 @@
         "sha256": "4c34b5e121584d382e7ab461c0d9d3b1b7ad02a01b30653cfd646a2aebe8fb8e"
       }
     ],
-    "knowledge_version": "2026-11-04-carton-audience-and-staff-reads",
-    "verified_commit": "Source review: explicit supplier audience, receiving read guards and independent factory reads",
+    "knowledge_version": "2026-11-06-mainland-huakang-c-route-integration",
+    "verified_commit": "Source review: carton routes and permissions retained alongside Mainland Invoice and Huakang C engineering/material route additions; production acceptance remains separate",
     "status": "verified"
   }
 ]

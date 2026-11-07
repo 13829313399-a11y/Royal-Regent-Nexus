@@ -17,7 +17,6 @@ import {
   FileUp,
   Filter,
   GitBranch,
-  History,
   Layers3,
   ListChecks,
   Plus,
@@ -31,6 +30,7 @@ import {
   X,
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { isAxiosError } from 'axios'
 import { customerOrderApi } from '@/api/customerOrder'
 import type { MappedCustomerCode } from '@/api/customerOrder'
 import { customerOrderLedgerApi } from '@/api/customerOrderLedger'
@@ -413,7 +413,7 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
       profile.ruleDescription = '按主要公共字段匹配最新排期，BuzzBee 和迪奇按产品对应 ITEM 分类页。各表在自己的取消单前追加，接单表、正单评审表关联实际明细页和行；合同、SO、客户 PO 分别映射，保留历史订单、公式和人工字段。'
       if (profile.code === 'zuru') {
         profile.templateDescription = '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）'
-        profile.ruleDescription += ' ZURU 按 PO号＋原单Line及完整SKU-SPEC识别，Customer PO逐行读取；USD单独保留，不换算HKD。不导入原周排期的MA/库存记录。'
+        profile.ruleDescription = '按 PO号、原单行号和完整货号识别 ZURU 正单，逐行读取客户PO，美元原价单独保留、不换算港币。核对后写入华兴统一排期，保留历史订单、公式及人工字段；原周排期的MA和库存记录不作为正单导入。'
       }
       if (profile.code === 'buzzbee') {
         profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
@@ -579,6 +579,8 @@ const receivedDate = ref(formatLocalDate(new Date()))
 const previewBatch = ref<CustomerOrderImportPreview | null>(null)
 const parseFailureMessage = ref('')
 const exportFailureMessage = ref('')
+const saveFailureMessage = ref('')
+const saveResultUnknown = ref(false)
 const warehouseSync = ref<{ state: 'idle' | 'pending' | 'success' | 'error'; message: string }>({ state: 'idle', message: '' })
 let warehouseSyncSequence = 0
 let warehouseSyncController: AbortController | null = null
@@ -591,7 +593,7 @@ function showWarehouseSync(result: WarehouseScheduleSyncResult | null | undefine
 }
 
 async function retryWarehouseSync() {
-  if (!warehouseUpload || warehouseSync.value.state === 'pending' || parsingFiles.value || exportingSchedule.value || savingOrder.value) return
+  if (!warehouseUpload || fileOperationBusy.value) return
   const { file, kind, customer, factory } = warehouseUpload
   const sequence = ++warehouseSyncSequence
   const controller = new AbortController()
@@ -617,6 +619,11 @@ const manualOverrideValues = ref<Record<string, string>>({})
 const confirmationReason = ref('')
 const sourceKind = ref<'formal' | 'supplementary'>('formal')
 const savingOrder = ref(false)
+const fileOperationLabel = computed(() => savingOrder.value ? '正在保存订单，请稍候…'
+  : exportingSchedule.value ? '正在生成…'
+  : parsingFiles.value ? '正在解析…'
+  : warehouseSync.value.state === 'pending' ? '正在同步仓库，请稍候…' : '')
+const fileOperationBusy = computed(() => savingOrder.value || exportingSchedule.value || parsingFiles.value || warehouseSync.value.state === 'pending')
 const reconciliation = ref({ enabled: false, lineId: '', expectedRevision: 0, reason: '' })
 const reconciliationCandidates = ref<CustomerOrderLedgerLine[]>([])
 const reconciliationLoading = ref(false)
@@ -633,7 +640,7 @@ function feedbackContext(): FeedbackContext {
     order_reference: row?.po_no || row?.contract_no || undefined,
     product_no: row?.product_no || undefined,
     batch_id: previewBatch.value?.preview_fingerprint?.slice(0, 64),
-    error_message: (parseFailureMessage.value || exportFailureMessage.value).slice(0, 1000) || undefined,
+    error_message: (parseFailureMessage.value || saveFailureMessage.value || exportFailureMessage.value).slice(0, 1000) || undefined,
     file_names: [...poFiles.value.map(file => file.name), ...(scheduleFile.value ? [scheduleFile.value.name] : [])].slice(0, 10),
   }
 }
@@ -1148,9 +1155,7 @@ const canParseFiles = computed(() => Boolean(
   && poFiles.value.length > 0
   && scheduleFile.value
   && receivedDate.value
-  && !parsingFiles.value
-  && warehouseSync.value.state !== 'pending'
-  && !exportingSchedule.value,
+  && !fileOperationBusy.value,
 ))
 
 const traceFields = computed(() => {
@@ -1235,6 +1240,8 @@ function clearPreviewState() {
   previewBatch.value = null
   parseFailureMessage.value = ''
   exportFailureMessage.value = ''
+  saveFailureMessage.value = ''
+  saveResultUnknown.value = false
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   generatedScheduleFileName.value = ''
@@ -1426,6 +1433,7 @@ function mapPreviewRow(row: CustomerOrderPreviewRow, factoryId: string): OrderRo
 }
 
 async function parseSelectedFiles() {
+  if (fileOperationBusy.value) return
   if (!selectedCustomer.value) {
     notify('请先选择当前厂区的客户。')
     return
@@ -1443,6 +1451,8 @@ async function parseSelectedFiles() {
   parsingFiles.value = true
   parseFailureMessage.value = ''
   exportFailureMessage.value = ''
+  saveFailureMessage.value = ''
+  saveResultUnknown.value = false
   previewBatch.value = null
   orderRows.value = []
   skippedIssueKeys.value = []
@@ -1578,6 +1588,7 @@ function finishBlockingResolution() {
 }
 
 async function confirmAndGenerateSchedule() {
+  if (fileOperationBusy.value) return
   if (unconfirmedDuplicateIssueCount.value > 0) {
     notify(`仍有 ${unconfirmedDuplicateIssueCount.value} 项重复订单待确认，请在“确认/阻断处理”列勾选后再生成。`)
     return
@@ -1753,6 +1764,7 @@ function selectReconciliationLine() {
 }
 
 async function confirmAndSaveOrder() {
+  if (fileOperationBusy.value) return
   if (unconfirmedDuplicateIssueCount.value > 0 || orderSummary.value.blocked > 0) {
     notify('请先完成所有重复订单确认和阻断项处理。')
     return
@@ -1789,6 +1801,8 @@ async function confirmAndSaveOrder() {
     payload.append('reconciliation_reason', reconciliation.value.reason.trim())
   }
   savingOrder.value = true
+  saveFailureMessage.value = ''
+  saveResultUnknown.value = false
   try {
     const result = await customerOrderLedgerApi.importConfirmed(requestedPreview.customer_code, payload)
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
@@ -1800,7 +1814,11 @@ async function confirmAndSaveOrder() {
     // Keep the source files and preview available for the separate Excel export.
   } catch (error) {
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
-    notify(`保存订单失败：${getApiErrorMessage(error)}`)
+    // A missing response or gateway failure does not prove the atomic save rolled back.
+    const status = isAxiosError(error) ? error.response?.status : undefined
+    saveResultUnknown.value = !status || ![400, 401, 403, 404, 409, 413, 422, 429].includes(status)
+    saveFailureMessage.value = getApiErrorMessage(error)
+    notify(`${saveResultUnknown.value ? '保存结果待核对' : '订单保存未完成'}：${saveFailureMessage.value}`)
   } finally {
     if (requestId === saveRequestSequence) savingOrder.value = false
   }
@@ -1885,8 +1903,8 @@ onBeforeUnmount(() => {
   <div class="order-workspace" data-testid="customer-order-center-workspace">
     <p v-if="warehouseSync.state !== 'idle'" class="panel-card" role="status" aria-live="polite" data-testid="warehouse-schedule-sync">
       <strong>{{ warehouseSync.state === 'error' ? '仓库同步未完成' : '纸箱仓库排期' }}</strong> · {{ warehouseSync.message }}
-      <button v-if="warehouseSync.state === 'error' && warehouseUpload" type="button" class="button button--secondary" :disabled="parsingFiles || exportingSchedule || savingOrder" @click="retryWarehouseSync">重试仓库同步</button>
-      <span v-else-if="warehouseSync.state === 'error' && !warehouseUpload">可再次保存订单或生成客户排期，系统会自动重试。</span>
+      <button v-if="warehouseSync.state === 'error' && warehouseUpload" type="button" class="button button--secondary" :disabled="fileOperationBusy" @click="retryWarehouseSync">{{ fileOperationLabel || '重试仓库同步' }}</button>
+      <span v-else-if="warehouseSync.state === 'error' && !warehouseUpload">可生成客户排期以重试仓库同步；已保存的订单无需再次保存。</span>
     </p>
     <Transition name="order-panel" mode="out-in">
       <section v-if="activeSection === 'dashboard'" key="dashboard" class="order-view" data-testid="order-dashboard">
@@ -2023,7 +2041,7 @@ onBeforeUnmount(() => {
             <h2>PO 与客户排期导入</h2>
             <p>同时选择客户原始PO和该客户当前排期模板，系统将按客户模板映射统一字段。</p>
           </div>
-          <span class="prototype-badge">真实文件试用 · {{ selectedCustomer ? `${selectedCustomer.name} ${selectedCustomer.version}` : '先选择客户' }}</span>
+          <span class="prototype-badge">{{ factoryName }} · {{ selectedCustomer ? selectedCustomer.name : '先选择客户' }}</span>
         </header>
 
         <section class="customer-selector" data-testid="factory-customer-selector">
@@ -2117,7 +2135,7 @@ onBeforeUnmount(() => {
                 </label>
               </div>
               <button type="button" class="button button--primary" :disabled="!canParseFiles" @click="parseSelectedFiles">
-                {{ parsingFiles ? '正在解析…' : '解析并进入预览' }} <ArrowRight aria-hidden="true" />
+                {{ fileOperationLabel || '解析并进入预览' }} <ArrowRight aria-hidden="true" />
               </button>
             </div>
 
@@ -2152,8 +2170,7 @@ onBeforeUnmount(() => {
 
             <article class="panel-card">
               <header class="panel-card__head">
-                <div><h3>实时导入队列</h3><p>参考HTML中的批量导入状态设计</p></div>
-                <button type="button" class="text-button"><History aria-hidden="true" /> 查看历史</button>
+                <div><h3>本次导入文件</h3><p>核对客户 PO 与对应的统一排期后开始解析。</p></div>
               </header>
               <div class="table-scroll">
                 <table class="import-queue-table">
@@ -2188,7 +2205,7 @@ onBeforeUnmount(() => {
 
             <article class="panel-card load-card">
               <header><h3>解析进度</h3><strong>{{ parsingFiles ? '处理中' : previewBatch ? '100%' : '0%' }}</strong></header>
-              <div class="progress-track"><span :style="{ width: parsingFiles ? '55%' : previewBatch ? '100%' : '0%' }" /></div>
+              <div class="progress-track" role="progressbar" aria-label="文件解析进度" :aria-valuenow="parsingFiles ? undefined : previewBatch ? 100 : 0" :aria-valuetext="parsingFiles ? '正在解析文件' : previewBatch ? '解析完成' : '待解析'" :aria-busy="parsingFiles"><span :class="{ 'is-processing': parsingFiles, 'is-complete': !parsingFiles && previewBatch }" /></div>
               <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ unconfirmedDuplicateIssueCount }} 项待确认 · {{ orderSummary.blocked }} 项阻断</p>
               <p v-else>选择一份或多份PO及一份客户排期后开始真实解析</p>
             </article>
@@ -2207,10 +2224,45 @@ onBeforeUnmount(() => {
             <button v-if="blockingResolutionItems.length" type="button" class="button button--ghost" data-testid="open-field-resolution" @click="resolveBlockedRow">
               {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : blockingResolutionItems.some(({ issue }) => issue.severity === 'warning' && issue.can_edit) ? '更正日期/补录字段' : '查看已处理阻断项' }}
             </button>
-            <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || savingOrder" @click="confirmAndSaveOrder">{{ savingOrder ? '正在保存…' : '确认并保存订单' }}</button>
-            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
+            <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy" @click="confirmAndSaveOrder">{{ fileOperationLabel || '确认并保存订单' }}</button>
+            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ fileOperationLabel || (unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期') }}</button>
           </div>
         </header>
+
+        <article
+          v-if="saveFailureMessage"
+          class="persistent-parse-alert persistent-parse-alert--preview"
+          data-testid="preview-save-alert"
+          role="alert"
+        >
+          <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+          <div class="persistent-parse-alert__content">
+            <h3>{{ saveResultUnknown ? '保存结果待核对' : '订单保存未完成' }}</h3>
+            <p>{{ saveFailureMessage }}</p>
+            <p v-if="saveResultUnknown">未收到完整保存结果，订单可能已经保存。请先到订单台账核对本批 PO；确认未保存后，再手动保存，系统不会自动重试。</p>
+          </div>
+          <button type="button" class="button button--secondary" data-testid="check-saved-orders" @click="navigate('ledger')">查看订单台账</button>
+        </article>
+
+        <article
+          v-if="exportFailureMessage"
+          class="persistent-parse-alert persistent-parse-alert--preview"
+          data-testid="preview-export-alert"
+          role="alert"
+        >
+          <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+          <div class="persistent-parse-alert__content">
+            <h3>排期生成未完成</h3>
+            <p>{{ exportFailureMessage }}</p>
+          </div>
+          <button
+            type="button"
+            class="button button--secondary"
+            data-testid="retry-schedule-export"
+            :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy"
+            @click="confirmAndGenerateSchedule"
+          >{{ fileOperationLabel || '重试生成排期' }}</button>
+        </article>
 
         <article
           v-if="blockingIssueDetails.length"
@@ -2332,18 +2384,18 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="button button--primary"
-            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'"
+            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy"
             @click="confirmAndGenerateSchedule"
           >
             <Download aria-hidden="true" />
-            {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : '生成并下载客户排期' }}
+            {{ fileOperationLabel || (unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : '生成并下载客户排期') }}
           </button>
           <button
             type="button"
             class="button button--secondary"
-            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || savingOrder"
+            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy"
             @click="confirmAndSaveOrder"
-          >{{ savingOrder ? '正在保存…' : '确认并保存订单' }}</button>
+          >{{ fileOperationLabel || '确认并保存订单' }}</button>
         </article>
 
         <div class="summary-strip">
@@ -2916,7 +2968,7 @@ onBeforeUnmount(() => {
 .order-workspace {
   width: min(100%, 1640px);
   margin: 0 auto;
-  color: var(--order-text, #191b23);
+  color: var(--order-text, var(--foreground));
 }
 
 .order-view {
@@ -2944,16 +2996,16 @@ onBeforeUnmount(() => {
 
 .view-heading h2 {
   margin-top: 7px;
-  color: #191b23;
+  color: var(--foreground);
   font-size: clamp(25px, 2.5vw, 34px);
-  font-weight: 900;
+  font-weight: 600;
   letter-spacing: -.035em;
 }
 
 .view-heading p {
   max-width: 850px;
   margin-top: 7px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 13px;
   line-height: 1.65;
 }
@@ -2963,7 +3015,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 11px;
   font-weight: 900;
   letter-spacing: .08em;
@@ -2976,11 +3028,11 @@ onBeforeUnmount(() => {
 }
 
 .prototype-badge {
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 6px;
-  background: #dae2ff;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
   padding: 7px 10px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .view-heading__actions {
@@ -2996,10 +3048,10 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 7px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0 14px;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
@@ -3013,19 +3065,24 @@ onBeforeUnmount(() => {
   box-shadow: none;
 }
 
+.order-workspace :is(button, a):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
 .button svg {
   width: 16px;
   height: 16px;
 }
 
 .button--primary {
-  background: #003d9b;
-  color: #fff;
-  box-shadow: 0 6px 15px rgb(0 61 155 / 15%);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: 0 6px 15px color-mix(in oklab, var(--primary) 15%, transparent);
 }
 
 .button--primary:hover {
-  background: #0052cc;
+  background: color-mix(in oklab, var(--primary) 90%, black);
 }
 
 .button--secondary {
@@ -3034,14 +3091,14 @@ onBeforeUnmount(() => {
 }
 
 .button--ghost {
-  border-color: #c3c6d6;
-  background: #fff;
-  color: #434654;
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--muted-foreground);
 }
 
 .button--ghost:hover {
-  border-color: #003d9b;
-  color: #003d9b;
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .metric-grid {
@@ -3056,9 +3113,9 @@ onBeforeUnmount(() => {
   min-width: 0;
   align-items: center;
   gap: 14px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 17px;
   box-shadow: 0 7px 18px rgb(38 42 55 / 4%);
 }
@@ -3081,7 +3138,7 @@ onBeforeUnmount(() => {
   height: 22px;
 }
 
-.metric-card__icon--blue { background: #dae2ff; color: #003d9b; }
+.metric-card__icon--blue { background: color-mix(in oklab, var(--primary) 10%, var(--card)); color: var(--primary); }
 .metric-card__icon--amber { background: #ffddb3; color: #7d5200; }
 .metric-card__icon--green { background: #d5f9e6; color: #006c47; }
 .metric-card__icon--red { background: #ffdad6; color: #ba1a1a; }
@@ -3094,14 +3151,14 @@ onBeforeUnmount(() => {
 }
 
 .metric-card p {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 700;
 }
 
 .metric-card strong {
   margin-top: 2px;
-  color: #191b23;
+  color: var(--foreground);
   font-size: 26px;
   line-height: 1.1;
 }
@@ -3109,7 +3166,7 @@ onBeforeUnmount(() => {
 .metric-card small {
   margin-top: 5px;
   overflow: hidden;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3136,9 +3193,9 @@ onBeforeUnmount(() => {
 .ledger-card,
 .data-grid-card,
 .merge-table-card {
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   box-shadow: 0 7px 18px rgb(38 42 55 / 4%);
 }
 
@@ -3147,7 +3204,7 @@ onBeforeUnmount(() => {
 }
 
 .flow-card--primary {
-  border-top: 3px solid #003d9b;
+  border-top: 3px solid var(--primary);
 }
 
 .flow-card__head,
@@ -3174,7 +3231,7 @@ onBeforeUnmount(() => {
 }
 
 .flow-number {
-  color: #737685;
+  color: var(--muted-foreground);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   font-weight: 900;
@@ -3230,8 +3287,8 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 8px;
-  background: #dae2ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
 }
 
 .flow-card__icon--green {
@@ -3256,7 +3313,7 @@ onBeforeUnmount(() => {
 
 .flow-card p {
   margin-top: 4px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -3275,7 +3332,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   align-items: center;
   gap: 8px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 700;
 }
@@ -3286,7 +3343,7 @@ onBeforeUnmount(() => {
   right: 8px;
   width: 14px;
   height: 1px;
-  background: #c3c6d6;
+  background: var(--border);
   content: "";
 }
 
@@ -3297,8 +3354,8 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  background: #e7e7f2;
-  color: #003d9b;
+  background: var(--accent);
+  color: var(--primary);
   font-size: 10px;
 }
 
@@ -3309,7 +3366,7 @@ onBeforeUnmount(() => {
   gap: 7px;
   border: 0;
   background: transparent;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 12px;
   font-weight: 900;
 }
@@ -3339,7 +3396,7 @@ onBeforeUnmount(() => {
 
 .panel-card__head p {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 
@@ -3354,19 +3411,19 @@ onBeforeUnmount(() => {
   min-height: 82px;
   place-items: center;
   gap: 4px;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #faf8ff;
+  background: var(--background);
   padding: 10px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 800;
 }
 
 .quick-action-grid button:hover {
-  border-color: #b2c5ff;
-  background: #f3f3fd;
-  color: #003d9b;
+  border-color: color-mix(in oklab, var(--primary) 25%, var(--border));
+  background: var(--muted);
+  color: var(--primary);
 }
 
 .quick-action-grid svg {
@@ -3379,9 +3436,9 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   gap: 11px;
   border-radius: 8px;
-  background: #2e3038;
+  background: var(--foreground);
   padding: 16px;
-  color: #f0f0fb;
+  color: var(--muted);
 }
 
 .scope-card > svg {
@@ -3425,7 +3482,7 @@ onBeforeUnmount(() => {
   gap: 6px;
   border: 0;
   background: transparent;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 10px;
   font-weight: 900;
 }
@@ -3438,7 +3495,7 @@ onBeforeUnmount(() => {
 .table-scroll {
   width: 100%;
   overflow: auto;
-  scrollbar-color: #c3c6d6 transparent;
+  scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
 }
 
@@ -3449,8 +3506,8 @@ table {
 }
 
 th {
-  background: #f3f3fd;
-  color: #737685;
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 900;
   letter-spacing: .04em;
@@ -3459,18 +3516,18 @@ th {
 
 th,
 td {
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   padding: 10px 12px;
   vertical-align: middle;
 }
 
 td {
-  color: #343742;
+  color: var(--foreground);
   font-size: 11px;
 }
 
 tbody tr:hover td {
-  background: #f8f8ff;
+  background: var(--muted);
 }
 
 .activity-table {
@@ -3486,9 +3543,9 @@ tbody tr:hover td {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   margin: 0 0 20px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 14px 20px;
   list-style: none;
 }
@@ -3501,7 +3558,7 @@ tbody tr:hover td {
   margin-bottom: 14px;
   border: 1px solid #b8c7e5;
   border-radius: 10px;
-  background: linear-gradient(135deg, #f8faff, #f2fff9);
+  background: linear-gradient(135deg, var(--muted), #f2fff9);
   padding: 15px 17px;
 }
 
@@ -3519,7 +3576,7 @@ tbody tr:hover td {
   place-items: center;
   border-radius: 9px;
   background: #e1e9ff;
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .customer-selector > header svg {
@@ -3538,7 +3595,7 @@ tbody tr:hover td {
 
 .customer-selector p {
   margin-top: 3px;
-  color: #596070;
+  color: var(--muted-foreground);
   line-height: 1.5;
 }
 
@@ -3554,11 +3611,11 @@ tbody tr:hover td {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  border: 1px solid #cfd5e4;
+  border: 1px solid var(--border);
   border-radius: 9px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 12px;
-  color: #343742;
+  color: var(--foreground);
   text-align: left;
   transition:
     transform var(--order-motion-fast) var(--order-motion-ease),
@@ -3585,8 +3642,8 @@ tbody tr:hover td {
   height: 32px;
   place-items: center;
   border-radius: 50%;
-  background: #edf0ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
+  color: var(--primary);
 }
 
 .customer-choice.active > span {
@@ -3610,17 +3667,16 @@ tbody tr:hover td {
 
 .customer-choice small {
   margin-top: 2px;
-  overflow: hidden;
-  color: #737685;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
 .customer-choice em {
   border-radius: 999px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 4px 7px;
-  color: #0040a2;
+  color: var(--primary);
   font-style: normal;
   font-weight: 900;
   white-space: nowrap;
@@ -3643,7 +3699,7 @@ tbody tr:hover td {
   display: grid;
   justify-items: center;
   gap: 7px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 800;
 }
@@ -3654,7 +3710,7 @@ tbody tr:hover td {
   left: calc(50% + 30px);
   width: calc(100% - 60px);
   height: 1px;
-  background: #c3c6d6;
+  background: var(--border);
   content: "";
 }
 
@@ -3663,20 +3719,20 @@ tbody tr:hover td {
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 50%;
-  background: #e7e7f2;
+  background: var(--accent);
   font-size: 11px;
 }
 
 .wizard-steps li.active {
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .wizard-steps li.active b {
-  border-color: #003d9b;
-  background: #003d9b;
-  color: #fff;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .wizard-steps li.done {
@@ -3714,23 +3770,23 @@ tbody tr:hover td {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 2px dashed #c3c6d6;
+  border: 2px dashed var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 22px;
   text-align: center;
   transition: border-color 160ms ease, background-color 160ms ease;
 }
 
 .upload-card:hover {
-  border-color: #003d9b;
-  background: #f8f9ff;
+  border-color: var(--primary);
+  background: var(--muted);
 }
 
 .upload-card--dragging {
-  border-color: #003d9b;
-  background: #eef3ff;
-  box-shadow: inset 0 0 0 2px rgb(0 61 155 / 9%);
+  border-color: var(--primary);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--primary) 9%, transparent);
 }
 
 .upload-card--schedule.upload-card--dragging {
@@ -3755,7 +3811,7 @@ tbody tr:hover td {
 
 .upload-card__type {
   align-self: flex-start;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
   letter-spacing: .07em;
@@ -3769,8 +3825,8 @@ tbody tr:hover td {
   margin: 12px 0;
   place-items: center;
   border-radius: 50%;
-  background: #dae2ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
   transition: transform 160ms ease;
 }
 
@@ -3797,7 +3853,7 @@ tbody tr:hover td {
 
 .upload-card p {
   margin-top: 5px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   line-height: 1.5;
 }
@@ -3808,7 +3864,7 @@ tbody tr:hover td {
   max-width: 100%;
   margin: 14px 0;
   overflow: hidden;
-  color: #434654;
+  color: var(--muted-foreground);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   text-overflow: ellipsis;
@@ -3971,7 +4027,7 @@ tbody tr:hover td {
   resize: vertical;
   border: 1px solid #c9b06f;
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);
   padding: 8px 10px;
   color: #232323;
   font: inherit;
@@ -4022,7 +4078,7 @@ tbody tr:hover td {
   height: 30px;
   border: 1px solid #71dba6;
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 8px;
   color: #24312d;
   font: inherit;
@@ -4038,9 +4094,9 @@ tbody tr:hover td {
   display: grid;
   gap: 12px;
   margin: 14px 0;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 8px;
-  background: #f6f8ff;
+  background: var(--muted);
   padding: 14px;
 }
 
@@ -4066,7 +4122,7 @@ tbody tr:hover td {
 .reconciliation-card__toggle small,
 .reconciliation-card__selected {
   margin-top: 3px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -4089,24 +4145,24 @@ tbody tr:hover td {
 
 .reconciliation-card__scope {
   margin: 0;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 11px;
   line-height: 1.5;
 }
 
 .reconciliation-card__body label {
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 800;
 }
 
 .reconciliation-card__body select,
 .reconciliation-card__body textarea {
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);
   padding: 8px;
-  color: #191b23;
+  color: var(--foreground);
   font: inherit;
 }
 
@@ -4124,7 +4180,7 @@ tbody tr:hover td {
 .import-queue-table td svg {
   width: 15px;
   height: 15px;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .guide-card ul,
@@ -4167,7 +4223,7 @@ tbody tr:hover td {
 
 .guide-card span {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4175,15 +4231,15 @@ tbody tr:hover td {
   position: relative;
   overflow: hidden;
   border-radius: 8px;
-  background: #2e3038;
+  background: var(--foreground);
   padding: 19px;
-  color: #f0f0fb;
+  color: var(--muted);
 }
 
 .mapping-card > svg {
   width: 23px;
   height: 23px;
-  color: #b2c5ff;
+  color: color-mix(in oklab, var(--primary) 25%, var(--border));
 }
 
 .mapping-card h3,
@@ -4210,8 +4266,8 @@ tbody tr:hover td {
   margin-top: 14px;
   border: 0;
   border-radius: 5px;
-  background: #0052cc;
-  color: #fff;
+  background: color-mix(in oklab, var(--primary) 90%, black);
+  color: var(--primary-foreground);
   font-size: 10px;
   font-weight: 900;
 }
@@ -4236,19 +4292,32 @@ tbody tr:hover td {
   margin-top: 10px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e7e7f2;
+  background: var(--accent);
 }
 
 .progress-track span {
   display: block;
-  width: 100%;
+  width: 0;
   height: 100%;
-  background: #006c47;
+  background: var(--primary);
+}
+
+.progress-track .is-complete {
+  width: 100%;
+}
+
+.progress-track .is-processing {
+  width: 35%;
+  animation: order-parse-progress 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes order-parse-progress {
+  to { transform: translateX(185%); }
 }
 
 .load-card > p {
   margin-top: 8px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4260,10 +4329,10 @@ tbody tr:hover td {
 }
 
 .summary-strip article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #737685;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
 }
 
@@ -4278,7 +4347,7 @@ tbody tr:hover td {
 }
 
 .summary-strip span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
   text-transform: uppercase;
@@ -4291,7 +4360,7 @@ tbody tr:hover td {
 
 .summary-strip small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4310,7 +4379,7 @@ tbody tr:hover td {
   padding: 13px 15px;
   border: 1px solid #8fc8ff;
   border-radius: 10px;
-  background: linear-gradient(135deg, #eef7ff 0%, #f8fbff 100%);
+  background: linear-gradient(135deg, #eef7ff 0%, var(--muted) 100%);
   box-shadow: 0 8px 18px rgb(0 76 165 / 8%);
 }
 
@@ -4424,9 +4493,9 @@ tbody tr:hover td {
 
 .filter-panel {
   align-self: start;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 14px;
 }
 
@@ -4435,7 +4504,7 @@ tbody tr:hover td {
   align-items: center;
   gap: 7px;
   margin: 0 0 13px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 900;
   letter-spacing: .07em;
@@ -4452,20 +4521,20 @@ tbody tr:hover td {
   align-items: center;
   gap: 8px;
   padding: 5px 0;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 700;
 }
 
 .filter-panel input[type="checkbox"],
 .check-option input {
-  accent-color: #003d9b;
+  accent-color: var(--primary);
 }
 
 .filter-divider {
   height: 1px;
   margin: 12px 0;
-  background: #c3c6d6;
+  background: var(--border);
 }
 
 .filter-field,
@@ -4473,7 +4542,7 @@ tbody tr:hover td {
   display: grid;
   gap: 5px;
   margin-top: 11px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -4483,11 +4552,11 @@ tbody tr:hover td {
 .ledger-toolbar select {
   width: 100%;
   height: 34px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 8px;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -4496,11 +4565,11 @@ tbody tr:hover td {
   align-items: flex-start;
   gap: 7px;
   margin-top: 15px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 6px;
-  background: #e8edff;
+  background: var(--accent);
   padding: 10px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .logic-note > svg {
@@ -4534,7 +4603,7 @@ tbody tr:hover td {
 .data-grid-card__toolbar {
   min-height: 54px;
   gap: 12px;
-  border-bottom: 1px solid #d7d9e3;
+  border-bottom: 1px solid var(--border);
   padding: 10px 13px;
 }
 
@@ -4549,7 +4618,7 @@ tbody tr:hover td {
   width: 17px;
   height: 17px;
   flex: 0 0 auto;
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .data-grid-card__toolbar span {
@@ -4558,7 +4627,7 @@ tbody tr:hover td {
 }
 
 .data-grid-card__toolbar small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4568,11 +4637,11 @@ tbody tr:hover td {
   height: 34px;
   align-items: center;
   gap: 7px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #f8f8ff;
+  background: var(--muted);
   padding: 0 9px;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .inline-search {
@@ -4619,11 +4688,11 @@ tbody tr:hover td {
   position: sticky;
   left: 0;
   z-index: 3;
-  background: #f3f3fd;
+  background: var(--muted);
 }
 
 .unified-table td.sticky-left {
-  background: #fff;
+  background: var(--card);
 }
 
 .unified-table .resolution-column {
@@ -4690,7 +4759,7 @@ tbody tr:hover td {
   min-width: 0;
   border: 1px solid #91b6a5;
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 7px 8px;
   color: #18392c;
   font-size: 10px;
@@ -4811,8 +4880,8 @@ tbody tr:hover td {
 }
 
 .product-role-badge--child {
-  border-color: #bdc8de;
-  background: #f2f5fb;
+  border-color: var(--border);
+  background: var(--muted);
   color: #44536f;
 }
 
@@ -4835,7 +4904,7 @@ tbody tr:hover td {
   border-radius: 4px;
   background: transparent;
   padding: 4px 6px;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 9px;
   font-weight: 900;
   white-space: nowrap;
@@ -4843,7 +4912,7 @@ tbody tr:hover td {
 
 .trace-button:hover,
 .version-button:hover {
-  background: #dae2ff;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
 }
 
 .version-button svg {
@@ -4854,9 +4923,9 @@ tbody tr:hover td {
 .table-footer {
   min-height: 42px;
   gap: 12px;
-  border-top: 1px solid #d7d9e3;
+  border-top: 1px solid var(--border);
   padding: 8px 12px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4889,12 +4958,12 @@ tbody tr:hover td {
 
 .table-footer button {
   background: transparent;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .table-footer b {
-  background: #003d9b;
-  color: #fff;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .ledger-kpis {
@@ -4908,9 +4977,9 @@ tbody tr:hover td {
   display: flex;
   align-items: center;
   gap: 13px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 15px;
 }
 
@@ -4920,8 +4989,8 @@ tbody tr:hover td {
   height: 42px;
   place-items: center;
   border-radius: 7px;
-  background: #dae2ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
 }
 
 .ledger-kpis article > span.amber { background: #ffddb3; color: #7d5200; }
@@ -4940,7 +5009,7 @@ tbody tr:hover td {
 }
 
 .ledger-kpis p {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 
@@ -4951,14 +5020,14 @@ tbody tr:hover td {
 
 .ledger-kpis small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
 .ledger-toolbar {
   gap: 8px;
   min-height: 58px;
-  border-bottom: 1px solid #d7d9e3;
+  border-bottom: 1px solid var(--border);
   padding: 10px 13px;
 }
 
@@ -4975,10 +5044,10 @@ tbody tr:hover td {
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
-  color: #434654;
+  background: var(--card);
+  color: var(--muted-foreground);
 }
 
 .icon-square svg {
@@ -4988,7 +5057,7 @@ tbody tr:hover td {
 
 .ledger-count {
   margin-left: auto;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5001,7 +5070,7 @@ tbody tr:hover td {
 }
 
 .strong {
-  color: #003d9b;
+  color: var(--primary);
   font-weight: 900;
 }
 
@@ -5016,9 +5085,9 @@ tbody tr:hover td {
 .schedule-files article {
   position: relative;
   gap: 13px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 16px;
 }
 
@@ -5026,7 +5095,7 @@ tbody tr:hover td {
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .schedule-files article > div {
@@ -5057,7 +5126,7 @@ tbody tr:hover td {
 
 .schedule-files small {
   margin-top: 4px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5065,11 +5134,11 @@ tbody tr:hover td {
   position: absolute;
   top: -8px;
   left: 12px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 4px;
-  background: #dae2ff;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
   padding: 2px 6px;
-  color: #0040a2;
+  color: var(--primary);
   font-size: 8px;
   font-weight: 900;
 }
@@ -5080,8 +5149,8 @@ tbody tr:hover td {
   height: 34px;
   place-items: center;
   border-radius: 50%;
-  background: #003d9b;
-  color: #fff;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .merge-arrow svg {
@@ -5097,14 +5166,14 @@ tbody tr:hover td {
 }
 
 .merge-summary-grid article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #737685;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
 }
 
-.merge-summary-grid article.new { border-left-color: #003d9b; }
+.merge-summary-grid article.new { border-left-color: var(--primary); }
 .merge-summary-grid article.update { border-left-color: #006c47; }
 .merge-summary-grid article.conflict { border-left-color: #ba1a1a; }
 
@@ -5114,9 +5183,9 @@ tbody tr:hover td {
   display: block;
 }
 
-.merge-summary-grid span { color: #737685; font-size: 9px; font-weight: 900; }
+.merge-summary-grid span { color: var(--muted-foreground); font-size: 9px; font-weight: 900; }
 .merge-summary-grid strong { margin-top: 2px; font-size: 22px; }
-.merge-summary-grid small { margin-top: 2px; color: #737685; font-size: 8px; }
+.merge-summary-grid small { margin-top: 2px; color: var(--muted-foreground); font-size: 8px; }
 
 .schedule-layout {
   display: grid;
@@ -5138,10 +5207,10 @@ tbody tr:hover td {
   font-weight: 900;
 }
 
-.merge-status--new { background: #dae2ff; color: #0040a2; }
+.merge-status--new { background: color-mix(in oklab, var(--primary) 10%, var(--card)); color: var(--primary); }
 .merge-status--update { background: #d5f9e6; color: #005235; }
 .merge-status--conflict { background: #ffdad6; color: #93000a; }
-.merge-status--unchanged { background: #e7e7f2; color: #596070; }
+.merge-status--unchanged { background: var(--accent); color: var(--muted-foreground); }
 
 .rule-card > label:not(.check-option) {
   margin-top: 10px;
@@ -5152,16 +5221,16 @@ tbody tr:hover td {
   align-items: center;
   gap: 7px;
   margin-top: 11px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 700;
 }
 
 .output-card {
   border-radius: 8px;
-  background: #2e3038;
+  background: var(--foreground);
   padding: 18px;
-  color: #f0f0fb;
+  color: var(--muted);
 }
 
 .output-card > svg {
@@ -5208,15 +5277,15 @@ tbody tr:hover td {
   gap: 7px;
   border: 0;
   border-radius: 5px;
-  background: #0052cc;
-  color: #fff;
+  background: color-mix(in oklab, var(--primary) 90%, black);
+  color: var(--primary-foreground);
   font-size: 10px;
   font-weight: 900;
 }
 
 .output-card button:disabled {
-  background: #596070;
-  color: #c3c6d6;
+  background: var(--muted-foreground);
+  color: var(--border);
   cursor: not-allowed;
 }
 
@@ -5251,9 +5320,9 @@ tbody tr:hover td {
 
 .draft-rule-label {
   margin-bottom: 12px;
-  border: 1px solid #b2c5ff;
-  background: #edf0ff;
-  color: #0040a2;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
+  color: var(--primary);
 }
 
 .schedule-source-alert > svg,
@@ -5290,10 +5359,10 @@ tbody tr:hover td {
 }
 
 .exception-kpis article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #737685;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px;
 }
 
@@ -5320,7 +5389,7 @@ tbody tr:hover td {
 }
 
 .exception-kpis span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
   font-weight: 900;
 }
@@ -5332,7 +5401,7 @@ tbody tr:hover td {
 
 .exception-kpis small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -5342,9 +5411,9 @@ tbody tr:hover td {
   align-items: end;
   gap: 9px;
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 11px;
 }
 
@@ -5354,7 +5423,7 @@ tbody tr:hover td {
 }
 
 .exception-toolbar > label > span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5362,11 +5431,11 @@ tbody tr:hover td {
 .exception-toolbar select {
   width: 100%;
   height: 36px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 9px;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -5375,7 +5444,7 @@ tbody tr:hover td {
   height: 36px;
   align-items: center;
   gap: 7px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 0 10px;
 }
@@ -5383,7 +5452,7 @@ tbody tr:hover td {
 .exception-search svg {
   width: 15px;
   height: 15px;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .exception-search input {
@@ -5391,7 +5460,7 @@ tbody tr:hover td {
   border: 0;
   outline: 0;
   background: transparent;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -5404,9 +5473,9 @@ tbody tr:hover td {
 .exception-list-card {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
 }
 
 .exception-list {
@@ -5417,8 +5486,8 @@ tbody tr:hover td {
   display: grid;
   grid-template-columns: 70px minmax(0, 1fr) 110px;
   gap: 12px;
-  border-bottom: 1px solid #e0e1e9;
-  border-left: 4px solid #737685;
+  border-bottom: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   padding: 14px;
   transition: opacity 160ms ease, background-color 160ms ease;
 }
@@ -5440,7 +5509,7 @@ tbody tr:hover td {
 }
 
 .exception-item.acknowledged {
-  background: #f6f6fb;
+  background: var(--muted);
   opacity: .7;
 }
 
@@ -5475,7 +5544,7 @@ tbody tr:hover td {
 }
 
 .exception-item__severity small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -5492,19 +5561,19 @@ tbody tr:hover td {
 }
 
 .exception-item__title h3 {
-  color: #252832;
+  color: var(--foreground);
   font-size: 12px;
 }
 
 .exception-item__title > span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   white-space: nowrap;
 }
 
 .exception-item__main > p {
   margin-top: 5px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   line-height: 1.55;
 }
@@ -5519,7 +5588,7 @@ tbody tr:hover td {
 .exception-item dl div {
   min-width: 0;
   border-radius: 5px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 6px;
 }
 
@@ -5530,13 +5599,13 @@ tbody tr:hover td {
 }
 
 .exception-item dt {
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .exception-item dd {
   margin-top: 2px;
   overflow: hidden;
-  color: #343742;
+  color: var(--foreground);
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5548,9 +5617,9 @@ tbody tr:hover td {
   gap: 7px;
   margin-top: 9px;
   border-radius: 5px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 7px 8px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .exception-item__recommendation svg {
@@ -5583,14 +5652,14 @@ tbody tr:hover td {
 
 .exception-action {
   border: 0;
-  background: #003d9b;
-  color: #fff;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .exception-acknowledge {
-  border: 1px solid #c3c6d6;
-  background: #fff;
-  color: #596070;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted-foreground);
 }
 
 .empty-exception {
@@ -5598,7 +5667,7 @@ tbody tr:hover td {
   justify-items: center;
   gap: 5px;
   padding: 40px;
-  color: #596070;
+  color: var(--muted-foreground);
   text-align: center;
 }
 
@@ -5637,18 +5706,18 @@ tbody tr:hover td {
   align-items: center;
   gap: 8px;
   border-radius: 5px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 8px;
 }
 
 .exception-rule-card li b {
-  color: #003d9b;
+  color: var(--primary);
   font-size: 9px;
 }
 
 .exception-rule-card li span,
 .exception-boundary-card li {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 8px;
   line-height: 1.45;
 }
@@ -5705,9 +5774,9 @@ tbody tr:hover td {
   align-items: end;
   gap: 10px;
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 12px;
 }
 
@@ -5717,7 +5786,7 @@ tbody tr:hover td {
 }
 
 .schedule-toolbar-card label > span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5725,11 +5794,11 @@ tbody tr:hover td {
 .schedule-toolbar-card select {
   width: 100%;
   height: 36px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 9px;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -5741,10 +5810,10 @@ tbody tr:hover td {
 }
 
 .factory-schedule-kpis article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #003d9b;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
 }
 
@@ -5767,7 +5836,7 @@ tbody tr:hover td {
 }
 
 .factory-schedule-kpis span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5779,15 +5848,15 @@ tbody tr:hover td {
 
 .factory-schedule-kpis small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
 .month-schedule-section {
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 13px;
 }
 
@@ -5811,7 +5880,7 @@ tbody tr:hover td {
 .month-schedule-section p,
 .month-schedule-section > header > span {
   margin-top: 3px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5824,23 +5893,23 @@ tbody tr:hover td {
 .month-card-grid button {
   display: grid;
   gap: 4px;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #f8f8ff;
+  background: var(--muted);
   padding: 11px;
-  color: #343742;
+  color: var(--foreground);
   text-align: left;
   transition: border-color 160ms ease, background-color 160ms ease;
 }
 
 .month-card-grid button.active,
 .month-card-grid button:hover {
-  border-color: #003d9b;
-  background: #edf0ff;
+  border-color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
 }
 
 .month-card-grid span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5850,7 +5919,7 @@ tbody tr:hover td {
 }
 
 .month-card-grid small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -5863,9 +5932,9 @@ tbody tr:hover td {
 
 .customer-month-section {
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 13px;
 }
 
@@ -5889,7 +5958,7 @@ tbody tr:hover td {
 .customer-month-section p,
 .customer-month-section > header > span {
   margin-top: 3px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5900,9 +5969,9 @@ tbody tr:hover td {
 }
 
 .customer-summary-grid > article {
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #f8f8ff;
+  background: var(--muted);
   padding: 11px;
 }
 
@@ -5914,7 +5983,7 @@ tbody tr:hover td {
 }
 
 .customer-summary-grid__head > span {
-  color: #003d9b;
+  color: var(--primary);
   font-size: 10px;
   font-weight: 900;
 }
@@ -5942,7 +6011,7 @@ tbody tr:hover td {
 
 .customer-summary-grid dl div {
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 7px;
 }
 
@@ -5953,12 +6022,12 @@ tbody tr:hover td {
 }
 
 .customer-summary-grid dt {
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .customer-summary-grid dd {
   margin-top: 2px;
-  color: #343742;
+  color: var(--foreground);
   font-weight: 900;
 }
 
@@ -5973,7 +6042,7 @@ tbody tr:hover td {
 .empty-customer-summary {
   grid-column: 1 / -1;
   padding: 24px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   text-align: center;
 }
@@ -5987,9 +6056,9 @@ tbody tr:hover td {
 .factory-schedule-table-card {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
 }
 
 .table-scroll--schedule {
@@ -6027,8 +6096,8 @@ tbody tr:hover td {
 }
 
 .delivery-chip--planned {
-  background: #dae2ff;
-  color: #0040a2;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
 }
 
 .delivery-chip--upcoming {
@@ -6063,7 +6132,7 @@ tbody tr:hover td {
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e0e1e9;
+  background: var(--border);
 }
 
 .production-progress i {
@@ -6079,7 +6148,7 @@ tbody tr:hover td {
 
 .empty-schedule {
   padding: 34px;
-  color: #737685;
+  color: var(--muted-foreground);
   text-align: center;
 }
 
@@ -6101,7 +6170,7 @@ tbody tr:hover td {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 9px;
   line-height: 1.45;
 }
@@ -6123,7 +6192,7 @@ tbody tr:hover td {
 }
 
 .feedback-boundary-card > p {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   line-height: 1.55;
 }
@@ -6134,9 +6203,9 @@ tbody tr:hover td {
   gap: 8px;
   margin-top: 11px;
   border-radius: 6px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 10px;
-  color: #0040a2;
+  color: var(--primary);
   font-size: 9px;
   line-height: 1.5;
 }
@@ -6152,11 +6221,11 @@ tbody tr:hover td {
   align-items: center;
   gap: 11px;
   margin-top: 14px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 7px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 12px 14px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .downstream-note > svg {
@@ -6191,7 +6260,7 @@ tbody tr:hover td {
   gap: 9px;
   border: 1px solid #71dba6;
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
   color: #005235;
   font-size: 11px;
@@ -6213,7 +6282,7 @@ tbody tr:hover td {
   place-items: center;
   border: 0;
   background: transparent;
-  color: #596070;
+  color: var(--muted-foreground);
 }
 
 .order-toast button svg {
@@ -6244,9 +6313,9 @@ tbody tr:hover td {
   max-height: min(820px, calc(100vh - 48px));
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--card);
   box-shadow: 0 24px 70px rgb(25 27 35 / 24%);
 }
 
@@ -6260,7 +6329,7 @@ tbody tr:hover td {
 }
 
 .blocker-resolution-dialog > header {
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   background: #fff8f7;
 }
 
@@ -6285,7 +6354,7 @@ tbody tr:hover td {
 
 .blocker-resolution-dialog > header p {
   margin-top: 5px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 
@@ -6297,8 +6366,8 @@ tbody tr:hover td {
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: #f3f3fd;
-  color: #596070;
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .blocker-resolution-dialog > header > button svg {
@@ -6335,7 +6404,7 @@ tbody tr:hover td {
 }
 
 .blocker-resolution-progress small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -6384,7 +6453,7 @@ tbody tr:hover td {
 
 .blocker-resolution-item__heading span {
   margin-top: 3px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -6420,14 +6489,14 @@ tbody tr:hover td {
   display: grid;
   gap: 6px;
   margin-top: 14px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 8px;
-  background: #f7f8ff;
+  background: var(--muted);
   padding: 12px;
 }
 
 .blocker-resolution-reason > span {
-  color: #003d9b;
+  color: var(--primary);
   font-size: 10px;
   font-weight: 900;
 }
@@ -6435,9 +6504,9 @@ tbody tr:hover td {
 .blocker-resolution-reason textarea {
   width: 100%;
   resize: vertical;
-  border: 1px solid #aeb8d7;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);
   padding: 9px;
   font: inherit;
   font-size: 10px;
@@ -6446,12 +6515,12 @@ tbody tr:hover td {
 }
 
 .blocker-resolution-reason textarea:focus {
-  border-color: #0052cc;
+  border-color: color-mix(in oklab, var(--primary) 90%, black);
   box-shadow: 0 0 0 2px rgb(0 82 204 / 12%);
 }
 
 .blocker-resolution-reason small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
   text-align: right;
 }
@@ -6463,8 +6532,8 @@ tbody tr:hover td {
 
 .blocker-resolution-dialog > footer {
   justify-content: flex-end;
-  border-top: 1px solid #e0e1e9;
-  background: #f8f8ff;
+  border-top: 1px solid var(--border);
+  background: var(--muted);
 }
 
 .trace-drawer {
@@ -6472,20 +6541,20 @@ tbody tr:hover td {
   inset: 0 0 0 auto;
   width: min(520px, 100%);
   overflow-y: auto;
-  border-left: 1px solid #c3c6d6;
-  background: #fff;
+  border-left: 1px solid var(--border);
+  background: var(--card);
   padding: 20px;
   box-shadow: -15px 0 35px rgb(25 27 35 / 12%);
 }
 
 .trace-drawer header {
   gap: 12px;
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   padding-bottom: 14px;
 }
 
 .trace-drawer header span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
   letter-spacing: .08em;
@@ -6503,8 +6572,8 @@ tbody tr:hover td {
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: #f3f3fd;
-  color: #596070;
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .trace-drawer header button svg {
@@ -6515,13 +6584,13 @@ tbody tr:hover td {
 .trace-status {
   margin: 15px 0;
   border-radius: 7px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 12px;
 }
 
 .trace-status p {
   margin: 8px 0 0;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   line-height: 1.5;
 }
@@ -6530,7 +6599,7 @@ tbody tr:hover td {
   display: grid;
   gap: 0;
   margin: 0;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
   overflow: hidden;
 }
@@ -6538,7 +6607,7 @@ tbody tr:hover td {
 .trace-drawer dl div {
   display: grid;
   grid-template-columns: 90px 1fr;
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
 }
 
 .trace-drawer dl div:last-child {
@@ -6553,8 +6622,8 @@ tbody tr:hover td {
 }
 
 .trace-drawer dt {
-  background: #f3f3fd;
-  color: #737685;
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-weight: 900;
 }
 
@@ -6577,13 +6646,13 @@ tbody tr:hover td {
   grid-template-columns: 90px 1fr;
   gap: 4px 8px;
   margin: 0;
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   padding: 9px 0;
   font-size: 9px;
 }
 
 .trace-drawer section p b {
-  color: #596070;
+  color: var(--muted-foreground);
 }
 
 .trace-drawer section p span {
@@ -6592,7 +6661,7 @@ tbody tr:hover td {
 
 .trace-drawer section p small {
   grid-column: 2;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -6925,7 +6994,7 @@ tbody tr:hover td {
 }
 
 .view-heading h2 {
-  font-size: clamp(28px, 2.7vw, 38px);
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
 }
 
 .view-heading p {
@@ -6983,7 +7052,7 @@ tbody tr:hover td {
   .schedule-files article,
   .customer-summary-grid > article
 ):hover {
-  border-color: #aeb4c8;
+  border-color: var(--border);
   box-shadow: 0 12px 28px rgb(31 38 57 / 10%);
   transform: translateY(-2px);
 }
@@ -7087,11 +7156,11 @@ tbody tr:hover td {
 
 @keyframes order-drop-pulse {
   from {
-    box-shadow: inset 0 0 0 2px rgb(0 61 155 / 9%), 0 8px 20px rgb(0 61 155 / 8%);
+    box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--primary) 9%, transparent), 0 8px 20px color-mix(in oklab, var(--primary) 8%, transparent);
   }
 
   to {
-    box-shadow: inset 0 0 0 3px rgb(0 61 155 / 15%), 0 14px 30px rgb(0 61 155 / 14%);
+    box-shadow: inset 0 0 0 3px color-mix(in oklab, var(--primary) 15%, transparent), 0 14px 30px color-mix(in oklab, var(--primary) 14%, transparent);
   }
 }
 

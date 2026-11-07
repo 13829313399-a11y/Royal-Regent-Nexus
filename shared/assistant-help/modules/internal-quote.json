@@ -187,9 +187,9 @@
         "sha256": "91a9f0cc7fe9a4567b23f40b78eaf724cddb6d02c710a05405b57ee93ed200ba"
       },
       {
-        "path": "backend/alembic/versions/20261107_0190_quote_paper_prices.py",
+        "path": "backend/alembic/versions/20261107_0193_quote_paper_prices.py",
         "symbol": "def upgrade",
-        "sha256": "3ca1d404ca40619f6ebbe79ce1763e210b281bf8ace1796bc6ef6494247dcc40"
+        "sha256": "5260cd18a9800ee75006cedd69d6e29ef54f115928469046a186f291ad2f5e3c"
       }
     ],
     "knowledge_version": "2026.11.07-quote-price-basis",

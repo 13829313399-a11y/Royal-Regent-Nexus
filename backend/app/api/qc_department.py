@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.db import get_db
 from app.services.auth import AuthContext, can, get_current_user
 from app.api.qc_inspection import _ensure_permission
-from app.services import qc_workflow, qc_schedule_downloads, qc_inspection_sheet, qc_cumulative, qc_inspection_summary
+from app.services import qc_workflow, qc_schedule_downloads, qc_inspection_sheet, qc_cumulative, qc_inspection_summary, qc_approved_statistics, qc_daily_report
 from starlette.concurrency import run_in_threadpool
 from urllib.parse import quote
 
@@ -29,6 +29,8 @@ COMPANIES = {
     "huadeng": "hy-huadeng", "huaxing": "hy-huaxing",
 }
 STATIC_FILES = {
+    "qc-daily-report.js", "qc-daily-report.css",
+    "qc-approved-statistics.js", "qc-approved-statistics.css",
     "index.html", "app.js", "style.css", "mobile.js", "mobile.css",
     "qc-backend.js", "report_export.js", "ai-ocr.js", "nexus-integration.js", "qc-schedule.js", "qc-workflow.js", "qc-workflow.css", "qc-photo-paste.js", "qc-inspection-audit.js", "qc-inspection-sheet.js", "qc-inspection-sheet.css", "qc-inspection-summary.js", "qc-inspection-summary.css",
 }
@@ -176,6 +178,31 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
                                  "Content-Length": str(len(content)), "Referrer-Policy": "no-referrer"})
     if asset_path == "api/schedule-source" and request.method == "GET":
         return JSONResponse(qc_workflow.sources(db, factory_id), headers=NO_CACHE)
+    if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
+        exporting = asset_path.endswith("/export")
+        keys = {"date", "revision"} if exporting else {"date"}
+        if "period" in request.query_params:
+            keys.add("period")
+        if set(request.query_params) != keys or any(len(request.query_params.getlist(key)) != 1 for key in keys):
+            raise HTTPException(422, "日报参数不正确")
+        if exporting:
+            _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
+        report = await run_in_threadpool(qc_daily_report.report, factory_id, request.query_params["date"], request.query_params.get("period", "daily"))
+        if not exporting:
+            return JSONResponse(report, headers=NO_CACHE)
+        if request.query_params["revision"] != report["revision"] or not report["total"]:
+            raise HTTPException(409, "日报记录已变化或为空，请重新读取后导出")
+        content = await run_in_threadpool(qc_daily_report.workbook, report)
+        label = {"daily": "每日", "weekly": "每周", "monthly": "每月"}[report["period"]]
+        name = quote(f"{label}验货情况统计表_{report['dateFrom']}_{report['dateTo']}.xlsx", safe="")
+        return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
+            "Content-Disposition": "attachment; filename=QC-daily.xlsx; filename*=UTF-8''" + name})
+    if asset_path in {"api/approved-statistics", "api/approved-statistics/report"} and request.method == "GET":
+        if any(len(request.query_params.getlist(key)) != 1 for key in request.query_params):
+            raise HTTPException(422, "统计筛选参数不能重复")
+        handler = qc_approved_statistics.report if asset_path.endswith('/report') else qc_approved_statistics.query
+        return JSONResponse(await run_in_threadpool(handler, factory_id,
+            dict(request.query_params)), headers=NO_CACHE)
     if asset_path.startswith("api/workflow/"):
         return await workflow_request(asset_path.removeprefix("api/workflow/"), request, db, user, factory_id)
     if asset_path.startswith("api/inspection-summary/"):

@@ -523,7 +523,7 @@ def ensure_internal_quote_paper_schema_ready() -> None:
         if "paper_prices_json" in columns:
             return
     raise RuntimeError(
-        "内部报价纸材目录尚未完成迁移 20261107_0190；请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+        "内部报价纸材目录尚未完成迁移 20261107_0193；请先备份数据库并执行 Alembic upgrade head，再启动应用。"
     )
 
 
@@ -906,6 +906,9 @@ def init_db() -> None:
         fabric_procurement,  # noqa: F401
         fabric_receiving,  # noqa: F401
         fabric_master,  # noqa: F401
+        engineering_bom,  # noqa: F401
+        material_plan,  # noqa: F401
+        material_purchase,  # noqa: F401
         material_handover,  # noqa: F401
         carton_stocktake,  # noqa: F401
         carton_positions,
@@ -996,8 +999,8 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            # Cutting and JP intake require explicit migrations.
-                            if not name.startswith(("cutting_ops_", "jp_intake_"))
+                            # Cutting, engineering and JP intake require explicit migrations.
+                            if not name.startswith(("cutting_ops_", "jp_intake_", "engineering_bom_", "material_plan_", "material_purchase_"))
                             and not name.startswith("online_document")
                             and (not name.startswith("carton_special_") or "auth_users" not in existing_tables)
                             and (name != "carton_price_reviews" or "auth_users" not in existing_tables)

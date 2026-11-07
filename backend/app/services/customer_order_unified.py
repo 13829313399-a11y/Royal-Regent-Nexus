@@ -36,7 +36,7 @@ from app.services.customer_order_manual import (
 )
 
 
-PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v3"
+PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v4"
 TARGET_TEMPLATE = "HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1"
 ITEM_SHEET = "ITEM表"
 ORDER_SHEET = "接单表"
@@ -170,6 +170,10 @@ def ensure_unified_schedule(
         raise CustomerOrderUnifiedError("客户排期超过 35MB 限制")
     workbook = _load_workbook(schedule_content)
     try:
+        if factory_id == 'huaxing' and customer_code == 'yinhui':
+            from .customer_order_yinhui_unified import validate
+            validate(workbook)
+            return
         item_names = huaxing.item_sheets(workbook, customer_code) if huaxing.enabled(factory_id, customer_code) else [ITEM_SHEET]
         missing = [name for name in (ORDER_SHEET, REVIEW_SHEET, *item_names) if name not in workbook.sheetnames]
         if missing:
@@ -300,7 +304,7 @@ def read_unified_history(
                 unit_price_hkd=price_by_key.get((_key(reference), _key(product)), ""),
                 extras={
                     field: _text(item_sheet.cell(row, column).value)
-                    for field, column in extra_columns.items()
+                    for field, column in {**extra_columns, **({"manual": 15} if huakang and customer_code == "360" else {})}.items()
                     if item_sheet.cell(row, column).data_type != "f"
                 },
             ))
@@ -395,6 +399,8 @@ def _enrich_row(
         "unit_price_hkd": "unit_price_hkd",
     }
     for target, source in inherited.items():
+        if row.get('_huakang_customer') == '360' and target in {'standard', 'packaging'}:
+            continue
         if (row.get('_regional_customer') == 'ubtech' or row.get('_zuru_customer') or row.get('_jakks_supplementary') or row.get('price_basis') == 'incomplete' or row.get('_huaxing_customer') == 'shushupapa') and target == 'unit_price_hkd':
             continue
         if not _text(row.get(target)):
@@ -760,6 +766,8 @@ def _parse_huaxing_rows(
         seen: set[tuple[str, ...]] = set()
         for file_name, content in po_files:
             parsed = yinhui_po_parser.parse_po(content, file_name)
+            if not parsed.get('rows'):
+                raise CustomerOrderUnifiedError(f'{file_name}：未识别到银辉 PO 明细，请核对原单；本批不会仅导出其他文件')
             warnings.extend(f"{file_name}：{message}" for message in parsed.get("warnings", []))
             for record in parsed.get("rows", []):
                 identity = tuple(_key(record.get(field)) for field in (
@@ -1245,6 +1253,10 @@ def create_unified_customer_preview(
         raise CustomerOrderUnifiedError("来单日期必须是 YYYY-MM-DD") from exc
 
     history = read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code)
+    shipping_map = []
+    if (factory_id, customer_code) == ('huakang-a', '360'):
+        from .customer_order_360_shipping_mapping import read_mapping_from_content
+        shipping_map = read_mapping_from_content(schedule_content)
     if customer_code == 'ubtech':
         history = [h for h in history if '优必选' in h.customer_name or 'UBTECH' in h.customer_name.upper()]
     customer_name = _customer_name(customer_code, factory_id)
@@ -1296,6 +1308,8 @@ def create_unified_customer_preview(
             huaxing.prepare_row(row, history, customer_code, huaxing_sheets, factory_id)
         if regional.enabled(factory_id, customer_code):
             regional.reconcile_product(row, history, factory_id, customer_code)
+        if factory_id == 'huakang-a' and customer_code == '360':
+            huakang_unified.enrich_360_requirements(row, history)
         _enrich_row(row, history, customer_name)
         if row.get('_zuru_customer'):
             huakang_unified.round_cartons(row)
@@ -1304,6 +1318,8 @@ def create_unified_customer_preview(
         if huakang_unified.enabled(factory_id, customer_code):
             row["target_template"] = huakang_unified.TARGET_TEMPLATE
             for field in ("barcode", "port", "printing_requirement", "country"):
+                if customer_code == '360':
+                    continue
                 if not _text(row.get(field)):
                     candidates = {item.extras[field] for item in history if _key(item.product_no) == _key(row.get("product_no")) and item.extras.get(field)}
                     if len(candidates) == 1:
@@ -1313,7 +1329,7 @@ def create_unified_customer_preview(
             if customer_code == '360':
                 huakang_unified.prepare_360_version(row, history)
                 from app.services.customer_order_360_shipping_item import prepare_shipping_item
-                prepare_shipping_item(row, history)
+                prepare_shipping_item(row, history, shipping_map)
         elif regional.enabled(factory_id, customer_code):
             regional.enrich(row, history, factory_id, customer_code)
         if customer_code == 'ubtech':
@@ -1363,6 +1379,12 @@ def create_unified_customer_preview(
         ]
         if factory_id == 'huaxing' and customer_code == 'shushupapa':
             warnings[0] = '新单只追加在各表顶部正单区，空间不足时在首个合计或分区标题前自动增行；各表关联实际 ITEM 行。'
+        if (factory_id, customer_code) == ('huadeng', 'casdon'):
+            warnings[0] = 'Casdon 新单按完整货号归入未走货区，接单表和正单评审表关联实际 ITEM 行；不同后缀不混组。'
+            warnings.append('ITEM金额关联唯一的接单表记录；美金按各摘要表P1现有汇率换算，单价不提前取两位。走货归档由业务手动确认，不按日期推断。')
+        if factory_id == 'huaxing' and customer_code == 'yinhui':
+            warnings[0] = '银辉三表按实际表头写入，兼容接单表没有订单类型、ITEM增加放版及抽版日期的排期；两项手填日期保留。'
+            warnings[1] = '新单在各表首个合计、取消或已走货边界前追加；数量、价格和日期关联实际列，源排期不会被覆盖。'
         if customer_code == 'edu':
             warnings[0] = 'EDU 新单按货号归组到绿色备料行上方，摘要关联实际 ITEM 行，同时更新 PO订单。'
             warnings[2] = 'EDU 按客户完整合同/PO＋产品查重，EDUHX 仅为内部编号；不同客户订单独立续编号，源排期不会被覆盖。'
@@ -1371,7 +1393,7 @@ def create_unified_customer_preview(
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
     preview = {
-        "preview_schema_version": PREVIEW_SCHEMA_VERSION,
+        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else ''),
         "customer_code": customer_code,
         "factory_id": factory_id,
         "po_file_name": file_names[0] if len(file_names) == 1 else f"{len(file_names)}个文件",
@@ -1478,7 +1500,9 @@ def _ensure_output_slots(workbook, count: int) -> list[int]:
 def _fit_generated_text(worksheet, row_number: int, linked_values: dict[int, Any] | None = None) -> None:
     """Expand only new rows when wrapped customer/product text needs more room."""
     height = worksheet.row_dimensions[row_number].height or 15
-    for cell in worksheet[row_number]:
+    for cell in tuple(worksheet._cells.values()):
+        if cell.row != row_number:
+            continue
         value = (linked_values or {}).get(cell.column, cell.value)
         if not isinstance(value, str) or value.startswith('=') or not cell.alignment.wrap_text:
             continue
@@ -1662,12 +1686,21 @@ def export_unified_customer_schedule(
                 row.setdefault('lineage', {})['customer_q'] = '业务人工补录计划验货日期'
     if factory_id == 'huakang-a' and customer_code == '360':
         from app.services.customer_order_360_shipping_item import prepare_shipping_item
+        from .customer_order_360_shipping_mapping import read_mapping_from_content
+        shipping_map = read_mapping_from_content(schedule_content)
         shipping_overrides = {item['row_id'] for item in manual_overrides or [] if item['field'] == 'shipping_item'}
+        corrected_requirements = {item['row_id'] for item in manual_overrides or []
+                                  if item['field'] in {'product_no', 'customer_name'}}
+        current_history = read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code)
         for row in preview['rows']:
+            if row['id'] in corrected_requirements:
+                huakang_unified.enrich_360_requirements(row, current_history, protected_fields={
+                    item['field'] for item in manual_overrides or [] if item['row_id'] == row['id']
+                })
             if row['id'] in shipping_overrides:
                 row.setdefault('lineage', {})['shipping_item'] = '业务人工补录出货货号；完整产品编号保持独立'
             elif _text(row.get('product_no')) != original_identities[row['id']][0]:
-                prepare_shipping_item(row, read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code))
+                prepare_shipping_item(row, current_history, shipping_map)
     if factory_id == 'huaxing' and customer_code == 'edu':
         from app.services.customer_order_edu import validate_controls
         workbook = _load_workbook(schedule_content)
@@ -1724,7 +1757,13 @@ def export_unified_customer_schedule(
                     ITEM_SHEET: len(rows), ORDER_SHEET: count, REVIEW_SHEET: count,
                 })
             else:
-                slots_by_sheet = huakang_unified.output_slots(workbook, len(rows))
+                if (factory_id, customer_code) == ('huadeng', 'casdon'):
+                    from app.services import customer_order_casdon as casdon
+                    money_report = casdon.prepare_money(workbook)
+                    preview['warnings'].extend(money_report['warnings'])
+                    slots_by_sheet = casdon.grouped_slots(workbook, rows)
+                else:
+                    slots_by_sheet = huakang_unified.output_slots(workbook, len(rows))
             summary_index = 0
             green_pairs = []
             for index, row in enumerate(rows):
@@ -1749,6 +1788,9 @@ def export_unified_customer_schedule(
                     if customer_code == 'ubtech':
                         from app.services.customer_order_ubtech import write_summary
                         write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])
+                if (factory_id, customer_code) == ('huadeng', 'casdon'):
+                    casdon.write_prices(workbook, row, row_number,
+                        slots_by_sheet[ORDER_SHEET][summary_index], slots_by_sheet[REVIEW_SHEET][summary_index])
                 if not recovered_rows[index]:
                     summary_index += 1
             for name, summary_row, item_row in green_pairs:

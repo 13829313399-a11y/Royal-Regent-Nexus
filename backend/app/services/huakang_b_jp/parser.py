@@ -290,7 +290,7 @@ def newest_reply_text(full_text):
 
 def extract_reply_info(reply_text, ref_date):
     """从最新回复文字中提取 DDD、S/D、包装、备注行、#货号 单行备注。"""
-    info = {'ddd': '', 'sd': None, 'pkg': '', 'global_notes': [], 'item_notes': {}}
+    info = {'ddd': '', 'sd': None, 'pkg': '', 'global_notes': [], 'item_notes': {}, 'item_packages': {}}
     m = re.search(r'DDD\s*[:/]?\s*(\d{1,2}/\d{1,2}(?:\s*>\s*\d{1,2}/\d{1,2})?)', reply_text, re.I)
     if m:
         info['ddd'] = 'DDD ' + m.group(1).replace(' ', '')
@@ -299,7 +299,10 @@ def extract_reply_info(reply_text, ref_date):
         d = parse_date_str(m.group(1), ref_date)
         if d:
             info['sd'] = d
-    m = re.search(r'\b(\d+L|EN)\b\s*pkg', reply_text, re.I)
+    # A package instruction naming one item must never become the default for
+    # every other item in a monthly enquiry.
+    global_text = '\n'.join(line for line in reply_text.split('\n') if not re.search(r'#\d{5}\b', line))
+    m = re.search(r'\b(\d+L|EN)\b\s*pkg', global_text, re.I)
     if m:
         info['pkg'] = m.group(1).upper()
     for line in reply_text.split('\n'):
@@ -312,6 +315,10 @@ def extract_reply_info(reply_text, ref_date):
         codes = re.findall(r'#(\d{5})\b', line)
         if codes:
             codes += [c for c in re.findall(r'\b(\d{5})\b', re.sub(r'#\d{5}\b', '', line))]
+            packages = [value.upper() for value in re.findall(r'\b(\d+L|EN)\b\s*pkg', line, re.I)]
+            if packages:
+                for code in dict.fromkeys(codes):
+                    info['item_packages'].setdefault(code, []).extend(packages)
             note = re.sub(r'#?\d{5}\b', '', line)
             note = re.sub(r'^请查收附件\s*', '', note)
             note = re.sub(r'谢谢[！!]*\s*$', '', note)
@@ -406,14 +413,35 @@ def clean_item_code(raw):
     return None, None
 
 
+def _vsk_table_columns(table):
+    """Recognize the explicit PO/Fty S/D/VSK/Qty monthly layout, not bare numbers."""
+    if len(table) < 2:
+        return None
+    header = [norm_header(value) for value in table[0]]
+    aliases = {'item': {'vsk', 'vsk no', 'vsk number'},
+               'po': {'po', 'po no', 'customer po'},
+               'sd': {'fty s d', 'fty sd', 'factory ship date'},
+               'qty': {'qty', 'qty pcs', 'quantity', 'quantity pcs'}}
+    columns = {}
+    for field, names in aliases.items():
+        matches = [index for index, value in enumerate(header) if value in names]
+        if len(matches) != 1:
+            return None
+        columns[field] = matches[0]
+    if not any(columns['item'] < len(row) and BABY_CODE_RE.fullmatch(row[columns['item']].strip())
+               for row in table[1:]):
+        return None
+    return columns
+
+
 def is_order_table(table):
-    """判断表格是不是订单明细表：某列数据含长货号，且表头有数量列。"""
+    """Recognize long-item enquiries or the explicit short-VSK monthly layout."""
     if len(table) < 2:
         return False
     header = table[0]
     joined = ' '.join(header)
     if not any(_has_long_code(c) for row in table[1:] for c in row):
-        return False
+        return _vsk_table_columns(table) is not None
     if find_col(header, ['qty']) is None and find_col(header, ['quantity']) is None \
             and find_col(header, ['order qty']) is None:
         return False
@@ -461,7 +489,8 @@ def _reply_without_order_tables(html_text):
             direct_tables = html_to_tables(direct_html)
             header = direct_tables[0][0] if direct_tables and direct_tables[0] else []
             qty_header = any(find_col(header, [label]) is not None for label in ('qty', 'quantity'))
-            if direct_item or (node['nested_item'] and qty_header):
+            direct_order = bool(direct_tables and _vsk_table_columns(direct_tables[0]))
+            if direct_item or direct_order or (node['nested_item'] and qty_header):
                 removed.append((node['start'], end))
             if self.stack:
                 parent = self.stack[-1]
@@ -718,11 +747,18 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
     orders = []
     table_count = len(candidates)
     if candidates:
-        table = candidates[0]
-        if len(candidates) > 1:
-            warnings.append(f'【{source}】检测到 {len(candidates)} 个订单表格（含邮件历史中的旧版本），'
-                            f'已取最新一个（{len(table) - 1} 行），请核对是否完整')
-        orders = _parse_headered_table(table, source, warnings, reply_info, ref_date)
+        # These are distinct product groups within the already-bounded current
+        # message. Do not discard groups two onward or import older quoted ones.
+        if len(candidates) > 1 and all(_vsk_table_columns(t) for t in candidates):
+            for table in candidates:
+                orders.extend(_parse_headered_table(table, source, warnings, reply_info, ref_date))
+            warnings.append(f'【{source}】已识别当前回复中的 {len(candidates)} 个 VSK 问单表格；仅取明细数量，不将 Total 合计列当作订单')
+        else:
+            table = candidates[0]
+            if len(candidates) > 1:
+                warnings.append(f'【{source}】检测到 {len(candidates)} 个订单表格（含邮件历史中的旧版本），'
+                                f'已取最新一个（{len(table) - 1} 行），请核对是否完整')
+            orders = _parse_headered_table(table, source, warnings, reply_info, ref_date)
     else:
         # 无标题行表格（JP/WMUS 客直接粘 Excel 区域进正文）
         hless = _headerless_order_tables(html_text, quantity_columns, allow_quoted=reuse_quoted)
@@ -743,15 +779,26 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
     meta_country = pick_country(subject)
     pkg_warned = set()
     for o in orders:
+        item_packages = set(reply_info['item_packages'].get(o.get('baby_item'), []))
+        reply_package = reply_info['pkg']
+        if len(item_packages) == 1:
+            reply_package = next(iter(item_packages))
+        elif len(item_packages) > 1:
+            reply_package = ''
+            o['reply_package_conflict'] = True
+            warnings.append(f'【{source}】货号 {o["baby_item"]} 的回复包装要求冲突（{" / ".join(sorted(item_packages))}），'
+                            '不推断各包装对应关系，也不使用历史包装补空，请人工核对')
         # This path was enabled by an explicit current-reply update, not a
         # current order table. Keep the quoted originals as audit evidence, but
         # never let them silently override the update that enabled reuse.
         if reused_quoted_table:
             o['quoted_original'] = {key: o.get(key, '') for key in ('pkg', 'cutoff_date', 'ship_date')}
-            if reply_info['pkg']:
-                if o.get('pkg') and o['pkg'].upper() != reply_info['pkg'].upper():
-                    warnings.append(f'【{source}】引用表包装 {o["pkg"]} 与最新回复 {reply_info["pkg"]} 不同，已按最新回复更新，请核对')
-                o['pkg'] = reply_info['pkg']
+            if o.get('reply_package_conflict'):
+                o['pkg'] = ''
+            elif reply_package:
+                if o.get('pkg') and o['pkg'].upper() != reply_package.upper():
+                    warnings.append(f'【{source}】引用表包装 {o["pkg"]} 与最新回复 {reply_package} 不同，已按最新回复更新，请核对')
+                o['pkg'] = reply_package
             if reply_info['sd']:
                 sd = fmt_date(reply_info['sd'])
                 if o.get('cutoff_date') and o['cutoff_date'] != sd:
@@ -765,7 +812,7 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
         if not o['country']:
             o['country'] = meta_country
         tbl_pkg = str(o.get('pkg') or '').strip()
-        reply_pkg = str(reply_info['pkg'] or '').strip()
+        reply_pkg = str(reply_package or '').strip()
         if not tbl_pkg:
             o['pkg'] = reply_pkg
         elif reply_pkg and tbl_pkg.upper() != reply_pkg.upper() and tbl_pkg.upper() not in pkg_warned:
@@ -818,12 +865,19 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
         n = sum(1 for r in table[1:] if i < len(r) and _has_long_code(r[i]))
         if n > best:
             best, col_item = n, i
+    vsk_columns = _vsk_table_columns(table)
+    if vsk_columns:
+        col_item = vsk_columns['item']
     col_baby = find_col(header, ['baby item'])
+    if vsk_columns:
+        col_baby = vsk_columns['item']
     col_qty = find_col(header, ['qty'])
     if col_qty is None:
         col_qty = find_col(header, ['quantity'])
     if col_qty is None:
         col_qty = find_col(header, ['order qty'])
+    if vsk_columns:
+        col_qty = vsk_columns['qty']
     col_desc = find_col(header, ['description'])
     col_pkg = find_col(header, ['pkg'])
     if col_pkg is None:
@@ -842,6 +896,8 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
     col_sd = find_col(header, ['fty sd'])
     if col_sd is None:
         col_sd = find_col(header, ['factory ship date'])
+    if vsk_columns:
+        col_sd = vsk_columns['sd']
     col_promised = find_col(header, ['promised crd'])
     if col_promised is not None:
         col_sd = col_promised
@@ -858,11 +914,13 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
     last_po, last_cust = '', ''
     for row in table[1:]:
         raw_item = cell(row, col_item)
+        if vsk_columns and not raw_item and any(re.fullmatch(r'(?i)(?:grand\s+)?total(?:\s*\(pcs\))?', str(v).strip()) for v in row):
+            continue
         baby, long_code = clean_item_code(raw_item)
         if not baby:
             # 长货号缺失时，找 Baby Item no 列或行内独立的 5 位货号
             cand = cell(row, col_baby)
-            if not BABY_CODE_RE.match(cand or ''):
+            if not BABY_CODE_RE.match(cand or '') and not vsk_columns:
                 cand = ''
                 for i, v in enumerate(row):
                     if i in (col_qty, col_item):

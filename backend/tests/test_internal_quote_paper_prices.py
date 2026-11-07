@@ -147,7 +147,7 @@ def test_paper_migration_preserves_existing_data_and_prevents_loss():
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import create_engine, inspect, text
-    path = Path(__file__).parents[1] / "alembic/versions/20261107_0190_quote_paper_prices.py"
+    path = Path(__file__).parents[1] / "alembic/versions/20261107_0193_quote_paper_prices.py"
     spec = importlib.util.spec_from_file_location("paper_migration", path)
     migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
     engine = create_engine("sqlite://")
@@ -211,7 +211,7 @@ def test_paper_startup_guard_only_reads_and_requires_migration(monkeypatch):
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE internal_quote_pricing_baselines (id TEXT PRIMARY KEY)"))
         connection.execute(text("INSERT INTO internal_quote_pricing_baselines VALUES ('original')"))
-    with pytest.raises(RuntimeError, match="20261107_0190"):
+    with pytest.raises(RuntimeError, match="20261107_0193"):
         db.ensure_internal_quote_paper_schema_ready()
     with engine.begin() as connection:
         assert connection.execute(text("SELECT * FROM internal_quote_pricing_baselines")).fetchall() == [("original",)]

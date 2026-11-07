@@ -167,6 +167,14 @@ def confirmed_date(item):
     return value
 
 
+def report_date(item, final):
+    """Use the captured plan for older approvals that lack a frozen date."""
+    if final or 'inspectionDateSource' in item:
+        return final, item.get('inspectionDateSource') or ''
+    planned = workflow.source_date(item.get('dateFrom'))
+    return planned, 'schedule' if planned else ''
+
+
 def review_item(item):
     # Absence of the marker means a historical confirmation: retain its old semantics.
     # In particular, recovery must not call the resolver or backfill historical blanks.
@@ -275,7 +283,7 @@ def filters(params):
     if set(params) - allowed:
         raise HTTPException(422, '汇总筛选参数无效')
     out = {k: text(params.get(k)).strip() for k in allowed}
-    if out['dateBasis'] not in ('','actual','schedule'):
+    if out['dateBasis'] not in ('','actual','schedule','report'):
         raise HTTPException(422, '汇总日期口径无效')
     if len(out['search']) > 200 or out['type'] not in ('', '客验', '行验', '待确认') or out['status'] not in ('', *STATUS):
         raise HTTPException(422, '汇总筛选参数无效')
@@ -292,16 +300,16 @@ def filters(params):
     return out
 
 
-def where(factory, f):
+def where(factory, f, date_column='inspection_date'):
     sql, args = ['factory=?', 'active=1'], [factory]
     if f['year']:
         start = date(int(f['year']), int(f['month'] or 1), int(f['day'] or 1))
         if f['day']:
-            sql.append('inspection_date=?'); args.append(start.isoformat())
+            sql.append(f'{date_column}=?'); args.append(start.isoformat())
         else:
             month = int(f['month'] or 12)
             end = date(int(f['year']), month, calendar.monthrange(int(f['year']), month)[1])
-            sql.append('inspection_date BETWEEN ? AND ?'); args.extend((start.isoformat(), end.isoformat()))
+            sql.append(f'{date_column} BETWEEN ? AND ?'); args.extend((start.isoformat(), end.isoformat()))
     for key, column in [('type', 'inspection_type'), ('status', 'status')]:
         if f[key]:
             sql.append(column + '=?'); args.append(f[key])
@@ -311,7 +319,10 @@ def where(factory, f):
     return ' AND '.join(sql), args
 
 
-ORDER = "inspection_date='' ASC,inspection_date ASC,stock_no COLLATE NOCASE ASC,id ASC"
+def summary_report_date(item, final):
+    if item.get('status') == 'approved' and item.get('sourceKind') == 'review':
+        return report_date(item, final)[0]
+    return final
 
 
 def with_schedule_dates(factory, items):
@@ -362,18 +373,29 @@ def listing(factory, params, *, all_rows=False):
     f = filters(params)
     reconcile(factory)
     if f['dateBasis']=='schedule':return schedule_listing(factory,f,all_rows=all_rows)
-    clause, args = where(factory, f)
+    using_report_date = f['dateBasis'] == 'report'
+    date_column = ("(CASE WHEN inspection_date='' AND status='approved' "
+                   "THEN report_date(payload) ELSE inspection_date END)") if using_report_date else 'inspection_date'
+    clause, args = where(factory, f, date_column)
     with store() as conn:
+        if using_report_date:
+            conn.create_function('report_date', 1, lambda payload: summary_report_date(json.loads(payload), ''),
+                                 deterministic=True)
         total = conn.execute('SELECT count(*) FROM records WHERE ' + clause, args).fetchone()[0]
         page_size = int(f['pageSize'] or 30)
         page = min(int(f['page'] or 1), max(1, (total + page_size - 1) // page_size))
-        query = 'SELECT payload FROM records WHERE ' + clause + ' ORDER BY ' + ORDER
+        query = (f'SELECT payload, {date_column} AS display_date FROM records WHERE {clause} '
+                 "ORDER BY display_date='' ASC,display_date ASC,stock_no COLLATE NOCASE ASC,id ASC")
         rows = conn.execute(query if all_rows else query + ' LIMIT ? OFFSET ?',
                             args if all_rows else [*args, page_size, (page - 1) * page_size]).fetchall()
-        years = [r[0] for r in conn.execute("SELECT DISTINCT substr(inspection_date,1,4) FROM records WHERE factory=? AND active=1 AND inspection_date<>'' ORDER BY 1", (factory,))]
+        years = [r[0] for r in conn.execute(f"SELECT DISTINCT substr({date_column},1,4) FROM records WHERE factory=? AND active=1 AND {date_column}<>'' ORDER BY 1", (factory,))]
         counts = {STATUS[r[0]]: r[1] for r in conn.execute('SELECT status,count(*) FROM records WHERE factory=? AND active=1 GROUP BY status', (factory,))}
-        unknown = conn.execute("SELECT count(*) FROM records WHERE factory=? AND active=1 AND inspection_date=''", (factory,)).fetchone()[0]
-    return {'items': [json.loads(r['payload']) for r in rows], 'total': total, 'page': page,
+        unknown = conn.execute(f"SELECT count(*) FROM records WHERE factory=? AND active=1 AND {date_column}=''", (factory,)).fetchone()[0]
+    items = [json.loads(r['payload']) for r in rows]
+    if using_report_date:
+        for item, row in zip(items, rows):
+            item['reportDate'] = row['display_date']
+    return {'items': items, 'total': total, 'page': page,
             'pageSize': page_size, 'years': years, 'counts': counts, 'unknownDates': unknown,
             'timezone': 'Asia/Shanghai', 'filters': f}
 
@@ -398,6 +420,7 @@ def detail(factory, identity):
                     item['photos']=item.get('photos') or detail['photos']
                 else:
                     item['photos']=[]
+        item['reportDate'] = summary_report_date(item, item.get('inspectionDate', ''))
         return with_schedule_dates(factory,[item])[0]
 
 
@@ -624,7 +647,12 @@ def export_excel(factory, params):
     ws.freeze_panes = 'D2'
     ws.auto_filter.ref = ws.dimensions
     context = wb.create_sheet('筛选与来源说明')
-    context.append(['口径', ('筛选按关联排期日期；日期列使用已保存的最终验货日期' if params.get('dateBasis')=='schedule' else '筛选、排序和日期列统一使用已保存的最终验货日期，Asia/Shanghai')+'；新审核确认采用QC填写日期，未填写时采用计划开始日期；历史确认保留原值，缺失日期不使用当天补位'])
+    date_basis = {
+        'schedule': '筛选按关联排期日期；日期列使用已保存的最终验货日期',
+        'report': '筛选和排序与页面一致，旧审核缺少最终日期时使用原排期开始日；日期列保留已保存的最终验货日期',
+    }
+    context.append(['口径', date_basis.get(params.get('dateBasis'), '筛选、排序和日期列统一使用已保存的最终验货日期，Asia/Shanghai')
+                    + '；新审核确认采用QC填写日期，未填写时采用计划开始日期；历史确认保留原值，缺失日期不使用当天补位'])
     context.append(['匹配记录数', result['total']])
     context.append(['筛选', dump(result['filters'])])
     context.append(['状态', '历史待核实不代表审核通过；库号缺失留空，与货号分列。'])
