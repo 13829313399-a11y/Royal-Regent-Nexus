@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InternalQuotePriceBasis from './InternalQuotePriceBasis.vue'
 import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
 import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -1167,6 +1168,7 @@ onBeforeUnmount(() => {
       <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
+    <InternalQuotePriceBasis v-if="loadedQuote" :key="quote.id" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges()" :read-only="isReadOnly" />
     <div v-if="pendingAssistantRemark" class="quote-assistant-prefill" role="status"><p>有一条曜灵备注建议待你核对。{{ canEditHeader ? '打开原表单后可明确追加到备注；尚未保存。' : '当前原报价不可修改资料，建议不会写入。' }}</p><button type="button" :disabled="remarkPrefillBusy || !canEditHeader || headerDialogBusy || headerDialogOpen" @click="openAssistantRemark">{{ remarkPrefillBusy ? '正在核对来源与原版本…' : '打开原表单核对备注' }}</button><button type="button" @click="clearQuotePrefill">丢弃建议</button></div>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
       <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部和装配部固定参与；工程部及其他部门按产品需要选择。勾选表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>

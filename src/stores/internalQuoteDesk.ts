@@ -1579,10 +1579,12 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       quoteId: string,
       revision: number,
       materialPrices: Array<{ material: string; grade: string; price_hkd_lb: string }>,
+      paperPrices?: import('@/lib/internalQuotePaper').QuotePaperPrice[],
     ) {
       return this.executeMutation(quoteId, () => internalQuoteApi.updateReferenceMaterials(quoteId, {
         revision,
         material_prices: materialPrices,
+        ...(paperPrices === undefined ? {} : { paper_prices: paperPrices }),
       }))
     },
     async performFileOperation<T>(operation: () => Promise<T>): Promise<T> {

@@ -188,6 +188,7 @@ describe('InternalQuoteBaselineDialog', () => {
     expect(wrapper.emitted('save')).toEqual([[
       {
         revision: 1,
+        paper_prices: [],
         workshop_name: '华兴',
         material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '9' }],
         machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '950' }],
@@ -290,6 +291,7 @@ describe('InternalQuoteBaselineDialog', () => {
     expect(wrapper.emitted('save')).toEqual([[
       {
         revision: 5,
+        paper_prices: [],
         workshop_name: '华兴',
         material_prices: [
           { material: 'TPR', grade: '透明橡胶料', price_hkd_lb: '17.00' },

@@ -5453,12 +5453,14 @@ def update_quote_reference_materials(
         f"{row.material}|{row.grade}": row.price_hkd_lb
         for row in payload.material_prices
     }
-    if old_material_prices == normalized_material_prices:
+    paper_prices = snapshot.get("paper_prices", []) if payload.paper_prices is None else [row.model_dump() for row in payload.paper_prices]
+    if old_material_prices == normalized_material_prices and paper_prices == snapshot.get("paper_prices", []):
         return quote_to_out(db, quote)
 
     snapshot["material_prices"] = normalized_material_prices
+    snapshot["paper_prices"] = paper_prices
     reason = (
-        f"本报价专用料价已更新："
+        f"本报价专用料价及纸材目录已更新："
         f"{len(old_material_prices) if isinstance(old_material_prices, dict) else 0} 项→"
         f"{len(normalized_material_prices)} 项"
     )
@@ -5470,9 +5472,9 @@ def update_quote_reference_materials(
         snapshot=snapshot,
         reason=reason,
         audit_action="reference_materials_update",
-        change_description="本报价专用料价已调整",
+        change_description="本报价专用料价及纸材目录已调整",
         audit_detail=(
-            f"material_count={len(normalized_material_prices)};"
+            f"material_count={len(normalized_material_prices)};paper_count={len(paper_prices)};"
             f"previous_reference={current_reference.id}"
         ),
         request=request,

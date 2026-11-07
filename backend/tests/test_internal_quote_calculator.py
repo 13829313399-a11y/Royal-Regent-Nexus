@@ -1053,6 +1053,8 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert sales["line_breakdown"][1] == {
         "source_path": ["cartons", 0],
         "original_carton_price_hkd": "0.9350",
+        "paper_material": "沿用原系数",
+        "flat_paper_details": [{"name": "主平卡", "paper_material": "沿用原系数", "paper_price_factor": "2.7500"}],
         "kind": "carton",
         "owner": "sales",
         "item": "主纸箱",

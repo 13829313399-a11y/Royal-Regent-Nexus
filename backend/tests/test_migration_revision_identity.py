@@ -19,7 +19,8 @@ def test_unique_revisions_and_jp_follows_both_cutting_and_carton_branches():
     config = Config(str(backend / 'alembic.ini'))
     config.set_main_option('script_location', str(backend / 'alembic'))
     graph = ScriptDirectory.from_config(config)
-    assert graph.get_heads() == ['20261102_0189']
+    assert graph.get_heads() == ['20261107_0190']
+    assert graph.get_revision('20261107_0190').down_revision == '20261102_0189'
     assert graph.get_revision('20261102_0189').down_revision == '20261102_0188'
     assert graph.get_revision('20261102_0188').down_revision == '20261030_0187'
     assert graph.get_revision('20261030_0187').down_revision == '20261030_0186'

@@ -18,7 +18,7 @@ from app.services.internal_quote import (
     _get_quote, _json_object, _rr2_cost_summary, ensure_quote_permission,
     ensure_section_permission, preview_quote_costs, quote_write, save_whole_product_sections,
     _can_project_molding_read, _project_molding_parts, _molding_projection_warning,
-    molding_projection_pending, _authoritative_factory_quote,
+    molding_projection_pending, _authoritative_factory_quote, _pricing_completeness,
 )
 from app.services.internal_quote_calculator import canonical_json
 from app.services.internal_quote_artifacts import _can_access_attachment_department
@@ -250,8 +250,9 @@ def _render(db, loaded, preview=None, drafts=(), *, user):
             field.pop("path")
             field.pop("owner_path")
             field.pop("note_key")
-    warnings = [{"message": f"{s.department_name}资料尚未完成或需要重新计算，当前合计不完整。"}
-                for s in sections if s.is_required and (s.calculation_status != "valid" or s.dependency_status != "current")]
+    incomplete = preview.incomplete_sections if preview is not None else _pricing_completeness(quote, sections)
+    warnings = [{"message": f"{item['section_name']}：{item['reason']}，当前合计不完整。"}
+                for item in incomplete]
     warnings.extend(warning for section in sections if section.is_required and section.department == "sewing"
                     for warning in _json_object(section.calculation_json).get("warnings", [])
                     if warning.get("code") == "sewing_quoted_price_pending")
