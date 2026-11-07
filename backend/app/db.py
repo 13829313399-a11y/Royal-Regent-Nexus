@@ -513,6 +513,20 @@ def ensure_internal_quote_baseline_freight_schema_ready() -> None:
     )
 
 
+def ensure_internal_quote_paper_schema_ready() -> None:
+    """Never let create_all silently bypass the additive paper-price migration."""
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if INTERNAL_QUOTE_BASELINE_TABLE not in inspector.get_table_names():
+            return
+        columns = {column["name"] for column in inspector.get_columns(INTERNAL_QUOTE_BASELINE_TABLE)}
+        if "paper_prices_json" in columns:
+            return
+    raise RuntimeError(
+        "内部报价纸材目录尚未完成迁移 20261107_0193；请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_three_d_printing_schema_ready() -> None:
     """Reject partial/old schemas before create_all can disguise a missed migration."""
     with engine.connect() as connection:
@@ -938,6 +952,7 @@ def init_db() -> None:
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
+    ensure_internal_quote_paper_schema_ready()
     ensure_three_d_printing_schema_ready()
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()

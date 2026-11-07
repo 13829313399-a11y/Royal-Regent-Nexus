@@ -368,12 +368,39 @@ class InternalQuoteFreightBaselineRow(BaseModel):
         return _nonnegative_decimal_text(value, label)
 
 
+class InternalQuotePaperPriceRow(BaseModel):
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    name: str = Field(min_length=1, max_length=128)
+    price_factor_hkd: str = Field(min_length=1, max_length=32)
+    remark: str = Field(default="", max_length=500)
+
+    @field_validator("name", "remark")
+    @classmethod
+    def clean_text(cls, value):
+        return value.strip()
+
+    @field_validator("price_factor_hkd")
+    @classmethod
+    def validate_price(cls, value):
+        return _positive_decimal_text(value, "纸材系数 HKD")
+
+
+def _validate_paper_rows(rows):
+    if rows is None:
+        return
+    keys = [row.key for row in rows]
+    names = [row.name.casefold() for row in rows]
+    if any(not name for name in names) or len(set(keys)) != len(keys) or len(set(names)) != len(names):
+        raise ValueError("纸材名称不能为空，名称和标识不能重复")
+
+
 class InternalQuotePricingBaselineUpdateRequest(BaseModel):
     revision: int = Field(ge=0)
     workshop_name: str = Field(default="华兴", min_length=1, max_length=128)
     material_prices: list[InternalQuoteMaterialBaselineRow] = Field(min_length=1, max_length=200)
     machine_prices: list[InternalQuoteMachineBaselineRow] = Field(min_length=1, max_length=100)
     freight_routes: list[InternalQuoteFreightBaselineRow] | None = Field(default=None, min_length=1, max_length=50)
+    paper_prices: list[InternalQuotePaperPriceRow] | None = Field(default=None, max_length=100)
 
     @field_validator("workshop_name")
     @classmethod
@@ -382,6 +409,7 @@ class InternalQuotePricingBaselineUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_unique_rows(self):
+        _validate_paper_rows(self.paper_prices)
         material_keys = [
             (row.material.casefold(), row.grade.casefold()) for row in self.material_prices
         ]
@@ -412,6 +440,7 @@ class InternalQuotePricingBaselineOut(BaseModel):
     material_prices: list[InternalQuoteMaterialBaselineRow]
     machine_prices: list[InternalQuoteMachineBaselineRow]
     freight_routes: list[InternalQuoteFreightBaselineRow]
+    paper_prices: list[InternalQuotePaperPriceRow] = Field(default_factory=list)
     updated_by: str
     updated_by_name: str
     updated_at: str
@@ -716,9 +745,11 @@ class InternalQuoteReferenceFxUpdateRequest(BaseModel):
 class InternalQuoteReferenceMaterialsUpdateRequest(BaseModel):
     revision: int = Field(ge=1)
     material_prices: list[InternalQuoteMaterialBaselineRow] = Field(default_factory=list, max_length=200)
+    paper_prices: list[InternalQuotePaperPriceRow] | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def validate_unique_rows(self):
+        _validate_paper_rows(self.paper_prices)
         material_keys = [
             (row.material.casefold(), row.grade.casefold()) for row in self.material_prices
         ]

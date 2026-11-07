@@ -157,6 +157,17 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(modelValue.injection_lines[0].machine_code).toBe('18A')
   })
 
+  it('matches C-PP only to the transparent PP family and preserves production inputs', async () => {
+    const modelValue = moldingModel({ material: 'C-PP', grade: '', net_weight_g: 75, sets: 2, target_output: 14142.8571, quantity: 3 })
+    const wrapper = mount(InternalQuoteSectionForm, { props: { code: 'molding', modelValue, referenceSnapshot } })
+    const gradeSelect = wrapper.findAll('.moldingInjectionTable select')[1]!
+    expect(gradeSelect.text()).toContain('5090T')
+    expect(gradeSelect.text()).not.toContain('JM350/K8009')
+    await gradeSelect.setValue(JSON.stringify(['透明PP', '5090T']))
+    expect(modelValue.injection_lines[0]).toMatchObject({ material: '透明PP', grade: '5090T', sets: 2, target_output: 14142.8571, quantity: 3, net_weight_g: 75 })
+    wrapper.unmount()
+  })
+
   it('offers the explicit PP alias grades and recalculates as soon as a concrete grade is selected', async () => {
     const modelValue = moldingModel({ material: 'PP', grade: '', net_weight_g: 135, machine_code: '18', sets: 1, target_output: 2800 })
     const wrapper = mount(InternalQuoteSectionForm, {
