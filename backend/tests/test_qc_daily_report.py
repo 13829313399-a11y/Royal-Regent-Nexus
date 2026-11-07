@@ -74,6 +74,18 @@ def test_report_and_template_download(monkeypatch, tmp_path):
         assert client.get(endpoint, params={'date': '2026-11-06'}).json()['total'] == 0
         assert client.get(endpoint, params={'date': '2026-11-99'}).status_code == 422
         assert client.get(endpoint, params={'date': DAY, 'company': 'hy-huadeng'}).status_code == 403
+        for period, start, end in [('weekly','2026-11-02','2026-11-08'), ('monthly','2026-11-01','2026-11-30')]:
+            params = {'date': DAY, 'period': period}
+            scoped = client.get(endpoint, params=params)
+            assert scoped.status_code == 200, scoped.text
+            scoped = scoped.json()
+            assert (scoped['dateFrom'], scoped['dateTo'], scoped['total']) == (start, end, 6)
+            download = client.get(endpoint+'/export', params={**params,'revision':scoped['revision']})
+            assert download.status_code == 200, download.text
+            assert load_workbook(BytesIO(download.content)).active['D9'].value == scoped['rows'][-1]['values'][3]
+            assert client.get(endpoint+'/export', params={**params,'revision':report['revision']}).status_code == 409
+        assert client.get(endpoint, params={'date': DAY, 'period': 'yearly'}).status_code == 422
+        assert client.get(endpoint, params=[('date',DAY),('period','weekly'),('period','monthly')]).status_code == 422
         export_url = endpoint + '/export'
         assert client.get(export_url, params={'date': DAY, 'revision': 'stale'}).status_code == 409
         params = {'date': DAY, 'revision': report['revision']}
