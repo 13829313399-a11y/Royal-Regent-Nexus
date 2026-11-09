@@ -42,6 +42,7 @@ const kindsFor=(t:ReportTask|undefined,mode:ProductionInput['mode'])=>Object.ent
   can(reportPermission(kind as ReportKind)) && (kind!=='daily'||!t?.historical) && (kind!=='match'||mode==='parts') && (!['return','accept'].includes(kind)||(t?.settlement_context?.execution??t?.execution)==='outsourced'))
 const kindOptions=computed(()=>kindsFor(task.value,entry.value?.mode||'sets'))
 const summary=computed(()=>result.value?.summary)
+const statisticsDatePending=computed(()=>!!result.value && asOf.value!==result.value.as_of)
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T
 function discard() {
   if(saving.value||pending.value){error.value='请先核对原操作结果，再离开或切换。';return false}
@@ -85,7 +86,7 @@ function fail(e:unknown){error.value=errorMessage(e);if((e as {response?:{status
 async function load(nextPage=1,navigation=false,followLocation=false,apply=false){
   if(!navigation&&!discard())return
   if(apply){appliedQuery.value=query.value;nextPage=1}
-  const request=++generation;loading.value=true;error.value='';locationError.value='';selected.value=null;result.value=null;entry.value=null;rows.value=[]
+  const request=++generation;loading.value=true;error.value='';locationError.value='';selected.value=null;result.value=null;entry.value=null;rows.value=[];asOf.value=''
   let locatingOrder = false
   try{
     const rights=await cuttingApi.access();if(!alive||request!==generation)return
@@ -99,7 +100,7 @@ async function load(nextPage=1,navigation=false,followLocation=false,apply=false
         locationError.value = '关联订单尚未签收，请先在排期区核对。'
         return
       }
-      rows.value=[order];total.value=1;page.value=1;asOf.value=target.day??''
+      rows.value=[order];total.value=1;page.value=1
       await select(order);return
     }
     const response=await ordersApi.list(nextPage,appliedQuery.value);if(!alive||request!==generation)return
@@ -118,17 +119,21 @@ async function load(nextPage=1,navigation=false,followLocation=false,apply=false
 }
 async function select(row: CuttingOrder, refreshStatistics = false) {
   if(!discard())return
+  const target = location.value
+  const sameOrder = selected.value?.line_id === row.line_id
+  const targetDay = target?.lineId === row.line_id ? target.day : undefined
+  const day = refreshStatistics ? (asOf.value || undefined) : ((sameOrder ? result.value?.as_of : undefined) ?? targetDay)
+  if (!sameOrder) asOf.value = ''
   const request=++generation;selected.value=row;entry.value=null;error.value='';notice.value='';loading.value=true
   if (!refreshStatistics) result.value = null
-  const target = location.value
   try {
     const documentId = target?.lineId === row.line_id && target.kind === 'report' ? target.id : undefined
-    const response = await reportingApi.read(row.line_id, asOf.value || undefined, 1, undefined, documentId)
+    const response = await reportingApi.read(row.line_id, day, 1, undefined, documentId)
     if (!alive || request !== generation) return
     result.value = response
+    asOf.value = response.as_of
     needsLogin.value = false
     if (refreshStatistics) {
-      asOf.value = response.as_of
       await persistStatisticsDate(row.line_id, response.as_of)
     }
   } catch (e) {
@@ -163,7 +168,7 @@ function start(t:ReportTask){
   const options=kindsFor(t,mode)
   const kind=(options.find(([key])=>key===preferred)||options[0])?.[0] as ReportKind|undefined
   if(!kind)return
-  entry.value={task_id:t.task_id,plan_version:t.plan_version,day:asOf.value||today(),mode,kind,sets:0,rejected:0,scrap:0,parts:[],evidence:'',exception_reason:''}
+  entry.value={task_id:t.task_id,plan_version:t.plan_version,day:result.value?.as_of||today(),mode,kind,sets:0,rejected:0,scrap:0,parts:[],evidence:'',exception_reason:''}
   frozenParts.value=clone(t.parts);documentId.value=crypto.randomUUID();reason.value='';editingExisting.value=false;decision.value=null
   normalize();baseline.value=stateSnapshot()
 }
@@ -252,7 +257,8 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
         <template #action><Button as-child variant="outline"><RouterLink :to="planningDestination">返回该订单排期</RouterLink></Button></template>
         <div class="report-detail">
         <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
-        <form class="cutting-master-toolbar" @submit.prevent="select(selected!, true)"><label>统计截至日期<input v-model="asOf" type="date" :max="today()" :disabled="loading||saving||!!pending" /></label><Button variant="outline" :disabled="loading||saving||!!pending">刷新统计</Button></form>
+        <form class="cutting-master-toolbar" @submit.prevent="select(selected!, true)"><label>统计截至日期<input id="cutting-statistics-date" name="statistics_date" v-model="asOf" type="date" :max="today()" :disabled="loading||saving||!!pending" /></label><Button variant="outline" :disabled="loading||saving||!!pending">刷新统计</Button></form>
+        <p v-if="statisticsDatePending" role="status">日期尚未应用。当前统计及新填报的默认日期仍为 {{ result.as_of }}。</p>
         <dl class="report-totals"><div><dt>订单总套数（工程核定）</dt><dd>{{ summary.order_sets ?? '待核定' }}</dd></div><div><dt>合格完成套数</dt><dd>{{ summary.completed }}</dd></div><div><dt>实际交数／已交接</dt><dd>{{ summary.actual_delivery }}</dd></div><div><dt>未完成套数</dt><dd>{{ summary.remaining ?? '待核定' }}</dd></div><div><dt>累计计划差额（交接−计划）</dt><dd>{{ summary.plan_difference }}</dd></div><div><dt>当日完成／交接</dt><dd>{{ summary.day_completed }} / {{ summary.day_handed }}</dd></div></dl>
         <p>截至 {{ result.as_of }}；未完成＝订单总套数−合格完成，允许保留超产后的负数。待交接 {{ summary.completed_unhanded }} 套。</p>
         <details><summary>月度汇总（截至所选日期）</summary><div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>月份</th><th>计划</th><th>完成</th><th>交接</th></tr></thead><tbody><tr v-for="(m,month) in summary.months" :key="month"><td>{{ month }}</td><td>{{ m.planned }}</td><td>{{ m.completed }}</td><td>{{ m.handed }}</td></tr></tbody></table></div></details>
