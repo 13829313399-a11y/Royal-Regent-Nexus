@@ -107,7 +107,8 @@ export function createCustomerOrderLedgerApi(client: CustomerOrderLedgerHttpClie
       return (await client.post<{ items: CustomerOrderLedgerLine[]; created_count: number; existing_count: number; reconciled_count: number; warehouse_sync?: WarehouseScheduleSyncResult }>(
         `${base}/imports/${encodeURIComponent(customerCode)}`,
         payload,
-        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 240_000 },
+        // Leave room for the bounded worker to stop and return its final save/sync result.
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300_000 },
       )).data
     },
   }

@@ -1,0 +1,57 @@
+{
+  "caixing": {
+    "file": "caixing.xls",
+    "sha256": "5e566a2f0a4e7ef8b6449ee671c38727162743df60f14cbf7c29c30e088d13d4",
+    "sourceFile": "彩星6-10月验货汇总表.xls",
+    "sourceSha256": "bb4066a591725a2dfca2e225a4ab2f18412812bdca7bdd1bb4e705414e8fba50",
+    "sourceSheets": [
+      "10月 "
+    ],
+    "headerRow": 0,
+    "dataRow": 1
+  },
+  "all": {
+    "file": "all.xls",
+    "sha256": "74667cf580464f0944970de8cbb35c25fbe5a81b5373e0c7be4a90fb5be61382",
+    "sourceFile": "2026年每周验货情况统计表1.xls",
+    "sourceSha256": "ce31f8616114d3bd33301428e0c466d53224fb67c625cb4ff770f208b96cf8eb",
+    "sourceSheets": [
+      "10月"
+    ],
+    "headerRow": 1,
+    "dataRow": 2
+  },
+  "customers": {
+    "file": "customers.xls",
+    "sha256": "6e5650db595a9d96a899026774d9eeeef5bde1ebbd43acb679aadc6d6292becd",
+    "sourceFile": "2026年客户验货汇总.xls",
+    "sourceSha256": "dca0dbd438ec0fc769375abe4c36039825cc122499dd985120c1dd50a8b5c1b2",
+    "sourceSheets": [
+      "SEASONS",
+      "ZURU",
+      "彩星",
+      "EDU",
+      "360",
+      "MAXX",
+      "银辉",
+      "MMI",
+      "BUZZBEE",
+      "DICKIE",
+      "SHUSHUPAPA",
+      "客验货"
+    ],
+    "headerRow": 1,
+    "dataRow": 2
+  },
+  "issues": {
+    "file": "issues.xlsx",
+    "sha256": "d5c8380f20e90a26c1e9ffdf7a8570a1da3e98cd6669c6c8247209da992be5bf",
+    "sourceFile": "每周验货问题统计表.xlsx",
+    "sourceSha256": "5439860e34d716d699ed5ac59dbb53cd24b3a12747fe4dd07d89124267f1a8e3",
+    "sourceSheets": [
+      "10.1-10.30"
+    ],
+    "headerRow": 0,
+    "dataRow": 1
+  }
+}

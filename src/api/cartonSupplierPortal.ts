@@ -93,7 +93,7 @@ export type SupplierMarkUploadOrder = SupplierMarkAsset['orders'][number] & { do
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
   async memberships() { return (await http.get<{ factory_id: string; supplier_name: string }[]>(base + '/memberships')).data },
-  async workspace(factory_id: string, internal = false, responsibilityScope: 'OWN' | 'ALL' = 'OWN') { return (await http.get<PortalWorkspace>(base + (internal ? '/internal' : '') + '/workspace', { params: { factory_id, ...(internal ? { responsibility_scope: responsibilityScope } : {}) } })).data },
+  async workspace(factory_id: string, internal = false, responsibilityScope: 'OWN' | 'ALL' = 'OWN', signal?: AbortSignal) { return (await http.get<PortalWorkspace>(base + (internal ? '/internal' : '') + '/workspace', { params: { factory_id, ...(internal ? { responsibility_scope: responsibilityScope } : {}) }, signal })).data },
   async pendingShipments(factory_id: string, limit = 3) { return (await http.get<PendingSupplierShipments>(base + '/internal/shipments/pending', { params: { factory_id, limit } })).data },
   async documents(factory_id: string) { return (await http.get<SupplierDocument[]>(base + '/documents', { params: { factory_id } })).data },
   async activity(factory_id: string) { return (await http.get<SupplierActivity[]>(base + '/activity', { params: { factory_id } })).data },

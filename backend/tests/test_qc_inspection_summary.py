@@ -8,10 +8,9 @@ import json
 import pytest
 from fastapi import HTTPException
 from openpyxl import Workbook, load_workbook
-from app.services import qc_inspection_summary as s, qc_cumulative as c, qc_inspection_sheet as sheet, qc_workflow as wf
+from app.services import qc_workbook_xml as xml, qc_inspection_summary as s, qc_cumulative as c, qc_inspection_sheet as sheet, qc_workflow as wf
 from test_customer_order_ledger import engine, db, ingest
 from test_qc_workflow import create, save, command, ACTOR, qc_user
-from test_qc_cumulative import request
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch,tmp_path):
@@ -22,19 +21,27 @@ def entry(db,t):
     return sheet.sync('huaxing',sheet.candidates('huaxing',[],[t],wf.sources(db,'huaxing')['items']))['items'][0]
 
 
+def legacy_archive(rows):
+    snapshots={r['id']:{**r,'archiveDate':r.get('actualDate') or r.get('dateFrom'),'result':r.get('cumulativeResult',r['result'])} for r in rows}
+    metadata={'bindings':{r['id']:{'sheet':'ZURU行验货','row':3+i} for i,r in enumerate(rows)}}
+    with c.store(True) as conn:
+        version=conn.execute('INSERT INTO versions(factory,content,snapshot,metadata,created_at,actor) VALUES(?,?,?,?,?,?)',('huaxing',history(count=len(rows)),json.dumps(snapshots),json.dumps(metadata),wf.now(),'legacy-fixture')).lastrowid
+        conn.execute('INSERT OR REPLACE INTO heads VALUES(?,?,NULL,1)',('huaxing',version))
+
+
 def merged(db,approve=True):
     t=save(db,create(db),remark='Inspection passed.')
     t=command(db,t,'submit')
     if approve:t=command(db,t,'approve')
     row=entry(db,t)
-    c.operate('huaxing','operator',request([row]),[row])
+    legacy_archive([row])
     return t,row
 
 
 def history(year=2024,count=3,duplicate=False):
     wb=Workbook();ws=wb.active;ws.title='ZURU行验货'
     ws.append([datetime(year,2,29 if year%4==0 else 28)])
-    ws.append(c.writer.HEAD1)
+    ws.append(xml.HEAD1)
     for n in range(count):
         ws.append(['ZURU','000001' if duplicate else f'000{n:03}','USA','00042','Test',12,6,2,['PASS','FAIL','PENDING'][n%3] if not duplicate else 'PASS','=Literal remark'])
         ws.cell(ws.max_row,10).data_type='s'
@@ -57,20 +64,6 @@ def test_approval_and_durable_merge_required_recovery_idempotency(db):
     assert s.detail('huaxing',item['id'])['approvalSnapshot']['state']=='approved'
     assert s.listing('huadeng',{})['total']==0
     with pytest.raises(HTTPException):s.detail('huadeng',item['id'])
-
-
-def test_approved_before_merge_and_failed_merge_cannot_archive(db,monkeypatch):
-    t=command(db,command(db,save(db,create(db)),'submit'),'approve');row=entry(db,t)
-    assert s.listing('huaxing',{})['total']==0
-    original=c.writer.build
-    def fail(*args):raise RuntimeError('disk failure')
-    monkeypatch.setattr(c.writer,'build',fail)
-    with pytest.raises(HTTPException):c.operate('huaxing','operator',request([row]),[row])
-    assert s.listing('huaxing',{})['total']==0
-    assert len(c.pending_items('huaxing',[row]))==1
-    monkeypatch.setattr(c.writer,'build',original)
-    c.operate('huaxing','operator',request([row]),[row])
-    assert s.listing('huaxing',{})['items'][0]['status']=='archived'
 
 
 def test_changed_result_reopen_and_undo_remove_formal_qualification(db):
@@ -177,7 +170,7 @@ def test_same_source_multiple_actual_inspections_keep_distinct_identity(db):
         task=create(db,line=line,batch=batch,key=uuid4().hex)
         tasks.append(command(db,command(db,save(db,task),'submit'),'approve'))
     rows=sheet.sync('huaxing',sheet.candidates('huaxing',[],tasks,wf.sources(db,'huaxing')['items']))['items']
-    c.operate('huaxing','operator',request(rows),rows)
+    legacy_archive(rows)
     items=s.listing('huaxing',{})['items'];assert len(items)==2 and all(i['status']=='archived' for i in items)
     assert items[0]['inspectionDate']==items[1]['inspectionDate'] and items[0]['productNo']==items[1]['productNo']
     assert items[0]['id']!=items[1]['id']

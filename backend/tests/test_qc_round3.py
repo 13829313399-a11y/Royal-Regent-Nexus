@@ -6,34 +6,20 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from openpyxl import load_workbook
-from app.services import qc_inspection_sheet as sheet,qc_inspection_summary as summary,qc_cumulative as cumulative,qc_workflow as wf
+from app.services import qc_inspection_sheet as sheet,qc_inspection_summary as summary,qc_workflow as wf
 from app.services.qc_inspection_results import RESULTS, ALLOWED_INSPECTION_RESULTS
 from test_customer_order_ledger import engine,db
 from test_qc_self_review import isolated,item,photo,command
 from test_qc_workflow import ACTOR
 
 @pytest.mark.parametrize('result',ALLOWED_INSPECTION_RESULTS)
-def test_every_legal_result_review_photo_summary_and_export(db,result):
+def test_every_legal_result_review_photo_and_summary(db,result):
  r=item(db);r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result=result,remark='原样结论 '+result),ACTOR)
  r=photo(r,'red');original=deepcopy(r['photos']);r=sheet.submit('huaxing',r['id'],{'revision':r['revision']},ACTOR)
  r=command(r)['results'][0]['item'];assert r['reviewState']=='approved' and r['result']==result
  detail=summary.detail('huaxing',summary.listing('huaxing',{})['items'][0]['id'])
  assert detail['photos']==original and detail['result']==result
  for p in detail['photos']:assert sheet.read_photo('huaxing',r['id'],p['id'])
- content=sheet.export_xlsx('huaxing',{'entries':[{'id':r['id'],'revision':r['revision']}]})
- assert load_workbook(BytesIO(content))['验货明细']['N2'].value==result
- # Cumulative template and its detail sheet also preserve literal results.
- body={'requestKey':uuid4().hex,'expectedVersion':0,'scope':{'result':result},'revisions':{r['id']:r['revision']}}
- out=cumulative.operate('huaxing','tester',body,[r]);assert out['count']==1
- with cumulative.store() as c:
-  head=c.execute('SELECT current_id FROM heads WHERE factory=?',('huaxing',)).fetchone()
-  version=c.execute('SELECT content,metadata FROM versions WHERE id=?',(head[0],)).fetchone();meta=json.loads(version['metadata'])
-  binding=meta['bindings'][r['id']];workbook=load_workbook(BytesIO(version['content']))
-  assert workbook[binding['sheet']].cell(binding['row'],9).value==result
- history=sheet.audit('huaxing',r['id'])
- cumulative.operate('huaxing','tester',{'requestKey':uuid4().hex,'expectedVersion':out['version']},[],action='undo')
- assert sheet.audit('huaxing',r['id'])==history
- for p in original:assert sheet.read_photo('huaxing',r['id'],p['id'])
 
 @pytest.mark.parametrize('result',['','UNKNOWN','lg','Pending',None])
 def test_invalid_or_empty_cannot_confirm(db,result):

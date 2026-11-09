@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InternalQuotePriceBasis from './InternalQuotePriceBasis.vue'
 import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
 import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -31,7 +32,7 @@ import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type InternalQuote
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
+import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft, InternalQuoteReferenceFxDraft } from '@/types/internalQuoteDesk'
 
 const route = useRoute()
 const router = useRouter()
@@ -137,7 +138,7 @@ const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
-const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing', 'hair']
+const optionalSectionCodes: InternalQuoteSectionCode[] = ['engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'hair']
 const manageableOptionalSections = computed(() => quote.value.sections.filter((section) => optionalSectionCodes.includes(section.code)))
 const participationChanges = computed(() => {
   const initial = new Set(initialParticipation.value)
@@ -554,16 +555,19 @@ async function syncReference() {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '同步参考快照失败。' }
 }
 
-async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
+async function updateReferenceFx(payload: InternalQuoteReferenceFxDraft) {
   message.value = ''
   errorMessage.value = ''
   try {
-    await quoteStore.updateReferenceFx(
-      quote.value.id,
-      quote.value.headerRevision,
+    const savedQuoteId = quote.value.id
+    const receipt = await quoteStore.updateReferenceFx(
+      savedQuoteId,
+      payload.revision,
       payload.rmbHkd,
       payload.hkdUsd,
     )
+    if (quote.value.id !== savedQuoteId) return
+    pricingPanel.value?.acceptSavedFx?.(payload, receipt.header_revision)
     message.value = '汇率已保存为新的冻结参考快照；该报价已按新汇率重算。'
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保存汇率失败。'
@@ -885,7 +889,9 @@ async function saveWholeProductDraft() {
   }
   let drafts: ReturnType<InstanceType<typeof InternalQuoteSectionEditor>['getWholeQuoteDraft']>[]
   let pricingDraft: InternalQuoteSidebarPricingDraft | undefined
+  let referenceFx: InternalQuoteReferenceFxDraft | undefined
   try {
+    referenceFx = pricingPanel.value?.getFxDraft?.()
     pricingDraft = pricingPanel.value?.getPricingDraft?.()
     if (pricingDraft && !savableSections.some((section) => section.code === 'sales')) {
       throw new Error('业务部分段当前不可保存，请先保存或恢复侧栏报价设置。')
@@ -898,7 +904,7 @@ async function saveWholeProductDraft() {
         const baseline = pricingPanel.value?.getPricingBaseline?.()
         if (baseline?.revision) {
           draft.revision = baseline.revision
-          draft.baselinePayload = cloneInternalQuotePayload('sales', baseline.payload)
+          draft.baselinePayload = cloneInternalQuotePayload('sales', baseline.payload, quote.value?.referenceSnapshot)
         }
       }
       return draft
@@ -910,13 +916,14 @@ async function saveWholeProductDraft() {
   wholeProductSaving.value = true
   try {
     const savedQuoteId = quote.value.id
-    const result = await quoteStore.saveWholeProductSections(savedQuoteId, drafts)
+    const result = await quoteStore.saveWholeProductSections(savedQuoteId, drafts, referenceFx)
     if (quote.value.id !== savedQuoteId) return
     for (const draft of drafts) {
       const saved = result.sections.find((section) => section.department === draft.sectionCode)
       if (saved) sectionEditors.value[draft.sectionCode]?.acceptSavedPayload(saved.payload, draft.payload, saved.revision, draft.localPayload)
     }
     if (pricingDraft) pricingPanel.value?.acceptSavedPricing?.(pricingDraft)
+    if (referenceFx && result.savedHeaderRevision) pricingPanel.value?.acceptSavedFx?.(referenceFx, result.savedHeaderRevision)
     savedReadinessQuoteId.value = savedQuoteId
     const blockers = outputProblems(result.quote)
     message.value = quoteStore.refreshWarningQuoteId === savedQuoteId && quoteStore.refreshWarning
@@ -1167,9 +1174,10 @@ onBeforeUnmount(() => {
       <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
+    <InternalQuotePriceBasis v-if="loadedQuote" :key="quote.id" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges()" :read-only="isReadOnly" />
     <div v-if="pendingAssistantRemark" class="quote-assistant-prefill" role="status"><p>有一条曜灵备注建议待你核对。{{ canEditHeader ? '打开原表单后可明确追加到备注；尚未保存。' : '当前原报价不可修改资料，建议不会写入。' }}</p><button type="button" :disabled="remarkPrefillBusy || !canEditHeader || headerDialogBusy || headerDialogOpen" @click="openAssistantRemark">{{ remarkPrefillBusy ? '正在核对来源与原版本…' : '打开原表单核对备注' }}</button><button type="button" @click="clearQuotePrefill">丢弃建议</button></div>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
-      <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部、工程部和装配部固定参与；勾选可选部门表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
+      <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部和装配部固定参与；工程部及其他部门按产品需要选择。勾选表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
       <div class="quote-participation-options">
         <label v-for="section in manageableOptionalSections" :key="section.code" :class="{ active: selectedParticipation.includes(section.code) }">
           <input v-model="selectedParticipation" type="checkbox" :value="section.code" @change="participationRemovalConfirmOpen = false">
@@ -1181,6 +1189,7 @@ onBeforeUnmount(() => {
       <div v-if="participationRemovalConfirmOpen" class="quote-participation-confirm" role="alert">
         <AlertTriangle />
         <span><strong>确认移除 {{ participationChanges.removals.map((section) => section.label).join('、') }}？</strong><small>这些部门当前填写内容和未保存修改将不再计入本报价；历史 revision 和审计记录仍会保留，以后仍可重新添加。</small></span>
+        <span v-if="participationChanges.removals.some(section => section.code === 'engineering')"><small>移除工程部后，仍关联工程模具的啤机明细需重新核对或解除联动，完成核价后再输出。</small></span>
         <button type="button" class="secondary" @click="participationRemovalConfirmOpen = false">返回选择</button>
         <button type="button" class="danger" :disabled="quoteStore.submitting" @click="saveParticipationChanges(true)">{{ quoteStore.submitting ? '保存中…' : '确认移除并保存' }}</button>
       </div>

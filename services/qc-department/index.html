@@ -73,7 +73,7 @@
 <!-- ───────────── SIDEBAR ───────────── -->
 <aside class="sidebar" id="sidebar">
   <nav class="sidebar-nav">
-    <div class="nav-group-label">主要功能</div>
+    <div class="nav-group-label">工作台</div>
     <a class="nav-item active" data-page="dashboard" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('dashboard')">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/></svg></span><span>质量仪表板</span>
     </a>
@@ -87,24 +87,12 @@
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="9" cy="7" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0m0-2 3 3 4-5"/></svg></span><span>审核中心</span><span class="nav-badge" id="reviewNavBadge" style="display:none"></span>
     </a>
     <a class="nav-item" data-page="inspection-summary" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('inspection-summary')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 8h1m3 0h6M7 12h1m3 0h6M7 16h1m3 0h6"/></svg></span><span>验货汇总</span></a>
-    <a class="nav-item" data-page="analysis" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('analysis')">
-      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="12" width="4" height="9" rx="1"/><rect x="10" y="7" width="4" height="14" rx="1"/><rect x="17" y="3" width="4" height="18" rx="1"/></svg></span><span>统计分析</span>
-    </a>
     <a class="nav-item" data-page="suppliers" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('suppliers')">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="9" cy="7" r="3"/><path d="M3 21v-4a6 6 0 0 1 12 0v4m2-17a3 3 0 0 1 0 6m2 4a5 5 0 0 1 2 4v3"/></svg></span><span>供应商&客户管理</span>
     </a>
-    <div class="nav-group-label">报告中心</div>
-    <a class="nav-item" data-page="daily" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('daily')">
-      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M5 3h10l4 4v14H5Z"/><path d="M14 3v5h5M8 12h8m-8 4h6"/></svg></span><span>品质日报</span>
-    </a>
-    <a class="nav-item" data-page="weekly" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('weekly')">
-      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M5 3h10l4 4v14H5Z"/><path d="M14 3v5h5M8 12h8m-8 4h6"/></svg></span><span>品质周报</span>
-    </a>
-    <a class="nav-item" data-page="monthly" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('monthly')">
-      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M5 3h10l4 4v14H5Z"/><path d="M14 3v5h5M8 12h8m-8 4h6"/></svg></span><span>品质月报</span>
-    </a>
-    <a class="nav-item" data-page="yearly" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('yearly')">
-      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M5 3h10l4 4v14H5Z"/><path d="M14 3v5h5M8 12h8m-8 4h6"/></svg></span><span>品质年报</span>
+    <div class="nav-group-label">报告</div>
+    <a class="nav-item" data-page="report-center" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('report-center')">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="12" width="4" height="9" rx="1"/><rect x="10" y="7" width="4" height="14" rx="1"/><rect x="17" y="3" width="4" height="18" rx="1"/></svg></span><span>报告中心</span>
     </a>
     <a class="nav-item" data-page="supplier-report" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('supplier-report')">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M5 3h10l4 4v14H5Z"/><path d="M14 3v5h5M8 12h8m-8 4h6"/></svg></span><span>供应商质量报告</span>
@@ -122,12 +110,6 @@
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 16V3m-5 5 5-5 5 5M4 14v6h16v-6"/></svg></span><span>数据导入</span>
     </a>
   </nav>
-
-  <div class="sidebar-footer">
-    <div class="footer-time" id="sidebarTime">--:--:--</div>
-    <div class="footer-date" id="sidebarDate">----/--/--</div>
-    <div class="footer-ver">v1.0 · 兴信塑胶</div>
-  </div>
 </aside>
 
 <!-- ───────────── MAIN ───────────── -->
@@ -186,7 +168,6 @@
       <div class="qs-heading">
         <div class="qs-actions"><label class="qs-button qs-select-all"><input type="checkbox" id="qsSelectAll" disabled>全选当前筛选</label><button type="button" id="qsPush" class="qs-button qs-primary" disabled>确认推送验货</button><button type="button" id="qsRefresh" class="qs-button">刷新数据</button><button type="button" id="qsExport" class="qs-button qs-primary" disabled>导出 Excel</button></div>
       </div>
-      <div class="qs-source" id="qsSourcePanel"><div><strong id="qsSourceLabel">数据来源：业务部 · 各客排期</strong><span id="qsSourceStatus" class="qs-source-badge">待接通</span></div><p id="qsNotice" role="status">业务部排期接通后自动读取</p></div>
       <div class="qs-toolbar" id="qsToolbar">
       <div class="qs-filters" aria-label="客排期筛选">
         <label class="qs-filter-field qs-search"><span class="qs-sr-only">搜索 PO、客 PO、货号或产品名称</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="qsSearch" placeholder="搜索 PO / 客 PO / 货号 / 产品名称"/></label>
@@ -209,9 +190,9 @@
       </div>
       <div class="qs-table-scroll" tabindex="0" role="region" aria-label="客排期表格，可横向滚动">
         <table class="qs-table"><caption class="qs-sr-only">客户验货排期，业务部维护订单信息，完成情况由验货台只读回显，备注读取业务部原文</caption>
-          <colgroup><col data-column="date" style="width:155px"/><col data-column="customer" style="width:110px"/><col data-column="poNo" style="width:165px"/><col style="width:120px"/><col style="width:135px"/><col style="width:170px"/><col style="width:85px"/><col style="width:70px"/><col style="width:70px"/><col style="width:80px"/><col style="width:80px"/><col style="width:145px"/><col style="width:135px"/><col style="width:235px"/></colgroup>
-          <thead><tr><th scope="col" data-column="date">日期</th><th scope="col" data-column="customer">客户</th><th scope="col" data-column="poNo">PO#</th><th scope="col">出口国</th><th scope="col">货号</th><th scope="col">产品名称</th><th scope="col">数量</th><th scope="col">装箱</th><th scope="col">箱数</th><th scope="col">生产</th><th scope="col">机构</th><th scope="col">客PO#</th><th scope="col">完成情况</th><th scope="col">备注</th></tr></thead>
-          <tbody id="qsRows"><tr><td colspan="14"><div class="qs-empty"><strong>业务部数据尚未接通</strong><p>接通后按此模板显示排期，当前不显示示例订单。</p></div></td></tr></tbody>
+          <colgroup><col style="width:36px"/><col data-column="date" style="width:119px"/><col data-column="customer" style="width:110px"/><col data-column="poNo" style="width:165px"/><col style="width:120px"/><col style="width:135px"/><col style="width:170px"/><col style="width:85px"/><col style="width:70px"/><col style="width:70px"/><col style="width:80px"/><col style="width:80px"/><col style="width:145px"/><col style="width:135px"/><col style="width:235px"/></colgroup>
+          <thead><tr><th scope="col"><span class="qs-sr-only">选择</span></th><th scope="col" data-column="date">排期日期</th><th scope="col" data-column="customer">客户</th><th scope="col" data-column="poNo">PO#</th><th scope="col">出口国</th><th scope="col">货号</th><th scope="col">产品名称</th><th scope="col">数量</th><th scope="col">装箱</th><th scope="col">箱数</th><th scope="col">生产</th><th scope="col">机构</th><th scope="col">客PO#</th><th scope="col">完成情况</th><th scope="col">备注</th></tr></thead>
+          <tbody id="qsRows"><tr><td colspan="15"><div class="qs-empty"><strong>业务部数据尚未接通</strong><p>接通后按此模板显示排期，当前不显示示例订单。</p></div></td></tr></tbody>
         </table>
       </div>
       <!-- 暂停展示回填区域；保留控件供现有脚本初始化，历史数据不变。 -->
@@ -292,10 +273,6 @@
           <select id="filterResult" aria-label="判定结果" onchange="filterRecords()"><option value="">全部判定</option><option value="PASS">Pass</option><option value="REJ">Fail</option><option value="PENDING">Pending</option></select>
           <select id="filterSort" aria-label="排序方式" onchange="filterRecords()" title="验货日期按计划开始日期排序，同日按客户归拢；修改日期按最近修改时间排序"><option value="date-desc">验货日期 ↓</option><option value="date-asc" selected>验货日期 ↑</option><option value="mod-desc">修改日期 ↓</option><option value="mod-asc">修改日期 ↑</option></select>
           <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
-        </div>
-        <div class="records-status-row">
-          <div class="records-context"><span id="recordCount">共 0 条</span><span id="inspectionSelection" aria-live="polite">未选中记录</span><span class="records-hint" id="recordsSelectionHint" hidden></span><button type="button" class="qis-latest-button" id="qisLatest" disabled>导入最新表格</button><input type="file" id="qisLatestFile" accept=".xls,.xlsx" hidden></div>
-          <div class="records-actions"><div class="qis-import-bar"><span id="qisImportStatus" role="status" aria-live="polite"></span><button type="button" id="qisImport" disabled>导入工作簿</button><button type="button" id="qisUndo" disabled title="撤销最近一次成功导入" aria-label="撤销最近一次成功导入">↶</button></div><button type="button" class="records-refresh" id="btnRefreshRecords" onclick="refreshRecordsPage()" title="从服务器重新加载验货台">↻ 刷新</button><button type="button" class="records-export-btn" id="btnExportInspectionExcel" onclick="requestInspectionExcel()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6"/></svg>导出 Excel</button></div>
         </div>
       </div>
 
@@ -406,6 +383,7 @@
           <button class="btn-secondary" onclick="window.print()" title="浏览器打印">🖨 打印</button>
           <button class="btn-primary" id="btnExportDaily" onclick="exportReportPDF('daily')">⬇ 导出 PDF</button>
         </div>
+        <div class="report-type-slot" data-report-type-slot></div>
       </div>
       <div id="dailyReportBody"></div>
     </div>
@@ -424,7 +402,21 @@
           <button class="btn-secondary" onclick="window.print()" title="浏览器打印">🖨 打印</button>
           <button class="btn-primary" id="btnExportWeekly" onclick="exportReportPDF('weekly')">⬇ 导出 PDF</button>
         </div>
+        <div class="report-type-slot" data-report-type-slot>
+          <div id="reportPeriodSwitch" class="report-period-switch" role="group" aria-label="报告周期">
+            <span class="report-period-glass" aria-hidden="true"></span>
+            <button type="button" data-report-page="daily" aria-label="日报" aria-pressed="false" onclick="changeReportPeriod(this)">日</button>
+            <button type="button" data-report-page="weekly" aria-label="周报" aria-pressed="true" onclick="changeReportPeriod(this)">周</button>
+            <button type="button" data-report-page="monthly" aria-label="月报" aria-pressed="false" onclick="changeReportPeriod(this)">月</button>
+          </div>
+            <select id="reportTypeSelect" aria-label="报告类型" onchange="changeReportType(this)">
+              <option value="intra-month" selected>月内报告</option>
+              <option value="analysis">年报</option>
+            </select>
+        </div>
       </div>
+      <nav id="qwtEntries" aria-label="周报 Excel 模板" hidden></nav>
+      <section id="qwtView" aria-label="周报模板明细" hidden></section>
       <div id="weeklyReportBody"></div>
     </div>
   </div>
@@ -455,15 +447,19 @@
 
   <!-- PAGE: MONTHLY REPORT -->
   <div class="page" id="page-monthly">
-    <div class="page-inner report-page">
+    <div class="page-inner report-page" id="monthlyReportContent">
       <div class="report-toolbar">
         <label>选择月份：
           <input type="month" id="monthlyMonth" onchange="renderMonthlyReport()" />
         </label>
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn-primary" onclick="exportMonthlyReportPDF()">⬇ 导出 PDF</button>
+          <button class="btn-secondary" onclick="window.print()">🖨 打印</button>
+          <button class="btn-primary" id="btnExportMonthly" onclick="exportMonthlyReportPDF()">⬇ 导出 PDF</button>
         </div>
+        <div class="report-type-slot" data-report-type-slot></div>
       </div>
+      <nav id="qmtEntries" aria-label="月报 Excel 模板" hidden></nav>
+      <section id="qmtView" aria-label="月报模板明细" hidden></section>
       <div id="monthlyReportBody"></div>
     </div>
   </div>
@@ -942,6 +938,14 @@
 <link rel="stylesheet" href="qc-inspection-sheet.css"/><script src="qc-inspection-audit.js"></script><script src="qc-inspection-sheet.js"></script>
 <link rel="stylesheet" href="qc-inspection-summary.css">
 <script src="qc-inspection-summary.js"></script>
+<link rel="stylesheet" href="qc-approved-statistics.css">
+<script src="qc-approved-statistics.js"></script>
+<link rel="stylesheet" href="qc-daily-report.css">
+<script src="qc-daily-report.js"></script>
+<link rel="stylesheet" href="qc-weekly-templates.css">
+<script src="qc-weekly-templates.js"></script>
+<link rel="stylesheet" href="qc-monthly-templates.css">
+<script src="qc-monthly-templates.js"></script>
 <script src="mobile.js"></script><!-- 移动端侧栏抽屉交互 -->
 <script>
 /* 切换系统下拉：点击页面其它位置时收起 */

@@ -35,6 +35,20 @@ return computed(() => {
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
 
+    if (['material-planning', 'process-material-dates', 'material-purchasing'].includes(module.id)) {
+      return { ...scopedModule, stats: module.stats, detailPage: true }
+    }
+
+    if (module.id === 'bom-process' && factory.id === 'huakang-c') {
+      const authorized = authStore.can('engineering_bom:read', factory.id, 'engineering')
+      return { ...scopedModule, title: '工程 BOM', owner: '华康 C · 工程部',
+        summary: '物料档案、多层用料、工序清单与历史资料核对',
+        status: authorized ? '工程工作区' : '权限待开通', statusTone: 'teal' as const,
+        stats: '工程建档 · 审核留存', statusMetrics: [], todos: [],
+        children: [{ label: '工程资料', summary: '维护与审核物料和 BOM，核对历史导入' }],
+        detailPage: authorized, route: authorized ? getFactoryScopedRoute('/modules/engineering/bom', factory.id) : undefined }
+    }
+
     if (module.id === 'indonesia-material-shipment') {
       return { ...scopedModule, route: getFactoryScopedRoute(module.route!, appStore.activeFactoryId) }
     }

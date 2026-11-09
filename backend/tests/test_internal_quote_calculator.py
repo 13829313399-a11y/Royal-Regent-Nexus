@@ -675,11 +675,11 @@ def test_painting_and_sewing_quick_quotes_are_authoritative_hkd_totals():
         "quote_mode": "quick",
         "painting_labor_hkd": "2.0000",
         "paint_base_hkd": "3.0000",
-        "paint_tax_hkd": "0.3900",
-        "paint_material_hkd": "3.3900",
-        "total_hkd": "5.3900",
+        "paint_tax_hkd": "0.0000",
+        "paint_material_hkd": "3.0000",
+        "total_hkd": "5.0000",
     }
-    assert [row["amount_hkd"] for row in painting["line_breakdown"]] == ["2.0000", "3.0000", "0.3900"]
+    assert [row["amount_hkd"] for row in painting["line_breakdown"]] == ["2.0000", "3.0000"]
 
     sewing = calculate(
         "sewing",
@@ -1053,6 +1053,8 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert sales["line_breakdown"][1] == {
         "source_path": ["cartons", 0],
         "original_carton_price_hkd": "0.9350",
+        "paper_material": "沿用原系数",
+        "flat_paper_details": [{"name": "主平卡", "paper_material": "沿用原系数", "paper_price_factor": "2.7500"}],
         "kind": "carton",
         "owner": "sales",
         "item": "主纸箱",

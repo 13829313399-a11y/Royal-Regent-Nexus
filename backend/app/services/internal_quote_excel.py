@@ -22,6 +22,7 @@ from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.worksheet.worksheet import Worksheet
 from app.services.internal_quote_output_fields import SourceLabel, bind_source_label
 from app.services.internal_quote_sewing import uses_sewing_quoted_price
+from app.services.internal_quote_tax import deduction_excluded
 from PIL import Image as PillowImage, ImageOps
 
 from app.models.internal_quote import (
@@ -35,7 +36,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v43"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v46"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v2"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -766,6 +767,8 @@ def _pricing_entry_category(entry: dict[str, Any]) -> str:
     category = str(entry.get("category") or "")
     auxiliary = str(entry.get("auxiliary_category") or "")
     label = _safe_text(entry.get("label"))
+    if kind == "carton":
+        return "纸箱"
     if section_code == "engineering":
         if category == "hardware":
             return "五金"
@@ -790,8 +793,6 @@ def _pricing_entry_category(entry: dict[str, Any]) -> str:
         )
         return "包装人工" if is_packaging_labor else "装配工"
     if section_code == "sales":
-        if kind == "carton":
-            return "纸箱"
         return {
             "blister": "吸塑",
             "color_box_inner_card": "彩盒/内卡",
@@ -807,10 +808,10 @@ def _pricing_entry_tax_tag(entry: dict[str, Any]) -> str:
     if category == "电镀":
         return "¥1%"
     if category == "搪胶":
-        return "¥3%"
+        return ""
     if category == "吸塑":
         return "¥6%"
-    if category in {"料价", "啤工", "喷油工", "装配工", "包装人工", "车衣", "车发"}:
+    if category in {"料价", "啤工", "喷油工", "装配工", "包装人工", "车衣", "车发", "纸箱"}:
         return ""
     return "¥13%"
 
@@ -832,6 +833,7 @@ def _pricing_entry_summary_category(entry: dict[str, Any]) -> str:
     if category == "利宝":
         return "利宝/说明书"
     if section_code == "engineering" and category not in {
+        "纸箱",
         "五金",
         "吸塑",
         "彩盒/内卡",
@@ -1847,6 +1849,14 @@ def _carton_quantity_reference(cell: str, index: int, count: int) -> str:
     return f'VALUE(TRIM(MID(SUBSTITUTE({cell},"/",REPT(" ",32)),{position * 32 + 1},32)))'
 
 
+def _applicable_tax_rows(summary: dict[str, Any], factory_id: str) -> dict[str, dict[str, Any]]:
+    rows = {key: dict(row) for key, row in _rr2_tax_rows(summary).items()}
+    for key in ("slush3", "sewhair13", "sewcloth13"):
+        if deduction_excluded(key, factory_id):
+            rows[key] = {**rows.get(key, {}), "label": "", "rate_percent": None, "deduction_hkd": None}
+    return rows
+
+
 def _build_summary_sheet(
     workbook: Workbook,
     quote: InternalQuote,
@@ -1868,10 +1878,7 @@ def _build_summary_sheet(
     t1 = _rr2_values(rr2_cost_summary, "t1")
     t2 = _rr2_values(rr2_cost_summary, "t2")
     t3 = _rr2_values(rr2_cost_summary, "t3")
-    t4 = _rr2_tax_rows(rr2_cost_summary)
-    # Retain the template columns, but never revive historical sewing tax rates.
-    for key, label in (("sewhair13", "车发类（不计税）"), ("sewcloth13", "车衣类（不计税）")):
-        t4[key] = {**t4.get(key, {}), "label": label, "rate_percent": None, "deduction_hkd": None}
+    t4 = _applicable_tax_rows(rr2_cost_summary, str(getattr(quote, "factory_id", "")))
     markup_tiers = _shipping_markup_tiers(shipping)
     active_tier = next((row for row in markup_tiers if row.get("is_active")), markup_tiers[-1])
     testing_fee_total_usd, testing_fee_tiers = _testing_fee_values(
@@ -1966,9 +1973,9 @@ def _build_summary_sheet(
             1,
             (
                 ("含税1%", _tax_rate(reference_snapshot, "tax_1_percent", 0.0099)),
-                ("搪胶类3%", _tax_rate(reference_snapshot, "slush", 0.03)),
-                ("车发类（不计税）", ""),
-                ("车衣类（不计税）", ""),
+                ("", ""),
+                (t4.get("sewhair13", {}).get("label", ""), _percent_fraction(t4.get("sewhair13", {}).get("rate_percent")) if t4.get("sewhair13", {}).get("rate_percent") is not None else ""),
+                (t4.get("sewcloth13", {}).get("label", ""), _percent_fraction(t4.get("sewcloth13", {}).get("rate_percent")) if t4.get("sewcloth13", {}).get("rate_percent") is not None else ""),
             ),
         ),
         (
@@ -1999,11 +2006,12 @@ def _build_summary_sheet(
         sales_payload.get("flat_card_price_factor"),
         paper_factor,
     )
+    selected_paper = any(c.get("paper_material_key") or any(f.get("paper_material_key") for f in c.get("flat_cards", []) or []) for c in sales_payload.get("cartons", []) or [])
     for column, (label, value, number_format) in enumerate(
         (
-            ("主纸箱系数", paper_factor, "0.00"),
-            ("内纸箱系数", inner_paper_factor, "0.00"),
-            ("平卡系数", flat_card_factor, "0.00"),
+            ("主箱默认系数" if selected_paper else "主纸箱系数", paper_factor, "0.00"),
+            ("内箱默认系数" if selected_paper else "内纸箱系数", inner_paper_factor, "0.00"),
+            ("平卡默认系数" if selected_paper else "平卡系数", flat_card_factor, "0.00"),
             ("杂项", _float_value(shipping.get("misc_ratio"), 0.02), "0.00%"),
         ),
         start=14,
@@ -2253,7 +2261,7 @@ def _build_summary_sheet(
     add_detail("", "喷油工", "喷油人工", painting_labor)
     add_detail("", "喷油工", "喷油未分类成本", painting_adjustment)
     add_detail("¥13%", "油漆", "油漆", paint_material)
-    add_detail("¥3%", "搪胶", "搪胶", cost_context.get("slush_hkd"))
+    add_detail("", "搪胶", "搪胶", cost_context.get("slush_hkd"))
     add_detail("", "吹气", "吹气", molding_blow)
     # Keep every summary category as an explicit detail-table category.  The
     # released workbook uses SUMIF against column B, so classifying sewing and
@@ -2470,14 +2478,17 @@ def _build_summary_sheet(
         amount = format(Decimal(item["amount_hkd"]), "f")
         return f"({amount}*{quantity_reference})" if item["mode"] == "per_piece" else amount
 
+    from app.services.internal_quote_paper import paper_reference
     flat_card_formulas = []
     flat_indices = {}
     for row_offset, carton_index in flat_card_row_offsets:
         flat_index = flat_indices.get(carton_index, 0)
         flat_indices[carton_index] = flat_index + 1
+        flat_source = cartons[carton_index].get("flat_cards", [])[flat_index]
+        flat_factor_cell = format(paper_reference(flat_source, reference_snapshot, flat_card_factor, strict=False)[0], "f") if flat_source.get("paper_material_key") else "$P$6"
         expression = (f"{dimension_letters[0]}{packaging_start_row + row_offset}/2.54"
                       f"*{dimension_letters[1]}{packaging_start_row + row_offset}/2.54"
-                      f"*{dimension_letters[2]}{packaging_start_row + row_offset}*$P$6/1000")
+                      f"*{dimension_letters[2]}{packaging_start_row + row_offset}*{flat_factor_cell}/1000")
         expression = adopted_box_formula(["cartons", carton_index, "flat_cards", flat_index], expression, quantity_references[carton_index])
         flat_card_formulas.append(expression + (f"/{quantity_references[carton_index]}" if len(cartons) > 1 else ""))
     packaging_rows[paperboard_offset][1] = (
@@ -2492,7 +2503,9 @@ def _build_summary_sheet(
         )
 
     for index, (row_offset, unit) in enumerate(carton_row_metadata):
-        formula = carton_price_formula(row_offset, unit, "$N$6" if index == 0 else "$O$6")
+        carton_source = cartons[index] if index < len(cartons) else {}
+        factor_cell = format(paper_reference(carton_source, reference_snapshot, paper_factor if index == 0 else inner_paper_factor, strict=False)[0], "f") if carton_source.get("paper_material_key") else ("$N$6" if index == 0 else "$O$6")
+        formula = carton_price_formula(row_offset, unit, factor_cell)
         formula = adopted_box_formula(["cartons", index], formula, quantity_references[index])
         packaging_rows[carton_price_offsets[index]][1] = "=" + formula + (
             f"/{quantity_references[index]}" if len(cartons) > 1 else ""
@@ -3405,7 +3418,7 @@ def _build_summary_sheet(
             rate_percent = t4.get(key, {}).get("rate_percent")
             value = (
                 ""
-                if key in {"carton", "sewhair13", "sewcloth13"}
+                if t4.get(key, {}).get("rate_percent") is None
                 else _percent_fraction(rate_percent)
             )
             number_format = "0.00%"
@@ -3444,6 +3457,8 @@ def _build_summary_sheet(
     tax_amount_references = {
         "tax1": f"H{second_value_row}",
         "slush3": f"G{first_value_row}",
+        "sewhair13": str(_float_value(t4.get("sewhair13", {}).get("amount_hkd"))),
+        "sewcloth13": str(_float_value(t4.get("sewcloth13", {}).get("amount_hkd"))),
         "suction6": f"M{first_value_row}",
         "freight9": f"K{second_value_row}",
         "tax13b": f"D{tax_amount_row}",
@@ -3451,7 +3466,7 @@ def _build_summary_sheet(
         "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
     }
     for column, key in enumerate(tax_keys, start=6):
-        if key in {"carton", "sewhair13", "sewcloth13"}:
+        if t4.get(key, {}).get("rate_percent") is None:
             sheet.cell(deduction_row, column).value = ""
         else:
             amount_reference = tax_amount_references[key]
@@ -4774,7 +4789,7 @@ def _replace_with_component_summary_sheet(
         target.cell(tax_amount_row, 3).value = (
             f"=D{tax_amount_row}+{tax_1_formula}"
         )
-        t4 = _rr2_tax_rows(rr2_cost_summary)
+        t4 = _applicable_tax_rows(rr2_cost_summary, str(getattr(quote, "factory_id", "")))
         tax_keys = (
             "tax1",
             "slush3",
@@ -4789,6 +4804,8 @@ def _replace_with_component_summary_sheet(
         tax_amount_references = {
             "tax1": f"H{second_value_row}",
             "slush3": f"G{first_value_row}",
+            "sewhair13": str(_float_value(t4.get("sewhair13", {}).get("amount_hkd"))),
+            "sewcloth13": str(_float_value(t4.get("sewcloth13", {}).get("amount_hkd"))),
             "suction6": f"M{first_value_row}",
             "freight9": f"K{second_value_row}",
             "tax13b": f"D{tax_amount_row}",
@@ -4796,7 +4813,7 @@ def _replace_with_component_summary_sheet(
             "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
         }
         for column, key in enumerate(tax_keys, start=6):
-            if key in {"carton", "sewhair13", "sewcloth13"}:
+            if t4.get(key, {}).get("rate_percent") is None:
                 target.cell(deduction_row, column).value = ""
                 continue
             amount_reference = tax_amount_references[key]
@@ -5635,6 +5652,8 @@ def build_internal_quote_workbook_model(
     _build_mold_quote_sheet(workbook, by_code.get("engineering"))
     from app.services.internal_quote_price_notes import append_price_notes
     append_price_notes(workbook, sections, attachments, quote.region_code, reference_snapshot)
+    from app.services.internal_quote_price_basis import append_price_basis
+    append_price_basis(workbook, quote, sections, reference_snapshot or {})
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True

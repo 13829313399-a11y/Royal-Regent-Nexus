@@ -1,0 +1,10 @@
+{
+  "name": "huakang-b-jp-trial-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vue-tsc --noEmit -p tsconfig.json && vite build --config vite.config.ts",
+    "test": "cd ../../.. && vitest run --config tools/huakang-b-jp-trial/web/vitest.config.ts",
+    "typecheck:test": "vue-tsc --noEmit -p tsconfig.test.json"
+  }
+}

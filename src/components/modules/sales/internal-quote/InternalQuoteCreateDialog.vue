@@ -12,7 +12,8 @@ import type {
   InternalQuoteSectionCode,
 } from '@/types/internalQuoteDesk'
 
-const mandatorySectionCodes: InternalQuoteSectionCode[] = ['sales', 'engineering', 'assembly']
+const mandatorySectionCodes: InternalQuoteSectionCode[] = ['sales', 'assembly']
+const defaultSectionCodes: InternalQuoteSectionCode[] = ['sales', 'engineering', 'assembly']
 const mandatorySectionDefinitions = internalQuoteSectionDefinitions.filter((item) => mandatorySectionCodes.includes(item.code))
 const optionalSectionDefinitions = internalQuoteSectionDefinitions.filter((item) => !mandatorySectionCodes.includes(item.code))
 
@@ -107,7 +108,7 @@ const form = reactive<QuoteCreateForm>({
   quantity: 10000,
   targetDate: '2026-08-30',
   remark: '',
-  participatingSections: [...mandatorySectionCodes],
+  participatingSections: [...defaultSectionCodes],
   quoteType: 'single',
   products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
 })
@@ -192,7 +193,7 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
     quantity: 10000,
     targetDate: '2026-08-30',
     remark: '',
-    participatingSections: [...mandatorySectionCodes],
+    participatingSections: [...defaultSectionCodes],
     quoteType: 'single',
     products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
   })
@@ -627,7 +628,7 @@ onBeforeUnmount(() => { cloneGeneration += 1; closeDocumentPreview() })
               </div>
               <div class="quote-participation-heading">
                 <strong>参与部门</strong>
-                <span>业务部、工程部、装配部固定参与</span>
+                <span>业务部、装配部固定参与</span>
               </div>
               <div class="quote-segment-pills mandatory">
                 <span v-for="segment in mandatorySectionDefinitions" :key="segment.code">
@@ -649,6 +650,7 @@ onBeforeUnmount(() => { cloneGeneration += 1; closeDocumentPreview() })
                 </label>
               </div>
               <p class="quote-participation-note">未选择的部门不会收到填写任务，也不计入协作进度和最终放行；创建后仍可在协作页添加回来。</p>
+              <p class="quote-participation-note">工程部默认参与，可按产品需要取消；例如搪胶产品不需要工程报价时，取消后无需工程资料即可输出。</p>
               <p><Snowflake aria-hidden="true" />创建后冻结汇率、材料价与机型价参考快照；同步新参考表会产生新 revision。</p>
             </section>
 

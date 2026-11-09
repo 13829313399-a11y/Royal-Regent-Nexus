@@ -1,0 +1,12 @@
+# Opt-in only. Combine with the existing production compose and image-pin override.
+# PRIVATE_MAINLAND_INVOICE_TEMPLATES must be an administrator-owned version directory.
+services:
+  api:
+    environment:
+      MAINLAND_INVOICE_ENABLED: "true"
+      MAINLAND_INVOICE_TEMPLATE_DIR: /run/private-mainland-invoice
+    volumes:
+      - type: bind
+        source: ${PRIVATE_MAINLAND_INVOICE_TEMPLATES:?Set private template directory outside the repository}
+        target: /run/private-mainland-invoice
+        read_only: true

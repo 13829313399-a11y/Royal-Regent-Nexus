@@ -241,7 +241,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",
         "symbol": "remaining_quantity",
-        "sha256": "c89e7608d4f65dd2f27a38c3a54c6b5be4c4e539b6f6ba45a7a783d8973922f6"
+        "sha256": "2ae457b4f7750d465a307e3f62f7a95a0545e6f9c7f06803801269c2c2ca1207"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",
@@ -454,7 +454,7 @@
       {
         "path": "src/components/modules/sales/internal-quote/InternalQuoteHome.vue",
         "symbol": "quote-list-toolbar",
-        "sha256": "43ec017697173ae91a346b418443477298b0bea15c3de73f7a1a3b3b7e32638c"
+        "sha256": "a127d3ccb164c96e67c82926bdab60e32c0a7cf373a0a5e534d0c7145b8952b5"
       },
       {
         "path": "src/components/modules/sales/internal-quote/InternalQuoteReadiness.vue",

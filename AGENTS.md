@@ -23,6 +23,35 @@ When modifying a feature, Codex may retrieve `PROJECT_MEMORY.md` progressively i
 
 Do not repeatedly load unrelated full memory. The index cannot replace source contracts or the latest user instruction. Maintain changed long-lived facts in place, not per-task logs.
 
+## Mandatory Workspace and Version Verification
+
+For every new QC task, including read-only investigations and UI design or preview tasks, complete this verification before selecting a source baseline or planning changes. Repeat it when resuming a task if its directory, branch, local changes or remote version may have changed. Historical chat context, project labels and previous verification results are not proof of the current version.
+
+### Canonical Workspace and Source Roles
+
+- The only formal QC development repository on this Mac is `/Users/chris/Desktop/QC_test/qc-update-20261107`; its fixed development branch is `codex/qc-development`. Do not independently select another source copy as the formal development baseline.
+- The QC development branch, including its valid unmerged commits and uncommitted work, is the source for QC feature work. Freshly fetched `origin/main` is the upstream integration and comparison baseline, not the sole source of QC functionality. Inspect both sides before concluding that a feature is absent, obsolete or safe to replace.
+- A latest-main inspection worktree is only an explicitly authorized comparison environment. Record its absolute path and starting commit; do not silently promote it to the QC development workspace. Do not create a clone or worktree without explicit authorization.
+- Runtime copies, including `/Users/chris/Desktop/QC_test/Royal-Regent-Nexus`, are evidence of what a running service uses, not proof of the latest repository code. Inspect them only when relevant, label their role and differences, and preserve their databases, credentials and runtime configuration.
+- `/Users/chris/Desktop/Analysis__output` and the parent `/Users/chris/Desktop/QC_test` are not the formal QC repository. A chat or Desktop project rooted there does not establish a QC branch or version. Report the mismatch and use the canonical repository explicitly for QC source operations; do not claim that the Desktop project configuration has changed without changing and verifying it.
+
+### Required Start-of-Task Checks
+
+1. Record the chat's actual working directory. In the intended repository, run `pwd` and `git rev-parse --show-toplevel`; verify that the resolved repository root is the canonical path above.
+2. Run `git branch --show-current` and `git remote -v`. Verify the fixed branch and that `origin` identifies `13829313399-a11y/Royal-Regent-Nexus` on GitHub (HTTPS or SSH). A detached HEAD, unexpected branch, root or remote must be reported; do not silently switch branches, rewrite remotes or use a different source copy.
+3. Run `git status --short` and `git rev-parse HEAD` to record uncommitted changes and the local commit before any integration. Preserve all existing modifications, additions and intentional deletions.
+4. Run `git fetch origin --prune`. Only after a successful fetch, obtain the upstream commit with `git rev-parse origin/main`. If fetching or resolving the remote fails, clearly report the failure and label any cached remote reference as unverified. Never claim to be using the latest GitHub code in that case.
+5. Run `git rev-list --left-right --count HEAD...origin/main`, `git log --oneline HEAD..origin/main` and `git log --oneline origin/main..HEAD`. Report both local-only and upstream-only commit counts, not just how far the branch is behind. Inspect relevant file diffs and uncommitted changes to distinguish upstream updates from valid QC work not yet merged into main; commit counts alone do not establish feature parity.
+6. Run `git worktree list --porcelain` and `git rev-parse --git-dir --git-common-dir` to distinguish the primary checkout from linked worktrees. When relevant, verify the Desktop chat/project directory and available starting-commit metadata. A non-Git chat directory has no Git starting commit; do not invent one or equate a project's display name with its repository path.
+7. Before relying on the source, provide a concise baseline report: actual source path and role, branch, local HEAD, freshly fetched `origin/main` SHA, ahead/behind counts, dirty/clean status and any unresolved mismatch. Explicitly identify the source used for a UI preview and any difference from the running system.
+
+### Safe Synchronization and Task Boundaries
+
+- Read-only investigation and UI design/preview tasks do not authorize merging, rebasing, resetting, switching or moving branches. Fetch and compare without altering the QC branch; report upstream differences and account for the QC branch's own features in the investigation or design.
+- Before formal business-code development, safely synchronize the fixed QC development branch with freshly fetched main within the user's authorized scope. Review local-only commits and uncommitted work first, preserve valid QC changes, and integrate upstream without replacing the QC branch with main. After integration, recheck status and commit ancestry/differences and run verification appropriate to the affected modules.
+- If synchronization would risk existing work, require a business conflict decision, or exceed the task's authorization, report the specific risk and obtain the missing decision before integration or dependent business-code edits. Do not silently stash, discard or overwrite local work, use `reset --hard`, `clean`, forced rebase or force-push to make the check pass.
+- A version check is not permission to publish, migrate databases, restart services, delete directories or create another workspace. Newer explicit read-only, design-only, instruction-file-only or no-release limits override the standing QC release workflow below. Updating these instructions does not itself authorize branch integration or business changes.
+
 ## Scope
 
 These rules apply to:
@@ -87,9 +116,15 @@ Report:
 
 ## Git Operations
 
-Do not run `git commit`, create commits, push branches, or open pull requests unless the user explicitly asks for that Git operation in the current turn.
+For modules other than QC, do not create commits, push branches, or open pull requests unless the user explicitly requests those Git operations. Otherwise leave changes in the working tree and report verification results.
 
-When code changes are made without an explicit Git operation request, leave them as working-tree changes and report the changed files plus verification results.
+### Fixed QC Workspace and Release Workflow
+
+The user has authorized the recurring QC release workflow. On this Mac, the sole QC Git/development directory is `/Users/chris/Desktop/QC_test/qc-update-20261107`, and the permanent branch is `codex/qc-development`. Keep local `main` as the ERP synchronization baseline. Do not treat the parent `QC_test` or older source copies as repositories, create duplicate clones/worktrees, or rename the QC branch for each release.
+
+For requested QC updates, preserve all local modifications, additions and intentional deletions, fetch latest remote `main`, integrate it into the fixed QC branch, repair actual failures, run the complete QC suites and application build, commit, publish using the authenticated GitHub Desktop/browser, create a non-draft PR, enable auto-merge, satisfy repository checks, verify the merged remote tree, then synchronize local `main` and the fixed QC branch for the next cycle. A newer explicit read-only or no-release instruction overrides this standing authorization.
+
+Never overwrite other departments, skip real failures, commit Python environments (including `backend/.venv` symlinks), upload private data/credentials, or force-push. Check deletions and the final PR diff. After squash merging, reconcile the fixed branch with latest `main` so the next PR contains only new changes; preserve unpublished work before any local history realignment. Delete only explicitly approved old QC branches after proving they are merged, have no unfinished PR and contain no unique valid work. Do not delete the fixed QC branch after merging. Production deployment and business-data migration require their own explicit scope; a merged PR does not establish either.
 
 ## Project Memory Maintenance
 

@@ -629,7 +629,7 @@ class CasdonPOParser:
             # "DAM [TARGET] 10001769117" / "DUK [AMAZON] 7CU324UE". Container
             # sizes (20FT/40FTHC) and short codes are not customer POs.
             candidates = []
-            for token in re.findall(r"[A-Z0-9]{6,}", bracket_tail.upper()):
+            for token in re.findall(r"\b[A-Z0-9]{5,}\b", bracket_tail.upper()):
                 if re.fullmatch(r"\d{1,3}FT(?:HC)?", token):
                     continue
                 if sum(ch.isdigit() for ch in token) >= 4:

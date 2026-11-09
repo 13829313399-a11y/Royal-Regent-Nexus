@@ -28,7 +28,7 @@ from .prices import PriceTable
 
 FACTORY = "huakang-b"
 CUSTOMER = "jp-huakang-b"
-PREVIEW_SCHEMA_VERSION = "huakang-b-jp-preview-v2"
+PREVIEW_SCHEMA_VERSION = "huakang-b-jp-preview-v3"
 KINDS = {"schedule", "price", "confirmed"}
 MAX_FILE = 20 * 1024 * 1024
 MAX_TOTAL = 50 * 1024 * 1024

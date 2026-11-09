@@ -123,7 +123,7 @@ describe('internal quote desk frontend layout', () => {
     expect(collaborationSource).not.toContain('removals.length && !window.confirm')
     for (const text of ['quote-edge-panel-left', 'quote-edge-panel-right', 'quote-edge-handle', '鼠标移入展开页面导航', '鼠标移入展开报价与资料侧栏', '.quote-edge-panel-left:hover,.quote-edge-panel-left:focus-within', 'table-layout:fixed', '.quote-edge-panel-left .quote-edge-panel-body{overflow:visible']) expect(collaborationSource).toContain(text)
     for (const text of ['focusEntryMode', '显示导航与侧栏', '切换为专注填报', 'class="focus-entry-float"']) expect(collaborationSource).not.toContain(text)
-    for (const text of ['业务部、工程部、装配部固定参与', '可选参与部门', '创建后仍可在协作页添加回来', '客人目标价', '没有请填无']) expect(createDialogSource).toContain(text)
+    for (const text of ['业务部、装配部固定参与', '可选参与部门', '创建后仍可在协作页添加回来', '客人目标价', '没有请填无']) expect(createDialogSource).toContain(text)
     expect(homeSource).toContain('跨厂只读')
     expect(homeSource).toContain('canCreateCurrentFactory')
     expect(homeSource).toContain('canCloneQuote')
@@ -312,9 +312,11 @@ describe('internal quote desk frontend layout', () => {
 
   it('keeps the active factory through sales and every internal-quote navigation level', () => {
     expect(workbenchSource).toMatch(/const scopedBackTo = computed\(\(\) => props\.backTo\.startsWith\('\/'\)[\s\S]{0,100}getFactoryScopedRoute\(props\.backTo, activeFactory\.value\.id\)/)
-    expect(workbenchSource).toMatch(/const salesDepartmentRoute = computed\(\(\) => getFactoryScopedRoute\([\s\S]{0,80}'\/modules\/sales-business',[\s\S]{0,60}activeFactory\.value\.id/)
+    expect(workbenchSource).toMatch(/const departmentRoute = computed\(\(\) => getFactoryScopedRoute\([\s\S]{0,80}props\.departmentTo,[\s\S]{0,60}activeFactory\.value\.id/)
     expect(workbenchSource).toContain(':to="scopedBackTo"')
-    expect(workbenchSource).toContain(':to="salesDepartmentRoute"')
+    expect(workbenchSource).toContain(':to="departmentRoute"')
+    expect(workbenchSource).toContain("departmentTo: '/modules/sales-business'")
+    expect(workbenchSource).toContain("departmentLabel: '业务部模块中心'")
 
     expect(homeSource).toMatch(/function getQuoteRoute\(path: string, factoryId: string = activeFactory\.value\.id\)[\s\S]{0,100}getFactoryScopedRoute\(path, factoryId as FactoryContextId\)/)
     expect(homeSource).toMatch(/router\.push\(getQuoteRoute\([\s\S]{0,120}`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/collaboration`,[\s\S]{0,80}quote\.factoryId/)

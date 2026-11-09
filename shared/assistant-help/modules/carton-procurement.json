@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "d1311859ef562a4fcc000b2092e1abbe2b0fc33466b0600e2578f208a459c435"
+        "sha256": "09ce9e7d837fbec7eb7d1760330d9fa1cb6c159cb2b61f6806e6461c5ee82b39"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -80,12 +80,12 @@
       {
         "path": "src/components/CartonSupplierReceiving.vue",
         "symbol": "resumeOrderSource",
-        "sha256": "a07985b29c423caa672d763c3035dc6a57fb78ce77b8f1cdb7ade0491e22dfd6"
+        "sha256": "8cede167328c05adc97272831047de9152e47554901efde8b59c4c54505d8970"
       },
       {
         "path": "backend/app/services/carton_supplier_portal.py",
         "symbol": "link_shipment_line",
-        "sha256": "cb9196e891fb12162b6bdb980fca501e2ba4403ea366add0d6f98c5cb6205fd3"
+        "sha256": "6e44b6185b2f904c09efa26b5d96b4c9af052b5b4c03a0727646b8c574bc65e3"
       },
       {
         "path": "backend/app/services/carton_contract_merge.py",
@@ -195,17 +195,17 @@
       {
         "path": "backend/app/services/carton_supplier_changes.py",
         "symbol": "def respond(",
-        "sha256": "29cfa93022b61cffe307752c55a59ed819f37aab8825fa567b2b22c0997927b2"
+        "sha256": "38bb4ca2eaee306deeeb83681e67e143f7dafb6e9fbfaf6c63bf1d92f7034801"
       },
       {
         "path": "src/components/CartonSupplierChangeTasks.vue",
         "symbol": "async function respond(",
-        "sha256": "3dfea6dd55067baa7984553123481fec0c233d5f2ef6cc9c1e37e035a926c632"
+        "sha256": "2e5570df0d011596ece858bb84f0a902a7323e8ccba6f865f948bde526633e6c"
       },
       {
         "path": "backend/app/services/carton_replenishment_supplier.py",
         "symbol": "def sources(",
-        "sha256": "605ab63f9dd47aa398f24822770af983d1a3af70102af683a2e0e0ae7b6710a8"
+        "sha256": "9c6e3ec89fa440db0eaeb94eb176d110e5797b2c670bdcfd34dde85a19e8ad25"
       },
       {
         "path": "backend/app/services/carton_special_receiving.py",
@@ -430,7 +430,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "80d1d91c5ae3147175226d9e3b72ce943a021505dba1bd3801db1a1ce9134ddd"
+        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
       },
       {
         "path": "src/components/CartonQuickUploadDialog.vue",
@@ -440,7 +440,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "80d1d91c5ae3147175226d9e3b72ce943a021505dba1bd3801db1a1ce9134ddd"
+        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
       },
       {
         "path": "backend/app/services/carton_print_split.py",
@@ -534,7 +534,7 @@
       }
     ],
     "knowledge_version": "2026-11-09-carton-sharing-and-order-time",
-    "verified_commit": "working-tree: order-only warehouse/supplier pickers and retained business links reviewed; browser verification blocked by occupied DevTools profile",
+    "verified_commit": "Reviewed the integrated carton workflows and their permission and version contracts",
     "status": "verified"
   }
 ]

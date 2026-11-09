@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     three_d_network_health_token: str = ""
     spray_ops_enabled: bool = False
     cutting_ops_enabled: bool = False
+    engineering_bom_enabled: bool = False
+    material_plan_enabled: bool = False
+    material_purchase_enabled: bool = False
     cutting_period_admin_acceptance: bool = False
     uv_ops_enabled: bool = False
     uv_ops_dispatch_enabled: bool = False
@@ -55,6 +58,8 @@ class Settings(BaseSettings):
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
+    mainland_invoice_enabled: bool = False
+    mainland_invoice_template_dir: str = str(BACKEND_DIR / "data" / "mainland-invoice-templates")
     online_documents_enabled: bool = False
     onlyoffice_jwt_secret: SecretStr = SecretStr("")
     onlyoffice_internal_url: str = "http://onlyoffice"

@@ -4,9 +4,52 @@ import { createYinhuiDraft, correctYinhuiDraft, loadYinhuiDraft, saveYinhuiDraft
 import { parseYinhuiMoq, validateYinhuiExport, yinhuiTotals } from '../customerPriceConverters/yinhui'
 import { createYinhuiCustomerQuoteWorkbook } from '../customerPriceConverters/yinhuiTemplate'
 import { draftSource } from './fixtures/yinhuiDraftSource'
-import { createXlsxWorkbook, parseXlsxWorkbook } from '../customerPriceConverters/xlsxLite'
+import { createXlsxWorkbook, parseXlsxWorkbook, type XlsxCellInput } from '../customerPriceConverters/xlsxLite'
 
 describe('Silverlit draft import', () => {
+  it.each(['valid', 'direct sum', 'wrong range', 'stale subtotal', 'stale total', 'quoted mismatch', 'zero', 'duplicate'])(
+    'reconciles an explicit molding subtotal allowance without bypassing price checks: %s', mode => {
+      const sheets = parseXlsxWorkbook(draftSource(false)).sheets.map(s => ({ ...s, rows: s.rows.map(r => [...r]) as XlsxCellInput[][] }))
+      const rows = sheets[0]!.rows
+      const raw = mode === 'zero' ? 0 : 1
+      rows[8]![9] = raw
+      rows[9] = []; rows[9]![9] = { formula: mode === 'wrong range' ? 'SUM(J8:J9)' : 'SUM(J9:J9)', value: mode === 'stale subtotal' ? 9 : raw }
+      rows[16]![3] = { formula: mode === 'direct sum' ? 'SUM(J9:J9)*1.05' : '$J$10*1.05', value: mode === 'stale total' ? 9 : raw * 1.05 }
+      rows[16]![4] = mode === 'quoted mismatch' ? 9 : raw * 1.05 * 1.1
+      if (mode === 'duplicate') rows[18]![1] = '啤工'
+      const bytes = createXlsxWorkbook(sheets)
+      const draft = createYinhuiDraft(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '银辉81209.xlsx')
+      if (['valid', 'direct sum', 'zero'].includes(mode)) {
+        expect(draft.result.quoteData.importIssues).toEqual([])
+        expect(yinhuiTotals(draft.result.quoteData).injection).toBeCloseTo(raw * 1.05 * 1.1, 10)
+        expect(yinhuiTotals(loadYinhuiDraft(saveYinhuiDraft(draft)).result.quoteData).injection).toBeCloseTo(raw * 1.05 * 1.1, 10)
+      } else {
+        expect(draft.result.quoteData.importIssues?.some(i => i.source.includes('啤工汇总倍率'))).toBe(true)
+        expect(() => validateYinhuiExport(draft.result.quoteData)).toThrow()
+        expect(yinhuiTotals(draft.result.quoteData).injection).toBeCloseTo(raw * 1.1, 10)
+      }
+    },
+  )
+  it.each([null, { formula: '1-1' }, 0] as XlsxCellInput[])('distinguishes blank amounts, missing formula caches and explicit zero: %j', value => {
+    const sheets = parseXlsxWorkbook(draftSource(false)).sheets.map(s => ({ ...s, rows: s.rows.map(r => [...r]) as XlsxCellInput[][] }))
+    sheets[0]!.rows[17]![3] = value
+    sheets[0]!.rows[17]![4] = 0
+    const bytes = createXlsxWorkbook(sheets)
+    const draft = createYinhuiDraft(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '银辉81209.xlsx')
+    const issue = draft.result.quoteData.importIssues?.find(i => i.source === '明细!D18')
+    if (value === null) {
+      expect(issue?.message).toContain('金额为空白')
+      expect(issue?.message).not.toContain('Excel')
+      expect(() => validateYinhuiExport(draft.result.quoteData)).toThrow(/确认/)
+      expect(() => validateYinhuiExport(draft.result.quoteData, { reviewNoticesConfirmed: true })).not.toThrow()
+      expect(draft.result.quoteData.mechanical[0]?.pricePending).toBe(true)
+    } else if (typeof value === 'object') {
+      expect(issue?.message).toContain('公式需先在 Excel 中计算并保存')
+    } else {
+      expect(issue).toBeUndefined()
+      expect(draft.result.quoteData.mechanical[0]?.amountHkd).toBe(0)
+    }
+  })
   it('restores reviewed additional routes and RMB but never trusts saved resin prices', () => {
     const draft = createYinhuiDraft(draftSource(false), '银辉81209.xlsx')
     Object.assign(draft.result.quoteData, { freight20FtHkd: .8, freight40HqHkd: 0, freightLocalHkd: 1.2, domesticPriceRmb: 55.615 })
@@ -101,6 +144,18 @@ describe('Silverlit draft import', () => {
     for (const changes of [[{ sheet: '明细', cell: 'E19', value: '' }], [{ sheet: '明细', cell: 'D19', value: 8 }]]) {
       const fixed = correctYinhuiDraft(draft, changes)
       expect(fixed.result.quoteData.importIssues?.some(i => i.source === '明细!D19')).toBe(true)
+    }
+  })
+  it.each([1, '#VALUE!', -1])('cannot turn an existing invalid or contradictory price %s into an acknowledged blank', price => {
+    const sheets = parseXlsxWorkbook(draftSource(false)).sheets
+    sheets[0]!.rows[17]![3] = price
+    sheets[0]!.rows[17]![4] = 9
+    const bytes = createXlsxWorkbook(sheets)
+    const draft = createYinhuiDraft(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '银辉81209.xlsx')
+    const cleared = correctYinhuiDraft(draft, [{ sheet: '明细', cell: 'D18', value: '' }])
+    for (const current of [cleared, loadYinhuiDraft(saveYinhuiDraft(cleared))]) {
+      expect(current.result.quoteData.importIssues?.find(i => i.source === '明细!D18')?.code).not.toBe('blank_amount')
+      expect(() => validateYinhuiExport(current.result.quoteData, { reviewNoticesConfirmed: true })).toThrow(/金额/)
     }
   })
   it('keeps a manually invalid MOQ pending across save/reopen, including uppercase extensions', () => {

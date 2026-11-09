@@ -222,6 +222,12 @@ export interface InternalQuoteRr2CostSummary {
   }
 }
 
+export interface InternalQuoteReferenceFxDraft {
+  revision: number
+  rmbHkd: string
+  hkdUsd: string
+}
+
 export interface InternalQuoteSidebarPricingDraft {
   markupTiers: Array<{ moq: number; markup_x: number; include_in_output: boolean }>
   selectedMoq: number

@@ -22,7 +22,7 @@ class RecognitionChoice(BaseModel):
 class RecognitionTask(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     id: str = Field(min_length=1, max_length=160)
-    kind: Literal["tool_match", "header", "cost_category"]
+    kind: Literal["tool_match", "header", "cost_category", "missing_amount"]
     target: str = Field(min_length=1, max_length=80)
     source: RecognitionEvidence
     context: list[RecognitionEvidence] = Field(default_factory=list, max_length=8)

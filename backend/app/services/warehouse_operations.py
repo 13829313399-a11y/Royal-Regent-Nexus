@@ -379,12 +379,85 @@ def projection(db, warehouse):
     return stock, entries
 
 
-def workspace(db, warehouse):
+def lock_cutting_returns(db):
+    from app.services.transaction_lock import lock_transaction
+    lock_transaction(db, 'cutting-master', FACTORY)
+    procurement.lock_factory(db)
+
+
+def warehouse_return_limits(db, entries, day, issue_id=None):
+    """Project how much a new warehouse return can deduct without changing count evidence."""
+    issues = {}
+    for row in ([entries.get(issue_id)] if issue_id else entries.values()):
+        if not row or row['kind'] != 'ISSUE' or row.get('reversed'):
+            continue
+        request = entries.get(row['data'].get('original_id'))
+        if request and request['kind'] == 'REQUEST' and request['data'].get('cutting_request'):
+            issues[row['id']] = row
+    if not issues:
+        return {}
+    if day > business_now().date():
+        raise HTTPException(422, '实际业务日期不能晚于今天')
+    date = day.isoformat()
+    ledger = {key: [] for key in issues}
+    for row in entries.values():
+        key = row['data'].get('original_id')
+        if key in ledger and row['kind'] in {'CUTTING_RECEIPT', 'RETURN'} and not row.get('reversed'):
+            ledger[key].append(row)
+    usage = {key: Decimal(0) for key in issues}
+    later_usage = set()
+    from app.services import cutting_usage
+    if inspect(db.connection()).has_table(cutting_usage.TABLE.name):
+        cutting_usage.ensure_schema(db)
+        history = cutting_usage.events(db)
+        for document in cutting_usage.documents(history).values():
+            if event := document['posted']:
+                entry = event['data']['entry']
+                key = entry['issue_id']
+                if key in issues:
+                    if entry['day'] > date:
+                        later_usage.add(key)
+                    else:
+                        usage[key] += decimal(entry['consumed_quantity']) + decimal(entry['loss_quantity'])
+        later_usage.update(event['data']['context']['issue_id'] for event in history
+                           if event['action'] == 'void' and event['data']['entry']['day'] > date)
+    result = {}
+    for key, issue in issues.items():
+        balance = -usage[key]
+        future = []
+        for row in sorted(ledger[key], key=lambda item: (item['business_date'], item['sequence'])):
+            quantity = decimal(row['data']['quantity']) * (1 if row['kind'] == 'CUTTING_RECEIPT' else -1)
+            if row['business_date'] <= date:
+                balance += quantity
+            else:
+                future.append(quantity)
+        limit = balance
+        for quantity in future:
+            balance += quantity
+            limit = min(limit, balance)
+        reason = ''
+        if date < issue['business_date']:
+            reason = '退料日期不能早于原发料日期。'
+        elif key in later_usage:
+            reason = '该日期之后有耗用或撤销记录，请核对退料日期及后续盘余依据。'
+        elif limit <= 0:
+            reason = '截至所选业务日期，扣除退仓、正常耗用和损耗后，没有可退的已签收余料。'
+        result[key] = {'day': date, 'quantity': text(Decimal(0) if reason else limit), 'reason': reason}
+    return result
+
+
+def workspace(db, warehouse, *, include_cutting_returns=False):
     ensure_schema(db)
+    if warehouse == 'fabric' and include_cutting_returns:
+        lock_cutting_returns(db)
     stock, entries = projection(db, warehouse)
     rows = list(entries.values())
     original_receipts = []
     if warehouse == 'fabric':
+        if include_cutting_returns:
+            limits = warehouse_return_limits(db, entries, business_now().date())
+            for key, limit in limits.items():
+                entries[key]['cutting_return_limit'] = limit
         from app.services.fabric_receipt_corrections import reversal_rows
         reversed_originals = reversal_rows(db)
         from app.schemas.warehouse_operations import WarehouseDocumentRequest

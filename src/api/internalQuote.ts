@@ -1,5 +1,5 @@
 import { http } from '@/lib/http'
-import type { InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode, InternalQuoteReadiness } from '@/types/internalQuoteDesk'
+import type { InternalQuoteReferenceFxDraft, InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode, InternalQuoteReadiness } from '@/types/internalQuoteDesk'
 
 export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
@@ -520,6 +520,8 @@ export interface ApiInternalQuoteFreightBaselineRow {
   lifting_hkd: string
 }
 
+export type { QuotePaperPrice } from '@/lib/internalQuotePaper'
+
 export interface ApiInternalQuotePricingBaseline {
   factory_id: string
   workshop_code: string
@@ -528,6 +530,7 @@ export interface ApiInternalQuotePricingBaseline {
   source_type: 'default' | 'custom'
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
   machine_prices: ApiInternalQuoteMachineBaselineRow[]
+  paper_prices?: import('@/lib/internalQuotePaper').QuotePaperPrice[]
   freight_routes: ApiInternalQuoteFreightBaselineRow[]
   updated_by: string
   updated_by_name: string
@@ -539,10 +542,12 @@ export interface InternalQuotePricingBaselineUpdateRequest {
   workshop_name: string
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
   machine_prices: ApiInternalQuoteMachineBaselineRow[]
+  paper_prices?: import('@/lib/internalQuotePaper').QuotePaperPrice[]
   freight_routes: ApiInternalQuoteFreightBaselineRow[]
 }
 
 export interface InternalQuoteReferenceMaterialsUpdateRequest {
+  paper_prices?: import('@/lib/internalQuotePaper').QuotePaperPrice[]
   revision: number
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
 }
@@ -883,6 +888,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       quoteId: string,
       sections: Array<{ sectionCode: InternalQuoteSectionCode; revision: number; payload: Record<string, unknown> }>,
       reason = '在连续报价页统一保存当前产品',
+      referenceFx?: InternalQuoteReferenceFxDraft,
     ) {
       const response = await client.put<ApiInternalQuoteWholeProductSave>(`/internal-quotes/${quoteId}/sections/save-all`, {
         sections: sections.map((section) => ({
@@ -891,6 +897,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
           payload: section.payload,
         })),
         reason,
+        ...(referenceFx ? { reference_fx: { revision: referenceFx.revision, rmb_hkd: referenceFx.rmbHkd, hkd_usd: referenceFx.hkdUsd } } : {}),
       })
       return response.data
     },

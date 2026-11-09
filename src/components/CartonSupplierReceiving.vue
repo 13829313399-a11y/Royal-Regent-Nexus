@@ -146,7 +146,8 @@ const entryPapers = computed(() => new Map(Object.entries(props.receiptEntryPape
 const chosenReceiptShipment = ref('')
 const unifiedReceiptBusy = ref(false)
 const chooseReceiptShipment = computed(() => !requestedShipmentId.value && requestedShipmentIds.value.size > 1)
-const receiptShipmentId = computed(() => requestedShipmentId.value || (chooseReceiptShipment.value ? chosenReceiptShipment.value : ''))
+const receiptShipmentId = computed(() => requestedShipmentId.value || (chooseReceiptShipment.value
+  ? chosenReceiptShipment.value : [...requestedShipmentIds.value][0] || ''))
 const filteredShipments = computed(() => {
   const shipments = data.value?.shipments ?? []
   if (requestedShipmentIds.value.size) return shipments.filter(row => requestedShipmentIds.value.has(row.id))
@@ -234,7 +235,7 @@ watch([
 }, { immediate: true })
 defineExpose({ refresh: load, resumeOrderSource })
 onBeforeUnmount(() => { generation++; scopeGeneration++; candidateGeneration++; suspendedReceiptDraft = null })
-watch([requestedShipmentId, () => props.receiptEntryPapers], () => {
+watch([() => [...requestedShipmentIds.value].join(','), () => props.receiptEntryPapers], () => {
   chosenReceiptShipment.value = ''
   openedDeepLinkKey = ''
   openDeepLinkedShipment()

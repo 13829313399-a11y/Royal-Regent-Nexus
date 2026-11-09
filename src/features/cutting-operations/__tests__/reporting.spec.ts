@@ -20,9 +20,9 @@ let wrapper:VueWrapper,router:Router
 const clone=<T,>(v:T):T=>JSON.parse(JSON.stringify(v))
 function button(text:string){const b=wrapper.findAll('button').find(b=>b.text()===text);if(!b)throw Error('Missing '+text);return b}
 function field(label:string){const l=wrapper.findAll('label').find(l=>l.text().startsWith(label));if(!l)throw Error('Missing field '+label);return l.find('input,select,textarea')}
-async function open(permissions=['read','report_write','report_review','handover_write','return_write','acceptance_write'],data=view){
+async function open(permissions=['read','report_write','report_review','handover_write','return_write','acceptance_write'],data=view,orders=[order]){
   vi.mocked(cuttingApi.access).mockResolvedValue({enabled:true,schema_ready:true,orders_schema_ready:true,reporting_schema_ready:true,permissions})
-  vi.mocked(ordersApi.list).mockResolvedValue({data:[order],page:1,page_size:50,total:1})
+  vi.mocked(ordersApi.list).mockResolvedValue({data:orders,page:1,page_size:50,total:orders.length})
   vi.mocked(reportingApi.read).mockResolvedValue(clone(data))
   router=createRouter({history:createMemoryHistory(),routes:[...cuttingOperationsRoutes,{path:'/modules/production',component:{template:'<div>生产部</div>'}}]})
   await router.push(path);await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
@@ -33,6 +33,36 @@ beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(fa
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it('uses the successfully applied date for new reports, even after a failed statistics refresh',async()=>{
+    await open()
+    await field('统计截至日期').setValue('2026-10-09')
+    expect(wrapper.text()).toContain('日期尚未应用')
+    vi.mocked(reportingApi.read).mockRejectedValueOnce({response:{status:503,data:{detail:'暂时无法读取统计'}}})
+    await wrapper.get('form:has(#cutting-statistics-date)').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('暂时无法读取统计')
+    await button('填报此任务').trigger('click')
+    expect(field('生产／业务日期').element).toHaveProperty('value','2026-10-10')
+    await button('取消编辑').trigger('click')
+    vi.mocked(reportingApi.read).mockResolvedValueOnce({...clone(view),as_of:'2026-10-09'})
+    await wrapper.get('form:has(#cutting-statistics-date)').trigger('submit')
+    await flushPromises()
+    expect(router.currentRoute.value.query.day).toBe('2026-10-09')
+    expect(wrapper.text()).not.toContain('日期尚未应用')
+    await button('填报此任务').trigger('click')
+    expect(field('生产／业务日期').element).toHaveProperty('value','2026-10-09')
+  })
+  it('starts a different order with its own default statistics date',async()=>{
+    const second={...order,line_id:'line-2',snapshot:{...order.snapshot,reference_no:'CUT-2'}}
+    await open(undefined,view,[order,second])
+    await field('统计截至日期').setValue('2026-10-09')
+    vi.mocked(reportingApi.read).mockResolvedValueOnce({...clone(view),line_id:'line-2',as_of:'2026-10-11'})
+    await wrapper.findAll('button').filter(b=>b.text()==='查看填数')[1]!.trigger('click');await flushPromises()
+    expect(reportingApi.read).toHaveBeenLastCalledWith('line-2',undefined,1,undefined,undefined)
+    expect(field('统计截至日期').element).toHaveProperty('value','2026-10-11')
+    await button('填报此任务').trigger('click')
+    expect(field('生产／业务日期').element).toHaveProperty('value','2026-10-11')
+  })
   it('preserves draft fields across history pages and rejects late history after a successful post',async()=>{
     const first=clone(view);first.history_pagination={page:1,page_size:20,total:45}
     await open(undefined,first);await form()

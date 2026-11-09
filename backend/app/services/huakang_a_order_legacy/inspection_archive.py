@@ -279,6 +279,21 @@ def _row_range_baselines(tokens, formula_sheet, maps):
     """
     significant = [(i, token) for i, token in enumerate(tokens) if token.type != 'WHITE-SPACE']
     overrides, recognized = {}, set()
+    # Unified Casdon templates use the equally valid ROW(range)-MIN(ROW(range))+1.
+    # MIN is a positional range origin, not a link to the first order's row.
+    for pos in range(len(significant) - 9):
+        window = significant[pos:pos + 10]
+        values = [t.value.upper() for _, t in window]
+        if not (values[0] == values[5] == 'ROW(' and values[2:5] == [')', '-', 'MIN(']
+                and values[7:] == [')', ')', '+']):
+            continue
+        if pos + 10 >= len(significant) or significant[pos + 10][1].value != '1':
+            continue
+        left, right = (CELL_REF.fullmatch(window[i][1].value) for i in (1, 6))
+        if not left or not right or not left.group('r2') or not right.group('r2'):
+            continue
+        if _reference_parts(left, formula_sheet) == _reference_parts(right, formula_sheet):
+            recognized.update((window[0][0], window[5][0]))
     for pos in range(len(significant) - 8):
         window = significant[pos:pos + 9]
         values = [t.value.upper() for _, t in window]

@@ -21,8 +21,9 @@ InternalQuoteSectionCode = Literal[
     "hair",
     "assembly",
 ]
-MANDATORY_SECTION_CODES = ("sales", "engineering", "assembly")
-OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing", "hair")
+MANDATORY_SECTION_CODES = ("sales", "assembly")
+DEFAULT_SECTION_CODES = ("sales", "engineering", "assembly")
+OPTIONAL_SECTION_CODES = ("engineering", "electronic", "molding", "painting", "slush", "sewing", "hair")
 SECTION_CODE_ORDER = (
     "engineering",
     "molding",
@@ -46,7 +47,7 @@ def _validate_participating_sections(
 ) -> list[InternalQuoteSectionCode]:
     missing = [code for code in MANDATORY_SECTION_CODES if code not in values]
     if missing:
-        raise ValueError("业务部、工程部、装配部必须参与内部报价")
+        raise ValueError("业务部、装配部必须参与内部报价")
     return _normalize_section_codes(values)
 
 
@@ -114,7 +115,7 @@ class InternalQuoteCreateRequest(BaseModel):
     pricing_components: list[str] = Field(default_factory=list, max_length=50)
     participating_sections: list[InternalQuoteSectionCode] = Field(
         default_factory=lambda: [
-            code for code in SECTION_CODE_ORDER if code in MANDATORY_SECTION_CODES
+            code for code in SECTION_CODE_ORDER if code in DEFAULT_SECTION_CODES
         ]
     )
 
@@ -367,12 +368,39 @@ class InternalQuoteFreightBaselineRow(BaseModel):
         return _nonnegative_decimal_text(value, label)
 
 
+class InternalQuotePaperPriceRow(BaseModel):
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    name: str = Field(min_length=1, max_length=128)
+    price_factor_hkd: str = Field(min_length=1, max_length=32)
+    remark: str = Field(default="", max_length=500)
+
+    @field_validator("name", "remark")
+    @classmethod
+    def clean_text(cls, value):
+        return value.strip()
+
+    @field_validator("price_factor_hkd")
+    @classmethod
+    def validate_price(cls, value):
+        return _positive_decimal_text(value, "纸材系数 HKD")
+
+
+def _validate_paper_rows(rows):
+    if rows is None:
+        return
+    keys = [row.key for row in rows]
+    names = [row.name.casefold() for row in rows]
+    if any(not name for name in names) or len(set(keys)) != len(keys) or len(set(names)) != len(names):
+        raise ValueError("纸材名称不能为空，名称和标识不能重复")
+
+
 class InternalQuotePricingBaselineUpdateRequest(BaseModel):
     revision: int = Field(ge=0)
     workshop_name: str = Field(default="华兴", min_length=1, max_length=128)
     material_prices: list[InternalQuoteMaterialBaselineRow] = Field(min_length=1, max_length=200)
     machine_prices: list[InternalQuoteMachineBaselineRow] = Field(min_length=1, max_length=100)
     freight_routes: list[InternalQuoteFreightBaselineRow] | None = Field(default=None, min_length=1, max_length=50)
+    paper_prices: list[InternalQuotePaperPriceRow] | None = Field(default=None, max_length=100)
 
     @field_validator("workshop_name")
     @classmethod
@@ -381,6 +409,7 @@ class InternalQuotePricingBaselineUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_unique_rows(self):
+        _validate_paper_rows(self.paper_prices)
         material_keys = [
             (row.material.casefold(), row.grade.casefold()) for row in self.material_prices
         ]
@@ -411,6 +440,7 @@ class InternalQuotePricingBaselineOut(BaseModel):
     material_prices: list[InternalQuoteMaterialBaselineRow]
     machine_prices: list[InternalQuoteMachineBaselineRow]
     freight_routes: list[InternalQuoteFreightBaselineRow]
+    paper_prices: list[InternalQuotePaperPriceRow] = Field(default_factory=list)
     updated_by: str
     updated_by_name: str
     updated_at: str
@@ -511,7 +541,7 @@ class InternalQuoteParticipationUpdateRequest(BaseModel):
     ) -> list[InternalQuoteSectionCode]:
         invalid = [code for code in values if code not in OPTIONAL_SECTION_CODES]
         if invalid:
-            raise ValueError("只能追加电子部、啤机部、喷油部、搪胶部或车缝部")
+            raise ValueError("只能追加工程部、电子部、啤机部、喷油部、搪胶部、车缝部或车发部")
         return _normalize_section_codes(values)
 
 
@@ -526,7 +556,7 @@ class InternalQuoteParticipationRemoveRequest(BaseModel):
     ) -> list[InternalQuoteSectionCode]:
         invalid = [code for code in values if code not in OPTIONAL_SECTION_CODES]
         if invalid:
-            raise ValueError("业务部、工程部和装配部为固定参与部门，不能移除")
+            raise ValueError("业务部和装配部为固定参与部门，不能移除")
         return _normalize_section_codes(values)
 
 
@@ -609,7 +639,26 @@ class InternalQuoteWholeProductSectionSave(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class InternalQuoteReferenceFxUpdateRequest(BaseModel):
+    revision: int = Field(ge=1)
+    rmb_hkd: str = Field(min_length=1, max_length=32)
+    hkd_usd: str = Field(min_length=1, max_length=32)
+
+    @field_validator("rmb_hkd", "hkd_usd")
+    @classmethod
+    def validate_fx(cls, value: str, info) -> str:
+        label = "RMB→HKD 汇率" if info.field_name == "rmb_hkd" else "HKD→USD 汇率"
+        normalized = _positive_decimal_text(value, label)
+        parsed = Decimal(normalized).normalize()
+        if parsed > Decimal("1000"):
+            raise ValueError(f"{label}不能大于 1000")
+        if parsed.as_tuple().exponent < -2:
+            raise ValueError(f"{label}最多保留 2 位小数")
+        return format(parsed, "f")
+
+
 class InternalQuoteWholeProductSaveRequest(BaseModel):
+    reference_fx: InternalQuoteReferenceFxUpdateRequest | None = None
     sections: list[InternalQuoteWholeProductSectionSave] = Field(min_length=1, max_length=9)
     reason: str = Field(default="在连续报价页统一保存当前产品", max_length=2000)
 
@@ -694,30 +743,14 @@ class InternalQuoteReferenceSyncRequest(BaseModel):
         return value.strip()
 
 
-class InternalQuoteReferenceFxUpdateRequest(BaseModel):
-    revision: int = Field(ge=1)
-    rmb_hkd: str = Field(min_length=1, max_length=32)
-    hkd_usd: str = Field(min_length=1, max_length=32)
-
-    @field_validator("rmb_hkd", "hkd_usd")
-    @classmethod
-    def validate_fx(cls, value: str, info) -> str:
-        label = "RMB→HKD 汇率" if info.field_name == "rmb_hkd" else "HKD→USD 汇率"
-        normalized = _positive_decimal_text(value, label)
-        parsed = Decimal(normalized).normalize()
-        if parsed > Decimal("1000"):
-            raise ValueError(f"{label}不能大于 1000")
-        if parsed.as_tuple().exponent < -2:
-            raise ValueError(f"{label}最多保留 2 位小数")
-        return format(parsed, "f")
-
-
 class InternalQuoteReferenceMaterialsUpdateRequest(BaseModel):
     revision: int = Field(ge=1)
     material_prices: list[InternalQuoteMaterialBaselineRow] = Field(default_factory=list, max_length=200)
+    paper_prices: list[InternalQuotePaperPriceRow] | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def validate_unique_rows(self):
+        _validate_paper_rows(self.paper_prices)
         material_keys = [
             (row.material.casefold(), row.grade.casefold()) for row in self.material_prices
         ]

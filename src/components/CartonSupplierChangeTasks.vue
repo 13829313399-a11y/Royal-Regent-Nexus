@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { createSupplierReadQueue, supplierReadQueueKey } from '@/features/carton-procurement/supplierReadQueue'
 import { cartonSupplierChangesApi as api, type SupplierChangeAction, type SupplierChangeTask, type SupplierChangeLine, type SupplierChangeFilter, type SupplierChangePendingState } from '@/api/cartonSupplierChanges'
 import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
@@ -15,6 +16,8 @@ const readError = ref('')
 const responseError = ref<{ rowKey: string; message: string } | null>(null)
 const refreshButton = ref<HTMLButtonElement | null>(null)
 const responseDisabled = computed(() => busy.value || loading.value || Boolean(readError.value))
+const readQueue = inject(supplierReadQueueKey, undefined) ?? createSupplierReadQueue()
+let readController = new AbortController(), lastReadStarted = 0
 const dates = reactive<Record<string, string>>({}), reasons = reactive<Record<string, string>>({}), requests = new Map<string, string>()
 const produced = reactive<Record<string, Record<string, string>>>({})
 async function downloadPrint(row: SupplierChangeTask, file: PrintFile) {
@@ -67,6 +70,7 @@ const beforeMaterial = (row: SupplierChangeTask, line: SupplierChangeLine) =>
   material(line.before_material) || (row.source_kind === 'PRINT' ? material(line) : '')
 let generation = 0, readSequence = 0, controller = new AbortController(), timer: ReturnType<typeof setInterval> | undefined
 watch(context, () => {
+  readController.abort(); lastReadStarted = 0
   generation++; readSequence++; controller.abort(); controller = new AbortController(); tasks.value = []; error.value = ''; readError.value = ''; success.value = ''; busy.value = false; loading.value = false; requests.clear()
   responseError.value = null
   for (const name of Object.keys(dates)) delete dates[name]
@@ -77,18 +81,37 @@ watch(context, () => {
 async function load() {
   const token = generation, scopes = factories.value, sequence = ++readSequence
   if (!scopes.length || busy.value) return
+  readController.abort(); readController = new AbortController()
+  const signal = readController.signal
+  lastReadStarted = Date.now()
   loading.value = true
+  const failures: Record<string, string> = {}
+  readError.value = ''; error.value = ''
   try {
-    const results = await Promise.all(scopes.map(factory => api.list(factory, props.internal, controller.signal)))
+    await Promise.allSettled(scopes.map(async factory => {
+      try {
+        const result = await readQueue.run(() => api.list(factory, props.internal, signal), signal)
+        if (token !== generation || sequence !== readSequence || signal.aborted) return
+        if (result.items.some(row => row.factory_id !== factory)) throw new Error('返回厂区与请求不一致，请重新读取')
+        for (const row of result.items) {
+          if (!(key(row) in dates)) dates[key(row)] = row.promised_date || row.planned_date
+          if (!(key(row) in reasons)) reasons[key(row)] = ''
+          if (!produced[key(row)]) produced[key(row)] = {}
+        }
+        tasks.value = [...tasks.value.filter(row => row.factory_id !== factory), ...result.items]
+      } catch (cause) {
+        if (token !== generation || sequence !== readSequence || signal.aborted) return
+        tasks.value = tasks.value.filter(row => row.factory_id !== factory)
+        failures[factory] = `${factoryName(factory)}：${getApiErrorMessage(cause)}`
+      }
+      readError.value = Object.values(failures).join('；'); error.value = readError.value
+    }))
     if (token !== generation || sequence !== readSequence) return
-    tasks.value = results.flatMap(result => result.items)
     for (const row of tasks.value) {
       if (!(key(row) in dates)) dates[key(row)] = row.promised_date || row.planned_date
       if (!(key(row) in reasons)) reasons[key(row)] = ''
       if (!produced[key(row)]) produced[key(row)] = {}
     }
-    error.value = ''
-    readError.value = ''
   } catch (cause) { if (token === generation && sequence === readSequence) { readError.value = getApiErrorMessage(cause); error.value = readError.value } }
   finally { if (token === generation && sequence === readSequence) loading.value = false }
 }
@@ -120,11 +143,11 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
   } catch (cause) { if (token === generation) fail(`回应结果待核对：${getApiErrorMessage(cause)}`) }
   finally { if (token === generation) busy.value = false }
 }
-function refreshOnFocus() { if (document.visibilityState !== 'hidden' && !busy.value && !loading.value) void load() }
+function refreshOnFocus() { if (document.visibilityState !== 'hidden' && Date.now() - lastReadStarted >= 45000 && !busy.value && !loading.value) void load() }
 function refresh() { page.value = 1; return load() }
 defineExpose({ refresh })
 onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus) })
-onBeforeUnmount(() => { generation++; controller.abort(); if (timer) clearInterval(timer); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus) })
+onBeforeUnmount(() => { generation++; controller.abort(); readController.abort(); if (timer) clearInterval(timer); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus) })
 </script>
 
 <template>

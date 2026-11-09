@@ -207,7 +207,19 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
     "system:permission_catalog_read",
 )
 
+MATERIAL_PURCHASE_PERMISSION_CODES = tuple('material_purchase:' + action for action in ('read', 'write', 'approve', 'release'))
+
+MATERIAL_PLAN_PERMISSION_CODES = ('material_plan:read', 'material_plan:draft_write', 'material_plan:submit',
+    'material_plan:self_review', 'material_plan:dates_read', 'material_plan:dates_write')
+
+ENGINEERING_BOM_PERMISSION_CODES = tuple('engineering_bom:' + action for action in (
+    'read', 'material_write', 'material_approve', 'bom_write', 'bom_approve', 'import',
+))
+
 BUSINESS_PERMISSION_CODES = (
+    *ENGINEERING_BOM_PERMISSION_CODES,
+    *MATERIAL_PLAN_PERMISSION_CODES,
+    *MATERIAL_PURCHASE_PERMISSION_CODES,
     *INDONESIA_MATERIAL_PERMISSION_CODES,
     *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     *CUTTING_OPS_PERMISSION_CODES,
@@ -233,6 +245,9 @@ BUSINESS_PERMISSION_CODES = (
 # catalog entry supports independent disabling and explicit IAM denies.
 MODULE_FEEDBACK_PERMISSION_CODES = ("module_feedback:submit", "module_feedback:manage")
 
+# Explicit per-factory/department grants; never expand built-in business roles.
+MAINLAND_INVOICE_PERMISSION_CODES = ("mainland_invoice:generate",)
+
 APPLICATION_PERMISSION_CODES = tuple(
-    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES))
+    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES, *MAINLAND_INVOICE_PERMISSION_CODES))
 )

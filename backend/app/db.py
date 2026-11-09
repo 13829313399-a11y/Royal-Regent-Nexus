@@ -513,6 +513,20 @@ def ensure_internal_quote_baseline_freight_schema_ready() -> None:
     )
 
 
+def ensure_internal_quote_paper_schema_ready() -> None:
+    """Never let create_all silently bypass the additive paper-price migration."""
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if INTERNAL_QUOTE_BASELINE_TABLE not in inspector.get_table_names():
+            return
+        columns = {column["name"] for column in inspector.get_columns(INTERNAL_QUOTE_BASELINE_TABLE)}
+        if "paper_prices_json" in columns:
+            return
+    raise RuntimeError(
+        "内部报价纸材目录尚未完成迁移 20261107_0193；请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_three_d_printing_schema_ready() -> None:
     """Reject partial/old schemas before create_all can disguise a missed migration."""
     with engine.connect() as connection:
@@ -892,6 +906,9 @@ def init_db() -> None:
         fabric_procurement,  # noqa: F401
         fabric_receiving,  # noqa: F401
         fabric_master,  # noqa: F401
+        engineering_bom,  # noqa: F401
+        material_plan,  # noqa: F401
+        material_purchase,  # noqa: F401
         material_handover,  # noqa: F401
         carton_stocktake,  # noqa: F401
         carton_positions,
@@ -935,6 +952,7 @@ def init_db() -> None:
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
+    ensure_internal_quote_paper_schema_ready()
     ensure_three_d_printing_schema_ready()
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
@@ -981,8 +999,8 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            # Cutting and JP intake require explicit migrations.
-                            if not name.startswith(("cutting_ops_", "jp_intake_"))
+                            # Cutting, engineering and JP intake require explicit migrations.
+                            if not name.startswith(("cutting_ops_", "jp_intake_", "engineering_bom_", "material_plan_", "material_purchase_"))
                             and not name.startswith("online_document")
                             and (not name.startswith("carton_special_") or "auth_users" not in existing_tables)
                             and (name != "carton_price_reviews" or "auth_users" not in existing_tables)

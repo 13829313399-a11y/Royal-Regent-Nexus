@@ -62,10 +62,11 @@ describe('Silverlit Tool Plan manual release', () => {
       {moldNo:'',partNo:'',description:'Cover',usage:2,cavity:2,weightG:0},
     ])
   })
-  it('blocks a Chinese fallback Tool Plan name until it is translated or manually corrected', () => {
+  it('allows an untranslated Tool Plan name after informed confirmation', () => {
     const result = convertYinhuiInternalQuote(mismatchedToolPlan(), '银辉00012.xlsx')
     result.quoteData.tools[0]!.description = '透明面盖'
-    expect(() => validateYinhuiExport(result.quoteData)).toThrow(/补全英文物料名称.*透明面盖/)
+    expect(() => validateYinhuiExport(result.quoteData)).toThrow(/确认/)
+    expect(() => validateYinhuiExport(result.quoteData, { reviewNoticesConfirmed: true })).not.toThrow()
     result.quoteData.tools[0]!.description = 'Clear Cover'
     expect(() => validateYinhuiExport(result.quoteData)).not.toThrow()
   })

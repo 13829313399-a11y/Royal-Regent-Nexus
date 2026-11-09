@@ -10,7 +10,8 @@ describe('Silverlit draft controls', () => {
   it('shows all source errors, applies corrections and allows saving the rebuilt draft', async () => {
     const draft = createYinhuiDraft(draftSource(), '银辉81209.xlsx')
     const wrapper = mount(YinhuiDraftReview, { props: { draft } })
-    expect(wrapper.text()).toContain('3 项原表问题')
+    expect(wrapper.text()).toContain('2 项原表问题')
+    expect(wrapper.text()).toContain('1 项金额待补')
     await wrapper.get('input[aria-label="补正 明细!L19"]').setValue('5K')
     await wrapper.get('input[aria-label="补正 明细!D18"]').setValue('1')
     await wrapper.get('input[aria-label="补正 明细!E19"]').setValue('2.2')
@@ -39,7 +40,7 @@ describe('Silverlit draft controls', () => {
     const draft = createYinhuiDraft(draftSource(), '银辉81209.xlsx')
     const wrapper = mount(YinhuiQuoteReview, { props: { result: draft.result, confirmed: false } })
     await flushPromises()
-    expect(wrapper.get('[data-testid="yinhui-export-issues"]').text()).toContain('明细!D18')
+    expect(wrapper.get('[data-testid="yinhui-review-notices"]').text()).toContain('明细!D18')
     expect(wrapper.get('[data-testid="yinhui-export-issues"]').text()).toContain('明细!D19')
     await wrapper.get('[data-testid="yinhui-moq"]').setValue('5K')
     expect(draft.result.quoteData.moq).toBe(5000)

@@ -90,7 +90,10 @@ def test_no_positive_carton_requirement_is_inferred(tmp_path, instruction):
     record = _parse(tmp_path, instruction)
     assert record["outer_carton_sticker"] == ""
     assert record["outer_carton_sticker_sources"] == []
-    assert record["barcode"] == "123456789012"
+    if instruction == "UPC Code: 123456789012; EAN Code : 1234567890128":
+        assert record["barcode"] == "" and record["_360_barcode_conflict"]
+    else:
+        assert record["barcode"] == "123456789012"
 
 
 def test_requirement_is_not_joined_across_pdf_pages(tmp_path):

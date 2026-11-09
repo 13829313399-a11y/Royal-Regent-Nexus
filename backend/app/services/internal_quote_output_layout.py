@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.models.internal_quote import InternalQuoteAlternative, InternalQuoteAttachment, InternalQuoteSection, InternalQuoteImportBatch
 from app.schemas.internal_quote import InternalQuoteCostPreviewRequest, InternalQuoteWholeProductSaveRequest
@@ -18,7 +18,7 @@ from app.services.internal_quote import (
     _get_quote, _json_object, _rr2_cost_summary, ensure_quote_permission,
     ensure_section_permission, preview_quote_costs, quote_write, save_whole_product_sections,
     _can_project_molding_read, _project_molding_parts, _molding_projection_warning,
-    molding_projection_pending, _authoritative_factory_quote,
+    molding_projection_pending, _authoritative_factory_quote, _pricing_completeness,
 )
 from app.services.internal_quote_calculator import canonical_json
 from app.services.internal_quote_artifacts import _can_access_attachment_department
@@ -202,7 +202,7 @@ def _prepare(db, quote_id, request, user, *, persist_images=False):
 
 
 
-def _render(db, loaded, preview=None, drafts=(), *, user):
+def _render(db, loaded, preview=None, drafts=(), *, user, include_source_workbooks=True):
     quote, sections, reference, token, editable = loaded
     snapshot = _json_object(reference.snapshot_json)
     projection_pending = _projection_pending(db, quote, sections)
@@ -233,15 +233,21 @@ def _render(db, loaded, preview=None, drafts=(), *, user):
         group["editable"] = group["section"] in editable
     # Match download ordering and include every retained workbook as read-only
     # evidence. Source sheets use saved values outside the formula evaluator.
-    attachments = list(db.scalars(select(InternalQuoteAttachment).where(
+    attachment_query = select(InternalQuoteAttachment).where(
         InternalQuoteAttachment.quote_id == quote.id,
-    ).order_by(InternalQuoteAttachment.uploaded_at, InternalQuoteAttachment.id)).all())
+    ).order_by(InternalQuoteAttachment.uploaded_at, InternalQuoteAttachment.id)
+    if not include_source_workbooks:
+        # The initial table only needs image bytes; do not read/parse every
+        # uploaded workbook while the user waits for the quotation itself.
+        attachment_query = attachment_query.options(defer(InternalQuoteAttachment.content))
+    attachments = list(db.scalars(attachment_query).all())
     source_attachments = [attachment for attachment in attachments
                           if _can_access_attachment_department(user, quote, attachment.department)]
     workbook = build_internal_quote_workbook_model(quote, sections, {}, snapshot, summary, context, source_attachments, allow_incomplete=True)
     try:
         _bind_aggregate_cells(workbook, groups)
-        _append_spreadsheet_attachment_sheets(workbook, source_attachments, cached_values_only=True)
+        if include_source_workbooks:
+            _append_spreadsheet_attachment_sheets(workbook, source_attachments, cached_values_only=True)
         sheets, errors = serialize_workbook(workbook)
     finally:
         workbook.close()
@@ -250,8 +256,9 @@ def _render(db, loaded, preview=None, drafts=(), *, user):
             field.pop("path")
             field.pop("owner_path")
             field.pop("note_key")
-    warnings = [{"message": f"{s.department_name}资料尚未完成或需要重新计算，当前合计不完整。"}
-                for s in sections if s.is_required and (s.calculation_status != "valid" or s.dependency_status != "current")]
+    incomplete = preview.incomplete_sections if preview is not None else _pricing_completeness(quote, sections)
+    warnings = [{"message": f"{item['section_name']}：{item['reason']}，当前合计不完整。"}
+                for item in incomplete]
     warnings.extend(warning for section in sections if section.is_required and section.department == "sewing"
                     for warning in _json_object(section.calculation_json).get("warnings", [])
                     if warning.get("code") == "sewing_quoted_price_pending")
@@ -280,16 +287,18 @@ def _render(db, loaded, preview=None, drafts=(), *, user):
                                      for section in sections if section.is_required
                                      for item in _json_object(section.payload_json).get("removed_amount_adjustments", [])],
             "import_sources": sources,
+            "source_workbooks_pending": not include_source_workbooks and any(
+                attachment.file_name.lower().endswith((".xlsx", ".xlsm", ".xls")) for attachment in source_attachments),
             "read_only": not editable, "warnings": [*warnings, *(preview.warnings if preview is not None else [])]}
 
 
-def get_output_layout(db: Session, quote_id: str, user: AuthContext):
-    return _render(db, _load(db, quote_id, user), user=user)
+def get_output_layout(db: Session, quote_id: str, user: AuthContext, *, include_source_workbooks=True):
+    return _render(db, _load(db, quote_id, user), user=user, include_source_workbooks=include_source_workbooks)
 
 
-def preview_output_layout(db: Session, quote_id: str, payload: OutputLayoutEdits, user: AuthContext):
+def preview_output_layout(db: Session, quote_id: str, payload: OutputLayoutEdits, user: AuthContext, *, include_source_workbooks=True):
     loaded, drafts, preview = _prepare(db, quote_id, payload, user)
-    return _render(db, loaded, preview, drafts, user=user)
+    return _render(db, loaded, preview, drafts, user=user, include_source_workbooks=include_source_workbooks)
 
 
 @quote_write

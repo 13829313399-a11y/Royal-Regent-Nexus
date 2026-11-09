@@ -83,7 +83,7 @@ function resetFilters() { filter.value = 'CURRENT'; keyword.value = ''; emit('up
 const statusDrafts = ref<Record<string, QuickAssetStatus | ''>>({})
 const audienceDrafts = ref<Record<string, QuickAssetAudience>>({})
 const audienceLabel = (asset: QuickAsset) => asset.purpose === 'EVIDENCE' || asset.sharing_mode === 'INTERNAL' ? '仅内部可见'
-  : asset.sharing_mode === 'SUPPLIER' ? `内部与${asset.shared_supplier_name || '对应供应商'}共享` : '沿用原订单共享规则'
+  : !asset.owner_department ? '历史资料，归属待核实' : asset.sharing_mode === 'SUPPLIER' ? `内部与${asset.shared_supplier_name || '对应供应商'}共享` : '沿用原订单共享规则'
 const allSupplierFactories = computed(() => props.audience === 'supplier' && (!props.factoryId || props.factoryId === 'ALL'))
 const requestedFactories = computed(() => allSupplierFactories.value ? [...new Set(props.supplierFactories || [])] : props.factoryId && props.factoryId !== 'ALL' ? [props.factoryId] : [])
 function readableDepartments(factory: string): AssetDepartment[] {

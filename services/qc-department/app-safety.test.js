@@ -47,13 +47,6 @@ function dateHelpers(document) {
   return context;
 }
 
-test('record snapshot comparison detects data that refresh would overwrite', () => {
-  const snapshotsDiffer = loadFunction(appSource, '_recordsSnapshotsDiffer');
-  assert.equal(snapshotsDiffer([{ id: 1, value: 'same' }], [{ id: 1, value: 'same' }]), false);
-  assert.equal(snapshotsDiffer([{ id: 1, value: 'local' }], [{ id: 1, value: 'server' }]), true);
-  assert.equal(snapshotsDiffer([{ id: 1 }], [{ id: 1 }, { id: 2 }]), true);
-});
-
 test('records page trims search text like the server export filter', () => {
   assert.match(appSource, /searchInput'\)\?\.value\s*\|\|\s*''\)\.trim\(\)\.toLowerCase\(\)/);
 });

@@ -77,7 +77,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "80d1d91c5ae3147175226d9e3b72ce943a021505dba1bd3801db1a1ce9134ddd"
+        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
       },
       {
         "path": "src/components/CartonQuickUploadDialog.vue",
@@ -87,7 +87,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "80d1d91c5ae3147175226d9e3b72ce943a021505dba1bd3801db1a1ce9134ddd"
+        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
       },
       {
         "path": "backend/app/services/carton_print_split.py",
@@ -117,7 +117,7 @@
       {
         "path": "backend/app/services/carton_asset_quick.py",
         "symbol": "def association_blocker(",
-        "sha256": "302d5c746b5044c64739a2f25731cad514a0b8c752c7a095c8546ddf833611da"
+        "sha256": "f7c14704c916dbb3f8c1ad64a5a7d8a673376bd9e764abc457ea8856894a91cd"
       },
       {
         "path": "backend/app/services/carton_mark_assets.py",
@@ -126,7 +126,7 @@
       }
     ],
     "knowledge_version": "2026-11-09-carton-sharing-and-order-time",
-    "verified_commit": "working-tree: order-only warehouse/supplier pickers and retained business links reviewed; browser verification blocked by occupied DevTools profile",
+    "verified_commit": "Reviewed the integrated carton workflows and their permission and version contracts",
     "status": "verified"
   }
 ]
