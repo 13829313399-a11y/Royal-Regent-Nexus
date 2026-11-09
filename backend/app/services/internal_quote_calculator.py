@@ -11,9 +11,10 @@ from app.models.internal_quote import InternalQuotePricingBaseline
 from app.models.molding_sample import MoldingSampleMaterialPrice
 from app.services.internal_quote_prefill import material_family, _match_token
 from app.services.internal_quote_sewing import is_sewing_labor, uses_sewing_quoted_price
+from app.services.internal_quote_tax import deduction_excluded
 
 
-FORMULA_VERSION = "rr2-2026-v14"
+FORMULA_VERSION = "rr2-2026-v16"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -203,7 +204,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
             "markup_x": "legacy/current selected 0.01..9.99",
             "markup_tiers": [{"moq": "positive integer, ascending", "markup_x": "0.01..9.99"}],
             "selected_markup_moq": "optional MOQ value that must exist in markup_tiers",
-            "misc_ratio": "0<=value<1; default 0.02; authoritative source for settlement = 1 - misc_ratio",
+            "misc_ratio": "0<=value<1; frozen reference default (new quotes 0.03, legacy fallback 0.02); authoritative source for settlement = 1 - misc_ratio",
         },
         "additional_tax_hkd": "decimal>=0",
         "indonesia_freight_hkd": "decimal>=0",
@@ -299,7 +300,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "blow_lines": [{"item": "text", "daily_capacity": "record only", "material": "exact text", "grade": "exact text", "estimated_weight_g": "decimal>=0", "labor_hkd": "decimal>=0", "burr_hkd": "decimal>=0", "profit_multiplier": "default 1.05", "quantity": "default 1", "output_count": "record only", "mold_price_rmb": "record only", "remark": "text"}],
         "caixing_tool_plan_rows": [{"ref_no": "unique text; plastic up to 100 rows, plush up to 51", "process_type": "IN|BL|CP|DC|RC", "tool_no": "text", "tooling_cost_hkd": "decimal>=0", "description": "text", "sku_no": "text", "cavities": "decimal>0", "up": "decimal>0", "net_weight_g": "decimal>0", "material_code": "decimal>0", "material": "text", "color": "text", "material_cost_hkd": "decimal>=0; required unless raw lb price or unique approved molding source exists", "material_price_hkd_lb": "optional decimal>0", "machine_size": "text", "cycle_time_seconds": "decimal>0", "process_cost_hkd": "decimal>=0; required unless raw daily price or unique approved molding source exists", "machine_daily_hkd": "optional decimal>0"}],
     },
-    "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/UV/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "cost_allocation": "split for explicit oil/labor; direct reserved for legacy quick rows", "paint_cost_hkd": "optional decimal>=0; blank pair requires completion", "labor_cost_hkd": "optional decimal>=0; missing one equals total minus other", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
+    "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "legacy ignored; final paint quote carries no added tax"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/UV/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "cost_allocation": "split for explicit oil/labor; direct reserved for legacy quick rows", "paint_cost_hkd": "optional decimal>=0; blank pair requires completion", "labor_cost_hkd": "optional decimal>=0; missing one equals total minus other", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
     "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0; legacy defaults RMB", "unit_price_hkd": "decimal>=0", "unit_price_source_currency": "RMB|HKD; HKD bypasses division by FX", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "extra_multiplier": "positive per-row multiplier; defaults 1", "quoted_price_hkd": "optional source final price used while usage or original unit price is missing; informational warning", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * HKD unit price, or usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup * extra_multiplier; incomplete source-priced rows retain quoted_price_hkd until both inputs exist; old rows without a row rate use the frozen RMB/HKD rate"},
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
@@ -449,7 +450,11 @@ def build_reference_snapshot(
     *,
     factory_id: str = "",
     workshop_code: str = "",
+    for_new_quote: bool = False,
 ) -> dict[str, Any]:
+    # Only creation opts into current commercial defaults. Legacy quotes without
+    # a frozen reference keep their historical fallback when read or copied.
+    misc_ratio = Decimal("0.03" if for_new_quote else "0.02")
     legacy_prices = {
         row.material.strip(): decimal_text(Decimal(str(row.unit_price)))
         for row in db.scalars(select(MoldingSampleMaterialPrice).order_by(MoldingSampleMaterialPrice.material)).all()
@@ -504,7 +509,7 @@ def build_reference_snapshot(
         "baseline_version": FORMULA_VERSION,
         "pricing_baseline_revision": baseline_revision,
         "paper_prices": paper_prices,
-        "fx": {"rmb_hkd": "0.85", "hkd_usd": "7.8", "rmb_usd": "7.75"},
+        "fx": {"rmb_hkd": "0.84" if for_new_quote else "0.85", "hkd_usd": "7.8", "rmb_usd": "7.75"},
         "material_prices": {
             f"{material}|{grade}": price
             for material, grade, price in material_rows
@@ -529,8 +534,8 @@ def build_reference_snapshot(
         "freight_share": "0.48",
         "lift_share": "0.52",
         "markup": "1.2",
-        "misc_ratio": "0.02",
-        "settlement": "0.98",
+        "misc_ratio": format(misc_ratio, "f"),
+        "settlement": format(Decimal("1") - misc_ratio, "f"),
     }
 
 
@@ -1399,10 +1404,9 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
             raise CalculationInputError("喷油快捷报价格式无效")
         spray_labor = decimal_value(quick.get("spray_labor_hkd"), "喷油工快捷报价")
         paint_base = decimal_value(quick.get("paint_hkd"), "油漆快捷报价")
-        paint_tax_rate = Decimal("13")
-        paint_tax = paint_base * paint_tax_rate / Decimal("100")
-        paint_with_tax = paint_base + paint_tax
-        total = spray_labor + paint_with_tax
+        # Both quick inputs are final departmental prices. Adding VAT here
+        # would charge it again before the summary applies its deduction.
+        total = spray_labor + paint_base
         pricing = _pricing_metadata(quick)
         result["line_breakdown"].extend((
             {
@@ -1419,13 +1423,6 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
                 "formula": "快捷报价：油漆 HKD",
                 "amount_hkd": decimal_text(paint_base),
             },
-            {
-                **pricing,
-                "kind": "painting_quick_paint_tax",
-                "item": "油漆税金 13%",
-                "formula": "油漆 HKD × 13%",
-                "amount_hkd": decimal_text(paint_tax),
-            },
         ))
         if total <= ZERO:
             result["warnings"].append(_warning("painting_quick_quote_empty", "喷油快捷报价合计必须大于 0"))
@@ -1434,8 +1431,8 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
             "quote_mode": "quick",
             "painting_labor_hkd": decimal_text(spray_labor),
             "paint_base_hkd": decimal_text(paint_base),
-            "paint_tax_hkd": decimal_text(paint_tax),
-            "paint_material_hkd": decimal_text(paint_with_tax),
+            "paint_tax_hkd": decimal_text(ZERO),
+            "paint_material_hkd": decimal_text(paint_base),
             "total_hkd": decimal_text(total),
         }
         return
@@ -2573,7 +2570,7 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
             raise CalculationInputError(f"减税第 {index + 1} 行格式无效")
         code = str(row.get("code", "")).strip()
         category_amount = decimal_value(row.get("amount_hkd"), "减税分类金额")
-        if code == "carton":
+        if deduction_excluded(code, str(context.get("factory_id", ""))):
             result["line_breakdown"].append({
                 "kind": "tax",
                 "code": code,

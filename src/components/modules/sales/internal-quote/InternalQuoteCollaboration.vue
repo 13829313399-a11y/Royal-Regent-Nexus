@@ -32,7 +32,7 @@ import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type InternalQuote
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
+import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft, InternalQuoteReferenceFxDraft } from '@/types/internalQuoteDesk'
 
 const route = useRoute()
 const router = useRouter()
@@ -555,16 +555,19 @@ async function syncReference() {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '同步参考快照失败。' }
 }
 
-async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
+async function updateReferenceFx(payload: InternalQuoteReferenceFxDraft) {
   message.value = ''
   errorMessage.value = ''
   try {
-    await quoteStore.updateReferenceFx(
-      quote.value.id,
-      quote.value.headerRevision,
+    const savedQuoteId = quote.value.id
+    const receipt = await quoteStore.updateReferenceFx(
+      savedQuoteId,
+      payload.revision,
       payload.rmbHkd,
       payload.hkdUsd,
     )
+    if (quote.value.id !== savedQuoteId) return
+    pricingPanel.value?.acceptSavedFx?.(payload, receipt.header_revision)
     message.value = '汇率已保存为新的冻结参考快照；该报价已按新汇率重算。'
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保存汇率失败。'
@@ -886,7 +889,9 @@ async function saveWholeProductDraft() {
   }
   let drafts: ReturnType<InstanceType<typeof InternalQuoteSectionEditor>['getWholeQuoteDraft']>[]
   let pricingDraft: InternalQuoteSidebarPricingDraft | undefined
+  let referenceFx: InternalQuoteReferenceFxDraft | undefined
   try {
+    referenceFx = pricingPanel.value?.getFxDraft?.()
     pricingDraft = pricingPanel.value?.getPricingDraft?.()
     if (pricingDraft && !savableSections.some((section) => section.code === 'sales')) {
       throw new Error('业务部分段当前不可保存，请先保存或恢复侧栏报价设置。')
@@ -899,7 +904,7 @@ async function saveWholeProductDraft() {
         const baseline = pricingPanel.value?.getPricingBaseline?.()
         if (baseline?.revision) {
           draft.revision = baseline.revision
-          draft.baselinePayload = cloneInternalQuotePayload('sales', baseline.payload)
+          draft.baselinePayload = cloneInternalQuotePayload('sales', baseline.payload, quote.value?.referenceSnapshot)
         }
       }
       return draft
@@ -911,13 +916,14 @@ async function saveWholeProductDraft() {
   wholeProductSaving.value = true
   try {
     const savedQuoteId = quote.value.id
-    const result = await quoteStore.saveWholeProductSections(savedQuoteId, drafts)
+    const result = await quoteStore.saveWholeProductSections(savedQuoteId, drafts, referenceFx)
     if (quote.value.id !== savedQuoteId) return
     for (const draft of drafts) {
       const saved = result.sections.find((section) => section.department === draft.sectionCode)
       if (saved) sectionEditors.value[draft.sectionCode]?.acceptSavedPayload(saved.payload, draft.payload, saved.revision, draft.localPayload)
     }
     if (pricingDraft) pricingPanel.value?.acceptSavedPricing?.(pricingDraft)
+    if (referenceFx && result.savedHeaderRevision) pricingPanel.value?.acceptSavedFx?.(referenceFx, result.savedHeaderRevision)
     savedReadinessQuoteId.value = savedQuoteId
     const blockers = outputProblems(result.quote)
     message.value = quoteStore.refreshWarningQuoteId === savedQuoteId && quoteStore.refreshWarning

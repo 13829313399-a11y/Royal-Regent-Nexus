@@ -7,6 +7,35 @@ const engineering = (molds: unknown[]) => normalizeInternalQuotePayload('enginee
 const molding = (injection_lines: unknown[] = []) => normalizeInternalQuotePayload('molding', { injection_lines }) as unknown as MoldingPayload
 
 describe('stable whole mold linkage', () => {
+  it.each([
+    ['C-PP', 'C-PP', '5090T'], ['C-PP', '透明PP', '5090T'],
+    ['C-ABS', 'C-ABS', 'TR558/920'], ['C-ABS', '透明ABS', 'TR558/920'],
+  ])('retains the selected %s grade through repeated engineering refreshes', (hint, material, grade) => {
+    for (const sourceField of ['material', 'material_type']) {
+      const source = engineering([{ mold_id: 'resin-mold', item: '船身', [sourceField]: hint,
+        net_weight_g: 75, quantity: 2, target_output: 14142.8571 }])
+      const selected = molding([{ engineering_mold_id: 'resin-mold', material, grade, quantity: 3,
+        target_output: 14142.8571, sets: 2, net_weight_g: 75 }])
+      const saved = linkEngineeringMolding(source, selected)
+      const refreshed = linkEngineeringMolding(source, saved)
+      expect(refreshed.injection_lines[0]).toMatchObject({ material, grade, quantity: 3,
+        target_output: 14142.8571, sets: 2, net_weight_g: 75 })
+      expect(refreshed.injection_lines[0]!.engineering_synced_fields).not.toContain('grade')
+      expect(selected.injection_lines[0]).toMatchObject({ material, grade })
+    }
+  })
+
+  it.each(['C-PP', 'C-ABS'])('clears a legacy %s family-as-grade for explicit frozen selection', hint => {
+    const source = engineering([{ mold_id: 'resin-mold', material_type: hint }])
+    const selected = molding([{ engineering_mold_id: 'resin-mold', material: hint, grade: hint,
+      engineering_synced_fields: ['grade'] }])
+    expect(linkEngineeringMolding(source, selected).injection_lines[0]).toMatchObject({ material: hint, grade: '' })
+    selected.injection_lines[0]!.grade = 'unknown-explicit-grade'
+    expect(linkEngineeringMolding(source, selected).injection_lines[0]!.grade).toBe('unknown-explicit-grade')
+    selected.injection_lines[0]!.material = hint === 'C-PP' ? 'PP' : 'ABS'
+    expect(linkEngineeringMolding(source, selected).injection_lines[0]).toMatchObject({ material: hint, grade: '' })
+  })
+
   it('selects the sole frozen grade and requires a new choice after engineering changes to a multi-grade resin', () => {
     const snapshot = { material_prices: { 'ABS|750SW': '6.5', '1#PP|A': '6', '1#PP|B': '7', '透明ABS|TR558/920': '10.07' } }
     const source = engineering([{ mold_id: 'm1', item: '公仔头', material_type: 'ABS' }])

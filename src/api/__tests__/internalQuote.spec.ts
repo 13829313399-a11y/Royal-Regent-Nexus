@@ -13,6 +13,17 @@ function client() {
 }
 
 describe('internal quote API adapter', () => {
+  it('sends optional FX and department changes in one whole-product request', async () => {
+    const http = client(), api = createInternalQuoteApi(http)
+    await api.saveWholeProduct('q1', [{ sectionCode: 'sales', revision: 4, payload: { remark: '新包装' } }], undefined,
+      { revision: 9, rmbHkd: '0.84', hkdUsd: '7.80' })
+    expect(http.put).toHaveBeenCalledWith('/internal-quotes/q1/sections/save-all', {
+      sections: [{ section_code: 'sales', revision: 4, payload: { remark: '新包装' } }],
+      reason: '在连续报价页统一保存当前产品',
+      reference_fx: { revision: 9, rmb_hkd: '0.84', hkd_usd: '7.80' },
+    })
+  })
+
   it('keeps direct output, alternative versions and adoption guarded by their current revisions', async () => {
     const http = client(), api = createInternalQuoteApi(http)
     await api.directIssue('q1', 8)
