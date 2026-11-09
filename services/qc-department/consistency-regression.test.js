@@ -36,29 +36,6 @@ for (const type of ['Daily','Weekly']) test(type+' PDF content retains dynamic c
   assert.match(html,/模板参考（非本厂实绩）/);
   assert.doesNotMatch(html,/东\s*莞\s*兴\s*信/);
 });
-test('explicit record refresh replaces loaded partner cache and candidates without any business POST',async()=>{
-  const b=browser(),records=[{id:1,date:'2026-10-19',result:'PASS',supplier:'Original'}];
-  b.ctx.records=records;
-  b.run(`state={records, nextId:31};_partners=[{type:'supplier',name:'Stale'}];getCompany=()=> 'hy-huaxing';filterRecords=()=>{};updateTopKpis=()=>{};showToast=()=>{};`);
-  let requests=0;
-  b.ctx.fetch=async(url,options)=>{
-    requests++;assert.equal(options.method,undefined);assert.match(url,/api\/bootstrap\?company=hy-huaxing$/);
-    return {ok:true,json:async()=>({records,nextId:31,partners:[{type:'supplier',name:'New supplier'},{type:'customer',name:'New customer'},{type:'processType',name:'New process'}]})};
-  };
-  await b.ctx.refreshRecordsPage();
-  assert.equal(requests,1);
-  assert.deepEqual(JSON.parse(b.run('JSON.stringify(managedNames("supplier"))')),['New supplier']);
-  assert.match(b.get('supplierList').innerHTML,/New supplier/);
-  assert.match(b.get('customerList').innerHTML,/New customer/);
-  assert.match(b.get('processTypeList').innerHTML,/New process/);
-  assert.deepEqual(JSON.parse(b.run('JSON.stringify(state.records)')),records);
-});
-test('cancelled record refresh preserves existing partner cache',async()=>{
-  const b=browser();b.run(`state={records:[],nextId:31};_partners=[{type:'supplier',name:'Keep'}];getCompany=()=> 'hy-huaxing';showToast=()=>{};`);
-  b.ctx.confirm=()=>false;b.ctx.fetch=async()=>({ok:true,json:async()=>({records:[{id:1}],partners:[{type:'supplier',name:'Discard'}]})});
-  await b.ctx.refreshRecordsPage();
-  assert.equal(b.run('managedNames("supplier")[0]'),'Keep');
-});
 
 test('daily and weekly pages and PDF contents include the same recorded problem notes without interpreting markup',()=>{
   const b=browser();b.get('dailyDate').value='2026-10-19';b.get('weeklyDate').value='2026-10-19';
@@ -244,16 +221,4 @@ if(process.env.QC_READONLY_RECORDS && process.env.QC_BASELINE_DIR) test('read-on
     outputs.push({charts,periods,weeks,rows:JSON.parse(b.run('JSON.stringify(state.records)'))});
   }
   assert.deepEqual(outputs[1],outputs[0]);assert.equal(rows.length,30);assert.equal(rows.reduce((s,r)=>s+Number(r.qty||0),0),60413);
-});
-
-
-test('authoritative refresh preserves another account inspector on the next save',async()=>{
- const b=browser();
- b.run(`state={records:[{id:31,qc:'历史姓名'}],nextId:78};window.__QC_KNOWN_RECORD_IDS=new Set([31]);window.__QC_NEXUS.inspector={id:'current',name:'当前账号'};getCompany=()=> 'hy-huaxing';filterRecords=()=>{};updateTopKpis=()=>{};showToast=()=>{};`);
- b.ctx.confirm=()=>true;
- b.ctx.fetch=async()=>({ok:true,json:async()=>({records:[{id:31,qc:'历史姓名'},{id:78,qc:'另一账号'}],nextId:79})});
- await b.ctx.refreshRecordsPage();
- b.run('persist()');
- assert.equal(b.run('state.records[1].qc'),'另一账号');
- assert.equal(b.run('window.__QC_KNOWN_RECORD_IDS.has(78)'),true);
 });

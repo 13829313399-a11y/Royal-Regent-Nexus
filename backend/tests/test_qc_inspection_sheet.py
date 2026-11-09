@@ -114,40 +114,6 @@ def test_mobile_heif_and_webp_are_persistent_jpeg():
     assert Image.open(BytesIO(sheet.normalize_photo(output.getvalue()))).format=='JPEG'
 
 
-def test_export_three_states_actual_embedded_images_text_ids_and_revision_gate():
-    a,b,c=seed();a=save(a,'PASS','合格 中文 English');a,_=photo(a)
-    b=save(b,'FAIL','=备注原文\n外壳划痕');b,_=photo(b,'blue');b,_=photo(b,'green')
-    body={'entries':[{'id':r['id'],'revision':r['revision']} for r in (a,b,c)]}
-    content=sheet.export_xlsx('huaxing',body)
-    book=load_workbook(BytesIO(content));ws=book['验货明细']
-    assert [c.value for c in ws[1]]==[label for key,label in sheet.COLUMNS if key!='submit']
-    assert [c.value for c in ws[1]][-4:]==['验货结果','备注','照片','改进措施']
-    assert ws.max_row==4 and ws['N2'].value=='PASS' and ws['N3'].value=='FAIL' and ws['N4'].value in ('',None)
-    assert ws['O2'].value==a['remark'] and ws['O3'].value==b['remark'] and ws['O3'].data_type=='s'
-    assert ws['C2'].value=='000001' and ws['E3'].value=='00042' and ws['L2'].value=='001019'
-    assert ws['A2'].value.date().isoformat()=='2026-10-29' and ws['G2'].value==24
-    assert len(ws._images)==3 and [i.anchor._from.row for i in ws._images]==[1,2,2]
-    assert all(i.anchor._from.col==15 for i in ws._images)
-    assert ws._images[1].anchor._from.colOff != ws._images[2].anchor._from.colOff
-    with zipfile.ZipFile(BytesIO(content)) as archive:
-        assert len([n for n in archive.namelist() if n.startswith('xl/media/')])==3
-        assert archive.testzip() is None
-    if os.environ.get('QC_INLINE_EVIDENCE'):
-        Path(os.environ['QC_INLINE_EVIDENCE']).write_bytes(content)
-    save(c,'PASS')
-    with pytest.raises(HTTPException) as error:sheet.export_xlsx('huaxing',body)
-    assert error.value.status_code==409
-
-
-def test_all_photos_export_even_more_than_eleven():
-    a,*_=seed()
-    for n in range(12):a,_=photo(a)
-    book=load_workbook(BytesIO(sheet.export_xlsx('huaxing',{'entries':[{'id':a['id'],'revision':a['revision']}]})))
-    assert len(book['照片-1']._images)==12
-    assert book['验货明细']['P2'].hyperlink.target=="#'照片-1'!A1"
-    assert all(book['照片-1'].cell(r,3).value==a['id'] for r in range(2,14))
-
-
 def test_existing_workflow_and_legacy_snapshots_preserved(db):
     task=create_workflow(db);before=deepcopy(wf.detail(db,'huaxing',task['id']))
     entries=sheet.sync('huaxing',sheet.candidates('huaxing',[],[task],wf.sources(db,'huaxing')['items']))['items']
@@ -186,9 +152,10 @@ def test_http_actual_save_read_photo_export_permissions_and_source_unchanged(db,
         response=client.post(path+'/photos',json={'revision':row['revision'],'name':'照片.png','content':base64.b64encode(output.getvalue()).decode(),'requestKey':uuid4().hex})
         assert response.status_code==200;row=response.json()
         assert client.get(path+'/photos/'+row['photos'][0]['id']).headers['content-type']=='image/jpeg'
-        ticket=client.post(base+'api/inspection-sheet/export',json={'entries':[{'id':row['id'],'revision':row['revision']}]}).json()
-        download=client.get(base+ticket['url']);assert download.status_code==200
-        assert len(load_workbook(BytesIO(download.content)).active._images)==1
+        for endpoint in ['workbook/status','workbook/download','workbook/archives','workbook/jobs/retired','exports/retired']:
+            assert client.get(base+'api/inspection-sheet/'+endpoint).status_code==404
+        for endpoint in ['workbook/import','workbook/undo','workbook/replace','workbook/entries/'+row['id']+'/save','export']:
+            assert client.post(base+'api/inspection-sheet/'+endpoint,json={}).status_code==404
         reloaded=client.get(base+'api/inspection-sheet/entries').json()['items'][0]
         assert reloaded['result']=='PASS' and reloaded['remark']=='现场记录' and len(reloaded['photos'])==1
         assert client.get(base+'api/schedule-source').json()==schedule and line.data==original
@@ -196,7 +163,7 @@ def test_http_actual_save_read_photo_export_permissions_and_source_unchanged(db,
         current[0]=qc_user(True)
         assert client.get(path+'/photos/'+row['photos'][0]['id']).status_code==409
         newbase=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        assert client.get(newbase+ticket['url']).status_code==404
+        assert client.get(newbase+'api/inspection-sheet/exports/retired').status_code==404
 
 
 def test_unpushed_orders_and_old_caches_stay_hidden_until_confirmed(db):

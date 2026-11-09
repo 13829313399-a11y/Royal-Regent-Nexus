@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   if(!root.__QC_NEXUS)return;
-  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',exporting:false,selectedId:'',view:'records',reviewTab:'pending',checked:new Set(),reviewBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
+  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',reviewTab:'pending',checked:new Set(),reviewBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
   let notificationGeneration=0;
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
@@ -60,84 +60,8 @@
     }
     if(reset.length)root.showToast?.('当前任务已变化，筛选已恢复为'+reset.join('、'),'info');
   }
-  const workbook={state:null,busy:false,checking:false,error:'',message:'',signature:'',timer:null,pending:null};
-  function scope(){const value=id=>root.document.getElementById(id)?.value||'';return {dateFrom:value('filterDateFrom'),dateTo:value('filterDateTo'),search:value('searchInput'),result:value('filterResult')};}
-  function bookControls(){
-    const label=root.document.getElementById('qisImportStatus'),button=root.document.getElementById('qisImport'),undo=root.document.getElementById('qisUndo');
-    if(!label||!button||!undo)return;
-    const s=workbook.state;
-    label.textContent=workbook.busy?'正在处理累计工作簿…':workbook.error||s?.error||(s?((s.scope.dateFrom||'不限')+'—'+(s.scope.dateTo||'不限')+' · '+s.count+' 条'+(s.excluded?' · 排除 '+s.excluded+' 条测试/参考':'')+(workbook.message||s.warning?' · '+(workbook.message||s.warning):'')):'正在读取导入范围…');
-    label.title=label.textContent+'；首表沿用验货台导出，累计 Excel 仅含文字与数值，照片在系统中保留。';label.classList.toggle('qis-error',Boolean(workbook.error||s?.error));
-    button.disabled=!editable()||!root.__QC_NEXUS.exportAllowed||workbook.busy||workbook.checking||Boolean(workbook.pending)||!s||Boolean(workbook.error||s.error)||s.count===0||model.loading;
-    undo.disabled=!editable()||!root.__QC_NEXUS.exportAllowed||workbook.busy||Boolean(workbook.pending)||!s?.undoAvailable||Boolean(s?.repairRequired);
-    const latest=root.document.getElementById('qisLatest');if(latest){latest.disabled=!editable()||!root.__QC_NEXUS.exportAllowed||workbook.busy||workbook.checking||Boolean(workbook.pending)||!s||Boolean(s?.repairRequired);latest.title='上传 .xls / .xlsx 作为累计基础；旧工作簿自动归档，验货记录保留。当前：'+(s?.baseName||'');}
-    button.setAttribute('aria-busy',String(workbook.busy));
-  }
-  async function bookStatus(force=false){
-    if(!root.__QC_NEXUS.exportAllowed)return;
-    const signature=JSON.stringify(scope())+model.items.map(r=>r.id+':'+r.revision).join('|');
-    if(!force&&signature===workbook.signature)return;
-    workbook.signature=signature;const selected=scope();workbook.checking=true;bookControls();
-    try{const s=await api('workbook/status?'+new URLSearchParams(selected));if(signature!==workbook.signature)return;workbook.state=s;workbook.error='';}
-    catch(error){if(signature===workbook.signature)workbook.error=error.message;}
-    finally{if(signature===workbook.signature){workbook.checking=false;bookControls();}}
-  }
-  function scheduleBookStatus(){clearTimeout(workbook.timer);workbook.timer=setTimeout(()=>bookStatus(),250);bookControls();}
-  const pendingKey=()=>base+root.location.pathname+':cumulative-pending';
-  function persistPending(value){workbook.pending=value;try{if(value)root.sessionStorage.setItem(pendingKey(),JSON.stringify(value));else root.sessionStorage.removeItem(pendingKey());}catch{}}
-  async function reconcilePending(){
-    if(!workbook.pending)return true;
-    try{
-      const job=await api('workbook/jobs/'+workbook.pending.requestKey);
-      if(['succeeded','failed','interrupted','unknown'].includes(job.status)){
-        if(job.status==='failed')workbook.error=job.message;
-        else if(job.status==='interrupted'||job.status==='unknown')workbook.error='上次操作未提交，请刷新状态后重试';
-        else workbook.message=job.status==='succeeded'?'上次操作已确认':'';
-        persistPending(null);return true;
-      }
-      workbook.message='上次操作仍在处理中';
-    }catch(error){workbook.error='暂时无法确认上次操作：'+error.message;}
-    bookControls();return false;
-  }
-  async function changeWorkbook(action,file){
-    if(workbook.busy)return;
-    if(workbook.pending&&!(await reconcilePending()))return;
-    workbook.busy=true;workbook.error='';workbook.message='';bookControls();
-    let sent=false,failure='';
-    try{
-      const expectedVersion=workbook.state?.version;
-      if(action==='import'||action==='replace')await flushMapped();
-      await bookStatus(true);if(!workbook.state||workbook.error)throw Error(workbook.error||'累计版本读取失败');
-      if(expectedVersion!==undefined&&expectedVersion!==workbook.state.version)throw Error('累计工作簿已有新版本，已刷新状态；请核对后重试');
-      const body={requestKey:requestKey(),expectedVersion:expectedVersion??workbook.state.version};
-      if(action==='import'){body.scope=scope();body.revisions=workbook.state.revisions||{};}
-      if(action==='replace'){if(!file||!/\.xlsx?$/i.test(file.name))throw Error('请选择 .xls 或 .xlsx 表格');if(file.size>32*1024*1024)throw Error('表格最多 32 MB');body.filename=file.name;body.contentType=file.type||'';body.content=await readFile(file);}
-      persistPending({requestKey:body.requestKey});sent=true;
-      const result=await api('workbook/'+action,body);persistPending(null);
-      workbook.message=result.status==='replaced'?'最新表格已启用，旧工作簿已归档':result.status==='undone'?'已撤销最近一次导入':result.status==='imported'?'已导入 '+result.count+' 条':result.status==='empty'?'没有有效记录':'没有变化';
-      if(result.warning)workbook.message+='；'+result.warning;
-      root.showToast?.(workbook.message,'success');
-    }catch(error){
-      failure=error.message;
-      if(error.status&&error.status!==409)persistPending(null);
-      if(sent&&workbook.pending){
-        await reconcilePending();
-        if(!workbook.pending&&!workbook.error){failure='';workbook.message=workbook.message||'上次操作已确认';}
-        else if(workbook.error)failure=workbook.error;
-        else workbook.message='正在核对操作状态，请稍后刷新';
-      }
-      if(failure){workbook.error=workbook.error||failure;root.showToast?.(workbook.error,'error');}
-      else root.showToast?.(workbook.message,'success');
-    }finally{
-      workbook.busy=false;
-      // Reload only after a confirmed commit. load() protects unsaved text/photo queues.
-      if(!failure&&!workbook.pending)await load();
-      await bookStatus(true);if(failure&&!workbook.pending)workbook.message='失败：'+failure;bookControls();
-    }
-  }
   async function api(path,body){
-    // Workbook conversion has its own persisted job/recovery flow and can take longer.
-    const controller=!path.startsWith('workbook/')&&root.AbortController?new root.AbortController():null;
+    const controller=root.AbortController?new root.AbortController():null;
     const timeout=controller?setTimeout(()=>controller.abort(),20000):null;
     try{
       const options=body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
@@ -153,11 +77,11 @@
     if(!model.drafts.has(row.id))model.drafts.set(row.id,{...Object.fromEntries(Object.keys(reviewFields).map(k=>[k,row[k]??''])),inspectionExecution:Object.fromEntries(Object.keys(executionFields).map(k=>[k,row.inspectionExecution?.[k]??row[k]??(['defects','measurements'].includes(k)?[]:'')])),executionDirty:new Set(),result:row.result,remark:row.remark,improvement:row.improvement||'',inspectionProblem:row.inspectionProblem||'',dirty:false,busy:false,error:'',timer:null,queue:[],conflict:false});
     return model.drafts.get(row.id);
   }
-  function navigationState(){return {dirty:Boolean(model.detailEditing)||[...model.drafts.values()].some(d=>d.dirty||d.queue.length||d.error),busy:model.reviewBusy||model.exporting||workbook.busy||[...model.drafts.values()].some(d=>d.busy||d.reading||d.mappedBusy||d.submitting)};}
+  function navigationState(){return {dirty:Boolean(model.detailEditing)||[...model.drafts.values()].some(d=>d.dirty||d.queue.length||d.error),busy:model.reviewBusy||[...model.drafts.values()].some(d=>d.busy||d.reading||d.submitting)};}
   function status(id){
     const d=model.drafts.get(id),node=root.document.querySelector('[data-save-status="'+id+'"]');
     if(!node||!d)return;
-    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy||d.mappedBusy)?'保存中…':d.dirty?'等待自动保存…':model.view!=='review'||d.savedUntil>Date.now()?'已保存':'';
+    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy)?'保存中…':d.dirty?'等待自动保存…':model.view!=='review'||d.savedUntil>Date.now()?'已保存':'';
     node.hidden=!node.textContent;
     node.classList.toggle('qis-error',Boolean(d.error));
     root.document.querySelectorAll('[data-review-status="'+id+'"]').forEach(label=>{label.textContent=node.textContent;label.classList.toggle('qis-error',Boolean(d.error));});
@@ -185,10 +109,10 @@
   async function pump(id){
     const row=byId(id);if(!row)return;
     const d=draft(row);clearTimeout(d.timer);d.timer=null;
-    if(d.busy||d.mappedBusy||d.error)return;
+    if(d.busy||d.error)return;
     d.busy=true;status(id);let photoJob=null;
     try{
-      while(!d.mappedBusy&&(d.dirty||d.queue.length)){
+      while((d.dirty||d.queue.length)){
         const current=byId(id);
         photoJob=null;
         if(d.dirty){
@@ -215,7 +139,7 @@
       d.errorKind=photoJob?'photo':'text';
       d.error=(d.rejectedPhoto?photoJob.body.name+'：':'')+error.message;d.conflict=error.status===409;
     }
-    finally{d.busy=false;d.busyKind=null;status(id);scheduleBookStatus();}
+    finally{d.busy=false;d.busyKind=null;status(id);}
   }
   function edit(id,key,value,immediate=false){
     const d=draft(byId(id));if(d[key]===value)return;d[key]=value;d.dirty=true;clearTimeout(d.timer);status(id);
@@ -246,7 +170,7 @@
           const changes=[...Object.entries(input).filter(([key,value])=>key!=='inspectionExecution'&&String(value??'')!==String(latest[key]??'')).map(([key,value])=>(names[key]||key)+'：'+JSON.stringify(value)),...Object.entries(input.inspectionExecution||{}).filter(([key,value])=>JSON.stringify(value)!==JSON.stringify(latest.inspectionExecution?.[key]??latest[key])).map(([key,value])=>executionFields[key][0]+'：'+JSON.stringify(value))];
           const message='该记录'+state+'，不能从当前页面直接保存。'+(latest.reviewState==='approved'?'如需修改，请先在“已审核”中反审核。':'请在对应页面继续处理。')+'\n\n本行未保存的输入：\n'+(changes.join('\n')||'文字和数值与服务器一致')+(d.queue.length?'\n另有 '+d.queue.length+' 项未完成的照片操作':'')+'\n\n确定：放弃本行未保存输入并更新状态，恢复页面切换。\n取消：继续保留当前输入，可先复制上述内容。';
           if(!root.confirm(message))return;
-          if(model.drafts.get(id)!==d||d.busy||d.reading||d.mappedBusy)return;
+          if(model.drafts.get(id)!==d||d.busy||d.reading)return;
           clearTimeout(d.timer);clearTimeout(d.successTimer);model.drafts.delete(id);model.checked.delete(id);accept(id,latest);render();
           root.showToast?.('已同步记录状态；如需修改已审核记录，请先反审核','success');return;
         }
@@ -266,7 +190,7 @@
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
     catch(error){model.error=error.message;}
-    finally{model.loading=false;render();if(view==='review'&&model.reviewTab==='pending'&&!model.error)void pendingNotifications(noticeGeneration);if(view==='records'){await reconcilePending();await bookStatus(true);}const next=model.nextLoad;model.nextLoad=null;if(next&&(next.view!==model.view||next.tab!==model.reviewTab))await load(next.view,next.tab);}
+    finally{model.loading=false;render();if(view==='review'&&model.reviewTab==='pending'&&!model.error)void pendingNotifications(noticeGeneration);const next=model.nextLoad;model.nextLoad=null;if(next&&(next.view!==model.view||next.tab!==model.reviewTab))await load(next.view,next.tab);}
   }
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
@@ -367,11 +291,7 @@
     const rows=filtered();
     const columns=model.columns.filter(({key})=>!['inspectionExecution.defects','inspectionExecution.measurements'].includes(key)||rows.some(row=>detailRows(draft(row).inspectionExecution[executionKey(key)],executionKey(key)).length));
     if(model.view==='records'){
-    root.document.getElementById('recordCount').textContent='显示 '+rows.length+' / '+model.items.length+' 条';
-    const selection=root.document.getElementById('inspectionSelection');if(selection)selection.textContent='';
-    root.document.getElementById('recordsSelectionHint').textContent='';
-    const exportButton=root.document.getElementById('btnExportInspectionExcel');if(exportButton)exportButton.disabled=!root.__QC_NEXUS.exportAllowed||model.exporting||workbook.busy||Boolean(workbook.pending);
-    scheduleBookStatus();
+
     }else updateReviewControls(rows);
     host.innerHTML=(model.error?'<p role="alert" class="qis-error">读取失败：'+esc(model.error)+'。请重试刷新，当前数据可能不是最新。</p>':'')+
       (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
@@ -447,31 +367,13 @@
   async function flush(){
     do {
       for(const row of model.items)await pump(row.id);
-      if([...model.drafts.values()].some(d=>d.busy||d.reading||d.mappedBusy))await new Promise(resolve=>setTimeout(resolve,20));
-    } while([...model.drafts.values()].some(d=>d.busy||d.reading||d.mappedBusy));
-    if(navigationState().dirty)throw Error('还有未保存内容或上传失败，请先重试对应行；导出未开始');
-  }
-  async function flushMapped(){
-    // Imports save only mapped text. Failed/queued/reading/in-flight photos remain in their own queue.
-    for(const row of model.items){
-      const d=model.drafts.get(row.id);if(!d?.dirty)continue;
-      const resumePhotoQueue=d.busy&&d.busyKind==='photo';
-      clearTimeout(d.timer);d.timer=null;d.mappedBusy=true;
-      try{
-        while(d.busy&&d.busyKind!=='photo')await new Promise(resolve=>setTimeout(resolve,20));
-        if(d.error&&d.errorKind!=='photo')throw Error('文字尚未保存，请先重试对应行：'+d.error);
-        while(d.dirty){
-          const sent=savedFields(d);
-          const saved=await api('workbook/entries/'+row.id+'/save',{revision:byId(row.id).revision,...sent});
-          accept(row.id,saved);d.dirty=differs(d,sent);
-        }
-      }catch(error){d.error=error.message;d.errorKind='text';d.conflict=error.status===409;throw error;}
-      finally{d.mappedBusy=false;status(row.id);if(resumePhotoQueue&&!d.busy&&!d.error&&d.queue.length)void pump(row.id);}
-    }
+      if([...model.drafts.values()].some(d=>d.busy||d.reading))await new Promise(resolve=>setTimeout(resolve,20));
+    } while([...model.drafts.values()].some(d=>d.busy||d.reading));
+    if(navigationState().dirty)throw Error('还有未保存内容或上传失败，请先重试对应行');
   }
   async function flushRow(id){
     const d=draft(byId(id));
-    do{await pump(id);if(d.busy||d.reading||d.mappedBusy)await new Promise(resolve=>setTimeout(resolve,20));}while(d.busy||d.reading||d.mappedBusy);
+    do{await pump(id);if(d.busy||d.reading)await new Promise(resolve=>setTimeout(resolve,20));}while(d.busy||d.reading);
     if(d.dirty||d.error||d.queue.length){const error=Error(d.error||'本行仍有未保存内容或失败照片，请先重试保存。');error.field=d.errorKind==='photo'||d.queue.length?'photos':'remark';throw error;}
   }
   const notices=new Map();
@@ -664,17 +566,6 @@
       }));
     }catch(error){if(active())root.showToast?.('反审核提醒读取失败：'+error.message+'；刷新可重试','error');}
   }
-  async function exportExcel(){
-    if(model.exporting||workbook.busy||workbook.pending)return;
-    model.exporting=true;
-    try{
-      const response=await root.fetch(base+'workbook/download',{method:'HEAD',cache:'no-store'});
-      if(!response.ok){let data;try{data=await response.json();}catch{}throw Error(data?.detail||'累计工作簿下载失败');}
-      const a=root.document.createElement('a');a.href=base+'workbook/download';a.download='QC累计验货.xlsx';root.document.body.append(a);a.click();a.remove();
-      root.showToast?.('已发起最新完整工作簿下载；新编辑需导入后才会进入文件，照片在系统中保留','success');
-    }catch(error){root.showToast?.(error.message,'error');}
-    finally{model.exporting=false;render();}
-  }
   async function focus(key){
     root.showPage?.('records');if(!model.loaded||model.view!=='records')await load();
     const row=model.items.find(r=>r.id===key||r.workflowId===key||r.sourceId===key||r.sourceKey===key);
@@ -688,15 +579,9 @@
     resetReviewFilters();
     selectRow(id);render();const node=root.document.querySelector('[data-entry="'+id+'"]');node?.scrollIntoView?.({block:'center'});node?.focus();
   }
-  root.QcInspectionSheet={model,load,focusReview,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,flushMapped,exportExcel,navigationState,offerConflictRecovery,focus,upload,workbook,bookStatus,changeWorkbook};
+  root.QcInspectionSheet={model,load,focusReview,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
   root.addEventListener('beforeunload',event=>{if(navigationState().dirty||navigationState().busy){event.preventDefault();event.returnValue='';}});
   root.document.addEventListener('DOMContentLoaded',()=>{
-    try{const pending=JSON.parse(root.sessionStorage.getItem(pendingKey())||'null');if(/^[a-f0-9-]{16,64}$/.test(pending?.requestKey))workbook.pending=pending;}catch{}
-    const button=root.document.getElementById('qisImport'),undo=root.document.getElementById('qisUndo');
-    const latest=root.document.getElementById('qisLatest'),fileInput=root.document.getElementById('qisLatestFile');
-    if(latest)latest.onclick=()=>fileInput?.click();
-    if(fileInput)fileInput.onchange=async()=>{const file=fileInput.files?.[0];fileInput.value='';if(file)await changeWorkbook('replace',file);};
-    if(button)button.onclick=()=>changeWorkbook('import');if(undo)undo.onclick=()=>changeWorkbook('undo');
     if(root.__QC_INITIAL_PAGE?.()==='review')load('review');else load();
   });
 })(window);

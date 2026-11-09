@@ -274,10 +274,6 @@
           <select id="filterSort" aria-label="排序方式" onchange="filterRecords()" title="验货日期按计划开始日期排序，同日按客户归拢；修改日期按最近修改时间排序"><option value="date-desc">验货日期 ↓</option><option value="date-asc" selected>验货日期 ↑</option><option value="mod-desc">修改日期 ↓</option><option value="mod-asc">修改日期 ↑</option></select>
           <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
         </div>
-        <div class="records-status-row">
-          <div class="records-context"><span id="recordCount">共 0 条</span><span id="inspectionSelection" aria-live="polite">未选中记录</span><span class="records-hint" id="recordsSelectionHint" hidden></span><button type="button" class="qis-latest-button" id="qisLatest" disabled>导入最新表格</button><input type="file" id="qisLatestFile" accept=".xls,.xlsx" hidden></div>
-          <div class="records-actions"><div class="qis-import-bar"><span id="qisImportStatus" role="status" aria-live="polite"></span><button type="button" id="qisImport" disabled>导入工作簿</button><button type="button" id="qisUndo" disabled title="撤销最近一次成功导入" aria-label="撤销最近一次成功导入">↶</button></div><button type="button" class="records-refresh" id="btnRefreshRecords" onclick="refreshRecordsPage()" title="从服务器重新加载验货台">↻ 刷新</button><button type="button" class="records-export-btn" id="btnExportInspectionExcel" onclick="requestInspectionExcel()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6"/></svg>导出 Excel</button></div>
-        </div>
       </div>
 
       <div class="table-wrap" id="recordsTableWrap"></div>

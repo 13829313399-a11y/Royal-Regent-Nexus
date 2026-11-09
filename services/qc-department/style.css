@@ -3363,32 +3363,19 @@ body.theme-light #page-sales-schedule .qs-table tr.qs-selected > td { background
 #page-records .records-date-fields input { width:100%; box-sizing:border-box; min-width:0; padding:8px; border:1px solid var(--border); border-radius:5px; color:var(--text-main); background:var(--bg-input); font:inherit; }
 #page-records .records-date-actions { display:flex; justify-content:space-between; margin-top:14px; }
 #page-records #recordsDateError { color:#dc2626; font-size:12px; margin:10px 0 0; }
-#page-records .records-status-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 16px; border-top:1px solid var(--border); }
-#page-records .records-context { display:flex; align-items:center; min-width:0; font-size:13px; }
-#page-records #recordCount { white-space:nowrap; color:var(--text-main); }
-#page-records #inspectionSelection { border-left:1px solid var(--border); padding-left:16px; margin-left:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); min-width:0; }
-#page-records .records-hint { border-left:1px solid var(--border); padding-left:16px; margin-left:16px; color:var(--text-muted); white-space:nowrap; }
-#page-records .records-actions { display:flex; gap:16px; align-items:center; flex:none; }
 #page-records .records-toolbar button { font-family:var(--font-body); font-size:13px; cursor:pointer; }
-#page-records .records-text-btn, #page-records .records-refresh { background:none; border:0; color:var(--accent); padding:8px 4px; white-space:nowrap; }
+#page-records .records-text-btn { background:none; border:0; color:var(--accent); padding:8px 4px; white-space:nowrap; }
 #page-records .records-reset { border-left:1px solid var(--border); border-radius:0; padding-left:14px; }
-#page-records .records-refresh { color:var(--text-muted); }
-#page-records .records-export-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; border:1px solid #1677ed; background:#1677ed; color:#fff; border-radius:6px; padding:9px 14px; white-space:nowrap; }
-#page-records .records-export-btn:hover { background:#0967d7; }
 #page-records .records-toolbar :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 #page-records .records-toolbar button:disabled { opacity:.5; cursor:not-allowed; }
 #page-records .records-toolbar button:disabled[aria-busy="true"] { cursor:wait; }
 @media(max-width:1050px) {
   #page-records .records-filters { gap:8px; grid-template-columns:minmax(195px,2fr) minmax(155px,1.3fr) minmax(100px,.9fr) minmax(118px,1fr) auto; }
-  #page-records .records-context { flex-wrap:wrap; gap:6px 0; }
-  #page-records .records-hint { flex-basis:100%; border:0; padding:0; margin:0; }
 }
 @media(max-width:760px) {
   #page-records .records-filters { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
   #page-records .records-search { grid-column:1/-1; }
   #page-records .records-reset { border:0; padding-left:4px; text-align:left; }
-  #page-records .records-status-row { flex-wrap:wrap; }
-  #page-records .records-actions { margin-left:auto; }
 }
 
 #page-records .records-toolbar { container-type:inline-size; }
@@ -3396,8 +3383,6 @@ body.theme-light #page-sales-schedule .qs-table tr.qs-selected > td { background
   #page-records .records-filters { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
   #page-records .records-search { grid-column:1/-1; }
   #page-records .records-reset { border:0; padding-left:4px; text-align:left; }
-  #page-records .records-context { flex-wrap:wrap; gap:6px 0; }
-  #page-records .records-hint { flex-basis:100%; border:0; padding:0; margin:0; }
 }
 
 /* QC Liquid Glass. Visual layer only; print canvases and business grid metrics stay independent. */
@@ -3523,8 +3508,6 @@ body.qc-liquid-glass #page-records .qis-table :is(textarea,select) {border-radiu
 body.qc-liquid-glass #page-records .qis-table select:has(option[value="PASS"]:checked) {background:#15803d!important;color:#fff!important}
 body.qc-liquid-glass #page-records .qis-table select:has(option[value="FAIL"]:checked) {background:#dc2626!important;color:#fff!important}
 body.qc-liquid-glass #page-records .qis-table small {color:var(--text-dim)}
-body.qc-liquid-glass :is(#qisImport,#qisUndo) {background:var(--bg-card);color:var(--text-main);border-color:var(--border);border-radius:8px}
-body.qc-liquid-glass #page-records .qis-latest-button {border-radius:9px}
 body.qc-liquid-glass .import-zone {border-style:dashed;background:var(--bg-panel)}
 body.qc-liquid-glass .import-zone:hover {background:var(--bg-hover)}
 body.qc-liquid-glass :is(.report-toolbar,.report-toolbar>div) {flex-wrap:wrap}

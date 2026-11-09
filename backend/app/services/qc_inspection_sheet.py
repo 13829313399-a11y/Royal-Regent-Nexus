@@ -9,21 +9,17 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-import time
 from uuid import uuid4
 import warnings
 
 from fastapi import HTTPException
 from PIL import Image, ImageOps, UnidentifiedImageError
-from openpyxl import Workbook
-from openpyxl.drawing.image import Image as ExcelImage
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
 
 from app.core.config import settings
 from app.services import qc_workflow as wf
 from app.services.qc_inspection_results import RESULTS, EDITABLE_RESULTS, ALLOWED_INSPECTION_RESULTS
 
+# Shared Excel MIME for summary/report downloads.
 MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 # Keep the template business fields; the final editing columns follow the requested result / remark / photos order.
 COLUMNS = [('date', '日期'), ('customer', '客户'), ('poNo', 'PO#'), ('country', '出口国'),
@@ -92,7 +88,6 @@ def clean_review_execution(raw):
     defaults={k:[] if k in {'defects','measurements'} else '' for k in REVIEW_EXECUTION_FIELDS}
     clean=wf.clean_execution({**defaults,**raw,'result':'PENDING','remark':''})
     return {k:clean[k] for k in raw}
-
 
 
 def migrate_review(conn):
@@ -379,15 +374,7 @@ def changed(conn, row, action, actor, *, before=None, location='验货台', requ
     return item
 
 
-def photo_revision_matches(conn,entry,expected):
-    if type(expected) is not int or expected>entry['revision']:return False
-    if expected==entry['revision']:return True
-    changes=list(conn.execute('SELECT revision,action FROM changes WHERE entry_id=? AND revision>? AND revision<=? ORDER BY revision',
-        (entry['id'],expected,entry['revision'])))
-    # Ignore only a complete, audited sequence of photo-only revisions. Untracked source changes still conflict.
-    return len(changes)==entry['revision']-expected and all(r['revision']==expected+i+1 and r['action'] in {'upload','remove-photo'} for i,r in enumerate(changes))
-
-def save(factory, entry_id, body, actor, allow_photo_changes=False, review=False):
+def save(factory, entry_id, body, actor, review=False):
     allowed={'revision','result','remark','improvement','inspectionProblem','inspectionExecution'} | (set(REVIEW_FIELDS) if review else set())
     if not {'revision','result','remark'} <= set(body) or set(body)-allowed or body['result'] not in EDITABLE_RESULTS:
         raise HTTPException(422,'验货结果只接受空草稿、PASS、FAIL、PENDING、LG')
@@ -403,7 +390,7 @@ def save(factory, entry_id, body, actor, allow_photo_changes=False, review=False
     execution_patch=clean_review_execution(body['inspectionExecution']) if 'inspectionExecution' in body else {}
     with store(True) as conn:
         row=get(conn,factory,entry_id);ensure_editable(conn,row,review)
-        if not (allow_photo_changes and photo_revision_matches(conn,row,body['revision'])):revision(row,body)
+        revision(row,body)
         before=unpack(conn,row)
         if all(body.get(k,before.get(k,''))==before.get(k,'') for k in ('result','remark','improvement','inspectionProblem',*REVIEW_FIELDS)) and all((before.get('inspectionExecution') or {}).get(k)==v for k,v in execution_patch.items()):return before
         conn.execute("INSERT INTO entry_details(entry_id,improvement,inspection_problem) VALUES(?,?,?) ON CONFLICT(entry_id) DO UPDATE SET improvement=excluded.improvement,inspection_problem=excluded.inspection_problem",
@@ -493,114 +480,6 @@ def read_photo(factory, entry_id, photo_id):
         row=conn.execute('SELECT content FROM photos WHERE id=? AND entry_id=? AND removed=0',(photo_id,entry_id)).fetchone()
         if row is None:
             raise HTTPException(404,'照片不存在')
-        return row['content']
-
-
-def date_value(item):
-    start,end=item.get('dateFrom',''),item.get('dateTo','')
-    if start and (not end or start==end):
-        return date.fromisoformat(start)
-    return start+' 至 '+end if start else ''
-
-
-def export_xlsx(factory, body):
-    if set(body)!={'entries'} or not isinstance(body['entries'],list) or len(body['entries'])>10000:
-        raise HTTPException(422,'导出范围不正确')
-    requested=body['entries']
-    if any(not isinstance(x,dict) or set(x)!={'id','revision'} or not isinstance(x['id'],str) for x in requested) or len({x['id'] for x in requested}) != len(requested):
-        raise HTTPException(422,'导出任务编号重复或无效')
-    items=[];photos={}
-    with store() as conn:
-        for wanted in requested:
-            row=get(conn,factory,wanted['id']);revision(row,wanted);item=unpack(conn,row);items.append(item)
-            photos[item['id']]=[dict(p) for p in conn.execute('SELECT content FROM photos WHERE entry_id=? AND removed=0 ORDER BY created_at,id',(item['id'],))]
-    return export_records(items,photo_provider=lambda item:photos[item['id']])
-
-
-def export_records(items,include_photos=True,photo_provider=None,epoch=None):
-    """Shared original detail export layout; callers supply one saved ordered snapshot."""
-    workbook=Workbook();sheet=workbook.active;sheet.title='验货明细'
-    if epoch is not None:workbook.epoch=epoch
-    columns=[(key,label) for key,label in COLUMNS if key!='submit' and (include_photos or key!='photos')]
-    sheet.append([label for _,label in columns])
-    widths=[23,18,27,24,29,33,12,12,12,15,15,22,22,14,48,36,48]
-    for i,width in enumerate(widths[:len(columns)],1): sheet.column_dimensions[get_column_letter(i)].width=width
-    line=Side(style='thin',color='CCD5D7')
-    for cell in sheet[1]:
-        cell.font=Font(name='Arial',bold=True,color='FFFFFF');cell.fill=PatternFill('solid',fgColor='24584E')
-        cell.alignment=Alignment(vertical='center');cell.border=Border(bottom=line)
-    sheet.row_dimensions[1].height=26;sheet.freeze_panes='D2';sheet.auto_filter.ref=f'A1:{get_column_letter(len(columns))}{max(1,len(items)+1)}'
-    total=0
-    for index,item in enumerate(items,2):
-        values=[date_value(item) if key=='date' else '' if key=='photos' else item.get(key,'') for key,_ in columns]
-        for col,value in enumerate(values,1):
-            cell=sheet.cell(index,col,value if value is not None else '')
-            if isinstance(value,str):
-                cell.data_type='s' # Never interpret PO/remark beginning with '=' as formulas.
-                cell.number_format='@'
-            if col==1 and isinstance(value,date):cell.number_format='m"月"d"日"'
-            if col in (7,8,9) and value not in ('',None):
-                try:
-                    number=float(value)
-                    if number!=number or abs(number)>1e12:raise ValueError()
-                    cell.value=number;cell.number_format='#,##0.####'
-                except (ValueError,TypeError):pass
-            cell.font=Font(name='Arial',size=11);cell.alignment=Alignment(vertical='top',wrap_text=True)
-            cell.border=Border(left=line,right=line,top=line,bottom=line)
-        photos=photo_provider(item) if include_photos and photo_provider else []
-        total+=sum(len(f['content']) for f in photos)
-        if total>200*1024*1024:raise HTTPException(413,'照片总量超过 200 MB，请缩小筛选范围后导出')
-        # Main row shows up to three photos; larger sets get an explicitly linked photo sheet.
-        height=max(42,min(400,18*(1+len(item['remark'])//44+item['remark'].count('\n'))))
-        for n,photo in enumerate(photos):
-            image=ExcelImage(BytesIO(photo['content']));ratio=min(140/image.width,110/image.height)
-            image.width*=ratio;image.height*=ratio
-            from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
-            from openpyxl.drawing.xdr import XDRPositiveSize2D
-            from openpyxl.utils.units import pixels_to_EMU
-            target=sheet;image_col=15;image_row=index-1;offset=n*150
-            if len(photos)>3:
-                if n==0:
-                    target=workbook.create_sheet('照片-'+str(index-1))
-                    target.append(['PO#','货号','任务编号','照片序号','照片'])
-                    for col,width in [('A',30),('B',30),('C',36),('D',12),('E',35)]:target.column_dimensions[col].width=width
-                    sheet.cell(index,16,'共 '+str(len(photos))+' 张；点击查看照片页')
-                    sheet.cell(index,16).hyperlink="#'"+target.title+"'!A1"
-                    target.freeze_panes='E2'
-                target=workbook['照片-'+str(index-1)]
-                target.append([scalar(item.get('poNo')),scalar(item.get('productNo')),item['id'],n+1,''])
-                for cell in target[n+2]:
-                    if isinstance(cell.value,str):cell.data_type='s';cell.number_format='@'
-                target.row_dimensions[n+2].height=94
-                image_col=4;image_row=n+1;offset=0
-            image.anchor=OneCellAnchor(_from=AnchorMarker(col=image_col,row=image_row,colOff=pixels_to_EMU(6+offset),rowOff=pixels_to_EMU(6)),
-                ext=XDRPositiveSize2D(pixels_to_EMU(image.width),pixels_to_EMU(image.height)))
-            target.add_image(image)
-        if photos:
-            height=max(height,94)
-            sheet.column_dimensions['P'].width=max(sheet.column_dimensions['P'].width,(min(len(photos),3)*150+12)/7)
-        sheet.row_dimensions[index].height=height
-    sheet.sheet_properties.pageSetUpPr.fitToPage=True
-    sheet.page_setup.orientation='landscape';sheet.page_setup.paperSize=sheet.PAPERSIZE_A3
-    sheet.page_setup.fitToWidth=1;sheet.page_setup.fitToHeight=0;sheet.print_title_rows='1:1'
-    output=BytesIO();workbook.save(output);return output.getvalue()
-
-
-def prepare_export(factory, body, actor):
-    content=export_xlsx(factory,body);stamp=int(time.time());token=uuid4().hex
-    with store(True) as conn:
-        conn.execute('DELETE FROM exports WHERE expires<?',(stamp,))
-        total=conn.execute('SELECT coalesce(sum(length(content)),0) FROM exports').fetchone()[0]
-        if total+len(content)>500*1024*1024:raise HTTPException(503,'导出缓存繁忙，请稍后重试')
-        conn.execute('INSERT INTO exports VALUES(?,?,?,?,?)',(token,factory,actor,stamp+600,content))
-    return {'url':'api/inspection-sheet/exports/'+token,'filename':'QC验货明细.xlsx'}
-
-
-def download_export(factory, actor, token):
-    with store() as conn:
-        row=conn.execute('SELECT * FROM exports WHERE id=? AND factory=? AND actor=?',(token,factory,actor)).fetchone()
-        if row is None:raise HTTPException(404,'下载不存在')
-        if row['expires']<int(time.time()):raise HTTPException(410,'下载已过期，请重新导出')
         return row['content']
 
 
