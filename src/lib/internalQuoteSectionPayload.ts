@@ -1,3 +1,4 @@
+import { selectedPaperFactor, type PaperSelection } from './internalQuotePaper'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 import { normalizeDickieMapping, normalizeDickieMold, type DickieMapping, type DickieMoldSupplement } from './dickieQuote'
 
@@ -126,8 +127,8 @@ export interface SalesPackagingMaterialRow extends QuotePricingMetadata {
   disney_included: number
 }
 export type SalesDimensionUnit = 'cm' | 'inch'
-export interface SalesFlatCardRow { name: string; length_in: number; width_in: number; quantity: number }
-export interface SalesCartonRow extends QuotePricingMetadata { item: string; size_unit?: SalesDimensionUnit; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
+export interface SalesFlatCardRow extends PaperSelection { name: string; length_in: number; width_in: number; quantity: number }
+export interface SalesCartonRow extends QuotePricingMetadata, PaperSelection { item: string; size_unit?: SalesDimensionUnit; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
 export type EngineeringFlatCardRow = SalesFlatCardRow
 export type EngineeringCartonRow = SalesCartonRow
 export interface EngineeringPayload {
@@ -755,6 +756,7 @@ function cartonRows(value: unknown): SalesCartonRow[] {
   return rows(value).map((row) => ({
     ...pricingMetadata(row),
     item: textValue(row.item),
+    ...(textValue(row.paper_material_key) ? { paper_material_key: textValue(row.paper_material_key) } : {}),
     size_unit: normalizeSalesDimensionUnit(row.size_unit),
     length_in: numberValue(row.length_in),
     width_in: numberValue(row.width_in),
@@ -764,6 +766,7 @@ function cartonRows(value: unknown): SalesCartonRow[] {
       ? { disney_unit_price_usd: numberValue(row.disney_unit_price_usd) }
       : {}),
     flat_cards: rows(row.flat_cards).map((flat) => ({
+      ...(textValue(flat.paper_material_key) ? { paper_material_key: textValue(flat.paper_material_key) } : {}),
       name: textValue(flat.name),
       length_in: numberValue(flat.length_in),
       width_in: numberValue(flat.width_in),
@@ -1053,18 +1056,18 @@ export function calculateCartonPriceHkd(carton: Pick<SalesCartonRow, 'length_in'
     : 0
 }
 
-export function calculateFlatCardPriceHkd(flatCard: Pick<SalesFlatCardRow, 'length_in' | 'width_in' | 'quantity'>, flatCardPriceFactor: unknown) {
+export function calculateFlatCardPriceHkd(flatCard: Pick<SalesFlatCardRow, 'length_in' | 'width_in' | 'quantity' | 'paper_material_key'>, flatCardPriceFactor: unknown, snapshot?: Record<string, unknown>) {
   const length = positivePreviewNumber(flatCard.length_in)
   const width = positivePreviewNumber(flatCard.width_in)
   const quantity = positivePreviewNumber(flatCard.quantity)
-  const factor = positivePreviewNumber(flatCardPriceFactor)
+  const factor = positivePreviewNumber(selectedPaperFactor(flatCard, flatCardPriceFactor, snapshot))
   return length && width && factor && quantity ? length * width * factor * quantity / 1000 : 0
 }
 
-export function calculateCartonUnitCostHkd(carton: SalesCartonRow, paperPriceFactor: unknown, flatCardPriceFactor: unknown = paperPriceFactor) {
+export function calculateCartonUnitCostHkd(carton: SalesCartonRow, paperPriceFactor: unknown, flatCardPriceFactor: unknown = paperPriceFactor, snapshot?: Record<string, unknown>) {
   const quantity = positivePreviewNumber(carton.qty_per_carton)
   if (!quantity) return 0
-  const flatCards = carton.flat_cards.reduce((total, flatCard) => total + calculateFlatCardPriceHkd(flatCard, flatCardPriceFactor), 0)
+  const flatCards = carton.flat_cards.reduce((total, flatCard) => total + calculateFlatCardPriceHkd(flatCard, flatCardPriceFactor, snapshot), 0)
   return (calculateCartonPriceHkd(carton, paperPriceFactor) + flatCards) / quantity
 }
 

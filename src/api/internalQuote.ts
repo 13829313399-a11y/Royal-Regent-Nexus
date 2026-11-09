@@ -520,6 +520,8 @@ export interface ApiInternalQuoteFreightBaselineRow {
   lifting_hkd: string
 }
 
+export type { QuotePaperPrice } from '@/lib/internalQuotePaper'
+
 export interface ApiInternalQuotePricingBaseline {
   factory_id: string
   workshop_code: string
@@ -528,6 +530,7 @@ export interface ApiInternalQuotePricingBaseline {
   source_type: 'default' | 'custom'
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
   machine_prices: ApiInternalQuoteMachineBaselineRow[]
+  paper_prices?: import('@/lib/internalQuotePaper').QuotePaperPrice[]
   freight_routes: ApiInternalQuoteFreightBaselineRow[]
   updated_by: string
   updated_by_name: string
@@ -539,10 +542,12 @@ export interface InternalQuotePricingBaselineUpdateRequest {
   workshop_name: string
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
   machine_prices: ApiInternalQuoteMachineBaselineRow[]
+  paper_prices?: import('@/lib/internalQuotePaper').QuotePaperPrice[]
   freight_routes: ApiInternalQuoteFreightBaselineRow[]
 }
 
 export interface InternalQuoteReferenceMaterialsUpdateRequest {
+  paper_prices?: import('@/lib/internalQuotePaper').QuotePaperPrice[]
   revision: number
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
 }

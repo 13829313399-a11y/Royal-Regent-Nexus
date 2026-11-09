@@ -10,6 +10,7 @@ from app.schemas.internal_quote import (
     InternalQuoteFreightBaselineRow,
     InternalQuoteMachineBaselineRow,
     InternalQuoteMaterialBaselineRow,
+    InternalQuotePaperPriceRow,
     InternalQuotePricingBaselineOut,
     InternalQuotePricingBaselineUpdateRequest,
 )
@@ -143,6 +144,7 @@ def _baseline_out(
             InternalQuoteMachineBaselineRow,
         ),
         freight_routes=_json_freight_routes(baseline.freight_routes_json),
+        paper_prices=_json_rows(baseline.paper_prices_json, InternalQuotePaperPriceRow),
         updated_by=baseline.updated_by,
         updated_by_name=baseline.updated_by_name,
         updated_at=baseline.updated_at,
@@ -263,6 +265,8 @@ def update_pricing_baseline(
         if payload.freight_routes is not None
         else _json_freight_routes(baseline.freight_routes_json if baseline is not None else "[]")
     )
+    paper_prices = payload.paper_prices if payload.paper_prices is not None else _json_rows(baseline.paper_prices_json if baseline else "[]", InternalQuotePaperPriceRow)
+    paper_prices_json = json.dumps([row.model_dump() for row in paper_prices], ensure_ascii=False, sort_keys=True)
     freight_routes_json = json.dumps(
         [row.model_dump() for row in freight_routes],
         ensure_ascii=False,
@@ -277,6 +281,7 @@ def update_pricing_baseline(
             material_prices_json=material_prices_json,
             machine_prices_json=machine_prices_json,
             freight_routes_json=freight_routes_json,
+            paper_prices_json=paper_prices_json,
             revision=1,
             created_by=user.id,
             created_by_name=user.display_name,
@@ -288,6 +293,7 @@ def update_pricing_baseline(
         db.add(baseline)
     else:
         baseline.workshop_name = payload.workshop_name
+        baseline.paper_prices_json = paper_prices_json
         baseline.material_prices_json = material_prices_json
         baseline.machine_prices_json = machine_prices_json
         baseline.freight_routes_json = freight_routes_json

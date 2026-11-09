@@ -52,8 +52,8 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert response.status_code == 200, response.text
         layout = response.json()
         assert layout["formula_errors"] == []
-        assert [s["name"] for s in layout["sheets"]] == ["报价明细", "original"]
-        source_sheet = layout["sheets"][1]
+        assert [s["name"] for s in layout["sheets"]] == ["报价明细", "采用价目表", "original"]
+        source_sheet = next(s for s in layout["sheets"] if s["name"] == "original")
         assert source_sheet["source"] == {"file_name": "original.xlsx", "department": "engineering"}
         source_cells = {c["address"]: c for row in source_sheet["rows"] for c in row["cells"]}
         assert source_cells["A1"]["text"] == "原表公式未缓存"
@@ -77,7 +77,7 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         preview = client.post(root + "/output-layout/preview", json=body)
         assert preview.status_code == 200, preview.text
         assert preview.json()["formula_errors"] == []
-        assert preview.json()["sheets"][1] == source_sheet
+        assert next(s for s in preview.json()["sheets"] if s["name"] == "original") == source_sheet
         with monkeypatch.context() as restricted:
             restricted.setattr(layout_service, "_can_access_attachment_department", lambda user, quote, department: False)
             restricted_preview = client.post(root + "/output-layout/preview", json=body)
@@ -156,7 +156,7 @@ def test_multiple_groups_currencies_atomic_failure_and_molding_dependency(monkey
         response = client.get(root + '/output-layout')
         assert response.status_code == 200, response.text
         layout = response.json()
-        assert [s['name'] for s in layout['sheets']] == ['报价明细', '电子明细1', '电子明细2', '工模报价']
+        assert [s['name'] for s in layout['sheets']] == ['报价明细', '电子明细1', '电子明细2', '工模报价', '采用价目表']
         second_sheet = layout['sheets'][2]
         second_price = next(c for row in second_sheet['rows'] for c in row['cells'] if c['address'] == 'E4')
         assert second_price['binding']['group'] == 'electronic:quote_groups/1/components/0'
