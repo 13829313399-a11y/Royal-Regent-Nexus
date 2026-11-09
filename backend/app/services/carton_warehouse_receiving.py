@@ -73,8 +73,8 @@ def receive(db, user, payload, *, refresh_actor):
         for item, row in specials:
             if item.expected_revision != row.revision or not special.flags(db, user, row, False)['can_manual_receive']:
                 raise HTTPException(409, '样板或杂单已变化，请核对锁单状态和版本')
-            if manual.pending_deliveries(db, row)[0]:
-                raise HTTPException(409, '所选样板或杂单已有待收或冲销待更正送货，请沿原单验收')
+            if manual.pending_deliveries(db, row, {line.line_id for line in item.lines})[0]:
+                raise HTTPException(409, '所选样板或杂单纸品已有待收或冲销待更正送货，请沿原单验收')
             papers = {line.id: line for line in special.lines(db, row)}
             totals = special.state_counts(db, row)[3]
             if len({line.line_id for line in item.lines}) != len(item.lines):

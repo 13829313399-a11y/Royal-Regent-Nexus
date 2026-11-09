@@ -46,6 +46,71 @@ def post(client, shipment, data):
     return response.json()
 
 
+def test_manual_receipt_protects_only_papers_with_remaining_or_queued_correction(monkeypatch, tmp_path):
+    import test_molding_sample_api
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
+    with make_client(monkeypatch) as client:
+        order, original = begin(client, monkeypatch)
+
+        def accept_one(shipment, index):
+            data = payload(client, shipment, 10)
+            for other, line in enumerate(data['lines']):
+                if other != index:
+                    line.update(received_quantity=0, location_allocations=[])
+            return post(client, shipment, data)
+
+        first = accept_one(original, 0)
+        second = accept_one(first, 1)
+        assert second['status'] == 'RECEIVED'
+        login_as(client, 'admin')
+
+        def reverse(identifier):
+            detail = client.get(f'/api/carton-procurement/receipts/{identifier}', params={'factory_id': 'huaxing'}).json()
+            response = client.post(f'/api/carton-procurement/receipts/{identifier}/reverse', json={
+                'factory_id': 'huaxing', 'expected_revision': detail['revision'], 'reason': '核实该批纸品重新验收',
+            })
+            assert response.status_code == 200, response.text
+
+        def shipment_state():
+            workspace = client.get(BASE + '/internal/workspace', params={'factory_id': 'huaxing'}).json()
+            return next(shipment for shipment in workspace['shipments'] if shipment['id'] == original['id'])
+
+        def new_note(index, note):
+            refreshed = client.get('/api/carton-procurement/orders', params={'factory_id': 'huaxing'}).json()['items'][0]
+            allocation = receive_payload(client, original)['lines'][0]['location_allocations'][0]
+            return client.post('/api/carton-unified-deliveries/warehouse-receive', json={
+                'factory_id': 'huaxing', 'request_id': uuid4().hex, 'delivery_note_no': note,
+                'delivery_date': '2026-09-30', 'acceptance_date': '2026-09-30',
+                'order_revisions': {order['order_no']: refreshed['revision']},
+                'formal_lines': [{'source_type': 'FORMAL_ORDER', 'order_line_id': original['lines'][index]['order_line_id'],
+                    'delivered_quantity': '1', 'received_quantity': '1', 'unit_price': '2',
+                    'location_allocations': [{**allocation, 'quantity': '1'}]}],
+            })
+
+        reverse(second['receipt_id'])
+        current = shipment_state()
+        assert [Decimal(line['reserved_quantity']) for line in current['lines']] == [0, 10]
+        assert [Decimal(line['receivable_quantity']) for line in current['lines']] == [0, 10]
+        duplicate = new_note(0, original['delivery_note_no'])
+        assert duplicate.status_code == 409 and '单号已登记' in duplicate.text
+        blocked = new_note(1, 'NEW-WAIT-CORRECTION')
+        assert blocked.status_code == 409 and '冲销待更正' in blocked.text
+        saved = new_note(0, 'NEW-DIFFERENT-ARRIVAL')
+        assert saved.status_code == 200, saved.text
+        assert saved.json()['receipts'][0]['status'] == 'POSTED'
+
+        reverse(first['receipt_id'])
+        queued = shipment_state()
+        assert all(Decimal(line['remaining_quantity']) == 0 and Decimal(line['reserved_quantity']) == 10 for line in queued['lines'])
+        assert sorted(Decimal(line['receivable_quantity']) for line in queued['lines']) == [0, 10]
+        later = next(index for index, line in enumerate(queued['lines']) if Decimal(line['receivable_quantity']) == 0)
+        blocked = new_note(later, 'NEW-QUEUED-CORRECTION')
+        assert blocked.status_code == 409 and '冲销待更正' in blocked.text
+        supplier_login(client)
+        external = client.get(BASE + '/workspace', params={'factory_id': 'huaxing'}).json()
+        assert all('reserved_quantity' not in line for shipment in external['shipments'] for line in shipment['lines'])
+
+
 def test_two_batches_cross_month_idempotency_capacity_and_individual_reversal(monkeypatch):
     with make_client(monkeypatch) as client:
         order, original = begin(client, monkeypatch)

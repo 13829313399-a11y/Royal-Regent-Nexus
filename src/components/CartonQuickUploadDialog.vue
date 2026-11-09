@@ -5,7 +5,7 @@ import { FileUp, X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/stores/auth'
 import { cartonQuickAssetsApi, type AssetDepartment, type QuickAsset, type QuickAssetStatus, type QuickTarget, type QuickUploadBody } from '@/api/cartonQuickAssets'
-import { canQuickAsset, departmentLabel, quickStatusLabel, responseStatus, suggestedContract, targetLabel, targetRef, uploadDepartments, viewerKey, type QuickAudience } from '@/features/carton-procurement/quickAssets'
+import { canQuickAsset, departmentLabel, quickStatusLabel, responseStatus, suggestedContract, targetLabel, targetOrderTime, targetRef, uploadDepartments, viewerKey, type QuickAudience } from '@/features/carton-procurement/quickAssets'
 import { getApiErrorMessage } from '@/lib/http'
 import { factoryContexts } from '@/data/enterpriseMock'
 import { createRandomUuid } from '@/lib/randomUuid'
@@ -39,8 +39,8 @@ const activeLocked = computed(() => activeFile.value?.state === 'saved' || activ
 const savedCount = computed(() => queue.value.filter(row => row.state === 'saved').length)
 const pendingCount = computed(() => queue.value.length - savedCount.value)
 const rowState = { pending: '待保存', saving: '保存中', saved: '已保存', failed: '保存失败', unknown: '结果待核实' }
-const targetScope = computed(() => props.audience === 'sales' ? 'PENDING_SCHEDULE' as const : 'ALL' as const)
-const visibleTargets = computed(() => candidates.value.filter(x => !orderSearch.value.trim() || [x.contract_no, x.customer_po, x.item_no, x.customer_name].join(' ').toLowerCase().includes(orderSearch.value.trim().toLowerCase())))
+const targetScope = computed(() => props.audience === 'sales' ? 'PENDING_SCHEDULE' as const : 'ORDERS' as const)
+const visibleTargets = computed(() => candidates.value.filter(x => !orderSearch.value.trim() || [x.contract_no, x.customer_po, x.item_no, x.customer_name, x.order_no, targetOrderTime(x)].join(' ').toLowerCase().includes(orderSearch.value.trim().toLowerCase())))
 const contractMatches = computed(() => contract.value ? candidates.value.filter(x => x.contract_no.trim().toUpperCase() === contract.value.trim().toUpperCase()) : [])
 const shareOptions = computed(() => factoryContexts.filter(x => (props.supplierFactories || [props.factoryId]).includes(x.id)))
 const validContent = computed(() => !!text.value.trim() && text.value.length <= 20000)
@@ -119,8 +119,9 @@ async function loadCandidates(token: number) {
   const original = context.value
   loading.value = true
   try {
-    const rows = await cartonQuickAssetsApi.candidates(props.factoryId, department.value as AssetDepartment, '', searchController.signal, targetScope.value)
+    const response = await cartonQuickAssetsApi.candidates(props.factoryId, department.value as AssetDepartment, '', searchController.signal, targetScope.value)
     if (token !== searchGeneration || original !== context.value) return
+    const rows = response.filter(row => props.audience === 'sales' || row.kind !== 'SCHEDULE')
     const available = new Set(rows.map(row => row.fingerprint))
     for (const row of [...queue.value, textSelection]) {
       if ('request' in row && row.request || 'state' in row && row.state === 'saved') continue
@@ -219,7 +220,7 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
     <DialogTrigger as-child><Button type="button" :disabled="disabled || !departments.length"><FileUp class="size-4" />快速上传</Button></DialogTrigger>
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/45" />
-      <DialogContent as="form" :id="formId" class="quick-upload fixed left-1/2 top-1/2 z-[71] flex max-h-[calc(100dvh-1.5rem)] w-[calc(100%_-_1.5rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-2xl" @submit.prevent="submit" @escape-key-down="event => { if (busy) event.preventDefault() }" @interact-outside="event => event.preventDefault()">
+      <DialogContent as="form" :id="formId" class="quick-upload fixed left-1/2 top-1/2 z-[71] flex max-h-[calc(100dvh-1.5rem)] w-[calc(100%_-_1.5rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-2xl" @submit.prevent="submit" @escape-key-down="event => { if (busy) event.preventDefault() }" @interact-outside="event => event.preventDefault()">
         <header class="flex shrink-0 items-start justify-between gap-3 border-b border-border p-4 sm:px-5">
           <div class="min-w-0"><DialogTitle class="text-lg font-bold">上传资料</DialogTitle><DialogDescription class="mt-1 text-xs text-muted-foreground">可多选文件，逐个核对关联后一起保存；也可暂不关联。</DialogDescription></div>
           <button type="button" aria-label="关闭快速上传" :disabled="busy" class="shrink-0 rounded-lg p-2 hover:bg-muted disabled:opacity-50" @click="changeOpen(false)"><X class="size-4" /></button>
@@ -234,7 +235,7 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
               </li>
             </ul>
           </section>
-          <fieldset :disabled="busy || !!frozen || mode === 'file' && activeLocked" class="min-w-0 space-y-4 disabled:opacity-70">
+          <fieldset :disabled="busy || !!frozen || mode === 'file' && activeLocked" class="upload-fields min-w-0 space-y-4 disabled:opacity-70">
             <p v-if="mode === 'file' && queue.length > 1" class="text-xs text-muted-foreground">归属部门、状态和共享范围用于本批待保存文件；关联订单只用于当前选中的文件。</p>
             <label v-if="departments.length > 1" class="block text-sm font-semibold">归属部门<select v-model="department" :disabled="hasUnknown" aria-label="资料归属部门" class="mt-1 h-10 w-full rounded-lg border border-input bg-card px-3 font-normal"><option value="">请选择本次归属部门</option><option v-for="d in departments" :key="d" :value="d">{{ departmentLabel[d] }}</option></select><span class="mt-1 block text-xs font-normal text-muted-foreground">多部门账号需明确选择，当前页面不代替归属选择。</span></label>
             <p v-else class="text-xs text-muted-foreground">归属：{{ department ? departmentLabel[department] : '暂无资料读写权限' }}</p>
@@ -251,7 +252,7 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
               <p v-if="mode === 'file' && file" class="break-all text-xs font-semibold text-primary">正在核对：{{ file.name }}</p>
               <div class="flex flex-wrap items-center justify-between gap-2"><h3 class="text-sm font-semibold">{{ audience === 'sales' ? '关联排期订单（未下单）' : '关联订单' }} <span class="font-normal text-muted-foreground">可多选</span></h3><button type="button" class="text-xs text-primary underline" @click="clearLinks">暂不关联</button></div>
               <p class="text-xs text-muted-foreground">选择这份资料适用的订单，货号和 PO 从订单带出，不用重复填写。同合同的资料不一定通用。</p>
-              <p class="text-xs text-muted-foreground">{{ audience === 'sales' ? '勾选后，仓库能在对应排期看到资料，下单时会沿用关联。' : '勾选这份资料对应的订单，关联不会提交采购。' }}</p>
+              <p class="text-xs text-muted-foreground">{{ audience === 'sales' ? '勾选后，仓库能在对应排期看到资料，下单时会沿用关联。' : '这里只显示可关联的已建采购单、样板和杂单。勾选关联不会提交采购。' }}</p>
               <input v-model="orderSearch" aria-label="搜索关联订单" placeholder="搜索客户、合同 / PO、货号" class="h-10 w-full min-w-0 rounded-lg border border-input bg-card px-3 text-sm">
               <p v-if="contract && loaded && !associationTouched" class="text-xs text-muted-foreground">识别到合同 {{ contract }}；{{ contractMatches.length > 1 ? `找到 ${contractMatches.length} 条订单，请按货号、PO 勾选适用订单，不会自动全选。` : chosenTargets.length ? '仅找到一条匹配订单，已推荐勾选，请核对后保存。' : '请核对并勾选对应订单，也可暂不关联。' }}</p>
               <p v-if="loading" role="status" class="text-sm text-muted-foreground">正在读取可关联订单…</p>
@@ -267,7 +268,7 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
                 </div>
               </div>
               <div v-else class="max-h-56 space-y-1 overflow-y-auto">
-                <label v-for="target in visibleTargets" :key="target.fingerprint" class="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5"><input v-model="chosenTargets" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0" @change="confirmSelection"><span class="min-w-0"><span class="block break-words font-semibold">{{ target.contract_no || '未填合同' }} · {{ target.item_no || '未填货号' }}</span><span class="mt-1 block break-words text-xs text-muted-foreground">{{ target.customer_name }} · PO {{ target.customer_po || '未填写' }} · {{ target.kind === 'SCHEDULE' ? '未下单排期' : targetLabel(target) }}</span><span v-if="target.kind === 'SCHEDULE'" class="block text-xs text-muted-foreground">{{ target.sheet }} 第{{ target.row }}行</span></span></label>
+                <label v-for="target in visibleTargets" :key="target.fingerprint" class="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5"><input v-model="chosenTargets" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0" @change="confirmSelection"><span class="min-w-0"><span class="block break-words font-semibold">{{ ['SAMPLE', 'MISC'].includes(target.kind) ? targetLabel(target) : `${target.contract_no || '未填合同'} · ${target.item_no || '未填货号'}` }}</span><span class="mt-1 block break-words text-xs text-muted-foreground">{{ ['SAMPLE', 'MISC'].includes(target.kind) ? (target.customer_name || '客户未填写') : `${target.customer_name} · PO ${target.customer_po || '未填写'} · ${target.kind === 'SCHEDULE' ? '未下单排期' : targetLabel(target)}` }}</span><span v-if="targetOrderTime(target)" class="mt-1 block text-xs tabular-nums text-muted-foreground">{{ targetOrderTime(target) }}</span><span v-if="target.kind === 'SCHEDULE'" class="block text-xs text-muted-foreground">{{ target.sheet }} 第{{ target.row }}行</span></span></label>
                 <p v-if="loaded && !visibleTargets.length" class="py-3 text-sm text-muted-foreground">{{ orderSearch ? '没有匹配结果，请换个关键词；也可以暂不关联。' : audience === 'sales' ? '暂无未下单排期。可先保存资料，再补充关联。' : '暂无可关联订单，可先保存资料。' }}</p>
               </div>
               <p class="text-sm" role="status">{{ chosenTargets.length ? `已选择 ${chosenTargets.length} 条（包含搜索后隐藏的选择）` : '未关联，保存后可在资料库补充关联。' }}</p>
@@ -292,5 +293,11 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
 
 <style scoped>
 .quick-upload { overflow-wrap:anywhere; }
+@media(min-width:1024px) {
+  .upload-fields { display:grid; grid-template-columns:minmax(0,0.85fr) minmax(0,1.15fr); column-gap:1.5rem; align-items:start; }
+  .upload-fields > * { grid-column:1; }
+  .upload-fields > [aria-label="选择关联订单"] { grid-column:2; grid-row:1 / span 10; margin-top:0; height:100%; }
+  .upload-fields > [aria-label="选择关联订单"] .max-h-56 { max-height:24rem; }
+}
 @media(max-width:360px) { .quick-upload [role="group"] { grid-template-columns:minmax(0,1fr); } }
 </style>

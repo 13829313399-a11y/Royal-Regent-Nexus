@@ -97,7 +97,7 @@ def test_same_contract_item_and_source_po_are_distinct_when_so_differs():
 
 
 def test_legacy_batch_projection_uses_so_without_spreading_old_audit_marks():
-    from app.services.carton_procurement import _project_item_schedule_rows, _schedule_event_key
+    from app.services.carton_procurement import _project_item_schedule_rows, _schedule_event_source
     from app.services.carton_schedule_tracking import identity, legacy_identity
 
     base = dict(schedule_customer_code='DICKIE', contract_no='53135', item_no='0040220-1',
@@ -115,11 +115,15 @@ def test_legacy_batch_projection_uses_so_without_spreading_old_audit_marks():
     assert not any(row['manual_ordered'] for row in summary['rows'])
     db = SimpleNamespace(get=lambda model, batch_id: old_batch)
     detail = {'batch_id': 'batch-1', 'source_sheet': 'ITEM', 'source_row': 4}
-    assert _schedule_event_key(db, 'huaxing', legacy_identity(rows[0]), detail, {}) == legacy_identity(rows[0])
-    assert _schedule_event_key(db, 'huaxing', identity(rows[0]), detail, {}) == identity(rows[0])
+    old_key, current_key = legacy_identity(rows[0]), identity(rows[0])
+    assert _schedule_event_source(db, 'huaxing', old_key, detail, {}) == (old_key, rows[0], current_key)
+    assert _schedule_event_source(db, 'huaxing', current_key, detail, {}) == (current_key, rows[0], current_key)
     single_batch = SimpleNamespace(factory_id='huaxing', parse_summary_json=json.dumps({'rows': [rows[0]]}))
     db = SimpleNamespace(get=lambda model, batch_id: single_batch)
-    assert _schedule_event_key(db, 'huaxing', legacy_identity(rows[0]), detail, {}) == identity(rows[0])
+    assert _schedule_event_source(db, 'huaxing', old_key, detail, {}) == (current_key, rows[0], current_key)
+    assert _schedule_event_source(db, 'huakang-b', old_key, detail, {}) == (old_key, None, '')
+    single_batch.parse_summary_json = json.dumps({'rows': [rows[0], dict(rows[0], order_type='样板单')]})
+    assert _schedule_event_source(db, 'huaxing', old_key, detail, {}) == (old_key, None, '')
     matched = dict(rows[0], order_id='old-order', order_no='OLD-1', order_status='PENDING_SUPPLIER',
                    match_status='MATCHED', procurement_state='ORDERED', suggestion='已匹配正式纸箱订单')
     matched_summary = {'parser_version': 'schedule-item-sections-v2', 'rows': [matched]}

@@ -101,15 +101,22 @@ def test_po_change_invalidates_old_source_even_when_so_demand_is_unchanged(monke
 
 
 def test_blank_source_po_stays_blank_and_legacy_so_links_remain_readable(monkeypatch):
+    from test_carton_asset_quick import enable, ok, upload as upload_asset
+
     with make_client(monkeypatch) as client:
         prepare(client)
+        enable(monkeypatch)
         blank = upload(client, 'blank-po.xlsx', [demand(po='')])
+        asset = ok(upload_asset(client, contract_number='RL-452547-8', target_scope='PENDING_SCHEDULE'))
         order, _ = create(client, blank)
         assert order['customer_po'] == ''
         from app.db import SessionLocal
+        from app.models.carton_mark import CartonMarkAsset
         from app.models.carton_procurement import CartonOrder, CartonAuditEvent
+        from app.services.carton_asset_targets import source_purchase_order_ids
         from sqlalchemy import select
         with SessionLocal() as db:
+            assert source_purchase_order_ids(db, db.get(CartonMarkAsset, asset['id'])) == {order['id']}
             db.get(CartonOrder, order['id']).customer_po = 'RL-452547-8'
             event = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.event_type == 'SCHEDULE_ORDER_LINKED'))
             data = json.loads(event.detail_json)
@@ -118,3 +125,97 @@ def test_blank_source_po_stays_blank_and_legacy_so_links_remain_readable(monkeyp
             db.commit()
         key = blank['parse_summary']['rows'][0]['schedule_identity']
         assert marks(client)[key]['matching_order_ids'] == [order['id']]
+        upload(client, 'blank-po-removed.xlsx', [demand(contract='UNRELATED')])
+        with SessionLocal() as db:
+            assert source_purchase_order_ids(db, db.get(CartonMarkAsset, asset['id'])) == {order['id']}
+
+
+def test_schedule_material_follows_its_purchase_after_source_row_is_removed(monkeypatch):
+    from test_carton_asset_quick import BASE as ASSETS, F, enable, ok, upload as upload_asset
+    from test_carton_procurement_api import _submit_order
+    from test_carton_supplier_portal import setup_portal, supplier_login
+    from test_molding_sample_api import login_as
+
+    with make_client(monkeypatch) as client:
+        unrelated = setup_portal(client)
+        login_as(client, 'admin')
+        enable(monkeypatch)
+        first, second = demand(so='SO-A'), demand(so='SO-B')
+        marked = demand(contract='MANUAL-MARK', so='', po='0004720')
+        original = upload(client, 'schedule-original.xlsx', [demand(contract='LEADING'), first, second, marked])
+        rows = original['parse_summary']['rows']
+        candidates = ok(client.get(ASSETS + '/candidates', params={
+            **F, 'owner_department': 'sales-business', 'target_scope': 'PENDING_SCHEDULE',
+            'contract_number': first[1],
+        }))['items']
+        first_target = next(target for target in candidates if target['row'] == rows[1]['source_row'])
+        ref = {field: first_target[field] for field in ('kind', 'id', 'sheet', 'row', 'fingerprint')}
+        asset = ok(upload_asset(client, contract_number=first[1], target_scope='PENDING_SCHEDULE',
+                                association='MANUAL', targets=[ref]))
+        first_order, first_body = create(client, original, index=1)
+        second_order, _ = create(client, original, index=2)
+        first_order = _submit_order(client, first_order)
+        assert client.post(BASE + '/schedule-order-marks', json={
+            **F, **source(original, marked[1]), 'marked': True, 'reason': '已按原采购记录核对',
+        }).status_code == 200
+
+        shifted = upload(client, 'schedule-shifted.xlsx', [first, second, marked])
+        shifted_rows = shifted['parse_summary']['rows']
+        assert shifted_rows[0]['source_row'] != rows[1]['source_row']
+        assert [row.get('order_id') for row in shifted_rows[:2]] == [first_order['id'], second_order['id']]
+        assert marks(client)[shifted_rows[2]['schedule_identity']]['marked']
+        assert client.post(BASE + '/orders', json={**first_body, 'request_id': uuid4().hex,
+            'schedule_source': source(shifted, first[1]),
+        }).status_code == 409
+        detail_url = ASSETS + '/' + asset['id']
+        assert [target['id'] for target in ok(client.get(detail_url, params=F))['targets']] == [shifted['id']]
+
+        changed_po = demand(so='SO-A', po='0009999')
+        upload(client, 'schedule-po-changed.xlsx', [changed_po, second, marked])
+        assert [target['id'] for target in ok(client.get(detail_url, params=F))['targets']] == [original['id']]
+
+        latest = upload(client, 'schedule-removed.xlsx', [second, marked])
+        assert latest['parse_summary']['rows'][0]['order_id'] == second_order['id']
+        assert marks(client)[rows[1]['schedule_identity']]['order_ids'] == [first_order['id']]
+        ledger = ok(client.get(BASE + '/orders', params=F))['items']
+        assert {order['id'] for order in ledger} == {first_order['id'], second_order['id'], unrelated['id']}
+        assert next(order for order in ledger if order['id'] == first_order['id'])['status'] == 'PENDING_SUPPLIER'
+
+        detail = ok(client.get(detail_url, params=F))
+        assert [(target['kind'], target['id'], target['row']) for target in detail['targets']] == [
+            ('SCHEDULE', original['id'], rows[1]['source_row']),
+        ]
+        supplier_login(client)
+        supplier_view = {**F, 'supplier_view': True}
+        detail = ok(client.get(detail_url, params=supplier_view))
+        assert [(target['kind'], target['id']) for target in detail['targets']] == [('REGULAR', first_order['id'])]
+        assert client.get(ASSETS + '/' + asset['id'] + '/document', params=supplier_view).content == b'synthetic text'
+
+
+@pytest.mark.parametrize('second_kind', ['正单', '备料单'])
+def test_duplicate_schedule_material_does_not_move_to_a_later_singleton(monkeypatch, second_kind):
+    from test_carton_asset_quick import BASE as ASSETS, F, enable, ok, upload as upload_asset
+
+    with make_client(monkeypatch) as client:
+        prepare(client)
+        enable(monkeypatch)
+        first = demand()
+        sibling = [second_kind, *first[1:]]
+        upload(client, 'schedule-unique-before-duplicates.xlsx', [first])
+        earlier = ok(upload_asset(client, contract_number=first[1], target_scope='PENDING_SCHEDULE', text='earlier source'))
+        original = upload(client, 'schedule-duplicates.xlsx', [first, sibling])
+        candidates = ok(client.get(ASSETS + '/candidates', params={
+            **F, 'owner_department': 'sales-business', 'target_scope': 'PENDING_SCHEDULE',
+            'contract_number': first[1],
+        }))['items']
+        second_target = max(candidates, key=lambda row: row['row'])
+        ref = {field: second_target[field] for field in ('kind', 'id', 'sheet', 'row', 'fingerprint')}
+        asset = ok(upload_asset(client, contract_number=first[1], target_scope='PENDING_SCHEDULE',
+                                association='MANUAL', targets=[ref]))
+        assert asset['targets'][0]['row'] == original['parse_summary']['rows'][1]['source_row']
+        create(client, original)
+        assert ok(client.get(ASSETS + '/' + earlier['id'], params=F))['targets'] == []
+        upload(client, 'schedule-singleton.xlsx', [first])
+        detail = ok(client.get(ASSETS + '/' + asset['id'], params=F))
+        assert detail['targets'] == []
+        assert client.get(ASSETS + '/' + asset['id'] + '/document', params=F).content == b'synthetic text'

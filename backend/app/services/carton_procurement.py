@@ -98,10 +98,12 @@ from app.services.carton_ledger_time import ledger_rows, ledger_time, ordered_le
 from app.services.carton_procurement_imports import (
     DELIVERY_IMPORT_PARSER_VERSION,
     INSPECTION_IMPORT_PARSER_VERSION,
+    SCHEDULE_360_FALLBACK_VERSION,
     SCHEDULE_IMPORT_PARSER_VERSION,
     parse_carton_import,
+    weekly_schedule_parser_version,
 )
-from app.services.carton_schedule_tracking import annotate_changes, customer_key, identity, legacy_identity, operation_identity, tracked, so_identity, effective_po, demand_snapshot, mark_changes, mark_for_row
+from app.services.carton_schedule_tracking import annotate_changes, customer_key, identity, legacy_identity, operation_identity, tracked, so_identity, effective_po, demand_snapshot, mark_changes, mark_for_row, material_identity
 
 
 CARTON_DEPARTMENTS = ("pmc-warehouse", "carton")
@@ -4307,7 +4309,8 @@ def _project_item_schedule_rows(batch_id: str, summary: dict[str, object]) -> No
     """Expose independent actions for repeated SO rows without rewriting import evidence."""
     rows = [row for row in summary.get("rows", []) if isinstance(row, dict) and row.get("template") == "unified-item"]
     counts = Counter(identity(row) for row in rows if tracked(row) and identity(row))
-    effective_po_versions = {SCHEDULE_IMPORT_PARSER_VERSION, "schedule-item-shipping-split-source-v7", "schedule-item-amendment-v6", "schedule-item-effective-po-v5"}
+    effective_po_versions = {SCHEDULE_360_FALLBACK_VERSION, SCHEDULE_IMPORT_PARSER_VERSION,
+        "schedule-item-shipping-split-source-v7", "schedule-item-amendment-v6", "schedule-item-effective-po-v5"}
     legacy = summary.get("parser_version") not in effective_po_versions | {"schedule-item-so-identity-v4-complete"}
     before_po_fallback = summary.get("parser_version") not in effective_po_versions
     for row in rows:
@@ -4556,19 +4559,23 @@ def create_import_batch(
             raise HTTPException(422, "请选择当前厂区基础资料中的排期客户")
         customer = get_active_customer(db, factory_id, customer_code)
         from app.services.carton_business_customers import source_code
+        business_customer_code = source_code(db, factory_id, customer.id)
         effective_profile.update(customer_code=customer.customer_code)
         # Keep old manual-import replay keys unchanged. The source code is a
         # server-derived parsing option; only the existing business handoff
         # profile has historically included it in the durable identity.
         if effective_profile.get("source_system") == "CUSTOMER_ORDER_CENTER":
-            effective_profile["business_customer_code"] = source_code(db, factory_id, customer.id)
+            effective_profile["business_customer_code"] = business_customer_code
         else:
             effective_profile.pop("business_customer_code", None)
     effective_profile["matching_version"] = "item-so-v2" if import_type == "WEEKLY_SCHEDULE" else "customer-po-v1"
     if import_type == "DELIVERY_NOTE":
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
     elif import_type == "WEEKLY_SCHEDULE":
-        effective_profile["parser_version"] = SCHEDULE_IMPORT_PARSER_VERSION
+        effective_profile["parser_version"] = weekly_schedule_parser_version(parsed_source, {
+            "customer_code": customer.customer_code, "customer_name": customer.customer_name,
+            "business_customer_code": business_customer_code,
+        })
     elif import_type == "INSPECTION_SCHEDULE":
         effective_profile["parser_version"] = INSPECTION_IMPORT_PARSER_VERSION
     identity_profile = dict(effective_profile)
@@ -4605,7 +4612,7 @@ def create_import_batch(
     parse_options["reference_date"] = business_now().date().isoformat()
     if import_type == "WEEKLY_SCHEDULE":
         parse_options["customer_name"] = customer.customer_name
-        parse_options["business_customer_code"] = source_code(db, factory_id, customer.id)
+        parse_options["business_customer_code"] = business_customer_code
         parse_options["schedule_order_links"] = _schedule_order_links(db, factory_id)
     parse_summary = parse_carton_import(
         db,
@@ -4683,35 +4690,79 @@ def create_import_batch(
     return result
 
 
-def _schedule_event_key(db: Session, factory_id: str, event_key: str, detail: dict[str, object], cache: dict[str, list[dict[str, object]]]) -> str:
+class _ScheduleEventSourceIndex:
+    """Index immutable source evidence once per referenced batch during audit replay."""
+
+    def __init__(self, rows, customer_code):
+        self.by_coordinate = defaultdict(list)
+        self.unindexed = []
+        self.customer_code = customer_code
+        self.identities = Counter()
+        self.pending_identities = Counter()
+        self.legacy_identities = Counter()
+        self.prior_identities = Counter()
+        for row in rows:
+            coordinate = (row.get("source_sheet"), row.get("source_row"))
+            try:
+                self.by_coordinate[coordinate].append(row)
+            except TypeError:
+                # Retain equality lookup for unusual coordinates in old JSON.
+                self.unindexed.append((coordinate, row))
+            if row.get('schedule_section') in (None, '', 'PENDING'):
+                self.pending_identities[self._pending_identity(row)] += 1
+            if tracked(row):
+                self.identities[identity(row)] += 1
+                self.legacy_identities[legacy_identity(row)] += 1
+                self.prior_identities[so_identity(row)] += 1
+
+    def _pending_identity(self, row):
+        return material_identity({**row, 'customer_code': row.get('schedule_customer_code') or self.customer_code})
+
+    def pending_source_is_unique(self, row):
+        return self.pending_identities[self._pending_identity(row)] == 1
+
+    def source_at(self, detail):
+        coordinate = (detail.get("source_sheet"), detail.get("source_row"))
+        try:
+            matches = self.by_coordinate.get(coordinate, [])
+        except TypeError:
+            matches = [row for key, row in self.unindexed if key == coordinate]
+        return matches[0] if len(matches) == 1 else None
+
+
+def _schedule_event_source(
+    db: Session, factory_id: str, event_key: str, detail: dict[str, object],
+    cache: dict[str, _ScheduleEventSourceIndex],
+) -> tuple[str, dict[str, object] | None, str]:
     batch_id = str(detail.get("batch_id") or "")
     if not batch_id:
-        return event_key
+        return event_key, None, ""
     if batch_id not in cache:
         batch = db.get(CartonImportBatch, batch_id)
         try:
-            summary = json.loads(batch.parse_summary_json or "{}") if batch else {}
+            summary = json.loads(batch.parse_summary_json or "{}") if batch and batch.factory_id == factory_id else {}
         except (TypeError, json.JSONDecodeError):
             summary = {}
-        cache[batch_id] = [row for row in summary.get("rows", []) if isinstance(row, dict)] if batch and batch.factory_id == factory_id else []
-    rows = cache[batch_id]
-    matches = [row for row in rows if row.get("source_sheet") == detail.get("source_sheet")
-               and row.get("source_row") == detail.get("source_row")]
-    if len(matches) != 1:
-        return event_key
-    row = matches[0]
+        customer_code = (summary.get('schedule_customer') or {}).get('customer_code', '')
+        cache[batch_id] = _ScheduleEventSourceIndex(
+            (row for row in summary.get("rows", []) if isinstance(row, dict)), customer_code)
+    sources = cache[batch_id]
+    row = sources.source_at(detail)
+    if row is None:
+        return event_key, None, ""
     old_key = legacy_identity(row)
     prior_key = so_identity(row)
     group_key = identity(row)
-    duplicate = sum(identity(item) == group_key and tracked(item) for item in rows) > 1
-    operation_key = operation_identity(row, batch_id, duplicate)
-    if (event_key == old_key and sum(legacy_identity(item) == old_key and tracked(item) for item in rows) != 1
-            or event_key == prior_key and sum(so_identity(item) == prior_key and tracked(item) for item in rows) != 1):
-        return event_key  # Legacy evidence cannot be assigned to one SO row.
-    prior_duplicate = sum(so_identity(item) == prior_key and tracked(item) for item in rows) > 1
+    operation_key = operation_identity(row, batch_id, sources.identities[group_key] > 1)
+    if (event_key == old_key and sources.legacy_identities[old_key] != 1
+            or event_key == prior_key and sources.prior_identities[prior_key] != 1):
+        # Legacy evidence cannot be assigned to one SO row.
+        return event_key, row, operation_key
+    prior_duplicate = sources.prior_identities[prior_key] > 1
     prior_operation = hashlib.sha256(json.dumps([prior_key, batch_id, row.get("source_sheet"), row.get("source_row")],
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest() if prior_duplicate else prior_key
-    return operation_key if event_key in {old_key, prior_key, prior_operation, group_key, operation_key} else event_key
+    key = operation_key if event_key in {old_key, prior_key, prior_operation, group_key, operation_key} else event_key
+    return key, row, operation_key
 
 
 def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, object]]:
@@ -4723,8 +4774,8 @@ def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, ob
         CartonAuditEvent.event_type == "SCHEDULE_ORDER_MARK_CHANGED",
     ).order_by(CartonAuditEvent.sequence)).all()
     marks: dict[str, dict[str, object]] = {}
-    cache: dict[str, list[dict[str, object]]] = {}
-    decisions: list[tuple[CartonAuditEvent, dict[str, object], str]] = []
+    cache: dict[str, _ScheduleEventSourceIndex] = {}
+    decisions = []
     destinations: dict[str, set[str]] = defaultdict(set)
     for event in events:
         try:
@@ -4733,20 +4784,16 @@ def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, ob
             continue
         if not isinstance(detail, dict):
             continue
-        key = _schedule_event_key(db, factory_id, event.entity_id, detail, cache)
-        decisions.append((event, detail, key))
+        key, source, operation_key = _schedule_event_source(db, factory_id, event.entity_id, detail, cache)
+        decisions.append((event, detail, key, source, operation_key))
         destinations[event.entity_id].add(key)
-    for event, detail, projected_key in decisions:
+    for event, detail, projected_key, source, operation_key in decisions:
         # One legacy key could have been toggled from several different SO rows.
         # Its historical final decision cannot safely be assigned to any one SO.
         key = projected_key if len(destinations[event.entity_id]) == 1 else event.entity_id
-        source_rows = cache.get(str(detail.get("batch_id") or ""), [])
-        source = [row for row in source_rows if row.get("source_sheet") == detail.get("source_sheet")
-                  and row.get("source_row") == detail.get("source_row")]
         frozen = detail.get("demand_snapshot")
-        if not isinstance(frozen, dict) and len(source) == 1 and key == operation_identity(source[0], str(detail.get("batch_id")),
-                sum(identity(row) == identity(source[0]) and tracked(row) for row in source_rows) > 1):
-            frozen = demand_snapshot(source[0])
+        if not isinstance(frozen, dict) and source is not None and key == operation_key:
+            frozen = demand_snapshot(source)
         marks[key] = {
             "marked": detail.get("marked") is True,
             "actor": event.actor_name,
@@ -4756,20 +4803,19 @@ def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, ob
     return marks
 
 
-def _schedule_order_links(db: Session, factory_id: str) -> dict[str, list[str]]:
-    """Retain explicit source-to-order evidence, excluding deleted/cancelled orders."""
+def _schedule_order_link_evidence(db: Session, factory_id: str):
+    """Read current orders with their validated, immutable schedule evidence."""
     events = db.scalars(select(CartonAuditEvent).where(
         CartonAuditEvent.factory_id == factory_id,
         CartonAuditEvent.entity_type == "schedule_order_link",
         CartonAuditEvent.event_type == "SCHEDULE_ORDER_LINKED",
     ).order_by(CartonAuditEvent.sequence)).all()
     if not events:
-        return {}
+        return
     orders = {order.id: order for order in db.scalars(select(CartonOrder).where(
         CartonOrder.factory_id == factory_id, CartonOrder.status != "CANCELLED", CartonOrder.deleted_at.is_(None),
     )).all()}
-    links: dict[str, list[str]] = {}
-    cache: dict[str, list[dict[str, object]]] = {}
+    cache: dict[str, _ScheduleEventSourceIndex] = {}
     for event in events:
         try:
             detail = json.loads(event.detail_json or "{}")
@@ -4783,17 +4829,29 @@ def _schedule_order_links(db: Session, factory_id: str) -> dict[str, list[str]]:
         if any(str(detail.get(field) or "").strip().casefold() != getattr(order, field).strip().casefold()
                for field in ("contract_no", "item_no")):
             continue
-        key = _schedule_event_key(db, factory_id, event.entity_id, detail, cache)
-        original = [row for row in cache.get(str(detail.get("batch_id") or ""), [])
-                    if row.get("source_sheet") == detail.get("source_sheet") and row.get("source_row") == detail.get("source_row")]
+        key, original, operation_key = _schedule_event_source(db, factory_id, event.entity_id, detail, cache)
         from app.services.carton_schedule_tracking import linked_po_matches, normalized
-        source_row = original[0] if len(original) == 1 else detail
-        if detail.get("po_semantics") == "SOURCE_PO":
+        source_row = original if original is not None else detail
+        uses_source_po = detail.get("po_semantics") == "SOURCE_PO"
+        if uses_source_po:
             valid_po = normalized(detail.get("customer_po")) == normalized(order.customer_po) == normalized(source_row.get("customer_po"))
         else:
             valid_po = linked_po_matches(source_row, order.customer_po)
         if not valid_po or (detail.get("customer_code") and normalized(detail["customer_code"]) != normalized(order.customer_code)):
             continue
+        # An ambiguous historical alias still appears in order state, but does
+        # not establish an exact source for projecting a file onto that order.
+        evidence = None
+        if original is not None and key == operation_key:
+            index = cache[str(detail.get('batch_id') or '')]
+            evidence = (original, index.pending_source_is_unique(original))
+        yield key, order, evidence, detail
+
+
+def _schedule_order_links(db: Session, factory_id: str) -> dict[str, list[str]]:
+    """Retain explicit source-to-order evidence, excluding deleted/cancelled orders."""
+    links: dict[str, list[str]] = {}
+    for key, order, _, _ in _schedule_order_link_evidence(db, factory_id):
         ids = links.setdefault(key, [])
         if order.id not in ids:
             ids.append(order.id)
