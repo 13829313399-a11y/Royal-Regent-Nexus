@@ -1054,7 +1054,12 @@ function mountReportTypeSelect(page, name) {
 }
 
 function changeReportPeriod(button) {
-  if (button.disabled || button.dataset.reportPage === currentPage) return;
+  if (button.disabled) return;
+  if (button.dataset.reportPage === currentPage) {
+    if (currentPage === 'weekly') window.QcWeeklyTemplates?.returnToReport();
+    if (currentPage === 'monthly') window.QcMonthlyTemplates?.returnToReport();
+    return;
+  }
   showPage(button.dataset.reportPage, true);
 }
 
@@ -1065,6 +1070,8 @@ function changeReportType(select) {
 }
 
 function showPage(name, focusReportType = false) {
+  if(window.QcMonthlyTemplates?.navigationState().dirty){showToast('请先完成月报补充内容的保存或处理保存冲突','error');return;}
+  if(window.QcWeeklyTemplates?.navigationState().dirty){showToast('请先完成周报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
   if (window.QcInspectionSummary?.busy) { showToast('历史导入正在保存，请稍候', 'warning'); return; }
   if (window.QcWorkflow?.navigationState().busy) { showToast('正在处理验货记录，请稍候再切换页面', 'error'); return; }
@@ -1080,6 +1087,8 @@ function showPage(name, focusReportType = false) {
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
   currentPage = name;
   window.QcApprovedStatistics?.pageChanged(name);
+  window.QcWeeklyTemplates?.pageChanged(name);
+  window.QcMonthlyTemplates?.pageChanged(name);
   window.__QC_PAGE_CHANGED?.(name);
   const periodControl = document.getElementById('reportPeriodSwitch');
   const periodGlass = periodControl?.querySelector('.report-period-glass');

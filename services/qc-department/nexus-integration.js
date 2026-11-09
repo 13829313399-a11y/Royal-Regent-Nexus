@@ -63,6 +63,8 @@
         && window.__QC_CURRENT_PAGE() !== bridge.page) window.showPage(bridge.page);
   };
   window.__QC_CONFIRM_FACTORY_LEAVE = function () {
+    if(window.QcMonthlyTemplates?.navigationState().dirty){window.alert('月报补充内容尚未保存，请先重试或处理冲突后再离开。');return false;}
+    if(window.QcWeeklyTemplates?.navigationState().dirty){window.alert('周报补充内容尚未保存，请先重试或处理冲突后再离开。');return false;}
     if (window.QcInspectionSummary?.busy) { window.showToast?.('历史导入正在保存，请稍候', 'warning'); return false; }
     var workflow = window.QcWorkflow?.navigationState?.() || {};
     var schedule = window.QcSchedule?.navigationState?.() || {};
