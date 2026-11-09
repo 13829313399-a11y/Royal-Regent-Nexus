@@ -3,20 +3,23 @@ import { readFileSync } from 'node:fs'
 import { departmentModuleRegistry } from '@/data/enterpriseMock'
 
 describe('mainland invoice integration boundaries', () => {
-  it('adds one independent business card without moving existing cards', () => {
+  it('places invoice only in accounting while preserving existing department cards', () => {
     const sales = departmentModuleRegistry['sales-business'].modules
     expect(sales.map(module => module.id)).toEqual([
       'material-planning', 'internal-quote-desk', 'customer-price-conversion',
-      'indonesia-material-shipment', 'po-schedule-intake', 'mainland-invoice',
+      'indonesia-material-shipment', 'po-schedule-intake',
     ])
-    const invoice = sales.at(-1)!
-    expect(invoice.route).toBe('/modules/sales-business/mainland-invoice')
+    const accounting = departmentModuleRegistry.accounting.modules
+    expect(accounting.map(module => module.id)).toEqual(['indonesia-invoice-reconciliation', 'mainland-invoice'])
+    const invoice = accounting.at(-1)!
+    expect(invoice.owner).toBe('会计部')
+    expect(invoice.route).toBe('/modules/accounting/mainland-invoice')
     expect(invoice.factoryIds).toEqual(['huakang-a', 'huakang-b', 'huakang-d'])
     expect(invoice.permissions).toEqual(['mainland_invoice:generate'])
-    expect(invoice.permissionDepartment).toBe('sales-business')
+    expect(invoice.permissionDepartment).toBe('accounting')
     expect(invoice.strictAccess).toBe(true)
     for (const [department, registry] of Object.entries(departmentModuleRegistry)) {
-      if (department !== 'sales-business') {
+      if (department !== 'accounting') {
         expect(registry.modules.some(module => module.id === 'mainland-invoice')).toBe(false)
       }
     }

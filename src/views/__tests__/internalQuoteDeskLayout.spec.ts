@@ -312,9 +312,11 @@ describe('internal quote desk frontend layout', () => {
 
   it('keeps the active factory through sales and every internal-quote navigation level', () => {
     expect(workbenchSource).toMatch(/const scopedBackTo = computed\(\(\) => props\.backTo\.startsWith\('\/'\)[\s\S]{0,100}getFactoryScopedRoute\(props\.backTo, activeFactory\.value\.id\)/)
-    expect(workbenchSource).toMatch(/const salesDepartmentRoute = computed\(\(\) => getFactoryScopedRoute\([\s\S]{0,80}'\/modules\/sales-business',[\s\S]{0,60}activeFactory\.value\.id/)
+    expect(workbenchSource).toMatch(/const departmentRoute = computed\(\(\) => getFactoryScopedRoute\([\s\S]{0,80}props\.departmentTo,[\s\S]{0,60}activeFactory\.value\.id/)
     expect(workbenchSource).toContain(':to="scopedBackTo"')
-    expect(workbenchSource).toContain(':to="salesDepartmentRoute"')
+    expect(workbenchSource).toContain(':to="departmentRoute"')
+    expect(workbenchSource).toContain("departmentTo: '/modules/sales-business'")
+    expect(workbenchSource).toContain("departmentLabel: '业务部模块中心'")
 
     expect(homeSource).toMatch(/function getQuoteRoute\(path: string, factoryId: string = activeFactory\.value\.id\)[\s\S]{0,100}getFactoryScopedRoute\(path, factoryId as FactoryContextId\)/)
     expect(homeSource).toMatch(/router\.push\(getQuoteRoute\([\s\S]{0,120}`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/collaboration`,[\s\S]{0,80}quote\.factoryId/)

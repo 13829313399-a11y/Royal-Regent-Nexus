@@ -1,10 +1,11 @@
-# 大陆发票：业务部独立入口
+# 大陆发票：会计部独立入口
 
 ## 范围与现状
 
 第一版仅华康 A / B / D，兴信不接入。前端路由为
-`/modules/sales-business/mainland-invoice?factory=huakang-a`；
-业务部模块中心在“客户订单中心”之后增加独立“大陆发票”卡片，保留原有模块顺序。
+`/modules/accounting/mainland-invoice?factory=huakang-a`；
+“大陆发票”卡片位于会计部模块中心，不再列入业务部；保留其他既有模块顺序。
+原 `/modules/sales-business/mainland-invoice` 书签转到会计部入口，保留厂区查询参数与锚点。
 独立 React 生成界面挂在 `/mainland-invoice/`，不与 Vue 主界面的样式混用。
 仅浏览器内解析记录、生成与下载，不上传记录，不保存服务器发票台账，不修改订单数据。
 源 Excel 发票计算和面单填充规则沿用用户提供的 invoice-generator。
@@ -17,9 +18,10 @@
 ## 权限和模板
 
 所有 context/template 请求都走现有登录及
-`mainland_invoice:generate@厂区/sales-business` 检查，厂区只能为 A/B/D。
+`mainland_invoice:generate@厂区/accounting` 检查，厂区只能为 A/B/D。
 权限只加入可授权目录，不自动增补现有职位或用户的权限；
-请通过已有 IAM 流程给实际操作人员按厂区、业务部授权，不用全厂通配。
+请通过已有 IAM 流程给实际操作人员按厂区、会计部授权，不用全厂通配。
+IAM 部门目录包含会计部，该权限仅支持会计部范围。原业务部专属授权不会自动复制为会计授权；需要按原 IAM 审核流程重新授权，已有明确拒绝仍有效。
 未登录、越厂、错误部门、撤权与权限停用均拒绝。
 生成/面单填充/每次下载都重新验证，权限失效后卸载界面。
 切换厂区、账号或任职身份销毁 iframe 内的上传和输出状态；操作与模板读取前后复核服务端账号/任职身份。已经下载到浏览器或磁盘的文件无法远程撤回。

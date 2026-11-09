@@ -241,7 +241,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",
         "symbol": "remaining_quantity",
-        "sha256": "c89e7608d4f65dd2f27a38c3a54c6b5be4c4e539b6f6ba45a7a783d8973922f6"
+        "sha256": "2ae457b4f7750d465a307e3f62f7a95a0545e6f9c7f06803801269c2c2ca1207"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",

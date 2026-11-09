@@ -21,7 +21,9 @@ const props = withDefaults(defineProps<{
   displayMode?: 'ledger' | 'schedule'
   detailOnly?: boolean
   focusLineId?: string
-}>(), { initialView: 'all', displayMode: 'ledger' })
+  historyImportEnabled?: boolean
+  localOnly?: boolean
+}>(), { initialView: 'all', displayMode: 'ledger', historyImportEnabled: true, localOnly: false })
 
 const emit = defineEmits<{ import: []; changed: []; 'close-detail': []; feedback: [context: FeedbackContext] }>()
 const emptyCapabilities: CustomerOrderLedgerCapabilities = {
@@ -51,6 +53,7 @@ const shipment = ref({ quantity: '', ship_date: '', document_no: '', note: '', i
 const reversalReason = ref('')
 const historyOpening = ref({ quantity: '', reason: '' })
 const showHistoryImport = ref(false)
+watch(() => props.historyImportEnabled, enabled => { if (!enabled) showHistoryImport.value = false })
 let listRequestSequence = 0
 let detailRequestSequence = 0
 let actionSequence = 0
@@ -471,7 +474,7 @@ onBeforeUnmount(() => {
         <h2>{{ title }}</h2>
         <p>{{ displayMode === 'schedule' ? '仅展示本厂各客户订单的公共字段、发送状态和走货数量。' : '显示本厂已保存的订单、版本、发送和业务人员凭出货单确认的分批走货记录。' }}</p>
       </div>
-      <div class="ledger__header-actions"><button class="ledger__button" type="button" :disabled="!capabilities.write || !capabilities.shipment_confirm" title="需要写入订单和确认走货权限" @click="showHistoryImport = true">历史排期迁入</button><button class="ledger__button ledger__button--primary" type="button" @click="emit('import')">新建导入</button></div>
+      <div class="ledger__header-actions"><button v-if="historyImportEnabled" class="ledger__button" type="button" :disabled="!capabilities.write || !capabilities.shipment_confirm" title="需要写入订单和确认走货权限" @click="showHistoryImport = true">历史排期迁入</button><button class="ledger__button ledger__button--primary" type="button" @click="emit('import')">新建导入</button></div>
     </header>
 
     <div class="ledger__filters" data-yl-help="customer-orders.filters">
@@ -506,7 +509,7 @@ onBeforeUnmount(() => {
         <template v-else-if="selected">
           <h3>{{ selected.line.customer_name || selected.line.customer_code }} · {{ selected.line.product_no }}</h3>
           <p class="ledger__muted">参考号 {{ selected.line.reference_no }} · V{{ selected.line.version }} · 修订 {{ selected.line.revision }}</p>
-          <button type="button" class="ledger__button" @click="emit('feedback', { page: '订单详情', section: displayMode === 'schedule' ? 'schedule' : 'ledger', order_id: selected.line.id, customer_code: selected.line.customer_code, order_reference: selected.line.reference_no, product_no: selected.line.product_no, error_message: actionError.slice(0, 1000) || undefined })">反馈此订单的问题</button>
+          <button v-if="!localOnly" type="button" class="ledger__button" @click="emit('feedback', { page: '订单详情', section: displayMode === 'schedule' ? 'schedule' : 'ledger', order_id: selected.line.id, customer_code: selected.line.customer_code, order_reference: selected.line.reference_no, product_no: selected.line.product_no, error_message: actionError.slice(0, 1000) || undefined })">反馈此订单的问题</button>
           <p v-if="actionError" class="ledger__message">{{ actionError }}</p>
           <button v-if="actionError" type="button" class="ledger__button" :disabled="actionBusy || detailLoading" @click="openDetail({ id: selected.line.id })">刷新订单详情后核对</button>
           <p v-if="typeof selected.line.data.recheck_notice === 'string'" class="ledger__recheck">{{ selected.line.data.recheck_notice }}</p>
@@ -514,7 +517,7 @@ onBeforeUnmount(() => {
           <section v-if="historyOriginalFields(selected.line.data).length"><h4>历史排期原始字段</h4><details class="ledger__details"><summary>展开原排期字段{{ historyOriginalLocation(selected.line.data) ? `（${historyOriginalLocation(selected.line.data)}）` : '' }}</summary><dl><template v-for="field in historyOriginalFields(selected.line.data)" :key="field.key"><dt>{{ field.header }}{{ field.column ? `（${field.column}列）` : '' }}</dt><dd>{{ field.value }}</dd></template></dl></details></section>
           <section><h4>原件与客户字段</h4><p v-if="selected.sources.length === 0" class="ledger__muted">暂无关联原件。</p><ul><li v-for="source in selected.sources" :key="source.id"><a :href="customerOrderLedgerSourceUrl(source.id, factoryId)" target="_blank" rel="noopener">{{ source.file_name }}</a> <small>{{ sourceKindLabel(source.kind) }}</small></li></ul><dl v-if="businessFields(selected.line.data).length"><template v-for="field in businessFields(selected.line.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><p v-else class="ledger__muted">暂无可展示的客户字段。</p><details v-if="lineageFields(selected.line.data).length" class="ledger__details"><summary>字段来源说明</summary><dl><template v-for="field in lineageFields(selected.line.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl></details></section>
           <section><h4>版本记录</h4><div class="ledger__versions"><details v-for="item in selected.versions" :key="`${item.version}-${item.created_at}`" class="ledger__details"><summary>V{{ item.version }} · {{ item.reason || '初始确认' }} · {{ item.actor }} · {{ item.created_at }}</summary><dl v-if="businessFields(item.data).length"><template v-for="field in businessFields(item.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><p v-else class="ledger__muted">该版本没有可展示的客户字段。</p></details></div></section>
-          <section><h4>发送记录</h4><p v-if="selected.dispatches.length === 0" class="ledger__muted">尚未发送给接收部门。</p><ul v-else><li v-for="item in selected.dispatches" :key="item.id">{{ recipientLabel(item.recipient) }} · V{{ item.version }} · {{ item.status === 'received' ? '已接收' : '已发送' }} · {{ item.created_at }}<template v-if="item.received_at"> · 接收于 {{ item.received_at }}{{ item.received_by ? `（${item.received_by}）` : '' }}</template></li></ul></section>
+          <section><h4>发送记录</h4><p v-if="localOnly" class="ledger__recheck">本机试用：发送只写入这台电脑的部门收件记录，不会通知线上员工或更新正式仓库。</p><p v-if="selected.dispatches.length === 0" class="ledger__muted">尚未发送给接收部门。</p><ul v-else><li v-for="item in selected.dispatches" :key="item.id">{{ recipientLabel(item.recipient) }} · V{{ item.version }} · {{ item.status === 'received' ? '已接收' : '已发送' }} · {{ item.created_at }}<template v-if="item.received_at"> · 接收于 {{ item.received_at }}{{ item.received_by ? `（${item.received_by}）` : '' }}</template></li></ul></section>
           <section v-if="capabilities.write && selected.line.status === 'active'"><h4>修改订单</h4><p v-if="requiresDispatchForEdit && !capabilities.dispatch" class="ledger__muted">该订单已发送；修改或取消需要订单发送权限。</p><div class="ledger__form"><label>数量<input v-model="amend.quantity" type="text"></label><label>客户要求交期<input v-model="amend.requested_ship_date" type="date"></label><label>备注<textarea v-model="amend.note" rows="2" /></label><label>修改原因（必填）<textarea v-model="amend.reason" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy || !canEdit" @click="submitAmend">保存修改</button></div></section>
           <section v-if="capabilities.dispatch && selected.line.status === 'active'"><h4>发送接收部门</h4><div class="ledger__checks"><label><input v-model="recipients" type="checkbox" value="pmc"> PMC</label><label><input v-model="recipients" type="checkbox" value="warehouse"> 仓库</label><label><input v-model="recipients" type="checkbox" value="injection"> 啤机部</label><label v-if="capabilities.cutting_dispatch_enabled"><input v-model="recipients" type="checkbox" value="cutting"> 裁床部</label></div><button class="ledger__button" type="button" :disabled="actionBusy" @click="submitDispatch">发送订单</button></section>
           <section v-if="canShip"><h4>凭出货单确认分批走货</h4><div class="ledger__form"><label>走货数量<input v-model="shipment.quantity" type="text"></label><label>走货日期<input v-model="shipment.ship_date" type="date"></label><label>出货单号<input v-model="shipment.document_no" type="text"></label><label>备注<textarea v-model="shipment.note" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy" @click="submitShipment">确认走货</button></div></section>
@@ -533,7 +536,7 @@ onBeforeUnmount(() => {
         </template>
       </aside>
     </div>
-    <CustomerOrderHistoryImport v-if="showHistoryImport" :factory-id="factoryId" @close="showHistoryImport = false" @saved="handleHistoryMigrationSaved" />
+    <CustomerOrderHistoryImport v-if="historyImportEnabled && showHistoryImport" :factory-id="factoryId" @close="showHistoryImport = false" @saved="handleHistoryMigrationSaved" />
   </section>
 </template>
 

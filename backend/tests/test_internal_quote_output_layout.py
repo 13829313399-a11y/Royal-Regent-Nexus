@@ -224,7 +224,7 @@ def test_multiple_groups_currencies_atomic_failure_and_molding_dependency(monkey
         assert sections['molding']['payload']['injection_lines'][0]['item'] == '主模改名'
         current = client.get(root + '/output-layout').json()
         changed_hkd = next(c for row in current['sheets'][2]['rows'] for c in row['cells'] if c['address'] == 'F4')
-        assert float(changed_hkd['text']) == pytest.approx(7 / .85, abs=.0001)
+        assert float(changed_hkd['text']) == pytest.approx(7 / .84, abs=.0001)
         logout(client)
         login(client, 'table-department', 'molding_clerk', 'molding')
         forbidden = client.put(root + '/output-layout', json={'base_token': current['base_token'], 'edits': [

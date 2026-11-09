@@ -33,6 +33,15 @@ def test_invoice_api_auth_scope_templates_and_rollout(monkeypatch, tmp_path, mod
         assert client.get(endpoint, params={"factory_id": "huakang-a"}).status_code == 401
         assert client.get(template, params={"factory_id": "huakang-a"}).status_code == 401
         assert client.post("/api/auth/login", json={"username": "admin", "password": "InvoiceTest123!"}).status_code == 200
+        organization_catalog = client.get("/api/auth/organization-catalog")
+        assert organization_catalog.status_code == 200
+        for organization in organization_catalog.json()["organizations"]:
+            if organization["id"] in api.TEMPLATES:
+                assert {"code": "accounting", "name": "会计部", "revision": 1} in organization["departments"]
+        permission_catalog = client.get("/api/iam/permissions")
+        assert permission_catalog.status_code == 200
+        invoice_permission = next(item for item in permission_catalog.json() if item["code"] == api.PERMISSION)
+        assert invoice_permission["applicable_departments"] == ["accounting"]
         assert client.get(endpoint, params={"factory_id": "huakang-a"}).status_code == 200
         for factory, entries in api.TEMPLATES.items():
             response = client.get(endpoint, params={"factory_id": factory})
@@ -52,12 +61,12 @@ def test_invoice_api_auth_scope_templates_and_rollout(monkeypatch, tmp_path, mod
 
         profile = client.get("/api/auth/me").json()
         permission = api.PERMISSION
-        grant = auth.AuthGrantContext("test-invoice", "测试权限", "huakang-a", "sales-business", frozenset({permission}))
+        grant = auth.AuthGrantContext("test-invoice", "测试权限", "huakang-a", "accounting", frozenset({permission}))
         scoped = auth.AuthContext(
             id=profile["id"], username="admin", display_name="测试",
             roles=("test-invoice",), role_codes=("test-invoice",),
             permissions=frozenset({permission}), factory_scopes=("huakang-a",),
-            department_scopes=("sales-business",), grants=(grant,),
+            department_scopes=("accounting",), grants=(grant,),
             active_permission_codes=frozenset({permission}), permission_catalog_loaded=True,
         )
         main.app.dependency_overrides[auth.get_current_user] = lambda: scoped
@@ -67,15 +76,16 @@ def test_invoice_api_auth_scope_templates_and_rollout(monkeypatch, tmp_path, mod
         for factory in ("huakang-b", "huakang-d"):
             assert client.get(endpoint, params={"factory_id": factory}).status_code == 403
             assert client.get("/api/mainland-invoices/templates/b-trade", params={"factory_id": factory}).status_code == 403
-        scoped = replace(scoped, grants=(replace(grant, department="accounting"),))
+        scoped = replace(scoped, grants=(replace(grant, department="sales-business"),))
         assert client.get(endpoint, params={"factory_id": "huakang-a"}).status_code == 403
+        assert client.get(template, params={"factory_id": "huakang-a"}).status_code == 403
         scoped = replace(scoped, grants=())
         assert client.get(template, params={"factory_id": "huakang-a"}).status_code == 403
         if mode in ("legacy", "shadow", "enforce"):
             scoped = replace(scoped, grants=(grant,), active_permission_codes=frozenset())
             assert client.get(endpoint, params={"factory_id": "huakang-a"}).status_code == 403
             scoped = replace(scoped, active_permission_codes=frozenset({permission}),
-                             overrides=(auth.AuthOverrideContext("deny", permission, "deny", "huakang-a", "sales-business"),))
+                             overrides=(auth.AuthOverrideContext("deny", permission, "deny", "huakang-a", "accounting"),))
             assert client.get(template, params={"factory_id": "huakang-a"}).status_code == 403
         main.app.dependency_overrides.clear()
         api.settings.mainland_invoice_enabled = False
@@ -108,3 +118,60 @@ def test_invoice_permission_is_catalogued_without_expanding_business_roles():
     from app.services.permission_codes import APPLICATION_PERMISSION_CODES, BUSINESS_PERMISSION_CODES
     assert "mainland_invoice:generate" in APPLICATION_PERMISSION_CODES
     assert "mainland_invoice:generate" not in BUSINESS_PERMISSION_CODES
+
+
+def test_invoice_grant_preview_accepts_accounting_and_rejects_business(monkeypatch):
+    from test_iam_api import create_user, login, make_client
+
+    with make_client(monkeypatch) as client:
+        user_id = create_user("invoice-scope-policy", "engineer", "huakang-a", "engineering")
+        login(client, "admin")
+        for department, status in (("accounting", 200), ("sales-business", 400), ("engineering", 400)):
+            response = client.post(
+                f"/api/iam/users/{user_id}/access/preview",
+                json={
+                    "base_revision": 1,
+                    "reason": "验证大陆发票仅按会计部门授权",
+                    "overrides": [{
+                        "permission_code": "mainland_invoice:generate", "effect": "allow",
+                        "factory_id": "huakang-a", "department": department,
+                    }],
+                },
+            )
+            assert response.status_code == status, response.text
+            if status == 400:
+                assert "当前范围不生效" in response.json()["detail"]
+        # A successful preview is not a grant or a user/position migration.
+        login(client, "invoice-scope-policy")
+        assert client.get("/api/mainland-invoices/context", params={"factory_id": "huakang-a"}).status_code == 403
+
+
+def test_accounting_catalog_seed_preserves_stopped_departments_and_revisions():
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+    from app.models.auth import AuthIamState
+    from app.models.identity import IamOrgDepartment, IamOrgUnit
+    from app.services.identity_catalog import FACTORIES, catalog, seed_identity_catalog
+
+    engine = create_engine("sqlite:///:memory:")
+    for table in (AuthIamState.__table__, IamOrgUnit.__table__, IamOrgDepartment.__table__):
+        table.create(engine)
+    with Session(engine) as db:
+        seed_identity_catalog(db)
+        for factory in FACTORIES:
+            assert db.get(IamOrgDepartment, (factory, "accounting")).status == "active"
+        assert db.get(IamOrgDepartment, ("group-management", "accounting")) is None
+        stopped = db.get(IamOrgDepartment, ("huakang-a", "accounting"))
+        stopped.status = "inactive"
+        stopped.revision = 7
+        db.flush()
+        before = {(d.org_unit_id, d.department_code): (d.status, d.revision)
+                  for d in db.scalars(select(IamOrgDepartment))}
+        seed_identity_catalog(db)
+        after = {(d.org_unit_id, d.department_code): (d.status, d.revision)
+                 for d in db.scalars(select(IamOrgDepartment))}
+        assert after == before
+        organizations = {o["id"]: o for o in catalog(db)["organizations"]}
+        assert all(d["code"] != "accounting" for d in organizations["huakang-a"]["departments"])
+        assert {"code": "accounting", "name": "会计部", "revision": 1} in organizations["huakang-b"]["departments"]
+    engine.dispose()

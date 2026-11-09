@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.app.json",
+  "include": ["src/**/*.ts", "src/**/*.vue"],
+  "exclude": ["src/**/*.spec.ts"],
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "paths": {
+      "@/lib/http": ["./src/http.ts"],
+      "@/*": ["../../../src/*"]
+    },
+    "tsBuildInfoFile": "../build/web.tsbuildinfo"
+  }
+}

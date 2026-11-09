@@ -415,6 +415,8 @@
             </select>
         </div>
       </div>
+      <nav id="qwtEntries" aria-label="周报 Excel 模板" hidden></nav>
+      <section id="qwtView" aria-label="周报模板明细" hidden></section>
       <div id="weeklyReportBody"></div>
     </div>
   </div>
@@ -445,7 +447,7 @@
 
   <!-- PAGE: MONTHLY REPORT -->
   <div class="page" id="page-monthly">
-    <div class="page-inner report-page">
+    <div class="page-inner report-page" id="monthlyReportContent">
       <div class="report-toolbar">
         <label>选择月份：
           <input type="month" id="monthlyMonth" onchange="renderMonthlyReport()" />
@@ -456,6 +458,8 @@
         </div>
         <div class="report-type-slot" data-report-type-slot></div>
       </div>
+      <nav id="qmtEntries" aria-label="月报 Excel 模板" hidden></nav>
+      <section id="qmtView" aria-label="月报模板明细" hidden></section>
       <div id="monthlyReportBody"></div>
     </div>
   </div>
@@ -938,6 +942,10 @@
 <script src="qc-approved-statistics.js"></script>
 <link rel="stylesheet" href="qc-daily-report.css">
 <script src="qc-daily-report.js"></script>
+<link rel="stylesheet" href="qc-weekly-templates.css">
+<script src="qc-weekly-templates.js"></script>
+<link rel="stylesheet" href="qc-monthly-templates.css">
+<script src="qc-monthly-templates.js"></script>
 <script src="mobile.js"></script><!-- 移动端侧栏抽屉交互 -->
 <script>
 /* 切换系统下拉：点击页面其它位置时收起 */

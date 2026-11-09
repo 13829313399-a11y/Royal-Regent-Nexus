@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "ca23873e8638df94b6cd5ae79f32c90e704093c2f79130e1e60ee83cc6f97bd3"
+        "sha256": "09ce9e7d837fbec7eb7d1760330d9fa1cb6c159cb2b61f6806e6461c5ee82b39"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -533,8 +533,8 @@
         "sha256": "4c34b5e121584d382e7ab461c0d9d3b1b7ad02a01b30653cfd646a2aebe8fb8e"
       }
     ],
-    "knowledge_version": "2026-11-06-mainland-huakang-c-route-integration",
-    "verified_commit": "Source review: carton routes and permissions retained alongside Mainland Invoice and Huakang C engineering/material route additions; production acceptance remains separate",
+    "knowledge_version": "2026-11-09-mainland-accounting-route",
+    "verified_commit": "Source review: carton routes and permissions unchanged when moving the Mainland Invoice entrance to accounting; production acceptance remains separate",
     "status": "verified"
   }
 ]
