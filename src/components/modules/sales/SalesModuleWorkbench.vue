@@ -21,6 +21,8 @@ const props = withDefaults(defineProps<{
   showPageHeader?: boolean
   backTo?: string
   backLabel?: string
+  departmentTo?: string
+  departmentLabel?: string
   factoryContext?: 'production' | 'all'
   wideLayout?: boolean
 }>(), {
@@ -29,6 +31,8 @@ const props = withDefaults(defineProps<{
   showPageHeader: true,
   backTo: '',
   backLabel: '返回业务部',
+  departmentTo: '/modules/sales-business',
+  departmentLabel: '业务部模块中心',
   factoryContext: 'production',
   wideLayout: false,
 })
@@ -42,8 +46,8 @@ const activeFactory = computed(() => (
 const scopedBackTo = computed(() => props.backTo.startsWith('/')
   ? getFactoryScopedRoute(props.backTo, activeFactory.value.id)
   : props.backTo)
-const salesDepartmentRoute = computed(() => getFactoryScopedRoute(
-  '/modules/sales-business',
+const departmentRoute = computed(() => getFactoryScopedRoute(
+  props.departmentTo,
   activeFactory.value.id,
 ))
 </script>
@@ -82,9 +86,9 @@ const salesDepartmentRoute = computed(() => getFactoryScopedRoute(
     <main class="sales-page">
       <header v-if="showPageHeader" class="sales-page-head">
         <div class="min-w-0">
-          <RouterLink :to="salesDepartmentRoute" class="sales-back-link">
+          <RouterLink :to="departmentRoute" class="sales-back-link">
             <ArrowLeft class="size-[15px]" aria-hidden="true" />
-            业务部模块中心
+            {{ departmentLabel }}
           </RouterLink>
           <div class="sales-title-row">
             <h1 class="sales-page-title">{{ title }}</h1>

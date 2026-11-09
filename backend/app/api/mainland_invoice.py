@@ -45,8 +45,8 @@ TEMPLATES = {
 def require_access(db: Session, user: AuthContext, factory_id: Factory) -> None:
     # New financial module always honors canonical denies/catalog/account state,
     # even if the host keeps legacy/shadow mode for existing modules.
-    if not can(user, PERMISSION, factory_id, "sales-business"):
-        raise HTTPException(403, "无本厂区业务部大陆发票权限", headers=NO_STORE)
+    if not can(user, PERMISSION, factory_id, "accounting"):
+        raise HTTPException(403, "无本厂区会计部大陆发票权限", headers=NO_STORE)
     if not settings.mainland_invoice_enabled:
         raise HTTPException(503, "大陆发票模块尚未启用", headers=NO_STORE)
 
