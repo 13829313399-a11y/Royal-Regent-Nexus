@@ -2171,73 +2171,6 @@ let _selectedIds = new Set();
 
 function renderRecordsTable() { filterRecords(); }
 
-function _recordsSnapshotsDiffer(localRecords, serverRecords) {
-  const local = Array.isArray(localRecords) ? localRecords : [];
-  const server = Array.isArray(serverRecords) ? serverRecords : [];
-  return JSON.stringify(local) !== JSON.stringify(server);
-}
-
-async function refreshRecordsPage() {
-  if (window.QcInspectionSheet) return window.QcInspectionSheet.load();
-  const btn = document.getElementById('btnRefreshRecords');
-  const oldText = btn ? btn.textContent : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '↻ 刷新中…';
-  }
-
-  try {
-    const apiBase = (location.pathname.replace(/[^/]*$/, '') || '/').replace(/\/$/, '');
-    const res = await fetch(apiBase + '/api/bootstrap?company=' + getCompany(), { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    if (!Array.isArray(data.records)) throw new Error('服务器返回数据格式不正确');
-    if (_recordsSnapshotsDiffer(state.records, data.records)) {
-      const syncFailed = window.__QC_BACKEND_OK !== true || (window.__QC_LAST_SYNC && window.__QC_LAST_SYNC.ok === false);
-      const warning = syncFailed
-        ? '检测到本地数据可能尚未成功同步。继续刷新会用服务器数据覆盖当前页面，未同步的修改将丢失。确定继续吗？'
-        : '服务器数据与当前页面不同。继续刷新会用服务器最新数据覆盖当前页面，确定继续吗？';
-      if (!window.confirm(warning)) {
-        showToast('已取消刷新，当前数据保持不变', 'info');
-        return;
-      }
-    }
-
-    activeInspectionKey = null;
-    window.__QC_TEST_ENTRY_IDS = new Set(data.testEntryIds || []);
-    window.__QC_INSPECTION_PLANS = data.inspectionPlans || {};
-    window.__QC_KNOWN_RECORD_IDS = new Set(data.records.map(r => r.id));
-    state = {
-      records: data.records,
-      nextId: data.nextId || (data.records.reduce((m, r) => Math.max(m, Number(r.id) || 0), 30) + 1),
-    };
-    (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(LS_KEY, JSON.stringify(state));
-    if (Array.isArray(data.users)) (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.users, JSON.stringify(data.users));
-    if (Array.isArray(data.defectLib)) (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.defectLib, JSON.stringify(data.defectLib));
-    if (Array.isArray(data.partners)) {
-      (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.partners, JSON.stringify(data.partners));
-      _partners = null; // Invalidate the loaded master list after an authoritative refresh.
-      renderSupplierDatalist();
-      renderCustomerDatalist();
-      renderProcessTypeDatalist();
-    }
-
-    _selectedIds.clear();
-    await window.QcWorkflow?.load();
-    filterRecords();
-    updateTopKpis();
-    showToast('✓ 验货台已刷新，共 ' + state.records.length + ' 条', 'success');
-  } catch (err) {
-    console.error('[refreshRecordsPage]', err);
-    showToast('刷新失败：' + err.message, 'error');
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = oldText || '↻ 刷新';
-    }
-  }
-}
-
 // List-only projection: planned schedule dates never replace date/inspDate.
 function inspectionPlanRange(record) {
   const plan = window.__QC_INSPECTION_PLANS?.[record.legacyId ?? record.id] || record.inspectionPlan || {};
@@ -2304,10 +2237,6 @@ function resetRecordsFilters() {
   document.getElementById('recordsDateFilter').open = false;
   filterRecords();
 }
-function requestInspectionExcel() {
-  if (window.QcInspectionSheet) return window.QcInspectionSheet.exportExcel();
-  showToast('导出 Excel 入口已预留，待配置模板后可导出已填写的验货数据', 'info');
-}
 document.addEventListener('click', event => {
   const panel = document.getElementById('recordsDateFilter');
   if (panel?.open && !panel.contains(event.target)) panel.open = false;
@@ -2357,7 +2286,6 @@ function filterRecords() {
       return mode === 'mod-asc' ? ka.localeCompare(kb) : kb.localeCompare(ka);
     });
 
-    setText('recordCount', `共 ${filteredRecs.length} 条`);
 
     const wrap = document.getElementById('recordsTableWrap');
     if (!wrap) return;
@@ -3671,11 +3599,7 @@ function syncInspectionSelection() {
     row.classList.toggle('inspection-active', selected);
     row.setAttribute('aria-selected', String(selected));
   });
-  const context = document.getElementById('inspectionSelection');
-  const label = record ? '已选中：' + [record.productName || record.productNo, record.orderNo].filter(Boolean).join(' · ') : '未选中记录';
-  if (context) { context.textContent = label; context.title = label; }
-  const hint = document.getElementById('recordsSelectionHint');
-  if (hint) hint.hidden = !!record;
+
 }
 function selectInspectionWithKey(event, key) {
   if (event.target !== event.currentTarget || !['Enter',' '].includes(event.key)) return;
@@ -8987,7 +8911,6 @@ window.applyAqlSuggest       = applyAqlSuggest;
 window.onProductNoChange     = onProductNoChange;
 window.onTypeChange          = onTypeChange;
 window.calcRate              = calcRate;
-window.refreshRecordsPage    = refreshRecordsPage;
 
 /* ── 数据导入确认预览 ── */
 window.importDragOver        = importDragOver;

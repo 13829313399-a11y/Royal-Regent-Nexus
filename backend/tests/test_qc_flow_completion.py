@@ -105,8 +105,6 @@ def test_http_manual_submit_actor_permissions_and_factory(db,monkeypatch):
   audit=client.get(base+'inspection-sheet/entries/'+pending['id']+'/audit').json()['items']
   assert audit[0]['actor']['id']==current[0].id and audit[0]['location']=='审核中心 · 待审核'
   approved=confirmation.json()['results'][0]['item']
-  from test_qc_cumulative import request
-  merged=client.post(base+'inspection-sheet/workbook/import',json=request([approved]));assert merged.status_code==200,merged.text
   assert client.get(base+'inspection-sheet/entries').json()['items']==[]
   listing=client.get(base+'inspection-summary/records').json();assert listing['total']==1 and listing['items'][0]['status']=='approved'
   with summary.store() as c:changes=c.execute('select count(*) from changes').fetchone()[0]

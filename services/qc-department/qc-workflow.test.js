@@ -85,7 +85,7 @@ test('records and review use original layout while the schedule controls remain'
   assert.equal(p.d.getElementById('qwf-records'),null);assert.equal(p.d.getElementById('qwf-review'),null);assert.ok(p.d.getElementById('qsPush'));assert.ok(p.d.getElementById('qsSelectAll'));
   const headers=Array.from(p.d.querySelectorAll('.qs-table thead tr:last-child th'), th=>th.textContent.trim());
   assert.deepEqual(headers,['选择','排期日期','客户','PO#','出口国','货号','产品名称','数量','装箱','箱数','生产','机构','客PO#','完成情况','备注']);
-  assert.ok(p.d.getElementById('btnExportInspectionExcel'));assert.ok(p.d.getElementById('page-daily'));
+  assert.equal(p.d.getElementById('btnExportInspectionExcel'),null);assert.ok(p.d.getElementById('page-daily'));
  }finally{p.dom.window.close();}
 });
 
@@ -236,17 +236,13 @@ test('row selection opens its drawer; embedded controls do not activate rows',as
  const p=await page({native:true,items:[task()],legacyRecords:[{id:31,productName:'货品 A'},{id:32,productName:'货品 B'}]});try{
   let opened=0;p.w.QcWorkflow.openRecord=()=>opened++;
   const td=p.d.createElement('td'),button=p.d.createElement('button'),checkbox=p.d.createElement('input');
-  assert.equal(p.d.querySelector('#inspectionSelection').textContent,'未选中记录');
   for(const target of [button,checkbox])p.w.openRecordRow({target},31);
-  assert.equal(p.d.querySelector('#inspectionSelection').textContent,'未选中记录');
   const before=p.calls.length;
   p.w.openRecordRow({target:td},31);
   assert.equal(opened,1);assert.equal(p.calls.length,before);
   assert.equal(p.d.querySelectorAll('.inspection-active').length,1);
-  assert.match(p.d.querySelector('#inspectionSelection').textContent,/货品 A/);
   p.w.openRecordRow({target:td},32);
   assert.equal(p.d.querySelectorAll('.inspection-active').length,1);
-  assert.match(p.d.querySelector('#inspectionSelection').textContent,/货品 B/);
   p.w.filterRecords();assert.equal(p.d.querySelectorAll('.inspection-active').length,1);
   p.w.startSelectedInspection();assert.equal(opened,3);
   await p.w.QcWorkflow.openRow({target:td},'task-1');
@@ -261,8 +257,6 @@ test('filtering selected row clears context; keyboard selection opens drawer',as
   assert.equal(prevented,true);assert.equal(p.d.querySelectorAll('.inspection-active').length,1);
   assert.ok(p.d.querySelector('.qwf-drawer'));
   p.d.querySelector('#searchInput').value='完全不匹配';p.w.filterRecords();
-  assert.equal(p.d.querySelector('#inspectionSelection').textContent,'未选中记录');
-  assert.equal(p.d.querySelector('#inspectionSelection').textContent,'未选中记录');
  }finally{p.dom.window.close();}
 });
 
@@ -470,11 +464,8 @@ test('toolbar date drafts validate before applying and reset restores all filter
   assert.equal(d.getElementById('filterDateFrom').value,'2026-10-26');
   d.getElementById('searchInput').value='no match';d.getElementById('filterResult').value='REJ';d.getElementById('filterSort').value='date-asc';
   w.resetRecordsFilters();
-  assert.equal(d.getElementById('recordCount').textContent,'共 1 条');
   assert.equal(d.getElementById('recordsDateLabel').textContent,'不限验货日期');
   assert.equal(d.getElementById('filterSort').value,'mod-desc');
-  let message='';w.showToast=text=>{message=text;};const calls=p.calls.length;
-  w.requestInspectionExcel();assert.match(message,/待配置模板/);assert.equal(p.calls.length,calls);
  }finally{p.dom.window.close();}
 });
 
