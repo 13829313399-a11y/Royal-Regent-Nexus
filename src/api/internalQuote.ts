@@ -1,5 +1,5 @@
 import { http } from '@/lib/http'
-import type { InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode, InternalQuoteReadiness } from '@/types/internalQuoteDesk'
+import type { InternalQuoteReferenceFxDraft, InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode, InternalQuoteReadiness } from '@/types/internalQuoteDesk'
 
 export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
@@ -888,6 +888,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       quoteId: string,
       sections: Array<{ sectionCode: InternalQuoteSectionCode; revision: number; payload: Record<string, unknown> }>,
       reason = '在连续报价页统一保存当前产品',
+      referenceFx?: InternalQuoteReferenceFxDraft,
     ) {
       const response = await client.put<ApiInternalQuoteWholeProductSave>(`/internal-quotes/${quoteId}/sections/save-all`, {
         sections: sections.map((section) => ({
@@ -896,6 +897,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
           payload: section.payload,
         })),
         reason,
+        ...(referenceFx ? { reference_fx: { revision: referenceFx.revision, rmb_hkd: referenceFx.rmbHkd, hkd_usd: referenceFx.hkdUsd } } : {}),
       })
       return response.data
     },

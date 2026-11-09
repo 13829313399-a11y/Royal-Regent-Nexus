@@ -298,7 +298,7 @@ export interface PaintingRow extends QuotePricingMetadata {
   source_row?: number
 }
 export interface DisneyDecorationRow { application_type: string; rate_per_op_usd: number; operations: number }
-export interface PaintingQuickQuote extends QuotePricingMetadata { spray_labor_hkd: number; paint_hkd: number; paint_tax_rate_percent: 13 }
+export interface PaintingQuickQuote extends QuotePricingMetadata { spray_labor_hkd: number; paint_hkd: number; paint_tax_rate_percent: number }
 export interface PaintingPayload {
   quote_mode: InternalQuoteEntryMode
   quick_quote: PaintingQuickQuote
@@ -607,6 +607,7 @@ function numberValue(value: unknown, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+// Historical fallback only; new quotes use their frozen reference defaults.
 export const defaultSalesMiscRatio = .02
 export const defaultSalesSettlementDivisor = .98
 
@@ -624,9 +625,10 @@ export function salesMiscRatioForSettlementDivisor(divisor: number) {
   return Number((1 - divisor).toFixed(4))
 }
 
-function normalizedSalesMiscPricing(
+export function resolveSalesMiscPricing(
   shippingSource: Record<string, unknown>,
   legacySettlement: unknown,
+  referenceSnapshot?: Record<string, unknown>,
 ) {
   const miscRatioSource = shippingSource.misc_ratio
   const miscRatio = Number(miscRatioSource)
@@ -654,6 +656,12 @@ function normalizedSalesMiscPricing(
     }
   }
 
+  if (referenceSnapshot) {
+    return resolveSalesMiscPricing({
+      misc_ratio: referenceSnapshot.misc_ratio,
+      divisor: referenceSnapshot.settlement,
+    }, undefined)
+  }
   return {
     misc_ratio: defaultSalesMiscRatio,
     divisor: defaultSalesSettlementDivisor,
@@ -1512,14 +1520,14 @@ export function calculatePaintingOperationTotals(payload: PaintingPayload) {
   ])) as Record<PaintingOperationCode, number>
 }
 
-export function calculatePaintingQuickPaintTaxHkd(payload: PaintingPayload) {
-  return Math.max(Number(payload.quick_quote?.paint_hkd) || 0, 0) * 0.13
+export function calculatePaintingQuickPaintTaxHkd(_payload: PaintingPayload) {
+  // Compatibility for callers reading the former extra-tax field.
+  return 0
 }
 
 export function calculatePaintingQuickTotalHkd(payload: PaintingPayload) {
   return Math.max(Number(payload.quick_quote?.spray_labor_hkd) || 0, 0)
     + Math.max(Number(payload.quick_quote?.paint_hkd) || 0, 0)
-    + calculatePaintingQuickPaintTaxHkd(payload)
 }
 
 export function calculatePaintingTotalHkd(payload: PaintingPayload) {
@@ -1627,8 +1635,8 @@ export function calculateAssemblyCategoryLaborHkd(payload: AssemblyPayload, cate
     .reduce((total, group) => total + calculateAssemblyGroupLaborHkd(group, payload.labor_base_hkd), 0)
 }
 
-export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, value: Record<string, unknown>): Record<string, unknown> {
-  const result = normalizeSectionInputs(code, value)
+export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, value: Record<string, unknown>, referenceSnapshot?: Record<string, unknown>): Record<string, unknown> {
+  const result = normalizeSectionInputs(code, value, referenceSnapshot)
   // Notes belong to their input row. Preserve them through the rebuilding
   // normalizer so moving a row carries its evidence instead of its old index.
   function carry(source: unknown, target: unknown) {
@@ -1646,7 +1654,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   return result
 }
 
-function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<string, unknown>): Record<string, unknown> {
+function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<string, unknown>, referenceSnapshot?: Record<string, unknown>): Record<string, unknown> {
   const source = objectValue(value)
   if (code === 'engineering') {
     const hasLegacyCartons = Object.prototype.hasOwnProperty.call(source, 'cartons')
@@ -1774,7 +1782,7 @@ function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<st
       ...pricingMetadata(objectValue(source.quick_quote)),
       spray_labor_hkd: numberValue(objectValue(source.quick_quote).spray_labor_hkd),
       paint_hkd: numberValue(objectValue(source.quick_quote).paint_hkd),
-      paint_tax_rate_percent: 13,
+      paint_tax_rate_percent: 0,
     },
     rows: rows(source.rows).map((row) => ({
       ...importBatchMetadata(row),
@@ -1932,7 +1940,7 @@ function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<st
     : []
   const shippingSource = objectValue(source.shipping)
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping') || Boolean(legacyScenarioWithSettlement)
-  const miscPricing = normalizedSalesMiscPricing(shippingSource, legacyScenarioWithSettlement?.settlement)
+  const miscPricing = resolveSalesMiscPricing(shippingSource, legacyScenarioWithSettlement?.settlement, referenceSnapshot)
   const normalizedPricingComponents = pricingComponents(source.pricing_components)
   const cartonDimensions = {
     product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
@@ -2074,11 +2082,11 @@ function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<st
   }
 }
 
-export function cloneInternalQuotePayload(code: InternalQuoteSectionCode, value: Record<string, unknown>) {
+export function cloneInternalQuotePayload(code: InternalQuoteSectionCode, value: Record<string, unknown>, referenceSnapshot?: Record<string, unknown>) {
   // Vue form models are deeply reactive proxies, which structuredClone cannot
   // clone. Normalization already rebuilds every supported payload branch as
   // plain JSON-compatible objects, so it is also the safe cloning boundary.
-  return normalizeInternalQuotePayload(code, value)
+  return normalizeInternalQuotePayload(code, value, referenceSnapshot)
 }
 
 export const paintingOperationLabels: Record<PaintingOperationCode, string> = {

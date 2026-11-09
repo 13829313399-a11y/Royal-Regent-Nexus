@@ -45,6 +45,43 @@ async function chooseMoldFile(wrapper: ReturnType<typeof setup>['wrapper']) {
 }
 
 describe('internal quote feedback regressions', () => {
+  it.each(['测试客户', 'Just Play'])('keeps a newly selected resin after save, engineering refresh and another save (%s)', async customer => {
+    const { wrapper, section, save } = setup('molding', { injection_lines: [{
+      engineering_mold_id: 'resin-mold', engineering_source_key: 'mold-id:resin-mold',
+      engineering_synced_fields: ['material'], item: '船身左', material: 'C-PP', grade: '',
+      target_output: 14142.8571, quantity: 3, sets: 2, net_weight_g: 75,
+    }] })
+    try {
+      const engineeringPayload = { molds: [{ mold_id: 'resin-mold', item: '船身左', material_type: 'C-PP',
+        net_weight_g: 75, quantity: 2, target_output: 14142.8571 }] }
+      await wrapper.setProps({ quote: { ...wrapper.props('quote'), customer }, engineeringPayload })
+      // Adding the quote-specific reference must enable a concrete grade selection.
+      await wrapper.setProps({ quote: { ...wrapper.props('quote'), referenceSnapshot: {
+        ...wrapper.props('quote').referenceSnapshot, material_prices: { 'C-PP|5090T': '7.8', 'C-PP|NEW-2026': '8.2' },
+      } } })
+      await wrapper.get('select[aria-label="具体材料料型"]').setValue(JSON.stringify(['C-PP', 'NEW-2026']))
+      const submitted = wrapper.vm.getWholeQuoteDraft().payload
+      expect(submitted).toMatchObject({ injection_lines: [{ material: 'C-PP', grade: 'NEW-2026' }] })
+      // Server prefill releases ownership of a concrete Molding selection.
+      const saved = { ...submitted, injection_lines: (submitted.injection_lines as Array<Record<string, unknown>>).map(row => ({
+        ...row, engineering_synced_fields: (row.engineering_synced_fields as string[]).filter(field => field !== 'material'),
+      })) }
+      wrapper.vm.acceptSavedPayload(saved, submitted, 6)
+      await wrapper.setProps({ section: { ...section, revision: 6, payload: saved },
+        engineeringPayload: JSON.parse(JSON.stringify(engineeringPayload)) })
+      await flushPromises()
+      expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{
+        material: 'C-PP', grade: 'NEW-2026', target_output: 14142.8571, quantity: 3, sets: 2, net_weight_g: 75,
+      }] })
+      expect(wrapper.vm.getWholeQuoteDraft().payload).toEqual(wrapper.vm.getWholeQuoteDraft().baselinePayload)
+      expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+      await wrapper.vm.saveWholeQuoteDraft(false)
+      expect(save).toHaveBeenLastCalledWith('feedback-quote', 'molding', 6, expect.objectContaining({
+        injection_lines: [expect.objectContaining({ material: 'C-PP', grade: 'NEW-2026' })],
+      }), '在连续报价页统一保存当前产品', false)
+    } finally { wrapper.unmount() }
+  })
+
   it.each([true, false])('keeps historical mold parts without persistent IDs clean (editable: %s)', async canEdit => {
     const { wrapper, save } = setup('engineering', { molds: [{
       item: '车壳', parts: [{ name: '上壳' }, { name: '下壳' }],

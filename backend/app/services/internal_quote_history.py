@@ -249,11 +249,11 @@ def _normalized_rows(code, payload, fx):
                              "labor_rmb": str(_decimal(r.get("unit_price_hkd")) * fx)} for r in _rows(result.get("quick_quotes"))]
     elif code == "painting":
         r = result.get("quick_quote") or {}
-        result["rows"] = [{**r, "name": "历史快捷喷油（人工及含税油漆）", "position": "历史快捷报价",
+        result["rows"] = [{**r, "name": "历史快捷喷油（人工及油漆）", "position": "历史快捷报价",
                            "cost_allocation": "direct",
-                           "remark": "沿用快捷报价拆分：散枪为人工，油色为含13%税油漆；不按70%/30%分摊。",
+                           "remark": "沿用快捷报价最终金额：散枪为人工，油色为油漆；不额外加税，不按70%/30%分摊。",
                            "operations": {"spray": {"quantity": 1, "unit_price_hkd": r.get("spray_labor_hkd", 0)},
-                                          "paint": {"quantity": 1, "unit_price_hkd": str(_decimal(r.get("paint_hkd")) * Decimal("1.13"))}}}]
+                                          "paint": {"quantity": 1, "unit_price_hkd": str(_decimal(r.get("paint_hkd")))}}}]
     result["quote_mode"] = "detail"
     result.pop("quick_quotes", None)
     result.pop("quick_quote", None)

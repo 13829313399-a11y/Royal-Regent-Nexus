@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.models.internal_quote import (
     InternalQuote,
@@ -1374,7 +1374,7 @@ def list_attachments(
     ensure_quote_read(db, user, quote.factory_id)
     if department:
         _ensure_attachment_access(user, quote, department)
-    statement = select(InternalQuoteAttachment).where(InternalQuoteAttachment.quote_id == quote.id)
+    statement = select(InternalQuoteAttachment).options(defer(InternalQuoteAttachment.content)).where(InternalQuoteAttachment.quote_id == quote.id)
     if department:
         statement = statement.where(InternalQuoteAttachment.department == department)
     statement = statement.order_by(InternalQuoteAttachment.uploaded_at.desc(), InternalQuoteAttachment.id.desc())
@@ -1827,7 +1827,7 @@ def _supersede_outdated_exports(
 ) -> None:
     current_revisions = {section.department: section.revision for section in sections}
     records = db.scalars(
-        select(InternalQuoteExportFile).where(
+        select(InternalQuoteExportFile).options(defer(InternalQuoteExportFile.content)).where(
             InternalQuoteExportFile.quote_id == quote.id,
             InternalQuoteExportFile.status == "current",
         )
@@ -2330,7 +2330,7 @@ def list_export_files(
         _supersede_outdated_exports(db, quote, sections)
         db.commit()
     records = db.scalars(
-        select(InternalQuoteExportFile)
+        select(InternalQuoteExportFile).options(defer(InternalQuoteExportFile.content))
         .where(InternalQuoteExportFile.quote_id == quote.id)
         .order_by(InternalQuoteExportFile.exported_at.desc(), InternalQuoteExportFile.id.desc())
     ).all()
