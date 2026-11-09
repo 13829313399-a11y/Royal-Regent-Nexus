@@ -16,6 +16,8 @@ import openpyxl
 import pdfplumber
 from openpyxl.utils.datetime import from_excel
 
+from .po_requirements import extract_requirements
+
 
 DEFAULT_DATA_ROOT = Path(r"D:\aaaAI系统项目\业务部入排期\华康A\ai")
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -495,6 +497,10 @@ def _parse_po_text(path: Path, text: str, page_count: int, root: Path | None = N
         "port": _first(r"Port of Discharge[ \t]*:[ \t]*([^\r\n]*)", text),
         "parse_ok": bool(contract and item_no and quantity is not None),
     }
+    parsed.update(extract_requirements(text, release_type, parsed["customer_release"]))
+    parsed["customer_label"] = "\n".join(dict.fromkeys(filter(None, (
+        parsed.get("customer_label"), outer_carton_sticker,
+    ))))
     parsed["parse_warnings"] = [
         label
         for field, label in (

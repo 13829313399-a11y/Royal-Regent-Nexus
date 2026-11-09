@@ -4,6 +4,8 @@ No GET writes, notification delivery assumptions, or inventory/price side effect
 """
 import hashlib
 import json
+from collections import defaultdict
+from copy import deepcopy
 from datetime import date
 from decimal import Decimal
 
@@ -75,9 +77,14 @@ def _special_deleted(db, row):
         SpecialVersion.request_id == row.id, SpecialVersion.action == "DELETED").limit(1)))
 
 
-def _source(db, user, factory, kind, identifier, *, internal=False):
+def _source(db, user, factory, kind, identifier, *, internal=False, authorized_vendor=None, projection=None):
     from app.services import carton_special_requests as special
-    if internal:
+    if authorized_vendor is not None:
+        # Only workspace supplies its already-authorized vendor within this read.
+        vendor = authorized_vendor
+        if vendor.factory_id != factory:
+            raise ValueError("Supplier source factory mismatch")
+    elif internal:
         portal.internal_permission(user, factory, "carton_procurement:read")
         vendor = portal.fixed_supplier(db, factory)
     else:
@@ -100,14 +107,23 @@ def _source(db, user, factory, kind, identifier, *, internal=False):
     snapshot = core._purchase_order_snapshot(issue)
     if bool(snapshot.get("replenishment")) != (kind == "REPLENISHMENT"):
         raise HTTPException(409, "采购版本类型不一致")
-    if kind == "REGULAR" and (not portal.latest_issue(db, row) or portal.latest_issue(db, row).id != identifier):
+    current = portal.latest_issue(db, row, projection=projection) if kind == "REGULAR" else None
+    if kind == "REGULAR" and (not current or current.id != identifier):
         raise HTTPException(409, "采购版本已更新，请刷新后核对最新版本")
     if internal:
         core.ensure_customer_operation(db, user, factory, row.customer_code)
     return row, issue
 
 
-def _publication_history(db, row, current, kind):
+def _publication_events(db, factory, entity_type, identifiers):
+    return db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
+        CartonAuditEvent.entity_id.in_(identifiers),
+        CartonAuditEvent.entity_type == entity_type,
+        CartonAuditEvent.event_type.in_(["SUPPLIER_PAPER_ACCEPTED", "SUPPLIER_CANCELLATION_ACKNOWLEDGED", "SUPPLIER_REPLENISHMENT_ACCEPTED"]))
+        .order_by(CartonAuditEvent.sequence))
+
+
+def _publication_history(db, row, current, kind, *, projection=None):
     """Superseded publication is not evidence that either party agreed to it."""
     if kind == "SPECIAL":
         versions = list(db.scalars(select(SpecialVersion).where(SpecialVersion.factory_id == row.factory_id,
@@ -138,18 +154,20 @@ def _publication_history(db, row, current, kind):
                     "unit": paper.get("unit", ""), "quantity": "0" if frozen.get("status") == "CANCELLED" else str(paper.get("quantity", "0"))}
                     for paper in frozen.get("lines", [])]})
         return result
-    versions = [issue for issue in reversed(core._purchase_order_issues(db, row.id))
+    versions = [issue for issue in reversed(projection["issues"] if projection is not None else core._purchase_order_issues(db, row.id))
         if issue.issue_sequence <= current.issue_sequence
         and bool(core._purchase_order_snapshot(issue).get("replenishment")) == (kind == "REPLENISHMENT")
         and (kind != "REPLENISHMENT" or issue.id == current.id)]
-    states = response_states(db, row.factory_id, kind, [version.id for version in versions])
+    states = {version.id: deepcopy(projection["replacement_states" if kind == "REPLENISHMENT" else "supplier_change_states"][version.id]) for version in versions} if projection is not None else response_states(db, row.factory_id, kind, [version.id for version in versions])
     accepted, cancel_acks, last_at = {}, set(), {}
     identifiers = [version.id for version in versions] if kind == "REPLENISHMENT" else [row.id]
-    events = db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == row.factory_id,
-        CartonAuditEvent.entity_id.in_(identifiers),
-        CartonAuditEvent.entity_type == ("carton_purchase_order_issue" if kind == "REPLENISHMENT" else "carton_order"),
-        CartonAuditEvent.event_type.in_(["SUPPLIER_PAPER_ACCEPTED", "SUPPLIER_CANCELLATION_ACKNOWLEDGED", "SUPPLIER_REPLENISHMENT_ACCEPTED"]))
-        .order_by(CartonAuditEvent.sequence))
+    entity_type = "carton_purchase_order_issue" if kind == "REPLENISHMENT" else "carton_order"
+    if projection is not None and "publication_events" in projection:
+        by_entity = projection["publication_events"]
+        events = sorted((event for identifier in identifiers for event in by_entity.get((entity_type, identifier), ())),
+                        key=lambda event: event.sequence)
+    else:
+        events = _publication_events(db, row.factory_id, entity_type, identifiers)
     for event in events:
         saved = json.loads(event.detail_json)
         identifier = saved.get("issue_id")
@@ -182,8 +200,8 @@ def _publication_history(db, row, current, kind):
     return result
 
 
-def _task(db, user, row, version, kind, *, internal=False):
-    state = special_confirmation(db, row) if kind == "SPECIAL" else response_state(db, row.factory_id, kind, version.id)
+def _task(db, user, row, version, kind, *, internal=False, projection=None):
+    state = special_confirmation(db, row) if kind == "SPECIAL" else deepcopy(projection["replacement_states" if kind == "REPLENISHMENT" else "supplier_change_states"][version.id]) if projection is not None else response_state(db, row.factory_id, kind, version.id)
     cancelled = row.status == "CANCELLED" and kind != "REPLENISHMENT"
     if kind == "SPECIAL":
         after = json.loads(version.snapshot_json)
@@ -206,7 +224,7 @@ def _task(db, user, row, version, kind, *, internal=False):
         customer_date, before_customer_date = "", ""
     else:
         after = core._purchase_order_snapshot(version)
-        previous = db.scalar(select(CartonPurchaseOrderIssue).where(CartonPurchaseOrderIssue.order_id == row.id,
+        previous = next((issue for issue in projection["issues"] if issue.issue_sequence < version.issue_sequence), None) if projection is not None else db.scalar(select(CartonPurchaseOrderIssue).where(CartonPurchaseOrderIssue.order_id == row.id,
             CartonPurchaseOrderIssue.factory_id == row.factory_id,
             CartonPurchaseOrderIssue.issue_sequence < version.issue_sequence)
             .order_by(CartonPurchaseOrderIssue.issue_sequence.desc()).limit(1))
@@ -221,7 +239,7 @@ def _task(db, user, row, version, kind, *, internal=False):
         customer_date = str(after.get("order", {}).get("customer_due_date") or "")
         before_customer_date = str(core._purchase_order_snapshot(previous).get("order", {}).get("customer_due_date") or "")
         if kind == "REGULAR":
-            accepted = portal.acceptance_summary(db, row, core.get_order_lines(db, row.id))
+            accepted = portal.acceptance_summary(db, row, projection["lines"] if projection is not None else core.get_order_lines(db, row.id), projection=projection)
             if cancelled:
                 notice = portal.cancellation_notice(db, row, version)
                 if notice and notice["acknowledged"]:
@@ -263,7 +281,7 @@ def _task(db, user, row, version, kind, *, internal=False):
         "action": "CANCEL" if cancelled else version.action if kind == "SPECIAL" else version.document_type,
         "responsibility": after.get("replenishment", {}).get("responsibility", ""), "lines": papers,
         "material_changed": before_manifest != after_manifest, "pending": pending,
-        "publication_history": _publication_history(db, row, version, kind),
+        "publication_history": _publication_history(db, row, version, kind, projection=projection),
         "can_respond": pending and state["status"] != "PENDING_ISSUE" and not internal and portal.supplier_permission(user, "carton_supplier:approve", row.factory_id)}
 
 
@@ -276,25 +294,39 @@ def workspace(db, user, factory, *, internal=False):
     items = []
     orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory,
         CartonOrder.supplier_id == vendor.id, CartonOrder.deleted_at.is_(None), CartonOrder.status.in_(portal.VISIBLE_STATES))).all()
-    for row in orders:
-        ordinary = portal.latest_issue(db, row)
-        versions = core._purchase_order_issues(db, row.id)
-        for version in versions:
-            replacement = bool(core._purchase_order_snapshot(version).get("replenishment"))
-            if not replacement and (not ordinary or ordinary.id != version.id):
-                continue
-            try:
-                owner, source = _source(db, user, factory, "REPLENISHMENT" if replacement else "REGULAR", version.id, internal=internal)
-                items.append(_task(db, user, owner, source, "REPLENISHMENT" if replacement else "REGULAR", internal=internal))
-            except HTTPException as exc:
-                if exc.status_code not in {403, 404, 409}:
-                    raise
+    from app.services.carton_supplier_projection import CHUNK, evidence
+    for start in range(0, len(orders), CHUNK):
+        batch = orders[start:start + CHUNK]
+        projections = evidence(db, batch)
+        publication_events = defaultdict(list)
+        replenishments = [version.id for data in projections.values() for version in data["issues"]
+                          if core._purchase_order_snapshot(version).get("replenishment")]
+        for entity_type, identifiers in (("carton_order", [row.id for row in batch]),
+                                         ("carton_purchase_order_issue", replenishments)):
+            for offset in range(0, len(identifiers), CHUNK):
+                for event in _publication_events(db, factory, entity_type, identifiers[offset:offset + CHUNK]):
+                    publication_events[(event.entity_type, event.entity_id)].append(event)
+        for row in batch:
+            projection = projections[row.id]
+            projection["publication_events"] = publication_events
+            ordinary = portal.latest_issue(db, row, projection=projection)
+            for version in projection["issues"]:
+                replacement = bool(core._purchase_order_snapshot(version).get("replenishment"))
+                if not replacement and (not ordinary or ordinary.id != version.id):
+                    continue
+                try:
+                    owner, source = _source(db, user, factory, "REPLENISHMENT" if replacement else "REGULAR", version.id,
+                        internal=internal, authorized_vendor=vendor, projection=projection)
+                    items.append(_task(db, user, owner, source, "REPLENISHMENT" if replacement else "REGULAR", internal=internal, projection=projection))
+                except HTTPException as exc:
+                    if exc.status_code not in {403, 404, 409}:
+                        raise
     for row in db.scalars(select(SpecialRequest).where(SpecialRequest.factory_id == factory,
             SpecialRequest.supplier_id == vendor.id, SpecialRequest.status != "SUBMITTED")):
         if row.status != "CANCELLED" and (row.origin == "SUPPLIER_EXTRA" or row.kind == "SUPPLIER_GIFT"):
             continue
         try:
-            owner, source = _source(db, user, factory, "SPECIAL", row.current_version_id, internal=internal)
+            owner, source = _source(db, user, factory, "SPECIAL", row.current_version_id, internal=internal, authorized_vendor=vendor)
             items.append(_task(db, user, owner, source, "SPECIAL", internal=internal))
         except HTTPException as exc:
             if exc.status_code not in {403, 404, 409}:

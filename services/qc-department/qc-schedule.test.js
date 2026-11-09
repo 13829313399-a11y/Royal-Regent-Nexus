@@ -140,10 +140,10 @@ test('export is denied without Nexus export permission',async()=>{
  const dom=await page(false);try{assert.equal(dom.window.document.getElementById('qsExport').disabled,true);}finally{dom.window.close();}
 });
 for(const payload of [{factory_id:'hy-other',contract_version:'1',status:'mapping_required',items:[]},{factory_id:'huaxing',contract_version:'1',status:'ready',items:rows}])test('unexpected data or wrong factory fails closed '+payload.status,async()=>{
- const dom=await page(true,async()=>({ok:true,json:async()=>payload}));try{const d=dom.window.document;assert.equal(d.getElementById('qsSourceStatus').textContent,'读取失败');assert.equal(d.getElementById('qsExport').disabled,true);assert.doesNotMatch(d.getElementById('qsRows').textContent,/消防车/);}finally{dom.window.close();}
+ const dom=await page(true,async()=>({ok:true,json:async()=>payload}));try{const d=dom.window.document;assert.match(d.getElementById('qsRows').textContent,/读取失败/);assert.equal(d.getElementById('qsExport').disabled,true);assert.doesNotMatch(d.getElementById('qsRows').textContent,/消防车/);}finally{dom.window.close();}
 });
 test('network errors are visible and never presented as an empty connected schedule',async()=>{
- const dom=await page(true,async()=>{throw new Error('offline')});try{assert.match(dom.window.document.getElementById('qsNotice').textContent,/读取失败/);}finally{dom.window.close();}
+ const dom=await page(true,async()=>{throw new Error('offline')});try{assert.match(dom.window.document.getElementById('qsRows').textContent,/读取失败/);}finally{dom.window.close();}
 });
 test('customer whitespace is consistent between dynamic choices and filtering',()=>{
  const sample=[{...rows[0],customer:' Dickie '}];assert.equal(api.choices(sample,'customer')[0],'Dickie');assert.equal(api.filterRows(sample,{...base,customer:'Dickie'}).length,1);
@@ -207,4 +207,32 @@ test('partial push retains failed selection and filters; full success resets and
  await w.QcSchedule.afterPush(['1']);assert.equal(d.getElementById('qsCustomer').value,'Dickie');assert.deepEqual([...d.querySelectorAll('[data-pick]:checked')].map(e=>e.dataset.pick),['3']);
  await w.QcSchedule.afterPush(['3']);assert.equal(d.getElementById('qsCustomer').value,'');assert.equal(d.querySelectorAll('[data-pick]:checked').length,0);assert.equal(d.querySelector('tr[data-qs-row]').dataset.qsRow,'3');
  }finally{dom.window.close()}
+});
+
+test('merged date cells preserve record selection, ranges and filtered row spans', async () => {
+ const items = [
+  {id:'a',dateFrom:'2026-12-22',customer:'A',productNo:'A',sourceStatus:'active'},
+  {id:'b',dateFrom:'2026-12-22',customer:'B',productNo:'B',sourceStatus:'active'},
+  {id:'range',dateFrom:'2025-12-31',dateTo:'2026-01-02',productNo:'R',sourceStatus:'active'},
+  {id:'missing',dateFrom:'',productNo:'M',sourceStatus:'cancelled'},
+ ];
+ const dom = await page(true, async () => ({ok:true,json:async()=>({factory_id:'huaxing',contract_version:'2',status:'ready',mapping_version:'qc-task-v1',source_available:true,items})}));
+ try {
+  const w=dom.window,d=w.document;
+  w.__QC_NEXUS.workflow={create:true};await w.renderSalesSchedule();
+  assert.equal(d.querySelectorAll('#qsRows .qs-group').length,0);
+  assert.equal(d.querySelectorAll('#qsRows tr').length,4);
+  const dates=d.querySelectorAll('#qsRows .qs-date-cell');
+  assert.equal(dates.length,3);assert.equal(dates[0].rowSpan,2);
+  assert.match(dates[0].textContent,/12月22日2026 · 周二/);
+  assert.match(dates[1].textContent,/12月31日2025 · 周三至01月02日2026 · 周五/);
+  assert.equal(dates[2].textContent,'待确认');
+  d.querySelector('[data-pick="b"]').click();
+  assert.equal(d.querySelector('[data-pick="b"]').checked,true);
+  assert.equal(d.querySelector('[data-pick="a"]').checked,false);
+  assert.equal(d.querySelector('[data-pick="missing"]').disabled,true);
+  const customer=d.getElementById('qsCustomer');customer.value='B';customer.dispatchEvent(new w.Event('change'));
+  assert.equal(d.querySelector('.qs-date-cell').rowSpan,1);
+  assert.equal(d.querySelector('[data-pick="b"]').checked,false);
+ } finally { dom.window.close(); }
 });

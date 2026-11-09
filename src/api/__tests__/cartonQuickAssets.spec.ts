@@ -3,6 +3,19 @@ import { createCartonQuickAssetsApi, type QuickUploadBody } from '../cartonQuick
 import { quickAsset } from '@/components/__tests__/cartonQuickAssetFixtures'
 
 describe('quick upload existing backend transport', () => {
+  it('preserves audience commands independently from order and factory sharing', async () => {
+    const post=vi.fn().mockResolvedValue({data:quickAsset({sharing_mode:'INTERNAL'})})
+    const api=createCartonQuickAssetsApi({post} as never)
+    await api.audience('huaxing',quickAsset(),'INTERNAL','audience-request')
+    expect(post).toHaveBeenCalledWith('/carton-mark/assets/quick/asset-one/audience',
+      {revision:1,request_id:'audience-request',sharing_mode:'INTERNAL'},expect.objectContaining({params:{factory_id:'huaxing'}}))
+  })
+  it('keeps an upload unresolved if its returned sharing mode differs from the frozen choice', async () => {
+    const post=vi.fn().mockResolvedValue({data:quickAsset({sharing_mode:'SUPPLIER'})})
+    const api=createCartonQuickAssetsApi({post} as never)
+    await expect(api.upload('huaxing',{request_id:'private-request',owner_department:'sales-business',
+      text:'private',contract_number:'',association:'NONE',status:'PENDING',sharing_mode:'INTERNAL'})).rejects.toThrow('共享范围')
+  })
   it('sends the chosen department, explicit empty contract and exact request in multipart', async () => {
     const post = vi.fn().mockResolvedValue({ data: quickAsset() }), client = { post }
     const api = createCartonQuickAssetsApi(client as never), file = new File(['合同号在正文中'], 'photo.png')

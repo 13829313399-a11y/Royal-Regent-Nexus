@@ -180,6 +180,7 @@ def map_record(row, record, customer_code):
         row["po_no"] = record.get("customer_po") or ""
         row["customer_release_no"] = record.get("customer_release") or ""
         row["customer_name"] = record.get("customer_name") or "ThreeSixty"
+        row["_360_customer_explicit"] = bool(record.get("customer_name"))
         source = row.get("source_po_file_name") or record.get("file_name") or "PO"
         row.setdefault("lineage", {}).update({
             "order_type": "华康A 360 业务规则 · 新 PURCHASE ORDER RELEASE 记为正单，客户 RL Order Type 不作为排期订单类型",
@@ -191,6 +192,15 @@ def map_record(row, record, customer_code):
             "customer_release_no": f"{source} · Customer Release No.（保留来源值）",
             "customer_po_number": f"{source} · Customer PO Number: {record.get('customer_po') or ''}",
         })
+        row["lineage"].update(record.get("_360_lineage", {}))
+        if row["lineage"].get("customer_name"):
+            row["lineage"]["customer_country"] = row["lineage"]["customer_name"]
+        row["_360_barcode_conflict"] = bool(record.get("_360_barcode_conflict"))
+        for field, message in record.get("_360_warnings", []):
+            row.setdefault("issues", []).append({
+                "severity": "warning", "code": f"360_{field}_review", "field": field,
+                "message": message, "can_skip": False, "skip_key": "", "skip_label": "",
+            })
         sticker_sources = []
         for evidence in record.get("outer_carton_sticker_sources") or []:
             if not isinstance(evidence, dict) or not evidence.get("raw_text"):
@@ -201,7 +211,9 @@ def map_record(row, record, customer_code):
             parts.append(str(evidence["raw_text"]))
             sticker_sources.append(" · ".join(parts))
         if sticker_sources:
-            row["lineage"]["customer_label"] = "\n".join(sticker_sources)
+            row["lineage"]["customer_label"] = "\n".join(filter(None, (
+                row["lineage"].get("customer_label"), *sticker_sources,
+            )))
     elif customer_code == "green-toys":
         row["reference_no"] = record.get("customer_po") or record.get("contract_no") or ""
         row["transportation_mode"] = "40'YT"
@@ -214,8 +226,54 @@ def map_record(row, record, customer_code):
     )
     for field in EXTRA_HEADERS[customer_code]:
         if row.get(field) not in (None, ""):
+            if customer_code == "360" and field in record.get("_360_lineage", {}):
+                continue
             row["lineage"][field] = "固定运输规则 40'YT" if customer_code == "green-toys" and field == "transportation_mode" else f"{row.get('source_po_file_name', 'PO')} · {field}"
     return row
+
+
+def enrich_360_requirements(row, history, *, protected_fields=()):
+    """Use only same-end-customer, exact-item history for absent requirements."""
+    from app.services.customer_order_unified import _text
+    # Decimal/version punctuation and leading zeroes are part of the full item;
+    # preserve Unicode customer names instead of dropping non-ASCII characters.
+    def identity(value):
+        return re.sub(r"\s+", "", _text(value)).casefold()
+    # Re-evaluate inherited values after a product/customer correction; explicit
+    # source values and audited field overrides remain authoritative.
+    for field, inherited in row.pop('_360_inherited_requirements', {}).items():
+        if field not in protected_fields and row.get(field) == inherited:
+            row[field] = ''
+            row.setdefault('lineage', {}).pop(field, None)
+    row['issues'] = [issue for issue in row.get('issues', [])
+                     if not (issue.get('code', '').startswith('360_')
+                             and issue.get('code', '').endswith(('_history', '_history_conflict')))]
+    inherited_fields = row['_360_inherited_requirements'] = {}
+    customer, product = identity(row.get("customer_name")), identity(row.get("product_no"))
+    matches = [h for h in history if row.get("_360_customer_explicit") is not False and customer and product
+               and identity(h.customer_name) == customer and identity(h.product_no) == product]
+    labels = {"standard": "国家标准", "packaging": "包装", "manual": "说明书", "barcode": "条码", "port": "卸货港"}
+    for field, label in labels.items():
+        if _text(row.get(field)) or (field == "barcode" and row.get("_360_barcode_conflict")):
+            continue
+        def value(item):
+            text = _text(getattr(item, field)) if field in {"standard", "packaging"} else _text(item.extras.get(field))
+            return '' if text.upper() in {'#REF!', '#N/A', '#DIV/0!', '#VALUE!', '#NAME?', '#NUM!', '#NULL!', '#SPILL!', '#CALC!'} else text
+        values = {value(item) for item in matches} - {""}
+        if len(values) == 1:
+            row[field] = next(iter(values))
+            inherited_fields[field] = row[field]
+            origins = ", ".join(f"{item.source_sheet}!第{item.row}行" for item in matches if value(item) == row[field])
+            row.setdefault("lineage", {})[field] = f"当前排期 · 同客名 {row['customer_name']} / 同货号 {row['product_no']} 唯一非空历史值 · {origins}（需核对本单版本）"
+            if field in {"standard", "packaging", "manual"}:
+                row.setdefault("issues", []).append({"severity": "warning", "code": f"360_{field}_history", "field": field,
+                    "message": f"{label}由当前排期同客、同货号的唯一历史值补充；本次 PO 未明确提供，请核对版本是否沿用",
+                    "can_skip": False, "skip_key": "", "skip_label": ""})
+        elif len(values) > 1:
+            row.setdefault("issues", []).append({"severity": "warning", "code": f"360_{field}_history_conflict", "field": field,
+                "message": f"同客、同货号的历史{label}有多个版本，未自动填入，请核对本单要求",
+                "can_skip": False, "skip_key": "", "skip_label": ""})
+    row["customer_country"] = " / ".join(str(v) for v in (row.get("customer_name"), row.get("country")) if v)
 
 
 def round_cartons(row):

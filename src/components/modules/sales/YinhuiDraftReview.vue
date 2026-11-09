@@ -9,6 +9,8 @@ const edits = ref<Record<string, string>>({})
 const message = ref('')
 watch(() => props.draft, () => { edits.value = {}; message.value = '' })
 const issues = computed(() => props.draft.result.quoteData.importIssues || [])
+const pendingIssues = computed(() => issues.value.filter(i => i.code === 'blank_amount'))
+const blockingIssues = computed(() => issues.value.filter(i => i.code !== 'blank_amount'))
 const cells = computed(() => [...new Map(issues.value.flatMap(i => i.cells).map(c => [`${c.sheet}!${c.cell}`, c])).values()])
 const dirty = computed(() => Object.keys(edits.value).length > 0)
 function edit(key: string, event: Event) {
@@ -32,6 +34,14 @@ function select(index: number, event: Event) {
   selectYinhuiToolCandidate(props.draft, index, (event.target as HTMLSelectElement).value)
   emit('invalidate')
 }
+function includeInOtherCost(source: string) {
+  if (props.disabled || dirty.value) return
+  const cell = pendingIssues.value.find(i => i.source === source)?.cells.find(c => c.label === '内部金额')
+  if (!cell) return
+  emit('invalidate')
+  try { emit('update:draft', correctYinhuiDraft(props.draft, [{ sheet: cell.sheet, cell: cell.cell, value: 0 }])) }
+  catch (e) { message.value = e instanceof Error ? e.message : String(e) }
+}
 </script>
 
 <template>
@@ -42,10 +52,15 @@ function select(index: number, event: Event) {
       <button type="button" data-testid="yinhui-save-draft" :disabled="disabled || dirty" class="rounded-md border border-slate-300 px-3 py-2 text-sm disabled:opacity-50" @click="emit('save')">保存草稿</button>
     </div>
     <p class="mt-2 text-xs text-slate-500">草稿包含内部报价资料，仅供内部核对，不是可发送客户的报价文件。{{ dirty ? '请先应用补正，再保存草稿。' : '' }}</p>
-    <div v-if="issues.length" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3" role="alert">
-      <p class="text-sm font-semibold text-red-900">已保留草稿，{{ issues.length }} 项原表问题待处理；当前只能查看已识别成本小计。</p>
-      <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-red-800"><li v-for="(issue, index) in issues" :key="index">{{ issue.source }}：{{ issue.message }}</li></ul>
-      <p v-if="issues.some(i => !i.cells.length)" class="mt-2 text-xs text-red-800">未提供补正输入的问题，请按提示完善下方资料，或修正原表后重新导入；不会自动忽略未识别成本。</p>
+    <div v-if="pendingIssues.length" class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" data-testid="yinhui-pending-costs">
+      <p class="font-semibold">{{ pendingIssues.length }} 项金额待补，确认处理说明后可输出</p>
+      <ul class="mt-2 space-y-3"><li v-for="issue in pendingIssues" :key="issue.source"><p>{{ issue.source }}：{{ issue.message }}</p><button type="button" :disabled="disabled || dirty" :aria-label="`${issue.source} 确认已含费用`" class="mt-1 rounded border border-amber-500 bg-white px-2 py-1 disabled:opacity-50" @click="includeInOtherCost(issue.source)">确认已含其他项目，按 0 元保留</button></li></ul>
+      <p class="mt-2">默认保留空白金额；也可补填已确认的金额，或使用 AI 建议判断原文是否说明已包含费用。</p>
+    </div>
+    <div v-if="blockingIssues.length" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3" role="alert">
+      <p class="text-sm font-semibold text-red-900">已保留草稿，{{ blockingIssues.length }} 项原表问题待处理；当前只能查看已识别成本小计。</p>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-red-800"><li v-for="(issue, index) in blockingIssues" :key="index">{{ issue.source }}：{{ issue.message }}</li></ul>
+      <p v-if="blockingIssues.some(i => !i.cells.length)" class="mt-2 text-xs text-red-800">未提供补正输入的问题，请按提示完善下方资料，或修正原表后重新导入；不会自动忽略未识别成本。</p>
     </div>
     <div v-if="cells.length" class="mt-3">
       <p class="text-sm text-slate-700">填写已确认的读取值后，点击“应用补正并重新核对”。补正只用于本次转换，不改动原文件，也不重算原表的其他公式；相关金额须一并核实。重新核对会重置下方手工资料。</p>

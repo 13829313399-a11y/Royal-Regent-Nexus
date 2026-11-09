@@ -27,6 +27,59 @@ beforeEach(() => {
 })
 
 describe('HuakangBJPIntake', () => {
+  it('keeps work controls hidden while permissions load, then shows truthful empty states', async () => {
+    let finish: ((value: { read: boolean; write: boolean; export: boolean; available: boolean }) => void) | undefined
+    api.capabilities.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mount(HuakangBJPIntake, { props: { factoryId: 'huakang-b' } })
+    expect(wrapper.text()).toContain('正在核对权限及参照')
+    expect(wrapper.find('input[aria-label="问单邮件"]').exists()).toBe(false)
+    finish?.({ read: true, write: true, export: true, available: true }); await flushPromises()
+    expect(wrapper.text()).toContain('等待解析邮件')
+    expect(wrapper.text()).toContain('暂无历史导出记录')
+    expect(wrapper.find('input[aria-label="问单邮件"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+  it.each([
+    [{ read: false, write: false, export: false, available: true }, '没有华康B订单读取权限'],
+    [{ read: true, write: true, export: true, available: false }, 'JP问单录入尚未启用'],
+  ])('does not expose upload controls in denied or unavailable states', async (capabilities, message) => {
+    api.capabilities.mockResolvedValue(capabilities)
+    const wrapper = mount(HuakangBJPIntake, { props: { factoryId: 'huakang-b' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain(message)
+    expect(wrapper.find('input[type=file]').exists()).toBe(false)
+    expect(api.references).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('offers an explicit retry after an initial load failure without showing stale references', async () => {
+    api.capabilities.mockRejectedValueOnce({ isAxiosError: true, response: { status: 503, data: { detail: '服务暂不可用' } } })
+    const wrapper = mount(HuakangBJPIntake, { props: { factoryId: 'huakang-b' } })
+    await flushPromises()
+    expect(wrapper.get('[role=alert]').text()).toContain('服务暂不可用')
+    expect(wrapper.text()).not.toContain('B货价.xlsx')
+    await button(wrapper, '重新加载').trigger('click'); await flushPromises()
+    expect(wrapper.find('[role=alert]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('B货价.xlsx')
+    expect(api.capabilities).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+  it.each(['references', 'exports'] as const)('does not present failed %s reads as empty business data', async resource => {
+    api[resource].mockRejectedValueOnce({ isAxiosError: true, response: { status: 503, data: { detail: '读取暂不可用' } } })
+    const wrapper = mount(HuakangBJPIntake, { props: { factoryId: 'huakang-b' } })
+    await flushPromises()
+    expect(wrapper.get('[role=alert]').text()).toContain('参照与历史读取失败')
+    expect(wrapper.text()).toContain('加载未完成')
+    expect(wrapper.text()).not.toContain('可开始录入')
+    expect(wrapper.text()).not.toContain('尚未上传')
+    expect(wrapper.text()).not.toContain('暂无历史导出记录')
+    expect(wrapper.find('input[aria-label="问单邮件"]').exists()).toBe(false)
+    await button(wrapper, '重新加载').trigger('click'); await flushPromises()
+    expect(wrapper.find('[role=alert]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('B货价.xlsx')
+    expect(wrapper.text()).toContain('暂无历史导出记录')
+    expect(wrapper.find('input[aria-label="问单邮件"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
   it('requires a new currency choice for each confirmation file and retains version checks', async () => {
     const wrapper = await open()
     const input = wrapper.get('input[aria-label="文员已确认货价表（可选）"]')

@@ -136,7 +136,7 @@ def _so_no(text: str) -> str | None:
     # ``5O:``.  Accept only those label-shaped variants and still stop before
     # Silverlit's separate line suffix (for example ``-10`` or ``-780``).
     match = re.search(
-        r"(?<![A-Z0-9])(?:S\s*(?:O|0O|0)|5\s*(?:O|0)|\$\s*(?:O|0))"
+        r"(?<![A-Z0-9])(?:S\s*(?:O|0O|0|50)|5\s*(?:O|0)|\$\s*(?:O|0))"
         r"\s*[:：]\s*([A-Z0-9]+)",
         text,
         re.I,
@@ -175,6 +175,52 @@ def _case_pack(text: str) -> float | int | None:
         value = float(inner_outer.group(1).replace(",", ""))
         return int(value) if value.is_integer() else value
     return None
+
+
+def _remark_outer_packs(remarks: str, item: str, *, single_item: bool) -> set[int]:
+    """Read explicit pieces/carton counts, never a bare number in OCR prose.
+
+    A multi-item remark applies only when its line names this exact part code.
+    A generic count cannot be assigned to every product in the document.
+    """
+    counts = set()
+    for line in remarks.splitlines():
+        if not single_item and not re.search(rf"(?<![A-Z0-9-]){re.escape(item)}(?![A-Z0-9-])", line, re.I):
+            continue
+        counts.update(int(value.replace(",", "")) for value in re.findall(
+            r"(?<![\d.,])([1-9]\d*(?:,\d{3})*)\s*(?:PCS?|PIECES?)\s*/\s*(?:CTNS?|CARTONS?|CASES?)\b",
+            line, re.I,
+        ))
+    return counts
+
+
+def _pdf_detail_text(text: str) -> str:
+    """Omit remark/barcode sections without relying on OCR-perfect headers."""
+    section = "unknown"
+    lines = []
+    for line in text.splitlines(keepends=True):
+        numbered = re.match(r"^[ \t]*\d{5}[ \t]+[A-Z0-9][A-Z0-9-]{3,}[ \t]+", line, re.I)
+        financial = numbered and (
+            re.search(r"\d{4}[.\/-]\w{2}[.\/-]\w{2}", line)
+            or re.search(r"[\d,]+\s+[A-Z]{1,8}\s+[\d.]+\s+[\d,.]+\s*$", line, re.I)
+        )
+        if re.match(r"^\s*(?:Remarks|Terms\s+and\s+Conditions|Total)\s*[:：]", line, re.I):
+            section = "remarks"
+        elif re.match(r"^\s*(?:<<OCR_PAGE_BREAK>>|Page\s*[:：]\s*\d+\s+of\s+\d+)\s*$", line, re.I):
+            section = "unknown"
+        elif re.search(r"\bITEM\s*#.*\bPART\s*#.*\bDESCRIPTION\b", line, re.I):
+            # Both native text and OCR can repeat the table after page-local
+            # remarks. A first Remarks heading is not an end-of-file marker.
+            section = "details"
+        elif financial:
+            if section == "remarks":
+                raise ValueError("备注或条款之后发现疑似订单明细，但无法确认明细分区；请提供清晰完整原单，不能只导出前面的订单")
+            # OCR may omit the entire header. A numbered line with a delivery
+            # date or financial columns supplies stronger evidence than a
+            # bare postal-address line such as '12345 BERLIN GERMANY'.
+            section = "details"
+        lines.append(line if section == "details" else "\n")
+    return "".join(lines)
 
 
 def _case_pack_from_rows(ws, start_row: int, end_row: int) -> float | int | None:
@@ -252,11 +298,7 @@ def check_amount_in_words(text: str, line_sum: float) -> str | None:
 def parse_pdf(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str, Any]:
     text, pages, used_ocr = _pdf_text(source)
     if not text:
-        return {
-            "filename": filename, "type": "pdf", "rows": [],
-            "meta": {"pages": pages, "text_chars": 0, "used_ocr": used_ocr},
-            "warnings": ["银辉 PO 没有可识别文字；本地 OCR 已执行但未能读取订单内容。"],
-        }
+        raise ValueError(f"{filename}：银辉 PO 没有可识别文字，请提供清晰原单；本批不能忽略此文件继续导出")
     po_no = _find(r"PURCHASE\s+ORDER\s*[:：]\s*([A-Z0-9-]+)", text)
     order_date = _find(r"Date\s*\(YMD\)\s*[:：]\s*([0-9.\/-]+)", text)
     remarks = _remarks_text(text)
@@ -265,24 +307,42 @@ def parse_pdf(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str,
     manual = _remarks_line(remarks, r"说明书", r"說明書", r"説明書")
     customer_label = _remarks_line(remarks, r"客贴", r"客貼", r"贴纸", r"貼紙", r"入口商")
     shipping_mark = _shipping_mark_from_remarks(remarks)
+    # Some scanned table rules become an isolated dash before DELI.(YMD).
+    # Accept only this position in OCR output, never rewrite product numbers.
+    date_prefix = r"[—–−-]?[ \t]*" if used_ocr else ""
     row_pattern = re.compile(
-        r"^\s*\d+\s+([A-Z0-9-]+)\s+(.+?)\s+(\d{4}[.\/-]\d{2}[.\/-]\d{2})\s+"
-        r"([\d,]+)\s+(?:PCS|PC|EA|SET)\s+([\d.]+)\s+([\d,.]+)\s*$", re.I | re.M,
+        r"^[ \t]*\d+[ \t]+([A-Z0-9-]+)[ \t]+(.+?)[ \t]+" + date_prefix
+        + r"(\d{4}[.\/-]\d{2}[.\/-]\d{2})[ \t]+"
+        r"([\d,]+)[ \t]+(PCS|PC|EA|SET|POP)[ \t]+([\d.]+)[ \t]+([\d,.]+)[ \t]*$",
+        re.I | re.M,
     )
     rows = []
     warnings = [
         "扫描版 PDF 已使用本地 OCR；合同号、SO、货号、数量、日期和金额已做结构及算术校验，仍请在预览中人工复核。",
         "扫描件中文备注不可靠，系统未把 OCR 乱码写入排期；说明书、彩盒、箱唛等内容保留为待确认。",
     ] if used_ocr else []
-    matches = list(row_pattern.finditer(text))
+    # Remarks can contain item-code/barcode tables. They are not PO detail
+    # rows. Check every numbered SAP detail in each detail section, including
+    # unsupported units or damaged dates, so a partial order cannot export.
+    detail_text = _pdf_detail_text(text)
+    matches = list(row_pattern.finditer(detail_text))
+    parsed_starts = {match.start() for match in matches}
+    candidates = re.finditer(r"^[ \t]*(\d{5})[ \t]+([A-Z0-9][A-Z0-9-]{3,})[ \t]+", detail_text, re.I | re.M)
+    unread = [f"{match.group(1)} / {match.group(2)}" for match in candidates if match.start() not in parsed_starts]
+    if unread:
+        raise ValueError(
+            f"{po_no or filename}：有明细行未完整识别（{'、'.join(unread)}）；"
+            "请核对数量单位、货期和金额并提供清晰原单，不能只导出已识别行"
+        )
     for index, match in enumerate(matches):
-        item, description, delivery, qty, price, amount = match.groups()
-        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        item_block = text[match.end():next_start]
+        item, description, delivery, qty, unit, price, amount = match.groups()
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(detail_text)
+        item_block = detail_text[match.end():next_start]
         case_pack = _case_pack(item_block)
         row = {
             "contract_no": po_no, "item_no": item, "product_name": description,
             "po_ship_date": delivery.replace(".", "-"), "quantity": qty,
+            "quantity_unit": unit.upper(),
             "unit_price_usd": price, "total_usd": amount, "order_date": order_date,
             "so_no": _so_no(item_block), "customer": customer,
             "case_pack": case_pack if case_pack else None,
@@ -292,6 +352,23 @@ def parse_pdf(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str,
             "source_sheet": "PDF OCR" if used_ocr else "PDF",
         }
         add_derived_fields(row)
+        if used_ocr:
+            row["source_review_flags"] = [{
+                "code": "ocr_case_pack_review", "field": "units_per_carton",
+                "severity": "warning",
+                "text": f"{item}：扫描表格装箱数为 {case_pack or '未识别'}；请对照原件中文备注核对，OCR 无法可靠排除备注中的不同装箱要求。",
+            }]
+        remark_packs = _remark_outer_packs(remarks, item, single_item=len(matches) == 1)
+        if case_pack and any(value != case_pack for value in remark_packs):
+            values = '、'.join(str(value) for value in sorted(remark_packs))
+            message = f"{item}：明细表装箱数为 {case_pack}，原单备注另有明确的 {values} PCS/CTN；装箱要求不一致，请对照原件核对后确认正确装箱数。"
+            row.setdefault("source_review_flags", []).append({
+                "code": "case_pack_source_conflict", "field": "units_per_carton",
+                "severity": "blocked", "text": message,
+            })
+            warnings.append(message)
+        if unit.upper() == "POP":
+            warnings.append(f"{po_no} {item}：原单数量为 {qty} POP，按原单包装单位保留，未换算为内含产品件数。")
         rows.append(row)
         # 自洽校验：数量×单价 = 行金额
         q, p, a = float(qty.replace(",", "")), float(price), float(amount.replace(",", ""))
@@ -302,7 +379,7 @@ def parse_pdf(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str,
         if say_warn:
             warnings.append(f"{po_no}: {say_warn}")
     else:
-        warnings.append("已读取PO文字，但未识别到标准明细行，请人工复核或使用排期表Excel。")
+        raise ValueError(f"{filename}：已读取 PO 文字，但未识别到标准明细行；请人工复核或使用排期表 Excel，本批不能忽略此文件继续导出")
     declared_pages = _declared_page_total(text)
     if declared_pages and declared_pages != pages:
         warnings.append(

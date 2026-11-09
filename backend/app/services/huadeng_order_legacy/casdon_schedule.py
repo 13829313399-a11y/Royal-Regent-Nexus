@@ -439,8 +439,8 @@ def _compose_row(order: dict, line: dict, idx: MasterIndex) -> dict[int, Any]:
     cn_name = "额外运费" if line.get("is_charge") else cat.get("cn_name", "")
     qty = "" if line.get("is_charge") else line.get("qty", "")
     carton_mark, customer_label = _casdon_packaging(customer)
-    unit_usd = line.get("unit_price", "") or ""
-    total_usd = line.get("total_usd", "") or ""
+    unit_usd = line.get("unit_price", "")
+    total_usd = line.get("total_usd", "")
     unit_hkd = round(float(unit_usd) * HKD_RATE, 6) if unit_usd not in (None, "") else ""
     total_hkd = round(float(total_usd) * HKD_RATE, 2) if total_usd not in (None, "") else ""
 

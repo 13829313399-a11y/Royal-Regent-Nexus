@@ -6,7 +6,7 @@ import CartonQuickAssetLibrary from '../CartonQuickAssetLibrary.vue'
 import { useAuthStore } from '@/stores/auth'
 import { quickAsset, quickSession, quickTarget, supplierQuickSession } from './cartonQuickAssetFixtures'
 
-const api = vi.hoisted(() => ({ upload: vi.fn(), candidates: vi.fn(), list: vi.fn(), confirm: vi.fn(), classify: vi.fn(), associate: vi.fn(), share: vi.fn(), document: vi.fn() }))
+const api = vi.hoisted(() => ({ upload: vi.fn(), candidates: vi.fn(), list: vi.fn(), confirm: vi.fn(), classify: vi.fn(), associate: vi.fn(), share: vi.fn(), audience: vi.fn(), document: vi.fn() }))
 const legacy = vi.hoisted(() => ({ listAssets: vi.fn() }))
 vi.mock('@/api/cartonQuickAssets', () => ({ cartonQuickAssetsApi: api }))
 vi.mock('@/api/cartonMark', () => ({ cartonMarkApi: legacy }))
@@ -276,6 +276,20 @@ describe('one quick-upload modal for all audiences', () => {
 })
 
 describe('multiple quick-upload files', () => {
+  it('defaults internal uploads to supplier sharing and freezes a chosen internal scope per retry', async () => {
+    useAuthStore().applySession(quickSession(['pmc-warehouse']))
+    await open('warehouse')
+    expect(dialog().get<HTMLSelectElement>('[aria-label="上传共享范围"]').element.value).toBe('SUPPLIER')
+    await dialog().get('[aria-label="上传共享范围"]').setValue('INTERNAL')
+    api.upload.mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce(quickAsset({ owner_department: 'pmc-warehouse' }))
+    await chooseFiles([new File(['a'], 'unbound.pdf')])
+    await dialog().trigger('submit'); await flushPromises()
+    const body = api.upload.mock.calls[0]![1]
+    expect(body.sharing_mode).toBe('INTERNAL')
+    expect(dialog().get('[aria-label="上传共享范围"]').attributes('disabled')).toBeDefined()
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[1]![1]).toEqual(body)
+  })
   it.each(['sales', 'warehouse', 'supplier'] as const)('saves separate files and independent contract suggestions (%s)', async audience => {
     const department = audience === 'supplier' ? 'supplier' : audience === 'warehouse' ? 'pmc-warehouse' : 'sales-business'
     useAuthStore().applySession(audience === 'supplier' ? supplierQuickSession() : quickSession([department]))
@@ -424,6 +438,23 @@ describe('multiple quick-upload files', () => {
 })
 
 describe('shared document library', () => {
+  it('updates internal source audience independently from order associations with exact uncertain retries', async () => {
+    const asset = quickAsset({ sharing_mode: 'SUPPLIER', can_change_audience: true })
+    api.list.mockResolvedValue({ items: [asset], total: 1 })
+    api.audience.mockRejectedValueOnce(new Error('timeout')).mockRejectedValueOnce({ response: { status: 403 } }).mockResolvedValueOnce({ ...asset, sharing_mode: 'INTERNAL', revision: 2 })
+    const wrapper = await library('sales')
+    await wrapper.get(`[aria-label="${asset.file_name} 共享范围"]`).setValue('INTERNAL')
+    await button(wrapper, '保存范围').trigger('click'); await flushPromises()
+    const request = api.audience.mock.calls[0]!.slice(0, 4)
+    expect(request.slice(0, 3)).toEqual(['huaxing', { id: asset.id, revision: 1 }, 'INTERNAL'])
+    await button(wrapper, '原样重试').trigger('click'); await flushPromises()
+    expect(api.audience.mock.calls[1]!.slice(0, 4)).toEqual(request)
+    expect(button(wrapper, '原样重试')).toBeDefined()
+    await button(wrapper, '原样重试').trigger('click'); await flushPromises()
+    expect(api.audience.mock.calls[2]!.slice(0, 4)).toEqual(request)
+    expect(api.associate).not.toHaveBeenCalled()
+    expect(api.share).not.toHaveBeenCalled()
+  })
   async function library(audience: 'sales' | 'warehouse' | 'supplier' = 'sales', factoryId = 'huaxing') {
     const wrapper = mount(CartonQuickAssetLibrary, { props: { audience, factoryId }, attachTo: document.body }); wrappers.push(wrapper); await flushPromises(); return wrapper
   }

@@ -1,8 +1,8 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { createXlsxWorkbook, excelDateSerial, parseXlsxWorkbook } from './xlsxLite'
 import { pricingRate } from './pricingSettings'
-import { YINHUI_MAX_MECHANICAL_ROWS } from './yinhuiProfiles'
-import { validateYinhuiExport, yinhuiTotals, yinhuiToolMaterialPrice, YINHUI_HKD_USD, type YinhuiConversionResult, type YinhuiCostRow } from './yinhui'
+import { YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS } from './yinhuiProfiles'
+import { validateYinhuiExport, yinhuiTotals, yinhuiCostRows, yinhuiToolMaterialPrice, YINHUI_HKD_USD, type YinhuiConversionResult, type YinhuiCostRow } from './yinhui'
 
 export interface YinhuiProductImage { bytes: Uint8Array; extension: 'png' | 'jpg' }
 export const YINHUI_SHEET_NAMES = ['SUM(總計)', '包裝價', 'BOM (1)', 'BOM (2)', 'TOOL PLAN (1)', 'TOOL PLAN (2)']
@@ -70,7 +70,9 @@ function templateLayout(parsed: ReturnType<typeof parseXlsxWorkbook>) {
   })
   const basicInfo = parsed.sheets[0]!.rows.flatMap((row, i) => i >= 56 && /^(?:Battery|Adaptor|Try me function)$/i.test(String(row?.[1] || '').trim())
     ? [{ row: i + 1, label: String(row[1]).trim() }] : [])
-  return { bom, tools, basicInfo }
+  const packagingEnd = parsed.sheets[1]!.rows.findIndex((row, i) => i >= 44 && /產品上貼紙不包括在此表格/.test(String(row?.[1] || ''))) + 1
+  if (packagingEnd < 45) throw new Error('银辉模板缺少包装明细结束标记')
+  return { bom, tools, basicInfo, packagingEnd }
 }
 function keepStatic(sheet: number, ref: string, layout: ReturnType<typeof templateLayout>) {
   const r = Number(ref.match(/\d+/)?.[0]); const c = column(ref)
@@ -90,7 +92,7 @@ function keepStatic(sheet: number, ref: string, layout: ReturnType<typeof templa
   }
   return ['A2', 'B3', 'L3', 'B4', 'F4', 'L4', 'B5', 'F5'].includes(ref) || r === 7 || ref === `D${layout.tools[sheet - 4]}`
 }
-export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanicalCapacity?: number } = {}) {
+export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanicalCapacity?: number; packagingCapacity?: number } = {}) {
   const source = unzipSync(new Uint8Array(buffer))
   const parsed = parseXlsxWorkbook(buffer)
   const layout = templateLayout(parsed)
@@ -147,31 +149,57 @@ export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanica
   const first = layout.bom[0]!
   const extraRows = Math.max(0, (options.mechanicalCapacity || 0) - (first.electronic - first.mechanical - 1))
   if (extraRows) extendMechanicalRows(output, first.mechanical, first.electronic, extraRows)
+  const packDoc = xml(strFromU8(output['xl/worksheets/sheet2.xml']!))
+  const reserved = packagingReservedRows(packDoc)
+  const packagingCapacity = options.packagingCapacity ?? 0
+  if (!Number.isInteger(packagingCapacity) || packagingCapacity < 0 || packagingCapacity > YINHUI_MAX_PACKAGING_ROWS) throw new Error('银辉包装模板扩展行数无效')
+  const extraPackaging = Math.max(0, packagingCapacity - (layout.packagingEnd - 33 - reserved.length))
+  if (extraPackaging) {
+    extendDetailRows(output, 1, layout.packagingEnd, extraPackaging)
+    // The supplied templates print only the empty first packaging block. Expanded
+    // exports must include the populated second block and its cost summary.
+    const workbook = xml(strFromU8(output['xl/workbook.xml']!))
+    for (const name of elements(workbook, 'definedName')) {
+      if (name.getAttribute('name') === '_xlnm.Print_Area' && name.getAttribute('localSheetId') === '1'
+        && name.textContent === '包裝價!$A$8:$L$29') name.textContent = `包裝價!$A$8:$L$${layout.packagingEnd + 6 + extraPackaging}`
+    }
+    output['xl/workbook.xml'] = serialize(workbook)
+  }
   return zipSync(output)
 }
 
-// Extend a sanitized working copy using the existing mechanical detail style,
-// shifting references to BOM (1) so every downstream formula keeps its meaning.
+function packagingReservedRows(doc: Document) {
+  // Some customer layouts span the first material's price/quantity over two rows.
+  return elements(doc, 'mergeCell').some(m => /^[HIJ]33:[HIJ]34$/.test(m.getAttribute('ref') || '')) ? [34] : []
+}
+
 function extendMechanicalRows(zip: Record<string, Uint8Array>, heading: number, before: number, count: number) {
   if (!Number.isInteger(count) || count <= 0 || before - heading - 1 + count > YINHUI_MAX_MECHANICAL_ROWS) throw new Error('银辉模板扩展行数无效')
+  extendDetailRows(zip, 2, before, count, heading)
+}
+
+// Insert styled detail rows in a sanitized working copy and shift all references
+// to that sheet, including shared formulas, merged cells and print ranges.
+function extendDetailRows(zip: Record<string, Uint8Array>, sheetIndex: number, before: number, count: number, mechanicalHeading?: number) {
   const docs = YINHUI_SHEET_NAMES.map((_, i) => xml(strFromU8(zip[`xl/worksheets/sheet${i + 1}.xml`]!)))
-  const target = docs[2]!
+  const target = docs[sheetIndex]!
   const sample = elements(target, 'row').find(row => Number(row.getAttribute('r')) === before - 1)
-  if (!sample) throw new Error('银辉模板缺少可复制的五金明细行')
+  if (!sample) throw new Error('银辉模板缺少可复制的明细行')
   const sampleRow = sample.cloneNode(true) as Element
   const formulas = formulaMap(target)
   const shiftRef = (ref: string) => ref.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (_, col: string, row: string) => `${col}${Number(row) >= before ? Number(row) + count : row}`)
   const shiftFormula = (expression: string, local: boolean) => expression.replace(/((?:'[^']+'|[\p{L}_][\p{L}\d_.]*)!)?(\$?[A-Z]{1,3}\$?\d+)(?::(\$?[A-Z]{1,3}\$?\d+))?/gu, (match, sheet: string | undefined, start: string, end: string | undefined) => {
-    const applies = sheet ? sheet.replace(/!$/, '').replace(/^'|'$/g, '') === 'BOM (1)' : local
+    const applies = sheet ? sheet.replace(/!$/, '').replace(/^'|'$/g, '') === YINHUI_SHEET_NAMES[sheetIndex] : local
     return applies ? `${sheet || ''}${shiftRef(start)}${end ? `:${shiftRef(end)}` : ''}` : match
   })
   docs.forEach((doc, i) => {
     for (const f of elements(doc, 'f')) {
-      if (f.textContent) f.textContent = shiftFormula(f.textContent, i === 2)
-      if (i === 2 && f.hasAttribute('ref')) f.setAttribute('ref', shiftRef(f.getAttribute('ref')!))
+      if (f.textContent) f.textContent = shiftFormula(f.textContent, i === sheetIndex)
+      if (i === sheetIndex && f.hasAttribute('ref')) f.setAttribute('ref', shiftRef(f.getAttribute('ref')!))
     }
-    if (i === 2) {
-      for (const [totalColumn, detailColumn] of [['H', 'H'], ['K', 'J']]) {
+    if (i === sheetIndex) {
+      if (mechanicalHeading !== undefined) for (const [totalColumn, detailColumn] of [['H', 'H'], ['K', 'J']]) {
+        const heading = mechanicalHeading
         const cell = elements(doc, 'c').find(c => c.getAttribute('r') === `${totalColumn}${heading}`)
         const f = cell && elements(cell, 'f')[0]
         if (!f) throw new Error('银辉五金小计公式缺失，不能安全扩展')
@@ -343,7 +371,7 @@ function writer(zip: Record<string, Uint8Array>, index: number) {
       if (ref !== start) mergedInteriors.add(ref)
     }
   }
-  const set = (ref: string, value: string | number | null) => {
+  const set = (ref: string, value: string | number | null, clearFormula = false) => {
     if (mergedInteriors.has(ref)) {
       if (value === null || value === '' || value === 'pc' || value === 0) return
       throw new Error(`银辉写入位置 ${YINHUI_SHEET_NAMES[index]}!${ref} 位于合并格内部，不能破坏原客表格式`)
@@ -359,9 +387,21 @@ function writer(zip: Record<string, Uint8Array>, index: number) {
       cell = doc.createElementNS(NS, 'c'); cell.setAttribute('r', ref)
       row.insertBefore(cell, Array.from(row.children).find((c) => column(c.getAttribute('r') || '') > column(ref)) || null); cells.set(ref, cell)
     }
-    // Formula XML (including shared-formula attributes) belongs to the customer's template.
-    // Never replace it with a converter-generated formula.
-    const formula = elements(cell, 'f')[0]?.cloneNode(true)
+    // Preserve template formulas except explicitly pending amount cells, which
+    // must remain genuinely blank. Expand their shared followers before removal.
+    const existingFormula = elements(cell, 'f')[0]
+    if (clearFormula && existingFormula?.getAttribute('t') === 'shared' && existingFormula.textContent) {
+      const formulas = formulaMap(doc)
+      for (const other of elements(doc, 'c')) {
+        const f = elements(other, 'f')[0]
+        if (f?.getAttribute('t') === 'shared' && f.getAttribute('si') === existingFormula.getAttribute('si') && other !== cell) {
+          const expression = formulas.get(other.getAttribute('r')!)!
+          for (const attr of Array.from(f.attributes)) f.removeAttribute(attr.name)
+          f.textContent = expression
+        }
+      }
+    }
+    const formula = clearFormula ? undefined : existingFormula?.cloneNode(true)
     cell.replaceChildren(); cell.removeAttribute('t')
     if (formula) cell.append(formula)
     if (typeof value === 'string') {
@@ -373,14 +413,15 @@ function writer(zip: Record<string, Uint8Array>, index: number) {
   }
   return { set, doc, has: (ref: string) => cells.has(ref), save: () => { zip[path] = serialize(doc) } }
 }
-export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult, template: ArrayBuffer, options: { missingMaterialPricesConfirmed?: boolean } = {}) {
+export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult, template: ArrayBuffer, options: { missingMaterialPricesConfirmed?: boolean; reviewNoticesConfirmed?: boolean } = {}) {
   const d = result.quoteData
-  validateYinhuiExport(d)
+  validateYinhuiExport(d, options)
   const total = yinhuiTotals(d)
-  const pricePending = total.missingMaterialPrices.length > 0
-  if (pricePending && !options.missingMaterialPricesConfirmed) throw new Error(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。请确认单价留空、合计暂未包含这些料价后再导出。`)
+  const pricePending = total.missingMaterialPrices.length > 0 || yinhuiCostRows(d).some(r => r.pricePending)
+  if (total.missingMaterialPrices.length && !options.missingMaterialPricesConfirmed) throw new Error(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。请确认单价留空、合计暂未包含这些料价后再导出。`)
   if (d.mechanical.length > YINHUI_MAX_MECHANICAL_ROWS) throw new Error(`银辉五金超过 ${YINHUI_MAX_MECHANICAL_ROWS} 行容量，不能截断明细`)
-  const prepared = sanitizeYinhuiTemplate(template, { mechanicalCapacity: d.mechanical.length })
+  if (d.packagingRows.length > YINHUI_MAX_PACKAGING_ROWS) throw new Error(`银辉包装材料超过 ${YINHUI_MAX_PACKAGING_ROWS} 行容量，不能截断明细`)
+  const prepared = sanitizeYinhuiTemplate(template, { mechanicalCapacity: d.mechanical.length, packagingCapacity: d.packagingRows.length })
   const layout = templateLayout(parseXlsxWorkbook(prepared.buffer.slice(prepared.byteOffset, prepared.byteOffset + prepared.byteLength) as ArrayBuffer))
   const first = layout.bom[0]!
   for (const [label, count, capacity] of [
@@ -389,7 +430,6 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     ['五金', d.mechanical.length, first.electronic - first.mechanical - 1],
     ['电子', d.electronic.length, first.fabric - first.electronic - 1],
     ['车缝', (d.fabric || []).length, first.labor - first.fabric - 1],
-    ['包装', d.packagingRows.length, 12],
   ] as const) if (count > capacity) throw new Error(`银辉${label}有 ${count} 行，超过该客表 ${capacity} 行容量，不能截断明细`)
   const zip = unzipSync(prepared)
   const date = excelDateSerial(new Date(`${d.quoteDate}T12:00:00Z`))
@@ -475,21 +515,24 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     let itemIndex = 0
     for (let i = 0; i < count; i++) {
       const r = start + i; const line = reserved.includes(r) ? undefined : list[itemIndex++]
-      set(`A${r}`, i + 1); set(`B${r}`, line?.description || ''); set(`G${r}`, line ? 'pc' : '')
-      set(`H${r}`, line?.quantity ?? null); set(`I${r}`, line ? line.amountHkd / line.quantity : null)
-      set(`J${r}`, line?.amountHkd || 0)
+      set(`A${r}`, i + 1); set(`B${r}`, line ? `${line.description}${line.pricePending ? ' [PRICE PENDING]' : ''}` : ''); set(`G${r}`, line ? 'pc' : '')
+      set(`H${r}`, line?.quantity ?? null); set(`I${r}`, line && !line.pricePending ? line.amountHkd / line.quantity : null, line?.pricePending)
+      set(`J${r}`, line?.pricePending ? null : line?.amountHkd || 0, line?.pricePending)
     }
   }
   const packaging = writer(zip, 1); const p = packaging.set
+  const packOffset = layout.packagingEnd - 45
+  const packReserved = packagingReservedRows(packaging.doc)
+  const packRows = Array.from({ length: layout.packagingEnd - 33 }, (_, i) => 33 + i).filter(r => !packReserved.includes(r))
   p('B3', 'Royal Regent Products International Ltd'); p('I3', date); p('B4', d.model); p('B5', d.productName)
   p('D31', d.packaging); p('D32', d.cartonPack); p('D10', d.cartonPack)
-  const packReserved = elements(packaging.doc, 'mergeCell').some(m => m.getAttribute('ref') === 'I33:I34') ? [34] : []
-  rowCosts(p, [], 11, 12); rowCosts(p, d.packagingRows, 33, 12, packReserved)
+  rowCosts(p, [], 11, 12); rowCosts(p, d.packagingRows, 33, layout.packagingEnd - 33, packReserved)
   const colorIndex = d.packagingRows.findIndex(r => /彩盒|color box/i.test(r.description))
-  if (colorIndex >= 0) d.colorBoxCm.forEach((v, i) => p(`${['C', 'D', 'E'][i]}${33 + colorIndex}`, v))
-  d.cartonCm.forEach((v, i) => p(`${['C', 'D', 'E'][i]}47`, v))
-  p('H47', 1); p('I47', d.carton.amountHkd); p('G47', 'pc'); p('J47', d.carton.amountHkd)
-  p('K49', d.packagingLaborHkd); p('K48', 0); p('K50', 0)
+  if (colorIndex >= 0) d.colorBoxCm.forEach((v, i) => p(`${['C', 'D', 'E'][i]}${packRows[colorIndex]}`, v))
+  const cartonRow = 47 + packOffset
+  d.cartonCm.forEach((v, i) => p(`${['C', 'D', 'E'][i]}${cartonRow}`, v))
+  p(`H${cartonRow}`, 1); p(`I${cartonRow}`, d.carton.amountHkd); p(`G${cartonRow}`, 'pc'); p(`J${cartonRow}`, d.carton.amountHkd)
+  p(`K${49 + packOffset}`, d.packagingLaborHkd); p(`K${48 + packOffset}`, 0); p(`K${50 + packOffset}`, 0)
   packaging.save()
   for (const second of [false, true]) {
     const w = writer(zip, second ? 3 : 2); const b = w.set; const area = layout.bom[second ? 1 : 0]!

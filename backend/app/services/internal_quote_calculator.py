@@ -13,7 +13,7 @@ from app.services.internal_quote_prefill import material_family, _match_token
 from app.services.internal_quote_sewing import is_sewing_labor, uses_sewing_quoted_price
 
 
-FORMULA_VERSION = "rr2-2026-v13"
+FORMULA_VERSION = "rr2-2026-v14"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -466,6 +466,7 @@ def build_reference_snapshot(
     machine_rows = DEFAULT_MACHINE_PRICES
     freight_routes = _default_freight_routes()
     baseline_revision = 0
+    paper_prices = []
     if baseline is not None:
         try:
             stored_material_rows = json.loads(baseline.material_prices_json)
@@ -497,10 +498,12 @@ def build_reference_snapshot(
                 for row in stored_machine_rows
                 if isinstance(row, dict)
             )
+        paper_prices = json.loads(baseline.paper_prices_json or "[]")
         baseline_revision = baseline.revision
     return {
         "baseline_version": FORMULA_VERSION,
         "pricing_baseline_revision": baseline_revision,
+        "paper_prices": paper_prices,
         "fx": {"rmb_hkd": "0.85", "hkd_usd": "7.8", "rmb_usd": "7.75"},
         "material_prices": {
             f"{material}|{grade}": price
@@ -1991,6 +1994,7 @@ def _sales_packaging(
     result: dict[str, Any],
 ) -> tuple[Decimal, Decimal]:
     from app.services.internal_quote_amount_adjustments import adopt_amount
+    from app.services.internal_quote_paper import paper_reference, paper_basis
     cartons = payload.get("cartons", []) or []
     if not cartons:
         return ZERO, ZERO
@@ -2044,23 +2048,26 @@ def _sales_packaging(
         width = positive_value(row.get("width_in"), f"纸箱第 {index + 1} 行宽度")
         height = positive_value(row.get("height_in"), f"纸箱第 {index + 1} 行高度")
         qty_per_carton = positive_value(row.get("qty_per_carton"), f"纸箱第 {index + 1} 行每箱数量")
-        carton_paper_factor = paper_factor if index == 0 else inner_paper_factor
+        carton_paper_factor, paper_name = paper_reference(row, snapshot, paper_factor if index == 0 else inner_paper_factor)
         carton_price = (length + width + 2) * (width + height + 1) * 2 * carton_paper_factor / 1000
         original_carton_price = carton_price
         carton_price = adopt_amount(row, ["cartons", index], carton_price / qty_per_carton, qty_per_carton,
             {"length": length, "width": width, "height": height, "quantity": qty_per_carton,
-             "factor": carton_paper_factor, "import_batch_id": row.get("import_batch_id")}, result, per_carton=True) * qty_per_carton
+             "factor": carton_paper_factor, **paper_basis(row), "import_batch_id": row.get("import_batch_id")}, result, per_carton=True) * qty_per_carton
         flat_total = ZERO
+        flat_details = []
         for flat_index, flat in enumerate(row.get("flat_cards", []) or []):
             if not isinstance(flat, dict):
                 raise CalculationInputError(f"纸箱第 {index + 1} 行平卡 {flat_index + 1} 格式无效")
             flat_length = positive_value(flat.get("length_in"), f"平卡第 {flat_index + 1} 行长度")
             flat_width = positive_value(flat.get("width_in"), f"平卡第 {flat_index + 1} 行宽度")
             flat_qty = positive_value(flat.get("quantity"), f"平卡第 {flat_index + 1} 行用量", "1")
-            flat_original = flat_length * flat_width * flat_card_factor * flat_qty / 1000
+            selected_flat_factor, flat_paper_name = paper_reference(flat, snapshot, flat_card_factor)
+            flat_details.append({"name": str(flat.get("name", "")), "paper_material": flat_paper_name, "paper_price_factor": decimal_text(selected_flat_factor)})
+            flat_original = flat_length * flat_width * selected_flat_factor * flat_qty / 1000
             flat_total += adopt_amount(flat, ["cartons", index, "flat_cards", flat_index], flat_original / qty_per_carton, qty_per_carton,
                 {"length": flat_length, "width": flat_width, "flat_quantity": flat_qty, "quantity": qty_per_carton,
-                 "factor": flat_card_factor, "import_batch_id": row.get("import_batch_id")}, result, per_carton=True) * qty_per_carton
+                 "factor": selected_flat_factor, **paper_basis(flat), "import_batch_id": row.get("import_batch_id")}, result, per_carton=True) * qty_per_carton
         per_piece = (carton_price + flat_total) / qty_per_carton
         cuft = length * width * height / 1728
         carton_total_hkd += per_piece
@@ -2071,6 +2078,8 @@ def _sales_packaging(
             "owner": "sales",
             "item": str(row.get("item", "")),
             "paper_price_factor": decimal_text(carton_paper_factor),
+            "paper_material": paper_name,
+            "flat_paper_details": flat_details,
             "flat_card_price_factor": decimal_text(flat_card_factor),
             "carton_price_hkd": decimal_text(carton_price),
             "original_carton_price_hkd": decimal_text(original_carton_price),

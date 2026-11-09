@@ -8,7 +8,7 @@ import unicodedata
 
 
 GENERIC_MATERIAL_TYPES = {
-    "ABS", "透明ABS", "HIPS", "GP", "PP", "1#PP", "透明PP", "POM", "PVC",
+    "ABS", "透明ABS", "C-ABS", "HIPS", "GP", "PP", "1#PP", "透明PP", "C-PP", "POM", "PVC",
     "LDPE", "HDPE", "TPR", "K料", "PC料",
 }
 
@@ -32,7 +32,7 @@ def _match_token(value: object) -> str:
 
 def material_family(value: object) -> str:
     token = _match_token(value)
-    return {"1#PP": "PP"}.get(token, token)
+    return {"1#PP": "PP", "C-PP": "透明PP", "C-ABS": "透明ABS"}.get(token, token)
 
 
 def _same_material_family(source: object, selected: object) -> bool:
@@ -456,7 +456,8 @@ def prefill_molding_from_engineering(
         if generic_material_hint:
             selected_material = _text(row.get("material"))
             selected_grade = _text(row.get("grade"))
-            if selected_grade and _same_material_family(generic_material_hint, selected_material):
+            if (selected_grade and _same_material_family(generic_material_hint, selected_material)
+                    and not _same_material_family(generic_material_hint, selected_grade)):
                 # The engineering sheet supplies only a resin family.  Keep the
                 # concrete frozen material/grade selected by Molding across save
                 # and quote refresh; otherwise every read would clear `grade` and

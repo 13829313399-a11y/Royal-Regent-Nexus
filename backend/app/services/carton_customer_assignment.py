@@ -78,8 +78,14 @@ def workspace(db, user, factory, *, summary=False):
         return result
     identifiers = {binding.user_id for binding in bindings} | set(owners.values())
     users = list(db.scalars(select(AuthUser).where(AuthUser.status == "active").order_by(AuthUser.display_name, AuthUser.id)))
-    candidates = [dict(id=row.id, name=row.display_name) for row in users
-        if eligible(build_auth_context(db, row), factory)] if manager or user.id in owners.values() else []
+    candidates = []
+    if manager or user.id in owners.values():
+        from app.services.auth_read_inputs import AuthReadInputs
+        for offset in range(0, len(users), 100):
+            batch = users[offset:offset + 100]
+            inputs = AuthReadInputs(db, [row.id for row in batch])
+            candidates.extend(dict(id=row.id, name=row.display_name) for row in batch
+                if eligible(build_auth_context(db, row, read_inputs=inputs), factory))
     names = {row.id: row.display_name for row in users}
     if identifiers - set(names):
         names.update((row.id, row.display_name) for row in db.scalars(select(AuthUser).where(AuthUser.id.in_(identifiers - set(names)))))

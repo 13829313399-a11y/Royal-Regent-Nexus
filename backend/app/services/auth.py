@@ -64,6 +64,9 @@ from app.services.permission_codes import (
     WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     APPLICATION_PERMISSION_CODES,
     CUTTING_OPS_PERMISSION_CODES,
+    ENGINEERING_BOM_PERMISSION_CODES,
+    MATERIAL_PLAN_PERMISSION_CODES,
+    MATERIAL_PURCHASE_PERMISSION_CODES,
     CARTON_SUPPLIER_PERMISSION_CODES,
     CARTON_SUPPLIER_MATERIAL_PERMISSIONS,
     CARTON_ASSET_PERMISSION_CODES,
@@ -638,6 +641,9 @@ POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
         'indonesia_material:export',
         *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         *CUTTING_OPS_PERMISSION_CODES,
+        *ENGINEERING_BOM_PERMISSION_CODES,
+        *MATERIAL_PLAN_PERMISSION_CODES,
+        *MATERIAL_PURCHASE_PERMISSION_CODES,
         *UV_OPS_PERMISSION_CODES,
         "fabric_warehouse:read",
         "fabric_warehouse:import",
@@ -2937,15 +2943,17 @@ def can(
     return authorization_decision(user, permission, factory_id, department, at=at)[0]
 
 
-def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = None) -> AuthContext:
+def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = None, read_inputs=None) -> AuthContext:
     from app.services.identity_resolver import resolve_identity_at, instant, utc_now
     from app.services.identity_sources import binding_grants, source_is_active
     checked_at = instant(at) if at else utc_now()
-    identity = resolve_identity_at(db, user.id, checked_at)
-    identity_profile = db.get(EmployeeProfile, user.id)
-    all_permissions = list(db.scalars(select(AuthPermission).order_by(AuthPermission.code)).all())
+    if read_inputs is not None:
+        read_inputs.check(db, user.id)
+    identity = resolve_identity_at(db, user.id, checked_at, read_inputs=read_inputs)
+    identity_profile = read_inputs.profiles.get(user.id) if read_inputs is not None else db.get(EmployeeProfile, user.id)
+    all_permissions = read_inputs.permissions if read_inputs is not None else list(db.scalars(select(AuthPermission).order_by(AuthPermission.code)).all())
     permission_code_by_id = {permission.id: permission.code for permission in all_permissions}
-    permission_metadata = list(db.scalars(select(AuthPermissionMetadata)).all())
+    permission_metadata = read_inputs.permission_metadata if read_inputs is not None else list(db.scalars(select(AuthPermissionMetadata)).all())
     permission_status_by_id = {item.permission_id: item.status for item in permission_metadata}
     permission_access_kind_by_id = {
         item.permission_id: (
@@ -2961,11 +2969,11 @@ def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = Non
         if permission_status_by_id.get(permission.id, "active") == "active"
     )
 
-    all_user_roles = list(
+    all_user_roles = read_inputs.user_roles[user.id] if read_inputs is not None else list(
         db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id).order_by(AuthUserRole.id)).all()
     )
     user_role_ids = [item.id for item in all_user_roles]
-    binding_metadata = (
+    binding_metadata = [read_inputs.binding_metadata[key] for key in user_role_ids if key in read_inputs.binding_metadata] if read_inputs is not None else (
         list(
             db.scalars(
                 select(AuthRoleBindingMetadata).where(AuthRoleBindingMetadata.user_role_id.in_(user_role_ids))
@@ -2987,10 +2995,10 @@ def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = Non
         user_roles.append(user_role)
 
     role_ids = sorted({user_role.role_id for user_role in user_roles})
-    roles = list(db.scalars(select(AuthRole).where(AuthRole.id.in_(role_ids))).all()) if role_ids else []
+    roles = [read_inputs.roles[key] for key in role_ids if key in read_inputs.roles] if read_inputs is not None else list(db.scalars(select(AuthRole).where(AuthRole.id.in_(role_ids))).all()) if role_ids else []
     role_name_by_id = {role.id: role.name for role in roles}
     role_code_by_id = {role.id: role.code for role in roles}
-    role_metadata = (
+    role_metadata = [read_inputs.role_metadata[key] for key in role_ids if key in read_inputs.role_metadata] if read_inputs is not None else (
         list(db.scalars(select(AuthRoleMetadata).where(AuthRoleMetadata.role_id.in_(role_ids))).all())
         if role_ids
         else []
@@ -3003,7 +3011,7 @@ def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = Non
     permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
     read_permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
     if role_ids:
-        role_permissions = list(
+        role_permissions = [r for r in read_inputs.role_permissions if r.role_id in role_ids] if read_inputs is not None else list(
             db.scalars(select(AuthRolePermission).where(AuthRolePermission.role_id.in_(role_ids))).all()
         )
         for role_permission in role_permissions:
@@ -3051,7 +3059,7 @@ def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = Non
 
     grants = binding_grants(db, grants, binding_metadata_by_id, active_permission_codes)
 
-    override_rows = list(
+    override_rows = read_inputs.overrides[user.id] if read_inputs is not None else list(
         db.scalars(
             select(AuthUserPermissionOverride)
             .where(
@@ -3079,7 +3087,7 @@ def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = Non
         and time_window_is_active(override.valid_from, override.valid_until, checked_at)
     )
 
-    profile_row = db.get(EmployeeProfile, user.id)
+    profile_row = identity_profile
     if profile_row is not None:
         profile = AuthProfileContext(
             primary_factory_id=identity["primary_factory_id"],
@@ -3092,7 +3100,7 @@ def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = Non
     else:
         profile = None
 
-    revision_row = db.get(AuthUserAuthorizationRevision, user.id)
+    revision_row = read_inputs.revisions.get(user.id) if read_inputs is not None else db.get(AuthUserAuthorizationRevision, user.id)
     role_names = tuple(role_name_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
     role_codes = tuple(role_code_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
     factory_scope_values = {user_role.factory_id for user_role in user_roles if user_role.factory_id}

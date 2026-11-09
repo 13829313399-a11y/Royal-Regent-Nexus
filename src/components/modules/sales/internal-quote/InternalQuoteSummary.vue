@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InternalQuotePriceBasis from './InternalQuotePriceBasis.vue'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -23,6 +24,7 @@ import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
 import InternalQuoteOutputTable from './InternalQuoteOutputTable.vue'
+import InternalQuoteCostHeadline from './InternalQuoteCostHeadline.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +41,7 @@ const comparison = ref<ApiInternalQuoteVersionComparison>()
 let comparisonRequest = 0
 const comparisonLoading = ref(false)
 const tableDirty = ref(false)
+const priceBasisRevision = ref(0)
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
 const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
@@ -49,7 +52,6 @@ const isWholeQuoteReview = computed(() => ['v3', 'v4'].includes(quote.value.modu
 const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
-const totalHkd = computed(() => quote.value.factoryPriceHkd)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const missingSections = computed(() => participatingSections.value.filter((section) => isWholeQuoteReview.value
   ? !(section.filledAt && section.calculationStatus === 'valid' && section.dependencyStatus === 'current')
@@ -256,7 +258,7 @@ watch([quoteId, canFinalApprove], () => {
 
     <header class="quote-summary-head">
       <div><span class="quote-eyebrow">整单报价表</span><h1>{{ isWholeQuoteReview ? '汇总与输出' : '汇总与最终放行' }}</h1><p>{{ quote.quoteNo }} · {{ quote.productName }} · {{ quote.customer }} · {{ quote.versionLabel }}</p></div>
-      <div class="quote-total-card"><span>整单工厂成本</span><strong>HKD {{ totalHkd.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong><small>RMB {{ (totalHkd * quote.fxRmbHkd).toFixed(2) }} · USD {{ (totalHkd / quote.fxHkdUsd).toFixed(2) }}</small></div>
+      <InternalQuoteCostHeadline :quote="quote" />
     </header>
 
     <nav v-if="batchProducts.length > 1" class="quote-summary-products" aria-label="批次产品汇总切换">
@@ -269,7 +271,8 @@ watch([quoteId, canFinalApprove], () => {
     <p v-if="quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.id" class="quote-page-message error" role="status">{{ quoteStore.refreshWarning }} <button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="quoteStore.refreshAfterMutation(quote.id)">重新读取</button></p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
     <p v-if="isReadOnly" class="quote-readonly-banner"><LockKeyhole aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；审核、最终放行及受控导出仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的审核、最终放行或受控导出权限。' }}</p>
 
-    <InternalQuoteOutputTable v-if="loadedQuote" :key="quote.id" :quote-id="quote.id"
+    <InternalQuotePriceBasis v-if="loadedQuote" :key="quote.id" :quote="quote" :has-unsaved-changes="tableDirty" :read-only="isReadOnly" @saved="priceBasisRevision++" />
+    <InternalQuoteOutputTable v-if="loadedQuote" :key="`${quote.id}:${priceBasisRevision}`" :quote-id="quote.id"
       :collaboration-route="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`)"
       @dirty="tableDirty = $event" @saved="quoteStore.refreshAfterMutation(quote.id)" />
     <section v-if="versionCandidates.length" class="quote-version-panel"><header><div><FileClock aria-hidden="true" /><span><strong>报价版本对比</strong><small>仅允许同报价或复制版本链，金额差异由服务端计算</small></span></div><div><select v-model="versionBaseId"><option value="">选择基准版本</option><option v-for="candidate in versionCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.quote_no }} · {{ candidate.version_label }} · {{ candidate.updated_at }}</option></select><button type="button" :disabled="!versionBaseId" @click="compareSelectedVersion">开始对比</button></div></header><div v-if="comparison" class="quote-comparison"><article><span>基准成本</span><strong>HKD {{ Number(comparison.total_before_hkd).toFixed(4) }}</strong></article><article><span>当前成本</span><strong>HKD {{ Number(comparison.total_after_hkd).toFixed(4) }}</strong></article><article><span>金额差异</span><strong>HKD {{ Number(comparison.total_delta_hkd).toFixed(4) }}</strong></article><div><p v-for="section in comparison.sections" :key="section.section_code"><span>{{ section.section_name }} · r{{ section.before_revision }} → r{{ section.after_revision }}</span><b>{{ Number(section.delta_hkd).toFixed(4) }}</b></p></div></div></section>

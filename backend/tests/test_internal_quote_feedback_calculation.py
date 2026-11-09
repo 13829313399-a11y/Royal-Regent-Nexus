@@ -101,3 +101,34 @@ def test_tooling_only_is_not_implicitly_injection_costing():
     engineering = _section("engineering", payload={"molds": [{"item": "工模", "cost_rmb": 40000}]})
     engineering.is_required, engineering.status = True, "draft"
     assert missing_molding_cost_reason([engineering]) == ""
+
+
+def test_generic_c_pp_survives_save_and_refresh_with_selected_grade(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "feedback-c-pp", "admin", "*", "*")
+        quote = fill(client, create(client, "C-PP-MATCH")); qid = quote["id"]
+        participation = client.post(f"/api/internal-quotes/{qid}/participation", json={"revision": quote["header_revision"], "add_sections": ["molding"]})
+        assert participation.status_code == 200, participation.text
+        quote = client.get(f"/api/internal-quotes/{qid}").json()
+        engineering = next(s for s in quote["sections"] if s["department"] == "engineering")
+        engineering_payload = {**engineering["payload"], "molds": [deepcopy(MOLD)], "mold_allocation_enabled": False}
+        saved = client.put(f"/api/internal-quotes/{qid}/sections/engineering", json={"revision": engineering["revision"], "payload": engineering_payload})
+        assert saved.status_code == 200, saved.text
+        quote = client.get(f"/api/internal-quotes/{qid}").json()
+        molding = next(s for s in quote["sections"] if s["department"] == "molding")
+        payload = deepcopy(molding["payload"])
+        line = payload["injection_lines"][0]
+        line.update(material="透明PP", grade="5090T", machine_code="10A-12A", machine_name="120T")
+        inputs = {key: line[key] for key in ("quantity", "sets", "target_output", "net_weight_g")}
+        response = client.put(f"/api/internal-quotes/{qid}/sections/molding", json={"revision": molding["revision"], "payload": payload})
+        assert response.status_code == 200 and response.json()["calculation_status"] == "valid", response.text
+        for _ in range(2):
+            refreshed = client.get(f"/api/internal-quotes/{qid}").json()
+            current = next(s for s in refreshed["sections"] if s["department"] == "molding")
+            assert current["payload"]["injection_lines"][0]["grade"] == "5090T"
+            assert {key: current["payload"]["injection_lines"][0][key] for key in inputs} == inputs
+            assert current["calculation_status"] == "valid"
+            assert next(s for s in refreshed["sections"] if s["department"] == "engineering")["payload"]["molds"] == engineering_payload["molds"]
+        summary = client.get(f"/api/internal-quotes/{qid}/summary").json()
+        assert summary["pricing_complete"] is True
+        assert client.get(f"/api/internal-quotes/{qid}/output-layout").json()["quote_price_hkd"] is not None

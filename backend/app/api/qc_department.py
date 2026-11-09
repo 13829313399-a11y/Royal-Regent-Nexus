@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.db import get_db
 from app.services.auth import AuthContext, can, get_current_user
 from app.api.qc_inspection import _ensure_permission
-from app.services import qc_workflow, qc_schedule_downloads, qc_inspection_sheet, qc_cumulative, qc_inspection_summary
+from app.services import qc_workflow, qc_schedule_downloads, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report
 from starlette.concurrency import run_in_threadpool
 from urllib.parse import quote
 
@@ -29,6 +29,8 @@ COMPANIES = {
     "huadeng": "hy-huadeng", "huaxing": "hy-huaxing",
 }
 STATIC_FILES = {
+    "qc-daily-report.js", "qc-daily-report.css",
+    "qc-approved-statistics.js", "qc-approved-statistics.css",
     "index.html", "app.js", "style.css", "mobile.js", "mobile.css",
     "qc-backend.js", "report_export.js", "ai-ocr.js", "nexus-integration.js", "qc-schedule.js", "qc-workflow.js", "qc-workflow.css", "qc-photo-paste.js", "qc-inspection-audit.js", "qc-inspection-sheet.js", "qc-inspection-sheet.css", "qc-inspection-summary.js", "qc-inspection-summary.css",
 }
@@ -176,6 +178,31 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
                                  "Content-Length": str(len(content)), "Referrer-Policy": "no-referrer"})
     if asset_path == "api/schedule-source" and request.method == "GET":
         return JSONResponse(qc_workflow.sources(db, factory_id), headers=NO_CACHE)
+    if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
+        exporting = asset_path.endswith("/export")
+        keys = {"date", "revision"} if exporting else {"date"}
+        if "period" in request.query_params:
+            keys.add("period")
+        if set(request.query_params) != keys or any(len(request.query_params.getlist(key)) != 1 for key in keys):
+            raise HTTPException(422, "日报参数不正确")
+        if exporting:
+            _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
+        report = await run_in_threadpool(qc_daily_report.report, factory_id, request.query_params["date"], request.query_params.get("period", "daily"))
+        if not exporting:
+            return JSONResponse(report, headers=NO_CACHE)
+        if request.query_params["revision"] != report["revision"] or not report["total"]:
+            raise HTTPException(409, "日报记录已变化或为空，请重新读取后导出")
+        content = await run_in_threadpool(qc_daily_report.workbook, report)
+        label = {"daily": "每日", "weekly": "每周", "monthly": "每月"}[report["period"]]
+        name = quote(f"{label}验货情况统计表_{report['dateFrom']}_{report['dateTo']}.xlsx", safe="")
+        return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
+            "Content-Disposition": "attachment; filename=QC-daily.xlsx; filename*=UTF-8''" + name})
+    if asset_path in {"api/approved-statistics", "api/approved-statistics/report"} and request.method == "GET":
+        if any(len(request.query_params.getlist(key)) != 1 for key in request.query_params):
+            raise HTTPException(422, "统计筛选参数不能重复")
+        handler = qc_approved_statistics.report if asset_path.endswith('/report') else qc_approved_statistics.query
+        return JSONResponse(await run_in_threadpool(handler, factory_id,
+            dict(request.query_params)), headers=NO_CACHE)
     if asset_path.startswith("api/workflow/"):
         return await workflow_request(asset_path.removeprefix("api/workflow/"), request, db, user, factory_id)
     if asset_path.startswith("api/inspection-summary/"):
@@ -301,9 +328,6 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         for item in all_items:item['sourceCancelled']=item.get('sourceId') in cancelled or (item.get('sourceRecord') or {}).get('sourceStatus')=='cancelled'
         if view=='review':
             result['items']=[r for r in all_items if r.get('reviewState') in {'pending','approved'} or r.get('legacyCompleted')]
-        elif view=='workbook':
-            eligible=[r for r in all_items if r.get('flowVersion')!=2 or r.get('reviewState')=='approved']
-            result['items']=await run_in_threadpool(qc_cumulative.pending_items,factory_id,eligible)
         else:
             result['items']=service.workbench_items(all_items)
         return result
@@ -316,57 +340,23 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
             return JSONResponse(await current_entries(view='review'),headers=NO_CACHE)
         if len(parts)==3 and parts[0]=='entries' and parts[2]=='audit':
             return JSONResponse(service.audit(factory_id,parts[1]),headers=NO_CACHE)
-        if parts[0]=='workbook':
-            _ensure_permission(db,user,'qc_inspection:report_export',factory_id)
-            if path=='workbook/status':
-                items=(await current_entries(False,view='workbook'))['items']
-                state=await run_in_threadpool(qc_cumulative.state,factory_id,items,dict(request.query_params))
-                state['revisions']={r['id']:r['revision'] for r in items}
-                return JSONResponse(state,headers=NO_CACHE)
-            if path=='workbook/archives':
-                return JSONResponse(await run_in_threadpool(qc_cumulative.archives,factory_id),headers=NO_CACHE)
-            if len(parts)==3 and parts[1]=='archives' and parts[2].isdigit():
-                content,name=await run_in_threadpool(qc_cumulative.archive_download,factory_id,int(parts[2]))
-                return Response(content if request.method=='GET' else b'',media_type=service.MIME,headers={**NO_CACHE,'Content-Disposition':"attachment; filename=QC-archive.xlsx; filename*=UTF-8''"+quote(name),'Content-Length':str(len(content))})
-            if path=='workbook/download':
-                content,_=await run_in_threadpool(qc_cumulative.download,factory_id)
-                return Response(content if request.method=='GET' else b'',media_type=service.MIME,
-                    headers={**NO_CACHE,'Content-Disposition':"attachment; filename=QC-cumulative.xlsx; filename*=UTF-8''"+quote('QC累计验货.xlsx'),
-                        'Content-Length':str(len(content))})
-            if len(parts)==3 and parts[1]=='jobs':
-                return JSONResponse(await run_in_threadpool(qc_cumulative.job,factory_id,str(user.id),parts[2]),headers=NO_CACHE)
-            raise HTTPException(404,'接口不存在')
         if len(parts)==4 and parts[0]=='entries' and parts[2]=='photos':
             content=service.read_photo(factory_id,parts[1],parts[3])
             return Response(content if request.method=='GET' else b'',media_type='image/jpeg',headers=NO_CACHE)
-        if len(parts)==2 and parts[0]=='exports':
-            _ensure_permission(db,user,'qc_inspection:report_export',factory_id)
-            content=service.download_export(factory_id,user.id,parts[1])
-            return Response(content if request.method=='GET' else b'',media_type=service.MIME,
-                headers={**NO_CACHE,'Content-Disposition':"attachment; filename=QC-inspection.xlsx; filename*=UTF-8''"+quote('QC验货明细.xlsx'),
-                         'Content-Length':str(len(content))})
         raise HTTPException(404,'接口不存在')
     if request.method != 'POST':raise HTTPException(405,'不支持此方法')
-    _ensure_permission(db,user,'qc_inspection:'+('report_export' if path=='export' else 'result_write'),factory_id)
+    _ensure_permission(db,user,'qc_inspection:result_write',factory_id)
     if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'不接受跨站写入')
     if request.headers.get('content-type','').split(';')[0].lower()!='application/json':raise HTTPException(415,'请使用 JSON 提交')
     raw=bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)
-        if len(raw)>(44*1024*1024 if path=='workbook/replace' else 15*1024*1024 if path.endswith('/photos') else 1024*1024):raise HTTPException(413,'提交内容过大')
+        if len(raw)>(15*1024*1024 if path.endswith('/photos') else 1024*1024):raise HTTPException(413,'提交内容过大')
     try:
         body=json.loads(raw)
         if not isinstance(body,dict):raise ValueError()
     except (ValueError,UnicodeError):raise HTTPException(400,'无效 JSON') from None
-    if path in {'workbook/import','workbook/undo','workbook/replace'}:
-        _ensure_permission(db,user,'qc_inspection:report_export',factory_id)
-        items=(await current_entries(False,view='workbook'))['items'] if path.endswith('/import') else []
-        result=await run_in_threadpool(qc_cumulative.operate,factory_id,str(user.id),body,items,path.split('/')[1])
-        result['summarySync']=await run_in_threadpool(qc_inspection_summary.after_change,factory_id)
-    elif len(parts)==4 and parts[:2]==['workbook','entries'] and parts[3]=='save':
-        _ensure_permission(db,user,'qc_inspection:report_export',factory_id)
-        result=service.save(factory_id,parts[2],body,actor,True)
-    elif path=='review/notifications/shown':
+    if path=='review/notifications/shown':
         result=await run_in_threadpool(service.reversal_notifications,factory_id,actor,body)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
@@ -376,7 +366,6 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3]=='return-to-inspection':
         source_rows=qc_workflow.sources(db,factory_id)['items']
         result=await run_in_threadpool(service.return_to_inspection,factory_id,parts[2],body,actor,source_rows)
-    elif path=='export':result=service.prepare_export(factory_id,body,user.id)
     elif len(parts)==3 and parts[0]=='entries' and parts[2] in {'save','photos','remove-photo','submit'}:
         method={'save':service.save,'photos':service.add_photo,'remove-photo':service.remove_photo,'submit':service.submit}[parts[2]]
         result=method(factory_id,parts[1],body,actor)
