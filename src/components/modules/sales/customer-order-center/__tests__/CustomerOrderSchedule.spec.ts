@@ -327,3 +327,21 @@ describe('CustomerOrderSchedule', () => {
     expect(wrapper.text()).toContain('无法整理排期：原排期含无效日期，请核对')
   })
 })
+
+describe('CustomerOrderSchedule trial capabilities', () => {
+  it('hides unavailable workbook tools and discards an unfinished organizer result', async () => {
+    const wrapper = await mount360()
+    await chooseWorkbook(wrapper)
+    let finish: ((value: unknown) => void) | undefined
+    api.organize360.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    await wrapper.get('.customer-schedule__organize button').trigger('click')
+    await wrapper.setProps({ workbookToolsEnabled: false })
+    expect(wrapper.find('.customer-schedule__organize').exists()).toBe(false)
+    finish?.({ blob: new Blob(['old']), fileName: 'old.xlsx' })
+    await flushPromises()
+    expect(click).not.toHaveBeenCalled()
+    await wrapper.setProps({ workbookToolsEnabled: true })
+    expect(wrapper.get('.customer-schedule__organize button').attributes('disabled')).toBeDefined()
+  })
+})
