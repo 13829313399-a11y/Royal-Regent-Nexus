@@ -430,7 +430,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
+        "sha256": "4e2f08ff47f371e85a392421ba2bc6a7a21b0215056d0c5bd334310cbfc50102"
       },
       {
         "path": "src/components/CartonQuickUploadDialog.vue",
@@ -440,7 +440,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
+        "sha256": "4e2f08ff47f371e85a392421ba2bc6a7a21b0215056d0c5bd334310cbfc50102"
       },
       {
         "path": "backend/app/services/carton_print_split.py",

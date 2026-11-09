@@ -571,10 +571,12 @@ describe('shared document library', () => {
   })
   it('shows a legacy source with its original link and blocks the unsafe quick editor', async () => {
     const asset = quickAsset({ owner_department: null, legacy_source: true, can_associate: false, can_manage_original: false,
+      sharing_mode: 'SUPPLIER', shared_supplier_name: '东康',
       association_blocker: '旧资料保留原匹配方式', targets: [quickTarget({ kind: 'REGULAR', contract_no: 'OLD-123' })] })
     api.list.mockResolvedValue({ items: [asset], total: 1 })
     const wrapper = await library('warehouse')
     expect(wrapper.text()).toContain('OLD-123')
+    expect(wrapper.text()).toContain('内部与东康共享')
     expect(wrapper.text()).toContain('旧资料保留原匹配方式')
     expect(button(wrapper, '关联订单')).toBeUndefined()
     expect(button(wrapper, '资料详情')).toBeDefined()

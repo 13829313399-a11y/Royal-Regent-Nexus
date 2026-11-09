@@ -88,12 +88,14 @@ def test_legacy_named_supplier_sharing_revocation_and_write_denial(monkeypatch):
         legacy('legacy-shared', order, 'manual_orders')
         original = raw('legacy-shared')
         row = ok(client.get(BASE + '/legacy-shared', params=F))
+        assert row['can_change_audience'] is True
         shared = ok(audience(client, row, 'SUPPLIER'))
         assert raw('legacy-shared') == original
         grant_supplier_permissions(permissions=('carton_asset:read', 'carton_asset:manage'))
         supplier_login(client)
         supplier_row = ok(client.get(BASE + '/legacy-shared', params={**F, 'supplier_view': True}))
         assert supplier_row['targets'] == [] and not supplier_row['can_associate']
+        assert supplier_row['can_change_audience'] is False
         assert client.get(BASE + '/legacy-shared/document', params={**F, 'supplier_view': True}).content == original[3]
         assert associate(client, supplier_row).status_code in (403, 404, 409)
         assert raw('legacy-shared') == original

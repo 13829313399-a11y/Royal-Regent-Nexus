@@ -145,6 +145,10 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
     except BaseException:db.rollback();raise
 
 
+def audience_editable(asset):
+    return collaboration.internal(asset) or (asset.owner_department is None and asset.asset_purpose == 'MATERIAL')
+
+
 def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_factory=None,supplier_candidates=None):
     if supplier is None and view_factory in (None,asset.factory_id):supplier=access.external_actor(db,user,asset)
     access.ensure(db,user,asset,supplier=supplier,view_factory=view_factory)
@@ -171,8 +175,8 @@ def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_fact
         legacy_source=not bool(asset.owner_department),association_blocker=blocker,
         can_manage_original=original_manage,photo_group_id=asset.photo_group_id,
         sharing_mode=audience['sharing_mode'],shared_supplier_name=audience['shared_supplier_name'],
-        can_change_audience=bool(not supplier and collaboration.internal(asset) and view_factory in (None,asset.factory_id)
-            and access.visible(db,user,asset,write=True)),
+        can_change_audience=bool(not supplier and audience_editable(asset) and view_factory in (None,asset.factory_id)
+            and original_manage),
         view_factory_id=view_factory or asset.factory_id,shared_factory_ids=factories(db,asset),
         can_classify=bool(statuses),allowed_statuses=statuses,can_associate=can_manage and not blocker,can_share=can_share,
         required_shared_factory_ids=[asset.factory_id] if collaboration.internal(asset) else [],
@@ -270,7 +274,7 @@ def audience(db,user,factory,identifier,body,refresh_actor=None):
         user=locked(db,user,factory)
         if refresh_actor:user=refresh_actor()
         access.ensure(db,user,asset,write=True)
-        if not collaboration.internal(asset):raise HTTPException(403,'仅内部普通资料可设置此共享范围')
+        if not audience_editable(asset):raise HTTPException(403,'仅内部普通资料可设置此共享范围')
         sharing.ensure_audience_scope(db,user,asset)
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_AUDIENCE',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:

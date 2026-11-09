@@ -77,7 +77,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
+        "sha256": "4e2f08ff47f371e85a392421ba2bc6a7a21b0215056d0c5bd334310cbfc50102"
       },
       {
         "path": "src/components/CartonQuickUploadDialog.vue",
@@ -87,7 +87,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "8dc0cf7ab96c25a4b8f499d3deb7a4efe6744ade3f3daf9446754e3450103e43"
+        "sha256": "4e2f08ff47f371e85a392421ba2bc6a7a21b0215056d0c5bd334310cbfc50102"
       },
       {
         "path": "backend/app/services/carton_print_split.py",
@@ -117,7 +117,7 @@
       {
         "path": "backend/app/services/carton_asset_quick.py",
         "symbol": "def association_blocker(",
-        "sha256": "f7c14704c916dbb3f8c1ad64a5a7d8a673376bd9e764abc457ea8856894a91cd"
+        "sha256": "060386cffc4949f013a3125e1c5aff695f9a84dcf953c1d07ef34091077dee45"
       },
       {
         "path": "backend/app/services/carton_mark_assets.py",
