@@ -67,12 +67,8 @@ def fixed_supplier(db, factory):
     return supplier
 
 
-def supplier_factories(db, user):
-    """Dongkang service factories with issued formal or published special requests."""
-    if not supplier_permission(user, "carton_supplier:read", "*"):
-        return []
-    suppliers = db.scalars(select(CartonSupplier).where(CartonSupplier.supplier_code == "HEYUAN-DONGKANG",
-        CartonSupplier.status == "ACTIVE").order_by(CartonSupplier.factory_id)).all()
+def _supplier_has_sources(db, supplier):
+    """Service evidence for one factory; never confers actor authorization."""
     from app.models.carton_special_requests import SpecialRequest
     from app.services import carton_mark_sharing as sharing
     def has_shared_sources(supplier):
@@ -84,8 +80,7 @@ def supplier_factories(db, user):
         return bool(shared_ids and db.scalar(select(CartonMarkAsset.id).where(
             CartonMarkAsset.factory_id == supplier.factory_id, CartonMarkAsset.is_archived.is_(False),
             CartonMarkAsset.id.in_(shared_ids)).limit(1)))
-    return [supplier for supplier in suppliers if supplier_permission(
-        user, "carton_supplier:read", supplier.factory_id) and (db.scalar(
+    return bool(db.scalar(
         select(CartonOrder.id).join(CartonPurchaseOrderIssue, and_(
             CartonPurchaseOrderIssue.order_id == CartonOrder.id,
             CartonPurchaseOrderIssue.factory_id == CartonOrder.factory_id)).where(
@@ -96,7 +91,17 @@ def supplier_factories(db, user):
                     SpecialRequest.status != "SUBMITTED").limit(1)) or has_shared_sources(supplier) or db.scalar(select(CartonAuditEvent.id).where(
                         CartonAuditEvent.factory_id == supplier.factory_id,
                         or_(and_(CartonAuditEvent.entity_type == "carton_supplier_payables", CartonAuditEvent.event_type == "SUPPLIER_PAYABLES_ACTION"),
-                            and_(CartonAuditEvent.entity_type == "carton_price_correction", CartonAuditEvent.event_type == "RECEIPT_PRICE_CORRECTION_ACTION"))).limit(1)))]
+                            and_(CartonAuditEvent.entity_type == "carton_price_correction", CartonAuditEvent.event_type == "RECEIPT_PRICE_CORRECTION_ACTION"))).limit(1)))
+
+
+def supplier_factories(db, user):
+    """Dongkang service factories with issued formal or published special requests."""
+    if not supplier_permission(user, "carton_supplier:read", "*"):
+        return []
+    suppliers = db.scalars(select(CartonSupplier).where(CartonSupplier.supplier_code == "HEYUAN-DONGKANG",
+        CartonSupplier.status == "ACTIVE").order_by(CartonSupplier.factory_id)).all()
+    return [supplier for supplier in suppliers if supplier_permission(
+        user, "carton_supplier:read", supplier.factory_id) and _supplier_has_sources(db, supplier)]
 
 
 def supplier_permission(user, permission, factory):
@@ -108,8 +113,14 @@ def supplier_permission(user, permission, factory):
 
 def supplier_access(db, user, factory, permission="carton_supplier:read"):
     factory = require_carton_factory(factory)
-    supplier = next((item for item in supplier_factories(db, user) if item.factory_id == factory), None)
-    if supplier is None or not supplier_permission(user, permission, factory):
+    # A scoped guard needs only this factory's evidence, not a scan of every
+    # service factory. Keep read and operation permissions live on every call.
+    if not supplier_permission(user, "carton_supplier:read", factory) or not supplier_permission(user, permission, factory):
+        raise HTTPException(403, "账号无权访问此厂区的供应商订单")
+    suppliers = db.scalars(select(CartonSupplier).where(CartonSupplier.factory_id == factory,
+        CartonSupplier.supplier_code == "HEYUAN-DONGKANG", CartonSupplier.status == "ACTIVE"))
+    supplier = next((item for item in suppliers if _supplier_has_sources(db, item)), None)
+    if supplier is None:
         raise HTTPException(403, "账号无权访问此厂区的供应商订单")
     return supplier
 
@@ -498,20 +509,20 @@ def _snapshot_line_no(value, order_no):
     return number
 
 
-def order_out(db, order, *, internal=False):
-    issue = latest_issue(db, order)
+def order_out(db, order, *, internal=False, projection=None):
+    issue = next((i for i in projection['issues'] if not _purchase_order_snapshot(i).get('replenishment')), None) if projection is not None else latest_issue(db, order)
     if not issue and not internal:
         return None
-    snapshot = _purchase_order_snapshot(issue) if issue else _purchase_order_pending_change(order, get_order_lines(db, order.id), None)[3]
+    current_lines = projection['lines'] if projection is not None else get_order_lines(db, order.id)
+    snapshot = _purchase_order_snapshot(issue) if issue else _purchase_order_pending_change(order, current_lines, None)[3]
     header = snapshot.get("order", {})
-    current_lines = get_order_lines(db, order.id)
     ids = [line.id for line in current_lines]
-    fulfilled = fulfilled_by_line(db, ids)
-    pending = _pending_received_by_line(db, ids)
-    shipped = outstanding(db, ids)
+    fulfilled = projection['fulfilled'] if projection is not None else fulfilled_by_line(db, ids)
+    pending = projection['pending'] if projection is not None else _pending_received_by_line(db, ids)
+    shipped = projection['outstanding'] if projection is not None else outstanding(db, ids)
     from app.services import carton_replenishment_supplier as replacement
     from app.services.carton_replenishment_receipts import legacy_review_lines
-    blocked = legacy_review_lines(db, order.factory_id, ids)
+    blocked = projection['legacy'] if projection is not None else legacy_review_lines(db, order.factory_id, ids)
     changed = _purchase_order_pending_change(order, current_lines, issue)[0] != "NONE"
     result = {key: header.get(key, "") for key in ("order_no", "customer_name", "contract_no", "customer_po", "item_no", "product_name")}
     result.update(id=order.id, status=order.status, revision=order.revision,
@@ -522,43 +533,44 @@ def order_out(db, order, *, internal=False):
         rush_at=order.rush_at, rush_acknowledged=bool(order.rush and order.rush_ack_at),
         rush_ack_at=order.rush_ack_at, rush_version=rush_version(db, order))
     from app.services.carton_material_correction import records, blocked_lines
-    result["material_corrections"] = records(db, order.factory_id, order.id)
-    material_holds = blocked_lines(db, order.factory_id, ids)
+    result["material_corrections"] = projection['corrections'] if projection is not None else records(db, order.factory_id, order.id)
+    material_holds = projection['material_holds'] if projection is not None else blocked_lines(db, order.factory_id, ids)
     result["cancellation_notice"] = cancellation_notice(db, order, issue)
     from app.services.carton_supplier_changes import response_state
-    disputed = bool(issue and response_state(db, order.factory_id, "REGULAR", issue.id)["status"] == "DISPUTED")
+    disputed = bool(issue and (projection['supplier_change_states'][issue.id] if projection is not None else response_state(db, order.factory_id, "REGULAR", issue.id))["status"] == "DISPUTED")
     if internal:
         from app.services.carton_order_split import plans
         result["customer_code"] = order.customer_code
-        result["split_records"] = plans(db, order.factory_id, order.id)
+        result["split_records"] = projection['plans'] if projection is not None else plans(db, order.factory_id, order.id)
     from app.services.carton_print_split import order_info as print_info, held as print_held
     result["print_split"] = print_info(db, order)
     from app.services.carton_order_division import order_info as division_info
     result["order_split"] = division_info(db, order)
     from app.services.carton_order_split_trace import schedule_split_sources
-    result["schedule_split_source"] = schedule_split_sources(db, [order]).get(order.id)
+    result["schedule_split_source"] = projection['schedule_split_source'] if projection is not None else schedule_split_sources(db, [order]).get(order.id)
     print_hold = bool(print_held(db, order))
     from app.services.carton_order_split import live_plans
-    legacy_hold = bool(live_plans(db, order.factory_id, order.id))
+    legacy_hold = any(p['status'] != 'CANCELLED' for p in projection['plans']) if projection is not None else bool(live_plans(db, order.factory_id, order.id))
+    commitments = {row.order_line_id: row for row in projection['commitments']} if projection is not None else {}
     for item in snapshot.get("lines", []):
         line_id = str(item["id"])
         required = Decimal(str(item["after_required_quantity"]))
-        commitment = db.get(SupplierCommitment, line_id)
+        commitment = commitments.get(line_id) if projection is not None else db.get(SupplierCommitment, line_id)
         accepted = bool(issue and commitment and commitment.issue_id == issue.id and not changed and not disputed)
         line = {key: item.get(key, "") for key in ("id", "line_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit")}
         line_no = _snapshot_line_no(item.get("line_no"), order.order_no)
         line.update(line_no=line_no, child_no=f"{order.order_no}/{line_no:02d}", required_quantity=str(required),
             received_quantity=str(fulfilled.get(line_id, 0)), in_transit_quantity=str(shipped.get(line_id, 0)),
-            remaining_to_ship=str(replacement.ordinary_capacity(db, order, line_id)),
+            remaining_to_ship=str(replacement.ordinary_capacity(db, order, line_id, projection=projection)),
             shipping_blocked_reason="旧拆分记录待转为独立订单，请联系仓库先处理拆单" if legacy_hold else "印刷拆单待回应，请先处理拆单变更待办" if print_hold else "供应商有异议，暂停执行，请沿变更待办核实" if disputed else "纸品资料更正待双方确认，暂停发货和正式入库" if line_id in material_holds else "此纸品有补单待核对，请联系内部仓库按原补单流程处理" if line_id in blocked else "",
             accepted=accepted, commitment_revision=commitment.revision if commitment else 0,
             promised_date=commitment.promised_date if commitment else "")
         if internal:
             line.update(unit_price=item.get("unit_price", "0"), currency=item.get("currency", "CNY"))
         result["lines"].append(line)
-    result["replenishment_sources"] = replacement.sources(db, order)
-    result["attachments"] = [attachment_out(row) for row in db.scalars(select(SupplierAttachment).where(
-        SupplierAttachment.order_id == order.id, SupplierAttachment.factory_id == order.factory_id).order_by(SupplierAttachment.created_at.desc())).all()]
+    result["replenishment_sources"] = replacement.sources(db, order, projection=projection)
+    result["attachments"] = [attachment_out(row) for row in (projection['attachments'] if projection is not None else db.scalars(select(SupplierAttachment).where(
+        SupplierAttachment.order_id == order.id, SupplierAttachment.factory_id == order.factory_id).order_by(SupplierAttachment.created_at.desc())).all())]
     return result
 
 
@@ -672,7 +684,11 @@ def workspace(db, user, factory, *, internal=False, responsibility_scope="OWN"):
         visible_order_ids = set(db.scalars(select(CartonOrder.id).where(CartonOrder.factory_id == factory,
             customer_predicate(user, factory, CartonOrder.customer_code))))
         orders = [order for order in orders if order.id in visible_order_ids]
-    result = [order_out(db, row, internal=internal) for row in orders]
+    from app.services.carton_supplier_read_inputs import batches, order_inputs
+    result = []
+    for batch in batches(orders):
+        inputs = order_inputs(db, batch, receiving=True)
+        result.extend(order_out(db, row, internal=internal, projection=inputs[row.id]) for row in batch)
     shipments = db.scalars(select(SupplierShipment).where(SupplierShipment.factory_id == factory,
         SupplierShipment.supplier_id == supplier_id).order_by(SupplierShipment.created_at.desc())).all()
     if internal and responsibility_scope == "OWN":
@@ -760,7 +776,8 @@ def shipment_out(db, row, *, internal=False):
         result["lines"].append(item)
     accepted = json.loads(row.acceptance_json or "{}")
     for item in result["lines"]:
-        item.update({key: str(value) for key, value in progress[item["id"]].items() if key != "reserved_quantity"})
+        item.update({key: str(value) for key, value in progress[item["id"]].items()
+            if key != "reserved_quantity" or internal})
     result["partially_received"] = row.status == "SENT" and any(item["received_quantity"] > 0 for item in progress.values())
     result["requires_receipt_link"] = receipt_link.link_only(row)
     result["linked_existing_receipt"] = bool(accepted.get("linked_existing_receipt"))

@@ -62,6 +62,27 @@ it('keeps rush orders first under each supplier order sort', async () => {
   } finally { wrapper.unmount() }
 })
 
+it('sorts and filters by the same earliest outstanding accepted promise', async () => {
+  const data = fixture(), original = data.orders[0]!
+  original.lines[0] = { ...original.lines[0]!, remaining_to_ship: '0', promised_date: '2026-09-11' }
+  original.lines[1] = { ...original.lines[1]!, promised_date: '2026-09-30' }
+  data.orders.push({ ...original, id: 'ORDER-B', order_no: 'ORDER-B', contract_no: 'SC-B',
+    lines: [{ ...original.lines[1]!, id: 'LINE-B', promised_date: '2026-09-22' }] })
+  api.workspace.mockResolvedValue(data)
+  const wrapper = mount(CartonSupplierView, options); await flushPromises()
+  try {
+    await wrapper.get('[aria-label="供应商订单排序"]').setValue('PROMISED_ASC')
+    expect(wrapper.findAll('[data-testid="supplier-regular-order-row"]')[0]!.text()).toContain('SC-B')
+    await wrapper.get('[aria-label="供应商订单日期口径"]').setValue('PROMISED')
+    await wrapper.get('[aria-label="下单日期结束"]').setValue('2026-09-22')
+    expect(wrapper.findAll('[data-testid="supplier-regular-order-row"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="supplier-regular-order-row"]').text()).toContain('SC-B')
+    await wrapper.findAll('button').find(button => button.text() === '清空筛选')!.trigger('click')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="供应商订单日期口径"]').element.value).toBe('ORDER')
+    expect(wrapper.findAll('[data-testid="supplier-regular-order-row"]')).toHaveLength(2)
+  } finally { wrapper.unmount() }
+})
+
 it('confirms the rush version displayed on the supplier row', async () => {
   const data = fixture()
   data.orders[0] = { ...data.orders[0]!, rush: true, rush_version: 'b'.repeat(64), rush_reason: '客户催货' }
@@ -315,6 +336,22 @@ describe('supplier workspace shared header search', () => {
       expect(wrapper.find('input[aria-label="搜索供应商操作日志"]').exists()).toBe(false)
       expect(api.activityPage).toHaveBeenCalledTimes(requestCount)
     } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('separates audit read failure from zero matches and restores a count on refresh', async () => {
+    api.activityPage.mockRejectedValueOnce(new Error('日志服务异常'))
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      await tab(wrapper, '操作日志')
+      expect(wrapper.text()).toContain('操作日志读取失败')
+      expect(wrapper.text()).toContain('日志数量暂不可用')
+      expect(wrapper.text()).not.toContain('暂无相关操作记录')
+      api.activityPage.mockResolvedValueOnce({ items: [], total: 0, offset: 0, limit: 50 })
+      const filter = wrapper.get('[aria-label="供应商日志筛选"]')
+      await filter.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
+      expect(wrapper.text()).toContain('暂无相关操作记录')
+      expect(wrapper.text()).toContain('共 0 条')
+    } finally { wrapper.unmount() }
   })
 })
 
@@ -1198,6 +1235,15 @@ describe('supplier batches and document desk', () => {
     expect(wrapper.text()).toContain('DN-1')
     expect(wrapper.get('thead').text()).toContain('导出次数')
     expect(wrapper.get('[aria-label="PO-1 导出 0 次"]').text()).toBe('0')
+    const purchaseCheckbox = wrapper.get<HTMLInputElement>('input[aria-label="选择单据 PO-1"]')
+    const purchaseRow = wrapper.findAll('tbody tr').find(row => row.element.contains(purchaseCheckbox.element))!
+    await purchaseRow.get('td[data-label="单据号"]').trigger('click')
+    expect(purchaseCheckbox.element.checked).toBe(true)
+    purchaseCheckbox.element.click(); await flushPromises()
+    expect(purchaseCheckbox.element.checked).toBe(false)
+    await wrapper.get('button[aria-label="查看单据 PO-1 明细"]').trigger('click'); await flushPromises()
+    expect(purchaseCheckbox.element.checked).toBe(false)
+    await wrapper.get('button[aria-label="关闭单据明细"]').trigger('click'); await flushPromises()
     await wrapper.get('select[aria-label="单据类型筛选"]').setValue('PURCHASE')
     expect(wrapper.text()).toContain('PO-1')
     expect(wrapper.text()).not.toContain('DN-1')
@@ -1342,6 +1388,33 @@ describe('supplier batches and document desk', () => {
   })
 })
 describe('supplier collaboration entry', () => {
+  it('opens the purchase history above a pinned order and restores focus on close', async () => {
+    const purchase = {
+      id: 'ISSUE-A', kind: 'PURCHASE', factory_id: 'huaxing', document_no: 'PO-A',
+      document_type: 'INITIAL', date: '2026-09-21', created_at: '2026-09-21T10:00:00',
+      status: '已生成', replenishment: false, orders: [{ order_no: 'ORDER-A' }], lines: [],
+    }
+    api.documents.mockResolvedValue([purchase])
+    const wrapper = mount(CartonSupplierView, { ...options, attachTo: document.body }); await flushPromises()
+    await wrapper.get('button[aria-label="查看订单 ORDER-A 明细"]').trigger('click'); await flushPromises()
+    const parent = wrapper.get('[data-testid="supplier-order-detail-overlay"] [role="dialog"]')
+    const trigger = parent.findAll('button').find(button => button.text() === '查看采购单')!
+    trigger.element.focus()
+    await trigger.trigger('click'); await flushPromises()
+    const purchaseDialog = parent.get('[role="dialog"]')
+    expect(purchaseDialog.text()).toContain('供应商采购单 · ORDER-A')
+    expect(purchaseDialog.attributes('aria-hidden')).toBeUndefined()
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('关闭采购单记录')
+    await purchaseDialog.findAll('button').find(button => button.text() === '重新下载原版本')!.trigger('click'); await flushPromises()
+    expect(api.exportDocuments).toHaveBeenCalledWith([purchase])
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); await flushPromises()
+    expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1)
+    expect(document.activeElement).toBe(trigger.element)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('shows the business order date without the order number and previews details before pinning them', async () => {
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
     const ledger = wrapper.findAll('table')[0]!

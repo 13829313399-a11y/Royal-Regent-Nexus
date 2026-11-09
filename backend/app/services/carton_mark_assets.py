@@ -230,13 +230,16 @@ def save_asset(db, user, factory, content, recognition, options=None):
         warning=recognition["warning"], created_by=user.id, created_by_name=user.display_name,
         created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
     from app.services import carton_asset_access as ownership
-    ownership.legacy(db,user,asset,department=options.owner_department)
-    if ownership.enabled() and options.previous_asset_id:
-        parent=active_asset(db,factory,options.previous_asset_id)
+    parent=active_asset(db,factory,options.previous_asset_id) if options.previous_asset_id else None
+    if ownership.enabled() and parent:
         ownership.ensure(db,user,parent,write=True)
-        if (parent.owner_department,parent.owner_supplier_id)!=(asset.owner_department,asset.owner_supplier_id):
+        if options.owner_department and options.owner_department!=parent.owner_department:
             raise HTTPException(422,'修改稿必须保留原部门和供应商归属')
+        asset.owner_department=parent.owner_department
+        asset.owner_supplier_id=parent.owner_supplier_id
         asset.asset_purpose=parent.asset_purpose
+    else:
+        ownership.legacy(db,user,asset,department=options.owner_department)
     if ownership.enabled() and options.status=='READY':
         if asset.asset_purpose!='MATERIAL':raise HTTPException(422,'内部凭据不是制作资料')
         ownership.ensure(db,user,asset,write=True,confirm=True)
@@ -246,7 +249,7 @@ def save_asset(db, user, factory, content, recognition, options=None):
     carton_mark_sharing.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
     if options.targets is not None:
         associations.apply(db, user, asset, options.targets)
-    elif ownership.enabled():
+    elif ownership.enabled() and asset.owner_department:
         from app.services import carton_asset_targets as quick_targets
         if options.previous_asset_id:
             quick_targets.record(db,user,asset,quick_targets.valid(db,parent))

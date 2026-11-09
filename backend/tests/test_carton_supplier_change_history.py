@@ -24,12 +24,24 @@ def test_two_unaccepted_regular_and_special_changes_keep_truthful_readonly_histo
         for quantity in (110, 120):
             payload = {**create_body(), "expected_revision": special["revision"], "reason": "连续样板调整尚未接单"}
             payload["lines"][0].update(id=special["lines"][0]["id"], quantity=str(quantity))
+            if quantity == 120:
+                payload["lines"][0].update(unit="张", item_no="QA-NEW-ITEM")
             special = ok(client.post(BASE + f"/{special['id']}/adjust", json=payload))
         supplier_login(client)
         tasks = ok(client.get("/api/carton-supplier/changes", params={"factory_id": "huaxing"}))["items"]
         for kind, identifier in (("REGULAR", regular["id"]), ("SPECIAL", special["id"])):
             task = next(row for row in tasks if row["source_kind"] == kind and row["order_id"] == identifier)
             assert task["status"] == "PENDING"
+            assert isinstance(task["publication_version"], int)
+            if kind == "REGULAR":
+                assert {key: task[key] for key in ("customer_name", "contract_no", "customer_po")} == {
+                    key: regular[key] for key in ("customer_name", "contract_no", "customer_po")}
+                assert task["item_nos"] == [regular["item_no"]]
+            else:
+                assert task["customer_name"] == special["customer_name"]
+                assert task["item_nos"] == list(dict.fromkeys(line["item_no"] for line in special["lines"] if line["item_no"]))
+                assert task["lines"][0]["before_material"]["unit"] == create_body()["lines"][0]["unit"]
+                assert task["lines"][0]["unit"] == "张"
             history = task["publication_history"]
             assert len(history) == 3
             assert [row["superseded"] for row in history] == [True, True, False]

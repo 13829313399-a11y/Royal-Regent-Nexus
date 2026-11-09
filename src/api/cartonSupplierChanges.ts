@@ -3,15 +3,18 @@ import { http } from '@/lib/http'
 
 export interface SupplierChangeLine {
   id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; unit: string
+  item_no?: string
+  removed?: boolean
   quantity: string; before_quantity: string
   promised_date?: string
-  before_material?: Partial<Record<'packaging_type' | 'paper_quality' | 'specification' | 'dimension_unit', string>>
+  before_material?: Partial<Record<'packaging_type' | 'paper_quality' | 'specification' | 'dimension_unit' | 'item_no' | 'unit', string>>
 }
 export interface SupplierChangeTask {
   print_split?: PrintPlan
   publication_history?: { source_id: string; document_no: string; created_at: string; action: string; status: string; read: boolean; responded_by: string; responded_at: string; reason: string; planned_date: string; superseded: boolean; response_history?: { status: string; reason: string; promised_date: string; actor_name: string; created_at: string }[]; lines: Pick<SupplierChangeLine, 'id' | 'packaging_type' | 'paper_quality' | 'specification' | 'unit' | 'quantity'>[] }[]
   source_kind: 'REGULAR' | 'REPLENISHMENT' | 'SPECIAL' | 'PRINT'; source_id: string; factory_id: string
   order_id: string; order_no: string; document_no: string; expected_revision: number; status: string
+  publication_version?: number; customer_name?: string; contract_no?: string; customer_po?: string; item_nos?: string[]
   is_cancellation: boolean; read: boolean; read_at: string; reason: string; responded_by: string; responded_at: string
   promised_date: string; planned_date: string; before_date: string; created_at: string; age_days: number
   change_reason?: string; customer_due_date?: string; before_customer_due_date?: string
@@ -19,6 +22,13 @@ export interface SupplierChangeTask {
   pending: boolean; can_respond: boolean
 }
 export type SupplierChangeAction = 'READ' | 'ACCEPT' | 'DISPUTE' | 'ACK_CANCEL'
+export type SupplierChangeFilter = 'pending' | 'read' | 'cancellation' | 'disputed'
+export interface SupplierChangePendingState {
+  loading: boolean
+  error: string
+  counts: Record<SupplierChangeTask['source_kind'], number>
+  stats: Record<SupplierChangeFilter | 'overdue', number>
+}
 export interface SupplierChangeWorkspace { items: SupplierChangeTask[]; pending_count: number; overdue_count: number; disputed_count: number }
 export const cartonSupplierChangesApi = {
   async list(factory: string, internal = false, signal?: AbortSignal) {
