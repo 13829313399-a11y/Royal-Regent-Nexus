@@ -227,30 +227,43 @@ def test_review_rows_do_not_get_automatic_inspection_delivery_reminders():
     assert '不计入正单' in rows[0]['suggestion']
 
 
-class MatchingDb:
-    def __init__(self, orders):
-        self.orders = orders
-
-    def execute(self, query):
-        return SimpleNamespace(all=lambda: [(SimpleNamespace(), order) for order in self.orders])
-
-    def scalars(self, query):
-        return SimpleNamespace(all=lambda: [])
-
-
 def order(**updates):
     fields = dict(factory_id='huaxing', id='o1', order_no='CO1', customer_po='0989551378', contract_no='53135',
                   item_no='0040220-1', customer_code='BUZZBEE', customer_name='BUZZ BEE',
-                  product_order_quantity=360, customer_due_date='2026-09-17', status='PENDING_SUPPLIER')
-    return SimpleNamespace(**(fields | updates))
+                  product_order_quantity=360, customer_due_date='2026-09-17', status='PENDING_SUPPLIER',
+                  supplier_id='SUP', supplier_name_snapshot='东康', order_date='2026-09-07', due_date='2026-09-14',
+                  created_by='keeper', updated_by='keeper', created_at='2026-09-07', updated_at='2026-09-07')
+    return fields | updates
+
+
+def match_with_orders(rows, *orders):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.models.carton_procurement import CartonAuditEvent, CartonImportBatch, CartonOrder, CartonOrderLine
+
+    engine = create_engine('sqlite://')
+    try:
+        tables = [model.__table__ for model in (CartonOrder, CartonOrderLine, CartonImportBatch, CartonAuditEvent)]
+        CartonOrder.metadata.create_all(engine, tables=tables)
+        with Session(engine) as db:
+            for values in orders:
+                db.add(CartonOrder(**values))
+                db.add(CartonOrderLine(id=values['id'] + '-paper', order_id=values['id'], line_no=1,
+                    factory_id=values['factory_id'], customer_code=values['customer_code'], contract_no=values['contract_no'],
+                    item_no=values['item_no'], packaging_type='外箱', paper_quality='A33', specification='30*20*15',
+                    usage_quantity=6, required_quantity=60, unit='个'))
+            db.flush()
+            _match_rows(db, 'huaxing', 'WEEKLY_SCHEDULE', rows)
+    finally:
+        engine.dispose()
 
 
 def test_unified_matching_never_falls_back_to_only_contract_or_only_item():
     rows = _parse_weekly('schedule.xlsx', workbook([source_row()]))['rows']
-    _match_rows(MatchingDb([order(contract_no='OTHER')]), 'huaxing', 'WEEKLY_SCHEDULE', rows)
+    match_with_orders(rows, order(contract_no='OTHER'))
     assert rows[0]['match_status'] == 'MISSING_ORDER'
     assert rows[0]['procurement_state'] == 'NEEDS_ORDER'
-    _match_rows(MatchingDb([order(item_no='OTHER')]), 'huaxing', 'WEEKLY_SCHEDULE', rows)
+    match_with_orders(rows, order(item_no='OTHER'))
     assert rows[0]['match_status'] == 'MISSING_ORDER'
 
 
@@ -259,8 +272,7 @@ def test_unified_matching_uses_so_instead_of_shared_original_po():
     second = list(first)
     first[2], second[2] = 'SO-21', 'SO-23'
     rows = _parse_weekly('schedule.xlsx', workbook([first, second]))['rows']
-    _match_rows(MatchingDb([order(customer_po='SO-21'), order(id='o2', order_no='CO2', customer_po='SO-23')]),
-                'huaxing', 'WEEKLY_SCHEDULE', rows)
+    match_with_orders(rows, order(customer_po='SO-21'), order(id='o2', order_no='CO2', customer_po='SO-23'))
     assert [row['order_id'] for row in rows] == ['o1', 'o2']
 
 
@@ -281,7 +293,7 @@ def test_duplicate_so_rows_can_each_create_an_order_with_separate_source_links(m
         assert all(row['schedule_identity_duplicate'] for row in rows)
         assert rows[0]['schedule_identity'] != rows[1]['schedule_identity']
         payload = {**_order_payload(), 'contract_no': '53135', 'item_no': '0040220-1',
-                   'customer_po': 'SO-REPEATED', 'product_order_quantity': 360}
+                   'customer_po': first[3], 'product_order_quantity': 360}
         created = []
         for source_row_no in (4, 5):
             response = client.post('/api/carton-procurement/orders', json={**payload, 'schedule_source': {
@@ -311,7 +323,7 @@ def test_duplicate_so_source_must_come_from_latest_effective_batch(monkeypatch):
             params={'factory_id': 'huaxing'}, files={'file': ('latest.xlsx', workbook([values]))})
         assert latest.status_code == 201, latest.text
         payload = {**_order_payload(), 'contract_no': '53135', 'item_no': '0040220-1',
-                   'customer_po': 'SO-REPEATED', 'product_order_quantity': 360,
+                   'customer_po': values[3], 'product_order_quantity': 360,
                    'schedule_source': {'batch_id': old.json()['id'], 'source_sheet': '子弹枪ITEM表', 'source_row': 5}}
         rejected = client.post('/api/carton-procurement/orders', json=payload)
         assert rejected.status_code == 409, rejected.text
@@ -324,14 +336,14 @@ def test_duplicate_so_source_must_come_from_latest_effective_batch(monkeypatch):
 ])
 def test_procurement_status_and_quantity_gap(status, quantity, state):
     rows = _parse_weekly('schedule.xlsx', workbook([source_row()]))['rows']
-    _match_rows(MatchingDb([order(status=status, product_order_quantity=quantity)]), 'huaxing', 'WEEKLY_SCHEDULE', rows)
+    match_with_orders(rows, order(status=status, product_order_quantity=quantity))
     assert rows[0]['procurement_state'] == state
     assert rows[0]['match_status'] == ('MATCHED' if quantity == 360 else 'QUANTITY_MISMATCH')
 
 
 def test_customer_deadline_difference_and_nonformal_exclusion():
     rows = _parse_weekly('schedule.xlsx', workbook([source_row(), source_row('样板单')]))['rows']
-    _match_rows(MatchingDb([order(customer_due_date='2026-09-15')]), 'huaxing', 'WEEKLY_SCHEDULE', rows)
+    match_with_orders(rows, order(customer_due_date='2026-09-15'))
     assert rows[0]['match_status'] == 'DATE_MISMATCH'
     assert rows[0]['date_difference']['business_date'] == '2026-09-17'
     assert rows[1]['match_status'] == 'REVIEW_REQUIRED'
@@ -354,7 +366,7 @@ def test_uncertain_item_dates_preserve_evidence_without_guessing(raw, column, fi
     assert row[field] == ''
     assert row['date_review_required'] is True
     assert parsed['review_count'] == 1
-    _match_rows(MatchingDb([order()]), 'huaxing', 'WEEKLY_SCHEDULE', [row])
+    match_with_orders([row], order())
     assert row['order_id'] == 'o1'
     assert row['procurement_state'] == 'ORDERED'
     assert row['match_status'] == 'REVIEW_REQUIRED'
@@ -536,7 +548,8 @@ def test_bulk_marks_are_atomic_idempotent_and_keep_ordered_cancellation_reminder
                             {'source_sheet': '子弹枪ITEM表', 'source_row': 7}]}
         rejected = client.post('/api/carton-procurement/schedule-order-marks/bulk', json=payload)
         assert rejected.status_code == 422, rejected.text
-        assert client.get('/api/carton-procurement/schedule-order-marks', params={'factory_id': 'huaxing'}).json() == {}
+        state = client.get('/api/carton-procurement/schedule-order-marks', params={'factory_id': 'huaxing'}).json()
+        assert all(not entry['marked'] for entry in state.values())
         payload['rows'][1]['source_row'] = 5
         marked = client.post('/api/carton-procurement/schedule-order-marks/bulk', json=payload)
         assert marked.status_code == 200, marked.text

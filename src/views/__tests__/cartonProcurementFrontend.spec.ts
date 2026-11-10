@@ -3531,6 +3531,21 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     wrapper.unmount()
   })
 
+  it('groups cartons by packaging type and the original purchase unit', async () => {
+    const order = orderFixture('CT-ORIGINAL-UNIT', businessDateOffset(5))
+    order.lines.push({ ...order.lines[0]!, id: 'LINE-BOX-UNIT', line_no: 2, unit: '箱', required_quantity: '5', remaining_quantity: '5' })
+    mockReceiptWorkspace([order])
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      const papers = wrapper.get('[aria-label="CT-ORIGINAL-UNIT 纸品明细"]')
+      expect(papers.text()).toContain('外箱 100个')
+      expect(papers.text()).toContain('外箱 5箱')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('groups multiple paper items under one contract and keeps paper quality separate from specification', async () => {
     cartonApiMock.listCustomers.mockResolvedValue([{ customer_code: 'DICKIE', customer_name: 'Dickie', factory_id: 'huaxing', status: 'ACTIVE' }])
     const wrapper = mountView('orders')
@@ -3551,8 +3566,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.get('[aria-label="订单批量选择"]').text()).not.toContain('产品数量')
     const materialSummary = firstOrder.get('[aria-label="CT-260805-006 纸品明细"]')
     expect(materialSummary.text()).toContain('纸品合计 7,350 件')
-    expect(materialSummary.text()).toContain('外箱 30箱')
-    expect(materialSummary.text()).toContain('内箱 120箱')
+    expect(materialSummary.text()).toContain('外箱 30个')
+    expect(materialSummary.text()).toContain('内箱 120个')
     expect(materialSummary.text()).toContain('滑板纸 3,600张')
     expect(materialSummary.text()).toContain('卡纸 3,600张')
     const arrivalProgress = firstOrder.get('[aria-label="CT-260805-006 到货进度"]')
@@ -4513,6 +4528,71 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.get('[aria-label="统一业务模板核对摘要"]').text()).toContain('已下单 2')
     expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
     wrapper.unmount()
+  })
+
+  it('keeps view order for linked schedules and only marks unlinked rows singly or in bulk', async () => {
+    const linked = pendingScheduleFixture('SC-LINKED-MARK', 4, { match_status: 'DATE_MISMATCH', procurement_state: 'ORDERED', manual_ordered: true })
+    const first = pendingScheduleFixture('SC-EXTERNAL-SINGLE', 5)
+    const second = pendingScheduleFixture('SC-EXTERNAL-BULK', 6)
+    const order = { ...orderFixture('CT-LINKED-MARK', businessDateOffset(3), 'PENDING_SUPPLIER'),
+      contract_no: linked.contract_no!, item_no: linked.item_no!, customer_po: linked.customer_po, product_order_quantity: '240' }
+    mockReceiptWorkspace([order])
+    const batch = mockWeeklySchedule([linked, first, second])
+    cartonApiMock.listScheduleOrderMarks.mockResolvedValue({
+      [linked.schedule_identity!]: { marked: true, actor: '', updated_at: '', matching_order_ids: [order.id] },
+    })
+    cartonApiMock.setScheduleOrderMark.mockResolvedValue({
+      identity: first.schedule_identity, marked: true, demand_snapshot: scheduleDemandSnapshot(first),
+    })
+    cartonApiMock.setScheduleOrderMarks.mockResolvedValue({
+      items: [first, second].map(row => ({ identity: row.schedule_identity, marked: true, demand_snapshot: scheduleDemandSnapshot(row) })), changed_count: 1,
+    })
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="全部排期"]').trigger('click')
+      const cell = wrapper.get('[data-schedule-action="SC-LINKED-MARK ITEM-SCHEDULE"]')
+      expect(cell.text()).toBe('查看订单')
+      expect(cell.attributes('disabled')).toBeUndefined()
+      const linkedRow = wrapper.get('tr:has([data-schedule-action="SC-LINKED-MARK ITEM-SCHEDULE"])')
+      expect(linkedRow.find('td[data-label="人工已下单"] button').exists()).toBe(false)
+      const linkedCheck = linkedRow.get<HTMLInputElement>('input[type="checkbox"]')
+      expect(linkedCheck.element.disabled).toBe(true)
+
+      await wrapper.get('[aria-label="标记已下单 SC-EXTERNAL-SINGLE ITEM-SCHEDULE"]').trigger('click'); await flushPromises()
+      expect(cartonApiMock.setScheduleOrderMark).toHaveBeenCalledWith('huaxing', batch.id, 'ITEM表', 5, true)
+      await wrapper.get('[aria-label="全选当前可标记排期"]').setValue(true)
+      expect(linkedCheck.element.checked).toBe(false)
+      await wrapper.get('[aria-label="批量标记排期已下单"]').trigger('click'); await flushPromises()
+      expect(cartonApiMock.setScheduleOrderMarks).toHaveBeenCalledWith('huaxing', batch.id,
+        [{ source_sheet: 'ITEM表', source_row: 5 }, { source_sheet: 'ITEM表', source_row: 6 }], true)
+    } finally { wrapper.unmount() }
+  })
+
+  it('keeps ambiguous legacy and split candidates eligible for external marking', async () => {
+    const legacy = pendingScheduleFixture('SC-LEGACY-MARK', 4, { schedule_customer_code: undefined, source_reference: '', customer_po: '' })
+    const legacyOrders = ['CT-LEGACY-A', 'CT-LEGACY-B'].map(number => ({
+      ...orderFixture(number, businessDateOffset(3), 'PENDING_SUPPLIER'),
+      contract_no: legacy.contract_no!, item_no: legacy.item_no!,
+    }))
+    const parent = splitLedgerFixture()
+    const target = parent.split_records[0]!.targets[0]!
+    const split = pendingScheduleFixture(target.contract_no, 5, {
+      item_no: parent.item_no, customer_po: target.customer_po, source_reference: '', match_status: 'AMBIGUOUS',
+    })
+    const direct = { ...orderFixture('CT-SPLIT-CONFLICT', businessDateOffset(3), 'PENDING_SUPPLIER'),
+      contract_no: target.contract_no, item_no: parent.item_no, customer_po: target.customer_po }
+    mockReceiptWorkspace([...legacyOrders, parent, direct])
+    mockWeeklySchedule([legacy, split])
+    cartonApiMock.listScheduleOrderMarks.mockResolvedValue({
+      [split.schedule_identity!]: { marked: false, actor: '', updated_at: '',
+        order_ids: [parent.id], matching_order_ids: [direct.id] },
+    })
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="全部排期"]').trigger('click')
+      expect(wrapper.get('[aria-label="标记已下单 SC-LEGACY-MARK ITEM-SCHEDULE"]').attributes('disabled')).toBeUndefined()
+      expect(wrapper.get(`[aria-label="标记已下单 ${target.contract_no} ${parent.item_no}"]`).attributes('disabled')).toBeUndefined()
+    } finally { wrapper.unmount() }
   })
 
   it('selects only same-item eligible schedule rows for independent creation and clears selection on purpose changes', async () => {

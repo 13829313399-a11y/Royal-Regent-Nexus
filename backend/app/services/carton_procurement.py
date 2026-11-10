@@ -4862,7 +4862,8 @@ def schedule_order_state(db: Session, factory_id: str) -> dict[str, dict[str, ob
     factory_id = require_carton_factory(factory_id)
     state = schedule_order_marks(db, factory_id)
     for key, order_ids in _schedule_order_links(db, factory_id).items():
-        state.setdefault(key, {"marked": False, "actor": "", "updated_at": ""})["order_ids"] = order_ids
+        state.setdefault(key, {"marked": False, "actor": "", "updated_at": ""}).update(
+            order_ids=list(order_ids), explicit_order_ids=order_ids)
     from app.services.carton_schedule_order_matching import read_matches
     current = read_matches(db, factory_id)
     for row in current["rows"]:
@@ -4880,6 +4881,18 @@ def schedule_order_state(db: Session, factory_id: str) -> dict[str, dict[str, ob
                 ids.append(plan["order_id"])
             entry.setdefault("split_ids", []).append(plan["id"])
     return state
+
+
+def _legacy_schedule_orders(db: Session, factory_id: str, row, customer_code: str):
+    if row.get("schedule_customer_code") or row.get("schedule_identity_duplicate") or not customer_code:
+        return []
+    from app.services.carton_schedule_tracking import normalized
+    current_orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory_id,
+        CartonOrder.customer_code == customer_code, CartonOrder.status != "CANCELLED", CartonOrder.deleted_at.is_(None)))
+    return [order for order in current_orders if normalized(order.contract_no) == normalized(row.get("contract_no"))
+            and normalized(order.item_no) == normalized(row.get("item_no"))
+            and (not effective_po(row) or normalized(order.customer_po) in {
+                normalized(row.get("customer_po")), effective_po(row)})]
 
 
 def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrderCreate) -> dict[str, object] | None:
@@ -4937,18 +4950,47 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
     current = read_po_matches(db, factory_id)
     if current["matches"].get(operation_key) or current["ambiguous"].get(operation_key):
         raise HTTPException(409, "该业务排期已有客户 PO / SO 匹配订单或待核对候选，请查看原订单，勿重复下单")
-    if not row.get("schedule_customer_code") and not row.get("schedule_identity_duplicate"):
-        current_orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory_id,
-            CartonOrder.customer_code == payload.customer_code, CartonOrder.status != "CANCELLED", CartonOrder.deleted_at.is_(None)))
-        if any(normalized(order.contract_no) == normalized(row.get("contract_no"))
-               and normalized(order.item_no) == normalized(row.get("item_no"))
-               and (not effective_po(row) or normalized(order.customer_po) in {
-                   normalized(row.get("customer_po")), effective_po(row)}) for order in current_orders):
-            raise HTTPException(409, "该旧排期已有客户 PO / SO 匹配订单，请核对原订单，勿重复下单")
+    if _legacy_schedule_orders(db, factory_id, row, payload.customer_code):
+        raise HTTPException(409, "该旧排期已有客户 PO / SO 匹配订单，请核对原订单，勿重复下单")
     existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") and row.get("match_basis") != BASIS else None
     if existing and existing.factory_id == factory_id and existing.status != "CANCELLED" and existing.deleted_at is None:
         raise HTTPException(409, "该业务排期已关联订单，请查看原订单，勿重复下单")
     return row
+
+
+def _schedule_mark_order_conflict(db, factory_id, selected):
+    """Use live association evidence before recording an external order mark."""
+    from app.services.carton_order_split import annotate_schedule, live_plans, schedule_matches
+    from app.services.carton_schedule_order_matching import read_matches as read_po_matches
+    from app.services.carton_schedule_quantity_matching import proof_matches, read_matches as read_quantity_matches
+
+    links = _schedule_order_links(db, factory_id)
+    current = read_po_matches(db, factory_id)
+    splits = live_plans(db, factory_id)
+    remaining = []
+    for key, row, customer_code in selected:
+        matched = current["matches"].get(key, [])
+        if any(order_id in links.get(key, []) for order_id in matched):
+            return row
+        candidates = [] if row.get("schedule_identity_duplicate") else schedule_matches(db, factory_id, row, splits)
+        if candidates:
+            if len(candidates) == 1 and not (matched or current["ambiguous"].get(key)):
+                projected = dict(row, split_id=None)
+                annotate_schedule(db, factory_id, projected, [candidates[0][0]])
+                if projected["split_id"]:
+                    return row
+            continue
+        if matched or len(_legacy_schedule_orders(db, factory_id, row, customer_code)) == 1:
+            return row
+        remaining.append((key, row))
+    if not remaining:
+        return None
+    quantity = defaultdict(list)
+    for proofs in read_quantity_matches(db, factory_id).values():
+        for proof in proofs:
+            if proof.get("ambiguous") is False:
+                quantity[proof["schedule_identity"]].append(proof)
+    return next((row for key, row in remaining if any(proof_matches(row, proof) for proof in quantity[key])), None)
 
 
 def set_schedule_order_mark(
@@ -4975,7 +5017,7 @@ def set_schedule_order_marks(
     rows = [row for row in summary.get("rows", []) if isinstance(row, dict)]
     marks = schedule_order_marks(db, factory_id)
     latest_by_customer = _previous_schedule_by_customer(db, factory_id, {customer_key(row) for row in rows}) if marked else {}
-    selected: list[tuple[str, dict[str, object]]] = []
+    selected: list[tuple[str, dict[str, object], str]] = []
     for source_sheet, source_row in sources:
         matches = [row for row in rows if row.get("source_sheet") == source_sheet and row.get("source_row") == source_row]
         if len(matches) != 1:
@@ -5003,12 +5045,16 @@ def set_schedule_order_marks(
                     or row.get("schedule_identity_duplicate") and any(item.get("_batch_id") != batch.id for item in latest)
                     or not row.get("schedule_identity_duplicate") and (len(latest) != 1 or demand_snapshot(latest[0]) != demand_snapshot(row))):
                 raise HTTPException(409, "最新排期的状态或需求已变化，请在最新排期中核对后标记")
-            if mark_changes(row, mark_for_row(row, marks)) and len(reason.strip()) < 4:
-                raise HTTPException(422, "需求已变化或原下单依据待核实，请填写至少四个字的核对理由后重新确认已下单")
-        selected.append((key, row))
+        selected.append((key, row, code))
+    if marked:
+        conflict = _schedule_mark_order_conflict(db, factory_id, selected)
+        if conflict is not None:
+            raise HTTPException(409, f"排期 {conflict.get('contract_no')} {conflict.get('item_no')} 已关联正式订单，请查看原订单。本次标记未保存。")
+        if len(reason.strip()) < 4 and any(mark_changes(row, mark_for_row(row, marks)) for _, row, _ in selected):
+            raise HTTPException(422, "需求已变化或原下单依据待核实，请填写至少四个字的核对理由后重新确认已下单")
     operation_id = f"SM-{uuid4().hex}"
     changed_count = 0
-    for key, row in selected:
+    for key, row, _ in selected:
         current = marks.get(key, {}).get("marked") is True
         if current != marked or mark_for_row(row, marks).get("review_required") or (marked and mark_changes(row, mark_for_row(row, marks))):
             _audit(db, user, factory_id, "SCHEDULE_ORDER_MARK_CHANGED", "schedule_order_mark", key, {
@@ -5021,7 +5067,7 @@ def set_schedule_order_marks(
             })
             changed_count += 1
     db.commit()
-    return {"items": [{"identity": key, "marked": marked, "demand_snapshot": demand_snapshot(row)} for key, row in selected], "changed_count": changed_count}
+    return {"items": [{"identity": key, "marked": marked, "demand_snapshot": demand_snapshot(row)} for key, row, _ in selected], "changed_count": changed_count}
 
 
 def _previous_schedule_by_customer(db: Session, factory_id: str, customers: set[str]) -> dict[str, list[dict[str, object]]]:

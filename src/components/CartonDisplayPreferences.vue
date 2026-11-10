@@ -22,14 +22,14 @@ function save() { saved.value = setPreference(currency.value, rate.value) }
       </div>
       <div class="space-y-2" @input="saved = false" @change="saved = false">
         <div class="flex flex-wrap items-center gap-3 text-xs">
-          <label class="flex items-center gap-2 font-semibold">金额显示<select v-model="currency" aria-label="我的金额显示币种" class="h-9 rounded-lg border border-teal-200 bg-white px-3"><option value="CNY">人民币（CNY）</option><option value="HKD">港币参考（HKD）</option></select></label>
+          <label class="flex items-center gap-2 font-semibold">人民币金额显示<select v-model="currency" aria-label="我的金额显示币种" class="h-9 rounded-lg border border-teal-200 bg-white px-3"><option value="CNY">仅显示原币</option><option value="HKD">同时显示港币参考</option></select></label>
           <label class="flex flex-wrap items-center gap-2">1 人民币 = <input v-model="rate" aria-label="人民币兑港币参考汇率" inputmode="decimal" maxlength="15" placeholder="填写汇率" class="h-9 w-28 rounded-lg border px-2">港币</label>
           <button type="button" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white" @click="save">保存金额设置</button>
         </div>
-        <p class="text-xs leading-5 text-slate-500">人民币单价和月结保持原账；港币按填写汇率显示参考，单价保留 6 位、金额保留 2 位小数，导出沿用原币。</p>
+        <p class="text-xs leading-5 text-slate-500">按手填汇率在收料单价、本月对账汇总和库存月结金额旁显示港币参考。单价参考保留 6 位、金额参考保留 2 位小数。查询、凭证与导出均使用原账币种。</p>
         <p v-if="error" role="alert" class="text-xs text-red-700">{{ error }}</p><p v-else-if="saved" role="status" class="text-xs text-teal-700">金额显示已保存</p>
       </div>
     </div>
-    <p class="mt-3 text-xs text-slate-500">仅当前账号、本机浏览器生效，每个人可单独设置。</p>
+    <p class="mt-3 text-xs text-slate-500">设置保存在本机浏览器，按登录账号和任职分别生效。</p>
   </article>
 </template>

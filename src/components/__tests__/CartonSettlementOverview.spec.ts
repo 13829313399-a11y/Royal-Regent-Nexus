@@ -31,6 +31,34 @@ function settlement(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => { workspaceMock.mockReset() })
 
+it('adds the personal HKD reference only to CNY totals while querying and displaying original amounts', async () => {
+  workspaceMock.mockImplementation(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+  const reference = vi.fn((value: string) => `港币参考 HK$${(Number(value) * 1.1).toFixed(2)}`)
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing', moneyReference: reference } })
+  try {
+    await flushPromises()
+    expect(wrapper.text()).toContain('1,380.00 人民币')
+    expect(wrapper.text()).toContain('港币参考 HK$1518.00')
+    expect(reference).toHaveBeenCalledWith('1380.00', 'CNY')
+    await wrapper.get('[aria-label="本月对账币种"]').setValue('HKD')
+    await flushPromises()
+    expect(workspaceMock).toHaveBeenLastCalledWith('huaxing', expect.any(String), 'HKD')
+    expect(wrapper.text()).toContain('1,380.00 港币')
+    expect(wrapper.text()).not.toContain('港币参考 HK$')
+  } finally { wrapper.unmount() }
+})
+
+it('leaves unpriced totals pending without converting them into a zero HKD figure', async () => {
+  workspaceMock.mockResolvedValue(settlement({ totals: { ...settlement().totals, inbound: null, net: null } }))
+  const reference = vi.fn(() => '港币参考 HK$0.00')
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing', moneyReference: reference } })
+  try {
+    await flushPromises()
+    expect(wrapper.text()).toContain('待核价 人民币')
+    expect(reference).toHaveBeenCalledExactlyOnceWith('0.00', 'CNY')
+  } finally { wrapper.unmount() }
+})
+
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (reason: Error) => void
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
@@ -148,7 +176,7 @@ it('shows a read-only month without submit, lock or unlock actions', async () =>
   expect(text).toContain('1,380.00')
   expect(text).toContain('人民币')
   expect(text).toContain('只读')
-  expect(text).toContain('不提交、不锁定，不作为付款依据')
+  expect(text).toContain('实际付款及库存锁期在对应入口按原凭证办理')
   const labels = wrapper.findAll('button').map(button => button.text())
   expect(labels).toContain('刷新')
   expect(labels).not.toContain('提交供应商核对')
@@ -163,7 +191,7 @@ it('lists blocking items as reference only, without submission controls', async 
   const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
   await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
   expect(wrapper.text()).toContain('1 行送货单缺价')
-  expect(wrapper.text()).toContain('暂不影响旧月结流程')
+  expect(wrapper.text()).toContain('按单号打开原凭证核对')
   expect(wrapper.findAll('button').map(button => button.text())).not.toContain('提交供应商核对')
   wrapper.unmount()
 })
@@ -187,6 +215,38 @@ it('keeps the overview read-only even if historical metadata allows a workflow a
     await flushPromises()
     await wrapper.get('[aria-label="本月对账币种"]').setValue('USD'); await flushPromises()
     expect(wrapper.findAll('button').map(button => button.text())).toEqual(['刷新'])
-    expect(wrapper.text()).toContain('不提交、不确认、不锁定，也不生成应付')
+    expect(wrapper.text()).toContain('只读对账')
+  } finally { wrapper.unmount() }
+})
+
+it('filters details and differences by customer and opens the exact receipt with the factory total still visible', async () => {
+  const month = settlement()
+  const dickie = { ...month.totals, inbound: '480.00', net: '480.00', documents: 1, receipt_lines: 2 }
+  const buzz = { ...month.totals, inbound: '900.00', net: '900.00', documents: 1, receipt_lines: 1 }
+  workspaceMock.mockResolvedValue(settlement({
+    customers: [{ key: 'code:DICKIE', name: 'Dickie', totals: dickie }, { key: 'code:BUZZ', name: 'BUZZ', totals: buzz }],
+    lines: [
+      line({ customer_key: 'code:DICKIE', issues: ['验收资料待核对'], reference: { kind: 'RECEIPT', id: 'receipt-1' } }),
+      line({ source_key: 'RECEIPT:2', customer_key: 'code:BUZZ', customer_name: 'BUZZ', document_no: 'DN-2', issues: ['另一客户的差异'] }),
+    ],
+  }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await flushPromises()
+    await wrapper.get('[aria-label="本月对账客户"]').setValue('code:DICKIE')
+    expect(wrapper.get('[aria-label="本厂东康总额"]').text()).toContain('1,380.00')
+    expect(wrapper.get('[aria-label="所选客户小计"]').text()).toContain('480.00')
+    const issues = wrapper.get('[aria-label="本月对账待处理清单"]')
+    expect(issues.text()).toContain('DN-1')
+    expect(issues.text()).not.toContain('另一客户的差异')
+    expect(wrapper.get('[aria-label="本月对账明细表"]').text()).not.toContain('DN-2')
+    await issues.get('button').trigger('click')
+    const open = wrapper.emitted('open-receipt')?.[0]
+    expect(open?.slice(0, 2)).toEqual(['huaxing', 'receipt-1'])
+    const signal = open?.[2] as AbortSignal
+    expect(signal.aborted).toBe(false)
+    await wrapper.get('[aria-label="本月对账客户"]').setValue('code:BUZZ')
+    expect(signal.aborted).toBe(true)
+    expect(workspaceMock).toHaveBeenCalledOnce()
   } finally { wrapper.unmount() }
 })

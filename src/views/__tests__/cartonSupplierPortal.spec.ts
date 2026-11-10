@@ -402,6 +402,10 @@ it('shows the shared monthly summary in the supplier portal without a standalone
     expect(w.findComponent({ name: 'CartonSupplierMonthlySummary' }).exists()).toBe(true)
     expect(w.findAll('button').some(row => row.text().includes('收料单价更正'))).toBe(false)
     expect(w.get('[aria-label="供应商月结子页面"]').text()).toContain('本月对账')
+    const panel = w.findComponent({ name: 'CartonSupplierMonthlySummary' })
+    const version = panel.props('refreshKey') as number
+    await w.findAll('button').find(row => row.text() === '刷新')!.trigger('click'); await flushPromises()
+    expect(panel.props('refreshKey')).toBe(version + 1)
   } finally { w.unmount(); routeState.query.settlement_view = undefined }
 })
 it('opens supplier payable receipts with the authorized factory list and an independent keyword', async () => {
@@ -409,7 +413,7 @@ it('opens supplier payable receipts with the authorized factory list and an inde
   const w = mount(CartonSupplierView, { global: { stubs: { ...guideOptions.global.stubs, CartonSupplierReturns: true, CartonSupplierChangeTasks: true, CartonPayables: true } } }); await flushPromises()
   try {
     await w.findAll('button').find(row => row.text() === '月结对账')!.trigger('click'); await flushPromises()
-    await w.findAll('button').find(row => row.text() === '应付与收款')!.trigger('click'); await flushPromises()
+    await w.findAll('button').find(row => row.text() === '收款与往来')!.trigger('click'); await flushPromises()
     const panel = w.findComponent({ name: 'CartonPayables' })
     expect(panel.props('internal')).toBe(false); expect(panel.props('factories')).toMatchObject([{ factory_id: 'huaxing' }])
     expect(router.replace).toHaveBeenCalledWith({ query: expect.objectContaining({ settlement_view: 'payables' }) })

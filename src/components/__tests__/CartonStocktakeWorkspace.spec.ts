@@ -140,6 +140,16 @@ describe('库存盘点工作台', () => {
     expect(mocks.create).toHaveBeenCalledTimes(1)
     expect(wrapper.get('[aria-label="全选盘点筛选结果"]').element.closest('th')).not.toBeNull()
   })
+  it('opens the exact posted stocktake from an exception without creating a draft from selected positions', async () => {
+    mocks.detail.mockResolvedValue(detail('POSTED'))
+    const wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing', initialDocumentId: 'PD-1', initialPositionKeys: ['M1'] } })
+    await flushPromises()
+    expect(mocks.detail).toHaveBeenCalledExactlyOnceWith('huaxing', 'PD-1')
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('已入账')
+    expect(wrapper.find('[aria-label="实盘数量 L1"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('does not create from a stale selection or while browsing without a selection', async () => {
     let wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing', initialPositionKeys: ['missing'] } })
     await flushPromises()
