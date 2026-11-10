@@ -56,6 +56,32 @@ def test_combined_page_filters_before_pagination_and_preserves_purchase_projecti
         sent = ok(client.get(ENDPOINT, params={'factory_id': FACTORY, 'kind': 'SAMPLE', 'status_filter': 'SENT'}))
         assert sent['total'] == 1 and sent['items'][0]['special']['id'] == seed['id']
         assert ok(client.get(ENDPOINT, params={'factory_id': FACTORY, 'kind': 'WORKSHOP_MISC', 'status_filter': 'SENT'}))['total'] == 0
+        unlocked = ok(client.get(ENDPOINT, params={'factory_id': FACTORY, 'status_filter': 'UNLOCKED', 'limit': 1, 'offset': 54}))
+        assert unlocked['total'] == 55 and unlocked['items'][0]['special']['status'] == 'SUBMITTED'
+        locked = ok(client.get(ENDPOINT, params={'factory_id': FACTORY, 'status_filter': 'LOCKED'}))
+        assert locked['total'] == 2
+        assert {entry['kind'] for entry in locked['items']} == {'PURCHASE', 'SAMPLE'}
+
+
+def test_awaiting_acceptance_groups_pending_and_partial_from_current_issue(monkeypatch):
+    with make_client(monkeypatch) as client:
+        order = setup_portal(client)
+        portal = ok(client.get('/api/carton-supplier/workspace', params={'factory_id': FACTORY}))['orders'][0]
+        params = {'factory_id': FACTORY, 'collaboration_filter': 'AWAITING_ACCEPTANCE'}
+        for accepted, status in enumerate(('PENDING', 'PARTIAL', 'ACCEPTED')):
+            if accepted:
+                supplier_login(client)
+                line = portal['lines'][accepted - 1]
+                ok(client.put(f"/api/carton-supplier/papers/{line['id']}/commitment",
+                    json={'factory_id': FACTORY, 'issue_id': portal['issue_id'], 'expected_revision': 0, 'promised_date': '2026-09-23'}))
+            login_as(client, 'admin')
+            filtered = ok(client.get(ENDPOINT, params=params))
+            if status == 'ACCEPTED':
+                assert filtered['total'] == 0
+                filtered = ok(client.get(ENDPOINT, params={**params, 'collaboration_filter': 'ACCEPTED'}))
+            assert filtered['total'] == 1
+            assert filtered['items'][0]['order']['order_no'] == order['order_no']
+            assert filtered['items'][0]['order']['supplier_acceptance']['status'] == status
 
 
 def test_applicant_only_never_reads_purchase_or_other_employees_requests(monkeypatch):

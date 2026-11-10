@@ -10,7 +10,7 @@ import { formatBusinessDate } from '@/lib/dateTime'
 import '@/features/carton-procurement/layout.css'
 
 const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; internal?: boolean; viewerKey?: string; search?: string; sourceId?: string; refundId?: string }>(), { internal: false, factoryId: '' })
-const emit = defineEmits<{ changed: []; busy: [value: boolean]; 'update:search': [value: string] }>()
+const emit = defineEmits<{ changed: []; busy: [value: boolean]; 'update:search': [value: string]; 'close-source': [] }>()
 const options = computed(() => [...new Set(props.factories?.map(row => row.factory_id) ?? (props.factoryId ? [props.factoryId] : []))])
 const factory = ref(''), rows = ref<SupplierReturn[]>([]), total = ref(0), offset = ref(0), history = ref(false)
 const localSearch = ref(''), loading = ref(false), busy = ref(false), error = ref(''), message = ref('')
@@ -58,8 +58,10 @@ watch(context, () => {
   generation++; sequence++; controller.abort(); controller = new AbortController(); rows.value = []; selected.value = null
   detailOpener = null
   total.value = 0; offset.value = 0; loading.value = false; busy.value = false; error.value = ''; message.value = ''; requests.clear(); clearForm()
-  if (props.sourceId && factory.value) void open({ movement_id: props.sourceId })
-  else if (!props.sourceId) void load()
+  if (searchTimer) clearTimeout(searchTimer)
+  if (!options.value.includes(factory.value)) return
+  if (props.sourceId) void open({ movement_id: props.sourceId })
+  else void load()
 }, { immediate: true, flush: 'sync' })
 watch(busy, value => emit('busy', value))
 watch([history, query], () => {
@@ -178,12 +180,13 @@ onBeforeUnmount(() => { generation++; controller.abort(); if (searchTimer) clear
 
 <template>
   <section class="space-y-4" aria-label="退货签收与退款">
-    <header v-if="!sourceId" class="rounded-xl border border-teal-200 bg-card p-4">
+    <header class="rounded-xl border border-teal-200 bg-card p-4">
+      <Button v-if="sourceId" type="button" variant="outline" size="sm" class="mt-3" :disabled="busy" @click="emit('close-source')">返回退货列表</Button>
       <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="text-base font-semibold text-foreground">退货签收与退款</h2><p class="mt-2 max-w-4xl text-xs leading-5 text-muted-foreground">按实际退货逐纸品核对发出、分次签收、异议与贷项。现金退款须内部核实到账；月结抵扣只是贷项分配，不重复扣减。</p></div><Button type="button" variant="outline" size="sm" :disabled="busy || loading || !factory" @click="refresh">刷新退货</Button></div>
       <div class="mt-4 flex flex-wrap items-end gap-3 text-xs"><label v-if="options.length > 1">厂区<select v-model="factory" :disabled="busy" aria-label="退货厂区" class="mt-1 block h-10 rounded-lg border border-input bg-card px-3"><option v-for="id in options" :key="id" :value="id">{{ factoryName(id) }}</option></select></label><label v-if="search === undefined" class="min-w-48 flex-1">搜索退货<input v-model="query" aria-label="退货搜索" placeholder="客户 / 合同 / 货号 / 退货单" class="mt-1 block h-10 w-full rounded-lg border border-input bg-card px-3"></label><label class="flex h-10 items-center gap-2"><input v-model="history" :disabled="busy" type="checkbox" aria-label="显示全部退货历史">显示全部历史及未接入退货</label><span class="pb-3 text-muted-foreground">{{ history ? '全部历史' : '当前待办' }} · {{ total }} 笔</span></div>
       <p class="mt-2 text-xs text-muted-foreground">未接入协同的退货仅供查阅；可接入记录由内部明确启用，其他供方沿原手工贷项核对。原月结确认保留。</p>
     </header>
-    <Button v-else type="button" variant="outline" size="sm" :disabled="busy || loading" @click="refresh">刷新原退货单</Button>
+    <Button v-if="sourceId" type="button" variant="outline" size="sm" :disabled="busy || loading" @click="refresh">刷新原退货单</Button>
     <p v-if="error" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</p><p v-if="message" role="status" class="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
     <p v-if="loading && !rows.length" role="status" class="p-6 text-sm text-muted-foreground">正在读取退货与回执…</p>
     <div v-if="rows.length" class="overflow-hidden rounded-xl border bg-card"><div class="carton-table-wrap overflow-x-auto"><table aria-label="供应商退货协同明细" class="carton-table-fit w-full min-w-[980px] text-left text-xs"><thead class="bg-muted/50 text-muted-foreground"><tr><th class="p-3">退货来源 / 纸品</th><th class="p-3">发出 / 签收 / 异议</th><th class="p-3">贷项 / 退款 / 抵扣</th><th class="p-3">复核状态</th><th class="p-3">处理</th></tr></thead><tbody class="divide-y"><tr v-for="row in rows" :key="row.movement_id"><td data-label="退货来源 / 纸品" class="max-w-64 break-words p-3"><b>{{ row.document_no }}</b><p class="mt-1">{{ row.customer_name }} · {{ row.contract_no }} · {{ row.item_no }}</p><p class="mt-1">{{ row.packaging_type }} · {{ row.paper_quality }} · {{ row.specification }}</p><p class="mt-1 text-muted-foreground">{{ row.date_evidence?.date_basis === 'RETURN_ACTUAL' ? '实际退货' : '历史记账（实际退货日期待核实）' }} {{ row.date_evidence?.return_date || row.posting_date }}</p></td><td data-label="发出 / 签收 / 异议" class="p-3 tabular-nums"><p>发出 {{ row.quantity }} {{ row.unit }}</p><p class="mt-1">已签收 {{ row.received_quantity }} · 异议 {{ row.disputed_quantity }}</p><p class="mt-1">待签收 {{ row.remaining_quantity }} {{ row.unit }}</p></td><td data-label="贷项 / 退款 / 抵扣" class="p-3 tabular-nums"><b>贷项 {{ money(row.credit?.amount) }} {{ row.currency }}</b><p class="mt-1">已核实现金 {{ money(row.cash_confirmed_amount) }}</p><p class="mt-1">已分配抵扣 {{ money(row.offset_confirmed_amount) }}</p><p class="mt-1 text-muted-foreground">此退货累计净抵扣（跨月合计） {{ money(row.deduction_amount) }}</p></td><td data-label="复核状态" class="max-w-52 p-3"><b :class="row.pending ? 'text-amber-800' : 'text-teal-800'">{{ !row.enabled ? '未接入协同' : row.date_reconfirmation_required ? '日期已更正，待双方复核' : row.pending ? '待处理' : '已完成' }}</b><p class="mt-1">签收 {{ label(row.receipt_status) }} · 贷项 {{ label(row.credit_status) }}</p><p v-if="!row.source_active" class="mt-1 text-red-700">原退货已冲销，只读核对</p></td><td data-label="处理" class="p-3"><Button type="button" size="sm" variant="outline" :disabled="busy || loading" :aria-label="`查看退货 ${row.document_no}`" @click="open(row, $event)">{{ rowActionLabel(row) }}</Button></td></tr></tbody></table></div>

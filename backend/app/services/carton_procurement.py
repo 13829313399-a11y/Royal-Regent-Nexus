@@ -2667,7 +2667,7 @@ def list_orders(
     *,
     customer_code: str = "",
     search: str = "",
-    status_filter: str = "",
+    status_filter: str | tuple[str, ...] = "",
     due_from: str = "",
     due_to: str = "",
     limit: int = 50,
@@ -2701,7 +2701,8 @@ def list_orders(
     if due_filter in due_conditions:
         query = query.where(due_conditions[due_filter])
     if status_filter:
-        query = query.where(CartonOrder.status == status_filter)
+        statuses = (status_filter,) if isinstance(status_filter, str) else status_filter
+        query = query.where(CartonOrder.status.in_(statuses))
     if due_from:
         query = query.where(CartonOrder.due_date >= due_from)
     if due_to:
@@ -5046,12 +5047,11 @@ def set_schedule_order_marks(
                     or not row.get("schedule_identity_duplicate") and (len(latest) != 1 or demand_snapshot(latest[0]) != demand_snapshot(row))):
                 raise HTTPException(409, "最新排期的状态或需求已变化，请在最新排期中核对后标记")
         selected.append((key, row, code))
-    if marked:
-        conflict = _schedule_mark_order_conflict(db, factory_id, selected)
-        if conflict is not None:
-            raise HTTPException(409, f"排期 {conflict.get('contract_no')} {conflict.get('item_no')} 已关联正式订单，请查看原订单。本次标记未保存。")
-        if len(reason.strip()) < 4 and any(mark_changes(row, mark_for_row(row, marks)) for _, row, _ in selected):
-            raise HTTPException(422, "需求已变化或原下单依据待核实，请填写至少四个字的核对理由后重新确认已下单")
+    conflict = _schedule_mark_order_conflict(db, factory_id, selected)
+    if conflict is not None:
+        raise HTTPException(409, f"排期 {conflict.get('contract_no')} {conflict.get('item_no')} 已关联正式订单，请查看原订单。本次标记未保存。")
+    if marked and len(reason.strip()) < 4 and any(mark_changes(row, mark_for_row(row, marks)) for _, row, _ in selected):
+        raise HTTPException(422, "需求已变化或原下单依据待核实，请填写至少四个字的核对理由后重新确认已下单")
     operation_id = f"SM-{uuid4().hex}"
     changed_count = 0
     for key, row, _ in selected:
