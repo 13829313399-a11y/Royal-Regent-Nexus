@@ -30,8 +30,8 @@ def validate(data):
     if gateway not in ipaddress.ip_network('100.64.0.0/10'):
         raise ValueError('Expected Windows gateway Tailscale IPv4')
     rows=data['printers']
-    if len(rows) not in (11,16) or {int(p['machine_no']) for p in rows}!=set(range(1,len(rows)+1)):
-        raise ValueError('Expected a complete fleet of machines 1 to 11 or 1 to 16')
+    if len(rows) not in (11,16,18) or {int(p['machine_no']) for p in rows}!=set(range(1,len(rows)+1)):
+        raise ValueError('Expected a complete fleet of machines 1 to 11, 1 to 16 or 1 to 18')
     addresses=set()
     references=set()
     for p in rows:

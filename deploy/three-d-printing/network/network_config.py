@@ -93,8 +93,8 @@ def validate(config):
         ):
             raise ValueError("invalid_public_key")
     printers = config["printers"]
-    if not isinstance(printers, list) or len(printers) not in (11, 16):
-        raise ValueError("complete_11_or_16_printer_fleet_required")
+    if not isinstance(printers, list) or len(printers) not in (11, 16, 18):
+        raise ValueError("complete_11_16_or_18_printer_fleet_required")
     ips, numbers, references = set(), set(), set()
     for printer in printers:
         if set(printer) != {"machine_no", "ip", "credential_ref", "cert_sha256"}:

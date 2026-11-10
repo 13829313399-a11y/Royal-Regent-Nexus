@@ -92,16 +92,17 @@ def test_templates_restrict_exact_printers_without_global_firewall_reset(config)
     assert "--snat-subnet-routes=false" in files["tailscale-commands.txt"]
 
 
-def test_sixteen_device_topology_keeps_exact_host_scope(config):
+@pytest.mark.parametrize("count", [16, 18])
+def test_expanded_device_topology_keeps_exact_host_scope(config, count):
     sample = config['printers'][0]
     config['printers'] = [
         {**sample, 'machine_no':n, 'ip':f'10.33.30.{100+n}', 'credential_ref':f'printer-{n:02}'}
-        for n in range(1,17)
+        for n in range(1,count+1)
     ]
     network_config.validate(config)
     policy = json.loads(render.templates(config)['tailscale-policy.json'])
-    assert len(policy['grants'][0]['dst']) == 16
-    assert len(policy['tests'][1]['deny']) == 16
+    assert len(policy['grants'][0]['dst']) == count
+    assert len(policy['tests'][1]['deny']) == count
     config['printers'].pop()
     with pytest.raises(ValueError): network_config.validate(config)
 

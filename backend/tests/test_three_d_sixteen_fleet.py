@@ -7,11 +7,11 @@ from sqlalchemy import select
 from test_three_d_connector import environment, post, registered
 
 
-def expand(env):
+def expand(env, count=16):
     _, dbm, m, service, clock, _ = env
     business = importlib.import_module("app.services.three_d_printing")
     with dbm.SessionLocal() as db:
-        db.get(m.ThreeDPrintingSetting, "huakang-a").machine_count = 16
+        db.get(m.ThreeDPrintingSetting, "huakang-a").machine_count = count
         business.seed_three_d_printing_defaults(db)
         db.flush()
         printers = list(db.scalars(select(m.ThreeDPrintingPrinter)))
@@ -32,8 +32,9 @@ def expand(env):
         return {p.machine_no: p.id for p in printers}
 
 
-def test_all_sixteen_observers_are_listed_and_granted_without_control(environment):
-    ids = expand(environment)
+@pytest.mark.parametrize("count", [16, 18])
+def test_all_observers_are_listed_and_granted_without_control(environment, count):
+    ids = expand(environment, count)
     registered(environment)
     listed = post(environment, "/printers", {"instance_id": "replica-a"})
     assert {p["printer_id"] for p in listed["printers"]} == set(ids.values())
@@ -45,9 +46,10 @@ def test_all_sixteen_observers_are_listed_and_granted_without_control(environmen
         assert grant["control_verified"] is False
 
 
-def test_sixteenth_machine_has_filters_resources_and_raw_and_cached_analytics(environment, monkeypatch):
+@pytest.mark.parametrize("count", [16, 18])
+def test_last_machine_has_filters_resources_and_raw_and_cached_analytics(environment, monkeypatch, count):
     env = environment
-    ids = expand(env)
+    ids = expand(env, count)
     registered(env)
     m, dbm, now = env[2], env[1], env[4][0]
     efficiency = importlib.import_module("app.services.three_d_efficiency")
@@ -56,7 +58,7 @@ def test_sixteenth_machine_has_filters_resources_and_raw_and_cached_analytics(en
     with dbm.SessionLocal() as db:
         for seq, seconds in enumerate((120, 60)):
             db.add(m.ThreeDPrintingPrinterStateEvent(
-                id=f"fleet-16-{seq}", factory_id="huakang-a", printer_id=ids[16], machine_no=16,
+                id=f"fleet-16-{seq}", factory_id="huakang-a", printer_id=ids[count], machine_no=count,
                 connector_instance_id=env[3].instance_key("replica-a"), connection_session_id="fleet-test", sequence=seq,
                 observed_at=rollups.stamp(now - timedelta(hours=2, seconds=seconds)),
                 received_at=rollups.stamp(now), state="PAUSE", error_code="E16",
@@ -64,28 +66,28 @@ def test_sixteenth_machine_has_filters_resources_and_raw_and_cached_analytics(en
             ))
         db.commit()
         raw = efficiency.counters(db, 1)
-        assert set(raw) == set(range(1, 17))
-        assert raw[16]["pause_hours"] > 0
-        assert raw[16]["error_events"] == 2
+        assert set(raw) == set(range(1, count + 1))
+        assert raw[count]["pause_hours"] > 0
+        assert raw[count]["error_events"] == 2
     rollups.initialize(dbm.engine, now=now)
     with dbm.SessionLocal() as db:
         assert efficiency.counters(db, 1) == raw
     response = env[0].get("/api/three-d-printing/collections/records", params={
-        "factory_id": "huakang-a", "machine_no": 16,
+        "factory_id": "huakang-a", "machine_no": count,
     })
     assert response.status_code == 200
     assert env[0].get("/api/three-d-printing/collections/records", params={
-        "factory_id": "huakang-a", "machine_no": 17,
+        "factory_id": "huakang-a", "machine_no": 19,
     }).status_code == 422
     schemas = importlib.import_module("app.schemas.three_d_operations")
-    assert schemas.Profile(machine_no=16, materials=[]).machine_no == 16
+    assert schemas.Profile(machine_no=count, materials=[]).machine_no == count
     assert schemas.Spool(material="PLA", lot="test", initial_g=100, remaining_g=100,
-                         machine_no=16, slot=0).machine_no == 16
+                         machine_no=count, slot=0).machine_no == count
     with pytest.raises(ValueError):
-        schemas.Profile(machine_no=17, materials=[])
+        schemas.Profile(machine_no=19, materials=[])
     response = env[0].get("/api/three-d-printing/operations/analytics?days=1")
     assert response.status_code == 200
-    assert {x["machine_no"] for x in response.json()["machines"]} == set(range(1, 17))
+    assert {x["machine_no"] for x in response.json()["machines"]} == set(range(1, count + 1))
 
 
 def test_numbering_cutoff_preserves_old_runs_and_does_not_match_reused_numbers(environment, monkeypatch):
