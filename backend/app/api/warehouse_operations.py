@@ -123,7 +123,8 @@ def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key
     if not capabilities(actor, 'fabric', factory_id)['read']:
         raise HTTPException(403, '无布料仓月度数量查询权限')
     from app.services.fabric_quantity_monthly import report
-    return report(db, month, direction, channel, party_key, search, unit, date_order)
+    return report(db, month, direction, channel, party_key, search, unit, date_order,
+                  include_purchase_price=can(actor, 'fabric_warehouse:read', factory_id, 'pmc-warehouse'))
 
 
 @router.get('/fabric/monthly')

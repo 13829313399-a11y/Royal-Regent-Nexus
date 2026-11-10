@@ -2,18 +2,21 @@ import axios from 'axios'
 import { http } from '@/lib/http'
 import type { WarehouseOperationsWorkspace } from './warehouseOperations'
 import type { MasterRecord } from './fabricMaster'
+import type { PurchasePriceReference } from './fabricProcurement'
 
 export const HANDOVER_FACTORY = 'huakang-c' as const
 export interface HandoverLine {
   id: string; source_line: string; item_code: string; item_name: string; specification: string; color: string
   quantity: string; unit: string; material_category: '' | 'FABRIC' | 'ACCESSORY' | 'THREAD'; lot: string; roll_no: string
   roll_quantities: string; contract_no: string; production_no: string; product_no: string; note: string
+  purchase_detail_id?: string; purchase_order_no?: string; ordered_quantity?: string; plan_no?: string
   unit_price?: string; price_unit?: string; currency?: '' | 'CNY' | 'HKD' | 'USD' | 'EUR'; price_note?: string
 }
 export interface HandoverData {
   kind: 'DELIVERY' | 'ISSUE'; source_no: string; document_date: string | null; counterparty: string
   contract_no: string; production_no: string; product_no: string; note: string; lines: HandoverLine[]
   supplier_id?: string
+  purchase_order_no?: string
 }
 export interface HandoverDocument {
   id: string; factory_id: string; issuer_id: string | null; status: 'DRAFT' | 'CONFIRMED' | 'VOID'; revision: number
@@ -28,8 +31,18 @@ export interface PendingDelivery extends HandoverSummary { pending_line_count: n
 export interface PendingDeliveries { total: number; items: PendingDelivery[]; limit: number; offset: number; stock_totals: { unit: string; quantity: string }[] }
 export interface HandoverIssuer { id: string; name: string; kind: 'SUPPLIER' | 'REQUESTOR'; active: number; revision: number; expires_at: string; created_at: string; token?: string; supplier_id?: string; supplier_code?: string; replayed?: boolean }
 export interface HandoverWorkspace { factory_id: string; inventory: WarehouseOperationsWorkspace; can_operate: boolean; can_manage: boolean; can_read_purchase?: boolean; materials: { id: string; code: string; name: string }[]; suppliers?: MasterRecord[] }
-export interface HandoverPurchaseSource { id: string; revision: number; receipt_count: number; remaining: string | null; received: string; order_no: string; production_no: string; plan_no: string; contract_no: string; supplier: string; item_code: string; item_name: string; unit: string; can_receive: boolean; suggested: boolean }
-export interface HandoverPurchaseSources { document_revision: number; lines: Record<string, HandoverPurchaseSource[]> }
+export interface HandoverPurchaseSource {
+  id: string; revision: number; receipt_count: number; remaining: string | null; received: string
+  order_no: string; production_no: string; plan_no: string; contract_no: string; supplier: string
+  item_code: string; item_name: string; unit: string; can_receive: boolean; suggested: boolean
+  primary_match?: boolean; ordered_quantity?: string | null; ordered_quantity_matches?: boolean
+  purchase_price?: PurchasePriceReference | null
+}
+export type HandoverPurchaseMatchStatus = 'MATCHED' | 'NO_REFERENCE' | 'NOT_FOUND' | 'CONFLICT'
+export interface HandoverPurchaseSources {
+  document_revision: number; lines: Record<string, HandoverPurchaseSource[]>
+  match_status?: Record<string, HandoverPurchaseMatchStatus>
+}
 export interface HandoverPosting { factory_id: 'huakang-c'; request_id: string; expected_revision: number; expected_inventory_revision: number; code_version: number; business_date: string; lines: { line_id: string; quantity: string; batch_id: string; location_id: string; lot: string; roll_no: string; purchase_source_id?: string; expected_source_revision?: number; expected_receipt_count?: number; difference_reason?: string }[] }
 export interface HandoverSave { request_id: string; expected_revision: number; data: HandoverData }
 export interface HandoverAction { request_id: string; expected_revision: number; acknowledge_warnings: boolean; reason: string; data?: HandoverData }

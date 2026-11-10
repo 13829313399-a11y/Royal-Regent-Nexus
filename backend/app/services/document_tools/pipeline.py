@@ -196,7 +196,7 @@ def run_one(session_factory, claimed=None):
             # All downstream work uses detached scalars, never a long DB lock.
             db.expunge_all()
         progress("validate", 0, None)
-        if job.kind != "inspect" and not any(f["role"] == "preview" for f in result.files):
+        if job.kind != "inspect" and not any(f["role"] == "preview" or (f['role']=='result' and f['format']=='pdf') for f in result.files):
             from app.services.document_tools.office_engine import render_office
             for item in list(result.files):
                 output = Path(item["path"])

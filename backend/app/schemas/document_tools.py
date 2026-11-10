@@ -14,6 +14,7 @@ class ConversionOptions(StrictModel):
     translation_engine: Literal["offline", "online"] = "offline"
     glossary: str = Field(default="", max_length=4000)
     page_selection: str = Field(default="all", max_length=2000)
+    refresh_source: bool = False
     ai_mode: Literal["auto", "off"] = "auto"
     output_name: str | None = Field(default=None, max_length=180)
     include_notes_sheet: bool = True
@@ -52,10 +53,10 @@ class ConversionOptions(StrictModel):
 
 COMMON = {"page_selection", "ai_mode", "output_name"}
 OPTION_KEYS = {
-    "image_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "page_selection"},
+    "image_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "page_selection", "refresh_source"},
     "word_translate": {"output_name", "translation_direction", "translation_engine", "glossary"},
     "excel_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "sheets"},
-    "pdf_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "page_selection"},
+    "pdf_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "page_selection", "refresh_source"},
     "word_to_pdf": COMMON,
     "word_to_excel": COMMON | {"include_notes_sheet", "word_mode", "include_headers_footers", "merge_continuation_tables"},
     "excel_to_word": COMMON | {"sheets", "range", "include_hidden", "formula_mode", "paper", "orientation"},

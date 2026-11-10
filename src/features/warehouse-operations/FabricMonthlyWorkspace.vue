@@ -9,6 +9,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import Button from '@/components/ui/button/Button.vue'
 import { warehouseOperationsApi as api, type FabricMonthlyDetail, type FabricMonthlyQuery, type FabricMonthlyReport, type FabricMonthlyView } from '@/api/warehouseOperations'
 import { monthlySearchKey } from './inventorySearch'
+import { purchasePriceText } from './purchasePrice'
 
 const props = defineProps<{ view: FabricMonthlyView }>()
 const route = useRoute(), auth = useAuthStore(), headerSearch = inject(monthlySearchKey, undefined)
@@ -103,7 +104,34 @@ onBeforeUnmount(() => { generation++; clearTimeout(searchTimer) })
       <footer class="monthly-footer"><span>共 {{ total }} {{ mode === 'summary' ? '组' : '笔' }}<template v-if="total"> · 显示 {{ page * pageSize + 1 }}–{{ Math.min((page + 1) * pageSize, total) }}</template></span><div><Button variant="outline" size="sm" :disabled="page === 0" @click="page--">上一页</Button><span>{{ page + 1 }} / {{ pageCount }}</span><Button variant="outline" size="sm" :disabled="page + 1 >= pageCount" @click="page++">下一页</Button></div></footer>
     </template>
     <details class="monthly-basis"><summary>数量口径与使用说明</summary><p>净实收＝实收－收料冲销；净发料＝实发－发料冲销－车间退料。冲销归更正发生月份，原月份的收发事实保留。</p><p>合计、汇总、明细和导出使用相同筛选；查找某个单号时，仅合计匹配的凭证。凭证数按实际收发凭证计，同一送货单分批收货会有多笔记录。</p><p>“送货 / 领料单”包含从单据列表或扫码办理的收发；退料沿用原发料来源。原采购入库计入“采购 / 手工登记”。裁床接口领料 · 待接入。</p><p>期初、盘点及调仓不算进货或领料。供应商同名无法唯一识别时按原单名称独立列示。参考价格不代表应付金额，本页未确认或锁定月份。</p><div><RouterLink to="/modules/pmc-warehouse/fabric-warehouse/inventory?factory=huakang-c&view=order-summary">查看包含期初与盘点的收发结余 →</RouterLink></div></details>
-    <DialogRoot :open="!!selected" @update:open="value => { if (!value) selected = undefined }"><DialogPortal><DialogOverlay class="monthly-overlay" /><DialogContent class="monthly-dialog"><template v-if="selected"><DialogTitle class="monthly-dialog-title">收发凭证详情</DialogTitle><DialogDescription class="monthly-dialog-description">{{ kindLabel(selected) }} · {{ selected.date }} · 保留原单记录，仅供核对</DialogDescription><dl><div><dt>归属方</dt><dd>{{ selected.party_name || '原单未填写' }}</dd></div><div><dt>原单往来方</dt><dd>{{ selected.recorded_party || '未记录' }}</dd></div><div><dt>物料</dt><dd>{{ selected.item_name }}<small>{{ selected.item_code }}</small></dd></div><div><dt>本笔数量</dt><dd>{{ selected.quantity }} {{ selected.unit }}</dd></div><div><dt>原单号</dt><dd>{{ selected.source_no }}</dd></div><div><dt>库存凭证</dt><dd>{{ selected.id }}</dd></div><div v-if="selected.original_id"><dt>关联原凭证</dt><dd>{{ selected.original_id }}</dd></div><div><dt>登记来源 / 经办人</dt><dd>{{ channelLabel(selected) }} · {{ selected.actor_name || '未记录' }}</dd></div><div><dt>归属依据</dt><dd>{{ selected.identity_basis }}</dd></div><div><dt>原单参考单价 / 计价单位</dt><dd>{{ selected.unit_price || '未记录' }} / {{ selected.price_unit || '未注明' }} · {{ selected.currency || '币种未注明' }}</dd></div><div v-if="selected.amount !== undefined && selected.amount !== ''"><dt>原入库单金额</dt><dd>{{ selected.amount }} {{ selected.currency }}</dd></div><div><dt>价格依据</dt><dd>{{ selected.price_note || '未填写' }}</dd></div></dl><p class="monthly-dialog-description">价格仅保留原单依据，不计算应付金额；冲销数量以本笔负数为准。</p><footer><RouterLink v-if="sourceLink" :to="sourceLink">查看关联交接单 ↗</RouterLink><Button variant="outline" @click="selected = undefined">关闭</Button></footer></template></DialogContent></DialogPortal></DialogRoot>
+    <DialogRoot :open="!!selected" @update:open="value => { if (!value) selected = undefined }">
+      <DialogPortal>
+        <DialogOverlay class="monthly-overlay" />
+        <DialogContent class="monthly-dialog">
+          <template v-if="selected">
+            <DialogTitle class="monthly-dialog-title">收发凭证详情</DialogTitle>
+            <DialogDescription class="monthly-dialog-description">{{ kindLabel(selected) }} · {{ selected.date }} · 保留原单记录，仅供核对</DialogDescription>
+            <dl>
+              <div><dt>归属方</dt><dd>{{ selected.party_name || '原单未填写' }}</dd></div>
+              <div><dt>原单往来方</dt><dd>{{ selected.recorded_party || '未记录' }}</dd></div>
+              <div><dt>物料</dt><dd>{{ selected.item_name }}<small>{{ selected.item_code }}</small></dd></div>
+              <div><dt>本笔数量</dt><dd>{{ selected.quantity }} {{ selected.unit }}</dd></div>
+              <div><dt>原单号</dt><dd>{{ selected.source_no }}</dd></div>
+              <div><dt>库存凭证</dt><dd>{{ selected.id }}</dd></div>
+              <div v-if="selected.original_id"><dt>关联原凭证</dt><dd>{{ selected.original_id }}</dd></div>
+              <div><dt>登记来源 / 经办人</dt><dd>{{ channelLabel(selected) }} · {{ selected.actor_name || '未记录' }}</dd></div>
+              <div><dt>归属依据</dt><dd>{{ selected.identity_basis }}</dd></div>
+              <div><dt>原单参考单价 / 计价单位</dt><dd>{{ selected.unit_price || '未记录' }} / {{ selected.price_unit || '未注明' }} · {{ selected.currency || '币种未注明' }}</dd></div>
+              <div v-if="selected.purchase_price"><dt>追货表采购参考单价</dt><dd>{{ purchasePriceText(selected.purchase_price.unit_price, selected.purchase_price.price_unit) }}</dd></div>
+              <div v-if="selected.amount !== undefined && selected.amount !== ''"><dt>原入库单金额</dt><dd>{{ selected.amount }} {{ selected.currency }}</dd></div>
+              <div><dt>原单价格依据</dt><dd>{{ selected.price_note || '未填写' }}</dd></div>
+            </dl>
+            <p class="monthly-dialog-description">参考价供仓库核对。冲销数量以本笔负数为准。</p>
+            <footer><RouterLink v-if="sourceLink" :to="sourceLink">查看关联交接单 ↗</RouterLink><Button variant="outline" @click="selected = undefined">关闭</Button></footer>
+          </template>
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
   </section>
 </template>
 

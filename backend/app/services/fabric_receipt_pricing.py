@@ -6,6 +6,15 @@ from fastapi import HTTPException
 PRICE_FIELDS = ('unit_price', 'price_unit', 'currency')
 
 
+def purchase_price_reference(facts):
+    """Huakang C tracking prices use CNY per the source row's basic unit."""
+    unit = facts.get('unit')
+    if not unit:
+        return None
+    price = facts.get('unit_price')
+    return dict(unit_price=None if price in (None, '') else str(price), price_unit=unit, currency='CNY')
+
+
 def omit_empty_prices(body):
     # New optional defaults must not change exact retries of old stock requests.
     for item in body.get('items', [body]):

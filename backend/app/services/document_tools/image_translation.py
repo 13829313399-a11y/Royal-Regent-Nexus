@@ -5,6 +5,7 @@ import json
 import math
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -156,6 +157,14 @@ def add_resize_issue(ir, page):
 
 
 def run_node(pages, options, work, progress, cancelled):
+    if options.get("_general_document"):
+        from .general_translation import process_pages
+        return process_pages(pages, options, work, progress, cancelled,
+            lambda layouts: _run_node(layouts, {**options, "_render_layout": True}, work, progress, cancelled))
+    return _run_node(pages, options, work, progress, cancelled)
+
+
+def _run_node(pages, options, work, progress, cancelled):
     """Check cancellation even during silent native inference; always reap the child."""
     stop = threading.Event()
     translate = make_translator(image_translation_options(options), lambda *args: None if stop.is_set() else progress(*args),
@@ -199,7 +208,8 @@ def run_node(pages, options, work, progress, cancelled):
     deadline = time.monotonic() + settings.image_translation_timeout_seconds
     total_chars = 0
     try:
-        process.stdin.write((json.dumps({"modelRoot": str(Path(settings.image_translation_model_dir).resolve()),
+        process.stdin.write((json.dumps({"mode": "render-layout" if options.get("_render_layout") else "legacy",
+            "modelRoot": str(Path(settings.image_translation_model_dir).resolve()),
             "direction": options.get("translation_direction", "en_to_zh"), "pages": pages}) + "\n").encode())
         process.stdin.flush()
         while True:
@@ -358,8 +368,10 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
     require_runtime()
     validate_translation_options(options, "image_translate")
     work.mkdir(parents=True, exist_ok=True)
-    ir = DocumentIR(source_type=path.suffix.lstrip("."), engine_manifest={"image_pipeline": "shinobu-node", "translation": options.get("translation_engine", "offline")})
-    inputs, metadata, native, raster_areas, preserved_boxes = [], [], {}, {}, {}
+    ir = DocumentIR(source_type=path.suffix.lstrip("."), engine_manifest={"image_pipeline": "document-layout-v2",
+        "translation": options.get("translation_engine", "offline"),
+        "translation_model": settings.document_tools_translation_model if options.get("translation_engine") == "online" else "offline"})
+    inputs, metadata, native, preserved_boxes = [], [], {}, {}
     deadline = time.monotonic() + settings.image_translation_timeout_seconds
     def check():
         if cancelled():
@@ -404,11 +416,6 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
                         # wider gaps expose English descenders above underlines.
                         'padding': 1,
                     })
-                raster_areas[index] = [{'x':max(0,im['x0'])*scale,'y':max(0,im['top'])*scale,
-                    'width':(min(width,im['x1'])-max(0,im['x0']))*scale,
-                    'height':(min(height,im['bottom'])-max(0,im['top']))*scale}
-                    for im in text_document.pages[index].images
-                    if (min(width,im['x1'])-max(0,im['x0']))*(min(height,im['bottom'])-max(0,im['top'])) > width*height*.06]
                 if scale <= 0 or min(width, height) * scale < 1:
                     raise ToolError("PDF_PAGE_GEOMETRY", "PDF 页面比例超出处理范围")
                 page = document[index]
@@ -452,6 +459,18 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
         with Image.open(inputs[i]) as image:
             page = metadata[i]
             x0, y0, x1, y1 = patch["bbox_pt"]
+            # Re-read complete intersected paragraphs, never replace only a
+            # fragment and accidentally discard the parent's remaining text.
+            for _ in range(len(parent_ir.blocks)+1):
+                before=(x0,y0,x1,y1)
+                for block in parent_ir.blocks:
+                    b=block.source.bbox_pt
+                    if block.kind=='image' or block.source.page_index!=page.page_index or not b:
+                        continue
+                    if min(x1,b[2])>max(x0,b[0]) and min(y1,b[3])>max(y0,b[1]):
+                        x0,y0,x1,y1=min(x0,b[0]),min(y0,b[1]),max(x1,b[2]),max(y1,b[3])
+                if before==(x0,y0,x1,y1):break
+            x0,y0,x1,y1=max(0,x0),max(0,y0),min(page.width_pt,x1),min(page.height_pt,y1)
             paste_box = (math.floor(x0 * image.width / page.width_pt), math.floor(y0 * image.height / page.height_pt),
                          math.ceil(x1 * image.width / page.width_pt), math.ceil(y1 * image.height / page.height_pt))
             crop = work / "patch-source.png"
@@ -467,11 +486,13 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
                        and r['box']['x']+r['box']['width'] <= x1 and r['box']['y']+r['box']['height'] <= y1]
         if regions:
             call['nativeRegions'] = regions
-            call['rasterAreas'] = raster_areas.get(metadata[i].page_index,[]) if not patch else []
     def timed_cancelled():
         check()
         return False
-    records = run_node(calls, options, work, progress, timed_cancelled)
+    with path.open('rb') as source_stream:
+        source_digest=hashlib.file_digest(source_stream,'sha256').hexdigest()
+    cache_scope=hashlib.sha256((str(path.resolve())+'\0'+source_digest).encode()).hexdigest()
+    records = run_node(calls, {**options, "_general_document": True,'_source_cache_scope':cache_scope}, work, progress, timed_cancelled)
     if patch:
         with Image.open(outputs[active[0]]) as base, Image.open(work / "patch-result.png") as result:
             if result.size != (paste_box[2] - paste_box[0], paste_box[3] - paste_box[1]):
@@ -479,7 +500,7 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
             merged = base.convert("RGB")
             from PIL import ImageDraw
             mask = Image.new('L',result.size,0)
-            if records[0]['record'].get('policy') == 'document-safe-v1':
+            if records[0]['record'].get('policy') in {'document-safe-v1', 'document-layout-v2'}:
                 draw=ImageDraw.Draw(mask)
                 for region in records[0]['record'].get('translations',[]):
                     if region.get('rendered'):
@@ -523,38 +544,90 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
                     sx, sy = page.width_pt/full.width, page.height_pt/full.height
                 dx, dy = paste_box[:2] if patch else (0,0)
                 bbox = [(box['x']+dx)*sx,(box['y']+dy)*sy,(box['x']+box['width']+dx)*sx,(box['y']+box['height']+dy)*sy]
-            ir.blocks.append(Block(id=f"p{page.page_index}-t{index}", text=(region.get("translatedText") or region['sourceText']) if region.get('rendered') else region['sourceText'], original_text=region["sourceText"],
+            if region.get('located') is False or region.get('skipReason')=='layout-position':
+                bbox=None
+            translated_text = region.get("translatedText") or ""
+            translation_status = region.get("translationStatus", "translated" if translated_text else "needs_review")
+            ir.blocks.append(Block(id=f"p{page.page_index}-t{index}", text=translated_text, original_text=region["sourceText"],
                 source=SourceAnchor(page_index=page.page_index, method=region.get('method','ocr'), bbox_pt=bbox),
-                style={'rendered':region.get('rendered',False),'preserved_reason':region.get('skipReason','unchanged' if not region.get('rendered') else '')}))
-        if record.get("status") == "no-translatable-text":
-            ir.issues.append(Issue(id=f"empty-{page.page_index}", code="NO_TEXT", message="选区未识别出可翻译文字，保留已有结果" if patch else "该页未识别出可翻译文字，保留原图", source=SourceAnchor(page_index=page.page_index)))
+                style={'rendered':region.get('rendered',False), 'translation_status':translation_status,
+                       'review_notes':region.get('reviewNotes', []), 'kind':region.get('kind', 'paragraph'),
+                       'selection':region.get('selection','none'),
+                       'preserved_reason':region.get('skipReason','unchanged' if not region.get('rendered') else '')}))
+        document = record["record"].get("document")
+        if document:
+            ir.engine_manifest.setdefault("document_pages", {})[str(page.page_index)] = document
+            if not document.get("coverage_complete"):
+                ir.issues.append(Issue(id=f"coverage-{page.page_index}", code="DOCUMENT_COVERAGE_REVIEW",
+                    message="本页识别覆盖或语义仍需核对，请查看完整译文与原文对照。",
+                    source=SourceAnchor(page_index=page.page_index)))
+            for note_index, note in enumerate(document.get("notes", [])):
+                ir.issues.append(Issue(id=f"document-{page.page_index}-{note_index}", code="DOCUMENT_REVIEW_NOTE",
+                    message=note, source=SourceAnchor(page_index=page.page_index)))
+        if record.get("status") in {"no-translatable-text", "no-rendered-text"}:
+            recognized = any(region.get("sourceText", "").strip() for region in record["record"].get("translations", []))
+            ir.issues.append(Issue(id=f"empty-{page.page_index}",
+                code="IMAGE_NO_RENDERED_TEXT" if recognized else "NO_TEXT",
+                message=(("选区已识别到文字，但未能安全回填译文，保留已有结果" if patch else "该页已识别到文字，但未能安全回填译文，保留原图") if recognized
+                    else ("选区未识别出可翻译文字，保留已有结果" if patch else "该页未识别出可翻译文字，保留原图")),
+                source=SourceAnchor(page_index=page.page_index)))
     if patch and parent_ir:
-        new_boxes = [b.source.bbox_pt for b in ir.blocks if b.kind!='image' and b.source.bbox_pt and b.style.get('rendered')]
+        from difflib import SequenceMatcher
+        new_blocks = [b for b in ir.blocks if b.kind!='image' and b.source.bbox_pt]
+        compact=lambda text:re.sub(r'[^a-z0-9\u3400-\u9fff]','',text.casefold())
         for block in parent_ir.blocks:
             if block.kind=='image':
                 continue
             old_box=block.source.bbox_pt
+            old_text=compact(getattr(block,'original_text',''))
             if block.source.page_index == patch['page_index'] and old_box and any(
-                min(old_box[2],b[2])>max(old_box[0],b[0]) and min(old_box[3],b[3])>max(old_box[1],b[1]) for b in new_boxes):
+                min(old_box[2],b.source.bbox_pt[2])>max(old_box[0],b.source.bbox_pt[0])
+                and min(old_box[3],b.source.bbox_pt[3])>max(old_box[1],b.source.bbox_pt[1])
+                and (old_text in compact(getattr(b,'original_text','')) or SequenceMatcher(None,old_text,compact(getattr(b,'original_text',''))).ratio()>.8)
+                for b in new_blocks):
                 continue
             inherited=block.model_copy(deep=True)
             inherited.id=f'previous-{block.id}'
             ir.blocks.append(inherited)
         for issue in parent_ir.issues:
-            if issue.source and issue.source.page_index is not None and issue.source.page_index != patch['page_index']:
+            if issue.source and issue.source.page_index is not None:
                 inherited=issue.model_copy(deep=True)
                 inherited.id=f'previous-{issue.id}'
                 ir.issues.append(inherited)
-    review = [b for b in ir.blocks if b.kind != 'image' and b.style.get('preserved_reason') not in {'', 'protected', 'not-source-language'}]
-    if review:
-        ir.issues.append(Issue(id='preserved-text',code='IMAGE_PRESERVED_REGIONS',message=f'{len(review)} 处因识别、背景或排版限制保留原文，请对照核对。'))
-    ir.issues.append(Issue(id="image-review", code="IMAGE_TRANSLATION_REVIEW", message="数字、型号和色号优先保留；请对照原文核对专业术语。PDF 保留原页面对象，译文以局部图层覆盖，原文字层仍可提取。"))
+        for key,value in parent_ir.engine_manifest.get('document_pages',{}).items():
+            if key not in ir.engine_manifest.get('document_pages',{}):
+                ir.engine_manifest.setdefault('document_pages',{})[key]=value
+    text_blocks = [b for b in ir.blocks if b.kind != 'image']
+    unresolved = [b for b in text_blocks if b.style.get('translation_status') == 'needs_review']
+    unplaced = [b for b in text_blocks if b.style.get('translation_status') == 'translated' and not b.style.get('rendered')]
+    if unresolved:
+        ir.issues.append(Issue(id='translation-incomplete', code='DOCUMENT_TRANSLATION_REVIEW',
+            message=f'{len(unresolved)} 处原文或译文尚未确认，不能视为全文翻译完成，请逐项核对。'))
+    if unplaced:
+        ir.issues.append(Issue(id='layout-incomplete', code='DOCUMENT_LAYOUT_REVIEW',
+            message=f'{len(unplaced)} 处译文未原位回填，完整内容已附在译文 PDF 后，并可单独下载完整对照译文。'))
+    ir.issues.append(Issue(id="image-review", code="IMAGE_TRANSLATION_REVIEW", severity="info", status="resolved",
+        message="内容翻译与原位排版分别核对；PDF 原文字层仍保留，译文覆盖不属于安全脱敏。"))
+    from .translation_output import write_complete_translation, append_complete_text
+    complete_text, complete_pdf = write_complete_translation(ir, work, cancelled)
+    files.extend([result_file(complete_text, 'complete_text'), result_file(complete_pdf, 'complete_pdf')])
+    if unplaced or unresolved or any(i.code=='DOCUMENT_COVERAGE_REVIEW' for i in ir.issues):
+        append_complete_text(pdf, complete_pdf)
+    summary = {"pages": len(metadata), "translation_engine": options.get("translation_engine", "offline"), "patch": bool(patch),
+        "translated_blocks": sum(b.style.get('translation_status') == 'translated' for b in text_blocks),
+        "preserved_blocks": sum(b.style.get('translation_status') == 'preserved' for b in text_blocks),
+        "unresolved_blocks": len(unresolved), "unplaced_blocks": len(unplaced),
+        "content_status": "needs_review" if unresolved or any(i.code == 'DOCUMENT_COVERAGE_REVIEW' for i in ir.issues) else "reviewed",
+        "layout_status": "partial" if unplaced else "applied", "pipeline": "document-layout-v2"}
     report = work / 'translation-review.json'
     report.write_text(json.dumps({'pages':[p.model_dump() for p in ir.pages],
         'regions':[{'id':b.id,'source':b.original_text,'translation':b.text,'page_index':b.source.page_index,
-                    'bbox_pt':b.source.bbox_pt,'rendered':b.style.get('rendered',False),'reason':b.style.get('preserved_reason','')}
+                    'bbox_pt':b.source.bbox_pt,'rendered':b.style.get('rendered',False),'reason':b.style.get('preserved_reason',''),
+                    'translation_status':b.style.get('translation_status','needs_review'), 'notes':b.style.get('review_notes',[])}
                    for b in ir.blocks if b.kind != 'image'],
-        'issues':[i.message for i in ir.issues]},ensure_ascii=False,indent=2),encoding='utf-8')
+        'summary': summary,
+        'issues':[(f'第 {i.source.page_index + 1} 页：' if i.source and i.source.page_index is not None else '') + i.message
+                  for i in ir.issues]},ensure_ascii=False,indent=2),encoding='utf-8')
     files.append(result_file(report,'translation_review'))
     target = work / (Path(safe_name(options.get("output_name") or path.stem)).stem + "-翻译.pdf")
     pdf.write(target)
@@ -562,4 +635,4 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
     check()
     files.insert(0, result_file(target))
     progress("rebuild", len(metadata), len(metadata))
-    return EngineResult(ir, files, {"pages": len(metadata), "translation_engine": options.get("translation_engine", "offline"), "patch": bool(patch)})
+    return EngineResult(ir, files, summary)
