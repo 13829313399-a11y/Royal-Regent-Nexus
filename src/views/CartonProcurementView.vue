@@ -276,7 +276,6 @@ watch(weeklyImportCustomerCode, () => { weeklyImportScope.value = { ...weeklyImp
 let weeklyImportGeneration = 0
 const scheduleOrderFilter = ref('ALL')
 const scheduleChangeFilter = ref('ALL')
-const scheduleQuantityFilter = ref('ALL')
 const scheduleDateField = ref<'CUSTOMER_DUE' | 'INSPECTION'>('CUSTOMER_DUE')
 const scheduleDateFrom = ref(''), scheduleDateTo = ref('')
 const scheduleSort = ref('WORK_PRIORITY')
@@ -303,6 +302,10 @@ const scheduleBatchSelection = ref<ScheduleBatchPreview[]>([])
 const scheduleBatchButton = ref<HTMLButtonElement | null>(null)
 const scheduleCreateModeInput = ref<HTMLInputElement | null>(null)
 const payablesSearch = ref('')
+const monthlySearch = ref('')
+const monthlyPeriod = ref(businessTodayIso().slice(0, 7))
+const monthlyCurrency = ref('CNY')
+const monthlyReturnSource = ref<{ id: string; refundId?: string } | null>(null)
 const closingView = ref(route.query.closing_view === 'inventory' ? 'INVENTORY' : route.query.closing_view === 'returns' ? 'RETURNS' : route.query.closing_view === 'payables' ? 'PAYABLES' : 'OVERVIEW')
 const closingNavigation = [
   { label: '日常核对', tabs: [{ id: 'OVERVIEW', label: '本月对账' }, { id: 'RETURNS', label: '退货签收与退款' }] },
@@ -326,10 +329,10 @@ function clearMovementFilters() {
   inventoryMovementDateRange.value = { start: undefined, end: undefined }
 }
 function clearWeeklyFilters() {
-  selectedCustomer.value = '全部客户'; scheduleCustomer.value = '全部客户'; scheduleSectionFilter.value = 'ALL'
+  scheduleCustomer.value = '全部客户'; scheduleSectionFilter.value = 'ALL'
   scheduleOrderTypeFilter.value = 'ALL'
   scheduleOrderFilter.value = 'ALL'; scheduleChangeFilter.value = 'ALL'; scheduleDateField.value = 'CUSTOMER_DUE'
-  scheduleDateFrom.value = ''; scheduleDateTo.value = ''; scheduleQuantityFilter.value = 'ALL'
+  scheduleDateFrom.value = ''; scheduleDateTo.value = ''
   globalSearch.value = ''
   scheduleWorkView.value = 'ALL'
 }
@@ -343,6 +346,7 @@ const activeHeaderSearch = computed({
     : activeTab.value === 'master-data' ? masterSearch.value
     : activeTab.value === 'audit' ? auditSearch.value
     : activeTab.value === 'weekly-check' && weeklyCheckMode.value === 'HISTORY' ? historySearch.value
+    : activeTab.value === 'closing' && closingView.value === 'OVERVIEW' ? monthlySearch.value
     : activeTab.value === 'closing' && closingView.value === 'RETURNS' ? returnSearch.value
     : activeTab.value === 'closing' && closingView.value === 'PAYABLES' ? payablesSearch.value : globalSearch.value,
   set: (value: string) => {
@@ -351,6 +355,7 @@ const activeHeaderSearch = computed({
     else if (activeTab.value === 'master-data') masterSearch.value = value
     else if (activeTab.value === 'audit') auditSearch.value = value
     else if (activeTab.value === 'weekly-check' && weeklyCheckMode.value === 'HISTORY') historySearch.value = value
+    else if (activeTab.value === 'closing' && closingView.value === 'OVERVIEW') monthlySearch.value = value
     else if (activeTab.value === 'closing' && closingView.value === 'RETURNS') returnSearch.value = value
     else if (activeTab.value === 'closing' && closingView.value === 'PAYABLES') payablesSearch.value = value
     else globalSearch.value = value
@@ -361,6 +366,7 @@ const headerSearchPlaceholder = computed(() => activeTab.value === 'inventory' &
   : activeTab.value === 'master-data' ? '搜索客户 / 合同 / 货号 / 纸品 / 仓位...'
   : activeTab.value === 'audit' ? '搜索订单 / 单据 / 原因 / 变更内容...'
   : activeTab.value === 'weekly-check' && weeklyCheckMode.value === 'HISTORY' ? '搜索文件名 / 客户...'
+  : activeTab.value === 'closing' && closingView.value === 'OVERVIEW' ? '搜索对账客户 / 合同 / 货号 / 单据...'
   : activeTab.value === 'closing' && closingView.value === 'RETURNS' ? '搜索退货客户 / 合同 / 货号 / 退货单...'
   : activeTab.value === 'closing' && closingView.value === 'PAYABLES' ? '搜索往来凭证 / 摘要 / 依据...'
   : '搜索合同 / PO / 货号 / 单据...')
@@ -476,13 +482,27 @@ const orderDetailPinned = ref(false)
 const openOrderMoreMenu = ref('')
 const combinedPurchaseOrderMessage = ref('')
 const combinedPurchaseOrderTone = ref<'progress' | 'success' | 'error'>('progress')
+const orderStatusOptions = [
+  { id: 'ALL', label: '全部状态', statuses: [] },
+  { id: 'UNLOCKED', label: '未锁定', statuses: ['DRAFT', 'CONFIRMED', 'SUBMITTED'] },
+  { id: 'LOCKED', label: '已确认锁定', statuses: ['PENDING_SUPPLIER', 'SENT', 'QUOTED', 'READY'] },
+  { id: 'PARTIALLY_RECEIVED', label: '部分收料', statuses: ['PARTIALLY_RECEIVED'] },
+  { id: 'COMPLETED', label: '已完成', statuses: ['COMPLETED'] },
+  { id: 'CANCELLED', label: '已取消', statuses: ['CANCELLED'] },
+]
+const collaborationOptions = [
+  { id: 'ALL', label: '全部接单状态' },
+  { id: 'AWAITING_ACCEPTANCE', label: '待接单（含部分接单）' },
+  { id: 'ACCEPTED', label: '已接单' },
+  { id: 'LATE_PROMISE', label: '承诺晚于计划' },
+]
 const orderStatusFilter = ref('ALL')
 const collaborationFilter = ref('ALL')
 const orderDueFilter = ref<'ALL' | 'OVERDUE' | 'TODAY' | 'DUE_SOON' | 'UPCOMING'>('ALL')
 const orderDateRange = shallowRef<DateRange>({ start: undefined, end: undefined })
 const orderSort = ref<'DUE_ASC' | 'DUE_DESC' | 'ORDER_DESC'>('DUE_ASC')
 const secondaryOrderFilters = computed(() => [
-  collaborationFilter.value !== 'ALL' ? `接单：${({ NOT_ISSUED: '尚未发送供应商', PENDING_CHANGE: '变更待生成', PENDING: '供应商待接单', PARTIAL: '供应商部分接单', ACCEPTED: '供应商已接单', NOT_REQUIRED: '无需接单', LATE_PROMISE: '承诺晚于计划', CANCELLED: '订单已取消' } as Record<string, string>)[collaborationFilter.value] || collaborationFilter.value}` : '',
+  collaborationFilter.value !== 'ALL' ? `接单：${collaborationOptions.find(option => option.id === collaborationFilter.value)?.label}` : '',
   orderDueFilter.value !== 'ALL' ? `交期：${({ OVERDUE: '已逾期', TODAY: '今日', DUE_SOON: '未来 3 天', UPCOMING: '后续' } as Record<string, string>)[orderDueFilter.value]}` : '',
   orderDateRange.value.start ? `下单：${orderDateRange.value.start} 至 ${orderDateRange.value.end || '未选结束日期'}` : '',
   orderSort.value !== 'DUE_ASC' ? `排序：${orderSort.value === 'DUE_DESC' ? '交期由远到近' : '下单日期最新'}` : '',
@@ -1507,7 +1527,10 @@ async function navigatePriceBlocker(blocker: PriceCorrectionBlocker, currency: s
   if (factory !== selectedFactoryId.value || viewer !== specialViewerKey.value) return
   if (blocker.kind === 'INVENTORY_CLOSING') closingQueryPeriod.value = blocker.period || ''
   if (blocker.kind === 'SUPPLIER_SETTLEMENT') {
-    reportActionFailure(`旧版逐单账单已下线；请在本月对账核对 ${blocker.period || '受影响月份'} 的送货、退货与应付。`, 'warning')
+    if (blocker.period) monthlyPeriod.value = blocker.period
+    monthlyCurrency.value = currency
+    monthlySearch.value = ''
+    reportActionFailure('已定位到受影响月份。历史确认凭证的更正仍按原凭证权限办理。', 'warning')
   }
   if (blocker.kind === 'ALLOCATION') {
     if (!payablesRef.value) { reportActionFailure('核销工作区尚未就绪，请重试；原单价更正批次已保留。'); return }
@@ -1776,18 +1799,21 @@ function matchesCustomer(customer: string) {
 const visibleOrders = computed(() => localOrders.filter((row) => {
   if (apiConnected.value && activeTab.value === 'orders' && !orderPageNumbers.value.includes(row.id)) return false
   const rawOrder = orderRecords.value.find((order) => order.order_no === row.id)
+  const acceptance = rawOrder?.supplier_acceptance
   const statusMatches = orderStatusFilter.value === 'ALL'
-    // Supplier collaboration is filtered over the full ledger by the backend.
-    || rawOrder?.status === orderStatusFilter.value
+    || orderStatusOptions.find(option => option.id === orderStatusFilter.value)?.statuses.includes(rawOrder?.status ?? '')
+  const collaborationMatches = collaborationFilter.value === 'ALL'
+    || (collaborationFilter.value === 'LATE_PROMISE'
+      ? (acceptance?.delivery_differences ?? []).some(item => item.difference_days > 0)
+      : collaborationFilter.value === 'AWAITING_ACCEPTANCE'
+        ? acceptance?.status === 'PENDING' || acceptance?.status === 'PARTIAL'
+        : acceptance?.status === collaborationFilter.value)
   const dueMatches = orderDueFilter.value === 'ALL'
     || orderDueReminder(row).level === orderDueFilter.value
   const orderDateMatches = (!orderDateRange.value.start || row.orderDate >= orderDateRange.value.start.toString())
     && (!orderDateRange.value.end || row.orderDate <= orderDateRange.value.end.toString())
   return statusMatches
-    && (collaborationFilter.value === 'ALL'
-      || (collaborationFilter.value === 'LATE_PROMISE'
-        ? (rawOrder?.supplier_acceptance?.delivery_differences ?? []).some(item => item.difference_days > 0)
-        : (rawOrder?.supplier_acceptance?.status ?? 'NOT_ISSUED') === collaborationFilter.value))
+    && collaborationMatches
     && dueMatches
     && orderDateMatches
     && matchesCustomer(row.customer)
@@ -1949,12 +1975,10 @@ const filteredWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
   && (scheduleOrderTypeFilter.value === 'ALL' || scheduleOrderTypeGroup(row.orderType) === scheduleOrderTypeFilter.value)
   && (scheduleOrderFilter.value === 'ALL' || scheduleWorkProjections.value.get(row.id)?.category === scheduleOrderFilter.value)
   && scheduleChangeMatches(row)
-  && scheduleQuantityMatches(row)
   && !scheduleDateRangeInvalid.value
   && ((!scheduleDateFrom.value && !scheduleDateTo.value) || Boolean(scheduleFilterDate(row)
     && (!scheduleDateFrom.value || scheduleFilterDate(row) >= scheduleDateFrom.value)
     && (!scheduleDateTo.value || scheduleFilterDate(row) <= scheduleDateTo.value)))
-  && matchesCustomer(row.customer)
   && includesSearch([
     row.reference,
     row.poNumbers,
@@ -4278,24 +4302,23 @@ function scheduleOrderCategory(row: WeeklyCheckRow): ScheduleOrderCategory {
 }
 
 function scheduleChangeMatches(row: WeeklyCheckRow) {
-  if (scheduleChangeFilter.value === 'ALL') return true
-  if (scheduleChangeFilter.value === 'CANCELLED') return ['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.scheduleChange || '')
-  if (scheduleChangeFilter.value === 'REVIEW') return scheduleMarkNeedsReview(row) || row.dateReviewRequired || row.scheduleChange === 'REVIEW_REQUIRED' || ['待人工确认', '待人工选择'].includes(row.result)
-  if (scheduleChangeFilter.value === 'UNCHANGED') return ['BASELINE', 'UNCHANGED'].includes(row.scheduleChange || '')
-  return row.scheduleChange === scheduleChangeFilter.value
-}
-
-function scheduleQuantityMatches(row: WeeklyCheckRow) {
-  if (scheduleQuantityFilter.value === 'ALL') return true
-  const source = scheduleSourceRow(row), orders = source ? scheduleOrdersForSource(source) : []
-  if (orders.length !== 1 || !Number(orders[0]?.product_order_quantity)) return false
-  const difference = row.quantity - Number(orders[0]!.product_order_quantity)
-  return scheduleQuantityFilter.value === 'INCREASE' ? difference > 0 : difference < 0
+  const change = scheduleChangeFilter.value
+  if (change === 'ALL') return true
+  if (change === 'QUANTITY_INCREASE' || change === 'QUANTITY_DECREASE') {
+    const source = scheduleSourceRow(row), orders = source ? scheduleOrdersForSource(source) : []
+    const orderQuantity = Number(orders[0]?.product_order_quantity)
+    if (orders.length !== 1 || !orderQuantity) return false
+    return change === 'QUANTITY_INCREASE' ? row.quantity > orderQuantity : row.quantity < orderQuantity
+  }
+  if (change === 'CANCELLED') return ['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.scheduleChange || '')
+  if (change === 'REVIEW') return scheduleMarkNeedsReview(row) || row.dateReviewRequired || row.scheduleChange === 'REVIEW_REQUIRED' || ['待人工确认', '待人工选择'].includes(row.result)
+  if (change === 'UNCHANGED') return ['BASELINE', 'UNCHANGED'].includes(row.scheduleChange || '')
+  return row.scheduleChange === change
 }
 
 function selectScheduleCustomer(code: string) {
   if (scheduleCustomer.value !== code) scheduleOrderTypeFilter.value = 'ALL'
-  scheduleCustomer.value = code; selectedCustomer.value = '全部客户'
+  scheduleCustomer.value = code
   activeWeeklyBatch.value = null; selectedWeeklyBatchId.value = ''; selectedWeeklyFileName.value = ''; selectedScheduleRowIds.value = []
   localWeeklyChecks.splice(0)
   void loadScheduleHistory(true).catch(() => {})
@@ -6106,7 +6129,7 @@ async function openMonthlyReceipt(factory: string, receiptId: string, signal: Ab
   const token = ++monthlyReceiptGeneration
   const current = () => token === monthlyReceiptGeneration && !signal.aborted
   try {
-    const receipt = await cartonProcurementApi.receiptDetail(factory, receiptId, receiptViewScope)
+    const receipt = await cartonProcurementApi.receiptDetail(factory, receiptId, receiptViewScope, signal)
     if (!current()) return
     if (!receipt || receipt.id !== receiptId || receipt.factory_id !== factory) {
       throw new Error('原收料单已变化或无法读取，请刷新本月对账。')
@@ -6116,6 +6139,25 @@ async function openMonthlyReceipt(factory: string, receiptId: string, signal: Ab
     if (current()) reportActionFailure(getApiErrorMessage(cause))
   }
 }
+async function openMonthlyReturn(factory: string, id: string, refundId?: string) {
+  const viewer = specialViewerKey.value
+  if (factory !== selectedFactoryId.value) return
+  try {
+    await selectClosingView('RETURNS')
+    if (factory === selectedFactoryId.value && viewer === specialViewerKey.value
+      && activeTab.value === 'closing' && closingView.value === 'RETURNS') {
+      monthlyReturnSource.value = { id, refundId }
+    }
+  } catch (cause) { reportActionFailure(getApiErrorMessage(cause)) }
+}
+watch([activeTab, closingView], ([tab, view]) => {
+  if (tab !== 'closing' || view !== 'RETURNS') monthlyReturnSource.value = null
+  closeReceiptDetails()
+}, { flush: 'sync' })
+watch([selectedFactoryId, specialViewerKey], () => {
+  monthlyReturnSource.value = null; monthlySearch.value = ''
+  closeReceiptDetails()
+}, { flush: 'sync' })
 function closeReceiptDetailPreview() {
   if (!receiptDetailPinned.value) receiptDetailTarget.value = null
 }
@@ -8043,7 +8085,7 @@ watch([selectedFactoryId, () => authStore.currentUser?.id, () => authStore.autho
   auditSequence++; auditPageRows.value = []; auditLabels.value = {}; auditActors.value = []; auditTotal.value = 0; auditPage.value = 1
   inventoryBusinessKind.value = 'ALL'; inventoryPaperType.value = ''; inventoryUnit.value = ''
   receiptHistoryDateField.value = 'ACCEPTANCE'; receiptHistorySort.value = 'DESC'
-  scheduleQuantityFilter.value = 'ALL'; exceptionOwner.value = ''; exceptionSort.value = 'DEFAULT'
+  scheduleChangeFilter.value = 'ALL'; exceptionOwner.value = ''; exceptionSort.value = 'DEFAULT'
   void loadAuditPage()
 })
 watch(weeklyCheckMode, mode => {
@@ -8573,11 +8615,11 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
         </div>
 
         <CartonFilterBar inline-actions label="订单筛选与批量操作" :more-label="secondaryOrderFilters.length ? `更多筛选（${secondaryOrderFilters.length} 项已设置）` : '更多筛选'" class="carton-order-filters">
-<label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">类型</span><select v-model="unifiedKind" aria-label="订单类型筛选" class="h-9 rounded-lg border bg-white px-3 text-xs"><option value="ALL">全部类型</option><option v-if="!specialOnlyAccess" value="PURCHASE">正单</option><option value="SAMPLE">样板</option><option value="WORKSHOP_MISC">杂单</option><option value="SUPPLIER_GIFT">历史赠送</option></select></label>
+<label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">类型</span><select v-model="unifiedKind" aria-label="订单类型筛选" class="h-9 rounded-lg border bg-white px-3 text-xs"><option value="ALL">全部类型</option><option v-if="!specialOnlyAccess" value="PURCHASE">正单</option><option value="SAMPLE">样板</option><option value="WORKSHOP_MISC">杂单</option></select></label>
 <label v-if="!specialOnlyAccess" class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">客户</span><select v-model="selectedCustomer" aria-label="客户筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option v-for="customer in customerFilterOptions" :key="customer" :value="customer">{{ customer }}</option></select></label>
-<label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">订单状态</span><select v-model="orderStatusFilter" aria-label="订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="ALL">全部状态</option><option value="CONFIRMED">正单：待发送</option><option value="PENDING_SUPPLIER">正单：已确认锁定</option><option value="SUBMITTED">待确认锁定</option><option value="SENT">已发送 · 待送货</option><option value="QUOTED">已报价 · 待送货</option><option value="READY">可送货</option><option value="PARTIALLY_RECEIVED">部分收料</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option></select></label>
+<label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">订单状态</span><select v-model="orderStatusFilter" aria-label="订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option v-for="option in orderStatusOptions" :key="option.id" :value="option.id">{{ option.label }}</option></select></label>
 <template #more>
-<label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">供应商接单</span><select v-model="collaborationFilter" aria-label="供应商接单状态筛选" class="h-9 rounded-lg border bg-white px-3 text-[11px]"><option value="ALL">全部接单状态</option><option value="NOT_ISSUED">尚未发送供应商</option><option value="PENDING_CHANGE">变更待生成</option><option value="PENDING">供应商待接单</option><option value="PARTIAL">供应商部分接单</option><option value="ACCEPTED">供应商已接单</option><option value="NOT_REQUIRED">无需接单</option><option value="LATE_PROMISE">承诺晚于计划</option><option value="CANCELLED">订单已取消</option></select></label>
+<label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">供应商接单</span><select v-model="collaborationFilter" aria-label="供应商接单状态筛选" class="h-9 rounded-lg border bg-white px-3 text-[11px]"><option v-for="option in collaborationOptions" :key="option.id" :value="option.id">{{ option.label }}</option></select></label>
 <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">计划交期</span><select v-model="orderDueFilter" aria-label="订单计划交期筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="ALL">全部计划交期</option><option value="OVERDUE">已逾期</option><option value="TODAY">今日交期</option><option value="DUE_SOON">3 天内</option><option value="UPCOMING">后续交期</option></select></label>
 <div class="carton-filter-field space-y-1"><span class="block text-[10px] font-bold text-slate-500">下单日期</span><DateRangeFilter v-model="orderDateRange" label="订单下单日期筛选" /></div>
 <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">排序</span><select v-model="orderSort" aria-label="订单排序" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="DUE_ASC">交期由近到远</option><option value="DUE_DESC">交期由远到近</option><option value="ORDER_DESC">下单日期最新</option></select></label>
@@ -8836,19 +8878,26 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
           <div class="mt-3 flex flex-wrap items-center gap-1.5" role="group" aria-label="排期订单类型筛选">
             <button v-for="type in scheduleOrderTypeOptions" :key="type.id" type="button" :aria-pressed="scheduleOrderTypeFilter === type.id" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="scheduleOrderTypeFilter === type.id ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-200 text-slate-600 hover:border-teal-300'" @click="scheduleOrderTypeFilter = type.id">{{ type.label }}</button>
           </div>
-          <CartonFilterBar label="排期筛选"><label>客户<select v-model="selectedCustomer" aria-label="客户筛选" class="h-9 rounded-lg border bg-white px-3 text-xs"><option v-for="customer in customerFilterOptions" :key="customer" :value="customer">{{ customer }}</option></select></label>
-<label class="space-y-1 text-xs"><span class="block">数量变化</span><select v-model="scheduleQuantityFilter" aria-label="排期数量变化筛选" class="h-9 rounded-lg border px-3"><option value="ALL">全部数量</option><option value="INCREASE">需追加（排期大于订单）</option><option value="DECREASE">需减单（排期小于订单）</option></select></label>
-<label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">下单状态</span><select v-model="scheduleOrderFilter" aria-label="排期下单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="ALL">全部状态</option><option value="UNPLACED">未下单</option><option value="CREATED">已建单待确认</option><option value="ORDERED">已下单</option><option value="COMPLETED">已完单</option><option value="REVIEW">待核对</option></select></label>
-<label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">排期变化</span><select v-model="scheduleChangeFilter" aria-label="排期变化筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="ALL">全部变化</option><option value="NEW">新加单</option><option value="MODIFIED">需求有变</option><option value="CANCELLED">退单提醒</option><option value="REOPENED">恢复下单</option><option value="REVIEW">待人工核对</option><option value="UNCHANGED">基准 / 无变化</option></select></label>
-<label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">日期字段</span><select v-model="scheduleDateField" aria-label="排期日期字段" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="CUSTOMER_DUE">客户交期</option><option value="INSPECTION">验货日期</option></select></label>
-<label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">开始日期</span><input v-model="scheduleDateFrom" aria-label="排期开始日期" type="date" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
-<label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">结束日期</span><input v-model="scheduleDateTo" aria-label="排期结束日期" type="date" :min="scheduleDateFrom || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
-<label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">排序</span><select v-model="scheduleSort" aria-label="排期日期排序" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="WORK_PRIORITY">处理优先顺序</option><option value="SOURCE">原表顺序</option><option value="DATE_ASC">日期由近到远</option><option value="DATE_DESC">日期由远到近</option></select></label>
-
-<template #actions><button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs text-slate-600" @click="clearWeeklyFilters">清空排期筛选</button>
-<button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="scheduleSort = 'WORK_PRIORITY'">恢复默认排序</button></template>
-<template #footer><span class="pb-2 text-[11px] text-slate-500">筛选结果 {{ visibleWeeklyChecks.length }} / {{ localWeeklyChecks.length }} 条</span></template>
-</CartonFilterBar>
+          <CartonFilterBar inline-actions label="排期筛选" :more-label="scheduleDateFrom || scheduleDateTo ? '日期筛选（已设置）' : '日期筛选'">
+            <label>下单状态<select v-model="scheduleOrderFilter" aria-label="排期下单状态筛选"><option value="ALL">全部状态</option><option value="UNPLACED">未下单</option><option value="CREATED">已建单待确认</option><option value="ORDERED">已下单</option><option value="COMPLETED">已完单</option><option value="REVIEW">待核对</option></select></label>
+            <label>排期变化<select v-model="scheduleChangeFilter" aria-label="排期变化筛选"><option value="ALL">全部变化</option><option value="NEW">新加单</option><option value="MODIFIED">需求有变</option><option value="QUANTITY_INCREASE">需追加（排期大于订单）</option><option value="QUANTITY_DECREASE">需减单（排期小于订单）</option><option value="CANCELLED">退单提醒</option><option value="REOPENED">恢复下单</option><option value="REVIEW">待人工核对</option><option value="UNCHANGED">基准 / 无变化</option></select></label>
+            <label>排序<select v-model="scheduleSort" aria-label="排期日期排序"><option value="WORK_PRIORITY">处理优先顺序</option><option value="SOURCE">原表顺序</option><option value="DATE_ASC">日期由近到远</option><option value="DATE_DESC">日期由远到近</option></select></label>
+            <template #more>
+              <label>按哪个日期筛选及排序<select v-model="scheduleDateField" aria-label="排期日期字段"><option value="CUSTOMER_DUE">客户交期</option><option value="INSPECTION">验货日期</option></select></label>
+              <label>开始日期<input v-model="scheduleDateFrom" aria-label="排期开始日期" type="date"></label>
+              <label>结束日期<input v-model="scheduleDateTo" aria-label="排期结束日期" type="date" :min="scheduleDateFrom || undefined"></label>
+            </template>
+            <template #actions>
+              <button type="button" class="text-slate-600" @click="clearWeeklyFilters">清空排期筛选</button>
+              <button v-if="scheduleSort !== 'WORK_PRIORITY'" type="button" @click="scheduleSort = 'WORK_PRIORITY'">恢复默认排序</button>
+            </template>
+            <template #footer>
+              <p class="mt-2 text-[11px] text-slate-500">
+                筛选结果 {{ visibleWeeklyChecks.length }} / {{ localWeeklyChecks.length }} 条
+                <span v-if="scheduleDateFrom || scheduleDateTo || scheduleSort.startsWith('DATE_')"> · 日期按{{ scheduleDateField === 'INSPECTION' ? '验货日期' : '客户交期' }}</span>
+              </p>
+            </template>
+          </CartonFilterBar>
           <p v-if="scheduleDateRangeInvalid" role="alert" class="mt-2 text-xs text-red-700">结束日期不能早于开始日期。</p>
           <p v-else-if="scheduleDateFrom || scheduleDateTo" class="mt-2 text-[11px] text-slate-500">日期范围包含起止当天；日期未填或原文待确认的记录不计入该范围。</p>
           <p v-if="activeWeeklyBatch && !activeWeeklyBatch.parse_summary.schedule_customer" class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-800">此旧批次尚未绑定基础客户。请在上方选择客户并重新导入；旧标记保留在原批次，新批次的已下单状态需重新确认。</p>
@@ -9012,7 +9061,6 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
               <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">状态</span><select v-model="historyStatus" aria-label="核对历史状态" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs"><option v-for="option in historyStatusOptions" :key="option.id" :value="option.id">{{ option.label }}</option></select></label>
               <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">开始日期</span><input v-model="historyDateFrom" aria-label="核对历史开始日期" type="date" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
               <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">结束日期</span><input v-model="historyDateTo" aria-label="核对历史结束日期" type="date" :min="historyDateFrom || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
-              <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">文件名</span><input v-model="historySearch" aria-label="核对历史文件名" placeholder="文件名 / 导入日期" class="h-9 w-48 rounded-lg border border-slate-200 bg-white px-3 text-xs"></label>
             </div>
             <p v-if="historyDateInvalid" role="alert" class="mt-2 text-xs text-red-700">结束日期不能早于开始日期。</p>
           </article>
@@ -9284,8 +9332,12 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
             </div>
           </div>
         </nav>
-        <CartonSettlementOverview v-if="closingView === 'OVERVIEW'" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :money-reference="moneyReference" :refresh-key="inventoryReportRefreshKey" @open-receipt="openMonthlyReceipt" />
-        <CartonSupplierReturns v-if="closingView === 'RETURNS'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey" v-model:search="returnSearch" />
+        <CartonSettlementOverview v-if="closingView === 'OVERVIEW'" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :money-reference="moneyReference"
+          v-model:period="monthlyPeriod" v-model:currency="monthlyCurrency" :search="monthlySearch" :refresh-key="inventoryReportRefreshKey"
+          @open-receipt="openMonthlyReceipt" @open-return="openMonthlyReturn" />
+        <CartonSupplierReturns v-if="closingView === 'RETURNS'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey"
+          v-model:search="returnSearch" :source-id="monthlyReturnSource?.id" :refund-id="monthlyReturnSource?.refundId"
+          @close-source="monthlyReturnSource = null" />
         <CartonPayables ref="payablesRef" v-if="closingView === 'PAYABLES'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey" v-model:search="payablesSearch" />
         <template v-if="closingView === 'INVENTORY'">
         <div v-if="exceptionRecords.some(row => row.category === 'STOCKTAKE_REVIEW' && ['OPEN', 'IN_PROGRESS'].includes(row.status) && (!closingQueryPeriod || row.created_at.startsWith(closingQueryPeriod)))" class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">

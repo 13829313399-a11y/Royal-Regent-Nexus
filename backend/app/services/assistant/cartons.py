@@ -87,7 +87,7 @@ class Arguments(BaseModel):
     date_to: str = Field(default='', max_length=10)
     due_filter: Literal['ALL', 'OVERDUE', 'TODAY', 'DUE_SOON', 'UPCOMING'] = 'ALL'
     sort: Literal['ORDER_DESC', 'DUE_ASC', 'DUE_DESC'] = 'DUE_ASC'
-    collaboration_filter: Literal['ALL', 'NOT_ISSUED', 'PENDING_CHANGE', 'PENDING', 'PARTIAL', 'ACCEPTED', 'NOT_REQUIRED', 'CANCELLED', 'LATE_PROMISE'] = 'ALL'
+    collaboration_filter: Literal['ALL', 'NOT_ISSUED', 'PENDING_CHANGE', 'PENDING', 'PARTIAL', 'ACCEPTED', 'NOT_REQUIRED', 'CANCELLED', 'LATE_PROMISE', 'AWAITING_ACCEPTANCE'] = 'ALL'
     limit: int = Field(default=20, ge=1, le=50)
     cursor: str | None = Field(default=None, min_length=1, max_length=1024)
 
