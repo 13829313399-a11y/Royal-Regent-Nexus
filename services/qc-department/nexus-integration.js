@@ -63,9 +63,9 @@
   window.__QC_PAGE_CHANGED = function (page) { factoryBridge?.navigate?.(page); };
   window.__QC_INITIAL_PAGE = function () {
     var page = factoryBridge?.page;
-    return page && document.getElementById('page-' + page) ? page : 'dashboard';
+    return page && document.getElementById('page-' + page) ? page : 'sales-schedule';
   };
-  window.__QC_CURRENT_PAGE = function () { return typeof currentPage === 'string' ? currentPage : 'dashboard'; };
+  window.__QC_CURRENT_PAGE = function () { return typeof currentPage === 'string' ? currentPage : 'sales-schedule'; };
   window.__QC_RENDER_FACTORY_SELECTOR = function () {
     if (!window.__QC_NEXUS || !factoryBridge) return;
     var badge = document.querySelector('#userBadge .user-badge-company');

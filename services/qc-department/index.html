@@ -15,17 +15,20 @@
   </style>
 </head>
 <body class="theme-light qc-liquid-glass">
-<p id="qcStartup" class="qc-startup" role="status">正在加载 QC 工作台…</p>
+<div id="qcStartup" class="qc-startup" role="status">
+  <span class="qc-orbit" aria-hidden="true"><i class="qc-orbit-outer"></i><i class="qc-orbit-inner"></i><i class="qc-orbit-center"></i></span>
+  <span class="qc-loading-label">正在加载 QC 工作台…</span>
+</div>
 <div id="appWrapper" style="display:none">
 
 <!-- ───────────── SIDEBAR ───────────── -->
 <aside class="sidebar" id="sidebar">
   <nav class="sidebar-nav">
     <div class="nav-group-label">工作台</div>
-    <a class="nav-item active" data-page="dashboard" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('dashboard')">
+    <a class="nav-item" data-page="dashboard" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('dashboard')">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/></svg></span><span>质量仪表板</span>
     </a>
-    <a class="nav-item" data-page="sales-schedule" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('sales-schedule')">
+    <a class="nav-item active" data-page="sales-schedule" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('sales-schedule')">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 11h18m-14 4h2m4 0h2m-8 3h2"/></svg></span><span>客排期</span>
     </a>
     <a class="nav-item" data-page="records" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('records')">
@@ -63,7 +66,7 @@
   <header class="topbar">
     <div class="topbar-left">
       <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
-      <div class="topbar-title" id="pageTitle">质量仪表板</div>
+      <div class="topbar-title" id="pageTitle">客排期</div>
     </div>
     <div class="topbar-kpis" id="topbarKpis">
       <div class="kpi-chip green"><span class="kpi-label">今日通过率</span><span class="kpi-val" id="kpiPassRate">--%</span></div>
@@ -107,11 +110,8 @@
   <!-- ═══════════════ PAGES ═══════════════ -->
 
   <!-- PAGE: DASHBOARD -->
-  <div class="page" id="page-sales-schedule">
+  <div class="page active" id="page-sales-schedule">
     <div class="qs-workspace">
-      <div class="qs-heading">
-        <div class="qs-actions"><label class="qs-button qs-select-all"><input type="checkbox" id="qsSelectAll" disabled>全选当前筛选</label><button type="button" id="qsPush" class="qs-button qs-primary" disabled>确认推送验货</button><button type="button" id="qsRefresh" class="qs-button">刷新数据</button><button type="button" id="qsExport" class="qs-button qs-primary" disabled>导出 Excel</button></div>
-      </div>
       <div class="qs-toolbar" id="qsToolbar">
       <div class="qs-filters" aria-label="客排期筛选">
         <label class="qs-filter-field qs-search"><span class="qs-sr-only">搜索 PO、客 PO、货号或产品名称</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="qsSearch" placeholder="搜索 PO / 客 PO / 货号 / 产品名称"/></label>
@@ -128,9 +128,18 @@
         </div>
         <label class="qs-filter-field"><span class="qs-sr-only">客户</span><select id="qsCustomer"><option value="">全部客户</option></select></label>
         <label class="qs-filter-field"><span class="qs-sr-only">完成情况</span><select id="qsCompletion"><option value="">全部完成情况</option><option value="empty">未填写</option></select></label>
-        <div class="qs-filter-actions"><button type="button" id="qsReset" class="qs-reset" aria-label="重置全部筛选">重置</button><span id="qsCount" aria-live="polite" aria-label="当前显示与总排期数">待接通</span></div>
+        <div class="qs-filter-actions"><button type="button" id="qsReset" class="qs-reset" aria-label="重置全部筛选">重置</button></div>
       </div>
       <p id="qsFilterError" class="qs-error" role="alert"></p>
+      <div class="qs-actions" aria-label="客排期操作">
+        <label class="qs-select-all"><input type="checkbox" id="qsSelectAll" disabled>全选当前筛选</label>
+        <span id="qsCount" aria-live="polite" aria-label="当前显示与总排期数">待接通</span>
+        <div class="qs-secondary-actions">
+          <button type="button" id="qsRefresh" class="qs-button">刷新数据</button>
+          <button type="button" id="qsExport" class="qs-button" disabled>导出 Excel</button>
+        </div>
+        <button type="button" id="qsPush" class="qs-button qs-primary" disabled>确认推送验货</button>
+      </div>
       </div>
       <div class="qs-table-scroll" tabindex="0" role="region" aria-label="客排期表格，可横向滚动">
         <table class="qs-table"><caption class="qs-sr-only">客户验货排期，业务部维护订单信息，完成情况由验货台只读回显，备注读取业务部原文</caption>
@@ -142,7 +151,7 @@
       <!-- 暂停展示回填区域；保留控件供现有脚本初始化，历史数据不变。 -->
     </div>
   </div>
-<div class="page active" id="page-dashboard">
+<div class="page" id="page-dashboard">
     <div class="page-inner">
 
       <!-- Summary Cards Row -->

@@ -60,6 +60,7 @@ describe('QC_department host', () => {
     const wrapper = mount(Host)
     try {
       expect(wrapper.get('[role="status"]').text()).toContain('正在连接 QC 工作台')
+      expect(wrapper.get('[role="status"] .qc-orbit').attributes('aria-hidden')).toBe('true')
       expect(wrapper.find('iframe').exists()).toBe(false)
       resolveHealth({ data: { frame_url: '/api/qc-department/huaxing/u-one/' } })
       await flushPromises()
@@ -76,8 +77,9 @@ describe('QC_department host', () => {
       await firstFrame.trigger('load')
       expect(secondFrame.classes()).toContain('invisible')
       expect(wrapper.find('[role="status"]').exists()).toBe(true)
-      bridgeFor(wrapper)
+      const { bridge } = bridgeFor(wrapper)
       await secondFrame.trigger('load')
+      expect(bridge.page).toBe('sales-schedule')
       expect(secondFrame.classes()).not.toContain('invisible')
       expect(wrapper.find('[role="status"]').exists()).toBe(false)
     } finally {
@@ -195,7 +197,7 @@ it('QC options are limited to readable factories and cannot request another fact
 })
 
 it('authorization refresh reconnects options without resetting the current QC page', async () => {
-  state.route.query.factory='huaxing';health()
+  state.route.query = { factory: 'huaxing', qcPage: 'dashboard' };health()
   state.can.mockImplementation(() => Boolean(state.auth.currentUser.id))
   const wrapper=mount(Host);await flushPromises()
   const {bridge}=bridgeFor(wrapper);await wrapper.get('iframe').trigger('load')
