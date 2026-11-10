@@ -26,6 +26,9 @@ const {
   activeTab,
   dashboard,
   loading,
+  updating,
+  accessDenied,
+  updateError,
   errorMessage,
   successMessage,
   live,
@@ -145,11 +148,11 @@ function releaseViewHeight() {
       </div>
       <footer class="legacy-sidebar-footer">
         <div class="legacy-sync" data-yl-help="three-d-printing.sync">
-          <span
-            ><i :class="{ connected: live.connected.value }" />{{
-              live.connected.value ? "实时同步中" : "定时同步中"
-            }}</span
-          >
+          <span :class="{ 'sync-failed': updateError }" :title="updateError || undefined" role="status">
+            <i :class="{ connected: live.connected.value && !updateError }" />{{
+              updating ? "更新中…" : updateError ? "更新失败" : live.connected.value ? "实时同步中" : "定时同步中"
+            }}
+          </span>
           <button
             type="button"
             aria-label="刷新数据"
@@ -221,7 +224,7 @@ function releaseViewHeight() {
         </Transition>
       </div>
     </main>
-    <PrinterDetail v-if="detailId" :key="detailId" :id="detailId" :open="detailOpen"
+    <PrinterDetail v-if="detailId && !accessDenied" :key="detailId" :id="detailId" :open="detailOpen"
       :printer="dashboard?.printers.find(p => p.id === detailId)" :return-focus="printerReturnFocus"
       @close="closePrinter" @after-close="afterDetailClose"
       @ready="selectAssistantPrinter(detailId)" @unavailable="invalidateAssistantPrinter(detailId)" />

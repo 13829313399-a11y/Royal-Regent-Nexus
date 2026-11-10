@@ -26,7 +26,7 @@
       {
         "path": "src/features/three-d-printing/printerPresentation.ts",
         "symbol": "printerStateText",
-        "sha256": "2426521b139268b0f3f239c2e98b905252004e6913c6f7823bc0ce801a6a08ec"
+        "sha256": "ce94fd756c49672ff7f4c950908463dc3546c108404e4cb34ffdd5e87c2b9de2"
       }
     ],
     "knowledge_version": "2026.09.29-v1",

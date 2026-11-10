@@ -126,8 +126,8 @@ const time = (s: string) =>
 <template>
   <section v-if="dashboard" class="space-y-5">
     <form class="legacy-toolbar tdp-record-toolbar" @submit.prevent="loadDay">
-      <strong>日期：</strong
-      ><input v-model="day" type="date" aria-label="生产日期" required /><TdpButton tone="soft" type="submit" :busy="loadingDay">
+      <label for="tdp-record-date">日期</label>
+      <input id="tdp-record-date" v-model="day" type="date" aria-label="生产日期" required /><TdpButton tone="soft" type="submit" class="tdp-day-action" :busy="loadingDay">
         <template #icon><CalendarDays :size="16" /></template>{{ loadingDay ? '加载中…' : '加载' }}
       </TdpButton><TdpButton
         v-if="canOperate"
@@ -138,7 +138,7 @@ const time = (s: string) =>
         v-if="canExport"
         tone="secondary"
         :busy="saving"
-        @click="exportWorkbook"
+        @click="exportWorkbook(day, day)"
       >
         <template #icon><Download :size="16" /></template>{{ searching ? "导出所选日期 Excel" : "导出 Excel" }}</TdpButton><TdpButton
         v-if="canOperate"
@@ -169,7 +169,7 @@ const time = (s: string) =>
       <label class="tdp-search-scope"
         ><input v-model="searchAllDates" type="checkbox" />搜索全部历史</label
       >
-      <TdpButton tone="soft" type="submit" :busy="listPages.records!.busy">
+      <TdpButton tone="soft" type="submit" class="tdp-search-action" :busy="listPages.records!.busy">
         <template #icon><Search :size="16" /></template>{{ listPages.records!.busy ? '查询中…' : '搜索记录' }}
       </TdpButton>
       <TdpButton
@@ -181,7 +181,7 @@ const time = (s: string) =>
         <template #icon><ArrowLeft :size="16" /></template>返回当日记录
       </TdpButton>
       <span class="basis-full text-sm text-muted-foreground"
-        >支持产品名称、打印文件名关键词；取消“搜索全部历史”可限定上方所选日期。</span
+        >可按产品名称或打印文件名搜索。<template v-if="recordSearchAllDates && canExport">Excel 仅导出所选日期 {{ day }}。</template><template v-else>取消“搜索全部历史”可限定所选日期。</template></span
       >
     </form>
     <LegacyPrinterGrid v-if="!searching" />
@@ -292,11 +292,11 @@ const time = (s: string) =>
               </td>
             </tr>
             <tr v-if="!dashboard.records.length">
-              <td :colspan="canOperate ? 18 : 17" class="p-8 text-center">
+              <td :colspan="canOperate ? 18 : 17" class="tdp-record-empty">
                 {{
                   searching
                     ? "没有找到匹配记录，请更换关键词或搜索全部历史。"
-                    : "暂无记录，点击“添加记录”开始"
+                    : canOperate ? "当天暂无记录，可点击“添加记录”开始。" : "当天暂无记录。"
                 }}
               </td>
             </tr>
@@ -368,7 +368,7 @@ const time = (s: string) =>
         <footer class="record-editor-footer">
           <span>{{ pendingRecordImage ? '1 张图片待上传，保存后生效' : '确认信息后保存本条生产记录' }}</span>
           <TdpButton tone="secondary" :disabled="saving" @click="closeForm">取消</TdpButton>
-          <TdpButton tone="primary" type="submit" :busy="saving"><template #icon><Save class="size-4" /></template>{{ saving ? '保存中…' : '保存记录' }}</TdpButton>
+          <TdpButton tone="primary" type="submit" class="tdp-save-action" :busy="saving"><template #icon><Save class="size-4" /></template>{{ saving ? '保存中…' : '保存记录' }}</TdpButton>
         </footer>
       </form>
     </LegacyDialog>
