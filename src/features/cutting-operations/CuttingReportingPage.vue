@@ -3,7 +3,7 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { RouterLink, onBeforeRouteLeave, routerKey, type LocationQueryRaw } from 'vue-router'
 import { cuttingApi, errorMessage, type Access } from './api'
 import { ordersApi, type CuttingOrder } from './ordersApi'
@@ -15,6 +15,12 @@ import CuttingLocationNotice from './CuttingLocationNotice.vue'
 import CuttingHistoryPager from './CuttingHistoryPager.vue'
 import CuttingTaskBoard from './CuttingTaskBoard.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
+import CuttingPiecePaste from './CuttingPiecePaste.vue'
+const formId = `cutting-reporting-${useId()}`
+const fieldId = (name: string) => `${formId}-${name}`
+const partField = (code: string, quantity: 'good' | 'rejected' | 'scrap') =>
+  `part_${quantity}_${encodeURIComponent(code)}`
+
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
 const reportingView=ref('tasks')
@@ -31,12 +37,13 @@ const ordersDestination = { path: `${CUTTING_BASE}/reporting`, query: { factory:
 const page=ref(1), total=ref(0), query=ref(''), asOf=ref('')
 const entry=ref<ProductionInput|null>(null), documentId=ref(''), reason=ref(''), editingExisting=ref(false)
 const decision=ref<ReportAction|null>(null), baseline=ref(''), frozenParts=ref<ReportTask['parts']>([])
-const pending=ref<{id:string;action:ReportAction;body:ReportCommand}|null>(null), uncertain=ref(false)
+const pending=ref<{id:string;action:ReportAction;body:ReportCommand;statisticsDate:string}|null>(null), uncertain=ref(false)
 let alive=true, generation=0
 const available=computed(()=>access.value?.enabled && access.value.orders_schema_ready && access.value.reporting_schema_ready)
 const can=(permission:string)=>!!access.value?.permissions.includes(permission)
 const stateSnapshot=()=>JSON.stringify([entry.value,reason.value])
-const dirty=computed(()=>!!entry.value && stateSnapshot()!==baseline.value)
+const unappliedPieces = ref(false)
+const dirty=computed(()=>!!entry.value && (unappliedPieces.value || stateSnapshot()!==baseline.value))
 const task=computed(()=>result.value?.tasks.find(t=>t.task_id===entry.value?.task_id))
 const kindsFor=(t:ReportTask|undefined,mode:ProductionInput['mode'])=>Object.entries(reportLabels).filter(([kind])=>
   can(reportPermission(kind as ReportKind)) && (kind!=='daily'||!t?.historical) && (kind!=='match'||mode==='parts') && (!['return','accept'].includes(kind)||(t?.settlement_context?.execution??t?.execution)==='outsourced'))
@@ -117,8 +124,9 @@ async function load(nextPage=1,navigation=false,followLocation=false,apply=false
   }
   finally{if(alive&&request===generation)loading.value=false}
 }
-async function select(row: CuttingOrder, refreshStatistics = false) {
+async function select(row: CuttingOrder, intent: 'select' | 'statistics' | 'recover' = 'select') {
   if(!discard())return
+  const refreshStatistics = intent === 'statistics'
   const target = location.value
   const sameOrder = selected.value?.line_id === row.line_id
   const targetDay = target?.lineId === row.line_id ? target.day : undefined
@@ -131,7 +139,7 @@ async function select(row: CuttingOrder, refreshStatistics = false) {
     const response = await reportingApi.read(row.line_id, day, 1, undefined, documentId)
     if (!alive || request !== generation) return
     result.value = response
-    asOf.value = response.as_of
+    if (intent !== 'recover') asOf.value = response.as_of
     needsLogin.value = false
     if (refreshStatistics) {
       await persistStatisticsDate(row.line_id, response.as_of)
@@ -196,19 +204,21 @@ function normalize(){
 }
 function cancel(){if(discard()){entry.value=null;decision.value=null}}
 async function submit(action:ReportAction){
-  if(saving.value)return
+  if(saving.value || unappliedPieces.value)return
   if(!pending.value){
     if(!selected.value||!result.value||!entry.value)return
     if(!can(action==='review'?'report_review':reportPermission(entry.value.kind))){error.value='没有此业务类型的操作权限。';return}
     if(!reason.value.trim()){error.value='请填写本次提交、更正或抽查说明。';return}
-    pending.value={id:selected.value.line_id,action,body:{factory_id:CUTTING_FACTORY,operation_id:crypto.randomUUID(),expected_version:result.value.version,
+    pending.value={id:selected.value.line_id,action,statisticsDate:result.value.as_of,body:{factory_id:CUTTING_FACTORY,operation_id:crypto.randomUUID(),expected_version:result.value.version,
       document_id:documentId.value,reason:reason.value,...(action==='save'||action==='post'?{entry:clone(entry.value)}:{})}}
     uncertain.value=false
   }
   generation++;loading.value=false;saving.value=true;error.value=''
   try{
-    const response=await reportingApi.command(pending.value.id,pending.value.action,pending.value.body);if(!alive)return
-    result.value=response;asOf.value=response.as_of;pending.value=null;uncertain.value=false;needsLogin.value=false;entry.value=null;decision.value=null
+    const operation = pending.value
+    const response = await reportingApi.command(operation.id, operation.action, operation.body, operation.statisticsDate)
+    if (!alive) return
+    result.value=response;pending.value=null;uncertain.value=false;needsLogin.value=false;entry.value=null;decision.value=null
     notice.value='操作已保存。生效记录计入实绩，草稿不计产量；原版本可在历史中查看。'
   }catch(e){if(!alive)return;fail(e);const status=(e as {response?:{status?:number}}).response?.status
     if(status&&status>=400&&status<500&&status!==401)needsLogin.value=false
@@ -222,7 +232,11 @@ async function recover(){
   try{
     const answer=await reportingApi.recover(pending.value.id,pending.value.action,pending.value.body);if(!alive)return
     pending.value=null;uncertain.value=false;needsLogin.value=false
-    if(answer.state==='committed'){entry.value=null;decision.value=null;saving.value=false;if(selected.value)await select(selected.value);notice.value='已核实原操作成功，已重新读取最新实绩。'}
+    if(answer.state==='committed'){
+      entry.value=null;decision.value=null;saving.value=false
+      if(selected.value)await select(selected.value, 'recover')
+      if (alive) notice.value = result.value ? '已核实原操作成功，已重新读取原截止日期的实绩。' : '已核实原操作成功，请重新读取实绩。'
+    }
     else notice.value='已确认原操作未执行并停止；草稿保留，可修改后重新提交。'
   }catch(e){if(alive)fail(e)}finally{saving.value=false}
 }
@@ -247,7 +261,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
       <CuttingTaskBoard v-show="reportingView==='tasks'" reporting />
       <div v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-overview">
       <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发收回由文员登记，验收由主管确认，验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
-      <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load(1,false,false,true)"><label>订单／货号<input v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
+      <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load(1,false,false,true)"><label :for="fieldId('order_query')">订单／货号<input :id="fieldId('order_query')" name="order_query" v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><caption class="sr-only">已签收订单（{{ total }} 条来源订单）</caption><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>状态</th><th>操作</th></tr></thead><tbody>
         <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact /></td><td><Button variant="outline" :disabled="saving||!!pending" @click="select(row)">查看填数</Button></td></tr>
       </tbody></table></div><p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选范围本页暂无已签收订单，可清除筛选或翻页查看。':total?'本页来源订单尚未签收，可翻页查看或到排期页核对接单。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
@@ -257,7 +271,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
         <template #action><Button as-child variant="outline"><RouterLink :to="planningDestination">返回该订单排期</RouterLink></Button></template>
         <div class="report-detail">
         <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
-        <form class="cutting-master-toolbar" @submit.prevent="select(selected!, true)"><label>统计截至日期<input id="cutting-statistics-date" name="statistics_date" v-model="asOf" type="date" :max="today()" :disabled="loading||saving||!!pending" /></label><Button variant="outline" :disabled="loading||saving||!!pending">刷新统计</Button></form>
+        <form class="cutting-master-toolbar" @submit.prevent="select(selected!, 'statistics')"><label :for="fieldId('statistics_date')">统计截至日期<input :id="fieldId('statistics_date')" name="statistics_date" v-model="asOf" type="date" :max="today()" :disabled="loading||saving||!!pending" /></label><Button variant="outline" :disabled="loading||saving||!!pending">刷新统计</Button></form>
         <p v-if="statisticsDatePending" role="status">日期尚未应用。当前统计及新填报的默认日期仍为 {{ result.as_of }}。</p>
         <dl class="report-totals"><div><dt>订单总套数（工程核定）</dt><dd>{{ summary.order_sets ?? '待核定' }}</dd></div><div><dt>合格完成套数</dt><dd>{{ summary.completed }}</dd></div><div><dt>实际交数／已交接</dt><dd>{{ summary.actual_delivery }}</dd></div><div><dt>未完成套数</dt><dd>{{ summary.remaining ?? '待核定' }}</dd></div><div><dt>累计计划差额（交接−计划）</dt><dd>{{ summary.plan_difference }}</dd></div><div><dt>当日完成／交接</dt><dd>{{ summary.day_completed }} / {{ summary.day_handed }}</dd></div></dl>
         <p>截至 {{ result.as_of }}；未完成＝订单总套数−合格完成，允许保留超产后的负数。待交接 {{ summary.completed_unhanded }} 套。</p>
@@ -279,16 +293,18 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           <h3>{{ decision==='review'?'主管抽查':decision==='void'?'作废生效记录':decision==='discard'?'放弃已保存草稿':editingExisting?'编辑／更正原记录':'新增生产记录' }}</h3>
           <fieldset :disabled="saving||!!pending">
             <template v-if="!decision">
-              <div class="cutting-master-fields"><label>生产／业务日期<input v-model="entry.day" type="date" :max="today()" required /></label><label>报数方式<select v-model="entry.mode" :disabled="editingExisting||!!task?.mode" @change="normalize"><option value="sets">直接报完整套数</option><option value="parts">按裁片核套</option></select></label><label>业务类型<select v-model="entry.kind" :disabled="editingExisting" @change="normalize"><option v-for="[key,label] in kindOptions" :key="key" :value="key">{{ label }}</option></select></label></div>
+              <div class="cutting-master-fields"><label :for="fieldId('business_day')">生产／业务日期<input :id="fieldId('business_day')" name="business_day" v-model="entry.day" type="date" :max="today()" required /></label><label :for="fieldId('report_mode')">报数方式<select :id="fieldId('report_mode')" name="report_mode" v-model="entry.mode" :disabled="editingExisting||!!task?.mode" @change="normalize"><option value="sets">直接报完整套数</option><option value="parts">按裁片核套</option></select></label><label :for="fieldId('report_kind')">业务类型<select :id="fieldId('report_kind')" name="report_kind" v-model="entry.kind" :disabled="editingExisting" @change="normalize"><option v-for="[key,label] in kindOptions" :key="key" :value="key">{{ label }}</option></select></label></div>
               <p v-if="entry.kind==='daily'">填写当日新增数量，不填累计数；零表示明确无产出，未填日报仍视为未报。</p>
-              <div v-if="entry.kind==='daily'&&entry.mode==='parts'" class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>部件／每套片数</th><th>合格新增片数</th><th>不良片数</th><th>报废片数</th></tr></thead><tbody><tr v-for="p in entry.parts" :key="p.code"><td>{{ frozenParts.find(r=>r.code===p.code)?.name }} / {{ frozenParts.find(r=>r.code===p.code)?.pieces_per_set }}</td><td><input v-model.number="p.good" :aria-label="p.code+'合格片数'" type="number" min="0" max="1000000000" step="1" required /></td><td><input v-model.number="p.rejected" :aria-label="p.code+'不良片数'" type="number" min="0" max="1000000000" step="1" required /></td><td><input v-model.number="p.scrap" :aria-label="p.code+'报废片数'" type="number" min="0" max="1000000000" step="1" required /></td></tr></tbody></table></div>
-              <div v-else class="cutting-master-fields"><label>{{ entry.kind==='accept'?'验收合格套数':'本次套数' }}<input v-model.number="entry.sets" type="number" min="0" max="1000000000" step="1" required /></label><label v-if="entry.kind==='daily'||entry.kind==='accept'">不良／验收不合格套数<input v-model.number="entry.rejected" type="number" min="0" max="1000000000" step="1" required /></label><label v-if="entry.kind==='daily'">报废套数<input v-model.number="entry.scrap" type="number" min="0" max="1000000000" step="1" required /></label></div>
+              <CuttingPiecePaste v-if="entry.kind==='daily' && entry.mode==='parts' && entry.parts.length" :key="documentId" :pieces="entry.parts" :day="entry.day" @pending="unappliedPieces = $event" @apply="entry.parts = $event" />
+              <div v-if="entry.kind==='daily'&&entry.mode==='parts'" class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>部件／每套片数</th><th>合格新增片数</th><th>不良片数</th><th>报废片数</th></tr></thead><tbody><tr v-for="p in entry.parts" :key="p.code"><td>{{ p.code }} · {{ frozenParts.find(r=>r.code===p.code)?.name }} / {{ frozenParts.find(r=>r.code===p.code)?.pieces_per_set }}</td><td><input :id="fieldId(partField(p.code, 'good'))" :name="partField(p.code, 'good')" v-model.number="p.good" :aria-label="p.code+'合格片数'" type="number" min="0" max="1000000000" step="1" required /></td><td><input :id="fieldId(partField(p.code, 'rejected'))" :name="partField(p.code, 'rejected')" v-model.number="p.rejected" :aria-label="p.code+'不良片数'" type="number" min="0" max="1000000000" step="1" required /></td><td><input :id="fieldId(partField(p.code, 'scrap'))" :name="partField(p.code, 'scrap')" v-model.number="p.scrap" :aria-label="p.code+'报废片数'" type="number" min="0" max="1000000000" step="1" required /></td></tr></tbody></table></div>
+              <div v-else class="cutting-master-fields"><label :for="fieldId('sets')">{{ entry.kind==='accept'?'验收合格套数':'本次套数' }}<input :id="fieldId('sets')" name="sets" v-model.number="entry.sets" type="number" min="0" max="1000000000" step="1" required /></label><label v-if="entry.kind==='daily'||entry.kind==='accept'" :for="fieldId('rejected_sets')">不良／验收不合格套数<input :id="fieldId('rejected_sets')" name="rejected_sets" v-model.number="entry.rejected" type="number" min="0" max="1000000000" step="1" required /></label><label v-if="entry.kind==='daily'" :for="fieldId('scrap_sets')">报废套数<input :id="fieldId('scrap_sets')" name="scrap_sets" v-model.number="entry.scrap" type="number" min="0" max="1000000000" step="1" required /></label></div>
               <p v-if="entry.kind==='match'">当前可配 {{ task?.balance?.matchable??0 }} 套；按冻结 BOM 配比消耗散片，重复核套会被拦截。</p>
-              <label>现场依据／核套人／收回验收或交接凭据<textarea v-model="entry.evidence" maxlength="500" required /></label><label>超产或实际条件未核定的说明<textarea v-model="entry.exception_reason" maxlength="500" /></label>
+              <label :for="fieldId('evidence')">现场依据／核套人／收回验收或交接凭据<textarea :id="fieldId('evidence')" name="evidence" v-model="entry.evidence" maxlength="500" required /></label><label :for="fieldId('exception_reason')">超产或实际条件未核定的说明<textarea :id="fieldId('exception_reason')" name="exception_reason" v-model="entry.exception_reason" maxlength="500" /></label>
             </template>
             <p v-else>原业务：{{ reportLabels[entry.kind] }}，{{ entry.day }}，{{ entry.sets }} 套。操作保留原记录及全部版本。</p>
-            <label>本次提交／更正／抽查说明<textarea v-model="reason" maxlength="500" required /></label>
-            <div class="cutting-master-actions"><Button variant="outline" v-if="!decision&&can(reportPermission(entry.kind))" type="button" @click="submit('save')">保存草稿</Button><Button v-if="can(decision==='review'?'report_review':reportPermission(entry.kind))" type="submit">{{ decision?'确认操作':'提交生效' }}</Button><Button variant="outline" type="button" @click="cancel">取消编辑</Button></div>
+            <label :for="fieldId('reason')">本次提交／更正／抽查说明<textarea :id="fieldId('reason')" name="reason" v-model="reason" maxlength="500" required /></label>
+            <p v-if="unappliedPieces" role="status">请先校验并应用粘贴内容，或清空后继续。</p>
+            <div class="cutting-master-actions"><Button variant="outline" v-if="!decision&&can(reportPermission(entry.kind))" type="button" :disabled="unappliedPieces" @click="submit('save')">保存草稿</Button><Button v-if="can(decision==='review'?'report_review':reportPermission(entry.kind))" type="submit" :disabled="unappliedPieces">{{ decision?'确认操作':'提交生效' }}</Button><Button variant="outline" type="button" @click="cancel">取消编辑</Button></div>
           </fieldset>
         </form>
         <h3>日报与业务记录</h3><p>记录列表保留全部日期；上方统计按截止日计算。草稿及更正草稿不覆盖原生效数量。</p>

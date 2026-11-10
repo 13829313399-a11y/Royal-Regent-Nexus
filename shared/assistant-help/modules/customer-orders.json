@@ -65,7 +65,7 @@
       {
         "path": "backend/app/api/cutting_operations.py",
         "symbol": "def order_command",
-        "sha256": "42387c156213c5e7822a77a54dc5e27649c1709dfa399da27cb63dd65e5ee83a"
+        "sha256": "b1d366ee8961c87115b24ed61193527c80281316e458393e824d4bd2b48d85af"
       },
       {
         "path": "backend/app/services/cutting_planning.py",
