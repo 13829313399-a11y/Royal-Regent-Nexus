@@ -47,6 +47,7 @@ const prefix = (supplier: boolean) => supplier ? '/carton-supplier/unified-deliv
 export const cartonUnifiedDeliveriesApi = {
   async warehouseReceive(body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<{ delivery_id: string; receipts: CartonReceiptResponse[] }>(`${prefix(false)}/warehouse-receive`, body, { signal })).data },
   async detail(factory: string, id: string, signal?: AbortSignal) { return (await http.get<UnifiedDelivery>(`${prefix(false)}/${encodeURIComponent(id)}`, { params: { factory_id: factory }, signal })).data },
+  async supplierDetail(factory: string, id: string, signal?: AbortSignal) { return (await http.get<UnifiedDelivery>(`${prefix(true)}/${encodeURIComponent(id)}`, { params: { factory_id: factory }, signal })).data },
   async list(factory: string, supplier = false, signal?: AbortSignal) { return (await http.get<{ items: UnifiedDelivery[]; total: number; options?: { workshops: { id: string; name: string }[] } }>(prefix(supplier), { params: { factory_id: factory }, signal })).data },
   async dispatch(body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<UnifiedDelivery>(prefix(true), body, { signal })).data },
   async receive(id: string, body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<UnifiedDelivery>(`${prefix(false)}/${encodeURIComponent(id)}/receive`, body, { signal })).data },

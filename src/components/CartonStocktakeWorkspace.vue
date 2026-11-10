@@ -9,7 +9,7 @@ import { cartonStocktakeApi, type StocktakeDetail, type StocktakeHeader, type St
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 
-const props = defineProps<{ factoryId: string; initialPositionKeys?: string[]; search?: string }>()
+const props = defineProps<{ factoryId: string; initialPositionKeys?: string[]; initialDocumentId?: string; search?: string }>()
 const emit = defineEmits<{ close: []; posted: []; 'update:search': [value: string] }>()
 const auth = useAuthStore()
 const balances = ref<CartonInventoryBalanceResponse[]>([])
@@ -24,7 +24,7 @@ const papers = computed(() => [...new Set(balances.value.map(row => row.packagin
 const units = computed(() => [...new Set(balances.value.map(row => row.unit))].sort())
 const busy = ref(false), error = ref(''), message = ref(''), dirty = ref(false), acknowledged = ref(false)
 const pendingWrite = ref('')
-const openingSelection = ref(Boolean(props.initialPositionKeys?.length))
+const openingSelection = ref(!props.initialDocumentId && Boolean(props.initialPositionKeys?.length))
 const navigationBlockMessage = computed(() => pendingWrite.value
   ? `${pendingWrite.value}，请等待完成后再切换页面。`
   : openingSelection.value ? '正在根据已选库存生成盘点单，请等待完成后再切换页面。'
@@ -103,7 +103,9 @@ async function open(id: string) {
   if (!leave()) return
   await run(async () => {
     const result = await cartonStocktakeApi.detail(props.factoryId, id)
-    if (active) accept(result)
+    if (!active) return
+    if (result.id !== id || result.factory_id !== props.factoryId) throw new Error('返回的盘点单与当前厂区或原单不符。')
+    accept(result)
   })
 }
 async function refresh() {
@@ -128,6 +130,10 @@ async function initialize() {
     if (active) acceptPolicy(result)
   })
   if (!active) return
+  if (props.initialDocumentId) {
+    await open(props.initialDocumentId)
+    return
+  }
   const initial = [...new Set(props.initialPositionKeys ?? [])]
   if (initial.length) {
     chosen.value = initial

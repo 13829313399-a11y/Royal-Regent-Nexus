@@ -119,6 +119,23 @@ def cell_text(cell):
     return text
 
 
+def _worksheet_size(sheet, row_limit):
+    from openpyxl.worksheet._reader import WorkSheetParser
+
+    max_row, max_column = sheet.max_row or 0, sheet.max_column or 0
+    if max_row > row_limit or max_column > 64:
+        return max_row, max_column
+
+    # Dimension metadata can be missing or too small. Inspect sparse cells before filling gaps.
+    with sheet._get_source() as source:
+        for row_number, cells in WorkSheetParser(source, sheet._shared_strings).parse():
+            max_row = max(max_row, row_number, max((cell["row"] for cell in cells), default=0))
+            max_column = max(max_column, max((cell["column"] for cell in cells), default=0))
+            if max_row > row_limit or max_column > 64:
+                break
+    return max_row, max_column
+
+
 def read(content, mode, sheet_name="", header_row=None, mapping=None):
     from openpyxl import load_workbook
     if mode not in {"REGULAR", "SPECIAL"} or not content or len(content) > MAX_BYTES:
@@ -144,15 +161,20 @@ def read(content, mode, sheet_name="", header_row=None, mapping=None):
             for number, cells in enumerate(sheet.iter_rows(max_row=50, max_col=64), 1):
                 score = len({aliases.get(normalized(str(c.value or ""))) for c in cells} - {None})
                 candidates.append((score, name, number))
+        if not candidates:
+            raise HTTPException(422, "未读到表头，请核对所选工作表")
         best = max(candidates, key=lambda x: x[0])
         sheet_name = sheet_name or best[1]
         header_row = header_row or best[2]
         if not 1 <= header_row <= 50:
             raise HTTPException(422, "表头行须在第 1–50 行")
         sheet = book[sheet_name]
-        if (sheet.max_column or 0) > 64 or (sheet.max_row or 0) > header_row + 501:
+        max_row, max_column = _worksheet_size(sheet, header_row + 501)
+        if max_column > 64 or max_row > header_row + 501:
             raise HTTPException(422, "所选工作表最多 64 列、500 行实际数据及 1 行模板演示，请删除多余格式行或拆分文件")
-        cells = list(sheet.iter_rows(min_row=header_row, max_row=min(sheet.max_row or header_row, header_row + 501), max_col=sheet.max_column or 1))
+        cells = list(sheet.iter_rows(min_row=header_row, max_row=max_row or header_row, max_col=max_column or 1))
+        if not cells:
+            raise HTTPException(422, "未读到表头，请核对表头所在行")
         headers = [cell_text(c) for c in cells[0]]
         values = [(header_row + n, [cell_text(c) for c in row]) for n, row in enumerate(cells[1:], 1) if any(c.value is not None for c in row)]
         marker_columns = [i for i, label in enumerate(headers) if label == DEMO_COLUMN]
@@ -185,7 +207,7 @@ def read(content, mode, sheet_name="", header_row=None, mapping=None):
                     raise HTTPException(422, f"第 {number} 行仍带演示标记，但内容或列已修改；实际订单请清空“{DEMO_COLUMN}”，再重新上传")
                 ignored_demo_rows.append(number)
             values = retained
-        if len(ignored_demo_rows) > 1 or len(values) > 500 or (sheet.max_row or header_row) - header_row - len(ignored_demo_rows) > 500:
+        if len(ignored_demo_rows) > 1 or len(values) > 500 or max_row - header_row - len(ignored_demo_rows) > 500:
             raise HTTPException(422, "每次最多 500 行实际数据及 1 行模板演示，请删除多余行或拆分文件")
         inferred = {}
         for key, _, _ in fields(mode):

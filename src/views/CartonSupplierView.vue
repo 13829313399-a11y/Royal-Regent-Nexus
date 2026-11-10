@@ -135,6 +135,7 @@ const workspace = ref<SupplierWorkspace | null>(null)
 const workspaceReadError = ref('')
 const membershipReadError = ref('')
 const monthlySearch = ref('')
+const monthlyRefreshKey = ref(0)
 const returnSearch = ref('')
 const payablesSearch = ref('')
 const unifiedDeliveries = ref<UnifiedDelivery[]>([])
@@ -1284,6 +1285,7 @@ async function refresh() {
     else error.value = regularResult.status === 'rejected' ? getApiErrorMessage(regularResult.reason) : specialResult.status === 'rejected' ? getApiErrorMessage(specialResult.reason) : '暂无可查看的服务厂区，请确认供应商协同权限。'
     if (regularResult.status === 'rejected') error.value = `采购订单服务厂区读取失败：${getApiErrorMessage(regularResult.reason)}`
     if (specialResult.status === 'rejected') specialError.value = `样板与杂单服务厂区读取失败：${getApiErrorMessage(specialResult.reason)}`
+    if (context === importContext.value && activeTab.value === 'settlements' && settlementView.value === 'MONTHLY') monthlyRefreshKey.value++
     openSpecialLink()
   } catch (reason) { if (context === importContext.value) failure(reason) } finally { if (context === importContext.value) discovering.value = false }
 }
@@ -1492,7 +1494,12 @@ async function download(id: string, factoryId: string, filename: string) {
             <div v-for="order in orders.filter(item => item.cancellation_notice?.issued && !item.cancellation_notice.acknowledged)" :key="order.id" class="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-red-800"><span>{{ factoryDisplayName(order.factory_id) }} · {{ order.contract_no }} · PO {{ order.customer_po || '纸箱订单未填写' }} · {{ order.item_no }} · {{ order.document_no }}</span><button v-if="canApprove" type="button" :disabled="busy" class="rounded border border-red-300 bg-white px-3 py-2 font-semibold" @click="acknowledgeCancellation(order)">确认收到取消通知</button></div>
           </section>
 
-        <section v-if="activeTab === 'settlements'" class="space-y-4"><nav aria-label="供应商月结子页面" class="flex flex-wrap gap-2 rounded-xl border bg-card p-2 text-xs"><button type="button" :aria-pressed="settlementView === 'MONTHLY'" class="rounded-lg px-4 py-2" :class="settlementView === 'MONTHLY' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('MONTHLY')">本月对账</button><button type="button" :aria-pressed="settlementView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="settlementView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('RETURNS')">退货签收与退款</button><button type="button" :aria-pressed="settlementView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="settlementView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('PAYABLES')">应付与收款</button></nav><CartonSupplierMonthlySummary v-if="settlementView === 'MONTHLY'" v-model:search="monthlySearch" :factories="memberships" /><CartonSupplierReturns v-else-if="settlementView === 'RETURNS'" :factories="serviceFactories" :viewer-key="importContext" v-model:search="returnSearch" /><CartonPayables v-else :factories="memberships" :viewer-key="importContext" v-model:search="payablesSearch" /></section>
+        <section v-if="activeTab === 'settlements'" class="space-y-4">
+          <nav aria-label="供应商月结子页面" class="flex flex-wrap gap-2 rounded-xl border bg-card p-2 text-xs"><button type="button" :aria-pressed="settlementView === 'MONTHLY'" class="rounded-lg px-4 py-2" :class="settlementView === 'MONTHLY' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('MONTHLY')">本月对账</button><button type="button" :aria-pressed="settlementView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="settlementView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('RETURNS')">退货签收与退款</button><button type="button" :aria-pressed="settlementView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="settlementView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('PAYABLES')">收款与往来</button></nav>
+          <CartonSupplierMonthlySummary v-if="settlementView === 'MONTHLY'" :search="monthlySearch" :factories="memberships" :viewer-key="importContext" :refresh-key="monthlyRefreshKey" />
+          <CartonSupplierReturns v-else-if="settlementView === 'RETURNS'" :factories="serviceFactories" :viewer-key="importContext" v-model:search="returnSearch" />
+          <CartonPayables v-else :factories="memberships" :viewer-key="importContext" v-model:search="payablesSearch" />
+        </section>
         <template v-else-if="activeTab === 'orders'">
           <p v-if="specialError" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ specialError }}</p>
           <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">

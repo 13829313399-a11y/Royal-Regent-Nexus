@@ -71,7 +71,7 @@ function examples(id) {
 
 const overviews = [
  {id:'workflow', title:'内部端：跟着真实业务走', steps:['下单：新需求建订单；样板／杂单可导入。多张旧单加量，用批量追加。','收发：供应商接单送货，仓库核对后入库；实际领料再出库。','对账：月底看送货、退货和应结金额；有差异回原单处理。'], result:'首次启用先备基础资料和期初库存。同一次到货不重复入库，分批到货分别验收。'},
- {id:'supplier-workflow', title:'供应商端：接单 → 送货 → 对账', steps:['接单：确认厂区，核对当前采购版本、纸品、数量和承诺交期。','送货：导入原送货单，核对数量和原价，再查看仓库有效入库与拒收反馈。','对账：选月份和币种，核对送货金额、退货贷项和本月应结。'], result:'本月对账只读，不需要系统内确认；收款另看“应付与收款”。'},
+ {id:'supplier-workflow', title:'供应商端：接单 → 送货 → 对账', steps:['接单：确认厂区，核对当前采购版本、纸品、数量和承诺交期。','送货：导入原送货单，核对数量和原价，再查看仓库有效入库与拒收反馈。','对账：选月份和币种，核对送货金额、退货贷项和本月应结。'], result:'本月对账只读，不需要系统内确认；收款另看“收款与往来”。'},
 ]
 for (const section of [...cartonGuideSections, ...cartonSupplierGuideSections, ...overviews]) {
   const file = section.image?.src.split('/').at(-1) ?? section.id + '.svg'
