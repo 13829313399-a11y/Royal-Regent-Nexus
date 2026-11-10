@@ -125,7 +125,7 @@ test('conditional record survives review, SQLite round trip and CSV export with 
   b.ctx._loadMeasRows([measurement()]); b.ctx.saveRecord(); b.ctx.approveRecord(501);
   const record = b.json('state.records[0]'); assert.equal(record.result, 'COND'); assert.equal(record.reviewBy, 'Test Inspector');
   assert.equal(record.status, 'approved'); assert.ok(record.reviewAt); assert.ok(record.updatedAt);
-  const core = vm.runInNewContext(server.slice(server.indexOf('const RECORD_COLS'), server.indexOf('function replaceUsers')) +
+  const core = vm.runInNewContext(server.slice(server.indexOf('const RECORD_COLS'), server.indexOf('function replacePartners')) +
     ';({SCHEMA_SQL,upsertRecords,rowToRecord})');
   const db = new DatabaseSync(':memory:');
   try { db.exec(core.SCHEMA_SQL); core.upsertRecords(db, [record]);

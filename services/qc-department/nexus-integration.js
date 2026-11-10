@@ -1,6 +1,46 @@
-/* Nexus owns identity and factory scope; the standalone login is not used here. */
+/* Nexus owns identity and factory scope. */
 (function () {
   'use strict';
+  const assets = {
+    excel: [['vendor/xlsx-js-style.min.js', () => window.XLSX]],
+    pdf: [
+      ['vendor/jspdf.umd.min.js', () => window.jspdf?.jsPDF || window.jsPDF],
+      ['vendor/html2canvas.min.js', () => window.html2canvas],
+    ],
+    ocr: [['vendor/tesseract/tesseract.min.js', () => window.Tesseract]],
+  };
+  const pendingAssets = new Map();
+
+  function loadAsset(source, isReady) {
+    if (isReady()) return Promise.resolve();
+    if (pendingAssets.has(source)) return pendingAssets.get(source);
+    const script = document.createElement('script');
+    script.src = source;
+    const request = new Promise((resolve, reject) => {
+      function fail() {
+        script.remove();
+        pendingAssets.delete(source);
+        reject(new Error('工具组件加载失败，请重试。'));
+      }
+      script.addEventListener('error', fail, { once: true });
+      script.addEventListener('load', () => {
+        if (!isReady()) { fail(); return; }
+        pendingAssets.delete(source);
+        resolve();
+      }, { once: true });
+    });
+    pendingAssets.set(source, request);
+    document.head.append(script);
+    return request;
+  }
+
+  window.QcAssets = {
+    async load(name) {
+      if (!Object.hasOwn(assets, name)) throw new Error('未知的 QC 工具组件。');
+      await Promise.all(assets[name].map(([source, isReady]) => loadAsset(source, isReady)));
+    },
+  };
+
   window.__QC_SYNC_FAILURE = function () {
     window.__QC_BACKEND_OK = false;
     if (document.getElementById('nexusSyncFailure')) return;
@@ -23,9 +63,9 @@
   window.__QC_PAGE_CHANGED = function (page) { factoryBridge?.navigate?.(page); };
   window.__QC_INITIAL_PAGE = function () {
     var page = factoryBridge?.page;
-    return page && document.getElementById('page-' + page) ? page : 'dashboard';
+    return page && document.getElementById('page-' + page) ? page : 'sales-schedule';
   };
-  window.__QC_CURRENT_PAGE = function () { return typeof currentPage === 'string' ? currentPage : 'dashboard'; };
+  window.__QC_CURRENT_PAGE = function () { return typeof currentPage === 'string' ? currentPage : 'sales-schedule'; };
   window.__QC_RENDER_FACTORY_SELECTOR = function () {
     if (!window.__QC_NEXUS || !factoryBridge) return;
     var badge = document.querySelector('#userBadge .user-badge-company');
@@ -59,7 +99,7 @@
     factoryBridge = bridge;
     window.__QC_RENDER_FACTORY_SELECTOR();
     // Only carry the page name across factories, never filters, selections or data.
-    if (bridge.page && document.getElementById('page-' + bridge.page) && window.showPage
+    if (window.__QC_WORKBENCH_READY === true && bridge.page && document.getElementById('page-' + bridge.page) && window.showPage
         && window.__QC_CURRENT_PAGE() !== bridge.page) window.showPage(bridge.page);
   };
   window.__QC_CONFIRM_FACTORY_LEAVE = function () {
@@ -104,18 +144,20 @@
       window.__QC_SYNC_FAILURE();
     }
   };
-  document.addEventListener('DOMContentLoaded', function () {
-    if (!window.__QC_NEXUS) { document.body.textContent = '请从 Nexus 的 QC 验货工作台进入。'; return; }
+  document.addEventListener('DOMContentLoaded', async function () {
+    if (!window.__QC_NEXUS) return;
     // A title can be returned safely without building HTML from account data.
     document.title = 'QC 验货工作台';
+    var systemMenu = document.getElementById('sysSwitch');
+    if (systemMenu) systemMenu.remove();
+
+    await window.__QC_BOOTSTRAP;
+    if (window.__QC_BACKEND_OK !== true) return;
     var reference = window.__QC_REFERENCE_DATA || { count: 0 };
     var banner = document.getElementById('qcReferenceBanner');
     if (banner && reference.count) {
       banner.hidden = false;
       banner.textContent = '模板参考：' + reference.count + ' 条记录源自东莞兴信原库（含模拟数据），不属于本厂。当前统计和报表包含参考数据；正式使用前可在数据导入页清除未修改的参考记录。';
     }
-
-    var systemMenu = document.getElementById('sysSwitch');
-    if (systemMenu) systemMenu.remove();
   });
 })();

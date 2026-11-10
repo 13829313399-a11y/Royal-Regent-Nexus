@@ -236,6 +236,8 @@
     const request=model.request;model.exporting=true;el('qsExport').disabled=true;el('qsExport').textContent='正在准备…';
     try {
       const f=filters(), rows=filterRows(model.items,f);
+      if(!root.XLSX)await root.QcAssets?.load('excel');
+      if(request!==model.request)throw new Error('排期页面已刷新，请重新导出');
       if(!root.XLSX)throw new Error('Excel 导出组件未加载');
       const company=typeof root.getCompanyName==='function'?root.getCompanyName():'';
       const ready=model.phase==='ready';
