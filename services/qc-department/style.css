@@ -3102,6 +3102,13 @@ body.theme-light #yearlyReportBody  .section-card {
   border-color: var(--red);
 }
 
+.qc-startup {
+  margin: 0;
+  padding: 24px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
 /* ════════════════════════════════════════
    §OCR  图片识别录入区域样式
 ════════════════════════════════════════ */

@@ -99,7 +99,10 @@ function returnToNexus() {
 
 function _showApp() {
   _initSidebar();
-  document.getElementById('appWrapper').style.display  = '';
+  const startup = document.getElementById('qcStartup');
+  if (startup) startup.hidden = true;
+  document.getElementById('appWrapper').style.display = '';
+  window.__QC_WORKBENCH_READY = true;
   _renderUserBadge();
   applyPermissions();
   /* 等工作台完成布局后再渲染，确保 ECharts 取得正确尺寸。 */
@@ -2339,11 +2342,8 @@ async function startOcr() {
     showToast('请先上传图片', 'error');
     return;
   }
-  if (typeof Tesseract === 'undefined') {
-    showToast('OCR 引擎未加载成功，请检查网络后重试', 'error');
-    return;
-  }
   if (_ocrWorkerBusy) return;
+  const image = _ocrImageFile;
   _ocrWorkerBusy = true;
   setText('ocrStatus', '正在识别，请稍候...');
   const btn = document.getElementById('btnStartOcr');
@@ -2351,7 +2351,9 @@ async function startOcr() {
 
   try {
     /* 图片预处理：放大2倍+灰度+对比度增强，提高识别准确率（不改变预览，只改变OCR输入）*/
-    const ocrInput = await preprocessImageForOcr(_ocrImageFile);
+    if (typeof Tesseract === 'undefined') await window.QcAssets.load('ocr');
+    if (image !== _ocrImageFile) return;
+    const ocrInput = await preprocessImageForOcr(image);
     /* Worker 内 importScripts 不识别相对路径，必须给绝对 URL */
     const _ocrBase = location.href.replace(/[^/]*$/, '');
     const result = await Tesseract.recognize(ocrInput, 'chi_sim+eng', {
@@ -2360,6 +2362,7 @@ async function startOcr() {
       langPath: _ocrBase + 'vendor/tesseract/lang',
       logger: () => {} /* 静默，不输出进度日志 */
     });
+    if (image !== _ocrImageFile) return;
     const text = (result?.data?.text || '').trim();
     if (!text) {
       setText('ocrStatus', '识别失败，请重新上传清晰图片');
@@ -4955,12 +4958,12 @@ function exportCSV() {
 }
 
 /* 按「加工厂品质检验明细统计表」格式导出 Excel（沿用验货明细页的日期/搜索筛选）*/
-function exportFactoryExcel() {
+async function exportFactoryExcel() {
   if (!can('exportData')) { showToast('当前账号无权限执行此操作', 'error'); return; }
   if (currentPage === 'records') filterRecords();
   if (_downloadServerExport('factory-excel.xls', '加工厂 Excel')) return;
-  if (typeof XLSX === 'undefined') { showToast('Excel 引擎未加载，请刷新后重试', 'error'); return; }
   try {
+    if (typeof XLSX === 'undefined') await window.QcAssets.load('excel');
     const hasActiveFilter = !!(
       getVal('searchInput') ||
       getVal('filterResult') ||
@@ -5454,6 +5457,7 @@ let _importSheetName    = '';
 let _importHeaderRowIdx = -1;   // 识别到的表头行索引
 let _importErrors       = [];   // { fatal:bool, msg:string }
 let _importWarnings     = [];   // { msg:string }
+let _importReadVersion  = 0;
 let _pendingImportPlan  = null; // 用户确认前的导入分析结果（不写入数据）
 
 /* ═══════════════════════════════
@@ -5485,6 +5489,7 @@ function handleFileImport(e) {
    重置 / 取消（不碰 localStorage）
 ═══════════════════════════════ */
 function importReset() {
+  _importReadVersion++;
   /* 清空内存状态 */
   _importParsedRows   = [];
   _importMappedFields = {};
@@ -5528,26 +5533,32 @@ function _setProgress(pct, label) {
 /* ═══════════════════════════════
    §A  入口：开始导入流程
 ═══════════════════════════════ */
-function _startImport(file) {
+async function _startImport(file) {
   const name = file.name.toLowerCase();
   if (!name.endsWith('.xlsx') && !name.endsWith('.xls') && !name.endsWith('.csv')) {
     _showFatalError('不支持的文件格式：' + file.name + '，请使用 .xlsx / .xls / .csv');
     return;
   }
-  if (typeof XLSX === 'undefined') {
-    _showFatalError('SheetJS 库未加载，请检查网络连接后刷新页面重试');
-    return;
-  }
-
   importReset();
+  const version = _importReadVersion;
+  if (typeof XLSX === 'undefined') {
+    _setProgress(0, '正在加载 Excel 工具…');
+    try { await window.QcAssets.load('excel'); }
+    catch (_) {
+      if (version === _importReadVersion) _showFatalError('Excel 工具加载失败，请重试');
+      return;
+    }
+    if (version !== _importReadVersion) return;
+  }
   /* 隐藏拖拽区，显示进度 */
   const zone = document.getElementById('importZone');
   if (zone) zone.style.display = 'none';
   _setProgress(10, '正在读取文件：' + file.name);
 
   const reader = new FileReader();
-  reader.onerror = () => _showFatalError('文件读取失败，请重试');
+  reader.onerror = () => { if (version === _importReadVersion) _showFatalError('文件读取失败，请重试'); };
   reader.onload  = ev => {
+    if (version !== _importReadVersion) return;
     try {
       _setProgress(30, '正在解析工作表…');
       const wb = XLSX.read(new Uint8Array(ev.target.result), {
@@ -6442,13 +6453,14 @@ function _cc() {
   };
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  const startup = document.getElementById('qcStartup');
   if (!_liveUser()) {
-    document.body.textContent = '请从 Nexus 的 QC 验货工作台进入。';
+    startup.textContent = '请从 Nexus 的 QC 验货工作台进入。';
     return;
   }
-  if (!window.__QC_BACKEND_OK) {
-    document.body.textContent = 'QC 数据读取失败，请返回工作台重试。';
+  if (!await window.__QC_BOOTSTRAP) {
+    startup.textContent = 'QC 数据读取失败，请返回工作台重试。';
     return;
   }
   /* 0. 每次进入 QC 默认浅色；仍可在当前页面手动切换主题。 */
@@ -7682,18 +7694,11 @@ function _pdfOptYearDefRate(months, mAvgRates) {
 async function exportMonthlyReportPDF() {
   if (window.QcPeriodReports?.monthly.enabled()) return exportReportPDF('monthly');
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  if (!window.html2canvas) {
-    alert('html2canvas 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
-  if (!window.jsPDF && !window.jspdf) {
-    alert('jsPDF 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
   const elMonth = document.getElementById('monthlyMonth');
   if (!elMonth || !elMonth.value) { showToast('请先选择月份', 'error'); return; }
 
   showToast('正在生成月报 PDF，请稍候…', 'info');
+  if (!await _rptCheckDeps()) return;
   const [year, month] = elMonth.value.split('-').map(Number);
   const data      = getMonthRecords(year, month);
   const s         = summarizeRecords(data);
@@ -7942,18 +7947,11 @@ async function exportMonthlyReportPDF() {
 ══════════════════════════════════════════════════════════ */
 async function exportYearlyReportPDF() {
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  if (!window.html2canvas) {
-    alert('html2canvas 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
-  if (!window.jsPDF && !window.jspdf) {
-    alert('jsPDF 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
   const elYear = document.getElementById('yearlyYear');
   if (!elYear || !elYear.value) { showToast('请先选择年份', 'error'); return; }
 
   showToast('正在生成年报 PDF，请稍候…', 'info');
+  if (!await _rptCheckDeps()) return;
   const year       = parseInt(elYear.value);
   const data       = getYearRecords(year);
   const s          = summarizeRecords(data);

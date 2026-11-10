@@ -18,7 +18,7 @@ function functionSource(source, name) {
   return source.slice(start, end);
 }
 
-function workbenchBoot(context, backendReady) {
+function workbenchBoot(context) {
   const dom = new JSDOM(index, {
     runScripts: 'outside-only',
     url: 'http://localhost/api/qc-department/huaxing/u-test/',
@@ -26,24 +26,26 @@ function workbenchBoot(context, backendReady) {
   const w = dom.window;
   const d = w.document;
   const calls = [];
-  let start;
+  const starts = [];
+  const requests = [];
   const listen = d.addEventListener.bind(d);
   d.addEventListener = (event, callback, ...options) => {
-    if (event === 'DOMContentLoaded') start = callback;
+    if (event === 'DOMContentLoaded') starts.push(callback);
     else listen(event, callback, ...options);
   };
   w.__QC_NEXUS = context;
-  w.__QC_BACKEND_OK = backendReady;
-  w.__QC_COMPANY = 'hy-huaxing';
+  w.fetch = (url, options) => new Promise(resolve => requests.push({ url, options, resolve }));
   w.requestAnimationFrame = callback => callback();
+  w.eval(backend);
   w.eval(app);
   w.showPage = page => calls.push(page);
   w.updateTopKpis = () => calls.push('kpis');
-  return { dom, w, d, calls, start };
+  return { dom, w, d, calls, requests, start: () => Promise.all(starts.map(start => start())) };
 }
 
 const qcContext = {
   factory: 'huaxing',
+  company: 'hy-huaxing',
   exportAllowed: false,
   user: {
     username: 'nexus:qc-1',
@@ -53,13 +55,38 @@ const qcContext = {
   },
 };
 
-test('QC loads through Nexus without ever rendering a second login', () => {
-  const { dom, w, d, calls, start } = workbenchBoot(qcContext, true);
+test('QC loads through Nexus without exposing stale data or a second login while bootstrap is pending', async () => {
+  const { dom, w, d, calls, requests, start } = workbenchBoot(qcContext);
   try {
     const wrapper = d.getElementById('appWrapper');
+    const startup = d.getElementById('qcStartup');
+    const recordsKey = 'nexus_qc_nexus:qc-1_hy-huaxing_records';
+    const staleRecords = JSON.stringify({ records: [{ id: 1 }], nextId: 2 });
+    w.sessionStorage.setItem(recordsKey, staleRecords);
+    assert.ok(startup);
+    assert.equal(startup.hidden, false);
     assert.equal(wrapper.style.display, 'none');
     assert.equal(d.querySelector('#loginScreen, input[type=password], [autocomplete=username]'), null);
-    start();
+    assert.equal(requests.length, 1, 'bootstrap GET starts before DOMContentLoaded');
+    assert.match(requests[0].url, /\/api\/bootstrap\?company=hy-huaxing$/);
+    assert.equal(requests[0].options?.method ?? 'GET', 'GET');
+    const started = start();
+    assert.equal(w.__QC_BACKEND_OK, false);
+    assert.deepEqual(calls, []);
+    assert.equal(wrapper.style.display, 'none');
+    assert.equal(startup.hidden, false);
+    assert.equal(w.recs().length, 0);
+    assert.equal(w.sessionStorage.getItem(recordsKey), staleRecords);
+    assert.equal(await w.__QC_SYNC_NOW(), false);
+    assert.equal(requests.length, 1, 'writes remain unavailable until server data loads');
+
+    const freshRecords = { records: [{ id: 31 }], nextId: 32 };
+    requests[0].resolve({ ok: true, status: 200, json: async () => freshRecords });
+    await started;
+    assert.equal(w.__QC_BACKEND_OK, true);
+    assert.deepEqual(JSON.parse(w.sessionStorage.getItem(recordsKey)), freshRecords);
+    assert.deepEqual(Array.from(w.recs(), record => record.id), [31]);
+    assert.ok(!startup.isConnected || startup.hidden || startup.style.display === 'none');
     assert.notEqual(wrapper.style.display, 'none');
     assert.equal(d.querySelector('input[type=password]'), null);
     assert.match(d.getElementById('userBadge').innerHTML, /&lt;QC &amp; reviewer&gt;/);
@@ -80,14 +107,30 @@ for (const [label, context, message] of [
   ['without Nexus identity', undefined, /Nexus/],
   ['when QC data fails to load', qcContext, /QC 数据读取失败/],
 ]) {
-  test('QC leaves business controls unavailable ' + label, () => {
-    const { dom, d, calls, start } = workbenchBoot(context, false);
+  test('QC leaves business controls unavailable ' + label, async () => {
+    const { dom, w, d, calls, requests, start } = workbenchBoot(context);
     try {
-      start();
-      assert.equal(d.getElementById('appWrapper'), null);
+      const recordsKey = 'nexus_qc_nexus:qc-1_hy-huaxing_records';
+      if (context) w.sessionStorage.setItem(recordsKey, JSON.stringify({ records: [{ id: 1 }] }));
+      const started = start();
+      if (context) {
+        assert.equal(requests.length, 1);
+        requests[0].resolve({ ok: false, status: 503 });
+      } else {
+        assert.equal(requests.length, 0);
+      }
+      await started;
+      const wrapper = d.getElementById('appWrapper');
+      assert.ok(!wrapper || wrapper.hidden || wrapper.style.display === 'none');
       assert.equal(d.querySelector('input[type=password]'), null);
       assert.match(d.body.textContent, message);
+      assert.notEqual(w.__QC_BACKEND_OK, true);
       assert.deepEqual(calls, []);
+      if (context) {
+        assert.equal(w.sessionStorage.getItem(recordsKey), null);
+        assert.equal(await w.__QC_SYNC_NOW(), false);
+        assert.equal(requests.length, 1);
+      }
     } finally {
       dom.window.close();
     }

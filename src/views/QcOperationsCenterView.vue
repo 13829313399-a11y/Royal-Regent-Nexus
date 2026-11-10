@@ -37,6 +37,7 @@ const frame = ref<HTMLIFrameElement | null>(null)
 const frameUrl = ref('')
 const loading = ref(false)
 const ready = ref(false)
+const frameLoaded = ref(false)
 const error = ref('')
 const switching = ref(false)
 const frameVersion = ref(0)
@@ -145,7 +146,9 @@ function measureFrame(height: number) {
   if (flowing) {
     // Measure natural content, not body.scrollHeight (which also includes the iframe viewport).
     // This lets filtering shrink the frame again without recreating editors or losing drafts.
-    element.style.height = `${Math.ceil(main.getBoundingClientRect().height)}px`
+    const contentHeight = Math.ceil(main.getBoundingClientRect().height)
+    // The workbench is hidden during bootstrap. Keep room for its loading status.
+    if (contentHeight > 0) element.style.height = `${contentHeight}px`
     measureVisibleArea()
     measureHeader(doc, element)
   } else {
@@ -251,11 +254,17 @@ function connectFrame(restorePage = true) {
   })
   connectLayout()
 }
+function onFrameLoad(event: Event) {
+  if (event.currentTarget !== frame.value || !ready.value) return
+  frameLoaded.value = true
+  connectFrame()
+}
 async function refresh() {
   const current = ++sequence
   disconnectLayout()
   try { page = child()?.__QC_CURRENT_PAGE?.() || page } catch { /* A replaced frame has no reusable view. */ }
   ready.value = false
+  frameLoaded.value = false
   frameUrl.value = ''
   error.value = ''
   if (!factoryId.value) { loading.value = false; return }
@@ -294,9 +303,11 @@ watch(frame, scheduleViewport, { flush: 'post' })
       </div>
     </header>
     <section v-if="!factoryId" class="m-6 rounded-xl border bg-white p-6" role="status">请选择具体厂区，再进入 QC 验货工作台。集团不加载各厂业务数据。</section>
-    <section v-else-if="loading" class="p-6" role="status">正在连接 QC 工作台…</section>
     <section v-else-if="error" class="m-6 rounded-xl border bg-white p-6" role="alert">{{ error }}</section>
-    <iframe v-else-if="ready" ref="frame" :key="`${factoryId}:${frameVersion}`" :src="frameUrl" @load="connectFrame()" title="QC_department 验货工作台" class="h-full min-h-0 w-full border-0 bg-white" />
+    <template v-else>
+      <section v-if="loading || (ready && !frameLoaded)" class="qc-host-loading p-6" role="status">正在连接 QC 工作台…</section>
+      <iframe v-if="ready" ref="frame" :key="`${factoryId}:${frameVersion}`" :src="frameUrl" :class="{ invisible: !frameLoaded }" @load="onFrameLoad" title="QC_department 验货工作台" class="h-full min-h-0 w-full border-0 bg-white" />
+    </template>
     <div ref="headerBounds" class="qc-table-header-bounds" hidden aria-hidden="true" inert>
       <div class="qc-table-header-sticky"><div ref="headerStrip" class="qc-table-header-strip" /></div>
     </div>
@@ -308,6 +319,7 @@ watch(frame, scheduleViewport, { flush: 'post' })
 :global(html.qc-document-scroll), :global(html.qc-document-scroll body) { height:auto; min-height:0; overflow:visible; overscroll-behavior:auto; }
 .qc-department-host { position:fixed; top:var(--qc-viewport-top,0px); left:0; right:0; display:grid; grid-template-rows:auto minmax(0,1fr); height:var(--qc-viewport-height,100dvh); min-width:0; overflow:hidden; background:var(--background,#f8fafc); }
 :global(html.qc-document-scroll .qc-department-host) { position:relative; top:auto; display:block; height:auto; min-height:var(--qc-viewport-height,100dvh); overflow:visible; }
+.qc-host-loading, .qc-department-host iframe { grid-area:2 / 1; }
 .qc-department-host iframe { display:block; }
 .qc-table-header-bounds { position:absolute; pointer-events:none; z-index:5; }
 .qc-table-header-sticky { position:sticky; top:0; }

@@ -4,24 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>QC 验货工作台</title>
-  <!-- 前端库本地自带于 vendor/（#215），触发 qc 重建（#216 修部署映射） -->
+  <script src="nexus-context.js"></script>
+  <script src="qc-backend.js"></script><!-- 尽早启动异步数据请求 -->
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="mobile.css" /><!-- 移动端适配，必须在 style.css 之后 -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
-  <script src="vendor/echarts.min.js"></script><!-- 本地自带，避免国内 jsdelivr 加载失败 -->
-  <!-- SheetJS：读取 .xlsx / .xls / .csv -->
-  <script src="vendor/xlsx-js-style.min.js"></script><!-- SheetJS 带样式分支：读写兼容 + 导出可写边框/加粗 -->
-  <!-- PDF 导出：jsPDF + html2canvas -->
-  <script src="vendor/jspdf.umd.min.js"></script>
-  <script src="vendor/html2canvas.min.js"></script>
-  <script src="vendor/tesseract/tesseract.min.js"></script>
+  <script defer src="vendor/echarts.min.js"></script>
   <style>
     .user-badge-company { margin-right:6px; padding:2px 8px; border-radius:6px; font-size:12px;
       background:rgba(79,140,255,.15); color:var(--accent, #4f8cff); font-weight:600; }
   </style>
 </head>
 <body class="theme-light qc-liquid-glass">
+<p id="qcStartup" class="qc-startup" role="status">正在加载 QC 工作台…</p>
 <div id="appWrapper" style="display:none">
 
 <!-- ───────────── SIDEBAR ───────────── -->
@@ -863,27 +857,33 @@
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
-<script src="nexus-context.js"></script><script src="nexus-integration.js"></script><!-- Nexus 身份与厂区上下文，先于数据初始化加载 -->
-<script src="qc-schedule.js"></script>
-<script src="report_export.js"></script>
-<script src="qc-backend.js?v=20260709-sync"></script><!-- 后端同步层：必须在 app.js 之前 -->
-<script src="app.js?v=20260702-heatmap"></script>
-<script src="ai-ocr.js?v=20260706-ocr-dispatch"></script><!-- AI(百炼)识别，劫持 startOcr -->
-<script src="qc-photo-paste.js"></script>
-<link rel="stylesheet" href="qc-workflow.css"/><script src="qc-workflow.js"></script>
-<link rel="stylesheet" href="qc-inspection-sheet.css"/><script src="qc-inspection-audit.js"></script><script src="qc-inspection-sheet.js"></script>
+<script defer src="nexus-integration.js"></script>
+<script defer src="qc-schedule.js"></script>
+<script defer src="report_export.js"></script>
+<script defer src="app.js?v=20260702-heatmap"></script>
+<script defer src="ai-ocr.js?v=20260706-ocr-dispatch"></script><!-- AI(百炼)识别，劫持 startOcr -->
+<script defer src="qc-photo-paste.js"></script>
+<link rel="stylesheet" href="qc-workflow.css"/><script defer src="qc-workflow.js"></script>
+<link rel="stylesheet" href="qc-inspection-sheet.css"/><script defer src="qc-inspection-audit.js"></script><script defer src="qc-inspection-sheet.js"></script>
 <link rel="stylesheet" href="qc-inspection-summary.css">
-<script src="qc-inspection-summary.js"></script>
+<script defer src="qc-inspection-summary.js"></script>
 <link rel="stylesheet" href="qc-approved-statistics.css">
-<script src="qc-approved-statistics.js"></script>
+<script defer src="qc-approved-statistics.js"></script>
 <link rel="stylesheet" href="qc-daily-report.css">
-<script src="qc-daily-report.js"></script>
+<script defer src="qc-daily-report.js"></script>
 <link rel="stylesheet" href="qc-weekly-templates.css">
-<script src="qc-weekly-templates.js"></script>
+<script defer src="qc-weekly-templates.js"></script>
 <link rel="stylesheet" href="qc-monthly-templates.css">
-<script src="qc-monthly-templates.js"></script>
-<script src="mobile.js"></script><!-- 移动端侧栏抽屉交互 -->
+<script defer src="qc-monthly-templates.js"></script>
+<script defer src="mobile.js"></script><!-- 移动端侧栏抽屉交互 -->
 <script>
+/* Report fonts should not hold the workbench or its iframe load event. */
+window.addEventListener('load', function () {
+  var fonts = document.createElement('link');
+  fonts.rel = 'stylesheet';
+  fonts.href = 'https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&family=Share+Tech+Mono&display=swap';
+  document.head.appendChild(fonts);
+}, { once: true });
 /* 切换系统下拉：点击页面其它位置时收起 */
 document.addEventListener('click', function () {
   var menu = document.getElementById('sysSwitchMenu');

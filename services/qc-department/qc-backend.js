@@ -47,14 +47,12 @@
     }
   };
 
-  /* ── 开机：同步 XHR 拉全量（必须同步，才能赶在 app.js 的 init 之前写好 sessionStorage）── */
-  function syncBootstrap() {
+  async function bootstrap() {
     try {
-      var xhr = new XMLHttpRequest();
-      xhr.open('GET', API_BASE + '/api/bootstrap?company=' + COMPANY, false); // 同步请求
-      xhr.send(null);
-      if (xhr.status !== 200) throw new Error('HTTP ' + xhr.status);
-      var data = JSON.parse(xhr.responseText);
+      var response = await fetch(API_BASE + '/api/bootstrap?company=' + encodeURIComponent(COMPANY), { cache: 'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      var data = await response.json();
+      if (!Array.isArray(data?.records)) throw new Error('QC 数据格式不正确');
       window.__QC_TEST_ENTRY_IDS = new Set(data.testEntryIds || []);
       window.__QC_INSPECTION_PLANS = data.inspectionPlans || {};
       window.__QC_KNOWN_RECORD_IDS = new Set((data.records || []).map(function(r) { return r.id; }));
@@ -62,7 +60,7 @@
 
       // records → app.js 的 state 形态 { records, nextId }
       sessionStorage.setItem(KEY.records, JSON.stringify({
-        records: Array.isArray(data.records) ? data.records : [],
+        records: data.records,
         nextId:  data.nextId || 31,
       }));
       if (Array.isArray(data.defectLib)) sessionStorage.setItem(KEY.defectLib, JSON.stringify(data.defectLib));
@@ -71,10 +69,12 @@
       window.__QC_BACKEND_OK = true;
       console.log('[QC后端] 预加载成功：公司', COMPANY, '记录', (data.records || []).length,
         '不良库', (data.defectLib || []).length);
+      return true;
     } catch (e) {
       window.__QC_BACKEND_OK = false;
       console.warn('[QC后端] 预加载失败：', e.message);
-      Object.keys(KEY).forEach(function(k) { sessionStorage.removeItem(KEY[k]); });
+      try { Object.keys(KEY).forEach(function(k) { sessionStorage.removeItem(KEY[k]); }); } catch (_) {}
+      return false;
     }
   }
 
@@ -196,8 +196,7 @@
     return pushRecords();
   };
 
-  /* 本文件早于 app.js 加载：立即预加载，确保 app.js 初始化前 sessionStorage 已是服务器数据 */
-  syncBootstrap();
+  window.__QC_BOOTSTRAP = bootstrap();
 
   /* app.js 解析完成后反复接管写入函数，避免线上脚本时序导致只改本地不写服务器 */
   document.addEventListener('DOMContentLoaded', function () {

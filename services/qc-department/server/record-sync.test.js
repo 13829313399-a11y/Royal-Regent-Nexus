@@ -59,33 +59,40 @@ test('failed explicit replacement restores both original rows and original tombs
   assert.deepEqual(all(db).map(r => r.id), [1]);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM record_tombstones WHERE id=2').get().n, 1);
 });
-function browser() {
+async function browser() {
   const store = new Map([['nexus_qc_nexus:qc-test_hy-huaxing_records', JSON.stringify({ records: [] })]]);
   const requests = [];
   const sandbox = { window: { __QC_NEXUS: { company: 'hy-huaxing', user: { username: 'nexus:qc-test' } } }, location: { pathname: '/qc/' }, console: { log() {}, warn() {} },
     document: { addEventListener() {} }, sessionStorage: { getItem: key => store.get(key), setItem: (key, value) => store.set(key, value) },
-    XMLHttpRequest: class { open() {} send() { this.status = 200; this.responseText = '{"records":[]}'; } },
-    fetch: (url, options) => new Promise(resolve => requests.push({ url, body: JSON.parse(options.body), resolve })), setTimeout() {} };
+    fetch: (url, options) => {
+      if (options?.method === 'POST') {
+        return new Promise(resolve => requests.push({ url, body: JSON.parse(options.body), resolve }));
+      }
+      assert.equal(url, '/qc/api/bootstrap?company=hy-huaxing');
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ records: [] }) });
+    }, setTimeout() {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../qc-backend.js'), 'utf8'), sandbox);
+  await sandbox.window.__QC_BOOTSTRAP;
+  assert.equal(sandbox.window.__QC_BACKEND_OK, true);
   return { window: sandbox.window, requests };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 test('in-flight success only acknowledges the deletion revisions actually sent', async () => {
-  const { window: w, requests } = browser(); w.__QC_MARK_DELETED([1]); const first = w.__QC_SYNC_NOW(); await tick();
+  const { window: w, requests } = await browser(); w.__QC_MARK_DELETED([1]); const first = w.__QC_SYNC_NOW(); await tick();
   w.__QC_MARK_DELETED([1, 2]); requests[0].resolve({ ok: true, status: 200 }); await first;
   assert.deepEqual(Array.from(w.__QC_PENDING_DELETES), [1, 2]);
   const second = w.__QC_SYNC_NOW(); await tick(); assert.deepEqual(requests[1].body.deletedIds, [1, 2]);
   requests[1].resolve({ ok: true, status: 200 }); await second; assert.equal(w.__QC_PENDING_DELETES.length, 0);
 });
 test('overlapping replacements remain serialized and the later generation is retained', async () => {
-  const { window: w, requests } = browser(); w.__QC_FORCE_REPLACE = 1; const first = w.__QC_SYNC_NOW(); await tick();
+  const { window: w, requests } = await browser(); w.__QC_FORCE_REPLACE = 1; const first = w.__QC_SYNC_NOW(); await tick();
   w.__QC_FORCE_REPLACE = 2; const second = w.__QC_SYNC_NOW(); await tick(); assert.equal(requests.length, 1);
   requests[0].resolve({ ok: true, status: 200 }); await first; await tick(); assert.equal(requests.length, 2);
   assert.match(requests[1].url, /\/records\/replace\?/); assert.equal(w.__QC_FORCE_REPLACE, 2);
   requests[1].resolve({ ok: true, status: 200 }); await second; assert.equal(w.__QC_FORCE_REPLACE, false);
 });
 test('failed record writes retain pending deletes and a replacement for retry', async () => {
-  const { window: w, requests } = browser(); w.__QC_MARK_DELETED([3]); w.__QC_FORCE_REPLACE = 1;
+  const { window: w, requests } = await browser(); w.__QC_MARK_DELETED([3]); w.__QC_FORCE_REPLACE = 1;
   const pending = w.__QC_SYNC_NOW(); await tick(); requests[0].resolve({ ok: false, status: 500 }); await pending;
   assert.deepEqual(Array.from(w.__QC_PENDING_DELETES), [3]); assert.equal(w.__QC_FORCE_REPLACE, 1);
 });
