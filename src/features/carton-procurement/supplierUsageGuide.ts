@@ -135,13 +135,13 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     "group": "需要时处理",
     "title": "本月对账：看金额和明细",
     "summary": "选同一厂区、月份和币种，和本厂核对明细。",
-    "entry": "月结对账 → 本月对账 / 应付与收款",
+    "entry": "月结对账 → 本月对账 / 收款与往来",
     "destination": "supplier-settlements",
     "actionLabel": "打开月结对账",
     "steps": [
       "打开“月结对账 → 本月对账”，选对厂区、月份和币种。",
       "看已验收送货、退货、退款和本月应结，展开原单明细。",
-      "有差异先联系本厂核实，再刷新；收款另看“应付与收款”。"
+      "金额有差异请核对原单。收到本厂付款后，在“收款与往来”核对凭证并回应。"
     ],
     "result": "核对送货、退货和退款明细，再按原流程对账。",
     "reminders": [
@@ -151,7 +151,7 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     ],
     "image": {
       "src": "/carton-guide/quick-supplier-monthly.svg",
-      "alt": "本月对账：看金额和明细：打开“月结对账 → 本月对账”，选对厂区、月份和币种。 → 看已验收送货、退货、退款和本月应结，展开原单明细。 → 有差异先联系本厂核实，再刷新；收款另看“应付与收款”。",
+      "alt": "本月对账：看金额和明细：打开“月结对账 → 本月对账”，选对厂区、月份和币种。 → 看已验收送货、退货、退款和本月应结，展开原单明细。 → 金额有差异请核对原单。收到本厂付款后，在“收款与往来”核对凭证并回应。",
       "caption": "操作示意图；按图中 1 → 2 → 3 办理，按钮与数据以当前页面为准。"
     }
   },

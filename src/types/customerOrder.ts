@@ -3,6 +3,7 @@ export interface CustomerOrderIssue {
   code: string
   field: string
   message: string
+  pending_information?: boolean
   can_skip: boolean
   skip_key: string
   skip_label: string

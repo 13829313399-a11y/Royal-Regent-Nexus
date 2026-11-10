@@ -1022,7 +1022,7 @@ def test_order_type_schema_invalidates_old_preview_fingerprint(monkeypatch, unif
     service_name = "customer_order_unified" if unified_schedule else "customer_order_buzzbee"
     service = importlib.import_module(f"app.services.{service_name}")
     api = importlib.import_module("app.api.customer_order")
-    assert service.PREVIEW_SCHEMA_VERSION.endswith("-v3")
+    assert int(service.PREVIEW_SCHEMA_VERSION.rsplit("-v", 1)[1]) >= 3
     args = dict(factory_id="huaxing", received_date="2026-08-19",
                 po_files=[("po.xlsx", build_wmc_po())], schedule_file_name="schedule.xlsx",
                 schedule_content=_unified_order_type_template() if unified_schedule else build_schedule())

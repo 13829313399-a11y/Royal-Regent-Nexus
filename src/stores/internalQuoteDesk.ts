@@ -24,10 +24,11 @@ import {
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { getApiErrorMessage } from '@/lib/http'
 import { normalizeInternalQuoteDraft } from '@/lib/internalQuoteMoldingReferences'
-import { defaultSalesMiscRatio, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio } from '@/lib/internalQuoteSectionPayload'
+import { resolveSalesMiscPricing, salesSettlementDivisorForMiscRatio } from '@/lib/internalQuoteSectionPayload'
 import { useAppStore } from '@/stores/app'
 import type {
   InternalQuote,
+  InternalQuoteReferenceFxDraft,
   InternalQuoteActivity,
   InternalQuoteBusinessOwner,
   InternalQuoteBatchProduct,
@@ -294,32 +295,17 @@ const rr2T3Fields = [
 ] as const
 const rr2T4Fields = [
   ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', null],
-  ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类（不计税）', null],
-  ['sewcloth13', '车衣类（不计税）', null], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
+  ['tax1', '含税1%', .99], ['slush3', '搪胶', null], ['sewhair13', '车发', null],
+  ['sewcloth13', '车衣', null], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
   ['tax13b', '含税13%类', 11.5],
 ] as const
 
-function rr2CostSummary(summary?: Pick<ApiInternalQuoteSummary, 'rr2_cost_summary'>): InternalQuoteRr2CostSummary {
+function rr2CostSummary(summary?: Pick<ApiInternalQuoteSummary, 'rr2_cost_summary'>, referenceSnapshot?: Record<string, unknown>): InternalQuoteRr2CostSummary {
   const source = summary?.rr2_cost_summary
   const shipping = source?.shipping_pricing
-  const miscRatioSource = shipping?.misc_ratio
-  const miscRatioValue = Number(miscRatioSource)
-  const hasMiscRatio = miscRatioSource != null && miscRatioSource !== ''
-    && Number.isFinite(miscRatioValue) && miscRatioValue >= 0 && miscRatioValue < 1
-  const settlementSource = shipping?.settlement
-  const settlementValue = Number(settlementSource)
-  const hasLegacySettlement = settlementSource != null && settlementSource !== ''
-    && Number.isFinite(settlementValue) && settlementValue > 0 && settlementValue <= 1
-  const miscRatio = hasMiscRatio
-    ? miscRatioValue
-    : (hasLegacySettlement
-        ? salesMiscRatioForSettlementDivisor(settlementValue)
-        : defaultSalesMiscRatio)
-  // The miscellaneous rate is authoritative. A stale settlement returned by
-  // an older service must not override the current `1 - misc_ratio` rule.
-  const settlement = hasMiscRatio
-    ? salesSettlementDivisorForMiscRatio(miscRatio)
-    : (hasLegacySettlement ? settlementValue : salesSettlementDivisorForMiscRatio(miscRatio))
+  const { misc_ratio: miscRatio, divisor: settlement } = resolveSalesMiscPricing(
+    { misc_ratio: shipping?.misc_ratio }, shipping?.settlement, referenceSnapshot,
+  )
   const fixedValues = (
     rows: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }> | undefined,
     fields: readonly (readonly [string, string, string?, boolean?])[],
@@ -375,14 +361,14 @@ function rr2CostSummary(summary?: Pick<ApiInternalQuoteSummary, 'rr2_cost_summar
         : defaultRate
       return {
         key,
-        label,
+        label: row?.label ?? label,
         amountHkd: numberValue(row?.amount_hkd),
         ratePercent,
         deductionHkd: row
           ? (row.deduction_hkd == null ? null : numberValue(row.deduction_hkd))
           : (ratePercent == null ? null : 0),
       }
-    }),
+    }).filter((row) => !['slush3', 'sewhair13', 'sewcloth13'].includes(row.key) || row.ratePercent != null),
     rmbPurchaseCostHkd: numberValue(source?.totals.rmb_purchase_cost_hkd),
     totalDeductionHkd: numberValue(source?.totals.total_deduction_hkd),
     afterDeductionCostHkd: numberValue(source?.totals.after_deduction_cost_hkd),
@@ -510,7 +496,7 @@ function toQuote(
     summaryComponents: Object.fromEntries(Object.entries(extras.summary?.components_hkd ?? {}).map(([key, value]) => [key, numberValue(value)])),
     summaryWarnings: summaryWarnings(extras.summary),
     shippingScenarios: shippingScenarios(source),
-    rr2CostSummary: rr2CostSummary(extras.summary),
+    rr2CostSummary: rr2CostSummary(extras.summary, extras.reference?.snapshot),
     finalSubmittedBy: source.final_submitted_by_name || undefined,
     finalSubmittedById: source.final_submitted_by || undefined,
     finalApprovedBy: source.final_reviewed_by_name || undefined,
@@ -1014,7 +1000,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         const preview = await internalQuoteApi.previewCosts(quoteId, drafts)
         if (requestSequence !== this.livePreviewRequestSequence) return undefined
         this.liveCostPreview = preview
-        this.liveCostPreviewSummary = rr2CostSummary({ rr2_cost_summary: preview.rr2_cost_summary })
+        this.liveCostPreviewSummary = rr2CostSummary({ rr2_cost_summary: preview.rr2_cost_summary }, this.getQuoteById(quoteId)?.referenceSnapshot)
         return preview
       } catch (error) {
         if (requestSequence !== this.livePreviewRequestSequence) return undefined
@@ -1207,6 +1193,19 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           quote.sections[index] = { ...toSection(saved, []), attachments }
         }
       }
+    },
+    applySavedReferenceFx(quoteId: string, receipt: ApiInternalQuote, fx: InternalQuoteReferenceFxDraft) {
+      const quote = this.getQuoteById(quoteId)
+      if (!quote) return
+      quote.headerRevision = receipt.header_revision
+      quote.referenceSnapshotId = receipt.reference_snapshot_id
+      quote.referenceSnapshot = { ...quote.referenceSnapshot, fx: {
+        ...(quote.referenceSnapshot?.fx as Record<string, unknown> | undefined),
+        rmb_hkd: fx.rmbHkd, hkd_usd: fx.hkdUsd,
+      } }
+      quote.fxRmbHkd = Number(fx.rmbHkd)
+      quote.fxHkdUsd = Number(fx.hkdUsd)
+      this.applySavedSections(quoteId, receipt.sections)
     },
     async refreshAfterMutation(quoteId: string) {
       const generation = this.factoryContextGeneration
@@ -1475,7 +1474,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       }
       return result
     },
-    async saveWholeProductSections(quoteId: string, drafts: InternalQuoteWholeProductDraft[]) {
+    async saveWholeProductSections(quoteId: string, drafts: InternalQuoteWholeProductDraft[], referenceFx?: InternalQuoteReferenceFxDraft) {
       const generation = this.factoryContextGeneration
       if (!drafts.length) throw new Error('当前没有需要保存的部门修改。')
       const fingerprint = (code: InternalQuoteSectionCode, value: Record<string, unknown>) => (
@@ -1487,6 +1486,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         .map((sectionCode) => draftByCode.get(sectionCode)!)
       const currentRevisions = new Map(orderedDrafts.map((draft) => [draft.sectionCode, draft.revision]))
       const savedSections: ApiInternalQuoteSection[] = []
+      let savedHeaderRevision: number | undefined
       this.clearLiveCostPreview(quoteId)
       this.submitting = true
       this.errorMessage = ''
@@ -1517,15 +1517,19 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
             payload: draft.payload,
           }))
         if (pendingDrafts.length) {
-          const result = await internalQuoteApi.saveWholeProduct(quoteId, pendingDrafts)
+          const result = referenceFx
+            ? await internalQuoteApi.saveWholeProduct(quoteId, pendingDrafts, undefined, referenceFx)
+            : await internalQuoteApi.saveWholeProduct(quoteId, pendingDrafts)
           this.assertContextGeneration(generation)
+          savedHeaderRevision = result.quote.header_revision
           savedSections.push(...result.sections)
+          if (referenceFx) this.applySavedReferenceFx(quoteId, result.quote, referenceFx)
           this.applySavedSections(quoteId, result.sections)
         }
 
         const refreshed = await this.refreshAfterMutation(quoteId)
         this.assertContextGeneration(generation)
-        return { quote: refreshed ?? this.getQuoteById(quoteId), sections: savedSections }
+        return { quote: refreshed ?? this.getQuoteById(quoteId), sections: savedSections, savedHeaderRevision }
       } catch (error) {
         this.assertContextGeneration(generation)
         const message = mutationMessage(error)
@@ -1573,7 +1577,13 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       return this.executeMutation(quoteId, () => internalQuoteApi.recalculateFormula(quoteId, revision, reason))
     },
     updateReferenceFx(quoteId: string, revision: number, rmbHkd: string, hkdUsd: string) {
-      return this.executeMutation(quoteId, () => internalQuoteApi.updateReferenceFx(quoteId, revision, rmbHkd, hkdUsd))
+      const generation = this.factoryContextGeneration
+      return this.executeMutation(quoteId, async () => {
+        const result = await internalQuoteApi.updateReferenceFx(quoteId, revision, rmbHkd, hkdUsd)
+        this.assertContextGeneration(generation)
+        this.applySavedReferenceFx(quoteId, result, { revision, rmbHkd, hkdUsd })
+        return result
+      }) as Promise<ApiInternalQuote>
     },
     updateReferenceMaterials(
       quoteId: string,

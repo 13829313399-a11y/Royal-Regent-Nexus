@@ -6,6 +6,17 @@ import { normalizeInternalQuotePayload, type PaintingPayload } from '@/lib/inter
 import InternalQuoteSectionForm from '../InternalQuoteSectionForm.vue'
 
 describe('painting UV entry', () => {
+  it('shows the final paint price once and updates the quick total without an extra tax field', async () => {
+    const modelValue = reactive(normalizeInternalQuotePayload('painting', { quote_mode: 'quick',
+      quick_quote: { spray_labor_hkd: .48, paint_hkd: .2, paint_tax_rate_percent: 13 } }))
+    const wrapper = mount(InternalQuoteSectionForm, { props: { code: 'painting', modelValue } })
+    expect(wrapper.text()).not.toContain('油漆税金')
+    expect(wrapper.get('.quick-readonly.total output').text()).toBe('HKD 0.680')
+    await wrapper.get('[aria-label="喷油快捷报价油漆 HKD"]').setValue('.3')
+    expect(wrapper.get('.quick-readonly.total output').text()).toBe('HKD 0.780')
+    wrapper.unmount()
+  })
+
   it.each(['ordinary', 'component'] as const)('edits UV and keeps other operation prices in %s mode', async mode => {
     const modelValue = reactive(normalizeInternalQuotePayload('painting', { rows: [
       { name: '外壳', position: '正面', pricing_component_id: 'shell', operations: { spray: { quantity: 3, unit_price_hkd: .08 } } },

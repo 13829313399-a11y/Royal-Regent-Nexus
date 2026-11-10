@@ -19,5 +19,5 @@
       <text x="760" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">3</text>
       <text x="790" y="141" fill="#0f766e" font-size="19" font-weight="700">最后处理 / 检查</text>
       <text x="746" y="185" font-size="20" fill="#334155"><tspan x="746" dy="0">对账：选月份和币种，核对送货</tspan><tspan x="746" dy="32">金额、退货贷项和本月应结。</tspan></text>
-      <rect x="28" y="382" width="1024" height="70" rx="12" fill="#ccfbf1"/><text x="48" y="408" font-size="20" fill="#115e59"><tspan x="48" dy="0">本月对账只读，不需要系统内确认；收款另看“应付与收款”。</tspan></text>
+      <rect x="28" y="382" width="1024" height="70" rx="12" fill="#ccfbf1"/><text x="48" y="408" font-size="20" fill="#115e59"><tspan x="48" dy="0">本月对账只读，不需要系统内确认；收款另看“收款与往来”。</tspan></text>
   </g></svg>

@@ -18,8 +18,6 @@ const STORAGE_PREFIX = window.__QC_STORAGE_PREFIX || 'xingxin_qms_';
 const STORAGE_KEYS = {
   records:      STORAGE_PREFIX + 'records',
   theme:        STORAGE_PREFIX + 'theme',
-  users:        STORAGE_PREFIX + 'users',         /* 账号列表 */
-  session:      STORAGE_PREFIX + 'session',        /* 当前登录会话 */
   defectLib:    STORAGE_PREFIX + 'defect_library', /* 不良描述内容库 */
   partners:     STORAGE_PREFIX + 'partners',       /* 供应商&客户名单 */
 };
@@ -27,75 +25,10 @@ const LS_KEY = STORAGE_KEYS.records;   /* 主数据 key */
 let state        = { records: [], nextId: 31 };
 let editingId    = null;
 let chartInst    = {};          // { chartId: echartsInstance }
-let currentPage  = 'dashboard';
+let currentPage  = 'sales-schedule';
 let filteredRecs = [];
 
-/* ════════════════════════════════════════
-   §1.5  AUTH — 账号 / 会话 / 权限
-════════════════════════════════════════ */
-
-/* ── 简单密码 hash（djb2，纯前端，非安全级，仅防止明文存储）── */
-function _hashPwd(str) {
-  let h = 5381;
-  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
-  return (h >>> 0).toString(16);
-}
-
-/* ── 权限矩阵：菜单 × (查看v / 编辑e / 审核a / 管理m) ──
-   查看=打开页面+导出；编辑=新增记录/条目；审核=修改已有记录；管理=删除/导入/库与账号管理 */
-const PERM_COLS = [
-  { k: 'v', label: '查看' },
-  { k: 'e', label: '编辑' },
-  { k: 'a', label: '审核' },
-  { k: 'm', label: '管理' },
-];
-const PERM_GROUPS = [
-  { group: '检验', menus: [
-    { k: 'dashboard', label: '质量仪表板' },
-    { k: 'sales-schedule', label: '客排期' },
-    { k: 'records',   label: '验货台' },
-    { k: 'review',    label: '审核中心' },
-    { k: 'inspection-summary', label: '验货汇总' },
-    { k: 'analysis',  label: '统计中心' },
-    { k: 'suppliers', label: '供应商&客户管理' },
-  ]},
-  { group: '报告', menus: [
-    { k: 'daily',           label: '月内报表' },
-    { k: 'weekly',          label: '验货周报' },
-    { k: 'monthly',         label: '验货月报' },
-    { k: 'yearly',          label: '验货年报' },
-    { k: 'supplier-report', label: '供应商质量报告' },
-  ]},
-  { group: '系统', menus: [
-    { k: 'defectlib', label: '不良描述库' },
-    { k: 'import',    label: '数据导入' },
-    { k: 'users',     label: '账号管理' },
-  ]},
-];
-const PERM_MENU_KEYS = PERM_GROUPS.flatMap(g => g.menus.map(m => m.k));
-
-function _permSet(fill) { const o = {}; PERM_MENU_KEYS.forEach(k => { o[k] = fill(k); }); return o; }
-/* 角色预设（「按角色重置」用） */
-const ROLE_PERM_MATRIX = {
-  admin:   _permSet(() => ({ v:1, e:1, a:1, m:1 })),
-  manager: _permSet(k => ({
-    v: 1,
-    e: ['records','suppliers','defectlib','import'].includes(k) ? 1 : 0,
-    a: ['records','review'].includes(k) ? 1 : 0,
-    m: ['defectlib','import'].includes(k) ? 1 : 0,
-  })),
-  viewer:  _permSet(k => ({
-    v: ['dashboard','records','review','analysis','suppliers','daily','weekly','monthly','yearly','supplier-report'].includes(k) ? 1 : 0,
-    e: k === 'records' ? 1 : 0,
-    a: 0, m: 0,
-  })),
-};
-
-const ROLE_LABELS = { admin:'主账号', manager:'管理账号', viewer:'查看账号' };
-
-/* 部门选项（账号表单下拉） */
-const DEPT_OPTIONS = ['业务','工程','电子','啤机','喷油','搪胶','车缝','装配','品质','其他'];
-
+/* Nexus 账号和权限 */
 /* 旧动作 → 矩阵映射 */
 const ACTION_PERM_MAP = {
   createRecord:    ['records', 'e'],
@@ -103,92 +36,29 @@ const ACTION_PERM_MAP = {
   deleteRecord:    ['records', 'm'],
   batchDelete:     ['records', 'm'],
   importData:      ['import', 'v'],
-  manageUsers:     ['users', 'm'],
   manageDefectLib: ['defectlib', 'm'],
   managePartners:  ['suppliers', 'e'],
   reviewRecord:    ['review', 'a'],
-  /* exportData / exportPdf：能查看即可导出，不单独设卡 */
+  /* 导出权限由 Nexus 单独提供。 */
 };
 
-/* 有效权限 = 角色预设 + 该账号自定义覆盖 */
-function effPerms(user) {
-  const base = JSON.parse(JSON.stringify(ROLE_PERM_MATRIX[user?.role] || ROLE_PERM_MATRIX.viewer));
-  if (user && user.perms && typeof user.perms === 'object') {
-    for (const k of PERM_MENU_KEYS) {
-      if (user.perms[k] && typeof user.perms[k] === 'object') Object.assign(base[k], user.perms[k]);
-    }
-  }
-  return base;
-}
-
-/* 当前登录账号的实时记录（权限改了立即生效） */
 function _liveUser() {
-  const sess = getCurrentUser();
-  if (!sess) return null;
-  return _getUsers().find(x => x.username === sess.username) || sess;
+  return window.__QC_NEXUS?.user || null;
 }
 
-/* ── 初始化账号数据（首次启动自动创建默认主账号 jc / qqwwee）── */
-function initUsers() {
-  const raw = (window.__QC_NEXUS ? sessionStorage : localStorage).getItem(STORAGE_KEYS.users);
-  if (!raw) {
-    const defaultUsers = [{
-      username:    'jc',
-      password:    _hashPwd('qqwwee'),
-      role:        'admin',
-      enabled:     true,
-      createdAt:   new Date().toISOString(),
-      lastLoginAt: null,
-    }];
-    (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.users, JSON.stringify(defaultUsers));
-  }
-}
-
-function _getUsers() {
-  try { return JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(STORAGE_KEYS.users)) || []; }
-  catch(e) { return []; }
-}
-function _saveUsers(users) {
-  (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.users, JSON.stringify(users));
-}
-
-/* ── 会话操作 ── */
-function getCurrentUser() {
-  try { return JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(STORAGE_KEYS.session)); }
-  catch(e) { return null; }
-}
-
-function _saveSession(user) {
-  const sess = { username: user.username, role: user.role, loginTime: new Date().toISOString() };
-  (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.session, JSON.stringify(sess));
-}
-
-function _clearSession() {
-  (window.__QC_NEXUS ? sessionStorage : localStorage).removeItem(STORAGE_KEYS.session);
-}
-
-/* ── 权限判断（基于权限矩阵；jc 主账号保底全权）── */
 function can(action) {
-  if (window.__QC_NEXUS && ["exportData", "exportPdf"].includes(action)) return window.__QC_NEXUS.exportAllowed;
-  const u = _liveUser();
-  if (!u) return false;
-  if (u.username === 'jc' && u.role === 'admin') return true;
-  const map = ACTION_PERM_MAP[action];
-  if (!map) return true;   /* 未映射的动作（如导出）：登录即可用 */
-  const p = effPerms(u);
-  return !!(p[map[0]] && p[map[0]][map[1]]);
+  const user = _liveUser();
+  if (!user) return false;
+  if (action === 'exportData' || action === 'exportPdf') return window.__QC_NEXUS.exportAllowed === true;
+  const permission = ACTION_PERM_MAP[action];
+  return !permission || Boolean(user.perms?.[permission[0]]?.[permission[1]]);
 }
 
-/* 页面可见性（侧边栏按此隐藏） */
 function canView(page) {
-  const u = _liveUser();
-  if (!u) return false;
-  if (u.username === 'jc' && u.role === 'admin') return true;
-  const p = effPerms(u);
-  return !!(p[page] && p[page].v);
+  return Boolean(_liveUser()?.perms?.[page]?.v);
 }
 
-/* ── 多厂区/子公司：厂区卡片 → 子公司卡片 → 登录。每家子公司一套独立数据 ── */
+/* QC 显示名称。厂区切换由 Nexus 管理。 */
 const QC_SITES = [
   { id: 'dongguan', name: '东莞厂区', color: '#2e6be6' },
   { id: 'heyuan',   name: '河源厂区', color: '#16a34a' },
@@ -214,8 +84,6 @@ const QC_COMPANIES = [
   { id: 'sy-xingxin',   site: 'hunan', name: '邵阳兴信' },
   { id: 'xs-huadeng',   site: 'hunan', name: '新邵华登' },
 ];
-let _selSite = null;        /* 卡片浏览时暂选的厂区（不落盘） */
-let _selView = 'form';      /* sites | subs | form */
 
 function getCompany()     { return window.__QC_COMPANY || 'dg-xingxin'; }
 function getCompanyObj()  { return QC_COMPANIES.find(c => c.id === getCompany()) || QC_COMPANIES[0]; }
@@ -224,192 +92,24 @@ function getReportCompanyLabel() {
   return _esc(getCompanyName()) + (window.__QC_REFERENCE_DATA?.count ? ' · 模板参考（非本厂实绩）' : '');
 }
 function getSiteObj(id)   { return QC_SITES.find(s => s.id === id) || QC_SITES[0]; }
-function companiesOf(siteId) { return QC_COMPANIES.filter(c => c.site === siteId); }
-
-function selectSite(siteId) { _selSite = siteId; _selView = 'subs'; renderCompanySelector(); }
-function backToSites()      { _selView = 'sites'; renderCompanySelector(); }
-function pickCompany(id) {
-  if (window.__QC_NEXUS) return;
-  if (!QC_COMPANIES.some(c => c.id === id)) return;
-  if (id !== getCompany()) {
-    try { (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(window.__QC_COMPANY_KEY || 'xingxin_qms_company', id); } catch(e) {}
-    location.reload();   /* 换子公司 = 重新加载，bootstrap 拉取该公司的独立数据 */
-    return;
-  }
-  _selView = 'form';
-  renderCompanySelector();
-}
-function _companyCardHtml(item, color, sub) {
-  return `<button type="button" class="company-card" onclick="${item.onclick}" style="--cc:${color}">
-    <div class="company-card-top"></div>
-    <div class="company-card-body">
-      <div class="company-card-icon">🏭</div>
-      <div class="company-card-name">${item.name}</div>
-      <div class="company-card-sub">${sub || ''}</div>
-    </div>
-  </button>`;
-}
-function renderCompanySelector() {
-  const box = document.getElementById('companySelector');
-  if (!box) return;
-  const fields = document.getElementById('loginFields');
-  const cur = getCompanyObj();
-  const curSite = getSiteObj(cur.site);
-
-  if (_selView === 'sites') {
-    if (fields) fields.style.display = 'none';
-    box.innerHTML =
-      `<div class="company-hint">选择厂区</div>` +
-      `<div class="company-cards">` + QC_SITES.map(s =>
-        _companyCardHtml({ name: s.name, onclick: `selectSite('${s.id}')` }, s.color,
-          companiesOf(s.id).length + ' 家子公司')
-      ).join('') + `</div>`;
-    return;
-  }
-  if (_selView === 'subs') {
-    if (fields) fields.style.display = 'none';
-    const site = getSiteObj(_selSite || cur.site);
-    box.innerHTML =
-      `<div class="company-hint"><a href="javascript:backToSites()" class="company-back">‹ 厂区</a> ${site.name} · 选择子公司（数据相互独立）</div>` +
-      `<div class="company-cards">` + companiesOf(site.id).map(c =>
-        _companyCardHtml({ name: c.name, onclick: `pickCompany('${c.id}')` }, site.color,
-          c.id === getCompany() ? '当前登录公司' : '')
-      ).join('') + `</div>`;
-    return;
-  }
-  /* form：直接登录当前公司 */
-  if (fields) fields.style.display = '';
-  box.innerHTML =
-    `<div class="company-hint">当前登录：<b style="color:${curSite.color}">${curSite.name} · ${cur.name}</b>
-      <a href="javascript:backToSites()" class="company-back" style="float:right">切换厂区/子公司</a></div>`;
-}
-
-/* ── 登录后切换厂区/子公司（头部徽章点击）── */
-let _swSite = null;
-let _swView = 'subs';
-function openCompanySwitch() {
-  if (window.__QC_NEXUS) { showToast("请返回 Nexus 切换厂区"); return; }
-  const ov = document.getElementById('companySwitchOverlay');
-  if (!ov) return;
-  _swSite = getCompanyObj().site;
-  _swView = 'subs';   /* 默认直接展开当前厂区的子公司列表 */
-  renderCompanySwitch();
-  ov.classList.add('show');
-}
-function closeCompanySwitch() {
-  const ov = document.getElementById('companySwitchOverlay');
-  if (ov) ov.classList.remove('show');
-}
-function swBackToSites()           { _swView = 'sites'; renderCompanySwitch(); }
-function swSelectSite(siteId)      { _swSite = siteId;  _swView = 'subs'; renderCompanySwitch(); }
-/* 换子公司一次性免登录票据（全局 key，不按公司前缀；用后即焚） */
-const SWITCH_TICKET_KEY = 'xingxin_qms_switch_ticket';
-function swPickCompany(id) {
-  if (id === getCompany()) { closeCompanySwitch(); return; }
-  try {
-    const sess = getCurrentUser();
-    const me   = sess && _getUsers().find(u => u.username === sess.username);
-    if (me) (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(SWITCH_TICKET_KEY, JSON.stringify({ username: me.username, pwd: me.password, ts: Date.now() }));
-  } catch(e) {}
-  pickCompany(id);   /* 换公司：落盘 + reload，bootstrap 拉新公司数据 */
-}
-function renderCompanySwitch() {
-  const box = document.getElementById('companySwitchBox');
-  if (!box) return;
-  if (_swView === 'sites') {
-    box.innerHTML =
-      `<div class="company-hint">选择厂区</div>` +
-      `<div class="company-cards">` + QC_SITES.map(s =>
-        _companyCardHtml({ name: s.name, onclick: `swSelectSite('${s.id}')` }, s.color,
-          companiesOf(s.id).length + ' 家子公司')
-      ).join('') + `</div>`;
-    return;
-  }
-  const site = getSiteObj(_swSite || getCompanyObj().site);
-  box.innerHTML =
-    `<div class="company-hint"><a href="javascript:swBackToSites()" class="company-back">‹ 厂区</a> ${site.name} · 选择子公司（切换后自动刷新，数据相互独立）</div>` +
-    `<div class="company-cards">` + companiesOf(site.id).map(c =>
-      _companyCardHtml({ name: c.name, onclick: `swPickCompany('${c.id}')` }, site.color,
-        c.id === getCompany() ? '当前公司' : '')
-    ).join('') + `</div>`;
-}
-
-/* ── 登录 ── */
-function login() {
-  const unameEl = document.getElementById('loginUsername');
-  const pwdEl   = document.getElementById('loginPassword');
-  const errEl   = document.getElementById('loginError');
-  const username = (unameEl?.value || '').trim();
-  const password = (pwdEl?.value || '').trim();
-
-  if (!username || !password) {
-    if (errEl) { errEl.textContent = '请输入用户名和密码'; errEl.style.display = ''; }
-    return;
-  }
-
-  const users = _getUsers();
-  const user  = users.find(u => u.username === username);
-
-  if (!user || user.password !== _hashPwd(password)) {
-    if (errEl) { errEl.textContent = '用户名或密码错误'; errEl.style.display = ''; }
-    if (pwdEl) { pwdEl.value = ''; pwdEl.focus(); }
-    return;
-  }
-  if (!user.enabled) {
-    if (errEl) { errEl.textContent = '账号已停用，请联系管理员'; errEl.style.display = ''; }
-    return;
-  }
-
-  /* 更新最后登录时间 */
-  user.lastLoginAt = new Date().toISOString();
-  _saveUsers(users);
-  _saveSession(user);
-
-  /* 进入系统 */
-  _showApp();
-}
-
-/* 按 Enter 键登录 */
-function loginOnEnter(e) {
-  if (e.key === 'Enter') login();
-}
-
-/* ── 退出登录 ── */
-function logout() {
-  if (window.__QC_NEXUS) {
-    if (window.__QC_CONFIRM_FACTORY_LEAVE && !window.__QC_CONFIRM_FACTORY_LEAVE()) return;
-    window.parent.location.assign("/modules/qc?factory=" + encodeURIComponent(window.__QC_NEXUS.factory)); return;
-  }
-  _clearSession();
-  _showLogin();
-}
-
-/* ── 显示 / 隐藏登录页 ── */
-function _showLogin() {
-  document.getElementById('loginScreen').style.display  = 'flex';
-  document.getElementById('appWrapper').style.display   = 'none';
-  renderCompanySelector();   /* 登录页显示厂区选择并高亮当前厂区 */
-  /* 清空输入 */
-  const u = document.getElementById('loginUsername');
-  const p = document.getElementById('loginPassword');
-  const e = document.getElementById('loginError');
-  if (u) u.value = '';
-  if (p) p.value = '';
-  if (e) { e.textContent = ''; e.style.display = 'none'; }
+function returnToNexus() {
+  if (window.__QC_CONFIRM_FACTORY_LEAVE && !window.__QC_CONFIRM_FACTORY_LEAVE()) return;
+  window.parent.location.assign('/modules/qc?factory=' + encodeURIComponent(window.__QC_NEXUS.factory));
 }
 
 function _showApp() {
   _initSidebar();
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('appWrapper').style.display  = '';
+  const startup = document.getElementById('qcStartup');
+  if (startup) startup.hidden = true;
+  document.getElementById('appWrapper').style.display = '';
+  window.__QC_WORKBENCH_READY = true;
   _renderUserBadge();
   applyPermissions();
-  /* 关键：登录后必须主动渲染仪表板（DOMContentLoaded 的 RAF 已过期）
-     用 RAF 等 appWrapper 完成布局后再渲染图表，确保 ECharts 拿到正确尺寸 */
+  /* 等工作台完成布局后再渲染，确保 ECharts 取得正确尺寸。 */
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       try {
-        showPage(window.__QC_INITIAL_PAGE?.() || 'dashboard');
+        showPage(window.__QC_INITIAL_PAGE?.() || 'sales-schedule');
         /* 顶部 KPI 在 showPage 之外，需单独刷新 */
         if (typeof updateTopKpis === 'function') updateTopKpis();
       } catch(e) { console.error('[_showApp] render error:', e); }
@@ -423,17 +123,16 @@ function _renderUserBadge() {
   const el = document.getElementById('userBadge');
   if (!el || !u) return;
   el.innerHTML =
-    `<span class="user-badge-company" onclick="openCompanySwitch()" style="cursor:pointer" title="点击切换厂区/子公司">${getSiteObj(getCompanyObj().site).name} · ${getCompanyName()}</span>` +
+    `<span class="user-badge-company">${getSiteObj(getCompanyObj().site).name} · ${getCompanyName()}</span>` +
     `<span class="user-badge-name">${_esc(u.name || u.username)}</span>` +
-    `<span class="user-badge-role">${window.__QC_NEXUS ? "Nexus 账号" : (ROLE_LABELS[u.role] || u.role)}</span>` +
-    `<button class="user-badge-logout" onclick="logout()">${window.__QC_NEXUS ? "返回 Nexus" : "退出"}</button>`;
+    `<span class="user-badge-role">Nexus 账号</span>` +
+    `<button class="user-badge-logout" onclick="returnToNexus()">返回 Nexus</button>`;
   window.__QC_RENDER_FACTORY_SELECTOR?.();
 }
 
 /* ── 权限应用（按角色显示/隐藏按钮）── */
 function applyPermissions() {
-  const u = getCurrentUser();
-  if (!u) return;
+  if (!_liveUser()) return;
 
   /* 侧边栏菜单：按权限矩阵「查看」列显示/隐藏 */
   document.querySelectorAll('.nav-item[data-page]').forEach(el => {
@@ -457,374 +156,6 @@ function applyPermissions() {
   const addRecordBtn = document.getElementById('btnAddRecord');
   if (addRecordBtn) addRecordBtn.style.display = canCreate ? '' : 'none';
 }
-
-/* ── requireLogin：启动时鉴权 ── */
-function requireLogin() {
-  if (window.__QC_NEXUS) {
-    if (!window.__QC_BACKEND_OK) { document.body.textContent = "QC 数据读取失败，请返回工作台重试。"; return; }
-    _saveSession(window.__QC_NEXUS.user); _showApp(); return;
-  }
-  initUsers();
-  /* 换子公司免登录：一次性票据（10 分钟内有效，用后即焚）；
-     目标公司存在同名+同密码+启用中的账号 → 直接进入，否则走正常登录页 */
-  try {
-    const t = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(SWITCH_TICKET_KEY) || 'null');
-    (window.__QC_NEXUS ? sessionStorage : localStorage).removeItem(SWITCH_TICKET_KEY);
-    if (t && t.username && t.pwd && Date.now() - (t.ts || 0) < 10 * 60 * 1000) {
-      const u = _getUsers().find(x => x.username === t.username && x.password === t.pwd && x.enabled);
-      if (u) { _saveSession(u); _showApp(); return; }
-    }
-  } catch(e) {}
-  const sess = getCurrentUser();
-  if (!sess) { _showLogin(); return; }
-
-  /* 验证 session 中的用户是否仍有效且未被停用 */
-  const users = _getUsers();
-  const user  = users.find(u => u.username === sess.username);
-  if (!user || !user.enabled) { _clearSession(); _showLogin(); return; }
-
-  _showApp();
-}
-
-/* ════════════════════════════════════════
-   §1.6  USER MANAGEMENT PAGE
-════════════════════════════════════════ */
-
-function renderUsersPage() {
-  if (!can('manageUsers')) {
-    showToast('当前账号无权限执行此操作', 'error'); return;
-  }
-  const el = document.getElementById('page-users');
-  if (!el) return;
-  const users = _getUsers();
-  const me    = getCurrentUser();
-
-  el.innerHTML = `
-  <div class="page-header">
-    <h2 class="page-title">账号管理</h2>
-    <button class="btn-primary" onclick="_openUserModal()">＋ 新增账号</button>
-  </div>
-  <div class="table-wrap" style="margin-top:12px">
-    <table style="table-layout:fixed;width:100%">
-      <colgroup>
-        <col style="width:110px"/><col style="width:100px"/><col style="width:90px"/><col style="width:90px"/>
-        <col style="width:70px"/><col style="width:130px"/><col style="width:140px"/><col style="width:210px"/>
-      </colgroup>
-      <thead><tr>
-        <th style="text-align:left">用户名</th>
-        <th style="text-align:left">姓名</th>
-        <th style="text-align:left">部门</th>
-        <th style="text-align:left">角色</th>
-        <th style="text-align:center">状态</th>
-        <th style="text-align:left">创建时间</th>
-        <th style="text-align:left">最后登录</th>
-        <th style="text-align:center">操作</th>
-      </tr></thead>
-      <tbody>
-        ${users.map(u => {
-          const isSelf = u.username === me?.username;
-          const statusBadge = u.enabled
-            ? '<span class="badge badge-pass">启用</span>'
-            : '<span class="badge badge-rej">停用</span>';
-          const created  = u.createdAt  ? u.createdAt.slice(0,10)  : '—';
-          const lastLogin= u.lastLoginAt? u.lastLoginAt.slice(0,16).replace('T',' ') : '从未';
-          return `<tr>
-            <td style="font-weight:500;color:#e8edf5">${u.username}${isSelf?' <span style="font-size:10px;color:var(--accent)">(我)</span>':''}</td>
-            <td>${u.name||'—'}</td>
-            <td>${u.dept||'—'}</td>
-            <td>${ROLE_LABELS[u.role]||u.role}</td>
-            <td style="text-align:center">${statusBadge}</td>
-            <td style="font-size:11px">${created}</td>
-            <td style="font-size:11px">${lastLogin}</td>
-            <td style="text-align:center">
-              <button class="action-btn" onclick="_openUserModal('${u.username}')">编辑</button>
-              <button class="action-btn" onclick="_openPermModal('${u.username}')">权限</button>
-              ${!isSelf ? `<button class="action-btn ${u.enabled?'':'badge-pass'}" onclick="_toggleUser('${u.username}')">${u.enabled?'停用':'启用'}</button>` : ''}
-              ${!isSelf ? `<button class="action-btn del" onclick="_deleteUser('${u.username}')">删除</button>` : ''}
-            </td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>
-  </div>
-
-  <!-- 新增/编辑账号弹框 -->
-  <div id="userModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2000;align-items:center;justify-content:center">
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:28px 32px;width:380px;max-width:95vw">
-      <h3 id="userModalTitle" style="margin:0 0 20px;color:var(--text-hi);font-size:16px">新增账号</h3>
-      <div style="margin-bottom:14px">
-        <label class="form-label">用户名</label>
-        <input id="umUsername" class="form-input" placeholder="字母/数字，至少2位" autocomplete="off"/>
-      </div>
-      <div style="margin-bottom:14px">
-        <label class="form-label">姓名</label>
-        <input id="umName" class="form-input" placeholder="真实姓名" autocomplete="off"/>
-      </div>
-      <div style="margin-bottom:14px">
-        <label class="form-label"><span id="umPwdLabel">密码</span> <span id="umPwdHint" style="font-size:10px;color:var(--text-dim)">（留空则不修改）</span></label>
-        <input id="umPassword" type="password" class="form-input" placeholder="至少6位" autocomplete="new-password"/>
-      </div>
-      <div style="margin-bottom:14px">
-        <label class="form-label">确认密码</label>
-        <input id="umPassword2" type="password" class="form-input" placeholder="再次输入密码" autocomplete="new-password"/>
-      </div>
-      <div style="margin-bottom:14px">
-        <label class="form-label">部门</label>
-        <select id="umDept" class="form-input">${DEPT_OPTIONS.map(d=>`<option value="${d}">${d}</option>`).join('')}</select>
-      </div>
-      <div style="margin-bottom:14px">
-        <label class="form-label">厂区 / 子公司</label>
-        <input class="form-input" value="${getSiteObj(getCompanyObj().site).name} · ${getCompanyName()}" disabled/>
-      </div>
-      <div style="margin-bottom:20px">
-        <label class="form-label">角色</label>
-        <select id="umRole" class="form-input">
-          <option value="admin">主账号（admin）</option>
-          <option value="manager" selected>管理账号（manager）</option>
-          <option value="viewer">查看账号（viewer）</option>
-        </select>
-      </div>
-      <div id="userModalErr" style="display:none;color:var(--red);font-size:12px;margin-bottom:12px"></div>
-      <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn-secondary" onclick="_closeUserModal()">取消</button>
-        <button class="btn-primary" onclick="_saveUser()">保存账号</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 编辑权限矩阵弹框 -->
-  <div id="permModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2100;align-items:center;justify-content:center">
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:24px 28px;width:660px;max-width:96vw;max-height:88vh;overflow:auto">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px">
-        <h3 id="permModalTitle" style="margin:0;color:var(--text-hi);font-size:16px">编辑权限</h3>
-        <button class="btn-secondary" onclick="_permResetRole()">按角色重置</button>
-      </div>
-      <div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">查看=打开页面并导出；编辑=新增记录；审核=修改已有记录；管理=删除 / 导入 / 库与账号管理</div>
-      <div id="permMatrixWrap"></div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
-        <button class="btn-secondary" onclick="_closePermModal()">取消</button>
-        <button class="btn-primary" onclick="_savePerms()">保存权限</button>
-      </div>
-    </div>
-  </div>
-  `;
-}
-
-let _editingUsername = null;
-let _permEditing = null, _permMatrix = null;
-
-function _openUserModal(username) {
-  _editingUsername = username || null;
-  const modal = document.getElementById('userModal');
-  if (!modal) return;
-  modal.style.display = 'flex';
-
-  const titleEl = document.getElementById('userModalTitle');
-  const hintEl  = document.getElementById('umPwdHint');
-  const pwdLabel = document.getElementById('umPwdLabel');
-  const pwdInput = document.getElementById('umPassword');
-  const pwdInput2 = document.getElementById('umPassword2');
-
-  if (username) {
-    /* 编辑模式 */
-    const users = _getUsers();
-    const u     = users.find(x => x.username === username);
-    if (!u) return;
-    if (titleEl) titleEl.textContent = `编辑账号：${username}`;
-    if (hintEl)  hintEl.style.display = '';
-    if (pwdLabel) pwdLabel.textContent = '新密码';
-    document.getElementById('umUsername').value = u.username;
-    document.getElementById('umUsername').disabled = true;
-    if (pwdInput)  { pwdInput.value = '';  pwdInput.placeholder = '留空则不修改，填写则至少6位'; }
-    if (pwdInput2) { pwdInput2.value = ''; pwdInput2.placeholder = '再次输入新密码'; }
-    document.getElementById('umRole').value = u.role;
-    document.getElementById('umName').value = u.name || '';
-    document.getElementById('umDept').value = u.dept || '品质';
-  } else {
-    /* 新增模式 */
-    if (titleEl) titleEl.textContent = '新增账号';
-    if (hintEl)  hintEl.style.display = 'none';
-    if (pwdLabel) pwdLabel.textContent = '密码';
-    document.getElementById('umUsername').value = '';
-    document.getElementById('umUsername').disabled = false;
-    if (pwdInput)  { pwdInput.value = '';  pwdInput.placeholder = '至少6位'; }
-    if (pwdInput2) { pwdInput2.value = ''; pwdInput2.placeholder = '再次输入密码'; }
-    document.getElementById('umRole').value = 'manager';
-    document.getElementById('umName').value = '';
-    document.getElementById('umDept').value = '品质';
-  }
-  const errEl = document.getElementById('userModalErr');
-  if (errEl) { errEl.textContent = ''; errEl.style.display = 'none'; }
-}
-
-function _closeUserModal() {
-  const modal = document.getElementById('userModal');
-  if (modal) modal.style.display = 'none';
-  _editingUsername = null;
-}
-
-function _saveUser() {
-  const errEl  = document.getElementById('userModalErr');
-  const show   = msg => { if(errEl){ errEl.textContent=msg; errEl.style.display=''; } };
-
-  const uname  = (document.getElementById('umUsername')?.value||'').trim();
-  const pwd    = (document.getElementById('umPassword')?.value||'').trim();
-  const pwd2   = (document.getElementById('umPassword2')?.value||'').trim();
-  const role   = document.getElementById('umRole')?.value || 'viewer';
-  const name   = (document.getElementById('umName')?.value||'').trim();
-  const dept   = document.getElementById('umDept')?.value || '';
-
-  if (!uname || uname.length < 2) { show('用户名至少2位'); return; }
-  if (!/^[a-zA-Z0-9_一-龥]+$/.test(uname)) { show('用户名只能含字母、数字、下划线或汉字'); return; }
-
-  const users = _getUsers();
-
-  if (_editingUsername) {
-    /* 编辑模式 */
-    const u = users.find(x => x.username === _editingUsername);
-    if (!u) { show('账号不存在'); return; }
-    if (pwd) {
-      if (pwd.length < 6) { show('密码至少6位'); return; }
-      if (pwd !== pwd2)   { show('两次密码不一致'); return; }
-      u.password = _hashPwd(pwd);
-    }
-    u.role = role;
-    u.name = name;
-    u.dept = dept;
-    /* 确保至少1个 admin */
-    const admins = users.filter(x => x.role === 'admin' && x.enabled);
-    if (admins.length === 0) { show('至少保留一个启用的主账号'); return; }
-  } else {
-    /* 新增模式 */
-    if (users.find(x => x.username === uname)) { show('用户名已存在'); return; }
-    if (!pwd) { show('请输入密码'); return; }
-    if (pwd.length < 6) { show('密码至少6位'); return; }
-    if (pwd !== pwd2)   { show('两次密码不一致'); return; }
-    users.push({
-      username:    uname,
-      name,
-      dept,
-      password:    _hashPwd(pwd),
-      role,
-      enabled:     true,
-      createdAt:   new Date().toISOString(),
-      lastLoginAt: null,
-    });
-  }
-
-  _saveUsers(users);
-  _closeUserModal();
-  showToast('✓ 账号已保存', 'success');
-  renderUsersPage();
-}
-
-/* ── 权限矩阵弹窗 ── */
-function _renderPermMatrix() {
-  const wrap = document.getElementById('permMatrixWrap');
-  if (!wrap || !_permMatrix) return;
-  const colHead = PERM_COLS.map(c =>
-    `<th style="text-align:center">${c.label}<br/><span style="font-size:10px;font-weight:400">` +
-    `<a href="javascript:void(0)" onclick="_permSetCol('${c.k}',1)" style="color:var(--accent)">全选</a> · ` +
-    `<a href="javascript:void(0)" onclick="_permSetCol('${c.k}',0)" style="color:var(--text-dim)">清空</a></span></th>`
-  ).join('');
-  const rows = PERM_GROUPS.map(g => g.menus.map((m, i) => {
-    const cells = PERM_COLS.map(c => {
-      const on = (_permMatrix[m.k] && _permMatrix[m.k][c.k]) ? 1 : 0;
-      return `<td style="text-align:center"><input type="checkbox" ${on?'checked':''} onchange="_permToggle('${m.k}','${c.k}',this.checked)" style="accent-color:var(--accent);width:15px;height:15px"/></td>`;
-    }).join('');
-    const gcell = i === 0
-      ? `<td rowspan="${g.menus.length}" style="background:rgba(250,204,21,.10);color:#facc15;font-weight:600;text-align:center;vertical-align:middle">${g.group}</td>`
-      : '';
-    return `<tr>${gcell}<td style="white-space:normal;min-width:110px">${m.label}</td>${cells}</tr>`;
-  }).join('')).join('');
-  wrap.innerHTML = `<div class="table-wrap"><table style="table-layout:fixed;width:100%;min-width:0">
-    <colgroup><col style="width:60px"/><col/><col style="width:86px"/><col style="width:86px"/><col style="width:86px"/><col style="width:86px"/></colgroup>
-    <thead><tr><th style="text-align:center">分组</th><th style="text-align:left">菜单</th>${colHead}</tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
-}
-
-function _openPermModal(username) {
-  const u = _getUsers().find(x => x.username === username);
-  if (!u) return;
-  _permEditing = username;
-  _permMatrix  = effPerms(u);          /* 角色预设 + 已有自定义覆盖 */
-  const t = document.getElementById('permModalTitle');
-  if (t) t.textContent = `编辑权限 — ${username}（${ROLE_LABELS[u.role]||u.role}）`;
-  _renderPermMatrix();
-  const m = document.getElementById('permModal');
-  if (m) m.style.display = 'flex';
-}
-function _closePermModal() {
-  const m = document.getElementById('permModal');
-  if (m) m.style.display = 'none';
-  _permEditing = null; _permMatrix = null;
-}
-function _permToggle(menu, col, on) {
-  if (!_permMatrix) return;
-  if (!_permMatrix[menu]) _permMatrix[menu] = { v:0, e:0, a:0, m:0 };
-  _permMatrix[menu][col] = on ? 1 : 0;
-}
-function _permSetCol(col, on) {
-  if (!_permMatrix) return;
-  PERM_MENU_KEYS.forEach(k => { if (_permMatrix[k]) _permMatrix[k][col] = on ? 1 : 0; });
-  _renderPermMatrix();
-}
-function _permResetRole() {
-  const u = _getUsers().find(x => x.username === _permEditing);
-  _permMatrix = JSON.parse(JSON.stringify(ROLE_PERM_MATRIX[u?.role] || ROLE_PERM_MATRIX.viewer));
-  _renderPermMatrix();
-  showToast('已按角色预设重置，保存后生效', 'info');
-}
-function _savePerms() {
-  const users = _getUsers();
-  const u = users.find(x => x.username === _permEditing);
-  if (u) {
-    u.perms = _permMatrix;
-    _saveUsers(users);
-    showToast('✓ 权限已保存', 'success');
-  }
-  _closePermModal();
-  applyPermissions();
-  renderUsersPage();
-}
-
-function _toggleUser(username) {
-  const users = _getUsers();
-  const u     = users.find(x => x.username === username);
-  if (!u) return;
-  const me = getCurrentUser();
-  if (u.username === me?.username) { showToast('不能停用当前登录账号', 'error'); return; }
-
-  /* 确保至少1个启用的 admin */
-  if (u.role === 'admin' && u.enabled) {
-    const admins = users.filter(x => x.role === 'admin' && x.enabled && x.username !== username);
-    if (admins.length === 0) { showToast('至少保留一个启用的主账号', 'error'); return; }
-  }
-
-  u.enabled = !u.enabled;
-  _saveUsers(users);
-  showToast(u.enabled ? '✓ 账号已启用' : '账号已停用', u.enabled ? 'success' : 'info');
-  renderUsersPage();
-}
-
-function _deleteUser(username) {
-  const me = getCurrentUser();
-  if (username === me?.username) { showToast('不能删除当前登录账号', 'error'); return; }
-  if (!confirm(`确认删除账号「${username}」？此操作不可撤销。`)) return;
-
-  const users = _getUsers();
-  const u     = users.find(x => x.username === username);
-  if (u?.role === 'admin') {
-    const admins = users.filter(x => x.role === 'admin' && x.username !== username);
-    if (admins.length === 0) { showToast('至少保留一个主账号', 'error'); return; }
-  }
-
-  const newUsers = users.filter(x => x.username !== username);
-  _saveUsers(newUsers);
-  showToast('✓ 账号已删除', 'success');
-  renderUsersPage();
-}
-
 
 function initData() {
   try {
@@ -1000,7 +331,6 @@ const PAGE_TITLES = {
   yearly:           '验货年报',
   'supplier-report':'供应商质量报告',
   import:           '数据导入',
-  users:            '账号管理',
   defectlib:        '不良描述库',
 };
 
@@ -1054,7 +384,12 @@ function mountReportTypeSelect(page, name) {
 }
 
 function changeReportPeriod(button) {
-  if (button.disabled || button.dataset.reportPage === currentPage) return;
+  if (button.disabled) return;
+  if (button.dataset.reportPage === currentPage) {
+    if (currentPage === 'weekly') window.QcWeeklyTemplates?.returnToReport();
+    if (currentPage === 'monthly') window.QcMonthlyTemplates?.returnToReport();
+    return;
+  }
   showPage(button.dataset.reportPage, true);
 }
 
@@ -1065,6 +400,8 @@ function changeReportType(select) {
 }
 
 function showPage(name, focusReportType = false) {
+  if(window.QcMonthlyTemplates?.navigationState().dirty){showToast('请先完成月报补充内容的保存或处理保存冲突','error');return;}
+  if(window.QcWeeklyTemplates?.navigationState().dirty){showToast('请先完成周报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
   if (window.QcInspectionSummary?.busy) { showToast('历史导入正在保存，请稍候', 'warning'); return; }
   if (window.QcWorkflow?.navigationState().busy) { showToast('正在处理验货记录，请稍候再切换页面', 'error'); return; }
@@ -1080,6 +417,8 @@ function showPage(name, focusReportType = false) {
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
   currentPage = name;
   window.QcApprovedStatistics?.pageChanged(name);
+  window.QcWeeklyTemplates?.pageChanged(name);
+  window.QcMonthlyTemplates?.pageChanged(name);
   window.__QC_PAGE_CHANGED?.(name);
   const periodControl = document.getElementById('reportPeriodSwitch');
   const periodGlass = periodControl?.querySelector('.report-period-glass');
@@ -1123,7 +462,6 @@ function showPage(name, focusReportType = false) {
         if (name === 'yearly')           renderYearlyReport();
         if (name === 'supplier-report')  populateSupplierSelect();
         if (name === 'import')           _backupStats();
-        if (name === 'users')            renderUsersPage();
         if (name === 'defectlib')        renderDefectLibPage();
         if (focusReportType && inReportCenter && currentPage === name) {
           (document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]') || document.getElementById('reportTypeSelect'))?.focus({ preventScroll: true });
@@ -3004,11 +2342,8 @@ async function startOcr() {
     showToast('请先上传图片', 'error');
     return;
   }
-  if (typeof Tesseract === 'undefined') {
-    showToast('OCR 引擎未加载成功，请检查网络后重试', 'error');
-    return;
-  }
   if (_ocrWorkerBusy) return;
+  const image = _ocrImageFile;
   _ocrWorkerBusy = true;
   setText('ocrStatus', '正在识别，请稍候...');
   const btn = document.getElementById('btnStartOcr');
@@ -3016,7 +2351,9 @@ async function startOcr() {
 
   try {
     /* 图片预处理：放大2倍+灰度+对比度增强，提高识别准确率（不改变预览，只改变OCR输入）*/
-    const ocrInput = await preprocessImageForOcr(_ocrImageFile);
+    if (typeof Tesseract === 'undefined') await window.QcAssets.load('ocr');
+    if (image !== _ocrImageFile) return;
+    const ocrInput = await preprocessImageForOcr(image);
     /* Worker 内 importScripts 不识别相对路径，必须给绝对 URL */
     const _ocrBase = location.href.replace(/[^/]*$/, '');
     const result = await Tesseract.recognize(ocrInput, 'chi_sim+eng', {
@@ -3025,6 +2362,7 @@ async function startOcr() {
       langPath: _ocrBase + 'vendor/tesseract/lang',
       logger: () => {} /* 静默，不输出进度日志 */
     });
+    if (image !== _ocrImageFile) return;
     const text = (result?.data?.text || '').trim();
     if (!text) {
       setText('ocrStatus', '识别失败，请重新上传清晰图片');
@@ -5620,12 +4958,12 @@ function exportCSV() {
 }
 
 /* 按「加工厂品质检验明细统计表」格式导出 Excel（沿用验货明细页的日期/搜索筛选）*/
-function exportFactoryExcel() {
+async function exportFactoryExcel() {
   if (!can('exportData')) { showToast('当前账号无权限执行此操作', 'error'); return; }
   if (currentPage === 'records') filterRecords();
   if (_downloadServerExport('factory-excel.xls', '加工厂 Excel')) return;
-  if (typeof XLSX === 'undefined') { showToast('Excel 引擎未加载，请刷新后重试', 'error'); return; }
   try {
+    if (typeof XLSX === 'undefined') await window.QcAssets.load('excel');
     const hasActiveFilter = !!(
       getVal('searchInput') ||
       getVal('filterResult') ||
@@ -6119,6 +5457,7 @@ let _importSheetName    = '';
 let _importHeaderRowIdx = -1;   // 识别到的表头行索引
 let _importErrors       = [];   // { fatal:bool, msg:string }
 let _importWarnings     = [];   // { msg:string }
+let _importReadVersion  = 0;
 let _pendingImportPlan  = null; // 用户确认前的导入分析结果（不写入数据）
 
 /* ═══════════════════════════════
@@ -6150,6 +5489,7 @@ function handleFileImport(e) {
    重置 / 取消（不碰 localStorage）
 ═══════════════════════════════ */
 function importReset() {
+  _importReadVersion++;
   /* 清空内存状态 */
   _importParsedRows   = [];
   _importMappedFields = {};
@@ -6193,26 +5533,32 @@ function _setProgress(pct, label) {
 /* ═══════════════════════════════
    §A  入口：开始导入流程
 ═══════════════════════════════ */
-function _startImport(file) {
+async function _startImport(file) {
   const name = file.name.toLowerCase();
   if (!name.endsWith('.xlsx') && !name.endsWith('.xls') && !name.endsWith('.csv')) {
     _showFatalError('不支持的文件格式：' + file.name + '，请使用 .xlsx / .xls / .csv');
     return;
   }
-  if (typeof XLSX === 'undefined') {
-    _showFatalError('SheetJS 库未加载，请检查网络连接后刷新页面重试');
-    return;
-  }
-
   importReset();
+  const version = _importReadVersion;
+  if (typeof XLSX === 'undefined') {
+    _setProgress(0, '正在加载 Excel 工具…');
+    try { await window.QcAssets.load('excel'); }
+    catch (_) {
+      if (version === _importReadVersion) _showFatalError('Excel 工具加载失败，请重试');
+      return;
+    }
+    if (version !== _importReadVersion) return;
+  }
   /* 隐藏拖拽区，显示进度 */
   const zone = document.getElementById('importZone');
   if (zone) zone.style.display = 'none';
   _setProgress(10, '正在读取文件：' + file.name);
 
   const reader = new FileReader();
-  reader.onerror = () => _showFatalError('文件读取失败，请重试');
+  reader.onerror = () => { if (version === _importReadVersion) _showFatalError('文件读取失败，请重试'); };
   reader.onload  = ev => {
+    if (version !== _importReadVersion) return;
     try {
       _setProgress(30, '正在解析工作表…');
       const wb = XLSX.read(new Uint8Array(ev.target.result), {
@@ -7107,7 +6453,16 @@ function _cc() {
   };
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  const startup = document.getElementById('qcStartup');
+  if (!_liveUser()) {
+    startup.textContent = '请从 Nexus 的 QC 验货工作台进入。';
+    return;
+  }
+  if (!await window.__QC_BOOTSTRAP) {
+    startup.textContent = 'QC 数据读取失败，请返回工作台重试。';
+    return;
+  }
   /* 0. 每次进入 QC 默认浅色；仍可在当前页面手动切换主题。 */
   applyTheme('light');
 
@@ -7120,9 +6475,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (dailyEl)  dailyEl.value  = todayStr();
   if (weeklyEl) weeklyEl.value = weekStart();
 
-  /* 4. 账号鉴权（通过后 _showApp 会自动渲染仪表板；
-     未登录则只显示登录页，待用户登录成功后由 login() → _showApp() 渲染）*/
-  requireLogin();
+  _showApp();
 
   /* 5. 单一绑定：事件委托，用 closest() 防止点到文字节点时 id 匹配失败 */
   document.addEventListener('click', function(e) {
@@ -8341,18 +7694,11 @@ function _pdfOptYearDefRate(months, mAvgRates) {
 async function exportMonthlyReportPDF() {
   if (window.QcPeriodReports?.monthly.enabled()) return exportReportPDF('monthly');
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  if (!window.html2canvas) {
-    alert('html2canvas 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
-  if (!window.jsPDF && !window.jspdf) {
-    alert('jsPDF 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
   const elMonth = document.getElementById('monthlyMonth');
   if (!elMonth || !elMonth.value) { showToast('请先选择月份', 'error'); return; }
 
   showToast('正在生成月报 PDF，请稍候…', 'info');
+  if (!await _rptCheckDeps()) return;
   const [year, month] = elMonth.value.split('-').map(Number);
   const data      = getMonthRecords(year, month);
   const s         = summarizeRecords(data);
@@ -8601,18 +7947,11 @@ async function exportMonthlyReportPDF() {
 ══════════════════════════════════════════════════════════ */
 async function exportYearlyReportPDF() {
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  if (!window.html2canvas) {
-    alert('html2canvas 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
-  if (!window.jsPDF && !window.jspdf) {
-    alert('jsPDF 未加载，请通过本地服务器打开页面（如：python3 -m http.server 8000）');
-    return;
-  }
   const elYear = document.getElementById('yearlyYear');
   if (!elYear || !elYear.value) { showToast('请先选择年份', 'error'); return; }
 
   showToast('正在生成年报 PDF，请稍候…', 'info');
+  if (!await _rptCheckDeps()) return;
   const year       = parseInt(elYear.value);
   const data       = getYearRecords(year);
   const s          = summarizeRecords(data);

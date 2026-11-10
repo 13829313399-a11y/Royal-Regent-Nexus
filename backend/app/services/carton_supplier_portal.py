@@ -550,10 +550,11 @@ def order_out(db, order, *, internal=False, projection=None):
     print_hold = bool(print_held(db, order))
     from app.services.carton_order_split import live_plans
     legacy_hold = any(row["status"] != "CANCELLED" for row in projection["split_records"]) if projection is not None else bool(live_plans(db, order.factory_id, order.id))
+    commitments = {row.order_line_id: row for row in projection["commitments"]} if projection is not None else {}
     for item in snapshot.get("lines", []):
         line_id = str(item["id"])
         required = Decimal(str(item["after_required_quantity"]))
-        commitment = next((row for row in projection["commitments"] if row.order_line_id == line_id), None) if projection is not None else db.get(SupplierCommitment, line_id)
+        commitment = commitments.get(line_id) if projection is not None else db.get(SupplierCommitment, line_id)
         accepted = bool(issue and commitment and commitment.issue_id == issue.id and not changed and not disputed)
         line = {key: item.get(key, "") for key in ("id", "line_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit")}
         line_no = _snapshot_line_no(item.get("line_no"), order.order_no)
@@ -771,7 +772,8 @@ def shipment_out(db, row, *, internal=False):
         result["lines"].append(item)
     accepted = json.loads(row.acceptance_json or "{}")
     for item in result["lines"]:
-        item.update({key: str(value) for key, value in progress[item["id"]].items() if key != "reserved_quantity"})
+        item.update({key: str(value) for key, value in progress[item["id"]].items()
+            if key != "reserved_quantity" or internal})
     result["partially_received"] = row.status == "SENT" and any(item["received_quantity"] > 0 for item in progress.values())
     result["requires_receipt_link"] = receipt_link.link_only(row)
     result["linked_existing_receipt"] = bool(accepted.get("linked_existing_receipt"))

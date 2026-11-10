@@ -323,6 +323,11 @@ async def import_orders(customer_code: str, request: Request, factory_id: str = 
         # Reuse it instead of parsing the PO and schedule in a second worker.
         # Nothing is persisted until the existing confirmation checks below pass.
         export = mapping._export_special_batch_schedule if special else mapping._export_mapped_customer_schedule
+        if reconcile_line:
+            kwargs['reconciliation_target'] = {
+                'factory_id': reconcile_line.factory_id, 'customer_code': reconcile_line.customer_code,
+                'reference_no': reconcile_line.reference_no, 'product_no': reconcile_line.product_no,
+            }
         output, file_name, resolved = await run_order_job(export, db=db, **kwargs,
             skipped_issue_keys=resolution_keys, manual_overrides=overrides)
         # Confirmation policy can alter display status; retain the writer's

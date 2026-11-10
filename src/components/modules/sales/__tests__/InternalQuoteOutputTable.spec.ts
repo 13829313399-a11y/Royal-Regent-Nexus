@@ -33,6 +33,52 @@ async function start() {
 }
 
 describe('output table source editing', () => {
+  it('shows the main quotation while originals load and preserves a newer live price preview', async () => {
+    let finish!: (value: OutputLayout) => void
+    mocks.get.mockResolvedValueOnce({ ...layout(), source_workbooks_pending: true })
+      .mockReturnValueOnce(new Promise<OutputLayout>(resolve => { finish = resolve }))
+    const wrapper = await start()
+    expect(wrapper.find('[data-cell="D20"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('正在读取原始报价表')
+    expect(mocks.get).toHaveBeenNthCalledWith(1, 'quote-1', false)
+    await wrapper.get('[data-cell="D20"] button').trigger('click')
+    await wrapper.get('input[aria-label="原始单价 RMB"]').setValue('.8')
+    mocks.preview.mockResolvedValueOnce({ ...layout(), quote_price_hkd: '2.8', preview: true })
+    await vi.advanceTimersByTimeAsync(700)
+    finish({ ...layout(), sheets: [...layout().sheets, { name: '供应商原表', source: { file_name: '原表.xlsx', department: 'engineering' }, widths: [100], rows: [] }] })
+    await flushPromises()
+    expect(wrapper.text()).toContain('供应商原表')
+    expect(wrapper.text()).toContain('HKD 2.8000')
+    expect(wrapper.get('[data-testid="save-output-table"]').attributes('disabled')).toBeUndefined()
+    expect((wrapper.get('input[aria-label="原始单价 RMB"]').element as HTMLInputElement).value).toBe('.8')
+  })
+
+  it('keeps the quotation available when original-sheet loading fails and allows retry', async () => {
+    mocks.get.mockResolvedValueOnce({ ...layout(), source_workbooks_pending: true }).mockRejectedValueOnce(new Error('原表暂不可用'))
+    const wrapper = await start()
+    expect(wrapper.find('[data-cell="D20"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('HKD 1.5000')
+    expect(wrapper.text()).toContain('重试读取原表')
+    mocks.get.mockResolvedValueOnce(layout())
+    await wrapper.findAll('button').find(b => b.text() === '重试读取原表')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('原始报价表读取失败')
+  })
+
+  it('discards old original sheets after switching products', async () => {
+    let finish!: (value: OutputLayout) => void
+    mocks.get.mockResolvedValueOnce({ ...layout(), source_workbooks_pending: true })
+      .mockReturnValueOnce(new Promise<OutputLayout>(resolve => { finish = resolve }))
+    const wrapper = await start()
+    mocks.get.mockResolvedValueOnce({ ...layout(), quote_id: 'quote-2', base_token: 'b'.repeat(64), version_label: 'B-V1' })
+    await wrapper.setProps({ quoteId: 'quote-2' })
+    await flushPromises()
+    finish({ ...layout(), sheets: [{ name: '旧产品原表', source: { file_name: '旧产品.xlsx', department: 'engineering' }, widths: [], rows: [] }] })
+    await flushPromises()
+    expect(wrapper.text()).toContain('B-V1')
+    expect(wrapper.text()).not.toContain('旧产品原表')
+  })
+
   it('opens adopted cost controls, sends a single pricing mode and refreshes the target gap', async () => {
     const current = layout()
     current.target_customer_price = 'HKD 1.2'
@@ -49,11 +95,11 @@ describe('output table source editing', () => {
     await wrapper.get('textarea[aria-label="报价采用金额 调价批注"]').setValue('供应商已口头确认')
     mocks.preview.mockResolvedValue({ ...current, preview: true, quote_price_hkd: '1.1' })
     await vi.advanceTimersByTimeAsync(700)
-    expect(mocks.preview).toHaveBeenLastCalledWith('quote-1', expect.objectContaining({ edits: [expect.objectContaining({ value: '3', adjustment_mode: 'per_carton', annotation: expect.objectContaining({ text: '供应商已口头确认' }) })] }))
+    expect(mocks.preview).toHaveBeenLastCalledWith('quote-1', expect.objectContaining({ edits: [expect.objectContaining({ value: '3', adjustment_mode: 'per_carton', annotation: expect.objectContaining({ text: '供应商已口头确认' }) })] }), false)
     expect(wrapper.text()).toContain('已达到目标价')
     await wrapper.findAll('button').find(button => button.text() === '恢复公式核算')!.trigger('click')
     await vi.advanceTimersByTimeAsync(700)
-    expect(mocks.preview).toHaveBeenLastCalledWith('quote-1', expect.objectContaining({ edits: [expect.objectContaining({ value: null, adjustment_mode: 'formula' })] }))
+    expect(mocks.preview).toHaveBeenLastCalledWith('quote-1', expect.objectContaining({ edits: [expect.objectContaining({ value: null, adjustment_mode: 'formula' })] }), false)
   })
 
   it('keeps the total visible and hides an outdated price while a new preview is pending', async () => {
@@ -75,7 +121,7 @@ describe('output table source editing', () => {
     await vi.advanceTimersByTimeAsync(700)
     expect(mocks.preview).toHaveBeenCalledWith('quote-1', expect.objectContaining({ edits: [expect.objectContaining({
       field_id: 'engineering:materials/0/unit_price_rmb', value: '.5', annotation: { text: '供应商口头降价', image_attachment_ids: [], new_images: [] },
-    })] }))
+    })] }), false)
     mocks.save.mockRejectedValue(new Error('版本发生变化'))
     await wrapper.get('[data-testid="save-output-table"]').trigger('click')
     await flushPromises()
@@ -99,7 +145,7 @@ describe('output table source editing', () => {
     expect((input.element as HTMLInputElement).value).toBe('.5')
     await input.setValue('.8')
     await vi.advanceTimersByTimeAsync(700)
-    expect(mocks.preview).toHaveBeenCalledWith('quote-1', { base_token: 'a'.repeat(64), edits: [{ field_id: 'engineering:materials/0/unit_price_rmb', value: '.8' }] })
+    expect(mocks.preview).toHaveBeenCalledWith('quote-1', { base_token: 'a'.repeat(64), edits: [{ field_id: 'engineering:materials/0/unit_price_rmb', value: '.8' }] }, false)
     await wrapper.get('[data-testid="save-output-table"]').trigger('click')
     await flushPromises()
     expect(mocks.save).toHaveBeenCalledWith('quote-1', expect.objectContaining({ edits: [{ field_id: 'engineering:materials/0/unit_price_rmb', value: '.8' }] }))

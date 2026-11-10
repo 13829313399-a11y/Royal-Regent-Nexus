@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import date, datetime
 from email.parser import Parser
 from hashlib import sha256
 import json
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from zipfile import ZipFile, ZIP_DEFLATED
+from zoneinfo import ZoneInfo
 
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
@@ -203,9 +205,9 @@ def build_provenance(source: Path, package: Path, source_commit: str):
         'build_inputs': inputs}
 
 
-def readme(factory: str):
+def readme(factory: str, release: str):
     _, _, name, customers = FACTORIES[factory]
-    common = f'''{name} 单机试用版｜2026-11-09
+    common = f'''{name} 单机试用版｜{release}
 
 适用：Windows 10/11 64位电脑。已带 Python 运行文件，不需安装 Python、Node 或登录总系统。
 
@@ -219,7 +221,7 @@ def readme(factory: str):
 数据与交接
 - data 文件夹在首次启动时创建，存放本包自己的历史、原件与记录。退出后保留。
 - 不连接线上数据库或其他厂区。复制到另一台电脑后是另一套独立数据。
-- 备份请先退出程序，再复制整个解压文件夹；更新前保留原 data，不要直接删除或覆盖。
+- 备份请先退出程序，再复制整个解压文件夹。更新时将同厂区旧包的 data 复制到新包后再启动；不要混用不同厂区的数据。
 - 演示资料仅用于测试。开始真实资料试用时请保留一份未使用的新解压包。
 - 上传的是原件副本，下载会生成新 Excel，不会覆盖原文件。
 - 反馈问题时请注明厂区、客户、按钮、提示原文，并附可授权核对的原件；启动异常可附 data/startup-error.log。
@@ -244,9 +246,9 @@ def readme(factory: str):
         common += '''
 订单／排期使用顺序
 1. 选择本厂客户、上传客户PO与对应原排期，填写来单日期后解析。
-2. 在预览中逐项核对；补录或明确确认允许处理的异常，并填写确认原因。
+2. 在预览中逐项核对。“资料待补”可先留空保存或生成排期；人工补录及允许确认的异常须填写原因。订单号、货号、有效数量和原单冲突仍须核对。
 3. “保存订单”写入本机台账；“生成排期”下载完整排期副本。这是两个独立操作。
-4. 台账中可核对订单版本，发送到本机部门收件箱，登记分批走货；走货撤回须保留原因。
+4. 缺货期可先入台账，补齐并保存货期后才能发送到本机部门收件箱；可登记分批走货，走货撤回须保留原因。
 5. 本机发送记录不是发给线上员工的通知，也不会更新正式仓库、库存或生产任务。
 
 已随包提供英文／简体中文 OCR 运行文件。扫描件的识别结果仍须核对。
@@ -256,7 +258,10 @@ def readme(factory: str):
     return common
 
 
-def build(cache: Path, output: Path, selected):
+def build(cache: Path, output: Path, selected, release_date: str | None = None):
+    release_day = date.fromisoformat(release_date) if release_date else datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    release = release_day.isoformat()
+    stamp = release_day.strftime("%Y%m%d")
     output.mkdir(parents=True, exist_ok=True)
     source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     records = []
@@ -278,10 +283,10 @@ def build(cache: Path, output: Path, selected):
             copy_tree(shared_runtime, package / 'runtime')
             shutil.copyfile(TOOL / 'launch.py', package / 'launch.py')
             (package / 'START.cmd').write_bytes(START.encode('ascii'))
-            (package / '先看使用说明.txt').write_text(readme(factory), encoding='utf-8-sig')
+            (package / '先看使用说明.txt').write_text(readme(factory, release), encoding='utf-8-sig')
             (package / 'trial.json').write_text(json.dumps({'kind': kind, 'factory_id': factory,
                 'name': f'{name}问单本地试用' if kind == 'jp' else f'{name}订单排期本地试用',
-                'release': '2026-11-09', 'source_commit': source_commit,
+                'release': release, 'source_commit': source_commit,
                 'source_commit_role': 'Base checkout; see BUILD-SOURCES.json for exact uncommitted build inputs.'}, ensure_ascii=False, indent=2), encoding='utf-8')
             if kind == 'orders':
                 ocr = package / 'ocr'
@@ -314,7 +319,7 @@ def build(cache: Path, output: Path, selected):
             (package / 'PACKAGE-MANIFEST.json').write_text(json.dumps({'factory_id': factory,
                 'source_commit': source_commit, 'source_commit_role': provenance['commit_meaning'],
                 'working_tree_has_changes': provenance['working_tree_has_changes'], 'files': hashes}, ensure_ascii=False, indent=2), encoding='utf-8')
-            destination = output / f'{zip_name}_Windows试用_20261109.zip'
+            destination = output / f'{zip_name}_Windows试用_{stamp}.zip'
             partial = destination.with_suffix('.zip.part')
             with ZipFile(partial, 'w', compression=ZIP_DEFLATED, compresslevel=6) as archive:
                 for item in sorted(package.rglob('*')):
@@ -332,7 +337,7 @@ def build(cache: Path, output: Path, selected):
         writer.writerow(['厂区', '试用包', '客户／功能', '对接人', '交付日期', '启动结果', '试用问题'])
         for factory in selected:
             filename, _, name, customers = FACTORIES[factory]
-            writer.writerow([name, f'{filename}_Windows试用_20261109.zip', customers, '', '', '', ''])
+            writer.writerow([name, f'{filename}_Windows试用_{stamp}.zip', customers, '', '', '', ''])
     (output / '00_总说明_先看这里.txt').write_text('各厂区订单／排期与华康B问单｜Windows单机试用包\n\n'
         '每个ZIP都是独立包，请把对应厂区的ZIP交给负责人，完整解压后双击START.cmd。\n'
         '不需要总系统账号。仅适用于Windows 10/11 64位。\n'
@@ -349,5 +354,6 @@ if __name__ == '__main__':
     parser.add_argument('--cache', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--factory', action='append', choices=FACTORIES)
+    parser.add_argument('--release-date', help='Release date YYYY-MM-DD; defaults to the Shanghai calendar date.')
     args = parser.parse_args()
-    build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES))
+    build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date)

@@ -14,11 +14,17 @@
 /* ─────────────────────────────────────────
    工具：检查依赖是否加载
 ───────────────────────────────────────── */
-function _rptCheckDeps() {
-  const missing = [];
-  if (typeof window.jspdf === 'undefined' && typeof jsPDF === 'undefined') missing.push('jsPDF');
-  if (typeof html2canvas === 'undefined') missing.push('html2canvas');
-  return missing;
+async function _rptCheckDeps() {
+  const ready = () => (window.jspdf?.jsPDF || typeof jsPDF === 'function') && typeof html2canvas === 'function';
+  if (ready()) return true;
+  try {
+    await window.QcAssets?.load('pdf');
+    if (ready()) return true;
+  } catch (_) {
+    // The asset loader allows a failed download to be retried.
+  }
+  showToast('PDF 组件加载失败，请重新尝试导出。', 'error');
+  return false;
 }
 
 /* ─────────────────────────────────────────
@@ -56,13 +62,6 @@ function _rptUpdateOverlay(msg, sub) {
 async function exportReportPDF(type) {
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
   const selectedDailyDate = type === 'daily' ? document.getElementById('dailyDate')?.value || _todayStr() : '';
-  /* 检查依赖 */
-  const missing = _rptCheckDeps();
-  if (missing.length) {
-    showToast('PDF 库未加载：' + missing.join('、') + '，请检查网络后刷新', 'error');
-    return;
-  }
-
   /* 供应商报告需要先选择供应商 */
   if (type === 'supplier') {
     const sel = document.getElementById('supplierSelect');
@@ -83,6 +82,7 @@ async function exportReportPDF(type) {
   if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
 
   try {
+    if (!await _rptCheckDeps()) { _rptHideOverlay(); return; }
     await new Promise(r => requestAnimationFrame(r));
 
     _rptUpdateOverlay('正在渲染报告…', '构建 A4 版面');
@@ -1456,11 +1456,6 @@ function _iqcGetRow(qty) {
 /* ── 入口 ── */
 async function exportIQCReport(recordId) {
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  const missing = _rptCheckDeps();
-  if (missing.length) {
-    showToast('PDF 库未加载：' + missing.join('、') + '，请检查网络后刷新', 'error');
-    return;
-  }
 
   const allData = _getData();
   const record  = allData.find(r => r.id === recordId);
@@ -1472,6 +1467,7 @@ async function exportIQCReport(recordId) {
   _rptShowOverlay('正在生成 IQC 检验报告…', '构建版面');
 
   try {
+    if (!await _rptCheckDeps()) { _rptHideOverlay(); return; }
     await new Promise(r => requestAnimationFrame(r));
 
     const canvas = _buildIQCCanvas(record);

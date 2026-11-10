@@ -17,7 +17,8 @@ vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: { listCustomer
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can,
   get currentUser() { return authState.currentUser }, get authorizationVersion() { return authState.authorizationVersion }, get authzMode() { return authState.authzMode } }) }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ activeProductionFactory: { id: 'huaxing' } }) }))
-vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
+const route = reactive({ query: {} as Record<string, string> })
+vi.mock('vue-router', () => ({ useRoute: () => route }))
 
 const options = { props: { factoryId: 'huaxing' }, global: { stubs: { CartonReceiptAllocations: true, CartonSplitReceiptReview: true } } }
 function sourceLine(id = 'SOURCE', patch: Partial<ShipmentLine> = {}): ShipmentLine {
@@ -47,10 +48,63 @@ beforeEach(() => {
   unified.list.mockResolvedValue({ items: [], total: 0 })
   authState.currentUser = { id: 'warehouse', identity: { employment_epoch: 1, effective_context_key: 'original' } }
   authState.authorizationVersion = 1; authState.authzMode = 'enforce'
+  route.query = {}
   api.workspace.mockResolvedValue(fixture()); api.receiptOptions.mockResolvedValue([])
 })
 
 describe('supplier-origin ordinary order entry', () => {
+  it('requires one original note choice and sends unrelated papers as zero with WAIT', async () => {
+    const data = fixture()
+    data.shipments[0]!.lines = [
+      sourceLine('TARGET', { source_type: 'FORMAL_ORDER', order_line_id: 'PAPER', quantity: '20', receivable_quantity: '10' }),
+      sourceLine('OTHER', { quantity: '30', receivable_quantity: '30' }),
+    ]
+    api.workspace.mockResolvedValue(data)
+    api.receive.mockResolvedValue(data.shipments[0])
+    route.query = { shipment_ids: 'SHIPMENT,OTHER-SHIPMENT' }
+    const wrapper = mount(Component, { ...options, attachTo: document.body, props: { ...options.props,
+      receiptEntryPapers: { SHIPMENT: ['TARGET'], 'OTHER-SHIPMENT': ['OTHER-NOTE'] } } })
+    try {
+      await flushPromises()
+      expect(wrapper.find('[aria-label="核实供应商实际送货"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('有 2 张原送货单待选择')
+      const chooser = wrapper.get('[aria-label="选择本次到货的原送货单"]')
+      expect(chooser.findAll('button')).toHaveLength(2)
+      await chooser.findAll('button')[0]!.trigger('click'); await flushPromises()
+      expect(wrapper.text()).toContain('显示 1 张送货单')
+      const form = wrapper.get('[aria-label="核实供应商实际送货"]')
+      expect(form.find('[aria-label="未收余货处理"]').exists()).toBe(false)
+      expect(form.get<HTMLInputElement>('[aria-label="TARGET 实收"]').element.value).toBe('10')
+      expect(document.activeElement).toBe(form.get('[aria-label="TARGET 实收"]').element)
+      expect(form.get<HTMLInputElement>('[aria-label="OTHER 实收"]').element.value).toBe('0')
+      expect(form.get('[aria-label="OTHER 实收"]').isVisible()).toBe(false)
+      form.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 10 }])
+      await form.trigger('submit'); await flushPromises()
+      expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ remaining_action: 'WAIT',
+        lines: [expect.objectContaining({ shipment_line_id: 'TARGET', received_quantity: 10 }),
+          expect.objectContaining({ shipment_line_id: 'OTHER', received_quantity: 0, location_allocations: [] })] }))
+    } finally { wrapper.unmount() }
+  })
+
+  it('offers the full note without prefilling another paper when the selected reservation is waiting on correction', async () => {
+    const data = fixture()
+    data.shipments[0]!.lines = [
+      sourceLine('TARGET', { source_type: 'FORMAL_ORDER', order_line_id: 'PAPER', receivable_quantity: '0', reserved_quantity: '10' }),
+      sourceLine('OTHER', { receivable_quantity: '5' }),
+    ]
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(Component, { ...options, props: { ...options.props, shipmentId: 'SHIPMENT', receiptEntryPapers: { SHIPMENT: ['TARGET'] } } })
+    try {
+      await flushPromises()
+      const form = wrapper.get('[aria-label="核实供应商实际送货"]')
+      expect(form.text()).toContain('所选纸品须等当前原单更正完成后再收料')
+      await form.trigger('submit'); await flushPromises()
+      expect(api.receive).not.toHaveBeenCalled()
+      await form.findAll('button').find(button => button.text() === '查看整张送货单')!.trigger('click')
+      expect(form.get<HTMLInputElement>('[aria-label="OTHER 实收"]').element.value).toBe('0')
+    } finally { wrapper.unmount() }
+  })
+
   it('shows delivery notes while auxiliary data loads and opens a deferred deep link only after readiness', async () => {
     let finish!: (rows: Awaited<ReturnType<typeof cartonPositionsApi.locations>>) => void
     vi.mocked(cartonPositionsApi.locations).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))

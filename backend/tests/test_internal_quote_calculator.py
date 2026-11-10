@@ -675,11 +675,11 @@ def test_painting_and_sewing_quick_quotes_are_authoritative_hkd_totals():
         "quote_mode": "quick",
         "painting_labor_hkd": "2.0000",
         "paint_base_hkd": "3.0000",
-        "paint_tax_hkd": "0.3900",
-        "paint_material_hkd": "3.3900",
-        "total_hkd": "5.3900",
+        "paint_tax_hkd": "0.0000",
+        "paint_material_hkd": "3.0000",
+        "total_hkd": "5.0000",
     }
-    assert [row["amount_hkd"] for row in painting["line_breakdown"]] == ["2.0000", "3.0000", "0.3900"]
+    assert [row["amount_hkd"] for row in painting["line_breakdown"]] == ["2.0000", "3.0000"]
 
     sewing = calculate(
         "sewing",

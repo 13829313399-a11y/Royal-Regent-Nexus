@@ -13,7 +13,7 @@ from test_internal_quote_purchase_export import arithmetic_value
 
 @pytest.mark.parametrize('factory', ['huaxing', 'huadeng', 'huakang-a', 'huakang-b', 'huakang-c', 'huakang-d'])
 @pytest.mark.parametrize('standalone_hair', [False, True])
-def test_material_clothes_and_hair_never_increase_tax_deduction(factory, standalone_hair):
+def test_resin_is_untaxed_and_sewing_hair_tax_respects_factory(factory, standalone_hair):
     def summary(extra):
         sections = [s for s in summary_sections(freight_enabled=False)
                     if s.department not in {'molding', 'sewing'}]
@@ -38,13 +38,19 @@ def test_material_clothes_and_hair_never_increase_tax_deduction(factory, standal
     for result in (before, after):
         taxes = rows_by_key(result['t4'])
         for key in ('sewhair13', 'sewcloth13'):
-            assert taxes[key]['rate_percent'] is None
-            assert taxes[key]['deduction_hkd'] is None
+            if factory in {'huakang-c', 'huakang-d'}:
+                assert taxes[key]['rate_percent'] == '11.5000'
+                assert Decimal(taxes[key]['deduction_hkd']) == Decimal(taxes[key]['amount_hkd']) * Decimal('.115')
+            else:
+                assert taxes[key]['rate_percent'] is None
+                assert taxes[key]['deduction_hkd'] is None
         assert Decimal(taxes['tax13b']['deduction_hkd']) > 0
-        assert taxes['slush3']['rate_percent'] == '3.0000'
+        assert taxes['slush3']['rate_percent'] is None
+        assert taxes['slush3']['deduction_hkd'] is None
     assert rows_by_key(before['t4'])['tax13']['amount_hkd'] == rows_by_key(after['t4'])['tax13']['amount_hkd']
-    assert before['totals']['total_deduction_hkd'] == after['totals']['total_deduction_hkd']
-    assert Decimal(after['totals']['after_deduction_cost_hkd']) - Decimal(before['totals']['after_deduction_cost_hkd']) == 30
+    expected_refund = Decimal('2.3') if factory in {'huakang-c', 'huakang-d'} else Decimal('0')
+    assert Decimal(after['totals']['total_deduction_hkd']) - Decimal(before['totals']['total_deduction_hkd']) == expected_refund
+    assert Decimal(after['totals']['after_deduction_cost_hkd']) - Decimal(before['totals']['after_deduction_cost_hkd']) == 30 - expected_refund
 
 
 @pytest.mark.parametrize('mode', ['ordinary', 'detached', 'component'])

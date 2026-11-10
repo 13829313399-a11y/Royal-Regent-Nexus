@@ -122,7 +122,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
             'X-Workbook-Password-Required':str(json.loads(row['controls']).get('password_required',False)).lower()})
 
     async def prepare_confirmed(customer_code,factory_id,received_date,po_files,schedule_file,confirmed,
-        skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason):
+        skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target=None):
         scoped(customer_code,factory_id)
         if not confirmed:raise HTTPException(400,'请先核对预览并明确确认生成。')
         if len(skipped_issue_keys)>2_000_000 or len(manual_overrides)>4_000_000:raise HTTPException(400,'人工核对内容过大。')
@@ -133,7 +133,8 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
         reason=contract._validated_confirmation_reason(resolution,confirmation_reason)
         args=await sources(customer_code,factory_id,received_date,po_files,schedule_file)
         operation=contract._export_special_batch_schedule if customer_code in {'buzzbee','dickie','caixing'} else contract._export_mapped_customer_schedule
-        output,name,resolved=await jobs.run_order_job(operation,**args,skipped_issue_keys=resolution,manual_overrides=overrides)
+        reconciliation={'reconciliation_target':reconciliation_target} if reconciliation_target else {}
+        output,name,resolved=await jobs.run_order_job(operation,**args,skipped_issue_keys=resolution,manual_overrides=overrides,**reconciliation)
         validated=finalize(deepcopy(resolved),args['received_date'])
         contract._ensure_preview_fingerprint(validated,args['received_date'],preview_fingerprint)
         actual_keys=contract._actual_confirmed_issue_keys(validated,resolution)

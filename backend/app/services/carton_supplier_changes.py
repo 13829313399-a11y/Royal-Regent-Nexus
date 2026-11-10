@@ -200,6 +200,10 @@ def _publication_history(db, row, current, kind, *, projection=None):
     return result
 
 
+def _previous_paper_material(paper):
+    return {key: paper.get(key, "") for key in ("packaging_type", "paper_quality", "specification", "dimension_unit", "item_no", "unit")}
+
+
 def _task(db, user, row, version, kind, *, internal=False, projection=None):
     state = special_confirmation(db, row) if kind == "SPECIAL" else deepcopy(projection["replacement_states" if kind == "REPLENISHMENT" else "supplier_change_states"][version.id]) if projection is not None else response_state(db, row.factory_id, kind, version.id)
     cancelled = row.status == "CANCELLED" and kind != "REPLENISHMENT"
@@ -213,17 +217,24 @@ def _task(db, user, row, version, kind, *, internal=False, projection=None):
         old_lines = {str(item["id"]): item for item in before.get("lines", [])}
         papers = [{**item, "before_quantity": str(old_lines.get(str(item["id"]), {}).get("quantity", "0")),
             "quantity": "0" if cancelled else str(item["quantity"]),
-            "before_material": {key: old_lines.get(str(item["id"]), {}).get(key, "") for key in ("packaging_type", "paper_quality", "specification", "dimension_unit")}}
+            "before_material": _previous_paper_material(old_lines.get(str(item["id"]), {}))}
             for item in after.get("lines", [])]
         current_ids = {str(item["id"]) for item in after.get("lines", [])}
-        papers.extend({**item, "before_quantity": str(item["quantity"]), "quantity": "0"}
+        papers.extend({**item, "before_quantity": str(item["quantity"]), "quantity": "0", "removed": True,
+            "before_material": _previous_paper_material(item)}
             for identifier, item in old_lines.items() if identifier not in current_ids)
         number, plan, created = row.request_no, row.required_date, version.created_at
+        order_identity = after
+        item_nos = list(dict.fromkeys(paper["item_no"] for paper in after.get("lines", []) if paper.get("item_no")))
+        publication_version = version.revision
         before_date = before.get("required_date", "")
         before_manifest, after_manifest = before.get("material_manifest", []), after.get("material_manifest", [])
         customer_date, before_customer_date = "", ""
     else:
         after = core._purchase_order_snapshot(version)
+        order_identity = after.get("order") or {}
+        item_nos = [order_identity["item_no"]] if order_identity.get("item_no") else []
+        publication_version = version.issue_sequence
         previous = next((issue for issue in projection["issues"] if issue.issue_sequence < version.issue_sequence), None) if projection is not None else db.scalar(select(CartonPurchaseOrderIssue).where(CartonPurchaseOrderIssue.order_id == row.id,
             CartonPurchaseOrderIssue.factory_id == row.factory_id,
             CartonPurchaseOrderIssue.issue_sequence < version.issue_sequence)
@@ -231,7 +242,7 @@ def _task(db, user, row, version, kind, *, internal=False, projection=None):
         old_lines = {str(item["id"]): item for item in core._purchase_order_snapshot(previous).get("lines", [])}
         papers = [{**item, "order_line_id": item["id"], "before_quantity": str(item.get("before_required_quantity", "0")),
             "quantity": str(item.get("required_quantity_delta", "0") if kind == "REPLENISHMENT" else item.get("after_required_quantity", "0")),
-            "before_material": {key: old_lines.get(str(item["id"]), {}).get(key, "") for key in ("packaging_type", "paper_quality", "specification", "dimension_unit")}}
+            "before_material": _previous_paper_material(old_lines.get(str(item["id"]), {}))}
             for item in after.get("lines", [])]
         number, plan, created = version.document_no, str(after.get("after_due_date", "")), version.generated_at
         before_date = str(after.get("before_due_date", ""))
@@ -272,6 +283,9 @@ def _task(db, user, row, version, kind, *, internal=False, projection=None):
     return {"source_kind": kind, "source_id": version.id, "factory_id": row.factory_id,
         "order_id": row.id, "order_no": row.request_no if kind == "SPECIAL" else row.order_no,
         "document_no": number, "expected_revision": row.revision, "status": state["status"],
+        "publication_version": publication_version, "customer_name": order_identity.get("customer_name") or "",
+        "contract_no": order_identity.get("contract_no") or "", "customer_po": order_identity.get("customer_po") or "",
+        "item_nos": item_nos,
         "is_cancellation": cancelled, "read": state["read"], "read_at": state["read_at"],
         "reason": state["reason"], "responded_by": state["responded_by"], "responded_at": state["responded_at"],
         "promised_date": state["promised_date"], "planned_date": plan, "before_date": before_date,

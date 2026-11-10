@@ -54,6 +54,10 @@ def prepare_controls(workbook, rows):
                 issue['message'] += '；确认后沿用原订单，本次不新增、不再次扣备料。如需修改已录订单，请使用订单修订或修订原排期。'
                 issue['skip_label'] = '确认沿用原订单，跳过本次重复行'
             row['_edu_existing_order'] = True
+            # A repeated order keeps its existing data; optional missing-field
+            # reminders must not expose edits that this path does not apply.
+            for issue in row['issues']:
+                issue.update(can_edit=False, edit_field='', edit_label='')
             _refresh_status(row)
             continue
         candidates = reservation_candidates(workbook, row['product_no'])

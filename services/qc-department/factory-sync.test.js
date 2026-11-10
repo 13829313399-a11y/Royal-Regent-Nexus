@@ -8,7 +8,8 @@ function page(){
  return {dom,w};
 }
 test('QC selector delegates to Nexus without mutating local factory or issuing data requests',async()=>{
- const {dom,w}=page();const requested=[];w.showPage=name=>requested.push('page:'+name);
+ const {dom,w}=page();const requested=[];w.currentPage='dashboard';w.showPage=name=>requested.push('page:'+name);
+ w.__QC_WORKBENCH_READY=true;
  w.fetch=()=>{throw Error('a selector must not fetch another factory directly');};
  w.__QC_SET_FACTORY_BRIDGE({factory:'huaxing',options:[{id:'group',label:'集团'},{id:'huaxing',label:'华兴'},{id:'huakang-a',label:'华康A'}],page:'sales-schedule',select:async id=>requested.push(id)});
  const select=w.document.getElementById('qcFactorySelect');
@@ -38,19 +39,24 @@ test('unsaved content prompts without clearing drafts; busy uploads and queued w
 
 test('factory page survives app initialization RAF after the iframe load bridge',()=>{
  const {dom,w}=page(); const frames=[],pages=[];
- w.document.body.insertAdjacentHTML('beforeend','<div id="loginScreen"></div><div id="appWrapper"></div>');
+ w.document.body.insertAdjacentHTML('beforeend','<div id="qcStartup"></div><div id="appWrapper" style="display:none"></div>');
  w._initSidebar=()=>{};w._renderUserBadge=()=>{};w.applyPermissions=()=>{};
  w.requestAnimationFrame=cb=>frames.push(cb);w.showPage=name=>pages.push(name);
  const app=fs.readFileSync(path.join(__dirname,'app.js'),'utf8');
  const start=app.indexOf('function _showApp()'); const end=app.indexOf('\n}',start)+2;
- w.eval(app.slice(start,end));w._showApp();
- frames.shift()();
+ w.eval(app.slice(start,end));
  w.__QC_SET_FACTORY_BRIDGE({factory:'huaxing',options:[],page:'sales-schedule',select:async()=>{}});
- frames.shift()();assert.deepEqual(pages,['sales-schedule','sales-schedule']);
+ assert.deepEqual(pages,[],'attaching the iframe bridge must not render a page before bootstrap');
+ assert.equal(w.__QC_INITIAL_PAGE(),'sales-schedule');
+ w._showApp();
+ while(frames.length) frames.shift()();
+ assert.deepEqual(pages,['sales-schedule']);
  const second=page(),later=second.w,after=[];later.showPage=name=>after.push(name);
- assert.equal(later.__QC_INITIAL_PAGE(),'dashboard');
+ assert.equal(later.__QC_INITIAL_PAGE(),'sales-schedule');
+ later.document.body.insertAdjacentHTML('beforeend','<div id="page-records"></div>');
+ later.__QC_WORKBENCH_READY=true;
  later.showPage(later.__QC_INITIAL_PAGE());
- later.__QC_SET_FACTORY_BRIDGE({factory:'huaxing',options:[],page:'sales-schedule',select:async()=>{}});
- assert.deepEqual(after,['dashboard','sales-schedule']);second.dom.window.close();
+ later.__QC_SET_FACTORY_BRIDGE({factory:'huaxing',options:[],page:'records',select:async()=>{}});
+ assert.deepEqual(after,['sales-schedule','records']);second.dom.window.close();
  dom.window.close();
 });

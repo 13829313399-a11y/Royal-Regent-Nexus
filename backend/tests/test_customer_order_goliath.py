@@ -7,12 +7,13 @@ from app.services.huadeng_order_legacy.goliath_po_parser import parse_po
 from app.services import customer_order_unified as service
 
 
-def po(*,price_tail='3',total='66436.80',brand='Goliath Far East Ltd',with_total=True, title='Purchase Order', extra=''):
+def po(*,price_tail='3',total='66436.80',brand='Goliath Far East Ltd',with_total=True, title='Purchase Order', extra='', blank_price=False):
     commands=[]
     def text(x,y,v):
         escaped=v.replace('\\','\\\\').replace('(','\\(').replace(')','\\)')
         commands.append(f'BT /F1 8 Tf {x} {842-y} Td ({escaped}) Tj ET')
-    for x,y,v in [(50,50,title),(300,70,brand),(300,175,'Deliver to :'),(300,190,'Pressman Toy Corp. c/o Regal Logistics'),(50,260,'Order # T_10130 - PHK26_00694'),(50,275,'Order date 24 April 2026'),(50,348,'Item'),(106,348,'Description'),(282,348,'ITF14'),(306,348,'Barcode'),(385,348,'No.'),(432,348,'Qty'),(463,348,'price'),(509,348,'Amount'),(55,368,'935373.002'),(112,368,'Butt Face - Chester Cheeks'),(271,368,'18720077353739'),(355,368,'935373.002'),(409,368,'16,000'),(456,368,'4.152'),(472,379,price_tail),(497,368,total),(55,391,'USDOMPO0'),(112,415,'CARGO READY DATE:'),(112,430,'15-AUG-2026'),(112,460,'US PO NO.: PUS26_00435'),(320,575,'Total USD Excl. VAT '+total)]:text(x,y,v)
+    for x,y,v in [(50,50,title),(300,70,brand),(300,175,'Deliver to :'),(300,190,'Pressman Toy Corp. c/o Regal Logistics'),(50,260,'Order # T_10130 - PHK26_00694'),(50,275,'Order date 24 April 2026'),(50,348,'Item'),(106,348,'Description'),(282,348,'ITF14'),(306,348,'Barcode'),(385,348,'No.'),(432,348,'Qty'),(463,348,'price'),(509,348,'Amount'),(55,368,'935373.002'),(112,368,'Butt Face - Chester Cheeks'),(271,368,'18720077353739'),(355,368,'935373.002'),(409,368,'16,000'),(456,368,'4.152'),(472,379,price_tail),(497,368,total),(55,391,'USDOMPO0'),(112,415,'CARGO READY DATE:'),(112,430,'15-AUG-2026'),(112,460,'US PO NO.: PUS26_00435'),(320,575,'Total USD Excl. VAT '+total)]:
+        if not (blank_price and (x,y) in {(456,368),(472,379)}):text(x,y,v)
     if not with_total:commands.pop()
     if extra:text(50,620,extra)
     return _pdf_document(commands)
@@ -284,3 +285,29 @@ def test_purchase_order_title_variants(title, expected):
     if not expected:
         assert any(issue['code'] == 'order_type_unresolved' and issue['requires_source_correction']
                    and not issue['can_skip'] for issue in row['issues'])
+
+
+def test_goliath_empty_price_keeps_amount_and_does_not_inherit_old_price():
+    source=template()
+    book=openpyxl.load_workbook(BytesIO(source))
+    for name in (service.ORDER_SHEET,service.REVIEW_SHEET):
+        for column,value in {4:'HIST',7:'935373.002',14:99,15:999,16:88,17:888}.items():book[name].cell(4,column,value)
+    saved=BytesIO();book.save(saved);book.close()
+    args=dict(factory_id='huadeng',customer_code='goliath',received_date='2026-11-10',
+        po_files=[('empty-price.pdf',po(blank_price=True))],schedule_file_name='schedule.xlsx',schedule_content=saved.getvalue())
+    output,_,preview=service.export_unified_customer_schedule(**args)
+    row=preview['rows'][0]
+    assert row['unit_price_usd']==row['unit_price_hkd']==''
+    assert row['amount_usd']=='66436.80'
+    issue=next(i for i in row['issues'] if i['code']=='missing_unit_price_usd')
+    assert issue['severity']=='warning' and issue['pending_information']
+    result=openpyxl.load_workbook(BytesIO(output),data_only=False)
+    try:
+        for name in (service.ORDER_SHEET,service.REVIEW_SHEET):
+            sheet=result[name]
+            number=next(r for r in range(4,sheet.max_row+1) if sheet.cell(r,4).value=='T_10130-PHK26_00694')
+            assert [sheet.cell(number,c).value for c in (14,15,16)]==[None,None,None]
+            assert sheet.cell(number,17).value==66436.8
+    finally:result.close()
+    with pytest.raises(ValueError,match='明细金额'):
+        parse_po(po(blank_price=True).replace(b'Total USD Excl. VAT 66436.80',b'Total USD Excl. VAT 66430.80'),'conflict.pdf')

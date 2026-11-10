@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 import CartonMarkAssetLibrary from '../CartonMarkAssetLibrary.vue'
 import type { CartonMarkAsset, CartonMarkAssetUploadResult } from '@/api/cartonMark'
+import * as quickPermissions from '@/features/carton-procurement/quickAssets'
 
 const api = vi.hoisted(() => ({ associateAsset: vi.fn(), listAssets: vi.fn(), uploadAssets: vi.fn(), bindAsset: vi.fn(), downloadAsset: vi.fn(), archiveAsset: vi.fn(), bindingOrders: vi.fn(), savePhotoGroup: vi.fn(), ungroupPhotos: vi.fn(), classifyAsset: vi.fn(), assetClassificationHistory: vi.fn(), shareRecipients: vi.fn(), setAssetSharing: vi.fn(), bindingTargets: vi.fn(), proposeAssetBindings: vi.fn(), confirmAssetBinding: vi.fn(), bindSpecialAsset: vi.fn() }))
 const supplierApi = vi.hoisted(() => ({ markAssets: vi.fn(), previewMarkAssetUrl: vi.fn(), downloadMarkAsset: vi.fn() }))
@@ -30,6 +31,110 @@ beforeEach(() => {
 })
 
 describe('carton-mark source repository', () => {
+  it('shows and searches legacy sample and misc targets by order number and Shanghai time', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    api.bindingTargets.mockResolvedValue([
+      { order_id: 'sample', order_kind: 'SAMPLE', order_no: 'SP-123', contract_no: '', customer_name: '客户', item_no: '', revision: 1, issue_id: '', lines: [], ordered_at: '2026-10-01T01:12:13Z' },
+      { order_id: 'misc', order_kind: 'MISC', order_no: 'MISC-456', contract_no: '', customer_name: '客户', item_no: '', revision: 1, issue_id: '', lines: [], ordered_at: '' },
+    ])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [asset.id], detailsOnly: true, quickRead: true, manageOriginal: true, legacyAssociations: true, managementMode: 'association', initialAssetId: asset.id } })
+    await flushPromises()
+    const select = wrapper.get('[aria-label="箱唛绑定订单"]')
+    expect(select.text()).toContain('SP-123'); expect(select.text()).toContain('2026-10-01 09:12')
+    expect(select.text()).toContain('MISC-456'); expect(select.text()).toContain('下单时间：未记录')
+    await wrapper.get('[aria-label="搜索箱唛绑定目标"]').setValue('2026-10-01 09:12')
+    expect(select.text()).toContain('SP-123'); expect(select.text()).not.toContain('MISC-456')
+    await wrapper.get('[aria-label="搜索箱唛绑定目标"]').setValue('MISC-456')
+    expect(select.text()).toContain('MISC-456'); expect(select.text()).not.toContain('SP-123')
+    wrapper.unmount(); permission.mockRestore()
+  })
+
+  it('keeps focused details informational while retaining original, links, history and revision', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [asset.id], detailsOnly: true, quickRead: true, manageOriginal: true } })
+    await flushPromises()
+    const detail = wrapper.get('[data-testid="asset-original-details"]')
+    expect(detail.text()).toContain('订单关联'); expect(detail.text()).toContain('只读'); expect(detail.text()).toContain('CTR-a')
+    expect(detail.get(`[aria-label="预览 ${asset.file_name}"]`).attributes('href')).toContain(asset.id)
+    expect(detail.get(`[aria-label="下载 ${asset.file_name}"]`).exists()).toBe(true)
+    expect(detail.get(`[aria-label="上传 ${asset.file_name} 修改稿"]`).exists()).toBe(true)
+    for (const name of ['共享范围', '修改状态', '关联订单', '移出', '解除分组', '组成照片组']) expect(detail.text()).not.toContain(name)
+    await detail.findAll('button').find(button => button.text() === '查看状态记录')!.trigger('click'); await flushPromises()
+    expect(api.assetClassificationHistory).toHaveBeenCalledWith('huaxing', asset.id, expect.any(AbortSignal))
+    wrapper.unmount(); permission.mockRestore()
+  })
+
+  it('opens focused legacy association with existing links and cancellation performs no write', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [asset.id], detailsOnly: true, quickRead: true, manageOriginal: true, legacyAssociations: true, managementMode: 'association', initialAssetId: asset.id } })
+    await flushPromises()
+    expect(wrapper.get('[aria-label="保留的订单关联"]').text()).toContain('CTR-a')
+    await wrapper.get('[aria-label="选择使用箱唛的订单"]').findAll('button').find(button => button.text() === '取消')!.trigger('click')
+    expect(wrapper.emitted('completed')).toHaveLength(1)
+    expect(api.associateAsset).not.toHaveBeenCalled(); expect(api.bindAsset).not.toHaveBeenCalled(); expect(api.savePhotoGroup).not.toHaveBeenCalled()
+    wrapper.unmount(); permission.mockRestore()
+  })
+
+  it('saves all focused photo-group members with their revisions and no version ancestor', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    const photos = ['a', 'b'].map((id, index) => ({ ...asset, id, kind: 'image' as const, file_name: `${id}.jpg`, photo_group_id: 'group', revision: index + 2 }))
+    api.listAssets.mockResolvedValue(photos); api.savePhotoGroup.mockResolvedValue([])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: ['a', 'b'], detailsOnly: true, quickRead: true, manageOriginal: true, managementMode: 'photos', initialAssetId: 'a' } })
+    await flushPromises()
+    expect(wrapper.get('[aria-label="关联箱唛资料"]').text()).toContain('2 张照片')
+    await wrapper.get('[aria-label="关联箱唛资料"]').findAll('button').find(button => button.text() === '保存照片组')!.trigger('click'); await flushPromises()
+    expect(api.savePhotoGroup).toHaveBeenCalledWith('huaxing', photos, asset.contract_number, '', 'group', expect.any(AbortSignal), undefined)
+    expect(wrapper.emitted('completed')).toHaveLength(1)
+    wrapper.unmount(); permission.mockRestore()
+  })
+  it('refuses focused management for readonly and history sources', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    const history = { ...asset, workflow: { status: 'HISTORY' as const, version: 1, note: '', previous_asset_id: '', superseded_by_asset_id: '', updated_by_name: '', updated_at: '', confirmed_by_name: '', confirmed_at: '', confirmation_note: '' } }
+    for (const [row, readOnly] of [[asset, true], [history, false]] as const) {
+      api.listAssets.mockResolvedValue([row])
+      const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [row.id], detailsOnly: true, quickRead: true, manageOriginal: true, legacyAssociations: true, managementMode: 'association', initialAssetId: row.id, readOnly } })
+      await flushPromises()
+      expect(wrapper.find('[aria-label="选择使用箱唛的订单"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('当前不可维护')
+      wrapper.unmount()
+    }
+    expect(api.associateAsset).not.toHaveBeenCalled(); expect(api.savePhotoGroup).not.toHaveBeenCalled()
+    permission.mockRestore()
+  })
+
+  it('inherits schedule labels through multiple revisions while respecting explicit empty links', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    const workflow = { status: 'PENDING' as const, version: 1, note: '', previous_asset_id: '', superseded_by_asset_id: '', updated_by_name: '', updated_at: '', confirmed_by_name: '', confirmed_at: '', confirmation_note: '' }
+    const parent = { ...asset, orders: [], workflow }
+    const child = { ...parent, id: 'child', file_name: 'child.pdf', workflow: { ...workflow, version: 2, previous_asset_id: parent.id } }
+    const grandchild = { ...parent, id: 'grandchild', file_name: 'grandchild.pdf', workflow: { ...workflow, version: 3, previous_asset_id: child.id } }
+    api.listAssets.mockResolvedValue([parent, child, grandchild])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [parent.id, child.id, grandchild.id], detailsOnly: true, quickRead: true, associationLabels: { [parent.id]: ['业务排期 · 合同 53135'] } } })
+    await flushPromises()
+    const associations = () => wrapper.get('[aria-label="grandchild.pdf 订单关联"]').text()
+    expect(associations()).toContain('业务排期 · 合同 53135')
+    await wrapper.setProps({ associationLabels: { [parent.id]: ['业务排期 · 合同 53135'], [child.id]: [] } })
+    expect(associations()).toContain('未关联订单')
+    expect(associations()).not.toContain('业务排期 · 合同 53135')
+    wrapper.unmount(); permission.mockRestore()
+  })
+  it('keeps a newly uploaded revision visible inside focused details', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    const child = { ...asset, id: 'revision-child', file_name: 'modified.pdf', workflow: { status: 'PENDING' as const, version: 2, note: '', previous_asset_id: asset.id, superseded_by_asset_id: '', updated_by_name: '', updated_at: '', confirmed_by_name: '', confirmed_at: '', confirmation_note: '' } }
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [asset.id], detailsOnly: true, quickRead: true, manageOriginal: true, legacyAssociations: true } }); await flushPromises()
+    await wrapper.get(`[aria-label="上传 ${asset.file_name} 修改稿"]`).trigger('click'); await flushPromises()
+    const file = new File(['synthetic revised content'], 'modified.pdf', { type: 'application/pdf' })
+    const input = wrapper.get('input[type=file]')
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    api.uploadAssets.mockResolvedValue([{ file_name: file.name, status: 'created', asset: child }])
+    api.listAssets.mockResolvedValue([asset, child])
+    await wrapper.findAll('button').find(row => row.text().startsWith('上传入库'))!.trigger('click'); await flushPromises()
+    expect(api.listAssets).toHaveBeenLastCalledWith('huaxing', undefined, expect.any(AbortSignal), [asset.id, child.id])
+    expect(wrapper.find(`[data-asset-id="${child.id}"]`).exists()).toBe(true)
+    expect(wrapper.emitted('busy')?.map(x => x[0])).toEqual([true, false])
+    wrapper.unmount(); permission.mockRestore()
+  })
   it('shows only exact schedule file IDs in the reused read-only viewer', async () => {
     api.listAssets.mockResolvedValue([asset, { ...asset, id: 'OTHER', file_name: '其他合同.pdf' }])
     const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [asset.id], readOnly: true } })
@@ -146,15 +251,23 @@ describe('carton-mark source repository', () => {
     wrapper.unmount()
   })
 
-  it('associates a supplier file directly without a separate approval', async () => {
+  it('associates a writable supplier file directly without a separate approval', async () => {
     supplierApi.markAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND' }])
     api.bindingTargets.mockResolvedValue([{ order_id: 'order-b', order_kind: 'REGULAR', order_no: 'CTR-b', contract_no: 'B', customer_name: 'ZURU', item_no: 'I', revision: 2, lines: [] }])
-    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true } }); await flushPromises()
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true } }); await flushPromises()
     await wrapper.findAll('button').find(row => row.text() === '关联订单')!.trigger('click'); await flushPromises()
     await wrapper.get('[aria-label="箱唛绑定订单"]').setValue('order-b')
     await wrapper.findAll('button').find(row => row.text() === '保存订单关联')!.trigger('click'); await flushPromises()
     expect(api.associateAsset).toHaveBeenCalledWith('huaxing', expect.objectContaining({ id: asset.id, revision: 1 }), [{ order_kind: 'REGULAR', order_id: 'order-b', expected_revision: 2, issue_id: '', line_id: '' }], expect.any(String), true, expect.any(AbortSignal))
     expect(api.confirmAssetBinding).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps supplier source selection read only', async () => {
+    supplierApi.markAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND' }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true, supplierCheckEnabled: true } }); await flushPromises()
+    expect(wrapper.findAll('button').some(row => row.text() === '关联订单')).toBe(false)
+    expect(api.associateAsset).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -391,6 +504,18 @@ describe('carton-mark source repository', () => {
     await confirm.trigger('click')
     expect(wrapper.emitted('useSources')?.[0]).toEqual([[excel, newerPdf]])
     expect(api.downloadAsset).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('selects an Excel/PDF pair in the readonly tool picker without exposing mutations', async () => {
+    const excel = { ...asset, id: 'picker-excel', kind: 'excel' as const, file_name: 'source.xlsx' }
+    api.listAssets.mockResolvedValue([asset, excel])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', sourcePicker: true, checkEnabled: true, readOnly: true } }); await flushPromises()
+    await wrapper.get('[aria-label="选择合同 4500222793 的 Excel / PDF 核对文件"]').trigger('click')
+    await wrapper.findAll('button').find(row => row.text() === '带入 Excel / PDF 核对')!.trigger('click')
+    expect(wrapper.emitted('useSources')?.[0]).toEqual([[excel, asset]])
+    expect(wrapper.text()).not.toContain('上传入库')
+    expect(wrapper.findAll('button').some(row => row.text() === '关联订单')).toBe(false)
     wrapper.unmount()
   })
 

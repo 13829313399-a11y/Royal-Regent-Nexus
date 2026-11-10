@@ -7,7 +7,7 @@ import { supplierSettlementApi as settlement } from '@/api/cartonSupplierSettlem
 import { row } from './cartonReturnFixture'
 
 vi.mock('@/api/cartonSupplierReturns', () => ({ cartonSupplierReturnsApi: { detail: vi.fn() } }))
-vi.mock('@/api/cartonSupplierSettlement', () => ({ supplierSettlementApi: { correctReturnDate: vi.fn() } }))
+vi.mock('@/api/cartonSupplierSettlement', () => ({ supplierSettlementApi: { returnDate: vi.fn(), correctReturnDate: vi.fn() } }))
 vi.mock('@/lib/http', () => ({ getApiErrorMessage: (cause: Error) => cause.message }))
 beforeEach(() => { vi.resetAllMocks(); vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-20T12:00:00Z')); vi.mocked(returns.detail).mockResolvedValue({ ...row(), allowed_actions: ['CORRECT_DATE'] }) })
 afterEach(() => vi.useRealTimers())
@@ -34,6 +34,21 @@ it('fails closed when authority or date evidence is missing', async () => {
   const w = mount(Component, { props: { factoryId: 'huaxing', movementId: 'M1' } }); await flushPromises()
   expect(w.find('form').exists()).toBe(false); expect(w.get('[role="alert"]').text()).toContain('不可更正日期')
   expect(settlement.correctReturnDate).not.toHaveBeenCalled(); w.unmount()
+})
+it('verifies a date-less historical return against its original posting date using the existing endpoint', async () => {
+  const detail = row()
+  vi.mocked(returns.detail).mockResolvedValue({
+    ...detail, allowed_actions: ['VERIFY_DATE'],
+    date_evidence: { return_date: null, date_basis: 'RETURN_POSTING', revision: 0, event_id: null, fingerprint: 'legacy-date', posting_date: detail.posting_date },
+  })
+  const w = mount(Component, { props: { factoryId: 'huaxing', movementId: 'M1' } }); await flushPromises()
+  await w.get('[aria-label="实际退货日期"]').setValue('2026-09-30')
+  await w.get('[aria-label="实际退货日期核实依据"]').setValue('已核实原始交接单')
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(settlement.returnDate).toHaveBeenCalledExactlyOnceWith('M1', 'huaxing', detail.posting_date, '2026-09-30', '已核实原始交接单', expect.any(AbortSignal))
+  expect(settlement.correctReturnDate).not.toHaveBeenCalled()
+  expect(w.emitted('saved')).toHaveLength(1)
+  w.unmount()
 })
 it('clears old evidence on a viewer change and discards a retired detail response', async () => {
   let done!: (value: ReturnType<typeof row>) => void

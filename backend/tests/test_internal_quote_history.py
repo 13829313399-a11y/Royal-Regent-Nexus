@@ -212,7 +212,9 @@ def test_history_reference_prices_preserve_source_materials_but_use_new_fx(monke
         with db_module.SessionLocal() as db:
             current = json.loads(db.get(models.InternalQuoteReferenceSet, new["reference_snapshot_id"]).snapshot_json)
             assert current["material_prices"]["ABS|750SW"] == "19.75"
-            assert current["fx"]["rmb_hkd"] != "0.5"
+            assert current["fx"]["rmb_hkd"] == "0.84"
+            assert current["misc_ratio"] == "0.03"
+            assert current["settlement"] == "0.97"
 
 
 def test_mixed_quick_and_detail_sources_keep_costs_and_paint_tax_split(monkeypatch):
@@ -229,9 +231,9 @@ def test_mixed_quick_and_detail_sources_keep_costs_and_paint_tax_split(monkeypat
         new = create(client, "QUICK-MIX", jp=True, products=[{"product_name": "混合款", "qty": 100, "pricing_components": ["快捷配件", "明细配件"],
             "component_sources": [source_ref(rows[a["id"]], "component-02"), source_ref(rows[b["id"]], "component-02")]}])
         painting = next(s for s in new["sections"] if s["department"] == "painting")["calculation"]
-        assert float(painting["totals"]["total_hkd"]) == pytest.approx(15.39)
+        assert float(painting["totals"]["total_hkd"]) == pytest.approx(15)
         assert float(painting["totals"]["painting_labor_hkd"]) == 9
-        assert float(painting["totals"]["paint_material_hkd"]) == pytest.approx(6.39)
+        assert float(painting["totals"]["paint_material_hkd"]) == pytest.approx(6)
         assert parts(new, "painting")["rows"][0]["cost_allocation"] == "direct"
         sewing = next(s for s in new["sections"] if s["department"] == "sewing")["calculation"]
         assert float(sewing["totals"]["total_hkd"]) == 5

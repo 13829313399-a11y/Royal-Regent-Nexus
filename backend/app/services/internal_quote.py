@@ -746,6 +746,7 @@ def _create_reference_set(
         .order_by(InternalQuoteReferenceSet.source_revision.desc())
     ).all()
     timestamp = now_text()
+    previous_reference = next((item for item in existing if item.is_current), None)
     for item in existing:
         if item.is_current:
             item.is_current = False
@@ -756,6 +757,16 @@ def _create_reference_set(
         factory_id=quote.factory_id,
         workshop_code=quote.workshop_code,
     )
+    if not snapshot and previous_reference is not None:
+        # Refreshing price tables must not reset this quote's commercial terms.
+        # Explicit FX edits and copies supply their own complete frozen snapshot.
+        previous_snapshot = _json_object(previous_reference.snapshot_json)
+        for key in ("fx", "misc_ratio", "settlement"):
+            if key in previous_snapshot:
+                snapshot_data[key] = previous_snapshot[key]
+            else:
+                # Missing misc_ratio can be meaningful for legacy divisor-only terms.
+                snapshot_data.pop(key, None)
     snapshot_json = canonical_json(snapshot_data)
     reference = InternalQuoteReferenceSet(
         id=f"IQREF-{uuid4().hex}",
@@ -1320,7 +1331,13 @@ def _rr2_cost_summary(
             "other_purchase": "其他外购",
         }.get(category, "其他外购")
         categorized[mapped] += amount
-    categorized["其他外购"] += customer_supplied_hkd
+    # These automatic JustPlay packing costs already enter the product price.
+    # Include them in management costs too, but retain their non-refundable basis.
+    fixed_packaging_cost = sum((
+        _summary_decimal(line.get("amount_hkd"))
+        for line in lines("sales", "justplay_fixed_packaging")
+    ), Decimal("0"))
+    categorized["其他外购"] += customer_supplied_hkd + fixed_packaging_cost
 
     electronic_motor = Decimal("0")
     for line in lines("electronic", "electronic_component"):
@@ -1886,10 +1903,12 @@ def _rr2_cost_summary(
             if key not in {"base_price", "imp_mat", "dom_mat"}
         ), Decimal("0"))
         + sum((value for key, value in t2_values.items() if key not in {"code_before", "code_after"}), Decimal("0"))
-        + t3_values["injection_labor"]
+        + t3_values["paint_material"]
         + direct_misc_cost
     )
-    labor_cost = t3_values["painting_labor"] + t3_values["paint_material"] + t3_values["assembly_labor"]
+    # Match the workbook's labor columns: injection, spray and assembly.
+    # Paint is a material cost, so it must not inflate labor or gross margin.
+    labor_cost = t3_values["injection_labor"] + t3_values["painting_labor"] + t3_values["assembly_labor"]
     total_cost = no_labor_cost + labor_cost
     base_price = t1_values["base_price"]
     gross = base_price - no_labor_cost
@@ -1898,10 +1917,14 @@ def _rr2_cost_summary(
     tax_13_cost = (
         t1_values["hardware"] + t1_values["motor"]
         + t2_values["color_box"] + t2_values["battery"] + t2_values["libao"]
-        + t2_values["other_buy"] - customer_supplied_hkd + t3_values["paint_material"] + t1_values["glue_bag"]
+        + t2_values["other_buy"] - customer_supplied_hkd - fixed_packaging_cost
+        + t3_values["paint_material"] + t1_values["glue_bag"]
     )
     tax_rates = snapshot.get("tax_rates", {})
     tax_rates = tax_rates if isinstance(tax_rates, dict) else {}
+    from app.services.internal_quote_tax import sewing_deduction_rate
+    hair_rate = sewing_deduction_rate(snapshot, "sewing_hair", factory_id)
+    cloth_rate = sewing_deduction_rate(snapshot, "sewing_clothes", factory_id)
     tax_specs = (
         ("tax13", "含税13%类成本", tax_13_cost, None),
         ("labor13", "人工类13%", injection_labor + t3_values["painting_labor"] + t3_values["assembly_labor"], None),
@@ -1909,13 +1932,13 @@ def _rr2_cost_summary(
         # excluded from tax deduction in the authoritative summary.
         ("carton", "纸箱类", t2_values["carton"], None),
         ("tax1", "含税1%", t2_values["plating"], _summary_decimal(tax_rates.get("tax_1_percent"), "0.0099") * 100),
-        ("slush3", "搪胶类3%", t1_values["slush"], _summary_decimal(tax_rates.get("slush"), "0.03") * 100),
-        ("sewhair13", "车发类（不计税）", t1_values["sewing_hair"], None),
+        ("slush3", "搪胶", t1_values["slush"], None),
+        ("sewhair13", "车发类13%" if hair_rate is not None else "车发", t1_values["sewing_hair"], None if hair_rate is None else hair_rate * 100),
         (
             "sewcloth13",
-            "车衣类（不计税）",
+            "车衣材料13%" if cloth_rate is not None else "车衣",
             sewing_clothes_material,
-            None,
+            None if cloth_rate is None else cloth_rate * 100,
         ),
         ("suction6", "吸塑类6%", t1_values["suction"], _summary_decimal(tax_rates.get("blister"), "0.06") * 100),
         ("freight9", "运费类9%", t2_values["freight"], _summary_decimal(tax_rates.get("freight_tax_9"), "0.0826") * 100),
@@ -2553,6 +2576,7 @@ def create_quote(
         db,
         factory_id=payload.factory_id,
         workshop_code=payload.workshop_code,
+        for_new_quote=True,
     )
     quotes: list[InternalQuote] = []
     for position, (quote_id, product) in enumerate(zip(quote_ids, products, strict=True), start=1):
@@ -4533,6 +4557,11 @@ def save_whole_product_sections(
     by_code = {section.department: section for section in sections}
     drafts = {draft.section_code: draft for draft in payload.sections}
 
+    # FX and department drafts share one transaction and the same pre-write locks.
+    if payload.reference_fx is not None:
+        ensure_section_permission(db, user, quote.factory_id, "sales", "edit")
+        _check_revision(quote.header_revision, payload.reference_fx.revision, "报价头")
+
     # Check every optimistic-lock revision before changing any department.
     for section_code, draft in drafts.items():
         ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
@@ -4567,6 +4596,10 @@ def save_whole_product_sections(
                 user,
                 request,
             )
+        if payload.reference_fx is not None:
+            # Recalculate the saved drafts and other participating departments
+            # against the new frozen FX before committing either change.
+            _apply_quote_reference_fx(db, quote, payload.reference_fx, user, request, commit=False)
         _derive_quote_status(db, quote)
         db.commit()
     except Exception:
@@ -5198,6 +5231,7 @@ def _replace_quote_reference_set(
     change_description: str,
     audit_detail: str = "",
     request: Request | None = None,
+    commit: bool = True,
 ) -> InternalQuoteOut:
     had_final_release = quote.final_release_status in {"pending", "approved"} or quote.status in {
         "final_reviewing",
@@ -5314,8 +5348,11 @@ def _replace_quote_reference_set(
             department="sales",
             reason=reason,
         )
-    db.commit()
-    db.refresh(quote)
+    if commit:
+        db.commit()
+        db.refresh(quote)
+    else:
+        db.flush()
     return quote_to_out(db, quote)
 
 
@@ -5396,6 +5433,18 @@ def update_quote_reference_fx(
     _ensure_active(quote)
     _check_revision(quote.header_revision, payload.revision, "报价头")
 
+    return _apply_quote_reference_fx(db, quote, payload, user, request)
+
+
+def _apply_quote_reference_fx(
+    db: Session,
+    quote: InternalQuote,
+    payload: InternalQuoteReferenceFxUpdateRequest,
+    user: AuthContext,
+    request: Request | None = None,
+    *,
+    commit: bool = True,
+) -> InternalQuoteOut:
     current_reference = _ensure_reference_set(db, quote, user)
     snapshot = _json_object(current_reference.snapshot_json)
     existing_fx = snapshot.get("fx", {})
@@ -5428,6 +5477,7 @@ def update_quote_reference_fx(
             f"previous_reference={current_reference.id}"
         ),
         request=request,
+        commit=commit,
     )
 
 

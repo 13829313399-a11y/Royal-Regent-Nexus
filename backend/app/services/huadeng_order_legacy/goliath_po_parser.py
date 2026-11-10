@@ -123,9 +123,13 @@ def parse_po(content: bytes, filename: str):
                 def column(n):
                     return (page.crop((edges[n],top,edges[n+1],end)).extract_text(x_tolerance=2,y_tolerance=3) or '').strip()
                 qty=_decimal(column(4),'数量')
-                price=_decimal(column(5),'USD 单价')
+                price_text=column(5)
+                price=_decimal(price_text,'USD 单价') if price_text else None
                 amount=_decimal(column(6),'USD 金额')
                 flags=[]
+                if price is None:
+                    flags.append({'level':'warning','code':'missing_unit_price_usd','field':'unit_price_usd',
+                        'text':'原单单价栏为空，USD单价待补；保留明确的行金额并核对整单总额，不反推单价。'})
                 line_ship_date=ship_date
                 delivery_date=_date(column(2)) if european and column(2) else ''
                 outer_pack=str(_decimal(column(3),'装箱量')) if european and column(3) else ''
@@ -140,14 +144,14 @@ def parse_po(content: bytes, filename: str):
                     flags.append({'level':'warning','code':'ship_holiday_review','field':'requested_ship_date','text':'走货期按验货期后3天并避开周末推算，节假日待复核。'})
                 if qty<=0 or qty!=qty.to_integral_value():
                     flags.append({'level':'high','code':'invalid_quantity','field':'quantity','text':'Goliath 数量须为正整数件数'})
-                if abs(qty*price-amount)>Decimal('0.01'):
+                if price is not None and abs(qty*price-amount)>Decimal('0.01'):
                     flags.append({'level':'high','code':'price_amount_conflict','field':'unit_price_usd','text':'Goliath 数量×单价与 PO 金额不一致，请核对单价末位及换行'})
                 records.append({'contract_no':order,'customer_po':customer_po,
                     'order_type':order_type,
                     'order_type_source':order_type_source,
                     'customer':customer,
                     'item_no':item['text'],'english_name':' '.join(column(1).split()),
-                    'quantity':str(qty),'unit_price_usd':str(price),'amount_usd':str(amount),
+                    'quantity':str(qty),'unit_price_usd':str(price) if price is not None else '', 'amount_usd':str(amount),
                     'barcode':'' if european else re.sub(r'\s+','',column(2)),
                     'outer_pack':outer_pack,'requested_delivery_date':delivery_date,
                     'ship_date':line_ship_date,'inspection_date':inspection_date,'customer_inspection_date':_date(bv[1]) if bv else '',

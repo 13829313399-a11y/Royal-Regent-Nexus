@@ -11,7 +11,7 @@ const repository = path.resolve(root, '../../..')
 export const aliases = [{ find: /^@\/lib\/http$/, replacement: path.join(root, 'src/api.ts') }, { find: '@', replacement: path.join(repository, 'src') }]
 const reused = ['src/components/common/PageHeader.vue', 'src/components/common/SectionPanel.vue',
   'src/components/common/StatusPill.vue', 'src/components/ui/button/Button.vue',
-  'src/components/ui/button/index.ts', 'src/lib/utils.ts', 'src/style.css',
+  'src/components/ui/button/index.ts', 'src/lib/utils.ts', 'src/lib/customerOrderReconciliation.ts', 'src/style.css',
   'src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue',
   'src/components/modules/sales/customer-order-center/CustomerOrderHistoryImport.vue',
   'src/components/modules/sales/customer-order-center/CustomerOrderSchedule.vue',

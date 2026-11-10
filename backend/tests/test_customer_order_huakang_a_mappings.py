@@ -401,6 +401,8 @@ Line Total Unit Cost Qty (Pieces) Item Description Item Code APN Number
 
 
 def test_green_toys_ocr_parser_extracts_rows_and_normalizes_prices() -> None:
+    # Legacy raw OCR text retains compatibility. Actual image uploads always
+    # use the separately validated image-column path and reject these errors.
     text = """
 Purchase Order
 PO# 7816

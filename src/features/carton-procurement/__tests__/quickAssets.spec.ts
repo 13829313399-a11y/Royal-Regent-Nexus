@@ -1,11 +1,18 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
-import { canQuickAsset, suggestedContract, uploadDepartments, viewerKey } from '../quickAssets'
+import { canQuickAsset, suggestedContract, targetLabel, targetOrderTime, uploadDepartments, viewerKey } from '../quickAssets'
+import { quickTarget } from '@/components/__tests__/cartonQuickAssetFixtures'
 import { quickSession, supplierQuickSession } from '@/components/__tests__/cartonQuickAssetFixtures'
 
 describe('quick asset departmental affordances', () => {
   beforeEach(() => setActivePinia(createPinia()))
+  it.each(['SAMPLE', 'MISC'] as const)('shows %s order number and Shanghai order time', kind => {
+    const target = quickTarget({ kind, order_no: 'SP-TEST', ordered_at: '2026-10-01T01:12:13Z' })
+    expect(targetLabel(target)).toContain('SP-TEST')
+    expect(targetOrderTime(target)).toBe('下单时间：2026-10-01 09:12')
+    expect(targetOrderTime({ ...target, ordered_at: '' })).toBe('下单时间：未记录')
+  })
   it.each(['sales-business', 'pmc-warehouse', 'carton'] as const)('keeps an unrestricted %s position in its actual department', department => {
     const auth = useAuthStore(); auth.applySession(quickSession([department]))
     for (const d of ['sales-business', 'pmc-warehouse', 'carton'] as const) {

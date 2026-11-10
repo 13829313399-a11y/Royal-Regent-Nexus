@@ -1,8 +1,13 @@
-import type { PortalShipment } from '@/api/cartonSupplierPortal'
+import type { PortalShipment, ShipmentLine } from '@/api/cartonSupplierPortal'
 import type { Tone } from '@/data/enterpriseMock'
 
 export function shipmentNeedsReceipt(shipment: PortalShipment) {
   return ['SENT', 'RECEIPT_REVERSED'].includes(shipment.status) || Boolean(shipment.requires_correction || shipment.receipt_status === 'REVERSED')
+}
+
+export function deliveryPaperNeedsReceipt(line: Pick<ShipmentLine, 'remaining_quantity' | 'receivable_quantity' | 'reserved_quantity' | 'quantity'>) {
+  return Number(line.reserved_quantity ?? line.remaining_quantity) > 0
+    || Number(line.receivable_quantity ?? line.remaining_quantity ?? line.quantity) > 0
 }
 
 /** Display only: processed notes may include closures or rejected goods. */

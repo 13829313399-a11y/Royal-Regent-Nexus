@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { JSDOM } = require('jsdom');
 const app = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
+const index = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 const reports = fs.readFileSync(path.join(__dirname, 'report_export.js'), 'utf8');
 const bridge = fs.readFileSync(path.join(__dirname, 'nexus-integration.js'), 'utf8');
 const backend = fs.readFileSync(path.join(__dirname, 'qc-backend.js'), 'utf8');
@@ -16,27 +18,126 @@ function functionSource(source, name) {
   return source.slice(start, end);
 }
 
-test('Nexus login renders its escaped user badge and continues into dashboard', () => {
-  const elements = new Map();
+function workbenchBoot(context) {
+  const dom = new JSDOM(index, {
+    runScripts: 'outside-only',
+    url: 'http://localhost/api/qc-department/huaxing/u-test/',
+  });
+  const w = dom.window;
+  const d = w.document;
   const calls = [];
-  const scope = { window: { __QC_NEXUS: {} },
-    _liveUser: () => ({name: '<QC & reviewer>', username: 'qc', role: 'viewer'}),
-    getCompanyObj: () => ({site: 'heyuan'}), getCompanyName: () => '河源华兴',
-    getSiteObj: () => ({name: '河源'}), _initSidebar() {},
-    document: {getElementById: id => {
-      if (!elements.has(id)) elements.set(id, {style: {}, innerHTML: ''});
-      return elements.get(id);
-    }},
-    applyPermissions: () => calls.push('permissions'),
-    requestAnimationFrame: callback => callback(),
-    showPage: page => calls.push(page), updateTopKpis: () => calls.push('kpis'),
-    console: {error: (...args) => { throw new Error(args.join(' ')); }}
+  const starts = [];
+  const requests = [];
+  const listen = d.addEventListener.bind(d);
+  d.addEventListener = (event, callback, ...options) => {
+    if (event === 'DOMContentLoaded') starts.push(callback);
+    else listen(event, callback, ...options);
   };
-  vm.runInNewContext(['_esc', '_renderUserBadge', '_showApp'].map(name => functionSource(app, name)).join('\n') + ';_showApp();', scope);
-  assert.match(elements.get('userBadge').innerHTML, /&lt;QC &amp; reviewer&gt;/);
-  assert.match(elements.get('userBadge').innerHTML, /Nexus 账号/);
-  assert.deepEqual(calls, ['permissions', 'dashboard', 'kpis']);
+  w.__QC_NEXUS = context;
+  w.fetch = (url, options) => new Promise(resolve => requests.push({ url, options, resolve }));
+  w.requestAnimationFrame = callback => callback();
+  w.eval(backend);
+  w.eval(app);
+  w.showPage = page => calls.push(page);
+  w.updateTopKpis = () => calls.push('kpis');
+  return { dom, w, d, calls, requests, start: () => Promise.all(starts.map(start => start())) };
+}
+
+const qcContext = {
+  factory: 'huaxing',
+  company: 'hy-huaxing',
+  exportAllowed: false,
+  user: {
+    username: 'nexus:qc-1',
+    name: '<QC & reviewer>',
+    role: 'viewer',
+    perms: { dashboard: { v: 1 }, records: { v: 1, e: 1, a: 0, m: 0 } },
+  },
+};
+
+test('QC loads through Nexus without exposing stale data or a second login while bootstrap is pending', async () => {
+  const { dom, w, d, calls, requests, start } = workbenchBoot(qcContext);
+  try {
+    const wrapper = d.getElementById('appWrapper');
+    const startup = d.getElementById('qcStartup');
+    const recordsKey = 'nexus_qc_nexus:qc-1_hy-huaxing_records';
+    const staleRecords = JSON.stringify({ records: [{ id: 1 }], nextId: 2 });
+    w.sessionStorage.setItem(recordsKey, staleRecords);
+    assert.ok(startup);
+    assert.ok(startup.querySelector('.qc-orbit[aria-hidden="true"]'));
+    assert.equal(startup.hidden, false);
+    assert.equal(wrapper.style.display, 'none');
+    assert.equal(d.querySelector('#loginScreen, input[type=password], [autocomplete=username]'), null);
+    assert.equal(requests.length, 1, 'bootstrap GET starts before DOMContentLoaded');
+    assert.match(requests[0].url, /\/api\/bootstrap\?company=hy-huaxing$/);
+    assert.equal(requests[0].options?.method ?? 'GET', 'GET');
+    const started = start();
+    assert.equal(w.__QC_BACKEND_OK, false);
+    assert.deepEqual(calls, []);
+    assert.equal(wrapper.style.display, 'none');
+    assert.equal(startup.hidden, false);
+    assert.equal(w.recs().length, 0);
+    assert.equal(w.sessionStorage.getItem(recordsKey), staleRecords);
+    assert.equal(await w.__QC_SYNC_NOW(), false);
+    assert.equal(requests.length, 1, 'writes remain unavailable until server data loads');
+
+    const freshRecords = { records: [{ id: 31 }], nextId: 32 };
+    requests[0].resolve({ ok: true, status: 200, json: async () => freshRecords });
+    await started;
+    assert.equal(w.__QC_BACKEND_OK, true);
+    assert.deepEqual(JSON.parse(w.sessionStorage.getItem(recordsKey)), freshRecords);
+    assert.deepEqual(Array.from(w.recs(), record => record.id), [31]);
+    assert.ok(!startup.isConnected || startup.hidden || startup.style.display === 'none');
+    assert.notEqual(wrapper.style.display, 'none');
+    assert.equal(d.querySelector('input[type=password]'), null);
+    assert.match(d.getElementById('userBadge').innerHTML, /&lt;QC &amp; reviewer&gt;/);
+    assert.match(d.getElementById('userBadge').textContent, /Nexus 账号/);
+    assert.deepEqual(calls, ['sales-schedule', 'kpis']);
+    assert.equal(w.canView('records'), true);
+    assert.equal(w.can('createRecord'), true);
+    assert.equal(w.can('editRecord'), false);
+    assert.equal(w.can('deleteRecord'), false);
+    assert.equal(w.can('manageDefectLib'), false);
+    assert.equal(w.can('exportPdf'), false);
+  } finally {
+    dom.window.close();
+  }
 });
+
+for (const [label, context, message] of [
+  ['without Nexus identity', undefined, /Nexus/],
+  ['when QC data fails to load', qcContext, /QC 数据读取失败/],
+]) {
+  test('QC leaves business controls unavailable ' + label, async () => {
+    const { dom, w, d, calls, requests, start } = workbenchBoot(context);
+    try {
+      const recordsKey = 'nexus_qc_nexus:qc-1_hy-huaxing_records';
+      if (context) w.sessionStorage.setItem(recordsKey, JSON.stringify({ records: [{ id: 1 }] }));
+      const started = start();
+      if (context) {
+        assert.equal(requests.length, 1);
+        requests[0].resolve({ ok: false, status: 503 });
+      } else {
+        assert.equal(requests.length, 0);
+      }
+      await started;
+      const wrapper = d.getElementById('appWrapper');
+      assert.ok(!wrapper || wrapper.hidden || wrapper.style.display === 'none');
+      assert.equal(d.querySelector('input[type=password]'), null);
+      assert.match(d.body.textContent, message);
+      assert.equal(d.querySelector('#qcStartup .qc-orbit'), null, 'failure replaces the loading animation');
+      assert.notEqual(w.__QC_BACKEND_OK, true);
+      assert.deepEqual(calls, []);
+      if (context) {
+        assert.equal(w.sessionStorage.getItem(recordsKey), null);
+        assert.equal(await w.__QC_SYNC_NOW(), false);
+        assert.equal(requests.length, 1);
+      }
+    } finally {
+      dom.window.close();
+    }
+  });
+}
 
 test('an empty bootstrap preserves the authoritative id high-water mark', () => {
   const scope = { window: { __QC_NEXUS: {} }, sessionStorage: { getItem: () => JSON.stringify({ records: [], nextId: 501 }) }, LS_KEY: 'records', state: null };
