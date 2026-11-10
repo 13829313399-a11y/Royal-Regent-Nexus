@@ -78,9 +78,12 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
         factory(factory_id);scoped(customer_code,factory_id)
         if reconcile_line_id and not 4<=len(reconciliation_reason.strip())<=500:
             raise HTTPException(400,'关联原因需要 4 至 500 个字。')
+        target=ledger.get_line(db,fixed_factory,reconcile_line_id) if reconcile_line_id else None
+        reconciliation_target=({'factory_id':target.factory_id,'customer_code':target.customer_code,
+            'reference_no':target.reference_no,'product_no':target.product_no} if target else None)
         # A single original writer rebuilds authoritative rows, then controls are checked before any database writes.
         args,resolved,output,name,controls=await prepare_confirmed(customer_code,factory_id,received_date,
-            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason)
+            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target)
         resolved['customer_name']=scoped(customer_code,factory_id)['name']
         def perform():
             target=ledger.get_line(db,fixed_factory,reconcile_line_id) if reconcile_line_id else None

@@ -241,7 +241,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",
         "symbol": "remaining_quantity",
-        "sha256": "2ae457b4f7750d465a307e3f62f7a95a0545e6f9c7f06803801269c2c2ca1207"
+        "sha256": "afa400f5dfb08297d3d4ebf4cd2eb06078f8ae075d706d7a11edb41b10364d47"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",
@@ -249,7 +249,7 @@
         "sha256": "c7cdbfb22fa52f9095c783138d9725269ab9c68725f9c7431b35de72ec943ef4"
       }
     ],
-    "knowledge_version": "2026.10.26-core-workflows-v1",
+    "knowledge_version": "2026-11-10",
     "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
     "status": "verified"
   },

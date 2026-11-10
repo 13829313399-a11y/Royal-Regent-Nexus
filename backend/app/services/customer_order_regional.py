@@ -106,6 +106,8 @@ def map_huadeng(row, record, customer_code):
             row[field] = _text(record.get(field))
             row['lineage'][field] = f"{record.get('source_file')} · {record.get('source_sheet')} · {field}"
         row['unit_price_hkd'] = str(Decimal(row['unit_price_usd']) * Decimal('7.75')) if row['unit_price_usd'] else ''
+        if not row['unit_price_usd']:
+            row['price_basis'] = 'incomplete'  # A blank source price is not a historical-price lookup.
         row['lineage']['unit_price_hkd'] = 'Goliath Ai 方案 · USD × 7.75'
         row['customer_q'] = _text(record.get('customer_inspection_date'))
         if row.get('requested_ship_date'):

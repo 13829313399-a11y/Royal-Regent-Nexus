@@ -28,8 +28,10 @@
 ```sh
 npm --prefix tools/huakang-b-jp-trial/web run build
 npm --prefix tools/customer-order-trial/web run build
-python tools/factory-trial-delivery/build_delivery.py --cache /absolute/runtime-cache --output /absolute/delivery
+python tools/factory-trial-delivery/build_delivery.py --cache /absolute/runtime-cache --output /absolute/delivery --release-date 2026-11-10
 ```
+
+交付日期默认取上海当天，也可用 `--release-date YYYY-MM-DD` 固定本次发布的文件名和说明日期。更新已有试用包前先退出旧程序并备份整个旧目录；将同厂区旧包的 `data` 目录复制到新包后再启动，保留本地台账与记录，不能混用不同厂区的数据。
 
 构建缓存需要 `python-3.12.10-embed-amd64.zip`、`wheels-pinned/` 以及 `tesseract-extracted/`。上游地址和校验值见 `runtime-sources.json`；依赖见 `requirements-windows.txt`。Windows wheels 可在其他系统上准备：
 

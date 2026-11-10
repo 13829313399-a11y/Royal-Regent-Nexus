@@ -3,6 +3,7 @@ from pydantic import BaseModel, field_validator
 
 class CustomerOrderIssueOut(BaseModel):
     severity: str
+    pending_information: bool = False
     code: str
     field: str
     message: str

@@ -25,6 +25,36 @@ function mountLedger() {
 
 describe('CustomerOrderLedger', () => {
   beforeEach(() => { vi.clearAllMocks() })
+  it('shows an undated saved order and allows dispatch only after the amended date is saved', async () => {
+    api.capabilities.mockResolvedValue({ read: true, write: true, dispatch: true })
+    const undated = { ...line, data: { requested_ship_date: '' } }
+    api.list.mockResolvedValue({ items: [undated], total: 1, page: 1, page_size: 50, customers: [] })
+    api.detail.mockResolvedValue({ line: undated, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂' } })
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain('待补')
+    await wrapper.get('button.ledger__link').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid=pending-delivery-date]').text()).toContain('订单已保留')
+    const dispatch = wrapper.findAll('button').find(button => button.text() === '发送订单')!
+    expect(dispatch.attributes('disabled')).toBeDefined()
+    const amend = wrapper.findAll('section').find(section => section.find('h4').text() === '修改订单')!
+    await amend.get('input[type=date]').setValue('2027-01-01')
+    expect(dispatch.attributes('disabled')).toBeDefined()
+    dispatch.element.dispatchEvent(new Event('click'))
+    await flushPromises()
+    expect(api.dispatch).not.toHaveBeenCalled()
+    await amend.findAll('textarea')[1]!.setValue('客户已确认交期')
+    api.amend.mockResolvedValue(line)
+    const dated = { ...line, revision: 5, data: { requested_ship_date: '2027-01-01' } }
+    api.detail.mockResolvedValue({ line: dated, versions: [], dispatches: [], shipments: [], sources: [] })
+    await amend.findAll('button').find(button => button.text() === '保存修改')!.trigger('click')
+    await flushPromises()
+    expect(api.amend).toHaveBeenCalledWith(line.id, 'huaxing', expect.objectContaining({ requested_ship_date: '2027-01-01', expected_revision: 4 }))
+    expect(wrapper.find('[data-testid=pending-delivery-date]').exists()).toBe(false)
+    expect(dispatch.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
   it('opens a linked record outside the current list and keeps keyboard focus inside its detail', async () => {
     api.capabilities.mockResolvedValue({ read: true, write: false, dispatch: false, shipment_confirm: false })
     api.list.mockResolvedValue({ items: [], total: 70, page: 1, page_size: 50, customers: [] })

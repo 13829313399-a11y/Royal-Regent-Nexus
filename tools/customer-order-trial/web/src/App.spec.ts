@@ -2,9 +2,9 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import ExistingOrderLink from './ExistingOrderLink.vue'
-const mock = vi.hoisted(() => ({ config: vi.fn(), preview: vi.fn(), export: vi.fn(), save: vi.fn() }))
+const mock = vi.hoisted(() => ({ config: vi.fn(), preview: vi.fn(), export: vi.fn(), save: vi.fn(), list: vi.fn() }))
 vi.mock('./api', () => ({ api: mock, errorMessage: async (error: Error) => error.message }))
-vi.mock('@/api/customerOrderLedger', () => ({ customerOrderLedgerApi: { importConfirmed: mock.save, list: vi.fn() } }))
+vi.mock('@/api/customerOrderLedger', () => ({ customerOrderLedgerApi: { importConfirmed: mock.save, list: mock.list } }))
 vi.mock('@/components/modules/sales/customer-order-center/CustomerOrderLedger.vue', () => ({ default: { name: 'CustomerOrderLedger', props: ['factoryId', 'factoryName', 'historyImportEnabled', 'localOnly'], template: '<div>本机订单台账</div>' } }))
 vi.mock('@/components/modules/sales/customer-order-center/CustomerOrderSchedule.vue', () => ({ default: { template: '<div>各客排期</div>' } }))
 vi.mock('./LocalInbox.vue', () => ({ default: { template: '<div>本机部门收件</div>' } }))
@@ -30,6 +30,76 @@ async function prepare() {
   return wrapper
 }
 describe('factory trial operations', () => {
+  it.each([false, true])('only reconciles quantity when the selected target matches (other blocker: %s)', async (otherBlocker) => {
+    const data = result(true)
+    mock.preview.mockResolvedValue({ ...data, rows: [{ ...data.rows[0], reference_no: 'REF-001', issues: [
+      { ...issue, code: 'existing_quantity_conflict', field: 'quantity', can_edit: false, message: '相同订单数量不同' },
+      ...(otherBlocker ? [{ ...issue, code: 'order_type_unresolved', field: 'order_type', can_edit: false, message: '订单类型无法确认' }] : []),
+    ] }] })
+    const line = { id: 'matching', factory_id: 'huaxing', customer_code: 'dickie', reference_no: 'REF-001', product_no: '00123', quantity: '50', status: 'active', revision: 7 }
+    mock.list.mockResolvedValue({ items: [line, { ...line, id: 'other-reference', reference_no: 'OTHER-REF' }], total: 2 })
+    mock.save.mockResolvedValue({ items: [], created_count: 0, existing_count: 0, reconciled_count: 1 })
+    const wrapper = await prepare()
+    const save = wrapper.get('[data-testid=save]')
+    const generate = wrapper.get('[data-testid=export]')
+    expect(save.attributes('disabled')).toBeDefined()
+    const link = wrapper.getComponent(ExistingOrderLink)
+    await link.get('input[type=checkbox]').setValue(true)
+    await flushPromises()
+    await link.get('textarea').setValue('核对原订单数量修订')
+    expect(save.attributes('disabled')).toBeDefined()
+    await link.get('select').setValue('other-reference')
+    expect(save.attributes('disabled')).toBeDefined()
+    await link.get('select').setValue('matching')
+    expect(generate.attributes('disabled')).toBeDefined()
+    if (otherBlocker) {
+      expect(save.attributes('disabled')).toBeDefined()
+      await save.trigger('click')
+      expect(mock.save).not.toHaveBeenCalled()
+    } else {
+      expect(save.attributes('disabled')).toBeUndefined()
+      await save.trigger('click')
+      await flushPromises()
+      const body = mock.save.mock.calls[0]![1] as FormData
+      expect(body.get('reconcile_line_id')).toBe('matching')
+      expect(body.get('expected_revision')).toBe('7')
+      expect(body.get('skipped_issue_keys')).toBe('[]')
+    }
+    expect(mock.export).not.toHaveBeenCalled()
+  })
+
+  it('keeps pending fields blank without confirmation and requires a reason only after editing', async () => {
+    const pending = { ...issue, severity: 'warning', code: 'missing_ship_date', field: 'requested_ship_date', message: '客户交期待补', pending_information: true, can_skip: true, edit_field: 'requested_ship_date', edit_label: '客户交期', edit_input_type: 'date' }
+    const data = result()
+    mock.preview.mockResolvedValue({ ...data, rows: [{ ...data.rows[0], status: 'warning', status_label: '待补', requested_ship_date: '', issues: [pending] }] })
+    mock.save.mockResolvedValue({ items: [], created_count: 1, existing_count: 0, reconciled_count: 0 })
+    const wrapper = await prepare()
+    expect(wrapper.get('[data-testid=pending-information]').text()).toContain('客户交期待补')
+    expect(wrapper.find('.issue input[type=checkbox]').exists()).toBe(false)
+    expect(wrapper.find('.reason').exists()).toBe(false)
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid=export]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid=save]').trigger('click')
+    await flushPromises()
+    const body = mock.save.mock.calls[0]![1] as FormData
+    expect(body.get('manual_overrides')).toBe('[]')
+    expect(body.get('skipped_issue_keys')).toBe('[]')
+    expect((wrapper.get('.issue input[type=date]').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('.issue input[type=date]').setValue('2027-01-01')
+    expect(wrapper.find('[data-testid=pending-information]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeDefined()
+    await wrapper.get('.reason textarea').setValue('客户已确认交期')
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not classify other warnings or hard blockers as pending information', async () => {
+    const data = result(true)
+    mock.preview.mockResolvedValue({ ...data, rows: [{ ...data.rows[0], issues: [{ ...issue, pending_information: true }, { ...issue, severity: 'warning', pending_information: false, code: 'ocr_review', message: '请核对OCR' }] }] })
+    const wrapper = await prepare()
+    expect(wrapper.find('[data-testid=pending-information]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid=export]').attributes('disabled')).toBeDefined()
+  })
   it('requires the original blocking controls and reason; rejected save preserves all inputs', async () => {
     mock.preview.mockResolvedValue(result(true))
     mock.save.mockRejectedValue(new Error('保存未完成，请核对本机台账'))

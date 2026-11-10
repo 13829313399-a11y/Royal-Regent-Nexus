@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { customerOrderLedgerApi, type CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
 import { getApiErrorMessage } from './api'
 import { sameReconciliationProduct } from './reconciliation'
-export interface ExistingOrderSelection { enabled: boolean; lineId: string; expectedRevision: number; reason: string }
+export interface ExistingOrderSelection { enabled: boolean; lineId: string; expectedRevision: number; reason: string; target?: CustomerOrderLedgerLine }
 const props = defineProps<{ factoryId: string; customerCode: string; productNo: string; eligible: boolean; disabled: boolean; modelValue: ExistingOrderSelection }>()
 const emit = defineEmits<{ 'update:modelValue': [value: ExistingOrderSelection] }>()
 const items = ref<CustomerOrderLedgerLine[]>([])
@@ -26,7 +26,7 @@ async function load(activate = false) {
   const token = ++sequence
   loading.value = true
   error.value = ''
-  update({ enabled: activate || props.modelValue.enabled, lineId: '', expectedRevision: 0 })
+  update({ enabled: activate || props.modelValue.enabled, lineId: '', expectedRevision: 0, target: undefined })
   try {
     const result = await customerOrderLedgerApi.list(props.factoryId, { customerCode: props.customerCode, view: 'all', q: query.value.trim(), page: page.value, pageSize: 50 })
     if (token !== sequence) return
@@ -42,7 +42,7 @@ function toggle(event: Event) {
 }
 function choose(event: Event) {
   const line = items.value.find(item => item.id === (event.target as HTMLSelectElement).value)
-  update({ lineId: line?.id || '', expectedRevision: line?.revision || 0 })
+  update({ lineId: line?.id || '', expectedRevision: line?.revision || 0, target: line })
 }
 function search() { page.value = 1; void load() }
 function go(next: number) { page.value = next; void load() }
