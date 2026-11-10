@@ -4,8 +4,8 @@ param(
     [Parameter(Mandatory=$true)][string]$OutputPath
 )
 $ErrorActionPreference = 'Stop'
-if ($PrinterIPs.Count -notin @(11,16) -or ($PrinterIPs | Select-Object -Unique).Count -ne $PrinterIPs.Count) {
-    throw 'A complete fleet of eleven or sixteen distinct printer addresses is required.'
+if ($PrinterIPs.Count -notin @(11,16,18) -or ($PrinterIPs | Select-Object -Unique).Count -ne $PrinterIPs.Count) {
+    throw 'A complete fleet of eleven, sixteen or eighteen distinct printer addresses is required.'
 }
 foreach ($address in $PrinterIPs) {
     $parsed = [System.Net.IPAddress]::Parse($address)

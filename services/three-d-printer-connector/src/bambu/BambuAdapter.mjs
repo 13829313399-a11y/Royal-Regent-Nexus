@@ -5,6 +5,8 @@ import tls from 'node:tls';
 import { Decoder, connectPacket, packet, publishBody, publishPacket, subscribePacket } from './mqtt.mjs';
 import { initialStatus, mergeReport } from './status.mjs';
 
+const commandResponseFields = new Set(['command', 'sequence_id', 'result', 'reason', 'msg', 'param', 'err_code']);
+
 function privateAddress(value) {
   if (!isIPv4(value)) return false;
   const [a, b] = value.split('.').map(Number);
@@ -27,7 +29,7 @@ export class BambuAdapter extends EventEmitter {
     reconnectBaseMs = 1000, reconnectMaxMs = 30000, heartbeatMs = 10000, freshMs = 30000,
     leaseCheckMs = 250 } = {}) {
     super();
-    if (config.factoryId !== 'huakang-a' || !Number.isInteger(config.machineNo) || config.machineNo < 1 || config.machineNo > 16 ||
+    if (config.factoryId !== 'huakang-a' || !Number.isInteger(config.machineNo) || config.machineNo < 1 || config.machineNo > 18 ||
         !privateAddress(config.host) || !/^[a-fA-F0-9]{64}$/.test(config.certificateFingerprint) ||
         !/^printer-\d{2}$/.test(config.credentialRef) || !/^[a-zA-Z0-9_-]{1,96}$/.test(config.printerId) ||
         Object.keys(config).some(key => !['factoryId', 'machineNo', 'host', 'printerId', 'credentialRef', 'certificateFingerprint', 'controlVerified'].includes(key)) ||
@@ -155,11 +157,16 @@ export class BambuAdapter extends EventEmitter {
         // PINGRESP only proves the MQTT transport is alive. A silent subscription
         // must recover even when no first status ever arrived; never refresh evidence.
         const lastStatusAt = this.state.observed_at ? Date.parse(this.state.observed_at) : this.readyAt;
-        if (this.clock() - lastStatusAt > this.freshMs || this.clock() < lastStatusAt)
+        const age = this.clock() - lastStatusAt;
+        if (age > this.freshMs || age < 0)
           return this.disconnect('status_timeout');
-        if (this.pingOutstanding) return this.disconnect('mqtt_ping_timeout');
-        this.pingOutstanding = true;
-        this.socket?.write(packet(0xc0));
+        if (this.pingOutstanding) {
+          // A printer can continue publishing live status while its PINGRESP is delayed.
+          if (!this.state.observed_at) return this.disconnect('mqtt_ping_timeout');
+        } else {
+          this.pingOutstanding = true;
+          this.socket?.write(packet(0xc0));
+        }
         this.requestFullStatus();
       }, this.heartbeatMs);
       this.emit('ready', { printer_id: this.config.printerId, connection_session_id: this.session });
@@ -179,6 +186,7 @@ export class BambuAdapter extends EventEmitter {
     try {
       report = JSON.parse(publication.payload.toString('utf8')).print;
       if (!report) return; // Other device information is not a live print-state update.
+      if (typeof report === 'object' && !Array.isArray(report) && Object.keys(report).every(key => commandResponseFields.has(key))) return;
       this.state = mergeReport(this.state, report, new Date(this.clock()).toISOString());
     } catch {
       this.protocolSafe = false;

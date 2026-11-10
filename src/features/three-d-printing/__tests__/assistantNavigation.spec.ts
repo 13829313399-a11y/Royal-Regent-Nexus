@@ -75,6 +75,18 @@ async function open(url = '/printers?factory=huakang-a&tab=machines&printer=SYN-
   return { wrapper, router }
 }
 const panel = () => document.querySelector<HTMLElement>('.printer-detail')!
+
+it('keeps the visible tab and printer unchanged when a later route guard rejects a switch', async () => {
+  const { router } = await open()
+  router.beforeEach(to => to.query.tab === 'operations' ? false : true)
+  workspace.activeTab.value = 'operations'
+  await flushPromises()
+  expect(router.currentRoute.value.query.tab).toBe('machines')
+  expect(workspace.activeTab.value).toBe('machines')
+  expect(workspace.selectedPrinter.value).toBe('SYN-1')
+  expect(panel()).not.toBeNull()
+})
+
 async function escape() {
   panel().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
   await flushPromises(); await vi.waitFor(() => expect(panel()).toBeNull())

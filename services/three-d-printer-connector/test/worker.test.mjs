@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
 import { ConnectorWorker } from '../src/worker.mjs';
 import { ConnectorClient } from '../src/client.mjs';
 import { mergeReport, initialStatus } from '../src/bambu/status.mjs';
@@ -100,11 +101,99 @@ test('observation-only grants upload telemetry and renew without polling hardwar
   } finally { await f.worker.stop() }
 });
 
-test('all sixteen observers acquire, report and renew while retaining physical identities', async () => {
+test('a slow observer upload keeps its MQTT session and commits the original device frame once', async () => {
+  const f = fixture({ controlVerified: false });
+  await f.prepare();
+  const received = [];
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    received.push(JSON.parse(body));
+    setTimeout(() => res.end('{"accepted":true}'), 2750);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const http = new ConnectorClient({ baseUrl: 'http://127.0.0.1:' + server.address().port,
+    token: 'test', instanceId: 'test-observer' });
+  const originalPost = f.worker.client.post;
+  f.worker.client.post = (path, payload, timeout) => path === '/events'
+    ? http.post(path, payload, timeout) : originalPost(path, payload);
+  try {
+    const slot = f.worker.slots.get('printer-1');
+    f.adapters[0].emit('state', { connection_session_id: 'session-1', event_id: 'slow-original', sequence: 2,
+      observed_at: '2026-11-10T03:30:00.000Z', connected: true, state: 'RUNNING', progress_percent: 45 });
+    await slot.queue;
+    assert.equal(received.length, 1);
+    assert.equal(received[0].event_id, 'slow-original');
+    assert.equal(received[0].observed_at, '2026-11-10T03:30:00.000Z');
+    assert.equal(received[0].progress_percent, 45);
+    assert.equal(f.adapters[0].closed, undefined);
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await f.worker.stop();
+  }
+});
+
+test('observer bursts leave room for lease renewal and skip an expired queued grant', async () => {
+  const f = fixture({ controlVerified: false });
+  await f.prepare();
+  const originalPost = f.worker.client.post;
+  const started = [], pending = [], renewals = [];
+  f.worker.client.post = async (path, payload, timeout) => {
+    if (path === '/events') {
+      started.push(payload.event_id);
+      await new Promise(resolve => pending.push(resolve));
+    } else if (path === '/leases/renew') {
+      renewals.push(timeout);
+      return { server_time: new Date(9000).toISOString(), leased_until: new Date(39000).toISOString(), connection_revision: 1 };
+    } else return originalPost(path, payload);
+  };
+  const done = Array.from({ length: 18 }, (_, i) => f.worker.uploadEvent(
+    { controlVerified: false, closed: false, deadline: i === 4 ? 8000 : 27000 }, { event_id: i }));
+  try {
+    assert.deepEqual(started, [0, 1, 2, 3]);
+    f.advance(9000);
+    await f.worker.tick();
+    assert.deepEqual(renewals, [8000]);
+    while (pending.length) {
+      pending.shift()();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.ok(pending.length <= 4);
+    }
+    await Promise.all(done);
+    assert.deepEqual(started, Array.from({ length: 18 }, (_, i) => i).filter(i => i !== 4));
+    assert.equal(f.worker.observerUploads, 0);
+  } finally { await f.worker.stop(); }
+});
+
+test('a lost upload response reuses identical evidence within the remaining lease budget', async () => {
+  const f = fixture({ controlVerified: false });
+  await f.prepare();
+  const originalPost = f.worker.client.post, attempts = [];
+  f.worker.client.post = async (path, payload, timeout) => {
+    if (path !== '/events') return originalPost(path, payload);
+    attempts.push({ payload, timeout });
+    if (attempts.length === 1) { f.advance(500); throw new Error('lost_response'); }
+  };
+  try {
+    const slot = f.worker.slots.get('printer-1');
+    f.advance(25000);
+    const payload = { event_id: 'unchanged', sequence: 2, observed_at: '2026-11-10T03:30:00.000Z' };
+    await f.worker.uploadEvent(slot, payload);
+    assert.deepEqual(attempts.map(a => a.timeout), [2000, 1500]);
+    assert.strictEqual(attempts[0].payload, attempts[1].payload);
+    assert.equal(f.worker.observationTimeout({ ...slot, controlVerified: true }), undefined);
+    f.advance(1600);
+    await f.worker.uploadEvent(slot, payload);
+    assert.equal(attempts.length, 2);
+  } finally { await f.worker.stop(); }
+});
+
+test('all eighteen observers acquire, report and renew while retaining physical identities', async () => {
   let now = 0;
   const messages = [], adapters = new Map();
   // Old 6-11 move to 9-14; credential references remain attached to each device.
-  const numbers = [1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 6, 7, 8, 15, 16];
+  const numbers = [1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 6, 7, 8, 15, 16, 17, 18];
   const devices = numbers.map((machineNo, i) => ({ printerId: `physical-${i + 1}`,
     machineNo, credentialRef: `printer-${String(i + 1).padStart(2, '0')}` }));
   const iso = value => new Date(value).toISOString();
@@ -133,7 +222,12 @@ test('all sixteen observers acquire, report and renew while retaining physical i
     } });
   try {
     await worker.start(); clearInterval(worker.timer);
-    assert.equal(adapters.size, 16);
+    assert.equal(adapters.size, 3);
+    for (let batch = 1; batch < 6; batch++) {
+      await worker.tick();
+      assert.equal(adapters.size, (batch + 1) * 3);
+    }
+    assert.equal(adapters.size, 18);
     for (const device of devices) {
       adapters.get(device.printerId).emit('state', { connection_session_id: `session-${device.printerId}`,
         event_id: `event-${device.printerId}`, sequence: 1, observed_at: iso(now),
@@ -142,7 +236,7 @@ test('all sixteen observers acquire, report and renew while retaining physical i
     }
     await Promise.all([...worker.slots.values()].map(slot => slot.queue));
     now = 9000; await worker.tick();
-    assert.equal(messages.filter(([path]) => path === '/leases/renew').length, 16);
+    assert.equal(messages.filter(([path]) => path === '/leases/renew').length, 18);
     const events = messages.filter(([path]) => path === '/events').map(([, body]) => body);
     assert.deepEqual(new Set(events.map(e => e.printer_id)), new Set(devices.map(d => d.printerId)));
     assert.equal(events.find(e => e.printer_id === 'physical-2').state, 'PAUSE');

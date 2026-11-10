@@ -25,9 +25,9 @@ print(json.dumps({'key': k.private_bytes(serialization.Encoding.PEM, serializati
 `], { encoding: 'utf8', timeout: 10000, maxBuffer: 20000 }));
 export const fingerprint = createHash('sha256').update(Buffer.from(credentials.der, 'hex')).digest('hex');
 
-export async function simulator({ acknowledge = true, connack = 0, suback = 0, fragment = false } = {}) {
+export async function simulator({ acknowledge = true, connack = 0, suback = 0, fragment = false, replyToPings = true } = {}) {
   const sockets = new Set(), commands = [], requests = [];
-  let connections = 0, maxActive = 0, connects = 0;
+  let connections = 0, maxActive = 0, connects = 0, pings = 0;
   const server = tls.createServer(credentials, socket => {
     sockets.add(socket); connections++; maxActive = Math.max(maxActive, sockets.size);
     const decoder = new Decoder();
@@ -39,7 +39,10 @@ export async function simulator({ acknowledge = true, connack = 0, suback = 0, f
           if (frame.header === 0x10) { connects++; socket.write(packet(0x20, Buffer.from([0, connack]))); }
           else if (frame.header === 0x82) {
             socket.write(packet(0x90, Buffer.from([0, 1, suback])));
-          } else if (frame.header === 0xc0) socket.write(packet(0xd0));
+          } else if (frame.header === 0xc0) {
+            pings++;
+            if (replyToPings) socket.write(packet(0xd0));
+          }
           else if (frame.header === 0x30) {
             const size = frame.body.readUInt16BE();
             const topic = frame.body.subarray(2, 2 + size).toString();
@@ -65,7 +68,7 @@ export async function simulator({ acknowledge = true, connack = 0, suback = 0, f
   return {
     fingerprint, sockets, commands, requests,
     get port() { return server.address().port; },
-    get stats() { return { connections, maxActive, connects, active: sockets.size }; },
+    get stats() { return { connections, maxActive, connects, pings, active: sockets.size }; },
     transport(options) { return tls.connect({ ...options, host: '127.0.0.1', port: server.address().port }); },
     report(print, { retained = false, topic } = {}) { for (const socket of sockets) send(socket, print, topic, retained); },
     raw(bytes) { for (const socket of sockets) socket.write(bytes); },
