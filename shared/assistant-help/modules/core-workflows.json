@@ -174,17 +174,17 @@
       {
         "path": "src/features/three-d-printing/WorkspaceView.vue",
         "symbol": "legacy-sync",
-        "sha256": "0354c5424816ac9225fe61794fa9669162748dfbee474bfd9b8d98fb9bd3d328"
+        "sha256": "d2c4711765d4ff9814fa91515b8446ecfbbec33d4d406f1d0eb081b7a186b7ed"
       },
       {
         "path": "src/features/three-d-printing/components/LegacyPrinterGrid.vue",
         "symbol": "statusText",
-        "sha256": "757a42c0d577245e940ca066517d1177114f9d6ab5ff36f346bcd139b66ee6b5"
+        "sha256": "a81d7988bbf49741ed5be4e294af9fd98264124965926c2f8bf3971687683c1e"
       },
       {
         "path": "src/features/three-d-printing/printerPresentation.ts",
         "symbol": "printerStateText",
-        "sha256": "2426521b139268b0f3f239c2e98b905252004e6913c6f7823bc0ce801a6a08ec"
+        "sha256": "ce94fd756c49672ff7f4c950908463dc3546c108404e4cb34ffdd5e87c2b9de2"
       },
       {
         "path": "src/features/three-d-printing/legacy.css",

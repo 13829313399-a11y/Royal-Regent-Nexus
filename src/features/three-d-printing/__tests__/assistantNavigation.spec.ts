@@ -225,3 +225,51 @@ it('drops old account data and selection on account/epoch changes and permits a 
   expect(assistantSelection('three-d-printing')).toBeNull()
   await router.push('/other'); expect(router.currentRoute.value.path).toBe('/other')
 })
+
+
+it('keeps the filtered page while refreshing, and ignores an older failed dashboard', async () => {
+  await open('/printers?factory=huakang-a&tab=records')
+  workspace.listPages.records!.q = 'filtered'
+  const filtered = { id: 'filtered-row' }
+  const result = { items: [filtered], total: 60, page: 2, page_size: 50 }
+  api.collection.mockResolvedValueOnce(result)
+  await workspace.loadPage('records', 2)
+  let rejectOld!: (error: Error) => void
+  api.dashboard.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
+  const older = workspace.loadDashboard(true)
+  let finishPage!: (value: typeof result) => void
+  api.collection.mockImplementationOnce(() => new Promise(resolve => { finishPage = resolve }))
+  const latest = workspace.loadDashboard(true)
+  await flushPromises()
+  expect(workspace.dashboard.value?.records).toEqual([filtered])
+  expect(workspace.listPages.records!.total).toBe(60)
+  expect(workspace.updating.value).toBe(true)
+  rejectOld(new Error('older failure'))
+  await older
+  expect(workspace.updateError.value).toBe('')
+  finishPage(result)
+  await latest
+  expect(workspace.updating.value).toBe(false)
+  api.dashboard.mockRejectedValueOnce(new Error('offline'))
+  await workspace.loadDashboard(true)
+  expect(workspace.updateError.value).toBe('offline')
+  expect(workspace.dashboard.value?.records).toEqual([filtered])
+  api.collection.mockResolvedValueOnce(result)
+  await workspace.loadDashboard(true)
+  expect(workspace.updateError.value).toBe('')
+})
+
+it('refreshes the requested page after a write and discards the earlier in-flight page response', async () => {
+  await open('/printers?factory=huakang-a&tab=records')
+  const old = { items: [{ id: 'old-version' }], total: 60, page: 2, page_size: 50 }
+  let finishOld!: (value: typeof old) => void
+  api.collection.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+  const pendingPage = workspace.loadPage('records', 2)
+  api.collection.mockResolvedValueOnce({ ...old, items: [{ id: 'after-write' }] })
+  await workspace.loadDashboard(true)
+  expect(api.collection).toHaveBeenLastCalledWith('records', expect.objectContaining({ page: 2 }))
+  finishOld(old)
+  await pendingPage
+  expect(workspace.listPages.records!.page).toBe(2)
+  expect(workspace.dashboard.value?.records).toEqual([{ id: 'after-write' }])
+})

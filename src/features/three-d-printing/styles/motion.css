@@ -44,6 +44,8 @@
   .tdp-theme .tdp-skeleton-machines { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
+  .tdp-theme .action-button:not(.tdp-button) { transition: none; }
+  .tdp-theme .action-button:not(.tdp-button):hover:not(:disabled) { transform: none; }
   .tdp-theme .tdp-view-enter-active,
   .tdp-theme .tdp-view-leave-active,
   .tdp-theme .tdp-nav-indicator,
