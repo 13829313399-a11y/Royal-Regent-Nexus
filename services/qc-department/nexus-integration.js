@@ -1,4 +1,4 @@
-/* Nexus owns identity and factory scope; the standalone login is not used here. */
+/* Nexus owns identity and factory scope. */
 (function () {
   'use strict';
   window.__QC_SYNC_FAILURE = function () {
@@ -105,7 +105,7 @@
     }
   };
   document.addEventListener('DOMContentLoaded', function () {
-    if (!window.__QC_NEXUS) { document.body.textContent = '请从 Nexus 的 QC 验货工作台进入。'; return; }
+    if (!window.__QC_NEXUS) return;
     // A title can be returned safely without building HTML from account data.
     document.title = 'QC 验货工作台';
     var reference = window.__QC_REFERENCE_DATA || { count: 0 };

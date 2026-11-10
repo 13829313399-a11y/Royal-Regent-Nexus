@@ -8,9 +8,9 @@ function page(){
   const add=d.addEventListener.bind(d);d.addEventListener=(name,...args)=>{if(name!=='DOMContentLoaded')add(name,...args);};
   const menus=()=>Array.from(d.querySelectorAll('#sidebar [data-page]'),x=>[x.dataset.page,x.textContent.trim(),x.getAttribute('onclick'),x.style.display]);
   const originalMenus=menus();
-  w.__QC_NEXUS={factory:'huaxing',exportAllowed:true};
+  const perms=Object.fromEntries(['daily','weekly','monthly','analysis'].map(page=>[page,{v:1}]));
+  w.__QC_NEXUS={factory:'huaxing',exportAllowed:true,user:{username:'test-admin',perms}};
   w.eval(fs.readFileSync(path.join(__dirname,'app.js'),'utf8'));
-  w._saveSession({username:'test-admin',role:'admin'});
   w.eval(fs.readFileSync(path.join(__dirname,'qc-approved-statistics.js'),'utf8'));
   d.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));d.getElementById('page-analysis').classList.add('active');w.eval("currentPage='analysis'");
   const data={factory:'huaxing',source:'current-inline-approved-summary-v1',ready:true,
@@ -85,7 +85,7 @@ test('report center defaults to weekly and switches reports even while annual da
     flush();
     assert.deepEqual(rendered,['weekly']);
     assert.equal(select.value,'intra-month');
-    p.w._saveUsers([{username:'test-admin',role:'admin',perms:{weekly:{v:0},monthly:{v:0},analysis:{v:0}}}]);
+    p.w.__QC_NEXUS.user.perms={daily:{v:1}};
     p.w.showPage('report-center');flush();
     assert.equal(select.value,'intra-month');
     assert.deepEqual(Array.from(p.d.querySelectorAll('[data-report-page]')).filter(b=>!b.hidden).map(b=>b.dataset.reportPage),['daily']);

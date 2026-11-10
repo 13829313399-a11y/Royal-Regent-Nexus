@@ -1,5 +1,6 @@
 """Exercise the bridge with real Nexus sessions and scoped permissions."""
 import importlib
+import json
 import httpx
 import pytest
 
@@ -36,15 +37,18 @@ def test_session_factory_boundary_and_no_local_accounts(monkeypatch):
         base = client.get(base + "api/health").json()["frame_url"]
         calls.clear()
         assert client.get(base).status_code == 200
-        assert client.get(base + "nexus-context.js").status_code == 200
+        context = client.get(base + "nexus-context.js")
+        assert context.status_code == 200
+        account = json.loads(context.text.removeprefix("window.__QC_NEXUS = ").removesuffix(";"))["user"]
+        assert account["username"].startswith("nexus:")
+        assert "password" not in account and "users" not in account["perms"]
         asset = client.get(base + "qc-schedule.js")
         assert asset.status_code == 200
         assert "root.renderSalesSchedule=refresh" in asset.text
         assert asset.headers["cache-control"] == "no-store"
         assert client.post(base + "qc-schedule.js").status_code == 404
         data = client.get(base + "api/bootstrap").json()
-        assert data["users"][0]["username"].startswith("nexus:")
-        assert data["users"][0]["password"] is None
+        assert "users" not in data
         assert "must-not-leak" not in str(data)
         assert calls[-1][2] == [("company", "hy-huaxing")]
         before = len(calls)
@@ -167,6 +171,13 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
         else:
             raise AssertionError("Test sidecar did not start")
         assert httpx.get(url + "/api/bootstrap?company=hy-huaxing", trust_env=False).status_code == 403
+        with httpx.Client(base_url=url, headers={"X-QC-Gateway-Token": token}, trust_env=False) as sidecar:
+            assert sidecar.get("/api/companies").status_code == 200
+            bootstrap = sidecar.get("/api/bootstrap?company=hy-huaxing")
+            assert bootstrap.status_code == 200
+            assert "users" not in bootstrap.json()
+            assert sidecar.post("/api/sso-verify", json={}).status_code == 404
+            assert sidecar.post("/api/users?company=hy-huaxing", json={"users": []}).status_code == 404
         with make_client(monkeypatch) as client:
             module = importlib.import_module("app.api.qc_department")
             monkeypatch.setattr(module.settings, "qc_department_url", url)

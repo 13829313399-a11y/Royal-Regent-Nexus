@@ -1,39 +1,17 @@
-/* ══════════════════════════════════════════════════════════════
-   兴信 QMS · 前端 ↔ 后端同步层  (qc-backend.js)
-   ────────────────────────────────────────────────────────────
-   必须在 app.js 之前加载（这样本文件的 DOMContentLoaded 处理器先执行）。
-
-   做两件事：
-     1【开机预加载】app.js 的 init 之前，同步拉取后端全量数据写入 localStorage，
-        使 initData / initUsers / initDefectLib 直接读到服务器数据（多浏览器共享）。
-     2【写穿透】劫持 persist / _saveUsers / _saveDefectLib 三个写入咽喉，
-        本地写完后把全量推回后端落库。
-
-   后端不可用时自动回退到本地 localStorage，离线也能用（只是不共享）。
-══════════════════════════════════════════════════════════════ */
+/* 在 QC 初始化前预加载数据，并将业务编辑同步到后端。 */
 (function () {
   'use strict';
 
-  /* ── 多厂区/子公司：当前子公司决定 localStorage 命名空间与 API 目标库 ──
-     每家子公司一套独立数据（服务端 server/data/<companyId>/qc.db）。
-     选择结果存在固定 key（不带公司前缀），切换子公司 = 改这个 key + 刷新页面 */
-  var COMPANY_KEY = 'xingxin_qms_company';
-  var COMPANY = 'dg-xingxin';
-  /* 旧版兼容：早期按厂区名存的值映射到该厂区默认子公司 */
-  var LEGACY = { dongguan: 'dg-xingxin', heyuan: 'hy-huakang-a', hunan: 'sy-huadeng' };
-  try {
-    COMPANY = (window.__QC_NEXUS ? sessionStorage : localStorage).getItem(COMPANY_KEY) || 'dg-xingxin';
-    if (LEGACY[COMPANY]) { COMPANY = LEGACY[COMPANY]; (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(COMPANY_KEY, COMPANY); }
-  } catch (e) {}
-  if (window.__QC_NEXUS) COMPANY = window.__QC_NEXUS.company;
+  var context = window.__QC_NEXUS;
+  if (!context?.user?.username || !context.company) return;
+  var COMPANY = context.company;
   window.__QC_COMPANY = COMPANY;
-  window.__QC_COMPANY_KEY = COMPANY_KEY;
-  window.__QC_STORAGE_PREFIX = window.__QC_NEXUS ? 'nexus_qc_' + window.__QC_NEXUS.user.username + '_' + COMPANY + '_' : 'xingxin_qms_' + COMPANY + '_';
+  window.__QC_STORAGE_PREFIX = 'nexus_qc_' + context.user.username + '_' + COMPANY + '_';
 
   var PREFIX = window.__QC_STORAGE_PREFIX;
   var KEY = {
     records:   PREFIX + 'records',
-    users:     PREFIX + 'users',
+
     defectLib: PREFIX + 'defect_library',
     partners:  PREFIX + 'partners',
   };
@@ -69,7 +47,7 @@
     }
   };
 
-  /* ── 开机：同步 XHR 拉全量（必须同步，才能赶在 app.js 的 init 之前写好 localStorage）── */
+  /* ── 开机：同步 XHR 拉全量（必须同步，才能赶在 app.js 的 init 之前写好 sessionStorage）── */
   function syncBootstrap() {
     try {
       var xhr = new XMLHttpRequest();
@@ -83,21 +61,20 @@
       window.__QC_REFERENCE_DATA = data.referenceData || { count: 0, ids: [] };
 
       // records → app.js 的 state 形态 { records, nextId }
-      (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.records, JSON.stringify({
+      sessionStorage.setItem(KEY.records, JSON.stringify({
         records: Array.isArray(data.records) ? data.records : [],
         nextId:  data.nextId || 31,
       }));
-      if (Array.isArray(data.users))     (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.users,     JSON.stringify(data.users));
-      if (Array.isArray(data.defectLib)) (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.defectLib, JSON.stringify(data.defectLib));
-      if (Array.isArray(data.partners))  (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.partners,  JSON.stringify(data.partners));
+      if (Array.isArray(data.defectLib)) sessionStorage.setItem(KEY.defectLib, JSON.stringify(data.defectLib));
+      if (Array.isArray(data.partners))  sessionStorage.setItem(KEY.partners,  JSON.stringify(data.partners));
 
       window.__QC_BACKEND_OK = true;
       console.log('[QC后端] 预加载成功：公司', COMPANY, '记录', (data.records || []).length,
-        '账号', (data.users || []).length, '不良库', (data.defectLib || []).length);
+        '不良库', (data.defectLib || []).length);
     } catch (e) {
       window.__QC_BACKEND_OK = false;
       console.warn('[QC后端] 预加载失败：', e.message);
-      if (window.__QC_NEXUS) { Object.keys(KEY).forEach(function(k) { (window.__QC_NEXUS ? sessionStorage : localStorage).removeItem(KEY[k]); }); }
+      Object.keys(KEY).forEach(function(k) { sessionStorage.removeItem(KEY[k]); });
     }
   }
 
@@ -113,19 +90,19 @@
         window.__QC_LAST_SYNC = { url: url, ok: r.ok, status: r.status, time: new Date().toISOString() };
         if (!r.ok) {
           console.warn('[QC后端] 写回非200:', url, r.status);
-          if (window.__QC_NEXUS && window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
+          if (window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
         }
         return r.ok;
       }).catch(function (err) {
         window.__QC_LAST_SYNC = { url: url, ok: false, error: err && err.message, time: new Date().toISOString() };
         console.warn('[QC后端] 写回失败:', url, err && err.message);
-        if (window.__QC_NEXUS && window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
+        if (window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
         return false;
       }));
     } catch (e) {
       window.__QC_LAST_SYNC = { url: url, ok: false, error: e && e.message, time: new Date().toISOString() };
       console.warn('[QC后端] 写回异常:', url, e && e.message);
-      if (window.__QC_NEXUS && window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
+      if (window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
       return Promise.resolve(false);
     }
   }
@@ -138,7 +115,7 @@
   }
   function sendRecords() {
     try {
-      var st = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.records) || '{}');
+      var st = JSON.parse(sessionStorage.getItem(KEY.records) || '{}');
       var deleted = window.__QC_PENDING_DELETES.slice();
       var revisions = deleted.map(function (id) { return deleteRevisions[id]; });
       function acknowledgeDeletes() {
@@ -158,19 +135,14 @@
     } catch (e) { console.warn('[QC后端] 读本地记录失败', e); }
     return Promise.resolve(false);
   }
-  function pushUsers(users) {
-    var u = users;
-    if (!Array.isArray(u)) { try { u = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.users) || '[]'); } catch (e) { u = []; } }
-    return post(API_BASE + '/api/users?company=' + COMPANY, { users: u });
-  }
   function pushPartners(list) {
     var l = list;
-    if (!Array.isArray(l)) { try { l = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.partners) || '[]'); } catch (e) { l = []; } }
+    if (!Array.isArray(l)) { try { l = JSON.parse(sessionStorage.getItem(KEY.partners) || '[]'); } catch (e) { l = []; } }
     return post(API_BASE + '/api/partners?company=' + COMPANY, { partners: l });
   }
   function pushDefects(lib) {
     var l = lib;
-    if (!Array.isArray(l)) { try { l = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.defectLib) || '[]'); } catch (e) { l = []; } }
+    if (!Array.isArray(l)) { try { l = JSON.parse(sessionStorage.getItem(KEY.defectLib) || '[]'); } catch (e) { l = []; } }
     return post(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: l });
   }
 
@@ -185,16 +157,6 @@
         return ret;
       };
       window.persist.__qcPatched = true;
-      patched = true;
-    }
-    if (typeof window._saveUsers === 'function' && !window._saveUsers.__qcPatched) {
-      var origUsers = window._saveUsers;
-      window._saveUsers = function (users) {
-        var ret = origUsers.apply(this, arguments);
-        pushUsers(users);
-        return ret;
-      };
-      window._saveUsers.__qcPatched = true;
       patched = true;
     }
     if (typeof window._savePartners === 'function' && !window._savePartners.__qcPatched) {
@@ -234,7 +196,7 @@
     return pushRecords();
   };
 
-  /* 本文件早于 app.js 加载：立即预加载，确保 app.js 初始化前 localStorage 已是服务器数据 */
+  /* 本文件早于 app.js 加载：立即预加载，确保 app.js 初始化前 sessionStorage 已是服务器数据 */
   syncBootstrap();
 
   /* app.js 解析完成后反复接管写入函数，避免线上脚本时序导致只改本地不写服务器 */

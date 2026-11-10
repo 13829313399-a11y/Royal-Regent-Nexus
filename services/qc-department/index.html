@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>兴信 QMS · 品质管理系统</title>
+  <title>QC 验货工作台</title>
   <!-- 前端库本地自带于 vendor/（#215），触发 qc 重建（#216 修部署映射） -->
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="mobile.css" /><!-- 移动端适配，必须在 style.css 之后 -->
@@ -17,57 +17,11 @@
   <script src="vendor/html2canvas.min.js"></script>
   <script src="vendor/tesseract/tesseract.min.js"></script>
   <style>
-    /* 厂区/子公司卡片（登录页，两级选择） */
-    .company-hint { font-size:12px; color:var(--text-dim); margin-bottom:12px; overflow:hidden; }
-    .company-back { color:var(--accent, #4f8cff); text-decoration:none; font-size:12px; }
-    .company-back:hover { text-decoration:underline; }
-    .company-cards { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:8px; }
-    .company-card { flex:1 1 30%; min-width:118px; padding:0; border:1px solid var(--border); border-radius:12px;
-      overflow:hidden; cursor:pointer; background:var(--bg-card); text-align:center;
-      transition:transform .15s, box-shadow .15s; }
-    .company-card:hover { transform:translateY(-2px); box-shadow:0 6px 18px rgba(0,0,0,.25); }
-    .company-card-top { height:44px; background:var(--cc, #4f8cff); }
-    .company-card-body { padding:12px 8px 14px; }
-    .company-card-icon { font-size:20px; margin-top:-28px; margin-bottom:4px; }
-    .company-card-name { font-size:14px; font-weight:700; color:var(--text-hi); }
-    .company-card-sub { font-size:11px; color:var(--text-muted); margin-top:4px; min-height:14px; }
     .user-badge-company { margin-right:6px; padding:2px 8px; border-radius:6px; font-size:12px;
       background:rgba(79,140,255,.15); color:var(--accent, #4f8cff); font-weight:600; }
   </style>
 </head>
 <body class="theme-light qc-liquid-glass">
-<div id="loginScreen" style="display:flex;align-items:center;justify-content:center;
-  min-height:100vh;background:var(--bg-body);padding:20px;box-sizing:border-box">
-  <div style="width:460px;max-width:100%">
-    <div style="text-align:center;margin-bottom:32px">
-      <div style="font-size:28px;font-weight:800;color:var(--text-hi);letter-spacing:2px">兴信 QMS</div>
-      <div style="font-size:13px;color:var(--text-dim);margin-top:6px">品质管理系统</div>
-    </div>
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:32px">
-      <div id="companySelector"></div>
-      <div id="loginFields">
-      <h3 style="margin:0 0 24px;font-size:16px;color:var(--text-hi);text-align:center">账号登录</h3>
-      <div style="margin-bottom:16px">
-        <label class="form-label">用户名</label>
-        <input id="loginUsername" class="form-input" placeholder="请输入用户名"
-               autocomplete="username" onkeydown="loginOnEnter(event)"/>
-      </div>
-      <div style="margin-bottom:20px">
-        <label class="form-label">密码</label>
-        <input id="loginPassword" type="password" class="form-input" placeholder="请输入密码"
-               autocomplete="current-password" onkeydown="loginOnEnter(event)"/>
-      </div>
-      <div id="loginError" style="display:none;color:var(--red);font-size:12px;
-           margin-bottom:12px;padding:8px 12px;background:rgba(255,61,90,.08);border-radius:6px"></div>
-      <button class="btn-primary" style="width:100%;padding:11px;font-size:15px"
-              onclick="login()">登 录</button>
-      </div>
-    </div>
-    <div style="text-align:center;margin-top:16px;font-size:11px;color:var(--text-muted)">
-      兴信塑胶 · 品质管理部（东莞 / 河源 / 湖南 · 各子公司数据独立）
-    </div>
-  </div>
-</div>
 <div id="appWrapper" style="display:none">
 
 <!-- ───────────── SIDEBAR ───────────── -->
@@ -101,10 +55,6 @@
     <!-- 不良描述库 -->
     <a class="nav-item" data-page="defectlib" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('defectlib')">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/></svg></span><span class="nav-label">不良描述库</span>
-    </a>
-    <!-- 账号管理（仅 admin 可见，applyPermissions 控制显示）-->
-    <a class="nav-item" data-page="users" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('users')" style="display:none">
-      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></span><span class="nav-label">账号管理</span>
     </a>
     <a class="nav-item" data-page="import" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="showPage('import')">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 16V3m-5 5 5-5 5 5M4 14v6h16v-6"/></svg></span><span>数据导入</span>
@@ -643,9 +593,6 @@
   <!-- ════ PAGE: 不良描述库 ════ -->
   <div class="page" id="page-defectlib"></div>
 
-  <!-- ════ PAGE: 账号管理 ════ -->
-  <div class="page" id="page-users"></div>
-
 </main>
 
 <!-- ═══════════════ MODAL: REJECT (反审核退回) ═══════════════ -->
@@ -665,17 +612,6 @@
       <button class="btn-secondary" onclick="closeRejectModal()">取消</button>
       <button class="btn-primary" onclick="confirmReject()">确认反审核</button>
     </div>
-  </div>
-</div>
-
-<!-- ═══════════════ MODAL: SWITCH COMPANY ═══════════════ -->
-<div class="modal-overlay" id="companySwitchOverlay">
-  <div class="modal" style="max-width:560px">
-    <div class="modal-header">
-      <span>切换厂区 / 子公司</span>
-      <button class="modal-close" onclick="closeCompanySwitch()">✕</button>
-    </div>
-    <div style="padding:16px 20px" id="companySwitchBox"></div>
   </div>
 </div>
 
@@ -927,7 +863,7 @@
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
-<script src="nexus-context.js"></script><script src="nexus-integration.js"></script><!-- 门户SSO免登：必须在 qc-backend.js / app.js 之前 -->
+<script src="nexus-context.js"></script><script src="nexus-integration.js"></script><!-- Nexus 身份与厂区上下文，先于数据初始化加载 -->
 <script src="qc-schedule.js"></script>
 <script src="report_export.js"></script>
 <script src="qc-backend.js?v=20260709-sync"></script><!-- 后端同步层：必须在 app.js 之前 -->

@@ -315,11 +315,11 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     font-variant-numeric:tabular-nums;
   }
 
-  body.qstats-shell :is(#page-defectlib,#page-users) > :is(.page-header,.table-wrap) {
+  body.qstats-shell #page-defectlib > :is(.page-header,.table-wrap) {
     margin-inline:22px;
   }
 
-  body.qstats-shell :is(#page-defectlib,#page-users) > .page-header {
+  body.qstats-shell #page-defectlib > .page-header {
     padding-top:16px;
   }
 
@@ -328,7 +328,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     max-width:min(280px,calc(100% - 44px)) !important;
   }
 
-  body.qstats-shell :is(#page-defectlib,#page-users) .table-wrap > table {
+  body.qstats-shell #page-defectlib .table-wrap > table {
     min-width:660px;
   }
 
@@ -492,7 +492,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
 
   @media (max-width:640px) {
-    body.qstats-shell :is(#page-defectlib,#page-users) > :is(.page-header,.table-wrap),
+    body.qstats-shell #page-defectlib > :is(.page-header,.table-wrap),
     body.qstats-shell #defLibSearch {
       margin-inline:12px;
     }

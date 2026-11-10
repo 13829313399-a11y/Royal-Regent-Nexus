@@ -3102,15 +3102,6 @@ body.theme-light #yearlyReportBody  .section-card {
   border-color: var(--red);
 }
 
-/* 浅色主题下登录页输入框 */
-body.theme-light #loginUsername,
-body.theme-light #loginPassword {
-  background: #fff;
-  color: #1e293b;
-  border-color: #cbd5e1;
-}
-
-
 /* ════════════════════════════════════════
    §OCR  图片识别录入区域样式
 ════════════════════════════════════════ */
