@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import type { PurchasePriceReference } from './fabricProcurement'
 
 export type WarehouseDomain = 'fabric' | 'semi'
 export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND' | 'REQUEST_CLOSE' | 'CUTTING_RECEIPT' | 'CUTTING_RECEIPT_VOID' | 'CUTTING_REQUEST_REUSE' | 'OPENING' | 'STOCKTAKE'
@@ -56,6 +57,7 @@ export interface FabricMonthlyDetail {
   item_code: string; item_name: string; unit: string; quantity: string; actor_name: string
   unit_price: string; price_unit: string; currency: string; price_note: string
   amount?: string
+  purchase_price?: PurchasePriceReference
 }
 export interface FabricMonthlyReport extends FabricMonthlyQuery {
   units?: string[]

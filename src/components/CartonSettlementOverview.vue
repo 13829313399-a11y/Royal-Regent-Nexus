@@ -2,11 +2,11 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import CartonFilterBar from '@/components/CartonFilterBar.vue'
 import CartonOrderDetailDialog from '@/components/CartonOrderDetailDialog.vue'
-import CartonSupplierReturns from '@/components/CartonSupplierReturns.vue'
 import CartonUnifiedDeliveryNotes from '@/components/CartonUnifiedDeliveryNotes.vue'
 import { cartonUnifiedDeliveriesApi, type UnifiedDelivery } from '@/api/cartonUnifiedDeliveries'
 import { supplierSettlementApi as api, type MonthlyReconciliation, type MonthlySettlementLine } from '@/api/cartonSupplierSettlement'
 import { factoryContexts } from '@/data/enterpriseMock'
+import { formatBusinessDate } from '@/lib/dateTime'
 import { getApiErrorMessage } from '@/lib/http'
 import '@/features/carton-procurement/layout.css'
 
@@ -19,19 +19,21 @@ const props = withDefaults(defineProps<{
   refreshKey?: number
   moneyReference?: (value: string, currency: string) => string
 }>(), { supplier: false, search: '' })
-const emit = defineEmits<{ 'open-receipt': [factory: string, receiptId: string, signal: AbortSignal] }>()
+const emit = defineEmits<{
+  'open-receipt': [factory: string, receiptId: string, signal: AbortSignal]
+  'open-return': [factory: string, movementId: string, refundId?: string]
+}>()
 
 const factories = computed(() => props.factories ?? [])
-const selectedFactory = ref('')
+const selectedFactory = defineModel<string>('selectedFactory', { default: '' })
 const factory = computed({
   get: () => props.supplier
     ? factories.value.find(item => item.factory_id === selectedFactory.value)?.factory_id ?? factories.value[0]?.factory_id ?? ''
     : props.factoryId ?? '',
   set: value => { selectedFactory.value = value },
 })
-const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
-const period = ref(today().slice(0, 7))
-const currency = ref('CNY')
+const period = defineModel<string>('period', { default: () => formatBusinessDate(new Date().toISOString()).slice(0, 7) })
+const currency = defineModel<string>('currency', { default: 'CNY' })
 const customerKey = ref('')
 const data = shallowRef<MonthlyReconciliation | null>(null)
 const busy = ref(false)
@@ -43,7 +45,7 @@ async function load() {
   const query = { factory: factory.value, period: period.value, currency: currency.value, supplier: props.supplier }
   data.value = null; error.value = ''; busy.value = false
   if (!query.factory) {
-    if (!query.supplier) error.value = '请选择厂区后查看本月对账。'
+    error.value = query.supplier ? '暂无可对账的服务厂区。' : '请选择厂区后查看本月对账。'
     return
   }
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(query.period)) { error.value = '请选择有效的对账月份。'; return }
@@ -72,13 +74,14 @@ const lines = computed(() => {
   return query ? customerLines.value.filter(row => [row.document_no, row.item_no, row.customer_name, row.contract_no]
     .some(value => value?.toLowerCase().includes(query))) : customerLines.value
 })
-const rowIssues = (row: MonthlySettlementLine) => row.issues?.length ? row.issues : row.amount === null
+const issueText = (value: string) => value.replace('，不能完成月结确认', '').replace('，不能提交核对', '')
+const rowIssues = (row: MonthlySettlementLine) => row.issues?.length ? row.issues.map(issueText) : row.amount === null
   ? [row.kind === 'RETURN' ? '退货贷项待核实' : '单价待核实'] : []
 const issueRows = computed(() => lines.value.filter(row => rowIssues(row).length))
 const globalIssues = computed(() => {
   const current = data.value
   if (!current || customer.value) return []
-  return current.global_issues ?? ('blockers' in current ? (current.blockers as string[]) : [])
+  return (current.global_issues ?? ('blockers' in current ? (current.blockers as string[]) : [])).map(issueText)
 })
 const issueCount = computed(() => issueRows.value.length + globalIssues.value.length)
 const visibleCounts = computed(() => ({
@@ -122,17 +125,16 @@ const byPackaging = computed(() => (data.value?.packaging ?? []).map(item => {
 
 const sourceRow = shallowRef<MonthlySettlementLine | null>(null)
 const delivery = shallowRef<UnifiedDelivery | null>(null)
-const sourceLoading = ref(false), sourceBusy = ref(false), sourceError = ref('')
+const sourceLoading = ref(false), sourceError = ref('')
 let sourceOpener: HTMLElement | null = null
 let sourceController = new AbortController()
-const sourceChanged = ref(false)
 const customerSelect = ref<HTMLSelectElement | null>(null)
 const sourceAction = (row: MonthlySettlementLine) => row.reference?.kind === 'RECEIPT' ? '打开原收料单'
   : row.reference?.kind === 'DELIVERY' ? '打开原送货单' : row.kind === 'RETURN_REFUND' ? '查看原退款凭证' : '打开原退货单'
 
 function clearSource() {
   sourceController.abort()
-  sourceRow.value = null; delivery.value = null; sourceLoading.value = false; sourceBusy.value = false; sourceError.value = ''
+  sourceRow.value = null; delivery.value = null; sourceLoading.value = false; sourceError.value = ''
 }
 async function openSource(row: MonthlySettlementLine, event: Event) {
   const reference = row.reference
@@ -144,10 +146,13 @@ async function openSource(row: MonthlySettlementLine, event: Event) {
     if (!props.supplier) emit('open-receipt', sourceFactory, reference.id, signal)
     return
   }
+  if (reference.kind === 'RETURN') {
+    emit('open-return', sourceFactory, reference.id, reference.refund_id)
+    return
+  }
+  if (!props.supplier) return
   sourceOpener = event.currentTarget as HTMLElement
-  sourceChanged.value = false
   sourceRow.value = row
-  if (reference.kind !== 'DELIVERY' || !props.supplier) return
   sourceLoading.value = true; sourceError.value = ''; delivery.value = null
   try {
     const original = await cartonUnifiedDeliveriesApi.supplierDetail(sourceFactory, reference.id, signal)
@@ -159,11 +164,6 @@ async function openSource(row: MonthlySettlementLine, event: Event) {
   } finally {
     if (!signal.aborted) sourceLoading.value = false
   }
-}
-function closeSource() {
-  clearSource()
-  if (sourceChanged.value) void load()
-  sourceChanged.value = false
 }
 function restoreSourceFocus(event: Event) {
   const target = sourceOpener?.isConnected ? sourceOpener : customerSelect.value
@@ -193,12 +193,11 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
       </template>
       <template #footer>
         <span class="text-slate-500">{{ data?.supplier_name || (busy ? '读取供应商中' : '暂无对账数据') }} · {{ factoryName(factory) }} · {{ data?.period || period }} · {{ currencyName(data?.currency || currency) }}</span>
-        <p v-if="!supplier" class="w-full text-slate-500">按凭证原币查询。人民币汇总的港币参考可在基础资料中单独设置。</p>
       </template>
     </CartonFilterBar>
 
     <p v-if="error" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
-    <p v-if="supplier" class="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">按厂区、月份和原币核对送货、退货和应结金额。退货或退款在原凭证办理，付款回执在「收款与往来」办理。</p>
+    <p v-if="supplier" class="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">按厂区、月份和原币核对送货、退货和应结金额。退货或退款在原凭证办理，付款回执在「应付与收款」办理。</p>
     <p v-else class="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">仓库在这里核对送货、退货、应结金额与待处理事项。退货回执、实际付款及库存锁期在对应入口按原凭证办理。</p>
     <p v-if="busy" role="status" class="rounded-xl border bg-white p-6 text-center text-xs text-slate-500">正在汇总 {{ period }} · {{ currencyName(currency) }} 的收料与退货…</p>
 
@@ -288,9 +287,8 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
       </div>
     </template>
 
-    <CartonOrderDetailDialog v-if="sourceRow?.reference" :title="sourceAction(sourceRow) + ' · ' + (sourceRow.document_no || '原凭证')" description="本月对账来源" close-label="关闭原凭证" :busy="sourceBusy" @close="closeSource" @close-auto-focus="restoreSourceFocus">
-      <CartonSupplierReturns v-if="sourceRow.reference.kind === 'RETURN'" :factory-id="factory" :internal="!supplier" :viewer-key="viewerKey" :source-id="sourceRow.reference.id" :refund-id="sourceRow.reference.refund_id" @busy="sourceBusy = $event" @changed="sourceChanged = true" />
-      <p v-else-if="sourceLoading" role="status" class="text-xs text-slate-500">正在读取原送货单…</p>
+    <CartonOrderDetailDialog v-if="sourceRow?.reference" :title="sourceAction(sourceRow) + ' · ' + (sourceRow.document_no || '原凭证')" description="本月对账来源" close-label="关闭原凭证" @close="clearSource" @close-auto-focus="restoreSourceFocus">
+      <p v-if="sourceLoading" role="status" class="text-xs text-slate-500">正在读取原送货单…</p>
       <p v-else-if="sourceError" role="alert" class="rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ sourceError }}</p>
       <CartonUnifiedDeliveryNotes v-else-if="delivery" :group="delivery" supplier :viewer-key="viewerKey" />
     </CartonOrderDetailDialog>

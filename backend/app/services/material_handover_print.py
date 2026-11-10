@@ -9,14 +9,18 @@ from app.services.material_handover_parser import validate_file
 
 MAX_PAGES = 20
 MAX_PDF_BYTES = 50 * 1024 * 1024
+PAGE_MARGIN = 20
+HEADER_TOP = 14
+HEADER_GAP = 7
+QR_SIZE = 58
 
 
 def corrected(data, extraction):
     original = HandoverData.model_validate(extraction.get('data', {})).model_dump(mode='json')
     current = HandoverData.model_validate(data).model_dump(mode='json')
-    headers = ('kind', 'source_no', 'document_date', 'contract_no', 'production_no', 'product_no', 'note')
+    headers = ('kind', 'source_no', 'document_date', 'purchase_order_no', 'contract_no', 'production_no', 'product_no', 'note')
     def lines(body):
-        return [{k: v for k, v in line.items() if k not in ('id', 'source_line')} for line in body['lines']]
+        return [{k: v for k, v in line.items() if k not in ('id', 'source_line', 'purchase_detail_id')} for line in body['lines']]
     return any(current[k] != original[k] for k in headers) or lines(current) != lines(original)
 
 
@@ -36,18 +40,59 @@ def font_name():
     return name
 
 
-def qr(canvas, code, x, y, size=72):
+def page_heading(width, font, corner, code, title, reference, note):
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT, TA_RIGHT
     from reportlab.graphics.barcode.qr import QrCodeWidget
     from reportlab.graphics.shapes import Drawing
-    from reportlab.graphics import renderPDF
-    # Keep a white quiet zone; no supplier title or printed rule touches the code.
-    canvas.setFillColorRGB(1, 1, 1)
-    canvas.rect(x - 5, y - 5, size + 10, size + 10, fill=1, stroke=0)
-    widget = QrCodeWidget(code, barLevel='M')
-    left, bottom, right, top = widget.getBounds()
-    drawing = Drawing(size, size, transform=[size/(right-left), 0, 0, size/(top-bottom), -left*size/(right-left), -bottom*size/(top-bottom)])
-    drawing.add(widget)
-    renderPDF.draw(drawing, canvas, x, y)
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, Table, TableStyle
+
+    left = corner == 'left'
+    style = ParagraphStyle('print-heading', fontName=font, fontSize=10, leading=13,
+        alignment=TA_LEFT if left else TA_RIGHT, wordWrap='CJK')
+    heading = [
+        Paragraph(escape(title), ParagraphStyle('print-title', parent=style, fontSize=14, leading=18)),
+        Paragraph(escape(reference), style),
+        Paragraph(escape(note), ParagraphStyle('print-note', parent=style, fontSize=8.5, leading=11)),
+        Paragraph(escape(code), ParagraphStyle('print-code', parent=style, fontName='Helvetica', fontSize=7, leading=9)),
+    ]
+    # The widget includes a four-module quiet zone inside the white header.
+    qr = Drawing(QR_SIZE, QR_SIZE)
+    qr.add(QrCodeWidget(code, barWidth=QR_SIZE, barHeight=QR_SIZE, barLevel='M'))
+    label_width = width - 2 * PAGE_MARGIN - QR_SIZE
+    cells, widths = ([qr, heading], [QR_SIZE, label_width]) if left else ([heading, qr], [label_width, QR_SIZE])
+    label_column = 1 if left else 0
+    table = Table([cells], colWidths=widths)
+    table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('LEFTPADDING' if left else 'RIGHTPADDING', (label_column, 0), (label_column, 0), 7),
+        ('LINEBELOW', (0, 0), (-1, -1), .5, colors.HexColor('#77847f')),
+    ]))
+    return table
+
+
+def draw_original_body(canvas, picture, width, height, top):
+    from PIL import ImageChops
+    from reportlab.lib.utils import ImageReader
+
+    # Reclaim only pure-white outer rows. Marks, tinted scans and spacing between
+    # original fields remain part of the same proportionally scaled image.
+    with ImageChops.invert(picture) as inverted:
+        ink = inverted.getbbox()
+    padding = round(3 * picture.height / height)
+    first = max(0, ink[1] - padding) if ink else 0
+    last = min(picture.height, ink[3] + padding) if ink else picture.height
+    source_height = height * (last - first) / picture.height
+    scale = min((width - 16) / width, (top - 10) / source_height)
+    print_width, print_height = width * scale, source_height * scale
+    with picture.crop((0, first, picture.width, last)) as trimmed:
+        canvas.drawImage(ImageReader(trimmed), (width - print_width) / 2, top - print_height,
+                         width=print_width, height=print_height)
 
 
 def source_pdf(name, content, folder, cancelled):
@@ -117,38 +162,44 @@ def confirmation_pages(data, code, corner, font):
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
     stream = io.BytesIO()
     width, height = landscape(A4)
-    style = ParagraphStyle('confirm', fontName=font, fontSize=8.5, leading=12, wordWrap='CJK')
-    title = ParagraphStyle('title', parent=style, fontSize=15, leading=21)
-    def p(value): return Paragraph(escape(str(value or '')).replace('\n', '<br/>'), style)
-    content = [Paragraph('系统确认明细（核对附页）', title),
-        p('原单识别内容经过补录或修改；本页列出确认后的信息，扫码读取同一份确认明细。'),
-        p(f"{data['counterparty']} / {data['source_no']} / {data.get('document_date') or ''}"), Spacer(1, 12)]
+    style = ParagraphStyle('confirm', fontName=font, fontSize=9.5, leading=13, wordWrap='CJK')
+    emphasis = ParagraphStyle('confirm-emphasis', parent=style, fontSize=11, leading=14)
+    def p(value, text_style=style): return Paragraph(escape(str(value or '')).replace('\n', '<br/>'), text_style)
+    heading = page_heading(width, font, corner, code, '系统确认明细（核对附页）',
+        f"原单号 {data['source_no']}", '仅供交接核对，不代表实际入库或发料')
+    _, heading_height = heading.wrap(width, height)
+    content = [p(f"{data['counterparty']} / {data.get('document_date') or ''}"), Spacer(1, 5)]
     content += [p(f"合同：{data.get('contract_no') or '未注明'} / 生产单：{data.get('production_no') or '未注明'} / 货号：{data.get('product_no') or '未注明'}"), p(data.get('note', '')), Spacer(1, 8)]
+    if data.get('purchase_order_no'):
+        content.append(p(f"采购订单号 {data['purchase_order_no']}"))
     rows = [[p(v) for v in ('物料编码', '名称 / 规格 / 颜色', '确认数量 / 单位', '缸号 / 卷号', '参考单价 / 计价单位 / 币种', '生产关联 / 说明')]]
     for line in data['lines']:
         category = {'FABRIC': '布料', 'ACCESSORY': '辅料', 'THREAD': '线'}.get(line.get('material_category'), '')
-        rows.append([p(line['item_code']), p('\n'.join(filter(None, (line['item_name'], category, line.get('specification'), line.get('color'))))),
-            p(f"{line['quantity']} {line['unit']}"), p('\n'.join(filter(None, (line.get('lot'), line.get('roll_no'), line.get('roll_quantities'))))),
+        references = [f'{label} {line[key]}' for key, label in (('purchase_order_no', '采购单'),
+            ('contract_no', '合同'), ('production_no', '生产单'), ('plan_no', '跟踪号'), ('product_no', '货号')) if line.get(key)]
+        if line.get('ordered_quantity'):
+            references.append(f"下单 {line['ordered_quantity']} {line['unit']}")
+        rows.append([p(line['item_code']), p('\n'.join(filter(None, (line['item_name'], category, line.get('specification'), line.get('color')))), emphasis),
+            p(f"{line['quantity']} {line['unit']}", emphasis), p('\n'.join(filter(None, (line.get('lot'), line.get('roll_no'), line.get('roll_quantities'))))),
             p(f"{line.get('unit_price') or '未记录'} / {line.get('price_unit') or '未注明'} / {line.get('currency') or '未注明'}\n{line.get('price_note') or ''}"),
-            p('\n'.join(filter(None, (line.get('contract_no'), line.get('production_no'), line.get('product_no'), line.get('note')))))])
-    table = Table(rows, colWidths=[108, 220, 93, 118, 136, width-48-675], repeatRows=1)
+            p('\n'.join(filter(None, [*references, line.get('note')])))])
+    table = Table(rows, colWidths=[105, 201, 104, 116, 114, width - 2 * PAGE_MARGIN - 640],
+                  repeatRows=1, splitInRow=1)
     table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#eef5f1')),
         ('GRID', (0,0), (-1,-1), .3, colors.HexColor('#cbd9d2')), ('LEFTPADDING',(0,0),(-1,-1),6), ('RIGHTPADDING',(0,0),(-1,-1),6)]))
     content.append(table)
     def header(canvas, doc):
-        qr(canvas, code, 18 if corner == 'left' else width-90, height-86)
-        canvas.setFont(font, 8)
-        canvas.drawString(110 if corner == 'left' else 24, height-28, '系统确认明细 - 仅供交接核对，不代表实际入库或发料')
-    SimpleDocTemplate(stream, pagesize=(width,height), leftMargin=24, rightMargin=24, topMargin=106, bottomMargin=24).build(content, onFirstPage=header, onLaterPages=header)
+        heading.drawOn(canvas, PAGE_MARGIN, height - HEADER_TOP - heading_height)
+    # A SimpleDocTemplate frame adds 6pt of its own padding.
+    SimpleDocTemplate(stream, pagesize=(width, height), leftMargin=PAGE_MARGIN - 6,
+        rightMargin=PAGE_MARGIN - 6, topMargin=HEADER_TOP + heading_height + HEADER_GAP - 6,
+        bottomMargin=24).build(content, onFirstPage=header, onLaterPages=header)
     return stream.getvalue()
 
 
 def render(name, content, data, extraction, code, corner, folder, cancelled=lambda: False):
     from pypdf import PdfReader, PdfWriter
     from reportlab.pdfgen.canvas import Canvas
-    from reportlab.lib.utils import ImageReader
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import Paragraph
     name = validate_file(name, content)
     if corner not in ('left', 'right'):
         raise ToolError('PRINT_CORNER', '二维码位置须为左上角或右上角')
@@ -168,29 +219,26 @@ def render(name, content, data, extraction, code, corner, folder, cancelled=lamb
             if not 200 <= width <= 1600 or not 240 <= height <= 2000:
                 raise ToolError('PRINT_PAGE_SIZE', '原单纸张大小超出打印范围，请导出常规纸张 PDF')
             canvas.setPageSize((width, height))
-            header_height = 100
-            style = ParagraphStyle('header', fontName=font, fontSize=8.5, leading=12, wordWrap='CJK')
-            header = Paragraph(escape(f"原单加码打印副本 · 第 {index+1}/{count} 页") + '<br/>' +
-                escape(f"原单号：{data['source_no']}") + '<br/>' +
-                ('识别明细有修改，系统确认内容见附页。' if has_changes else '纸面保留原单信息，扫码查看系统确认明细。'), style)
-            label_width = width-126
-            _, label_height = header.wrap(label_width, 500)
-            header_height = max(header_height, label_height+24)
-            if header_height >= height*.4:
+            title = '送货单原件 · 扫码交接' if data['kind'] == 'DELIVERY' else '领料单原件 · 扫码交接'
+            note = f'第 {index + 1}/{count} 页'
+            if has_changes:
+                note += ' · 系统确认内容见附页'
+            heading = page_heading(width, font, corner, code, title, f"原单号 {data['source_no']}", note)
+            _, heading_height = heading.wrap(width, height)
+            heading_bottom = height - HEADER_TOP - heading_height
+            if height - heading_bottom >= height * .4:
                 raise ToolError('PRINT_HEADER_SIZE', '原单号过长或纸张过小，请使用常规打印版式')
-            # The reserved band avoids guessing where a supplier left a blank corner.
-            scale = min((width-16)/width, (height-header_height-12)/height)
             pixel_count += width*height*2.4**2
             if pixel_count > 90_000_000:
                 raise ToolError('PRINT_SIZE', '原单页面过大，请拆分后准备加码打印')
             bitmap = page.render(scale=2.4, draw_annots=True)
-            picture = bitmap.to_pil().copy(); bitmap.close()
-            canvas.drawImage(ImageReader(picture), (width-width*scale)/2, 6, width=width*scale, height=height*scale)
-            picture.close(); page.close()
-            qr(canvas, code, 18 if corner == 'left' else width-90, height-86)
-            header.drawOn(canvas, 110 if corner == 'left' else 18, height-18-label_height)
-            canvas.setFont('Helvetica', 6.5)
-            canvas.drawString(110 if corner == 'left' else 18, height-header_height+10, code)
+            try:
+                with bitmap.to_pil().convert('RGB') as picture:
+                    draw_original_body(canvas, picture, width, height, heading_bottom - HEADER_GAP)
+            finally:
+                bitmap.close()
+                page.close()
+            heading.drawOn(canvas, PAGE_MARGIN, heading_bottom)
             canvas.showPage()
         canvas.save()
     output = PdfWriter()

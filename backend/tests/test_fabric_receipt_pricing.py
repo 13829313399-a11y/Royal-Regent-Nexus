@@ -65,7 +65,8 @@ def test_batch_prices_are_per_item_atomic_and_legacy_retry_hash_is_unchanged(cli
     def item(source, **pricing):
         body = request(source)
         return dict(source_line_id=source['id'], expected_source_revision=source['revision'], expected_receipt_count=0,
-                    material_category='FABRIC', difference_reason='', batches=body['batches'], **pricing)
+                    material_category='FABRIC', difference_reason='', delivery_quantity=body['delivery_quantity'],
+                    batches=body['batches'], **pricing)
     body = dict(factory_id='huakang-c', request_id=str(uuid4()), receipt_date='2026-09-16', delivery_reference='BATCH-PRICE', confirmed=True,
         items=[item(sources[0], unit_price='0', price_unit='码', currency='CNY'), item(sources[1], unit_price='-1', price_unit='码', currency='HKD')])
     base = '/api/fabric-warehouse/procurement/receipts/batch'
@@ -76,13 +77,16 @@ def test_batch_prices_are_per_item_atomic_and_legacy_retry_hash_is_unchanged(cli
     assert response.status_code == 200, response.text
     assert [r['amount'] for r in response.json()['receipts']] == ['0.00', '5.00']
     assert client.post(base, json=body).json() == response.json()
-    pricing = importlib.import_module('app.services.fabric_receipt_pricing')
+    receiving = importlib.import_module('app.services.fabric_receiving')
     schema = importlib.import_module('app.schemas.fabric_receiving')
-    # Original clients omit the optional fields. Explicit empty new defaults hash the same.
+    # Legacy requests omit fields that are now part of price and quantity evidence.
     old = request(sources[0])
-    decoded = schema.ReceiveSourceRequest(**old).model_dump(mode='json')
-    assert pricing.omit_empty_prices(decoded) == {**old, 'accounting_month': None, 'delivery_note_date': None,
+    old.pop('delivery_quantity')
+    assert receiving.receipt_request_body(schema.ReceiveSourceRequest(**old)) == {
+        **old, 'accounting_month': None, 'delivery_note_date': None,
         'prior_received_quantity': None, 'difference_reason': '', 'note': ''}
     old_batch = {**body, 'items': [item(source) for source in sources]}
-    assert pricing.omit_empty_prices(schema.ReceiveSourcesRequest(**old_batch).model_dump(mode='json')) == {
+    for old_item in old_batch['items']:
+        old_item.pop('delivery_quantity')
+    assert receiving.receipt_request_body(schema.ReceiveSourcesRequest(**old_batch)) == {
         **old_batch, 'delivery_note_date': None, 'note': ''}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ const emit = defineEmits<{ close: []; saved: [receipt: FabricReceipt]; stale: [m
 const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const receiptDate = ref(today), deliveryReference = ref(''), deliveryDate = ref(today)
 const deliveryQuantity = ref('')
+const deliveryQuantityId = useId()
 const initialCategory = props.source.material_category || suggestMaterialCategory(props.source.facts.unit)
 const category = ref<MaterialCategory | ''>(initialCategory)
 const reason = ref(''), note = ref(''), busy = ref(false), error = ref('')
@@ -62,9 +63,8 @@ const shortage = computed(() => {
   return d !== undefined && c !== undefined && d >= c ? quantityText(d - c) : undefined
 })
 const summary = computed(() => [
-  ['送货量', receiptQuantity(deliveryQuantity.value) !== undefined ? deliveryQuantity.value : undefined], ['实点合计', counted.value],
-  ['破损合计', damaged.value], ['拒收合计', rejected.value], ['其他不可用合计', other.value],
-  ['入库合计', total.value], ['短少', shortage.value], ['退供应商合计', returned.value],
+  ['实点合计', counted.value], ['净入库合计', total.value], ['短少', shortage.value],
+  ['破损合计', damaged.value], ['拒收合计', rejected.value], ['其他不可用合计', other.value], ['退供应商合计', returned.value],
 ])
 const duplicate = computed(() => {
   if (category.value !== 'FABRIC') return false
@@ -143,7 +143,6 @@ async function save() {
           <div class="fabric-intake-document-fields">
             <label>收货日期<input v-model="receiptDate" type="date" aria-label="实际收货日期" :max="today" required /></label>
             <label>送货单号 / 收料依据<input v-model="deliveryReference" aria-label="送货依据编号" placeholder="填写单号" maxlength="128" required /></label>
-            <label>本单该采购明细到货量（{{ source.facts.unit }}）<input v-model.trim="deliveryQuantity" aria-label="本单到货量" inputmode="decimal" maxlength="32" placeholder="按送货单填写，不能用采购总数代替" required /></label>
             <label>物料分类<select v-model="category" aria-label="入库物料分类" required><option value="" disabled>请选择</option><option v-for="(label, value) in materialCategoryLabels" :key="value" :value="value">{{ label }}</option></select><small v-if="!source.material_category && suggestMaterialCategory(source.facts.unit)">已按单位建议分类，可修改。</small></label>
           </div>
           <section class="fabric-intake-details"><div class="fabric-intake-section-heading"><h3>收货明细</h3><Button variant="outline" size="sm" type="button" :disabled="rows.length >= 200" @click="rows.push(newRow(nextKey++))">＋ 增加明细</Button></div>
@@ -158,10 +157,19 @@ async function save() {
                 <td class="fabric-intake-remove"><Button v-if="category === 'FABRIC'" variant="outline" size="sm" type="button" :disabled="rows.length >= 200" :aria-label="`第${index + 1}项同缸新增一卷`" @click="addRoll(row)">同缸新增一卷</Button><Button v-if="rows.length > 1" variant="ghost" size="sm" type="button" :aria-label="`删除第${index + 1}项`" @click="removeRow(row.key)">删除</Button></td>
               </tr>
             </tbody></table></div>
-            <div class="fabric-intake-totals"><span>{{ rows.length }} 项明细 · 单位：{{ source.facts.unit }}<span v-if="category === 'FABRIC'"> · 同卷分仓请填写不同仓位</span></span><strong>本次入库合计：{{ total ?? '—' }} {{ source.facts.unit }}</strong></div>
-            <dl class="receipt-quantity-summary" aria-label="本次数量汇总"><div v-for="[label, value] in summary" :key="label"><dt>{{ label }}</dt><dd>{{ value ?? '—' }} {{ source.facts.unit }}</dd></div></dl>
+            <div class="fabric-intake-totals"><span>{{ rows.length }} 项明细 · 单位：{{ source.facts.unit }}<span v-if="category === 'FABRIC'"> · 同卷分仓请填写不同仓位</span></span></div>
+            <dl class="receipt-quantity-summary" aria-label="本次数量汇总">
+              <div class="receipt-delivery-quantity">
+                <dt><label :for="deliveryQuantityId">送货单数量（{{ source.facts.unit }}）</label></dt>
+                <dd>
+                  <input :id="deliveryQuantityId" v-model.trim="deliveryQuantity" name="delivery_quantity" inputmode="decimal" maxlength="32" placeholder="按送货单填写本明细数量" required />
+                  <Button variant="outline" type="button" :disabled="!counted || counted === '0'" @click="deliveryQuantity = counted ?? ''">与实点一致</Button>
+                </dd>
+              </div>
+              <div v-for="[label, value] in summary" :key="label"><dt>{{ label }}</dt><dd>{{ value ?? '—' }} {{ source.facts.unit }}</dd></div>
+            </dl>
           </section>
-          <p v-if="exceedsDelivery" class="fabric-intake-error" role="alert">实点合计超过本单到货量，不能入库。</p>
+          <p v-if="exceedsDelivery" class="fabric-intake-error" role="alert">实点合计超过送货单数量，不能入库。</p>
           <p v-if="duplicate" class="fabric-intake-error" role="alert">同缸号、卷号和仓位重复，请合并核对。</p>
           <p v-if="total === '0'" class="fabric-intake-alert" role="status">本次全部不可用，只登记差异，不增加库存</p>
           <p class="fabric-intake-alert">同一送货依据分仓请在本次增加明细；需要分次入库时，请从“送货单入库”打开同一张已确认单据，系统会累计校验剩余量。</p>
@@ -186,5 +194,9 @@ async function save() {
 .receipt-quantity-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 20px; margin-top: 16px; padding: 16px; background: var(--muted); border: 1px solid var(--border); border-radius: 8px; }
 .receipt-quantity-summary dt { font-size: 12px; color: var(--muted-foreground); }
 .receipt-quantity-summary dd { margin: 6px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.receipt-delivery-quantity { grid-column: span 2; min-width: 0; }
+.receipt-delivery-quantity dd { display: flex; align-items: center; gap: 8px; }
+.receipt-delivery-quantity input { font-variant-numeric: tabular-nums; }
+.receipt-delivery-quantity button { flex-shrink: 0; }
 @media(max-width: 700px) { .fabric-intake-table { min-width: 0; } .fabric-intake-table .fabric-intake-remove { width: auto; } .receipt-quantity-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>

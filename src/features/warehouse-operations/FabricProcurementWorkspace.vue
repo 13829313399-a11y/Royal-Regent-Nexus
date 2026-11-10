@@ -71,7 +71,7 @@ const labels: Partial<Record<keyof PurchaseFacts, string>> = {
   status: '采购来源状态',
   order_no: '采购订单号', supplier: '供应商', production_no: '生产 / 放产单号', plan_no: '计划跟踪号',
   material_code: '物料编码', old_material_code: '旧物料编码', material_name: '物料名称规格', contract_no: '合同号',
-  unit: '原表单位', ordered_quantity: '订单数量', reported_received_quantity: '采购已回参考数量', unit_price: '采购单价',
+  unit: '原表单位', ordered_quantity: '订单数量', reported_received_quantity: '采购已回参考数量', unit_price: '采购参考单价（人民币／基本单位）',
   reported_received_quantity_basis: '已回数量依据',
   order_date: '订单日期', order_date_raw: '订单日期原文', supplier_reply: '供应商复期原文', supplier_reply_date: '供应商复期日期',
   second_reply: '二次复期原文', second_reply_date: '二次复期日期', delivery_detail: '交货明细原文',

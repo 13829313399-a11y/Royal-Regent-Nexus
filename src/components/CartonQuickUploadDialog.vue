@@ -288,7 +288,7 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
       </DialogContent>
     </DialogPortal>
   </DialogRoot>
-  <p v-if="success" role="status" class="mt-2 break-words text-sm text-primary">{{ success }}</p>
+  <p v-if="success" role="status" class="max-w-full shrink-0 text-sm text-primary [overflow-wrap:anywhere]">{{ success }}</p>
 </template>
 
 <style scoped>

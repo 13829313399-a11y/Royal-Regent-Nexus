@@ -242,7 +242,7 @@ const resultPreview = computed(
 const results = computed(
   () =>
     currentJob.value?.artifacts.filter((item) =>
-      ['result', 'package'].includes(item.role),
+      ['result', 'package', 'complete_pdf', 'complete_text'].includes(item.role),
     ) ?? [],
 )
 const hasResult = computed(

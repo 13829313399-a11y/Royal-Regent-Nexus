@@ -13,7 +13,7 @@ from app.models.fabric_receiving import FabricReceipt, FabricStockBatch, FabricI
 from app.models.fabric_master import FabricChaseResolution
 from app.services import fabric_procurement as source
 from app.services.fabric_procurement_parser import number, decimal_text, digest, dump
-from app.services.fabric_receipt_pricing import omit_empty_prices, evidence as price_evidence
+from app.services.fabric_receipt_pricing import omit_empty_prices, evidence as price_evidence, purchase_price_reference
 
 MODELS = (FabricReceipt, FabricStockBatch, FabricInventoryMovement)
 
@@ -165,8 +165,10 @@ def receipt_data(db, receipt, *, reversals=None):
         FabricStockBatch.receipt_id == receipt.id).order_by(FabricStockBatch.id))
     from app.services.fabric_receipt_corrections import reversal_rows
     reversal = (reversal_rows(db) if reversals is None else reversals).get(receipt.id)
+    facts = json.loads(receipt.source_json)
     return {"id": receipt.id, "source_line_id": receipt.source_line_id, "source_revision": receipt.source_revision,
-        "facts": json.loads(receipt.source_json), **json.loads(receipt.payload_json), "quantity": receipt.quantity,
+        "facts": facts, **json.loads(receipt.payload_json), "quantity": receipt.quantity,
+        'purchase_price': purchase_price_reference(facts),
         "unit": receipt.unit, "actor_name": receipt.actor_name, "occurred_at": receipt.occurred_at, "stock_posted": Decimal(receipt.quantity) > 0,
         'reversed': reversal is not None, 'reversal': {'id': reversal.id, 'date': reversal.business_date,
             'reason': json.loads(reversal.payload_json)['reason'], 'actor_name': reversal.actor_name} if reversal else None,

@@ -21,7 +21,7 @@ import { supplierWorkCounts, specialSupplierOrigin, specialSupplierActive, speci
 import { deliveryNoteHtml } from '@/features/carton-procurement/deliveryNotePrint'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import CartonFeedbackCenter from '@/components/CartonFeedbackCenter.vue'
-import CartonSupplierMonthlySummary from '@/components/CartonSupplierMonthlySummary.vue'
+import CartonSettlementOverview from '@/components/CartonSettlementOverview.vue'
 import CartonSupplierReturns from '@/components/CartonSupplierReturns.vue'
 import CartonPayables from '@/components/CartonPayables.vue'
 import CartonPriceCorrectionDialog from '@/components/CartonPriceCorrectionDialog.vue'
@@ -135,7 +135,11 @@ const workspace = ref<SupplierWorkspace | null>(null)
 const workspaceReadError = ref('')
 const membershipReadError = ref('')
 const monthlySearch = ref('')
+const monthlyFactory = ref('')
+const monthlyPeriod = ref(formatBusinessDate(new Date().toISOString()).slice(0, 7))
+const monthlyCurrency = ref('CNY')
 const monthlyRefreshKey = ref(0)
+const monthlyReturnSource = ref<{ factory: string; id: string; refundId?: string } | null>(null)
 const returnSearch = ref('')
 const payablesSearch = ref('')
 const unifiedDeliveries = ref<UnifiedDelivery[]>([])
@@ -250,9 +254,18 @@ function openPriceCorrection(factory = '', line = '') {
 watch(() => route.query.price_correction, value => { if (typeof value === 'string' && value) openPriceCorrection(typeof route.query.factory === 'string' ? route.query.factory : '', value === 'workspace' ? '' : value) }, { immediate: true })
 watch(() => route.query.settlement_view, value => { settlementView.value = value === 'returns' ? 'RETURNS' : value === 'payables' ? 'PAYABLES' : 'MONTHLY'; if (value === 'returns' || value === 'payables') activeTab.value = 'settlements' }, { immediate: true })
 function selectSettlementView(value: 'RETURNS' | 'PAYABLES' | 'MONTHLY') {
+  monthlyReturnSource.value = null
   settlementView.value = value; activeTab.value = 'settlements'
   void router.replace({ query: { ...route.query, settlement_view: value === 'MONTHLY' ? undefined : value.toLowerCase() } })
 }
+function openMonthlyReturn(factory: string, id: string, refundId?: string) {
+  if (!memberships.value.some(row => row.factory_id === factory)) return
+  selectSettlementView('RETURNS')
+  monthlyReturnSource.value = { factory, id, refundId }
+}
+watch([activeTab, settlementView], ([tab, view]) => {
+  if (tab !== 'settlements' || view !== 'RETURNS') monthlyReturnSource.value = null
+}, { flush: 'sync' })
 watch(() => route.query.special_request, id => { if (typeof id === 'string') activeTab.value = 'orders' })
 const showUsageGuide = ref(false)
 const feedbackCenter = ref<InstanceType<typeof CartonFeedbackCenter> | null>(null)
@@ -407,6 +420,7 @@ watch(importContext, () => {
   selectedPriceFactory.value = ''
   priceReviewState.value = { factoryId: '', loading: true, readError: '', error: '', pendingCount: null, canRead: true }
   deliveryGeneration++; unifiedDeliveries.value = []; deliveryError.value = ''; deliveryLoading.value = false; monthlySearch.value = ''; returnSearch.value = ''; payablesSearch.value = ''
+  monthlyFactory.value = ''; monthlyReturnSource.value = null
   specialGeneration++; specialRequests.value = []; specialReadFailures.value = new Set(); specialSelection.value = null; specialError.value = ''; specialLoading.value = false; orderKind.value = 'ALL'
   specialMemberships.value = []
   importGeneration++; ++generation; importOpen.value = false; importFile.value = null; importPreview.value = null
@@ -1495,9 +1509,17 @@ async function download(id: string, factoryId: string, filename: string) {
           </section>
 
         <section v-if="activeTab === 'settlements'" class="space-y-4">
-          <nav aria-label="供应商月结子页面" class="flex flex-wrap gap-2 rounded-xl border bg-card p-2 text-xs"><button type="button" :aria-pressed="settlementView === 'MONTHLY'" class="rounded-lg px-4 py-2" :class="settlementView === 'MONTHLY' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('MONTHLY')">本月对账</button><button type="button" :aria-pressed="settlementView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="settlementView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('RETURNS')">退货签收与退款</button><button type="button" :aria-pressed="settlementView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="settlementView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('PAYABLES')">收款与往来</button></nav>
-          <CartonSupplierMonthlySummary v-if="settlementView === 'MONTHLY'" :search="monthlySearch" :factories="memberships" :viewer-key="importContext" :refresh-key="monthlyRefreshKey" />
-          <CartonSupplierReturns v-else-if="settlementView === 'RETURNS'" :factories="serviceFactories" :viewer-key="importContext" v-model:search="returnSearch" />
+          <nav aria-label="供应商月结子页面" class="flex flex-wrap gap-2 rounded-xl border bg-card p-2 text-xs">
+            <button type="button" :aria-pressed="settlementView === 'MONTHLY'" class="rounded-lg px-4 py-2" :class="settlementView === 'MONTHLY' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('MONTHLY')">本月对账</button>
+            <button type="button" :aria-pressed="settlementView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="settlementView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('RETURNS')">退货签收与退款</button>
+            <button type="button" :aria-pressed="settlementView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="settlementView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('PAYABLES')">应付与收款</button>
+          </nav>
+          <CartonSettlementOverview v-if="settlementView === 'MONTHLY'" supplier :factories="memberships" :search="monthlySearch"
+            v-model:selected-factory="monthlyFactory" v-model:period="monthlyPeriod" v-model:currency="monthlyCurrency"
+            :viewer-key="importContext" :refresh-key="monthlyRefreshKey" @open-return="openMonthlyReturn" />
+          <CartonSupplierReturns v-else-if="settlementView === 'RETURNS'" :factories="monthlyReturnSource ? undefined : serviceFactories"
+            :factory-id="monthlyReturnSource?.factory" :viewer-key="importContext" v-model:search="returnSearch"
+            :source-id="monthlyReturnSource?.id" :refund-id="monthlyReturnSource?.refundId" @close-source="monthlyReturnSource = null" />
           <CartonPayables v-else :factories="memberships" :viewer-key="importContext" v-model:search="payablesSearch" />
         </section>
         <template v-else-if="activeTab === 'orders'">

@@ -65,7 +65,7 @@
       {
         "path": "backend/app/api/cutting_operations.py",
         "symbol": "def order_command",
-        "sha256": "42387c156213c5e7822a77a54dc5e27649c1709dfa399da27cb63dd65e5ee83a"
+        "sha256": "b1d366ee8961c87115b24ed61193527c80281316e458393e824d4bd2b48d85af"
       },
       {
         "path": "backend/app/services/cutting_planning.py",
@@ -210,12 +210,12 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "4e2f08ff47f371e85a392421ba2bc6a7a21b0215056d0c5bd334310cbfc50102"
+        "sha256": "4ecbd68bfc4ecff79d4077c6bb78202a4f3b1e370d313c31f2073326db499c0a"
       },
       {
         "path": "src/components/CartonQuickUploadDialog.vue",
         "symbol": "async function submit()",
-        "sha256": "cc5515c33af20b77eacb976460df2c4d1a489e898395c72a9e21754c870e68f6"
+        "sha256": "e661d61b193c529ac06ed74f3f50ccd3649082d87448a4c1573cc28cbc6a0067"
       },
       {
         "path": "backend/app/services/carton_business_changes.py",

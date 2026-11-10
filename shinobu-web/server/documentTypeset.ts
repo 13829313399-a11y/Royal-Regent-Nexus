@@ -44,6 +44,43 @@ export function overlap(a: Region['box'], b: Region['box']): number {
     Math.max(0, Math.min(a.y+a.height,b.y+b.height)-Math.max(a.y,b.y));
 }
 
+/** Native PDF text owns its measured area, including every protected value.
+ * Detection still covers the whole page: outlined headings and small images
+ * have no native text and must not disappear merely because another area does.
+ */
+export function uncoveredOcrRegions<T extends {box:Region['box']}>(regions:T[], native:Region[]):T[] {
+  return regions.filter(region=>!native.some(word=>overlap(region.box,word.box)>2));
+}
+
+/** Split detection boxes at native boundaries before reading any letters.
+ * In a mixed "Color 00123" line, the native number must not discard the
+ * outlined word. Each surviving rectangle is independently recognized.
+ */
+export function uncoveredOcrCandidates<T extends Region>(regions:T[], native:Region[]):T[] {
+  return regions.flatMap(region=>{
+    let boxes=[region.box];
+    const minWidth=Math.max(6,Math.min(12,region.box.height*.4)),minHeight=Math.max(5,region.box.height*.45);
+    for(const word of native) {
+      boxes=boxes.flatMap(box=>{
+        if(overlap(box,word.box)<=2)return [box];
+        const left=Math.max(box.x,word.box.x-1),right=Math.min(box.x+box.width,word.box.x+word.box.width+1);
+        const top=Math.max(box.y,word.box.y-1),bottom=Math.min(box.y+box.height,word.box.y+word.box.height+1);
+        return [
+          {x:box.x,y:box.y,width:left-box.x,height:box.height},
+          {x:right,y:box.y,width:box.x+box.width-right,height:box.height},
+          {x:left,y:box.y,width:right-left,height:top-box.y},
+          {x:left,y:bottom,width:right-left,height:box.y+box.height-bottom},
+        ].filter(part=>part.width>=minWidth&&part.height>=minHeight);
+      });
+      // Bound fragmentation in pathological overlapping text layers.
+      if(boxes.length>64)return [];
+      if(!boxes.length)break;
+    }
+    if(boxes.length===1&&boxes[0]===region.box)return [region];
+    return boxes.map((box,i)=>({...region,id:`${region.id}-uncovered-${i}`,box,quad:undefined,sourceText:'',translatedText:''}));
+  });
+}
+
 const letters=(text:string)=>text.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]/g,'');
 
 /** OCR metric boxes may overlap while the visible rows have a clear gap. */
@@ -119,6 +156,7 @@ function combineConflictingRows(source:Canvas,regions:Region[]):Region[] {
 export function prepareRegions(regions: Region[], direction: string, source?:Canvas): Region[] {
   let unique: Region[] = [];
   for (const original of regions) {
+    if(!original.sourceText.trim())continue;
     const region = { ...original, box: { ...original.box }, method: original.method ?? 'ocr' };
     region.skipReason = preserveReason(region, direction);
     let duplicate=false;
@@ -390,11 +428,12 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
   const output = createCanvas(source.width, source.height);
   const ctx = output.getContext('2d'); ctx.drawImage(source, 0, 0);
   const original = source.getContext('2d');
-  for (const region of regions) {
+  const expanded=new Set<Region>(),pending=[...regions];
+  for (const region of pending) {
     if (region.skipReason) continue;
     if (!region.translatedText || region.translatedText.trim() === region.sourceText.trim()) {region.skipReason='unchanged';continue;}
     const multiwordLine=region.method!=='native'&&/[A-Za-z]{2}\s+[A-Za-z]{2}/.test(region.sourceText);
-    const b = paddedBox(region,regions,source,.35,multiwordLine?.75:.35);
+    const b = paddedBox(region,regions,source,expanded.has(region)?.65:.35,multiwordLine?.75:.35);
     const x = Math.max(0, Math.floor(b.x)), y = Math.max(0, Math.floor(b.y));
     const w = Math.min(source.width-x, Math.ceil(b.x+b.width)-x), h = Math.min(source.height-y, Math.ceil(b.y+b.height)-y);
     if (w < 3 || h < 5) { region.skipReason = 'too-small'; continue; }
@@ -445,7 +484,7 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     }
     if (flat/(w*h)<.50) { region.skipReason='complex-background'; continue; }
     // Reject large illustration components. Keep straight rules/underlines.
-    const seen=new Uint8Array(w*h), erase=new Uint8Array(w*h), rules=new Uint8Array(w*h); let complex=false,paddingArtwork=false;
+    const seen=new Uint8Array(w*h), erase=new Uint8Array(w*h), rules=new Uint8Array(w*h); let complex=false,clipped=false,paddingArtwork=false;
     // Inspect complete edge components before removing straight rules. A solid
     // swatch contains long columns too; detaching those first would leave its
     // curved edge as a small, apparently erasable "letter" inside the box.
@@ -515,6 +554,13 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
       const cw=r-l+1,ch=bt-t+1;
       const rule=(cw>h*2.5&&ch<=Math.max(3,h*.15)) || (ch>h*.85&&cw<=Math.max(2,h*.08));
       if (rule) {component.forEach(p=>rules[p]=1);continue;}
+      // A glyph cut by the cleanup boundary would leave part of the English
+      // behind. Do not publish an overprint when its full ink is unverified.
+      if((l===0||r===w-1||t===0||bt===h-1)&&component.some(p=>{
+        const px=x+p%w,py=y+Math.floor(p/w);
+        return px>=region.box.x&&px<region.box.x+region.box.width
+          &&py>=region.box.y&&py<region.box.y+region.box.height&&isGlyphColor(p);
+      }))clipped=true;
       if (region.method!=='native' && cw>h*3.5 && ch>h*.5) {complex=true;break;}
       const bounded=mixedCaption&&cw<=region.box.height*3.5&&ch<=region.box.height*1.25
         &&l>0&&r<w-1&&t>0&&bt<h-1;
@@ -527,10 +573,17 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
       component.forEach(p=>{if(isGlyphColor(p)||neutralGlyph)erase[p]=1;else rules[p]=1;});
     }
     if(complex) {region.skipReason='illustration';continue;}
+    if(clipped) {
+      // One bounded retry can recover a tall descender or inaccurate font
+      // ascent. Neighbour boxes still fence the expanded cleanup area.
+      if(!expanded.has(region)){expanded.add(region);pending.push(region);continue;}
+      region.skipReason='clipped-text';continue;
+    }
     // Align to visible ink, since PDF font metric boxes can sit below the
     // actual letters. Nearby horizontal rules constrain the usable cell height.
     let inkTop=h,inkBottom=-1,inkLeft=w;
     for(let p=0;p<erase.length;p++)if(erase[p]){const row=Math.floor(p/w);inkTop=Math.min(inkTop,row);inkBottom=Math.max(inkBottom,row);inkLeft=Math.min(inkLeft,p%w);}
+    if(inkBottom<inkTop) {region.skipReason='clipped-text';continue;}
     const center=inkBottom>=inkTop?y+(inkTop+inkBottom+1)/2:region.box.y+region.box.height/2;
     const textLeft=paddingArtwork&&inkBottom>=inkTop?Math.max(region.box.x,x+inkLeft):region.box.x;
     let top=y,bottom=y+h;
@@ -570,7 +623,7 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     ctx.font=font(); metrics=ctx.measureText(translated);
     // Replace only detected glyph pixels and their narrow antialias halo. Original
     // lines, surrounding artwork and every pixel outside the source box survive.
-    const cleaned=original.getImageData(x,y,w,h);
+    const cleaned=ctx.getImageData(x,y,w,h);
     // Pale antialias/stroke halos can sit below the foreground threshold.
     // Remove their narrow surround while the artwork/rule mask is restored.
     const radius=Math.max(2,Math.min(4,Math.round(h*.06)));
