@@ -16,6 +16,11 @@ const connectionReasons = new Set(['device_report', 'tcp_connect_timeout', 'tls_
   'transport_closed', 'protocol_error', 'mqtt_auth_rejected', 'mqtt_subscription_rejected',
   'mqtt_ping_timeout', 'status_timeout']);
 
+// Event ingestion serializes business-record writes for the factory. Leave capacity for leases and heartbeats.
+const maxObserverUploads = 4;
+const observerRequestMs = 8000;
+const maxAcquisitionsPerTick = 3;
+
 /** One boot ID per process, bounded per-printer queues, no disk command replay. */
 export class ConnectorWorker {
   constructor({ client, secretStore, adapterFactory = (config, options) => new BambuAdapter(config, options),
@@ -24,6 +29,8 @@ export class ConnectorWorker {
     this.clock = clock; this.safetyMs = safetyMs; this.pollMs = pollMs; this.log = log;
     this.slots = new Map(); this.stopped = true; this.busy = false; this.heartbeatAt = -Infinity;
     this.apiRetryAt = 0; this.apiFailures = 0;
+    this.observerUploads = 0; this.uploadWaiters = [];
+    this.acquireCursor = 0;
   }
 
   deadline(grant, started) {
@@ -33,6 +40,10 @@ export class ConnectorWorker {
   }
 
   valid(slot) { return !this.stopped && !slot.closed && this.clock() < slot.deadline; }
+  observationTimeout(slot) {
+    if (slot.controlVerified) return undefined;
+    return Math.max(1, Math.floor(Math.min(observerRequestMs, slot.deadline - this.clock())));
+  }
   ref(slot) { return { printer_id: slot.id, leader_lease_id: slot.lease,
     connection_session_id: slot.session }; }
 
@@ -70,11 +81,22 @@ export class ConnectorWorker {
         const { printers } = await this.client.post('/printers');
         const ids = new Set(printers.map(printer => printer.printer_id));
         for (const slot of this.slots.values()) if (!ids.has(slot.id)) this.close(slot);
-        this.ids = [...ids].slice(0, 16); this.heartbeatAt = this.clock();
+        this.ids = [...ids].slice(0, 18); this.heartbeatAt = this.clock();
         if (this.apiFailures) this.log({ code: 'connector_api_recovered' });
         this.apiFailures = 0; this.apiRetryAt = 0;
       }
-      await Promise.allSettled((this.ids || []).map(id => this.tickPrinter(id)));
+      const ids = this.ids || [];
+      const active = [], waiting = [];
+      for (let offset = 0; offset < ids.length; offset++) {
+        const index = (this.acquireCursor + offset) % ids.length;
+        const slot = this.slots.get(ids[index]);
+        if (slot && this.valid(slot)) active.push(ids[index]);
+        else if (waiting.length < maxAcquisitionsPerTick) waiting.push(index);
+      }
+      // A gateway recovery must not start eighteen TLS/MQTT handshakes in one burst.
+      // Rotate acquisition attempts so an unreachable printer cannot delay renewal or starve the rest.
+      if (waiting.length) this.acquireCursor = (waiting.at(-1) + 1) % ids.length;
+      await Promise.allSettled([...active, ...waiting.map(index => ids[index])].map(id => this.tickPrinter(id)));
     } catch (error) {
       // Failure of the shared API closes all sessions immediately, before server expiry.
       for (const slot of this.slots.values()) this.close(slot, 'shared_api_unavailable');
@@ -117,7 +139,8 @@ export class ConnectorWorker {
       if (slot.deadline - this.clock() < 20000) {
         operation = 'renew';
         const started = this.clock();
-        const grant = await this.client.post('/leases/renew', { printer_id: id, leader_lease_id: slot.lease });
+        const grant = await this.client.post('/leases/renew', { printer_id: id, leader_lease_id: slot.lease },
+          this.observationTimeout(slot));
         if (!this.valid(slot) || grant.connection_revision !== slot.revision) return this.close(slot);
         slot.deadline = this.deadline(grant, started);
       }
@@ -135,6 +158,26 @@ export class ConnectorWorker {
     }
   }
 
+  async uploadEvent(slot, payload) {
+    if (!slot.controlVerified) {
+      if (this.observerUploads < maxObserverUploads) this.observerUploads++;
+      else await new Promise(resolve => this.uploadWaiters.push(resolve));
+    }
+    try {
+      if (!this.valid(slot)) return;
+      try { await this.client.post('/events', payload, this.observationTimeout(slot)); }
+      catch {
+        if (this.valid(slot)) await this.client.post('/events', payload, this.observationTimeout(slot));
+      }
+    } finally {
+      if (!slot.controlVerified) {
+        const next = this.uploadWaiters.shift();
+        if (next) next();
+        else this.observerUploads--;
+      }
+    }
+  }
+
   enqueue(slot, event) {
     if (!this.valid(slot)) return;
     const reason = connectionReasons.has(event.reason) ? event.reason : 'device_state';
@@ -149,7 +192,8 @@ export class ConnectorWorker {
       if (!this.valid(slot)) return;
       if (slot.session !== event.connection_session_id) {
         slot.session = event.connection_session_id;
-        await this.client.post('/sessions/start', { ...this.ref(slot), generation: ++slot.generation });
+        await this.client.post('/sessions/start', { ...this.ref(slot), generation: ++slot.generation },
+          this.observationTimeout(slot));
       }
       /** @type {Record<string, any>} */
       const payload = { ...this.ref(slot) };
@@ -158,8 +202,7 @@ export class ConnectorWorker {
       payload.progress_percent = Math.floor(payload.progress_percent);
       payload.remaining_minutes = Math.floor(payload.remaining_minutes);
       // State evidence is durable before any result ACK. Lost responses are retried identically.
-      try { await this.client.post('/events', payload); }
-      catch { if (!this.valid(slot)) return; await this.client.post('/events', payload); }
+      await this.uploadEvent(slot, payload);
     }).catch(error => {
       this.log({ code: 'printer_api_failed', printer_id: slot.id, operation: 'event', reason: apiFailure(error) });
       this.close(slot, 'event_upload_failed');

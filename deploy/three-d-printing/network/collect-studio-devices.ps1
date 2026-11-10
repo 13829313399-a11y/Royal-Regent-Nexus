@@ -168,12 +168,12 @@ function Parse-StudioConfig([string]$Text) {
 try {
     $allPrinters = @(Import-Csv -LiteralPath $PrinterFile)
     $targets = @($allPrinters | Where-Object { [int]$_.machine_no -in $MachineNumbers })
-    if ($MachineNumbers.Count -lt 1 -or $MachineNumbers.Count -gt 16 -or $targets.Count -ne $MachineNumbers.Count -or
+    if ($MachineNumbers.Count -lt 1 -or $MachineNumbers.Count -gt 18 -or $targets.Count -ne $MachineNumbers.Count -or
         @($targets.machine_no | Select-Object -Unique).Count -ne $targets.Count -or
         @($targets.ip | Select-Object -Unique).Count -ne $targets.Count -or
         @($targets.credential_ref | Select-Object -Unique).Count -ne $targets.Count) { throw 'invalid_targets' }
     foreach ($row in $targets) {
-        if ([int]$row.machine_no -lt 1 -or [int]$row.machine_no -gt 16 -or -not (Canonical-IPv4 $row.ip) -or $row.credential_ref -notmatch '^printer-[0-9]{2}$') { throw 'invalid_target' }
+        if ([int]$row.machine_no -lt 1 -or [int]$row.machine_no -gt 18 -or -not (Canonical-IPv4 $row.ip) -or $row.credential_ref -notmatch '^printer-[0-9]{2}$') { throw 'invalid_target' }
         $pin = Read-StringProperty $row 'observed_cert_sha256'
         if ($pin -and $pin -notmatch '^[a-fA-F0-9]{64}$') { throw 'invalid_observed_pin' }
     }

@@ -50,11 +50,15 @@ def enable(db, machine_no):
             "mode": row.connection_owner, "connection_revision": row.connection_revision}
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--machine", type=int, choices=range(1, 17), required=True)
-    args = parser.parse_args()
+    parser.add_argument("--machine", type=int, choices=range(1, 19), required=True)
+    args = parser.parse_args(argv)
     with SessionLocal() as db:
         result = enable(db, args.machine)
         db.commit()
     print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

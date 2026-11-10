@@ -59,10 +59,10 @@ def test_login_from_system32_and_chinese_package_path(launch_environment,via_men
     assert calls[2]=='ip -4'
 
 
-@pytest.mark.parametrize('count', [11, 16])
+@pytest.mark.parametrize('count', [11, 16, 18])
 def test_printer_inventory_and_host_route_plan_support_complete_fleet(tmp_path, count):
     rows = [{'machine_no':n, 'ip':f'192.168.110.{100+n}', 'credential_ref':f'printer-{n:02}'} for n in range(1,count+1)]
-    if count == 16:
+    if count >= 16:
         rows[5]['credential_ref'], rows[11]['credential_ref'] = rows[11]['credential_ref'], rows[5]['credential_ref']
     inventory = tmp_path/'printers.csv'
     with inventory.open('w', encoding='utf-8', newline='') as f:
@@ -98,7 +98,7 @@ def test_expanded_inventory_rejects_ambiguous_identity_without_networking(tmp_pa
     if fault == 'missing_reference': rows[-1]['credential_ref']=''
     elif fault == 'duplicate_reference': rows[-1]['credential_ref']=rows[0]['credential_ref']
     elif fault == 'duplicate_address': rows[-1]['ip']=rows[0]['ip']
-    else: rows[-1]['machine_no']=17
+    else: rows[-1]['machine_no']=19
     inventory=tmp_path/'printers.csv'
     with inventory.open('w',encoding='utf-8',newline='') as f:
         writer=csv.DictWriter(f,fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)

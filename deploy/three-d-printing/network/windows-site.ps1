@@ -19,14 +19,14 @@ function Find-Tailscale {
 }
 function Read-Printers {
     $rows = @(Import-Csv -LiteralPath $PrinterFile)
-    if ($rows.Count -lt 1 -or $rows.Count -gt 16) { throw 'Fill printers.csv with one to sixteen distinct machines.' }
+    if ($rows.Count -lt 1 -or $rows.Count -gt 18) { throw 'Fill printers.csv with one to eighteen distinct machines.' }
     $numbers = @(); $addresses = @(); $references = @()
     foreach ($row in $rows) {
         $ip = [Net.IPAddress]::Parse($row.ip)
         $b = $ip.GetAddressBytes()
         if ($b.Length -ne 4 -or -not ($b[0] -eq 10 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168))) { throw 'Use the printer LAN IPv4 address.' }
         $number = [int]$row.machine_no
-        if ($number -lt 1 -or $number -gt 16 -or $numbers -contains $number -or $addresses -contains $ip.ToString()) { throw 'Duplicate or invalid printer number/address.' }
+        if ($number -lt 1 -or $number -gt 18 -or $numbers -contains $number -or $addresses -contains $ip.ToString()) { throw 'Duplicate or invalid printer number/address.' }
         if ($rows.Count -gt 11 -and -not $row.credential_ref) { throw 'Expanded fleets require explicit credential_ref values tied to physical devices.' }
         if ($row.credential_ref) {
             if ($row.credential_ref -notmatch '^printer-[0-9]{2}$' -or $references -contains $row.credential_ref) { throw 'Duplicate or invalid device credential reference.' }

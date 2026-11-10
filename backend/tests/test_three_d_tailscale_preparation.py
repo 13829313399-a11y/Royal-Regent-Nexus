@@ -29,25 +29,26 @@ def test_windows_report_builds_cloud_config_without_linux_interfaces():
     with pytest.raises(ValueError): tailscale_doctor.from_site_report(bad)
 
 
-def expanded_report():
+def expanded_report(count=16):
     site = site_report()
     site['printers'] = [
         {**site['printers'][0], 'machine_no':n, 'ip':f'192.168.110.{n}',
-         'credential_ref':f'printer-{n:02}'} for n in range(1,17)
+         'credential_ref':f'printer-{n:02}'} for n in range(1,count+1)
     ]
     site['printers'][5]['credential_ref']='printer-12'
     site['printers'][11]['credential_ref']='printer-06'
     return site
 
 
-def test_expanded_report_keeps_device_references_and_requires_complete_fleet():
-    site = expanded_report()
+@pytest.mark.parametrize("count", [16, 18])
+def test_expanded_report_keeps_device_references_and_requires_complete_fleet(count):
+    site = expanded_report(count)
     value = tailscale_doctor.from_site_report(site)
-    assert len(value['printers']) == 16
+    assert len(value['printers']) == count
     assert value['printers'][5]['credential_ref'] == 'printer-12'
     assert value['printers'][11]['credential_ref'] == 'printer-06'
     for mutation in ('missing_machine', 'duplicate_machine', 'missing_reference', 'duplicate_reference'):
-        bad = expanded_report()
+        bad = expanded_report(count)
         if mutation == 'missing_machine': bad['printers'].pop()
         elif mutation == 'duplicate_machine': bad['printers'][-1]['machine_no'] = 1
         elif mutation == 'duplicate_reference': bad['printers'][-1]['credential_ref'] = bad['printers'][0]['credential_ref']

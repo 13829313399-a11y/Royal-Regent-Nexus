@@ -22,9 +22,9 @@ export class ConnectorClient {
     this.timeoutMs = timeoutMs;
   }
 
-  async post(path, payload = {}) {
+  async post(path, payload = {}, timeoutMs = this.timeoutMs) {
     const response = await this.fetchImpl(this.url + path, {
-      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(this.timeoutMs),
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
       headers: { 'Content-Type': 'application/json', 'X-Three-D-Connector-Token': this.token },
       body: JSON.stringify({ protocol_version: 1, factory_id: 'huakang-a',
         site_id: '3dsite-huakang-a-heyuan', instance_id: this.instanceId, ...payload }),

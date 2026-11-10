@@ -238,6 +238,47 @@ test('disconnect/reconnect changes session, requests full status and never fabri
   }
 });
 
+test('late PINGRESP preserves live progress while silent or acknowledgement-only devices still expire', async t => {
+  let now = Date.now();
+  const { adapter, server } = await setup(t, { replyToPings: false }, { clock: () => now, heartbeatMs: 20, freshMs: 100 });
+  const events = []; adapter.on('state', event => events.push(event));
+  await running(adapter, server);
+  const session = adapter.session;
+  await until(() => server.stats.pings === 1);
+  now += 30;
+  server.report({ mc_percent: 35 });
+  await until(() => adapter.snapshot().progress_percent === 35);
+  const observed = adapter.snapshot().observed_at;
+  const readRequests = server.requests.length;
+  await until(() => server.requests.length >= readRequests + 3);
+  assert.equal(adapter.session, session);
+  assert.equal(server.stats.pings, 1);
+  assert.equal(adapter.snapshot().connected, true);
+  server.raw(packet(0xd0));
+  await until(() => server.stats.pings === 2);
+  now += 60;
+  server.report({ command: 'pause', sequence_id: '123', result: 'success' });
+  server.report({ mc_percent: 100 }, { retained: true });
+  server.raw(packet(0xd0));
+  await until(() => server.stats.pings === 3);
+  assert.equal(adapter.snapshot().observed_at, observed);
+  now += 50;
+  await until(() => events.some(event => event.reason === 'status_timeout'));
+  const expired = events.find(event => event.reason === 'status_timeout');
+  assert.equal(expired.observed_at, observed);
+  assert.equal(expired.progress_percent, 35);
+  assert.equal(expired.connected, false);
+  assert.equal(server.commands.length, 0);
+});
+
+test('missing both the first printer report and the ping response triggers reconnect', async t => {
+  const { adapter } = await setup(t, { replyToPings: false }, { heartbeatMs: 15, freshMs: 1000 });
+  const events = []; adapter.on('state', event => events.push(event));
+  adapter.start();
+  await until(() => events.some(event => event.reason === 'mqtt_ping_timeout'));
+  assert.ok(events.every(event => !event.connected && !event.observed_at));
+});
+
 test('responsive MQTT pings cannot keep a connection with no initial telemetry alive forever', async t => {
   const { adapter, server } = await setup(t, {}, { heartbeatMs: 10, freshMs: 35 });
   const events = []; adapter.on('state', event => events.push(event));
@@ -267,10 +308,10 @@ test('a silent subscribed printer reconnects and recovers without refreshing old
   assert.equal(server.commands.length, 0);
 });
 
-test('16 independent simulated printers connect and recover without duplicate local sessions', async t => {
-  const pairs = await Promise.all(Array.from({ length: 16 }, (_, n) => setup(t, {}, {}, config(n + 1))));
+test('18 independent simulated printers connect and recover without duplicate local sessions', async t => {
+  const pairs = await Promise.all(Array.from({ length: 18 }, (_, n) => setup(t, {}, {}, config(n + 1))));
   await Promise.all(pairs.map(({ adapter, server }) => running(adapter, server)));
-  assert.equal(pairs.filter(({ adapter }) => adapter.snapshot().state === 'RUNNING').length, 16);
+  assert.equal(pairs.filter(({ adapter }) => adapter.snapshot().state === 'RUNNING').length, 18);
   const sessions = pairs.map(({ adapter }) => adapter.session);
   for (const { server } of pairs) server.outage();
   await until(() => pairs.every(({ adapter }, n) => adapter.session !== sessions[n] && adapter.ready));
@@ -284,5 +325,8 @@ test('renumbered printers retain their physical credential reference', () => {
   assert.equal(adapter.config.machineNo, 9);
   assert.equal(adapter.config.credentialRef, 'printer-06');
   assert.equal(adapter.config.controlVerified, false);
-  assert.throws(() => new BambuAdapter(config(17)), /invalid_printer_config/);
+  for (const number of [17, 18]) {
+    assert.equal(new BambuAdapter(config(number)).config.machineNo, number);
+  }
+  assert.throws(() => new BambuAdapter(config(19)), /invalid_printer_config/);
 });

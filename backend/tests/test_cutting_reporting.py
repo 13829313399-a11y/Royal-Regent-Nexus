@@ -90,6 +90,20 @@ def test_same_day_duplicate_and_dependent_correction_void(production):
     ok(send(p))
 
 
+def test_report_command_keeps_requested_cutoff_and_retries_without_reposting(production):
+    p = production
+    payload = command(expected_version=read(p)['version'], document_id=uuid4().hex, entry=entry(p))
+    params = {'as_of': '2026-10-14', 'paged_history': True}
+    saved = ok(p.post(URL + '/post', params=params, json=payload))
+    assert saved['as_of'] == '2026-10-14'
+    assert saved['summary']['completed'] == 0
+    assert saved['summary'] == read(p, '2026-10-14')['summary']
+    assert saved['documents'][0]['posted']['data']['entry']['day'] == '2026-10-15'
+    retried = ok(p.post(URL + '/post', params=params, json=payload))
+    assert retried == saved
+    assert read(p, '2026-10-15')['summary']['completed'] == 10
+
+
 def test_parts_matching_carries_loose_and_never_counts_twice(production):
     p=production
     pieces=[dict(code='P01',good=19,rejected=2,scrap=1),dict(code='P02',good=12)]

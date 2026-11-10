@@ -24,7 +24,7 @@ export interface HistoryPagination { page:number;page_size:number;total:number }
 const url = (id: string) => `/cutting-operations/orders/${encodeURIComponent(id)}`
 export const reportingApi = {
   async read(id: string, asOf?: string, page=1, expectedVersion?:number, documentId?:string): Promise<ProductionView> { return (await http.get(`${url(id)}/reports`, { params: { factory_id: CUTTING_FACTORY, history_page:page, expected_version:expectedVersion, history_document_id:documentId, ...(asOf ? { as_of: asOf } : {}) } })).data },
-  async command(id: string, action: ReportAction, body: ReportCommand): Promise<ProductionView> { return (await http.post(`${url(id)}/reports/${action}`, body, {params:{paged_history:true}})).data },
+  async command(id: string, action: ReportAction, body: ReportCommand, asOf?: string): Promise<ProductionView> { return (await http.post(`${url(id)}/reports/${action}`, body, {params:{paged_history:true, as_of:asOf}})).data },
   async recover(id: string, action: ReportAction, command: ReportCommand): Promise<{state:'committed';result:ProductionView} | {state:'abandoned'}> { return (await http.post(`${url(id)}/report-operations/recover`, { action, command })).data },
 }
 export const reportLabels: Record<ReportKind,string> = { daily:'每日报数', match:'裁片核套', return:'外发收回', accept:'外发验收', handover:'交接下道' }
