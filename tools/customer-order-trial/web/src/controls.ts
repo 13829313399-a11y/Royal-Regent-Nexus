@@ -9,7 +9,7 @@ export function isResolved(issue: CustomerOrderIssue, skipped: string[], values:
 export function exportControls(preview: CustomerOrderImportPreview | null, skipped: string[], values: Record<string, string>) {
   const overrides: CustomerOrderManualOverride[] = []
   const allowedSkips = new Set<string>()
-  const unresolved: Array<{ rowId: string; message: string }> = []
+  const unresolved: Array<{ rowId: string; message: string; code?: string }> = []
   for (const row of preview?.rows ?? []) {
     if (!['valid', 'warning', 'blocked'].includes(row.status)) unresolved.push({ rowId: row.id, message: '该行状态未识别，请重新解析或反馈原件。' })
     if (row.status === 'blocked' && !row.issues.length) unresolved.push({ rowId: row.id, message: '该行仍被阻断，请核对原件后重新解析。' })
@@ -21,7 +21,7 @@ export function exportControls(preview: CustomerOrderImportPreview | null, skipp
       }
       if (!['warning', 'blocked', 'confirmation'].includes(issue.severity)) unresolved.push({ rowId: row.id, message: issue.message || '核对项状态未识别。' })
       if (['blocked', 'confirmation'].includes(issue.severity) && !isResolved(issue, skipped, values)) {
-        unresolved.push({ rowId: row.id, message: issue.message })
+        unresolved.push({ rowId: row.id, message: issue.message, code: issue.code })
       }
     }
   }

@@ -5,7 +5,7 @@ import sqlite3
 from fastapi.testclient import TestClient
 import pytest
 from app.main import create_app
-from test_api import BASE,HEADERS,preview,fixtures
+from test_api import BASE,HEADERS,preview,fixtures,sample,uploads
 
 P='/api/customer-order-ledger'
 
@@ -191,3 +191,74 @@ def test_full_original_immutable_guards_and_dispatch_receipt(tmp_path):
     with TestClient(create_app(tmp_path),base_url=BASE) as c:
         inbox=c.get(P+'/inbox?factory_id=huaxing&recipient=pmc').json()
         assert inbox['items'][0]['status']=='received'
+
+
+def test_missing_delivery_persists_blank_and_only_dispatch_requires_amendment(tmp_path):
+    factory='huakang-a'
+    code,pos,content,count=sample(factory)
+    pos=[(name,data.replace(b'<td>11/10/2026</td>',b'<td></td>')) for name,data in pos]
+    fields={'customer_code':code,'factory_id':factory,'received_date':'2026-11-10'}
+    files=uploads(pos,content)
+    suffix='?factory_id='+factory
+    with TestClient(create_app(tmp_path,factory_id=factory),base_url=BASE) as c:
+        r=c.post('/api/orders/preview',headers=HEADERS,data=fields,files=files)
+        assert r.status_code==200,r.text
+        parsed=r.json()
+        assert len(parsed['rows'])==count and parsed['summary']['blocked']==0
+        assert all(not row.get('requested_ship_date') for row in parsed['rows'])
+        assert all(any(i.get('pending_information') and i['field']=='requested_ship_date' for i in row['issues']) for row in parsed['rows'])
+        fields.update(confirmed='true',preview_fingerprint=parsed['preview_fingerprint'],
+                      skipped_issue_keys='[]',manual_overrides='[]',confirmation_reason='')
+        r=c.post(P+'/imports/'+code,headers=HEADERS,data=fields,files=files)
+        assert r.status_code==200,r.text
+        result=r.json();assert result['created_count']==count
+        ident=result['items'][0]['id']
+        detail=c.get(P+'/lines/'+ident+suffix).json()
+        line=detail['line'];assert not line['data'].get('requested_ship_date')
+        assert not detail['dispatches']
+        r=post(c,'/lines/'+ident+'/dispatch'+suffix,{'expected_revision':line['revision'],'recipients':['pmc']})
+        assert r.status_code==400 and '走货期' in r.text
+        assert c.get(P+'/inbox'+suffix+'&recipient=pmc').json()['total']==0
+    # Blank delivery survives an application restart, then an explicit amendment
+    # produces the date needed for dispatch without rewriting the imported source.
+    with TestClient(create_app(tmp_path,factory_id=factory),base_url=BASE) as c:
+        detail=c.get(P+'/lines/'+ident+suffix).json();line=detail['line']
+        assert not line['data'].get('requested_ship_date') and len(detail['versions'])==1
+        r=post(c,'/lines/'+ident+'/amend'+suffix,{'expected_revision':line['revision'],
+            'quantity':line['quantity'],'requested_ship_date':'2026-12-01','note':'客人已确认货期','reason':'收到客人货期补充'})
+        assert r.status_code==200,r.text
+        line=r.json()
+        r=post(c,'/lines/'+ident+'/dispatch'+suffix,{'expected_revision':line['revision'],'recipients':['pmc']})
+        assert r.status_code==200,r.text
+        detail=c.get(P+'/lines/'+ident+suffix).json()
+        assert len(detail['versions'])==2 and len(detail['dispatches'])==1
+        inbox=c.get(P+'/inbox'+suffix+'&recipient=pmc').json()
+        assert inbox['total']==1
+
+
+def test_quantity_conflict_requires_selected_existing_ledger_revision(tmp_path):
+    from io import BytesIO
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import DecodedStreamObject, NameObject
+    with TestClient(create_app(tmp_path),base_url=BASE) as c:
+        result,_,_=imported(c)
+        line=result['items'][0]
+        schedule=c.get('/api/orders/exports/'+result['export_id']+'/download').content
+        code,pos,_,_=sample('huaxing')
+        reader=PdfReader(BytesIO(pos[0][1]));writer=PdfWriter();page=reader.pages[0]
+        stream=DecodedStreamObject();stream.set_data(page.get_contents().get_data().replace(b'2502 EA',b'3000 EA'))
+        page[NameObject('/Contents')]=stream;writer.add_page(page);output=BytesIO();writer.write(output)
+        files=uploads([('formal.pdf',output.getvalue())],schedule)
+        fields={'customer_code':code,'factory_id':'huaxing','received_date':'2026-11-10'}
+        r=c.post('/api/orders/preview',headers=HEADERS,data=fields,files=files)
+        assert r.status_code==200,r.text
+        parsed=r.json();issue=next(i for row in parsed['rows'] for i in row['issues'] if i['code']=='existing_quantity_conflict')
+        assert issue['severity']=='blocked' and not issue['can_skip']
+        fields.update(confirmed='true',preview_fingerprint=parsed['preview_fingerprint'],skipped_issue_keys='[]',manual_overrides='[]')
+        r=c.post(P+'/imports/'+code,headers=HEADERS,data=fields,files=files)
+        assert r.status_code==400 and '阻断' in r.text
+        fields.update(reconcile_line_id=line['id'],expected_revision=str(line['revision']),reconciliation_reason='正式PO数量已核对')
+        r=c.post(P+'/imports/'+code,headers=HEADERS,data=fields,files=files)
+        assert r.status_code==200,r.text
+        result=r.json();assert result['reconciled_count']==1 and result['items'][0]['id']==line['id']
+        assert result['items'][0]['quantity']=='3000' and result['items'][0]['version']==2

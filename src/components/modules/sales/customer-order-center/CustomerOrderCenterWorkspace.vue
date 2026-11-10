@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { isCuttingPoTestBridgeEnabled } from '@/features/cutting-operations/poTestBridge'
+import { quantityReconciliationRowId } from '@/lib/customerOrderReconciliation'
 import {
   AlertTriangle,
   ArrowRight,
@@ -854,6 +855,16 @@ const reconciliationPageCount = computed(() => Math.max(1, Math.ceil(reconciliat
 const selectedReconciliationLine = computed(() => reconciliationCandidates.value.find(
   (line) => line.id === reconciliation.value.lineId,
 ) ?? null)
+const quantityReconciliationId = computed(() => quantityReconciliationRowId(
+  previewBatch.value, sourceKind.value, reconciliation.value, selectedReconciliationLine.value, manualOverrides.value,
+))
+const saveBlockedCount = computed(() => activeOrderRows.value.filter(row => {
+  if (row.status !== 'blocked') return false
+  const remaining = (row.issues ?? []).filter(issue => issue.severity === 'blocked'
+    && !isConfirmationIssue(issue) && !isIssueResolved(issue))
+  return !(row.id === quantityReconciliationId.value && remaining.length > 0
+    && remaining.every(issue => issue.code === 'existing_quantity_conflict'))
+}).length)
 const selectedPoFile = computed(() => {
   if (poFiles.value.length === 0) return '尚未选择 PO 文件'
   if (poFiles.value.length === 1) return poFiles.value[0]!.name
@@ -956,6 +967,11 @@ const blockingResolutionItems = computed(() => (
     .filter((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue) || issue.can_edit)
     .map((issue) => ({ row, issue })))
 ))
+const pendingInformationItems = computed(() => (previewBatch.value?.rows ?? [])
+  .filter(row => row.row_role !== 'parent')
+  .flatMap(row => row.issues
+    .filter(issue => issue.severity === 'warning' && issue.pending_information && !isIssueResolved(issue))
+    .map(issue => ({ row, issue }))))
 const bulkSkippableIssueKeys = computed(() => [...new Set(
   blockingResolutionItems.value
     .map(({ issue }) => issue)
@@ -1765,7 +1781,7 @@ function selectReconciliationLine() {
 
 async function confirmAndSaveOrder() {
   if (fileOperationBusy.value) return
-  if (unconfirmedDuplicateIssueCount.value > 0 || orderSummary.value.blocked > 0) {
+  if (unconfirmedDuplicateIssueCount.value > 0 || saveBlockedCount.value > 0) {
     notify('请先完成所有重复订单确认和阻断项处理。')
     return
   }
@@ -2224,7 +2240,7 @@ onBeforeUnmount(() => {
             <button v-if="blockingResolutionItems.length" type="button" class="button button--ghost" data-testid="open-field-resolution" @click="resolveBlockedRow">
               {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : blockingResolutionItems.some(({ issue }) => issue.severity === 'warning' && issue.can_edit) ? '更正日期/补录字段' : '查看已处理阻断项' }}
             </button>
-            <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy" @click="confirmAndSaveOrder">{{ fileOperationLabel || '确认并保存订单' }}</button>
+            <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || saveBlockedCount > 0 || confirmationReasonMissing || fileOperationBusy" @click="confirmAndSaveOrder">{{ fileOperationLabel || '确认并保存订单' }}</button>
             <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ fileOperationLabel || (unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期') }}</button>
           </div>
         </header>
@@ -2285,6 +2301,13 @@ onBeforeUnmount(() => {
         <article v-if="advisoryDuplicateCount" class="parse-error-card" data-testid="duplicate-advisory" role="status">
           <CircleAlert aria-hidden="true" />
           <div><h3>发现 {{ advisoryDuplicateCount }} 条重复订单</h3><p>可以继续导出，重复的新行会使用红色字体；保存台账时不会重复新增相同订单。</p></div>
+        </article>
+
+        <article v-if="pendingInformationItems.length" class="panel-card pending-information-card" data-testid="pending-information" role="status">
+          <h3>资料待补：{{ pendingInformationItems.length }} 项</h3>
+          <p>这些缺失信息可先留空，保存订单或生成排期不要求逐项确认。其他阻断或重复确认仍须处理；缺交期的订单需补齐并保存后再发送。</p>
+          <ul><li v-for="({ row, issue }, index) in pendingInformationItems.slice(0, 8)" :key="`${row.id}-${issue.code}-${index}`">{{ row.po_no || row.contract_no || row.id }} · {{ row.product_no }}：{{ issue.message }}</li></ul>
+          <p v-if="pendingInformationItems.length > 8">其余 {{ pendingInformationItems.length - 8 }} 项见下方各行提醒。</p>
         </article>
 
         <article v-if="previewBatch?.factory_id === 'huakang-a' && previewBatch.customer_code === '360'" class="panel-card" data-testid="360-number-label-preview">
@@ -2358,6 +2381,7 @@ onBeforeUnmount(() => {
               <button type="button" class="button button--ghost" :disabled="reconciliationLoading || reconciliationPage <= 1" @click="goToReconciliationPage(reconciliationPage - 1)">上一页</button>
               <button type="button" class="button button--ghost" :disabled="reconciliationLoading || reconciliationPage >= reconciliationPageCount" @click="goToReconciliationPage(reconciliationPage + 1)">下一页</button>
             </div>
+            <p v-if="quantityReconciliationId" class="reconciliation-card__scope">此数量变更将通过“确认并保存订单”修订所选原订单；单独生成排期仍须处理原冲突。</p>
             <p v-if="selectedReconciliationLine" class="reconciliation-card__selected">将关联：{{ selectedReconciliationLine.reference_no }} / {{ selectedReconciliationLine.product_no }} / 数量 {{ selectedReconciliationLine.quantity }} / 当前修订 {{ selectedReconciliationLine.revision }}</p>
             <label>正式 PO 核对原因（4–500 字）<textarea v-model="reconciliation.reason" maxlength="500" rows="2" placeholder="例如：正式 PO 补齐合同号，已核对货号、数量和交期" /></label>
           </div>
@@ -2393,7 +2417,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="button button--secondary"
-            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy"
+            :disabled="unconfirmedDuplicateIssueCount > 0 || saveBlockedCount > 0 || confirmationReasonMissing || fileOperationBusy"
             @click="confirmAndSaveOrder"
           >{{ fileOperationLabel || '确认并保存订单' }}</button>
         </article>
@@ -2858,7 +2882,7 @@ onBeforeUnmount(() => {
                 <p class="blocker-resolution-item__message">{{ item.issue.message }}</p>
 
                 <label v-if="item.issue.can_edit" class="manual-override-field manual-override-field--dialog">
-                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>{{ item.issue.edit_field === 'shipping_item' ? '不填写则保留当前映射；填写后写入新排期' : item.issue.severity === 'warning' ? '不填写则使用PO原值；填写后写入新排期' : '填写正确内容后，本项立即解除阻断并写入新排期' }}</small></span>
+                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>{{ item.issue.pending_information ? '可暂留空；补填后核对并写入新排期，不修改客户原件' : item.issue.edit_field === 'shipping_item' ? '不填写则保留当前映射；填写后写入新排期' : item.issue.severity === 'warning' ? '不填写则使用PO原值；填写后写入新排期' : '填写正确内容后，本项立即解除阻断并写入新排期' }}</small></span>
                   <textarea
                     v-if="item.issue.edit_field === 'product_version' || item.issue.edit_input_type === 'textarea'"
                     :value="manualOverrideValues[item.issue.skip_key] ?? item.row.product_version ?? ''"
@@ -3985,6 +4009,16 @@ tbody tr:hover td {
   margin-top: 4px;
   overflow-wrap: anywhere;
 }
+
+.pending-information-card {
+  padding: 16px 20px;
+  border-color: #d8b55f;
+  background: #fffaf0;
+  color: #5f4507;
+}
+.pending-information-card h3 { margin: 0 0 8px; font-size: 16px; }
+.pending-information-card p, .pending-information-card li { margin: 6px 0; line-height: 1.6; }
+.pending-information-card ul { margin: 8px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
 
 .confirmation-reason-card {
   display: grid;

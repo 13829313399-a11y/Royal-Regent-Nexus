@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import CustomerOrderLedger from '@/components/modules/sales/customer-order-center/CustomerOrderLedger.vue'
 import CustomerOrderSchedule from '@/components/modules/sales/customer-order-center/CustomerOrderSchedule.vue'
 import { customerOrderLedgerApi } from '@/api/customerOrderLedger'
+import { quantityReconciliationRowId } from '@/lib/customerOrderReconciliation'
 import type { CustomerOrderImportPreview, CustomerOrderIssue } from '@/types/customerOrder'
 import { api, errorMessage, type TrialConfig, type DownloadResult } from './api'
 import { businessFields, fieldLabels } from './fields'
@@ -39,6 +40,11 @@ const fileKey = ref(0)
 let sequence = 0
 const customer = computed(() => config.value?.customers.find(item => item.code === customerCode.value))
 const controls = computed(() => exportControls(preview.value, skipped.value, values.value))
+const pendingInformationItems = computed(() => (preview.value?.rows ?? [])
+  .filter(row => row.row_role !== 'parent')
+  .flatMap(row => row.issues
+    .filter(issue => issue.severity === 'warning' && issue.pending_information && !isResolved(issue, skipped.value, values.value))
+    .map(issue => ({ row, issue }))))
 const reconciliationDetails = computed(() => (preview.value?.rows ?? []).filter(row => row.row_role !== 'parent'))
 const reconciliationProductNo = computed(() => {
   const row = reconciliationDetails.value[0]
@@ -48,6 +54,12 @@ const reconciliationProductNo = computed(() => {
 const reasonInvalid = computed(() => controls.value.keys.length > 0 && (reason.value.trim().length < 4 || reason.value.trim().length > 500))
 const canSaveLink = computed(() => !existingOrder.value.enabled || Boolean(existingOrder.value.lineId && existingOrder.value.expectedRevision > 0 && existingOrder.value.reason.trim().length >= 4 && existingOrder.value.reason.trim().length <= 500))
 const canConfirm = computed(() => Boolean(preview.value?.rows.length && !controls.value.unresolved.length && !reasonInvalid.value && !busy.value))
+const quantityReconciliationId = computed(() => quantityReconciliationRowId(
+  preview.value, sourceKind.value, existingOrder.value, existingOrder.value.target, controls.value.overrides,
+))
+const canSave = computed(() => Boolean(preview.value?.rows.length && !controls.value.unresolved.some(issue => !(
+  issue.rowId === quantityReconciliationId.value && issue.code === 'existing_quantity_conflict'
+)) && !reasonInvalid.value && canSaveLink.value && !busy.value))
 const filteredRows = computed(() => (preview.value?.rows ?? []).filter(row => !search.value.trim() || [row.po_no, row.contract_no, row.product_no, row.customer_name].join(' ').toLowerCase().includes(search.value.trim().toLowerCase())))
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / 30)))
 const visibleRows = computed(() => filteredRows.value.slice((previewPage.value - 1) * 30, previewPage.value * 30))
@@ -162,7 +174,7 @@ function retainDownload(result: DownloadResult) {
   link.click()
 }
 async function confirm(kind: 'save' | 'export') {
-  if (!canConfirm.value || (kind === 'save' && !canSaveLink.value)) return
+  if (kind === 'save' ? !canSave.value : !canConfirm.value) return
   busy.value = kind === 'save' ? '正在保存本机订单…' : '正在生成客户排期…'
   failure.value = ''
   message.value = ''
@@ -215,16 +227,23 @@ onBeforeUnmount(() => { sequence += 1; clearDownload() })
         <SectionPanel v-if="preview" title="预览与人工核对" :subtitle="`${preview.po_file_count} 份 PO · ${preview.rows.length} 条明细 · 输出 ${preview.output_file_name}`">
           <div class="trial-actions"><StatusPill :label="`原始有效 ${preview.summary.valid}`" tone="teal" /><StatusPill :label="`提醒 ${preview.summary.warning}`" tone="amber" /><StatusPill :label="`仍待处理 ${controls.unresolved.length}`" :tone="controls.unresolved.length ? 'red' : 'teal'" /></div>
           <ul v-if="preview.warnings.length" class="notice warning"><li v-for="(warning, index) in preview.warnings" :key="index">{{ warning }}</li></ul>
+          <div v-if="pendingInformationItems.length" class="notice warning" data-testid="pending-information" role="status">
+            <strong>资料待补：{{ pendingInformationItems.length }} 项</strong>
+            <p>这些缺失信息可先留空，保存订单或生成排期不要求逐项确认。其他阻断或重复确认仍须处理；缺交期的订单需补齐并保存后再发送。</p>
+            <ul><li v-for="({ row, issue }, index) in pendingInformationItems.slice(0, 8)" :key="`${row.id}-${issue.code}-${index}`">{{ row.po_no || row.contract_no || row.id }} · {{ row.product_no }}：{{ issue.message }}</li></ul>
+            <p v-if="pendingInformationItems.length > 8">其余 {{ pendingInformationItems.length - 8 }} 项见下方各行提醒。</p>
+          </div>
           <div v-if="controls.unresolved.length" class="notice error" role="status">仍有 {{ controls.unresolved.length }} 项阻断或待确认，必须按每行提示处理。<ul><li v-for="(issue, index) in controls.unresolved.slice(0, 8)" :key="index">{{ issue.rowId }}：{{ issue.message }}</li></ul></div>
           <label class="search-label">查找明细<input v-model="search" type="search" placeholder="客户 PO、合同号或完整货号"></label>
           <div class="preview-table" tabindex="0" aria-label="订单明细横向滚动表格"><table><thead><tr><th>核对状态</th><th>客户 PO / 合同号</th><th>完整货号</th><th>数量 / 装箱</th><th>客户交期</th><th>港币单价 / 金额</th><th>美元单价 / 金额</th><th>来源与详细字段</th></tr></thead>
-            <tbody><template v-for="row in visibleRows" :key="row.id"><tr><td>{{ row.status_label }}</td><td>{{ row.po_no || '—' }}<br>{{ row.contract_no }}</td><td>{{ row.product_no }}<small v-if="row.product_version">{{ row.product_version }}</small></td><td>{{ row.quantity }} / {{ row.units_per_carton || '—' }}<small>箱数 {{ row.carton_count || '—' }}</small></td><td>{{ row.requested_ship_date || '—' }}</td><td>{{ row.unit_price_hkd || '—' }} / {{ row.amount_hkd || '—' }}</td><td>{{ row.unit_price_usd || '—' }} / {{ row.amount_usd || '—' }}</td><td><details><summary>原始字段与来源</summary><p>{{ row.source_po_file_name }}</p><p>{{ row.price_details_text }}</p><dl class="trace-fields"><template v-for="field in businessFields({ ...row })" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><h4>字段来源</h4><dl class="trace-fields"><template v-for="(source, key) in row.lineage" :key="key"><dt>{{ fieldLabels[key] || key }}</dt><dd>{{ source }}</dd></template></dl></details></td></tr>
-              <tr v-if="row.issues.length"><td colspan="8"><fieldset :disabled="Boolean(busy)" class="issue-list"><div v-for="(issue, index) in row.issues" :key="`${issue.skip_key}-${index}`" class="issue" :class="{ resolved: isResolved(issue, skipped, values) }"><strong>{{ issue.message }}</strong><small>{{ issue.field }} · {{ isResolved(issue, skipped, values) ? '已记录人工处理' : issue.severity === 'warning' ? '提醒' : '待处理' }}</small><label v-if="issue.can_edit && issue.edit_field && issue.skip_key">{{ issue.edit_label || issue.field }}<textarea v-if="issue.edit_input_type === 'textarea' || ['product_version', 'po_unit_prices'].includes(issue.edit_field)" :value="values[issue.skip_key] || ''" rows="3" :placeholder="issue.edit_field === 'po_unit_prices' ? '各 PO 单价（HKD），每行 PO=单价' : '按原件核对后填写'" @input="editIssue(issue, $event)" /><input v-else :value="values[issue.skip_key] || ''" :type="manualInputType(issue)" step="any" @input="editIssue(issue, $event)"></label><label v-if="issue.can_skip && issue.skip_key" class="check"><input type="checkbox" :checked="skipped.includes(issue.skip_key)" @change="skipIssue(issue, $event)">{{ issue.skip_label || '已人工核对，确认继续' }}</label></div></fieldset></td></tr>
+            <tbody><template v-for="row in visibleRows" :key="row.id"><tr><td>{{ row.status_label }}</td><td>{{ row.po_no || '—' }}<br>{{ row.contract_no }}</td><td>{{ row.product_no }}<small v-if="row.product_version">{{ row.product_version }}</small></td><td>{{ row.quantity }} / {{ row.units_per_carton || '—' }}<small>箱数 {{ row.carton_count || '—' }}</small></td><td>{{ row.requested_ship_date || '待补' }}</td><td>{{ row.unit_price_hkd || '—' }} / {{ row.amount_hkd || '—' }}</td><td>{{ row.unit_price_usd || '—' }} / {{ row.amount_usd || '—' }}</td><td><details><summary>原始字段与来源</summary><p>{{ row.source_po_file_name }}</p><p>{{ row.price_details_text }}</p><dl class="trace-fields"><template v-for="field in businessFields({ ...row })" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><h4>字段来源</h4><dl class="trace-fields"><template v-for="(source, key) in row.lineage" :key="key"><dt>{{ fieldLabels[key] || key }}</dt><dd>{{ source }}</dd></template></dl></details></td></tr>
+              <tr v-if="row.issues.length"><td colspan="8"><fieldset :disabled="Boolean(busy)" class="issue-list"><div v-for="(issue, index) in row.issues" :key="`${issue.skip_key}-${index}`" class="issue" :class="{ resolved: isResolved(issue, skipped, values) }"><strong>{{ issue.message }}</strong><small>{{ issue.field }} · {{ isResolved(issue, skipped, values) ? '已记录人工处理' : issue.severity === 'warning' ? '提醒' : '待处理' }}</small><label v-if="issue.can_edit && issue.edit_field && issue.skip_key">{{ issue.edit_label || issue.field }}<textarea v-if="issue.edit_input_type === 'textarea' || ['product_version', 'po_unit_prices'].includes(issue.edit_field)" :value="values[issue.skip_key] || ''" rows="3" :placeholder="issue.edit_field === 'po_unit_prices' ? '各 PO 单价（HKD），每行 PO=单价' : '按原件核对后填写'" @input="editIssue(issue, $event)" /><input v-else :value="values[issue.skip_key] || ''" :type="manualInputType(issue)" step="any" @input="editIssue(issue, $event)"></label><label v-if="issue.can_skip && issue.skip_key && issue.severity !== 'warning'" class="check"><input type="checkbox" :checked="skipped.includes(issue.skip_key)" @change="skipIssue(issue, $event)">{{ issue.skip_label || '已人工核对，确认继续' }}</label></div></fieldset></td></tr>
             </template><tr v-if="!visibleRows.length"><td colspan="8">没有符合条件的明细。</td></tr></tbody></table></div>
           <div class="pagination"><span>第 {{ previewPage }} / {{ totalPages }} 页，共 {{ filteredRows.length }} 条</span><Button variant="outline" :disabled="previewPage <= 1" @click="previewPage--">上一页</Button><Button variant="outline" :disabled="previewPage >= totalPages" @click="previewPage++">下一页</Button></div>
           <label v-if="controls.keys.length" class="reason">人工处理原因（4–500 字）<textarea v-model="reason" maxlength="500" rows="3" :disabled="Boolean(busy)" @input="message = ''; clearDownload()"/><small>已处理 {{ controls.keys.length }} 项，其中人工更正 {{ controls.overrides.length }} 项；原始文件与人工值一起保留。{{ reason.trim().length }} / 500</small></label>
           <ExistingOrderLink v-model="existingOrder" :factory-id="config.factory_id" :customer-code="customerCode" :product-no="reconciliationProductNo" :eligible="sourceKind === 'formal' && reconciliationDetails.length === 1" :disabled="Boolean(busy)" />
-          <div class="trial-actions"><Button data-testid="save" variant="outline" :disabled="!canConfirm || !canSaveLink" @click="confirm('save')">{{ busy || '确认并保存订单' }}</Button><Button data-testid="export" :disabled="!canConfirm" @click="confirm('export')">{{ busy || '确认警告并生成客户排期' }}</Button></div>
+          <p v-if="quantityReconciliationId" class="notice warning">此数量变更将通过“确认并保存订单”修订所选原订单；单独生成排期仍须处理原冲突。</p>
+          <div class="trial-actions"><Button data-testid="save" variant="outline" :disabled="!canSave" @click="confirm('save')">{{ busy || '确认并保存订单' }}</Button><Button data-testid="export" :disabled="!canConfirm" @click="confirm('export')">{{ busy || '确认警告并生成客户排期' }}</Button></div>
           <p class="muted">保存订单后可在本机台账修改、发送及登记走货。生成排期只产生文件副本，不代表订单已入台账；人工更正的最终数量与金额以服务器校验后的文件为准。</p>
           <div v-if="generated" class="notice success"><a :href="generated.url" :download="generated.fileName">下载 {{ generated.fileName }}</a><p v-if="generated.passwordRequired">下载文件保留原排期保护设置，请使用业务原密码打开。</p></div>
         </SectionPanel>

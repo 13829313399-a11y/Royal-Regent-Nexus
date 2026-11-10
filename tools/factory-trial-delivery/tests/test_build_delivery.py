@@ -152,12 +152,15 @@ import demo
     cache = tmp_path / "cache"
     cache.mkdir()
     output = tmp_path / "output"
-    result = delivery.build(cache, output, ["huakang-b"])
+    result = delivery.build(cache, output, ["huakang-b"], "2026-11-10")
+    assert result[0]["file"].endswith("_20261110.zip")
     zipped_path = output / result[0]["file"]
     with ZipFile(zipped_path) as zipped:
         names = zipped.namelist()
         assert not any("__pycache__" in name or name.endswith(".pyc") or "/data/" in name for name in names)
         prefix = "HuakangB_JP_Trial/"
+        assert json.loads(zipped.read(prefix + "trial.json"))["release"] == "2026-11-10"
+        assert "2026-11-10" in zipped.read(prefix + "先看使用说明.txt").decode("utf-8-sig")
         provenance = json.loads(zipped.read(prefix + "BUILD-SOURCES.json"))
         assert provenance["working_tree_has_changes"] and provenance["base_commit"] == "base-commit"
         source_entry = next(item for item in provenance["build_inputs"] if item["path"].endswith("/create_demo.py"))

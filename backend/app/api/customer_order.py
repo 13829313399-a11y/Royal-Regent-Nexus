@@ -287,6 +287,8 @@ def _create_special_batch_preview(*, customer_code: str, **kwargs):
 def _export_special_batch_schedule(*, customer_code: str, **kwargs):
     if is_unified_schedule(kwargs["schedule_content"]):
         return export_unified_customer_schedule(customer_code=customer_code, **kwargs)
+    # The scoped quantity reconciliation contract belongs to the unified writer.
+    kwargs.pop("reconciliation_target", None)
     legacy = {
         "buzzbee": export_buzzbee_batch_schedule,
         "dickie": export_dickie_batch_schedule,

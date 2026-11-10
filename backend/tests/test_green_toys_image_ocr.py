@@ -52,7 +52,7 @@ def recognize_mock(tmp_path, monkeypatch, *, scale=1, padding=20, header=HEADER,
         payloads.append(tsv(values, intervals, crop_top))
     payloads += [footer] + (items or ['AA-1', 'BB-2', 'CC-3'])
     iterator = iter(payloads)
-    monkeypatch.setattr(ocr._Reader, 'read', lambda *_args, **_kwargs: next(iterator))
+    monkeypatch.setattr(ocr._Reader, 'read', lambda *_args, **_kwargs: next(iterator, ''))
     before = path.read_bytes()
     result = ocr.recognize_green_toys_image(path, 'tesseract')
     assert path.read_bytes() == before
@@ -62,7 +62,7 @@ def recognize_mock(tmp_path, monkeypatch, *, scale=1, padding=20, header=HEADER,
 @pytest.mark.parametrize('scale,padding', [(1, 20), (2, 20), (1, 150)])
 def test_layout_is_detected_not_fixed_and_all_rows_roundtrip(tmp_path, monkeypatch, scale, padding):
     text = recognize_mock(tmp_path, monkeypatch, scale=scale, padding=padding)
-    rows = parser.parse_green_toys_ocr_text('20261005144325.png', text)
+    rows = parser.parse_green_toys_ocr_text('20261005144325.png', text, verified_image_columns=True)
     assert len(rows) == 3
     assert [r['description'] for r in rows] == ['Toy One', 'Toy Two', 'Toy Three']
     assert all(r['contract_no'] == '9876' and r['parse_ok'] and r['parse_warnings'] for r in rows)
@@ -107,6 +107,112 @@ def test_metadata_handles_ocr_equals_label_but_rejects_missing_po():
     assert ocr._metadata(HEADER.replace('PO #', 'PO ='))['po'] == '9876'
     with pytest.raises(ocr.GreenImageError):
         ocr._metadata(HEADER.replace('PO #\n9876', 'Reference 20261005144325'))
+
+
+@pytest.mark.parametrize('following', ['', '\nMemo-Detail\nTerms', '\nCancel Date\n12/31/2026'])
+def test_empty_delivery_image_keeps_every_row_and_pending_dates(tmp_path, monkeypatch, following):
+    header = HEADER.replace('\n11/10/2026', '') + following
+    text = recognize_mock(tmp_path, monkeypatch, header=header)
+    rows = parser.parse_green_toys_ocr_text('timestamp.png', text, verified_image_columns=True)
+    assert len(rows) == 3
+    assert sum(Decimal(str(r['amount_usd'])) for r in rows) == Decimal('60.00')
+    for row in rows:
+        assert row['parse_ok'] and row['contract_no'] == '9876'
+        assert row['order_date'] == '2026-10-01'
+        assert row['factory_commit_date'] == row['planned_inspection_date'] == ''
+        issues = parser.issues_for_record('green-toys', 'Green Toys', row, row['customer_po'])
+        assert not any(issue['severity'] == 'blocked' for issue in issues)
+        assert any(issue['code'] == 'missing_requested_ship_date' and issue['severity'] == 'warning' for issue in issues)
+
+
+def test_complete_multiword_item_stays_in_its_cell_not_description(tmp_path, monkeypatch):
+    text = recognize_mock(tmp_path, monkeypatch, items=['AA-1 Inv It', 'BB-2', 'CC-3'])
+    rows = parser.parse_green_toys_ocr_text('timestamp.png', text, verified_image_columns=True)
+    assert rows[0]['item_no'] == 'AA-1 Inv It'
+    assert rows[0]['description'] == 'Toy One'
+    assert rows[0]['quantity'] == 10
+    assert parser._reconcile_green_item(rows[0], {'AA1': [{'item_no': 'AA-1', 'description': 'Toy One'}]}) == 'AA-1 Inv It'
+
+
+def test_column_aligned_ocr_candidate_stays_visible_until_history_or_manual_review(tmp_path, monkeypatch):
+    text = recognize_mock(tmp_path, monkeypatch, items=['ABCOIR', 'BB-2', 'CC-3'])
+    rows = parser.parse_green_toys_ocr_text('timestamp.png', text, verified_image_columns=True)
+    assert len(rows) == 3 and sum(Decimal(str(r['amount_usd'])) for r in rows) == Decimal('60')
+    row = rows[0]
+    assert row['item_no'] == row['_ocr_item_no'] == 'ABCOIR'
+    issues = parser.issues_for_record('green-toys', 'Green Toys', row, '1')
+    issue = next(i for i in issues if i['code'] == 'ocr_product_uncertain')
+    assert issue['field'] == 'product_no' and issue['severity'] == 'blocked' and not issue['can_skip']
+    row['item_no'] = parser._reconcile_green_item(row, {'ABC01R': [{'item_no': 'ABC01R', 'description': 'Toy One'}]})
+    assert row['item_no'] == 'ABC01R' and row['_ocr_item_no'] == 'ABCOIR'
+    assert not any(i['code'] == 'ocr_product_uncertain' for i in parser.issues_for_record('green-toys', 'Green Toys', row, '1'))
+
+
+def test_numeric_cell_retry_requires_two_matching_reads():
+    image = ruled_image()
+    _, _, columns, intervals = ocr._layout(image)
+    class Reader:
+        def __init__(self, tokens):
+            self.tokens = iter(tokens)
+            self.calls = []
+        def read(self, _image, **options):
+            self.calls.append(options)
+            return next(self.tokens)
+    reader = Reader(['3,000', '3.35', '10,050.00'] * 2)
+    result = ocr._read_row_numbers(['3,000', '3235', '10,050.00'], 1, image, columns, intervals[0], reader)
+    assert result == (Decimal('3000'), Decimal('3.35'), Decimal('10050'))
+    assert reader.calls == [{'psm': 7, 'scale': 2}] * 3 + [{'psm': 7, 'scale': 3}] * 3
+    # Both alternatives pass arithmetic and have the same amount; they still
+    # cannot establish a quantity or price when the independent reads disagree.
+    reader = Reader(['10', '2', '20.00', '20', '1', '20.00'])
+    with pytest.raises(ocr.GreenImageError, match='不一致'):
+        ocr._read_row_numbers(['10', '200', '20.00'], 1, image, columns, intervals[0], reader)
+    reader = Reader(['10', '2O', '20.00'])
+    with pytest.raises(ocr.GreenImageError, match='不会自动猜数'):
+        ocr._read_row_numbers(['10', '200', '20.00'], 1, image, columns, intervals[0], reader)
+
+
+def test_numeric_retry_keeps_existing_deadline_and_skips_valid_rows():
+    image = ruled_image()
+    _, _, columns, intervals = ocr._layout(image)
+    reader = ocr._Reader('unused')
+    reader.deadline = 0
+    assert ocr._read_row_numbers(['10', '2', '20.00'], 1, image, columns, intervals[0], reader) == (10, 2, 20)
+    with pytest.raises(ocr.GreenImageError, match='超时'):
+        ocr._read_row_numbers(['10', '200', '20.00'], 1, image, columns, intervals[0], reader)
+
+
+@pytest.mark.parametrize('price,amount', [('3.533', '10.60'), ('100', '300.00')])
+def test_verified_column_price_is_not_rederived_or_scaled(price, amount):
+    text = HEADER + f'\nAA-1  Test Item  3  0  {price}  {amount}\nTotal ${amount}'
+    row = parser.parse_green_toys_ocr_text('image.png', text, verified_image_columns=True)[0]
+    assert Decimal(str(row['unit_price_usd'])) == Decimal(price)
+    assert Decimal(str(row['amount_usd'])) == Decimal(amount)
+
+
+@pytest.mark.parametrize('line', [
+    'AA-1  Test Item  5,000|  0  2.788  13,945.00',
+    'AA-1  Test Item  5,000  0  2.788  13,945.00',
+    'AA-1  Test Item  3,000  0  441  13,27',
+    'AA-1 Test Item 5000 0 2.788 13945.00',
+], ids=['noisy-number', 'contradictory-price', 'lost-decimal', 'lost-columns'])
+def test_image_adapter_never_falls_back_to_legacy_numeric_inference(monkeypatch, line):
+    # Historical text OCR tolerates these artifacts. An image reader output
+    # must never regain those transformations, even if its shape is broken.
+    text = 'PO # 9876\nPO Date 10/1/2026\nDeliver By Date\n' + line + '\nTotal $13,945.00'
+    monkeypatch.setattr(parser, '_ocr_green_toys_image', lambda _path: text)
+    with pytest.raises(parser.HuakangASpecialCustomerError):
+        parser.parse_green_toys_po('actual.png', b'local mock image')
+
+
+@pytest.mark.parametrize('replacement', ['', 'Deliver By Date\n2/30/2026',
+    'Deliver By Date\n1O/10/2026', 'Deliver By Date\nnot-readable',
+    'Deliver By Date 11/10/2026\n12/10/2026\nMemo-Detail',
+    'Deliver By Date 11/10/2026\nnot-readable\nTerms',
+    'Deliver By Date 11/10/2026\nDeliver By Date 12/10/2026'])
+def test_delivery_missing_label_invalid_or_conflicting_is_not_a_blank(replacement):
+    with pytest.raises(ocr.GreenImageError):
+        ocr._metadata(HEADER.replace('Deliver By Date\n11/10/2026', replacement))
 
 
 def test_cell_coordinates_preserve_wrapped_description_and_missing_row():
