@@ -109,7 +109,7 @@ def ui_context(user: AuthContext, factory_id: str) -> dict:
     write = allowed("result_write") and allowed("order_write")
     manage, export = allowed("customer_manage"), allowed("report_export")
     menus = ["dashboard", "sales-schedule", "records", "review", "inspection-summary", "analysis", "suppliers",
-             "daily", "weekly", "monthly", "yearly", "supplier-report", "defectlib", "import", "users"]
+             "daily", "weekly", "monthly", "yearly", "supplier-report", "defectlib", "import"]
     perms = {key: {"v": 1, "e": 0, "a": 0, "m": 0} for key in menus}
     for key in ("records", "review"):
         perms[key].update(e=int(write), a=int(write), m=int(write and manage))
@@ -117,14 +117,13 @@ def ui_context(user: AuthContext, factory_id: str) -> dict:
         perms[key].update(e=int(manage), a=int(manage), m=int(manage))
     perms["review"]["a"] = int(allowed("review"))
     perms["import"] = dict(v=int(write and manage), e=0, a=0, m=int(write and manage))
-    perms["users"] = dict(v=0, e=0, a=0, m=0)
     return {"factory": factory_id, "company": COMPANIES[factory_id], "exportAllowed": export, "summaryImportAllowed": allowed("result_write") and manage and export,
             "weeklyTemplatesEditAllowed": allowed("result_write"),
             "workflow": {"create": allowed("schedule_write") and allowed("order_write"), "edit": allowed("result_write"),
                          "review": allowed("review"), "export": export, "manual": write},
             "inspector": {"id": user.id, "name": user.display_name or user.username},
             "user": {"username": "nexus:" + user.id, "name": user.display_name or user.username,
-                     "role": "viewer", "enabled": True, "perms": perms, "password": None}}
+                     "role": "viewer", "enabled": True, "perms": perms}}
 
 
 async def upstream(method: str, path: str, params: list, body: bytes) -> httpx.Response:
@@ -308,7 +307,8 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         result = await upstream(request.method, asset_path, params, bytes(body))
     if asset_path == "api/bootstrap" and result.status_code == 200:
         payload = result.json()
-        payload["users"] = [ui_context(user, factory_id)["user"]]
+        # An older private service may still return its legacy account data.
+        payload.pop("users", None)
         payload["testEntryIds"] = [r["id"] for r in payload.get("records", []) if qc_workflow.test_entry_allowed(factory_id, r)]
         payload["inspectionPlans"] = inspection_plan_dates(factory_id, payload.get("records", []), payload["testEntryIds"])
         return JSONResponse(payload, headers=NO_CACHE)

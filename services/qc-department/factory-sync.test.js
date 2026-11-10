@@ -38,7 +38,7 @@ test('unsaved content prompts without clearing drafts; busy uploads and queued w
 
 test('factory page survives app initialization RAF after the iframe load bridge',()=>{
  const {dom,w}=page(); const frames=[],pages=[];
- w.document.body.insertAdjacentHTML('beforeend','<div id="loginScreen"></div><div id="appWrapper"></div>');
+ w.document.body.insertAdjacentHTML('beforeend','<div id="appWrapper" style="display:none"></div>');
  w._initSidebar=()=>{};w._renderUserBadge=()=>{};w.applyPermissions=()=>{};
  w.requestAnimationFrame=cb=>frames.push(cb);w.showPage=name=>pages.push(name);
  const app=fs.readFileSync(path.join(__dirname,'app.js'),'utf8');
