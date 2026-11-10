@@ -533,7 +533,10 @@ def test_api_reconciles_changed_po_against_schedule_containing_old_quantity(clie
     changed = create_unified_customer_preview(**changed_args)
     api.mapping._finalize_preview(changed, received_date=args["received_date"], current_user=user(["read", "write"]), factory_id="huaxing")
     conflict = next(i for row in changed["rows"] for i in row["issues"] if i["code"] == "existing_quantity_conflict")
-    assert conflict["can_skip"] is True
+    assert conflict["can_skip"] is False
+    # Ordinary new-order export may not confirm a changed quantity away.
+    with pytest.raises(Exception, match="阻断"):
+        export_unified_customer_schedule(**changed_args)
     keys = [i["skip_key"] for row in changed["rows"] for i in row["issues"] if i.get("can_skip")]
     response = client.post("/api/customer-order-ledger/imports/disney", data={
         "factory_id": "huaxing", "received_date": args["received_date"], "confirmed": "true",

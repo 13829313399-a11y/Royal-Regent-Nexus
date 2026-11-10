@@ -97,8 +97,8 @@ export function useWorkspace() {
     get: () => currentTab.value,
     set: (tab: TabId) => {
       if (tab === currentTab.value || !canNavigate()) return;
-      currentTab.value = tab;
-      selectedPrinter.value = '';
+      // Mount the destination only after navigation is accepted. Its initial
+      // loading state must not block the navigation that opened it.
       void router.replace({ query: { ...router.currentRoute.value.query, tab, printer: undefined } });
     },
   });

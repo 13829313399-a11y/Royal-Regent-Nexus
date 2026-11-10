@@ -8,6 +8,7 @@ import type { InternalQuote } from '@/types/internalQuoteDesk'
 function quote(): InternalQuote {
   return {
     id: 'quote-fx-1',
+    headerRevision: 1,
     fxRmbHkd: 0.85,
     fxHkdUsd: 7.8,
     fxRmbUsd: 7.75,
@@ -48,7 +49,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     await wrapper.get('[data-testid="fx-hkd-usd"]').setValue('7.9')
     await wrapper.get('[data-testid="save-reference-fx"]').trigger('click')
 
-    expect(wrapper.emitted('updateFx')).toEqual([[{ rmbHkd: '0.90', hkdUsd: '7.90' }]])
+    expect(wrapper.emitted('updateFx')).toEqual([[{ revision: 1, rmbHkd: '0.90', hkdUsd: '7.90' }]])
   })
 
   it('hides editing from read-only users and rejects non-positive rates', async () => {
@@ -62,6 +63,42 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(editable.get('[data-testid="save-reference-fx"]').attributes('disabled')).toBeDefined()
     await editable.get('[data-testid="fx-rmb-hkd"]').setValue('0.851')
     expect(editable.text()).toContain('RMB→HKD汇率最多保留 2 位小数')
+  })
+
+  it('includes edited FX in whole-product save without requiring a separate FX save', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: { ...savedPricingQuote(), headerRevision: 7 }, canEditFx: true, canEditMarkup: true } })
+    await wrapper.get('[data-testid="edit-reference-fx"]').trigger('click')
+    await wrapper.get('[data-testid="fx-rmb-hkd"]').setValue('0.84')
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.15')
+    expect(wrapper.vm.getPricingDraft()).toMatchObject({ activeMarkup: 1.15 })
+    expect(wrapper.vm.getFxDraft()).toEqual({ revision: 7, rmbHkd: '0.84', hkdUsd: '7.80' })
+    await wrapper.get('[data-testid="fx-rmb-hkd"]').setValue('0')
+    expect(() => wrapper.vm.getFxDraft()).toThrow('必须大于 0')
+    wrapper.unmount()
+  })
+
+  it('retains newer FX input and acknowledges a save even if the detail refresh is unavailable', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: { ...quote(), headerRevision: 7 }, canEditFx: true } })
+    await wrapper.get('[data-testid="edit-reference-fx"]').trigger('click')
+    await wrapper.get('[data-testid="fx-rmb-hkd"]').setValue('0.84')
+    const submitted = wrapper.vm.getFxDraft()!
+    await wrapper.get('[data-testid="fx-rmb-hkd"]').setValue('0.83')
+    await wrapper.setProps({ quote: { ...quote(), fxRmbHkd: .84, headerRevision: 8, referenceSnapshotId: 'REF-2' } })
+    wrapper.vm.acceptSavedFx(submitted, 8)
+    expect(wrapper.vm.getFxDraft()).toEqual({ revision: 8, rmbHkd: '0.83', hkdUsd: '7.80' })
+    wrapper.vm.acceptSavedFx(wrapper.vm.getFxDraft()!, 9)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.vm.getFxDraft()).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('keeps the original header revision when another user changes FX during local editing', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: { ...quote(), headerRevision: 7 }, canEditFx: true } })
+    await wrapper.get('[data-testid="edit-reference-fx"]').trigger('click')
+    await wrapper.get('[data-testid="fx-rmb-hkd"]').setValue('0.84')
+    await wrapper.setProps({ quote: { ...quote(), fxRmbHkd: .88, headerRevision: 8, referenceSnapshotId: 'REF-2' } })
+    expect(wrapper.vm.getFxDraft()).toEqual({ revision: 7, rmbHkd: '0.84', hkdUsd: '7.80' })
+    wrapper.unmount()
   })
 
   it('shows live quote price, editable markup, saved cost baseline, and proximity color depth', async () => {

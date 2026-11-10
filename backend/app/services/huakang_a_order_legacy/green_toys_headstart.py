@@ -279,10 +279,11 @@ def _ocr_green_toys_image(path: Path) -> str:
 
 
 def _normalize_green_item(value: str) -> str:
-    item = re.sub(r"[^A-Z0-9-]", "", value.upper())
+    parts = value.split()
+    item = re.sub(r"[^A-Z0-9-]", "", (parts[0] if parts else '').upper())
     item = re.sub(r"^(DTK|FTK)OIR$", r"\g<1>01R", item)
     item = re.sub(r"^RBHI-", "RBH1-", item)
-    return item
+    return ' '.join([item, *parts[1:]])
 
 
 def _green_numeric_token(value: str) -> float | int | None:
@@ -310,7 +311,7 @@ def _green_record(file_name, po_no, po_date, delivery, item, description, quanti
         'factory_commit_date': delivery, 'unit_price_usd': unit_price,
         'amount_usd': round(float(quantity) * float(unit_price), 2) if quantity and unit_price else None,
         'country': '美國', 'transportation_mode': "40'YT", 'parse_warnings': problems,
-        'parse_ok': bool(po_no and item and quantity and delivery and unit_price),
+        'parse_ok': bool(po_no and item and quantity and unit_price),
     }
 
 
@@ -324,6 +325,7 @@ def _green_decimal(value: str) -> Decimal:
 def parse_green_toys_html(file_name: str, content: bytes) -> list[dict[str, Any]]:
     """Read static table evidence only; never execute scripts or fetch resources."""
     from lxml import html
+    from .green_toys_image_ocr import valid_green_item
     document = html.fromstring(content, parser=html.HTMLParser(no_network=True))
     for element in document.xpath('//script | //style'):
         element.drop_tree()
@@ -339,8 +341,9 @@ def parse_green_toys_html(file_name: str, content: bytes) -> list[dict[str, Any]
         raise HuakangASpecialCustomerError('Green Toys HTML 的 PO号或日期缺失/不唯一')
     po_no = next(iter(labels['PO #']))
     po_date = _iso_date(next(iter(labels['PO Date'])))
-    delivery = _iso_date(next(iter(labels['Deliver By Date'])))
-    if not re.fullmatch(r'\d{4,}', po_no) or not po_date or not delivery:
+    raw_delivery = next(iter(labels['Deliver By Date']))
+    delivery = _iso_date(raw_delivery)
+    if not re.fullmatch(r'\d{4,}', po_no) or not po_date or (raw_delivery and not delivery):
         raise HuakangASpecialCustomerError('Green Toys HTML 的 PO号或日期无效')
     headers = ['Item', 'Description', 'Order Quantity', 'Received', 'Inventory Detail', 'Unit Price', 'Amount']
     tables = [table for table in document.xpath('//table')
@@ -363,7 +366,7 @@ def parse_green_toys_html(file_name: str, content: bytes) -> list[dict[str, Any]
         if not header_seen or total_seen or len(values) != 7:
             raise HuakangASpecialCustomerError('Green Toys HTML 存在无法确认的明细行')
         item, description = values[:2]
-        if not re.fullmatch(r'[A-Z0-9][A-Z0-9-]{2,30}', item) or not description:
+        if not valid_green_item(item) or not description:
             raise HuakangASpecialCustomerError('Green Toys HTML 明细货号/品名不完整')
         quantity, unit_price, amount = (_green_decimal(values[i]) for i in (2, 5, 6))
         if quantity <= 0 or quantity != quantity.to_integral_value() or unit_price <= 0:
@@ -390,7 +393,13 @@ def parse_green_toys_po(file_name: str, content: bytes) -> list[dict[str, Any]]:
 def parse_green_toys_ocr_text(
     file_name: str,
     text: str,
+    *,
+    verified_image_columns: bool = False,
 ) -> list[dict[str, Any]]:
+    # The image reader validates physical columns, numeric cells and totals
+    # before returning text. Historical raw OCR text callers still use their
+    # existing normalization; spacing alone does not identify that contract.
+    from .green_toys_image_ocr import valid_green_item, _row_numbers, GreenImageError
     po_numbers = set(re.findall(r"^\s*PO\s*(?:#|No\.?|=)\s*[:#]?\s*(\d{4,})\b", text, re.I | re.M))
     if len(po_numbers) != 1:
         raise HuakangASpecialCustomerError('Green Toys 图片 PO号缺失/不唯一；不得用文件名代替 PO号')
@@ -406,48 +415,70 @@ def parse_green_toys_ocr_text(
     records: list[dict[str, Any]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        item_match = re.match(r"([A-Z0-9][A-Z0-9,.:\-]{2,20})(?:\s+(.+))?$", line, re.IGNORECASE)
-        if not item_match:
-            continue
-        raw_item = item_match.group(1)
+        structured = re.split(r'\s{2,}', line)
+        structured_row = len(structured) == 6 and valid_green_item(structured[0])
+        if structured_row:
+            raw_item, rest = structured[0], '  '.join(structured[1:])
+        else:
+            item_match = re.match(r"([A-Z0-9][A-Z0-9,.:\-]{2,20})(?:\s+(.+))?$", line, re.IGNORECASE)
+            if not item_match:
+                continue
+            raw_item, rest = item_match.group(1), item_match.group(2) or ''
         item_no = _normalize_green_item(raw_item)
-        if not re.search(r'[A-Z]', item_no, re.I) or not re.search(r'\d', item_no):
+        if not re.search(r'[A-Z]', item_no, re.I) or (not re.search(r'\d', item_no) and len(structured) != 6):
             continue
-        rest = item_match.group(2) or ''
-        # A right-hand numeric tail supports both single and preserved spacing.
-        tail = re.fullmatch(r"(.+?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,.]*)\s+(\$?[\d,.]+)", rest)
-        spans = ([raw_item, tail[1], tail[2], tail[3], tail[4], tail[5]] if tail else
-                 [raw_item] + [part.strip(' |') for part in re.split(r'\s{2,}', rest) if part.strip(' |')])
-        quantity_index = next(
-            (
-                index
-                for index, part in enumerate(spans[1:], start=1)
-                if re.fullmatch(r"[\d,]+[|\]°]?", part.strip())
-                and (_green_numeric_token(part) or 0) > 0
-            ),
-            None,
-        )
-        quantity = _green_numeric_token(spans[quantity_index]) if quantity_index is not None else None
-        trailing = [
-            number
-            for part in spans[quantity_index + 1 :]
-            if (number := _green_numeric_token(part)) not in (None, 0)
-        ] if quantity_index is not None else []
-        unit_price = float(trailing[0]) if trailing else None
-        if unit_price is not None and unit_price >= 100 and float(unit_price).is_integer():
-            unit_price /= 100
-        if len(trailing) >= 2 and float(quantity):
-            printed_amount = float(trailing[1])
-            amount_unit_price = round(printed_amount / float(quantity), 4)
-            if unit_price is not None and (abs(amount_unit_price - unit_price) <= 0.02
-                    or ('.' not in spans[quantity_index + 2] and abs(amount_unit_price - unit_price / 10) <= 0.0001)):
-                unit_price = amount_unit_price
-        if unit_price is not None and unit_price > 20:
-            unit_price = None
-        description = re.sub(r"^[‘'\[]+", "", " ".join(spans[1:quantity_index]) if quantity_index is not None else rest).strip()
+        if verified_image_columns and not structured_row:
+            raise HuakangASpecialCustomerError('Green Toys 图片明细列不完整，无法安全保存；请核对原图或上传 HTML')
+        if verified_image_columns:
+            try:
+                raw_quantity, raw_price, raw_amount = _row_numbers(
+                    [structured[2], structured[4], structured[5]], len(records) + 1)
+            except GreenImageError as exc:
+                raise HuakangASpecialCustomerError(str(exc)) from exc
+            quantity, unit_price = int(raw_quantity), float(raw_price)
+            description = structured[1]
+        else:
+            # A right-hand numeric tail supports both single and preserved spacing.
+            tail = re.fullmatch(r"(.+?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,.]*)\s+(\$?[\d,.]+)", rest)
+            spans = ([raw_item, tail[1], tail[2], tail[3], tail[4], tail[5]] if tail else
+                     [raw_item] + [part.strip(' |') for part in re.split(r'\s{2,}', rest) if part.strip(' |')])
+            quantity_index = next(
+                (
+                    index
+                    for index, part in enumerate(spans[1:], start=1)
+                    if re.fullmatch(r"[\d,]+[|\]°]?", part.strip())
+                    and (_green_numeric_token(part) or 0) > 0
+                ),
+                None,
+            )
+            quantity = _green_numeric_token(spans[quantity_index]) if quantity_index is not None else None
+            trailing = [
+                number
+                for part in spans[quantity_index + 1 :]
+                if (number := _green_numeric_token(part)) not in (None, 0)
+            ] if quantity_index is not None else []
+            unit_price = float(trailing[0]) if trailing else None
+            if unit_price is not None and unit_price >= 100 and float(unit_price).is_integer():
+                unit_price /= 100
+            if len(trailing) >= 2 and float(quantity):
+                printed_amount = float(trailing[1])
+                amount_unit_price = round(printed_amount / float(quantity), 4)
+                if unit_price is not None and (abs(amount_unit_price - unit_price) <= 0.02
+                        or ('.' not in spans[quantity_index + 2] and abs(amount_unit_price - unit_price / 10) <= 0.0001)):
+                    unit_price = amount_unit_price
+            if unit_price is not None and unit_price > 20:
+                unit_price = None
+            description = re.sub(r"^[‘'\[]+", "", " ".join(spans[1:quantity_index]) if quantity_index is not None else rest).strip()
         line_number = len(records) + 1
         warnings = ["图片 PO 使用 OCR 识别，请复核货号、数量、价格和走货期"]
         record = _green_record(file_name, po_no, po_date, delivery, item_no, description, quantity, unit_price, warnings)
+        if verified_image_columns:
+            record['amount_usd'] = float(raw_amount)
+        # A complete, column-aligned row must not disappear because OCR read
+        # zero/one as O/I. Keep the raw candidate for history reconciliation or
+        # explicit manual correction; an unverified candidate cannot export.
+        if not re.search(r'\d', item_no):
+            record['_unverified_ocr_item'] = True
         record['customer_po'] = f'{po_no}-{line_number}' if po_no else ''
         records.append(record)
     if records:
@@ -481,7 +512,7 @@ def parse_green_toys_image(file_name: str, content: bytes) -> list[dict[str, Any
         path = Path(temp_dir) / f"po{suffix}"
         path.write_bytes(content)
         text = _ocr_green_toys_image(path)
-        records = parse_green_toys_ocr_text(file_name, text)
+        records = parse_green_toys_ocr_text(file_name, text, verified_image_columns=True)
         # Structured OCR emits three metadata lines, one per physical detail,
         # and the printed total. Never silently discard an identified row.
         if len(records) != len(text.splitlines()) - 4 or any(not row['parse_ok'] for row in records):
@@ -538,6 +569,10 @@ def _reconcile_green_item(
     raw_item = _item_key(record.get("item_no"))
     if raw_item in item_rows:
         return _text(item_rows[raw_item][0]["item_no"])
+    if len(_text(record.get('item_no')).split()) > 1:
+        # A complete space-separated suffix is part of the source identity.
+        # Matching a product description cannot authorize dropping that suffix.
+        return _text(record.get('item_no'))
     source_description = _description_key(record.get("description"))
     if not source_description:
         return _text(record.get("item_no"))
@@ -763,6 +798,14 @@ def issues_for_record(
         "未识别 Green Toys PO 明细": "row",
     }
     issues: list[dict[str, Any]] = []
+    if (record.get('_unverified_ocr_item') and
+            _item_key(record.get('item_no')) == _item_key(record.get('_ocr_item_no'))):
+        issues.append({
+            'severity': 'blocked', 'code': 'ocr_product_uncertain', 'field': 'product_no',
+            'requires_manual_correction': True,
+            'message': '图片货号中的数字可能被识别为字母，且没有可靠历史匹配；请按原单核对并更正完整货号',
+            'can_skip': False, 'skip_key': f'{row_id}:ocr_product_uncertain', 'skip_label': '',
+        })
     for index, message in enumerate(record.get("parse_warnings") or [], start=1):
         field = field_by_message.get(_text(message), "row")
         is_ocr_review = "OCR" in _text(message)
@@ -770,7 +813,7 @@ def issues_for_record(
             f"missing_{field}" if field != "row" else f"parse_warning_{index}"
         )
         issues.append({
-            "severity": "warning" if is_ocr_review else "blocked",
+            "severity": "warning" if is_ocr_review or (customer_code == 'green-toys' and field == 'requested_ship_date') else "blocked",
             "code": code,
             "field": field,
             "message": _text(message) or "PO 字段需要人工复核",

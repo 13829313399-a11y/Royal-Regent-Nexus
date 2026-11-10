@@ -61,16 +61,19 @@ describe('customer order center static frontend', () => {
     customerOrderApiMock.synchronizeWarehouseSchedule.mockResolvedValue({ batch_id: 'warehouse-retry', duplicate: false, message: '排期已自动同步到纸箱仓库' })
   })
 
-  async function mountDickieExportPreview(options: { withWarning?: boolean; warehouseError?: boolean } = {}) {
-    const rows = options.withWarning ? [{
-      id: 'synthetic-warning', status: 'warning', status_label: '需复核', received_date: '2026-11-05',
+  async function mountDickieExportPreview(options: { withWarning?: boolean; warehouseError?: boolean; pendingInformation?: boolean; quantityConflict?: boolean; otherBlocker?: boolean } = {}) {
+    const rows = options.withWarning || options.quantityConflict ? [{
+      id: 'synthetic-warning', status: options.quantityConflict ? 'blocked' : 'warning', status_label: '需复核', received_date: '2026-11-05',
       po_no: 'SYNTHETIC-PO', contract_no: 'SYNTHETIC-CONTRACT', customer_country: 'Dickie / 测试',
       customer_name: 'Dickie', country: '测试', product_no: 'SYNTHETIC-ITEM',
       product_name_zh: '合成测试玩具', product_name_en: 'Synthetic test toy', quantity: '96', units_per_carton: '8',
       carton_count: '12', standard: '', unit_price_hkd: '1', amount_hkd: '96', packaging: '', line_q: '', customer_q: '',
       requested_ship_date: '2027-01-01', input_template: 'DICKIE', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
       item_sheet_name: 'ITEM表', source_po_file_name: 'release.pdf', lineage: {},
-      issues: [{ severity: 'warning', code: 'missing_date_code', field: 'date_code', message: '日期码可选补录',
+      issues: options.quantityConflict ? [
+        { severity: 'blocked', code: 'existing_quantity_conflict', field: 'quantity', message: '相同订单数量不同', can_skip: false, skip_key: 'quantity-conflict', skip_label: '', can_edit: false },
+        ...(options.otherBlocker ? [{ severity: 'blocked', code: 'order_type_unresolved', field: 'order_type', message: '订单类型无法确认', can_skip: false, skip_key: 'order-type', skip_label: '', can_edit: false }] : []),
+      ] : [{ severity: 'warning', code: 'missing_date_code', field: 'date_code', message: '日期码可选补录', pending_information: options.pendingInformation,
         can_skip: true, skip_key: 'synthetic-date-code', skip_label: '', can_edit: true, edit_field: 'date_code', edit_label: '日期码' }],
     }] : []
     customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
@@ -97,6 +100,66 @@ describe('customer order center static frontend', () => {
     await wrapper.setProps({ activeSection: 'preview' })
     return wrapper
   }
+
+  it.each([false, true])('only saves an existing quantity conflict against the selected matching order (other blocker: %s)', async (otherBlocker) => {
+    const line = { id: 'matching', factory_id: 'huaxing', customer_code: 'dickie', customer_name: 'Dickie', reference_no: 'SYNTHETIC-CONTRACT', product_no: 'SYNTHETIC-ITEM', quantity: '48', shipped_quantity: '0', remaining_quantity: '48', status: 'active', version: 1, revision: 7, dispatch_status: 'unsent', data: {}, created_at: '', updated_at: '' }
+    customerOrderLedgerApiMock.list.mockResolvedValueOnce({ items: [line, { ...line, id: 'other-reference', reference_no: 'OTHER-ORDER' }], total: 2, page: 1, page_size: 50, customers: [] })
+    if (!otherBlocker) customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 0, existing_count: 0, reconciled_count: 1 })
+    const wrapper = await mountDickieExportPreview({ quantityConflict: true, otherBlocker })
+    onTestFinished(() => wrapper.unmount())
+    const save = wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary')
+    const generate = wrapper.get('[data-testid="order-preview"] > .view-heading .button--primary')
+    expect(save.attributes('disabled')).toBeDefined()
+    expect(generate.attributes('disabled')).toBeDefined()
+    const card = wrapper.get('[data-testid="order-reconciliation-card"]')
+    await card.get('input[type=checkbox]').setValue(true)
+    await flushPromises()
+    await card.get('textarea').setValue('核对原订单数量修订')
+    expect(save.attributes('disabled')).toBeDefined()
+    await card.get('select').setValue('other-reference')
+    expect(save.attributes('disabled')).toBeDefined()
+    await card.get('select').setValue('matching')
+    expect(generate.attributes('disabled')).toBeDefined()
+    if (otherBlocker) {
+      expect(save.attributes('disabled')).toBeDefined()
+      await save.trigger('click')
+      expect(customerOrderLedgerApiMock.importConfirmed).not.toHaveBeenCalled()
+    } else {
+      expect(save.attributes('disabled')).toBeUndefined()
+      await save.trigger('click')
+      await flushPromises()
+      const body = customerOrderLedgerApiMock.importConfirmed.mock.calls[0]![1] as FormData
+      expect(body.get('reconcile_line_id')).toBe('matching')
+      expect(body.get('expected_revision')).toBe('7')
+      expect(body.get('skipped_issue_keys')).toBe('[]')
+    }
+    expect(customerOrderApiMock.exportDickieBatch).not.toHaveBeenCalled()
+  })
+
+  it('allows pending information without a skip or reason and still audits optional corrections', async () => {
+    customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 1, existing_count: 0, reconciled_count: 0 })
+    const wrapper = await mountDickieExportPreview({ withWarning: true, pendingInformation: true })
+    onTestFinished(() => wrapper.unmount())
+    const pending = wrapper.get('[data-testid="pending-information"]')
+    expect(pending.text()).toContain('资料待补：1 项')
+    expect(pending.text()).toContain('日期码可选补录')
+    expect(pending.text()).toContain('不要求逐项确认')
+    const save = wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary')
+    expect(save.attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="confirmation-reason-card"]').exists()).toBe(false)
+    await save.trigger('click')
+    await flushPromises()
+    const body = customerOrderLedgerApiMock.importConfirmed.mock.calls[0]![1] as FormData
+    expect(body.get('skipped_issue_keys')).toBe('[]')
+    expect(body.get('manual_overrides')).toBe('[]')
+    await wrapper.get('[data-testid="open-field-resolution"]').trigger('click')
+    const dialog = wrapper.get('[data-testid="blocker-resolution-dialog"]')
+    expect(dialog.find('input[type="checkbox"]').exists()).toBe(false)
+    await dialog.get('input[type="text"]').setValue('00042')
+    expect(wrapper.find('[data-testid="pending-information"]').exists()).toBe(false)
+    expect(save.attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('确认原因')
+  })
 
   it.each(['save', 'export', 'sync', 'parse'] as const)('keeps file actions mutually exclusive while %s is pending, including direct repeated events', async action => {
     const wrapper = await mountDickieExportPreview({ warehouseError: true })

@@ -24,6 +24,39 @@ def editable(row):
     return data
 
 
+def test_manual_receipt_checks_only_the_selected_special_request_paper(monkeypatch):
+    with make_client(monkeypatch) as client:
+        place = setup(client)
+        body = create_body()
+        body['lines'].append({**body['lines'][0], 'packaging_type': '隔板', 'specification': '20*10'})
+        row = ok(client.post(BASE, json=body), 201)
+        row = ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
+        row = accept(client, row)
+        row = ship(client, row, quantity="10")
+        login_as(client, "admin")
+        row = ok(client.get(BASE + f"/{row['id']}", params={"factory_id": FACTORY}))
+        path = BASE + f"/{row['id']}/manual-receive"
+        blocked = client.post(path, json=manual_body(row, place))
+        assert blocked.status_code == 409
+        assert blocked.json()['detail']['code'] == 'EXISTING_DELIVERY_PENDING'
+        manual = manual_body(row, place)
+        manual['lines'][0]['line_id'] = row['lines'][1]['id']
+        row = ok(client.post(path, json=manual))
+        assert [Decimal(line['received_quantity']) for line in row['lines']] == [0, 10]
+
+        bridge = manual_body(row, place)
+        bridge['formal_lines'] = []
+        bridge['special_requests'] = [dict(id=row['id'], expected_revision=row['revision'], lines=bridge.pop('lines'))]
+        endpoint = '/api/carton-unified-deliveries/warehouse-receive'
+        blocked = client.post(endpoint, json=bridge)
+        assert blocked.status_code == 409 and '纸品已有待收' in blocked.text
+        bridge['special_requests'][0]['lines'][0]['line_id'] = row['lines'][1]['id']
+        saved = ok(client.post(endpoint, json=bridge))
+        assert len(saved['receipts']) == 1 and saved['receipts'][0]['status'] == 'POSTED'
+        latest = ok(client.get(BASE + f"/{row['id']}", params={"factory_id": FACTORY}))
+        assert [Decimal(line['received_quantity']) for line in latest['lines']] == [0, 20]
+
+
 def test_manual_note_posts_once_with_unknown_vendor_prices_and_supplier_confirmation(monkeypatch):
     with make_client(monkeypatch) as client:
         place = setup(client)

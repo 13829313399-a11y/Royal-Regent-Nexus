@@ -108,7 +108,7 @@ async def quick_upload(request: Request, factory_id: str, metadata: str = Form(.
 
 @router.get('/api/carton-mark/assets/quick/candidates')
 def quick_candidates(factory_id: str, contract_number: str = Query('',max_length=128), owner_department: str | None = None,
-    target_scope: str = Query('ALL',pattern='^(ALL|PENDING_SCHEDULE)$'), asset_id: str = Query('',max_length=96),
+    target_scope: str = Query('ALL',pattern='^(ALL|PENDING_SCHEDULE|ORDERS)$'), asset_id: str = Query('',max_length=96),
     db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
     from app.services import carton_asset_targets
     department,_=asset_access.owner(db,user,factory_id,owner_department,supplier=owner_department=='supplier')

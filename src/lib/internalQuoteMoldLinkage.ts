@@ -2,7 +2,7 @@ import { normalizeInternalQuotePayload, type EngineeringPayload, type Engineerin
 import { moldingMaterialFamily, normalizedReferenceToken as token } from './internalQuoteMoldingReferences'
 import { createRandomUuid } from './randomUuid'
 
-const genericMaterials = new Set(['ABS', '透明ABS', 'HIPS', 'GP', 'PP', '1#PP', '透明PP', 'POM', 'PVC', 'LDPE', 'HDPE', 'TPR', 'K料', 'PC料'])
+const genericMaterials = new Set(['ABS', '透明ABS', 'C-ABS', 'HIPS', 'GP', 'PP', '1#PP', '透明PP', 'C-PP', 'POM', 'PVC', 'LDPE', 'HDPE', 'TPR', 'K料', 'PC料'])
 const text = (value: unknown) => String(value ?? '').trim()
 const newId = (prefix: string) => `${prefix}-${createRandomUuid()}`
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
@@ -145,7 +145,11 @@ export function linkEngineeringMolding(engineering: EngineeringPayload, molding:
         : genericMaterials.has(material) && genericMaterials.has(grade) && moldingMaterialFamily(material) === moldingMaterialFamily(grade)
           ? (material.length >= grade.length ? mold.material : mold.material_type) : mold.part_source_id && !material ? mold.material_type : ''
     if (generic) {
-      if (!row.grade || moldingMaterialFamily(generic) !== moldingMaterialFamily(row.material)) {
+      // Match server prefill: C-PP/C-ABS are resin families, not concrete grades.
+      // Refreshing Engineering must retain a Molding selection in that family;
+      // a historical family stored as a grade still needs a frozen-price choice.
+      if (!text(row.grade) || moldingMaterialFamily(generic) !== moldingMaterialFamily(row.material)
+        || moldingMaterialFamily(generic) === moldingMaterialFamily(row.grade)) {
         syncText('material', generic); row.grade = ''
       }
     } else { syncText('material', mold.material); syncText('grade', mold.material_type) }

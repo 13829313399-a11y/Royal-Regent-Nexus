@@ -201,6 +201,69 @@ describe('internal quote desk real API state', () => {
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
   })
 
+  it.each([false, true])('saves sidebar FX with department edits and acknowledges the receipt (refresh failure: %s)', async (refreshFails) => {
+    const store = useInternalQuoteDeskStore()
+    await store.loadQuote('quote-1')
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: store.getQuoteById('quote-1')!, canEditFx: true, canEditMarkup: true } })
+    await wrapper.get('[data-testid="edit-reference-fx"]').trigger('click')
+    await wrapper.get('[data-testid="fx-rmb-hkd"]').setValue('0.90')
+    const fx = wrapper.vm.getFxDraft()!
+    expect(wrapper.vm.getPricingDraft()).toBeUndefined()
+    const saved = { ...section('engineering', 1), revision: 3, payload: { source: 'new' } }
+    const receipt = quote({ header_revision: 5, reference_snapshot_id: 'REF-2', sections: [saved] })
+    apiMock.saveWholeProduct.mockResolvedValue({ quote: receipt, sections: [saved] })
+    apiMock.get.mockResolvedValueOnce(quote())
+    if (refreshFails) apiMock.get.mockRejectedValueOnce(new Error('detail unavailable'))
+    else apiMock.get.mockResolvedValueOnce(receipt)
+    apiMock.getReferenceSnapshot.mockResolvedValue({ snapshot: { fx: { rmb_hkd: '.90', hkd_usd: '7.81' } } })
+    const result = await store.saveWholeProductSections('quote-1', [
+      { sectionCode: 'engineering', revision: 1, payload: { source: 'new' }, baselinePayload: { source: 'backend' } },
+    ], fx)
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledWith('quote-1', [
+      { sectionCode: 'engineering', revision: 1, payload: { source: 'new' } },
+    ], undefined, { revision: 2, rmbHkd: '0.90', hkdUsd: '7.81' })
+    expect(apiMock.updateReferenceFx).not.toHaveBeenCalled()
+    expect(result.savedHeaderRevision).toBe(5)
+    expect(store.getQuoteById('quote-1')).toMatchObject({ fxRmbHkd: .9, headerRevision: 5, referenceSnapshotId: 'REF-2' })
+    await wrapper.setProps({ quote: store.getQuoteById('quote-1')! })
+    wrapper.vm.acceptSavedFx(fx, result.savedHeaderRevision!)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    if (refreshFails) expect(store.refreshWarning).toContain('已成功保存')
+    wrapper.unmount()
+  })
+
+  it('saves an existing dirty department after a separate FX recalculation advances its revision', async () => {
+    const store = useInternalQuoteDeskStore()
+    await store.loadQuote('quote-1')
+    const draft = { sectionCode: 'engineering' as const, revision: 1, payload: { source: 'new' }, baselinePayload: { source: 'backend' } }
+    const recalculated = { ...section('engineering', 1), revision: 2 }
+    const updated = quote({ header_revision: 3, reference_snapshot_id: 'REF-2', sections: [recalculated] })
+    apiMock.updateReferenceFx.mockResolvedValueOnce(updated)
+    apiMock.get.mockResolvedValue(updated)
+    apiMock.getReferenceSnapshot.mockResolvedValue({ snapshot: { fx: { rmb_hkd: '.90', hkd_usd: '7.90' } } })
+    await store.updateReferenceFx('quote-1', 2, '.90', '7.90')
+    apiMock.saveWholeProduct.mockResolvedValueOnce({ quote: updated, sections: [{ ...recalculated, revision: 3, payload: draft.payload }] })
+    await store.saveWholeProductSections('quote-1', [draft])
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledWith('quote-1', [{ sectionCode: 'engineering', revision: 2, payload: draft.payload }])
+  })
+
+  it('retains the FX draft after a rejected atomic save without an independent FX write', async () => {
+    const store = useInternalQuoteDeskStore()
+    await store.loadQuote('quote-1')
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: store.getQuoteById('quote-1')!, canEditFx: true } })
+    await wrapper.get('[data-testid="edit-reference-fx"]').trigger('click')
+    await wrapper.get('[data-testid="fx-rmb-hkd"]').setValue('0.90')
+    const fx = wrapper.vm.getFxDraft()!
+    apiMock.saveWholeProduct.mockRejectedValueOnce(new Error('报价头版本冲突'))
+    await expect(store.saveWholeProductSections('quote-1', [
+      { sectionCode: 'engineering', revision: 1, payload: { source: 'new' }, baselinePayload: { source: 'backend' } },
+    ], fx)).rejects.toThrow('报价头版本冲突')
+    expect(wrapper.vm.getFxDraft()).toEqual(fx)
+    expect(store.getQuoteById('quote-1')!.fxRmbHkd).toBe(.86)
+    expect(apiMock.updateReferenceFx).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('keeps server formula readiness even when the header is current and summary has no formula warning', async () => {
     const store = useInternalQuoteDeskStore()
     const source = quote({ current_formula_version: 'rr2-2026-v1', formula_recalculation_required: true })
@@ -396,8 +459,8 @@ describe('internal quote desk real API state', () => {
     expect(loaded?.rr2CostSummary.t1.filter((item) => item.display !== false).map((item) => item.label)).toEqual(['货价', '料价', '吹气', '搪胶', '车发', '车衣', '五金', '电子', '马达', '吸塑', '胶袋'])
     expect(loaded?.rr2CostSummary.t2.map((item) => item.label)).toEqual(['彩盒/内咭', '未减税前码数', '减税后码数', '电池', '利宝', '电镀', '其他外购', '纸箱', '运费', '吊柜费', '杂项'])
     expect(loaded?.rr2CostSummary.t3.map((item) => item.label)).toEqual(['啤工', '喷油工', '油漆', '装配工', '不含人工成本', '人工比例', '毛利', '毛利率', '利润', '利润率', '总成本'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类（不计税）', '车衣类（不计税）', '吸塑类6%', '运费类9%', '含税13%类'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 3, null, null, 6, 8.26, 11.5])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '吸塑类6%', '运费类9%', '含税13%类'])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 6, 8.26, 11.5])
   })
 
   it('merges legacy imported and domestic molding material values into one visible material price', async () => {
@@ -439,7 +502,7 @@ describe('internal quote desk real API state', () => {
     expect(loaded?.rr2CostSummary.t1.find((item) => item.key === 'dom_mat')?.display).toBe(false)
   })
 
-  it('preserves an authoritative non-applicable sewing material tax row', async () => {
+  it('hides a non-applicable sewing material tax row', async () => {
     apiMock.getSummary.mockResolvedValueOnce({
       factory_price_hkd: '88.8000',
       rr2_cost_summary: {
@@ -468,16 +531,10 @@ describe('internal quote desk real API state', () => {
     const loaded = await store.loadQuote('quote-1')
     const sewingTax = loaded?.rr2CostSummary.t4.find((item) => item.key === 'sewcloth13')
 
-    expect(sewingTax).toEqual({
-      key: 'sewcloth13',
-      label: '车衣类（不计税）',
-      amountHkd: 10,
-      ratePercent: null,
-      deductionHkd: null,
-    })
+    expect(sewingTax).toBeUndefined()
   })
 
-  it('keeps sewing tax disabled for Huakang C/D as returned by the server', async () => {
+  it('displays authoritative Huakang C/D material-only tax', async () => {
     apiMock.getSummary.mockResolvedValueOnce({
       factory_price_hkd: '88.8000',
       rr2_cost_summary: {
@@ -488,10 +545,10 @@ describe('internal quote desk real API state', () => {
         t3: [],
         t4: [{
           key: 'sewcloth13',
-          label: '车衣类（不计税）',
+          label: '车衣材料13%',
           amount_hkd: '15.0000',
-          rate_percent: null,
-          deduction_hkd: null,
+          rate_percent: '11.5000',
+          deduction_hkd: '1.7250',
         }],
         totals: {
           rmb_purchase_cost_hkd: '18.0000',
@@ -508,10 +565,10 @@ describe('internal quote desk real API state', () => {
 
     expect(sewingTax).toEqual({
       key: 'sewcloth13',
-      label: '车衣类（不计税）',
+      label: '车衣材料13%',
       amountHkd: 15,
-      ratePercent: null,
-      deductionHkd: null,
+      ratePercent: 11.5,
+      deductionHkd: 1.725,
     })
   })
 
@@ -537,6 +594,18 @@ describe('internal quote desk real API state', () => {
 
     const loaded = await store.loadQuote('quote-1')
 
+    expect(loaded?.rr2CostSummary.shippingPricing.miscRatio).toBe(.03)
+    expect(loaded?.rr2CostSummary.shippingPricing.settlement).toBe(.97)
+  })
+
+  it('uses the quote frozen commercial defaults when summary pricing is not populated', async () => {
+    apiMock.getReferenceSnapshot.mockResolvedValueOnce({ snapshot: {
+      fx: { rmb_hkd: '0.84', hkd_usd: '7.8', rmb_usd: '7.75' },
+      misc_ratio: '0.03', settlement: '0.97',
+    } })
+    apiMock.getSummary.mockResolvedValueOnce({ factory_price_hkd: '0.0000' })
+    const loaded = await useInternalQuoteDeskStore().loadQuote('quote-1')
+    expect(loaded?.fxRmbHkd).toBe(.84)
     expect(loaded?.rr2CostSummary.shippingPricing.miscRatio).toBe(.03)
     expect(loaded?.rr2CostSummary.shippingPricing.settlement).toBe(.97)
   })

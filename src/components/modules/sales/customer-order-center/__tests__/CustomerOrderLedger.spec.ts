@@ -25,6 +25,36 @@ function mountLedger() {
 
 describe('CustomerOrderLedger', () => {
   beforeEach(() => { vi.clearAllMocks() })
+  it('shows an undated saved order and allows dispatch only after the amended date is saved', async () => {
+    api.capabilities.mockResolvedValue({ read: true, write: true, dispatch: true })
+    const undated = { ...line, data: { requested_ship_date: '' } }
+    api.list.mockResolvedValue({ items: [undated], total: 1, page: 1, page_size: 50, customers: [] })
+    api.detail.mockResolvedValue({ line: undated, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂' } })
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain('待补')
+    await wrapper.get('button.ledger__link').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid=pending-delivery-date]').text()).toContain('订单已保留')
+    const dispatch = wrapper.findAll('button').find(button => button.text() === '发送订单')!
+    expect(dispatch.attributes('disabled')).toBeDefined()
+    const amend = wrapper.findAll('section').find(section => section.find('h4').text() === '修改订单')!
+    await amend.get('input[type=date]').setValue('2027-01-01')
+    expect(dispatch.attributes('disabled')).toBeDefined()
+    dispatch.element.dispatchEvent(new Event('click'))
+    await flushPromises()
+    expect(api.dispatch).not.toHaveBeenCalled()
+    await amend.findAll('textarea')[1]!.setValue('客户已确认交期')
+    api.amend.mockResolvedValue(line)
+    const dated = { ...line, revision: 5, data: { requested_ship_date: '2027-01-01' } }
+    api.detail.mockResolvedValue({ line: dated, versions: [], dispatches: [], shipments: [], sources: [] })
+    await amend.findAll('button').find(button => button.text() === '保存修改')!.trigger('click')
+    await flushPromises()
+    expect(api.amend).toHaveBeenCalledWith(line.id, 'huaxing', expect.objectContaining({ requested_ship_date: '2027-01-01', expected_revision: 4 }))
+    expect(wrapper.find('[data-testid=pending-delivery-date]').exists()).toBe(false)
+    expect(dispatch.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
   it('opens a linked record outside the current list and keeps keyboard focus inside its detail', async () => {
     api.capabilities.mockResolvedValue({ read: true, write: false, dispatch: false, shipment_confirm: false })
     api.list.mockResolvedValue({ items: [], total: 70, page: 1, page_size: 50, customers: [] })
@@ -390,5 +420,34 @@ describe('CustomerOrderLedger', () => {
     await flushPromises()
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(api.list).toHaveBeenLastCalledWith('huakang-a', expect.any(Object))
+  })
+})
+
+describe('CustomerOrderLedger local trial options', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+  it('preserves history import by default and closes it when the capability becomes unavailable', async () => {
+    historyApi.customers.mockResolvedValue({ items: [] })
+    const wrapper = mountLedger()
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '历史排期迁入')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(CustomerOrderHistoryImport).exists()).toBe(true)
+    await wrapper.setProps({ historyImportEnabled: false })
+    expect(wrapper.findComponent(CustomerOrderHistoryImport).exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('历史排期迁入')
+    await wrapper.setProps({ historyImportEnabled: true })
+    expect(wrapper.findComponent(CustomerOrderHistoryImport).exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('shows local delivery boundaries inside the detail only when explicitly enabled', async () => {
+    const wrapper = mountLedger()
+    await flushPromises()
+    await wrapper.get('button.ledger__link').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="dialog"]').text()).not.toContain('本机试用：发送')
+    await wrapper.setProps({ localOnly: true })
+    expect(wrapper.get('[role="dialog"]').text()).toContain('发送只写入这台电脑的部门收件记录')
+    expect(wrapper.get('[role="dialog"]').text()).not.toContain('反馈此订单的问题')
+    wrapper.unmount()
   })
 })

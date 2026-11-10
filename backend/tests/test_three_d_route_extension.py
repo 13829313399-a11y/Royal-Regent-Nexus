@@ -81,6 +81,18 @@ def test_plan_is_read_only_and_apply_preserves_every_existing_route(route_case):
     assert '--unattended' not in mutations[0] and 'up ' not in mutations[0]
 
 
+def test_two_new_machine_routes_preserve_existing_fleet(route_case):
+    with route_case[1].open('w', encoding='utf-8-sig', newline='') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(['machine_no', 'ip'])
+        writer.writerows([(17, '10.33.30.117'), (18, '10.33.30.118')])
+    result, report, _ = execute(route_case)
+    assert result.returncode == 0, result.stderr
+    added = {'10.33.30.117/32', '10.33.30.118/32'}
+    assert set(report['added_routes']) == added
+    assert set(state_of(route_case)['routes']) == set(ORIGINAL) | added
+
+
 def test_repeated_apply_is_noop_and_rollback_preserves_later_unrelated_routes(route_case):
     _,_,first=execute(route_case)
     result,report,_=execute(route_case)

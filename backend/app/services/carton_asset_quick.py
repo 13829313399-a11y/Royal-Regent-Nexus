@@ -145,6 +145,10 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
     except BaseException:db.rollback();raise
 
 
+def audience_editable(asset):
+    return collaboration.internal(asset) or (asset.owner_department is None and asset.asset_purpose == 'MATERIAL')
+
+
 def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_factory=None,supplier_candidates=None):
     if supplier is None and view_factory in (None,asset.factory_id):supplier=access.external_actor(db,user,asset)
     access.ensure(db,user,asset,supplier=supplier,view_factory=view_factory)
@@ -165,12 +169,16 @@ def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_fact
         candidates=targets.candidates(db,user,asset.factory_id,supplier=supplier) if supplier_candidates is None else supplier_candidates
         visible_targets=[x for x in candidates
             if x['kind']=='REGULAR' and x['id'] in purchase_ids or (x['kind'],x['id']) in special_ids]
+    blocker=association_blocker(db,asset,supplier)
+    original_manage=access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory)
     return dict(id=asset.id,factory_id=asset.factory_id,owner_department=asset.owner_department,
+        legacy_source=not bool(asset.owner_department),association_blocker=blocker,
+        can_manage_original=original_manage,photo_group_id=asset.photo_group_id,
         sharing_mode=audience['sharing_mode'],shared_supplier_name=audience['shared_supplier_name'],
-        can_change_audience=bool(not supplier and collaboration.internal(asset) and view_factory in (None,asset.factory_id)
-            and access.visible(db,user,asset,write=True)),
+        can_change_audience=bool(not supplier and audience_editable(asset) and view_factory in (None,asset.factory_id)
+            and original_manage),
         view_factory_id=view_factory or asset.factory_id,shared_factory_ids=factories(db,asset),
-        can_classify=bool(statuses),allowed_statuses=statuses,can_associate=can_manage,can_share=can_share,
+        can_classify=bool(statuses),allowed_statuses=statuses,can_associate=can_manage and not blocker,can_share=can_share,
         required_shared_factory_ids=[asset.factory_id] if collaboration.internal(asset) else [],
         created_by_name=asset.created_by_name,created_at=asset.created_at,
         owner_supplier_id=asset.owner_supplier_id,purpose=asset.asset_purpose,kind=asset.kind,file_name=asset.file_name,
@@ -178,6 +186,19 @@ def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_fact
         text=asset.content.decode('utf-8') if asset.kind=='text' else None,workflow=state.model_dump(),
         targets=[{k:v for k,v in row.items() if k not in {'customer_code','identity','revision','supplier_id'}}
             if supplier else row for row in visible_targets],uploaded=True,warning=asset.warning)
+
+
+def association_blocker(db,asset,supplier=None):
+    state=lifecycle.current(db,asset)
+    if state.status=='HISTORY' or state.superseded_by_asset_id:
+        return '历史版本保留原关联，不能修改；请打开当前版本。'
+    if asset.photo_group_id:
+        return '照片组须整体维护关联，请打开资料详情。'
+    if not asset.owner_department:
+        return '旧资料保留原匹配方式，请在资料详情中维护关联。'
+    if supplier and collaboration.internal(asset) and not targets.current(db,asset):
+        return '请内部人员先关联客户订单，供应商随后可维护同客户的已发送订单。'
+    return ''
 
 
 def listing(db,user,factory,department=None,*,history=False):
@@ -220,12 +241,18 @@ def associate(db,user,factory,identifier,body,refresh_actor=None):
         access.ensure(db,user,asset,write=True,supplier=supplier,view_factory=factory,collaborate=True,collaboration_action='associate')
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_ASSOCIATE',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:
+            blocker=association_blocker(db,asset,supplier)
+            if blocker:raise HTTPException(409,blocker)
             if body.targets and body.target:raise HTTPException(422,'不能同时提交两组关联目标')
             rows=resolve_many(db,user,factory,body.targets or ([body.target] if body.target else []),supplier,scope=body.target_scope,retain=asset)
             lifecycle.bump(db,asset,body.revision)
             if supplier and collaboration.internal(asset):
                 collaboration.record(db,user,asset,supplier,collaboration.TARGETS,targets=rows)
             else:
+                if body.target_scope=='ORDERS':
+                    # Warehouse edits only purchase targets. Hidden business
+                    # schedule references retain their original identity/state.
+                    rows=[row for row in targets.current(db,asset,factory) if row['kind']=='SCHEDULE']+rows
                 targets.record(db,user,asset,rows,factory)
                 # Audience is an independent user choice. Linking or unlinking
                 # orders must not overwrite an explicit INTERNAL/SUPPLIER setting.
@@ -247,7 +274,7 @@ def audience(db,user,factory,identifier,body,refresh_actor=None):
         user=locked(db,user,factory)
         if refresh_actor:user=refresh_actor()
         access.ensure(db,user,asset,write=True)
-        if not collaboration.internal(asset):raise HTTPException(403,'仅内部普通资料可设置此共享范围')
+        if not audience_editable(asset):raise HTTPException(403,'仅内部普通资料可设置此共享范围')
         sharing.ensure_audience_scope(db,user,asset)
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_AUDIENCE',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:

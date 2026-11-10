@@ -287,6 +287,11 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code == "mainland_invoice:generate":
+        return ScopePolicy(
+            ("accounting",),
+            guidance="仅华康 A/B/D 会计部按厂区单独授权，不自动授予现有职位或用户",
+        )
     if permission_code in {'carton_asset:read','carton_asset:manage','carton_asset:confirm'}:
         return ScopePolicy(('sales-business','pmc-warehouse','carton','*'),
             guidance='部门原件权限；供应商同时校验东康服务范围，确认权限不授予供应商，不等于QC放行')

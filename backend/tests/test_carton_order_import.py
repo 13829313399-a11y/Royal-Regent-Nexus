@@ -3,7 +3,9 @@ from copy import deepcopy
 from decimal import Decimal
 from io import BytesIO
 from uuid import uuid4
+from zipfile import ZipFile
 import json
+import re
 
 import pytest
 from fastapi import HTTPException
@@ -37,6 +39,18 @@ def workbook(rows, *, mode='REGULAR', title='客户自己的订单', header=3, l
     if second:
         other = book.copy_worksheet(sheet); other.title = '第二张订单表'
     output = BytesIO(); book.save(output); book.close()
+    return output.getvalue()
+
+
+def with_dimensions(content, reference=None):
+    output = BytesIO()
+    replacement = f'<dimension ref="{reference}"/>'.encode() if reference else b''
+    with ZipFile(BytesIO(content)) as source, ZipFile(output, 'w') as target:
+        for entry in source.infolist():
+            data = source.read(entry)
+            if re.fullmatch(r'xl/worksheets/sheet\d+\.xml', entry.filename):
+                data = re.sub(rb'<dimension\b[^>]*/>', replacement, data)
+            target.writestr(entry, data)
     return output.getvalue()
 
 
@@ -89,17 +103,64 @@ def test_parser_aliases_sheet_header_ambiguous_columns_and_limits():
     assert mapped['sheet'] == '第二张订单表'
     with pytest.raises(HTTPException):
         read(data, 'REGULAR', mapping={'customer': 1, 'item_no': 1})
-    with pytest.raises(HTTPException):
-        read(workbook([regular() | {'quantity': '=1+1'}]), 'REGULAR')
+    formula = workbook([regular() | {'quantity': '=1+1'}])
+    for content in (formula, with_dimensions(formula)):
+        with pytest.raises(HTTPException, match='含公式'):
+            read(content, 'REGULAR')
     with pytest.raises(HTTPException):
         read(workbook([regular()] * 501), 'REGULAR')
+
+
+@pytest.mark.parametrize('mode', ['REGULAR', 'SPECIAL'])
+@pytest.mark.parametrize('reference', [None, 'A1:B4'])
+def test_incomplete_worksheet_dimensions_keep_columns_and_source_rows(mode, reference):
+    from app.services.carton_order_import_file import read
+
+    row = regular() if mode == 'REGULAR' else special_row(item_no='000123')
+    original = workbook([row, row | {'item_no': '000124'}], mode=mode, second=True)
+    declared = read(original, mode, '第二张订单表')
+    recovered = read(with_dimensions(original, reference), mode, '第二张订单表')
+    assert recovered['header_row'] == 3
+    assert recovered['columns'] == declared['columns']
+    assert recovered['rows'] == declared['rows']
+    assert [(item['source_row'], item['data']['item_no']) for item in recovered['rows']] == [
+        (4, '000123'), (5, '000124'),
+    ]
+
+
+def test_missing_worksheet_dimensions_in_an_empty_sheet_reports_no_header():
+    from app.services.carton_order_import_file import read
+
+    book = Workbook()
+    output = BytesIO()
+    book.save(output)
+    book.close()
+    with pytest.raises(HTTPException, match='未读到表头') as error:
+        read(with_dimensions(output.getvalue()), 'REGULAR')
+    assert error.value.status_code == 422
+
+
+@pytest.mark.parametrize(('row', 'column', 'limit'), [(502, 1, '500 行'), (5000, 1, '64 列'), (2, 65, '64 列')])
+@pytest.mark.parametrize('reference', [None, 'A1:B1'])
+def test_incomplete_worksheet_dimensions_still_reject_out_of_range_cells(row, column, limit, reference):
+    from app.services.carton_order_import_file import read
+
+    book = Workbook()
+    book.active.append(['客户', '合同号'])
+    book.active.cell(row, column, '超出允许范围')
+    output = BytesIO()
+    book.save(output)
+    book.close()
+    with pytest.raises(HTTPException, match=limit) as error:
+        read(with_dimensions(output.getvalue(), reference), 'REGULAR')
+    assert error.value.status_code == 422
 
 
 def test_real_worker_regular_calculated_pairing_replay_and_source_evidence(monkeypatch):
     with make_client(monkeypatch) as client:
         setup(client, monkeypatch, fast=False)
         card = regular() | dict(packaging_type='平卡', usage_quantity='', carton_source_row='4', per_carton_quantity='2', unit='张')
-        content = workbook([regular() | {'quantity': '105'}, card])
+        content = with_dimensions(workbook([regular() | {'quantity': '105'}, card]))
         body = read_body(client, content)
         command, preview = checked(client, content, body)
         assert preview['groups'][0]['quantities'] == ['105.0000', '210.0000']

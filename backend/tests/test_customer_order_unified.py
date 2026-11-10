@@ -132,7 +132,6 @@ def test_optional_common_item_fields_stay_blank_without_blocking(monkeypatch):
         "production_no",
         "product_name_zh",
         "product_name_en",
-        "quantity",
         "units_per_carton",
         "standard",
         "packaging",
@@ -145,8 +144,8 @@ def test_optional_common_item_fields_stay_blank_without_blocking(monkeypatch):
         {
             "severity": "blocked",
             "code": "missing_required_field",
-            "field": "quantity",
-            "message": "旧模板要求数量",
+            "field": "units_per_carton",
+            "message": "旧模板要求装箱数",
             "can_skip": False,
             "skip_key": "",
             "skip_label": "",
@@ -169,7 +168,7 @@ def test_optional_common_item_fields_stay_blank_without_blocking(monkeypatch):
         item = workbook[unified.ITEM_SHEET]
         assert item["B7"].value is None
         assert item["I7"].value is None
-        assert item["K7"].value is None
+        assert item["K7"].value == 240
         assert item["L7"].value is None
         assert item["M7"].value is None
         assert item["N7"].value is None

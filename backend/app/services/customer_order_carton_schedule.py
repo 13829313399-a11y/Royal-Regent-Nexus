@@ -48,8 +48,9 @@ async def synchronize(db, user, factory, customer_code, customer_name, filename,
     factory = carton.require_carton_factory(factory)
     authorize_sales(db, user, factory)
     parsed = await run_order_job(parse_business_schedule, filename, content, db=db)
-    from app.services.carton_procurement_imports import SCHEDULE_IMPORT_PARSER_VERSION
-    semantic_sha256 = sha256(json.dumps([SCHEDULE_IMPORT_PARSER_VERSION, parsed],
+    from app.services.carton_procurement_imports import weekly_schedule_parser_version
+    parser_version = weekly_schedule_parser_version(parsed, {"business_customer_code": customer_code})
+    semantic_sha256 = sha256(json.dumps([parser_version, parsed],
         ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
     parsed["business_source"] = dict(system="CUSTOMER_ORDER_CENTER", customer_code=customer_code,
         source_kind=source_kind, received_at=received_at, semantic_sha256=semantic_sha256)

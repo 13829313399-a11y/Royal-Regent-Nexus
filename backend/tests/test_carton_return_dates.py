@@ -225,12 +225,22 @@ def test_legacy_return_keeps_fingerprint_and_retry_until_supervisor_verifies_bot
         assert client.post(url, json=verify).status_code == 409  # Destination month confirmed.
         assert action(client, september, 'reopen', reason='核实历史退货所属月份').status_code == 200
         login_as(client, 'warehouse_keeper')
+        detail_url = BASE + f'/returns/{movement_id}'
+        readonly = client.get(detail_url, params={'factory_id': 'huaxing'})
+        assert readonly.status_code == 200, readonly.text
+        assert 'VERIFY_DATE' not in readonly.json()['allowed_actions']
         assert client.post(url, json=verify).status_code == 403
         login_as(client, 'carton_supervisor')
+        before_verification = client.get(detail_url, params={'factory_id': 'huaxing'}).json()
+        assert 'VERIFY_DATE' in before_verification['allowed_actions']
+        assert 'CORRECT_DATE' not in before_verification['allowed_actions']
         assert client.post(url, json={**verify, 'expected_posting_date': '2026-10-04'}).status_code == 409
         before = ledger(client)
         saved = client.post(url, json=verify)
         assert saved.status_code == 200, saved.text
+        verified = client.get(detail_url, params={'factory_id': 'huaxing'}).json()
+        assert 'VERIFY_DATE' not in verified['allowed_actions']
+        assert 'CORRECT_DATE' in verified['allowed_actions']
         assert client.post(url, json=verify).status_code == 409  # Actual evidence cannot be silently overwritten.
         assert ledger(client)[-1]['occurred_at'] == before[-1]['occurred_at']
         assert len(ledger(client)) == len(before)

@@ -188,45 +188,18 @@ def test_direct_cost_rows_keep_additional_tax_and_effective_indonesia_freight_se
         workbook.close()
 
 
-def test_non_rebate_factory_leaves_sewing_clothes_tax_rate_and_deduction_empty():
-    workbook, sheet = _summary_sheet(rate_percent=None, material_amount_hkd="3.2500")
+@pytest.mark.parametrize("old_rate", [None, "11.5000"])
+def test_non_rebate_tax_items_are_removed_but_costs_remain(old_rate):
+    workbook, sheet = _summary_sheet(rate_percent=old_rate, material_amount_hkd="3.2500")
     try:
-        top_label = _find_cell(sheet, "车衣类（不计税）")
-        assert sheet.cell(top_label.row + 1, top_label.column).value == ""
-
-        tax_label = next(
-            cell
-            for cell in sheet[_find_cell(sheet, "人民币外购件成本").row]
-            if cell.value == "车衣类（不计税）"
-        )
-        tax_rate_row = tax_label.row + 1
-        deduction_row = tax_label.row + 3
-        assert sheet.cell(tax_rate_row, tax_label.column).value == ""
-        assert sheet.cell(deduction_row, tax_label.column).value == ""
-
-        cloth_detail = _find_cell(sheet, "车衣")
-        assert sheet.cell(cloth_detail.row, 1).value in (None, "")
-        assert sheet.cell(cloth_detail.row, 4).value == 12.5
-    finally:
-        workbook.close()
-
-
-def test_historical_sewing_tax_rates_are_ignored_without_changing_cost():
-    workbook, sheet = _summary_sheet(rate_percent="11.5000", material_amount_hkd="3.2500")
-    try:
-        top_label = _find_cell(sheet, "车衣类（不计税）")
-        assert sheet.cell(top_label.row + 1, top_label.column).value == ""
-
-        tax_label = next(
-            cell
-            for cell in sheet[_find_cell(sheet, "人民币外购件成本").row]
-            if cell.value == "车衣类（不计税）"
-        )
-        tax_rate_row = tax_label.row + 1
-        deduction_row = tax_label.row + 3
-        assert sheet.cell(tax_rate_row, tax_label.column).value == ""
-        assert sheet.cell(deduction_row, tax_label.column).value == ""
-
+        values = [cell.value for row in sheet for cell in row]
+        assert "车衣类（不计税）" not in values
+        assert "车发类（不计税）" not in values
+        assert "搪胶类3%" not in values
+        tax_header = _find_cell(sheet, "人民币外购件成本").row
+        for col in (7, 8, 9):
+            for offset in (0, 1, 3):
+                assert sheet.cell(tax_header + offset, col).value in (None, "")
         cloth_detail = _find_cell(sheet, "车衣")
         assert sheet.cell(cloth_detail.row, 1).value in (None, "")
         assert sheet.cell(cloth_detail.row, 4).value == 12.5

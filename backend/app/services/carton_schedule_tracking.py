@@ -29,6 +29,12 @@ def effective_po(row: dict[str, Any]) -> str:
     return normalized(row.get("source_reference")) or normalized(row.get("customer_po"))
 
 
+def material_identity(row: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(" ".join(normalized(value).split()) for value in (
+        row.get("customer_code"), row.get("contract_no"), row.get("item_no"), effective_po(row),
+    ))
+
+
 def linked_po_matches(row: dict[str, Any], customer_po: Any) -> bool:
     """Validate explicit provenance, including historical orders that stored SO as PO."""
     value = normalized(customer_po)

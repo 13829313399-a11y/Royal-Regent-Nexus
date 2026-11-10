@@ -3,7 +3,7 @@ import type { CartonMarkAssetWorkflow } from '@/api/cartonMark'
 
 export type AssetDepartment = 'sales-business' | 'pmc-warehouse' | 'carton' | 'supplier'
 export type QuickAssetStatus = 'DRAFT' | 'PENDING' | 'READY' | 'HISTORY'
-export type QuickTargetScope = 'ALL' | 'PENDING_SCHEDULE'
+export type QuickTargetScope = 'ALL' | 'PENDING_SCHEDULE' | 'ORDERS'
 export type QuickAssetAudience = 'SUPPLIER' | 'INTERNAL'
 export interface QuickTarget {
   kind: 'REGULAR' | 'SCHEDULE' | 'SAMPLE' | 'MISC'
@@ -17,9 +17,15 @@ export interface QuickTarget {
   customer_po?: string
   customer_code?: string
   ordered?: boolean
+  order_no?: string
+  ordered_at?: string
 }
 export type QuickTargetRef = Pick<QuickTarget, 'kind' | 'id' | 'sheet' | 'row' | 'fingerprint'>
 export interface QuickAsset {
+  legacy_source?: boolean
+  association_blocker?: string
+  can_manage_original?: boolean
+  photo_group_id?: string | null
   sharing_mode?: QuickAssetAudience | 'ORDER_BOUND'
   shared_supplier_name?: string
   can_change_audience?: boolean
@@ -34,7 +40,7 @@ export interface QuickAsset {
   created_at?: string
   id: string
   factory_id: string
-  owner_department: AssetDepartment
+  owner_department: AssetDepartment | null
   owner_supplier_id?: string | null
   purpose: 'MATERIAL' | 'EVIDENCE'
   kind: 'excel' | 'pdf' | 'image' | 'text'

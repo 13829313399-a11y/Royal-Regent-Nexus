@@ -315,11 +315,11 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     font-variant-numeric:tabular-nums;
   }
 
-  body.qstats-shell :is(#page-defectlib,#page-users) > :is(.page-header,.table-wrap) {
+  body.qstats-shell #page-defectlib > :is(.page-header,.table-wrap) {
     margin-inline:22px;
   }
 
-  body.qstats-shell :is(#page-defectlib,#page-users) > .page-header {
+  body.qstats-shell #page-defectlib > .page-header {
     padding-top:16px;
   }
 
@@ -328,7 +328,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     max-width:min(280px,calc(100% - 44px)) !important;
   }
 
-  body.qstats-shell :is(#page-defectlib,#page-users) .table-wrap > table {
+  body.qstats-shell #page-defectlib .table-wrap > table {
     min-width:660px;
   }
 
@@ -492,7 +492,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
 
   @media (max-width:640px) {
-    body.qstats-shell :is(#page-defectlib,#page-users) > :is(.page-header,.table-wrap),
+    body.qstats-shell #page-defectlib > :is(.page-header,.table-wrap),
     body.qstats-shell #defLibSearch {
       margin-inline:12px;
     }
@@ -502,4 +502,94 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     }
   }
 
+}
+
+/* Approved schedule toolbar: filters first, then selection and actions. */
+@media screen {
+  #page-sales-schedule #qsToolbar {
+    --qs-control-height: 36px;
+    padding: 15px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-card);
+    box-shadow: none;
+    backdrop-filter: none;
+    font-size: 13px;
+  }
+  #page-sales-schedule #qsToolbar .qs-filters {
+    grid-template-columns: minmax(210px,2.1fr) minmax(160px,1.2fr) minmax(110px,1fr) minmax(130px,1.1fr) auto;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  #page-sales-schedule #qsToolbar :is(.qs-filter-field input,.qs-filter-field select,.qs-date-toggle,.qs-button,.qs-reset) {
+    min-height: var(--qs-control-height);
+    height: var(--qs-control-height);
+    border-radius: 7px;
+    border-color: var(--border);
+    box-shadow: none;
+    font-size: 13px;
+  }
+  #page-sales-schedule #qsToolbar .qs-search svg { top: calc((var(--qs-control-height) - 18px) / 2); }
+  #page-sales-schedule #qsToolbar .qs-reset { padding: 0 4px; border: 0; }
+  #page-sales-schedule #qsToolbar .qs-actions {
+    align-items: center;
+    gap: 10px;
+    margin-top: 13px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  #page-sales-schedule #qsToolbar .qs-select-all { min-height: var(--qs-control-height); }
+  #page-sales-schedule #qsToolbar #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
+  #page-sales-schedule #qsToolbar #qsCount { margin-left: auto; white-space: nowrap; }
+  #page-sales-schedule #qsToolbar .qs-secondary-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+  #page-sales-schedule #qsToolbar .qs-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+  #page-sales-schedule #qsToolbar #qsRefresh { border-color: transparent; background: transparent; color: var(--text-dim); }
+  #page-sales-schedule #qsToolbar :is(#qsRefresh,#qsExport,#qsPush)::before {
+    content: "";
+    flex: none;
+    width: 14px;
+    height: 14px;
+    background: currentColor;
+    mask: var(--qs-action-icon) center / contain no-repeat;
+  }
+  #page-sales-schedule #qsToolbar #qsRefresh { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3'/%3E%3C/svg%3E"); }
+  #page-sales-schedule #qsToolbar #qsExport { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'/%3E%3C/svg%3E"); }
+  #page-sales-schedule #qsToolbar #qsPush { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 17 17 7M7 7h10v10'/%3E%3C/svg%3E"); }
+  #page-sales-schedule #qsToolbar #qsExport { background: var(--bg-input); color: var(--text-main); font-weight: 500; }
+  #page-sales-schedule #qsToolbar #qsPush { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #page-sales-schedule #qsToolbar #qsPush:disabled {
+    background: var(--bg-hover);
+    border-color: var(--border);
+    color: var(--text-dim);
+    opacity: 1;
+  }
+  #page-sales-schedule #qsToolbar :is(#qsRefresh,#qsExport):hover:not(:disabled) { background: var(--bg-hover); }
+  #page-sales-schedule #qsToolbar #qsFilterError:not(:empty) { margin: 10px 0 0; }
+  @container (max-width: 900px) {
+    #page-sales-schedule #qsToolbar .qs-filters { grid-template-columns: minmax(160px,1.2fr) minmax(110px,1fr) minmax(130px,1.1fr) auto; }
+    #page-sales-schedule #qsToolbar .qs-search { grid-column: 1 / -1; }
+  }
+  @container (max-width: 560px) {
+    #page-sales-schedule #qsToolbar .qs-filters { grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; }
+    #page-sales-schedule #qsToolbar .qs-date-filter { grid-column: 1 / -1; }
+    #page-sales-schedule #qsToolbar .qs-filter-actions { grid-column: 3; }
+    #page-sales-schedule #qsToolbar .qs-actions { gap: 8px; }
+    #page-sales-schedule #qsToolbar .qs-secondary-actions { margin-left: auto; }
+    #page-sales-schedule #qsToolbar #qsCount { flex-basis: calc(100% - 130px); text-align: right; }
+  }
+  @media (max-width: 640px), (pointer: coarse) {
+    #page-sales-schedule #qsToolbar { --qs-control-height: 44px; padding: 12px; }
+    #page-sales-schedule #qsToolbar :is(.qs-filter-field input,.qs-filter-field select) { font-size: 16px; }
+  }
 }

@@ -23,6 +23,8 @@ const replaceOpen = ref(false)
 const previewPending = ref(false)
 const imageReading = ref(new Set<string>())
 function setImageReading(id: string, busy: boolean) { if (busy) imageReading.value.add(id); else imageReading.value.delete(id) }
+const sourceLoading = ref(false)
+const sourceError = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)
@@ -128,15 +130,43 @@ function changedCell(cell: OutputCell) {
   const ids = [cell.binding?.group, ...(cell.binding?.groups ?? [])]
   return ids.some(id => id && groupMap.value.get(id)?.fields.some(f => changedIds.value.includes(f.id)))
 }
+function withSourceSheets(layout: OutputLayout, sources: OutputLayout['sheets']): OutputLayout {
+  return { ...layout, sheets: [...layout.sheets.filter(s => !s.source), ...sources] }
+}
+async function loadSourceSheets(id = props.quoteId, context = generation) {
+  if (!base.value || sourceLoading.value) return
+  const token = base.value.base_token
+  sourceLoading.value = true
+  sourceError.value = ''
+  try {
+    const result = await internalQuoteOutputApi.get(id, true)
+    if (context !== generation || !base.value || !display.value) return
+    if (result.base_token !== token || base.value.base_token !== token) {
+      sourceError.value = '原始报价资料已更新，请重新读取后查看。'
+      return
+    }
+    const sources = result.sheets.filter(s => s.source)
+    // Only attach the immutable source tabs. Never overwrite a live price
+    // preview, its warnings or unsaved inputs when this slower read finishes.
+    base.value = withSourceSheets(base.value, sources)
+    display.value = withSourceSheets(display.value, sources)
+  } catch (cause) {
+    if (context === generation) sourceError.value = `原始报价表读取失败：${messageOf(cause)}`
+  } finally {
+    if (context === generation) sourceLoading.value = false
+  }
+}
 async function load() {
   const id = props.quoteId
   const current = ++generation
   ++previewSequence
   clearTimeout(timer)
   loading.value = true
+  sourceLoading.value = false
+  sourceError.value = ''
   error.value = ''
   try {
-    const result = await internalQuoteOutputApi.get(id)
+    const result = await internalQuoteOutputApi.get(id, false)
     if (current !== generation) return
     base.value = result
     display.value = result
@@ -145,6 +175,7 @@ async function load() {
     annotations.value = {}; previewPending.value = false
     selectedCell.value = ''
     if (!result.sheets.some(s => s.name === sheetName.value)) sheetName.value = result.sheets[0]?.name ?? ''
+    if (result.source_workbooks_pending) void loadSourceSheets(id, current)
   } catch (cause) {
     if (current === generation) error.value = messageOf(cause)
   } finally {
@@ -157,9 +188,9 @@ async function preview() {
   const context = generation
   previewing.value = true
   try {
-    const result = await internalQuoteOutputApi.preview(props.quoteId, payload())
+    const result = await internalQuoteOutputApi.preview(props.quoteId, payload(), false)
     if (context !== generation || current !== previewSequence) return
-    display.value = result
+    display.value = withSourceSheets(result, base.value?.sheets.filter(s => s.source) ?? [])
     previewPending.value = false
     error.value = ''
   } catch (cause) {
@@ -269,7 +300,7 @@ defineExpose({ save, dirty, canLeave })
         <img v-for="(picture, i) in sheet.images" :key="i" :src="picture.src" alt="报价产品图片" :style="{ position: 'absolute', left: `${picture.left + 38}px`, top: `${picture.top + 23}px`, width: `${picture.width}px`, height: `${picture.height}px`, objectFit: 'contain', pointerEvents: 'none' }">
       </div>
     </div>
-    <div class="output-total-bar" aria-live="polite"><span>当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong></span><span>{{ previewPending || previewing ? '正在重算…' : dirty ? '未保存试算' : '已保存金额' }}</span><small v-if="!previewPending && !previewing && !error && display?.quote_price_hkd != null">成本 HKD {{ Number(display.factory_price_hkd).toFixed(4) }} · {{ targetComparison }}</small></div><footer class="output-tabs"><button v-for="s in display?.sheets" :key="s.name" :class="{ active: s.name === sheet?.name }" @click="sheetName = s.name; selectedCell = ''"><FileSpreadsheet :size="14" />{{ s.name }}</button><span>已上传的 Excel 原表随报价一起导出</span></footer>
+    <div class="output-total-bar" aria-live="polite"><span>当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong></span><span>{{ previewPending || previewing ? '正在重算…' : dirty ? '未保存试算' : '已保存金额' }}</span><small v-if="!previewPending && !previewing && !error && display?.quote_price_hkd != null">成本 HKD {{ Number(display.factory_price_hkd).toFixed(4) }} · {{ targetComparison }}</small></div><footer class="output-tabs"><button v-for="s in display?.sheets" :key="s.name" :class="{ active: s.name === sheet?.name }" @click="sheetName = s.name; selectedCell = ''"><FileSpreadsheet :size="14" />{{ s.name }}</button><span v-if="sourceLoading" role="status">正在读取原始报价表…</span><span v-else-if="sourceError" role="alert">{{ sourceError }} <button @click="loadSourceSheets()">重试读取原表</button></span><span>已上传的 Excel 原表随报价一起导出</span></footer>
     <div v-if="drawer" class="output-drawer-backdrop" @click.self="drawer = false">
       <aside class="output-drawer" role="dialog" aria-modal="true" aria-label="修改原始名称与单价" @keydown.esc="drawer = false">
         <header><div><strong>名称与报价调价</strong><p>修改现有明细，保存到同一张报价。</p></div><button aria-label="关闭明细" @click="drawer = false"><X :size="20" /></button></header>
