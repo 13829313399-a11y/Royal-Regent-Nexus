@@ -53,6 +53,37 @@ describe('QC_department host', () => {
     expect(state.get).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
+  it('keeps the connection message until the current frame loads, including on reload', async () => {
+    state.route.query.factory = 'huaxing'
+    let resolveHealth!: (value: unknown) => void
+    state.get.mockReturnValueOnce(new Promise(resolve => { resolveHealth = resolve }))
+    const wrapper = mount(Host)
+    try {
+      expect(wrapper.get('[role="status"]').text()).toContain('正在连接 QC 工作台')
+      expect(wrapper.find('iframe').exists()).toBe(false)
+      resolveHealth({ data: { frame_url: '/api/qc-department/huaxing/u-one/' } })
+      await flushPromises()
+      const firstFrame = wrapper.get('iframe')
+      expect(firstFrame.classes()).toContain('invisible')
+      expect(wrapper.get('[role="status"]').text()).toContain('正在连接 QC 工作台')
+      expect(wrapper.get('button').attributes('disabled')).toBeUndefined()
+
+      state.get.mockResolvedValueOnce({ data: { frame_url: '/api/qc-department/huaxing/u-one/' } })
+      await wrapper.get('button').trigger('click')
+      await flushPromises()
+      const secondFrame = wrapper.get('iframe')
+      expect(secondFrame.element).not.toBe(firstFrame.element)
+      await firstFrame.trigger('load')
+      expect(secondFrame.classes()).toContain('invisible')
+      expect(wrapper.find('[role="status"]').exists()).toBe(true)
+      bridgeFor(wrapper)
+      await secondFrame.trigger('load')
+      expect(secondFrame.classes()).not.toContain('invisible')
+      expect(wrapper.find('[role="status"]').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
   it('removes the old frame while rechecking a changed authorization version', async () => {
     state.route.query.factory = 'huaxing'
     state.get.mockResolvedValueOnce({ data: { frame_url: '/api/qc-department/huaxing/u-one/' } })
