@@ -609,7 +609,7 @@ def report_permission(db, line_id, body, action):
 
 @router.post('/orders/{line_id}/reports/{action}')
 def production_command(line_id: str, action: Literal['save', 'post', 'void', 'review', 'discard'], body: dict, db: Db, user: User,
-                       paged_history: bool = False):
+                       paged_history: bool = False, as_of: ps.BusinessDate | None = None):
     c.authorize(user, body.get('factory_id', ''))
     orders_ready(db)
     c.require(reporting.schema_ready(db.connection()), '每日填数需先完成 0155 显式迁移', 503)
@@ -617,7 +617,7 @@ def production_command(line_id: str, action: Literal['save', 'post', 'void', 're
     c.authorize(user, parsed.factory_id, report_permission(db, line_id, parsed, action))
     c.command(db, user, parsed, 'report-'+action+':'+line_id, lambda: reporting.apply(db, user, line_id, parsed, action))
     db.expire_all()
-    value = reporting.view(db, line_id)
+    value = reporting.view(db, line_id, as_of.isoformat() if as_of else None)
     if paged_history:
         from app.services.cutting_history import production
         return production(value, focus=parsed.document_id)
