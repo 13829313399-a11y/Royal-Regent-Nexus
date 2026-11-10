@@ -25,7 +25,7 @@ const LS_KEY = STORAGE_KEYS.records;   /* 主数据 key */
 let state        = { records: [], nextId: 31 };
 let editingId    = null;
 let chartInst    = {};          // { chartId: echartsInstance }
-let currentPage  = 'dashboard';
+let currentPage  = 'sales-schedule';
 let filteredRecs = [];
 
 /* Nexus 账号和权限 */
@@ -109,7 +109,7 @@ function _showApp() {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       try {
-        showPage(window.__QC_INITIAL_PAGE?.() || 'dashboard');
+        showPage(window.__QC_INITIAL_PAGE?.() || 'sales-schedule');
         /* 顶部 KPI 在 showPage 之外，需单独刷新 */
         if (typeof updateTopKpis === 'function') updateTopKpis();
       } catch(e) { console.error('[_showApp] render error:', e); }

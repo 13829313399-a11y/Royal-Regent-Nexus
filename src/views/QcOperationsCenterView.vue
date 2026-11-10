@@ -200,7 +200,7 @@ onMounted(() => {
   viewport?.addEventListener('scroll', scheduleScroll)
   measureViewport()
 })
-let page = typeof route.query.qcPage === 'string' ? route.query.qcPage : 'dashboard'
+let page = typeof route.query.qcPage === 'string' ? route.query.qcPage : 'sales-schedule'
 let sequence = 0
 function child() { return frame.value?.contentWindow as QcFrame | null }
 function permitLeave() {
@@ -305,7 +305,10 @@ watch(frame, scheduleViewport, { flush: 'post' })
     <section v-if="!factoryId" class="m-6 rounded-xl border bg-white p-6" role="status">请选择具体厂区，再进入 QC 验货工作台。集团不加载各厂业务数据。</section>
     <section v-else-if="error" class="m-6 rounded-xl border bg-white p-6" role="alert">{{ error }}</section>
     <template v-else>
-      <section v-if="loading || (ready && !frameLoaded)" class="qc-host-loading p-6" role="status">正在连接 QC 工作台…</section>
+      <section v-if="loading || (ready && !frameLoaded)" class="qc-host-loading" role="status">
+        <span class="qc-orbit" aria-hidden="true"><i class="qc-orbit-outer" /><i class="qc-orbit-inner" /><i class="qc-orbit-center" /></span>
+        <span class="qc-loading-label">正在连接 QC 工作台…</span>
+      </section>
       <iframe v-if="ready" ref="frame" :key="`${factoryId}:${frameVersion}`" :src="frameUrl" :class="{ invisible: !frameLoaded }" @load="onFrameLoad" title="QC_department 验货工作台" class="h-full min-h-0 w-full border-0 bg-white" />
     </template>
     <div ref="headerBounds" class="qc-table-header-bounds" hidden aria-hidden="true" inert>
@@ -320,6 +323,53 @@ watch(frame, scheduleViewport, { flush: 'post' })
 .qc-department-host { position:fixed; top:var(--qc-viewport-top,0px); left:0; right:0; display:grid; grid-template-rows:auto minmax(0,1fr); height:var(--qc-viewport-height,100dvh); min-width:0; overflow:hidden; background:var(--background,#f8fafc); }
 :global(html.qc-document-scroll .qc-department-host) { position:relative; top:auto; display:block; height:auto; min-height:var(--qc-viewport-height,100dvh); overflow:visible; }
 .qc-host-loading, .qc-department-host iframe { grid-area:2 / 1; }
+.qc-host-loading { display:grid; place-items:center; min-height:160px; }
+/* Keep the host and iframe loaders aligned across the document handoff. */
+.qc-orbit {
+  --orbit-paper: #fbfaf7;
+  --orbit-purple: #b6a2cf;
+  --orbit-green: #9bc5ac;
+  position: relative;
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+.qc-orbit-outer,
+.qc-orbit-inner {
+  position: absolute;
+  border-radius: 50%;
+  mask-image: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+}
+.qc-orbit-outer {
+  inset: 1px;
+  background: conic-gradient(from 15deg, color-mix(in srgb, var(--orbit-purple) 22%, var(--orbit-paper)) 5deg, var(--orbit-purple) 118deg, transparent 120deg 245deg, color-mix(in srgb, var(--orbit-purple) 22%, var(--orbit-paper)) 350deg);
+  animation: qc-orbit-spin 1.16s linear infinite;
+}
+.qc-orbit-inner {
+  inset: 9px;
+  background: conic-gradient(from 200deg, color-mix(in srgb, var(--orbit-green) 22%, var(--orbit-paper)) 5deg, var(--orbit-green) 128deg, transparent 130deg 260deg, color-mix(in srgb, var(--orbit-green) 22%, var(--orbit-paper)) 350deg);
+  animation: qc-orbit-spin 1.55s linear infinite reverse;
+}
+.qc-orbit-center {
+  position: absolute;
+  inset: 25px;
+  border-radius: 50%;
+  background: var(--orbit-green);
+}
+.qc-loading-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@keyframes qc-orbit-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .qc-orbit-outer,
+  .qc-orbit-inner { animation: none; }
+}
 .qc-department-host iframe { display:block; }
 .qc-table-header-bounds { position:absolute; pointer-events:none; z-index:5; }
 .qc-table-header-sticky { position:sticky; top:0; }

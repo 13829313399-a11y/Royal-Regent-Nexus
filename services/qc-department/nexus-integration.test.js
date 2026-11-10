@@ -64,6 +64,7 @@ test('QC loads through Nexus without exposing stale data or a second login while
     const staleRecords = JSON.stringify({ records: [{ id: 1 }], nextId: 2 });
     w.sessionStorage.setItem(recordsKey, staleRecords);
     assert.ok(startup);
+    assert.ok(startup.querySelector('.qc-orbit[aria-hidden="true"]'));
     assert.equal(startup.hidden, false);
     assert.equal(wrapper.style.display, 'none');
     assert.equal(d.querySelector('#loginScreen, input[type=password], [autocomplete=username]'), null);
@@ -91,7 +92,7 @@ test('QC loads through Nexus without exposing stale data or a second login while
     assert.equal(d.querySelector('input[type=password]'), null);
     assert.match(d.getElementById('userBadge').innerHTML, /&lt;QC &amp; reviewer&gt;/);
     assert.match(d.getElementById('userBadge').textContent, /Nexus 账号/);
-    assert.deepEqual(calls, ['dashboard', 'kpis']);
+    assert.deepEqual(calls, ['sales-schedule', 'kpis']);
     assert.equal(w.canView('records'), true);
     assert.equal(w.can('createRecord'), true);
     assert.equal(w.can('editRecord'), false);
@@ -124,6 +125,7 @@ for (const [label, context, message] of [
       assert.ok(!wrapper || wrapper.hidden || wrapper.style.display === 'none');
       assert.equal(d.querySelector('input[type=password]'), null);
       assert.match(d.body.textContent, message);
+      assert.equal(d.querySelector('#qcStartup .qc-orbit'), null, 'failure replaces the loading animation');
       assert.notEqual(w.__QC_BACKEND_OK, true);
       assert.deepEqual(calls, []);
       if (context) {

@@ -3105,8 +3105,60 @@ body.theme-light #yearlyReportBody  .section-card {
 .qc-startup {
   margin: 0;
   padding: 24px;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 100dvh;
+  background: #fbfaf7;
   color: var(--text-dim);
   font-size: 14px;
+}
+.qc-startup[hidden] { display: none; }
+/* Keep this initial light-theme loader aligned with the Vue host loader. */
+.qc-startup .qc-orbit {
+  --orbit-paper: #fbfaf7;
+  --orbit-purple: #b6a2cf;
+  --orbit-green: #9bc5ac;
+  position: relative;
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+.qc-startup .qc-orbit-outer,
+.qc-startup .qc-orbit-inner {
+  position: absolute;
+  border-radius: 50%;
+  mask-image: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+}
+.qc-startup .qc-orbit-outer {
+  inset: 1px;
+  background: conic-gradient(from 15deg, color-mix(in srgb, var(--orbit-purple) 22%, var(--orbit-paper)) 5deg, var(--orbit-purple) 118deg, transparent 120deg 245deg, color-mix(in srgb, var(--orbit-purple) 22%, var(--orbit-paper)) 350deg);
+  animation: qc-orbit-spin 1.16s linear infinite;
+}
+.qc-startup .qc-orbit-inner {
+  inset: 9px;
+  background: conic-gradient(from 200deg, color-mix(in srgb, var(--orbit-green) 22%, var(--orbit-paper)) 5deg, var(--orbit-green) 128deg, transparent 130deg 260deg, color-mix(in srgb, var(--orbit-green) 22%, var(--orbit-paper)) 350deg);
+  animation: qc-orbit-spin 1.55s linear infinite reverse;
+}
+.qc-startup .qc-orbit-center {
+  position: absolute;
+  inset: 25px;
+  border-radius: 50%;
+  background: var(--orbit-green);
+}
+.qc-startup .qc-loading-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@keyframes qc-orbit-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .qc-startup .qc-orbit-outer,
+  .qc-startup .qc-orbit-inner { animation: none; }
 }
 
 /* ════════════════════════════════════════
