@@ -111,14 +111,23 @@ body { min-width: 320px; overflow: hidden; background: var(--background); color:
 .rs-patch { border-top: 1px solid var(--border); justify-content: flex-start; padding-inline: 16px; color: var(--muted-foreground); }
 .rs-review { border-top: 1px solid var(--border); padding: 11px 16px; font-size: 11px; flex-shrink: 0; background: var(--card); }
 .rs-review summary { cursor: pointer; color: var(--primary); font-weight: 600; }
+.rs-review-notices { max-height: 80px; overflow: auto; margin-bottom: 8px; color: var(--muted-foreground); line-height: 1.6; overflow-wrap: anywhere; }
+.rs-review-notices p { margin: 0; }
+.rs-review-notices p + p { margin-top: 4px; }
 .rs-review-list { max-height: 145px; overflow: auto; display: grid; gap: 5px; margin-top: 10px; scrollbar-width: thin; }
 .rs-review-list button { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; text-align: left; overflow-wrap: anywhere; font-size: 11px; font-weight: 400; border-color: var(--border); min-height: 32px; }
 .rs-review-list strong { font-weight: 500; }
+.rs-complete-text { width: 100%; padding: 18px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.rs-complete-text > p { color: var(--muted-foreground); }
+.rs-complete-text article { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.rs-complete-text article p { white-space: pre-wrap; }
+.rs-complete-text small, .rs-original-text { color: var(--muted-foreground); }
 .rs-callout { padding: 8px 10px; border: 1px solid color-mix(in oklch, var(--primary) 12%, var(--border)); border-radius: 8px; background: color-mix(in oklch, var(--accent) 55%, var(--card)); line-height: 1.5; }
 .rs-callout strong { display: flex; align-items: center; gap: 6px; color: var(--accent-foreground); font-size: 12px; font-weight: 600; }
 .rs-callout p { color: var(--muted-foreground); font-size: 11px; margin-top: 3px; padding-left: 23px; }
 .rs-settings label { display: grid; gap: 5px; font-size: 12px; font-weight: 600; }
 .rs-settings .rs-setting-row { grid-template-columns: 60px minmax(0, 1fr); align-items: center; gap: 8px; }
+.rs-settings .rs-setting-row input[type="checkbox"] { width: 16px; height: 16px; padding: 0; justify-self: start; }
 .rs-setting-field { display: grid; gap: 4px; }
 .rs-settings select, .rs-settings input, .rs-settings textarea { width: 100%; min-width: 0; padding: 7px 8px; font-weight: 400; font-size: 12px; }
 .rs-settings textarea { min-height: 56px; resize: vertical; }
@@ -145,6 +154,7 @@ body { min-width: 320px; overflow: hidden; background: var(--background); color:
 .rs-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 .rs-status[data-state='succeeded'], .rs-status[data-state='ready'] { color: var(--primary); }
 .rs-status[data-state='running'], .rs-status[data-state='inspecting'], .rs-status[data-state='queued'], .rs-status[data-state='awaiting_input'] { color: oklch(0.52 0.1 65); }
+.rs-status[data-state='needs_review'] { color: oklch(0.52 0.1 65); }
 .rs-status[data-state='failed'] { color: var(--destructive); }
 .rs-error, .rs-notice { border: 1px solid color-mix(in oklch, var(--destructive) 20%, var(--border)); border-radius: 8px; padding: 10px 14px; background: color-mix(in oklch, var(--destructive) 5%, var(--card)); color: var(--destructive); line-height: 1.6; flex-shrink: 0; font-size: 12px; }
 .rs-error > button { float: right; min-height: 22px; padding: 0 7px; background: transparent; border-color: transparent; }

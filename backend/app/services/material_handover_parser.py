@@ -23,8 +23,13 @@ ALIASES = {
     'color': ('颜色', '色号', 'color', 'colour'),
     'lot': ('缸号', '批号', '批次号', '批次', 'lot'),
     'roll_no': ('卷号', '卷支编号', 'rollno'),
+    'purchase_detail_id': ('采购明细id', '采购明细编号', '采购来源明细id', 'purchaselineid'),
+    'purchase_order_no': ('采购订单号', '采购单号', '订单号', 'purchaseorderno', 'pono'),
+    'order_and_product': ('采购订单号货号', '采购单号货号', '订单号货号', '订单货号'),
+    'ordered_quantity': ('原下单量', '原下单数量', '下单量', '下单数量', '订单数量', '采购数量', 'orderedquantity'),
     'contract_no': ('合同号', '合同编号', 'contractno'),
     'production_no': ('放产订单', '放产单号', '生产单号', '生产清单号', '生产单编号', 'productionno'),
+    'plan_no': ('计划跟踪号', '跟踪号', 'planreference'),
     'product_no': ('货号', '款号', '产品编码', 'productcode'),
     'note': ('备注', '说明', 'remark'),
     'unit_price': ('单价', '含税单价', '不含税单价', 'unitprice', 'price'),
@@ -33,6 +38,11 @@ ALIASES = {
     'price_note': ('单价依据', '价格说明', 'pricenote'),
 }
 UNIT_ALIASES = {'y': '码', 'yd': '码', 'yds': '码', 'yard': '码', 'yards': '码', 'kg': '千克', 'kgs': '千克', 'pcs': 'Pcs', 'pc': 'Pcs', 'm': '米'}
+PAPER_NUMBER = r'[A-Za-z0-9][A-Za-z0-9_\-./]{0,127}'
+PAPER_ORDER_LABEL = re.compile(r'(?:原)?下[单單](?:数量|數量|量)?')
+PAPER_QUANTITY = r'[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?'
+PAPER_QUANTITY_WITH_UNIT = re.compile(rf'(?<![A-Za-z0-9.,-]){PAPER_QUANTITY}\s*'
+    r'(?:yards?|yds?|y|kgs?|pcs?|码|碼|米|千克|公斤|个|件|卷)(?![A-Za-z])', re.I)
 SUMMARY_LABELS = {
     '合计', '总计', '小计', '合计数量', '总计数量', '小计数量', '数量合计', '数量总计', '数量小计',
     '本页合计', '本页小计', '累计数量', 'total', 'subtotal', 'grandtotal', 'totalquantity', 'totalqty',
@@ -68,6 +78,42 @@ def numeric(value):
         return format(amount, 'f'), UNIT_ALIASES.get(match[2].lower(), match[2])
     except InvalidOperation:
         return '', ''
+
+
+def document_reference(text, labels):
+    text = unicodedata.normalize('NFKC', text)
+    values = set()
+    for label in labels:
+        pattern = r'D\s*N[oe0]' if label == 'D No' else re.escape(label)
+        for match in re.finditer(rf'(?<!\w){pattern}\s*[:：.]?\s*({PAPER_NUMBER})(?![A-Za-z0-9_\-./])', text, re.I):
+            if re.match(r'[ \t]*(?:[,、;/&+]|及|和)[ \t]*[A-Za-z0-9]', text[match.end():]):
+                return ''
+            values.add(match[1])
+    return next(iter(values)) if len(values) == 1 else ''
+
+
+def combined_order_quantity(text, label):
+    # OCR may insert the wrapped product name between 下单 and its amount.
+    # Only accept a unique quantity with a unit, or a bare quantity on the label's line.
+    remainder = text[label.end():]
+    stated = {match[0] for match in PAPER_QUANTITY_WITH_UNIT.finditer(remainder)}
+    if stated:
+        return next(iter(stated)) if len(stated) == 1 else ''
+    bare = re.match(rf'[ \t]*[:：]?[ \t]*({PAPER_QUANTITY})(?=[ \t]*(?:$|\n|缸号|批号))', remainder)
+    return bare[1] if bare else ''
+
+
+def outside_table(block, table):
+    box, bounds = block.source.bbox_pt, table.source.bbox_pt
+    if not box or len(box) != 4 or not bounds or len(bounds) != 4 or block.source.page_index != table.source.page_index:
+        return True
+    x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return not (bounds[0] <= x <= bounds[2] and bounds[1] <= y <= bounds[3])
+
+
+def header_rows(table, stop):
+    return [' '.join(cell.display_text or cell.raw_text for cell in table.cells
+        if cell.row == row and cell.resolution not in {'unknown', 'unresolved'}) for row in range(stop)]
 
 
 def header_label(cell, column):
@@ -183,9 +229,12 @@ def map_ir(ir):
     full_text = '\n'.join(texts)
     budget = any(v in full_text for v in ('预算用料', '计划用量', '放产损耗'))
     data = HandoverData(kind='ISSUE' if budget or any(v in full_text for v in ('发料单', '领料单', '领料申请')) else 'DELIVERY')
+    document_headers = [block.text for block in ir.blocks if block.text and all(outside_table(block, table) for table in ir.tables)]
     if budget:
         warnings.append('这是用料计划 / 预算候选，请核对实际申请量；生成交接单不会直接收发库存。')
     for key, aliases in {'source_no': ('单号', '单据编号', '生产清单号', '生产单号', 'D No'), 'contract_no': ('合同号',), 'product_no': ('款号', '货号')}.items():
+        if data.kind == 'DELIVERY':
+            continue
         for label in aliases:
             pattern = r'D\s*N[oe0]' if label == 'D No' else re.escape(label)
             match = re.search(pattern + r'\s*[:：.]?\s*([A-Za-z0-9][A-Za-z0-9_\-./]{2,127})', full_text, re.I)
@@ -214,6 +263,8 @@ def map_ir(ir):
                 label = header_label(cell, c)
                 for field, aliases in ALIASES.items():
                     if label in aliases:
+                        if data.kind == 'DELIVERY' and field == 'quantity' and label == '采购数量':
+                            continue
                         rank = aliases.index(label)
                         if field not in candidate or rank < candidate[field][1]:
                             candidate[field] = (c, rank)
@@ -225,11 +276,12 @@ def map_ir(ir):
                     label = header_label(below, c)
                     combined = normalized((above.raw_text if above else '') + (below.raw_text if below else ''))
                     for value in (combined, label):
-                        if value in ALIASES['quantity']:
+                        if value in ALIASES['quantity'] and (data.kind != 'DELIVERY' or value != '采购数量'):
                             rank = ALIASES['quantity'].index(value)
                             if 'quantity' not in candidate or rank < candidate['quantity'][1]:
                                 candidate['quantity'] = (c, rank); extra_header = True
-            if 'quantity' in candidate and ('item_code' in candidate or 'item_name' in candidate):
+            has_quantity = 'quantity' in candidate or (data.kind == 'DELIVERY' and 'ordered_quantity' in candidate)
+            if has_quantity and ('item_code' in candidate or 'item_name' in candidate):
                 # Repeated 单位 columns belong to different objects; prefer the material name's nearest unit.
                 units = [(c, ALIASES['unit'].index(normalized(grid[r,c].raw_text))) for c in range(table.column_count)
                     if (r,c) in grid and normalized(grid[r,c].raw_text) in ALIASES['unit']]
@@ -245,7 +297,11 @@ def map_ir(ir):
                         start += 1
                 break
         if start is None:
+            if data.kind == 'DELIVERY' and not lines and table.row_count <= 8:
+                document_headers.extend(header_rows(table, table.row_count))
             continue
+        if data.kind == 'DELIVERY':
+            document_headers.extend(header_rows(table, r))
         for r in range(start, table.row_count):
             raw, anchors = {}, {}
             for field, (c, _) in mapping.items():
@@ -281,6 +337,27 @@ def map_ir(ir):
             if suffix_unit and raw['unit'] != suffix_unit:
                 warnings.append(f'第 {len(lines)+1} 行数量内单位与单位列不一致，请核对。')
                 raw['unit'] = ''
+            combined_order = unicodedata.normalize('NFKC', raw.pop('order_and_product', ''))
+            if data.kind == 'DELIVERY':
+                if not raw.get('purchase_order_no') and combined_order.count('/') == 1:
+                    order_no = combined_order.split('/', 1)[0].strip()
+                    if re.fullmatch(PAPER_NUMBER, order_no):
+                        raw['purchase_order_no'] = order_no
+                original_quantity = raw.get('ordered_quantity', '')
+                quantity_label = PAPER_ORDER_LABEL.search(combined_order)
+                if not original_quantity and quantity_label:
+                    original_quantity = combined_order_quantity(combined_order, quantity_label)
+                ordered, ordered_unit = numeric(unicodedata.normalize('NFKC', original_quantity))
+                if ordered_unit == '碼':
+                    ordered_unit = '码'
+                if (original_quantity or quantity_label) and (not ordered or len(ordered) > 32 or Decimal(ordered) >= Decimal('1e12')
+                        or (ordered_unit and ordered_unit != raw['unit'])):
+                    warnings.append(f'第 {len(lines)+1} 行原下单量或单位待核对。')
+                    ordered = ''
+                raw['ordered_quantity'] = ordered
+            else:
+                for field in ('purchase_detail_id', 'purchase_order_no', 'ordered_quantity', 'plan_no'):
+                    raw.pop(field, None)
             identifier = f'L{len(lines)+1}'
             for key, value in raw.items():
                 limit = next((getattr(m, 'max_length', None) for m in HandoverLine.model_fields[key].metadata if getattr(m, 'max_length', None)), 2000)
@@ -290,7 +367,8 @@ def map_ir(ir):
             row = HandoverLine(id=identifier, source_line=f'{table.title or table.id}:{r+1}'[:128], **raw)
             numeric_rolls = []
             used_roll_cells = set()
-            quantity_cell = grid.get((r, mapping['quantity'][0]))
+            quantity_column = mapping.get('quantity')
+            quantity_cell = grid.get((r, quantity_column[0])) if quantity_column else None
             for c in range(table.column_count):
                 header = grid.get((start-1, c))
                 value = grid.get((r, c))
@@ -316,6 +394,15 @@ def map_ir(ir):
             if len(lines) > 200:
                 raise ToolError('TOO_MANY_LINES', '单据超过 200 行，请拆分后上传')
     data.lines = lines
+    if data.kind == 'DELIVERY':
+        # Keep the supplier voucher number separate from the purchase reference.
+        header_text = '\n'.join(document_headers)
+        data.source_no = document_reference(header_text, ('送货单号', '出货单号', '送货单编号', '出货单编号',
+            '原单号', '单据编号', '单号', 'D No'))
+        for field, labels in (('purchase_order_no', ('采购订单号', '采购单号')),
+                ('contract_no', ('合同号', '合同编号')), ('production_no', ('生产单号', '放产单号')),
+                ('product_no', ('款号', '货号'))):
+            setattr(data, field, document_reference(header_text, labels))
     warnings += [issue.message for issue in ir.issues][:30]
     if ir.source_type in {'image', 'pdf'}:
         warnings.append('请核对印刷文字与手写 / 涂改内容，数量和单位以确认后的明细为准。')

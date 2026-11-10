@@ -105,6 +105,25 @@ def issuer_scope(db,access):
         HandoverSupplierBinding.supplier_id==access.supplier_id))) if access.supplier_id else [access.issuer_id]
 
 
+def document_scope(db, access):
+    if access.issuer_id:
+        return HandoverDocument.issuer_id.in_(issuer_scope(db, access))
+    from_supplier = select(HandoverIssuer.id).where(
+        HandoverIssuer.id == HandoverDocument.issuer_id,
+        HandoverIssuer.factory_id == HandoverDocument.factory_id,
+        HandoverIssuer.kind == 'SUPPLIER',
+    ).exists()
+    # Unconfirmed supplier uploads, including abandoned drafts, stay private.
+    return ~from_supplier | (HandoverDocument.status == 'CONFIRMED') | (HandoverDocument.confirmed_at != '')
+
+
+def require_preparer(db, access, row):
+    if not access.issuer_id and row.issuer_id:
+        issuer = db.get(HandoverIssuer, row.issuer_id)
+        if issuer and issuer.factory_id == row.factory_id and issuer.kind == 'SUPPLIER':
+            raise HTTPException(403, '供应商送货单只能由制单供应商修改、确认、作废或打印')
+
+
 def supplier_identity(db,row,body):
     identity=db.get(HandoverSupplierBinding,row.issuer_id) if row.issuer_id else None
     return identity.supplier_id if identity else body.get('supplier_id','')
@@ -128,9 +147,8 @@ def validate_party(db,access,data,document_issuer_id=None):
 
 
 def document(db, access, identifier, *, lock=False):
-    query = select(HandoverDocument).where(HandoverDocument.factory_id == FACTORY, HandoverDocument.id == identifier)
-    if access.issuer_id:
-        query = query.where(HandoverDocument.issuer_id.in_(issuer_scope(db,access)))
+    query = select(HandoverDocument).where(HandoverDocument.factory_id == FACTORY,
+        HandoverDocument.id == identifier, document_scope(db, access))
     row = db.scalar(query.with_for_update() if lock else query)
     if row is None:
         raise HTTPException(404, '未找到当前范围的单据')
@@ -190,9 +208,12 @@ def request_signature(kind, identifier, payload):
     if body.get('data') is None:body.pop('data',None)
     if isinstance(body.get('data'),dict):
         data=body['data']
-        if not data.get('supplier_id'):data.pop('supplier_id',None)
+        for key in ('supplier_id', 'purchase_order_no'):
+            if not data.get(key):
+                data.pop(key, None)
         for line in data.get('lines',[]):
-            for key in ('unit_price','price_unit','currency','price_note'):
+            for key in ('unit_price', 'price_unit', 'currency', 'price_note',
+                        'purchase_detail_id', 'purchase_order_no', 'ordered_quantity', 'plan_no'):
                 if not line.get(key):line.pop(key,None)
     return digest([kind, identifier, body])
 
@@ -254,13 +275,22 @@ def check_revision(row, expected):
         raise HTTPException(409, '单据或收发进度已变化，请刷新后核对')
 
 
+def preserve_internal_purchase_references(access, data, stored):
+    if access.issuer_id:
+        references = {line['id']: line.get('purchase_detail_id', '') for line in stored['lines']}
+        for line in data.lines:
+            line.purchase_detail_id = references.get(line.id, '')
+
+
 def save_document(db, access, identifier, payload):
     inventory.procurement.lock_factory(db)
+    row = document(db, access, identifier, lock=True)
+    require_preparer(db, access, row)
     signature = request_signature('SAVE', identifier, payload)
     previous = replay(db, access, payload.request_id, signature)
     if previous is not None:
         return previous
-    row = document(db, access, identifier, lock=True); check_revision(row, payload.expected_revision)
+    check_revision(row, payload.expected_revision)
     if row.status != 'DRAFT':
         raise HTTPException(409, '已确认单据不可直接改写，请保留原版本并先作废未执行单据')
     data = payload.data
@@ -268,6 +298,7 @@ def save_document(db, access, identifier, payload):
         raise HTTPException(422, '明细行编号不能重复')
     validate_party(db,access,data,row.issuer_id)
     before = json.loads(row.data_json)
+    preserve_internal_purchase_references(access, data, before)
     row.data_json = data.model_dump_json(); row.revision += 1; row.updated_at = business_now().isoformat()
     db.flush(); result = output(db, row)
     event(db, access, row, 'SAVE', payload.request_id, signature, {'before': before, 'after': data.model_dump(mode='json')}, result)
@@ -281,13 +312,14 @@ def confirmation_issues(data):
         if not value:
             issues.append('缺少' + label)
     if data.kind == 'DELIVERY' and not data.supplier_id:
-        issues.append('供应商尚未关联，请仓库选择供应商基础资料')
+        issues.append('供应商尚未关联基础资料')
     if not data.lines:
-        issues.append('尚无物料明细，请添加明细或交仓库按原件补录')
+        issues.append('尚无物料明细，请按原件添加明细')
     for index, line in enumerate(data.lines, 1):
         missing = ['缺少' + label for value, label in ((line.item_code, '物料编码'), (line.item_name, '物料名称'), (line.unit, '单位'), (line.material_category, '物料分类')) if not value]
-        for value, label, allow_zero in ((line.quantity, '数量', False), (line.unit_price, '参考单价', True)):
-            if allow_zero and not value:
+        for value, label, optional, allow_zero in ((line.quantity, '数量', False, False),
+                (line.unit_price, '参考单价', True, True), (line.ordered_quantity, '原下单量', True, False)):
+            if optional and not value:
                 continue
             if not value:
                 missing.append('缺少' + label)
@@ -303,20 +335,24 @@ def confirmation_issues(data):
 
 def confirm(db, access, identifier, payload):
     inventory.procurement.lock_factory(db)
+    row = document(db, access, identifier, lock=True)
+    require_preparer(db, access, row)
     signature = request_signature('CONFIRM', identifier, payload)
     previous = replay(db, access, payload.request_id, signature)
     if previous is not None:
         return previous
-    row = document(db, access, identifier, lock=True); check_revision(row, payload.expected_revision)
+    check_revision(row, payload.expected_revision)
     if row.status != 'DRAFT':
         raise HTTPException(409, '单据已确认或作废，请刷新')
     data = payload.data or HandoverData.model_validate_json(row.data_json)
+    if payload.data and access.issuer_id:
+        preserve_internal_purchase_references(access, data, json.loads(row.data_json))
     if not payload.data and access.issuer_id:data.supplier_id=access.supplier_id;data.counterparty=access.name
     validate_party(db,access,data,row.issuer_id)
     if len({line.id for line in data.lines})!=len(data.lines):raise HTTPException(422,'明细行编号不能重复')
     issues = confirmation_issues(data)
     if issues:
-        raise HTTPException(422, '确认打印前请补全：' + '；'.join(issues) + '。也可先保存，交仓库补全。')
+        raise HTTPException(422, '请核对并填齐必填项后再确认：' + '；'.join(issues) + '。')
     if data.kind=='DELIVERY':
         from app.services.material_handover_suppliers import supplier
         supplier(db,data.supplier_id)
@@ -340,11 +376,13 @@ def confirm(db, access, identifier, payload):
 
 def void(db, access, identifier, payload):
     inventory.procurement.lock_factory(db)
+    row = document(db, access, identifier, lock=True)
+    require_preparer(db, access, row)
     signature = request_signature('VOID', identifier, payload)
     previous = replay(db, access, payload.request_id, signature)
     if previous is not None:
         return previous
-    row = document(db, access, identifier, lock=True); check_revision(row, payload.expected_revision)
+    check_revision(row, payload.expected_revision)
     if not payload.reason:
         raise HTTPException(422, '请填写作废原因')
     if row.status == 'VOID' or progress(db, identifier)[1]:

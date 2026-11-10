@@ -41,6 +41,17 @@ const result: Result = {
 }
 afterEach(() => vi.restoreAllMocks())
 describe('document result review', () => {
+  it('keeps an unresolved source visible even when no trustworthy translation exists', async () => {
+    vi.spyOn(documentTools, 'result').mockResolvedValue({ ...result, tables: [], total_cells: 0,
+      blocks: [{ id: 'pending', kind: 'paragraph', source: { page_index: 0 }, original_text: 'Unread label', text: '',
+        style: { translation_status: 'needs_review', rendered: false, review_notes: ['识别不确定'] } }] })
+    const wrapper = mount(ResultReview, { props: { job, readonly: true } }); await flushPromises()
+    expect(wrapper.text()).toContain('Unread label')
+    expect(wrapper.text()).toContain('未得到可信译文')
+    expect(wrapper.text()).toContain('识别不确定')
+    expect(wrapper.get('textarea').attributes('readonly')).toBeDefined()
+    wrapper.unmount()
+  })
   it('marks a manually confirmed revision as confirmed rather than ambiguous', async () => {
     const table = result.tables[0]!
     vi.spyOn(documentTools, 'result').mockResolvedValue({ ...result, tables: [{ ...table, cells: [{ ...table.cells[0]!, display_text: '001235', resolution: 'manually_confirmed' }] }] })

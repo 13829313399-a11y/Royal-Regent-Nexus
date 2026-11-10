@@ -20,6 +20,7 @@ export interface PurchaseGroupResult {
   options?: { suppliers: string[]; units: string[]; imports?: { id: string; name: string }[] }; can_receive?: boolean
 }
 export type ImportAction = 'ALL' | 'NEW' | 'UPDATE' | 'UNCHANGED' | 'BLOCKED'
+export interface PurchasePriceReference { unit_price: string | null; price_unit: string; currency: 'CNY' }
 export interface PurchaseFacts {
   source_category?: 'PURCHASE' | 'SUPPLEMENT'
   supplement_no?: string

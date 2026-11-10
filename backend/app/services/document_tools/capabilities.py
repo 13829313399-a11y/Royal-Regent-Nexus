@@ -40,13 +40,13 @@ def get_capabilities():
     from app.services.document_tools.image_translation import runtime_status
     image_runtime = runtime_status()
     for operation, (label, _) in job_service.OPERATIONS.items():
-        required = operation in {"word_to_pdf", "excel_to_pdf", "pdf_translate"}
+        required = operation in {"word_to_pdf", "excel_to_pdf"}
         reason = "Office 渲染引擎未安装" if required and not office else ""
         if operation == "excel_to_pdf" and office and not uno:
             reason = "Office 文档读取和打印组件不可用"
         if operation.endswith("_translate") and not (offline or online):
             reason = "请配置在线 AI 翻译或安装离线翻译模型"
-        if operation == "image_translate" and not image_runtime["available"]:
+        if operation in {"image_translate", "pdf_translate"} and not image_runtime["available"]:
             reason = image_runtime["reason"]
         operations.append({"id": operation, "label": label, "available": not reason, "reason": reason})
     return {"operations": operations, "worker": job_service.heartbeat_status(), "image_translation": image_runtime,

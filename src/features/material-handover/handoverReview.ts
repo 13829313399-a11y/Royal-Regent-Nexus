@@ -2,15 +2,17 @@ import type { HandoverData } from '@/api/materialHandover'
 
 export interface HandoverReviewIssue { label: string; fields: string[] }
 
-// Drafts may be incomplete. These requirements apply only to confirmation/printing.
-export function handoverReviewIssues(data: HandoverData): HandoverReviewIssue[] {
+// Drafts may be incomplete. These requirements apply when confirming a document.
+export function handoverReviewIssues(data: HandoverData, supplierPortal = false): HandoverReviewIssue[] {
   const issues: HandoverReviewIssue[] = []
   const missing = (value: string | null | undefined) => !value?.trim()
   for (const [value, label] of [[data.source_no, '原单号'], [data.document_date, '单据日期'], [data.counterparty, '制单方']] as const) {
     if (missing(value)) issues.push({ label: `缺少${label}`, fields: [label] })
   }
-  if (data.kind === 'DELIVERY' && missing(data.supplier_id)) issues.push({ label: '供应商尚未关联，请仓库选择供应商基础资料', fields: ['制单供应商'] })
-  if (!data.lines.length) issues.push({ label: '尚无物料明细，请添加明细或交仓库按原件补录', fields: [] })
+  if (data.kind === 'DELIVERY' && missing(data.supplier_id)) issues.push({ label: supplierPortal
+    ? '供应商尚未关联，请联系仓库关联供应商基础资料'
+    : '供应商尚未关联，请选择供应商基础资料', fields: ['制单供应商'] })
+  if (!data.lines.length) issues.push({ label: '尚无物料明细，请按原件添加明细', fields: [] })
   const validNumber = (value: string, allowZero = false) => {
     const text = value.trim(), integer = text.split('.')[0]!.replace(/^0+/, '')
     return /^\d+(\.\d{1,6})?$/.test(text) && text.length <= 32 && integer.length <= 12 && (allowZero || /[1-9]/.test(text))
@@ -27,6 +29,10 @@ export function handoverReviewIssues(data: HandoverData): HandoverReviewIssue[] 
     if (line.unit_price?.trim() && !validNumber(line.unit_price, true)) {
       messages.push('参考单价须为非负数、小于一万亿，最多 6 位小数；不清楚可留空')
       fields.push(`第${index + 1}行参考单价`)
+    }
+    if (line.ordered_quantity?.trim() && !validNumber(line.ordered_quantity)) {
+      messages.push('原下单量须大于 0、小于一万亿，最多 6 位小数')
+      fields.push(`第${index + 1}行原下单量`)
     }
     if (messages.length) issues.push({ label: `第 ${index + 1} 行${line.item_name.trim() ? `（${line.item_name.trim()}）` : ''}：${messages.join('；')}`, fields })
   })
