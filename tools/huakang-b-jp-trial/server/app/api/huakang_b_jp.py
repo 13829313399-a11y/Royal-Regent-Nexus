@@ -133,17 +133,13 @@ async def preview(request: Request, factory_id: str = Form(...), received_date: 
 async def export(request: Request, factory_id: str = Form(...), received_date: date = Form(...),
     files: list[UploadFile] = File(default=[]), html: str = Form(""), subject: str = Form(""),
     quantity_selections: str = Form("[]"), fingerprint: str = Form(...), selected: str = Form(...),
-    overrides: str = Form("[]"), reason: str = Form(...), confirmed: bool = Form(...),
+    overrides: str = Form("[]"), reason: str = Form("", max_length=500), confirmed: bool = Form(False),
     merchandiser: str = Form("", max_length=128),
     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     require_page_header(request)
     guard(db, user, factory_id)
     guard(db, user, factory_id, "export")
-    if not confirmed or not 4 <= len(reason.strip()) <= 500:
-        raise HTTPException(400, "请确认核对结果并填写 4 至 500 个字的原因")
     merchandiser = merchandiser.strip()
-    if not 1 <= len(merchandiser) <= 128:
-        raise HTTPException(400, "请按金山人员名称填写业务跟单")
     changes = json_values(overrides, RowOverride, 2750)
     uploads, refs, result = await prepare(db, user, files, html, subject, received_date, quantity_selections, merchandiser, changes)
     user = refresh_user(request, db)
@@ -154,7 +150,7 @@ async def export(request: Request, factory_id: str = Form(...), received_date: d
     record = transaction(db, lambda: intake.save_export(db, result, json_values(selected, str),
         changes, refs, uploads, html, reason.strip(), actor_name(user), user.display_name or user.username))
     return {"id": record.id, "first_number": record.first_number, "last_number": record.last_number,
-            "row_count": len(record.data["rows"])}
+            "row_count": len(record.data["rows"]), "numbering_status": record.data.get("numbering_status", "allocated")}
 
 
 @router.get("/exports")
@@ -167,7 +163,8 @@ def exports(factory_id: str, page: int = 1, db: Session = Depends(get_db), user:
     rows = db.scalars(query.order_by(JPExport.created_at.desc(), JPExport.id).offset((page - 1) * 20).limit(20)).all()
     return {"total": total, "items": [{"id": row.id, "actor": row.actor, "created_at": row.created_at,
         "first_number": row.first_number, "last_number": row.last_number,
-        "row_count": len(row.data["rows"]), "prefix": row.data["prefix"]} for row in rows]}
+        "row_count": len(row.data["rows"]), "prefix": row.data["prefix"],
+        "numbering_status": row.data.get("numbering_status", "allocated")} for row in rows]}
 
 
 @router.get("/exports/{id}/download")

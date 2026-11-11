@@ -162,17 +162,16 @@ def test_feedback_preview_and_44_column_export_use_exact_variant_prices(db):
     assert 'MOQ 5K' in out.cell(7, 28).value and '申请MA/MO失败' in out.cell(7, 28).value
 
 
-def test_fallback_variant_price_requires_recorded_review_before_export(db):
+def test_fallback_variant_price_exports_with_pending_status_and_reminder(db):
     install(db)
     files = [('other-variant.eml', mail(body().replace('2B-003', '2C-003')))]
     p = preview(db, files)
     row = p['rows'][0]
     assert row['price_confirm'] and row['price_t'] == '12.5'
-    with pytest.raises(HTTPException, match='货价未精确匹配'):
-        export(db, p, files=files)
-    changes = [{'id': row['id'], 'field': f, 'value': row[f]} for f in ('price_t', 'factory_price_t')]
-    record = export(db, p, overrides=changes, files=files)
-    assert record.data['rows'][0]['manual_price_review'] is True
+    record = export(db, p, files=files)
+    assert record.data['rows'][0]['manual_price_review'] is False
+    assert record.data['rows'][0]['price_confirm']
+    assert any('候选匹配' in note for note in record.data['generation_reminders'])
 
 
 def test_current_package_is_not_replaced_by_schedule_history(db):
@@ -196,15 +195,16 @@ def test_exact_customer_price_does_not_approve_another_variants_factory_price(db
     p = preview(db)
     assert p['rows'][0]['price_confirm']
     assert '出厂价未按本单' in p['rows'][0]['price_note']
-    with pytest.raises(HTTPException, match='货价未精确匹配'):
-        export(db, p)
+    record = export(db, p)
+    assert record.data['rows'][0]['price_confirm']
+    assert record.data['review_status'] == 'pending'
 
 
 @pytest.mark.parametrize('category,long_code', [
     ('柜货', '67053-000-2B-003-WB0'),
     ('客派车', '67053-000-2C-003-WB0'),
 ])
-def test_amazon_category_or_variant_fallback_requires_price_review(db, category, long_code):
+def test_amazon_category_or_variant_fallback_is_reminded_not_marked_approved(db, category, long_code):
     install(db)
     w = openpyxl.Workbook()
     s = w.active
@@ -217,17 +217,18 @@ def test_amazon_category_or_variant_fallback_requires_price_review(db, category,
     p = preview(db, files)
     row = p['rows'][0]
     assert row['price_confirm'] and row['price_t'] == '12.5' and row['factory_price_t'] == '10'
-    with pytest.raises(HTTPException, match='货价未精确匹配'):
-        export(db, p, files=files)
+    record = export(db, p, files=files)
+    assert record.data['rows'][0]['price_confirm']
+    assert record.data['review_status'] == 'pending'
 
 
 def test_preview_semantic_version_changes_fingerprint_without_changing_inputs(db, monkeypatch):
     install(db)
     files = [('versioned.eml', mail())]
     current = preview(db, files)
-    assert current['preview_schema_version'] == 'huakang-b-jp-preview-v4'
+    assert current['preview_schema_version'] == 'huakang-b-jp-preview-v5'
     with monkeypatch.context() as ctx:
-        ctx.setattr(intake, 'PREVIEW_SCHEMA_VERSION', 'huakang-b-jp-preview-v3')
+        ctx.setattr(intake, 'PREVIEW_SCHEMA_VERSION', 'huakang-b-jp-preview-v4')
         old = preview(db, files)
     assert old['fingerprint'] != current['fingerprint']
     assert old['rows'] == current['rows']

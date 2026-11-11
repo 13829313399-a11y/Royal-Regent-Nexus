@@ -25,8 +25,6 @@ const preview = ref<JPPreview | null>(null)
 const original = ref<JPRow[]>([])
 const selected = ref<string[]>([])
 const quantityColumns = ref<Record<string, string>>({})
-const reason = ref('')
-const confirmed = ref(false)
 const busy = ref(false)
 const loading = ref(false)
 const loadFailed = ref(false)
@@ -49,22 +47,20 @@ const editable = [
   ['factory_price_t', '出厂价HKD'], ['note', '备注'],
 ] as const
 const canPreview = computed(() => props.factoryId === 'huakang-b' && caps.value.read && caps.value.available && !busy.value && !loading.value)
-const exportBlockers = computed(() => {
+const generationReminders = computed(() => {
   if (!preview.value) return []
-  const blockers: string[] = []
-  if (!references.value.schedule || !references.value.price) blockers.push('先上传并验证排期参照和货价表。')
-  if (preview.value.failed_sources.length) blockers.push('仍有未识别来源，请移除或修正后重新解析。')
-  if (preview.value.quantity_selections.length) blockers.push('先选定数量列，再按所选数量列重新解析。')
-  if (!selected.value.length) blockers.push('至少选择一条未重复的问单明细。')
-  const missingPrices = preview.value.rows.filter(row => selected.value.includes(row.id) && !row.price_t.trim())
-  if (missingPrices.length) blockers.push(`${missingPrices.length} 条所选明细的货价HKD为空，请按当前客名和装箱数重新核价。`)
-  if (!merchandiser.value.trim()) blockers.push('填写金山业务跟单名称。')
-  if (reason.value.trim().length < 4 || reason.value.trim().length > 500) blockers.push('填写 4–500 字的核对原因。')
-  if (!confirmed.value) blockers.push('核对所选明细和两项价格后勾选确认。')
-  return blockers
+  const reminders: string[] = []
+  if (!references.value.schedule) reminders.push('未上传排期参照；没有已有编号依据时，文件编号留空。')
+  if (!references.value.price) reminders.push('未上传货价表，无法匹配的价格留空。')
+  if (!merchandiser.value.trim()) reminders.push('业务跟单未填写，文件中将留空。')
+  for (const row of preview.value.rows.filter(item => selected.value.includes(item.id))) {
+    const fields = editable.filter(([key]) => ['customer', 'carton_t', 'ship_date', 'cutoff_date', 'price_t', 'factory_price_t'].includes(key) && !String(row[key] ?? '').trim()).map(([, label]) => label)
+    if (fields.length) reminders.push(`${row.baby_item}：${fields.join('、')}待补，缺值留空。`)
+    if (row.price_confirm) reminders.push(`${row.baby_item}：当前价格含候选匹配，生成不代表价格已确认。`)
+  }
+  return reminders
 })
-const canExport = computed(() => canPreview.value && caps.value.export && preview.value && selected.value.length > 0
-  && !exportBlockers.value.length)
+const canExport = computed(() => canPreview.value && caps.value.export && preview.value && selected.value.length > 0)
 const pageStatus = computed<{ label: string; tone: 'slate' | 'teal' | 'amber' | 'red' }>(() => {
   if (loading.value) return { label: '正在加载', tone: 'slate' }
   if (props.factoryId !== 'huakang-b') return { label: '华康B专用', tone: 'slate' }
@@ -74,7 +70,7 @@ const pageStatus = computed<{ label: string; tone: 'slate' | 'teal' | 'amber' | 
   if (!caps.value.available) return { label: '尚未启用', tone: 'amber' }
   if (busy.value) return { label: '处理中', tone: 'teal' }
   if (!caps.value.export) return { label: '仅可核对', tone: 'slate' }
-  return preview.value ? { label: '待核对明细', tone: 'amber' } : { label: '可开始录入', tone: 'teal' }
+  return preview.value ? { label: '可生成问单', tone: 'amber' } : { label: '可开始录入', tone: 'teal' }
 })
 const reviewCounts = computed(() => ({
   selected: selected.value.length,
@@ -82,16 +78,15 @@ const reviewCounts = computed(() => ({
   priceReview: preview.value?.rows.filter(priceNeedsReview).length ?? 0,
 }))
 
-function invalidate() { preview.value = null; original.value = []; selected.value = []; confirmed.value = false; notice.value = '' }
+function invalidate() { preview.value = null; original.value = []; selected.value = []; notice.value = '' }
 function priceNeedsReview(row: JPRow) {
   const before = original.value.find(item => item.id === row.id)
   return row.price_confirm || !row.price_t.trim() || Boolean(before && (row.customer !== before.customer || row.carton_t !== before.carton_t))
 }
 function rowEdited(row: JPRow, field: string) {
-  confirmed.value = false
   if (field === 'customer' || field === 'carton_t') {
     row.price_t = ''; row.factory_price_t = ''
-    row.price_note = '客名或装箱数已更正，旧价格已清空；请按新条件重新填写核对货价及出厂价。'
+    row.price_note = '客名或装箱数已更正，旧价格已清空，缺价仍可生成，之后按新条件补充。'
   }
 }
 function clearProtected() { invalidate(); references.value = {}; records.value = []; caps.value = { ...emptyCaps }; clipboardText.value = ''; clipboardMessage.value = '' }
@@ -246,7 +241,7 @@ async function copyExport(id: string) {
     if (result.column_count !== 44 || !result.text || result.row_count < 1) throw new Error('已生成记录的复制数据不完整，请下载原导出核对。')
     clipboardText.value = result.text
     const record = records.value.find(item => item.id === id)
-    const label = record ? `${record.prefix}-${record.first_number} 至 ${record.last_number}` : '所选记录'
+    const label = record ? recordLabel(record) : '所选记录'
     clipboardMessage.value = `已读取 ${label} 的 ${result.row_count} 行已生成数据，每行 44 列，不含表头；不会重新分配编号。`
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
@@ -262,6 +257,7 @@ async function copyExport(id: string) {
   } catch (cause) { if (token === epoch) handleError(cause) }
   finally { if (token === epoch) busy.value = false }
 }
+function recordLabel(record: JPExportRecord) { return record.numbering_status === 'pending' || !record.first_number ? '未编号问单' : `${record.prefix}-${record.first_number} 至 ${record.last_number}` }
 function selectClipboardText() { clipboardTextarea.value?.focus(); clipboardTextarea.value?.select() }
 async function exportRows() {
   if (!canExport.value || !preview.value) return
@@ -270,21 +266,20 @@ async function exportRows() {
   const changes = preview.value.rows.filter(row => selected.value.includes(row.id)).flatMap(row => {
     const before = original.value.find(item => item.id === row.id)!
     const contextChanged = row.customer !== before.customer || row.carton_t !== before.carton_t
-    const priceReviewRequired = contextChanged || before.price_confirm
+    const priceReviewRequired = contextChanged
     return editable.flatMap(([field]) => !((field === 'price_t' || field === 'factory_price_t') && priceReviewRequired)
       && String(row[field] ?? '') === String(before[field] ?? '') ? [] : [{ id: row.id, field, value: String(row[field] ?? '') }])
   })
   body.append('fingerprint', preview.value.fingerprint); body.append('selected', JSON.stringify(selected.value))
-  body.append('overrides', JSON.stringify(changes)); body.append('reason', reason.value.trim()); body.append('confirmed', 'true')
+  body.append('overrides', JSON.stringify(changes))
   busy.value = true; error.value = ''
   try {
     const result = await api.export(body, controller.signal)
     if (token !== epoch) return
-    confirmed.value = false
     const history = await api.exports(props.factoryId, 1, controller.signal)
     if (token !== epoch) return
     records.value = history.items; totalRecords.value = history.total; page.value = 1
-    notice.value = `已保留 ${result.row_count} 行的编号与导出记录。请从下方下载；重复下载不会分配新号。未写入正式订单或下发生产。`
+    notice.value = `已生成 ${result.row_count} 行问单。${result.numbering_status === 'pending' ? '缺少历史编号依据，编号已留空；补充参照后可重新解析生成带编号文件。' : '编号与导出记录已保留。'}请从下方下载或复制。未写入正式订单或下发生产。`
   } catch (cause) { if (token === epoch) handleError(cause) }
   finally { if (token === epoch) busy.value = false }
 }
@@ -316,7 +311,7 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
 
     <div class="jp-boundary surface-subtle" role="note">
       <ClipboardList aria-hidden="true" />
-      <p>仅用于问单核对与导出。问单不计入正式订单，不自动安排生产或调整库存。</p>
+      <p>用于问单解析与导出。问单不计入正式订单，不自动安排生产或调整库存。</p>
     </div>
 
     <div v-if="error" class="jp-message jp-message--error" role="alert">
@@ -390,12 +385,12 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
             </div>
           </article>
         </div>
-        <p class="jp-help">排期参照和货价表由有更新权限的人员维护。确认价表为可选项，请核对币种后上传。</p>
+        <p class="jp-help">参照文件均可选，由有更新权限的人员维护。无参照也可解析生成；缺资料留空，无历史编号依据时不分配编号。</p>
       </SectionPanel>
 
       <SectionPanel title="02 · 上传或粘贴邮件" subtitle="填写来单信息，再选择邮件文件或粘贴邮件正文。" class="jp-panel">
         <div class="jp-form-grid">
-          <label class="jp-field"><span>业务跟单（金山人员名称）<span class="jp-required">必填</span></span>
+          <label class="jp-field"><span>业务跟单（金山人员名称）<span class="jp-muted">可后补</span></span>
             <input v-model="merchandiser" aria-label="业务跟单" maxlength="128" placeholder="填写金山中的人员名称" :disabled="busy" @input="invalidate">
           </label>
           <label class="jp-field"><span>来单日期（邮件无日期时使用）</span>
@@ -425,14 +420,14 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
             <Button v-if="html || subject" variant="outline" :disabled="busy" @click="clearPastedBody">清除粘贴正文</Button>
           </div>
         </div>
-        <p v-if="mails.length || html.trim()" class="jp-help" data-testid="jp-source-summary">本批来源：{{ mails.length }} 份邮件文件{{ html.trim() ? '，另有 1 份粘贴正文' : '' }}。<template v-if="mails.length && html.trim()">将分别识别所有来源；有未识别来源时需修正或移除后重新解析。</template></p>
+        <p v-if="mails.length || html.trim()" class="jp-help" data-testid="jp-source-summary">本批来源：{{ mails.length }} 份邮件文件{{ html.trim() ? '，另有 1 份粘贴正文' : '' }}。<template v-if="mails.length && html.trim()">将分别识别所有来源；未识别来源只作提醒，本次仅生成已识别且选中的明细。</template></p>
         <div class="jp-section-footer">
-          <p class="jp-muted">解析后请逐项核对客户、货号、数量、日期和价格。</p>
-          <Button :disabled="!canPreview" @click="parse"><ClipboardList aria-hidden="true" />解析并核对</Button>
+          <p class="jp-muted">解析后显示明细与资料提醒，可直接生成文件。</p>
+          <Button :disabled="!canPreview" @click="parse"><ClipboardList aria-hidden="true" />解析邮件</Button>
         </div>
       </SectionPanel>
 
-      <SectionPanel title="03 · 核对明细" subtitle="核对原邮件与参照，确认后生成问单 Excel。" class="jp-panel">
+      <SectionPanel title="03 · 明细与提醒" subtitle="可直接生成问单 Excel；缺项与待核对事项只作提醒。" class="jp-panel">
         <template #action><StatusPill :label="preview ? `${preview.rows.length} 条明细` : '等待解析'" :tone="preview ? 'teal' : 'slate'" /></template>
         <template v-if="preview">
           <div class="jp-review-summary" aria-label="明细核对概况">
@@ -445,28 +440,28 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
               <ul><li v-for="(warning, i) in preview.warnings" :key="i">{{ warning }}</li></ul>
             </div>
           </div>
-          <div v-if="preview.failed_sources.length" class="jp-message jp-message--error" role="alert">
-            <CircleAlert aria-hidden="true" /><div class="jp-message__content"><p>这些来源尚未识别：{{ preview.failed_sources.join('、') }}。当前已识别明细仍可查看，但须处理失败来源后重新解析才能生成。</p><p>可在上方移除对应文件；ZIP 内邮件需修正邮件包后重新选择。</p></div>
+          <div v-if="preview.failed_sources.length" class="jp-message jp-message--warning" role="alert">
+            <CircleAlert aria-hidden="true" /><div class="jp-message__content"><p>这些来源尚未识别：{{ preview.failed_sources.join('、') }}。这些来源不会写入本次文件，已识别且选中的明细可直接生成。</p><p>可在上方移除对应文件；ZIP 内邮件需修正邮件包后重新选择。</p></div>
             <Button v-if="preview.failed_sources.includes('粘贴正文') && html.trim()" variant="outline" :disabled="busy" @click="removePastedAndParse">{{ mails.length ? '移除粘贴正文并重新解析' : '清除未识别的粘贴正文' }}</Button>
           </div>
           <div v-if="preview.quantity_selections.length" class="jp-quantity-choices surface-subtle">
             <label v-for="choice in preview.quantity_selections" :key="`${choice.source_id}:${choice.table_index}`" class="jp-field">
               <span>请选择 {{ choice.source }} 第 {{ choice.table_index + 1 }} 个表格的数量列</span>
-              <select v-model="quantityColumns[`${choice.source_id}:${choice.table_index}`]" aria-label="数量列" :disabled="busy" @change="confirmed = false">
+              <select v-model="quantityColumns[`${choice.source_id}:${choice.table_index}`]" aria-label="数量列" :disabled="busy">
                 <option value="">待选择</option><option v-for="column in choice.columns" :key="column.index" :value="String(column.index)">第 {{ column.index + 1 }} 列：{{ column.sample }}</option>
               </select>
             </label>
             <Button variant="outline" :disabled="!canPreview" @click="parse">按所选数量列重新解析</Button>
           </div>
           <template v-if="preview.rows.length">
-            <p id="jp-table-help" class="jp-help">左右滚动查看全部字段。行Q期D与截数期是不同字段；装箱数、数量、货价回退及版本均须人工核对。</p>
+            <p id="jp-table-help" class="jp-help">左右滚动查看全部字段。行Q期D与截数期是不同字段；缺项及候选价格会提示，生成不代表已完成核对。</p>
             <div class="jp-table" tabindex="0" role="region" aria-label="问单核对明细" aria-describedby="jp-table-help">
               <table>
                 <caption class="sr-only">问单明细核对与更正</caption>
                 <thead><tr><th scope="col" class="jp-selection-column">选择与状态</th><th scope="col" class="jp-identity-column">报关货号 / 长货号</th><th v-for="[field, label] in editable" :key="field" scope="col" :class="`jp-col-${field}`">{{ label }}</th></tr></thead>
                 <tbody><tr v-for="row in preview.rows" :key="row.id" :data-selected="selected.includes(row.id)" :class="{ 'jp-row-existing': row.exists }">
                   <td class="jp-selection-column"><div class="jp-row-status">
-                    <label class="jp-row-check"><input v-model="selected" type="checkbox" :value="row.id" :disabled="row.exists || busy" aria-label="选择明细" @change="confirmed = false"><span>选择明细</span></label>
+                    <label class="jp-row-check"><input v-model="selected" type="checkbox" :value="row.id" :disabled="row.exists || busy" aria-label="选择明细"><span>选择明细</span></label>
                     <StatusPill v-if="row.exists" label="排期已有，勿重录" tone="slate" compact />
                     <StatusPill v-if="priceNeedsReview(row)" label="货价待确认" tone="amber" compact />
                     <small v-if="row.price_note">{{ row.price_note }}</small>
@@ -477,34 +472,32 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
               </table>
             </div>
             <div class="jp-confirm-area surface-subtle">
-              <p class="jp-muted">不得把待确认价格当成已批准报价。勾选前请核对两项价格及全部提醒；修改明细后需重新确认。</p>
-              <p class="jp-muted">客名或装箱数会影响价格匹配，修改后会清空旧价。请按新条件填写货价，并核对出厂价；系统不会替你沿用旧价。核对原因和勾选确认用于分配问单编号、保留核对依据。</p>
-              <label class="jp-field"><span>核对原因<span class="jp-required">必填 · 至少 4 个字</span></span><textarea v-model="reason" rows="2" maxlength="500" placeholder="填写本次核对依据或更正原因" :disabled="busy" @input="confirmed = false" /></label>
-              <label class="jp-confirmation"><input v-model="confirmed" type="checkbox" :disabled="busy"><span>已核对所选明细、数量、交期、包装、价格及警告；确认分配编号并保留导出记录。</span></label>
-              <div v-if="exportBlockers.length" class="jp-message jp-message--warning" data-testid="jp-export-blockers"><div class="jp-message__content"><strong>生成前还需完成</strong><ul><li v-for="blocker in exportBlockers" :key="blocker">{{ blocker }}</li></ul></div></div>
+              <p class="jp-muted">可直接生成，无需勾选核对或填写原因。缺项保持空白，文件保留“待核对”状态，候选价仍需后续核价。</p>
+              <p class="jp-muted">更改客名或装箱数后旧价格会清空；可先生成，之后再补充价格。</p>
+              <div v-if="generationReminders.length" class="jp-message jp-message--warning" data-testid="jp-generation-reminders"><div class="jp-message__content"><strong>资料提醒（不影响生成）</strong><ul><li v-for="reminder in generationReminders" :key="reminder">{{ reminder }}</li></ul></div></div>
               <div class="jp-section-footer">
                 <p v-if="!caps.export" class="jp-muted">当前账号无导出权限，可核对明细后联系有权限的人员处理。</p>
-                <p v-else class="jp-muted">确认后保留 {{ reviewCounts.selected }} 条所选明细的编号与导出记录。</p>
-                <Button :disabled="!canExport" @click="exportRows"><Download aria-hidden="true" />确认并生成问单 Excel</Button>
+                <p v-else class="jp-muted">本次生成 {{ reviewCounts.selected }} 条所选明细，保留原件与导出记录。</p>
+                <Button :disabled="!canExport" @click="exportRows"><Download aria-hidden="true" />生成问单 Excel</Button>
               </div>
             </div>
           </template>
           <div v-else class="jp-empty"><div class="jp-state-icon"><Inbox aria-hidden="true" /></div><h3>暂未识别到可核对明细</h3><p>请按上方提醒检查邮件内容，再重新解析。</p></div>
         </template>
-        <div v-else class="jp-empty"><div class="jp-state-icon"><ClipboardList aria-hidden="true" /></div><h3>等待解析邮件</h3><p>上传或粘贴邮件并点击“解析并核对”，明细与核对提醒会显示在这里。</p></div>
+        <div v-else class="jp-empty"><div class="jp-state-icon"><ClipboardList aria-hidden="true" /></div><h3>等待解析邮件</h3><p>上传或粘贴邮件并点击“解析邮件”，明细与核对提醒会显示在这里。</p></div>
       </SectionPanel>
 
       <SectionPanel :title="`历史导出记录（${totalRecords}）`" subtitle="保留原始参照版本和核对依据；下载不会重复占号。" class="jp-panel">
         <ul v-if="records.length" class="jp-history-list">
           <li v-for="record in records" :key="record.id">
             <span class="jp-history-icon"><FileSpreadsheet aria-hidden="true" /></span>
-            <div class="jp-history-content"><h3>{{ record.prefix }}-{{ record.first_number }} 至 {{ record.last_number }}</h3><p>{{ record.created_at }} · {{ record.actor }}</p></div>
+            <div class="jp-history-content"><h3>{{ recordLabel(record) }}</h3><p>{{ record.created_at }} · {{ record.actor }}</p></div>
             <StatusPill :label="`${record.row_count} 行`" tone="slate" compact />
             <Button variant="outline" :disabled="!canPreview || !caps.export" @click="copyExport(record.id)"><Copy aria-hidden="true" />复制全部44列</Button>
             <Button variant="outline" :disabled="!canPreview || !caps.export" @click="download(record.id)"><Download aria-hidden="true" />下载原导出</Button>
           </li>
         </ul>
-        <div v-else class="jp-empty"><div class="jp-state-icon"><Inbox aria-hidden="true" /></div><h3>暂无历史导出记录</h3><p>完成核对并生成 Excel 后，可在这里重复下载原导出。</p></div>
+        <div v-else class="jp-empty"><div class="jp-state-icon"><Inbox aria-hidden="true" /></div><h3>暂无历史导出记录</h3><p>生成 Excel 后，可在这里重复下载原导出。</p></div>
         <div v-if="clipboardText" class="jp-copy-result surface-subtle" data-testid="jp-copy-result">
           <p role="status">{{ clipboardMessage }}</p>
           <p class="jp-muted">复制的是这条已生成记录的完整数据，不含表头。粘贴到 Excel 对应的首个数据单元格；文本保护符用于保留前导零、避免公式执行，请勿自行删除。</p>

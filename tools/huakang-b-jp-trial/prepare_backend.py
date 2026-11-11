@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-API_SOURCE_SHA256 = "99252b0546ec6e8fd5c39980455d9c1a6e2fd9a40a29ac80ea661d0b40f44b11"
+API_SOURCE_SHA256 = "3432d68ceca120dc1d5f493a721c6b78a836eb2f640dfd15a93d417c3e7ec6a4"
 
 
 def prepare(destination, repository=None):
