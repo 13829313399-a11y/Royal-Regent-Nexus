@@ -221,6 +221,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/pmc-warehouse/shipping-management',
+    name: 'shipping-management',
+    component: () => import('@/features/shipping-management/ShippingManagementView.vue'),
+    meta: {
+      title: '船务管理',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/sales-business/mainland-invoice',
     redirect: to => ({ name: 'mainland-invoice', query: to.query, hash: to.hash }),
   },
