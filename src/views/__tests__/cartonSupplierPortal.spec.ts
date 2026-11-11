@@ -866,6 +866,10 @@ describe('supplier carton mark templates', () => {
     expect(wrapper.get('[data-testid="supplier-original-materials"]').attributes('style')).toContain('display: none')
     await choose('资料库').trigger('click')
     expect(wrapper.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('保留原文件搜索')
+    const library = wrapper.getComponent(CartonQuickAssetLibrary)
+    await library.findAll('button').find(button => button.text() === '清除筛选')!.trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('')
+    expect(library.props('search')).toBe('')
     wrapper.unmount()
   })
   it('selects a shared Excel into the supplier PDF form without opening the internal warehouse page', async () => {
