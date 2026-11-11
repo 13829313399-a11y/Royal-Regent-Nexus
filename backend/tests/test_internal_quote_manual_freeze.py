@@ -140,6 +140,53 @@ def test_entire_document_freeze_is_atomic_and_rejects_partial_stale_foreign_scop
         assert all(current(client, q)["status"] == "drafting" for q in selected)
 
 
+def test_unfrozen_old_formula_guidance_preserves_inputs_references_and_historical_files(monkeypatch):
+    import importlib
+    with make_client(monkeypatch) as client:
+        login(client, "old-formula-unfreeze", "admin", "*", "*")
+        quote = fill(client, create(client))
+        frozen = freeze(client, [quote])[0]
+        artifact = issue(client, quote)
+        root = f"/api/internal-quotes/{quote['id']}"
+        url = root + f"/exports/{artifact['id']}/download"
+        original = client.get(url).content
+        references = client.get(root + "/reference-snapshot").json()["snapshot"]
+        # Only this isolated test database is made to resemble a historical freeze.
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.internal_quote")
+        with db_module.SessionLocal() as db:
+            db.get(models.InternalQuote, quote["id"]).formula_version = "rr2-2026-v12"
+            for section in frozen["sections"]:
+                if section["is_required"]:
+                    db.get(models.InternalQuoteSection, section["id"]).calculation_formula_version = "rr2-2026-v12"
+            db.commit()
+        locked_layout = client.get(root + "/output-layout").json()
+        assert not any(w.get("code") == "formula_outdated" for w in locked_layout["warnings"])
+        unfrozen = freeze(client, [quote], False)[0]
+        response = client.get(root + "/output-layout")
+        assert response.status_code == 200, response.text
+        layout = response.json()
+        pending = [w for w in layout["warnings"] if w.get("code") == "formula_outdated"]
+        assert {w["section_code"] for w in pending} == {
+            s["department"] for s in unfrozen["sections"] if s["is_required"]}
+        assert all(w["section_name"] for w in pending)
+        assert layout["quote_price_hkd"] is None
+        assert current(client, quote)["header_revision"] == unfrozen["header_revision"]
+        assert current(client, quote)["formula_version"] == "rr2-2026-v12"
+        response = client.post(root + "/formula/recalculate", json={
+            "revision": unfrozen["header_revision"], "reason": "解冻后沿用原参考价格更新公式"})
+        assert response.status_code == 200, response.text
+        updated = response.json()
+        assert {s["department"]: s["payload"] for s in updated["sections"]} == {
+            s["department"]: s["payload"] for s in unfrozen["sections"]}
+        assert client.get(root + "/reference-snapshot").json()["snapshot"] == references
+        ready = client.get(root + "/output-layout").json()
+        assert not any(w.get("code") == "formula_outdated" for w in ready["warnings"])
+        assert ready["quote_price_hkd"] is not None
+        assert client.get(url).content == original
+        assert issue(client, quote)["id"] != artifact["id"]
+
+
 def test_adopted_frozen_version_and_legacy_workflow_are_not_silently_unlocked(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "freeze-adoption", "admin", "*", "*")
