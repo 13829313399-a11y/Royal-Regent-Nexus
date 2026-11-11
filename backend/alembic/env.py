@@ -54,6 +54,7 @@ from app.models import (
     carton_price_review,  # noqa: F401
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
+    qc_dossier,  # noqa: F401
     huakang_b_jp,  # noqa: F401
     internal_quote,  # noqa: F401
     module_feedback,  # noqa: F401
@@ -122,7 +123,7 @@ def run_migrations_online() -> None:
                 'nexus_assistant_subscriptions', 'nexus_assistant_feedback')))
         if assistant_legacy:
             raise RuntimeError('Legacy local assistant 0176/0177 identity requires backup and isolated schema reconciliation; never stamp or replay it blindly. See docs/assistant/MIGRATION_IDENTITY.md')
-        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193'}
+        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194'}
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
                               '20261017_0167', '20261019_0167', '20261020_0168',
                               '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171',
@@ -134,10 +135,10 @@ def run_migrations_online() -> None:
             # Extend successor recognition without rewriting the applied migration.
             if revisions in [{head} for head in later_successors] + [{'20261023_0176', '20261026_0177'}, {'20261023_0176', '20261026_0179'}, {'20261026_0178', '20261026_0179'}, {'20261023_0176', '20261026_0181'}, {'20261026_0178', '20261026_0181'}, {'20261026_0180', '20261026_0181'}, {'20261023_0176', '20261026_0183'}, {'20261026_0178', '20261026_0183'}, {'20261026_0180', '20261026_0183'}, {'20261026_0182', '20261026_0183'}]:
                 preflight.__globals__['VALID_VERSIONS'].append(revisions)
-            if connection.dialect.name == 'sqlite' and revisions & {'20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193'}:
+            if connection.dialect.name == 'sqlite' and revisions & {'20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194'}:
                 header = runpy.run_path(str(Path(__file__).parent / 'versions/20261028_0185_cutting_period_headers.py'))
                 present = header['index_state'](connection)
-                if revisions & {'20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193'} and not present:
+                if revisions & {'20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194'} and not present:
                     raise RuntimeError('0185 cutting header index is missing; preserve database before repair')
                 if present:
                     original_expected = preflight.__globals__['_sqlite_expected']

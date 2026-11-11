@@ -443,3 +443,98 @@ def test_inspection_plan_join_is_readonly_scoped_and_requires_verified_origin(mo
     assert module.inspection_plan_dates('huaxing',[{**record,'client':'other'}]) == {}
     assert module.inspection_plan_dates('huaxing',[{**record,'remark':'计划日期：2099-01-01'}],[31]) == {}
     assert module.inspection_plan_dates('huaxing',[{**record,'orderNo':'other'}],[31]) == {}
+
+
+def test_dossier_real_read_api_scopes_identity_permissions_and_read_only(monkeypatch):
+    from hashlib import sha256
+    with make_client(monkeypatch) as client:
+        calls=install_upstream(monkeypatch)
+        endpoint='/api/qc-department/huaxing/api/inspection-dossier/records/'+'a'*32
+        assert client.get(endpoint).status_code==401
+        login_as(client,'qc_inspector')
+        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
+        summary=importlib.import_module('app.services.qc_inspection_summary')
+        archive=importlib.import_module('app.services.qc_dossier')
+        with summary.store() as conn:
+            sid=summary.upsert(conn,'huaxing','legacy-api-example',dict(status='unverified',sourceKind='legacy',result='PASS',quantity='0',verificationIssues=['历史未采集']))
+            foreign=summary.upsert(conn,'huadeng','foreign-example',dict(status='unverified',sourceKind='legacy',result='FAIL'))
+        path=summary.Path(archive.settings.qc_department_data_dir)/'_summary'/'summaries.sqlite3'
+        before=sha256(path.read_bytes()).hexdigest();calls.clear()
+        endpoint=base+'api/inspection-dossier/records/'+sid
+        response=client.get(endpoint);assert response.status_code==200
+        assert response.json()['qc']['quantity']=='0' and response.json()['business']['status']=='not_initialized'
+        assert response.json()['qc']['verificationIssues']==['历史未采集']
+        assert response.headers['cache-control']=='no-store'
+        assert client.get(base+'api/inspection-dossier/records/'+foreign).status_code==404
+        assert client.get(base+'api/inspection-dossier/records/not-a-summary-id').status_code==404
+        assert client.get(endpoint+'?company=hy-huadeng').status_code==403
+        assert client.get('/api/qc-department/huadeng/'+base.split('/huaxing/')[1]+'api/inspection-dossier/records/'+foreign).status_code==403
+        assert client.post(endpoint,json={}).status_code==405
+        assert client.get('/api/qc-department/huaxing/u-'+'0'*32+'/api/inspection-dossier/records/'+sid).status_code==409
+        assert not archive.path().exists() and sha256(path.read_bytes()).hexdigest()==before and not calls
+        archive.migrate()
+        payload={'schemaVersion':1,'sourceSystem':archive.SYSTEM,'record':{'id':'source-permission-test','factory_id':'huaxing','version':1,'revision':1,'updated_at':archive.now()},'data':{'packaging':'业务包装','contact':'受限联系人','unit_price_hkd':'10.50','future_field':False},'sources':[{'id':'private-source-id','file_name':'private.xlsx'}],'legacyProjection':{}}
+        with archive.connect(True) as conn:archive.capture(conn,payload,archive.now(),'permission-fixture')
+        with summary.store() as conn:
+            sid=summary.upsert(conn,'huaxing','legacy-api-example',dict(status='unverified',sourceKind='legacy',result='PASS',sourceRecord={'id':'source-permission-test','factory':'huaxing'}))
+        public=client.get(endpoint).json()['business']['latest']
+        assert public['data']=={'packaging':'业务包装'} and public['sources']==[]
+        grant_permission_override('qc_inspector','customer_order:read',factory_id='huaxing',department='sales-business')
+        login_as(client,'qc_inspector')
+        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url'];endpoint=base+'api/inspection-dossier/records/'+sid
+        full=client.get(endpoint).json()['business']['latest']
+        assert full['data']['contact']=='受限联系人' and full['data']['unit_price_hkd']=='10.50' and full['data']['future_field'] is False
+        assert full['sources'][0]['file_name']=='private.xlsx'
+        login_as(client,'engineer')
+        assert client.get(endpoint).status_code in (403,409)
+
+
+def test_dossier_background_collection_runs_without_opening_qc_page(monkeypatch):
+    import time
+    monkeypatch.setenv('QC_DOSSIER_ENABLED','true')
+    monkeypatch.setenv('QC_DOSSIER_POLL_SECONDS','10')
+    client=make_client(monkeypatch)
+    database=importlib.import_module('app.db')
+    archive=importlib.import_module('app.services.qc_dossier')
+    model=importlib.import_module('app.models.qc_dossier')
+    service=importlib.import_module('app.services.customer_order_ledger')
+    # Explicit isolated setup, before application activation; startup itself must not migrate.
+    database.init_db()
+    model.QcDossierOutbox.__table__.create(database.engine)
+    archive.migrate()
+    with client:
+        with database.SessionLocal() as db:
+            result=service.import_preview(db,preview=dict(factory_id='huaxing',customer_code='buzzbee',customer_name='Synthetic',rows=[dict(id='example',reference_no='AUTO',product_no='001',quantity='10',packaging='后台采集示例')]),files=[],source_kind='formal',actor='隔离验收',reason='',controls={})
+            db.commit();source_id=result['items'][0]['id']
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            with archive.connect() as conn:
+                found=conn.execute('SELECT capture_id FROM source_heads WHERE factory=? AND source_id=?',('huaxing',source_id)).fetchone()
+            if found:break
+            time.sleep(.1)
+        assert found is not None
+        with database.SessionLocal() as db:
+            events=db.query(model.QcDossierOutbox).all();assert events and all(e.delivered_at for e in events)
+        # No schedule-source or dossier GET has been made anywhere in this test.
+
+
+def test_photo_variants_revalidate_private_cache_and_auth(monkeypatch):
+    with make_client(monkeypatch) as client:
+        install_upstream(monkeypatch)
+        login_as(client, 'qc_inspector')
+        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
+        module=importlib.import_module('app.api.qc_department')
+        calls=[]
+        def read(factory,entry,photo,variant):
+            calls.append((factory,entry,photo,variant));return b'validated-by-photo-service','image/png'
+        monkeypatch.setattr(module.qc_inspection_sheet,'read_photo_version',read)
+        url=base+'api/inspection-sheet/entries/entry/photos/photo?variant=original'
+        first=client.get(url);assert first.status_code==200
+        assert first.headers['cache-control']=='private, no-cache'
+        assert first.headers['content-type']=='image/png'
+        second=client.get(url,headers={'If-None-Match':first.headers['etag']})
+        assert second.status_code==304 and len(calls)==2
+        assert all(c==('huaxing','entry','photo','original') for c in calls)
+        login_as(client,'engineer');before=len(calls)
+        assert client.get(url,headers={'If-None-Match':first.headers['etag']}).status_code==403
+        assert len(calls)==before

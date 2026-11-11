@@ -246,11 +246,11 @@
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def amend",
-        "sha256": "c7cdbfb22fa52f9095c783138d9725269ab9c68725f9c7431b35de72ec943ef4"
+        "sha256": "26e8c34c87178035649e9921010c2967b206c3f4186a221fd83b24c146b45059"
       }
     ],
-    "knowledge_version": "2026-11-10",
-    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "knowledge_version": "2026.11.10-qc-source-outbox-compatible",
+    "verified_commit": "6c466bef-working-tree-source-review",
     "status": "verified"
   },
   {

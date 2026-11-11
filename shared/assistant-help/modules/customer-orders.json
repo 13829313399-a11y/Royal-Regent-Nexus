@@ -40,12 +40,12 @@
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def amend",
-        "sha256": "c7cdbfb22fa52f9095c783138d9725269ab9c68725f9c7431b35de72ec943ef4"
+        "sha256": "26e8c34c87178035649e9921010c2967b206c3f4186a221fd83b24c146b45059"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def ship",
-        "sha256": "c7cdbfb22fa52f9095c783138d9725269ab9c68725f9c7431b35de72ec943ef4"
+        "sha256": "26e8c34c87178035649e9921010c2967b206c3f4186a221fd83b24c146b45059"
       },
       {
         "path": "backend/app/api/customer_order_ledger.py",
@@ -55,7 +55,7 @@
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def dispatch",
-        "sha256": "c7cdbfb22fa52f9095c783138d9725269ab9c68725f9c7431b35de72ec943ef4"
+        "sha256": "26e8c34c87178035649e9921010c2967b206c3f4186a221fd83b24c146b45059"
       },
       {
         "path": "backend/app/services/cutting_orders.py",
@@ -308,8 +308,8 @@
         "sha256": "11773edcea0f3b6aba2f35f067b2660fe70567d96c000318097c44f4c4353f6c"
       }
     ],
-    "knowledge_version": "2026-11-10",
-    "verified_commit": "Reviewed Huakang B enquiry navigation, schedule export and the integrated carton library guidance",
+    "knowledge_version": "2026.11.10-qc-complete-records",
+    "verified_commit": "6c466bef-working-tree-source-review",
     "status": "verified"
   }
 ]

@@ -168,3 +168,6 @@ outputs/opening-inventory-template-20260909/
 # Private QC customer workbooks and source schedules are provisioned locally.
 /backend/app/templates/qc-cumulative/
 /services/qc-department/fixtures/qc-schedule-example.json
+
+# QC complete-record activation, recovery and access contract.
+!/docs/business/qc-complete-records.md
