@@ -4,6 +4,7 @@
 import re
 import email
 import html as html_lib
+import csv
 from datetime import datetime, date, timedelta
 from email.header import decode_header, make_header
 from html.parser import HTMLParser
@@ -100,6 +101,152 @@ def html_to_text(html_text):
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\n\s*\n+', '\n', text)
     return text.strip()
+
+
+def _plain_table_candidate(rows):
+    """Only explicit rectangular cell boundaries can become an order table."""
+    if not rows or len(rows[0]) < 2 or any(len(row) != len(rows[0]) for row in rows):
+        return False
+    return is_order_table(rows) or all(
+        any(_has_long_code(cell) for cell in row)
+        and any(NUM_CELL_RE.fullmatch(cell.strip()) for cell in row)
+        for row in rows
+    )
+
+
+def _structured_plaintext_html(text):
+    """Preserve TSV/pipe cell and mail-chain boundaries; never guess bare columns.
+
+    All non-table text stays in its original position, escaped as text. This
+    adapter does not choose the current reply: the ordinary quote/forwarding
+    rules below still decide which converted tables may supply order facts.
+    """
+    if re.search(r'<\s*/?\s*(?:html|body|table|tr|td|th|div|p|br|span|blockquote|script|style)\b', text, re.I):
+        return text, 0
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    replacements = []
+    covered = set()
+
+    def accept(start, stop, rows):
+        rows = [[re.sub(r'\s+', ' ', cell).strip() for cell in row] for row in rows]
+        groups, current = [], []
+        for row in rows:
+            names = [norm_header(cell) for cell in row]
+            item_header = any(name in {'item', 'item no', 'jp item', 'jp item no', 'no',
+                                      'vsk', 'vsk no', 'vsk number', 'baby item no'} for name in names)
+            quantity_header = any(name in {'qty', 'quantity', 'order qty', 'qty pcs', 'quantity pcs'} for name in names)
+            boundary = not any(_has_long_code(cell) for cell in row) and any(_QUOTED_MARK_RE.search(cell) for cell in row)
+            if boundary or (current and item_header and quantity_header):
+                groups.append((False, current))
+                current = []
+            if boundary:
+                groups.append((True, [row]))
+            else:
+                current.append(row)
+        groups.append((False, current))
+        rendered, table_count = [], 0
+        for boundary, group in groups:
+            if not group:
+                continue
+            if not boundary and _plain_table_candidate(group):
+                rendered.append('<table>' + ''.join('<tr>' + ''.join(
+                    '<td>' + html_lib.escape(cell) + '</td>' for cell in row) + '</tr>' for row in group) + '</table>')
+                table_count += 1
+            else:
+                # A quoted-message marker must remain outside both tables;
+                # otherwise its offset inside a current table could admit old
+                # rows. Repeated headers likewise start a separate table.
+                rendered.append('<br>\n' + '<br>\n'.join(html_lib.escape('\t'.join(row)) for row in group) + '<br>\n')
+        if not table_count:
+            return
+        replacements.append((offsets[start], offsets[stop], ''.join(rendered), table_count))
+        covered.update(range(start, stop))
+
+    # csv retains explicitly quoted multiline clipboard cells. A malformed
+    # quote refuses this conversion rather than shifting following columns.
+    if '\t' in text:
+        reader = csv.reader(lines, delimiter='\t', strict=True)
+        records, previous = [], 0
+        try:
+            for row in reader:
+                records.append((previous, reader.line_num, row))
+                previous = reader.line_num
+        except csv.Error:
+            records = []
+        i = 0
+        while i < len(records):
+            if len(records[i][2]) < 2:
+                i += 1
+                continue
+            start = i
+            while i < len(records) and len(records[i][2]) >= 2:
+                i += 1
+            accept(records[start][0], records[i - 1][1], [row for _, _, row in records[start:i]])
+
+    i = 0
+    while i < len(lines):
+        if i in covered or '\t' in lines[i] or '|' not in lines[i]:
+            i += 1
+            continue
+        start = i
+        if lines[i].strip() == '|':
+            # Foxmail's text/plain alternative has one pipe-delimited cell per
+            # line and a double pipe between rows. Incomplete/ambiguous rows
+            # are rejected by the rectangular-table check, never regrouped.
+            while i < len(lines) and lines[i].strip() and i not in covered and '\t' not in lines[i]:
+                i += 1
+            block = lines[start:i]
+            if not block or block[-1].strip() != '|':
+                continue
+            chunks, cell = [], []
+            for line in block:
+                if line.strip() == '|':
+                    chunks.append(' '.join(cell).strip())
+                    cell = []
+                else:
+                    cell.append(line.strip())
+            if cell:
+                continue
+            if chunks and not chunks[0]:
+                chunks.pop(0)
+            rows, row = [], []
+            for chunk in chunks:
+                if not chunk:
+                    if row:
+                        rows.append(row)
+                        row = []
+                else:
+                    row.append(chunk)
+            if row:
+                rows.append(row)
+            accept(start, i, rows)
+        else:
+            rows = []
+            while i < len(lines) and '|' in lines[i] and lines[i].strip() != '|' \
+                    and i not in covered and '\t' not in lines[i]:
+                line = lines[i].strip()
+                cells = line.split('|')
+                if line.startswith('|'):
+                    cells.pop(0)
+                if line.endswith('|'):
+                    cells.pop()
+                # A Markdown alignment separator carries no business row.
+                if not (cells and all(re.fullmatch(r'\s*:?-{3,}:?\s*', cell) for cell in cells)):
+                    rows.append(cells)
+                i += 1
+            accept(start, i, rows)
+    if not replacements:
+        return text, 0
+    cursor, parts = 0, []
+    for start, stop, rendered, _ in sorted(replacements):
+        parts.append(html_lib.escape(text[cursor:start]).replace('\n', '<br>\n'))
+        parts.append(rendered)
+        cursor = stop
+    parts.append(html_lib.escape(text[cursor:]).replace('\n', '<br>\n'))
+    return ''.join(parts), sum(count for _, _, _, count in replacements)
 
 
 def decode_mime_header(s):
@@ -354,6 +501,8 @@ SUBJECT_SKIP = ('just play', 'royal regent', 'order enquiry', 'new order', 'enqu
 
 def customer_from_subject(subject):
     s = re.sub(r'^\s*((fw|re|fwd|回复|转发)\s*[:：]\s*)+', '', subject or '', flags=re.I)
+    # A bracketed mail date is metadata, not the first fragment of a customer.
+    s = re.sub(r'^\s*[([]\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\s*[)\]]\s*', '', s)
     # "Minnie new order for Imexporta / Chile" names the customer after "for".
     named = re.search(r'\b(?:new\s+)?order\s+for\s+(.+)', s, re.I)
     if named:
@@ -715,6 +864,9 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
     warnings = []
     if ref_date is None:
         ref_date = date.today()
+    html_text, plain_tables = _structured_plaintext_html(html_text)
+    if plain_tables:
+        warnings.append(f'【{source}】已按明确的单元格分隔符识别 {plain_tables} 个纯文本表格；仍仅使用当前邮件范围，请核对明细')
     full_text = html_to_text(html_text)
     thread_dt = extract_thread_date(full_text)
     if not subject:
@@ -806,11 +958,12 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
                 o['sd_orig'] = o['cutoff_date'] = sd
                 o['ship_date'] = fmt_date(hangq_from_sd(reply_info['sd']))
                 o['ship_date_source'] = '最新回复文字（引用表原值已保留）'
-        # 客名以主题里的短名优先（文员习惯，如 Grupo Mas Tres / MORRISONS）
-        if meta_customer:
+        # Explicit current-table customers are source facts. Subject aliases
+        # only fill a missing customer, never overwrite a named recipient.
+        if not o['customer'] and meta_customer:
             o['customer'] = meta_customer
         if not o['country']:
-            o['country'] = meta_country
+            o['country'] = pick_country(o['customer']) or meta_country
         tbl_pkg = str(o.get('pkg') or '').strip()
         reply_pkg = str(reply_package or '').strip()
         if not tbl_pkg:
@@ -839,6 +992,13 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
         if any(n in it or it in n for it in item_note_set):
             continue
         global_notes.append(n)
+
+    customers = {order['customer'] for order in orders if order['customer']}
+    countries = {order['country'] for order in orders if order['country']}
+    if customers:
+        meta_customer = next(iter(customers)) if len(customers) == 1 else ''
+    if countries:
+        meta_country = next(iter(countries)) if len(countries) == 1 else ''
 
     meta = {
         'subject': subject,
@@ -901,6 +1061,13 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
     col_promised = find_col(header, ['promised crd'])
     if col_promised is not None:
         col_sd = col_promised
+    if col_sd is None:
+        requested_columns = [i for i, value in enumerate(header)
+                             if norm_header(value) == 'original req delivery date']
+        if len(requested_columns) == 1:
+            col_sd = requested_columns[0]
+        elif len(requested_columns) > 1:
+            warnings.append(f'【{source}】Original Req.Delivery Date 列不唯一，未自动选取截数期，请核对')
     col_so = find_col(header, ['sales order'])
     col_remark = find_col(header, ['remark'])
     col_sur = find_col(header, ['surcharge'], excludes=('extra',))

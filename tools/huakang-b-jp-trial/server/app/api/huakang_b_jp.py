@@ -12,6 +12,7 @@ from app.services.customer_order_jobs import order_job_request, run_order_job
 from app.local_identity import transaction, actor_name
 from app.schemas.huakang_b_jp import QuantitySelection, RowOverride
 from app.services.huakang_b_jp import intake
+from app.services.huakang_b_jp.clipboard import export_clipboard
 from app.models.huakang_b_jp import JPExport
 
 router = APIRouter(prefix="/api/huakang-b-jp", tags=["huakang-b-jp"], dependencies=[Depends(order_job_request)])
@@ -179,3 +180,19 @@ def download(id: str, factory_id: str, db: Session = Depends(get_db), user: Auth
     return Response(row.content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="jp-enquiry-{id}.xlsx"',
                  "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/exports/{id}/clipboard")
+def clipboard(id: str, factory_id: str, response: Response, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    guard(db, user, factory_id)
+    guard(db, user, factory_id, "export")
+    row = db.scalar(select(JPExport).where(JPExport.id == id, JPExport.factory_id == factory_id))
+    if not row:
+        raise HTTPException(404, "导出记录不存在")
+    try:
+        result = export_clipboard(bytes(row.content))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return result

@@ -13,6 +13,7 @@ export interface JPPreview {
   quantity_selections: Array<{ source_id: string; source: string; table_index: number; columns: Array<{ index: number; sample: string }> }>;
 }
 export interface JPExportRecord { id: string; actor: string; created_at: string; prefix: string; first_number: number; last_number: number; row_count: number }
+export interface JPClipboardResult { text: string; row_count: number; column_count: 44 }
 const base = '/huakang-b-jp'
 const scope = (factory: string) => `factory_id=${encodeURIComponent(factory)}`
 const fileConfig = { timeout: 270_000, headers: { 'X-JP-Intake': '1' } }
@@ -26,4 +27,5 @@ export const huakangBJPApi = {
   async export(data: FormData, signal?: AbortSignal) { return (await http.post<{ id: string; row_count: number }>(`${base}/export`, data, { ...fileConfig, ...(signal ? { signal } : {}) })).data },
   async exports(factory: string, page = 1, signal?: AbortSignal) { return (await http.get<{ items: JPExportRecord[]; total: number }>(`${base}/exports?${scope(factory)}&page=${page}`, signal ? { signal } : undefined)).data },
   async download(factory: string, id: string, signal?: AbortSignal) { return (await http.get<Blob>(`${base}/exports/${encodeURIComponent(id)}/download?${scope(factory)}`, { responseType: 'blob', ...(signal ? { signal } : {}) })).data },
+  async clipboard(factory: string, id: string, signal?: AbortSignal) { return (await http.get<JPClipboardResult>(`${base}/exports/${encodeURIComponent(id)}/clipboard?${scope(factory)}`, signal ? { signal } : undefined)).data },
 }

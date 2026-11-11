@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { CircleAlert, ClipboardList, Download, FileInput, FileSpreadsheet, Inbox, LockKeyhole } from '@lucide/vue'
+import { CircleAlert, ClipboardList, Copy, Download, FileInput, FileSpreadsheet, Inbox, LockKeyhole } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -16,6 +16,8 @@ const refFiles = ref<Partial<Record<JPReferenceKind, File>>>({})
 const confirmedCurrency = ref('')
 const mails = ref<File[]>([])
 const html = ref('')
+const pastedText = ref('')
+const pastedRichText = ref(false)
 const subject = ref('')
 const merchandiser = ref('')
 const receivedDate = ref(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date()))
@@ -33,6 +35,9 @@ const notice = ref('')
 const records = ref<JPExportRecord[]>([])
 const totalRecords = ref(0)
 const page = ref(1)
+const clipboardText = ref('')
+const clipboardMessage = ref('')
+const clipboardTextarea = ref<HTMLTextAreaElement | null>(null)
 let epoch = 0
 let controller = new AbortController()
 const referenceKinds = [
@@ -44,8 +49,22 @@ const editable = [
   ['factory_price_t', '出厂价HKD'], ['note', '备注'],
 ] as const
 const canPreview = computed(() => props.factoryId === 'huakang-b' && caps.value.read && caps.value.available && !busy.value && !loading.value)
+const exportBlockers = computed(() => {
+  if (!preview.value) return []
+  const blockers: string[] = []
+  if (!references.value.schedule || !references.value.price) blockers.push('先上传并验证排期参照和货价表。')
+  if (preview.value.failed_sources.length) blockers.push('仍有未识别来源，请移除或修正后重新解析。')
+  if (preview.value.quantity_selections.length) blockers.push('先选定数量列，再按所选数量列重新解析。')
+  if (!selected.value.length) blockers.push('至少选择一条未重复的问单明细。')
+  const missingPrices = preview.value.rows.filter(row => selected.value.includes(row.id) && !row.price_t.trim())
+  if (missingPrices.length) blockers.push(`${missingPrices.length} 条所选明细的货价HKD为空，请按当前客名和装箱数重新核价。`)
+  if (!merchandiser.value.trim()) blockers.push('填写金山业务跟单名称。')
+  if (reason.value.trim().length < 4 || reason.value.trim().length > 500) blockers.push('填写 4–500 字的核对原因。')
+  if (!confirmed.value) blockers.push('核对所选明细和两项价格后勾选确认。')
+  return blockers
+})
 const canExport = computed(() => canPreview.value && caps.value.export && preview.value && selected.value.length > 0
-  && !preview.value.failed_sources.length && !preview.value.quantity_selections.length && confirmed.value && reason.value.trim().length >= 4 && Boolean(merchandiser.value.trim()))
+  && !exportBlockers.value.length)
 const pageStatus = computed<{ label: string; tone: 'slate' | 'teal' | 'amber' | 'red' }>(() => {
   if (loading.value) return { label: '正在加载', tone: 'slate' }
   if (props.factoryId !== 'huakang-b') return { label: '华康B专用', tone: 'slate' }
@@ -60,10 +79,14 @@ const pageStatus = computed<{ label: string; tone: 'slate' | 'teal' | 'amber' | 
 const reviewCounts = computed(() => ({
   selected: selected.value.length,
   existing: preview.value?.rows.filter(row => row.exists).length ?? 0,
-  priceReview: preview.value?.rows.filter(row => row.price_confirm).length ?? 0,
+  priceReview: preview.value?.rows.filter(priceNeedsReview).length ?? 0,
 }))
 
 function invalidate() { preview.value = null; original.value = []; selected.value = []; confirmed.value = false; notice.value = '' }
+function priceNeedsReview(row: JPRow) {
+  const before = original.value.find(item => item.id === row.id)
+  return row.price_confirm || !row.price_t.trim() || Boolean(before && (row.customer !== before.customer || row.carton_t !== before.carton_t))
+}
 function rowEdited(row: JPRow, field: string) {
   confirmed.value = false
   if (field === 'customer' || field === 'carton_t') {
@@ -71,7 +94,7 @@ function rowEdited(row: JPRow, field: string) {
     row.price_note = '客名或装箱数已更正，旧价格已清空；请按新条件重新填写核对货价及出厂价。'
   }
 }
-function clearProtected() { invalidate(); references.value = {}; records.value = []; caps.value = { ...emptyCaps } }
+function clearProtected() { invalidate(); references.value = {}; records.value = []; caps.value = { ...emptyCaps }; clipboardText.value = ''; clipboardMessage.value = '' }
 function handleError(cause: unknown) {
   error.value = getApiErrorMessage(cause)
   const status = (cause as { response?: { status?: number } })?.response?.status
@@ -101,6 +124,49 @@ function fileChanged(event: Event, kind?: JPReferenceKind) {
   if (kind) { refFiles.value[kind] = input.files?.[0]; if (kind === 'confirmed') confirmedCurrency.value = '' }
   else { mails.value = Array.from(input.files ?? []); quantityColumns.value = {}; invalidate() }
   input.value = ''
+}
+function removeMail(index: number) {
+  if (busy.value) return
+  mails.value = mails.value.filter((_, position) => position !== index)
+  quantityColumns.value = {}; invalidate()
+  notice.value = '已移除所选文件；请重新解析当前来源。'
+}
+function editPastedText(event: Event) {
+  pastedText.value = (event.target as HTMLTextAreaElement).value
+  html.value = pastedText.value; pastedRichText.value = false
+  quantityColumns.value = {}; invalidate()
+}
+function pasteBody(event: ClipboardEvent) {
+  if (busy.value || !event.clipboardData) return
+  const rich = event.clipboardData.getData('text/html')
+  const plain = event.clipboardData.getData('text/plain')
+  if (!rich && !plain) return
+  event.preventDefault()
+  html.value = rich || plain
+  // Never render clipboard HTML. Only its readable text is displayed; the
+  // original table markup is retained for the server until the user edits it.
+  if (plain) pastedText.value = plain
+  else {
+    const template = document.createElement('template')
+    template.innerHTML = rich
+    template.content.querySelectorAll('script, style, noscript, template').forEach(node => node.remove())
+    template.content.querySelectorAll('td, th').forEach(node => node.append('\t'))
+    template.content.querySelectorAll('tr, p, div, li').forEach(node => node.append('\n'))
+    pastedText.value = template.content.textContent || ''
+  }
+  pastedRichText.value = Boolean(rich)
+  quantityColumns.value = {}; invalidate()
+}
+function clearPastedBody() {
+  if (busy.value) return
+  html.value = ''; pastedText.value = ''; pastedRichText.value = false; subject.value = ''
+  quantityColumns.value = {}; invalidate()
+  notice.value = '已移除粘贴正文；上传的邮件文件仍保留，请重新解析。'
+}
+async function removePastedAndParse() {
+  if (busy.value) return
+  clearPastedBody()
+  if (mails.value.length) await parse()
 }
 async function upload(kind: JPReferenceKind) {
   const file = refFiles.value[kind]
@@ -170,6 +236,33 @@ async function download(id: string) {
   } catch (cause) { if (token === epoch) handleError(cause) }
   finally { if (token === epoch) busy.value = false }
 }
+async function copyExport(id: string) {
+  if (!canPreview.value || !caps.value.export) return
+  const token = epoch
+  busy.value = true; error.value = ''; clipboardText.value = ''; clipboardMessage.value = ''
+  try {
+    const result = await api.clipboard(props.factoryId, id, controller.signal)
+    if (token !== epoch) return
+    if (result.column_count !== 44 || !result.text || result.row_count < 1) throw new Error('已生成记录的复制数据不完整，请下载原导出核对。')
+    clipboardText.value = result.text
+    const record = records.value.find(item => item.id === id)
+    const label = record ? `${record.prefix}-${record.first_number} 至 ${record.last_number}` : '所选记录'
+    clipboardMessage.value = `已读取 ${label} 的 ${result.row_count} 行已生成数据，每行 44 列，不含表头；不会重新分配编号。`
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await Promise.race([
+        navigator.clipboard.writeText(result.text),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('clipboard timeout')), 10_000) }),
+      ])
+      if (token === epoch) clipboardMessage.value += ' 已复制，可粘贴到 Excel。'
+    } catch {
+      if (token === epoch) clipboardMessage.value += ' 浏览器未完成自动复制，请点击“选中全部文本”后手动复制。'
+    } finally { if (timer !== undefined) clearTimeout(timer) }
+  } catch (cause) { if (token === epoch) handleError(cause) }
+  finally { if (token === epoch) busy.value = false }
+}
+function selectClipboardText() { clipboardTextarea.value?.focus(); clipboardTextarea.value?.select() }
 async function exportRows() {
   if (!canExport.value || !preview.value) return
   const token = epoch
@@ -207,7 +300,7 @@ async function historyPage(next: number) {
   finally { if (token === epoch) busy.value = false }
 }
 watch(() => props.factoryId, () => {
-  mails.value = []; html.value = ''; subject.value = ''; merchandiser.value = ''; refFiles.value = {}; confirmedCurrency.value = ''; quantityColumns.value = {}; busy.value = false; page.value = 1; void load()
+  mails.value = []; html.value = ''; pastedText.value = ''; pastedRichText.value = false; subject.value = ''; merchandiser.value = ''; refFiles.value = {}; confirmedCurrency.value = ''; quantityColumns.value = {}; busy.value = false; page.value = 1; void load()
 }, { immediate: true })
 onBeforeUnmount(() => { epoch += 1; controller.abort() })
 </script>
@@ -315,7 +408,7 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
             <span class="jp-state-icon"><FileInput aria-hidden="true" /></span>
             <div><h3>上传问单邮件</h3><p class="jp-muted">支持 EML 邮件及 ZIP 邮件包，可一次选择多份。</p></div>
             <input class="jp-file-input" type="file" accept=".eml,.zip" multiple aria-label="问单邮件" :disabled="busy" @change="fileChanged($event)">
-            <ul v-if="mails.length" class="jp-file-list" aria-label="已选择邮件"><li v-for="(file, index) in mails" :key="`${index}-${file.name}`"><FileInput aria-hidden="true" /><span>{{ file.name }}</span></li></ul>
+            <ul v-if="mails.length" class="jp-file-list" aria-label="已选择邮件"><li v-for="(file, index) in mails" :key="`${index}-${file.name}`"><FileInput aria-hidden="true" /><span>{{ file.name }}</span><Button size="sm" variant="ghost" :aria-label="`移除 ${file.name}`" :disabled="busy" @click="removeMail(index)">移除</Button></li></ul>
             <p v-else class="jp-muted">尚未选择邮件</p>
             <p class="jp-upload-limit">单文件最多 20MB，合计最多 50MB；每批最多 100 封邮件、250 条明细。过大批次请拆分。</p>
           </div>
@@ -324,11 +417,15 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
             <label class="jp-field"><span>粘贴正文的邮件主题</span>
               <input v-model="subject" maxlength="500" placeholder="填写原邮件主题" :disabled="busy" @input="invalidate">
             </label>
-            <label class="jp-field"><span>邮件 HTML 正文</span>
-              <textarea v-model="html" rows="5" placeholder="粘贴完整邮件 HTML 正文，保留订单表格和回复内容" :disabled="busy" @input="invalidate" />
+            <label class="jp-field"><span>邮件正文（可直接粘贴表格）</span>
+              <textarea :value="pastedText" aria-label="邮件正文" rows="5" placeholder="从邮箱复制完整正文和订单表格，在这里粘贴；无需取得 HTML 源码" :disabled="busy" @paste="pasteBody" @input="editPastedText" />
             </label>
+            <p class="jp-help">每次粘贴会替换本次正文，并自动保留可用的表格格式；手动改写后按当前文字重新解析。原邮件文件与粘贴正文通常任选一种，同一封邮件不必重复添加。</p>
+            <p v-if="html.trim()" class="jp-muted" role="status">{{ pastedRichText ? '已保留原表格格式，下方显示可读文字。' : '当前为文字内容；表格请保留制表符或明确的列分隔。' }}</p>
+            <Button v-if="html || subject" variant="outline" :disabled="busy" @click="clearPastedBody">清除粘贴正文</Button>
           </div>
         </div>
+        <p v-if="mails.length || html.trim()" class="jp-help" data-testid="jp-source-summary">本批来源：{{ mails.length }} 份邮件文件{{ html.trim() ? '，另有 1 份粘贴正文' : '' }}。<template v-if="mails.length && html.trim()">将分别识别所有来源；有未识别来源时需修正或移除后重新解析。</template></p>
         <div class="jp-section-footer">
           <p class="jp-muted">解析后请逐项核对客户、货号、数量、日期和价格。</p>
           <Button :disabled="!canPreview" @click="parse"><ClipboardList aria-hidden="true" />解析并核对</Button>
@@ -349,7 +446,8 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
             </div>
           </div>
           <div v-if="preview.failed_sources.length" class="jp-message jp-message--error" role="alert">
-            <CircleAlert aria-hidden="true" /><p>这些邮件尚未识别，请处理或移除后重新上传：{{ preview.failed_sources.join('、') }}</p>
+            <CircleAlert aria-hidden="true" /><div class="jp-message__content"><p>这些来源尚未识别：{{ preview.failed_sources.join('、') }}。当前已识别明细仍可查看，但须处理失败来源后重新解析才能生成。</p><p>可在上方移除对应文件；ZIP 内邮件需修正邮件包后重新选择。</p></div>
+            <Button v-if="preview.failed_sources.includes('粘贴正文') && html.trim()" variant="outline" :disabled="busy" @click="removePastedAndParse">{{ mails.length ? '移除粘贴正文并重新解析' : '清除未识别的粘贴正文' }}</Button>
           </div>
           <div v-if="preview.quantity_selections.length" class="jp-quantity-choices surface-subtle">
             <label v-for="choice in preview.quantity_selections" :key="`${choice.source_id}:${choice.table_index}`" class="jp-field">
@@ -370,7 +468,7 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
                   <td class="jp-selection-column"><div class="jp-row-status">
                     <label class="jp-row-check"><input v-model="selected" type="checkbox" :value="row.id" :disabled="row.exists || busy" aria-label="选择明细" @change="confirmed = false"><span>选择明细</span></label>
                     <StatusPill v-if="row.exists" label="排期已有，勿重录" tone="slate" compact />
-                    <StatusPill v-if="row.price_confirm" label="货价待确认" tone="amber" compact />
+                    <StatusPill v-if="priceNeedsReview(row)" label="货价待确认" tone="amber" compact />
                     <small v-if="row.price_note">{{ row.price_note }}</small>
                   </div></td>
                   <td class="jp-identity-column"><strong>{{ row.baby_item }}</strong><span class="jp-long-code">{{ row.long_code }}</span><small>{{ row.source }}</small></td>
@@ -380,8 +478,10 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
             </div>
             <div class="jp-confirm-area surface-subtle">
               <p class="jp-muted">不得把待确认价格当成已批准报价。勾选前请核对两项价格及全部提醒；修改明细后需重新确认。</p>
+              <p class="jp-muted">客名或装箱数会影响价格匹配，修改后会清空旧价。请按新条件填写货价，并核对出厂价；系统不会替你沿用旧价。核对原因和勾选确认用于分配问单编号、保留核对依据。</p>
               <label class="jp-field"><span>核对原因<span class="jp-required">必填 · 至少 4 个字</span></span><textarea v-model="reason" rows="2" maxlength="500" placeholder="填写本次核对依据或更正原因" :disabled="busy" @input="confirmed = false" /></label>
               <label class="jp-confirmation"><input v-model="confirmed" type="checkbox" :disabled="busy"><span>已核对所选明细、数量、交期、包装、价格及警告；确认分配编号并保留导出记录。</span></label>
+              <div v-if="exportBlockers.length" class="jp-message jp-message--warning" data-testid="jp-export-blockers"><div class="jp-message__content"><strong>生成前还需完成</strong><ul><li v-for="blocker in exportBlockers" :key="blocker">{{ blocker }}</li></ul></div></div>
               <div class="jp-section-footer">
                 <p v-if="!caps.export" class="jp-muted">当前账号无导出权限，可核对明细后联系有权限的人员处理。</p>
                 <p v-else class="jp-muted">确认后保留 {{ reviewCounts.selected }} 条所选明细的编号与导出记录。</p>
@@ -400,10 +500,17 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
             <span class="jp-history-icon"><FileSpreadsheet aria-hidden="true" /></span>
             <div class="jp-history-content"><h3>{{ record.prefix }}-{{ record.first_number }} 至 {{ record.last_number }}</h3><p>{{ record.created_at }} · {{ record.actor }}</p></div>
             <StatusPill :label="`${record.row_count} 行`" tone="slate" compact />
+            <Button variant="outline" :disabled="!canPreview || !caps.export" @click="copyExport(record.id)"><Copy aria-hidden="true" />复制全部44列</Button>
             <Button variant="outline" :disabled="!canPreview || !caps.export" @click="download(record.id)"><Download aria-hidden="true" />下载原导出</Button>
           </li>
         </ul>
         <div v-else class="jp-empty"><div class="jp-state-icon"><Inbox aria-hidden="true" /></div><h3>暂无历史导出记录</h3><p>完成核对并生成 Excel 后，可在这里重复下载原导出。</p></div>
+        <div v-if="clipboardText" class="jp-copy-result surface-subtle" data-testid="jp-copy-result">
+          <p role="status">{{ clipboardMessage }}</p>
+          <p class="jp-muted">复制的是这条已生成记录的完整数据，不含表头。粘贴到 Excel 对应的首个数据单元格；文本保护符用于保留前导零、避免公式执行，请勿自行删除。</p>
+          <label class="jp-field"><span>已生成的44列数据（只读）</span><textarea ref="clipboardTextarea" :value="clipboardText" readonly rows="4" wrap="off" spellcheck="false" aria-label="已生成的44列数据" /></label>
+          <Button variant="outline" :disabled="busy" @click="selectClipboardText">选中全部文本</Button>
+        </div>
         <div class="jp-history-footer">
           <p class="jp-muted">导出不等于已录入金山或成为正式订单。</p>
           <nav class="jp-pagination" aria-label="历史导出分页">
@@ -459,9 +566,10 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
 .jp-upload-limit { color: var(--muted-foreground); font-size: 12px; line-height: 1.7; }
 .jp-paste-area { display: grid; min-width: 0; gap: 12px; }
 .jp-file-list { display: grid; gap: 6px; width: 100%; margin: 0; padding: 0; list-style: none; }
-.jp-file-list li { display: flex; gap: 8px; color: var(--foreground); font-size: 13px; }
+.jp-file-list li { display: flex; align-items: flex-start; gap: 8px; color: var(--foreground); font-size: 13px; }
 .jp-file-list svg { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 3px; color: var(--primary); }
-.jp-file-list span { min-width: 0; overflow-wrap: anywhere; }
+.jp-file-list span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.jp-file-list button { flex: 0 0 auto; }
 .jp-section-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
 .jp-section-footer p { flex: 1; min-width: 180px; }
 .jp-review-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 16px; color: var(--muted-foreground); }
@@ -504,6 +612,9 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
 .jp-history-content h3 { font-variant-numeric: tabular-nums; }
 .jp-history-content p { margin-top: 4px; color: var(--muted-foreground); font-size: 12px; }
 .jp-history-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; padding-top: 16px; }
+.jp-copy-result { display: grid; gap: 12px; margin-top: 16px; border-radius: var(--radius); padding: 16px; }
+.jp-copy-result button { justify-self: start; }
+.jp-copy-result textarea { font-family: monospace; }
 .jp-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: 13px; font-variant-numeric: tabular-nums; }
 @media (max-width: 1279px) { .jp-reference-grid { grid-template-columns: 1fr; } .jp-reference__heading h3 { min-width: 0; } }
 @media (max-width: 639px) {
