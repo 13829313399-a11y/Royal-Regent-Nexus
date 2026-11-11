@@ -1,5 +1,5 @@
 import { http } from '@/lib/http'
-import type { InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode, InternalQuoteReadiness } from '@/types/internalQuoteDesk'
+import type { InternalQuoteReferenceFxDraft, InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode, InternalQuoteReadiness } from '@/types/internalQuoteDesk'
 
 export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
@@ -348,6 +348,8 @@ export interface ApiAlternativeSyncPreview {
 }
 
 export interface ApiInternalQuoteAlternative {
+  header_revision?: number
+  final_release_status?: string
   can_delete?: boolean
   delete_block_reason?: string
   quote_id: string
@@ -374,6 +376,10 @@ export interface ApiInternalQuoteAlternativeFamily {
   revision: number
   selected_quote_id: string
   items: ApiInternalQuoteAlternative[]
+}
+
+export interface ApiInternalQuoteFreezeOptions {
+  products: Array<{ product_root_id: string; product_name: string; family_revision: number; options: ApiInternalQuoteAlternative[] }>
 }
 
 export interface ApiInternalQuoteAlternativeGroup {
@@ -888,6 +894,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       quoteId: string,
       sections: Array<{ sectionCode: InternalQuoteSectionCode; revision: number; payload: Record<string, unknown> }>,
       reason = '在连续报价页统一保存当前产品',
+      referenceFx?: InternalQuoteReferenceFxDraft,
     ) {
       const response = await client.put<ApiInternalQuoteWholeProductSave>(`/internal-quotes/${quoteId}/sections/save-all`, {
         sections: sections.map((section) => ({
@@ -896,6 +903,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
           payload: section.payload,
         })),
         reason,
+        ...(referenceFx ? { reference_fx: { revision: referenceFx.revision, rmb_hkd: referenceFx.rmbHkd, hkd_usd: referenceFx.hkdUsd } } : {}),
       })
       return response.data
     },
@@ -1043,6 +1051,14 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async createExport(quoteId: string) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/exports`)
       return response.data
+    },
+    async getFreezeOptions(quoteId: string) {
+      return (await client.get<ApiInternalQuoteFreezeOptions>(`/internal-quotes/${quoteId}/freeze-options`)).data
+    },
+    async setDocumentFrozen(quoteId: string, payload: {
+      products: Array<{ quote_id: string; revision: number; family_revision: number }>; frozen: boolean; reason: string
+    }) {
+      return (await client.post<ApiInternalQuote[]>(`/internal-quotes/${quoteId}/freeze`, payload)).data
     },
     async directIssue(quoteId: string, revision: number) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/direct-issue`, { revision })

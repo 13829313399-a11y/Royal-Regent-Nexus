@@ -639,7 +639,26 @@ class InternalQuoteWholeProductSectionSave(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class InternalQuoteReferenceFxUpdateRequest(BaseModel):
+    revision: int = Field(ge=1)
+    rmb_hkd: str = Field(min_length=1, max_length=32)
+    hkd_usd: str = Field(min_length=1, max_length=32)
+
+    @field_validator("rmb_hkd", "hkd_usd")
+    @classmethod
+    def validate_fx(cls, value: str, info) -> str:
+        label = "RMB→HKD 汇率" if info.field_name == "rmb_hkd" else "HKD→USD 汇率"
+        normalized = _positive_decimal_text(value, label)
+        parsed = Decimal(normalized).normalize()
+        if parsed > Decimal("1000"):
+            raise ValueError(f"{label}不能大于 1000")
+        if parsed.as_tuple().exponent < -2:
+            raise ValueError(f"{label}最多保留 2 位小数")
+        return format(parsed, "f")
+
+
 class InternalQuoteWholeProductSaveRequest(BaseModel):
+    reference_fx: InternalQuoteReferenceFxUpdateRequest | None = None
     sections: list[InternalQuoteWholeProductSectionSave] = Field(min_length=1, max_length=9)
     reason: str = Field(default="在连续报价页统一保存当前产品", max_length=2000)
 
@@ -722,24 +741,6 @@ class InternalQuoteReferenceSyncRequest(BaseModel):
     @classmethod
     def strip_reason(cls, value: str) -> str:
         return value.strip()
-
-
-class InternalQuoteReferenceFxUpdateRequest(BaseModel):
-    revision: int = Field(ge=1)
-    rmb_hkd: str = Field(min_length=1, max_length=32)
-    hkd_usd: str = Field(min_length=1, max_length=32)
-
-    @field_validator("rmb_hkd", "hkd_usd")
-    @classmethod
-    def validate_fx(cls, value: str, info) -> str:
-        label = "RMB→HKD 汇率" if info.field_name == "rmb_hkd" else "HKD→USD 汇率"
-        normalized = _positive_decimal_text(value, label)
-        parsed = Decimal(normalized).normalize()
-        if parsed > Decimal("1000"):
-            raise ValueError(f"{label}不能大于 1000")
-        if parsed.as_tuple().exponent < -2:
-            raise ValueError(f"{label}最多保留 2 位小数")
-        return format(parsed, "f")
 
 
 class InternalQuoteReferenceMaterialsUpdateRequest(BaseModel):

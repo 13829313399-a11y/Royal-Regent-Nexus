@@ -168,3 +168,8 @@ outputs/opening-inventory-template-20260909/
 # Private QC customer workbooks and source schedules are provisioned locally.
 /backend/app/templates/qc-cumulative/
 /services/qc-department/fixtures/qc-schedule-example.json
+
+# Complete vendored Indonesia source documentation and Nexus integration contract.
+!/services/indonesia-shipping/**/*.md
+!/docs/indonesia-shipping.md
+!/docs/frontend/indonesia-shipping-brief.md

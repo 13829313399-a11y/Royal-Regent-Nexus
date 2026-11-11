@@ -97,7 +97,7 @@ export function canonicalizeMoldingReferences(payload: MoldingPayload, snapshot?
 // Establish both the editable draft and its saved baseline using exactly the
 // same reference canonicalization that the form applies after user selection.
 export function normalizeInternalQuoteDraft(code: InternalQuoteSectionCode, value: Record<string, unknown>, snapshot?: Record<string, unknown>) {
-  const normalized = normalizeInternalQuotePayload(code, value)
+  const normalized = normalizeInternalQuotePayload(code, value, snapshot)
   if (code === 'molding') canonicalizeMoldingReferences(normalized as unknown as MoldingPayload, snapshot)
   return normalized
 }

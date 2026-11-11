@@ -542,6 +542,40 @@ describe('public tool center', () => {
     expect(wrapper.text()).toContain('任务已在后台开始')
   })
 
+  it.each(['groups', 'extract'])('previews Chinese page groups and submits ASCII separators for %s', async (splitMode) => {
+    vi.mocked(documentTools.source).mockResolvedValue({
+      ...source,
+      manifest: {
+        ...source.manifest,
+        pages: Array.from({ length: 42 }, (_, index) => ({
+          ...source.manifest.pages![0]!,
+          page_index: index,
+          display_page_number: index + 1,
+        })),
+      },
+    })
+    const create = vi.spyOn(documentTools, 'create').mockResolvedValue({ job_id: 'split-1' })
+    const wrapper = render()
+    await flushPromises()
+    await upload(wrapper, [new File(['pdf'], 'source.pdf')])
+    await wrapper.findAll('.dt-tools button').find(button => button.text() === 'PDF 精确分页')!.trigger('click')
+    const options = wrapper.get('.dt-options')
+    await options.get('select').setValue(splitMode)
+    await options.get('textarea').setValue('1-10；11-20；21-30；31-42')
+    const groups = options.findAll('.dt-group')
+    expect(groups).toHaveLength(4)
+    expect(groups[0]!.text()).toBe('文件 1：1、2、3、4、5、6、7、8、9、10')
+    expect(groups[3]!.text()).toBe('文件 4：31、32、33、34、35、36、37、38、39、40、41、42')
+    expect(options.find('[role="alert"]').exists()).toBe(false)
+    await wrapper.get('.dt-generate button').trigger('click')
+    await flushPromises()
+    expect(create).toHaveBeenCalledWith(source.id, 'pdf_split', expect.objectContaining({
+      split_mode: splitMode,
+      groups: '1-10;11-20;21-30;31-42',
+    }), expect.any(String))
+    expect(wrapper.text()).toContain('任务已在后台开始')
+  })
+
   it('reports unavailable workers without fake completion progress', async () => {
     vi.mocked(documentTools.capabilities).mockResolvedValue({
       operations: [],

@@ -3,7 +3,7 @@ import { Activity, Calculator, Clock3, Eye, LoaderCircle, MessageSquare, Pencil,
 import { computed, ref, watch } from 'vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { createDefaultSalesMarkupTiers, salesMarkupTierForQuantity, salesPackagingPricingGroupId, salesPackagingPricingGroupName, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
-import type { InternalQuote, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
+import type { InternalQuote, InternalQuoteReferenceFxDraft, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{
   quote: InternalQuote
@@ -16,7 +16,7 @@ const props = defineProps<{
   busy?: boolean
 }>()
 const emit = defineEmits<{
-  updateFx: [payload: { rmbHkd: string; hkdUsd: string }]
+  updateFx: [payload: InternalQuoteReferenceFxDraft]
   updateMarkup: [payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string; componentMarkups?: Array<{ id: string; markup: string }> }]
   previewMarkup: [value: number]
   pricingDraft: [value: InternalQuoteSidebarPricingDraft | undefined]
@@ -28,6 +28,7 @@ const fxEditing = ref(false)
 const formatFx = (value: number) => value.toFixed(2)
 const fxRmbHkd = ref(formatFx(props.quote.fxRmbHkd))
 const fxHkdUsd = ref(formatFx(props.quote.fxHkdUsd))
+const fxBaseline = ref({ revision: props.quote.headerRevision, rmbHkd: props.quote.fxRmbHkd, hkdUsd: props.quote.fxHkdUsd })
 const savedMarkup = computed(() => {
   const value = Number(props.quote.rr2CostSummary?.shippingPricing.markup)
   return Number.isFinite(value) && value > 0 ? value : 1.2
@@ -296,11 +297,12 @@ const fxValidationMessage = computed(() => {
   return ''
 })
 const fxDirty = computed(() => (
-  Number(fxRmbHkd.value) !== props.quote.fxRmbHkd
-  || Number(fxHkdUsd.value) !== props.quote.fxHkdUsd
+  Number(fxRmbHkd.value) !== fxBaseline.value.rmbHkd
+  || Number(fxHkdUsd.value) !== fxBaseline.value.hkdUsd
 ))
 
 function resetFxEditor(close = true) {
+  fxBaseline.value = { revision: props.quote.headerRevision, rmbHkd: props.quote.fxRmbHkd, hkdUsd: props.quote.fxHkdUsd }
   fxRmbHkd.value = formatFx(props.quote.fxRmbHkd)
   fxHkdUsd.value = formatFx(props.quote.fxHkdUsd)
   if (close) fxEditing.value = false
@@ -359,12 +361,24 @@ function toggleMarkupTierOutput(index: number, event: Event) {
   row.includeInOutput = (event.target as HTMLInputElement).checked
 }
 
+function getFxDraft(): InternalQuoteReferenceFxDraft | undefined {
+  if (!fxDirty.value) return undefined
+  if (!props.canEditFx) throw new Error('当前账号没有修改报价汇率的权限。')
+  if (fxValidationMessage.value) throw new Error(fxValidationMessage.value)
+  return { revision: fxBaseline.value.revision, rmbHkd: Number(fxRmbHkd.value).toFixed(2), hkdUsd: Number(fxHkdUsd.value).toFixed(2) }
+}
+
+function acceptSavedFx(submitted: InternalQuoteReferenceFxDraft, revision: number) {
+  // Acknowledge the receipt even when the follow-up read fails; never discard
+  // input typed while saving or silently adopt a concurrent header revision.
+  fxBaseline.value = { revision, rmbHkd: Number(submitted.rmbHkd), hkdUsd: Number(submitted.hkdUsd) }
+  if (!fxDirty.value) fxEditing.value = false
+}
+
 function saveFx() {
   if (!props.canEditFx || fxValidationMessage.value || !fxDirty.value || props.busy) return
-  emit('updateFx', {
-    rmbHkd: Number(fxRmbHkd.value).toFixed(2),
-    hkdUsd: Number(fxHkdUsd.value).toFixed(2),
-  })
+  const draft = getFxDraft()
+  if (draft) emit('updateFx', draft)
 }
 
 function saveMarkup() {
@@ -398,7 +412,6 @@ function pricingDraftSnapshot(): InternalQuoteSidebarPricingDraft {
 }
 
 function getPricingDraft(): InternalQuoteSidebarPricingDraft | undefined {
-  if (fxDirty.value) throw new Error('汇率有未保存修改，请先保存汇率后再保存整单。')
   if (!pricingDirty.value) return undefined
   if (!props.canEditMarkup || props.markupBlockedReason) throw new Error(props.markupBlockedReason || '当前不能保存报价设置。')
   if (pricingValidationMessage.value) throw new Error(pricingValidationMessage.value)
@@ -446,13 +459,15 @@ const liveTotals = computed(() => ({
   costHkd: costHkd.value, quoteHkd: quoteHkd.value, quoteRmb: quoteRmb.value, quoteUsd: quoteUsd.value,
   status: previewError.value || previewStatus.value, target: targetComparison.value,
 }))
-defineExpose({ hasUnsavedChanges, getPricingDraft, getPricingBaseline, acceptSavedPricing, liveTotals })
+defineExpose({ getFxDraft, acceptSavedFx, hasUnsavedChanges, getPricingDraft, getPricingBaseline, acceptSavedPricing, liveTotals })
 
 watch(() => JSON.stringify([quoteMarkupTiers.value, selectedMarkupTierIndex.value, quoteMiscPercent.value, componentMarkupRows.value, pricingDirty.value, pricingValidationMessage.value]), () => {
   emit('pricingDraft', pricingDirty.value && !pricingValidationMessage.value ? pricingDraftSnapshot() : undefined)
 })
 
-watch(() => props.quote.referenceSnapshotId, () => resetFxEditor())
+watch(() => [props.quote.id, props.quote.headerRevision, props.quote.referenceSnapshotId, props.quote.fxRmbHkd, props.quote.fxHkdUsd] as const, (incoming, previous) => {
+  if (incoming[0] !== previous[0] || !fxDirty.value) resetFxEditor()
+})
 watch(normalizedMarkup, (value) => emit('previewMarkup', value), { immediate: true })
 watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), JSON.stringify(savedComponentMarkups.value), savedActiveMarkupTierIndex.value, savedMiscRatio.value, props.quote.sections?.find((section) => section.code === 'sales')?.revision, JSON.stringify(salesPricingPayload.value)] as const, (incoming, previous) => {
   if (incoming[0] === previous[0] && pricingDirty.value) return
@@ -597,7 +612,7 @@ function addComment() {
           <label><span>RMB → HKD</span><input v-model="fxRmbHkd" data-testid="fx-rmb-hkd" type="number" min="0.01" max="1000" step="0.01" inputmode="decimal"></label>
           <label><span>HKD → USD</span><input v-model="fxHkdUsd" data-testid="fx-hkd-usd" type="number" min="0.01" max="1000" step="0.01" inputmode="decimal"></label>
           <p v-if="fxValidationMessage" class="quote-fx-error">{{ fxValidationMessage }}</p>
-          <p class="quote-fx-warning">保存会生成新 revision，重算本报价，并使受影响审批失效。</p>
+          <p class="quote-fx-warning">可单独保存汇率，也可点击“保存当前款”一并保存。保存后重算本报价，受影响审批需重新确认。</p>
           <div class="quote-fx-actions"><button type="button" :disabled="busy" @click="resetFxEditor()"><X aria-hidden="true" />取消</button><button type="button" class="primary" data-testid="save-reference-fx" :disabled="busy || !!fxValidationMessage || !fxDirty" @click="saveFx"><Save aria-hidden="true" />{{ busy ? '保存中…' : '保存汇率' }}</button></div>
         </div>
         <dl>

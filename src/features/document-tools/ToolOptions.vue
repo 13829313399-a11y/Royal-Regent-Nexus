@@ -226,7 +226,7 @@ watch(
               options.groups = ($event.target as HTMLTextAreaElement).value
             "
             placeholder="1-3;4,6,5"
-          /><small>分号分文件；逗号与区间按输入顺序输出。</small></label
+          /><small>支持中英文分号、逗号；分号分文件，逗号与区间按输入顺序输出。</small></label
         >
         <p v-if="groupPreview.error" role="alert">{{ groupPreview.error }}</p>
         <p

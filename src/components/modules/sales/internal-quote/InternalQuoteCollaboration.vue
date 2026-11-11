@@ -32,7 +32,7 @@ import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type InternalQuote
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
+import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft, InternalQuoteReferenceFxDraft } from '@/types/internalQuoteDesk'
 
 const route = useRoute()
 const router = useRouter()
@@ -172,7 +172,7 @@ const progressPercent = computed(() => participatingSections.value.length ? comp
 const collaborationStatusLabel = computed(() => {
   if (wholeDocumentArchived.value) return '整单报价已归档'
   if (currentAlternativeArchived.value) return '此方案版本已归档'
-  if (isDirectOutput.value) return quote.value.status === 'exported' ? '已输出并冻结' : quote.value.status === 'archived' ? '已归档' : '方案填写中'
+  if (isDirectOutput.value) return quote.value.status === 'exported' ? '已冻结' : quote.value.status === 'archived' ? '已归档' : quote.value.finalReleaseStatus === 'output' ? '已输出 · 可修改' : '方案填写中'
   if (!isContinuousQuote.value) return quote.value.status === 'rejected' ? '存在退回' : '协作进行中'
   return {
     drafting: '整单填写中',
@@ -187,7 +187,7 @@ const collaborationStatusLabel = computed(() => {
 })
 const wholeReviewDescription = computed(() => {
   if (currentAlternativeArchived.value) return '报价已归档，资料和历史记录保留。请在包装方案与版本中恢复后继续操作。'
-  if (isDirectOutput.value) return quote.value.status === 'exported' ? '本方案版本已经输出并保留，后续调整请复制新版本；其他备选方案互不影响。' : '各部门填写并保存，资料完整后即可直接输出当前方案；输出时保留完整版本并交接客价转换台，无需人工审核。'
+  if (isDirectOutput.value) return quote.value.status === 'exported' ? '本方案版本已冻结；需要调整时，可由有权限的用户在报价首页解除整单冻结。' : '各部门填写并保存后即可输出。输出后仍可修改报价及汇总表，历史文件保留；需锁定时在报价首页手动冻结。'
   if (quote.value.status === 'fully_approved') return '所有参与部门资料已经保存并通过服务端校验，可以统一提交给指定审核人。'
   if (quote.value.status === 'final_pending') return `整份报价已经锁定，正在等待 ${quote.value.businessOwner} 统一审核。`
   if (quote.value.status === 'rejected') return quote.value.finalReviewComment
@@ -261,7 +261,7 @@ const markupBlockedReason = computed(() => {
   if (!canEditMarkup.value) return ''
   if (!salesSection.value) return '业务部分段不存在，暂时无法保存码数与杂项。'
   if (['draft', 'rejected'].includes(salesSection.value.status)) return ''
-  if (isDirectOutput.value) return '此方案版本已输出并冻结，请复制新版本后修改。'
+  if (isDirectOutput.value) return '此方案版本已冻结，请在报价首页解除整单冻结后修改。'
   if (isContinuousQuote.value) return '整单已经提交或审核通过；整单退回并全部解锁后才能修改码数与杂项。'
   return '业务部已提交或审核完成；请先重开业务部分段，再保存新的码数与杂项。'
 })
@@ -475,7 +475,7 @@ async function showFormulaRecovery() {
   if (currentAlternativeArchived.value) {
     formulaRecoveryNotice.value = '本款已归档。请先在“包装方案与版本”中恢复此版本或整单，再处理公式。'
   } else if (isDirectOutput.value && quote.value.status === 'exported') {
-    formulaRecoveryNotice.value = '本款已输出并冻结。需要调整时请先复制新版本，再重算和输出。'
+    formulaRecoveryNotice.value = '本款已冻结。需要调整时请先在报价首页解除整单冻结，再重算和输出。'
   } else if (!canSyncReference.value) {
     formulaRecoveryNotice.value = '当前账号没有该厂区的公式重算权限，请由有权限的业务部或工程部人员处理。'
   } else if (!formulaStale.value) {
@@ -555,16 +555,19 @@ async function syncReference() {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '同步参考快照失败。' }
 }
 
-async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
+async function updateReferenceFx(payload: InternalQuoteReferenceFxDraft) {
   message.value = ''
   errorMessage.value = ''
   try {
-    await quoteStore.updateReferenceFx(
-      quote.value.id,
-      quote.value.headerRevision,
+    const savedQuoteId = quote.value.id
+    const receipt = await quoteStore.updateReferenceFx(
+      savedQuoteId,
+      payload.revision,
       payload.rmbHkd,
       payload.hkdUsd,
     )
+    if (quote.value.id !== savedQuoteId) return
+    pricingPanel.value?.acceptSavedFx?.(payload, receipt.header_revision)
     message.value = '汇率已保存为新的冻结参考快照；该报价已按新汇率重算。'
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保存汇率失败。'
@@ -832,7 +835,7 @@ async function saveReferenceMaterials(
 }
 
 function hasUnsavedDepartmentChanges() {
-  return Boolean(pricingPanel.value?.hasUnsavedChanges?.()) || Object.values(sectionEditors.value).some((editor) => editor?.hasUnsavedChanges())
+  return Boolean(pricingPanel.value?.hasUnsavedChanges?.()) || Object.values(sectionEditors.value).some((editor) => editor?.hasUnsavedChanges?.())
 }
 const leavePricingOpen = ref(false)
 let pendingPricingNavigation: Promise<boolean> | undefined
@@ -886,7 +889,9 @@ async function saveWholeProductDraft() {
   }
   let drafts: ReturnType<InstanceType<typeof InternalQuoteSectionEditor>['getWholeQuoteDraft']>[]
   let pricingDraft: InternalQuoteSidebarPricingDraft | undefined
+  let referenceFx: InternalQuoteReferenceFxDraft | undefined
   try {
+    referenceFx = pricingPanel.value?.getFxDraft?.()
     pricingDraft = pricingPanel.value?.getPricingDraft?.()
     if (pricingDraft && !savableSections.some((section) => section.code === 'sales')) {
       throw new Error('业务部分段当前不可保存，请先保存或恢复侧栏报价设置。')
@@ -899,7 +904,7 @@ async function saveWholeProductDraft() {
         const baseline = pricingPanel.value?.getPricingBaseline?.()
         if (baseline?.revision) {
           draft.revision = baseline.revision
-          draft.baselinePayload = cloneInternalQuotePayload('sales', baseline.payload)
+          draft.baselinePayload = cloneInternalQuotePayload('sales', baseline.payload, quote.value?.referenceSnapshot)
         }
       }
       return draft
@@ -911,13 +916,14 @@ async function saveWholeProductDraft() {
   wholeProductSaving.value = true
   try {
     const savedQuoteId = quote.value.id
-    const result = await quoteStore.saveWholeProductSections(savedQuoteId, drafts)
+    const result = await quoteStore.saveWholeProductSections(savedQuoteId, drafts, referenceFx)
     if (quote.value.id !== savedQuoteId) return
     for (const draft of drafts) {
       const saved = result.sections.find((section) => section.department === draft.sectionCode)
       if (saved) sectionEditors.value[draft.sectionCode]?.acceptSavedPayload(saved.payload, draft.payload, saved.revision, draft.localPayload)
     }
     if (pricingDraft) pricingPanel.value?.acceptSavedPricing?.(pricingDraft)
+    if (referenceFx && result.savedHeaderRevision) pricingPanel.value?.acceptSavedFx?.(referenceFx, result.savedHeaderRevision)
     savedReadinessQuoteId.value = savedQuoteId
     const blockers = outputProblems(result.quote)
     message.value = quoteStore.refreshWarningQuoteId === savedQuoteId && quoteStore.refreshWarning
@@ -944,7 +950,7 @@ async function directOutput() {
   if (hasUnsavedDepartmentChanges()) { errorMessage.value = '当前页面还有未保存的内容，请先保存当前款，再直接输出。'; return }
   try {
     const record = await quoteStore.directIssue(quote.value.id, quote.value.headerRevision) as { id: string; file_name: string }
-    message.value = '此方案版本已输出并冻结，已交接客价转换台。后续修改请复制新版本。'
+    message.value = '报价已输出，文件记录已保留。仍可修改并再次输出；需要锁定时请在报价首页手动冻结。'
     await quoteStore.downloadExport(quote.value.id, record.id, record.file_name)
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '输出失败，请检查资料完整性后重试。' }
 }
@@ -1241,7 +1247,7 @@ onBeforeUnmount(() => {
             <button type="button" class="quote-whole-product-save" title="保存当前款全部现有内容" :disabled="currentAlternativeArchived || wholeProductSaving || quoteStore.submitting" @click="saveWholeProductDraft"><Save />{{ wholeProductSaving ? '保存中…' : '保存' }}</button>
             <div class="quote-whole-review-actions quote-whole-product-workflow">
               <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与输出</RouterLink>
-              <button v-if="isDirectOutput && !['exported', 'archived'].includes(quote.status)" type="button" class="primary" title="输出后保留本版，修改请复制新版本" :disabled="currentAlternativeArchived || !canDirectOutput || wholeProductSaving || quoteStore.submitting" @click="directOutput">直接输出并保留此版</button>
+              <button v-if="isDirectOutput && !['exported', 'archived'].includes(quote.status)" type="button" class="primary" title="输出后仍可修改，历史文件保留" :disabled="currentAlternativeArchived || !canDirectOutput || wholeProductSaving || quoteStore.submitting" @click="directOutput">输出报价</button>
               <button v-if="isMultiProduct && !currentAlternativeArchived && quote.status !== 'archived' && authStore.can('internal_quote:export', quote.factoryId, 'sales-business')" type="button" class="primary" :disabled="wholeProductSaving || quoteStore.submitting" @click="openSeriesExport">系列报价一起输出</button>
               <button v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status)" type="button" class="primary" :title="!canSubmitWholeReview ? '当前账号没有整单提交权限' : !batchReady ? '全部产品完成后可提交审核' : '提交审核'" :disabled="!canSubmitWholeReview || !batchReady || quoteStore.submitting" @click="submitWholeReview"><Send />{{ quoteStore.submitting ? '提交中…' : '提交审核' }}</button>
               <span v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !canSubmitWholeReview">当前账号无提交权限</span>

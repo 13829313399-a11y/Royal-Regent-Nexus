@@ -101,6 +101,10 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert issued.status_code == 200, issued.text
         assert issued.json()["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "original.xlsx"
         assert issued.json()["export_manifest"]["source_spreadsheet_attachments"][0]["file_name"] == "original.xlsx"
+        editable = client.get(root + "/output-layout?include_source_workbooks=false").json()
+        assert editable["read_only"] is False and any(g["editable"] for g in editable["groups"])
+        from test_internal_quote_alternatives import freeze_versions
+        freeze_versions(client, [current])
         exported = client.get(root + f"/exports/{issued.json()['id']}/download")
         book = load_workbook(BytesIO(exported.content))
         assert book["original"].sheet_state == "visible"
@@ -161,7 +165,7 @@ def test_multiple_groups_currencies_atomic_failure_and_molding_dependency(monkey
         second_price = next(c for row in second_sheet['rows'] for c in row['cells'] if c['address'] == 'E4')
         assert second_price['binding']['group'] == 'electronic:quote_groups/1/components/0'
         second_hkd = next(c for row in second_sheet['rows'] for c in row['cells'] if c['address'] == 'F4')
-        assert float(second_hkd['text']) == pytest.approx(2 / .85, abs=.0001)
+        assert float(second_hkd['text']) == pytest.approx(2 / .84, abs=.0001)
         ids = {f['id'] for g in layout['groups'] for f in g['fields']}
         assert 'molding:injection_lines/0/item' not in ids
         assert 'engineering:materials/0/unit_price_hkd' in ids
@@ -192,7 +196,7 @@ def test_multiple_groups_currencies_atomic_failure_and_molding_dependency(monkey
         assert sections['molding']['payload']['injection_lines'][0]['item'] == '主模改名'
         current = client.get(root + '/output-layout').json()
         changed_hkd = next(c for row in current['sheets'][2]['rows'] for c in row['cells'] if c['address'] == 'F4')
-        assert float(changed_hkd['text']) == pytest.approx(7 / .85, abs=.0001)
+        assert float(changed_hkd['text']) == pytest.approx(7 / .84, abs=.0001)
         logout(client)
         login(client, 'table-department', 'molding_clerk', 'molding')
         forbidden = client.put(root + '/output-layout', json={'base_token': current['base_token'], 'edits': [

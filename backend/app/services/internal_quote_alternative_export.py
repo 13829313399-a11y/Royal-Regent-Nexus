@@ -157,7 +157,10 @@ def export_alternatives(db, quote_id, payload, user, request=None):
             ).order_by(InternalQuoteExportFile.exported_at, InternalQuoteExportFile.id)).all()
             record = next((row for row in candidates if
                            json.loads(row.export_manifest_json).get("final_release_revision") == quote.final_release_revision), None)
-            if record is not None and (quote.status not in {"fully_approved", "exported"}
+            if quote.module_version == "v4" and quote.final_release_status != "issued":
+                out = issue_alternative(db, quote.id, selected, user, request, commit=False)
+                record = db.get(InternalQuoteExportFile, out.id)
+            elif record is not None and (quote.status not in {"fully_approved", "exported"}
                                        or quote.final_release_status not in {"approved", "issued"}):
                 raise HTTPException(409, "此方案已有历史输出，但当前版本尚未核准，请先核对版本状态")
             if record is None:
