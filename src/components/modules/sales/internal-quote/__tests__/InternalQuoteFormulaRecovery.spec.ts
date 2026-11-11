@@ -107,7 +107,7 @@ describe('packaging source formula recovery', () => {
 
   it.each([
     [{ versionArchived: true }, true, '本款已归档'],
-    [{ status: 'exported' }, true, '本款已输出并冻结'],
+    [{ status: 'exported' }, true, '本款已冻结'],
     [{}, false, '没有该厂区的公式重算权限'],
     [{ formulaRecalculationRequired: false }, true, '本款已使用当前公式'],
   ] as const)('explains why the source cannot be recalculated: %s', async (overrides, permission, text) => {

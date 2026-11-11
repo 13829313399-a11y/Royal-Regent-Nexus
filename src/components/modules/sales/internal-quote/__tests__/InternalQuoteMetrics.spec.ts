@@ -24,7 +24,7 @@ describe('quote readiness and first output reporting', () => {
     expect(wrapper.text()).toContain('待读取核价状态')
     expect(wrapper.find('progress').exists()).toBe(false)
     await wrapper.setProps({ readiness: { state: 'issued', ready_sections: 5, required_sections: 5, blockers: [] } })
-    expect(wrapper.text()).toContain('已输出 · 保留冻结核价')
+    expect(wrapper.text()).toContain('已冻结 · 保留当前核价')
     expect(wrapper.find('progress').exists()).toBe(false)
     await wrapper.setProps({ readiness: { state: 'ready', ready_sections: 3, required_sections: 3, blockers: [] } })
     expect(wrapper.text()).toContain('3/3 已就绪')

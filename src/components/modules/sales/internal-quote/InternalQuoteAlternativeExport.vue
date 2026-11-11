@@ -53,13 +53,13 @@ async function output() {
       <DialogContent class="alternative-export-dialog" @escape-key-down="busy && $event.preventDefault()" @interact-outside="$event.preventDefault()">
         <DialogTitle class="title">多方案合并输出</DialogTitle>
         <DialogDescription class="description">勾选同一产品的 2–20 个方案版本。一个 Excel 内含包装、MOQ、出厂价汇总对比，详细成本各放一个工作表。</DialogDescription>
-        <p class="notice">已输出版本沿用原文件；未输出版本通过核价后会一并输出并冻结。任一版本不满足条件时，全部取消，不改变历史版本。</p>
+        <p class="notice">冻结版本沿用原文件；未冻结版本按当前核价输出，输出后仍可修改。任一版本不满足条件时，全部取消，历史文件保留。</p>
         <p v-if="loading" role="status">正在读取方案…</p>
         <fieldset :disabled="busy || loading" class="options">
           <legend>选择要对比的方案版本</legend>
           <label v-for="row in options" :key="row.quote_id">
             <input v-model="selected" type="checkbox" :value="row.quote_id" :aria-label="`${row.scenario_name} · ${row.version_label}`">
-            <span><strong>{{ row.scenario_name }} · {{ row.version_label }}</strong><small>{{ ['released', 'exported'].includes(row.status) ? '已输出，保留原文件' : '未输出，将校验并冻结' }}</small></span>
+            <span><strong>{{ row.scenario_name }} · {{ row.version_label }}</strong><small>{{ ['released', 'exported'].includes(row.status) ? '已冻结，保留原文件' : '校验当前资料并输出，仍可修改' }}</small></span>
           </label>
           <p v-if="!loading && options.length < 2">至少需要两个未归档方案版本。</p>
         </fieldset>
