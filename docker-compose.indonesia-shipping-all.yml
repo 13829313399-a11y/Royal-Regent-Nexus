@@ -1,0 +1,147 @@
+# Six-factory deployment. Each factory has a separate database service and volume.
+# Opt-in overlay for docker-compose.prod.yml; does not reuse the old single-factory volume.
+x-shipping-db: &shipping-db
+  image: postgres:16-alpine
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U indonesia_shipping -d indonesia_shipping"]
+    interval: 10s
+    timeout: 5s
+    retries: 10
+  restart: unless-stopped
+x-shipping-service: &shipping-service
+  build:
+    context: ./services/indonesia-shipping
+  restart: unless-stopped
+services:
+  indonesia-shipping-huakang-a-db:
+    <<: *shipping-db
+    environment:
+      POSTGRES_DB: indonesia_shipping
+      POSTGRES_USER: indonesia_shipping
+      POSTGRES_PASSWORD: "${INDONESIA_SHIPPING_HUAKANG_A_DB_PASSWORD:?Dedicated huakang-a database password is required}"
+    volumes:
+      - indonesia-shipping-huakang-a-data:/var/lib/postgresql/data
+  indonesia-shipping-huakang-a:
+    <<: *shipping-service
+    environment:
+      NexusBridge__Enabled: "true"
+      NexusBridge__FactoryId: "huakang-a"
+      NexusBridge__Key: "${INDONESIA_SHIPPING_BRIDGE_KEY:?A random bridge key of 32 or more bytes is required}"
+      ConnectionStrings__Default: "Host=indonesia-shipping-huakang-a-db;Database=indonesia_shipping;Username=indonesia_shipping;Password=${INDONESIA_SHIPPING_HUAKANG_A_DB_PASSWORD:?Dedicated huakang-a database password is required};Search Path=indo_shipping"
+    depends_on:
+      indonesia-shipping-huakang-a-db:
+        condition: service_healthy
+  indonesia-shipping-huakang-b-db:
+    <<: *shipping-db
+    environment:
+      POSTGRES_DB: indonesia_shipping
+      POSTGRES_USER: indonesia_shipping
+      POSTGRES_PASSWORD: "${INDONESIA_SHIPPING_HUAKANG_B_DB_PASSWORD:?Dedicated huakang-b database password is required}"
+    volumes:
+      - indonesia-shipping-huakang-b-data:/var/lib/postgresql/data
+  indonesia-shipping-huakang-b:
+    <<: *shipping-service
+    environment:
+      NexusBridge__Enabled: "true"
+      NexusBridge__FactoryId: "huakang-b"
+      NexusBridge__Key: "${INDONESIA_SHIPPING_BRIDGE_KEY:?A random bridge key of 32 or more bytes is required}"
+      ConnectionStrings__Default: "Host=indonesia-shipping-huakang-b-db;Database=indonesia_shipping;Username=indonesia_shipping;Password=${INDONESIA_SHIPPING_HUAKANG_B_DB_PASSWORD:?Dedicated huakang-b database password is required};Search Path=indo_shipping"
+    depends_on:
+      indonesia-shipping-huakang-b-db:
+        condition: service_healthy
+  indonesia-shipping-huakang-c-db:
+    <<: *shipping-db
+    environment:
+      POSTGRES_DB: indonesia_shipping
+      POSTGRES_USER: indonesia_shipping
+      POSTGRES_PASSWORD: "${INDONESIA_SHIPPING_HUAKANG_C_DB_PASSWORD:?Dedicated huakang-c database password is required}"
+    volumes:
+      - indonesia-shipping-huakang-c-data:/var/lib/postgresql/data
+  indonesia-shipping-huakang-c:
+    <<: *shipping-service
+    environment:
+      NexusBridge__Enabled: "true"
+      NexusBridge__FactoryId: "huakang-c"
+      NexusBridge__Key: "${INDONESIA_SHIPPING_BRIDGE_KEY:?A random bridge key of 32 or more bytes is required}"
+      ConnectionStrings__Default: "Host=indonesia-shipping-huakang-c-db;Database=indonesia_shipping;Username=indonesia_shipping;Password=${INDONESIA_SHIPPING_HUAKANG_C_DB_PASSWORD:?Dedicated huakang-c database password is required};Search Path=indo_shipping"
+    depends_on:
+      indonesia-shipping-huakang-c-db:
+        condition: service_healthy
+  indonesia-shipping-huakang-d-db:
+    <<: *shipping-db
+    environment:
+      POSTGRES_DB: indonesia_shipping
+      POSTGRES_USER: indonesia_shipping
+      POSTGRES_PASSWORD: "${INDONESIA_SHIPPING_HUAKANG_D_DB_PASSWORD:?Dedicated huakang-d database password is required}"
+    volumes:
+      - indonesia-shipping-huakang-d-data:/var/lib/postgresql/data
+  indonesia-shipping-huakang-d:
+    <<: *shipping-service
+    environment:
+      NexusBridge__Enabled: "true"
+      NexusBridge__FactoryId: "huakang-d"
+      NexusBridge__Key: "${INDONESIA_SHIPPING_BRIDGE_KEY:?A random bridge key of 32 or more bytes is required}"
+      ConnectionStrings__Default: "Host=indonesia-shipping-huakang-d-db;Database=indonesia_shipping;Username=indonesia_shipping;Password=${INDONESIA_SHIPPING_HUAKANG_D_DB_PASSWORD:?Dedicated huakang-d database password is required};Search Path=indo_shipping"
+    depends_on:
+      indonesia-shipping-huakang-d-db:
+        condition: service_healthy
+  indonesia-shipping-huadeng-db:
+    <<: *shipping-db
+    environment:
+      POSTGRES_DB: indonesia_shipping
+      POSTGRES_USER: indonesia_shipping
+      POSTGRES_PASSWORD: "${INDONESIA_SHIPPING_HUADENG_DB_PASSWORD:?Dedicated huadeng database password is required}"
+    volumes:
+      - indonesia-shipping-huadeng-data:/var/lib/postgresql/data
+  indonesia-shipping-huadeng:
+    <<: *shipping-service
+    environment:
+      NexusBridge__Enabled: "true"
+      NexusBridge__FactoryId: "huadeng"
+      NexusBridge__Key: "${INDONESIA_SHIPPING_BRIDGE_KEY:?A random bridge key of 32 or more bytes is required}"
+      ConnectionStrings__Default: "Host=indonesia-shipping-huadeng-db;Database=indonesia_shipping;Username=indonesia_shipping;Password=${INDONESIA_SHIPPING_HUADENG_DB_PASSWORD:?Dedicated huadeng database password is required};Search Path=indo_shipping"
+    depends_on:
+      indonesia-shipping-huadeng-db:
+        condition: service_healthy
+  indonesia-shipping-huaxing-db:
+    <<: *shipping-db
+    environment:
+      POSTGRES_DB: indonesia_shipping
+      POSTGRES_USER: indonesia_shipping
+      POSTGRES_PASSWORD: "${INDONESIA_SHIPPING_HUAXING_DB_PASSWORD:?Dedicated huaxing database password is required}"
+    volumes:
+      - indonesia-shipping-huaxing-data:/var/lib/postgresql/data
+  indonesia-shipping-huaxing:
+    <<: *shipping-service
+    environment:
+      NexusBridge__Enabled: "true"
+      NexusBridge__FactoryId: "huaxing"
+      NexusBridge__Key: "${INDONESIA_SHIPPING_BRIDGE_KEY:?A random bridge key of 32 or more bytes is required}"
+      ConnectionStrings__Default: "Host=indonesia-shipping-huaxing-db;Database=indonesia_shipping;Username=indonesia_shipping;Password=${INDONESIA_SHIPPING_HUAXING_DB_PASSWORD:?Dedicated huaxing database password is required};Search Path=indo_shipping"
+    depends_on:
+      indonesia-shipping-huaxing-db:
+        condition: service_healthy
+  api:
+    environment:
+      INDONESIA_SHIPPING_UPSTREAMS: '{"huakang-a":"http://indonesia-shipping-huakang-a:5180","huakang-b":"http://indonesia-shipping-huakang-b:5180","huakang-c":"http://indonesia-shipping-huakang-c:5180","huakang-d":"http://indonesia-shipping-huakang-d:5180","huadeng":"http://indonesia-shipping-huadeng:5180","huaxing":"http://indonesia-shipping-huaxing:5180"}'
+      INDONESIA_SHIPPING_BRIDGE_KEY: "${INDONESIA_SHIPPING_BRIDGE_KEY}"
+    depends_on:
+      indonesia-shipping-huakang-a:
+        condition: service_healthy
+      indonesia-shipping-huakang-b:
+        condition: service_healthy
+      indonesia-shipping-huakang-c:
+        condition: service_healthy
+      indonesia-shipping-huakang-d:
+        condition: service_healthy
+      indonesia-shipping-huadeng:
+        condition: service_healthy
+      indonesia-shipping-huaxing:
+        condition: service_healthy
+volumes:
+  indonesia-shipping-huakang-a-data:
+  indonesia-shipping-huakang-b-data:
+  indonesia-shipping-huakang-c-data:
+  indonesia-shipping-huakang-d-data:
+  indonesia-shipping-huadeng-data:
+  indonesia-shipping-huaxing-data:
