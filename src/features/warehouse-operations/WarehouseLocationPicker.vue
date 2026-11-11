@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, useId, watch } from 'vue'
 import { locationCategoryLabels, matchesLocationCategory } from './fabricLocationZones'
-const props = defineProps<{ modelValue?: string; locations: { id: string; label: string; status?: string; category?: string }[]; category?: string; disabled?: boolean; label?: string }>()
+const props = defineProps<{
+  modelValue?: string
+  locations: { id: string; label: string; status?: string; category?: string }[]
+  category?: string
+  disabled?: boolean
+  label?: string
+  shortHelp?: boolean
+}>()
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
 const query = ref(''), input = ref<HTMLInputElement>(), listId = useId()
 const choices = ref<HTMLDetailsElement>()
@@ -37,7 +44,7 @@ function choose(event: Event) {
 </script>
 <template>
   <div class="warehouse-location-picker">
-    <input ref="input" :value="query" :list="listId" required :disabled="disabled || !places.length" :aria-label="label || '目标仓位'" :aria-invalid="Boolean(query && !modelValue)" autocomplete="off" placeholder="搜索并选择已有仓库／仓位" @input="choose" />
+    <input ref="input" :value="query" :list="listId" required :disabled="disabled || !places.length" :aria-label="label || '目标仓位'" :aria-invalid="Boolean(query && !modelValue)" autocomplete="off" :placeholder="shortHelp ? '搜索仓位' : '搜索并选择已有仓库／仓位'" @input="choose" />
     <datalist :id="listId"><option v-for="row in places" :key="row.id" :value="row.label" /></datalist>
   <details v-if="places.length && !disabled" ref="choices" class="location-touch-choices">
     <summary>点选仓位</summary>
@@ -50,7 +57,9 @@ function choose(event: Event) {
     <small v-if="category === ''" role="status">先选择物料分类，再选择对应架位或区域。</small>
     <small v-else-if="!places.length" role="status">没有可用仓位，请先在基础资料建立或分类对应原料分区。</small>
     <small v-else-if="query && !modelValue" role="alert">请选择已有仓位，不能直接填写新仓位。</small>
-    <small v-else-if="category" class="location-zone-hint">仅限{{ locationCategoryLabels[category] }}分区 · 请选择具体架／区</small>
+    <small v-else-if="category" class="location-zone-hint">
+      {{ shortHelp ? `仅限${locationCategoryLabels[category]}仓位` : `仅限${locationCategoryLabels[category]}分区 · 请选择具体架／区` }}
+    </small>
   </div>
 </template>
 <style scoped>
