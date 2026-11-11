@@ -24,6 +24,7 @@ const partField = (code: string, quantity: 'good' | 'rejected' | 'scrap') =>
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
 const reportingView=ref('tasks')
+const orderListOpen=ref(false)
 const reportingTabs=[{id:'tasks',label:'每日任务'},{id:'records',label:'日报记录'},{id:'parts',label:'裁片配套'},{id:'external',label:'外发收回与验收'},{id:'handover',label:'交接与抽查'}]
 function changeReportingView(value:string){
   // Switching views retains the mounted editor and its pending command.
@@ -49,6 +50,12 @@ const kindsFor=(t:ReportTask|undefined,mode:ProductionInput['mode'])=>Object.ent
   can(reportPermission(kind as ReportKind)) && (kind!=='daily'||!t?.historical) && (kind!=='match'||mode==='parts') && (!['return','accept'].includes(kind)||(t?.settlement_context?.execution??t?.execution)==='outsourced'))
 const kindOptions=computed(()=>kindsFor(task.value,entry.value?.mode||'sets'))
 const summary=computed(()=>result.value?.summary)
+const orderTitle = computed(() => {
+  if (!selected.value || !result.value) return '生产记录'
+  const snapshot = selected.value.snapshot
+  const product = orderProductName(snapshot)
+  return product === '未填写' ? String(snapshot.reference_no ?? '生产记录') : product
+})
 const statisticsDatePending=computed(()=>!!result.value && asOf.value!==result.value.as_of)
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T
 function discard() {
@@ -154,6 +161,14 @@ async function select(row: CuttingOrder, intent: 'select' | 'statistics' | 'reco
     if (alive && request === generation) loading.value = false
   }
 }
+async function openOrder(row: CuttingOrder) {
+  await select(row)
+  if (selected.value?.line_id === row.line_id && result.value) {
+    orderListOpen.value = false
+    if (reportingView.value === 'tasks') changeReportingView('records')
+  }
+}
+
 async function historyPage(next:number){
   if(!selected.value||!result.value||loading.value||saving.value||pending.value)return
   const request=++generation;loading.value=true;error.value=''
@@ -246,47 +261,88 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
 <template>
   <section class="cutting-page cutting-master reporting-page">
     <CuttingLocationNotice :location="location" :selected-id="result?selected?.line_id:undefined" />
-    <PageHeader title="每日生产填数" description="文员提交即生效，主管抽查；完整套数、散片、外发验收与交接分别追踪。" />
-    <CuttingSubnav :model-value="reportingView" :items="reportingTabs" label="每日填数工作视图" @update:model-value="changeReportingView" />
+    <PageHeader title="每日记录" description="查看生产日报、裁片配套、外发验收与交接进度。文员提交即生效，主管抽查。" />
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="loading" role="status">正在读取生产记录…</p>
     <div v-if="needsLogin"><p>登录已失效，填报内容暂时隐藏。请在新标签页重新登录，再重试或核对原操作。</p><a href="/login" target="_blank" rel="noopener">重新登录</a></div>
     <div v-if="pending" class="cutting-master-actions"><Button variant="outline" :disabled="saving" @click="submit(pending.action)">重试原操作</Button><Button variant="outline" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button></div>
-    <p v-if="!loading&&access&&!available&&!needsLogin">每日填数尚未启用。需完成 0155 迁移，并为生产岗位分别授予填报、抽查、外发收回、外发验收或交接权限。</p>
+    <p v-if="!loading&&access&&!available&&!needsLogin">每日记录尚未启用。需完成 0155 迁移，并为生产岗位分别授予填报、抽查、外发收回、外发验收或交接权限。</p>
     <SectionPanel v-if="locationError" title="无法定位关联订单" class="cutting-content-panel">
       <p role="alert" class="cutting-error">{{ locationError }}</p>
       <template #action><Button as-child variant="outline"><RouterLink :to="ordersDestination">返回订单列表</RouterLink></Button></template>
     </SectionPanel>
     <template v-else-if="available&&!needsLogin">
-      <CuttingTaskBoard v-show="reportingView==='tasks'" reporting />
-      <div v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-overview">
-      <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发收回由文员登记，验收由主管确认，验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
-      <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load(1,false,false,true)"><label :for="fieldId('order_query')">订单／货号<input :id="fieldId('order_query')" name="order_query" v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
-      <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><caption class="sr-only">已签收订单（{{ total }} 条来源订单）</caption><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>状态</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact /></td><td><Button variant="outline" :disabled="saving||!!pending" @click="select(row)">查看填数</Button></td></tr>
-      </tbody></table></div><p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选范围本页暂无已签收订单，可清除筛选或翻页查看。':total?'本页来源订单尚未签收，可翻页查看或到排期页核对接单。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
-      <nav class="cutting-pagination" aria-label="生产填数订单分页"><span>第 {{ page }} 页 · 共 {{ total }} 条</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page<=1||loading" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="page*50>=total||loading" @click="load(page+1)">下一页</Button></div></nav>
+      <div class="report-workspace">
+        <SectionPanel title="已签收订单" class="cutting-content-panel report-orders">
+          <template v-if="selected&&result" #action>
+            <Button class="report-order-toggle" variant="outline" :aria-expanded="orderListOpen" :aria-controls="fieldId('orders')" @click="orderListOpen=!orderListOpen">{{ orderListOpen?'收起订单':'切换订单' }}</Button>
+          </template>
+          <div :id="fieldId('orders')" class="report-orders-body" :class="{ 'report-orders-collapsed': selected&&result&&!orderListOpen }">
+          <form class="report-order-filter" @submit.prevent="load(1,false,false,true)">
+            <label :for="fieldId('order_query')">订单／货号
+              <input :id="fieldId('order_query')" name="order_query" v-model="query" maxlength="80" />
+            </label>
+            <Button variant="outline" :disabled="saving||!!pending||loading">查询订单</Button>
+          </form>
+          <ul v-if="rows.length" class="report-order-list" aria-label="已签收订单">
+            <li v-for="row in rows" :key="row.line_id" :class="{ 'report-order-selected': selected?.line_id===row.line_id }">
+              <div class="report-order-heading">
+                <strong>{{ row.snapshot.reference_no }}</strong>
+                <StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact />
+              </div>
+              <p>{{ row.snapshot.product_no }} · {{ orderProductName(row.snapshot) }}</p>
+              <p>{{ row.snapshot.customer_name }} · <span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
+              <Button variant="outline" size="sm" :aria-current="selected?.line_id===row.line_id?'true':undefined" :disabled="saving||!!pending" @click="openOrder(row)">查看记录</Button>
+            </li>
+          </ul>
+          <p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选范围本页暂无已签收订单，可清除筛选或翻页查看。':total?'本页来源订单尚未签收，可翻页查看或到排期页核对接单。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
+      <nav class="cutting-pagination" aria-label="每日记录订单分页"><span>第 {{ page }} 页 · 共 {{ total }} 条</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page<=1||loading" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="page*50>=total||loading" @click="load(page+1)">下一页</Button></div></nav>
+          </div>
       </SectionPanel>
-      <SectionPanel v-if="selected&&result&&summary" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`">
-        <template #action><Button as-child variant="outline"><RouterLink :to="planningDestination">返回该订单排期</RouterLink></Button></template>
-        <div class="report-detail">
-        <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
-        <form class="cutting-master-toolbar" @submit.prevent="select(selected!, 'statistics')"><label :for="fieldId('statistics_date')">统计截至日期<input :id="fieldId('statistics_date')" name="statistics_date" v-model="asOf" type="date" :max="today()" :disabled="loading||saving||!!pending" /></label><Button variant="outline" :disabled="loading||saving||!!pending">刷新统计</Button></form>
+        <SectionPanel class="cutting-content-panel report-main" :title="orderTitle">
+          <template v-if="selected&&result" #action><Button as-child variant="outline"><RouterLink :to="planningDestination">返回该订单排期</RouterLink></Button></template>
+          <div v-if="selected&&result&&summary" class="report-detail">
+            <p class="report-order-meta">{{ selected.snapshot.reference_no }} · 货号 {{ selected.snapshot.product_no }} · <span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
+        <form class="report-statistics-filter" @submit.prevent="select(selected!, 'statistics')"><label :for="fieldId('statistics_date')">统计截至日期<input :id="fieldId('statistics_date')" name="statistics_date" v-model="asOf" type="date" :max="today()" :disabled="loading||saving||!!pending" /></label><Button variant="outline" :disabled="loading||saving||!!pending">刷新统计</Button></form>
         <p v-if="statisticsDatePending" role="status">日期尚未应用。当前统计及新填报的默认日期仍为 {{ result.as_of }}。</p>
-        <dl class="report-totals"><div><dt>订单总套数（工程核定）</dt><dd>{{ summary.order_sets ?? '待核定' }}</dd></div><div><dt>合格完成套数</dt><dd>{{ summary.completed }}</dd></div><div><dt>实际交数／已交接</dt><dd>{{ summary.actual_delivery }}</dd></div><div><dt>未完成套数</dt><dd>{{ summary.remaining ?? '待核定' }}</dd></div><div><dt>累计计划差额（交接−计划）</dt><dd>{{ summary.plan_difference }}</dd></div><div><dt>当日完成／交接</dt><dd>{{ summary.day_completed }} / {{ summary.day_handed }}</dd></div></dl>
-        <p>截至 {{ result.as_of }}；未完成＝订单总套数−合格完成，允许保留超产后的负数。待交接 {{ summary.completed_unhanded }} 套。</p>
-        <details><summary>月度汇总（截至所选日期）</summary><div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>月份</th><th>计划</th><th>完成</th><th>交接</th></tr></thead><tbody><tr v-for="(m,month) in summary.months" :key="month"><td>{{ month }}</td><td>{{ m.planned }}</td><td>{{ m.completed }}</td><td>{{ m.handed }}</td></tr></tbody></table></div></details>
+            <dl class="report-totals">
+              <div><dt>订单总套数</dt><dd>{{ summary.order_sets ?? '待核定' }} <small v-if="summary.order_sets!=null">套</small></dd></div>
+              <div><dt>合格完成</dt><dd>{{ summary.completed }} <small>套</small></dd></div>
+              <div><dt>实际交数</dt><dd>{{ summary.actual_delivery }} <small>套</small></dd></div>
+              <div><dt>未完成</dt><dd>{{ summary.remaining ?? '待核定' }} <small v-if="summary.remaining!=null">套</small></dd></div>
+            </dl>
+            <details class="report-statistics-details">
+              <summary>统计明细与口径</summary>
+              <p>截至 {{ result.as_of }}。实际交数按已交接套数统计；未完成＝订单总套数−合格完成，超产保留负数。</p>
+              <p>当日完成／交接 {{ summary.day_completed }}／{{ summary.day_handed }} 套 · 待交接 {{ summary.completed_unhanded }} 套 · 累计计划差额（交接−计划）{{ summary.plan_difference }} 套</p>
+              <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="月度汇总，可横向滚动"><table><thead><tr><th>月份</th><th>计划</th><th>完成</th><th>交接</th></tr></thead><tbody><tr v-for="(m,month) in summary.months" :key="month"><td>{{ month }}</td><td>{{ m.planned }}</td><td>{{ m.completed }}</td><td>{{ m.handed }}</td></tr></tbody></table></div>
+            </details>
+          </div>
+          <CuttingSubnav :model-value="reportingView" :items="reportingTabs" label="每日记录工作视图" @update:model-value="changeReportingView" />
+          <CuttingTaskBoard v-show="reportingView==='tasks'" reporting />
+          <p v-if="!result&&reportingView!=='tasks'&&!loading&&!error" class="cutting-no-records">请选择已签收订单，查看任务与生产记录。</p>
+          <div v-if="selected&&result" v-show="reportingView!=='tasks'||!!entry||!!pending" class="report-detail">
         <h3>执行任务</h3>
         <p v-if="reportingView==='parts'">仅列按裁片核套或尚未确定报数方式的任务；已固定直接报套的任务不能改用裁片核套。</p>
         <p v-if="reportingView==='external'">文员负责收回，主管负责验收；操作按钮沿用各自独立授权。</p>
         <div v-for="t in result.tasks" v-show="(reportingView!=='external'||(t.settlement_context?.execution??t.execution)==='outsourced')&&(reportingView!=='parts'||t.mode!=='sets')" :key="t.task_id" :data-cutting-task="t.task_id" class="cutting-master-line">
-          <h4>{{ t.name }} · {{ t.execution==='internal'?'本厂':'外发' }} · {{ t.historical?'历史任务':'发布 V'+t.plan_version }}</h4>
-          <p>报数方式：{{ t.mode==='parts'?'按裁片核套':t.mode==='sets'?'直接报完整套数':'首次填报时确定' }}；目标 {{ t.target_sets }} 套</p>
+          <div class="report-task-heading">
+            <div>
+              <h4>{{ t.name }} · {{ t.execution==='internal'?'本厂':'外发' }} <StatusPill :label="t.mode==='parts'?'按裁片核套':t.mode==='sets'?'直接报完整套数':'首次填报时确定'" compact /></h4>
+              <p>{{ t.historical?'历史任务':'计划 V'+t.plan_version }} · 目标 {{ t.target_sets }} 套</p>
+            </div>
+            <Button v-if="(!t.historical||t.settlement_context)&&kindsFor(t,t.mode||'sets').length" :disabled="loading||saving||!!pending" @click="start(t)">{{ t.historical?'办理历史余额':'填报此任务' }}</Button>
+          </div>
           <p v-if="t.settlement_context">以下实绩余额归属：{{ t.settlement_context.resource_name }} · {{ t.settlement_context.execution==='outsourced'?'外发':'本厂' }} · 冻结 BOM V{{ t.settlement_context.bom_version }}／计划 V{{ t.settlement_context.plan_version }}。计划变更不转移原执行方的数量。</p>
-          <p>合格完成 {{ t.balance?.completed ?? 0 }} · 已交接 {{ t.balance?.handed ?? 0 }} · 可新增核套 {{ t.balance?.matchable ?? 0 }}</p>
+          <div class="report-task-balance">
+            <span>合格完成 <strong>{{ t.balance?.completed ?? 0 }}</strong> 套</span>
+            <span>已交接 <strong>{{ t.balance?.handed ?? 0 }}</strong> 套</span>
+            <span v-if="t.mode!=='sets'">可新增核套 <strong>{{ t.balance?.matchable ?? 0 }}</strong> 套</span>
+            <template v-if="t.mode==='parts'">
+              <span v-for="p in (t.settlement_context?.parts??t.parts)" :key="p.code">{{ p.name }}余 <strong>{{ t.balance?.loose[p.code]??0 }}</strong> 片（不良 {{ t.balance?.part_rejected[p.code]??0 }}／报废 {{ t.balance?.part_scrap[p.code]??0 }}）</span>
+            </template>
+          </div>
           <p v-if="(t.settlement_context?.execution??t.execution)==='outsourced'">外厂报称 {{ t.balance?.claimed ?? 0 }} · 实收 {{ t.balance?.returned ?? 0 }} · 验收合格 {{ t.balance?.accepted ?? 0 }} · 不合格 {{ t.balance?.rejected ?? 0 }} · 待验 {{ (t.balance?.returned??0)-(t.balance?.accepted??0)-(t.balance?.rejected??0) }}</p>
-          <p v-if="t.mode==='parts'">散片：<span v-for="p in (t.settlement_context?.parts??t.parts)" :key="p.code">{{ p.name }} {{ t.balance?.loose[p.code]??0 }} 片（不良 {{ t.balance?.part_rejected[p.code]??0 }}／报废 {{ t.balance?.part_scrap[p.code]??0 }}）；</span></p>
-          <Button variant="outline" v-if="(!t.historical||t.settlement_context)&&kindsFor(t,t.mode||'sets').length" :disabled="loading||saving||!!pending" @click="start(t)">{{ t.historical?'办理历史余额':'填报此任务' }}</Button>
         </div>
         <p v-if="!result.tasks.length">暂无已发布任务，请先在排期页发布任务与日计划。</p>
         <form v-if="entry" class="cutting-master-form report-form" @submit.prevent="submit(decision||'post')">
@@ -307,20 +363,118 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
             <div class="cutting-master-actions"><Button variant="outline" v-if="!decision&&can(reportPermission(entry.kind))" type="button" :disabled="unappliedPieces" @click="submit('save')">保存草稿</Button><Button v-if="can(decision==='review'?'report_review':reportPermission(entry.kind))" type="submit" :disabled="unappliedPieces">{{ decision?'确认操作':'提交生效' }}</Button><Button variant="outline" type="button" @click="cancel">取消编辑</Button></div>
           </fieldset>
         </form>
-        <h3>日报与业务记录</h3><p>记录列表保留全部日期；上方统计按截止日计算。草稿及更正草稿不覆盖原生效数量。</p>
+        <h3>日报与业务记录</h3>
+        <p>记录列表保留全部日期；上方统计按截止日计算。草稿及更正草稿不覆盖原生效数量。</p>
         <CuttingHistoryPager v-if="result.history_pagination" :value="result.history_pagination" :busy="loading||saving||!!pending" @page="historyPage" />
-        <div v-for="doc in result.documents" :key="doc.document_id" :data-cutting-report="doc.document_id" class="cutting-master-line">
-          <h4>{{ effectiveEntry(doc).day }} · {{ reportLabels[effectiveEntry(doc).kind] }} · {{ (doc.posted||doc.draft||doc.history[0])?.data.context.task_name }}</h4>
-          <p>{{ doc.voided?'已作废':doc.posted?'已生效':'未生效' }}{{ doc.draft?' · 有草稿':'' }} · {{ doc.review?'主管已抽查':'尚未抽查' }} · {{ effectiveEntry(doc).mode==='parts'&&effectiveEntry(doc).kind==='daily'?'裁片明细见历史':effectiveEntry(doc).sets+' 套' }}</p>
+        <p v-if="!result.documents.length" class="cutting-no-records">暂无生产记录。</p>
+        <div v-else class="report-record-list">
+          <div class="report-record-row report-record-header" aria-hidden="true"><span>业务日期</span><span>记录类型</span><span>数量</span><span>状态</span><span></span></div>
+          <details v-for="doc in result.documents" :key="doc.document_id" :data-cutting-report="doc.document_id">
+            <summary class="report-record-row">
+              <span>{{ effectiveEntry(doc).day }}</span>
+              <span>{{ reportLabels[effectiveEntry(doc).kind] }}</span>
+              <span>{{ effectiveEntry(doc).mode==='parts'&&effectiveEntry(doc).kind==='daily'?'裁片明细':effectiveEntry(doc).sets+' 套' }}</span>
+              <StatusPill :label="doc.voided?'已作废':doc.posted?'已生效':'未生效'" compact />
+              <span class="report-record-expand">详情</span>
+            </summary>
+            <div class="report-record-detail">
+              <p>{{ (doc.posted||doc.draft||doc.history[0])?.data.context.task_name }} · {{ doc.review?'主管已抽查':'尚未抽查' }}<template v-if="doc.draft"> · 有草稿</template></p>
           <div class="cutting-master-actions" v-if="!doc.voided"><template v-if="can(reportPermission(effectiveEntry(doc).kind))"><Button variant="outline" :disabled="loading||saving||!!pending" @click="edit(doc)">编辑／更正</Button><Button variant="outline" v-if="doc.draft" :disabled="loading||saving||!!pending" @click="edit(doc,'discard')">放弃草稿</Button><Button variant="outline" v-if="doc.posted" :disabled="loading||saving||!!pending" @click="edit(doc,'void')">作废</Button></template><Button variant="outline" v-if="doc.posted&&can('report_review')" :disabled="loading||saving||!!pending" @click="edit(doc,'review')">主管抽查</Button></div>
           <details><summary>版本与操作依据</summary><article v-for="event in doc.history" :key="event.id"><p>V{{ event.version }} · {{ {save:'保存草稿',post:'提交生效',void:'作废',review:'主管抽查',discard:'放弃草稿'}[event.action] }} · {{ event.actor_id }} · {{ event.created_at }}</p><p>{{ event.reason }}；{{ event.data.entry.evidence }}；{{ event.data.entry.exception_reason }}</p><p>{{ event.data.entry.day }} · {{ event.data.entry.sets }} 套／不良 {{ event.data.entry.rejected }}／报废 {{ event.data.entry.scrap }} · BOM V{{ event.data.context.bom_version }} · {{ event.data.context.resource_name }}</p><p v-for="p in event.data.entry.parts" :key="p.code">{{ p.code }}：合格 {{ p.good }}／不良 {{ p.rejected }}／报废 {{ p.scrap }} 片</p></article></details>
+            </div>
+          </details>
         </div>
-      </div></SectionPanel>
+          </div>
+        </SectionPanel>
       </div>
     </template>
   </section>
 </template>
 
 <style scoped>
-.report-detail{display:flex;flex-direction:column;gap:16px}.reporting-page td{padding:10px 16px;border-bottom:1px solid var(--border)}.report-totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}.report-totals div{padding:14px;background:var(--muted);border-radius:8px}.report-totals dt{font-size:12px;color:var(--muted-foreground)}.report-totals dd{font-size:24px;font-weight:600}.report-form fieldset{display:flex;flex-direction:column;gap:14px}.reporting-page h2,.reporting-page h3{font-weight:600}.reporting-page article{padding:12px;border-bottom:1px solid var(--border);overflow-wrap:anywhere}.reporting-page td input{width:100px}.reporting-page p{font-size:13px;line-height:1.7}
+.report-workspace {
+  display: grid;
+  grid-template-columns: minmax(240px, 27fr) minmax(0, 73fr);
+  align-items: start;
+  gap: 16px;
+}
+.report-orders, .report-main, .report-detail { min-width: 0; }
+.report-orders-body { display: flex; flex-direction: column; gap: 16px; }
+.report-order-toggle[data-slot='button'] { display: none; }
+.report-detail { display: flex; flex-direction: column; gap: 12px; }
+.report-order-filter, .report-statistics-filter, .report-task-heading {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.report-order-filter label { flex: 1 1 120px; }
+.report-order-filter [data-slot='button'],
+.report-statistics-filter [data-slot='button'] { align-self: end; }
+.report-statistics-filter label { flex-direction: row; align-items: center; gap: 10px; }
+.report-statistics-filter input { width: auto; min-width: 140px; }
+.report-order-list { padding: 0; margin: 0; list-style: none; }
+.report-order-list li { padding: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.report-order-list li:last-child { border-bottom: 1px solid var(--border); }
+.report-order-selected { background: var(--accent); box-shadow: inset 3px 0 var(--primary); }
+.report-order-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
+.report-order-list [data-slot='button'] { margin-top: 6px; }
+.report-order-meta, .report-order-list p, .report-record-detail p, .report-statistics-details p { color: var(--muted-foreground); }
+.report-totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.report-totals div { padding: 10px 14px; }
+.report-totals div + div { border-inline-start: 1px solid var(--border); }
+.report-totals dt { color: var(--muted-foreground); font-size: 13px; }
+.report-totals dd { margin: 0; font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.report-totals small { font-size: 13px; }
+.report-totals div:nth-child(2) dd { color: var(--primary); }
+.report-task-heading { justify-content: space-between; align-items: start; }
+.report-task-heading h4 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.report-task-balance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--muted);
+}
+.report-record-list { border: 1px solid var(--border); border-radius: var(--radius); }
+.report-record-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.1fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  justify-items: start;
+  padding: 10px 12px;
+}
+.report-record-row::-webkit-details-marker { display: none; }
+.report-record-header { background: var(--muted); font-size: 13px; font-weight: 600; }
+.report-record-list > details { border-top: 1px solid var(--border); }
+.report-record-expand { color: var(--primary); white-space: nowrap; }
+.report-record-detail { padding: 0 12px 12px; }
+.report-form fieldset { display: flex; flex-direction: column; gap: 14px; }
+.reporting-page article { padding: 12px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.reporting-page td input { width: 100px; }
+.reporting-page p { font-size: 13px; line-height: 1.7; }
+
+@media (max-width: 1023px) {
+  .report-workspace { grid-template-columns: minmax(0, 1fr); }
+  .report-order-toggle[data-slot='button'] { display: inline-flex; }
+  .report-orders-collapsed { display: none; }
+  .report-orders:has(.report-orders-collapsed) > :deep(div:last-child) { display: none; }
+}
+@media (max-width: 640px) {
+  .report-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-totals div:nth-child(3) { border-inline-start: 0; }
+  .report-totals div:nth-child(n+3) { border-top: 1px solid var(--border); }
+  .report-record-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-record-header { display: none; }
+  .report-record-expand { grid-column: 1 / -1; }
+}
 </style>
