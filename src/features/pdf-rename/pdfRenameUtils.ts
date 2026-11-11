@@ -1,3 +1,11 @@
+import type { PdfRenamePreviewField } from '@/api/pdfRename'
+
+export interface PdfRenameFieldCompletion {
+  template: string
+  fields: PdfRenamePreviewField[]
+  values: Record<string, string>
+}
+
 export const MAX_PDF_FILE_SIZE_BYTES = 20 * 1024 * 1024
 
 export function formatPdfFileSize(size: number) {
