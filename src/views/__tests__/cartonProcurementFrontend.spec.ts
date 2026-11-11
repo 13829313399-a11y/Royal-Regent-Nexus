@@ -593,7 +593,8 @@ describe('CartonProcurementView frontend workspace', () => {
       } else {
         expect(focus).not.toHaveBeenCalled()
         expect(routeState.query.closing_view).toBeUndefined()
-        expect(w.findComponent({ name: 'CartonActionNotice' }).props('message')).toContain('旧版逐单账单已下线')
+        expect(w.findComponent({ name: 'CartonSettlementOverview' }).props()).toMatchObject({ period: '2026-09', currency: 'HKD' })
+        expect(w.findComponent({ name: 'CartonActionNotice' }).props('message')).toContain('已定位到受影响月份')
       }
       await w.findAll('button').find(row => row.text() === '本月对账')!.trigger('click'); await flushPromises()
       Object.assign(routeState.query, { price_correction: 'PRICE-EXACT-LINE-2' }); await flushPromises()
