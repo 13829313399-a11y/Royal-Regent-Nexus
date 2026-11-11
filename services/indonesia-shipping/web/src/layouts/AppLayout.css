@@ -1,0 +1,29 @@
+/* Keep the original desktop workbench; narrow screens scroll tables, not the page. */
+@media (max-width: 1023px) {
+  .indonesia-workspace .ant-pro-layout-content { padding: 12px 0; min-width: 0; }
+  .indonesia-workspace .ant-pro-layout-content > div { min-width: 0; }
+  .indonesia-workspace .ant-card { min-width: 0; }
+  .indonesia-workspace .ant-card-head { padding-inline: 12px; }
+  .indonesia-workspace .ant-card-head-wrapper { flex-wrap: wrap; gap: 8px; padding-block: 12px; }
+  .indonesia-workspace .ant-card-head-title { flex-basis: 100%; white-space: normal; }
+  .indonesia-workspace .ant-card-extra { margin-inline-start: 0; max-width: 100%; }
+  .indonesia-workspace .ant-card-extra > .ant-space { flex-wrap: wrap; }
+  .indonesia-workspace .ant-card-body { padding: 12px; }
+  .indonesia-workspace .ant-pro-global-header-right-content { min-width: 0 !important; }
+  .indonesia-workspace .ant-pro-global-header-header-actions-item:has(.indonesia-account-name) { display: none; }
+  .indonesia-workspace .ant-pro-global-header-header-actions-item { padding-inline: 2px; flex-shrink: 0; }
+  .indonesia-workspace .ant-pro-global-header .ant-space { flex-wrap: wrap; gap: 0 !important; }
+  .indonesia-workspace .ant-pro-global-header .ant-tag { white-space: nowrap; }
+  :is(.indonesia-workspace, .purchase-editor, .schedule-editor, .outbound-dialog) .ant-table-cell-fix-left,
+  :is(.indonesia-workspace, .purchase-editor, .schedule-editor, .outbound-dialog) .ant-table-cell-fix-right {
+    position: static !important;
+  }
+  :is(.indonesia-workspace, .purchase-editor, .schedule-editor, .outbound-dialog) .ant-table-cell::after { box-shadow: none !important; }
+  .schedule-editor .ant-drawer-content-wrapper { width: 100% !important; }
+  .schedule-editor .ant-drawer-body, .schedule-editor .ant-drawer-header { padding: 12px; }
+  .schedule-upload .ant-space { flex-wrap: wrap; max-width: 100%; }
+  .schedule-upload .ant-space-item { max-width: 100%; }
+  .schedule-upload .ant-input, .schedule-upload .ant-select { max-width: 100%; }
+  .outbound-dialog .ant-modal-body > .ant-row > .ant-col { flex: 0 0 100%; max-width: 100%; }
+  .outbound-dialog .ant-modal-body > .ant-row { row-gap: 10px; }
+}

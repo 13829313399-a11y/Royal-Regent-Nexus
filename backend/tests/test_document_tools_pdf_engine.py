@@ -90,7 +90,7 @@ def test_pdf_borderless_multiple_tables(tmp_path):
     assert all(t.row_count==3 and t.column_count==3 for t in result.ir.tables)
 
 
-@pytest.mark.parametrize('mode,options,expected',[('each',{},[[0],[1],[2],[3]]),('every_n',{'every_n':3},[[0,1,2],[3]]),('groups',{'groups':'3,1;4,2,2'},[[2,0],[3,1,1]]),('extract',{'groups':'3,1;4,2,2'},[[2,0,3,1,1]])])
+@pytest.mark.parametrize('mode,options,expected',[('each',{},[[0],[1],[2],[3]]),('every_n',{'every_n':3},[[0,1,2],[3]]),('groups',{'groups':'3,1;4,2,2'},[[2,0],[3,1,1]]),('extract',{'groups':'3,1;4,2,2'},[[2,0,3,1,1]]),('groups',{'groups':'3，1；4，2，2'},[[2,0],[3,1,1]]),('extract',{'groups':'3,1；4，2,2'},[[2,0,3,1,1]])])
 def test_split_order_native_text(tmp_path,mode,options,expected):
     source=make_pdf(tmp_path/'pages.pdf',pages=4)
     result=convert_pdf(source,'pdf_split',{'split_mode':mode,**options},tmp_path/'out',lambda *_:None,lambda:False)
@@ -98,6 +98,26 @@ def test_split_order_native_text(tmp_path,mode,options,expected):
     for file,pages in zip(result.files,expected):
         reader=PdfReader(file['path'])
         assert [p.extract_text().split()[0] for p in reader.pages]==[f'PAGE-{i+1:02d}' for i in pages]
+
+
+def test_split_chinese_groups_42_pages(tmp_path):
+    source=make_pdf(tmp_path/'pages.pdf',pages=42)
+    result=convert_pdf(source,'pdf_split',{'split_mode':'groups','groups':'1-10；11-20；21-30；31-42'},tmp_path/'out',lambda *_:None,lambda:False)
+    outputs=[PdfReader(file['path']) for file in result.files]
+    assert [len(output.pages) for output in outputs]==[10,10,10,12]
+    assert [page.extract_text().split()[0] for output in outputs for page in output.pages]==[f'PAGE-{i:02d}' for i in range(1,43)]
+
+
+def test_chinese_group_duplicate_policy():
+    assert parse_page_groups('2，1；2,3',3)==[[1,0],[1,2]]
+    assert parse_page_groups('2，1；2,3',3,'deduplicate')==[[1,0],[2]]
+
+
+@pytest.mark.parametrize('expression',['0-2；3','4-2；3','1-43；2','1；；2','1，；2','1-2；三','1-2；3/4'])
+def test_chinese_groups_reject_invalid_selection(expression):
+    with pytest.raises(ToolError) as error:
+        parse_page_groups(expression,42)
+    assert error.value.code=='PAGE_RANGE_INVALID'
 
 
 def test_visible_index_excludes_hidden_text(tmp_path):

@@ -44,3 +44,18 @@ test('export current template, no writes before export, empty state disables dow
  p.data.tables.caixing=[];p.data.tables.summary=[];p.w.fetch=async()=>p.response(p.data);await p.w.QcMonthlyTemplates.open('caixing');assert.equal(p.d.getElementById('qmtExcel').disabled,true);assert.match(p.d.getElementById('qmtTables').textContent,/没有符合/);
  }finally{p.dom.window.close();}
 });
+
+test('photo quality chooser defaults to preview, blocks missing originals without consent and cancels without export',async()=>{
+ const p=page();try{
+  p.w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};p.w.HTMLDialogElement.prototype.close=function(){this.open=false;};p.w.HTMLAnchorElement.prototype.click=function(){};
+  await p.w.QcMonthlyTemplates.open('issues');const exports=[];
+  p.w.fetch=async(url,init)=>{if(url.endsWith('/options'))return p.response({count:2,missingOriginals:1,displayConversions:0});exports.push(JSON.parse(init.body));return p.response({url:'api/monthly-templates/excel/abc',filename:'测试.xlsx'});};
+  const wait=()=>new Promise(r=>setTimeout(r,20));
+  p.d.getElementById('qmtExcel').click();await wait();let dlg=p.d.querySelector('dialog');assert.equal(dlg.querySelector('[value=preview]').checked,true);
+  dlg.querySelector('[data-cancel]').click();await wait();assert.equal(exports.length,0);assert.equal(p.d.querySelector('dialog'),null);
+  p.d.getElementById('qmtExcel').click();await wait();dlg=p.d.querySelector('dialog');dlg.querySelector('[value=original]').click();assert.equal(dlg.querySelector('[data-confirm]').disabled,true);
+  dlg.querySelector('[data-fallback] input').click();dlg.querySelector('[data-confirm]').click();await wait();assert.equal(exports[0].photoQuality,'original');assert.equal(exports[0].allowPreviewFallback,true);
+  p.data.tables.issues[0].photos=[];p.w.fetch=async(url,init)=>{if(!init?.body)return p.response(p.data);assert.ok(!url.endsWith('/options'));exports.push(JSON.parse(init.body));return p.response({url:'api/monthly-templates/excel/abc',filename:'测试.xlsx'});};
+  await p.w.QcMonthlyTemplates.open('issues');p.d.getElementById('qmtExcel').click();await wait();assert.equal(p.d.querySelector('dialog'),null);assert.equal(exports.length,2);assert.equal(exports[1].photoQuality,undefined);
+ }finally{p.dom.window.close();}
+});

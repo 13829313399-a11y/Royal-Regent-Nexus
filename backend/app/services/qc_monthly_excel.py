@@ -6,6 +6,7 @@ from hashlib import sha256
 from io import BytesIO
 import json, math, re, sqlite3, unicodedata
 from pathlib import Path
+from threading import BoundedSemaphore
 import xlrd, xlwt, openpyxl
 from xlutils.filter import XLWTWriter
 from openpyxl.drawing.image import Image
@@ -14,11 +15,12 @@ from openpyxl.drawing.xdr import XDRPositiveSize2D
 from PIL import Image as PILImage
 from fastapi import HTTPException
 from app.core.config import settings
-from app.services import qc_monthly_templates as monthly, qc_weekly_excel as shared
+from app.services import qc_monthly_templates as monthly, qc_weekly_excel as shared, qc_photo_assets as assets
 
 TEMPLATE_DIR=Path(__file__).resolve().parents[1]/'templates/qc-monthly'
 ASSETS=json.loads((TEMPLATE_DIR/'templates.json').read_text())
 MAX_BYTES=32*1024*1024
+export_slots=BoundedSemaphore(2)
 EXPORT_NAMES = {'caixing':'彩星汇总_月度验货明细', 'all':'全客明细_月度验货',
                 'issues':'问题图文_月度验货', 'customers':'分客明细_月度验货'}
 
@@ -40,17 +42,37 @@ def _asset(kind):
     return raw,spec
 
 
-def _photo(factory, entry, photo):
+def _photo(factory, entry, photo, quality='preview', fallback=False):
     path=Path(settings.qc_department_data_dir).resolve()/'_inspection_sheet/inspections.sqlite3'
     try:
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as conn:
-            row=conn.execute('''SELECT p.content FROM photos p JOIN entries e ON e.id=p.entry_id
+            conn.row_factory=sqlite3.Row
+            row=conn.execute("""SELECT p.* FROM photos p JOIN entries e ON e.id=p.entry_id
                 JOIN entry_details d ON d.entry_id=e.id WHERE e.factory=? AND e.id=? AND e.revision=?
-                AND d.review_state='approved' AND p.id=? AND p.removed=0''',
+                AND d.review_state='approved' AND p.id=? AND p.removed=0""",
                 (factory,entry['id'],entry['revision'],photo['id'])).fetchone()
-        if row is None: raise HTTPException(409,'验货照片或审核记录已变化，请刷新核对后导出')
-        return row[0]
-    except sqlite3.Error as exc: raise HTTPException(503,'验货照片读取失败，请重试') from exc
+            if row is None:raise HTTPException(409,'验货照片或审核记录已变化，请刷新核对后导出')
+            meta=assets.public_metadata(conn,row['id'])
+            if quality=='original' and not meta['originalAvailable']:
+                if not fallback:raise HTTPException(409,'部分历史照片没有原图，请重新选择图片清晰度并明确确认使用已有预览图')
+                quality='preview'
+            return assets.read(conn,row,quality)[0]
+    except sqlite3.Error as exc:raise HTTPException(503,'验货照片读取失败，请重试') from exc
+
+
+def photo_options(factory, body):
+    data=checked_data(factory,body)
+    photos=[(entry,p) for entry in data['tables']['issues'] for p in entry['photos']] if body['template']=='issues' else []
+    missing=converted=0
+    path=Path(settings.qc_department_data_dir).resolve()/'_inspection_sheet/inspections.sqlite3'
+    if photos:
+        with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as conn:
+            for entry,p in photos:
+                meta=assets.public_metadata(conn,p['id'])
+                missing+=not meta['originalAvailable']
+                original=meta.get('original',{})
+                converted+=original.get('mime') in {'image/heic','image/heif','image/webp'} or original.get('orientation',1)!=1
+    return dict(count=len(photos),missingOriginals=missing,displayConversions=converted)
 
 
 def _name(name, used):
@@ -132,7 +154,7 @@ def _xls(data,kind):
     stream=BytesIO();book.save(stream);return stream.getvalue()
 
 
-def _xlsx(data,factory):
+def _xlsx(data,factory,quality='preview',fallback=False):
     raw,_=_asset('issues');book=openpyxl.load_workbook(BytesIO(raw));sheet=book.active
     sheet.title=data['dateFrom'][:7]+'问题记录'
     model=[copy(c._style) for c in sheet[2]]
@@ -148,7 +170,7 @@ def _xlsx(data,factory):
     title.font=copy(sheet.cell(2,1).font)
     title.alignment=openpyxl.styles.Alignment(horizontal='center',vertical='center')
     sheet.freeze_panes='A3';sheet.print_title_rows='1:2';sheet.sheet_view.topLeftCell='A1'
-    rownum=3;photo_bytes=0
+    rownum=3;photo_bytes=0;embedded_bytes=0
     for entry in data['tables']['issues']:
         photos=entry['photos'];batches=[photos[i:i+4] for i in range(0,len(photos),4)] or [[]]
         if photos and str(entry['values'][11]).strip(): batches.insert(0,[])
@@ -166,15 +188,18 @@ def _xlsx(data,factory):
             sheet.row_dimensions[rownum].height=height
             sheet.cell(rownum,12).alignment=openpyxl.styles.Alignment(horizontal='left',vertical='top',wrap_text=True)
             for j,photo in enumerate(batch):
-                content=_photo(factory,entry,photo);photo_bytes+=len(content)
+                content=_photo(factory,entry,photo,quality,fallback);photo_bytes+=len(content)
                 if photo_bytes>MAX_BYTES:raise HTTPException(422,'照片总量过大，请按客户筛选后分别导出')
                 try:
                     with PILImage.open(BytesIO(content)) as original:
-                        original.load();out=BytesIO();original.convert('RGB').save(out,format='PNG')
-                    image=Image(BytesIO(out.getvalue()));ratio=min(230/image.width,175/image.height,1)
+                        if original.format not in {'JPEG','PNG'} or original.getexif().get(274,1)!=1:
+                            content=assets.display_png(content)
+                    embedded_bytes+=len(content)
+                    if embedded_bytes>MAX_BYTES:raise HTTPException(422,'图片总量过大，请使用预览图或缩小导出范围')
+                    image=Image(BytesIO(content));ratio=min(230/image.width,175/image.height,1)
                     image.width*=ratio;image.height*=ratio
                     marker=AnchorMarker(col=11,row=rownum-1,colOff=int((5+(j%2)*240)*9525),rowOff=int((photo_top+(j//2)*190)*9525))
-                    image.anchor=OneCellAnchor(_from=marker,ext=XDRPositiveSize2D(int(image.width*9525),int(image.height*9525)))
+                    image.anchor=OneCellAnchor(_from=marker,ext=XDRPositiveSize2D(round(image.width*9525),round(image.height*9525)))
                     sheet.add_image(image)
                 except (OSError,ValueError) as exc:raise HTTPException(422,'验货照片无法解码，未生成缺图文件') from exc
             rownum+=1
@@ -184,12 +209,15 @@ def _xlsx(data,factory):
     stream=BytesIO();book.save(stream);return stream.getvalue()
 
 
-def render(data,kind,factory='huaxing'):
+def render(data,kind,factory='huaxing',quality='preview',fallback=False):
     if kind not in ASSETS:raise HTTPException(422,'月报模板不正确')
     if not data['tables'][kind]:raise HTTPException(409,'当前模板没有验货记录，无法导出空白文件')
-    content=_xlsx(data,factory) if kind=='issues' else _xls(data,kind)
-    if len(content)>MAX_BYTES:raise HTTPException(422,'Excel 文件过大，请按客户筛选后导出')
-    return content
+    if not export_slots.acquire(timeout=5):raise HTTPException(429,'Excel 导出繁忙，请稍后重试')
+    try:
+        content=_xlsx(data,factory,quality,fallback) if kind=='issues' else _xls(data,kind)
+        if len(content)>MAX_BYTES:raise HTTPException(422,'Excel 文件过大，请按客户筛选后导出')
+        return content
+    finally:export_slots.release()
 
 import hmac, os, secrets, time
 TTL=600
@@ -222,9 +250,9 @@ def _clean():
     return files
 
 
-def prepare(factory, owner, body):
+def checked_data(factory, body):
     keys = {'date', 'customer', 'template', 'sourceRevision', 'versions'}
-    if not isinstance(body, dict) or set(body) != keys or any(not isinstance(body[k], str) for k in keys-{'versions'}):
+    if not isinstance(body, dict) or not keys <= set(body) or set(body)-keys-{'photoQuality','allowPreviewFallback'} or any(not isinstance(body[k], str) for k in keys-{'versions'}):
         raise HTTPException(422, 'Excel 导出参数不正确')
     if body['template'] not in set(ASSETS):
         raise HTTPException(422, '请选择有效的模板')
@@ -232,7 +260,13 @@ def prepare(factory, owner, body):
     # Compare both source records and all visible saved supplement versions.
     if body['sourceRevision'] != data['sourceRevision'] or body['versions'] != versions(data):
         raise HTTPException(409, '验货记录或月报补充内容已变化，请刷新核对后再导出 Excel')
-    content = render(data, body['template'], factory)
+    if not isinstance(body.get('photoQuality','preview'),str) or body.get('photoQuality','preview') not in {'preview','original'} or not isinstance(body.get('allowPreviewFallback',False),bool):raise HTTPException(422,'图片清晰度参数不正确')
+    return data
+
+
+def prepare(factory, owner, body):
+    data=checked_data(factory,body)
+    content = render(data, body['template'], factory,body.get('photoQuality','preview'),body.get('allowPreviewFallback',False))
     fresh = monthly.query(factory, body['date'], body['customer'])
     if fresh['sourceRevision'] != data['sourceRevision'] or versions(fresh) != versions(data):
         raise HTTPException(409, '导出期间记录已变化，请刷新后重试')

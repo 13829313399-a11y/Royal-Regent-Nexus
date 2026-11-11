@@ -73,9 +73,9 @@ def parse_page_groups(expression, page_count, duplicate_policy="keep"):
     if expression in {None, "", "all"}:
         return [list(range(page_count))]
     groups, seen = [], set()
-    for group in expression.split(";"):
+    for group in re.split(r"[;；]", expression):
         pages = []
-        for token in group.split(","):
+        for token in re.split(r"[,，]", group):
             token = token.strip()
             match = re.fullmatch(r"(\d+)(?:\s*-\s*(\d+))?", token)
             if not match:

@@ -37,7 +37,7 @@
       {
         "path": "src/views/CartonSupplierMarkTemplatesView.vue",
         "symbol": "chooseGeneration",
-        "sha256": "432170f8ebff787cbd741fd5b65587f7ee6b89a2777a83fc45fce6f4def56b42"
+        "sha256": "dcd94c1591d8888b5a0846fba6e9a1a24ecd0ddfe8d103d3bf0d3ad8ad73279a"
       },
       {
         "path": "backend/app/services/carton_supplier_mark_pdf.py",
@@ -92,7 +92,7 @@
       {
         "path": "backend/app/services/carton_supplier_changes.py",
         "symbol": "def respond(",
-        "sha256": "38bb4ca2eaee306deeeb83681e67e143f7dafb6e9fbfaf6c63bf1d92f7034801"
+        "sha256": "1fda7ddcfcdde28fdad6352fafbe507e1c60ea8209adc366392d7ac2795eb757"
       },
       {
         "path": "src/components/CartonSupplierChangeTasks.vue",

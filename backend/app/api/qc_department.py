@@ -161,6 +161,14 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     if any(value != company for value in request.query_params.getlist("company")):
         raise HTTPException(403, "不能访问其他厂区的数据")
     asset_path = asset_path or "index.html"
+    if asset_path.startswith('api/inspection-dossier/records/'):
+        if request.method != 'GET':
+            raise HTTPException(405, '完整资料仅供查询')
+        from app.services.qc_dossier_read import detail as dossier_detail
+        identity = asset_path.removeprefix('api/inspection-dossier/records/')
+        result = await run_in_threadpool(dossier_detail, factory_id, identity,
+            full_business=can(user, 'customer_order:read', factory_id, 'sales-business'))
+        return JSONResponse(result, headers=NO_CACHE)
     if asset_path == "api/schedule-export" and request.method == "POST":
         _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
         if request.headers.get("sec-fetch-site") == "cross-site":
@@ -382,7 +390,7 @@ async def monthly_templates_request(path, request, db, user, factory_id):
         data['canEdit'] = can(user, 'qc_inspection:result_write', factory_id, 'qc')
         data['canExport'] = can(user, 'qc_inspection:report_export', factory_id, 'qc')
         return JSONResponse(data, headers=NO_CACHE)
-    if path not in {'api/monthly-templates/save', 'api/monthly-templates/excel'} or request.method != 'POST':
+    if path not in {'api/monthly-templates/save', 'api/monthly-templates/excel', 'api/monthly-templates/excel/options'} or request.method != 'POST':
         raise HTTPException(405, '不支持此操作')
     if not exporting:
         _ensure_permission(db, user, 'qc_inspection:result_write', factory_id)
@@ -399,7 +407,9 @@ async def monthly_templates_request(path, request, db, user, factory_id):
         body = json.loads(raw)
     except (ValueError, UnicodeError):
         raise HTTPException(400, '无效 JSON') from None
-    if exporting:
+    if path=='api/monthly-templates/excel/options':
+        result = await run_in_threadpool(qc_monthly_excel.photo_options, factory_id, body)
+    elif exporting:
         result = await run_in_threadpool(qc_monthly_excel.prepare, factory_id, owner, body)
     else:
         result = await run_in_threadpool(qc_monthly_templates.save, factory_id,
@@ -437,8 +447,14 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         if len(parts)==3 and parts[0]=='entries' and parts[2]=='audit':
             return JSONResponse(service.audit(factory_id,parts[1]),headers=NO_CACHE)
         if len(parts)==4 and parts[0]=='entries' and parts[2]=='photos':
-            content=service.read_photo(factory_id,parts[1],parts[3])
-            return Response(content if request.method=='GET' else b'',media_type='image/jpeg',headers=NO_CACHE)
+            if set(request.query_params)-{'variant'} or len(request.query_params.getlist('variant'))>1:raise HTTPException(422,'照片参数不正确')
+            content,mime=await run_in_threadpool(service.read_photo_version,factory_id,parts[1],parts[3],request.query_params.get('variant','preview'))
+            # Revalidate authentication, factory, active photo and bytes before 304.
+            # Private cache avoids downloading unchanged originals again.
+            etag='"'+hashlib.sha256(content).hexdigest()+'"'
+            headers={'Cache-Control':'private, no-cache','ETag':etag,'X-Content-Type-Options':'nosniff','Vary':'Cookie, Authorization'}
+            if request.headers.get('if-none-match')==etag:return Response(status_code=304,headers=headers)
+            return Response(content if request.method=='GET' else b'',media_type=mime,headers=headers)
         raise HTTPException(404,'接口不存在')
     if request.method != 'POST':raise HTTPException(405,'不支持此方法')
     _ensure_permission(db,user,'qc_inspection:result_write',factory_id)
@@ -579,7 +595,7 @@ async def inspection_summary_request(path, request, db, user, factory_id):
     service = qc_inspection_summary
     parts = path.split('/')
     actor = str(user.id)
-    if request.method == 'GET' or request.method == 'HEAD' and path == 'export':
+    if request.method == 'GET':
         if path == 'records':
             result = await run_in_threadpool(service.listing, factory_id, dict(request.query_params))
         elif path == 'history':
@@ -588,11 +604,6 @@ async def inspection_summary_request(path, request, db, user, factory_id):
             result = await run_in_threadpool(service.detail, factory_id, parts[1])
         elif len(parts) == 2 and parts[0] == 'history':
             result = await run_in_threadpool(service.batch_detail, factory_id, parts[1], actor)
-        elif path == 'export':
-            _ensure_permission(db, user, 'qc_inspection:report_export', factory_id)
-            content, name = await run_in_threadpool(service.export_excel, factory_id, dict(request.query_params))
-            return Response(content if request.method == 'GET' else b'', media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE, 'Content-Length': str(len(content)),
-                'Content-Disposition': "attachment; filename=QC-summary.xlsx; filename*=UTF-8''" + quote(name)})
         else:
             raise HTTPException(404, '接口不存在')
         return JSONResponse(result, headers=NO_CACHE)

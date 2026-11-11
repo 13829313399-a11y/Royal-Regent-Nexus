@@ -17,6 +17,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.config import settings
 from app.services import qc_workflow as wf
+from app.services import qc_photo_assets as photo_assets
 from app.services.qc_inspection_results import RESULTS, EDITABLE_RESULTS, ALLOWED_INSPECTION_RESULTS
 
 # Shared Excel MIME for summary/report downloads.
@@ -51,9 +52,11 @@ def store(write=False, review=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=20)
     conn.row_factory = sqlite3.Row
+    new_files=[]
+    file_token=photo_assets.created_files.set(new_files)
     try:
         conn.execute('PRAGMA foreign_keys=ON')
-        conn.executescript(SCHEMA)
+        conn.executescript(SCHEMA + photo_assets.SCHEMA)
         migrate_pending(conn)
         conn.execute("CREATE TABLE IF NOT EXISTS entry_details (entry_id TEXT PRIMARY KEY REFERENCES entries(id), improvement TEXT NOT NULL DEFAULT '', submitted_at TEXT NOT NULL DEFAULT '', submitted_snapshot TEXT NOT NULL DEFAULT '');")
         migrate_review(conn)
@@ -67,8 +70,10 @@ def store(write=False, review=False):
         conn.commit()
     except Exception:
         conn.rollback()
+        for file in new_files:file.unlink(missing_ok=True)
         raise
     finally:
+        photo_assets.created_files.reset(file_token)
         conn.close()
 
 
@@ -322,13 +327,15 @@ def sync(factory, rows, copy_photos=True):
                     continue
                 try:
                     content = wf.read_file(factory,base['workflowId'],attachment['id'])['content']
-                    content = normalize_photo(content)
+                    photo_assets.inspect(content)
                 except (HTTPException,OSError):
                     # Keep the original attachment untouched and retry on a later ordinary page refresh.
                     # An unavailable historical photo must not hide readable inspection text.
                     photo_warnings.add(entry_id);continue
+                photo_id=uuid4().hex
                 conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',
-                    (uuid4().hex,entry_id,attachment['name'],content,sha256(content).hexdigest(),origin,wf.now()))
+                    (photo_id,entry_id,attachment['name'],b'',sha256(content).hexdigest(),origin,wf.now()))
+                photo_assets.save(conn,photo_id,content)
                 conn.execute('UPDATE entries SET revision=revision+1 WHERE id=?',(entry_id,))
         # Preserve existing inspection history. Pre-push source caches stay hidden until
         # a confirmed task adopts them above, including any previously saved input.
@@ -443,23 +450,26 @@ def add_photo(factory, entry_id, body, actor, review=False):
         content=base64.b64decode(body['content'],validate=True)
     except (ValueError,TypeError,binascii.Error):
         raise HTTPException(422,'照片内容无效') from None
-    content=normalize_photo(content)
+    photo_assets.inspect(content)
     digest=sha256(content).hexdigest()
     with store(True) as conn:
         row=get(conn,factory,entry_id)
         origin='upload:'+body['requestKey']
         previous=conn.execute('SELECT digest FROM photos WHERE entry_id=? AND origin=?',(entry_id,origin)).fetchone()
         if previous:
-            if previous['digest'] != digest:
+            if previous['digest'] != digest and previous['digest'] != sha256(normalize_photo(content)).hexdigest():
                 raise HTTPException(409,'同一上传编号不能用于不同照片')
             return unpack(conn,row)
         ensure_editable(conn,row,review)
         before=unpack(conn,row)
         revision(row,body)
-        count,total=conn.execute('SELECT count(*),coalesce(sum(length(content)),0) FROM photos WHERE entry_id=? AND removed=0',(entry_id,)).fetchone()
+        count,total=conn.execute('''SELECT count(*),coalesce(sum(CASE WHEN a.photo_id IS NULL THEN length(p.content) ELSE coalesce(json_extract(a.metadata,'$.original.size'),length(p.content)) END),0) FROM photos p LEFT JOIN photo_assets a ON a.photo_id=p.id WHERE p.entry_id=? AND p.removed=0''',(entry_id,)).fetchone()
         if count>=50 or total+len(content)>100*1024*1024:
             raise HTTPException(413,'每条任务最多 50 张、100 MB')
-        conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',(uuid4().hex,entry_id,name,content,digest,origin,wf.now()))
+        photo_id=uuid4().hex
+        conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',(photo_id,entry_id,name,b'',digest,origin,wf.now()))
+        try:photo_assets.save(conn,photo_id,content)
+        except OSError:raise HTTPException(503,'原图保存失败，请重试；未创建照片记录') from None
         return changed(conn,row,'upload',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
 
 
@@ -474,13 +484,16 @@ def remove_photo(factory, entry_id, body, actor, review=False):
         return changed(conn,row,'remove-photo',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
 
 
-def read_photo(factory, entry_id, photo_id):
+def read_photo_version(factory, entry_id, photo_id, variant='preview'):
     with store() as conn:
         get(conn,factory,entry_id)
-        row=conn.execute('SELECT content FROM photos WHERE id=? AND entry_id=? AND removed=0',(photo_id,entry_id)).fetchone()
-        if row is None:
-            raise HTTPException(404,'照片不存在')
-        return row['content']
+        row=conn.execute('SELECT * FROM photos WHERE id=? AND entry_id=? AND removed=0',(photo_id,entry_id)).fetchone()
+        if row is None:raise HTTPException(404,'照片不存在')
+        return photo_assets.read(conn,row,variant)
+
+
+def read_photo(factory, entry_id, photo_id):
+    return read_photo_version(factory,entry_id,photo_id)[0]
 
 
 def migrate_pending(conn):
