@@ -1,4 +1,4 @@
-import { mount, flushPromises } from '@vue/test-utils'
+import { DOMWrapper, mount, flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PdfRenamePreviewResult, PdfRenameRuleDefinition } from '@/api/pdfRename'
 import PdfBatchRenameWorkspace from './PdfBatchRenameWorkspace.vue'
@@ -7,6 +7,10 @@ const api = vi.hoisted(() => ({ getPdfRenameRules: vi.fn(), previewPdfRename: vi
 const download = vi.hoisted(() => vi.fn())
 vi.mock('@/api/pdfRename', () => ({ pdfRenameApi: api, PdfRenameApiError: class extends Error {} }))
 vi.mock('./pdfRenameUtils', async (importOriginal) => ({ ...await importOriginal<typeof import('./pdfRenameUtils')>(), downloadToolBlob: download }))
+vi.mock('@/features/document-tools/PdfCanvas.vue', () => ({ default: {
+  name: 'PdfCanvas', props: ['url', 'pageIndex'], emits: ['page'],
+  template: '<section data-testid="source-pdf-canvas"><button type="button" @click="$emit(\'page\', pageIndex + 1)">下一页</button></section>',
+} }))
 
 const rule: PdfRenameRuleDefinition = {
   id: 'buzzbee-inspection', label: 'BuzzBee 行验报告', version: '1.0.1', status: 'active', available: true,
@@ -22,6 +26,7 @@ const result: PdfRenamePreviewResult = {
     ] }],
 }
 const wrappers: ReturnType<typeof mount>[] = []
+const mountHosts: HTMLElement[] = []
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -29,10 +34,16 @@ beforeEach(() => {
   api.previewPdfRename.mockResolvedValue(structuredClone(result))
   api.executePdfRename.mockResolvedValue({ blob: new Blob(['zip']), fileName: 'results.zip', fileCount: 1 })
 })
-afterEach(() => wrappers.splice(0).forEach(wrapper => wrapper.unmount()))
+afterEach(() => {
+  wrappers.splice(0).forEach(wrapper => wrapper.unmount())
+  mountHosts.splice(0).forEach(host => host.remove())
+  vi.unstubAllGlobals()
+})
 
-async function setup() {
-  const wrapper = mount(PdfBatchRenameWorkspace, { props: { contextLabel: '华兴厂区', factoryId: 'huaxing' } })
+async function setup(attach = false) {
+  const host = attach ? document.createElement('div') : undefined
+  if (host) { document.body.appendChild(host); mountHosts.push(host) }
+  const wrapper = mount(PdfBatchRenameWorkspace, { attachTo: host, props: { contextLabel: '华兴厂区', factoryId: 'huaxing' } })
   wrappers.push(wrapper)
   await flushPromises()
   const input = wrapper.get('input[type="file"]')
@@ -46,7 +57,189 @@ function button(wrapper: Awaited<ReturnType<typeof setup>>, label: string) {
   return found
 }
 
+function partialCaixingResult(missing = ['report_no']): PdfRenamePreviewResult {
+  const caixing = { ...rule, id: 'caixing-inspection', label: '彩星行验报告' }
+  return {
+    rule: caixing, preview_token: 'caixing-partial', summary: { total: 1, ready: 0, review: 0, error: 1 },
+    items: [{ source_file_name: 'scan.pdf', target_file_name: '', interval_name: '', status: 'ERROR',
+      filename_template: '{report_no}-#{item_no}-{po_numbers}-{quantity}-{report_date}.pdf',
+      manual_override_allowed: true,
+      issues: [{ code: 'PDF_RENAME_INTERVAL_INVALID', message: 'Batch no. 的值模糊，请人工核对。' }],
+      fields: [
+        ['report_no', '报告号（Batch no.）', 'RR6015P'],
+        ['item_no', '货号（Item number 前 5 位）', '57812'],
+        ['po_numbers', 'PO 号（P/O no.）', '1931771'],
+        ['quantity', '数量（Pcs）', '2800'],
+        ['report_date', '日期（DATE，月/日/年）', '2026.3.4'],
+      ].map(([key, label, text]) => ({ key: key!, label: label!, raw_text: text!,
+        normalized_text: missing.includes(key!) ? '' : text!,
+        validation_error: missing.includes(key!) ? '请核对原 PDF 后补充此项。' : '',
+        route: 'LOCAL_OCR', confidence: .99 })),
+    }],
+  }
+}
+
 describe('BuzzBee batch rename review workflow', () => {
+  it('previews the uploaded original and applies a missing field in the same window without losing edits', async () => {
+    const createUrl = vi.fn().mockReturnValueOnce('blob:source-1').mockReturnValueOnce('blob:source-2')
+    const revokeUrl = vi.fn()
+    vi.stubGlobal('URL', class extends URL { static createObjectURL = createUrl; static revokeObjectURL = revokeUrl })
+    const partial = partialCaixingResult()
+    const corrected = structuredClone(partial)
+    corrected.items[0]!.status = 'REVIEW'
+    corrected.items[0]!.manual_override = true
+    corrected.items[0]!.target_file_name = 'RR6015P-#57812-1931771-2800-2026.3.4.pdf'
+    corrected.summary = { total: 1, ready: 0, review: 1, error: 0 }
+    api.getPdfRenameRules.mockResolvedValueOnce({ rules: [partial.rule], limits: {} })
+    api.previewPdfRename.mockResolvedValueOnce(partial).mockResolvedValueOnce(corrected)
+    const wrapper = await setup(true)
+    const file = wrapper.get<HTMLInputElement>('input[type="file"]').element.files![0]!
+    await button(wrapper, '生成改名预览').trigger('click')
+    await flushPromises()
+    expect(createUrl).not.toHaveBeenCalled()
+    const opener = wrapper.get<HTMLButtonElement>('button[aria-label="预览 scan.pdf"]')
+    opener.element.focus()
+    await opener.trigger('click')
+    await flushPromises()
+    const dialog = new DOMWrapper(document.querySelector<HTMLElement>('[role="dialog"]')!)
+    expect(dialog.text()).toContain('原 PDF 预览与补充')
+    expect(createUrl).toHaveBeenCalledWith(file)
+    expect(api.previewPdfRename).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(dialog.get('button[aria-label="关闭原 PDF 预览"]').element)
+    const viewer = wrapper.findComponent({ name: 'PdfCanvas' })
+    expect(viewer.props('url')).toBe('blob:source-1')
+    await dialog.get('[data-testid="source-pdf-canvas"] button').trigger('click')
+    expect(viewer.props('pageIndex')).toBe(1)
+    await dialog.get('input[aria-label="补充 报告号（Batch no.） scan.pdf"]').setValue('RR6015P')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="补充 报告号（Batch no.） scan.pdf"]').element.value).toBe('RR6015P')
+    expect(dialog.text()).toContain(corrected.items[0]!.target_file_name)
+    await dialog.get('input[aria-label="确认人工改名 scan.pdf"]').setValue(true)
+    await dialog.findAll('button').find(node => node.text() === '应用修改并重新预览')!.trigger('click')
+    await flushPromises()
+    expect(api.previewPdfRename).toHaveBeenLastCalledWith(expect.any(Array), 'caixing-inspection', 'huaxing', expect.any(AbortSignal), [
+      { source_index: 0, target_file_name: corrected.items[0]!.target_file_name, confirmed: true },
+    ])
+    expect(createUrl).toHaveBeenCalledTimes(1)
+    await dialog.trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(revokeUrl).toHaveBeenCalledWith('blob:source-1')
+    expect(document.activeElement).toBe(opener.element)
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="补充 报告号（Batch no.） scan.pdf"]').element.value).toBe('RR6015P')
+    await opener.trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'PdfCanvas' }).props('pageIndex')).toBe(0)
+    await wrapper.setProps({ factoryId: 'huadeng' })
+    await flushPromises()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(revokeUrl.mock.calls).toEqual([['blob:source-1'], ['blob:source-2']])
+  })
+
+  it('matches previews and corrections by row even when two original filenames are identical', async () => {
+    const createUrl = vi.fn().mockReturnValue('blob:source')
+    const revokeUrl = vi.fn()
+    vi.stubGlobal('URL', class extends URL { static createObjectURL = createUrl; static revokeObjectURL = revokeUrl })
+    const partial = partialCaixingResult()
+    partial.items.push(structuredClone(partial.items[0]!))
+    partial.summary = { total: 2, ready: 0, review: 0, error: 2 }
+    api.getPdfRenameRules.mockResolvedValueOnce({ rules: [partial.rule], limits: {} })
+    api.previewPdfRename.mockResolvedValueOnce(partial)
+    const wrapper = await setup()
+    const fileInput = wrapper.get<HTMLInputElement>('input[type="file"]')
+    const first = fileInput.element.files![0]!
+    const second = new File(['%PDF-second-source'], 'scan.pdf', { type: 'application/pdf', lastModified: 1 })
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [second] })
+    await fileInput.trigger('change')
+    await button(wrapper, '生成改名预览').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button[aria-label="预览 scan.pdf"]')[1]!.trigger('click')
+    await flushPromises()
+    const dialog = new DOMWrapper(document.querySelector<HTMLElement>('[role="dialog"]')!)
+    expect(createUrl).toHaveBeenLastCalledWith(second)
+    await dialog.get('input[aria-label="补充 报告号（Batch no.） scan.pdf"]').setValue('RR6016')
+    const rowInputs = wrapper.findAll<HTMLInputElement>('input[aria-label="补充 报告号（Batch no.） scan.pdf"]')
+    expect(rowInputs.map(node => node.element.value)).toEqual(['', 'RR6016'])
+    await dialog.get('button[aria-label="关闭原 PDF 预览"]').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button[aria-label="预览 scan.pdf"]')[0]!.trigger('click')
+    await flushPromises()
+    expect(createUrl).toHaveBeenLastCalledWith(first)
+    wrapper.unmount()
+    expect(revokeUrl).toHaveBeenCalledTimes(2)
+  })
+
+  it('completes only the unclear Batch no., keeps all other values and downloads the assembled name', async () => {
+    const partial = partialCaixingResult()
+    const name = 'RR6015P-#57812-1931771-2800-2026.3.4.pdf'
+    const enteredName = 'ＲＲ６０１５Ｐ-#57812-1931771-2800-2026.3.4.pdf'
+    const corrected = structuredClone(partial)
+    corrected.preview_token = 'caixing-corrected'
+    corrected.summary = { total: 1, ready: 0, review: 1, error: 0 }
+    corrected.items[0]!.status = 'REVIEW'
+    corrected.items[0]!.manual_override = true
+    corrected.items[0]!.target_file_name = name
+    // Rechecking the PDF must not replace values already used in the manual name.
+    corrected.items[0]!.fields.find(field => field.key === 'po_numbers')!.normalized_text = '9999999'
+    api.getPdfRenameRules.mockResolvedValueOnce({ rules: [partial.rule], limits: {} })
+    api.previewPdfRename.mockResolvedValueOnce(partial).mockResolvedValueOnce(corrected)
+    const wrapper = await setup()
+    await button(wrapper, '生成改名预览').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('input[aria-label^="补充 "]')).toHaveLength(1)
+    expect(wrapper.find('input[aria-label="人工文件名 scan.pdf"]').exists()).toBe(false)
+    for (const value of ['57812', '1931771', '2800', '2026.3.4']) expect(wrapper.text()).toContain(value)
+    expect(wrapper.text()).toContain('【待补充：报告号（Batch no.）】-#57812-1931771-2800-2026.3.4.pdf')
+    const input = wrapper.get('input[aria-label="补充 报告号（Batch no.） scan.pdf"]')
+    await input.setValue('ＲＲ６０１５Ｐ')
+    expect(wrapper.text()).toContain(enteredName)
+    expect(wrapper.text()).not.toContain('【待补充：')
+    expect(button(wrapper, '应用补充').attributes('disabled')).toBeDefined()
+    await wrapper.get('input[aria-label="确认人工改名 scan.pdf"]').setValue(true)
+    await button(wrapper, '应用补充').trigger('click')
+    await flushPromises()
+    const overrides = [{ source_index: 0, target_file_name: enteredName, confirmed: true }]
+    expect(api.previewPdfRename).toHaveBeenLastCalledWith(expect.any(Array), 'caixing-inspection', 'huaxing', expect.any(AbortSignal), overrides)
+    expect(wrapper.text()).toContain(name)
+    expect(wrapper.text()).not.toContain('9999999')
+    expect(wrapper.text()).toContain('人工补充 · 待最终复核')
+    await wrapper.get('aside input[type="checkbox"]').setValue(true)
+    await button(wrapper, '确认并下载 ZIP').trigger('click')
+    await flushPromises()
+    expect(api.executePdfRename).toHaveBeenLastCalledWith(expect.any(Array), 'caixing-inspection', 'caixing-corrected', true, 'huaxing', expect.any(AbortSignal), overrides)
+    expect(download).toHaveBeenCalledOnce()
+    await input.setValue('RR6016')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="确认人工改名 scan.pdf"]').element.checked).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('aside input[type="checkbox"]').element.checked).toBe(false)
+    expect(button(wrapper, '确认并下载 ZIP').attributes('disabled')).toBeDefined()
+    await input.setValue('')
+    expect(wrapper.text()).toContain('【待补充：报告号（Batch no.）】')
+    expect(button(wrapper, '确认并下载 ZIP').attributes('disabled')).toBeDefined()
+  })
+
+  it('requires every missing field before applying, without requesting clear fields again', async () => {
+    const partial = partialCaixingResult(['report_no', 'quantity'])
+    api.getPdfRenameRules.mockResolvedValueOnce({ rules: [partial.rule], limits: {} })
+    api.previewPdfRename.mockResolvedValueOnce(partial)
+    const wrapper = await setup()
+    await button(wrapper, '生成改名预览').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('input[aria-label^="补充 "]')).toHaveLength(2)
+    await wrapper.get('input[aria-label="补充 报告号（Batch no.） scan.pdf"]').setValue('RR6015P')
+    expect(wrapper.text()).toContain('RR6015P-#57812-1931771-【待补充：数量（Pcs）】-2026.3.4.pdf')
+    expect(wrapper.get('#rename-download-blockers').text()).toContain('请补齐标记的未识别字段')
+    expect(wrapper.find('input[aria-label="确认人工改名 scan.pdf"]').exists()).toBe(false)
+    expect(button(wrapper, '应用补充').attributes('disabled')).toBeDefined()
+    await wrapper.get('input[aria-label="补充 数量（Pcs） scan.pdf"]').setValue('2800')
+    expect(wrapper.text()).toContain('RR6015P-#57812-1931771-2800-2026.3.4.pdf')
+    await wrapper.get('input[aria-label="确认人工改名 scan.pdf"]').setValue(true)
+    expect(button(wrapper, '应用补充').attributes('disabled')).toBeUndefined()
+    await wrapper.setProps({ factoryId: 'huadeng' })
+    await wrapper.setProps({ factoryId: 'huaxing' })
+    await flushPromises()
+    expect(wrapper.find('table').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('RR6015P')
+  })
+
   it('selects BuzzBee Indonesia invoices and downloads the invoice filename', async () => {
     const invoiceRule: PdfRenameRuleDefinition = {
       ...rule, id: 'buzzbee-indonesia-invoice', label: 'BuzzBee印尼发票',
