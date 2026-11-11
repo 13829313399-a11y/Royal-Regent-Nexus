@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createSupplierReadQueue, supplierReadQueueKey } from '@/features/carton-procurement/supplierReadQueue'
-import { cartonSupplierChangesApi as api, type SupplierChangeAction, type SupplierChangeTask, type SupplierChangeLine } from '@/api/cartonSupplierChanges'
+import { cartonSupplierChangesApi as api, type SupplierChangeAction, type SupplierChangeTask, type SupplierChangeLine, type SupplierChangeFilter, type SupplierChangePendingState } from '@/api/cartonSupplierChanges'
 import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { cartonPrintSplitsApi, type PrintFile } from '@/api/cartonPrintSplits'
 import { factoryContexts } from '@/data/enterpriseMock'
 
-const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; viewerKey?: string; internal?: boolean; readOnly?: boolean; sourceId?: string; sourceKinds?: SupplierChangeTask['source_kind'][]; embedded?: boolean; showClosed?: boolean }>(), { factoryId: '', internal: false, embedded: false, showClosed: undefined })
-const emit = defineEmits<{ changed: []; 'pending-state': [state: { loading: boolean; error: string; counts: Record<SupplierChangeTask['source_kind'], number>; stats: { pending: number; read: number; cancellation: number; disputed: number; overdue: number } }]; 'update:showClosed': [value: boolean] }>()
+const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; viewerKey?: string; internal?: boolean; readOnly?: boolean; sourceId?: string; sourceKinds?: SupplierChangeTask['source_kind'][]; embedded?: boolean; showClosed?: boolean; taskFilter?: SupplierChangeFilter }>(), { factoryId: '', internal: false, embedded: false, showClosed: undefined })
+const emit = defineEmits<{ changed: []; 'pending-state': [state: SupplierChangePendingState]; 'update:showClosed': [value: boolean] }>()
 const tasks = ref<SupplierChangeTask[]>([]), loading = ref(false), busy = ref(false), error = ref(''), success = ref('')
 const localShowClosed = ref(false)
 const showClosed = computed({ get: () => props.showClosed ?? localShowClosed.value, set: value => { localShowClosed.value = value; emit('update:showClosed', value) } })
 const readError = ref('')
+const responseError = ref<{ rowKey: string; message: string } | null>(null)
+const refreshButton = ref<HTMLButtonElement | null>(null)
+const responseDisabled = computed(() => busy.value || loading.value || Boolean(readError.value))
 const readQueue = inject(supplierReadQueueKey, undefined) ?? createSupplierReadQueue()
 let readController = new AbortController(), lastReadStarted = 0
 const dates = reactive<Record<string, string>>({}), reasons = reactive<Record<string, string>>({}), requests = new Map<string, string>()
@@ -27,28 +30,49 @@ const scoped = computed(() => tasks.value.filter(row => !props.sourceId || row.s
 // Category selection only filters presentation; the scope, drafts and polling stay mounted.
 const selected = computed(() => scoped.value.filter(row => !props.sourceKinds || props.sourceKinds.includes(row.source_kind)))
 const pending = computed(() => selected.value.filter(row => row.pending))
-const visible = computed(() => showClosed.value ? selected.value : pending.value)
-const pendingLabel = computed(() => loading.value ? '读取中…' : readError.value ? '暂不可用' : `${pending.value.length} 项待确认`)
+const buckets = computed(() => ({
+  pending: pending.value,
+  read: pending.value.filter(row => row.read && !row.responded_at && !['DISPUTED', 'PARTIAL'].includes(row.status)),
+  cancellation: pending.value.filter(row => row.is_cancellation),
+  disputed: selected.value.filter(row => row.status === 'DISPUTED'),
+}))
+const filtered = computed(() => props.taskFilter ? buckets.value[props.taskFilter] : showClosed.value ? selected.value : pending.value)
+const page = ref(1)
+const pageSize = 10
+const paginated = computed(() => props.internal && props.embedded)
+const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
+watch([() => props.taskFilter, showClosed, context], () => { page.value = 1 }, { flush: 'sync' })
+watch(pageCount, count => { page.value = Math.min(page.value, count) }, { flush: 'sync' })
+const visible = computed(() => {
+  if (!paginated.value) return filtered.value
+  if (readError.value) return []
+  return filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize)
+})
+const pendingLabel = computed(() => loading.value ? '读取中…' : readError.value ? '暂不可用'
+  : props.taskFilter ? `${filtered.value.length} 项符合所选分类` : `${pending.value.length} 项待确认`)
 watch(() => ({ loading: loading.value, error: readError.value, counts: {
   PRINT: scoped.value.filter(row => row.pending && row.source_kind === 'PRINT').length,
   REGULAR: scoped.value.filter(row => row.pending && row.source_kind === 'REGULAR').length,
   SPECIAL: scoped.value.filter(row => row.pending && row.source_kind === 'SPECIAL').length,
   REPLENISHMENT: scoped.value.filter(row => row.pending && row.source_kind === 'REPLENISHMENT').length,
 }, stats: {
-  pending: pending.value.length,
-  read: pending.value.filter(row => row.read).length,
-  cancellation: pending.value.filter(row => row.is_cancellation).length,
-  disputed: selected.value.filter(row => row.status === 'DISPUTED').length,
+  pending: buckets.value.pending.length,
+  read: buckets.value.read.length,
+  cancellation: buckets.value.cancellation.length,
+  disputed: buckets.value.disputed.length,
   overdue: pending.value.filter(row => row.overdue).length,
 } }), state => emit('pending-state', state), { immediate: true })
 const key = (row: SupplierChangeTask) => `${row.factory_id}:${row.source_kind}:${row.source_id}`
 const factoryName = (factory: string) => factoryContexts.find(row => row.id === factory)?.name || factory
 const labels: Record<string, string> = { READ: '已读，不代表同意', PENDING: '待明确确认', PARTIAL: '部分纸品已接单，仍待整单确认', DISPUTED: '有异议，暂停执行', ACCEPTED: '已同意接单', CANCEL_ACKNOWLEDGED: '已收到停止通知', CLOSED_WITHOUT_ACCEPTANCE: '已完成，历史未记录接单', CLOSED_BY_CANCELLATION: '原单已取消，沿停止通知核实', PENDING_ISSUE: '内部变更待生成', SUPPLIER_ORIGIN: '供应商原送货来源' }
 const material = (row: Partial<SupplierChangeLine> | SupplierChangeLine['before_material']) => row ? [row.packaging_type, row.paper_quality, row.specification, row.dimension_unit].filter(Boolean).join(' · ') : ''
+const beforeMaterial = (row: SupplierChangeTask, line: SupplierChangeLine) =>
+  material(line.before_material) || (row.source_kind === 'PRINT' ? material(line) : '')
 let generation = 0, readSequence = 0, controller = new AbortController(), timer: ReturnType<typeof setInterval> | undefined
 watch(context, () => {
   readController.abort(); lastReadStarted = 0
   generation++; readSequence++; controller.abort(); controller = new AbortController(); tasks.value = []; error.value = ''; readError.value = ''; success.value = ''; busy.value = false; loading.value = false; requests.clear()
+  responseError.value = null
   for (const name of Object.keys(dates)) delete dates[name]
   for (const name of Object.keys(reasons)) delete reasons[name]
   for (const name of Object.keys(produced)) delete produced[name]
@@ -92,17 +116,19 @@ async function load() {
   finally { if (token === generation && sequence === readSequence) loading.value = false }
 }
 async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
-  if (busy.value || props.internal || props.readOnly) return
-  if (action === 'ACCEPT' && !dates[key(row)]) { error.value = '请填写承诺交期。'; return }
-  if (action === 'DISPUTE' && !reasons[key(row)]?.trim()) { error.value = '请填写具体异议。'; return }
-  if (action === 'ACCEPT' && row.source_kind === 'PRINT' && row.lines.some(line => !String(produced[key(row)]?.[line.id] ?? '').trim())) { error.value = '请逐纸品填写已按原印刷生产的累计数量，无生产填 0。'; return }
-  const token = generation
+  if (responseDisabled.value || props.internal || props.readOnly || !row.pending || (action !== 'READ' && !row.can_respond)) return
+  const rowKey = key(row)
+  const fail = (message: string) => { responseError.value = { rowKey, message } }
+  if (action === 'ACCEPT' && !dates[rowKey]) { fail('请填写承诺交期。'); return }
+  if (action === 'DISPUTE' && !reasons[rowKey]?.trim()) { fail('请填写具体异议。'); return }
+  if (action === 'ACCEPT' && row.source_kind === 'PRINT' && row.lines.some(line => !String(produced[rowKey]?.[line.id] ?? '').trim())) { fail('请逐纸品填写已按原印刷生产的累计数量，无生产填 0。'); return }
+  const token = generation, focused = document.activeElement
   const body = { factory_id: row.factory_id, source_kind: row.source_kind, source_id: row.source_id, expected_revision: row.expected_revision, action,
     ...(action === 'ACCEPT' && row.source_kind === 'PRINT' ? { produced_quantities: Object.fromEntries(Object.entries(produced[key(row)] ?? {}).map(([id, value]) => [id, String(value)])) } : {}),
     ...(action === 'ACCEPT' ? { promised_date: dates[key(row)] } : {}), ...(action === 'DISPUTE' ? { reason: reasons[key(row)]?.trim() } : {}) }
   const signature = JSON.stringify(body)
   if (!requests.has(signature)) requests.set(signature, createRandomUuid())
-  readSequence++; loading.value = false; busy.value = true; error.value = ''; success.value = ''
+  readSequence++; loading.value = false; busy.value = true; error.value = ''; success.value = ''; responseError.value = null
   try {
     await api.respond({ ...body, request_id: requests.get(signature)! }, controller.signal)
     if (token !== generation) return
@@ -110,12 +136,16 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
     success.value = action === 'READ' ? '已记录查看，待办仍须明确回应。' : action === 'ACK_CANCEL' ? '已确认收到停止通知；费用及赔偿仍须另行协商。' : action === 'DISPUTE' ? '异议已保留，此版本暂停执行。' : '已确认本版本全部纸品及承诺交期。'
     busy.value = false
     await load()
-    if (token === generation) emit('changed')
-  } catch (cause) { if (token === generation) error.value = getApiErrorMessage(cause) }
+    await nextTick()
+    if (token !== generation) return
+    if (focused && !focused.isConnected && document.activeElement === document.body) refreshButton.value?.focus()
+    emit('changed')
+  } catch (cause) { if (token === generation) fail(`回应结果待核对：${getApiErrorMessage(cause)}`) }
   finally { if (token === generation) busy.value = false }
 }
 function refreshOnFocus() { if (document.visibilityState !== 'hidden' && Date.now() - lastReadStarted >= 45000 && !busy.value && !loading.value) void load() }
-defineExpose({ refresh: load })
+function refresh() { page.value = 1; return load() }
+defineExpose({ refresh })
 onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus) })
 onBeforeUnmount(() => { generation++; controller.abort(); readController.abort(); if (timer) clearInterval(timer); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus) })
 </script>
@@ -123,24 +153,58 @@ onBeforeUnmount(() => { generation++; controller.abort(); readController.abort()
 <template>
   <section :class="embedded ? 'min-w-0' : 'rounded-xl border border-amber-200 bg-amber-50/60 p-4'" aria-label="供应商变更待办">
     <div class="flex flex-wrap items-center justify-between gap-2">
-      <component :is="embedded ? 'p' : 'h2'" class="text-sm font-semibold text-slate-900"><template v-if="!embedded">{{ internal ? '供应商待确认跟进' : '订单与变更待办' }} · </template>{{ pendingLabel }}<span v-if="!loading && !readError && pending.some(row => row.overdue)" class="ml-2 text-xs text-amber-800">隔日未确认 {{ pending.filter(row => row.overdue).length }} 项</span></component>
-      <div class="flex flex-wrap items-center gap-3 text-xs"><label><input v-model="showClosed" type="checkbox" class="mr-1" aria-label="显示已完成回执">显示已完成回执</label><button type="button" :disabled="busy || loading" class="rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:opacity-40" @click="load">刷新待办</button></div>
+      <component :is="embedded ? 'p' : 'h2'" class="text-sm font-semibold text-slate-900" aria-live="polite"><template v-if="!embedded">{{ internal ? '供应商待确认跟进' : '订单与变更待办' }} · </template>{{ pendingLabel }}<span v-if="!props.taskFilter && !loading && !readError && pending.some(row => row.overdue)" class="ml-2 text-xs text-amber-800">隔日未确认 {{ pending.filter(row => row.overdue).length }} 项</span></component>
+      <div class="flex flex-wrap items-center gap-3 text-xs"><label v-if="!props.taskFilter"><input v-model="showClosed" type="checkbox" class="mr-1" aria-label="显示已完成回执">显示已完成回执</label><button ref="refreshButton" type="button" :disabled="busy || loading" class="rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:opacity-40" @click="refresh">刷新待办</button></div>
     </div>
     <p class="mt-2 text-xs text-slate-600">已读只表示查看。新订单、数量、交期及资料变更须明确同意或提出异议；停止通知单独确认收到，费用与赔偿仍须另行协商。</p>
     <p v-if="error" role="alert" class="mt-3 text-sm text-red-700">待办读取或回应失败：{{ error }}；请刷新核对，勿据此认定已同意。</p>
     <p v-if="success" role="status" class="mt-3 text-sm text-teal-800">{{ success }}</p>
     <p v-if="loading && !tasks.length" role="status" class="mt-3 text-xs text-slate-500">正在读取版本回执…</p>
-    <p v-else-if="!visible.length && !error" class="mt-3 text-xs text-slate-600">{{ showClosed ? '暂无可查看的版本回执。' : '当前没有待明确确认的版本。' }}</p>
+    <p v-else-if="!loading && !visible.length && !error" class="mt-3 text-xs text-slate-600">{{ props.taskFilter ? '当前分类暂无通知。' : showClosed ? '暂无可查看的版本回执。' : '当前没有待明确确认的版本。' }}</p>
     <div class="mt-3 divide-y" :class="embedded ? 'divide-slate-200' : 'divide-amber-200'">
       <details v-for="row in visible" :key="key(row)" class="py-3">
         <summary class="cursor-pointer break-words text-xs leading-6 [overflow-wrap:anywhere]"><b>{{ factoryName(row.factory_id) }} · {{ row.document_no }}</b><span class="ml-2">{{ row.source_kind === 'PRINT' ? (row.print_split?.print_changed === false ? '拆单 · 沿用原印刷' : '拆单 · 印刷不同') : row.source_kind === 'SPECIAL' ? '样板 / 杂单' : row.source_kind === 'REPLENISHMENT' ? `补单 · ${row.responsibility === 'SUPPLIER' ? '供应商责任' : '我方责任'}` : '正式订单' }}</span><span class="ml-2 font-semibold" :class="row.is_cancellation || row.status === 'DISPUTED' ? 'text-red-800' : 'text-amber-900'">{{ row.is_cancellation && row.pending ? '待确认收到停止通知' : labels[row.status] || row.status }}</span><span class="ml-2 text-slate-500">{{ row.read ? '已读，回执单独记录' : '未记录查看' }}<template v-if="row.overdue"> · 已隔 {{ row.age_days }} 天</template></span></summary>
-        <div class="mt-3 space-y-3 text-xs">
-          <p class="break-all text-slate-600">来源 {{ row.order_no }} · 生成 {{ row.created_at.slice(0, 16).replace('T', ' ') }}</p>
-          <p class="text-slate-600">以下对比上次发布的版本；上次发布不代表供应商已经同意。</p>
-          <p>计划交期：{{ row.before_date || '首次下单' }} → <b>{{ row.planned_date || '待核实' }}</b><span v-if="row.material_changed" class="ml-2 text-amber-800">印刷资料版本有变化，请查看本单箱唛</span></p>
-          <p v-if="row.customer_due_date && row.customer_due_date !== row.before_customer_due_date">客户交期：{{ row.before_customer_due_date || '首次记录' }} → <b>{{ row.customer_due_date }}</b></p>
+        <div class="mt-3 min-w-0 space-y-4 text-xs [overflow-wrap:anywhere]">
+          <section class="rounded-lg border border-slate-200 bg-slate-50 p-3" aria-label="当前发布版本">
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h3 class="text-sm font-bold text-slate-900">{{ row.document_no }}</h3>
+              <span v-if="row.publication_version != null" class="font-semibold text-teal-800">版本 V{{ row.publication_version }}</span>
+              <span class="text-slate-600">发布 {{ row.created_at.slice(0, 16).replace('T', ' ') }}</span>
+            </div>
+            <dl class="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div><dt class="text-slate-600">厂区</dt><dd class="font-semibold">{{ factoryName(row.factory_id) }}</dd></div>
+              <div><dt class="text-slate-600">客户</dt><dd class="font-semibold">{{ row.customer_name || '—' }}</dd></div>
+              <div><dt class="text-slate-600">合同</dt><dd class="font-semibold">{{ row.contract_no || '—' }}</dd></div>
+              <div><dt class="text-slate-600">客户 PO</dt><dd class="font-semibold">{{ row.customer_po || '—' }}</dd></div>
+              <div><dt class="text-slate-600">货号</dt><dd class="font-semibold">{{ row.item_nos?.join('、') || '—' }}</dd></div>
+              <div><dt class="text-slate-600">来源订单</dt><dd class="font-semibold">{{ row.order_no }}</dd></div>
+            </dl>
+          </section>
+          <section class="space-y-2" aria-label="交期及纸品版本对照">
+            <h3 class="text-sm font-bold text-slate-900">{{ row.is_cancellation ? '停止通知 · 交期与纸品' : '交期与纸品对照' }}</h3>
+            <p class="text-slate-600">以下对比上次发布的版本；上次发布不代表供应商已经同意。</p>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <div class="rounded-lg border border-slate-200 bg-white p-3">
+                <h4 class="font-semibold text-slate-600">上次发布</h4>
+                <p class="mt-1">计划交期 <span class="tabular-nums">{{ row.before_date || '—' }}</span></p>
+                <p v-if="row.customer_due_date || row.before_customer_due_date">客户交期 <span class="tabular-nums">{{ row.before_customer_due_date || '—' }}</span></p>
+              </div>
+              <div class="rounded-lg border border-teal-200 bg-teal-50/60 p-3">
+                <h4 class="font-semibold text-teal-800">本次发布</h4>
+                <p class="mt-1">计划交期 <b class="tabular-nums">{{ row.planned_date || '待核实' }}</b></p>
+                <p v-if="row.customer_due_date || row.before_customer_due_date">客户交期 <b class="tabular-nums">{{ row.customer_due_date || '—' }}</b></p>
+              </div>
+            </div>
+            <p v-if="row.material_changed" class="text-amber-800">印刷资料版本有变化，请查看本单箱唛。</p>
+            <div v-for="(line, index) in row.lines" :key="line.id" class="rounded-lg border border-slate-200 bg-white p-3">
+              <h4 class="font-semibold text-slate-900">纸品 {{ index + 1 }}</h4>
+              <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                <div class="min-w-0 rounded-md bg-slate-50 p-2"><p class="font-semibold text-slate-600">上次发布</p><p v-if="line.before_material?.item_no">货号 {{ line.before_material.item_no }}</p><p>{{ beforeMaterial(row, line) || '—' }}</p><p class="tabular-nums">数量 {{ line.before_quantity }} {{ line.before_material?.unit || line.unit }}</p></div>
+                <div class="min-w-0 rounded-md bg-teal-50/60 p-2"><p class="font-semibold text-teal-800">本次发布</p><p v-if="line.removed">本次移除此纸品</p><template v-else><p v-if="line.item_no">货号 {{ line.item_no }}</p><p>{{ material(line) || '—' }}</p><p class="tabular-nums">数量 <b>{{ line.quantity }} {{ line.unit }}</b></p><p v-if="row.source_kind === 'REPLENISHMENT'" class="text-teal-800">当前承诺交期 {{ line.promised_date || '待供应商确认' }}</p></template></div>
+              </div>
+            </div>
+          </section>
           <p v-if="row.change_reason" class="whitespace-pre-wrap break-words text-slate-700">内部变更说明：{{ row.change_reason }}</p>
-          <div v-for="line in row.lines" :key="line.id" class="grid gap-1 border-l-2 border-amber-200 pl-3 sm:grid-cols-2"><div class="min-w-0 break-words"><b>{{ material(line) }}</b><p v-if="row.source_kind === 'REPLENISHMENT'" class="mt-1 text-teal-800">当前承诺交期：{{ line.promised_date || '待供应商确认' }}</p><p v-if="line.before_material && material(line.before_material) && material(line.before_material) !== material(line)" class="text-amber-900">原资料：{{ material(line.before_material) }}</p></div><p class="tabular-nums sm:text-right">数量 {{ line.before_quantity }} → <b>{{ line.quantity }} {{ line.unit }}</b></p></div>
           <section v-if="row.print_split" class="space-y-3 rounded-lg border border-sky-200 bg-sky-50 p-3" aria-label="供应商印刷拆单对照">
             <strong>{{ row.print_split.contract_no }} → {{ row.print_split.targets.map(t => t.contract_no).join('、') }}</strong>
             <p>上方数量是原单保留量；以下是拆出量，两者合计仍为原采购需求。确认前请核对已生产部分，旧印刷不能直接作为新印刷交货。</p>
@@ -165,19 +229,34 @@ onBeforeUnmount(() => { generation++; controller.abort(); readController.abort()
               </details>
             </div>
           </details>
-          <template v-if="!internal && !readOnly && row.pending">
-            <button v-if="!row.read" type="button" :disabled="busy || loading" class="rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:opacity-40" @click="respond(row, 'READ')">记录已读（不代表同意）</button>
-            <div v-if="row.can_respond" class="flex flex-wrap items-end gap-3">
-              <template v-if="!row.is_cancellation"><label class="block space-y-1"><span class="block font-semibold">承诺交期 *</span><input v-model="dates[key(row)]" type="date" :aria-label="`${row.document_no}承诺交期`" :disabled="busy" class="h-9 rounded-lg border border-slate-300 bg-white px-3 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20"></label><button type="button" :disabled="busy || loading" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white disabled:opacity-40" @click="respond(row, 'ACCEPT')">{{ row.status === 'DISPUTED' ? '重新同意本版本全部纸品' : '同意本版本全部纸品并接单' }}</button></template>
-              <button v-else type="button" :disabled="busy || loading" class="h-9 rounded-lg border border-red-300 bg-white px-3 font-semibold text-red-800 disabled:opacity-40" @click="respond(row, 'ACK_CANCEL')">确认收到停止通知</button>
-              <label class="block min-w-0 flex-1 space-y-1"><span class="block font-semibold">异议说明</span><textarea v-model="reasons[key(row)]" :aria-label="`${row.document_no}异议说明`" :disabled="busy" rows="2" maxlength="1000" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20" /></label><button type="button" :disabled="busy || loading" class="h-9 rounded-lg border border-amber-400 bg-white px-3 font-semibold text-amber-900 disabled:opacity-40" @click="respond(row, 'DISPUTE')">提出异议并暂停执行</button>
+          <section v-if="!internal && !readOnly && row.pending" class="space-y-3 rounded-lg border border-teal-200 bg-white p-3" aria-label="回应当前版本">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="text-sm font-bold text-slate-900">回应当前版本</h3>
+              <button v-if="!row.read" type="button" :disabled="responseDisabled" class="min-h-9 rounded-lg border border-slate-300 bg-white px-3 py-1.5 disabled:opacity-40" @click="respond(row, 'READ')">记录已读（不代表同意）</button>
             </div>
+            <p v-if="responseError?.rowKey === key(row)" role="alert" class="rounded-md bg-red-50 p-2 text-red-800">{{ responseError.message }}</p>
+            <template v-if="row.can_respond">
+              <div v-if="!row.is_cancellation" class="flex flex-wrap items-end gap-3">
+                <label class="block min-w-0 space-y-1"><span class="block font-semibold">承诺交期 *</span><input v-model="dates[key(row)]" type="date" :aria-label="`${row.document_no}承诺交期`" :disabled="busy" class="h-10 max-w-full rounded-lg border border-slate-300 bg-white px-3 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20"></label>
+                <button type="button" :disabled="responseDisabled" class="min-h-10 rounded-lg bg-teal-700 px-3 py-2 font-semibold text-white disabled:opacity-40" @click="respond(row, 'ACCEPT')">{{ row.status === 'DISPUTED' ? '重新同意本版本全部纸品' : '同意本版本全部纸品并接单' }}</button>
+              </div>
+              <button v-else type="button" :disabled="responseDisabled" class="min-h-10 rounded-lg border border-red-300 bg-white px-3 py-2 font-semibold text-red-800 disabled:opacity-40" @click="respond(row, 'ACK_CANCEL')">确认收到停止通知</button>
+              <div class="flex flex-wrap items-end gap-2 border-t border-slate-200 pt-3">
+                <label class="block w-full min-w-0 space-y-1 sm:flex-1"><span class="block font-semibold">异议说明（提出异议时必填）</span><textarea v-model="reasons[key(row)]" :aria-label="`${row.document_no}异议说明`" :disabled="busy" rows="2" maxlength="1000" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20" /></label>
+                <button type="button" :disabled="responseDisabled" class="min-h-10 rounded-lg border border-amber-400 bg-white px-3 py-2 font-semibold text-amber-900 disabled:opacity-40" @click="respond(row, 'DISPUTE')">提出异议并暂停执行</button>
+              </div>
+            </template>
             <p v-else class="text-slate-600">{{ row.status === 'PENDING_ISSUE' ? '内部变更尚未发布，请等待最新采购版本；旧承诺暂停执行。' : '当前账号可查看；请由有供应商接单确认权限的人员明确回应。' }}</p>
-          </template>
+          </section>
           <p v-else-if="readOnly && row.pending" class="text-slate-600">本页只读；请返回订单行或供应商协同工作台处理接单、异议及停止通知。</p>
           <p v-else-if="internal && row.pending" class="font-semibold text-amber-900">{{ row.status === 'PENDING_ISSUE' ? '请按此单号生成最新供应商采购版本；发布后再取得明确回执。' : '请按以上厂区、单号和差异联系供应商核实，待明确回执后继续执行。' }}</p>
         </div>
       </details>
     </div>
+    <nav v-if="paginated && !readError && pageCount > 1" aria-label="变更通知分页" class="mt-2 flex flex-wrap items-center justify-end gap-2 text-xs">
+      <span aria-live="polite">第 {{ page }} / {{ pageCount }} 页 · 共 {{ filtered.length }} 项</span>
+      <button type="button" :disabled="loading || page <= 1" class="rounded-lg border bg-white px-2 py-1.5 disabled:opacity-40" @click="page--">上一页</button>
+      <button type="button" :disabled="loading || page >= pageCount" class="rounded-lg border bg-white px-2 py-1.5 disabled:opacity-40" @click="page++">下一页</button>
+    </nav>
   </section>
 </template>

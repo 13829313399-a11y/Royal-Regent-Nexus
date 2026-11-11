@@ -45,6 +45,39 @@ def test_native_html_preserves_all_eight_rows_and_totals():
     assert rows[0]['planned_inspection_date'] == '2026-11-09'
 
 
+def test_native_html_empty_delivery_retains_order_and_pending_date():
+    source = html_po().replace(b'<td>11/10/2026</td>', b'<td></td>')
+    rows = parser.parse_green_toys_po('unrelated-name.html', source)
+    assert len(rows) == 8 and sum(r['quantity'] for r in rows) == 40000
+    assert sum(Decimal(str(r['amount_usd'])) for r in rows) == Decimal('93670')
+    for row in rows:
+        assert row['parse_ok']
+        assert row['order_date'] == '2026-10-01'
+        assert row['factory_commit_date'] == row['planned_inspection_date'] == ''
+        issues = parser.issues_for_record('green-toys', 'Green Toys', row, row['customer_po'])
+        assert [(issue['field'], issue['severity']) for issue in issues] == [('requested_ship_date', 'warning')]
+        assert not issues[0]['can_skip']
+
+
+def test_html_complete_item_suffix_is_preserved_with_missing_delivery():
+    source = html_po().replace(b'<td>11/10/2026</td>', b'<td></td>').replace(b'<td>DTK01R</td>', b'<td>DTK01R Inv It</td>')
+    rows = parser.parse_green_toys_po('order.html', source)
+    assert rows[0]['item_no'] == 'DTK01R Inv It'
+    assert rows[0]['description'] == 'Dump Truck Red'
+    assert rows[0]['parse_ok'] and rows[0]['factory_commit_date'] == ''
+
+
+@pytest.mark.parametrize('source', [
+    html_po().replace(b'<tr><td>Deliver By Date</td><td></td><td>11/10/2026</td></tr>', b''),
+    html_po().replace(b'<td>11/10/2026</td>', b'<td>2/30/2026</td>'),
+    html_po().replace(b'<td>11/10/2026</td>', b'<td>11/10/2026 or 12/10/2026</td>'),
+    html_po().replace(b'<td>11/10/2026</td>', b'<td></td>').replace(b'<td>PO #</td><td></td><td>7848</td>', b'<td>PO #</td><td></td><td></td>'),
+], ids=['missing-delivery-label', 'impossible-date', 'ambiguous-date', 'missing-order-identity'])
+def test_empty_delivery_does_not_relax_invalid_or_incomplete_evidence(source):
+    with pytest.raises(parser.HuakangASpecialCustomerError):
+        parser.parse_green_toys_po('7848.html', source)
+
+
 @pytest.mark.parametrize('source', [
     html_po().replace(b'17,665.00', b'17,664.00'),
     html_po().replace(b'$93,670.00', b'$90,000.00'),

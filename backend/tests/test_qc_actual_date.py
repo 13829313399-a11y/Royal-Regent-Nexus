@@ -1,7 +1,6 @@
 """Phase 4.1: original input vs confirmed date, using isolated QC stores only."""
 from copy import deepcopy
 from dataclasses import replace
-from io import BytesIO
 from uuid import uuid4
 import json
 import sqlite3
@@ -10,7 +9,6 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
 
 from app.services import qc_workflow as wf, qc_inspection_sheet as sheet, qc_inspection_summary as summary
 from test_customer_order_ledger import engine, db, ingest
@@ -202,7 +200,6 @@ def test_old_confirmations_and_summary_payloads_unchanged_on_reads(db, monkeypat
         item = summary.listing('huaxing', {'dateBasis': 'actual'})['items'][0]
         assert item['inspectionDate'] == actual and 'inspectionDateSource' not in item
         summary.detail('huaxing', item['id'])
-        summary.export_excel('huaxing', {'dateBasis': 'actual'})
         assert 'inspectionDateSource' not in reread(old)
     with sheet.store() as c:
         assert [tuple(r) for r in c.execute('SELECT submitted_snapshot,approved_snapshot FROM entry_details')] == snapshots
@@ -239,7 +236,7 @@ def test_result_contract_unaffected(db, result):
     assert row['result'] == result and row['inspectionDateSource'] == 'schedule'
 
 
-def test_final_date_listing_filter_sort_details_and_export_share_same_basis(db):
+def test_final_date_listing_filter_sort_and_details_share_same_basis(db):
     for n, start, actual in [(1, '2026-11-05', '2026-12-02'), (2, '2026-12-10', '2026-11-06'),
                              (3, '2026-11-05', '')]:
         transition(submit(save(scheduled(db, n, start, start), actual)))
@@ -252,15 +249,6 @@ def test_final_date_listing_filter_sort_details_and_export_share_same_basis(db):
     assert summary.listing('huadeng', filters)['total'] == 0
     detail = summary.detail('huaxing', selected[1]['id'])
     assert detail['scheduleDate'] == '2026-12-10' and detail['inspectionDate'] == '2026-11-06'
-    content, _ = summary.export_excel('huaxing', filters)
-    book = load_workbook(BytesIO(content))
-    sheet1 = book.active
-    assert sheet1.max_column == 26 and sheet1.cell(1, 1).value == '实际验货日期'
-    assert [sheet1.cell(i, 1).value for i in (2, 3)] == [r['inspectionDate'] for r in selected]
-    assert sheet1.freeze_panes == 'D2' and sheet1.cell(2, 1).number_format == '@'
-    assert sheet1.cell(1, 1).font.bold and sheet1.column_dimensions['A'].width == 19
-    assert '已保存的最终验货日期' in book.worksheets[1].cell(1, 2).value
-    book.close()
 
 
 def test_formal_sales_source_stable_ids_batches_and_no_upstream_writes(db):

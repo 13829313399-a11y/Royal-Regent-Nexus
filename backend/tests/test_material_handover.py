@@ -194,7 +194,7 @@ def test_public_link_isolation_revocation_duplicate_and_void(client):
     assert client.get(BASE + '/external/documents/' + doc['id'], headers=headers).status_code == 401
 
 
-def test_incomplete_supplier_draft_can_be_completed_by_warehouse_without_posting(client):
+def test_supplier_must_complete_and_confirm_its_private_draft_before_warehouse_receiving(client):
     _, headers = issuer(client)
     doc = upload(client, headers)
     body = copy.deepcopy(doc['data'])
@@ -208,36 +208,66 @@ def test_incomplete_supplier_draft_can_be_completed_by_warehouse_without_posting
     denied = client.post(BASE + '/external/documents/' + doc['id'] + '/confirm', headers=headers,
         json=dict(request_id=str(uuid4()), expected_revision=draft['revision'], acknowledge_warnings=True))
     assert denied.status_code == 422, denied.text
-    for message in ('缺少原单号', '缺少单据日期', '第 1 行', '缺少物料编码', '缺少数量', '缺少单位', '缺少物料分类', '交仓库补全'):
+    for message in ('缺少原单号', '缺少单据日期', '第 1 行', '缺少物料编码', '缺少数量', '缺少单位', '缺少物料分类'):
         assert message in denied.json()['detail']
     assert client.get(BASE + '/external/documents/' + doc['id'] + '/qr', headers=headers).status_code == 409
-    internal = client.get(BASE + '/documents/' + doc['id'], params={'factory_id': FACTORY})
-    assert internal.status_code == 200, internal.text
-    assert internal.json()['revision'] == draft['revision']
-    assert internal.json()['data'] == body
-    other, _ = issuer(client, name='另一家供应商')
-    for changed_party in (dict(kind='DELIVERY', supplier_id=other['supplier_id'], counterparty='另一家供应商'),
-                          dict(kind='ISSUE', supplier_id='', counterparty='车间')):
-        wrong = copy.deepcopy(doc['data']); wrong.update(changed_party)
-        for action in ('save', 'confirm'):
-            request = dict(request_id=str(uuid4()), expected_revision=draft['revision'], data=wrong)
-            if action == 'save':
-                rejected = client.put(BASE + '/documents/' + doc['id'], params={'factory_id': FACTORY}, json=request)
-            else:
-                request['acknowledge_warnings'] = True
-                rejected = client.post(BASE + '/documents/' + doc['id'] + '/actions/confirm', params={'factory_id': FACTORY}, json=request)
-            assert rejected.status_code == 403, rejected.text
-            assert '不能变更制单方或收发用途' in rejected.json()['detail']
+    params = {'factory_id': FACTORY, 'expected_revision': draft['revision']}
+    staff_url = BASE + '/documents/' + doc['id']
+    supplier_url = BASE + '/external/documents/' + doc['id']
+    assert client.get(supplier_url, headers=headers).json()['data'] == body
+    assert client.get(BASE + '/documents', params=params).json()['items'] == []
+    for suffix in ('', '/source', '/purchase-sources', '/qr', '/print'):
+        assert client.get(staff_url + suffix, params=params).status_code == 404
     complete = copy.deepcopy(body)
-    complete.update(source_no='WAREHOUSE-COMPLETED', document_date='2026-07-18')
-    complete['lines'][0].update(item_code='01-01-00001', quantity='40', unit='码', material_category='THREAD')
-    result = client.post(BASE + '/documents/' + doc['id'] + '/actions/confirm', params={'factory_id': FACTORY},
-        json=dict(request_id=str(uuid4()), expected_revision=draft['revision'], acknowledge_warnings=True, data=complete))
+    complete.update(source_no='SUPPLIER-COMPLETED', document_date='2026-07-18')
+    complete['lines'][0].update(item_code='01-01-00001', quantity='40', unit='码', material_category='FABRIC')
+    save_body = dict(request_id=str(uuid4()), expected_revision=draft['revision'], data=complete)
+    confirm_body = {**save_body, 'request_id': str(uuid4()), 'acknowledge_warnings': True}
+    void_body = dict(request_id=str(uuid4()), expected_revision=draft['revision'], reason='原单填错')
+    assert client.put(staff_url, params=params, json=save_body).status_code == 404
+    assert client.post(staff_url + '/actions/confirm', params=params, json=confirm_body).status_code == 404
+    assert client.post(staff_url + '/actions/void', params=params, json=void_body).status_code == 404
+    result = client.post(supplier_url + '/confirm', headers=headers, json=confirm_body)
     assert result.status_code == 200, result.text
-    assert result.json()['status'] == 'CONFIRMED' and result.json()['code']
-    assert result.json()['data']['lines'][0]['material_category'] == 'THREAD'
-    assert result.json()['source_sha256'] == doc['source_sha256']
+    final = result.json()
+    assert final['status'] == 'CONFIRMED' and final['code']
+    assert final['data'] == complete and final['source_sha256'] == doc['source_sha256']
     assert workspace(client)['stock'] == []
+    params['expected_revision'] = final['revision']
+    assert client.get(staff_url, params=params).json()['data'] == complete
+    assert client.get(staff_url + '/source', params=params).status_code == 200
+    assert client.get(staff_url + '/qr', params=params).status_code == 403
+    assert client.get(staff_url + '/print', params=params).status_code == 403
+    assert client.get(supplier_url + '/qr', headers=headers).status_code == 200
+    assert client.put(staff_url, params=params, json={**save_body, 'expected_revision': final['revision']}).status_code == 403
+    assert client.post(staff_url + '/actions/confirm', params=params, json=confirm_body).status_code == 403
+    assert client.post(staff_url + '/actions/void', params=params,
+        json={**void_body, 'expected_revision': final['revision']}).status_code == 403
+    scanned = client.post(BASE + '/scan', json={'factory_id': FACTORY, 'code': final['code']})
+    assert scanned.status_code == 200 and scanned.json()['id'] == final['id']
+    received = client.post(staff_url + '/post', json=posting(final, 0, [receipt(amount='15')]))
+    assert received.status_code == 200, received.text
+    assert received.json()['data'] == final['data']
+    assert received.json()['progress']['L1'] == {'processed': '15', 'remaining': '25'}
+    void_body['expected_revision'] = received.json()['revision']
+    assert client.post(supplier_url + '/void', headers=headers, json=void_body).status_code == 409
+
+
+def test_supplier_can_void_unreceived_document_and_reissue_same_number(client):
+    _, headers = issuer(client)
+    original = confirmed(client, headers)
+    url = BASE + '/external/documents/' + original['id']
+    void_body = dict(request_id=str(uuid4()), expected_revision=original['revision'], reason='数量写错')
+    result = client.post(url + '/void', headers=headers, json=void_body)
+    assert result.status_code == 200, result.text
+    assert result.json()['status'] == 'VOID'
+    assert client.get(url + '/qr', headers=headers).status_code == 409
+    assert client.post(BASE + '/scan', json={'factory_id': FACTORY, 'code': original['code']}).status_code == 409
+    replacement = confirmed(client, headers, workbook(rows=[['01-01-00001', '测试布料', 42, '码', 'LOT-1']]))
+    assert replacement['code'] != original['code'] and replacement['data']['source_no'] == original['data']['source_no']
+    assert replacement['data']['lines'][0]['quantity'] == '42'
+    warehouse = client.get(BASE + '/documents', params={'factory_id': FACTORY}).json()['items']
+    assert {item['id']: item['status'] for item in warehouse} == {original['id']: 'VOID', replacement['id']: 'CONFIRMED'}
 
 
 def test_confirmation_requires_review_and_fresh_revision(client):

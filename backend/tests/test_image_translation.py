@@ -36,7 +36,7 @@ def image_runtime(monkeypatch):
                 result = source.convert("RGB")
             ImageDraw.Draw(result).rectangle((0, 0, min(30, result.width - 1), min(30, result.height - 1)), fill="red")
             result.save(page["output"])
-            values.append({"event": "page", "index": index, "status": "completed", "record": {"translations": [{"sourceText": "Hello 123", "translatedText": "你好 123"}]}})
+            values.append({"event": "page", "index": index, "status": "completed", "record": {"translations": [{"sourceText": "Hello 123", "translatedText": "你好 123", "rendered": True}]}})
         return values
     monkeypatch.setattr(engine, "run_node", process)
 
@@ -145,6 +145,7 @@ def test_region_patch_retains_other_pages_review_issues(tmp_path, image_runtime,
     def no_text(*args):
         result=process(*args)
         result[0]['status']='no-translatable-text'
+        result[0]['record']['translations']=[]
         return result
     monkeypatch.setattr(engine,'run_node',no_text)
     result=engine.convert_image_translation(source,{'_recognize_region':{'page_index':0,'bbox_pt':[20,20,80,80]}},
@@ -152,6 +153,27 @@ def test_region_patch_retains_other_pages_review_issues(tmp_path, image_runtime,
     assert any(i.code=='NO_TEXT' and i.source.page_index==1 for i in result.ir.issues)
     assert any(i.code=='NO_TEXT' and i.source.page_index==0 and '选区' in i.message for i in result.ir.issues)
     assert len({i.id for i in result.ir.issues})==len(result.ir.issues)
+
+
+@pytest.mark.parametrize('source_text,code,message', [
+    ('Long fabric caption','IMAGE_NO_RENDERED_TEXT','已识别到文字，但未能安全回填'),
+    ('   ','NO_TEXT','未识别出可翻译文字'),
+])
+def test_unrendered_text_has_accurate_page_numbered_warning(tmp_path, image_runtime, monkeypatch, source_text, code, message):
+    source=tmp_path/'source.png';source.write_bytes(picture())
+    process=engine.run_node
+    def preserved(*args):
+        records=process(*args)
+        records[0]['status']='no-rendered-text'
+        records[0]['record']['translations']=[{'sourceText':source_text,'skipReason':'does-not-fit'}]
+        return records
+    monkeypatch.setattr(engine,'run_node',preserved)
+    result=engine.convert_image_translation(source,{},tmp_path/'result',lambda *a:None,lambda:False)
+    issue=next(i for i in result.ir.issues if i.code==code)
+    assert message in issue.message
+    assert not any(i.code==('NO_TEXT' if code=='IMAGE_NO_RENDERED_TEXT' else 'IMAGE_NO_RENDERED_TEXT') for i in result.ir.issues)
+    report=json.loads((tmp_path/'result'/'translation-review.json').read_text(encoding='utf-8'))
+    assert any(value.startswith('第 1 页：') and message in value for value in report['issues'])
 
 
 @pytest.mark.parametrize('payload,code', [(b'not an image', 'INVALID_IMAGE'), (picture('JPEG'), 'INVALID_IMAGE')])

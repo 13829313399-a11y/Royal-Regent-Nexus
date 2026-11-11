@@ -1,16 +1,26 @@
 <script setup lang="ts">
 import { X } from '@lucide/vue'
+import { DialogContent, DialogDescription, DialogRoot, DialogTitle } from 'reka-ui'
+import { nextTick } from 'vue'
 import type { CartonPurchaseOrderContextResponse, CartonPurchaseOrderIssueResponse } from '@/api/cartonProcurement'
 defineProps<{ orderNo: string; context?: CartonPurchaseOrderContextResponse | null; loading?: boolean; generating?: boolean; downloadingId?: string; exporting?: boolean; canGenerate?: boolean; referenceEnabled?: boolean; error?: string }>()
 const emit = defineEmits<{ close: []; generate: []; download: [issue: CartonPurchaseOrderIssueResponse]; batch: [issue: CartonPurchaseOrderIssueResponse]; reference: [] }>()
 const purchaseOrderTypeLabel = (kind: string) => ({ INITIAL: '首次采购单', APPEND: '追加采购单', REDUCE: '减单通知', ADJUSTMENT: '采购变更单', NONE: '没有待生成采购单' }[kind] || kind)
 const signedQuantity = (value: string | null) => value == null ? '—' : `${Number(value) > 0 ? '+' : ''}${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 4 })}`
+const opener = typeof document !== 'undefined' ? document.activeElement : null
+function restoreFocus(event: Event) {
+  event.preventDefault()
+  void nextTick(() => {
+    if (opener instanceof HTMLElement && opener.isConnected) opener.focus()
+  })
+}
 </script>
 <template>
-    <div class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="emit('close')">
-      <div class="max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="purchase-order-dialog-title">
+  <DialogRoot :open="true" @update:open="value => { if (!value) emit('close') }">
+    <div class="pointer-events-auto fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="emit('close')">
+      <DialogContent class="max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl" aria-modal="true" @close-auto-focus="restoreFocus">
         <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
-          <div><h2 id="purchase-order-dialog-title" class="text-[16px] font-bold text-slate-950">供应商采购单 · {{ orderNo }}</h2><p class="mt-1 text-[11px] text-slate-500">订单保留累计数量；供应商执行只认每张采购单的“本次变化”列。</p></div>
+          <div><DialogTitle class="text-[16px] font-bold text-slate-950">供应商采购单 · {{ orderNo }}</DialogTitle><DialogDescription class="mt-1 text-[11px] text-slate-500">订单保留累计数量；供应商执行只认每张采购单的“本次变化”列。</DialogDescription></div>
           <button type="button" aria-label="关闭采购单记录" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="emit('close')"><X class="size-4" /></button>
         </div>
         <p v-if="error" role="alert" class="p-5 text-sm text-red-700">{{ error }}</p>
@@ -46,7 +56,7 @@ const signedQuantity = (value: string | null) => value == null ? '—' : `${Numb
           <div v-if="referenceEnabled" class="rounded-xl border border-slate-200 bg-white p-4"><div class="flex flex-wrap items-center justify-between gap-3"><div><div class="text-[11px] font-bold text-slate-800">当前累计对账表</div><p class="mt-1 text-[10px] text-slate-500">仅供内部核对当前总量，不代表向供应商追加下单。</p></div><button type="button" :disabled="Boolean(exporting)" class="h-8 rounded-lg border border-slate-200 px-3 text-[10px] font-bold text-slate-600 disabled:opacity-40" @click="emit('reference')">{{ exporting ? '生成中…' : '导出累计参考' }}</button></div></div>
         </div>
         <div class="flex justify-end border-t border-slate-200 bg-slate-50 px-5 py-4"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="emit('close')">关闭</button></div>
-      </div>
+      </DialogContent>
     </div>
-
+  </DialogRoot>
 </template>

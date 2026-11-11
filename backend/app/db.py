@@ -1000,7 +1000,7 @@ def init_db() -> None:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             # Cutting, engineering and JP intake require explicit migrations.
-                            if not name.startswith(("cutting_ops_", "jp_intake_", "engineering_bom_", "material_plan_", "material_purchase_"))
+                            if not name.startswith(("cutting_ops_", "jp_intake_", "engineering_bom_", "material_plan_", "material_purchase_", "qc_dossier_"))
                             and not name.startswith("online_document")
                             and (not name.startswith("carton_special_") or "auth_users" not in existing_tables)
                             and (name != "carton_price_reviews" or "auth_users" not in existing_tables)

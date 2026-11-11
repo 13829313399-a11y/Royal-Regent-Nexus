@@ -168,6 +168,56 @@ def test_docx_native_table_without_supplier_template():
     assert result['data']['kind'] == 'ISSUE' and result['data']['lines'][0]['quantity'] == '12.5'
 
 
+def test_delivery_purchase_references_are_separate_from_voucher_and_actual_quantity():
+    parser = importlib.import_module('app.services.material_handover_parser')
+    result = parser.parse('供应商原单.xlsx', workbook(
+        title='销售出货单 单号：XS-001 采购订单号：PO-HEADER 生产单号：PROD-1 合同号：C-01 2026-07-18',
+        headers=['订单号/货号', '布料名称-色号', '合计数量', '采购明细ID'],
+        rows=[['PO-ROW/样品-\n下单\n03测试货号\n2,152码缸号：1#', '01-01-10-00002 黑布', '2000Y', 'DETAIL-1'],
+              ['PO-ROW/样品 下单 5768码 缸号：1#', '01-01-10-00002 黑布', '448Y', 'DETAIL-2'],
+              ['PO-ROW/样品 下单 9米 缸号：1#', '01-01-10-00002 黑布', '100Y', 'DETAIL-3']],
+    ))
+    data = result['data']
+    assert (data['source_no'], data['purchase_order_no'], data['production_no'], data['contract_no']) == ('XS-001', 'PO-HEADER', 'PROD-1', 'C-01')
+    assert [(line['purchase_order_no'], line['purchase_detail_id'], line['ordered_quantity'], line['quantity']) for line in data['lines']] == [
+        ('PO-ROW', 'DETAIL-1', '2152', '2000'), ('PO-ROW', 'DETAIL-2', '5768', '448'), ('PO-ROW', 'DETAIL-3', '', '100')]
+    assert any('原下单量或单位' in warning for warning in result['warnings'])
+
+
+def test_purchase_order_and_production_number_cannot_supply_a_missing_voucher_number():
+    parser = importlib.import_module('app.services.material_handover_parser')
+    result = parser.parse('缺送货单号.xlsx', workbook(title='销售出货单 采购订单号：PO-123 生产单号：PROD-1 2026-07-18'))
+    assert result['data']['source_no'] == ''
+    assert result['data']['purchase_order_no'] == 'PO-123'
+
+
+def test_ambiguous_header_purchase_orders_and_order_only_quantity_require_review():
+    parser = importlib.import_module('app.services.material_handover_parser')
+    result = parser.parse('缺实际送货量.xlsx', workbook(
+        title='销售出货单 单号：XS-001 采购订单号：PO-A、PO-B 2026-07-18',
+        headers=['物料编码', '物料名称', '采购数量', '单位'], rows=[['A', '布料', '2152', '码']],
+    ))
+    data = result['data']
+    assert data['source_no'] == 'XS-001' and data['purchase_order_no'] == ''
+    assert [(line['ordered_quantity'], line['quantity']) for line in data['lines']] == [('2152', '')]
+
+
+def test_separate_metadata_table_uses_displayed_purchase_reference():
+    from app.services.document_tools.document_ir import DocumentIR, Cell, Table
+    parser = importlib.import_module('app.services.material_handover_parser')
+    metadata = Table(id='header', row_count=1, column_count=2, cells=[
+        Cell(id='label', row=0, column=0, raw_text='采购订单号'),
+        Cell(id='number', row=0, column=1, raw_text='17', display_text='00017'),
+    ])
+    values = [['物料编码', '物料名称', '数量', '单位'], ['MAT', '布料', '5', '码']]
+    materials = Table(id='items', row_count=2, column_count=4, cells=[
+        Cell(id=f'cell-{r}-{c}', row=r, column=c, raw_text=value)
+        for r, cells in enumerate(values) for c, value in enumerate(cells)
+    ])
+    result = parser.map_ir(DocumentIR(source_type='docx', tables=[metadata, materials]))
+    assert result['data']['purchase_order_no'] == '00017'
+
+
 def test_disposable_worker_extracts_office_without_business_database():
     files = importlib.import_module('app.services.material_handover_files')
     result=files.extract('任意.xlsx', workbook())

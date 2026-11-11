@@ -157,13 +157,13 @@ router = APIRouter(prefix="/api/internal-quotes", tags=["internal-quotes"])
 
 
 @router.get("/{quote_id}/output-layout")
-def get_internal_quote_output_layout(quote_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
-    return get_output_layout(db, quote_id, current_user)
+def get_internal_quote_output_layout(quote_id: str, include_source_workbooks: bool = True, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return get_output_layout(db, quote_id, current_user, include_source_workbooks=include_source_workbooks)
 
 
 @router.post("/{quote_id}/output-layout/preview")
-def post_internal_quote_output_layout_preview(quote_id: str, payload: OutputLayoutEdits, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
-    return preview_output_layout(db, quote_id, payload, current_user)
+def post_internal_quote_output_layout_preview(quote_id: str, payload: OutputLayoutEdits, include_source_workbooks: bool = True, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return preview_output_layout(db, quote_id, payload, current_user, include_source_workbooks=include_source_workbooks)
 
 
 @router.put("/{quote_id}/output-layout", response_model=InternalQuoteWholeProductSaveOut)

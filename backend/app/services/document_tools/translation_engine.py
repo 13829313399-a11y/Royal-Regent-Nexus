@@ -17,10 +17,22 @@ ONLINE_BATCH_MAX_TEXTS = 12
 ONLINE_BATCH_MAX_CHARACTERS = 2400
 
 
+def translation_connection():
+    """An explicit translation connection never borrows OCR credentials."""
+    if (settings.document_tools_translation_base_url
+            or settings.document_tools_translation_api_key.get_secret_value()
+            or settings.document_tools_translation_protocol != "inherit"):
+        return (settings.document_tools_translation_base_url,
+                "openai" if settings.document_tools_translation_protocol == "inherit" else settings.document_tools_translation_protocol,
+                settings.document_tools_translation_api_key.get_secret_value())
+    return (settings.document_tools_qwen_base_url, settings.document_tools_qwen_protocol,
+            settings.document_tools_qwen_api_key.get_secret_value())
+
+
 def online_configured():
+    base, _, key = translation_connection()
     return bool(settings.document_tools_ai_mode != "off"
-                and settings.document_tools_qwen_api_key.get_secret_value()
-                and settings.document_tools_qwen_base_url
+                and key and base
                 and settings.document_tools_translation_model)
 
 
@@ -34,16 +46,13 @@ def validate_translation_options(options, operation):
             raise ToolError("TRANSLATION_MODEL_MISSING", "服务器离线翻译模型尚未安装，请选择已配置的在线 AI 翻译")
         if options.get("glossary"):
             raise ToolError("TRANSLATION_GLOSSARY_ONLINE", "自定义术语仅支持在线 AI 精译")
-    if operation == "pdf_translate":
-        from .office_engine import office_executable
-        if not office_executable():
-            raise ToolError("OFFICE_UNAVAILABLE", "PDF 译文需要 Office 渲染引擎，请联系管理员安装")
 
 
 def online_batch(texts, direction, glossary, cancelled, client=None):
     if not online_configured():
         raise ToolError("TRANSLATION_NOT_CONFIGURED", "在线 AI 翻译尚未启用")
-    base = settings.document_tools_qwen_base_url.rstrip("/")
+    base, protocol, key = translation_connection()
+    base = base.rstrip("/")
     parsed = urlparse(base)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.query or parsed.fragment:
         raise ToolError("TRANSLATION_CONFIGURATION", "在线翻译地址必须为有效 HTTPS API 地址")
@@ -62,22 +71,26 @@ def online_batch(texts, direction, glossary, cancelled, client=None):
     messages = [{"role": "system", "content": instruction},
                 {"role": "user", "content": json.dumps({"texts": texts, "terminology": glossary}, ensure_ascii=False)}]
     model = settings.document_tools_translation_model
-    if settings.document_tools_qwen_protocol == "dashscope":
+    if protocol == "dashscope":
         endpoint = base if base.endswith("/generation") else base + ("" if base.endswith("/api/v1") else "/api/v1") + "/services/aigc/multimodal-generation/generation"
         messages = [{**m, "content": [{"text": m["content"]}]} for m in messages]
         payload = {"model": model, "input": {"messages": messages},
                    "parameters": {"max_tokens": 8192, "enable_thinking": False}}
     else:
         endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
-        payload = {"model": model, "messages": messages, "max_tokens": 8192,
-                   "enable_thinking": False}
+        if protocol == "mimo":
+            payload = {"model": model, "messages": messages, "max_completion_tokens": 8192,
+                       "thinking": {"type": "disabled"}, "response_format": {"type": "json_object"}}
+        else:
+            payload = {"model": model, "messages": messages, "max_tokens": 8192,
+                       "enable_thinking": False}
     owned = client is None
     client = client or httpx.Client(timeout=settings.document_tools_qwen_timeout_seconds, follow_redirects=False)
     try:
         if cancelled():
             raise Cancelled()
         try:
-            response = client.post(endpoint, json=payload, headers={"Authorization": "Bearer " + settings.document_tools_qwen_api_key.get_secret_value()})
+            response = client.post(endpoint, json=payload, headers={"Authorization": "Bearer " + key})
         except httpx.RequestError:
             raise ToolError("TRANSLATION_NETWORK", "在线 AI 翻译连接失败或超时，请稍后重试") from None
         if cancelled():
@@ -201,31 +214,32 @@ def convert_translation(path, operation, options, work, progress, cancelled):
     engine = options.get("translation_engine", "offline")
     try:
         if operation == "pdf_translate":
-            from .pdf_engine import _extract
-            # Offline translation must not implicitly transmit scanned pages for OCR.
-            extracted = _extract(path, {**options, "ai_mode": "auto" if engine == "online" else "off"}, work, progress, cancelled, ocr=True)
-            ir = extracted.ir
-            targets = [(c, c.display_text) for t in ir.tables for c in t.cells]
-            targets += [(b, b.text) for b in ir.blocks if b.table_id is None and b.kind != "image"]
-            targets = [(t, text) for t, text in targets if local._should_translate(text.strip(), direction)]
-            if not targets:
-                raise ToolError("TRANSLATION_NO_TEXT", "未识别到可翻译文字，请核对翻译方向或上传更清晰的文档")
-            unique = list(dict.fromkeys(text for _, text in targets))
-            translated = dict(zip(unique, translator(unique, direction), strict=True))
-            for target, text in targets:
-                if hasattr(target, "display_text"):
-                    target.display_text = target.value = translated[text]
-                    target.value_kind = "text"
-                else:
-                    target.original_text = text
-                    target.text = translated[text]
-            output = office.write_docx(ir, work / (stem + ".docx"), {"layout_mode": "editable"})
-            pdf = work / (stem + ".pdf")
-            progress("rebuild", 0, 1)
-            office.render_office(output, pdf, {}, work, cancelled)
-            files = [result_file(pdf), result_file(output)]
-            count = len(targets)
-            ir.issues.append(Issue(id="translation-layout", code="TRANSLATION_LAYOUT", message="PDF 译文按阅读顺序重新排版；图片中的文字可能仍为原文，请对照原件核验扫描识别与复杂表格。"))
+            from .image_translation import convert_image_translation
+            converted = convert_image_translation(path, {**options,"translation_direction":direction}, work, progress, cancelled)
+            ir = converted.ir
+            editable = ir.model_copy(deep=True)
+            from .document_ir import Block, SourceAnchor
+            editable.blocks=[]
+            for page in ir.pages:
+                editable.blocks.append(Block(id=f'heading-p{page.page_index}',kind='heading',
+                    text=f'第 {page.display_page_number} 页译文',source=SourceAnchor(page_index=page.page_index)))
+                for original in ir.blocks:
+                    if original.kind=='image' or original.source.page_index!=page.page_index:continue
+                    block=original.model_copy(deep=True)
+                    if not block.text.strip():
+                        block.text='[未得到可信译文，请核对原文] '+getattr(block,'original_text','')
+                    elif block.style.get('translation_status')=='needs_review':
+                        block.text='[原文或译文需核对] '+block.text+'\n原文：'+getattr(block,'original_text','')
+                    associations=[n for n in block.style.get('review_notes',[]) if n.startswith(('表格归属：','版面归属：','原文选项：'))]
+                    if associations:block.text+='\n'+'\n'.join(associations)
+                    editable.blocks.append(block)
+            output = office.write_docx(editable, work / (stem + ".docx"), {"layout_mode":"editable"})
+            converted.files.append(result_file(output))
+            converted.summary.update(translated_units=converted.summary.get("translated_blocks",0),translation_direction=direction)
+            ir.engine_manifest["translation"]={"engine":engine,"direction":direction,
+                "model":settings.document_tools_translation_model if engine=="online" else "offline"}
+            if cancelled():raise Cancelled()
+            return converted
         else:
             normalized = office._normalize(Path(path), options, work, cancelled)
             selected = (options.get("sheets") or None) if operation == "excel_translate" else None

@@ -22,6 +22,13 @@ class GreenImageError(ValueError):
     pass
 
 
+def valid_green_item(value):
+    # Keep the complete item cell, including short space-separated suffixes.
+    # Column geometry (or native HTML cells), not a guessed SKU prefix, separates
+    # the item from its description.
+    return bool(re.fullmatch(r'[A-Z0-9][A-Z0-9-]{2,30}(?: [A-Z0-9][A-Z0-9-]{0,15}){0,3}', value, re.I))
+
+
 def _bands(indices):
     result = []
     for index in indices:
@@ -100,7 +107,6 @@ def _metadata(text):
     patterns = {
         'po': r'^\s*PO\s*(?:#|No\.?|=)\s*[:#]?\s*(\d{4,})\b',
         'date': r'PO\s+Date\s+(\d{1,2}/\d{1,2}/\d{4})\b',
-        'delivery': r'Deliver\s+By\s+Date\s+(\d{1,2}/\d{1,2}/\d{4})\b',
     }
     values = {}
     for key, pattern in patterns.items():
@@ -108,9 +114,22 @@ def _metadata(text):
         if len(found) != 1:
             raise GreenImageError('图片 PO号或日期缺失/不唯一；不得用文件名代替，请上传完整清晰截图')
         values[key] = found.pop()
+    # A customer may issue the complete order before supplying its ship date.
+    # Require the visible label, and distinguish its empty value from an OCR
+    # failure/invalid date. Never consume a later field's date as this value.
+    delivery_labels = list(re.finditer(r'Deliver\s+By\s+Date\b', text, re.I))
+    if len(delivery_labels) != 1:
+        raise GreenImageError('Green Toys 图片走货期标签缺失/不唯一，请上传完整清晰截图')
+    remainder = text[delivery_labels[0].end():]
+    following_label = re.search(r'^\s*(?:Memo[\s-]*Detail|Terms|Shipping\s+Method|Cancel\s+Date|Vendor|Ship\s+To)\b', remainder, re.I | re.M)
+    value_segment = remainder[:following_label.start()] if following_label else remainder
+    values['delivery'] = ' '.join(value_segment.split())
+    if values['delivery'] and not re.fullmatch(r'\d{1,2}/\d{1,2}/\d{4}', values['delivery']):
+        raise GreenImageError('Green Toys 图片走货期无法确认，请核对原单；不会当作空白放行')
     try:
         for key in ('date', 'delivery'):
-            datetime.strptime(values[key], '%m/%d/%Y')
+            if values[key]:
+                datetime.strptime(values[key], '%m/%d/%Y')
     except ValueError as exc:
         raise GreenImageError('Green Toys 图片日期无效，请核对原单') from exc
     return values
@@ -144,6 +163,42 @@ def _decimal(token, *, places=None):
     if not re.fullmatch(pattern, token) or sum(char.isdigit() for char in token) > 20:
         raise GreenImageError('Green Toys 数量/价格/金额无法确认；请核对图片，不会自动猜数')
     return Decimal(token.replace(',', ''))
+
+
+def _row_numbers(tokens, row_number):
+    quantity, price = (_decimal(token) for token in tokens[:2])
+    amount = _decimal(tokens[2], places=2)
+    if quantity <= 0 or quantity != quantity.to_integral_value() or price <= 0 or amount <= 0:
+        raise GreenImageError(f'图片第 {row_number} 行数量/价格/金额无效')
+    with localcontext() as context:
+        context.prec = 48
+        calculated = (quantity * price).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    if calculated != amount:
+        raise GreenImageError(f'图片第 {row_number} 行数量×单价与金额不符，不会猜测修正')
+    return quantity, price, amount
+
+
+def _read_row_numbers(tokens, row_number, image, columns, interval, reader):
+    try:
+        return _row_numbers(tokens, row_number)
+    except GreenImageError:
+        # Column OCR can merge a decimal point into a digit. Re-read the same
+        # three cells, at most once per preprocessing variant, never derive a
+        # price from the printed amount. Both independent reads must agree.
+        start, end = interval
+        candidates = []
+        for threshold in (False, True):
+            fresh = []
+            for column in (2, 5, 6):
+                left, right = columns[column]
+                crop = image.crop((left, start, right, end))
+                if threshold:
+                    crop = crop.point(lambda value: 255 if value > 150 else 0)
+                fresh.append(reader.read(crop, psm=7, scale=3 if threshold else 2).strip())
+            candidates.append(_row_numbers(fresh, row_number))
+        if candidates[0] != candidates[1]:
+            raise GreenImageError(f'图片第 {row_number} 行数字重复识别不一致，请核对原图')
+        return candidates[0]
 
 
 def recognize_green_toys_image(path: Path, command: str) -> str:
@@ -189,19 +244,12 @@ def recognize_green_toys_image(path: Path, command: str) -> str:
     for index, (start, end) in enumerate(intervals):
         left, right = columns[0]
         item_scale = max(1, min(5, 90 // (end - start)))
-        item = reader.read(image.crop((left, start, right, end)), psm=7, scale=item_scale).strip().upper()
-        if not re.fullmatch(r'[A-Z0-9][A-Z0-9-]{2,30}', item) or not values[1][index]:
+        item = ' '.join(reader.read(image.crop((left, start, right, end)), psm=7, scale=item_scale).split())
+        if not valid_green_item(item) or not values[1][index]:
             raise GreenImageError(f'图片第 {index + 1} 行货号/品名无法确认，不会跳过明细')
-        quantity = _decimal(values[2][index])
-        price = _decimal(values[5][index])
-        amount = _decimal(values[6][index], places=2)
-        if quantity <= 0 or quantity != quantity.to_integral_value() or price <= 0 or amount <= 0:
-            raise GreenImageError(f'图片第 {index + 1} 行数量/价格/金额无效')
-        with localcontext() as context:
-            context.prec = 48
-            calculated = (quantity * price).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
-        if calculated != amount:
-            raise GreenImageError(f'图片第 {index + 1} 行数量×单价与金额不符，不会猜测修正')
+        quantity, price, amount = _read_row_numbers(
+            [values[column][index] for column in (2, 5, 6)], index + 1,
+            image, columns, (start, end), reader)
         amounts.append(amount)
         lines.append(f'{item}  {values[1][index]}  {int(quantity)}  0  {price}  {amount}')
     if sum(amounts) != total:

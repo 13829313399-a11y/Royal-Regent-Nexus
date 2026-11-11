@@ -8,7 +8,6 @@ from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from hashlib import sha256
-from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -20,8 +19,6 @@ import logging
 import sqlite3
 
 from fastapi import HTTPException
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils.datetime import from_excel
 from openpyxl.utils.cell import range_boundaries, get_column_letter
 
@@ -349,7 +346,7 @@ def with_schedule_dates(factory, items):
     return items
 
 
-def schedule_listing(factory, f, *, all_rows=False):
+def schedule_listing(factory, f):
     # Existing SQL still handles factory, search and status; only the requested UI date basis changes.
     with store() as conn:
         all_items = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM records WHERE factory=? AND active=1',(factory,))]
@@ -363,16 +360,16 @@ def schedule_listing(factory, f, *, all_rows=False):
     selected = sorted((i for i in items if matches(i)), key=lambda i:(not i['scheduleDate'],i['scheduleDate'],text(i.get('stockNo')).lower(),i['id']))
     total=len(selected);page_size=int(f['pageSize'] or 30)
     page=min(int(f['page'] or 1),max(1,(total+page_size-1)//page_size))
-    return {'items':selected if all_rows else selected[(page-1)*page_size:page*page_size],
+    return {'items':selected[(page-1)*page_size:page*page_size],
         'total':total,'page':page,'pageSize':page_size,'years':sorted({i['scheduleDate'][:4] for i in items if i['scheduleDate']}),
         'counts':dict(Counter(STATUS[i['status']] for i in items)),'unknownDates':sum(not i['scheduleDate'] for i in items),
         'timezone':'Asia/Shanghai','dateBasis':'schedule','filters':f}
 
 
-def listing(factory, params, *, all_rows=False):
+def listing(factory, params):
     f = filters(params)
     reconcile(factory)
-    if f['dateBasis']=='schedule':return schedule_listing(factory,f,all_rows=all_rows)
+    if f['dateBasis']=='schedule':return schedule_listing(factory,f)
     using_report_date = f['dateBasis'] == 'report'
     date_column = ("(CASE WHEN inspection_date='' AND status='approved' "
                    "THEN report_date(payload) ELSE inspection_date END)") if using_report_date else 'inspection_date'
@@ -386,8 +383,8 @@ def listing(factory, params, *, all_rows=False):
         page = min(int(f['page'] or 1), max(1, (total + page_size - 1) // page_size))
         query = (f'SELECT payload, {date_column} AS display_date FROM records WHERE {clause} '
                  "ORDER BY display_date='' ASC,display_date ASC,stock_no COLLATE NOCASE ASC,id ASC")
-        rows = conn.execute(query if all_rows else query + ' LIMIT ? OFFSET ?',
-                            args if all_rows else [*args, page_size, (page - 1) * page_size]).fetchall()
+        rows = conn.execute(query + ' LIMIT ? OFFSET ?',
+                            [*args, page_size, (page - 1) * page_size]).fetchall()
         years = [r[0] for r in conn.execute(f"SELECT DISTINCT substr({date_column},1,4) FROM records WHERE factory=? AND active=1 AND {date_column}<>'' ORDER BY 1", (factory,))]
         counts = {STATUS[r[0]]: r[1] for r in conn.execute('SELECT status,count(*) FROM records WHERE factory=? AND active=1 GROUP BY status', (factory,))}
         unknown = conn.execute(f"SELECT count(*) FROM records WHERE factory=? AND active=1 AND {date_column}=''", (factory,)).fetchone()[0]
@@ -603,66 +600,3 @@ def rollback_history(factory, identity):
                              (factory, identity)).rowcount
         conn.execute("UPDATE batches SET status='rolled_back',rolled_back_at=? WHERE id=?", (workflow.now(), identity))
         return {'status': 'rolled_back', 'count': count}
-
-
-def export_excel(factory, params):
-    result = listing(factory, params, all_rows=True)
-    if not result['total']:
-        raise HTTPException(422, '当前筛选没有记录，未生成空文件')
-    wb = Workbook()
-    ws = wb.active
-    ws.title = '验货汇总明细'
-    columns = [('实际验货日期', 'inspectionDate'), ('客户', 'customer'), ('库号', 'stockNo'), ('货号', 'productNo'),
-               ('订单/PO', 'poNo'), ('验货类型', 'inspectionType'), ('验货结果', 'result'), ('归档状态', 'status'),
-               ('备注', 'remark'), ('其他备注', 'otherRemark'), ('确认时间', 'confirmedAt'), ('确认人', 'confirmedBy'),
-               ('归档时间', 'archivedAt'), ('来源', 'sourceLabel'), ('来源文件', 'sourceFilename'),
-               ('来源工作表', 'sourceSheet'), ('来源行号', 'sourceRow'), ('工作簿版本', 'workbookVersionId'), ('稳定记录ID', 'id'),
-               ('产品名称', 'productName'), ('数量', 'quantity'), ('实际验货数量', 'actualQuantity'),
-               ('装箱', 'unitsPerCarton'), ('箱数', 'cartonCount'), ('验货人', 'inspector'), ('共享合并范围', 'sharedRanges')]
-    ws.append([label for label, _ in columns])
-    for row_number, item in enumerate(result['items'], 2):
-        values = []
-        for _, key in columns:
-            value = item.get(key, '')
-            if key == 'sharedRanges':
-                value = '; '.join(sorted({v['range'] for v in item.get('sharedSourceCells', {}).values()}))
-            if key == 'status':
-                value = STATUS[value]
-            if key in ('confirmedAt', 'archivedAt') and value:
-                value = datetime.fromisoformat(value).astimezone(SHANGHAI).strftime('%Y-%m-%d %H:%M:%S')
-            if len(text(value)) > 32767:
-                raise HTTPException(422, '记录 ' + item['id'] + ' 的字段超过 Excel 单元格上限，未截断或生成不完整文件')
-            values.append(text(value))
-        ws.append(values)
-        for column_number in range(1, len(columns) + 1):
-            cell = ws.cell(row_number, column_number)
-            cell.data_type = 's'  # IDs, formulas-looking remarks and leading zeroes stay literal.
-            cell.number_format = '@'
-            cell.alignment = Alignment(vertical='top', wrap_text=True)
-    for cell in ws[1]:
-        cell.font = Font(bold=True, color='FFFFFF')
-        cell.fill = PatternFill('solid', fgColor='305A72')
-    for index, (label, _) in enumerate(columns, 1):
-        ws.column_dimensions[ws.cell(1, index).column_letter].width = 36 if '备注' in label else 24 if '时间' in label or 'ID' in label else 19
-    ws.freeze_panes = 'D2'
-    ws.auto_filter.ref = ws.dimensions
-    context = wb.create_sheet('筛选与来源说明')
-    date_basis = {
-        'schedule': '筛选按关联排期日期；日期列使用已保存的最终验货日期',
-        'report': '筛选和排序与页面一致，旧审核缺少最终日期时使用原排期开始日；日期列保留已保存的最终验货日期',
-    }
-    context.append(['口径', date_basis.get(params.get('dateBasis'), '筛选、排序和日期列统一使用已保存的最终验货日期，Asia/Shanghai')
-                    + '；新审核确认采用QC填写日期，未填写时采用计划开始日期；历史确认保留原值，缺失日期不使用当天补位'])
-    context.append(['匹配记录数', result['total']])
-    context.append(['筛选', dump(result['filters'])])
-    context.append(['状态', '历史待核实不代表审核通过；库号缺失留空，与货号分列。'])
-    context.append(['合并字段', '带共享合并范围的字段来自原表纵向合并单元格，是同组共享值，数量或箱数不可按明细重复累计。'])
-    context.column_dimensions['A'].width = 20
-    context.column_dimensions['B'].width = 100
-    stream = BytesIO()
-    wb.save(stream)
-    f = result['filters']
-    scope = '-'.join(f[k].zfill(2) for k in ('year', 'month', 'day') if f[k]) or '全部历史'
-    if f['search'] or f['type'] or f['status']:
-        scope += '-筛选结果'
-    return stream.getvalue(), '验货汇总明细-' + scope + '.xlsx'

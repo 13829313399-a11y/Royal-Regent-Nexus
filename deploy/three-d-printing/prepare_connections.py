@@ -20,7 +20,7 @@ def prepare(db, rows, *, observed=False):
     for row in rows:
         number = int(row['machine_no'])
         address = ipaddress.IPv4Address(row['ip'])
-        if not 1 <= number <= 16 or number in numbers or str(address) in addresses or not address.is_private:
+        if not 1 <= number <= 18 or number in numbers or str(address) in addresses or not address.is_private:
             raise ValueError('Invalid printer number or LAN address')
         credential_ref = row.get('credential_ref') or f'printer-{number:02}'
         if not re.fullmatch(r'printer-[0-9]{2}', credential_ref) or credential_ref in references:

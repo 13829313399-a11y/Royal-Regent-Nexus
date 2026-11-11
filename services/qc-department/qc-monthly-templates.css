@@ -1,0 +1,53 @@
+/* Huaxing monthly workbook views. Keep the existing report and export styles local. */
+#qmtEntries { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:0 0 14px; }
+#qmtEntries[hidden], #qmtView[hidden] { display:none!important; }
+#qmtEntries button {
+  flex:0 1 auto; min-width:0; min-height:26px; padding:3px 9px;
+  border:1px solid #c3c6c8; border-top-color:#d6d8da; border-left-color:#d6d8da;
+  border-radius:3px; background:linear-gradient(#fff,#eceeef); color:#53585b;
+  box-shadow:inset 0 1px 0 #fff,0 1px 0 #00000008;
+  font:400 11px/18px var(--font-body); cursor:pointer;
+}
+#qmtEntries button:hover { border-color:#a6abb0; background:linear-gradient(#fff,#e3e6e8); color:#32383d; }
+#qmtEntries button:active, #qmtEntries button[aria-current="page"] { background:#e3e5e7; box-shadow:inset 0 1px 2px #0000001a; }
+#qmtEntries button:focus-visible { outline:1px dotted #53585b; outline-offset:-4px; }
+#qmtView { min-width:0; color:var(--text-main); font:13px/1.5 var(--font-body); }
+#monthlyReportContent.qmt-open { max-width:none; width:100%; padding:16px 12px; }
+#qmtView #qmtExcel { margin-left:auto; }
+#qmtView .qmt-field-help { margin:4px 0 10px; font-size:12px; color:var(--text-dim); }
+#qmtView .qmt-field-help summary { cursor:pointer; width:fit-content; }
+#qmtView .qmt-field-help p { max-width:960px; margin:8px 0; line-height:1.7; }
+#qmtView #qmtExcelStatus:not(:empty) { margin-bottom:8px; }
+#qmtView .qmt-heading, #qmtView .qmt-controls, #qmtView .qmt-status-line { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+#qmtView h2 { margin:0; font-size:17px; font-weight:600; }
+#qmtView h3 { margin:14px 0 6px; font-size:13px; font-weight:600; }
+#qmtView button, #qmtView select { font:inherit; min-height:32px; max-width:100%; border:1px solid var(--border); border-radius:6px; padding:5px 9px; color:var(--text-main); background:var(--bg-card); }
+#qmtView button { cursor:pointer; }
+#qmtView button:disabled { opacity:.5; cursor:default; }
+#qmtView .qmt-muted { color:var(--text-dim); font-size:12px; }
+#qmtView .qmt-status-line [role="status"] { margin-left:auto; }
+#qmtView .qmt-error { color:var(--red,#a42828); }
+#qmtView .qmt-message { padding:16px 0; }
+#qmtView .qmt-scroll { overflow:auto; max-height:65vh; min-height:80px; border:1px solid #abb7ae; background:#fff; scrollbar-gutter:stable; }
+#qmtView table { width:100%; table-layout:fixed; border-collapse:separate; border-spacing:0; font:13px/1.4 'Songti SC',SimSun,serif!important; color:#26332a; }
+#qmtView th, #qmtView td { padding:0!important; height:43px; border-right:1px solid #b5beb8!important; border-bottom:1px solid #b5beb8!important; text-align:center!important; vertical-align:middle!important; font:inherit!important; }
+#qmtView th { position:sticky; top:24px; z-index:2; height:46px; padding:5px!important; background:#fff!important; color:#26332a!important; font-weight:400!important; overflow-wrap:anywhere; }
+#qmtView .qmt-letters th { top:0; height:24px; padding:2px!important; background:#e9efeb!important; font:11px/18px var(--font-body)!important; }
+#qmtView td { background:#f4f6f7; }
+#qmtView td.qmt-editable { background:#fff; }
+#qmtView td>span, #qmtView .qmt-cell { display:block; width:100%; height:42px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:4px; }
+#qmtView .qmt-cell { border:0; border-radius:0; min-height:42px; background:#fff; color:inherit; font:inherit; text-align:inherit; cursor:text; box-shadow:none; }
+#qmtView .qmt-cell:focus-visible { outline:2px solid #408558; outline-offset:-2px; }
+#qmtView .qmt-editor { display:block; width:100%; min-width:0; height:42px; min-height:42px; padding:5px 7px; border:0; border-radius:0; outline:none; box-shadow:inset 0 0 0 2px #408558!important; background:#fff; color:#26332a; font:inherit; resize:none; margin:0; }
+#qmtView tfoot td { background:#edf2ee; font-weight:600!important; border-top:1px solid #91a797!important; }
+#qmtView .qmt-selected-source { font-size:12px; color:var(--text-dim); margin:8px 0; overflow-wrap:anywhere; }
+#qmtView .qmt-conflict { border:1px solid var(--red,#a42828); border-radius:6px; padding:10px; margin:10px 0; background:var(--bg-card); overflow-wrap:anywhere; }
+#qmtView .qmt-conflict p { margin:5px 0; white-space:pre-wrap; }
+body.theme-dark #qmtEntries button { background:linear-gradient(#38413d,#2b3330); border-color:#616b65; color:#e0e6e1; box-shadow:inset 0 1px 0 #4e5852; }
+@media(pointer:coarse) { #qmtEntries button, #qmtView .qmt-controls button { min-height:44px; } }
+@media(max-width:640px) { #qmtView .qmt-status-line [role="status"] { margin-left:0; } #qmtView .qmt-editor, #qmtView select { font-size:16px!important; } }
+@media print { #qmtEntries, #qmtView { display:none!important; } #monthlyReportBody[hidden] { display:block!important; } }
+
+#qmtView .qmt-photos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding:4px}#qmtView .qmt-photo{padding:2px;min-height:0}#qmtView .qmt-photos img{display:block;width:100%;height:100px;object-fit:contain}#qmtView td:has(.qmt-photos){vertical-align:top!important}.qmt-photo-dialog{max-width:90vw;max-height:90vh;border:1px solid #aaa;border-radius:8px;padding:12px}.qmt-photo-dialog img{display:block;max-width:85vw;max-height:78vh;object-fit:contain}.qmt-photo-dialog::backdrop{background:#0007}
+
+.qmt-quality-dialog{width:min(460px,calc(100vw - 24px))}.qmt-quality-dialog label{display:block;margin:12px 0}.qmt-quality-dialog label small{display:block;margin:5px 0 0 24px;color:var(--muted,#65736b);line-height:1.6}body.qc-liquid-glass .qwf-dialog.qmt-quality-dialog input[type=radio],body.qc-liquid-glass .qwf-dialog.qmt-quality-dialog input[type=checkbox]{width:15px;min-width:15px;height:15px;min-height:15px;display:inline-block;vertical-align:middle;margin:0 7px 2px 0;padding:0;accent-color:#45795d}.qmt-quality-dialog [hidden]{display:none!important}

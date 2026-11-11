@@ -7,41 +7,9 @@ from collections import defaultdict
 
 from sqlalchemy import select
 
-from app.models.carton_procurement import CartonOrderLine, CartonPurchaseOrderIssue, CartonReceipt, CartonReceiptLine
-from app.models.carton_supplier_portal import SupplierAttachment, SupplierCommitment
-
-CHUNK = 200
-
-
-def evidence(db, orders):
-    from app.services.carton_supplier_changes import response_states
-    if not orders:
-        return {}
-    factory = orders[0].factory_id
-    if any(order.factory_id != factory for order in orders):
-        raise ValueError("Supplier projection must belong to one factory")
-    identifiers = [order.id for order in orders]
-    lines, issues = defaultdict(list), defaultdict(list)
-    for row in db.scalars(select(CartonOrderLine).where(CartonOrderLine.factory_id == factory,
-            CartonOrderLine.order_id.in_(identifiers)).order_by(CartonOrderLine.line_no)):
-        lines[row.order_id].append(row)
-    for row in db.scalars(select(CartonPurchaseOrderIssue).where(CartonPurchaseOrderIssue.factory_id == factory,
-            CartonPurchaseOrderIssue.order_id.in_(identifiers)).order_by(CartonPurchaseOrderIssue.issue_sequence.desc())):
-        issues[row.order_id].append(row)
-    line_ids = [line.id for own in lines.values() for line in own]
-    commitments = {}
-    for start in range(0, len(line_ids), CHUNK):
-        commitments.update({row.order_line_id: row for row in db.scalars(select(SupplierCommitment).where(
-            SupplierCommitment.factory_id == factory, SupplierCommitment.order_line_id.in_(line_ids[start:start + CHUNK])))})
-    issue_ids = [row.id for own in issues.values() for row in own]
-    states = {kind: {} for kind in ("REGULAR", "REPLENISHMENT")}
-    for start in range(0, len(issue_ids), CHUNK):
-        for kind in states:
-            states[kind].update(response_states(db, factory, kind, issue_ids[start:start + CHUNK]))
-    return {order.id: {"lines": lines[order.id], "issues": issues[order.id],
-        "commitments": [commitments[line.id] for line in lines[order.id] if line.id in commitments],
-        "supplier_change_states": states["REGULAR"], "replacement_states": states["REPLENISHMENT"]}
-        for order in orders}
+from app.models.carton_procurement import CartonReceipt, CartonReceiptLine
+from app.models.carton_supplier_portal import SupplierAttachment
+from app.services.carton_supplier_read_inputs import batches, order_inputs
 
 
 def order_page_out(db, orders, *, internal=False):
@@ -52,9 +20,8 @@ def order_page_out(db, orders, *, internal=False):
     from app.services.carton_order_split import plans
     from app.services.carton_order_split_trace import schedule_split_sources
     result = []
-    for start in range(0, len(orders), CHUNK):
-        batch = orders[start:start + CHUNK]
-        projected = evidence(db, batch)
+    for batch in batches(orders):
+        projected = order_inputs(db, batch)
         # Match order_out's early return before evaluating any quantity evidence.
         batch = [order for order in batch if internal or portal.latest_issue(db, order, projection=projected[order.id])]
         if not batch:
@@ -62,15 +29,16 @@ def order_page_out(db, orders, *, internal=False):
         factory = batch[0].factory_id
         line_ids = [line.id for order in batch for line in projected[order.id]["lines"]]
         fulfilled, pending, shipped, options, reserved, blocked, posted = {}, {}, {}, {}, {}, set(), defaultdict(int)
-        links = receipt_links(db, factory)
-        for offset in range(0, len(line_ids), CHUNK):
-            ids = line_ids[offset:offset + CHUNK]
+        links = receipt_links(db, factory) if projected[batch[0].id]["replacement_states"] else {}
+        for ids in batches(line_ids):
             fulfilled.update(portal.fulfilled_by_line(db, ids))
             pending.update(portal._pending_received_by_line(db, ids))
             shipped.update(portal.outstanding(db, ids))
             options.update(options_by_line(db, factory, ids))
             blocked.update(legacy_review_lines(db, factory, ids))
             reserved.update(replacement.reservations(db, factory, ids))
+            if not links:
+                continue
             for paper in db.scalars(select(CartonReceiptLine).join(CartonReceipt, CartonReceipt.id == CartonReceiptLine.receipt_id)
                     .where(CartonReceipt.factory_id == factory, CartonReceipt.status == "POSTED", CartonReceiptLine.order_line_id.in_(ids))):
                 if paper.id in links:

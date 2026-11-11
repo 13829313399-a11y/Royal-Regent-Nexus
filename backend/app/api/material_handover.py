@@ -18,8 +18,11 @@ router = APIRouter(prefix='/api/material-handover', tags=['material-handover'])
 
 
 def public_result(result):
-    # A supplier's own progress does not grant access to warehouse batch IDs or staff identities.
-    return {**result, 'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id'}}
+    # Keep internal purchase IDs, warehouse batch IDs and staff identities within the warehouse.
+    data = result['data']
+    lines = [{**line, 'purchase_detail_id': ''} for line in data['lines']]
+    return {**result, 'data': {**data, 'lines': lines},
+        'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id'}}
         for movement in result.get('movements', [])]}
 
 
@@ -53,6 +56,7 @@ def source_response(db, access, identifier):
 
 def print_snapshot(db, access, identifier, expected_revision):
     row = service.document(db, access, identifier)
+    service.require_preparer(db, access, row)
     service.check_revision(row, expected_revision)
     if row.status != 'CONFIRMED':
         raise HTTPException(409, '只有已确认的有效单据可以准备原单加码打印')
@@ -65,6 +69,7 @@ def print_snapshot(db, access, identifier, expected_revision):
 
 def check_print_snapshot(db, access, identifier, snapshot):
     row = service.document(db, access, identifier)
+    service.require_preparer(db, access, row)
     if row.status != 'CONFIRMED' or service.code(row) != snapshot['code'] or row.data_json != snapshot['signature']:
         raise HTTPException(409, '单据状态已变化，请刷新后准备原单打印')
 
@@ -101,9 +106,7 @@ def list_documents(db, access, limit, offset, status, search='', kind='ALL', sup
         HandoverSupplierBinding.supplier_id.label('bound_supplier_id')).outerjoin(HandoverSupplierBinding,
         (HandoverSupplierBinding.issuer_id == HandoverDocument.issuer_id) &
         (HandoverSupplierBinding.factory_id == HandoverDocument.factory_id)
-    ).where(HandoverDocument.factory_id == service.FACTORY)
-    if access.issuer_id:
-        query = query.where(HandoverDocument.issuer_id.in_(service.issuer_scope(db,access)))
+    ).where(HandoverDocument.factory_id == service.FACTORY, service.document_scope(db, access))
     if status != 'ALL':
         query = query.where(HandoverDocument.status == status)
     rows = db.execute(query.order_by(HandoverDocument.updated_at.desc(), HandoverDocument.id))
@@ -258,7 +261,9 @@ def purchase_sources(identifier: str, factory_id: str, db: Session = Depends(get
 
 @router.get('/documents/{identifier}/qr')
 def qr(identifier: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    row = service.document(db, staff_access(db, actor, factory_id), identifier)
+    access = staff_access(db, actor, factory_id)
+    row = service.document(db, access, identifier)
+    service.require_preparer(db, access, row)
     return response_file(service.qr_svg(row), row.id + '.svg', 'image/svg+xml')
 
 

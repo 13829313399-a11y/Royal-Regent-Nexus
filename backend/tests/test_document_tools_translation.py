@@ -18,6 +18,14 @@ from test_document_tools_jobs import runtime, upload
 from app.services.document_tools import pipeline
 
 
+@pytest.fixture(autouse=True)
+def isolated_translation_connection(monkeypatch):
+    # Private local provider configuration must never leak into contract tests.
+    monkeypatch.setattr(settings, "document_tools_translation_api_key", SecretStr(""))
+    monkeypatch.setattr(settings, "document_tools_translation_base_url", "")
+    monkeypatch.setattr(settings, "document_tools_translation_protocol", "inherit")
+
+
 def make_pdf(path, texts):
     writer = PdfWriter()
     for text in texts:
@@ -80,17 +88,23 @@ def test_excel_only_selected_sheet_preserves_formula_and_merge(tmp_path, offline
 
 
 def test_pdf_translation_reads_selected_page_and_writes_both_formats(tmp_path, monkeypatch, offline):
+    from app.services.document_tools import image_translation
+    from app.services.document_tools.document_ir import Block, DocumentIR, EngineResult, Page, SourceAnchor, result_file
     path = tmp_path / "source.pdf"
+    monkeypatch.setattr(office,'office_executable',lambda:None)
     make_pdf(path, ["Purchase Order 00123", "Quantity 12"])
-    monkeypatch.setattr(office, "office_executable", lambda: "test-office")
-    def render(source, output, *args):
-        assert Document(source).paragraphs[0].text == "数量 12"
-        make_pdf(output, ["Rendered translation"])
-    monkeypatch.setattr(office, "render_office", render)
+    def convert(source,options,work,*args):
+        assert options['page_selection']=='2' and options['translation_direction']=='en_to_zh'
+        output=work/'translated.pdf';make_pdf(output,['Rendered translation'])
+        ir=DocumentIR(source_type='pdf',pages=[Page(page_index=1,display_page_number=2,width_pt=595,height_pt=842)],
+            blocks=[Block(id='text',text='数量 12',original_text='Quantity 12',source=SourceAnchor(page_index=1))])
+        return EngineResult(ir,[result_file(output)],{'translated_blocks':1,'pipeline':'document-layout-v2'})
+    monkeypatch.setattr(image_translation,'convert_image_translation',convert)
     result = engine.convert_translation(path, "pdf_translate", {"translation_direction": "en_to_zh", "page_selection": "2"}, tmp_path / "work", lambda *a: None, lambda: False)
     assert [f["format"] for f in result.files] == ["pdf", "docx"]
     assert len(result.ir.pages) == 1 and result.ir.pages[0].page_index == 1
     assert result.ir.blocks[0].original_text == "Quantity 12"
+    assert [p.text for p in Document(result.files[1]['path']).paragraphs]==['第 2 页译文','数量 12']
 
 
 @pytest.mark.parametrize("protocol", ["dashscope", "openai"])
@@ -108,6 +122,52 @@ def test_online_contract_and_glossary(monkeypatch, protocol):
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": '{"translations":["Quantity 12"]}'}}]})
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
         assert engine.online_batch(["数量 12"], "zh_to_en", "数量=Quantity", lambda: False, client) == ["Quantity 12"]
+
+
+def test_mimo_uses_independent_connection_and_its_thinking_contract(monkeypatch):
+    monkeypatch.setattr(settings, "document_tools_ai_mode", "auto")
+    monkeypatch.setattr(settings, "document_tools_qwen_api_key", SecretStr("ocr-only-key"))
+    monkeypatch.setattr(settings, "document_tools_qwen_base_url", "https://ocr.example.test/api/v1")
+    monkeypatch.setattr(settings, "document_tools_qwen_protocol", "dashscope")
+    monkeypatch.setattr(settings, "document_tools_translation_api_key", SecretStr("translation-only-key"))
+    monkeypatch.setattr(settings, "document_tools_translation_base_url", "https://api.xiaomimimo.com/v1")
+    monkeypatch.setattr(settings, "document_tools_translation_protocol", "mimo")
+    monkeypatch.setattr(settings, "document_tools_translation_model", "mimo-v2.6-flash")
+    def handle(request):
+        assert str(request.url) == "https://api.xiaomimimo.com/v1/chat/completions"
+        assert request.headers["Authorization"] == "Bearer translation-only-key"
+        body=json.loads(request.content)
+        assert body["model"] == "mimo-v2.6-flash"
+        assert body["thinking"] == {"type":"disabled"}
+        assert body["max_completion_tokens"] == 8192
+        assert body["response_format"] == {"type":"json_object"}
+        assert "enable_thinking" not in body and "max_tokens" not in body
+        return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":'{"translations":["连衣裙配外套"]}'}}]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert engine.online_batch(["DRESS WITH JACKET"],"en_to_zh","",lambda:False,client)==["连衣裙配外套"]
+    assert settings.document_tools_qwen_api_key.get_secret_value()=="ocr-only-key"
+    assert settings.document_tools_qwen_base_url=="https://ocr.example.test/api/v1"
+
+
+@pytest.mark.parametrize('missing', ['key','base'])
+def test_partial_dedicated_translation_connection_never_uses_ocr_credentials(monkeypatch, missing):
+    monkeypatch.setattr(settings,"document_tools_ai_mode","auto")
+    monkeypatch.setattr(settings,"document_tools_qwen_api_key",SecretStr("ocr-key"))
+    monkeypatch.setattr(settings,"document_tools_qwen_base_url","https://ocr.example.test/v1")
+    monkeypatch.setattr(settings,"document_tools_translation_protocol","mimo")
+    monkeypatch.setattr(settings,"document_tools_translation_api_key",SecretStr("" if missing=='key' else "translation-key"))
+    monkeypatch.setattr(settings,"document_tools_translation_base_url","" if missing=='base' else "https://translation.example.test/v1")
+    assert not engine.online_configured()
+    with pytest.raises(ToolError) as error:
+        engine.online_batch(["Fabric"],"en_to_zh","",lambda:False)
+    assert error.value.code=='TRANSLATION_NOT_CONFIGURED'
+
+
+def test_dedicated_translation_configuration_respects_ai_off(monkeypatch):
+    monkeypatch.setattr(settings,"document_tools_translation_api_key",SecretStr("translation-key"))
+    monkeypatch.setattr(settings,"document_tools_translation_base_url","https://translation.example.test/v1")
+    monkeypatch.setattr(settings,"document_tools_ai_mode","off")
+    assert not engine.online_configured()
 
 
 @pytest.mark.parametrize("response", [{"translations": []}, {"translations": [""]}, {"translations": "wrong"}])

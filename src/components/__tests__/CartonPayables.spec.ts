@@ -59,7 +59,8 @@ it('supports explicit zero opening and a credit direction without guessing histo
 it('keeps effective and proposed amounts apart and gives supplier only its exact-version review actions', async () => {
   const row = { ...payableEntry(), id: 'OPEN1', kind: 'OPENING' as const, document_no: 'OPEN-SEP', active: payableVersion(), proposal: { ...payableVersion(), event_id: 'P2', version: 2, amount: '150.00', signed_amount: '150.00', status: 'PENDING_SUPPLIER' }, allowed_actions: ['REVIEW_OPENING', 'CONFIRM_OPENING'] }
   vi.mocked(api.workspace).mockResolvedValue({ ...payableWorkspace(), opening: row, records: { items: [row], total: 1, limit: 25, offset: 0 } }); vi.mocked(api.detail).mockResolvedValue({ ...row, account_revision: 7, source_fingerprint: 'f'.repeat(64) })
-  const w = mount(Component, { props: { internal: false, factories: [{ factory_id: 'huaxing' }], viewerKey: 'supplier:1' } }); await flushPromises(); await button(w, '期初、费用与资金凭证').trigger('click')
+  const w = mount(Component, { props: { internal: false, factories: [{ factory_id: 'huaxing' }], viewerKey: 'supplier:1' } }); await flushPromises()
+  expect(button(w, '收款和往来凭证').attributes('aria-pressed')).toBe('true')
   expect(w.text()).toContain('旧有效 100.00 暂计；新提议 150.00 待双方确认')
   await w.get('[aria-label="查看往来凭证 OPEN-SEP"]').trigger('click'); await flushPromises()
   expect(button(w, '内部确认期初')).toBeUndefined(); await w.get('[aria-label="应付处理原因"]').setValue('核对期初差异凭证'); await w.get('[aria-label="往来核对结果"]').setValue('DISPUTED'); await w.get('form').trigger('submit'); await flushPromises()

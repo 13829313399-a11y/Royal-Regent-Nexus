@@ -74,6 +74,7 @@ export interface Block {
   kind: string
   text: string
   original_text?: string
+  style?: { translation_status?: string; rendered?: boolean; review_notes?: string[] }
   source: Anchor
 }
 export interface Result {

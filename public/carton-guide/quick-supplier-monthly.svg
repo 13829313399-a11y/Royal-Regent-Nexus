@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="470" viewBox="0 0 1080 470" role="img" aria-labelledby="title desc">
-  <title id="title">本月对账：看金额和明细</title><desc id="desc">打开“月结对账 → 本月对账”，选对厂区、月份和币种。；看已验收送货、退货、退款和本月应结，展开原单明细。；有差异先联系本厂核实，再刷新；收款另看“应付与收款”。</desc>
+  <title id="title">本月对账：看金额和明细</title><desc id="desc">打开“月结对账 → 本月对账”，选对厂区、月份和币种。；看已验收送货、退货、退款和本月应结，展开原单明细。；金额有差异请核对原单。收到本厂付款后，在“收款与往来”核对凭证并回应。</desc>
   <rect width="1080" height="470" rx="20" fill="#f1f5f9"/>
   <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif">
     <text x="28" y="43" font-size="27" font-weight="700" fill="#0f172a">本月对账：看金额和明细</text>

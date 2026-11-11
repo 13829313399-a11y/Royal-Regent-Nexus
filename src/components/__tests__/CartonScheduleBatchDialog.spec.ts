@@ -12,14 +12,15 @@ vi.mock('@/api/cartonScheduleBatch', () => ({ cartonScheduleBatchApi: api }))
 const stubs = Object.fromEntries(['DialogRoot', 'DialogPortal', 'DialogOverlay', 'DialogContent', 'DialogTitle', 'DialogDescription'].map(name => [name, { template: '<div><slot /></div>' }]))
 const source = { customer_code: 'C1', customer_name: 'BUZZ BEE', contract_no: '53607', item_no: '57520', quantity: 4842, carton_rule: '6', customer_due_date: '2026-12-01', schedule_section: 'PENDING' as const, source_sheet: 'ITEM', source_row: 2, source_reference: 'SO-1' }
 const selection: ScheduleBatchPreview[] = [{ batchId: 'B1', source }, { batchId: 'B1', source: { ...source, contract_no: '53608', quantity: 588, source_row: 3, customer_due_date: '2026-12-03' } }]
-const config = { id: 'M1', kind: 'CONFIG', customer_code: '', code: '57520', status: 'ACTIVE', revision: 3, data: { lines: [{ packaging_type: '外箱', paper_quality: 'A33', specification: '40*30*20', dimension_unit: 'cm', unit: '个', usage_quantity: 24 }] } } as MasterRecord
+const configuredPaper = { packaging_type: '外箱', paper_quality: 'A33', specification: '40*30*20', dimension_unit: 'cm', unit: '个', usage_quantity: 24 }
+const config = { id: 'M1', kind: 'CONFIG', customer_code: '', code: '57520', status: 'ACTIVE', revision: 3, data: { lines: [configuredPaper] } } as MasterRecord
 const props = { open: true, factoryId: 'huaxing', identityKey: 'actor', viewerKey: 'actor-auth1', selection }
 function batch(rows = selection) { return { id: 'B1', status: 'PARSED', parse_summary: { schedule_customer: { customer_code: 'C1', customer_name: 'BUZZ BEE' }, rows: rows.map(row => row.source) } } }
 function render(overrides = {}) { return mount(Dialog, { props: { ...props, ...overrides }, global: { stubs } }) }
 beforeEach(() => { vi.resetAllMocks(); window.localStorage.clear(); pendingScheduleBatches.clear(); api.responsibilities.mockResolvedValue({ unrestricted: true, own_customer_codes: [] }); api.get.mockResolvedValue({ records: [config] }); api.importDetail.mockResolvedValue(batch()); api.create.mockResolvedValue([]) })
 
 it('calculates each independent source with schedule packing, retaining individual tail rounding', () => {
-  const lines = config.data.lines!.map(line => ({ ...line, usage_quantity: null }))
+  const lines = [{ ...configuredPaper, usage_quantity: null }]
   expect(batchPaperPreview(source, lines)[0]!.actual).toBe(807)
   expect(batchPaperPreview(selection[1]!.source, lines)[0]!.actual).toBe(98)
   expect(batchPaperPreview({ ...source, quantity: 7 }, lines)[0]!.actual).toBe(2)
@@ -51,6 +52,27 @@ it('automatically carries config, readonly source quantities and separate dates,
   expect(body.lines[0]).toMatchObject({ paper_quality: 'A33', specification: '40*30*20', usage_quantity: null })
   expect(body.supplier_id).toBeUndefined(); expect(body.customer_due_date).toBeUndefined()
   expect(wrapper.emitted('saved')).toHaveLength(1)
+  wrapper.unmount()
+})
+
+it('submits every source and preserves a hidden per-order override while searching the review', async () => {
+  const selected = Array.from({ length: 12 }, (_, index) => ({
+    batchId: 'B1', source: { ...source, source_row: index + 2, contract_no: `ROW-${index}`, customer_po: `00-PO-${index}` },
+  }))
+  api.importDetail.mockResolvedValue(batch(selected))
+  const wrapper = render({ selection: selected }); await flushPromises()
+  const review = wrapper.get('[aria-label="批量下单来源核对"]')
+  expect(review.findAll('article')).toHaveLength(10)
+  await review.findAll('button').find(button => button.text() === '下一页')!.trigger('click')
+  await wrapper.get('[aria-label="调整本单数量重量 ROW-11"]').trigger('click')
+  await wrapper.get('[aria-label="本单纸品 ROW-11"]').get('[aria-label="纸箱数量 1"]').setValue('900')
+  await wrapper.get('[aria-label="查找批量下单来源"]').setValue('00-PO-0')
+  expect(review.findAll('article')).toHaveLength(1)
+  await wrapper.get('[aria-label="批量下单计划交期"]').setValue('2026-11-25')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(api.create.mock.calls[0]![0].sources).toHaveLength(12)
+  expect(api.create.mock.calls[0]![0].order_overrides).toEqual([{ batch_id: 'B1', source_sheet: 'ITEM', source_row: 13,
+    lines: [{ line_no: 1, manual_quantity: 900 }] }])
   wrapper.unmount()
 })
 

@@ -70,8 +70,13 @@ def test_new_orders_do_not_inherit_previous_manual_status_or_split_formulas(monk
         assert len(new_rows)==6
         # Original reserved formulas are owned by the uploaded template. Rows
         # newly inserted or filled from another order may not inherit them.
+        if customer=='casdon':
+            # Casdon inserts every new product row, moving the original reserved
+            # row 11 down by six; a new row at 11 must not inherit its values.
+            assert sheet.cell(17,44).value=='="SO-OLD"'
+            assert sheet.cell(17,45).value=='="已下单"'
         for number in new_rows:
-            if number==11:
+            if number==11 and customer!='casdon':
                 assert sheet.cell(number,44).value=='="SO-OLD"'
             else:
                 assert sheet.cell(number,44).value is None

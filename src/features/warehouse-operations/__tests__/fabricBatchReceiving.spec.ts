@@ -15,7 +15,13 @@ vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: api, materialCateg
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: sourceApi }))
 const source = (id: string, unit = '码', category: 'FABRIC' | 'ACCESSORY' = 'FABRIC'): PurchaseDetail => ({ id, revision: 2, receipt_count: 0, can_receive: true,
   material_category: category, warehouse_received_quantity: '0', warehouse_outstanding_quantity: id === 'L1' ? '5' : null,
-  facts: { order_no: `PO-${id}`, material_code: id, material_name: `物料${id}`, supplier: '供应商', unit, source_category: 'PURCHASE', production_no: 'P1', style_no: 'ST1' }, available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', category, label: `一仓／${code}` })), evidence: [] } as PurchaseDetail)
+  facts: { order_no: `PO-${id}`, material_code: id, material_name: `物料${id}`, supplier: '供应商', unit, source_category: 'PURCHASE', production_no: 'P1', style_no: 'ST1',
+    status: 'PENDING', source_line_id: id, plan_no: '', old_material_code: '', contract_no: '', ordered_quantity: '100', reported_received_quantity: null,
+    unit_price: null, order_date: null, order_date_raw: '', delivery_detail: '', delivery_note_no: '', delivery_note_date: null, delivery_note_date_raw: '',
+    reported_receipt_date: null, reported_receipt_date_raw: '', supplier_reply: '', supplier_reply_date: null, second_reply: '', second_reply_date: null,
+    note: '', warehouse_note: '' },
+  available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', category, label: `一仓／${code}` })), evidence: [],
+})
 let wrapper: VueWrapper | undefined
 const body = () => new DOMWrapper(document.body)
 const button = (label: string) => body().findAll('button').find(item => item.text().startsWith(label))!
@@ -60,10 +66,13 @@ describe('carton-style fabric selection and batch receiving', () => {
     expect(button('保存全部并入库').attributes('disabled')).toBeUndefined()
   })
   it('calculates each item and groups batch amounts by currency without mixing inventory units', async () => {
-    await openDialog(); await fill()
+    const first = source('L1')
+    first.facts.unit_price = '0.04'
+    await openDialog([first, source('L2', '个', 'ACCESSORY')]); await fill()
     expect(body().get<HTMLSelectElement>('[aria-label="第1项入库币种"]').element.value).toBe('CNY')
     expect(body().get<HTMLSelectElement>('[aria-label="第2项入库币种"]').element.value).toBe('CNY')
-    await body().get('[aria-label="第1项入库单价"]').setValue('0.04')
+    await button('带入人民币参考价').trigger('click')
+    expect(body().get<HTMLInputElement>('[aria-label="第2项入库单价"]').element.value).toBe('')
     await body().get('[aria-label="第2项入库单价"]').setValue('10')
     await body().get('[aria-label="第2项入库币种"]').setValue('HKD')
     expect(body().text()).toContain('本批已填写金额合计：0.01 CNY')

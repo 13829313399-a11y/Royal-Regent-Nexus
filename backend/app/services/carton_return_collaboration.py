@@ -261,7 +261,11 @@ def detail(db, user, factory, identifier, *, external=False):
                             and item["credit_event_id"] == row.get("confirmation_id") for item in state["refunds"]): continue
                     voidable.append(row["id"])
             if voidable: actions.append("VOID")
-    if not external and active and current["return_date"] and _financial(user, factory): actions.append("CORRECT_DATE")
+    if not external and active and _financial(user, factory):
+        if current["return_date"]:
+            actions.append("CORRECT_DATE")
+        elif supplier:
+            actions.append("VERIFY_DATE")
     pending = bool(state["enabled"] and active and (counts["RECEIVE"] != quantity or counts["DISPUTE"] or not credit
         or proposed or required or any(row["status"] == "PROPOSED" for row in state["refunds"])))
     status = "LEGACY" if not state["enabled"] else "SOURCE_REVERSED" if not active else "RECONFIRM_REQUIRED" if required else (

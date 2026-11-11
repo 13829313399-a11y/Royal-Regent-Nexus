@@ -46,3 +46,10 @@ def test_blank_optional_fields_preserve_old_request_signature():
     old={'request_id':'00000000-0000-4000-8000-000000000001','expected_revision':1,
         'acknowledge_warnings':True,'reason':''}
     assert service.request_signature('CONFIRM','old',schema.DocumentAction(**old))==digest(['CONFIRM','old',old])
+    legacy_data = schema.HandoverData(lines=[schema.HandoverLine(id='L1')]).model_dump(mode='json')
+    for key in ('supplier_id', 'purchase_order_no'):
+        legacy_data.pop(key)
+    for key in ('unit_price', 'price_unit', 'currency', 'price_note', 'purchase_detail_id', 'purchase_order_no', 'ordered_quantity', 'plan_no'):
+        legacy_data['lines'][0].pop(key)
+    legacy = {**old, 'data': legacy_data}
+    assert service.request_signature('CONFIRM', 'old', schema.DocumentAction(**legacy)) == digest(['CONFIRM', 'old', legacy])

@@ -62,14 +62,13 @@ def settlement_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(
 def monthly_settlement_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
                                  currency: str = "CNY", db: Session = Depends(get_db),
                                  user: AuthContext = Depends(get_current_user)):
-    """Read-only copy of the internal simplified month, without internal blockers."""
+    """Read the shared month with supplier-safe source references and issue text."""
     from app.services import carton_monthly_settlement as monthly
     if not service.supplier_permission(user, "carton_supplier:read", factory_id):
         raise HTTPException(403, "没有本厂供应商月结查看权限")
-    data = monthly.workspace(db, factory_id, period, currency)
-    keys = ("source_key", "kind", "document_no", "acceptance_date", "customer_name", "contract_no",
-            "item_no", "packaging_type", "paper_quality", "specification", "unit", "quantity",
-            "unit_price", "amount", "currency")
+    # Release the authorization connection before opening the reconciliation snapshot.
+    db.close()
+    data = monthly.read_workspace(factory_id, period, currency)
     return {
         "factory_id": data["factory_id"], "supplier_name": data["supplier_name"],
         "period": data["period"], "currency": data["currency"], "read_only": True,
@@ -79,7 +78,9 @@ def monthly_settlement_workspace(factory_id: str, period: str = Query(pattern=r"
         "can_confirm": False,
         "can_dispute": False,
         "totals": data["totals"],
-        "lines": [{key: line.get(key) for key in keys} for line in data["lines"]],
+        "customers": data["customers"],
+        "global_issues": ["有凭证的日期或归属待核实，请与仓库核对。"] if data["global_issues"] else [],
+        "lines": [monthly.supplier_line(line) for line in data["lines"]],
     }
 
 

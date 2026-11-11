@@ -223,6 +223,10 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/modules/sales-business/mainland-invoice',
+    redirect: to => ({ name: 'mainland-invoice', query: to.query, hash: to.hash }),
+  },
+  {
+    path: '/modules/accounting/mainland-invoice',
     name: 'mainland-invoice',
     component: () => import('@/views/MainlandInvoiceView.vue'),
     meta: {
@@ -230,7 +234,7 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['mainland_invoice:generate'],
-      permissionDepartment: 'sales-business',
+      permissionDepartment: 'accounting',
       enforcePermissions: true,
       strictPermissions: true,
     },

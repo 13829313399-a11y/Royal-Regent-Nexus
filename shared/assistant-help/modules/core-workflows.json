@@ -174,17 +174,17 @@
       {
         "path": "src/features/three-d-printing/WorkspaceView.vue",
         "symbol": "legacy-sync",
-        "sha256": "0354c5424816ac9225fe61794fa9669162748dfbee474bfd9b8d98fb9bd3d328"
+        "sha256": "d2c4711765d4ff9814fa91515b8446ecfbbec33d4d406f1d0eb081b7a186b7ed"
       },
       {
         "path": "src/features/three-d-printing/components/LegacyPrinterGrid.vue",
         "symbol": "statusText",
-        "sha256": "757a42c0d577245e940ca066517d1177114f9d6ab5ff36f346bcd139b66ee6b5"
+        "sha256": "a81d7988bbf49741ed5be4e294af9fd98264124965926c2f8bf3971687683c1e"
       },
       {
         "path": "src/features/three-d-printing/printerPresentation.ts",
         "symbol": "printerStateText",
-        "sha256": "2426521b139268b0f3f239c2e98b905252004e6913c6f7823bc0ce801a6a08ec"
+        "sha256": "ce94fd756c49672ff7f4c950908463dc3546c108404e4cb34ffdd5e87c2b9de2"
       },
       {
         "path": "src/features/three-d-printing/legacy.css",
@@ -241,16 +241,16 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",
         "symbol": "remaining_quantity",
-        "sha256": "c89e7608d4f65dd2f27a38c3a54c6b5be4c4e539b6f6ba45a7a783d8973922f6"
+        "sha256": "afa400f5dfb08297d3d4ebf4cd2eb06078f8ae075d706d7a11edb41b10364d47"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def amend",
-        "sha256": "c7cdbfb22fa52f9095c783138d9725269ab9c68725f9c7431b35de72ec943ef4"
+        "sha256": "26e8c34c87178035649e9921010c2967b206c3f4186a221fd83b24c146b45059"
       }
     ],
-    "knowledge_version": "2026.10.26-core-workflows-v1",
-    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "knowledge_version": "2026.11.10-qc-source-outbox-compatible",
+    "verified_commit": "6c466bef-working-tree-source-review",
     "status": "verified"
   },
   {
@@ -269,7 +269,7 @@
       "inventoryMoneySummary"
     ],
     "summary": "结存按库存身份与仓位累计，数量分单位；待核价部分不能按零金额合计。",
-    "content": "当前结余 = 期初 + 入库 − 出库 + 调仓净额 + 调整。累计净入库与净出库包含对应冲销的抵减，不能再把冲销数量加一遍。结存是本仓位账面事实，不直接代表可分配、可领用或已经送达的数量。\n\n先核对客户、仓库、仓位、纸品类型与计数单位。不同单位不直接相加；同一库存身份混合多种订单来源时，类型筛选保留整项结存，不拆分或重复计算。当前筛选结果与全部库存条数应区分。\n\n显示金额后，如果存在待核价或核算记录，已计价小计只包含可计价部分；待核价数量明确单列，不按 0 补齐。金额按币种分开。排查：先清理无意筛选、核对仓位及单位，再查看相关收发与冲销原始记录；不能直接改结余来凑数。引导只定位台账，盘点、出入库和月结仍由原流程执行。\n盘点确认按本厂门槛校验权限。非零差异保留待抽查或复核记录，可在库存月结记录查看并进入异常处理填写主管结论；不会因入账自动清除。\n盘点页面普通读取期间可以切换页面；仅刷新已保存盘点单不会变成未保存。已填写的实盘数量或差异原因须先保存草稿，或点“返回库存台账”确认放弃。正在生成盘点单、保存或入账时须等待完成，提示会说明具体操作，处理完成后自动消除。",
+    "content": "当前结余 = 期初 + 入库 − 出库 + 调仓净额 + 调整。累计净入库与净出库包含对应冲销的抵减，不能再把冲销数量加一遍。结存是本仓位账面事实，不直接代表可分配、可领用或已经送达的数量。\n\n先核对客户、仓库、仓位、纸品类型与计数单位。不同单位不直接相加；同一库存身份混合多种订单来源时，类型筛选保留整项结存，不拆分或重复计算。当前筛选结果与全部库存条数应区分。\n\n显示金额后，如果存在待核价或核算记录，已计价小计只包含可计价部分；待核价数量明确单列，不按 0 补齐。金额按币种分开。排查：先清理无意筛选、核对仓位及单位，再查看相关收发与冲销原始记录；不能直接改结余来凑数。引导只定位台账，盘点、出入库和月结仍由原流程执行。\n盘点确认按本厂门槛校验权限。非零差异保留待抽查或复核记录，可在库存月结记录查看并进入异常处理填写主管结论；不会因入账自动清除。\n盘点页面普通读取期间可以切换页面；仅刷新已保存盘点单不会变成未保存。已填写的实盘数量或差异原因须先保存草稿，或点“返回库存台账”确认放弃。正在生成盘点单、保存或入账时须等待完成，提示会说明具体操作，处理完成后自动消除。\n异常处理中的盘点差异可直接查看原盘点单。复核记录由有主管调整权限的人员在异常处理填写结论。",
     "steps": [
       {
         "title": "核对库存范围",
@@ -297,7 +297,7 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "inventoryMoneySummary",
-        "sha256": "dcf2f99e78e0598bfdacfa387ef106a59019fabe076daa224497a2d4a4d4ebe5"
+        "sha256": "450e93ff3704fcb1652042033a7f7b31791ff20bc0023610502a8dac738fad2b"
       }
     ],
     "knowledge_version": "2026-10-29-carton-asset-v1b",

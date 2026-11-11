@@ -1,0 +1,38 @@
+{
+  "python_version": "3.12.10",
+  "target": "Windows x64",
+  "native_downloads": [
+    {
+      "name": "python-3.12.10-embed-amd64.zip",
+      "source": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
+      "bytes": 11133606,
+      "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
+    },
+    {
+      "name": "7z2606-mac.tar.xz",
+      "source": "https://github.com/ip7z/7zip/releases/download/26.06/7z2606-mac.tar.xz",
+      "bytes": 965712,
+      "sha256": "b6f17920b4240940461dac8ef4009891881ac44d2a5ead625ede2ec8472185dd"
+    },
+    {
+      "name": "tesseract-5.5.3-windows.exe",
+      "source": "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.3/tesseract-ocr-w64-setup-5.5.3.20260724.exe",
+      "bytes": 26573224,
+      "sha256": "bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4"
+    }
+  ],
+  "ocr_languages": [
+    {
+      "name": "eng.traineddata",
+      "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "bytes": 4113088
+    },
+    {
+      "name": "chi_sim.traineddata",
+      "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/chi_sim.traineddata",
+      "sha256": "a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730",
+      "bytes": 2469156
+    }
+  ]
+}

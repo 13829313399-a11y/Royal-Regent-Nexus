@@ -357,6 +357,6 @@ def binding_targets(db, user, factory, external=False):
         if db.scalar(select(special.SpecialVersion.id).where(special.SpecialVersion.request_id == row.id,
                 special.SpecialVersion.action == 'DELETED').limit(1)): continue
         result.append(dict(order_id=row.id, order_kind='SAMPLE' if row.kind == 'SAMPLE' else 'MISC', order_no=row.request_no, contract_no='',
-            customer_name=row.customer_name, item_no='', revision=row.revision, issue_id=row.current_version_id,
+            customer_name=row.customer_name, item_no='', revision=row.revision, issue_id=row.current_version_id, ordered_at=row.created_at,
             lines=[dict(id=line.id, label=f'{line.packaging_type} · {line.item_no}') for line in special.lines(db, row)]))
     return result

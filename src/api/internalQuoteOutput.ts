@@ -38,6 +38,7 @@ export interface OutputCell {
   binding: { group?: string; groups?: string[]; kind: 'name' | 'price' | 'source' } | null
 }
 export interface OutputLayout {
+  source_workbooks_pending?: boolean
   import_sources?: Array<{ id: string; file_name: string; department: string; import_type: import('./internalQuote').ApiInternalQuoteImportPreview['import_type']; editable: boolean; revision: number }>
   quote_id: string
   version_label: string
@@ -61,11 +62,13 @@ export interface OutputEdits {
 
 export function createInternalQuoteOutputApi(client: InternalQuoteHttpClient = http) {
   return {
-    async get(quoteId: string) {
-      return (await client.get<OutputLayout>(`/internal-quotes/${quoteId}/output-layout`)).data
+    async get(quoteId: string, includeSourceWorkbooks = true) {
+      return (await client.get<OutputLayout>(`/internal-quotes/${quoteId}/output-layout`,
+        { params: { include_source_workbooks: includeSourceWorkbooks } })).data
     },
-    async preview(quoteId: string, edits: OutputEdits) {
-      return (await client.post<OutputLayout>(`/internal-quotes/${quoteId}/output-layout/preview`, edits)).data
+    async preview(quoteId: string, edits: OutputEdits, includeSourceWorkbooks = true) {
+      return (await client.post<OutputLayout>(`/internal-quotes/${quoteId}/output-layout/preview`, edits,
+        { params: { include_source_workbooks: includeSourceWorkbooks } })).data
     },
     async save(quoteId: string, edits: OutputEdits) {
       return (await client.put<ApiInternalQuoteWholeProductSave>(`/internal-quotes/${quoteId}/output-layout`, edits)).data

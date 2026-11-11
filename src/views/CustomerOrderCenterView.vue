@@ -61,10 +61,26 @@ const standardNavigationItems = [
   { id: 'materials' as const, label: '箱唛资料', icon: FileInput },
   { id: 'feedback' as const, label: '反馈与答复', icon: MessagesSquare },
 ]
+const huakangBSections = new Set<CustomerOrderCenterSection>(['jp-intake', 'ledger', 'customer-schedule', 'materials', 'feedback'])
 const navigationItems = computed(() => activeFactory.value.id === 'huakang-b'
-  ? [...standardNavigationItems.slice(0, 2), { id: 'jp-intake' as const, label: 'JP问单录入', icon: FileInput }, ...standardNavigationItems.slice(2)]
+  ? [{ id: 'jp-intake' as const, label: 'JP问单录入', icon: FileInput }, ...standardNavigationItems.filter(item => huakangBSections.has(item.id))]
   : standardNavigationItems)
-watch(() => activeFactory.value.id, () => { if (activeSection.value === 'jp-intake') activeSection.value = 'ledger' })
+function normalizeSection(section: CustomerOrderCenterSection): CustomerOrderCenterSection {
+  if (activeFactory.value.id === 'huakang-b' && !huakangBSections.has(section)) return 'jp-intake'
+  if (activeFactory.value.id !== 'huakang-b' && section === 'jp-intake') return 'ledger'
+  return section
+}
+watch(() => activeFactory.value.id, factory => {
+  if (factory === 'huakang-b') activeSection.value = focusedOrderId.value ? 'ledger' : 'jp-intake'
+  else if (activeSection.value === 'jp-intake') activeSection.value = 'ledger'
+}, { immediate: true })
+// Old PO-import bookmarks must not reopen the unrelated formal-order workspace in B.
+watch(() => route.query.section, section => {
+  if (activeFactory.value.id === 'huakang-b' && typeof section === 'string'
+    && ['dashboard', 'import', 'preview', 'exceptions', 'schedule', 'jp-intake'].includes(section)) {
+    activeSection.value = 'jp-intake'
+  }
+}, { immediate: true })
 watch(() => activeFactory.value.id, () => { materialsSearch.value = '' })
 
 function reportProblem(context?: FeedbackContext) {
@@ -76,6 +92,7 @@ function reportProblem(context?: FeedbackContext) {
 }
 
 function navigate(section: CustomerOrderCenterSection) {
+  section = normalizeSection(section)
   if (section !== 'ledger') clearFocusedOrder()
   activeSection.value = section
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -123,14 +140,14 @@ function navigate(section: CustomerOrderCenterSection) {
       <div class="order-sidebar__heading">
         <span class="order-sidebar__mark"><CalendarRange aria-hidden="true" /></span>
         <div>
-          <component :is="activeSection === 'jp-intake' ? 'p' : 'h1'" class="order-sidebar__title">客户订单中心</component>
-          <p class="order-sidebar__subtitle">客户订单与统一排期</p>
+          <component :is="activeSection === 'jp-intake' ? 'p' : 'h1'" class="order-sidebar__title">{{ activeFactory.id === 'huakang-b' ? '华康B问单' : '客户订单中心' }}</component>
+          <p class="order-sidebar__subtitle">{{ activeFactory.id === 'huakang-b' ? '邮件问单与金山导出' : '客户订单与统一排期' }}</p>
         </div>
       </div>
 
-      <button type="button" class="order-new-button" @click="navigate('import')">
+      <button type="button" class="order-new-button" @click="navigate(activeFactory.id === 'huakang-b' ? 'jp-intake' : 'import')">
         <FileInput aria-hidden="true" />
-        新建导入
+        {{ activeFactory.id === 'huakang-b' ? '新建问单' : '新建导入' }}
       </button>
 
       <nav class="order-sidebar__nav" aria-label="客户订单中心页面">
@@ -153,12 +170,17 @@ function navigate(section: CustomerOrderCenterSection) {
           <CircleAlert aria-hidden="true" />
           当前阶段
         </div>
-        <ol>
+        <ol v-if="activeFactory.id === 'huakang-b'">
+          <li><b>01</b><span>准备排期与货价参照</span></li>
+          <li><b>02</b><span>导入邮件并核对问单明细</span></li>
+          <li><b>03</b><span>确认编号并导出金山 Excel</span></li>
+        </ol>
+        <ol v-else>
           <li><b>01</b><span>导入并核对客户 PO</span></li>
           <li><b>02</b><span>确认后保存订单台账</span></li>
           <li><b>03</b><span>发送订单与凭出货单确认走货</span></li>
         </ol>
-        <p>订单中心不维护生产、物料、库存或排产数据。</p>
+        <p>{{ activeFactory.id === 'huakang-b' ? '问单导出不等于已录入金山或成为正式订单。' : '订单中心不维护生产、物料、库存或排产数据。' }}</p>
       </div>
     </aside>
 
@@ -188,6 +210,7 @@ function navigate(section: CustomerOrderCenterSection) {
       </nav>
 
       <CustomerOrderCenterWorkspace
+        v-if="activeFactory.id !== 'huakang-b' || activeSection === 'ledger' || activeSection === 'customer-schedule'"
         v-show="activeSection !== 'feedback' && activeSection !== 'jp-intake' && activeSection !== 'materials'"
         ref="orderWorkspace"
         :key="activeFactory.id"

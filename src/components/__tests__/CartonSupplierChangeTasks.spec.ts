@@ -9,7 +9,7 @@ const task = (patch: Partial<SupplierChangeTask> = {}): SupplierChangeTask => ({
   source_kind: 'SPECIAL', source_id: 'VERSION', factory_id: 'huaxing', order_id: 'REQ', order_no: 'SP-1', document_no: 'SP-1',
   expected_revision: 3, status: 'PENDING', is_cancellation: false, read: false, read_at: '', reason: '', responded_by: '', responded_at: '',
   promised_date: '', planned_date: '2026-10-25', before_date: '2026-10-24', created_at: '2026-10-20', age_days: 1, overdue: true,
-  action: 'ADJUSTED', responsibility: '', lines: [{ id: 'PAPER', packaging_type: '普通箱', paper_quality: 'A=B', specification: '1*2*3', unit: '个', before_quantity: '10', quantity: '12' }],
+  action: 'ADJUSTED', responsibility: '', lines: [{ id: 'PAPER', packaging_type: '普通箱', paper_quality: 'A=B', specification: '1*2*3', unit: '个', before_quantity: '10', quantity: '12', before_material: { unit: '张', item_no: 'OLD-ITEM' } }],
   material_changed: false, pending: true, can_respond: true, ...patch,
 })
 const workspace = (row = task()) => ({ items: [row], pending_count: row.pending ? 1 : 0, overdue_count: row.overdue ? 1 : 0, disputed_count: 0 })
@@ -20,6 +20,29 @@ beforeEach(() => { vi.clearAllMocks(); api.list.mockResolvedValue(workspace()); 
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('durable supplier change tasks', () => {
+  it('derives dashboard filters and counts together, resetting the page when categories change', async () => {
+    const waiting = Array.from({ length: 11 }, (_, index) => task({ source_id: `P-${index}`, document_no: `待办-${index}`, read: true }))
+    const disputed = task({ source_id: 'DISPUTE', document_no: '已回异议', status: 'DISPUTED', read: true, responded_at: '2026-10-20' })
+    const stop = task({ source_id: 'STOP', document_no: '停止版本', is_cancellation: true })
+    api.list.mockResolvedValue({ items: [...waiting, disputed, stop] })
+    const wrapper = setup({ internal: true, embedded: true, taskFilter: 'pending' }); await flushPromises()
+    expect(wrapper.emitted('pending-state')!.at(-1)![0]).toMatchObject({ stats: { pending: 13, read: 11, cancellation: 1, disputed: 1 } })
+    expect(wrapper.findAll('details')).toHaveLength(10)
+    await click(wrapper, '下一页')
+    expect(wrapper.text()).toContain('第 2 / 2 页')
+    await wrapper.setProps({ taskFilter: 'read' })
+    expect(wrapper.text()).toContain('第 1 / 2 页 · 共 11 项')
+    expect(wrapper.text()).not.toContain('已回异议')
+    await wrapper.setProps({ taskFilter: 'disputed' })
+    expect(wrapper.text()).toContain('已回异议')
+    expect(wrapper.findAll('details')).toHaveLength(1)
+    api.list.mockRejectedValueOnce(new Error('测试读取失败'))
+    await click(wrapper, '刷新待办')
+    expect(wrapper.text()).toContain('暂不可用')
+    expect(wrapper.text()).not.toContain('当前分类暂无通知')
+    expect(wrapper.findAll('details')).toHaveLength(0)
+    expect(api.respond).not.toHaveBeenCalled()
+  })
   it('pauses hidden polling and coalesces visibility/focus refresh while preserving unsent fields', async () => {
     vi.useFakeTimers()
     let state = 'visible'
@@ -46,8 +69,8 @@ describe('durable supplier change tasks', () => {
       lines: [{ ...task().lines[0]!, promised_date: '2026-10-28' },
         { ...task().lines[0]!, id: 'PAPER-2', packaging_type: '刀卡', promised_date: '2026-10-29' }] })))
     const wrapper = setup({ internal: true, showClosed: true }); await flushPromises()
-    expect(wrapper.text()).toContain('当前承诺交期：2026-10-28')
-    expect(wrapper.text()).toContain('当前承诺交期：2026-10-29')
+    expect(wrapper.text()).toContain('当前承诺交期 2026-10-28')
+    expect(wrapper.text()).toContain('当前承诺交期 2026-10-29')
     expect(wrapper.text()).not.toContain('承诺 2026-10-26')
   })
   it('submits a durable request on HTTP origins without crypto.randomUUID', async () => {
@@ -74,7 +97,10 @@ describe('durable supplier change tasks', () => {
     expect(api.respond.mock.calls[0]![0]).toMatchObject({ action: 'READ', source_kind: 'SPECIAL', source_id: 'VERSION', expected_revision: 3 })
     expect(api.respond.mock.calls[0]![0]).not.toHaveProperty('promised_date')
     expect(wrapper.text()).toContain('已读，回执单独记录'); expect(wrapper.text()).toContain('同意本版本全部纸品并接单')
-    expect(wrapper.text()).toContain('数量 10 → 12 个')
+    const comparison = wrapper.get('[aria-label="交期及纸品版本对照"]')
+    expect(comparison.text()).toContain('货号 OLD-ITEM')
+    expect(comparison.text()).toContain('数量 10 张')
+    expect(comparison.text()).toContain('数量 12 个')
   })
   it('preserves unsent date and dispute text through a routine refresh and retries the same request id', async () => {
     const wrapper = setup(); await flushPromises()

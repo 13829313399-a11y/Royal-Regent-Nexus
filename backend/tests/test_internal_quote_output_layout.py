@@ -61,6 +61,16 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert source_cells["B1"]["text"] == "=1+2"
         assert all(cell["binding"] is None for cell in source_cells.values())
         import app.services.internal_quote_output_layout as layout_service
+        with monkeypatch.context() as quick:
+            def unexpected_parse(*args, **kwargs):
+                raise AssertionError("initial quotation must not parse uploaded spreadsheets")
+            quick.setattr(layout_service, "_append_spreadsheet_attachment_sheets", unexpected_parse)
+            initial = client.get(root + "/output-layout?include_source_workbooks=false")
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["sheets"] == [sheet for sheet in layout["sheets"] if "source" not in sheet]
+            assert initial.json()["source_workbooks_pending"] is True
+            for key in ["base_token", "groups", "factory_price_hkd", "quote_price_hkd", "warnings"]:
+                assert initial.json()[key] == layout[key]
         with monkeypatch.context() as restricted:
             restricted.setattr(layout_service, "_can_access_attachment_department", lambda user, quote, department: False)
             restricted_view = client.get(root + "/output-layout")
@@ -78,6 +88,10 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert preview.status_code == 200, preview.text
         assert preview.json()["formula_errors"] == []
         assert next(s for s in preview.json()["sheets"] if s["name"] == "original") == source_sheet
+        quick_preview = client.post(root + "/output-layout/preview?include_source_workbooks=false", json=body)
+        assert quick_preview.status_code == 200, quick_preview.text
+        assert quick_preview.json()["sheets"] == [sheet for sheet in preview.json()["sheets"] if "source" not in sheet]
+        assert quick_preview.json()["quote_price_hkd"] == preview.json()["quote_price_hkd"]
         with monkeypatch.context() as restricted:
             restricted.setattr(layout_service, "_can_access_attachment_department", lambda user, quote, department: False)
             restricted_preview = client.post(root + "/output-layout/preview", json=body)
@@ -105,6 +119,24 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert editable["read_only"] is False and any(g["editable"] for g in editable["groups"])
         from test_internal_quote_alternatives import freeze_versions
         freeze_versions(client, [current])
+        from sqlalchemy import event
+        from app.db import engine
+        import re
+        statements = []
+        def capture_sql(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+        event.listen(engine, "before_cursor_execute", capture_sql)
+        try:
+            assert client.get(root + "/attachments").status_code == 200
+            assert client.get(root + "/exports").status_code == 200
+        finally:
+            event.remove(engine, "before_cursor_execute", capture_sql)
+        assert not any(re.search(r"internal_quote_(?:attachments|export_files)\.content\b", sql) for sql in statements)
+        frozen_initial = client.get(root + "/output-layout?include_source_workbooks=false").json()
+        assert frozen_initial["read_only"] is True
+        assert frozen_initial["source_workbooks_pending"] is True
+        assert not any("source" in sheet for sheet in frozen_initial["sheets"])
+
         exported = client.get(root + f"/exports/{issued.json()['id']}/download")
         book = load_workbook(BytesIO(exported.content))
         assert book["original"].sheet_state == "visible"

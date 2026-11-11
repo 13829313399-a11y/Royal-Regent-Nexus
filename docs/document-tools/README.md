@@ -8,11 +8,23 @@
 
 `word_translate`、`pdf_translate`、`excel_translate` 复用上传、独立 worker、个人任务、撤回与结果下载。支持 `translation_direction=zh_to_en|en_to_zh` 和 `translation_engine=offline|online`。Word 输出 DOCX；旧 DOC/XLS 先经 LibreOffice 转为 DOCX/XLSX。Excel 按所选 `sheets` 翻译文字并保留公式、数字、合并格和原始包结构；空选择表示包含隐藏表在内的全部工作表。Word 翻译正文、表格、页眉页脚等文字，Office 图片中的文字不翻译。Word/Excel 不支持按预览页选取翻译范围。
 
-PDF 支持 `page_selection`，先原生提取/扫描识别，再生成重新排版的 PDF 和可编辑 DOCX；必须有 Office 渲染引擎。译文不承诺原页数/布局不变，图片中的原文及扫描识别需核验。翻译结果提供原文对照、校样及下载；网页中的译文为只读，需要修改时下载编辑或重新发起翻译。
+PDF 支持 `page_selection`，与图片翻译共用完整读取、语义复核、原位排版和完整对照输出。输出原位 PDF、完整对照 PDF/TXT 及阅读顺序 DOCX；未回填译文仍保留，未确认内容单列需核对。PDF 原文字层仍保留，不是脱敏。生成 DOCX 不再依赖 Office 渲染引擎，但在线页图理解需要支持图片的已配置翻译模型、本地 OCR 和 Node 合成运行时。网页译文只读，下载后编辑；详细边界见 [图片/PDF 翻译](image-translation.md)。
 
-离线模式使用现有 `DOCUMENT_TRANSLATION_MODEL_DIR` 和 `DOCUMENT_TRANSLATION_DEVICE`，PDF OCR 强制本地，不外发内容。在线模式需要 `DOCUMENT_TOOLS_AI_MODE=auto`，复用服务器 `DOCUMENT_TOOLS_QWEN_API_KEY`、`DOCUMENT_TOOLS_QWEN_BASE_URL`、`DOCUMENT_TOOLS_QWEN_PROTOCOL` 和超时设置，新增 `DOCUMENT_TOOLS_TRANSLATION_MODEL`（默认 `qwen3-vl-plus`）。DashScope 使用多模态 generation 地址和支持纯文字输入的 VL 模型；兼容 Chat 协议使用配置的 `/chat/completions` 地址。协议参考：[千问文本生成官方文档](https://www.alibabacloud.com/help/en/model-studio/text-generation)。API 与 worker 必须同时获得这些配置并重启。
+离线模式使用现有 `DOCUMENT_TRANSLATION_MODEL_DIR` 和 `DOCUMENT_TRANSLATION_DEVICE`，PDF OCR 强制本地，不外发内容。在线模式需要 `DOCUMENT_TOOLS_AI_MODE=auto` 和 `DOCUMENT_TOOLS_TRANSLATION_MODEL`（默认 `qwen3-vl-plus`）。可通过独立的 `DOCUMENT_TOOLS_TRANSLATION_API_KEY`、`DOCUMENT_TOOLS_TRANSLATION_BASE_URL`、`DOCUMENT_TOOLS_TRANSLATION_PROTOCOL` 连接翻译服务，协议支持 `dashscope`、`openai`、`mimo`。仅在独立密钥和地址均为空且协议为默认 `inherit` 时，复用原有 `DOCUMENT_TOOLS_QWEN_*` 连接；部分填写的独立连接不会借用 OCR 密钥。独立连接未指定协议时采用 `openai`；超时仍由 `DOCUMENT_TOOLS_QWEN_TIMEOUT_SECONDS` 控制。此连接用于公共 Word/PDF/Excel/图片在线翻译；PDF/图片的整页视觉读取和复核也使用此连接。其他转换操作的 OCR/layout 继续使用各自的 Qwen 设置。DashScope 使用多模态 generation 地址和支持纯文字输入的 VL 模型；兼容 Chat 协议使用配置的 `/chat/completions` 地址。协议参考：[千问文本生成官方文档](https://www.alibabacloud.com/help/en/model-studio/text-generation)。API 与 worker 必须同时获得这些配置并重启。
 
-在线模式仅将需要翻译的文字和用户填写的 `glossary` 术语发送至已配置服务；PDF 扫描识别还可能发送图像区域。密钥只在服务器配置，不写入前端、任务或日志。在线批次最多 12 段，通常不超过 2400 字符；单段可独立发送至原有 6000 字符上限，不截断段内文字。截断、格式异常、空译文或数量不符时，失败批次按原顺序二分重试，单段最多再试一次；不会重复发送已经成功的批次。只接受完整 JSON 或完整 JSON 代码块，不猜测缺失译文的对应位置。网络、鉴权、限流、服务拒绝以及数字/型号变化仍明确失败，不自动切回离线；恢复失败的任务也不发布部分结果。离线批次仍为最多 30 段/6000 字符，总量上限仍为 50 万字符。能力接口的配置就绪状态不代表真实翻译精度已验证，上线应以合成样本对目标服务实测。
+本地使用 MiMo-V2.6-Flash 时，在忽略 Git 的 `backend/.env` 配置以下独立翻译连接。真实密钥仅填写在本地文件中：
+
+```dotenv
+DOCUMENT_TOOLS_AI_MODE=auto
+DOCUMENT_TOOLS_TRANSLATION_API_KEY=<本地私有密钥>
+DOCUMENT_TOOLS_TRANSLATION_BASE_URL=https://api.xiaomimimo.com/v1
+DOCUMENT_TOOLS_TRANSLATION_PROTOCOL=mimo
+DOCUMENT_TOOLS_TRANSLATION_MODEL=mimo-v2.6-flash
+```
+
+MiMo 使用 Bearer 鉴权、`max_completion_tokens`、`thinking.type` 和 JSON 对象响应格式。Office 初译、PDF/图片原文识别和分批初译关闭深度思考；PDF/图片的文件上下文和语义复核开启有上限的深度思考。接口依据：[小米 MiMo 官方 Chat Completions 文档](https://mimo.mi.com/docs/en-US/api/chat/openai-api)。页面选择“在线 AI 精译”后使用该连接；“服务器离线翻译”继续使用本地模型。此配置不改变独立助手或生产服务器。
+
+在线 PDF/图片翻译会发送所选完整页图、文字与术语并复核内容；离线模式不外发但不提供视觉语义复核。Word/Excel 在线翻译只发送需要翻译的文字和用户填写的 `glossary`。以下文字分批规则适用于 Office 翻译：密钥只在服务器配置，不写入前端、任务或日志。在线批次最多 12 段，通常不超过 2400 字符；单段可独立发送至原有 6000 字符上限，不截断段内文字。截断、格式异常、空译文或数量不符时，失败批次按原顺序二分重试，单段最多再试一次；不会重复发送已经成功的批次。只接受完整 JSON 或完整 JSON 代码块，不猜测缺失译文的对应位置。网络、鉴权、限流、服务拒绝以及数字/型号变化仍明确失败，不自动切回离线；恢复失败的任务也不发布部分结果。离线批次仍为最多 30 段/6000 字符，总量上限仍为 50 万字符。能力接口的配置就绪状态不代表真实翻译精度已验证，上线应以合成样本对目标服务实测。
 
 若在本地使用千问 3.8 Flash，可在已配置连接的 `backend/.env` 中设置以下三项，分别覆盖扫描识别、版面理解及在线翻译：
 

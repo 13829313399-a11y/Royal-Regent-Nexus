@@ -1,10 +1,10 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 const { monthlyMock } = vi.hoisted(() => ({ monthlyMock: vi.fn() }))
 vi.mock('@/api/cartonSupplierSettlement', () => ({ supplierSettlementApi: { supplierMonthlyWorkspace: monthlyMock } }))
 
-import Component from '../CartonSupplierMonthlySummary.vue'
+import Component from '../CartonSettlementOverview.vue'
 
 const line = (overrides: Record<string, unknown> = {}) => ({
   source_key: 'RECEIPT:1', kind: 'RECEIPT', document_no: 'DN-1', acceptance_date: '2026-10-02',
@@ -14,7 +14,7 @@ const line = (overrides: Record<string, unknown> = {}) => ({
 })
 
 const summary = (overrides: Record<string, unknown> = {}) => ({
-  factory_id: 'huaxing', supplier_name: '东康', period: '2026-10', currency: 'CNY', read_only: true,
+  factory_id: 'huaxing', supplier_name: '东康', period: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 7), currency: 'CNY', read_only: true,
   status: 'OPEN', stale: false, locked_at: null, submitted_at: null, supplier_confirmed_at: null,
   disputed_reason: '', can_confirm: false, can_dispute: false,
   totals: { inbound: '1380.00', returns: '0.00', refunds: '0.00', net: '1380.00', documents: 2, receipt_lines: 3, return_lines: 0, refund_lines: 0 },
@@ -25,9 +25,61 @@ const summary = (overrides: Record<string, unknown> = {}) => ({
 
 beforeEach(() => { monthlyMock.mockReset() })
 
+it('includes verified cash refunds in the source formula without displaying a goods quantity', async () => {
+  const data = summary()
+  monthlyMock.mockResolvedValue({
+    ...data,
+    totals: { ...data.totals, returns: '64.00', refunds: '9.00', net: '1325.00', refund_lines: 1 },
+    lines: [line({ source_key: 'REFUND:1', kind: 'RETURN_REFUND', document_no: 'CASH-1', quantity: '0', amount: '9.00',
+      reference: { kind: 'RETURN', id: 'return-1', refund_id: 'refund-1' } })],
+  })
+  const wrapper = mount(Component, { props: { supplier: true, factories: [{ factory_id: 'huaxing' }] } }); await flushPromises()
+  expect(wrapper.text()).toContain('1,325.00 人民币')
+  expect(wrapper.text()).toContain('本月已核实现金退款')
+  expect(wrapper.text()).toContain('已核实退款 9.00')
+  const refund = wrapper.get('tbody tr')
+  expect(refund.text()).toContain('CASH-1')
+  expect(refund.findAll('td')[5]?.text()).toBe('—')
+  await refund.get('button').trigger('click')
+  expect(wrapper.emitted('open-return')).toEqual([['huaxing', 'return-1', 'refund-1']])
+  wrapper.unmount()
+})
+
+it('clears previous amounts while changing the original currency', async () => {
+  monthlyMock.mockResolvedValueOnce(summary())
+  let finish!: (value: ReturnType<typeof summary>) => void
+  monthlyMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  const wrapper = mount(Component, { props: { supplier: true, factories: [{ factory_id: 'huaxing' }] } })
+  try {
+    await flushPromises()
+    expect(wrapper.text()).toContain('1,380.00 人民币')
+    await wrapper.get('[aria-label="供应商对账币种"]').setValue('USD')
+    expect(wrapper.get('[role="status"]').text()).toContain('美元')
+    expect(wrapper.text()).not.toContain('1,380.00')
+    expect(wrapper.text()).not.toContain('DN-1')
+    finish(summary({ currency: 'USD', totals: { ...summary().totals, inbound: '5.00', net: '5.00' }, lines: [] }))
+    await flushPromises()
+    expect(wrapper.text()).toContain('5.00 美元')
+  } finally { wrapper.unmount() }
+})
+
+it('clears prior figures while the replacement viewer loads and rejects a different factory response', async () => {
+  monthlyMock.mockResolvedValueOnce(summary())
+  let done!: (value: ReturnType<typeof summary>) => void
+  monthlyMock.mockImplementationOnce(() => new Promise(resolve => { done = resolve }))
+  const wrapper = mount(Component, { props: { supplier: true, factories: [{ factory_id: 'huaxing' }], viewerKey: 'first' } }); await flushPromises()
+  expect(wrapper.text()).toContain('1,380.00')
+  await wrapper.setProps({ viewerKey: 'second' })
+  expect(wrapper.text()).not.toContain('1,380.00')
+  done(summary({ factory_id: 'huakang-a' })); await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toContain('与当前厂区、月份或币种不一致')
+  expect(wrapper.text()).not.toContain('DN-1')
+  wrapper.unmount()
+})
+
 it('shows a read-only month with Chinese factory and currency labels', async () => {
   monthlyMock.mockResolvedValue(summary())
-  const wrapper = mount(Component, { props: { factories: [{ factory_id: 'huaxing' }, { factory_id: 'huakang-a' }] } })
+  const wrapper = mount(Component, { props: { supplier: true, factories: [{ factory_id: 'huaxing' }, { factory_id: 'huakang-a' }] } })
   await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
   expect(monthlyMock).toHaveBeenCalledWith('huaxing', expect.any(String), 'CNY')
   expect(wrapper.get('[aria-label="供应商对账厂区"]').findAll('option').map(option => option.text())).toEqual(['华兴', '华康A'])
@@ -45,7 +97,7 @@ it('shows a read-only month with Chinese factory and currency labels', async () 
 
 it('filters the shared lines with the page search without confirmation controls', async () => {
   monthlyMock.mockResolvedValue(summary())
-  const wrapper = mount(Component, { props: { factories: [{ factory_id: 'huaxing' }] } })
+  const wrapper = mount(Component, { props: { supplier: true, factories: [{ factory_id: 'huaxing' }] } })
   await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
   expect(wrapper.get('[aria-label="供应商本月对账明细"]').text()).toContain('DN-2')
   await wrapper.setProps({ search: 'DN-2' }); await wrapper.vm.$nextTick()

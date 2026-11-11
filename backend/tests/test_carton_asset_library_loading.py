@@ -59,7 +59,9 @@ def test_library_reuses_one_scan_and_refreshes_after_reimport(monkeypatch):
             assert first[asset['id']] == asset
         assert first[originals[0]['id']]['targets'][0]['id'] == original_batch['id']
         # A new HTTP read must not reuse the previous read's schedule snapshot.
-        new_batch = schedule(client, [source_row(contract='LIB-READ', item='LIB-ITEM')])
+        new_batch = schedule(client, [source_row(contract='OTHER', item='OTHER'),
+                                      source_row(contract='LIB-READ', item='LIB-ITEM')])
+        assert new_batch['id'] != original_batch['id']
         fresh = listing()
         assert all(fresh[asset['id']]['targets'][0]['id'] == new_batch['id'] for asset in originals)
         # Cross-import ambiguity retains the canonical rejection, not stale links.
@@ -159,11 +161,11 @@ def test_schedule_source_still_resolves_its_explicit_purchase(monkeypatch):
         from app.db import SessionLocal
         from app.models.carton_mark import CartonMarkAsset
         from app.services import carton_asset_targets as targets, carton_procurement as core
-        state = Mock(wraps=core.schedule_order_state)
-        monkeypatch.setattr(core, 'schedule_order_state', state)
+        evidence = Mock(wraps=core._schedule_order_link_evidence)
+        monkeypatch.setattr(core, '_schedule_order_link_evidence', evidence)
         with SessionLocal() as db:
             assert targets.source_purchase_order_ids(db, db.get(CartonMarkAsset, asset['id'])) == {order['id']}
-        assert state.call_count == 1
+        assert evidence.call_count == 1
         supplier_login(client)
         result = next(x for x in ok(client.get(BASE, params={**F, 'owner_department': 'supplier'}))['items'] if x['id'] == asset['id'])
         assert {x['id'] for x in result['targets']} == {order['id']}

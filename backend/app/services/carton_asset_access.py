@@ -69,7 +69,17 @@ def ensure(db,user,asset,*,write=False,confirm=False,library=False,supplier=None
         from app.services.carton_supplier_portal import supplier_access
         current=supplier_access(db,user,asset.factory_id,'carton_supplier:edit' if write else 'carton_supplier:read')
         if current.id!=supplier.id or asset.asset_purpose=='EVIDENCE': raise HTTPException(404,'资料不可访问')
-        if department is None: raise HTTPException(404,'历史资料缺少可信归属')
+        if department is None:
+            # Explicitly named sharing is sufficient for reading an old source;
+            # it must not invent ownership or grant supplier mutation rights.
+            from app.services.carton_mark_sharing import current as sharing_current
+            shared=sharing_current(db,asset)
+            decision=authorization_decision(user,'carton_asset:read',asset.factory_id,'supplier')
+            if (not write and not confirm and asset.asset_purpose=='MATERIAL'
+                    and shared['sharing_mode']=='SUPPLIER' and shared['shared_supplier_id']==current.id
+                    and (decision[0] or decision[1]=='default')):
+                return
+            raise HTTPException(404,'历史资料未向当前供应商共享或不允许修改')
         if classification and confirm and not can_confirm(user,asset.factory_id,'supplier'):
             raise HTTPException(403,'没有资料状态确认权限')
         own=department=='supplier' and asset.owner_supplier_id==current.id

@@ -1,18 +1,18 @@
-"""Simplified monthly supplier settlement with one review round and one lock.
-
-Money still comes from the audited settlement source builder, so supplier
-delivery prices, returns and refunds keep their existing evidence. The flow is
-plain: the factory submits the month, the supplier confirms it, then the factory
-locks it. All state is derived from immutable audit events; no new table.
-"""
+"""Read-only monthly reconciliation for both portals and legacy audit projection."""
+from collections import defaultdict
 import json
 from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.models.carton_procurement import CartonAuditEvent
+from app import db as database
+from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement, CartonReceiptLine
+from app.models.carton_special_requests import SpecialShipment, UnifiedDelivery
+from app.models.carton_supplier_portal import SupplierShipment
 from app.services import carton_procurement as core
+from app.services import carton_source_links
+from app.services import carton_supplier_portal as portal
 from app.services import carton_supplier_settlement as legacy
 
 ENTITY = "carton_monthly_settlement"
@@ -118,10 +118,138 @@ def blocking_issues(rows, issues, undated) -> list[str]:
     return unique
 
 
+def _totals(rows):
+    receipts = [row for row in rows if row["kind"] == "RECEIPT"]
+    returns = [row for row in rows if row["kind"] == "RETURN"]
+    refunds = [row for row in rows if row["kind"] == "RETURN_REFUND"]
+    inbound, return_amount, refund_amount = _sum(receipts), _sum(returns), _sum(refunds)
+    net = None if inbound is None or return_amount is None else money(inbound - return_amount + (refund_amount or Decimal(0)))
+    return {
+        "inbound": None if inbound is None else str(inbound),
+        "returns": None if return_amount is None else str(return_amount),
+        "refunds": None if refund_amount is None else str(refund_amount),
+        "net": None if net is None else str(net),
+        "documents": len({row["document_no"] for row in receipts if row.get("document_no")}),
+        "receipt_lines": len(receipts), "return_lines": len(returns), "refund_lines": len(refunds),
+    }
+
+
+def _return_id(row):
+    return row.get("return_movement_id") or (row["source_key"].removeprefix("RETURN:") if row["kind"] == "RETURN" else "")
+
+
+def _delivery_links(db, factory, supplier_id, receipts):
+    if not receipts:
+        return {}
+    linked = carton_source_links.line_sources(db, factory, list(receipts))
+    links = {key: value["delivery_id"] for key, value in linked.items()}
+    remaining = {receipt_id for key, receipt_id in receipts.items() if key not in links}
+    if remaining:
+        groups = carton_source_links.delivery_ids(db, factory)
+        direct = defaultdict(set)
+        for shipment in db.scalars(select(SupplierShipment).where(SupplierShipment.factory_id == factory,
+                SupplierShipment.supplier_id == supplier_id, SupplierShipment.receipt_id.in_(remaining))):
+            direct[shipment.receipt_id].add(groups.get(shipment.id, "FORMAL:" + shipment.id))
+        links.update({key: next(iter(direct[receipt_id])) for key, receipt_id in receipts.items()
+                      if key not in links and len(direct[receipt_id]) == 1})
+
+    # Only offer supplier-owned links. The original detail endpoint rechecks authorization.
+    permitted = set()
+    for model, prefix in ((UnifiedDelivery, ""), (SupplierShipment, "FORMAL:"), (SpecialShipment, "SPECIAL:")):
+        ids = {identifier.removeprefix(prefix) for identifier in links.values()
+               if (identifier.startswith(prefix) if prefix else ":" not in identifier)}
+        if ids:
+            permitted.update(prefix + identifier for identifier in db.scalars(select(model.id).where(
+                model.factory_id == factory, model.supplier_id == supplier_id, model.id.in_(ids))))
+    return {key: identifier for key, identifier in links.items() if identifier in permitted}
+
+
+def _customer(code, name):
+    return (f"code:{code}" if code else f"name:{name}" if name else "unassigned", name or code or "未填写客户")
+
+
+def _reconciliation_details(db, factory, supplier_id, rows):
+    receipts = {row["source_key"].removeprefix("RECEIPT:"): row["receipt_id"] for row in rows if row["kind"] == "RECEIPT"}
+    receipt_codes = dict(db.execute(select(CartonReceiptLine.id, CartonReceiptLine.customer_code).where(
+        CartonReceiptLine.factory_id == factory, CartonReceiptLine.id.in_(receipts))).all()) if receipts else {}
+    return_ids = {_return_id(row) for row in rows} - {""}
+    return_codes = dict(db.execute(select(CartonInventoryMovement.id, CartonInventoryMovement.customer_code).where(
+        CartonInventoryMovement.factory_id == factory, CartonInventoryMovement.id.in_(return_ids))).all()) if return_ids else {}
+    delivery_links = _delivery_links(db, factory, supplier_id, receipts)
+    customer_rows = defaultdict(list)
+    names = {}
+    for row in rows:
+        if row["kind"] == "RECEIPT":
+            line_id = row["source_key"].removeprefix("RECEIPT:")
+            code = receipt_codes.get(line_id)
+            row["reference"] = {"kind": "RECEIPT", "id": row["receipt_id"]}
+            if line_id in delivery_links:
+                row["supplier_reference"] = {"kind": "DELIVERY", "id": delivery_links[line_id]}
+        else:
+            movement_id = _return_id(row)
+            code = return_codes.get(movement_id)
+            if movement_id in return_codes:
+                row["reference"] = {"kind": "RETURN", "id": movement_id}
+                if row["kind"] == "RETURN_REFUND":
+                    row["reference"]["refund_id"] = row["refund_evidence"]["id"]
+                # An anomalous historical refund can survive a change in source ownership.
+                if row["kind"] == "RETURN" or not row["issues"]:
+                    row["supplier_reference"] = row["reference"]
+        key, label = _customer(code, row.get("customer_name"))
+        row["customer_key"] = key
+        names.setdefault(key, label)
+        customer_rows[key].append(row)
+    return [{"key": key, "name": names[key], "totals": _totals(customer_rows[key])}
+            for key in sorted(customer_rows, key=lambda key: (names[key], key))]
+
+
+def supplier_line(row):
+    keys = ("source_key", "kind", "document_no", "acceptance_date", "date_basis", "customer_key", "customer_name", "contract_no",
+            "item_no", "packaging_type", "paper_quality", "specification", "unit", "quantity", "unit_price", "amount", "currency")
+    safe = {key: row.get(key) for key in keys}
+    safe["issues"] = []
+    if row["kind"] == "RECEIPT":
+        if row["amount"] is None:
+            safe["issues"].append("送货单价待核实")
+        if not row["acceptance_date"]:
+            safe["issues"].append("实际验收日期待核实")
+        if row["issues"] and not safe["issues"]:
+            safe["issues"].append("原送货与验收资料有差异，请与仓库核对")
+    elif row["kind"] == "RETURN":
+        if row["issues"]:
+            safe["issues"].append("退货签收、日期或贷项待核对")
+        elif row["amount"] is None:
+            safe["issues"].append("退货贷项金额待核实")
+    elif row["issues"]:
+        safe["issues"].append("退款与原退货的关联待核实")
+    if row.get("price_basis") == "SUPPLIER_ORIGINAL":
+        safe["price_basis"] = "SUPPLIER_ORIGINAL"
+    safe["reference"] = row.get("supplier_reference")
+    return safe
+
+
 def workspace(db, factory: str, period: str, currency: str) -> dict:
     factory = core.require_carton_factory(factory)
     core._lock_receipt_factory(db, factory)
-    supplier = core.get_active_supplier(db, factory, None)
+    return _build_workspace(db, factory, period, currency)
+
+
+def read_workspace(factory: str, period: str, currency: str) -> dict:
+    """Read reconciliation in one transaction-scoped snapshot."""
+    factory = core.require_carton_factory(factory)
+    with database.SessionLocal() as snapshot:
+        connection = snapshot.connection()
+        if connection.dialect.name == "postgresql":
+            connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        elif connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("BEGIN")
+        else:
+            raise RuntimeError("Monthly reconciliation snapshots require PostgreSQL or SQLite")
+        return _build_workspace(snapshot, factory, period, currency)
+
+
+def _build_workspace(db, factory: str, period: str, currency: str) -> dict:
+    supplier = portal.fixed_supplier(db, factory)
     try:
         core._period_bounds(period)
     except (ValueError, OverflowError):
@@ -129,17 +257,20 @@ def workspace(db, factory: str, period: str, currency: str) -> dict:
     currency = core.normalize_currency(currency)
     rows, fingerprint, issues, undated = legacy.sources(db, factory, supplier.id, period, currency)
     adopt_supplier_original_prices(db, factory, rows)
-    receipts = [row for row in rows if row["kind"] == "RECEIPT"]
-    returns = [row for row in rows if row["kind"] == "RETURN"]
-    refunds = [row for row in rows if row["kind"] == "RETURN_REFUND"]
-    inbound, return_amount, refund_amount = _sum(receipts), _sum(returns), _sum(refunds)
-    net = None if inbound is None or return_amount is None else money(inbound - return_amount + (refund_amount or Decimal(0)))
+    totals = _totals(rows)
+    customers = _reconciliation_details(db, factory, supplier.id, rows)
+    receipt_groups = defaultdict(list)
+    for row in rows:
+        if row["kind"] == "RECEIPT":
+            receipt_groups[row.get("packaging_type") or "纸品类型待补"].append(row)
+    packaging = [{"name": name, "amount": None if (amount := _sum(group)) is None else str(amount)}
+                 for name, group in receipt_groups.items()]
     identifier = entity_id(supplier.id, period, currency)
     state = workflow_state(db, factory, identifier)
     stale = is_stale(state, fingerprint)
     status = "STALE" if stale and state["status"] in REVIEWED else state["status"]
     blockers = blocking_issues(rows, issues, undated)
-    if net is None:
+    if totals["net"] is None:
         blockers = blockers or ["本月金额仍有未核实价格，不能提交核对"]
     return {
         "factory_id": factory, "supplier_id": supplier.id, "supplier_name": supplier.supplier_name,
@@ -154,16 +285,10 @@ def workspace(db, factory: str, period: str, currency: str) -> dict:
         "locked_totals": state["totals"] if status == "LOCKED" else None,
         "can_submit": False,
         "can_lock": False,
-        "totals": {
-            "inbound": None if inbound is None else str(inbound),
-            "returns": None if return_amount is None else str(return_amount),
-            "refunds": None if refund_amount is None else str(refund_amount),
-            "net": None if net is None else str(net),
-            "documents": len({row["document_no"] for row in receipts if row.get("document_no")}),
-            "receipt_lines": len(receipts),
-            "return_lines": len(returns),
-            "refund_lines": len(refunds),
-        },
+        "totals": totals,
+        "customers": customers,
+        "packaging": packaging,
+        "global_issues": blocking_issues([], issues, undated),
         "blockers": blockers,
         "lines": rows,
     }
@@ -173,8 +298,8 @@ def adopt_supplier_original_prices(db, factory: str, rows) -> None:
     """A supplier's own delivery-note price settles the line; no manual correction queue.
 
     When the receipt price is unresolved (zero/blank pending review) but the
-    supplier note recorded a price at receipt time, use that supplier price.
-    Lines without any supplier price still stay unresolved and block submission.
+    supplier note recorded a positive price at receipt time, use that supplier price.
+    Confirmed free prices are already projected by the canonical source builder.
     """
     from app.models.carton_price_review import CartonPriceReview
     reviews = {row.receipt_line_id: row for row in db.scalars(
@@ -183,7 +308,7 @@ def adopt_supplier_original_prices(db, factory: str, rows) -> None:
         if row["kind"] != "RECEIPT" or row["amount"] is not None:
             continue
         review = reviews.get(row["source_key"].removeprefix("RECEIPT:"))
-        if review is None or review.original_unit_price is None:
+        if review is None or review.original_unit_price is None or review.original_unit_price <= 0:
             continue
         price = Decimal(str(review.original_unit_price))
         row["unit_price"] = str(price)

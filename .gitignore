@@ -173,3 +173,8 @@ outputs/opening-inventory-template-20260909/
 !/services/indonesia-shipping/**/*.md
 !/docs/indonesia-shipping.md
 !/docs/frontend/indonesia-shipping-brief.md
+# QC complete-record activation, recovery and access contract.
+!/docs/business/qc-complete-records.md
+
+# Preserve the pinned Indonesia solution as source.
+!/services/indonesia-shipping/IndoShipping.sln

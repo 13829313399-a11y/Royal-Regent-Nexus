@@ -267,7 +267,7 @@ def create(db, number, body, user):
             raise HTTPException(409, "同印刷拆单须沿用原单现有关联资料；更换印刷请明确选择印刷不同")
         original_files = inherited or file_manifest(db, user, body.factory_id, body.original_asset_ids)
     plan = dict(id="CPS-" + uuid4().hex, factory_id=body.factory_id, order_id=order.id,
-        order_no=order.order_no, contract_no=order.contract_no, item_no=order.item_no,
+        order_no=order.order_no, contract_no=order.contract_no, item_no=order.item_no, customer_po=order.customer_po,
         customer_code=order.customer_code, customer_name=order.customer_name, supplier_id=order.supplier_id,
         status="DRAFT", revision=0, created_at=core.now_text(), created_by=user.id,
         created_by_name=user.display_name, reason=body.reason, body=body.model_dump(mode="json"),
@@ -458,6 +458,8 @@ def task(plan, user, *, internal):
         "WITHDRAWING": "PENDING"}.get(plan["status"], plan["status"])
     return dict(source_kind="PRINT", source_id=plan["id"], factory_id=plan["factory_id"],
         order_id=plan["order_id"], order_no=plan["order_no"], document_no="订单拆分 · " + plan["order_no"],
+        customer_name=plan.get("customer_name", ""), contract_no=plan.get("contract_no", ""),
+        customer_po=plan.get("customer_po") or "", item_nos=[plan["item_no"]] if plan.get("item_no") else [],
         expected_revision=plan["revision"], status=status, is_cancellation=plan["status"] == "WITHDRAWING",
         read=plan["read"], read_at="", reason=plan.get("response_reason", ""),
         responded_by=plan.get("responded_by", ""), responded_at=plan.get("responded_at", ""),

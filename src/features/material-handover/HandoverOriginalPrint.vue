@@ -53,11 +53,15 @@ watch(() => [props.file, props.token], async () => {
 onBeforeUnmount(() => { epoch++; release() })
 </script>
 <template>
-  <section ref="root" class="original-print-preview">
-    <div class="original-preview-heading"><h2>原单加码打印预览</h2><p>保留原单内容，顶部预留二维码位置。请核对文字、分页与缸号；识别明细有修改时附系统确认明细。</p><p v-if="progress" role="status">{{ progress }}</p></div>
-    <div class="original-print-pages"><div v-for="page in pages" :key="page.name" class="original-print-page" :style="{ page: page.name, '--original-width': `${page.width}pt`, '--original-height': `${page.height}pt` }"><img :src="page.image" alt="带交接二维码的原单打印页" /></div></div>
-  </section>
+  <p v-if="progress" class="original-render-status" role="status">{{ progress }}</p>
+  <div v-if="pages.length" ref="root" class="original-print-pages">
+    <div v-for="page in pages" :key="page.name" class="original-print-page" :style="{ page: page.name, '--original-width': `${page.width}pt`, '--original-height': `${page.height}pt` }">
+      <img :src="page.image" alt="带交接二维码的原单打印页" />
+    </div>
+  </div>
 </template>
 <style scoped>
-.original-print-preview{margin:20px 0;background:white;border:1px solid #dce5e1;border-radius:10px;padding:20px}.original-preview-heading h2{font-size:18px;font-weight:650}.original-preview-heading p{color:#667a73;margin:8px 0;font-size:13px}.original-print-pages{max-height:650px;overflow:auto;padding:12px;background:#e8eee9}.original-print-page{width:var(--original-width);max-width:100%;margin:0 auto 16px;box-shadow:0 1px 6px #243b3020;background:white}.original-print-page img{display:block;width:100%;height:auto}@media print{.original-print-preview{margin:0!important;padding:0!important;border:0!important;border-radius:0!important}.original-preview-heading{display:none!important}.original-print-pages{max-height:none;overflow:visible;padding:0;background:white}.original-print-page{max-width:none;width:var(--original-width);height:var(--original-height);margin:0;box-shadow:none;break-after:page}.original-print-page:last-child{break-after:auto}.original-print-page img{width:100%;height:100%}}
+.original-render-status{margin:8px 0;color:#64748b;font-size:13px}
+.original-print-pages{max-height:650px;overflow:auto;padding:12px;background:#e8eee9}.original-print-page{width:var(--original-width);max-width:100%;margin:0 auto 16px;box-shadow:0 1px 6px #243b3020;background:white}.original-print-page img{display:block;width:100%;height:auto}
+@media print{.original-render-status{display:none!important}.original-print-pages{max-height:none;overflow:visible;padding:0;background:white}.original-print-page{max-width:none;width:var(--original-width);height:var(--original-height);margin:0;box-shadow:none;break-after:page}.original-print-page:last-child{break-after:auto}.original-print-page img{width:100%;height:100%}}
 </style>

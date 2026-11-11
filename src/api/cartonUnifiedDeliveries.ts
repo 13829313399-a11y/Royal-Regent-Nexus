@@ -27,11 +27,17 @@ export function unifiedDeliveryLineKind(group: UnifiedDelivery, line: UnifiedDel
 }
 // Display/filter projection only. Mutations always use the original typed group.
 export function toPortalShipment(group: UnifiedDelivery): PortalShipment {
-  const history = group.receipts.map(receipt => ({ receipt_id: receipt.receipt_id || receipt.id,
-    acceptance_date: receipt.acceptance_date || null, confirmed_at: '', status: receipt.status || '', lines: [] }))
+  const formalHistory = group.formal?.acceptance_history ?? []
+  const formalReceiptIds = new Set(formalHistory.flatMap(batch => batch.receipt_id ? [batch.receipt_id] : []))
+  // Supplier history includes actual dates even when internal receipt IDs are withheld.
+  const history = [...formalHistory, ...group.receipts
+    .filter(receipt => !formalReceiptIds.has(receipt.receipt_id || receipt.id || ''))
+    .map(receipt => ({ receipt_id: receipt.receipt_id || receipt.id,
+      acceptance_date: receipt.acceptance_date || null, confirmed_at: '', status: receipt.status || '', lines: [] }))]
+  const acceptanceDates = [group.formal?.acceptance_date || '', ...history.map(row => row.acceptance_date || '')]
   return { ...group.formal, id: group.id, delivery_note_no: group.delivery_note_no, delivery_date: group.delivery_date,
     status: group.status, revision: group.revision, created_at: group.created_at, confirmed_at: '',
-    acceptance_date: history.map(row => row.acceptance_date || '').sort().at(-1) || null,
+    acceptance_date: acceptanceDates.sort().at(-1) || null,
     acceptance_history: history, acceptance_lines: [], requires_correction: group.requires_correction, can_operate: group.can_operate,
     lines: group.lines.map(line => ({ ...line, business_kind: unifiedDeliveryLineKind(group, line), source_type: line.source_kind === 'FORMAL' ? line.source_type as ShipmentLine['source_type'] : undefined,
       order_line_id: line.source_kind === 'SPECIAL' && line.origin !== 'SUPPLIER_EXTRA' ? line.original_special_line_id || null : line.order_line_id,
@@ -41,6 +47,7 @@ const prefix = (supplier: boolean) => supplier ? '/carton-supplier/unified-deliv
 export const cartonUnifiedDeliveriesApi = {
   async warehouseReceive(body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<{ delivery_id: string; receipts: CartonReceiptResponse[] }>(`${prefix(false)}/warehouse-receive`, body, { signal })).data },
   async detail(factory: string, id: string, signal?: AbortSignal) { return (await http.get<UnifiedDelivery>(`${prefix(false)}/${encodeURIComponent(id)}`, { params: { factory_id: factory }, signal })).data },
+  async supplierDetail(factory: string, id: string, signal?: AbortSignal) { return (await http.get<UnifiedDelivery>(`${prefix(true)}/${encodeURIComponent(id)}`, { params: { factory_id: factory }, signal })).data },
   async list(factory: string, supplier = false, signal?: AbortSignal) { return (await http.get<{ items: UnifiedDelivery[]; total: number; options?: { workshops: { id: string; name: string }[] } }>(prefix(supplier), { params: { factory_id: factory }, signal })).data },
   async dispatch(body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<UnifiedDelivery>(prefix(true), body, { signal })).data },
   async receive(id: string, body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<UnifiedDelivery>(`${prefix(false)}/${encodeURIComponent(id)}/receive`, body, { signal })).data },
