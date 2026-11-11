@@ -26,13 +26,23 @@ async function open(permissions=['read','report_write','report_review','handover
   vi.mocked(reportingApi.read).mockResolvedValue(clone(data))
   router=createRouter({history:createMemoryHistory(),routes:[...cuttingOperationsRoutes,{path:'/modules/production',component:{template:'<div>生产部</div>'}}]})
   await router.push(path);await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
-  await button('查看填数').trigger('click');await flushPromises()
+  await button('查看记录').trigger('click');await flushPromises()
 }
 async function form(){await button('填报此任务').trigger('click');await field('本次套数').setValue('10');await field('现场依据').setValue('现场核套人A确认10套');await field('本次提交').setValue('文员填回实际数')}
 beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(false)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it('keeps the order and active form when switching record views', async () => {
+    await open()
+    expect(button('查看记录').attributes('aria-current')).toBe('true')
+    await form()
+    await button('裁片配套').trigger('click')
+    expect(button('裁片配套').attributes('aria-pressed')).toBe('true')
+    expect(field('本次套数').element).toHaveProperty('value','10')
+    expect(button('查看记录').attributes('aria-current')).toBe('true')
+    expect(reportingApi.read).toHaveBeenCalledTimes(1)
+  })
   it('uses the successfully applied date for new reports, even after a failed statistics refresh',async()=>{
     await open()
     await field('统计截至日期').setValue('2026-10-09')
@@ -57,7 +67,7 @@ describe('cutting production facts and save protection',()=>{
     await open(undefined,view,[order,second])
     await field('统计截至日期').setValue('2026-10-09')
     vi.mocked(reportingApi.read).mockResolvedValueOnce({...clone(view),line_id:'line-2',as_of:'2026-10-11'})
-    await wrapper.findAll('button').filter(b=>b.text()==='查看填数')[1]!.trigger('click');await flushPromises()
+    await wrapper.findAll('button').filter(b=>b.text()==='查看记录')[1]!.trigger('click');await flushPromises()
     expect(reportingApi.read).toHaveBeenLastCalledWith('line-2',undefined,1,undefined,undefined)
     expect(field('统计截至日期').element).toHaveProperty('value','2026-10-11')
     await button('填报此任务').trigger('click')
@@ -222,7 +232,7 @@ describe('cutting production facts and save protection',()=>{
     expect(wrapper.text()).toContain('已确认原操作未执行');expect(field('本次套数').element).toHaveProperty('value','10')
   })
   it('keeps read-only users away from write controls',async()=>{
-    await open(['read']);expect(wrapper.text()).toContain('未完成套数');expect(wrapper.findAll('button').some(b=>b.text()==='填报此任务')).toBe(false)
+    await open(['read']);expect(wrapper.get('.report-totals').text()).toContain('未完成');expect(wrapper.findAll('button').some(b=>b.text()==='填报此任务')).toBe(false)
   })
   it('uses frozen historical context for remaining handover',async()=>{
     const data=clone(view),t=data.tasks[0]!;t.historical=true;t.mode='sets';t.settlement_context={plan_version:3,dispatch_id:'old',bom_id:'bom',bom_version:2,parts:t.parts,task_name:t.name,task_target:50,resource_id:'r',resource_name:'本厂',execution:'internal',actual_review_pending:false}
@@ -235,7 +245,7 @@ describe('cutting production facts and save protection',()=>{
   it('ignores a late order response after a newer selection',async()=>{
     await open();let resolve!: (data:ProductionView)=>void
     vi.mocked(reportingApi.read).mockReturnValueOnce(new Promise(r=>{resolve=r})).mockResolvedValueOnce({...clone(view),version:99})
-    await button('查看填数').trigger('click');await button('查看填数').trigger('click');await flushPromises();resolve({...clone(view),version:8});await flushPromises()
+    await button('查看记录').trigger('click');await button('查看记录').trigger('click');await flushPromises();resolve({...clone(view),version:8});await flushPromises()
     await form();vi.mocked(reportingApi.command).mockResolvedValue(clone(view));await wrapper.get('form.report-form').trigger('submit');await flushPromises()
     expect(reportingApi.command).toHaveBeenCalledWith('line-1','post',expect.objectContaining({expected_version:99}),'2026-10-10')
   })
@@ -245,7 +255,7 @@ describe('cutting production facts and save protection',()=>{
     t.parts=[]
     await open(undefined,data)
     expect(wrapper.text()).toContain('以下实绩余额归属：原裁剪车间')
-    expect(wrapper.text()).toContain('前片 0 片')
+    expect(wrapper.text()).toContain('前片余 0 片')
     expect(wrapper.text()).toContain('冻结 BOM V2')
   })
 })
