@@ -78,11 +78,17 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
         access.writes();user=locked(db,user,factory)
         if refresh_actor:user=refresh_actor()
         department,supplier_id=access.owner(db,user,factory,body.owner_department,supplier=body.owner_department=='supplier')
+        if department=='supplier' and body.sharing_mode is not None:
+            raise HTTPException(422,'供应商资料请使用共享厂区设置')
+        if body.purpose=='EVIDENCE' and body.sharing_mode=='SUPPLIER':
+            raise HTTPException(403,'客户凭据禁止共享给供应商')
         supplier=supplier_for(db,user,factory,department)
         if supplier and body.purpose=='EVIDENCE':raise HTTPException(403,'客户凭据只允许内部上传')
         recognition,content=prepared
         sha=hashlib.sha256(content).hexdigest()
-        rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_UPLOAD',dict(body=body.model_dump(),sha256=sha,name=recognition['file_name']))
+        # Omitted audience keeps the pre-upgrade request digest for uncertain retries.
+        body_data=body.model_dump(exclude={'sharing_mode'} if body.sharing_mode is None else set())
+        rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_UPLOAD',dict(body=body_data,sha256=sha,name=recognition['file_name']))
         if saved and 'result' in saved:
             asset=assets.active_asset(db,factory,saved['result']['asset_id'])
             access.ensure(db,user,asset,write=True,supplier=supplier)
@@ -124,7 +130,14 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
         from app.services.carton_asset_visibility import record as record_visibility
         record_visibility(db,user,asset,body.shared_factory_ids)
         recipient=receiver(db,asset,rows)
-        sharing.record(db,user,asset,'SUPPLIER' if recipient else 'INTERNAL',recipient)
+        if body.sharing_mode=='SUPPLIER' and not recipient:
+            raise HTTPException(422,'当前厂区未配置唯一有效的对应供应商，请核对或选择仅内部可见')
+        mode=body.sharing_mode or ('SUPPLIER' if recipient else 'INTERNAL')
+        if parent and body.sharing_mode is None:
+            previous=sharing.current(db,parent)
+            if previous['sharing_mode'] in {'SUPPLIER','INTERNAL'}:
+                mode=previous['sharing_mode'];recipient=previous['shared_supplier_id']
+        sharing.record(db,user,asset,mode,recipient if mode=='SUPPLIER' else '')
         assets.audit(db,user,asset,'CARTON_MARK_ASSET_CREATED',dict(sha256=sha,owner_department=department,owner_supplier_id=supplier_id,purpose=body.purpose))
         requests.record_request(db,user,asset,rid,saved,dict(asset_id=asset.id))
         result=output(db,user,asset,supplier=supplier)
@@ -132,10 +145,11 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
     except BaseException:db.rollback();raise
 
 
-def output(db,user,asset,*,supplier=None,view_factory=None):
+def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_factory=None,supplier_candidates=None):
     if supplier is None and view_factory in (None,asset.factory_id):supplier=access.external_actor(db,user,asset)
     access.ensure(db,user,asset,supplier=supplier,view_factory=view_factory)
     state=lifecycle.current(db,asset)
+    audience=sharing.current(db,asset)
     from app.services.carton_asset_visibility import factories
     can_manage=access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory,collaborate=True,collaboration_action='associate')
     can_share=bool(supplier) and access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory,collaboration_action='share')
@@ -143,16 +157,24 @@ def output(db,user,asset,*,supplier=None,view_factory=None):
     can_confirm=access.visible(db,user,asset,write=True,confirm=True,supplier=supplier,view_factory=view_factory,collaborate=True,classification=True)
     statuses=(['DRAFT','PENDING','HISTORY'] if can_classify else []) + (['READY'] if can_confirm and asset.asset_purpose=='MATERIAL' else [])
     if state.superseded_by_asset_id:statuses=[]
-    visible_targets=targets.valid(db,asset,view_factory)
+    visible_targets=targets.valid(db,asset,view_factory,schedule_rows_by_factory=schedule_rows_by_factory)
     if view_factory in (None,asset.factory_id):visible_targets=collaboration.display_targets(db,asset,visible_targets)
     if supplier:
         purchase_ids=targets.purchase_order_ids(db,asset)
         special_ids={(x['kind'],x['id']) for x in visible_targets if x.get('supplier_id')==supplier.id}
-        visible_targets=[x for x in targets.candidates(db,user,asset.factory_id,supplier=supplier)
+        candidates=targets.candidates(db,user,asset.factory_id,supplier=supplier) if supplier_candidates is None else supplier_candidates
+        visible_targets=[x for x in candidates
             if x['kind']=='REGULAR' and x['id'] in purchase_ids or (x['kind'],x['id']) in special_ids]
+    blocker=association_blocker(db,asset,supplier)
+    original_manage=access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory)
     return dict(id=asset.id,factory_id=asset.factory_id,owner_department=asset.owner_department,
+        legacy_source=not bool(asset.owner_department),association_blocker=blocker,
+        can_manage_original=original_manage,photo_group_id=asset.photo_group_id,
+        sharing_mode=audience['sharing_mode'],shared_supplier_name=audience['shared_supplier_name'],
+        can_change_audience=bool(not supplier and asset.asset_purpose=='MATERIAL' and asset.owner_department!='supplier' and view_factory in (None,asset.factory_id)
+            and access.visible(db,user,asset,write=True)),
         view_factory_id=view_factory or asset.factory_id,shared_factory_ids=factories(db,asset),
-        can_classify=bool(statuses),allowed_statuses=statuses,can_associate=can_manage,can_share=can_share,
+        can_classify=bool(statuses),allowed_statuses=statuses,can_associate=can_manage and not blocker,can_share=can_share,
         required_shared_factory_ids=[asset.factory_id] if collaboration.internal(asset) else [],
         created_by_name=asset.created_by_name,created_at=asset.created_at,
         owner_supplier_id=asset.owner_supplier_id,purpose=asset.asset_purpose,kind=asset.kind,file_name=asset.file_name,
@@ -160,6 +182,19 @@ def output(db,user,asset,*,supplier=None,view_factory=None):
         text=asset.content.decode('utf-8') if asset.kind=='text' else None,workflow=state.model_dump(),
         targets=[{k:v for k,v in row.items() if k not in {'customer_code','identity','revision','supplier_id'}}
             if supplier else row for row in visible_targets],uploaded=True,warning=asset.warning)
+
+
+def association_blocker(db,asset,supplier=None):
+    state=lifecycle.current(db,asset)
+    if state.status=='HISTORY' or state.superseded_by_asset_id:
+        return '历史版本保留原关联，不能修改；请打开当前版本。'
+    if asset.photo_group_id:
+        return '照片组须整体维护关联，请打开资料详情。'
+    if not asset.owner_department:
+        return '旧资料保留原匹配方式，请在资料详情中维护关联。'
+    if supplier and collaboration.internal(asset) and not targets.current(db,asset):
+        return '请内部人员先关联客户订单，供应商随后可维护同客户的已发送订单。'
+    return ''
 
 
 def listing(db,user,factory,department=None,*,history=False):
@@ -174,8 +209,18 @@ def listing(db,user,factory,department=None,*,history=False):
     if supplier:query=query.where(CartonMarkAsset.factory_id==factory)
     if history:query=query.where(CartonMarkAsset.owner_department.is_(None))
     result=[]
+    # Local to this listing; never retain schedule rows across requests/writes.
+    schedule_rows_by_factory={}
+    supplier_candidates=None
     for asset in db.scalars(query.order_by(CartonMarkAsset.created_at.desc(),CartonMarkAsset.id)):
-        if access.visible(db,user,asset,library=True,supplier=supplier,view_factory=factory):result.append(output(db,user,asset,supplier=supplier,view_factory=factory))
+        if access.visible(db,user,asset,library=True,supplier=supplier,view_factory=factory):
+            # The viewer, supplier and factory are fixed for this list. Build the
+            # authorized order choices once, then retain each source's own links.
+            # Details, mutations and the next listing always query afresh.
+            if supplier is not None and supplier_candidates is None:
+                supplier_candidates=targets.candidates(db,user,factory,supplier=supplier)
+            result.append(output(db,user,asset,supplier=supplier,view_factory=factory,
+                schedule_rows_by_factory=schedule_rows_by_factory,supplier_candidates=supplier_candidates))
     return dict(items=result,total=len(result))
 
 
@@ -192,19 +237,52 @@ def associate(db,user,factory,identifier,body,refresh_actor=None):
         access.ensure(db,user,asset,write=True,supplier=supplier,view_factory=factory,collaborate=True,collaboration_action='associate')
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_ASSOCIATE',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:
+            blocker=association_blocker(db,asset,supplier)
+            if blocker:raise HTTPException(409,blocker)
             if body.targets and body.target:raise HTTPException(422,'不能同时提交两组关联目标')
             rows=resolve_many(db,user,factory,body.targets or ([body.target] if body.target else []),supplier,scope=body.target_scope,retain=asset)
             lifecycle.bump(db,asset,body.revision)
             if supplier and collaboration.internal(asset):
                 collaboration.record(db,user,asset,supplier,collaboration.TARGETS,targets=rows)
             else:
+                if body.target_scope=='ORDERS':
+                    # Warehouse edits only purchase targets. Hidden business
+                    # schedule references retain their original identity/state.
+                    rows=[row for row in targets.current(db,asset,factory) if row['kind']=='SCHEDULE']+rows
                 targets.record(db,user,asset,rows,factory)
+                # Audience is an independent user choice. Linking or unlinking
+                # orders must not overwrite an explicit INTERNAL/SUPPLIER setting.
                 if factory==asset.factory_id:
-                    recipient=receiver(db,asset,rows);sharing.record(db,user,asset,'SUPPLIER' if recipient else 'INTERNAL',recipient)
+                    current_audience=sharing.current(db,asset)
+                    if current_audience['sharing_mode']=='SUPPLIER':
+                        sharing.validate_recipient(db,asset,'SUPPLIER',current_audience['shared_supplier_id'])
             requests.record_request(db,user,asset,rid,saved,dict(asset_id=asset.id))
             result=output(db,user,asset,supplier=supplier,view_factory=factory);db.commit();return result
         else:db.rollback()
         return output(db,user,asset,supplier=supplier,view_factory=factory)
+    except BaseException:db.rollback();raise
+
+
+def audience(db,user,factory,identifier,body,refresh_actor=None):
+    try:
+        access.writes();asset=db.get(CartonMarkAsset,identifier)
+        if not asset or asset.factory_id!=factory:raise HTTPException(404,'资料不存在')
+        user=locked(db,user,factory)
+        if refresh_actor:user=refresh_actor()
+        access.ensure(db,user,asset,write=True)
+        if asset.asset_purpose!='MATERIAL' or asset.owner_department=='supplier':raise HTTPException(403,'仅内部普通资料可设置此共享范围')
+        sharing.ensure_audience_scope(db,user,asset)
+        rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_AUDIENCE',dict(id=identifier,body=body.model_dump()))
+        if not saved or 'result' not in saved:
+            recipient=receiver(db,asset,targets.current(db,asset)) if body.sharing_mode=='SUPPLIER' else ''
+            if body.sharing_mode=='SUPPLIER' and not recipient:
+                raise HTTPException(422,'当前厂区未配置唯一有效的对应供应商，请核对或选择仅内部可见')
+            sharing.validate_recipient(db,asset,body.sharing_mode,recipient)
+            lifecycle.bump(db,asset,body.revision)
+            sharing.record(db,user,asset,body.sharing_mode,recipient)
+            requests.record_request(db,user,asset,rid,saved,dict(asset_id=asset.id))
+            result=output(db,user,asset);db.commit();return result
+        db.rollback();return output(db,user,asset)
     except BaseException:db.rollback();raise
 
 

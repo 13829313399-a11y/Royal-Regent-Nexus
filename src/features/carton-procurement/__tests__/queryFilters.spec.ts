@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { emptyShipmentFilters, filterShipments, matchesSettlementLine, settlementStage } from '../queryFilters'
+import { toPortalShipment } from '@/api/cartonUnifiedDeliveries'
 import type { PortalShipment } from '@/api/cartonSupplierPortal'
 import type { SettlementDocument, StatementLine, SupplierSource } from '@/api/cartonSupplierSettlement'
 
@@ -43,6 +44,22 @@ describe('carton read-only query projections', () => {
       expect(filterShipments([row], { ...emptyShipmentFilters(), dateField: 'ACCEPTANCE', from: month + '-01', to: month + '-31' })).toEqual([row])
     }
     expect(filterShipments([row], { ...emptyShipmentFilters(), dateField: 'ACCEPTANCE', from: '2026-08-01', to: '2026-08-31' })).toEqual([])
+  })
+  it('uses supplier-visible acceptance dates even without internal receipt identifiers', () => {
+    const formal = { ...shipment('formal', '2026-09-29', '2026-10-01'), acceptance_history: [
+      { confirmed_at: '', acceptance_date: '2026-09-30', status: 'POSTED', lines: [] },
+      { confirmed_at: '', acceptance_date: '2026-10-01', status: 'POSTED', lines: [] },
+    ] }
+    const row = toPortalShipment({
+      id: 'original', factory_id: 'huaxing', delivery_note_no: 'DN-1', delivery_date: formal.delivery_date,
+      created_at: formal.created_at, formal, special: [], receipts: [], status: 'RECEIVED',
+      lines: formal.lines.map(line => ({ ...line, source_kind: 'FORMAL' })),
+      revision: 1, requires_correction: false, can_operate: false,
+    })
+    expect(row.acceptance_date).toBe('2026-10-01')
+    for (const date of ['2026-09-30', '2026-10-01']) {
+      expect(filterShipments([row], { ...emptyShipmentFilters(), dateField: 'ACCEPTANCE', from: date, to: date })).toEqual([row])
+    }
   })
   it('uses the selected date basis inclusively and puts unrecorded dates last in both directions', () => {
     const rows = [shipment('early', '2026-09-01', '2026-10-01'), shipment('late', '2026-10-02', '2026-10-02'), shipment('undated', '2026-10-03', null)]

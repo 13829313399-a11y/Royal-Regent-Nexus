@@ -39,7 +39,7 @@ def test_acknowledged_demand_detects_every_material_change(field, value, label):
 
 
 def test_old_fallback_po_evidence_is_projected_only_when_its_source_is_provable():
-    from app.services.carton_procurement import _schedule_event_key
+    from app.services.carton_procurement import _schedule_event_source
     base = dict(schedule_customer_code='DICKIE', contract_no='C1', item_no='I1', source_reference='',
                 source_sheet='ITEM', source_row=4, order_type='正单', schedule_section='PENDING')
     first, second = {**base, 'customer_po': 'PO-A'}, {**base, 'customer_po': 'PO-B', 'source_row': 5}
@@ -47,8 +47,9 @@ def test_old_fallback_po_evidence_is_projected_only_when_its_source_is_provable(
     old_key = so_identity(first)
     old_operation = hashlib.sha256(json.dumps([old_key, 'B', 'ITEM', 4], ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     detail = {'batch_id': 'B', 'source_sheet': 'ITEM', 'source_row': 4}
-    assert _schedule_event_key(db, 'huaxing', old_operation, detail, {}) == identity(first)
-    assert _schedule_event_key(db, 'huaxing', old_key, detail, {}) == old_key
+    current_key = identity(first)
+    assert _schedule_event_source(db, 'huaxing', old_operation, detail, {}) == (current_key, first, current_key)
+    assert _schedule_event_source(db, 'huaxing', old_key, detail, {}) == (old_key, first, current_key)
     assert mark_for_row(first, {old_key: {'marked': True}})['review_required'] is True
     assert not mark_changes(first, mark_for_row(first, {old_key: {'marked': False}}))
 

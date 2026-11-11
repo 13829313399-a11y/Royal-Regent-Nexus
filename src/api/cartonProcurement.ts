@@ -573,6 +573,7 @@ export interface CartonScheduleOrderMark {
   actor: string
   updated_at: string
   order_ids?: string[]
+  explicit_order_ids?: string[]
   matching_order_ids?: string[]
   ambiguous_order_ids?: string[]
   demand_snapshot?: CartonScheduleDemandSnapshot | null
@@ -797,11 +798,11 @@ export const cartonProcurementApi = {
       if (!response.data.items.length || items.length >= response.data.total) return items
     }
   },
-  async selectedOrders(factoryId: string, orderNos: string[]) {
+  async selectedOrders(factoryId: string, orderNos: string[], signal?: AbortSignal) {
     const items: CartonOrderResponse[] = []
     for (let offset = 0; offset < orderNos.length; offset += 100) {
       const response = await http.post<{ items: CartonOrderResponse[] }>('/carton-procurement/orders/selection',
-        { factory_id: factoryId, order_nos: orderNos.slice(offset, offset + 100) })
+        { factory_id: factoryId, order_nos: orderNos.slice(offset, offset + 100) }, { signal })
       items.push(...response.data.items)
     }
     return items
@@ -1316,8 +1317,8 @@ export const cartonProcurementApi = {
   async receiptHistory(factoryId: string, filters: Record<string, string | number> = {}) {
     return (await http.get<{ items: CartonReceiptSummary[]; total: number }>('/carton-procurement/receipt-history', { params: { factory_id: factoryId, ...filters } })).data
   },
-  async receiptDetail(factoryId: string, receiptId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN') {
-    return (await http.get<CartonReceiptResponse>(`/carton-procurement/receipts/${encodeURIComponent(receiptId)}`, { params: { factory_id: factoryId, responsibility_scope: responsibilityScope } })).data
+  async receiptDetail(factoryId: string, receiptId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN', signal?: AbortSignal) {
+    return (await http.get<CartonReceiptResponse>(`/carton-procurement/receipts/${encodeURIComponent(receiptId)}`, { params: { factory_id: factoryId, responsibility_scope: responsibilityScope }, signal })).data
   },
   async listReceipts(factoryId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN') {
     const items: CartonReceiptResponse[] = []

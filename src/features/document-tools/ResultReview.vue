@@ -309,7 +309,7 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-for="block in result.blocks.filter(
-          (item) => item.kind !== 'table' && item.text,
+          (item) => item.kind !== 'table' && item.kind !== 'image' && (item.text || item.original_text),
         )"
         :key="block.id"
         class="dt-block"
@@ -322,7 +322,11 @@ onBeforeUnmount(() => {
               : '原文区块'
           }}
           · 查看来源</button
-        ><p v-if="block.original_text" class="dt-original">原文：{{ block.original_text }}</p><textarea
+        ><p v-if="block.original_text" class="dt-original">原文：{{ block.original_text }}</p>
+        <p v-if="block.style?.translation_status === 'needs_review' || !block.text">原文或译文需核对{{ !block.text ? '，未得到可信译文' : '' }}</p>
+        <p v-else-if="block.style?.translation_status === 'translated' && !block.style.rendered">译文已生成，原位版式未回填</p>
+        <p v-for="note in block.style?.review_notes ?? []" :key="note">{{ note }}</p>
+        <textarea
           :readonly="readonly"
           :aria-label="`区块 ${block.id} 结果`"
           :value="drafts[block.id] ?? block.text"

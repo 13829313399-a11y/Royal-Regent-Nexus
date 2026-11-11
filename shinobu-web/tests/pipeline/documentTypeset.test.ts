@@ -1,11 +1,51 @@
 import { describe, it, expect } from 'vitest';
 import { createCanvas } from 'canvas';
 import { resolve } from 'node:path';
-import { prepareRegions, renderDocument, splitRuledRegion, fragmentedCaptionGroups, verifiedCaptionMerge, splitMixedWords, verifiedWordParts, documentWordCrops, documentOcrRetry, acceptDocumentOcrRetry, registerDocumentFont, type Region } from '../../server/documentTypeset';
+import { prepareRegions, renderDocument, uncoveredOcrRegions, uncoveredOcrCandidates, splitRuledRegion, fragmentedCaptionGroups, verifiedCaptionMerge, splitMixedWords, verifiedWordParts, documentWordCrops, documentOcrRetry, acceptDocumentOcrRetry, registerDocumentFont, type Region } from '../../server/documentTypeset';
 
 registerDocumentFont(resolve('server/dist'));
 const region=(text:string,x:number,width:number):Region=>({id:text,sourceText:text,box:{x,y:40,width,height:30},prob:.99,method:'native'});
 describe('document-safe typesetting',()=>{
+  it('does not count empty OCR responses as recognized text',()=>{
+    expect(prepareRegions([{...region('   ',20,90),method:'ocr'}],'en_to_zh')).toEqual([]);
+  });
+  it('keeps outlined headings and small-image captions outside authoritative native PDF text',()=>{
+    const native=[region('FABRIC',30,90),region('00123',400,70)];
+    const title={...region('DRESS WITH JACKET',30,280),box:{x:30,y:5,width:280,height:25}};
+    const caption={...region('POLAR FLEECE',30,100),box:{x:30,y:110,width:100,height:14}};
+    const duplicate={...region('FABRIC',28,94),method:'ocr'};
+    const acrossNumber={...region('Color 00123',380,110),method:'ocr'};
+    expect(uncoveredOcrRegions([title,duplicate,caption,acrossNumber],native)).toEqual([title,caption]);
+    expect(uncoveredOcrRegions([title,caption],[])).toEqual([title,caption]);
+  });
+  it('retains clipped source glyphs instead of drawing Chinese over uncleaned English',()=>{
+    const source=createCanvas(260,130),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,260,130);
+    c.fillStyle='black';c.font='30px Arial';c.fillText('SAMPLE',20,64);
+    // Malformed font metrics / tightly bounded OCR can cover only the lower
+    // half of the visible source letters, even after bounded cleanup padding.
+    const r={...region('SAMPLE',20,130),box:{x:20,y:55,width:130,height:12},translatedText:'样品'};
+    const output=renderDocument(source,[r]);
+    expect(r.rendered).not.toBe(true);expect(r.skipReason).toBe('clipped-text');
+    expect(output.toBuffer()).toEqual(source.toBuffer());
+  });
+  it('re-reads the uncovered caption beside a native number instead of discarding the mixed line',()=>{
+    const number=region('00123',115,70);
+    const mixed={...region('Color 00123',20,165),method:'ocr'};
+    const parts=uncoveredOcrCandidates([mixed],[number]);
+    expect(parts).toHaveLength(1);expect(parts[0].sourceText).toBe('');
+    expect(parts[0].box.x).toBe(20);expect(parts[0].box.x+parts[0].box.width).toBeLessThan(115);
+    expect(uncoveredOcrCandidates([{...number,method:'ocr'}],[number])).toEqual([]);
+    // A detector box spanning a native row keeps the separate outlined row.
+    const multiline={...mixed,box:{x:20,y:10,width:165,height:60}};
+    expect(uncoveredOcrCandidates([multiline],[{...number,box:{x:20,y:40,width:165,height:30}}])[0].box)
+      .toEqual({x:20,y:10,width:165,height:29});
+  });
+  it('does not place a translation in an empty native text metric box',()=>{
+    const source=createCanvas(180,100),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,180,100);
+    const r={...region('FABRIC',20,110),translatedText:'面料'};
+    expect(renderDocument(source,[r]).toBuffer()).toEqual(source.toBuffer());
+    expect(r.skipReason).toBe('clipped-text');expect(r.rendered).not.toBe(true);
+  });
   it('separates overlapping OCR row metrics only at an observed blank row',()=>{
     const source=createCanvas(260,160),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,260,160);
     c.fillStyle='black';c.font='24px Arial';c.fillText('Deep',30,58);c.fillText('Brown',30,88);

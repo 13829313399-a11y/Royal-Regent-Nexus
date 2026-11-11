@@ -278,6 +278,57 @@ def test_workspace_reads_all_effective_batches_excludes_deleted_and_limits_paylo
         alert_context(db, "huaxing", result["items"][0]["id"])
 
 
+def test_schedule_audit_replays_many_events_with_one_source_index_per_reader(db, monkeypatch):
+    from app.models.carton_procurement import CartonAuditEvent, CartonImportBatch, CartonOrder
+    from app.services import carton_procurement as core
+    from app.services.carton_schedule_tracking import identity, legacy_identity
+
+    factory = "huakang-b"
+    now = "2026-10-01"
+    rows = [dict(row(i), order_type="正单", customer_po=f"PO{i}") for i in range(200)]
+    db.add(CartonImportBatch(id="B", factory_id=factory, import_type="WEEKLY_SCHEDULE", original_filename="test.xlsx",
+        source_sha256="synthetic", source_size_bytes=1, content_type="application/xlsx", status="REQUIRES_REVIEW",
+        imported_by="TEST", imported_by_name="TEST", created_at=now, parse_summary_json=json.dumps({"rows": rows})))
+    def add_event(event_id, source, entity_type, event_type, **extra):
+        detail = dict(batch_id="B", source_sheet=source["source_sheet"], source_row=source["source_row"], **extra)
+        db.add(CartonAuditEvent(id=event_id, factory_id=factory, event_type=event_type, entity_type=entity_type,
+            entity_id=legacy_identity(source), actor_user_id="TEST", actor_name="TEST", created_at=now,
+            detail_json=json.dumps(detail)))
+
+    expected_marks, expected_links = {}, {}
+    for i, source in enumerate(rows[:40]):
+        add_event(f"M{i}", source, "schedule_order_mark", "SCHEDULE_ORDER_MARK_CHANGED", marked=True)
+        expected_marks[identity(source)] = demand_snapshot(source)
+    for i, source in enumerate(rows[40:80], start=40):
+        order_id = f"O{i}"
+        # A matching audit/order pair still fails validation when its original source PO differs.
+        customer_po = "STALE" if i == 40 else source["customer_po"]
+        db.add(CartonOrder(id=order_id, factory_id=factory, order_no=order_id, customer_code="TEST", customer_name="TEST",
+            supplier_id="S", supplier_name_snapshot="S", contract_no=source["contract_no"], item_no=source["item_no"],
+            customer_po=customer_po, order_date=now, due_date=now, product_order_quantity=100, status="CONFIRMED",
+            created_by="TEST", updated_by="TEST", created_at=now, updated_at=now))
+        add_event(f"L{i}", source, "schedule_order_link", "SCHEDULE_ORDER_LINKED", order_id=order_id,
+            customer_po=customer_po, contract_no=source["contract_no"], item_no=source["item_no"], po_semantics="SOURCE_PO")
+        if i != 40:
+            expected_links[identity(source)] = [order_id]
+    db.commit()
+
+    calls = []
+    def counting(function):
+        def count(source):
+            calls.append(function.__name__)
+            return function(source)
+        return count
+
+    for name in ("identity", "legacy_identity", "so_identity"):
+        monkeypatch.setattr(core, name, counting(getattr(core, name)))
+    marks = core.schedule_order_marks(db, factory)
+    assert {key: value["demand_snapshot"] for key, value in marks.items() if value["marked"]} == expected_marks
+    assert core._schedule_order_links(db, factory) == expected_links
+    assert len(calls) <= 6 * len(rows) + 3 * 80
+    assert not db.dirty
+
+
 def test_dashboard_routes_require_factory_permission(monkeypatch):
     from test_molding_sample_api import make_client, login_as
     with make_client(monkeypatch) as client:

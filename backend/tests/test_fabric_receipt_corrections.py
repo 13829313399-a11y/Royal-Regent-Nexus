@@ -77,6 +77,11 @@ def test_whole_receipt_reversal_preserves_original_price_and_evidence_restores_c
     october = client.get('/api/warehouse-operations/fabric/monthly', params={'factory_id': FACTORY, 'month': '2026-10'}).json()
     assert sum(Decimal(row['quantity']) for row in september['details']) == 50
     assert sum(Decimal(row['quantity']) for row in october['details']) == Decimal('-42.5')
+    september_price = september['details'][0]['purchase_price']
+    assert september_price == {'unit_price': '3.99', 'price_unit': '码', 'currency': 'CNY'}
+    reversed_row = next(row for row in october['details'] if row['correction'])
+    assert reversed_row['purchase_price'] == september_price
+    assert reversed_row['unit_price'] == '5' and reversed_row['amount'] == '250.00'
 
 
 def test_reversal_requires_confirmation_reason_current_version_and_correct_permission(client, monkeypatch):

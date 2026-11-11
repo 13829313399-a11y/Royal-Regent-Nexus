@@ -44,6 +44,10 @@ export function clearScheduleBatchDraft(storage: Pick<Storage, 'removeItem'>, id
   storage.removeItem(scheduleBatchDraftKey(identityKey, factoryId)); scheduleBatchDraftVersion.value++
 }
 const identifier = (value?: string) => (value || '').normalize('NFKC').trim().toLocaleLowerCase()
+export function matchesScheduleBatchSearch(query: string, ...fields: (string | undefined)[]) {
+  const term = identifier(query)
+  return !term || fields.some(field => identifier(field).includes(term))
+}
 export function schedulePacking(row: CartonImportPreviewRow): Record<string, number> | null {
   const match = (row.carton_rule || '').trim().match(/^(\d+(?:\.\d+)?)(?:\s*[/／]\s*(\d+(?:\.\d+)?))?$/)
   if (!match) return null

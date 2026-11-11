@@ -21,7 +21,7 @@ def report(client, month='2026-07', **filters):
     return result.json()
 
 
-def test_all_channels_and_original_split_receipts_are_counted_once_and_exported(client):
+def test_all_channels_and_original_split_receipts_are_counted_once_and_exported(client, monkeypatch):
     party, headers = issuer(client)
     manual = post(client, payload(client, 'RECEIPT', item_code='01-01-00001', quantity='20',
                                  counterparty=party['name'], source_no='=SUM(1,1)', lot='LOT-1'))
@@ -42,7 +42,8 @@ def test_all_channels_and_original_split_receipts_are_counted_once_and_exported(
     post(client, payload(client, 'RETURN', original_id=first['id'], quantity='1'))
     post(client, payload(client, 'TRANSFER', batch_id=manual['id'], location='A02', quantity='2'))
     post(client, payload(client, 'REQUEST', quantity='100', counterparty='车间一'))
-    post(client, payload(client, 'RECEIPT', item_code='01-01-00001', unit='Pcs', material_category='ACCESSORY', quantity='2', counterparty='临时供应商'))
+    post(client, payload(client, 'RECEIPT', item_code='01-01-00001', unit='Pcs', material_category='ACCESSORY',
+                         location='辅料位', quantity='2', counterparty='临时供应商'))
     before = workspace(client)
     result = report(client)
     total = next(r for r in result['totals'] if r['unit'] == '码')
@@ -57,7 +58,8 @@ def test_all_channels_and_original_split_receipts_are_counted_once_and_exported(
     assert suppliers[0]['document_count'] == 3  # manual + scan + original header
     assert len(result['details']) == 7 and result['cutting_interface'] == 'PENDING'
     procurement = next(r for r in result['details'] if r['origin'] == 'PROCUREMENT_RECEIVING')
-    assert procurement['unit_price'] == '0' and procurement['price_unit'] == '' and procurement['currency'] == ''
+    assert procurement['unit_price'] == '' and procurement['price_unit'] == '' and procurement['currency'] == ''
+    assert procurement['purchase_price'] == {'unit_price': '0', 'price_unit': '码', 'currency': 'CNY'}
     assert workspace(client) == before  # a report does not write or advance a revision
     incoming = report(client, direction='IN', party_key='supplier:' + party['supplier_id'])
     assert Decimal(incoming['totals'][0]['net_received']) == 85
@@ -72,7 +74,19 @@ def test_all_channels_and_original_split_receipts_are_counted_once_and_exported(
     source_cell = next(cell for cells in sheets['收发原单明细'] for cell in cells if cell.value == '=SUM(1,1)')
     assert source_cell.data_type == 's'
     assert any(cell.value == '01-01-00001' for cells in sheets['收发原单明细'] for cell in cells)
+    assert any(cell.value == '0 元／码' for cells in sheets['收发原单明细'] for cell in cells)
     assert len(sheets['收发原单明细']['A']) == 9
+    api = importlib.import_module('app.api.warehouse_operations')
+    can = api.can
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(api, 'can', lambda actor, permission, *args: permission != 'fabric_warehouse:read' and can(actor, permission, *args))
+        limited = report(client)
+        assert all('purchase_price' not in item for item in limited['details'])
+        assert next(item for item in limited['details'] if item['id'] == procurement['id'])['unit_price'] == ''
+        limited_export = client.get(MONTHLY + '/export', params=dict(factory_id=FACTORY, month='2026-07', version=limited['version']))
+        assert limited_export.status_code == 200, limited_export.text
+        limited_sheet = load_workbook(BytesIO(limited_export.content))['收发原单明细']
+        assert all(cell.value != '追货表采购参考单价' for cell in limited_sheet[2])
     # The internal name grouping never grants public ownership of manual vouchers.
     public = client.get(BASE + '/external/monthly', headers=headers, params={'month': '2026-07'}).json()
     assert public['totals'][0]['month_net_received'] == '15' and public['unlinked_receipts'] == []

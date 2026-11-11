@@ -84,7 +84,7 @@ def uno_python() -> str | None:
 
 
 def require_conversion_runtime(operation, source_type):
-    needs_office = operation in {"word_to_pdf", "excel_to_pdf", "pdf_translate"} or source_type in {"doc", "xls"}
+    needs_office = operation in {"word_to_pdf", "excel_to_pdf"} or source_type in {"doc", "xls"}
     if not needs_office:
         return
     if not office_executable():

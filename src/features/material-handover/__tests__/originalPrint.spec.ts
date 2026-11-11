@@ -3,7 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import Print from '../HandoverOriginalPrint.vue'
 
 const engine=vi.hoisted(()=>({getDocument:vi.fn(),GlobalWorkerOptions:{workerSrc:''}}))
-vi.mock('pdfjs-dist',()=>engine)
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs',()=>engine)
 let wrapper:VueWrapper|undefined
 const draw=()=>({getViewport:({scale}:{scale:number})=>({width:595*scale,height:842*scale}),render:vi.fn().mockReturnValue({promise:Promise.resolve(),cancel:vi.fn()}),cleanup:vi.fn()})
 beforeEach(()=>{
@@ -18,6 +18,7 @@ describe('all-page original printing',()=>{
     const page=draw(),destroy=vi.fn().mockResolvedValue(undefined)
     engine.getDocument.mockReturnValue({promise:Promise.resolve({numPages:2,getPage:vi.fn().mockResolvedValue(page)}),destroy})
     wrapper=mount(Print,{props:{file:file(),token:'current'}});await flushPromises()
+    expect(wrapper.get('.handover-original-print').attributes('aria-hidden')).toBe('true')
     expect(wrapper.findAll('img')).toHaveLength(2)
     expect(page.render).toHaveBeenCalledTimes(2)
     expect(wrapper.emitted('ready')).toEqual([['current']])

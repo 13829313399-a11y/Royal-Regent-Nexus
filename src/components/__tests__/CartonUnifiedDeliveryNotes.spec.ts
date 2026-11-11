@@ -19,6 +19,64 @@ async function open(wrapper: ReturnType<typeof setup>) { await wrapper.findAll('
 beforeEach(() => { vi.clearAllMocks(); api.receive.mockResolvedValue(group()); api.reopenShortfall.mockResolvedValue(group()); portal.receiptOptions.mockResolvedValue([]) })
 afterEach(() => { vi.unstubAllGlobals() })
 describe('unified delivery receipt', () => {
+  it('shows a whole mixed supplier note with visible formal history and no warehouse operation', () => {
+    const source = group()
+    Object.assign(source.lines[0]!, { customer_name: '样板客户', received_quantity: '0', effective_quantity: '0' })
+    source.lines.push({ ...source.lines[0]!, id: 'FORMAL', source_kind: 'FORMAL', order_line_id: 'ORDER-LINE',
+      customer_name: '正单客户', contract_no: 'CT-42', received_quantity: '4', remaining_quantity: '6', effective_quantity: '4' })
+    source.formal = { id: 'SHIP-1', delivery_note_no: source.delivery_note_no, delivery_date: source.delivery_date, created_at: source.created_at,
+      revision: 1, status: 'SENT', confirmed_at: '', acceptance_date: '2026-11-08', lines: [], acceptance_lines: [],
+      acceptance_history: [{ confirmed_at: '', acceptance_date: '2026-11-08', status: 'POSTED', lines: [] }] }
+    const wrapper = setup(source, { supplier: true, collapsible: true })
+    try {
+      const details = wrapper.get('details')
+      expect(details.attributes('open')).toBeUndefined()
+      expect(details.get('summary').text()).toBe('送货单明细')
+      expect(wrapper.text()).toContain('部分已核实，余货待收')
+      expect(details.text()).toContain('样板客户')
+      expect(details.text()).toContain('正单客户')
+      expect(details.text()).toContain('实际入库 待核实')
+      expect(details.text()).toContain('2026-11-08 · 已入库')
+      expect(wrapper.text()).not.toContain('冲销本次入库')
+      expect(api.receive).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+  it('keeps unrelated mixed-note papers waiting when opened from a selected order', async () => {
+    const source = group()
+    Object.assign(source.lines[0]!, { customer_name: '所选客户', contract_no: 'CT-1', item_no: 'SKU-1' })
+    source.lines.push({ ...source.lines[0]!, id: 'OTHER', original_special_line_id: 'RL2', customer_name: '另一个客户' })
+    const wrapper = setup(source, { autoOpen: true, receiptEntryPaperIds: ['L1'] })
+    try {
+      await flushPromises()
+      expect(wrapper.get('form').text()).toContain('原送货单 DN-1')
+      expect(wrapper.get('fieldset').text()).toContain('客户 所选客户 · 合同 CT-1 · 订单 SP-1 · 货号 SKU-1')
+      expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('10')
+      expect(wrapper.find('[aria-label="OTHER实收"]').exists()).toBe(false)
+      expect(wrapper.find('[aria-label="统一未收余货处理"]').exists()).toBe(false)
+      await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(api.receive.mock.calls[0]![1].special).toMatchObject([{ remaining_action: 'WAIT',
+        lines: [{ shipment_line_id: 'L1', received_quantity: '10' }] }])
+      expect(api.receive.mock.calls[0]![1].special[0].lines).toHaveLength(1)
+    } finally { wrapper.unmount() }
+  })
+
+  it('preserves the receipt draft through identical list refreshes and blocks writes while fresh inputs are unavailable', async () => {
+    const wrapper = setup(group(), { autoOpen: true })
+    try {
+      await flushPromises()
+      await wrapper.get('[aria-label="L1实收"]').setValue('7')
+      await wrapper.setProps({ readBlocked: true, group: group() }); await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('7')
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(api.receive).not.toHaveBeenCalled()
+      await wrapper.setProps({ readBlocked: false }); await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('7')
+      const changed = group(); changed.revision++
+      await wrapper.setProps({ group: changed }); await flushPromises()
+      expect(wrapper.find('[aria-label="L1实收"]').exists()).toBe(false)
+    } finally { wrapper.unmount() }
+  })
   it.each([
     { price: null, free: false, shown: '', hint: '原单未填写单价', action: 'PENDING' },
     { price: '0', free: false, shown: '0', hint: '原单单价为0，未确认免费', action: 'PENDING' },

@@ -13,7 +13,7 @@ import { cartonMasterApi, masterPaperOptions, masterDueRules, type MasterRecord 
 import { cartonProcurementApi, type CartonOrderResponse } from '@/api/cartonProcurement'
 import { cartonCustomerResponsibilitiesApi } from '@/api/cartonCustomerResponsibilities'
 import { cartonScheduleBatchApi, type ScheduleBatchBody, type ScheduleBatchLineOverride } from '@/api/cartonScheduleBatch'
-import { batchPaperPreview, batchPaperError, batchSourceError, batchWeightError, effectiveBatchWeights, emptyBatchPapers, isScheduleBox, pendingScheduleBatches, sameScheduleItem, scheduleBatchConfigurations, scheduleSourceKey, readScheduleBatchDraft, writeScheduleBatchDraft, clearScheduleBatchDraft, scheduleBatchDraftKey, type BatchPaper, type BatchOverrides, type ScheduleBatchPreview, type ScheduleBatchDraft } from '@/features/carton-procurement/scheduleBatch'
+import { batchPaperPreview, batchPaperError, batchSourceError, batchWeightError, effectiveBatchWeights, emptyBatchPapers, isScheduleBox, matchesScheduleBatchSearch, pendingScheduleBatches, sameScheduleItem, scheduleBatchConfigurations, scheduleSourceKey, readScheduleBatchDraft, writeScheduleBatchDraft, clearScheduleBatchDraft, scheduleBatchDraftKey, type BatchPaper, type BatchOverrides, type ScheduleBatchPreview, type ScheduleBatchDraft } from '@/features/carton-procurement/scheduleBatch'
 import { referencesAfterRemoval, reusableQuantityRule } from '@/features/carton-procurement/paperQuantity'
 import { isCardPaper, showPaperWeightInputs } from '@/features/carton-procurement/paperCatalog'
 import { formatBusinessDate } from '@/lib/dateTime'
@@ -22,12 +22,21 @@ import { createRandomUuid } from '@/lib/randomUuid'
 import '@/features/carton-procurement/layout.css'
 
 const props = defineProps<{ open: boolean; factoryId: string; viewerKey: string; identityKey: string; selection: ScheduleBatchPreview[]; defaultDimension?: 'cm' | 'inch' | 'mm' }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; saved: [orders: CartonOrderResponse[]]; 'draft-change': [] }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; saved: [orders: CartonOrderResponse[]]; 'draft-change': []; 'close-auto-focus': [event: Event] }>()
 const rows = ref<ScheduleBatchPreview[]>([]), records = ref<MasterRecord[]>([]), papers = ref<BatchPaper[]>([])
 const planned = ref(''), configId = ref(''), configRevision = ref(0), error = ref(''), busy = ref(false), loading = ref(false), frozen = ref(false)
 const note = ref(''), rush = ref(false), rushReason = ref(''), overrides = ref<BatchOverrides>({}), expanded = ref<string[]>([])
 const storageError = ref(''), restored = ref(false), changedSource = ref(false), discardConfirm = ref(false)
 const storedExists = ref(false)
+const reviewSearch = ref('')
+const reviewPage = ref(1)
+const reviewPageSize = 10
+const matchingReviewRows = computed(() => rows.value.filter(({ source }) =>
+  matchesScheduleBatchSearch(reviewSearch.value, source.contract_no, source.customer_po, source.source_reference)))
+const reviewPageCount = computed(() => Math.max(1, Math.ceil(matchingReviewRows.value.length / reviewPageSize)))
+const reviewRows = computed(() => matchingReviewRows.value.slice((reviewPage.value - 1) * reviewPageSize, reviewPage.value * reviewPageSize))
+watch(reviewSearch, () => { reviewPage.value = 1 }, { flush: 'sync' })
+watch(reviewPageCount, count => { reviewPage.value = Math.min(reviewPage.value, count) }, { flush: 'sync' })
 const cacheKey = computed(() => `schedule:${props.identityKey}:${props.factoryId}`)
 const configurations = computed(() => rows.value[0] ? scheduleBatchConfigurations(records.value, rows.value[0].source) : [])
 const configuration = computed(() => configurations.value.find(row => row.id === configId.value))
@@ -99,6 +108,7 @@ async function load() {
   note.value = ''; rush.value = false; rushReason.value = ''; overrides.value = {}; expanded.value = []; restored.value = false; changedSource.value = false; discardConfirm.value = false
   frozen.value = false; storageError.value = ''
   storedExists.value = false
+  reviewSearch.value = ''; reviewPage.value = 1
   if (!props.open) return
   const scope = { identity: props.identityKey, factory: props.factoryId }, key = cacheKey.value
   loading.value = true
@@ -207,14 +217,14 @@ function close() { if (!busy.value) { persist(); emit('update:open', false) } }
 <template>
   <DialogRoot :open="open" @update:open="value => { if (!value) close() }"><DialogPortal>
     <DialogOverlay class="fixed inset-0 z-[80] bg-slate-950/40" />
-    <DialogContent class="fixed left-1/2 top-1/2 z-[81] w-[calc(100%-2rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2" @interact-outside.prevent @escape-key-down="event => { if (busy) event.preventDefault() }">
+    <DialogContent class="fixed left-1/2 top-1/2 z-[81] w-[calc(100%-2rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2" @close-auto-focus="emit('close-auto-focus', $event)" @interact-outside.prevent @escape-key-down="event => { if (busy) event.preventDefault() }">
       <DialogTitle class="sr-only">同货号批量下单</DialogTitle><DialogDescription class="sr-only">共用普通订单的纸品、数量和重量字段，各条排期分别生成独立订单。</DialogDescription>
-      <CartonOrderEditorForm title="同货号批量下单" description="每条排期分别生成待发送订单；供应商接单、上传资料和仓库入库继续逐单办理。" :busy="busy" :disabled="frozen || loading" :submit-disabled="loading || !rows.length" :submit-label="frozen ? '核对原提交结果' : `创建 ${rows.length} 张独立订单`" close-label="关闭批量下单" back-label="保存并退出" @submit="submit" @close="close">
+      <CartonOrderEditorForm fixed-actions title="同货号批量下单" description="每条排期分别生成待发送订单；供应商接单、上传资料和仓库入库继续逐单办理。" :busy="busy" :disabled="frozen || loading" :submit-disabled="loading || !rows.length" :submit-label="frozen ? '核对原提交结果' : `创建 ${rows.length} 张独立订单`" close-label="关闭批量下单" back-label="保存并退出" @submit="submit" @close="close">
         <p v-if="loading" role="status" class="text-sm text-slate-600">正在读取纸箱资料并核对来源…</p>
         <div v-if="!loading && !rows.length && storedExists && !frozen" class="rounded-lg border border-amber-200 p-3 text-xs"><p>这份本机草稿的来源目前不能继续下单。可以只清空本机未提交草稿后重新选择，不会修改正式订单。</p><button type="button" class="mt-2 text-teal-700 underline" @click="discardConfirm = true">清空不可用草稿</button><button v-if="discardConfirm" type="button" class="ml-3 rounded border px-3 py-2" @click="discard">确认清空草稿</button></div>
         <p v-if="frozen" role="status" class="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">上次提交结果待确认，已保存原内容和提交记录，关闭或刷新后仍可恢复。只能点击“核对原提交结果”，不会重复下单。</p>
         <template v-if="rows.length">
-          <div class="flex flex-wrap items-start justify-between gap-3 rounded-lg bg-teal-50 p-3 text-sm text-teal-900"><div><strong>{{ rows[0]!.source.customer_name || rows[0]!.source.customer_code }} · {{ rows[0]!.source.item_no }}</strong><p class="mt-1 text-xs">供应商：沿用本厂固定供应商，无需重复选择。</p><p class="mt-1 text-xs">{{ restored ? '已恢复本机未完成草稿。' : '填写内容自动保存在本机当前账号和厂区。' }}</p></div><button v-if="!frozen" type="button" class="text-xs underline" @click="discardConfirm = !discardConfirm">清空批量草稿</button></div>
+          <div class="flex flex-wrap items-start justify-between gap-3 rounded-lg bg-teal-50 p-3 text-sm text-teal-900"><div class="min-w-0 [overflow-wrap:anywhere]"><strong>{{ rows[0]!.source.customer_name || rows[0]!.source.customer_code }} · {{ rows[0]!.source.item_no }}</strong><p class="mt-1 text-xs">已选 {{ rows.length }} 条 · 沿用本厂固定供应商</p><p class="mt-1 text-xs">{{ restored ? '已恢复本机未完成草稿。' : '填写内容自动保存在本机当前账号和厂区。' }}</p></div><button v-if="!frozen" type="button" class="text-xs underline" @click="discardConfirm = !discardConfirm">清空批量草稿</button></div>
           <div v-if="discardConfirm && !frozen" class="rounded-lg border border-amber-200 p-3 text-xs"><p>清空仅移除本机未提交的草稿，不会修改任何正式订单。确定清空？</p><button type="button" class="mt-2 rounded border px-3 py-2" @click="discard">确认清空草稿</button></div>
           <p v-if="changedSource && !frozen" class="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">来源的合同、SO、客户 PO、数量、装箱或交期已有变化，已刷新来源数据；请重新核对订单资料、手动数量和每箱重量。</p>
           <div class="grid gap-3 sm:grid-cols-2"><label class="block text-xs font-semibold">统一计划交期 *<input v-model="planned" type="date" :min="businessTodayIso()" aria-label="批量下单计划交期" required class="mt-2 block h-9 w-full rounded-lg border bg-white px-3"></label><div class="space-y-2 text-xs"><label class="flex items-center gap-2"><input v-model="rush" type="checkbox" aria-label="批量下单加急" class="accent-teal-700">加急订单</label><input v-if="rush" v-model="rushReason" aria-label="批量下单加急原因" maxlength="80" placeholder="原因（选填）" class="h-9 w-full rounded-lg border px-3"></div></div>
@@ -233,8 +243,18 @@ function close() { if (!busy.value) { persist(); emit('update:open', false) } }
               <p class="text-xs text-slate-500">纸箱净重为每箱货物不含包装的重量，毛重为含包装的整箱重量，单位 kg；两项选填，毛重不能小于净重。卡类及按箱配套纸品无需填写重量。</p>
             </CartonOrderPaperSection>
           </section>
-          <section class="space-y-3" aria-label="批量下单来源核对"><h3 class="text-sm font-bold">逐单核对 · 各自生成独立订单</h3>
-            <article v-for="row in rows" :key="scheduleSourceKey(row)" class="rounded-xl border border-slate-200 p-3">
+          <section class="space-y-3 [overflow-wrap:anywhere]" aria-label="批量下单来源核对">
+            <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 class="text-sm font-bold">逐单核对 · 各自生成独立订单</h3>
+              <p class="mt-1 text-xs text-slate-600">每条沿用自己的装箱、客户交期和来源，可单独覆盖数量及重量。查找和翻页会保留覆盖值。</p>
+              <label class="mt-2 block max-w-sm text-xs font-semibold">查找已选订单<input v-model="reviewSearch" type="search" aria-label="查找批量下单来源" placeholder="输入合同、客户 PO 或业务 SO" class="mt-1 block h-9 w-full rounded-lg border bg-white px-3 font-normal" @keydown.enter.prevent></label>
+              <div class="mt-2 flex flex-wrap items-center gap-2 text-xs" aria-label="批量下单来源分页">
+                <span class="text-slate-600" aria-live="polite">匹配 {{ matchingReviewRows.length }} / {{ rows.length }} 条<template v-if="reviewPageCount > 1"> · 第 {{ reviewPage }} / {{ reviewPageCount }} 页</template></span>
+                <template v-if="reviewPageCount > 1"><button type="button" :disabled="reviewPage <= 1" class="rounded-lg border bg-white px-2 py-1.5 disabled:opacity-40" @click="reviewPage--">上一页</button><button type="button" :disabled="reviewPage >= reviewPageCount" class="rounded-lg border bg-white px-2 py-1.5 disabled:opacity-40" @click="reviewPage++">下一页</button></template>
+              </div>
+            </div>
+            <p v-if="!reviewRows.length" class="text-xs text-slate-600">没有符合查找条件的订单。</p>
+            <article v-for="row in reviewRows" :key="scheduleSourceKey(row)" class="min-w-0 rounded-xl border border-slate-200 p-3">
               <div class="grid gap-3 text-xs sm:grid-cols-3"><div><strong>{{ row.source.contract_no }}</strong><p class="mt-1 text-slate-500">客户 PO：{{ row.source.customer_po || '未填' }}</p><p v-if="row.source.source_reference" class="mt-1 text-slate-500">业务 SO：{{ row.source.source_reference }}</p></div><div>产品数量：{{ row.source.quantity }}<p class="mt-1">内 / 外箱装箱：{{ row.source.carton_rule }}</p></div><div>客户交期：{{ row.source.customer_due_date }}<p v-if="dateWarning(row)" class="mt-1 text-amber-800">{{ dateWarning(row) }}</p></div></div>
               <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs"><p v-for="(paper, index) in demands(row)" :key="index" :class="paper.error ? 'text-amber-700' : 'text-teal-800'">{{ paper.type || `纸品 ${index + 1}` }}：{{ paper.error ? '待核对装箱' : `${paper.actual} ${paper.unit}` }}{{ lineOverride(row, index)?.manual_quantity != null ? '（手动）' : '' }}</p></div>
               <button type="button" :aria-expanded="expanded.includes(scheduleSourceKey(row))" :aria-label="`调整本单数量重量 ${row.source.contract_no}`" class="mt-3 text-xs font-semibold text-teal-700 underline" @click="toggleExpanded(row)">调整本单数量 / 重量</button>

@@ -10,10 +10,13 @@ from app.schemas import carton_special_requests as schema
 from app.services import carton_special_requests as special
 
 
-def pending_deliveries(db, row):
+def pending_deliveries(db, row, selected_line_ids=None):
     shipped, _, consumed, _, _ = special.state_counts(db, row)
     shipment_ids = sorted({paper.shipment_id for paper in shipped
-        if paper.quantity > consumed.get(paper.id, Decimal(0))})
+        if (not selected_line_ids or paper.request_line_id in selected_line_ids)
+        and paper.quantity > consumed.get(paper.id, Decimal(0))})
+    if not shipment_ids:
+        return [], []
     groups = list(db.scalars(select(UnifiedDelivery).where(
         UnifiedDelivery.factory_id == row.factory_id, UnifiedDelivery.supplier_id == row.supplier_id)))
     delivery_ids = []
@@ -41,7 +44,7 @@ def receive(db, user, identifier, payload: schema.ManualReceive):
         special.require_revision(row, payload)
         if not special.flags(db, user, row, False)["can_manual_receive"]:
             raise HTTPException(409, "请先确认并锁定样板或杂单，再登记实际收料")
-        shipment_ids, delivery_ids = pending_deliveries(db, row)
+        shipment_ids, delivery_ids = pending_deliveries(db, row, {line.line_id for line in payload.lines})
         if shipment_ids:
             raise HTTPException(409, dict(code="EXISTING_DELIVERY_PENDING",
                 message="已有待收或冲销待更正送货，请沿原送货单核实，不能另建手动收料",

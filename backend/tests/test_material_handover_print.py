@@ -3,6 +3,7 @@ import copy
 import importlib
 import io
 import json
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ import pytest
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.lib.pagesizes import A4, landscape
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from test_material_handover import client, issuer, confirmed, upload, workspace, BASE, FACTORY
 
@@ -57,16 +59,57 @@ def test_original_page_all_content_is_retained_below_the_qr_band_and_code_decode
             page = output[index]
             assert tuple(page.get_size()) == pytest.approx(tuple(map(float, landscape(A4))), abs=.005)
             images = text_pdf.pages[index].images
-            assert len(images) == 1 and images[0]['top'] >= 100  # header cannot cover original paper
+            assert len(images) == 1 and images[0]['width'] > page.get_width() * .9
             bitmap = page.render(scale=3); picture=bitmap.to_pil().convert('RGB')
             image = np.asarray(picture)
-            decoded, points, _ = cv2.QRCodeDetector().detectAndDecode(image[:300])
+            decoded, points, _ = cv2.QRCodeDetector().detectAndDecode(image[:round(images[0]['top'] * 3)])
             assert decoded == code and points is not None
             center = points.mean(axis=1)[0][0]
             assert (center < picture.width/2) == (corner == 'left')
+            heading = [char for char in text_pdf.pages[index].chars if char['size'] == pytest.approx(14)]
+            assert heading and max(char['bottom'] for char in heading) < images[0]['top']
+            edge = max(char['x1'] for char in heading) if corner == 'right' else min(char['x0'] for char in heading)
+            qr_edge = points[:, :, 0].min() if corner == 'right' else points[:, :, 0].max()
+            assert 0 < abs(edge - qr_edge / 3) < 22
             picture.close(); bitmap.close(); page.close()
         # No action, external source URL or issuer credential enters the static PDF.
         assert 'http' not in ''.join(p.extract_text() or '' for p in text_pdf.pages)
+
+
+def test_sparse_original_keeps_faint_marks_and_near_full_width(tmp_path):
+    import pypdfium2 as pdfium
+    from pypdf import PdfReader
+    from app.services.material_handover_print import render
+
+    stream = io.BytesIO()
+    width, height = landscape(A4)
+    canvas = Canvas(stream, pagesize=(width, height))
+    canvas.setFillColorRGB(.96, .93, .9)
+    canvas.rect(24, height - 65, 12, 6, fill=1, stroke=0)
+    canvas.setFillColorRGB(.91, .94, .97)
+    canvas.rect(width - 36, 30, 12, 6, fill=1, stroke=0)
+    canvas.setFillColorRGB(0, 0, 0)
+    canvas.drawString(24, height - 160, 'MATERIAL F-001 / 2,152')
+    canvas.save()
+
+    original = stream.getvalue()
+    with pdfium.PdfDocument(original) as pdf:
+        source_page = pdf[0]
+        source_bitmap = source_page.render(scale=2.4)
+        with source_bitmap.to_pil().convert('RGB') as source_image:
+            top_color = source_image.getpixel((round(29 * 2.4), round(62 * 2.4)))
+            bottom_color = source_image.getpixel((round((width - 30) * 2.4), round((height - 33) * 2.4)))
+        source_bitmap.close()
+        source_page.close()
+    assert top_color != bottom_color and (255, 255, 255) not in (top_color, bottom_color)
+
+    body = data()
+    result = render('原单.pdf', original, body, {'data': body}, 'MH1:MHD-test:1', 'right', tmp_path)
+    page = PdfReader(io.BytesIO(result)).pages[0]
+    with page.images[0].image as picture:
+        assert picture.height < round(height * 2.4)
+        colors = {color for _, color in picture.getcolors(maxcolors=1024)}
+        assert {top_color, bottom_color} <= colors
 
 
 def test_changed_confirmed_quantities_attach_the_current_values_without_rewriting_original(tmp_path):
@@ -165,3 +208,104 @@ def test_link_revocation_during_render_blocks_the_prepared_pdf(client,monkeypatc
     monkeypatch.setattr(files,'render_original',revoke)
     response=client.get(BASE+'/external/documents/'+doc['id']+'/print',headers=headers,params={'expected_revision':doc['revision']})
     assert response.status_code==401 and b'private-copy' not in response.content
+
+
+@pytest.mark.parametrize('failures', [1, 2])
+def test_print_retries_a_busy_sqlite_read_and_reports_persistent_contention(client, monkeypatch, failures):
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    service = importlib.import_module('app.services.material_handover')
+    files = importlib.import_module('app.services.material_handover_files')
+    original_access = service.external
+    attempts, rendered = [], []
+
+    def read_access(db, token):
+        attempts.append(token)
+        if len(attempts) <= failures:
+            busy = sqlite3.OperationalError('database is locked')
+            busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise OperationalError('SELECT name FROM sqlite_master', {}, busy)
+        return original_access(db, token)
+
+    monkeypatch.setattr(service, 'external', read_access)
+    monkeypatch.setattr(files, 'render_original', lambda *args: rendered.append(args) or b'%PDF-1.4\nprepared')
+    response = client.get(BASE + '/external/documents/' + doc['id'] + '/print',
+                          headers=headers, params={'expected_revision': doc['revision']})
+    if failures == 1:
+        assert response.status_code == 200, response.text
+        assert len(attempts) == 3 and len(rendered) == 1
+    else:
+        assert response.status_code == 503
+        assert response.headers['retry-after'] == '1'
+        assert '稍后重试原单加码打印' in response.json()['detail']
+        assert len(attempts) == 2 and rendered == []
+
+
+def test_print_retries_the_final_factory_lock_without_rendering_again(client, monkeypatch):
+    from fastapi import HTTPException
+
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    procurement = importlib.import_module('app.services.fabric_procurement')
+    files = importlib.import_module('app.services.material_handover_files')
+    original_lock = procurement.lock_factory
+    attempts, rendered = [], []
+
+    def lock(db):
+        attempts.append(True)
+        if len(attempts) == 1:
+            busy = sqlite3.OperationalError('database is locked')
+            busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            try:
+                raise OperationalError('UPDATE fabric_procurement_state', {}, busy)
+            except OperationalError as error:
+                raise HTTPException(409, '另一笔采购导入正在保存') from error
+        return original_lock(db)
+
+    monkeypatch.setattr(procurement, 'lock_factory', lock)
+    monkeypatch.setattr(files, 'render_original', lambda *args: rendered.append(args) or b'%PDF-1.4\nprepared')
+    response = client.get(BASE + '/external/documents/' + doc['id'] + '/print',
+                          headers=headers, params={'expected_revision': doc['revision']})
+    assert response.status_code == 200, response.text
+    assert len(attempts) == 2 and len(rendered) == 1
+
+
+def test_print_read_recovers_after_an_actual_sqlite_lock_is_released(tmp_path):
+    from threading import Event, Thread
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    api = importlib.import_module('app.api.material_handover')
+    path = tmp_path / 'print-contention.db'
+    engine = create_engine(f'sqlite:///{path}', connect_args={'timeout': 0.01})
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE print_fixture (value INTEGER)'))
+        connection.execute(text('INSERT INTO print_fixture VALUES (7)'))
+    lock = sqlite3.connect(path, check_same_thread=False)
+    lock.execute('BEGIN EXCLUSIVE')
+    blocked = Event()
+
+    def unlock():
+        blocked.wait(timeout=3)
+        lock.rollback()
+
+    thread = Thread(target=unlock)
+    thread.start()
+    attempts = []
+    try:
+        with Session(engine) as db:
+            def read():
+                attempts.append(True)
+                try:
+                    return db.scalar(text('SELECT value FROM print_fixture'))
+                except OperationalError:
+                    blocked.set()
+                    raise
+
+            assert api.print_database_step(db, read) == 7
+        assert len(attempts) == 2
+    finally:
+        blocked.set()
+        thread.join(timeout=3)
+        lock.close()
+        engine.dispose()

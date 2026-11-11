@@ -28,6 +28,9 @@ afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHT
 
 describe('warehouse unified month reconciliation', () => {
   it('queries supplier/recipient views with channel and party filters, retaining zero price evidence', async () => {
+    const report = fixture()
+    report.details[0]!.purchase_price = { unit_price: '8.5', price_unit: '码', currency: 'CNY' }
+    api.monthly.mockResolvedValueOnce(report)
     const router = await open('reconciliation')
     expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ direction: 'IN', channel: '', party_key: '' }))
     expect(wrapper!.text()).toContain('供应商收料对账')
@@ -35,6 +38,7 @@ describe('warehouse unified month reconciliation', () => {
     await wrapper!.get('[aria-label="查看凭证 FB-1"]').trigger('click'); await flushPromises()
     const body = new DOMWrapper(document.body)
     expect(body.get('[role="dialog"]').text()).toContain('0 / 码')
+    expect(body.get('[role="dialog"]').text()).toContain('8.5 元／码')
     expect(body.get('[role="dialog"] a').attributes('href')).toBe('/modules/pmc-warehouse/material-handover?factory=huakang-c&tab=documents&document=MHD-1')
     await body.findAll('button').find(button => button.text() === '关闭')!.trigger('click')
     await wrapper!.get('[aria-label="月结登记方式"]').setValue('SCAN'); await flushPromises()

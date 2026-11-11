@@ -108,6 +108,67 @@ def test_existing_exact_po_matching_remains_available(monkeypatch, tmp_path):
         assert actual['order_id'] == order['id']
 
 
+@pytest.mark.parametrize('link', ['po', 'quantity', 'explicit'])
+def test_formal_schedule_order_blocks_single_and_bulk_manual_marking(monkeypatch, tmp_path, link):
+    with isolated_client(monkeypatch, tmp_path) as client:
+        batch = import_schedule(client, [row(), row(contract='MARK-SINGLE'), row(contract='MARK-BULK')])
+        imported = batch['parse_summary']['rows']
+        assert all(not entry.get('order_id') for entry in imported)
+        source = {'batch_id': batch['id'], 'source_sheet': '子弹枪ITEM表', 'source_row': 4}
+        fields = {'customer_po': '0989551378' if link != 'quantity' else ''}
+        if link == 'explicit':
+            fields['schedule_source'] = source
+        # A purchase created after import must block a stale open browser too.
+        purchase = manual_order(client, **fields)
+        base = '/api/carton-procurement'
+        params = {'factory_id': 'huaxing'}
+        command = {**params, 'batch_id': batch['id'], 'marked': True}
+        single = base + '/schedule-order-marks'
+        bulk = single + '/bulk'
+        linked = {'source_sheet': '子弹枪ITEM表', 'source_row': 4}
+        unlinked = {'source_sheet': '子弹枪ITEM表', 'source_row': 5}
+        for requested_mark in (True, False):
+            request = {**command, 'marked': requested_mark}
+            for response in (
+                client.post(single, json={**request, **linked}),
+                client.post(bulk, json={**request, 'rows': [unlinked, linked]}),
+            ):
+                assert response.status_code == 409, response.text
+                assert '已关联正式订单' in response.json()['detail']
+        state = client.get(single, params=params).json()
+        assert all(not state.get(entry['schedule_identity'], {}).get('marked') for entry in imported)
+
+        marked = client.post(single, json={**command, **unlinked})
+        assert marked.status_code == 200 and marked.json()['marked'], marked.text
+        marked_bulk = client.post(bulk, json={**command, 'rows': [
+            unlinked, {'source_sheet': '子弹枪ITEM表', 'source_row': 6},
+        ]})
+        assert marked_bulk.status_code == 200 and marked_bulk.json()['changed_count'] == 1, marked_bulk.text
+        state = client.get(single, params=params).json()
+        assert not state[imported[0]['schedule_identity']]['marked']
+        assert all(state[entry['schedule_identity']]['marked'] for entry in imported[1:])
+        orders = client.get(base + '/orders', params=params).json()['items']
+        assert [order['id'] for order in orders] == [purchase['id']]
+
+
+@pytest.mark.parametrize('direct_match', [False, True])
+def test_split_candidates_with_competing_evidence_do_not_block_as_a_link(monkeypatch, direct_match):
+    from app.services import carton_order_split, carton_procurement, carton_schedule_order_matching
+
+    source = {'schedule_customer_code': 'DICKIE', 'contract_no': 'SPLIT-TARGET', 'item_no': 'ITEM'}
+    plan = {'customer_code': 'DICKIE', 'item_no': 'ITEM',
+            'targets': [{'contract_no': 'SPLIT-TARGET', 'customer_po': 'PO-A'}]}
+    plans = [plan] if direct_match else [plan, {**plan, 'targets': [
+        {'contract_no': 'SPLIT-TARGET', 'customer_po': 'PO-B'},
+    ]}]
+    monkeypatch.setattr(carton_procurement, '_schedule_order_links', lambda db, factory: {})
+    monkeypatch.setattr(carton_order_split, 'live_plans', lambda db, factory: plans)
+    monkeypatch.setattr(carton_schedule_order_matching, 'read_matches', lambda db, factory: {
+        'matches': {'SOURCE': ['OTHER-ORDER']} if direct_match else {}, 'ambiguous': {},
+    })
+    assert carton_procurement._schedule_mark_order_conflict(None, 'huaxing', [('SOURCE', source, 'DICKIE')]) is None
+
+
 def test_other_customer_is_not_a_fallback_candidate(monkeypatch, tmp_path):
     with isolated_client(monkeypatch, tmp_path) as client:
         helper.login_as(client, 'admin')

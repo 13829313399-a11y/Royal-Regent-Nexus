@@ -19,7 +19,7 @@ const options = defineModel<Record<string, unknown>>({ required: true })
     <p v-if="!availability">尚未获取翻译服务状态，请刷新服务；若后台版本较旧，请更新并重启 API 与文档处理服务。</p>
     <p v-else-if="options.translation_engine === 'online'">
       {{ availability?.online_available ? `已连接 · ${availability.online_model}` : '请管理员配置在线 AI 服务后使用。' }}
-      文档文字将发送至已配置的 AI 服务；扫描 PDF 还会发送待识别图像。
+      文档文字和术语将发送至已配置的 AI 服务；PDF 翻译会发送所选页面的完整页图，用于读取版面和复核含义。
     </p>
     <p v-else>{{ availability?.offline_available ? '使用服务器离线中英模型，文档内容不外发。' : '离线模型尚未就绪，请安装模型或选用已配置的在线 AI。' }}</p>
     <label v-if="!compact && options.translation_engine === 'online'">专业术语（可选）

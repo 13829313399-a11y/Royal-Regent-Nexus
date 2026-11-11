@@ -8,11 +8,18 @@ from app.services import carton_procurement as core, carton_special_requests as 
 from app.services.carton_order_projection import order_page_out
 
 
+ORDER_STATUS_GROUPS = {
+    "UNLOCKED": ("DRAFT", "CONFIRMED", "SUBMITTED"),
+    "LOCKED": ("PENDING_SUPPLIER", "SENT", "QUOTED", "READY"),
+}
+
+
 def ledger(db, user, factory_id, *, responsibility_scope="OWN", kind="ALL", search="", customer_name="",
            status_filter="", order_from="", order_to="", due_filter="ALL", sort="DUE_ASC",
            collaboration_filter="ALL", limit=50, offset=0):
     special.access(db, user, factory_id)
     rows = []
+    statuses = ORDER_STATUS_GROUPS.get(status_filter, (status_filter,) if status_filter else ())
     today = core.business_now().date()
     soon = (today + timedelta(days=3)).isoformat()
     today = today.isoformat()
@@ -27,7 +34,7 @@ def ledger(db, user, factory_id, *, responsibility_scope="OWN", kind="ALL", sear
         # the final combined page is projected into full purchase order outputs.
         _, regular = core.list_orders(db, factory_id, limit=None, offset=0,
             user=user if responsibility_scope == "OWN" else None, search=search.strip(), customer_name=customer_name,
-            status_filter=status_filter, order_from=order_from, order_to=order_to, due_filter=due_filter,
+            status_filter=statuses, order_from=order_from, order_to=order_to, due_filter=due_filter,
             sort=sort, collaboration_filter=collaboration_filter)
         rows.extend({"kind": "PURCHASE", "model": row, "date": row.order_date, "due": row.due_date or "", "number": row.order_no,
                      "level": due_level(row.status, row.due_date)} for row in regular)
@@ -38,7 +45,7 @@ def ledger(db, user, factory_id, *, responsibility_scope="OWN", kind="ALL", sear
             date = row.get("created_at", "")[:10]
             if order_from and date < order_from or order_to and date > order_to: continue
             status = row["status"]
-            if status_filter and status_filter != status: continue
+            if statuses and status not in statuses: continue
             collaboration = "NOT_ISSUED" if status == "SUBMITTED" else "CANCELLED" if status == "CANCELLED" else "NOT_REQUIRED"
             if collaboration_filter != "ALL" and collaboration_filter != collaboration: continue
             level = due_level(status, row["required_date"])

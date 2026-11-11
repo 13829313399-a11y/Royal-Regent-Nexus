@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 const { workspaceMock } = vi.hoisted(() => ({ workspaceMock: vi.fn() }))
 vi.mock('@/api/cartonSupplierSettlement', () => ({
-  supplierSettlementApi: { monthlyWorkspace: workspaceMock },
+  supplierSettlementApi: { monthlyWorkspace: workspaceMock, supplierMonthlyWorkspace: workspaceMock },
 }))
 
 import Component from '../CartonSettlementOverview.vue'
@@ -30,6 +30,34 @@ function settlement(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => { workspaceMock.mockReset() })
+
+it.each([false, true])('shows verified subtotal and original reference separately with supplier=%s', async supplier => {
+  const totals = { ...settlement().totals, inbound: null, net: null, verified_net: '320.00', pending_price_lines: 1 }
+  workspaceMock.mockResolvedValue(settlement({ totals,
+    customers: [{ key: 'code:DICKIE', name: 'Dickie', totals }],
+    lines: [line({ customer_key: 'code:DICKIE' }), line({ customer_key: 'code:DICKIE', source_key: 'RECEIPT:free',
+      document_no: 'DN-FREE', unit_price: '0.00', amount: '0.00' }),
+    line({ customer_key: 'code:DICKIE', source_key: 'RECEIPT:pending', document_no: 'DN-PENDING',
+      unit_price: null, amount: null, supplier_original_unit_price: '2.123456', supplier_original_amount: '12.74',
+      issues: ['送货单价待核实'] })],
+  }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing', factories: [{ factory_id: 'huaxing' }], supplier } })
+  try {
+    await flushPromises()
+    const totalsCard = wrapper.get('[aria-label="本厂东康总额"]')
+    expect(totalsCard.text()).toContain('本月应结待核价')
+    expect(totalsCard.text()).toContain('已核实小计 320.00 · 1 行待核价')
+    expect(totalsCard.text()).not.toContain('12.74')
+    await wrapper.get('[aria-label="本月对账客户"]').setValue('code:DICKIE')
+    expect(wrapper.get('[aria-label="所选客户小计"]').text()).toContain('已核实小计 320.00 · 1 行待核价')
+    const rows = wrapper.get('[aria-label="本月对账明细表"]').findAll('tbody tr')
+    expect(rows.find(row => row.text().includes('DN-FREE'))!.get('[data-label="金额"]').text()).toBe('0.00')
+    const pending = rows.find(row => row.text().includes('DN-PENDING'))!
+    expect(pending.get('[data-label="单价"]').text()).toContain('原单价 2.123456')
+    expect(pending.get('[data-label="金额"]').text()).toContain('原单参考 12.74')
+    expect(wrapper.get('[aria-label="本月对账待处理清单"]').text()).toContain('送货单价待核实')
+  } finally { wrapper.unmount() }
+})
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (reason: Error) => void
@@ -148,7 +176,7 @@ it('shows a read-only month without submit, lock or unlock actions', async () =>
   expect(text).toContain('1,380.00')
   expect(text).toContain('人民币')
   expect(text).toContain('只读')
-  expect(text).toContain('不提交、不锁定，不作为付款依据')
+  expect(text).toContain('实际付款及库存锁期在对应入口按原凭证办理')
   const labels = wrapper.findAll('button').map(button => button.text())
   expect(labels).toContain('刷新')
   expect(labels).not.toContain('提交供应商核对')
@@ -159,11 +187,14 @@ it('shows a read-only month without submit, lock or unlock actions', async () =>
 })
 
 it('lists blocking items as reference only, without submission controls', async () => {
-  workspaceMock.mockResolvedValue(settlement({ blockers: ['1 行送货单缺价，不能计入应付：DN-9 ITEM-9'] }))
+  workspaceMock.mockResolvedValue(settlement({ blockers: ['1 行送货单缺价，不能计入应付：DN-9 ITEM-9'],
+    lines: [line({ issues: ['送货价格待双方核实，不能完成月结确认'] })] }))
   const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
   await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
   expect(wrapper.text()).toContain('1 行送货单缺价')
-  expect(wrapper.text()).toContain('暂不影响旧月结流程')
+  expect(wrapper.text()).toContain('送货价格待双方核实')
+  expect(wrapper.text()).not.toContain('不能完成月结确认')
+  expect(wrapper.text()).toContain('按单号打开原凭证核对')
   expect(wrapper.findAll('button').map(button => button.text())).not.toContain('提交供应商核对')
   wrapper.unmount()
 })
@@ -187,6 +218,38 @@ it('keeps the overview read-only even if historical metadata allows a workflow a
     await flushPromises()
     await wrapper.get('[aria-label="本月对账币种"]').setValue('USD'); await flushPromises()
     expect(wrapper.findAll('button').map(button => button.text())).toEqual(['刷新'])
-    expect(wrapper.text()).toContain('不提交、不确认、不锁定，也不生成应付')
+    expect(wrapper.text()).toContain('只读对账')
+  } finally { wrapper.unmount() }
+})
+
+it('filters details and differences by customer and opens the exact receipt with the factory total still visible', async () => {
+  const month = settlement()
+  const dickie = { ...month.totals, inbound: '480.00', net: '480.00', documents: 1, receipt_lines: 2 }
+  const buzz = { ...month.totals, inbound: '900.00', net: '900.00', documents: 1, receipt_lines: 1 }
+  workspaceMock.mockResolvedValue(settlement({
+    customers: [{ key: 'code:DICKIE', name: 'Dickie', totals: dickie }, { key: 'code:BUZZ', name: 'BUZZ', totals: buzz }],
+    lines: [
+      line({ customer_key: 'code:DICKIE', issues: ['验收资料待核对'], reference: { kind: 'RECEIPT', id: 'receipt-1' } }),
+      line({ source_key: 'RECEIPT:2', customer_key: 'code:BUZZ', customer_name: 'BUZZ', document_no: 'DN-2', issues: ['另一客户的差异'] }),
+    ],
+  }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await flushPromises()
+    await wrapper.get('[aria-label="本月对账客户"]').setValue('code:DICKIE')
+    expect(wrapper.get('[aria-label="本厂东康总额"]').text()).toContain('1,380.00')
+    expect(wrapper.get('[aria-label="所选客户小计"]').text()).toContain('480.00')
+    const issues = wrapper.get('[aria-label="本月对账待处理清单"]')
+    expect(issues.text()).toContain('DN-1')
+    expect(issues.text()).not.toContain('另一客户的差异')
+    expect(wrapper.get('[aria-label="本月对账明细表"]').text()).not.toContain('DN-2')
+    await issues.get('button').trigger('click')
+    const open = wrapper.emitted('open-receipt')?.[0]
+    expect(open?.slice(0, 2)).toEqual(['huaxing', 'receipt-1'])
+    const signal = open?.[2] as AbortSignal
+    expect(signal.aborted).toBe(false)
+    await wrapper.get('[aria-label="本月对账客户"]').setValue('code:BUZZ')
+    expect(signal.aborted).toBe(true)
+    expect(workspaceMock).toHaveBeenCalledOnce()
   } finally { wrapper.unmount() }
 })

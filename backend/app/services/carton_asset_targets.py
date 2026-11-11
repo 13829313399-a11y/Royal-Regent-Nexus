@@ -1,10 +1,11 @@
 """Explicit old-asset targets, including pre-purchase schedule identity snapshots."""
 import hashlib,json
+from collections import defaultdict
 from sqlalchemy import select
 from fastapi import HTTPException
 from app.models.carton_procurement import CartonImportBatch,CartonAuditEvent
 from app.services import carton_mark_assets as assets
-from app.services.carton_schedule_tracking import effective_po
+from app.services.carton_schedule_tracking import effective_po, identity as schedule_identity, material_identity, normalized, tracked
 
 EVENT='CARTON_ASSET_TARGETS_V1'
 
@@ -14,7 +15,7 @@ def digest(value):
 
 
 def identity(row):
-    return [assets.identity(str(row.get(k) or '')) for k in ('customer_code','contract_no','item_no')] + [assets.identity(effective_po(row))]
+    return list(material_identity(row))
 
 
 def schedules(db,factory):
@@ -83,7 +84,7 @@ def candidates(db,user,factory,contract='',*,supplier=None,scope='ALL',retain=No
             customer_name=snapshot.get('customer_name',order.customer_name),customer_po=snapshot.get('customer_po',order.customer_po),
             supplier_id=order.supplier_id,revision=order.revision,issue_id=issue.id if issue else '')
         row['identity']=identity(row);row['fingerprint']=digest(row);result.append(row)
-    if not supplier:
+    if not supplier and scope!='ORDERS':
         for row in schedules(db,factory):
             try:schedule_customer_allowed(db,user,factory,row['customer_code'])
             except HTTPException:continue
@@ -101,7 +102,10 @@ def candidates(db,user,factory,contract='',*,supplier=None,scope='ALL',retain=No
             contract_no=value.get('contract_no',''),item_no=value.get('item_no',''),
             customer_code=special.customer_code,customer_name=value.get('customer_name',''),customer_po='',
             supplier_id=special.supplier_id,revision=value.get('revision',value.get('expected_revision',0)),issue_id=value.get('issue_id',''))
-        row['identity']=identity(row);row['fingerprint']=digest(row);result.append(row)
+        row['identity']=identity(row);row['fingerprint']=digest(row)
+        # Display metadata must not invalidate existing applicability fingerprints.
+        row.update(order_no=value.get('order_no',''),ordered_at=value.get('ordered_at',''))
+        result.append(row)
     # Do not collapse an unproven order/schedule match into a fictitious singleton.
     if contract:result=[x for x in result if assets.identity(x['contract_no'])==assets.identity(contract)]
     if supplier and retain is not None:
@@ -153,7 +157,27 @@ def current(db,asset,factory=None):
 
 
 def legacy_targets(db,asset,*,current_authorized=False):
-    if not asset.owner_department:return []
+    if not asset.owner_department:
+        # Read the original matcher without changing its mode, IDs or bindings.
+        # In particular, manual_orders + [] is an intentional empty selection.
+        orders=assets.matching_asset_orders(asset,assets.available_orders(db,asset.factory_id))
+        if asset.recognition_source not in {'manual_orders','manual_order'} and not asset.bound_order_id:
+            if len({assets.identity(o.customer_code) for o in orders})>1:orders=[]
+        result=[]
+        for order in orders:
+            row=dict(kind='REGULAR',id=order.id,sheet='',row=0,customer_code=order.customer_code,
+                customer_name=order.customer_name,contract_no=order.contract_no,item_no=order.item_no,
+                customer_po=order.customer_po,supplier_id=order.supplier_id,revision=order.revision)
+            row['identity']=identity(row);row['fingerprint']=digest(row);result.append(row)
+        # Special links already carry their frozen customer/supplier evidence.
+        from app.services.carton_mark_sharing import current as sharing_current
+        for link in sharing_current(db,asset)['special_orders']:
+            if not link.get('customer_code') or not link.get('supplier_id'):continue
+            row=dict(kind=link['order_kind'],id=link['order_id'],sheet='',row=0,
+                customer_code=link['customer_code'],contract_no='',item_no='',customer_po='',
+                supplier_id=link['supplier_id'],line_id=link.get('line_id',''))
+            row['identity']=identity(row);row['fingerprint']=digest(row);result.append(row)
+        return result
     from app.models.carton_procurement import CartonOrder
     from app.models.carton_special_requests import SpecialRequest
     from app.services import carton_mark_sharing as sharing
@@ -201,16 +225,92 @@ def legacy_targets(db,asset,*,current_authorized=False):
     return result
 
 
-def valid(db,asset,factory=None):
+def _saved_schedule_source(db, factory, target, cache):
+    from app.services import carton_procurement as core
+
+    batch = db.get(CartonImportBatch, target['id'])
+    if not batch or batch.factory_id != factory or batch.import_type != 'WEEKLY_SCHEDULE' or batch.status == 'REJECTED':
+        return None, '', False
+    _, source, key = core._schedule_event_source(db, factory, '', {
+        'batch_id': batch.id, 'source_sheet': target['sheet'], 'source_row': target['row'],
+    }, cache)
+    if source is None:
+        return None, '', False
+    index = cache[batch.id]
+    code = source.get('schedule_customer_code') or index.customer_code
+    if identity({**source, 'customer_code': code}) != target['identity']:
+        return None, '', False
+    unique = key == schedule_identity(source) and index.pending_source_is_unique(source)
+    return source, key, unique
+
+
+def _purchase_links(db, factory):
+    from app.services import carton_procurement as core
+
+    links = defaultdict(list)
+    for key, order, evidence, detail in core._schedule_order_link_evidence(db, factory):
+        if evidence is not None:
+            links[key].append((order, evidence, detail))
+    return links
+
+
+def _schedule_purchase_ids(target, source, unique, links):
+    source_po = normalized(source.get('customer_po'))
+    result = set()
+    for order, (original, original_unique), detail in links:
+        exact = (detail.get('batch_id'), detail.get('source_sheet'), detail.get('source_row')) == (
+            target['id'], target['sheet'], target['row'])
+        if not exact and (not unique or not original_unique or not tracked(source)):
+            continue
+        # SO identifies the schedule row. The actual P/O# belongs to the
+        # purchase; only legacy creation evidence can treat SO as that PO.
+        if source_po != normalized(original.get('customer_po')):
+            continue
+        order_po = normalized(order.customer_po)
+        po_matches = order_po == source_po or (detail.get('po_semantics') != 'SOURCE_PO' and order_po == effective_po(source))
+        order_identity = identity(dict(customer_code=order.customer_code, contract_no=order.contract_no, item_no=order.item_no))
+        if po_matches and order_identity[:3] == target['identity'][:3]:
+            result.add(order.id)
+    return result
+
+
+def valid(db,asset,factory=None,*,schedule_rows_by_factory=None):
     factory=factory or asset.factory_id
     from app.models.carton_procurement import CartonOrder
-    latest=schedules(db,factory);result=[]
+    latest=None;result=[]
+    source_cache = {}
+    links = None
     for target in current(db,asset,factory):
         if target['kind']=='SCHEDULE':
+            # Unassociated/ordinary-order sources do not need a factory schedule
+            # scan. A library read may reuse rows within this one response only.
+            if latest is None:
+                if schedule_rows_by_factory is None:
+                    latest=schedules(db,factory)
+                else:
+                    if factory not in schedule_rows_by_factory:
+                        schedule_rows_by_factory[factory]=schedules(db,factory)
+                    latest=schedule_rows_by_factory[factory]
             exact=[x for x in latest if (x['id'],x['sheet'],x['row'],x['identity'])==(target['id'],target['sheet'],target['row'],target['identity'])]
-            matches=exact or [x for x in latest if x['identity']==target['identity']]
-            if len(matches)==1:result.append(matches[0])
-            elif factory==asset.factory_id and source_purchase_order_ids(db,asset,schedule_target=target):result.append(dict(target,ordered=True))
+            if len(exact) == 1:
+                result.append(exact[0])
+                continue
+            original, key, unique = _saved_schedule_source(db, factory, target, source_cache)
+            if original is None:
+                continue
+            # An old duplicate has only its original batch/sheet/row identity.
+            # A later singleton does not tell us which of the duplicates survived.
+            matches = [x for x in latest if x['identity'] == target['identity']] if unique else []
+            if len(matches) == 1:
+                current_source, _, _ = _saved_schedule_source(db, factory, matches[0], source_cache)
+                if current_source is not None and normalized(current_source.get('customer_po')) == normalized(original.get('customer_po')):
+                    result.append(matches[0])
+                    continue
+            if factory == asset.factory_id:
+                if links is None:
+                    links = _purchase_links(db, factory)
+                if _schedule_purchase_ids(target, original, unique, links.get(key, ())):
+                    result.append(dict(target, ordered=True))
         elif target['kind']=='REGULAR':
             order=db.get(CartonOrder,target['id'])
             if order and order.factory_id==factory and not order.deleted_at and order.status!='CANCELLED':
@@ -247,10 +347,10 @@ def source_purchase_order_ids(db,asset,*,schedule_target=None):
     Read the saved source batch so later schedule removal cannot erase a purchase
     link. Current order identity and factory still have to match that source.
     """
-    from app.services import carton_procurement as core
     from app.models.carton_procurement import CartonOrder
     result=set()
-    state=core.schedule_order_state(db,asset.factory_id)
+    source_cache = {}
+    links = None
     for target in [schedule_target] if schedule_target else current(db,asset):
         if target['kind']=='REGULAR':
             order=db.get(CartonOrder,target['id'])
@@ -258,16 +358,12 @@ def source_purchase_order_ids(db,asset,*,schedule_target=None):
                 customer_code=order.customer_code,contract_no=order.contract_no,item_no=order.item_no,customer_po=order.customer_po))==target['identity']:result.add(order.id)
             continue
         if target['kind']!='SCHEDULE':continue
-        batch=db.get(CartonImportBatch,target['id'])
-        if not batch or batch.factory_id!=asset.factory_id or batch.status=='REJECTED':continue
-        rows=core.import_batch_out(batch).parse_summary.get('rows',[])
-        source=next((r for r in rows if r.get('source_sheet')==target['sheet'] and r.get('source_row')==target['row']),None)
-        if not source:continue
-        for identifier in state.get(source.get('schedule_identity'),{}).get('order_ids',[]):
-            order=db.get(CartonOrder,identifier)
-            if order and order.factory_id==asset.factory_id and not order.deleted_at and order.status!='CANCELLED' and identity(dict(
-                customer_code=order.customer_code,contract_no=order.contract_no,item_no=order.item_no,customer_po=order.customer_po))==target['identity']:
-                result.add(order.id)
+        source, key, unique = _saved_schedule_source(db, asset.factory_id, target, source_cache)
+        if not key:
+            continue
+        if links is None:
+            links = _purchase_links(db, asset.factory_id)
+        result.update(_schedule_purchase_ids(target, source, unique, links.get(key, ())))
     return result
 
 
@@ -293,6 +389,11 @@ def shared_with_supplier(db,asset,supplier):
     state=sharing.current(db,asset)
     if asset.asset_purpose!='MATERIAL' or state['sharing_mode']=='INTERNAL':return False
     if state['sharing_mode']=='SUPPLIER' and state['shared_supplier_id']==supplier.id:
+        from app.services.carton_asset_access import DEPARTMENTS
+        # A named, same-factory supplier audience grants source access independently
+        # of purchasing. Order projections still require their own explicit links.
+        if asset.owner_department in DEPARTMENTS and asset.factory_id == supplier.factory_id:
+            return True
         rows=valid(db,asset)
         from app.services import carton_supplier_portal as portal
         from app.models.carton_procurement import CartonOrder

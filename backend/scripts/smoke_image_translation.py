@@ -25,14 +25,21 @@ def main():
     image.save(source)
     print(json.dumps(runtime_status()), flush=True)
     result = convert_image_translation(source, {"translation_direction": "en_to_zh", "translation_engine": "offline"}, root / "result", lambda stage, current, total: print(stage, current, total, flush=True), lambda: False)
-    output = next(file["path"] for file in result.files if file["format"] == "pdf")
+    output = next(file["path"] for file in result.files if file["role"] == "result")
+    comparison = next(file["path"] for file in result.files if file["role"] == "complete_pdf")
+    text = next(file["path"] for file in result.files if file["role"] == "complete_text")
     pdf = PdfReader(output)
-    assert len(pdf.pages) == 1
+    comparison_pages = len(PdfReader(comparison).pages)
+    assert result.summary["content_status"] == "needs_review"  # Offline cannot certify whole-page coverage.
+    assert comparison_pages > 0 and len(pdf.pages) == 1 + comparison_pages
     assert abs(float(pdf.pages[0].mediabox.width) / float(pdf.pages[0].mediabox.height) - 1000 / 600) < .001
     records = [{"original": block.original_text, "translated": block.text} for block in result.ir.blocks if block.kind != "image"]
     assert records, "Real model did not detect any text"
     assert any(any('\u4e00' <= char <= '\u9fff' for char in item['translated']) for item in records)
-    (root / "report.json").write_text(json.dumps({"pages": 1, "width": 1000, "height": 600, "text": records}, ensure_ascii=False, indent=2), encoding="utf-8")
+    assert any("123" in item["original"] and "123" in item["translated"] for item in records)
+    assert "Quantity 123" in Path(text).read_text(encoding="utf-8")
+    (root / "report.json").write_text(json.dumps({"source_pages": 1, "comparison_pages": comparison_pages,
+        "width": 1000, "height": 600, "text": records}, ensure_ascii=False, indent=2), encoding="utf-8")
     print("REAL_SERVER_INFERENCE_PASSED", flush=True)
 
 

@@ -294,6 +294,7 @@ export interface CartonMarkSharing {
 }
 export interface CartonMarkBindingTarget {
   order_id: string; order_kind: 'REGULAR' | 'SAMPLE' | 'MISC'; order_no?: string; contract_no: string
+  ordered_at?: string
   customer_name: string; item_no: string; revision: number; issue_id?: string; lines: { id: string; label: string }[]
 }
 export interface CartonMarkAssociationTarget {

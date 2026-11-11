@@ -6,6 +6,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from uuid import uuid4, uuid5
 
 from fastapi import HTTPException
@@ -16,7 +17,7 @@ from app.schemas.material_handover import HandoverData
 from app.schemas.warehouse_operations import WarehouseDocumentRequest
 from app.services.auth import can
 from app.services import warehouse_operations as inventory
-from app.services.fabric_receiving import quantity
+from app.services.fabric_receiving import quantity, receipt_line_quantities, validate_delivery_quantity
 from app.services.fabric_procurement_parser import dump, digest
 
 FACTORY = 'huakang-c'
@@ -105,6 +106,25 @@ def issuer_scope(db,access):
         HandoverSupplierBinding.supplier_id==access.supplier_id))) if access.supplier_id else [access.issuer_id]
 
 
+def document_scope(db, access):
+    if access.issuer_id:
+        return HandoverDocument.issuer_id.in_(issuer_scope(db, access))
+    from_supplier = select(HandoverIssuer.id).where(
+        HandoverIssuer.id == HandoverDocument.issuer_id,
+        HandoverIssuer.factory_id == HandoverDocument.factory_id,
+        HandoverIssuer.kind == 'SUPPLIER',
+    ).exists()
+    # Unconfirmed supplier uploads, including abandoned drafts, stay private.
+    return ~from_supplier | (HandoverDocument.status == 'CONFIRMED') | (HandoverDocument.confirmed_at != '')
+
+
+def require_preparer(db, access, row):
+    if not access.issuer_id and row.issuer_id:
+        issuer = db.get(HandoverIssuer, row.issuer_id)
+        if issuer and issuer.factory_id == row.factory_id and issuer.kind == 'SUPPLIER':
+            raise HTTPException(403, '供应商送货单只能由制单供应商修改、确认、作废或打印')
+
+
 def supplier_identity(db,row,body):
     identity=db.get(HandoverSupplierBinding,row.issuer_id) if row.issuer_id else None
     return identity.supplier_id if identity else body.get('supplier_id','')
@@ -128,9 +148,8 @@ def validate_party(db,access,data,document_issuer_id=None):
 
 
 def document(db, access, identifier, *, lock=False):
-    query = select(HandoverDocument).where(HandoverDocument.factory_id == FACTORY, HandoverDocument.id == identifier)
-    if access.issuer_id:
-        query = query.where(HandoverDocument.issuer_id.in_(issuer_scope(db,access)))
+    query = select(HandoverDocument).where(HandoverDocument.factory_id == FACTORY,
+        HandoverDocument.id == identifier, document_scope(db, access))
     row = db.scalar(query.with_for_update() if lock else query)
     if row is None:
         raise HTTPException(404, '未找到当前范围的单据')
@@ -154,11 +173,54 @@ def progress(db, identifier, *, entries=None):
     return amounts, movements
 
 
+def document_progress(lines, amounts):
+    remaining, completed = {}, 0
+    for line in lines:
+        target = inventory.decimal(line['quantity']) if line['quantity'] else inventory.decimal('0')
+        actual = amounts.get(line['id'], inventory.decimal('0'))
+        remaining[line['id']] = {'processed': inventory.text(actual), 'remaining': inventory.text(max(inventory.decimal('0'), target - actual))}
+        completed += target > 0 and actual >= target
+    if lines and completed == len(lines):
+        return remaining, 'COMPLETE'
+    return remaining, 'PARTIAL' if any(amounts.values()) else 'PENDING'
+
+
+def receipt_processing_statuses(db, delivery_lines):
+    if not delivery_lines:
+        return {}
+    _, entries = inventory.projection(db, 'fabric')
+    entries_by_document = {identifier: {} for identifier in delivery_lines}
+    for operation_id, entry in entries.items():
+        identifier = entry['data'].get('handover_document_id')
+        if identifier in entries_by_document:
+            entries_by_document[identifier][operation_id] = entry
+
+    statuses = {}
+    for identifier, lines in delivery_lines.items():
+        amounts, _ = progress(db, identifier, entries=entries_by_document[identifier])
+        _, statuses[identifier] = document_progress(lines, amounts)
+    return statuses
+
+
 def code(row):
     return f'MH1:{row.id}:{row.code_version}' if row.status == 'CONFIRMED' else ''
 
 
-def output(db, row, *, with_progress=True):
+def receipt_observations(db, identifier):
+    statement = select(HandoverEvent.detail_json).where(
+        HandoverEvent.document_id == identifier,
+        HandoverEvent.factory_id == FACTORY,
+        HandoverEvent.kind == 'POST',
+    ).order_by(HandoverEvent.revision.desc())
+    observations = []
+    for raw in db.scalars(statement):
+        observation = json.loads(raw).get('receipt_observation')
+        if observation:
+            observations.append(observation)
+    return observations
+
+
+def output(db, row, *, with_progress=True, with_receipt_observations=False):
     body = HandoverData.model_validate_json(row.data_json).model_dump(mode='json')
     body['supplier_id']=supplier_identity(db,row,body)
     if row.status=='DRAFT' and body['supplier_id']:
@@ -166,33 +228,37 @@ def output(db, row, *, with_progress=True):
         body['counterparty']=supplier(db,body['supplier_id'],active=False).name
     extraction = json.loads(row.extraction_json)
     amounts, movements = progress(db, row.id) if with_progress else ({}, [])
-    remaining, total_lines, completed = {}, len(body['lines']), 0
-    for line in body['lines']:
-        target = inventory.decimal(line['quantity']) if line['quantity'] else inventory.decimal('0')
-        actual = amounts.get(line['id'], inventory.decimal('0'))
-        remaining[line['id']] = {'processed': inventory.text(actual), 'remaining': inventory.text(max(inventory.decimal('0'), target - actual))}
-        completed += target > 0 and actual >= target
-    processing = 'COMPLETE' if total_lines and completed == total_lines else 'PARTIAL' if any(amounts.values()) else 'PENDING'
+    remaining, processing = document_progress(body['lines'], amounts)
     source = db.get(HandoverSource, row.id)
-    return {'id': row.id, 'factory_id': FACTORY, 'issuer_id': row.issuer_id, 'status': row.status, 'revision': row.revision,
+    result = {'id': row.id, 'factory_id': FACTORY, 'issuer_id': row.issuer_id, 'status': row.status, 'revision': row.revision,
         'code_version': row.code_version, 'code': code(row), 'data': body, 'warnings': extraction.get('warnings', []),
         'evidence': extraction.get('evidence', {}), 'engine': extraction.get('engine', ''), 'raw_text': extraction.get('raw_text', ''),
         'file_name': source.file_name if source else '', 'source_sha256': source.sha256 if source else '',
         'confirmed_at': row.confirmed_at, 'created_at': row.created_at, 'progress': remaining, 'processing_status': processing,
         'movements': movements}
+    if with_receipt_observations and body['kind'] == 'DELIVERY' and row.status != 'DRAFT':
+        observations = receipt_observations(db, row.id)
+        if observations:
+            result['receipt_observations'] = observations
+    return result
 
 
 def request_signature(kind, identifier, payload):
     body=payload.model_dump(mode='json')
     for line in body.get('lines', []):
-        for key in ('purchase_source_id', 'expected_source_revision', 'expected_receipt_count', 'difference_reason'):
+        for key in ('purchase_source_id', 'expected_source_revision', 'expected_receipt_count', 'difference_reason', 'receipt_counts'):
             if line.get(key) in ('', None): line.pop(key, None)
+    if not body.get('delivery_quantities'):
+        body.pop('delivery_quantities', None)
     if body.get('data') is None:body.pop('data',None)
     if isinstance(body.get('data'),dict):
         data=body['data']
-        if not data.get('supplier_id'):data.pop('supplier_id',None)
+        for key in ('supplier_id', 'purchase_order_no'):
+            if not data.get(key):
+                data.pop(key, None)
         for line in data.get('lines',[]):
-            for key in ('unit_price','price_unit','currency','price_note'):
+            for key in ('unit_price', 'price_unit', 'currency', 'price_note',
+                        'purchase_detail_id', 'purchase_order_no', 'ordered_quantity', 'plan_no'):
                 if not line.get(key):line.pop(key,None)
     return digest([kind, identifier, body])
 
@@ -254,13 +320,22 @@ def check_revision(row, expected):
         raise HTTPException(409, '单据或收发进度已变化，请刷新后核对')
 
 
+def preserve_internal_purchase_references(access, data, stored):
+    if access.issuer_id:
+        references = {line['id']: line.get('purchase_detail_id', '') for line in stored['lines']}
+        for line in data.lines:
+            line.purchase_detail_id = references.get(line.id, '')
+
+
 def save_document(db, access, identifier, payload):
     inventory.procurement.lock_factory(db)
+    row = document(db, access, identifier, lock=True)
+    require_preparer(db, access, row)
     signature = request_signature('SAVE', identifier, payload)
     previous = replay(db, access, payload.request_id, signature)
     if previous is not None:
         return previous
-    row = document(db, access, identifier, lock=True); check_revision(row, payload.expected_revision)
+    check_revision(row, payload.expected_revision)
     if row.status != 'DRAFT':
         raise HTTPException(409, '已确认单据不可直接改写，请保留原版本并先作废未执行单据')
     data = payload.data
@@ -268,6 +343,7 @@ def save_document(db, access, identifier, payload):
         raise HTTPException(422, '明细行编号不能重复')
     validate_party(db,access,data,row.issuer_id)
     before = json.loads(row.data_json)
+    preserve_internal_purchase_references(access, data, before)
     row.data_json = data.model_dump_json(); row.revision += 1; row.updated_at = business_now().isoformat()
     db.flush(); result = output(db, row)
     event(db, access, row, 'SAVE', payload.request_id, signature, {'before': before, 'after': data.model_dump(mode='json')}, result)
@@ -281,13 +357,14 @@ def confirmation_issues(data):
         if not value:
             issues.append('缺少' + label)
     if data.kind == 'DELIVERY' and not data.supplier_id:
-        issues.append('供应商尚未关联，请仓库选择供应商基础资料')
+        issues.append('供应商尚未关联基础资料')
     if not data.lines:
-        issues.append('尚无物料明细，请添加明细或交仓库按原件补录')
+        issues.append('尚无物料明细，请按原件添加明细')
     for index, line in enumerate(data.lines, 1):
         missing = ['缺少' + label for value, label in ((line.item_code, '物料编码'), (line.item_name, '物料名称'), (line.unit, '单位'), (line.material_category, '物料分类')) if not value]
-        for value, label, allow_zero in ((line.quantity, '数量', False), (line.unit_price, '参考单价', True)):
-            if allow_zero and not value:
+        for value, label, optional, allow_zero in ((line.quantity, '数量', False, False),
+                (line.unit_price, '参考单价', True, True), (line.ordered_quantity, '原下单量', True, False)):
+            if optional and not value:
                 continue
             if not value:
                 missing.append('缺少' + label)
@@ -303,20 +380,24 @@ def confirmation_issues(data):
 
 def confirm(db, access, identifier, payload):
     inventory.procurement.lock_factory(db)
+    row = document(db, access, identifier, lock=True)
+    require_preparer(db, access, row)
     signature = request_signature('CONFIRM', identifier, payload)
     previous = replay(db, access, payload.request_id, signature)
     if previous is not None:
         return previous
-    row = document(db, access, identifier, lock=True); check_revision(row, payload.expected_revision)
+    check_revision(row, payload.expected_revision)
     if row.status != 'DRAFT':
         raise HTTPException(409, '单据已确认或作废，请刷新')
     data = payload.data or HandoverData.model_validate_json(row.data_json)
+    if payload.data and access.issuer_id:
+        preserve_internal_purchase_references(access, data, json.loads(row.data_json))
     if not payload.data and access.issuer_id:data.supplier_id=access.supplier_id;data.counterparty=access.name
     validate_party(db,access,data,row.issuer_id)
     if len({line.id for line in data.lines})!=len(data.lines):raise HTTPException(422,'明细行编号不能重复')
     issues = confirmation_issues(data)
     if issues:
-        raise HTTPException(422, '确认打印前请补全：' + '；'.join(issues) + '。也可先保存，交仓库补全。')
+        raise HTTPException(422, '请核对并填齐必填项后再确认：' + '；'.join(issues) + '。')
     if data.kind=='DELIVERY':
         from app.services.material_handover_suppliers import supplier
         supplier(db,data.supplier_id)
@@ -340,11 +421,13 @@ def confirm(db, access, identifier, payload):
 
 def void(db, access, identifier, payload):
     inventory.procurement.lock_factory(db)
+    row = document(db, access, identifier, lock=True)
+    require_preparer(db, access, row)
     signature = request_signature('VOID', identifier, payload)
     previous = replay(db, access, payload.request_id, signature)
     if previous is not None:
         return previous
-    row = document(db, access, identifier, lock=True); check_revision(row, payload.expected_revision)
+    check_revision(row, payload.expected_revision)
     if not payload.reason:
         raise HTTPException(422, '请填写作废原因')
     if row.status == 'VOID' or progress(db, identifier)[1]:
@@ -355,14 +438,47 @@ def void(db, access, identifier, payload):
     db.commit(); return result
 
 
-def scan(db, access, value):
+def scan(db, access, value, *, with_receipt_observations=False):
     match = re.fullmatch(r'MH1:(MHD-[0-9a-f]{32}):([1-9][0-9]{0,5})', value.strip())
     if not match:
         raise HTTPException(422, '请扫描本模块生成的单据码，或完整输入码下方的编号')
     row = document(db, access, match[1])
     if row.status != 'CONFIRMED' or row.code_version != int(match[2]):
         raise HTTPException(409, '二维码版本已失效或单据未确认 / 已作废，请使用有效原单')
-    return output(db, row)
+    return output(db, row, with_receipt_observations=with_receipt_observations)
+
+
+def collect_receipt_observations(data, payload, source_lines):
+    if data.kind != 'DELIVERY':
+        if payload.delivery_quantities or any(part.receipt_counts for part in payload.lines):
+            raise HTTPException(422, '领料出库不能填写收料差异')
+        return {}, {}
+
+    allocations, groups = {}, {}
+    for index, part in enumerate(payload.lines):
+        if part.receipt_counts is None:
+            continue
+        if not part.receipt_counts.counted_quantity.strip():
+            raise HTTPException(422, '请填写收料差异的实点数量')
+        amounts = receipt_line_quantities(part, counts=part.receipt_counts)
+        if Decimal(amounts['counted_quantity']) == 0 and part.line_id not in payload.delivery_quantities:
+            raise HTTPException(422, '实点为零时请填写本批送货数量')
+        line = source_lines[part.line_id]
+        # Quantities document the observed difference. They do not attest to physical disposition.
+        amounts.pop('returned_to_supplier')
+        allocation = {**amounts, 'lot': part.lot or line.lot, 'roll_no': part.roll_no or line.roll_no}
+        allocations[index] = allocation
+        groups.setdefault(part.line_id, {'line_id': part.line_id, 'item_name': line.item_name,
+            'item_code': line.item_code, 'unit': line.unit, 'parts': []})['parts'].append(allocation)
+
+    for line_id, delivered in payload.delivery_quantities.items():
+        group = groups.get(line_id)
+        if not group or any(part.line_id == line_id and part.receipt_counts is None for part in payload.lines):
+            raise HTTPException(422, '计算短少前请填写该明细各分项的实点数量')
+        counted = sum((Decimal(part['counted_quantity']) for part in group['parts']), Decimal(0))
+        declared = validate_delivery_quantity(counted, delivered, label='本批送货数量')
+        group.update(delivered_quantity=inventory.text(declared), shortage_quantity=inventory.text(declared - counted))
+    return allocations, groups
 
 
 def post(db, actor, identifier, payload):
@@ -381,6 +497,8 @@ def post(db, actor, identifier, payload):
         supplier(db,supplier_identity(db,row,data.model_dump(mode='json')))
     if payload.business_date < data.document_date:
         raise HTTPException(422, '实际收发日期不能早于单据日期')
+    if payload.business_date > business_now().date():
+        raise HTTPException(422, '实际业务日期不能晚于今天')
     remaining, _ = progress(db, identifier)
     source_lines = {line.id: line for line in data.lines}
     selected_totals = {}
@@ -396,18 +514,26 @@ def post(db, actor, identifier, payload):
         if original.get('handover_document_id') == identifier and original.get('handover_line_id') in selected_line_ids \
                 and payload.business_date.isoformat() < entry['business_date']:
             raise HTTPException(409, '重新收发日期不能早于该明细的冲销日期，请核对实际日期')
-    for selection in payload.lines:
+    stock_selections = []
+    for index, selection in enumerate(payload.lines):
         line = source_lines.get(selection.line_id)
         if line is None:
             raise HTTPException(422, '所选明细不属于本单')
-        amount = quantity(selection.quantity, '本次数量')
+        amount = quantity(selection.quantity, '本次数量', allow_zero=selection.receipt_counts is not None)
+        if amount > 0:
+            stock_selections.append((index, selection))
+        elif (selection.purchase_source_id or selection.expected_source_revision is not None
+                or selection.expected_receipt_count is not None or selection.difference_reason):
+            raise HTTPException(422, '零入库差异不填写采购待收关联')
         selected_totals[line.id] = selected_totals.get(line.id, inventory.decimal('0')) + amount
-        if remaining.get(line.id, inventory.decimal('0')) + selected_totals[line.id] > inventory.decimal(line.quantity):
+        received = remaining.get(line.id, inventory.decimal('0'))
+        if received >= inventory.decimal(line.quantity) or received + selected_totals[line.id] > inventory.decimal(line.quantity):
             raise HTTPException(409, '本次累计数量超过本单未完成数量')
+    receipt_parts, receipt_groups = collect_receipt_observations(data, payload, source_lines)
     from app.services.material_handover_procurement import prepare_links
-    purchase_links = prepare_links(db, actor, row, data, payload.lines)
+    purchase_links = prepare_links(db, actor, row, data, [part for _, part in stock_selections]) if stock_selections else []
     result_movements = []
-    for index, selection in enumerate(payload.lines):
+    for (index, selection), purchase_link in zip(stock_selections, purchase_links, strict=True):
         line = source_lines[selection.line_id]
         if data.kind == 'ISSUE':
             stock, _ = inventory.projection(db, 'fabric')
@@ -417,23 +543,31 @@ def post(db, actor, identifier, payload):
             if line.lot and batch.get('lot', '') != line.lot:
                 raise HTTPException(422, '所选批次缸号与本单指定缸号不符')
         body = WarehouseDocumentRequest(factory_id=FACTORY, request_id=uuid5(payload.request_id, f'{identifier}:{index}'),
-            expected_revision=actual_revision + index, kind='RECEIPT' if data.kind == 'DELIVERY' else 'ISSUE',
+            expected_revision=actual_revision + len(result_movements), kind='RECEIPT' if data.kind == 'DELIVERY' else 'ISSUE',
             business_date=payload.business_date, source_system='MATERIAL_HANDOVER', source_no=data.source_no,
             source_line=f'{identifier}:{line.id}:{digest([str(payload.request_id), index])[:24]}', source_version=str(row.code_version),
             item_code=line.item_code, item_name=line.item_name, unit=line.unit, material_category=line.material_category,
             quantity=selection.quantity, lot=selection.lot or line.lot, roll_no=selection.roll_no or line.roll_no,
             location_id=selection.location_id, batch_id=selection.batch_id, counterparty=data.counterparty,
             production_no=line.production_no or data.production_no, reason=data.note)
-        result_movements.append(inventory.post(db, actor, 'fabric', body, _state=state, _commit=False,
+        movement = inventory.post(db, actor, 'fabric', body, _state=state, _commit=False,
             _metadata={'handover_document_id': identifier, 'handover_line_id': line.id, 'handover_code_version': row.code_version,
                 'handover_line_snapshot': line.model_dump(mode='json'),
                 'handover_supplier_id': supplier_identity(db,row,data.model_dump(mode='json')),
                 'handover_contract_no': line.contract_no or data.contract_no, 'handover_product_no': line.product_no or data.product_no,
-                'handover_request_id': str(payload.request_id), **purchase_links[index]}))
+                'handover_request_id': str(payload.request_id), **purchase_link})
+        result_movements.append(movement)
+        if index in receipt_parts:
+            receipt_parts[index].update(operation_id=movement['id'], location=movement['data'].get('location', ''))
     row.revision += 1; row.updated_at = business_now().isoformat(); db.flush()
-    result = output(db, row)
-    event(db, access, row, 'POST', payload.request_id, signature, {'operation_ids': [m['id'] for m in result_movements],
-        'selections': payload.model_dump(mode='json')}, result)
+    result = output(db, row, with_receipt_observations=True)
+    detail = {'operation_ids': [m['id'] for m in result_movements], 'selections': payload.model_dump(mode='json')}
+    if receipt_groups:
+        observation = {'request_id': str(payload.request_id), 'business_date': payload.business_date.isoformat(),
+            'actor_name': access.name, 'lines': list(receipt_groups.values())}
+        detail['receipt_observation'] = observation
+        result['receipt_observations'] = [observation, *result.get('receipt_observations', [])]
+    event(db, access, row, 'POST', payload.request_id, signature, detail, result)
     db.commit(); return result
 
 

@@ -1,7 +1,13 @@
 import { http } from '@/lib/http'
-import type { PurchaseFacts } from './fabricProcurement'
+import type { PurchaseFacts, PurchasePriceReference } from './fabricProcurement'
 
 export type MaterialCategory = 'FABRIC' | 'ACCESSORY' | 'THREAD'
+export interface ReceiptCounts {
+  counted_quantity: string
+  damaged_quantity: string
+  rejected_quantity: string
+  other_unusable_quantity: string
+}
 export interface ReceiptPriceInput { unit_price?: string; price_unit?: string; currency?: '' | 'CNY' | 'HKD' | 'USD' | 'EUR' }
 export interface ReceiptBatchInput { location_id?: string; quantity: string; location: string; dye_lot: string; roll_no: string
   counted_quantity?: string; damaged_quantity?: string; rejected_quantity?: string; other_unusable_quantity?: string }
@@ -25,6 +31,7 @@ export interface FabricReceipt {
   handover_document_id?: string; source_version?: string
   reversed?: boolean; reversal?: { id: string; date: string; reason: string; actor_name: string } | null
   unit_price?: string; price_unit?: string; currency?: string; amount?: string; price_basis?: string
+  purchase_price?: PurchasePriceReference | null
   id: string; source_line_id: string; source_revision: number; facts: PurchaseFacts; quantity: string; unit: string
   prior_received_quantity: string | null; receipt_date: string; accounting_month: string; delivery_reference: string
   material_category: MaterialCategory; difference_reason: string; note: string; actor_name: string; occurred_at: string; stock_posted: boolean

@@ -8,7 +8,7 @@ from app.services.document_tools.document_ir import ToolError
 def validate_outputs(files):
     checks = []
     for item in files:
-        if item["role"] not in {"result", "preview", "package", "result_page", "source_page"}:
+        if item["role"] not in {"result", "preview", "package", "result_page", "source_page", "complete_pdf", "complete_text"}:
             continue
         path = Path(item["path"])
         try:
@@ -39,6 +39,10 @@ def validate_outputs(files):
                     if archive.testzip() is not None or len(set(archive.namelist())) != len(archive.namelist()):
                         raise ValueError("corrupt archive")
                     details = {"files": len(archive.namelist())}
+            elif path.suffix.lower() == ".txt":
+                text=path.read_text(encoding="utf-8")
+                if not text.strip() or '\x00' in text:raise ValueError("invalid complete text")
+                details={"characters":len(text)}
             else:
                 continue
         except Exception:

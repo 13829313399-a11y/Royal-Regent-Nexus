@@ -1,12 +1,13 @@
 import type { AssetDepartment, QuickTarget, QuickTargetRef } from '@/api/cartonQuickAssets'
 import { grantAllowsPermission, type useAuthStore } from '@/stores/auth'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
+import { formatBusinessDateTime } from '@/lib/dateTime'
 
 export type QuickAudience = 'sales' | 'warehouse' | 'supplier'
 type Auth = ReturnType<typeof useAuthStore>
 export const internalDepartments: AssetDepartment[] = ['sales-business', 'pmc-warehouse', 'carton']
 export const departmentLabel: Record<AssetDepartment, string> = { 'sales-business': '业务部', 'pmc-warehouse': '仓库', carton: '纸箱部', supplier: '东康' }
-export const quickStatusLabel: Record<string, string> = { DRAFT: '初稿', PENDING: '待确认', READY: '已确认', HISTORY: '历史版本', UNCLASSIFIED: '初稿' }
+export const quickStatusLabel: Record<string, string> = { DRAFT: '初稿', PENDING: '待确认', READY: '已确认', HISTORY: '历史版本', UNCLASSIFIED: '待分类' }
 const explicitSources = ['override', 'user_override', 'inactive_permission', 'inactive_account']
 const matches = (granted: string, requested: string) => granted === '*' || granted === requested
 
@@ -39,9 +40,12 @@ export function viewerKey(auth: Auth) {
 export function targetRef(target: QuickTarget): QuickTargetRef {
   return { kind: target.kind, id: target.id, sheet: target.sheet, row: target.row, fingerprint: target.fingerprint }
 }
-export function targetLabel(target: Pick<QuickTarget, 'kind' | 'contract_no' | 'item_no' | 'customer_name' | 'sheet' | 'row'>) {
+export function targetLabel(target: Pick<QuickTarget, 'kind' | 'contract_no' | 'item_no' | 'customer_name' | 'sheet' | 'row' | 'order_no'>) {
   const type = { REGULAR: '采购单（已建单）', SCHEDULE: '业务排期（采购前可关联）', SAMPLE: '样板', MISC: '杂单' }[target.kind]
-  return [type, target.contract_no, target.customer_name, target.item_no, target.kind === 'SCHEDULE' ? `${target.sheet} 第${target.row}行` : ''].filter(Boolean).join(' · ')
+  return [type, ['SAMPLE', 'MISC'].includes(target.kind) ? target.order_no : '', target.contract_no, target.customer_name, target.item_no, target.kind === 'SCHEDULE' ? `${target.sheet} 第${target.row}行` : ''].filter(Boolean).join(' · ')
+}
+export function targetOrderTime(target: Pick<QuickTarget, 'kind' | 'ordered_at'>) {
+  return ['SAMPLE', 'MISC'].includes(target.kind) ? `下单时间：${formatBusinessDateTime(target.ordered_at, { fallback: '未记录' })}` : ''
 }
 export function suggestedContract(value: string, filename = false) {
   const text = value.normalize('NFKC')

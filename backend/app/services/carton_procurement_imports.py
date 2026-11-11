@@ -42,6 +42,7 @@ def prepared_sheets(filename, content, sheets):
 # whenever an OCR/parser change must reprocess files imported by an older build.
 DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v11-unordered"
 SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-source-customer-po-v8"
+SCHEDULE_360_FALLBACK_VERSION = "schedule-item-360-shipping-fallback-v9"
 INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v4-amendment"
 PACKAGING_TYPES = (
     "普通箱",
@@ -730,6 +731,34 @@ def _item_date_text(value: Any, datemode: int) -> str:
         return ""
 
 
+def _item_review_reason(row, item_no, quantity):
+    if row.get("schedule_section") == "CANCELLED":
+        return "来源表取消单区：核对是否已经下过纸箱采购单；不会自动取消正式订单"
+    if row.get("schedule_section") == "SHIPPED":
+        return "来源表已走货区：保留记录，不作为当前待下单需求"
+    if row.get("order_type") not in {"正单", "改单"}:
+        return f"{row.get('order_type') or '未标订单类型'}：待人工确认，不计入正单下单核对"
+    if not row.get("contract_no") or not item_no:
+        return "正单缺少合同号或产品编号，不能按相邻行或单独货号推断订单"
+    if quantity is None or quantity <= 0:
+        return "正单数量为空、无效或非正数，请确认需求；不会自动取消采购单"
+    return ""
+
+
+def _item_duplicate_reviews(rows, item_numbers, review_reasons):
+    identities: dict[tuple[str, ...], list[int]] = {}
+    for index, (row, item_no) in enumerate(zip(rows, item_numbers)):
+        if review_reasons[index]:
+            continue
+        key = tuple(unicodedata.normalize("NFKC", value).strip().casefold()
+                    for value in (row.get("contract_no") or "", item_no)) + (effective_po(row),)
+        identities.setdefault(key, []).append(index)
+    for duplicates in identities.values():
+        if len(duplicates) > 1:
+            for index in duplicates:
+                review_reasons[index] = "合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单"
+
+
 def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict[str, Any]:
     """Read the unified ITEM source without including its duplicate order-summary tab."""
     aliases = {
@@ -751,6 +780,7 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
         "note": {"备注"},
     }
     result: list[dict[str, Any]] = []
+    review_reasons: list[str] = []
     mappings: list[dict[str, Any]] = []
     for name, rows, datemode in sheets:
         header = _header_mapping(rows, aliases)
@@ -793,32 +823,16 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
             }
             row["date_review_required"] = any(values.get(field) and not row[field]
                                               for field in ("inspection_window", "customer_due_date"))
-            if section == "CANCELLED":
-                row.update(match_status="REVIEW_REQUIRED", suggestion="来源表取消单区：核对是否已经下过纸箱采购单；不会自动取消正式订单")
-            elif section == "SHIPPED":
-                row.update(match_status="REVIEW_REQUIRED", suggestion="来源表已走货区：保留记录，不作为当前待下单需求")
-            elif values.get("order_type") not in {"正单", "改单"}:
-                row.update(match_status="REVIEW_REQUIRED", suggestion=f"{values.get('order_type') or '未标订单类型'}：待人工确认，不计入正单下单核对")
-            elif not values.get("contract_no") or not values.get("item_no"):
-                row.update(match_status="REVIEW_REQUIRED", suggestion="正单缺少合同号或产品编号，不能按相邻行或单独货号推断订单")
-            elif quantity is None or quantity <= 0:
-                row.update(match_status="REVIEW_REQUIRED", suggestion="正单数量为空、无效或非正数，请确认需求；不会自动取消采购单")
+            review_reasons.append(_item_review_reason(row, values.get("item_no"), quantity))
             result.append(row)
             if len(result) > MAX_IMPORT_ROWS:
                 raise HTTPException(422, f"ITEM 数据超过 {MAX_IMPORT_ROWS} 行，请拆分文件后导入")
     if not result:
         raise HTTPException(422, "ITEM 工作表没有可核对的业务明细")
-    identities: dict[tuple[str, ...], list[dict[str, Any]]] = {}
-    for row in result:
-        if row.get("match_status") == "REVIEW_REQUIRED":
-            continue
-        key = tuple(unicodedata.normalize("NFKC", str(row.get(field) or "")).strip().casefold()
-                    for field in ("contract_no", "item_no")) + (effective_po(row),)
-        identities.setdefault(key, []).append(row)
-    for duplicates in identities.values():
-        if len(duplicates) > 1:
-            for row in duplicates:
-                row.update(match_status="REVIEW_REQUIRED", suggestion="合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单")
+    _item_duplicate_reviews(result, [row.get("item_no") or "" for row in result], review_reasons)
+    for row, reason in zip(result, review_reasons):
+        if reason:
+            row.update(match_status="REVIEW_REQUIRED", suggestion=reason)
     return {"rows": result, "engine": "unified-item-header-mapping", "field_mappings": mappings,
             "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；待下单区正单和改单参与下单核对，其他记录保留待确认。接单表不重复导入。",
                          "Contract No.、SO#/Reference、P/O#: 分别保留；SO 用于排期身份，下单客户 PO 只取原表 P/O#:，空白不以 SO 或相邻行补齐。",
@@ -1365,8 +1379,40 @@ def parse_carton_file(import_type: str, filename: str, content: bytes) -> dict[s
     return parsed
 
 
+def _is_360_schedule_customer(options):
+    # A canonical business link takes precedence over the warehouse display name.
+    business_code = options.get("business_customer_code")
+    return business_code == "360" if business_code else any(
+        _text(options.get(key)) == "360" for key in ("customer_code", "customer_name"))
+
+
+def _schedule_360_item_no(row):
+    return _text(row.get("shipping_item_no")) or _text(row.get("source_item_no", row.get("item_no")))
+
+
+def _schedule_360_reviews(rows):
+    unified = [row for row in rows if row.get("template") == "unified-item"]
+    item_numbers = [_schedule_360_item_no(row) for row in unified]
+    review_reasons = [_item_review_reason(row, item_no, row.get("quantity"))
+                      for row, item_no in zip(unified, item_numbers)]
+    _item_duplicate_reviews(unified, item_numbers, review_reasons)
+    return zip(unified, review_reasons)
+
+
+def weekly_schedule_parser_version(parsed, options):
+    if _is_360_schedule_customer(options):
+        rows = parsed.get("rows", [])
+        if any(not _text(row.get("shipping_item_no")) for row in rows) or any(
+            reason != row.get("suggestion", "") for row, reason in _schedule_360_reviews(rows)
+        ):
+            return SCHEDULE_360_FALLBACK_VERSION
+    return SCHEDULE_IMPORT_PARSER_VERSION
+
+
 def match_carton_import(db, factory_id, import_type, parsed, options):
     rows = parsed.get("rows", [])
+    schedule_version = (options.get("parser_version") or weekly_schedule_parser_version(parsed, options)
+                        if import_type == "WEEKLY_SCHEDULE" else None)
     if import_type == "WEEKLY_SCHEDULE" and options.get("customer_code"):
         parsed["schedule_customer"] = {"customer_code": options["customer_code"], "customer_name": options["customer_name"]}
         for row in rows:
@@ -1375,16 +1421,19 @@ def match_carton_import(db, factory_id, import_type, parsed, options):
                        customer_code=options["customer_code"], customer_name=options["customer_name"])
         # The selected master customer is authoritative; workbook buyer names
         # and filenames must never activate another customer's item convention.
-        business_code = options.get("business_customer_code")
-        is_360 = business_code == "360" if business_code else any(
-            _text(options.get(key)) == "360" for key in ("customer_code", "customer_name"))
-        if is_360:
+        if _is_360_schedule_customer(options):
+            for row, reason in _schedule_360_reviews(rows):
+                if reason:
+                    row.update(match_status="REVIEW_REQUIRED", suggestion=reason)
+                else:
+                    row.pop("match_status", None)
+                    row.pop("suggestion", None)
             for row in rows:
-                row.setdefault("source_item_no", row.get("item_no") or "")
-                row["item_no"] = _text(row.get("shipping_item_no"))
-                if not row["item_no"]:
-                    row.update(match_status="REVIEW_REQUIRED", suggestion="360 的货号使用出货货号；请补齐原表“出货货号”后重新导入")
-            parsed.setdefault("warnings", []).append("360 按出货货号核对和下单；完整产品编号保留为原表信息，缺少出货货号的行待补齐。")
+                row.setdefault("source_item_no", _text(row.get("item_no")))
+                row["item_no"] = _schedule_360_item_no(row)
+                if not row["item_no"] and not row.get("match_status"):
+                    row.update(match_status="REVIEW_REQUIRED", suggestion="360 的出货货号和原产品编号都为空，请补齐后重新导入")
+            parsed.setdefault("warnings", []).append("360 优先使用出货货号核对和下单；出货货号为空时使用原产品编号，原产品编号仍保留为原表信息。")
         if any(row.get("split_source") for row in rows):
             parsed.setdefault("warnings", []).append("拆单来源仅保留原单来历；原单、新单分别按表内数量核对，不自动拆分或扣减采购单。订单类型仍填写正单。")
     _match_rows(db, factory_id, import_type, rows, options.get("schedule_order_links"))
@@ -1422,7 +1471,7 @@ def match_carton_import(db, factory_id, import_type, parsed, options):
             "ready_count": sum(1 for row in rows if row.get("reminder_status") == "READY"),
             "advance_days": int(options.get("advance_days", 3)) if import_type == "INSPECTION_SCHEDULE" else None,
             "parser_version": DELIVERY_IMPORT_PARSER_VERSION if import_type == "DELIVERY_NOTE" else (
-                SCHEDULE_IMPORT_PARSER_VERSION if import_type == "WEEKLY_SCHEDULE" else INSPECTION_IMPORT_PARSER_VERSION),
+                schedule_version if import_type == "WEEKLY_SCHEDULE" else INSPECTION_IMPORT_PARSER_VERSION),
         }
     )
     return parsed

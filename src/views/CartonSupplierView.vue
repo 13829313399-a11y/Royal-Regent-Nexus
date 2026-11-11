@@ -17,11 +17,11 @@ import CartonPriceReviews from '@/components/CartonPriceReviews.vue'
 import { cartonUnifiedDeliveriesApi, toPortalShipment, type UnifiedDelivery } from '@/api/cartonUnifiedDeliveries'
 import { cartonSpecialRequestsApi, type SpecialRequest } from '@/api/cartonSpecialRequests'
 import CartonImportDifference from '@/components/CartonImportDifference.vue'
-import { supplierWorkCounts, specialSupplierOrigin, specialSupplierActive, specialSupplierAccepted, specialSupplierNeedsAcceptance, specialSupplierCanPromise, specialSupplierPromise, specialSupplierStage, specialSupplierStatusLabel } from '@/features/carton-procurement/supplierWork'
+import { supplierWorkCounts, regularSupplierCanShip, specialSupplierCanShip, specialSupplierOrigin, specialSupplierActive, specialSupplierAccepted, specialSupplierNeedsAcceptance, specialSupplierCanPromise, specialSupplierPromise, specialSupplierStage, specialSupplierStatusLabel } from '@/features/carton-procurement/supplierWork'
 import { deliveryNoteHtml } from '@/features/carton-procurement/deliveryNotePrint'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import CartonFeedbackCenter from '@/components/CartonFeedbackCenter.vue'
-import CartonSupplierMonthlySummary from '@/components/CartonSupplierMonthlySummary.vue'
+import CartonSettlementOverview from '@/components/CartonSettlementOverview.vue'
 import CartonSupplierReturns from '@/components/CartonSupplierReturns.vue'
 import CartonPayables from '@/components/CartonPayables.vue'
 import CartonPriceCorrectionDialog from '@/components/CartonPriceCorrectionDialog.vue'
@@ -122,21 +122,30 @@ const workspace = ref<SupplierWorkspace | null>(null)
 const workspaceReadError = ref('')
 const membershipReadError = ref('')
 const monthlySearch = ref('')
+const monthlyFactory = ref('')
+const monthlyPeriod = ref(formatBusinessDate(new Date().toISOString()).slice(0, 7))
+const monthlyCurrency = ref('CNY')
+const monthlyRefreshKey = ref(0)
+const monthlyReturnSource = ref<{ factory: string; id: string; refundId?: string } | null>(null)
 const returnSearch = ref('')
 const payablesSearch = ref('')
 const unifiedDeliveries = ref<UnifiedDelivery[]>([])
 const deliveryError = ref('')
+const deliveryLoading = ref(false)
 let deliveryGeneration = 0
 async function loadUnifiedDeliveries() {
   const token = ++deliveryGeneration, context = importContext.value
   const scopes = serviceFactories.value.map(item => item.factory_id)
+  deliveryLoading.value = true
   const results = await Promise.allSettled(scopes.map(scope => cartonUnifiedDeliveriesApi.list(scope, true)))
   if (token !== deliveryGeneration || context !== importContext.value) return
   unifiedDeliveries.value = results.flatMap(result => result.status === 'fulfilled' ? result.value.items : [])
   deliveryError.value = results.flatMap((result, index) => result.status === 'rejected' ? [`${factoryDisplayName(scopes[index]!)}：${getApiErrorMessage(result.reason)}`] : []).join('；')
+  deliveryLoading.value = false
 }
 const unifiedShipmentRows = computed(() => unifiedDeliveries.value.map(group => ({ ...toPortalShipment(group), factory_id: group.factory_id, group })))
-const matchingUnifiedShipments = computed(() => filterShipments(unifiedShipmentRows.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), shipmentFilters.value))
+const factoryShipments = computed(() => unifiedShipmentRows.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value))
+const matchingUnifiedShipments = computed(() => filterShipments(factoryShipments.value, shipmentFilters.value))
 type OrderMarkCount = { current: number; history: number; draft: number; pending: number; ready: number }
 type FactoryMarkState = { loading: boolean; error: string; counts: Record<string, OrderMarkCount> }
 const orderMarks = ref<Record<string, FactoryMarkState>>({})
@@ -186,16 +195,14 @@ function orderHasMarks(order: SupplierOrder) {
   const state = orderMarks.value[order.factory_id]
   return !state?.loading && !state?.error && Boolean(state?.counts[markOrderKey(order.id, order.issue_id)]?.current)
 }
-const workCounts = computed(() => {
-  const regular = supplierWorkCounts(orders.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), (workspace.value?.shipments || []).filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), specialRequests.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value))
-  return { ...regular,
-    receipt: unifiedDeliveries.value.filter(row => (!factoryFilter.value || row.factory_id === factoryFilter.value) && ['SENT', 'RECEIPT_REVERSED'].includes(row.status)).length,
-  }
-})
+const workCounts = computed(() => supplierWorkCounts(
+  orders.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value),
+  factoryShipments.value,
+  specialRequests.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value),
+))
 function openPendingReceipts() {
-  if (specialRequests.value.some(row => (!factoryFilter.value || row.factory_id === factoryFilter.value) && specialStage(row) === 'RECEIPT_PENDING')) {
-    activeTab.value = 'orders'; orderKind.value = 'ALL'; statusFilter.value = 'RECEIPT_PENDING'; customerFilter.value = ''; search.value = ''; selectedOnly.value = false; orderDateFrom.value = ''; orderDateTo.value = ''
-  } else { activeTab.value = 'shipments'; shipmentFilters.value = { ...emptyShipmentFilters(), status: 'PENDING_RECEIPT' } }
+  shipmentFilters.value = { ...emptyShipmentFilters(), status: 'PENDING_RECEIPT' }
+  void openTab('shipments')
 }
 const materialCorrection = ref<MaterialCorrection | null>(null)
 const materialCorrections = computed(() => [...new Map((workspace.value?.orders.flatMap(order => order.material_corrections || []) || []).map(row => [row.id, row])).values()])
@@ -228,9 +235,18 @@ function openPriceCorrection(factory = '', line = '') {
 watch(() => route.query.price_correction, value => { if (typeof value === 'string' && value) openPriceCorrection(typeof route.query.factory === 'string' ? route.query.factory : '', value === 'workspace' ? '' : value) }, { immediate: true })
 watch(() => route.query.settlement_view, value => { settlementView.value = value === 'returns' ? 'RETURNS' : value === 'payables' ? 'PAYABLES' : 'MONTHLY'; if (value === 'returns' || value === 'payables') activeTab.value = 'settlements' }, { immediate: true })
 function selectSettlementView(value: 'RETURNS' | 'PAYABLES' | 'MONTHLY') {
+  monthlyReturnSource.value = null
   settlementView.value = value; activeTab.value = 'settlements'
   void router.replace({ query: { ...route.query, settlement_view: value === 'MONTHLY' ? undefined : value.toLowerCase() } })
 }
+function openMonthlyReturn(factory: string, id: string, refundId?: string) {
+  if (!memberships.value.some(row => row.factory_id === factory)) return
+  selectSettlementView('RETURNS')
+  monthlyReturnSource.value = { factory, id, refundId }
+}
+watch([activeTab, settlementView], ([tab, view]) => {
+  if (tab !== 'settlements' || view !== 'RETURNS') monthlyReturnSource.value = null
+}, { flush: 'sync' })
 watch(() => route.query.special_request, id => { if (typeof id === 'string') activeTab.value = 'orders' })
 const showUsageGuide = ref(false)
 const feedbackCenter = ref<InstanceType<typeof CartonFeedbackCenter> | null>(null)
@@ -265,7 +281,8 @@ const documents = ref<SupplierDocument[]>([])
 const activity = ref<SupplierActivity[]>([])
 const extraLoaded = reactive({ documents: false, activity: false })
 const extraLoadingState = reactive({ documents: false, activity: false })
-const extraLoading = computed(() => extraLoadingState.documents || extraLoadingState.activity)
+const documentReadError = ref('')
+const activityReadError = ref('')
 const extraGeneration = { documents: 0, activity: 0 }
 const documentSearch = ref('')
 const documentFactory = ref('')
@@ -381,20 +398,23 @@ watch(importContext, () => {
   priceCorrectionOpen.value = false; priceCorrectionLineId.value = ''; priceCorrectionFactory.value = ''
   selectedPriceFactory.value = ''
   priceReviewState.value = { factoryId: '', loading: true, readError: '', error: '', pendingCount: null, canRead: true }
-  deliveryGeneration++; unifiedDeliveries.value = []; deliveryError.value = ''; monthlySearch.value = ''; returnSearch.value = ''; payablesSearch.value = ''
+  deliveryGeneration++; unifiedDeliveries.value = []; deliveryError.value = ''; deliveryLoading.value = false; monthlySearch.value = ''; returnSearch.value = ''; payablesSearch.value = ''
+  monthlyFactory.value = ''; monthlyReturnSource.value = null
   specialGeneration++; specialRequests.value = []; specialReadFailures.value = new Set(); specialSelection.value = null; specialError.value = ''; specialLoading.value = false; orderKind.value = 'ALL'
   specialMemberships.value = []
   importGeneration++; ++generation; importOpen.value = false; importFile.value = null; importPreview.value = null
   clearOrderMarks()
   materialCorrection.value = null; workspace.value = null; memberships.value = []; purchaseSelection.value = null; documents.value = []; activity.value = []; acceptOrderId.value = ''; selectedOrderIds.value = []; selectedDocumentKeys.value = []
   ++extraGeneration.documents; ++extraGeneration.activity; extraLoaded.documents = extraLoaded.activity = false; extraLoadingState.documents = extraLoadingState.activity = false
+  documentReadError.value = ''; activityReadError.value = ''
   closeDocumentDetail(); closeMergedDocuments(); bulkAcceptOpen.value = false; loading.value = false; discovering.value = false
   dirtyDates.clear(); for (const key of Object.keys(dates)) delete dates[key]; for (const key of Object.keys(dateIssueIds)) delete dateIssueIds[key]
   selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; importFreeConfirmations.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false; busy.value = false
-  search.value = ''; documentSearch.value = ''; activitySearch.value = ''
-  shipmentFilters.value = { ...shipmentFilters.value, search: '' }
-  activityTotal.value = 0
-  if (activityTimer) clearTimeout(activityTimer)
+  clearFilters(); orderSort.value = 'DEFAULT'
+  clearDocumentFilters(); clearActivityFilters(); activitySort.value = 'DESC'
+  shipmentFilters.value = emptyShipmentFilters()
+  activityPage.value = 1; activityTotal.value = 0
+  if (activityTimer) { clearTimeout(activityTimer); activityTimer = undefined }
 })
 onBeforeUnmount(() => { importGeneration++; generation++; specialGeneration++; deliveryGeneration++; clearOrderMarks() })
 function importGroupReady(group: DeliveryImportGroup) { return importModes.value[importNoteKey(group)] === 'EXISTING_RECEIPT' ? Boolean(group.receipt_link_ready) : group.ready }
@@ -414,14 +434,21 @@ function factoryDisplayName(id: string) {
 }
 const customers = computed(() => [...new Set([...orders.value.map(order => order.customer_name), ...specialRequests.value.map(order => order.customer_name)].filter(Boolean))].sort((a, b) => a.localeCompare(b)))
 const query = computed(() => search.value.trim().toLocaleLowerCase())
+function earliestOutstandingPromise(order: PortalOrder) {
+  return order.lines.filter(line => line.accepted && Number(line.remaining_to_ship) > 0)
+    .map(line => line.promised_date).filter(Boolean).sort()[0] || ''
+}
+function specialOutstandingPromise(order: SpecialRequest) {
+  return specialSupplierActive(order) && order.lines.some(line => Number(line.remaining_to_ship ?? line.remaining_quantity ?? line.quantity) > 0)
+    ? specialSupplierPromise(order) : ''
+}
 function orderQueryDate(order: PortalOrder) {
   if (orderDateField.value === 'PLANNED') return order.planned_date
-  if (orderDateField.value === 'PROMISED') return order.lines.filter(line => line.accepted && Number(line.remaining_to_ship) > 0).map(line => line.promised_date).filter(Boolean).sort()[0] || ''
+  if (orderDateField.value === 'PROMISED') return earliestOutstandingPromise(order)
   return order.order_date
 }
 function compareOrders(a: SupplierOrder, b: SupplierOrder) {
-  const promised = (order: PortalOrder) => order.lines.filter(line => line.accepted && Number(line.remaining_to_ship) > 0).map(line => line.promised_date).filter(Boolean).sort()[0] || ''
-  const field = (order: PortalOrder) => orderSort.value === 'ORDER_DESC' ? order.order_date : orderSort.value === 'PROMISED_ASC' ? promised(order) : order.planned_date
+  const field = (order: PortalOrder) => orderSort.value === 'ORDER_DESC' ? order.order_date : orderSort.value === 'PROMISED_ASC' ? earliestOutstandingPromise(order) : order.planned_date
   const left = field(a), right = field(b)
   return (orderSort.value === 'DEFAULT' ? (stagePriority[orderStage(a)] ?? 9) - (stagePriority[orderStage(b)] ?? 9) : 0)
     || Number(!left) - Number(!right) || (orderSort.value === 'ORDER_DESC' ? right.localeCompare(left) : left.localeCompare(right)) || a.order_no.localeCompare(b.order_no)
@@ -429,13 +456,15 @@ function compareOrders(a: SupplierOrder, b: SupplierOrder) {
 const filteredOrders = computed(() => orders.value.filter(order => {
   if (factoryFilter.value && order.factory_id !== factoryFilter.value) return false
   if (customerFilter.value && order.customer_name !== customerFilter.value) return false
-  if (statusFilter.value !== 'ALL' && (statusFilter.value === 'PARTIALLY_RECEIVED' ? order.status !== statusFilter.value : orderStage(order) !== statusFilter.value)) return false
+  const status = statusFilter.value
+  if (status === 'WAITING_SHIPMENT' && !regularSupplierCanShip(order)) return false
+  if (status !== 'ALL' && status !== 'WAITING_SHIPMENT' && (status === 'PARTIALLY_RECEIVED' ? order.status !== status : orderStage(order) !== status)) return false
   if (orderDateFrom.value && (!orderQueryDate(order) || orderQueryDate(order) < orderDateFrom.value)) return false
   if (orderDateTo.value && (!orderQueryDate(order) || orderQueryDate(order) > orderDateTo.value)) return false
   if (!query.value) return true
   return [order.customer_name, order.contract_no, order.customer_po, order.item_no,
     order.order_no, order.document_no, order.product_name, ...order.lines.map(line => line.child_no)]
-    .some(value => value.toLocaleLowerCase().includes(query.value))
+    .some(value => value?.toLocaleLowerCase().includes(query.value))
 }))
 const visibleOrders = computed(() => (selectedOnly.value
   ? orders.value.filter(order => selectedOrderIds.value.includes(selectionKey('REGULAR', order)))
@@ -446,19 +475,26 @@ const hiddenSelectedCount = computed(() => selectedOrderIds.value.filter(key => 
 ].includes(key)).length)
 const specialStage = specialSupplierStage
 const specialStatus = specialSupplierStatusLabel
-function specialDate(row: SpecialRequest) { return orderDateField.value === 'ORDER' ? row.created_at ? formatBusinessDate(row.created_at) : '' : orderDateField.value === 'PROMISED' ? specialSupplierPromise(row) : row.required_date }
+function specialDate(row: SpecialRequest) { return orderDateField.value === 'ORDER' ? row.created_at ? formatBusinessDate(row.created_at) : '' : orderDateField.value === 'PROMISED' ? specialOutstandingPromise(row) : row.required_date }
+function specialStatusMatches(row: SpecialRequest, status: string) {
+  if (status === 'ALL') return true
+  if (status === 'WAITING_SHIPMENT') return specialSupplierCanShip(row)
+  if (status === 'PARTIALLY_RECEIVED') return row.status === status
+  if (['SENT', 'QUOTED', 'READY'].includes(status)) return ['SAMPLE', 'WORKSHOP_MISC'].includes(row.kind) && row.status === status
+  return specialStage(row) === status
+}
 const filteredSpecialOrders = computed(() => specialRequests.value.filter(row => (orderKind.value === 'ALL' || orderKind.value === row.kind)
   && (!factoryFilter.value || row.factory_id === factoryFilter.value)
   && (!customerFilter.value || row.customer_name === customerFilter.value)
-  && (statusFilter.value === 'ALL' || (statusFilter.value === 'PARTIALLY_RECEIVED' ? row.status === statusFilter.value : ['SENT', 'QUOTED', 'READY'].includes(statusFilter.value) ? ['SAMPLE', 'WORKSHOP_MISC'].includes(row.kind) && row.status === statusFilter.value : specialStage(row) === statusFilter.value))
+  && specialStatusMatches(row, statusFilter.value)
   && (!orderDateFrom.value || specialDate(row) >= orderDateFrom.value)
   && (!orderDateTo.value || Boolean(specialDate(row)) && specialDate(row) <= orderDateTo.value)
   && (!query.value || [row.request_no, row.title, row.requester_name, row.customer_name, row.purpose, ...row.lines.flatMap(line => [line.packaging_type, line.paper_quality, line.specification, line.item_no])].join(' ').toLocaleLowerCase().includes(query.value))))
 const visibleSpecialOrders = computed(() => selectedOnly.value ? specialRequests.value.filter(row => selectedOrderIds.value.includes(selectionKey('SPECIAL', row))) : filteredSpecialOrders.value)
 const visibleOrderRows = computed(() => {
   const rows: { key: string; date: string; stage: string; regular?: SupplierOrder; special?: SpecialRequest }[] = [
-    ...visibleOrders.value.map(regular => ({ key: selectionKey('REGULAR', regular), date: orderSort.value === 'ORDER_DESC' ? regular.order_date : orderSort.value === 'PROMISED_ASC' ? regular.lines.map(line => line.promised_date).filter(Boolean).sort()[0] || '' : regular.planned_date, stage: orderStage(regular), regular })),
-    ...visibleSpecialOrders.value.map(special => ({ key: selectionKey('SPECIAL', special), date: orderSort.value === 'ORDER_DESC' ? special.created_at ? formatBusinessDate(special.created_at) : '' : orderSort.value === 'PROMISED_ASC' ? specialSupplierPromise(special) : special.required_date, stage: specialStage(special), special })),
+    ...visibleOrders.value.map(regular => ({ key: selectionKey('REGULAR', regular), date: orderSort.value === 'ORDER_DESC' ? regular.order_date : orderSort.value === 'PROMISED_ASC' ? earliestOutstandingPromise(regular) : regular.planned_date, stage: orderStage(regular), regular })),
+    ...visibleSpecialOrders.value.map(special => ({ key: selectionKey('SPECIAL', special), date: orderSort.value === 'ORDER_DESC' ? special.created_at ? formatBusinessDate(special.created_at) : '' : orderSort.value === 'PROMISED_ASC' ? specialOutstandingPromise(special) : special.required_date, stage: specialStage(special), special })),
   ]
   return rows.sort((a, b) => Number(!a.regular?.rush) - Number(!b.regular?.rush) || (orderSort.value === 'DEFAULT' ? (stagePriority[a.stage] ?? 9) - (stagePriority[b.stage] ?? 9) : 0) || Number(!a.date) - Number(!b.date) || (orderSort.value === 'ORDER_DESC' ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date)) || a.key.localeCompare(b.key))
 })
@@ -516,6 +552,10 @@ const filteredDocuments = computed(() => documents.value.filter(row => {
   ])].some(value => value.toLocaleLowerCase().includes(term))
 }))
 const selectedDocuments = computed(() => documents.value.filter(row => selectedDocumentKeys.value.includes(documentKey(row))))
+const hiddenDocumentSelectionCount = computed(() => {
+  const matching = new Set(filteredDocuments.value.map(documentKey))
+  return selectedDocuments.value.filter(row => !matching.has(documentKey(row))).length
+})
 const mergedDocumentOrders = computed(() => {
   const groups = new Map<string, {
     factory_id: string
@@ -542,24 +582,44 @@ const mergedUnmatchedLines = computed(() => selectedDocuments.value.flatMap(docu
 const allVisibleDocumentsSelected = computed(() => filteredDocuments.value.length > 0
   && filteredDocuments.value.every(row => selectedDocumentKeys.value.includes(documentKey(row))))
 const filteredActivity = computed(() => activity.value)
+function clearActivityFilters() {
+  activitySearch.value = ''; activityFactory.value = ''; activityEvent.value = ''; activityFrom.value = ''; activityTo.value = ''
+}
+function clearDocumentFilters() {
+  documentSearch.value = ''; documentFactory.value = ''; documentKind.value = ''; documentBusinessKind.value = ''
+  documentStatus.value = ''; documentDateFrom.value = ''; documentDateTo.value = ''
+}
 async function loadActivity() {
   if (!memberships.value.length || !auth.can('carton_supplier:read', '*', '*')) return
+  if (activityTimer) { clearTimeout(activityTimer); activityTimer = undefined }
   const token = ++extraGeneration.activity
-  extraLoadingState.activity = true; error.value = ''; activity.value = []
+  extraLoadingState.activity = true; activityReadError.value = ''; activity.value = []
   try {
     const result = await api.activityPage({ factory_id: activityFactory.value, search: activitySearch.value.trim(), event_type: activityEvent.value, date_from: activityFrom.value, date_to: activityTo.value, sort: activitySort.value, limit: 50, offset: (activityPage.value - 1) * 50 })
     if (token !== extraGeneration.activity) return
     activity.value = result.items; activityTotal.value = result.total; extraLoaded.activity = true
-  } catch (cause) { if (token === extraGeneration.activity) error.value = getApiErrorMessage(cause) }
+  } catch (cause) {
+    if (token === extraGeneration.activity) {
+      activityReadError.value = getApiErrorMessage(cause)
+      activityTotal.value = 0
+    }
+  }
   finally { if (token === extraGeneration.activity) extraLoadingState.activity = false }
 }
 let activityTimer: ReturnType<typeof setTimeout> | undefined
 watch([activitySearch, activityFactory, activityEvent, activityFrom, activityTo, activitySort], () => {
-  extraGeneration.activity++; activityPage.value = 1; activity.value = []
-  if (activityTimer) clearTimeout(activityTimer)
-  if (activeTab.value === 'activity' && memberships.value.length && auth.can('carton_supplier:read', '*', '*')) activityTimer = setTimeout(() => void loadActivity(), 200)
+  extraGeneration.activity++; activityPage.value = 1; activity.value = []; activityTotal.value = 0; activityReadError.value = ''
+  if (activityTimer) { clearTimeout(activityTimer); activityTimer = undefined }
+  if (activeTab.value === 'activity' && memberships.value.length && auth.can('carton_supplier:read', '*', '*')) {
+    extraLoadingState.activity = true
+    activityTimer = setTimeout(() => {
+      activityTimer = undefined
+      if (activeTab.value === 'activity') void loadActivity()
+      else extraLoadingState.activity = false
+    }, 200)
+  }
 })
-watch(activityPage, () => { if (activeTab.value === 'activity') void loadActivity() })
+watch(activityPage, () => { if (activeTab.value === 'activity' && !activityTimer) void loadActivity() })
 onBeforeUnmount(() => { if (activityTimer) clearTimeout(activityTimer) })
 
 function open(order: PortalOrder) {
@@ -659,7 +719,7 @@ function orderStage(order: PortalOrder) {
   if (order.status === 'COMPLETED') return 'COMPLETED'
   if (order.lines.some(line => Number(line.in_transit_quantity) > 0)) return 'RECEIPT_PENDING'
   if (order.lines.some(needsAcceptance)) return 'PENDING_ACCEPTANCE'
-  if (order.status === 'PARTIALLY_RECEIVED' && order.lines.some(line => Number(line.remaining_to_ship) > 0)) return 'WAITING_SHIPMENT'
+  if (order.status === 'PARTIALLY_RECEIVED' && regularSupplierCanShip(order)) return 'WAITING_SHIPMENT'
   return 'ACCEPTED'
 }
 const stagePriority: Record<string, number> = {
@@ -672,7 +732,7 @@ function progressLines(order: PortalOrder) {
 function orderStatus(order: PortalOrder) {
   const labels: Record<string, string> = {
     CANCELLED: '已取消', COMPLETED: '已完成', PENDING_ISSUE: '变更待生成',
-    RECEIPT_PENDING: '待仓库验收', PENDING_ACCEPTANCE: '待接单', WAITING_SHIPMENT: '待送货', ACCEPTED: '已确认接单',
+    RECEIPT_PENDING: '待仓库验收', PENDING_ACCEPTANCE: '待接单', WAITING_SHIPMENT: '待发货', ACCEPTED: '已确认接单',
   }
   return labels[orderStage(order)]
 }
@@ -715,6 +775,7 @@ function clearFilters() {
   statusFilter.value = 'ALL'
   orderDateFrom.value = ''
   orderDateTo.value = ''
+  orderDateField.value = 'ORDER'
   selectedOnly.value = false
 }
 function toggleVisibleOrders(checked: boolean) {
@@ -752,6 +813,7 @@ function closeOrderDetailPreview() {
   if (!detailPinned.value) { detailOrderId.value = ''; specialSelection.value = null }
 }
 function closeOrderDetail() {
+  purchaseSelection.value = null
   specialSelection.value = null
   detailOrderId.value = ''
   detailPinned.value = false
@@ -811,7 +873,8 @@ function trapDialogTab(event: KeyboardEvent) {
 }
 function onDetailKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    closeOrderDetail()
+    // Pinned order details and their child purchase dialog share Reka's Escape stack.
+    if (!detailPinned.value) closeOrderDetail()
     acceptOrderId.value = ''
     closeSpecialAccept()
     closeDeliveryImport()
@@ -965,6 +1028,7 @@ async function loadExtra(tab: 'documents' | 'activity') {
   if (extraLoadingState[tab] || extraLoaded[tab] || !memberships.value.length) return
   const token = ++extraGeneration[tab]
   extraLoadingState[tab] = true
+  documentReadError.value = ''
   try {
     const data = await Promise.all(memberships.value.map(item =>
       tab === 'documents' ? api.documents(item.factory_id) : api.activity(item.factory_id)))
@@ -984,7 +1048,10 @@ async function loadExtra(tab: 'documents' | 'activity') {
     extraLoaded[tab] = true
     return ''
   } catch (reason) {
-    if (token === extraGeneration[tab]) { failure(reason); return error.value }
+    if (token === extraGeneration[tab]) {
+      documentReadError.value = getApiErrorMessage(reason)
+      return documentReadError.value
+    }
   } finally {
     if (token === extraGeneration[tab]) extraLoadingState[tab] = false
   }
@@ -1001,6 +1068,11 @@ function toggleDocument(row: SupplierDocument, event: Event) {
   input.checked ? keys.add(key) : keys.delete(key)
   selectedDocumentKeys.value = [...keys]
   error.value = ''
+}
+function selectDocumentRow(event: MouseEvent) {
+  if (busy.value || !(event.target instanceof Element) || event.target.closest('button, a, input, select, textarea, label, [role="button"], [role="link"], [contenteditable]')) return
+  const row = event.currentTarget as HTMLTableRowElement
+  row.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click()
 }
 function toggleVisibleDocuments(event: Event) {
   const input = event.target as HTMLInputElement
@@ -1145,6 +1217,7 @@ async function refresh() {
   clearOrderMarks()
   documents.value = []
   activity.value = []
+  documentReadError.value = ''; activityReadError.value = ''
   selectedDocumentKeys.value = []
   closeDocumentDetail()
   closeMergedDocuments()
@@ -1154,6 +1227,7 @@ async function refresh() {
   ++extraGeneration.activity
   extraLoadingState.documents = false
   extraLoadingState.activity = false
+  if (activityTimer) { clearTimeout(activityTimer); activityTimer = undefined }
   ++generation
   const context = importContext.value
   try {
@@ -1174,15 +1248,16 @@ async function refresh() {
     else error.value = regularResult.status === 'rejected' ? getApiErrorMessage(regularResult.reason) : specialResult.status === 'rejected' ? getApiErrorMessage(specialResult.reason) : '暂无可查看的服务厂区，请确认供应商协同权限。'
     if (regularResult.status === 'rejected') error.value = `采购订单服务厂区读取失败：${getApiErrorMessage(regularResult.reason)}`
     if (specialResult.status === 'rejected') specialError.value = `样板与杂单服务厂区读取失败：${getApiErrorMessage(specialResult.reason)}`
+    if (context === importContext.value && activeTab.value === 'settlements' && settlementView.value === 'MONTHLY') monthlyRefreshKey.value++
     openSpecialLink()
   } catch (reason) { if (context === importContext.value) failure(reason) } finally { if (context === importContext.value) discovering.value = false }
 }
 let automaticRefresh: ReturnType<typeof setInterval> | undefined
 function refreshOnFocus() {
-  if (!busy.value && !loading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
+  if (document.visibilityState !== 'hidden' && !busy.value && !loading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
 }
-onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
-onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
+onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
+onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
 async function acknowledgeCancellation(order: SupplierOrder) {
   if (busy.value || !canApprove.value) return
   const context = importContext.value
@@ -1282,7 +1357,7 @@ async function download(id: string, factoryId: string, filename: string) {
 <template>
   <main class="min-h-screen bg-[#f3f8fc] text-slate-800" data-yl-help="carton-supplier.overview">
     <CartonActionNotice :message="error" @dismiss="error = ''" />
-    <header :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
+    <header :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="z-20 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur sm:sticky sm:top-0">
       <div class="mx-auto flex max-w-[1720px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div class="flex min-w-0 items-center gap-3">
           <RouterLink to="/modules/pmc-warehouse" aria-label="返回 PMC / 仓管模块" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:border-teal-300 hover:text-teal-700"><ArrowLeft class="size-4" aria-hidden="true" />返回</RouterLink>
@@ -1374,7 +1449,20 @@ async function download(id: string, factoryId: string, filename: string) {
             <div v-for="order in orders.filter(item => item.cancellation_notice?.issued && !item.cancellation_notice.acknowledged)" :key="order.id" class="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-red-800"><span>{{ factoryDisplayName(order.factory_id) }} · {{ order.contract_no }} · PO {{ order.customer_po || '纸箱订单未填写' }} · {{ order.item_no }} · {{ order.document_no }}</span><button v-if="canApprove" type="button" :disabled="busy" class="rounded border border-red-300 bg-white px-3 py-2 font-semibold" @click="acknowledgeCancellation(order)">确认收到取消通知</button></div>
           </section>
 
-        <section v-if="activeTab === 'settlements'" class="space-y-4"><nav aria-label="供应商月结子页面" class="flex flex-wrap gap-2 rounded-xl border bg-card p-2 text-xs"><button type="button" :aria-pressed="settlementView === 'MONTHLY'" class="rounded-lg px-4 py-2" :class="settlementView === 'MONTHLY' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('MONTHLY')">本月对账</button><button type="button" :aria-pressed="settlementView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="settlementView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('RETURNS')">退货签收与退款</button><button type="button" :aria-pressed="settlementView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="settlementView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('PAYABLES')">应付与收款</button></nav><CartonSupplierMonthlySummary v-if="settlementView === 'MONTHLY'" v-model:search="monthlySearch" :factories="memberships" /><CartonSupplierReturns v-else-if="settlementView === 'RETURNS'" :factories="serviceFactories" :viewer-key="importContext" v-model:search="returnSearch" /><CartonPayables v-else :factories="memberships" :viewer-key="importContext" v-model:search="payablesSearch" /></section>
+        <section v-if="activeTab === 'settlements'" class="space-y-4">
+          <nav aria-label="供应商月结子页面" class="flex flex-wrap gap-2 rounded-xl border bg-card p-2 text-xs">
+            <button type="button" :aria-pressed="settlementView === 'MONTHLY'" class="rounded-lg px-4 py-2" :class="settlementView === 'MONTHLY' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('MONTHLY')">本月对账</button>
+            <button type="button" :aria-pressed="settlementView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="settlementView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('RETURNS')">退货签收与退款</button>
+            <button type="button" :aria-pressed="settlementView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="settlementView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-muted-foreground'" @click="selectSettlementView('PAYABLES')">应付与收款</button>
+          </nav>
+          <CartonSettlementOverview v-if="settlementView === 'MONTHLY'" supplier :factories="memberships" :search="monthlySearch"
+            v-model:selected-factory="monthlyFactory" v-model:period="monthlyPeriod" v-model:currency="monthlyCurrency"
+            :viewer-key="importContext" :refresh-key="monthlyRefreshKey" @open-return="openMonthlyReturn" />
+          <CartonSupplierReturns v-else-if="settlementView === 'RETURNS'" :factories="monthlyReturnSource ? undefined : serviceFactories"
+            :factory-id="monthlyReturnSource?.factory" :viewer-key="importContext" v-model:search="returnSearch"
+            :source-id="monthlyReturnSource?.id" :refund-id="monthlyReturnSource?.refundId" @close-source="monthlyReturnSource = null" />
+          <CartonPayables v-else :factories="memberships" :viewer-key="importContext" v-model:search="payablesSearch" />
+        </section>
         <template v-else-if="activeTab === 'orders'">
           <p v-if="specialError" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ specialError }}</p>
           <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -1382,7 +1470,7 @@ async function download(id: string, factoryId: string, filename: string) {
 <label >厂区<select v-model="factoryFilter" aria-label="供应商订单厂区筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700"><option value="">全部厂区</option><option v-for="item in serviceFactories" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }} · {{ item.supplier_name }}</option></select></label>
 <label >类型<select v-model="orderKind" aria-label="供应商订单类型筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="ALL">全部类型</option><option value="PURCHASE">正单</option><option value="SAMPLE">样板单</option><option value="WORKSHOP_MISC">车间杂单</option><option value="SUPPLIER_GIFT">供应商赠送</option></select></label>
 <label >客户<select v-model="customerFilter" aria-label="供应商订单客户筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部客户</option><option v-for="name in customers" :key="name" :value="name">{{ name }}</option></select></label>
-<label >状态<select v-model="statusFilter" aria-label="供应商订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="ALL">全部状态</option><option value="PENDING_ACCEPTANCE">待接单</option><option value="WAITING_SHIPMENT">待送货</option><option value="ACCEPTED">已确认接单</option><option value="PARTIALLY_RECEIVED">部分收料</option><option value="RECEIPT_PENDING">待仓库验收</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option><option value="PENDING_ISSUE">变更待生成</option></select></label>
+<label >状态<select v-model="statusFilter" aria-label="供应商订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="ALL">全部状态</option><option value="PENDING_ACCEPTANCE">待接单</option><option value="WAITING_SHIPMENT">待发货</option><option value="ACCEPTED">已确认接单</option><option value="PARTIALLY_RECEIVED">部分收料</option><option value="RECEIPT_PENDING">待仓库验收</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option><option value="PENDING_ISSUE">变更待生成</option></select></label>
 <template #more><label class="flex items-center gap-1 text-xs text-slate-600">起始日期<input v-model="orderDateFrom" type="date" aria-label="下单日期开始" :max="orderDateTo || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
 <label class="flex items-center gap-1 text-xs text-slate-600">至<input v-model="orderDateTo" type="date" aria-label="下单日期结束" :min="orderDateFrom || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
 <label >日期口径<select v-model="orderDateField" aria-label="供应商订单日期口径" class="h-9 rounded-lg border px-2 text-xs"><option value="ORDER">下单日期</option><option value="PLANNED">计划交期</option><option value="PROMISED">最早未交纸品承诺交期</option></select></label>
@@ -1401,13 +1489,12 @@ async function download(id: string, factoryId: string, filename: string) {
                 <thead class="bg-slate-50 text-slate-600"><tr><th><input type="checkbox" aria-label="全选当前筛选订单" :checked="allVisibleSelected" :indeterminate="someVisibleSelected && !allVisibleSelected" :disabled="!selectableVisibleOrders.length" class="size-4 accent-teal-700" @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)"></th><th>厂区 / 类型</th><th>客户 / 合同 / 单号</th><th>货号 / 产品</th><th>箱唛资料</th><th>下单日期 / 交期提醒</th><th>纸品 / 送货进度</th><th>订单状态</th><th class="text-right">操作</th></tr></thead>
                 <tbody class="divide-y divide-slate-100">
                   <CartonSupplierOrderRow v-for="entry in visibleOrderRows" :key="entry.key" :data-testid="entry.special ? 'supplier-special-order-row' : 'supplier-regular-order-row'" :row="supplierRow(entry)" :selected="selectedOrderIds.includes(entry.key)" :selectable="entry.special ? canSelectSpecial(entry.special) : !!entry.regular && canSelectOrder(entry.regular)" @select="toggleOrderSelection(entry.key, $event)" @marks="showEntryDetail(entry, true)" @preview="showEntryDetail(entry)" @leave="closeOrderDetailPreview" @detail="showEntryDetail(entry, true)"><template #actions><span v-if="entry.regular?.rush" class="inline-flex items-center rounded-md bg-red-600 px-2 py-1 text-[10px] font-bold text-white" :title="entry.regular.rush_reason || '本厂要求优先处理这一单'">急单</span><button v-if="entry.regular?.rush && !entry.regular.rush_acknowledged && canApprove" type="button" :disabled="busy" class="rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 font-semibold text-red-700 disabled:opacity-40" @click="acknowledgeRush(entry.regular)">确认收到催货</button><span v-else-if="entry.regular?.rush && entry.regular.rush_acknowledged" class="px-1 text-[10px] font-semibold text-red-700">催货已收到</span><template v-if="entry.special"><button v-if="specialApprovalAllowed(entry.special) && specialSupplierCanPromise(entry.special)" type="button" :aria-label="specialSupplierAccepted(entry.special) ? `更新订单 ${entry.special.request_no} 承诺交期` : `确认订单 ${entry.special.request_no} 接单`" :disabled="busy" class="rounded-lg border px-2 py-1.5 font-semibold text-teal-800 disabled:opacity-40" :class="specialSupplierAccepted(entry.special) ? 'border-slate-200 bg-white hover:border-teal-300' : 'border-teal-200 bg-teal-50'" @click="showSpecialAccept(entry.special, $event)">{{ specialSupplierAccepted(entry.special) ? '更新承诺交期' : '确认接单' }}</button></template><template v-for="order in entry.regular ? [entry.regular] : []" :key="order.id"><button v-if="canApprove && open(order) && order.lines.some(needsAcceptance)" type="button" :aria-label="`确认订单 ${order.order_no} 接单`" class="rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 font-semibold text-teal-800" @click="showAccept(order)">确认接单</button><button v-if="canApprove && order.cancellation_notice?.issued && !order.cancellation_notice.acknowledged" type="button" :disabled="busy" class="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 font-semibold text-red-700" @click="acknowledgeCancellation(order)">确认收到取消通知</button><button v-if="canApprove && open(order) && !order.lines.some(needsAcceptance) && order.lines.some(line => Number(line.required_quantity) > 0)" type="button" :aria-label="`更新订单 ${order.order_no} 承诺交期`" class="rounded-lg border border-slate-200 bg-white px-2 py-1.5 font-semibold text-teal-800 hover:border-teal-300" @click="showAccept(order)">更新承诺交期</button></template></template></CartonSupplierOrderRow>
-                  <tr v-if="!visibleOrderRows.length"><td colspan="9" class="px-4 py-10 text-center text-slate-500">{{ loading || specialLoading ? '正在读取订单…' : specialError ? '部分订单未能读取，请刷新重试。' : orders.length + specialRequests.length ? '没有符合当前筛选条件的订单' : '暂无已发送的订单。' }}</td></tr>
+                  <tr v-if="!visibleOrderRows.length"><td colspan="9" class="px-4 py-10 text-center text-slate-500">{{ loading || specialLoading ? '正在读取订单…' : workspaceReadError || specialError ? '订单读取未完成，请刷新重试。' : orders.length + specialRequests.length ? '没有符合当前筛选条件的订单' : '暂无已发送的订单。' }}</td></tr>
                 </tbody>
               </table>
             </div>
           </section>
 
-          <CartonSupplierPurchaseOrders v-if="purchaseSelection" :key="purchaseSelection.factoryId + purchaseSelection.orderNo" :factory-id="purchaseSelection.factoryId" :order-no="purchaseSelection.orderNo" @close="purchaseSelection = null" />
           <CartonOrderDetailDialog v-if="detailOrder || specialSelection" data-testid="supplier-order-detail-overlay" :pinned="detailPinned" :title="'订单明细 · ' + factoryDisplayName(detailOrder?.factory_id || specialSelection!.factoryId) + ' · ' + (detailOrder?.customer_name || detailSpecial?.customer_name || '未关联客户')" close-label="关闭供应商订单明细" @close="closeOrderDetail">
             <template v-if="detailOrder">
               <p v-if="detailOrder.schedule_split_source" class="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">排期拆单来源：{{ detailOrder.schedule_split_source.source_contract_no }} → {{ detailOrder.contract_no }}。按本合同及对应资料核对印刷、送货，勿与来源单混合。</p>
@@ -1420,6 +1507,7 @@ async function download(id: string, factoryId: string, filename: string) {
 </CartonOrderDetailContent><div v-if="detailPinned" class="flex justify-end"><button type="button" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white" @click="purchaseSelection = { factoryId: detailOrder.factory_id, orderNo: detailOrder.order_no }">查看采购单</button></div>
               <div class="flex flex-wrap gap-2"><button v-for="file in detailOrder.attachments" :key="file.id" type="button" class="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700" @click="download(file.id, detailOrder.factory_id, file.filename)">{{ file.filename }} · v{{ file.version }}</button></div>
               <div v-if="detailPinned" data-testid="supplier-order-marks"><CartonMarkAssetLibrary :key="detailOrder.factory_id + detailOrder.id + detailOrder.issue_id" :factory-id="detailOrder.factory_id" :order-id="detailOrder.id" :supplier-issue-id="detailOrder.issue_id" supplier read-only /></div>
+              <CartonSupplierPurchaseOrders v-if="purchaseSelection" :key="purchaseSelection.factoryId + purchaseSelection.orderNo" :factory-id="purchaseSelection.factoryId" :order-no="purchaseSelection.orderNo" @close="purchaseSelection = null" />
             </template>
             <CartonSpecialRequests v-else-if="specialSelection" :key="specialSelection.factoryId + ':' + specialSelection.id + ':' + detailPinned" :factory-id="specialSelection.factoryId" :viewer-key="importContext" supplier supplier-read-only mode="detail" :request-id="detailPinned ? specialSelection.id : undefined" :preview-request="detailPinned ? undefined : detailSpecial || undefined" @changed="loadSpecialRequests" />
           </CartonOrderDetailDialog>
@@ -1490,9 +1578,12 @@ async function download(id: string, factoryId: string, filename: string) {
           <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 class="text-sm font-bold">发货与仓库反馈</h2><p class="mt-1 text-xs text-slate-500">同一张送货单统一核实正单、样板、杂单与额外纸品，保留各批实际收货和原箱唛。</p></div></div>
             <CartonShipmentFilters v-model="shipmentFilters" :rows="unifiedShipmentRows" hide-search @clear="factoryFilter = ''"><label>厂区<select v-model="factoryFilter" aria-label="供应商发货厂区筛选" class="h-9 max-w-full rounded-lg border px-2 text-xs"><option value="">全部厂区</option><option v-for="item in serviceFactories" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }} · {{ item.supplier_name }}</option></select></label></CartonShipmentFilters>
-            <p v-if="deliveryError" role="alert" class="m-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">送货单读取失败：{{ deliveryError }}</p>
-            <p class="px-4 pt-3 text-xs text-slate-500">显示 {{ matchingUnifiedShipments.length }} 张送货单</p>
-            <div class="space-y-3 p-4"><div v-for="shipment in matchingUnifiedShipments" :key="shipment.id"><p class="mb-1 text-xs font-semibold text-teal-800">送往{{ factoryDisplayName(shipment.factory_id) }}</p><CartonUnifiedDeliveryNotes :group="shipment.group" supplier :viewer-key="importContext" /></div><p v-if="!matchingUnifiedShipments.length && !deliveryError" class="py-8 text-center text-sm text-slate-500">暂无符合条件的发货单</p></div>
+            <p v-if="deliveryLoading" role="status" class="px-4 pt-3 text-xs text-slate-500">正在读取送货单…</p>
+            <p v-else-if="deliveryError" role="alert" class="m-4 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+              送货单读取失败：{{ deliveryError }}<button type="button" class="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold" @click="loadUnifiedDeliveries">重新读取送货单</button>
+            </p>
+            <p v-if="!deliveryLoading && (!deliveryError || matchingUnifiedShipments.length)" class="px-4 pt-3 text-xs text-slate-500">{{ deliveryError ? '已读取范围显示' : '显示' }} {{ matchingUnifiedShipments.length }} 张送货单</p>
+            <div class="space-y-3 p-4"><div v-for="shipment in matchingUnifiedShipments" :key="`${shipment.factory_id}:${shipment.id}`"><p class="mb-1 text-xs font-semibold text-teal-800">送往{{ factoryDisplayName(shipment.factory_id) }}</p><CartonUnifiedDeliveryNotes :group="shipment.group" supplier collapsible :viewer-key="importContext" /></div><p v-if="!deliveryLoading && !matchingUnifiedShipments.length && !deliveryError" class="py-8 text-center text-sm text-slate-500">暂无符合条件的发货单</p></div>
           </section>
         </template>
 
@@ -1507,11 +1598,12 @@ async function download(id: string, factoryId: string, filename: string) {
 <label class="text-xs">日期从 <input v-model="documentDateFrom" type="date" aria-label="单据日期开始" class="h-9 rounded-lg border border-slate-200 px-2"></label>
 <label class="text-xs">至 <input v-model="documentDateTo" type="date" aria-label="单据日期结束" class="h-9 rounded-lg border border-slate-200 px-2"></label>
 
-<template #actions><button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs" @click="documentSearch = ''; documentFactory = ''; documentKind = ''; documentBusinessKind = ''; documentStatus = ''; documentDateFrom = ''; documentDateTo = ''">清空筛选</button></template>
+<template #actions><button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs" @click="clearDocumentFilters">清空筛选</button></template>
 
 </CartonFilterBar>
-            <div class="flex items-center gap-3 border-b border-slate-100 px-4 py-2 text-xs"><span>单据 {{ filteredDocuments.length }} / {{ documents.length }} 张</span><span>已选 {{ selectedDocuments.length }} 张单据 · {{ mergedDocumentOrders.length }} 张订单</span><span class="text-slate-400">一次最多 100 张单据</span><button type="button" :disabled="!selectedDocumentKeys.length" class="text-slate-500 disabled:opacity-40" @click="selectedDocumentKeys = []">清空选择</button></div>
-            <div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[980px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 font-bold text-slate-600"><tr><th class="px-4 py-3"><input type="checkbox" aria-label="全选当前筛选单据" :checked="allVisibleDocumentsSelected" @change="toggleVisibleDocuments($event)"></th><th class="px-3 py-3">类型</th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">单据号</th><th class="px-3 py-3">日期</th><th class="px-3 py-3">包含订单</th><th class="px-3 py-3">纸品条数</th><th class="px-3 py-3">状态</th><th class="px-3 py-3">是否接单</th><th class="px-3 py-3" title="从启用导出次数记录起，每次成功生成 Excel 累计一次；合并导出涉及的每张单据分别计一次">导出次数</th><th class="px-3 py-3 text-right">操作</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredDocuments" :key="documentKey(row)"><td data-label="选择" class="px-4 py-3"><input :checked="selectedDocumentKeys.includes(documentKey(row))" type="checkbox" :aria-label="`选择单据 ${row.document_no}`" @change="toggleDocument(row, $event)"></td><td data-label="类型" class="px-3 py-3">{{ row.kind === 'PURCHASE' ? (row.is_cancellation ? '取消采购通知' : row.is_batch ? '合并采购单' : '采购单') : '送货单' }}</td><td data-label="送货厂区" class="px-3 py-3">{{ factoryDisplayName(row.factory_id) }}</td><td data-label="单据号" class="px-3 py-3 font-bold">{{ row.document_no }}</td><td data-label="日期" class="px-3 py-3">{{ row.date }}</td><td data-label="包含订单" class="px-3 py-3">{{ row.orders.length }} 张订单<span v-if="row.unmatched_line_count"> · {{ row.unmatched_line_count }} 条无单纸品</span><span v-if="row.orders.some(item => item.contract_no?.trim())"> · {{ row.orders.map(item => item.contract_no?.trim()).filter(Boolean).join('、') }}</span><p class="mt-1 text-slate-500">{{ documentBusinessLabel(row) }}</p></td><td data-label="纸品条数" class="px-3 py-3">{{ row.lines.length }}</td><td data-label="状态" class="px-3 py-3">{{ row.status === 'RECEIPT_REVERSED' ? '收料已冲销，待更正' : row.status === 'SENT' ? '待仓库确认' : row.status === 'RECEIVED' ? '已核实' : row.status === 'NOT_RECEIVED' ? '仓库未收到' : row.status }}</td><td data-label="是否接单" class="px-3 py-3" :aria-label="`${row.document_no} 接单状态`"><span :class="row.supplier_acceptance?.status === 'ACCEPTED' ? 'text-emerald-700' : 'text-amber-700'">{{ row.kind === 'PURCHASE' ? row.supplier_acceptance?.label || '接单状态待核实' : '—' }}</span><p v-if="row.kind === 'PURCHASE' && row.supplier_acceptance" class="mt-1 text-slate-500">{{ row.supplier_acceptance.accepted_line_count }}/{{ row.supplier_acceptance.total_line_count }} 条已接</p></td><td data-label="导出次数" class="px-3 py-3" :aria-label="`${row.document_no} 导出 ${row.export_count ?? 0} 次`">{{ row.export_count ?? 0 }}</td><td data-label="操作" class="px-3 py-3 text-right"><button v-if="row.kind === 'DELIVERY'" type="button" :aria-label="`打印送货单 ${row.document_no}`" class="mr-1 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 font-semibold text-teal-800" @click="printDeliveryNote(row)">打印</button><button type="button" :aria-label="`查看单据 ${row.document_no} 明细`" title="悬停预览单据明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold" @mouseenter="showDocumentDetail(row)" @mouseleave="closeDocumentDetailPreview" @focus="showDocumentDetail(row)" @blur="closeDocumentDetailPreview" @click="showDocumentDetail(row, true)">明细</button></td></tr><tr v-if="!filteredDocuments.length"><td colspan="11" class="p-10 text-center text-slate-500">{{ extraLoading ? '正在读取单据…' : '暂无符合条件的单据' }}</td></tr></tbody></table></div>
+            <p v-if="documentReadError" role="alert" class="m-3 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-3 text-xs text-red-700">单据读取失败：{{ documentReadError }}<button type="button" class="rounded-lg border border-red-200 bg-white px-3 py-1.5 font-semibold" @click="loadExtra('documents')">重新读取单据</button></p>
+            <div class="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-2 text-xs"><span aria-live="polite">{{ extraLoadingState.documents ? '正在读取单据…' : documentReadError ? documents.length ? '上次读取的单据' : '单据数量暂不可用' : `单据 ${filteredDocuments.length} / ${documents.length} 张` }}</span><span>已选 {{ selectedDocuments.length }} 张单据 · {{ mergedDocumentOrders.length }} 张订单<template v-if="hiddenDocumentSelectionCount">（筛选外 {{ hiddenDocumentSelectionCount }} 张单据）</template></span><span class="text-slate-500">一次最多 100 张单据</span><button type="button" :disabled="!selectedDocumentKeys.length" class="text-slate-500 disabled:opacity-40" @click="selectedDocumentKeys = []">清空选择</button></div>
+            <div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[980px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 font-bold text-slate-600"><tr><th class="px-4 py-3"><input type="checkbox" aria-label="全选当前筛选单据" :checked="allVisibleDocumentsSelected" :disabled="busy" @change="toggleVisibleDocuments($event)"></th><th class="px-3 py-3">类型</th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">单据号</th><th class="px-3 py-3">日期</th><th class="px-3 py-3">包含订单</th><th class="px-3 py-3">纸品条数</th><th class="px-3 py-3">状态</th><th class="px-3 py-3">是否接单</th><th class="px-3 py-3" title="从启用导出次数记录起，每次成功生成 Excel 累计一次；合并导出涉及的每张单据分别计一次">导出次数</th><th class="px-3 py-3 text-right">操作</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredDocuments" :key="documentKey(row)" :class="[busy ? '' : 'cursor-pointer hover:bg-teal-50/50', { 'bg-teal-50': selectedDocumentKeys.includes(documentKey(row)) }]" @click="selectDocumentRow"><td data-label="选择" class="px-4 py-3"><input :checked="selectedDocumentKeys.includes(documentKey(row))" type="checkbox" :aria-label="`选择单据 ${row.document_no}`" :disabled="busy" @change="toggleDocument(row, $event)"></td><td data-label="类型" class="px-3 py-3">{{ row.kind === 'PURCHASE' ? (row.is_cancellation ? '取消采购通知' : row.is_batch ? '合并采购单' : '采购单') : '送货单' }}</td><td data-label="送货厂区" class="px-3 py-3">{{ factoryDisplayName(row.factory_id) }}</td><td data-label="单据号" class="px-3 py-3 font-bold">{{ row.document_no }}</td><td data-label="日期" class="px-3 py-3">{{ row.date }}</td><td data-label="包含订单" class="px-3 py-3">{{ row.orders.length }} 张订单<span v-if="row.unmatched_line_count"> · {{ row.unmatched_line_count }} 条无单纸品</span><span v-if="row.orders.some(item => item.contract_no?.trim())"> · {{ row.orders.map(item => item.contract_no?.trim()).filter(Boolean).join('、') }}</span><p class="mt-1 text-slate-500">{{ documentBusinessLabel(row) }}</p></td><td data-label="纸品条数" class="px-3 py-3">{{ row.lines.length }}</td><td data-label="状态" class="px-3 py-3">{{ row.status === 'RECEIPT_REVERSED' ? '收料已冲销，待更正' : row.status === 'SENT' ? '待仓库确认' : row.status === 'RECEIVED' ? '已核实' : row.status === 'NOT_RECEIVED' ? '仓库未收到' : row.status }}</td><td data-label="是否接单" class="px-3 py-3" :aria-label="`${row.document_no} 接单状态`"><span :class="row.supplier_acceptance?.status === 'ACCEPTED' ? 'text-emerald-700' : 'text-amber-700'">{{ row.kind === 'PURCHASE' ? row.supplier_acceptance?.label || '接单状态待核实' : '—' }}</span><p v-if="row.kind === 'PURCHASE' && row.supplier_acceptance" class="mt-1 text-slate-500">{{ row.supplier_acceptance.accepted_line_count }}/{{ row.supplier_acceptance.total_line_count }} 条已接</p></td><td data-label="导出次数" class="px-3 py-3" :aria-label="`${row.document_no} 导出 ${row.export_count ?? 0} 次`">{{ row.export_count ?? 0 }}</td><td data-label="操作" class="px-3 py-3 text-right"><button v-if="row.kind === 'DELIVERY'" type="button" :aria-label="`打印送货单 ${row.document_no}`" class="mr-1 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 font-semibold text-teal-800" @click="printDeliveryNote(row)">打印</button><button type="button" :aria-label="`查看单据 ${row.document_no} 明细`" title="悬停预览单据明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold" @mouseenter="showDocumentDetail(row)" @mouseleave="closeDocumentDetailPreview" @focus="showDocumentDetail(row)" @blur="closeDocumentDetailPreview" @click="showDocumentDetail(row, true)">明细</button></td></tr><tr v-if="!filteredDocuments.length && !documentReadError && !extraLoadingState.documents"><td colspan="11" class="p-10 text-center text-slate-500">暂无符合条件的单据</td></tr></tbody></table></div>
           </section>
           <div v-if="detailDocument" data-testid="supplier-document-detail-overlay" class="fixed inset-0 z-[64] flex items-center justify-center p-4" :class="detailDocumentPinned ? 'pointer-events-auto bg-slate-950/45' : 'pointer-events-none bg-slate-950/25'" @click.self="closeDocumentDetail">
             <div ref="documentDetailDialog" role="dialog" aria-labelledby="supplier-document-title" :aria-modal="detailDocumentPinned ? 'true' : undefined" :inert="detailDocumentPinned ? undefined : true" class="flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl" @keydown="trapDialogTab">
@@ -1537,11 +1629,11 @@ async function download(id: string, factoryId: string, filename: string) {
 <label>至<input v-model="activityTo" type="date" aria-label="供应商日志结束日期" class="ml-2 h-9 rounded-lg border px-2"></label>
 <label >排序<select v-model="activitySort" aria-label="供应商日志排序" class="h-9 rounded-lg border px-2"><option value="DESC">最新操作优先</option><option value="ASC">最早操作优先</option></select></label>
 
-<template #actions><button type="button" class="h-9 rounded-lg border px-3" @click="activitySearch = ''; activityFactory = ''; activityEvent = ''; activityFrom = ''; activityTo = ''">清除筛选</button>
+<template #actions><button type="button" class="h-9 rounded-lg border px-3" @click="clearActivityFilters">清除筛选</button>
 <button type="button" class="h-9 rounded-lg border px-3" @click="activitySort = 'DESC'">恢复默认排序</button>
-<button type="button" class="h-9 rounded-lg border px-3" :disabled="extraLoading" @click="loadActivity">刷新</button></template>
-<template #footer><span>共 {{ activityTotal }} 条</span></template>
-</CartonFilterBar><div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[700px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 text-slate-600"><tr><th class="p-3">时间</th><th class="p-3">厂区</th><th class="p-3">操作</th><th class="p-3">单据 / 订单</th><th class="p-3">操作人</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredActivity" :key="row.id"><td data-label="时间" class="p-3">{{ row.created_at }}</td><td data-label="厂区" class="p-3">{{ factoryDisplayName(row.factory_id) }}</td><td data-label="操作" class="p-3 font-semibold">{{ row.action }}</td><td data-label="单据 / 订单" class="p-3">{{ row.reference_no }}</td><td data-label="操作人" class="p-3">{{ row.actor_name }}</td></tr><tr v-if="!filteredActivity.length"><td colspan="5" class="p-10 text-center text-slate-500">{{ extraLoading ? '正在读取操作日志…' : '暂无相关操作记录' }}</td></tr></tbody></table></div><div class="flex items-center justify-end gap-3 border-t p-3 text-xs"><button type="button" :disabled="extraLoading || activityPage <= 1" class="rounded-lg border px-3 py-2 disabled:opacity-40" @click="activityPage--">上一页</button><span>第 {{ activityPage }} / {{ Math.max(1, Math.ceil(activityTotal / 50)) }} 页</span><button type="button" :disabled="extraLoading || activityPage * 50 >= activityTotal" class="rounded-lg border px-3 py-2 disabled:opacity-40" @click="activityPage++">下一页</button></div></section>
+<button type="button" class="h-9 rounded-lg border px-3" :disabled="extraLoadingState.activity" @click="loadActivity">刷新</button></template>
+<template #footer><span aria-live="polite">{{ extraLoadingState.activity ? '读取中…' : activityReadError ? '日志数量暂不可用' : `共 ${activityTotal} 条` }}</span></template>
+</CartonFilterBar><p v-if="activityReadError" role="alert" class="m-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">操作日志读取失败：{{ activityReadError }}</p><div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[700px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 text-slate-600"><tr><th class="p-3">时间</th><th class="p-3">厂区</th><th class="p-3">操作</th><th class="p-3">单据 / 订单</th><th class="p-3">操作人</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredActivity" :key="row.id"><td data-label="时间" class="p-3">{{ row.created_at }}</td><td data-label="厂区" class="p-3">{{ factoryDisplayName(row.factory_id) }}</td><td data-label="操作" class="p-3 font-semibold">{{ row.action }}</td><td data-label="单据 / 订单" class="p-3">{{ row.reference_no }}</td><td data-label="操作人" class="p-3">{{ row.actor_name }}</td></tr><tr v-if="!filteredActivity.length && !extraLoadingState.activity && !activityReadError"><td colspan="5" class="p-10 text-center text-slate-500">暂无相关操作记录</td></tr></tbody></table></div><div class="flex items-center justify-end gap-3 border-t p-3 text-xs"><button type="button" :disabled="extraLoadingState.activity || Boolean(activityReadError) || activityPage <= 1" class="rounded-lg border px-3 py-2 disabled:opacity-40" @click="activityPage--">上一页</button><span v-if="!activityReadError && !extraLoadingState.activity">第 {{ activityPage }} / {{ Math.max(1, Math.ceil(activityTotal / 50)) }} 页</span><button type="button" :disabled="extraLoadingState.activity || Boolean(activityReadError) || activityPage * 50 >= activityTotal" class="rounded-lg border px-3 py-2 disabled:opacity-40" @click="activityPage++">下一页</button></div></section>
         </template>
       </section>
     </div>

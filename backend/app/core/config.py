@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     document_tools_qwen_ocr_model: str = "qwen3.5-ocr"
     document_tools_qwen_layout_model: str = "qwen3-vl-plus"
     document_tools_translation_model: str = "qwen3-vl-plus"
+    document_tools_translation_api_key: SecretStr = SecretStr("")
+    document_tools_translation_base_url: str = ""
+    document_tools_translation_protocol: Literal["inherit", "dashscope", "openai", "mimo"] = "inherit"
     document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
     image_translation_model_dir: str = str(BACKEND_DIR / "models" / "image-translation")
     image_translation_runner: str = str(BACKEND_DIR.parent / "shinobu-web" / "server" / "dist" / "runner.mjs")

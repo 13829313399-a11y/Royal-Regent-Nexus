@@ -173,7 +173,14 @@ def validate_recipient(db, asset, mode, supplier_id):
     matches = related_orders(db, asset)
     if any(row.supplier_id != supplier_id for row in matches):
         raise HTTPException(422, '资料关联订单包含其他供应商，请先核实共享范围')
-    if len({assets.identity(row.customer_code) for row in matches}) > 1:
+    codes={assets.identity(row.customer_code) for row in matches}
+    if asset.owner_department:
+        from app.services import carton_asset_targets
+        quick_targets=carton_asset_targets.current(db,asset)
+        if any(row.get('supplier_id') and row['supplier_id']!=supplier_id for row in quick_targets):
+            raise HTTPException(422,'资料关联订单包含其他供应商，请先核实共享范围')
+        codes.update(assets.identity(row['customer_code']) for row in quick_targets)
+    if len(codes) > 1:
         raise HTTPException(422, '资料包含多个客户，请明确关联订单后再共享')
     return chosen['id'], chosen['name']
 
@@ -206,12 +213,20 @@ def initialize(db, user, asset, options):
         record(db, user, asset, options.sharing_mode, options.supplier_id)
 
 
+def ensure_audience_scope(db,user,asset):
+    for order in related_orders(db,asset):ensure_customer(db,user,order)
+    if asset.owner_department:
+        from app.services import carton_asset_targets as targets
+        for row in targets.current(db,asset):
+            if row['kind']=='SCHEDULE':targets.schedule_customer_allowed(db,user,asset.factory_id,row['customer_code'])
+            else:targets.customer_allowed(db,user,asset.factory_id,row['customer_code'])
+
+
 def change(db, user, factory, identifier, payload):
     user = internal_actor(db, user, factory)
     asset = assets.active_asset(db, factory, identifier)
     ensure_asset_access(db,user,asset,write=True)
-    for order in related_orders(db, asset):
-        ensure_customer(db, user, order)
+    ensure_audience_scope(db,user,asset)
     validate_recipient(db, asset, payload.sharing_mode, payload.supplier_id)
     lifecycle.bump(db, asset, payload.revision)
     record(db, user, asset, payload.sharing_mode, payload.supplier_id)
@@ -342,6 +357,6 @@ def binding_targets(db, user, factory, external=False):
         if db.scalar(select(special.SpecialVersion.id).where(special.SpecialVersion.request_id == row.id,
                 special.SpecialVersion.action == 'DELETED').limit(1)): continue
         result.append(dict(order_id=row.id, order_kind='SAMPLE' if row.kind == 'SAMPLE' else 'MISC', order_no=row.request_no, contract_no='',
-            customer_name=row.customer_name, item_no='', revision=row.revision, issue_id=row.current_version_id,
+            customer_name=row.customer_name, item_no='', revision=row.revision, issue_id=row.current_version_id, ordered_at=row.created_at,
             lines=[dict(id=line.id, label=f'{line.packaging_type} · {line.item_no}') for line in special.lines(db, row)]))
     return result

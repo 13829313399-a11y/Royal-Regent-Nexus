@@ -204,17 +204,16 @@ def test_supplier_own_shared_evidence_and_confirmation(monkeypatch):
         assert own['owner_supplier_id'] and own['owner_department']=='supplier'
         own=ok(action(client,own,'READY'))
         assert upload(client,owner_department='supplier',purpose='EVIDENCE').status_code==403
-        # Pre-purchase internal material remains visible to the warehouse; the
-        # supplier receives it through its own issued order, not factory access.
-        assert client.get(BASE+'/'+shared['id'],params={**F,'supplier_view':True}).status_code==404
+        # A named supplier audience is independent from purchasing; evidence is not.
+        assert client.get(BASE+'/'+shared['id'],params={**F,'supplier_view':True}).status_code==200
         assert client.get(BASE+'/'+evidence['id'],params={**F,'supplier_view':True}).status_code==404
         assert client.get(BASE+'/'+evidence['id'],params=F).status_code==404
         assert upload(client,owner_department='sales-business').status_code==403
         assert client.get('/api/carton-mark/assets/'+evidence['id']+'/document',params=F).status_code==403
         originals=ok(client.get(BASE,params={**F,'owner_department':'supplier'}))['items']
-        assert {x['id'] for x in originals}=={own['id']}
+        assert {x['id'] for x in originals}=={own['id'],shared['id']}
         assert client.put('/api/carton-supplier/carton-mark/assets/'+shared['id']+'/associations',params=F,
-            json=dict(revision=shared['revision'],request_id=uuid4().hex,targets=[])).status_code==404
+            json=dict(revision=shared['revision'],request_id=uuid4().hex,targets=[])).status_code==403
         # No internal actor can alter supplier ownership by guessing an ID.
         login_as(client,'admin')
         assert action(client,own,'READY').status_code in {403,404}
