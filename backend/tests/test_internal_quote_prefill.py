@@ -374,3 +374,34 @@ def test_explicitly_unselected_molding_is_not_prefilled_until_resumed():
     resumed = prefill_molding_from_engineering(engineering, {"engineering_prefill_paused": False})
     assert len(resumed["injection_lines"]) == 1
     assert blank == {"engineering_prefill_paused": True}
+
+
+def test_transparent_resin_category_does_not_overwrite_selected_grade():
+    from copy import deepcopy
+    for material, grade in [("C-PP", "5090T"), ("C-ABS", "TR558/920")]:
+        for field in ["material", "material_type"]:
+            engineering = {"molds": [{"mold_no": "3", field: material, "net_weight_g": 75,
+                                      "quantity": 2, "target_output": 14142.8571}]}
+            draft = prefill_molding_from_engineering(engineering, {})
+            row = draft["injection_lines"][0]
+            assert row["material"] == material and row["grade"] == ""
+            row.update(material=material, grade=grade, quantity=3)
+            before = deepcopy(draft)
+            saved = prefill_molding_from_engineering(engineering, draft)
+            refreshed = prefill_molding_from_engineering(engineering, saved)
+            assert refreshed["injection_lines"][0]["grade"] == grade
+            assert "grade" not in refreshed["injection_lines"][0]["engineering_synced_fields"]
+            for key in ("quantity", "target_output", "sets", "net_weight_g"):
+                assert refreshed["injection_lines"][0][key] == before["injection_lines"][0][key]
+            assert draft == before
+
+
+def test_historical_category_in_grade_becomes_unselected_without_guessing_price():
+    engineering = {"molds": [{"mold_no": "1", "material_type": "C-PP"}]}
+    for material in ("", "C-PP"):
+        saved = {"injection_lines": [{"mold_no": "1", "material": material, "grade": "C-PP",
+                                     "engineering_synced_fields": ["grade"]}]}
+        row = prefill_molding_from_engineering(engineering, saved)["injection_lines"][0]
+        assert (row["material"], row["grade"]) == ("C-PP", "")
+    unknown = {"injection_lines": [{"mold_no": "1", "material": "C-PP", "grade": "unknown-grade"}]}
+    assert prefill_molding_from_engineering(engineering, unknown)["injection_lines"][0]["grade"] == "unknown-grade"

@@ -12,6 +12,7 @@ COPY . .
 
 # Native canvas/Node inference install hooks are only needed by tests, not Web builds.
 RUN cd shinobu-web && npm ci --ignore-scripts
+RUN cd services/mainland-invoice && npm ci --ignore-scripts
 
 ARG VITE_API_BASE_URL=/api
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}

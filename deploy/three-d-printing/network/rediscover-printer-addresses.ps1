@@ -14,11 +14,11 @@ if (-not $OutputDirectory) { $OutputDirectory = Join-Path $scriptDirectory 'repo
 
 function Read-DiscoveryInventory {
     $rows = @(Import-Csv -LiteralPath $PrinterFile)
-    if ($rows.Count -lt 1 -or $rows.Count -gt 16) { throw 'invalid_inventory' }
+    if ($rows.Count -lt 1 -or $rows.Count -gt 18) { throw 'invalid_inventory' }
     $numbers=@(); $refs=@(); $pins=@()
     foreach ($row in $rows) {
         $number=[int]$row.machine_no
-        if ($number -lt 1 -or $number -gt 16 -or $number -in $numbers) { throw 'invalid_machine_number' }
+        if ($number -lt 1 -or $number -gt 18 -or $number -in $numbers) { throw 'invalid_machine_number' }
         if ($row.credential_ref -notmatch '^printer-[0-9]{2}$' -or $row.credential_ref -in $refs) { throw 'invalid_credential_reference' }
         if ($row.cert_sha256 -cnotmatch '^[a-f0-9]{64}$' -or $row.cert_sha256 -in $pins) { throw 'invalid_or_duplicate_certificate_pin' }
         $ip=[Net.IPAddress]::Parse($row.ip)

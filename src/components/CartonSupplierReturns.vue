@@ -10,12 +10,13 @@ import { formatBusinessDate } from '@/lib/dateTime'
 import '@/features/carton-procurement/layout.css'
 
 const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; internal?: boolean; viewerKey?: string; search?: string; sourceId?: string; refundId?: string }>(), { internal: false, factoryId: '' })
-const emit = defineEmits<{ changed: []; 'update:search': [value: string]; 'close-source': [] }>()
+const emit = defineEmits<{ changed: []; busy: [value: boolean]; 'update:search': [value: string]; 'close-source': [] }>()
 const options = computed(() => [...new Set(props.factories?.map(row => row.factory_id) ?? (props.factoryId ? [props.factoryId] : []))])
 const factory = ref(''), rows = ref<SupplierReturn[]>([]), total = ref(0), offset = ref(0), history = ref(false)
 const localSearch = ref(''), loading = ref(false), busy = ref(false), error = ref(''), message = ref('')
 const selected = ref<SupplierReturn | null>(null), dateEditor = ref(false), action = ref<ReturnAction | ''>('')
 const detailHeading = ref<HTMLElement | null>(null)
+let detailOpener: HTMLElement | null = null
 const form = reactive({ quantity: '', receipt_date: '', document_no: '', reason: '', unit_price: '', credit_date: '',
   kind: 'CASH' as 'CASH' | 'OFFSET', amount: '', refund_date: '', target_event_id: '', confirmation_reference: '' })
 const query = computed({ get: () => props.search ?? localSearch.value, set: (value: string) => { if (props.search === undefined) localSearch.value = value; else emit('update:search', value) } })
@@ -24,6 +25,9 @@ const context = computed(() => JSON.stringify([options.value, factory.value, pro
 const actionLabels: Record<ReturnAction, string> = { ENROLL: '将此退货接入协同', RECEIVE: '登记本次签收', DISPUTE: '登记本次异议', PROPOSE_CREDIT: '提出整笔退货贷项', CONFIRM_CREDIT: '内部确认贷项', DECLARE_REFUND: '登记退款或抵扣凭证', CONFIRM_REFUND: '内部核实到账 / 抵扣', VOID: '更正已录凭证', RECONFIRM_DATE: '供应商确认新退货日期', CONFIRM_DATE: '内部确认新退货日期' }
 const statusLabels: Record<string, string> = { PENDING: '待处理', LEGACY: '未接入协同', SOURCE_REVERSED: '原退货已冲销', RECONFIRM_REQUIRED: '日期版本待复核', NOT_PROPOSED: '尚未提议', SUPERSEDED: '已被新版本替代', ACTIVE: '生效', PARTIAL: '部分签收', RECEIVED: '已签收', ACCEPTED: '已签收', DISPUTED: '有异议', PROPOSED: '待内部核实', CONFIRMED: '已核实', APPROVED: '已核实', VOID: '已更正，保留历史', VOIDED: '已更正，保留历史', NONE: '尚未登记', COMPLETE: '已完成' }
 const allowed = computed(() => selected.value?.allowed_actions.filter((value): value is ReturnAction => Object.prototype.hasOwnProperty.call(actionLabels, value)) ?? [])
+const reviewActions: ReturnAction[] = ['RECEIVE', 'DISPUTE', 'CONFIRM_CREDIT', 'CONFIRM_REFUND', 'RECONFIRM_DATE', 'CONFIRM_DATE']
+const reviewOptions = computed(() => allowed.value.filter(value => reviewActions.includes(value)))
+const otherOptions = computed(() => allowed.value.filter(value => !reviewActions.includes(value)))
 const canVerifyDate = computed(() => props.internal && Boolean(selected.value?.allowed_actions.includes('VERIFY_DATE')))
 const canDate = computed(() => canVerifyDate.value || props.internal && !!selected.value
   && (selected.value.can_correct_date || selected.value.allowed_actions.includes('CORRECT_DATE')))
@@ -52,12 +56,14 @@ function clearForm() {
 watch(options, ids => { if (!ids.includes(factory.value)) factory.value = ids[0] || '' }, { immediate: true })
 watch(context, () => {
   generation++; sequence++; controller.abort(); controller = new AbortController(); rows.value = []; selected.value = null
-  if (searchTimer) clearTimeout(searchTimer)
+  detailOpener = null
   total.value = 0; offset.value = 0; loading.value = false; busy.value = false; error.value = ''; message.value = ''; requests.clear(); clearForm()
+  if (searchTimer) clearTimeout(searchTimer)
   if (!options.value.includes(factory.value)) return
   if (props.sourceId) void open({ movement_id: props.sourceId })
   else void load()
 }, { immediate: true, flush: 'sync' })
+watch(busy, value => emit('busy', value))
 watch([history, query], () => {
   if (props.sourceId) return
   if (searchTimer) clearTimeout(searchTimer)
@@ -76,18 +82,37 @@ async function load() {
   } catch (cause) { if (token === generation && read === sequence) { rows.value = []; total.value = 0; error.value = getApiErrorMessage(cause) } }
   finally { if (token === generation && read === sequence) loading.value = false }
 }
-async function open(row: Pick<SupplierReturn, 'movement_id'>) {
+function directReview(row: SupplierReturn) {
+  const priority: ReturnAction[] = props.internal ? ['CONFIRM_DATE', 'CONFIRM_REFUND', 'CONFIRM_CREDIT'] : ['RECONFIRM_DATE', 'RECEIVE', 'DISPUTE']
+  return priority.find(value => row.allowed_actions.includes(value))
+}
+function rowActionLabel(row: SupplierReturn) {
+  const next = directReview(row)
+  if (next === 'RECEIVE' || next === 'DISPUTE') return '核对签收或异议'
+  if (next) return actionLabels[next]
+  return row.allowed_actions.length || row.can_correct_date ? '查看可办事项' : '查看记录'
+}
+function closeDetail() {
+  selected.value = null
+  clearForm()
+  if (detailOpener?.isConnected) detailOpener.focus()
+  detailOpener = null
+}
+async function open(row: Pick<SupplierReturn, 'movement_id'>, event?: Event) {
   if (busy.value || loading.value) return
   const token = generation, read = ++sequence
+  const opener = event?.currentTarget as HTMLElement | undefined
   loading.value = true; error.value = ''; message.value = ''; selected.value = null; clearForm()
   try {
     const data = await api.detail(row.movement_id, factory.value, props.internal, controller.signal)
     if (token !== generation || read !== sequence) return
-    if (data.factory_id !== factory.value || data.movement_id !== row.movement_id) {
-      throw new Error('返回的退货凭证与当前厂区或原单不符。')
-    }
+    if (data.factory_id !== factory.value || data.movement_id !== row.movement_id) throw new Error('返回的退货凭证与当前厂区或原单不符。')
     selected.value = data
-    if (props.sourceId) {
+    if (opener) {
+      detailOpener = opener
+      action.value = directReview(data) || ''
+    }
+    if (opener || props.sourceId) {
       await nextTick()
       if (token === generation && read === sequence) detailHeading.value?.focus()
     }
@@ -145,9 +170,9 @@ async function dateSaved() {
   await open(row)
   if (token !== generation) return
   message.value = row.date_evidence?.return_date
-    ? '实际退货日期已更正，真实回款记录保留。请按新日期版本完成双方复核。'
-    : '实际退货日期已核实。'
-  emit('changed'); if (!props.sourceId && !error.value) await load()
+    ? '实际退货日期已更正。请按新日期版本完成双方复核。'
+    : '实际退货日期已核实。请按原凭证核对后接入协同。'
+  emit('changed'); if (!props.sourceId) await load()
 }
 function page(delta: number) { if (!busy.value && !loading.value) { offset.value += delta * limit; selected.value = null; clearForm(); void load() } }
 onBeforeUnmount(() => { generation++; controller.abort(); if (searchTimer) clearTimeout(searchTimer) })
@@ -156,23 +181,27 @@ onBeforeUnmount(() => { generation++; controller.abort(); if (searchTimer) clear
 <template>
   <section class="space-y-4" aria-label="退货签收与退款">
     <header class="rounded-xl border border-teal-200 bg-card p-4">
-      <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="text-base font-semibold text-foreground">退货签收与退款</h2><p class="mt-2 max-w-4xl text-xs leading-5 text-muted-foreground">按实际退货逐纸品核对发出、分次签收、异议与贷项。现金退款须内部核实到账；月结抵扣只是贷项分配，不重复扣减。</p></div><Button type="button" variant="outline" size="sm" :disabled="busy || loading || !factory" @click="refresh">刷新退货</Button></div>
       <Button v-if="sourceId" type="button" variant="outline" size="sm" class="mt-3" :disabled="busy" @click="emit('close-source')">返回退货列表</Button>
-      <div v-if="!sourceId" class="mt-4 flex flex-wrap items-end gap-3 text-xs"><label v-if="options.length > 1">厂区<select v-model="factory" :disabled="busy" aria-label="退货厂区" class="mt-1 block h-10 rounded-lg border border-input bg-card px-3"><option v-for="id in options" :key="id" :value="id">{{ factoryName(id) }}</option></select></label><label v-if="search === undefined" class="min-w-48 flex-1">搜索退货<input v-model="query" aria-label="退货搜索" placeholder="客户 / 合同 / 货号 / 退货单" class="mt-1 block h-10 w-full rounded-lg border border-input bg-card px-3"></label><label class="flex h-10 items-center gap-2"><input v-model="history" :disabled="busy" type="checkbox" aria-label="显示全部退货历史">显示全部历史及未接入退货</label><span class="pb-3 text-muted-foreground">{{ history ? '全部历史' : '当前待办' }} · {{ total }} 笔</span></div>
-      <p class="mt-2 text-xs text-muted-foreground">历史退货由仓库核对原凭证，确认可接入后再启用东康协同。</p>
+      <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="text-base font-semibold text-foreground">退货签收与退款</h2><p class="mt-2 max-w-4xl text-xs leading-5 text-muted-foreground">按实际退货逐纸品核对发出、分次签收、异议与贷项。现金退款须内部核实到账；月结抵扣只是贷项分配，不重复扣减。</p></div><Button type="button" variant="outline" size="sm" :disabled="busy || loading || !factory" @click="refresh">刷新退货</Button></div>
+      <div class="mt-4 flex flex-wrap items-end gap-3 text-xs"><label v-if="options.length > 1">厂区<select v-model="factory" :disabled="busy" aria-label="退货厂区" class="mt-1 block h-10 rounded-lg border border-input bg-card px-3"><option v-for="id in options" :key="id" :value="id">{{ factoryName(id) }}</option></select></label><label v-if="search === undefined" class="min-w-48 flex-1">搜索退货<input v-model="query" aria-label="退货搜索" placeholder="客户 / 合同 / 货号 / 退货单" class="mt-1 block h-10 w-full rounded-lg border border-input bg-card px-3"></label><label class="flex h-10 items-center gap-2"><input v-model="history" :disabled="busy" type="checkbox" aria-label="显示全部退货历史">显示全部历史及未接入退货</label><span class="pb-3 text-muted-foreground">{{ history ? '全部历史' : '当前待办' }} · {{ total }} 笔</span></div>
+      <p class="mt-2 text-xs text-muted-foreground">未接入协同的退货仅供查阅；可接入记录由内部明确启用，其他供方沿原手工贷项核对。原月结确认保留。</p>
     </header>
+    <Button v-if="sourceId" type="button" variant="outline" size="sm" :disabled="busy || loading" @click="refresh">刷新原退货单</Button>
     <p v-if="error" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</p><p v-if="message" role="status" class="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
     <p v-if="loading && !rows.length" role="status" class="p-6 text-sm text-muted-foreground">正在读取退货与回执…</p>
-    <div v-if="rows.length" class="overflow-hidden rounded-xl border bg-card"><div class="carton-table-wrap overflow-x-auto"><table aria-label="供应商退货协同明细" class="carton-table-fit w-full min-w-[980px] text-left text-xs"><thead class="bg-muted/50 text-muted-foreground"><tr><th class="p-3">退货来源 / 纸品</th><th class="p-3">发出 / 签收 / 异议</th><th class="p-3">贷项 / 退款 / 抵扣</th><th class="p-3">复核状态</th><th class="p-3">处理</th></tr></thead><tbody class="divide-y"><tr v-for="row in rows" :key="row.movement_id"><td data-label="退货来源 / 纸品" class="max-w-64 break-words p-3"><b>{{ row.document_no }}</b><p class="mt-1">{{ row.customer_name }} · {{ row.contract_no }} · {{ row.item_no }}</p><p class="mt-1">{{ row.packaging_type }} · {{ row.paper_quality }} · {{ row.specification }}</p><p class="mt-1 text-muted-foreground">{{ row.date_evidence?.date_basis === 'RETURN_ACTUAL' ? '实际退货' : '历史记账（实际退货日期待核实）' }} {{ row.date_evidence?.return_date || row.posting_date }}</p></td><td data-label="发出 / 签收 / 异议" class="p-3 tabular-nums"><p>发出 {{ row.quantity }} {{ row.unit }}</p><p class="mt-1">已签收 {{ row.received_quantity }} · 异议 {{ row.disputed_quantity }}</p><p class="mt-1">待签收 {{ row.remaining_quantity }} {{ row.unit }}</p></td><td data-label="贷项 / 退款 / 抵扣" class="p-3 tabular-nums"><b>贷项 {{ money(row.credit?.amount) }} {{ row.currency }}</b><p class="mt-1">已核实现金 {{ money(row.cash_confirmed_amount) }}</p><p class="mt-1">已分配抵扣 {{ money(row.offset_confirmed_amount) }}</p><p class="mt-1 text-muted-foreground">此退货累计净抵扣（跨月合计） {{ money(row.deduction_amount) }}</p></td><td data-label="复核状态" class="max-w-52 p-3"><b :class="row.pending ? 'text-amber-800' : 'text-teal-800'">{{ !row.enabled ? '未接入协同' : row.date_reconfirmation_required ? '日期已更正，待双方复核' : row.pending ? '待处理' : '已完成' }}</b><p class="mt-1">签收 {{ label(row.receipt_status) }} · 贷项 {{ label(row.credit_status) }}</p><p v-if="!row.source_active" class="mt-1 text-red-700">原退货已冲销，只读核对</p></td><td data-label="处理" class="p-3"><Button type="button" size="sm" variant="outline" :disabled="busy || loading" :aria-label="`查看退货 ${row.document_no}`" @click="open(row)">查看与处理</Button></td></tr></tbody></table></div>
+    <div v-if="rows.length" class="overflow-hidden rounded-xl border bg-card"><div class="carton-table-wrap overflow-x-auto"><table aria-label="供应商退货协同明细" class="carton-table-fit w-full min-w-[980px] text-left text-xs"><thead class="bg-muted/50 text-muted-foreground"><tr><th class="p-3">退货来源 / 纸品</th><th class="p-3">发出 / 签收 / 异议</th><th class="p-3">贷项 / 退款 / 抵扣</th><th class="p-3">复核状态</th><th class="p-3">处理</th></tr></thead><tbody class="divide-y"><tr v-for="row in rows" :key="row.movement_id"><td data-label="退货来源 / 纸品" class="max-w-64 break-words p-3"><b>{{ row.document_no }}</b><p class="mt-1">{{ row.customer_name }} · {{ row.contract_no }} · {{ row.item_no }}</p><p class="mt-1">{{ row.packaging_type }} · {{ row.paper_quality }} · {{ row.specification }}</p><p class="mt-1 text-muted-foreground">{{ row.date_evidence?.date_basis === 'RETURN_ACTUAL' ? '实际退货' : '历史记账（实际退货日期待核实）' }} {{ row.date_evidence?.return_date || row.posting_date }}</p></td><td data-label="发出 / 签收 / 异议" class="p-3 tabular-nums"><p>发出 {{ row.quantity }} {{ row.unit }}</p><p class="mt-1">已签收 {{ row.received_quantity }} · 异议 {{ row.disputed_quantity }}</p><p class="mt-1">待签收 {{ row.remaining_quantity }} {{ row.unit }}</p></td><td data-label="贷项 / 退款 / 抵扣" class="p-3 tabular-nums"><b>贷项 {{ money(row.credit?.amount) }} {{ row.currency }}</b><p class="mt-1">已核实现金 {{ money(row.cash_confirmed_amount) }}</p><p class="mt-1">已分配抵扣 {{ money(row.offset_confirmed_amount) }}</p><p class="mt-1 text-muted-foreground">此退货累计净抵扣（跨月合计） {{ money(row.deduction_amount) }}</p></td><td data-label="复核状态" class="max-w-52 p-3"><b :class="row.pending ? 'text-amber-800' : 'text-teal-800'">{{ !row.enabled ? '未接入协同' : row.date_reconfirmation_required ? '日期已更正，待双方复核' : row.pending ? '待处理' : '已完成' }}</b><p class="mt-1">签收 {{ label(row.receipt_status) }} · 贷项 {{ label(row.credit_status) }}</p><p v-if="!row.source_active" class="mt-1 text-red-700">原退货已冲销，只读核对</p></td><td data-label="处理" class="p-3"><Button type="button" size="sm" variant="outline" :disabled="busy || loading" :aria-label="`查看退货 ${row.document_no}`" @click="open(row, $event)">{{ rowActionLabel(row) }}</Button></td></tr></tbody></table></div>
       <nav class="flex items-center justify-end gap-3 border-t p-3 text-xs" aria-label="退货分页"><span>第 {{ Math.floor(offset / limit) + 1 }} 页 · 共 {{ total }} 笔</span><Button type="button" variant="outline" size="sm" :disabled="busy || loading || offset === 0" @click="page(-1)">上一页</Button><Button type="button" variant="outline" size="sm" :disabled="busy || loading || offset + limit >= total" @click="page(1)">下一页</Button></nav>
     </div>
     <p v-else-if="!sourceId && !loading && !error" class="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">{{ history ? '没有匹配的退货记录。' : '当前没有退货待办。可查看全部历史及尚未接入的退货。' }}</p>
     <article v-if="selected" class="space-y-4 rounded-xl border border-teal-200 bg-card p-4" aria-label="退货回执详情">
-      <div class="flex items-start justify-between gap-3"><div><h3 ref="detailHeading" tabindex="-1" class="break-words text-sm font-semibold">{{ selected.document_no }} · {{ selected.packaging_type }} {{ selected.item_no }}</h3><p class="mt-1 text-xs text-muted-foreground">{{ factoryName(selected.factory_id) }} · {{ selected.customer_name }} · {{ selected.contract_no }} · 版本 {{ selected.revision }}</p></div><Button v-if="!sourceId" type="button" size="sm" variant="ghost" :disabled="busy" @click="selected = null; clearForm()">收起</Button></div>
-      <p v-if="selected.date_reconfirmation_required" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">实际退货日期已更正。原签收和真实到账记录保留，双方须针对最新日期版本重新确认；请在原退货凭证完成复核后刷新本月对账。</p>
-      <p v-if="!selected.enabled" class="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">此退货未接入协同。仓库核对原单后启用，东康才会收到待办。</p>
-      <div class="grid gap-3 text-xs sm:grid-cols-2"><div class="rounded-lg bg-muted/40 p-3"><b>签收与异议记录</b><p v-if="!selected.receipts.length" class="mt-2 text-muted-foreground">尚未登记</p><p v-for="item in selected.receipts" :key="item.id" class="mt-2 break-words">{{ item.receipt_date }} · {{ item.document_no }} · {{ item.quantity }} {{ selected.unit }} · {{ item.decision === 'DISPUTE' ? '异议' : '签收' }} · {{ label(item.status) }}<span v-if="item.reason"> · {{ item.reason }}</span></p></div><div class="rounded-lg bg-muted/40 p-3"><b>退款 / 抵扣凭证</b><p v-if="!selected.refunds.length" class="mt-2 text-muted-foreground">尚未登记；现金申报待内部核实才计到账</p><p v-for="item in selected.refunds" :key="item.id" :aria-current="item.id === refundId ? 'true' : undefined" class="mt-2 break-words" :class="{ 'rounded bg-teal-50 p-2 font-semibold text-teal-900': item.id === refundId }">{{ item.kind === 'CASH' ? '现金退款' : '月结抵扣' }} · {{ item.refund_date }} · {{ item.document_no }} · {{ item.amount }} {{ selected.currency }} · {{ label(item.status) }}<span v-if="item.confirmation_reference"> · 内部核实 {{ item.confirmation_reference }}</span></p></div></div>
-      <p v-if="internal && !selected.date_evidence?.return_date" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">此退货的实际日期待核实。{{ canVerifyDate ? '请按原交接凭证核实日期。' : '请由有本厂月结与调整权限的主管核实。' }}</p><div v-if="allowed.length || canDate" class="flex flex-wrap items-center gap-3 text-xs"><label v-if="allowed.length">本次处理<select v-model="action" :disabled="busy || loading || dateEditor" aria-label="退货处理动作" class="ml-2 h-10 max-w-full rounded-lg border border-input bg-card px-3"><option value="">选择处理事项</option><option v-for="item in allowed" :key="item" :value="item">{{ actionLabels[item] }}</option></select></label><Button v-if="canDate" type="button" size="sm" variant="outline" :disabled="busy || loading" @click="action = ''; dateEditor = true">{{ canVerifyDate ? '核实实际退货日期' : '更正已录实际退货日期' }}</Button></div>
+      <div class="flex items-start justify-between gap-3"><div><h3 ref="detailHeading" tabindex="-1" class="break-words text-sm font-semibold">{{ selected.document_no }} · {{ selected.packaging_type }} {{ selected.item_no }}</h3><p class="mt-1 text-xs text-muted-foreground">{{ factoryName(selected.factory_id) }} · {{ selected.customer_name }} · {{ selected.contract_no }} · 版本 {{ selected.revision }}</p></div><Button v-if="!sourceId" type="button" size="sm" variant="ghost" :disabled="busy" @click="closeDetail">收起</Button></div>
+      <p v-if="selected.date_reconfirmation_required" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">实际退货日期已更正。原签收和真实到账记录保留，双方须针对最新日期版本重新确认；未解决前不能完成相关月结。</p>
+      <p v-if="!selected.enabled" class="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">此退货未接入协同，原有账单不自动变更。可接入记录经内部明确启用后才产生供应商待办，其他供方沿原手工贷项流程核对。</p>
+      <div class="grid gap-3 text-xs sm:grid-cols-2"><div class="rounded-lg bg-muted/40 p-3"><b>签收与异议记录</b><p v-if="!selected.receipts.length" class="mt-2 text-muted-foreground">尚未登记</p><p v-for="item in selected.receipts" :key="item.id" class="mt-2 break-words">{{ item.receipt_date }} · {{ item.document_no }} · {{ item.quantity }} {{ selected.unit }} · {{ item.decision === 'DISPUTE' ? '异议' : '签收' }} · {{ label(item.status) }}<span v-if="item.reason"> · {{ item.reason }}</span></p></div><div class="rounded-lg bg-muted/40 p-3"><b>退款 / 抵扣凭证</b><p v-if="!selected.refunds.length" class="mt-2 text-muted-foreground">尚未登记；现金申报待内部核实才计到账</p><p v-for="item in selected.refunds" :key="item.id" :aria-current="item.id === refundId ? 'true' : undefined" class="mt-2 break-words" :class="item.id === refundId ? 'rounded bg-teal-50 p-2 font-semibold text-teal-900' : ''">{{ item.kind === 'CASH' ? '现金退款' : '月结抵扣' }} · {{ item.refund_date }} · {{ item.document_no }} · {{ item.amount }} {{ selected.currency }} · {{ label(item.status) }}<span v-if="item.confirmation_reference"> · 内部核实 {{ item.confirmation_reference }}</span></p></div></div>
+      <p v-if="internal && !selected.date_evidence?.return_date" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">此退货的实际日期待核实。{{ canVerifyDate ? '请按本单原始交接凭证补证，再核对是否接入协同。' : '由有本厂月结与调整权限的主管核实原始交接凭证。' }}</p><div v-if="allowed.length || canDate" class="flex flex-wrap items-center gap-3 text-xs"><label v-if="allowed.length">本次处理<select v-model="action" :disabled="busy || loading || dateEditor" aria-label="退货处理动作" class="ml-2 h-10 max-w-full rounded-lg border border-input bg-card px-3"><option value="">选择处理事项</option>
+        <optgroup v-if="reviewOptions.length" label="签收与确认"><option v-for="item in reviewOptions" :key="item" :value="item">{{ actionLabels[item] }}</option></optgroup>
+        <optgroup v-if="otherOptions.length" label="登记或更正凭证"><option v-for="item in otherOptions" :key="item" :value="item">{{ actionLabels[item] }}</option></optgroup></select></label><Button v-if="canDate" type="button" size="sm" variant="outline" :disabled="busy || loading" @click="action = ''; dateEditor = true">{{ canVerifyDate ? '核实实际退货日期' : '更正已录实际退货日期' }}</Button></div>
+      <p v-if="!allowed.length && !canDate" class="text-xs text-muted-foreground">当前凭证可查阅。处理事项按厂区权限和最新凭证状态显示。</p>
       <CartonReturnDateEditor v-if="dateEditor" :factory-id="factory" :movement-id="selected.movement_id" :viewer-key="viewerKey" @saved="dateSaved" @close="dateEditor = false" />
       <form v-if="action" class="space-y-3 rounded-lg border border-input p-4 text-xs" aria-label="退货处理表单" @submit.prevent="submit">
         <h4 class="font-semibold">{{ actionLabels[action] }}</h4><p v-if="action === 'ENROLL'" class="text-amber-900">接入后将按当前退货建立签收与贷项待办。请先核实历史是否已退款或抵扣，避免重复处理。</p><p v-if="action === 'VOID'" class="text-amber-900">用于有依据地更正错误凭证，原记录保留。真实已到账资金不会因日期更正自动撤回；此处请核实具体错误凭证及更正依据。</p>

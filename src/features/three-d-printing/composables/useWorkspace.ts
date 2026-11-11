@@ -1,3 +1,4 @@
+import axios from "axios";
 import { createRandomUuid } from "@/lib/randomUuid";
 import {
   Activity,
@@ -97,8 +98,8 @@ export function useWorkspace() {
     get: () => currentTab.value,
     set: (tab: TabId) => {
       if (tab === currentTab.value || !canNavigate()) return;
-      currentTab.value = tab;
-      selectedPrinter.value = '';
+      // Mount the destination only after navigation is accepted. Its initial
+      // loading state must not block the navigation that opened it.
       void router.replace({ query: { ...router.currentRoute.value.query, tab, printer: undefined } });
     },
   });
@@ -345,11 +346,23 @@ export function useWorkspace() {
     activeTab.value = "records";
   }
   const queryVersions: Record<string, number> = {};
-  async function loadPage(kind: string, page = 1) {
+  const requestedPages: Record<string, number> = {};
+  const listErrors = reactive<Record<string, string>>({});
+  const refreshError = ref("");
+  const accessDenied = ref(false);
+  const updatingDashboard = ref(false);
+  const activeList = computed(() => activeTab.value === "warehouse" ? "movements" : activeTab.value);
+  const updateError = computed(() => refreshError.value || listErrors[activeList.value] || "");
+  const updating = computed(() => updatingDashboard.value || !!listPages[activeList.value]?.busy);
+  function isAccessDenied(error: unknown) {
+    return axios.isAxiosError(error) && [401, 403].includes(error.response?.status ?? 0);
+  }
+  async function loadPage(kind: string, page = 1, quiet = false) {
     const state = listPages[kind]!;
     const version = (queryVersions[kind] = (queryVersions[kind] ?? 0) + 1);
+    requestedPages[kind] = page;
     state.busy = true;
-    errorMessage.value = "";
+    if (!quiet) errorMessage.value = "";
     try {
       const result = await threeDPrintingApi.collection(kind, {
         page,
@@ -364,9 +377,10 @@ export function useWorkspace() {
         date_from: kind === "records" && recordSearchAllDates.value ? "" : dateFrom.value,
         date_to: kind === "records" && recordSearchAllDates.value ? "" : dateTo.value,
       });
-      if (version !== queryVersions[kind] || !dashboard.value) return;
+      if (disposed || version !== queryVersions[kind] || !dashboard.value) return;
+      listErrors[kind] = "";
       if (page > 1 && result.items.length === 0) {
-        await loadPage(kind, Math.max(1, Math.ceil(result.total / 50)));
+        await loadPage(kind, Math.max(1, Math.ceil(result.total / 50)), quiet);
         return;
       }
       state.page = page;
@@ -375,7 +389,14 @@ export function useWorkspace() {
         [kind === "movements" ? "inventory_movements" : kind]: result.items,
       });
     } catch (error) {
-      if (version === queryVersions[kind]) errorMessage.value = getApiErrorMessage(error);
+      if (disposed || version !== queryVersions[kind]) return;
+      listErrors[kind] = getApiErrorMessage(error);
+      if (activeList.value === kind && !quiet) errorMessage.value = listErrors[kind];
+      if (quiet && activeList.value === kind && !isAccessDenied(error)) liveRefreshPending = true;
+      if (isAccessDenied(error) && dashboard.value) {
+        Object.assign(dashboard.value, { [kind === "movements" ? "inventory_movements" : kind]: [] });
+        state.total = 0;
+      }
     } finally {
       if (version === queryVersions[kind]) state.busy = false;
     }
@@ -413,7 +434,7 @@ export function useWorkspace() {
         OFFLINE: "离线",
         STALE: "状态陈旧",
         UNKNOWN: "状态未知",
-      }[state] ?? state
+      }[state] ?? "待确认状态"
     );
   }
 
@@ -440,6 +461,9 @@ export function useWorkspace() {
   async function loadDashboard(background = false) {
     const requestVersion = ++dashboardRequestVersion;
     const snapshotVersion = liveSnapshotVersion;
+    const previousQueries = { ...queryVersions };
+    updatingDashboard.value = !!dashboard.value;
+    if (!background) errorMessage.value = "";
     dashboardInFlight++;
     if (!background) { foregroundRequests++; loading.value = true; }
     try {
@@ -453,27 +477,48 @@ export function useWorkspace() {
         next.printers = dashboard.value.printers;
         next.network_health = dashboard.value.network_health;
       }
+      const tab = activeTab.value;
+      const paged = tab === "products" || tab === "records" || tab === "schedules" || tab === "maintenance";
+      const hadData = !!dashboard.value;
+      const movements = listPages.movements!;
+      if (tab === "warehouse" && dashboard.value && (movements.page > 1 || movements.busy))
+        next.inventory_movements = dashboard.value.inventory_movements;
+      // Compact dashboard rows are not the filtered page the operator is reading.
+      if (paged && dashboard.value) Object.assign(next, { [tab]: dashboard.value[tab] });
       dashboard.value = next;
+      accessDenied.value = false;
+      refreshError.value = "";
       if (!settingsDirty.value && !saving.value) {
-        Object.assign(settingsForm, dashboard.value.settings);
+        Object.assign(settingsForm, next.settings);
         settingsBaseline.value = JSON.stringify(settingsForm);
       }
-      listPages.products!.total = Number(
-        dashboard.value.summary.productCount || dashboard.value.products.length,
-      );
-      listPages.records!.total = Number(
-        dashboard.value.summary.recordCount || dashboard.value.records.length,
-      );
-      if (
-        ["products", "records", "schedules", "maintenance"].includes(
-          activeTab.value,
-        )
-      )
-        await loadPage(activeTab.value, listPages[activeTab.value]!.page);
-      errorMessage.value = "";
+      if (tab !== "products" || !hadData)
+        listPages.products!.total = Number(next.summary.productCount ?? next.products.length);
+      if (tab !== "records" || !hadData)
+        listPages.records!.total = Number(next.summary.recordCount ?? next.records.length);
+      if (paged && (!hadData || previousQueries[tab] === queryVersions[tab])) {
+        // A write can finish while a page change is in flight. Refresh its
+        // requested page and supersede the old read, keeping displayed rows.
+        const list = listPages[tab]!;
+        await loadPage(tab, list.busy ? requestedPages[tab] ?? list.page : list.page, background);
+      }
     } catch (error) {
-      if (!background) errorMessage.value = getApiErrorMessage(error);
+      if (disposed || requestVersion !== dashboardRequestVersion) return;
+      if (isAccessDenied(error)) {
+        accessDenied.value = true;
+        for (const key of Object.keys(queryVersions)) {
+          queryVersions[key] = (queryVersions[key] ?? 0) + 1;
+          listPages[key]!.busy = false;
+        }
+        dashboard.value = null;
+        selectedPrinter.value = "";
+        assistantPrinterId.value = "";
+      }
+      refreshError.value = getApiErrorMessage(error);
+      if (!dashboard.value) errorMessage.value = refreshError.value;
+      else if (background) liveRefreshPending = true;
     } finally {
+      if (requestVersion === dashboardRequestVersion) updatingDashboard.value = false;
       dashboardInFlight--;
       if (!background) { foregroundRequests--; loading.value = foregroundRequests > 0; }
     }
@@ -1009,13 +1054,10 @@ export function useWorkspace() {
     }
   }
 
-  async function exportWorkbook() {
+  async function exportWorkbook(from = dateFrom.value, to = dateTo.value) {
     saving.value = true;
     try {
-      const blob = await threeDPrintingApi.exportWorkbook(
-        dateFrom.value,
-        dateTo.value,
-      );
+      const blob = await threeDPrintingApi.exportWorkbook(from, to);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -1092,6 +1134,9 @@ export function useWorkspace() {
     openPrinter,
     closePrinter,
     recordSearchAllDates,
+    updating,
+    accessDenied,
+    updateError,
     showProductRecords,
     editSchedule,
     scheduleEditId,

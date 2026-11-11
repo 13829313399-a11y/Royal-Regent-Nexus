@@ -198,6 +198,10 @@ def lock_line(db: Session, line: Line, expected: int) -> None:
     if result.rowcount != 1:
         raise HTTPException(409, "订单已被其他操作更新，请刷新后重试")
     db.refresh(line)
+    # The revision lock is a SQL UPDATE, so include it in the transaction outbox
+    # even when no ORM field is dirty (for example a dispatch-only revision).
+    from app.services.qc_dossier_events import mark
+    mark(db, line)
 
 
 def line_out(db: Session, line: Line, *, dispatch_versions=None) -> dict:
@@ -525,3 +529,8 @@ def detail(db: Session, line: Line, *, history_limit: int | None = None) -> dict
         "sources": [{"id": item.id, "file_name": item.file_name, "kind": item.kind} for item in sources],
         **({"history_counts": history_counts} if history_counts is not None else {}),
     }
+
+
+# Install the transactional outbox for CLI/import entry points as well as HTTP.
+from app.services.qc_dossier_events import install as _install_dossier_events
+_install_dossier_events()

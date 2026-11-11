@@ -13,7 +13,7 @@ import WarehouseBulkIssueDialog from './WarehouseBulkIssueDialog.vue'
 import FabricIssueGroupDialog from './FabricIssueGroupDialog.vue'
 import { Button } from '@/components/ui/button'
 import { getApiErrorMessage } from '@/lib/http'
-import { warehouseOperationsApi as api, type WarehouseBatch, type WarehouseDocument, type WarehouseDocumentInput, type WarehouseDomain, type WarehouseOperationsWorkspace } from '@/api/warehouseOperations'
+import { warehouseOperationsApi as api, type CuttingReturnLimit, type WarehouseBatch, type WarehouseDocument, type WarehouseDocumentInput, type WarehouseDomain, type WarehouseOperationsWorkspace } from '@/api/warehouseOperations'
 import { warehouseRequestId } from './requestIdentity'
 import { documentProgress, remaining, operationLabels, operationsView, referenceKinds } from './operations'
 import { inventorySearchKey, exceptionSearchKey } from './inventorySearch'
@@ -68,17 +68,39 @@ function matchesRecordState(row: WarehouseDocument) {
 const draft = ref<WarehouseDocumentInput>(), detail = ref<WarehouseDocument>(), frozen = ref<WarehouseDocumentInput>()
 const printError = ref('')
 watch(detail, () => { printError.value = '' })
-let openedReceipt = ''
+let openedRecord = ''
 watch(() => [route.query.record, props.warehouse, props.section, props.view, data.value], () => {
   const id = typeof route.query.record === 'string' ? route.query.record : ''
-  if (!id) { openedReceipt = ''; return }
-  if (props.warehouse !== 'fabric' || props.section !== 'inventory' || props.view !== 'movements' || draft.value || id === openedReceipt) return
-  const row = data.value?.documents.find(row => row.id === id && row.kind === 'RECEIPT')
-  if (row) { detail.value = row; openedReceipt = id }
-})
+  if (!id) { openedRecord = ''; return }
+  if (!fabricMovements.value || draft.value || id === openedRecord) return
+  const row = data.value?.documents.find(row => row.id === id && ['RECEIPT', 'ISSUE'].includes(row.kind))
+  if (row) { detail.value = row; openedRecord = id }
+}, { flush: 'post' })
 const correctionTarget = ref<WarehouseDocument>()
 const fixedReturnOriginal = ref(false)
-const returnOriginal = computed(() => fixedReturnOriginal.value && draft.value?.kind === 'RETURN' ? data.value?.documents.find(row => row.id === draft.value?.original_id) : undefined)
+const returnOriginal = computed(() => draft.value?.kind === 'RETURN' ? data.value?.documents.find(row => row.id === draft.value?.original_id) : undefined)
+const cuttingRequests = computed(() => new Set(data.value?.documents.filter(row => row.kind === 'REQUEST' && row.data.cutting_request).map(row => row.id)))
+const cuttingIssue = (row: WarehouseDocument) => props.warehouse === 'fabric' && (row.cutting_return_limit != null || cuttingRequests.value.has(row.data.original_id))
+const cuttingReturnId = computed(() => returnOriginal.value && cuttingIssue(returnOriginal.value) ? returnOriginal.value.id : '')
+const returnLimit = ref<CuttingReturnLimit>(), returnLimitLoading = ref(false), returnLimitError = ref(''), returnLimitRetry = ref(0)
+const returnDay = computed(() => draft.value?.business_date ?? '')
+const validReturnLimit = computed(() => returnLimit.value?.day === returnDay.value ? returnLimit.value : undefined)
+watch([cuttingReturnId, returnDay, data, returnLimitRetry], async ([id, day], _, onCleanup) => {
+  let current = true
+  onCleanup(() => { current = false })
+  returnLimit.value = undefined; returnLimitError.value = ''; returnLimitLoading.value = Boolean(id && day)
+  if (!id || !day) return
+  try { const result = await api.cuttingReturnLimit(id, day); if (current) returnLimit.value = result }
+  catch (e) { if (current) returnLimitError.value = getApiErrorMessage(e) }
+  finally { if (current) returnLimitLoading.value = false }
+}, { flush: 'sync' })
+const returnQuantityExceeded = computed(() => {
+  const amount = draft.value?.quantity?.trim() ?? ''
+  return !!validReturnLimit.value && /^\d+(?:\.\d{1,6})?$/.test(amount)
+    && remaining(validReturnLimit.value.quantity, amount).startsWith('-')
+})
+const cuttingReturnBlocked = computed(() => Boolean(cuttingReturnId.value &&
+  (returnLimitLoading.value || !validReturnLimit.value || Number(validReturnLimit.value.quantity) <= 0 || returnQuantityExceeded.value)))
 const formError = ref(''), initial = ref(''), fixedBatch = ref(false)
 const bulkRows = ref<WarehouseBatch[]>()
 const issueGroupOpen = ref(false)
@@ -123,7 +145,11 @@ function permitted(kind: WarehouseDocumentInput['kind']) { return kind !== 'QUAL
 async function load() {
   const ticket = ++sequence
   loading.value = true; error.value = ''
-  try { const result = await api.workspace(props.warehouse); if (ticket === sequence) data.value = result }
+  try {
+    const includeCuttingReturns = fabricInventory.value && ['issues', 'movements'].includes(props.view)
+    const result = await api.workspace(props.warehouse, includeCuttingReturns)
+    if (ticket === sequence) data.value = result
+  }
   catch (e) { if (ticket === sequence) { data.value = undefined; error.value = getApiErrorMessage(e) } }
   finally { if (ticket === sequence) loading.value = false }
 }
@@ -142,7 +168,8 @@ function begin(kind: WarehouseDocumentInput['kind'], batchId = '') {
 function issueRequest(row: WarehouseDocument) { begin('ISSUE'); if (draft.value) { draft.value.original_id = row.id; selectOriginal(); initial.value = JSON.stringify(draft.value) } }
 function closeRequest(row: WarehouseDocument) { begin('REQUEST_CLOSE'); if(draft.value) { draft.value.original_id=row.id; initial.value=JSON.stringify(draft.value) } }
 function isReturnableIssue(row: WarehouseDocument) {
-  return fabricInventory.value && ['issues', 'movements'].includes(props.view) && row.kind === 'ISSUE' && !row.read_only && !row.reversed && Number(remaining(row.data.quantity, row.returned_quantity)) > 0
+  return fabricInventory.value && ['issues', 'movements'].includes(props.view) && row.kind === 'ISSUE' && !row.read_only && !row.reversed
+    && (cuttingIssue(row) || Number(remaining(row.data.quantity, row.returned_quantity)) > 0)
 }
 function returnIssue(row: WarehouseDocument) {
   if (loading.value || !isReturnableIssue(row) || !permitted('RETURN')) return
@@ -177,6 +204,7 @@ watch([search, from, to, recordKind, recordState, recordSort, recordActor], () =
 async function submit() {
   if (!draft.value || saving.value || (!frozen.value && !permitted(draft.value.kind))) return
   if (!frozen.value) {
+    if (cuttingReturnBlocked.value) return
     if (draft.value.kind === 'CORRECTION' && (!draft.value.confirmed || !draft.value.reason.trim())) { formError.value = '请填写原因并确认整单冲销'; return }
     if (needsLocation.value && !activeLocations.value.some(row => row.id === draft.value?.location_id && matchesLocationCategory(row, locationCategory.value))) { formError.value = '请选择基础资料中已启用的仓位'; return }
     if (draft.value.location_id) draft.value.location = activeLocations.value.find(row => row.id === draft.value?.location_id)?.label ?? ''
@@ -254,7 +282,7 @@ function exportFabricIssues() {
         <table class="warehouse-records-table"><thead><tr><th>{{ fabricExceptions ? '更正日期 / 原业务' : '业务 / 日期' }}</th><th>物料 / 数量进度</th><th>{{ fabricExceptions ? '更正原因' : '仓位 / 去向' }}</th><th>来源凭证</th><th>经办人</th><th>操作</th></tr></thead><tbody>
           <tr v-for="row in visibleRecords" :key="row.id">
             <td :data-label="fabricExceptions ? '更正日期 / 原业务' : '业务 / 日期'"><template v-if="fabricExceptions"><strong>{{ row.business_date }}</strong><small>{{ originalKindLabels[row.data.reversed_kind || ''] || '原单' }}冲销</small></template><template v-else><strong>{{ operationLabels[row.kind] }}</strong><small>{{ row.business_date }}</small></template></td>
-            <td data-label="物料 / 数量进度"><strong>{{ rowTitle(row) }}</strong><small>{{ row.data.item_code || row.batch_snapshot?.item_code }}<template v-if="row.data.process_state || row.batch_snapshot?.process_state"> · {{ row.data.process_state || row.batch_snapshot?.process_state }}</template></small><span v-if="row.data.quantity">{{ row.data.quantity }} {{ row.data.unit || row.batch_snapshot?.unit }}</span><small v-if="fabricInventory && row.kind === 'ISSUE' && !row.reversed">已退 {{ row.returned_quantity || '0' }} · 可退 {{ remaining(row.data.quantity, row.returned_quantity) }} {{ row.data.unit || row.batch_snapshot?.unit }}</small><small v-else>{{ documentProgress(row) }}</small></td>
+            <td data-label="物料 / 数量进度"><strong>{{ rowTitle(row) }}</strong><small>{{ row.data.item_code || row.batch_snapshot?.item_code }}<template v-if="row.data.process_state || row.batch_snapshot?.process_state"> · {{ row.data.process_state || row.batch_snapshot?.process_state }}</template></small><span v-if="row.data.quantity">{{ row.data.quantity }} {{ row.data.unit || row.batch_snapshot?.unit }}</span><small v-if="fabricInventory && row.kind === 'ISSUE' && !row.reversed">已退 {{ row.returned_quantity || '0' }} · <template v-if="cuttingIssue(row)"><template v-if="row.cutting_return_limit">{{ row.cutting_return_limit.day }} 可退 {{ row.cutting_return_limit.quantity }} {{ row.data.unit || row.batch_snapshot?.unit }}</template><template v-else>可退额度待核对</template></template><template v-else>可退 {{ remaining(row.data.quantity, row.returned_quantity) }} {{ row.data.unit || row.batch_snapshot?.unit }}</template></small><small v-else>{{ documentProgress(row) }}</small></td>
             <td :data-label="fabricExceptions ? '更正原因' : '仓位 / 去向'"><template v-if="fabricExceptions">{{ row.data.reason || '—' }}</template><template v-else-if="row.kind === 'TRANSFER'">{{ row.batch_snapshot?.location }} → {{ row.data.location }}</template><template v-else>{{ row.data.location || row.batch_snapshot?.location || '—' }}<small>{{ row.data.counterparty || '—' }}</small></template></td>
             <td data-label="来源凭证">{{ row.data.source_no || '未另填凭证' }}<small v-if="row.data.original_id">已关联原单</small><small v-if="issueGroupFor(row)">配套：{{ issueGroupFor(row)?.order_no }} · {{ issueGroupFor(row)?.name }}</small><small v-if="row.data.cutting_request">裁床订单 {{row.data.cutting_request.order_no}} · {{row.data.cutting_request.task_name}} · BOM V{{row.data.cutting_request.bom_version}} / 计划V{{row.data.cutting_request.plan_version}}<br />仓库：{{row.data.cutting_request.warehouse_material.code}} / {{row.data.cutting_request.warehouse_material.spec}} / {{row.data.cutting_request.warehouse_material.color}} / {{row.data.cutting_request.warehouse_material.unit}}<br />裁床：{{row.data.cutting_request.cutting_material.code}} / {{row.data.cutting_request.cutting_material.specification}} / {{row.data.cutting_request.cutting_material.color}}<br />对应依据：{{row.data.cutting_request.mapping_basis}}</small></td>
             <td data-label="经办人">{{ row.actor_name }}</td><td class="warehouse-record-actions"><Button v-if="warehouse === 'fabric' && !row.read_only && !row.reversed && referenceKinds('CORRECTION').includes(row.kind)" title="原单录错时整单冲销，保留原记录和更正原因" variant="outline" size="sm" :disabled="loading || !permitted('CORRECTION')" @click="correct(row)">冲销</Button><Button v-if="isReturnableIssue(row)" title="原出库正确，车间实际退回材料时登记；可分次退料" variant="outline" size="sm" :disabled="loading || !permitted('RETURN')" @click="returnIssue(row)">退料</Button><Button v-if="row.kind === 'REQUEST' && !row.reversed && !row.closed && Number(remaining(row.data.quantity, row.issued_quantity)) > 0" size="sm" :disabled="!permitted('ISSUE')" @click="issueRequest(row)">办理出库</Button><Button v-if="row.kind === 'REQUEST' && row.data.cutting_request && !row.closed" variant="outline" size="sm" :disabled="!permitted('REQUEST_CLOSE')" @click="closeRequest(row)">关闭未发余量</Button><Button variant="outline" size="sm" @click="detail = row">详情</Button></td>
@@ -272,7 +300,15 @@ function exportFabricIssues() {
           <p v-if="draft.kind === 'PACK_RECEIVE'" class="fabric-message">此操作为仓库代录包装接收回执，须填写实际接收人，回执备注可选填；不会再次扣库存。</p>
           <p v-if="draft.kind === 'PROCESS_RETURN'" class="fabric-message">本次产出量按加工任务的产品和单位记录；本轮核销量按原发出单位填写，不能直接用产出量相减。</p>
           <p v-if="correctionTarget" class="fabric-message">本次整单冲销：{{ rowTitle(correctionTarget) }} · {{ correctionTarget.business_date }} · {{ correctionTarget.data.quantity }} {{ correctionTarget.data.unit || correctionTarget.batch_snapshot?.unit }} · {{ correctionTarget.data.counterparty }}。请核对原单及整单数量。</p>
-          <div v-if="returnOriginal" class="operation-stock-card"><strong>原出库：{{ rowTitle(returnOriginal) }}</strong><span>{{ returnOriginal.data.item_code || returnOriginal.batch_snapshot?.item_code }} · {{ returnOriginal.business_date }} · 领用方：{{ returnOriginal.data.counterparty }}</span><div><span>实发 {{ returnOriginal.data.quantity }} · 已退 {{ returnOriginal.returned_quantity || '0' }}</span><strong>可退 {{ remaining(returnOriginal.data.quantity, returnOriginal.returned_quantity) }} {{ returnOriginal.data.unit || returnOriginal.batch_snapshot?.unit }}</strong></div><small>按实际收回数量登记，物料、单位和领用方沿用原出库单。</small></div>
+          <div v-if="returnOriginal" class="operation-stock-card"><strong>原出库：{{ rowTitle(returnOriginal) }}</strong><span>{{ returnOriginal.data.item_code || returnOriginal.batch_snapshot?.item_code }} · {{ returnOriginal.business_date }} · 领用方：{{ returnOriginal.data.counterparty }}</span><div><span>实发 {{ returnOriginal.data.quantity }} · 已退 {{ returnOriginal.returned_quantity || '0' }}</span><strong v-if="cuttingReturnId && validReturnLimit">可退 {{ validReturnLimit.quantity }} {{ returnOriginal.data.unit || returnOriginal.batch_snapshot?.unit }}</strong><strong v-else-if="!cuttingReturnId">可退 {{ remaining(returnOriginal.data.quantity, returnOriginal.returned_quantity) }} {{ returnOriginal.data.unit || returnOriginal.batch_snapshot?.unit }}</strong></div><small>按实际收回数量登记，物料、单位和领用方沿用原出库单。</small>
+            <template v-if="cuttingReturnId">
+              <small v-if="returnLimitLoading" role="status">正在读取所选业务日期的裁床可退余料…</small>
+              <small v-else-if="!returnDay">请选择业务日期后核对可退余料。</small>
+              <small v-else-if="returnLimitError" role="alert">可退余料读取失败。{{ returnLimitError }} <Button type="button" variant="outline" size="sm" @click="returnLimitRetry++">重新读取</Button></small>
+              <small v-else-if="validReturnLimit?.reason" role="status">{{ validReturnLimit.reason }}</small>
+              <small v-else-if="returnQuantityExceeded" role="status">本次数量超过所选业务日期的可退余料。</small>
+            </template>
+          </div>
           <div v-if="selectedBatch" class="operation-stock-card"><strong>{{ selectedBatch.item_name }}</strong><span>{{ selectedBatch.item_code }} · {{ selectedBatch.lot || '—' }} <template v-if="selectedBatch.roll_no">· 卷 {{ selectedBatch.roll_no }}</template></span><div><span>当前仓位：{{ selectedBatch.location_label || selectedBatch.location }} <b v-if="!selectedBatch.location_verified">（待核实）</b></span><strong>结余 {{ selectedBatch.quantity }} {{ selectedBatch.unit }}</strong></div></div>
           <p v-if="needsLocation && !activeLocations.length" class="fabric-error">尚无可用仓位，请先到基础资料建立仓库与仓位。</p>
           <p v-if="draft.kind === 'LOCATION_BIND'" class="fabric-message">核实旧记录的实际存放位置，只关联正式仓位，不增加或扣减库存。实物已经移动的情况需另行登记调仓。</p>
@@ -298,7 +334,7 @@ function exportFabricIssues() {
           </fieldset>
           <div v-if="frozen"><a href="/login" target="_blank" rel="noopener">重新登录</a><Button type="button" variant="outline" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button></div><p v-if="formError" role="alert" class="fabric-error">{{ formError }}</p>
         </div>
-        <footer><span>保存后保留原单与经办记录</span><Button type="submit" :disabled="saving || (!frozen && needsLocation && !activeLocations.length)">{{ saving ? '正在保存…' : frozen ? '用原内容重试' : draft.kind === 'CORRECTION' ? '确认整单冲销' : '确认保存' }}</Button></footer>
+        <footer><span>保存后保留原单与经办记录</span><Button type="submit" :disabled="saving || (!frozen && (cuttingReturnBlocked || (needsLocation && !activeLocations.length)))">{{ saving ? '正在保存…' : frozen ? '用原内容重试' : draft.kind === 'CORRECTION' ? '确认整单冲销' : '确认保存' }}</Button></footer>
       </form></FocusScope></div>
       <div v-if="detail" class="warehouse-operation-overlay" :class="{ 'fabric-touch-overlay': warehouse === 'fabric' }"><FocusScope as-child loop trapped><section ref="detailElement" @keydown.esc.prevent="detail = undefined" class="warehouse-operation-dialog" :class="{ 'fabric-touch-dialog': warehouse === 'fabric' }" role="dialog" aria-modal="true" aria-label="业务单据详情"><header><div><h2>{{ operationLabels[detail.kind] }}</h2><p>{{ detail.id }}</p></div><div class="warehouse-record-actions"><Button v-if="warehouse === 'fabric' && detail.kind === 'ISSUE'" variant="outline" @click="printFabricIssueNote">打印发料单</Button><Button v-if="warehouse === 'fabric' && detail.kind === 'RECEIPT' && !detail.read_only && !detail.reversed && permitted('CORRECTION')" variant="outline" @click="correct(detail); detail = undefined">冲销本笔入库</Button><Button variant="outline" @click="detail = undefined">关闭详情</Button></div></header><div class="warehouse-operation-form"><p v-if="printError" role="alert" class="fabric-error">{{ printError }}</p><dl class="warehouse-operation-detail"><div><dt>业务日期</dt><dd>{{ detail.business_date }}</dd></div><div><dt>来源</dt><dd>{{ detail.data.source_no || '未填写外部凭证' }}<template v-if="detail.data.source_no"> / {{ detail.data.source_line }} {{ detail.data.source_version }}</template></dd></div><div><dt>物料 / 产品</dt><dd>{{ rowTitle(detail) }} {{ detail.data.item_code || detail.batch_snapshot?.item_code }}</dd></div><div><dt>数量与进度</dt><dd v-if="detail.kind === 'LOCATION_BIND'">数量未变，核实时结余 {{ detail.batch_snapshot?.quantity }} {{ detail.data.unit }}</dd><dd v-else>{{ detail.data.quantity }} {{ detail.data.unit || detail.batch_snapshot?.unit }}<br />{{ documentProgress(detail) }}</dd></div><div><dt>原单 / 加工任务</dt><dd>{{ detail.data.original_id || detail.data.task_id || '—' }}</dd></div><div v-if="detail.kind === 'LOCATION_BIND'"><dt>核实前仓位</dt><dd>{{ detail.batch_snapshot?.location || '未填写' }}</dd></div><div><dt>仓位 / 缸号</dt><dd>{{ detail.data.location || detail.batch_snapshot?.location }} / {{ detail.data.lot || detail.batch_snapshot?.lot }}</dd></div><div><dt>加工状态 / 工序</dt><dd>{{ detail.data.process_state || detail.batch_snapshot?.process_state || '—' }} / {{ detail.data.purpose || '—' }}</dd></div><div><dt>往来单位 / 确认人</dt><dd>{{ detail.data.counterparty || '—' }} / {{ detail.data.responsible_person || '—' }}</dd></div><div v-if="issueGroupFor(detail)"><dt>订单配套组</dt><dd>{{ issueGroupFor(detail)?.order_no }} · {{ issueGroupFor(detail)?.name }}<br />关联领料单：{{ issueGroupFor(detail)?.request_ids.join("、") }}</dd></div><div><dt>依据</dt><dd>{{ detail.data.reason || '—' }}</dd></div><div><dt>登记</dt><dd>{{ detail.actor_name }} · {{ detail.occurred_at }}</dd></div></dl><h3 v-if="detail.data.allocations.length">用料分配</h3><p v-for="(allocation, index) in detail.data.allocations" :key="index">{{ allocation.production_no }}：{{ allocation.quantity }}</p></div></section></FocusScope></div>
     </Teleport>

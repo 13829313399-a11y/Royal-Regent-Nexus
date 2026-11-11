@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { DatabaseSync } = require('node:sqlite');
 const { referenceData, clearReferenceData, importReferenceData } = require('./reference-data');
 const source = fs.readFileSync(__dirname + '/server.js', 'utf8');
-const core = vm.runInNewContext(source.slice(source.indexOf('const RECORD_COLS'), source.indexOf('function replaceUsers')) +
+const core = vm.runInNewContext(source.slice(source.indexOf('const RECORD_COLS'), source.indexOf('function replacePartners')) +
   ';({SCHEMA_SQL,upsertRecords,deleteRecords})');
 function database(t) { const db = new DatabaseSync(':memory:'); db.exec(core.SCHEMA_SQL); t.after(() => db.close()); return db; }
 function row(id, productNo = 'reference') { return { id, productNo, updatedAt: '2026-10-20T00:00:00Z' }; }

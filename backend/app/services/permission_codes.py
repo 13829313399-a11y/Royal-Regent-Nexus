@@ -4,6 +4,22 @@ This module intentionally has no database or authorization-service imports so
 the fixed system-position catalog can depend on it without creating a cycle.
 """
 
+INDONESIA_SHIPPING_DOMAINS = (
+    "products", "materials", "customers", "schedules", "purchase", "quotes",
+    "molding", "outbound", "shipments",
+)
+INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES = (
+    "indonesia_shipping:read",
+    *(f"indonesia_shipping:{domain}_{action}"
+      for domain in INDONESIA_SHIPPING_DOMAINS for action in ("read", "write")),
+)
+# Legacy administration is retired in Nexus; preserve the catalog group for callers.
+INDONESIA_SHIPPING_ADMIN_PERMISSION_CODES: tuple[str, ...] = ()
+# Historical grants remain auditable, but this capability can no longer be assigned or used.
+INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES = frozenset({
+    "indonesia_shipping:users_manage", "indonesia_shipping:database_manage",
+})
+
 INDONESIA_MATERIAL_PERMISSION_CODES = tuple('indonesia_material:' + action for action in (
     'read', 'write', 'receipt_confirm', 'export',
 ))
@@ -207,7 +223,20 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
     "system:permission_catalog_read",
 )
 
+MATERIAL_PURCHASE_PERMISSION_CODES = tuple('material_purchase:' + action for action in ('read', 'write', 'approve', 'release'))
+
+MATERIAL_PLAN_PERMISSION_CODES = ('material_plan:read', 'material_plan:draft_write', 'material_plan:submit',
+    'material_plan:self_review', 'material_plan:dates_read', 'material_plan:dates_write')
+
+ENGINEERING_BOM_PERMISSION_CODES = tuple('engineering_bom:' + action for action in (
+    'read', 'material_write', 'material_approve', 'bom_write', 'bom_approve', 'import',
+))
+
 BUSINESS_PERMISSION_CODES = (
+    *INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES,
+    *ENGINEERING_BOM_PERMISSION_CODES,
+    *MATERIAL_PLAN_PERMISSION_CODES,
+    *MATERIAL_PURCHASE_PERMISSION_CODES,
     *INDONESIA_MATERIAL_PERMISSION_CODES,
     *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     *CUTTING_OPS_PERMISSION_CODES,
@@ -233,6 +262,9 @@ BUSINESS_PERMISSION_CODES = (
 # catalog entry supports independent disabling and explicit IAM denies.
 MODULE_FEEDBACK_PERMISSION_CODES = ("module_feedback:submit", "module_feedback:manage")
 
+# Explicit per-factory/department grants; never expand built-in business roles.
+MAINLAND_INVOICE_PERMISSION_CODES = ("mainland_invoice:generate",)
+
 APPLICATION_PERMISSION_CODES = tuple(
-    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES))
+    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES, *MAINLAND_INVOICE_PERMISSION_CODES, *INDONESIA_SHIPPING_ADMIN_PERMISSION_CODES))
 )

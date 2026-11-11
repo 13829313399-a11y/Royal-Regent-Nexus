@@ -9,7 +9,6 @@ import {
   ClipboardList,
   Clock3,
   Copy,
-  Eye,
   Filter,
   PieChart,
   Plus,
@@ -17,6 +16,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  Snowflake,
   TimerReset,
   Trash2,
   Users,
@@ -33,6 +33,7 @@ import InternalQuoteCustomerDialog from './InternalQuoteCustomerDialog.vue'
 import InternalQuoteStatusDonut from './InternalQuoteStatusDonut.vue'
 import InternalQuoteReadiness from './InternalQuoteReadiness.vue'
 import InternalQuotePendingOutput from './InternalQuotePendingOutput.vue'
+import InternalQuoteFreezeDialog from './InternalQuoteFreezeDialog.vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -71,6 +72,7 @@ const resumeChoice = ref<{ factory: string; options: Array<{ id: string; label: 
 let openSequence = 0
 onBeforeUnmount(() => { openSequence++ })
 const archiveTarget = ref<InternalQuote>()
+const freezeTarget = ref<InternalQuote>()
 const archiveReason = ref('')
 const archiveDialogError = ref('')
 const archivingQuoteId = ref('')
@@ -80,7 +82,7 @@ const comparisonLoading = ref(false)
 const comparisonError = ref('')
 const comparisonLimit = 5
 onBeforeUnmount(registerQuoteNavigationGuard(() => {
-  if (createDialogOpen.value || baselineDialogOpen.value || customerDialogOpen.value || deleteTarget.value || archiveTarget.value
+  if (createDialogOpen.value || baselineDialogOpen.value || customerDialogOpen.value || deleteTarget.value || archiveTarget.value || freezeTarget.value
       || deletingQuoteId.value || archivingQuoteId.value) {
     quoteStore.errorMessage = '请先完成或关闭当前报价操作，再切换页面或厂区。'
     return false
@@ -205,11 +207,11 @@ const statusMeta: Record<InternalQuoteStatus, { label: string; tone: string }> =
   fully_approved: { label: '待最终提交', tone: 'teal' },
   final_pending: { label: '待最终放行', tone: 'blue' },
   released: { label: '已放行', tone: 'green' },
-  exported: { label: '已导出', tone: 'green' },
+  exported: { label: '已输出 / 已冻结', tone: 'green' },
   archived: { label: '已归档', tone: 'slate' },
 }
 function quoteStatusLabel(quote: InternalQuote) {
-  if (quote.moduleVersion === 'v4') return quote.status === 'exported' ? '已输出并冻结' : quote.status === 'archived' ? '已归档' : quote.readiness?.state === 'ready' ? '可输出' : quote.readiness?.state === 'incomplete' ? '待补齐 / 待重算' : '填写中'
+  if (quote.moduleVersion === 'v4') return quote.status === 'exported' ? '已冻结' : quote.status === 'archived' ? '已归档' : quote.finalReleaseStatus === 'output' ? '已输出 · 可修改' : quote.readiness?.state === 'ready' ? '可输出' : quote.readiness?.state === 'incomplete' ? '待补齐 / 待重算' : '填写中'
   if (quote.moduleVersion !== 'v3') return statusMeta[quote.status].label
   return {
     drafting: '整单填写中',
@@ -222,6 +224,19 @@ function quoteStatusLabel(quote: InternalQuote) {
     archived: '已归档',
   }[quote.status]
 }
+
+function canFreezeQuote(quote: InternalQuote) {
+  return quote.moduleVersion === 'v4' && quote.status !== 'archived' && !quote.documentArchive
+    && quote.factoryId === activeFactoryId.value
+    && authStore.can('internal_quote:export', quote.factoryId, 'sales-business')
+    && authStore.can('internal_quote:sales_edit', quote.factoryId, 'sales-business')
+}
+async function freezeCompleted() {
+  const factory = freezeTarget.value?.factoryId
+  freezeTarget.value = undefined
+  if (factory === activeFactoryId.value) await loadPage(factory)
+}
+watch(() => [activeFactoryId.value, authStore.currentUser?.id], () => { freezeTarget.value = undefined })
 
 const managedCustomerNames = computed(() => quoteStore.factoryCustomers.map((customer) => customer.name))
 const customers = computed(() => Array.from(new Set([
@@ -724,7 +739,7 @@ onBeforeUnmount(() => {
       <div>
         <div class="quote-eyebrow"><span />业务部 · 内部成本协作</div>
         <h1>内部报价台</h1>
-        <p>业务部与工程部均可新建或复制报价，业务部、工程部、装配部固定参与，其余部门按项目需要选择。</p>
+        <p>业务部与工程部均可新建或复制报价，业务部、装配部固定参与，工程部及其他部门按产品需要选择。</p>
       </div>
       <div class="quote-heading-actions">
         <button v-if="canViewPricingBaseline" type="button" class="quote-baseline-button" :disabled="quoteStore.baselineLoading" @click="openPricingBaseline">
@@ -883,7 +898,7 @@ onBeforeUnmount(() => {
               <td><span class="quote-date">{{ quote.updatedAt }}</span></td>
               <td>
                 <div class="quote-row-actions">
-                  <button type="button" title="查看报价" aria-label="查看报价" @click="openQuote(quote)"><Eye aria-hidden="true" /></button>
+                  <button v-if="canFreezeQuote(quote)" type="button" title="整单冻结 / 解除冻结" aria-label="整单冻结 / 解除冻结" @click.stop="freezeTarget = quote"><Snowflake aria-hidden="true" /></button>
                   <button
                     type="button"
                     :disabled="!canCloneQuote(quote)"
@@ -966,6 +981,7 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
+    <InternalQuoteFreezeDialog v-if="freezeTarget" :quote="freezeTarget" @close="freezeTarget = undefined" @completed="freezeCompleted" />
     <InternalQuoteCreateDialog
       :open="createDialogOpen"
       :mode="dialogMode"

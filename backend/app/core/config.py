@@ -2,14 +2,34 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    # Explicit activation after both the ledger outbox and local archive migration.
+    qc_photo_preview_max_edge: int = Field(default=1920, ge=960, le=2560)
+    qc_photo_preview_quality: int = Field(default=85, ge=75, le=95)
+    qc_photo_preview_target_bytes: int = Field(default=350000, ge=50000, le=1000000)
+    qc_dossier_enabled: bool = False
+    qc_dossier_emergency_disabled: bool = False
+
+    @model_validator(mode="after")
+    def dossier_emergency_switch(self):
+        if self.qc_dossier_emergency_disabled:
+            self.qc_dossier_enabled = False
+        return self
+
+    qc_dossier_factories: str = "huaxing"
+    qc_dossier_poll_seconds: int = 30
     qc_department_managed: bool = False
+    # One private sidecar and dedicated database per explicitly configured factory.
+    indonesia_shipping_upstreams: dict[str, str] = {}
+    indonesia_shipping_bridge_key: SecretStr = SecretStr("")
+    indonesia_shipping_timeout_seconds: int = Field(default=180, ge=5, le=900)
+    indonesia_shipping_max_upload_mb: int = Field(default=100, ge=1, le=200)
     qc_department_data_dir: str = str(BACKEND_DIR / "data" / "qc-department" / "companies")
     qc_department_url: str = "http://127.0.0.1:3411"
     qc_department_gateway_token: SecretStr = SecretStr("")
@@ -29,6 +49,9 @@ class Settings(BaseSettings):
     three_d_network_health_token: str = ""
     spray_ops_enabled: bool = False
     cutting_ops_enabled: bool = False
+    engineering_bom_enabled: bool = False
+    material_plan_enabled: bool = False
+    material_purchase_enabled: bool = False
     cutting_period_admin_acceptance: bool = False
     uv_ops_enabled: bool = False
     uv_ops_dispatch_enabled: bool = False
@@ -55,6 +78,8 @@ class Settings(BaseSettings):
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
+    mainland_invoice_enabled: bool = False
+    mainland_invoice_template_dir: str = str(BACKEND_DIR / "data" / "mainland-invoice-templates")
     online_documents_enabled: bool = False
     onlyoffice_jwt_secret: SecretStr = SecretStr("")
     onlyoffice_internal_url: str = "http://onlyoffice"

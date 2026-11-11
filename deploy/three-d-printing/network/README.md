@@ -1,6 +1,6 @@
 # PR-05 河源站点网络实施手册
 
-云端 Connector 和 Tailscale 客户端已安装，进入 Windows 现场接入阶段。现场使用 `windows-site.ps1` 安装、登录、发布路由和诊断，`windows-start.ps1` 提供操作菜单；`windows-tailscale-plan.ps1` 仍保留原只读计划用途。实际 VPN、11 台设备身份与连通性仍待现场确认，恢复与单机切换见 [执行手册](../README.md)。
+河源目前由现场 Windows 网关和云端采集程序接入 18 台打印机。现网恢复与验收见下文「Windows 现场网关自动恢复」。初次接入可用 `windows-site.ps1` 安装、登录、发布路由和诊断，`windows-start.ps1` 提供操作菜单。下文初期 11 台的部署示例保留供参考。[单机切换执行手册](../README.md)
 
 Windows 方案的云端采集使用 `tailscale_doctor.py`：用 `--site-report <现场报告> --config <network.json>` 生成实际网关与证书配置，再用 `--config <network.json>` 探测。配置生成前需将报告中的机号/IP 与物理打印机对应；首次观察到的证书不等于已证明设备身份。该方案不要求 Linux VLAN 网卡名或 Windows nftables 快照。报告里的 exposure=unknown 保留其真实含义，但不会再单独把健康网络判为断线；unsafe 仍判异常。服务同机上报支持 `http://127.0.0.1/api/three-d-printing/network/health`，远程上报仍使用 HTTPS。定时任务每 30 秒一次，配置完现场网关和设备后启用。
 
@@ -16,7 +16,7 @@ Windows 方案的云端采集使用 `tailscale_doctor.py`：用 `--site-report <
 
 `config.example.json` 全部为蓝图示例地址，不是现场配置。复制到仓库外受限目录后修改：
 
-- 固定 `factory_id=huakang-a`、`site_id=3dsite-huakang-a-heyuan`；完整 11 或 16 台清单，编号、IP 与凭据引用各自唯一。扩容与重编号前置条件见 [执行手册](../README.md#16-台扩容准备与重编号边界)。
+- 固定 `factory_id=huakang-a`、`site_id=3dsite-huakang-a-heyuan`；完整 11、16 或 18 台清单，编号、IP 与凭据引用各自唯一。扩容与重编号前置条件见 [执行手册](../README.md#17、18-号机扩容)。
 - `lan.cidr/interface/gateway_ip` 必须是经确认的专用打印机 VLAN、网关网卡和该网卡地址。
 - `vpn.type/interface/connector_ip/gateway_ip` 分别选 `wireguard/wg-3d`、`tailscale/tailscale0` 或 `ipsec/xfrm-3d`，填写对应实际隧道 IP，不能与 VLAN 重叠。
 - WireGuard 公钥和云端 UDP 入口填入 `cloud_public_key/gateway_public_key/cloud_endpoint`。其它模式可保留未使用的公钥占位符；IPsec 使用证书身份和云端域名，不使用 endpoint 的 WireGuard 端口。
@@ -56,6 +56,34 @@ python3 render.py --config /etc/rr-3d-network/config.json --output-dir /var/lib/
 
 ## 诊断与验收
 
+### Windows 现场网关自动恢复
+
+河源 Fleet18 使用 `gateway-recovery/` 中的云端采样器与 Windows 计划任务。云端部署入口为 `python3 install-cloud.py /opt/royal-regent/three-d/network.json`，运行于现有采集服务器。采样器每 20 秒以只读事务核对真实设备状态、观察者租约及云端各网络命名空间中的打印连接。状态服务使用独立低权限身份，仅监听 Tailscale 接口的 18443 端口，并核对现场来源。现场安装包固定云端 TLS 证书指纹、节点身份和机台清单摘要。私有清单、证书私钥及现场回执保存在仓库外。
+
+在现场「3D」电脑上运行私有安装包中的 `Install.cmd`，并核对 `guard-install-*.json` 中的 `installed_and_paired`、SYSTEM 身份和实际读到的机台数。云端通过 `journalctl -u rr-three-d-gateway-health.service` 核对现场成功读取。地址或证书发生变更时，重新核对登记机台身份后更新安装包。云端证书轮换时应同步更新现场指纹。
+
+如果安装时部分机台已失联，采样器按机号、设备和采集实例核对六小时内最后一帧真实上报及其到达时间。若期间重新领取了租约，须从审计记录验证同一实例先后取得了上报时的租约和当前租约，且期间没有连接配置变更或其他实例接管。历史上报可证明机台原先连通过，单机恢复仍需从当前有效样本开始累计至少三分钟。安装回执中的 `field_checks` 逐台记录仍无上报的机台能否匹配登记 MAC、端口是否可达、云端是否保有连接及当时能确认的网关转发连接数。正在回传的机台跳过额外连接测试。旧版安装可原位升级，回执会核对本次安装版本确实由 SYSTEM 执行。
+
+若状态 HTTPS 暂时无法连接，单台任务可在六分钟内继续核对先前已取得的样本，条件是仍由同一租约证明最后设备帧没有变更，且满足独立云端复核和现场复测。传输失败不算有效样本，不允许当场处置；签名证书、清单或租约证据失效时重新采样。整组重启的健康基线在读失败后重新建立。
+
+运维端在 `gateway-recovery/` 中执行 `python package-windows.py CLOUD_INSTALL FIELD_CONFIG LAN_RECEIPT OUTPUT_ZIP` 可重建安装包。三个输入依次是云端安装回执、经现场核实且带机台证书指纹的网关配置，以及同批包含局域网 IP 和 MAC 对照的现场回执。脚本交叉校验全部 18 台的地址、身份和清单摘要后生成归档。地址或设备更换时先更新这三份私有资料。
+
+任务每分钟检查一次。单台恢复要求持续缺少真实上报、云端没有已建立连接、两份不同时间的有效云端证据、现场物理地址与进程身份匹配，且旧转发连接的完整标识在执行前仍相同。至少 12 台持续失联并有 3 台得到现场复证，才允许因机群故障重连网关。VPN 路径故障另行检查现场有线出口、云端公网连通和实际隧道探测。云端租约异常、证书不匹配、配置漂移或采样过期时暂停相应恢复。网关处置冷却一小时，每滚动 24 小时最多两次。维修期间可禁用同名任务，`Uninstall.cmd` 可撤销现场任务。验收按真实设备上报、到达间隔、观察者会话和同一任务的进度进行。
+
+若现场网卡地址匹配，但 8883 超时且现场没有归属明确的旧转发连接，可在该台仅做一次 990 证书核对。证书匹配说明设备身份和文件服务可达，实时进度仍须从 MQTT 状态主题取得。现场任务在缺少可释放连接时继续监测，云端采集器按原退避策略重试。
+
+达到单机处置条件时先检查 17、18 号机。滚动 24 小时的前八次沿用原限额。每一台经云端独立确认恢复真实上报的机台，可支持一次额外的首次处置，每日总次数最多等于登记机台数。此前的处置、未决结果和单机冷却在升级后继续生效。
+
+回归测试使用 Windows PowerShell 5.1 运行 `gateway-recovery/test-guard.ps1`。云端主机需要 Python 3、Docker、Tailscale、OpenSSL、iproute2、util-linux 和支持 `LoadCredential` 的 systemd。只停用自动恢复时先禁用现场计划任务，再停用 `rr-three-d-gateway-health.socket`、`rr-three-d-gateway-health.service`、`rr-three-d-gateway-health-sample.timer`，原有打印采集服务独立运行。
+
+### 河源备用中继
+
+现场与云端保留原有 Tailscale 直连，另外使用同一云主机上的 DERP 区域。云安全组仅对经核实的现场公网来源开放专用 TCP/UDP 端口。TCP 用于加密中继，UDP 用于 Tailscale 延迟探测。节点准入按两个登记节点的稳定 ID 读取当前公钥，逐连接校验来源和密钥；读取失败时拒绝新连接。
+
+在云端私有目录备好固定版本的官方 `derper`、以公网 IP 命名的 TLS 证书与私钥，以及含 `site_id`、`cloud_id`、`site_source`、`cloud_sources` 的 `pair.json`。`install-relay.py` 与 `relay-admission.py` 放在同一目录，先运行 `python3 install-relay.py --input PRIVATE_DIR --public EIP --binary-sha256 HASH --cert-sha256 PIN` 验证，再加 `--apply` 安装。安装器验证现场来源、两端身份、证书地址和固定指纹、可执行文件摘要以及监听端口。系统单元随启动加载专用转发规则，并以低权限身份启动；DERP 身份落在独立的持久化状态目录。主机对本机访问中继的单个 UDP 端口做地址转换，使测延迟看到的映射与真实公网出口一致。
+
+验收同时核对两端的 `tailscale status --json`、中继的两条已认证连接、现场与 VPN 收发，以及 18 台在云端收到的原始设备帧。若现场公网地址变更，需核实实际出口，再同步更新安全组、主机来源限制和节点准入配置。证书轮换需要同时更新策略中的节点证书指纹。撤回时先在原策略中移除新增中继区域，保留其他最新规则；待两个节点切换后停用 `rr-three-d-relay.service` 及它的两个依赖单元，再移除中继专用的安全组规则。单独的直连 UDP 规则仍供现场网关使用。
+
 实际探测在云端 Connector 所在 Linux 网络命名空间运行，需 Python 3.11+、iproute2 和所选 VPN CLI；健康探测所需权限应只授予受控服务。doctor 不部署在现场网关作为业务 Agent。
 
 在云端和现场网关各自导出 `nft -j list ruleset` 至受限文件，标注主机身份、导出时间和配置变更号，并通过已批准的管理通道将网关快照交给云端诊断。每次网络验收/防火墙变更后重新导出。`--nft-json` 分别提供两端快照：它只审计给定快照里的 DNAT，无法证明快照真实、最新或覆盖运营商/其它路由器；`exposure=ok` **不是公网全局安全证明**。动态 set/map/redirect 无法解析时返回 unknown，须先展开/人工核验，不能删掉未知条目凑成功。
@@ -82,7 +110,7 @@ MQTT 验收读取 `/run/secrets/three-d-printers/printer-NN.json`，仅包含 `s
 
 **预验收先不加 `--report-url`。** 首次成功上报会启用站点网络门禁，后续采集停止超过 90 秒将阻止新远程指令及旧 Edge 领取指令；上报需在前后端加载匹配代码、0098 站点初始化完成及切换窗口明确后开启。复制 `.service.example/.timer.example` 到仓库外、替换 HTTPS 域名、安装路径、文件权限后再安装并启用；模板不自动启用。先单次运行验证，再开启 30 秒定时采集。不应每次采集做 MQTT 登录。
 
-报告固定华康 A/河源站点，兼容完整 11/16 台清单，并与数据库当前机台清单比对，拒绝缺机、重复编号、乱序、冲突和过期/超前时间；相同报告重试幂等，但扩容后旧报告的重试仍会被拒绝。历史 11 台报告保留可读，不能在扩容后继续给出健康状态。站点不可达、检测不完整或报告过期时，页面显示 STALE/提示，远程控制关闭，自动运行任务不结算。设备自身状态超过 30 秒同样显示陈旧；报告正常不代表设备业务事件已同步。恢复后等待可信设备状态，旧任务不凭网络恢复自动生成结束记录。连续采集为审计证据，需要纳入后续容量与保留周期运维。
+报告固定华康 A/河源站点，兼容完整 11/16/18 台清单，并与数据库当前机台清单比对，拒绝缺机、重复编号、乱序、冲突和过期/超前时间；相同报告重试幂等，但扩容后旧报告的重试仍会被拒绝。历史 11 台报告保留可读，不能在扩容后继续给出健康状态。站点不可达、检测不完整或报告过期时，页面显示 STALE/提示，远程控制关闭，自动运行任务不结算。设备自身状态超过 30 秒同样显示陈旧；报告正常不代表设备业务事件已同步。恢复后等待可信设备状态，旧任务不凭网络恢复自动生成结束记录。连续采集为审计证据，需要纳入后续容量与保留周期运维。
 
 ## 现场签收与回滚
 

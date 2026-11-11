@@ -22,7 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const statusLabel: Record<InternalQuoteSectionStatus, string> = {
-  sealed: '已输出并冻结',
+  sealed: '已冻结',
   draft: '草稿',
   pending_review: '待审核',
   approved: '已通过',

@@ -1,10 +1,9 @@
-import type { CartonImportPreviewRow, CartonScheduleOrder } from '@/api/cartonProcurement'
+import type { CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { WeeklyCheckRow } from './demoData'
 import type { ScheduleOrderReminder } from '@/lib/cartonScheduleDeadline'
 
 export type ScheduleWorkView = 'ATTENTION' | 'FUTURE' | 'ORDERED' | 'ALL'
 export type ScheduleOrderCategory = 'UNPLACED' | 'CREATED' | 'ORDERED' | 'COMPLETED' | 'REVIEW'
-export type ScheduleWorkReviews = Partial<Record<'cancellation' | 'quantity' | 'date', boolean>>
 
 export interface ScheduleWorkItem {
   attention: boolean
@@ -21,82 +20,53 @@ export interface ScheduleWorkProjection {
   reminder: ScheduleOrderReminder | null
   result: string
   source?: CartonImportPreviewRow
-  order?: Pick<CartonScheduleOrder, 'status' | 'customer_due_date' | 'product_order_quantity' | 'split_records'>
   pendingSplit?: boolean
-  reviews?: ScheduleWorkReviews
 }
 
-const purchaseTypes = new Set(['正单', '正式PO', '加单', '改单'])
-const deadlines = {
-  OVERDUE: { priority: 1, reason: '逾期未下单' },
-  DUE_TODAY: { priority: 2, reason: '今天必须下单' },
-  DUE_SOON: { priority: 3, reason: '三天内需下单' },
-}
-
-function scheduleDifference(row: WeeklyCheckRow, { source, order, reviews, result }: ScheduleWorkProjection) {
-  const quantity = order?.product_order_quantity
-  // Only a comparable whole-order quantity can clear a saved quantity difference.
-  const quantitiesAgree = quantity != null && quantity !== '' && !row.quantityMissing
-    && !order?.split_records?.some(plan => plan.status !== 'CANCELLED')
-    && Number(quantity) === row.quantity
-  if ((source?.match_status === 'QUANTITY_MISMATCH' || result === '数量差异')
-    && reviews?.quantity !== false && !quantitiesAgree) return '核对数量差异'
-  const datesAgree = source?.customer_due_date && source.customer_due_date === order?.customer_due_date
-  if ((source?.match_status === 'DATE_MISMATCH' || result === '交期差异')
-    && reviews?.date !== false && !datesAgree) return '核对交期差异'
-  return ''
-}
+const reviewResults = new Set(['数量差异', '交期差异', '待人工选择', '待人工确认', '匹配不唯一'])
+const substantiveReviewResults = new Set(['数量差异', '交期差异', '待人工选择', '匹配不唯一'])
+const reviewReminderStates = new Set<ScheduleOrderReminder['state']>(['REVIEW', 'DATE_REVIEW', 'RULE_REVIEW', 'CHANGE_REVIEW'])
 
 /** Read-only queue membership; it never changes source evidence or action eligibility. */
 export function scheduleWorkItem(row: WeeklyCheckRow, projection: ScheduleWorkProjection): ScheduleWorkItem {
-  const { category, reminder, result, source, order, reviews } = projection
+  const { category, reminder, result, source } = projection
   const ordered = category === 'ORDERED' || category === 'COMPLETED'
-  const section = row.scheduleSection
-  const change = row.scheduleChange
   const deadline = reminder?.deadline || ''
   const item = (priority: number, reason: string, attention = true, historical = false): ScheduleWorkItem =>
     ({ attention, future: !attention && !historical && category === 'UNPLACED' && reminder?.state === 'WAIT', ordered, historical, priority, deadline, reason })
 
-  const cancellation = change === 'CANCELLED' || change === 'CANCELLED_AFTER_ORDER'
-  const openPurchase = category === 'CREATED' || (category === 'ORDERED' && Boolean(order))
-  if (reviews?.cancellation !== false
-    && (cancellation || reviews?.cancellation || (section === 'CANCELLED' && openPurchase))) return item(0, '核实退单')
+  // Placed records still need cancellation/change hand-off; they cannot vanish into the history view.
+  if (['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.scheduleChange || '')) return item(0, '核实退单')
+  if (row.scheduleSection === 'CANCELLED' && (ordered || category === 'CREATED')) return item(0, '核实退单')
+
+  const substantiveReview = substantiveReviewResults.has(result)
+    || ['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source?.match_status || '')
+    || row.identityDuplicate || source?.schedule_identity_duplicate || source?.legacy_match_stale
+    || row.scheduleChange === 'REVIEW_REQUIRED'
+  const historicalSource = row.scheduleSection === 'SHIPPED'
+    || (row.scheduleSection === 'CANCELLED' && !ordered && category !== 'CREATED')
+  // The parser labels archived source sections REVIEW_REQUIRED merely to retain them.
+  // Neither that label nor an incomplete historical date creates a current procurement task.
+  if (historicalSource && category !== 'CREATED' && !projection.pendingSplit
+    && row.scheduleChange !== 'REOPENED' && !substantiveReview)
+    return item(6, row.scheduleSection === 'SHIPPED' ? '已送货排期留存' : '旧退单排期留存', false, true)
+  if (reminder?.state === 'OVERDUE') return item(1, '逾期未下单')
+  if (reminder?.state === 'DUE_TODAY') return item(2, '今天必须下单')
+  if (reminder?.state === 'DUE_SOON') return item(3, '三天内需下单')
+  if (category === 'CREATED') return item(4, '待核对并确认锁定')
   if (projection.pendingSplit) return item(4, '拆单待仓库确认')
-  if (change === 'REOPENED') return item(4, '核实恢复下单')
-  if (source?.missing_review?.status === 'PENDING') return item(4, '核实排期缺行')
-  if (section === 'CANCELLED') return item(6, '退单排期留存', false, true)
-  if (section === 'SHIPPED' && category !== 'CREATED') return item(6, '已送货排期留存', false, true)
-
-  const difference = scheduleDifference(row, projection)
-  const markedChange = reminder?.state === 'CHANGE_REVIEW'
-  if (category === 'COMPLETED') {
-    if (change === 'MODIFIED' && (difference || markedChange)) return item(4, difference || '复核已下单需求变化')
-    return item(6, '已完单', false, true)
-  }
-
-  const state = reminder?.state
-  const timing = state === 'OVERDUE' || state === 'DUE_TODAY' || state === 'DUE_SOON' ? deadlines[state] : undefined
-  if (category === 'CREATED') return item(timing?.priority ?? 4,
-    order?.status === 'CONFIRMED' ? '待发供应商' : '待核对并确认锁定')
-  if (!ordered && source?.template === 'unified-item' && !purchaseTypes.has((source.order_type || row.orderType || '').trim()))
-    return item(7, '其他排期记录', false)
-  if (!ordered && timing) return item(timing.priority, timing.reason)
-  if (markedChange) return item(4, '复核已下单依据')
-  if (difference) return item(4, difference)
-  if (!ordered && (row.dateReviewRequired || source?.date_review_required || state === 'DATE_REVIEW'))
-    return item(4, '核实日期原文')
-  if (state === 'RULE_REVIEW') return item(4, '核实下单周期')
+  if (row.scheduleChange === 'REOPENED') return item(4, '核实恢复下单')
+  if (row.dateReviewRequired || source?.date_review_required) return item(4, '核实日期原文')
   if (row.identityDuplicate || source?.schedule_identity_duplicate || source?.legacy_match_stale
-    || change === 'REVIEW_REQUIRED' || source?.match_status === 'AMBIGUOUS' || state === 'REVIEW'
-    || result === '待人工选择' || result === '匹配不唯一') return item(4, '核对订单身份或资料')
-  if (!ordered && (category === 'REVIEW' || result === '待人工确认')) return item(4, '核对排期资料')
+    || row.scheduleChange === 'REVIEW_REQUIRED' || category === 'REVIEW'
+    || reviewResults.has(result) || ['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source?.match_status || '')
+    || (reminder && reviewReminderStates.has(reminder.state))) return item(4, '核实排期差异或资料')
 
   // Legacy evidence without a timing projection remains visible for review rather than guessed as far future.
-  if (!reminder && !ordered && result !== '已匹配')
+  if (!reminder && !ordered && result !== '已匹配' && (!row.scheduleSection || row.scheduleSection === 'PENDING'))
     return item(4, '核实下单与交期')
-  if (ordered) return item(6, '已下单', false)
-  if (category === 'UNPLACED' && state === 'WAIT') return item(5, '后续未下单', false)
-  return item(7, '其他排期记录', false)
+  return item(ordered ? 6 : category === 'UNPLACED' && reminder?.state === 'WAIT' ? 5 : 7,
+    ordered ? '已下单 / 已完单' : category === 'UNPLACED' && reminder?.state === 'WAIT' ? '后续未下单' : '其他排期记录', false)
 }
 
 export function scheduleWorkViewMatches(item: ScheduleWorkItem, view: ScheduleWorkView): boolean {

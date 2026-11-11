@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { WeeklyCheckRow } from '../demoData'
 import { scheduleOrderReminder } from '@/lib/cartonScheduleDeadline'
-import { compareScheduleWorkPriority, scheduleWorkItem, scheduleWorkViewMatches, type ScheduleOrderCategory, type ScheduleWorkProjection } from '../scheduleWorkViews'
+import { compareScheduleWorkPriority, scheduleWorkItem, scheduleWorkViewMatches, type ScheduleOrderCategory } from '../scheduleWorkViews'
 
 const source: CartonImportPreviewRow = {
   template: 'unified-item', order_type: '正单', contract_no: 'C-001', item_no: 'I-001', quantity: 100,
@@ -16,16 +16,14 @@ const row: WeeklyCheckRow = {
 }
 const options = { today: '2026-10-08', leadDays: 3, productionDays: 7, marked: false, orderCount: 0 }
 const work = (changes: Partial<CartonImportPreviewRow> = {}, today = options.today,
-  category: ScheduleOrderCategory = 'UNPLACED', orderStatus?: CartonImportPreviewRow['order_status'], marked = false,
-  overrides: Partial<ScheduleWorkProjection> = {}) => {
+  category: ScheduleOrderCategory = 'UNPLACED', orderStatus?: string, marked = false) => {
   const currentSource = { ...source, ...changes }
   const reminder = scheduleOrderReminder(currentSource, { ...options, today, orderStatus, marked,
     orderCount: orderStatus ? 1 : 0 })
   const currentRow = { ...row, scheduleSection: currentSource.schedule_section,
     scheduleChange: currentSource.schedule_change, identityDuplicate: currentSource.schedule_identity_duplicate,
-    dateReviewRequired: currentSource.date_review_required, quantity: Number(currentSource.quantity) }
-  return scheduleWorkItem(currentRow, { category, reminder, result: reminder?.label || row.result, source: currentSource,
-    order: orderStatus ? { status: orderStatus } : undefined, ...overrides })
+    dateReviewRequired: currentSource.date_review_required }
+  return scheduleWorkItem(currentRow, { category, reminder, result: reminder?.label || row.result, source: currentSource })
 }
 
 describe('carton schedule staff work views', () => {
@@ -45,13 +43,10 @@ describe('carton schedule staff work views', () => {
     expect(work({}, '2026-12-01', 'COMPLETED', 'COMPLETED')).toMatchObject({ attention: false, future: false, ordered: true })
   })
 
-  it.each([
-    ['DRAFT', '待核对并确认锁定'],
-    ['CONFIRMED', '待发供应商'],
-  ] as const)('gives a %s order its current next action', (status, reason) => {
+  it.each(['DRAFT', 'CONFIRMED'])('keeps %s drafts in the confirmation queue without claiming they are placed or overdue', status => {
     expect(work({}, '2026-10-09', 'CREATED', status)).toMatchObject({ attention: true, future: false, ordered: false })
     expect(work({}, '2026-10-04', 'CREATED', status)).toMatchObject({
-      attention: true, future: false, ordered: false, priority: 4, deadline: '2026-10-08', reason,
+      attention: true, future: false, ordered: false, priority: 4, deadline: '2026-10-08', reason: '待核对并确认锁定',
     })
   })
 
@@ -66,37 +61,6 @@ describe('carton schedule staff work views', () => {
   it.each(['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'] as const)('keeps ordered %s evidence in the queue', match_status => {
     expect(work({ match_status }, '2026-10-04', 'ORDERED', 'PENDING_SUPPLIER'))
       .toMatchObject({ attention: true, future: false, ordered: true })
-  })
-
-  it.each(['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'] as const)('keeps a completed order with old %s evidence in history', match_status => {
-    const item = work({ match_status, schedule_change: 'UNCHANGED' }, undefined, 'COMPLETED', 'COMPLETED')
-    expect(item).toMatchObject({ attention: false, ordered: true, historical: true })
-    expect(scheduleWorkViewMatches(item, 'ORDERED')).toBe(true)
-  })
-
-  it('retains a genuine quantity change after completion until the purchase agrees or the review closes', () => {
-    const change = { match_status: 'QUANTITY_MISMATCH', schedule_change: 'MODIFIED', quantity: 120 } as const
-    const order = { status: 'COMPLETED', product_order_quantity: '100' } as const
-    expect(work(change, undefined, 'COMPLETED', 'COMPLETED', false, { order }))
-      .toMatchObject({ attention: true, reason: '核对数量差异' })
-    expect(work(change, undefined, 'COMPLETED', 'COMPLETED', false, { order: { ...order, product_order_quantity: '120' } }))
-      .toMatchObject({ attention: false, historical: true })
-    expect(work(change, undefined, 'COMPLETED', 'COMPLETED', false, { order, reviews: { quantity: false } }))
-      .toMatchObject({ attention: false, historical: true })
-  })
-
-  it('stops treating a saved date mismatch as work when the current order date agrees', () => {
-    const change = { match_status: 'DATE_MISMATCH', customer_due_date: '2026-10-20' } as const
-    expect(work(change, undefined, 'ORDERED', 'PENDING_SUPPLIER', false, {
-      order: { status: 'PENDING_SUPPLIER', customer_due_date: '2026-10-20' },
-    })).toMatchObject({ attention: false, ordered: true })
-  })
-
-  it.each(['备料单', '样板单'] as const)('keeps ordinary %s available in all rows without a purchase task', order_type => {
-    const item = work({ order_type, schedule_change: 'NOT_TRACKED', match_status: 'REVIEW_REQUIRED' },
-      undefined, 'REVIEW', undefined, false, { result: '待人工确认' })
-    expect(item).toMatchObject({ attention: false, future: false, historical: false })
-    expect(scheduleWorkViewMatches(item, 'ALL')).toBe(true)
   })
 
   it('keeps placed split targets awaiting warehouse confirmation in both attention and placed views', () => {
@@ -149,28 +113,16 @@ describe('carton schedule staff work views', () => {
     expect(historicalRow.procurementState).toBe('待确认')
   })
 
-  it.each(['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'] as const)('keeps saved %s from shipped rows in history', match_status => {
+  it.each(['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'] as const)('keeps substantive archived %s evidence as a current review', match_status => {
     expect(scheduleWorkItem({ ...row, scheduleSection: 'SHIPPED', result: '待人工确认' },
       { category: 'REVIEW', reminder: null, result: '待人工确认', source: { ...source, schedule_section: 'SHIPPED', match_status } }))
-      .toMatchObject({ attention: false, historical: true })
+      .toMatchObject({ attention: true, historical: false, priority: 4 })
   })
 
-  it.each([['ORDERED', 'PENDING_SUPPLIER'], ['CREATED', 'DRAFT']] as const)('keeps an old cancellation with a live %s purchase for explicit hand-off', (category, status) => {
-    expect(work({ schedule_section: 'CANCELLED', schedule_change: 'UNCHANGED' }, undefined, category, status))
+  it.each(['ORDERED', 'COMPLETED', 'CREATED'] as const)('keeps an existing %s order in an unchanged cancellation source for explicit hand-off', category => {
+    expect(scheduleWorkItem({ ...row, scheduleSection: 'CANCELLED', scheduleChange: 'NOT_TRACKED' },
+      { category, reminder: null, result: '待人工确认', source: { ...source, schedule_section: 'CANCELLED', match_status: 'REVIEW_REQUIRED' } }))
       .toMatchObject({ attention: true, historical: false, priority: 0, reason: '核实退单' })
-  })
-
-  it('archives old cancellations with a completed purchase or only an old manual mark', () => {
-    const change = { schedule_section: 'CANCELLED', schedule_change: 'UNCHANGED' } as const
-    expect(work(change, undefined, 'COMPLETED', 'COMPLETED')).toMatchObject({ attention: false, historical: true })
-    expect(work(change, undefined, 'ORDERED', undefined, true)).toMatchObject({ attention: false, historical: true })
-  })
-
-  it('keeps a new cancellation until its review closes', () => {
-    const change = { schedule_section: 'CANCELLED', schedule_change: 'CANCELLED_AFTER_ORDER' } as const
-    expect(work(change, undefined, 'COMPLETED', 'COMPLETED')).toMatchObject({ attention: true, reason: '核实退单' })
-    expect(work(change, undefined, 'ORDERED', 'PENDING_SUPPLIER', false, { reviews: { cancellation: false } }))
-      .toMatchObject({ attention: false, historical: true })
   })
 
   it.each(['CANCELLED', 'CANCELLED_AFTER_ORDER'] as const)('keeps a genuine new %s change even without a current purchase', scheduleChange => {

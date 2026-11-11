@@ -17,6 +17,7 @@ const props = withDefaults(defineProps<{
   search?: string
   viewerKey?: string
   refreshKey?: number
+  moneyReference?: (value: string, currency: string) => string
 }>(), { supplier: false, search: '' })
 const emit = defineEmits<{
   'open-receipt': [factory: string, receiptId: string, signal: AbortSignal]
@@ -88,8 +89,7 @@ const visibleCounts = computed(() => ({
   returns: lines.value.filter(row => row.kind === 'RETURN').length,
   refund: lines.value.filter(row => row.kind === 'RETURN_REFUND').length,
 }))
-const format = (value: string | null, maximumFractionDigits = 2) => value === null ? '待核价'
-  : Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits })
+const format = (value: string | null) => value === null ? '待核价' : Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const currencyName = (code: string) => ({ CNY: '人民币', HKD: '港币', USD: '美元' } as Record<string, string>)[code] || code
 const factoryName = (id: string) => factoryContexts.find(item => item.id === id)?.shortName ?? id
 const kindLabel = (kind: string) => kind === 'RETURN' ? '退货' : kind === 'RETURN_REFUND' ? '退款' : '送货'
@@ -97,6 +97,17 @@ const signedQuantity = (row: MonthlySettlementLine) => row.kind === 'RETURN_REFU
   : (row.kind === 'RETURN' ? '−' : '') + Number(row.quantity).toLocaleString('zh-CN', { maximumFractionDigits: 4 }) + (row.unit ? ' ' + row.unit : '')
 const signedAmount = (row: MonthlySettlementLine) => (row.kind === 'RETURN' && Number(row.amount) > 0 ? '−' : '') + format(row.amount)
 
+const references = computed(() => {
+  const current = data.value
+  const reference = props.moneyReference
+  if (current?.currency !== 'CNY' || !reference) return null
+  const { inbound, returns, net } = current.totals
+  return {
+    inbound: inbound === null ? '' : reference(inbound, current.currency),
+    returns: returns === null ? '' : reference(returns, current.currency),
+    net: net === null ? '' : reference(net, current.currency),
+  }
+})
 function quantityByUnit(rows: MonthlySettlementLine[]) {
   const byUnit = new Map<string, number>()
   for (const row of rows) byUnit.set(row.unit || '', (byUnit.get(row.unit || '') ?? 0) + Number(row.quantity || 0))
@@ -197,18 +208,20 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
           <article class="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div class="text-[11px] text-slate-500">本月已验收送货</div>
             <div class="mt-2 break-words text-xl font-bold tabular-nums">{{ format(data.totals.inbound) }} <span class="text-xs font-medium text-slate-500">{{ currencyName(data.currency) }}</span></div>
+            <p v-if="references?.inbound" class="mt-1 break-words text-xs tabular-nums text-teal-700">{{ references.inbound }}</p>
             <div class="mt-1 text-[10px] text-slate-500">{{ data.totals.documents }} 张送货单 · {{ data.totals.receipt_lines }} 行</div>
           </article>
           <article class="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div class="text-[11px] text-slate-500">退货贷项</div>
             <div class="mt-2 break-words text-xl font-bold tabular-nums text-rose-700">{{ format(data.totals.returns) }} <span class="text-xs font-medium text-slate-500">{{ currencyName(data.currency) }}</span></div>
+            <p v-if="references?.returns" class="mt-1 break-words text-xs tabular-nums text-teal-700">{{ references.returns }}</p>
             <div class="mt-1 text-[10px] text-slate-500">{{ data.totals.return_lines }} 笔{{ data.totals.refund_lines ? ' · 已核实退款 ' + format(data.totals.refunds) : '' }}</div>
           </article>
           <article class="min-w-0 rounded-xl border border-teal-200 bg-teal-50/40 p-4 shadow-sm">
             <div class="text-[11px] font-bold text-teal-800">本月应结</div>
             <div class="mt-2 break-words text-2xl font-bold tabular-nums text-teal-900">{{ format(data.totals.net) }} <span class="text-xs font-medium text-slate-500">{{ currencyName(data.currency) }}</span></div>
+            <p v-if="references?.net" class="mt-1 break-words text-xs tabular-nums text-teal-700">{{ references.net }}</p>
             <div class="mt-1 text-[10px] text-teal-700">送货金额 − 退货贷项 ＋ 本月已核实现金退款</div>
-            <p v-if="data.totals.pending_price_lines && data.totals.verified_net != null" class="mt-1 text-[11px] text-amber-800">已核实小计 {{ format(data.totals.verified_net) }} · {{ data.totals.pending_price_lines }} 行待核价</p>
           </article>
         </div>
         <p v-if="data.global_issues?.length" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">有全厂凭证待核实。金额按已纳入本期的凭证汇总，可在「全部客户」查看提示。</p>
@@ -221,7 +234,6 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
           <span>退货贷项 <b>{{ format(customer.totals.returns) }}</b></span>
           <span>已核实退款 <b>{{ format(customer.totals.refunds) }}</b></span>
           <span class="text-teal-800">应结 <b>{{ format(customer.totals.net) }}</b></span>
-          <span v-if="customer.totals.pending_price_lines && customer.totals.verified_net != null" class="text-amber-800">已核实小计 <b>{{ format(customer.totals.verified_net) }}</b> · {{ customer.totals.pending_price_lines }} 行待核价</span>
         </div>
       </section>
 
@@ -256,15 +268,9 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
               <td data-label="客户" class="px-3 py-2">{{ row.customer_name || '—' }}</td>
               <td data-label="货号 / 纸品" class="px-3 py-2">{{ row.item_no || '—' }}<span class="text-slate-500"> · {{ row.packaging_type || '纸品待补' }}</span></td>
               <td data-label="数量" class="px-3 py-2 text-right tabular-nums">{{ signedQuantity(row) }}</td>
-              <td data-label="单价" class="px-3 py-2 text-right tabular-nums">
-                {{ row.unit_price === null ? '—' : format(row.unit_price, 6) }}
-                <p v-if="row.supplier_original_unit_price != null" class="mt-1 text-[10px] text-slate-500">原单价 {{ format(row.supplier_original_unit_price, 6) }}</p>
-              </td>
-              <td data-label="金额" class="px-3 py-2 text-right font-semibold tabular-nums">
-                {{ signedAmount(row) }}
-                <p v-if="row.supplier_original_amount != null" class="mt-1 text-[10px] font-normal text-slate-500">原单参考 {{ format(row.supplier_original_amount) }}</p>
-              </td>
-              <td data-label="原凭证" class="px-3 py-2"><button v-if="row.reference" type="button" class="rounded text-left font-semibold text-teal-800 underline underline-offset-2" @click="openSource(row, $event)">{{ sourceAction(row) }}</button><span v-else>—</span></td>
+              <td data-label="单价" class="px-3 py-2 text-right tabular-nums">{{ row.unit_price === null ? '—' : format(row.unit_price) }}</td>
+              <td data-label="金额" class="px-3 py-2 text-right font-semibold tabular-nums">{{ signedAmount(row) }}</td>
+              <td data-label="原凭证" class="px-3 py-2"><button v-if="row.reference" type="button" class="rounded text-left font-semibold text-teal-800 underline underline-offset-2" @click="openSource(row, $event)">{{ sourceAction(row) }}</button><span v-else>—</span><p v-if="row.price_basis === 'SUPPLIER_ORIGINAL'" class="mt-1 text-[10px] text-teal-800">按供应商原单价</p></td>
             </tr>
             <tr v-if="!lines.length"><td colspan="9" class="px-4 py-8 text-center text-xs text-slate-500">当前范围没有已验收送货、退货或退款明细</td></tr>
           </tbody>

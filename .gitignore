@@ -24,6 +24,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+/backend/.venv
 backend/.venv/
 backend/.venv*/
 backend/.pytest-tmp/
@@ -32,6 +33,9 @@ backend/data/qa/
 backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/data/document-tools/
+backend/data/mainland-invoice-templates/
+services/mainland-invoice/private/
+services/mainland-invoice/public/
 backend/models/document-translation/
 backend/models/image-translation/
 .env
@@ -61,6 +65,7 @@ backend/models/image-translation/
 !/docs/document-studio/evaluation.md
 !/docs/document-studio-runtime-diagnostics.md
 !/docs/business/internal-quote-collaboration-design.md
+!/docs/business/mainland-invoice-deployment.md
 !/docs/business/indonesia-materials-implementation.md
 !/docs/business/qc-complete-business-process.md
 !/docs/business/injection-scheduling-v3.md
@@ -151,6 +156,7 @@ outputs/opening-inventory-template-20260909/
 
 # Local frontend/API/document worker process identities and logs
 /.local-dev/
+/services/mainland-invoice/.local-dev/
 
 # QC embedded deployment documentation and private runtime data
 !/docs/business/qc-department-integration.md
@@ -162,3 +168,13 @@ outputs/opening-inventory-template-20260909/
 # Private QC customer workbooks and source schedules are provisioned locally.
 /backend/app/templates/qc-cumulative/
 /services/qc-department/fixtures/qc-schedule-example.json
+
+# Complete vendored Indonesia source documentation and Nexus integration contract.
+!/services/indonesia-shipping/**/*.md
+!/docs/indonesia-shipping.md
+!/docs/frontend/indonesia-shipping-brief.md
+# QC complete-record activation, recovery and access contract.
+!/docs/business/qc-complete-records.md
+
+# Preserve the pinned Indonesia solution as source.
+!/services/indonesia-shipping/IndoShipping.sln

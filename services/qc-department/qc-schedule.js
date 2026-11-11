@@ -23,6 +23,18 @@
     const r = dateRange(row);
     return r ? r.from + (r.to !== r.from ? ' — ' + r.to : '') : '';
   }
+  function dateCell(row) {
+    const range = dateRange(row);
+    if (!range) return '<span class="qs-date-main">待确认</span>';
+    const endpoint = value => {
+      const [year, month, day] = value.split('-');
+      const weekday = '日一二三四五六'[new Date(value + 'T00:00:00Z').getUTCDay()];
+      return '<span class="qs-date-main">' + month + '月' + day + '日</span>' +
+        '<span class="qs-date-meta">' + year + ' · 周' + weekday + '</span>';
+    };
+    return endpoint(range.from) + (range.to === range.from ? '' :
+      '<span class="qs-date-through">至</span>' + endpoint(range.to));
+  }
   function filterRows(rows, filters) {
     if ((filters.from && !date(filters.from)) || (filters.to && !date(filters.to))) throw new Error('请选择有效日期');
     if (filters.from && filters.to && filters.from > filters.to) throw new Error('开始日期不能晚于结束日期');
@@ -123,10 +135,21 @@
     el('qsCount').title='当前显示 / 总计';
     if(!rows.length) {
       const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期，可点击“新增验货”添加排期':'没有符合筛选条件的排期';
-      body.innerHTML='<tr><td colspan="14"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后按此模板显示排期。当前可设置筛选条件，或导出空模板。':'')+'</p></div></td></tr>';
+      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后按此模板显示排期。当前可设置筛选条件，或导出空模板。':'')+'</p></div></td></tr>';
       updatePush();return;
     }
-    body.innerHTML=groups(rows).map(group=>'<tr class="qs-group"><th colspan="14">'+escape(group.key || '日期待确认')+(group.key.includes(' — ')?' · 跨日排期':'')+'</th></tr>'+group.rows.map(row=>'<tr data-qs-row="'+escape(row.id)+'" tabindex="0" aria-selected="false" >'+COLUMNS.map(([key])=>{
+    body.innerHTML=groups(rows).map(group => group.rows.map((row, index) =>
+      '<tr data-qs-row="' + escape(row.id) + '" tabindex="0" aria-selected="false"' +
+      (index === 0 ? ' class="qs-date-group-start"' : '') + '>' +
+      '<td class="qs-pick-cell">' + (model.phase === 'ready' ?
+        '<input type="checkbox" class="qwf-pick" data-pick="' + escape(row.id) +
+        '" aria-label="选择 ' + escape(row.productNo) + '" ' +
+        (model.checked.has(row.id) ? 'checked' : '') +
+        (row.sourceStatus !== 'active' || !root.__QC_NEXUS?.workflow?.create ? ' disabled' : '') + '/>' : '') +
+      '</td>' + COLUMNS.map(([key]) => {
+      if (key === 'date') return index === 0 ?
+        '<td data-column="date" class="qs-date-cell" rowspan="' + group.rows.length +
+        '" title="' + escape(group.key || '日期待确认') + '">' + dateCell(row) + '</td>' : '';
       const value=key==='date'?dateLabel(row):text(key==='remark'?(row.sourceRemark??row.remark):row[key]);
       if(key==='completion') {
         const tasks=model.phase==='ready'?row.tasks||[]:[];
@@ -136,7 +159,7 @@
         return '<td class="qs-write">'+content+'</td>';
       }
       if(key==='remark') return '<td class="qs-write"><span class="qs-feedback-text">'+escape(value)+'</span></td>';
-      return '<td data-column="'+key+'"'+(['quantity','unitsPerCarton','cartonCount'].includes(key)?' class="qs-number"':'')+'>'+(key==='date'&&model.phase==='ready'?'<input type="checkbox" class="qwf-pick" data-pick="'+escape(row.id)+'" aria-label="选择 '+escape(row.productNo)+'" '+(model.checked.has(row.id)?'checked':'')+(row.sourceStatus!=='active'?' disabled':'')+'/> ':'')+escape(value)+'</td>';
+      return '<td data-column="'+key+'"'+(['quantity','unitsPerCarton','cartonCount'].includes(key)?' class="qs-number"':'')+'>'+escape(value)+'</td>';
     }).join('')+'</tr>').join('')).join('');
     updatePush();freezeScheduleColumns();
   }
@@ -181,9 +204,7 @@
     if(!el('page-sales-schedule'))return;
     const seq=++model.request;
     model.checked.clear();updatePush();model.phase='loading';model.items=[];renderTable();
-    el('qsSourcePanel').dataset.mode='';
-    el('qsSourceLabel').textContent='数据来源：业务部 · 各客排期';
-    el('qsRefresh').disabled=true;el('qsSourceStatus').textContent='读取中';el('qsNotice').textContent='正在检查业务部排期接口…';
+    el('qsRefresh').disabled=true;
     try {
       const response=await root.fetch('api/schedule-source',{cache:'no-store'});
       if(!response.ok)throw new Error('HTTP '+response.status);
@@ -192,12 +213,9 @@
       const pending=data.contract_version==='1'&&data.status==='mapping_required'&&Array.isArray(data.items)&&data.items.length===0;
       if(data.factory_id!==root.__QC_NEXUS?.factory||!Array.isArray(data.items)||(!ready&&!pending))throw new Error('排期数据格式尚未确认');
       if(ready){model.items=data.items;model.phase='ready';}
-      el('qsSourceStatus').textContent=ready?'已接通正式订单':'待接通';
-      el('qsNotice').textContent=ready?'读取业务部订单及手动新增排期，点击确认推送后进入验货台。缺少计划日期、验货方式或有效数量的记录会跳过并提示；取消订单不能推送。':'业务部排期接通后自动读取；订单信息由业务部维护，完成情况由验货台回显，备注读取业务部原文。';
       if(model.phase==='loading')model.phase='pending';
     } catch(e) {
       if(seq!==model.request)return;model.phase='error';model.items=[];
-      el('qsSourceStatus').textContent='读取失败';el('qsNotice').textContent='排期读取失败，或数据格式尚未确认。请刷新重试。';
     } finally {
       if(seq===model.request){el('qsRefresh').disabled=false;updateChoices();renderTable();updatePush();}
     }
@@ -218,6 +236,8 @@
     const request=model.request;model.exporting=true;el('qsExport').disabled=true;el('qsExport').textContent='正在准备…';
     try {
       const f=filters(), rows=filterRows(model.items,f);
+      if(!root.XLSX)await root.QcAssets?.load('excel');
+      if(request!==model.request)throw new Error('排期页面已刷新，请重新导出');
       if(!root.XLSX)throw new Error('Excel 导出组件未加载');
       const company=typeof root.getCompanyName==='function'?root.getCompanyName():'';
       const ready=model.phase==='ready';

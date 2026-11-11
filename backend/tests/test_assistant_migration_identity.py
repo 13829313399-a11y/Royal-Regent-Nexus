@@ -49,7 +49,7 @@ def test_canonical_assistant_upgrade_retains_all_existing_tables_and_repeats(bas
     path = clone(base_database, tmp_path)
     migrate(path, '20261030_0187')
     before = snapshot(path)
-    migrate(path, 'head')
+    migrate(path, '20261102_0189')
     after = snapshot(path)
     assert version_snapshot(path) == [('20261102_0189',)]
     assert set(after) - set(before) == {
@@ -57,12 +57,12 @@ def test_canonical_assistant_upgrade_retains_all_existing_tables_and_repeats(bas
         'nexus_assistant_run_metrics', 'nexus_assistant_subscriptions', 'nexus_assistant_feedback',
     }
     assert all(after[name] == value for name, value in before.items())
-    migrate(path, 'head')
+    migrate(path, '20261102_0189')
     assert snapshot(path) == after
     with sqlite3.connect(path) as db:
         assert db.execute('PRAGMA integrity_check').fetchone() == ('ok',)
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
         db.execute('DROP INDEX ix_cutting_period_headers')
     damaged = snapshot(path)
-    assert 'cutting header index is missing' in migrate(path, 'head', success=False).stderr
+    assert 'cutting header index is missing' in migrate(path, '20261102_0189', success=False).stderr
     assert snapshot(path) == damaged

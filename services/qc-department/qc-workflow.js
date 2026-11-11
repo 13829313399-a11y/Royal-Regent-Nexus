@@ -476,6 +476,7 @@
   }
   async function onPage(page){
     beforePageChange(page);
+    if(page==='daily'&&root.QcDailyReport?.enabled())return;
     if(page==='review'&&root.QcInspectionSheet){await root.QcInspectionSheet.loadReview();return;}
     if(page==='records'&&root.QcInspectionSheet){await root.QcInspectionSheet.load();return;}
     if(['records','review','dashboard','analysis','daily','weekly','monthly','yearly','supplier-report'].includes(page)){
@@ -488,7 +489,7 @@
   root.QcWorkflow={navigationState:()=>({dirty:model.dirty||hasPendingFiles()||Boolean(root.QcInspectionSheet?.navigationState().dirty),busy:model.busy||Boolean(model.opening)||Boolean(root.QcInspectionSheet?.navigationState().busy)}),reviewLegacy,onPage,beforePageChange,preparePush,openSource,openTask,openNew,openRecord,openRow,openLegacy,load,selectedTasks,model,readForm,close,recordItems,recordRow,reviewRow,isLinked,exportOne,saveEntry:()=>busy(async()=>{await uploadPending();await saveDraft();})};
   root.addEventListener('beforeunload',e=>{if(model.dirty||model.busy||model.opening||hasPendingFiles()){e.preventDefault();e.returnValue='';}});
   root.document.addEventListener('DOMContentLoaded',()=>{if(root.__QC_NEXUS?.workflow){
-    for(const name of ['exportReportPDF','exportPDF','exportMonthlyReportPDF','exportYearlyReportPDF']){const original=root[name];if(typeof original==='function')root[name]=function(...args){if(!model.loaded||model.loading||model.error){toast('请先成功刷新验货任务，确保报表包含完整的已审核记录',true);return;}return original.apply(this,args);};}
+    for(const name of ['exportReportPDF','exportPDF','exportMonthlyReportPDF','exportYearlyReportPDF']){const original=root[name];if(typeof original==='function')root[name]=function(...args){if(name==='exportReportPDF'&&args[0]==='daily'&&root.QcDailyReport?.enabled())return original.apply(this,args);if(!model.loaded||model.loading||model.error){toast('请先成功刷新验货任务，确保报表包含完整的已审核记录',true);return;}return original.apply(this,args);};}
     load();
   }});
 })(window);

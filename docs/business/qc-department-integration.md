@@ -4,7 +4,7 @@
 
 原 `/modules/qc/inspection-operations` 页面已替换成 QC_department 宿主，点击 QC 部入口直接显示嵌入工作台。检验、审核、统计、PDF 和表格导出沿用独立系统；上方保留返回 QC 模块中心按钮。旧子路由继续进入这个宿主，不把旧 Nexus 记录 ID 对应到新系统记录。
 
-唯一活动源码位于日常主项目 `/Users/chris/Desktop/QC Code/Royal-Regent-Nexus/services/qc-department`。QC_test 下的主项目入口指向同一目录；原独立 QC 和旧预览副本归档保存，不再作为运行入口。原 Nexus 的 QC 表、接口和历史附件保留，没有删库，也没有把两套记录混合。
+唯一 Git 仓库及日常开发目录为 `/Users/chris/Desktop/QC_test/qc-update-20261107`，QC 源码位于其中的 `services/qc-department`，固定开发分支为 `codex/qc-development`，本地 `main` 保留为 ERP 同步基线。后续复用该目录和分支，按 AGENTS.md 中的固定发布流程执行，不再将父目录或旧副本当作 Git 仓库，也不为每次发布创建克隆或工作区。旧目录的私有运行数据保留；开发目录调整不代表数据库或运行服务已经迁移。原 Nexus 的 QC 表、接口和历史附件保留，没有删库，也没有把两套记录混合。
 
 ## 业务部代码定位
 
@@ -49,7 +49,7 @@
 
 ## 本地运行
 
-唯一主项目为 `/Users/chris/Desktop/QC Code/Royal-Regent-Nexus`。从项目运行 `npm run dev`，或双击 QC_test 中“启动华兴企业系统.command”。统一入口为 `http://127.0.0.1:5173/`，API 为 8000，私有 QC 为 3411。`npm run dev:web` 仅启动前端，供已有后端的开发场景使用。
+固定开发目录为 `/Users/chris/Desktop/QC_test/qc-update-20261107`。在该目录配置好私有环境与明确的数据库路径后运行 `npm run dev`；旧启动快捷方式需要先核对实际目标，不能据此认定新开发目录正在运行。统一入口为 `http://127.0.0.1:5173/`，API 为 8000，私有 QC 为 3411。`npm run dev:web` 仅启动前端，供已有后端的开发场景使用。
 
 `backend/.env` 保留原主系统数据库和文件存储设置，启用 `QC_DEPARTMENT_MANAGED=true`。主 API 的 lifespan 自动启动私有 QC，等待受令牌保护的就绪响应；正常退出、启动异常或父进程消失均回收自己启动的 QC。占用端口时报错，不接管或结束未知服务。直接重启原有 uvicorn 后端也会启动最新 QC，不需要独立运行 QC_department。
 

@@ -1,3 +1,4 @@
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,7 +13,12 @@ const { api, auth } = vi.hoisted(() => ({
 vi.mock('@/api/threeDPrinting', () => ({ threeDPrintingApi: api }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ activeProductionFactory: { id: 'huakang-a' } }) }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }), RouterLink: { template: '<a><slot /></a>' } }))
+let router: Router
+vi.mock('vue-router', async importOriginal => ({
+  ...await importOriginal<typeof import('vue-router')>(),
+  useRouter: () => router,
+  RouterLink: { template: '<a><slot /></a>' },
+}))
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<button>账号与头像设置</button>' } }))
 vi.mock('@/lib/http', () => ({ http: { defaults: { baseURL: '/api' } }, getApiErrorMessage: (error: Error) => error.message }))
 
@@ -38,7 +44,11 @@ const data = () => ({
 let wrapper: ReturnType<typeof mount>
 const button = (text: string) => wrapper.findAll('button').find(item => item.text() === text)!
 
-beforeEach(() => {
+beforeEach(async () => {
+  router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/printers', name: 'three-d-printing-management', component: View },
+  ] })
+  await router.push('/printers?factory=huakang-a')
   vi.clearAllMocks()
   HTMLDialogElement.prototype.showModal = vi.fn()
   HTMLDialogElement.prototype.close = vi.fn()
@@ -381,10 +391,13 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('网络检测提示')
     await button('机器状态').trigger('click')
-    expect(wrapper.text()).toContain('离线')
+    await flushPromises()
+    expect(wrapper.text()).toContain('等待状态更新')
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
     expect(button('远程暂停')).toBeUndefined()
     expect(button('恢复打印')).toBeUndefined()
     await button('每日记录').trigger('click')
+    await flushPromises()
     expect(wrapper.text()).toContain('历史产品')
     expect(api.updateRecord).not.toHaveBeenCalled()
   })
@@ -415,6 +428,7 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('仪表盘')
     await button('每日记录').trigger('click')
+    await flushPromises()
     expect(wrapper.text()).toContain('历史产品')
     await button('删除').trigger('click')
     await flushPromises()

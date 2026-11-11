@@ -68,15 +68,13 @@ export interface MonthlySettlementLine {
   source_key: string; kind: 'RECEIPT' | 'RETURN' | 'RETURN_REFUND'; document_no: string; acceptance_date: string | null;
   date_basis: string; customer_name?: string; contract_no?: string; item_no?: string; packaging_type?: string;
   paper_quality?: string; specification?: string; unit?: string; quantity: string; unit_price: string | null;
-  amount: string | null; currency: string; issues: string[];
-  supplier_original_unit_price?: string | null; supplier_original_amount?: string | null;
+  amount: string | null; currency: string; issues: string[]; price_basis?: string;
   customer_key?: string; reference?: MonthlySourceReference | null;
 }
 export type MonthlySettlementStatus = 'OPEN' | 'SUBMITTED' | 'CONFIRMED' | 'DISPUTED' | 'STALE' | 'LOCKED'
 export interface MonthlyReconciliation {
   factory_id: string; supplier_name: string; period: string; currency: string;
   totals: { inbound: string | null; returns: string | null; refunds: string | null; net: string | null;
-    verified_net?: string; pending_price_lines?: number;
     documents: number; receipt_lines: number; return_lines: number; refund_lines: number };
   customers?: { key: string; name: string; totals: MonthlyReconciliation['totals'] }[];
   packaging?: { name: string; amount: string | null }[];

@@ -116,7 +116,7 @@ onBeforeUnmount(() => {
         :to="{ path: `${CUTTING_BASE}/${workspace.path}`, query: { factory: CUTTING_FACTORY } }"
         :aria-label="workspace.title" :aria-current="route.path === `${CUTTING_BASE}/${workspace.path}` ? 'page' : undefined">
         <component :is="icons[workspace.icon]" :size="21" aria-hidden="true" />
-        <span>{{ workspace.path === 'planning' ? '生产排期' : workspace.path === 'reporting' ? '每日填数' : workspace.short }}</span>
+        <span>{{ workspace.path === 'planning' ? '生产排期' : workspace.short }}</span>
       </RouterLink>
     </nav>
     <main ref="main" id="cutting-main" class="cutting-main" tabindex="-1">

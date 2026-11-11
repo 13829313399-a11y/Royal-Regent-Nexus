@@ -2133,9 +2133,9 @@ it('shows supplier date differences in both the internal ledger and order detail
     const created = { ...orderFixture('CT-FAR-CREATED', businessDateOffset(60)), contract_no: 'FAR-CREATED', item_no: 'ITEM-SCHEDULE', customer_po: 'PO-FAR-CREATED' }
     mockReceiptWorkspace([created])
     const rows = [
-      pendingScheduleFixture('LATE-NOW', 4, { source_sheet: 'Z ITEM', customer_due_date: businessDateOffset(9) }),
-      pendingScheduleFixture('FAR-CREATED', 5, { source_sheet: 'Z ITEM', order_id: created.id, customer_due_date: businessDateOffset(70) }),
-      pendingScheduleFixture('UNKNOWN-DATE', 4, { source_sheet: 'A ITEM', customer_due_date: '', source_customer_due_date: '年底分批', date_review_required: true }),
+      pendingScheduleFixture('LATE-NOW', 4, { customer_due_date: businessDateOffset(9) }),
+      pendingScheduleFixture('FAR-CREATED', 5, { order_id: created.id, customer_due_date: businessDateOffset(70) }),
+      pendingScheduleFixture('UNKNOWN-DATE', 6, { customer_due_date: '', source_customer_due_date: '年底分批', date_review_required: true }),
       pendingScheduleFixture('PLACED-CHANGED', 7, { manual_ordered: true, customer_due_date: businessDateOffset(70), match_status: 'QUANTITY_MISMATCH' }),
       pendingScheduleFixture('LIVE-CANCELLATION', 8, { manual_ordered: true, schedule_section: 'CANCELLED', schedule_change: 'CANCELLED_AFTER_ORDER', match_status: 'REVIEW_REQUIRED' }),
       pendingScheduleFixture('OLD-CANCELLATION', 9, { order_type: '取消单', schedule_section: 'CANCELLED', schedule_change: 'NOT_TRACKED', match_status: 'REVIEW_REQUIRED', procurement_state: undefined }),
@@ -2154,14 +2154,7 @@ it('shows supplier date differences in both the internal ledger and order detail
       expect(table.text()).toContain('FAR-CREATED')
       expect(table.text()).toContain('UNKNOWN-DATE')
       expect(table.text()).toContain('PLACED-CHANGED')
-      const sort = wrapper.get<HTMLSelectElement>('[aria-label="排期日期排序"]')
-      expect(sort.element.value).toBe('SOURCE')
-      expect(table.findAll('tbody tr').map(row => row.get('td:nth-child(3) > div').text()))
-        .toEqual(['LATE-NOW', 'FAR-CREATED', 'UNKNOWN-DATE', 'PLACED-CHANGED', 'LIVE-CANCELLATION'])
-      await sort.setValue('WORK_PRIORITY')
       expect(table.findAll('tbody tr')[0]!.text()).toContain('LIVE-CANCELLATION')
-      await findButton(wrapper, '恢复默认排序').trigger('click')
-      expect(table.findAll('tbody tr')[0]!.text()).toContain('LATE-NOW')
       expect(table.text()).not.toContain('SHIPPED-0')
       expect(table.text()).not.toContain('FUTURE-0')
       expect(table.text()).not.toContain('OLD-CANCELLATION')
@@ -2172,7 +2165,6 @@ it('shows supplier date differences in both the internal ledger and order detail
       expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('共 272 条')
       await wrapper.get('[aria-label="排期下一页"]').trigger('click')
       expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('第 2 / 6 页')
-      expect(table.findAll('tbody tr')[0]!.text()).toContain('FUTURE-50')
       await wrapper.get('[aria-label="已下单 / 历史"]').trigger('click')
       expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('第 1 /')
       expect(table.text()).toContain('SHIPPED-0')
@@ -2184,53 +2176,6 @@ it('shows supplier date differences in both the internal ledger and order detail
       expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
       expect(cartonApiMock.setScheduleOrderMark).not.toHaveBeenCalled()
     } finally { wrapper.unmount(); masterGet.mockRestore() }
-  })
-
-  it('separates completed differences and handled cancellations from genuine schedule work', async () => {
-    const orders = [
-      { ...orderFixture('CT-HISTORY-DATE', '2026-11-09', 'COMPLETED'), contract_no: 'HISTORY-DATE' },
-      { ...orderFixture('CT-HANDLED', '2026-11-09', 'PENDING_SUPPLIER'), contract_no: 'HANDLED' },
-      { ...orderFixture('CT-OPEN-CANCEL', '2026-11-09', 'PENDING_SUPPLIER'), contract_no: 'OPEN-CANCEL' },
-    ].map(order => ({ ...order, item_no: 'ITEM-SCHEDULE', customer_po: `PO-${order.contract_no}` }))
-    mockReceiptWorkspace(orders)
-    const batch = mockWeeklySchedule([
-      pendingScheduleFixture('HISTORY-DATE', 4, { customer_due_date: '2026-11-16', match_status: 'DATE_MISMATCH', schedule_change: 'UNCHANGED' }),
-      pendingScheduleFixture('HANDLED', 5, { schedule_section: 'CANCELLED', schedule_change: 'CANCELLED_AFTER_ORDER', match_status: 'REVIEW_REQUIRED' }),
-      pendingScheduleFixture('OPEN-CANCEL', 6, { schedule_section: 'CANCELLED', schedule_change: 'CANCELLED_AFTER_ORDER', match_status: 'REVIEW_REQUIRED' }),
-      pendingScheduleFixture('SAMPLE-ONLY', 7, { order_type: '样板单', schedule_change: 'NOT_TRACKED', match_status: 'REVIEW_REQUIRED' }),
-    ])
-    const handled = { id: 'EX-HANDLED', exception_no: 'EX-HANDLED', factory_id: 'huaxing', source_type: 'WEEKLY_SCHEDULE',
-      source_id: batch.id, category: 'SCHEDULE_CANCELLED_AFTER_ORDER', severity: 'HIGH', customer_code: 'DICKIE',
-      customer_name: 'Dickie', contract_no: 'HANDLED', item_no: 'ITEM-SCHEDULE', title: '核实退单',
-      description: '已核实\n来源：ITEM表 · 第 5 行 · SO：PO-HANDLED', status: 'RESOLVED' }
-    cartonApiMock.listExceptions.mockResolvedValue([handled, { ...handled, id: 'OLD-EX', source_id: 'OLDER-BATCH',
-      contract_no: 'OPEN-CANCEL', description: '已核实\n来源：ITEM表 · 第 6 行 · SO：PO-OPEN-CANCEL' }])
-    const wrapper = mountView('weekly-check')
-    try {
-      await flushPromises()
-      const table = wrapper.get('[aria-label="业务排期明细"]')
-      expect(table.findAll('tbody tr')).toHaveLength(1)
-      expect(table.text()).toContain('OPEN-CANCEL')
-      expect(table.text()).toContain('核实退单')
-      expect(table.text()).not.toContain('HISTORY-DATE')
-      expect(table.text()).not.toContain('HANDLED')
-      expect(table.text()).not.toContain('SAMPLE-ONLY')
-
-      await wrapper.get('[aria-label="已下单 / 历史"]').trigger('click')
-      expect(table.text()).toContain('HANDLED')
-      await wrapper.get('[aria-label="排期下单状态筛选"]').setValue('COMPLETED')
-      expect(table.findAll('tbody tr')).toHaveLength(1)
-      expect(table.text()).toContain('原表分区')
-      expect(table.text()).toContain('纸箱采购状态')
-      expect(table.text()).toContain('历史交期差异')
-      expect(table.text()).toContain('已完单')
-      expect(table.get('[data-schedule-action="HISTORY-DATE ITEM-SCHEDULE"]').text()).toBe('查看订单')
-      await wrapper.get('[aria-label="顶部搜索"]').setValue('CT-HISTORY-DATE')
-      expect(table.text()).toContain('HISTORY-DATE')
-      expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
-    } finally {
-      wrapper.unmount()
-    }
   })
 
   it.each([
@@ -3595,6 +3540,21 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     wrapper.unmount()
   })
 
+  it('groups cartons by packaging type and the original purchase unit', async () => {
+    const order = orderFixture('CT-ORIGINAL-UNIT', businessDateOffset(5))
+    order.lines.push({ ...order.lines[0]!, id: 'LINE-BOX-UNIT', line_no: 2, unit: '箱', required_quantity: '5', remaining_quantity: '5' })
+    mockReceiptWorkspace([order])
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      const papers = wrapper.get('[aria-label="CT-ORIGINAL-UNIT 纸品明细"]')
+      expect(papers.text()).toContain('外箱 100个')
+      expect(papers.text()).toContain('外箱 5箱')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('groups multiple paper items under one contract and keeps paper quality separate from specification', async () => {
     cartonApiMock.listCustomers.mockResolvedValue([{ customer_code: 'DICKIE', customer_name: 'Dickie', factory_id: 'huaxing', status: 'ACTIVE' }])
     const wrapper = mountView('orders')
@@ -3615,8 +3575,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.get('[aria-label="订单批量选择"]').text()).not.toContain('产品数量')
     const materialSummary = firstOrder.get('[aria-label="CT-260805-006 纸品明细"]')
     expect(materialSummary.text()).toContain('纸品合计 7,350 件')
-    expect(materialSummary.text()).toContain('外箱 30箱')
-    expect(materialSummary.text()).toContain('内箱 120箱')
+    expect(materialSummary.text()).toContain('外箱 30个')
+    expect(materialSummary.text()).toContain('内箱 120个')
     expect(materialSummary.text()).toContain('滑板纸 3,600张')
     expect(materialSummary.text()).toContain('卡纸 3,600张')
     const arrivalProgress = firstOrder.get('[aria-label="CT-260805-006 到货进度"]')
@@ -4391,8 +4351,6 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await group.findAll('button').find(button => button.text() === 'BUZZ')!.trigger('click'); await flushPromises()
     expect(wrapper.get('[aria-label="排期订单类型筛选"]').findAll('button').find(button => button.text() === '全部类型')!.attributes('aria-pressed')).toBe('true')
     expect(wrapper.get('[aria-label="排期订单类型筛选"]').text()).toContain('备料单')
-    expect(wrapper.get('table').text()).not.toContain('SC-BUZZ')
-    await wrapper.get('[aria-label="全部排期"]').trigger('click')
     expect(wrapper.get('table').text()).toContain('SC-BUZZ')
     expect(wrapper.get('table').text()).not.toContain('SC-CUSTOMER-LATEST')
     expect(group.text()).not.toContain('WMU')
@@ -4473,8 +4431,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await findButton(wrapper, '清空排期筛选').trigger('click')
     expect(wrapper.get<HTMLSelectElement>('[aria-label="排期日期排序"]').element.value).toBe('DATE_DESC')
     await findButton(wrapper, '恢复默认排序').trigger('click')
-    expect(wrapper.get<HTMLSelectElement>('[aria-label="排期日期排序"]').element.value).toBe('SOURCE')
-    expect(contracts()[0]).toBe('SC-NEW')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="排期日期排序"]').element.value).toBe('WORK_PRIORITY')
+    expect(contracts()[0]).toBe('SC-CANCELLED')
     expect(contracts()).toHaveLength(rows.length)
     await wrapper.get('[aria-label="排期日期排序"]').setValue('SOURCE')
     await wrapper.get('[aria-label="排期日期字段"]').setValue('INSPECTION')
@@ -4528,9 +4486,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(group.findAll('button').map(button => button.text())).toContain('样板单')
     await findButton(wrapper, '清空排期筛选').trigger('click')
     expect(wrapper.get<HTMLSelectElement>('[aria-label="排期日期排序"]').element.value).toBe('SOURCE')
-    await wrapper.get('[aria-label="排期日期排序"]').setValue('WORK_PRIORITY')
     await findButton(wrapper, '恢复默认排序').trigger('click')
-    expect(wrapper.get<HTMLSelectElement>('[aria-label="排期日期排序"]').element.value).toBe('SOURCE')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="排期日期排序"]').element.value).toBe('WORK_PRIORITY')
     expect(contracts()).toHaveLength(rows.length)
     await wrapper.get('[aria-label="排期日期排序"]').setValue('SOURCE')
     expect(contracts()).toEqual(rows.map(row => row.contract_no))
@@ -4876,71 +4833,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       status === 'MISSING' ? '暂无已确认箱唛' : status === 'REVIEW' ? '关联待核' : '读取失败')
     expect(wrapper.get('[data-schedule-action="SC-MARK-HINT ITEM-SCHEDULE"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[aria-label="排期箱唛提示"]').text()).toContain('没有已确认箱唛也可下单')
-    if (status === 'ERROR') {
-      await wrapper.get('[aria-label="排期下单状态筛选"]').setValue('WITH_MARKS')
-      expect(wrapper.get('[aria-label="排期筛选"]').text()).toContain('箱唛资料暂不可用')
-      expect(wrapper.find('[aria-label="排期分页"]').exists()).toBe(false)
-      expect(wrapper.get('[aria-label="全部排期"]').text()).toContain('—')
-    }
     wrapper.unmount()
-  })
-
-  it('filters the whole schedule for readable carton marks before paginating in workbook order', async () => {
-    mockReceiptWorkspace([])
-    const marked = Array.from({ length: 52 }, (_, index) =>
-      pendingScheduleFixture(`WITH-MARK-${index}`, index + 4, { source_sheet: '第二ITEM表' }))
-    mockWeeklySchedule([
-      pendingScheduleFixture('MARK-MISSING', 4),
-      pendingScheduleFixture('MARK-REVIEW', 5),
-      pendingScheduleFixture('MARK-RESTRICTED', 6),
-      ...marked,
-    ])
-    let finishRead!: () => void
-    scheduleMarksApiMock.get.mockImplementation((factory_id: string, batch_id: string) => new Promise(resolve => {
-      finishRead = () => resolve({ factory_id, batch_id, source_policy: 'ASSET_V1',
-        rows: [
-          ...(['MISSING', 'REVIEW', 'RESTRICTED'] as const).map((status, index) => ({
-            source_sheet: 'ITEM表', source_row: index + 4, status, asset_ids: [],
-          })),
-          ...marked.map((row, index) => ({
-            source_sheet: row.source_sheet, source_row: row.source_row, status: 'UPLOADED',
-            asset_ids: [`ASSET-${index}`], status_label: index === 0 ? '有资料 · 待处理' : index === 1 ? '有资料 · 待确认' : '有资料 · 已确认',
-          })),
-        ], assets: [] })
-    }))
-    const wrapper = mountView('weekly-check')
-    try {
-      await flushPromises()
-      await wrapper.get('[aria-label="全部排期"]').trigger('click')
-      await wrapper.get('[aria-label="排期下一页"]').trigger('click')
-      expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('第 2 / 2 页')
-      const filter = wrapper.get<HTMLSelectElement>('[aria-label="排期下单状态筛选"]')
-      expect(filter.get('option[value="WITH_MARKS"]').text()).toBe('有箱唛资料')
-      await filter.setValue('WITH_MARKS')
-      expect(wrapper.get('[aria-label="排期筛选"]').text()).toContain('正在读取箱唛资料')
-      expect(wrapper.find('[aria-label="排期分页"]').exists()).toBe(false)
-
-      finishRead(); await flushPromises()
-      const table = wrapper.get('[aria-label="业务排期明细"]')
-      expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('共 52 条 · 第 1 / 2 页')
-      expect(wrapper.get('[aria-label="全部排期"]').text()).toContain('52')
-      expect(table.findAll('tbody tr')).toHaveLength(50)
-      expect(table.text()).toContain('有资料 · 待处理')
-      expect(table.text()).toContain('有资料 · 待确认')
-      for (const contract of ['MARK-MISSING', 'MARK-REVIEW', 'MARK-RESTRICTED']) {
-        expect(table.text()).not.toContain(contract)
-      }
-      await wrapper.get('[aria-label="排期下一页"]').trigger('click')
-      expect(table.findAll('tbody tr').map(row => row.get('td:nth-child(3) > div').text()))
-        .toEqual(['WITH-MARK-50', 'WITH-MARK-51'])
-      expect(scheduleMarksApiMock.get).toHaveBeenCalledTimes(1)
-
-      await findButton(wrapper, '清空排期筛选').trigger('click')
-      expect(filter.element.value).toBe('ALL')
-      expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('共 55 条 · 第 1 / 2 页')
-    } finally {
-      wrapper.unmount()
-    }
   })
 
   it('opens uploaded pre-order carton marks as exact read-only originals', async () => {
@@ -4950,7 +4843,6 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       rows: [{ source_sheet: 'ITEM表', source_row: 4, status: 'UPLOADED', asset_ids: ['FILE-1'] }],
       assets: [{ id: 'FILE-1', file_name: '箱唛原件.pdf', usage_status: 'READY' }] }))
     const wrapper = mountView('weekly-check'); await flushPromises()
-    await wrapper.get('[aria-label="排期下单状态筛选"]').setValue('WITH_MARKS')
     expect(wrapper.get('[aria-label="查看排期箱唛 SC-MARK-HINT ITEM-SCHEDULE"]').text()).toContain('已确认（1）')
     await wrapper.get('[aria-label="查看排期箱唛 SC-MARK-HINT ITEM-SCHEDULE"]').trigger('click'); await flushPromises()
     expect(wrapper.findComponent({ name: 'CartonMarkAssetLibrary' }).props()).toMatchObject({ factoryId: 'huaxing', assetIds: ['FILE-1'], readOnly: true })
@@ -4964,7 +4856,6 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     authStoreMock.can.mockImplementation((permission: string) => permission !== 'carton_mark:read')
     const wrapper = mountView('weekly-check'); await flushPromises()
     expect(scheduleMarksApiMock.get).not.toHaveBeenCalled()
-    expect(wrapper.find('option[value="WITH_MARKS"]').exists()).toBe(false)
     expect(wrapper.get('[aria-label="排期箱唛状态 SC-MARK-HINT ITEM-SCHEDULE"]').text()).toContain('无查看权限')
     expect(wrapper.get('[data-schedule-action="SC-MARK-HINT ITEM-SCHEDULE"]').attributes('disabled')).toBeUndefined()
     wrapper.unmount()

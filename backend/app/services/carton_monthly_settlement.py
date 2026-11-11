@@ -4,10 +4,10 @@ import json
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import select
 
+from app import db as database
 from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement, CartonReceiptLine
-from app.models.carton_price_review import CartonPriceReview
 from app.models.carton_special_requests import SpecialShipment, UnifiedDelivery
 from app.models.carton_supplier_portal import SupplierShipment
 from app.services import carton_procurement as core
@@ -123,21 +123,12 @@ def _totals(rows):
     returns = [row for row in rows if row["kind"] == "RETURN"]
     refunds = [row for row in rows if row["kind"] == "RETURN_REFUND"]
     inbound, return_amount, refund_amount = _sum(receipts), _sum(returns), _sum(refunds)
-    verified_net = Decimal(0)
-    pending_price_lines = 0
-    for row in rows:
-        amount = _amount(row)
-        if amount is None:
-            pending_price_lines += 1
-        else:
-            verified_net += -amount if row["kind"] == "RETURN" else amount
-    verified_net_text = str(money(verified_net))
+    net = None if inbound is None or return_amount is None else money(inbound - return_amount + (refund_amount or Decimal(0)))
     return {
         "inbound": None if inbound is None else str(inbound),
         "returns": None if return_amount is None else str(return_amount),
         "refunds": None if refund_amount is None else str(refund_amount),
-        "net": None if pending_price_lines else verified_net_text,
-        "verified_net": verified_net_text, "pending_price_lines": pending_price_lines,
+        "net": None if net is None else str(net),
         "documents": len({row["document_no"] for row in receipts if row.get("document_no")}),
         "receipt_lines": len(receipts), "return_lines": len(returns), "refund_lines": len(refunds),
     }
@@ -214,8 +205,7 @@ def _reconciliation_details(db, factory, supplier_id, rows):
 
 def supplier_line(row):
     keys = ("source_key", "kind", "document_no", "acceptance_date", "date_basis", "customer_key", "customer_name", "contract_no",
-            "item_no", "packaging_type", "paper_quality", "specification", "unit", "quantity", "unit_price", "amount", "currency",
-            "supplier_original_unit_price", "supplier_original_amount")
+            "item_no", "packaging_type", "paper_quality", "specification", "unit", "quantity", "unit_price", "amount", "currency")
     safe = {key: row.get(key) for key in keys}
     safe["issues"] = []
     if row["kind"] == "RECEIPT":
@@ -232,32 +222,33 @@ def supplier_line(row):
             safe["issues"].append("退货贷项金额待核实")
     elif row["issues"]:
         safe["issues"].append("退款与原退货的关联待核实")
+    if row.get("price_basis") == "SUPPLIER_ORIGINAL":
+        safe["price_basis"] = "SUPPLIER_ORIGINAL"
     safe["reference"] = row.get("supplier_reference")
     return safe
 
 
 def workspace(db, factory: str, period: str, currency: str) -> dict:
-    """Read the authorized month in one snapshot after request authentication."""
-    # Release the authentication transaction before configuring the snapshot.
-    db.rollback()
-    try:
-        dialect = db.get_bind().dialect.name
-        if dialect == "postgresql":
-            db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
-            db.execute(text("SET TRANSACTION READ ONLY"))
-        elif dialect == "sqlite":
-            connection = db.connection()
-            if not connection.connection.driver_connection.in_transaction:
-                connection.exec_driver_sql("BEGIN")
-        else:
-            raise RuntimeError("Carton monthly reconciliation requires PostgreSQL or SQLite")
-        return _workspace(db, factory, period, currency)
-    finally:
-        db.rollback()
-
-
-def _workspace(db, factory: str, period: str, currency: str) -> dict:
     factory = core.require_carton_factory(factory)
+    core._lock_receipt_factory(db, factory)
+    return _build_workspace(db, factory, period, currency)
+
+
+def read_workspace(factory: str, period: str, currency: str) -> dict:
+    """Read reconciliation in one transaction-scoped snapshot."""
+    factory = core.require_carton_factory(factory)
+    with database.SessionLocal() as snapshot:
+        connection = snapshot.connection()
+        if connection.dialect.name == "postgresql":
+            connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        elif connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("BEGIN")
+        else:
+            raise RuntimeError("Monthly reconciliation snapshots require PostgreSQL or SQLite")
+        return _build_workspace(snapshot, factory, period, currency)
+
+
+def _build_workspace(db, factory: str, period: str, currency: str) -> dict:
     supplier = portal.fixed_supplier(db, factory)
     try:
         core._period_bounds(period)
@@ -265,7 +256,7 @@ def _workspace(db, factory: str, period: str, currency: str) -> dict:
         raise HTTPException(422, "账期月份无效")
     currency = core.normalize_currency(currency)
     rows, fingerprint, issues, undated = legacy.sources(db, factory, supplier.id, period, currency)
-    _attach_supplier_original_prices(db, factory, supplier.id, rows)
+    adopt_supplier_original_prices(db, factory, rows)
     totals = _totals(rows)
     customers = _reconciliation_details(db, factory, supplier.id, rows)
     receipt_groups = defaultdict(list)
@@ -303,23 +294,28 @@ def _workspace(db, factory: str, period: str, currency: str) -> dict:
     }
 
 
-def _attach_supplier_original_prices(db, factory: str, supplier_id: str, rows) -> None:
-    pending = {row["source_key"].removeprefix("RECEIPT:"): row for row in rows
-               if row["kind"] == "RECEIPT" and row["amount"] is None}
-    if not pending:
-        return
-    original_prices = db.execute(select(CartonPriceReview.receipt_line_id, CartonPriceReview.original_unit_price).where(
-        CartonPriceReview.factory_id == factory, CartonPriceReview.supplier_id == supplier_id,
-        CartonPriceReview.receipt_line_id.in_(pending), CartonPriceReview.original_unit_price > 0))
-    for line_id, price in original_prices:
-        row = pending[line_id]
-        row["supplier_original_unit_price"] = str(price)
-        row["supplier_original_amount"] = str(legacy.money(Decimal(str(row["quantity"])) * price))
+def adopt_supplier_original_prices(db, factory: str, rows) -> None:
+    """A supplier's own delivery-note price settles the line; no manual correction queue.
 
-
-def _locked_workspace(db, factory: str, period: str, currency: str) -> dict:
-    core._lock_receipt_factory(db, factory)
-    return _workspace(db, factory, period, currency)
+    When the receipt price is unresolved (zero/blank pending review) but the
+    supplier note recorded a positive price at receipt time, use that supplier price.
+    Confirmed free prices are already projected by the canonical source builder.
+    """
+    from app.models.carton_price_review import CartonPriceReview
+    reviews = {row.receipt_line_id: row for row in db.scalars(
+        select(CartonPriceReview).where(CartonPriceReview.factory_id == factory))}
+    for row in rows:
+        if row["kind"] != "RECEIPT" or row["amount"] is not None:
+            continue
+        review = reviews.get(row["source_key"].removeprefix("RECEIPT:"))
+        if review is None or review.original_unit_price is None or review.original_unit_price <= 0:
+            continue
+        price = Decimal(str(review.original_unit_price))
+        row["unit_price"] = str(price)
+        row["amount"] = str(money(Decimal(str(row["quantity"])) * price))
+        row["price_basis"] = "SUPPLIER_ORIGINAL"
+        row["issues"] = [issue for issue in row["issues"]
+                         if issue not in {"入库单价待核实", "送货价格待双方核实，不能完成月结确认"}]
 
 
 def _permissions(db, user, factory: str) -> None:
@@ -335,7 +331,7 @@ def submit(db, user, payload) -> dict:
     supplier = core.get_active_supplier(db, factory, None)
     currency = core.normalize_currency(payload.currency)
     identifier = entity_id(supplier.id, payload.period, currency)
-    current = _locked_workspace(db, factory, payload.period, currency)
+    current = workspace(db, factory, payload.period, currency)
     status = current["status"]
     if status == "LOCKED":
         raise HTTPException(409, "本月已锁定；如需重新核对请先解锁")
@@ -359,7 +355,7 @@ def lock(db, user, payload) -> dict:
     supplier = core.get_active_supplier(db, factory, None)
     currency = core.normalize_currency(payload.currency)
     identifier = entity_id(supplier.id, payload.period, currency)
-    current = _locked_workspace(db, factory, payload.period, currency)
+    current = workspace(db, factory, payload.period, currency)
     status = current["status"]
     if status == "LOCKED":
         raise HTTPException(409, "本月已锁定；如需修改请先解锁")
@@ -385,7 +381,7 @@ def unlock(db, user, payload) -> dict:
     supplier = core.get_active_supplier(db, factory, None)
     currency = core.normalize_currency(payload.currency)
     identifier = entity_id(supplier.id, payload.period, currency)
-    current = _locked_workspace(db, factory, payload.period, currency)
+    current = workspace(db, factory, payload.period, currency)
     if current["status"] != "LOCKED":
         raise HTTPException(409, "本月尚未锁定，无需解锁")
     reason = (payload.reason or "").strip()
@@ -410,7 +406,7 @@ def supplier_confirm(db, user, payload) -> dict:
     supplier = core.get_active_supplier(db, factory, None)
     currency = core.normalize_currency(payload.currency)
     identifier = entity_id(supplier.id, payload.period, currency)
-    current = _locked_workspace(db, factory, payload.period, currency)
+    current = workspace(db, factory, payload.period, currency)
     if current["status"] == "CONFIRMED" and not current["stale"]:
         return current
     if current["status"] == "LOCKED":
@@ -432,7 +428,7 @@ def supplier_dispute(db, user, payload) -> dict:
     supplier = core.get_active_supplier(db, factory, None)
     currency = core.normalize_currency(payload.currency)
     identifier = entity_id(supplier.id, payload.period, currency)
-    current = _locked_workspace(db, factory, payload.period, currency)
+    current = workspace(db, factory, payload.period, currency)
     if current["status"] == "LOCKED":
         raise HTTPException(409, "本月已被本厂锁定，不能再提出异议")
     if current["status"] not in {"SUBMITTED", "CONFIRMED"}:

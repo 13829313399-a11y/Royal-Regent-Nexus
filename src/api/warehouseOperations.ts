@@ -33,7 +33,9 @@ export interface WarehouseDocument {
   read_only?: boolean
   closed?: boolean; close_reason?: string; cutting_received_quantity?: string
   issued_quantity?: string; returned_quantity?: string; received_quantity?: string; consumed_quantity?: string
+  cutting_return_limit?: CuttingReturnLimit
 }
+export interface CuttingReturnLimit { day: string; quantity: string; reason: string }
 export interface WarehouseOperationsWorkspace {
   issue_groups?: FabricIssueGroup[]
   revision: number; stock: WarehouseBatch[]; documents: WarehouseDocument[]
@@ -102,8 +104,11 @@ export const warehouseOperationsApi = {
   async exportMonthly(query: FabricMonthlyQuery, version: string) { return (await http.get<Blob>('/warehouse-operations/fabric/monthly/export', { params: { factory_id: 'huakang-c', ...query, version }, responseType: 'blob' })).data },
   async saveLocation(input: { factory_id: 'huakang-c'; request_id: string; id: string; expected_revision: number; warehouse: string; code: string; status: 'ACTIVE' | 'INACTIVE' }) { return (await http.post<WarehouseLocation>('/warehouse-operations/semi/locations', input)).data },
   async bulkIssue(warehouse: WarehouseDomain, input: WarehouseBulkIssue) { return (await http.post(`/warehouse-operations/${warehouse}/issues/bulk`, input)).data },
-  async workspace(warehouse: WarehouseDomain) {
-    return (await http.get<WarehouseOperationsWorkspace>(`/warehouse-operations/${warehouse}`, { params: { factory_id: 'huakang-c' } })).data
+  async workspace(warehouse: WarehouseDomain, includeCuttingReturns = false) {
+    return (await http.get<WarehouseOperationsWorkspace>(`/warehouse-operations/${warehouse}`, { params: { factory_id: 'huakang-c', include_cutting_returns: includeCuttingReturns || undefined } })).data
+  },
+  async cuttingReturnLimit(issueId: string, day: string) {
+    return (await http.get<CuttingReturnLimit>('/warehouse-operations/fabric/return-limit', { params: { factory_id: 'huakang-c', issue_id: issueId, day } })).data
   },
   async post(warehouse: WarehouseDomain, input: WarehouseDocumentInput) {
     return (await http.post<WarehouseDocument>(`/warehouse-operations/${warehouse}/documents`, input)).data

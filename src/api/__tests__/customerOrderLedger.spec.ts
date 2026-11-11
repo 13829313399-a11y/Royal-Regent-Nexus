@@ -41,7 +41,7 @@ describe('customer order ledger api', () => {
 
     const result = await api.importConfirmed('buzzbee', payload)
 
-    expect(post).toHaveBeenCalledWith('/customer-order-ledger/imports/buzzbee', payload, expect.objectContaining({ headers: { 'Content-Type': 'multipart/form-data' } }))
+    expect(post).toHaveBeenCalledWith('/customer-order-ledger/imports/buzzbee', payload, expect.objectContaining({ headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300_000 }))
     expect(result.reconciled_count).toBe(1)
     expect(customerOrderLedgerSourceUrl('source 1', 'huaxing')).toContain('/customer-order-ledger/sources/source%201?factory_id=huaxing')
   })

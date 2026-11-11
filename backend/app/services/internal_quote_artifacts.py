@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.models.internal_quote import (
     InternalQuote,
@@ -1041,6 +1041,7 @@ def confirm_import_batch(
             if image is not None:
                 db.delete(image)
     if quote.module_version == "v4":
+        _invalidate_final_release(db, quote, reason="报价附件或导入资料已修改")
         quote.header_revision += 1
     section.status = "draft"
     section.revision += 1
@@ -1217,6 +1218,7 @@ def upload_attachment(
         request=request,
     )
     if quote.module_version == "v4":
+        _invalidate_final_release(db, quote, reason="报价附件或导入资料已修改")
         quote.header_revision += 1
         quote.updated_at = now_text()
     db.commit()
@@ -1295,6 +1297,7 @@ def upload_product_image(
         request=request,
     )
     if quote.module_version == "v4":
+        _invalidate_final_release(db, quote, reason="报价附件或导入资料已修改")
         quote.header_revision += 1
         quote.updated_at = now_text()
     db.commit()
@@ -1374,7 +1377,7 @@ def list_attachments(
     ensure_quote_read(db, user, quote.factory_id)
     if department:
         _ensure_attachment_access(user, quote, department)
-    statement = select(InternalQuoteAttachment).where(InternalQuoteAttachment.quote_id == quote.id)
+    statement = select(InternalQuoteAttachment).options(defer(InternalQuoteAttachment.content)).where(InternalQuoteAttachment.quote_id == quote.id)
     if department:
         statement = statement.where(InternalQuoteAttachment.department == department)
     statement = statement.order_by(InternalQuoteAttachment.uploaded_at.desc(), InternalQuoteAttachment.id.desc())
@@ -1473,6 +1476,7 @@ def delete_import_attachment(
         )
     section.payload_json = canonical_json(cleared_payload)
     if quote.module_version == "v4":
+        _invalidate_final_release(db, quote, reason="报价附件或导入资料已修改")
         quote.header_revision += 1
     section.status = "draft"
     section.revision += 1
@@ -1581,6 +1585,7 @@ def delete_supporting_attachment(
                request=request)
     db.delete(attachment)
     if quote.module_version == "v4":
+        _invalidate_final_release(db, quote, reason="报价附件或导入资料已修改")
         quote.header_revision += 1
         quote.updated_at = now_text()
     db.commit()
@@ -1827,7 +1832,7 @@ def _supersede_outdated_exports(
 ) -> None:
     current_revisions = {section.department: section.revision for section in sections}
     records = db.scalars(
-        select(InternalQuoteExportFile).where(
+        select(InternalQuoteExportFile).options(defer(InternalQuoteExportFile.content)).where(
             InternalQuoteExportFile.quote_id == quote.id,
             InternalQuoteExportFile.status == "current",
         )
@@ -1871,17 +1876,19 @@ def _export_sections(db: Session, quote: InternalQuote) -> list[InternalQuoteSec
 
 def _ensure_export_sections_ready(
     sections: list[InternalQuoteSection],
+    *, editable_output: bool = False,
 ) -> None:
     required = [section for section in sections if section.is_required]
     incomplete = [
         section.department
         for section in required
-        if section.status not in {"approved", "sealed", "not_applicable"}
+        if section.status not in ({"draft", "rejected"} if editable_output else {"approved", "sealed", "not_applicable"})
+        or (editable_output and (not section.filled_at or not _json_object(section.payload_json)))
     ]
     invalid = [
         section.department
         for section in required
-        if section.status in {"approved", "sealed"}
+        if (editable_output or section.status in {"approved", "sealed"})
         and (
             section.calculation_status != "valid"
             or section.dependency_status != "current"
@@ -1998,25 +2005,35 @@ def create_controlled_export(
     quote_id: str,
     user: AuthContext,
     request: Request | None = None,
-    *, commit: bool = True,
+    *, commit: bool = True, prepared_direct_output: bool = False,
 ) -> InternalQuoteExportFileOut:
     quote = _get_quote(db, quote_id)
     _ensure_export_permission(db, quote, user)
-    direct = quote.module_version == "v4" and quote.final_release_status == "issued"
+    if quote.module_version == "v4" and quote.final_release_status == "output" and not prepared_direct_output:
+        from types import SimpleNamespace
+        from app.services.internal_quote_alternatives import issue_alternative
+        # The old download action must not generate a different layout/content
+        # under an existing output's release revision and customer handoff.
+        return issue_alternative(db, quote_id, SimpleNamespace(revision=quote.header_revision),
+                                 user, request, commit=commit)
+    direct = quote.module_version == "v4" and quote.final_release_status in {"issued", "output"}
     if quote.module_version == "v4" and not direct:
-        raise HTTPException(409, "请使用直接输出，先冻结本方案版本")
-    if direct:
-        existing = db.scalar(select(InternalQuoteExportFile).where(
+        raise HTTPException(409, "请使用直接输出生成当前报价")
+    if direct and quote.final_release_status == "issued":
+        existing_records = db.scalars(select(InternalQuoteExportFile).where(
             InternalQuoteExportFile.quote_id == quote.id,
             InternalQuoteExportFile.release_stage == "p4_direct_issued",
-        ).order_by(InternalQuoteExportFile.exported_at, InternalQuoteExportFile.id))
-        if existing is not None:
-            return _export_out(existing)
+        ).order_by(InternalQuoteExportFile.exported_at.desc(), InternalQuoteExportFile.id.desc()))
+        for existing in existing_records:
+            if _json_object(existing.export_manifest_json).get("final_release_revision") == quote.final_release_revision:
+                return _export_out(existing)
+        if not prepared_direct_output:
+            raise HTTPException(409, "冻结版本缺少对应原输出文件，请核查历史文件，不能重新生成历史报价")
     _ensure_active(quote)
     sections = _export_sections(db, quote)
     ensure_molding_projection_current(db, quote, sections)
     ensure_quote_formula_current(quote, sections)
-    _ensure_export_sections_ready(sections)
+    _ensure_export_sections_ready(sections, editable_output=direct and quote.final_release_status == "output")
     ensure_current_molding_pricing(db, quote, sections)
     attachments = db.scalars(
         select(InternalQuoteAttachment)
@@ -2039,7 +2056,7 @@ def create_controlled_export(
             .where(
                 InternalQuoteExportFile.quote_id == quote.id,
                 InternalQuoteExportFile.status == "current",
-                InternalQuoteExportFile.release_stage == "p4_final_approved",
+                InternalQuoteExportFile.release_stage == ("p4_direct_issued" if direct else "p4_final_approved"),
             )
             .order_by(
                 InternalQuoteExportFile.exported_at.desc(),
@@ -2087,6 +2104,7 @@ def create_controlled_export(
             section.department: section.calculation_hash for section in sections
         },
         "release_stage": release_stage,
+        "source_frozen": quote.final_release_status == "issued" if direct else is_final_release,
         "issued_by_name": str(_json_object(quote.final_submission_manifest_json).get("issued_by_name", "")) if direct else "",
         "issued_at": str(_json_object(quote.final_submission_manifest_json).get("issued_at", "")) if direct else "",
         "p4_final_release_required": not is_final_release,
@@ -2211,7 +2229,7 @@ def create_controlled_export(
         existing_handoff.artifact_manifest_json = canonical_json(
             _handoff_manifest(quote, record)
         )
-    if is_final_release:
+    if is_final_release and not (direct and quote.final_release_status == "output"):
         quote.status = "exported"
         quote.updated_at = now_text()
     _add_audit(
@@ -2330,7 +2348,7 @@ def list_export_files(
         _supersede_outdated_exports(db, quote, sections)
         db.commit()
     records = db.scalars(
-        select(InternalQuoteExportFile)
+        select(InternalQuoteExportFile).options(defer(InternalQuoteExportFile.content))
         .where(InternalQuoteExportFile.quote_id == quote.id)
         .order_by(InternalQuoteExportFile.exported_at.desc(), InternalQuoteExportFile.id.desc())
     ).all()

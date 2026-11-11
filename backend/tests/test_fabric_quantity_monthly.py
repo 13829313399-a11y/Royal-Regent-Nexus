@@ -144,7 +144,7 @@ def test_search_unit_and_date_filters_aggregate_and_export_the_same_signed_evide
     original = post(client, payload(client, 'RECEIPT', quantity='0.100001', source_no='DN-0007', counterparty='供方甲'))
     post(client, payload(client, 'CORRECTION', original_id=original['id'], business_date='2026-07-20'))
     post(client, payload(client, 'RECEIPT', quantity='2', source_no='DN-0007', counterparty='供方甲',
-                         item_code='PCS-1', unit='Pcs', material_category='ACCESSORY'))
+                         item_code='PCS-1', unit='Pcs', material_category='ACCESSORY', location='辅料位'))
     post(client, payload(client, 'RECEIPT', quantity='100', source_no='DN-OTHER', counterparty='供方乙'))
     before = workspace(client)
     filters = dict(search=' dn-0007 ', unit='码', date_order='DESC')

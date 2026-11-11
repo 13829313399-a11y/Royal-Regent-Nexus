@@ -12,6 +12,22 @@ function changedSource(kind: 'header' | 'cost') {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 describe('Silverlit bounded AI choices', () => {
+  it('suggests only bounded missing-price handling and applies zero only after human confirmation', () => {
+    const sheets = parseXlsxWorkbook(draftSource(false)).sheets
+    Object.assign(sheets[0]!.rows[17]!, { 1: '包装', 2: '白咭由彩托搭', 3: null, 4: 0 })
+    const bytes = createXlsxWorkbook(sheets)
+    const draft = createYinhuiDraft(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '银辉81209.xlsx')
+    const task = buildYinhuiRecognitionTasks(draft).tasks.find(t => t.kind === 'missing_amount')!
+    expect(task.source).toEqual({ sheet: '明细', cell: 'C18', text: '白咭由彩托搭' })
+    expect(task.choices.map(c => c.id)).toEqual(['pending', 'included'])
+    expect(draft.result.quoteData.packagingRows[0]?.pricePending).toBe(true)
+    expect(applyYinhuiRecognition(draft, task, { task_id: task.id, choice_id: 'pending', reason: '待用户核对' })).toBe(draft)
+    const next = applyYinhuiRecognition(draft, task, { task_id: task.id, choice_id: 'included', reason: '原文注明由彩托搭' })
+    expect(next.overrides).toEqual([{ sheet: '明细', cell: 'D18', value: 0 }])
+    expect(next.result.quoteData.packagingRows[0]).toMatchObject({ amountHkd: 0, sourceAmountWasBlank: true })
+    expect(next.result.quoteData.packagingRows[0]?.pricePending).toBeUndefined()
+    expect(() => applyYinhuiRecognition(next, task, { task_id: task.id, choice_id: 'included', reason: '迟到建议' })).toThrow(/草稿已变化/)
+  })
   it.each(['内部明细', '內部明細', '明细（开窗盒）'])('uses the authoritative main sheet for %s', name => {
     const sheets = parseXlsxWorkbook(draftSource(false)).sheets
     sheets[0]!.name = name
@@ -35,7 +51,8 @@ describe('Silverlit bounded AI choices', () => {
     const task = tasks.find(t => t.kind === 'tool_match')!
     expect(task.source).toEqual({ sheet: '明细', cell: 'C9', text: 'Cover' })
     expect(task.choices[0]!.evidence[0]!.cell).toBe('C48')
-    expect(JSON.stringify(tasks)).not.toMatch(/9\.12|1\.1|amountHkd|laborHkd|weightG|D18|E19|L19/)
+    expect(JSON.stringify(tasks)).not.toMatch(/9\.12|1\.1|amountHkd|laborHkd|weightG|E19|L19/)
+    expect(tasks.flatMap(t => [t.source, ...t.context, ...t.choices.flatMap(c => c.evidence)]).some(e => e.cell === 'D18')).toBe(false)
     const before = structuredClone(draft.result.quoteData)
     applyYinhuiRecognition(draft, task, { task_id: task.id, choice_id: task.choices[0]!.id, reason: '原表对应' })
     expect(draft.result.quoteData.tools[0]!.moldNo).toBe('NA123')

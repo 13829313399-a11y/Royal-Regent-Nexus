@@ -1,4 +1,5 @@
 from typing import Literal
+from copy import deepcopy
 from datetime import date
 from hashlib import sha256
 import json
@@ -193,6 +194,70 @@ async def organize_360_schedule(factory_id: str, schedule_file: UploadFile = Fil
                              "X-Content-Type-Options": "nosniff"})
 
 
+async def casdon_upload(db, current_user, factory_id, upload, *, exporting=False):
+    authorize(db, current_user, factory_id)
+    if factory_id != 'huadeng':
+        raise HTTPException(400, '此工具仅用于华登 Casdon 统一排期')
+    if exporting:
+        authorize(db, current_user, factory_id, 'export')
+    mapping._validate_upload(upload, kind='Casdon 排期', supported=('.xlsx',))
+    content = await upload.read(mapping.MAX_SCHEDULE_BYTES + 1)
+    if not content or len(content) > mapping.MAX_SCHEDULE_BYTES:
+        raise HTTPException(400, '客户排期为空或超过 35MB 限制')
+    return upload.filename or 'Casdon排期.xlsx', content
+
+
+@router.post('/schedule/casdon/preview')
+async def casdon_preview(factory_id: str, schedule_file: UploadFile = File(...),
+                         db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services.customer_order_casdon import _casdon_preview
+    name, content = await casdon_upload(db, current_user, factory_id, schedule_file)
+    try:
+        return await run_order_job(_casdon_preview, name, content, db=db)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post('/schedule/casdon/export')
+async def casdon_export(factory_id: str, schedule_file: UploadFile = File(...),
+                        fingerprint: str = Form(..., max_length=64), action: str = Form(..., max_length=16),
+                        selections: str = Form('[]', max_length=5000), reason: str = Form('', max_length=500),
+                        confirmed: bool = Form(False), db: Session = Depends(get_db),
+                        current_user: AuthContext = Depends(get_current_user)):
+    from app.services.customer_order_casdon import _casdon_export, fingerprint as source_fingerprint, VERSION
+    name, content = await casdon_upload(db, current_user, factory_id, schedule_file, exporting=True)
+    if action not in {'prepare', 'ship', 'restore'}:
+        raise HTTPException(400, '不支持的整理操作')
+    if action != 'prepare':
+        authorize(db, current_user, factory_id, 'write')
+        if not confirmed or len(reason.strip()) < 4:
+            raise HTTPException(400, '请确认所选订单并填写至少4字的整理原因')
+    if fingerprint != source_fingerprint(content):
+        raise HTTPException(409, '源文件已变化，请重新预览')
+    try:
+        ids = json.loads(selections)
+        output, output_name, report, source_hash = await run_order_job(
+            _casdon_export, name, content, fingerprint, action, ids, db=db)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit = mapping._record_export_audit(db, current_user, preview={
+        'factory_id': factory_id, 'customer_code': 'casdon', 'schedule_file_name': name,
+        'source_schedule_sha256': source_hash, 'preview_schema_version': VERSION,
+        'target_template': 'HUADENG_CASDON_WORKBOOK_V1',
+    }, received_date=date.today().isoformat(), preview_fingerprint=fingerprint,
+       actual_issue_keys=set(), manual_overrides=[],
+       confirmation_reason=f'Casdon Excel 整理（不更改台账走货数量）：{reason.strip()}\n'
+                           + json.dumps(report, ensure_ascii=False, separators=(',', ':')),
+       output=output, file_name=output_name)
+    warnings = report.get('warnings', [])
+    summary = {'moved': len(report['moves']), 'warning_count': len(warnings), 'warnings': warnings[:3]}
+    return Response(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote(output_name),
+                 'X-Export-Audit-Id': audit.id, 'Cache-Control': 'no-store',
+                 'X-Casdon-Report': quote(json.dumps(summary, ensure_ascii=False), safe=''),
+                 'X-Content-Type-Options': 'nosniff'})
+
+
 @router.get("/lines")
 def list_lines(factory_id: str, customer_code: str = "", view: Literal["all", "unshipped", "shipped", "cancelled"] = "all",
                q: str = Query("", max_length=255), page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
@@ -254,15 +319,24 @@ async def import_orders(customer_code: str, request: Request, factory_id: str = 
     kwargs = dict(customer_code=customer_code, factory_id=factory_id, received_date=received_date,
         po_files=files, schedule_file_name=schedule_file.filename or "", schedule_content=schedule_content)
     try:
-        create_preview = mapping._create_special_batch_preview if special else mapping._create_mapped_customer_preview
-        preview = await run_order_job(create_preview, db=db, **kwargs)
+        # Every writer rebuilds the authoritative preview from these exact files.
+        # Reuse it instead of parsing the PO and schedule in a second worker.
+        # Nothing is persisted until the existing confirmation checks below pass.
+        export = mapping._export_special_batch_schedule if special else mapping._export_mapped_customer_schedule
+        if reconcile_line:
+            kwargs['reconciliation_target'] = {
+                'factory_id': reconcile_line.factory_id, 'customer_code': reconcile_line.customer_code,
+                'reference_no': reconcile_line.reference_no, 'product_no': reconcile_line.product_no,
+            }
+        output, file_name, resolved = await run_order_job(export, db=db, **kwargs,
+            skipped_issue_keys=resolution_keys, manual_overrides=overrides)
+        # Confirmation policy can alter display status; retain the writer's
+        # original resolved rows for the ledger's existing payload contract.
+        preview = deepcopy(resolved)
         mapping._finalize_preview(preview, received_date=received_date, current_user=current_user, factory_id=factory_id)
         mapping._ensure_preview_fingerprint(preview, received_date, preview_fingerprint)
         actual_keys = mapping._actual_confirmed_issue_keys(preview, resolution_keys)
         mapping._actual_manual_overrides(preview, overrides)
-        # Validate and apply manual inputs using the exact existing writer. Its source files remain unchanged.
-        export = mapping._export_special_batch_schedule if special else mapping._export_mapped_customer_schedule
-        output, file_name, resolved = await run_order_job(export, db=db, **kwargs, skipped_issue_keys=actual_keys, manual_overrides=overrides)
     except (mapping.CustomerOrderWorkbookError, mapping.HuaxingCustomerOrderError,
             mapping.HuadengCustomerOrderError, mapping.HuakangACustomerOrderError, mapping.HuakangCCustomerOrderError) as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -40,7 +40,10 @@ def compute(source):
         operation, args, kwargs = pickle.load(stream)
     if operation not in OPERATIONS:
         raise ValueError("Unsupported customer-order job")
-    if operation.startswith("_jp_"):
+    if operation in {"_casdon_preview", "_casdon_export"}:
+        from app.services import customer_order_casdon
+        function = getattr(customer_order_casdon, operation)
+    elif operation.startswith("_jp_"):
         from app.services.huakang_b_jp import intake
         function = getattr(intake, operation)
     elif operation == "prepare_file":

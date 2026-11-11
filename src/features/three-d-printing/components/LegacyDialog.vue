@@ -33,6 +33,21 @@ function restoreFocus() {
   previousFocus = null
 }
 
+// Native modal dialogs make the background inert, but Chromium can tab out
+// to browser chrome at either end. Keep that boundary inside the open editor.
+function wrapTab(event: KeyboardEvent) {
+  const node = dialog.value
+  if (!node || !(event.target instanceof Element) || event.target.closest('dialog') !== node) return
+  const controls = [...node.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, summary, [tabindex]')]
+    .filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && !el.closest('[inert]')
+      && el.getClientRects().length && getComputedStyle(el).visibility === 'visible')
+  const edge = event.shiftKey ? controls[0] : controls.at(-1)
+  if (!edge || document.activeElement !== edge) return
+  event.preventDefault()
+  const next = event.shiftKey ? controls.at(-1) : controls[0]
+  next?.focus()
+}
+
 function finishClose(token: number) {
   if (token !== sequence || props.open) return
   cancelAnimation()
@@ -130,6 +145,7 @@ onBeforeUnmount(() => {
     class="legacy-dialog three-d-workspace tdp-theme"
     :class="`tdp-dialog--${phase}`"
     :aria-labelledby="titleId"
+    @keydown.tab="wrapTab"
     @cancel.self.prevent.stop="emit('close')"
     @click="$event.target === dialog && emit('close')"
   >

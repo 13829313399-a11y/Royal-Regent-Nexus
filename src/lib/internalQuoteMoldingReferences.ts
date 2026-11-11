@@ -10,7 +10,8 @@ export function normalizedReferenceToken(value: unknown) {
 }
 export function moldingMaterialFamily(value: unknown) {
   const token = normalizedReferenceToken(value)
-  return token === '1#PP' ? 'PP' : token
+  const aliases: Record<string, string> = { '1#PP': 'PP', 'C-PP': '透明PP', 'C-ABS': '透明ABS' }
+  return aliases[token] ?? token
 }
 export function moldingMaterialReferences(snapshot?: Record<string, unknown>): MoldingMaterialReference[] {
   const source = snapshot?.material_prices
@@ -96,7 +97,7 @@ export function canonicalizeMoldingReferences(payload: MoldingPayload, snapshot?
 // Establish both the editable draft and its saved baseline using exactly the
 // same reference canonicalization that the form applies after user selection.
 export function normalizeInternalQuoteDraft(code: InternalQuoteSectionCode, value: Record<string, unknown>, snapshot?: Record<string, unknown>) {
-  const normalized = normalizeInternalQuotePayload(code, value)
+  const normalized = normalizeInternalQuotePayload(code, value, snapshot)
   if (code === 'molding') canonicalizeMoldingReferences(normalized as unknown as MoldingPayload, snapshot)
   return normalized
 }

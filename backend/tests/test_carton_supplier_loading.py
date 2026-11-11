@@ -1,8 +1,6 @@
 """Equivalent supplier reads with bounded SQL and fresh per-call inputs."""
-import json
 from time import perf_counter
 
-import pytest
 from sqlalchemy import event, select
 from test_carton_asset_library_loading import isolated
 from test_molding_sample_api import make_client, login_as
@@ -27,9 +25,9 @@ def test_supplier_workspace_and_change_tasks_match_canonical_reads_with_less_sql
             _submit_order(client, created.json())
         from app.db import SessionLocal, engine
         from app.models.auth import AuthUser
-        from app.models.carton_procurement import CartonOrder, CartonPurchaseOrderIssue
+        from app.models.carton_procurement import CartonOrder
         from app.services.auth import build_auth_context
-        from app.services import carton_supplier_portal as portal, carton_supplier_changes as changes, carton_supplier_read_inputs as inputs
+        from app.services import carton_supplier_portal as portal, carton_supplier_changes as changes, carton_supplier_projection as inputs
         counts = []
         def measure(read):
             with SessionLocal() as db:
@@ -42,9 +40,10 @@ def test_supplier_workspace_and_change_tasks_match_canonical_reads_with_less_sql
                 finally: event.remove(engine, 'before_cursor_execute', counted)
                 counts.append((calls[0], round(perf_counter() - started, 3)))
                 return result
-        canonical_inputs = inputs.order_inputs
+        def canonical_order_page(db, orders, *, internal=False):
+            return [item for row in orders if (item := portal.order_out(db, row, internal=internal)) is not None]
         with monkeypatch.context() as baseline:
-            baseline.setattr(inputs, 'order_inputs', lambda db, orders, **kwargs: {row.id: None for row in orders})
+            baseline.setattr(inputs, 'order_page_out', canonical_order_page)
             old = measure(lambda db, user: portal.workspace(db, user, 'huaxing', internal=True, responsibility_scope='ALL'))
         new = measure(lambda db, user: portal.workspace(db, user, 'huaxing', internal=True, responsibility_scope='ALL'))
         assert new == old

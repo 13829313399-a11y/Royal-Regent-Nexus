@@ -11,8 +11,9 @@ import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
 import type { FeedbackContext } from '@/api/moduleFeedback'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
+import CasdonWorkbookTools from './CasdonWorkbookTools.vue'
 
-const props = defineProps<{ factoryId: string; factoryName: string }>()
+const props = withDefaults(defineProps<{ factoryId: string; factoryName: string; workbookToolsEnabled?: boolean; historyImportEnabled?: boolean; localOnly?: boolean }>(), { workbookToolsEnabled: true, historyImportEnabled: true, localOnly: false })
 const emit = defineEmits<{ import: []; feedback: [context: FeedbackContext] }>()
 
 type SectionKey = 'unshipped' | 'shipped' | 'cancelled' | 'inspection_pending' | 'completed'
@@ -298,6 +299,8 @@ async function organize360() {
   }
 }
 
+watch(() => props.workbookToolsEnabled, enabled => { if (!enabled) resetOrganizer() })
+
 onMounted(() => {
   dateRefreshTimer = setInterval(refreshAcrossDate, 30_000)
   window.addEventListener('focus', refreshAcrossDate)
@@ -346,7 +349,7 @@ watch(() => props.factoryId, () => {
     <p v-if="customerMessage" class="customer-schedule__message">{{ customerMessage }}</p>
     <p v-if="message" class="customer-schedule__message">{{ message }}</p>
 
-    <section v-if="is360Selected" class="customer-schedule__organize" aria-label="按验货日期整理Excel">
+    <section v-if="workbookToolsEnabled && is360Selected" class="customer-schedule__organize" aria-label="按验货日期整理Excel">
       <h3>按验货日期整理Excel</h3>
       <p class="customer-schedule__note">选择 360 统一排期（ITEM表、接单表、正单评审表），按现有验货日期整理并下载副本。原文件保留，系统台账不受影响。</p>
       <label>选择排期文件 <input ref="organizeInput" type="file" accept=".xlsx" :disabled="organizing" @change="selectOrganizeFile"></label>
@@ -360,6 +363,8 @@ watch(() => props.factoryId, () => {
         <ul v-if="organizeReport.warnings.length" class="customer-schedule__organize-warnings"><li v-for="(warning, index) in organizeReport.warnings" :key="index">{{ warning }}</li></ul>
       </div>
     </section>
+
+    <CasdonWorkbookTools v-if="workbookToolsEnabled && factoryId === 'huadeng' && draft.customerCode === 'casdon'" :key="factoryId + draft.customerCode" :factory-id="factoryId" />
 
     <template v-if="schedule">
       <section class="customer-schedule__summary" aria-label="订单汇总">
@@ -405,7 +410,7 @@ watch(() => props.factoryId, () => {
       </details>
     </template>
 
-    <CustomerOrderLedger v-if="selectedLineId" :factory-id="factoryId" :factory-name="factoryName" detail-only :focus-line-id="selectedLineId" @changed="refreshSchedule" @close-detail="selectedLineId = ''" @feedback="emit('feedback', $event)" />
+    <CustomerOrderLedger v-if="selectedLineId" :factory-id="factoryId" :factory-name="factoryName" :history-import-enabled="historyImportEnabled" :local-only="localOnly" detail-only :focus-line-id="selectedLineId" @changed="refreshSchedule" @close-detail="selectedLineId = ''" @feedback="emit('feedback', $event)" />
   </section>
 </template>
 

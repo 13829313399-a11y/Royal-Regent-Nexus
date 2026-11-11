@@ -13,6 +13,7 @@ import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGua
 import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
 import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
 import { guardUvNavigation } from '@/features/uv-operations/navigationGuard'
+import { guardShippingNavigation } from '@/features/indonesia-shipping/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
 import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
@@ -40,6 +41,10 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/modules/sales-business/material-planning', name: 'material-planning', component: () => import('@/features/material-planning/MaterialPlanningView.vue'), meta: { title: '需求试算草稿', requiresAuth: true, permissions: ['material_plan:read'], strictPermissions: true, enforcePermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'sales-business' } },
+  { path: '/modules/pmc-warehouse/process-material-dates', name: 'process-material-dates', component: () => import('@/features/material-planning/ProcessDatesView.vue'), meta: { title: '工序物料期', requiresAuth: true, permissions: ['material_plan:dates_read'], strictPermissions: true, enforcePermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
+  { path: '/modules/pmc-warehouse/material-purchasing', name: 'material-purchasing', component: () => import('@/features/material-planning/MaterialPurchasingView.vue'), meta: { title: '采购制单与审核', requiresAuth: true, permissions: ['material_purchase:read'], strictPermissions: true, enforcePermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
+  { path: '/modules/engineering/bom', name: 'engineering-bom', component: () => import('@/features/engineering-bom/EngineeringBomView.vue'), meta: { title: '工程 BOM', requiresAuth: true, permissions: ['engineering_bom:read'], strictPermissions: true, enforcePermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'engineering' } },
   { path: '/online-documents', name: 'online-documents', component: () => import('@/views/OnlineDocumentsView.vue'), meta: { title: '在线文档', fullPage: true, requiresAuth: true } },
   { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
   { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
@@ -217,6 +222,34 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/pmc-warehouse/shipping-management',
+    name: 'shipping-management',
+    component: () => import('@/features/shipping-management/ShippingManagementView.vue'),
+    meta: {
+      title: '船务管理',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/modules/sales-business/mainland-invoice',
+    redirect: to => ({ name: 'mainland-invoice', query: to.query, hash: to.hash }),
+  },
+  {
+    path: '/modules/accounting/mainland-invoice',
+    name: 'mainland-invoice',
+    component: () => import('@/views/MainlandInvoiceView.vue'),
+    meta: {
+      title: '大陆发票',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['mainland_invoice:generate'],
+      permissionDepartment: 'accounting',
+      enforcePermissions: true,
+      strictPermissions: true,
+    },
+  },
+  {
     path: '/modules/sales-business/customer-price-conversion',
     name: 'customer-price-conversion',
     component: () => import('@/views/CustomerPriceConversionView.vue'),
@@ -286,6 +319,16 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['customer_order:read'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/modules/sales-business/indonesia-shipping',
+    name: 'indonesia-shipping',
+    component: () => import('@/views/IndonesiaShippingView.vue'),
+    meta: {
+      title: '印尼走货明细', fullPage: true, requiresAuth: true,
+      permissions: ['indonesia_shipping:read'], permissionDepartment: 'sales-business',
       enforcePermissions: true,
     },
   },
@@ -725,6 +768,7 @@ router.beforeEach(async (to, from) => {
   if (!guardCartonNavigation(to, from)) return false
   if (!await guardQuoteNavigation(to, from)) return false
   if (!guardUvNavigation(to, from)) return false
+  if (!await guardShippingNavigation(to, from)) return false
   if (to.name === 'three-d-printing-management' && to.query.factory !== 'huakang-a') {
     return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
   }

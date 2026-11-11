@@ -23,6 +23,8 @@ const replaceOpen = ref(false)
 const previewPending = ref(false)
 const imageReading = ref(new Set<string>())
 function setImageReading(id: string, busy: boolean) { if (busy) imageReading.value.add(id); else imageReading.value.delete(id) }
+const sourceLoading = ref(false)
+const sourceError = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)
@@ -40,6 +42,14 @@ let timer: ReturnType<typeof setTimeout> | undefined
 const changedIds = computed(() => [...new Set([...Object.keys(edits.value), ...Object.keys(annotations.value), ...Object.keys(adjustmentModes.value)])])
 const changedCount = computed(() => changedIds.value.length)
 const dirty = computed(() => changedCount.value > 0)
+const outdatedFormulaWarnings = computed(() => (display.value?.warnings ?? []).filter(w => w.code === 'formula_outdated'))
+const otherWarnings = computed(() => (display.value?.warnings ?? []).filter(w => w.code !== 'formula_outdated'))
+const outdatedDepartments = computed(() => [...new Set(outdatedFormulaWarnings.value.map(w => w.section_name).filter(Boolean))].join('、'))
+const formulaRecoveryRoute = computed(() => {
+  const target = new URL(props.collaborationRoute, window.location.origin)
+  target.searchParams.set('formulaRecovery', '1')
+  return target.pathname + target.search + target.hash
+})
 const sheet = computed(() => display.value?.sheets.find(s => s.name === sheetName.value) ?? display.value?.sheets[0])
 const groupMap = computed(() => new Map((base.value?.groups ?? []).map(g => [g.id, g])))
 const visibleGroups = computed(() => (base.value?.groups ?? []).filter(g =>
@@ -128,15 +138,43 @@ function changedCell(cell: OutputCell) {
   const ids = [cell.binding?.group, ...(cell.binding?.groups ?? [])]
   return ids.some(id => id && groupMap.value.get(id)?.fields.some(f => changedIds.value.includes(f.id)))
 }
+function withSourceSheets(layout: OutputLayout, sources: OutputLayout['sheets']): OutputLayout {
+  return { ...layout, sheets: [...layout.sheets.filter(s => !s.source), ...sources] }
+}
+async function loadSourceSheets(id = props.quoteId, context = generation) {
+  if (!base.value || sourceLoading.value) return
+  const token = base.value.base_token
+  sourceLoading.value = true
+  sourceError.value = ''
+  try {
+    const result = await internalQuoteOutputApi.get(id, true)
+    if (context !== generation || !base.value || !display.value) return
+    if (result.base_token !== token || base.value.base_token !== token) {
+      sourceError.value = '原始报价资料已更新，请重新读取后查看。'
+      return
+    }
+    const sources = result.sheets.filter(s => s.source)
+    // Only attach the immutable source tabs. Never overwrite a live price
+    // preview, its warnings or unsaved inputs when this slower read finishes.
+    base.value = withSourceSheets(base.value, sources)
+    display.value = withSourceSheets(display.value, sources)
+  } catch (cause) {
+    if (context === generation) sourceError.value = `原始报价表读取失败：${messageOf(cause)}`
+  } finally {
+    if (context === generation) sourceLoading.value = false
+  }
+}
 async function load() {
   const id = props.quoteId
   const current = ++generation
   ++previewSequence
   clearTimeout(timer)
   loading.value = true
+  sourceLoading.value = false
+  sourceError.value = ''
   error.value = ''
   try {
-    const result = await internalQuoteOutputApi.get(id)
+    const result = await internalQuoteOutputApi.get(id, false)
     if (current !== generation) return
     base.value = result
     display.value = result
@@ -145,6 +183,7 @@ async function load() {
     annotations.value = {}; previewPending.value = false
     selectedCell.value = ''
     if (!result.sheets.some(s => s.name === sheetName.value)) sheetName.value = result.sheets[0]?.name ?? ''
+    if (result.source_workbooks_pending) void loadSourceSheets(id, current)
   } catch (cause) {
     if (current === generation) error.value = messageOf(cause)
   } finally {
@@ -157,9 +196,9 @@ async function preview() {
   const context = generation
   previewing.value = true
   try {
-    const result = await internalQuoteOutputApi.preview(props.quoteId, payload())
+    const result = await internalQuoteOutputApi.preview(props.quoteId, payload(), false)
     if (context !== generation || current !== previewSequence) return
-    display.value = result
+    display.value = withSourceSheets(result, base.value?.sheets.filter(s => s.source) ?? [])
     previewPending.value = false
     error.value = ''
   } catch (cause) {
@@ -243,7 +282,12 @@ defineExpose({ save, dirty, canLeave })
     </div>
     <p v-if="error" class="output-error" role="alert">{{ error }}<span v-if="dirty"> · 修改仍保留在本页，尚未确认保存。</span></p>
     <p v-if="display?.formula_errors.length" class="output-error">部分表格结果暂未算出，已标记“待核算”。请核对后再输出。</p>
-    <p v-if="display?.warnings.length" class="output-error">{{ display.warnings.map(w => w.message).filter(Boolean).join(' ') }}</p>
+    <div v-if="outdatedFormulaWarnings.length" class="output-formula-notice" role="status">
+      <div><strong>旧公式待重算</strong><p>已保存的部门资料仍保留，无需重新填写。请按当前公式重算后再核对总价、输出。</p><p v-if="outdatedDepartments">涉及部门：{{ outdatedDepartments }}。</p><small>重算沿用本报价原有汇率和参考价格；历史输出文件保持不变。</small></div>
+      <span v-if="dirty || saving || imageReading.size" class="output-formula-pending">请先保存表格修改，再前往重算。</span>
+      <RouterLink v-else :to="formulaRecoveryRoute" class="output-formula-link"><RotateCcw :size="15" />前往重算</RouterLink>
+    </div>
+    <p v-if="otherWarnings.length" class="output-error">{{ otherWarnings.map(w => w.message).filter(Boolean).join(' ') }}</p>
     <details v-if="base?.removed_adjustments?.length" class="output-status"><summary>旧报价单有 {{ base.removed_adjustments.length }} 项调价未匹配新项目，需核对（均未计入新报价）</summary><p v-for="(item,index) in base.removed_adjustments" :key="index">{{ item.section_name }} · {{ item.name }} · 原采用 HKD {{ item.amount_hkd }} / 件 · {{ item.reason }}。请在对应新项目重新确认调价。</p></details>
     <div v-if="loading && !display" class="output-empty"><LoaderCircle class="spinning" />正在生成报价表格…</div>
     <div v-else-if="sheet" class="output-grid-scroll" :aria-busy="previewing || loading">
@@ -269,7 +313,7 @@ defineExpose({ save, dirty, canLeave })
         <img v-for="(picture, i) in sheet.images" :key="i" :src="picture.src" alt="报价产品图片" :style="{ position: 'absolute', left: `${picture.left + 38}px`, top: `${picture.top + 23}px`, width: `${picture.width}px`, height: `${picture.height}px`, objectFit: 'contain', pointerEvents: 'none' }">
       </div>
     </div>
-    <div class="output-total-bar" aria-live="polite"><span>当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong></span><span>{{ previewPending || previewing ? '正在重算…' : dirty ? '未保存试算' : '已保存金额' }}</span><small v-if="!previewPending && !previewing && !error && display?.quote_price_hkd != null">成本 HKD {{ Number(display.factory_price_hkd).toFixed(4) }} · {{ targetComparison }}</small></div><footer class="output-tabs"><button v-for="s in display?.sheets" :key="s.name" :class="{ active: s.name === sheet?.name }" @click="sheetName = s.name; selectedCell = ''"><FileSpreadsheet :size="14" />{{ s.name }}</button><span>已上传的 Excel 原表随报价一起导出</span></footer>
+    <div class="output-total-bar" aria-live="polite"><span>当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong></span><span>{{ previewPending || previewing ? '正在重算…' : dirty ? '未保存试算' : '已保存金额' }}</span><small v-if="!previewPending && !previewing && !error && display?.quote_price_hkd != null">成本 HKD {{ Number(display.factory_price_hkd).toFixed(4) }} · {{ targetComparison }}</small></div><footer class="output-tabs"><button v-for="s in display?.sheets" :key="s.name" :class="{ active: s.name === sheet?.name }" @click="sheetName = s.name; selectedCell = ''"><FileSpreadsheet :size="14" />{{ s.name }}</button><span v-if="sourceLoading" role="status">正在读取原始报价表…</span><span v-else-if="sourceError" role="alert">{{ sourceError }} <button @click="loadSourceSheets()">重试读取原表</button></span><span>已上传的 Excel 原表随报价一起导出</span></footer>
     <div v-if="drawer" class="output-drawer-backdrop" @click.self="drawer = false">
       <aside class="output-drawer" role="dialog" aria-modal="true" aria-label="修改原始名称与单价" @keydown.esc="drawer = false">
         <header><div><strong>名称与报价调价</strong><p>修改现有明细，保存到同一张报价。</p></div><button aria-label="关闭明细" @click="drawer = false"><X :size="20" /></button></header>
@@ -289,6 +333,7 @@ defineExpose({ save, dirty, canLeave })
 </template>
 
 <style scoped>
+.output-formula-notice{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:14px 18px;border-block:1px solid #e9d6ae;background:#fff8eb;color:#80541c;font-size:13px;line-height:1.6}.output-formula-notice p{margin:4px 0}.output-formula-notice small{font-size:12px}.output-formula-link{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex-shrink:0;border:1px solid #bddbd4;border-radius:7px;background:#fff;padding:9px 12px;color:#19685b;text-decoration:none}.output-formula-link:focus-visible{outline:2px solid #14796b;outline-offset:2px}.output-formula-pending{font-weight:600}
 .output-total-bar{display:flex;gap:20px;align-items:center;flex-wrap:wrap;padding:14px 20px;background:#e6f7ee;color:#205d48;border-top:1px solid #bddbd4}.output-total-bar strong{font-size:20px;margin-left:10px}.output-total-bar small{margin-left:auto}.output-note-button{border:1px solid #b4d7c6;border-radius:4px;background:#edf9f1;color:#23715a;font:11px Arial;padding:3px 5px}
 
 .output-table{position:relative;min-width:0;border:1px solid #bddbd4;border-radius:14px;background:#fff;overflow:hidden;color:#234b45}.output-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 20px;background:#f3fbf8;flex-wrap:wrap}.output-title,.output-actions{display:flex;align-items:center;gap:10px}.output-title span{display:grid;gap:5px}.output-title strong{font-size:17px}.output-title small{font-size:12px;color:#607d77}.output-actions{flex-wrap:wrap}.output-table button,.output-actions a{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer}.output-actions button,.output-actions a,.output-view-tools button,.output-drawer footer button{border:1px solid #bddbd4;border-radius:7px;background:#fff;padding:9px 12px;color:#19685b;font-size:12px;text-decoration:none}.output-table button:disabled{opacity:.5;cursor:not-allowed}.output-table button.primary{background:#14796b;color:#fff;border-color:#14796b}.output-status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 20px;font-size:12px;border-top:1px solid #e4efeb;border-bottom:1px solid #e4efeb}.output-status span{display:inline-flex;align-items:center;gap:5px}.output-status .dirty{color:#a16a0a}.output-view-tools{display:flex;align-items:center;gap:16px;padding:9px 18px;background:#fafcfb;font-size:12px}.output-view-tools label{margin-left:auto}.output-view-tools select{padding:5px;border:1px solid #ccdcd7;border-radius:5px}.output-grid-scroll{overflow:auto;max-height:76vh;min-height:320px;background:#e7eeeb;padding:18px 20px 28px}.output-paper{background:white;box-shadow:0 3px 16px #163d3520}.output-grid{border-collapse:collapse;table-layout:fixed;line-height:1.3}.output-grid th{font-family:Arial,sans-serif;font-size:11px;font-weight:400;color:#61756e;background:#edf3f0;border:1px solid #d6e1dc;height:23px}.output-grid thead{position:sticky;top:-22px;z-index:2}.output-grid td{position:relative;padding:2px 4px;vertical-align:middle;overflow-wrap:anywhere}.output-grid td.editable:after{content:'';position:absolute;right:0;top:0;border-top:6px solid #24a58a;border-left:6px solid transparent;pointer-events:none}.output-grid td.editable:hover{box-shadow:inset 0 0 0 2px #7bccb8}.output-grid td.selected{outline:2px solid #169e83;outline-offset:-2px}.output-grid td.changed{background-color:#fff1bd!important}.output-grid td.unavailable{color:#aa5414!important}.output-table .output-cell-button{display:block;width:100%;min-height:18px;text-align:inherit;font:inherit;color:inherit;white-space:inherit;border:0;background:transparent;padding:0}.output-inline-field{display:flex;flex-direction:column;gap:2px;min-width:80px}.output-inline-field small{font:10px Arial;color:#276e60}.output-cell-input{width:100%;box-sizing:border-box;border:1px solid #269c81;background:#f5fffb;min-height:24px;font:inherit;color:#155d4e;padding:2px}.output-tabs{display:flex;align-items:center;gap:3px;padding:9px 12px;border-top:1px solid #d5e4df;background:#f5f9f7;flex-wrap:wrap}.output-tabs button{padding:9px 14px;background:transparent;border:0;border-radius:6px;font-size:12px;color:#56736a}.output-tabs button.active{color:#087762;background:#def2e9;font-weight:700}.output-tabs span{margin-left:auto;font-size:11px;color:#83938e}.output-error{margin:0;padding:11px 18px;background:#fff1ed;color:#a13620;font-size:13px;line-height:1.6}.output-empty{display:flex;align-items:center;justify-content:center;gap:10px;min-height:100px;padding:20px;color:#71877f}.output-drawer-backdrop{position:fixed;inset:0;z-index:120;background:#133d343b;display:flex;justify-content:flex-end}.output-drawer{display:flex;flex-direction:column;width:min(470px,100vw);height:100%;background:#fff;box-shadow:-12px 0 40px #102f2920}.output-drawer>header{display:flex;justify-content:space-between;align-items:flex-start;padding:22px 24px;background:#f0faf6}.output-drawer header p{margin:8px 0 0;font-size:12px;color:#647f74}.output-drawer header button{background:none;border:0;color:#426b5f}.output-search{margin:16px 20px;padding:10px 12px;border:1px solid #c7dbd1;border-radius:7px;font-size:13px}.output-source-list{overflow:auto;flex:1;padding:0 20px}.output-source-list article{border:1px solid #dce8e1;border-radius:9px;padding:15px;margin-bottom:14px}.output-source-list article header{display:grid;gap:5px;margin-bottom:13px}.output-source-list article header strong{font-size:14px}.output-source-list article header small{font-size:11px;color:#7a8d84}.output-source-list label{display:grid;grid-template-columns:110px minmax(0,1fr);align-items:center;gap:10px;margin-top:9px;font-size:12px}.output-source-list label b{font-size:10px;color:#719083}.output-source-list input{min-width:0;width:100%;box-sizing:border-box;padding:8px;border:1px solid #cdded4;border-radius:5px;font-size:13px}.output-source-list input:disabled{background:#f5f7f6;color:#718277}.output-drawer footer{display:flex;justify-content:flex-end;gap:10px;padding:18px 20px;border-top:1px solid #dbe8e0}.spinning{animation:output-spin 1s linear infinite}@keyframes output-spin{to{transform:rotate(360deg)}}@media(max-width:700px){.output-toolbar{padding:13px}.output-title small{font-size:11px}.output-grid-scroll{padding:10px}.output-view-tools{gap:8px}.output-view-tools>span{display:none}}

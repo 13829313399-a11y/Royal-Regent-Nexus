@@ -1,11 +1,9 @@
 from copy import deepcopy
 from datetime import date, datetime, timezone
-from io import BytesIO
 from uuid import uuid4
 import json
 import pytest
 from fastapi import HTTPException
-from openpyxl import load_workbook
 from openpyxl.utils.datetime import to_excel, CALENDAR_MAC_1904
 from app.services import qc_schedule_candidates as gate
 from app.services import qc_inspection_sheet as sheet, qc_inspection_summary as summary, qc_workflow as wf
@@ -91,24 +89,20 @@ def test_review_fields_full_persistence_cas_audit_snapshot_and_readonly(db):
     with pytest.raises(HTTPException):sheet.save('huadeng',r['id'],dict(revision=r['revision'],result='PASS',remark='',responsible='跨厂'),ACTOR,review=True)
 
 
-def test_summary_schedule_date_is_read_only_filter_sort_detail_and_export(db):
+def test_summary_schedule_date_is_read_only_filter_sort_and_detail(db):
     r=command(submitted(db),'confirm')
     assert not r.get('actualDate')
     before=summary.listing('huaxing',{})['items'][0]
     result=summary.listing('huaxing',{'dateBasis':'schedule','year':r['dateFrom'][:4]})
     assert result['total']==1 and result['items'][0]['scheduleDate']==r['dateFrom']
-    assert result['items'][0]['inspectionDate']==''
+    assert result['items'][0]['inspectionDate']==r['dateFrom']
+    assert result['items'][0]['inspectionDateSource']=='schedule'
     assert summary.detail('huaxing',before['id'])['scheduleDate']==r['dateFrom']
     assert summary.listing('huaxing',{'dateBasis':'schedule','year':'2040'})['total']==0
     assert summary.listing('huadeng',{'dateBasis':'schedule'})['total']==0
     assert summary.listing('huaxing',{})['items'][0]==before
     unlinked={'id':'old','inspectionDate':'2026-11-01','submittedAt':'2026-11-03','confirmedAt':'2026-11-04'}
     assert summary.with_schedule_dates('huaxing',[unlinked])[0]['scheduleDate']==''
-    content=summary.export_excel('huaxing',{'dateBasis':'schedule','year':r['dateFrom'][:4]})
-    book=load_workbook(BytesIO(content[0] if isinstance(content,tuple) else content))
-    assert book.active.cell(1,1).value=='实际验货日期'
-    assert book.active.cell(2,1).value is None
-    book.close()
 
 def test_automatic_intake_keeps_historical_schedule_and_existing_task(db):
     from test_customer_order_ledger import ingest

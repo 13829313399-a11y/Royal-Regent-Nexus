@@ -23,6 +23,9 @@ from app.api.carton_procurement import router as carton_procurement_router
 from app.api.fabric_procurement import router as fabric_procurement_router
 from app.api.warehouse_operations import router as warehouse_operations_router
 from app.api.fabric_master import router as fabric_master_router
+from app.api.engineering_bom import router as engineering_bom_router
+from app.api.material_plan import router as material_plan_router
+from app.api.material_purchase import router as material_purchase_router
 from app.api.carton_supplier_settlement import router as carton_supplier_settlement_router
 from app.api.carton_supplier_payables import router as carton_supplier_payables_router
 from app.api.carton_return_collaboration import router as carton_return_collaboration_router, supplier_router as carton_supplier_return_collaboration_router
@@ -43,6 +46,7 @@ from app.api.identity import router as identity_router
 from app.api.position_reviews import router as position_reviews_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.indonesia_materials import router as indonesia_materials_router
+from app.api.indonesia_shipping import router as indonesia_shipping_router
 from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.module_feedback import router as module_feedback_router
 from app.api.customer_price_settings import router as customer_price_settings_router
@@ -54,6 +58,7 @@ from app.api.internal_quote import (
 )
 from app.api.molding_sample import router as molding_sample_router
 from app.api.pricing import router as pricing_router
+from app.api.mainland_invoice import router as mainland_invoice_router
 from app.api.qc_inspection import router as qc_inspection_router
 from app.api.qc_department import router as qc_department_router
 from app.api.raw_material import router as raw_material_router
@@ -67,6 +72,9 @@ from app.api.uv_operations import router as uv_operations_router
 from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
 from app.db import init_db
+from app.services.qc_dossier_events import install as install_qc_dossier_events
+
+install_qc_dossier_events()
 
 request_timing_logger = logging.getLogger("uvicorn.error")
 sweep_logger = logging.getLogger("app.three_d_sweep")
@@ -124,6 +132,10 @@ async def application_lifespan(app: FastAPI):
     import asyncio
 
     init_db()
+    if settings.qc_dossier_enabled:
+        from app.db import engine
+        from app.services.qc_dossier_worker import validate_installed
+        validate_installed(engine)
     from app.services.assistant import files as assistant_files
     await asyncio.to_thread(assistant_files.recover_jobs)
     from app.services.assistant.durable import worker as assistant_run_worker
@@ -139,9 +151,22 @@ async def application_lifespan(app: FastAPI):
     identity_task = asyncio.create_task(identity_worker()) if settings.iam_identity_writes_enabled else None
     from app.services.collaboration.maintenance import worker as collaboration_worker
     collaboration_task = asyncio.create_task(collaboration_worker()) if settings.collaboration_enabled else None
+    from app.services.qc_dossier_worker import worker as dossier_worker
+    dossier_task = asyncio.create_task(dossier_worker()) if settings.qc_dossier_enabled else None
+    from app.services.qc_photo_assets import worker as photo_worker
+    photo_task = asyncio.create_task(photo_worker())
     try:
         yield
     finally:
+        photo_task.cancel()
+        try:await photo_task
+        except asyncio.CancelledError:pass
+        if dossier_task:
+            dossier_task.cancel()
+            try:
+                await dossier_task
+            except asyncio.CancelledError:
+                pass
         await assistant_run_worker.stop()
         await asyncio.to_thread(assistant_files.shutdown)
         if collaboration_task:
@@ -297,6 +322,9 @@ app.include_router(carton_procurement_router)
 app.include_router(fabric_procurement_router)
 app.include_router(warehouse_operations_router)
 app.include_router(fabric_master_router)
+app.include_router(engineering_bom_router)
+app.include_router(material_plan_router)
+app.include_router(material_purchase_router)
 app.include_router(carton_supplier_settlement_router)
 app.include_router(carton_supplier_payables_router)
 app.include_router(carton_return_collaboration_router)
@@ -321,6 +349,7 @@ app.include_router(module_feedback_router)
 app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(indonesia_materials_router)
+app.include_router(indonesia_shipping_router)
 app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
 app.include_router(identity_router)
@@ -329,6 +358,7 @@ from app.api.iam_workspace import router as iam_workspace_router
 app.include_router(iam_workspace_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
+app.include_router(mainland_invoice_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(qc_department_router)

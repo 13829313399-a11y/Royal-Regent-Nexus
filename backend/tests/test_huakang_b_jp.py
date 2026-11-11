@@ -433,18 +433,19 @@ def test_exact_po_revision_keeps_newest_but_unknown_po_needs_review(db):
 
 
 @pytest.mark.parametrize('field,value', [('customer', 'Amazon US'), ('carton_t', '6')])
-def test_changed_price_context_requires_explicit_price_review(db, field, value):
+def test_changed_price_context_leaves_unedited_prices_blank_without_blocking(db, field, value):
     install(db)
     p = preview(db)
     row = p['rows'][0]
     changed = [dict(id=row['id'], field=field, value=value)]
-    with pytest.raises(HTTPException, match='重新填写核对货价'):
-        export(db, p, overrides=changed)
+    resolved = intake.resolve_rows(p, [row['id']], changed)[0]
+    assert resolved['price_t'] == resolved['factory_price_t'] == ''
+    assert resolved['generation_reminders']
     assert db.get(JPCounter, 'huakang-b') is None
     changed += [dict(id=row['id'], field='price_t', value='20'),
                 dict(id=row['id'], field='factory_price_t', value='')]
     record = export(db, p, overrides=changed)
-    assert record.data['rows'][0]['manual_price_review']
+    assert record.data['rows'][0]['manual_price_review'] is False
     assert openpyxl.load_workbook(BytesIO(record.content)).active.cell(2, 21).value == 20
 
 

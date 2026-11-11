@@ -173,7 +173,7 @@ def test_ambiguous_legacy_association_blocks_instead_of_generating_prices(ambigu
     from fastapi import HTTPException
     service = importlib.import_module("app.services.internal_quote")
     monkeypatch.setattr(service, "_find_reference_set", lambda *_: SimpleNamespace(id="ref", snapshot_json=json.dumps(SNAPSHOT)))
-    stored = [SimpleNamespace(department="engineering", is_required=True, payload_json=json.dumps(source)),
+    stored = [SimpleNamespace(department="engineering", is_required=True, status="draft", payload_json=json.dumps(source)),
               SimpleNamespace(department="molding", is_required=True, status="draft", payload_json=json.dumps({"injection_lines": rows}), calculation_json=json.dumps({"totals": {"total_hkd": "1"}}))]
     before = [section.payload_json for section in stored]
     with pytest.raises(HTTPException) as error:

@@ -14,7 +14,9 @@ router = APIRouter(prefix="/api/carton-procurement", tags=["carton-supplier-sett
 def monthly_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
                       currency: str = "CNY", db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, user, "carton_procurement:read", factory_id)
-    return monthly.workspace(db, factory_id, period, currency)
+    # Release the authorization connection before opening the reconciliation snapshot.
+    db.close()
+    return monthly.read_workspace(factory_id, period, currency)
 
 
 @router.post("/monthly-settlements/submit")

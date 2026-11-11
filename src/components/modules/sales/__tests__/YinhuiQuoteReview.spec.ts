@@ -48,6 +48,8 @@ describe('Silverlit export review', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('服务未就绪')
     expect(result.quoteData.productName).toBe('配重塊')
+    expect(wrapper.get('[data-testid="yinhui-review-notices"]').text()).toContain('保留原文输出')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="yinhui-translate"]').trigger('click')
     await flushPromises()
     expect(result.quoteData.productName).toBe('Counterweight')
@@ -87,6 +89,19 @@ describe('Silverlit export review', () => {
     expect(result.quoteData.model).toBe('0020')
     expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([false])
     expect(wrapper.text()).toContain('型号冲突')
+  })
+  it('shows missing-price handling and allows informed confirmation while preserving the row', async () => {
+    const result = fixture()
+    Object.assign(result.quoteData.mechanical[0]!, { pricePending: true, amountHkd: 0, internalHkd: 0 })
+    const wrapper = mount(YinhuiQuoteReview, { props: { result, confirmed: false } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="yinhui-review-notices"]').text()).toContain('单价和金额留空')
+    expect(wrapper.text()).toContain('已知成本小计（待补价）')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="yinhui-confirm"]').setValue(true)
+    expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([true])
+    await wrapper.get('input[aria-label="五金 / 外购第 1 行物料名称"]').setValue('Updated part')
+    expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([false])
   })
   it('blocks confirmation for missing freight or invalid BOM names but accepts Chinese', async () => {
     const result=fixture(); result.quoteData.freightLclHkd=null

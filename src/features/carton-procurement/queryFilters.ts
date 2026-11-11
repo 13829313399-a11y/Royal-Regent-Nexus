@@ -1,4 +1,4 @@
-import { shipmentNeedsReceipt } from './receiptDisplay'
+import { awaitsWarehouseReceipt } from './supplierWork'
 import { isCardPaper } from './paperCatalog'
 import type { PortalShipment, ShipmentLine, SupplierDocumentBusinessKind } from '@/api/cartonSupplierPortal'
 import type { SettlementDocument, StatementLine, SupplierSource } from '@/api/cartonSupplierSettlement'
@@ -21,7 +21,7 @@ export function filterShipments<T extends PortalShipment>(rows: T[], filters: Sh
     const dates = filters.dateField === 'ACCEPTANCE'
       ? [row.acceptance_date, ...(row.acceptance_history ?? []).map(batch => batch.acceptance_date)].filter((day): day is string => !!day)
       : [dateOf(row)]
-    return (!filters.status || (filters.status === 'PENDING_RECEIPT' ? shipmentNeedsReceipt(row) : filters.status === 'RECEIPT_REVERSED' ? Boolean(row.requires_correction || row.receipt_status === 'REVERSED' || row.status === 'RECEIPT_REVERSED') : row.status === filters.status))
+    return (!filters.status || (filters.status === 'PENDING_RECEIPT' ? awaitsWarehouseReceipt(row) : filters.status === 'RECEIPT_REVERSED' ? Boolean(row.requires_correction || row.receipt_status === 'REVERSED' || row.status === 'RECEIPT_REVERSED') : row.status === filters.status))
       && (!filters.customer || row.lines.some(line => line.customer_name === filters.customer))
       && (!filters.businessKind || row.lines.some(line => shipmentLineBusinessKind(line) === filters.businessKind))
       && (!filters.association || (filters.association === 'UNMATCHED' ? row.lines.some(line => !line.order_line_id) : row.lines.every(line => !!line.order_line_id)))

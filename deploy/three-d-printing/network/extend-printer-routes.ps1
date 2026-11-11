@@ -24,7 +24,7 @@ function Read-Routes {
 $report=$null; $reportPath=$null
 try {
     $rows=@(Import-Csv -LiteralPath $PrinterFile)
-    if ($rows.Count -lt 1 -or $rows.Count -gt 16) { throw 'invalid_inventory' }
+    if ($rows.Count -lt 1 -or $rows.Count -gt 18) { throw 'invalid_inventory' }
     $requested=@(); $numbers=@()
     foreach ($row in $rows) {
         $ip=[Net.IPAddress]::Parse($row.ip); $bytes=$ip.GetAddressBytes()
@@ -32,7 +32,7 @@ try {
             -not ($bytes[0] -eq 10 -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or ($bytes[0] -eq 192 -and $bytes[1] -eq 168))) { throw 'invalid_private_ipv4' }
         $number=[int]$row.machine_no
         $route=$ip.ToString()+'/32'
-        if ($number -lt 1 -or $number -gt 16 -or $number -in $numbers -or $route -in $requested) { throw 'duplicate_or_invalid_inventory' }
+        if ($number -lt 1 -or $number -gt 18 -or $number -in $numbers -or $route -in $requested) { throw 'duplicate_or_invalid_inventory' }
         $numbers+=$number; $requested+=$route
     }
     $requested=@($requested | Sort-Object -Unique)

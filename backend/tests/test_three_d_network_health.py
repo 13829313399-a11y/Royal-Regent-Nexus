@@ -66,31 +66,32 @@ def publish(client, value):
     )
 
 
-def test_expanded_fleet_requires_new_complete_report_and_invalidates_old_health(client):
+@pytest.mark.parametrize("count", [16, 18])
+def test_expanded_fleet_requires_new_complete_report_and_invalidates_old_health(client, count):
     old = report()
     assert publish(client, old).status_code == 200
-    assert publish(client, report(machine_count=16)).status_code == 409
+    assert publish(client, report(machine_count=count)).status_code == 409
     dbm = importlib.import_module('app.db')
     models = importlib.import_module('app.models.three_d_printing')
     with dbm.SessionLocal() as db:
-        db.get(models.ThreeDPrintingSetting, 'huakang-a').machine_count = 16
+        db.get(models.ThreeDPrintingSetting, 'huakang-a').machine_count = count
         db.commit()
     state = dashboard(client)['network_health']
     assert state['status'] == 'degraded'
-    assert state['failed_machine_numbers'] == [12, 13, 14, 15, 16]
+    assert state['failed_machine_numbers'] == list(range(12, count + 1))
     assert publish(client, old).status_code == 409  # Even identical old retries fail closed.
     assert publish(client, report()).status_code == 409
     assert publish(client, report(machine_count=15)).status_code == 422
-    value = report(machine_count=16)
+    value = report(machine_count=count)
     duplicate = {**value, 'printers': value['printers'][:-1] + [value['printers'][0]]}
     assert publish(client, duplicate).status_code == 422
     result = publish(client, value)
     assert result.status_code == 200 and result.json()['status'] == 'healthy'
     assert publish(client, value).status_code == 200
-    failed = report(machine_count=16)
+    failed = report(machine_count=count)
     failed['printers'][-1].update(tls='failed', mqtt='skipped')
     result = publish(client, failed)
-    assert result.status_code == 200 and result.json()['failed_machine_numbers'] == [16]
+    assert result.status_code == 200 and result.json()['failed_machine_numbers'] == [count]
 
 
 def dashboard(client):

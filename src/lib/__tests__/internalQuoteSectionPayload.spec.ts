@@ -566,9 +566,9 @@ describe('internal quote section payload normalization', () => {
       quick_quote: { spray_labor_hkd: '2', paint_hkd: '3', paint_tax_rate_percent: 99 },
       rows: [{ name: '保留明细', operations: { spray: { quantity: 10, unit_price_hkd: 10 } } }],
     }) as unknown as PaintingPayload
-    expect(painting.quick_quote.paint_tax_rate_percent).toBe(13)
-    expect(calculatePaintingQuickPaintTaxHkd(painting)).toBeCloseTo(.39)
-    expect(calculatePaintingTotalHkd(painting)).toBeCloseTo(5.39)
+    expect(painting.quick_quote.paint_tax_rate_percent).toBe(0)
+    expect(calculatePaintingQuickPaintTaxHkd(painting)).toBe(0)
+    expect(calculatePaintingTotalHkd(painting)).toBeCloseTo(5)
 
     const sewing = normalizeInternalQuotePayload('sewing', {
       quote_mode: 'quick',
@@ -871,7 +871,7 @@ describe('internal quote section payload normalization', () => {
     })).toMatchObject({ injection_lines: [{ disney_mold_no: 'M02', disney_resin_cost_usd_kg: 6.32, disney_cycle_time_seconds: 39, disney_labor_rate_usd_hr: 10.77 }] })
     expect(normalizeInternalQuotePayload('painting', {
       rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: '.0171', operations: '34' }],
-    })).toEqual({ quote_mode: 'detail', quick_quote: { spray_labor_hkd: 0, paint_hkd: 0, paint_tax_rate_percent: 13 }, rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: .0171, operations: 34 }] })
+    })).toEqual({ quote_mode: 'detail', quick_quote: { spray_labor_hkd: 0, paint_hkd: 0, paint_tax_rate_percent: 0 }, rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: .0171, operations: 34 }] })
     expect(normalizeInternalQuotePayload('sales', {
       packaging_materials: [{
         item: '彩盒', specification: '四彩', category: 'color_box_inner_card', quantity: '1', unit_price_rmb: '3',

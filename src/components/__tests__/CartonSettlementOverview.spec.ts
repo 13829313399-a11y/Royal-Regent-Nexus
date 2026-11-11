@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 const { workspaceMock } = vi.hoisted(() => ({ workspaceMock: vi.fn() }))
 vi.mock('@/api/cartonSupplierSettlement', () => ({
-  supplierSettlementApi: { monthlyWorkspace: workspaceMock, supplierMonthlyWorkspace: workspaceMock },
+  supplierSettlementApi: { monthlyWorkspace: workspaceMock },
 }))
 
 import Component from '../CartonSettlementOverview.vue'
@@ -31,31 +31,31 @@ function settlement(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => { workspaceMock.mockReset() })
 
-it.each([false, true])('shows verified subtotal and original reference separately with supplier=%s', async supplier => {
-  const totals = { ...settlement().totals, inbound: null, net: null, verified_net: '320.00', pending_price_lines: 1 }
-  workspaceMock.mockResolvedValue(settlement({ totals,
-    customers: [{ key: 'code:DICKIE', name: 'Dickie', totals }],
-    lines: [line({ customer_key: 'code:DICKIE' }), line({ customer_key: 'code:DICKIE', source_key: 'RECEIPT:free',
-      document_no: 'DN-FREE', unit_price: '0.00', amount: '0.00' }),
-    line({ customer_key: 'code:DICKIE', source_key: 'RECEIPT:pending', document_no: 'DN-PENDING',
-      unit_price: null, amount: null, supplier_original_unit_price: '2.123456', supplier_original_amount: '12.74',
-      issues: ['送货单价待核实'] })],
-  }))
-  const wrapper = mount(Component, { props: { factoryId: 'huaxing', factories: [{ factory_id: 'huaxing' }], supplier } })
+it('adds the personal HKD reference only to CNY totals while querying and displaying original amounts', async () => {
+  workspaceMock.mockImplementation(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+  const reference = vi.fn((value: string) => `港币参考 HK$${(Number(value) * 1.1).toFixed(2)}`)
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing', moneyReference: reference } })
   try {
     await flushPromises()
-    const totalsCard = wrapper.get('[aria-label="本厂东康总额"]')
-    expect(totalsCard.text()).toContain('本月应结待核价')
-    expect(totalsCard.text()).toContain('已核实小计 320.00 · 1 行待核价')
-    expect(totalsCard.text()).not.toContain('12.74')
-    await wrapper.get('[aria-label="本月对账客户"]').setValue('code:DICKIE')
-    expect(wrapper.get('[aria-label="所选客户小计"]').text()).toContain('已核实小计 320.00 · 1 行待核价')
-    const rows = wrapper.get('[aria-label="本月对账明细表"]').findAll('tbody tr')
-    expect(rows.find(row => row.text().includes('DN-FREE'))!.get('[data-label="金额"]').text()).toBe('0.00')
-    const pending = rows.find(row => row.text().includes('DN-PENDING'))!
-    expect(pending.get('[data-label="单价"]').text()).toContain('原单价 2.123456')
-    expect(pending.get('[data-label="金额"]').text()).toContain('原单参考 12.74')
-    expect(wrapper.get('[aria-label="本月对账待处理清单"]').text()).toContain('送货单价待核实')
+    expect(wrapper.text()).toContain('1,380.00 人民币')
+    expect(wrapper.text()).toContain('港币参考 HK$1518.00')
+    expect(reference).toHaveBeenCalledWith('1380.00', 'CNY')
+    await wrapper.get('[aria-label="本月对账币种"]').setValue('HKD')
+    await flushPromises()
+    expect(workspaceMock).toHaveBeenLastCalledWith('huaxing', expect.any(String), 'HKD')
+    expect(wrapper.text()).toContain('1,380.00 港币')
+    expect(wrapper.text()).not.toContain('港币参考 HK$')
+  } finally { wrapper.unmount() }
+})
+
+it('leaves unpriced totals pending without converting them into a zero HKD figure', async () => {
+  workspaceMock.mockResolvedValue(settlement({ totals: { ...settlement().totals, inbound: null, net: null } }))
+  const reference = vi.fn(() => '港币参考 HK$0.00')
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing', moneyReference: reference } })
+  try {
+    await flushPromises()
+    expect(wrapper.text()).toContain('待核价 人民币')
+    expect(reference).toHaveBeenCalledExactlyOnceWith('0.00', 'CNY')
   } finally { wrapper.unmount() }
 })
 
@@ -187,13 +187,10 @@ it('shows a read-only month without submit, lock or unlock actions', async () =>
 })
 
 it('lists blocking items as reference only, without submission controls', async () => {
-  workspaceMock.mockResolvedValue(settlement({ blockers: ['1 行送货单缺价，不能计入应付：DN-9 ITEM-9'],
-    lines: [line({ issues: ['送货价格待双方核实，不能完成月结确认'] })] }))
+  workspaceMock.mockResolvedValue(settlement({ blockers: ['1 行送货单缺价，不能计入应付：DN-9 ITEM-9'] }))
   const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
   await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
   expect(wrapper.text()).toContain('1 行送货单缺价')
-  expect(wrapper.text()).toContain('送货价格待双方核实')
-  expect(wrapper.text()).not.toContain('不能完成月结确认')
   expect(wrapper.text()).toContain('按单号打开原凭证核对')
   expect(wrapper.findAll('button').map(button => button.text())).not.toContain('提交供应商核对')
   wrapper.unmount()

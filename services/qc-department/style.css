@@ -134,22 +134,6 @@ html, body {
 }
 .nav-icon { width: 16px; text-align: center; font-size: 14px; flex-shrink: 0; }
 
-.sidebar-footer {
-  padding: 14px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
-  flex-shrink: 0;
-}
-.footer-time {
-  font-family: var(--font-mono);
-  font-size: 20px;
-  color: var(--accent);
-  letter-spacing: 2px;
-  filter: drop-shadow(0 0 6px rgba(0,200,255,.4));
-}
-.footer-date { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-.footer-ver { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
-
 /* ════════════════════════════════════════
    MAIN LAYOUT
 ════════════════════════════════════════ */
@@ -688,6 +672,71 @@ input:disabled { opacity: .55; cursor: not-allowed; }
    REPORT PAGES
 ════════════════════════════════════════ */
 .report-page { max-width: 900px; }
+.report-type-slot {
+  display:flex;
+  flex:0 0 100%;
+  justify-content:flex-start;
+  padding-top:2px;
+}
+.report-type-slot:empty { display:none; }
+#qstats-root .report-type-slot { margin-top:10px; }
+.report-period-switch {
+  --report-period-count:3;
+  position:relative;
+  display:grid;
+  grid-template-columns:repeat(var(--report-period-count),minmax(0,1fr));
+  isolation:isolate;
+  width:248px;
+  max-width:100%;
+  padding:4px;
+  border:1px solid color-mix(in srgb,var(--text-dim) 24%,transparent);
+  border-radius:16px;
+  background:linear-gradient(145deg,color-mix(in srgb,var(--bg-card) 78%,transparent),color-mix(in srgb,var(--accent) 9%,var(--bg-panel)));
+  box-shadow:inset 0 1px 1px rgba(255,255,255,.55),inset 0 -1px 2px rgba(56,92,71,.08),0 2px 5px rgba(35,62,46,.07);
+  -webkit-backdrop-filter:blur(18px) saturate(135%);
+  backdrop-filter:blur(18px) saturate(135%);
+}
+.report-period-glass {
+  position:absolute;
+  z-index:-1;
+  top:4px;
+  bottom:4px;
+  left:4px;
+  width:calc((100% - 8px) / var(--report-period-count));
+  border:1px solid color-mix(in srgb,var(--text-dim) 20%,transparent);
+  border-radius:12px;
+  background:linear-gradient(150deg,color-mix(in srgb,var(--bg-card) 94%,transparent),color-mix(in srgb,var(--bg-card) 80%,var(--bg-panel)));
+  box-shadow:inset 0 1px 2px rgba(255,255,255,.85),inset 0 -1px 1px rgba(100,143,115,.12),0 2px 5px rgba(29,63,43,.16);
+  pointer-events:none;
+  will-change:transform;
+}
+.report-period-switch > button {
+  appearance:none;
+  border:0;
+  background:transparent;
+  color:var(--text-dim);
+  font:inherit;
+  font-size:14px;
+  min-height:36px;
+  padding:5px 10px;
+  border-radius:11px;
+  cursor:pointer;
+  transition:color 160ms ease,transform 120ms ease;
+  -webkit-tap-highlight-color:transparent;
+}
+.report-period-switch > button[aria-pressed="true"] { color:var(--text-hi);font-weight:600; }
+.report-period-switch > button:hover { color:var(--text-hi); }
+.report-period-switch > button:active { transform:scale(.96); }
+.report-period-switch > button:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+.report-period-switch > [hidden] { display:none!important; }
+@media(pointer:coarse) { .report-period-switch > button { min-height:44px; } }
+@media(prefers-reduced-motion:reduce) {
+  .report-period-switch > button { transition:none; }
+  .report-period-switch > button:active { transform:none; }
+}
+@media print {
+  .report-type-slot { display: none !important; }
+}
 .report-toolbar {
   display: flex;
   align-items: center;
@@ -2269,20 +2318,6 @@ body.theme-light .nav-item.active {
 }
 body.theme-light .nav-item.active .nav-icon { color: #0ea5e9; }
 
-/* 底部时间/版本区 */
-body.theme-light .sidebar-footer {
-  background: #f1f5f9;
-  border-top: 1px solid #e2e8f0;
-  color: #334155;
-}
-body.theme-light .footer-time {
-  color: #0284c7;
-  filter: none;
-}
-body.theme-light .footer-date { color: #64748b; }
-body.theme-light .footer-ver  { color: #94a3b8; }
-
-
 body.theme-light .topbar {
   background: #ffffff;
   border-bottom-color: #e5e7eb;
@@ -2800,7 +2835,7 @@ body.theme-light .batch-preview-table th {
 }
 
 /* ════════════════════════════════════════
-   §19  品质月报 / 品质年报 — 页面样式
+   §19  验货月报 / 验货年报 — 页面样式
 ════════════════════════════════════════ */
 
 /* ── 三列 grid 布局（月报用） ── */
@@ -3067,14 +3102,64 @@ body.theme-light #yearlyReportBody  .section-card {
   border-color: var(--red);
 }
 
-/* 浅色主题下登录页输入框 */
-body.theme-light #loginUsername,
-body.theme-light #loginPassword {
-  background: #fff;
-  color: #1e293b;
-  border-color: #cbd5e1;
+.qc-startup {
+  margin: 0;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 100dvh;
+  background: #fbfaf7;
+  color: var(--text-dim);
+  font-size: 14px;
 }
-
+.qc-startup[hidden] { display: none; }
+/* Keep this initial light-theme loader aligned with the Vue host loader. */
+.qc-startup .qc-orbit {
+  --orbit-paper: #fbfaf7;
+  --orbit-purple: #b6a2cf;
+  --orbit-green: #9bc5ac;
+  position: relative;
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+.qc-startup .qc-orbit-outer,
+.qc-startup .qc-orbit-inner {
+  position: absolute;
+  border-radius: 50%;
+  mask-image: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+}
+.qc-startup .qc-orbit-outer {
+  inset: 1px;
+  background: conic-gradient(from 15deg, color-mix(in srgb, var(--orbit-purple) 22%, var(--orbit-paper)) 5deg, var(--orbit-purple) 118deg, transparent 120deg 245deg, color-mix(in srgb, var(--orbit-purple) 22%, var(--orbit-paper)) 350deg);
+  animation: qc-orbit-spin 1.16s linear infinite;
+}
+.qc-startup .qc-orbit-inner {
+  inset: 9px;
+  background: conic-gradient(from 200deg, color-mix(in srgb, var(--orbit-green) 22%, var(--orbit-paper)) 5deg, var(--orbit-green) 128deg, transparent 130deg 260deg, color-mix(in srgb, var(--orbit-green) 22%, var(--orbit-paper)) 350deg);
+  animation: qc-orbit-spin 1.55s linear infinite reverse;
+}
+.qc-startup .qc-orbit-center {
+  position: absolute;
+  inset: 25px;
+  border-radius: 50%;
+  background: var(--orbit-green);
+}
+.qc-startup .qc-loading-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@keyframes qc-orbit-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .qc-startup .qc-orbit-outer,
+  .qc-startup .qc-orbit-inner { animation: none; }
+}
 
 /* ════════════════════════════════════════
    §OCR  图片识别录入区域样式
@@ -3208,10 +3293,6 @@ body.theme-light #page-sales-schedule .qs-toolbar { background:#f3f4f6; }
 #page-sales-schedule .qs-primary { color:#fff; background:#007fdb; border-color:#007fdb; font-weight:600; }
 #page-sales-schedule button:disabled { opacity:.5; cursor:not-allowed; }
 #page-sales-schedule :is(button,input,select,textarea):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
-#page-sales-schedule .qs-source { border:1px solid var(--border); background:var(--bg-panel); border-radius:8px; padding:12px 16px; margin-bottom:18px; color:var(--text-hi); }
-#page-sales-schedule .qs-source > div { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
-#page-sales-schedule .qs-source p { color:var(--text-dim); margin-top:4px; font-size:12px; }
-#page-sales-schedule .qs-source-badge { border:1px solid var(--border-hi); border-radius:4px; padding:1px 8px; color:var(--text-main); font-size:12px; }
 #page-sales-schedule .qs-filters { display:grid; grid-template-columns:minmax(210px,2.6fr) minmax(180px,1.5fr) minmax(110px,1fr) minmax(130px,1.1fr) auto; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--border); border-radius:7px; background:var(--bg-card); }
 #page-sales-schedule .qs-date-filter { position:relative; min-width:0; }
 #page-sales-schedule .qs-date-toggle { display:flex; align-items:center; gap:9px; width:100%; height:40px; padding:0 10px; border:1px solid var(--border-hi); border-radius:5px; color:var(--text-hi); background:var(--bg-input); cursor:pointer; text-align:left; }
@@ -3289,7 +3370,7 @@ body.theme-light #page-sales-schedule .qs-toolbar { background:#f3f4f6; }
 #page-sales-schedule .qs-editor-actions { display:flex; flex-direction:column; gap:10px; min-width:120px; }
 #page-sales-schedule .qs-editor-notice { margin:0 16px 15px; font-size:12px; color:var(--text-dim); }
 #page-sales-schedule .qs-sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
-body.theme-light #page-sales-schedule .qs-source, body.theme-light #page-sales-schedule .qs-editor-heading, body.theme-light #page-sales-schedule .qs-table .qs-group th { background:#eaf4fc; }
+body.theme-light #page-sales-schedule .qs-editor-heading, body.theme-light #page-sales-schedule .qs-table .qs-group th { background:#eaf4fc; }
 body.theme-light #page-sales-schedule .qs-table thead th, body.theme-light #page-sales-schedule .qs-table .qs-write { background:#f4f9fe; }
 @media (max-width:1024px) {
   #page-sales-schedule .qs-workspace { padding:16px; }
@@ -3304,8 +3385,6 @@ body.theme-light #page-sales-schedule .qs-table thead th, body.theme-light #page
   #page-sales-schedule .qs-editor-body label { flex-basis:100%; min-width:0; }
 }
 
-#page-sales-schedule .qs-source[data-mode="example"] { border-color:#d4a333; background:var(--bg-panel); }
-body.theme-light #page-sales-schedule .qs-source[data-mode="example"] { background:#fff7df; }
 #page-sales-schedule .qs-example-tag { display:block; color:var(--text-dim); font-size:11px; }
 
 /* 示例排期的整行选择，与现有验货表隔离。 */
@@ -3334,32 +3413,19 @@ body.theme-light #page-sales-schedule .qs-table tr.qs-selected > td { background
 #page-records .records-date-fields input { width:100%; box-sizing:border-box; min-width:0; padding:8px; border:1px solid var(--border); border-radius:5px; color:var(--text-main); background:var(--bg-input); font:inherit; }
 #page-records .records-date-actions { display:flex; justify-content:space-between; margin-top:14px; }
 #page-records #recordsDateError { color:#dc2626; font-size:12px; margin:10px 0 0; }
-#page-records .records-status-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 16px; border-top:1px solid var(--border); }
-#page-records .records-context { display:flex; align-items:center; min-width:0; font-size:13px; }
-#page-records #recordCount { white-space:nowrap; color:var(--text-main); }
-#page-records #inspectionSelection { border-left:1px solid var(--border); padding-left:16px; margin-left:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); min-width:0; }
-#page-records .records-hint { border-left:1px solid var(--border); padding-left:16px; margin-left:16px; color:var(--text-muted); white-space:nowrap; }
-#page-records .records-actions { display:flex; gap:16px; align-items:center; flex:none; }
 #page-records .records-toolbar button { font-family:var(--font-body); font-size:13px; cursor:pointer; }
-#page-records .records-text-btn, #page-records .records-refresh { background:none; border:0; color:var(--accent); padding:8px 4px; white-space:nowrap; }
+#page-records .records-text-btn { background:none; border:0; color:var(--accent); padding:8px 4px; white-space:nowrap; }
 #page-records .records-reset { border-left:1px solid var(--border); border-radius:0; padding-left:14px; }
-#page-records .records-refresh { color:var(--text-muted); }
-#page-records .records-export-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; border:1px solid #1677ed; background:#1677ed; color:#fff; border-radius:6px; padding:9px 14px; white-space:nowrap; }
-#page-records .records-export-btn:hover { background:#0967d7; }
 #page-records .records-toolbar :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 #page-records .records-toolbar button:disabled { opacity:.5; cursor:not-allowed; }
 #page-records .records-toolbar button:disabled[aria-busy="true"] { cursor:wait; }
 @media(max-width:1050px) {
   #page-records .records-filters { gap:8px; grid-template-columns:minmax(195px,2fr) minmax(155px,1.3fr) minmax(100px,.9fr) minmax(118px,1fr) auto; }
-  #page-records .records-context { flex-wrap:wrap; gap:6px 0; }
-  #page-records .records-hint { flex-basis:100%; border:0; padding:0; margin:0; }
 }
 @media(max-width:760px) {
   #page-records .records-filters { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
   #page-records .records-search { grid-column:1/-1; }
   #page-records .records-reset { border:0; padding-left:4px; text-align:left; }
-  #page-records .records-status-row { flex-wrap:wrap; }
-  #page-records .records-actions { margin-left:auto; }
 }
 
 #page-records .records-toolbar { container-type:inline-size; }
@@ -3367,8 +3433,6 @@ body.theme-light #page-sales-schedule .qs-table tr.qs-selected > td { background
   #page-records .records-filters { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
   #page-records .records-search { grid-column:1/-1; }
   #page-records .records-reset { border:0; padding-left:4px; text-align:left; }
-  #page-records .records-context { flex-wrap:wrap; gap:6px 0; }
-  #page-records .records-hint { flex-basis:100%; border:0; padding:0; margin:0; }
 }
 
 /* QC Liquid Glass. Visual layer only; print canvases and business grid metrics stay independent. */
@@ -3413,7 +3477,7 @@ body.qc-liquid-glass .sidebar {
   box-shadow:inset -1px 0 0 var(--border);clip-path:inset(0);
   backdrop-filter:blur(22px) saturate(135%); -webkit-backdrop-filter:blur(22px) saturate(135%);
 }
-body.qc-liquid-glass :is(.sidebar-logo,.sidebar-nav,.sidebar-footer) {background:transparent}
+body.qc-liquid-glass :is(.sidebar-logo,.sidebar-nav) {background:transparent}
 body.qc-liquid-glass .sidebar-logo {padding:18px 20px;gap:11px;border-color:var(--glass-border)}
 body.qc-liquid-glass .logo-icon {filter:none;animation:none;color:var(--accent)}
 body.qc-liquid-glass .logo-main {font-size:17px;letter-spacing:.3px;font-weight:650;color:var(--text-hi)}
@@ -3425,10 +3489,6 @@ body.qc-liquid-glass .nav-item:hover {background:var(--glass-active);border-colo
 body.qc-liquid-glass .nav-item.active {background:var(--glass-active);border-color:var(--glass-border);box-shadow:inset 0 1px 0 var(--glass-border);color:var(--accent);font-weight:600}
 body.qc-liquid-glass .nav-item .nav-icon {width:19px;height:19px;color:inherit;display:inline-flex;align-items:center;justify-content:center}
 body.qc-liquid-glass .nav-icon svg {width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
-body.qc-liquid-glass .sidebar-footer {padding:10px 20px;border-color:var(--border);display:grid;grid-template-columns:1fr auto;align-items:center;gap:2px 8px}
-body.qc-liquid-glass .footer-time {font-family:var(--font-body);font-size:14px;letter-spacing:0;filter:none;color:var(--text-main);font-variant-numeric:tabular-nums}
-body.qc-liquid-glass .footer-date {font-family:var(--font-body);color:var(--text-dim);margin:0;font-size:11px}
-body.qc-liquid-glass .footer-ver {grid-column:1/-1;margin-top:0;color:var(--text-dim)}
 body.qc-liquid-glass .topbar {
   min-height:58px;height:auto;padding:10px 20px;gap:12px;flex-wrap:wrap;
   background:var(--glass);border-color:var(--glass-border);box-shadow:0 1px 0 var(--border);
@@ -3498,8 +3558,6 @@ body.qc-liquid-glass #page-records .qis-table :is(textarea,select) {border-radiu
 body.qc-liquid-glass #page-records .qis-table select:has(option[value="PASS"]:checked) {background:#15803d!important;color:#fff!important}
 body.qc-liquid-glass #page-records .qis-table select:has(option[value="FAIL"]:checked) {background:#dc2626!important;color:#fff!important}
 body.qc-liquid-glass #page-records .qis-table small {color:var(--text-dim)}
-body.qc-liquid-glass :is(#qisImport,#qisUndo) {background:var(--bg-card);color:var(--text-main);border-color:var(--border);border-radius:8px}
-body.qc-liquid-glass #page-records .qis-latest-button {border-radius:9px}
 body.qc-liquid-glass .import-zone {border-style:dashed;background:var(--bg-panel)}
 body.qc-liquid-glass .import-zone:hover {background:var(--bg-hover)}
 body.qc-liquid-glass :is(.report-toolbar,.report-toolbar>div) {flex-wrap:wrap}
@@ -3570,3 +3628,19 @@ body.qc-liquid-glass .qwf-dialog button.qwf-primary {background:var(--glass-prim
   body.qc-liquid-glass *,body.qc-liquid-glass *::before,body.qc-liquid-glass *::after {animation:none!important;transition:none!important;scroll-behavior:auto!important}
 }
 }
+
+/* Customer schedule: one date cell per contiguous date range, selection per record. */
+#page-sales-schedule .qs-table .qs-pick-cell { padding:10px 6px; text-align:center; }
+#page-sales-schedule .qs-table .qs-pick-cell input { margin:0; vertical-align:middle; }
+#page-sales-schedule .qs-table .qs-date-cell { background:#20352c; color:#dcebe2; vertical-align:middle; }
+#page-sales-schedule .qs-date-main { display:block; font-size:12px; font-weight:600; white-space:nowrap; }
+#page-sales-schedule .qs-date-meta { display:block; margin-top:4px; font-size:11px; color:#adc2b5; white-space:nowrap; }
+#page-sales-schedule .qs-date-through { display:block; margin:4px 0; font-size:11px; color:var(--text-muted); }
+#page-sales-schedule .qs-table .qs-date-group-start:not(:first-child) > td { border-top:1px solid var(--border-hi); }
+body.theme-light #page-sales-schedule .qs-table .qs-date-cell { background:#f0f5f1; color:#254739; }
+body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
+
+.report-period-switch[hidden] { display:none!important; }
+.report-type-slot { align-items:center; gap:12px; }
+.report-type-slot > #reportTypeSelect { margin-left:auto; width:8.5rem; max-width:100%; min-height:36px; border:1px solid var(--border); border-radius:8px; padding:5px 10px; background:var(--bg-input); color:var(--text-hi); font:inherit; }
+.report-toolbar label[hidden] { display:none!important; }

@@ -1,18 +1,18 @@
 /* ══════════════════════════════════════════════════════════════
-   兴信 QMS 后端服务器  ·  零依赖（Node 内置 http + node:sqlite）
+   QC 工作台内部服务  ·  零依赖（Node 内置 http + node:sqlite）
    ────────────────────────────────────────────────────────────
    职责：
-     1. 用 SQLite 文件库持久化 验货记录 / 账号 / 不良描述库
-     2. 首次启动从 seed.json 灌入默认账号 + 不良库
-     3. 提供 REST API：/api/bootstrap (拉全量)、/api/records|users|defects (全量写回)
-     4. 同端口静态托管前端（index.html / app.js / ...）
+     1. 用 SQLite 文件库持久化验货记录、伙伴和不良描述库
+     2. 首次启动从 seed.json 灌入不良库
+     3. 提供 REST API：/api/bootstrap、/api/records、/api/partners、/api/defects
+     4. 通过 Nexus 网关处理业务数据请求
 
    多厂区（2026-09 新增）：
      · 每个厂区一套完全独立的数据库文件：server/data/<厂区id>/qc.db
-     · 数据（记录 / 账号 / 不良库）在厂区之间物理隔离、互不流通
+     · 数据（记录 / 伙伴 / 不良库）在厂区之间物理隔离、互不流通
      · 所有数据 API 通过 ?company=<厂区id> 指定目标厂区（缺省默认 dg-xingxin，兼容旧链接）
      · 旧版单库（生产：DATA_PATH/qc.db；本地：server/qc.db）首次启动自动迁移为东莞兴信库
-   启动：node server.js   （默认端口 8765，可用环境变量 PORT 覆盖）
+   启动：node server.js   （默认端口 3411，可用环境变量 PORT 覆盖）
 ══════════════════════════════════════════════════════════════ */
 'use strict';
 const http = require('node:http');
@@ -21,24 +21,6 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { referenceData, clearReferenceData } = require('./reference-data');
-
-/* ── 门户 SSO 票据（HS256 JWT）校验：与门户 SSO_SECRET 一致 ── */
-function verifyPortalTicket(ticket) {
-  const parts = String(ticket || '').split('.');
-  if (parts.length !== 3) throw new Error('票据格式不正确');
-  const secret = process.env.SSO_SECRET || 'dev-sso-secret-change-me';
-  const expected = crypto.createHmac('sha256', secret).update(parts[0] + '.' + parts[1]).digest();
-  const actual = Buffer.from(parts[2].replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) throw new Error('票据校验失败');
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
-  } catch (e) { throw new Error('票据无效'); }
-  if (!payload.exp || Date.now() > payload.exp) throw new Error('票据已过期');
-  if (payload.app !== 'xingxin-qms') throw new Error('票据不属于本系统');
-  if (!payload.sub) throw new Error('票据缺少账号');
-  return payload;
-}
 
 const ROOT      = path.join(__dirname, '..');           // 前端静态根目录
 const DATA_DIR  = process.env.DATA_PATH || path.join(__dirname, 'data');
@@ -506,41 +488,6 @@ function replaceRecords(db, records) {
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
-function replaceUsers(db, users) {
-  migrateUsersTable(db);
-  const ins = db.prepare('INSERT INTO users(username,password,role,enabled,createdAt,lastLoginAt,name,dept,perms) VALUES(?,?,?,?,?,?,?,?,?)');
-  db.exec('BEGIN');
-  try {
-    db.prepare('DELETE FROM users').run();
-    for (const u of users) ins.run(
-      u.username, u.password ?? null, u.role ?? 'viewer', u.enabled ? 1 : 0,
-      u.createdAt ?? null, u.lastLoginAt ?? null,
-      u.name ?? null, u.dept ?? null,
-      u.perms ? (typeof u.perms === 'string' ? u.perms : JSON.stringify(u.perms)) : null,
-    );
-    db.exec('COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
-  ensureSuperAdmin(db);
-}
-
-/* 保底：主账号 jc 在任何子公司都不能被删除/停用（确保管理员永远进得去） */
-function ensureSuperAdmin(db) {
-  try {
-    const seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8'));
-    const jc = (seed.users || []).find(u => u.username === 'jc');
-    if (!jc) return;
-    const cur = db.prepare("SELECT * FROM users WHERE username='jc'").get();
-    if (!cur) {
-      db.prepare('INSERT INTO users(username,password,role,enabled,createdAt,lastLoginAt) VALUES(?,?,?,1,?,NULL)')
-        .run('jc', jc.password ?? null, 'admin', new Date().toISOString());
-      console.log('[保底] jc 主账号被删除，已自动恢复');
-    } else if (!cur.enabled || cur.role !== 'admin') {
-      db.prepare("UPDATE users SET enabled=1, role='admin' WHERE username='jc'").run();
-      console.log('[保底] jc 主账号被停用/降权，已自动恢复');
-    }
-  } catch (e) { console.warn('[保底] jc 主账号检查失败：', e.message); }
-}
-
 /* 供应商&客户名单（全量替换） */
 function replacePartners(db, list) {
   const ins = db.prepare('INSERT INTO partners(name,type,createdAt) VALUES(?,?,?)');
@@ -563,16 +510,12 @@ function replaceDefects(db, lib) {
 }
 
 /* ── 首次启动灌种子（仅在对应表为空时）──
-   includeRecords=false 时只灌默认账号 + 不良库（用于新厂区，不带示例验货记录） */
+   includeRecords=false 时只灌不良库（用于新厂区，不带示例验货记录） */
 function seedIfEmpty(db, { includeRecords = true } = {}) {
-  let seed = { records: [], users: [], defectLib: [] };
+  let seed = { records: [], defectLib: [] };
   try { seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')); }
   catch (e) { console.warn('[seed] 读取 seed.json 失败，跳过灌种子：', e.message); }
 
-  if (db.prepare('SELECT COUNT(*) c FROM users').get().c === 0 && seed.users?.length) {
-    replaceUsers(db, seed.users);
-    console.log('[seed] 灌入默认账号', seed.users.length, '个');
-  }
   if (includeRecords && db.prepare('SELECT COUNT(*) c FROM records').get().c === 0 && seed.records?.length) {
     replaceRecords(db, seed.records);
     console.log('[seed] 灌入验货记录', seed.records.length, '条');
@@ -647,7 +590,7 @@ function getDb(companyId) {
   db.exec(SCHEMA_SQL);
   migrateUsersTable(db);   /* 老库补齐 姓名/部门/权限 列 */
   migrateRecordsTable(db); /* 老库补齐 加工类型 列 */
-  // 东莞老库已带数据则无需灌种子；全新厂区只灌账号 + 不良库，不带示例记录
+  // 东莞老库已带数据则无需灌种子；全新厂区只灌不良库，不带示例记录
   seedIfEmpty(db, { includeRecords: companyId === DEFAULT_COMPANY });
   _dbs.set(companyId, db);
   console.log('[DB] 厂区「' + companyName(companyId) + '」数据库就绪：' + dbPath);
@@ -660,10 +603,6 @@ migrateLegacyDb();
 function getBootstrap(db) {
   const records = db.prepare('SELECT * FROM records ORDER BY id').all().map(rowToRecord);
   const nextId  = nextRecordId(db);
-  const users   = db.prepare('SELECT * FROM users').all().map(u => Object.assign({}, u, {
-    enabled: !!u.enabled,
-    perms: (() => { try { return u.perms ? JSON.parse(u.perms) : null; } catch (e) { return null; } })(),
-  }));
   const defectLib = db.prepare('SELECT * FROM defect_library ORDER BY id').all().map(d => ({
     name: d.name, category: d.category, defaultLevel: d.defaultLevel,
     keywords: (() => { try { return JSON.parse(d.keywords || '[]'); } catch (e) { return []; } })(),
@@ -671,7 +610,7 @@ function getBootstrap(db) {
   }));
   const partners = db.prepare('SELECT * FROM partners ORDER BY id').all()
     .map(p => ({ name: p.name, type: p.type, createdAt: p.createdAt }));
-  return { records, nextId, users, defectLib, partners, referenceData: referenceData(db) };
+  return { records, nextId, defectLib, partners, referenceData: referenceData(db) };
 }
 
 /* ════════ HTTP 工具 ════════ */
@@ -879,30 +818,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/health' && req.method === 'GET') {
       return sendJson(res, 200, { ok: true, time: new Date().toISOString() });
     }
-    /* ── 厂区清单（登录页用，无需鉴权）── */
+    /* ── Nexus 托管运行时校验厂区隔离配置 ── */
     if (p === '/api/companies' && req.method === 'GET') {
       return sendJson(res, 200, { companies: COMPANIES });
-    }
-
-    /* ── 门户 SSO 验票（免登，无需鉴权，不分厂区）── */
-    if (p === '/api/sso-verify' && req.method === 'POST') {
-      const body = await readBody(req);
-      try {
-        const claims = verifyPortalTicket(body && body.ticket);
-        return sendJson(res, 200, {
-          ok: true,
-          user: {
-            username: String(claims.sub),
-            name: String(claims.name || claims.sub),
-            dept: String(claims.dept || ''),
-            role: 'admin',
-            perms: claims.perms || null,
-          },
-          companies: Array.isArray(claims.companies) ? claims.companies : null,
-        });
-      } catch (e) {
-        return sendJson(res, 401, { ok: false, error: String(e && e.message || e) });
-      }
     }
 
     /* ── 数据类路由：解析目标厂区（缺省东莞，兼容旧链接）── */
@@ -953,11 +871,6 @@ const server = http.createServer(async (req, res) => {
       replaceRecords(db, Array.isArray(body.records) ? body.records : []);
       return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM records').get().c });
     }
-    if (p === '/api/users' && req.method === 'POST') {
-      const body = await readBody(req);
-      replaceUsers(db, Array.isArray(body.users) ? body.users : []);
-      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM users').get().c });
-    }
     if (p === '/api/partners' && req.method === 'POST') {
       const body = await readBody(req);
       replacePartners(db, Array.isArray(body.partners) ? body.partners : []);
@@ -996,12 +909,12 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, process.env.HOST || '127.0.0.1', () => {
   console.log('════════════════════════════════════════════');
-  console.log('  兴信 QMS 后端已启动（多厂区模式）');
-  console.log('  本机:   http://localhost:' + PORT + '/index.html');
+  console.log('  QC 工作台内部服务已启动（多厂区模式）');
+  console.log('  内部端口: ' + PORT);
   console.log('  数据目录: ' + DATA_DIR);
   for (const c of COMPANIES) {
     const b = getBootstrap(getDb(c.id));
-    console.log('  厂区「' + c.name + '」: 记录 ' + b.records.length + ' 条 / 账号 ' + b.users.length + ' 个 / 不良库 ' + b.defectLib.length + ' 条');
+    console.log('  厂区「' + c.name + '」: 记录 ' + b.records.length + ' 条 / 不良库 ' + b.defectLib.length + ' 条');
   }
   console.log('  AI(百炼): ' + (AI.ready ? ('已就绪, 模型 ' + AI.ocrModel) : '未配置(填 ai-config.json 后调 /api/ai/reload)'));
   console.log('════════════════════════════════════════════');

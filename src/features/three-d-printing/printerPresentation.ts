@@ -8,6 +8,16 @@ export function freshestPrinter(live?: ThreeDPrinter, fetched?: ThreeDPrinter) {
   // Staleness can change without a new device timestamp.
   return live.status_stale || !live.connected ? live : fetched;
 }
+// A stale snapshot from the API normally has connected=false and state=STALE.
+export function isStaleObservation(printer: ThreeDPrinter) {
+  return !!printer.status_stale && (printer.state === "STALE" || printer.connected);
+}
+export const hasReading = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+export const hasProgress = (value: unknown): value is number =>
+  hasReading(value) && value >= 0 && value <= 100;
+export const temperature = (value: unknown) => hasReading(value) ? Math.round(value) + "°" : "—";
+
 export interface PrinterEvent {
   id: string;
   state: string;

@@ -92,6 +92,56 @@ def test_invalid_or_ambiguous_values_fail_closed(key, bad):
     assert result.manual_override_allowed
 
 
+def test_unclear_batch_keeps_the_other_four_fields_and_a_completion_template():
+    value = evidence()
+    value = replace(value, text_boxes=tuple(replace(b, confidence=.6) if b.text == 'RR6015P' else b
+                                             for b in value.text_boxes))
+    result = plan(value)
+    assert result.status == 'ERROR' and not result.target_file_name
+    assert result.filename_template == '{report_no}-#{item_no}-{po_numbers}-{quantity}-{report_date}.pdf'
+    fields = {field.key: field for field in result.fields}
+    assert fields['report_no'].validation_error and fields['report_no'].normalized_text == ''
+    assert {key: field.normalized_text for key, field in fields.items() if key not in ('report_header', 'report_no')} == {
+        'item_no': '57812', 'po_numbers': '1931771', 'quantity': '2800', 'report_date': '2026.3.4',
+    }
+    assert fields['report_header'].raw_text == value.raw_text
+    payload = result.as_dict()
+    assert payload['filename_template'] == result.filename_template
+    assert payload['fields'][1]['validation_error']
+
+
+def test_multiple_bad_fields_are_all_returned_without_losing_later_valid_fields():
+    result = plan(evidence(report='RR6O15P', quantity='0', date='2/29/2026'))
+    assert result.status == 'ERROR' and len(result.issues) == 3
+    assert {field.key for field in result.fields if field.validation_error} == {'report_no', 'quantity', 'report_date'}
+    assert next(field for field in result.fields if field.key == 'item_no').normalized_text == '57812'
+    assert next(field for field in result.fields if field.key == 'po_numbers').normalized_text == '1931771'
+    assert all(not field.normalized_text for field in result.fields if field.validation_error)
+    wrong_report = plan(replace(evidence(), normalized_text='OTHER INSPECTION REPORT'))
+    assert not wrong_report.filename_template
+
+
+def test_partial_name_stays_blocked_until_manual_completion_and_keeps_pdf_bytes():
+    rule = CaixingInspectionRule()
+    source = PdfRenameSource('scan.pdf', pdf())
+    read = lambda *_: evidence(report='RR6O15P')
+    preview = build_pdf_rename_preview(rule, (source,), recognizer=read)
+    with pytest.raises(PdfRenameServiceError) as exc:
+        execute_pdf_rename_batch(rule, (source,), expected_preview_token=preview.preview_token,
+                                recognizer=read, ocr_review_confirmed=True)
+    assert exc.value.code == 'PDF_RENAME_PREVIEW_HAS_ERRORS'
+    overrides = (PdfRenameManualOverride(0, 'RR6015P-#57812-1931771-2800-2026.3.4.pdf', True),)
+    corrected = build_pdf_rename_preview(rule, (source,), recognizer=read, manual_overrides=overrides)
+    assert corrected.items[0].filename_template == preview.items[0].filename_template
+    assert corrected.items[0].fields == preview.items[0].fields
+    assert corrected.items[0].manual_override and corrected.review_count == 1
+    result = execute_pdf_rename_batch(rule, (source,), expected_preview_token=corrected.preview_token,
+                                     recognizer=read, manual_overrides=overrides, ocr_review_confirmed=True)
+    with ZipFile(BytesIO(result.content)) as archive:
+        assert archive.namelist() == [overrides[0].target_file_name]
+        assert archive.read(overrides[0].target_file_name) == source.content
+
+
 @pytest.mark.parametrize('missing', ['Batch no.', 'RR6015P', 'Item number', '57812NMC4', '1931771', '2800', '3/04/2026'])
 def test_missing_labels_or_cells_never_borrow_neighbour_or_old_name(missing):
     value = evidence()

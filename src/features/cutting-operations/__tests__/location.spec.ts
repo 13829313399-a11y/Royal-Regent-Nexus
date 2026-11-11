@@ -60,7 +60,7 @@ describe('monthly reconciliation destinations',()=>{
   it('opens the same order and summary date from the planning production summary',async()=>{
     vi.mocked(ordersApi.read).mockResolvedValue({ ...order, current: { ...order.current!, data: { ...order.current!.data, planning: {} } } })
     const router = await open('planning', true)
-    const link = wrapper.findAll('a').find(a => a.text() === '进入每日填数查看明细')!
+    const link = wrapper.findAll('a').find(a => a.text() === '进入每日记录查看明细')!
     await link.trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/modules/production/cutting/reporting')
@@ -105,7 +105,7 @@ describe('monthly reconciliation destinations',()=>{
     await flushPromises()
     expect(wrapper.text()).toContain('无法定位关联订单')
     expect(wrapper.text()).toContain('关联订单无法查看')
-    expect(wrapper.text()).not.toContain('每日填数尚未启用')
+    expect(wrapper.text()).not.toContain('每日记录尚未启用')
     expect(wrapper.text()).not.toContain('TARGET-ORDER')
     await wrapper.findAll('a').find(a=>a.text()==='返回订单列表')!.trigger('click')
     await flushPromises()

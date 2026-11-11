@@ -6,7 +6,7 @@ from app.services.identity_resolver import stamp
 FACTORIES = {"huakang-a": "华康A", "huakang-b": "华康B", "huakang-c": "华康C", "huakang-d": "华康D", "huaxing": "华兴", "huadeng": "华登"}
 DEPARTMENTS = {"assembly": "装配部", "electronic": "电子部", "engineering": "工程部", "management": "总务",
                "molding": "啤机部", "painting": "喷油部", "pmc-warehouse": "PMC仓库", "production": "生产部",
-               "qa": "QA部", "qc": "QC部", "carton": "纸箱部", "sales-business": "业务部", "sewing": "车缝部",
+               "qa": "QA部", "qc": "QC部", "carton": "纸箱部", "sales-business": "业务部", "accounting": "会计部", "sewing": "车缝部",
                "hair": "植发部", "slush": "搪胶部", "three-d-printing": "3D打印部", "warehouse": "仓管部"}
 
 

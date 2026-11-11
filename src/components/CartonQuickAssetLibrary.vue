@@ -126,6 +126,15 @@ const statusFilters = computed(() => [
   { id: 'ALL', label: '全部版本', count: matchingEntries.value.length },
   ...(['DRAFT', 'PENDING', 'READY', 'UNCLASSIFIED', 'HISTORY'] as const).map(id => ({ id, label: quickStatusLabel[id], count: matchingEntries.value.filter(x => documentState(x) === id).length })),
 ])
+const warehouseToolbar = computed(() => props.audience === 'warehouse' && !props.assetIds)
+const versionIds = ['CURRENT', 'ALL', 'HISTORY']
+const versionFilters = computed(() => statusFilters.value.filter(option => versionIds.includes(option.id)))
+const currentStatusFilters = computed(() => statusFilters.value.filter(option => !versionIds.includes(option.id)))
+const versionScope = computed(() => versionIds.includes(filter.value) ? filter.value : 'CURRENT')
+const currentStatus = computed({
+  get: () => versionScope.value === 'CURRENT' ? filter.value : 'CURRENT',
+  set: value => { filter.value = value },
+})
 const visible = computed(() => matchingEntries.value.filter(x => filter.value === 'ALL' || (filter.value === 'CURRENT' ? documentState(x) !== 'HISTORY' : documentState(x) === filter.value)))
 const ordered = computed(() => [...visible.value].sort((a,b) => sort.value === 'CONTRACT' ? a.contract_number.localeCompare(b.contract_number) : (b.created_at || '').localeCompare(a.created_at || '') || a.id.localeCompare(b.id)))
 const pageCount = computed(() => Math.max(1, Math.ceil(ordered.value.length / 20)))
@@ -254,6 +263,14 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
     <template v-else>
       <div class="carton-mark-tools mt-4 min-w-0 overflow-hidden rounded-xl border border-border">
         <div class="flex flex-wrap items-end gap-x-4 gap-y-2 border-b border-border p-3 sm:px-4">
+          <div v-if="warehouseToolbar" class="flex min-w-0 flex-wrap gap-1 rounded-lg bg-muted/40 p-1" role="group" aria-label="资料版本范围">
+            <Button v-for="option in versionFilters" :key="option.id" type="button"
+              :variant="versionScope === option.id ? 'soft' : 'ghost'"
+              :aria-pressed="versionScope === option.id" :aria-label="`${option.label} ${loading || error ? '数量未读取' : option.count}`"
+              :data-status-filter="option.id" class="h-9 px-2.5" @click="filter = option.id">
+              {{ option.label }}<span class="rounded bg-current/5 px-1.5 tabular-nums">{{ loading || error ? '—' : option.count }}</span>
+            </Button>
+          </div>
           <label v-if="search === undefined" class="min-w-40 flex-1 text-xs">搜索资料<input v-model="keyword" aria-label="搜索资料" placeholder="文件名、合同、货号" class="mt-1 block h-9 w-full rounded-lg border border-input bg-card px-3 text-sm"></label>
           <div class="flex min-w-0 flex-[1_1_21rem] flex-wrap items-center justify-between gap-3">
             <label class="flex min-h-9 items-center gap-2 text-xs font-semibold text-muted-foreground" title="按上传部门筛选，包含该部门其他同事上传的资料；不勾选时显示全部有权查看的资料。"><input v-model="mine" type="checkbox" :aria-label="uploadFilterLabel">{{ uploadFilterLabel }}</label>
@@ -264,7 +281,13 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
           </div>
         </div>
         <CartonFilterBar inline-actions label="资料筛选" class="carton-mark-filters">
-          <label class="carton-mark-filter-wide">资料状态
+          <label v-if="warehouseToolbar" class="min-w-0 text-xs">当前资料状态
+            <select v-model="currentStatus" aria-label="当前资料状态" :disabled="versionScope !== 'CURRENT'" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm disabled:opacity-50">
+              <option value="CURRENT">全部状态</option>
+              <option v-for="option in currentStatusFilters" :key="option.id" :value="option.id">{{ option.label }} · {{ loading || error ? '—' : option.count }}</option>
+            </select>
+          </label>
+          <label v-else class="carton-mark-filter-wide">资料状态
             <select v-model="filter" aria-label="资料状态">
               <option v-for="option in statusFilters" :key="option.id" :value="option.id">{{ option.label }} · {{ loading || error ? '—' : option.count }}</option>
             </select>

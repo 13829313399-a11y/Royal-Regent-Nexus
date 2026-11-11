@@ -70,7 +70,6 @@ import { useMoneyPreference } from '@/features/carton-procurement/moneyPreferenc
 import { estimateMoney, moneyLabel, unitCostLabel, moneyTotals, type InventoryMoney } from '@/lib/cartonInventoryMoney'
 import { formatBusinessDate } from '@/lib/dateTime'
 import { scheduleOrderReminder, type ScheduleOrderReminder } from '@/lib/cartonScheduleDeadline'
-import { weeklyExceptionLookup } from '@/lib/cartonAlertIndex'
 import { scheduleMarkChanges, effectiveSchedulePo, scheduleCustomerPo, scheduleLinkedPoMatches, scheduleDemandSnapshot, scheduleMarkState, scheduleQuantityCandidates, scheduleQuantityMatchBasis } from '@/features/carton-procurement/scheduleDemand'
 import { buildBusinessOrderAlerts, type BusinessOrderAlert, type BusinessOrderAlertKind } from '@/features/carton-procurement/businessAlerts'
 import { orderDraftKey, orderDraftFormFingerprint, readOrderDraft, writeOrderDraft, removeOrderDraft, type OrderDraftContext, type OrderDraftForm, type OrderDraftMaterial } from '@/features/carton-procurement/orderDraft'
@@ -83,7 +82,7 @@ import { createRandomUuid } from '@/lib/randomUuid'
 import { isSupplierOrderSource, type SupplierOrderSource } from '@/features/carton-procurement/supplierOrderSource'
 import { useCartonMovementHistory } from '@/features/carton-procurement/useCartonMovementHistory'
 import { formatShanghaiMovementTime } from '@/lib/cartonMovementTime'
-import { scheduleWorkItem, scheduleWorkViewMatches, compareScheduleWorkPriority, type ScheduleWorkView, type ScheduleWorkItem, type ScheduleOrderCategory, type ScheduleWorkReviews } from '@/features/carton-procurement/scheduleWorkViews'
+import { scheduleWorkItem, scheduleWorkViewMatches, compareScheduleWorkPriority, type ScheduleWorkView, type ScheduleWorkItem, type ScheduleOrderCategory } from '@/features/carton-procurement/scheduleWorkViews'
 import CartonPaperPicker from '@/components/CartonPaperPicker.vue'
 import CartonMasterWorkspace from '@/components/CartonMasterWorkspace.vue'
 import { cartonCustomerResponsibilitiesApi, emptyResponsibilities } from '@/api/cartonCustomerResponsibilities'
@@ -143,6 +142,8 @@ import { cartonSupplierPortalApi, type PendingSupplierShipment } from '@/api/car
 import { useWorkCenterStore } from '@/stores/workCenter'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import CartonStocktakeWorkspace from '@/components/CartonStocktakeWorkspace.vue'
+import CartonExceptionDeliverySource from '@/components/CartonExceptionDeliverySource.vue'
+import { exceptionGuide } from '@/features/carton-procurement/exceptionGuide'
 import CartonOrderReceiptDialog from '@/components/CartonOrderReceiptDialog.vue'
 import CartonOrderBatchActionDialog from '@/components/CartonOrderBatchActionDialog.vue'
 import CartonSelectionSummary from '@/components/CartonSelectionSummary.vue'
@@ -273,11 +274,11 @@ const weeklyImportCustomerCode = ref('')
 const weeklyImportScope = ref(emptyScheduleImportScope())
 watch(weeklyImportCustomerCode, () => { weeklyImportScope.value = { ...weeklyImportScope.value, full_scope_confirmed: false } })
 let weeklyImportGeneration = 0
-const scheduleOrderFilter = ref<'ALL' | 'WITH_MARKS' | ScheduleOrderCategory>('ALL')
+const scheduleOrderFilter = ref('ALL')
 const scheduleChangeFilter = ref('ALL')
 const scheduleDateField = ref<'CUSTOMER_DUE' | 'INSPECTION'>('CUSTOMER_DUE')
 const scheduleDateFrom = ref(''), scheduleDateTo = ref('')
-const scheduleSort = ref<'SOURCE' | 'WORK_PRIORITY' | 'DATE_ASC' | 'DATE_DESC'>('SOURCE')
+const scheduleSort = ref('WORK_PRIORITY')
 const scheduleWorkView = ref<ScheduleWorkView>('ATTENTION')
 const scheduleWorkViewOptions: { id: ScheduleWorkView; label: string }[] = [
   { id: 'ATTENTION', label: '当前需处理' }, { id: 'FUTURE', label: '后续待安排' },
@@ -306,6 +307,10 @@ const monthlyPeriod = ref(businessTodayIso().slice(0, 7))
 const monthlyCurrency = ref('CNY')
 const monthlyReturnSource = ref<{ id: string; refundId?: string } | null>(null)
 const closingView = ref(route.query.closing_view === 'inventory' ? 'INVENTORY' : route.query.closing_view === 'returns' ? 'RETURNS' : route.query.closing_view === 'payables' ? 'PAYABLES' : 'OVERVIEW')
+const closingNavigation = [
+  { label: '日常核对', tabs: [{ id: 'OVERVIEW', label: '本月对账' }, { id: 'RETURNS', label: '退货签收与退款' }] },
+  { label: '资金与库存记录', tabs: [{ id: 'PAYABLES', label: '应付与付款' }, { id: 'INVENTORY', label: '库存月结记录' }] },
+] as const
 watch(() => route.query.closing_view, value => { closingView.value = value === 'inventory' ? 'INVENTORY' : value === 'returns' ? 'RETURNS' : value === 'payables' ? 'PAYABLES' : 'OVERVIEW' })
 function selectClosingView(value: 'OVERVIEW' | 'RETURNS' | 'PAYABLES' | 'INVENTORY') {
   return router.replace({ query: { ...route.query, factory: selectedFactoryId.value, tab: 'closing', closing_view: value === 'OVERVIEW' ? undefined : value.toLowerCase() } })
@@ -464,7 +469,7 @@ const undoImportTarget = ref<CartonImportBatchResponse | null>(null)
 const undoImportReason = ref('本次导入文件有误')
 const undoingImport = ref(false)
 const selectedWeeklyBatchId = ref('')
-const pendingScheduleNavigation = ref<{ batchId: string; customerCode: string } | null>(null)
+const pendingScheduleNavigation = ref<{ batchId: string; kind: 'WEEKLY_SCHEDULE' | 'INSPECTION_SCHEDULE'; search?: string } | null>(null)
 const selectedInspectionBatchId = ref('')
 const replenishTarget = ref<CartonOrderResponse | null>(null)
 const replenishResponsibility = ref<'' | 'OWN' | 'SUPPLIER'>('')
@@ -749,18 +754,28 @@ async function loadScheduleHistory(restore = false) {
   if (weeklyCheckMode.value === 'HISTORY') return
   const token = ++scheduleHistorySequence, factory = selectedFactoryId.value, viewer = authStore.currentUser?.id, authorization = authStore.authorizationVersion
   const kind: 'WEEKLY_SCHEDULE' | 'INSPECTION_SCHEDULE' = weeklyCheckMode.value === 'ORDER_GAP' ? 'WEEKLY_SCHEDULE' : 'INSPECTION_SCHEDULE'
+  const current = () => token === scheduleHistorySequence && factory === selectedFactoryId.value
+    && viewer === authStore.currentUser?.id && authorization === authStore.authorizationVersion && activeTab.value === 'weekly-check'
+    && weeklyCheckMode.value === (kind === 'WEEKLY_SCHEDULE' ? 'ORDER_GAP' : 'INSPECTION_REMINDER')
   scheduleHistoryLoading.value = true; scheduleHistoryError.value = ''
   try {
     const page = await cartonProcurementApi.listImportsPage(factory, { types: [kind], limit: 20, offset: 0, customer: scheduleCustomer.value })
-    if (token !== scheduleHistorySequence || factory !== selectedFactoryId.value || viewer !== authStore.currentUser?.id || authorization !== authStore.authorizationVersion || activeTab.value !== 'weekly-check') return
+    if (!current()) return
     const history = kind === 'WEEKLY_SCHEDULE' ? weeklyImportHistory : inspectionImportHistory
     history.value = page.items
     const navigation = pendingScheduleNavigation.value
-    if (navigation && kind === 'WEEKLY_SCHEDULE') {
-      const batch = await cartonDashboardApi.batch(factory, navigation.batchId)
-      if (token !== scheduleHistorySequence || factory !== selectedFactoryId.value) return
-      if (batch.status === 'REJECTED' || batch.factory_id !== factory || batch.import_type !== kind) throw new Error('该提醒的排期批次已撤回或不可用')
-      restoreWeeklyImport(batch); pendingScheduleNavigation.value = null
+    if (navigation?.kind === kind) {
+      const batch = kind === 'WEEKLY_SCHEDULE'
+        ? await cartonDashboardApi.batch(factory, navigation.batchId)
+        : await cartonProcurementApi.importDetail(factory, navigation.batchId)
+      if (!current() || pendingScheduleNavigation.value !== navigation) return
+      if (batch.id !== navigation.batchId || batch.status === 'REJECTED' || batch.factory_id !== factory || batch.import_type !== kind) {
+        throw new Error('原排期批次已撤回或当前不可用。')
+      }
+      if (kind === 'WEEKLY_SCHEDULE') restoreWeeklyImport(batch)
+      else restoreInspectionImport(batch)
+      if (navigation.search) globalSearch.value = navigation.search
+      pendingScheduleNavigation.value = null
     } else if (restore) {
       const selected = kind === 'WEEKLY_SCHEDULE' ? activeWeeklyBatch.value : activeInspectionBatch.value
       const batch = page.items.find(item => item.id === selected?.id) ?? (selected ? { ...selected, detail_loaded: false } : page.items.find(item => item.status !== 'REJECTED'))
@@ -769,7 +784,7 @@ async function loadScheduleHistory(restore = false) {
         else { activeInspectionBatch.value = null; selectedInspectionBatchId.value = ''; selectedInspectionFileName.value = ''; localInspectionChecks.splice(0) }
       } else if (batch) await viewImportResult(batch)
     }
-  } catch (cause) { if (token === scheduleHistorySequence) { scheduleHistoryError.value = getApiErrorMessage(cause); throw cause } }
+  } catch (cause) { if (current()) { scheduleHistoryError.value = getApiErrorMessage(cause); throw cause } }
   finally { if (token === scheduleHistorySequence) scheduleHistoryLoading.value = false }
 }
 
@@ -836,6 +851,7 @@ const historyReviewCount = (batch: CartonImportBatchResponse) => typeof batch.pa
 const historyAsOf = (batch: CartonImportBatchResponse) => batch.parse_summary.schedule_coverage?.as_of_date || '未声明'
 const showInventoryImport = ref(false)
 const showStocktake = ref(false)
+const stocktakeSourceId = ref('')
 const stocktakeWorkspace = ref<InstanceType<typeof CartonStocktakeWorkspace> | null>(null)
 const openingInventoryWorkspace = ref<InstanceType<typeof CartonOpeningInventoryImport> | null>(null)
 const showInventoryOperation = ref(false)
@@ -1129,6 +1145,11 @@ const localInspectionChecks = reactive<InspectionReminderRow[]>([])
 const localExceptions = reactive<CartonExceptionRow[]>(cartonExceptions.map((row) => ({ ...row })))
 const closingRecords = ref<CartonClosingResponse[]>([])
 const exceptionRecords = ref<CartonExceptionResponse[]>([])
+const exceptionByNumber = computed(() => new Map(exceptionRecords.value.map(record => [record.exception_no, record])))
+const exceptionDeliverySource = shallowRef<CartonExceptionResponse | null>(null)
+const exceptionOrderLookup = ref('')
+let exceptionSourceOpener: HTMLElement | null = null
+let exceptionSourceSequence = 0
 const customerRecords = ref<CartonCustomerResponse[]>([])
 const correctionOrderNo = ref('')
 const orderRecords = ref<CartonOrderResponse[]>([])
@@ -1703,15 +1724,8 @@ const scheduleMarks = useScheduleMarks(() => ({ factory: selectedFactoryId.value
   batch: selectedWeeklyBatchId.value, viewer: JSON.stringify([specialViewerKey.value, customerViewScope.value]),
   enabled: activeTab.value === 'weekly-check' && weeklyCheckMode.value === 'ORDER_GAP' && canReadRegularCarton.value && canReadAnyMarks.value && apiConnected.value,
 }))
-const scheduleMarkFilterMessage = computed(() => {
-  if (scheduleOrderFilter.value !== 'WITH_MARKS' || !selectedWeeklyBatchId.value || scheduleMarks.data.value) return ''
-  return scheduleMarks.loading.value ? '正在读取箱唛资料…' : '箱唛资料暂不可用，请刷新后重试。'
-})
 watch([selectedFactoryId, selectedWeeklyBatchId, specialViewerKey, customerViewScope, activeTab, weeklyCheckMode,
-  () => canReadAnyMarks.value], () => {
-  scheduleMarkPreview.value = null
-  if (!canReadAnyMarks.value && scheduleOrderFilter.value === 'WITH_MARKS') scheduleOrderFilter.value = 'ALL'
-}, { flush: 'sync' })
+  () => canReadAnyMarks.value], () => { scheduleMarkPreview.value = null }, { flush: 'sync' })
 watch([selectedFactoryId, selectedWeeklyBatchId, specialViewerKey, customerViewScope, activeTab, scheduleSelectionMode, canIssuePurchaseOrders], () => {
   selectedScheduleRowIds.value = []; scheduleItemGroupKey.value = ''; scheduleBatchOpen.value = false; scheduleBatchSelection.value = []
   scheduleItemSearch.value = ''; scheduleGroupSearch.value = ''; scheduleGroupStatus.value = 'ALL'
@@ -1740,22 +1754,30 @@ function openScheduleMarks(row: WeeklyCheckRow) {
 const activeModule = computed<CartonTab>(() => ['weekly-check', 'business-alerts', 'carton-marks'].includes(activeTab.value) ? 'orders'
   : ['inventory', 'inventory-summary', 'inventory-movements'].includes(activeTab.value) ? 'inventory' : activeTab.value)
 const activeTabItem = computed(() => tabs.find(tab => tab.id === activeModule.value) ?? tabs[0])
-watch(activeTab, tab => { if (tab !== 'inventory') showStocktake.value = false })
+watch(activeTab, tab => {
+  if (tab !== 'inventory') {
+    showStocktake.value = false
+    stocktakeSourceId.value = ''
+  }
+})
 function openModule(tab: CartonTab) {
   if (!canLeaveCarton()) return
   showStocktake.value = false
+  stocktakeSourceId.value = ''
   showInventoryImport.value = false
   setActiveTab(tab)
 }
-async function openInventoryPage(tab: CartonTab, stocktake = false, openingStock = false) {
-  if (activeTab.value === tab && showStocktake.value === stocktake && showInventoryImport.value === openingStock) return
+async function openInventoryPage(tab: CartonTab, stocktake = false, openingStock = false, documentId = '') {
+  if (activeTab.value === tab && showStocktake.value === stocktake && showInventoryImport.value === openingStock && stocktakeSourceId.value === documentId) return
   if (!canLeaveCarton()) return
+  const factory = selectedFactoryId.value, viewer = specialViewerKey.value
   // These workspaces share the inventory route. Replacing that same URL returns
   // a duplicated-navigation failure, even though switching the local page is valid.
   if (activeTab.value !== tab) {
     const failure = await setActiveTab(tab)
-    if (failure) return
+    if (failure || selectedFactoryId.value !== factory || specialViewerKey.value !== viewer || activeTab.value !== tab) return
   }
+  stocktakeSourceId.value = documentId
   showStocktake.value = stocktake
   showInventoryImport.value = openingStock
 }
@@ -1936,41 +1958,12 @@ const scheduleOrderTypeOptions = computed(() => {
   return [{ id: 'ALL', label: '全部类型' }, ...types.map(type => ({ id: type, label: type || '未记录类型' }))]
 })
 const scheduleDateRangeInvalid = computed(() => Boolean(scheduleDateFrom.value && scheduleDateTo.value && scheduleDateFrom.value > scheduleDateTo.value))
-const scheduleReviewsBySource = computed(() => {
-  const kinds: Record<string, keyof ScheduleWorkReviews | undefined> = {
-    SCHEDULE_CANCELLED: 'cancellation',
-    SCHEDULE_CANCELLED_AFTER_ORDER: 'cancellation',
-    QUANTITY_MISMATCH: 'quantity',
-    SCHEDULE_DATE_MISMATCH: 'date',
-  }
-  const reviews = new Map<CartonImportPreviewRow, ScheduleWorkReviews>()
-  const exceptions = exceptionRecords.value.filter(exception => exception.factory_id === selectedFactoryId.value
-    && exception.source_type === 'WEEKLY_SCHEDULE' && exception.source_id === selectedWeeklyBatchId.value
-    && kinds[exception.category])
-  if (!exceptions.length) return reviews
-  const sourceForException = weeklyExceptionLookup([...activeScheduleSourceRows.value.values()])
-  for (const exception of exceptions) {
-    const source = sourceForException(exception)
-    const kind = kinds[exception.category]
-    if (!source || !kind) continue
-    const state = reviews.get(source) ?? {}
-    state[kind] = Boolean(state[kind]) || exception.status === 'OPEN' || exception.status === 'IN_PROGRESS'
-    reviews.set(source, state)
-  }
-  return reviews
-})
 const scheduleWorkProjections = computed(() => {
-  const result = new Map<string, { category: ScheduleOrderCategory; assessment: ReturnType<typeof calculateScheduleAssessment>; work: ScheduleWorkItem; orderNumbers: string[] }>()
-  const reviews = scheduleReviewsBySource.value
+  const result = new Map<string, { category: ScheduleOrderCategory; assessment: ReturnType<typeof calculateScheduleAssessment>; work: ScheduleWorkItem }>()
   for (const row of localWeeklyChecks) {
-    const source = scheduleSourceRow(row)
-    const orders = source ? scheduleOrdersForSource(source) : []
-    const assessment = calculateScheduleAssessment(row, source, orders)
-    const category = scheduleOrderCategory(row, source, orders, assessment.reminder)
+    const source = scheduleSourceRow(row), assessment = calculateScheduleAssessment(row), category = scheduleOrderCategory(row)
     const splits = source ? scheduleSplitsForSource(source) : []
-    result.set(row.id, { category, assessment, orderNumbers: orders.map(order => order.order_no), work: scheduleWorkItem(row, { category, source,
-      order: orders.length === 1 ? orders[0] : undefined,
-      reviews: source ? reviews.get(source) : undefined,
+    result.set(row.id, { category, assessment, work: scheduleWorkItem(row, { category, source,
       result: splits.length > 1 ? '待人工选择' : assessment.result, reminder: assessment.reminder,
       pendingSplit: splits.some(match => match.plan.status === 'PENDING_WAREHOUSE') }) })
   }
@@ -1980,9 +1973,7 @@ const filteredWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
   (scheduleCustomer.value === '全部客户' || (row.customerCode || '__UNBOUND__') === scheduleCustomer.value)
   && (scheduleSectionFilter.value === 'ALL' || row.scheduleSection === scheduleSectionFilter.value)
   && (scheduleOrderTypeFilter.value === 'ALL' || scheduleOrderTypeGroup(row.orderType) === scheduleOrderTypeFilter.value)
-  && (scheduleOrderFilter.value === 'ALL' || (scheduleOrderFilter.value === 'WITH_MARKS'
-    ? canReadAnyMarks.value && scheduleMarks.find(row)?.status === 'UPLOADED'
-    : scheduleWorkProjections.value.get(row.id)?.category === scheduleOrderFilter.value))
+  && (scheduleOrderFilter.value === 'ALL' || scheduleWorkProjections.value.get(row.id)?.category === scheduleOrderFilter.value)
   && scheduleChangeMatches(row)
   && !scheduleDateRangeInvalid.value
   && ((!scheduleDateFrom.value && !scheduleDateTo.value) || Boolean(scheduleFilterDate(row)
@@ -1997,7 +1988,6 @@ const filteredWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
     row.customer,
     row.itemNo,
     row.productName,
-    ...(scheduleWorkProjections.value.get(row.id)?.orderNumbers ?? []),
     scheduleAssessment(row).result,
     row.procurementState ?? '',
     row.businessCustomer ?? '',
@@ -2013,17 +2003,14 @@ const scheduleWorkCounts = computed(() => {
   }
   return counts
 })
-const visibleWeeklyChecks = computed(() => {
-  const rows = filteredWeeklyChecks.value.filter(row =>
-    scheduleWorkViewMatches(scheduleWorkProjections.value.get(row.id)!.work, scheduleWorkView.value))
-  const sort = scheduleSort.value
-  if (sort === 'SOURCE') return rows
-  return rows.sort((left, right) => {
-    if (sort === 'WORK_PRIORITY') return compareScheduleWorkPriority(scheduleWorkProjections.value.get(left.id)!.work, scheduleWorkProjections.value.get(right.id)!.work)
-    const a = scheduleFilterDate(left), b = scheduleFilterDate(right)
-    return !a ? (!b ? 0 : 1) : !b ? -1 : a.localeCompare(b) * (sort === 'DATE_DESC' ? -1 : 1)
-  })
-})
+const visibleWeeklyChecks = computed(() => filteredWeeklyChecks.value.filter(row =>
+  scheduleWorkViewMatches(scheduleWorkProjections.value.get(row.id)!.work, scheduleWorkView.value),
+).sort((left, right) => {
+  if (scheduleSort.value === 'WORK_PRIORITY') return compareScheduleWorkPriority(scheduleWorkProjections.value.get(left.id)!.work, scheduleWorkProjections.value.get(right.id)!.work)
+  if (scheduleSort.value === 'SOURCE') return 0
+  const a = scheduleFilterDate(left), b = scheduleFilterDate(right)
+  return !a ? (!b ? 0 : 1) : !b ? -1 : a.localeCompare(b) * (scheduleSort.value === 'DATE_DESC' ? -1 : 1)
+}))
 const selectedScheduleRows = computed(() => localWeeklyChecks.filter(row => selectedScheduleRowIds.value.includes(row.id)))
 type ScheduleGroupRow = { row: WeeklyCheckRow; blockedReason: string }
 const scheduleItemGroups = computed(() => {
@@ -2155,9 +2142,10 @@ const scheduleDueRulesByCustomer = computed(() => {
   return new Map([...codes].map(code => [code, masterDueRules(masterWorkspace.value.records, code)]))
 })
 
-function currentScheduleReminder(source: CartonImportPreviewRow, orders = scheduleOrdersForSource(source)) {
+function currentScheduleReminder(source: CartonImportPreviewRow) {
   const customerCode = source.schedule_customer_code || scheduleCustomerForSource(source)?.customer_code
   const rules = scheduleDueRulesByCustomer.value.get(customerCode || '') ?? masterDueRules(masterWorkspace.value.records, customerCode || '')
+  const orders = scheduleOrdersForSource(source)
   const review = !orders.length && scheduleQuantityReview(source).length > 0
   const current = source.match_basis === scheduleQuantityMatchBasis
     ? { ...source, match_status: orders.length ? 'MATCHED' as const : 'MISSING_ORDER' as const } : source
@@ -2172,11 +2160,11 @@ function currentScheduleReminder(source: CartonImportPreviewRow, orders = schedu
     detail: '合同、货号、产品数量及装箱存在多个候选或来源待核实；请核对原订单，勿重复下单。' } : reminder
 }
 
-function calculateScheduleAssessment(row: WeeklyCheckRow, source = scheduleSourceRow(row),
-  orders = source ? scheduleOrdersForSource(source) : []) {
-  const reminder = source ? currentScheduleReminder(source, orders) : null
+function calculateScheduleAssessment(row: WeeklyCheckRow) {
+  const source = scheduleSourceRow(row)
+  const reminder = source ? currentScheduleReminder(source) : null
   // Quantity/date matching evidence is independent of the current ordering deadline.
-  const quantityReview = source && !orders.length && scheduleQuantityReview(source).length > 0
+  const quantityReview = source && scheduleQuantityReview(source).length > 0 && !scheduleOrdersForSource(source).length
   const staleAmbiguity = source?.match_basis === scheduleQuantityMatchBasis && source.match_status === 'AMBIGUOUS'
   const preserveMatch = !quantityReview && !staleAmbiguity && source && !source.schedule_identity_duplicate && (['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source.match_status || '')
     || (source.match_status === 'REVIEW_REQUIRED' && reminder?.state === 'ORDERED'))
@@ -2368,6 +2356,10 @@ const visibleExceptions = computed(() => localExceptions.filter((row) =>
 }))
 
 const selectedExceptions = computed(() => localExceptions.filter(row => selectedExceptionNos.value.includes(row.id)))
+const visibleExceptionCards = computed(() => visibleExceptions.value.map(row => {
+  const record = exceptionByNumber.value.get(row.id)
+  return { row, record, guide: record ? exceptionGuide(record) : null }
+}))
 const allVisibleExceptionsSelected = computed(() => visibleExceptions.value.length > 0 && visibleExceptions.value.every(row => selectedExceptionNos.value.includes(row.id)))
 const someVisibleExceptionsSelected = computed(() => visibleExceptions.value.some(row => selectedExceptionNos.value.includes(row.id)))
 function selectVisibleExceptions(selected: boolean) {
@@ -2815,7 +2807,7 @@ watch(selectedFactoryId, (factoryId, previousFactory) => {
   scheduleOrderTypeFilter.value = 'ALL'
   weeklyImportCustomerCode.value = ''; weeklyImportScope.value = emptyScheduleImportScope(); weeklyImportGeneration += 1; importingWeekly.value = false
   scheduleOrderFilter.value = 'ALL'; scheduleChangeFilter.value = 'ALL'; scheduleDateFrom.value = ''; scheduleDateTo.value = ''
-  scheduleDateField.value = 'CUSTOMER_DUE'; scheduleSort.value = 'SOURCE'; scheduleWorkView.value = 'ATTENTION'
+  scheduleDateField.value = 'CUSTOMER_DUE'; scheduleSort.value = 'WORK_PRIORITY'; scheduleWorkView.value = 'ATTENTION'
   scheduleMarkRecords.value = {}
   scheduleMarkReview.value = null; scheduleMarkReason.value = ''
   scheduleMarkBusy.value = ''
@@ -2864,6 +2856,7 @@ watch(selectedFactoryId, (factoryId, previousFactory) => {
   inventoryBulkQuantities.value = {}
   showInventoryImport.value = false
   showStocktake.value = false
+  stocktakeSourceId.value = ''
   showInventoryOperation.value = false
   showInventoryRelocation.value = false
   relocationTarget.value = null
@@ -3350,7 +3343,7 @@ function orderRowMaterialReceivedQuantity(order: CartonOrderRow, material: Carto
 }
 
 function materialDisplayUnit(material: CartonMaterialLine) {
-  return material.packagingType.includes('箱') ? '箱' : (material.unit || '个')
+  return material.unit || (material.packagingType.includes('箱') ? '箱' : '个')
 }
 
 function orderPaperItemQuantity(order: CartonOrderRow) {
@@ -4172,6 +4165,7 @@ function mapException(row: CartonExceptionResponse): CartonExceptionRow {
       INSPECTION_DELIVERY_OVERDUE: '纸箱交货逾期',
       INSPECTION_DELIVERY_DUE: '纸箱交货临近',
       INSPECTION_DELIVERY_REMINDER: '纸箱提前交货提醒',
+      STOCKTAKE_REVIEW: '盘点差异复核',
     } as Record<string, string>)[row.category] ?? row.category,
     title: row.source_type === 'DELIVERY_NOTE' && row.category === 'SCHEDULE_REVIEW_REQUIRED'
       ? '送货明细待人工确认'
@@ -4290,13 +4284,15 @@ function scheduleFilterDate(row: WeeklyCheckRow) {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : ''
 }
 
-function scheduleOrderCategory(row: WeeklyCheckRow, source: CartonImportPreviewRow | undefined,
-  orders: CartonScheduleOrder[], reminder: ScheduleOrderReminder | null): ScheduleOrderCategory {
+function scheduleOrderCategory(row: WeeklyCheckRow): ScheduleOrderCategory {
+  const source = scheduleSourceRow(row)
+  const orders = source ? scheduleOrdersForSource(source) : []
   if (orders.length > 1) return 'REVIEW'
   if (source && !orders.length && scheduleQuantityReview(source).length) return 'REVIEW'
   if (orders[0]?.status === 'COMPLETED') return 'COMPLETED'
   if (orders[0] && ['DRAFT', 'CONFIRMED'].includes(orders[0].status)) return 'CREATED'
   if (orders.length || scheduleIsMarked(row)) return 'ORDERED'
+  const reminder = source ? currentScheduleReminder(source) : null
   if (reminder && ['WAIT', 'DUE_SOON', 'DUE_TODAY', 'OVERDUE'].includes(reminder.state)) return 'UNPLACED'
   if (row.dateReviewRequired || row.scheduleChange === 'REVIEW_REQUIRED' || row.procurementState === '待确认') return 'REVIEW'
   if (!['正单', '正式PO', '加单', '改单'].includes(row.orderType || '') && source?.template === 'unified-item') return 'REVIEW'
@@ -4315,8 +4311,7 @@ function scheduleChangeMatches(row: WeeklyCheckRow) {
     return change === 'QUANTITY_INCREASE' ? row.quantity > orderQuantity : row.quantity < orderQuantity
   }
   if (change === 'CANCELLED') return ['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.scheduleChange || '')
-  if (change === 'REVIEW') return scheduleMarkNeedsReview(row) || row.dateReviewRequired || row.scheduleChange === 'REVIEW_REQUIRED'
-    || [row.result, scheduleAssessment(row).result].some(result => ['待人工确认', '待人工选择', '数量差异', '交期差异'].includes(result))
+  if (change === 'REVIEW') return scheduleMarkNeedsReview(row) || row.dateReviewRequired || row.scheduleChange === 'REVIEW_REQUIRED' || ['待人工确认', '待人工选择'].includes(row.result)
   if (change === 'UNCHANGED') return ['BASELINE', 'UNCHANGED'].includes(row.scheduleChange || '')
   return row.scheduleChange === change
 }
@@ -6127,16 +6122,17 @@ function showReceiptDetails(receipt: CartonReceiptResponse, pinned = false) {
   receiptDetailTarget.value = receipt
   receiptDetailPinned.value = pinned
 }
+let monthlyReceiptGeneration = 0
+onBeforeUnmount(() => { monthlyReceiptGeneration++ })
 async function openMonthlyReceipt(factory: string, receiptId: string, signal: AbortSignal) {
-  const viewer = specialViewerKey.value
-  const current = () => !signal.aborted && factory === selectedFactoryId.value
-    && viewer === specialViewerKey.value && canReadRegularCarton.value
-  if (!current()) return
+  if (factory !== selectedFactoryId.value || !canReadRegularCarton.value) return
+  const token = ++monthlyReceiptGeneration
+  const current = () => token === monthlyReceiptGeneration && !signal.aborted
   try {
     const receipt = await cartonProcurementApi.receiptDetail(factory, receiptId, receiptViewScope, signal)
     if (!current()) return
-    if (receipt?.id !== receiptId || receipt.factory_id !== factory) {
-      throw new Error('返回的原收料单与当前厂区或凭证不符。')
+    if (!receipt || receipt.id !== receiptId || receipt.factory_id !== factory) {
+      throw new Error('原收料单已变化或无法读取，请刷新本月对账。')
     }
     showReceiptDetails(receipt, true)
   } catch (cause) {
@@ -6174,7 +6170,9 @@ function continueReceiptDetails() {
   closeReceiptDetails()
   if (receipt) openReceiptHistoryDocument(receipt)
 }
-watch([selectedFactoryId, activeTab, selectedCustomer, globalSearch, receiptHistoryStatus, receiptHistoryDateRange], () => {
+watch([selectedFactoryId, activeTab, selectedCustomer, globalSearch, receiptHistoryStatus, receiptHistoryDateRange,
+  specialViewerKey, closingView, canReadRegularCarton], () => {
+  monthlyReceiptGeneration++
   closeReceiptDetails()
 }, { flush: 'sync' })
 
@@ -7005,7 +7003,7 @@ function openBusinessAlertException(alert: BusinessOrderAlert) {
   if (!alert.exception || alert.reminder?.state === 'CHANGE_REVIEW'
     || alert.reminder?.state === 'REVIEW' && alert.kind === 'QUANTITY_REVIEW') {
     clearWeeklyFilters()
-    pendingScheduleNavigation.value = { batchId: alert.batchId, customerCode: alert.sourceRow?.schedule_customer_code || '__UNBOUND__' }
+    pendingScheduleNavigation.value = { batchId: alert.batchId, kind: 'WEEKLY_SCHEDULE' }
     weeklyCheckMode.value = 'ORDER_GAP'
     selectedWeeklyBatchId.value = ''; selectedWeeklyFileName.value = ''; localWeeklyChecks.splice(0)
     selectedCustomer.value = '全部客户'; globalSearch.value = ''
@@ -7865,9 +7863,13 @@ async function advanceClosing(rowId: string) {
   }
 }
 
+const canManageExceptions = computed(() => apiConnected.value && ['carton', 'pmc-warehouse'].some(
+  dept => authStore.can('carton_procurement:exception_manage', selectedFactoryId.value, dept),
+))
+
 function canBulkAdvanceExceptions(status: CartonExceptionResponse['status']) {
-  return apiConnected.value && !exceptionBusyId.value && selectedExceptionNos.value.length > 0
-    && selectedExceptionNos.value.length <= 500 && authStore.can('carton_procurement:exception_manage', selectedFactoryId.value)
+  return canManageExceptions.value && !exceptionBusyId.value && selectedExceptionNos.value.length > 0
+    && selectedExceptionNos.value.length <= 500
     && selectedExceptionNos.value.every(id => exceptionRecord(id)?.status === status)
     && selectedExceptionNos.value.every(id => {
       const row = exceptionRecord(id)
@@ -7910,27 +7912,80 @@ function exceptionActionLabel(status: CartonExceptionResponse['status']) {
 }
 
 function exceptionRecord(displayId: string) {
-  return exceptionRecords.value.find((row) => row.exception_no === displayId)
+  return exceptionByNumber.value.get(displayId)
 }
 
-function exceptionRecordId(displayId: string) {
-  return exceptionRecord(displayId)?.id ?? displayId
+function restoreExceptionSourceFocus(event: Event) {
+  if (exceptionSourceOpener?.isConnected) {
+    event.preventDefault()
+    exceptionSourceOpener.focus()
+  }
+  exceptionSourceOpener = null
 }
 
-function exceptionButtonLabel(displayId: string) {
-  const exception = exceptionRecord(displayId)
-  return exception ? exceptionActionLabel(exception.status) : '等待正式数据'
+watch([selectedFactoryId, specialViewerKey, activeTab], () => {
+  exceptionSourceSequence++
+  exceptionOrderLookup.value = ''
+  exceptionDeliverySource.value = null
+}, { flush: 'sync' })
+onBeforeUnmount(() => { exceptionSourceSequence++ })
+
+async function openExceptionSource(record: CartonExceptionResponse, event: Event) {
+  const factory = selectedFactoryId.value
+  if (!apiConnected.value || !record.source_id || record.factory_id !== factory || !canLeaveCarton()) return
+  if (record.source_type === 'DELIVERY_NOTE') {
+    exceptionSourceOpener = event.currentTarget as HTMLElement
+    exceptionDeliverySource.value = record
+    return
+  }
+  if (record.source_type === 'STOCKTAKE') {
+    await openInventoryPage('inventory', true, false, record.source_id)
+    return
+  }
+  if (record.source_type === 'WEEKLY_SCHEDULE' || record.source_type === 'INSPECTION_SCHEDULE') {
+    const kind = record.source_type
+    const navigation = { batchId: record.source_id, kind, search: record.contract_no || record.item_no } as const
+    clearWeeklyFilters()
+    pendingScheduleNavigation.value = navigation
+    if (kind === 'WEEKLY_SCHEDULE') {
+      weeklyCheckMode.value = 'ORDER_GAP'
+      activeWeeklyBatch.value = null; selectedWeeklyBatchId.value = ''; selectedWeeklyFileName.value = ''; localWeeklyChecks.splice(0)
+    } else {
+      weeklyCheckMode.value = 'INSPECTION_REMINDER'
+      activeInspectionBatch.value = null; selectedInspectionBatchId.value = ''; selectedInspectionFileName.value = ''; localInspectionChecks.splice(0)
+    }
+    const failure = await setActiveTab('weekly-check')
+    if (failure && pendingScheduleNavigation.value?.batchId === navigation.batchId) pendingScheduleNavigation.value = null
+    return
+  }
+  if (record.source_type !== 'ORDER' || exceptionOrderLookup.value) return
+  const search = record.contract_no || record.item_no
+  if (!search) { reportActionFailure('原订单缺少可查询的合同或货号，请按留存单据核对。'); return }
+  const token = ++exceptionSourceSequence
+  const current = () => token === exceptionSourceSequence && activeTab.value === 'exceptions'
+  exceptionOrderLookup.value = record.id
+  try {
+    const orders = await cartonProcurementApi.listOrders(factory, { search, responsibilityScope: customerViewScope.value })
+    if (!current()) return
+    const order = orders.find(row => row.id === record.source_id && row.factory_id === factory)
+    if (!order) throw new Error('原订单已移出台账或超出当前可查范围。')
+    clearOrderFilters()
+    globalSearch.value = order.order_no
+    await setActiveTab('orders')
+  } catch (cause) {
+    if (current()) reportActionFailure(`无法定位原订单：${getApiErrorMessage(cause)}`)
+  } finally { if (current()) exceptionOrderLookup.value = '' }
 }
 
 function exceptionButtonDisabled(displayId: string) {
   const exception = exceptionRecord(displayId)
-  return !exception || Boolean(exceptionBusyId.value) || (exception.category === 'STOCKTAKE_REVIEW'
+  return !canManageExceptions.value || !exception || Boolean(exceptionBusyId.value) || (exception.category === 'STOCKTAKE_REVIEW'
     && (!canReviewStocktakeException() || (['RESOLVED', 'CLOSED'].includes(nextExceptionStatus(exception.status))
       && !(resolutionNotes[exception.id]?.trim() || exception.resolution_note.trim()))))
 }
 
 async function advanceException(displayId: string) {
-  const exception = exceptionRecords.value.find((row) => row.exception_no === displayId)
+  const exception = exceptionRecord(displayId)
   if (!exception || exceptionButtonDisabled(displayId)) return
   const nextStatus = nextExceptionStatus(exception.status)
   const note = resolutionNotes[exception.id]?.trim() || exception.resolution_note
@@ -8806,10 +8861,10 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
         <article v-if="weeklyCheckMode === 'ORDER_GAP'" class="rounded-xl border border-teal-200 bg-white p-4 shadow-sm">
           <div class="grid gap-2 sm:grid-cols-4" role="group" aria-label="排期工作视图">
             <button v-for="view in scheduleWorkViewOptions" :key="view.id" type="button" :aria-label="view.label" :aria-pressed="scheduleWorkView === view.id" class="flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left text-xs font-semibold" :class="scheduleWorkView === view.id ? 'border-teal-500 bg-teal-50 text-teal-900 ring-1 ring-teal-100' : 'border-slate-200 bg-white text-slate-600 hover:border-teal-300'" @click="scheduleWorkView = view.id">
-              <span>{{ view.label }}</span><strong class="text-lg tabular-nums">{{ scheduleMarkFilterMessage ? '—' : scheduleWorkCounts[view.id] }}</strong>
+              <span>{{ view.label }}</span><strong class="text-lg tabular-nums">{{ scheduleWorkCounts[view.id] }}</strong>
             </button>
           </div>
-          <p class="mb-4 mt-2 text-[11px] text-slate-500">当前需处理显示临近或逾期下单、已建单待办及仍需核对的变更。数量按当前批次和筛选统计，有待办的已下单记录也可在历史中查看。</p>
+          <p class="mb-4 mt-2 text-[11px] text-slate-500">当前需处理包括最迟下单日已到或 3 天内到期、已建单待确认、取消变更或差异待核。正常远期放在后续安排，已完单、已送货及旧退单可在历史查看；原状态保留，上方数量按当前筛选统计。</p>
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div><h2 class="font-bold text-slate-950">按客户查看排期变化</h2><p class="mt-1 text-[11px] text-slate-500">首次导入作为基准；以后按同一客户的上次有效排期识别新加单、退单和已送货。未出现在新文件里的订单不自动判退单。</p></div>
             <span class="text-[11px] text-slate-500">人工“已下单”标记跨批次保留；退单仍需人工核实采购单</span>
@@ -8824,9 +8879,9 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
             <button v-for="type in scheduleOrderTypeOptions" :key="type.id" type="button" :aria-pressed="scheduleOrderTypeFilter === type.id" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="scheduleOrderTypeFilter === type.id ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-200 text-slate-600 hover:border-teal-300'" @click="scheduleOrderTypeFilter = type.id">{{ type.label }}</button>
           </div>
           <CartonFilterBar inline-actions label="排期筛选" :more-label="scheduleDateFrom || scheduleDateTo ? '日期筛选（已设置）' : '日期筛选'">
-            <label>纸箱采购状态<select v-model="scheduleOrderFilter" aria-label="排期下单状态筛选"><option value="ALL">全部状态</option><option value="UNPLACED">未下单</option><option value="CREATED">已建单待办</option><option value="ORDERED">已下单</option><option value="COMPLETED">已完单</option><option value="REVIEW">待核对</option><option v-if="canReadAnyMarks" value="WITH_MARKS">有箱唛资料</option></select></label>
+            <label>下单状态<select v-model="scheduleOrderFilter" aria-label="排期下单状态筛选"><option value="ALL">全部状态</option><option value="UNPLACED">未下单</option><option value="CREATED">已建单待确认</option><option value="ORDERED">已下单</option><option value="COMPLETED">已完单</option><option value="REVIEW">待核对</option></select></label>
             <label>排期变化<select v-model="scheduleChangeFilter" aria-label="排期变化筛选"><option value="ALL">全部变化</option><option value="NEW">新加单</option><option value="MODIFIED">需求有变</option><option value="QUANTITY_INCREASE">需追加（排期大于订单）</option><option value="QUANTITY_DECREASE">需减单（排期小于订单）</option><option value="CANCELLED">退单提醒</option><option value="REOPENED">恢复下单</option><option value="REVIEW">待人工核对</option><option value="UNCHANGED">基准 / 无变化</option></select></label>
-            <label>排序<select v-model="scheduleSort" aria-label="排期日期排序"><option value="SOURCE">原表顺序</option><option value="WORK_PRIORITY">处理优先顺序</option><option value="DATE_ASC">日期由近到远</option><option value="DATE_DESC">日期由远到近</option></select></label>
+            <label>排序<select v-model="scheduleSort" aria-label="排期日期排序"><option value="WORK_PRIORITY">处理优先顺序</option><option value="SOURCE">原表顺序</option><option value="DATE_ASC">日期由近到远</option><option value="DATE_DESC">日期由远到近</option></select></label>
             <template #more>
               <label>按哪个日期筛选及排序<select v-model="scheduleDateField" aria-label="排期日期字段"><option value="CUSTOMER_DUE">客户交期</option><option value="INSPECTION">验货日期</option></select></label>
               <label>开始日期<input v-model="scheduleDateFrom" aria-label="排期开始日期" type="date"></label>
@@ -8834,11 +8889,10 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
             </template>
             <template #actions>
               <button type="button" class="text-slate-600" @click="clearWeeklyFilters">清空排期筛选</button>
-              <button v-if="scheduleSort !== 'SOURCE'" type="button" @click="scheduleSort = 'SOURCE'">恢复默认排序</button>
+              <button v-if="scheduleSort !== 'WORK_PRIORITY'" type="button" @click="scheduleSort = 'WORK_PRIORITY'">恢复默认排序</button>
             </template>
             <template #footer>
-              <p v-if="scheduleMarkFilterMessage" role="status" class="mt-2 text-[11px] text-slate-500">{{ scheduleMarkFilterMessage }}</p>
-              <p v-else class="mt-2 text-[11px] text-slate-500">
+              <p class="mt-2 text-[11px] text-slate-500">
                 筛选结果 {{ visibleWeeklyChecks.length }} / {{ localWeeklyChecks.length }} 条
                 <span v-if="scheduleDateFrom || scheduleDateTo || scheduleSort.startsWith('DATE_')"> · 日期按{{ scheduleDateField === 'INSPECTION' ? '验货日期' : '客户交期' }}</span>
               </p>
@@ -8846,8 +8900,8 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
           </CartonFilterBar>
           <p v-if="scheduleDateRangeInvalid" role="alert" class="mt-2 text-xs text-red-700">结束日期不能早于开始日期。</p>
           <p v-else-if="scheduleDateFrom || scheduleDateTo" class="mt-2 text-[11px] text-slate-500">日期范围包含起止当天；日期未填或原文待确认的记录不计入该范围。</p>
-          <p v-if="activeWeeklyBatch" class="mt-3 break-words text-[11px] text-slate-500">当前批次 {{ activeWeeklyBatch.original_filename }} · {{ activeWeeklyBatch.parse_summary.schedule_customer?.customer_name || '未绑定客户' }} · 排期版本 {{ activeWeeklyBatch.parse_summary.schedule_coverage?.as_of_date || '未声明' }} · 导入时间 {{ activeWeeklyBatch.created_at.replace('T', ' ').slice(0, 16) }}</p>
           <p v-if="activeWeeklyBatch && !activeWeeklyBatch.parse_summary.schedule_customer" class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-800">此旧批次尚未绑定基础客户。请在上方选择客户并重新导入；旧标记保留在原批次，新批次的已下单状态需重新确认。</p>
+          <p v-else-if="activeWeeklyBatch" class="mt-3 text-[11px] text-slate-500">当前批次客户：{{ activeWeeklyBatch.parse_summary.schedule_customer?.customer_name }} · 排期版本 {{ activeWeeklyBatch.parse_summary.schedule_coverage?.as_of_date || '未声明' }} · 导入时间 {{ activeWeeklyBatch.created_at.replace('T', ' ').slice(0, 16) }}</p>
         </article>
         <div v-if="weeklyCheckMode === 'ORDER_GAP'" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2 text-[11px] text-slate-500" aria-label="排期箱唛提示">
@@ -8917,12 +8971,12 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
                   <th class="px-4 py-3">客户 / 产品</th>
                   <th class="px-4 py-3">合同</th>
                   <th class="px-4 py-3">货号 / 订单类型</th>
-                  <th class="px-4 py-3"><span class="block">原表分区</span><span class="block">变化</span></th>
+                  <th class="px-4 py-3"><span class="block">排期区</span><span class="block">变化</span></th>
                   <th class="px-4 py-3 text-right">数量</th>
                   <th class="px-4 py-3">装箱</th>
                   <th class="px-4 py-3"><span class="block">验货期</span><span class="block">客户走货期</span></th>
                   <th class="px-4 py-3">核对结果</th>
-                  <th class="px-4 py-3"><span class="block">关联订单</span><span class="block">纸箱采购状态</span></th>
+                  <th class="px-4 py-3"><span class="block">关联订单</span><span class="block">下单状态</span></th>
                   <th class="px-4 py-3">人工已下单</th>
                   <th class="px-4 py-3">下单 / 提示</th>
                 </tr>
@@ -8939,16 +8993,12 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
 
                   </td>
                   <td data-label="货号 / 订单类型" class="px-4 py-3"><div class="font-mono font-semibold">{{ row.itemNo }}</div><span v-if="row.orderType?.trim() === '加单'" :aria-label="`加单提醒 ${row.reference} ${row.itemNo}`" class="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">加单</span><div v-else class="text-[10px] text-slate-500">{{ row.orderType }}</div></td>
-                  <td data-label="原表分区 变化" class="px-4 py-3 text-[11px]"><div class="font-bold" :class="row.scheduleSection === 'CANCELLED' ? 'text-red-700' : row.scheduleSection === 'SHIPPED' ? 'text-blue-700' : 'text-teal-700'">{{ scheduleSectionLabel(row.scheduleSection) }}</div><div class="mt-1" :class="row.scheduleChange === 'CANCELLED_AFTER_ORDER' ? 'font-bold text-red-700' : row.scheduleChange === 'NEW' ? 'font-bold text-amber-700' : 'text-slate-500'">{{ scheduleChangeLabel(row.scheduleChange) }}</div></td>
+                  <td data-label="排期区 变化" class="px-4 py-3 text-[11px]"><div class="font-bold" :class="row.scheduleSection === 'CANCELLED' ? 'text-red-700' : row.scheduleSection === 'SHIPPED' ? 'text-blue-700' : 'text-teal-700'">{{ scheduleSectionLabel(row.scheduleSection) }}</div><div class="mt-1" :class="row.scheduleChange === 'CANCELLED_AFTER_ORDER' ? 'font-bold text-red-700' : row.scheduleChange === 'NEW' ? 'font-bold text-amber-700' : 'text-slate-500'">{{ scheduleChangeLabel(row.scheduleChange) }}</div></td>
                   <td data-label="数量" class="px-4 py-3 text-right font-semibold tabular-nums">{{ row.quantityMissing ? '待确认' : formatNumber(row.quantity) }}</td>
                   <td data-label="装箱" class="px-4 py-3">{{ row.cartonRule }}</td>
                   <td data-label="验货期 客户走货期" class="px-4 py-3"><div class="font-semibold">{{ row.inspectionWindow || '验货期未填' }}</div><div v-if="row.customerDueDate" class="text-[10px] text-slate-500">走货 {{ row.customerDueDate }}</div><div v-if="row.dateReviewRequired" class="text-[10px] text-amber-800">日期原文待确认</div></td>
-                  <td data-label="核对结果" class="px-4 py-3">
-                    <span class="rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(scheduleAssessment(row).tone)">{{ scheduleWorkProjections.get(row.id)?.work.historical && ['数量差异', '交期差异'].includes(scheduleAssessment(row).result) ? '历史' : '' }}{{ scheduleAssessment(row).result }}</span>
-                    <div v-if="scheduleWorkProjections.get(row.id)?.work.attention" class="mt-1 text-[10px] font-semibold text-amber-800">{{ scheduleWorkProjections.get(row.id)?.work.reason }}</div>
-                    <div v-if="scheduleAssessment(row).reminder?.deadline" class="mt-1 text-[10px] text-slate-500" :title="scheduleAssessment(row).reminder?.detail">最迟下单 {{ scheduleAssessment(row).reminder?.deadline }}</div>
-                  </td>
-                  <td data-label="关联订单 纸箱采购状态" class="px-4 py-3 text-[11px]"><div class="font-mono">{{ scheduleLinkedOrderLabel(row) }}</div><div class="mt-1 font-semibold" :class="scheduleProcurementLabel(row) === '需要下单' ? 'text-amber-800' : 'text-teal-800'">{{ scheduleProcurementLabel(row) }}</div></td>
+                  <td data-label="核对结果" class="px-4 py-3"><span class="rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(scheduleAssessment(row).tone)">{{ scheduleAssessment(row).result }}</span><div v-if="scheduleAssessment(row).reminder?.deadline" class="mt-1 text-[10px] text-slate-500" :title="scheduleAssessment(row).reminder?.detail">最迟下单 {{ scheduleAssessment(row).reminder?.deadline }}</div></td>
+                  <td data-label="关联订单 下单状态" class="px-4 py-3 text-[11px]"><div class="font-mono">{{ scheduleLinkedOrderLabel(row) }}</div><div class="mt-1 font-semibold" :class="scheduleProcurementLabel(row) === '需要下单' ? 'text-amber-800' : 'text-teal-800'">{{ scheduleProcurementLabel(row) }}</div></td>
                   <td data-label="人工已下单" class="px-4 py-3">
                     <span v-if="scheduleHasFormalOrder(scheduleSourceRow(row))" class="text-[10px] text-slate-400">—</span>
                     <button v-else-if="row.scheduleSection === 'PENDING' && row.scheduleIdentity && ['正单', '正式PO', '加单', '改单'].includes(row.orderType || '')" type="button" :disabled="!canMarkScheduleRow(row, selectedWeeklyBatchId, scheduleMarkNeedsReview(row) || !scheduleIsMarked(row)) || Boolean(scheduleMarkBusy)" :aria-label="`${scheduleMarkNeedsReview(row) ? '重新确认已下单' : scheduleIsMarked(row) ? '取消已下单标记' : '标记已下单'} ${row.reference} ${row.itemNo}`" class="whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[10px] font-bold disabled:opacity-40" :class="scheduleMarkNeedsReview(row) ? 'border-amber-300 bg-amber-50 text-amber-800' : scheduleIsMarked(row) ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'" @click="toggleScheduleMark(row)">{{ scheduleMarkNeedsReview(row) ? '待复核 · 重新确认' : scheduleIsMarked(row) ? '✓ 已下单' : '标记已下单' }}</button>
@@ -8956,11 +9006,11 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
                   </td>
                   <td data-label="下单 / 提示" class="px-4 py-3 text-[11px] text-slate-500"><button v-if="!row.scheduleSection || row.scheduleSection === 'PENDING'" type="button" :aria-label="`${scheduleOrderActionLabel(row)} ${row.reference} ${row.itemNo}`" :data-schedule-action="`${row.reference} ${row.itemNo}`" :disabled="scheduleOrderActionDisabled(row)" class="mb-2 whitespace-nowrap rounded-lg bg-teal-700 px-3 py-1.5 text-[10px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500" @click="openScheduleOrder(row)">{{ scheduleOrderActionLabel(row) }}</button><button v-if="scheduleSendOrder(row)" type="button" :aria-label="`发送排期订单 ${row.reference} 给供应商`" :disabled="!apiConnected || Boolean(scheduleSendBusy) || submittingSupplierOrder" class="mb-2 block whitespace-nowrap rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-[10px] font-bold text-teal-800 disabled:opacity-40" @click="openScheduleSend(row)">{{ scheduleSendBusy === row.id ? '正在读取…' : '发给供应商' }}</button><div>{{ scheduleAssessment(row).suggestion }}</div><div v-if="scheduleSourceRow(row)?.missing_review" class="mt-2 rounded bg-amber-50 p-2 text-amber-900">缺行核实：{{ scheduleMissingStatusLabel(scheduleSourceRow(row)!.missing_review!.status) }}<p v-if="scheduleSourceRow(row)?.missing_review?.reason">{{ scheduleSourceRow(row)!.missing_review!.reason }}</p><p class="mt-1 text-[10px]">缺行核实清单入口已关闭；如需从该来源下单，请先联系主管核对原批次。</p></div><div v-if="scheduleSourceRow(row)?.legacy_match_stale" class="mt-1 text-amber-700">此旧批次的下单匹配需按 SO 重新核对；重新导入原文件可刷新结果。</div><div v-if="row.identityDuplicate && scheduleSourceRow(row) && scheduleDuplicateCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">已有同 SO 候选订单：{{ scheduleDuplicateCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请核实后操作。</div><div v-if="scheduleSourceRow(row) && scheduleOtherPoCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">同合同货号已有其他 PO 或未填 PO 的订单：{{ scheduleOtherPoCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请确认不是同一需求。</div><div class="mt-1 text-[10px]">{{ row.sourceLocation }}</div></td>
                 </tr>
-                <tr v-if="visibleWeeklyChecks.length === 0 && !scheduleMarkFilterMessage"><td colspan="12" class="px-4 py-12 text-center text-slate-400">没有符合当前筛选条件的核对记录</td></tr>
+                <tr v-if="visibleWeeklyChecks.length === 0"><td colspan="12" class="px-4 py-12 text-center text-slate-400">没有符合当前筛选条件的核对记录</td></tr>
               </tbody>
             </table>
           </div>
-          <nav v-if="!scheduleMarkFilterMessage" aria-label="排期分页" class="flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 px-4 py-3 text-xs">
+          <nav aria-label="排期分页" class="flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 px-4 py-3 text-xs">
             <span>共 {{ visibleWeeklyChecks.length }} 条 · 第 {{ schedulePage }} / {{ schedulePageCount }} 页 · 每页 {{ schedulePageSize }} 条</span>
             <button type="button" aria-label="排期上一页" :disabled="schedulePage <= 1" class="rounded border px-3 py-2 disabled:opacity-40" @click="schedulePage--">上一页</button>
             <button type="button" aria-label="排期下一页" :disabled="schedulePage >= schedulePageCount" class="rounded border px-3 py-2 disabled:opacity-40" @click="schedulePage++">下一页</button>
@@ -9171,7 +9221,13 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
 
       <CartonMasterWorkspace v-else-if="activeTab === 'master-data'" :key="selectedFactoryId" :factory-id="selectedFactoryId" :customers="customerRecords" :initial-tab="masterSection" :preference-scope="currentOrderDraftContext" :dimension-unit="newPaperDimensionUnit" :dimension-preference-error="dimensionPreferenceError" @update:dimension-unit="setDimensionPreference" v-model:search="masterSearch" @changed="masterChanged" @customers="openCustomerManager" @use="orderFromMaster" />
       <section v-else-if="activeTab === 'inventory' || activeTab === 'inventory-movements'" class="space-y-4">
-        <CartonStocktakeWorkspace ref="stocktakeWorkspace" v-model:search="stocktakeSearch" v-if="showStocktake && activeTab === 'inventory'" :key="selectedFactoryId" :factory-id="selectedFactoryId" :initial-position-keys="selectedInventoryBalances.map(row => row.id)" @close="showStocktake = false" @posted="refreshInventoryLedger" />
+        <CartonStocktakeWorkspace
+          v-if="showStocktake && activeTab === 'inventory'" ref="stocktakeWorkspace" v-model:search="stocktakeSearch"
+          :key="`${selectedFactoryId}:${stocktakeSourceId}:${stocktakeSourceId ? specialViewerKey : ''}`"
+          :factory-id="selectedFactoryId" :initial-document-id="stocktakeSourceId || undefined"
+          :initial-position-keys="stocktakeSourceId ? undefined : selectedInventoryBalances.map(row => row.id)"
+          @close="showStocktake = false; stocktakeSourceId = ''" @posted="refreshInventoryLedger"
+        />
         <CartonOpeningInventoryImport ref="openingInventoryWorkspace" v-else-if="showInventoryImport && activeTab === 'inventory'" :key="selectedFactoryId" :factory-id="selectedFactoryId" :viewer-key="currentOrderDraftContext ? `${currentOrderDraftContext.userId}:${currentOrderDraftContext.employmentEpoch}` : ''" :connected="apiConnected" :can-import="authStore.can('carton_procurement:inventory_write')" :customers="customerRecords" :locations="inventoryLocations" @close="showInventoryImport = false" @imported="openingInventoryImported" @reversed="refreshInventoryLedger" />
         <template v-else>
         <div v-if="activeTab === 'inventory'" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -9266,8 +9322,17 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
       <CartonInventorySummary v-else-if="activeTab === 'inventory-summary'" @context="assistantInventoryScope = $event" @selected="selectAssistantCarton" :factory-id="selectedFactoryId" :customers="customerRecords" :search="globalSearch" :refresh-key="inventoryReportRefreshKey" :connected="apiConnected" @clear-search="globalSearch = ''" @inventory="setActiveTab('inventory')" @closing="setActiveTab('closing')" />
 
       <section v-else-if="activeTab === 'closing'" class="space-y-4">
-        <nav aria-label="月结对账子页面" class="flex flex-wrap gap-2 rounded-xl border bg-white p-2 text-xs"><button type="button" :aria-pressed="closingView === 'OVERVIEW'" class="rounded-lg px-4 py-2" :class="closingView === 'OVERVIEW' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('OVERVIEW')">本月对账</button><button type="button" :aria-pressed="closingView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="closingView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('RETURNS')">退货签收与退款</button><button type="button" :aria-pressed="closingView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="closingView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('PAYABLES')">应付与付款</button><button type="button" :aria-pressed="closingView === 'INVENTORY'" class="rounded-lg px-4 py-2" :class="closingView === 'INVENTORY' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('INVENTORY')">库存月结记录</button></nav>
-        <CartonSettlementOverview v-if="closingView === 'OVERVIEW'" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey"
+        <nav aria-label="月结对账子页面" class="flex flex-wrap gap-2 rounded-xl border bg-white p-2 text-xs">
+          <div v-for="group in closingNavigation" :key="group.label" role="group" :aria-label="group.label" class="min-w-0 rounded-lg bg-slate-50 p-2">
+            <p class="px-2 pb-1 font-semibold text-slate-600">{{ group.label }}</p>
+            <div class="flex flex-wrap gap-1">
+              <button v-for="tab in group.tabs" :key="tab.id" type="button" :aria-pressed="closingView === tab.id"
+                class="min-h-9 rounded-md px-3 py-1.5 font-semibold" :class="closingView === tab.id ? 'bg-teal-700 text-white' : 'text-slate-700 hover:bg-slate-200'"
+                @click="selectClosingView(tab.id)">{{ tab.label }}</button>
+            </div>
+          </div>
+        </nav>
+        <CartonSettlementOverview v-if="closingView === 'OVERVIEW'" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :money-reference="moneyReference"
           v-model:period="monthlyPeriod" v-model:currency="monthlyCurrency" :search="monthlySearch" :refresh-key="inventoryReportRefreshKey"
           @open-receipt="openMonthlyReceipt" @open-return="openMonthlyReturn" />
         <CartonSupplierReturns v-if="closingView === 'RETURNS'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey"
@@ -9332,23 +9397,63 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
 <button type="button" class="h-9 rounded-lg border px-3" @click="exceptionStatusFilter = 'ALL'; exceptionTypeFilter = 'ALL'; exceptionOwner = ''; selectedCustomer = '全部客户'; globalSearch = ''">清空筛选</button></template>
 
 </CartonFilterBar>
-        <div class="rounded-xl border border-blue-200 bg-blue-50 p-4 text-[11px] leading-5 text-blue-800"><div class="font-bold text-blue-950">导入异常会在这里形成正式待办</div><p class="mt-1">排期疑似漏单、送货单未匹配、数量差异和匹配不唯一均需人工处理；排期导入本身不会创建订单，送货单导入本身不会增加库存。</p></div>
+        <div class="rounded-xl border border-blue-200 bg-blue-50 p-4 text-xs leading-5 text-blue-800">
+          <div class="font-bold text-blue-950">先核对原单，再记录处理结论</div>
+          <p class="mt-1">这里记录异常的跟进状态。下单、收料和库存更正请到对应业务单据办理。盘点差异由有主管调整权限的人员填写复核结论。</p>
+        </div>
         <div class="grid gap-3 md:grid-cols-3"><article class="rounded-xl border border-red-200 bg-red-50 p-4"><div class="text-[11px] font-bold text-red-800">高优先级</div><div class="mt-2 text-2xl font-bold text-red-900">{{ visibleExceptions.filter((row) => row.tone === 'red' && row.status !== '已关闭').length }}</div></article><article class="rounded-xl border border-amber-200 bg-amber-50 p-4"><div class="text-[11px] font-bold text-amber-800">待处理 / 处理中</div><div class="mt-2 text-2xl font-bold text-amber-900">{{ visibleExceptions.filter((row) => row.status === '待处理' || row.status === '处理中').length }}</div></article><article class="rounded-xl border border-slate-200 bg-white p-4"><div class="text-[11px] font-bold text-slate-600">已解决 / 已关闭</div><div class="mt-2 text-2xl font-bold text-slate-900">{{ visibleExceptions.filter((row) => row.status === '已解决' || row.status === '已关闭').length }}</div></article></div>
         <div class="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
           <label class="flex items-center gap-2 text-xs font-semibold"><input type="checkbox" aria-label="全选当前筛选异常" :checked="allVisibleExceptionsSelected" :indeterminate="someVisibleExceptionsSelected && !allVisibleExceptionsSelected" :disabled="!visibleExceptions.length" class="size-4 accent-teal-600" @change="selectVisibleExceptions(($event.target as HTMLInputElement).checked)">全选当前筛选异常（{{ visibleExceptions.length }} 条）</label>
-          <div class="flex flex-wrap items-center gap-2">
-            <input v-model="bulkExceptionNote" aria-label="批量异常处理说明" placeholder="处理说明（盘点差异结论必填）" maxlength="4000" class="h-9 min-w-60 flex-1 rounded-lg border px-3 text-xs" :disabled="Boolean(exceptionBusyId)">
+          <div v-if="canManageExceptions" class="flex flex-wrap items-center gap-2">
+            <input v-model="bulkExceptionNote" aria-label="批量异常处理说明" placeholder="处理说明（盘点差异结论必填）" maxlength="4000" class="h-9 min-w-0 flex-1 basis-52 rounded-lg border px-3 text-xs" :disabled="Boolean(exceptionBusyId)">
             <button v-for="status in (['OPEN', 'IN_PROGRESS', 'RESOLVED'] as const)" :key="status" type="button" :disabled="!canBulkAdvanceExceptions(status)" class="h-9 rounded-lg border border-teal-200 px-3 text-xs font-semibold text-teal-700 disabled:opacity-40" @click="bulkAdvanceExceptions(status)">批量{{ exceptionActionLabel(status) }}</button>
           </div>
+          <p v-else-if="apiConnected" class="text-xs text-slate-600">查看原单和处理记录。更新状态需要本厂区异常处理权限。</p>
           <p v-if="selectedExceptionNos.length > 500" class="text-xs text-amber-700">单次最多处理 500 条，请在“查看已选”中减少选择。</p>
           <CartonSelectionSummary :rows="selectedExceptions.map(row => ({ id: row.id, label: `${row.customer} · ${row.id} · ${row.title}` }))" :visible-ids="visibleExceptions.map(row => row.id)" @clear="selectedExceptionNos = []" @remove="selectedExceptionNos = selectedExceptionNos.filter(id => id !== $event)" />
         </div>
         <div class="grid gap-3 xl:grid-cols-2">
-          <article v-for="row in visibleExceptions" :key="row.id" class="rounded-xl border p-4 shadow-sm" :class="[toneClass(row.tone, 'surface'), selectedExceptionNos.includes(row.id) ? 'ring-2 ring-teal-500' : '']">
-            <div class="flex items-start gap-3"><input v-model="selectedExceptionNos" type="checkbox" :value="row.id" :aria-label="`选择异常 ${row.id}`" class="mt-2 size-4 shrink-0 accent-teal-600"><span class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/80"><AlertTriangle class="size-4" /></span><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span class="text-[10px] font-bold">{{ row.id }}</span><span class="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.type }}</span><span class="ml-auto rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.status }}</span></div><h2 class="mt-2 text-[14px] font-bold">{{ row.title }}</h2><p class="mt-1 text-[11px] opacity-80">{{ row.detail }}</p><div class="mt-3 flex flex-wrap gap-4 text-[10px] font-semibold"><span>客户：{{ row.customer }}</span><span>责任部门：{{ row.owner }}</span><span>{{ row.deadline }}</span></div><div v-if="exceptionRecord(row.id)" class="mt-3 flex flex-col gap-2 border-t border-current/10 pt-3 sm:flex-row"><input v-model="resolutionNotes[exceptionRecordId(row.id)]" :aria-label="`${row.id} 处理说明`" :placeholder="exceptionRecord(row.id)?.category === 'STOCKTAKE_REVIEW' ? '主管抽查 / 复核结论（解决时必填）' : '处理说明（选填）'" class="h-9 min-w-0 flex-1 rounded-lg border border-white/80 bg-white/80 px-3 text-[11px] text-slate-800 outline-none focus:border-teal-500"><button type="button" :disabled="exceptionButtonDisabled(row.id)" class="h-9 rounded-lg bg-white px-3 text-[11px] font-bold text-teal-700 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400" @click="advanceException(row.id)">{{ exceptionBusyId === exceptionRecord(row.id)?.id ? '处理中…' : exceptionButtonLabel(row.id) }}</button></div></div></div>
+          <article v-for="{ row, record, guide } in visibleExceptionCards" :key="row.id" class="min-w-0 rounded-xl border p-4 shadow-sm" :class="[toneClass(row.tone, 'surface'), selectedExceptionNos.includes(row.id) ? 'ring-2 ring-teal-500' : '']">
+            <div class="flex items-start gap-3">
+              <input v-model="selectedExceptionNos" type="checkbox" :value="row.id" :aria-label="`选择异常 ${row.id}`" class="mt-2 size-4 shrink-0 accent-teal-600">
+              <span class="mt-0.5 hidden size-9 shrink-0 items-center justify-center rounded-lg bg-white/80 sm:flex"><AlertTriangle class="size-4" /></span>
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="break-all text-[10px] font-bold">{{ row.id }}</span>
+                  <span class="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.type }}</span>
+                  <span class="ml-auto rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.status }}</span>
+                </div>
+                <h2 class="mt-2 break-words text-sm font-bold">{{ row.title }}</h2>
+                <p class="mt-1 whitespace-pre-line break-words text-xs">{{ row.detail }}</p>
+                <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-semibold">
+                  <span>客户 {{ row.customer }}</span><span>责任部门 {{ row.owner || '待确认' }}</span><span>{{ row.deadline }}</span>
+                </div>
+                <template v-if="record && guide">
+                  <div class="mt-3 space-y-2 border-t border-current/10 pt-3 text-xs leading-5">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="font-semibold">来源 {{ guide.label }}</span>
+                      <button v-if="guide.action" type="button" :disabled="!apiConnected || record.source_type === 'ORDER' && Boolean(exceptionOrderLookup)"
+                        class="min-h-8 rounded-lg border border-current/20 bg-white/80 px-3 py-1 font-semibold text-teal-800 disabled:opacity-40"
+                        @click="openExceptionSource(record, $event)">{{ exceptionOrderLookup === record.id ? '正在定位…' : guide.action }}</button>
+                    </div>
+                    <p>{{ guide.guidance }}</p>
+                    <p v-if="record.resolution_note" class="whitespace-pre-line break-words"><strong>已记录结论</strong> {{ record.resolution_note }}</p>
+                  </div>
+                  <div v-if="canManageExceptions && (record.category !== 'STOCKTAKE_REVIEW' || canReviewStocktakeException())" class="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <input v-model="resolutionNotes[record.id]" :aria-label="`${row.id} 处理说明`" maxlength="4000"
+                      :placeholder="record.category === 'STOCKTAKE_REVIEW' ? '主管抽查 / 复核结论（解决时必填）' : '处理说明（选填）'"
+                      class="h-9 min-w-0 flex-1 rounded-lg border border-white/80 bg-white/80 px-3 text-xs text-slate-800 outline-none focus:border-teal-500">
+                    <button type="button" :disabled="exceptionButtonDisabled(row.id)" class="h-9 rounded-lg bg-white px-3 text-xs font-bold text-teal-700 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400"
+                      @click="advanceException(row.id)">{{ exceptionBusyId === record.id ? '处理中…' : exceptionActionLabel(record.status) }}</button>
+                  </div>
+                </template>
+              </div>
+            </div>
           </article>
           <div v-if="visibleExceptions.length === 0" class="col-span-full rounded-xl border border-slate-200 bg-white py-16 text-center text-slate-400">没有符合当前筛选条件的异常</div>
         </div>
+        <CartonExceptionDeliverySource v-if="exceptionDeliverySource" :key="exceptionDeliverySource.id" :exception="exceptionDeliverySource"
+          @close="exceptionDeliverySource = null" @close-auto-focus="restoreExceptionSourceFocus" />
       </section>
 
       <section v-else-if="activeTab === 'audit'" class="space-y-4">

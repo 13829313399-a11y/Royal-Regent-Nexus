@@ -28,7 +28,7 @@ from .prices import PriceTable
 
 FACTORY = "huakang-b"
 CUSTOMER = "jp-huakang-b"
-PREVIEW_SCHEMA_VERSION = "huakang-b-jp-preview-v2"
+PREVIEW_SCHEMA_VERSION = "huakang-b-jp-preview-v5"
 KINDS = {"schedule", "price", "confirmed"}
 MAX_FILE = 20 * 1024 * 1024
 MAX_TOTAL = 50 * 1024 * 1024
@@ -111,8 +111,6 @@ def reference_state(db):
 
 def snapshots(db):
     state = reference_state(db)
-    if not {"schedule", "price"}.issubset(state):
-        raise HTTPException(400, "请先上传华康B排期参照和货价表")
     return [(kind, item, bytes(db.get(Source, item["id"]).content)) for kind, item in sorted(state.items())]
 
 
@@ -192,6 +190,22 @@ def day(value):
         return d.strftime("%Y/%m/%d")
     except (ValueError, TypeError):
         raise ValueError("日期须为年/月/日")
+
+
+def row_reminders(row):
+    missing = [label for key, label in (('customer', '客名'), ('carton_t', '装箱数'),
+        ('ship_date', '行Q期'), ('cutoff_date', '截数期'), ('price_t', '货价'),
+        ('factory_price_t', '出厂价')) if not str(row.get(key) or '').strip()]
+    notes = [f"{row.get('baby_item') or '明细'}：{'、'.join(missing)}待补，缺值留空，不影响生成"] if missing else []
+    if row.get('price_confirm'):
+        notes.append(f"{row.get('baby_item')}：当前价格含候选匹配，请后续核价；生成不代表价格已确认")
+    try:
+        shipping, cutoff = day(row.get('ship_date')), day(row.get('cutoff_date'))
+        if shipping and cutoff and datetime.strptime(shipping, '%Y/%m/%d') > datetime.strptime(cutoff, '%Y/%m/%d'):
+            notes.append(f"{row.get('baby_item')}：行Q期晚于截数期，请后续核对")
+    except ValueError:
+        pass  # Explicit malformed edits are reported by field validation.
+    return notes
 
 
 def _jp_preview(files, html, subject, received_date, references, quantity_selections, actor_id, merchandiser="", identity_overrides=()):
@@ -289,6 +303,11 @@ def _jp_preview(files, html, subject, received_date, references, quantity_select
                     entries[i][0]["skipped"] = True
                     entries[i][0]["warnings"].append("同线程较旧或重复邮件已跳过")
         rows, warnings, failed = [], [], []
+        kinds = {kind for kind, _, _ in references}
+        if 'schedule' not in kinds:
+            warnings.append('未上传排期参照：历史排期无法比对；没有已有编号依据时，生成文件的编号留空。')
+        if 'price' not in kinds:
+            warnings.append('未上传货价表：无法匹配的价格留空，可直接生成后补充。')
         for res, _, checksum in entries:
             if not res["orders"] and not res.get("skipped"):
                 failed.append(res["meta"]["source"])
@@ -326,8 +345,6 @@ def resolve_rows(preview, selected, overrides):
     by_id = {r["id"]: deepcopy(r) for r in preview["rows"]}
     if not selected or len(set(selected)) != len(selected) or any(i not in by_id for i in selected):
         raise HTTPException(400, "请选择当前预览中的有效明细，不能重复选择")
-    if preview["failed_sources"] or preview["quantity_selections"]:
-        raise HTTPException(400, "存在未识别邮件或未确认数量列，请先处理或移除该邮件再预览")
     seen = set()
     for change in overrides:
         key = (change["id"], change["field"])
@@ -343,30 +360,28 @@ def resolve_rows(preview, selected, overrides):
         context_changed = any(str(row.get(f) or '').strip() != str(source.get(f) or '').strip()
                               for f in ('customer', 'carton_t'))
         if context_changed:
-            if any((id, field) not in seen for field in ('price_t', 'factory_price_t')):
-                raise HTTPException(400, '更改客名或装箱数后，必须重新填写核对货价与出厂价，不能沿用旧价格')
-            row['price_note'] = '客名或装箱数已更正，货价与出厂价由人工重新核对'
-            row['manual_price_review'] = True
-        elif source.get('price_confirm'):
-            if any((id, field) not in seen for field in ('price_t', 'factory_price_t')):
-                raise HTTPException(400, f'{row.get("baby_item")}：货价未精确匹配，须核对货价与出厂价后再导出')
-            row['price_note'] = '候选货价与出厂价由人工逐项核对；' + str(source.get('price_note') or '')
-            row['manual_price_review'] = True
+            # Changed matching keys must not retain an old price implicitly.
+            # Missing replacements remain blank, never a generation gate.
+            for field in ('price_t', 'factory_price_t'):
+                if (id, field) not in seen:
+                    row[field] = ''
+            row['price_note'] = '客名或装箱数已更正；未重新填写的价格留空，价格仍待核对'
+        row['manual_price_review'] = False
+        row['review_status'] = 'pending'
         if row.get("exists") or row.get("reference_duplicate"):
             raise HTTPException(409, "排期已有该明细，请在原问单上转确认单，不重复导出")
         try:
             row["qty"] = number(row["qty"], integer=True)
-            row["carton_t"] = number(row.get("carton_t"), integer=True)
-            row["price_t"] = number(row.get("price_t"))
+            row["carton_t"] = number(row.get("carton_t"), integer=True, optional=True)
+            row["price_t"] = number(row.get("price_t"), optional=True)
             row["factory_price_t"] = number(row.get("factory_price_t"), optional=True)
             row["ship_date"], row["cutoff_date"] = day(row.get("ship_date")), day(row.get("cutoff_date"))
             row["order_date"] = day(row["order_date"])
-            if day(row["ship_date"]) > day(row["cutoff_date"]):
-                raise ValueError("行Q期不能晚于截数期")
         except ValueError as exc:
             raise HTTPException(400, f"{row.get('baby_item')}：{exc}") from exc
-        if not row.get("baby_item") or not row.get("customer") or not row["cutoff_date"] or not row["ship_date"]:
-            raise HTTPException(400, "货号、客名、行Q期及截数期不能为空，请核对后填写")
+        if not row.get("baby_item") or not row.get("long_code"):
+            raise HTTPException(400, "未识别货号，无法生成该明细")
+        row["generation_reminders"] = row_reminders(row)
         identity = (row["customer"].casefold(), row.get("customer_po") or "", row["long_code"], row["qty"])
         if identity in identities:
             raise HTTPException(409, "所选问单包含重复明细，请核对后只保留一条")
@@ -381,14 +396,15 @@ def workbook(rows, first, prefix, actor, merchandiser=""):
     s.title = "录入新订单"
     s.append(COLUMNS)
     for offset, row in enumerate(rows):
-        values = [f"{prefix}-{first + offset:04d}", row["customer"], row.get("customer_po"), row["order_date"],
+        values = [f"{prefix}-{first + offset:04d}" if first else "", row["customer"], row.get("customer_po"), row["order_date"],
             row.get("sales_order", ""), row.get("item_t", ""), "JP", "华康B", row.get("sub_item_t", ""),
             row.get("product_t", ""), row["baby_item"], row.get("pkg", ""), int(Decimal(row["qty"])), "",
-            int(Decimal(row["carton_t"])), row.get("country", ""), "", row["ship_date"], "", row["cutoff_date"],
-            Decimal(row["price_t"]), "", "", Decimal(row["factory_price_t"]) if row["factory_price_t"] else "",
-            "", "", "", row.get("note", ""), "", "", "", "", "", "", "", "", "问单", "华康B", "已核对", merchandiser, actor, "", "", ""]
+            int(Decimal(row["carton_t"])) if row["carton_t"] else "", row.get("country", ""), "", row["ship_date"], "", row["cutoff_date"],
+            Decimal(row["price_t"]) if row["price_t"] else "", "", "", Decimal(row["factory_price_t"]) if row["factory_price_t"] else "",
+            "", "", "", row.get("note", ""), "", "", "", "", "", "", "", "", "问单", "华康B", "待核对", merchandiser, actor, "", "", ""]
         for index in (3, 17, 19):
-            values[index] = datetime.strptime(values[index], "%Y/%m/%d")
+            if values[index]:
+                values[index] = datetime.strptime(values[index], "%Y/%m/%d")
         s.append(values)
         for cell in s[s.max_row]:
             if isinstance(cell.value, str):
@@ -422,16 +438,19 @@ def save_export(db, preview, selected, overrides, references, files, html, reaso
     counter = db.get(JPCounter, FACTORY)
     historical_max = db.scalar(select(func.max(JPExport.last_number)).where(JPExport.factory_id == FACTORY)) or 0
     previous = max(counter.last_number if counter else 0, historical_max, preview["max_seq"])
-    last = previous + len(rows)
+    numbered = bool('schedule' in current or previous)
+    first = previous + 1 if numbered else 0
+    last = previous + len(rows) if numbered else 0
     if last > 99999:
         raise HTTPException(409, "原编号格式的流水号已满，需先确认新的编号规则")
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     prefix = "01" + str(now.year)[2:]
-    content = workbook(rows, previous + 1, prefix, creator_name or actor, preview["inputs"].get("merchandiser", ""))
-    if counter:
-        counter.last_number = last
-    else:
-        db.add(JPCounter(factory_id=FACTORY, last_number=last))
+    content = workbook(rows, first, prefix, creator_name or actor, preview["inputs"].get("merchandiser", ""))
+    if numbered:
+        if counter:
+            counter.last_number = last
+        else:
+            db.add(JPCounter(factory_id=FACTORY, last_number=last))
     source_ids = [m["id"] for _, m, _ in references]
     originals = [*files] + ([("粘贴正文.html", html.encode())] if html else [])
     for name, original in originals:
@@ -445,13 +464,17 @@ def save_export(db, preview, selected, overrides, references, files, html, reaso
             db.flush()
         source_ids.append(source.id)
     record = JPExport(id=uuid4().hex, factory_id=FACTORY, request_hash=key, actor=actor,
-        created_at=now.isoformat(timespec="seconds"), first_number=previous + 1, last_number=last,
+        created_at=now.isoformat(timespec="seconds"), first_number=first, last_number=last,
         data={"rows": rows, "source_ids": source_ids, "references": current, "reason": reason, "overrides": overrides,
               "preview_fingerprint": preview["fingerprint"], "inputs": preview["inputs"], "confirmation_usd_hkd_rate": "7.8",
-              "prefix": prefix, "sha256": sha256(content).hexdigest(), "warnings": preview["warnings"]}, content=content)
+              "prefix": prefix, "sha256": sha256(content).hexdigest(), "warnings": preview["warnings"],
+              "review_status": "pending", "generation_policy": "reminders-only",
+              "numbering_status": "allocated" if numbered else "pending",
+              "failed_sources": preview["failed_sources"], "quantity_selections": preview["quantity_selections"],
+              "generation_reminders": [note for row in rows for note in row["generation_reminders"]]}, content=content)
     db.add(record)
     db.flush()
-    for identity in identities:
+    for identity in identities if numbered else []:
         db.add(JPExportIdentity(factory_id=FACTORY, identity_key=identity, export_id=record.id))
     db.flush()
     return record

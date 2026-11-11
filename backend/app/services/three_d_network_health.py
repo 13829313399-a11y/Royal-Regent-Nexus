@@ -25,7 +25,7 @@ Check = Literal["ok", "failed", "skipped"]
 
 class PrinterProbe(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    machine_no: int = Field(ge=1, le=16)
+    machine_no: int = Field(ge=1, le=18)
     route: Check
     tcp: Check
     tls: Check
@@ -52,7 +52,7 @@ class NetworkHealthReport(BaseModel):
     observed_at: datetime
     tunnel: Literal["ok", "failed", "unknown"]
     exposure: Literal["ok", "unsafe", "unknown"]
-    printers: list[PrinterProbe] = Field(min_length=11, max_length=16)
+    printers: list[PrinterProbe] = Field(min_length=11, max_length=18)
 
     @field_validator("observed_at")
     @classmethod
@@ -64,8 +64,8 @@ class NetworkHealthReport(BaseModel):
     @field_validator("printers")
     @classmethod
     def all_printers(cls, value):
-        if len(value) not in (11, 16) or {p.machine_no for p in value} != set(range(1, len(value) + 1)):
-            raise ValueError("complete_11_or_16_printer_fleet_required")
+        if len(value) not in (11, 16, 18) or {p.machine_no for p in value} != set(range(1, len(value) + 1)):
+            raise ValueError("complete_11_16_or_18_printer_fleet_required")
         return sorted(value, key=lambda p: p.machine_no)
 
 

@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts", "src/**/*.vue", "../../../src/components/modules/sales/customer-order-center/__tests__/HuakangBJPIntake.spec.ts"],
+  "exclude": [],
+  "compilerOptions": { "types": ["vitest/globals", "node"] }
+}

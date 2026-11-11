@@ -5,8 +5,8 @@
    依赖：jsPDF 2.x  +  html2canvas 1.x
    调用：exportReportPDF('daily' | 'weekly')
    输出：A4 横向  297mm × 210mm
-         品质日报_YYYY-MM-DD.pdf
-         品质周报_YYYY-MM-DD.pdf
+         验货日报_YYYY-MM-DD.pdf
+         验货周报_YYYY-MM-DD.pdf
 ══════════════════════════════════════════════════════ */
 
 'use strict';
@@ -14,11 +14,17 @@
 /* ─────────────────────────────────────────
    工具：检查依赖是否加载
 ───────────────────────────────────────── */
-function _rptCheckDeps() {
-  const missing = [];
-  if (typeof window.jspdf === 'undefined' && typeof jsPDF === 'undefined') missing.push('jsPDF');
-  if (typeof html2canvas === 'undefined') missing.push('html2canvas');
-  return missing;
+async function _rptCheckDeps() {
+  const ready = () => (window.jspdf?.jsPDF || typeof jsPDF === 'function') && typeof html2canvas === 'function';
+  if (ready()) return true;
+  try {
+    await window.QcAssets?.load('pdf');
+    if (ready()) return true;
+  } catch (_) {
+    // The asset loader allows a failed download to be retried.
+  }
+  showToast('PDF 组件加载失败，请重新尝试导出。', 'error');
+  return false;
 }
 
 /* ─────────────────────────────────────────
@@ -55,13 +61,7 @@ function _rptUpdateOverlay(msg, sub) {
 ───────────────────────────────────────── */
 async function exportReportPDF(type) {
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  /* 检查依赖 */
-  const missing = _rptCheckDeps();
-  if (missing.length) {
-    showToast('PDF 库未加载：' + missing.join('、') + '，请检查网络后刷新', 'error');
-    return;
-  }
-
+  const selectedDailyDate = type === 'daily' ? document.getElementById('dailyDate')?.value || _todayStr() : '';
   /* 供应商报告需要先选择供应商 */
   if (type === 'supplier') {
     const sel = document.getElementById('supplierSelect');
@@ -76,18 +76,22 @@ async function exportReportPDF(type) {
   /* 更新按钮状态 */
   const btnId = type === 'daily' ? 'btnExportDaily'
               : type === 'weekly' ? 'btnExportWeekly'
+              : type === 'monthly' ? 'btnExportMonthly'
               : 'btnExportSupplier';
   const btn = document.getElementById(btnId);
   if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
 
   try {
+    if (!await _rptCheckDeps()) { _rptHideOverlay(); return; }
     await new Promise(r => requestAnimationFrame(r));
 
     _rptUpdateOverlay('正在渲染报告…', '构建 A4 版面');
 
     /* 生成 HTML 画布 */
     let canvas;
-    if (type === 'daily') {
+    if (window.QcPeriodReports?.[type]?.enabled()) {
+      canvas = window.QcPeriodReports[type].pdfCanvas();
+    } else if (type === 'daily') {
       canvas = _buildDailyCanvas();
     } else if (type === 'weekly') {
       const withAppendix = document.getElementById('weeklyAppendix')?.checked === true;
@@ -147,9 +151,9 @@ async function exportReportPDF(type) {
       document.body.removeChild(canvas);
 
       const dateStr2 = document.getElementById('weeklyDate')?.value || _todayStr();
-      pdf2.save(`品质周报_${dateStr2}.pdf`);
+      pdf2.save(`验货周报_${dateStr2}.pdf`);
       _rptHideOverlay();
-      showToast(`✓ 品质周报_${dateStr2}.pdf 已生成`, 'success');
+      showToast(`✓ 验货周报_${dateStr2}.pdf 已生成`, 'success');
       if (btn) { btn.disabled = false; btn.textContent = '⬇ 导出 PDF'; }
       return;   /* ← 周报独立处理完，提前返回 */
 
@@ -210,11 +214,14 @@ async function exportReportPDF(type) {
     /* 文件名 */
     let prefix, dateStr;
     if (type === 'daily') {
-      prefix  = '品质日报';
-      dateStr = document.getElementById('dailyDate')?.value || _todayStr();
+      prefix  = '验货日报';
+      dateStr = selectedDailyDate;
     } else if (type === 'weekly') {
-      prefix  = '品质周报';
+      prefix  = '验货周报';
       dateStr = document.getElementById('weeklyDate')?.value || _todayStr();
+    } else if (type === 'monthly') {
+      prefix = '验货月报';
+      dateStr = document.getElementById('monthlyMonth')?.value || _todayStr().slice(0,7);
     } else {
       const sName = document.getElementById('supplierSelect')?.value || '供应商';
       prefix  = `供应商质量报告_${sName}`;
@@ -364,9 +371,10 @@ function _svgLine(values, w=280, h=60, color='#1a5f8a') {
 }
 
 /* ─────────────────────────────────────────
-   §A  品质日报 HTML 画布构建
+   §A  验货日报 HTML 画布构建
 ───────────────────────────────────────── */
 function _buildDailyCanvas() {
+  if (window.QcDailyReport?.enabled()) return window.QcDailyReport.pdfCanvas();
   const date    = document.getElementById('dailyDate')?.value || _todayStr();
   const allData = _getData();
   const data    = allData.filter(r => r.date === date || r.inspDate === date);
@@ -438,7 +446,7 @@ function _buildDailyCanvas() {
     <div class="rpt-header">
       <div>
         <div class="rpt-co-name">${getReportCompanyLabel()}</div>
-        <div class="rpt-doc-type">品 质 日 报</div>
+        <div class="rpt-doc-type">验 货 日 报</div>
       </div>
       <div class="rpt-doc-no">
         <div><strong>报告日期：</strong>${date}</div>
@@ -613,7 +621,7 @@ function _buildDailyCanvas() {
 }
 
 /* ─────────────────────────────────────────
-   §B  品质周报 HTML 画布构建
+   §B  验货周报 HTML 画布构建
    ──────────────────────────────────────
    管理版（默认）：KPI + 供应商排名 + TOP不良 +
                    REJ明细 + 结论 ≈ 2~3页
@@ -753,7 +761,7 @@ function _buildWeeklyCanvas(withAppendix) {
     <div class="rpt-header">
       <div>
         <div class="rpt-co-name">${getReportCompanyLabel()}</div>
-        <div class="rpt-doc-type">品 质 周 报</div>
+        <div class="rpt-doc-type">验 货 周 报</div>
       </div>
       <div class="rpt-doc-no">
         <div><strong>统计周期：</strong>${ws} ～ ${we}</div>
@@ -1448,11 +1456,6 @@ function _iqcGetRow(qty) {
 /* ── 入口 ── */
 async function exportIQCReport(recordId) {
   if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  const missing = _rptCheckDeps();
-  if (missing.length) {
-    showToast('PDF 库未加载：' + missing.join('、') + '，请检查网络后刷新', 'error');
-    return;
-  }
 
   const allData = _getData();
   const record  = allData.find(r => r.id === recordId);
@@ -1464,6 +1467,7 @@ async function exportIQCReport(recordId) {
   _rptShowOverlay('正在生成 IQC 检验报告…', '构建版面');
 
   try {
+    if (!await _rptCheckDeps()) { _rptHideOverlay(); return; }
     await new Promise(r => requestAnimationFrame(r));
 
     const canvas = _buildIQCCanvas(record);

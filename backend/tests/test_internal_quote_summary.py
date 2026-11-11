@@ -533,6 +533,16 @@ def test_rr2_justplay_owns_automatic_fixed_packaging_without_manual_material_row
     assert global_pricing["entries"][1]["cartons_per_pallet"] == "40.0000"
     assert global_pricing["entries"][1]["paper_pallet_extra_hkd"] == "0.0700"
 
+    # Fixed packing is already in the quoted cost; management must include it
+    # exactly once without turning it into a refundable supplier purchase.
+    t1, t2, t3, t4 = (rows_by_key(result[key]) for key in ("t1", "t2", "t3", "t4"))
+    assert t2["other_buy"]["value"] == "0.6000"
+    assert t4["tax13b"]["amount_hkd"] == "10.0000"
+    assert result["totals"]["total_deduction_hkd"] == "1.1500"
+    assert Decimal(t3["total_cost"]["value"]) == Decimal("11.6") + Decimal(t2["misc"]["value"])
+    assert Decimal(t3["no_labor_cost"]["value"]) == Decimal(t3["total_cost"]["value"])
+    assert Decimal(t1["base_price"]["value"]) == ((Decimal("10") * Decimal("1.15") + Decimal("1.6") * Decimal("1.25")) / Decimal(".97")).quantize(Decimal(".0001"))
+
 
 @pytest.mark.parametrize(
     ("factory_id", "expected_rate", "expected_deduction"),
@@ -541,11 +551,11 @@ def test_rr2_justplay_owns_automatic_fixed_packaging_without_manual_material_row
         ("huadeng", None, None),
         ("huakang-a", None, None),
         ("huakang-b", None, None),
-        ("huakang-c", None, None),
-        ("huakang-d", None, None),
+        ("huakang-c", "11.5000", "1.7250"),
+        ("huakang-d", "11.5000", "1.7250"),
     ],
 )
-def test_rr2_sewing_is_not_taxed_in_any_factory(
+def test_rr2_sewing_material_tax_is_factory_scoped(
     factory_id: str,
     expected_rate: str | None,
     expected_deduction: str | None,
@@ -578,7 +588,7 @@ def test_rr2_sewing_is_not_taxed_in_any_factory(
     tax_row = rows_by_key(result["t4"])["sewcloth13"]
     assert tax_row == {
         "key": "sewcloth13",
-        "label": "车衣类（不计税）",
+        "label": "车衣材料13%" if expected_rate is not None else "车衣",
         "amount_hkd": "15.0000",
         "rate_percent": expected_rate,
         "deduction_hkd": expected_deduction,
@@ -620,7 +630,7 @@ def test_rr2_sewing_tax_refund_rebuilds_material_only_basis_from_legacy_lines():
 
     tax_row = rows_by_key(result["t4"])["sewcloth13"]
     assert tax_row["amount_hkd"] == "15.0000"
-    assert tax_row["deduction_hkd"] is None
+    assert tax_row["deduction_hkd"] == "1.7250"
 
 
 def test_rr2_sewing_quick_quote_never_assumes_an_unknown_total_is_refundable_material():
@@ -650,8 +660,8 @@ def test_rr2_sewing_quick_quote_never_assumes_an_unknown_total_is_refundable_mat
 
     tax_row = rows_by_key(result["t4"])["sewcloth13"]
     assert tax_row["amount_hkd"] == "0.0000"
-    assert tax_row["rate_percent"] is None
-    assert tax_row["deduction_hkd"] is None
+    assert tax_row["rate_percent"] == "11.5000"
+    assert tax_row["deduction_hkd"] == "0.0000"
 
 
 def test_rr2_cost_summary_keeps_exact_four_table_fields_and_reference_tax_columns():
@@ -812,7 +822,7 @@ def test_rr2_cost_summary_books_misc_as_a_share_of_the_grossed_up_quote(
     # The settlement gross-up only finances the misc share.  It must not alter
     # the pre-misc gross margin or profit.
     assert Decimal(t1["base_price"]["value"]) - Decimal(t2["misc"]["value"]) == Decimal("60.6000")
-    assert t3["gross"]["value"] == "29.1000"
+    assert t3["gross"]["value"] == "27.1000"
     assert t3["profit"]["value"] == "14.1000"
 
 

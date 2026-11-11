@@ -83,7 +83,7 @@ def combine_series_workbooks(products, *, summary_builder=None):
 
 
 def export_series(db, quote_id, payload, user, request=None):
-    """Freeze all unissued members atomically; never regenerate issued bytes."""
+    """Export current editable members atomically; preserve manually frozen bytes."""
     try:
         ids = [row.quote_id for row in payload.products]
         if len(ids) != len(set(ids)):
@@ -136,7 +136,7 @@ def export_series(db, quote_id, payload, user, request=None):
         for quote in ordered:
             if quote.factory_id != source.factory_id or quote.customer != source.customer:
                 raise HTTPException(400, "系列报价必须属于同一客户和厂区")
-            if quote.module_version != "v4" or quote.final_release_status != "issued":
+            if quote.module_version != "v4":
                 _check_revision(quote.header_revision, revisions[quote.id], quote.product_name)
             try:
                 if quote.module_version == "v4":
