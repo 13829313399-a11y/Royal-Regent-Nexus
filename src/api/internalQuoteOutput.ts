@@ -53,7 +53,7 @@ export interface OutputLayout {
   removed_adjustments?: Array<{ name: string; section_name: string; amount_hkd: string; reason: string }>
   preview: boolean
   read_only: boolean
-  warnings: Array<{ message?: string }>
+  warnings: Array<{ message?: string; code?: string; section_code?: string; section_name?: string }>
 }
 export interface OutputEdits {
   base_token: string
