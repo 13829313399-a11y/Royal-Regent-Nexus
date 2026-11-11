@@ -7,7 +7,7 @@ from test_cutting_jp_migration import base_database, clone, migrate, snapshot, v
 def latest_database(base_database, tmp_path_factory):
     path = clone(base_database, tmp_path_factory.mktemp('latest-head-preflight'))
     migrate(path, '20261102_0189')
-    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193'):
+    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194'):
         migrate(path, revision)
         before = snapshot(path)
         migrate(path, revision)

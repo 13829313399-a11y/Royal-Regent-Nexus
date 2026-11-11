@@ -71,6 +71,9 @@ from app.api.uv_operations import router as uv_operations_router
 from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
 from app.db import init_db
+from app.services.qc_dossier_events import install as install_qc_dossier_events
+
+install_qc_dossier_events()
 
 request_timing_logger = logging.getLogger("uvicorn.error")
 sweep_logger = logging.getLogger("app.three_d_sweep")
@@ -128,6 +131,10 @@ async def application_lifespan(app: FastAPI):
     import asyncio
 
     init_db()
+    if settings.qc_dossier_enabled:
+        from app.db import engine
+        from app.services.qc_dossier_worker import validate_installed
+        validate_installed(engine)
     from app.services.assistant import files as assistant_files
     await asyncio.to_thread(assistant_files.recover_jobs)
     from app.services.assistant.durable import worker as assistant_run_worker
@@ -143,9 +150,22 @@ async def application_lifespan(app: FastAPI):
     identity_task = asyncio.create_task(identity_worker()) if settings.iam_identity_writes_enabled else None
     from app.services.collaboration.maintenance import worker as collaboration_worker
     collaboration_task = asyncio.create_task(collaboration_worker()) if settings.collaboration_enabled else None
+    from app.services.qc_dossier_worker import worker as dossier_worker
+    dossier_task = asyncio.create_task(dossier_worker()) if settings.qc_dossier_enabled else None
+    from app.services.qc_photo_assets import worker as photo_worker
+    photo_task = asyncio.create_task(photo_worker())
     try:
         yield
     finally:
+        photo_task.cancel()
+        try:await photo_task
+        except asyncio.CancelledError:pass
+        if dossier_task:
+            dossier_task.cancel()
+            try:
+                await dossier_task
+            except asyncio.CancelledError:
+                pass
         await assistant_run_worker.stop()
         await asyncio.to_thread(assistant_files.shutdown)
         if collaboration_task:

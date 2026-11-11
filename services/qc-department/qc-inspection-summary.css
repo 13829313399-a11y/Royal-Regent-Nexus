@@ -47,3 +47,62 @@ body.theme-dark.qc-liquid-glass .qsum-lightbox{box-shadow:0 24px 90px #0009,inse
 @supports(backdrop-filter:blur(20px)){body.qc-liquid-glass .qsum-lightbox{background:color-mix(in srgb,var(--bg-panel) 94%,transparent);backdrop-filter:blur(20px) saturate(120%)}}
 @keyframes qsum-photo-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){body.qc-liquid-glass .qsum-lightbox{animation:none}body.qc-liquid-glass .qsum-lightbox button,body.qc-liquid-glass .qsum-photo-thumb{transition:none}}
+
+/* Full dossier stays inside the established 540px inspection drawer. */
+#qsum-root .qsum-detail-link{border-color:transparent;background:transparent;box-shadow:none;color:var(--accent,#406f58);padding:4px 8px;min-height:32px}
+.qsum-dossier .qwf-dialog-body{min-width:0;overflow:auto}
+.qsum-dossier .qsum-dossier-tabs{position:sticky;top:0;z-index:2;display:flex;border-bottom:1px solid var(--border,#dce3dc);background:var(--bg-card,#fff);margin:-2px 0 18px;gap:0}
+body.qc-liquid-glass .qsum-dossier .qsum-dossier-tabs [role=tab]{flex:1;min-width:0;border:0;border-radius:0;background:transparent;box-shadow:none;padding:12px 4px;white-space:nowrap;font-size:13px}
+body.qc-liquid-glass .qsum-dossier .qsum-dossier-tabs [role=tab][aria-selected=true]{background:transparent;color:var(--accent,#406f58);box-shadow:inset 0 -2px var(--accent,#406f58);font-weight:600}
+.qsum-dossier .qsum-dossier-panel[hidden]{display:none}
+.qsum-dossier .qsum-dossier-section{margin:0 0 20px}
+.qsum-dossier .qsum-detail dd{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.qsum-dossier .qsum-dossier-empty{display:inline-block;min-width:1em;min-height:1em}
+.qsum-dossier .qsum-dossier-json{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:0;max-width:100%}
+.qsum-dossier .qsum-dossier-source select{max-width:100%;border:1px solid var(--border);background:var(--bg-input);border-radius:8px;padding:6px 9px;color:var(--text-main)}
+.qsum-dossier .qsum-dossier-more{border-top:1px solid var(--border,#dce3dc);margin:14px 0;padding-top:12px;overflow-wrap:anywhere}
+.qsum-dossier .qsum-dossier-more>summary{cursor:pointer;color:var(--text-dim);padding:4px 0;font-size:12px}
+.qsum-dossier .qsum-history{font-size:13px;line-height:1.6;min-width:0}
+.qsum-dossier .qsum-history-heading,.qsum-dossier .qsum-history-entry>summary{display:grid;grid-template-columns:150px minmax(0,1fr);gap:0;padding:10px 6px}
+.qsum-dossier .qsum-history-heading{color:var(--text-dim);font-size:12px;border-bottom:1px solid var(--border,#dce3dc)}
+.qsum-dossier .qsum-history-entry{border-bottom:1px solid var(--border,#dce3dc)}
+.qsum-dossier .qsum-history-entry>summary{cursor:pointer;list-style:none;min-height:44px}
+.qsum-dossier .qsum-history-entry>summary::-webkit-details-marker{display:none}
+.qsum-dossier .qsum-history-entry>summary:hover{background:var(--bg-body,#f5f7f4)}
+.qsum-dossier .qsum-history-identity,.qsum-dossier .qsum-history-time{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0;overflow-wrap:anywhere}
+.qsum-dossier .qsum-history-identity>span,.qsum-dossier .qsum-history-missing{color:var(--text-dim);font-size:12px}
+.qsum-dossier .qsum-history-status{padding:1px 8px;border-radius:12px;background:var(--bg-body,#edf4ef);color:var(--accent,#406f58);font-size:11px}
+.qsum-dossier .qsum-history-toggle{color:var(--accent,#406f58);font-size:12px}
+.qsum-dossier .qsum-history-toggle:before{content:'▸ ';display:inline-block;margin-right:3px}
+.qsum-dossier .qsum-history-entry[open] .qsum-history-toggle:before{transform:rotate(90deg)}
+.qsum-dossier .qsum-history-content{margin-left:150px;padding:0 6px 10px;min-width:0}
+.qsum-dossier .qsum-history-field{padding:12px 0;overflow-wrap:anywhere}
+.qsum-dossier .qsum-history-field+.qsum-history-field{border-top:1px solid var(--border,#dce3dc)}
+.qsum-dossier .qsum-history-diff{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:6px}
+.qsum-dossier .qsum-history-diff>div{min-width:0;padding:10px;background:var(--bg-body,#f5f7f4);border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.qsum-dossier .qsum-history-diff>div:last-child{background:color-mix(in srgb,var(--accent,#406f58) 7%,var(--bg-card,#fff))}
+.qsum-dossier .qsum-history-diff>div>span:first-child{display:block;font-size:11px;color:var(--text-dim);margin-bottom:4px}
+.qsum-dossier .qsum-history-value{white-space:pre-wrap;margin-top:4px}
+.qsum-dossier .qsum-dossier-section>.qsum-detail dt,.qsum-dossier .qsum-dossier-section>.qsum-detail dd{font-size:13px;line-height:1.6;padding:9px 12px;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left}
+@media(max-width:480px){.qsum-dossier .qsum-history-heading{display:none}.qsum-dossier .qsum-history-entry>summary{grid-template-columns:minmax(0,1fr);gap:8px}.qsum-dossier .qsum-history-content{margin-left:0}.qsum-dossier .qsum-history-diff{grid-template-columns:minmax(0,1fr)}.qsum-dossier .qsum-history-time{gap:4px}}
+.qsum-dossier [role=tab]:focus-visible,.qsum-dossier summary:focus-visible{outline:2px solid var(--accent,#406f58);outline-offset:2px}
+@media(max-width:640px){.qsum-dossier .qsum-detail{grid-template-columns:105px minmax(0,1fr)}.qsum-dossier .qsum-dossier-source select{font-size:16px}.qsum-dossier-tabs [role=tab]{min-height:44px;font-size:12px}}
+
+/* Shared readable values; no raw JSON or empty business groups. */
+.qsum-dossier .qsum-value-list{margin:0;padding-left:18px}
+.qsum-dossier .qsum-value-object{display:grid;grid-template-columns:minmax(70px,auto) minmax(0,1fr);gap:6px 10px;margin:0}
+.qsum-dossier .qsum-value-object dt,.qsum-dossier .qsum-value-object dd{padding:0;border:0;background:transparent;white-space:pre-wrap;overflow-wrap:anywhere}
+.qsum-dossier .qsum-dossier-tabs{flex-shrink:0;top:0;margin-top:0}
+.qsum-dossier .qsum-dossier-section>h3{margin:0 0 10px}
+.qsum-dossier .qwf-dialog-body{overscroll-behavior:contain;scroll-padding-top:60px}
+/* Avoid stacking the shared section margin with tab margin and the body gap. */
+.qsum-dossier .qsum-dossier-tabs{margin-bottom:0}
+.qsum-dossier .qsum-dossier-panel{margin-top:0;flex-shrink:0}
+
+/* Accepted B reference: record overview followed by a compact two-column list. */
+.qsum-dossier .qsum-history-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0 16px;margin-bottom:20px;border-bottom:1px solid var(--border,#dce3dc)}
+.qsum-dossier .qsum-history-overview>div{min-width:0}
+body.qc-liquid-glass .qsum-dossier .qsum-history-overview h3{font-size:16px;margin:0 0 12px}
+.qsum-dossier .qsum-history-overview p{font-size:12px;color:var(--text-dim);margin:0;overflow-wrap:anywhere}
+.qsum-dossier .qsum-history-overview>.qsum-history-status{flex-shrink:0;padding:3px 9px;font-size:12px}
+.qsum-dossier .qsum-history-caption{font-size:12px;color:var(--text-dim);margin:0 0 16px}
