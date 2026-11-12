@@ -16,7 +16,8 @@ const filterId=`cutting-tasks-${useId()}`
 const route=inject(routeLocationKey,undefined)
 function linkedDay(){
   if(route?.query.factory!=='huakang-c')return businessDay()
-  return (props.reporting?cuttingQueryDay(route.query.task_day):undefined)??cuttingQueryDay(route.query.day)??businessDay()
+  const taskDay=props.reporting?(cuttingQueryDay(route.query.task_query_day)??cuttingQueryDay(route.query.task_day)):undefined
+  return taskDay??cuttingQueryDay(route.query.day)??businessDay()
 }
 const day=ref(linkedDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
 const applied=ref({day:day.value,q:'',execution:'',scope:'daily'})
@@ -83,7 +84,7 @@ function retry(){if(failedQuery.value&&!busy.value)void read({...failedQuery.val
 function change(value:string){scope.value=value;applied.value={...applied.value,scope:value};void load(1)}
 function resetFilters(){query.value='';execution.value='';applied.value={...applied.value,q:'',execution:''};void load(1)}
 onMounted(()=>void load())
-watch(linkedDay,value=>{day.value=value;applied.value={...applied.value,day:value};void load(1)})
+watch(linkedDay,value=>{if(value!==applied.value.day){day.value=value;applied.value={...applied.value,day:value};void load(1)}})
 onBeforeUnmount(()=>{alive=false;generation++})
 watchCuttingWorkspace(()=>void load(currentPage.value))
 </script>

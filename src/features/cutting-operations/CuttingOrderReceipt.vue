@@ -1,18 +1,15 @@
 <script setup lang="ts">
 import type { OrderReceipt } from './ordersApi'
+import { orderHistoryTime } from './orderDisplay'
 
 defineProps<{ receipt: OrderReceipt; recordVersion: number }>()
 const labels = { automatic: '首次下发自动接单', manual: '裁床人工确认', note_only: '系统同步备注 · 沿用生产依据' }
-const time = new Intl.DateTimeFormat('zh-CN', {
-  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-})
 </script>
 
 <template>
   <div class="receipt-evidence">
     <p>{{ labels[receipt.mode] }} · 业务下发 V{{ receipt.source_version }} · 裁床记录 V{{ recordVersion }}</p>
-    <p v-if="receipt.received_at">接收时间 {{ time.format(new Date(receipt.received_at)) }}</p>
+    <p v-if="receipt.received_at">接收时间 <time :datetime="receipt.received_at">{{ orderHistoryTime(receipt.received_at) }}</time></p>
     <dl v-if="receipt.note_comparison" class="receipt-comparison">
       <div>
         <dt>原备注 · 业务下发 V{{ receipt.note_comparison.before_version }}</dt>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import PageHeader from '@/components/common/PageHeader.vue'
-import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave, RouterLink } from 'vue-router'
 import { ChevronLeft, ChevronRight, ClipboardList, Search } from '@lucide/vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -16,7 +16,7 @@ import CuttingMaterialRequests from './CuttingMaterialRequests.vue'
 import CuttingMaterialUsage from './CuttingMaterialUsage.vue'
 import CuttingProductionSummary from './CuttingProductionSummary.vue'
 import { taskInput, type PlanTaskInput } from './planning'
-import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
+import { orderHistoryTime, orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 import { cuttingDestination, useCuttingLocation, type CuttingLocation } from './location'
 import CuttingLocationNotice from './CuttingLocationNotice.vue'
 import CuttingPlanningMetrics from './CuttingPlanningMetrics.vue'
@@ -59,7 +59,8 @@ const bomMatchBasis = ref('')
 const chosenBom = ref<MasterRecord | null>(null), bomQuery = ref(''), bomRows = ref<MasterRecord[]>([])
 const bomPage = ref(1), bomTotal = ref(0), versionPage = ref(1), versionTotal = ref(0), versionId = ref(''), versions = ref<MasterRecord[]>([])
 const demands = ref<DemandInput[]>([]), batches = ref<EtaBatch[]>([])
-const disposition = ref<'not_ordered' | 'cancelled_or_reallocated'>('not_ordered'), evidence = ref(''), allHandled = ref(false)
+const disposition = ref<'' | 'not_ordered' | 'cancelled_or_reallocated'>(''), evidence = ref(''), allHandled = ref(false)
+const orderEditor = ref<HTMLFormElement>()
 const history = ref<OrderRevision[]>([]), historyPage = ref(1), historyTotal = ref(0)
 const pending = ref<{ id: string; action: OrderAction; body: OrderCommand } | null>(null), uncertain = ref(false)
 const planTasks = ref<PlanTaskInput[]>([])
@@ -69,6 +70,10 @@ const snapshot = () => JSON.stringify([reason.value, targetSets.value, quantityB
 const dirty = computed(() => !!action.value && snapshot() !== baseline.value)
 const available = computed(() => access.value?.enabled && access.value?.orders_schema_ready)
 const data = computed(() => selected.value?.current?.data)
+const hasPurchaseEvidence = computed(() => {
+  const original = selected.value?.pending_purchase
+  return original?.has_purchase_evidence ?? !!original?.batches.length
+})
 const receiveLabel = computed(() => selected.value?.current ? '确认订单变更' : '签收订单版本')
 const publishedPlan = computed(() => data.value?.planning?.published)
 const singlePublishedTask = computed(() => publishedPlan.value?.tasks.length === 1 ? publishedPlan.value.tasks[0] : undefined)
@@ -128,13 +133,15 @@ function select(row: CuttingOrder) {
 }
 function edit(next: OrderAction) {
   if (!discard()) return
+  const previousFocus = document.activeElement
+  const lineId = selected.value?.line_id
   searchGeneration++; action.value = next; reason.value = ''; chosenBom.value = null; bomQuery.value = ''; bomRows.value = []; versions.value = []
   removedTaskReasons.value = {}
   if (next === 'plan-publish' && data.value?.planning?.published) reason.value = data.value.planning.draft?.adjustment_reason ?? ''
   targetSets.value = data.value?.target_sets ?? 1; quantityBasis.value = data.value?.quantity_basis ?? ''
   bomMatchBasis.value = data.value?.bom_match_basis ?? ''
   demands.value = requirements.value.map((_, row) => ({ row, quantity: '', purchase_mode: 'purchase', no_purchase_reason: '' }))
-  disposition.value = 'not_ordered'; evidence.value = ''; allHandled.value = false
+  disposition.value = ''; evidence.value = ''; allHandled.value = false
   batches.value = structuredClone(data.value?.batches ? JSON.parse(JSON.stringify(data.value.batches)) : [])
   planTasks.value = (data.value?.planning?.draft ?? data.value?.planning?.published)?.tasks.map(taskInput) ?? []
   if (next === 'plan' && (data.value?.planning?.draft ? selected.value?.planning_summary?.draft_stale : selected.value?.planning_summary?.published_stale)) {
@@ -146,8 +153,28 @@ function edit(next: OrderAction) {
     notice.value = '旧计划依据已变更：保留任务和日计划，预计物料、实际领料及前置条件须重新核对填写。'
   }
   baseline.value = snapshot()
+  void nextTick(() => {
+    if (!alive || action.value !== next || selected.value?.line_id !== lineId ||
+        (document.activeElement !== previousFocus && document.activeElement !== document.body)) return
+    const editor = orderEditor.value
+    const firstField = editor?.querySelector<HTMLElement>('input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled)')
+    const target = firstField ?? editor?.querySelector('h3')
+    target?.focus()
+  })
 }
-function cancel() { if (discard()) { action.value = null; searchGeneration++ } }
+function cancel() {
+  if (!discard() || !action.value) return
+  const trigger = editorId(`open-${action.value}`)
+  const lineId = selected.value?.line_id
+  const previousFocus = document.activeElement
+  action.value = null; searchGeneration++
+  void nextTick(() => {
+    if (alive && !action.value && selected.value?.line_id === lineId &&
+        (document.activeElement === previousFocus || document.activeElement === document.body)) {
+      document.getElementById(trigger)?.focus()
+    }
+  })
+}
 async function searchBoms(nextPage = 1) {
   const request = ++searchGeneration
   bomRows.value = []; versions.value = []; versionId.value = ''
@@ -185,7 +212,13 @@ function makeCommand(): OrderCommand | null {
   if (action.value === 'requisition') return { ...common, lines: JSON.parse(JSON.stringify(demands.value)) }
   if (action.value === 'eta' && data.value?.requisition) return { ...common, requisition_version: data.value.requisition.version, batches: JSON.parse(JSON.stringify(batches.value)) }
   if (action.value === 'withdraw' && data.value?.requisition) return { ...common, requisition_version: data.value.requisition.version }
-  if (action.value === 'reconcile' && selected.value?.pending_purchase?.requisition) return { ...common, requisition_version: selected.value.pending_purchase.requisition.version, disposition: disposition.value, evidence: evidence.value, all_handled: allHandled.value }
+  if (action.value === 'reconcile' && selected.value?.pending_purchase?.requisition) {
+    if (!disposition.value || (hasPurchaseEvidence.value && disposition.value === 'not_ordered')) {
+      error.value = '请选择适用的旧采购处理结果。'
+      return null
+    }
+    return { ...common, requisition_version: selected.value.pending_purchase.requisition.version, disposition: disposition.value, evidence: evidence.value, all_handled: allHandled.value }
+  }
   error.value = '请明确选择一个已发布 BOM 版本。'; return null
 }
 async function save() {
@@ -392,15 +425,15 @@ function status(row: CuttingOrder) {
         <p v-if="data?.bom">已关联 {{ data.bom.code }} V{{ data.bom.version }} · 裁床目标 {{ data.target_sets }} 套 · 数量依据：{{ data.quantity_basis }}</p>
         <div class="order-toolbar" v-if="!action">
           <template v-if="workspace.path === 'planning' && writable && data?.bom && !data.purchase_reconciliation_required">
-            <Button variant="outline" v-if="can('plan_write')" @click="edit('plan')">编制任务与日计划</Button>
-            <Button variant="outline" v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">{{publishLabel}}</Button>
+            <Button variant="outline" v-if="can('plan_write')" :id="editorId('open-plan')" @click="edit('plan')">编制任务与日计划</Button>
+            <Button variant="outline" v-if="can('plan_publish') && data.planning?.draft" :id="editorId('open-plan-publish')" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">{{publishLabel}}</Button>
           </template>
-          <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">{{ receiveLabel }}</Button>
-          <Button variant="outline" v-if="writable && !data?.requisition && can('bom_write')" @click="edit('bom')">工程关联 BOM</Button>
-          <Button variant="outline" v-if="writable && data?.bom && !data.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('requisition')">工程提交物料需求</Button>
-          <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('eta_write') && data.requisition.lines.some(r => r.purchase_mode !== 'no_purchase')" @click="edit('eta')">采购回复分批交期</Button>
-          <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('withdraw')">工程申请撤回／修订</Button>
-          <Button variant="outline" v-if="!selected.needs_receipt && data?.purchase_reconciliation_required && can('requisition_reconcile')" @click="edit('reconcile')">采购核对旧需求</Button>
+          <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" :id="editorId('open-receive')" @click="edit('receive')">{{ receiveLabel }}</Button>
+          <Button variant="outline" v-if="writable && !data?.requisition && can('bom_write')" :id="editorId('open-bom')" @click="edit('bom')">工程关联 BOM</Button>
+          <Button variant="outline" v-if="writable && data?.bom && !data.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" :id="editorId('open-requisition')" @click="edit('requisition')">工程提交物料需求</Button>
+          <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('eta_write') && data.requisition.lines.some(r => r.purchase_mode !== 'no_purchase')" :id="editorId('open-eta')" @click="edit('eta')">采购回复分批交期</Button>
+          <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" :id="editorId('open-withdraw')" @click="edit('withdraw')">工程申请撤回／修订</Button>
+          <Button variant="outline" v-if="!selected.needs_receipt && data?.purchase_reconciliation_required && can('requisition_reconcile')" :id="editorId('open-reconcile')" @click="edit('reconcile')">采购核对旧需求</Button>
         </div>
         <div v-if="data?.requisition" class="cutting-table-scroll"><table><caption>需求版本 V{{ data.requisition.version }}；无交期批次表示尚待回复</caption><thead><tr><th>需求行／物料</th><th>阶段／部件</th><th>裁剪必需</th><th>理论净用量</th><th>工程需求量</th><th>已回复／待回复</th><th>预计交期批次</th></tr></thead><tbody>
           <tr v-for="r in data.requisition.lines" :key="r.row"><td>{{ r.row + 1 }} · {{ r.material.code }} {{ r.material.name }}</td><td>{{ r.stage }} / {{ r.part_codes.join('、') }}</td><td>{{ r.required_for_cutting ? '是' : '否' }}</td><td>{{ r.theoretical_quantity }} {{ r.unit }}</td><td>{{ r.quantity }} {{ r.unit }}<p v-if="r.purchase_mode === 'no_purchase'">本次不采购：{{ r.no_purchase_reason }}</p></td><td>{{ r.replied_quantity }} / {{ r.awaiting_reply_quantity }} {{ r.unit }}</td><td><p v-for="(b, i) in data.batches.filter(b => b.row === r.row)" :key="i">{{ b.expected_date }} / {{ b.quantity }} {{ r.unit }} / {{ b.supplier }} / {{ b.purchase_reference }}</p><span v-if="r.purchase_mode === 'no_purchase'">无需采购交期</span><span v-else-if="!data.batches.some(b => b.row === r.row)">待回复</span></td></tr>
@@ -411,8 +444,8 @@ function status(row: CuttingOrder) {
           <CuttingPlanSummary v-if="data.planning.draft" :plan="data.planning.draft" title="待发布草稿" :stale="selected.planning_summary?.draft_stale" />
           <details v-if="data.planning.baseline"><summary>首次基准计划</summary><CuttingPlanSummary :plan="data.planning.baseline" title="首次基准" /></details>
         </template>
-        <form v-if="action" class="order-form" @submit.prevent="save">
-          <h3>{{ action==='plan-publish'?publishLabel:action==='receive'?receiveLabel:labels[action] }}</h3>
+        <form v-if="action" ref="orderEditor" class="order-form" @submit.prevent="save">
+          <h3 tabindex="-1">{{ action==='plan-publish'?publishLabel:action==='receive'?receiveLabel:labels[action] }}</h3>
           <fieldset :disabled="saving || !!pending">
             <CuttingPlanEditor v-if="action === 'plan' && data" v-model="planTasks" v-model:removed-task-reasons="removedTaskReasons" :data="data" :line-id="selected.line_id" />
             <CuttingPlanDiff v-if="adjustingPlan && data?.planning?.published" :previous="data.planning.published" :tasks="action === 'plan' ? planTasks : data.planning.draft?.tasks ?? []" :removed-reasons="action === 'plan' ? removedTaskReasons : data.planning.draft?.removed_task_reasons" />
@@ -452,7 +485,14 @@ function status(row: CuttingOrder) {
             </template>
             <p v-if="action === 'withdraw'">申请后暂停原需求交期办理。无论是否填写过交期，都须由采购确认旧需求处置；核对完成后可修订数量、BOM 并重新提交。</p>
             <template v-if="action === 'reconcile'">
-              <label>旧采购处理结果 <select :id="editorId('disposition')" name="disposition" v-model="disposition" aria-label="旧采购处理结果"><option value="not_ordered">已核实整张旧需求尚未采购</option><option value="cancelled_or_reallocated">旧采购已取消／转用并完成核对</option></select></label>
+              <label :for="editorId('disposition')">旧采购处理结果
+                <select :id="editorId('disposition')" name="disposition" v-model="disposition" required :aria-describedby="hasPurchaseEvidence ? editorId('disposition-help') : undefined">
+                  <option value="" disabled>请选择核对结果</option>
+                  <option value="not_ordered" :disabled="hasPurchaseEvidence">已核实整张旧需求尚未采购</option>
+                  <option value="cancelled_or_reallocated">旧采购已取消／转用并完成核对</option>
+                </select>
+              </label>
+              <p v-if="hasPurchaseEvidence" :id="editorId('disposition-help')" class="cutting-notice">原需求已有采购交期记录，不能选择「尚未采购」。请核对取消或转用凭据后，再选择处理结果。</p>
               <label>处置依据 <textarea :id="editorId('evidence')" name="evidence" v-model="evidence" minlength="4" maxlength="500" required placeholder="注明核对人、原采购单号、取消／转用凭据及数量；不得遗留未处理承诺量" /></label>
               <label><input :id="editorId('all_handled')" name="all_handled" v-model="allHandled" type="checkbox" required />确认整张旧需求均已核对处置，没有未处理采购承诺；此处不会自动操作外部采购单。</label>
             </template>
@@ -463,7 +503,7 @@ function status(row: CuttingOrder) {
           </fieldset>
         </form>
         <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
-        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id==='system:cutting-auto-receipt'?'系统':r.actor_id }} · {{ r.reason }}</summary>
+        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · <time :datetime="r.created_at">{{ orderHistoryTime(r.created_at) }}</time> · {{ r.actor_id==='system:cutting-auto-receipt'?'系统':r.actor_id }} · {{ r.reason }}</summary>
           <CuttingOrderReceipt v-if="r.data.receipt?.mode === 'note_only'" :receipt="r.data.receipt" :record-version="r.version" />
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
