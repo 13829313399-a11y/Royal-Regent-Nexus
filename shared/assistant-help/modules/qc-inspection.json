@@ -89,7 +89,7 @@
       {
         "path": "services/qc-department/qc-inspection-summary.js",
         "symbol": "async function load",
-        "sha256": "91c8816b46b3418e69ba4e8d7c03ec5650d924f446dc49632682a5510ddd2a20"
+        "sha256": "365866bcf6a935b9a85405a7f184fdf05b17bab2fe5b7b0e658f486c8e9562cd"
       },
       {
         "path": "backend/app/services/qc_weekly_templates.py",
