@@ -3,7 +3,7 @@ from copy import deepcopy
 from datetime import datetime, UTC
 from zoneinfo import ZoneInfo
 from decimal import Decimal, localcontext
-from sqlalchemy import inspect, select, func, or_
+from sqlalchemy import inspect, select, func, or_, tuple_
 from app.models.cutting_ops import CuttingOrder, CuttingOrderRevision, CuttingCommand, CuttingMaster, CuttingRevision
 from app.models.customer_order_ledger import OrderLedgerLine, OrderLedgerDispatch
 from app.services import cutting_ops as c
@@ -31,6 +31,32 @@ def revision(db, order, version=None):
     r = db.get(CuttingOrderRevision, (order.line_id, version or order.version))
     c.require(r is not None, '裁床订单版本不存在', 404)
     return dict(version=r.version, data=r.data, actor_id=r.actor_id, created_at=r.created_at, reason=r.reason)
+
+
+def include_note_comparisons(db, revisions):
+    """Decorate response revisions from immutable cutting dispatches in one page-level read."""
+    targets = []
+    keys = set()
+    for line_id, revision_data in revisions:
+        receipt = revision_data['data'].get('receipt') if revision_data else None
+        if not receipt or receipt.get('mode') != 'note_only' or not receipt.get('source_dispatch_id'):
+            continue
+        version = receipt['source_version']
+        targets.append((line_id, version, revision_data, receipt))
+        keys.update(((line_id, version - 1), (line_id, version)))
+    if not keys:
+        return
+    query = select(OrderLedgerDispatch).where(
+        OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting',
+        tuple_(OrderLedgerDispatch.line_id, OrderLedgerDispatch.version).in_(sorted(keys)))
+    sources = {(d.line_id, d.version): d for d in db.scalars(query)}
+    for line_id, version, revision_data, receipt in targets:
+        before, after = sources.get((line_id, version - 1)), sources.get((line_id, version))
+        if not before or not after or not before.received_at or not after.received_at or after.id != receipt['source_dispatch_id']:
+            continue
+        comparison = dict(before_version=before.version, before=str(before.snapshot.get('note') or ''),
+                          after=str(after.snapshot.get('note') or ''))
+        revision_data['data'] = {**revision_data['data'], 'receipt': {**receipt, 'note_comparison': comparison}}
 
 
 def view(db, dispatch, loaded=None, planning_summary=None):
