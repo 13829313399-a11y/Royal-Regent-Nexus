@@ -78,7 +78,7 @@ def test_changed_result_reopen_and_undo_remove_formal_qualification(db):
     assert s.listing('huaxing',{})['items'][0]['id']==a['id']
 
 
-def test_history_preview_commit_repeated_file_retains_real_duplicates_rollback():
+def test_history_preview_commit_retains_real_duplicates_and_supports_previously_rolled_back_batches():
     p=preview(history(2024,2,True));assert p['total']==2 and p['new']==2
     assert s.listing('huaxing',{})['total']==0
     assert s.commit_history('huaxing','operator',p['id'])['count']==2
@@ -87,8 +87,14 @@ def test_history_preview_commit_repeated_file_retains_real_duplicates_rollback()
     again=preview(history(2024,2,True));assert again['duplicate']==2 and again['new']==0
     assert s.commit_history('huaxing','operator',again['id'])['count']==0
     assert s.commit_history('huaxing','operator',p['id'])['status']=='unchanged'
-    assert s.rollback_history('huaxing',p['id'])['count']==2
+    # Simulate a batch rolled back before that operation was retired.
+    with s.store(True) as conn:
+        conn.execute('UPDATE records SET active=0 WHERE batch_id=?', (p['id'],))
+        conn.execute("UPDATE batches SET status='rolled_back',rolled_back_at=? WHERE id=?", (wf.now(), p['id']))
     assert s.listing('huaxing',{})['total']==0
+    with pytest.raises(HTTPException) as error:
+        s.commit_history('huaxing','operator',p['id'])
+    assert error.value.status_code == 409
     with s.store() as conn:assert bytes(conn.execute('SELECT original FROM batches WHERE id=?',(p['id'],)).fetchone()[0])
     new=preview(history(2024,2,True));s.commit_history('huaxing','operator',new['id'])
     assert {r['id'] for r in s.listing('huaxing',{})['items']}=={r['id'] for r in records}
@@ -153,6 +159,9 @@ def test_http_read_import_permissions_and_removed_export(db,monkeypatch):
         assert client.post(base+'api/inspection-summary/history/preview',json=payload,headers={'Sec-Fetch-Site':'cross-site'}).status_code==403
         response=client.post(base+'api/inspection-summary/history/preview',json=payload);assert response.status_code==200,response.text
         batch=response.json()['id'];assert client.post(base+'api/inspection-summary/history/'+batch+'/commit',json={}).status_code==200
+        assert client.get(base+'api/inspection-summary/history').status_code==404
+        assert client.post(base+'api/inspection-summary/history/'+batch+'/rollback',json={}).status_code==404
+        assert client.get(base+'api/inspection-summary/records').json()['total']==3
         assert client.head(base+'api/inspection-summary/export').status_code==405
         assert client.get(base+'api/inspection-summary/export').status_code==404
         codes=current[0].permissions-{'qc_inspection:report_export'}

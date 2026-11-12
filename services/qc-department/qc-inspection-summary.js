@@ -18,9 +18,52 @@
   function shell(){
     const el=root.document.getElementById('qsum-root');if(!el||el.dataset.ready)return;
     el.dataset.ready='1';
-    el.innerHTML=`<div class="qsum-heading"><div class="qsum-actions"><button class="btn btn-secondary" id="qsum-import">历史导入</button><button class="btn btn-secondary" id="qsum-batches">导入批次</button><button class="btn btn-secondary" id="qsum-refresh">刷新</button></div></div>
-      <div class="qsum-filters"><label>年<select id="qsum-year" aria-label="汇总年份"></select></label><label>月<select id="qsum-month" aria-label="汇总月份"></select></label><label>日<select id="qsum-day" aria-label="汇总日期"></select></label><label class="qsum-search">搜索<input id="qsum-search" type="search" placeholder="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总"></label><label>验货类型<select id="qsum-type"><option value="">全部类型</option><option>客验</option><option>行验</option><option>待确认</option></select></label><label>归档状态<select id="qsum-status"><option value="">全部历史</option><option value="approved">已审核</option><option value="completed">已完成</option><option value="archived">已归档</option><option value="unverified">历史待核实</option><option value="withdrawn">归档已撤回</option></select></label><button class="btn btn-secondary" id="qsum-reset">重置</button></div>
-      <p id="qsum-message" role="status" aria-live="polite"></p><div class="qsum-table-wrap"><table class="qsum-table"><thead><tr><th>验货日期 ↑</th><th>客户</th><th>库号</th><th>货号</th><th>验货类型</th><th>验货结果</th><th>归档状态</th><th>操作</th></tr></thead><tbody id="qsum-body"></tbody></table></div><div class="qsum-footer"><span id="qsum-count"></span><div><button class="btn btn-secondary" id="qsum-prev">上一页</button><span id="qsum-page"></span><button class="btn btn-secondary" id="qsum-next">下一页</button></div></div><input id="qsum-file" type="file" accept=".xls,.xlsx" hidden>`;
+    el.innerHTML=`
+      <div class="qsum-workspace">
+        <div class="qsum-toolbar">
+          <ul id="qsum-totals" aria-label="验货汇总统计" hidden></ul>
+          <div class="qsum-actions">
+            <button type="button" class="btn btn-secondary" id="qsum-import">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h4l4 4v14H7v-4M7 9V3h6v5h5M3 13h11m-4-4 4 4-4 4"/></svg>历史导入
+            </button>
+            <button type="button" class="btn btn-secondary" id="qsum-refresh">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 8M20 3v5h-5"/></svg>刷新
+            </button>
+          </div>
+        </div>
+        <div class="qsum-filter-bar">
+          <label class="qsum-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input id="qsum-search" type="search" placeholder="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总">
+          </label>
+          <div class="qsum-date-filters" role="group" aria-label="验货日期筛选">
+            <select id="qsum-year" aria-label="汇总年份"></select>
+            <select id="qsum-month" aria-label="汇总月份"></select>
+            <select id="qsum-day" aria-label="汇总日期"></select>
+          </div>
+          <label class="qsum-select">验货类型
+            <select id="qsum-type"><option value="">全部类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
+          </label>
+          <label class="qsum-select">归档状态
+            <select id="qsum-status"><option value="">全部历史</option><option value="approved">已审核</option><option value="completed">已完成</option><option value="archived">已归档</option><option value="unverified">历史待核实</option><option value="withdrawn">归档已撤回</option></select>
+          </label>
+          <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
+        </div>
+        <p id="qsum-message" role="status" aria-live="polite"></p>
+        <div class="qsum-results">
+          <div class="qsum-table-wrap" role="region" aria-label="验货汇总表格" tabindex="0">
+            <table class="qsum-table">
+              <thead><tr><th scope="col" aria-sort="ascending">验货日期 ↑</th><th scope="col">客户</th><th scope="col">库号</th><th scope="col">货号</th><th scope="col">验货类型</th><th scope="col">验货结果</th><th scope="col">归档状态</th><th scope="col">操作</th></tr></thead>
+              <tbody id="qsum-body"></tbody>
+            </table>
+          </div>
+          <div class="qsum-footer">
+            <span id="qsum-count"></span>
+            <div><button type="button" class="btn btn-secondary" id="qsum-prev">上一页</button><span id="qsum-page"></span><button type="button" class="btn btn-secondary" id="qsum-next">下一页</button></div>
+          </div>
+        </div>
+      </div>
+      <input id="qsum-file" type="file" accept=".xls,.xlsx" hidden>`;
     ['year','month','day','type','status'].forEach(key=>root.document.getElementById('qsum-'+key).addEventListener('change',event=>{
       state.filters[key]=event.target.value;if(key==='year')state.filters.month=state.filters.day='';if(key==='month')state.filters.day='';state.filters.page=1;controls();void load();
     }));
@@ -32,9 +75,7 @@
     root.document.getElementById('qsum-body').onclick=event=>{const button=event.target.closest('[data-summary-id]');if(button)void details(button.dataset.summaryId);};
     root.document.getElementById('qsum-import').onclick=()=>root.document.getElementById('qsum-file').click();
     root.document.getElementById('qsum-file').onchange=event=>{const file=event.target.files[0];event.target.value='';if(file)void preview(file);};
-    root.document.getElementById('qsum-batches').onclick=batches;
     root.document.getElementById('qsum-import').hidden=!root.__QC_NEXUS?.summaryImportAllowed;
-    root.document.getElementById('qsum-batches').hidden=!root.__QC_NEXUS?.summaryImportAllowed;
     controls();
   }
   function controls(){
@@ -49,16 +90,20 @@
   function message(text,error=false){const el=root.document.getElementById('qsum-message');if(el){el.textContent=text;el.classList.toggle('qsum-error',error);}}
   async function load(){
     shell();const sequence=++state.sequence;message('正在读取汇总…');
+    const totals = root.document.getElementById('qsum-totals');
     try{
       const data=await api('records?'+query());if(sequence!==state.sequence)return;state.data=data;state.filters.page=data.page;controls();
       root.document.getElementById('qsum-body').innerHTML=data.items.length?data.items.map(row=>`<tr><td>${display(row.reportDate ?? row.inspectionDate)}</td><td title="${esc(root.QcInspectionAudit.hint(row))}">${display(row.customer)}${row.entryId?root.QcInspectionAudit.badge(row):''}</td><td>${display(row.stockNo)}</td><td>${display(row.productNo)}</td><td>${display(row.inspectionType)}</td><td><span class="qsum-result ${['PASS','FAIL','REJ'].includes(row.result)?'qsum-'+row.result.toLowerCase():''}">${display(row.result)}</span></td><td><span class="qsum-state">${labels[row.status]||display(row.status)}</span></td><td><button class="btn btn-secondary qsum-detail-link" data-summary-id="${esc(row.id)}" aria-label="查看 ${esc(row.customer)} ${esc(row.productNo)} 详情">查看详情</button></td></tr>`).join(''):'<tr><td colspan="8" class="qsum-empty">没有符合条件的记录。可调整筛选，或预览历史工作簿。</td></tr>';
       root.QcInspectionAudit.bind(root.document.getElementById('qsum-body'));
       const pages=Math.max(1,Math.ceil(data.total/data.pageSize));
-      root.document.getElementById('qsum-count').textContent=`共 ${data.total} 条 · 验货日期升序，库号及记录 ID 稳定排序`;
+      root.document.getElementById('qsum-count').textContent=`共 ${data.total} 条`;
       root.document.getElementById('qsum-page').textContent=`${data.page} / ${pages}`;
       root.document.getElementById('qsum-prev').disabled=data.page<=1;root.document.getElementById('qsum-next').disabled=data.page>=pages;
-      message(`已审核 ${data.counts['已审核']||0} 条 · 已完成 ${data.counts['已完成']||0} 条 · 已归档 ${data.counts['已归档']||0} 条 · 历史待核实 ${data.counts['历史待核实']||0} 条${data.unknownDates?' · '+data.unknownDates+' 条缺少可用验货日期，选择具体年月日时不计入':''}`);
-    }catch(error){if(sequence===state.sequence){message(error.message+'；点击刷新可重试。',true);root.document.getElementById('qsum-body').innerHTML='<tr><td colspan="8" class="qsum-empty">读取未完成，未显示旧筛选结果。</td></tr>';}}
+      totals.innerHTML = ['已审核', '已完成', '已归档', '历史待核实'].map(label =>
+        `<li>${label} <strong>${esc(data.counts[label] || 0)}</strong></li>`).join('');
+      totals.hidden = false;
+      message(data.unknownDates ? `${data.unknownDates} 条缺少可用验货日期，选择具体年月日时不计入` : '');
+    }catch(error){if(sequence===state.sequence){totals.hidden=true;message(error.message+'；点击刷新可重试。',true);root.document.getElementById('qsum-body').innerHTML='<tr><td colspan="8" class="qsum-empty">读取未完成，未显示旧筛选结果。</td></tr>';}}
   }
   function dialog(title,body){
     const trigger=root.document.activeElement,el=root.document.createElement('dialog');el.className='qwf-dialog qsum-dialog';el.setAttribute('aria-label',title);
@@ -383,7 +428,7 @@
       if(!/\.xlsx?$/i.test(file.name)||file.size>32*1024*1024)throw Error('请选择不超过 32 MB 的 .xls 或 .xlsx 工作簿');
       const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(Error('读取文件失败'));reader.readAsDataURL(file);});
       const data=await api('history/preview',{filename:file.name,mime:file.type||'',content});
-      const el=dialog('历史导入预览',`<p>${esc(data.filename)}</p><p>识别 ${data.total} 条 · 可新增 ${data.new} 条 · 已有 ${data.duplicate} 条 · 跨来源冲突暂缓 ${data.conflict} 条</p><p>年份分布：${esc(Object.entries(data.years).map(([k,v])=>k+' 年 '+v+' 条').join('；'))}</p><p class="qsum-note">新增记录统一标记“历史待核实”，验货类型为“待确认”。原文件及来源坐标已保留，可按批次回滚。预览不会改变验货台或累计工作簿。</p><details><summary>识别范围与跳过的工作表</summary><ul>${data.warnings.map(w=>'<li>'+esc(w)+'</li>').join('')}</ul></details><div class="qsum-table-wrap"><table class="qsum-table"><thead><tr><th>日期</th><th>客户</th><th>货号</th><th>结果</th><th>来源</th></tr></thead><tbody>${data.samples.map(r=>`<tr><td>${display(r.inspectionDate)}</td><td>${display(r.customer)}</td><td>${display(r.productNo)}</td><td>${display(r.result)}</td><td>${esc(r.sourceSheet)} / ${r.sourceRow}</td></tr>`).join('')}</tbody></table></div><p>预览前 ${data.samples.length} 条；提交时处理全部可新增记录。</p><button class="btn btn-primary" id="qsum-confirm-import" ${data.new?'':'disabled'}>确认导入 ${data.new} 条待核实记录</button>`);
+      const el=dialog('历史导入预览',`<p>${esc(data.filename)}</p><p>识别 ${data.total} 条 · 可新增 ${data.new} 条 · 已有 ${data.duplicate} 条 · 跨来源冲突暂缓 ${data.conflict} 条</p><p>年份分布：${esc(Object.entries(data.years).map(([k,v])=>k+' 年 '+v+' 条').join('；'))}</p><p class="qsum-note">新增记录统一标记“历史待核实”，验货类型为“待确认”。原文件及来源坐标已保留。预览不会改变验货台或累计工作簿。</p><details><summary>识别范围与跳过的工作表</summary><ul>${data.warnings.map(w=>'<li>'+esc(w)+'</li>').join('')}</ul></details><div class="qsum-table-wrap"><table class="qsum-table"><thead><tr><th>日期</th><th>客户</th><th>货号</th><th>结果</th><th>来源</th></tr></thead><tbody>${data.samples.map(r=>`<tr><td>${display(r.inspectionDate)}</td><td>${display(r.customer)}</td><td>${display(r.productNo)}</td><td>${display(r.result)}</td><td>${esc(r.sourceSheet)} / ${r.sourceRow}</td></tr>`).join('')}</tbody></table></div><p>预览前 ${data.samples.length} 条；提交时处理全部可新增记录。</p><button class="btn btn-primary" id="qsum-confirm-import" ${data.new?'':'disabled'}>确认导入 ${data.new} 条待核实记录</button>`);
       el.querySelector('#qsum-confirm-import').onclick=async()=>{
         if(state.busy)return;state.busy=true;el.querySelector('#qsum-confirm-import').disabled=true;el.querySelector('[data-close]').disabled=true;
         try{const saved=await api('history/'+data.id+'/commit',{});el.close();await load();message(`历史导入完成：新增 ${saved.count} 条，全部为历史待核实。`);}
@@ -392,12 +437,6 @@
       };
       message('历史预览完成，请核对后确认导入。');
     }catch(error){message(error.message,true);}finally{state.busy=false;}
-  }
-  async function batches(){
-    try{const data=await api('history');const el=dialog('历史导入批次',data.items.length?data.items.map(b=>`<div class="qsum-batch"><strong>${esc(b.filename)}</strong><p>${esc(time(b.created_at))} · 当前保留 ${b.count} 条 · ${b.status==='rolled_back'?'已回滚':'已导入'}</p><button class="btn btn-secondary" data-rollback="${b.id}" ${b.status!=='committed'||!b.count?'disabled':''}>回滚本批历史导入</button></div>`).join(''):'暂无已确认的历史导入批次。');
-      el.addEventListener('click',async event=>{const button=event.target.closest('[data-rollback]');if(!button||state.busy)return;if(button.dataset.confirm!=='yes'){button.dataset.confirm='yes';button.textContent='确认回滚本批历史待核实记录';const note=root.document.createElement('p');note.textContent='仅移除此批导入记录；原始 Excel、验货台和正式归档不受影响。再次点击确认。';button.before(note);return;}state.busy=true;button.disabled=true;
-        try{const saved=await api('history/'+button.dataset.rollback+'/rollback',{});el.close();await load();message(`已回滚本批 ${saved.count} 条历史记录，来源凭据仍保留。`);}catch(error){message(error.message,true);button.disabled=false;}finally{state.busy=false;}});
-    }catch(error){message(error.message,true);}
   }
   root.QcInspectionSummary={load,get busy(){return state.busy;}};
 })(window);
