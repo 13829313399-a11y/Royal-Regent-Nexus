@@ -24,9 +24,11 @@ import CuttingInventory from './CuttingInventory.vue'
 import CuttingActivityPage from './CuttingActivityPage.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
 import CuttingScheduleImport from './CuttingScheduleImport.vue'
+import CuttingOrderReceipt from './CuttingOrderReceipt.vue'
 
 const props=defineProps<{ workspace: CuttingWorkspace }>()
 const filterId=`cutting-orders-${useId()}`
+const editorId = (name: string, row?: number) => `${filterId}-editor-${name}${row === undefined ? '' : `-${row}`}`
 const materialsView=ref('inventory')
 const manualLocation=ref<CuttingLocation>()
 const appliedQuery=ref(''),appliedStatus=ref(''),appliedPlanStatus=ref(''),summaryRefresh=ref(0)
@@ -364,6 +366,10 @@ function status(row: CuttingOrder) {
       <SectionPanel v-if="selected" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`">
         <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
         <p>{{ status(selected) }} · 裁床记录 V{{ selected.current?.version ?? 0 }}</p>
+        <details v-if="selected.current?.data.receipt?.mode === 'note_only'">
+          <summary>已接收备注对照</summary>
+          <CuttingOrderReceipt :receipt="selected.current.data.receipt" :record-version="selected.current.version" />
+        </details>
         <p v-if="selected.snapshot.status === 'cancelled'" role="alert">来源订单已取消，仅可签收取消通知及核对旧采购需求。</p>
         <div v-if="selected.needs_receipt" class="cutting-notice">
           <div v-if="selected.current">
@@ -413,47 +419,52 @@ function status(row: CuttingOrder) {
             <p v-if="action === 'plan-publish'">发布当前草稿后形成新计划版本，首次基准和历史调整仍保留。预排不代表物料已可用或允许实际开工。</p>
             <p v-if="action==='plan-publish'&&publishLabel!=='发布生产预排'" class="cutting-notice">本次仅发布任务供领料使用，不增加已排期订单数，不生成日计划或完成数量。领料后调整已发布任务仍须填写原因。</p>
             <template v-if="action === 'bom'">
-              <div class="order-toolbar"><label>BOM 编码／货号／名称／款式／颜色 <input v-model="bomQuery" maxlength="80" /></label><Button variant="outline" type="button" @click="searchBoms()">查找 BOM</Button></div>
+              <div class="order-toolbar"><label>BOM 编码／货号／名称／款式／颜色 <input :id="editorId('bom_query')" name="bom_query" v-model="bomQuery" maxlength="80" /></label><Button variant="outline" type="button" @click="searchBoms()">查找 BOM</Button></div>
               <ul><li v-for="b in bomRows" :key="b.id">{{ b.code }} · {{ b.data.name }} <Button variant="outline" type="button" @click="loadVersions(b.id)">查看发布版本</Button></li></ul>
               <div v-if="bomTotal" class="order-toolbar"><Button variant="outline" type="button" :disabled="bomPage <= 1" @click="searchBoms(bomPage-1)">BOM 上一页</Button><Button variant="outline" type="button" :disabled="bomPage*50 >= bomTotal" @click="searchBoms(bomPage+1)">BOM 下一页</Button></div>
               <ul><li v-for="b in versions" :key="b.version">{{ b.code }} V{{ b.version }} · {{ (b.data as BomData).item_no }} · {{ (b.data as BomData).style }} / {{ (b.data as BomData).color }} <Button variant="outline" type="button" @click="chosenBom = b">选择此发布版</Button></li></ul>
               <p v-if="versionId && !versions.length">此页没有发布版本。</p>
               <div v-if="versionId" class="order-toolbar"><Button variant="outline" type="button" :disabled="versionPage <= 1" @click="loadVersions(versionId, versionPage-1)">版本上一页</Button><Button variant="outline" type="button" :disabled="versionPage*50 >= versionTotal" @click="loadVersions(versionId, versionPage+1)">版本下一页</Button></div>
               <p>已选择：{{ chosenBom ? `${chosenBom.code} V${chosenBom.version}` : '尚未选择' }}。新发布版本不会自动替换本订单。</p>
-              <label>裁床目标套数 <input v-model.number="targetSets" type="number" min="1" max="1000000000" step="1" required /></label>
-              <label>数量口径／换算依据 <textarea v-model="quantityBasis" maxlength="500" required placeholder="确认订单数量是否为套；如换算，请填写依据" /></label>
-              <label>BOM 对应依据 <textarea v-model="bomMatchBasis" maxlength="500" placeholder="订单货号与 BOM 货号不同时，必须说明对应依据" /></label>
+              <label>裁床目标套数 <input :id="editorId('target_sets')" name="target_sets" v-model.number="targetSets" type="number" min="1" max="1000000000" step="1" required /></label>
+              <label>数量口径／换算依据 <textarea :id="editorId('quantity_basis')" name="quantity_basis" v-model="quantityBasis" maxlength="500" required placeholder="确认订单数量是否为套；如换算，请填写依据" /></label>
+              <label>BOM 对应依据 <textarea :id="editorId('bom_match_basis')" name="bom_match_basis" v-model="bomMatchBasis" maxlength="500" placeholder="订单货号与 BOM 货号不同时，必须说明对应依据" /></label>
             </template>
             <template v-if="action === 'requisition'">
               <p>逐行核定正式需求量。理论净用量不包含损耗，也未抵扣库存；请在提交依据中说明差异。</p>
               <div v-for="(r, i) in requirements" :key="i" class="demand-row">
                 <p>{{ i+1 }} · {{ materialName(i) }} / {{ r.stage }} / {{ r.part_codes.join('、') }} · {{ r.required_for_cutting ? '裁剪必需' : '非当前必需' }} · 每套 {{ r.quantity_per_set }} {{ r.unit }}</p>
-                <label>本次采购方式 <select v-model="demands[i]!.purchase_mode" :aria-label="`采购方式${i+1}`" @change="purchaseModeChanged(demands[i]!)"><option value="purchase">需要采购</option><option value="no_purchase">本次不采购</option></select></label>
-                <label>需求数量 <input v-model="demands[i]!.quantity" :readonly="demands[i]!.purchase_mode === 'no_purchase'" inputmode="decimal" required :aria-label="`需求数量${i+1}`" /> {{ r.unit }}</label>
-                <label v-if="demands[i]!.purchase_mode === 'no_purchase'">不采购原因 <input v-model="demands[i]!.no_purchase_reason" maxlength="500" required :aria-label="`不采购原因${i+1}`" /></label>
+                <label>本次采购方式 <select :id="editorId('purchase_mode',i)" :name="`lines[${i}].purchase_mode`" v-model="demands[i]!.purchase_mode" :aria-label="`采购方式${i+1}`" @change="purchaseModeChanged(demands[i]!)"><option value="purchase">需要采购</option><option value="no_purchase">本次不采购</option></select></label>
+                <label>需求数量 <input :id="editorId('demand_quantity',i)" :name="`lines[${i}].quantity`" v-model="demands[i]!.quantity" :readonly="demands[i]!.purchase_mode === 'no_purchase'" inputmode="decimal" required :aria-label="`需求数量${i+1}`" /> {{ r.unit }}</label>
+                <label v-if="demands[i]!.purchase_mode === 'no_purchase'">不采购原因 <input :id="editorId('no_purchase_reason',i)" :name="`lines[${i}].no_purchase_reason`" v-model="demands[i]!.no_purchase_reason" maxlength="500" required :aria-label="`不采购原因${i+1}`" /></label>
               </div><p>“本次不采购”只说明采购安排，不代表已有库存、可用或到料。</p>
             </template>
             <template v-if="action === 'eta'">
               <p>保存将形成新的完整交期版本；未覆盖数量仍待回复。删除批次只修订预计交期，不撤销采购单。</p>
               <div v-for="(b, i) in batches" :key="i" class="eta-row">
-                <label>需求行 <select v-model.number="b.row"><option v-for="r in data?.requisition?.lines.filter(r => r.purchase_mode !== 'no_purchase')" :key="r.row" :value="r.row">{{ r.row+1 }} · {{ r.material.code }} {{ r.material.name }} / {{ r.stage }} / {{ r.part_codes.join('、') }} / {{ r.unit }}</option></select></label>
-                <label>批次数量 <input v-model="b.quantity" inputmode="decimal" required /></label><label>预计到料 <input v-model="b.expected_date" type="date" required /></label><label>供应商 <input v-model="b.supplier" maxlength="120" required /></label><label>采购来源单号 <input v-model="b.purchase_reference" maxlength="120" required /></label><Button variant="outline" type="button" @click="batches.splice(i, 1)">移除此批次</Button>
+                <label>需求行 <select :id="editorId('batch_row',i)" :name="`batches[${i}].row`" v-model.number="b.row"><option v-for="r in data?.requisition?.lines.filter(r => r.purchase_mode !== 'no_purchase')" :key="r.row" :value="r.row">{{ r.row+1 }} · {{ r.material.code }} {{ r.material.name }} / {{ r.stage }} / {{ r.part_codes.join('、') }} / {{ r.unit }}</option></select></label>
+                <label>批次数量 <input :id="editorId('batch_quantity',i)" :name="`batches[${i}].quantity`" v-model="b.quantity" inputmode="decimal" required /></label>
+                <label>预计到料 <input :id="editorId('expected_date',i)" :name="`batches[${i}].expected_date`" v-model="b.expected_date" type="date" required /></label>
+                <label>供应商 <input :id="editorId('supplier',i)" :name="`batches[${i}].supplier`" v-model="b.supplier" maxlength="120" required /></label>
+                <label>采购来源单号 <input :id="editorId('purchase_reference',i)" :name="`batches[${i}].purchase_reference`" v-model="b.purchase_reference" maxlength="120" required /></label>
+                <Button variant="outline" type="button" @click="batches.splice(i, 1)">移除此批次</Button>
               </div><Button variant="outline" type="button" @click="addBatch">增加交期批次</Button>
             </template>
             <p v-if="action === 'withdraw'">申请后暂停原需求交期办理。无论是否填写过交期，都须由采购确认旧需求处置；核对完成后可修订数量、BOM 并重新提交。</p>
             <template v-if="action === 'reconcile'">
-              <label>旧采购处理结果 <select v-model="disposition" aria-label="旧采购处理结果"><option value="not_ordered">已核实整张旧需求尚未采购</option><option value="cancelled_or_reallocated">旧采购已取消／转用并完成核对</option></select></label>
-              <label>处置依据 <textarea v-model="evidence" minlength="4" maxlength="500" required placeholder="注明核对人、原采购单号、取消／转用凭据及数量；不得遗留未处理承诺量" /></label>
-              <label><input v-model="allHandled" type="checkbox" required />确认整张旧需求均已核对处置，没有未处理采购承诺；此处不会自动操作外部采购单。</label>
+              <label>旧采购处理结果 <select :id="editorId('disposition')" name="disposition" v-model="disposition" aria-label="旧采购处理结果"><option value="not_ordered">已核实整张旧需求尚未采购</option><option value="cancelled_or_reallocated">旧采购已取消／转用并完成核对</option></select></label>
+              <label>处置依据 <textarea :id="editorId('evidence')" name="evidence" v-model="evidence" minlength="4" maxlength="500" required placeholder="注明核对人、原采购单号、取消／转用凭据及数量；不得遗留未处理承诺量" /></label>
+              <label><input :id="editorId('all_handled')" name="all_handled" v-model="allHandled" type="checkbox" required />确认整张旧需求均已核对处置，没有未处理采购承诺；此处不会自动操作外部采购单。</label>
             </template>
-            <label v-if="adjustingPlan">已发布计划调整原因 <textarea v-model="reason" maxlength="500" required /></label>
+            <label v-if="adjustingPlan" :for="editorId('reason')">已发布计划调整原因 <textarea :id="editorId('reason')" name="reason" v-model="reason" maxlength="500" required /></label>
             <p v-if="adjustingPlan">本次调整将形成新版本，首次基准和原发布版本保留；发布时带入已保存的调整原因，可核对修改。</p>
-            <label v-else-if="action !== 'plan' && action !== 'plan-publish'">本次操作依据 <textarea v-model="reason" maxlength="500" required /></label>
+            <label v-else-if="action !== 'plan' && action !== 'plan-publish'" :for="editorId('reason')">本次操作依据 <textarea :id="editorId('reason')" name="reason" v-model="reason" maxlength="500" required /></label>
             <Button type="submit">确认保存</Button><Button variant="outline" type="button" @click="cancel">取消编辑</Button>
           </fieldset>
         </form>
         <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
         <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id==='system:cutting-auto-receipt'?'系统':r.actor_id }} · {{ r.reason }}</summary>
+          <CuttingOrderReceipt v-if="r.data.receipt?.mode === 'note_only'" :receipt="r.data.receipt" :record-version="r.version" />
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>

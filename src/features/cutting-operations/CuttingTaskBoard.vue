@@ -9,11 +9,15 @@ import CuttingMetrics from './CuttingMetrics.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
 import { workspaceApi,businessDay,type TaskView } from './workspaceApi'
 import { errorMessage } from './api'
-import { cuttingDestination } from './location'
+import { cuttingDestination, cuttingQueryDay } from './location'
 const props=defineProps<{reporting?:boolean}>()
+const emit=defineEmits<{ 'loaded-day': [day: string] }>()
 const filterId=`cutting-tasks-${useId()}`
 const route=inject(routeLocationKey,undefined)
-function linkedDay(){const value=route?.query.day;return route?.query.factory==='huakang-c'&&typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString().slice(0,10)===value?value:businessDay()}
+function linkedDay(){
+  if(route?.query.factory!=='huakang-c')return businessDay()
+  return (props.reporting?cuttingQueryDay(route.query.task_day):undefined)??cuttingQueryDay(route.query.day)??businessDay()
+}
 const day=ref(linkedDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
 const applied=ref({day:day.value,q:'',execution:'',scope:'daily'})
 type TaskQuery=typeof applied.value & {page:number}
@@ -41,7 +45,7 @@ function exceptionLink(row:TaskView['data'][number],reason:string) {
   const date=result.value?.day??day.value
   const isReport=reason==='外发收回待验收'||reason==='已结束业务日未填报'
   const target=cuttingDestination(row.line_id,date.slice(0,7),isReport?'reporting':'planning','task',row.task_id)
-  return {...target,query:{...target.query,day:date,...(isReport?{reporting_view:reason==='外发收回待验收'?'external':'records'}:{})}}
+  return {...target,query:{...target.query,day:date,...(isReport?{task_day:date,reporting_view:reason==='外发收回待验收'?'external':'records'}:{})}}
 }
 const exceptionLabels:Record<string,string>={'外发收回待验收':'收回与验收','已结束业务日未填报':'补填当日日报','计划依据已变更':'复核计划','计划已逾期未完成':'核对逾期计划','物料及前置条件待实际核定':'核定执行条件'}
 async function load(page=1,apply=false){
@@ -63,6 +67,7 @@ async function read(request:TaskQuery,retry=false){
       pageNotice.value=`原第 ${request.page} 页已超出当前任务范围，已按原条件返回第 1 页。`
     }
     result.value=value
+    emit('loaded-day',value.day)
   }
   catch(e){if(alive&&ticket===generation){
     error.value=errorMessage(e)
@@ -78,7 +83,7 @@ function retry(){if(failedQuery.value&&!busy.value)void read({...failedQuery.val
 function change(value:string){scope.value=value;applied.value={...applied.value,scope:value};void load(1)}
 function resetFilters(){query.value='';execution.value='';applied.value={...applied.value,q:'',execution:''};void load(1)}
 onMounted(()=>void load())
-watch(()=>route?.query.day,()=>{day.value=linkedDay();applied.value={...applied.value,day:day.value};void load(1)})
+watch(linkedDay,value=>{day.value=value;applied.value={...applied.value,day:value};void load(1)})
 onBeforeUnmount(()=>{alive=false;generation++})
 watchCuttingWorkspace(()=>void load(currentPage.value))
 </script>
@@ -134,7 +139,7 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
           <td><StatusPill :label="row.reported?'已填报':row.planned?'未填报':'计划外实绩'" compact /></td>
           <td><p v-for="reason in row.reasons" :key="reason">{{reason}}</p><span v-if="!row.reasons.length">—</span></td>
           <td><div class="cutting-master-actions">
-            <Button as-child size="sm" variant="outline"><RouterLink :to="{...cuttingDestination(row.line_id,(result?.day??day).slice(0,7),'reporting','task',row.task_id),query:{...cuttingDestination(row.line_id,(result?.day??day).slice(0,7),'reporting','task',row.task_id).query,day:result?.day??day}}">填数／查看</RouterLink></Button>
+            <Button as-child size="sm" variant="outline"><RouterLink :to="{...cuttingDestination(row.line_id,(result?.day??day).slice(0,7),'reporting','task',row.task_id),query:{...cuttingDestination(row.line_id,(result?.day??day).slice(0,7),'reporting','task',row.task_id).query,day:result?.day??day,task_day:result?.day??day}}">填数／查看</RouterLink></Button>
             <Button v-for="reason in row.reasons" :key="reason" as-child size="sm" variant="outline"><RouterLink :to="exceptionLink(row,reason)">{{exceptionLabels[reason]??'处理异常'}}</RouterLink></Button>
           </div></td>
         </tr></tbody>

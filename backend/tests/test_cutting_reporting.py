@@ -74,8 +74,14 @@ def test_note_receipt_keeps_production_evidence_but_quantity_still_requires_conf
     data = synced['current']['data']
     assert not synced['needs_receipt'] and not synced['planning_summary']['published_stale']
     assert synced['source_version'] == first['source_version'] + 1
+    comparison = dict(before_version=first['source_version'], before=first['snapshot'].get('note') or '', after='备注补充')
     assert data['receipt'] == dict(mode='note_only', source_version=synced['source_version'],
-                                   received_at=synced['received_at'], source_dispatch_id=synced['dispatch_id'])
+                                   received_at=synced['received_at'], source_dispatch_id=synced['dispatch_id'],
+                                   note_comparison=comparison)
+    with Session(p.engine) as db:
+        from app.models.cutting_ops import CuttingOrderRevision
+        stored = db.get(CuttingOrderRevision, ('line-1', synced['current']['version']))
+        assert 'note_comparison' not in stored.data['receipt']
     assert synced['snapshot']['note'] == '备注补充' and synced['dispatch_id'] != first['dispatch_id']
     for key in ('order', 'dispatch_id', 'bom', 'requisition', 'batches', 'planning', 'purchase_reconciliation_required'):
         assert data[key] == initial[key]
@@ -93,6 +99,10 @@ def test_note_receipt_keeps_production_evidence_but_quantity_still_requires_conf
                      requested_ship_date=line.data['requested_ship_date'], note='数量变更后的补充备注', reason='补充待确认订单备注'), 'sales')
         db.commit()
     assert order_view(p)['needs_receipt']
+    pending_rows = ok(p.get(BASE+'/orders',params={'factory_id':'huakang-c','changes_only':True}))['data']
+    assert pending_rows[0]['current']['data']['receipt']['note_comparison'] == comparison
+    history = ok(p.get(BASE+'/orders/line-1/versions',params={'factory_id':'huakang-c'}))['data']
+    assert history[0]['data']['receipt']['note_comparison'] == comparison
     confirmed = receive(p)
     assert confirmed['current']['data']['receipt']['mode'] == 'manual'
     assert confirmed['current']['data']['bom'] is None
