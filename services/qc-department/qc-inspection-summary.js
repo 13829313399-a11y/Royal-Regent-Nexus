@@ -21,10 +21,7 @@
     el.innerHTML=`
       <div class="qsum-workspace">
         <div class="qsum-toolbar">
-          <ul id="qsum-totals" aria-label="验货汇总统计" hidden>
-            <li>审核记录：<strong id="qsum-review-count"></strong> 条</li>
-            <li>历史待核实 <strong id="qsum-unverified-count"></strong></li>
-          </ul>
+          <p id="qsum-totals" hidden>审核记录：<strong id="qsum-review-count"></strong> 条</p>
           <div class="qsum-actions">
             <button type="button" class="btn btn-secondary" id="qsum-import">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h4l4 4v14H7v-4M7 9V3h6v5h5M3 13h11m-4-4 4 4-4 4"/></svg>历史导入
@@ -104,7 +101,6 @@
       root.document.getElementById('qsum-prev').disabled=data.page<=1;root.document.getElementById('qsum-next').disabled=data.page>=pages;
       const totalRecords = Object.values(data.counts).reduce((sum, count) => sum + count, 0);
       root.document.getElementById('qsum-review-count').textContent = totalRecords;
-      root.document.getElementById('qsum-unverified-count').textContent = data.counts['历史待核实'] || 0;
       totals.hidden = false;
       message(data.unknownDates ? `${data.unknownDates} 条缺少可用验货日期，选择具体年月日时不计入` : '');
     }catch(error){if(sequence===state.sequence){totals.hidden=true;message(error.message+'；点击刷新可重试。',true);root.document.getElementById('qsum-body').innerHTML='<tr><td colspan="8" class="qsum-empty">读取未完成，未显示旧筛选结果。</td></tr>';}}

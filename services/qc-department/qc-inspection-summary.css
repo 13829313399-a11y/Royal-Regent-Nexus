@@ -20,7 +20,6 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 
 .qsum-toolbar,
 .qsum-actions,
-#qsum-totals,
 .qsum-footer,
 .qsum-footer > div {
   display: flex;
@@ -37,10 +36,11 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 }
 
 #qsum-totals {
-  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   margin: 0;
-  padding: 0;
-  gap: 7px 0;
+  white-space: nowrap;
   color: var(--text-main);
   font-size: 13px;
 }
@@ -50,23 +50,12 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
   display: none;
 }
 
-#qsum-totals li {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding-inline: 13px;
-  white-space: nowrap;
-}
-
-#qsum-totals li:first-child { padding-inline-start: 0; }
-#qsum-totals li + li { border-inline-start: 1px solid var(--border); }
 #qsum-totals strong {
-  color: var(--text-hi);
+  color: var(--green-dim);
   font-size: 17px;
   line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
-#qsum-totals li:first-child strong { color: var(--green-dim); }
 
 .qsum-actions { gap: 8px; margin-inline-start: auto; }
 #qsum-root .qsum-actions .btn { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; white-space: nowrap; }
@@ -207,13 +196,6 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 
 @container qsum (max-width: 480px) {
   .qsum-toolbar { padding-inline: 10px; }
-  #qsum-totals {
-    display: grid;
-    grid-template-columns: repeat(2, max-content);
-    column-gap: 15px;
-  }
-  #qsum-totals li { padding-inline: 0; }
-  #qsum-totals li + li { border: 0; }
   .qsum-actions { margin-inline-start: 0; }
   .qsum-filter-bar { padding-inline: 10px; gap: 8px; }
   .qsum-filter-bar :is(.qsum-search, .qsum-date-filters) { grid-column: 1 / -1; }
