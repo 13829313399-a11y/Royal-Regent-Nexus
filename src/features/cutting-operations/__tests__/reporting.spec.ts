@@ -6,6 +6,7 @@ import { cuttingOperationsRoutes } from '../routes'
 import { cuttingApi } from '../api'
 import { ordersApi, type CuttingOrder } from '../ordersApi'
 import { reportingApi, type ProductionView, type ReportKind, type ReportEvent } from '../reportingApi'
+import { workspaceApi } from '../workspaceApi'
 
 vi.mock('@/components/layout/AccountMenu.vue',()=>({default:{template:'<span />'}}))
 vi.mock('../api',async original=>({...await original<typeof import('../api')>(),cuttingApi:{access:vi.fn()}}))
@@ -56,6 +57,34 @@ describe('cutting production facts and save protection',()=>{
     await wrapper.findAll('a').find(link=>link.text()==='返回当日任务')!.trigger('click');await flushPromises()
     expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',day:'2026-10-20'})
     expect(wrapper.text()).toContain('当日任务')
+  })
+  it('restores the last queried task subpage date separately from the return date and statistics cutoff',async()=>{
+    const taskRead=workspaceApi.tasks
+    const tasks=vi.spyOn(workspaceApi,'tasks').mockImplementation(async request=>({...await taskRead(request),day:request.day}))
+    await open()
+    await button('每日任务').trigger('click');await flushPromises()
+    const taskForm=wrapper.get('form:has(input[name="day"])')
+    await taskForm.get('input[name="day"]').setValue('2026-10-19')
+    const previousCalls=tasks.mock.calls.length
+    await taskForm.trigger('submit');await flushPromises()
+    expect(tasks.mock.calls.length).toBe(previousCalls+1)
+    expect(router.currentRoute.value.query).toMatchObject({day:view.as_of,task_day:'2026-10-20',task_query_day:'2026-10-19',reporting_view:'tasks'})
+    await taskForm.get('input[name="day"]').setValue('2026-10-18')
+    tasks.mockRejectedValueOnce(new Error('offline'))
+    await taskForm.trigger('submit');await flushPromises()
+    expect(router.currentRoute.value.query.task_query_day).toBe('2026-10-19')
+    const saved=router.currentRoute.value.fullPath
+    wrapper.unmount()
+    vi.mocked(ordersApi.read).mockResolvedValue(order)
+    router=createRouter({history:createMemoryHistory(),routes:cuttingOperationsRoutes})
+    await router.push(saved);await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    expect(wrapper.get('input[name="day"]').element).toHaveProperty('value','2026-10-19')
+    expect(wrapper.text()).toContain('当前查询日期：2026-10-19')
+    await button('裁片配套').trigger('click');await flushPromises()
+    expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)
+    await wrapper.findAll('a').find(link=>link.text()==='返回当日任务')!.trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',day:'2026-10-20'})
   })
   it('returns an out-of-range chooser page to page one using the applied query',async()=>{
     await open()

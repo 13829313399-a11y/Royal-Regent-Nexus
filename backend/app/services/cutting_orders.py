@@ -98,11 +98,16 @@ def workflow_status(data, source_status='active', needs_receipt=False):
 
 
 def purchase_snapshot(db, line_id, version):
-    r = db.scalar(select(CuttingOrderRevision).where(CuttingOrderRevision.line_id == line_id,
-        CuttingOrderRevision.data['requisition']['version'].as_integer() == version)
-        .order_by(CuttingOrderRevision.version.desc()).limit(1))
+    scope = (CuttingOrderRevision.line_id == line_id,
+             CuttingOrderRevision.data['requisition']['version'].as_integer() == version)
+    r = db.scalar(select(CuttingOrderRevision).where(*scope).order_by(CuttingOrderRevision.version.desc()).limit(1))
     c.require(r is not None, '待核对的原需求版本缺失，请核对历史', 409)
-    return dict(requisition=r.data['requisition'], bom=r.data['bom'], order=r.data['order'], batches=r.data['batches'])
+    batches = r.data['batches']
+    # A revised reply can remove batches without removing the original procurement evidence.
+    has_purchase_evidence = bool(batches) or any(db.scalars(select(CuttingOrderRevision.data['batches']).where(
+        *scope, CuttingOrderRevision.version < r.version).execution_options(yield_per=50)))
+    return dict(requisition=r.data['requisition'], bom=r.data['bom'], order=r.data['order'], batches=batches,
+                has_purchase_evidence=has_purchase_evidence)
 
 
 def pending_purchase_version(db, order, data):
@@ -407,11 +412,8 @@ def reconcile(db, user, line_id, body):
     order, data = writable(db, line_id, body.expected_version, allow_cancelled=True)
     pending = pending_purchase_version(db, order, data)
     c.require(pending and pending == body.requisition_version, '请核对当前待处理的原需求版本')
-    purchase_snapshot(db, line_id, pending)
-    previous_versions = db.scalars(select(CuttingOrderRevision).where(CuttingOrderRevision.line_id == line_id,
-        CuttingOrderRevision.data['requisition']['version'].as_integer() == pending)).yield_per(50)
-    had_commitment = any(r.data.get('batches') for r in previous_versions)
-    c.require(body.disposition != 'not_ordered' or not had_commitment,
+    snapshot = purchase_snapshot(db, line_id, pending)
+    c.require(body.disposition != 'not_ordered' or not snapshot['has_purchase_evidence'],
               '原需求已有采购交期证据，请按已采购处置并说明，不可声明尚未采购', 422)
     data.update(requisition=None, batches=[], purchase_reconciliation_required=False, pending_requisition_version=None,
         reconciliation=dict(requisition_version=pending, disposition=body.disposition, evidence=body.evidence, all_handled=True,
