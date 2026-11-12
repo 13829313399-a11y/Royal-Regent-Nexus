@@ -90,7 +90,7 @@ describe('cutting production facts and save protection',()=>{
     expect(wrapper.get('select[name="execution"]').element).toHaveProperty('value','internal')
     expect(button('待填任务').attributes('aria-pressed')).toBe('true')
     expect(tasks).toHaveBeenLastCalledWith({day:'2026-10-19',q:'ORDER-APPLIED',execution:'internal',scope:'unreported',page:1})
-    expect(wrapper.text()).toContain('当前查询日期：2026-10-19')
+    expect(wrapper.text()).toContain('上次成功查询：2026-10-19')
     await button('裁片配套').trigger('click');await flushPromises()
     expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)
     await wrapper.findAll('a').find(link=>link.text()==='返回当日任务')!.trigger('click');await flushPromises()
