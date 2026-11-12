@@ -26,6 +26,10 @@ async function open(permissions=['read','report_write','report_review','handover
   vi.mocked(reportingApi.read).mockResolvedValue(clone(data))
   router=createRouter({history:createMemoryHistory(),routes:[...cuttingOperationsRoutes,{path:'/modules/production',component:{template:'<div>生产部</div>'}}]})
   await router.push(path);await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+  expect(button('选择生产订单').attributes('aria-expanded')).toBe('false')
+  expect(wrapper.text()).toContain('当日任务')
+  expect(ordersApi.list).not.toHaveBeenCalled()
+  await button('选择生产订单').trigger('click');await flushPromises()
   await button('查看记录').trigger('click');await flushPromises()
 }
 async function form(){await button('填报此任务').trigger('click');await field('本次套数').setValue('10');await field('现场依据').setValue('现场核套人A确认10套');await field('本次提交').setValue('文员填回实际数')}
@@ -33,6 +37,25 @@ beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(fa
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it('re-reads the chooser on reopen and separates pending changes from new reporting',async()=>{
+    await open()
+    const pending=clone(order)
+    pending.needs_receipt=true
+    pending.source_version=2
+    pending.snapshot.quantity='150'
+    pending.current!.data.order={version:1,quantity:'120'}
+    pending.current!.data.receipt={mode:'automatic',source_version:1,received_at:'2026-11-12T00:32:00Z'}
+    vi.mocked(ordersApi.list).mockResolvedValueOnce({data:[pending],page:1,page_size:50,total:1})
+    await button('选择生产订单').trigger('click');await flushPromises()
+    expect(ordersApi.list).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('变更待确认')
+    expect(wrapper.text()).toContain('120 → 150')
+    expect(wrapper.text()).toContain('首次下发自动接单 · 下发 V1')
+    expect(wrapper.findAll('a').some(link=>link.text()==='前往排期确认')).toBe(true)
+    await button('查看原记录').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('请先在生产排期确认新版本')
+    expect(wrapper.findAll('button').some(item=>item.text()==='填报此任务')).toBe(false)
+  })
   it('keeps the order and active form when switching record views', async () => {
     await open()
     expect(button('查看记录').attributes('aria-current')).toBe('true')
@@ -65,6 +88,7 @@ describe('cutting production facts and save protection',()=>{
   it('starts a different order with its own default statistics date',async()=>{
     const second={...order,line_id:'line-2',snapshot:{...order.snapshot,reference_no:'CUT-2'}}
     await open(undefined,view,[order,second])
+    await button('选择生产订单').trigger('click');await flushPromises()
     await field('统计截至日期').setValue('2026-10-09')
     vi.mocked(reportingApi.read).mockResolvedValueOnce({...clone(view),line_id:'line-2',as_of:'2026-10-11'})
     await wrapper.findAll('button').filter(b=>b.text()==='查看记录')[1]!.trigger('click');await flushPromises()

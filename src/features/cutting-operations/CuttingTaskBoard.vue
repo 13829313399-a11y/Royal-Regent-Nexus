@@ -115,7 +115,10 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
         </ul>
       </template>
     </SectionPanel>
-    <SectionPanel :title="reporting?'每日任务与填报进度':'生产任务列表'" class="cutting-content-panel">
+    <SectionPanel :title="reporting?'当日任务':'生产任务列表'" class="cutting-content-panel">
+      <template v-if="reporting && result?.stats.order_changes" #action>
+        <slot name="order-changes" :count="result.stats.order_changes" :query="applied.q" />
+      </template>
       <CuttingSubnav :model-value="scope" :items="tabs" @update:model-value="change" />
       <p v-if="busy" role="status">{{readingTarget?.retry?`正在按原条件重试：${targetLabel(readingTarget)}。`:'正在核对有效计划与生产实绩…'}}</p>
       <p v-if="pageNotice" class="cutting-muted" role="status">{{pageNotice}}</p>
