@@ -606,8 +606,6 @@ async def inspection_summary_request(path, request, db, user, factory_id):
     if request.method == 'GET':
         if path == 'records':
             result = await run_in_threadpool(service.listing, factory_id, dict(request.query_params))
-        elif path == 'history':
-            result = await run_in_threadpool(service.history_batches, factory_id)
         elif len(parts) == 2 and parts[0] == 'records':
             result = await run_in_threadpool(service.detail, factory_id, parts[1])
         elif len(parts) == 2 and parts[0] == 'history':
@@ -635,8 +633,8 @@ async def inspection_summary_request(path, request, db, user, factory_id):
         raise HTTPException(400, '无效 JSON') from None
     if path == 'history/preview':
         result = await run_in_threadpool(service.preview, factory_id, actor, body)
-    elif len(parts) == 3 and parts[0] == 'history' and parts[2] in ('commit', 'rollback') and not body:
-        result = await run_in_threadpool(service.commit_history, factory_id, actor, parts[1]) if parts[2] == 'commit' else await run_in_threadpool(service.rollback_history, factory_id, parts[1])
+    elif len(parts) == 3 and parts[0] == 'history' and parts[2] == 'commit' and not body:
+        result = await run_in_threadpool(service.commit_history, factory_id, actor, parts[1])
     else:
         raise HTTPException(404, '接口不存在')
     return JSONResponse(result, headers=NO_CACHE)
