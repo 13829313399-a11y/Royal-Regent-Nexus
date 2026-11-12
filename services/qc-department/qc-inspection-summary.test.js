@@ -62,6 +62,23 @@ test('year/month/day cascade resets stale dates and handles leap years',async()=
 test('unknown types remain explicit, source content is escaped and management is permission gated',async()=>{
  const p=page();try{await p.w.QcInspectionSummary.load();assert.equal(p.d.querySelector('#qsum-body script'),null);assert.match(p.d.getElementById('qsum-body').textContent,/待确认/);assert.equal(p.d.getElementById('qsum-import').hidden,true);assert.match(p.d.getElementById('qsum-message').textContent,/缺少可用验货日期/);}finally{p.dom.window.close();}
 });
+test('summary header counts all factory records while the footer shows the filtered total', async () => {
+  const p = page();
+  try {
+    const counts = {'已审核': 3, '已完成': 2, '已归档': 4, '历史待核实': 1, '归档已撤回': 1};
+    p.w.fetch = async () => ({
+      ok: true,
+      json: async () => ({items: [], total: 0, page: 1, pageSize: 30, years: [], counts}),
+    });
+    await p.w.QcInspectionSummary.load();
+    const header = p.d.getElementById('qsum-totals');
+    assert.equal(header.textContent, '审核记录：11 条');
+    assert.equal(p.d.getElementById('qsum-count').textContent, '共 0 条');
+  } finally {
+    p.dom.window.close();
+  }
+});
+
 test('read failure clears stale rows without mutating sources',async()=>{
  const p=page();try{await p.w.QcInspectionSummary.load();p.w.fetch=async()=>({ok:false,json:async()=>({detail:'权限已变化'})});await p.w.QcInspectionSummary.load();assert.match(p.d.getElementById('qsum-message').textContent,/权限已变化/);assert.match(p.d.getElementById('qsum-body').textContent,/读取未完成/);}finally{p.dom.window.close();}
 });
