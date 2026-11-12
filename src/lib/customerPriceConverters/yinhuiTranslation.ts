@@ -3,12 +3,8 @@ import type { QuoteTranslationResponse } from '@/api/quoteTranslation'
 
 export const hasChineseQuoteText = (text: string) => /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(text)
 
-export function yinhuiDescriptionRows(data: YinhuiQuoteData) {
-  // BOM descriptions retain source Chinese; only Tool Plan names need translation.
-  return data.tools
-}
 export function pendingYinhuiDescriptions(data: YinhuiQuoteData) {
-  return [data.productName, data.packaging, ...yinhuiDescriptionRows(data).map(row => row.description)].filter(hasChineseQuoteText).length
+  return [data.productName, data.packaging].filter(hasChineseQuoteText).length
 }
 
 /** Only captured text fields can be updated; numeric/formula/source fields are never sent. */
@@ -17,10 +13,10 @@ export async function translateYinhuiDescriptions(
   translate: (texts: string[]) => Promise<QuoteTranslationResponse>,
   isCurrent: () => boolean = () => true,
 ) {
-  const fields = [
-    ...(['productName', 'packaging'] as const).map(key => ({ get: () => data[key], set: (value: string) => { data[key] = value } })),
-    ...yinhuiDescriptionRows(data).map(row => ({ get: () => row.description, set: (value: string) => { row.originalDescription ||= row.description; row.description = value } })),
-  ].map(field => ({ ...field, source: field.get() })).filter(field => hasChineseQuoteText(field.source))
+  // BOM and Tool Plan descriptions retain their source language and mapped layout.
+  const fields = (['productName', 'packaging'] as const)
+    .map(key => ({ get: () => data[key], set: (value: string) => { data[key] = value } }))
+    .map(field => ({ ...field, source: field.get() })).filter(field => hasChineseQuoteText(field.source))
   if (!fields.length) return { translated: 0, remaining: 0, warning: '' }
   const texts = [...new Set(fields.map(field => field.source))]
   const response = await translate(texts)
