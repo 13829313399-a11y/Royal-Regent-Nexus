@@ -404,6 +404,75 @@ def test_uploaded_note_preserves_original_manual_correction_path(client):
     assert sum(Decimal(item['quantity']) for item in workspace(client)['stock']) == 15
 
 
+def test_receipt_observations_follow_splits_and_post_only_the_net(client):
+    save(client, source_book())
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    first = {**linked_part(client, doc, '12'), 'receipt_counts': {
+        'counted_quantity': '14', 'damaged_quantity': '1', 'rejected_quantity': '1',
+    }}
+    zero = {**receipt(amount='0', location=''), 'receipt_counts': {'counted_quantity': '3', 'rejected_quantity': '3'}}
+    second = {**first, 'quantity': '18', 'roll_no': 'R2', 'receipt_counts': {
+        'counted_quantity': '20', 'other_unusable_quantity': '2',
+    }}
+    body = posting(doc, workspace(client)['revision'], [first, zero, second])
+    body['delivery_quantities'] = {'L1': '40'}
+    url = BASE + '/documents/' + doc['id'] + '/post'
+    wrong_net = {**body, 'lines': [{**first, 'quantity': '13'}, zero, second]}
+    assert client.post(url, json=wrong_net).status_code == 422
+    too_small = {**body, 'delivery_quantities': {'L1': '36'}}
+    assert client.post(url, json=too_small).status_code == 422
+    assert counts() == (0, 0)
+
+    response = client.post(url, json=body)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['progress']['L1'] == {'processed': '30', 'remaining': '10'}
+    assert result['data'] == doc['data']
+    assert counts() == (0, 2)
+    assert Decimal(current(client, first['purchase_source_id'])['warehouse_outstanding_quantity']) == 70
+    observation = result['receipt_observations'][0]['lines'][0]
+    assert (observation['delivered_quantity'], observation['shortage_quantity']) == ('40', '3')
+    assert [part['accepted_quantity'] for part in observation['parts']] == ['12', '0', '18']
+    assert observation['parts'][0]['damaged_quantity'] == '1'
+    assert observation['parts'][1]['rejected_quantity'] == '3'
+    assert 'operation_id' not in observation['parts'][1]
+    assert observation['parts'][2]['other_unusable_quantity'] == '2'
+    assert client.post(url, json=body).json() == result
+    changed = {**body, 'delivery_quantities': {'L1': '41'}}
+    assert client.post(url, json=changed).status_code == 409
+    scan = client.post(BASE + '/scan', json={'factory_id': FACTORY, 'code': doc['code']})
+    assert scan.json()['receipt_observations'] == result['receipt_observations']
+    public = client.get(BASE + '/external/documents/' + doc['id'], headers=headers)
+    assert public.status_code == 200
+    assert 'receipt_observations' not in public.json()
+
+
+def test_zero_net_receipt_saves_a_difference_without_moving_stock_or_purchase(client):
+    save(client, source_book())
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    part = {**receipt(amount='0', location=''), 'receipt_counts': {'counted_quantity': '40', 'rejected_quantity': '40'}}
+    source_id = sources(client, doc)['L1'][0]['id']
+    url = BASE + '/documents/' + doc['id'] + '/post'
+    original_revision = workspace(client)['revision']
+    body = posting(doc, original_revision, [part])
+    response = client.post(url, json=body)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['revision'] == doc['revision'] + 1
+    assert result['progress'] == doc['progress']
+    assert result['movements'] == []
+    assert result['receipt_observations'][0]['lines'][0]['parts'][0]['rejected_quantity'] == '40'
+    assert counts() == (0, 0)
+    assert workspace(client)['revision'] == original_revision
+    assert Decimal(current(client, source_id)['warehouse_outstanding_quantity']) == 100
+    assert client.post(url, json=body).json() == result
+    stale = {**body, 'request_id': str(uuid4())}
+    assert client.post(url, json=stale).status_code == 409
+    assert client.get(BASE + '/documents/' + doc['id'], params={'factory_id': FACTORY}).json()['receipt_observations'] == result['receipt_observations']
+
+
 def test_new_empty_posting_fields_preserve_original_retry_hash():
     from app.schemas.material_handover import PostingInput
     from app.services.material_handover import request_signature

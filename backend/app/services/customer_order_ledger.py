@@ -239,7 +239,7 @@ def dispatch_out(item: Dispatch) -> dict:
     )} | {"status": "received" if item.received_at else "sent"}
 
 
-def publish(db: Session, line: Line, recipients, actor: str, reason="") -> None:
+def publish(db: Session, line: Line, recipients, actor: str, reason="", *, receive_first_cutting=False) -> None:
     for recipient in set(recipients):
         existing = db.scalar(select(Dispatch.id).where(Dispatch.line_id == line.id, Dispatch.version == line.version, Dispatch.recipient == recipient))
         if existing:
@@ -252,8 +252,13 @@ def publish(db: Session, line: Line, recipients, actor: str, reason="") -> None:
             shipped_quantity=decimal_text(line.shipped_quantity),
             remaining_quantity="0" if line.status == "cancelled" else decimal_text(None if line.quantity is None else line.quantity - line.shipped_quantity),
             history_cutoff_date=line.data.get("history_migration", {}).get("cutoff_date", ""))
-        db.add(Dispatch(id=uid(), line_id=line.id, factory_id=line.factory_id, recipient=recipient,
-            version=line.version, snapshot=json_copy(snapshot), actor=actor, created_at=now_text(), received_at="", received_by=""))
+        item = Dispatch(id=uid(), line_id=line.id, factory_id=line.factory_id, recipient=recipient,
+            version=line.version, snapshot=json_copy(snapshot), actor=actor, created_at=now_text(), received_at="", received_by="")
+        if receive_first_cutting and recipient == 'cutting':
+            from app.services.cutting_orders import add_dispatch_with_first_receipt
+            add_dispatch_with_first_receipt(db, item)
+        else:
+            db.add(item)
 
 
 def _existing_recipients(db: Session, line: Line):
@@ -454,7 +459,7 @@ def dispatch(db: Session, line: Line, body, actor: str) -> None:
         raise HTTPException(409, "已取消订单不能新发送")
     if line.quantity is None or line.quantity <= 0 or not line.data.get("requested_ship_date"):
         raise HTTPException(400, "发送订单前请补齐有效数量和走货期")
-    publish(db, line, body.recipients, actor)
+    publish(db, line, body.recipients, actor, receive_first_cutting=True)
     db.flush()
 
 

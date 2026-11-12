@@ -43,11 +43,10 @@ def test_archive_dispatch_receipt_bom_and_duplicates(flow):
     assert count(p,Source)==1 and count(p,OrderLedgerVersion)==1
     line=result['rows'][0]['line_id']
     order=p.get(BASE+'/orders/'+line,params={'factory_id':'huakang-c'}).json()
-    assert order['needs_receipt'] and order['snapshot']['intake_row']==2 and order['snapshot']['order_unit']=='PCS'
-    assert not order['current']
-    receipt=p.post(BASE+'/orders/'+line+'/receive',json=command(dispatch_id=order['dispatch_id']))
-    assert receipt.status_code==200,receipt.text
-    assert receipt.json()['current']['data']['requisition'] is None
+    assert not order['needs_receipt'] and order['snapshot']['intake_row']==2 and order['snapshot']['order_unit']=='PCS'
+    assert order['current']['version']==1
+    assert order['current']['data']['receipt']==dict(mode='automatic',source_version=1,received_at=order['received_at'])
+    assert order['current']['data']['requisition'] is None
     material=create(p);bom=state(p,create(p,bom_body(material)),'published').json()
     bound=p.post(BASE+'/orders/'+line+'/bom',json=command(expected_version=1,bom_id=bom['id'],bom_version=bom['version'],target_sets=50,quantity_basis='工程核对100件组成50套'))
     assert bound.status_code==200,bound.text

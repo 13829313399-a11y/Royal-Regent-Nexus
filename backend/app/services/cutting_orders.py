@@ -10,6 +10,7 @@ from app.services import cutting_ops as c
 from app.services.transaction_lock import lock_transaction
 
 TABLES = (CuttingOrder.__table__, CuttingOrderRevision.__table__)
+AUTOMATIC_RECEIPT_ACTOR = 'system:cutting-auto-receipt'
 
 
 def schema_ready(bind):
@@ -114,7 +115,7 @@ def planning_rows(db, query):
         yield from rows
 
 
-def list_orders(db, page, q, status=None, plan_status=None):
+def list_orders(db, page, q, status=None, plan_status=None, *, changes_only=False):
     newest = select(OrderLedgerDispatch.line_id, func.max(OrderLedgerDispatch.version).label('version')).where(
         OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting').group_by(
         OrderLedgerDispatch.line_id).subquery()
@@ -124,6 +125,11 @@ def list_orders(db, page, q, status=None, plan_status=None):
     if q.strip():
         query = query.where(OrderLedgerLine.reference_no.contains(q.strip(), autoescape=True) |
                             OrderLedgerLine.product_no.contains(q.strip(), autoescape=True))
+    if changes_only:
+        changed = select(CuttingOrder.line_id).where(
+            CuttingOrder.line_id == OrderLedgerDispatch.line_id, CuttingOrder.factory_id == c.FACTORY,
+            CuttingOrder.dispatch_id != OrderLedgerDispatch.id).correlate(OrderLedgerDispatch).exists()
+        query = query.where(changed)
     if plan_status:
         from app.services.cutting_planning import summary
         # Read the current order and its snapshot together. Unreceived orders
@@ -201,39 +207,62 @@ def lock_sources(db, line_ids):
         c.require(dispatch.version==line.version,'来源订单已有新版本，请等待重新下发')
 
 
-def append(db, user, order, data, reason):
+def append_revision(db, actor_id, order, data, reason, *, created_at=None):
     data['workflow_status'] = workflow_status(data, data['order'].get('status'))
     order.version += 1
     db.add(CuttingOrderRevision(line_id=order.line_id, version=order.version, data=data,
-        actor_id=user.id, created_at=datetime.now(UTC).isoformat(), reason=reason))
+        actor_id=actor_id, created_at=created_at or datetime.now(UTC).isoformat(), reason=reason))
+
+
+def append(db, user, order, data, reason):
+    append_revision(db, user.id, order, data, reason)
     db.flush()
     return view(db, latest(db, order.line_id))
 
 
+def record_receipt(db, dispatch, order, actor_id, reason, *, automatic=False):
+    previous = revision(db, order)['data'] if order and order.version else None
+    if order is None:
+        order = CuttingOrder(line_id=dispatch.line_id, factory_id=c.FACTORY, dispatch_id=dispatch.id, version=0)
+        db.add(order)
+        db.flush()
+    # An updated source never cancels a purchase order or erases its planning history.
+    pending_version = None
+    if previous:
+        pending_version = previous['requisition']['version'] if previous.get('requisition') else pending_purchase_version(db, order, previous)
+    order.dispatch_id = dispatch.id
+    received_at = datetime.now(UTC).isoformat()
+    dispatch.received_at = received_at
+    dispatch.received_by = '系统自动接单' if automatic else actor_id
+    data = dict(order=deepcopy(dispatch.snapshot), dispatch_id=dispatch.id, bom=None, requisition=None,
+                receipt=dict(mode='automatic' if automatic else 'manual', source_version=dispatch.version, received_at=received_at),
+                batches=[], purchase_reconciliation_required=bool(pending_version), pending_requisition_version=pending_version,
+                reconciliation_request={'kind': 'source_change', 'actor_id': actor_id, 'reason': reason} if pending_version else None)
+    if previous and previous.get('planning'):
+        data['planning'] = deepcopy(previous['planning'])
+    append_revision(db, actor_id, order, data, reason, created_at=received_at)
+    db.flush()
+
+
+def add_dispatch_with_first_receipt(db, dispatch):
+    # The sales writer holds the source row lock, or direct intake has just inserted the line.
+    first = (dispatch.factory_id == c.FACTORY and dispatch.recipient == 'cutting'
+             and dispatch.snapshot.get('status') == 'active' and latest(db, dispatch.line_id) is None)
+    db.add(dispatch)
+    if first:
+        db.flush()  # Persist the immutable source before creating its dependent receipt.
+        record_receipt(db, dispatch, None, AUTOMATIC_RECEIPT_ACTOR, '首次有效下发自动接单', automatic=True)
+
+
 def receive(db, user, line_id, body):
-    line, dispatch = lock_source(db, line_id)
+    _, dispatch = lock_source(db, line_id)
     c.require(dispatch.id == body.dispatch_id, '只能接收最新下发版本')
     order = db.get(CuttingOrder, line_id)
     if order and order.dispatch_id == dispatch.id:
         return view(db, dispatch)  # Separate retries cannot create another receipt revision.
     c.require((order.version if order else 0) == body.expected_version, '裁床记录已更新，请重新读取')
-    if order is None:
-        order = CuttingOrder(line_id=line_id, factory_id=c.FACTORY, dispatch_id=dispatch.id, version=0)
-        db.add(order)
-    previous = revision(db, order)['data'] if order.version else None
-    # Never imply that replacing a source version cancels a real purchase order.
-    pending_version = None
-    if previous:
-        pending_version = previous['requisition']['version'] if previous.get('requisition') else pending_purchase_version(db, order, previous)
-    order.dispatch_id = dispatch.id
-    dispatch.received_at = datetime.now(UTC).isoformat()
-    dispatch.received_by = user.id
-    data = dict(order=deepcopy(dispatch.snapshot), dispatch_id=dispatch.id, bom=None, requisition=None,
-                batches=[], purchase_reconciliation_required=bool(pending_version), pending_requisition_version=pending_version,
-                reconciliation_request={'kind': 'source_change', 'actor_id': user.id, 'reason': body.reason} if pending_version else None)
-    if previous and previous.get('planning'):
-        data['planning'] = deepcopy(previous['planning'])
-    return append(db, user, order, data, body.reason)
+    record_receipt(db, dispatch, order, user.id, body.reason)
+    return view(db, dispatch)
 
 
 def writable(db, line_id, expected, *, allow_cancelled=False):

@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedgerSource as Source, OrderLedgerLineSource as Link, OrderLedgerDispatch as Dispatch
 from app.services import cutting_ops as c, cutting_schemas as s, customer_order_ledger as ledger
 from app.services.auth import now_text
+from app.services.cutting_orders import add_dispatch_with_first_receipt
 from app.services.order_workbook_bounds import worksheet_bounds
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -204,7 +205,7 @@ def confirm(db, user, body, content, parsed):
                 shipped_quantity='0',remaining_quantity=ledger.decimal_text(line.quantity),history_cutoff_date='',
                 intake_kind=SCHEMA,intake_file_name=body.file_name,intake_sheet=row['sheet'],intake_row=row['row'],
                 intake_batch=body.operation_id,intake_sha256=body.file_sha256,order_unit=data['unit'])
-            db.add(Dispatch(id=ledger.uid(),line_id=line.id,factory_id=c.FACTORY,recipient='cutting',version=1,
+            add_dispatch_with_first_receipt(db, Dispatch(id=ledger.uid(),line_id=line.id,factory_id=c.FACTORY,recipient='cutting',version=1,
                 snapshot=snapshot,actor=ledger.actor_name(user),created_at=now_text(),received_at='',received_by=''))
             result['created'] += 1
         else: result['skipped'] += 1

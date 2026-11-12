@@ -3,6 +3,7 @@ import copy
 import importlib
 import io
 import json
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ import pytest
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.lib.pagesizes import A4, landscape
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from test_material_handover import client, issuer, confirmed, upload, workspace, BASE, FACTORY
 
@@ -206,3 +208,104 @@ def test_link_revocation_during_render_blocks_the_prepared_pdf(client,monkeypatc
     monkeypatch.setattr(files,'render_original',revoke)
     response=client.get(BASE+'/external/documents/'+doc['id']+'/print',headers=headers,params={'expected_revision':doc['revision']})
     assert response.status_code==401 and b'private-copy' not in response.content
+
+
+@pytest.mark.parametrize('failures', [1, 2])
+def test_print_retries_a_busy_sqlite_read_and_reports_persistent_contention(client, monkeypatch, failures):
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    service = importlib.import_module('app.services.material_handover')
+    files = importlib.import_module('app.services.material_handover_files')
+    original_access = service.external
+    attempts, rendered = [], []
+
+    def read_access(db, token):
+        attempts.append(token)
+        if len(attempts) <= failures:
+            busy = sqlite3.OperationalError('database is locked')
+            busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise OperationalError('SELECT name FROM sqlite_master', {}, busy)
+        return original_access(db, token)
+
+    monkeypatch.setattr(service, 'external', read_access)
+    monkeypatch.setattr(files, 'render_original', lambda *args: rendered.append(args) or b'%PDF-1.4\nprepared')
+    response = client.get(BASE + '/external/documents/' + doc['id'] + '/print',
+                          headers=headers, params={'expected_revision': doc['revision']})
+    if failures == 1:
+        assert response.status_code == 200, response.text
+        assert len(attempts) == 3 and len(rendered) == 1
+    else:
+        assert response.status_code == 503
+        assert response.headers['retry-after'] == '1'
+        assert '稍后重试原单加码打印' in response.json()['detail']
+        assert len(attempts) == 2 and rendered == []
+
+
+def test_print_retries_the_final_factory_lock_without_rendering_again(client, monkeypatch):
+    from fastapi import HTTPException
+
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    procurement = importlib.import_module('app.services.fabric_procurement')
+    files = importlib.import_module('app.services.material_handover_files')
+    original_lock = procurement.lock_factory
+    attempts, rendered = [], []
+
+    def lock(db):
+        attempts.append(True)
+        if len(attempts) == 1:
+            busy = sqlite3.OperationalError('database is locked')
+            busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            try:
+                raise OperationalError('UPDATE fabric_procurement_state', {}, busy)
+            except OperationalError as error:
+                raise HTTPException(409, '另一笔采购导入正在保存') from error
+        return original_lock(db)
+
+    monkeypatch.setattr(procurement, 'lock_factory', lock)
+    monkeypatch.setattr(files, 'render_original', lambda *args: rendered.append(args) or b'%PDF-1.4\nprepared')
+    response = client.get(BASE + '/external/documents/' + doc['id'] + '/print',
+                          headers=headers, params={'expected_revision': doc['revision']})
+    assert response.status_code == 200, response.text
+    assert len(attempts) == 2 and len(rendered) == 1
+
+
+def test_print_read_recovers_after_an_actual_sqlite_lock_is_released(tmp_path):
+    from threading import Event, Thread
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    api = importlib.import_module('app.api.material_handover')
+    path = tmp_path / 'print-contention.db'
+    engine = create_engine(f'sqlite:///{path}', connect_args={'timeout': 0.01})
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE print_fixture (value INTEGER)'))
+        connection.execute(text('INSERT INTO print_fixture VALUES (7)'))
+    lock = sqlite3.connect(path, check_same_thread=False)
+    lock.execute('BEGIN EXCLUSIVE')
+    blocked = Event()
+
+    def unlock():
+        blocked.wait(timeout=3)
+        lock.rollback()
+
+    thread = Thread(target=unlock)
+    thread.start()
+    attempts = []
+    try:
+        with Session(engine) as db:
+            def read():
+                attempts.append(True)
+                try:
+                    return db.scalar(text('SELECT value FROM print_fixture'))
+                except OperationalError:
+                    blocked.set()
+                    raise
+
+            assert api.print_database_step(db, read) == 7
+        assert len(attempts) == 2
+    finally:
+        blocked.set()
+        thread.join(timeout=3)
+        lock.close()
+        engine.dispose()

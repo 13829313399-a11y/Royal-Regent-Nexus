@@ -479,10 +479,10 @@
     if(page==='daily'&&root.QcDailyReport?.enabled())return;
     if(page==='review'&&root.QcInspectionSheet){await root.QcInspectionSheet.loadReview();return;}
     if(page==='records'&&root.QcInspectionSheet){await root.QcInspectionSheet.load();return;}
-    if(['records','review','dashboard','analysis','daily','weekly','monthly','yearly','supplier-report'].includes(page)){
+    if(['records','review','analysis','daily','weekly','monthly','yearly','supplier-report'].includes(page)){
       await load();
       if(['records','review'].includes(page))render(page);
-      if(model.loaded){const name={dashboard:'renderDashboard',analysis:'renderAnalysis',daily:'renderDailyReport',weekly:'renderWeeklyReport',monthly:'renderMonthlyReport',yearly:'renderYearlyReport'}[page];if(name)root[name]?.();}
+      if(model.loaded){const name={analysis:'renderAnalysis',daily:'renderDailyReport',weekly:'renderWeeklyReport',monthly:'renderMonthlyReport',yearly:'renderYearlyReport'}[page];if(name)root[name]?.();}
     }
   }
   function openSource(id){if(root.QcInspectionSheet)return root.QcInspectionSheet.focus(id);model.source=id;model.filters.records={state:'',method:'',q:'',from:'',to:''};root.showPage?.('records');render('records');}

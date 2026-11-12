@@ -1,0 +1,38 @@
+# Optional ONE-factory deployment. No sidecar/database port is published.
+# Use together with docker-compose.prod.yml; read docs/indonesia-shipping.md.
+services:
+  indonesia-shipping-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: indonesia_shipping
+      POSTGRES_USER: indonesia_shipping
+      POSTGRES_PASSWORD: "${INDONESIA_SHIPPING_DB_PASSWORD:?Dedicated database password is required}"
+    volumes:
+      - indonesia-shipping-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U indonesia_shipping -d indonesia_shipping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  indonesia-shipping:
+    build:
+      context: ./services/indonesia-shipping
+    environment:
+      NexusBridge__Enabled: "true"
+      NexusBridge__FactoryId: "${INDONESIA_SHIPPING_FACTORY_ID:?Explicit factory is required}"
+      NexusBridge__Key: "${INDONESIA_SHIPPING_BRIDGE_KEY:?A random bridge key of 32 or more bytes is required}"
+      ConnectionStrings__Default: "Host=indonesia-shipping-db;Database=indonesia_shipping;Username=indonesia_shipping;Password=${INDONESIA_SHIPPING_DB_PASSWORD};Search Path=indo_shipping"
+    depends_on:
+      indonesia-shipping-db:
+        condition: service_healthy
+    restart: unless-stopped
+  api:
+    environment:
+      INDONESIA_SHIPPING_UPSTREAMS: '{"${INDONESIA_SHIPPING_FACTORY_ID}":"http://indonesia-shipping:5180"}'
+      INDONESIA_SHIPPING_BRIDGE_KEY: "${INDONESIA_SHIPPING_BRIDGE_KEY}"
+    depends_on:
+      indonesia-shipping:
+        condition: service_healthy
+volumes:
+  indonesia-shipping-data:

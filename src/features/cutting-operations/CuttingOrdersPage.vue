@@ -67,6 +67,9 @@ const snapshot = () => JSON.stringify([reason.value, targetSets.value, quantityB
 const dirty = computed(() => !!action.value && snapshot() !== baseline.value)
 const available = computed(() => access.value?.enabled && access.value?.orders_schema_ready)
 const data = computed(() => selected.value?.current?.data)
+const receiveLabel = computed(() => selected.value?.current ? '确认订单变更' : '签收订单版本')
+const publishedPlan = computed(() => data.value?.planning?.published)
+const singlePublishedTask = computed(() => publishedPlan.value?.tasks.length === 1 ? publishedPlan.value.tasks[0] : undefined)
 const adjustingPlan = computed(() => (action.value === 'plan' || action.value === 'plan-publish') && !!data.value?.planning?.published)
 const publishLabel = computed(() => selected.value?.snapshot.intake_kind==='cutting-schedule-v1'&&!data.value?.planning?.draft?.tasks.some(t=>t.days.length) ? '发布领料任务（暂不排日计划）' : '发布生产预排')
 const requirements = computed(() => (data.value?.bom?.data as BomData | undefined)?.requirements ?? [])
@@ -264,18 +267,16 @@ function status(row: CuttingOrder) {
     <p v-else-if="access&&!access.enabled" class="cutting-notice">裁床订单模块尚未启用，请联系系统负责人。</p>
     <p v-else class="cutting-notice">裁床订单结构尚未就绪，请先完成显式迁移；当前不读取或录入业务数据。</p>
   </section>
-  <section v-else class="cutting-page orders-page">
+  <section v-else class="cutting-page cutting-review-page orders-page">
     <CuttingLocationNotice :location="manualLocation??location" :selected-id="selected?.line_id" />
     <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '本厂现场、外发在外物料与订单领用，按原实发追溯。' : '订单、工程需求与生产预排'"/>
-    <CuttingScheduleImport v-if="workspace.path==='planning'&&can('order_receive')" ref="scheduleImporter" @imported="load(1,false,false)" />
     <SectionPanel v-if="selected?.snapshot.intake_kind==='cutting-schedule-v1'" title="业务排期来源" class="cutting-content-panel">
       <p>排期直接导入：{{selected.snapshot.intake_file_name}} · {{selected.snapshot.intake_sheet}} 第 {{selected.snapshot.intake_row}} 行 · 来源 V{{selected.source_version}}</p>
       <p>原订单单位：{{selected.snapshot.order_unit}}；目标套数仍由工程按 BOM 明确核定。</p>
       <details><summary>批次与原文件指纹</summary><p style="overflow-wrap:anywhere">{{selected.snapshot.intake_batch}}<br>{{selected.snapshot.intake_sha256}}</p></details>
     </SectionPanel>
-    <CuttingPlanningMetrics v-if="workspace.path==='planning'" :query="appliedQuery" :status="appliedStatus" :plan-status="appliedPlanStatus" :refresh="summaryRefresh" />
     <CuttingSubnav v-if="workspace.path==='materials'" v-model="materialsView" :items="materialTabs" label="物料库存工作视图" />
-    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；领料申请与实发签收已对接布料仓。按原实发登记耗用、损耗和盘余核对，材料费用按已确认批次成本计算，缺价显示待计价。</p>
+    <p v-if="workspace.path==='materials'" class="cutting-muted">领料申请与实发签收已对接布料仓。现场及外发余料按原实发核对，计价以已确认批次成本为准。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="needsLogin" role="alert">登录已失效，请在新标签页重新登录后重试。<a href="/login" target="_blank" rel="noopener">重新登录</a></p>
     <Button variant="outline" v-if="pending" :disabled="saving" @click="save">{{ saving ? '正在保存…' : '重试原操作' }}</Button>
@@ -284,7 +285,7 @@ function status(row: CuttingOrder) {
       <CuttingInventory v-if="workspace.path==='materials'" v-show="materialsView==='inventory'||materialsView==='orders'" :summary="materialsView==='orders'" @open="openMaterial" />
       <CuttingActivityPage v-if="workspace.path==='materials'&&materialsView==='movements'" embedded initial-source="warehouse" />
       <div v-show="workspace.path!=='materials'||!['inventory','orders','movements'].includes(materialsView)" class="cutting-overview">
-      <SectionPanel class="order-ledger min-w-0" :title="workspace.path === 'materials' ? materialsView==='eta'?'采购交期':'选择领用订单' : '订单总台账'">
+      <div class="cutting-review-filters">
         <form class="order-toolbar order-filters" @submit.prevent="load(1,false,false,true)">
           <label class="order-filter-field" :for="`${filterId}-query`">
             <span>订单号／货号</span>
@@ -308,6 +309,19 @@ function status(row: CuttingOrder) {
             <Search aria-hidden="true" />查询／刷新
           </Button>
         </form>
+      </div>
+      <CuttingPlanningMetrics v-if="workspace.path==='planning'" :query="appliedQuery" :status="appliedStatus" :plan-status="appliedPlanStatus" :refresh="summaryRefresh" />
+      <SectionPanel v-if="workspace.path==='planning' && selected" title="当前订单排期摘要" :subtitle="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`" class="cutting-content-panel">
+        <dl class="cutting-review-grid cutting-review-facts">
+          <div><dt>关联 BOM</dt><dd>{{ data?.bom ? `${data.bom.code} V${data.bom.version}` : '待关联' }}</dd></div>
+          <div><dt>发布计划</dt><dd>{{ publishedPlan ? `V${publishedPlan.version}${selected.planning_summary?.published_stale ? ' · 待复核' : ''}` : '未发布' }}</dd></div>
+          <div><dt>预计供数</dt><dd>{{ singlePublishedTask?.estimated_supply_date ?? (publishedPlan && !singlePublishedTask ? '按任务核对' : '待核定') }}</dd></div>
+          <div><dt>实际领料</dt><dd>{{ singlePublishedTask?.actual_issue_date ?? (publishedPlan && !singlePublishedTask ? '按任务核对' : '待核定') }}</dd></div>
+          <div><dt>计划完成</dt><dd>{{ singlePublishedTask?.completion_date ?? (publishedPlan && !singlePublishedTask ? '按任务核对' : '未排完') }}</dd></div>
+        </dl>
+      </SectionPanel>
+      <CuttingScheduleImport v-if="workspace.path==='planning'&&can('order_receive')" ref="scheduleImporter" @imported="load(1,false,false)" />
+      <SectionPanel class="order-ledger min-w-0" :title="workspace.path === 'materials' ? materialsView==='eta'?'采购交期':'选择领用订单' : '订单总台账'">
         <div class="order-ledger-grid">
           <div class="cutting-table-scroll" role="region" aria-label="订单总台账，可横向滚动" tabindex="0">
             <table class="order-ledger-table" :aria-busy="loading">
@@ -340,7 +354,7 @@ function status(row: CuttingOrder) {
         </nav>
       </SectionPanel>
       <SectionPanel v-if="workspace.path === 'planning' && selected" title="领料办理" class="cutting-content-panel">
-        <p>领料申请、仓库回传与分批签收统一在物料库存工作区办理。</p>
+        <p>领料申请与实发签收已对接布料仓。申请、仓库回传与分批签收在物料库存工作区办理。</p>
         <div class="order-toolbar">
           <Button as-child variant="outline"><RouterLink :to="cuttingDestination(selected.line_id, location?.month ?? '', 'materials')">前往物料库存办理领料</RouterLink></Button>
         </div>
@@ -351,7 +365,16 @@ function status(row: CuttingOrder) {
         <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
         <p>{{ status(selected) }} · 裁床记录 V{{ selected.current?.version ?? 0 }}</p>
         <p v-if="selected.snapshot.status === 'cancelled'" role="alert">来源订单已取消，仅可签收取消通知及核对旧采购需求。</p>
-        <p v-if="selected.needs_receipt" class="cutting-notice">请先签收最新版本。重新签收会重置当前 BOM 和需求链；旧版保留历史，不会自动撤销采购单。</p>
+        <div v-if="selected.needs_receipt" class="cutting-notice">
+          <div v-if="selected.current">
+            <p>订单变更待确认 · 已接 V{{ data?.order.version ?? data?.receipt?.source_version ?? '—' }} → 待确认 V{{ selected.source_version }}</p>
+            <p v-if="data?.order.quantity!==selected.snapshot.quantity">订单数量 {{ data?.order.quantity ?? '—' }} → {{ selected.snapshot.quantity ?? '—' }}</p>
+            <p v-if="data?.order.requested_ship_date!==selected.snapshot.requested_ship_date">交期 {{ data?.order.requested_ship_date ?? '—' }} → {{ selected.snapshot.requested_ship_date ?? '—' }}</p>
+            <p v-if="selected.snapshot.change_reason">变更说明 {{ selected.snapshot.change_reason }}</p>
+            <p>确认后需重新核对 BOM 和需求。原采购单及计划依据保留，已有采购需求须先核对。</p>
+          </div>
+          <p v-else>此订单尚未接单，请先确认下发版本。</p>
+        </div>
         <p v-if="data?.purchase_reconciliation_required" role="alert">原需求待采购核对，期间不能继续回复交期或重新提交。核对整张旧需求的采购处置后，工程可修订并重新提交。</p>
         <p v-if="data?.reconciliation_request">核对原因：{{ data.reconciliation_request.reason }}</p>
         <p v-if="data?.reconciliation">采购已核对需求 V{{ data.reconciliation.requisition_version }}：{{ data.reconciliation.evidence }}。此次记录不自动撤销外部采购单。</p>
@@ -366,7 +389,7 @@ function status(row: CuttingOrder) {
             <Button variant="outline" v-if="can('plan_write')" @click="edit('plan')">编制任务与日计划</Button>
             <Button variant="outline" v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">{{publishLabel}}</Button>
           </template>
-          <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">签收订单版本</Button>
+          <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">{{ receiveLabel }}</Button>
           <Button variant="outline" v-if="writable && !data?.requisition && can('bom_write')" @click="edit('bom')">工程关联 BOM</Button>
           <Button variant="outline" v-if="writable && data?.bom && !data.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('requisition')">工程提交物料需求</Button>
           <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('eta_write') && data.requisition.lines.some(r => r.purchase_mode !== 'no_purchase')" @click="edit('eta')">采购回复分批交期</Button>
@@ -383,7 +406,7 @@ function status(row: CuttingOrder) {
           <details v-if="data.planning.baseline"><summary>首次基准计划</summary><CuttingPlanSummary :plan="data.planning.baseline" title="首次基准" /></details>
         </template>
         <form v-if="action" class="order-form" @submit.prevent="save">
-          <h3>{{ action==='plan-publish'?publishLabel:labels[action] }}</h3>
+          <h3>{{ action==='plan-publish'?publishLabel:action==='receive'?receiveLabel:labels[action] }}</h3>
           <fieldset :disabled="saving || !!pending">
             <CuttingPlanEditor v-if="action === 'plan' && data" v-model="planTasks" v-model:removed-task-reasons="removedTaskReasons" :data="data" :line-id="selected.line_id" />
             <CuttingPlanDiff v-if="adjustingPlan && data?.planning?.published" :previous="data.planning.published" :tasks="action === 'plan' ? planTasks : data.planning.draft?.tasks ?? []" :removed-reasons="action === 'plan' ? removedTaskReasons : data.planning.draft?.removed_task_reasons" />
@@ -430,7 +453,7 @@ function status(row: CuttingOrder) {
           </fieldset>
         </form>
         <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
-        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id }} · {{ r.reason }}</summary>
+        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.version===1&&r.data.receipt?.mode==='automatic'?'系统':r.actor_id }} · {{ r.reason }}</summary>
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
@@ -449,7 +472,7 @@ function status(row: CuttingOrder) {
 
 <style scoped>
 .order-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
-.order-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); align-items: end; gap: 16px; margin: 0 0 20px; }
+.order-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); align-items: end; gap: 12px; margin: 0; }
 .order-filter-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 500; }
 .order-filter-control { width: 100%; min-width: 0; height: 36px; border: 1px solid var(--input); border-radius: var(--radius); padding: 6px 10px; background: var(--card); color: var(--foreground); font-size: 14px; font-weight: 400; }
 .order-filter-control::placeholder { color: var(--muted-foreground); }

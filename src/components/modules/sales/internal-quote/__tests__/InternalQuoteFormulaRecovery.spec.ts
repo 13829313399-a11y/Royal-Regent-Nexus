@@ -67,6 +67,22 @@ afterEach(() => {
 })
 
 describe('packaging source formula recovery', () => {
+  it('opens the summary recovery link without recalculating or changing the saved reference prices', async () => {
+    const { wrapper, router, recalculate, sync } = await setup({}, true, true)
+    expect(router.currentRoute.value.query).toEqual({ factory: 'huaxing' })
+    expect(wrapper.get('.quote-snapshot-banner').text()).toContain('旧公式待重算')
+    expect(wrapper.get('.quote-sync-panel').text()).toContain('沿用本报价原有汇率和参考价格')
+    expect(wrapper.get('.quote-sync-panel').text()).toContain('历史输出文件仍保留')
+    expect(button(wrapper, '按当前公式重算').attributes('disabled')).toBeDefined()
+    expect(recalculate).not.toHaveBeenCalled()
+    expect(sync).not.toHaveBeenCalled()
+    await wrapper.get('textarea[aria-label="公式或参考资料变更原因"]').setValue('解冻后更新公式')
+    await button(wrapper, '按当前公式重算').trigger('click')
+    await flushPromises()
+    expect(recalculate).toHaveBeenCalledWith('source', 4, '解冻后更新公式')
+    expect(sync).not.toHaveBeenCalled()
+  })
+
   it('offers recalculation for a stale section with a current header, requiring a reason', async () => {
     const { wrapper, recalculate, sync } = await setup()
     await button(wrapper, '处理旧公式').trigger('click')

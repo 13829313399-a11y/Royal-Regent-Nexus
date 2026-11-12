@@ -33,9 +33,10 @@ const metrics=computed(()=>{const s=result.value?.stats;return props.reporting?[
 ]:[
   {label:'当日生产任务',value:s?.tasks??'—',unit:'项'},
   {label:'当日计划',value:s?.planned??'—',unit:'套'},
-  {label:'合格完成 / 交接',value:s?`${s.completed} / ${s.handed}`:'—',unit:'套',hint:'含当日历史与计划外有效实绩'},
-  {label:'待处理异常',value:s?.abnormal??'—',unit:'项',hint:'同一任务多项异常仅计一次'},
+  {label:'合格完成',value:s?.completed??'—',unit:'套'},
+  {label:'已交接',value:s?.handed??'—',unit:'套'},
 ]})
+const exceptionPreview=computed(()=>result.value?.data.filter(row=>row.reasons.length).slice(0,3)??[])
 function exceptionLink(row:TaskView['data'][number],reason:string) {
   const date=result.value?.day??day.value
   const isReport=reason==='外发收回待验收'||reason==='已结束业务日未填报'
@@ -83,8 +84,7 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
 </script>
 <template>
   <div class="cutting-overview">
-    <CuttingMetrics :items="metrics" />
-    <SectionPanel :title="reporting?'每日任务与填报进度':'生产任务与异常跟进'" class="cutting-content-panel">
+    <div class="cutting-review-filters">
       <form class="order-toolbar" @submit.prevent="load(1,true)">
         <label :for="`${filterId}-day`">业务日期<input :id="`${filterId}-day`" v-model="day" name="day" type="date" required /></label>
         <label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="query" name="q" maxlength="80" placeholder="查询全部匹配订单" /></label>
@@ -95,6 +95,30 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
       </form>
       <p v-if="unapplied" class="cutting-muted" role="status">筛选有未查询的修改，当前结果仍按上次查询条件展示。</p>
       <p class="cutting-muted">当前查询日期：{{applied.day}}。订单号／货号：{{applied.q||'全部'}}；执行方：{{applied.execution==='internal'?'本厂':applied.execution==='outsourced'?'外发':'本厂与外发'}}；视图：{{viewLabel(applied.scope)}}。查询应用当前输入；切换任务视图、翻页及刷新不提交未查询的日期、订单或执行方条件。</p>
+    </div>
+    <CuttingMetrics :items="metrics" />
+    <SectionPanel v-if="!reporting && result" title="异常任务" :subtitle="`${result.day} · ${result.stats.abnormal} 项待处理，同一任务仅计一次`" class="cutting-content-panel cutting-exception-panel">
+      <template v-if="result.stats.abnormal && scope!=='abnormal'" #action>
+        <Button variant="outline" @click="change('abnormal')">查看全部异常</Button>
+      </template>
+      <p v-if="!result.stats.abnormal" class="cutting-muted">当前查询条件下暂无待处理异常。</p>
+      <template v-else>
+        <p class="cutting-muted">{{exceptionPreview.length?'本页最多显示 3 项异常，可在任务列表中查看全部。':'本页暂无异常，可切换到异常任务或翻页查看。'}}</p>
+        <ul v-if="exceptionPreview.length" class="cutting-review-grid">
+          <li v-for="row in exceptionPreview" :key="row.line_id+row.task_id" class="cutting-review-card">
+            <strong>{{row.order_no}} · {{row.task_name}}</strong>
+            <span class="cutting-muted">{{row.customer}} · {{row.item_no}} · {{row.resource_name}}</span>
+            <div class="cutting-master-actions">
+              <Button v-for="reason in row.reasons" :key="reason" as-child size="sm" variant="outline"><RouterLink :to="exceptionLink(row,reason)">{{exceptionLabels[reason]??reason}}</RouterLink></Button>
+            </div>
+          </li>
+        </ul>
+      </template>
+    </SectionPanel>
+    <SectionPanel :title="reporting?'当日任务':'生产任务列表'" class="cutting-content-panel">
+      <template v-if="reporting && result?.stats.order_changes" #action>
+        <slot name="order-changes" :count="result.stats.order_changes" :query="applied.q" />
+      </template>
       <CuttingSubnav :model-value="scope" :items="tabs" @update:model-value="change" />
       <p v-if="busy" role="status">{{readingTarget?.retry?`正在按原条件重试：${targetLabel(readingTarget)}。`:'正在核对有效计划与生产实绩…'}}</p>
       <p v-if="pageNotice" class="cutting-muted" role="status">{{pageNotice}}</p>
@@ -102,11 +126,11 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
       <p v-if="failedQuery" class="cutting-muted">重试目标：{{failedQuery.day}}；订单号／货号 {{failedQuery.q||'全部'}}；执行方 {{failedQuery.execution==='internal'?'本厂':failedQuery.execution==='outsourced'?'外发':'本厂与外发'}}；{{viewLabel(failedQuery.scope)}}，第 {{failedQuery.page}} 页。保留尚未查询的新输入，重试不提交业务记录。</p>
       <p class="cutting-muted">应报任务以当日有效发布日计划为准；外厂自报不计合格完成。实收条件待核定不直接判为缺料。</p>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="生产任务列表"><table>
-        <thead><tr><th>客户／订单</th><th>货号／任务</th><th>执行方</th><th>当日计划</th><th>合格完成／交接</th><th>填报状态</th><th>异常与核对</th><th>操作</th></tr></thead>
+        <thead><tr><th>客户／订单</th><th>货号／任务</th><th>执行方</th><th>当日计划</th><th>合格完成</th><th>已交接</th><th>填报状态</th><th>异常与核对</th><th>操作</th></tr></thead>
         <tbody><tr v-for="row in result?.data" :key="row.line_id+row.task_id">
           <td>{{row.customer}}<br />{{row.order_no}}</td><td>{{row.item_no}}<br />{{row.task_name}}</td>
           <td>{{row.resource_name}}<br />{{row.execution==='internal'?'本厂':'外发'}}</td>
-          <td>{{row.planned}} 套</td><td>{{row.day_completed}} / {{row.day_handed}} 套</td>
+          <td>{{row.planned}} 套</td><td>{{row.day_completed}} 套</td><td>{{row.day_handed}} 套</td>
           <td><StatusPill :label="row.reported?'已填报':row.planned?'未填报':'计划外实绩'" compact /></td>
           <td><p v-for="reason in row.reasons" :key="reason">{{reason}}</p><span v-if="!row.reasons.length">—</span></td>
           <td><div class="cutting-master-actions">

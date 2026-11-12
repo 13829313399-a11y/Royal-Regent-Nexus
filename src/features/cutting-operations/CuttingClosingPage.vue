@@ -172,7 +172,7 @@ onMounted(()=>void loadLocation())
 </script>
 
 <template>
-  <section class="cutting-page cutting-master">
+  <section class="cutting-page cutting-review-page cutting-master">
     <PageHeader :title="workspace.title" description="内部月结、外发加工费与付款分别办理，实时核对和冻结快照分别追溯。" />
     <CuttingSubnav :model-value="closingView" @update:model-value="changeClosingView" :items="closingTabs" label="月结工作视图" />
     <p class="cutting-notice">内部材料月结与外发加工费结算分别办理。实时核对不代表锁月；冻结报表按所选版本追溯，当前有效状态以版本提示为准。付款登记与核销不操作银行。</p>

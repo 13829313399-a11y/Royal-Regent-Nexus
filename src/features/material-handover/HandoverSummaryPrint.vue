@@ -5,16 +5,18 @@ import type { HandoverDocument } from '@/api/materialHandover'
 const props = defineProps<{ document: HandoverDocument; qrUrl: string }>()
 const data = computed(() => props.document.data)
 const delivery = computed(() => data.value.kind === 'DELIVERY')
+const companyName = computed(() => delivery.value ? data.value.counterparty?.trim() : '')
+const rowGroups = computed(() => [data.value.lines.slice(0, -1), data.value.lines.slice(-1)])
 const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: '已作废 · 仅供查阅' }
 </script>
 
 <template>
-  <section class="handover-summary-print">
+  <section class="handover-summary-print" :class="{ 'summary-many-rows': data.lines.length > 10 }">
     <table class="summary-table" aria-label="交接明细">
       <colgroup>
-        <col style="width: 15%" />
-        <col style="width: 26%" />
         <col style="width: 13%" />
+        <col style="width: 26%" />
+        <col style="width: 15%" />
         <col style="width: 16%" />
         <col style="width: 12%" />
         <col style="width: 18%" />
@@ -26,9 +28,9 @@ const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: 
               <div class="summary-identity">
                 <img v-if="qrUrl && document.status === 'CONFIRMED'" :src="qrUrl" alt="交接单二维码" class="print-qr" />
                 <div>
-                  <p class="summary-kicker">统一明细（备用） · {{ status[document.status] }}</p>
-                  <h2>{{ delivery ? '供应商送货交接单' : '领料交接单' }}</h2>
-                  <p><span class="summary-label">{{ delivery ? '供应商' : '领用方' }}</span> {{ data.counterparty }}</p>
+                  <p class="summary-kicker">{{ companyName ? '送货交接单' : '统一明细（备用）' }} · {{ status[document.status] }}</p>
+                  <h2 :class="{ 'summary-company': companyName }">{{ companyName || (delivery ? '送货交接单' : '领料交接单') }}</h2>
+                  <p v-if="!delivery"><span class="summary-label">领用方</span> {{ data.counterparty }}</p>
                 </div>
               </div>
               <div class="summary-meta">
@@ -55,8 +57,8 @@ const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: 
           <th scope="col">原单依据 / 生产关联</th>
         </tr>
       </thead>
-      <tbody>
-        <tr v-for="line in data.lines" :key="line.id">
+      <tbody v-for="(lines, index) in rowGroups" :key="index" :class="{ 'summary-ending': index === rowGroups.length - 1 }">
+        <tr v-for="line in lines" :key="line.id" class="summary-material-row">
           <td>{{ line.item_code }}</td>
           <td>
             <strong class="summary-material">{{ line.item_name }}</strong>
@@ -81,23 +83,27 @@ const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: 
             <span v-if="line.note" class="summary-secondary">{{ line.note }}</span>
           </td>
         </tr>
+        <tr v-if="index === rowGroups.length - 1">
+          <td class="summary-footer-cell" colspan="6">
+            <footer>
+              <section v-if="delivery && document.status === 'CONFIRMED'" class="summary-signoff" aria-label="现场签收">
+                <div class="summary-signoff-heading">
+                  <h3>现场签收</h3>
+                  <span v-if="data.source_no">原单号 {{ data.source_no }}</span>
+                </div>
+                <div class="summary-signatures">
+                  <div>送货人签字</div>
+                  <div>收货人签字</div>
+                  <div>签收日期</div>
+                </div>
+                <p class="summary-signoff-note">签收备注</p>
+              </section>
+              <p class="summary-disclaimer">数量以仓库实际点收 / 实发记录为准。参考单价是原单依据，付款金额需另行核对。</p>
+            </footer>
+          </td>
+        </tr>
       </tbody>
     </table>
-    <footer class="summary-footer">
-      <section v-if="delivery && document.status === 'CONFIRMED'" class="summary-signoff" aria-label="现场签收">
-        <div class="summary-signoff-heading">
-          <h3>现场签收</h3>
-          <span v-if="data.source_no">原单号 {{ data.source_no }}</span>
-        </div>
-        <div class="summary-signatures">
-          <div>送货人签字</div>
-          <div>收货人签字</div>
-          <div>签收日期</div>
-        </div>
-        <p class="summary-signoff-note">签收备注</p>
-      </section>
-      <p class="summary-disclaimer">数量以仓库实际点收 / 实发记录为准。参考单价是原单依据，付款金额需另行核对。</p>
-    </footer>
   </section>
 </template>
 
@@ -116,15 +122,16 @@ const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: 
   .handover-summary-print :is(p, h2, h3) { margin: 0; }
   .summary-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
   .summary-table thead { display: table-header-group; }
-  .summary-table tr { break-inside: avoid; }
-  .summary-heading-cell { padding: 0 0 4mm; }
+  /* Keep the final material row with the sign-off when they fit on one sheet. */
+  .summary-table :is(thead, tr, .summary-ending) { break-inside: avoid; }
+  .summary-heading-cell { padding: 0 0 2.5mm; }
 
   .summary-heading {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 35%);
     align-items: center;
     gap: 6mm;
-    padding-bottom: 3mm;
+    padding-bottom: 2mm;
     border-bottom: 0.8pt solid #253732;
   }
 
@@ -132,6 +139,7 @@ const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: 
   .summary-identity > div { min-width: 0; }
   .print-qr { display: block; flex: none; width: 22mm; height: 22mm; }
   .summary-heading h2 { margin: 0.5mm 0 1mm; font-size: 19pt; line-height: 1.18; font-weight: 700; }
+  .summary-heading .summary-company { font-size: 22pt; }
   .summary-kicker, .summary-label, .summary-references { color: #364640; font-size: 9.5pt; }
   .summary-meta { text-align: right; }
   .summary-number { font-size: 12.5pt; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -139,7 +147,7 @@ const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: 
   .summary-references { display: flex; flex-wrap: wrap; gap: 1mm 5mm; margin-top: 2mm; }
 
   .summary-columns th {
-    padding: 2.2mm;
+    padding: 1.8mm 2.2mm;
     background: #edf1ef;
     border-top: 0.75pt solid #586862;
     border-bottom: 0.75pt solid #586862;
@@ -148,13 +156,19 @@ const status = { DRAFT: '草稿 · 仅供校对', CONFIRMED: '已确认', VOID: 
     print-color-adjust: exact;
   }
 
-  .summary-table tbody td { padding: 2.8mm 2.2mm; vertical-align: top; border-bottom: 0.5pt solid #a8b4af; }
+  .summary-material-row > td { padding: 2.5mm 2.2mm; vertical-align: top; border-bottom: 0.5pt solid #a8b4af; }
   .summary-material { font-size: 11.5pt; }
   .summary-secondary { display: block; color: #364640; font-size: 9pt; white-space: pre-line; }
   .summary-quantity { text-align: right; font-variant-numeric: tabular-nums; }
-  .summary-quantity strong { font-size: 12.5pt; }
+  .summary-quantity strong { display: inline-block; max-width: 100%; font-size: 12.5pt; }
 
-  .summary-footer { margin-top: 5mm; break-inside: avoid; break-before: avoid; }
+  .summary-many-rows .summary-heading { gap: 4mm; padding-bottom: 1.5mm; }
+  .summary-many-rows .summary-company { font-size: 20pt; }
+  .summary-many-rows .print-qr { width: 20mm; height: 20mm; }
+  .summary-many-rows .summary-material-row { line-height: 1.2; }
+  .summary-many-rows .summary-material-row > td { padding-block: 1.25mm; }
+
+  .summary-footer-cell { padding: 4mm 0 0; }
   .summary-signoff { padding: 3mm; border: 0.75pt solid #71817b; }
   .summary-signoff-heading { display: flex; justify-content: space-between; gap: 4mm; }
   .summary-signoff-heading h3 { flex: none; font-size: 11pt; }

@@ -481,10 +481,11 @@ def schedule_import_recover(body:schedule_import.Recover,db:Db,user:User):
 
 @router.get('/orders')
 def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1), q: str = Query('', max_length=80),
-               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
+               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None,
+               changes_only: bool = False):
     c.authorize(user, factory_id)
     orders_ready(db)
-    return orders.list_orders(db, page, q, status, plan_status)
+    return orders.list_orders(db, page, q, status, plan_status, changes_only=changes_only)
 
 
 @router.get('/orders/{line_id}/versions')
