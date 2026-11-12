@@ -333,6 +333,7 @@ watch(frame, scheduleViewport, { flush: 'post' })
   display: block;
   width: 56px;
   height: 56px;
+  transform: scale(calc(80 / 56));
 }
 .qc-orbit-outer,
 .qc-orbit-inner {
