@@ -35,7 +35,7 @@ test('QC remark displays the authoritative snapshot, hides blank values and neve
    assert.doesNotMatch(qc.textContent,/备注存在 QC 修改记录|业务原备注|不应盲读最新历史|不能覆盖/);
    assert.match(business.textContent,/业务原备注/);for(const v of ['0','false','000123','0.12500'])assert.ok(business.textContent.includes(v));
    assert.equal(business.querySelector('select,details,[aria-label=空值]'),null);
-   assert.equal(qc.querySelector('.qsum-dossier-section dl').className,business.querySelector('dl').className);
+   assert.equal(qc.querySelector('dl').className,business.querySelector('dl').className);
   }finally{p.dom.window.close();}
  }
 });
@@ -96,8 +96,8 @@ test('final date display retains original plan and photo zoom/navigation never s
   p.w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new p.w.Event('close'));};
   await p.w.QcInspectionSummary.load();assert.match(p.calls[0],/dateBasis=report/);assert.match(p.d.querySelector('#qsum-body td').textContent,/^2026-11-07/);assert.match(p.d.querySelector('th').textContent,/^验货日期/);
   const photos=[{id:'first',name:'A'},{id:'second',name:'B'}];p.w.fetch=async()=>({ok:true,json:async()=>({id:'one',entryId:'entry1',scheduleDate:'2026-11-03',inspectionDate:'2026-11-07',photos})});
-  p.d.querySelector('[data-summary-id]').click();await tick();const drawer=p.d.querySelector('.qsum-dialog'),body=drawer.querySelector('.qwf-dialog-body');body.scrollTop=120;
-  assert.match(drawer.textContent,/QC填写的实际验货日期/);assert.match(drawer.textContent,/原始计划日期/);assert.match(drawer.textContent,/2026-11-03/);assert.match(drawer.textContent,/2026-11-07/);
+  p.d.querySelector('[data-summary-id]').click();await tick();const drawer=p.d.querySelector('.qsum-dialog'),body=drawer.querySelector('.qrd-content');body.scrollTop=120;
+  assert.match(drawer.textContent,/实际验货日期/);assert.match(drawer.textContent,/原始计划日期/);assert.match(drawer.textContent,/2026-11-03/);assert.match(drawer.textContent,/2026-11-07/);
   p.d.querySelector('[data-photo="0"]').click();const box=p.d.querySelector('.qsum-lightbox'),img=box.querySelector('img'),viewport=box.querySelector('.qsum-lightbox-viewport');
   Object.defineProperties(img,{naturalWidth:{value:1000},naturalHeight:{value:800}});Object.defineProperties(viewport,{clientWidth:{value:632},clientHeight:{value:432}});img.dispatchEvent(new p.w.Event('load'));
   const width=parseFloat(img.style.width);box.querySelector('[data-photo-plus]').click();assert.equal(parseFloat(img.style.width),width);assert.equal(box.querySelector('output').textContent,'125%');assert.equal(p.d.body.style.transform,'');assert.equal(p.d.documentElement.style.zoom,'');assert.equal(drawer.style.transform,'');
@@ -208,7 +208,7 @@ test('summary displays plan dates as plain dates and keeps the frozen date in de
    p.d.querySelector('[data-summary-id="'+id+'"]').click();await tick();
    const values=Object.fromEntries([...p.d.querySelectorAll('dialog dt')].map(n=>[n.textContent,n.nextElementSibling.textContent]));
    assert.equal(values['原始计划日期'],'2026-11-05 至 2026-11-07');assert.equal(values['最终采用日期'],'2026-11-05');
-   assert.equal(values['QC填写的实际验货日期'],id==='manual'?'2026-11-05':'');
+   assert.equal(values['实际验货日期'],id==='manual'?'2026-11-05':'—');
    assert.equal(values['最终日期来源'],id==='manual'?'QC人工填写':'计划日期补位');p.d.querySelector('[data-close]').click();
   }
  }finally{p.dom.window.close();}
@@ -268,7 +268,7 @@ test('ten photo cycles own exactly one detail and preview; document gesture list
   for(let i=0;i<10;i++){
    const button=p.d.querySelector('[data-summary-id]');for(let n=0;n<8;n++)button.click();await tick();
    assert.equal(p.d.querySelectorAll('.qsum-dialog').length,1);assert.equal(requests,i+1);
-   const body=p.d.querySelector('.qwf-dialog-body');body.scrollTop=81;
+   const body=p.d.querySelector('.qrd-content');body.scrollTop=81;
    for(let n=0;n<8;n++)p.d.querySelector('[data-photo]').click();
    assert.equal(p.d.querySelectorAll('.qsum-lightbox').length,1);assert.equal(p.d.querySelectorAll('#qsum-panel-qc').length,1);
    const box=p.d.querySelector('.qsum-lightbox'),img=box.querySelector('img'),v=box.querySelector('.qsum-lightbox-viewport');
@@ -309,10 +309,19 @@ test('business displays nonempty authorized fields including zero false leading 
 test('product identity precedes QC and photos; original is only requested explicitly',async()=>{
  const p=page();try{
   p.w.HTMLDialogElement.prototype.close=function(){this.dispatchEvent(new p.w.Event('close'));};
-  await p.w.QcInspectionSummary.load();p.w.fetch=async()=>({ok:true,json:async()=>({id:'one',entryId:'entry',customer:'测试客户',poNo:'000123',productNo:'SKU-01',productName:'产品甲',photos:[{id:'p1',name:'A',originalAvailable:true},{id:'p2',name:'B',originalAvailable:false}]})});
+  await p.w.QcInspectionSummary.load();p.w.fetch=async()=>({ok:true,json:async()=>({id:'one',entryId:'entry',customer:'测试客户',poNo:'000123',customerPo:'000456',contractNo:'000789',quantity:168,actualQuantity:160,inspectionProblem:'模拟检查：未发现异常。',improvement:'核对清单',productNo:'SKU-01',productName:'产品甲',photos:[{id:'p1',name:'A',originalAvailable:true},{id:'p2',name:'B',originalAvailable:false}]})});
   p.d.querySelector('[data-summary-id]').click();await tick();const pane=p.d.querySelector('#qsum-panel-qc');
-  assert.equal(pane.querySelector('h3').textContent,'商品基础信息');assert.equal(pane.querySelector('dt').textContent,'客户');assert.equal(pane.querySelector('[data-photo-jump]'),null);
+  assert.equal(pane.querySelector('h3').textContent,'商品基础信息');assert.equal(pane.querySelector('dt').textContent,'PO#');assert.equal(pane.querySelector('[data-photo-jump]'),null);
   assert.ok(pane.textContent.indexOf('SKU-01')<pane.textContent.indexOf('QC验货信息'));
+  const fields=Object.fromEntries([...pane.querySelectorAll('dt')].map(label=>[label.textContent,label.nextElementSibling.textContent]));
+  assert.deepEqual([fields['PO#'],fields['客PO#'],fields['合同号'],fields['货号']],['000123','000456','000789','SKU-01']);
+  assert.equal(fields['客户'],'测试客户');
+  assert.equal(fields['产品名称'],'产品甲');
+  assert.equal(fields['数量'],'168');
+  assert.equal(fields['实际数量'],'160');
+  assert.equal(fields['验货问题'],'模拟检查：未发现异常。');
+  assert.equal(fields['改进措施'],'核对清单');
+  assert.equal(fields['不合格项'],undefined);
   p.d.querySelector('[data-photo]').click();const box=p.d.querySelector('.qsum-lightbox'),img=box.querySelector('img');assert.ok(!img.src.includes('original'));
   box.querySelector('[data-photo-original]').click();assert.ok(img.src.endsWith('?variant=original-display'));img.onerror();assert.match(box.textContent,/原图加载失败/);
   box.querySelector('[data-photo-retry]').click();assert.ok(img.src.endsWith('?variant=original-display'));
