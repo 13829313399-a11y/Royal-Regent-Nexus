@@ -28,11 +28,13 @@ watchCuttingWorkspace(()=>void load())
 </script>
 <template>
   <div class="cutting-overview">
-    <CuttingMetrics :items="[{label:'待计价实发',value:result?.pending_pricing??'—',unit:'笔',hint:'缺价不以零元代替'},...Object.entries(result?.currencies??{}).map(([currency,v])=>({label:`已计价正常耗用（${currency}）`,value:v.normal,unit:currency,hint:`完工 ${v.completed??'待归属'} / 在制 ${v.wip??'待归属'}；损耗 ${v.loss} ${currency}`}))]" />
-    <SectionPanel title="订单实际材料费用" class="cutting-content-panel">
+    <div class="cutting-review-filters">
       <form class="order-toolbar" @submit.prevent="load(1,true)"><label :for="`${filterId}-query`">订单号／货号<input :id="`${filterId}-query`" v-model="query" name="order_q" maxlength="80" /></label><Button :disabled="busy">查询／刷新</Button></form>
       <p class="cutting-muted">当前查询条件：订单号／货号 {{applied.q||'全部'}}。</p>
       <p v-if="unapplied" role="status" class="cutting-muted">筛选有未查询的修改；当前仍按上次查询条件显示。点击“查询／刷新”后应用，翻页和原条件重试不会提交新输入。</p>
+    </div>
+    <CuttingMetrics :items="[{label:'待计价实发',value:result?.pending_pricing??'—',unit:'笔',hint:'缺价不以零元代替'},...Object.entries(result?.currencies??{}).map(([currency,v])=>({label:`已计价正常耗用（${currency}）`,value:v.normal,unit:currency,hint:`完工 ${v.completed??'待归属'} / 在制 ${v.wip??'待归属'}；损耗 ${v.loss} ${currency}`}))]" />
+    <SectionPanel title="订单实际材料费用" class="cutting-content-panel">
       <p class="cutting-notice">当前累计核对，已计价部分按币种汇总。完工及在制归属进入订单确认；已锁月份以内部月结冻结快照为准。</p>
       <p v-if="busy" role="status">正在核对原批次价格与实际耗用…</p><p v-if="error" role="alert">{{error}}</p>
       <Button v-if="failedQuery" variant="outline" :disabled="busy" @click="retry">按原条件重试（第 {{failedQuery.page}} 页）</Button>
