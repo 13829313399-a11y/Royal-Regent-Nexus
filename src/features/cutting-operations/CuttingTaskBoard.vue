@@ -20,14 +20,16 @@ const linkedFilters=computed<TaskFilters>(() => {
     {day:cuttingQueryDay(query.day)??businessDay(),q:'',execution:'',scope:'daily'}
 })
 const initial=linkedFilters.value
-const day=ref(initial.day),query=ref(initial.q),execution=ref(initial.execution),scope=ref(initial.scope)
-const result=ref<TaskView>(),busy=ref(false),error=ref(''),applied=ref(initial)
+const day=ref(initial.day),query=ref(initial.q),execution=ref(initial.execution)
 type TaskQuery=TaskFilters & {page:number}
-const failedQuery=ref<TaskQuery>(),currentPage=ref(1)
+const result=ref<TaskView>(),busy=ref(false),error=ref(''),applied=ref<TaskQuery>()
+const failedQuery=ref<TaskQuery>()
 const readingTarget=ref<TaskQuery & {retry:boolean}>(),pageNotice=ref('')
+const baseFilters=computed<TaskFilters>(()=>applied.value??linkedFilters.value)
+const scope=computed(()=>readingTarget.value?.scope??baseFilters.value.scope)
 const retryButtonId=`${filterId}-retry`, resultPager=ref<HTMLElement>()
 const retryFocusCleanups=new Set<()=>void>()
-const unapplied=computed(()=>day.value!==applied.value.day||query.value!==applied.value.q||execution.value!==applied.value.execution)
+const unapplied=computed(()=>day.value!==baseFilters.value.day||query.value!==baseFilters.value.q||execution.value!==baseFilters.value.execution)
 let generation=0,alive=true
 const tabs=computed(()=>props.reporting?[
   {id:'daily',label:'每日任务'},{id:'reported',label:'已填报任务'},{id:'unreported',label:'待填任务'},{id:'history',label:'计划外与历史实绩'},{id:'abnormal',label:'异常待办'},
@@ -52,14 +54,12 @@ function exceptionLink(row:TaskView['data'][number],reason:string) {
   return {...target,query:{...target.query,day:date,...(isReport?{task_day:date,reporting_view:reason==='外发收回待验收'?'external':'records'}:{})}}
 }
 const exceptionLabels:Record<string,string>={'外发收回待验收':'收回与验收','已结束业务日未填报':'补填当日日报','计划依据已变更':'复核计划','计划已逾期未完成':'核对逾期计划','物料及前置条件待实际核定':'核定执行条件'}
-async function load(page=1,apply=false){
-  if(apply){applied.value={day:day.value,q:query.value,execution:execution.value,scope:scope.value};page=1}
-  await read({...applied.value,page})
-}
+function load(page=applied.value?.page??1){return read({...baseFilters.value,page})}
+function queryTasks(){return read({day:day.value,q:query.value,execution:execution.value,scope:baseFilters.value.scope,page:1})}
 async function read(request:TaskQuery, focusOrigin?: Element | null, retry=false){
   let target={...request}
   const lineId=route?.query.line_id
-  const ticket=++generation;busy.value=true;error.value='';pageNotice.value='';result.value=undefined;currentPage.value=target.page
+  const ticket=++generation;busy.value=true;error.value='';pageNotice.value='';result.value=undefined
   if(!retry)failedQuery.value=undefined
   readingTarget.value={...target,retry}
   let restoreFocus=!!focusOrigin
@@ -88,11 +88,12 @@ async function read(request:TaskQuery, focusOrigin?: Element | null, retry=false
     if(!alive||ticket!==generation)return
     if(target.page>Math.max(1,Math.ceil(value.total/value.page_size))){
       pageNotice.value=`原第 ${target.page} 页已超出当前任务范围，正在按原条件读取第 1 页。`
-      target={...target,page:1};currentPage.value=1;readingTarget.value={...target,retry}
+      target={...target,page:1};readingTarget.value={...target,retry}
       value=await workspaceApi.tasks(target)
       if(!alive||ticket!==generation)return
       pageNotice.value=`原第 ${request.page} 页已超出当前任务范围，已按原条件返回第 1 页。`
     }
+    applied.value={...target}
     result.value=value
     failedQuery.value=undefined
     emit('loaded-query',{day:target.day,q:target.q,execution:target.execution,scope:target.scope},lineId)
@@ -103,7 +104,7 @@ async function read(request:TaskQuery, focusOrigin?: Element | null, retry=false
     if(status!==401&&status!==403){
       failedQuery.value={...target}
       if(target.page!==request.page)pageNotice.value=`原第 ${request.page} 页已超出当前任务范围，第 1 页读取未完成，可按原条件重试。`
-    }else { pageNotice.value='';failedQuery.value=undefined }
+    }else { pageNotice.value='';failedQuery.value=undefined;applied.value=undefined }
   }}
   finally{
     if(alive&&ticket===generation){
@@ -123,35 +124,35 @@ function retry(event: MouseEvent){
   const origin=document.activeElement===event.currentTarget?document.activeElement:undefined
   void read({...failedQuery.value},origin,true)
 }
-function change(value:string){scope.value=value;applied.value={...applied.value,scope:value};void load(1)}
-function resetFilters(){query.value='';execution.value='';applied.value={...applied.value,q:'',execution:''};void load(1)}
+function change(value:string){void read({...baseFilters.value,scope:value,page:1})}
+function resetFilters(){query.value='';execution.value='';void read({...baseFilters.value,q:'',execution:'',page:1})}
 onMounted(()=>void load())
 watch(linkedFilters,(value,previous)=>{
   if(sameTaskFilters(value,previous))return
-  const next=props.reporting?value:{...applied.value,day:value.day}
-  if(sameTaskFilters(next,applied.value))return
-  if(next.day!==applied.value.day)day.value=next.day
-  if(next.q!==applied.value.q)query.value=next.q
-  if(next.execution!==applied.value.execution)execution.value=next.execution
-  scope.value=next.scope
-  applied.value=next;void load(1)
+  const current=applied.value??previous
+  const next=props.reporting?value:{...current,day:value.day}
+  if(readingTarget.value ? sameTaskFilters(next,readingTarget.value) : result.value&&sameTaskFilters(next,current))return
+  if(next.day!==current.day)day.value=next.day
+  if(next.q!==current.q)query.value=next.q
+  if(next.execution!==current.execution)execution.value=next.execution
+  void read({...next,page:1})
 })
 onBeforeUnmount(()=>{alive=false;generation++;for(const cleanup of retryFocusCleanups)cleanup()})
-watchCuttingWorkspace(()=>void load(currentPage.value))
+watchCuttingWorkspace(()=>void load())
 </script>
 <template>
   <div class="cutting-overview">
     <div class="cutting-review-filters">
-      <form class="order-toolbar" @submit.prevent="load(1,true)">
+      <form class="order-toolbar" @submit.prevent="queryTasks">
         <label :for="`${filterId}-day`">业务日期<input :id="`${filterId}-day`" v-model="day" name="day" type="date" required /></label>
         <label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="query" name="q" maxlength="80" placeholder="查询全部匹配订单" /></label>
         <label :for="`${filterId}-execution`">执行方<select :id="`${filterId}-execution`" v-model="execution" name="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>
         <Button type="submit" :disabled="busy">查询</Button>
-        <Button type="button" variant="outline" :disabled="busy" @click="load(currentPage)">刷新当前结果</Button>
+        <Button type="button" variant="outline" :disabled="busy" @click="load()">刷新当前结果</Button>
         <Button type="button" variant="outline" :disabled="busy" @click="resetFilters">清除订单／执行方筛选</Button>
       </form>
-      <p v-if="unapplied" class="cutting-muted" role="status">筛选有未查询的修改，当前结果仍按上次查询条件展示。</p>
-      <p class="cutting-muted">当前查询日期：{{applied.day}}。订单号／货号：{{applied.q||'全部'}}；执行方：{{applied.execution==='internal'?'本厂':applied.execution==='outsourced'?'外发':'本厂与外发'}}；视图：{{viewLabel(applied.scope)}}。查询应用当前输入；切换任务视图、翻页及刷新不提交未查询的日期、订单或执行方条件。</p>
+      <p v-if="applied" class="cutting-muted">上次成功查询：{{targetLabel(applied)}}。</p>
+      <p v-if="unapplied" class="cutting-muted" role="status">{{failedQuery?'当前输入尚未成功应用。':'筛选有未查询的修改。'}}切换任务视图、翻页及刷新沿用已应用筛选。</p>
     </div>
     <CuttingMetrics :items="metrics" />
     <SectionPanel v-if="!reporting && result" title="异常任务" :subtitle="`${result.day} · ${result.stats.abnormal} 项待处理，同一任务仅计一次`" class="cutting-content-panel cutting-exception-panel">
@@ -174,7 +175,7 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
     </SectionPanel>
     <SectionPanel :title="reporting?'当日任务':'生产任务列表'" class="cutting-content-panel">
       <template v-if="reporting && result?.stats.order_changes" #action>
-        <slot name="order-changes" :count="result.stats.order_changes" :query="applied.q" />
+        <slot name="order-changes" :count="result.stats.order_changes" :query="applied?.q??''" />
       </template>
       <CuttingSubnav :model-value="scope" :items="tabs" @update:model-value="change" />
       <p v-if="busy" role="status">{{readingTarget?.retry?`正在按原条件重试：${targetLabel(readingTarget)}。`:'正在核对有效计划与生产实绩…'}}</p>
