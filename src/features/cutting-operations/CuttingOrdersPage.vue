@@ -67,6 +67,7 @@ const snapshot = () => JSON.stringify([reason.value, targetSets.value, quantityB
 const dirty = computed(() => !!action.value && snapshot() !== baseline.value)
 const available = computed(() => access.value?.enabled && access.value?.orders_schema_ready)
 const data = computed(() => selected.value?.current?.data)
+const receiveLabel = computed(() => selected.value?.current ? '确认订单变更' : '签收订单版本')
 const publishedPlan = computed(() => data.value?.planning?.published)
 const singlePublishedTask = computed(() => publishedPlan.value?.tasks.length === 1 ? publishedPlan.value.tasks[0] : undefined)
 const adjustingPlan = computed(() => (action.value === 'plan' || action.value === 'plan-publish') && !!data.value?.planning?.published)
@@ -364,7 +365,16 @@ function status(row: CuttingOrder) {
         <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
         <p>{{ status(selected) }} · 裁床记录 V{{ selected.current?.version ?? 0 }}</p>
         <p v-if="selected.snapshot.status === 'cancelled'" role="alert">来源订单已取消，仅可签收取消通知及核对旧采购需求。</p>
-        <p v-if="selected.needs_receipt" class="cutting-notice">请先签收最新版本。重新签收会重置当前 BOM 和需求链；旧版保留历史，不会自动撤销采购单。</p>
+        <div v-if="selected.needs_receipt" class="cutting-notice">
+          <div v-if="selected.current">
+            <p>订单变更待确认 · 已接 V{{ data?.order.version ?? data?.receipt?.source_version ?? '—' }} → 待确认 V{{ selected.source_version }}</p>
+            <p v-if="data?.order.quantity!==selected.snapshot.quantity">订单数量 {{ data?.order.quantity ?? '—' }} → {{ selected.snapshot.quantity ?? '—' }}</p>
+            <p v-if="data?.order.requested_ship_date!==selected.snapshot.requested_ship_date">交期 {{ data?.order.requested_ship_date ?? '—' }} → {{ selected.snapshot.requested_ship_date ?? '—' }}</p>
+            <p v-if="selected.snapshot.change_reason">变更说明 {{ selected.snapshot.change_reason }}</p>
+            <p>确认后需重新核对 BOM 和需求。原采购单及计划依据保留，已有采购需求须先核对。</p>
+          </div>
+          <p v-else>此订单尚未接单，请先确认下发版本。</p>
+        </div>
         <p v-if="data?.purchase_reconciliation_required" role="alert">原需求待采购核对，期间不能继续回复交期或重新提交。核对整张旧需求的采购处置后，工程可修订并重新提交。</p>
         <p v-if="data?.reconciliation_request">核对原因：{{ data.reconciliation_request.reason }}</p>
         <p v-if="data?.reconciliation">采购已核对需求 V{{ data.reconciliation.requisition_version }}：{{ data.reconciliation.evidence }}。此次记录不自动撤销外部采购单。</p>
@@ -379,7 +389,7 @@ function status(row: CuttingOrder) {
             <Button variant="outline" v-if="can('plan_write')" @click="edit('plan')">编制任务与日计划</Button>
             <Button variant="outline" v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">{{publishLabel}}</Button>
           </template>
-          <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">签收订单版本</Button>
+          <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">{{ receiveLabel }}</Button>
           <Button variant="outline" v-if="writable && !data?.requisition && can('bom_write')" @click="edit('bom')">工程关联 BOM</Button>
           <Button variant="outline" v-if="writable && data?.bom && !data.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('requisition')">工程提交物料需求</Button>
           <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('eta_write') && data.requisition.lines.some(r => r.purchase_mode !== 'no_purchase')" @click="edit('eta')">采购回复分批交期</Button>
@@ -396,7 +406,7 @@ function status(row: CuttingOrder) {
           <details v-if="data.planning.baseline"><summary>首次基准计划</summary><CuttingPlanSummary :plan="data.planning.baseline" title="首次基准" /></details>
         </template>
         <form v-if="action" class="order-form" @submit.prevent="save">
-          <h3>{{ action==='plan-publish'?publishLabel:labels[action] }}</h3>
+          <h3>{{ action==='plan-publish'?publishLabel:action==='receive'?receiveLabel:labels[action] }}</h3>
           <fieldset :disabled="saving || !!pending">
             <CuttingPlanEditor v-if="action === 'plan' && data" v-model="planTasks" v-model:removed-task-reasons="removedTaskReasons" :data="data" :line-id="selected.line_id" />
             <CuttingPlanDiff v-if="adjustingPlan && data?.planning?.published" :previous="data.planning.published" :tasks="action === 'plan' ? planTasks : data.planning.draft?.tasks ?? []" :removed-reasons="action === 'plan' ? removedTaskReasons : data.planning.draft?.removed_task_reasons" />
@@ -443,7 +453,7 @@ function status(row: CuttingOrder) {
           </fieldset>
         </form>
         <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
-        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id }} · {{ r.reason }}</summary>
+        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.version===1&&r.data.receipt?.mode==='automatic'?'系统':r.actor_id }} · {{ r.reason }}</summary>
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
