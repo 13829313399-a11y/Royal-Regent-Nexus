@@ -3,7 +3,7 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
-import { computed, inject, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { RouterLink, onBeforeRouteLeave, routerKey, type LocationQueryRaw } from 'vue-router'
 import { cuttingApi, errorMessage, type Access } from './api'
 import { ordersApi, type CuttingOrder } from './ordersApi'
@@ -164,8 +164,16 @@ async function select(row: CuttingOrder, intent: 'select' | 'statistics' | 'reco
 async function openOrder(row: CuttingOrder) {
   await select(row)
   if (selected.value?.line_id === row.line_id && result.value) {
+    const chooser = document.getElementById(fieldId('orders'))
+    const restoreFocus = chooser?.contains(document.activeElement)
     orderListOpen.value = false
     if (reportingView.value === 'tasks') changeReportingView('records')
+    if (restoreFocus) {
+      await nextTick()
+      if (alive && (document.activeElement === document.body || chooser?.contains(document.activeElement))) {
+        document.getElementById(fieldId('orders_toggle'))?.focus({ preventScroll: true })
+      }
+    }
   }
 }
 
@@ -259,7 +267,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
 </script>
 
 <template>
-  <section class="cutting-page cutting-master reporting-page">
+  <section class="cutting-page cutting-review-page cutting-master reporting-page">
     <CuttingLocationNotice :location="location" :selected-id="result?selected?.line_id:undefined" />
     <PageHeader title="每日记录" description="查看生产日报、裁片配套、外发验收与交接进度。文员提交即生效，主管抽查。" />
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
@@ -273,9 +281,9 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
     </SectionPanel>
     <template v-else-if="available&&!needsLogin">
       <div class="report-workspace">
-        <SectionPanel title="已签收订单" class="cutting-content-panel report-orders">
+        <SectionPanel title="已签收订单" :subtitle="selected ? `当前订单 ${selected.snapshot.reference_no}` : undefined" class="cutting-content-panel report-orders">
           <template v-if="selected&&result" #action>
-            <Button class="report-order-toggle" variant="outline" :aria-expanded="orderListOpen" :aria-controls="fieldId('orders')" @click="orderListOpen=!orderListOpen">{{ orderListOpen?'收起订单':'切换订单' }}</Button>
+            <Button :id="fieldId('orders_toggle')" variant="outline" :aria-expanded="orderListOpen" :aria-controls="fieldId('orders')" @click="orderListOpen=!orderListOpen">{{ orderListOpen?'收起订单':'切换订单' }}</Button>
           </template>
           <div :id="fieldId('orders')" class="report-orders-body" :class="{ 'report-orders-collapsed': selected&&result&&!orderListOpen }">
           <form class="report-order-filter" @submit.prevent="load(1,false,false,true)">
@@ -394,13 +402,13 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
 <style scoped>
 .report-workspace {
   display: grid;
-  grid-template-columns: minmax(240px, 27fr) minmax(0, 73fr);
-  align-items: start;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
 }
 .report-orders, .report-main, .report-detail { min-width: 0; }
 .report-orders-body { display: flex; flex-direction: column; gap: 16px; }
-.report-order-toggle[data-slot='button'] { display: none; }
+.report-orders-collapsed { display: none; }
+.report-orders:has(.report-orders-collapsed) > :deep(div:last-child) { display: none; }
 .report-detail { display: flex; flex-direction: column; gap: 12px; }
 .report-order-filter, .report-statistics-filter, .report-task-heading {
   display: flex;
@@ -408,14 +416,13 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
   flex-wrap: wrap;
   gap: 10px;
 }
-.report-order-filter label { flex: 1 1 120px; }
+.report-order-filter label { flex: 0 1 270px; }
 .report-order-filter [data-slot='button'],
 .report-statistics-filter [data-slot='button'] { align-self: end; }
 .report-statistics-filter label { flex-direction: row; align-items: center; gap: 10px; }
 .report-statistics-filter input { width: auto; min-width: 140px; }
-.report-order-list { padding: 0; margin: 0; list-style: none; }
-.report-order-list li { padding: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
-.report-order-list li:last-child { border-bottom: 1px solid var(--border); }
+.report-order-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 8px; padding: 0; margin: 0; list-style: none; }
+.report-order-list li { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; overflow-wrap: anywhere; }
 .report-order-selected { background: var(--accent); box-shadow: inset 3px 0 var(--primary); }
 .report-order-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
 .report-order-list [data-slot='button'] { margin-top: 6px; }
@@ -463,12 +470,6 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
 .reporting-page td input { width: 100px; }
 .reporting-page p { font-size: 13px; line-height: 1.7; }
 
-@media (max-width: 1023px) {
-  .report-workspace { grid-template-columns: minmax(0, 1fr); }
-  .report-order-toggle[data-slot='button'] { display: inline-flex; }
-  .report-orders-collapsed { display: none; }
-  .report-orders:has(.report-orders-collapsed) > :deep(div:last-child) { display: none; }
-}
 @media (max-width: 640px) {
   .report-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .report-totals div:nth-child(3) { border-inline-start: 0; }
