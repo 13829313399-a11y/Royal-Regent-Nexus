@@ -426,6 +426,7 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     service = qc_inspection_sheet
     parts = path.split('/')
     actor = {'id': user.id, 'name': user.display_name or user.username}
+    notification_actions = {'review/notifications': 'revoke', 'entries/notifications': 'return-to-inspection'}
     async def current_entries(copy_photos=True, view="workbench"):
         response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id])],b'')
         if response.status_code!=200:raise HTTPException(503,'验货基础数据读取失败，请重试')
@@ -445,8 +446,9 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     if request.method in {'GET','HEAD'}:
         if path == 'entries' and request.method == 'GET':
             return JSONResponse(await current_entries(),headers=NO_CACHE)
-        if path=='review/notifications' and request.method=='GET':
-            return JSONResponse(await run_in_threadpool(service.reversal_notifications,factory_id,actor),headers=NO_CACHE)
+        if path in notification_actions and request.method=='GET':
+            result = await run_in_threadpool(service.review_notifications, factory_id, actor, action=notification_actions[path])
+            return JSONResponse(result, headers=NO_CACHE)
         if path=='review/entries' and request.method=='GET':
             return JSONResponse(await current_entries(view='review'),headers=NO_CACHE)
         if len(parts)==3 and parts[0]=='entries' and parts[2]=='audit':
@@ -473,8 +475,9 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         body=json.loads(raw)
         if not isinstance(body,dict):raise ValueError()
     except (ValueError,UnicodeError):raise HTTPException(400,'无效 JSON') from None
-    if path=='review/notifications/shown':
-        result=await run_in_threadpool(service.reversal_notifications,factory_id,actor,body)
+    notification_action = notification_actions.get(path.removesuffix('/shown')) if path.endswith('/shown') else None
+    if notification_action:
+        result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:

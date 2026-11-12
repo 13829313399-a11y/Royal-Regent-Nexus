@@ -28,6 +28,32 @@ def test_notifications_user_factory_once_and_new_events(db):
  assert read(r)['lastReversal']['eventId']==e['eventId'];assert len([x for x in sheet.audit('huaxing',r['id'])['items'] if x['action']=='revoke'])==1
  r=command(r)['results'][0]['item'];r=command(r,'revoke')['results'][0]['item'];assert len(sheet.reversal_notifications('huaxing',ACTOR)['items'])==1
 
+def test_return_notifications_follow_current_workbench_record_and_actor(db):
+ r=submitted(db)
+ reason='核对贴纸\n重新拍照'
+ body={'revision':r['revision'],'requestKey':uuid4().hex,'reason':reason}
+ out=sheet.return_to_inspection('huaxing',r['id'],body,ACTOR)
+ other=dict(ACTOR,id='other')
+ def notices(actor=ACTOR,factory='huaxing',payload=None):
+  return sheet.review_notifications(factory,actor,payload,action='return-to-inspection')
+ event,=notices()['items']
+ assert (event['entryId'],event['eventId'],event['poNo'],event['productNo'],event['reason'])==(r['id'],out['eventId'],r['poNo'],r['productNo'],reason)
+ assert not notices(factory='huakang-a')['items']
+ assert not sheet.reversal_notifications('huaxing',ACTOR)['items']
+ with pytest.raises(HTTPException) as error:
+  sheet.return_to_inspection('huaxing',r['id'],{**body,'reason':'更换原因'},ACTOR)
+ assert error.value.status_code==409
+ assert notices(payload={'eventIds':[event['eventId']]})['shown']==[event['eventId']]
+ assert not notices()['items'] and notices(other)['items']==[event]
+ r=out['item']
+ r=sheet.submit('huaxing',r['id'],{'revision':r['revision']},ACTOR)
+ assert not notices(other)['items']
+ next_return=sheet.return_to_inspection('huaxing',r['id'],{'revision':r['revision'],'requestKey':uuid4().hex},ACTOR)
+ latest,=notices(other)['items']
+ assert latest['eventId']==next_return['eventId'] and latest['reason']==''
+ assert any(e['changes'].get('reason')==reason for e in sheet.audit('huaxing',r['id'])['items'])
+
+
 def test_return_resubmit_complete_evidence_no_duplicates(db):
  r=submitted(db);initial=deepcopy(r)
  with sheet.store() as c:old_submission=c.execute('SELECT submitted_snapshot FROM entry_details WHERE entry_id=?',(r['id'],)).fetchone()[0]
