@@ -3123,6 +3123,7 @@ body.theme-light #yearlyReportBody  .section-card {
   display: block;
   width: 56px;
   height: 56px;
+  transform: scale(calc(80 / 56));
 }
 .qc-startup .qc-orbit-outer,
 .qc-startup .qc-orbit-inner {
