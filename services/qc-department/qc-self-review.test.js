@@ -9,10 +9,15 @@ async function page(){
  const rows=['a','b','c'].map((id,i)=>({id,customer:'客户'+i,poNo:'PO'+i,productNo:'ITEM'+i,dateFrom:'2026-11-03',dateTo:'2026-11-03',result:'PASS',remark:'原备注',improvement:'原措施',photos:[],revision:1,submittedAt:'2026-11-01T17:00:00Z',reviewState:'pending',flowVersion:2,lastActor:{name:'后台用户'},lastLocation:'验货台',lastChangedAt:'2026-11-01T17:00:00Z'}));
  let failId='',eventId=0;const events=[],seen=new Set();w.fetch=async(url,opts={})=>{
   const body=opts.body?JSON.parse(opts.body):null;calls.push({url,body});let value;
-  if(url.endsWith('/notifications'))value={items:events.filter(e=>!seen.has(e.eventId)&&rows.find(r=>r.id===e.entryId)?.reviewState==='pending')};
+  if(url.endsWith('/notifications')){
+   const workbench=url.includes('entries/notifications');
+   value={items:events.filter(e=>!seen.has(e.eventId)&&Boolean(e.workbench)===workbench&&rows.find(r=>r.id===e.entryId)?.reviewState===(workbench?'returned_to_inspection':'pending'))};
+  }
   else if(url.endsWith('/notifications/shown')){body.eventIds.forEach(id=>seen.add(id));value={shown:body.eventIds};}
-  else if(url.endsWith('/return-to-inspection')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(body.revision,row.revision);row.revision++;row.reviewState='returned_to_inspection';value={item:structuredClone(row),eventId:100};}
-  else if(url.endsWith('/entries'))value={results:['PASS','FAIL','PENDING','LG'],items:url.includes('review/')?structuredClone(rows):[],columns:['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','completion','result','remark','photos','improvement','submit'].map(key=>({key,label:key}))};
+  else if(url.endsWith('/return-to-inspection')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(body.revision,row.revision);row.revision++;row.reviewState='returned_to_inspection';
+   events.push({eventId:++eventId,entryId:row.id,customer:row.customer,poNo:row.poNo,productNo:row.productNo,reason:body.reason,at:'2026-11-01T17:26:00Z',workbench:true});
+   value={item:structuredClone(row),eventId};}
+  else if(url.endsWith('/entries'))value={results:['PASS','FAIL','PENDING','LG'],items:structuredClone(url.includes('review/')?rows:rows.filter(r=>r.reviewState==='returned_to_inspection')),columns:['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','completion','result','remark','photos','improvement','submit'].map(key=>({key,label:key}))};
   else if(url.endsWith('/save')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);Object.assign(row,{...body,...(body.inspectionExecution?{inspectionExecution:{...row.inspectionExecution,...body.inspectionExecution}}:{})},{revision:row.revision+1,lastLocation:'审核中心 · 待审核'});value=structuredClone(row);}
   else if(url.endsWith('/photos')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);row.photos.push({id:'p-'+row.photos.length,name:body.name});row.revision++;value=structuredClone(row);}
   else if(/review\/(confirm|revoke)$/.test(url)){
@@ -127,6 +132,29 @@ test('revoke receipt is centered, lists successes and failures, and return badge
   dialog.querySelector('[data-close]').click();await new Promise(resolve=>setTimeout(resolve,150));await p.w.QcInspectionSheet.loadReview('pending');assert.equal(p.d.querySelectorAll('[data-reversal]').length,2);assert.equal(p.d.querySelector('.qis-reversal-notice'),null);
   p.d.querySelector('[data-reversal=a]').click();assert.match(p.d.querySelector('dialog').textContent,/后台用户.*审核中心/s);p.d.querySelector('[data-close]').click();
   p.rows[0].reviewState='approved';await p.w.QcInspectionSheet.loadReview('approved');assert.equal(p.d.querySelector('[data-reversal=a]'),null);
+ }finally{p.dom.window.close();}
+});
+
+test('returned inspection rows show reasons on entering the workbench and can be located',async()=>{
+ const p=await page();try{
+  p.d.querySelector('[data-return=a]').click();
+  const dialog=p.d.querySelector('dialog');
+  dialog.querySelector('[data-reason]').value='重验标签\n<包装>';
+  dialog.querySelector('[data-return-confirm]').click();await tick();
+  assert.equal(p.d.querySelector('.qis-reversal-notice'),null);
+  p.d.getElementById('page-review').classList.remove('active');
+  p.d.getElementById('page-records').classList.add('active');
+  await p.w.QcInspectionSheet.load();await tick();await tick();
+  const notice=p.d.querySelector('#qis-central-notifications .qis-reversal-notice');
+  assert.ok(notice);
+  assert.match(notice.textContent,/审核中心退回提醒.*客户0 · PO0 · ITEM0.*退回原因：重验标签\n<包装>/s);
+  assert.match(notice.textContent,/2026\/11\/02 01:26:00/);
+  assert.deepEqual(p.calls.find(c=>c.url.endsWith('entries/notifications/shown')).body.eventIds,[1]);
+  notice.querySelector('[data-view-entry]').click();await tick();
+  assert.equal(p.w.QcInspectionSheet.model.selectedId,'a');
+  assert.equal(p.d.querySelector('.qis-reversal-notice'),null);
+  await p.w.QcInspectionSheet.load();await tick();
+  assert.equal(p.d.querySelector('.qis-reversal-notice'),null);
  }finally{p.dom.window.close();}
 });
 

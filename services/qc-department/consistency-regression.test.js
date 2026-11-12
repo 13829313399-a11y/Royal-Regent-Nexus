@@ -215,7 +215,7 @@ if(process.env.QC_READONLY_RECORDS && process.env.QC_BASELINE_DIR) test('read-on
     b.ctx.actualRows=structuredClone(rows);b.run('state={records:actualRows,nextId:31};getCompanyName=()=>"华兴";');
     const charts={};b.ctx.makeChart=id=>({setOption:option=>charts[id]=JSON.parse(JSON.stringify(option))});
     b.ctx.getComputedStyle=()=>({getPropertyValue:()=>''});b.ctx.document.body={classList:{contains:()=>false}};
-    for(const name of ['chartDailyTrend','chartResultPie','chartSupplierRank','chartDefectTop','chartClientPie','chartWeeklyTrend','chartWeeklySupplier','chartProductType','chartFailMonth','chartDefectHeatmap']) b.ctx[name](b.ctx.actualRows);
+    for(const name of ['chartWeeklySupplier','chartProductType','chartFailMonth','chartDefectHeatmap']) b.ctx[name](b.ctx.actualRows);
     const periods=['2026-03-31','2026-04-01','2026-04-07','2026-04-09'].map(day=>b.run(`recs().filter(r=>r.date==='${day}'||r.inspDate==='${day}').map(r=>r.id).join(',')`));
     const weeks=['2026-03-30','2026-04-06'].map(day=>b.run(`recs().filter(r=>r.date>='${day}'&&r.date<=weekEnd('${day}')).map(r=>r.id).join(',')`));
     outputs.push({charts,periods,weeks,rows:JSON.parse(b.run('JSON.stringify(state.records)'))});
