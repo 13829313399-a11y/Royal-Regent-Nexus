@@ -17,6 +17,7 @@ const instanceId = useId()
 const fieldId = (name: string) => `cutting-material-${instanceId}-${name}`
 const refreshedOrder = ref<CuttingOrder>()
 const currentOrder = computed(() => refreshedOrder.value ?? props.order)
+const productionDispatchId = (order: CuttingOrder) => order.current?.data.dispatch_id ?? order.dispatch_id
 const refreshComparison = ref(''), refreshConfirmed = ref(true)
 const ledger=ref<MaterialLedger>(), loading=ref(false), saving=ref(false), error=ref(''), notice=ref(''), needsLogin=ref(false)
 const uncertain=ref(false)
@@ -76,7 +77,7 @@ const projectedRequest = computed(()=>{
   const task=plan.value?.tasks.find(t=>t.task_id===draft.value?.task_id), row=draft.value.row
   const requirement=row===undefined?undefined:bom.value?.requirements[row]
   if(!task||!requirement)return null
-  const group=ledger.value?.totals?.find(t=>t.dispatch_id===currentOrder.value.dispatch_id&&t.bom_id===currentOrder.value.current?.data.bom?.id&&t.bom_version===currentOrder.value.current?.data.bom?.version&&t.task_id===task.task_id&&t.resource_id===task.resource_id&&t.resource_version===task.resource_version&&t.row===row)
+  const group=ledger.value?.totals?.find(t=>t.dispatch_id===productionDispatchId(currentOrder.value)&&t.bom_id===currentOrder.value.current?.data.bom?.id&&t.bom_version===currentOrder.value.current?.data.bom?.version&&t.task_id===task.task_id&&t.resource_id===task.resource_id&&t.resource_version===task.resource_version&&t.row===row)
   const theoretical=multiplyQuantity(requirement.quantity_per_set,task.target_sets)
   if(theoretical===undefined)return null
   const total=sumQuantities([group?.effective_requested_quantity??'0',draft.value.quantity!])
@@ -99,7 +100,7 @@ async function refreshDraft(){
     const nextPlan=latest.current?.data.planning?.published
     const oldTask=before.current?.data.planning?.published?.tasks.find(t=>t.task_id===original.task_id)
     const nextTask=nextPlan?.tasks.find(t=>t.task_id===original.task_id)
-    const identityChanged=before.dispatch_id!==latest.dispatch_id||oldBom?.id!==nextBom?.id||oldBom?.version!==nextBom?.version||oldTask?.resource_id!==nextTask?.resource_id||oldTask?.resource_version!==nextTask?.resource_version
+    const identityChanged=productionDispatchId(before)!==productionDispatchId(latest)||oldBom?.id!==nextBom?.id||oldBom?.version!==nextBom?.version||oldTask?.resource_id!==nextTask?.resource_id||oldTask?.resource_version!==nextTask?.resource_version
     refreshedOrder.value=latest;ledger.value=latestLedger
     refreshComparison.value=`订单 V${original.expected_version} → V${latest.current?.version??0}；发布计划 V${original.plan_version??'无'} → V${nextPlan?.version??'无'}；BOM V${oldBom?.version??'无'} → V${nextBom?.version??'无'}。${identityChanged?'订单、BOM或执行方已变化，请重新选择仓库物料并核对对应依据。':'数量、用途及物料映射已保留，请核对最新任务、累计领料与物料版本。'}`
     if(identityChanged)materialId.value=''

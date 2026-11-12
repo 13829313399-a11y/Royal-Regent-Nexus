@@ -11,6 +11,7 @@ from app.services.transaction_lock import lock_transaction
 
 TABLES = (CuttingOrder.__table__, CuttingOrderRevision.__table__)
 AUTOMATIC_RECEIPT_ACTOR = 'system:cutting-auto-receipt'
+NOTE_RECEIPT_FIELDS = {'note', 'version', 'change_reason', 'shipped_quantity', 'remaining_quantity'}
 
 
 def schema_ready(bind):
@@ -220,6 +221,12 @@ def append(db, user, order, data, reason):
     return view(db, latest(db, order.line_id))
 
 
+def stamp_receipt(dispatch, actor_id, mode):
+    dispatch.received_at = datetime.now(UTC).isoformat()
+    dispatch.received_by = {'automatic': '系统自动接单', 'note_only': '系统同步备注'}.get(mode, actor_id)
+    return dict(mode=mode, source_version=dispatch.version, received_at=dispatch.received_at)
+
+
 def record_receipt(db, dispatch, order, actor_id, reason, *, automatic=False):
     previous = revision(db, order)['data'] if order and order.version else None
     if order is None:
@@ -231,16 +238,14 @@ def record_receipt(db, dispatch, order, actor_id, reason, *, automatic=False):
     if previous:
         pending_version = previous['requisition']['version'] if previous.get('requisition') else pending_purchase_version(db, order, previous)
     order.dispatch_id = dispatch.id
-    received_at = datetime.now(UTC).isoformat()
-    dispatch.received_at = received_at
-    dispatch.received_by = '系统自动接单' if automatic else actor_id
+    receipt = stamp_receipt(dispatch, actor_id, 'automatic' if automatic else 'manual')
     data = dict(order=deepcopy(dispatch.snapshot), dispatch_id=dispatch.id, bom=None, requisition=None,
-                receipt=dict(mode='automatic' if automatic else 'manual', source_version=dispatch.version, received_at=received_at),
+                receipt=receipt,
                 batches=[], purchase_reconciliation_required=bool(pending_version), pending_requisition_version=pending_version,
                 reconciliation_request={'kind': 'source_change', 'actor_id': actor_id, 'reason': reason} if pending_version else None)
     if previous and previous.get('planning'):
         data['planning'] = deepcopy(previous['planning'])
-    append_revision(db, actor_id, order, data, reason, created_at=received_at)
+    append_revision(db, actor_id, order, data, reason, created_at=receipt['received_at'])
     db.flush()
 
 
@@ -252,6 +257,38 @@ def add_dispatch_with_first_receipt(db, dispatch):
     if first:
         db.flush()  # Persist the immutable source before creating its dependent receipt.
         record_receipt(db, dispatch, None, AUTOMATIC_RECEIPT_ACTOR, '首次有效下发自动接单', automatic=True)
+
+
+def add_dispatch_with_note_receipt(db, dispatch, previous_version):
+    from app.core.config import settings
+
+    # Called only by the ledger amendment transaction while it holds the source row lock.
+    if not settings.cutting_ops_enabled or not schema_ready(db.connection()):
+        db.add(dispatch)
+        return
+    previous = latest(db, dispatch.line_id)
+    order = db.get(CuttingOrder, dispatch.line_id)
+    if (not previous or not order or order.dispatch_id != previous.id or not previous.received_at
+            or previous.version != previous_version or dispatch.version != previous_version + 1
+            or previous.snapshot.get('status') != 'active' or dispatch.snapshot.get('status') != 'active'
+            or any(previous.snapshot.get(key, '') != value for key, value in dispatch.snapshot.items()
+                   if key not in NOTE_RECEIPT_FIELDS)):
+        db.add(dispatch)
+        return
+
+    data = deepcopy(revision(db, order)['data'])
+    # Carry forward archived source fields from direct intake. Both dispatch snapshots remain immutable.
+    dispatch.snapshot = {**previous.snapshot, **dispatch.snapshot}
+    receipt = stamp_receipt(dispatch, AUTOMATIC_RECEIPT_ACTOR, 'note_only')
+    receipt['source_dispatch_id'] = dispatch.id
+    db.add(dispatch)
+    db.flush()
+    # Advance the live receipt while keeping the production dispatch and its snapshot
+    # pinned for planning, procurement, material, reporting and month-close evidence.
+    order.dispatch_id = dispatch.id
+    data['receipt'] = receipt
+    append_revision(db, AUTOMATIC_RECEIPT_ACTOR, order, data, '仅备注变更，沿用生产依据', created_at=receipt['received_at'])
+    db.flush()
 
 
 def receive(db, user, line_id, body):

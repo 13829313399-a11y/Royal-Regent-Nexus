@@ -8,7 +8,7 @@ export interface Demand extends Requirement { row: number; quantity: string; pur
 export interface EtaBatch { row: number; quantity: string; expected_date: string; supplier: string; purchase_reference: string }
 export interface OrderData {
   planning?: Planning
-  receipt?: { mode: 'automatic' | 'manual'; source_version: number; received_at: string }
+  receipt?: { mode: 'automatic' | 'manual' | 'note_only'; source_version: number; received_at: string }
   order: Record<string, string | number | null>; dispatch_id: string; bom: MasterRecord | null
   target_sets?: number; quantity_basis?: string; bom_match_basis?: string; purchase_reconciliation_required: boolean
   requisition: { version: number; lines: Demand[]; actor_id: string; created_at: string } | null; batches: EtaBatch[]

@@ -84,8 +84,15 @@ describe('material bridge recovery and audit',()=>{
   it('shows exact cumulative quantities and warns about additional requests above the task BOM amount',async()=>{
     const value=clone(ledger);value.totals=[{dispatch_id:'d1',bom_id:'bom',bom_version:2,task_id:'t1',resource_id:'r1',resource_version:1,row:0,task_name:'本厂任务',material_name:'蓝布',unit:'米',theoretical_quantity:'10',requested_quantity:'6.5',effective_requested_quantity:'6.5',issued_quantity:'6.5',received_quantity:'1',returned_quantity:'0',net_received_quantity:'1',outstanding_quantity:'0',exceeds_theoretical:false}]
     vi.mocked(materialApi.read).mockResolvedValue(value)
+    const noteOnly=clone(order);noteOnly.dispatch_id='d2';noteOnly.source_version=2;noteOnly.current!.version=10
     await open();expect(wrapper.text()).toContain('历史／有效申请')
     await button('新建领料申请').trigger('click');await field('本次申请数量').setValue('4.000001')
+    await button('查询物料映射').trigger('click');await flushPromises()
+    await field('仓库物料版本').setValue('wm1')
+    vi.mocked(ordersApi.read).mockResolvedValue(noteOnly)
+    await button('保留填写并刷新订单／计划').trigger('click');await flushPromises()
+    expect(field('仓库物料版本').element).toHaveProperty('value','wm1')
+    expect(wrapper.text()).toContain('数量、用途及物料映射已保留')
     expect(wrapper.text()).toContain('有效申请合计 10.500001 米');expect(wrapper.text()).toContain('超过理论用量')
   })
   it('selects only current-task receipts and fills the latest selected actual receipt date',async()=>{
