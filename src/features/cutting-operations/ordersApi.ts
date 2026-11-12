@@ -23,7 +23,11 @@ export interface OrderData {
   reconciliation?: { requisition_version: number; disposition: string; evidence: string; actor_id: string; created_at: string }
 }
 export interface OrderRevision { version: number; data: OrderData; actor_id: string; created_at: string; reason: string }
-export interface CuttingOrder { planning_summary?: { receipt_review_required?: boolean; states?: string[]; published_stale: boolean; draft_stale: boolean; published_version: number | null; draft_version: number | null }; line_id: string; dispatch_id: string; source_version: number; snapshot: OrderData['order']; received_at: string; needs_receipt: boolean; current: OrderRevision | null; workflow_status?: string; expected_date_passed?: boolean; pending_purchase?: (Pick<OrderData, 'requisition' | 'bom' | 'order' | 'batches'> & { has_purchase_evidence?: boolean }) | null }
+export interface PendingPurchase extends Pick<OrderData, 'requisition' | 'bom' | 'order' | 'batches'> {
+  has_purchase_evidence?: boolean
+  prior_purchase_reply?: { revision: number; batches: EtaBatch[] } | null
+}
+export interface CuttingOrder { planning_summary?: { receipt_review_required?: boolean; states?: string[]; published_stale: boolean; draft_stale: boolean; published_version: number | null; draft_version: number | null }; line_id: string; dispatch_id: string; source_version: number; snapshot: OrderData['order']; received_at: string; needs_receipt: boolean; current: OrderRevision | null; workflow_status?: string; expected_date_passed?: boolean; pending_purchase?: PendingPurchase | null }
 export interface Page<T> { data: T[]; total: number; page: number; page_size: number }
 export type OrderAction = 'receive' | 'bom' | 'requisition' | 'eta' | 'withdraw' | 'reconcile' | 'plan' | 'plan-publish'
 export type OrderCommand = Command & ({ tasks: PlanTaskInput[]; removed_task_reasons?: Record<string,string> } | { draft_version: number } | { dispatch_id: string } | { bom_id: string; bom_version: number; target_sets: number; quantity_basis: string; bom_match_basis: string } | { lines: DemandInput[] } | { requisition_version: number; batches: EtaBatch[] } | { requisition_version: number } | { requisition_version: number; disposition: 'not_ordered' | 'cancelled_or_reallocated'; evidence: string; all_handled: boolean })

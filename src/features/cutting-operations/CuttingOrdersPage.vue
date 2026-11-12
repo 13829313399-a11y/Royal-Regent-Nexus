@@ -25,6 +25,7 @@ import CuttingActivityPage from './CuttingActivityPage.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
 import CuttingScheduleImport from './CuttingScheduleImport.vue'
 import CuttingOrderReceipt from './CuttingOrderReceipt.vue'
+import CuttingPurchaseReplyEvidence from './CuttingPurchaseReplyEvidence.vue'
 
 const props=defineProps<{ workspace: CuttingWorkspace }>()
 const filterId=`cutting-orders-${useId()}`
@@ -420,7 +421,7 @@ function status(row: CuttingOrder) {
         <details v-if="selected.pending_purchase"><summary>查看待核对的原需求 V{{ selected.pending_purchase.requisition?.version }}</summary>
           <p>原订单：{{ selected.pending_purchase.order.reference_no }} · 数量 {{ selected.pending_purchase.order.quantity }} · BOM {{ selected.pending_purchase.bom?.code }} V{{ selected.pending_purchase.bom?.version }}</p>
           <ul><li v-for="r in selected.pending_purchase.requisition?.lines" :key="r.row">{{ r.row+1 }} · {{ r.material.name }} / {{ r.stage }} · {{ r.quantity }} {{ r.unit }} <span v-if="r.purchase_mode === 'no_purchase'">本次不采购：{{ r.no_purchase_reason }}</span></li></ul>
-          <ul><li v-for="(b, i) in selected.pending_purchase.batches" :key="i">需求行 {{ b.row+1 }} · {{ b.quantity }} · {{ b.expected_date }} · {{ b.supplier }} · {{ b.purchase_reference }}</li></ul>
+          <CuttingPurchaseReplyEvidence :purchase="selected.pending_purchase" />
         </details>
         <p v-if="data?.bom">已关联 {{ data.bom.code }} V{{ data.bom.version }} · 裁床目标 {{ data.target_sets }} 套 · 数量依据：{{ data.quantity_basis }}</p>
         <div class="order-toolbar" v-if="!action">
@@ -493,6 +494,10 @@ function status(row: CuttingOrder) {
                 </select>
               </label>
               <p v-if="hasPurchaseEvidence" :id="editorId('disposition-help')" class="cutting-notice">原需求已有采购交期记录，不能选择「尚未采购」。请核对取消或转用凭据后，再选择处理结果。</p>
+              <details v-if="hasPurchaseEvidence && selected.pending_purchase">
+                <summary>查看原交期凭据</summary>
+                <CuttingPurchaseReplyEvidence :purchase="selected.pending_purchase" />
+              </details>
               <label>处置依据 <textarea :id="editorId('evidence')" name="evidence" v-model="evidence" minlength="4" maxlength="500" required placeholder="注明核对人、原采购单号、取消／转用凭据及数量；不得遗留未处理承诺量" /></label>
               <label><input :id="editorId('all_handled')" name="all_handled" v-model="allHandled" type="checkbox" required />确认整张旧需求均已核对处置，没有未处理采购承诺；此处不会自动操作外部采购单。</label>
             </template>

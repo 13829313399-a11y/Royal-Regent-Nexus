@@ -237,6 +237,28 @@ describe('cutting read-only workspaces',()=>{
     expect(wrapper.text()).not.toContain('正在按原条件重试')
     expect(wrapper.find('[role=alert]').exists()).toBe(false)
   })
+  it.each([false,true])('restores task retry focus unless the user has moved it (moved: %s)',async moved=>{
+    let reject!:(error:Error)=>void
+    let resolve!:(value:TaskView)=>void
+    vi.mocked(workspaceApi.tasks).mockResolvedValueOnce(task).mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(()=>new Promise((_resolve,r)=>{reject=r}))
+      .mockImplementationOnce(()=>new Promise(r=>{resolve=r}))
+    wrapper=mount(TaskBoard,{props:{reporting:true},attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    await button('下一页').trigger('click');await flushPromises()
+    const retry=button('按原条件重试（第 2 页）')
+    retry.element.focus()
+    await retry.trigger('click');await flushPromises()
+    const inFlight=button('按原条件重试（第 2 页）')
+    expect(document.activeElement).toBe(inFlight.element)
+    expect(inFlight.attributes('aria-disabled')).toBe('true')
+    reject(new Error('still offline'));await flushPromises()
+    expect(document.activeElement).toBe(button('按原条件重试（第 2 页）').element)
+    await button('按原条件重试（第 2 页）').trigger('click');await flushPromises()
+    const input=wrapper.get<HTMLInputElement>('input[name="q"]')
+    if(moved)input.element.focus()
+    resolve({...task,page:2});await flushPromises()
+    expect(document.activeElement).toBe(moved?input.element:wrapper.get('.task-result-page').element)
+  })
   it('ignores an old task page-recovery result after switching views',async()=>{
     let resolve!:(value:TaskView)=>void
     vi.mocked(workspaceApi.tasks).mockResolvedValueOnce(task).mockResolvedValueOnce({...task,total:1,page:2,data:[]})

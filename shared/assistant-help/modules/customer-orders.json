@@ -60,7 +60,7 @@
       {
         "path": "backend/app/services/cutting_orders.py",
         "symbol": "def submit",
-        "sha256": "cf974c919dbea7530932e2f715972696f7f51f910a6c3e52045192f155dece25"
+        "sha256": "4eaae9ca164c87a5c023b953ca9fbefb0aa3b2e4d3b32a8119e8b42ea83e9535"
       },
       {
         "path": "backend/app/api/cutting_operations.py",

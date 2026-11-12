@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ProductionPlan } from './planning'
+import { orderHistoryTime } from './orderDisplay'
 defineProps<{ plan: ProductionPlan; title: string; stale?: boolean }>()
 </script>
 <template>
@@ -24,7 +25,7 @@ defineProps<{ plan: ProductionPlan; title: string; stale?: boolean }>()
       <p>{{ task.readiness_basis || '物料依据待补充' }}；前置工序：{{ (task.prerequisite_required || task.prerequisite_date || task.actual_prerequisite_date) ? '需要' : '未设置要求' }} {{ task.prerequisite_date ?? '无日期' }} {{ task.prerequisite_basis }}</p>
       <ul><li v-for="day in task.days" :key="day.day">{{ day.day }}：{{ day.sets }} 套</li></ul>
     </details>
-    <p>发布／保存依据：{{ plan.reason }} · {{ plan.created_at }}</p>
+    <p>发布／保存依据：{{ plan.reason }} · <time :datetime="plan.created_at">{{ orderHistoryTime(plan.created_at) }}</time></p>
     <p v-if="plan.adjustment_reason">已发布计划调整原因：{{ plan.adjustment_reason }}</p>
     <ul v-if="plan.removed_task_reasons"><li v-for="(reason,id) in plan.removed_task_reasons" :key="id">取消原任务依据：{{ reason }}</li></ul>
   </section>

@@ -11,6 +11,21 @@ export function cuttingQueryDay(value: unknown) {
   const day = scalar(value)
   return /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0,10) === day ? day : undefined
 }
+export interface TaskFilters { day: string; q: string; execution: string; scope: string }
+export function reportingTaskFilters(query: LocationQuery, defaultDay: string): TaskFilters {
+  const keyword = scalar(query.task_q)
+  const execution = query.task_execution
+  const scope = query.task_scope
+  return {
+    day: cuttingQueryDay(query.task_query_day) ?? cuttingQueryDay(query.task_day) ?? cuttingQueryDay(query.day) ?? defaultDay,
+    q: keyword.length <= 80 ? keyword : '',
+    execution: execution === 'internal' || execution === 'outsourced' ? execution : '',
+    scope: scope === 'reported' || scope === 'unreported' || scope === 'history' || scope === 'abnormal' ? scope : 'daily',
+  }
+}
+export function sameTaskFilters(left: TaskFilters, right: TaskFilters) {
+  return left.day === right.day && left.q === right.q && left.execution === right.execution && left.scope === right.scope
+}
 export function readCuttingLocation(query: LocationQuery): CuttingLocation | undefined {
   const lineId = scalar(query.line_id)
   if (query.factory !== CUTTING_FACTORY || !lineId) return
