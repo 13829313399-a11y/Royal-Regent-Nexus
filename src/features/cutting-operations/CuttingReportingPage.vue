@@ -10,7 +10,8 @@ import { ordersApi, type CuttingOrder } from './ordersApi'
 import { reportingApi, reportLabels, reportPermission, type ProductionInput, type ProductionView, type ReportAction, type ReportCommand, type ReportDocument, type ReportTask, type ReportKind } from './reportingApi'
 import { CUTTING_BASE, CUTTING_FACTORY } from './navigation'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
-import { cuttingDestination, cuttingQueryDay, useCuttingLocation, type ReportingView } from './location'
+import { cuttingDestination, cuttingQueryDay, reportingTaskFilters, sameTaskFilters, useCuttingLocation, type ReportingView, type TaskFilters } from './location'
+import { businessDay } from './workspaceApi'
 import CuttingLocationNotice from './CuttingLocationNotice.vue'
 import CuttingHistoryPager from './CuttingHistoryPager.vue'
 import CuttingTaskBoard from './CuttingTaskBoard.vue'
@@ -104,7 +105,7 @@ async function persistOrderLocation(lineId: string, day: string, taskDay=origina
   const route = router.currentRoute.value
   const query: LocationQueryRaw = { ...route.query, line_id: lineId, day }
   if (location.value?.lineId !== lineId) {
-    for (const key of ['month', 'focus_kind', 'focus_id', 'task_query_day']) delete query[key]
+    for (const key of ['month', 'focus_kind', 'focus_id', 'task_query_day', 'task_q', 'task_execution', 'task_scope']) delete query[key]
   }
   if(taskDay)query.task_day=taskDay
   if(reportingView.value==='records')delete query.reporting_view
@@ -125,15 +126,22 @@ async function replacePresentationQuery(query: LocationQueryRaw) {
     presentationPaths.delete(target)
   }
 }
-function taskDayLoaded(day: string) {
-  taskBoardDay.value = day
+function taskQueryLoaded(filters: TaskFilters, lineId: unknown) {
   const route = router?.currentRoute.value
-  if (reportingView.value !== 'tasks' || !selected.value || !result.value ||
-      route?.query.line_id !== selected.value.line_id) return
-  const linked = location.value?.taskDay ?? location.value?.day
-  const applied = cuttingQueryDay(route.query.task_query_day) ?? linked
-  if (day === applied) return
-  void replacePresentationQuery({ ...route.query, task_query_day: day })
+  if (!route || route.query.factory !== CUTTING_FACTORY || route.query.line_id !== lineId) return
+  taskBoardDay.value = filters.day
+  if (reportingView.value !== 'tasks' || (lineId && (selected.value?.line_id !== lineId || !result.value))) return
+  if (sameTaskFilters(filters, reportingTaskFilters(route.query, businessDay()))) return
+  const query: LocationQueryRaw = { ...route.query }
+  if (lineId) query.task_query_day = filters.day
+  else {
+    query.day = filters.day
+    delete query.task_query_day
+  }
+  query.task_q = filters.q || undefined
+  query.task_execution = filters.execution || undefined
+  query.task_scope = filters.scope === 'daily' ? undefined : filters.scope
+  void replacePresentationQuery(query)
 }
 function beforeUnload(e:BeforeUnloadEvent){if(dirty.value||pending.value||saving.value){e.preventDefault();e.returnValue=''}}
 onMounted(()=>{window.addEventListener('beforeunload',beforeUnload);void loadWorkspace()})
@@ -452,7 +460,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           </div>
       </SectionPanel>
         <CuttingSubnav v-if="selected" :model-value="reportingView" :items="reportingTabs" label="每日记录工作视图" @update:model-value="changeReportingView" />
-        <CuttingTaskBoard v-show="reportingView==='tasks'" reporting @loaded-day="taskDayLoaded">
+        <CuttingTaskBoard v-show="reportingView==='tasks'" reporting @loaded-query="taskQueryLoaded">
           <template #order-changes="{ count, query: keyword }"><Button variant="outline" size="sm" @click="showOrders(true,keyword)"><StatusPill :label="`订单变更待确认 · ${count} 笔`" tone="amber" compact /></Button></template>
         </CuttingTaskBoard>
         <SectionPanel v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-content-panel report-main" :title="orderTitle">

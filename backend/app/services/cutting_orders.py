@@ -104,10 +104,17 @@ def purchase_snapshot(db, line_id, version):
     c.require(r is not None, '待核对的原需求版本缺失，请核对历史', 409)
     batches = r.data['batches']
     # A revised reply can remove batches without removing the original procurement evidence.
-    has_purchase_evidence = bool(batches) or any(db.scalars(select(CuttingOrderRevision.data['batches']).where(
-        *scope, CuttingOrderRevision.version < r.version).execution_options(yield_per=50)))
+    prior_reply = None
+    if not batches:
+        history = db.execute(select(CuttingOrderRevision.version, CuttingOrderRevision.data['batches']).where(
+            *scope, CuttingOrderRevision.version < r.version).order_by(
+            CuttingOrderRevision.version.desc()).execution_options(yield_per=50))
+        previous = next(((revision, reply) for revision, reply in history if reply), None)
+        history.close()
+        if previous:
+            prior_reply = dict(revision=previous[0], batches=previous[1])
     return dict(requisition=r.data['requisition'], bom=r.data['bom'], order=r.data['order'], batches=batches,
-                has_purchase_evidence=has_purchase_evidence)
+                has_purchase_evidence=bool(batches or prior_reply), prior_purchase_reply=prior_reply)
 
 
 def pending_purchase_version(db, order, data):

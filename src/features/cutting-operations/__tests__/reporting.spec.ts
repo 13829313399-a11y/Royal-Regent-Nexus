@@ -60,19 +60,25 @@ describe('cutting production facts and save protection',()=>{
   })
   it('restores the last queried task subpage date separately from the return date and statistics cutoff',async()=>{
     const taskRead=workspaceApi.tasks
-    const tasks=vi.spyOn(workspaceApi,'tasks').mockImplementation(async request=>({...await taskRead(request),day:request.day}))
+    const tasks=vi.spyOn(workspaceApi,'tasks').mockImplementation(async request=>({...await taskRead(request),day:String(request.day)}))
     await open()
     await button('每日任务').trigger('click');await flushPromises()
     const taskForm=wrapper.get('form:has(input[name="day"])')
     await taskForm.get('input[name="day"]').setValue('2026-10-19')
+    await taskForm.get('input[name="q"]').setValue('ORDER-APPLIED')
+    await taskForm.get('select[name="execution"]').setValue('internal')
     const previousCalls=tasks.mock.calls.length
     await taskForm.trigger('submit');await flushPromises()
     expect(tasks.mock.calls.length).toBe(previousCalls+1)
-    expect(router.currentRoute.value.query).toMatchObject({day:view.as_of,task_day:'2026-10-20',task_query_day:'2026-10-19',reporting_view:'tasks'})
+    await button('待填任务').trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({day:view.as_of,task_day:'2026-10-20',task_query_day:'2026-10-19',
+      reporting_view:'tasks',task_q:'ORDER-APPLIED',task_execution:'internal',task_scope:'unreported'})
     await taskForm.get('input[name="day"]').setValue('2026-10-18')
+    await taskForm.get('input[name="q"]').setValue('ORDER-FAILED')
     tasks.mockRejectedValueOnce(new Error('offline'))
     await taskForm.trigger('submit');await flushPromises()
     expect(router.currentRoute.value.query.task_query_day).toBe('2026-10-19')
+    expect(router.currentRoute.value.query.task_q).toBe('ORDER-APPLIED')
     const saved=router.currentRoute.value.fullPath
     wrapper.unmount()
     vi.mocked(ordersApi.read).mockResolvedValue(order)
@@ -80,6 +86,10 @@ describe('cutting production facts and save protection',()=>{
     await router.push(saved);await router.isReady()
     wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
     expect(wrapper.get('input[name="day"]').element).toHaveProperty('value','2026-10-19')
+    expect(wrapper.get('input[name="q"]').element).toHaveProperty('value','ORDER-APPLIED')
+    expect(wrapper.get('select[name="execution"]').element).toHaveProperty('value','internal')
+    expect(button('待填任务').attributes('aria-pressed')).toBe('true')
+    expect(tasks).toHaveBeenLastCalledWith({day:'2026-10-19',q:'ORDER-APPLIED',execution:'internal',scope:'unreported',page:1})
     expect(wrapper.text()).toContain('当前查询日期：2026-10-19')
     await button('裁片配套').trigger('click');await flushPromises()
     expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)

@@ -341,7 +341,8 @@ describe('engineering requisitions and procurement form operations', () => {
   })
   it.each([true, false])('requires an explicit purchase disposition and returns focus (historical evidence: %s)', async hasEvidence => {
     const original = submittedRow.current!.data
-    const pending: CuttingOrder = { ...submittedRow, pending_purchase: { ...original, batches: [], has_purchase_evidence: hasEvidence },
+    const prior = { revision: 4, batches: [{ row: 0, quantity: '5', expected_date: '2026-11-10', supplier: '原供应商', purchase_reference: 'PO-HISTORY' }] }
+    const pending: CuttingOrder = { ...submittedRow, pending_purchase: { ...original, batches: [], has_purchase_evidence: hasEvidence, prior_purchase_reply: hasEvidence ? prior : null },
       current: { ...submittedRow.current!, data: { ...original, purchase_reconciliation_required: true } } }
     await open(pending, undefined, true)
     const trigger = button('采购核对旧需求')
@@ -352,6 +353,13 @@ describe('engineering requisitions and procurement form operations', () => {
     expect(select.element.value).toBe('')
     expect(select.get<HTMLOptionElement>('option[value="not_ordered"]').element.disabled).toBe(hasEvidence)
     expect(wrapper.text().includes('原需求已有采购交期记录')).toBe(hasEvidence)
+    const details = wrapper.find('form.order-form details')
+    expect(details.exists()).toBe(hasEvidence)
+    if (hasEvidence) {
+      expect(details.get('summary').text()).toBe('查看原交期凭据')
+      expect(details.text()).toContain('裁床记录 V4')
+      expect(details.text()).toContain('PO-HISTORY')
+    }
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
     expect(ordersApi.command).not.toHaveBeenCalled()
     const cancel = button('取消编辑')
@@ -361,8 +369,10 @@ describe('engineering requisitions and procurement form operations', () => {
   })
   it('uses the same Beijing time in note history and its expanded receipt', async () => {
     const created_at = '2026-11-12T08:53:46.645533+00:00'
+    const published_at = '2026-11-12T08:51:35.886458+00:00'
     const history = { ...received.current!, version: 8, created_at, reason: '仅备注变更，沿用生产依据',
-      data: { ...received.current!.data, receipt: { mode: 'note_only' as const, source_version: 3, received_at: created_at } } }
+      data: { ...received.current!.data, receipt: { mode: 'note_only' as const, source_version: 3, received_at: created_at },
+        planning: { published: { version: 6, tasks: [], allocated_sets: 20, unallocated_sets: 0, actor_id: 'planner', created_at: published_at, reason: '核对采购交期' } } } }
     await open(received)
     vi.mocked(ordersApi.history).mockResolvedValue(page([history]))
     await button('查看历史版本').trigger('click'); await flushPromises()
@@ -372,6 +382,8 @@ describe('engineering requisitions and procurement form operations', () => {
     expect(receiptTime.text()).toBe(summary.text())
     expect(summary.attributes('datetime')).toBe(created_at)
     expect(receiptTime.attributes('datetime')).toBe(created_at)
+    expect(wrapper.get('details .plan-summary time').text()).toBe('2026/11/12 16:51:35（北京时间）')
+    expect(wrapper.get('details .plan-summary time').attributes('datetime')).toBe(published_at)
   })
 })
 

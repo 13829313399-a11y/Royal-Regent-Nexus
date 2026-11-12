@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watchCuttingWorkspace } from './workspaceRefresh'
-import { computed, inject, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { RouterLink, routeLocationKey } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -9,21 +9,24 @@ import CuttingMetrics from './CuttingMetrics.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
 import { workspaceApi,businessDay,type TaskView } from './workspaceApi'
 import { errorMessage } from './api'
-import { cuttingDestination, cuttingQueryDay } from './location'
+import { cuttingDestination, cuttingQueryDay, reportingTaskFilters, sameTaskFilters, type TaskFilters } from './location'
 const props=defineProps<{reporting?:boolean}>()
-const emit=defineEmits<{ 'loaded-day': [day: string] }>()
+const emit=defineEmits<{ 'loaded-query': [filters: TaskFilters, lineId: unknown] }>()
 const filterId=`cutting-tasks-${useId()}`
 const route=inject(routeLocationKey,undefined)
-function linkedDay(){
-  if(route?.query.factory!=='huakang-c')return businessDay()
-  const taskDay=props.reporting?(cuttingQueryDay(route.query.task_query_day)??cuttingQueryDay(route.query.task_day)):undefined
-  return taskDay??cuttingQueryDay(route.query.day)??businessDay()
-}
-const day=ref(linkedDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
-const applied=ref({day:day.value,q:'',execution:'',scope:'daily'})
-type TaskQuery=typeof applied.value & {page:number}
+const linkedFilters=computed<TaskFilters>(() => {
+  const query=route?.query.factory==='huakang-c'?route.query:{}
+  return props.reporting?reportingTaskFilters(query,businessDay()):
+    {day:cuttingQueryDay(query.day)??businessDay(),q:'',execution:'',scope:'daily'}
+})
+const initial=linkedFilters.value
+const day=ref(initial.day),query=ref(initial.q),execution=ref(initial.execution),scope=ref(initial.scope)
+const result=ref<TaskView>(),busy=ref(false),error=ref(''),applied=ref(initial)
+type TaskQuery=TaskFilters & {page:number}
 const failedQuery=ref<TaskQuery>(),currentPage=ref(1)
 const readingTarget=ref<TaskQuery & {retry:boolean}>(),pageNotice=ref('')
+const retryButtonId=`${filterId}-retry`, resultPager=ref<HTMLElement>()
+const retryFocusCleanups=new Set<()=>void>()
 const unapplied=computed(()=>day.value!==applied.value.day||query.value!==applied.value.q||execution.value!==applied.value.execution)
 let generation=0,alive=true
 const tabs=computed(()=>props.reporting?[
@@ -53,10 +56,33 @@ async function load(page=1,apply=false){
   if(apply){applied.value={day:day.value,q:query.value,execution:execution.value,scope:scope.value};page=1}
   await read({...applied.value,page})
 }
-async function read(request:TaskQuery,retry=false){
+async function read(request:TaskQuery, focusOrigin?: Element | null, retry=false){
   let target={...request}
-  const ticket=++generation;busy.value=true;error.value='';pageNotice.value='';result.value=undefined;failedQuery.value=undefined;currentPage.value=target.page
+  const lineId=route?.query.line_id
+  const ticket=++generation;busy.value=true;error.value='';pageNotice.value='';result.value=undefined;currentPage.value=target.page
+  if(!retry)failedQuery.value=undefined
   readingTarget.value={...target,retry}
+  let restoreFocus=!!focusOrigin
+  const cancelFocus=()=>{restoreFocus=false}
+  const focusMoved=(event:FocusEvent)=>{if((event.target as HTMLElement)?.id!==retryButtonId)cancelFocus()}
+  const tabPressed=(event:KeyboardEvent)=>{if(event.key==='Tab')cancelFocus()}
+  const cleanupFocus=()=>{
+    document.removeEventListener('focusin',focusMoved)
+    document.removeEventListener('pointerdown',cancelFocus)
+    document.removeEventListener('keydown',tabPressed)
+    retryFocusCleanups.delete(cleanupFocus)
+  }
+  if(restoreFocus){
+    document.addEventListener('focusin',focusMoved)
+    document.addEventListener('pointerdown',cancelFocus)
+    document.addEventListener('keydown',tabPressed)
+    retryFocusCleanups.add(cleanupFocus)
+    void nextTick(()=>{
+      if(alive&&ticket===generation&&busy.value&&restoreFocus&&document.activeElement===document.body){
+        document.getElementById(retryButtonId)?.focus()
+      }
+    })
+  }
   try{
     let value=await workspaceApi.tasks(target)
     if(!alive||ticket!==generation)return
@@ -68,7 +94,8 @@ async function read(request:TaskQuery,retry=false){
       pageNotice.value=`原第 ${request.page} 页已超出当前任务范围，已按原条件返回第 1 页。`
     }
     result.value=value
-    emit('loaded-day',value.day)
+    failedQuery.value=undefined
+    emit('loaded-query',{day:target.day,q:target.q,execution:target.execution,scope:target.scope},lineId)
   }
   catch(e){if(alive&&ticket===generation){
     error.value=errorMessage(e)
@@ -76,16 +103,40 @@ async function read(request:TaskQuery,retry=false){
     if(status!==401&&status!==403){
       failedQuery.value={...target}
       if(target.page!==request.page)pageNotice.value=`原第 ${request.page} 页已超出当前任务范围，第 1 页读取未完成，可按原条件重试。`
-    }else pageNotice.value=''
+    }else { pageNotice.value='';failedQuery.value=undefined }
   }}
-  finally{if(alive&&ticket===generation){busy.value=false;readingTarget.value=undefined}}
+  finally{
+    if(alive&&ticket===generation){
+      busy.value=false;readingTarget.value=undefined
+      if(restoreFocus)await nextTick()
+    }
+    cleanupFocus()
+    if(restoreFocus&&alive&&ticket===generation&&
+       (document.activeElement?.id===retryButtonId||document.activeElement===document.body)){
+      const target=result.value?resultPager.value:failedQuery.value?document.getElementById(retryButtonId):undefined
+      target?.focus()
+    }
+  }
 }
-function retry(){if(failedQuery.value&&!busy.value)void read({...failedQuery.value},true)}
+function retry(event: MouseEvent){
+  if(!failedQuery.value||busy.value)return
+  const origin=document.activeElement===event.currentTarget?document.activeElement:undefined
+  void read({...failedQuery.value},origin,true)
+}
 function change(value:string){scope.value=value;applied.value={...applied.value,scope:value};void load(1)}
 function resetFilters(){query.value='';execution.value='';applied.value={...applied.value,q:'',execution:''};void load(1)}
 onMounted(()=>void load())
-watch(linkedDay,value=>{if(value!==applied.value.day){day.value=value;applied.value={...applied.value,day:value};void load(1)}})
-onBeforeUnmount(()=>{alive=false;generation++})
+watch(linkedFilters,(value,previous)=>{
+  if(sameTaskFilters(value,previous))return
+  const next=props.reporting?value:{...applied.value,day:value.day}
+  if(sameTaskFilters(next,applied.value))return
+  if(next.day!==applied.value.day)day.value=next.day
+  if(next.q!==applied.value.q)query.value=next.q
+  if(next.execution!==applied.value.execution)execution.value=next.execution
+  scope.value=next.scope
+  applied.value=next;void load(1)
+})
+onBeforeUnmount(()=>{alive=false;generation++;for(const cleanup of retryFocusCleanups)cleanup()})
 watchCuttingWorkspace(()=>void load(currentPage.value))
 </script>
 <template>
@@ -128,8 +179,11 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
       <CuttingSubnav :model-value="scope" :items="tabs" @update:model-value="change" />
       <p v-if="busy" role="status">{{readingTarget?.retry?`正在按原条件重试：${targetLabel(readingTarget)}。`:'正在核对有效计划与生产实绩…'}}</p>
       <p v-if="pageNotice" class="cutting-muted" role="status">{{pageNotice}}</p>
-      <p v-if="error" role="alert">{{error}} <Button v-if="failedQuery" type="button" variant="outline" :disabled="busy" @click="retry">按原条件重试（第 {{failedQuery.page}} 页）</Button></p>
-      <p v-if="failedQuery" class="cutting-muted">重试目标：{{failedQuery.day}}；订单号／货号 {{failedQuery.q||'全部'}}；执行方 {{failedQuery.execution==='internal'?'本厂':failedQuery.execution==='outsourced'?'外发':'本厂与外发'}}；{{viewLabel(failedQuery.scope)}}，第 {{failedQuery.page}} 页。保留尚未查询的新输入，重试不提交业务记录。</p>
+      <div v-if="error||(readingTarget?.retry&&failedQuery)">
+        <p v-show="error" role="alert">{{error}}</p>
+        <Button v-if="failedQuery" :id="retryButtonId" type="button" variant="outline" :aria-disabled="busy" @click="retry">按原条件重试（第 {{readingTarget?.page??failedQuery.page}} 页）</Button>
+      </div>
+      <p v-if="failedQuery&&!busy" class="cutting-muted">重试目标：{{targetLabel(failedQuery)}}。保留尚未查询的新输入，重试不提交业务记录。</p>
       <p class="cutting-muted">应报任务以当日有效发布日计划为准；外厂自报不计合格完成。实收条件待核定不直接判为缺料。</p>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="生产任务列表"><table>
         <thead><tr><th>客户／订单</th><th>货号／任务</th><th>执行方</th><th>当日计划</th><th>合格完成</th><th>已交接</th><th>填报状态</th><th>异常与核对</th><th>操作</th></tr></thead>
@@ -146,7 +200,11 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
         </tr></tbody>
       </table></div>
       <p v-if="result&&!result.total" class="cutting-no-records">当前筛选范围暂无任务。</p>
-      <nav v-if="result" class="order-pagination" aria-label="生产任务分页"><span>第 {{result.page}} 页 · 共 {{result.total}} 项</span><Button variant="outline" :disabled="busy||result.page<=1" @click="load(result.page-1)">上一页</Button><Button variant="outline" :disabled="busy||result.page*50>=result.total" @click="load(result.page+1)">下一页</Button></nav>
+      <nav v-if="result" class="order-pagination" aria-label="生产任务分页"><span ref="resultPager" tabindex="-1" aria-live="polite" class="task-result-page">第 {{result.page}} 页 · 共 {{result.total}} 项</span><Button variant="outline" :disabled="busy||result.page<=1" @click="load(result.page-1)">上一页</Button><Button variant="outline" :disabled="busy||result.page*50>=result.total" @click="load(result.page+1)">下一页</Button></nav>
     </SectionPanel>
   </div>
 </template>
+<style scoped>
+.task-result-page:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 2px; }
+button[aria-disabled='true'] { opacity: .55; cursor: not-allowed; }
+</style>

@@ -65,6 +65,7 @@ def test_commitment_evidence_cannot_be_erased_by_deleting_eta(flow):
     pending = read(flow)['pending_purchase']
     assert pending['batches'] == []
     assert pending['has_purchase_evidence'] is True
+    assert pending['prior_purchase_reply'] == dict(revision=4, batches=[batch()])
     assert reconcile(flow, 6).status_code == 422
     args = dict(expected_version=6, requisition_version=3, disposition='cancelled_or_reallocated', evidence='PO001旧采购全部转用，原需求不再占用', all_handled=False)
     assert post(flow, 'reconcile', **args).status_code == 422
