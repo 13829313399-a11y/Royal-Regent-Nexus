@@ -239,7 +239,8 @@ def dispatch_out(item: Dispatch) -> dict:
     )} | {"status": "received" if item.received_at else "sent"}
 
 
-def publish(db: Session, line: Line, recipients, actor: str, reason="", *, receive_first_cutting=False) -> None:
+def publish(db: Session, line: Line, recipients, actor: str, reason="", *, receive_first_cutting=False,
+            cutting_note_from=None) -> None:
     for recipient in set(recipients):
         existing = db.scalar(select(Dispatch.id).where(Dispatch.line_id == line.id, Dispatch.version == line.version, Dispatch.recipient == recipient))
         if existing:
@@ -257,6 +258,9 @@ def publish(db: Session, line: Line, recipients, actor: str, reason="", *, recei
         if receive_first_cutting and recipient == 'cutting':
             from app.services.cutting_orders import add_dispatch_with_first_receipt
             add_dispatch_with_first_receipt(db, item)
+        elif cutting_note_from is not None and recipient == 'cutting' and line.factory_id == 'huakang-c':
+            from app.services.cutting_orders import add_dispatch_with_note_receipt
+            add_dispatch_with_note_receipt(db, item, cutting_note_from)
         else:
             db.add(item)
 
@@ -372,14 +376,28 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             "existing_count": len(lines) - created, "reconciled_count": 1 if reconcile_line else 0}
 
 
-def amend(db: Session, line: Line, body, actor: str) -> None:
+def amend(db: Session, line: Line, body, actor: str, *, authorize_dispatch=None) -> None:
+    cutting_locked = False
+    if line.factory_id == 'huakang-c' and body.note != (line.data.get('note') or ''):
+        from app.core.config import settings
+        from app.services.transaction_lock import lock_transaction
+        if settings.cutting_ops_enabled:
+            # Cutting writers (including month close) take the factory lock before the source row.
+            lock_transaction(db, 'cutting-master', line.factory_id)
+            cutting_locked = True
     lock_line(db, line, body.expected_revision)
     if line.status != "active":
         raise HTTPException(409, "已取消订单不能修改")
+    recipients = _existing_recipients(db, line)
+    if recipients and authorize_dispatch:
+        authorize_dispatch()
     qty = number(body.quantity)
     if qty < line.shipped_quantity:
         raise HTTPException(409, "订单数量不能小于已确认走货数量")
     data = deepcopy(line.data)
+    delivery_changed = body.requested_ship_date != str(data.get('requested_ship_date') or '')
+    note_only = cutting_locked and qty == line.quantity and not delivery_changed and body.note != (data.get('note') or '')
+    previous_version = line.version
     notices = []
     if qty != line.quantity:
         for key in ("carton_count", "cartons", "amount_hkd", "amount_usd", "amount", "total_amount", "total_cartons"):
@@ -394,7 +412,7 @@ def amend(db: Session, line: Line, body, actor: str) -> None:
             )
             data.setdefault("lineage", {})["amount_usd"] = "订单台账数量已调整，美元金额已清空，待新 PO 核对"
         notices.append("数量已调整，原箱数、金额等派生数据已清空，请按新 PO 核对。")
-    if body.requested_ship_date != str(data.get("requested_ship_date") or ""):
+    if delivery_changed:
         for key in ("line_q", "customer_q", "date_code", "inspection_date", "planned_inspection_date", "fcd_date"):
             if key in data:
                 data[key] = ""
@@ -406,7 +424,8 @@ def amend(db: Session, line: Line, body, actor: str) -> None:
     line.data = {**data, "quantity": decimal_text(qty), "requested_ship_date": body.requested_ship_date, "note": body.note}
     line.version += 1
     record_version(db, line, body.reason, actor)
-    publish(db, line, _existing_recipients(db, line), actor, body.reason)
+    publish(db, line, recipients, actor, body.reason,
+            cutting_note_from=previous_version if note_only else None)
     db.flush()
 
 

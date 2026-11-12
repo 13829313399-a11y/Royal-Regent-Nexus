@@ -26,6 +26,7 @@ const appliedQuery=ref('')
 const reportingView=ref('tasks')
 const orderListOpen=ref(false)
 const changesOnly=ref(false), ordersLoading=ref(false), ordersLoaded=ref(false), ordersError=ref('')
+const ordersPageNotice=ref('')
 const failedOrdersPage=ref(1)
 let ordersGeneration=0
 const reportingTabs=[{id:'tasks',label:'每日任务'},{id:'records',label:'日报记录'},{id:'parts',label:'裁片配套'},{id:'external',label:'外发收回与验收'},{id:'handover',label:'交接与抽查'}]
@@ -46,6 +47,7 @@ let alive=true, generation=0
 const available=computed(()=>access.value?.enabled && access.value.orders_schema_ready && access.value.reporting_schema_ready)
 const can=(permission:string)=>!!access.value?.permissions.includes(permission)
 const receiptTime=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'})
+const receiptLabels={automatic:'首次下发自动接单',manual:'裁床人工确认',note_only:'系统同步备注 · 沿用生产依据'}
 function orderChanges(row:CuttingOrder){
   const old=row.current?.data.order
   if(!old||!row.needs_receipt)return []
@@ -90,7 +92,7 @@ const planningDestination = computed(() => {
   return cuttingDestination(lineId, month ?? '', 'planning')
 })
 
-async function persistStatisticsDate(lineId: string, day: string) {
+async function persistOrderLocation(lineId: string, day: string) {
   if (!router) return
   const route = router.currentRoute.value
   const query: LocationQueryRaw = { ...route.query, line_id: lineId, day }
@@ -145,15 +147,24 @@ async function loadWorkspace(){
 }
 async function loadOrders(nextPage=1,apply=false){
   if(apply)appliedQuery.value=query.value
+  const keyword=appliedQuery.value, pendingChanges=changesOnly.value
   const request=++ordersGeneration
-  ordersLoading.value=true;ordersError.value='';failedOrdersPage.value=nextPage
+  ordersLoading.value=true;ordersError.value='';ordersPageNotice.value='';failedOrdersPage.value=nextPage
   try{
-    const response=await ordersApi.list(nextPage,appliedQuery.value,'','',changesOnly.value)
+    let response=await ordersApi.list(nextPage,keyword,'','',pendingChanges)
     if(!alive||request!==ordersGeneration)return
+    if(nextPage>Math.max(1,Math.ceil(response.total/response.page_size))){
+      failedOrdersPage.value=1
+      ordersPageNotice.value=`原第 ${nextPage} 页超出范围，正在按原条件读取第 1 页。`
+      response=await ordersApi.list(1,keyword,'','',pendingChanges)
+      if(!alive||request!==ordersGeneration)return
+      ordersPageNotice.value=`原第 ${nextPage} 页超出范围，已按原条件返回第 1 页。`
+    }
     rows.value=response.data;total.value=response.total;page.value=response.page;ordersLoaded.value=true
   }catch(e){
     if(alive&&request===ordersGeneration){
       rows.value=[];total.value=0;ordersLoaded.value=false;ordersError.value=errorMessage(e)
+      if(failedOrdersPage.value!==nextPage)ordersPageNotice.value=`原第 ${nextPage} 页超出范围，第 1 页读取未完成。`
       if((e as {response?:{status?:number}}).response?.status===401)needsLogin.value=true
     }
   }finally{if(alive&&request===ordersGeneration)ordersLoading.value=false}
@@ -189,7 +200,7 @@ async function select(row: CuttingOrder, intent: 'select' | 'statistics' | 'reco
     if (intent !== 'recover') asOf.value = response.as_of
     needsLogin.value = false
     if (refreshStatistics) {
-      await persistStatisticsDate(row.line_id, response.as_of)
+      await persistOrderLocation(row.line_id, response.as_of)
     }
     return true
   } catch (e) {
@@ -214,6 +225,7 @@ async function openOrder(row: CuttingOrder) {
         document.getElementById(fieldId('orders_toggle'))?.focus({ preventScroll: true })
       }
     }
+    if(alive&&selected.value?.line_id===row.line_id&&result.value)await persistOrderLocation(row.line_id,result.value.as_of)
   }
 }
 
@@ -337,7 +349,8 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
             <Button variant="outline" :disabled="ordersLoading">查询订单</Button>
           </form>
           <p v-if="ordersLoading" role="status">正在读取生产订单…</p>
-          <div v-else-if="ordersError" role="alert">{{ordersError}} <Button variant="outline" @click="loadOrders(failedOrdersPage)">按原条件重试</Button></div>
+          <p v-if="ordersPageNotice" role="status" class="cutting-muted">{{ordersPageNotice}}</p>
+          <div v-if="ordersError" role="alert">{{ordersError}} <Button variant="outline" @click="loadOrders(failedOrdersPage)">按原条件重试</Button></div>
           <ul v-if="rows.length&&!ordersLoading" class="report-order-list" aria-label="生产订单">
             <li v-for="row in rows" :key="row.line_id" :class="{ 'report-order-selected': selected?.line_id===row.line_id, 'report-order-pending': row.needs_receipt }">
               <div class="report-order-heading">
@@ -346,9 +359,9 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
               </div>
               <p>{{ row.snapshot.product_no }} · {{ orderProductName(row.snapshot) }}</p>
               <p>{{ row.snapshot.customer_name }} · <span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
-              <details v-if="row.current?.data.receipt" class="report-order-evidence"><summary>接单记录</summary><p>{{ row.current.data.receipt.mode==='automatic'?'首次下发自动接单':'裁床人工确认' }} · 下发 V{{ row.current.data.receipt.source_version }} · {{ receiptTime.format(new Date(row.current.data.receipt.received_at)) }}</p></details>
+              <details v-if="row.current?.data.receipt" class="report-order-evidence"><summary>接单记录</summary><p>{{ receiptLabels[row.current.data.receipt.mode] }} · 下发 V{{ row.current.data.receipt.source_version }} · {{ receiptTime.format(new Date(row.current.data.receipt.received_at)) }}</p></details>
               <details v-if="row.needs_receipt&&row.current" class="report-order-evidence"><summary>查看变更依据</summary>
-                <p>已接 V{{ row.current.data.order.version ?? row.current.data.receipt?.source_version ?? '—' }} · 待确认 V{{ row.source_version }}</p>
+                <p>已接 V{{ row.current.data.receipt?.source_version ?? row.current.data.order.version ?? '—' }} · 待确认 V{{ row.source_version }}</p>
                 <p v-for="change in orderChanges(row)" :key="change.label">{{ change.label }} <strong>{{ change.old }} → {{ change.current }}</strong></p>
                 <p v-if="row.snapshot.change_reason">变更说明 {{ row.snapshot.change_reason }}</p>
               </details>
@@ -358,7 +371,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
               </div>
             </li>
           </ul>
-          <p v-if="!rows.length&&ordersLoaded&&!ordersLoading" class="cutting-no-records">{{appliedQuery?'当前筛选范围无匹配订单。':changesOnly?'当前没有待确认的订单变更。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';loadOrders(1,true)">清除筛选</Button></p>
+          <p v-if="!rows.length&&ordersLoaded&&!ordersLoading" class="cutting-no-records">{{total?'当前页未读取到订单，请重新查询。':appliedQuery?'当前筛选范围无匹配订单。':changesOnly?'当前没有待确认的订单变更。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';loadOrders(1,true)">清除筛选</Button></p>
           <nav v-if="ordersLoaded" class="cutting-pagination" aria-label="每日记录订单分页"><span>第 {{ page }} 页 · 共 {{ total }} 条</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page<=1||ordersLoading" @click="loadOrders(page-1)">上一页</Button><Button variant="outline" :disabled="page*50>=total||ordersLoading" @click="loadOrders(page+1)">下一页</Button></div></nav>
           </div>
       </SectionPanel>
@@ -367,7 +380,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           <template #order-changes="{ count, query: keyword }"><Button variant="outline" size="sm" @click="showOrders(true,keyword)"><StatusPill :label="`订单变更待确认 · ${count} 笔`" tone="amber" compact /></Button></template>
         </CuttingTaskBoard>
         <SectionPanel v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-content-panel report-main" :title="orderTitle">
-          <template v-if="selected&&result" #action><Button as-child variant="outline"><RouterLink :to="planningDestination">返回该订单排期</RouterLink></Button></template>
+          <template v-if="selected&&result" #action><div class="cutting-master-actions"><Button as-child variant="outline"><RouterLink :to="ordersDestination">返回当日任务</RouterLink></Button><Button as-child variant="outline"><RouterLink :to="planningDestination">返回该订单排期</RouterLink></Button></div></template>
           <div v-if="selected&&result&&summary" class="report-detail">
             <p class="report-order-meta">{{ selected.snapshot.reference_no }} · 货号 {{ selected.snapshot.product_no }} · <span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
             <p v-if="selected.needs_receipt" class="cutting-notice">订单变更待裁床确认。可追溯原记录，请先在生产排期确认新版本，再按有效计划填写新日报。</p>

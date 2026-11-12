@@ -367,7 +367,7 @@ function status(row: CuttingOrder) {
         <p v-if="selected.snapshot.status === 'cancelled'" role="alert">来源订单已取消，仅可签收取消通知及核对旧采购需求。</p>
         <div v-if="selected.needs_receipt" class="cutting-notice">
           <div v-if="selected.current">
-            <p>订单变更待确认 · 已接 V{{ data?.order.version ?? data?.receipt?.source_version ?? '—' }} → 待确认 V{{ selected.source_version }}</p>
+            <p>订单变更待确认 · 已接 V{{ data?.receipt?.source_version ?? data?.order.version ?? '—' }} → 待确认 V{{ selected.source_version }}</p>
             <p v-if="data?.order.quantity!==selected.snapshot.quantity">订单数量 {{ data?.order.quantity ?? '—' }} → {{ selected.snapshot.quantity ?? '—' }}</p>
             <p v-if="data?.order.requested_ship_date!==selected.snapshot.requested_ship_date">交期 {{ data?.order.requested_ship_date ?? '—' }} → {{ selected.snapshot.requested_ship_date ?? '—' }}</p>
             <p v-if="selected.snapshot.change_reason">变更说明 {{ selected.snapshot.change_reason }}</p>
@@ -453,7 +453,7 @@ function status(row: CuttingOrder) {
           </fieldset>
         </form>
         <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
-        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.version===1&&r.data.receipt?.mode==='automatic'?'系统':r.actor_id }} · {{ r.reason }}</summary>
+        <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id==='system:cutting-auto-receipt'?'系统':r.actor_id }} · {{ r.reason }}</summary>
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
