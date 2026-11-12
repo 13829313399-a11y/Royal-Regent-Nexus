@@ -72,7 +72,7 @@ test('summary header counts all factory records while the footer shows the filte
     });
     await p.w.QcInspectionSummary.load();
     const header = p.d.getElementById('qsum-totals');
-    assert.deepEqual([...header.children].map(item => item.textContent), ['审核记录：11 条', '历史待核实 1']);
+    assert.equal(header.textContent, '审核记录：11 条');
     assert.equal(p.d.getElementById('qsum-count').textContent, '共 0 条');
   } finally {
     p.dom.window.close();
