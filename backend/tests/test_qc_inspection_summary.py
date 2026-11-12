@@ -101,24 +101,21 @@ def test_cross_document_ambiguity_is_held_not_silently_merged():
     assert s.listing('huaxing',{})['total']==3
 
 
-def test_year_month_day_leap_unknown_date_stable_pagination_and_full_export():
+def test_year_month_day_leap_unknown_date_and_stable_pagination():
     for year,count in [(2024,65),(2025,2),(2026,2)]:
         p=preview(history(year,count));s.commit_history('huaxing','operator',p['id'])
     all_data=s.listing('huaxing',{});assert all_data['total']==69 and all_data['years']==['2024','2025','2026']
     assert len(all_data['items'])==30
     f={'year':'2024','month':'2','day':'29','search':'00042','pageSize':'10'}
     assert s.listing('huaxing',f)['total']==65
-    ids=[r['id'] for r in s.listing('huaxing',{},all_rows=True)['items']]
-    assert ids==[r['id'] for r in s.listing('huaxing',{},all_rows=True)['items']]
-    raw,name=s.export_excel('huaxing',f);wb=load_workbook(BytesIO(raw))
-    assert wb['验货汇总明细'].max_row==66 and '2024-02-29' in name
-    assert wb['验货汇总明细']['D2'].value=='00042' and wb['验货汇总明细']['I2'].data_type=='s'
-    assert wb['验货汇总明细']['I2'].value=='=Literal remark'
+    ids=[r['id'] for r in s.listing('huaxing',{'pageSize':'100'})['items']]
+    assert ids==[r['id'] for r in s.listing('huaxing',{'pageSize':'100'})['items']]
+    assert len(ids)==69 and len(set(ids))==69
+    assert s.listing('huaxing',f)['items'][0]['remark']=='=Literal remark'
     assert s.listing('huaxing',{'year':'2025','month':'3'})['total']==0
     assert s.listing('huaxing',{'search':"%' OR 1=1 --"})['total']==0
     for invalid in ({'year':'2025','month':'2','day':'29'},{'month':'2'},{'day':'1'},{'year':'2024 OR 1=1'}):
         with pytest.raises(HTTPException):s.listing('huaxing',invalid)
-    with pytest.raises(HTTPException):s.export_excel('huaxing',{'year':'2020'})
     assert s.business_date('2023-12-31T18:00:00Z')=='2024-01-01'
 
 
@@ -130,7 +127,7 @@ def test_preview_actor_scope_corrupt_file_and_no_source_mutation():
     assert c.template('huaxing')==before and s.listing('huaxing',{})['total']==0
 
 
-def test_http_read_export_import_permissions_factory_and_actor(db,monkeypatch):
+def test_http_read_import_permissions_and_removed_export(db,monkeypatch):
     from dataclasses import replace
     import httpx
     from fastapi import FastAPI
@@ -156,11 +153,11 @@ def test_http_read_export_import_permissions_factory_and_actor(db,monkeypatch):
         assert client.post(base+'api/inspection-summary/history/preview',json=payload,headers={'Sec-Fetch-Site':'cross-site'}).status_code==403
         response=client.post(base+'api/inspection-summary/history/preview',json=payload);assert response.status_code==200,response.text
         batch=response.json()['id'];assert client.post(base+'api/inspection-summary/history/'+batch+'/commit',json={}).status_code==200
-        head=client.head(base+'api/inspection-summary/export');assert head.status_code==200 and int(head.headers['content-length'])>0 and not head.content
-        output=client.get(base+'api/inspection-summary/export');assert output.status_code==200 and load_workbook(BytesIO(output.content)).active.max_row==4
+        assert client.head(base+'api/inspection-summary/export').status_code==405
+        assert client.get(base+'api/inspection-summary/export').status_code==404
         codes=current[0].permissions-{'qc_inspection:report_export'}
         current[0]=replace(current[0],permissions=codes,grants=tuple(replace(g,permissions=codes) for g in current[0].grants))
-        assert client.get(base+'api/inspection-summary/export').status_code==403
+        assert client.get(base+'api/inspection-summary/export').status_code==404
         assert client.get(base+'api/inspection-summary/records').status_code==200
 
 

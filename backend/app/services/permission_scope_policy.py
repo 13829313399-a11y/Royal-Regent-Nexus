@@ -287,6 +287,8 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code.startswith("indonesia_shipping:"):
+        return ScopePolicy(("sales-business",), guidance="仅在明确厂区的业务部范围生效；每厂使用独立印尼走货数据库")
     if permission_code == "mainland_invoice:generate":
         return ScopePolicy(
             ("accounting",),

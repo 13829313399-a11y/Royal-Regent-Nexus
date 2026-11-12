@@ -2,11 +2,12 @@
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { Button } from '@/components/ui/button'
+import CartonFilterBar from './CartonFilterBar.vue'
 import CartonQuickUploadDialog from './CartonQuickUploadDialog.vue'
 import CartonMarkAssetLibrary from './CartonMarkAssetLibrary.vue'
 import { cartonQuickAssetsApi, type AssetDepartment, type QuickAsset, type QuickAssetAudience, type QuickAssetStatus, type QuickTarget, type QuickTargetRef } from '@/api/cartonQuickAssets'
 import { useAuthStore } from '@/stores/auth'
-import { canQuickAsset, departmentLabel, internalDepartments, quickStatusLabel, responseStatus, targetLabel, targetOrderTime, targetRef, viewerKey, type QuickAudience } from '@/features/carton-procurement/quickAssets'
+import { canQuickAsset, departmentLabel, internalDepartments, quickStatusLabel, responseStatus, targetLabel, targetOrderTime, targetRef, uploadDepartments, viewerKey, type QuickAudience } from '@/features/carton-procurement/quickAssets'
 import { getApiErrorMessage, http } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { factoryContexts } from '@/data/enterpriseMock'
@@ -83,8 +84,7 @@ function resetFilters() { filter.value = 'CURRENT'; keyword.value = ''; emit('up
 const statusDrafts = ref<Record<string, QuickAssetStatus | ''>>({})
 const audienceDrafts = ref<Record<string, QuickAssetAudience>>({})
 const audienceLabel = (asset: QuickAsset) => asset.purpose === 'EVIDENCE' || asset.sharing_mode === 'INTERNAL' ? '仅内部可见'
-  : asset.sharing_mode === 'SUPPLIER' ? `内部与${asset.shared_supplier_name || '对应供应商'}共享`
-    : !asset.owner_department ? '历史资料，归属待核实' : '沿用原订单共享规则'
+  : asset.sharing_mode === 'SUPPLIER' ? `内部与${asset.shared_supplier_name || '对应供应商'}共享` : '沿用原订单共享规则'
 const allSupplierFactories = computed(() => props.audience === 'supplier' && (!props.factoryId || props.factoryId === 'ALL'))
 const requestedFactories = computed(() => allSupplierFactories.value ? [...new Set(props.supplierFactories || [])] : props.factoryId && props.factoryId !== 'ALL' ? [props.factoryId] : [])
 function readableDepartments(factory: string): AssetDepartment[] {
@@ -100,6 +100,8 @@ const scopes = computed(() => requestedFactories.value.flatMap(factory => {
 const uploadFactories = computed(() => requestedFactories.value.filter(factory => canQuickAsset(auth, factory, 'supplier', 'manage')))
 const selectedUploadFactory = ref('')
 const uploadFactory = computed(() => allSupplierFactories.value ? selectedUploadFactory.value : props.factoryId)
+const canUpload = computed(() => !props.readOnly && uploadDepartments(auth, uploadFactory.value, props.audience)
+  .some(department => canQuickAsset(auth, uploadFactory.value, department, 'read')))
 watch(uploadFactories, factories => {
   if (!factories.includes(selectedUploadFactory.value)) selectedUploadFactory.value = factories[0] || ''
 }, { immediate: true, flush: 'sync' })
@@ -124,6 +126,15 @@ const statusFilters = computed(() => [
   { id: 'ALL', label: '全部版本', count: matchingEntries.value.length },
   ...(['DRAFT', 'PENDING', 'READY', 'UNCLASSIFIED', 'HISTORY'] as const).map(id => ({ id, label: quickStatusLabel[id], count: matchingEntries.value.filter(x => documentState(x) === id).length })),
 ])
+const warehouseToolbar = computed(() => props.audience === 'warehouse' && !props.assetIds)
+const versionIds = ['CURRENT', 'ALL', 'HISTORY']
+const versionFilters = computed(() => statusFilters.value.filter(option => versionIds.includes(option.id)))
+const currentStatusFilters = computed(() => statusFilters.value.filter(option => !versionIds.includes(option.id)))
+const versionScope = computed(() => versionIds.includes(filter.value) ? filter.value : 'CURRENT')
+const currentStatus = computed({
+  get: () => versionScope.value === 'CURRENT' ? filter.value : 'CURRENT',
+  set: value => { filter.value = value },
+})
 const visible = computed(() => matchingEntries.value.filter(x => filter.value === 'ALL' || (filter.value === 'CURRENT' ? documentState(x) !== 'HISTORY' : documentState(x) === filter.value)))
 const ordered = computed(() => [...visible.value].sort((a,b) => sort.value === 'CONTRACT' ? a.contract_number.localeCompare(b.contract_number) : (b.created_at || '').localeCompare(a.created_at || '') || a.id.localeCompare(b.id)))
 const pageCount = computed(() => Math.max(1, Math.ceil(ordered.value.length / 20)))
@@ -243,36 +254,62 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
 
 <template>
   <section class="min-w-0 rounded-xl border border-border bg-card p-4 sm:p-5" data-testid="quick-department-library">
-    <header class="flex flex-wrap items-start justify-between gap-3"><div><h2 ref="libraryTitle" tabindex="-1" class="text-base font-bold">箱唛资料库</h2><p class="mt-1 text-xs text-muted-foreground">上传、选择状态、关联订单。同厂业务与仓库共享；供应商资料按所选厂区共享。</p></div><div v-if="!readOnly" class="flex flex-wrap items-end gap-3">
-      <CartonQuickUploadDialog :factory-id="uploadFactory" :audience="audience" :supplier-factories="supplierFactories" @saved="saved" />
-    </div></header>
+    <header>
+      <h2 ref="libraryTitle" tabindex="-1" class="text-base font-bold">箱唛资料库</h2>
+      <p class="mt-1 text-xs text-muted-foreground">上传、选择状态、关联订单。同厂业务与仓库共享；供应商资料按所选厂区共享。</p>
+    </header>
     <p v-if="!requestedFactories.length" class="mt-4 text-sm text-muted-foreground">请先选择一个厂区，再查看资料或上传。</p>
     <p v-else-if="!scopes.length" role="status" class="mt-4 text-sm text-muted-foreground">当前账号没有本厂资料读取权限。</p>
     <template v-else>
-      <div class="mt-4 flex flex-wrap items-end gap-3 rounded-lg bg-muted/40 p-3">
-        <div class="flex min-w-0 flex-wrap gap-2" :class="audience === 'supplier' ? 'flex-1 basis-[36rem]' : 'w-full'" role="group" aria-label="筛选资料状态"><Button v-for="option in statusFilters" :key="option.id" type="button" :variant="filter === option.id ? 'default' : 'outline'" :aria-pressed="filter === option.id" :aria-label="`${option.label} ${loading || error ? '数量未读取' : option.count}`" :data-status-filter="option.id" class="min-h-10" @click="filter = option.id">{{ option.label }}<span class="rounded bg-current/5 px-1.5 tabular-nums">{{ loading || error ? '—' : option.count }}</span></Button></div>
-        <label v-if="search === undefined" class="min-w-40 flex-1 text-xs">搜索资料<input v-model="keyword" aria-label="搜索资料" placeholder="文件名、合同、货号" class="mt-1 block h-10 w-full rounded-lg border border-input bg-card px-3 text-sm"></label>
-        <div class="flex flex-wrap items-center gap-3" :class="{ 'ml-auto': audience === 'supplier' }">
-          <label class="flex min-h-10 items-center gap-2 text-sm" title="按上传部门筛选，包含该部门其他同事上传的资料；不勾选时显示全部有权查看的资料。"><input v-model="mine" type="checkbox" :aria-label="uploadFilterLabel">{{ uploadFilterLabel }}</label>
-          <Button type="button" variant="outline" :disabled="loading || busy || !!pending" @click="load">刷新资料</Button>
+      <div class="carton-mark-tools mt-4 min-w-0 overflow-hidden rounded-xl border border-border">
+        <div class="flex flex-wrap items-end gap-x-4 gap-y-2 border-b border-border p-3 sm:px-4">
+          <div v-if="warehouseToolbar" class="flex min-w-0 flex-wrap gap-1 rounded-lg bg-muted/40 p-1" role="group" aria-label="资料版本范围">
+            <Button v-for="option in versionFilters" :key="option.id" type="button"
+              :variant="versionScope === option.id ? 'soft' : 'ghost'"
+              :aria-pressed="versionScope === option.id" :aria-label="`${option.label} ${loading || error ? '数量未读取' : option.count}`"
+              :data-status-filter="option.id" class="h-9 px-2.5" @click="filter = option.id">
+              {{ option.label }}<span class="rounded bg-current/5 px-1.5 tabular-nums">{{ loading || error ? '—' : option.count }}</span>
+            </Button>
+          </div>
+          <label v-if="search === undefined" class="min-w-40 flex-1 text-xs">搜索资料<input v-model="keyword" aria-label="搜索资料" placeholder="文件名、合同、货号" class="mt-1 block h-9 w-full rounded-lg border border-input bg-card px-3 text-sm"></label>
+          <div class="flex min-w-0 flex-[1_1_21rem] flex-wrap items-center justify-between gap-3">
+            <label class="flex min-h-9 items-center gap-2 text-xs font-semibold text-muted-foreground" title="按上传部门筛选，包含该部门其他同事上传的资料；不勾选时显示全部有权查看的资料。"><input v-model="mine" type="checkbox" :aria-label="uploadFilterLabel">{{ uploadFilterLabel }}</label>
+            <div class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+              <Button type="button" variant="outline" :disabled="loading || busy || !!pending" @click="load">刷新资料</Button>
+              <CartonQuickUploadDialog v-if="canUpload" :factory-id="uploadFactory" :audience="audience" :supplier-factories="supplierFactories" @saved="saved" />
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="mt-4 grid grid-cols-2 gap-3 rounded-lg bg-muted/40 p-3 lg:grid-cols-6" aria-label="资料筛选">
-        <label class="min-w-0 text-xs">格式<select v-model="format" aria-label="资料格式" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm"><option value="ALL">全部格式</option><option value="pdf">PDF</option><option value="excel">Excel</option><option value="image">图片</option><option value="text">文字</option></select></label>
-        <label class="min-w-0 text-xs">客户<select v-model="customer" aria-label="资料客户" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm"><option value="">全部客户</option><option v-for="value in customers" :key="value">{{ value }}</option></select></label>
-        <label class="min-w-0 text-xs">关联状态<select v-model="binding" aria-label="资料关联状态" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm"><option value="ALL">全部</option><option value="BOUND">已关联</option><option value="UNBOUND">未关联 / 待核实</option></select></label>
-        <label class="min-w-0 text-xs">订单类型<select v-model="orderKind" aria-label="资料订单类型" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm"><option value="ALL">全部</option><option value="SCHEDULE">业务排期</option><option value="REGULAR">采购正单</option><option value="SAMPLE">样板</option><option value="MISC">杂单</option></select></label>
-        <label class="min-w-0 text-xs">排序<select v-model="sort" aria-label="资料排序" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm"><option value="LATEST">最近上传优先</option><option value="CONTRACT">合同号</option></select></label>
-        <Button type="button" variant="outline" class="self-end" @click="resetFilters">清除筛选</Button>
+        <CartonFilterBar inline-actions label="资料筛选" class="carton-mark-filters">
+          <label v-if="warehouseToolbar" class="min-w-0 text-xs">当前资料状态
+            <select v-model="currentStatus" aria-label="当前资料状态" :disabled="versionScope !== 'CURRENT'" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm disabled:opacity-50">
+              <option value="CURRENT">全部状态</option>
+              <option v-for="option in currentStatusFilters" :key="option.id" :value="option.id">{{ option.label }} · {{ loading || error ? '—' : option.count }}</option>
+            </select>
+          </label>
+          <label v-else class="carton-mark-filter-wide">资料状态
+            <select v-model="filter" aria-label="资料状态">
+              <option v-for="option in statusFilters" :key="option.id" :value="option.id">{{ option.label }} · {{ loading || error ? '—' : option.count }}</option>
+            </select>
+          </label>
+          <label>格式<select v-model="format" aria-label="资料格式"><option value="ALL">全部格式</option><option value="pdf">PDF</option><option value="excel">Excel</option><option value="image">图片</option><option value="text">文字</option></select></label>
+          <label>客户<select v-model="customer" aria-label="资料客户"><option value="">全部客户</option><option v-for="value in customers" :key="value">{{ value }}</option></select></label>
+          <label>关联状态<select v-model="binding" aria-label="资料关联状态"><option value="ALL">全部</option><option value="BOUND">已关联</option><option value="UNBOUND">未关联 / 待核实</option></select></label>
+          <label>订单类型<select v-model="orderKind" aria-label="资料订单类型"><option value="ALL">全部</option><option value="SCHEDULE">业务排期</option><option value="REGULAR">采购正单</option><option value="SAMPLE">样板</option><option value="MISC">杂单</option></select></label>
+          <label class="carton-mark-filter-wide">排序<select v-model="sort" aria-label="资料排序"><option value="LATEST">最近上传优先</option><option value="CONTRACT">合同号</option></select></label>
+          <template #actions>
+            <Button type="button" variant="outline" @click="resetFilters">清除筛选</Button>
+          </template>
+        </CartonFilterBar>
       </div>
       <p class="mt-2 text-xs text-muted-foreground">已确认是资料状态；核对、审核和 QC 核验记录分别保留。</p>
       <div v-if="allSupplierFactories" class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <label v-if="!readOnly && uploadFactories.length > 1" class="flex items-center gap-2 text-xs">关联订单厂区<select v-model="selectedUploadFactory" aria-label="上传关联订单厂区" class="h-9 rounded-lg border border-input bg-card px-3 text-sm"><option v-for="id in uploadFactories" :key="id" :value="id">{{ factoryName(id) }}</option></select></label>
-        <p class="text-xs text-muted-foreground">{{ uploadFactories.length ? '可直接上传。关联订单厂区只用于查找订单；共享厂区在上传窗口另选，默认无。' : '可读取已发送订单的共享资料；上传与维护需要独立授权。' }}</p>
+        <label v-if="canUpload && uploadFactories.length > 1" class="flex items-center gap-2 text-xs">关联订单厂区<select v-model="selectedUploadFactory" aria-label="上传关联订单厂区" class="h-9 rounded-lg border border-input bg-card px-3 text-sm"><option v-for="id in uploadFactories" :key="id" :value="id">{{ factoryName(id) }}</option></select></label>
+        <p class="text-xs text-muted-foreground">{{ canUpload ? '可直接上传。关联订单厂区只用于查找订单；共享厂区在上传窗口另选，默认无。' : '可读取已发送订单的共享资料；上传与维护需要独立授权。' }}</p>
       </div>
       <p v-if="loading" role="status" class="py-6 text-sm text-muted-foreground">正在读取资料…</p>
       <p v-else-if="error" role="alert" class="mt-3 text-sm text-destructive">{{ error }} <button type="button" class="underline" @click="load">重试读取</button></p>
-      <p v-else-if="!visible.length" class="py-6 text-sm text-muted-foreground">暂无符合条件的资料。可上传文件、照片或文字。</p>
+      <p v-else-if="!visible.length" class="py-6 text-sm text-muted-foreground">暂无符合条件的资料。<span v-if="canUpload">可上传文件、照片或文字。</span></p>
       <ul v-else class="mt-3 divide-y divide-border">
         <li v-for="asset in paged" :key="asset.id" class="min-w-0 py-4" :data-quick-asset="asset.id">
           <label v-if="!readOnly && audience !== 'supplier' && asset.kind === 'image' && asset.can_manage_original && asset.workflow.status !== 'HISTORY' && !asset.workflow.superseded_by_asset_id" class="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><input v-model="photoSelection" type="checkbox" :value="asset.id" :aria-label="`选择分组照片 ${asset.file_name}`">选择照片{{ asset.photo_group_id ? '（包含整组）' : '' }}</label>
@@ -344,3 +381,21 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
     </DialogContent></DialogPortal></DialogRoot>
   </section>
 </template>
+
+<style scoped>
+.carton-mark-tools { container: carton-mark-tools / inline-size; }
+.carton-mark-filters.carton-filter-bar { border-bottom: 0; }
+.carton-mark-filters :deep(.carton-filter-inline > .carton-filter-fields) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.carton-mark-filters :deep(.carton-filter-inline > .carton-filter-actions) { margin-inline-start: auto; }
+.carton-mark-filter-wide { grid-column: span 2; }
+@container carton-mark-tools (min-width: 544px) {
+  .carton-mark-filters :deep(.carton-filter-inline > .carton-filter-fields) {
+    flex-basis: 420px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .carton-mark-filter-wide { grid-column: auto; }
+}
+@container carton-mark-tools (min-width: 1100px) {
+  .carton-mark-filters :deep(.carton-filter-inline > .carton-filter-fields) { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+</style>

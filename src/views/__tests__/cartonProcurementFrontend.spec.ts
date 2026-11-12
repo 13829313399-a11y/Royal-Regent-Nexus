@@ -505,6 +505,9 @@ describe('CartonProcurementView frontend workspace', () => {
       expect((extra.element as HTMLElement).style.display).not.toBe('none')
       expect(extra.get('[aria-label="供应商接单状态筛选"]').exists()).toBe(true)
       expect(filters.get('[aria-label="订单状态筛选"]').element.closest('details')).toBeNull()
+      expect(filters.get('[aria-label="订单类型筛选"]').findAll('option').map(option => option.text())).toEqual(['全部类型', '正单', '样板', '杂单'])
+      const acceptance = extra.get('[aria-label="供应商接单状态筛选"]')
+      expect(acceptance.findAll('option').map(option => option.text())).toEqual(['全部接单状态', '待接单（含部分接单）', '已接单', '承诺晚于计划'])
       expect(wrapper.find('[aria-label="所选订单批量操作"]').exists()).toBe(false)
       await wrapper.get('[aria-label="按交期查看：逾期"]').trigger('click'); await flushPromises()
       expect(unifiedApiMock.ledger).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ due_filter: 'OVERDUE', offset: 0 }), expect.any(AbortSignal))
@@ -527,6 +530,11 @@ describe('CartonProcurementView frontend workspace', () => {
       expect(findButton(wrapper, '发给供应商').element.closest('details')).toBeNull()
       await wrapper.get('[aria-label="选择订单 CT-LATE"]').setValue(false)
       expect(wrapper.find('[aria-label="所选订单批量操作"]').exists()).toBe(false)
+      await more.trigger('click')
+      await filters.get('[aria-label="订单状态筛选"]').setValue('LOCKED')
+      await acceptance.setValue('AWAITING_ACCEPTANCE'); await flushPromises()
+      expect(unifiedApiMock.ledger).toHaveBeenLastCalledWith('huaxing',
+        expect.objectContaining({ status_filter: 'LOCKED', collaboration_filter: 'AWAITING_ACCEPTANCE' }), expect.any(AbortSignal))
     } finally { wrapper.unmount() }
   })
 
@@ -585,7 +593,8 @@ describe('CartonProcurementView frontend workspace', () => {
       } else {
         expect(focus).not.toHaveBeenCalled()
         expect(routeState.query.closing_view).toBeUndefined()
-        expect(w.findComponent({ name: 'CartonActionNotice' }).props('message')).toContain('旧版逐单账单已下线')
+        expect(w.findComponent({ name: 'CartonSettlementOverview' }).props()).toMatchObject({ period: '2026-09', currency: 'HKD' })
+        expect(w.findComponent({ name: 'CartonActionNotice' }).props('message')).toContain('已定位到受影响月份')
       }
       await w.findAll('button').find(row => row.text() === '本月对账')!.trigger('click'); await flushPromises()
       Object.assign(routeState.query, { price_correction: 'PRICE-EXACT-LINE-2' }); await flushPromises()
@@ -4363,8 +4372,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
   })
 
   it('combines order state, changes and inclusive date filters without guessing uncertain dates', async () => {
-    const created = { ...orderFixture('CT-SCHEDULE-CREATED', '2026-10-02'), contract_no: 'SC-CREATED', item_no: 'ITEM-SCHEDULE', customer_po: 'PO-SC-CREATED' }
-    const completed = { ...orderFixture('CT-SCHEDULE-COMPLETED', '2026-10-03', 'COMPLETED'), contract_no: 'SC-COMPLETED', item_no: 'ITEM-SCHEDULE', customer_po: 'PO-SC-COMPLETED' }
+    const created = { ...orderFixture('CT-SCHEDULE-CREATED', '2026-10-02'), contract_no: 'SC-CREATED', item_no: 'ITEM-SCHEDULE', customer_po: 'PO-SC-CREATED', product_order_quantity: '300' }
+    const completed = { ...orderFixture('CT-SCHEDULE-COMPLETED', '2026-10-03', 'COMPLETED'), contract_no: 'SC-COMPLETED', item_no: 'ITEM-SCHEDULE', customer_po: 'PO-SC-COMPLETED', product_order_quantity: '200' }
     mockReceiptWorkspace([created, completed])
     const rows = [
       pendingScheduleFixture('SC-NEW', 4, { schedule_change: 'NEW', customer_due_date: '2026-09-30', inspection_window: '2026-09-27' }),
@@ -4400,7 +4409,17 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(contracts()).toEqual(['SC-CANCELLED'])
     await wrapper.get('[aria-label="排期变化筛选"]').setValue('REOPENED')
     expect(contracts()).toEqual(['SC-REOPENED'])
+    const filters = wrapper.get('[aria-label="排期筛选"]')
+    expect(filters.find('[aria-label="客户筛选"]').exists()).toBe(false)
+    expect(filters.find('[aria-label="排期数量变化筛选"]').exists()).toBe(false)
+    await filters.get('[aria-label="排期变化筛选"]').setValue('QUANTITY_DECREASE')
+    expect(contracts()).toEqual(['SC-CREATED'])
+    await filters.get('[aria-label="排期变化筛选"]').setValue('QUANTITY_INCREASE')
+    expect(contracts()).toEqual(['SC-COMPLETED'])
     await wrapper.get('[aria-label="排期变化筛选"]').setValue('ALL')
+    const dates = filters.get('button[aria-expanded]')
+    expect(dates.attributes('aria-expanded')).toBe('false')
+    await dates.trigger('click')
     await wrapper.get('[aria-label="排期开始日期"]').setValue('2026-09-30')
     await wrapper.get('[aria-label="排期结束日期"]').setValue('2026-10-01')
     expect(contracts()).toEqual(['SC-NEW', 'SC-MARKED'])

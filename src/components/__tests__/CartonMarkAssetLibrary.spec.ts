@@ -2,7 +2,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 import CartonMarkAssetLibrary from '../CartonMarkAssetLibrary.vue'
-import type { CartonMarkAsset, CartonMarkAssetUploadResult } from '@/api/cartonMark'
+import type { CartonMarkAsset } from '@/api/cartonMark'
 import * as quickPermissions from '@/features/carton-procurement/quickAssets'
 
 const api = vi.hoisted(() => ({ associateAsset: vi.fn(), listAssets: vi.fn(), uploadAssets: vi.fn(), bindAsset: vi.fn(), downloadAsset: vi.fn(), archiveAsset: vi.fn(), bindingOrders: vi.fn(), savePhotoGroup: vi.fn(), ungroupPhotos: vi.fn(), classifyAsset: vi.fn(), assetClassificationHistory: vi.fn(), shareRecipients: vi.fn(), setAssetSharing: vi.fn(), bindingTargets: vi.fn(), proposeAssetBindings: vi.fn(), confirmAssetBinding: vi.fn(), bindSpecialAsset: vi.fn() }))
@@ -56,8 +56,8 @@ describe('carton-mark source repository', () => {
     const detail = wrapper.get('[data-testid="asset-original-details"]')
     expect(detail.text()).toContain('订单关联'); expect(detail.text()).toContain('只读'); expect(detail.text()).toContain('CTR-a')
     expect(detail.get(`[aria-label="预览 ${asset.file_name}"]`).attributes('href')).toContain(asset.id)
-    expect(detail.get(`[aria-label="下载 ${asset.file_name}"]`).exists()).toBe(true)
-    expect(detail.get(`[aria-label="上传 ${asset.file_name} 修改稿"]`).exists()).toBe(true)
+    expect(detail.find(`[aria-label="下载 ${asset.file_name}"]`).exists()).toBe(true)
+    expect(detail.find(`[aria-label="上传 ${asset.file_name} 修改稿"]`).exists()).toBe(true)
     for (const name of ['共享范围', '修改状态', '关联订单', '移出', '解除分组', '组成照片组']) expect(detail.text()).not.toContain(name)
     await detail.findAll('button').find(button => button.text() === '查看状态记录')!.trigger('click'); await flushPromises()
     expect(api.assetClassificationHistory).toHaveBeenCalledWith('huaxing', asset.id, expect.any(AbortSignal))
@@ -191,21 +191,31 @@ describe('carton-mark source repository', () => {
     expect(api.confirmAssetBinding).not.toHaveBeenCalled(); expect(api.classifyAsset).not.toHaveBeenCalled()
     expect(wrapper.text()).not.toContain('暂不可生产'); wrapper.unmount()
   })
-  it('keeps a stored upload when association fails and only retries the exact association', async () => {
-    api.uploadAssets.mockResolvedValue([{ file_name: asset.file_name, status: 'created', message: '', asset: { ...asset, orders: [], binding_status: 'UNBOUND' } }])
+  it('retries an unresolved legacy association without uploading the original again', async () => {
+    const permission = vi.spyOn(quickPermissions, 'canQuickAsset').mockReturnValue(true)
+    api.listAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND' }])
     api.bindingTargets.mockResolvedValue([{ order_id: 'sample', order_kind: 'SAMPLE', order_no: 'SP', contract_no: '', customer_name: '', item_no: '', revision: 4, issue_id: 'v4', lines: [] }])
     api.associateAsset.mockRejectedValueOnce(new Error('关联响应尚未确认')).mockResolvedValueOnce(asset)
-    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', uploadOnly: true } }); await flushPromises()
-    const input = wrapper.get('input[type=file]'); Object.defineProperty(input.element, 'files', { value: [new File(['pdf'], asset.file_name)], configurable: true }); await input.trigger('change')
-    await wrapper.findAll('button').find(button => button.text().startsWith('上传入库'))!.trigger('click'); await flushPromises()
-    await wrapper.findAll('button').find(button => button.text() === '关联订单')!.trigger('click'); await flushPromises()
-    await wrapper.get('[aria-label="箱唛绑定订单"]').setValue('sample')
-    const save = () => wrapper.findAll('button').find(button => button.text() === '保存订单关联')!.trigger('click')
-    await save(); await flushPromises()
-    expect(wrapper.text()).toContain('资料原件已保留，仅订单关联未完成'); expect(wrapper.text()).toContain('无需重新上传')
-    await save(); await flushPromises()
-    expect(api.associateAsset.mock.calls[1]).toEqual(api.associateAsset.mock.calls[0])
-    expect(api.uploadAssets).toHaveBeenCalledTimes(1); wrapper.unmount()
+    const wrapper = mount(CartonMarkAssetLibrary, {
+      props: { factoryId: 'huaxing', assetIds: [asset.id], detailsOnly: true, quickRead: true, manageOriginal: true, legacyAssociations: true, managementMode: 'association', initialAssetId: asset.id },
+    })
+    try {
+      await flushPromises()
+      await wrapper.get('[aria-label="箱唛绑定订单"]').setValue('sample')
+      const save = () => wrapper.findAll('button').find(button => button.text() === '保存订单关联')!.trigger('click')
+      await save()
+      await flushPromises()
+      expect(wrapper.text()).toContain('无需重新上传')
+      await save()
+      await flushPromises()
+      expect(api.associateAsset).toHaveBeenCalledTimes(2)
+      expect(api.associateAsset.mock.calls[1]).toEqual(api.associateAsset.mock.calls[0])
+      expect(api.uploadAssets).not.toHaveBeenCalled()
+      expect(wrapper.emitted('completed')).toHaveLength(1)
+    } finally {
+      wrapper.unmount()
+      permission.mockRestore()
+    }
   })
   it('replaces legacy pending proposals directly while keeping other associations unless explicitly removed', async () => {
     const regular = { order_id: 'order-a', order_kind: 'REGULAR' as const, order_no: 'CTR-a', contract_no: '4500222793', customer_name: 'ZURU', item_no: '100369', revision: 3, issue_id: 'v3', lines: [] }
@@ -224,22 +234,6 @@ describe('carton-mark source repository', () => {
     await wrapper.findAll('button').find(button => button.text() === '保存订单关联')!.trigger('click'); await flushPromises()
     expect(api.associateAsset.mock.calls[1]![2]).toEqual([]); wrapper.unmount()
   })
-  it('requires an explicit shared supplier when there are several and supports internal-only upload', async () => {
-    api.shareRecipients.mockResolvedValue([{ id: 'a', name: '供应商甲' }, { id: 'b', name: '供应商乙' }])
-    api.uploadAssets.mockResolvedValue([])
-    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', uploadOnly: true } }); await flushPromises()
-    const file = new File(['pdf'], '未绑定.pdf'), input = wrapper.get('input[type=file]')
-    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] }); await input.trigger('change')
-    const submit = () => wrapper.findAll('button').find(row => row.text().startsWith('上传入库'))!.trigger('click')
-    await submit(); await flushPromises()
-    expect(api.uploadAssets).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('请选择共享给哪家供应商')
-    await wrapper.get('[aria-label="上传资料共享范围"]').setValue('INTERNAL')
-    await submit(); await flushPromises()
-    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', [file], expect.any(AbortSignal), [{ status: 'DRAFT', note: '', request_id: expect.any(String), sharing_mode: 'INTERNAL', supplier_id: undefined }])
-    wrapper.unmount()
-  })
-
   it('shows and downloads supplier shared files without pretending they have an order', async () => {
     supplierApi.markAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND', sharing_mode: 'SUPPLIER', shared_supplier_name: '东康' }])
     const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true } }); await flushPromises()
@@ -264,9 +258,10 @@ describe('carton-mark source repository', () => {
   })
 
   it('keeps supplier source selection read only', async () => {
-    supplierApi.markAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND' }])
+    supplierApi.markAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND', can_classify: true, workflow: { status: 'PENDING' } }])
     const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true, supplierCheckEnabled: true } }); await flushPromises()
     expect(wrapper.findAll('button').some(row => row.text() === '关联订单')).toBe(false)
+    expect(wrapper.find(`[aria-label="修改 ${asset.file_name} 状态"]`).exists()).toBe(false)
     expect(api.associateAsset).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -313,24 +308,6 @@ describe('carton-mark source repository', () => {
     finishOld([{ ...asset, file_name: 'old.pdf', orders: [{ ...order, issue_id: 'old-issue' }] }]); await flushPromises()
     expect(wrapper.text()).toContain('current.pdf')
     expect(wrapper.text()).not.toContain('old.pdf')
-    wrapper.unmount()
-  })
-
-  it('uploads per-file classifications and keeps failed file choices for retry', async () => {
-    const files = [new File(['a'], '已确认.pdf'), new File(['b'], '制作中.pdf')]
-    api.uploadAssets.mockResolvedValue([{ file_name: files[0]!.name, status: 'created', asset }, { file_name: files[1]!.name, status: 'failed', message: '文件损坏' }])
-    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', uploadOnly: true } }); await flushPromises()
-    const input = wrapper.get('input[type=file]')
-    Object.defineProperty(input.element, 'files', { configurable: true, value: files }); await input.trigger('change')
-    await wrapper.get('[aria-label="已确认.pdf 上传分类 1"]').setValue('READY')
-    await wrapper.get('[aria-label="已确认.pdf 资料备注 1"]').setValue('客户邮件确认')
-    await wrapper.findAll('button').find(button => button.text().startsWith('上传入库'))!.trigger('click'); await flushPromises()
-    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', files, expect.any(AbortSignal), [
-      { status: 'READY', note: '客户邮件确认', request_id: expect.any(String), sharing_mode: 'SUPPLIER', supplier_id: 'supplier-a' }, { status: 'DRAFT', note: '', request_id: expect.any(String), sharing_mode: 'SUPPLIER', supplier_id: 'supplier-a' },
-    ])
-    expect(wrapper.find('[aria-label="已确认.pdf 上传分类 1"]').exists()).toBe(false)
-    expect(wrapper.get<HTMLSelectElement>('[aria-label="制作中.pdf 上传分类 1"]').element.value).toBe('DRAFT')
-    expect(wrapper.emitted('changed')).toHaveLength(1)
     wrapper.unmount()
   })
 
@@ -776,58 +753,6 @@ describe('carton-mark source repository', () => {
     expect(wrapper.text()).toContain('上传入库（1）')
     await wrapper.findAll('button').find(b => b.text() === '用于PDF核对')!.trigger('click')
     expect(wrapper.emitted('use')?.[0]).toEqual([asset])
-    wrapper.unmount()
-  })
-
-  it('preserves an upload and its per-file results across an unchanged account refresh', async () => {
-    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', uploadOnly: true } })
-    await flushPromises()
-    const files = [new File(['pdf'], '4500222793.pdf'), new File(['bad'], 'broken.pdf')]
-    const input = wrapper.get('input[type=file]')
-    Object.defineProperty(input.element, 'files', { configurable: true, value: files })
-    await input.trigger('change')
-    let finish!: (results: CartonMarkAssetUploadResult[]) => void
-    api.uploadAssets.mockImplementationOnce(() => new Promise<CartonMarkAssetUploadResult[]>(resolve => { finish = resolve }))
-    await wrapper.findAll('button').find(button => button.text().includes('上传入库'))!.trigger('click')
-    const signal = api.uploadAssets.mock.calls[0]![2] as AbortSignal
-
-    authState.currentUser = { ...authState.currentUser, name: '仓管刷新' }
-    await flushPromises()
-    expect(signal.aborted).toBe(false)
-    expect(wrapper.text()).toContain('处理中…')
-    expect(wrapper.text()).toContain('broken.pdf')
-
-    finish([{ file_name: files[0]!.name, status: 'created', message: '', asset },
-      { file_name: files[1]!.name, status: 'failed', message: 'PDF 损坏', asset: null }])
-    await flushPromises()
-    authState.currentUser = { ...authState.currentUser }
-    await flushPromises()
-    expect(wrapper.get('[role="status"]').text()).toContain('已入库')
-    expect(wrapper.get('[role="status"]').text()).toContain('PDF 损坏')
-    expect(wrapper.text()).toContain('上传入库（1）')
-    expect(api.uploadAssets).toHaveBeenCalledTimes(1)
-    wrapper.unmount()
-  })
-
-  it.each(['account', 'authorization'])('cancels an upload when the %s changes', async boundary => {
-    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', uploadOnly: true } })
-    await flushPromises()
-    const input = wrapper.get('input[type=file]')
-    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['pdf'], '4500222793.pdf')] })
-    await input.trigger('change')
-    let finish!: (results: CartonMarkAssetUploadResult[]) => void
-    api.uploadAssets.mockImplementationOnce(() => new Promise<CartonMarkAssetUploadResult[]>(resolve => { finish = resolve }))
-    await wrapper.findAll('button').find(button => button.text().includes('上传入库'))!.trigger('click')
-    const signal = api.uploadAssets.mock.calls[0]![2] as AbortSignal
-
-    if (boundary === 'account') authState.currentUser = { id: 'other-user', name: '其他仓管' }
-    else authState.authorizationVersion += 1
-    await flushPromises()
-    expect(signal.aborted).toBe(true)
-    finish([{ file_name: '4500222793.pdf', status: 'created', message: '', asset }])
-    await flushPromises()
-    expect(wrapper.find('[role="status"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('4500222793.pdf')
     wrapper.unmount()
   })
 

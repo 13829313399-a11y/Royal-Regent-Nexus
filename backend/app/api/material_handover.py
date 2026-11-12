@@ -1,10 +1,13 @@
 import hashlib
 import json
+import sqlite3
+import time
 from typing import Literal
 from urllib.parse import quote
 from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.db import get_db
@@ -18,8 +21,11 @@ router = APIRouter(prefix='/api/material-handover', tags=['material-handover'])
 
 
 def public_result(result):
-    # A supplier's own progress does not grant access to warehouse batch IDs or staff identities.
-    return {**result, 'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id'}}
+    # Keep internal purchase IDs, warehouse batch IDs and staff identities within the warehouse.
+    data = result['data']
+    lines = [{**line, 'purchase_detail_id': ''} for line in data['lines']]
+    return {**{k: v for k, v in result.items() if k != 'receipt_observations'}, 'data': {**data, 'lines': lines},
+        'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id'}}
         for movement in result.get('movements', [])]}
 
 
@@ -53,6 +59,7 @@ def source_response(db, access, identifier):
 
 def print_snapshot(db, access, identifier, expected_revision):
     row = service.document(db, access, identifier)
+    service.require_preparer(db, access, row)
     service.check_revision(row, expected_revision)
     if row.status != 'CONFIRMED':
         raise HTTPException(409, '只有已确认的有效单据可以准备原单加码打印')
@@ -65,33 +72,62 @@ def print_snapshot(db, access, identifier, expected_revision):
 
 def check_print_snapshot(db, access, identifier, snapshot):
     row = service.document(db, access, identifier)
+    service.require_preparer(db, access, row)
     if row.status != 'CONFIRMED' or service.code(row) != snapshot['code'] or row.data_json != snapshot['signature']:
         raise HTTPException(409, '单据状态已变化，请刷新后准备原单打印')
 
 
-@router.get('/documents/{identifier}/print')
-async def original_print(request: Request, identifier: str, factory_id: str, expected_revision: int = Query(..., ge=1),
-                         corner: Literal['left', 'right'] = 'right', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    snapshot = print_snapshot(db, staff_access(db, actor, factory_id), identifier, expected_revision)
+def print_database_step(db, operation):
+    for retry in (True, False):
+        try:
+            return operation()
+        except (OperationalError, HTTPException) as error:
+            # The shared factory lock can wrap a SQLite lock error in HTTP 409.
+            cause = error if isinstance(error, OperationalError) else error.__cause__
+            driver_error = cause.orig if isinstance(cause, OperationalError) else None
+            if not isinstance(driver_error, sqlite3.OperationalError):
+                raise
+            code = getattr(driver_error, 'sqlite_errorcode', 0) & 0xff
+            if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
+            db.rollback()
+            if not retry:
+                raise HTTPException(503, '数据库正在处理其他操作，请稍后重试原单加码打印',
+                                    headers={'Retry-After': '1'}) from error
+            time.sleep(0.15)
+
+
+def prepare_original_print(db, identifier, expected_revision, corner, access, fresh_access):
+    snapshot = print_database_step(db, lambda: print_snapshot(db, access(), identifier, expected_revision))
     db.rollback()
-    content = await run_in_threadpool(files.render_original, snapshot['name'], snapshot['content'],
-                                    snapshot['data'], snapshot['extraction'], snapshot['code'], corner)
-    service.inventory.procurement.lock_factory(db)
-    actor = get_current_user(request, db)
-    check_print_snapshot(db, staff_access(db, actor, factory_id), identifier, snapshot)
+    content = files.render_original(snapshot['name'], snapshot['content'], snapshot['data'],
+                                    snapshot['extraction'], snapshot['code'], corner)
+
+    def recheck():
+        service.inventory.procurement.lock_factory(db)
+        check_print_snapshot(db, fresh_access(), identifier, snapshot)
+
+    print_database_step(db, recheck)
     return response_file(content, identifier+'-原单加码.pdf', 'application/pdf')
+
+
+@router.get('/documents/{identifier}/print')
+def original_print(request: Request, identifier: str, factory_id: str, expected_revision: int = Query(..., ge=1),
+                   corner: Literal['left', 'right'] = 'right', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    return prepare_original_print(
+        db, identifier, expected_revision, corner,
+        lambda: staff_access(db, actor, factory_id),
+        lambda: staff_access(db, get_current_user(request, db), factory_id),
+    )
 
 
 @router.get('/external/documents/{identifier}/print')
-async def external_original_print(identifier: str, expected_revision: int = Query(..., ge=1), corner: Literal['left', 'right'] = 'right',
-                                  x_handover_key: str = Header(default=''), db: Session = Depends(get_db)):
-    snapshot = print_snapshot(db, service.external(db, x_handover_key), identifier, expected_revision)
-    db.rollback()
-    content = await run_in_threadpool(files.render_original, snapshot['name'], snapshot['content'],
-                                    snapshot['data'], snapshot['extraction'], snapshot['code'], corner)
-    service.inventory.procurement.lock_factory(db)
-    check_print_snapshot(db, service.external(db, x_handover_key), identifier, snapshot)
-    return response_file(content, identifier+'-原单加码.pdf', 'application/pdf')
+def external_original_print(identifier: str, expected_revision: int = Query(..., ge=1), corner: Literal['left', 'right'] = 'right',
+                            x_handover_key: str = Header(default=''), db: Session = Depends(get_db)):
+    def access():
+        return service.external(db, x_handover_key)
+
+    return prepare_original_print(db, identifier, expected_revision, corner, access, access)
 
 
 def list_documents(db, access, limit, offset, status, search='', kind='ALL', supplier_id=''):
@@ -101,14 +137,13 @@ def list_documents(db, access, limit, offset, status, search='', kind='ALL', sup
         HandoverSupplierBinding.supplier_id.label('bound_supplier_id')).outerjoin(HandoverSupplierBinding,
         (HandoverSupplierBinding.issuer_id == HandoverDocument.issuer_id) &
         (HandoverSupplierBinding.factory_id == HandoverDocument.factory_id)
-    ).where(HandoverDocument.factory_id == service.FACTORY)
-    if access.issuer_id:
-        query = query.where(HandoverDocument.issuer_id.in_(service.issuer_scope(db,access)))
+    ).where(HandoverDocument.factory_id == service.FACTORY, service.document_scope(db, access))
     if status != 'ALL':
         query = query.where(HandoverDocument.status == status)
     rows = db.execute(query.order_by(HandoverDocument.updated_at.desc(), HandoverDocument.id))
     needle = search.strip().casefold()
     items, total = [], 0
+    delivery_lines = {}
     for row in rows:
         body = json.loads(row.data_json)
         if kind != 'ALL' and body.get('kind') != kind:
@@ -129,7 +164,13 @@ def list_documents(db, access, limit, offset, status, search='', kind='ALL', sup
                 'created_at': row.created_at, 'confirmed_at': row.confirmed_at,
                 'data': {key: value for key, value in body.items() if key != 'lines'},
                 'line_count': len(body.get('lines', []))})
+            if not access.issuer_id and row.status == 'CONFIRMED' and body.get('kind') == 'DELIVERY':
+                delivery_lines[row.id] = body.get('lines', [])
         total += 1
+    statuses = service.receipt_processing_statuses(db, delivery_lines)
+    for item in items:
+        if item['id'] in statuses:
+            item['processing_status'] = statuses[item['id']]
     return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
 
 
@@ -236,12 +277,12 @@ async def upload(request: Request, factory_id: str = Form(...), request_id: UUID
 
 @router.post('/scan')
 def scan(payload: ScanInput, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    return service.scan(db, staff_access(db, actor, payload.factory_id), payload.code)
+    return service.scan(db, staff_access(db, actor, payload.factory_id), payload.code, with_receipt_observations=True)
 
 
 @router.get('/documents/{identifier}')
 def detail(identifier: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    return service.output(db, service.document(db, staff_access(db, actor, factory_id), identifier))
+    return service.output(db, service.document(db, staff_access(db, actor, factory_id), identifier), with_receipt_observations=True)
 
 
 @router.get('/documents/{identifier}/source')
@@ -258,7 +299,9 @@ def purchase_sources(identifier: str, factory_id: str, db: Session = Depends(get
 
 @router.get('/documents/{identifier}/qr')
 def qr(identifier: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    row = service.document(db, staff_access(db, actor, factory_id), identifier)
+    access = staff_access(db, actor, factory_id)
+    row = service.document(db, access, identifier)
+    service.require_preparer(db, access, row)
     return response_file(service.qr_svg(row), row.id + '.svg', 'image/svg+xml')
 
 

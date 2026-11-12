@@ -2,14 +2,34 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    # Explicit activation after both the ledger outbox and local archive migration.
+    qc_photo_preview_max_edge: int = Field(default=1920, ge=960, le=2560)
+    qc_photo_preview_quality: int = Field(default=85, ge=75, le=95)
+    qc_photo_preview_target_bytes: int = Field(default=350000, ge=50000, le=1000000)
+    qc_dossier_enabled: bool = False
+    qc_dossier_emergency_disabled: bool = False
+
+    @model_validator(mode="after")
+    def dossier_emergency_switch(self):
+        if self.qc_dossier_emergency_disabled:
+            self.qc_dossier_enabled = False
+        return self
+
+    qc_dossier_factories: str = "huaxing"
+    qc_dossier_poll_seconds: int = 30
     qc_department_managed: bool = False
+    # One private sidecar and dedicated database per explicitly configured factory.
+    indonesia_shipping_upstreams: dict[str, str] = {}
+    indonesia_shipping_bridge_key: SecretStr = SecretStr("")
+    indonesia_shipping_timeout_seconds: int = Field(default=180, ge=5, le=900)
+    indonesia_shipping_max_upload_mb: int = Field(default=100, ge=1, le=200)
     qc_department_data_dir: str = str(BACKEND_DIR / "data" / "qc-department" / "companies")
     qc_department_url: str = "http://127.0.0.1:3411"
     qc_department_gateway_token: SecretStr = SecretStr("")
@@ -127,6 +147,9 @@ class Settings(BaseSettings):
     document_tools_qwen_ocr_model: str = "qwen3.5-ocr"
     document_tools_qwen_layout_model: str = "qwen3-vl-plus"
     document_tools_translation_model: str = "qwen3-vl-plus"
+    document_tools_translation_api_key: SecretStr = SecretStr("")
+    document_tools_translation_base_url: str = ""
+    document_tools_translation_protocol: Literal["inherit", "dashscope", "openai", "mimo"] = "inherit"
     document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
     image_translation_model_dir: str = str(BACKEND_DIR / "models" / "image-translation")
     image_translation_runner: str = str(BACKEND_DIR.parent / "shinobu-web" / "server" / "dist" / "runner.mjs")

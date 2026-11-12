@@ -16,6 +16,7 @@ import zipfile
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import settings
 from app.models.customer_order_ledger import OrderLedgerLine
 
@@ -311,6 +312,19 @@ def create_tasks(db, factory, body, actor):
                 'defects':[], 'measurements':[], 'resultExplanation':''}}
             conn.execute('INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?)', (task_id,factory,src['id'],method,batch,'waiting',1,dump(payload),stamp,stamp))
             event(conn,get(conn,factory,task_id),'create',actor)
+            if settings.qc_dossier_enabled:
+                # Independent durable evidence, never expand payload.source.
+                # Archive delivery runs later; its outage cannot block inspection.
+                from app.services import qc_dossier
+                conn.execute('SAVEPOINT dossier_task')
+                try:
+                    qc_dossier.queue_task(conn, db, line, task_id, stamp)
+                    conn.execute('RELEASE dossier_task')
+                except (sqlite3.Error, SQLAlchemyError, ValueError, TypeError):
+                    conn.execute('ROLLBACK TO dossier_task')
+                    conn.execute('RELEASE dossier_task')
+                    import logging
+                    logging.getLogger(__name__).error('qc_dossier_task_unlinked task=%s; original task retained', task_id)
             ids.append(task_id)
         conn.execute('INSERT INTO receipts VALUES(?,?,?,?,?)', (factory,actor['id'],key,digest,dump(ids)))
         return {'items':[unpack(conn,get(conn,factory,i)) for i in ids], 'replayed':False}

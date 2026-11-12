@@ -8,13 +8,14 @@ from decimal import Decimal
 from io import BytesIO
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.models.fabric_master import FabricMasterRecord
 from app.models.fabric_receiving import FabricReceipt
 from app.services import warehouse_operations as operations
 from app.services.material_handover_monthly import bounds
 from app.services.fabric_procurement_parser import digest
+from app.services.fabric_receipt_pricing import purchase_price_reference
 from app.services.fabric_supplier_identity import supplier_aliases
 
 FIELDS = ('received', 'receipt_reversed', 'net_received', 'issued', 'issue_reversed',
@@ -23,7 +24,8 @@ FIELDS = ('received', 'receipt_reversed', 'net_received', 'issued', 'issue_rever
 CHANNELS = {'MANUAL': '手动', 'SCAN': '扫码'}
 
 
-def report(db, month, direction='', channel='', party_key='', search='', unit='', date_order='DESC'):
+def report(db, month, direction='', channel='', party_key='', search='', unit='', date_order='DESC', *,
+           include_purchase_price=False):
     operations.ensure_schema(db)
     start, end = bounds(month)
     if direction not in ('', 'IN', 'OUT') or channel not in ('', *CHANNELS):
@@ -50,7 +52,7 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
 
     events = []
 
-    def event(identifier, when, body, kind, sign=1, original_id='', actor=''):
+    def event(identifier, when, body, kind, sign=1, original_id='', actor='', purchase_facts=None):
         if not start <= when <= end:
             return
         supplier = kind == 'RECEIPT'
@@ -78,19 +80,34 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
             currency=prices.get('currency', body.get('currency', '')),
             price_note=prices.get('price_note', body.get('price_note', ''))))
         events[-1]['amount'] = body.get('amount', '')
+        if include_purchase_price and supplier:
+            purchase = body.get('procurement_receipt') or {}
+            reference = purchase_price_reference(purchase_facts or purchase.get('source_facts') or {})
+            if reference:
+                events[-1]['purchase_price'] = reference
 
-    # One physical receipt header once, irrespective of its roll/bin split.
-    for receipt in db.scalars(select(FabricReceipt).where(FabricReceipt.factory_id == operations.FACTORY,
-            FabricReceipt.receipt_date >= start, FabricReceipt.receipt_date <= end)):
+    correction_ids = {entry['data']['procurement_original_receipt_id'] for entry in entries
+        if entry['kind'] == 'CORRECTION' and start <= entry['business_date'] <= end
+        and entry['data'].get('procurement_original_receipt_id')} if include_purchase_price else set()
+    correction_facts = {}
+    receipt_scope = FabricReceipt.receipt_date.between(start, end)
+    if correction_ids:
+        receipt_scope = or_(receipt_scope, FabricReceipt.id.in_(correction_ids))
+    # A receipt counts once. An older receipt may also provide evidence for this month's correction.
+    for receipt in db.scalars(select(FabricReceipt).where(FabricReceipt.factory_id == operations.FACTORY, receipt_scope)):
         facts = json.loads(receipt.source_json)
+        if receipt.id in correction_ids:
+            correction_facts[receipt.id] = facts
+        if not start <= receipt.receipt_date <= end:
+            continue
         pricing = json.loads(receipt.payload_json)
         event(receipt.id, receipt.receipt_date, dict(counterparty=facts.get('supplier', ''),
             item_code=facts.get('material_code', ''), item_name=facts.get('material_name', ''),
             quantity=receipt.quantity, unit=receipt.unit, source_no=pricing.get('delivery_reference', receipt.delivery_reference),
             source_line=receipt.source_line_id, source_system='PROCUREMENT_RECEIVING',
-            unit_price=pricing.get('unit_price', facts.get('unit_price') or ''), price_unit=pricing.get('price_unit', ''),
+            unit_price=pricing.get('unit_price', ''), price_unit=pricing.get('price_unit', ''),
             currency=pricing.get('currency', ''), amount=pricing.get('amount', ''),
-            price_note=pricing.get('price_basis', '')), 'RECEIPT', actor=receipt.actor_name)
+            price_note=pricing.get('price_basis', '')), 'RECEIPT', actor=receipt.actor_name, purchase_facts=facts)
     for entry in entries:
         kind, body = entry['kind'], entry['data']
         if kind in ('RECEIPT', 'ISSUE', 'RETURN'):
@@ -103,9 +120,11 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
             event(entry['id'], entry['business_date'], body, kind,
                   original_id=body.get('original_id', ''), actor=entry['actor_name'])
         elif kind == 'CORRECTION':
-            if body.get('procurement_original_receipt_id'):
+            procurement_receipt_id = body.get('procurement_original_receipt_id')
+            if procurement_receipt_id:
                 event(entry['id'], entry['business_date'], body, 'RECEIPT', -1,
-                    original_id=body['procurement_original_receipt_id'], actor=entry['actor_name'])
+                    original_id=procurement_receipt_id, actor=entry['actor_name'],
+                    purchase_facts=correction_facts.get(procurement_receipt_id))
                 continue
             original = projected.get(body['original_id'])
             if original and original['kind'] in ('RECEIPT', 'ISSUE'):
@@ -189,11 +208,20 @@ def export_xlsx(result):
     for title, rows, columns in pages:
         if title == '收发数量汇总':
             columns += [(field, labels[field]) for field in FIELDS]
+        has_purchase_price = title == '收发原单明细' and any(row.get('purchase_price') for row in rows)
         sheet = book.create_sheet(title)
         sheet.append([result['month'], '实时数量核对；未关账；参考价格不计算应付金额', result['version']])
-        sheet.append([label for _, label in columns])
+        sheet.append([label for _, label in columns] + (['追货表采购参考单价'] if has_purchase_price else []))
         for row in rows:
-            sheet.append([str(row.get(key, '')) for key, _ in columns])
+            values = [str(row.get(key, '')) for key, _ in columns]
+            if has_purchase_price:
+                reference = row.get('purchase_price')
+                label = ''
+                if reference:
+                    price = reference['unit_price']
+                    label = '待补价' if price is None else f"{price} 元／{reference['price_unit']}"
+                values.append(label)
+            sheet.append(values)
         sheet.freeze_panes = 'A3'
         sheet.auto_filter.ref = f'A2:{get_column_letter(sheet.max_column)}{sheet.max_row}'
         for cells in sheet:

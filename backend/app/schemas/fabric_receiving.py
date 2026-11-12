@@ -4,13 +4,16 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class ReceiptBatchInput(BaseModel):
+class ReceiptCounts(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    quantity: str = Field(min_length=1, max_length=32)
     counted_quantity: str = Field(default='', max_length=32)
     damaged_quantity: str = Field(default='0', max_length=32)
     rejected_quantity: str = Field(default='0', max_length=32)
     other_unusable_quantity: str = Field(default='0', max_length=32)
+
+
+class ReceiptBatchInput(ReceiptCounts):
+    quantity: str = Field(min_length=1, max_length=32)
     location: str = Field(min_length=1, max_length=128)
     location_id: str = Field(default='', max_length=64)
     dye_lot: str = Field(default="", max_length=128)

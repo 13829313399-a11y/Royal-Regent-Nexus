@@ -16,6 +16,7 @@ from app.models.carton_procurement import CartonAuditEvent, CartonOrder, CartonP
 from app.models.carton_special_requests import SpecialRequest, SpecialVersion
 from app.schemas.carton_supplier_portal import BatchCommitmentSave, CancellationAcknowledge
 from app.services import carton_procurement as core, carton_supplier_portal as portal
+from app.services.carton_supplier_read_inputs import batches, order_inputs
 
 
 def response_state(db, factory, source_kind, source_id):
@@ -308,17 +309,15 @@ def workspace(db, user, factory, *, internal=False):
     items = []
     orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory,
         CartonOrder.supplier_id == vendor.id, CartonOrder.deleted_at.is_(None), CartonOrder.status.in_(portal.VISIBLE_STATES))).all()
-    from app.services.carton_supplier_projection import CHUNK, evidence
-    for start in range(0, len(orders), CHUNK):
-        batch = orders[start:start + CHUNK]
-        projections = evidence(db, batch)
+    for batch in batches(orders):
+        projections = order_inputs(db, batch)
         publication_events = defaultdict(list)
         replenishments = [version.id for data in projections.values() for version in data["issues"]
                           if core._purchase_order_snapshot(version).get("replenishment")]
         for entity_type, identifiers in (("carton_order", [row.id for row in batch]),
                                          ("carton_purchase_order_issue", replenishments)):
-            for offset in range(0, len(identifiers), CHUNK):
-                for event in _publication_events(db, factory, entity_type, identifiers[offset:offset + CHUNK]):
+            for part in batches(identifiers):
+                for event in _publication_events(db, factory, entity_type, part):
                     publication_events[(event.entity_type, event.entity_id)].append(event)
         for row in batch:
             projection = projections[row.id]

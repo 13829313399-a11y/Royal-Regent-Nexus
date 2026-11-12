@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { formatBusinessDateTime } from '@/lib/dateTime'
 import { materialCategoryLabels, type FabricReceipt } from '@/api/fabricReceiving'
 import { receiptQuantity } from './receiptQuantities'
+import { purchasePriceText } from './purchasePrice'
 
 const props = defineProps<{ record: FabricReceipt }>()
 const zeroReceipt = computed(() => !props.record.operation_id && props.record.stock_posted === false && receiptQuantity(props.record.quantity) === 0n)
@@ -35,8 +36,30 @@ const emit = defineEmits<{ close: [] }>()
             <p class="receipt-detail-hint">短少按整张收货单记录；下表不可用量均已当场退供应商，不进入库存。</p>
             <div class="receipt-detail-table-scroll" tabindex="0" role="region" aria-label="逐卷差异"><table><thead><tr><th>仓位 / 缸号 / 卷号</th><th class="numeric">实点</th><th class="numeric">破损</th><th class="numeric">拒收</th><th class="numeric">其他</th><th class="numeric">入库</th><th class="numeric">退供应商</th><th>去向</th></tr></thead><tbody><tr v-for="(line, index) in record.receipt_lines" :key="index"><td>{{ line.location }}<small v-if="record.material_category === 'FABRIC'">{{ line.dye_lot || '—' }} / {{ line.roll_no || '—' }}</small></td><td class="numeric">{{ line.counted_quantity }}</td><td class="numeric">{{ line.damaged_quantity }}</td><td class="numeric">{{ line.rejected_quantity }}</td><td class="numeric">{{ line.other_unusable_quantity }}</td><td class="numeric">{{ line.accepted_quantity }}</td><td class="numeric">{{ line.returned_to_supplier }}</td><td>{{ line.disposition === 'RETURNED_TO_SUPPLIER' ? '不可用量当场退供应商' : '可用量入库' }}</td></tr></tbody></table></div>
           </section>
-          <section class="receipt-detail-section"><h3>收货与采购来源</h3><dl><div><dt>采购单号</dt><dd>{{ record.facts.order_no || '—' }}</dd></div><div v-if="record.facts.source_category"><dt>采购类型</dt><dd>{{ record.facts.source_category === 'SUPPLEMENT' ? '补数追货' : '正常采购' }}</dd></div><div class="wide"><dt>供应商</dt><dd>{{ record.facts.supplier || '—' }}</dd></div><div><dt>送货依据</dt><dd>{{ record.delivery_reference || '—' }}</dd></div><div v-if="record.delivery_quantity"><dt>本单该采购明细到货量</dt><dd>{{ record.delivery_quantity }} {{ record.unit }}</dd></div><div><dt>记账月份</dt><dd>{{ record.accounting_month }}</dd></div><div v-if="record.facts.production_no"><dt>生产 / 放产单号</dt><dd>{{ record.facts.production_no }}</dd></div><div v-if="record.facts.contract_no"><dt>合同号</dt><dd>{{ record.facts.contract_no }}</dd></div></dl></section>
-          <section class="receipt-detail-section"><h3>本次单价与金额</h3><dl><div><dt>入库单价 / 计价单位</dt><dd>{{ record.unit_price || '未记录' }} / {{ record.price_unit || '未注明' }}</dd></div><div><dt>币种</dt><dd>{{ record.currency || '未注明' }}</dd></div><div><dt>本次金额合计</dt><dd>{{ record.amount || '未记录' }} {{ record.amount ? record.currency : '' }}</dd></div><div class="wide"><dt>计算依据</dt><dd>{{ record.price_basis || '旧记录未录入本次价格，不按采购参考价补算金额' }}</dd></div></dl></section>
+          <section class="receipt-detail-section">
+            <h3>收货与采购来源</h3>
+            <dl>
+              <div><dt>采购单号</dt><dd>{{ record.facts.order_no || '—' }}</dd></div>
+              <div v-if="record.facts.source_category"><dt>采购类型</dt><dd>{{ record.facts.source_category === 'SUPPLEMENT' ? '补数追货' : '正常采购' }}</dd></div>
+              <div class="wide"><dt>供应商</dt><dd>{{ record.facts.supplier || '—' }}</dd></div>
+              <div><dt>送货依据</dt><dd>{{ record.delivery_reference || '—' }}</dd></div>
+              <div v-if="record.delivery_quantity"><dt>本单该采购明细到货量</dt><dd>{{ record.delivery_quantity }} {{ record.unit }}</dd></div>
+              <div><dt>记账月份</dt><dd>{{ record.accounting_month }}</dd></div>
+              <div v-if="record.facts.production_no"><dt>生产 / 放产单号</dt><dd>{{ record.facts.production_no }}</dd></div>
+              <div v-if="record.facts.plan_no"><dt>计划跟踪号</dt><dd>{{ record.facts.plan_no }}</dd></div>
+              <div v-if="record.facts.contract_no"><dt>合同号</dt><dd>{{ record.facts.contract_no }}</dd></div>
+            </dl>
+          </section>
+          <section class="receipt-detail-section">
+            <h3>本次单价与金额</h3>
+            <dl>
+              <div><dt>{{ record.handover_document_id ? '原送货单价' : '入库单价' }} / 计价单位</dt><dd>{{ record.unit_price || '未记录' }} / {{ record.price_unit || '未注明' }}</dd></div>
+              <div><dt>币种</dt><dd>{{ record.currency || '未注明' }}</dd></div>
+              <div v-if="record.purchase_price"><dt>追货表采购参考单价</dt><dd>{{ purchasePriceText(record.purchase_price.unit_price, record.purchase_price.price_unit) }}</dd></div>
+              <div><dt>本次金额合计</dt><dd>{{ record.amount || '未记录' }} {{ record.amount ? record.currency : '' }}</dd></div>
+              <div class="wide"><dt>价格依据</dt><dd>{{ record.price_basis || '本次入库单价未记录' }}</dd></div>
+            </dl>
+          </section>
           <section v-if="record.difference_reason || record.note" class="receipt-detail-section"><h3>补充说明</h3><dl><div v-if="record.difference_reason" class="wide"><dt>超收说明</dt><dd>{{ record.difference_reason }}</dd></div><div v-if="record.note" class="wide"><dt>备注</dt><dd>{{ record.note }}</dd></div></dl></section>
           <section v-if="record.reversal" class="receipt-detail-section"><h3>整单冲销记录</h3><dl><div><dt>冲销日期 / 经办人</dt><dd>{{ record.reversal.date }} / {{ record.reversal.actor_name }}</dd></div><div class="wide"><dt>冲销原因</dt><dd>{{ record.reversal.reason }}</dd></div><div class="wide"><dt>冲销单号</dt><dd>{{ record.reversal.id }}</dd></div></dl></section><section class="receipt-detail-section"><h3>登记与追溯</h3><dl><div><dt>登记人</dt><dd>{{ record.actor_name }}</dd></div><div><dt>登记时间</dt><dd>{{ formatBusinessDateTime(record.occurred_at) }}</dd></div><div class="wide"><dt>完整入库单号</dt><dd class="receipt-detail-code">{{ record.id }}</dd></div><div class="wide"><dt>来源明细编号</dt><dd class="receipt-detail-code">{{ record.source_line_id }}</dd></div><div v-if="!record.operation_id || record.source_revision"><dt>采购来源版本</dt><dd>第 {{ record.source_revision }} 版</dd></div><div v-if="record.operation_id && record.source_version"><dt>原单版本</dt><dd>{{ record.source_version }}</dd></div></dl></section>
         </div>

@@ -70,7 +70,8 @@ def test_comparison_uses_frozen_prices_packaging_and_preserves_original_bytes(mo
         assert client.get(frozen_url).content == frozen
         workbook = load_workbook(BytesIO(response.content))
         visible = [sheet for sheet in workbook if sheet.sheet_state == "visible"]
-        assert len(visible) == 3 and visible[0].title == "方案汇总"
+        assert len(visible) == 5 and visible[0].title == "方案汇总"
+        assert [sheet.title for sheet in visible[-2:]] == ["1-采用价目表", "2-采用价目表"]
         summary = visible[0]
         assert summary.max_row == 7
         assert [summary.cell(row, 5).value for row in (5, 6, 7)] == [5000, 3000, 5000]
@@ -153,7 +154,7 @@ def test_legacy_final_export_is_reused_without_current_formula_validation(monkey
         models = importlib.import_module("app.models.internal_quote")
         with db_module.SessionLocal() as db:
             quote = db.get(models.InternalQuote, source["id"])
-            quote.module_version = "v3"; quote.final_release_status = "approved"; quote.formula_version = "historical"
+            quote.module_version = "v3"; quote.status = "exported"; quote.final_release_status = "approved"; quote.formula_version = "historical"
             db.get(models.InternalQuoteExportFile, issued["id"]).release_stage = "p4_final_approved"
             db.commit()
         frozen_url = f"/api/internal-quotes/{source['id']}/exports/{issued['id']}/download"

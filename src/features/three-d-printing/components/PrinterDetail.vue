@@ -21,6 +21,10 @@ import { http, getApiErrorMessage } from "@/lib/http";
 import type { ThreeDPrinter } from "@/types/threeDPrinting";
 import {
   chinaTime,
+  hasProgress,
+  hasReading,
+  isStaleObservation,
+  temperature,
   freshestPrinter,
   groupPrinterEvents,
   printerStateText,
@@ -70,7 +74,7 @@ const online = computed(
   () => !!printer.value?.connected && !printer.value.status_stale,
 );
 const state = computed(() =>
-  online.value ? printer.value?.state || "UNKNOWN" : "OFFLINE",
+  online.value ? printer.value?.state || "UNKNOWN" : printer.value && isStaleObservation(printer.value) ? "STALE" : "OFFLINE",
 );
 const stateTone = computed(() => ["ERROR", "FAILED"].includes(state.value) ? 'fault'
   : state.value === 'RUNNING' ? 'running' : state.value === 'FINISH' ? 'complete'
@@ -82,9 +86,7 @@ const stateIcon = (value: string) => value === 'RUNNING' ? Printer
 const eventTone = (value: string) => ["ERROR", "FAILED"].includes(value) ? 'fault'
   : value === 'FINISH' ? 'complete' : value === 'PAUSE' ? 'paused' : isPrinterPreparing(value) ? 'preparing' : 'normal';
 const events = computed(() => groupPrinterEvents(data.value?.events || []));
-const progress = computed(() =>
-  Math.min(100, Math.max(0, printer.value?.progress_percent || 0)),
-);
+const progress = computed(() => printer.value?.progress_percent);
 const duration = (n: number) =>
   n >= 60
     ? `${Math.floor(n / 60)} 小时 ${Math.round(n % 60)} 分钟`
@@ -217,7 +219,7 @@ onBeforeUnmount(() => {
       <div class="detail-body">
         <div class="connection-line">
           <span :class="{ connected: online }"
-            >● {{ !printer ? (unavailable ? "机台不可用" : "尚未读取机台") : online ? "设备在线" : "等待连接" }}</span
+            >● {{ !printer ? (unavailable ? "机台不可用" : "尚未读取机台") : online ? "设备在线" : state === "STALE" ? "等待状态更新" : "等待连接" }}</span
           ><button
             class="refresh-button"
             type="button"
@@ -230,7 +232,9 @@ onBeforeUnmount(() => {
         <p v-if="error" role="alert" class="error-message">
           详情加载失败：{{ error }}。
         </p>
-        <p v-if="loading && !printer" role="status">正在读取所选机台…</p>
+        <div v-if="loading && !printer" class="tdp-detail-placeholder" role="status">
+          <p>正在读取所选机台…</p><i class="tdp-skeleton-block" aria-hidden="true" /><i class="tdp-skeleton-block" aria-hidden="true" />
+        </div>
         <section v-if="printer" class="status-panel" :class="`status-panel--${stateTone}`">
           <span class="eyebrow">当前状态</span>
           <h3><component :is="stateIcon(state)" :size="24" aria-hidden="true" />{{ printerStateText(state) }}</h3>
@@ -254,10 +258,11 @@ onBeforeUnmount(() => {
           </p>
           <template v-if="online && ['RUNNING', 'PAUSE'].includes(state)">
             <div class="progress-caption">
-              <strong>{{ progress }}%</strong
-              ><span>预计剩余 {{ duration(printer.remaining_minutes) }}</span>
+              <strong>{{ hasProgress(progress) ? progress + "%" : "进度待上报" }}</strong
+              ><span v-if="hasReading(printer.remaining_minutes) && printer.remaining_minutes >= 0">预计剩余 {{ duration(printer.remaining_minutes) }}</span>
             </div>
             <div
+              v-if="hasProgress(progress)"
               class="progress-track"
               role="progressbar"
               aria-label="打印进度"
@@ -267,23 +272,23 @@ onBeforeUnmount(() => {
             >
               <i :style="{ width: `${progress}%` }" />
             </div>
-            <p v-if="printer.total_layers" class="muted">
-              已打印 {{ printer.layer_num || 0 }} /
+            <p v-if="hasReading(printer.layer_num) && printer.total_layers" class="muted">
+              已打印 {{ printer.layer_num }} /
               {{ printer.total_layers }} 层
             </p>
           </template>
           <div v-if="online" class="device-readings">
             <div>
               <Thermometer :size="16" /><span>喷头温度</span
-              ><strong>{{ Math.round(printer.nozzle_temperature) }}°C</strong
-              ><small v-if="printer.nozzle_target !== undefined"
+              ><strong>{{ hasReading(printer.nozzle_temperature) ? temperature(printer.nozzle_temperature) + "C" : "—" }}</strong
+              ><small v-if="hasReading(printer.nozzle_target)"
                 >目标 {{ Math.round(printer.nozzle_target) }}°C</small
               >
             </div>
             <div>
               <Thermometer :size="16" /><span>热床温度</span
-              ><strong>{{ Math.round(printer.bed_temperature) }}°C</strong
-              ><small v-if="printer.bed_target !== undefined"
+              ><strong>{{ hasReading(printer.bed_temperature) ? temperature(printer.bed_temperature) + "C" : "—" }}</strong
+              ><small v-if="hasReading(printer.bed_target)"
                 >目标 {{ Math.round(printer.bed_target) }}°C</small
               >
             </div>
@@ -386,7 +391,9 @@ onBeforeUnmount(() => {
 .tdp-drawer-leave-to .printer-detail { transform: translateX(12px); opacity: 0; }
 .printer-detail {
   width: 100%;
-  max-width: 620px;
+  max-width: 500px;
+  border-radius: 16px 0 0 16px;
+  overflow: hidden;
   height: 100dvh;
   display: flex;
   flex-direction: column;
@@ -398,7 +405,8 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 14px;
   align-items: center;
-  padding: 22px 26px;
+  padding: 18px 22px;
+  background: var(--tdp-surface);
   border-bottom: 1px solid var(--border);
 }
 .device-icon {
@@ -440,7 +448,8 @@ h3 {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 22px 26px;
+  padding: 18px 22px;
+  background: var(--tdp-surface);
 }
 .connection-line {
   display: flex;
@@ -467,13 +476,14 @@ h3 {
   background: var(--muted);
 }
 .status-panel h3 {
-  font-size: 27px;
+  font-size: 23px;
   color: var(--primary);
   margin: 5px 0;
   display: flex;
   align-items: center;
   gap: 9px;
 }
+.status-panel--running { background: linear-gradient(135deg, var(--accent), var(--tdp-surface)); border-color: var(--tdp-border-active); }
 .status-panel--fault { background: color-mix(in oklch, var(--destructive) 5%, var(--card)); border-color: color-mix(in oklch, var(--destructive) 24%, var(--border)); }
 .status-panel--fault h3 { color: var(--color-red-800); }
 .status-panel--paused { background: var(--color-amber-50); border-color: var(--color-amber-200); }
@@ -497,7 +507,11 @@ h3 {
   margin-top: 26px;
 }
 .file-name {
-  font-size: 15px;
+  padding: 10px 12px;
+  background: var(--tdp-surface-inset);
+  border: 1px solid var(--tdp-border);
+  border-radius: 9px;
+  font-size: 13px;
   overflow-wrap: anywhere;
   margin: 10px 0 18px;
   line-height: 1.7;
@@ -509,7 +523,7 @@ h3 {
   align-items: center;
 }
 .progress-caption strong {
-  font-size: 24px;
+  font-size: 28px;
   color: var(--primary);
 }
 .progress-caption span {
@@ -543,7 +557,8 @@ small {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 5px 8px;
-  background: var(--muted);
+  background: var(--tdp-surface);
+  border: 1px solid var(--tdp-border);
   border-radius: 10px;
   padding: 14px;
   font-size: 12px;

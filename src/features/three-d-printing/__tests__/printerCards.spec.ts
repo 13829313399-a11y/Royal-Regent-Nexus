@@ -33,6 +33,12 @@ describe('printer card display state', () => {
       expect(card().find('[role="progressbar"]').exists()).toBe(false)
     }
 
+    dashboard.value = { printers: [{ ...printer, progress_percent: NaN, remaining_minutes: NaN, nozzle_temperature: NaN }] }
+    await nextTick()
+    expect(card().text()).toContain('进度待上报')
+    expect(card().text()).not.toMatch(/NaN|剩余/)
+    expect(card().find('[role="progressbar"]').exists()).toBe(false)
+
     dashboard.value = { printers: [{ ...printer, connected: false, state: 'RUNNING' }] }
     await nextTick()
     expect(card().text()).toContain('离线')

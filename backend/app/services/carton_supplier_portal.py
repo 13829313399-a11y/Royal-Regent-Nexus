@@ -209,6 +209,7 @@ def acceptance_order_ids(db, orders, status):
     commitment must never make the current ordinary purchase look accepted.
     """
     from collections import defaultdict
+    matching_statuses = ("PENDING", "PARTIAL") if status == "AWAITING_ACCEPTANCE" else (status,)
     result = []
     for start in range(0, len(orders), 400):
         batch = orders[start:start + 400]
@@ -233,7 +234,7 @@ def acceptance_order_ids(db, orders, status):
             if status == "LATE_PROMISE":
                 if any(int(item.get("difference_days") or 0) > 0 for item in summary.get("delivery_differences", [])):
                     result.append(order.id)
-            elif summary["status"] == status:
+            elif summary["status"] in matching_statuses:
                 result.append(order.id)
     return result
 

@@ -127,12 +127,14 @@ def test_formal_schedule_order_blocks_single_and_bulk_manual_marking(monkeypatch
         bulk = single + '/bulk'
         linked = {'source_sheet': '子弹枪ITEM表', 'source_row': 4}
         unlinked = {'source_sheet': '子弹枪ITEM表', 'source_row': 5}
-        for response in (
-            client.post(single, json={**command, **linked}),
-            client.post(bulk, json={**command, 'rows': [unlinked, linked]}),
-        ):
-            assert response.status_code == 409, response.text
-            assert '已关联正式订单' in response.json()['detail']
+        for requested_mark in (True, False):
+            request = {**command, 'marked': requested_mark}
+            for response in (
+                client.post(single, json={**request, **linked}),
+                client.post(bulk, json={**request, 'rows': [unlinked, linked]}),
+            ):
+                assert response.status_code == 409, response.text
+                assert '已关联正式订单' in response.json()['detail']
         state = client.get(single, params=params).json()
         assert all(not state.get(entry['schedule_identity'], {}).get('marked') for entry in imported)
 

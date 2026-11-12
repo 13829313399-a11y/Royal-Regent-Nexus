@@ -5273,7 +5273,8 @@ def _build_approval_sheet(
     )
     if is_direct:
         release_label = "P4 直接输出"
-        boundary_label = "报价版本已冻结，可交接客价转换台"
+        boundary_label = ("报价版本已冻结，可交接客价转换台" if manifest.get("source_frozen", True)
+                          else "输出文件保留，报价仍可修改；需锁定请在报价首页手动冻结")
     summary = (
         ("模板版本", template_version, "公式版本", quote.formula_version),
         ("参考快照", quote.reference_snapshot_id, "报价头revision", quote.header_revision),

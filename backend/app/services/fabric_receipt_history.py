@@ -7,6 +7,7 @@ from app.models.fabric_receiving import FabricReceipt
 from app.services import fabric_receiving as receiving
 from app.services import warehouse_operations as operations
 from app.services.fabric_receipt_corrections import reversal_rows
+from app.services.fabric_receipt_pricing import purchase_price_reference
 
 
 def operation_record(entry, reversal):
@@ -31,6 +32,7 @@ def operation_record(entry, reversal):
         actor_name=entry['actor_name'], occurred_at=entry['occurred_at'], stock_posted=True,
         unit_price=line.get('unit_price', ''), price_unit=line.get('price_unit', ''),
         currency=line.get('currency', ''), price_basis='原送货单参考价格；本页不推算金额或应付金额',
+        purchase_price=purchase_price_reference(purchase.get('source_facts') or {}),
         reversed=bool(reversal), reversal=dict(id=reversal['id'], date=reversal['business_date'],
             reason=reversal['data'].get('reason', ''), actor_name=reversal['actor_name']) if reversal else None,
         batches=[dict(id=entry['id'], quantity=body['quantity'], location=body.get('location', ''),

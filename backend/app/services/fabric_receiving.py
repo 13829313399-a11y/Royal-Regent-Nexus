@@ -13,7 +13,7 @@ from app.models.fabric_receiving import FabricReceipt, FabricStockBatch, FabricI
 from app.models.fabric_master import FabricChaseResolution
 from app.services import fabric_procurement as source
 from app.services.fabric_procurement_parser import number, decimal_text, digest, dump
-from app.services.fabric_receipt_pricing import omit_empty_prices, evidence as price_evidence
+from app.services.fabric_receipt_pricing import omit_empty_prices, evidence as price_evidence, purchase_price_reference
 
 MODELS = (FabricReceipt, FabricStockBatch, FabricInventoryMovement)
 
@@ -33,10 +33,10 @@ def receipt_request_body(payload):
     return body
 
 
-def validate_delivery_quantity(total, declared):
-    limit = quantity(declared, '本单该采购明细到货量')
+def validate_delivery_quantity(total, declared, *, label='本单该采购明细到货量'):
+    limit = quantity(declared, label)
     if total > limit:
-        raise HTTPException(422, '实点合计超过本单该采购明细到货量，请核对数量；填写超收说明不能放行')
+        raise HTTPException(422, f'实点合计超过{label}，请核对数量；填写超收说明不能放行')
     return limit
 
 
@@ -165,8 +165,10 @@ def receipt_data(db, receipt, *, reversals=None):
         FabricStockBatch.receipt_id == receipt.id).order_by(FabricStockBatch.id))
     from app.services.fabric_receipt_corrections import reversal_rows
     reversal = (reversal_rows(db) if reversals is None else reversals).get(receipt.id)
+    facts = json.loads(receipt.source_json)
     return {"id": receipt.id, "source_line_id": receipt.source_line_id, "source_revision": receipt.source_revision,
-        "facts": json.loads(receipt.source_json), **json.loads(receipt.payload_json), "quantity": receipt.quantity,
+        "facts": facts, **json.loads(receipt.payload_json), "quantity": receipt.quantity,
+        'purchase_price': purchase_price_reference(facts),
         "unit": receipt.unit, "actor_name": receipt.actor_name, "occurred_at": receipt.occurred_at, "stock_posted": Decimal(receipt.quantity) > 0,
         'reversed': reversal is not None, 'reversal': {'id': reversal.id, 'date': reversal.business_date,
             'reason': json.loads(reversal.payload_json)['reason'], 'actor_name': reversal.actor_name} if reversal else None,
@@ -174,18 +176,19 @@ def receipt_data(db, receipt, *, reversals=None):
                      "quality_status": batch.quality_status, "quantity": movement.quantity} for batch, movement in rows]}
 
 
-def receipt_line_quantities(batch):
+def receipt_line_quantities(batch, *, counts=None):
     def parse(value, label):
         if not re.fullmatch(r'[0-9]{1,12}(?:\.[0-9]{1,6})?', value.strip()):
             raise HTTPException(422, f'{label}须为非负普通数字，最多六位小数')
         return quantity(value, label, True)
 
+    counts = batch if counts is None else counts
     accepted = parse(batch.quantity, '入库量')
-    damaged = parse(batch.damaged_quantity, '破损量')
-    rejected = parse(batch.rejected_quantity, '拒收量')
-    other = parse(batch.other_unusable_quantity, '其他不可用量')
+    damaged = parse(counts.damaged_quantity, '破损量')
+    rejected = parse(counts.rejected_quantity, '拒收量')
+    other = parse(counts.other_unusable_quantity, '其他不可用量')
     returned = damaged + rejected + other
-    counted = parse(batch.counted_quantity, '实点量') if batch.counted_quantity.strip() else accepted + returned
+    counted = parse(counts.counted_quantity, '实点量') if counts.counted_quantity.strip() else accepted + returned
     quantity(decimal_text(counted), '实点量', True)
     if returned > counted:
         raise HTTPException(422, '破损、拒收和其他不可用合计不能超过实点量')

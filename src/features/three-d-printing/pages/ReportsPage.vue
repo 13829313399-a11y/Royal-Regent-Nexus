@@ -18,7 +18,7 @@ const { canExport, saving, dateFrom, dateTo, exportWorkbook } =
         v-if="canExport"
         tone="primary"
         :busy="saving"
-        @click="exportWorkbook"
+        @click="exportWorkbook()"
       >
         <template #icon><Download :size="16" /></template>导出 Excel
       </TdpButton>

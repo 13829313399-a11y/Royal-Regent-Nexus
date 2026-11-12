@@ -117,7 +117,7 @@ def create_job(payload: CreateJob, user: User, db: DB):
     except ToolError as exc:
         service.fail(exc.code, exc.message, 422)
     options = payload.options.model_dump(include=OPTION_KEYS[payload.operation])
-    if payload.operation == "image_translate":
+    if payload.operation in {"image_translate", "pdf_translate"}:
         from app.services.document_tools.image_translation import require_runtime
         from app.services.document_tools.document_ir import ToolError
         try:
@@ -192,6 +192,9 @@ def result(job_id: str, user: User, db: DB, table_id: str | None = None, target_
     for block in blocks:
         block.get("style", {}).pop("image_path", None)
     manifest = dict(ir.get("engine_manifest", {}))
+    document_pages=manifest.pop('document_pages',{})
+    if document_pages:
+        manifest['document_page_count']=len(document_pages)
     candidates = manifest.pop("regional_candidates", [])
     if candidates:
         manifest["regional_candidate_count"] = len(candidates)

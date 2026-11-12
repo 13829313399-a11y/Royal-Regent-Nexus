@@ -73,7 +73,8 @@ watch(
     <TranslationOptions v-if="translating" v-model="options" :availability="translationAvailability" />
     <p v-if="operation === 'word_translate'">翻译正文、表格及页眉页脚，输出 Word；图片内文字保留原样。</p>
     <p v-if="operation === 'excel_translate'">只翻译所选工作表的文字，保留公式、数字和格式；未选表示全部工作表（含隐藏表）。</p>
-    <p v-if="operation === 'pdf_translate'">输出重新排版的译文 PDF 与 Word，扫描件需核对识别结果。</p>
+    <p v-if="operation === 'pdf_translate'">优先完整翻译并尽量原位排版，输出 PDF、完整对照译文与可编辑 Word。未能原位回填的译文附在 PDF 后；需核对项会单独列出。</p>
+    <label v-if="operation === 'pdf_translate' && options.translation_engine === 'online'" class="dt-check"><input v-model="options.refresh_source" type="checkbox" />重新识别原文<small>识别有误时开启；通常复用本文件已有的识别结果。</small></label>
     <label v-if="operation !== 'pdf_split' && (!translating || operation === 'pdf_translate')"
       >页面范围<input
         v-model="options.page_selection"
@@ -226,7 +227,7 @@ watch(
               options.groups = ($event.target as HTMLTextAreaElement).value
             "
             placeholder="1-3;4,6,5"
-          /><small>分号分文件；逗号与区间按输入顺序输出。</small></label
+          /><small>支持中英文分号、逗号；分号分文件，逗号与区间按输入顺序输出。</small></label
         >
         <p v-if="groupPreview.error" role="alert">{{ groupPreview.error }}</p>
         <p
