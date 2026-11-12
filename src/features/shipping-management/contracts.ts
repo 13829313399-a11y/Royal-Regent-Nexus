@@ -92,6 +92,41 @@ export interface ShippingFactoryMapping {
   local: boolean
 }
 
+export type ShippingOrderStatus = '已创建' | '已确认' | '已装柜' | '已开船' | '已取消'
+
+export const shippingOrderStatusMeta: Record<ShippingOrderStatus, { tone: Tone }> = {
+  已创建: { tone: 'slate' },
+  已确认: { tone: 'blue' },
+  已装柜: { tone: 'teal' },
+  已开船: { tone: 'green' },
+  已取消: { tone: 'red' },
+}
+
+/** 工厂货期排单的列表实体：一票货一个柜/车次，按开航日期倒序展示。 */
+export interface ShippingProduct {
+  code: string
+  name: string
+}
+
+export interface ShippingOrder {
+  id: string
+  containerNo: string
+  so: string
+  containerType: string
+  /** 出场时间，与开航日期一致，用于排序与区间筛选。 */
+  departureDate: string
+  siDeadline: string
+  cutoff: string
+  port: string
+  destination: string
+  plCount: number
+  cbm: number
+  special: string
+  status: ShippingOrderStatus
+  /** 本票货物摘要，用于按货号或货名搜索。 */
+  products: ShippingProduct[]
+}
+
 export interface ShippingFactoryProfile {
   factoryId: ShippingFactoryId
   label: string
@@ -100,6 +135,7 @@ export interface ShippingFactoryProfile {
   ports: ShippingPort[]
   factoryMappings: ShippingFactoryMapping[]
   tasks: ShipmentTask[]
+  orders: ShippingOrder[]
 }
 
 /** 船务单据进度：SO 排出货表、补料（SI）、舱单。 */
@@ -685,6 +721,127 @@ const huakangDTasks: ShipmentTask[] = [
   },
 ]
 
+type OrderRow = [
+  id: string,
+  containerNo: string,
+  so: string,
+  containerType: string,
+  departureDate: string,
+  siDeadline: string,
+  cutoff: string,
+  port: string,
+  destination: string,
+  plCount: number,
+  cbm: number,
+  special: string,
+  status: ShippingOrderStatus,
+]
+
+function orderRows(pool: ShippingProduct[], rows: OrderRow[]): ShippingOrder[] {
+  return rows.map(([id, containerNo, so, containerType, departureDate, siDeadline, cutoff, port, destination, plCount, cbm, special, status], index) => ({
+    id, containerNo, so, containerType, departureDate, siDeadline, cutoff, port, destination, plCount, cbm, special, status,
+    products: [pool[index % pool.length]!, pool[(index + 3) % pool.length]!],
+  }))
+}
+
+const huaxingProducts: ShippingProduct[] = [
+  { code: '15754', name: '链条枪' },
+  { code: '62437', name: '三弹枪' },
+  { code: '15789', name: '恐龙蛋' },
+  { code: '92107', name: '泡泡棒' },
+  { code: '15756', name: '遥控车' },
+  { code: '9548', name: '沙滩桶' },
+  { code: '15783', name: '恐龙套装' },
+]
+
+const huadengProducts: ShippingProduct[] = [
+  { code: '15812', name: '遥控工程车' },
+  { code: '15901', name: '合金车模' },
+  { code: '15944', name: '轨道车' },
+  { code: '15520', name: '拼装积木' },
+  { code: '15888', name: '遥控飞机' },
+  { code: '15977', name: '合金车队' },
+]
+
+const huakangAProducts: ShippingProduct[] = [
+  { code: '22110', name: '轨道套装' },
+  { code: '22144', name: '合金车队' },
+  { code: '22190', name: '拼装飞机' },
+  { code: '22210', name: '遥控船' },
+  { code: '22255', name: '积木城堡' },
+  { code: '22301', name: '恐龙模型' },
+]
+
+const huakangBProducts: ShippingProduct[] = [
+  { code: '33101', name: '手工套装' },
+  { code: '33155', name: '彩泥套装' },
+  { code: '33220', name: '拼装积木' },
+  { code: '33290', name: '遥控车' },
+]
+
+const huakangDProducts: ShippingProduct[] = [
+  { code: '44101', name: '沙滩玩具' },
+  { code: '44155', name: '水枪套装' },
+  { code: '44220', name: '拼装模型' },
+  { code: '44290', name: '遥控越野车' },
+]
+
+const huaxingOrders = orderRows(huaxingProducts, [
+  ['1001', 'C260304887', 'SHZ8265013', '1*40HQ', day(8), at(6, '14:00'), at(7, '17:00'), '盐田', '美国 · 洛杉矶', 4, 33.6, '立放、拉网；柜门拍照留档', '已创建'],
+  ['1002', 'C260304891', 'SHZ8265014', '1*40HQ', day(6), at(4, '11:00'), at(5, '17:00'), '盐田', '美国 · 长滩', 3, 28.4, '与 1001 同批拼柜', '已创建'],
+  ['1003', '', 'SZCFS2288', '散货交仓', day(5), at(3, '12:00'), at(4, '08:30'), '盐田', '美国 · 芝加哥', 1, 31.0, '按 35 CBM 分两车', '已确认'],
+  ['1004', 'C260304760', 'SHZ8264998', '1*40HQ', day(-1), at(-2, '14:00'), at(-1, '17:00'), '盐田', '美国 · 纽约', 4, 52.3, '', '已装柜'],
+  ['1005', '', 'SHZ8265301', '1*20GP', '', '', '', '盐田', '美国 · 休斯顿', 2, 12.6, '剩余散货等待客户通知', '已创建'],
+  ['1006', 'C260304611', 'SHZ8264777', '1*40HQ', day(-3), at(-4, '09:00'), at(-3, '16:00'), '南沙', '美国 · 奥克兰', 3, 41.8, '', '已开船'],
+  ['1007', 'C260304455', 'SHZ8264551', '1*20GP', day(-5), at(-6, '10:00'), at(-5, '15:00'), '南沙', '加拿大 · 温哥华', 2, 19.2, '', '已开船'],
+  ['1008', 'C260304990', 'SHZ8265110', '1*40HQ', day(2), at(0, '14:00'), at(1, '17:00'), '盐田', '英国 · 费利克斯托', 3, 37.5, 'UKCA 标签照片随柜', '已确认'],
+  ['1009', 'C260305012', 'SHZ8265188', '1*45HC', day(1), at(-1, '11:00'), at(0, '16:00'), '蛇口', '加拿大 · 多伦多', 2, 44.1, '华登做柜拼柜', '已创建'],
+  ['1010', '', 'SHZ8265202', '散货交仓', day(3), at(1, '12:00'), at(2, '08:30'), '盐田', '美国 · 达拉斯', 1, 22.7, '', '已创建'],
+  ['1011', 'C260304301', 'SHZ8264960', '1*40HQ', day(-7), at(-8, '14:00'), at(-7, '17:00'), '盐田', '美国 · 洛杉矶', 4, 58.2, '', '已开船'],
+  ['1012', 'C260305101', 'SHZ8265388', '1*20GP', day(4), at(2, '09:00'), at(3, '16:00'), '南沙', '美国 · 迈阿密', 2, 15.9, '客户指定船公司', '已取消'],
+])
+
+const huadengOrders = orderRows(huadengProducts, [
+  ['2001', 'HDCU771201', 'HDX77120', '1*45HC', day(7), at(5, '10:00'), at(6, '16:00'), '蛇口', '加拿大 · 多伦多', 3, 46.2, '华登做柜，兴信货截关前送达', '已创建'],
+  ['2002', '', 'HDSO5521', '散货交仓', day(3), at(1, '15:00'), at(2, '09:00'), '蛇口', '加拿大 · 多伦多', 2, 20.2, '交仓单注明 MOOSE 收货编号', '已确认'],
+  ['2003', 'HDCU770881', 'HDX77088', '1*40HQ', day(-2), at(-3, '10:00'), at(-2, '16:00'), '蛇口', '加拿大 · 多伦多', 3, 39.4, '', '已装柜'],
+  ['2004', '', 'HDX77208', '1*20GP', '', '', '', '蛇口', '英国 · 费利克斯托', 1, 3.4, '剩余散货等待客户通知', '已创建'],
+  ['2005', 'HDCU773011', 'HDX77301', '1*40HQ', day(5), at(3, '14:00'), at(4, '17:00'), '盐田', '美国 · 洛杉矶', 3, 34.8, '', '已确认'],
+  ['2006', 'HDCU768801', 'HDX76880', '1*40HQ', day(-6), at(-7, '10:00'), at(-6, '15:00'), '蛇口', '加拿大 · 温哥华', 4, 55.1, '', '已开船'],
+  ['2007', 'HDCU774021', 'HDX77402', '1*20GP', day(1), at(-1, '09:00'), at(0, '14:00'), '蛇口', '加拿大 · 多伦多', 2, 17.6, '', '已确认'],
+  ['2008', '', 'HDX77455', '散货交仓', day(4), at(2, '12:00'), at(3, '08:30'), '盐田', '美国 · 芝加哥', 1, 26.3, '', '已创建'],
+  ['2009', 'HDCU775001', 'HDX77500', '1*45HC', day(9), at(7, '11:00'), at(8, '16:00'), '蛇口', '加拿大 · 多伦多', 4, 48.7, '品牌行红字版走柜表', '已创建'],
+  ['2010', 'HDCU765201', 'HDX76520', '1*40HQ', day(-9), at(-10, '14:00'), at(-9, '17:00'), '蛇口', '加拿大 · 温哥华', 2, 30.5, '', '已取消'],
+])
+
+const huakangAOrders = orderRows(huakangAProducts, [
+  ['3001', 'KACU551021', 'KAX55102', '1*40HQ', day(6), at(4, '13:00'), at(5, '17:00'), '南沙', '英国 · 费利克斯托', 3, 37.2, 'UKCA 标签照片随柜', '已创建'],
+  ['3002', '', 'KASO7781', '散货交仓', day(4), at(2, '12:00'), at(3, '08:00'), '南沙', '英国 · 费利克斯托', 2, 18.1, '交仓资料与照片一并归档', '已确认'],
+  ['3003', 'KACU550401', 'KAX55040', '1*20GP', day(-2), at(-3, '13:00'), at(-2, '17:00'), '南沙', '英国 · 伦敦门户', 2, 14.6, '', '已装柜'],
+  ['3004', 'KACU552211', 'KAX55221', '1*40HQ', day(2), at(0, '14:00'), at(1, '17:00'), '盐田', '美国 · 洛杉矶', 3, 42.5, '', '已创建'],
+  ['3005', 'KACU549801', 'KAX54980', '1*40HQ', day(-6), at(-7, '10:00'), at(-6, '16:00'), '南沙', '英国 · 费利克斯托', 4, 51.7, '', '已开船'],
+  ['3006', '', 'KASO7799', '散货交仓', day(1), at(-1, '12:00'), at(0, '09:00'), '盐田', '美国 · 芝加哥', 1, 21.4, '', '已创建'],
+  ['3007', 'KACU552702', 'KAX55270', '1*20GP', day(8), at(6, '09:00'), at(7, '15:00'), '南沙', '英国 · 伦敦门户', 2, 16.3, '', '已确认'],
+  ['3008', 'KACU548901', 'KAX54890', '1*40HQ', day(-8), at(-9, '14:00'), at(-8, '17:00'), '南沙', '英国 · 费利克斯托', 3, 44.9, '', '已取消'],
+])
+
+const huakangBOrders = orderRows(huakangBProducts, [
+  ['4001', 'KBCU310771', 'KBX31077', '1*40GP', day(8), at(6, '14:00'), at(7, '17:00'), '盐田', '美国 · 洛杉矶', 2, 15.1, '柜内拍照，箱门贴 CEPIA 标签', '已创建'],
+  ['4002', '', 'KBSO9912', '散货交仓', day(3), at(1, '12:00'), at(2, '09:00'), '盐田', '美国 · 达拉斯', 2, 38.5, '体积超过 35 CBM，需拆车', '已确认'],
+  ['4003', 'KBCU310021', 'KBX31002', '1*40HQ', day(-5), at(-6, '14:00'), at(-5, '17:00'), '盐田', '美国 · 纽瓦克', 3, 45.8, '', '已装柜'],
+  ['4004', 'KBCU311501', 'KBX31150', '1*20GP', day(1), at(-1, '10:00'), at(0, '16:00'), '南沙', '美国 · 奥克兰', 1, 9.7, '', '已创建'],
+  ['4005', 'KBCU307701', 'KBX30770', '1*40HQ', day(-10), at(-11, '09:00'), at(-10, '15:00'), '盐田', '美国 · 洛杉矶', 4, 57.3, '', '已开船'],
+  ['4006', '', 'KBX31201', '1*40GP', day(5), at(3, '11:00'), at(4, '16:00'), '南沙', '美国 · 迈阿密', 2, 24.6, '', '已取消'],
+])
+
+const huakangDOrders = orderRows(huakangDProducts, [
+  ['5001', 'KDCU102451', 'KDX10245', '1*20GP', day(7), at(5, '11:00'), at(6, '15:00'), '盐田', '阿联酋 · 迪拜', 2, 9.2, '阿拉伯语标签确认图', '已创建'],
+  ['5002', '', 'KDSO3301', '散货', day(2), at(0, '12:00'), at(1, '08:00'), '盐田', '阿联酋 · 杰贝阿里', 2, 7.8, '送清溪物流园，按预约时段进场', '已确认'],
+  ['5003', 'KDCU101801', 'KDX10180', '1*20GP', day(-4), at(-5, '11:00'), at(-4, '15:00'), '盐田', '阿联酋 · 迪拜', 1, 6.4, '', '已装柜'],
+  ['5004', 'KDCU103122', 'KDX10312', '1*40HQ', day(4), at(2, '14:00'), at(3, '17:00'), '南沙', '沙特 · 吉达', 3, 36.4, '', '已创建'],
+  ['5005', 'KDCU100201', 'KDX10020', '1*40HQ', day(-9), at(-10, '10:00'), at(-9, '16:00'), '盐田', '阿联酋 · 迪拜', 3, 41.2, '', '已开船'],
+])
+
 export const shippingFactoryProfiles: Record<ShippingFactoryId, ShippingFactoryProfile> = {
   huaxing: {
     factoryId: 'huaxing',
@@ -706,6 +863,7 @@ export const shippingFactoryProfiles: Record<ShippingFactoryId, ShippingFactoryP
       { english: 'Dong Guan Hanson Plastic Product Ltd', chinese: '兴信（贸易抬头）', local: true },
     ],
     tasks: huaxingTasks,
+    orders: huaxingOrders,
   },
   huadeng: {
     factoryId: 'huadeng',
@@ -727,6 +885,7 @@ export const shippingFactoryProfiles: Record<ShippingFactoryId, ShippingFactoryP
       { english: 'Sky Castle Industrial Ltd.', chinese: 'Sky Castle', local: false },
     ],
     tasks: huadengTasks,
+    orders: huadengOrders,
   },
   'huakang-a': {
     factoryId: 'huakang-a',
@@ -748,6 +907,7 @@ export const shippingFactoryProfiles: Record<ShippingFactoryId, ShippingFactoryP
       { english: 'Dong Guan Huadeng Toys Co., Ltd.', chinese: '华登', local: true },
     ],
     tasks: huakangATasks,
+    orders: huakangAOrders,
   },
   'huakang-b': {
     factoryId: 'huakang-b',
@@ -769,6 +929,7 @@ export const shippingFactoryProfiles: Record<ShippingFactoryId, ShippingFactoryP
       { english: 'Prologis Dongguan Warehouse', chinese: '普洛斯（东莞）仓', local: false },
     ],
     tasks: huakangBTasks,
+    orders: huakangBOrders,
   },
   'huakang-d': {
     factoryId: 'huakang-d',
@@ -790,6 +951,7 @@ export const shippingFactoryProfiles: Record<ShippingFactoryId, ShippingFactoryP
       { english: 'Qingxi Logistics Park', chinese: '清溪物流园', local: false },
     ],
     tasks: huakangDTasks,
+    orders: huakangDOrders,
   },
 }
 
@@ -815,6 +977,16 @@ export function hoursUntil(value: string, now = new Date()): number | null {
   const parsed = new Date(value.replace(' ', 'T'))
   if (Number.isNaN(parsed.getTime())) return null
   return (parsed.getTime() - now.getTime()) / 3_600_000
+}
+
+/** 距某天还有几个自然日；今天 0，明天 1，已过为负数。 */
+export function daysUntil(value: string, now = new Date()): number | null {
+  if (!value) return null
+  const parsed = new Date(value.replace(' ', 'T'))
+  if (Number.isNaN(parsed.getTime())) return null
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const target = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate())
+  return Math.round((target.getTime() - start.getTime()) / 86_400_000)
 }
 
 export function relativeDayText(value: string, now = new Date()): string {

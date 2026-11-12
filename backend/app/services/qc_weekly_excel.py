@@ -26,7 +26,7 @@ from app.services import qc_weekly_templates as weekly
 MIME = 'application/vnd.ms-excel'
 TTL, MAX_BYTES = 600, 32 * 1024 * 1024
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / 'templates/qc-weekly'
-ASSETS = json.loads((TEMPLATE_DIR/'export-templates.json').read_text())
+ASSETS = json.loads((TEMPLATE_DIR/'export-templates.json').read_text(encoding='utf-8'))
 FOOTER_COLUMNS = [0, 1, 3, 5, 7, 10, 14, 15, 16]
 FOOTER_SPANS = [(0,0),(1,2),(3,4),(5,6),(7,9),(10,13),(14,14),(15,15),(16,17)]
 

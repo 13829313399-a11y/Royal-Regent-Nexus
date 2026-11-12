@@ -1,0 +1,337 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  CalendarClock,
+  ChevronLeft,
+  ChevronRight,
+  FileSpreadsheet,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Truck,
+  X,
+} from '@lucide/vue'
+import StatusPill from '@/components/common/StatusPill.vue'
+import type { ShippingFactoryProfile, ShippingOrder } from './contracts'
+import { shippingOrderStatusMeta } from './contracts'
+
+const props = defineProps<{ profile: ShippingFactoryProfile }>()
+const emit = defineEmits<{ notify: [message: string] }>()
+
+const PAGE_SIZE = 10
+
+const actionCards = [
+  { id: 'so-export', title: 'SO排出货表', hint: '按 SO 汇总待出运明细', icon: FileSpreadsheet },
+  { id: 'vehicle-export', title: '车的排出货表', hint: '按车次汇总交仓出货明细', icon: Truck },
+  { id: 'si-supplement', title: '补料', hint: 'SI 截止前补料与截补料提醒', icon: CalendarClock },
+  { id: 'customs-pack', title: '通关一体化资料', hint: '报关单 / 装箱单 / 发票', icon: ShieldCheck },
+]
+
+const searchInput = ref('')
+const appliedQuery = ref('')
+
+const page = ref(1)
+const detail = ref<ShippingOrder | null>(null)
+const refreshNote = ref('')
+const closeButton = ref<HTMLButtonElement | null>(null)
+
+const filteredOrders = computed(() => {
+  const keyword = appliedQuery.value.trim().toLowerCase()
+  return props.profile.orders
+    .filter((order) => {
+      if (!keyword) return true
+      return order.products.some((product) =>
+        product.code.toLowerCase().includes(keyword) || product.name.toLowerCase().includes(keyword),
+      )
+    })
+    .sort((a, b) => (b.departureDate || '').localeCompare(a.departureDate || ''))
+})
+
+const total = computed(() => filteredOrders.value.length)
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
+const pagedOrders = computed(() => filteredOrders.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
+
+watch(filteredOrders, () => {
+  page.value = 1
+})
+
+watch(pageCount, (count) => {
+  if (page.value > count) page.value = count
+})
+
+function applySearch() {
+  appliedQuery.value = searchInput.value.trim()
+  page.value = 1
+}
+
+function clearSearch() {
+  searchInput.value = ''
+  appliedQuery.value = ''
+  refreshNote.value = ''
+  page.value = 1
+}
+
+function refresh() {
+  page.value = 1
+  refreshNote.value = `已刷新 · 共 ${total.value} 条`
+}
+
+function preview(title: string) {
+  emit('notify', `界面预览：${title}尚未接入后端接口。`)
+}
+
+function openDetail(order: ShippingOrder) {
+  detail.value = order
+  void nextTick(() => closeButton.value?.focus())
+}
+
+function closeDetail() {
+  detail.value = null
+}
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && detail.value) closeDetail()
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+
+function shortDate(value: string) {
+  return value ? value.slice(5).replace('-', '/') : ''
+}
+
+function shortDateTime(value: string) {
+  return value ? value.slice(5, 16).replace('-', '/') : '—'
+}
+
+function statusTone(order: ShippingOrder) {
+  return shippingOrderStatusMeta[order.status].tone
+}
+</script>
+
+<template>
+  <div class="space-y-4">
+    <section aria-label="船务作业" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <button
+        v-for="action in actionCards"
+        :key="action.id"
+        type="button"
+        class="group flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition hover:border-teal-200 hover:bg-teal-50/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
+        :aria-label="action.title"
+        @click="preview(action.title)"
+      >
+        <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600 transition group-hover:bg-teal-100/70 group-hover:text-teal-800" aria-hidden="true">
+          <component :is="action.icon" class="size-5" />
+        </span>
+        <span class="min-w-0">
+          <span class="block text-[13px] font-bold text-slate-900">{{ action.title }}</span>
+          <span class="mt-0.5 block text-[11px] leading-4 text-slate-500">{{ action.hint }}</span>
+        </span>
+      </button>
+    </section>
+
+    <section class="enterprise-panel rounded-xl" aria-label="工厂货期排单">
+      <header class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-4 sm:px-5">
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-semibold tracking-[-0.02em] text-slate-950">工厂货期排单</h2>
+          <p class="mt-1 text-[11px] text-slate-500">
+            按开航日期倒序 · 状态默认「已创建」 · 每页 {{ PAGE_SIZE }} 条
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <p class="text-[11px] text-slate-500" role="status" aria-live="polite">
+            共 <b class="tabular-nums text-slate-800">{{ total }}</b> 条
+            <span v-if="refreshNote" class="ml-1 text-slate-400">{{ refreshNote }}</span>
+          </p>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-800"
+            @click="refresh"
+          >
+            <RefreshCw class="size-3.5" aria-hidden="true" />刷新
+          </button>
+        </div>
+      </header>
+
+      <div class="border-b border-slate-100 px-4 py-3 sm:px-5">
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="relative min-w-[220px] flex-1">
+            <span class="sr-only">搜索货号或货名</span>
+            <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+            <input
+              v-model="searchInput"
+              type="search"
+              aria-label="搜索货号或货名"
+              placeholder="搜索货号或货名"
+              class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-[13px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-3 focus:ring-blue-500/15"
+              @keydown.enter="applySearch"
+            >
+          </label>
+          <button
+            type="button"
+            class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-[13px] font-semibold text-white shadow-sm transition hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+            @click="applySearch"
+          >
+            <Search class="size-4" aria-hidden="true" />搜索
+          </button>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[1300px] border-collapse text-left text-[12px]">
+          <thead class="bg-slate-50 text-[11px] font-semibold text-slate-500">
+            <tr>
+              <th scope="col" class="px-3 py-2">ID</th>
+              <th scope="col" class="px-3 py-2">柜号</th>
+              <th scope="col" class="px-3 py-2">SO号</th>
+              <th scope="col" class="px-3 py-2">柜型</th>
+              <th scope="col" class="px-3 py-2">出场时间</th>
+              <th scope="col" class="px-3 py-2">SI截止</th>
+              <th scope="col" class="px-3 py-2" title="截关 / 截数期">截重期</th>
+              <th scope="col" class="px-3 py-2">港口</th>
+              <th scope="col" class="px-3 py-2">收货地</th>
+              <th scope="col" class="px-3 py-2 text-right">PL票数</th>
+              <th scope="col" class="px-3 py-2 text-right">CBM</th>
+              <th scope="col" class="px-3 py-2">特殊要求</th>
+              <th scope="col" class="px-3 py-2 text-right">状态</th>
+              <th scope="col" class="sticky right-0 z-20 w-[160px] border-l border-slate-100 bg-slate-50 px-3 py-2 text-right shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)]">操作</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr
+              v-for="order in pagedOrders"
+              :key="order.id"
+              class="bg-white hover:bg-slate-50/60"
+            >
+              <td class="px-3 py-2 font-semibold tabular-nums text-slate-800">{{ order.id }}</td>
+              <td class="px-3 py-2 tabular-nums text-slate-600">{{ order.containerNo || '—' }}</td>
+              <td class="px-3 py-2">
+                <button type="button" class="font-semibold tabular-nums text-teal-700 underline-offset-2 hover:underline" :aria-label="`查看 SO ${order.so}`" @click="openDetail(order)">
+                  {{ order.so }}
+                </button>
+              </td>
+              <td class="px-3 py-2 text-slate-700">{{ order.containerType }}</td>
+              <td class="px-3 py-2 tabular-nums text-slate-700" :title="order.departureDate || '待排'">{{ order.departureDate ? shortDate(order.departureDate) : '待排' }}</td>
+              <td class="px-3 py-2 tabular-nums text-slate-600">{{ shortDateTime(order.siDeadline) }}</td>
+              <td class="px-3 py-2 tabular-nums text-slate-600">{{ shortDateTime(order.cutoff) }}</td>
+              <td class="px-3 py-2 text-slate-700">{{ order.port }}</td>
+              <td class="px-3 py-2 text-slate-700">{{ order.destination }}</td>
+              <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ order.plCount }}</td>
+              <td class="px-3 py-2 text-right tabular-nums text-slate-800">{{ order.cbm.toFixed(1) }}</td>
+              <td class="max-w-[190px] truncate px-3 py-2 text-slate-500" :title="order.special">{{ order.special || '—' }}</td>
+              <td class="whitespace-nowrap px-3 py-2"><StatusPill :label="order.status" :tone="statusTone(order)" compact /></td>
+              <td
+                class="sticky right-0 z-10 border-l border-slate-100 bg-white px-3 py-2 shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)]"
+              >
+                <div class="flex items-center justify-end gap-1">
+                  <button type="button" class="h-7 whitespace-nowrap rounded-md border border-slate-200 bg-white px-1.5 text-[11px] font-semibold text-slate-600 hover:border-teal-200 hover:text-teal-800" @click="openDetail(order)">查看</button>
+                  <button type="button" class="h-7 whitespace-nowrap rounded-md border border-slate-200 bg-white px-1.5 text-[11px] font-semibold text-slate-600 hover:border-teal-200 hover:text-teal-800" @click="preview(`修改出货单 ${order.so}（${order.id}）`)">修改</button>
+                  <button type="button" class="h-7 whitespace-nowrap rounded-md border border-slate-200 bg-white px-1.5 text-[11px] font-semibold text-slate-600 hover:border-teal-200 hover:text-teal-800" @click="preview(`柜单 ${order.so}`)">柜单</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="!pagedOrders.length" class="px-5 py-12 text-center" role="status">
+        <p class="text-[13px] font-semibold text-slate-800">没有匹配的出货单</p>
+        <p class="mt-1 text-[12px] text-slate-500">换个货号或货名再试，或清空搜索查看全部 {{ profile.orders.length }} 票。</p>
+        <button type="button" class="mt-3 text-[12px] font-semibold text-teal-700 hover:underline" @click="clearSearch">清空搜索</button>
+      </div>
+
+      <footer class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-3 sm:px-5">
+        <p class="text-[11px] text-slate-500">
+          第 <span class="tabular-nums">{{ page }}</span> / <span class="tabular-nums">{{ pageCount }}</span> 页
+          · 本页 <span class="tabular-nums">{{ pagedOrders.length }}</span> 条
+        </p>
+        <div class="flex items-center gap-1">
+          <button
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 disabled:opacity-40"
+            :disabled="page <= 1"
+            aria-label="上一页"
+            @click="page -= 1"
+          >
+            <ChevronLeft class="size-3.5" aria-hidden="true" />上一页
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 disabled:opacity-40"
+            :disabled="page >= pageCount"
+            aria-label="下一页"
+            @click="page += 1"
+          >
+            下一页<ChevronRight class="size-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      </footer>
+    </section>
+
+    <Teleport to="body">
+      <div
+        v-if="detail"
+        class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/40 p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shipping-order-detail-title"
+        @click.self="closeDetail"
+      >
+        <div class="w-[min(760px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl">
+          <header class="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+            <div class="min-w-0">
+              <p class="text-[11px] font-bold uppercase tracking-[0.16em] text-teal-700">Shipment Order</p>
+              <h2 id="shipping-order-detail-title" class="mt-1 flex flex-wrap items-baseline gap-2 text-lg font-semibold text-slate-950">
+                <span class="tabular-nums">{{ detail.so }}</span>
+                <span class="text-sm font-medium text-slate-500">ID {{ detail.id }}</span>
+                <StatusPill :label="detail.status" :tone="statusTone(detail)" compact />
+              </h2>
+            </div>
+            <button ref="closeButton" type="button" class="flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-800" aria-label="关闭详情" @click="closeDetail">
+              <X class="size-4" aria-hidden="true" />
+            </button>
+          </header>
+          <div class="grid gap-3 px-5 py-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="surface-subtle rounded-lg px-3 py-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">柜号</p>
+              <p class="mt-0.5 text-[13px] font-semibold tabular-nums text-slate-900">{{ detail.containerNo || '—' }}</p>
+            </div>
+            <div class="surface-subtle rounded-lg px-3 py-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">柜型</p>
+              <p class="mt-0.5 text-[13px] font-semibold text-slate-900">{{ detail.containerType }}</p>
+            </div>
+            <div class="surface-subtle rounded-lg px-3 py-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">出场时间</p>
+              <p class="mt-0.5 text-[13px] font-semibold tabular-nums text-slate-900">{{ detail.departureDate || '待排' }}</p>
+            </div>
+            <div class="surface-subtle rounded-lg px-3 py-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">SI截止</p>
+              <p class="mt-0.5 text-[13px] font-semibold tabular-nums text-slate-900">{{ detail.siDeadline || '—' }}</p>
+            </div>
+            <div class="surface-subtle rounded-lg px-3 py-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">截重期</p>
+              <p class="mt-0.5 text-[13px] font-semibold tabular-nums text-slate-900">{{ detail.cutoff || '—' }}</p>
+            </div>
+            <div class="surface-subtle rounded-lg px-3 py-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">港口 / 收货地</p>
+              <p class="mt-0.5 text-[13px] font-semibold text-slate-900">{{ detail.port }} · {{ detail.destination }}</p>
+            </div>
+            <div class="surface-subtle rounded-lg px-3 py-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">PL票数 / CBM</p>
+              <p class="mt-0.5 text-[13px] font-semibold tabular-nums text-slate-900">{{ detail.plCount }} 票 · {{ detail.cbm.toFixed(1) }} CBM</p>
+            </div>
+            <div class="surface-subtle rounded-lg px-3 py-2 sm:col-span-2">
+              <p class="text-[10.5px] font-semibold text-slate-500">特殊要求</p>
+              <p class="mt-0.5 text-[13px] font-semibold text-slate-900">{{ detail.special || '—' }}</p>
+            </div>
+          </div>
+          <footer class="flex flex-wrap justify-end gap-2 border-t border-slate-100 px-5 py-3">
+            <button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 hover:border-teal-200 hover:text-teal-800" @click="preview(`修改出货单 ${detail.so}（${detail.id}）`)">修改</button>
+            <button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 hover:border-teal-200 hover:text-teal-800" @click="preview(`柜单 ${detail.so}`)">柜单</button>
+            <button type="button" class="h-9 rounded-lg bg-teal-700 px-3.5 text-[12px] font-semibold text-white hover:bg-teal-800" @click="closeDetail">关闭</button>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
+  </div>
+</template>

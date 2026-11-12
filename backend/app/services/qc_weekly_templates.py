@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.services import qc_approved_statistics as approved, qc_daily_report as daily
 from app.services.qc_inspection_summary import confirmed_date, report_date, dump, text
 
-TEMPLATES = json.loads((Path(__file__).resolve().parents[1] / 'templates/qc-weekly/templates.json').read_text())
+TEMPLATES = json.loads((Path(__file__).resolve().parents[1] / 'templates/qc-weekly/templates.json').read_text(encoding='utf-8'))
 FIELDS = {'returns', 'returnReason', 'hongKongContact', 'weeklyRemark', 'reworkA0D', 'handling'}
 DETAIL_FIELDS = {
     3: 'contractNo', 4: 'country', 5: 'productNo', 6: 'productName',

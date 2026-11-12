@@ -5,7 +5,7 @@ import { AlertTriangle, ArrowLeft, Building2, ClipboardList, Ship, Truck, Table2
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
-import ShipmentTaskWorkspace from './ShipmentTaskWorkspace.vue'
+import ShippingOrderWorkspace from './ShippingOrderWorkspace.vue'
 import VehicleDispatchPanel from './VehicleDispatchPanel.vue'
 import ShippingMasterDataPanel from './ShippingMasterDataPanel.vue'
 import { isShippingFactory, SHIPPING_FACTORY_IDS, shippingFactoryProfiles } from './contracts'
@@ -17,7 +17,7 @@ const router = useRouter()
 const appStore = useAppStore()
 
 const shippingTabs: Array<{ id: ShippingTab; label: string; icon: typeof ClipboardList }> = [
-  { id: 'tasks', label: '走柜任务', icon: ClipboardList },
+  { id: 'tasks', label: '工厂货期排单', icon: ClipboardList },
   { id: 'dispatch', label: '交仓分车', icon: Truck },
   { id: 'master', label: '基础资料', icon: Table2 },
 ]
@@ -37,7 +37,7 @@ let feedbackTimer: ReturnType<typeof setTimeout> | undefined
 
 const dispatchCount = computed(() => profile.value?.tasks.filter((task) => task.vehicles.length > 0).length ?? 0)
 const tabCounts = computed<Record<ShippingTab, number | null>>(() => ({
-  tasks: profile.value?.tasks.length ?? null,
+  tasks: profile.value?.orders.length ?? null,
   dispatch: profile.value ? dispatchCount.value : null,
   master: null,
 }))
@@ -184,7 +184,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
 
       <template v-if="profile">
         <p class="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-[11px] leading-5 text-slate-500">
-          示例数据按厂区隔离：{{ profile.label }} 当前 {{ profile.tasks.length }} 个任务，字段口径沿用船务业务文档（四个时间闸门、五态任务、35 CBM 分车）。
+          示例数据按厂区隔离：{{ profile.label }} 当前 {{ profile.orders.length }} 票出货单、{{ profile.tasks.length }} 个走柜任务，字段口径沿用船务业务文档（四个时间闸门、五态任务、35 CBM 分车）。
           正式接入后由船务接口提供数据，本页不写入任何业务库。
         </p>
 
@@ -194,7 +194,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
           role="tabpanel"
           aria-labelledby="shipping-tab-tasks"
         >
-          <ShipmentTaskWorkspace :profile="profile" @notify="notify" />
+          <ShippingOrderWorkspace :profile="profile" @notify="notify" />
         </section>
 
         <section

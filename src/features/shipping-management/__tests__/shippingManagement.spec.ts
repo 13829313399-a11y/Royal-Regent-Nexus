@@ -34,116 +34,138 @@ function mountView(factory: 'huaxing' | 'huadeng' | 'huakang-a' | 'huakang-b' | 
   return { store, wrapper }
 }
 
-describe('shipping management workspace', () => {
+const rows = (wrapper: ReturnType<typeof mountView>['wrapper']) => wrapper.findAll('tbody tr')
+
+describe('shipping order management workspace', () => {
   beforeEach(() => {
     routeState.query = {}
     replaceMock.mockReset()
   })
 
-  it('shows the current factory tasks and the four shipment gates', async () => {
+  it('lists factory-scoped orders with the newest departure date first', async () => {
     const { wrapper } = mountView('huaxing')
 
     expect(wrapper.text()).toContain('船务管理')
-    expect((wrapper.get('select[aria-label="切换厂区"]').element as HTMLSelectElement).value).toBe('huaxing')
-    expect(wrapper.text()).toContain('界面预览')
-    expect(wrapper.text()).toContain('128-1')
-    expect(wrapper.text()).toContain('SHZ8265013')
-    expect(wrapper.text()).toContain('装船 / 出货日')
-    expect(wrapper.text()).toContain('SI 截止')
-    expect(wrapper.text()).toContain('截关 / 截数期')
-    expect(wrapper.text()).toContain('验货通过')
-    expect(wrapper.text()).not.toContain('HD-064-1')
+    expect(wrapper.text()).toContain('工厂货期排单')
+    expect(wrapper.text()).toContain('共 12 条')
+    expect(rows(wrapper)).toHaveLength(10)
+    expect(rows(wrapper)[0]!.text()).toContain('1001')
+    expect(rows(wrapper)[0]!.text()).toContain('SHZ8265013')
+    expect(rows(wrapper)[0]!.text()).toContain('美国 · 洛杉矶')
+    expect(wrapper.findAll('[aria-label="船务作业"] button')).toHaveLength(4)
 
     wrapper.unmount()
   })
 
-  it('switches the whole task catalog with the active factory', async () => {
+  it('switches the whole order catalog with the active factory', async () => {
     const { store, wrapper } = mountView('huaxing')
-    expect(wrapper.text()).toContain('ZURU')
+    expect(wrapper.text()).toContain('SHZ8265013')
 
     store.setActiveFactory('huadeng')
     await nextTick()
 
-    expect(wrapper.text()).toContain('当前厂区')
-    expect((wrapper.get('select[aria-label="切换厂区"]').element as HTMLSelectElement).value).toBe('huadeng')
-    expect(wrapper.text()).toContain('064-1')
-    expect(wrapper.text()).toContain('MOOSE')
-    expect(wrapper.text()).not.toContain('128-1')
+    expect(wrapper.text()).toContain('共 10 条')
+    expect(wrapper.text()).toContain('HDX77500')
     expect(wrapper.text()).not.toContain('SHZ8265013')
+    expect((wrapper.get('select[aria-label="切换厂区"]').element as HTMLSelectElement).value).toBe('huadeng')
 
     wrapper.unmount()
   })
 
-  it('keeps unsupported factories out of the shipping workspace', async () => {
+  it('searches by product code or name and clears the query', async () => {
+    const { wrapper } = mountView('huaxing')
+    const input = wrapper.get('input[aria-label="搜索货号或货名"]')
+    const searchButton = () => wrapper.findAll('button').find((button) => button.text().trim() === '搜索')!
+
+    expect(input.attributes('placeholder')).toBe('搜索货号或货名')
+    expect(wrapper.text()).toContain('共 12 条')
+
+    await input.setValue('15754')
+    await searchButton().trigger('click')
+    expect(wrapper.text()).toContain('共 4 条')
+    expect(rows(wrapper)).toHaveLength(4)
+
+    await input.setValue('链条枪')
+    await searchButton().trigger('click')
+    expect(wrapper.text()).toContain('共 4 条')
+
+    await input.setValue('ZZZ999')
+    await searchButton().trigger('click')
+    expect(rows(wrapper)).toHaveLength(0)
+    expect(wrapper.text()).toContain('没有匹配的出货单')
+
+    await wrapper.findAll('button').find((button) => button.text().includes('清空搜索'))!.trigger('click')
+    expect(wrapper.text()).toContain('共 12 条')
+
+    wrapper.unmount()
+  })
+
+  it('paginates through the order list without row selection', async () => {
+    const { wrapper } = mountView('huaxing')
+    const next = () => wrapper.get('button[aria-label="下一页"]')
+    const previous = () => wrapper.get('button[aria-label="上一页"]')
+
+    expect(wrapper.text()).toContain('第 1 / 2 页')
+    expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0)
+
+    await next().trigger('click')
+    expect(rows(wrapper)).toHaveLength(2)
+    expect(rows(wrapper)[0]!.text()).toContain('1011')
+    expect(rows(wrapper)[1]!.text()).toContain('1005')
+    expect(wrapper.text()).toContain('第 2 / 2 页')
+
+    await previous().trigger('click')
+    expect(rows(wrapper)).toHaveLength(10)
+    expect(wrapper.text()).toContain('第 1 / 2 页')
+
+    wrapper.unmount()
+  })
+
+  it('opens the order detail from the SO link and closes with Escape', async () => {
+    const { wrapper } = mountView('huaxing')
+
+    await wrapper.get('button[aria-label="查看 SO SHZ8265013"]').trigger('click')
+    await nextTick()
+
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).toBeTruthy()
+    expect(dialog!.textContent).toContain('Shipment Order')
+    expect(dialog!.textContent).toContain('C260304887')
+    expect(dialog!.textContent).toContain('美国 · 洛杉矶')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('keeps refresh, row actions and top actions explicit previews', async () => {
+    const { wrapper } = mountView('huaxing')
+
+    await wrapper.findAll('button').find((button) => button.text().includes('刷新'))!.trigger('click')
+    expect(wrapper.text()).toContain('已刷新 · 共 12 条')
+
+    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === 'SO排出货表')!.trigger('click')
+    expect(wrapper.text()).toContain('界面预览：SO排出货表尚未接入后端接口')
+
+    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === '车的排出货表')!.trigger('click')
+    expect(wrapper.text()).toContain('界面预览：车的排出货表尚未接入后端接口')
+
+    await rows(wrapper)[0]!.findAll('button').find((button) => button.text() === '修改')!.trigger('click')
+    expect(wrapper.text()).toContain('界面预览：修改出货单 SHZ8265013（1001）尚未接入后端接口')
+
+    await rows(wrapper)[0]!.findAll('button').find((button) => button.text() === '柜单')!.trigger('click')
+    expect(wrapper.text()).toContain('界面预览：柜单 SHZ8265013尚未接入后端接口')
+
+    wrapper.unmount()
+  })
+
+  it('keeps unsupported factories out of the shipping workspace', () => {
     const { wrapper } = mountView('huakang-c')
 
     expect(wrapper.text()).toContain('暂未开通船务管理')
-    expect(wrapper.text()).not.toContain('走柜任务')
     expect(wrapper.find('[role="tablist"]').exists()).toBe(false)
-
-    wrapper.unmount()
-  })
-
-  it('opens the selected task detail with items and totals', async () => {
-    const { wrapper } = mountView('huaxing')
-
-    const waitingTask = wrapper.findAll('button').find((button) => button.text().includes('130-1'))
-    expect(waitingTask).toBeTruthy()
-    await waitingTask!.trigger('click')
-
-    expect(wrapper.text()).toContain('等待客户通知')
-    expect(wrapper.text()).toContain('待客户通知')
-    expect(wrapper.text()).toContain('15754')
-    expect(wrapper.text()).toContain('合计 CBM')
-
-    wrapper.unmount()
-  })
-
-  it('lists warehouse trips against the 35 CBM cap and flags overloads', async () => {
-    const { store, wrapper } = mountView('huaxing')
-
-    const dispatchTab = wrapper.findAll('[role="tab"]').find((tab) => tab.text().includes('交仓分车'))
-    expect(dispatchTab).toBeTruthy()
-    await dispatchTab!.trigger('click')
-
-    expect(wrapper.text()).toContain('35 CBM')
-    expect(wrapper.text()).toContain('车1')
-    expect(wrapper.text()).toContain('18.4')
-
-    store.setActiveFactory('huakang-b')
-    await nextTick()
-    expect(wrapper.text()).toContain('超出 35 CBM')
-    expect(wrapper.text()).toContain('38.5')
-
-    wrapper.unmount()
-  })
-
-  it('shows factory-scoped master data and keeps preview actions explicit', async () => {
-    const { wrapper } = mountView('huaxing')
-
-    const masterTab = wrapper.findAll('[role="tab"]').find((tab) => tab.text().includes('基础资料'))
-    await masterTab!.trigger('click')
-
-    expect(wrapper.text()).toContain('客户与柜号序列')
-    expect(wrapper.text()).toContain('ZURU')
-    expect(wrapper.text()).toContain('盐田')
-    expect(wrapper.text()).toContain('Dong Guan Xingxin Plastic Products Co., Ltd.')
-
-    await wrapper.findAll('[role="tab"]')[0]!.trigger('click')
-    const exportButton = wrapper.findAll('button').find((button) => button.text().includes('导出走柜表'))
-    await exportButton!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：导出走柜表尚未接入后端接口')
-
-    wrapper.unmount()
-  })
-
-  it('breaks the completed KPI into SO / 补料 / 舱单 completion', () => {
-    const { wrapper } = mountView('huakang-a')
-
-    expect(wrapper.text()).toContain('SO已完成 3')
-    expect(wrapper.text()).toContain('补料已完成 2')
-    expect(wrapper.text()).toContain('舱单已完成 1')
-    expect(wrapper.text()).toContain('单据进度')
 
     wrapper.unmount()
   })
@@ -151,36 +173,27 @@ describe('shipping management workspace', () => {
   it('switches the workspace factory from the header selector', async () => {
     const { wrapper } = mountView('huaxing')
 
-    await wrapper.get('select[aria-label="切换厂区"]').setValue('huadeng')
+    await wrapper.get('select[aria-label="切换厂区"]').setValue('huakang-d')
 
-    expect((wrapper.get('select[aria-label="切换厂区"]').element as HTMLSelectElement).value).toBe('huadeng')
-    expect(wrapper.text()).toContain('064-1')
-    expect(wrapper.text()).not.toContain('128-1')
+    expect(wrapper.text()).toContain('共 5 条')
+    expect(wrapper.text()).toContain('KDX10245')
+    expect(wrapper.text()).not.toContain('SHZ8265013')
 
     wrapper.unmount()
   })
 
-  it('exposes SO export, customs pack and SI supplement quick actions', async () => {
-    const { wrapper } = mountView('huakang-a')
+  it('keeps warehouse dispatch and master data tabs factory-scoped', async () => {
+    const { store, wrapper } = mountView('huaxing')
 
-    expect(wrapper.text()).toContain('快捷作业')
-    expect(wrapper.text()).toContain('SO排出货表')
-    expect(wrapper.text()).toContain('通关一体化资料')
-    expect(wrapper.text()).toContain('补料')
-    expect(wrapper.text()).toContain('舱单')
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text().includes('交仓分车'))!.trigger('click')
+    expect(wrapper.text()).toContain('35 CBM')
+    store.setActiveFactory('huakang-b')
+    await nextTick()
+    expect(wrapper.text()).toContain('超出 35 CBM')
 
-    const customs = wrapper.findAll('button').find((button) => button.text().includes('通关一体化资料'))
-    expect(customs).toBeTruthy()
-    await customs!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：通关一体化资料（当前 SO KAX55102）尚未接入后端接口')
-
-    const manifest = wrapper.findAll('button').find((button) => button.text().includes('舱单'))
-    await manifest!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：舱单（当前 SO KAX55102）尚未接入后端接口')
-
-    const supplement = wrapper.findAll('button').find((button) => button.text().includes('补料'))
-    await supplement!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：补料（当前 SO KAX55102）尚未接入后端接口')
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text().includes('基础资料'))!.trigger('click')
+    expect(wrapper.text()).toContain('客户与柜号序列')
+    expect(wrapper.text()).toContain('CEPIA')
 
     wrapper.unmount()
   })
