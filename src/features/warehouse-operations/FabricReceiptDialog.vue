@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { getApiErrorMessage } from '@/lib/http'
 import type { PurchaseDetail } from '@/api/fabricProcurement'
 import { fabricReceivingApi as api, materialCategoryLabels, type MaterialCategory, type ReceiveRequest, type FabricReceipt } from '@/api/fabricReceiving'
-import { quantityText, receiptQuantity } from './receiptQuantities'
+import { newReceiptCounts, quantityText, receiptCountFields as quantityFields, receiptNetQuantity, receiptQuantity } from './receiptQuantities'
 import FabricReceiptPriceFields from './FabricReceiptPriceFields.vue'
 import type { ReceiptPriceInput } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
@@ -23,18 +23,12 @@ const initialCategory = props.source.material_category || suggestMaterialCategor
 const category = ref<MaterialCategory | ''>(initialCategory)
 const reason = ref(''), note = ref(''), busy = ref(false), error = ref('')
 const unitPrice = ref(''), currency = ref<NonNullable<ReceiptPriceInput['currency']>>('CNY')
-const newRow = (key: number) => ({ key, counted_quantity: '', damaged_quantity: '0', rejected_quantity: '0', other_unusable_quantity: '0', location: '', location_id: '', dye_lot: '', roll_no: '' })
+const newRow = (key: number) => ({ key, ...newReceiptCounts(), location: '', location_id: '', dye_lot: '', roll_no: '' })
 type ReceiptRow = ReturnType<typeof newRow>
 const rows = ref([newRow(1)])
-const quantityFields = [
-  { key: 'counted_quantity', label: '实点数量' }, { key: 'damaged_quantity', label: '破损数量' },
-  { key: 'rejected_quantity', label: '拒收数量' }, { key: 'other_unusable_quantity', label: '其他不可用' },
-] as const
 function accepted(row: ReceiptRow): string | undefined {
-  const counted = receiptQuantity(row.counted_quantity), damaged = receiptQuantity(row.damaged_quantity),
-    rejected = receiptQuantity(row.rejected_quantity), other = receiptQuantity(row.other_unusable_quantity)
-  if (counted === undefined || damaged === undefined || rejected === undefined || other === undefined || damaged + rejected + other > counted) return undefined
-  return quantityText(counted - damaged - rejected - other)
+  const amount = receiptNetQuantity(row)
+  return amount === undefined ? undefined : quantityText(amount)
 }
 function sum(values: (string | undefined)[]): string | undefined {
   const amounts = values.map(value => receiptQuantity(value ?? ''))

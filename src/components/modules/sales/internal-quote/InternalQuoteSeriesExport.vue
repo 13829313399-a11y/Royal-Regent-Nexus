@@ -84,11 +84,11 @@ async function output() {
     <section role="dialog" aria-modal="true" aria-labelledby="series-export-title" class="series-export-dialog">
       <h2 id="series-export-title">系列报价一起输出</h2>
       <p>生成一个 Excel，每款一个工作表。已优先选择当前方案组或本人上次工作版本，请逐款核对方案、版本及状态后确认。</p>
-      <p>未输出的版本会在资料完整后一起输出并冻结；已输出的版本沿用原文件内容。</p>
+      <p>未冻结版本按当前已保存资料输出，输出后仍可修改；已冻结版本沿用冻结文件。历史导出记录保留。</p>
       <p v-if="loading" role="status">正在读取系列报价…</p>
       <div v-for="(row, index) in rows" :key="index" class="series-product"><label><span>{{ index + 1 }}. {{ row.name }}</span><select v-model="row.selected" :aria-label="`${row.name} 输出版本`" :disabled="busy || row.loading" @change="selectVersion(index)"><option disabled value="">请选择输出版本</option><option v-for="option in row.options" :key="option.quote_id" :value="option.quote_id">{{ option.scenario_name }} · {{ option.version_label }}{{ option.status === 'exported' ? '（已输出）' : '' }}</option></select></label>
         <ul v-if="row.problems.length" class="series-problems"><li v-for="(problem, pi) in row.problems" :key="pi"><span>{{ problem.section_name }}：{{ problem.reason }}</span><button type="button" :disabled="busy || row.loading" @click="resolve(row.selected, problem.section_code)">前往处理</button></li></ul>
-        <p v-else-if="!row.loading && row.revision > 0" class="series-ready">已就绪；已输出版本沿用原文件。</p>
+        <p v-else-if="!row.loading && row.revision > 0" class="series-ready">已就绪；冻结版本沿用原文件，其他版本输出当前资料。</p>
         <p v-else-if="!row.loading">状态未能读取，请重新读取状态。</p>
       </div>
       <p v-if="error" role="alert">{{ error }}</p>

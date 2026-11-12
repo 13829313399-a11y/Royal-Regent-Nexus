@@ -295,7 +295,7 @@
       {
         "path": "src/views/CustomerOrderCenterView.vue",
         "symbol": "const huakangBSections",
-        "sha256": "9af205c7bd732b0adf8fef73a13e9be836e8bf080ee8bd07a57c11300d74f6ef"
+        "sha256": "73527246a569c9d53a8990d15bb30d2199aeaf6b2cc71e6e863399eab4f37c0e"
       },
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",

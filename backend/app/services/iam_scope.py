@@ -1,4 +1,5 @@
 from typing import Literal
+from app.services.permission_codes import INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES
 
 
 ScopeMode = Literal[
@@ -26,6 +27,7 @@ VALID_ACCESS_KINDS = {READ_ACCESS_KIND, OPERATE_ACCESS_KIND}
 # their read-only contract is explicitly recorded here and in IAM metadata.
 READ_PERMISSION_CODES = frozenset(
     {
+        *(code for code in INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES if code.endswith("read")),
         "indonesia_material:read",
         "uv_ops:read", "uv_ops:cost_read", "uv_ops:payroll_read", "uv_ops:audit_read",
         "injection_scheduling:read",

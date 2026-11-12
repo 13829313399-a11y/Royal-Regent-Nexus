@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     qc_dossier_factories: str = "huaxing"
     qc_dossier_poll_seconds: int = 30
     qc_department_managed: bool = False
+    # One private sidecar and dedicated database per explicitly configured factory.
+    indonesia_shipping_upstreams: dict[str, str] = {}
+    indonesia_shipping_bridge_key: SecretStr = SecretStr("")
+    indonesia_shipping_timeout_seconds: int = Field(default=180, ge=5, le=900)
+    indonesia_shipping_max_upload_mb: int = Field(default=100, ge=1, le=200)
     qc_department_data_dir: str = str(BACKEND_DIR / "data" / "qc-department" / "companies")
     qc_department_url: str = "http://127.0.0.1:3411"
     qc_department_gateway_token: SecretStr = SecretStr("")

@@ -103,10 +103,13 @@ def _parse_response(text: str, region: NormalizedRegion) -> RecognizedRegionValu
     except (ValueError, TypeError):
         raise PdfRenameServiceError("PDF_RENAME_QWEN_RESPONSE", "千问未返回完整的字段识别结果。",
                                     action="请重新识别，或检查原文件清晰度。") from None
-    if uncertain or "[无法辨认]" in raw:
+    if (uncertain or "[无法辨认]" in raw) and not region.allow_partial_fields:
         raise PdfRenameServiceError("PDF_RENAME_REGION_UNCERTAIN", "千问发现命名区域存在模糊或不完整字段。",
                                     action="请核对原 PDF 后重试或人工改名。")
-    return RecognizedRegionValue(region.key, region.label, raw, " ".join(raw.split()), "QWEN", None)
+    unreadable_labels = [re.split(r"[:：]", line, maxsplit=1)[0]
+                         for line in lines if "[无法辨认]" in line]
+    return RecognizedRegionValue(region.key, region.label, raw, " ".join(raw.split()), "QWEN", None,
+                                 uncertain_fields=tuple([*uncertain, *unreadable_labels]))
 
 
 def recognize_qwen_region(pdf_bytes: bytes, region: NormalizedRegion) -> RecognizedRegionValue:

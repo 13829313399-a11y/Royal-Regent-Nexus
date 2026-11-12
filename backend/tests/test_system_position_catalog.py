@@ -53,13 +53,14 @@ def test_fixed_system_position_definition_contract():
     groups = [set(permission_codes.BUSINESS_PERMISSION_CODES),
               set(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES),
               set(permission_codes.MODULE_FEEDBACK_PERMISSION_CODES),
-              set(permission_codes.MAINLAND_INVOICE_PERMISSION_CODES)]
+              set(permission_codes.MAINLAND_INVOICE_PERMISSION_CODES),
+              set(permission_codes.INDONESIA_SHIPPING_ADMIN_PERMISSION_CODES)]
     assert registered_codes == set.union(*groups)
     assert sum(map(len, groups)) == len(registered_codes)
     assert len(permission_codes.APPLICATION_PERMISSION_CODES) == len(registered_codes)
     assert permission_codes.MAINLAND_INVOICE_PERMISSION_CODES == ("mainland_invoice:generate",)
     assert all("mainland_invoice:generate" not in definition.permission_codes for definition in definitions)
-    independently_granted = set(permission_codes.ENGINEERING_BOM_PERMISSION_CODES) | set(
+    independently_granted = set(permission_codes.INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES) | set(permission_codes.INDONESIA_SHIPPING_ADMIN_PERMISSION_CODES) | set(permission_codes.ENGINEERING_BOM_PERMISSION_CODES) | set(
         permission_codes.MATERIAL_PLAN_PERMISSION_CODES
     ) | set(permission_codes.MATERIAL_PURCHASE_PERMISSION_CODES)
     assert all(not (set(definition.permission_codes) & independently_granted) for definition in definitions)
@@ -125,6 +126,7 @@ def test_fixed_system_position_definition_contract():
             "customer_price:settings_read",
             "customer_price:settings_manage",
             *permission_codes.INDONESIA_MATERIAL_PERMISSION_CODES,
+            *permission_codes.INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES,
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
             *permission_codes.SPRAY_OPS_PERMISSION_CODES,
