@@ -212,10 +212,15 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return await monthly_templates_request(asset_path, request, db, user, factory_id)
     if asset_path in {"api/weekly-templates", "api/weekly-templates/save", "api/weekly-templates/excel"} or asset_path.startswith('api/weekly-templates/excel/'):
         return await weekly_templates_request(asset_path, request, db, user, factory_id)
-    if asset_path in {"api/approved-statistics", "api/approved-statistics/report"} and request.method == "GET":
+    stats_handlers = {
+        "api/approved-statistics": qc_approved_statistics.query,
+        "api/approved-statistics/report": qc_approved_statistics.report,
+        "api/approved-statistics/dashboard": qc_approved_statistics.dashboard,
+    }
+    if asset_path in stats_handlers and request.method == "GET":
         if any(len(request.query_params.getlist(key)) != 1 for key in request.query_params):
             raise HTTPException(422, "统计筛选参数不能重复")
-        handler = qc_approved_statistics.report if asset_path.endswith('/report') else qc_approved_statistics.query
+        handler = stats_handlers[asset_path]
         return JSONResponse(await run_in_threadpool(handler, factory_id,
             dict(request.query_params)), headers=NO_CACHE)
     if asset_path.startswith("api/workflow/"):

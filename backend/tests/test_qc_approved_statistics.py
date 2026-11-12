@@ -63,6 +63,29 @@ def test_confirmed_formula_matches_summary_without_writing(db,monkeypatch,result
     assert data['excluded']=={} and hashes()==before
 
 
+def test_dashboard_pages_failure_details_in_the_selected_scope(db):
+    approval(db, 1, 'FAIL', customer='上月客户', actual='2026-10-28')
+    for day in range(1, 8):
+        approval(db, day + 1, 'FAIL', customer=f'样例客户{day}', actual=f'2026-11-{day:02d}')
+    approval(db, 9, 'PENDING', customer='样例客户1', actual='2026-11-08')
+
+    latest = stats.dashboard('huaxing', {})
+    assert latest['month'] == '2026-11' and latest['totals']['total'] == 8
+    assert latest['totals']['FAIL'] == 7
+    assert [row['date'] for row in latest['recentFailures']] == [f'2026-11-{day:02d}' for day in range(7, 1, -1)]
+    assert latest['failurePage'] == 1 and latest['failurePages'] == 2
+    last = stats.dashboard('huaxing', {'month':'2026-11', 'failurePage':'2'})
+    assert [row['date'] for row in last['recentFailures']] == ['2026-11-01']
+    assert last['failureRevision'] == latest['failureRevision']
+    assert last['recentFailures'][0]['productNo'] == 'ITEM-2'
+
+    october = stats.dashboard('huaxing', {'month':'2026-10'})
+    assert october['totals']['total'] == 1
+    assert october['recentFailures'][0]['customer'] == '上月客户'
+    assert stats.dashboard('huaxing', {'month':''})['totals']['total'] == 9
+    assert stats.dashboard('huakang-a', {})['recentFailures'] == []
+
+
 def test_reconfirm_revoke_return_and_same_po_never_count_history(db):
     first=approval(db,1); second=approval(db,2,'FAIL') # Same PO, distinct stable tasks.
     assert stats.query('huaxing',{})['totals']['total']==2
