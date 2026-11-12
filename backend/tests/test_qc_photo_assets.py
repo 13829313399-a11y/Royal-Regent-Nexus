@@ -5,6 +5,7 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+from unittest.mock import patch
 import pytest
 from PIL import Image, ImageOps
 from fastapi import HTTPException
@@ -26,16 +27,24 @@ def entry(n='one'):
 
 
 def upload(e,raw,key=None):
-    return sheet.add_photo('huaxing',e['id'],dict(revision=e['revision'],name='验货照片',content=base64.b64encode(raw).decode(),requestKey=key or uuid4().hex),ACTOR)
+    body=dict(revision=e['revision'],name='验货照片',content=base64.b64encode(raw).decode(),requestKey=key or uuid4().hex)
+    return sheet.add_photo('huaxing',e['id'],body,ACTOR)
+
+
+def upload_retained(e,raw):
+    # Simulate the previous storage policy to verify existing original files.
+    save=assets.save
+    with patch.object(assets,'save',side_effect=lambda conn,pid,content,status,**kwargs:
+            save(conn,pid,content,'available',**kwargs)):
+        return upload(e,raw)
 
 
 @pytest.mark.parametrize('fmt',['JPEG','PNG','WEBP','HEIF'])
-def test_original_exact_preview_metadata_orientation(fmt):
+def test_new_upload_preview_metadata_orientation(fmt):
     if fmt=='HEIF':
         from pillow_heif import register_heif_opener
         register_heif_opener()
     raw=image(fmt,6);e=upload(entry(),raw);p=e['photos'][0]['id']
-    original,mime=sheet.read_photo_version('huaxing',e['id'],p,'original');assert original==raw and mime==assets.inspect(raw)['mime']
     preview=sheet.read_photo('huaxing',e['id'],p)
     with Image.open(BytesIO(preview)) as im:
         assert max(im.size)<=1920 and not im.getexif()
@@ -43,9 +52,39 @@ def test_original_exact_preview_metadata_orientation(fmt):
             oriented=ImageOps.exif_transpose(source);assert abs(im.width/im.height-oriented.width/oriented.height)<.01
     assert len(preview)<len(raw)
     with sheet.store() as conn:
-        m=assets.metadata(conn,p);assert m['original']['sha256']==sha256(raw).hexdigest()
+        m=assets.metadata(conn,p);assert m['original'] is None
         assert conn.execute('SELECT length(content) FROM photos WHERE id=?',(p,)).fetchone()[0]==0
     assert len(e['photos'][0])==2  # File metadata never contaminates approved/revision payloads.
+
+
+@pytest.mark.parametrize('fmt,mime',[
+    ('MPO','image/jpeg'),('AVIF','image/avif'),('TIFF','image/tiff'),
+    ('BMP','image/bmp'),('GIF','image/gif'),
+])
+def test_extended_formats_with_legacy_original_and_browser_readable_versions(fmt,mime):
+    primary = Image.new('RGB',(320,240),'red')
+    out = BytesIO()
+    if fmt=='MPO':
+        exif=Image.Exif()
+        exif[274]=6
+        primary.save(out,fmt,save_all=True,append_images=[Image.new('RGB',primary.size,'blue')],exif=exif)
+    else:
+        primary.save(out,fmt)
+    raw=out.getvalue()
+    saved=upload_retained(entry(),raw)
+    photo=saved['photos'][0]
+    assert sheet.read_photo_version('huaxing',saved['id'],photo['id'],'original') == (raw,mime)
+    preview,preview_mime=sheet.read_photo_version('huaxing',saved['id'],photo['id'])
+    assert preview_mime=='image/jpeg'
+    display,display_mime=sheet.read_photo_version('huaxing',saved['id'],photo['id'],'original-display')
+    if fmt=='GIF':
+        assert (display,display_mime)==(raw,mime)
+    else:
+        assert display_mime=='image/png'
+    with Image.open(BytesIO(preview)) as preview_image, Image.open(BytesIO(display)) as displayed:
+        assert preview_image.size==displayed.size==((240,320) if fmt=='MPO' else (320,240))
+        r,g,b=preview_image.convert('RGB').getpixel((0,0))
+        assert r>200 and g<30 and b<30
 
 
 def test_duplicate_retry_revision_and_factory_boundaries():
@@ -61,6 +100,27 @@ def test_duplicate_retry_revision_and_factory_boundaries():
     assert all(r==got for r in results)
 
 
+def test_preview_only_upload_retries_without_leaving_original_or_broken_photo(monkeypatch):
+    e=entry();raw=image(size=(400,300));key=uuid4().hex
+    with monkeypatch.context() as patch:
+        patch.setattr(assets,'preview',lambda _:(_ for _ in ()).throw(OSError('simulated')))
+        with pytest.raises(HTTPException,match='照片未上传'):
+            upload(e,raw,key)
+        assert not list(assets.root().glob('*'))
+    saved=upload(e,raw,key)
+    assert upload(e,raw,key)==saved
+    p=saved['photos'][0]['id']
+    assert sheet.read_photo('huaxing',e['id'],p)
+    assert len(list(assets.root().glob('*.bin')))==1
+    with sheet.store() as conn:
+        meta=assets.metadata(conn,p)
+        assert meta['originalStatus']=='preview-only' and meta['original'] is None
+        assert meta['sourceSize']==len(raw)
+        assert conn.execute('SELECT length(content) FROM photos WHERE id=?',(p,)).fetchone()[0]==0
+    with pytest.raises(HTTPException,match='仅保留了预览图'):
+        sheet.read_photo_version('huaxing',e['id'],p,'original')
+
+
 def test_malformed_oversize_and_decode_limits():
     for raw in (b'<svg onload=bad()>',b'\xff\xd8broken',b'x'*(10*1024*1024+1)):
         with pytest.raises(HTTPException):assets.inspect(raw)
@@ -71,7 +131,7 @@ def test_malformed_oversize_and_decode_limits():
 def test_preview_failure_retains_original_and_recovers_without_revision(monkeypatch):
     raw=image(size=(400,300));e=entry();real=assets.preview
     monkeypatch.setattr(assets,'preview',lambda _:(_ for _ in ()).throw(OSError('simulated')))
-    e=upload(e,raw);p=e['photos'][0]['id']
+    e=upload_retained(e,raw);p=e['photos'][0]['id']
     assert sheet.read_photo_version('huaxing',e['id'],p,'original')[0]==raw
     with pytest.raises(HTTPException):sheet.read_photo('huaxing',e['id'],p)
     monkeypatch.setattr(assets,'preview',real)
@@ -81,7 +141,7 @@ def test_preview_failure_retains_original_and_recovers_without_revision(monkeypa
     with sheet.store() as conn:assert sheet.unpack(conn,sheet.get(conn,'huaxing',e['id']))==e
 
 
-def test_original_failure_and_transaction_failure_leave_no_orphan(monkeypatch):
+def test_preview_write_and_transaction_failure_leave_no_orphan(monkeypatch):
     e=entry();raw=image(size=(100,100));real=assets.write_file
     monkeypatch.setattr(assets,'write_file',lambda _:(_ for _ in ()).throw(OSError('disk full')))
     with pytest.raises(HTTPException):upload(e,raw)
@@ -106,7 +166,7 @@ def test_legacy_blob_idempotent_migration_no_fabricated_original():
 
 
 def test_removed_photo_and_missing_file_are_not_readable():
-    e=upload(entry(),image(size=(100,80)));p=e['photos'][0]['id']
+    e=upload_retained(entry(),image(size=(100,80)));p=e['photos'][0]['id']
     with sheet.store() as conn:m=assets.metadata(conn,p)
     (assets.root()/m['original']['path']).unlink()
     with pytest.raises(HTTPException) as exc:sheet.read_photo_version('huaxing',e['id'],p,'original')
@@ -115,48 +175,13 @@ def test_removed_photo_and_missing_file_are_not_readable():
     with pytest.raises(HTTPException):sheet.read_photo('huaxing',e['id'],p)
 
 
-def test_excel_embeds_selected_bytes_and_preserves_cells_and_anchors(db):
+def test_excel_embeds_stored_previews_including_a_legacy_photo(db):
     e=issue(db,1,photos=2);data=monthly.query('huaxing',DAY)
-    def parts(quality):
-        raw=excel.render(data,'issues','huaxing',quality)
-        with zipfile.ZipFile(BytesIO(raw)) as z:return {n:z.read(n) for n in z.namelist()}
-    preview=parts('preview');original=parts('original')
-    for n in preview:
-        if n.startswith('xl/worksheets/') or n=='xl/styles.xml' or n=='xl/drawings/drawing1.xml':assert preview[n]==original[n]
-    for i,p in enumerate(e['photos'],1):
-        assert original[f'xl/media/image{i}.png']==sheet.read_photo_version('huaxing',e['id'],p['id'],'original')[0]
-        assert preview[f'xl/media/image{i}.jpeg']==sheet.read_photo('huaxing',e['id'],p['id'])
-    payload=dict(date=DAY,customer='',template='issues',sourceRevision=data['sourceRevision'],versions=excel.versions(data))
-    assert excel.photo_options('huaxing',payload)['missingOriginals']==0
-    # Simulate a retained historical normalized blob, with no claim of original existence.
-    p=e['photos'][0]['id'];old=sheet.read_photo('huaxing',e['id'],p)
+    first=e['photos'][0]['id'];old=sheet.read_photo('huaxing',e['id'],first)
     with sheet.store(True) as conn:
-        conn.execute('DELETE FROM photo_assets WHERE photo_id=?',(p,));conn.execute('UPDATE photos SET content=? WHERE id=?',(old,p))
-    assert excel.photo_options('huaxing',payload)['missingOriginals']==1
-    with pytest.raises(HTTPException):excel.render(data,'issues','huaxing','original')
-    assert excel.render(data,'issues','huaxing','original',True)
-    payload['sourceRevision']='stale'
-    with pytest.raises(HTTPException):excel.photo_options('huaxing',payload)
-
-
-def test_original_and_preview_sizes_do_not_shift_excel_anchors(db,monkeypatch):
-    issue(db,1,photos=1);data=monthly.query('huaxing',DAY)
-    raw=image(size=(3000,2000));small=assets.preview(raw)[0]
-    monkeypatch.setattr(excel,'_photo',lambda factory,entry,photo,quality,fallback:raw if quality=='original' else small)
-    def drawing(quality):
-        with zipfile.ZipFile(BytesIO(excel.render(data,'issues','huaxing',quality))) as book:
-            return book.read('xl/drawings/drawing1.xml')
-    assert drawing('preview')==drawing('original')
-
-
-def test_excel_missing_original_file_fails_then_recovers(db):
-    e=issue(db,1,photos=1);data=monthly.query('huaxing',DAY)
-    with sheet.store() as conn:meta=assets.metadata(conn,e['photos'][0]['id'])
-    path=assets.root()/meta['original']['path'];raw=path.read_bytes();path.unlink()
-    with pytest.raises(HTTPException) as exc:excel.render(data,'issues','huaxing','original',True)
-    assert exc.value.status_code==503  # Consent covers legacy absence, never a corrupted/lost real original.
-    path.write_bytes(raw)
-    assert excel.render(data,'issues','huaxing','original').startswith(b'PK')
-    payload=dict(date=DAY,customer='',template='issues',sourceRevision=data['sourceRevision'],versions=excel.versions(data),photoQuality=[])
-    with pytest.raises(HTTPException) as exc:excel.photo_options('huaxing',payload)
-    assert exc.value.status_code==422
+        conn.execute('DELETE FROM photo_assets WHERE photo_id=?',(first,))
+        conn.execute('UPDATE photos SET content=? WHERE id=?',(old,first))
+    with zipfile.ZipFile(BytesIO(excel.render(data,'issues','huaxing'))) as book:
+        assert book.testzip() is None
+        for i,p in enumerate(e['photos'],1):
+            assert book.read(f'xl/media/image{i}.jpeg')==sheet.read_photo('huaxing',e['id'],p['id'])
