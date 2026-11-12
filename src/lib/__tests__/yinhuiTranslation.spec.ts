@@ -9,54 +9,55 @@ function fixture(): YinhuiQuoteData {
 }
 const response = (source: string, translation: string): QuoteTranslationResponse => ({engine:'local',warning:'',items:[{source,translation,needs_review:false}]})
 describe('Yinhui automatic name translation', () => {
-  it('leaves every BOM group unchanged while translating product, packaging and tools', async () => {
+  it('leaves every BOM and Tool Plan field unchanged while translating only product and packaging', async () => {
     const data = fixture()
     for (const group of ['plastic', 'electronic', 'fabric', 'packagingRows', 'documentFees'] as const) data[group] = [{ ...data.mechanical[0]! }]
     data.carton.description = '主纸箱'
     data.productName = '机器人'; data.packaging = '彩盒'
     const before = structuredClone(data)
     const translate = vi.fn(async (texts: string[]): Promise<QuoteTranslationResponse> => ({ engine: 'local', warning: '', items: texts.map(source => ({ source, translation: source === '机器人' ? 'Robot' : source === '彩盒' ? 'Color Box' : 'Counterweight ABS 4.0mm (2PCS)', needs_review: false })) }))
-    expect(await translateYinhuiDescriptions(data, translate)).toMatchObject({ translated: 3, remaining: 0 })
-    expect(translate).toHaveBeenCalledWith(['机器人', '彩盒', '配重塊 ABS 4.0mm (2PCS)'])
-    for (const group of ['plastic', 'mechanical', 'electronic', 'fabric', 'packagingRows', 'documentFees', 'carton'] as const) expect(data[group]).toEqual(before[group])
+    expect(await translateYinhuiDescriptions(data, translate)).toMatchObject({ translated: 2, remaining: 0 })
+    expect(translate).toHaveBeenCalledWith(['机器人', '彩盒'])
+    for (const group of ['tools', 'plastic', 'mechanical', 'electronic', 'fabric', 'packagingRows', 'documentFees', 'carton'] as const) expect(data[group]).toEqual(before[group])
   })
   it('sends deduplicated name text only and keeps commercial data and identifiers unchanged', async () => {
-    const data=fixture();data.tools.push({...data.tools[0]!,partNo:'A02'})
+    const data=fixture();data.productName=data.packaging='配重塊 ABS 4.0mm (2PCS)'
     const before=structuredClone(data)
     const translate=vi.fn(async (texts:string[]) => response(texts[0]!,'Counterweight ABS 4.0mm (2PCS)'))
     const result=await translateYinhuiDescriptions(data,translate)
     expect(translate).toHaveBeenCalledWith(['配重塊 ABS 4.0mm (2PCS)'])
     expect(result).toMatchObject({translated:2,remaining:0})
-    for (const row of data.tools) {row.description=row.originalDescription!;delete row.originalDescription}
-    expect(data).toEqual(before)
+    expect(data).toEqual({...before,productName:'Counterweight ABS 4.0mm (2PCS)',packaging:'Counterweight ABS 4.0mm (2PCS)'})
   })
   it.each(['Counterweight ABS 5.0mm (2PCS)','Counterweight POM 4.0mm (2PCS)','Counterweight ABS 4.0mm (2PCS) 8',''])('rejects a changed specification or invalid result: %s', async translated => {
-    const data=fixture();const before=structuredClone(data)
+    const data=fixture();data.productName='配重塊 ABS 4.0mm (2PCS)';const before=structuredClone(data)
     await expect(translateYinhuiDescriptions(data,async texts => response(texts[0]!,translated))).rejects.toThrow(/翻译/)
     expect(data).toEqual(before)
   })
   it('keeps a failed or reordered batch atomic', async () => {
-    const data=fixture()
+    const data=fixture();data.productName='配重塊'
     await expect(translateYinhuiDescriptions(data,async()=>response('wrong','Counterweight'))).rejects.toThrow(/对应/)
     expect(pendingYinhuiDescriptions(data)).toBe(1)
   })
   it('ignores a stale import response', async () => {
-    const data=fixture();const before=structuredClone(data)
+    const data=fixture();data.productName='配重塊 ABS 4.0mm (2PCS)';const before=structuredClone(data)
     await translateYinhuiDescriptions(data,async texts=>response(texts[0]!,'Counterweight ABS 4.0mm (2PCS)'),()=>false)
     expect(data).toEqual(before)
   })
   it('does not overwrite a manual edit made during inference', async () => {
-    const data=fixture()
+    const data=fixture();data.productName='配重塊 ABS 4.0mm (2PCS)'
     await translateYinhuiDescriptions(data,async texts=>{
-      data.tools[0]!.description='Manually checked Counterweight'
+      data.productName='Manually checked Counterweight'
       return response(texts[0]!,'Counterweight ABS 4.0mm (2PCS)')
     })
-    expect(data.tools[0]!.description).toBe('Manually checked Counterweight')
+    expect(data.productName).toBe('Manually checked Counterweight')
   })
-  it('does not contact the server when only BOM names are Chinese', async () => {
-    const data=fixture();data.tools[0]!.description='Counterweight'
+  it('does not contact the server or count pending translations when only BOM and Tool Plan names are Chinese', async () => {
+    const data=fixture();const before=structuredClone(data)
     const translate=vi.fn()
     expect(await translateYinhuiDescriptions(data,translate)).toMatchObject({translated:0,remaining:0})
     expect(translate).not.toHaveBeenCalled()
+    expect(pendingYinhuiDescriptions(data)).toBe(0)
+    expect(data).toEqual(before)
   })
 })

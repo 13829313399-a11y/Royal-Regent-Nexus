@@ -453,6 +453,27 @@ describe('Silverlit temporary independent mapping', () => {
     expect(convertYinhuiP4InternalQuote(p4(), 'b.xlsx').quoteData.mechanical).toEqual(before.mechanical)
   })
 
+  it.each(['legacy', 'P4'])('exports source Chinese Tool Plan names with the existing format and amounts from %s', source => {
+    const name = '上蓋 ABS 4.0mm'
+    const artifact = p4()
+    artifact.productName = '#00012 Sample Robot'
+    const baseline = source === 'legacy' ? convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx') : convertYinhuiP4InternalQuote(artifact, '银辉00012.xlsx')
+    const lines = artifact.sections.molding.calculation.line_breakdown as Array<Record<string, unknown>>
+    lines[0]!.item = name
+    const result = source === 'legacy' ? convertYinhuiInternalQuote(changedLegacy(sheets => {
+      sheets[0]!.rows[11]![2] = `${name}*1`
+      sheets[1]!.rows[3]![1] = name
+    }), '银辉00012.xlsx') : convertYinhuiP4InternalQuote(artifact, '银辉00012.xlsx')
+    expect(result.quoteData.tools[0]!.description).toBe(name)
+    expect(result.quoteData.tools).toEqual(baseline.quoteData.tools.map(row => ({ ...row, description: name })))
+    expect(yinhuiTotals(result.quoteData)).toEqual(yinhuiTotals(baseline.quoteData))
+    expect(() => validateYinhuiExport(result.quoteData)).not.toThrow()
+    const output = buffer(createYinhuiCustomerQuoteWorkbook(result, template))
+    expect(formulaAndStyle(output)).toEqual(formulaAndStyle(template))
+    const parsed = parseXlsxWorkbook(output)
+    expect(parsed.sheets.flatMap(sheet => sheet.rows.flat())).toContain(name)
+    expect(parsed.sheets[0]!.rows[31]![9]).toBeCloseTo(yinhuiTotals(baseline.quoteData).exFactory, 6)
+  }, 15000)
   it('preserves Chinese BOM descriptions from approved P4 data through export', () => {
     const artifact = p4()
     artifact.productName = '#00012 Sample Robot'

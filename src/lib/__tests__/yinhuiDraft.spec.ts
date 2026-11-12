@@ -78,6 +78,29 @@ describe('Silverlit draft import', () => {
     expect(new Uint8Array(reopened.buffer)).toEqual(bytes)
   })
   it.each([['5K', 5000], ['5 k pcs', 5000], ['5,000', 5000], ['２万件', 20000], ['2.5千', 2500], [5000, 5000]])('reads MOQ %s', (input, expected) => expect(parseYinhuiMoq(input)).toBe(expected))
+  it.each([undefined, 'source'])('restores original Tool Plan names from older drafts with BOM policy %s', bomLanguage => {
+    const parsed = parseXlsxWorkbook(draftSource(false))
+    parsed.sheets[0]!.rows[8]![2] = '上蓋 ABS 2PCS'
+    parsed.sheets[1]!.rows[47]![2] = '上蓋 ABS 2PCS'
+    const bytes = createXlsxWorkbook(parsed.sheets)
+    const draft = createYinhuiDraft(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '银辉81209.xlsx')
+    const totals = yinhuiTotals(draft.result.quoteData)
+    const saved = JSON.parse(saveYinhuiDraft(draft))
+    delete saved.toolLanguage
+    saved.bomLanguage = bomLanguage
+    saved.review.names.tools[0].description = 'Top Cover ABS 2PCS'
+    saved.review.tools[0] = { moldNo: '已核对模号', partNo: 'PART-01' }
+    const restored = loadYinhuiDraft(JSON.stringify(saved))
+    expect(restored.result.quoteData.tools[0]).toMatchObject({ description: '上蓋 ABS 2PCS', moldNo: '已核对模号', partNo: 'PART-01' })
+    expect(yinhuiTotals(restored.result.quoteData)).toEqual(totals)
+    restored.result.quoteData.tools[0]!.description = '上蓋 ABS 2PCS（已核对）'
+    const current = saveYinhuiDraft(restored)
+    expect(JSON.parse(current).toolLanguage).toBe('source')
+    const reopened = loadYinhuiDraft(current)
+    expect(reopened.result.quoteData.tools).toEqual(restored.result.quoteData.tools)
+    expect(yinhuiTotals(reopened.result.quoteData)).toEqual(totals)
+    expect(new Uint8Array(reopened.buffer)).toEqual(bytes)
+  })
   it.each(['', '5-10K', '5,00', '-5K', '0', '1.2', 'NaN', '#VALUE!', true])('does not guess ambiguous MOQ %s', value => expect(() => parseYinhuiMoq(value)).toThrow())
   it('collects independent errors, keeps known data and blocks direct export even with acknowledgement', () => {
     const draft = createYinhuiDraft(draftSource(), '银辉81209.xlsx')
