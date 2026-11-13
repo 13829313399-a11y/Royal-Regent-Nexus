@@ -26,7 +26,7 @@ MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 COLUMNS = [('date', '日期'), ('customer', '客户'), ('poNo', 'PO#'), ('country', '出口国'),
            ('productNo', '货号'), ('productName', '产品名称'), ('quantity', '数量'),
            ('unitsPerCarton', '装箱'), ('cartonCount', '箱数'), ('production', '生产'),
-           ('agency', '机构'), ('customerPo', '客PO#'), ('completion', '完成情况'),
+           ('agency', '机构'), ('customerPo', '客PO#'),
            ('result', '验货结果'), ('remark', '备注'), ('photos', '照片'), ('improvement', '改进措施'), ('submit', '提交')]
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS entries (
@@ -125,6 +125,8 @@ def base_fields(source):
     start, end = wf.source_date(source.get('dateFrom')), wf.source_date(source.get('dateTo'))
     result.update(dateFrom=start, dateTo=end or start, sourceRevision=source.get('sourceRevision'),
                   sourceNote=scalar(source.get('sourceRemark', source.get('remark', ''))))
+    # Keep the captured source contract stable even though completion is no longer a display column.
+    result['completion'] = source.get('completion', '')
     result['sourceRecord'] = {k:v for k,v in source.items() if k not in {'input','tasks'}}
     result['actualDate'] = wf.source_date(source.get('actualDate'))
     for key in ('inspectionProblem','otherRemark','inspectionFactory','reportStatus','responsible','firstResponsible','secondResponsible'):
@@ -269,7 +271,6 @@ def unpack(conn, row, include_photos=True):
     if extension and extension['inspection_problem'] is not None:base['inspectionProblem']=extension['inspection_problem']
     for key, (column, _) in REVIEW_FIELDS.items():
         if extension and extension[column] is not None:base[key]=extension[column]
-    if base['submittedAt']:base['completion']='待审核' if base['reviewState']=='pending' else '已完成'
     base['legacyCompleted']=bool(not base['flowVersion'] and (base['submittedAt'] or base.get('legacyReviewState')=='approved'))
     if not base['flowVersion'] and base.get('legacyReviewState') in {'pending','returned'}:base['reviewState']='pending'
     if extension and extension['submitted_snapshot']:
@@ -292,11 +293,11 @@ def unpack(conn, row, include_photos=True):
     for key in ('contractNo','customerCode','shippedQuantity'):
         if not extension or extension[REVIEW_FIELDS[key][0]] is None:
             base[key]=scalar((base.get('sourceRecord') or {}).get(key))
-    if base['reviewState']=='returned_to_inspection':base['completion']='退回重新验货'
     raw=base.get('sourceResult','')
     cumulative_result=raw if raw in {'REJ','COND','HOLD'} and not base.get('resultOverride') else row['result']
     return {**base, 'id':row['id'], 'sourceKey':row['source_key'], 'cumulativeResult':cumulative_result,
-            'result':row['result'], 'remark':row['remark'], 'revision':row['revision'],
+            'result':row['result'], 'completion':'已完成' if row['result']=='PASS' else '未完成',
+            'remark':row['remark'], 'revision':row['revision'],
             'updatedAt':row['updated_at'], 'photos':photos}
 
 

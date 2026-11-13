@@ -24,18 +24,17 @@
     return row.agency==='行验'||row.agency==='客验'?row.agency:'';
   }
   const reviewFields={responsible:'责任人',firstResponsible:'第一责任人',secondResponsible:'第二责任人',otherRemark:'其他备注',inspectionFactory:'验货工厂',reportStatus:'报告状态',contractNo:'合同号'};
-  const executionFields={inspectorId:['检验人员标识','text'],institutionId:['机构标识','text'],analysisReason:['分析原因','multiline'],actualDate:['实际验货日期','date'],actualQuantity:['实际数量','number'],inspector:['检验人员','text'],sampleQuantity:['抽查数量','number'],institution:['第三方机构','text'],reportNo:['报告编号','text'],reportMissingReason:['报告暂缺说明','multiline'],resultExplanation:['结论说明','multiline'],defects:['不良明细','details'],measurements:['测量明细','details']};
+  const executionFields={inspectorId:['检验人员标识','text'],institutionId:['机构标识','text'],analysisReason:['分析原因','multiline'],actualQuantity:['实际数量','number'],inspector:['检验人员','text'],sampleQuantity:['抽查数量','number'],institution:['第三方机构','text'],reportNo:['报告编号','text'],reportMissingReason:['报告暂缺说明','multiline'],resultExplanation:['结论说明','multiline'],defects:['不良明细','details'],measurements:['测量明细','details']};
   const executionKey=column=>Object.hasOwn(executionFields,column)?column:column.startsWith('inspectionExecution.')&&Object.hasOwn(executionFields,column.slice(20))?column.slice(20):null;
   const textFields=['remark','improvement','inspectionProblem'];
-  const savedFields=d=>{const fields=Object.fromEntries(['result',...textFields.filter(k=>model.view==='review'||k!=='improvement'),...(model.view==='review'?Object.keys(reviewFields):[])].map(k=>[k,d[k]??'']));const keys=[...d.executionDirty].filter(k=>model.view==='review'||['actualDate','sampleQuantity','inspectorId'].includes(k));if(keys.length)fields.inspectionExecution=Object.fromEntries(keys.map(k=>[k,JSON.parse(JSON.stringify(d.inspectionExecution[k]))]));return fields;};
+  const savedFields=d=>{const fields=Object.fromEntries(['result',...textFields.filter(k=>model.view==='review'||k!=='improvement'),...(model.view==='review'?Object.keys(reviewFields):[])].map(k=>[k,d[k]??'']));const keys=[...d.executionDirty].filter(k=>model.view==='review'||['sampleQuantity','inspectorId'].includes(k));if(keys.length)fields.inspectionExecution=Object.fromEntries(keys.map(k=>[k,JSON.parse(JSON.stringify(d.inspectionExecution[k]))]));return fields;};
   const differs=(d,sent)=>JSON.stringify(savedFields(d))!==JSON.stringify(sent);
   function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(selected));});}
   function freezeColumns(host){const first=host.querySelector('th[data-column=customer]');if(first){host.style.setProperty('--qis-customer-width',first.getBoundingClientRect().width+'px');host.style.setProperty('--qis-frozen-width',(first.getBoundingClientRect().width+(host.querySelector('th[data-column=poNo]')?.getBoundingClientRect().width||0))+'px');}}
   function displayColumns(columns){
-    const tail=['result','inspectionExecution.sampleQuantity','inspectionProblem','remark','photos','inspector',...(model.view==='review'?['inspectionExecution.analysisReason','improvement']:[])];
-    const all=columns.filter(c=>!['inspectionProblem','actualDate','submit','improvement',...tail].includes(c.key));
+    const tail=['result','inspectionExecution.sampleQuantity',...(model.view==='review'?[]:['inspectionProblem']),'remark','photos','inspector',...(model.view==='review'?['inspectionProblem','inspectionExecution.analysisReason','improvement']:[])];
+    const all=columns.filter(c=>!['inspectionProblem','actualDate','inspectionExecution.actualDate','completion','submit','improvement',...tail].includes(c.key));
     const result=[...['date','customer','poNo'].map(k=>all.find(c=>c.key===k)).filter(Boolean),...all.filter(c=>!['date','customer','poNo'].includes(c.key))];
-    const country=result.findIndex(c=>c.key==='country');result.splice(country<0?Math.min(3,result.length):country,0,{key:'actualDate',label:'实际验货日期'});
     return [...result,...tail.map(k=>({key:k,label:({'inspectionProblem':'验货问题','inspectionExecution.sampleQuantity':'抽查数量',inspector:'检验人员','inspectionExecution.analysisReason':'分析原因',improvement:'改善措施'})[k]||columns.find(c=>c.key===k)?.label})).filter(c=>c.label)];
   }
   // The API has already projected task plans into dateFrom; never substitute QC actualDate.
@@ -240,7 +239,7 @@
   }
   function editExecution(id,key,value,immediate=false){const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
   function reviewEditor(row,key,label,type,value){
-    const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"'+(key==='actualDate'?' title="未填写时，审核确认后自动采用客排期计划日期。"':'');
+    const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
     if(['inspector','institution'].includes(key)){
       const list=options[key==='inspector'?'inspectors':'institutions']||[], idKey=key==='inspector'?'inspectorId':'institutionId', d=draft(row);
       const selected=d.inspectionExecution[idKey]||'', historical=value&&!list.some(x=>x.id===selected);
@@ -315,8 +314,7 @@
       }
       if(model.view==='review'&&reviewFields[key]&&canEdit(row))return cell(reviewEditor(row,key,reviewFields[key],['otherRemark','customerRequirements'].includes(key)?'multiline':key==='shipDate'?'date':key==='shippedQuantity'?'number':'text',d[key]));
       const ek=executionKey(key);
-      if(model.view==='review'&&ek==='actualDate')return cell(reviewValue(row,'实际验货日期',d.inspectionExecution.actualDate,canEdit(row)?reviewEditor(row,ek,'实际验货日期','date',d.inspectionExecution.actualDate):''));
-      if(ek&&(model.view==='review'||['actualDate','sampleQuantity','inspector'].includes(ek))){const [label,type]=executionFields[ek];if(type==='details'){const count=detailRows(d.inspectionExecution[ek],ek).length;return cell(count?'<button type="button" class="qis-detail-button" data-detail="'+ek+'">'+label+'（'+count+'）</button>':'');}if(canEdit(row)&&!(model.view==='review'&&['sampleQuantity','inspector'].includes(ek)))return cell(reviewEditor(row,ek,label,type,d.inspectionExecution[ek]??''));}
+      if(ek&&(model.view==='review'||['sampleQuantity','inspector'].includes(ek))){const [label,type]=executionFields[ek];if(type==='details'){const count=detailRows(d.inspectionExecution[ek],ek).length;return cell(count?'<button type="button" class="qis-detail-button" data-detail="'+ek+'">'+label+'（'+count+'）</button>':'');}if(canEdit(row)&&!(model.view==='review'&&['sampleQuantity','inspector'].includes(ek)))return cell(reviewEditor(row,ek,label,type,d.inspectionExecution[ek]??''));}
       const raw=key.split('.').reduce((v,k)=>v?.[k],row);
       const value=key==='date'?dateText(row):key==='reviewState'?(row.legacyCompleted?'历史已完成':{pending:'待审核',approved:'已审核'}[row.reviewState]||'—'):Array.isArray(raw)?raw.map(v=>Object.entries(v).map(([k,x])=>k+'：'+x).join('；')).join('\n'):raw;
       const note=key==='date'?[row.dateFrom,row.dateTo].filter(Boolean).join(' 至 '):scalar(value);
