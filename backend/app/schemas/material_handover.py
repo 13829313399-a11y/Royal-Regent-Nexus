@@ -1,7 +1,8 @@
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
+from app.schemas.fabric_receiving import ReceiptCounts
 
 
 class Strict(BaseModel):
@@ -102,6 +103,7 @@ class PostingLine(Strict):
     expected_source_revision: int | None = Field(default=None, ge=1)
     expected_receipt_count: int | None = Field(default=None, ge=0)
     difference_reason: str = Field(default='', max_length=1000)
+    receipt_counts: ReceiptCounts | None = None
 
 
 class PostingInput(Strict):
@@ -112,3 +114,7 @@ class PostingInput(Strict):
     code_version: int = Field(ge=1)
     business_date: date
     lines: list[PostingLine] = Field(min_length=1, max_length=100)
+    delivery_quantities: dict[
+        Annotated[str, Field(min_length=1, max_length=64)],
+        Annotated[str, Field(min_length=1, max_length=32)],
+    ] = Field(default_factory=dict, max_length=100)

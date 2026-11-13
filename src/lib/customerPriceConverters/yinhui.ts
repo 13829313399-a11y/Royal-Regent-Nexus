@@ -205,9 +205,6 @@ export function yinhuiReviewNotices(data: YinhuiQuoteData) {
     ? [{ source: row.source, description: row.description, handling: '保留物料，单价和金额留空并标注待补价', impact: '本项暂未计入合计，当前仅为已知成本小计' }]
     : row.sourceAmountWasBlank ? [{ source: row.source, description: row.description, handling: '原金额为空，已人工补正为 0', impact: '保留物料，按 0 元计入合计' }] : [])
   if (/[\u3400-\u9fff]/.test(data.productName)) notices.push({ source: '产品名称', description: data.productName, handling: '翻译未完成，保留原文输出', impact: '不影响金额，请核对客户能否接受原文' })
-  data.tools.forEach((row, i) => {
-    if (/[\u3400-\u9fff]/.test(row.description)) notices.push({ source: `Tool Plan ${i + 1}`, description: row.description, handling: '翻译未完成，保留原文输出', impact: '不影响金额，请核对客户能否接受原文' })
-  })
   return notices
 }
 export function yinhuiTotals(data: YinhuiQuoteData) {
@@ -724,7 +721,7 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   if (!isYinhuiCustomer(artifact.customer)) throw new Error('受控文件客户与银辉映射不一致')
   if (!/huaxing|华兴|華興/i.test(artifact.factoryAndWorkshop)) throw new Error('银辉映射仅适用于华兴受控报价')
   const data = emptyData()
-  const warnings = ['银辉临时映射按单 BOM 输出；请核对 BOM 原文、产品及 Tool Plan 英文名称、型号和运费。']
+  const warnings = ['银辉临时映射按单 BOM 输出；请核对 BOM 与 Tool Plan 原文、产品英文名称、型号和运费。']
   data.productName = artifact.productName
   if (artifact.quoteDate) data.quoteDate = artifact.quoteDate
   data.model = artifact.productName.match(/#\s*([\w-]+)/)?.[1] || ''

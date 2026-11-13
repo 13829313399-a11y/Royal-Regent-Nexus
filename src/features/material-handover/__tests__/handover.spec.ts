@@ -7,7 +7,22 @@ import View from '../MaterialHandoverView.vue'
 import type { HandoverDocument, HandoverWorkspace } from '@/api/materialHandover'
 
 const api = vi.hoisted(() => ({ workspace: vi.fn(), list: vi.fn(), pendingDeliveries: vi.fn(), issuers: vi.fn(), detail: vi.fn(), purchaseSources: vi.fn(), post: vi.fn(), scan: vi.fn(), action: vi.fn(), save: vi.fn(), upload: vi.fn(), context: vi.fn(), file: vi.fn(), printFile: vi.fn() }))
-vi.mock('../HandoverOriginalPrint.vue',async()=>{const {defineComponent,onMounted}=await import('vue');return{default:defineComponent({props:['file','token'],emits:['ready','failed'],setup(props,{emit}){onMounted(()=>emit('ready',props.token));return{}},template:'<div class="original-print-pages"></div>'})}})
+const originalRender = vi.hoisted(() => ({ ready: true }))
+vi.mock('../HandoverOriginalPrint.vue', async () => {
+  const { defineComponent, onMounted } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'OriginalPrintStub',
+      props: ['file', 'token'],
+      emits: ['ready', 'failed'],
+      setup(props, { emit }) {
+        onMounted(() => { if (originalRender.ready) emit('ready', props.token) })
+        return {}
+      },
+      template: '<div class="handover-original-print"></div>',
+    }),
+  }
+})
 vi.mock('@/api/materialHandover', () => ({ HANDOVER_FACTORY: 'huakang-c', handoverApi: () => api }))
 const auth = reactive({ currentUser: { id: 'warehouse' }, authorizationVersion: 1 })
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
@@ -31,7 +46,7 @@ const quantityInput = (part = 1) => wrapper!.get<HTMLInputElement>(`[aria-label=
 const locationInput = (part = 1) => wrapper!.get<HTMLInputElement>(`[aria-label="第1项第${part}个入库仓位"]`)
 const warehouseInput = (part = 1) => wrapper!.get<HTMLSelectElement>(`[aria-label="第1项第${part}个入库仓库"]`)
 beforeEach(() => { vi.resetAllMocks(); auth.currentUser.id = 'warehouse'; auth.authorizationVersion = 1; api.workspace.mockResolvedValue(work()); api.list.mockResolvedValue({ items: [{ ...fixture(), line_count: 2 }], limit: 50, offset: 0 }); api.detail.mockResolvedValue(fixture()); api.issuers.mockResolvedValue([]); api.context.mockResolvedValue({ name: '供应商', kind: 'SUPPLIER', supplier_id: 'SUP' });api.file.mockResolvedValue(new Blob(['<svg/>'],{type:'image/svg+xml'}));vi.stubGlobal('URL',class extends URL { static createObjectURL(){return 'blob:test'};static revokeObjectURL(){} });vi.spyOn(window,'print').mockImplementation(()=>{}) })
-afterEach(() => { wrapper?.unmount(); wrapper = undefined;vi.restoreAllMocks();vi.unstubAllGlobals() })
+afterEach(() => { wrapper?.unmount(); wrapper = undefined; originalRender.ready = true; vi.restoreAllMocks();vi.unstubAllGlobals() })
 
 describe('material handover workflow', () => {
   it.each([false, true])('uses the receiving unit for a price without a second unit input (external=%s)', async (external) => {
@@ -200,22 +215,41 @@ describe('material handover workflow', () => {
     expect(api.save.mock.calls[0]![1].data.document_date).toBeNull()
     expect(wrapper!.get('.draft-review').text()).toContain('缺少单据日期')
   })
-  it.each([false, true])('lets the warehouse receive a confirmed supplier document without document actions (scan=%s)', async (scan) => {
+  it.each([false, true])('opens receiving with the confirmed supplier details collapsed (scan=%s)', async (scan) => {
     const row = fixture(); row.issuer_id = 'ISSUER-A'
+    row.data.lines[0]!.quantity = '40.000000'
+    row.progress.A!.remaining = '30.000000'
     api.detail.mockResolvedValue(row); api.scan.mockResolvedValue(row)
     await open(false, scan ? '/?factory=huakang-c&tab=scan' : '/?factory=huakang-c')
     if (scan) {
       await wrapper!.get('[aria-label="扫描单据二维码"]').setValue(row.code)
       await wrapper!.get('.scan-card form').trigger('submit'); await flushPromises()
     } else await select()
-    expect(wrapper!.get('.document-fields').attributes('disabled')).toBeDefined()
-    expect(wrapper!.get('[aria-label="第1行物料编码"]').attributes('disabled')).toBeDefined()
+    const details = wrapper!.get<HTMLElement>('.supplier-document-details')
+    const disclosure = wrapper!.get('[aria-controls="handover-supplier-document-details"]')
+    expect(disclosure.attributes('aria-expanded')).toBe('false')
+    expect(details.element.style.display).toBe('none')
+    expect(wrapper!.get('.detail-heading h2').text()).toBe(row.data.source_no)
+    expect(wrapper!.get('.supplier-document-meta').text()).toContain(row.data.counterparty)
+    expect(wrapper!.get('.supplier-document-meta time').text()).toBe(row.data.document_date)
+    expect(details.get('.document-fields').attributes('disabled')).toBeDefined()
+    expect(details.get('[aria-label="第1行物料编码"]').attributes('disabled')).toBeDefined()
     expect(wrapper!.find('.document-confirmation').exists()).toBe(false)
     expect(wrapper!.find('.code-card').exists()).toBe(false)
     expect(wrapper!.text()).not.toContain('作废未执行单据')
-    expect(wrapper!.text()).toContain('原单有误请联系供应商更正重开')
-    expect(wrapper!.get('.posting-card').text()).toContain('本次实际收料入库')
-    expect(wrapper!.get('.posting-card').text()).toContain('增加仓位')
+    expect(details.text()).toContain('原单有误请联系供应商更正重开')
+    const receiving = wrapper!.get('.posting-card')
+    expect(details.element.contains(receiving.element)).toBe(false)
+    expect(receiving.text()).toContain('本次实际收料入库')
+    expect(receiving.text()).toContain('增加仓位')
+    expect(receiving.get('.receipt-metrics').findAll('dd').map(value => value.text())).toEqual(['40 码', '30 码', '30 码'])
+    await quantityInput().setValue('19.25')
+    await disclosure.trigger('click')
+    expect(disclosure.attributes('aria-expanded')).toBe('true')
+    expect(details.element.style.display).not.toBe('none')
+    await disclosure.trigger('click')
+    expect(details.element.style.display).toBe('none')
+    expect(quantityInput().element.value).toBe('19.25')
     await click('查看原件')
     expect(api.file).toHaveBeenCalledWith(row.id, 'source')
     expect(api.post).not.toHaveBeenCalled()
@@ -229,6 +263,25 @@ describe('material handover workflow', () => {
     expect(wrapper!.text()).toContain('待入库送货单')
     expect(wrapper!.find('.posting-card').exists()).toBe(true)
     expect(api.post).not.toHaveBeenCalled()
+  })
+  it('shows receipt progress below confirmation and labels void history', async () => {
+    const delivery = fixture()
+    const statuses = ['PENDING', 'PARTIAL', 'COMPLETE'] as const
+    api.list.mockResolvedValue({ items: [
+      ...statuses.map(processing_status => ({ ...delivery, id: processing_status, processing_status, line_count: 2 })),
+      { ...delivery, id: 'VOID', status: 'VOID', line_count: 2 },
+      { ...delivery, id: 'DRAFT', status: 'DRAFT', line_count: 2 },
+      { ...delivery, id: 'ISSUE', data: { ...delivery.data, kind: 'ISSUE' }, line_count: 2 },
+    ], total: 6, limit: 50, offset: 0 })
+    await open(false, '/?factory=huakang-c&tab=scan')
+
+    const labels = wrapper!.findAll('.document-statuses').map(group => (
+      Array.from(group.element.children, label => label.textContent?.trim())
+    ))
+    expect(labels).toEqual([
+      ['已确认', '待收货'], ['已确认', '部分收货'], ['已确认', '收货完成'],
+      ['已作废'], ['待核对'], ['已确认'],
+    ])
   })
   beforeEach(() => { api.purchaseSources.mockResolvedValue({ document_revision: 3, lines: {} }) })
   const purchase = (id: string, revision = 4, count = 2) => ({ id, revision, receipt_count: count, remaining: '30', received: '70',
@@ -325,15 +378,130 @@ describe('material handover workflow', () => {
     api.purchaseSources.mockRejectedValueOnce(new AxiosError('网络断开')).mockResolvedValueOnce({ document_revision: 3, match_status: { A: 'MATCHED' }, lines: { A: [purchase('P1')] } })
     await open(); await select()
     expect(wrapper!.findAll('button').find(button => button.text() === '确认本次实物收发')!.attributes('disabled')).toBeDefined()
+    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
+    await quantityInput().setValue('12')
+    await locationInput().setValue('一仓 A01')
     api.workspace.mockResolvedValue({ ...work(), inventory: { ...work().inventory, revision: 12 } })
-    await click('刷新采购与库存进度'); await flushPromises()
+    await wrapper!.get('[aria-label="刷新采购与库存进度"]').trigger('click'); await flushPromises()
     expect(wrapper!.findAll('button').find(button => button.text() === '确认本次实物收发')!.attributes('disabled')).toBeUndefined()
     expect(wrapper!.get<HTMLSelectElement>('[aria-label="A采购待收明细"]').element.value).toBe('P1')
     api.post.mockResolvedValue(fixture())
-    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
-    await locationInput().setValue('一仓 A01')
     await click('确认本次实物收发')
-    expect(api.post.mock.calls[0]![1].expected_inventory_revision).toBe(12)
+    expect(api.post).toHaveBeenCalledWith('D1', expect.objectContaining({
+      expected_inventory_revision: 12,
+      lines: [expect.objectContaining({ line_id: 'A', quantity: '12', location_id: 'BIN' })],
+    }))
+  })
+  it('keeps the current split receipt on refresh and submits the latest versions', async () => {
+    const workspace = work()
+    workspace.inventory.locations!.push({
+      id: 'BIN2', category: 'FABRIC', warehouse: '二仓', code: 'B01', label: '二仓 B01', status: 'ACTIVE', revision: 1,
+    })
+    api.workspace.mockResolvedValue(workspace)
+    api.purchaseSources.mockResolvedValue({ document_revision: 3, match_status: { A: 'MATCHED' }, lines: { A: [purchase('P1'), purchase('P2')] } })
+    await open(); await select()
+    await wrapper!.get('.receipt-date input').setValue('2026-10-13')
+    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
+    await warehouseInput().setValue('一仓')
+    await locationInput().setValue('一仓 A01')
+    await quantityInput().setValue('12')
+    await click('增加仓位')
+    await warehouseInput(2).setValue('二仓')
+    await locationInput(2).setValue('二仓 B01')
+    await quantityInput(2).setValue('6')
+    const secondAllocation = wrapper!.get('.posting-row').findAll('.receipt-allocation')[1]!
+    const [lot, roll] = secondAllocation.findAll('input[maxlength="128"]')
+    await lot!.setValue('LOT-2')
+    await roll!.setValue('ROLL-2')
+    await click('实点与差异')
+    await wrapper!.get('[aria-label="第1项第1个仓位破损数量"]').setValue('2')
+    await wrapper!.get('[aria-label="A采购待收明细"]').setValue('P2')
+
+    const updated = fixture()
+    updated.revision = 4
+    updated.progress.A = { processed: '20', remaining: '20' }
+    updated.progress.B = { processed: '5', remaining: '35' }
+    api.detail.mockResolvedValue(updated)
+    api.workspace.mockResolvedValue({ ...workspace, inventory: { ...workspace.inventory, revision: 12 } })
+    api.purchaseSources.mockResolvedValue({
+      document_revision: 4, match_status: { A: 'MATCHED' }, lines: { A: [purchase('P1'), purchase('P2', 5, 3)] },
+    })
+    api.post.mockResolvedValue(updated)
+    await click('刷新进度')
+
+    expect(api.post).not.toHaveBeenCalled()
+    expect(wrapper!.get<HTMLInputElement>('.posting-row input[type=checkbox]').element.checked).toBe(true)
+    expect(wrapper!.get('.posting-row').text()).toContain('单据尚余由 30 码更新为 20 码')
+    expect(quantityInput().element.value).toBe('10')
+    expect(quantityInput(2).element.value).toBe('6')
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="第2项第1个仓位净入库量"]').element.value).toBe('35')
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="A采购待收明细"]').element.value).toBe('P2')
+    await click('确认本次实物收发')
+    expect(api.post).toHaveBeenCalledWith('D1', expect.objectContaining({
+      expected_revision: 4, expected_inventory_revision: 12, business_date: '2026-10-13',
+      lines: [
+        expect.objectContaining({
+          line_id: 'A', quantity: '10', location_id: 'BIN', purchase_source_id: 'P2',
+          expected_source_revision: 5, expected_receipt_count: 3,
+          receipt_counts: expect.objectContaining({ counted_quantity: '12', damaged_quantity: '2' }),
+        }),
+        expect.objectContaining({
+          line_id: 'A', quantity: '6', location_id: 'BIN2', lot: 'LOT-2', roll_no: 'ROLL-2',
+          purchase_source_id: 'P2', expected_source_revision: 5, expected_receipt_count: 3,
+        }),
+      ],
+    }))
+  })
+  it.each([
+    ['8', '分仓净入库合计超过单据尚余'],
+    ['0', '该物料已收货完成，请取消勾选'],
+  ])('checks retained inputs against a refreshed remainder of %s', async (remaining, message) => {
+    await open(); await select()
+    const checkbox = wrapper!.get<HTMLInputElement>('.posting-row input[type=checkbox]')
+    await checkbox.setValue(true)
+    await locationInput().setValue('一仓 A01')
+    await quantityInput().setValue('12')
+
+    const updated = fixture()
+    updated.revision = 4
+    updated.progress.A = { processed: remaining === '0' ? '40' : '32', remaining }
+    api.detail.mockResolvedValue(updated)
+    api.purchaseSources.mockResolvedValue({ document_revision: 4, lines: {} })
+    await click('刷新进度')
+    expect(quantityInput().element.value).toBe('12')
+    expect(wrapper!.get('.posting-row [role="alert"]').text()).toContain(message)
+    await click('确认本次实物收发')
+    expect(api.post).not.toHaveBeenCalled()
+    if (remaining === '0') {
+      expect(checkbox.element.disabled).toBe(false)
+      await checkbox.setValue(false)
+      expect(checkbox.element.disabled).toBe(true)
+      expect(wrapper!.get('.posting-row').find('[role="alert"]').exists()).toBe(false)
+    }
+  })
+  it('requires a new choice when a refreshed purchase source or warehouse location is unavailable', async () => {
+    api.purchaseSources.mockResolvedValue({ document_revision: 3, match_status: { A: 'MATCHED' }, lines: { A: [purchase('P1')] } })
+    await open(); await select()
+    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
+    await quantityInput().setValue('12')
+    await locationInput().setValue('一仓 A01')
+
+    const workspace = work()
+    workspace.inventory.locations = [{ ...workspace.inventory.locations![0]!, id: 'NEW-BIN', code: 'A02', label: '一仓 A02' }]
+    api.workspace.mockResolvedValue(workspace)
+    api.purchaseSources.mockResolvedValue({ document_revision: 3, match_status: { A: 'MATCHED' }, lines: { A: [purchase('P2')] } })
+    await click('刷新进度')
+    await click('刷新进度')
+    expect(quantityInput().element.value).toBe('12')
+    const purchaseSelect = wrapper!.get<HTMLSelectElement>('[aria-label="A采购待收明细"]')
+    expect(purchaseSelect.element.value).toBe('')
+    expect(wrapper!.get('.purchase-match-message').text()).toContain('请重新选择')
+    await click('确认本次实物收发')
+    expect(api.post).not.toHaveBeenCalled()
+    await purchaseSelect.setValue('P2')
+    await click('确认本次实物收发')
+    expect(wrapper!.get('.handover-message.error').text()).toContain('选择仓库和仓位')
+    expect(api.post).not.toHaveBeenCalled()
   })
   it('keeps a boxed return on the left and removes duplicate warehouse navigation', async () => {
     await open()
@@ -379,7 +547,7 @@ describe('material handover workflow', () => {
     expect(api.scan).toHaveBeenCalledWith('MH1:D1:1')
     expect(api.purchaseSources).toHaveBeenCalledWith('D1')
     expect(wrapper!.get<HTMLSelectElement>('[aria-label="A采购待收明细"]').element.value).toBe('P1')
-    expect(wrapper!.get('.posting-row').text()).toContain('送货单数量 40 码 · 单据尚余 30 码')
+    expect(wrapper!.get('.receipt-metrics').findAll('dd').slice(0, 2).map(value => value.text())).toEqual(['40 码', '30 码'])
     expect(quantityInput().element.value).toBe('30')
     expect(warehouseInput().element.value).toBe('一仓')
     expect(wrapper!.get('.posting-row').text()).toContain('增加仓位')
@@ -390,12 +558,68 @@ describe('material handover workflow', () => {
     expect(api.post).not.toHaveBeenCalled()
     await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
     await quantityInput().setValue('7.5')
-    expect(wrapper!.get('.posting-row').text()).toContain('送货单数量 40 码 · 单据尚余 30 码')
+    expect(wrapper!.get('.receipt-metrics').findAll('dd').slice(0, 2).map(value => value.text())).toEqual(['40 码', '30 码'])
     await locationInput().setValue('一仓 A01')
     await click('确认本次实物收发')
     const body = api.post.mock.calls[0]![1]
     expect(body.expected_revision).toBe(3); expect(body.expected_inventory_revision).toBe(8)
     expect(body.lines).toEqual([{ line_id: 'A', quantity: '7.5', batch_id: '', location_id: 'BIN', lot: 'LOT', roll_no: '' }])
+  })
+  it('carries the current quantity into the count fields and posts the calculated net', async () => {
+    api.post.mockResolvedValue(fixture())
+    await open(); await select()
+    await click('实点与差异')
+    expect(quantityInput().attributes('readonly')).toBeDefined()
+    expect(quantityInput().element.closest('.receipt-count-fields')).not.toBeNull()
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="第1项第1个仓位实点数量"]').element.value).toBe('30')
+    expect(wrapper!.find('[aria-label="第1项本批送货数量"]').exists()).toBe(false)
+    await click('实点与差异')
+    expect(quantityInput().element.value).toBe('30')
+    expect(quantityInput().attributes('readonly')).toBeUndefined()
+    await quantityInput().setValue('18.25')
+    await click('实点与差异')
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="第1项第1个仓位实点数量"]').element.value).toBe('18.25')
+    await click('增加仓位')
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="第1项第2个仓位实点数量"]').element.value).toBe('')
+    await wrapper!.get('[aria-label="移除第1项的第2个仓位"]').trigger('click')
+    await wrapper!.get('[aria-label="第1项第1个仓位实点数量"]').setValue('12.5')
+    await wrapper!.get('[aria-label="第1项第1个仓位破损数量"]').setValue('1')
+    await wrapper!.get('[aria-label="第1项第1个仓位拒收数量"]').setValue('0.5')
+    await wrapper!.get('[aria-label="第1项第1个仓位其他不可用"]').setValue('0.25')
+    expect(quantityInput().element.value).toBe('10.75')
+    await click('实点与差异')
+    expect(quantityInput().element.value).toBe('10.75')
+    expect(quantityInput().element.closest('.receipt-count-fields')).toBeNull()
+    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
+    await locationInput().setValue('一仓 A01')
+    await click('确认本次实物收发')
+    const body = api.post.mock.calls[0]![1]
+    expect(body.delivery_quantities).toBeUndefined()
+    expect(body).toMatchObject({
+      lines: [{ line_id: 'A', quantity: '10.75', location_id: 'BIN', receipt_counts: {
+        counted_quantity: '12.5', damaged_quantity: '1', rejected_quantity: '0.5', other_unusable_quantity: '0.25',
+      } }],
+    })
+  })
+  it('can save an all-rejected split without a stock location or purchase selection', async () => {
+    api.purchaseSources.mockResolvedValue({ document_revision: 3, lines: { A: [purchase('P1')] } })
+    api.post.mockResolvedValue(fixture())
+    await open(); await select()
+    await click('实点与差异')
+    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
+    await wrapper!.get('[aria-label="第1项第1个仓位实点数量"]').setValue('0')
+    await click('确认本次实物收发')
+    expect(api.post).not.toHaveBeenCalled()
+    expect(wrapper!.text()).toContain('实点数量须大于零')
+    await wrapper!.get('[aria-label="第1项第1个仓位实点数量"]').setValue('5')
+    await wrapper!.get('[aria-label="第1项第1个仓位拒收数量"]').setValue('5')
+    expect(quantityInput().element.value).toBe('0')
+    expect(warehouseInput().attributes('disabled')).toBeDefined()
+    await click('确认本次实物收发')
+    const line = api.post.mock.calls[0]![1].lines[0]
+    expect(line).toMatchObject({ quantity: '0', location_id: '', receipt_counts: { rejected_quantity: '5' } })
+    expect(line.purchase_source_id).toBeUndefined()
+    expect(wrapper!.text()).toContain('本次收料差异已保存，净入库量为零')
   })
   it('splits one receipt line across eligible warehouses with an exact quantity cap and frozen retry', async () => {
     const row = fixture()
@@ -416,18 +640,18 @@ describe('material handover workflow', () => {
     await warehouseInput().setValue('一仓')
     await locationInput().setValue('一仓 A01')
     await quantityInput().setValue('0.1')
-    await click('＋ 增加仓位')
+    await click('增加仓位')
     await warehouseInput(2).setValue('一仓')
     await locationInput(2).setValue('一仓 A01')
     await warehouseInput(2).setValue('二仓')
     expect(locationInput(2).element.value).toBe('')
     await quantityInput(2).setValue('0.21')
-    expect(wrapper!.get('.posting-row').text()).toContain('本次净入库合计 0.31 码')
+    expect(wrapper!.get('.receipt-metric-total dd').text()).toBe('0.31 码')
     await click('确认本次实物收发')
     expect(wrapper!.text()).toContain('分仓净入库合计超过单据尚余')
     expect(api.post).not.toHaveBeenCalled()
     await quantityInput(2).setValue('0.2')
-    expect(wrapper!.get('.posting-row').text()).toContain('本次净入库合计 0.3 码')
+    expect(wrapper!.get('.receipt-metric-total dd').text()).toBe('0.3 码')
     expect(wrapper!.find('[aria-label="A超收说明"]').exists()).toBe(false)
     await click('确认本次实物收发')
     expect(wrapper!.text()).toContain('请为每个入库仓位填写净入库量')
@@ -505,20 +729,22 @@ describe('material handover workflow', () => {
     await click('原单加码打印')
     expect(api.printFile).toHaveBeenCalledWith('D1',3,'right')
     expect(window.print).toHaveBeenCalledOnce()
-    expect(wrapper!.get('.original-print-preview').text()).toContain('原单加码打印预览')
+    expect(wrapper!.find('.original-print-preview').exists()).toBe(false)
+    expect(wrapper!.find('main > .handover-original-print').exists()).toBe(true)
     expect(api.post).not.toHaveBeenCalled()
   })
   it('prepares the chosen corner and clears print copies when authorization changes',async()=>{
     api.printFile.mockResolvedValue(new Blob(['pdf'],{type:'application/pdf'}))
     await open();await select();await wrapper!.get('[aria-label="原单二维码位置"]').setValue('left')
     await click('原单加码打印');expect(api.printFile).toHaveBeenCalledWith('D1',3,'left')
-    expect(wrapper!.find('.original-print-preview').exists()).toBe(true)
+    expect(wrapper!.find('main > .handover-original-print').exists()).toBe(true)
     auth.authorizationVersion++;await flushPromises()
-    expect(wrapper!.find('.original-print-preview').exists()).toBe(false)
+    expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
     expect(wrapper!.text()).not.toContain('下载加码原单 PDF')
   })
-  it('prints confirmed supplier quantities with a separate blank sign-off area', async () => {
+  it('prints the company name and keeps sign-off with the final confirmed material row', async () => {
     const row = { ...fixture(), issuer_id: 'ISSUER-A' }
+    row.data.counterparty = '锦禾纺织有限公司'
     row.data.lines[0]!.unit_price = '0'
     api.detail.mockResolvedValue(row)
     await open(true, '/#key=public-test-key')
@@ -527,11 +753,16 @@ describe('material handover workflow', () => {
 
     const sheet = wrapper!.get('main > .handover-summary-print')
     expect(sheet.get('.summary-heading .print-qr').attributes('src')).toBe('blob:test')
+    expect(sheet.get('h2').text()).toBe('锦禾纺织有限公司')
+    expect(sheet.get('.summary-kicker').text()).toBe('送货交接单 · 已确认')
+    expect(sheet.get('.summary-heading').text()).not.toContain('供应商')
     expect(sheet.get('.summary-number').text()).toBe('DN-1')
     expect(sheet.get('tbody .summary-material').text()).toBe('物料A')
     expect(sheet.get('tbody .summary-quantity').text()).toBe('40 码')
     expect(sheet.get('tbody tr > td:nth-child(5)').text()).toBe('0')
-    expect(sheet.get('.summary-signoff').text()).toContain('送货人签字收货人签字签收日期签收备注')
+    const ending = sheet.get('tbody.summary-ending')
+    expect(ending.findAll('.summary-material').map(item => item.text())).toEqual(['物料B'])
+    expect(ending.get('.summary-signoff').text()).toContain('送货人签字收货人签字签收日期签收备注')
     expect(window.print).toHaveBeenCalledOnce()
     expect(api.post).not.toHaveBeenCalled()
   })
@@ -557,7 +788,7 @@ describe('material handover workflow', () => {
     expect(wrapper!.find('.qr-image').exists()).toBe(false)
     expect(window.print).not.toHaveBeenCalled()
   })
-  it.each(['打印已准备原单', '下载加码原单 PDF'])('rechecks a prepared copy before %s', async (operation) => {
+  it.each(['原单加码打印', '下载加码原单 PDF'])('rechecks a prepared copy before %s', async (operation) => {
     const row = { ...fixture(), issuer_id: 'ISSUER-A' }
     api.detail.mockResolvedValue(row)
     api.printFile.mockResolvedValue(new Blob(['pdf'], { type: 'application/pdf' }))
@@ -566,7 +797,7 @@ describe('material handover workflow', () => {
     expect(window.print).toHaveBeenCalledOnce()
     api.detail.mockResolvedValueOnce({ ...row, status: 'VOID', code: '', revision: row.revision + 1 })
     await click(operation)
-    expect(wrapper!.find('.original-print-preview').exists()).toBe(false)
+    expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
     expect(wrapper!.find('.code-card').exists()).toBe(false)
     expect(wrapper!.text()).toContain('旧二维码和加码副本不可再用')
     expect(window.print).toHaveBeenCalledOnce()
@@ -587,21 +818,22 @@ describe('material handover workflow', () => {
     await wrapper!.findAll('button').find(button => button.text().startsWith('DN-2'))!.trigger('click')
     finishPrint(row); await flushPromises()
     expect(window.print).not.toHaveBeenCalled()
-    expect(wrapper!.find('.original-print-preview').exists()).toBe(false)
+    expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
     finishOpen(other); await flushPromises()
     expect(wrapper!.get('.detail-heading h2').text()).toBe('DN-2')
   })
-  it('dismisses a pending preview without printing its late response and can reopen the same document', async () => {
+  it('cancels preparation without printing its late response and can print the same document again', async () => {
     let finishFirst!: (file: Blob) => void
     const pdf = new Blob(['pdf'], { type: 'application/pdf' })
     api.printFile.mockReturnValueOnce(new Promise<Blob>(resolve => { finishFirst = resolve })).mockResolvedValue(pdf)
     await open(); await select(); await click('原单加码打印')
-    expect(wrapper!.get('.original-print-preview').text()).toContain('准备加码打印')
+    expect(wrapper!.get('.print-preparing').text()).toBe('正在准备加码原单…')
+    expect(wrapper!.find('.original-print-preview').exists()).toBe(false)
 
-    await click('关闭预览')
+    await click('取消准备')
     finishFirst(pdf); await flushPromises()
     expect(window.print).not.toHaveBeenCalled()
-    expect(wrapper!.find('.original-print-preview').exists()).toBe(false)
+    expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
 
     await click('原单加码打印')
     expect(api.printFile).toHaveBeenLastCalledWith('D1', 3, 'right')
@@ -612,6 +844,68 @@ describe('material handover workflow', () => {
     api.printFile.mockReturnValue(new Promise<Blob>(done=>{resolve=done}))
     await open();await select();await wrapper!.findAll('button').find(b=>b.text()==='原单加码打印')!.trigger('click')
     auth.authorizationVersion++;await flushPromises();resolve(new Blob(['pdf'],{type:'application/pdf'}));await flushPromises()
-    expect(window.print).not.toHaveBeenCalled();expect(wrapper!.find('.original-print-preview').exists()).toBe(false)
+    expect(window.print).not.toHaveBeenCalled();expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
+  })
+  it('reuses a prepared original after the browser dialog closes and can switch to summary printing', async () => {
+    api.printFile.mockResolvedValue(new Blob(['pdf'], { type: 'application/pdf' }))
+    await open(true, '/#key=public-test-key')
+    await select()
+    await click('原单加码打印')
+    expect(wrapper!.get('main').classes()).toContain('original-print-active')
+
+    window.dispatchEvent(new Event('afterprint'))
+    await flushPromises()
+    expect(wrapper!.get('main').classes()).not.toContain('original-print-active')
+    await click('原单加码打印')
+    expect(api.printFile).toHaveBeenCalledOnce()
+    expect(window.print).toHaveBeenCalledTimes(2)
+
+    window.dispatchEvent(new Event('afterprint'))
+    await click('打印统一明细（备用）')
+    expect(window.print).toHaveBeenCalledTimes(3)
+    expect(wrapper!.get('main').classes()).not.toContain('original-print-active')
+    expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
+  })
+  it('cancels a summary request before its QR response arrives', async () => {
+    let finish!: (file: Blob) => void
+    api.file.mockReturnValueOnce(new Promise<Blob>(resolve => { finish = resolve }))
+    await open(true, '/#key=public-test-key')
+    await select()
+    await click('打印统一明细（备用）')
+    await click('取消准备')
+    finish(new Blob(['<svg/>'], { type: 'image/svg+xml' }))
+    await flushPromises()
+    expect(window.print).not.toHaveBeenCalled()
+    expect(wrapper!.find('.qr-image').exists()).toBe(false)
+  })
+  it('shows the server lock message and can retry printing the saved document', async () => {
+    api.printFile.mockRejectedValueOnce(Object.assign(new AxiosError('busy'), {
+      response: { status: 503, data: new Blob([JSON.stringify({ detail: '数据库忙，请稍后重试原单加码打印' })], { type: 'application/json' }) },
+    })).mockResolvedValue(new Blob(['pdf'], { type: 'application/pdf' }))
+    await open(true, '/#key=public-test-key')
+    await select()
+    await click('原单加码打印')
+    expect(wrapper!.get('[role="alert"]').text()).toContain('数据库忙，请稍后重试原单加码打印')
+    expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
+    await click('原单加码打印')
+    expect(window.print).toHaveBeenCalledOnce()
+    expect(api.action).not.toHaveBeenCalled()
+    expect(api.save).not.toHaveBeenCalled()
+  })
+  it('keeps PDF download available when browser page rendering fails', async () => {
+    originalRender.ready = false
+    api.printFile.mockResolvedValue(new Blob(['pdf'], { type: 'application/pdf' }))
+    const download = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    await open(true, '/#key=public-test-key')
+    await select()
+    await click('原单加码打印')
+    const renderer = wrapper!.getComponent({ name: 'OriginalPrintStub' })
+    renderer.vm.$emit('failed', renderer.props('token'), '无法绘制')
+    await flushPromises()
+    expect(window.print).not.toHaveBeenCalled()
+    expect(wrapper!.find('.handover-original-print').exists()).toBe(false)
+    expect(wrapper!.get('[role="alert"]').text()).toContain('可下载加码 PDF 打印')
+    await click('下载加码原单 PDF')
+    expect(download).toHaveBeenCalledOnce()
   })
 })

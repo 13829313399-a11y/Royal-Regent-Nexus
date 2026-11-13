@@ -48,7 +48,7 @@ function select(order:CuttingOrder){if(!loading.value&&discard())selected.value=
 onMounted(()=>void load(1,false,true))
 </script>
 <template>
-  <section class="cutting-page cutting-master">
+  <section class="cutting-page cutting-review-page cutting-master">
     <CuttingLocationNotice :location="location" :selected-id="selected?.line_id" />
     <PageHeader :title="workspace.title" description="按真实耗用核对本厂、外发材料费用，确认完工及在制归属，追溯原批次成本。" />
     <CuttingSubnav v-model="costView" :items="costTabs" label="物料费用工作视图" />
@@ -64,7 +64,9 @@ onMounted(()=>void load(1,false,true))
         <p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选无匹配订单，请清除筛选后查看。':'暂无已下发裁床订单。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
         <nav class="order-pagination" aria-label="费用订单分页"><span>第 {{page}} 页 · 共 {{total}} 条</span><Button variant="outline" :disabled="loading||page<=1" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="loading||page*50>=total" @click="load(page+1)">下一页</Button></nav>
       </SectionPanel>
-      <p v-if="selected">货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
+      <SectionPanel v-if="selected" title="当前费用核对订单" :subtitle="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`" class="cutting-content-panel">
+        <p>{{ selected.snapshot.customer_name }} · {{ orderProductName(selected.snapshot) }} · <span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
+      </SectionPanel>
       <CuttingMaterialUsage v-if="selected?.current" ref="editor" :key="selected.line_id" :line-id="selected.line_id" :permissions="access.permissions" with-costs :view="costView" />
       <p v-else-if="selected" class="cutting-notice">请先签收订单并完成工程及领料依据。</p>
     </template>

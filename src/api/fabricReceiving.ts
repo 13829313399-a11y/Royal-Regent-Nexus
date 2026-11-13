@@ -2,6 +2,12 @@ import { http } from '@/lib/http'
 import type { PurchaseFacts, PurchasePriceReference } from './fabricProcurement'
 
 export type MaterialCategory = 'FABRIC' | 'ACCESSORY' | 'THREAD'
+export interface ReceiptCounts {
+  counted_quantity: string
+  damaged_quantity: string
+  rejected_quantity: string
+  other_unusable_quantity: string
+}
 export interface ReceiptPriceInput { unit_price?: string; price_unit?: string; currency?: '' | 'CNY' | 'HKD' | 'USD' | 'EUR' }
 export interface ReceiptBatchInput { location_id?: string; quantity: string; location: string; dye_lot: string; roll_no: string
   counted_quantity?: string; damaged_quantity?: string; rejected_quantity?: string; other_unusable_quantity?: string }

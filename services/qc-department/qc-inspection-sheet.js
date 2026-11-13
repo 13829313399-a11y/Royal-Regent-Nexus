@@ -8,6 +8,7 @@
   const byId=id=>model.items.find(r=>r.id===id);
   const editable=()=>Boolean(root.__QC_NEXUS.workflow?.edit);
   const base='api/inspection-sheet/';
+  const photoAccept='image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,image/tiff,image/bmp,image/gif,.mpo,.heic,.heif,.tif,.tiff';
   // LAN HTTP pages lack randomUUID; getRandomValues remains available there.
   // These are idempotency keys, with the same secure-random fallback as QcWorkflow.
   const requestKey=()=>root.crypto.randomUUID?.()||Array.from(root.crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
@@ -190,7 +191,7 @@
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
     catch(error){model.error=error.message;}
-    finally{model.loading=false;render();if(view==='review'&&model.reviewTab==='pending'&&!model.error)void pendingNotifications(noticeGeneration);const next=model.nextLoad;model.nextLoad=null;if(next&&(next.view!==model.view||next.tab!==model.reviewTab))await load(next.view,next.tab);}
+    finally{model.loading=false;render();if(!model.error&&(view==='records'||model.reviewTab==='pending'))void reviewNotifications(view,noticeGeneration);const next=model.nextLoad;model.nextLoad=null;if(next&&(next.view!==model.view||next.tab!==model.reviewTab))await load(next.view,next.tab);}
   }
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
@@ -265,7 +266,7 @@
       if(key==='inspectionProblem')return cell('<textarea data-problem="'+row.id+'" rows="2" maxlength="20000" aria-label="验货问题" '+disabled+'>'+esc(d.inspectionProblem)+'</textarea>');
       if(key==='improvement')return cell('<textarea data-improvement="'+row.id+'" rows="2" maxlength="20000" aria-label="改进措施" '+disabled+'>'+esc(d.improvement)+'</textarea>');
       if(['submittedAt','confirmedAt','lastChangedAt'].includes(key))return cell(esc(audit().time(row[key])));
-      if(key==='photos')return cell(mobileKey+'<div class="qis-photo-editor" title="选中本行后，可按 ⌘V / Ctrl+V 粘贴图片">'+(canEdit(row)?'<div class="qis-photo-actions"><label>选照片<input type="file" data-files="'+row.id+'" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple></label><label>拍照<input type="file" data-camera="'+row.id+'" accept="image/*" capture="environment"></label></div>':'')+'<div data-photo-list="'+row.id+'" class="qis-photos">'+photoList(row)+'</div></div><div class="qis-photo-feedback"><span data-photo-status="'+row.id+'" role="status">'+(row.photos.length?'已附 '+row.photos.length+' 张':'')+'</span><button type="button" data-photo-retry="'+row.id+'" hidden>重试</button></div>',' class="qis-photo-cell"');
+      if(key==='photos')return cell(mobileKey+'<div class="qis-photo-editor" title="选中本行后，可按 ⌘V / Ctrl+V 粘贴图片">'+(canEdit(row)?'<div class="qis-photo-actions"><label>选照片<input type="file" data-files="'+row.id+'" accept="'+photoAccept+'" multiple></label><label>拍照<input type="file" data-camera="'+row.id+'" accept="image/*" capture="environment"></label></div>':'')+'<div data-photo-list="'+row.id+'" class="qis-photos">'+photoList(row)+'</div></div><div class="qis-photo-feedback"><span data-photo-status="'+row.id+'" role="status">'+(row.photos.length?'已附 '+row.photos.length+' 张':'')+'</span><button type="button" data-photo-retry="'+row.id+'" hidden>重试</button></div>',' class="qis-photo-cell"');
       if(model.view==='review'&&reviewFields[key]&&canEdit(row))return cell(reviewEditor(row,key,reviewFields[key],['otherRemark','customerRequirements'].includes(key)?'multiline':key==='shipDate'?'date':key==='shippedQuantity'?'number':'text',d[key]));
       const ek=executionKey(key);
       if(ek&&(model.view==='review'||ek==='actualDate')){const [label,type]=executionFields[ek];if(type==='details'){const count=detailRows(d.inspectionExecution[ek],ek).length;return cell(count?'<button type="button" class="qis-detail-button" data-detail="'+ek+'">'+label+'（'+count+'）</button>':'');}if(canEdit(row))return cell(reviewEditor(row,ek,label,type,d.inspectionExecution[ek]??''));}
@@ -541,33 +542,43 @@
   }
   function returnToInspection(id){
     const row=byId(id);if(!row||model.reviewBusy||!canReturn(row))return;
-    const el=audit().dialog('确认退回验货台？','<p>即将把以下订单退回验货台重新验货：</p><p>客户：'+esc(row.customer)+'<br>PO：'+esc(row.poNo)+'</p><p>该订单将从待审核列表移出，并重新出现在验货台中。原有验货内容和照片保留，可以重新检查和填写。</p><p data-feedback role="alert"></p><footer><button data-cancel>取消</button><button class="qis-return-action" data-return-confirm>确认退回</button></footer>');
-    let request=null;const feedback=el.querySelector('[data-feedback]'),button=el.querySelector('[data-return-confirm]');
+    const el=audit().dialog('确认退回验货台？','<p>即将把以下订单退回验货台重新验货：</p><p>客户：'+esc(row.customer)+'<br>PO：'+esc(row.poNo)+'</p><p>该订单将从待审核列表移出，并重新出现在验货台中。原有验货内容和照片保留，可以重新检查和填写。</p><label>退回原因（选填）<textarea data-reason maxlength="20000" rows="3"></textarea></label><p data-feedback role="alert"></p><footer><button data-cancel>取消</button><button class="qis-return-action" data-return-confirm>确认退回</button></footer>');
+    let request=null;const feedback=el.querySelector('[data-feedback]'),button=el.querySelector('[data-return-confirm]'),reason=el.querySelector('[data-reason]');
     el.querySelector('[data-cancel]').onclick=()=>{if(!model.reviewBusy)el.close();};el.addEventListener('cancel',e=>{if(model.reviewBusy)e.preventDefault();});
     button.onclick=async()=>{
       if(model.reviewBusy)return;model.reviewBusy=true;el.querySelectorAll('button').forEach(b=>b.disabled=true);updateReviewControls(filtered());
       try{
-        if(!request){await flushRow(id);request={revision:byId(id).revision,requestKey:requestKey()};}
+        if(!request){
+          await flushRow(id);
+          request={revision:byId(id).revision,requestKey:requestKey(),reason:reason.value};
+          reason.disabled=true;
+        }
         const result=await api('review/entries/'+id+'/return-to-inspection',request);
         accept(id,result.item);model.checked.delete(id);model.drafts.delete(id);render();el.close();root.showToast?.('已退回验货台：'+row.customer+' · '+row.poNo,'success');
       }catch(error){feedback.textContent=error.message+'；数据保留，可重试或关闭后刷新核对。';}
       finally{model.reviewBusy=false;el.querySelectorAll('button').forEach(b=>b.disabled=false);updateReviewControls(filtered());}
     };
   }
-  async function pendingNotifications(generation){
-    const active=()=>generation===notificationGeneration&&model.view==='review'&&model.reviewTab==='pending'&&root.document?.getElementById('page-review')?.classList.contains('active');
+  async function reviewNotifications(view,generation){
+    const workbench=view==='records';
+    const path=(workbench?'entries':'review')+'/notifications';
+    const label=workbench?'退回提醒':'反审核提醒';
+    const active=()=>generation===notificationGeneration&&model.view===view&&
+      (workbench||model.reviewTab==='pending')&&root.document?.getElementById('page-'+view)?.classList.contains('active');
+    if(!active())return;
     try{
-      const data=await api('review/notifications');if(!active()||!data.items?.length)return;
-      const panel=audit().reversalResult({results:data.items.map(e=>({id:e.entryId,ok:true,reversal:e}))},model.items);
+      const data=await api(path);if(!active()||!data.items?.length)return;
+      const panel=audit().reversalResult({results:data.items.map(e=>({id:e.entryId,ok:true,reversal:e}))},model.items,{workbench});
       if(!panel)return;
       // Acknowledge after the visible panel has had a paint opportunity, never on fetch.
       root.requestAnimationFrame(()=>root.requestAnimationFrame(()=>{
-        if(panel.isConnected&&active()&&!root.document.hidden)void api('review/notifications/shown',{eventIds:data.items.map(e=>e.eventId)}).catch(()=>{panel.querySelector('strong').textContent='反审核提醒已显示，读取状态未保存；刷新后可能再次提醒';});
+        if(panel.isConnected&&active()&&!root.document.hidden)void api(path+'/shown',{eventIds:data.items.map(e=>e.eventId)}).catch(()=>{panel.querySelector('strong').textContent=label+'已显示，读取状态未保存；刷新后可能再次提醒';});
       }));
-    }catch(error){if(active())root.showToast?.('反审核提醒读取失败：'+error.message+'；刷新可重试','error');}
+    }catch(error){if(active())root.showToast?.(label+'读取失败：'+error.message+'；刷新可重试','error');}
   }
   async function focus(key){
-    root.showPage?.('records');if(!model.loaded||model.view!=='records')await load();
+    if(!root.document.getElementById('page-records')?.classList.contains('active'))root.showPage?.('records');
+    if(!model.loaded||model.view!=='records')await load();
     const row=model.items.find(r=>r.id===key||r.workflowId===key||r.sourceId===key||r.sourceKey===key);
     if(!row)return;
     root.resetRecordsFilters?.();model.selectedId=row.id;render();const node=root.document.querySelector('[data-entry="'+row.id+'"]');node?.scrollIntoView?.({block:'center'});node?.querySelector('select')?.focus();

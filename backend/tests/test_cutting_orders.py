@@ -84,7 +84,9 @@ def amend(client, cancelled=False):
 
 def test_complete_chain_pins_bom_and_never_posts_stock(flow):
     initial = read(flow)
-    assert initial['needs_receipt'] and 'unit_price_hkd' not in initial['snapshot'] and 'secret' not in initial['snapshot']
+    assert not initial['needs_receipt'] and 'unit_price_hkd' not in initial['snapshot'] and 'secret' not in initial['snapshot']
+    assert initial['current']['data']['receipt'] == dict(mode='automatic', source_version=1, received_at=initial['received_at'])
+    assert initial['received_at'] == initial['current']['created_at']
     row, bom = submitted(flow)
     req = row['current']['data']['requisition']
     assert req['lines'][0]['theoretical_quantity'] == '6.250000'
@@ -114,6 +116,32 @@ def test_receive_is_idempotent_and_current_auth_still_required(flow):
     assert flow.post(url, json=dict(body, reason='改变同一操作')).status_code == 409
     flow.cutting_auth['user'] = user('read')
     assert flow.post(url, json=body).status_code == 403
+
+
+def test_first_cutting_dispatch_after_order_revision_is_atomic_and_legacy_stays_pending(flow):
+    with Session(flow.engine) as db:
+        original = db.get(Line, 'line-1')
+        values = {key: getattr(original, key) for key in (
+            'factory_id', 'customer_code', 'customer_name', 'product_no', 'quantity',
+            'shipped_quantity', 'status', 'data', 'created_at', 'updated_at')}
+        fresh = Line(id='first-cutting', identity_key='first-cutting', reference_no='FIRST-CUTTING', version=2, revision=2, **values)
+        legacy = Line(id='legacy-pending', identity_key='legacy-pending', reference_no='LEGACY-PENDING', version=1, revision=1, **values)
+        db.add_all([fresh, legacy]); db.flush()
+        ledger.publish(db, legacy, ['cutting'], 'legacy-sales')
+        db.commit()
+        ledger.dispatch(db, fresh, DispatchIn(expected_revision=2, recipients=['cutting']), 'sales')
+        assert db.get(CuttingOrder, fresh.id).version == 1
+        db.rollback()
+        assert db.get(CuttingOrder, fresh.id) is None and orders.latest(db, fresh.id) is None
+        ledger.dispatch(db, fresh, DispatchIn(expected_revision=2, recipients=['cutting']), 'sales')
+        db.commit()
+        ledger.dispatch(db, fresh, DispatchIn(expected_revision=fresh.revision, recipients=['cutting']), 'sales')
+        ledger.dispatch(db, legacy, DispatchIn(expected_revision=legacy.revision, recipients=['cutting']), 'sales')
+        db.commit()
+        assert db.get(CuttingOrder, fresh.id).version == 1
+        assert db.get(CuttingOrderRevision, (fresh.id, 1)).data['receipt']['source_version'] == 2
+        assert orders.latest(db, fresh.id).received_by == '系统自动接单'
+        assert db.get(CuttingOrder, legacy.id) is None and not orders.latest(db, legacy.id).received_at
 
 
 @pytest.mark.parametrize('action,department', [('receive', 'engineering'), ('bom', 'production'), ('requisition', 'pmc-warehouse'), ('eta', 'engineering')])
@@ -156,6 +184,11 @@ def test_source_change_invalidates_chain_and_retains_old_purchase_evidence(flow)
     row, _ = submitted(flow)
     old_dispatch = row['dispatch_id']
     amend(flow)
+    pending = read(flow)
+    assert pending['needs_receipt'] and pending['received_at'] == '' and pending['current']['version'] == 3
+    assert pending['current']['data']['receipt']['mode'] == 'automatic'
+    changes = flow.get(BASE + '/orders', params={'factory_id':'huakang-c','changes_only':'true'}).json()
+    assert changes['total'] == 1 and changes['data'][0]['line_id'] == 'line-1'
     assert post(flow, 'eta', expected_version=3, requisition_version=3, batches=[]).status_code == 409
     assert post(flow, 'receive', expected_version=3, dispatch_id=old_dispatch).status_code == 409
     row = receive(flow)
@@ -165,6 +198,9 @@ def test_source_change_invalidates_chain_and_retains_old_purchase_evidence(flow)
     assert historical[1]['data']['requisition']['lines'][0]['quantity'] == '7'
     assert historical[1]['data']['order']['quantity'] == '100'
     assert row['snapshot']['quantity'] == '120'
+    assert row['current']['data']['receipt'] == dict(mode='manual', source_version=2, received_at=row['received_at'])
+    assert historical[-1]['data']['receipt']['mode'] == 'automatic'
+    assert flow.get(BASE + '/orders', params={'factory_id':'huakang-c','changes_only':'true'}).json()['total'] == 0
 
 
 def test_cancellation_can_be_received_but_cannot_write(flow):

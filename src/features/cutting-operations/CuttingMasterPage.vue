@@ -3,7 +3,7 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
-import { computed, inject, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onBeforeUnmount, reactive, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, routeLocationKey } from 'vue-router'
 import { cuttingApi, errorMessage, type Access, type Kind, type MasterRecord, type MaterialData, type ResourceData, type BomData, type SaveCommand, type StateCommand } from './api'
 import CuttingCalendarEditor from './CuttingCalendarEditor.vue'
@@ -14,6 +14,7 @@ import { workspaceApi } from './workspaceApi'
 const masterStats=ref<{bom:number;draft:number;material:number;resource:number}>()
 const statsError=ref('')
 const calendarView=ref(false)
+const queryId=`cutting-master-query-${useId()}`
 const route=inject(routeLocationKey,undefined)
 async function loadStats(){
   const ticket=generation
@@ -243,22 +244,24 @@ function requirements(data: MasterRecord['data']) { return (data as BomData).req
 </script>
 
 <template>
-  <section class="cutting-page cutting-master">
+  <section class="cutting-page cutting-review-page cutting-master">
     <PageHeader title="基础资料" description="登记物料、执行方及工程生产 BOM；修订保留原版本。"></PageHeader>
     <p class="cutting-notice">BOM 由工程核对并发布；物料与执行方分别维护版本，工作日历沿用执行方资料。历史订单保留原 BOM，不自动改用新版本。</p>
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <Button variant="outline" v-if="pending" type="button" :disabled="saving" @click="executePending">重试原操作</Button>
     <a v-if="pending && needsLogin" href="/login" target="_blank" rel="noopener noreferrer">在新标签页重新登录</a>
+    <nav class="cutting-section-nav cutting-subnav" aria-label="基础资料分类"><Button variant="outline" v-for="(label, key) in labels" :key="key" :disabled="saving || !!pending" :aria-pressed="kind === key&&!calendarView" @click="switchKind(key)">{{ label }}</Button><Button variant="outline" :disabled="saving||!!pending" :aria-pressed="calendarView" @click="showCalendar">工作日历</Button></nav>
+    <div v-if="available&&!loading" class="cutting-review-filters">
+      <div class="cutting-master-toolbar"><form @submit.prevent="load(true)"><label :for="queryId">编码／名称／货号 <input :id="queryId" v-model="query" name="q" maxlength="80" /></label><Button :disabled="saving || !!pending">查询</Button></form><Button v-if="canEdit" :disabled="saving || !!pending" type="button" variant="outline" @click="openEditor()">新增资料</Button><span v-else>当前为只读</span></div>
+    </div>
     <CuttingMetrics v-if="available" :items="[{label:'产品 BOM',value:masterStats?.bom??'—',unit:'项'},{label:'待发布草稿',value:masterStats?.draft??'—',unit:'项'},{label:'有效物料',value:masterStats?.material??'—',unit:'项'},{label:'有效执行方',value:masterStats?.resource??'—',unit:'个'}]" />
     <p v-if="statsError" role="alert">统计暂不可用：{{statsError}}</p>
     <CuttingBomImport v-if="available && kind === 'bom' && canEdit && !editor && !transition && !pending"
       ref="bomImport" @imported="showImportedBom" />
     <SectionPanel class="cutting-content-panel" :title="calendarView?'工作日历':labels[kind]">
-      <nav class="cutting-section-nav" aria-label="基础资料分类"><Button variant="outline" v-for="(label, key) in labels" :key="key" :disabled="saving || !!pending" :aria-pressed="kind === key&&!calendarView" @click="switchKind(key)">{{ label }}</Button><Button variant="outline" :disabled="saving||!!pending" :aria-pressed="calendarView" @click="showCalendar">工作日历</Button></nav>
       <p v-if="calendarView" class="cutting-notice">未配置日历时按周一至周六工作、周日休息。休息、调休或加班需登记例外及依据；日历修订会提示关联计划复核，不自动改写已发布日期。</p><p v-if="loading" role="status" class="cutting-master-message">正在读取基础资料…</p>
       <div v-else-if="!available" class="cutting-master-message"><p>{{ access ? '基础资料尚未启用，请由管理员完成迁移与启用。' : '基础资料暂不可读取，请检查账号权限或服务状态。' }}</p><Button variant="outline" type="button" @click="load()">重新检查</Button></div>
       <template v-else>
-        <div class="cutting-master-toolbar"><form @submit.prevent="load(true)"><label>编码／名称／货号 <input v-model="query" maxlength="80" /></label><Button :disabled="saving || !!pending">查询</Button></form><Button v-if="canEdit" :disabled="saving || !!pending" type="button" @click="openEditor()">新增资料</Button><span v-else>当前为只读</span></div>
         <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>编码</th><th>名称</th><th>{{calendarView?'工作周／例外':kind==='bom'?'货号／款式／配套':kind==='material'?'规格／颜色／单位':'执行方式／准备周期'}}</th><th>版本</th><th>状态</th><th>资料来源</th><th>操作</th></tr></thead><tbody>
           <tr v-for="row in records" :key="row.id"><td>{{ row.code }}</td><td>{{ row.data.name }}</td><td>
             <template v-if="calendarView&&'execution' in row.data">{{row.data.calendar?row.data.calendar.weekdays.map(d=>'周'+['一','二','三','四','五','六','日'][d-1]).join('、'):'默认周一至周六'}}<br />{{row.data.calendar?.exceptions.length??0}} 个例外日期 · 准备 {{row.data.preparation_workdays??3}} 个工作日</template>

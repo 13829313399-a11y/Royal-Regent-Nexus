@@ -415,6 +415,7 @@ function showPage(name, focusReportType = false) {
   // or be delayed, and must never control whether it leaks across pages.
   window.QcWorkflow?.beforePageChange(name);
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
+  if (currentPage === 'dashboard' && name !== 'dashboard') closeDashboardFailurePopover();
   currentPage = name;
   window.QcApprovedStatistics?.pageChanged(name);
   window.QcWeeklyTemplates?.pageChanged(name);
@@ -545,96 +546,288 @@ function setText(id, val) {
 /* ════════════════════════════════════════
    §6  DASHBOARD
 ════════════════════════════════════════ */
-/* 仪表板「数据月份」筛选：
-   null = 未初始化(首次默认选最近有数据的月)，'' = 用户主动选了全部月份，'YYYY-MM' = 指定月 */
-let _dashMonth = null;
+let dashboardSnapshot = null;
+let dashboardMonth = null;
+let dashboardLoading = false;
+const dashboardFailurePageSize = 3;
+let dashboardFailurePage = 1;
+let dashboardFailureBatch = null;
+let dashboardFailureRequest = null;
+let dashboardFailureHideTimer;
+let dashboardFailureAnchor;
+let dashboardFailureFrame = 0;
 
-/* 在概要卡上方注入/刷新月份选择器；选项来自记录中实际出现的月份（倒序） */
-function ensureDashMonthFilter() {
-  const cards = document.getElementById('summaryCards');
-  if (!cards || !cards.parentNode) return;
-  let bar = document.getElementById('dashMonthBar');
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.id = 'dashMonthBar';
-    bar.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;';
-    bar.innerHTML =
-      '<span style="font-size:13px;color:var(--text-dim)">数据月份</span>' +
-      '<select id="dashMonthSel" class="filter-select" style="width:auto;min-width:130px"></select>' +
-      '<span id="dashMonthHint" style="font-size:12px;color:var(--text-muted)"></span>';
-    cards.parentNode.insertBefore(bar, cards);
-    bar.querySelector('#dashMonthSel').addEventListener('change', function () {
-      _dashMonth = this.value;
-      renderDashboard();
+async function fetchDashboardSnapshot(month, failurePage, signal) {
+  const params = new URLSearchParams();
+  if (month !== null) params.set('month', month);
+  if (failurePage) params.set('failurePage', String(failurePage));
+  const url = 'api/approved-statistics/dashboard' + (params.size ? '?' + params : '');
+  const response = await fetch(url, { cache: 'no-store', signal });
+  const snapshot = await response.json();
+  if (!response.ok) {
+    throw new Error(typeof snapshot.detail === 'string' ? snapshot.detail : '验货汇总读取失败');
+  }
+  if (snapshot.factory !== window.__QC_NEXUS?.factory || snapshot.source !== 'current-inline-approved-summary-v1') {
+    throw new Error('统计来源或厂区不一致，请重试');
+  }
+  if (snapshot.excluded.missingProjection || snapshot.excluded.invalidLineage) {
+    throw new Error('已审核记录与汇总未对齐，请核对验货汇总');
+  }
+  return snapshot;
+}
+
+async function renderDashboard(month = dashboardMonth) {
+  if (currentPage !== 'dashboard' || dashboardLoading) return;
+
+  const dashboard = document.getElementById('qcDashboard');
+  const content = document.getElementById('qcDashboardData');
+  const select = document.getElementById('dashMonthSel');
+  const retry = document.getElementById('dashRetry');
+
+  dashboardLoading = true;
+  dashboardMonth = month;
+  closeDashboardFailurePopover();
+  dashboard.setAttribute('aria-busy', 'true');
+  content.hidden = true;
+  select.disabled = true;
+  retry.hidden = true;
+  setText('dashMonthHint', '正在读取验货汇总…');
+  try {
+    const snapshot = await fetchDashboardSnapshot(month);
+    if (currentPage !== 'dashboard') return;
+
+    dashboardSnapshot = snapshot;
+    dashboardMonth = snapshot.month;
+    const months = snapshot.months.map(item => item.month).reverse();
+    select.replaceChildren(new Option('全部月份', ''), ...months.map(month =>
+      new Option(month.slice(0, 4) + '年' + month.slice(5) + '月', month)
+    ));
+    select.value = dashboardMonth;
+    select.disabled = !months.length;
+    content.hidden = false;
+    renderDashboardMonth();
+  } catch (error) {
+    if (currentPage === 'dashboard') {
+      content.hidden = true;
+      select.disabled = true;
+      setText('dashMonthHint', error.message || '验货汇总读取失败');
+      retry.hidden = false;
+    }
+  } finally {
+    dashboardLoading = false;
+    dashboard.setAttribute('aria-busy', 'false');
+  }
+}
+
+function renderDashboardMonth() {
+  const content = document.getElementById('qcDashboardData');
+  if (!dashboardSnapshot || content.hidden) return;
+
+  const { totals, recentFailures } = dashboardSnapshot;
+  const months = dashboardSnapshot.months
+    .filter(item => !dashboardMonth || item.month <= dashboardMonth)
+    .slice(-12);
+  setText('dashMonthHint', totals.total ? '共 ' + totals.total + ' 批已审核验货' : '暂无已审核验货');
+  closeDashboardFailurePopover();
+  renderSummaryCards(totals);
+  renderDashboardFailures(recentFailures);
+  safeInit(() => chartInspectionTrend(months), 'chartInspectionTrend');
+  safeInit(() => chartResultPie(totals), 'chartResultPie');
+}
+
+function renderDashboardFailures(rows) {
+  const panel = document.getElementById('qcDashboardFailures');
+  if (!rows.length) {
+    panel.innerHTML = '<p class="qc-dashboard-empty">所选范围暂无 FAIL 批次</p>';
+    return;
+  }
+  const cell = value => '<td title="' + _esc(value) + '">' + _esc(value || '—') + '</td>';
+  panel.innerHTML = `
+    <div class="qc-dashboard-table-scroll" role="region" aria-label="近期 FAIL 批次明细" tabindex="0">
+      <table class="qc-dashboard-table">
+        <thead><tr>
+          <th scope="col">验货日期</th><th scope="col">客户</th><th scope="col">PO#</th>
+          <th scope="col">产品名称</th><th scope="col">问题 / 备注</th>
+        </tr></thead>
+        <tbody>${rows.map(row => '<tr>' + [row.date, row.customer, row.poNo,
+          row.productName, row.inspectionProblem || row.remark].map(cell).join('') + '</tr>').join('')}</tbody>
+      </table>
+    </div>`;
+}
+
+function cancelDashboardFailureHide() {
+  clearTimeout(dashboardFailureHideTimer);
+}
+
+function scheduleDashboardFailureHide() {
+  cancelDashboardFailureHide();
+  dashboardFailureHideTimer = setTimeout(() => {
+    const panel = document.getElementById('qcDashboardFailPopover');
+    const card = document.getElementById('qcDashboardFailCard');
+    if (!panel.matches(':hover, :focus-within') && !card?.matches(':hover')) {
+      closeDashboardFailurePopover();
+    }
+  }, 140);
+}
+
+function closeDashboardFailurePopover() {
+  cancelDashboardFailureHide();
+  const panel = document.getElementById('qcDashboardFailPopover');
+  if (panel?.matches?.(':popover-open')) panel.hidePopover();
+}
+
+function dashboardFailurePopoverToggled(event) {
+  const open = event.newState === 'open';
+  document.getElementById('qcDashboardFailCard')?.setAttribute('aria-expanded', String(open));
+  if (!open) {
+    cancelDashboardFailureHide();
+    cancelAnimationFrame(dashboardFailureFrame);
+    dashboardFailureFrame = 0;
+    dashboardFailureRequest?.abort();
+    dashboardFailureRequest = null;
+    dashboardFailureBatch = null;
+  }
+}
+
+function dashboardFailurePageCount() {
+  return Math.max(1, Math.ceil(dashboardSnapshot.totals.FAIL / dashboardFailurePageSize));
+}
+
+function renderDashboardFailurePopover(snapshot, page = 1) {
+  const items = document.getElementById('qcDashboardFailItems');
+  const batchSize = dashboardSnapshot.recentFailures.length;
+  const start = (page - 1) * dashboardFailurePageSize - (snapshot.failurePage - 1) * batchSize;
+  const rows = snapshot.recentFailures.slice(start, start + dashboardFailurePageSize);
+  const pages = dashboardFailurePageCount();
+  dashboardFailureBatch = snapshot;
+  dashboardFailurePage = page;
+  items.innerHTML = rows.length ? '<ol>' + rows.map(row => {
+    const product = row.productName || row.productNo || '未填写货品';
+    const info = [row.date || '验货日期未填写', row.productName && row.productNo].filter(Boolean).join(' · ');
+    const issue = row.inspectionProblem ? '问题：' + row.inspectionProblem
+      : row.remark ? '备注：' + row.remark : '问题未填写';
+    return '<li><strong>' + _esc(product) + '</strong><small>' + _esc(info) +
+      '</small><p>' + _esc(issue) + '</p></li>';
+  }).join('') + '</ol>' : '<p class="qc-dashboard-fail-empty">所选范围暂无 FAIL 批次</p>';
+  items.scrollTop = 0;
+  document.getElementById('qcDashboardFailPages').hidden = pages < 2;
+  setText('qcDashboardFailPage', page + ' / ' + pages);
+  updateDashboardFailurePageButtons();
+}
+
+function updateDashboardFailurePageButtons() {
+  document.getElementById('qcDashboardFailPrev').disabled =
+    Boolean(dashboardFailureRequest) || dashboardFailurePage <= 1;
+  document.getElementById('qcDashboardFailNext').disabled =
+    Boolean(dashboardFailureRequest) || dashboardFailurePage >= dashboardFailurePageCount();
+}
+
+function showDashboardFailurePopover(x, y) {
+  cancelDashboardFailureHide();
+  const panel = document.getElementById('qcDashboardFailPopover');
+  if (!dashboardSnapshot || panel.matches(':popover-open')) return;
+  dashboardFailureAnchor = { x, y };
+  document.getElementById('qcDashboardFailStatus').hidden = true;
+  renderDashboardFailurePopover(dashboardSnapshot);
+  panel.showPopover();
+  positionDashboardFailurePopover();
+}
+
+function positionDashboardFailurePopover() {
+  const panel = document.getElementById('qcDashboardFailPopover');
+  const { x, y } = dashboardFailureAnchor;
+  const gap = 8, margin = 8;
+  const { clientWidth, clientHeight } = document.documentElement;
+  const rightSpace = clientWidth - x - gap - margin;
+  const width = Math.min(200, Math.max(152, rightSpace), clientWidth - 2 * margin);
+  panel.style.width = width + 'px';
+  panel.style.left = Math.max(margin, Math.min(x + gap, clientWidth - width - margin)) + 'px';
+  panel.style.top = Math.max(margin, Math.min(y + gap, clientHeight - panel.offsetHeight - margin)) + 'px';
+}
+
+function followDashboardFailurePopover(event) {
+  if (event.pointerType !== 'mouse') return;
+  const panel = document.getElementById('qcDashboardFailPopover');
+  if (!panel.matches(':popover-open') || panel.matches(':focus-within')) return;
+  dashboardFailureAnchor = { x: event.clientX, y: event.clientY };
+  if (!dashboardFailureFrame) {
+    dashboardFailureFrame = requestAnimationFrame(() => {
+      dashboardFailureFrame = 0;
+      if (panel.matches(':popover-open')) positionDashboardFailurePopover();
     });
   }
-  const months = Array.from(new Set(recs().map(r => (r.date || '').slice(0, 7)).filter(Boolean))).sort().reverse();
-  /* 首次进入默认选「最近有数据的月份」；用户主动选过(含全部)后不再覆盖 */
-  if (_dashMonth === null) _dashMonth = months[0] || '';
-  const sel = document.getElementById('dashMonthSel');
-  if (sel) {
-    sel.innerHTML = '<option value="">全部月份</option>' +
-      months.map(m => `<option value="${m}">${m.slice(0,4)}年${m.slice(5,7)}月</option>`).join('');
-    sel.value = _dashMonth;
+}
+
+async function changeDashboardFailurePage(offset) {
+  const page = dashboardFailurePage + offset;
+  if (dashboardFailureRequest || page < 1 || page > dashboardFailurePageCount()) return;
+  document.getElementById('qcDashboardFailItems').focus({ preventScroll: true });
+  const status = document.getElementById('qcDashboardFailStatus');
+  status.hidden = true;
+  const batchSize = dashboardSnapshot.recentFailures.length;
+  const batchPage = Math.floor((page - 1) * dashboardFailurePageSize / batchSize) + 1;
+  const cachedBatch = batchPage === 1 ? dashboardSnapshot : dashboardFailureBatch;
+  if (cachedBatch?.failurePage === batchPage) {
+    renderDashboardFailurePopover(cachedBatch, page);
+    positionDashboardFailurePopover();
+    return;
+  }
+  const request = new AbortController();
+  dashboardFailureRequest = request;
+  updateDashboardFailurePageButtons();
+  try {
+    const snapshot = await fetchDashboardSnapshot(dashboardMonth, batchPage, request.signal);
+    if (request.signal.aborted) return;
+    if (snapshot.month !== dashboardMonth || snapshot.failureRevision !== dashboardSnapshot.failureRevision) {
+      throw new Error('验货汇总已更新，请重新加载看板');
+    }
+    renderDashboardFailurePopover(snapshot, page);
+    positionDashboardFailurePopover();
+  } catch (error) {
+    if (request.signal.aborted) return;
+    status.textContent = error.message || 'FAIL 明细读取失败';
+    status.hidden = false;
+    positionDashboardFailurePopover();
+  } finally {
+    if (dashboardFailureRequest === request) {
+      dashboardFailureRequest = null;
+      updateDashboardFailurePageButtons();
+    }
   }
 }
 
-function renderDashboard() {
-  ensureDashMonthFilter();
-  let data = recs();
-  if (_dashMonth) data = data.filter(r => r.date && r.date.startsWith(_dashMonth));
-  const hint = document.getElementById('dashMonthHint');
-  if (hint) hint.textContent = _dashMonth ? ('· 本月 ' + data.length + ' 条记录') : ('· 全部 ' + data.length + ' 条记录');
-  updateTopKpis();
-  renderSummaryCards(data);
-  renderRiskTable(data);
-  renderRiskMatrix(data);
-  /* 图表统一在 initCharts() 中初始化（接收已按月过滤的 data） */
-  initCharts(data);
-}
-
-function renderSummaryCards(data) {
+function renderSummaryCards(totals) {
   const el = document.getElementById('summaryCards');
-  if (!el) return;
-  const total    = data.length;
-  const failCnt  = data.filter(r => isFail(r)).length;
-  const passCnt  = total - failCnt;
-  const passRate = total ? fmtPct(passCnt / total) : '0.0%';
-  const totalQty = data.reduce((s, r) => s + (r.qty || 0), 0);
-  const ws = weekStart(), we = weekEnd(ws);
-  const weekR = data.filter(r => r.date >= ws && r.date <= we);
-
+  const passRate = totals.passRate === null ? '—' : fmtPct(totals.passRate / 100);
   el.innerHTML = `
-    <div class="summary-card green">
-      <div class="card-icon">✓</div>
-      <div class="card-label">总体通过率</div>
-      <div class="card-value text-green">${passRate}</div>
-      <div class="card-sub">${passCnt} / ${total} 非REJ批次</div>
-    </div>
-    <div class="summary-card red">
-      <div class="card-icon">✕</div>
-      <div class="card-label">总 FAIL 批次</div>
-      <div class="card-value text-red">${failCnt}</div>
-      <div class="card-sub">本周 ${weekR.filter(r=>isFail(r)).length} 批</div>
-    </div>
     <div class="summary-card accent">
-      <div class="card-icon">⬡</div>
-      <div class="card-label">累计验货批次</div>
-      <div class="card-value">${total}</div>
-      <div class="card-sub">本周 ${weekR.length} 批</div>
+      <div class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg></div>
+      <div class="card-label">验货批次</div>
+      <div class="card-value">${totals.total}</div>
     </div>
-    <div class="summary-card blue">
-      <div class="card-icon">◈</div>
-      <div class="card-label">累计来料数量</div>
-      <div class="card-value">${(totalQty/10000).toFixed(1)}<span style="font-size:14px">万</span></div>
-      <div class="card-sub">共 ${totalQty.toLocaleString()} 件</div>
+    <div class="summary-card green">
+      <div class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 22s7-3 7-9V6l-7-3-7 3v7c0 6 7 9 7 9Z"/><path d="m9 12 2 2 4-4"/></svg></div>
+      <div class="card-label">合格率</div>
+      <div class="card-value text-green">${passRate}</div>
+      <div class="card-sub">PASS ÷（PASS + FAIL）</div>
     </div>
-    <div class="summary-card yellow">
-      <div class="card-icon">◉</div>
-      <div class="card-label">活跃供应商</div>
-      <div class="card-value text-yellow">${Object.keys(groupBy(data,'supplier')).length}</div>
-      <div class="card-sub">家参与本期验货</div>
-    </div>`;
+    <button type="button" class="summary-card red" id="qcDashboardFailCard"
+            aria-controls="qcDashboardFailPopover" aria-expanded="false">
+      <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10.3 5a2 2 0 0 1 3.4 0l7.4 12a2 2 0 0 1-1.7 3H4.6a2 2 0 0 1-1.7-3Z"/><path d="M12 9v4m0 3h.01"/></svg></span>
+      <span class="card-label">FAIL 批次</span>
+      <span class="card-value text-red">${totals.FAIL}</span>
+    </button>`;
+  const card = document.getElementById('qcDashboardFailCard');
+  card.addEventListener('pointerenter', event => {
+    if (event.pointerType === 'mouse') showDashboardFailurePopover(event.clientX, event.clientY);
+  });
+  card.addEventListener('pointermove', followDashboardFailurePopover);
+  card.addEventListener('pointerleave', scheduleDashboardFailureHide);
+  card.addEventListener('click', event => {
+    const bounds = card.getBoundingClientRect();
+    showDashboardFailurePopover(event.detail ? event.clientX : bounds.left, event.detail ? event.clientY : bounds.bottom);
+    document.getElementById('qcDashboardFailItems').focus({ preventScroll: true });
+  });
 }
 
 /* ════════════════════════════════════════
@@ -678,18 +871,6 @@ function G(top=30, right=16, bottom=30, left=50) {
   return { top, right, bottom, left, containLabel: true };
 }
 
-/* ─── §7.1  初始化仪表板所有图表 ─── */
-function initCharts(data) {
-  /* 按顺序逐个初始化，catch 独立，互不影响 */
-  safeInit(() => chartDailyTrend(data),     'chartDailyTrend');
-  safeInit(() => chartResultPie(data),      'chartResultPie');
-  safeInit(() => chartSupplierRank(data),   'chartSupplierRank');
-  safeInit(() => chartDefectTop(data),      'chartDefectTop');
-  safeInit(() => chartClientPie(data),      'chartClientPie');
-  safeInit(() => chartWeeklyTrend(data),    'chartWeeklyTrend');
-  /* chartRiskMatrix 用 HTML 渲染，不用 ECharts */
-}
-
 /* 初始化分析页图表 */
 function initAnalysisCharts(data) {
   safeInit(() => chartWeeklySupplier(data), 'chartWeeklySupplier');
@@ -704,430 +885,97 @@ function safeInit(fn, label) {
 
 /* ─── §7.2  具体图表实现 ─── */
 
-/* 1. 每日验货 + PASS率 */
-function chartDailyTrend(data) {
-  const c = makeChart('chartDailyTrend');
+function dashboardChartStyle() {
+  const light = document.body.classList.contains('theme-light');
+  return {
+    ..._cc(),
+    textDim: light ? '#53645d' : '#a6b6ca',
+    trendBar: light ? '#a9d2b8' : '#4f8b73',
+    trendLine: light ? '#216247' : '#8ed8b0',
+    green: light ? '#287650' : '#76d6a7',
+    red: light ? '#b72c43' : '#ff99a4',
+    yellow: light ? '#a66c13' : '#edce85',
+    blue: light ? '#346ca6' : '#78b2ff',
+  };
+}
+
+function chartInspectionTrend(months) {
+  const c = makeChart('chartInspectionTrend');
   if (!c) return;
-  const byDate = groupBy(data, 'date');
-  const dates  = Object.keys(byDate).sort();
-  const totals = dates.map(d => byDate[d].length);
-  const fails  = dates.map(d => byDate[d].filter(r => isFail(r)).length);
-  const rates  = dates.map((d, i) => totals[i] ? +((totals[i]-fails[i])/totals[i]*100).toFixed(1) : 100);
+  const colors = dashboardChartStyle();
+  if (!months.length) {
+    c.setOption({ graphic: [{ type:'text', left:'center', top:'middle',
+      style:{ text:'暂无按月统计的验货记录', fill:colors.textDim, fontSize:12 } }] });
+    return;
+  }
 
   c.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', ...(_cc().tt) },
+    tooltip: { trigger: 'axis', ...colors.tt },
     legend: {
-      data:      ['验货批次','PASS率(%)'],
-      textStyle: { color: _cc().text, fontSize: 11 },
-      top:       6,
-      right:     28,
-      itemGap:   22,
-      itemWidth: 14,
-      itemHeight: 9,
+      data: ['验货批次', '合格率'],
+      textStyle: { color:colors.text, fontSize:11 },
+      top: 6, right: 20, itemGap: 14, itemWidth: 14, itemHeight: 9,
     },
-    grid: G(44, 60, 28, 48),
+    grid: G(42, 20, 16, 18),
     xAxis: {
-      type:'category', data: dates.map(d => d.slice(5)),
-      axisLabel:{ color:_cc().textDim, fontSize:10 },
-      axisLine:{ lineStyle:{ color:_cc().axis } },
+      type:'category', data:months.map(item => item.month),
+      axisLabel:{ color:colors.textDim, fontSize:11, hideOverlap:true },
+      axisLine:{ lineStyle:{ color:colors.axis } },
     },
     yAxis: [
-      { type:'value', name:'批次', nameTextStyle:{color:_cc().textDim,fontSize:10},
-        axisLabel:{ color:_cc().textDim, fontSize:10 },
-        splitLine:{ lineStyle:{ color:_cc().grid, type:'dashed' } } },
-      { type:'value', name:'PASS率', min:0, max:100,
-        nameTextStyle:{color:_cc().textDim,fontSize:10},
-        axisLabel:{ color:_cc().textDim, fontSize:10, formatter:'{value}%' },
+      { type:'value', name:'批次', minInterval:1,
+        nameTextStyle:{ color:colors.textDim, fontSize:11 },
+        axisLabel:{ color:colors.textDim, fontSize:11 },
+        splitLine:{ lineStyle:{ color:colors.grid } } },
+      { type:'value', min:0, max:100,
+        axisLabel:{ color:colors.textDim, fontSize:11, formatter:'{value}%' },
         splitLine:{ show:false } },
     ],
     series: [
-      { name:'验货批次', type:'bar', data:totals,
-        itemStyle:{ color:'#0090bb', borderRadius:[3,3,0,0] },
-        barMaxWidth: 30 },
-      { name:'PASS率(%)', type:'line', yAxisIndex:1, data:rates,
-        smooth:true, symbol:'circle', symbolSize:5,
-        lineStyle:{ color:'#00e596', width:2 },
-        itemStyle:{ color:'#00e596' },
-        areaStyle:{ color:'rgba(0,229,150,0.07)' } },
+      { name:'验货批次', type:'bar', data:months.map(item => item.total),
+        itemStyle:{ color:colors.trendBar, borderRadius:[3,3,0,0] }, barMaxWidth:30 },
+      { name:'合格率', type:'line', yAxisIndex:1, data:months.map(item => item.passRate),
+        tooltip:{ valueFormatter:value => value == null ? '—' : value.toFixed(1) + '%' },
+        symbol:'circle', symbolSize:5,
+        lineStyle:{ color:colors.trendLine, width:2 }, itemStyle:{ color:colors.trendLine } },
     ],
   });
 }
 
-/* 2. 判定结果饼图 */
-function chartResultPie(data) {
+function chartResultPie(totals) {
   const c = makeChart('chartResultPie');
   if (!c) return;
-  const pass = data.filter(r => isPass(r)).length;
-  const fail = data.filter(r => isFail(r)).length;
-  const cond = data.filter(r => r.result === 'COND').length;
-  const hold = data.filter(r => r.result === 'HOLD').length;
+  const colors = dashboardChartStyle();
+  const results = [
+    { value:totals.PASS, name:'PASS', itemStyle:{ color:colors.green } },
+    { value:totals.FAIL, name:'FAIL', itemStyle:{ color:colors.red } },
+    { value:totals.PENDING, name:'PENDING', itemStyle:{ color:colors.yellow } },
+    { value:totals.LG, name:'LG', itemStyle:{ color:colors.blue } },
+    { value:Object.values(totals.other).reduce((sum, count) => sum + count, 0),
+      name:'其他', itemStyle:{ color:colors.textDim } },
+  ].filter(item => item.value > 0);
 
   c.setOption({
     backgroundColor:'transparent',
-    tooltip:{ trigger:'item', ...(_cc().tt),
-      formatter: p => {
-        const label = p.name === 'PASS' ? '纯 PASS 占比' :
-                      p.name === 'REJ'  ? 'REJ 占比'     :
-                      p.name + ' 占比';
-        return `<b>${p.name}：${p.value}批</b><br/>`
-          + `${label}：${p.percent.toFixed(2)}%<br/>`
-          + `<span style="color:#8899aa;font-size:10px">注：总体通过率含非REJ批次，PASS占比仅统计纯PASS</span>`;
-      }
+    tooltip:{ trigger:'item', ...colors.tt, formatter:'{b}：{c} 批（{d}%）' },
+    title:{
+      text:totals.total ? totals.total.toLocaleString() : '—',
+      subtext:totals.total ? '批次' : '暂无判定数据',
+      left:totals.total ? '35%' : 'center', top:'middle', textAlign:'center', itemGap:3,
+      textStyle:{ color:colors.textHi, fontSize:26, fontWeight:650 },
+      subtextStyle:{ color:colors.textDim, fontSize:11 },
     },
-    legend:{ bottom:4, textStyle:{ color:_cc().text, fontSize:10 }, itemWidth:10, itemHeight:10 },
+    legend:{
+      orient:'vertical', right:12, top:'middle', itemGap:10, itemWidth:10, itemHeight:10,
+      textStyle:{ color:colors.text, fontSize:12 },
+      formatter:name => name + '  ' + results.find(item => item.name === name).value.toLocaleString(),
+    },
     series:[{
-      type:'pie', radius:['48%','72%'], center:['50%','44%'],
-      label:{ show:false },
-      emphasis:{ label:{ show:true, fontSize:13, fontWeight:'bold', color:_cc().textHi } },
-      data:[
-        { value:pass, name:'PASS',   itemStyle:{ color:'#00e596' } },
-        { value:fail, name:'REJ',    itemStyle:{ color:'#ff3d5a' } },
-        { value:cond, name:'有条件', itemStyle:{ color:'#f5c842' } },
-        { value:hold, name:'待定',   itemStyle:{ color:'#3b82f6' } },
-      ].filter(d => d.value > 0),
+      type:'pie', radius:['47%','65%'], center:['35%','50%'],
+      label:{ show:false }, data:results,
     }],
   });
-}
-
-/* 3. 供应商批次不良率排名（REJ批次 / 验货批次 × 100%，与供应商管理口径一致）*/
-function chartSupplierRank(data) {
-  const c = makeChart('chartSupplierRank');
-  if (!c) return;
-
-  /* 复用 getSupplierTopRate（batchRate口径，rej>0 才进入排名） */
-  const list = getSupplierTopRate(data, 10);
-
-  if (!list.length) {
-    c.setOption({
-      backgroundColor: 'transparent',
-      graphic: [{ type:'text', left:'center', top:'middle',
-        style:{ text:'暂无供应商不良率数据', fill:_cc().textDim, fontSize:12 } }],
-    });
-    return;
-  }
-
-  /* 横向条图，供应商名称在 Y 轴，不被截断 */
-  const names = list.map(d => d.name).reverse();
-  const bars  = list.map(d => d.batchRate).reverse();
-  const ttList = list.slice().reverse();
-
-  c.setOption({
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis', ...(_cc().tt),
-      formatter: p => {
-        const d = ttList[p[0].dataIndex];
-        const qr = d.qtyRate != null ? d.qtyRate.toFixed(1) + '%' : '—';
-        return `<b>${d.name}</b><br/>` +
-               `验货批次：${d.total}<br/>` +
-               `REJ批次：${d.rej}<br/>` +
-               `批次不良率：<strong>${d.batchRate.toFixed(1)}%</strong><br/>` +
-               `数量不良率：${qr}（参考）`;
-      },
-    },
-    grid: { top: 8, left: 8, right: 44, bottom: 8, containLabel: true },
-    xAxis: {
-      type: 'value',
-      name: '批次不良率',
-      nameTextStyle: { color: _cc().textDim, fontSize: 10 },
-      axisLabel: { color: _cc().textDim, fontSize: 10, formatter: '{value}%' },
-      splitLine: { lineStyle: { color: _cc().grid, type: 'dashed' } },
-    },
-    yAxis: {
-      type: 'category', data: names,
-      axisLabel: { color: _cc().text, fontSize: 10 },
-      axisLine: { lineStyle: { color: _cc().axis } },
-    },
-    series: [{
-      type: 'bar', barMaxWidth: 20,
-      data: bars.map(v => ({
-        value: v,
-        itemStyle: {
-          color: v >= 30 ? '#ff3d5a' : v >= 10 ? '#f5c842' : '#00e596',
-          borderRadius: [0, 3, 3, 0],
-        },
-      })),
-      label: {
-        show: true, position: 'right',
-        color: _cc().text, fontSize: 10,
-        formatter: p => p.value.toFixed(1) + '%',
-      },
-    }],
-  });
-}
-
-/* 4. 不良类型 TOP（横向柱图） */
-function chartDefectTop(data) {
-  const c = makeChart('chartDefectTop');
-  if (!c) return;
-  const dm = {};
-  data.forEach(r => {
-    _splitDefect(r.defect).forEach(d => {
-      dm[d] = (dm[d] || 0) + 1;
-    });
-  });
-
-  const hasData = Object.keys(dm).length > 0;
-  /* 无不良时显示空状态，不用占位数据 */
-  if (!hasData) {
-    c.setOption({
-      backgroundColor: 'transparent',
-      graphic: [{
-        type: 'text', left: 'center', top: 'middle',
-        style: { text: '暂无不良数据', fill: '#3a4858', fontSize: 13 },
-      }],
-    });
-    return;
-  }
-
-  const list = Object.entries(dm).sort((a,b)=>b[1]-a[1]).slice(0,8);
-  const COLS = ['#ff3d5a','#ff6b35','#f5c842','#f5c842','#00c8ff','#3b82f6','#3b82f6','#a855f7'];
-
-  c.setOption({
-    backgroundColor:'transparent',
-    tooltip:{ trigger:'axis', ...(_cc().tt) },
-    grid: G(10, 50, 10, 10),
-    xAxis:{ type:'value',
-      axisLabel:{ color:_cc().textDim, fontSize:10 },
-      splitLine:{ lineStyle:{ color:_cc().grid, type:'dashed' } } },
-    yAxis:{ type:'category', data:list.map(d=>d[0]).reverse(),
-      axisLabel:{ color:_cc().text, fontSize:11 } },
-    series:[{
-      type:'bar', barMaxWidth:18,
-      data: list.map((d,i) => ({
-        value:d[1],
-        itemStyle:{ color:COLS[i]||'#3b82f6', borderRadius:[0,3,3,0] },
-      })).reverse(),
-      label:{ show:true, position:'right', color:_cc().text, fontSize:10,
-        formatter: p => p.value + '次' },
-    }],
-  });
-}
-
-/* 5. 客户占比环形图 */
-function chartClientPie(data) {
-  const c = makeChart('chartClientPie');
-  if (!c) return;
-
-  const byC   = groupBy(data, 'client');
-  const total = data.length || 1;
-  const COLS  = ['#00c8ff','#00e596','#f5c842','#ff6b35','#ff3d5a','#3b82f6','#a855f7','#ec4899'];
-
-  /* 按批次数降序排列 */
-  const sorted = Object.entries(byC)
-    .map(([name, arr]) => ({ name, value: arr.length }))
-    .sort((a, b) => b.value - a.value);
-
-  /* 合并规则：
-     ① 超过 7 个客户 → 保留 TOP 7，其余合入"其他"
-     ② 占比 < 3% 的客户合入"其他"（无论总数多少）
-  */
-  const THRESHOLD = 0.03;
-  const MAX_SLICES = 7;
-
-  const main  = [];
-  let otherVal = 0;
-
-  sorted.forEach((d, i) => {
-    const pct = d.value / total;
-    if (i < MAX_SLICES && pct >= THRESHOLD) {
-      main.push(d);
-    } else {
-      otherVal += d.value;
-    }
-  });
-
-  if (otherVal > 0) {
-    main.push({ name: '其他', value: otherVal });
-  }
-
-  /* 计算每项占比，用于按项控制标签显示 */
-  const totalVal = main.reduce((s, d) => s + d.value, 0) || 1;
-  /* 分配颜色 + 按占比控制标签/引导线 */
-  const SHOW_PCT = 8;   /* >= 8% 才显示外部标签 */
-  const list = main.map((d, i) => {
-    const pct = d.value / totalVal * 100;
-    const showLbl = pct >= SHOW_PCT;
-    return {
-      value:     d.value,
-      name:      d.name,
-      itemStyle: { color: d.name === '其他' ? '#4a5568' : COLS[i % COLS.length] },
-      label:     { show: showLbl },
-      labelLine: { show: showLbl },
-    };
-  });
-
-  c.setOption({
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'item', ...(_cc().tt),
-      confine: true,
-      formatter: p => `${p.name}<br/>批次：${p.value}<br/>占比：${p.percent.toFixed(1)}%`,
-    },
-    legend: {
-      type:       'scroll',
-      orient:     'horizontal',
-      bottom:     2,
-      left:       10,
-      right:      10,
-      itemWidth:  10,
-      itemHeight: 10,
-      itemGap:    10,
-      textStyle:     { color: _cc().text,   fontSize: 11 },
-      pageTextStyle: { color: _cc().textHi, fontSize: 11 },
-      pageIconColor:         _cc().blue || '#00c8ff',
-      pageIconInactiveColor: _cc().pageInactive,
-    },
-    series: [{
-      type:              'pie',
-      radius:            ['42%', '62%'],
-      center:            ['50%', '42%'],
-      avoidLabelOverlap: true,           /* 恢复自动避让，配合按项控制 */
-      minShowLabelAngle: 8,
-      label: {
-        show:       true,
-        position:   'outside',
-        fontSize:   11,
-        fontWeight: 600,
-        lineHeight: 14,
-        color:      _cc().textHi,
-        formatter:  p => `${p.name}\n${p.percent.toFixed(0)}%`,
-      },
-      labelLine: {
-        show:      true,
-        length:    14,
-        length2:   14,
-        smooth:    false,
-        lineStyle: { color: _cc().labelLine, width: 1.2 },
-      },
-      labelLayout:  { hideOverlap: true },  /* 仍存在的重叠标签自动隐藏 */
-      emphasis: {
-        label: {
-          show:      true,
-          fontSize:  12,
-          formatter: p => `${p.name}\n${p.percent.toFixed(1)}%`,
-        },
-      },
-      data: list,
-    }],
-  });
-}
-
-/* 6. 本周批次不良率趋势（折线）
-   Y轴：每周批次不良率 = REJ批次 / 总批次 × 100%（与供应商排名口径一致）
-   某周无验货数据 → null（折线断开，不显示 0%）
-*/
-function chartWeeklyTrend(data) {
-  const c = makeChart('chartWeeklyTrend');
-  if (!c) return;
-  const bw = {};
-  data.forEach(r => {
-    const ws = weekStart(r.date);
-    if (!bw[ws]) bw[ws] = { total: 0, fail: 0 };
-    bw[ws].total++;
-    if (isFail(r)) bw[ws].fail++;
-  });
-  const weeks = Object.keys(bw).sort();
-
-  /* 批次不良率 = REJ批次 / 总批次；某周无记录则 null */
-  const weekData = weeks.map(w => {
-    const d = bw[w];
-    if (!d || d.total === 0) return { rate: null, total: 0, fail: 0 };
-    return {
-      rate:  +(d.fail / d.total * 100).toFixed(1),
-      total: d.total,
-      fail:  d.fail,
-    };
-  });
-
-  c.setOption({
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis', ...(_cc().tt),
-      formatter: p => {
-        const idx = p[0].dataIndex;
-        const d   = weekData[idx];
-        if (!d || d.total === 0) {
-          return `W${idx + 1}（${weeks[idx].slice(5)}）<br/>无验货记录`;
-        }
-        const rateStr = d.rate != null ? d.rate.toFixed(1) + '%' : '—';
-        return `<b>W${idx + 1}（${weeks[idx].slice(5)}）</b><br/>` +
-               `验货批次：${d.total}<br/>` +
-               `REJ批次：${d.fail}<br/>` +
-               `批次不良率：<strong>${rateStr}</strong>`;
-      },
-    },
-    grid: G(24, 14, 28, 48),
-    xAxis: {
-      type: 'category', data: weeks.map((_, i) => `W${i + 1}`),
-      axisLabel: { color: _cc().textDim, fontSize: 10 },
-      axisLine: { lineStyle: { color: _cc().axis } },
-    },
-    yAxis: {
-      type: 'value', name: '批次不良率',
-      nameTextStyle: { color: _cc().textDim, fontSize: 10 },
-      axisLabel: { color: _cc().textDim, fontSize: 10, formatter: '{value}%' },
-      splitLine: { lineStyle: { color: _cc().grid, type: 'dashed' } },
-    },
-    series: [{
-      type: 'line',
-      data: weekData.map(d => d.rate),   /* null = 该周无记录，折线断开 */
-      connectNulls: false,
-      smooth: true, symbol: 'circle', symbolSize: 6,
-      lineStyle: { color: '#f5c842', width: 2 },
-      itemStyle: { color: '#f5c842' },
-      areaStyle: { color: 'rgba(245,200,66,0.08)' },
-      markLine: {
-        data: [{ type: 'average', name: '均值',
-          lineStyle: { color: '#ff3d5a', type: 'dashed', width: 1 } }],
-        label: { color: '#ff3d5a', fontSize: 10 },
-        silent: true,
-      },
-    }],
-  });
-}
-
-/* 7. 风险矩阵（HTML 渲染，不用 ECharts） */
-function renderRiskMatrix(data) {
-  const el = document.getElementById('chartRiskMatrix');
-  if (!el) return;
-
-  const SEVERITY = {
-    '爆口':'high','大小眼':'high','斜眼':'high','大小脚':'high','形状不良':'high',
-    '线头':'medium','咪咪眼':'medium','眼贴歪':'medium','止口偏大':'medium','色差':'medium',
-    '缝线不匀':'medium','轻微色差':'low',
-  };
-
-  const dm = {};
-  data.forEach(r => {
-    _splitDefect(r.defect).forEach(d => {
-      dm[d] = (dm[d] || 0) + 1;
-    });
-  });
-
-  const items = Object.entries(dm).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  const maxCnt = items[0]?.[1] || 1;
-
-  if (!items.length) {
-    el.innerHTML = '<div class="empty-state" style="padding:30px"><div class="empty-icon">✓</div><div class="empty-text">暂无不良记录</div></div>';
-    return;
-  }
-
-  el.className = 'chart-body risk-body';
-  el.innerHTML = '<div class="risk-matrix-wrap">' +
-    items.map(([name, cnt]) => {
-      const lv  = SEVERITY[name] || (cnt>=4?'high':cnt>=2?'medium':'low');
-      const pct = Math.round(cnt / maxCnt * 100);
-      const tag = { high:'高风险', medium:'风险', low:'正常' }[lv];
-      const bc  = { high:'badge-rej', medium:'badge-cond', low:'badge-pass' }[lv];
-      return `<div class="risk-item ${lv}">
-        <span class="risk-name">${name}</span>
-        <div class="risk-bar-wrap"><div class="risk-bar" style="width:${pct}%"></div></div>
-        <span class="risk-count">${cnt}次</span>
-        <span class="badge ${bc}">${tag}</span>
-      </div>`;
-    }).join('') + '</div>';
 }
 
 /* 8. 每周供应商批次不良率趋势（分析页）
@@ -1379,52 +1227,6 @@ function chartDefectHeatmap(data) {
       emphasis:{ itemStyle:{ shadowBlur:8, shadowColor:'rgba(0,0,0,.5)' } },
     }],
   });
-}
-
-/* ════════════════════════════════════════
-   §8  RISK TABLE
-════════════════════════════════════════ */
-function renderRiskTable(data) {
-  const el = document.getElementById('riskTableWrap');
-  if (!el) return;
-  const failR = data.filter(r=>isFail(r)).sort((a,b)=>String(b.date || '').localeCompare(String(a.date || ''))).slice(0,12);
-  if (!failR.length) {
-    el.innerHTML = '<div class="empty-state" style="padding:40px"><div class="empty-icon">✓</div><div class="empty-text">暂无高风险批次</div></div>';
-    return;
-  }
-  el.innerHTML = `<table style="table-layout:fixed;width:100%">
-    <colgroup>
-      <col style="width:100px"/><col style="width:110px"/><col style="width:100px"/>
-      <col style="width:auto"/><col style="width:90px"/><col style="width:80px"/>
-      <col style="width:80px"/><col style="width:180px"/><col style="width:90px"/>
-    </colgroup>
-    <thead><tr>
-      <th style="text-align:left">日期</th>
-      <th style="text-align:left">供应商</th>
-      <th style="text-align:left">货号</th>
-      <th style="text-align:left">款式</th>
-      <th style="text-align:right">来料数</th>
-      <th style="text-align:right">抽查数</th>
-      <th style="text-align:right">不良率</th>
-      <th style="text-align:left">不良现象</th>
-      <th style="text-align:center">风险等级</th>
-    </tr></thead>
-    <tbody>${failR.map(r => {
-      const rt = parseRate(r.defectRate) ?? 0;
-      const cls = rt>=20 ? 'risk-red' : 'risk-yellow';
-      const lbl = rt>=20 ? '高风险' : '风险';
-      return `<tr${_dateRowAttrs(r)}>
-        <td style="font-family:var(--font-mono);font-size:11px;white-space:nowrap">${_dateDisplay(r.date)}${_dateWarningLabel(r)}</td>
-        <td style="font-weight:500;color:#e8edf5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.supplier}">${r.supplier}</td>
-        <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:11px" title="${r.productNo||''}">${r.productNo||'-'}</td>
-        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.productName||''}">${r.productName||'-'}</td>
-        <td style="text-align:right;font-variant-numeric:tabular-nums">${(r.qty||0).toLocaleString()}</td>
-        <td style="text-align:right;font-variant-numeric:tabular-nums">${r.sampleQty != null ? r.sampleQty : '<span style="color:var(--text-muted)">—</span>'}</td>
-        <td style="text-align:right" class="${cls}">${r.sampleQty != null ? (r.defectRate||'-') : '<span style="color:var(--text-muted)">—</span>'}</td>
-        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${r.defect||''}">${r.defect||'-'}</td>
-        <td style="text-align:center"><span class="badge ${rt>=20?'badge-rej':'badge-cond'}">${lbl}</span></td>
-      </tr>`;
-    }).join('')}</tbody></table>`;
 }
 
 /* ════════════════════════════════════════
@@ -6386,6 +6188,7 @@ function resizeAllCharts() {
 }
 
 window.addEventListener('resize', () => {
+  if (currentPage === 'dashboard') closeDashboardFailurePopover();
   clearTimeout(window._resizeTimer);
   window._resizeTimer = setTimeout(resizeAllCharts, 150);
 });
@@ -6414,12 +6217,11 @@ function applyTheme(theme) {
   if (label) label.textContent = t === 'dark' ? '深色' : '浅色';
   /* 主题切换后重绘所有已初始化的图表 */
   try {
-    const data = recs();
-    if (data.length) {
-      initCharts(data);
-      if (currentPage === 'analysis' && !window.__QC_NEXUS) initAnalysisCharts(data);
+    if (currentPage === 'dashboard') renderDashboardMonth();
+    if (currentPage === 'analysis') {
+      if (window.__QC_NEXUS) window.QcApprovedStatistics?.redraw();
+      else initAnalysisCharts(recs());
     }
-    if (currentPage === 'analysis' && window.__QC_NEXUS) window.QcApprovedStatistics?.redraw();
   } catch(e) {}
 }
 

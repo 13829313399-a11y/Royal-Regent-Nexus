@@ -3,6 +3,7 @@ import { http } from '@/lib/http'
 import type { WarehouseOperationsWorkspace } from './warehouseOperations'
 import type { MasterRecord } from './fabricMaster'
 import type { PurchasePriceReference } from './fabricProcurement'
+import type { ReceiptCounts } from './fabricReceiving'
 
 export const HANDOVER_FACTORY = 'huakang-c' as const
 export interface HandoverLine {
@@ -24,8 +25,32 @@ export interface HandoverDocument {
   engine: string; raw_text: string; file_name: string; source_sha256: string; confirmed_at: string; created_at: string
   progress: Record<string, { processed: string; remaining: string }>; processing_status: 'PENDING' | 'PARTIAL' | 'COMPLETE'
   movements: { operation_id: string; line_id: string; quantity: string; business_date: string; reversed: boolean }[]
+  receipt_observations?: HandoverReceiptObservation[]
 }
-export interface HandoverSummary { id: string; status: HandoverDocument['status']; revision: number; data: Omit<HandoverData, 'lines'>; line_count: number; created_at: string }
+export interface HandoverReceiptObservation {
+  request_id: string
+  business_date: string
+  actor_name: string
+  lines: {
+    line_id: string
+    item_name: string
+    item_code: string
+    unit: string
+    delivered_quantity?: string
+    shortage_quantity?: string
+    parts: (ReceiptCounts & {
+      accepted_quantity: string
+      lot: string
+      roll_no: string
+      location?: string
+      operation_id?: string
+    })[]
+  }[]
+}
+export interface HandoverSummary {
+  id: string; status: HandoverDocument['status']; revision: number; data: Omit<HandoverData, 'lines'>; line_count: number; created_at: string
+  processing_status?: HandoverDocument['processing_status']
+}
 export interface HandoverListFilters { search: string; status: 'ALL' | HandoverDocument['status']; kind: 'ALL' | HandoverData['kind']; supplier_id: string }
 export interface PendingDelivery extends HandoverSummary { pending_line_count: number; processing_status: 'PENDING' | 'PARTIAL'; first_item_name: string }
 export interface PendingDeliveries { total: number; items: PendingDelivery[]; limit: number; offset: number; stock_totals: { unit: string; quantity: string }[] }
@@ -43,7 +68,28 @@ export interface HandoverPurchaseSources {
   document_revision: number; lines: Record<string, HandoverPurchaseSource[]>
   match_status?: Record<string, HandoverPurchaseMatchStatus>
 }
-export interface HandoverPosting { factory_id: 'huakang-c'; request_id: string; expected_revision: number; expected_inventory_revision: number; code_version: number; business_date: string; lines: { line_id: string; quantity: string; batch_id: string; location_id: string; lot: string; roll_no: string; purchase_source_id?: string; expected_source_revision?: number; expected_receipt_count?: number; difference_reason?: string }[] }
+export interface HandoverPosting {
+  factory_id: 'huakang-c'
+  request_id: string
+  expected_revision: number
+  expected_inventory_revision: number
+  code_version: number
+  business_date: string
+  delivery_quantities?: Record<string, string>
+  lines: {
+    line_id: string
+    quantity: string
+    batch_id: string
+    location_id: string
+    lot: string
+    roll_no: string
+    purchase_source_id?: string
+    expected_source_revision?: number
+    expected_receipt_count?: number
+    difference_reason?: string
+    receipt_counts?: ReceiptCounts
+  }[]
+}
 export interface HandoverSave { request_id: string; expected_revision: number; data: HandoverData }
 export interface HandoverAction { request_id: string; expected_revision: number; acknowledge_warnings: boolean; reason: string; data?: HandoverData }
 export interface HandoverMonthlyRow { document_id: string; line_id: string; source_no: string; document_date: string; supplier_id: string; supplier_name: string; item_code: string; item_name: string; unit: string; declared: string; prior_received: string; month_received: string; month_reversed: string; month_net_received: string; cumulative_received: string; outstanding: string; unit_price: string; price_unit: string; currency: string; price_note: string; notes: string[] }

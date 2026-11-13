@@ -79,7 +79,7 @@
   }
   function table(kind,headers,rows=data.tables[kind]) {
     const sizes=widths[kind];
-    let html='<div class="qmt-scroll" tabindex="0" aria-label="'+esc(titles[kind] || '彩星月度统计')+'"><table style="min-width:'+sizes.reduce((a,b)=>a+b,0)+'px"><colgroup>'+sizes.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr class="qmt-letters">'+headers.map((_,i)=>'<th>'+String.fromCharCode(65+i)+'</th>').join('')+'</tr><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>';
+    let html='<div class="qmt-scroll" tabindex="0" aria-label="'+esc(titles[kind] || '彩星月度统计')+'"><table style="min-width:'+sizes.reduce((a,b)=>a+b,0)+'px"><colgroup>'+sizes.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>';
     for(const row of rows){
       const available=columns(kind,row);
       html+='<tr>'+values(kind,row).map((v,i)=>{
@@ -238,19 +238,6 @@
       button.title=active?'导出当前月报模板 Excel':button.dataset.qmtOriginalTitle;
     });
   }
-  function choosePhotoQuality(info){
-    return new Promise(resolve=>{
-      const trigger=doc.activeElement,dialog=doc.createElement('dialog');dialog.className='qwf-dialog qmt-quality-dialog';dialog.setAttribute('aria-label','导出 Excel');
-      dialog.innerHTML='<header><strong>导出 Excel</strong></header><div class="qwf-dialog-body"><p>此文件包含验货问题图片，请选择导出图片的清晰度。</p><label><input type="radio" name="qmt-quality" value="preview" checked> 预览图（默认推荐）<small>文件较小，导出速度更快，适合日常查看和分享。</small></label><label><input type="radio" name="qmt-quality" value="original"> 原始高清图<small>保留更多图片细节，文件可能明显增大，适合需要检查细节的场景。</small></label>'+(info.missingOriginals?'<p>'+info.missingOriginals+' 张历史照片没有可确认的原图。</p><label data-fallback hidden><input type="checkbox"> 同意这 '+info.missingOriginals+' 张使用已有预览图继续导出</label>':'')+(info.displayConversions?'<p class="qsum-note">'+info.displayConversions+' 张原图需为 Excel 适配方向或格式，将使用全尺寸 PNG；原始文件仍保留。</p>':'')+'<div class="qsum-actions"><button class="btn btn-secondary" data-cancel>取消</button><button class="btn btn-primary" data-confirm>确认导出</button></div></div>';
-      doc.body.append(dialog);let settled=false;
-      const done=value=>{if(settled)return;settled=true;dialog.close();dialog.remove();trigger?.focus();resolve(value);};
-      const update=()=>{const original=dialog.querySelector('[value="original"]').checked,fallback=dialog.querySelector('[data-fallback]');if(fallback)fallback.hidden=!original;dialog.querySelector('[data-confirm]').disabled=original&&!!info.missingOriginals&&!fallback.querySelector('input').checked;};
-      dialog.addEventListener('change',update);dialog.querySelector('[data-cancel]').onclick=()=>done(null);
-      dialog.addEventListener('cancel',event=>{event.preventDefault();done(null);});dialog.addEventListener('close',()=>done(null));
-      dialog.querySelector('[data-confirm]').onclick=()=>done({photoQuality:dialog.querySelector('[value="original"]').checked?'original':'preview',allowPreviewFallback:!!dialog.querySelector('[data-fallback] input')?.checked});
-      dialog.showModal();dialog.querySelector('[data-cancel]').focus();
-    });
-  }
   async function exportExcel(){
     finish();
     if(!data?.canExport||!data?.tables[active]?.length||dirty()||exporting){exportMessage=dirty()?'请先保存补充内容，再导出 Excel':!data?.canExport?'当前账号无导出权限':!data?.tables[active]?.length?'当前筛选没有记录':'';status();return;}
@@ -258,10 +245,6 @@
     exporting=true;exportMessage='正在准备完整表格，请稍候…';status();
     try{
       const payload={date:data.date,customer,template:active,sourceRevision:data.sourceRevision,versions};
-      if(active==='issues'&&data.tables.issues.some(row=>row.photos.length)){
-        const info=await request('api/monthly-templates/excel/options',payload);
-        if(info.count){const choice=await choosePhotoQuality(info);if(!choice){exportMessage='已取消导出';return;}Object.assign(payload,choice);}
-      }
       const result=await request('api/monthly-templates/excel',payload,120000);
       if(!/^api\/monthly-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效，请重试');
       const link=doc.createElement('a');link.href=result.url;link.download=result.filename;link.hidden=true;doc.body.append(link);link.click();link.remove();

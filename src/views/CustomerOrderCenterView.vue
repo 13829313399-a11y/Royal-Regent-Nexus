@@ -223,7 +223,7 @@ function navigate(section: CustomerOrderCenterSection) {
         @feedback="reportProblem"
       />
       <div v-if="activeSection === 'materials'" class="space-y-4">
-        <CartonQuickAssetLibrary :key="`quick-${activeFactory.id}`" :factory-id="activeFactory.id" audience="sales" :search="materialsSearch" />
+        <CartonQuickAssetLibrary v-model:search="materialsSearch" :key="`quick-${activeFactory.id}`" :factory-id="activeFactory.id" audience="sales" />
 
       </div>
       <HuakangBJPIntake v-if="activeSection === 'jp-intake' && activeFactory.id === 'huakang-b'"

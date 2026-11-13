@@ -6,7 +6,7 @@ import { setYinhuiDraftMoq } from '@/lib/customerPriceConverters/yinhuiDraft'
 import { YINHUI_PROFILES } from '@/lib/customerPriceConverters/yinhuiProfiles'
 import { translateQuoteDescriptions } from '@/api/quoteTranslation'
 import { getApiErrorMessage } from '@/lib/http'
-import { hasChineseQuoteText, pendingYinhuiDescriptions, translateYinhuiDescriptions } from '@/lib/customerPriceConverters/yinhuiTranslation'
+import { pendingYinhuiDescriptions, translateYinhuiDescriptions } from '@/lib/customerPriceConverters/yinhuiTranslation'
 
 const props = withDefaults(defineProps<{ result: YinhuiConversionResult; disabled?: boolean; factoryId?: string }>(), { factoryId: 'huaxing' })
 const confirmed = defineModel<boolean>('confirmed', { required: true })
@@ -23,7 +23,7 @@ async function translateNames() {
   const isCurrent = () => !controller.signal.aborted && props.result === result && translationRequest === controller
   confirmed.value = false
   translating.value = true
-  translationMessage.value = '正在翻译产品、包装及 Tool Plan 名称；BOM 明细保留原文…'
+  translationMessage.value = '正在翻译产品名称和包装方式；BOM 与模具名称保留原文…'
   try {
     const report = await translateYinhuiDescriptions(result.quoteData, texts => translateQuoteDescriptions(texts, props.factoryId, controller.signal), isCurrent)
     if (isCurrent()) translationMessage.value = report.warning || (report.remaining ? `已翻译 ${report.translated} 项，剩余 ${report.remaining} 项可重试或手工核对。` : `已自动翻译 ${report.translated} 项名称，请核对专业术语后确认导出。`)
@@ -126,18 +126,18 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
         </table>
       </div>
       <div v-if="result.quoteData.tools.length" class="mt-3 max-h-64 overflow-auto border-t border-slate-200 pt-3">
-        <p class="mb-2 text-xs font-semibold">Tool Plan 零件名称</p>
+        <p class="mb-2 text-xs font-semibold">Tool Plan 零件名称（保留导入原文）</p>
         <label v-for="(line, index) in result.quoteData.tools" :key="index" class="mb-2 grid gap-1 text-xs">
           {{ index + 1 }} · {{ line.moldNo || '未填模号' }}
           <span>胶料 {{ line.material }} · {{ yinhuiToolMaterialPrice(result.quoteData, line)?.toFixed(6) ?? '待补' }} HKD/kg · {{ line.sourceMaterialPriceHkdKg === undefined ? '客户维护价' : '原报价换算' }}</span>
-          <input v-model="line.description" :aria-label="`Tool Plan 第 ${index + 1} 行英文描述`" class="rounded border border-slate-300 px-2 py-1" :class="hasChineseQuoteText(line.description) ? 'border-amber-500' : ''">
+          <input v-model="line.description" :aria-label="`Tool Plan 第 ${index + 1} 行零件名称`" class="rounded border border-slate-300 px-2 py-1">
           <span class="grid gap-2 sm:grid-cols-2"><input v-model="line.moldNo" :aria-label="`Tool Plan 第 ${index + 1} 行模号`" placeholder="客户模号（无依据可留空）" class="rounded border border-slate-300 px-2 py-1"><input v-model="line.partNo" :aria-label="`Tool Plan 第 ${index + 1} 行零件号`" placeholder="零件号（无依据可留空）" class="rounded border border-slate-300 px-2 py-1"></span>
           <span v-if="line.originalDescription" class="text-slate-500">原文：{{ line.originalDescription }}</span>
         </label>
       </div>
     </details>
     <div class="mt-3 flex flex-wrap items-center gap-3 text-sm" aria-live="polite">
-      <p data-testid="yinhui-translation-status" class="text-slate-700">{{ translationMessage || 'BOM 明细保留原表中文；仅产品、包装及 Tool Plan 名称使用项目离线模型翻译。' }}</p>
+      <p data-testid="yinhui-translation-status" class="text-slate-700">{{ translationMessage || 'BOM 与模具名称保留导入原文；仅产品名称和包装方式自动翻译，输出格式沿用现有映射。' }}</p>
       <button v-if="pendingNames" type="button" data-testid="yinhui-translate" class="rounded border border-teal-500 bg-white px-3 py-1 text-teal-800" :disabled="translating || disabled" @click="translateNames">{{ translating ? '正在自动翻译…' : `重试自动翻译（${pendingNames} 项）` }}</button>
     </div>
     <p v-if="total.missingMaterialPrices.length" class="mt-3 rounded-md border border-amber-300 bg-amber-100 p-3 text-sm text-amber-950" role="alert" data-testid="yinhui-missing-prices">

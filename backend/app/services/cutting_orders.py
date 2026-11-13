@@ -3,13 +3,15 @@ from copy import deepcopy
 from datetime import datetime, UTC
 from zoneinfo import ZoneInfo
 from decimal import Decimal, localcontext
-from sqlalchemy import inspect, select, func, or_
+from sqlalchemy import inspect, select, func, or_, tuple_
 from app.models.cutting_ops import CuttingOrder, CuttingOrderRevision, CuttingCommand, CuttingMaster, CuttingRevision
 from app.models.customer_order_ledger import OrderLedgerLine, OrderLedgerDispatch
 from app.services import cutting_ops as c
 from app.services.transaction_lock import lock_transaction
 
 TABLES = (CuttingOrder.__table__, CuttingOrderRevision.__table__)
+AUTOMATIC_RECEIPT_ACTOR = 'system:cutting-auto-receipt'
+NOTE_RECEIPT_FIELDS = {'note', 'version', 'change_reason', 'shipped_quantity', 'remaining_quantity'}
 
 
 def schema_ready(bind):
@@ -29,6 +31,32 @@ def revision(db, order, version=None):
     r = db.get(CuttingOrderRevision, (order.line_id, version or order.version))
     c.require(r is not None, '裁床订单版本不存在', 404)
     return dict(version=r.version, data=r.data, actor_id=r.actor_id, created_at=r.created_at, reason=r.reason)
+
+
+def include_note_comparisons(db, revisions):
+    """Decorate response revisions from immutable cutting dispatches in one page-level read."""
+    targets = []
+    keys = set()
+    for line_id, revision_data in revisions:
+        receipt = revision_data['data'].get('receipt') if revision_data else None
+        if not receipt or receipt.get('mode') != 'note_only' or not receipt.get('source_dispatch_id'):
+            continue
+        version = receipt['source_version']
+        targets.append((line_id, version, revision_data, receipt))
+        keys.update(((line_id, version - 1), (line_id, version)))
+    if not keys:
+        return
+    query = select(OrderLedgerDispatch).where(
+        OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting',
+        tuple_(OrderLedgerDispatch.line_id, OrderLedgerDispatch.version).in_(sorted(keys)))
+    sources = {(d.line_id, d.version): d for d in db.scalars(query)}
+    for line_id, version, revision_data, receipt in targets:
+        before, after = sources.get((line_id, version - 1)), sources.get((line_id, version))
+        if not before or not after or not before.received_at or not after.received_at or after.id != receipt['source_dispatch_id']:
+            continue
+        comparison = dict(before_version=before.version, before=str(before.snapshot.get('note') or ''),
+                          after=str(after.snapshot.get('note') or ''))
+        revision_data['data'] = {**revision_data['data'], 'receipt': {**receipt, 'note_comparison': comparison}}
 
 
 def view(db, dispatch, loaded=None, planning_summary=None):
@@ -70,11 +98,23 @@ def workflow_status(data, source_status='active', needs_receipt=False):
 
 
 def purchase_snapshot(db, line_id, version):
-    r = db.scalar(select(CuttingOrderRevision).where(CuttingOrderRevision.line_id == line_id,
-        CuttingOrderRevision.data['requisition']['version'].as_integer() == version)
-        .order_by(CuttingOrderRevision.version.desc()).limit(1))
+    scope = (CuttingOrderRevision.line_id == line_id,
+             CuttingOrderRevision.data['requisition']['version'].as_integer() == version)
+    r = db.scalar(select(CuttingOrderRevision).where(*scope).order_by(CuttingOrderRevision.version.desc()).limit(1))
     c.require(r is not None, '待核对的原需求版本缺失，请核对历史', 409)
-    return dict(requisition=r.data['requisition'], bom=r.data['bom'], order=r.data['order'], batches=r.data['batches'])
+    batches = r.data['batches']
+    # A revised reply can remove batches without removing the original procurement evidence.
+    prior_reply = None
+    if not batches:
+        history = db.execute(select(CuttingOrderRevision.version, CuttingOrderRevision.data['batches']).where(
+            *scope, CuttingOrderRevision.version < r.version).order_by(
+            CuttingOrderRevision.version.desc()).execution_options(yield_per=50))
+        previous = next(((revision, reply) for revision, reply in history if reply), None)
+        history.close()
+        if previous:
+            prior_reply = dict(revision=previous[0], batches=previous[1])
+    return dict(requisition=r.data['requisition'], bom=r.data['bom'], order=r.data['order'], batches=batches,
+                has_purchase_evidence=bool(batches or prior_reply), prior_purchase_reply=prior_reply)
 
 
 def pending_purchase_version(db, order, data):
@@ -114,7 +154,7 @@ def planning_rows(db, query):
         yield from rows
 
 
-def list_orders(db, page, q, status=None, plan_status=None):
+def list_orders(db, page, q, status=None, plan_status=None, *, changes_only=False):
     newest = select(OrderLedgerDispatch.line_id, func.max(OrderLedgerDispatch.version).label('version')).where(
         OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting').group_by(
         OrderLedgerDispatch.line_id).subquery()
@@ -124,6 +164,11 @@ def list_orders(db, page, q, status=None, plan_status=None):
     if q.strip():
         query = query.where(OrderLedgerLine.reference_no.contains(q.strip(), autoescape=True) |
                             OrderLedgerLine.product_no.contains(q.strip(), autoescape=True))
+    if changes_only:
+        changed = select(CuttingOrder.line_id).where(
+            CuttingOrder.line_id == OrderLedgerDispatch.line_id, CuttingOrder.factory_id == c.FACTORY,
+            CuttingOrder.dispatch_id != OrderLedgerDispatch.id).correlate(OrderLedgerDispatch).exists()
+        query = query.where(changed)
     if plan_status:
         from app.services.cutting_planning import summary
         # Read the current order and its snapshot together. Unreceived orders
@@ -201,39 +246,98 @@ def lock_sources(db, line_ids):
         c.require(dispatch.version==line.version,'来源订单已有新版本，请等待重新下发')
 
 
-def append(db, user, order, data, reason):
+def append_revision(db, actor_id, order, data, reason, *, created_at=None):
     data['workflow_status'] = workflow_status(data, data['order'].get('status'))
     order.version += 1
     db.add(CuttingOrderRevision(line_id=order.line_id, version=order.version, data=data,
-        actor_id=user.id, created_at=datetime.now(UTC).isoformat(), reason=reason))
+        actor_id=actor_id, created_at=created_at or datetime.now(UTC).isoformat(), reason=reason))
+
+
+def append(db, user, order, data, reason):
+    append_revision(db, user.id, order, data, reason)
     db.flush()
     return view(db, latest(db, order.line_id))
 
 
+def stamp_receipt(dispatch, actor_id, mode):
+    dispatch.received_at = datetime.now(UTC).isoformat()
+    dispatch.received_by = {'automatic': '系统自动接单', 'note_only': '系统同步备注'}.get(mode, actor_id)
+    return dict(mode=mode, source_version=dispatch.version, received_at=dispatch.received_at)
+
+
+def record_receipt(db, dispatch, order, actor_id, reason, *, automatic=False):
+    previous = revision(db, order)['data'] if order and order.version else None
+    if order is None:
+        order = CuttingOrder(line_id=dispatch.line_id, factory_id=c.FACTORY, dispatch_id=dispatch.id, version=0)
+        db.add(order)
+        db.flush()
+    # An updated source never cancels a purchase order or erases its planning history.
+    pending_version = None
+    if previous:
+        pending_version = previous['requisition']['version'] if previous.get('requisition') else pending_purchase_version(db, order, previous)
+    order.dispatch_id = dispatch.id
+    receipt = stamp_receipt(dispatch, actor_id, 'automatic' if automatic else 'manual')
+    data = dict(order=deepcopy(dispatch.snapshot), dispatch_id=dispatch.id, bom=None, requisition=None,
+                receipt=receipt,
+                batches=[], purchase_reconciliation_required=bool(pending_version), pending_requisition_version=pending_version,
+                reconciliation_request={'kind': 'source_change', 'actor_id': actor_id, 'reason': reason} if pending_version else None)
+    if previous and previous.get('planning'):
+        data['planning'] = deepcopy(previous['planning'])
+    append_revision(db, actor_id, order, data, reason, created_at=receipt['received_at'])
+    db.flush()
+
+
+def add_dispatch_with_first_receipt(db, dispatch):
+    # The sales writer holds the source row lock, or direct intake has just inserted the line.
+    first = (dispatch.factory_id == c.FACTORY and dispatch.recipient == 'cutting'
+             and dispatch.snapshot.get('status') == 'active' and latest(db, dispatch.line_id) is None)
+    db.add(dispatch)
+    if first:
+        db.flush()  # Persist the immutable source before creating its dependent receipt.
+        record_receipt(db, dispatch, None, AUTOMATIC_RECEIPT_ACTOR, '首次有效下发自动接单', automatic=True)
+
+
+def add_dispatch_with_note_receipt(db, dispatch, previous_version):
+    from app.core.config import settings
+
+    # Called only by the ledger amendment transaction while it holds the source row lock.
+    if not settings.cutting_ops_enabled or not schema_ready(db.connection()):
+        db.add(dispatch)
+        return
+    previous = latest(db, dispatch.line_id)
+    order = db.get(CuttingOrder, dispatch.line_id)
+    if (not previous or not order or order.dispatch_id != previous.id or not previous.received_at
+            or previous.version != previous_version or dispatch.version != previous_version + 1
+            or previous.snapshot.get('status') != 'active' or dispatch.snapshot.get('status') != 'active'
+            or any(previous.snapshot.get(key, '') != value for key, value in dispatch.snapshot.items()
+                   if key not in NOTE_RECEIPT_FIELDS)):
+        db.add(dispatch)
+        return
+
+    data = deepcopy(revision(db, order)['data'])
+    # Carry forward archived source fields from direct intake. Both dispatch snapshots remain immutable.
+    dispatch.snapshot = {**previous.snapshot, **dispatch.snapshot}
+    receipt = stamp_receipt(dispatch, AUTOMATIC_RECEIPT_ACTOR, 'note_only')
+    receipt['source_dispatch_id'] = dispatch.id
+    db.add(dispatch)
+    db.flush()
+    # Advance the live receipt while keeping the production dispatch and its snapshot
+    # pinned for planning, procurement, material, reporting and month-close evidence.
+    order.dispatch_id = dispatch.id
+    data['receipt'] = receipt
+    append_revision(db, AUTOMATIC_RECEIPT_ACTOR, order, data, '仅备注变更，沿用生产依据', created_at=receipt['received_at'])
+    db.flush()
+
+
 def receive(db, user, line_id, body):
-    line, dispatch = lock_source(db, line_id)
+    _, dispatch = lock_source(db, line_id)
     c.require(dispatch.id == body.dispatch_id, '只能接收最新下发版本')
     order = db.get(CuttingOrder, line_id)
     if order and order.dispatch_id == dispatch.id:
         return view(db, dispatch)  # Separate retries cannot create another receipt revision.
     c.require((order.version if order else 0) == body.expected_version, '裁床记录已更新，请重新读取')
-    if order is None:
-        order = CuttingOrder(line_id=line_id, factory_id=c.FACTORY, dispatch_id=dispatch.id, version=0)
-        db.add(order)
-    previous = revision(db, order)['data'] if order.version else None
-    # Never imply that replacing a source version cancels a real purchase order.
-    pending_version = None
-    if previous:
-        pending_version = previous['requisition']['version'] if previous.get('requisition') else pending_purchase_version(db, order, previous)
-    order.dispatch_id = dispatch.id
-    dispatch.received_at = datetime.now(UTC).isoformat()
-    dispatch.received_by = user.id
-    data = dict(order=deepcopy(dispatch.snapshot), dispatch_id=dispatch.id, bom=None, requisition=None,
-                batches=[], purchase_reconciliation_required=bool(pending_version), pending_requisition_version=pending_version,
-                reconciliation_request={'kind': 'source_change', 'actor_id': user.id, 'reason': body.reason} if pending_version else None)
-    if previous and previous.get('planning'):
-        data['planning'] = deepcopy(previous['planning'])
-    return append(db, user, order, data, body.reason)
+    record_receipt(db, dispatch, order, user.id, body.reason)
+    return view(db, dispatch)
 
 
 def writable(db, line_id, expected, *, allow_cancelled=False):
@@ -315,11 +419,8 @@ def reconcile(db, user, line_id, body):
     order, data = writable(db, line_id, body.expected_version, allow_cancelled=True)
     pending = pending_purchase_version(db, order, data)
     c.require(pending and pending == body.requisition_version, '请核对当前待处理的原需求版本')
-    purchase_snapshot(db, line_id, pending)
-    previous_versions = db.scalars(select(CuttingOrderRevision).where(CuttingOrderRevision.line_id == line_id,
-        CuttingOrderRevision.data['requisition']['version'].as_integer() == pending)).yield_per(50)
-    had_commitment = any(r.data.get('batches') for r in previous_versions)
-    c.require(body.disposition != 'not_ordered' or not had_commitment,
+    snapshot = purchase_snapshot(db, line_id, pending)
+    c.require(body.disposition != 'not_ordered' or not snapshot['has_purchase_evidence'],
               '原需求已有采购交期证据，请按已采购处置并说明，不可声明尚未采购', 422)
     data.update(requisition=None, batches=[], purchase_reconciliation_required=False, pending_requisition_version=None,
         reconciliation=dict(requisition_version=pending, disposition=body.disposition, evidence=body.evidence, all_handled=True,

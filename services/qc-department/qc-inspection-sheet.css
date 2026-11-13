@@ -215,6 +215,10 @@ body.qc-liquid-glass .qis-notice{position:relative;padding:18px 20px;border:1px 
 .qis-reversal-dialog::backdrop{background:rgb(20 35 60 / 30%);backdrop-filter:blur(5px)}
 .qis-reversal-item{padding:12px 0;border-bottom:1px solid var(--border-hi,#dbe4ef)}
 .qis-reversal-dialog p{margin:6px 0}.qis-reversal-reason{white-space:pre-wrap;overflow-wrap:anywhere}
+.qia-dialog [data-reason] {
+  display:block;width:100%;min-height:5em;margin-top:4px;padding:8px;box-sizing:border-box;resize:vertical;
+  border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--text-hi);font:inherit;
+}
 @supports(backdrop-filter:blur(20px)){.qis-reversal-dialog{background:color-mix(in srgb,var(--bg-panel,#f8fbff) 92%,transparent);backdrop-filter:blur(24px) saturate(140%)}}
 [data-theme=dark] .qis-reversal-badge{background:#252e51;color:#d7e2ff;border-color:#56648c}
 
