@@ -6,10 +6,11 @@ import { cuttingOperationsRoutes } from '../routes'
 import { cuttingApi } from '../api'
 import { ordersApi, type CuttingOrder } from '../ordersApi'
 import { reportingApi, type ProductionView, type ReportKind, type ReportEvent } from '../reportingApi'
+import { workspaceApi } from '../workspaceApi'
 
 vi.mock('@/components/layout/AccountMenu.vue',()=>({default:{template:'<span />'}}))
 vi.mock('../api',async original=>({...await original<typeof import('../api')>(),cuttingApi:{access:vi.fn()}}))
-vi.mock('../ordersApi',()=>({ordersApi:{list:vi.fn()}}))
+vi.mock('../ordersApi',()=>({ordersApi:{list:vi.fn(),read:vi.fn()}}))
 vi.mock('../reportingApi',async original=>({...await original<typeof import('../reportingApi')>(),reportingApi:{read:vi.fn(),command:vi.fn(),recover:vi.fn()}}))
 const path='/modules/production/cutting/reporting?factory=huakang-c'
 const order:CuttingOrder={line_id:'line-1',dispatch_id:'dispatch-1',source_version:1,snapshot:{reference_no:'CUT-1',product_no:'001',customer_name:'合成洋行',status:'active'},received_at:'',needs_receipt:false,
@@ -20,12 +21,16 @@ let wrapper:VueWrapper,router:Router
 const clone=<T,>(v:T):T=>JSON.parse(JSON.stringify(v))
 function button(text:string){const b=wrapper.findAll('button').find(b=>b.text()===text);if(!b)throw Error('Missing '+text);return b}
 function field(label:string){const l=wrapper.findAll('label').find(l=>l.text().startsWith(label));if(!l)throw Error('Missing field '+label);return l.find('input,select,textarea')}
-async function open(permissions=['read','report_write','report_review','handover_write','return_write','acceptance_write'],data=view,orders=[order]){
+async function open(permissions=['read','report_write','report_review','handover_write','return_write','acceptance_write'],data=view,orders=[order],attach=false){
   vi.mocked(cuttingApi.access).mockResolvedValue({enabled:true,schema_ready:true,orders_schema_ready:true,reporting_schema_ready:true,permissions})
   vi.mocked(ordersApi.list).mockResolvedValue({data:orders,page:1,page_size:50,total:orders.length})
   vi.mocked(reportingApi.read).mockResolvedValue(clone(data))
   router=createRouter({history:createMemoryHistory(),routes:[...cuttingOperationsRoutes,{path:'/modules/production',component:{template:'<div>生产部</div>'}}]})
-  await router.push(path);await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+  await router.push(path);await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]},...(attach?{attachTo:document.body}:{})});await flushPromises()
+  expect(button('选择生产订单').attributes('aria-expanded')).toBe('false')
+  expect(wrapper.text()).toContain('当日任务')
+  expect(ordersApi.list).not.toHaveBeenCalled()
+  await button('选择生产订单').trigger('click');await flushPromises()
   await button('查看记录').trigger('click');await flushPromises()
 }
 async function form(){await button('填报此任务').trigger('click');await field('本次套数').setValue('10');await field('现场依据').setValue('现场核套人A确认10套');await field('本次提交').setValue('文员填回实际数')}
@@ -33,15 +38,136 @@ beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(fa
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it('restores the chooser selection and applied cutoff from its saved URL',async()=>{
+    await open()
+    expect(router.currentRoute.value.query).toMatchObject({line_id:order.line_id,day:view.as_of,task_day:'2026-10-20'})
+    expect(reportingApi.read).toHaveBeenCalledTimes(1)
+    await button('裁片配套').trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query.reporting_view).toBe('parts')
+    const saved=router.currentRoute.value.fullPath
+    wrapper.unmount()
+    vi.mocked(ordersApi.read).mockResolvedValue(order)
+    router=createRouter({history:createMemoryHistory(),routes:cuttingOperationsRoutes})
+    await router.push(saved);await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    expect(ordersApi.read).toHaveBeenCalledWith(order.line_id)
+    expect(reportingApi.read).toHaveBeenLastCalledWith(order.line_id,view.as_of,1,undefined,undefined)
+    expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)
+    expect(button('裁片配套').attributes('aria-pressed')).toBe('true')
+    await wrapper.findAll('a').find(link=>link.text()==='返回当日任务')!.trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',day:'2026-10-20'})
+    expect(wrapper.text()).toContain('当日任务')
+  })
+  it('restores the last queried task subpage date separately from the return date and statistics cutoff',async()=>{
+    const taskRead=workspaceApi.tasks
+    const tasks=vi.spyOn(workspaceApi,'tasks').mockImplementation(async request=>({...await taskRead(request),day:String(request.day)}))
+    await open()
+    await button('每日任务').trigger('click');await flushPromises()
+    const taskForm=wrapper.get('form:has(input[name="day"])')
+    await taskForm.get('input[name="day"]').setValue('2026-10-19')
+    await taskForm.get('input[name="q"]').setValue('ORDER-APPLIED')
+    await taskForm.get('select[name="execution"]').setValue('internal')
+    const previousCalls=tasks.mock.calls.length
+    await taskForm.trigger('submit');await flushPromises()
+    expect(tasks.mock.calls.length).toBe(previousCalls+1)
+    await button('待填任务').trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({day:view.as_of,task_day:'2026-10-20',task_query_day:'2026-10-19',
+      reporting_view:'tasks',task_q:'ORDER-APPLIED',task_execution:'internal',task_scope:'unreported'})
+    await taskForm.get('input[name="day"]').setValue('2026-10-18')
+    await taskForm.get('input[name="q"]').setValue('ORDER-FAILED')
+    tasks.mockRejectedValueOnce(new Error('offline'))
+    await taskForm.trigger('submit');await flushPromises()
+    expect(router.currentRoute.value.query.task_query_day).toBe('2026-10-19')
+    expect(router.currentRoute.value.query.task_q).toBe('ORDER-APPLIED')
+    const saved=router.currentRoute.value.fullPath
+    wrapper.unmount()
+    vi.mocked(ordersApi.read).mockResolvedValue(order)
+    router=createRouter({history:createMemoryHistory(),routes:cuttingOperationsRoutes})
+    await router.push(saved);await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    expect(wrapper.get('input[name="day"]').element).toHaveProperty('value','2026-10-19')
+    expect(wrapper.get('input[name="q"]').element).toHaveProperty('value','ORDER-APPLIED')
+    expect(wrapper.get('select[name="execution"]').element).toHaveProperty('value','internal')
+    expect(button('待填任务').attributes('aria-pressed')).toBe('true')
+    expect(tasks).toHaveBeenLastCalledWith({day:'2026-10-19',q:'ORDER-APPLIED',execution:'internal',scope:'unreported',page:1})
+    expect(wrapper.text()).toContain('上次成功查询：2026-10-19')
+    await button('裁片配套').trigger('click');await flushPromises()
+    expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)
+    await wrapper.findAll('a').find(link=>link.text()==='返回当日任务')!.trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',day:'2026-10-20'})
+  })
+  it('returns an out-of-range chooser page to page one using the applied query',async()=>{
+    await open()
+    await button('选择生产订单').trigger('click');await flushPromises()
+    const filter=wrapper.get('form:has([name="order_query"])')
+    const input=filter.get('input')
+    await input.setValue('CUT')
+    const first={data:[order],page:1,page_size:50,total:51}
+    vi.mocked(ordersApi.list).mockResolvedValueOnce(first)
+    await filter.trigger('submit');await flushPromises()
+    await input.setValue('未应用')
+    vi.mocked(ordersApi.list).mockResolvedValueOnce({data:[],page:2,page_size:50,total:1})
+      .mockResolvedValueOnce({...first,total:1})
+    await button('下一页').trigger('click');await flushPromises()
+    expect(vi.mocked(ordersApi.list).mock.calls.slice(-2)).toEqual([[2,'CUT','','',false],[1,'CUT','','',false]])
+    expect(wrapper.text()).toContain('原第 2 页超出范围，已按原条件返回第 1 页')
+    expect(wrapper.text()).toContain('第 1 页 · 共 1 条')
+    expect(input.element).toHaveProperty('value','未应用')
+    expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)
+  })
+  it('retains the successful page on repeated pagination failures and restores keyboard focus',async()=>{
+    await open(undefined,view,[order],true)
+    await button('选择生产订单').trigger('click');await flushPromises()
+    const filter=wrapper.get('form:has([name="order_query"])'), input=filter.get('input')
+    await input.setValue('CUT')
+    vi.mocked(ordersApi.list).mockResolvedValueOnce({data:[order],page:1,page_size:50,total:51})
+    await filter.trigger('submit');await flushPromises()
+    await input.setValue('未提交')
+    vi.mocked(ordersApi.list).mockRejectedValueOnce(new Error('离线')).mockRejectedValueOnce(new Error('仍离线'))
+    ;(button('下一页').element as HTMLButtonElement).focus()
+    await button('下一页').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('当前显示上次成功读取的第 1 页')
+    expect(wrapper.text()).toContain('订单／货号 CUT · 第 2 页')
+    expect(wrapper.get('.report-order-list').text()).toContain('CUT-1')
+    expect(document.activeElement).toBe(button('按原条件重试').element)
+    await button('按原条件重试').trigger('click');await flushPromises()
+    expect(document.activeElement).toBe(button('按原条件重试').element)
+    vi.mocked(ordersApi.list).mockResolvedValueOnce({data:[order],page:2,page_size:50,total:51})
+    await button('按原条件重试').trigger('click');await flushPromises()
+    expect(vi.mocked(ordersApi.list).mock.calls.slice(-3)).toEqual(Array(3).fill([2,'CUT','','',false]))
+    expect(input.element).toHaveProperty('value','未提交')
+    expect(document.activeElement?.textContent).toContain('第 2 页 · 共 51 条')
+  })
+  it('re-reads the chooser on reopen and separates pending changes from new reporting',async()=>{
+    await open()
+    const pending=clone(order)
+    pending.needs_receipt=true
+    pending.source_version=2
+    pending.snapshot.quantity='150'
+    pending.current!.data.order={version:1,quantity:'120'}
+    pending.current!.data.receipt={mode:'automatic',source_version:1,received_at:'2026-11-12T00:32:00Z'}
+    vi.mocked(ordersApi.list).mockResolvedValueOnce({data:[pending],page:1,page_size:50,total:1})
+    await button('选择生产订单').trigger('click');await flushPromises()
+    expect(ordersApi.list).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('变更待确认')
+    expect(wrapper.text()).toContain('120 → 150')
+    expect(wrapper.text()).toContain('首次下发自动接单 · 业务下发 V1 · 裁床记录 V7')
+    expect(wrapper.findAll('a').some(link=>link.text()==='前往排期确认')).toBe(true)
+    await button('查看原记录').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('请先在生产排期确认新版本')
+    expect(wrapper.findAll('button').some(item=>item.text()==='填报此任务')).toBe(false)
+  })
   it('keeps the order and active form when switching record views', async () => {
     await open()
     expect(button('查看记录').attributes('aria-current')).toBe('true')
     await form()
-    await button('裁片配套').trigger('click')
+    await button('裁片配套').trigger('click');await flushPromises()
     expect(button('裁片配套').attributes('aria-pressed')).toBe('true')
     expect(field('本次套数').element).toHaveProperty('value','10')
     expect(button('查看记录').attributes('aria-current')).toBe('true')
     expect(reportingApi.read).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.query.reporting_view).toBe('parts')
+    expect(window.confirm).not.toHaveBeenCalled()
   })
   it('uses the successfully applied date for new reports, even after a failed statistics refresh',async()=>{
     await open()
@@ -65,6 +191,7 @@ describe('cutting production facts and save protection',()=>{
   it('starts a different order with its own default statistics date',async()=>{
     const second={...order,line_id:'line-2',snapshot:{...order.snapshot,reference_no:'CUT-2'}}
     await open(undefined,view,[order,second])
+    await button('选择生产订单').trigger('click');await flushPromises()
     await field('统计截至日期').setValue('2026-10-09')
     vi.mocked(reportingApi.read).mockResolvedValueOnce({...clone(view),line_id:'line-2',as_of:'2026-10-11'})
     await wrapper.findAll('button').filter(b=>b.text()==='查看记录')[1]!.trigger('click');await flushPromises()
@@ -163,7 +290,7 @@ describe('cutting production facts and save protection',()=>{
     await router.push(path+'&line_id=another-order&month=2026-09&focus_kind=task&focus_id=other')
     await flushPromises()
     expect(window.confirm).toHaveBeenCalled()
-    expect(router.currentRoute.value.query.line_id).toBeUndefined()
+    expect(router.currentRoute.value.query).toMatchObject({line_id:order.line_id,day:view.as_of})
     expect((field('本次套数').element as HTMLInputElement).value).toBe('10')
     expect(reportingApi.read).toHaveBeenCalledTimes(1)
   })
@@ -209,14 +336,16 @@ describe('cutting production facts and save protection',()=>{
   })
   it('protects a dirty form from route changes and discard',async()=>{
     await open();await form();await button('取消编辑').trigger('click');expect(wrapper.find('form.report-form').exists()).toBe(true)
-    await router.push('/modules/production?factory=huakang-c');expect(router.currentRoute.value.fullPath).toBe(path)
+    const selectedPath=router.currentRoute.value.fullPath
+    await router.push('/modules/production?factory=huakang-c');expect(router.currentRoute.value.fullPath).toBe(selectedPath)
     const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);expect(e.defaultPrevented).toBe(true)
     vi.mocked(window.confirm).mockReturnValue(true);await button('取消编辑').trigger('click');expect(wrapper.find('form.report-form').exists()).toBe(false)
   })
   it.each([401,403,409])('retains unknown results through retry rejection %s',async status=>{
     await open();await form();vi.mocked(reportingApi.command).mockRejectedValueOnce(new Error('timeout')).mockRejectedValueOnce({response:{status}}).mockResolvedValueOnce(clone(view))
+    const selectedPath=router.currentRoute.value.fullPath
     await wrapper.get('form.report-form').trigger('submit');await flushPromises();const original=vi.mocked(reportingApi.command).mock.calls[0]
-    await button('重试原操作').trigger('click');await flushPromises();await router.push('/modules/production?factory=huakang-c');expect(router.currentRoute.value.fullPath).toBe(path)
+    await button('重试原操作').trigger('click');await flushPromises();await router.push('/modules/production?factory=huakang-c');expect(router.currentRoute.value.fullPath).toBe(selectedPath)
     await button('重试原操作').trigger('click');await flushPromises();expect(vi.mocked(reportingApi.command).mock.calls[2]).toEqual(original)
   })
   it('restores editing after initial 401 followed by definitive business rejection',async()=>{

@@ -62,9 +62,9 @@ async function download(){
 function close(){if(discard()){open.value=false;file.value=undefined;preview.value=undefined;error.value='';reason.value='';confirmed.value=false}}
 </script>
 <template>
-  <SectionPanel title="业务排期 Excel 导入" subtitle="按排期原行建立可追溯订单来源，确认后进入裁床待接单。" class="cutting-content-panel">
+  <SectionPanel title="业务排期 Excel 导入" subtitle="按排期原行建立可追溯订单来源，确认导入时首次下发并自动接单。" class="cutting-content-panel">
     <template #action><Button v-if="!open" type="button" variant="outline" @click="open=true">排期 Excel 导入</Button><Button v-else type="button" variant="outline" :disabled="busy||!!pending" @click="close">收起导入</Button></template>
-    <p class="schedule-note">导入预览 → 确认订单 → 签收订单、工程关联 BOM → 发布任务 → 物料库存提交领料 → 布料仓核对发料 → 裁床签收。</p>
+    <p class="schedule-note">导入预览 → 确认导入并自动接单 → 工程关联 BOM → 发布任务 → 物料库存提交领料 → 布料仓核对发料 → 裁床签收物料。</p>
     <div v-if="open" class="schedule-intake">
       <p class="schedule-note">仅接收本厂客户的 .xlsx，单批最多 500 行。请按模板整理七列，单位须明确；首批不生成采购、成本或月结。可先发布任务而不排日计划，待实际领料后再核定日期。</p>
       <div class="schedule-toolbar"><Button type="button" variant="outline" :disabled="busy||!!pending" @click="download">下载导入模板</Button></div>
@@ -86,10 +86,10 @@ function close(){if(discard()){open.value=false;file.value=undefined;preview.val
         <p v-if="!preview.can_confirm||!sheetsReady" class="cutting-error">请先修正未读取的工作表、文件错误或已有订单冲突，再重新预览；本批不能确认，不会覆盖原订单。</p>
         <label :for="`${id}-reason`">核对说明<textarea :id="`${id}-reason`" name="cutting_schedule_reason" v-model="reason" rows="2" maxlength="500" :disabled="busy||!!pending" placeholder="至少四字，说明排期来源及本批核对依据" /></label>
         <label class="schedule-check" :for="`${id}-confirmed`"><input :id="`${id}-confirmed`" name="cutting_schedule_confirmed" type="checkbox" v-model="confirmed" :disabled="busy||!!pending" />已核对客户、订单、数量、单位和交期；这不是生产完成或库存入库。</label>
-        <Button v-if="!pending" type="button" :disabled="!ready||busy" @click="submit">确认导入并送裁床待接单</Button>
+        <Button v-if="!pending" type="button" :disabled="!ready||busy" @click="submit">确认导入并自动接单</Button>
       </template>
       <div v-if="pending" class="schedule-toolbar"><Button type="button" :disabled="busy" @click="submit">重试原导入</Button><Button type="button" variant="outline" :disabled="busy" @click="recover">恢复核对原操作</Button></div>
-      <div v-if="result" role="status" class="cutting-notice"><p>导入完成：新增 {{result.created}} 条，已存在跳过 {{result.skipped}} 条。原文件和来源行已留存；仍须按原流程签收、关联 BOM 和发布任务。</p><details><summary>导入批次与订单</summary><p class="schedule-id">{{result.batch_id}}</p><ul><li v-for="r in result.rows" :key="`${r.sheet}-${r.row}`"><RouterLink :to="{path:'/modules/production/cutting/planning',query:{factory:CUTTING_FACTORY,line_id:r.line_id}}">{{r.reference_no}}／{{r.product_no}} · 来源 {{r.sheet}} 第 {{r.row}} 行 · V{{r.version}}</RouterLink></li></ul></details></div>
+      <div v-if="result" role="status" class="cutting-notice"><p>导入完成：新增并自动接单 {{result.created}} 条，已存在跳过 {{result.skipped}} 条。原文件和来源行已留存，请继续关联 BOM 和发布任务。</p><details><summary>导入批次与订单</summary><p class="schedule-id">{{result.batch_id}}</p><ul><li v-for="r in result.rows" :key="`${r.sheet}-${r.row}`"><RouterLink :to="{path:'/modules/production/cutting/planning',query:{factory:CUTTING_FACTORY,line_id:r.line_id}}">{{r.reference_no}}／{{r.product_no}} · 来源 {{r.sheet}} 第 {{r.row}} 行 · V{{r.version}}</RouterLink></li></ul></details></div>
     </div>
   </SectionPanel>
 </template>

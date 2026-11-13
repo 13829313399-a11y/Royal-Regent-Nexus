@@ -151,60 +151,48 @@
       <!-- 暂停展示回填区域；保留控件供现有脚本初始化，历史数据不变。 -->
     </div>
   </div>
-<div class="page" id="page-dashboard">
-    <div class="page-inner">
-
-      <!-- Summary Cards Row -->
-      <div class="cards-row" id="summaryCards"></div>
-
-      <!-- Charts Row 1 -->
-      <div class="charts-row">
-        <div class="chart-card wide">
-          <div class="chart-header"><span class="chart-title">每日验货数量 &amp; 合格率趋势</span><span class="chart-badge">折线/柱状</span></div>
-          <div class="chart-body" id="chartDailyTrend"></div>
-        </div>
-        <div class="chart-card">
-          <div class="chart-header"><span class="chart-title">判定结果分布</span><span class="chart-badge">饼图</span></div>
-          <div class="chart-body" id="chartResultPie"></div>
-        </div>
+<div class="page" id="page-dashboard" onscroll="closeDashboardFailurePopover()">
+    <div class="page-inner" id="qcDashboard" aria-busy="true">
+      <div class="qc-dashboard-filter">
+        <label for="dashMonthSel">数据月份</label>
+        <select id="dashMonthSel" class="filter-select" onchange="renderDashboard(this.value)" disabled>
+          <option value="">全部月份</option>
+        </select>
+        <span id="dashMonthHint" role="status"></span>
+        <button type="button" class="btn-secondary" id="dashRetry" onclick="renderDashboard()" hidden>重试</button>
       </div>
-
-      <!-- Charts Row 2 -->
-      <div class="charts-row">
-        <div class="chart-card">
-          <div class="chart-header"><span class="chart-title">供应商批次不良率 TOP10</span><span class="chart-badge">横向柱图</span></div>
-          <div class="chart-body" id="chartSupplierRank"></div>
+      <div id="qcDashboardData" hidden>
+        <div class="cards-row" id="summaryCards"></div>
+        <div class="qc-dashboard-row qc-dashboard-charts">
+          <section class="chart-card">
+            <div class="chart-header"><h2 class="chart-title">月度验货趋势</h2></div>
+            <div class="chart-body" id="chartInspectionTrend"></div>
+          </section>
+          <section class="chart-card">
+            <div class="chart-header"><h2 class="chart-title">判定结果分布</h2></div>
+            <div class="chart-body" id="chartResultPie"></div>
+          </section>
         </div>
-        <div class="chart-card">
-          <div class="chart-header"><span class="chart-title">不良类型 TOP 排名</span><span class="chart-badge">横向柱图</span></div>
-          <div class="chart-body" id="chartDefectTop"></div>
-        </div>
-        <div class="chart-card">
-          <div class="chart-header"><span class="chart-title">客户占比分析</span><span class="chart-badge">环形图</span></div>
-          <div class="chart-body" id="chartClientPie"></div>
-        </div>
+        <section class="section-card" aria-labelledby="qc-dashboard-fail-title">
+          <div class="section-header"><h2 class="section-title" id="qc-dashboard-fail-title">近期 FAIL 批次</h2></div>
+          <div id="qcDashboardFailures"></div>
+        </section>
       </div>
-
-      <!-- Risk Matrix + Issue Analysis -->
-      <div class="charts-row">
-        <div class="chart-card wide">
-          <div class="chart-header"><span class="chart-title">重点问题分析</span><span class="chart-badge">风险矩阵</span></div>
-          <div class="chart-body" id="chartRiskMatrix"></div>
+      <aside id="qcDashboardFailPopover" popover="auto" aria-labelledby="qcDashboardFailPopoverTitle"
+             onbeforetoggle="dashboardFailurePopoverToggled(event)"
+             onpointerenter="cancelDashboardFailureHide()" onpointerleave="scheduleDashboardFailureHide()">
+        <header>
+          <h2 id="qcDashboardFailPopoverTitle">FAIL 验货明细</h2>
+          <button type="button" class="qc-dashboard-fail-close" onclick="closeDashboardFailurePopover()" aria-label="关闭 FAIL 明细">×</button>
+        </header>
+        <div id="qcDashboardFailItems" role="region" aria-labelledby="qcDashboardFailPopoverTitle" tabindex="-1"></div>
+        <div class="qc-dashboard-fail-pages" id="qcDashboardFailPages" hidden>
+          <button type="button" id="qcDashboardFailPrev" onclick="changeDashboardFailurePage(-1)">上一页</button>
+          <span id="qcDashboardFailPage"></span>
+          <button type="button" id="qcDashboardFailNext" onclick="changeDashboardFailurePage(1)">下一页</button>
         </div>
-        <div class="chart-card">
-          <div class="chart-header"><span class="chart-title">本周批次不良率趋势</span><span class="chart-badge">折线图</span></div>
-          <div class="chart-body" id="chartWeeklyTrend"></div>
-        </div>
-      </div>
-
-      <!-- Risk Table -->
-      <div class="section-card">
-        <div class="section-header">
-          <span class="section-title">⚠ 近期高风险批次</span>
-        </div>
-        <div id="riskTableWrap"></div>
-      </div>
-
+        <p id="qcDashboardFailStatus" role="status" hidden></p>
+      </aside>
     </div>
   </div>
 

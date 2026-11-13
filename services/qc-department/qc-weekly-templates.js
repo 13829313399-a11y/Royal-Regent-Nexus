@@ -80,7 +80,7 @@
   function table(kind, headers) {
     const rows=data.tables[kind], totals=Array(headers.length).fill('');
     const sizes=widths[kind];
-    let html='<div class="qwt-scroll" tabindex="0" aria-label="'+esc(kind==='footer'?'客户周汇总':titles[kind])+'"><table style="min-width:'+sizes.reduce((a,b)=>a+b,0)+'px"><colgroup>'+sizes.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr class="qwt-letters">'+headers.map((_,i)=>'<th>'+String.fromCharCode(65+i)+'</th>').join('')+'</tr><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>';
+    let html='<div class="qwt-scroll" tabindex="0" aria-label="'+esc(kind==='footer'?'客户周汇总':titles[kind])+'"><table style="min-width:'+sizes.reduce((a,b)=>a+b,0)+'px"><colgroup>'+sizes.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>';
     for(const row of rows) {
       const key=row.customerKey ?? row.id, available=columns(kind,row);
       html+='<tr>'+values(kind,row).map((v,i)=>{

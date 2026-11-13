@@ -7,11 +7,15 @@ from uuid import uuid4
 import runpy
 import pytest
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from test_cutting_ops import client, user, command, BASE
-from test_cutting_orders import flow, amend, receive
+from test_cutting_orders import flow, amend, receive, read as order_view
 from test_cutting_planning import planned, resource, task, save, publish
+from app.models.customer_order_ledger import OrderLedgerLine
+from app.schemas.customer_order_ledger import AmendIn
+from app.services import customer_order_ledger as ledger
 
 URL=BASE+'/orders/line-1/reports'
 
@@ -54,6 +58,56 @@ def ok(response):
 
 
 def doc(response): return response['documents'][-1]['document_id']
+
+
+def test_note_receipt_keeps_production_evidence_but_quantity_still_requires_confirmation(production):
+    p = production
+    first = order_view(p)
+    initial = first['current']['data']
+    with Session(p.engine) as db:
+        line = db.get(OrderLedgerLine, 'line-1')
+        ledger.amend(db, line, AmendIn(expected_revision=line.revision, quantity=str(line.quantity),
+                     requested_ship_date=line.data['requested_ship_date'], note='备注补充', reason='仅补充订单备注'), 'sales')
+        db.commit()
+
+    synced = order_view(p)
+    data = synced['current']['data']
+    assert not synced['needs_receipt'] and not synced['planning_summary']['published_stale']
+    assert synced['source_version'] == first['source_version'] + 1
+    comparison = dict(before_version=first['source_version'], before=first['snapshot'].get('note') or '', after='备注补充')
+    assert data['receipt'] == dict(mode='note_only', source_version=synced['source_version'],
+                                   received_at=synced['received_at'], source_dispatch_id=synced['dispatch_id'],
+                                   note_comparison=comparison)
+    with Session(p.engine) as db:
+        from app.models.cutting_ops import CuttingOrderRevision
+        stored = db.get(CuttingOrderRevision, ('line-1', synced['current']['version']))
+        assert 'note_comparison' not in stored.data['receipt']
+    assert synced['snapshot']['note'] == '备注补充' and synced['dispatch_id'] != first['dispatch_id']
+    for key in ('order', 'dispatch_id', 'bom', 'requisition', 'batches', 'planning', 'purchase_reconciliation_required'):
+        assert data[key] == initial[key]
+    posted = ok(send(p))
+    assert posted['documents'][0]['posted']['data']['context']['dispatch_id'] == initial['dispatch_id']
+
+    amend(p)
+    pending = order_view(p)
+    assert pending['needs_receipt'] and pending['planning_summary']['published_stale']
+    assert pending['snapshot']['quantity'] == '120' and pending['current']['data']['order']['quantity'] == '100'
+    assert send(p, task_id='external').status_code == 409
+    with Session(p.engine) as db:
+        line = db.get(OrderLedgerLine, 'line-1')
+        ledger.amend(db, line, AmendIn(expected_revision=line.revision, quantity=str(line.quantity),
+                     requested_ship_date=line.data['requested_ship_date'], note='数量变更后的补充备注', reason='补充待确认订单备注'), 'sales')
+        db.commit()
+    assert order_view(p)['needs_receipt']
+    pending_rows = ok(p.get(BASE+'/orders',params={'factory_id':'huakang-c','changes_only':True}))['data']
+    assert pending_rows[0]['current']['data']['receipt']['note_comparison'] == comparison
+    history = ok(p.get(BASE+'/orders/line-1/versions',params={'factory_id':'huakang-c'}))['data']
+    assert history[0]['data']['receipt']['note_comparison'] == comparison
+    confirmed = receive(p)
+    assert confirmed['current']['data']['receipt']['mode'] == 'manual'
+    assert confirmed['current']['data']['bom'] is None
+    assert confirmed['current']['data']['purchase_reconciliation_required']
+    assert confirmed['pending_purchase']['requisition'] == initial['requisition']
 
 
 def test_draft_post_zero_correction_review_and_months(production):

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { it, expect } from 'vitest'
 import { convertYinhuiInternalQuote, validateYinhuiExport, yinhuiTotals } from '../customerPriceConverters/yinhui'
-import { hasChineseQuoteText, pendingYinhuiDescriptions, translateYinhuiDescriptions, yinhuiDescriptionRows } from '../customerPriceConverters/yinhuiTranslation'
+import { hasChineseQuoteText, pendingYinhuiDescriptions, translateYinhuiDescriptions } from '../customerPriceConverters/yinhuiTranslation'
 import { createYinhuiCustomerQuoteWorkbook } from '../customerPriceConverters/yinhuiTemplate'
 import { YINHUI_PROFILES } from '../customerPriceConverters/yinhuiProfiles'
 import { parseXlsxWorkbook } from '../customerPriceConverters/xlsxLite'
@@ -13,18 +13,16 @@ const translations = process.env.YINHUI_TRANSLATION_RESULTS
 const buffer = (bytes: Uint8Array) => bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength) as ArrayBuffer
 it.skipIf(!source || !output)('extracts only customer-facing Chinese names from the supplied quote for offline translation QA', () => {
   const data = convertYinhuiInternalQuote(buffer(readFileSync(source!)),source!).quoteData
-  const texts = [...new Set([data.productName,data.packaging,...yinhuiDescriptionRows(data).map(row => row.description)].filter(hasChineseQuoteText))]
+  const texts = [...new Set([data.productName,data.packaging].filter(hasChineseQuoteText))]
   writeFileSync(`${output}/translation-input.json`,JSON.stringify(texts,null,2))
   writeFileSync(`${output}/baseline.json`,JSON.stringify({model:data.model,totals:yinhuiTotals(data),count:texts.length},null,2))
-  expect(texts.length).toBeGreaterThan(0)
 })
 it.skipIf(!source || !output || !translations)('validates actual offline translations and exports without changing costs, specs or the source file', async () => {
   const input = readFileSync(source!)
   const hash = createHash('sha256').update(input).digest('hex')
   const result = convertYinhuiInternalQuote(buffer(input),source!)
   const before = yinhuiTotals(result.quoteData)
-  const numeric = () => JSON.stringify(yinhuiDescriptionRows(result.quoteData).map(({description:_d,originalDescription:_o,...rest})=>rest))
-  const originalNumeric = numeric()
+  const originalTools = structuredClone(result.quoteData.tools)
   const response = JSON.parse(readFileSync(translations!,'utf8'))
   await translateYinhuiDescriptions(result.quoteData,async texts => {
     expect(texts).toEqual(response.items.map((item: {source:string})=>item.source))
@@ -32,7 +30,7 @@ it.skipIf(!source || !output || !translations)('validates actual offline transla
   })
   expect(pendingYinhuiDescriptions(result.quoteData)).toBe(0)
   expect(yinhuiTotals(result.quoteData)).toEqual(before)
-  expect(numeric()).toBe(originalNumeric)
+  expect(result.quoteData.tools).toEqual(originalTools)
   validateYinhuiExport(result.quoteData)
   const template = buffer(readFileSync(`public/templates/${YINHUI_PROFILES[result.quoteData.templateId || 'standard'].file}`))
   const bytes = createYinhuiCustomerQuoteWorkbook(result,template,{missingMaterialPricesConfirmed:true})

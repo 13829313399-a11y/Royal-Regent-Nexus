@@ -13,6 +13,8 @@ from test_cutting_materials import bridge,actor,warehouse_view,warehouse_post
 from app.models.customer_order_ledger import OrderLedgerLine as Line,OrderLedgerSource as Source,OrderLedgerVersion,OrderLedgerDispatch
 from app.models.cutting_ops import CuttingOrder
 from app.services.cutting_schedule_import import parse,SCHEMA
+from app.schemas.customer_order_ledger import AmendIn
+from app.services import customer_order_ledger as ledger
 
 URL=BASE+'/schedule-import'
 HEAD=['客户','订单号','货号','货名','数量','交期','单位']
@@ -43,11 +45,10 @@ def test_archive_dispatch_receipt_bom_and_duplicates(flow):
     assert count(p,Source)==1 and count(p,OrderLedgerVersion)==1
     line=result['rows'][0]['line_id']
     order=p.get(BASE+'/orders/'+line,params={'factory_id':'huakang-c'}).json()
-    assert order['needs_receipt'] and order['snapshot']['intake_row']==2 and order['snapshot']['order_unit']=='PCS'
-    assert not order['current']
-    receipt=p.post(BASE+'/orders/'+line+'/receive',json=command(dispatch_id=order['dispatch_id']))
-    assert receipt.status_code==200,receipt.text
-    assert receipt.json()['current']['data']['requisition'] is None
+    assert not order['needs_receipt'] and order['snapshot']['intake_row']==2 and order['snapshot']['order_unit']=='PCS'
+    assert order['current']['version']==1
+    assert order['current']['data']['receipt']==dict(mode='automatic',source_version=1,received_at=order['received_at'])
+    assert order['current']['data']['requisition'] is None
     material=create(p);bom=state(p,create(p,bom_body(material)),'published').json()
     bound=p.post(BASE+'/orders/'+line+'/bom',json=command(expected_version=1,bom_id=bom['id'],bom_version=bom['version'],target_sets=50,quantity_basis='工程核对100件组成50套'))
     assert bound.status_code==200,bound.text
@@ -57,6 +58,14 @@ def test_archive_dispatch_receipt_bom_and_duplicates(flow):
         assert db.get(Line,line).data['source_import']['sheet']=='业务排期'
         assert db.get(Line,line).data['source_kind']==SCHEMA
         assert db.scalar(select(func.count()).select_from(OrderLedgerDispatch).where(OrderLedgerDispatch.line_id==line))==1
+        current=db.get(Line,line)
+        ledger.amend(db,current,AmendIn(expected_revision=current.revision,quantity=str(current.quantity),
+            requested_ship_date=current.data['requested_ship_date'],note='只补备注',reason='合成备注来源核对'),'sales')
+        db.commit()
+    updated=p.get(BASE+'/orders/'+line,params={'factory_id':'huakang-c'}).json()
+    assert not updated['needs_receipt'] and updated['snapshot']['intake_batch']==data['operation_id']
+    assert updated['snapshot']['order_unit']=='PCS' and updated['current']['data']['receipt']['mode']=='note_only'
+    assert updated['current']['data']['bom']==bound.json()['current']['data']['bom']
 
 @pytest.mark.parametrize('field,value',[('quantity',0),('quantity','NaN'),('quantity','=50+50'),('requested_ship_date','bad-date'),('unit',''),('customer_name','未知客户')])
 def test_invalid_input_never_writes(flow,field,value):

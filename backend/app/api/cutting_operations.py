@@ -481,10 +481,13 @@ def schedule_import_recover(body:schedule_import.Recover,db:Db,user:User):
 
 @router.get('/orders')
 def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1), q: str = Query('', max_length=80),
-               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
+               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None,
+               changes_only: bool = False):
     c.authorize(user, factory_id)
     orders_ready(db)
-    return orders.list_orders(db, page, q, status, plan_status)
+    result = orders.list_orders(db, page, q, status, plan_status, changes_only=changes_only)
+    orders.include_note_comparisons(db, ((row['line_id'], row['current']) for row in result['data']))
+    return result
 
 
 @router.get('/orders/{line_id}/versions')
@@ -495,7 +498,9 @@ def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page:
     c.require(order is not None and order.factory_id == c.FACTORY, '裁床订单不存在', 404)
     numbers = db.scalars(select(CuttingOrderRevision.version).where(CuttingOrderRevision.line_id == line_id)
         .order_by(CuttingOrderRevision.version.desc()).offset((page-1)*50).limit(50))
-    return dict(data=[orders.revision(db, order, v) for v in numbers], total=order.version, page=page, page_size=50)
+    revisions = [orders.revision(db, order, v) for v in numbers]
+    orders.include_note_comparisons(db, ((line_id, row) for row in revisions))
+    return dict(data=revisions, total=order.version, page=page, page_size=50)
 
 
 @router.get('/orders/{line_id}')
@@ -504,7 +509,9 @@ def read_order(line_id: str, db: Db, user: User, factory_id: str = ''):
     orders_ready(db)
     dispatch = orders.latest(db, line_id)
     c.require(dispatch is not None, '华康C裁床来源订单不存在', 404)
-    return orders.view(db, dispatch)
+    result = orders.view(db, dispatch)
+    orders.include_note_comparisons(db, [(line_id, result['current'])])
+    return result
 
 
 def order_command(db, user, line_id, body, action, handler):
@@ -515,7 +522,10 @@ def order_command(db, user, line_id, body, action, handler):
         # A historical successful receipt must not hide current rule/resource invalidation.
         # Keep the immutable receipt intact, but return the current order view after replay.
         db.expire_all()
-        return orders.view(db, orders.latest(db, line_id))
+        result = orders.view(db, orders.latest(db, line_id))
+    if result.get('current'):
+        result = {**result, 'current': dict(result['current'])}
+        orders.include_note_comparisons(db, [(line_id, result['current'])])
     return result
 
 
@@ -579,7 +589,13 @@ def recover_order_operation(line_id: str, body: s.RecoverOperation, db: Db, user
         return orders.recover_operation(db, user, identity, permission + ':' + line_id, invalid_payload=body.command)
     # Read access plus ownership is enough to resolve/stop an own command after write revocation.
     # No source-state check here: stale/cancelled orders must still be recoverable.
-    return orders.recover_operation(db, user, original, permission + ':' + line_id)
+    recovered = orders.recover_operation(db, user, original, permission + ':' + line_id)
+    if recovered.get('result', {}).get('current'):
+        result = recovered['result']
+        result = {**result, 'current': dict(result['current'])}
+        orders.include_note_comparisons(db, [(line_id, result['current'])])
+        return {**recovered, 'result': result}
+    return recovered
 
 
 @router.get('/orders/{line_id}/reports')

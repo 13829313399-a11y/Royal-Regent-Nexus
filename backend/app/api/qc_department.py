@@ -212,10 +212,15 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return await monthly_templates_request(asset_path, request, db, user, factory_id)
     if asset_path in {"api/weekly-templates", "api/weekly-templates/save", "api/weekly-templates/excel"} or asset_path.startswith('api/weekly-templates/excel/'):
         return await weekly_templates_request(asset_path, request, db, user, factory_id)
-    if asset_path in {"api/approved-statistics", "api/approved-statistics/report"} and request.method == "GET":
+    stats_handlers = {
+        "api/approved-statistics": qc_approved_statistics.query,
+        "api/approved-statistics/report": qc_approved_statistics.report,
+        "api/approved-statistics/dashboard": qc_approved_statistics.dashboard,
+    }
+    if asset_path in stats_handlers and request.method == "GET":
         if any(len(request.query_params.getlist(key)) != 1 for key in request.query_params):
             raise HTTPException(422, "统计筛选参数不能重复")
-        handler = qc_approved_statistics.report if asset_path.endswith('/report') else qc_approved_statistics.query
+        handler = stats_handlers[asset_path]
         return JSONResponse(await run_in_threadpool(handler, factory_id,
             dict(request.query_params)), headers=NO_CACHE)
     if asset_path.startswith("api/workflow/"):
@@ -390,7 +395,7 @@ async def monthly_templates_request(path, request, db, user, factory_id):
         data['canEdit'] = can(user, 'qc_inspection:result_write', factory_id, 'qc')
         data['canExport'] = can(user, 'qc_inspection:report_export', factory_id, 'qc')
         return JSONResponse(data, headers=NO_CACHE)
-    if path not in {'api/monthly-templates/save', 'api/monthly-templates/excel', 'api/monthly-templates/excel/options'} or request.method != 'POST':
+    if path not in {'api/monthly-templates/save', 'api/monthly-templates/excel'} or request.method != 'POST':
         raise HTTPException(405, '不支持此操作')
     if not exporting:
         _ensure_permission(db, user, 'qc_inspection:result_write', factory_id)
@@ -407,9 +412,7 @@ async def monthly_templates_request(path, request, db, user, factory_id):
         body = json.loads(raw)
     except (ValueError, UnicodeError):
         raise HTTPException(400, '无效 JSON') from None
-    if path=='api/monthly-templates/excel/options':
-        result = await run_in_threadpool(qc_monthly_excel.photo_options, factory_id, body)
-    elif exporting:
+    if exporting:
         result = await run_in_threadpool(qc_monthly_excel.prepare, factory_id, owner, body)
     else:
         result = await run_in_threadpool(qc_monthly_templates.save, factory_id,
@@ -421,6 +424,7 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     service = qc_inspection_sheet
     parts = path.split('/')
     actor = {'id': user.id, 'name': user.display_name or user.username}
+    notification_actions = {'review/notifications': 'revoke', 'entries/notifications': 'return-to-inspection'}
     async def current_entries(copy_photos=True, view="workbench"):
         response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id])],b'')
         if response.status_code!=200:raise HTTPException(503,'验货基础数据读取失败，请重试')
@@ -440,8 +444,9 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     if request.method in {'GET','HEAD'}:
         if path == 'entries' and request.method == 'GET':
             return JSONResponse(await current_entries(),headers=NO_CACHE)
-        if path=='review/notifications' and request.method=='GET':
-            return JSONResponse(await run_in_threadpool(service.reversal_notifications,factory_id,actor),headers=NO_CACHE)
+        if path in notification_actions and request.method=='GET':
+            result = await run_in_threadpool(service.review_notifications, factory_id, actor, action=notification_actions[path])
+            return JSONResponse(result, headers=NO_CACHE)
         if path=='review/entries' and request.method=='GET':
             return JSONResponse(await current_entries(view='review'),headers=NO_CACHE)
         if len(parts)==3 and parts[0]=='entries' and parts[2]=='audit':
@@ -468,8 +473,9 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         body=json.loads(raw)
         if not isinstance(body,dict):raise ValueError()
     except (ValueError,UnicodeError):raise HTTPException(400,'无效 JSON') from None
-    if path=='review/notifications/shown':
-        result=await run_in_threadpool(service.reversal_notifications,factory_id,actor,body)
+    notification_action = notification_actions.get(path.removesuffix('/shown')) if path.endswith('/shown') else None
+    if notification_action:
+        result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:
@@ -480,7 +486,10 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         result=await run_in_threadpool(service.return_to_inspection,factory_id,parts[2],body,actor,source_rows)
     elif len(parts)==3 and parts[0]=='entries' and parts[2] in {'save','photos','remove-photo','submit'}:
         method={'save':service.save,'photos':service.add_photo,'remove-photo':service.remove_photo,'submit':service.submit}[parts[2]]
-        result=method(factory_id,parts[1],body,actor)
+        if parts[2]=='photos':
+            result=await run_in_threadpool(method,factory_id,parts[1],body,actor)
+        else:
+            result=method(factory_id,parts[1],body,actor)
     else:raise HTTPException(404,'接口不存在')
     return JSONResponse(result,headers=NO_CACHE)
 
@@ -598,8 +607,6 @@ async def inspection_summary_request(path, request, db, user, factory_id):
     if request.method == 'GET':
         if path == 'records':
             result = await run_in_threadpool(service.listing, factory_id, dict(request.query_params))
-        elif path == 'history':
-            result = await run_in_threadpool(service.history_batches, factory_id)
         elif len(parts) == 2 and parts[0] == 'records':
             result = await run_in_threadpool(service.detail, factory_id, parts[1])
         elif len(parts) == 2 and parts[0] == 'history':
@@ -627,8 +634,8 @@ async def inspection_summary_request(path, request, db, user, factory_id):
         raise HTTPException(400, '无效 JSON') from None
     if path == 'history/preview':
         result = await run_in_threadpool(service.preview, factory_id, actor, body)
-    elif len(parts) == 3 and parts[0] == 'history' and parts[2] in ('commit', 'rollback') and not body:
-        result = await run_in_threadpool(service.commit_history, factory_id, actor, parts[1]) if parts[2] == 'commit' else await run_in_threadpool(service.rollback_history, factory_id, parts[1])
+    elif len(parts) == 3 and parts[0] == 'history' and parts[2] == 'commit' and not body:
+        result = await run_in_threadpool(service.commit_history, factory_id, actor, parts[1])
     else:
         raise HTTPException(404, '接口不存在')
     return JSONResponse(result, headers=NO_CACHE)

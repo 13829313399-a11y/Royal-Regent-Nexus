@@ -154,3 +154,65 @@
 @media (max-width:639px) {
   .cutting-overview .order-toolbar > label { flex-basis:100%; max-width:none; }
 }
+
+.cutting-review-page { gap: 16px; }
+.cutting-review-page .cutting-overview { gap: 14px; }
+.cutting-review-page .cutting-content-panel > div:last-child { gap: 12px; }
+.cutting-review-page .cutting-metrics {
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--border);
+}
+.cutting-review-page .cutting-metrics article { border: 0; border-radius: 0; padding: 12px 16px; }
+.cutting-review-page .cutting-metrics strong, .cutting-review-count {
+  color: var(--primary);
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+.cutting-review-count small { font-size: 13px; color: var(--muted-foreground); }
+.cutting-review-filters {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+.cutting-review-filters .cutting-master-toolbar { margin: 0; }
+.cutting-review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cutting-review-card {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  justify-items: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  overflow-wrap: anywhere;
+}
+.cutting-review-card > * { min-width: 0; max-width: 100%; }
+.cutting-review-card-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.cutting-exception-panel .cutting-review-card { border-inline-start: 3px solid #b67636; }
+.cutting-review-facts > div { min-width: 0; border-inline-start: 2px solid var(--border); padding: 4px 10px; }
+.cutting-review-facts dt { color: var(--muted-foreground); font-size: 13px; }
+.cutting-review-facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cutting-review-page .cutting-table-scroll :is(th, td) { padding: 9px 12px; }
+.cutting-review-page .order-ledger-grid > .cutting-table-scroll { border: 0; border-radius: 0; }
+@media (max-width:639px) {
+  .cutting-review-filters, .cutting-review-page .cutting-metrics article { padding: 10px 12px; }
+  .cutting-review-page .cutting-metrics strong, .cutting-review-count { font-size: 22px; }
+}

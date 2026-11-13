@@ -117,6 +117,28 @@ describe('Silverlit export review', () => {
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[role="alert"]').text()).toContain('BOM 物料名称')
   })
+  it('keeps Chinese Tool Plan names without translation warnings and still validates missing or invalid names', async () => {
+    const result = fixture()
+    result.quoteData.tools = [{moldNo:'M1',partNo:'P1',description:'上蓋 ABS 2PCS',usage:1,cavity:1,weightG:100,material:'ABS',laborHkd:1,toolingHkd:0}]
+    const wrapper = mount(YinhuiQuoteReview, { props: { result, confirmed: false } })
+    await flushPromises()
+    expect(translateQuoteDescriptions).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="yinhui-translate"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="yinhui-review-notices"]').exists()).toBe(false)
+    const name = wrapper.get('input[aria-label="Tool Plan 第 1 行零件名称"]')
+    expect(name.classes()).not.toContain('border-amber-500')
+    expect((name.element as HTMLInputElement).value).toBe('上蓋 ABS 2PCS')
+    expect(wrapper.text()).toContain('输出格式沿用现有映射')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+    await wrapper.setProps({ confirmed: true })
+    for (const invalid of ['', '#VALUE!']) {
+      await name.setValue(invalid)
+      expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
+    }
+    await name.setValue('上蓋 ABS 2PCS（已核对）')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([false])
+  })
   it('locks the review controls when export permission is absent or export is in progress', () => {
     const wrapper=mount(YinhuiQuoteReview,{props:{result:fixture(),confirmed:false,disabled:true}})
     expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()

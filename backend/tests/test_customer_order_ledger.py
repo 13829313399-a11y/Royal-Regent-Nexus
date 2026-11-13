@@ -432,7 +432,11 @@ def test_restore_rechecks_recipients_after_lock_without_partial_commit(client, d
     assert db.scalar(select(func.count()).select_from(Version)) == 2
 
 
-def test_cancel_rechecks_dispatch_authority_after_lock(client, db, monkeypatch):
+@pytest.mark.parametrize('action, fields', [
+    ('cancel', {'reason': '误取消订单'}),
+    ('amend', {'quantity': '9000', 'requested_ship_date': '2026-10-02', 'note': '追加备注', 'reason': '测试变更通知'}),
+])
+def test_change_rechecks_dispatch_authority_after_lock(client, db, monkeypatch, action, fields):
     line = ingest(db)
     client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write"])
     original = service.lock_line
@@ -441,11 +445,12 @@ def test_cancel_rechecks_dispatch_authority_after_lock(client, db, monkeypatch):
         service.publish(db, line, ["pmc"], "并发发送人员")
         db.flush()
     monkeypatch.setattr(service, "lock_line", locked_with_dispatch)
-    response = client.post(f"/api/customer-order-ledger/lines/{line.id}/cancel?factory_id=huaxing",
-        json={"expected_revision": line.revision, "reason": "误取消订单"})
+    response = client.post(f"/api/customer-order-ledger/lines/{line.id}/{action}?factory_id=huaxing",
+        json={"expected_revision": line.revision, **fields})
     assert response.status_code == 403
     db.refresh(line)
     assert (line.status, line.revision) == ("active", 1)
+    assert not db.scalar(select(Dispatch.id).where(Dispatch.line_id == line.id))
 
 
 def test_api_permission_and_factory_isolation(client, db):
