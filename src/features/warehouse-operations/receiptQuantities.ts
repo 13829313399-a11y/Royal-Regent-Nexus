@@ -21,6 +21,18 @@ export function receiptNetQuantity(counts: ReceiptCounts): bigint | undefined {
   return net >= 0n ? net : undefined
 }
 
+export function duplicateReceiptSplitMessage(rows: readonly { dye_lot: string; roll_no: string; location_id: string }[]) {
+  const firstRowByRoll = new Map<string, number>()
+  for (const [index, row] of rows.entries()) {
+    const keyParts = [row.dye_lot.trim(), row.roll_no.trim(), row.location_id]
+    if (keyParts.some(value => !value)) continue
+    const key = JSON.stringify(keyParts)
+    const first = firstRowByRoll.get(key)
+    if (first !== undefined) return `第 ${first} 项和第 ${index + 1} 项的缸号、卷号和仓位相同，请合并核对。`
+    firstRowByRoll.set(key, index + 1)
+  }
+}
+
 // Six decimal places in the backend contract; avoid floating point in receipt previews.
 const scale = 1_000_000n
 export function receiptQuantity(value: string): bigint | undefined {

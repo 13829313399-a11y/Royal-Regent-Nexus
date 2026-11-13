@@ -17,7 +17,7 @@ export interface PurchaseMaterialGroup {
 }
 export interface PurchaseGroupResult {
   total: number; line_total: number; groups: PurchaseMaterialGroup[]; summary: TrackingSummary
-  options?: { suppliers: string[]; units: string[]; imports?: { id: string; name: string }[] }; can_receive?: boolean
+  options?: { suppliers: string[]; units: string[]; imports?: { id: string; name: string }[] }; can_receive?: boolean; can_receive_pending_purchase?: boolean
 }
 export type ImportAction = 'ALL' | 'NEW' | 'UPDATE' | 'UNCHANGED' | 'BLOCKED'
 export interface PurchasePriceReference { unit_price: string | null; price_unit: string; currency: 'CNY' }
@@ -97,7 +97,7 @@ export const fabricProcurementApi = {
   },
   async lines(status: Exclude<PurchaseScope, 'TRACKING'>, search = '', offset = 0, view?: PurchaseView, filters: PurchaseFilters = {}) {
     const cleanFilters = Object.fromEntries(Object.entries(filters).filter(([, value]) => value))
-    return (await http.get<{ total: number; items: PurchaseLine[]; offset: number; limit: number; summary: TrackingSummary; options?: { suppliers: string[]; units: string[]; imports?: { id: string; name: string }[] }; can_receive?: boolean }>('/fabric-warehouse/procurement/lines', { params: { factory_id: 'huakang-c', status, search, offset, view, ...cleanFilters } })).data
+    return (await http.get<{ total: number; items: PurchaseLine[]; offset: number; limit: number; summary: TrackingSummary; options?: { suppliers: string[]; units: string[]; imports?: { id: string; name: string }[] }; can_receive?: boolean; can_receive_pending_purchase?: boolean }>('/fabric-warehouse/procurement/lines', { params: { factory_id: 'huakang-c', status, search, offset, view, ...cleanFilters } })).data
   },
   async detail(id: string) {
     return (await http.get<PurchaseDetail>(`/fabric-warehouse/procurement/lines/${encodeURIComponent(id)}`, { params: { factory_id: 'huakang-c' } })).data

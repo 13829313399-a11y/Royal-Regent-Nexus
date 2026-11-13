@@ -16,6 +16,9 @@ function group(): UnifiedDelivery {
 }
 function setup(source = group(), props = {}) { return mount(Component, { props: { group: source, canReceive: true, locations: [{ id: 'B1', factory_id: 'huaxing', label: 'A01', warehouse: '仓库', bin_code: 'A01', status: 'ACTIVE' }], ...props }, global: { stubs: { CartonReceiptAllocations: allocations, CartonSplitReceiptReview: true, CartonSourceLinks: true } } }) }
 async function open(wrapper: ReturnType<typeof setup>) { await wrapper.findAll('button').find(item => item.text() === '核实实际收到')!.trigger('click'); await flushPromises() }
+async function fillRemaining(wrapper: ReturnType<typeof setup>, lineId = 'L1') {
+  await wrapper.get('[aria-label="' + lineId + '按余量全收"]').trigger('click')
+}
 beforeEach(() => { vi.clearAllMocks(); api.receive.mockResolvedValue(group()); api.reopenShortfall.mockResolvedValue(group()); portal.receiptOptions.mockResolvedValue([]) })
 afterEach(() => { vi.unstubAllGlobals() })
 describe('unified delivery receipt', () => {
@@ -50,14 +53,54 @@ describe('unified delivery receipt', () => {
       await flushPromises()
       expect(wrapper.get('form').text()).toContain('原送货单 DN-1')
       expect(wrapper.get('fieldset').text()).toContain('客户 所选客户 · 合同 CT-1 · 订单 SP-1 · 货号 SKU-1')
-      expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('10')
+      expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('')
       expect(wrapper.find('[aria-label="OTHER实收"]').exists()).toBe(false)
       expect(wrapper.find('[aria-label="统一未收余货处理"]').exists()).toBe(false)
+      await fillRemaining(wrapper)
       await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
       await wrapper.get('form').trigger('submit'); await flushPromises()
       expect(api.receive.mock.calls[0]![1].special).toMatchObject([{ remaining_action: 'WAIT',
         lines: [{ shipment_line_id: 'L1', received_quantity: '10' }] }])
       expect(api.receive.mock.calls[0]![1].special[0].lines).toHaveLength(1)
+    } finally { wrapper.unmount() }
+  })
+  it('starts blank, previews this batch by paper, and prompts for a warehouse bin before posting', async () => {
+    const source = group()
+    Object.assign(source.lines[0]!, { quantity: '80', received_quantity: '20', remaining_quantity: '60' })
+    const wrapper = setup(source)
+    try {
+      await open(wrapper)
+      const form = wrapper.get('form[aria-label="统一送货验收"]')
+      const actual = form.get<HTMLInputElement>('[aria-label="L1实收"]')
+      const confirm = form.get<HTMLButtonElement>('button[type="submit"]')
+      const summary = () => form.get('[aria-label="本批验收汇总"]').findAll('dd').map(item => item.text())
+      expect(actual.element.value).toBe('')
+      expect(form.text()).toContain('原单待收 60 个')
+      expect(form.get('[aria-label="L1填写验收差异"]').element.closest('details')?.open).toBe(false)
+      expect(confirm.element.disabled).toBe(true)
+      await form.trigger('submit')
+      expect(api.receive).not.toHaveBeenCalled()
+
+      await actual.setValue('20')
+      await form.get('[aria-label="L1填写验收差异"]').trigger('click')
+      await form.get('[aria-label="L1破损"]').setValue('2')
+      expect(summary()).toEqual(['18 个', '40 个'])
+      expect(form.text()).toContain('请选择入库仓位')
+      expect(confirm.element.disabled).toBe(true)
+      await fillRemaining(wrapper)
+      expect(actual.element.value).toBe('60')
+      expect(summary()).toEqual(['58 个', '0 个'])
+      await actual.setValue('61')
+      expect(confirm.element.disabled).toBe(true)
+      expect(form.text()).toContain('实到不能超过原单待收')
+      await actual.setValue('20')
+      await form.get('[aria-label="选择测试仓位"]').trigger('click')
+      expect(confirm.element.disabled).toBe(false)
+      await form.trigger('submit')
+      await flushPromises()
+      expect(api.receive.mock.calls[0]![1].special).toMatchObject([{ remaining_action: 'WAIT', lines: [
+        { shipment_line_id: 'L1', received_quantity: '20', damaged_quantity: '2', location_allocations: [{ location_id: 'B1', quantity: 18 }] },
+      ] }])
     } finally { wrapper.unmount() }
   })
 
@@ -86,6 +129,7 @@ describe('unified delivery receipt', () => {
     const wrapper = setup(source); await open(wrapper)
     const input = wrapper.get<HTMLInputElement>('[aria-label="L1供应商单价"]')
     expect(input.element.value).toBe(shown); expect(input.attributes('readonly')).toBeDefined(); expect(wrapper.text()).toContain(hint)
+    await fillRemaining(wrapper)
     await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive.mock.calls[0]![1].special[0].lines[0]).toMatchObject({ unit_price: '0', price_action: action })
@@ -98,6 +142,7 @@ describe('unified delivery receipt', () => {
     expect(wrapper.text()).not.toContain('供应商已明确本行免费')
     await open(wrapper)
     expect(wrapper.get<HTMLInputElement>('[aria-label="L1供应商单价"]').element.value).toBe('')
+    await fillRemaining(wrapper)
     await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive.mock.calls[0]![1].special[0].lines[0]).toMatchObject({ price_action: 'PENDING', unit_price: '0' })
@@ -125,12 +170,26 @@ describe('unified delivery receipt', () => {
       wrapper.unmount()
     }
   })
+  it('allows a fully rejected batch to be recorded with zero inbound and no warehouse bin', async () => {
+    const wrapper = setup()
+    try {
+      await open(wrapper)
+      await fillRemaining(wrapper)
+      await wrapper.get('[aria-label="L1拒收"]').setValue('10')
+      expect(wrapper.get('[aria-label="本批验收汇总"]').findAll('dd').map(item => item.text())).toEqual(['0 个', '0 个'])
+      expect(wrapper.get<HTMLButtonElement>('form button[type="submit"]').element.disabled).toBe(false)
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(api.receive.mock.calls[0]![1].special[0].lines[0]).toMatchObject({ received_quantity: '10', rejected_quantity: '10', location_allocations: [] })
+      expect(wrapper.text()).toContain('有效入库 0')
+    } finally { wrapper.unmount() }
+  })
   it('accepts supplier extras by selecting the type without collecting customer, requester or workshop', async () => {
     const source = group(); source.special[0]!.origin = 'SUPPLIER_EXTRA'; source.lines[0]!.origin = 'SUPPLIER_EXTRA'
     const wrapper = setup(source); await open(wrapper)
     await wrapper.get('[aria-label="R1额外用途"]').setValue('WORKSHOP_MISC')
     expect(wrapper.find('[aria-label="R1需求人"]').exists()).toBe(false)
     expect(wrapper.find('[aria-label="R1车间"]').exists()).toBe(false)
+    await fillRemaining(wrapper)
     await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('U1', expect.objectContaining({ special: [expect.objectContaining({ received_kind: 'WORKSHOP_MISC', requester_name: '', workshop_id: '' })] }), expect.any(AbortSignal))
@@ -148,7 +207,7 @@ describe('unified delivery receipt', () => {
     const source = group(); source.lines[0]!.closed_quantity = '2'; source.lines[0]!.remaining_quantity = '0'
     const wrapper = setup(source, { reopenOnly: true })
     expect(wrapper.text()).not.toContain('核实实际收到')
-    await wrapper.findAll('button').find(item => item.text() === '更正短送结束')!.trigger('click')
+    await wrapper.findAll('button').find(item => item.text() === '恢复原单待收')!.trigger('click')
     await wrapper.get('[aria-label="L1选择重开"]').setValue(true)
     await wrapper.get('[aria-label="重开短送原因"]').setValue('原短送结束操作有误')
     await wrapper.get('form').trigger('submit'); await flushPromises()
@@ -159,7 +218,7 @@ describe('unified delivery receipt', () => {
     const source = group(); source.lines[0]!.remaining_quantity = '0'; source.lines[0]!.closed_quantity = '2'
     source.lines.push({ ...source.lines[0]!, id: 'L2' })
     const wrapper = setup(source)
-    await wrapper.findAll('button').find(item => item.text() === '更正短送结束')!.trigger('click')
+    await wrapper.findAll('button').find(item => item.text() === '恢复原单待收')!.trigger('click')
     await wrapper.get('form[aria-label="重开短送余量"]').trigger('submit'); await flushPromises()
     expect(api.reopenShortfall).not.toHaveBeenCalled()
     await wrapper.get('[aria-label="L1选择重开"]').setValue(true)
@@ -169,7 +228,7 @@ describe('unified delivery receipt', () => {
     expect(api.reopenShortfall).toHaveBeenCalledWith('U1', expect.objectContaining({ factory_id: 'huaxing', reason: '核对原单误关闭',
       special: [{ request_id: 'R1', shipment_id: 'S1', expected_revision: 2, lines: [{ shipment_line_id: 'L1', quantity: '1' }] }] }), expect.any(AbortSignal))
     expect(api.receive).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('未产生入库或应付')
+    expect(wrapper.emitted('shortfall-reopened')).toEqual([['1 个']])
     expect(wrapper.emitted('changed')).toHaveLength(1)
     wrapper.unmount()
   })
@@ -177,7 +236,7 @@ describe('unified delivery receipt', () => {
     const source = group(); source.lines[0]!.closed_quantity = '2'
     api.reopenShortfall.mockRejectedValueOnce(new Error('保存结果未确认'))
     const wrapper = setup(source)
-    await wrapper.findAll('button').find(item => item.text() === '更正短送结束')!.trigger('click')
+    await wrapper.findAll('button').find(item => item.text() === '恢复原单待收')!.trigger('click')
     await wrapper.get('[aria-label="L1选择重开"]').setValue(true)
     await wrapper.get('[aria-label="L1重开数量"]').setValue('3')
     await wrapper.get('[aria-label="重开短送原因"]').setValue('原操作关闭有误')
@@ -190,7 +249,7 @@ describe('unified delivery receipt', () => {
     expect(api.reopenShortfall.mock.calls[1]![1].request_id).toBe(first.request_id)
     wrapper.unmount()
     const supplier = setup(source, { supplier: true })
-    expect(supplier.text()).not.toContain('更正短送结束')
+    expect(supplier.text()).not.toContain('恢复原单待收')
     supplier.unmount()
   })
   it('closes only the selected paper and preserves the other paper as zero-arrival WAIT', async () => {
@@ -208,10 +267,17 @@ describe('unified delivery receipt', () => {
   })
   it('records a reasoned zero-arrival closure without inventing quantities or locations', async () => {
     const wrapper = setup(); await open(wrapper)
-    await wrapper.get('[aria-label="L1实收"]').setValue('0')
+    await wrapper.get('[aria-label="短送结案选项"]').trigger('click')
     await wrapper.get('[aria-label="统一未收余货处理"]').setValue('CLOSE')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive).not.toHaveBeenCalled()
+    expect(wrapper.get('form').text()).toContain('请填写结案纸品的本批实到数量')
+    await wrapper.get('[aria-label="L1实收"]').setValue('0')
+    expect(wrapper.get('[aria-label="统一短送结束原因"]').attributes('required')).toBeDefined()
+    await wrapper.get('[aria-label="统一短送结束原因"]').setValue('少字')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive).not.toHaveBeenCalled()
+    expect(wrapper.get('form').text()).toContain('至少四字原因')
     await wrapper.get('[aria-label="统一短送结束原因"]').setValue('供应商确认本单不再送')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('U1', expect.objectContaining({ special: [expect.objectContaining({ remaining_action: 'CLOSE', close_reason: '供应商确认本单不再送', lines: [expect.objectContaining({ received_quantity: '0', location_allocations: [] })] })] }), expect.any(AbortSignal))
@@ -221,13 +287,14 @@ describe('unified delivery receipt', () => {
     const wrapper = setup(group(), { autoOpen: true }); await flushPromises()
     expect(wrapper.find('form[aria-label="统一送货验收"]').exists()).toBe(true)
     await wrapper.setProps({ viewerKey: 'changed' }); await flushPromises()
-    expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('10')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('')
     wrapper.unmount()
   })
   it('keeps unexplained zero pending automatically without a warehouse price selector', async () => {
     const wrapper = setup(); await open(wrapper)
     expect(wrapper.find('[aria-label="L1价格核对"]').exists()).toBe(false)
     expect(wrapper.get('[aria-label="L1供应商单价"]').attributes('readonly')).toBeDefined()
+    await fillRemaining(wrapper)
     await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('U1', expect.objectContaining({ special: [expect.objectContaining({ request_id: 'R1', shipment_id: 'S1', expected_revision: 2, lines: [expect.objectContaining({ price_action: 'PENDING', unit_price: '0', price_reason: '供应商原单缺价或零价未注明免费，待供应商补价', received_quantity: '10', location_allocations: [{ location_id: 'B1', quantity: 10 }] })] })] }), expect.any(AbortSignal))
@@ -239,17 +306,41 @@ describe('unified delivery receipt', () => {
     source.lines.push(...formalLines)
     source.formal = { id: 'FORMAL-1', revision: 3, lines: formalLines } as unknown as NonNullable<UnifiedDelivery['formal']>
     const wrapper = setup(source); await open(wrapper)
-    await wrapper.get('[aria-label="L1实收"]').setValue('0')
-    await wrapper.get('[aria-label="F2实收"]').setValue('0')
+    await fillRemaining(wrapper, 'F1')
     await wrapper.findAll('[aria-label="选择测试仓位"]')[1]!.trigger('click')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('U1', expect.objectContaining({ special: [], formal: expect.objectContaining({ expected_revision: 3, lines: [expect.objectContaining({ shipment_line_id: 'F1', received_quantity: '10' }), expect.objectContaining({ shipment_line_id: 'F2', received_quantity: '0', location_allocations: [] })] }) }), expect.any(AbortSignal))
     wrapper.unmount()
   })
+  it('keeps both the defect note and shortfall reason on the selected formal paper', async () => {
+    const source = group()
+    source.special = []
+    source.lines[0]!.source_kind = 'FORMAL'
+    source.lines[0]!.source_type = 'FORMAL_ORDER'
+    source.formal = { id: 'FORMAL-1', revision: 3, lines: source.lines } as unknown as NonNullable<UnifiedDelivery['formal']>
+    const wrapper = setup(source)
+    try {
+      await open(wrapper)
+      await wrapper.get('[aria-label="L1实收"]').setValue('5')
+      await wrapper.get('[aria-label="L1破损"]').setValue('1')
+      await wrapper.get('form').trigger('submit')
+      expect(api.receive).not.toHaveBeenCalled()
+      expect(wrapper.get('form').text()).toContain('填写至少四字差异说明')
+      await wrapper.get('[aria-label="L1差异说明"]').setValue('外箱压坏一件')
+      await wrapper.get('[aria-label="L1关闭此纸品余量"]').setValue(true)
+      await wrapper.get('[aria-label="统一短送结束原因"]').setValue('供应商确认不再补送')
+      expect(wrapper.get('[aria-label="本批验收汇总"]').findAll('dd').map(item => item.text())).toEqual(['4 个', '0 个', '5 个'])
+      await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(api.receive.mock.calls[0]![1].formal).toMatchObject({ remaining_action: 'WAIT', lines: [
+        { received_quantity: '5', damaged_quantity: '1', close_remaining: true, difference_reason: '外箱压坏一件；供应商确认不再补送' },
+      ] })
+    } finally { wrapper.unmount() }
+  })
   it('keeps the same idempotency key on uncertain retry and preserves the supplier original price', async () => {
     const source = group(); source.lines[0]!.delivery_unit_price = '2'
     api.receive.mockRejectedValueOnce(new Error('结果未确认'))
-    const wrapper = setup(source); await open(wrapper); await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
+    const wrapper = setup(source); await open(wrapper); await fillRemaining(wrapper); await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
     await wrapper.get('form').trigger('submit'); await flushPromises(); const first = api.receive.mock.calls[0]![1]
     await wrapper.get('form').trigger('submit'); await flushPromises(); expect(api.receive.mock.calls[1]![1].request_id).toBe(first.request_id)
     expect(first.special[0].lines[0]).toMatchObject({ price_action: 'MATCH', unit_price: '2', price_reason: '' }); expect(source.lines[0]!.delivery_unit_price).toBe('2')
@@ -262,7 +353,7 @@ describe('unified delivery receipt', () => {
   })
   it('rejects invalid effective quantities and requires classification of supplier extras', async () => {
     const source = group(); source.special[0]!.origin = 'SUPPLIER_EXTRA'; source.lines[0]!.origin = 'SUPPLIER_EXTRA'
-    const wrapper = setup(source); await open(wrapper); await wrapper.get('[aria-label="L1破损"]').setValue('11'); await wrapper.get('form').trigger('submit'); await flushPromises(); expect(api.receive).not.toHaveBeenCalled()
+    const wrapper = setup(source); await open(wrapper); await fillRemaining(wrapper); await wrapper.get('[aria-label="L1破损"]').setValue('11'); await wrapper.get('form').trigger('submit'); await flushPromises(); expect(api.receive).not.toHaveBeenCalled()
     await wrapper.get('[aria-label="L1破损"]').setValue('0'); await wrapper.get('[aria-label="选择测试仓位"]').trigger('click'); await wrapper.get('form').trigger('submit'); await flushPromises(); expect(wrapper.text()).toContain('额外送货须核对用途'); expect(api.receive).not.toHaveBeenCalled(); wrapper.unmount()
   })
 })

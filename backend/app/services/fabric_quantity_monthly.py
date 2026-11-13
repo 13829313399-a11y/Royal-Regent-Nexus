@@ -55,9 +55,12 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
     def event(identifier, when, body, kind, sign=1, original_id='', actor='', purchase_facts=None):
         if not start <= when <= end:
             return
+        if kind == 'RETURN':
+            issue = projected[body['original_id']]['data']
+            body = {**body, 'handover_document_id': issue.get('handover_document_id', '')}
         supplier = kind == 'RECEIPT'
         recorded_party = body.get('counterparty', '')
-        supplier_id = body.get('handover_supplier_id', '') if supplier else ''
+        supplier_id = (body.get('handover_supplier_id') or body.get('receipt_supplier_id', '')) if supplier else ''
         matched = aliases.get(recorded_party, set())
         if supplier and not supplier_id and len(matched) == 1:
             supplier_id = next(iter(matched))
@@ -110,13 +113,19 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
             price_note=pricing.get('price_basis', '')), 'RECEIPT', actor=receipt.actor_name, purchase_facts=facts)
     for entry in entries:
         kind, body = entry['kind'], entry['data']
+        group = body.get('manual_receipt_id') if kind == 'RECEIPT' else body.get('manual_receipt_reversal_id') if kind == 'CORRECTION' else None
+        if group:
+            receipt = projected[group]['data']
+            first = receipt['operation_ids'][0]
+            original_id = body.get('original_id') if kind == 'CORRECTION' else entry['id']
+            if original_id == first:
+                original = projected[first]['data']
+                whole = {**original, **{key: receipt.get(key, '') for key in ('quantity', 'amount', 'unit_price', 'price_unit', 'currency')},
+                         'price_note': receipt.get('price_basis', '')}
+                event(entry['id'] if kind == 'CORRECTION' else group, entry['business_date'], whole, 'RECEIPT',
+                      -1 if kind == 'CORRECTION' else 1, original_id=group if kind == 'CORRECTION' else '', actor=entry['actor_name'])
+            continue
         if kind in ('RECEIPT', 'ISSUE', 'RETURN'):
-            # A workshop return follows its original issue's party/channel,
-            # and is shown separately; it never reduces supplier receipts.
-            if kind == 'RETURN':
-                original = projected[body['original_id']]['data']
-                body = {**body, **{key: original.get(key, '') for key in
-                    ('handover_document_id', 'handover_supplier_id')}}
             event(entry['id'], entry['business_date'], body, kind,
                   original_id=body.get('original_id', ''), actor=entry['actor_name'])
         elif kind == 'CORRECTION':
@@ -127,7 +136,7 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
                     purchase_facts=correction_facts.get(procurement_receipt_id))
                 continue
             original = projected.get(body['original_id'])
-            if original and original['kind'] in ('RECEIPT', 'ISSUE'):
+            if original and original['kind'] in ('RECEIPT', 'ISSUE', 'RETURN'):
                 event(entry['id'], entry['business_date'], original['data'], original['kind'], -1,
                       original_id=original['id'], actor=entry['actor_name'])
         # Requests, transfers, metadata and unused printed documents are not actual handovers.

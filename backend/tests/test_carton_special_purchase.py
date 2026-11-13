@@ -2,7 +2,7 @@
 from io import BytesIO
 from openpyxl import load_workbook
 import pytest
-from test_carton_special_requests import make_client, setup, ok, create_body, command, login_as, supplier_login, accept, BASE, SUP, FACTORY
+from test_carton_special_requests import make_client, setup, ok, create_body, command, login_as, supplier_login, accept, approve, quote, BASE, SUP, FACTORY
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +28,19 @@ def test_frozen_versions_shared_export_supplier_access_and_history(monkeypatch, 
         sheet = load_workbook(BytesIO(original.content)).active
         assert sheet["G10"].value == 100 and sheet["H10"].value == 100
         assert sheet["F5"].value == ("样板单" if kind == "SAMPLE" else "杂单")
+        external_url = SUP + f"/{row['id']}/purchase-orders"
+        supplier_login(client)
+        assert ok(client.get(external_url, params={"factory_id": FACTORY}))["issues"] == []
+        assert client.get(external_url + f"/{initial['id']}/export", params={"factory_id": FACTORY}).status_code == 404
+        if kind == "SAMPLE":
+            row = approve(client, quote(client, row))
+            supplier_login(client)
+            assert ok(client.get(external_url, params={"factory_id": FACTORY}))["issues"] == []
+            assert row["supplier_confirmation"]["status"] == "PENDING"
+        row = accept(client, row)
+        assert ok(client.get(external_url, params={"factory_id": FACTORY}))["issues"] == [initial]
+        assert client.get(external_url + f"/{initial['id']}/export", params={"factory_id": FACTORY}).status_code == 200
+        login_as(client, "admin")
         before_history = row["history"]
         edit = create_body(kind) | command(row) | {"reason": "增加实际需求", "lines": [dict(row["lines"][0], quantity="120")]}
         # Response-only fields are not command input.
@@ -44,11 +57,12 @@ def test_frozen_versions_shared_export_supplier_access_and_history(monkeypatch, 
         assert [old[f"{col}10"].value for col in "FGH"] == [0, 100, 100]
         # Internal and supplier views use the same immutable document identity.
         supplier_login(client)
-        external_url = SUP + f"/{row['id']}/purchase-orders"
-        assert ok(client.get(external_url, params={"factory_id": FACTORY}))["issues"] == context["issues"]
+        assert ok(client.get(external_url, params={"factory_id": FACTORY}))["issues"] == [initial]
+        assert client.get(external_url + f"/{context['issues'][0]['id']}/export", params={"factory_id": FACTORY}).status_code == 404
         assert client.get(external_url, params={"factory_id": "huakang-b"}).status_code in (403, 404)
         assert client.get(external_url + '/missing/export', params={"factory_id": FACTORY}).status_code == 404
         accept(client, row)
+        assert ok(client.get(external_url, params={"factory_id": FACTORY}))["issues"] == context["issues"]
         docs = ok(client.get('/api/carton-supplier/documents', params={"factory_id": FACTORY}))
         owned = [doc for doc in docs if doc.get("special_request_id") == row["id"]]
         assert {doc["id"] for doc in owned} == {item["id"] for item in context["issues"]}

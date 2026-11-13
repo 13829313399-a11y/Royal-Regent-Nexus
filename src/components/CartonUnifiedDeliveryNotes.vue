@@ -19,7 +19,7 @@ const displayQuantity = (value: unknown) => {
   return Number.isFinite(number) ? number.toLocaleString('zh-CN', { maximumFractionDigits: 4 }) : String(value ?? '')
 }
 const props = withDefaults(defineProps<{ group: UnifiedDelivery; supplier?: boolean; collapsible?: boolean; canReceive?: boolean; readBlocked?: boolean; autoOpen?: boolean; receiptEntryPaperIds?: string[]; reopenOnly?: boolean; locations?: CartonLocation[]; workshops?: { id: string; name: string }[]; viewerKey?: string; orders?: PortalOrder[] }>(), { locations: () => [], workshops: () => [], orders: () => [] })
-const emit = defineEmits<{ changed: []; reverse: [receiptId: string]; 'link-receipt': [shipment: PortalShipment]; 'locations-changed': []; busy: [value: boolean] }>()
+const emit = defineEmits<{ changed: []; 'shortfall-reopened': [quantities: string]; reverse: [receiptId: string]; 'link-receipt': [shipment: PortalShipment]; 'locations-changed': []; busy: [value: boolean] }>()
 interface Row { source: UnifiedDeliveryLine; received: string; damaged: string; rejected: string; unusable: string; allocations: LocationAllocation[]; action: PriceAction; price: string; reason: string; difference: string; close: boolean }
 const editing = ref(false), busy = ref(false), error = ref(''), message = ref(''), rows = ref<Row[]>([])
 const receiptForm = ref<HTMLFormElement | null>(null)
@@ -64,6 +64,36 @@ const valid = (value: string, digits = 4) => new RegExp(`^\\d{1,14}(\\.\\d{1,${d
 const scaled = (value: string) => { if (!valid(value)) return 0n; const [whole = '0', fraction = ''] = value.split('.'); return BigInt(whole) * 10000n + BigInt(fraction.padEnd(4, '0')) }
 const decimal = (value: bigint) => `${value / 10000n}.${(value % 10000n).toString().padStart(4, '0')}`
 const effective = (row: Row) => scaled(row.received) - scaled(row.damaged) - scaled(row.rejected) - scaled(row.unusable)
+const receivableQuantity = (line: UnifiedDeliveryLine) => line.receivable_quantity ?? line.remaining_quantity ?? '0'
+const displayReceiptQuantity = (value: bigint) => decimal(value).replace(/\.?0+$/, '')
+const receiptEntries = computed(() => editableRows.value
+  .filter(row => scaled(receivableQuantity(row.source)) > 0n)
+  .map(row => {
+    const original = scaled(receivableQuantity(row.source))
+    const actual = scaled(row.received)
+    const inbound = effective(row)
+    const entered = row.received !== ''
+    const quantityValid = (!entered || valid(row.received)) && [row.damaged, row.rejected, row.unusable].every(value => valid(value))
+      && inbound >= 0n && actual <= original
+    const missingLocation = quantityValid && inbound > 0n && (!row.allocations.length || row.allocations.some(part => !part.location_id))
+    return { row, actual, inbound, entered, quantityValid, missingLocation, remaining: original - actual,
+      closing: remainingAction.value === 'CLOSE' || row.close }
+  }))
+const closingShortfall = computed(() => receiptEntries.value.some(entry => entry.closing))
+const receiptSummary = computed(() => receiptEntries.value.filter(entry => entry.entered || entry.closing))
+const receiptProblem = computed(() => {
+  const entries = receiptEntries.value
+  if (entries.some(entry => entry.closing && !entry.entered)) return '请填写结案纸品的本批实到数量。未到填写 0。'
+  if (!entries.some(entry => entry.entered)) return '请填写本批实到数量。未到填写 0。'
+  if (entries.some(entry => !entry.quantityValid)) return '请核对本批实到和差异数量。实到不能超过原单待收，差异合计不能超过实到。'
+  if (closingShortfall.value && closeReason.value.trim().length < 4) return '短送结案须填写至少四字原因。'
+  if (entries.some(entry => entry.row.source.source_kind === 'FORMAL' && entry.actual !== entry.inbound
+    && entry.row.difference.trim().length < 4 && !(entry.closing && entry.remaining > 0n))) {
+    return '有破损、拒收或其他不可用数量时，请填写至少四字差异说明。'
+  }
+  if (entries.some(entry => entry.missingLocation)) return '请选择有效入库纸品的仓位。'
+  return ''
+})
 function reset() { generation++; controller.abort(); controller = new AbortController(); editing.value = false; focusedPaperIds.value = null; reopening.value = false; reopenReason.value = ''; reopenRows.value = []; busy.value = false; error.value = ''; message.value = ''; rows.value = []; candidates.value = []; candidateError.value = ''; candidateLoading.value = false; newDeliveryConfirmed.value = false; splitConfirmation.value = ''; attempts.clear() }
 watch([() => props.group.factory_id, () => props.group.id, () => props.group.revision,
   () => props.group.special.map(item => `${item.id}:${item.revision}`).join(','),
@@ -86,7 +116,7 @@ function open() {
   const papers = props.receiptEntryPaperIds
   focusedPaperIds.value = papers ?? null
   rows.value = props.group.lines.filter(line => line.source_kind === 'FORMAL' || Number(line.receivable_quantity ?? line.remaining_quantity ?? 0) > 0).map(source => ({ source,
-    received: !papers || papers.includes(source.id) ? source.receivable_quantity ?? source.remaining_quantity ?? '0' : '0', damaged: '0', rejected: '0', unusable: '0', allocations: [],
+    received: '', damaged: '0', rejected: '0', unusable: '0', allocations: [],
     action: originalPrice(source) == null ? 'PENDING' : Number(originalPrice(source)) === 0 ? source.free_confirmed ? 'FREE' : 'PENDING' : 'MATCH', price: originalPrice(source) ?? '', reason: supplierReceiptPrice(source).price_reason, difference: '', close: false }))
   void checkCandidates()
   extra.value = Object.fromEntries(props.group.special.filter(item => item.origin === 'SUPPLIER_EXTRA').map(item => [item.id, { kind: item.shipments.some(shipment => shipment.receipts?.some(receipt => receipt.status === 'POSTED')) && item.kind === 'SAMPLE' ? 'SAMPLE' : item.shipments.some(shipment => shipment.receipts?.some(receipt => receipt.status === 'POSTED')) && item.kind === 'WORKSHOP_MISC' ? 'WORKSHOP_MISC' : '', requester: item.requester_name || '', workshop: item.workshop_id || '' }]))
@@ -150,7 +180,15 @@ async function submitReopening() {
   const token = generation; busy.value = true
   try {
     await api.reopenShortfall(props.group.id, { ...payload, request_id: attempts.get(signature) }, controller.signal)
-    if (token === generation) { attempts.delete(signature); reopening.value = false; message.value = '选中纸品已恢复原单待收，未产生入库或应付；请核实实物后登记。'; emit('changed') }
+    if (token !== generation) return
+    attempts.delete(signature)
+    reopening.value = false
+    const quantities = new Map<string, bigint>()
+    for (const { source, quantity } of selected) {
+      quantities.set(source.unit, (quantities.get(source.unit) ?? 0n) + scaled(quantity))
+    }
+    emit('shortfall-reopened', [...quantities].map(([unit, quantity]) => `${displayReceiptQuantity(quantity)} ${unit}`.trim()).join('、'))
+    emit('changed')
   } catch (cause) { if (token === generation) error.value = getApiErrorMessage(cause) }
   finally { if (token === generation) busy.value = false }
 }
@@ -159,13 +197,15 @@ async function submit() {
   error.value = ''
   if (usesFormalReceipt.value && (candidateLoading.value || candidateError.value)) { error.value = '请先完成原收料重复检查，失败时点击重试。'; return }
   if (usesFormalReceipt.value && (props.group.formal?.requires_receipt_link || candidates.value.length && !newDeliveryConfirmed.value)) { error.value = '请关联原收料，或核对本次确为新一批到货。'; return }
-  const arriving = editableRows.value.filter(row => scaled(row.received) > 0n)
-  const chosen = (remainingAction.value === 'CLOSE' || !arriving.length ? editableRows.value : editableRows.value.filter(row => row.close || scaled(row.received) > 0n)).filter(row => Number(row.source.receivable_quantity ?? row.source.remaining_quantity ?? 0) > 0)
-  if ((remainingAction.value === 'CLOSE' || rows.value.some(row => row.close)) && closeReason.value.trim().length < 4) { error.value = '短送结束须填写至少四字原因，采购欠数仍保留。'; return }
-  if (!date.value || !chosen.length || rows.value.some(row => [row.received, row.damaged, row.rejected, row.unusable].some(value => !valid(value)) || effective(row) < 0n || scaled(row.received) > scaled(row.source.receivable_quantity ?? row.source.remaining_quantity ?? '0'))) { error.value = '请核对验收日期、实收和不合格数量，实收不能超过待收。'; return }
+  if (receiptProblem.value) return
+  if (!date.value) { error.value = '请填写实际验收日期。'; return }
+  const hasArrival = receiptEntries.value.some(entry => entry.actual > 0n)
+  const chosen = receiptEntries.value
+    .filter(entry => entry.closing || (entry.entered && (!hasArrival || entry.actual > 0n)))
+    .map(entry => entry.row)
   if (chosen.some(row => effective(row) > 0n && (!row.allocations.length || row.allocations.some(part => !valid(String(part.quantity)) || scaled(String(part.quantity)) <= 0n || !props.locations.some(location => location.id === part.location_id && location.status !== 'INACTIVE')) || new Set(row.allocations.map(part => part.location_id)).size !== row.allocations.length || row.allocations.reduce((sum, part) => sum + scaled(String(part.quantity)), 0n) !== effective(row)))) { error.value = '请核对本厂仓位及分仓数量，合计须等于有效入库，仓位不能重复。'; return }
   if (correctsFormalReceipt.value && correctionReason.value.trim().length < 4) { error.value = '冲销后重新验收须填写至少四字更正原因。'; return }
-  const common = (row: Row) => ({ shipment_line_id: row.source.id, received_quantity: row.received, damaged_quantity: row.damaged, rejected_quantity: row.rejected, unusable_quantity: row.unusable,
+  const common = (row: Row) => ({ shipment_line_id: row.source.id, received_quantity: row.received || '0', damaged_quantity: row.damaged, rejected_quantity: row.rejected, unusable_quantity: row.unusable,
     location_allocations: effective(row) > 0n ? row.allocations : [],
     ...(row.close ? { close_remaining: true } : {}), price_action: row.action, price_reason: row.reason.trim(), unit_price: row.action === 'PENDING' ? originalPrice(row.source) ?? '0' : row.price,
     ...(row.action === 'FREE' || row.action === 'PROPOSE' && Number(row.price) === 0 ? { zero_price_kind: 'FREE' } : {}) })
@@ -178,14 +218,36 @@ async function submit() {
   }))
   if (chosen.some(row => effective(row) > 0n && row.source.origin === 'SUPPLIER_EXTRA' && !extra.value[row.source.special_request_id || '']?.kind)) { error.value = '额外送货须核对用途：请选择样板或杂单入库类型。'; return }
   const formalRows = chosen.some(row => row.source.source_kind === 'FORMAL') ? rows.value.filter(row => row.source.source_kind === 'FORMAL') : []
+  const formalLines = formalRows.map(row => {
+    const closing = (remainingAction.value === 'CLOSE' || row.close) && scaled(row.received) < scaled(receivableQuantity(row.source))
+    const differenceReason = [row.difference.trim(), closing ? closeReason.value.trim() : ''].filter(Boolean).join('；')
+    return { ...common(row),
+      ...(row.source.source_type === 'AD_HOC_REVIEW' && scaled(row.received) > 0n && scaled(row.rejected) === scaled(row.received) ? { no_order_decision: 'WRONG_DELIVERY' as const } : {}),
+      paper_quality: row.source.paper_quality, specification: row.source.specification,
+      dimension_unit: row.source.dimension_unit === 'in' || row.source.dimension_unit === 'inch' ? 'in' as const : 'cm' as const,
+      difference_reason: differenceReason }
+  })
+  if (formalLines.some(line => line.difference_reason.length > 1000)) {
+    error.value = '差异说明与短送结案原因合计不能超过 1000 字。'; return
+  }
   const payload = { factory_id: props.group.factory_id, expected_revision: props.group.revision, acceptance_date: date.value, special,
-    ...(formalRows.length && props.group.formal ? { formal: { expected_revision: props.group.formal.revision, remaining_action: remainingAction.value, split_confirmation: splitConfirmation.value, new_delivery_confirmation: newDeliveryConfirmed.value, correction_reason: correctionReason.value.trim(),
-      lines: formalRows.map(row => ({ ...common(row), ...(row.source.source_type === 'AD_HOC_REVIEW' && scaled(row.received) > 0n && scaled(row.rejected) === scaled(row.received) ? { no_order_decision: 'WRONG_DELIVERY' as const } : {}), paper_quality: row.source.paper_quality, specification: row.source.specification, dimension_unit: row.source.dimension_unit === 'in' || row.source.dimension_unit === 'inch' ? 'in' : 'cm', difference_reason: row.difference || (remainingAction.value === 'CLOSE' || row.close ? closeReason.value.trim() : '') })) } } : {}) }
+    ...(formalLines.length && props.group.formal ? { formal: { expected_revision: props.group.formal.revision, remaining_action: remainingAction.value, split_confirmation: splitConfirmation.value, new_delivery_confirmation: newDeliveryConfirmed.value, correction_reason: correctionReason.value.trim(),
+       lines: formalLines } } : {}) }
   const signature = JSON.stringify(payload)
   try { if (!attempts.has(signature)) attempts.set(signature, createRandomUuid()) }
   catch (cause) { error.value = getApiErrorMessage(cause); return }
   const token = generation; busy.value = true
-  try { await api.receive(props.group.id, { ...payload, request_id: attempts.get(signature) }, controller.signal); if (token === generation) { attempts.delete(signature); editing.value = false; message.value = '本次收货已记录；按供应商原价入库，缺价明细等待供应商补价。'; emit('changed') } }
+  const closesRemainder = receiptEntries.value.some(entry => entry.closing && entry.remaining > 0n)
+  const hasInbound = chosen.some(row => effective(row) > 0n)
+  try {
+    await api.receive(props.group.id, { ...payload, request_id: attempts.get(signature) }, controller.signal)
+    if (token !== generation) return
+    attempts.delete(signature)
+    editing.value = false
+    message.value = closesRemainder ? '本批验收已记录。所选送货余量已结案，采购欠数保留。'
+      : hasInbound ? '本批验收已记录。按供应商原价入库，缺价明细等待补价。' : '本批验收已记录，有效入库 0。'
+    emit('changed')
+  }
   catch (cause) { if (token === generation) error.value = getApiErrorMessage(cause) }
   finally { if (token === generation) busy.value = false }
 }
@@ -200,20 +262,111 @@ async function download(line: UnifiedDeliveryLine) {
 </script>
 <template>
   <article class="unified-receipt min-w-0 space-y-3 border-t py-4 [overflow-wrap:anywhere]" :data-testid="`unified-delivery-${group.id}`" :aria-label="`送货单 ${group.delivery_note_no}`">
-    <div class="flex flex-wrap items-center justify-between gap-3"><div v-if="!reopenOnly" class="min-w-0"><h3 class="font-bold">{{ group.delivery_note_no }} · {{ group.delivery_date }}</h3><p class="mt-1 text-xs text-slate-500">{{ group.lines.length }} 条纸品 · <slot name="receipt-status">{{ receiptStatus }}</slot></p></div><div v-if="!supplier" class="flex flex-wrap gap-2"><Button v-if="canReceive && closedLines.length && !reopening" size="sm" variant="outline" :disabled="busy" @click="openReopening">更正短送结束</Button><Button v-if="canReceive && pending && !editing && !reopening && !reopenOnly" size="sm" :disabled="busy" @click="open">{{ group.requires_correction ? '更正原单验收' : '核实实际收到' }}</Button></div></div>
+    <div class="flex flex-wrap items-center justify-between gap-3"><div v-if="!reopenOnly" class="min-w-0"><h3 class="font-bold">{{ group.delivery_note_no }} · {{ group.delivery_date }}</h3><p class="mt-1 text-xs text-slate-500">{{ group.lines.length }} 条纸品 · <slot name="receipt-status">{{ receiptStatus }}</slot></p></div><div v-if="!supplier" class="flex flex-wrap gap-2"><Button v-if="canReceive && closedLines.length && !reopening" size="sm" variant="outline" :disabled="busy" @click="openReopening">恢复原单待收</Button><Button v-if="canReceive && pending && !editing && !reopening && !reopenOnly" size="sm" :disabled="busy" @click="open">{{ group.requires_correction ? '更正原单验收' : '核实实际收到' }}</Button></div></div>
     <component :is="collapsible ? 'details' : 'div'" :key="viewerKey" class="space-y-3">
     <summary v-if="collapsible" :aria-label="`送货单明细 ${group.delivery_note_no}`" class="w-fit cursor-pointer rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700">送货单明细</summary>
-    <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p><p v-if="message" role="status" class="text-xs text-teal-700">{{ message }}</p>
+    <p v-if="error && !editing" role="alert" class="rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p><p v-if="message" role="status" class="text-xs text-teal-700">{{ message }}</p>
     <div v-show="!reopenOnly" v-for="line in group.lines" :key="line.id" class="rounded-lg bg-slate-50 p-3 text-xs"><p class="font-semibold">{{ businessLabel(line) }} · {{ line.order_no }} · {{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }}</p><p v-if="line.customer_name || line.contract_no || line.item_no" class="mt-1 break-words">{{ line.customer_name }} · 合同 {{ line.contract_no || '未填写' }} · PO {{ line.customer_po || '未填写' }} · 货号 {{ line.item_no || '未填写' }}</p><CartonSourceLinks :factory-id="group.factory_id" :sources="sources(line)" :supplier="supplier" :receiving="!supplier" :marks="!supplier && group.special.find(item => item.id === line.special_request_id)?.permissions.can_view_order_resources !== false" /><p class="mt-1">发货 {{ displayQuantity(line.quantity) }} {{ line.unit }} · 到货 {{ displayQuantity(line.received_quantity) }} · 拒收退回 {{ displayQuantity(line.rejected_quantity) }} · 破损 {{ displayQuantity(line.damaged_quantity) }} · 其他不可用 {{ displayQuantity(line.unusable_quantity) }} · 实际入库 {{ inboundLabel(line) }} · 待收 {{ displayQuantity(line.receivable_quantity ?? line.remaining_quantity) }} · 已结束余量 {{ displayQuantity(line.closed_quantity) }} · 供应商原价 {{ originalPrice(line) == null ? '未填写（待核价）' : `${line.currency || 'CNY'} ${originalPrice(line)}` }}</p><p v-if="whollyRejected(line)" class="mt-1 font-semibold text-red-700">此项已全部拒收退回，入库 0，不计货款。</p><p v-if="line.source_origin === 'WAREHOUSE_MANUAL'" class="mt-1 text-amber-800">仓库代录 · 记录单价 {{ line.warehouse_unit_price == null ? '未填写' : line.warehouse_unit_price }} · 待双方核价</p><p v-if="originalPrice(line) != null && Number(originalPrice(line)) === 0" class="mt-1 font-semibold text-amber-800">{{ line.free_confirmed ? '供应商已明确本行免费，请核实实物。' : '原单价为 0，但未明确声明免费，等待供应商确认；可先收货，仓库不修改原价。' }}</p><Button v-if="line.mark_attachment_id && group.special.find(item => item.id === line.special_request_id)?.permissions.can_view_order_resources !== false" size="sm" variant="ghost" :disabled="busy" @click="download(line)">查看本批箱唛</Button><span v-else-if="line.source_kind === 'SPECIAL'" class="mt-1 block text-slate-500">{{ line.mark_mode === 'NONE' ? '无需箱唛 / 空白箱' : '原批资料待核实' }}</span></div>
     <form v-if="reopening && receiptAuthority" class="space-y-3 rounded-xl border border-amber-200 p-4" aria-label="重开短送余量" @submit.prevent="submitReopening"><p class="text-xs text-slate-600">只更正本原单误关闭、真正未到货的余量，恢复待收，不增加库存或应付。已到货但损坏或不合格的数量不能在这里重开；相关月份已确认对账时须先由内部说明原因重核。</p><fieldset v-for="row in reopenRows" :key="row.source.id" :disabled="busy" class="grid gap-3 rounded-lg border p-3 sm:grid-cols-2"><label class="flex items-center gap-2"><input v-model="row.selected" type="checkbox" :aria-label="`${row.source.id}选择重开`" class="!m-0 !min-h-0 !w-4">{{ row.source.packaging_type }} · {{ row.source.specification }} · 已结束 {{ row.source.closed_quantity }} {{ row.source.unit }}</label><label>本次重开数量<input v-model="row.quantity" :aria-label="`${row.source.id}重开数量`" :disabled="!row.selected" inputmode="decimal"></label></fieldset><label>更正原因<input v-model="reopenReason" aria-label="重开短送原因" :disabled="busy" minlength="4" required></label><div class="flex flex-wrap gap-2"><Button :disabled="readBlocked || busy">{{ busy ? '正在保存…' : '确认恢复待收' }}</Button><Button type="button" variant="outline" :disabled="busy" @click="reopening = false">返回</Button></div></form>
-    <form v-if="editing && receiptAuthority" ref="receiptForm" class="space-y-3 rounded-xl border border-teal-200 p-4" aria-label="统一送货验收" @submit.prevent="submit"><div v-if="focusedPaperIds" class="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm"><p class="break-words"><strong>原送货单 {{ group.delivery_note_no }}</strong> · 本次核实所选纸品，尚未核实的其他纸品继续待收。</p><p v-if="!focusedPaperAvailable" tabindex="-1" data-receipt-entry-waiting>所选纸品须等当前原单更正完成后再收料。</p><button type="button" class="mt-2 font-semibold text-teal-800 underline" :disabled="busy" @click="showWholeReceipt">查看整张送货单</button></div><label v-else>未收余货<select v-model="remainingAction" aria-label="统一未收余货处理" :disabled="busy"><option value="WAIT">余货继续待收</option><option value="CLOSE">本单短送结束，采购欠数保留</option></select></label><label v-if="remainingAction === 'CLOSE' || rows.some(row => row.close)">短送结束原因<input v-model="closeReason" aria-label="统一短送结束原因" :disabled="busy" minlength="4" required></label><p class="text-xs text-slate-500">短送结束只释放本送货单余量，不修改采购需求。误关闭可按纸品说明原因恢复原单待收；实际入库批次仍沿原批冲销更正。</p><label>实际验收日期<input v-model="date" type="date" aria-label="统一验收日期" :disabled="busy" required></label><label v-if="correctsFormalReceipt">更正原因<input v-model="correctionReason" :disabled="busy" required></label>
+    <form v-if="editing && receiptAuthority" ref="receiptForm" class="space-y-4 rounded-xl border border-teal-200 p-3 sm:p-4" aria-label="统一送货验收" @submit.prevent="submit">
+      <div v-if="focusedPaperIds" class="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm">
+        <p class="break-words"><strong>原送货单 {{ group.delivery_note_no }}</strong> · 本次核实所选纸品，尚未核实的其他纸品继续待收。</p>
+        <p v-if="!focusedPaperAvailable" tabindex="-1" data-receipt-entry-waiting>所选纸品须等当前原单更正完成后再收料。</p>
+        <button type="button" class="mt-2 font-semibold text-teal-800 underline" :disabled="busy" @click="showWholeReceipt">查看整张送货单</button>
+      </div>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <label>实际验收日期<input v-model="date" type="date" aria-label="统一验收日期" :disabled="busy" required></label>
+        <label v-if="correctsFormalReceipt">更正原因<input v-model="correctionReason" :disabled="busy" required></label>
+      </div>
       <section v-for="request in group.special.filter(item => item.origin === 'SUPPLIER_EXTRA' && (!focusedPaperIds || editableRows.some(row => row.source.special_request_id === item.id)))" :key="request.id" class="grid gap-3 rounded-lg bg-amber-50 p-3 sm:grid-cols-3"><label>额外纸品用途<select v-model="extra[request.id]!.kind" :aria-label="`${request.id}额外用途`" :disabled="busy"><option value="">选择入库类型</option><option value="SAMPLE">样板</option><option value="WORKSHOP_MISC">杂单</option></select></label></section>
-      <fieldset v-for="row in editableRows" v-show="!focusedPaperIds || Number(row.source.receivable_quantity ?? row.source.remaining_quantity ?? 0) > 0" :key="row.source.id" :disabled="busy" class="grid gap-3 rounded-lg border p-3 sm:grid-cols-2 lg:grid-cols-4"><legend class="px-1 text-xs font-bold">{{ row.source.packaging_type }} · {{ row.source.specification }}</legend>
-        <p class="min-w-0 break-words text-xs text-slate-600 sm:col-span-2 lg:col-span-4">客户 {{ row.source.customer_name || '未填写' }}<template v-if="row.source.contract_no"> · 合同 {{ row.source.contract_no }}</template> · 订单 {{ row.source.order_no || '未关联' }} · 货号 {{ row.source.item_no || '未填写' }}</p>
-        <label class="flex items-center gap-2 sm:col-span-2"><input v-model="row.close" type="checkbox" :aria-label="`${row.source.id}关闭此纸品余量`" class="!m-0 !min-h-0 !w-4" :disabled="remainingAction === 'CLOSE'">此纸品短送结束，其他纸品继续待收</label><label>到货数量<input v-model="row.received" :data-receipt-entry-focus="focusedPaperIds && Number(row.source.receivable_quantity ?? row.source.remaining_quantity ?? 0) > 0 ? '' : undefined" :aria-label="`${row.source.id}实收`" inputmode="decimal"></label><label>破损<input v-model="row.damaged" :aria-label="`${row.source.id}破损`" inputmode="decimal"></label><label>拒收<input v-model="row.rejected" :aria-label="`${row.source.id}拒收`" inputmode="decimal"></label><label>其他不可用<input v-model="row.unusable" :aria-label="`${row.source.id}不可用`" inputmode="decimal"></label><div class="sm:col-span-2"><span class="text-xs font-semibold">仓位 · 有效入库 {{ Number(decimal(effective(row))) }}</span><CartonReceiptAllocations v-model="row.allocations" :effective="Number(decimal(effective(row)))" :locations="locations" :factory-id="group.factory_id" :disabled="busy" @created="emit('locations-changed')" /></div><label>供应商单价 {{ row.source.currency || 'CNY' }}<input :value="row.price" :aria-label="row.source.id + '供应商单价'" readonly placeholder="未填写（待核价）"><span class="mt-1 block text-xs text-slate-500">{{ row.action === 'PENDING' ? originalPrice(row.source) == null ? '原单未填写单价，可先入库，等待供应商补价' : '原单单价为0，未确认免费，等待供应商核实' : row.action === 'FREE' ? '供应商已明确确认免费' : '按供应商送货原价入库' }}</span></label><label v-if="row.source.source_kind === 'FORMAL'" class="sm:col-span-2">收货差异说明<input v-model="row.difference" :aria-label="`${row.source.id}差异说明`" placeholder="破损、拒收等情况请说明"></label></fieldset>
+      <fieldset v-for="{ row, inbound, quantityValid, missingLocation } in receiptEntries" :key="row.source.id" :disabled="busy" class="min-w-0 space-y-3 rounded-lg border p-3">
+        <legend class="px-1 text-sm font-semibold">{{ row.source.packaging_type }} · {{ row.source.specification }}</legend>
+        <p class="break-words text-xs text-slate-600">客户 {{ row.source.customer_name || '未填写' }}<template v-if="row.source.contract_no"> · 合同 {{ row.source.contract_no }}</template> · 订单 {{ row.source.order_no || '未关联' }} · 货号 {{ row.source.item_no || '未填写' }}</p>
+        <div class="grid items-end gap-3 sm:grid-cols-2">
+          <div>
+            <p class="text-xs text-slate-600">原单待收 <strong class="tabular-nums">{{ displayQuantity(receivableQuantity(row.source)) }} {{ row.source.unit }}</strong></p>
+            <div class="mt-2 flex flex-wrap items-end gap-2">
+              <label class="flex-1 basis-24">本批实到（{{ row.source.unit }}）
+                <input v-model.trim="row.received" :data-receipt-entry-focus="focusedPaperIds ? '' : undefined" :aria-label="row.source.id + '实收'" inputmode="decimal" placeholder="按实物填写">
+              </label>
+              <Button type="button" size="sm" variant="outline" :aria-label="row.source.id + '按余量全收'" @click="row.received = receivableQuantity(row.source)">按余量全收</Button>
+            </div>
+          </div>
+          <label>供应商单价 {{ row.source.currency || 'CNY' }}
+            <input :value="row.price" :aria-label="row.source.id + '供应商单价'" readonly placeholder="未填写（待核价）">
+            <span class="mt-1 block text-xs text-slate-500">{{ row.action === 'PENDING' ? originalPrice(row.source) == null ? '原单未填写单价，可先入库，等待供应商补价' : '原单单价为0，未确认免费，等待供应商核实' : row.action === 'FREE' ? '供应商已明确确认免费' : '按供应商送货原价入库' }}</span>
+          </label>
+        </div>
+        <details class="rounded-lg border px-3 py-2">
+          <summary class="cursor-pointer text-sm font-semibold text-teal-800" :aria-label="row.source.id + '填写验收差异'">
+            破损、拒收及其他差异<span v-if="scaled(row.damaged) || scaled(row.rejected) || scaled(row.unusable) || row.difference" class="ml-2 text-xs font-normal text-amber-800">已填写</span>
+          </summary>
+          <div class="mt-3 grid gap-3 sm:grid-cols-3">
+            <label>破损<input v-model.trim="row.damaged" :aria-label="row.source.id + '破损'" inputmode="decimal"></label>
+            <label>拒收<input v-model.trim="row.rejected" :aria-label="row.source.id + '拒收'" inputmode="decimal"></label>
+            <label>其他不可用<input v-model.trim="row.unusable" :aria-label="row.source.id + '不可用'" inputmode="decimal"></label>
+            <label v-if="row.source.source_kind === 'FORMAL'" class="sm:col-span-3">收货差异说明
+              <input v-model="row.difference" :aria-required="effective(row) !== scaled(row.received)" :aria-label="row.source.id + '差异说明'" maxlength="1000" placeholder="破损、拒收等情况请说明">
+            </label>
+          </div>
+        </details>
+        <div v-show="quantityValid && inbound > 0n" class="space-y-1">
+          <p class="text-xs font-semibold">入库仓位</p>
+          <CartonReceiptAllocations v-model="row.allocations" :effective="quantityValid ? Number(decimal(inbound)) : 0" :locations="locations" :factory-id="group.factory_id" :disabled="busy" class="!min-w-0 [&>div]:flex-wrap" @created="emit('locations-changed')" />
+          <p v-if="missingLocation" class="text-xs text-amber-800">请选择入库仓位。</p>
+        </div>
+      </fieldset>
+      <details v-if="receiptEntries.length" class="rounded-lg border px-3 py-2">
+        <summary class="cursor-pointer text-sm font-semibold text-teal-800" aria-label="短送结案选项">短送结案
+          <span class="ml-2 text-xs font-normal text-slate-600">{{ closingShortfall ? '已选择结案' : '余货继续待收' }}</span>
+        </summary>
+        <div class="mt-3 space-y-3">
+          <p class="text-xs text-slate-600">只结案本送货单的未到余量，采购欠数保留。实物未到的纸品，本批实到填 0。</p>
+          <label v-if="!focusedPaperIds">未收余货
+            <select v-model="remainingAction" aria-label="统一未收余货处理" :disabled="busy">
+              <option value="WAIT">余货继续待收</option>
+              <option value="CLOSE">整张送货单短送结案</option>
+            </select>
+          </label>
+          <label v-for="{ row } in receiptEntries" :key="row.source.id" class="!flex items-start gap-2">
+            <input v-model="row.close" type="checkbox" :aria-label="row.source.id + '关闭此纸品余量'" class="!m-0 !min-h-0 !w-4" :disabled="busy || remainingAction === 'CLOSE'">
+            {{ row.source.packaging_type }} · {{ row.source.specification }} · {{ row.source.order_no }} · 此纸品短送结案
+          </label>
+        </div>
+      </details>
+      <label v-if="closingShortfall">短送结案原因（必填）
+        <input v-model="closeReason" aria-label="统一短送结束原因" :disabled="busy" minlength="4" maxlength="1000" required placeholder="填写至少四字原因">
+      </label>
       <CartonSplitReceiptReview v-if="hasSplits" :factory="group.factory_id" :lines="splitLines" @update:confirmation="splitConfirmation = $event" />
       <p v-if="candidateLoading" class="text-xs">正在检查原收料记录…</p><p v-if="candidateError" role="alert" class="text-xs text-red-700">{{ candidateError }}<button type="button" class="ml-2 underline" @click="checkCandidates">重试</button></p><div v-if="usesFormalReceipt && group.formal && (candidates.length || group.formal.requires_receipt_link)" class="rounded-lg bg-amber-50 p-3 text-xs"><p>原收料可能已入库，后补凭证须关联原记录，避免重复记账。</p><Button type="button" variant="outline" size="sm" :disabled="busy" @click="emit('link-receipt', group.formal)">关联原收料</Button><label v-if="!group.formal.requires_receipt_link" class="mt-2 flex items-center gap-2"><input v-model="newDeliveryConfirmed" type="checkbox" class="!m-0 !min-h-0 !w-4">已核对，这是新一批实际到货</label></div>
-      <div class="flex flex-wrap gap-2"><Button :disabled="readBlocked || busy || !focusedPaperAvailable || candidateLoading || !!candidateError">{{ busy ? '正在保存…' : '确认本次收货' }}</Button><Button type="button" variant="outline" :disabled="busy" @click="editing = false">返回</Button></div>
+      <div class="space-y-3 border-t pt-3">
+        <section v-if="receiptSummary.length" aria-label="本批验收汇总" aria-live="polite" class="space-y-2">
+          <div v-for="entry in receiptSummary" :key="entry.row.source.id" class="rounded-lg bg-muted/60 px-3 py-2 text-xs">
+            <p class="mb-1 font-semibold">{{ entry.row.source.packaging_type }} · {{ entry.row.source.specification }} · {{ entry.row.source.order_no }}</p>
+            <dl class="flex flex-wrap gap-x-5 gap-y-1 tabular-nums">
+              <div class="flex items-baseline gap-1">
+                <dt>本批有效入库</dt>
+                <dd class="font-semibold">{{ entry.quantityValid && entry.entered ? displayReceiptQuantity(entry.inbound) + ' ' + entry.row.source.unit : '—' }}</dd>
+              </div>
+              <div class="flex items-baseline gap-1">
+                <dt>原单继续待收</dt>
+                <dd class="font-semibold">{{ entry.quantityValid && entry.entered ? displayReceiptQuantity(entry.closing ? 0n : entry.remaining) + ' ' + entry.row.source.unit : '—' }}</dd>
+              </div>
+              <div v-if="entry.closing && entry.quantityValid && entry.entered && entry.remaining > 0n" class="flex items-baseline gap-1 text-amber-800">
+                <dt>本次短送结案</dt><dd class="font-semibold">{{ displayReceiptQuantity(entry.remaining) }} {{ entry.row.source.unit }}</dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+        <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
+        <p v-if="receiptProblem && focusedPaperAvailable" class="text-xs text-slate-600" role="status">{{ receiptProblem }}</p>
+        <div class="flex flex-wrap gap-2">
+          <Button type="submit" :disabled="readBlocked || busy || !focusedPaperAvailable || candidateLoading || !!candidateError || !!receiptProblem">
+            {{ busy ? '正在保存…' : closingShortfall ? '确认验收并结案' : '确认本次收货' }}
+          </Button>
+          <Button type="button" variant="outline" :disabled="busy" @click="editing = false">返回</Button>
+        </div>
+      </div>
     </form>
     <details v-if="closureNotes.length && !reopenOnly" class="text-xs"><summary class="cursor-pointer font-semibold">送货核对与短送结束说明</summary><p v-for="(note, index) in closureNotes" :key="index" class="mt-2">{{ note }}</p></details>
     <details v-if="group.shortfall_reopen_history?.length" class="text-xs"><summary class="cursor-pointer font-semibold">短送重开记录</summary><p v-for="(item, index) in group.shortfall_reopen_history" :key="index" class="mt-2">{{ item.created_at }} · {{ item.reason }} · 仅恢复原单待收</p></details>

@@ -47,10 +47,13 @@ async function submit() {
   <DialogRoot :open="true" @update:open="value => { if (!value) close() }"><DialogPortal>
     <DialogOverlay class="warehouse-guide-overlay" />
     <DialogContent class="warehouse-guide fabric-edit-dialog" @escape-key-down="event => { event.preventDefault(); close() }" @interact-outside="event => { event.preventDefault(); close() }">
-      <header class="warehouse-guide-heading"><div><DialogTitle>整单冲销入库</DialogTitle><DialogDescription>扣回这张入库单全部实收库存，恢复采购待收量。原单、价格和经办记录保留；已有后续收发时不能直接冲销。</DialogDescription></div><Button variant="ghost" :disabled="saving || !!frozen" @click="close">关闭</Button></header>
+      <header class="warehouse-guide-heading"><div><DialogTitle>冲销本次入库</DialogTitle><DialogDescription>扣回这笔入库的实收库存，保留原单和原因。原批次已有后续收发时，不能直接冲销。</DialogDescription></div><Button variant="ghost" :disabled="saving || !!frozen" @click="close">关闭</Button></header>
       <form class="warehouse-guide-body" @submit.prevent="submit">
-        <p>{{ record.facts.order_no }} · {{ record.facts.material_name }} · 送货依据 {{ record.delivery_reference }}</p>
-        <p>本次整单冲销：<strong>{{ record.quantity }} {{ record.unit }}</strong>，共 {{ record.batches.length }} 项实物。</p>
+        <p>{{ record.facts.material_name }} · 送货依据 {{ record.delivery_reference }}<template v-if="record.facts.order_no"> · 采购单 {{ record.facts.order_no }}</template></p>
+        <p>本次扣回：<strong>{{ preview?.quantity ?? record.quantity }} {{ preview?.unit ?? record.unit }}</strong>，共 {{ record.batches.length }} 项实物。</p>
+        <p v-if="preview?.locations?.length">涉及仓位：{{ preview.locations.join('、') }}</p>
+        <p v-if="preview?.can_reverse && preview.affects_purchase">采购待收将按本次冲销量恢复。</p>
+        <p v-if="preview?.can_reverse && preview.affects_delivery">对应送货单的已收量将扣回本次数量，其他收货记录保留。</p>
         <p v-if="loading" role="status">正在核对原批次和后续业务…</p>
         <p v-if="preview && !preview.can_reverse" class="fabric-error" role="alert">{{ preview.blocked_reason }}</p>
         <fieldset :disabled="loading || saving || !!frozen || !preview?.can_reverse" class="warehouse-operation-fields">

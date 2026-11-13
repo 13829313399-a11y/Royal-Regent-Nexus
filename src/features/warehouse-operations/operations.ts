@@ -8,6 +8,9 @@ export const operationLabels: Record<WarehouseOperationKind, string> = {
   PROCESS_RETURN: '登记加工回货', PACK_SEND: '登记包装发出', PACK_RECEIVE: '代录包装接收回执',
 }
 export const qualityLabels: Record<WarehouseQuality, string> = { PENDING_INSPECTION: '待检', QUALIFIED: '合格', REJECTED: '不合格', HOLD: '暂停' }
+export function fabricOperationLabel(kind: WarehouseOperationKind) {
+  return kind === 'RECEIPT' ? '入库' : operationLabels[kind]
+}
 export function sumQuantities(values: string[]): string {
   const scale = Math.max(0, ...values.map(value => (value.split('.')[1] ?? '').length))
   const sum = values.reduce((total, value) => { const [whole, fraction = ''] = value.split('.'); return total + BigInt(`${whole}${fraction.padEnd(scale, '0')}`) }, 0n)
@@ -15,7 +18,7 @@ export function sumQuantities(values: string[]): string {
   return scale ? `${digits.slice(0, -scale)}.${digits.slice(-scale)}`.replace(/\.?0+$/, '') : digits
 }
 export function operationsView(domain: WarehouseDomain, section: string, view: string): { stock: boolean; kinds: WarehouseOperationKind[]; actions: WarehouseOperationKind[] } | undefined {
-  if (section === 'overview') return { stock: false, kinds: [], actions: domain === 'fabric' ? ['RECEIPT', 'REQUEST'] : ['TASK', 'RECEIPT'] }
+  if (section === 'overview') return { stock: false, kinds: [], actions: domain === 'fabric' ? ['REQUEST'] : ['TASK', 'RECEIPT'] }
   if (section === 'activity') return { stock: false, kinds: [], actions: [] }
   if (section === 'exceptions' && view !== 'missing') return { stock: view === 'holds', kinds: view === 'holds' ? [] : domain === 'fabric' ? ['CORRECTION'] : ['CORRECTION', 'RETURN'], actions: domain === 'fabric' ? [] : ['CORRECTION'] }
   if (domain === 'semi' && section === 'orders' && view === 'tasks') return { stock: false, kinds: ['TASK'], actions: ['TASK'] }

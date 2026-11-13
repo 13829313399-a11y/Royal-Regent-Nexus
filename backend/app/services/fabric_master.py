@@ -172,14 +172,15 @@ def material_info(facts, all_records):
     return {"material_category": data["data"].get("category") if item.status == "ACTIVE" and matches else None, "master_material": data, "master_material_matches": matches}
 
 
-def receipt_references(db, facts, payload):
+def receipt_references(db, facts, payload, *, supplier=None):
     all_records = records(db)
     material = material_info(facts, all_records)
     if material["master_material"] and material["master_material"]["status"] == "INACTIVE":
         raise HTTPException(422, "该物料资料已停用，请负责人核对后再收料")
     if material["material_category"] and material["material_category"] != payload.material_category:
         raise HTTPException(422, "物料分类与已确认基础资料不同，请刷新并核对资料")
-    supplier = receipt_supplier(db, facts["supplier"])
+    if supplier is None:
+        supplier = receipt_supplier(db, facts["supplier"])
     unit = next((row for row in all_records if row.kind == "UNIT" and not json.loads(row.data_json).get("ratio") and facts["unit"] in (row.code, row.name)), None)
     if unit and unit.status == "INACTIVE":
         raise HTTPException(422, "该单位资料已停用，请负责人核对后再收料")

@@ -37,8 +37,8 @@ const currentView = computed(() => {
 })
 watch(() => currentView.value.id, id => emit('viewChange', warehousePath(props.warehouse, props.section.path), id), { immediate: true })
 function selectView(view: WarehouseView) {
-  if (currentView.value.id === view.id && !route.query.source) return
-  return router.push({ path: route.path, query: { ...route.query, view: view.id, source: undefined, ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}) } })
+  if (currentView.value.id === view.id && !route.query.source && !route.query.receipt) return
+  return router.push({ path: route.path, query: { ...route.query, view: view.id, source: undefined, receipt: undefined, ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}) } })
 }
 async function selectMobileView(event: Event) {
   const select = event.target as HTMLSelectElement
@@ -166,13 +166,13 @@ const dateLabel = computed(() => {
         <summary><Info :size="15" aria-hidden="true" />收料说明</summary>
         <div class="fabric-receiving-help-content">
           <strong>按本次实物登记入库</strong>
-          <p>正常采购与补数统一追货。导入订单和采购历史不增加库存；保存本次实收后增加对应批次库存。</p>
-          <p>供应商上传的送货单可从“送货单入库”列表打开，也可用“扫码入库”快速定位。核对本次实物后才确认入库；选择对应采购待收明细后按实收量同步扣减欠货，同一批货只登记一次；缺少匹配采购来源时会明确提示。</p>
-          <p>实收入库后在库存台账办理出库、退料和调仓，在月结对账统一汇总数量。质检由 QC 负责；历史期初在库存管理中导入，正式月结确认尚未开放。</p>
+          <p>在「待收料」打开「查看采购明细」，或切换到「按采购明细」，从对应行点「登记入库」。也可勾选多条采购明细后批量登记。</p>
+          <p>送货单可从「送货单入库」列表打开，也可扫码定位。核对本次实物后确认入库，按实收量扣减已关联采购单的待收量。同一批货只登记一次。采购归属暂不明确时，可在送货单收料时选「采购待核对」，之后到「入库记录」补关联。</p>
+          <p>入库录错，到「入库记录」冲销。出库和调仓从库存台账办理；退料或出库冲销到「收发记录」找原出库单。数量在月结对账汇总，质检由 QC 负责。</p>
           <div class="fabric-receiving-preview"><span>单据样式预览 · 不保存业务</span><Button v-for="action in previewActions" :key="action.kind" variant="outline" size="sm" @click="previewKind = action.kind">{{ action.label }}</Button></div>
         </div>
       </details>
-      <details v-if="fabricClosing" class="fabric-receiving-help"><summary><Info :size="15" />对账说明</summary><div class="fabric-receiving-help-content"><strong>按实际收发核对当月数量</strong><p>收发数量汇总看全貌，供应商收料和领用方发料分别核对；不同单位不相加。采购实收归入手动，车间退料扣减净发料，冲销按更正发生月份扣回。</p><p>期初库存、盘点和调仓不计入供应商进货或车间领料；库存结余到库存管理查看。参考价格保留原单依据，不计算应付金额。</p><p>裁床接口领料 · 待接入。供应商双方确认、应付结算和正式月结记录尚未开放。</p></div></details><details v-if="fabricExceptions" class="fabric-receiving-help"><summary><Info :size="15" />处理说明</summary><div class="fabric-receiving-help-content"><strong>按原业务核对，再办理更正</strong><p>录错数量或仓位时，从原入库单或收发记录发起冲销；核对原因、确认整单后保留原记录。</p><p>正常分批到货继续在待收料追货，车间退料在库存管理办理。物料缺资料到基础资料补齐。质量问题由 QC 负责，本页可查看历史受限批次，调仓不会解除限制。</p><p>短收、超收、责任分派与处理关闭的独立异常流程尚未接入。</p></div></details>
+      <details v-if="fabricClosing" class="fabric-receiving-help"><summary><Info :size="15" />对账说明</summary><div class="fabric-receiving-help-content"><strong>按实际收发核对当月数量</strong><p>收发数量汇总看全貌，供应商收料和领用方发料分别核对；不同单位不相加。采购实收归入手动，车间退料扣减净发料，冲销按更正发生月份扣回。</p><p>期初库存、盘点和调仓不计入供应商进货或车间领料；库存结余到库存管理查看。参考价格保留原单依据，不计算应付金额。</p><p>裁床接口领料 · 待接入。供应商双方确认、应付结算和正式月结记录尚未开放。</p></div></details><details v-if="fabricExceptions" class="fabric-receiving-help"><summary><Info :size="15" />处理说明</summary><div class="fabric-receiving-help-content"><strong>按原业务核对，再办理更正</strong><p>录错入库数量或仓位，到「收料入库 → 入库记录」冲销；录错出库，到「库存管理 → 收发记录」找原出库单。冲销需填写原因，原单仍保留。</p><p>正常分批到货继续在待收料追货，车间退料在库存管理办理。物料缺资料到基础资料补齐。质量问题由 QC 负责，本页可查看历史受限批次，调仓不会解除限制。</p><p>短收、超收、责任分派与处理关闭的独立异常流程尚未接入。</p></div></details>
       <details v-if="masterMode" class="fabric-receiving-help"><summary><Info :size="15" />资料说明</summary><div class="fabric-receiving-help-content"><strong>基础资料已启用 · 先满足仓库收发</strong><p>仓库与仓位由仓库日常维护。工程、采购模块接入前，物料、计量单位和供应商资料先在这里补齐；当前供应商资料不包含客户或内部领料部门。</p><p>物料先确认编码、名称、分类和库存单位；规格、颜色、材质按已确认资料补充。供应商固定编号用于送货识别、专用入口和收料对账。单位换算只保存有依据的资料，不自动换算收发数量。</p><p>后续衔接工程和采购资料时，应沿用已有编号及对应关系，避免重复建档。资料可修改、停用，导入候选须人工确认后启用；历史单据保留当时资料。</p></div></details>
       </div>
       <div :class="{ 'fabric-receipts-content': fabricReceipts, 'fabric-master-content': masterMode, 'fabric-inventory-content': fabricInventory || fabricExceptions || fabricClosing }">

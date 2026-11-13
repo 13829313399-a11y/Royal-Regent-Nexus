@@ -5,16 +5,18 @@ import WarehouseLocationPicker from '../warehouse-operations/WarehouseLocationPi
 import HandoverPurchaseDetails from './HandoverPurchaseDetails.vue'
 import HandoverOriginalPrint from './HandoverOriginalPrint.vue'
 import HandoverSummaryPrint from './HandoverSummaryPrint.vue'
+import HandoverRejectionSummary from './HandoverRejectionSummary.vue'
 import MaterialHandoverMonthly from './MaterialHandoverMonthly.vue'
 import { handoverReviewIssues } from './handoverReview'
 import { suggestMaterialCategory } from '../warehouse-operations/materialCategorySuggestion'
-import { newReceiptCounts, quantityText, receiptCountFields, receiptNetQuantity, receiptQuantity } from '../warehouse-operations/receiptQuantities'
+import { duplicateReceiptSplitMessage, newReceiptCounts, quantityText, receiptCountFields, receiptNetQuantity, receiptQuantity } from '../warehouse-operations/receiptQuantities'
 import type { ReceiptCounts } from '@/api/fabricReceiving'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, RouterLink } from 'vue-router'
 import axios from 'axios'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { handoverApi, HANDOVER_FACTORY, type HandoverAction, type HandoverData, type HandoverDocument, type HandoverIssuer, type HandoverLine, type HandoverPosting, type HandoverSave, type HandoverSummary, type HandoverWorkspace, type HandoverLinkInput, type HandoverLinkAction, type HandoverPurchaseSources, type HandoverListFilters } from '@/api/materialHandover'
+import type { HandoverPriorReceipt, HandoverReceiptLink, HandoverReceiptUnlink, HandoverRejectionFollowup, HandoverRejectionStatus } from '@/api/materialHandover'
 
 const props = defineProps<{ external?: boolean }>()
 const supplierTemplateUrl = `${import.meta.env.BASE_URL}templates/material-handover/supplier-delivery-v1.xlsx`
@@ -56,11 +58,19 @@ type PostingRow = {
   batch_id: string
   purchase_source_id: string
   difference_reason: string
+  procurementPending: boolean
+  procurementPendingReason: string
   showReceiptCounts: boolean
   previousRemaining?: string
   purchaseChoiceNeedsReview?: boolean
 }
 const posting = ref<Record<string, PostingRow>>({})
+const receiptToLink = ref<{ lineId: string; receiptId: string } | null>(null)
+const receiptToUnlink = ref('')
+const unlinkReason = ref('')
+const receiptObservationHistory = ref<HTMLDetailsElement | null>(null)
+const rejectionDraft = ref<{ observationId: string; lineId: string; status: HandoverRejectionStatus | ''; reason: string } | null>(null)
+const confirmedNewReceipts = ref<Record<string, boolean>>({})
 const maxPostingParts = 100
 let nextPostingPartKey = 0
 const receivingLocations = computed(() => (workspace.value?.inventory.locations ?? []).filter(location => location.status === 'ACTIVE'))
@@ -95,7 +105,7 @@ const draftEditable = computed(() => selected.value?.status === 'DRAFT' && canPr
 const suppliers = computed(() => workspace.value?.suppliers || [])
 const activeSuppliers = computed(() => suppliers.value.filter(row => row.status === 'ACTIVE'))
 const canMonthly = computed(() => props.external && Boolean(issuer.value?.kind === 'SUPPLIER' && issuer.value.supplier_id))
-type Pending = { kind: 'save' | 'confirm' | 'void' | 'post'; id: string; body: HandoverSave | HandoverAction | HandoverPosting; print_after?: boolean }
+type Pending = { kind: 'save' | 'confirm' | 'void' | 'post' | 'linkReceipt' | 'unlinkReceipt' | 'rejectionFollowup'; id: string; body: HandoverSave | HandoverAction | HandoverPosting | HandoverReceiptLink | HandoverReceiptUnlink | HandoverRejectionFollowup; print_after?: boolean }
 const pending = ref<Pending | null>(null)
 let generation = 0
 const uploadRequests = new WeakMap<File, string>()
@@ -113,7 +123,7 @@ function releasePrint() {
   originalPrintActive.value = false
 }
 function releaseUrls() { fileSequence.source++; fileSequence.qr++; for (const value of [sourceUrl.value, qrUrl.value]) if (value) URL.revokeObjectURL(value); sourceUrl.value = ''; qrUrl.value = ''; releasePrint() }
-function clear() { generation++; purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''; workspace.value = null; issuer.value = null; summaries.value = []; moreAvailable.value = false; total.value = 0; filters.value = emptyFilters(); appliedFilters.value = emptyFilters(); selected.value = null; draft.value = null; posting.value = {}; issuers.value = []; pending.value = null; managementPending.value = null; bindSupplier.value = {}; failedFiles.value = []; newLink.value = ''; scanCode.value = ''; releaseUrls(); error.value = ''; notice.value = ''; busy.value = false; loading.value = false }
+function clear() { generation++; purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''; workspace.value = null; issuer.value = null; summaries.value = []; moreAvailable.value = false; total.value = 0; filters.value = emptyFilters(); appliedFilters.value = emptyFilters(); selected.value = null; draft.value = null; rejectionDraft.value = null; posting.value = {}; issuers.value = []; pending.value = null; managementPending.value = null; bindSupplier.value = {}; failedFiles.value = []; newLink.value = ''; scanCode.value = ''; releaseUrls(); error.value = ''; notice.value = ''; busy.value = false; loading.value = false }
 function showError(e: unknown, message = getApiErrorMessage(e)) { if (axios.isAxiosError(e) && [401, 403].includes(e.response?.status || 0)) clear(); error.value = message }
 function scopeValid() { return props.external ? Boolean(key.value) : route.query.factory === HANDOVER_FACTORY }
 function readList(offset = 0) { return pendingDeliveriesOnly.value ? api.value.pendingDeliveries(offset) : api.value.list(offset, appliedFilters.value) }
@@ -166,7 +176,11 @@ function accept(row: HandoverDocument, preserveReceipt = false) {
   const previous = selected.value
   const keepReceipt = preserveReceipt && previous?.id === row.id && previous.factory_id === row.factory_id &&
     previous.status === 'CONFIRMED' && row.status === 'CONFIRMED' && row.data.kind === 'DELIVERY'
-  if (selected.value?.id !== row.id || row.status === 'VOID') { showVoid.value = false; voidReason.value = '' }
+  receiptToLink.value = null
+  receiptToUnlink.value = ''
+  unlinkReason.value = ''
+  confirmedNewReceipts.value = {}
+  if (selected.value?.id !== row.id || row.status === 'VOID') { showVoid.value = false; voidReason.value = ''; rejectionDraft.value = null }
   manualCategories.clear()
   row.data.lines.filter(line => line.material_category).forEach(line => manualCategories.add(line.id))
   purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''
@@ -189,6 +203,7 @@ function accept(row: HandoverDocument, preserveReceipt = false) {
     return [line.id, {
       selected: false, parts: [newPostingPart(line, quantity)],
       batch_id: '', purchase_source_id: '', difference_reason: '', showReceiptCounts: false,
+      procurementPending: false, procurementPendingReason: '',
     }]
   }))
 }
@@ -252,6 +267,14 @@ function postingTotal(parts: PostingPart[]) {
   }
   return total
 }
+function receiptDuplicateIssue(line: HandoverLine, row: PostingRow) {
+  if (line.material_category !== 'FABRIC') return
+  return duplicateReceiptSplitMessage(row.parts.map(part => ({
+    dye_lot: part.lot.trim() || line.lot,
+    roll_no: part.roll_no,
+    location_id: (postingPartAmount(part) ?? 0n) > 0n ? part.location_id : '',
+  })))
+}
 function receiptInputIssue(line: HandoverLine, row: PostingRow) {
   const progressIssue = receiptProgressIssue(line.id, row)
   if (progressIssue) return progressIssue
@@ -269,6 +292,7 @@ function receiptInputIssue(line: HandoverLine, row: PostingRow) {
       return '所选仓位已不可用，请重新选择仓库和仓位。'
     }
   }
+  return receiptDuplicateIssue(line, row)
 }
 function receiptTotalLabel(line: HandoverLine) {
   const total = postingTotal(posting.value[line.id]!.parts)
@@ -316,7 +340,10 @@ async function loadPurchaseSources() {
   } catch (e) { if (epoch === generation && ticket === purchaseSequence) { if (axios.isAxiosError(e) && [401,403].includes(e.response?.status || 0)) showError(e); else purchaseError.value = getApiErrorMessage(e) } }
   finally { if (epoch === generation && ticket === purchaseSequence) purchaseLoading.value = false }
 }
-function purchaseChoice(line: HandoverLine) { return purchaseSources.value?.lines[line.id]?.find(value => value.id === posting.value[line.id]?.purchase_source_id) }
+function purchaseChoice(line: HandoverLine) {
+  const state = posting.value[line.id]
+  return state?.procurementPending ? undefined : purchaseSources.value?.lines[line.id]?.find(value => value.id === state?.purchase_source_id)
+}
 function purchaseMatchMessage(line: HandoverLine) {
   const state = posting.value[line.id]
   if (state?.purchaseChoiceNeedsReview && !state.purchase_source_id) return '原关联采购明细已变化，请重新选择。'
@@ -335,7 +362,7 @@ function purchaseOverage(line: HandoverLine) {
   const choice = purchaseChoice(line)
   const remaining = receiptQuantity(choice?.remaining ?? '')
   if (!choice || remaining === undefined) return false
-  const parts = Object.values(posting.value).filter(row => row.selected && row.purchase_source_id === choice.id).flatMap(row => row.parts)
+  const parts = Object.values(posting.value).filter(row => row.selected && !row.procurementPending && row.purchase_source_id === choice.id).flatMap(row => row.parts)
   const total = postingTotal(parts)
   return total !== undefined && total > remaining
 }
@@ -396,18 +423,32 @@ async function mutate(value: Pending) {
     let result: HandoverDocument
     if (frozen.kind === 'save') result = await client.save(frozen.id, frozen.body as HandoverSave)
     else if (frozen.kind === 'post') result = await client.post(frozen.id, frozen.body as HandoverPosting)
+    else if (frozen.kind === 'linkReceipt') result = await client.linkReceipt(frozen.id, frozen.body as HandoverReceiptLink)
+    else if (frozen.kind === 'unlinkReceipt') result = await client.unlinkReceipt(frozen.id, frozen.body as HandoverReceiptUnlink)
+    else if (frozen.kind === 'rejectionFollowup') result = await client.recordRejectionFollowup(frozen.id, frozen.body as HandoverRejectionFollowup)
     else result = await client.action(frozen.id, frozen.kind, frozen.body as HandoverAction)
     if (epoch !== generation) return
     pending.value = null
     if (frozen.kind === 'void') releaseUrls()
-    accept(result)
-    if (frozen.kind === 'post') {
+    accept(result, frozen.kind === 'linkReceipt' || frozen.kind === 'unlinkReceipt' || frozen.kind === 'rejectionFollowup')
+    if (frozen.kind === 'linkReceipt') {
+      notice.value = '原实收已关联，送货单进度已更新。'
+    } else if (frozen.kind === 'unlinkReceipt') {
+      notice.value = '已撤回关联，送货单进度已更新。'
+    } else if (frozen.kind === 'rejectionFollowup') {
+      rejectionDraft.value = null
+      notice.value = '拒收处理结果已保存。'
+    } else if (frozen.kind === 'post') {
       const lines = (frozen.body as HandoverPosting).lines
-      notice.value = lines.every(line => line.receipt_counts && receiptQuantity(line.quantity) === 0n)
-        ? '本次收料差异已保存，净入库量为零。可在本单收料差异记录中查看。'
-        : lines.some(line => line.purchase_source_id)
-          ? '本次实收已保存，库存、单据剩余数量和采购待收进度已同步更新。'
-          : '本次实际收发已保存，库存和剩余数量已更新。'
+      if (lines.every(line => line.receipt_counts && receiptQuantity(line.quantity) === 0n)) {
+        notice.value = '本次收料差异已保存，净入库量为零。可在本单收料差异记录中查看。'
+      } else if (lines.some(line => line.procurement_pending_reason)) {
+        notice.value = '本次实收已入库，待核对批次可到「收料入库 → 入库记录」补关联采购。'
+      } else if (lines.some(line => line.purchase_source_id)) {
+        notice.value = '本次实收已保存，库存、单据剩余数量和采购待收进度已同步更新。'
+      } else {
+        notice.value = '本次实际收发已保存，库存和剩余数量已更新。'
+      }
     } else if (supplierPortal.value) {
       notice.value = frozen.kind === 'save' ? '草稿已保存，仅本供应商可见。'
         : frozen.kind === 'confirm' ? '送货单已确认，已生成交接二维码，仓库可按单收货。'
@@ -456,16 +497,82 @@ async function scan() {
   catch (e) { if (epoch === generation) showError(e) }
   finally { if (epoch === generation) loading.value = false }
 }
+function confirmReceiptLink(lineId: string, receipt: HandoverPriorReceipt) {
+  if (!selected.value || locked.value || !receipt.can_link) return
+  void mutate({ kind: 'linkReceipt', id: selected.value.id, body: {
+    factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: selected.value.revision,
+    line_id: lineId, receipt_id: receipt.id,
+  } })
+}
+const unlinkImpact = computed(() => {
+  const doc = selected.value
+  const movement = doc?.movements.find(item => item.operation_id === receiptToUnlink.value)
+  if (!doc || !movement || movement.manual_reference === undefined) return
+  const progress = doc.progress[movement.line_id]
+  const line = doc.data.lines.find(item => item.id === movement.line_id)
+  if (!line || !progress) return
+  const received = receiptQuantity(progress.processed)
+  const remaining = receiptQuantity(progress.remaining)
+  const change = movement.reversed ? 0n : receiptQuantity(movement.quantity)
+  if (received === undefined || remaining === undefined || change === undefined) return
+  return { line, progress, received: quantityText(received - change), remaining: quantityText(remaining + change) }
+})
+function confirmReceiptUnlink() {
+  if (!selected.value || !unlinkImpact.value || locked.value || !unlinkReason.value.trim()) return
+  void mutate({ kind: 'unlinkReceipt', id: selected.value.id, body: {
+    factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: selected.value.revision,
+    link_id: receiptToUnlink.value, expected_processed: unlinkImpact.value.progress.processed, reason: unlinkReason.value.trim(),
+  } })
+}
+function showReceiptObservations() {
+  const history = receiptObservationHistory.value
+  if (!history) return
+  history.open = true
+  history.scrollIntoView?.({ block: 'start' })
+  history.querySelector('summary')?.focus({ preventScroll: true })
+}
+async function editRejection(observationId: string, lineId: string, status: HandoverRejectionStatus | null) {
+  if (locked.value || !workspace.value?.can_operate || selected.value?.status !== 'CONFIRMED') return
+  rejectionDraft.value = { observationId, lineId, status: status ?? '', reason: '' }
+  await nextTick()
+  receiptObservationHistory.value?.querySelector<HTMLSelectElement>('.rejection-followup-form select')?.focus()
+}
+function saveRejectionFollowup() {
+  const doc = selected.value, followup = rejectionDraft.value
+  if (!doc || doc.status !== 'CONFIRMED' || !workspace.value?.can_operate || locked.value || !followup?.status || !followup.reason.trim()) return
+  void mutate({ kind: 'rejectionFollowup', id: doc.id, body: {
+    factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: doc.revision,
+    observation_request_id: followup.observationId, line_id: followup.lineId,
+    status: followup.status, reason: followup.reason.trim(),
+  } })
+}
 function post() {
   if (!selected.value || !workspace.value || locked.value) return
   const receiving = selected.value.data.kind === 'DELIVERY'
   if (receiving && !purchaseReady.value) { error.value = '请先加载并核对采购待收明细。'; return }
   const selectedRows = Object.entries(posting.value).filter(([, row]) => row.selected)
   if (!selectedRows.length) { error.value = '请勾选本次实际收到或发出的明细。'; return }
+  const manualReceiptReviews: Record<string, string> = {}
   if (receiving) {
     for (const [id, row] of selectedRows) {
       const hasStock = row.parts.some(part => !part.counts || (postingPartAmount(part) ?? 0n) > 0n)
-      if (hasStock && (purchaseSources.value?.lines[id]?.length || 0) > 0 && !row.purchase_source_id) {
+      const review = selected.value.prior_receipts?.[id]
+      if (hasStock && review) {
+        if (review.items.some(item => item.blocks_posting)) {
+          error.value = '同单号已有实收，请先核对并关联原入库。'
+          return
+        }
+        if (!confirmedNewReceipts.value[id]) {
+          error.value = '请核对可能对应的旧入库，关联原实收或确认本批为新到货。'
+          return
+        }
+        manualReceiptReviews[id] = review.review_token
+      }
+      if (hasStock && row.procurementPending && !row.procurementPendingReason.trim()) {
+        error.value = '请填写采购待核对原因。'
+        return
+      }
+      if (hasStock && !row.procurementPending && (purchaseSources.value?.lines[id]?.length || 0) > 0 && !row.purchase_source_id) {
         error.value = '请为本次实收选择对应采购待收明细。'
         return
       }
@@ -475,12 +582,15 @@ function post() {
     }
   }
   const lines = selectedRows.flatMap(([line_id, row]) => {
-    const choice = purchaseSources.value?.lines[line_id]?.find(value => value.id === row.purchase_source_id)
+    const originalRoll = selected.value?.data.lines.find(line => line.id === line_id)?.roll_no
+    const choice = row.procurementPending ? undefined : purchaseSources.value?.lines[line_id]?.find(value => value.id === row.purchase_source_id)
     return row.parts.map(part => {
       const quantity = part.counts ? calculatedNetText(part) : part.quantity
       const zeroReceipt = !!part.counts && quantity === '0'
       return { line_id, quantity, batch_id: row.batch_id, location_id: zeroReceipt ? '' : part.location_id, lot: part.lot, roll_no: part.roll_no,
+        ...(receiving && originalRoll && !part.roll_no.trim() ? { roll_no_is_blank: true } : {}),
         ...(part.counts ? { receipt_counts: { ...part.counts } } : {}),
+        ...(row.procurementPending && !zeroReceipt ? { procurement_pending_reason: row.procurementPendingReason.trim() } : {}),
         ...(choice && !zeroReceipt ? { purchase_source_id: choice.id, expected_source_revision: choice.revision, expected_receipt_count: choice.receipt_count, difference_reason: row.difference_reason } : {}) }
     })
   })
@@ -489,6 +599,7 @@ function post() {
     factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: selected.value.revision,
     expected_inventory_revision: workspace.value.inventory.revision, code_version: selected.value.code_version,
     business_date: businessDate.value, lines,
+    ...(Object.keys(manualReceiptReviews).length ? { manual_receipt_reviews: manualReceiptReviews } : {}),
   } })
 }
 function batches(line: HandoverLine) { return (workspace.value?.inventory.stock || []).filter(b => b.item_code === line.item_code && b.unit === line.unit && Number(b.available_quantity) > 0 && (!line.lot || b.lot === line.lot)) }
@@ -721,13 +832,14 @@ onBeforeUnmount(() => {
               <span class="document-statuses">
                 <span class="status-tag" :class="row.status.toLowerCase()">{{ statusLabels[row.status] }}</span>
                 <span
-                  v-if="!external && row.status === 'CONFIRMED' && row.data.kind === 'DELIVERY' && row.processing_status"
+                  v-if="!external && row.status === 'CONFIRMED' && row.data.kind === 'DELIVERY' && row.processing_status && (row.processing_status !== 'PENDING' || !row.receipt_rejection)"
                   class="status-tag"
                   :class="receiptProgress[row.processing_status].classes"
                 >{{ receiptProgress[row.processing_status].label }}</span>
               </span>
             </span>
             <span class="document-party">{{ row.data.counterparty || '制单方待核对' }}</span>
+            <HandoverRejectionSummary v-if="!external && row.receipt_rejection" :summary="row.receipt_rejection" />
             <small>{{ row.data.kind === 'DELIVERY' ? '送货单' : '领料单' }} · {{ row.line_count }} 项 <span>{{ row.data.document_date || '日期待核对' }}</span></small>
           </button>
           <button v-if="moreAvailable" :disabled="locked" @click="loadMore">加载更早单据</button>
@@ -770,6 +882,10 @@ onBeforeUnmount(() => {
                 <p>{{ selected.file_name }} · {{ selected.data.counterparty || '制单方待补' }}</p>
               </div>
               <button @click="preview('source')">查看原件</button>
+            </div>
+            <div v-if="!external && selected.receipt_rejection" class="receipt-rejection-overview">
+              <HandoverRejectionSummary :summary="selected.receipt_rejection" />
+              <button type="button" class="receipt-secondary-action" @click="showReceiptObservations">查看收料差异</button>
             </div>
             <iframe v-if="sourceUrl && selected.file_name.toLowerCase().endsWith('.pdf')" :src="sourceUrl" title="单据原件" class="source-preview" />
             <img v-else-if="sourceUrl && /\.(png|jpe?g|webp)$/i.test(selected.file_name)" :src="sourceUrl" alt="单据原件" class="source-preview" />
@@ -906,12 +1022,43 @@ onBeforeUnmount(() => {
                         </button>
                       </div>
                     </div>
+                    <details v-if="selected.prior_receipts?.[line.id]?.items.length" open class="prior-receipts">
+                      <summary>核对已有入库 · {{ selected.prior_receipts[line.id]!.items.length }} 笔</summary>
+                      <ul>
+                        <li v-for="old in selected.prior_receipts[line.id]!.items" :key="old.id">
+                          <div>
+                            <strong>{{ old.reference || '旧记录未填单号' }}</strong>
+                            <span> · {{ old.date }} · {{ receiptDisplayQuantity(old.quantity) }} {{ line.unit }}</span>
+                            <span v-if="old.exact_reference"> · 同单号</span>
+                            <small v-if="old.order_no || old.production_no || old.contract_no">
+                              {{ [old.order_no && `采购单 ${old.order_no}`, old.production_no && `生产单 ${old.production_no}`, old.contract_no && `合同 ${old.contract_no}`].filter(Boolean).join(' · ') }}
+                            </small>
+                            <small v-for="(part, index) in old.parts" :key="index">
+                              {{ [part.location, part.lot && `缸 ${part.lot}`, part.roll_no && `卷 ${part.roll_no}`].filter(Boolean).join(' · ') }}
+                            </small>
+                            <small v-if="old.reason">{{ old.reason }}</small>
+                          </div>
+                          <button v-if="old.can_link" type="button" :aria-label="`关联旧入库 ${old.reference || old.date}`"
+                            @click="receiptToLink = { lineId: line.id, receiptId: old.id }">关联这笔入库</button>
+                          <div v-if="receiptToLink?.lineId === line.id && receiptToLink.receiptId === old.id" class="prior-receipt-confirm">
+                            <p>确认是本单同一批货后，将原实收 {{ receiptDisplayQuantity(old.quantity) }} {{ line.unit }}计入送货单进度。库存只计原入库。</p>
+                            <button type="button" @click="receiptToLink = null">取消</button>
+                            <button type="button" class="primary" @click="confirmReceiptLink(line.id, old)">确认补关联</button>
+                          </div>
+                        </li>
+                      </ul>
+                      <label v-if="!selected.prior_receipts[line.id]!.items.some(item => item.blocks_posting)" class="check-label">
+                        <input v-model="confirmedNewReceipts[line.id]" type="checkbox" />
+                        <span>已核对以上记录，本次是新到货</span>
+                      </label>
+                    </details>
                     <div class="receipt-allocations">
                       <p v-if="posting[line.id]!.previousRemaining !== undefined" class="review-warning" role="status">
                         单据尚余由 {{ receiptDisplayQuantity(posting[line.id]!.previousRemaining) }} {{ line.unit }}更新为 {{ receiptDisplayQuantity(selected.progress[line.id]?.remaining) }} {{ line.unit }}。请核对本次净入库量。
                       </p>
                       <p v-if="postingTotal(posting[line.id]!.parts) !== 0n && !receiptWarehouses(line).length" class="review-warning" role="status">没有匹配物料分类的可用仓位，请先到基础资料启用仓位。</p>
                       <p v-if="receiptProgressIssue(line.id, posting[line.id]!)" class="review-warning error" role="alert">{{ receiptProgressIssue(line.id, posting[line.id]!) }}</p>
+                      <p v-if="receiptDuplicateIssue(line, posting[line.id]!)" class="review-warning error" role="alert">{{ receiptDuplicateIssue(line, posting[line.id]!) }}</p>
                       <div v-for="(part, partIndex) in posting[line.id]!.parts" :key="part.key" class="receipt-allocation">
                         <div v-if="posting[line.id]!.parts.length > 1" class="receipt-allocation-heading">
                           <strong>入库仓位 {{ partIndex + 1 }}</strong>
@@ -963,7 +1110,7 @@ onBeforeUnmount(() => {
                         <p v-if="part.counts && receiptQuantity(part.counts.counted_quantity) !== 0n && calculatedNetText(part) === '0'" class="receipt-count-note">本分项净入库为零，仅保存差异。</p>
                       </div>
                     </div>
-                    <div v-if="postingTotal(posting[line.id]!.parts) !== 0n && purchaseSources?.lines[line.id]?.length" class="receipt-purchase-source">
+                    <div v-if="!posting[line.id]!.procurementPending && postingTotal(posting[line.id]!.parts) !== 0n && purchaseSources?.lines[line.id]?.length" class="receipt-purchase-source">
                       <label>对应采购待收明细
                         <select v-model="posting[line.id]!.purchase_source_id" :aria-label="`${line.id}采购待收明细`">
                           <option value="">请选择对应采购单</option>
@@ -973,10 +1120,16 @@ onBeforeUnmount(() => {
                       <p v-if="Number(selected.progress[line.id]?.remaining) > 0" class="purchase-match-message" role="status">{{ purchaseMatchMessage(line) }}</p>
                       <HandoverPurchaseDetails v-if="Number(selected.progress[line.id]?.remaining) > 0 && purchaseReady && purchaseChoice(line)" :source="purchaseChoice(line)!" :line="line" />
                     </div>
-                    <p v-else-if="postingTotal(posting[line.id]!.parts) !== 0n && purchaseReady && workspace.can_read_purchase !== false" class="receipt-source-note">
+                    <p v-else-if="!posting[line.id]!.procurementPending && postingTotal(posting[line.id]!.parts) !== 0n && purchaseReady && workspace.can_read_purchase !== false" class="receipt-source-note">
                       <strong>{{ posting[line.id]!.purchaseChoiceNeedsReview ? '原关联采购明细已不可用' : '未匹配采购来源' }}</strong>
                       <span>可登记实收，采购待收保持原数量。请核对采购资料。</span>
                     </p>
+                    <div v-if="postingTotal(posting[line.id]!.parts) !== 0n && purchaseReady && workspace.can_read_purchase !== false" class="receipt-purchase-source">
+                      <label class="check-label"><input v-model="posting[line.id]!.procurementPending" type="checkbox" :aria-label="`${line.id}采购待核对`" />采购待核对</label>
+                      <label v-if="posting[line.id]!.procurementPending">待核对原因
+                        <input v-model="posting[line.id]!.procurementPendingReason" :aria-label="`${line.id}采购待核对原因`" maxlength="1000" placeholder="例如原件合同号与候选采购单不符" />
+                      </label>
+                    </div>
                     <label v-if="purchaseOverage(line)">超收说明<input v-model="posting[line.id]!.difference_reason" :aria-label="`${line.id}超收说明`" maxlength="1000" /></label>
                   </template>
                   <template v-else>
@@ -991,7 +1144,8 @@ onBeforeUnmount(() => {
                 <button class="primary" :disabled="locked || (selected.data.kind === 'DELIVERY' && !purchaseReady)" @click="post">确认本次实物收发</button>
               </footer>
             </section>
-            <details v-if="!external && selected.receipt_observations?.length" class="history receipt-observation-history">
+            <details v-if="!external && selected.receipt_observations?.length" :key="selected.id" ref="receiptObservationHistory"
+              :open="Boolean(selected.receipt_rejection)" class="history receipt-observation-history">
               <summary>收料差异记录 · {{ selected.receipt_observations.length }} 次</summary>
               <article v-for="entry in selected.receipt_observations" :key="entry.request_id">
                 <strong>{{ entry.business_date }} · {{ entry.actor_name }}</strong>
@@ -1005,10 +1159,62 @@ onBeforeUnmount(() => {
                     · 净入库 {{ part.accepted_quantity }} {{ line.unit }}
                     <span v-if="selected.movements.some(move => move.operation_id === part.operation_id && move.reversed)">· 入库已冲销</span>
                   </p>
+                  <div v-if="line.full_rejection" class="receipt-rejection-followup">
+                    <HandoverRejectionSummary :summary="{ rejected_quantity: line.full_rejection.rejected_quantity,
+                      unit: line.unit, status: line.full_rejection.followup?.status ?? null }" />
+                    <p v-if="line.full_rejection.followup" class="rejection-evidence">
+                      {{ line.full_rejection.followup.reason }} · {{ line.full_rejection.followup.actor_name }}
+                      · {{ line.full_rejection.followup.recorded_at.slice(0, 16).replace('T', ' ') }}
+                    </p>
+                    <template v-if="selected.status === 'CONFIRMED' && workspace?.can_operate">
+                      <form v-if="rejectionDraft?.observationId === entry.request_id && rejectionDraft.lineId === line.line_id"
+                        class="rejection-followup-form" @submit.prevent="saveRejectionFollowup">
+                        <label>处理结果<select v-model="rejectionDraft.status" required :disabled="locked">
+                          <option value="" disabled>请选择处理结果</option>
+                          <option value="PENDING_REDELIVERY">待补送</option>
+                          <option value="RESOLVED">差异已处理</option>
+                        </select></label>
+                        <label>处理原因<textarea v-model="rejectionDraft.reason" maxlength="1000" rows="2" required :disabled="locked" /></label>
+                        <div class="prior-receipt-confirm">
+                          <button type="button" :disabled="locked" @click="rejectionDraft = null">取消</button>
+                          <button type="submit" class="rejection-save" :disabled="locked || !rejectionDraft.status || !rejectionDraft.reason.trim()">保存处理结果</button>
+                        </div>
+                      </form>
+                      <button v-else type="button" class="receipt-secondary-action" :disabled="locked"
+                        @click="editRejection(entry.request_id, line.line_id, line.full_rejection.followup?.status ?? null)">
+                        {{ line.full_rejection.followup ? '修改处理结果' : '处理拒收' }}
+                      </button>
+                    </template>
+                  </div>
                 </div>
               </article>
             </details>
-            <details v-if="selected.movements.length" class="history"><summary>本单实际收发记录 · {{ selected.movements.length }} 笔</summary><p v-for="movement in selected.movements" :key="movement.operation_id">{{ movement.business_date }} · {{ movement.line_id }} · {{ movement.quantity }} · {{ movement.reversed ? '已冲销' : '已入库存流水' }} · {{ movement.operation_id }}</p></details>
+            <details v-if="selected.movements.length || selected.revoked_receipt_links?.length" class="history">
+              <summary>本单实际收发记录 · {{ selected.movements.length }} 笔<span v-if="selected.revoked_receipt_links?.length"> · 撤回关联 {{ selected.revoked_receipt_links.length }} 笔</span></summary>
+              <div v-for="movement in selected.movements" :key="movement.operation_id" class="receipt-history-entry">
+                <p>
+                  {{ movement.business_date }} · {{ movement.line_id }} · {{ receiptDisplayQuantity(movement.quantity) }}
+                  · {{ movement.reversed ? '已冲销' : '已入库存流水' }}
+                  <template v-if="movement.manual_reference !== undefined"> · 关联旧入库 {{ movement.manual_reference }}</template>
+                  <template v-else> · {{ movement.operation_id }}</template>
+                  <button v-if="movement.manual_reference !== undefined && !external && workspace?.can_operate" type="button"
+                    :disabled="locked" @click="receiptToUnlink = movement.operation_id; unlinkReason = ''">撤回关联</button>
+                </p>
+                <form v-if="receiptToUnlink === movement.operation_id && unlinkImpact" class="receipt-unlink-form" @submit.prevent="confirmReceiptUnlink">
+                  <strong>{{ unlinkImpact.line.item_name }}</strong>
+                  <p>已收 {{ unlinkImpact.progress.processed }} → {{ unlinkImpact.received }} {{ unlinkImpact.line.unit }} · 待收 {{ unlinkImpact.progress.remaining }} → {{ unlinkImpact.remaining }} {{ unlinkImpact.line.unit }}</p>
+                  <label>撤回原因<input v-model="unlinkReason" maxlength="1000" required :disabled="locked" /></label>
+                  <div class="prior-receipt-confirm">
+                    <button type="button" :disabled="locked" @click="receiptToUnlink = ''">取消</button>
+                    <button type="submit" class="receipt-unlink-button" :disabled="locked || !unlinkReason.trim()">确认撤回关联</button>
+                  </div>
+                </form>
+              </div>
+              <p v-for="item in selected.revoked_receipt_links" :key="item.link_id" class="receipt-history-entry">
+                已撤回关联 · {{ item.reference }} · {{ receiptDisplayQuantity(item.quantity) }} · {{ item.revoked_by }}
+                · {{ item.revoked_at.slice(0, 16).replace('T', ' ') }} · {{ item.reason }}
+              </p>
+            </details>
             <details v-if="selected.raw_text" class="history"><summary>查看识别原文与字段出处</summary><pre>{{ selected.raw_text }}</pre><pre>{{ JSON.stringify(selected.evidence, null, 2) }}</pre></details>
              <div v-if="selected.status !== 'VOID' && canPrepare" class="actions"><button :disabled="locked || selected.movements.length > 0" @click="showVoid = !showVoid">作废未执行单据</button><form v-if="showVoid" @submit.prevent="voidDocument"><p v-if="supplierPortal && selected.status === 'CONFIRMED'">作废后旧二维码失效。请上传正确的原单，重新确认和打印。</p><label>作废原因<input v-model="voidReason" required maxlength="1000" /></label><button :disabled="locked || !voidReason.trim()">确认作废</button></form></div>
           </template>
@@ -1377,6 +1583,45 @@ onBeforeUnmount(() => {
 .receipt-metric-total dd {
   color: var(--primary);
 }
+.prior-receipts {
+  min-width: 0;
+  padding: 10px 12px;
+  background: #fff7e8;
+  border: 1px solid #eadabb;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.prior-receipts summary { font-weight: 650; cursor: pointer; }
+.prior-receipts ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.prior-receipts li {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-top: 1px solid #eadabb;
+}
+.prior-receipts small { display: block; color: var(--muted-foreground); }
+.prior-receipt-confirm { flex-basis: 100%; }
+.prior-receipt-confirm p { margin: 0 0 8px; }
+.prior-receipt-confirm button + button { margin-left: 8px; }
+.receipt-history-entry { margin: 10px 0; overflow-wrap: anywhere; }
+.receipt-history-entry > p > button { margin-left: 8px; }
+.receipt-unlink-form, .rejection-followup-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.receipt-unlink-form p { margin: 0; }
+.receipt-unlink-form .receipt-unlink-button { background: #a2392d; color: white; border-color: #a2392d; }
+.receipt-rejection-overview { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0 12px; }
+.receipt-rejection-followup { margin: 8px 0 12px; display: grid; gap: 8px; justify-items: start; }
+.rejection-followup-form { width: min(100%, 480px); }
+.receipt-rejection-followup .rejection-evidence { margin: 0; }
+.rejection-followup-form .rejection-save { color: white; background: #0f766e; border-color: #0f766e; }
 .receipt-allocations{min-width:0;display:grid;gap:8px}
 .receipt-allocation-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 16px}
 .receipt-allocation-heading strong{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
