@@ -145,7 +145,7 @@ def workspace_masters(db: Db, user: User, factory_id: str = ''):
 
 @router.get('/workspace/planning')
 def workspace_planning(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
-                       status: s.WorkflowStatus | None = None, bucket: Literal['', 'scheduled', 'unscheduled'] = '',
+                       status: s.WorkflowStatusFilter | None = None, bucket: Literal['', 'scheduled', 'unscheduled'] = '',
                        page: int = Query(1, ge=1),
                        plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
     c.authorize(user, factory_id)
@@ -481,7 +481,7 @@ def schedule_import_recover(body:schedule_import.Recover,db:Db,user:User):
 
 @router.get('/orders')
 def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1), q: str = Query('', max_length=80),
-               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None,
+               status: s.WorkflowStatusFilter | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None,
                changes_only: bool = False):
     c.authorize(user, factory_id)
     orders_ready(db)

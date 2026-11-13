@@ -86,6 +86,13 @@ const writable = computed(() => selected.value && !selected.value.needs_receipt 
 const can = (permission: string) => access.value?.permissions.includes(permission) ?? false
 const labels: Record<OrderAction, string> = { receive: '签收订单版本', bom: '工程关联 BOM', requisition: '工程提交物料需求', eta: '采购回复分批交期', withdraw: '工程申请撤回／修订', reconcile: '采购核对旧需求', plan: '编制任务与日计划', 'plan-publish': '发布生产预排' }
 const statusLabels: Record<string, string> = { awaiting_receipt: '待签收新版本', cancelled_receipt: '取消待签收', cancelled: '已取消', reconciliation: '旧需求待采购核对', awaiting_bom: '待关联 BOM', awaiting_submission: '待工程提交需求', awaiting_reply: '待采购回复', partial_reply: '采购部分回复', complete_reply: '采购全部回复', no_purchase: '本次无需采购' }
+const planningStatusLabels = {
+  pending_confirmation: '待确认',
+  pending_engineering: '待工程处理',
+  pending_procurement: '待采购处理',
+  procurement_ready: '物料已齐／无需采购',
+  cancelled: statusLabels.cancelled,
+}
 let alive = true, generation = 0, searchGeneration = 0, historyGeneration = 0
 function discard() {
   if (scheduleImporter.value && !scheduleImporter.value.discard()) return false
@@ -333,7 +340,7 @@ function status(row: CuttingOrder) {
             <span>办理状态</span>
             <select :id="`${filterId}-status`" name="status" v-model="statusFilter" class="order-filter-control" aria-label="办理状态筛选">
               <option value="">全部状态</option>
-              <option v-for="(label, value) in statusLabels" :key="value" :value="value">{{ label }}</option>
+              <option v-for="(label, value) in (workspace.path === 'planning' ? planningStatusLabels : statusLabels)" :key="value" :value="value">{{ label }}</option>
             </select>
           </label>
           <label v-if="workspace.path === 'planning'" class="order-filter-field" :for="`${filterId}-plan-status`">
