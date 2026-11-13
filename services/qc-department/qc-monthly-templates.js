@@ -234,11 +234,6 @@
   }
   function applyLayout(){
     el('monthlyReportContent')?.classList.toggle('qmt-open',!!active);
-    doc.querySelectorAll('#btnExportMonthly,button[onclick="exportPDF()"]').forEach(button=>{
-      if(!button.dataset.qmtOriginalText){button.dataset.qmtOriginalText=button.textContent;button.dataset.qmtOriginalTitle=button.getAttribute('title')||'';}
-      button.textContent=active?'⬇ 导出 Excel':button.dataset.qmtOriginalText;
-      button.title=active?'导出当前月报模板 Excel':button.dataset.qmtOriginalTitle;
-    });
   }
   async function exportExcel(){
     finish();
@@ -265,8 +260,6 @@
   function init(){
     if(root.__QC_NEXUS?.factory!=='huaxing'||!el('qmtEntries'))return;
     const nav=el('qmtEntries');nav.hidden=false;
-    // Existing Excel shortcuts follow the currently visible worksheet; other pages retain their handlers.
-    doc.addEventListener('click',e=>{if(active&&e.target.closest('#btnExportMonthly,button[onclick="exportPDF()"]')){e.preventDefault();e.stopImmediatePropagation();exportExcel();}},true);
     nav.innerHTML=Object.entries(titles).map(([key,title])=>'<button data-template="'+key+'">'+esc(title)+'</button>').join('');
     nav.querySelectorAll('button').forEach(b=>b.onclick=()=>open(b.dataset.template));
     el('monthlyMonth').addEventListener('change',e=>{

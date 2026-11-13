@@ -4,10 +4,9 @@
   const doc = root.document;
   const enabled = () => root.__QC_NEXUS?.factory === 'huaxing';
   const exportAllowed = () => root.__QC_NEXUS?.exportAllowed === true;
-  function createReport(period, inputId, buttonId, label, overviewLabel) {
+  function createReport(period, inputId, label, overviewLabel) {
     const area = () => doc.getElementById(period + 'ReportBody');
     const dateInput = () => doc.getElementById(inputId);
-    const pdfButton = () => doc.getElementById(buttonId);
     const esc = value => root._esc(value);
     const display = value => value === '' || value == null ? '—' : esc(value);
     const quantity = value => typeof value === 'number' ? value.toLocaleString('zh-CN', {maximumFractionDigits:4}) : display(value);
@@ -160,14 +159,13 @@
       const id = ++sequence;
       const input = dateInput();
       input.closest('.page').classList.add('qdr-active');
-      if (period === 'weekly') input.closest('.report-toolbar').querySelector('label:has(#weeklyAppendix)').hidden = true;
       if (!initialized && !input.value) input.value = period === 'monthly' ? root.todayStr().slice(0,7) : root.todayStr();
       initialized = true;
       const day = selectedDate();
       snapshot = null;
       const rangeLabel = input.closest('.report-toolbar').querySelector('.qdr-period-range');
       if (rangeLabel) rangeLabel.textContent = '';
-      pdfButton().disabled = true;
+
       area().innerHTML = '<p class="qdr-message" role="status">' + (day ? '正在读取已审核验货记录…' : '请选择报告日期') + '</p>';
       if (!day) return;
       try {
@@ -183,7 +181,7 @@
         }
         range.textContent = period === 'daily' ? '' : periodLabel(report);
         snapshot = report;
-        pdfButton().disabled = !exportAllowed() || !report.total;
+
       } catch (error) {
         if (id !== sequence) return;
         area().innerHTML = '<div class="qdr-message" role="alert"><span>' + esc(error.message) +
@@ -217,24 +215,12 @@
       }
     }
 
-    function pdfCanvas() {
-      const report = snapshot;
-      if (!report?.total || report.date !== selectedDate()) throw Error('请先读取所选日期的报表');
-      const canvas = doc.createElement('div');
-      canvas.id = 'rpt-canvas';
-      canvas.className = 'qdr-pdf';
-      canvas.innerHTML = '<div class="rpt-header"><div><div class="rpt-co-name">' + root.getReportCompanyLabel() +
-        '</div><div class="rpt-doc-type">' + label + '</div></div><div class="rpt-doc-no">' + esc(periodLabel(report)) +
-        '</div></div><div class="qdr">' + overview(report) + fullTable(report) + '</div>';
-      return canvas;
-    }
-
-    return {enabled, load, pdfCanvas};
+    return {enabled, load};
   }
   root.QcPeriodReports = {
-    daily: createReport('daily', 'dailyDate', 'btnExportDaily', '验货日报', '当日验货概览'),
-    weekly: createReport('weekly', 'weeklyDate', 'btnExportWeekly', '验货周报', '本周验货概览'),
-    monthly: createReport('monthly', 'monthlyMonth', 'btnExportMonthly', '验货月报', '本月验货概览'),
+    daily: createReport('daily', 'dailyDate', '验货日报', '当日验货概览'),
+    weekly: createReport('weekly', 'weeklyDate', '验货周报', '本周验货概览'),
+    monthly: createReport('monthly', 'monthlyMonth', '验货月报', '本月验货概览'),
   };
   root.QcDailyReport = root.QcPeriodReports.daily;
 })(window);

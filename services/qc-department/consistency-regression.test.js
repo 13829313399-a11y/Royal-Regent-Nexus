@@ -28,22 +28,12 @@ function browser(appSource = app, reportSource = report) {
   vm.runInContext(appSource,ctx);vm.runInContext(reportSource,ctx);
   return {ctx,get,store,run:s=>vm.runInContext(s,ctx)};
 }
-for (const type of ['Daily','Weekly']) test(type+' PDF content retains dynamic company/reference header without legacy company subtitle',()=>{
-  const b=browser();b.get('dailyDate').value='2026-10-19';b.get('weeklyDate').value='2026-10-19';
-  b.run(`state={records:[],nextId:31};getCompanyName=()=> 'Huaxing <Factory>';window.__QC_REFERENCE_DATA={count:30};`);
-  const html=b.ctx['_build'+type+'Canvas'](false).innerHTML;
-  assert.match(html,/Huaxing &lt;Factory&gt;/);
-  assert.match(html,/模板参考（非本厂实绩）/);
-  assert.doesNotMatch(html,/东\s*莞\s*兴\s*信/);
-});
-
-test('daily and weekly pages and PDF contents include the same recorded problem notes without interpreting markup',()=>{
+test('daily and weekly pages include the same recorded problem notes without interpreting markup',()=>{
   const b=browser();b.get('dailyDate').value='2026-10-19';b.get('weeklyDate').value='2026-10-19';
   b.run(`state={records:[{id:42,date:'2026-10-19',inspDate:'2026-10-19',supplier:'S',productNo:'P',type:'成品',qty:100,sampleQty:10,result:'PASS',status:'approved',remark:'Check <tag> & label',defects:[{desc:'Surface',qty:1,remark:'Verify seam'}]}],nextId:43};getCompanyName=()=> 'Huaxing';`);
   const before=b.run('JSON.stringify(state.records)');
   b.ctx.renderDailyReport();b.ctx.renderWeeklyReport();
-  const html=[b.get('dailyReportBody').innerHTML,b.get('weeklyReportBody').innerHTML,
-    b.ctx._buildDailyCanvas().innerHTML,b.ctx._buildWeeklyCanvas(false).innerHTML];
+  const html=[b.get('dailyReportBody').innerHTML,b.get('weeklyReportBody').innerHTML];
   for(const text of html){
     assert.match(text,/验货问题备注（原文）/);assert.match(text,/Check &lt;tag&gt; &amp; label/);
     assert.match(text,/Surface：Verify seam/);assert.doesNotMatch(text,/<tag>/);
@@ -53,15 +43,6 @@ test('daily and weekly pages and PDF contents include the same recorded problem 
 
 test('empty notes add no report section',()=>{
   const b=browser();assert.equal(b.ctx.buildQcProblemNotes([{id:1,remark:' ',defects:[]}]),'');
-});
-
-for (const type of ['Daily','Weekly']) test(type+' PDF quantity totals are numeric without changing source records',()=>{
-  const b=browser();b.get('dailyDate').value='2026-10-19';b.get('weeklyDate').value='2026-10-19';
-  b.run(`state={records:[{id:1,date:'2026-10-19',qty:'100',result:'PASS',status:'approved'}, {id:2,date:'2026-10-19',qty:'200',result:'PASS',status:'approved'}],nextId:3};getCompanyName=()=> 'Huaxing';`);
-  const before=b.run('JSON.stringify(state.records)');
-  const html=b.ctx['_build'+type+'Canvas'](false).innerHTML;
-  assert.match(html,/300/);assert.doesNotMatch(html,/0100200/);
-  assert.equal(b.run('JSON.stringify(state.records)'),before);
 });
 
 for (const page of ['records','dashboard']) test('local CSV keeps a zero-match filter empty on '+page,()=>{
@@ -81,22 +62,9 @@ test('deferred date, PASS and average/risk semantics remain unchanged',()=>{
   b.ctx.renderDailyReport();b.ctx.renderWeeklyReport();
   assert.match(b.get('dailyReportBody').innerHTML,/验货批次<\/div><div class="meta-value">1 批/);
   assert.match(b.get('weeklyReportBody').innerHTML,/PASS 批次<\/div><div class="meta-value text-green">3 批/);
-  assert.match(b.ctx._buildWeeklyCanvas(false).innerHTML,/1 \/ 4 批次通过/);
   assert.equal(b.ctx._defectRateAvg([{sampleQty:0,defectRate:'0%'},{sampleQty:100,defectRate:'10%'}]).avg,5);
   assert.equal(b.ctx.getRisk(.15),'high');assert.equal(b.ctx.getRisk(.05),'mid');
 });
-
-for(const result of ['PASS','REJ','FAIL','COND','HOLD']) for(const withAppendix of [false,true]) {
-  test('weekly PDF keeps notes exactly once for '+result+' withAppendix='+withAppendix,()=>{
-    const b=browser();b.get('weeklyDate').value='2026-10-19';
-    b.ctx.fixture={id:1,date:'2026-10-19',supplier:'S',productNo:'P',qty:100,sampleQty:10,fail:2,defectRate:'20%',result,status:'approved',remark:'Keep this problem note',defects:[{desc:'Surface',qty:2,remark:'Keep this defect note'}]};
-    b.run(`state={records:[fixture,{...fixture,id:2,status:'pending',remark:'UNAPPROVED note',defects:[]}],nextId:3};getCompanyName=()=> 'Huaxing';`);
-    const html=b.ctx._buildWeeklyCanvas(withAppendix).innerHTML;
-    assert.equal(html.split('Keep this problem note').length-1,1);
-    assert.equal(html.split('Keep this defect note').length-1,1);
-    assert.doesNotMatch(html,/UNAPPROVED note/);
-  });
-}
 
 for(const raw of ['',null,'unknown','2026-02-30','2025/02/29','2026年13月1日','5月4日','04/05/2026','45000junk','2026-02-30T10:00:00Z']) test('unrecognized date stays blank: '+raw,()=>{
   const b=browser();assert.equal(b.ctx._dateDisplay(raw),'');

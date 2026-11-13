@@ -248,11 +248,6 @@
   }
   function applyLayout(){
     el('weeklyReportContent')?.classList.toggle('qwt-open',!!active);
-    doc.querySelectorAll('#btnExportWeekly,button[onclick="exportPDF()"]').forEach(button=>{
-      if(!button.dataset.qwtOriginalText){button.dataset.qwtOriginalText=button.textContent;button.dataset.qwtOriginalTitle=button.getAttribute('title')||'';}
-      button.textContent=active?'⬇ 导出 Excel':button.dataset.qwtOriginalText;
-      button.title=active?'导出当前周报模板 Excel':button.dataset.qwtOriginalTitle;
-    });
   }
   async function exportExcel(){
     if(active==='issues')return root.QcIssueReports?.exportExcel();
@@ -281,8 +276,6 @@
   function init(){
     if(root.__QC_NEXUS?.factory!=='huaxing'||!el('qwtEntries'))return;
     const nav=el('qwtEntries');nav.hidden=false;
-    // Existing Excel shortcuts follow the currently visible worksheet; other pages retain their handlers.
-    doc.addEventListener('click',e=>{if(active&&e.target.closest('#btnExportWeekly,button[onclick="exportPDF()"]')){e.preventDefault();e.stopImmediatePropagation();exportExcel();}},true);
     nav.innerHTML=Object.entries(titles).map(([key,title])=>'<button data-template="'+key+'">'+esc(title)+'</button>').join('');
     nav.querySelectorAll('button').forEach(b=>b.onclick=()=>open(b.dataset.template));
     el('weeklyDate').addEventListener('change',e=>{

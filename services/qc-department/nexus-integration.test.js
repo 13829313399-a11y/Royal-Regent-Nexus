@@ -157,7 +157,7 @@ test('sync failure freezes subsequent queued writes until a reload', async () =>
   assert.equal(saved, false);
 });
 
-for (const [source, name] of [[app, 'exportPDF'], [app, 'exportMonthlyReportPDF'], [app, 'exportYearlyReportPDF'], [reports, 'exportReportPDF'], [reports, 'exportIQCReport']]) {
+for (const [source, name] of [[app, 'exportPDF'], [reports, 'exportReportPDF'], [reports, 'exportIQCReport']]) {
   test(name + ' refuses export before reading records or touching canvas', async () => {
     const messages = [];
     const context = { window: {}, can: () => false, showToast: value => messages.push(value) };
@@ -166,18 +166,11 @@ for (const [source, name] of [[app, 'exportPDF'], [app, 'exportMonthlyReportPDF'
   });
 }
 
-test('period monthly export keeps the shared permission guard before data or canvas access', async () => {
-  const messages = [];
-  const context = {
-    window: { QcPeriodReports: { monthly: { enabled: () => true } } },
-    can: () => false,
-    showToast: value => messages.push(value),
-    document: { getElementById() { throw new Error('must not access report controls'); } },
-    _rptCheckDeps() { throw new Error('must not touch PDF dependencies'); },
-  };
-  await vm.runInNewContext(functionSource(reports, 'exportReportPDF') + '\n' +
-    functionSource(app, 'exportMonthlyReportPDF') + ';exportMonthlyReportPDF();', context);
-  assert.deepEqual(messages, ['当前账号没有导出权限']);
+test('retired report-center PDF exports never read records or load canvas', async () => {
+  for (const period of ['daily','weekly','monthly','yearly','analysis']) {
+    const context = { can: () => true, document: {getElementById() {throw Error('retired PDF read');}} };
+    await vm.runInNewContext(functionSource(reports,'exportReportPDF') + `;exportReportPDF('${period}');`,context);
+  }
 });
 
 test('JSON export rejects missing export permission before reading any records', () => {
@@ -248,4 +241,19 @@ test('new imported rows retain account name across repeated sync without touchin
   const first=JSON.stringify(scope.state.records);
   vm.runInNewContext('_bindNewQcInspectors();',scope);
   assert.equal(JSON.stringify(scope.state.records),first);
+});
+
+
+test('supplier PDF still exports through its independent canvas and restores its button', async () => {
+  const saved=[],button={},canvas={offsetWidth:100,offsetHeight:50};
+  const controls={supplierSelect:{value:'Test supplier'},supplierAppendix:{checked:true},btnExportSupplier:button};
+  const context={can:()=>true,showToast:()=>{},document:{getElementById:id=>controls[id],body:{appendChild:()=>{},removeChild:()=>{}}},
+    _rptShowOverlay:()=>{},_rptHideOverlay:()=>{},_rptUpdateOverlay:()=>{},_rptCheckDeps:async()=>true,
+    _buildSupplierCanvas:(name,appendix)=>{assert.equal(name,'Test supplier');assert.equal(appendix,true);return canvas;},
+    requestAnimationFrame:fn=>fn(),setTimeout:fn=>fn(),_todayStr:()=> '2026-11-13',
+    html2canvas:async()=>({width:100,height:50,toDataURL:()=> 'data:image/jpeg;base64,test'}),
+    window:{jspdf:{jsPDF:class{internal={getPageSize:()=>{},pageSize:{getWidth:()=>297,getHeight:()=>210}};addImage(){};save(name){saved.push(name);}}}},console};
+  await vm.runInNewContext(functionSource(reports,'exportReportPDF')+";exportReportPDF('supplier');",context);
+  assert.deepEqual(saved,['供应商质量报告_Test supplier_2026-11-13.pdf']);
+  assert.equal(button.disabled,false);
 });
