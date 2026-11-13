@@ -99,7 +99,7 @@
       {
         "path": "services/qc-department/qc-weekly-templates.js",
         "symbol": "async function flush",
-        "sha256": "4529a25291a502cc2a1bb2cac36b6bf0ea0859bd4540f489700a35061bea9e16"
+        "sha256": "f86b8a837e71c3c18e00a4e81eb97dfefe8972065824056a1cf727304f3d42f0"
       },
       {
         "path": "backend/app/services/qc_weekly_excel.py",
@@ -119,7 +119,7 @@
       {
         "path": "services/qc-department/qc-monthly-templates.js",
         "symbol": "QcMonthlyTemplates",
-        "sha256": "1b733ce016bbcc0a8289fe50d60584f2b2119746116bec5b4a0d5e3848e9c0c6"
+        "sha256": "2b431b57a1faea8005a8d9309eedb9b94690e89eae018c7b5eaffb75294ae2ad"
       },
       {
         "path": "backend/app/services/qc_dossier_read.py",
@@ -149,7 +149,7 @@
       {
         "path": "services/qc-department/qc-issue-reports.js",
         "symbol": "QcIssueReports",
-        "sha256": "a250802e91ee7341dd456e987c4230c89ae1166640626cca9a58631841040bfd"
+        "sha256": "363c71aaac8f553ca3fb27cc286044de34656b3c054b63a2bc6964a995191238"
       }
     ],
     "knowledge_version": "qc-comprehensive-upgrade-20261113",

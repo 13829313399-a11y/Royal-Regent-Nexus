@@ -14,9 +14,6 @@
 #qmtView { min-width:0; color:var(--text-main); font:13px/1.5 var(--font-body); }
 #monthlyReportContent.qmt-open { max-width:none; width:100%; padding:16px 12px; }
 #qmtView #qmtExcel { margin-left:auto; }
-#qmtView .qmt-field-help { margin:4px 0 10px; font-size:12px; color:var(--text-dim); }
-#qmtView .qmt-field-help summary { cursor:pointer; width:fit-content; }
-#qmtView .qmt-field-help p { max-width:960px; margin:8px 0; line-height:1.7; }
 #qmtView #qmtExcelStatus:not(:empty) { margin-bottom:8px; }
 #qmtView .qmt-heading, #qmtView .qmt-controls, #qmtView .qmt-status-line { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
 #qmtView h2 { margin:0; font-size:17px; font-weight:600; }
@@ -39,7 +36,6 @@
 #qmtView .qmt-cell:focus-visible { outline:2px solid #408558; outline-offset:-2px; }
 #qmtView .qmt-editor { display:block; width:100%; min-width:0; height:42px; min-height:42px; padding:5px 7px; border:0; border-radius:0; outline:none; box-shadow:inset 0 0 0 2px #408558!important; background:#fff; color:#26332a; font:inherit; resize:none; margin:0; }
 #qmtView tfoot td { background:#edf2ee; font-weight:600!important; border-top:1px solid #91a797!important; }
-#qmtView .qmt-selected-source { font-size:12px; color:var(--text-dim); margin:8px 0; overflow-wrap:anywhere; }
 #qmtView .qmt-conflict { border:1px solid var(--red,#a42828); border-radius:6px; padding:10px; margin:10px 0; background:var(--bg-card); overflow-wrap:anywhere; }
 #qmtView .qmt-conflict p { margin:5px 0; white-space:pre-wrap; }
 body.theme-dark #qmtEntries button { background:linear-gradient(#38413d,#2b3330); border-color:#616b65; color:#e0e6e1; box-shadow:inset 0 1px 0 #4e5852; }
