@@ -1,67 +1,81 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { AlertTriangle, ArrowLeft, Building2, ClipboardList, Ship, Truck, Table2, RotateCcw } from '@lucide/vue'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Building2,
+  CalendarClock,
+  ClipboardCheck,
+  ClipboardList,
+  Mail,
+  Package,
+  RotateCcw,
+  Ship,
+  Tags,
+  Users,
+} from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 import ShippingOrderWorkspace from './ShippingOrderWorkspace.vue'
-import VehicleDispatchPanel from './VehicleDispatchPanel.vue'
+import ShippingEmailImportPanel from './ShippingEmailImportPanel.vue'
+import ShippingCodeMappingPanel from './ShippingCodeMappingPanel.vue'
 import ShippingMasterDataPanel from './ShippingMasterDataPanel.vue'
 import { isShippingFactory, SHIPPING_FACTORY_IDS, shippingFactoryProfiles } from './contracts'
 
-type ShippingTab = 'tasks' | 'dispatch' | 'master'
+type ShippingPage = 'email' | 'orders' | 'codes' | 'master'
 
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 
-const shippingTabs: Array<{ id: ShippingTab; label: string; icon: typeof ClipboardList }> = [
-  { id: 'tasks', label: '工厂货期排单', icon: ClipboardList },
-  { id: 'dispatch', label: '交仓分车', icon: Truck },
-  { id: 'master', label: '基础资料', icon: Table2 },
-]
+const menu = [
+  { id: 'email', label: '邮件导入', icon: Mail, page: 'email' },
+  { id: 'orders', label: '工厂排期单', icon: ClipboardList, page: 'orders' },
+  { id: 'codes', label: '货号映射', icon: Tags, page: 'codes' },
+  { id: 'vendor', label: '厂商映射', icon: Building2, page: 'master' },
+  { id: 'daily', label: '每日单据监控', icon: CalendarClock, page: null },
+  { id: 'pallet', label: '卡板据统计', icon: Package, page: null },
+  { id: 'container', label: '提箱柜核对', icon: ClipboardCheck, page: null },
+  { id: 'users', label: '用户管理', icon: Users, page: null },
+] as const
 
 const factoryId = computed(() => appStore.activeProductionFactory.id)
 const profile = computed(() => (isShippingFactory(factoryId.value) ? shippingFactoryProfiles[factoryId.value] : null))
-
 const departmentRoute = computed(() => getFactoryScopedRoute('/modules/pmc-warehouse', factoryId.value))
 
-function normalizeTab(value: unknown): ShippingTab {
-  return value === 'dispatch' || value === 'master' ? value : 'tasks'
+function normalizePage(value: unknown): ShippingPage {
+  if (value === 'orders' || value === 'tasks') return 'orders'
+  if (value === 'codes') return 'codes'
+  if (value === 'master') return 'master'
+  return 'email'
 }
 
-const activeTab = ref<ShippingTab>(normalizeTab(route.query.tab))
+const activePage = ref<ShippingPage>(normalizePage(route.query.tab))
 const feedback = ref('')
 let feedbackTimer: ReturnType<typeof setTimeout> | undefined
 
-const dispatchCount = computed(() => profile.value?.tasks.filter((task) => task.vehicles.length > 0).length ?? 0)
-const tabCounts = computed<Record<ShippingTab, number | null>>(() => ({
-  tasks: profile.value?.orders.length ?? null,
-  dispatch: profile.value ? dispatchCount.value : null,
-  master: null,
-}))
+const activeMenuId = computed(() => {
+  if (activePage.value === 'orders') return 'orders'
+  if (activePage.value === 'codes') return 'codes'
+  if (activePage.value === 'master') return 'vendor'
+  return 'email'
+})
 
-function setTab(tab: ShippingTab) {
-  activeTab.value = tab
-  void router.replace({
-    query: { ...route.query, tab: tab === 'tasks' ? undefined : tab },
-  })
+function setPage(page: ShippingPage) {
+  activePage.value = page
+  void router.replace({ query: { ...route.query, tab: page === 'email' ? undefined : page } })
 }
 
-async function onTabKeydown(event: KeyboardEvent, index: number) {
-  if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return
-  event.preventDefault()
-  const count = shippingTabs.length
-  let next = index
-  if (event.key === 'ArrowRight') next = (index + 1) % count
-  if (event.key === 'ArrowLeft') next = (index - 1 + count) % count
-  if (event.key === 'Home') next = 0
-  if (event.key === 'End') next = count - 1
-  const target = shippingTabs[next]!
-  setTab(target.id)
-  await nextTick()
-  document.getElementById(`shipping-tab-${target.id}`)?.focus()
+function onMenu(id: string) {
+  const item = menu.find((entry) => entry.id === id)
+  if (!item) return
+  if (item.page) {
+    setPage(item.page)
+    return
+  }
+  notify(`界面预览：${item.label}尚未接入后端接口。`)
 }
 
 function notify(message: string) {
@@ -79,14 +93,14 @@ function switchFactory(event: Event) {
 }
 
 watch(() => route.query.tab, (tab) => {
-  activeTab.value = normalizeTab(tab)
+  activePage.value = normalizePage(tab)
 })
 
 onBeforeUnmount(() => clearTimeout(feedbackTimer))
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-100 text-[13px] leading-relaxed text-slate-900">
+  <main class="min-h-screen bg-[#eef4ef] text-[13px] leading-relaxed text-slate-900">
     <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div class="mx-auto flex max-w-[1720px] flex-wrap items-center gap-3 px-4 py-2.5 sm:px-5">
         <RouterLink
@@ -140,81 +154,55 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
           <AccountMenu />
         </div>
       </div>
-
-      <nav
-        v-if="profile"
-        class="mx-auto flex max-w-[1720px] items-center gap-1 overflow-x-auto px-4 sm:px-5"
-        role="tablist"
-        aria-label="船务工作区"
-      >
-        <button
-          v-for="(tab, index) in shippingTabs"
-          :id="`shipping-tab-${tab.id}`"
-          :key="tab.id"
-          type="button"
-          role="tab"
-          :aria-selected="activeTab === tab.id"
-          :aria-controls="`shipping-panel-${tab.id}`"
-          :tabindex="activeTab === tab.id ? 0 : -1"
-          class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-t-lg px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
-          :class="activeTab === tab.id ? 'bg-slate-900 text-white' : 'text-slate-500'"
-          @click="setTab(tab.id)"
-          @keydown="onTabKeydown($event, index)"
-        >
-          <component :is="tab.icon" class="size-4" aria-hidden="true" />
-          {{ tab.label }}
-          <span
-            v-if="tabCounts[tab.id] !== null"
-            class="rounded-full px-1.5 text-[10px] tabular-nums"
-            :class="activeTab === tab.id ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'"
-          >{{ tabCounts[tab.id] }}</span>
-        </button>
-      </nav>
     </header>
 
-    <div class="mx-auto max-w-[1720px] space-y-4 px-4 pb-12 pt-4 sm:px-5">
+    <div class="mx-auto max-w-[1720px] px-4 pb-12 pt-4 sm:px-5">
       <div
         v-if="feedback"
-        class="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-4 py-2.5 text-[12px] font-semibold text-teal-800"
+        class="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-[12px] font-semibold text-emerald-900"
         role="status"
         aria-live="polite"
       >
         <RotateCcw class="size-4 shrink-0" aria-hidden="true" />{{ feedback }}
       </div>
 
-      <template v-if="profile">
-        <p class="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-[11px] leading-5 text-slate-500">
-          示例数据按厂区隔离：{{ profile.label }} 当前 {{ profile.orders.length }} 票出货单、{{ profile.tasks.length }} 个走柜任务，字段口径沿用船务业务文档（四个时间闸门、五态任务、35 CBM 分车）。
-          正式接入后由船务接口提供数据，本页不写入任何业务库。
-        </p>
+      <div v-if="profile" class="flex flex-col gap-3 lg:flex-row lg:items-start">
+        <aside class="shrink-0 rounded-xl bg-[#04291f] p-2 text-emerald-100/80 lg:sticky lg:top-20 lg:h-[calc(100vh-6rem)] lg:w-[220px] lg:overflow-y-auto" aria-label="船务系统菜单">
+          <div class="flex items-center gap-2 px-2 py-1.5 text-white">
+            <Mail class="size-4" aria-hidden="true" />
+            <span class="text-[12px] font-bold">船务管理</span>
+          </div>
+          <nav class="flex gap-1 overflow-x-auto pb-1 lg:block lg:space-y-0.5 lg:overflow-visible lg:pb-0">
+            <button
+              v-for="item in menu"
+              :key="item.id"
+              type="button"
+              class="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-[12px] font-medium transition lg:w-full"
+              :class="activeMenuId === item.id ? 'bg-emerald-200 text-emerald-950' : 'text-emerald-100/80 hover:bg-white/10 hover:text-white'"
+              :aria-current="activeMenuId === item.id ? 'page' : undefined"
+              @click="onMenu(item.id)"
+            >
+              <component :is="item.icon" class="size-4 shrink-0" aria-hidden="true" />
+              <span class="truncate">{{ item.label }}</span>
+            </button>
+          </nav>
+        </aside>
 
-        <section
-          v-if="activeTab === 'tasks'"
-          id="shipping-panel-tasks"
-          role="tabpanel"
-          aria-labelledby="shipping-tab-tasks"
-        >
-          <ShippingOrderWorkspace :profile="profile" @notify="notify" />
-        </section>
-
-        <section
-          v-else-if="activeTab === 'dispatch'"
-          id="shipping-panel-dispatch"
-          role="tabpanel"
-          aria-labelledby="shipping-tab-dispatch"
-        >
-          <VehicleDispatchPanel :profile="profile" />
-        </section>
-
-        <section
-          v-else
-          id="shipping-panel-master"
-          role="tabpanel"
-          aria-labelledby="shipping-tab-master"
-        >
-          <ShippingMasterDataPanel :profile="profile" />
-        </section>
-      </template>
+        <div class="min-w-0 flex-1">
+          <section v-if="activePage === 'email'" aria-label="邮件导入">
+            <ShippingEmailImportPanel @notify="notify" />
+          </section>
+          <section v-else-if="activePage === 'codes'" aria-label="货号映射">
+            <ShippingCodeMappingPanel @notify="notify" />
+          </section>
+          <section v-else-if="activePage === 'orders'" aria-label="出货单管理">
+            <ShippingOrderWorkspace :profile="profile" @notify="notify" />
+          </section>
+          <section v-else aria-label="基础资料">
+            <ShippingMasterDataPanel :profile="profile" />
+          </section>
+        </div>
+      </div>
 
       <section v-else class="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
         <span class="mx-auto flex size-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">

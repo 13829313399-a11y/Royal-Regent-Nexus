@@ -1,0 +1,192 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import { Download, Info, Plus, RotateCcw, Search } from '@lucide/vue'
+
+const emit = defineEmits<{ notify: [message: string] }>()
+
+const customers = ['全部', 'ZURU', 'MOOSE', 'TIG', 'TOMY', 'CEPIA', 'AZAD', 'ZANZOON', 'JOHN ADAMS'] as const
+
+interface CodeRow {
+  code: string
+  name: string
+  perCarton: string
+  category: string
+  note: string
+  gross: string
+  net: string
+  source: string
+  customer: string
+  status: string
+  tone: 'blue' | 'orange' | 'red'
+}
+
+const rows: CodeRow[] = [
+  { code: '10201', name: '全能足球6个/箱', perCarton: '6 个', category: '塑胶', note: '-', gross: '4.047', net: '2.496', source: 'X盘', customer: 'ZURU', status: '已同步', tone: 'blue' },
+  { code: '10731', name: '公仔系列', perCarton: '默认', category: '塑胶', note: '-', gross: '1.350', net: '1.100', source: 'X盘', customer: 'MOOSE', status: '已同步', tone: 'blue' },
+  { code: '10740', name: '工具盒', perCarton: '默认', category: '塑胶', note: '-', gross: '2.470', net: '2.150', source: 'X盘', customer: 'TIG', status: '待同步', tone: 'orange' },
+  { code: '10761', name: '公仔系列', perCarton: '默认', category: '塑胶', note: '-', gross: '1.180', net: '0.900', source: 'X盘', customer: 'TOMY', status: '已同步', tone: 'blue' },
+  { code: '1085', name: '马桶3个/箱', perCarton: '3 个', category: '塑胶', note: '-', gross: '1.993', net: '1.140', source: 'X盘', customer: 'CEPIA', status: '异常', tone: 'red' },
+  { code: '11-1501', name: '风扇香蕉机12个/箱', perCarton: '12 个', category: '电子', note: '-', gross: '7.161', net: '5.760', source: 'X盘', customer: 'AZAD', status: '已同步', tone: 'blue' },
+  { code: '11-2101', name: '香蕉套装24个/箱', perCarton: '24 个', category: '塑胶', note: '-', gross: '4.777', net: '1.920', source: 'X盘', customer: 'ZANZOON', status: '待同步', tone: 'orange' },
+  { code: '11-PROD-001-0003', name: '风扇香蕉机40个/箱', perCarton: '40 个', category: '电子', note: '-', gross: '9.820', net: '9.200', source: 'X盘', customer: 'JOHN ADAMS', status: '已同步', tone: 'blue' },
+  { code: '11-PROD-002-0001-B', name: '香蕉盒144个/箱', perCarton: '144 个', category: '塑胶', note: '-', gross: '7.185', net: '5.760', source: 'X盘', customer: 'ZURU', status: '已同步', tone: 'blue' },
+  { code: '11-PROD-002-0002', name: '蜡烛香蕉灯100个/箱', perCarton: '100 个', category: '电子', note: '-', gross: '7.185', net: '5.100', source: 'X盘', customer: 'MOOSE', status: '异常', tone: 'red' },
+  { code: '11-PROD-002-0003', name: '蜡烛香蕉灯100个/箱', perCarton: '100 个', category: '电子', note: '-', gross: '10.556', net: '7.700', source: 'X盘', customer: 'TIG', status: '已同步', tone: 'blue' },
+  { code: '11250', name: '雨衣8个/箱', perCarton: '8 个', category: '电子', note: '-', gross: '5.039', net: '3.560', source: 'X盘', customer: 'TOMY', status: '待同步', tone: 'orange' },
+]
+
+const keyword = ref('')
+const appliedKeyword = ref('')
+const activeCustomer = ref<string>('全部')
+
+const filteredRows = computed(() => {
+  const search = appliedKeyword.value.trim().toLowerCase()
+  return rows.filter((row) => {
+    if (activeCustomer.value !== '全部' && row.customer !== activeCustomer.value) return false
+    if (!search) return true
+    return row.code.toLowerCase().includes(search) || row.name.toLowerCase().includes(search)
+  })
+})
+
+const statusDot: Record<CodeRow['tone'], string> = {
+  blue: 'bg-blue-500',
+  orange: 'bg-amber-500',
+  red: 'bg-rose-500',
+}
+
+function preview(title: string) {
+  emit('notify', `界面预览：${title}尚未接入后端接口。`)
+}
+
+function applySearch() {
+  appliedKeyword.value = keyword.value
+}
+
+function reset() {
+  keyword.value = ''
+  appliedKeyword.value = ''
+  activeCustomer.value = '全部'
+}
+</script>
+
+<template>
+  <section class="space-y-3" aria-label="货号映射管理">
+    <div class="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/50 p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex min-w-0 items-center gap-2">
+          <h2 class="text-[16px] font-bold tracking-[-0.02em] text-emerald-950">货号映射管理</h2>
+          <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-900">9389</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="relative">
+            <span class="sr-only">搜索货号或货名</span>
+            <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-emerald-700/50" aria-hidden="true" />
+            <input
+              v-model="keyword"
+              type="search"
+              aria-label="搜索货号或货名"
+              placeholder="搜索货号或货名"
+              class="h-8 w-[200px] rounded-lg border border-emerald-100 bg-white pl-8 pr-2.5 text-[12px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/15"
+              @keydown.enter="applySearch"
+            >
+          </label>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-800 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:bg-emerald-900"
+            @click="applySearch"
+          >
+            <Search class="size-3.5" aria-hidden="true" />搜索
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-50"
+            @click="reset"
+          >
+            <RotateCcw class="size-3.5" aria-hidden="true" />重置
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-50"
+            @click="preview('导出')"
+          >
+            <Download class="size-3.5" aria-hidden="true" />导出
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-700 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:bg-emerald-800"
+            @click="preview('新增货号映射')"
+          >
+            <Plus class="size-3.5" aria-hidden="true" />新增
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-3 flex flex-wrap items-center gap-1.5">
+        <span class="text-[11px] text-slate-500">客户筛选：</span>
+        <button
+          v-for="customer in customers"
+          :key="customer"
+          type="button"
+          class="rounded-full px-2.5 py-1 text-[11px] font-medium transition"
+          :class="activeCustomer === customer ? 'bg-emerald-900 text-white' : 'border border-emerald-100 bg-white text-slate-600 hover:border-emerald-200 hover:text-emerald-900'"
+          @click="activeCustomer = customer"
+        >
+          {{ customer }}
+        </button>
+      </div>
+    </div>
+
+    <p class="flex items-start gap-2 rounded-lg border border-emerald-100 bg-emerald-50/70 px-3 py-2 text-[11px] leading-5 text-emerald-900/80">
+      <Info class="mt-0.5 size-3.5 shrink-0 text-emerald-700" aria-hidden="true" />
+      多规格匹配规则：货号相同、货名相同、每箱个数不同 → 视为独立记录，分行展示，导出时各自对应正确重量。
+    </p>
+
+    <div class="overflow-x-auto rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/40">
+      <table class="w-full min-w-[1040px] border-collapse text-left text-[12px]">
+        <thead class="bg-emerald-50/80 text-[11px] font-semibold text-emerald-900/70">
+          <tr>
+            <th scope="col" class="px-3 py-2">货号</th>
+            <th scope="col" class="px-3 py-2">货名</th>
+            <th scope="col" class="px-3 py-2 text-right">每箱个数</th>
+            <th scope="col" class="px-3 py-2">玩具类别</th>
+            <th scope="col" class="px-3 py-2">备注（柜单）</th>
+            <th scope="col" class="px-3 py-2 text-right">每箱毛重（kg）</th>
+            <th scope="col" class="px-3 py-2 text-right">每箱净重（kg）</th>
+            <th scope="col" class="px-3 py-2">来源</th>
+            <th scope="col" class="px-3 py-2">客户</th>
+            <th scope="col" class="px-3 py-2">状态</th>
+            <th scope="col" class="px-3 py-2 text-right">操作</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-emerald-50/80">
+          <tr v-for="row in filteredRows" :key="`${row.code}-${row.customer}-${row.perCarton}`" class="bg-white/70 hover:bg-emerald-50/50">
+            <td class="px-3 py-2 font-semibold tabular-nums text-emerald-800">{{ row.code }}</td>
+            <td class="px-3 py-2 text-slate-800">{{ row.name }}</td>
+            <td class="px-3 py-2 text-right tabular-nums text-slate-600">{{ row.perCarton }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.category }}</td>
+            <td class="px-3 py-2 text-slate-400">{{ row.note }}</td>
+            <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.gross }}</td>
+            <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.net }}</td>
+            <td class="px-3 py-2">
+              <span class="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">{{ row.source }}</span>
+            </td>
+            <td class="px-3 py-2 text-slate-700">{{ row.customer }}</td>
+            <td class="px-3 py-2">
+              <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-600">
+                <span class="size-1.5 rounded-full" :class="statusDot[row.tone]" aria-hidden="true" />
+                {{ row.status }}
+              </span>
+            </td>
+            <td class="px-3 py-2 text-right">
+              <div class="inline-flex items-center gap-2">
+                <button type="button" class="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900" @click="preview(`编辑货号映射 ${row.code}`)">编辑</button>
+                <button type="button" class="text-[11px] font-semibold text-rose-500 hover:text-rose-700" @click="preview(`删除货号映射 ${row.code}`)">删除</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-if="!filteredRows.length" class="px-4 py-10 text-center text-[12px] text-slate-500">没有匹配的货号映射</p>
+    </div>
+  </section>
+</template>
