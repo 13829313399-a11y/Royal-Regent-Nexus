@@ -28,9 +28,10 @@ export_slots=BoundedSemaphore(2)
 EXPORT_NAMES = {'caixing':'彩星汇总_月度验货明细', 'all':'全客明细_月度验货',
                 'issues':'问题图文_月度验货', 'customers':'分客明细_月度验货'}
 
-def filename(kind, start, end, quality=None):
-    suffix='_预览图' if kind=='issues' and quality=='preview' else ''
-    return f'{EXPORT_NAMES[kind]}_{start}_{end}{suffix}'+extension(kind)
+def filename(kind, start, end, quality=None, period='monthly'):
+    suffix=({'preview':'_预览图','original':'_原图','mixed':'_原图及预览替代'}.get(quality,'')) if kind=='issues' else ''
+    name=EXPORT_NAMES[kind] if period=='monthly' else '问题图文_'+{'weekly':'每周','yearly':'年度'}[period]+'验货'
+    return f'{name}_{start}_{end}{suffix}'+extension(kind)
 
 def _center_column(widths):
     """Nearest column centre to the table midpoint, without merged cells."""
@@ -47,7 +48,7 @@ def _asset(kind):
     return raw,spec
 
 
-def _photo(factory, entry, photo):
+def _photo(factory, entry, photo, quality='preview', allow_fallback=False, fallback_photos=None):
     path=Path(settings.qc_department_data_dir).resolve()/'_inspection_sheet/inspections.sqlite3'
     try:
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as conn:
@@ -57,7 +58,12 @@ def _photo(factory, entry, photo):
                 AND d.review_state='approved' AND p.id=? AND p.removed=0""",
                 (factory,entry['id'],entry['revision'],photo['id'])).fetchone()
             if row is None:raise HTTPException(409,'验货照片或审核记录已变化，请刷新核对后导出')
-            return assets.read(conn,row,'preview')[0]
+            if quality=='original' and not assets.public_metadata(conn,row['id'])['originalAvailable']:
+                if not allow_fallback:
+                    raise HTTPException(409,dict(code='original_missing',message='部分照片未保留原图。请选择预览图，或明确勾选允许缺失原图的照片使用预览图。'))
+                quality='preview'
+                if fallback_photos is not None:fallback_photos.append(photo['id'])
+            return assets.read(conn,row,quality)[0]
     except sqlite3.Error as exc:raise HTTPException(503,'验货照片读取失败，请重试') from exc
 
 
@@ -137,10 +143,17 @@ def _xls(data,kind):
                 customer_info=next(c for c in data['customers'] if c['key']==summary['customerKey'])
                 label='彩星 '+period+' 月度验货统计汇总表'
                 if len(data['tables']['summary'])>1:label+=' · '+customer_info['label']
-                title(foot,1,6,label,20,1,440)
-                write(foot+1,data['summaryHeaders'],21,1)
+                target.write_merge(foot,foot,1,5,label,style(asset['summaryTitleRow'],1));target.row(foot).height=440
+                write(foot+1,data['summaryHeaders'],asset['summaryHeaderRow'],1)
                 values=list(summary['values']);values[3]=int(values[3]) if values[3]!='' else ''
-                write(foot+2,values,21,1);foot+=4
+                write(foot+2,values,asset['summaryDataRow'],1)
+                rr=foot+2;formula=xlwt.Formula(f'IF(OR(C{rr+1}=0,E{rr+1}=""),"",E{rr+1}/C{rr+1})')
+                st=style(asset['summaryDataRow'],5);st.num_format_str='0.0%'
+                target._cell_overwrite_ok=True
+                target.row(rr).insert_cell(5,shared.CachedFormulaCell(rr,5,book.add_style(st),formula,values[4]))
+                foot+=4
+            target.portrait=False;target.fit_num_pages=True;target.fit_width_to_pages=1;target.fit_height_to_pages=0
+            target.print_in_rows=True
     stream=BytesIO();book.save(stream);return stream.getvalue()
 
 
@@ -173,7 +186,7 @@ def _xlsx(data,factory):
     sheet['M2']._style=copy(sheet['L2']._style)
     widths=[sheet.column_dimensions[openpyxl.utils.get_column_letter(c)].width or 10 for c in range(1,14)]
     anchor=1+_center_column(widths)
-    title=sheet.cell(1,anchor,data['dateFrom'][:7]+' 月度验货问题图文记录表')
+    title=sheet.cell(1,anchor,data.get('title',data['dateFrom'][:7]+' 月度验货问题图文记录表')+' '+(data['dateFrom']+' 至 '+data['dateTo'] if data.get('period') else ''))
     title.font=copy(sheet.cell(2,1).font)
     title.alignment=openpyxl.styles.Alignment(horizontal='center',vertical='center')
     sheet.freeze_panes='A3';sheet.print_title_rows='1:2';sheet.sheet_view.topLeftCell='A1'
@@ -197,7 +210,7 @@ def _xlsx(data,factory):
         if photos:
             columns,slot_width,slot_height=_photo_slots(len(photos))
             for j,photo in enumerate(photos):
-                content=_photo(factory,entry,photo);photo_bytes+=len(content)
+                content=_photo(factory,entry,photo, data.get('photoQuality','preview'), data.get('allowPreviewFallback',False), data.get('fallbackPhotos'));photo_bytes+=len(content)
                 if photo_bytes>MAX_BYTES:raise HTTPException(422,'照片总量过大，请按客户筛选后分别导出')
                 try:
                     with PILImage.open(BytesIO(content)) as original:
@@ -217,6 +230,8 @@ def _xlsx(data,factory):
                 except (OSError,ValueError) as exc:raise HTTPException(422,'验货照片无法解码，未生成缺图文件') from exc
         sheet.row_dimensions[rownum].height=max(60,min(405,text_lines*15),math.ceil(photo_bottom*0.75))
     sheet.print_area=f'A1:M{len(rows)+2}';sheet.page_setup.orientation='landscape';sheet.page_setup.paperSize=sheet.PAPERSIZE_A3
+    sheet.sheet_properties.pageSetUpPr.fitToPage=True
+    sheet.page_setup.fitToWidth=1;sheet.page_setup.fitToHeight=0;sheet.page_setup.scale=None
     stream=BytesIO();book.save(stream);return stream.getvalue()
 
 
@@ -286,10 +301,16 @@ def prepare(factory, owner, body):
         raise HTTPException(409, '导出期间记录已变化，请刷新后重试')
     photo_quality='preview' if kind=='issues' and any(row['photos'] for row in data['tables']['issues']) else None
     download_name = filename(kind,data['dateFrom'],data['dateTo'],photo_quality)
+    return store_download(owner,content,kind,data['dateFrom'],data['dateTo'],photo_quality)
+
+
+def store_download(owner,content,kind,start,end,quality=None,period='monthly'):
+    download_name=filename(kind,start,end,quality,period)
     nonce = secrets.token_hex(16)
-    value = f"{nonce}.{int(time.time())+TTL}.{kind}.{data['dateFrom']}.{data['dateTo']}"
-    if photo_quality:
-        value+='.'+photo_quality
+    value = f"{nonce}.{int(time.time())+TTL}.{kind}.{start}.{end}"
+    if quality:
+        value+='.'+quality
+    if period!='monthly':value+='.'+period
     token = value+'.'+_signature(owner, value)
     try:
         _folder().mkdir(parents=True, exist_ok=True)
@@ -304,8 +325,8 @@ def prepare(factory, owner, body):
 
 
 def download(owner, token):
-    match = re.fullmatch(r'([a-f0-9]{32})\.(\d{10})\.(caixing|all|issues|customers)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})(?:\.(preview))?\.([a-f0-9]{64})', token)
-    if not match or not hmac.compare_digest(_signature(owner, token.rsplit('.', 1)[0]), match[7]):
+    match = re.fullmatch(r'([a-f0-9]{32})\.(\d{10})\.(caixing|all|issues|customers)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})(?:\.(preview|original|mixed))?(?:\.(weekly|yearly))?\.([a-f0-9]{64})', token)
+    if not match or not hmac.compare_digest(_signature(owner, token.rsplit('.', 1)[0]), match[8]):
         raise HTTPException(404, 'Excel 下载不存在')
     if int(match[2]) < time.time():
         _clean(); raise HTTPException(410, 'Excel 下载已过期，请重新导出')
@@ -313,4 +334,4 @@ def download(owner, token):
         content = (_folder()/(match[1]+extension(match[3]))).read_bytes()
     except OSError:
         raise HTTPException(410, 'Excel 下载已过期，请重新导出') from None
-    return content, filename(match[3],match[4],match[5],match[6])
+    return content, filename(match[3],match[4],match[5],match[6],match[7] or 'monthly')

@@ -416,6 +416,7 @@ function showPage(name, focusReportType = false) {
   window.QcWorkflow?.beforePageChange(name);
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
   if (currentPage === 'dashboard' && name !== 'dashboard') closeDashboardFailurePopover();
+  if(currentPage!==name)window.QcIssueReports?.pageChanged();
   currentPage = name;
   window.QcApprovedStatistics?.pageChanged(name);
   window.QcWeeklyTemplates?.pageChanged(name);

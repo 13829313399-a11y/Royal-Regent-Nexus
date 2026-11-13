@@ -53,6 +53,20 @@ def save(row,result='',remark=''):
     return sheet.save('huaxing',row['id'],{'revision':row['revision'],'result':result,'remark':remark},ACTOR)
 
 
+def test_pushed_schedule_source_note_does_not_prefill_qc_remark():
+    order=source('imported')
+    order['remark']='原始业务备注'
+    order['sourceRemark']='原始业务备注\n原表完成情况：PASS'
+    row,=sheet.sync('huaxing',pushed_candidates([order]))['items']
+    assert row['remark']==''
+    assert row['sourceNote']==order['sourceRemark']
+    assert row['sourceRecord']['remark']==order['remark']
+    save(row,'PASS','验货员手填备注')
+    refreshed,=sheet.sync('huaxing',pushed_candidates([{**order,'sourceRemark':'业务更新备注'}]))['items']
+    assert refreshed['remark']=='验货员手填备注'
+    assert refreshed['sourceNote']=='业务更新备注'
+
+
 def photo(row,color='red',key=None,fmt='PNG'):
     output=BytesIO();Image.new('RGB',(160,90),color).save(output,format=fmt)
     body={'revision':row['revision'],'name':'现场照片.'+fmt.lower(),'content':base64.b64encode(output.getvalue()).decode(),'requestKey':key or uuid4().hex}

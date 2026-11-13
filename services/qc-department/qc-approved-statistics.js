@@ -38,6 +38,10 @@
     }
     el('reset').onclick=()=>{Object.assign(state.filters,{year:'',month:'',day:'',customer:'',result:'FAIL',page:'1'});void load();};
     el('refresh').onclick=()=>void load();
+    if(root.__QC_NEXUS?.factory==='huaxing'){
+      const button=root.document.createElement('button');button.className='qc-reset';button.textContent='年度验货问题图文记录表';button.id='qstats-issues';
+      const footer=root.document.createElement('div');footer.className='qir-entry-footer';footer.append(button);el('root').querySelector('.qc-content').append(footer);button.onclick=()=>{const year=el('year').value;if(!year)return root.showToast?.('请先选择年份','error');root.QcIssueReports?.open('yearly',year+'-01-01',el('client').value);};
+    }
     el('root').querySelectorAll('[data-result]').forEach(b=>b.onclick=()=>{state.filters.result=b.dataset.result;state.filters.page='1';void load();});
     el('prev').onclick=()=>{state.filters.page=String(state.data.details.page-1);void load();};
     el('next').onclick=()=>{state.filters.page=String(state.data.details.page+1);void load();};

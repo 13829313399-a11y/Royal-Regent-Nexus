@@ -20,14 +20,19 @@ async function page(){
  w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjectURL=()=>{};
  w.fetch=async(url,options={})=>{
   const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
+  if(url.endsWith('/options'))return {ok:true,json:async()=>({inspectors:[{id:'qc-test',name:'测试检验员'}],institutions:[]})};
   if(url.endsWith('/entries'))return {ok:true,json:async()=>({items:copy(rows),columns})};
+  if(url.endsWith('/photo-info')){
+   const row=rows.find(r=>r.id===url.split('/').at(-2));
+   return {ok:true,json:async()=>({items:row.photos.map(photo=>({...photo,originalAvailable:true}))})};
+  }
   if(fail)return {ok:false,status:503,json:async()=>({detail:'网络断开，未保存'})};
   if(url.endsWith('/photos')&&body.name==='corrupt.jpg')return {ok:false,status:422,json:async()=>({detail:'图片损坏或格式不支持'})};
   const id=url.split('/').at(-2),row=rows.find(r=>r.id===id);
   assert.ok(row,'stable entry identity');active++;maxActive=Math.max(maxActive,active);
   if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
   assert.equal(body.revision,row.revision,'serialized requests use latest revision');
-  if(url.endsWith('/save')){Object.assign(row,{result:body.result,remark:body.remark,improvement:body.improvement,inspectionProblem:body.inspectionProblem});if(body.inspectionExecution){row.inspectionExecution={...row.inspectionExecution,...body.inspectionExecution};row.actualDate=row.inspectionExecution.actualDate;}}
+  if(url.endsWith('/save')){Object.assign(row,{result:body.result,remark:body.remark,...(Object.hasOwn(body,'improvement')?{improvement:body.improvement}:{}),inspectionProblem:body.inspectionProblem});if(body.inspectionExecution){row.inspectionExecution={...row.inspectionExecution,...body.inspectionExecution};row.actualDate=row.inspectionExecution.actualDate;if(body.inspectionExecution.inspectorId==='qc-test')row.inspectionExecution.inspector='测试检验员';}}
   if(url.endsWith('/photos'))row.photos.push({id:'photo-'+row.photos.length,name:body.name});
   if(url.endsWith('/remove-photo'))row.photos=row.photos.filter(p=>p.id!==body.photoId);
   row.revision++;active--;
@@ -37,14 +42,33 @@ async function page(){
  w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-audit.js'),'utf8'));w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-photo-paste.js'),'utf8'));w.eval(script);await tick();if(!w.QcInspectionSheet.model.loaded)await w.QcInspectionSheet.load();
  return {dom,w,d:w.document,calls,get rows(){return rows;},set fail(value){fail=value;},set delay(value){delay=value;},get maxActive(){return maxActive;}};
 }
-test('19 real display columns including optional actual date, inline four-result controls, reused remarks, real camera/file inputs and no drawer',async()=>{
+test('20 real display columns including optional actual date, inline four-result controls, reused remarks, real camera/file inputs and no drawer',async()=>{
  const p=await page();try{
-  assert.equal(p.d.querySelectorAll('.qis-table thead th').length,19);
+  assert.equal(p.d.querySelectorAll('.qis-table thead th').length,20);
   assert.deepEqual([...p.d.querySelector('[data-result]').options].map(x=>x.value),['','PASS','FAIL','PENDING','LG']);
   assert.equal(p.d.querySelector('[data-result] option[value=""]').disabled,false);
   assert.equal(p.d.querySelector('[data-result]').value,'');assert.equal(p.d.querySelectorAll('[data-remark]').length,3);
   assert.equal(p.d.querySelector('[data-camera]').getAttribute('capture'),'environment');assert.ok(p.d.querySelector('[data-files]').multiple);
   assert.equal(p.d.querySelector('.qwf-dialog'),null);assert.ok(p.d.getElementById('page-review'));
+ }finally{p.dom.window.close();}
+});
+test('workbench opens the shared viewer with photo metadata only when clicked',async()=>{
+ const p=await page();
+ try{
+  p.rows[0].photos=[{id:'p1',name:'手机照片.JPG'}];
+  let opened;
+  p.w.QcInspectionSummary={openPhoto:(...args)=>{opened=args;}};
+  await p.w.QcInspectionSheet.load();
+  assert.equal(p.calls.filter(c=>c.url?.endsWith('/photo-info')).length,0);
+  const preview=p.d.querySelector('[data-view-photo="p1"]');
+  assert.ok(preview.querySelector('img').src.endsWith('/entries/a/photos/p1'));
+  assert.match(p.d.querySelector('[data-files]').accept,/image\/avif/);
+  await preview.onclick(new p.w.MouseEvent('click',{cancelable:true}));
+  assert.equal(p.calls.at(-1).url,'api/inspection-sheet/entries/a/photo-info');
+  assert.equal(opened[0].entryId,'a');
+  assert.deepEqual(opened[1],[{id:'p1',name:'手机照片.JPG',originalAvailable:true}]);
+  assert.equal(opened[2],0);
+  assert.equal(opened[4],preview);
  }finally{p.dom.window.close();}
 });
 test('LAN HTTP camera and album attach without randomUUID, retain secure keys on retry, and show feedback beside photos',async()=>{
@@ -137,10 +161,10 @@ test('search control is reused at toolbar end; reset clears new and legacy filte
 });
 test('moved business inputs preserve result, problem, improvement, photo and remark values through refresh',async()=>{
  const p=await page();try{
-  const s=p.w.QcInspectionSheet;s.edit('a','result','FAIL');s.edit('a','inspectionProblem','标签偏移');s.edit('a','improvement','重新定位');s.edit('a','remark','保留备注');await s.flush();
+  p.rows[0].improvement='重新定位';await p.w.QcInspectionSheet.load();const s=p.w.QcInspectionSheet;s.edit('a','result','FAIL');s.edit('a','inspectionProblem','标签偏移');assert.equal(p.d.querySelector('[data-improvement]'),null);s.edit('a','remark','保留备注');await s.flush();
   const control=p.d.querySelector('[data-files=a]');Object.defineProperty(control,'files',{value:[new p.w.File(['evidence'],'proof.png',{type:'image/png'})]});await s.upload('a',control);await s.load();
   assert.equal(p.rows[0].result,'FAIL');assert.equal(p.rows[0].inspectionProblem,'标签偏移');assert.equal(p.rows[0].improvement,'重新定位');assert.equal(p.rows[0].remark,'保留备注');assert.equal(p.rows[0].photos.length,1);
-  assert.deepEqual([...p.d.querySelectorAll('#recordsTableWrap thead th')].map(c=>c.dataset.column),['date','customer','poNo','actualDate','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','completion','result','inspectionProblem','improvement','photos','remark']);
+  assert.deepEqual([...p.d.querySelectorAll('#recordsTableWrap thead th')].map(c=>c.dataset.column),['date','customer','poNo','actualDate','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','completion','result','inspectionExecution.sampleQuantity','inspectionProblem','remark','photos','inspector']);
   assert.deepEqual(p.rows.slice(1).map(r=>r.photos.length),[0,0]);
  }finally{p.dom.window.close();}
 });
@@ -353,7 +377,7 @@ test('workbench date uses native editor, autosaves only its patch, reloads and c
   const input=()=>p.d.querySelector('[data-entry="a"] [data-execution-field="actualDate"]');
   assert.equal(input().type,'date');assert.equal(input().value,'');assert.match(input().title,/未填写时.*计划日期/);
   const order=[...p.d.querySelectorAll('#recordsTableWrap th[data-column]')].map(n=>n.dataset.column);
-  assert.deepEqual(order.slice(0,5),['date','customer','poNo','actualDate','country']);assert.deepEqual(order.slice(-5),['result','inspectionProblem','improvement','photos','remark']);
+  assert.deepEqual(order.slice(0,5),['date','customer','poNo','actualDate','country']);assert.deepEqual(order.slice(-6),['result','inspectionExecution.sampleQuantity','inspectionProblem','remark','photos','inspector']);
   p.rows[0].inspectionExecution={actualDate:'',reportNo:'KEEP',sampleQuantity:'0'};
   await p.w.QcInspectionSheet.load();input().value='2026-11-06';input().dispatchEvent(new p.w.Event('input'));
   await new Promise(resolve=>setTimeout(resolve,720));
@@ -404,5 +428,17 @@ test('immediate submit waits for the latest date and queued photo before sending
   assert.ok(submitted>0);assert.ok(requests.findIndex(c=>c.url.endsWith('/photos'))<submitted);
   assert.equal(p.rows[0].actualDate,'2026-11-09');assert.equal(p.rows[0].photos.length,1);
   assert.equal(requests[submitted].body.revision,p.rows[0].revision-1);
+ }finally{p.dom.window.close();}
+});
+
+test('sample quantity and inspector selection persist with stable identity without editing old measures',async()=>{
+ const p=await page();try{
+  p.rows[0].improvement='历史措施';await p.w.QcInspectionSheet.load();
+  const sample=p.d.querySelector('[data-entry=a] [data-execution-field=sampleQuantity]');sample.value='0';sample.dispatchEvent(new p.w.Event('input'));
+  const person=p.d.querySelector('[data-entry=a] [data-person-field=inspector]');person.value='qc-test';person.dispatchEvent(new p.w.Event('change'));
+  await p.w.QcInspectionSheet.flush();await p.w.QcInspectionSheet.load();
+  assert.equal(p.rows[0].inspectionExecution.sampleQuantity,'0');assert.equal(p.rows[0].inspectionExecution.inspectorId,'qc-test');assert.equal(p.rows[0].inspectionExecution.inspector,'测试检验员');
+  assert.equal(p.d.querySelector('[data-person-field=inspector]').value,'qc-test');assert.equal(p.rows[0].improvement,'历史措施');
+  assert.ok(p.calls.filter(c=>c.url?.endsWith('/save')).every(c=>!Object.hasOwn(c.body,'improvement')));
  }finally{p.dom.window.close();}
 });

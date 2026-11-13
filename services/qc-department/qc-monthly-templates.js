@@ -6,7 +6,7 @@
   const fields=[];
   const columns=(_,row)=>row.editableFields || {};
   const detailWidths=[42,100,100,108,80,105,160,72,56,60,72,48,90,90,180,90,90,180];
-  const widths={all:detailWidths,customers:detailWidths,caixing:[100,80,110,90,100,180,74,60,60,72,200,180,200],issues:[100,90,110,100,160,74,60,60,72,220,90,340],summary:[110,110,110,120,110]};
+  const widths={all:detailWidths,customers:detailWidths,caixing:[100,80,110,120,100,180,74,60,60,72,200,200,200,90,180],issues:[100,90,110,100,160,74,60,60,72,220,90,340],summary:[110,110,110,120,110]};
   const selectedDate=()=>el('monthlyMonth').value+'-01';
   let exporting=false, exportMessage='';
   // Missing/null supplements are blank editable values; zero remains a real value.
@@ -22,7 +22,7 @@
   const el = id => doc.getElementById(id);
   let active = '', data = null, valid = false, date = '', customer = '', sequence = 0, editor = null;
   let pending = {}, receipt = null, sending = false, paused = false, error = '', conflict = null, timer, storageError = false;
-  const uid = () => root.crypto.randomUUID();
+  const uid = () => root.crypto.randomUUID?.() || Array.from(root.crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
   const cellKey = (customerKey, field) => customerKey + ':' + field;
   const dirty = () => sending || !!receipt || Object.keys(pending).length > 0;
   const storageKey = () => 'qc-monthly-v1:' + root.location.pathname + ':' + root.__QC_NEXUS.factory + ':' + data.dateFrom;
@@ -75,6 +75,7 @@
   function values(kind,row) {
     const result=[...row.values];
     for(const [i,field] of Object.entries(columns(kind,row)))result[i]=fieldValue(row.customerKey,field);
+    if(kind==='summary')result[4]=rate(result[3],result[1]);
     return result;
   }
   function table(kind,headers,rows=data.tables[kind]) {
@@ -117,7 +118,7 @@
     if(!active || !data) return;
     const spec=data.templates.find(t=>t.id===active);
     const scheduleCount=data.tables[active].filter(r=>r.dateSource==='schedule').length;
-    view.innerHTML='<div class="qmt-heading"><h2>'+esc(spec.title)+'</h2></div><div class="qmt-controls"><label>客户 <select id="qmtCustomer"><option value="">全部客户</option>'+data.customers.map(c=>'<option value="'+c.key+'"'+(customer===c.key?' selected':'')+'>'+esc(c.label)+'</option>').join('')+'</select></label><button id="qmtRefresh">刷新数据</button><button id="qmtExcel">导出 Excel</button></div><div id="qmtExcelStatus" class="qmt-muted" role="status" aria-live="polite"></div><details class="qmt-field-help"><summary>哪些空白可以填写？</summary><p>合同、报告、责任人、备注等空白业务格可补录，四个月报模板共用补充内容。彩星实际退货次数按月填写。不良率暂时留空；已审核原值、序号、日期及验货结果不可编辑。</p></details><div class="qmt-status-line"><span>'+esc(data.dateFrom+' 至 '+data.dateTo)+' · '+data.tables[active].length+' 条已审核记录</span><span id="qmtStatus" role="status" aria-live="polite"></span><button id="qmtRetry" hidden>重试保存</button></div><p class="qmt-muted">点击白色单元格可补录，输入后自动保存。退货次数需人工确认，不由 FAIL 推算。'+(scheduleCount?' '+scheduleCount+' 条历史记录沿用现有月报的计划日期回退，日期格可查看来源。':'')+'</p><div id="qmtConflict"></div><div id="qmtTables"></div><p class="qmt-selected-source">原模板：'+esc(spec.sourceFile)+' · 字段保持原顺序；所有单元格独立。彩星实际退货次数按月填写，不良率暂不计算。图片对应原验货记录。</p>';
+    view.innerHTML='<div class="qmt-heading"><h2>'+esc(spec.title)+'</h2></div><div class="qmt-controls"><label>客户 <select id="qmtCustomer"><option value="">全部客户</option>'+data.customers.map(c=>'<option value="'+c.key+'"'+(customer===c.key?' selected':'')+'>'+esc(c.label)+'</option>').join('')+'</select></label><button id="qmtRefresh">刷新数据</button><button id="qmtExcel">导出 Excel</button></div><div id="qmtExcelStatus" class="qmt-muted" role="status" aria-live="polite"></div><details class="qmt-field-help"><summary>哪些空白可以填写？</summary><p>合同、报告、责任人、备注等空白业务格可补录，四个月报模板共用补充内容。彩星实际退货次数按月填写。不良率沿用新版模板公式：人工填写的退货单数 ÷ 验货总单数；已审核原值、序号、日期及验货结果不可编辑。</p></details><div class="qmt-status-line"><span>'+esc(data.dateFrom+' 至 '+data.dateTo)+' · '+data.tables[active].length+' 条已审核记录</span><span id="qmtStatus" role="status" aria-live="polite"></span><button id="qmtRetry" hidden>重试保存</button></div><p class="qmt-muted">点击白色单元格可补录，输入后自动保存。退货次数需人工确认，不由 FAIL 推算。'+(scheduleCount?' '+scheduleCount+' 条历史记录沿用现有月报的计划日期回退，日期格可查看来源。':'')+'</p><div id="qmtConflict"></div><div id="qmtTables"></div><p class="qmt-selected-source">原模板：'+esc(spec.sourceFile)+' · 字段保持原顺序；所有单元格独立。彩星实际退货次数按月填写，不良率沿用模板公式，不良次数暂无已确认来源，保持空白。图片对应原验货记录。</p>';
     el('qmtRefresh').onclick=()=>load();
     el('qmtExcel').onclick=exportExcel;
     el('qmtCustomer').onchange=e=>{customer=e.target.value;load();};
@@ -142,12 +143,13 @@
     input.setAttribute('aria-label',button.getAttribute('aria-label'));if(field==='returns')input.inputMode='numeric';
     if(field.endsWith(':quantity'))input.inputMode='decimal';
     editor={input,customerKey,field,original:input.value};button.replaceWith(input);
-    input.oninput=e=>{if(!e.isComposing)stage(customerKey,field,input.value);};
-    input.oncompositionend=()=>stage(customerKey,field,input.value);
+    input.oncompositionstart=()=>{editor.composing=true;};
+    input.oninput=e=>{editor.composing=!!e.isComposing;stage(customerKey,field,input.value);};
+    input.oncompositionend=()=>{editor.composing=false;stage(customerKey,field,input.value);};
     input.onblur=()=>finish();
     input.onkeydown=e=>{
       if(e.isComposing)return;
-      if(e.key==='Escape'){e.preventDefault();stage(customerKey,field,editor.original);finish();}
+      if(e.key==='Escape'){e.preventDefault();input.value=editor.original;stage(customerKey,field,editor.original);finish();}
       if(e.key==='Tab'||(e.key==='Enter'&&!e.shiftKey)){
         e.preventDefault();const cells=Array.from(doc.querySelectorAll('#qmtTables .qmt-cell,.qmt-editor')),index=cells.indexOf(input);
         finish();const buttons=Array.from(doc.querySelectorAll('#qmtTables .qmt-cell'));
@@ -156,7 +158,7 @@
     };
     input.focus();status();
   }
-  function finish(){if(!editor)return;const input=editor.input;input.onblur=null;editor=null;renderTables();status();}
+  function finish(){if(!editor)return;const {input,customerKey,field}=editor;input.onblur=null;if(input.value!==fieldValue(customerKey,field))stage(customerKey,field,input.value);editor=null;renderTables();status();if(Object.keys(pending).length){root.clearTimeout(timer);timer=root.setTimeout(flush,0);}}
   function showConflict(){
     const area=el('qmtConflict');if(!area)return;
     if(!conflict){area.innerHTML='';return;}
@@ -180,7 +182,7 @@
     receipt=null;conflict=null;error='';paused=false;persist();renderTables();status();flush();
   }
   async function flush(){
-    if(sending||paused||!data||!data.canEdit)return;
+    if(sending||paused||!data||!data.canEdit||editor?.composing)return;
     if(!receipt){
       const key=Object.keys(pending)[0];if(!key)return;
       const item=pending[key],saved=data.fields[item.customerKey]?.[item.field];
@@ -193,6 +195,7 @@
     const sent=receipt;
     try{
       const result=await request('api/monthly-templates/save',sent.body);
+      if(result.customerKey!==sent.body.customerKey||result.field!==sent.body.field||result.value!==sent.body.value||!Number.isInteger(result.version)||result.version<sent.body.baseVersion)throw Error('服务器未确认本次保存，草稿保留，请重试核对');
       (data.fields[result.customerKey] ||= {})[result.field]={value:result.value,version:result.version};
       const latest=pending[sent.key];
       if(latest?.value===result.value) delete pending[sent.key];else if(latest)latest.baseVersion=result.version;
