@@ -32,6 +32,33 @@ describe('fabric order receiving issuing and adjustments', () => {
     expect(wrapper.get('tbody').text()).toContain('IS-001')
     expect(wrapper.get('tbody').text()).toContain('车间一')
   })
+  it('displays exact quantities without trailing decimal zeroes in totals, details and timeline', async () => {
+    const quantities = { opening: '0.000000', inbound: '448.000000', outbound: '4.125000', adjustment: '-0.000001', balance: '443.874999' }
+    const issue = { ...report.details[0]!, quantity: '4.125000', stock_change: '-4.125000', moved_quantity: '0.000000' }
+    api.orderSummary.mockResolvedValue({
+      ...report,
+      rows: [{ ...report.rows[0]!, ...quantities }],
+      totals: [{ unit: '码', ...quantities }],
+      details: [issue, {
+        ...issue, id: 'T', mode: 'ADJUSTMENT', label: '调仓', quantity: '0.000000',
+        stock_change: '0.000000', moved_quantity: '12.500000',
+      }],
+    })
+    await open()
+    const expected = ['0', '448', '4.125', '-0.000001', '443.874999']
+    expect(wrapper.findAll('.order-totals dd').map(value => value.text())).toEqual(expected)
+    expect(wrapper.findAll('tbody td').slice(4, 9).map(value => value.text())).toEqual(expected)
+    await wrapper.findAll('button').find(button => button.text() === '订单流水')!.trigger('click')
+    await flushPromises()
+    const body = new DOMWrapper(document.body)
+    const dialog = body.get('[role="dialog"]')
+    expect(dialog.text()).toContain('-4.125 码')
+    expect(dialog.text()).toContain('调仓 12.5 码')
+    expect(dialog.text()).not.toContain('调仓 0')
+    await dialog.findAll('button').find(button => button.text() === '关闭流水')!.trigger('click')
+    await wrapper.findAll('nav button').find(button => button.text() === '调整明细')!.trigger('click')
+    expect(wrapper.findAll('tbody td').slice(4, 6).map(value => value.text())).toEqual(['0 码', '12.5 码'])
+  })
   it('applies a completed date range with supplier and keyword, and clears both date bounds together', async () => {
     await open()
     await wrapper.get('[aria-label="订单收发关键字"]').setValue(' PO-001 ')

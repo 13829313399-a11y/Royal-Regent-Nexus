@@ -4,6 +4,7 @@ import io
 import json
 import re
 import secrets
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -17,7 +18,7 @@ from app.schemas.material_handover import HandoverData
 from app.schemas.warehouse_operations import WarehouseDocumentRequest
 from app.services.auth import can
 from app.services import warehouse_operations as inventory
-from app.services.fabric_receiving import quantity, receipt_line_quantities, validate_delivery_quantity
+from app.services.fabric_receiving import quantity, receipt_line_quantities, validate_delivery_quantity, validate_receipt_roll
 from app.services.fabric_procurement_parser import dump, digest
 
 FACTORY = 'huakang-c'
@@ -156,9 +157,14 @@ def document(db, access, identifier, *, lock=False):
     return row
 
 
-def progress(db, identifier, *, entries=None):
+def progress(db, identifier, *, entries=None, links=None, reversals=None):
+    from app.services import material_handover_receipts as receipts
     if entries is None:
         _, entries = inventory.projection(db, 'fabric')
+    if links is None:
+        links = receipts.receipt_links(db, [identifier]).values()
+    if reversals is None:
+        reversals = receipts.reversals_by_receipt(entries)
     amounts, movements = {}, []
     for entry in entries.values():
         data = entry['data']
@@ -167,9 +173,16 @@ def progress(db, identifier, *, entries=None):
         movements.append({'operation_id': entry['id'], 'kind': entry['kind'], 'line_id': data['handover_line_id'],
             'quantity': data['quantity'], 'business_date': entry['business_date'], 'reversed': bool(entry.get('reversed')),
             'actor_name': entry['actor_name'], 'batch_id': data.get('batch_id', '')})
-        if not entry.get('reversed'):
-            key = data['handover_line_id']
-            amounts[key] = amounts.get(key, inventory.decimal('0')) + inventory.decimal(data['quantity'])
+    for link in links:
+        if link['document_id'] == identifier:
+            movements.append({'operation_id': link['id'], 'kind': 'RECEIPT', 'line_id': link['line_id'],
+                'quantity': link['quantity'], 'business_date': link['business_date'],
+                'reversed': link['receipt_id'] in reversals, 'actor_name': link['actor_name'], 'batch_id': '',
+                'manual_reference': link['reference']})
+    for movement in movements:
+        if not movement['reversed']:
+            key = movement['line_id']
+            amounts[key] = amounts.get(key, inventory.decimal('0')) + inventory.decimal(movement['quantity'])
     return amounts, movements
 
 
@@ -185,49 +198,57 @@ def document_progress(lines, amounts):
     return remaining, 'PARTIAL' if any(amounts.values()) else 'PENDING'
 
 
-def receipt_processing_statuses(db, delivery_lines):
-    if not delivery_lines:
+def delivery_amounts(db, document_ids, *, entries=None):
+    if not document_ids:
         return {}
-    _, entries = inventory.projection(db, 'fabric')
-    entries_by_document = {identifier: {} for identifier in delivery_lines}
+    from app.services import material_handover_receipts as receipts
+    if entries is None:
+        _, entries = inventory.projection(db, 'fabric')
+    entries_by_document = defaultdict(dict)
     for operation_id, entry in entries.items():
         identifier = entry['data'].get('handover_document_id')
-        if identifier in entries_by_document:
+        if identifier in document_ids:
             entries_by_document[identifier][operation_id] = entry
+    links_by_document = defaultdict(list)
+    for link in receipts.receipt_links(db, document_ids).values():
+        links_by_document[link['document_id']].append(link)
+    reversals = receipts.reversals_by_receipt(entries)
+    return {identifier: progress(db, identifier, entries=entries_by_document[identifier],
+                                  links=links_by_document[identifier], reversals=reversals)[0]
+            for identifier in document_ids}
 
-    statuses = {}
-    for identifier, lines in delivery_lines.items():
-        amounts, _ = progress(db, identifier, entries=entries_by_document[identifier])
-        _, statuses[identifier] = document_progress(lines, amounts)
-    return statuses
+
+def receipt_processing_statuses(db, delivery_lines):
+    amounts = delivery_amounts(db, delivery_lines)
+    return {identifier: document_progress(lines, amounts[identifier])[1]
+            for identifier, lines in delivery_lines.items()}
 
 
 def code(row):
     return f'MH1:{row.id}:{row.code_version}' if row.status == 'CONFIRMED' else ''
 
 
-def receipt_observations(db, identifier):
-    statement = select(HandoverEvent.detail_json).where(
-        HandoverEvent.document_id == identifier,
-        HandoverEvent.factory_id == FACTORY,
-        HandoverEvent.kind == 'POST',
-    ).order_by(HandoverEvent.revision.desc())
-    observations = []
-    for raw in db.scalars(statement):
-        observation = json.loads(raw).get('receipt_observation')
-        if observation:
-            observations.append(observation)
-    return observations
-
-
-def output(db, row, *, with_progress=True, with_receipt_observations=False):
+def output(db, row, *, with_progress=True, with_receipt_observations=False, with_receipt_review=False,
+           entries=None, manual_links=None):
     body = HandoverData.model_validate_json(row.data_json).model_dump(mode='json')
     body['supplier_id']=supplier_identity(db,row,body)
     if row.status=='DRAFT' and body['supplier_id']:
         from app.services.material_handover_suppliers import supplier
         body['counterparty']=supplier(db,body['supplier_id'],active=False).name
     extraction = json.loads(row.extraction_json)
-    amounts, movements = progress(db, row.id) if with_progress else ({}, [])
+    with_link_history = with_receipt_review and row.status != 'DRAFT' and body['kind'] == 'DELIVERY'
+    with_receipt_review = with_link_history and row.status == 'CONFIRMED'
+    if with_receipt_review:
+        from app.services import material_handover_receipts as receipts
+        if entries is None:
+            _, entries = inventory.projection(db, 'fabric')
+        if manual_links is None:
+            manual_links = receipts.receipt_links(db)
+    amounts, movements = progress(db, row.id, entries=entries,
+                                  links=None if manual_links is None else manual_links.values()) if with_progress else ({}, [])
+    if not with_receipt_review:
+        for movement in movements:
+            movement.pop('manual_reference', None)
     remaining, processing = document_progress(body['lines'], amounts)
     source = db.get(HandoverSource, row.id)
     result = {'id': row.id, 'factory_id': FACTORY, 'issuer_id': row.issuer_id, 'status': row.status, 'revision': row.revision,
@@ -237,19 +258,30 @@ def output(db, row, *, with_progress=True, with_receipt_observations=False):
         'confirmed_at': row.confirmed_at, 'created_at': row.created_at, 'progress': remaining, 'processing_status': processing,
         'movements': movements}
     if with_receipt_observations and body['kind'] == 'DELIVERY' and row.status != 'DRAFT':
-        observations = receipt_observations(db, row.id)
-        if observations:
-            result['receipt_observations'] = observations
+        from app.services import material_handover_rejections as rejections
+        rejections.add_observations(result, rejections.observations_by_document(db, [row.id])[row.id])
+    if with_receipt_review:
+        result['prior_receipts'] = receipts.prior_receipts(db, row, HandoverData.model_validate(body),
+                                                          entries, amounts, manual_links)
+    if with_link_history:
+        from app.services.material_handover_receipts import revoked_receipt_links
+        revoked = revoked_receipt_links(db, row.id)
+        if revoked:
+            result['revoked_receipt_links'] = revoked
     return result
 
 
 def request_signature(kind, identifier, payload):
     body=payload.model_dump(mode='json')
     for line in body.get('lines', []):
-        for key in ('purchase_source_id', 'expected_source_revision', 'expected_receipt_count', 'difference_reason', 'receipt_counts'):
+        for key in ('purchase_source_id', 'expected_source_revision', 'expected_receipt_count', 'difference_reason',
+                    'procurement_pending_reason', 'receipt_counts'):
             if line.get(key) in ('', None): line.pop(key, None)
-    if not body.get('delivery_quantities'):
-        body.pop('delivery_quantities', None)
+        if not line.get('roll_no_is_blank'):
+            line.pop('roll_no_is_blank', None)
+    for key in ('delivery_quantities', 'manual_receipt_reviews'):
+        if not body.get(key):
+            body.pop(key, None)
     if body.get('data') is None:body.pop('data',None)
     if isinstance(body.get('data'),dict):
         data=body['data']
@@ -438,14 +470,18 @@ def void(db, access, identifier, payload):
     db.commit(); return result
 
 
-def scan(db, access, value, *, with_receipt_observations=False):
+def scan(db, access, value, *, with_receipt_observations=False, with_receipt_review=False):
     match = re.fullmatch(r'MH1:(MHD-[0-9a-f]{32}):([1-9][0-9]{0,5})', value.strip())
     if not match:
         raise HTTPException(422, '请扫描本模块生成的单据码，或完整输入码下方的编号')
     row = document(db, access, match[1])
     if row.status != 'CONFIRMED' or row.code_version != int(match[2]):
         raise HTTPException(409, '二维码版本已失效或单据未确认 / 已作废，请使用有效原单')
-    return output(db, row, with_receipt_observations=with_receipt_observations)
+    return output(db, row, with_receipt_observations=with_receipt_observations, with_receipt_review=with_receipt_review)
+
+
+def actual_roll_no(selection, line):
+    return selection.roll_no or ('' if selection.roll_no_is_blank else line.roll_no)
 
 
 def collect_receipt_observations(data, payload, source_lines):
@@ -466,7 +502,7 @@ def collect_receipt_observations(data, payload, source_lines):
         line = source_lines[part.line_id]
         # Quantities document the observed difference. They do not attest to physical disposition.
         amounts.pop('returned_to_supplier')
-        allocation = {**amounts, 'lot': part.lot or line.lot, 'roll_no': part.roll_no or line.roll_no}
+        allocation = {**amounts, 'lot': part.lot or line.lot, 'roll_no': actual_roll_no(part, line)}
         allocations[index] = allocation
         groups.setdefault(part.line_id, {'line_id': part.line_id, 'item_name': line.item_name,
             'item_code': line.item_code, 'unit': line.unit, 'parts': []})['parts'].append(allocation)
@@ -499,39 +535,51 @@ def post(db, actor, identifier, payload):
         raise HTTPException(422, '实际收发日期不能早于单据日期')
     if payload.business_date > business_now().date():
         raise HTTPException(422, '实际业务日期不能晚于今天')
-    remaining, _ = progress(db, identifier)
+    from app.services import material_handover_receipts as receipts
     source_lines = {line.id: line for line in data.lines}
     selected_totals = {}
     _, entries = inventory.projection(db, 'fabric')
+    manual_links = receipts.receipt_links(db) if data.kind == 'DELIVERY' else {}
+    reversals = receipts.reversals_by_receipt(entries)
+    received_amounts, _ = progress(db, identifier, entries=entries, links=manual_links.values(), reversals=reversals)
     actual_revision = max((e['sequence'] for e in entries.values()), default=0)
     if actual_revision != payload.expected_inventory_revision:
         raise HTTPException(409, '库存已变化，请刷新后核对')
     selected_line_ids = {selection.line_id for selection in payload.lines}
-    for entry in entries.values():
-        if entry['kind'] != 'CORRECTION':
-            continue
-        original = entries.get(entry['data'].get('original_id'), {}).get('data', {})
-        if original.get('handover_document_id') == identifier and original.get('handover_line_id') in selected_line_ids \
+    for original_id, entry in reversals.items():
+        original = entries.get(original_id, {}).get('data', {})
+        link = manual_links.get(original_id, {})
+        if ((original.get('handover_document_id') == identifier and original.get('handover_line_id') in selected_line_ids)
+                or (link.get('document_id') == identifier and link.get('line_id') in selected_line_ids)) \
                 and payload.business_date.isoformat() < entry['business_date']:
             raise HTTPException(409, '重新收发日期不能早于该明细的冲销日期，请核对实际日期')
     stock_selections = []
+    roll_keys = defaultdict(set)
     for index, selection in enumerate(payload.lines):
         line = source_lines.get(selection.line_id)
         if line is None:
             raise HTTPException(422, '所选明细不属于本单')
         amount = quantity(selection.quantity, '本次数量', allow_zero=selection.receipt_counts is not None)
+        if data.kind == 'DELIVERY' and line.material_category == 'FABRIC':
+            validate_receipt_roll(roll_keys[line.id], selection.lot or line.lot,
+                                  actual_roll_no(selection, line), selection.location_id)
         if amount > 0:
             stock_selections.append((index, selection))
         elif (selection.purchase_source_id or selection.expected_source_revision is not None
-                or selection.expected_receipt_count is not None or selection.difference_reason):
+                or selection.expected_receipt_count is not None or selection.difference_reason
+                or selection.procurement_pending_reason):
             raise HTTPException(422, '零入库差异不填写采购待收关联')
         selected_totals[line.id] = selected_totals.get(line.id, inventory.decimal('0')) + amount
-        received = remaining.get(line.id, inventory.decimal('0'))
+        received = received_amounts.get(line.id, inventory.decimal('0'))
         if received >= inventory.decimal(line.quantity) or received + selected_totals[line.id] > inventory.decimal(line.quantity):
             raise HTTPException(409, '本次累计数量超过本单未完成数量')
     receipt_parts, receipt_groups = collect_receipt_observations(data, payload, source_lines)
     from app.services.material_handover_procurement import prepare_links
-    purchase_links = prepare_links(db, actor, row, data, [part for _, part in stock_selections]) if stock_selections else []
+    selections = [part for _, part in stock_selections]
+    if data.kind == 'DELIVERY' and selections:
+        receipts.guard_reposting(db, actor, row, data, entries, received_amounts, manual_links,
+                                 selections, payload)
+    purchase_links = prepare_links(db, actor, row, data, selections) if selections else []
     result_movements = []
     for (index, selection), purchase_link in zip(stock_selections, purchase_links, strict=True):
         line = source_lines[selection.line_id]
@@ -547,7 +595,7 @@ def post(db, actor, identifier, payload):
             business_date=payload.business_date, source_system='MATERIAL_HANDOVER', source_no=data.source_no,
             source_line=f'{identifier}:{line.id}:{digest([str(payload.request_id), index])[:24]}', source_version=str(row.code_version),
             item_code=line.item_code, item_name=line.item_name, unit=line.unit, material_category=line.material_category,
-            quantity=selection.quantity, lot=selection.lot or line.lot, roll_no=selection.roll_no or line.roll_no,
+            quantity=selection.quantity, lot=selection.lot or line.lot, roll_no=actual_roll_no(selection, line),
             location_id=selection.location_id, batch_id=selection.batch_id, counterparty=data.counterparty,
             production_no=line.production_no or data.production_no, reason=data.note)
         movement = inventory.post(db, actor, 'fabric', body, _state=state, _commit=False,
@@ -560,13 +608,14 @@ def post(db, actor, identifier, payload):
         if index in receipt_parts:
             receipt_parts[index].update(operation_id=movement['id'], location=movement['data'].get('location', ''))
     row.revision += 1; row.updated_at = business_now().isoformat(); db.flush()
-    result = output(db, row, with_receipt_observations=True)
+    result = output(db, row, with_receipt_observations=True, with_receipt_review=receipts.can_review(actor),
+                    manual_links=manual_links)
     detail = {'operation_ids': [m['id'] for m in result_movements], 'selections': payload.model_dump(mode='json')}
     if receipt_groups:
-        observation = {'request_id': str(payload.request_id), 'business_date': payload.business_date.isoformat(),
+        from app.services import material_handover_rejections as rejections
+        detail['receipt_observation'] = {'request_id': str(payload.request_id), 'business_date': payload.business_date.isoformat(),
             'actor_name': access.name, 'lines': list(receipt_groups.values())}
-        detail['receipt_observation'] = observation
-        result['receipt_observations'] = [observation, *result.get('receipt_observations', [])]
+        rejections.add_observations(result, [rejections.project_observation(detail), *result.get('receipt_observations', [])])
     event(db, access, row, 'POST', payload.request_id, signature, detail, result)
     db.commit(); return result
 

@@ -65,6 +65,18 @@ describe('carton-style fabric selection and batch receiving', () => {
     await body().get('[aria-label="第2项本单到货量"]').setValue('0.125')
     expect(button('保存全部并入库').attributes('disabled')).toBeUndefined()
   })
+  it('blocks a repeated known roll in one item without requiring roll numbers', async () => {
+    await openDialog(); await fill()
+    await button('＋ 增加明细').trigger('click')
+    await body().get('[aria-label="物料1明细2实收数量"]').setValue('0.125')
+    await body().get('[aria-label="物料1明细2仓位"]').setValue('一仓／A01')
+    await body().get('[aria-label="物料1明细2缸号"]').setValue('0001')
+    expect(button('保存全部并入库').attributes('disabled')).toBeUndefined()
+    await body().get('[aria-label="物料1明细1卷号"]').setValue('001')
+    await body().get('[aria-label="物料1明细2卷号"]').setValue('001')
+    expect(body().text()).toContain('第 1 项和第 2 项的缸号、卷号和仓位相同')
+    expect(button('保存全部并入库').attributes('disabled')).toBeDefined()
+  })
   it('calculates each item and groups batch amounts by currency without mixing inventory units', async () => {
     const first = source('L1')
     first.facts.unit_price = '0.04'

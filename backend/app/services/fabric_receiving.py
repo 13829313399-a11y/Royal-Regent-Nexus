@@ -98,11 +98,19 @@ def receipt_context(db):
     from app.services.material_handover_procurement import linked_operations
     # Linked handover operations already own the physical stock. Only project their
     # effective quantities here; do not create a second FabricReceipt or movement.
-    frozen_receipts.extend(dict(id=receipt.id, source_line_id=link['source_line_id'],
-        prior_received_quantity=link['prior_received_quantity'], baseline_known=link['baseline_known'],
-        facts=link['source_facts'], chase_reference=link.get('chase_reference'),
-        quantity=Decimal(0) if reversed_receipt else Decimal(body['quantity']), occurred_at=receipt.occurred_at)
-        for receipt, body, link, reversed_receipt in linked_operations(db))
+    grouped = {}
+    for receipt, body, link, reversed_receipt in linked_operations(db):
+        amount = Decimal(0) if reversed_receipt else Decimal(body['quantity'])
+        group_id = body.get('manual_receipt_id')
+        if group_id in grouped:
+            grouped[group_id]['quantity'] += amount
+            continue
+        linked = dict(id=receipt.id, source_line_id=link['source_line_id'], prior_received_quantity=link['prior_received_quantity'],
+            baseline_known=link['baseline_known'], facts=link['source_facts'], chase_reference=link.get('chase_reference'),
+            quantity=amount, occurred_at=receipt.occurred_at)
+        frozen_receipts.append(linked)
+        if group_id:
+            grouped[group_id] = linked
     for receipt in sorted(frozen_receipts, key=lambda receipt: (receipt['occurred_at'], receipt['id'])):
         item = totals.setdefault(receipt['source_line_id'], {"receipt_count": 0, "warehouse_received_quantity": Decimal(0)})
         if not item["receipt_count"]:
@@ -199,6 +207,48 @@ def receipt_line_quantities(batch, *, counts=None):
         accepted_quantity=accepted, returned_to_supplier=returned).items()}
 
 
+def validate_receipt_roll(roll_keys, lot, roll_no, location_id):
+    key = (lot.strip(), roll_no.strip(), location_id)
+    if all(key):
+        if key in roll_keys:
+            raise HTTPException(422, '同缸号、卷号和仓位重复，请合并核对')
+        roll_keys.add(key)
+
+
+def prepare_receipt(db, facts, payload, *, supplier=None):
+    """The same count, category and physical split rules apply to both manual paths."""
+    from app.services.fabric_master import receipt_references
+    master_references = receipt_references(db, facts, payload, supplier=supplier)
+    location_records = {row['id']: row for row in master_references['locations']}
+    batches, roll_keys = [], set()
+    for batch in payload.batches:
+        amounts = receipt_line_quantities(batch)
+        if not batch.location.strip():
+            raise HTTPException(422, '请填写每项实物的仓位')
+        if payload.material_category == 'FABRIC' and not batch.dye_lot.strip():
+            raise HTTPException(422, '布料每项实物须填写缸号')
+        if payload.material_category != 'FABRIC' and (batch.dye_lot.strip() or batch.roll_no.strip()):
+            raise HTTPException(422, '辅料和线无需填写布料缸号、卷号，请核对分类')
+        location = location_records[batch.location_id]
+        lot, roll_no = batch.dye_lot.strip(), batch.roll_no.strip()
+        validate_receipt_roll(roll_keys, lot, roll_no, location['id'])
+        batches.append({**amounts, 'quantity': amounts['accepted_quantity'], 'location': location['label'],
+                        'dye_lot': lot, 'roll_no': roll_no, 'location_record': location})
+    totals = {field: sum((Decimal(batch[field]) for batch in batches), Decimal(0)) for field in
+        ('counted_quantity', 'damaged_quantity', 'rejected_quantity', 'other_unusable_quantity', 'accepted_quantity', 'returned_to_supplier')}
+    quantity(decimal_text(totals['accepted_quantity']), '本次入库总数', True)
+    delivered = validate_delivery_quantity(totals['counted_quantity'], payload.delivery_quantity)
+    return batches, totals, delivered, decimal_text(delivered - totals['counted_quantity']), master_references
+
+
+def line_evidence(item, category, unit, shortage):
+    return {**{key: value for key, value in item.items() if key not in {'quantity', 'location_record'}},
+            'batch_id': None, 'location_id': item['location_record']['id'], 'material_category': category, 'unit': unit,
+            # Delivery is declared at header level; never allocate a guessed per-roll shortage.
+            'shortage_quantity': shortage, 'shortage_scope': 'RECEIPT',
+            'disposition': 'RETURNED_TO_SUPPLIER' if Decimal(item['returned_to_supplier']) > 0 else 'ACCEPTED'}
+
+
 def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _commit=True):
     ensure_schema(db)
     body = receipt_request_body(payload)
@@ -249,6 +299,8 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     reference = payload.delivery_reference.strip()
     from app.services.material_handover_procurement import guard_manual_delivery
     guard_manual_delivery(db, reference, facts['material_code'], facts['unit'], facts['supplier'], source_id=line_id)
+    from app.services.fabric_manual_receipts import guard_same_receipt
+    guard_same_receipt(db, reference, facts, payload.receipt_date.isoformat())
     from app.services.fabric_receipt_corrections import same_reference_receipts, reversal_rows
     same_notes = same_reference_receipts(db, reference, line_id)
     reversed_originals = reversal_rows(db)
@@ -257,31 +309,8 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     storage_reference = ('reposted:' + str(payload.request_id)) if same_notes else reference
     if same_notes and payload.receipt_date.isoformat() < max(reversed_originals[receipt.id].business_date for receipt in same_notes):
         raise HTTPException(422, '更正重收日期不能早于原单冲销日期，请保留原期间记录')
-    from app.services.fabric_master import receipt_references
-    master_references = receipt_references(db, facts, payload)
-    location_records = {row["id"]: row for row in master_references["locations"]}
-    batches, roll_keys = [], set()
-    for batch in payload.batches:
-        amounts = receipt_line_quantities(batch)
-        if not batch.location.strip():
-            raise HTTPException(422, "请填写每项实物的仓位")
-        if payload.material_category == "FABRIC" and not batch.dye_lot.strip():
-            raise HTTPException(422, "布料每项实物须填写缸号")
-        if payload.material_category != "FABRIC" and (batch.dye_lot.strip() or batch.roll_no.strip()):
-            raise HTTPException(422, "辅料和线无需填写布料缸号、卷号，请核对分类")
-        # A roll can split across bins, but the same roll/bin cannot be entered twice.
-        entered_location = batch.location.strip()
-        key = (batch.dye_lot.strip(), batch.roll_no.strip(), location_records[batch.location_id]["label"])
-        if payload.material_category == 'FABRIC' and key in roll_keys:
-            raise HTTPException(422, "同缸号、卷号和仓位重复，请合并核对")
-        roll_keys.add(key)
-        batches.append({**amounts, "quantity": amounts['accepted_quantity'], "location": key[2], "dye_lot": key[0], "roll_no": key[1], "location_record": location_records[batch.location_id]})
-    total = sum((Decimal(batch["quantity"]) for batch in batches), Decimal(0))
-    quantity(decimal_text(total), "本次入库总数", True)
-    totals = {field: sum((Decimal(batch[field]) for batch in batches), Decimal(0)) for field in
-        ('counted_quantity', 'damaged_quantity', 'rejected_quantity', 'other_unusable_quantity', 'accepted_quantity', 'returned_to_supplier')}
-    delivered = validate_delivery_quantity(totals['counted_quantity'], payload.delivery_quantity)
-    shortage = decimal_text(delivered - totals['counted_quantity'])
+    batches, totals, delivered, shortage, master_references = prepare_receipt(db, facts, payload)
+    total = totals['accepted_quantity']
     if total == 0 and not any(check['name'] == 'ck_fabric_receipt_quantity' and '>=' in check['sqltext']
             for check in inspect(db.connection()).get_check_constraints('fabric_receipts')):
         raise HTTPException(503, '零入库差异单需要数据库迁移 20261023_0176，请先备份并升级')
@@ -313,18 +342,13 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     movements = []
     frozen_body["batch_locations"] = {}
     for item in batches:
-        line_evidence = {key: value for key, value in item.items() if key not in {'quantity', 'location_record'}}
-        line_evidence.update(batch_id=None, location_id=item['location_record']['id'],
-            material_category=payload.material_category, unit=facts['unit'],
-            # Delivery is declared at header level; never allocate a guessed per-roll shortage.
-            shortage_quantity=shortage, shortage_scope='RECEIPT',
-            disposition='RETURNED_TO_SUPPLIER' if Decimal(item['returned_to_supplier']) > 0 else 'ACCEPTED')
-        frozen_body['receipt_lines'].append(line_evidence)
+        evidence = line_evidence(item, payload.material_category, facts['unit'], shortage)
+        frozen_body['receipt_lines'].append(evidence)
         if Decimal(item['quantity']) == 0:
             continue
         batch = FabricStockBatch(id=uuid4().hex, factory_id=source.FACTORY, receipt_id=receipt.id,
             material_category=payload.material_category, quality_status="PENDING_INSPECTION", **{k: item[k] for k in ('location', 'dye_lot', 'roll_no')})
-        line_evidence['batch_id'] = batch.id
+        evidence['batch_id'] = batch.id
         frozen_body["batch_locations"][batch.id] = item["location_record"]
         db.add(batch)
         movements.append(FabricInventoryMovement(id=uuid4().hex, factory_id=source.FACTORY, receipt_id=receipt.id,

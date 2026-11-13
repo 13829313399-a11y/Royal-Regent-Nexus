@@ -45,7 +45,8 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     ],
     "result": "接单状态和承诺交期可供本厂查看。",
     "reminders": [
-      "批量操作先看成功和失败结果，不要重做已成功的单。"
+      "批量操作先看成功和失败结果，不要重做已成功的单。",
+      "单独或批量接齐后，符合东康模板条件且尚未导出的采购单会弹出导出提示，可立即导出或选择稍后导出。"
     ],
     "image": {
       "src": "/carton-guide/quick-supplier-accept.svg",
@@ -63,12 +64,14 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     "destination": "supplier-documents",
     "actionLabel": "打开采购单与送货单",
     "steps": [
-      "到“采购单与送货单”，按厂区或单号查找。",
-      "看明细，核对当前采购版本和纸品数量。",
+      "新单完整接单后，到“采购单与送货单”按厂区或单号查找。合并采购单等所含订单全部接齐。",
+      "看明细核对版本和数量，用“东康模板”筛选已导出或未导出。",
       "需要导入东康时，导出对应模板，检查文件后再导入。"
     ],
     "result": "采购内容和导出文件一致。",
     "reminders": [
+      "混选时东康模板只导出适用的正单。样板、杂单用“预览并导出”下载普通 Excel。",
+      "导出记录分别显示东康模板和普通单据下载。东康模板记录的是在协同平台生成 Excel 的次数和最近时间。",
       "导出采购单不等于已发货，也不会产生入库。"
     ],
     "image": {

@@ -910,6 +910,7 @@ def _purchase_order_pending_change(
         pending_type = "NONE"
 
     snapshot: dict[str, object] = {
+        "supplier_document_after_acceptance": True,
         "cancellation": cancelled,
         "order": {
             "id": order.id,

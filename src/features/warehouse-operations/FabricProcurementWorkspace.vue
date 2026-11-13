@@ -38,7 +38,8 @@ const filters = ref(defaultFilters()), options = ref<{ suppliers: string[]; unit
 const chaseSource = ref<PurchaseDetail>()
 const withdrawal = ref<WithdrawalPreview>(), withdrawOpen = ref(false), withdrawReason = ref(''), withdrawConfirmed = ref(false)
 const notice = ref('')
-const canReceive = ref(false), receiptSource = ref<PurchaseDetail>()
+const canReceive = ref(false), canPendingPurchase = ref(false), receiptSource = ref<PurchaseDetail>()
+const savedReceiptId = ref('')
 const selected = ref<PurchaseLine[]>([]), batchSources = ref<PurchaseDetail[]>()
 const layout = ref<'materials' | 'lines'>('materials'), groups = ref<PurchaseMaterialGroup[]>([]), lineTotal = ref(0)
 const activeGroup = ref<PurchaseMaterialGroup>(), groupOffset = ref(0)
@@ -93,7 +94,7 @@ async function load() {
   if (importSaving.value) { deferredLoad = true; return }
   deferredLoad = false
   const ticket = ++sequence
-  busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false
+  busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
   try {
     if (props.mode === 'import') {
       const records = await api.imports(historyOffset.value)
@@ -102,14 +103,14 @@ async function load() {
       const data = await api.groups(search.value.trim(), offset.value, pendingView.value, filters.value)
       if (ticket === sequence) {
         groups.value = data.groups; total.value = data.total; lineTotal.value = data.line_total
-        summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive
+        summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive; canPendingPurchase.value = !!data.can_receive_pending_purchase
         if (!canReceive.value) selected.value = []
       }
     } else {
       const queryFilters = activeGroup.value ? { ...filters.value, group_key: activeGroup.value.key } : filters.value
       const data = await api.lines(status.value, search.value.trim(), offset.value, props.mode === 'pending' ? pendingView.value : undefined, queryFilters)
       if (ticket === sequence) {
-        lines.value = data.items; total.value = data.total; summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive
+        lines.value = data.items; total.value = data.total; summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive; canPendingPurchase.value = !!data.can_receive_pending_purchase
         if (!canReceive.value) selected.value = []
         else selected.value = selected.value.flatMap(line => { const current = data.items.find(item => item.id === line.id); return current ? eligible(current) ? [current] : [] : [line] })
       }
@@ -124,12 +125,12 @@ watch(search, () => {
   clearTimeout(searchTimer)
   if (props.mode === 'import') return
   sequence++; busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined
-  lineTotal.value = 0; summary.value = undefined; canReceive.value = false
+  lineTotal.value = 0; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
   searchTimer = setTimeout(query, 350)
 }, { flush: 'sync' })
 if (headerSearch) watch(headerSearch.submitted, query)
 function refreshPendingWhenIdle() {
-  if (props.mode === 'pending' && !busy.value && !detailOpen.value && !receiptSource.value && !batchSources.value && !chaseSource.value && document.visibilityState === 'visible') void load()
+  if (props.mode === 'pending' && !busy.value && !detailOpen.value && receiptSource.value === undefined && !batchSources.value && !chaseSource.value && document.visibilityState === 'visible') void load()
 }
 const refreshTimer = setInterval(refreshPendingWhenIdle, 60_000)
 window.addEventListener('focus', refreshPendingWhenIdle)
@@ -147,7 +148,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 watch(() => [auth.currentUser?.id, auth.authorizationVersion], () => {
   clearTimeout(searchTimer); clearImport(); file.value = undefined
   lines.value = []; groups.value = []; total.value = undefined; summary.value = undefined; options.value = undefined
-  history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false
+  history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false; canPendingPurchase.value = false; savedReceiptId.value = ''
   selected.value = []; receiptSource.value = undefined; batchSources.value = undefined; chaseSource.value = undefined
   withdrawal.value = undefined; withdrawOpen.value = false; activeGroup.value = undefined; notice.value = ''
   busy.value = false
@@ -218,7 +219,9 @@ async function startReceive(id: string) {
 }
 async function receiptSaved(receipt: FabricReceipt) {
   receiptSource.value = undefined
+  savedReceiptId.value = receipt.id
   notice.value = receipt.reversed ? `原请求已保存的入库单 ${receipt.id} 后来已冲销，本次重试没有再次增加库存；请核对当前待收量。` : receipt.stock_posted === false ? `已保存差异单 ${receipt.id}，本次入库 0，全部为差异/退供应商；未增加库存。` : `已保存入库单 ${receipt.id}，本次实收 ${receipt.quantity} ${receipt.unit} 已计入待检库存。`
+  if (receipt.purchase_status === 'PENDING') notice.value += ' 采购待核对，确认后可在入库记录补关联。'
   await load()
 }
 async function startBatchReceive() {
@@ -297,9 +300,9 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
 
 <template>
   <div class="fabric-procurement">
-    <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '先按供应商和物料查看待收及复期，进入采购明细后按原单登记实收。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
+    <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '按供应商和物料查看待收与复期，从对应采购明细登记本次实收。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
     <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
-    <p v-if="notice" class="fabric-success" role="status">{{ notice }}</p>
+    <p v-if="notice" class="fabric-success" role="status">{{ notice }} <RouterLink v-if="savedReceiptId && notice.includes(savedReceiptId)" class="underline" :to="{ path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'history', receipt: savedReceiptId } }">查看本次入库</RouterLink></p>
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
     <p v-if="pendingImport" class="fabric-message" role="status">导入结果尚未确认，文件和提交内容已锁定。<Button v-if="canRetryImport && !confirmOpen" variant="outline" size="sm" :disabled="busy || importSaving" @click="saveImport">核对原导入结果</Button><span v-if="!canRetryImport">请使用原提交账号核对结果。</span></p>
     <template v-if="mode === 'import'">
@@ -392,7 +395,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
   </div>
   <FabricChaseDialog v-if="chaseSource" :source="chaseSource" @close="chaseSource = undefined" @saved="chaseSaved" @stale="message => { chaseSource = undefined; receiptStale(message) }" />
   <FabricBatchReceiptDialog v-if="batchSources" :sources="batchSources" @close="batchSources = undefined" @saved="batchSaved" @stale="receiptStale" />
-  <FabricReceiptDialog v-if="receiptSource" :source="receiptSource" @close="receiptSource = undefined" @saved="receiptSaved" @stale="receiptStale" />
+  <FabricReceiptDialog v-if="receiptSource" :source="receiptSource" :can-pending-purchase="canPendingPurchase" @close="receiptSource = undefined" @saved="receiptSaved" @stale="receiptStale" />
 </template>
 
 <style scoped>

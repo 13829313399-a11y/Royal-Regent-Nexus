@@ -77,6 +77,8 @@ def collect(receipts, entries, stock):
                     mode = 'INBOUND' if original['kind'] == 'RECEIPT' else 'OUTBOUND'
                     event_entry = {**entry, 'data': {**body, 'handover_document_id': original['data'].get('handover_document_id', '')}}
                     add(event_entry, batch, mode, str(-Decimal(original['data']['quantity'])), '整单入库冲销' if mode == 'INBOUND' else '整单出库冲销')
+                elif original['kind'] == 'RETURN':
+                    add(entry, batch, 'ADJUSTMENT', str(-Decimal(original['data']['quantity'])), '退料冲销')
                 elif original['kind'] == 'TRANSFER':
                     add(entry, batch, 'ADJUSTMENT', '0', '调仓冲销（总库存不变）', original['data']['quantity'])
     return events

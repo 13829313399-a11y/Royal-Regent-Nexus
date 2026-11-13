@@ -11,7 +11,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import Button from '@/components/ui/button/Button.vue'
 import { activitySearchKey } from './inventorySearch'
 import { activityLabel, activitySummary, filterActivity, operationTime, type ActivityFilters } from './activityLog'
-import { operationLabels } from './operations'
+import { fabricOperationLabel } from './operations'
 
 const auth = useAuthStore(), headerSearch = inject(activitySearchKey, undefined)
 const data = ref<WarehouseOperationsWorkspace>(), loading = ref(false), error = ref(''), selected = ref<WarehouseDocument>()
@@ -63,7 +63,7 @@ onBeforeUnmount(() => { sequence++ })
     <div class="activity-filters">
       <label>日期口径<select v-model="filters.dateField" aria-label="日志日期口径"><option value="OPERATION">操作时间</option><option value="BUSINESS">业务日期</option></select></label>
       <div class="flex items-center gap-2 whitespace-nowrap text-xs"><span>日期范围</span><DateRangeFilter v-model="dates" label="日志日期范围" /></div>
-      <label>业务类型<select v-model="filters.kind" aria-label="日志业务类型"><option value="">全部类型</option><option v-for="kind in kinds" :key="kind" :value="kind">{{operationLabels[kind]}}</option></select></label>
+      <label>业务类型<select v-model="filters.kind" aria-label="日志业务类型"><option value="">全部类型</option><option v-for="kind in kinds" :key="kind" :value="kind">{{ fabricOperationLabel(kind) }}</option></select></label>
       <label>经办人<select v-model="filters.actor" aria-label="日志经办人"><option value="">全部经办人</option><option v-for="actor in actors" :key="actor">{{actor}}</option></select></label>
       <label>记录状态<select v-model="filters.state" aria-label="日志记录状态"><option value="">全部状态</option><option value="ACTIVE">未冲销</option><option value="REVERSED">原单已冲销</option></select></label>
       <label>排序<select v-model="filters.sort" aria-label="日志排序"><option value="DESC">{{filters.dateField==='OPERATION'?'最新操作在前':'业务日期最新在前'}}</option><option value="ASC">{{filters.dateField==='OPERATION'?'最早操作在前':'业务日期最早在前'}}</option></select></label>
