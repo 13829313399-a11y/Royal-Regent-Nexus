@@ -130,21 +130,21 @@ function statusTone(order: ShippingOrder) {
 
 <template>
   <div class="space-y-4">
-    <section aria-label="船务作业" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <section aria-label="船务作业" class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
       <button
         v-for="action in actionCards"
         :key="action.id"
         type="button"
-        class="group flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition hover:border-teal-200 hover:bg-slate-50/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
+        class="group flex min-w-0 items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-teal-200 hover:bg-slate-50/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
         :aria-label="action.title"
         @click="preview(action.title)"
       >
-        <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600 transition group-hover:bg-teal-100/70 group-hover:text-teal-800" aria-hidden="true">
-          <component :is="action.icon" class="size-5" />
+        <span class="flex size-7 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-600 transition group-hover:bg-teal-100/70 group-hover:text-teal-800" aria-hidden="true">
+          <component :is="action.icon" class="size-3.5" />
         </span>
         <span class="min-w-0">
-          <span class="block text-[13px] font-bold text-slate-900">{{ action.title }}</span>
-          <span class="mt-1 block text-[11px] leading-4 text-slate-500">{{ action.hint }}</span>
+          <span class="block truncate text-[13px] font-bold text-slate-900">{{ action.title }}</span>
+          <span class="block truncate text-[11px] text-slate-500">{{ action.hint }}</span>
         </span>
       </button>
     </section>

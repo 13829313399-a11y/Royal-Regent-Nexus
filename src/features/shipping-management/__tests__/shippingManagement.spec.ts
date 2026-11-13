@@ -52,6 +52,8 @@ describe('shipping order management workspace', () => {
     expect(rows(wrapper)[0]!.text()).toContain('1001')
     expect(rows(wrapper)[0]!.text()).toContain('SHZ8265013')
     expect(rows(wrapper)[0]!.text()).toContain('美国 · 洛杉矶')
+    expect(wrapper.find('[aria-label="船务指标"]').exists()).toBe(false)
+
     const cards = wrapper.findAll('[aria-label="船务作业"] button')
     expect(cards).toHaveLength(4)
     expect(cards[0]!.text()).toContain('SO排出货表')
