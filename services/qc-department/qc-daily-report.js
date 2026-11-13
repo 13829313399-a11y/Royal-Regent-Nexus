@@ -116,7 +116,6 @@
 
     function paint(report) {
       area().innerHTML = '<div class="qdr">' + overview(report, true) +
-        (report.scheduleCount ? '<p class="qdr-muted">' + report.scheduleCount + ' 条记录按排期开始日统计。</p>' : '') +
         '<section class="qdr-panel qdr-detail" aria-label="验货明细"><div class="qdr-heading"><div><h3>验货明细</h3><small>' +
         report.total + ' 条记录</small></div>' + (report.total ? '<div class="qdr-views" role="group" aria-label="明细视图">' +
         '<button type="button" data-qdr-view="compact">精简</button><button type="button" data-qdr-view="full">完整 13 列</button></div>' : '') + '</div>' +

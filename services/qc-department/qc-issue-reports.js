@@ -64,7 +64,7 @@
         if(token!==generation||!el.isConnected)return;
         if(first){customers=result.customers||[];q('[data-customer]').innerHTML='<option value="">全部客户</option>'+customers.map(c=>'<option value="'+esc(c.key)+'">'+esc(c.label)+'</option>').join('');
           if(initialCustomer){if(!customers.some(c=>c.key===initialCustomer)){const option=doc.createElement('option');option.value=initialCustomer;option.textContent='当前客户（本期无记录）';q('[data-customer]').append(option);}q('[data-customer]').value=initialCustomer;initialCustomer='';return load();}}
-        data=result;page=0;draw();status.textContent=data.total?'已读取当前有效审核记录':'当前范围没有验货问题记录';
+        data=result;page=0;draw();status.textContent=data.total?'':'当前范围没有验货问题记录';
       }catch(e){if(el.isConnected&&token===generation){status.textContent=e.name==='AbortError'?'请求已取消或超时，请重试':e.message;status.className='qir-error';}}
     }
     let closed=false;
