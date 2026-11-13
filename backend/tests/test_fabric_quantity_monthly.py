@@ -10,6 +10,8 @@ from test_warehouse_operations import payload, post
 from test_fabric_procurement import book, row, stored
 from test_fabric_procurement_tracking import save
 from test_fabric_receiving import request, receive
+from test_fabric_receipt_corrections import original
+from test_fabric_order_summary import report as order_report, total as stock_total
 
 MONTHLY = '/api/warehouse-operations/fabric/monthly'
 
@@ -26,7 +28,13 @@ def test_all_channels_and_original_split_receipts_are_counted_once_and_exported(
     manual = post(client, payload(client, 'RECEIPT', item_code='01-01-00001', quantity='20',
                                  counterparty=party['name'], source_no='=SUM(1,1)', lot='LOT-1'))
     doc = confirmed(client, headers)
-    scan = client.post(BASE + '/documents/' + doc['id'] + '/post', json=posting(doc, 1, [receipt(amount='15')]))
+    url = BASE + '/documents/' + doc['id']
+    detail = client.get(url, params={'factory_id': FACTORY})
+    assert detail.status_code == 200, detail.text
+    review = detail.json()['prior_receipts']['L1']
+    body = posting(doc, 1, [receipt(amount='15')])
+    body['manual_receipt_reviews'] = {'L1': review['review_token']}
+    scan = client.post(url + '/post', json=body)
     assert scan.status_code == 200, scan.text
     # Purchasing-source physical receipt has two rolls/locations, but one header quantity.
     save(client, book([row(供应商=party['name'], 物料编码='01-01-00001', 单价=0, 订单日期='2026/7/18')]))
@@ -123,6 +131,40 @@ def test_cross_month_receipt_and_issue_reversals_preserve_prior_month_and_source
     old_version = july['version']
     post(client, payload(client, 'RECEIPT', item_code='NEW', quantity='1', counterparty='供方C'))
     assert client.get(MONTHLY + '/export', params=dict(factory_id=FACTORY, month='2026-07', version=old_version)).status_code == 409
+
+
+def test_return_reversals_update_both_reports_in_their_own_month(client):
+    source, inbound, _, _ = original(client)
+    issue = post(client, payload(client, 'ISSUE', batch_id=inbound['batches'][0]['id'], quantity='6',
+                                 business_date='2026-10-10', counterparty='车间一'))
+    returned = post(client, payload(client, 'RETURN', original_id=issue['id'], quantity='2', business_date='2026-10-11'))
+    same_month = post(client, payload(client, 'CORRECTION', original_id=returned['id'], business_date='2026-10-12'))
+    replacement = post(client, payload(client, 'RETURN', original_id=issue['id'], quantity='2', business_date='2026-10-31'))
+    next_month = post(client, payload(client, 'CORRECTION', original_id=replacement['id'], business_date='2026-11-01'))
+
+    october = report(client, '2026-10', direction='OUT')
+    assert october['totals'][0]['returned'] == '2' and october['totals'][0]['net_outbound'] == '4'
+    assert {row['id']: Decimal(row['quantity']) for row in october['details'] if row['kind'] == 'RETURN'} == {
+        returned['id']: Decimal(2), same_month['id']: Decimal(-2), replacement['id']: Decimal(2),
+    }
+    november = report(client, '2026-11')
+    correction, = november['details']
+    assert correction['id'] == next_month['id'] and correction['original_id'] == replacement['id']
+    assert correction['kind'] == 'RETURN' and correction['correction'] and correction['party_name'] == '车间一'
+    assert correction['unit'] == '码' and Decimal(correction['quantity']) == -2
+    assert november['totals'][0]['returned'] == '-2' and november['totals'][0]['net_outbound'] == '2'
+    assert november['totals'][0]['stock_change'] == '-2'
+
+    october_order = order_report(client, date_from='2026-10-01', date_to='2026-10-31')
+    assert Decimal(october_order['rows'][0]['balance']) == 46
+    november_order = order_report(client, date_from='2026-11-01', date_to='2026-11-30')
+    row, = november_order['rows']
+    correction, = november_order['details']
+    assert row['source_line_id'] == source['id'] and Decimal(row['opening']) == 46
+    assert Decimal(row['adjustment']) == -2 and Decimal(row['balance']) == stock_total(client) == 44
+    assert correction['mode'] == 'ADJUSTMENT' and correction['label'] == '退料冲销'
+    assert correction['id'] == next_month['id'] and correction['original_id'] == replacement['id']
+    assert correction['recipient'] == '车间一' and correction['item_code'] == row['item_code']
 
 
 def test_internal_report_requires_scoped_read_and_never_accepts_supplier_token(client, monkeypatch):

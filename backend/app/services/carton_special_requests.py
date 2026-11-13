@@ -128,8 +128,13 @@ def version(db, user, row, action, *, execution=False, reason=""):
     row.revision += 1
     row.updated_at = core.now_text()
     db.flush()
+    frozen = snapshot(db, row)
+    if reason:
+        frozen["reason"] = reason
+    if action in {"SEND", "ADJUSTED"} and row.kind in {"SAMPLE", "WORKSHOP_MISC"}:
+        frozen["supplier_document_after_acceptance"] = True
     event = SpecialVersion(id=uid("CSV-"), factory_id=row.factory_id, request_id=row.id, revision=row.revision,
-        action=action, actor_id=user.id, actor_name=user.display_name, created_at=row.updated_at, snapshot_json=pack(snapshot(db, row) | ({"reason": reason} if reason else {})))
+        action=action, actor_id=user.id, actor_name=user.display_name, created_at=row.updated_at, snapshot_json=pack(frozen))
     db.add(event)
     if execution:
         row.current_version_id = event.id

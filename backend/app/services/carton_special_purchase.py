@@ -13,11 +13,14 @@ from sqlalchemy import select
 from app.models.carton_special_requests import SpecialRequest, SpecialVersion
 from app.services import carton_special_requests as special
 from app.services.carton_procurement_export import build_purchase_order_issue_workbook
+from app.services.carton_purchase_batches import document_line_changes
 
 
 def project_versions(row, events):
     result, previous = [], None
     for event in events:
+        if result and event.action in {"QUOTE", "APPROVE"}:
+            result[-1]["acceptance_versions"].append(event.id)
         if event.action not in {"SEND", "ADJUSTED", "CANCEL"}:
             continue
         current = json.loads(event.snapshot_json)
@@ -55,7 +58,10 @@ def project_versions(row, events):
                      before_product_quantity=None, after_product_quantity=None, product_quantity_delta=None,
                      generated_by=event.actor_id, generated_by_name=event.actor_name,
                      generated_at=event.created_at, is_cancellation=cancelled,
-                     is_replenishment=row.origin == "REPLENISHMENT", snapshot_json=json.dumps(snapshot, ensure_ascii=False))
+                     is_replenishment=row.origin == "REPLENISHMENT", snapshot_json=json.dumps(snapshot, ensure_ascii=False),
+                     release_after_acceptance=bool(current.get("supplier_document_after_acceptance"))
+                     and not cancelled and any(Decimal(paper["after_required_quantity"]) > 0 for paper in papers),
+                     acceptance_versions=[event.id])
         result.append(issue)
         previous = current
     return result
@@ -67,20 +73,57 @@ def issues(db, row):
     return project_versions(row, events)
 
 
+def supplier_visible_issues(db, row, records):
+    from app.services.carton_supplier_changes import response_states
+    source_ids = [version for issue in records if issue["release_after_acceptance"]
+                  for version in issue["acceptance_versions"]]
+    states = response_states(db, row.factory_id, "SPECIAL", source_ids)
+    accepted = {identifier for identifier, state in states.items()
+                if any(event["status"] == "ACCEPTED" for event in state["history"])}
+    visible, skipped = [], False
+    for issue in records:
+        if issue["release_after_acceptance"] and not accepted.intersection(issue["acceptance_versions"]):
+            skipped = True
+            continue
+        if skipped and issue["release_after_acceptance"]:
+            snapshot = json.loads(issue["snapshot_json"])
+            previous = json.loads(visible[-1]["snapshot_json"]) if visible else {}
+            snapshot["lines"] = document_line_changes(snapshot["lines"], previous.get("lines", []))
+            snapshot["before_due_date"] = previous.get("after_due_date", "")
+            issue = dict(issue, snapshot_json=json.dumps(snapshot, ensure_ascii=False))
+        visible.append(issue)
+        skipped = False
+    return visible
+
+
 def context(db, user, factory, identifier, *, external=False):
     row = special.access(db, user, factory, identifier, external=external)
     records = issues(db, row)
+    published = supplier_visible_issues(db, row, records) if external else records
+    if published:
+        empty_reason = ""
+    elif external and records:
+        empty_reason = "供应商完整接单后可查看采购单。"
+    elif row.status == "SUBMITTED":
+        empty_reason = "订单尚未确认锁定，确认后可下载采购单。"
+    else:
+        empty_reason = "此历史来源没有内部已发布采购版本；原订单、送货和收料记录继续保留。"
     return dict(factory_id=factory, order_no=row.request_no, order_revision=row.revision,
                 pending_type="INITIAL" if not records and row.status == "SUBMITTED" else "NONE", pending_product_quantity=None,
                 pending_line_count=0, can_generate=False, historical_baseline=False,
-                latest_document_no=records[-1]["document_no"] if records else "",
-                empty_reason="" if records else "订单尚未确认锁定，确认后可下载采购单。" if row.status == "SUBMITTED" else "此历史来源没有内部已发布采购版本；原订单、送货和收料记录继续保留。",
-                issues=[{k: v for k, v in item.items() if k != "snapshot_json"} for item in reversed(records)])
+                latest_document_no=published[-1]["document_no"] if published else "",
+                empty_reason=empty_reason,
+                issues=[{k: v for k, v in item.items()
+                         if k not in {"snapshot_json", "release_after_acceptance", "acceptance_versions"}}
+                        for item in reversed(published)])
 
 
 def export(db, user, factory, identifier, version_id, *, external=False):
     row = special.access(db, user, factory, identifier, external=external)
-    issue = next((item for item in issues(db, row) if item["id"] == version_id), None)
+    records = issues(db, row)
+    if external:
+        records = supplier_visible_issues(db, row, records)
+    issue = next((item for item in records if item["id"] == version_id), None)
     if issue is None:
         raise HTTPException(404, "未找到此订单已发布采购版本")
     return build_purchase_order_issue_workbook(SimpleNamespace(**issue)), issue["document_no"] + ".xlsx"
@@ -95,7 +138,7 @@ def supplier_documents(db, user, factory):
         from app.services.carton_supplier_changes import special_confirmation
         confirmation = special_confirmation(db, row)
         records = issues(db, row)
-        for issue in records:
+        for issue in supplier_visible_issues(db, row, records):
             snap = json.loads(issue["snapshot_json"])
             business_kind = "SAMPLE" if row.kind == "SAMPLE" else "MISC"
             status = confirmation["status"] if issue["id"] == records[-1]["id"] else "HISTORICAL"

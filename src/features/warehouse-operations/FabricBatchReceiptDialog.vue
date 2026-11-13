@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { getApiErrorMessage } from '@/lib/http'
 import type { PurchaseDetail } from '@/api/fabricProcurement'
 import { fabricReceivingApi as api, materialCategoryLabels, type MaterialCategory, type ReceiveSourcesRequest, type ReceiveSourcesResult } from '@/api/fabricReceiving'
-import { quantityText, receiptQuantity, receiptTotal, receiptAmount, receiptAmountTotals } from './receiptQuantities'
+import { duplicateReceiptSplitMessage, quantityText, receiptQuantity, receiptTotal, receiptAmount, receiptAmountTotals } from './receiptQuantities'
 import FabricReceiptPriceFields from './FabricReceiptPriceFields.vue'
 import type { ReceiptPriceInput } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
@@ -28,7 +28,8 @@ const progress = computed(() => entries.value.map(entry => {
   const amount = receiptQuantity(total ?? ''), pending = receiptQuantity(remaining ?? '')
   const overage = amount !== undefined && pending !== undefined && amount > pending ? quantityText(amount - pending) : undefined
   const deliveryLimit = receiptQuantity(entry.deliveryQuantity)
-  return { total, remaining, overage, deliveryValid: deliveryLimit !== undefined && deliveryLimit > 0n && amount !== undefined && amount <= deliveryLimit }
+  const duplicate = entry.category === 'FABRIC' ? duplicateReceiptSplitMessage(entry.rows) : undefined
+  return { total, remaining, overage, duplicate, deliveryValid: deliveryLimit !== undefined && deliveryLimit > 0n && amount !== undefined && amount <= deliveryLimit }
 }))
 const splitCount = computed(() => entries.value.reduce((sum, entry) => sum + entry.rows.length, 0))
 const amounts = computed(() => entries.value.map((entry, i) => ({ currency: entry.currency, amount: receiptAmount(progress.value[i]?.total ?? '', entry.unitPrice) })))
@@ -36,7 +37,7 @@ const amountTotals = computed(() => receiptAmountTotals(amounts.value))
 const unpriced = computed(() => amounts.value.filter(row => !row.currency || row.amount === undefined).length)
 const valid = computed(() => entries.value.length > 0 && entries.value.length <= 50 && splitCount.value <= 500 &&
   receiptDate.value && receiptDate.value <= today && deliveryReference.value.trim() && entries.value.every((entry, index) =>
-    entry.source.can_receive && entry.category && progress.value[index]?.total && progress.value[index]?.deliveryValid &&
+    entry.source.can_receive && entry.category && progress.value[index]?.total && progress.value[index]?.deliveryValid && !progress.value[index]?.duplicate &&
     (!entry.unitPrice.trim() || (entry.currency && amounts.value[index]?.amount !== undefined)) &&
     entry.rows.every(row => row.location_id && (entry.category !== 'FABRIC' || row.dye_lot.trim())) &&
     (!progress.value[index]?.overage || entry.reason.trim())))
@@ -98,6 +99,7 @@ async function save() {
         <p v-if="entry.deliveryQuantity && !progress[itemIndex]?.deliveryValid" class="fabric-intake-error" role="alert">请核对本单到货量，分仓实收合计不可超量。</p>
 
         <div class="fabric-intake-table-wrap"><table class="fabric-intake-table"><thead><tr><th class="fabric-intake-index">序号</th><th>本次实收（{{ entry.source.facts.unit }}）</th><th>仓位 *</th><th v-if="entry.category === 'FABRIC'">缸号 *</th><th v-if="entry.category === 'FABRIC'">卷号（选填）</th><th class="fabric-intake-remove"></th></tr></thead><tbody><tr v-for="(row, rowIndex) in entry.rows" :key="row.key"><td class="fabric-intake-index">{{ rowIndex + 1 }}</td><td data-label="本次实收"><input v-model="row.quantity" :aria-label="`物料${itemIndex + 1}明细${rowIndex + 1}实收数量`" inputmode="decimal" placeholder="填写数量" maxlength="32" required /></td><td data-label="仓位"><WarehouseLocationPicker :category="entry.category" :disabled="busy || !!submitted" v-model="row.location_id" :locations="entry.source.available_locations ?? []" :label="`物料${itemIndex + 1}明细${rowIndex + 1}仓位`" /></td><td v-if="entry.category === 'FABRIC'" data-label="缸号"><input v-model="row.dye_lot" :aria-label="`物料${itemIndex + 1}明细${rowIndex + 1}缸号`" placeholder="染色批次号" maxlength="128" required /></td><td v-if="entry.category === 'FABRIC'" data-label="卷号（选填）"><input v-model="row.roll_no" :aria-label="`物料${itemIndex + 1}明细${rowIndex + 1}卷号`" placeholder="单卷编号" maxlength="128" /></td><td class="fabric-intake-remove"><Button v-if="entry.rows.length > 1" type="button" variant="ghost" size="sm" :aria-label="`删除物料${itemIndex + 1}明细${rowIndex + 1}`" @click="removeRow(itemIndex, row.key)">删除</Button></td></tr></tbody></table></div>
+        <p v-if="progress[itemIndex]?.duplicate" class="fabric-intake-error" role="alert">{{ progress[itemIndex]?.duplicate }}</p>
         <div class="fabric-intake-totals"><Button type="button" variant="outline" size="sm" :disabled="entry.rows.length >= 200 || splitCount >= 500" @click="entry.rows.push(newRow(nextKey++))">＋ 增加明细</Button><strong>本项实收：{{ progress[itemIndex]?.total ?? '—' }} {{ entry.source.facts.unit }}</strong></div>
         <FabricReceiptPriceFields v-model:price="entry.unitPrice" v-model:currency="entry.currency" :quantity="progress[itemIndex]?.total" :unit="entry.source.facts.unit" :reference="entry.source.facts.unit_price" :label="`第${itemIndex + 1}项`" />
         <label v-if="progress[itemIndex]?.overage" class="fabric-receipt-overage">超出待收 {{ progress[itemIndex]?.overage }} {{ entry.source.facts.unit }} · 超收说明<textarea v-model="entry.reason" :aria-label="`第${itemIndex + 1}项超收说明`" maxlength="1000" rows="2" required /></label>

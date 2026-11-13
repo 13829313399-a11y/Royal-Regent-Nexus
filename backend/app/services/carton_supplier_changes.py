@@ -67,7 +67,9 @@ def special_confirmation(db, row):
             SpecialVersion.request_id == row.id,
             SpecialVersion.action.in_(["SEND", "ADJUSTED", "MATERIAL_CHANGED", "CANCEL"]))
             .order_by(SpecialVersion.revision.desc()).limit(1))
-        if quoted and quoted.action == "QUOTE" and (not latest_requirement or quoted.revision > latest_requirement.revision):
+        legacy_requirement = not latest_requirement or not json.loads(latest_requirement.snapshot_json).get("supplier_document_after_acceptance")
+        if quoted and quoted.action == "QUOTE" and legacy_requirement and (
+                not latest_requirement or quoted.revision > latest_requirement.revision):
             state.update(status="ACCEPTED", promised_date=row.promised_date,
                 responded_by=quoted.actor_name, responded_at=quoted.created_at)
     return state
@@ -134,15 +136,16 @@ def _publication_history(db, row, current, kind, *, projection=None):
         first_send = next((version.revision for version in versions if version.action == "SEND"), None)
         versions = [version for version in versions if first_send is not None and version.revision >= first_send]
         states = response_states(db, row.factory_id, kind, [version.id for version in versions])
-        result, last_quote = [], None
+        result, last_quote, requires_acceptance = [], None, False
         for version in versions:
             frozen = json.loads(version.snapshot_json)
             state = states[version.id]
             if version.action in {"SEND", "ADJUSTED", "MATERIAL_CHANGED", "CANCEL"}:
                 last_quote = None
+                requires_acceptance = bool(frozen.get("supplier_document_after_acceptance"))
             if version.action == "QUOTE":
                 last_quote = version
-            if state["status"] == "PENDING" and last_quote and version.action in {"QUOTE", "APPROVE"}:
+            if state["status"] == "PENDING" and last_quote and not requires_acceptance and version.action in {"QUOTE", "APPROVE"}:
                 state.update(status="ACCEPTED", responded_by=last_quote.actor_name, responded_at=last_quote.created_at)
             result.append({"source_id": version.id, "document_no": f"{row.request_no} / 版本 {version.revision}",
                 "created_at": version.created_at, "action": version.action, "status": state["status"],

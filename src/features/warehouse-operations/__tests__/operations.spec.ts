@@ -14,7 +14,10 @@ const empty = (): WarehouseOperationsWorkspace => ({ revision: 3, locations: ['A
 async function open(section = 'inventory', view = 'pending-issues', data = empty(), warehouse: WarehouseDomain = 'fabric') {
   data.stock = data.stock.map(row => ({ location_id: row.location, location_verified: true, location_status: 'ACTIVE', ...row }))
   api.workspace.mockResolvedValue(data)
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Workspace, props: { warehouse, section, view } }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/', component: Workspace, props: { warehouse, section, view } },
+    { path: '/modules/pmc-warehouse/fabric-warehouse/receipts', component: { template: '<div />' } },
+  ] })
   await router.push('/'); await router.isReady()
   wrapper = mount(Workspace, { props: { warehouse, section, view }, global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
@@ -207,22 +210,26 @@ describe('warehouse actual operations', () => {
     await wrapper!.findAll('button').find(b=>b.text()==='刷新')!.trigger('click');await flushPromises()
     expect(wrapper!.findAll('button').some(b=>b.text()==='办理出库')).toBe(false)
   })
-  it.each([true, false])('opens an exact receipt link read-only and gates correction permission (%s)', async correct => {
+  it.each([true, false])('links receipt details to the original receipt without duplicating reversal (%s)', async correct => {
     const receipt = { id: 'OP-1', kind: 'RECEIPT', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '',
-      data: { quantity: '10', unit: '码', item_name: '白布', source_no: 'DN-1', allocations: [] } } as WarehouseDocument
-    const data = { ...empty(), documents: [receipt] }
+      receipt_record_id: 'FM-1', data: { quantity: '10', unit: '码', item_name: '白布', source_no: 'DN-1', allocations: [] } } as WarehouseDocument
+    const issue = { ...receipt, id: 'ISSUE-1', receipt_record_id: undefined, kind: 'ISSUE', data: { ...receipt.data, source_no: 'ISSUE-DN' } } as WarehouseDocument
+    const data = { ...empty(), documents: [receipt, issue] }
     data.permissions.correct = correct
     const body = await open('inventory', 'movements', data)
+    const rows = wrapper!.findAll('tbody tr')
+    expect(rows.find(row => row.text().includes('DN-1'))!.text()).not.toContain('冲销')
+    const issueRow = rows.find(row => row.text().includes('ISSUE-DN'))!
+    expect(issueRow.text()).toContain('退料')
+    const issueCorrection = issueRow.findAll('button').find(button => button.text() === '冲销')
+    expect(issueCorrection!.attributes('disabled') === undefined).toBe(correct)
     await wrapper!.vm.$router.push('/?record=OP-1'); await flushPromises()
-    expect(body.get('[role="dialog"]').text()).toContain('DN-1')
-    const action = body.findAll('button').find(button => button.text() === '冲销本笔入库')
-    expect(!!action).toBe(correct)
+    const dialog = body.get('[role="dialog"]')
+    expect(dialog.text()).toContain('DN-1')
+    expect(dialog.text()).not.toContain('冲销本笔入库')
+    expect(dialog.get('a').text()).toBe('查看入库记录')
+    expect(dialog.get('a').attributes('href')).toContain('view=history&receipt=FM-1')
     expect(api.post).not.toHaveBeenCalled()
-    if (action) {
-      await action.trigger('click'); await flushPromises()
-      expect(body.get('[role="dialog"]').text()).toContain('冲销')
-      expect(api.post).not.toHaveBeenCalled()
-    }
   })
   it('opens the exact issue and blocks a dated cutting return while the balance is unknown or zero', async () => {
     const row = { id: 'CUT-ISSUE', kind: 'ISSUE', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '',
@@ -322,9 +329,10 @@ describe('warehouse actual operations', () => {
     expect(api.post.mock.calls[0]![1]).toMatchObject({ kind: 'CORRECTION', original_id: row.id, confirmed: true, reason: '数量录错' })
     expect(wrapper!.text()).toContain('库存与关联进度已恢复')
   })
-  it('explains overview intake and request actions without posting stock', async () => {
+  it('keeps the overview request action and omits the old fabric receipt entry', async () => {
     await open('overview', 'pending')
-    expect(wrapper!.text()).toContain('登记实收')
+    expect(wrapper!.text()).toContain('登记领料申请')
+    expect(wrapper!.text()).not.toContain('登记实收')
     expect(wrapper!.text()).toContain('只建立申请')
     expect(api.post).not.toHaveBeenCalled()
   })
@@ -458,21 +466,19 @@ describe('warehouse actual operations', () => {
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
     expect(api.post.mock.calls[1]![1]).toEqual(first)
   })
-  it('retries frozen receiving content even after the current location category changes', async () => {
-    api.post.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ id: 'receipt' })
+  it('retries frozen return content even after the destination location category changes', async () => {
+    api.post.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ id: 'returned' })
     const state = empty()
-    const body = await open('overview', 'pending', state)
-    await wrapper!.findAll('button').find(button => button.text() === '登记实收')!.trigger('click')
-    await body.get('[aria-label="来源单号"]').setValue('DN-ZONE')
-    await body.get('[aria-label="物料产品编码"]').setValue('M1')
-    await body.get('[aria-label="名称规格"]').setValue('布料')
-    await body.get('[aria-label="原单位"]').setValue('码')
-    await body.get('[aria-label="往来单位"]').setValue('供应商')
+    state.documents = [{ id: 'ISS-1', kind: 'ISSUE', sequence: 3, business_date: '2026-09-01', actor_name: '仓管', occurred_at: '',
+      data: { material_category: 'FABRIC', quantity: '2', unit: '码', item_code: 'M1', item_name: '布料', counterparty: '车间', source_no: 'OUT-1', allocations: [] },
+    } as WarehouseDocument]
+    const body = await open('inventory', 'movements', state)
+    await wrapper!.findAll('tbody button').find(button => button.text() === '退料')!.trigger('click')
     await body.get('[aria-label="本次数量"]').setValue('1')
     await body.get('[aria-label="目标仓位"]').setValue('一仓／A01')
-    await body.get('[aria-label="缸号批号"]').setValue('LOT')
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
     const first = JSON.parse(JSON.stringify(api.post.mock.calls[0]![1]))
+    expect(first).toMatchObject({ kind: 'RETURN', original_id: 'ISS-1', location_id: 'A01', quantity: '1' })
     state.locations![0]!.category = 'THREAD'
     await wrapper!.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()

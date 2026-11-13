@@ -15,9 +15,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import JSON, and_, cast, func, or_, select
 from sqlalchemy.orm import Session
-from app.services.carton_purchase_batches import group_purchase_documents, load_purchase_batch, purchase_batch
+from app.services.carton_purchase_batches import document_line_changes, group_purchase_documents, load_purchase_batch, purchase_batch
 from app.models.carton_mark import CartonMarkAsset, CartonMarkDocument, CartonMarkTemplate
 from app.services import carton_mark_assets as mark_assets
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonSupplier, CartonPurchaseOrderIssue, CartonReceipt, CartonReceiptLine, CartonAuditEvent
@@ -37,6 +37,7 @@ from app.services.carton_procurement import (CARTON_DEPARTMENTS, require_carton_
 OPEN_STATES = {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}
 VISIBLE_STATES = OPEN_STATES | {"COMPLETED", "CANCELLED"}
 MAX_FILE = 10 * 1024 * 1024
+ORDER_IMPORT_EXPORT_FORMAT = "SUPPLIER_ORDER_IMPORT"
 TABLES = ("carton_supplier_members", "carton_supplier_commitments", "carton_supplier_shipments", "carton_supplier_shipment_lines", "carton_supplier_unmatched_lines", "carton_supplier_attachments")
 
 
@@ -838,8 +839,133 @@ def shipment_out(db, row, *, internal=False):
     return result
 
 
-def documents(db, user, factory):
-    """Issued purchase snapshots and supplier-authored notes only, within one authorized factory."""
+def _papers_required_for_purchase_document(snapshot):
+    if not snapshot.get("supplier_document_after_acceptance") or snapshot.get("cancellation"):
+        return set()
+    quantity_key = "required_quantity_delta" if snapshot.get("replenishment") else "after_required_quantity"
+    return {str(line["id"]) for line in snapshot.get("lines", [])
+            if Decimal(str(line.get(quantity_key, "0"))) > 0}
+
+
+def _purchase_acceptance_sequences(db, factory, issues, snapshots):
+    """Find the first audit sequence at which each version met its own acceptance gate."""
+    accepted_at = {}
+    remaining = {}
+    source_by_issue = {}
+    issue_sources = defaultdict(set)
+    for issue in issues:
+        snapshot = snapshots[issue.id]
+        required = _papers_required_for_purchase_document(snapshot)
+        replacement = bool(snapshot.get("replenishment"))
+        if not required:
+            accepted_at[issue.id] = 0  # Legacy documents and stop notices have no gate.
+            continue
+        remaining[issue.id] = required
+        source = ("carton_purchase_order_issue", "SUPPLIER_REPLENISHMENT_ACCEPTED", issue.id) if replacement else (
+            "carton_order", "SUPPLIER_PAPER_ACCEPTED", issue.order_id)
+        source_by_issue[issue.id] = source
+        issue_sources[source[:2]].add(source[2])
+    for (entity_type, event_type), identifiers in issue_sources.items():
+        ids = list(identifiers)
+        for start in range(0, len(ids), 400):
+            events = db.execute(select(CartonAuditEvent.entity_id, CartonAuditEvent.detail_json, CartonAuditEvent.sequence).where(
+                CartonAuditEvent.factory_id == factory,
+                CartonAuditEvent.entity_type == entity_type,
+                CartonAuditEvent.event_type == event_type,
+                CartonAuditEvent.entity_id.in_(ids[start:start + 400]),
+            ).order_by(CartonAuditEvent.sequence))
+            for entity_id, detail, sequence in events:
+                accepted = json.loads(detail)
+                issue_id = accepted.get("issue_id")
+                if issue_id not in accepted_at and source_by_issue.get(issue_id) == (entity_type, event_type, entity_id):
+                    remaining[issue_id].discard(accepted.get("line_id"))
+                    if not remaining[issue_id]:
+                        accepted_at[issue_id] = sequence
+    # Legacy print proposals can be accepted as a group. That operation records a
+    # whole-version response for each member instead of separate paper events.
+    # These issues are not members of warehouse confirmation batches.
+    printed = [identifier for identifier, lines in remaining.items()
+               if lines and snapshots[identifier].get("print_split")]
+    if printed:
+        from app.services.carton_supplier_changes import response_states
+        for identifier, state in response_states(db, factory, "REGULAR", printed).items():
+            if any(event["status"] == "ACCEPTED" for event in state["history"]):
+                accepted_at[identifier] = 0
+    return accepted_at
+
+
+def _published_purchase_issues(db, factory, orders, all_issues, snapshots, batches, accepted_at):
+    """Release a batch only if all original members were ready before the first replacement."""
+    gated_batches = {batch["id"]: batch for identifier, batch in batches.items()
+                     if snapshots[identifier].get("supplier_document_after_acceptance")}
+    gated_members = {identifier for identifier, batch in batches.items() if batch["id"] in gated_batches}
+    published = set(accepted_at) - gated_members
+    visible_batches = {identifier: batch for identifier, batch in batches.items() if identifier not in gated_members}
+    if not gated_members:
+        return published, visible_batches
+
+    replaced_by = {}
+    for order in orders:
+        later_issue_id = None
+        for issue in all_issues[order.id]:  # Descending issue sequence.
+            snapshot = snapshots.get(issue.id)
+            if snapshot is None or snapshot.get("replenishment"):
+                continue
+            if issue.id in gated_members and (later_issue_id or order.status == "CANCELLED"):
+                replaced_by[issue.id] = later_issue_id
+            later_issue_id = issue.id
+    issuance_sequences = {}
+    replacement_ids = sorted({identifier for identifier in replaced_by.values() if identifier})
+    for start in range(0, len(replacement_ids), 400):
+        issuance_sequences.update(db.execute(select(CartonAuditEvent.entity_id, func.min(CartonAuditEvent.sequence)).where(
+            CartonAuditEvent.factory_id == factory,
+            CartonAuditEvent.entity_type == "carton_purchase_order_issue",
+            CartonAuditEvent.event_type == "PURCHASE_ORDER_ISSUED",
+            CartonAuditEvent.entity_id.in_(replacement_ids[start:start + 400]),
+        ).group_by(CartonAuditEvent.entity_id)).all())
+    # An already-replaced member without issuance evidence cannot prove it was published.
+    cutoff = {identifier: issuance_sequences.get(replacement_id, 0) for identifier, replacement_id in replaced_by.items()}
+    for batch in gated_batches.values():
+        members = [identifier for identifier in batch["issue_ids"] if batches.get(identifier) == batch]
+        broken_at = min((cutoff[identifier] for identifier in members if identifier in cutoff), default=None)
+        if len(members) == len(batch["issue_ids"]) and all(
+                identifier in accepted_at and (broken_at is None or accepted_at[identifier] < broken_at)
+                for identifier in members):
+            published.update(members)
+            visible_batches.update((identifier, batch) for identifier in members)
+        elif broken_at is not None:
+            # Once the unopened batch breaks, an unchanged member can stand on its own.
+            # A member already replaced by then never served as a purchase document.
+            published.update(identifier for identifier in members if identifier in accepted_at and (
+                identifier not in cutoff or max(broken_at, accepted_at[identifier]) < cutoff[identifier]))
+    return published, visible_batches
+
+
+def _rebase_supplier_purchase_snapshots(all_issues, snapshots, released_issues):
+    """Use the last released version when intervening warehouse versions never became documents."""
+    for versions in all_issues.values():
+        previous = None
+        skipped = False
+        for issue in reversed(versions):
+            if issue.document_type == "LEGACY_BASELINE":
+                previous = _purchase_order_snapshot(issue)
+                skipped = False
+                continue
+            snapshot = snapshots[issue.id]
+            if snapshot.get("replenishment"):
+                continue
+            if issue.id not in released_issues:
+                skipped = True
+                continue
+            if skipped and snapshot.get("supplier_document_after_acceptance"):
+                snapshots[issue.id] = dict(snapshot, lines=document_line_changes(
+                    snapshot["lines"], (previous or {}).get("lines", [])))
+            previous = snapshot
+            skipped = False
+
+
+def _document_projection(db, user, factory):
+    """Released purchase documents and supplier-authored notes within one authorized factory."""
     supplier = supplier_access(db, user, factory)
     orders = db.scalars(select(CartonOrder).where(
         CartonOrder.factory_id == factory, CartonOrder.supplier_id == supplier.id,
@@ -862,16 +988,21 @@ def documents(db, user, factory):
     acceptances = {order.id: acceptance_summary(db, order, papers[order.id], projection={
         "issues": all_issues[order.id], "commitments": commitments[order.id]}) for order in orders}
     result = []
-    batches = {}
+    batches, snapshots = {}, {}
     if order_ids:
-        issues = db.scalars(select(CartonPurchaseOrderIssue).where(
-            CartonPurchaseOrderIssue.factory_id == factory,
-            CartonPurchaseOrderIssue.order_id.in_(order_ids),
-            CartonPurchaseOrderIssue.document_type != "LEGACY_BASELINE")
-            .order_by(CartonPurchaseOrderIssue.generated_at.desc())).all()
+        issues = sorted((issue for versions in all_issues.values() for issue in versions
+                         if issue.document_type != "LEGACY_BASELINE"),
+                        key=lambda issue: issue.generated_at, reverse=True)
+        snapshots = {issue.id: _purchase_order_snapshot(issue) for issue in issues}
+        batches = {issue.id: batch for issue in issues if (batch := purchase_batch(issue))}
+        accepted_at = _purchase_acceptance_sequences(db, factory, issues, snapshots)
+        released_issues, batches = _published_purchase_issues(
+            db, factory, orders, all_issues, snapshots, batches, accepted_at)
+        _rebase_supplier_purchase_snapshots(all_issues, snapshots, released_issues)
         for issue in issues:
-            snapshot = _purchase_order_snapshot(issue)
-            batches[issue.id] = purchase_batch(issue)
+            if issue.id not in released_issues:
+                continue
+            snapshot = snapshots[issue.id]
             header = snapshot.get("order", {})
             acceptance = dict(acceptances[issue.order_id])
             if snapshot.get("replenishment"):
@@ -913,6 +1044,18 @@ def documents(db, user, factory):
                     quantity=line["required_quantity"], change_quantity=line["required_quantity"], before_quantity="0") for line in source["lines"]]
                 result[-1]["responsibility"] = source["responsibility"]
     result = group_purchase_documents(result, batches)
+    for document in result:
+        sources = document.get("source_documents")
+        if not sources or document["supplier_acceptance"]["status"] == "ACCEPTED":
+            continue
+        member_snapshots = [snapshots[source["id"]] for source in sources]
+        if all(snapshot.get("supplier_document_after_acceptance") for snapshot in member_snapshots):
+            # The batch was only published after every member accepted its original version.
+            # Preserve that fact without treating the historical versions as current.
+            count = sum(len(_papers_required_for_purchase_document(snapshot)) for snapshot in member_snapshots)
+            document["supplier_acceptance"].update(
+                status="HISTORICAL", label="原合并单已接齐，请核对当前版本",
+                accepted_line_count=count, total_line_count=count)
     from app.services.carton_special_purchase import supplier_documents
     result.extend(supplier_documents(db, user, factory))
     from app.services.carton_unified_deliveries import workspace as unified_workspace
@@ -961,10 +1104,17 @@ def documents(db, user, factory):
         batch_ids = [row["id"] for row in result if row.get("is_batch")]
         special_version_ids = [row["id"] for row in result if row.get("special_request_id")]
         delivery_ids = [row["id"] for row in result if row["kind"] == "DELIVERY"]
-        export_counts = {
-            (entity_type, entity_id): count for entity_type, entity_id, count in db.execute(
+        export_format = (func.json_extract(CartonAuditEvent.detail_json, "$.format")
+                         if db.get_bind().dialect.name == "sqlite"
+                         else cast(CartonAuditEvent.detail_json, JSON)["format"].as_string())
+        order_import = export_format == ORDER_IMPORT_EXPORT_FORMAT
+        export_records = {
+            (entity_type, entity_id): (count, import_count, last_import_at)
+            for entity_type, entity_id, count, import_count, last_import_at in db.execute(
                 select(CartonAuditEvent.entity_type, CartonAuditEvent.entity_id,
-                       func.count(CartonAuditEvent.id)).where(
+                       func.count(CartonAuditEvent.id),
+                       func.count(CartonAuditEvent.id).filter(order_import),
+                       func.max(CartonAuditEvent.created_at).filter(order_import)).where(
                     CartonAuditEvent.factory_id == factory,
                     CartonAuditEvent.event_type == "SUPPLIER_DOCUMENT_EXPORTED",
                     or_(and_(CartonAuditEvent.entity_type == "carton_purchase_order_issue",
@@ -979,8 +1129,14 @@ def documents(db, user, factory):
         }
         for row in result:
             entity_type = _document_entity_type(row)
-            row["export_count"] = export_counts.get((entity_type, row["id"]), 0)
-    return sorted(result, key=lambda item: (item["created_at"], item["document_no"]), reverse=True)
+            count, import_count, last_import_at = export_records.get((entity_type, row["id"]), (0, 0, None))
+            row.update(export_count=count, order_import_export_count=import_count, order_import_last_export_at=last_import_at)
+    return sorted(result, key=lambda item: (item["created_at"], item["document_no"]), reverse=True), snapshots
+
+
+def documents(db, user, factory):
+    rows, _ = _document_projection(db, user, factory)
+    return rows
 
 
 def _activity_rules(db, user, factory):
@@ -995,11 +1151,13 @@ def _activity_rules(db, user, factory):
         CartonPurchaseOrderIssue.order_id.in_(order_ids),
         CartonPurchaseOrderIssue.document_type != "LEGACY_BASELINE")).all()
     issue_nos = {row.id: row.document_no for row in issue_rows}
+    issue_actions = {row.id: ("待接单版本已发送" if _papers_required_for_purchase_document(_purchase_order_snapshot(row))
+                             else "采购单已生成") for row in issue_rows}
     shipments = db.scalars(select(SupplierShipment).where(
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier.id)).all()
     shipment_nos = {row.id: row.delivery_note_no for row in shipments}
     allowed = {
-        "PURCHASE_ORDER_ISSUED": ("carton_purchase_order_issue", issue_nos, "采购单已生成"),
+        "PURCHASE_ORDER_ISSUED": ("carton_purchase_order_issue", issue_nos, issue_actions),
         "ORDER_DATES_CHANGED": ("carton_order", order_nos, "内部订单交期已变更"),
         "ORDER_CANCELLED": ("carton_order", order_nos, "内部订单已取消"),
         "ORDER_REDUCED": ("carton_order", order_nos, "内部订单已减单"),
@@ -1017,6 +1175,10 @@ def _activity_rules(db, user, factory):
         "SUPPLIER_SHIPMENT_LINE_LINKED": ("supplier_shipment", shipment_nos, "无单纸品已关联正式订单"),
     }
     return allowed
+
+
+def _supplier_activity_label(rule, identifier):
+    return rule[2][identifier] if isinstance(rule[2], dict) else rule[2]
 
 
 def supplier_activity_page(db, user, factory="", *, search="", event_type="", date_from="", date_to="", sort="DESC", limit=50, offset=0):
@@ -1040,7 +1202,7 @@ def supplier_activity_page(db, user, factory="", *, search="", event_type="", da
         term = search.casefold()
         matches = [and_(CartonAuditEvent.factory_id == scope, CartonAuditEvent.event_type == code,
                         CartonAuditEvent.entity_id.in_([key for key, number in rule[1].items()
-                            if term in number.casefold() or term in rule[2].casefold()]))
+                            if term in number.casefold() or term in _supplier_activity_label(rule, key).casefold()]))
                    for scope, allowed in rules.items() for code, rule in allowed.items()]
         query = query.where(or_(CartonAuditEvent.actor_name.ilike(literal_pattern(search), escape="!"), *matches))
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
@@ -1049,7 +1211,7 @@ def supplier_activity_page(db, user, factory="", *, search="", event_type="", da
     for row in rows:
         rule = rules[row.factory_id][row.event_type]
         result.append({
-            "id": row.id, "created_at": row.created_at, "action": rule[2],
+            "id": row.id, "created_at": row.created_at, "action": _supplier_activity_label(rule, row.entity_id),
             "reference_no": rule[1][row.entity_id], "actor_name": row.actor_name or "系统",
             "factory_id": row.factory_id, "event_type": row.event_type,
         })
@@ -1176,21 +1338,23 @@ def _supplier_import_dimensions(specification: str, document_no: str) -> list[fl
 
 
 def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
-    """Dongkang ERP rows use issued deltas, including B replacements, never cumulative totals."""
+    """Dongkang ERP rows use the released document's deltas, including B replacements."""
     if len({selection.factory_id for selection in payload.documents}) != 1:
         raise HTTPException(422, "对方导入模板一次只能包含一个送货厂区；请按厂区分别导出")
     _lock_receipt_factory(db, payload.documents[0].factory_id)
     visible_by_factory = {}
+    snapshots_by_factory = {}
     issue_rows = []
     selected = []
     for selection in payload.documents:
         if selection.kind != "PURCHASE":
             raise HTTPException(422, "对方订单导入模板只能选择采购单")
         if selection.factory_id not in visible_by_factory:
+            rows, snapshots = _document_projection(db, user, selection.factory_id)
             visible_by_factory[selection.factory_id] = {
-                row["id"]: row for row in documents(db, user, selection.factory_id)
-                if row["kind"] == "PURCHASE"
+                row["id"]: row for row in rows if row["kind"] == "PURCHASE"
             }
+            snapshots_by_factory[selection.factory_id] = snapshots
         document = visible_by_factory[selection.factory_id].get(selection.id)
         if document is None:
             raise HTTPException(404, "所选采购单不存在或不属于当前供应商")
@@ -1199,7 +1363,7 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
         if document.get("is_cancellation"):
             raise HTTPException(422, f"{document['document_no']} 是取消采购通知，请在东康 ERP 停止或关闭原单；请下载原始通知，不能作为新增订单导入")
         if document["supplier_acceptance"]["status"] != "ACCEPTED" and not payload.acknowledge_unaccepted:
-            raise HTTPException(409, f"采购单 {document['document_no']}：{document['supplier_acceptance']['label']}；请先确认接单，或明确确认未接单导出提醒后再导出导入模板。导出不会自动接单")
+            raise HTTPException(409, f"采购单 {document['document_no']}：{document['supplier_acceptance']['label']}；请核对当前版本和接单状态，确认后再导出。导出不会自动接单")
         selected.append(document)
         if document.get("is_batch"):
             _batch, sources = load_purchase_batch(db, selection.factory_id, selection.id)
@@ -1208,7 +1372,8 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
             if issue is None or issue.factory_id != selection.factory_id:
                 raise HTTPException(404, "采购单生成快照不存在")
             sources = [issue]
-        issue_rows.extend((issue, _purchase_order_snapshot(issue), document) for issue in sources)
+        snapshots = snapshots_by_factory[selection.factory_id]
+        issue_rows.extend((issue, snapshots[issue.id], document) for issue in sources)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "006 (2)"
@@ -1278,7 +1443,7 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
     workbook.save(output)
     workbook.close()
     for document in selected:
-        _record_document_export(db, user, document, format="SUPPLIER_ORDER_IMPORT",
+        _record_document_export(db, user, document, format=ORDER_IMPORT_EXPORT_FORMAT,
             acknowledge_unaccepted=payload.acknowledge_unaccepted,
             acceptance_status=document["supplier_acceptance"]["status"])
     db.commit()

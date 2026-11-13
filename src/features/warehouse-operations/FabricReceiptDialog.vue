@@ -1,25 +1,48 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, useId, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { Button } from '@/components/ui/button'
 import { getApiErrorMessage } from '@/lib/http'
-import type { PurchaseDetail } from '@/api/fabricProcurement'
-import { fabricReceivingApi as api, materialCategoryLabels, type MaterialCategory, type ReceiveRequest, type FabricReceipt } from '@/api/fabricReceiving'
-import { newReceiptCounts, quantityText, receiptCountFields as quantityFields, receiptNetQuantity, receiptQuantity } from './receiptQuantities'
+import { fabricProcurementApi, type PurchaseDetail, type PurchaseLine } from '@/api/fabricProcurement'
+import { fabricMasterApi, type MasterRecord } from '@/api/fabricMaster'
+import { fabricReceivingApi as api, materialCategoryLabels, type MaterialCategory, type ReceiptInput, type ReceiveManualRequest, type ReceiveRequest, type FabricReceipt } from '@/api/fabricReceiving'
+import { duplicateReceiptSplitMessage, newReceiptCounts, quantityText, receiptCountFields as quantityFields, receiptNetQuantity, receiptQuantity } from './receiptQuantities'
 import FabricReceiptPriceFields from './FabricReceiptPriceFields.vue'
 import type { ReceiptPriceInput } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
 import WarehouseLocationPicker from './WarehouseLocationPicker.vue'
 import { suggestMaterialCategory } from './materialCategorySuggestion'
 
-const props = defineProps<{ source: PurchaseDetail }>()
+const props = defineProps<{ source?: PurchaseDetail; canPurchase?: boolean; canPendingPurchase?: boolean }>()
 const emit = defineEmits<{ close: []; saved: [receipt: FabricReceipt]; stale: [message: string] }>()
+const canChoosePurchase = computed(() => !!props.source || !!props.canPurchase)
+const mode = ref<'ORDER' | 'PENDING'>(canChoosePurchase.value ? 'ORDER' : 'PENDING')
+const pickedPurchase = shallowRef(props.source)
+const source = computed(() => mode.value === 'ORDER' ? pickedPurchase.value : undefined)
+const purchaseSearch = ref(''), purchaseHits = ref<PurchaseLine[]>(), sourceBusy = ref(false), sourceError = ref('')
+const materials = ref<MasterRecord[]>([]), suppliers = ref<MasterRecord[]>([]), bins = ref<MasterRecord[]>([])
+const materialId = ref(''), supplierId = ref(''), materialSearch = ref(''), supplierSearch = ref(''), pendingReason = ref('')
+const manualMaterial = computed(() => materials.value.find(record => record.id === materialId.value))
+const manualSupplier = computed(() => suppliers.value.find(record => record.id === supplierId.value))
+const locations = computed(() => mode.value === 'ORDER' ? source.value?.available_locations ?? [] : bins.value.map(bin => ({
+  id: bin.id, label: `${bin.data.warehouse}／${bin.code}`, category: bin.data.category,
+})))
+const unit = computed(() => mode.value === 'ORDER' ? source.value?.facts.unit ?? '' : manualMaterial.value?.data.unit ?? '')
+function matchedMasters(records: MasterRecord[], query: string, id: string) {
+  const search = query.trim().toLocaleLowerCase()
+  const matches = records.filter(row => `${row.code} ${row.name}`.toLocaleLowerCase().includes(search)).slice(0, 50)
+  const selected = records.find(row => row.id === id)
+  return selected && !matches.includes(selected) ? [selected, ...matches] : matches
+}
+const materialChoices = computed(() => matchedMasters(materials.value, materialSearch.value, materialId.value))
+const supplierChoices = computed(() => matchedMasters(suppliers.value, supplierSearch.value, supplierId.value))
 const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const receiptDate = ref(today), deliveryReference = ref(''), deliveryDate = ref(today)
 const deliveryQuantity = ref('')
 const deliveryQuantityId = useId()
-const initialCategory = props.source.material_category || suggestMaterialCategory(props.source.facts.unit)
+const sourceCategory = (record?: PurchaseDetail) => record?.material_category || suggestMaterialCategory(record?.facts.unit ?? '')
+const initialCategory = sourceCategory(props.source)
 const category = ref<MaterialCategory | ''>(initialCategory)
 const reason = ref(''), note = ref(''), busy = ref(false), error = ref('')
 const unitPrice = ref(''), currency = ref<NonNullable<ReceiptPriceInput['currency']>>('CNY')
@@ -45,7 +68,68 @@ function addRoll(row: ReceiptRow) {
 }
 let nextKey = 2, alive = true, saved = false
 const requestId = warehouseRequestId()
-const submitted = ref<ReceiveRequest>()
+const submitted = ref<{ sourceId: string; input: ReceiveRequest } | { sourceId: null; input: ReceiveManualRequest }>()
+let catalogReady = false
+function clearPhysicalForSourceChange() {
+  if (!rows.value.some(rowDirty) && !deliveryQuantity.value && !unitPrice.value) return true
+  if (!window.confirm('更换收料来源会清空实物明细、送货量和单价。日期及送货依据会保留，确定更换？')) return false
+  rows.value = [newRow(nextKey++)]; deliveryQuantity.value = ''; unitPrice.value = ''; reason.value = ''
+  return true
+}
+async function loadMasters() {
+  if (sourceBusy.value) return
+  sourceBusy.value = true; sourceError.value = ''
+  try {
+    const [items, parties, places] = await Promise.all([
+      fabricMasterApi.list('MATERIAL', '', 'ACTIVE'), fabricMasterApi.list('SUPPLIER', '', 'ACTIVE'), fabricMasterApi.list('LOCATION', '', 'ACTIVE'),
+    ])
+    if (!alive) return
+    materials.value = items.items.filter(row => row.data.category && row.data.unit)
+    suppliers.value = parties.items; bins.value = places.items
+    category.value = manualMaterial.value?.data.category || ''
+    catalogReady = true
+  } catch (e) { if (alive) sourceError.value = getApiErrorMessage(e) }
+  finally { if (alive) sourceBusy.value = false }
+}
+function setMode(value: 'ORDER' | 'PENDING') {
+  if (mode.value === value || sourceBusy.value || busy.value || submitted.value || !clearPhysicalForSourceChange()) return
+  mode.value = value; sourceError.value = ''; error.value = ''
+  category.value = value === 'ORDER' ? sourceCategory(pickedPurchase.value) : manualMaterial.value?.data.category || ''
+  if (value === 'PENDING' && !catalogReady) void loadMasters()
+}
+function chooseManualMaterial(event: Event) {
+  const select = event.target as HTMLSelectElement
+  if (select.value === materialId.value) return
+  if (!clearPhysicalForSourceChange()) { select.value = materialId.value; return }
+  materialId.value = select.value
+  category.value = manualMaterial.value?.data.category || ''
+}
+async function searchPurchase() {
+  if (!purchaseSearch.value.trim() || sourceBusy.value || submitted.value) return
+  sourceBusy.value = true; sourceError.value = ''
+  try {
+    const data = await fabricProcurementApi.lines('PENDING', purchaseSearch.value.trim(), 0, 'OUTSTANDING')
+    if (alive) purchaseHits.value = data.items
+  } catch (e) { if (alive) sourceError.value = getApiErrorMessage(e) }
+  finally { if (alive) sourceBusy.value = false }
+}
+async function choosePurchase(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const id = select.value
+  select.value = pickedPurchase.value?.id ?? ''
+  if (!id || sourceBusy.value || submitted.value) return
+  sourceBusy.value = true; sourceError.value = ''
+  try {
+    const record = await fabricProcurementApi.detail(id)
+    if (!alive) return
+    if (!record.can_receive) sourceError.value = '该采购明细暂不能入库，请核对采购来源，或选择采购待核对。'
+    else if (record.id === pickedPurchase.value?.id || clearPhysicalForSourceChange()) {
+      pickedPurchase.value = record; category.value = sourceCategory(record); select.value = record.id
+    }
+  } catch (e) { if (alive) sourceError.value = getApiErrorMessage(e) }
+  finally { if (alive) sourceBusy.value = false }
+}
+if (mode.value === 'PENDING' && props.canPendingPurchase) void loadMasters()
 const total = computed(() => sum(rows.value.map(accepted)))
 const counted = computed(() => sum(rows.value.map(row => row.counted_quantity)))
 const damaged = computed(() => sum(rows.value.map(row => row.damaged_quantity)))
@@ -60,17 +144,14 @@ const summary = computed(() => [
   ['实点合计', counted.value], ['净入库合计', total.value], ['短少', shortage.value],
   ['破损合计', damaged.value], ['拒收合计', rejected.value], ['其他不可用合计', other.value], ['退供应商合计', returned.value],
 ])
-const duplicate = computed(() => {
-  if (category.value !== 'FABRIC') return false
-  const keys = rows.value.filter(row => row.location_id && row.dye_lot.trim()).map(row => JSON.stringify([row.location_id, row.dye_lot.trim(), row.roll_no.trim()]))
-  return new Set(keys).size !== keys.length
-})
-const ordered = computed(() => receiptQuantity(props.source.facts.ordered_quantity))
-const prior = computed(() => receiptQuantity(props.source.prior_received_quantity ?? ''))
+const duplicate = computed(() => category.value === 'FABRIC' ? duplicateReceiptSplitMessage(rows.value) : undefined)
+const ordered = computed(() => receiptQuantity(source.value?.facts.ordered_quantity ?? ''))
+const prior = computed(() => receiptQuantity(source.value?.prior_received_quantity ?? ''))
 const remaining = computed(() => {
-  if (props.source.receipt_quantity_review_required || props.source.receipt_reconciliation_required) return undefined
-  if (props.source.warehouse_outstanding_quantity != null) return props.source.warehouse_outstanding_quantity
-  const recorded = receiptQuantity(props.source.warehouse_received_quantity ?? '0')
+  const record = source.value
+  if (!record || record.receipt_quantity_review_required || record.receipt_reconciliation_required) return undefined
+  if (record.warehouse_outstanding_quantity != null) return record.warehouse_outstanding_quantity
+  const recorded = receiptQuantity(record.warehouse_received_quantity ?? '0')
   if (prior.value === undefined || ordered.value === undefined || recorded === undefined || prior.value > ordered.value) return undefined
   const amount = ordered.value - prior.value - recorded
   return quantityText(amount > 0n ? amount : 0n)
@@ -83,8 +164,10 @@ const overage = computed(() => {
 })
 const deliveryLimit = computed(() => receiptQuantity(deliveryQuantity.value))
 const exceedsDelivery = computed(() => deliveryLimit.value !== undefined && (receiptQuantity(counted.value ?? '') ?? 0n) > deliveryLimit.value)
-const valid = computed(() => props.source.can_receive && total.value !== undefined && counted.value !== undefined && deliveryLimit.value !== undefined && deliveryLimit.value > 0n && !exceedsDelivery.value && !duplicate.value && (!unitPrice.value.trim() || (currency.value && receiptQuantity(unitPrice.value) !== undefined)) && rows.value.every(row => row.location_id && (category.value !== 'FABRIC' || row.dye_lot.trim())) && (!overage.value || reason.value.trim()) && category.value && deliveryReference.value.trim() && receiptDate.value && receiptDate.value <= today)
-const dirty = computed(() => deliveryQuantity.value || unitPrice.value || currency.value !== 'CNY' || rows.value.some(rowDirty) || deliveryReference.value || deliveryDate.value !== today || receiptDate.value !== today || category.value !== initialCategory || reason.value || note.value)
+const sourceReady = computed(() => mode.value === 'ORDER' ? source.value?.can_receive :
+  props.canPendingPurchase && manualMaterial.value && manualSupplier.value && (total.value === '0' || pendingReason.value.trim()))
+const valid = computed(() => !sourceBusy.value && sourceReady.value && total.value !== undefined && counted.value !== undefined && deliveryLimit.value !== undefined && deliveryLimit.value > 0n && !exceedsDelivery.value && !duplicate.value && (!unitPrice.value.trim() || (currency.value && receiptQuantity(unitPrice.value) !== undefined)) && rows.value.every(row => locations.value.some(bin => bin.id === row.location_id) && (category.value !== 'FABRIC' || row.dye_lot.trim())) && (!overage.value || reason.value.trim()) && category.value && deliveryReference.value.trim() && receiptDate.value && receiptDate.value <= today)
+const dirty = computed(() => deliveryQuantity.value || unitPrice.value || currency.value !== 'CNY' || rows.value.some(rowDirty) || deliveryReference.value || deliveryDate.value !== today || receiptDate.value !== today || category.value !== initialCategory || reason.value || pendingReason.value || note.value)
 function allowLeave() {
   if (busy.value) return false
   return saved || !dirty.value || window.confirm(submitted.value ? '保存结果尚未确认，系统可能已入库。离开后请先查入库记录，避免重复登记。确定离开？' : '本次收料尚未保存，离开会清空填写内容。确定离开？')
@@ -103,25 +186,35 @@ function removeRow(key: number) {
 }
 async function save() {
   if (busy.value || (!submitted.value && !valid.value)) return
-  if (!submitted.value) submitted.value = {
-    factory_id: 'huakang-c', request_id: requestId, expected_source_revision: props.source.revision, expected_receipt_count: props.source.receipt_count ?? 0,
+  if (!submitted.value) {
+    const input: ReceiptInput = {
+    factory_id: 'huakang-c', request_id: requestId,
     receipt_date: receiptDate.value, delivery_reference: deliveryReference.value.trim(), delivery_note_date: deliveryDate.value || null,
     delivery_quantity: deliveryQuantity.value.trim(),
-    material_category: category.value as MaterialCategory, difference_reason: overage.value ? reason.value.trim() : '', note: note.value.trim(),
-    ...(unitPrice.value.trim() ? { unit_price: unitPrice.value.trim(), price_unit: props.source.facts.unit, currency: currency.value } : {}),
-    batches: rows.value.map(row => ({ quantity: accepted(row)!, counted_quantity: row.counted_quantity.trim(), damaged_quantity: row.damaged_quantity.trim(), rejected_quantity: row.rejected_quantity.trim(), other_unusable_quantity: row.other_unusable_quantity.trim(), location_id: row.location_id, location: (props.source.available_locations ?? []).find(bin => bin.id === row.location_id)?.label ?? '', dye_lot: category.value === 'FABRIC' ? row.dye_lot : '', roll_no: category.value === 'FABRIC' ? row.roll_no : '' })), confirmed: true,
+    material_category: category.value as MaterialCategory, note: note.value.trim(),
+    ...(unitPrice.value.trim() ? { unit_price: unitPrice.value.trim(), price_unit: unit.value, currency: currency.value } : {}),
+    batches: rows.value.map(row => ({ quantity: accepted(row)!, counted_quantity: row.counted_quantity.trim(), damaged_quantity: row.damaged_quantity.trim(), rejected_quantity: row.rejected_quantity.trim(), other_unusable_quantity: row.other_unusable_quantity.trim(), location_id: row.location_id, location: locations.value.find(bin => bin.id === row.location_id)?.label ?? '', dye_lot: category.value === 'FABRIC' ? row.dye_lot : '', roll_no: category.value === 'FABRIC' ? row.roll_no : '' })), confirmed: true,
+    }
+    const record = source.value
+    if (record) submitted.value = { sourceId: record.id, input: { ...input, expected_source_revision: record.revision,
+      expected_receipt_count: record.receipt_count ?? 0, difference_reason: overage.value ? reason.value.trim() : '' } }
+    else if (manualMaterial.value && manualSupplier.value) submitted.value = { sourceId: null, input: { ...input,
+      material_id: manualMaterial.value.id, material_revision: manualMaterial.value.revision,
+      supplier_id: manualSupplier.value.id, supplier_revision: manualSupplier.value.revision, procurement_pending_reason: pendingReason.value.trim() } }
+    else return
   }
   busy.value = true; error.value = ''
   try {
-    const result = await api.receive(props.source.id, submitted.value)
+    const request = submitted.value
+    const result = await (request.sourceId === null ? api.receiveManual(request.input) : api.receive(request.sourceId, request.input))
     if (!alive) return
     saved = true; emit('saved', result)
   } catch (e) {
     if (!alive) return
     error.value = getApiErrorMessage(e)
     const status = (e as { response?: { status?: number } }).response?.status
-    if (status === 409 || status === 404 || status === 403 || status === 401) { saved = true; emit('stale', error.value) }
-    else if (status && status < 500 && status !== 408) submitted.value = undefined
+    if (status === 403 || status === 401 || (submitted.value?.sourceId && (status === 409 || status === 404))) { saved = true; emit('stale', error.value) }
+    else if (status && status < 500 && status !== 408 && status !== 429) submitted.value = undefined
   } finally { if (alive) busy.value = false }
 }
 </script>
@@ -131,19 +224,39 @@ async function save() {
     <header class="fabric-intake-header"><div><span class="fabric-intake-eyebrow">布料仓 · 收料入库</span><DialogTitle>登记入库</DialogTitle><DialogDescription>逐卷实点，扣除当场退供应商的不可用量后入库。</DialogDescription></div><Button variant="outline" :disabled="busy" @click="close">关闭</Button></header>
     <form class="fabric-intake-form" @submit.prevent="save">
       <div class="fabric-intake-body">
-        <div class="fabric-intake-source"><div><span class="fabric-intake-tag">{{ source.facts.source_category === 'SUPPLEMENT' ? '补数追货' : '正常采购' }}</span><strong>{{ source.facts.material_name }}</strong><p>{{ source.facts.material_code }} · {{ source.facts.order_no }}</p><p>{{ source.facts.supplier }}</p></div><div class="fabric-intake-progress"><span>待收数量</span><strong>{{ remaining ?? '待核对' }} <small v-if="remaining !== undefined">{{ source.facts.unit }}</small></strong><p>本系统已入库 {{ source.warehouse_received_quantity ?? '0' }} {{ source.facts.unit }}</p></div></div>
-        <p v-if="remaining === undefined" class="fabric-intake-alert" role="note">起始待收量待负责人核对。本次按实物入库，剩余待收暂不计算。</p>
         <fieldset :disabled="busy || !!submitted" class="fabric-receipt-fields">
+          <div v-if="canChoosePurchase && canPendingPurchase" class="fabric-intake-source-choice" role="group" aria-label="采购归属">
+            <Button type="button" size="sm" variant="outline" :aria-pressed="mode === 'ORDER'" :disabled="sourceBusy" @click="setMode('ORDER')">关联采购单</Button>
+            <Button type="button" size="sm" variant="outline" :aria-pressed="mode === 'PENDING'" :disabled="sourceBusy" @click="setMode('PENDING')">采购待核对</Button>
+          </div>
+          <div v-if="mode === 'ORDER' && !props.source" class="fabric-intake-source-tools">
+            <label>查找采购明细<input v-model="purchaseSearch" aria-label="查找采购明细" placeholder="采购单、合同号、生产单或物料" maxlength="128" @keydown.enter.prevent="searchPurchase" /></label>
+            <Button type="button" size="sm" variant="outline" :disabled="sourceBusy || !purchaseSearch.trim()" @click="searchPurchase">查找</Button>
+            <label v-if="purchaseHits?.length" class="wide">选择采购明细<select :value="source?.id ?? ''" aria-label="选择采购明细" :disabled="sourceBusy" @change="choosePurchase"><option value="">请选择明细</option><option v-for="line in purchaseHits" :key="line.id" :value="line.id">{{ [line.facts.order_no, line.facts.production_no, line.facts.contract_no, line.facts.material_name, line.facts.supplier, line.facts.ordered_quantity && `下单 ${line.facts.ordered_quantity} ${line.facts.unit}`].filter(Boolean).join(' · ') }}</option></select></label>
+            <p v-else-if="purchaseHits" class="wide fabric-intake-alert">没找到待收明细。可换关键词查找，或按「采购待核对」登记。</p>
+          </div>
+          <div v-if="source" class="fabric-intake-source"><div><span class="fabric-intake-tag">{{ source.facts.source_category === 'SUPPLEMENT' ? '补数追货' : '正常采购' }}</span><strong>{{ source.facts.material_name }}</strong><p>{{ source.facts.material_code }} · {{ source.facts.order_no }}</p><p>{{ source.facts.supplier }}</p></div><div class="fabric-intake-progress"><span>待收数量</span><strong>{{ remaining ?? '待核对' }} <small v-if="remaining !== undefined">{{ unit }}</small></strong><p>本系统已入库 {{ source.warehouse_received_quantity ?? '0' }} {{ unit }}</p></div></div>
+          <p v-if="source && remaining === undefined" class="fabric-intake-alert" role="note">起始待收量待负责人核对。本次按实物入库，剩余待收暂不计算。</p>
+          <template v-if="mode === 'PENDING'">
+            <p class="fabric-intake-alert">按实物收料，先保留送货凭证。确认采购单后，到「入库记录」补关联，库存只记一次。</p>
+            <div class="fabric-intake-document-fields fabric-intake-manual">
+              <label>物料<input v-model="materialSearch" aria-label="搜索入库物料" placeholder="按编码或名称搜索" @keydown.enter.prevent /><select :value="materialId" aria-label="选择入库物料" :disabled="sourceBusy" required @change="chooseManualMaterial"><option value="">选择已启用的物料</option><option v-for="item in materialChoices" :key="item.id" :value="item.id">{{ item.code }} · {{ item.name }} · {{ item.data.unit }}</option></select></label>
+              <label>供应商<input v-model="supplierSearch" aria-label="搜索入库供应商" placeholder="按编号或名称搜索" @keydown.enter.prevent /><select v-model="supplierId" aria-label="选择入库供应商" :disabled="sourceBusy" required><option value="">选择已启用的供应商</option><option v-for="item in supplierChoices" :key="item.id" :value="item.id">{{ item.code }} · {{ item.name }}</option></select></label>
+            </div>
+            <label v-if="total !== '0'" class="fabric-receipt-overage">采购待核对原因<textarea v-model="pendingReason" aria-label="采购待核对原因" placeholder="例如供应商纸单没有采购单号" maxlength="1000" rows="2" required /></label>
+          </template>
+          <p v-if="sourceBusy" class="fabric-intake-alert" role="status">正在读取收料资料…</p>
+          <p v-if="sourceError" class="fabric-intake-error" role="alert">{{ sourceError }} <Button v-if="mode === 'PENDING'" size="sm" type="button" variant="outline" @click="loadMasters">重新读取</Button></p>
           <div class="fabric-intake-document-fields">
             <label>收货日期<input v-model="receiptDate" type="date" aria-label="实际收货日期" :max="today" required /></label>
             <label>送货单号 / 收料依据<input v-model="deliveryReference" aria-label="送货依据编号" placeholder="填写单号" maxlength="128" required /></label>
-            <label>物料分类<select v-model="category" aria-label="入库物料分类" required><option value="" disabled>请选择</option><option v-for="(label, value) in materialCategoryLabels" :key="value" :value="value">{{ label }}</option></select><small v-if="!source.material_category && suggestMaterialCategory(source.facts.unit)">已按单位建议分类，可修改。</small></label>
+            <label>物料分类<select v-model="category" aria-label="入库物料分类" :disabled="mode === 'PENDING'" required><option value="" disabled>请选择</option><option v-for="(label, value) in materialCategoryLabels" :key="value" :value="value">{{ label }}</option></select><small v-if="source && !source.material_category && suggestMaterialCategory(unit)">已按单位建议分类，可修改。</small></label>
           </div>
           <section class="fabric-intake-details"><div class="fabric-intake-section-heading"><h3>收货明细</h3><Button variant="outline" size="sm" type="button" :disabled="rows.length >= 200" @click="rows.push(newRow(nextKey++))">＋ 增加明细</Button></div>
             <div class="fabric-intake-table-wrap" tabindex="0" role="region" aria-label="逐卷收货明细"><table class="fabric-intake-table"><thead><tr><th class="fabric-intake-index">序号</th><th>仓位 <span>*</span></th><th v-if="category === 'FABRIC'">缸号 <span>*</span></th><th v-if="category === 'FABRIC'">卷号（选填）</th><th v-for="field in quantityFields" :key="field.key" class="numeric">{{ field.label }}<span v-if="field.key === 'counted_quantity'"> *</span></th><th class="numeric">入库数量</th><th class="fabric-intake-remove">操作</th></tr></thead><tbody>
               <tr v-for="(row, index) in rows" :key="row.key">
                 <td class="fabric-intake-index">{{ index + 1 }}</td>
-                <td data-label="仓位"><WarehouseLocationPicker :category="category" :disabled="busy || !!submitted" v-model="row.location_id" :locations="source.available_locations ?? []" :label="`第${index + 1}项仓位`" /></td>
+                <td data-label="仓位"><WarehouseLocationPicker :category="category" :disabled="busy || !!submitted" v-model="row.location_id" :locations="locations" :label="`第${index + 1}项仓位`" /></td>
                 <td v-if="category === 'FABRIC'" data-label="缸号"><input v-model="row.dye_lot" :aria-label="`第${index + 1}项缸号`" placeholder="染色批次号" maxlength="128" required /></td>
                 <td v-if="category === 'FABRIC'" data-label="卷号（选填）"><input v-model="row.roll_no" :aria-label="`第${index + 1}项卷号`" placeholder="单卷编号" maxlength="128" /></td>
                 <td v-for="field in quantityFields" :key="field.key" :data-label="field.label" class="numeric"><input v-model="row[field.key]" :aria-label="`第${index + 1}项${field.label}`" inputmode="decimal" maxlength="32" required :placeholder="field.key === 'counted_quantity' ? '现场实点' : '0'" /></td>
@@ -151,24 +264,24 @@ async function save() {
                 <td class="fabric-intake-remove"><Button v-if="category === 'FABRIC'" variant="outline" size="sm" type="button" :disabled="rows.length >= 200" :aria-label="`第${index + 1}项同缸新增一卷`" @click="addRoll(row)">同缸新增一卷</Button><Button v-if="rows.length > 1" variant="ghost" size="sm" type="button" :aria-label="`删除第${index + 1}项`" @click="removeRow(row.key)">删除</Button></td>
               </tr>
             </tbody></table></div>
-            <div class="fabric-intake-totals"><span>{{ rows.length }} 项明细 · 单位：{{ source.facts.unit }}<span v-if="category === 'FABRIC'"> · 同卷分仓请填写不同仓位</span></span></div>
+            <div class="fabric-intake-totals"><span>{{ rows.length }} 项明细 · 单位：{{ unit || '—' }}<span v-if="category === 'FABRIC'"> · 同卷分仓请填写不同仓位</span></span></div>
             <dl class="receipt-quantity-summary" aria-label="本次数量汇总">
               <div class="receipt-delivery-quantity">
-                <dt><label :for="deliveryQuantityId">送货单数量（{{ source.facts.unit }}）</label></dt>
+                 <dt><label :for="deliveryQuantityId">送货单数量<span v-if="unit">（{{ unit }}）</span></label></dt>
                 <dd>
                   <input :id="deliveryQuantityId" v-model.trim="deliveryQuantity" name="delivery_quantity" inputmode="decimal" maxlength="32" placeholder="按送货单填写本明细数量" required />
                   <Button variant="outline" type="button" :disabled="!counted || counted === '0'" @click="deliveryQuantity = counted ?? ''">与实点一致</Button>
                 </dd>
               </div>
-              <div v-for="[label, value] in summary" :key="label"><dt>{{ label }}</dt><dd>{{ value ?? '—' }} {{ source.facts.unit }}</dd></div>
+               <div v-for="[label, value] in summary" :key="label"><dt>{{ label }}</dt><dd>{{ value ?? '—' }} {{ unit }}</dd></div>
             </dl>
           </section>
           <p v-if="exceedsDelivery" class="fabric-intake-error" role="alert">实点合计超过送货单数量，不能入库。</p>
-          <p v-if="duplicate" class="fabric-intake-error" role="alert">同缸号、卷号和仓位重复，请合并核对。</p>
+          <p v-if="duplicate" class="fabric-intake-error" role="alert">{{ duplicate }}</p>
           <p v-if="total === '0'" class="fabric-intake-alert" role="status">本次全部不可用，只登记差异，不增加库存</p>
           <p class="fabric-intake-alert">同一送货依据分仓请在本次增加明细；需要分次入库时，请从“送货单入库”打开同一张已确认单据，系统会累计校验剩余量。</p>
-          <FabricReceiptPriceFields v-model:price="unitPrice" v-model:currency="currency" :quantity="total" :unit="source.facts.unit" :reference="source.facts.unit_price" />
-          <label v-if="overage" class="fabric-receipt-overage">超出待收数量 {{ overage }} {{ source.facts.unit }} · 超收说明<textarea v-model="reason" aria-label="超收说明" placeholder="说明本次超收的原因" maxlength="1000" rows="2" required /></label>
+          <FabricReceiptPriceFields v-model:price="unitPrice" v-model:currency="currency" :quantity="total" :unit="unit" :reference="source?.facts.unit_price" />
+          <label v-if="overage" class="fabric-receipt-overage">超出待收数量 {{ overage }} {{ unit }} · 超收说明<textarea v-model="reason" aria-label="超收说明" placeholder="说明本次超收的原因" maxlength="1000" rows="2" required /></label>
           <details class="fabric-receipt-more"><summary>补充信息（选填）</summary><div class="fabric-intake-extra-fields"><label>送货单日期<input v-model="deliveryDate" type="date" aria-label="送货单日期" /></label><label>收料备注<textarea v-model="note" aria-label="收料备注" placeholder="其他需要记录的信息" maxlength="2000" rows="2" /></label></div></details>
         </fieldset>
       </div>
@@ -179,6 +292,11 @@ async function save() {
 
 <style scoped>
 @media(min-width: 701px) { .fabric-receipt-dialog { width: min(1280px, calc(100vw - 32px)); } }
+.fabric-intake-source-choice { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.fabric-intake-source-choice button[aria-pressed='true'] { border-color: var(--primary); color: var(--primary); }
+.fabric-intake-source-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-bottom: 12px; }
+.fabric-intake-source-tools .wide { grid-column: 1 / -1; }
+.fabric-intake-source-tools label, .fabric-intake-manual label { min-width: 0; }
 .fabric-intake-table-wrap { overflow-x: auto; }
 .fabric-intake-table { min-width: 1140px; }
 .fabric-intake-table .fabric-intake-remove { width: 128px; }

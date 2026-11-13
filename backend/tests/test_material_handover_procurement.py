@@ -127,6 +127,146 @@ def test_standalone_manual_receipt_before_upload_also_blocks_handover_reposting(
     assert counts() == (0, 1)
 
 
+def receipt_link_request(doc, candidate, line_id='L1'):
+    return dict(factory_id=FACTORY, request_id=str(uuid4()), expected_revision=doc['revision'],
+                line_id=line_id, receipt_id=candidate['id'])
+
+
+@pytest.mark.parametrize('purchase_entry', [False, True])
+def test_link_existing_receipt_updates_progress_without_reposting(client, purchase_entry):
+    save(client, source_book())
+    source = stored(client)['items'][0]
+    if purchase_entry:
+        response = receive(client, source, manual_request(source, delivery_reference='DOC-001',
+            receipt_date='2026-07-18', batches=[
+                {'quantity': '12', 'location': 'A01', 'dye_lot': 'LOT-1', 'roll_no': 'R1'},
+                {'quantity': '8', 'location': 'A02', 'dye_lot': 'LOT-1', 'roll_no': 'R2'},
+            ]))
+        assert response.status_code == 200, response.text
+    else:
+        operation_post(client, operation_payload(client, 'RECEIPT', source_no='DOC-001', item_code='01-01-00001',
+            unit='码', counterparty='测试供应商', lot='LOT-1', quantity='20'))
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    document_url = BASE + '/documents/' + doc['id']
+    scanned = client.post(BASE + '/scan', json=dict(factory_id=FACTORY, code=doc['code'])).json()
+    candidate, = scanned['prior_receipts']['L1']['items']
+    assert candidate['exact_reference'] and candidate['blocks_posting'] and candidate['can_link']
+    assert len(candidate['parts']) == (2 if purchase_entry else 1)
+    before = counts(), workspace(client), current(client, source['id'])['warehouse_received_quantity']
+    body = receipt_link_request(doc, candidate)
+    result = client.post(document_url + '/link-receipt', json=body)
+    assert result.status_code == 200, result.text
+    linked = result.json()
+    assert linked['progress']['L1'] == {'processed': '20', 'remaining': '20'}
+    assert linked['processing_status'] == 'PARTIAL' and linked['code'] == doc['code']
+    assert linked['prior_receipts'] == {}
+    assert client.post(document_url + '/link-receipt', json=body).json() == linked
+    assert client.post(document_url + '/link-receipt', json=receipt_link_request(linked, candidate)).status_code == 409
+    assert (counts(), workspace(client), current(client, source['id'])['warehouse_received_quantity']) == before
+    public = client.get(BASE + '/external/documents/' + doc['id'], headers=headers).json()
+    assert public['progress'] == linked['progress']
+    assert 'prior_receipts' not in public and 'manual_reference' not in public['movements'][0]
+    assert candidate['id'] not in str(public)
+
+    send(client, linked, [linked_part(client, linked, '21')], status=409)
+    completed, _ = send(client, linked, [linked_part(client, linked, '20')])
+    assert completed['processing_status'] == 'COMPLETE'
+    pending = client.get(BASE + '/pending-deliveries', params={'factory_id': FACTORY}).json()
+    assert not any(item['id'] == doc['id'] for item in pending['items'])
+    report = client.get(BASE + '/monthly', params={'factory_id': FACTORY, 'month': '2026-07'}).json()
+    assert Decimal(report['details'][0]['month_received']) == 40
+    assert not report['unlinked_receipts']
+    assert sum(Decimal(item['quantity']) for item in workspace(client)['stock']) == 40
+    assert Decimal(current(client, source['id'])['warehouse_received_quantity']) == (40 if purchase_entry else 20)
+
+    operation_post(client, operation_payload(client, 'CORRECTION', original_id=candidate['id'],
+        reason='原实收需要冲销核对', business_date='2026-08-01', confirmed=True))
+    reopened = client.get(document_url, params={'factory_id': FACTORY}).json()
+    assert reopened['progress']['L1'] == {'processed': '20', 'remaining': '20'}
+    assert next(item for item in reopened['movements'] if 'manual_reference' in item)['reversed']
+    pending = client.get(BASE + '/pending-deliveries', params={'factory_id': FACTORY}).json()
+    assert any(item['id'] == doc['id'] and item['processing_status'] == 'PARTIAL' for item in pending['items'])
+    report = client.get(BASE + '/monthly', params={'factory_id': FACTORY, 'month': '2026-08'}).json()
+    assert Decimal(report['details'][0]['month_reversed']) == 20
+    failed, _ = send(client, reopened, [linked_part(client, reopened, '20')], status=409)
+    assert '冲销日期' in failed['detail']
+
+
+def test_mistyped_reference_requires_review_and_can_be_used_by_the_real_delivery(client):
+    operation_post(client, operation_payload(client, 'RECEIPT', source_no='DOC-002', item_code='01-01-00001',
+        unit='码', counterparty='测试供应商', lot='LOT-1', quantity='20'))
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    details_url = BASE + '/documents/' + doc['id']
+    review = client.get(details_url, params={'factory_id': FACTORY}).json()['prior_receipts']['L1']
+    candidate, = review['items']
+    assert not candidate['exact_reference'] and not candidate['blocks_posting'] and candidate['can_link']
+    send(client, doc, [receipt(amount='20')], status=409)
+    assert counts() == (0, 1)
+    linked = client.post(details_url + '/link-receipt', json=receipt_link_request(doc, candidate))
+    assert linked.status_code == 200, linked.text
+    assert linked.json()['progress']['L1']['processed'] == '20'
+
+    second = confirmed(client, headers, workbook(title='送货单 单号：DOC-002 2026-07-18'), source='DOC-002')
+    second_url = BASE + '/documents/' + second['id']
+    review = client.get(second_url, params={'factory_id': FACTORY}).json()['prior_receipts']['L1']
+    resolved, = review['items']
+    assert resolved['exact_reference'] and not resolved['blocks_posting'] and not resolved['can_link']
+    assert client.post(second_url + '/link-receipt', json=receipt_link_request(second, resolved)).status_code == 409
+    part = receipt(amount='12')
+    send(client, second, [part], status=409)
+    body = posting(second, workspace(client)['revision'], [part])
+    body['manual_receipt_reviews'] = {'L1': review['review_token']}
+    result, _ = send(client, second, [part], body=body)
+    assert result['progress']['L1']['processed'] == '12' and counts() == (0, 2)
+
+
+def test_exact_number_from_another_lot_requires_review_but_does_not_block_new_receiving(client):
+    operation_post(client, operation_payload(client, 'RECEIPT', source_no='DOC-001', item_code='01-01-00001',
+        unit='码', counterparty='测试供应商', lot='LOT-1', quantity='20'))
+    _, headers = issuer(client)
+    doc = confirmed(client, headers, workbook(rows=[
+        ['01-01-00001', '测试布料', '20', '码', 'LOT-1'],
+        ['01-01-00001', '测试布料', '20', '码', 'LOT-2'],
+    ]))
+    url = BASE + '/documents/' + doc['id']
+    reviews = client.get(url, params={'factory_id': FACTORY}).json()['prior_receipts']
+    assert reviews['L1']['items'][0]['blocks_posting']
+    other_lot, = reviews['L2']['items']
+    assert other_lot['exact_reference'] and not other_lot['blocks_posting'] and not other_lot['can_link']
+    part = receipt(line='L2', amount='15') | {'lot': 'LOT-2'}
+    send(client, doc, [part], status=409)
+    body = posting(doc, workspace(client)['revision'], [part])
+    body['manual_receipt_reviews'] = {'L2': reviews['L2']['review_token']}
+    posted, _ = send(client, doc, [part], body=body)
+    assert posted['progress']['L1']['processed'] == '0' and posted['progress']['L2']['processed'] == '15'
+    response = client.post(url + '/link-receipt', json=receipt_link_request(posted, reviews['L1']['items'][0]))
+    assert response.status_code == 200, response.text
+    assert response.json()['progress']['L1']['remaining'] == '0'
+    assert counts() == (0, 2)
+
+
+def test_historical_receipt_can_be_linked_after_supplier_deactivation(client):
+    operation_post(client, operation_payload(client, 'RECEIPT', source_no='DOC-001', item_code='01-01-00001',
+        unit='码', counterparty='测试供应商', lot='LOT-1', quantity='20'))
+    issuer_record, headers = issuer(client)
+    doc = confirmed(client, headers)
+    master_url = '/api/fabric-warehouse/master'
+    records = client.get(master_url, params=dict(factory_id=FACTORY, kind='SUPPLIER')).json()['items']
+    master = next(row for row in records if row['id'] == issuer_record['supplier_id'])
+    disabled = client.post(master_url, json=dict(factory_id=FACTORY, request_id=str(uuid4()),
+        id=master['id'], expected_revision=master['revision'], kind='SUPPLIER', code=master['code'],
+        name=master['name'], status='INACTIVE', data=master['data']))
+    assert disabled.status_code == 200, disabled.text
+    url = BASE + '/documents/' + doc['id']
+    candidate, = client.get(url, params={'factory_id': FACTORY}).json()['prior_receipts']['L1']['items']
+    response = client.post(url + '/link-receipt', json=receipt_link_request(doc, candidate))
+    assert response.status_code == 200, response.text
+    assert response.json()['progress']['L1']['processed'] == '20'
+    assert counts() == (0, 1)
+
+
 def test_concurrent_purchase_and_handover_entry_cannot_receive_the_same_note_twice(client):
     save(client, source_book())
     _, headers = issuer(client)
@@ -438,6 +578,7 @@ def test_receipt_observations_follow_splits_and_post_only_the_net(client):
     assert observation['parts'][1]['rejected_quantity'] == '3'
     assert 'operation_id' not in observation['parts'][1]
     assert observation['parts'][2]['other_unusable_quantity'] == '2'
+    assert 'full_rejection' not in observation and 'receipt_rejection' not in result
     assert client.post(url, json=body).json() == result
     changed = {**body, 'delivery_quantities': {'L1': '41'}}
     assert client.post(url, json=changed).status_code == 409
@@ -448,7 +589,7 @@ def test_receipt_observations_follow_splits_and_post_only_the_net(client):
     assert 'receipt_observations' not in public.json()
 
 
-def test_zero_net_receipt_saves_a_difference_without_moving_stock_or_purchase(client):
+def test_zero_net_receipt_saves_a_difference_without_moving_stock_or_purchase(client, monkeypatch):
     save(client, source_book())
     _, headers = issuer(client)
     doc = confirmed(client, headers)
@@ -464,6 +605,7 @@ def test_zero_net_receipt_saves_a_difference_without_moving_stock_or_purchase(cl
     assert result['progress'] == doc['progress']
     assert result['movements'] == []
     assert result['receipt_observations'][0]['lines'][0]['parts'][0]['rejected_quantity'] == '40'
+    assert result['receipt_rejection'] == {'rejected_quantity': '40', 'unit': '码', 'status': None}
     assert counts() == (0, 0)
     assert workspace(client)['revision'] == original_revision
     assert Decimal(current(client, source_id)['warehouse_outstanding_quantity']) == 100
@@ -471,6 +613,54 @@ def test_zero_net_receipt_saves_a_difference_without_moving_stock_or_purchase(cl
     stale = {**body, 'request_id': str(uuid4())}
     assert client.post(url, json=stale).status_code == 409
     assert client.get(BASE + '/documents/' + doc['id'], params={'factory_id': FACTORY}).json()['receipt_observations'] == result['receipt_observations']
+
+    detail_url = BASE + '/documents/' + doc['id']
+    pending_url = BASE + '/pending-deliveries'
+    pending, = client.get(pending_url, params={'factory_id': FACTORY}).json()['items']
+    assert pending['processing_status'] == 'PENDING' and pending['receipt_rejection'] == result['receipt_rejection']
+    list_row, = client.get(BASE + '/documents', params={'factory_id': FACTORY}).json()['items']
+    assert list_row['receipt_rejection'] == result['receipt_rejection']
+
+    followup_url = detail_url + '/rejection-followup'
+    followup = dict(factory_id=FACTORY, request_id=str(uuid4()), expected_revision=result['revision'],
+        observation_request_id=body['request_id'], line_id='L1', status='PENDING_REDELIVERY', reason='请供应商补送')
+    assert client.post(followup_url, json={**followup, 'factory_id': 'huakang-b'}).status_code == 422
+    assert client.post(followup_url, json={**followup, 'observation_request_id': str(uuid4())}).status_code == 422
+    service = importlib.import_module('app.services.material_handover')
+    can = service.can
+    with monkeypatch.context() as scope:
+        scope.setattr(service, 'can', lambda actor, permission, *args: permission != 'fabric_operations:operate' and can(actor, permission, *args))
+        assert client.post(followup_url, json=followup).status_code == 403
+    saved = client.post(followup_url, json=followup)
+    assert saved.status_code == 200, saved.text
+    pending = saved.json()
+    assert pending['revision'] == result['revision'] + 1
+    assert pending['progress'] == doc['progress'] and pending['receipt_rejection']['status'] == 'PENDING_REDELIVERY'
+    event = pending['receipt_observations'][0]['lines'][0]['full_rejection']['followup']
+    assert event['reason'] == followup['reason'] and event['actor_name'] and event['recorded_at']
+    assert client.post(followup_url, json=followup).json() == pending
+    assert client.post(followup_url, json={**followup, 'reason': '不同内容'}).status_code == 409
+    assert client.post(followup_url, json={**followup, 'request_id': str(uuid4())}).status_code == 409
+
+    closed = client.post(followup_url, json={**followup, 'request_id': str(uuid4()),
+        'expected_revision': pending['revision'], 'status': 'RESOLVED', 'reason': '已核对本次差异'})
+    assert closed.status_code == 200, closed.text
+    resolved = closed.json()
+    assert resolved['receipt_rejection']['status'] == 'RESOLVED' and resolved['processing_status'] == 'PENDING'
+    assert resolved['progress'] == doc['progress'] and resolved['movements'] == []
+    assert workspace(client)['revision'] == original_revision
+    assert Decimal(current(client, source_id)['warehouse_outstanding_quantity']) == 100
+    assert client.get(detail_url, params={'factory_id': FACTORY}).json()['receipt_observations'] == resolved['receipt_observations']
+    for external_url in (BASE + '/external/documents/' + doc['id'], BASE + '/external/documents'):
+        public = client.get(external_url, headers=headers).json()
+        assert 'receipt_rejection' not in public.get('items', [public])[0]
+        assert 'receipt_observations' not in public.get('items', [public])[0]
+
+    redelivery, _ = send(client, resolved, [linked_part(client, resolved, '40')])
+    assert redelivery['progress']['L1'] == {'processed': '40', 'remaining': '0'}
+    assert redelivery['processing_status'] == 'COMPLETE' and redelivery['receipt_rejection']['status'] == 'RESOLVED'
+    assert len(redelivery['movements']) == 1
+    assert Decimal(current(client, source_id)['warehouse_outstanding_quantity']) == 60
 
 
 def test_new_empty_posting_fields_preserve_original_retry_hash():

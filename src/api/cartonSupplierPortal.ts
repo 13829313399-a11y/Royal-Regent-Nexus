@@ -31,7 +31,29 @@ export interface SupplierMarkTemplate { id: string; customer_name: string; po: s
 export type SupplierDocumentBusinessKind = 'REGULAR' | 'SAMPLE' | 'MISC' | 'UNKNOWN'
 export interface SupplierDocumentOrder { order_kind?: SupplierDocumentBusinessKind; order_no: string; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; order_date: string; planned_date: string }
 export interface SupplierDocumentLine { rejected_quantity?: string; effective_quantity?: string; order_kind?: SupplierDocumentBusinessKind; order_no: string; child_no: string; contract_no?: string; item_no?: string; customer_name?: string; source_document_no?: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; before_quantity?: string; change_quantity?: string; received_quantity?: string }
-export interface SupplierDocument { is_cancellation?: boolean; supplier_acceptance?: Omit<CartonSupplierAcceptanceResponse, 'status' | 'issue_id' | 'document_no' | 'accepted_at'> & { status: string }; id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; is_batch?: boolean; source_documents?: { id: string; document_no: string; order_no: string }[]; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
+export interface SupplierDocument {
+  id: string
+  kind: 'PURCHASE' | 'DELIVERY'
+  factory_id: string
+  document_no: string
+  document_type: string
+  date: string
+  created_at: string
+  status: string
+  replenishment: boolean
+  is_cancellation?: boolean
+  supplier_acceptance?: Omit<CartonSupplierAcceptanceResponse, 'status' | 'issue_id' | 'document_no' | 'accepted_at'> & { status: string }
+  export_count: number
+  order_import_export_count?: number
+  order_import_last_export_at?: string | null
+  is_batch?: boolean
+  source_documents?: { id: string; document_no: string; order_no: string }[]
+  unmatched_line_count?: number
+  source_filename?: string
+  source_sha256?: string
+  orders: SupplierDocumentOrder[]
+  lines: SupplierDocumentLine[]
+}
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
 export interface SupplierMarkAsset extends CartonMarkSharing {
   can_classify?: boolean

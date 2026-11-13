@@ -121,20 +121,16 @@ const matchingEntries = computed(() => entries.value.filter(x => {
     && (!query || [x.file_name, x.contract_number, ...x.targets.flatMap(t => [targetLabel(t), t.customer_po])].join(' ').toLowerCase().includes(query))
 }))
 const documentState = (asset: QuickAsset) => asset.workflow.status
+const warehouseStatusButtons = computed(() => props.audience === 'warehouse' && !props.assetIds)
+const documentStatusFilters = computed(() => (['DRAFT', 'PENDING', 'READY', 'UNCLASSIFIED'] as const).map(id => ({
+  id, label: quickStatusLabel[id], count: matchingEntries.value.filter(x => documentState(x) === id).length,
+})))
 const statusFilters = computed(() => [
   { id: 'CURRENT', label: '当前资料', count: matchingEntries.value.filter(x => documentState(x) !== 'HISTORY').length },
   { id: 'ALL', label: '全部版本', count: matchingEntries.value.length },
-  ...(['DRAFT', 'PENDING', 'READY', 'UNCLASSIFIED', 'HISTORY'] as const).map(id => ({ id, label: quickStatusLabel[id], count: matchingEntries.value.filter(x => documentState(x) === id).length })),
+  ...documentStatusFilters.value,
+  { id: 'HISTORY', label: quickStatusLabel.HISTORY, count: matchingEntries.value.filter(x => documentState(x) === 'HISTORY').length },
 ])
-const warehouseToolbar = computed(() => props.audience === 'warehouse' && !props.assetIds)
-const versionIds = ['CURRENT', 'ALL', 'HISTORY']
-const versionFilters = computed(() => statusFilters.value.filter(option => versionIds.includes(option.id)))
-const currentStatusFilters = computed(() => statusFilters.value.filter(option => !versionIds.includes(option.id)))
-const versionScope = computed(() => versionIds.includes(filter.value) ? filter.value : 'CURRENT')
-const currentStatus = computed({
-  get: () => versionScope.value === 'CURRENT' ? filter.value : 'CURRENT',
-  set: value => { filter.value = value },
-})
 const visible = computed(() => matchingEntries.value.filter(x => filter.value === 'ALL' || (filter.value === 'CURRENT' ? documentState(x) !== 'HISTORY' : documentState(x) === filter.value)))
 const ordered = computed(() => [...visible.value].sort((a,b) => sort.value === 'CONTRACT' ? a.contract_number.localeCompare(b.contract_number) : (b.created_at || '').localeCompare(a.created_at || '') || a.id.localeCompare(b.id)))
 const pageCount = computed(() => Math.max(1, Math.ceil(ordered.value.length / 20)))
@@ -263,11 +259,11 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
     <template v-else>
       <div class="carton-mark-tools mt-4 min-w-0 overflow-hidden rounded-xl border border-border">
         <div class="flex flex-wrap items-end gap-x-4 gap-y-2 border-b border-border p-3 sm:px-4">
-          <div v-if="warehouseToolbar" class="flex min-w-0 flex-wrap gap-1 rounded-lg bg-muted/40 p-1" role="group" aria-label="资料版本范围">
-            <Button v-for="option in versionFilters" :key="option.id" type="button"
-              :variant="versionScope === option.id ? 'soft' : 'ghost'"
-              :aria-pressed="versionScope === option.id" :aria-label="`${option.label} ${loading || error ? '数量未读取' : option.count}`"
-              :data-status-filter="option.id" class="h-9 px-2.5" @click="filter = option.id">
+          <div v-if="warehouseStatusButtons" class="grid w-full min-w-0 grid-cols-2 gap-1 rounded-lg bg-muted/40 p-1 sm:flex sm:w-auto sm:flex-wrap" role="group" aria-label="资料状态筛选">
+            <Button v-for="option in documentStatusFilters" :key="option.id" type="button"
+              :variant="filter === option.id ? 'soft' : 'ghost'" :aria-pressed="filter === option.id"
+              :aria-label="`${option.label} ${loading || error ? '数量未读取' : option.count}`"
+              :data-status-filter="option.id" class="h-9 px-2.5" @click="filter = filter === option.id ? 'CURRENT' : option.id">
               {{ option.label }}<span class="rounded bg-current/5 px-1.5 tabular-nums">{{ loading || error ? '—' : option.count }}</span>
             </Button>
           </div>
@@ -280,14 +276,8 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
             </div>
           </div>
         </div>
-        <CartonFilterBar inline-actions label="资料筛选" class="carton-mark-filters">
-          <label v-if="warehouseToolbar" class="min-w-0 text-xs">当前资料状态
-            <select v-model="currentStatus" aria-label="当前资料状态" :disabled="versionScope !== 'CURRENT'" class="mt-1 h-9 w-full rounded-lg border border-input bg-card px-2 text-sm disabled:opacity-50">
-              <option value="CURRENT">全部状态</option>
-              <option v-for="option in currentStatusFilters" :key="option.id" :value="option.id">{{ option.label }} · {{ loading || error ? '—' : option.count }}</option>
-            </select>
-          </label>
-          <label v-else class="carton-mark-filter-wide">资料状态
+        <CartonFilterBar inline-actions label="资料筛选" class="carton-mark-filters" :class="{ 'carton-mark-warehouse-filters': warehouseStatusButtons }">
+          <label v-if="!warehouseStatusButtons" class="carton-mark-filter-wide">资料状态
             <select v-model="filter" aria-label="资料状态">
               <option v-for="option in statusFilters" :key="option.id" :value="option.id">{{ option.label }} · {{ loading || error ? '—' : option.count }}</option>
             </select>
@@ -385,6 +375,7 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
 <style scoped>
 .carton-mark-tools { container: carton-mark-tools / inline-size; }
 .carton-mark-filters.carton-filter-bar { border-bottom: 0; }
+.carton-mark-warehouse-filters { --carton-mark-filter-columns: 5; }
 .carton-mark-filters :deep(.carton-filter-inline > .carton-filter-fields) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .carton-mark-filters :deep(.carton-filter-inline > .carton-filter-actions) { margin-inline-start: auto; }
 .carton-mark-filter-wide { grid-column: span 2; }
@@ -396,6 +387,8 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
   .carton-mark-filter-wide { grid-column: auto; }
 }
 @container carton-mark-tools (min-width: 1100px) {
-  .carton-mark-filters :deep(.carton-filter-inline > .carton-filter-fields) { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .carton-mark-filters :deep(.carton-filter-inline > .carton-filter-fields) {
+    grid-template-columns: repeat(var(--carton-mark-filter-columns, 6), minmax(0, 1fr));
+  }
 }
 </style>

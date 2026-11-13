@@ -35,7 +35,7 @@ import type { CartonSupplierGuideDestination } from '@/features/carton-procureme
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { cartonSupplierPortalApi as api, type PortalOrder, type PortalPaper, type PortalShipment, type SupplierDocument, type SupplierActivity, type SupplierMarkAsset, type DeliveryImportPreview, type DeliveryImportGroup, type DeliveryImportRow, type DeliveryRowSelection } from '@/api/cartonSupplierPortal'
 import { factoryContexts } from '@/data/enterpriseMock'
-import { formatBusinessDate, parseBusinessTimestamp } from '@/lib/dateTime'
+import { formatBusinessDate, formatBusinessDateTime, parseBusinessTimestamp } from '@/lib/dateTime'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { useAuthStore } from '@/stores/auth'
@@ -303,11 +303,17 @@ const extraLoadingState = reactive({ documents: false, activity: false })
 const documentReadError = ref('')
 const activityReadError = ref('')
 const extraGeneration = { documents: 0, activity: 0 }
+function invalidateDocuments() {
+  extraGeneration.documents++
+  extraLoaded.documents = false
+  extraLoadingState.documents = false
+}
 const documentSearch = ref('')
 const documentFactory = ref('')
 const documentKind = ref('')
 const documentBusinessKind = ref('')
 const documentStatus = ref('')
+const documentImportStatus = ref('')
 const documentDateFrom = ref('')
 const documentDateTo = ref('')
 const selectedDocumentKeys = ref<string[]>([])
@@ -318,6 +324,8 @@ const mergedDocumentsOpen = ref(false)
 const documentDetailDialog = ref<HTMLElement | null>(null)
 const mergedDocumentsDialog = ref<HTMLElement | null>(null)
 const MAX_DOCUMENT_EXPORT = 100
+const orderImportOffers = ref<SupplierDocument[][]>([])
+const orderImportOfferError = ref('')
 let documentDetailTrigger: HTMLElement | null = null
 let mergedDocumentsTrigger: HTMLElement | null = null
 let restoringDocumentFocus = false
@@ -365,6 +373,7 @@ const specialRetries = reactive(new Map<string, SpecialAcceptBody>())
 const unresolvedSpecialRequests = reactive(new Map<string, SpecialAcceptBody>())
 const completedAcceptances = new Set<string>()
 let bulkVersions = new Map<string, string>()
+const bulkAcceptedIssues = new Map<string, Set<string>>()
 const changeTasks = ref<InstanceType<typeof CartonSupplierChangeTasks> | null>(null)
 let specialAcceptTrigger: HTMLElement | null = null
 const importOpen = ref(false)
@@ -413,7 +422,8 @@ watch(importContext, () => {
   workspaceController.abort(); workspaceController = new AbortController(); workspaceStates.value = {}; lastOrderReadAt.value = ''; lastReadStarted = 0
   auxiliaryController.abort(); auxiliaryController = new AbortController(); auxiliaryGeneration++; auxiliaryLoading = false
   collaborationCategory.value = 'ORDERS'; collaborationExpanded.value = false; materialHistory.value = false; workspaceReadError.value = ''; membershipReadError.value = ''
-  acceptSpecialKey.value = ''; specialRetries.clear(); unresolvedSpecialRequests.clear(); completedAcceptances.clear(); bulkVersions.clear()
+  acceptSpecialKey.value = ''; specialRetries.clear(); unresolvedSpecialRequests.clear(); completedAcceptances.clear(); bulkVersions.clear(); bulkAcceptedIssues.clear()
+  orderImportOffers.value = []; orderImportOfferError.value = ''
   for (const key of Object.keys(specialDates)) delete specialDates[key]
   changePendingState.value = { loading: true, error: '', counts: { REGULAR: 0, SPECIAL: 0, REPLENISHMENT: 0, PRINT: 0 } }
   priceCorrectionOpen.value = false; priceCorrectionLineId.value = ''; priceCorrectionFactory.value = ''
@@ -551,11 +561,32 @@ function documentBusinessKinds(row: SupplierDocument) {
 function documentBusinessLabel(row: SupplierDocument) {
   return documentBusinessKinds(row).map(kind => ({ REGULAR: '正单', SAMPLE: '样板', MISC: '杂单', UNKNOWN: '待分类' }[kind] || '待分类')).join(' / ')
 }
+function supportsOrderImport(row: SupplierDocument) {
+  if (row.kind !== 'PURCHASE' || row.is_cancellation || documentBusinessKinds(row).some(kind => kind !== 'REGULAR')) return false
+  const changes = row.lines.map(line => Number(line.change_quantity))
+  return changes.some(change => change > 0) && changes.every(change => Number.isFinite(change) && change >= 0)
+}
+function orderImportExportState(row: SupplierDocument) {
+  if ((row.order_import_export_count ?? 0) > 0) return 'EXPORTED'
+  if (!supportsOrderImport(row)) return 'UNAVAILABLE'
+  return row.order_import_export_count === 0 ? 'UNEXPORTED' : 'UNKNOWN'
+}
+function orderImportExportLabel(row: SupplierDocument) {
+  const state = orderImportExportState(row)
+  if (state === 'EXPORTED') return `东康模板已导出 ${row.order_import_export_count} 次`
+  if (state === 'UNEXPORTED') return '东康模板未导出'
+  if (state === 'UNKNOWN') return '东康模板记录未读取'
+  return '东康模板不适用'
+}
+function documentDownloadCount(row: SupplierDocument) {
+  return Math.max(0, row.export_count - (row.order_import_export_count ?? 0))
+}
 const filteredDocuments = computed(() => documents.value.filter(row => {
   if (documentFactory.value && row.factory_id !== documentFactory.value) return false
   if (documentKind.value && row.kind !== documentKind.value) return false
   if (documentBusinessKind.value && !documentBusinessKinds(row).includes(documentBusinessKind.value)) return false
   if (documentStatus.value && row.status !== documentStatus.value) return false
+  if (documentImportStatus.value && orderImportExportState(row) !== documentImportStatus.value) return false
   if (documentDateFrom.value && row.date < documentDateFrom.value) return false
   if (documentDateTo.value && row.date > documentDateTo.value) return false
   const term = documentSearch.value.trim().toLocaleLowerCase()
@@ -564,6 +595,8 @@ const filteredDocuments = computed(() => documents.value.filter(row => {
   ])].some(value => value.toLocaleLowerCase().includes(term))
 }))
 const selectedDocuments = computed(() => documents.value.filter(row => selectedDocumentKeys.value.includes(documentKey(row))))
+const selectedOrderImportDocuments = computed(() => selectedDocuments.value.filter(supportsOrderImport))
+const excludedOrderImportCount = computed(() => selectedDocuments.value.length - selectedOrderImportDocuments.value.length)
 const hiddenDocumentSelectionCount = computed(() => {
   const matching = new Set(filteredDocuments.value.map(documentKey))
   return selectedDocuments.value.filter(row => !matching.has(documentKey(row))).length
@@ -599,7 +632,7 @@ function clearActivityFilters() {
 }
 function clearDocumentFilters() {
   documentSearch.value = ''; documentFactory.value = ''; documentKind.value = ''; documentBusinessKind.value = ''
-  documentStatus.value = ''; documentDateFrom.value = ''; documentDateTo.value = ''
+  documentStatus.value = ''; documentImportStatus.value = ''; documentDateFrom.value = ''; documentDateTo.value = ''
 }
 async function loadActivity() {
   if (!memberships.value.length || !auth.can('carton_supplier:read', '*', '*')) return
@@ -693,6 +726,7 @@ async function submitSpecialAcceptance(row: SpecialRequest, context: string) {
   }
   if (context !== importContext.value) return
   specialRetries.delete(key)
+  invalidateDocuments()
   draft.dirty = false
   const current = specialRequests.value.find(item => selectionKey('SPECIAL', item) === key)
   if (current?.current_version_id === body.source_id && current.revision === body.expected_revision) {
@@ -913,10 +947,43 @@ function openBulkAccept() {
     return
   }
   bulkVersions = new Map(selectedSources.value.map(source => [selectionKey(source.kind, source.order), acceptanceVersion(source)]))
+  bulkAcceptedIssues.clear()
   bulkAcceptOpen.value = true
 }
 function acceptanceVersion(source: SupplierSelection) {
   return source.kind === 'SPECIAL' ? specialVersion(source.order) : JSON.stringify([source.order.issue_id, source.order.lines.filter(needsAcceptance).map(line => [line.id, line.commitment_revision])])
+}
+async function readOrderImportOffers(acceptedIssues: ReadonlyMap<string, ReadonlySet<string>>) {
+  const factories = [...acceptedIssues]
+  const results = await Promise.allSettled(factories.map(async ([factoryId, issueIds]) => {
+    const rows = await api.documents(factoryId)
+    return rows.filter(row => row.factory_id === factoryId
+      && orderImportExportState(row) === 'UNEXPORTED'
+      && row.supplier_acceptance?.status === 'ACCEPTED'
+      && (issueIds.has(row.id) || row.source_documents?.some(source => issueIds.has(source.id))))
+  }))
+  const batches: SupplierDocument[][] = []
+  const failedFactories: string[] = []
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      failedFactories.push(factoryDisplayName(factories[index]![0]))
+      continue
+    }
+    for (let start = 0; start < result.value.length; start += MAX_DOCUMENT_EXPORT) {
+      batches.push(result.value.slice(start, start + MAX_DOCUMENT_EXPORT))
+    }
+  }
+  return { batches, failedFactories }
+}
+function showOrderImportOffers({ batches, failedFactories }: Awaited<ReturnType<typeof readOrderImportOffers>>) {
+  if (failedFactories.length) {
+    const notice = `${failedFactories.join('、')}的采购单读取失败。可到「采购单与送货单」重新读取。`
+    error.value = [error.value, notice].filter(Boolean).join(' ')
+  }
+  if (activeTab.value === 'orders') {
+    orderImportOfferError.value = ''
+    orderImportOffers.value = batches
+  }
 }
 async function confirmBulkAccept() {
   if (busy.value || !canApprove.value) return
@@ -951,6 +1018,10 @@ async function confirmBulkAccept() {
       })))
       if (context !== importContext.value) return
       completedAcceptances.add(signature)
+      const acceptedIssues = bulkAcceptedIssues.get(factoryId) ?? new Set<string>()
+      for (const { order } of lines) acceptedIssues.add(order.issue_id)
+      bulkAcceptedIssues.set(factoryId, acceptedIssues)
+      invalidateDocuments()
       succeeded.push(factoryDisplayName(factoryId))
       for (const { line } of lines) dirtyDates.delete(line.id)
       const keys = sources.map(source => selectionKey(source.kind, source.order))
@@ -973,12 +1044,19 @@ async function confirmBulkAccept() {
     failureMessage = `${succeeded.length ? `已完成 ${succeeded.join('、')}；` : ''}接单失败：${error.value}`
   } finally {
     if (context !== importContext.value) return
-    const [refreshError] = await Promise.all([load(false, false), loadSpecialRequests()])
+    const [refreshError, , exportOffers] = await Promise.all([
+      load(false, false), loadSpecialRequests(),
+      failureMessage || !bulkAcceptedIssues.size ? undefined : readOrderImportOffers(bulkAcceptedIssues),
+    ])
     void changeTasks.value?.refresh()
     if (context !== importContext.value) return
     const refreshFailure = [refreshError, specialError.value].filter(Boolean).join('；')
     if (failureMessage) error.value = `${failureMessage}${refreshFailure ? `；列表刷新失败：${refreshFailure}` : ''}`
     else if (refreshFailure) error.value = `${message.value} 接单已保存，但列表刷新失败：${refreshFailure}。请刷新查看，勿重复接单。`
+    if (exportOffers) {
+      bulkAcceptedIssues.clear()
+      showOrderImportOffers(exportOffers)
+    }
     busy.value = false
   }
 }
@@ -1146,22 +1224,51 @@ async function exportDocument(row: SupplierDocument) {
   finally { busy.value = false }
 }
 async function exportSelectedOrderImports() {
-  const purchases = selectedDocuments.value.filter(row => row.kind === 'PURCHASE')
+  const purchases = selectedOrderImportDocuments.value
   if (busy.value || !purchases.length) return
-  if (purchases.some(document => document.orders.some(order => order.order_kind === 'SAMPLE' || order.order_kind === 'MISC'))) { error.value = '样板和杂单请下载采购单；东康正单导入模板要求真实合同及货号，不能用需求单号代填。'; return }
-  if (purchases.some(document => document.is_cancellation)) { error.value = '取消采购通知请下载原文件，并在东康 ERP 停止或关闭原单；不能作为新增订单导入。'; return }
-  const unaccepted = purchases.filter(row => row.supplier_acceptance?.status !== 'ACCEPTED')
-  if (unaccepted.length && !window.confirm(`所选采购单中有 ${unaccepted.length} 张尚未确认完整接单：\n${unaccepted.map(row => `${row.document_no}：${row.supplier_acceptance?.label || '接单状态待核实'}`).join('\n')}\n建议先到订单页面确认接单，再导入东康系统。导出不会自动接单。仍要继续导出吗？`)) return
+  const needsReview = purchases.filter(row => row.supplier_acceptance?.status !== 'ACCEPTED')
+  if (needsReview.length && !window.confirm(`以下 ${needsReview.length} 张采购单需要核对版本或接单状态：\n${needsReview.map(row => `${row.document_no}：${row.supplier_acceptance?.label || '接单状态待核实'}`).join('\n')}\n请核对订单页面的当前版本和接单状态，再导入东康系统。导出不会自动接单。仍要继续导出吗？`)) return
   busy.value = true
   error.value = ''
+  const context = importContext.value
   try {
-    await api.exportOrderImport(purchases, unaccepted.length > 0)
-    extraLoaded.documents = false
+    if (!await downloadOrderImportFile(purchases, needsReview.length > 0, context)) return
     const refreshError = await loadExtra('documents')
-    if (refreshError) error.value = `导入模板已生成并开始下载，但单据记录刷新失败：${refreshError}。可稍后刷新记录。`
+    if (context === importContext.value && refreshError) error.value = `导入模板已生成并开始下载，但单据记录刷新失败：${refreshError}。可稍后刷新记录。`
   }
-  catch (reason) { error.value = await getApiErrorMessageAsync(reason) }
-  finally { busy.value = false }
+  catch (reason) {
+    const message = await getApiErrorMessageAsync(reason)
+    if (context === importContext.value) error.value = message
+  }
+  finally { if (context === importContext.value) busy.value = false }
+}
+async function downloadOrderImportFile(purchases: SupplierDocument[], acknowledgeUnaccepted: boolean, context: string) {
+  await api.exportOrderImport(purchases, acknowledgeUnaccepted)
+  if (context !== importContext.value) return false
+  extraLoaded.documents = false
+  extraLoaded.activity = false
+  return true
+}
+function closeOrderImportOffer() {
+  if (busy.value) return
+  orderImportOffers.value = []
+  orderImportOfferError.value = ''
+}
+async function exportOrderImportOffer(batch: SupplierDocument[]) {
+  if (busy.value || !canApprove.value || !orderImportOffers.value.includes(batch)) return
+  busy.value = true
+  orderImportOfferError.value = ''
+  const context = importContext.value
+  try {
+    if (!await downloadOrderImportFile(batch, false, context)) return
+    orderImportOffers.value = orderImportOffers.value.filter(item => item !== batch)
+    message.value = `${factoryDisplayName(batch[0]!.factory_id)}的 ${batch.length} 张采购单已生成东康导入模板。`
+  } catch (reason) {
+    const detail = await getApiErrorMessageAsync(reason)
+    if (context === importContext.value) orderImportOfferError.value = detail
+  } finally {
+    if (context === importContext.value) busy.value = false
+  }
 }
 function failure(reason: unknown) {
   error.value = getApiErrorMessage(reason)
@@ -1339,18 +1446,27 @@ async function accept(order: SupplierOrder, line: PortalPaper) {
   if (busy.value || !canApprove.value) return
   if (!dates[line.id]) { error.value = '请填写承诺交期'; return }
   const context = importContext.value
+  const accepting = needsAcceptance(line)
   busy.value = true
   error.value = ''
   try {
-    await api.accept(line, order, order.factory_id, dates[line.id]!)
+    const saved = await api.accept(line, order, order.factory_id, dates[line.id]!)
     if (context !== importContext.value) return
     dirtyDates.delete(line.id)
+    invalidateDocuments()
     extraLoaded.activity = false
-    message.value = `${line.child_no} ${line.accepted ? "承诺交期已更新" : "已确认接单"}`
-    const refreshError = await load()
+    message.value = `${line.child_no} ${accepting ? '已确认接单' : '承诺交期已更新'}`
+    const complete = saved.issue_id === order.issue_id && !saved.lines.some(needsAcceptance)
+    const [refreshError, exportOffers] = await Promise.all([
+      load(),
+      accepting && complete && order.issue_id && activeTab.value === 'orders'
+        ? readOrderImportOffers(new Map([[order.factory_id, new Set([order.issue_id])]]))
+        : undefined,
+    ])
     if (context !== importContext.value) return
     if (refreshError) error.value = `${line.child_no} 已确认接单，但列表刷新失败：${refreshError}。请刷新查看，勿重复接单。`
-    if (order.lines.every(item => item.id === line.id || !needsAcceptance(item))) acceptOrderId.value = ''
+    if (complete) acceptOrderId.value = ''
+    if (exportOffers) showOrderImportOffers(exportOffers)
   } catch (reason) { if (context === importContext.value) failure(reason) } finally { if (context === importContext.value) busy.value = false }
 }
 async function onDeliveryFile(event: Event) {
@@ -1473,7 +1589,7 @@ async function download(id: string, factoryId: string, filename: string) {
             <p v-if="priceReviewState.error && (!collaborationExpanded || collaborationCategory !== 'PRICES')" role="alert" class="px-4 pb-3 text-xs text-red-700">{{ factoryDisplayName(priceReviewState.factoryId) }}收料核价：{{ priceReviewState.error }}。请展开收料核价核对。</p>
             <div id="supplier-collaboration-content" v-show="collaborationExpanded" class="min-w-0 p-4">
               <div v-if="membershipReadError && ['ORDERS', 'REPLENISHMENT'].includes(collaborationCategory)" role="alert" class="flex flex-wrap items-center gap-2 text-sm text-red-700">版本回执服务厂区读取失败：{{ membershipReadError }}<button type="button" :disabled="discovering" class="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold disabled:opacity-40" @click="refresh()">重新读取</button></div>
-              <CartonSupplierChangeTasks ref="changeTasks" v-show="['ORDERS', 'REPLENISHMENT'].includes(collaborationCategory) && !membershipReadError" :factories="memberships" :viewer-key="importContext" :source-kinds="changeSourceKinds" embedded @pending-state="changePendingState = $event" @changed="load()" />
+              <CartonSupplierChangeTasks ref="changeTasks" v-show="['ORDERS', 'REPLENISHMENT'].includes(collaborationCategory) && !membershipReadError" :factories="memberships" :viewer-key="importContext" :source-kinds="changeSourceKinds" embedded @pending-state="changePendingState = $event" @changed="invalidateDocuments(); load()" />
               <div v-show="collaborationCategory === 'MATERIAL'" aria-label="纸品资料更正待办">
                 <div class="flex flex-wrap items-center justify-between gap-3">
                   <p class="text-xs leading-5 text-slate-600">核对前后资料及实物；涉及纸品暂停发货和正式入库，双方确认后生效。</p>
@@ -1559,7 +1675,7 @@ async function download(id: string, factoryId: string, filename: string) {
               <p v-if="detailOrder.schedule_split_source" class="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">排期拆单来源：{{ detailOrder.schedule_split_source.source_contract_no }} → {{ detailOrder.contract_no }}。按本合同及对应资料核对印刷、送货，勿与来源单混合。</p>
               <p v-if="detailOrder.order_split?.source_order_no" class="rounded-lg bg-sky-50 p-3 text-sm text-sky-900">拆单来源：{{ detailOrder.order_split.source_contract_no }}（{{ detailOrder.order_split.source_order_no }}）。本单独立送货及收料。</p>
               <CartonPrintSplitInfo v-if="detailOrder.print_split" :info="detailOrder.print_split" :factory="detailOrder.factory_id" supplier />
-              <CartonOrderDetailContent :fields="[{ label: '客户', value: detailOrder.customer_name }, { label: '订单类型', value: '正单' }, { label: '合同号', value: detailOrder.contract_no }, { label: '状态', value: orderStatus(detailOrder) }, { label: '货号', value: detailOrder.item_no }, { label: '产品名称', value: detailOrder.product_name }, { label: '客户 PO', value: detailOrder.customer_po || '纸箱订单未填写' }, { label: '下单日期', value: detailOrder.order_date || '历史未记录' }, { label: '计划交期', value: detailOrder.planned_date || '待确认' }, { label: '纸箱采购单据', value: detailOrder.document_no }]" :rows="detailOrder.lines.map(line => ({ id: line.id, label: line.packaging_type + ' · ' + line.child_no, quality: line.paper_quality, specification: line.specification + ' ' + line.dimension_unit, unit: line.unit, rule: '', required: Number(line.required_quantity), received: Number(line.received_quantity), remaining: Math.max(0, Number(line.required_quantity) - Number(line.received_quantity)), progress: 0, note: line.shipping_blocked_reason, inTransit: Number(line.in_transit_quantity), remainingToShip: Number(line.remaining_to_ship), acceptance: Number(line.required_quantity) <= 0 ? '无需接单' : line.accepted ? '已确认' : '待确认', promised: Number(line.required_quantity) <= 0 ? '需求已归零' : line.promised_date || '未承诺' }))" supplier>
+              <CartonOrderDetailContent :fields="[{ label: '客户', value: detailOrder.customer_name }, { label: '订单类型', value: '正单' }, { label: '合同号', value: detailOrder.contract_no }, { label: '状态', value: orderStatus(detailOrder) }, { label: '货号', value: detailOrder.item_no }, { label: '产品名称', value: detailOrder.product_name }, { label: '客户 PO', value: detailOrder.customer_po || '纸箱订单未填写' }, { label: '下单日期', value: detailOrder.order_date || '历史未记录' }, { label: '计划交期', value: detailOrder.planned_date || '待确认' }, { label: '当前采购版本', value: detailOrder.document_no }]" :rows="detailOrder.lines.map(line => ({ id: line.id, label: line.packaging_type + ' · ' + line.child_no, quality: line.paper_quality, specification: line.specification + ' ' + line.dimension_unit, unit: line.unit, rule: '', required: Number(line.required_quantity), received: Number(line.received_quantity), remaining: Math.max(0, Number(line.required_quantity) - Number(line.received_quantity)), progress: 0, note: line.shipping_blocked_reason, inTransit: Number(line.in_transit_quantity), remainingToShip: Number(line.remaining_to_ship), acceptance: Number(line.required_quantity) <= 0 ? '无需接单' : line.accepted ? '已确认' : '待确认', promised: Number(line.required_quantity) <= 0 ? '需求已归零' : line.promised_date || '未承诺' }))" supplier>
 <template #status>
               <p v-if="detailOrder.awaiting_issue" class="text-xs font-semibold text-amber-700">订单有尚未生成的变更，旧承诺暂停执行；请等待新版本生成后重新确认接单。</p><p v-else-if="!open(detailOrder)" class="text-xs text-slate-500">{{ detailOrder.status === 'COMPLETED' ? '订单已收齐' : '订单已取消' }}，不可接单或发货。</p>
               </template>
@@ -1585,11 +1701,43 @@ async function download(id: string, factoryId: string, filename: string) {
           <DialogRoot :open="canApprove && bulkAcceptOpen" @update:open="value => { if (!value) bulkAcceptOpen = false }">
             <DialogOverlay class="fixed inset-0 z-[64] bg-slate-950/45" />
             <DialogContent class="fixed left-1/2 top-1/2 z-[65] flex max-h-[88vh] w-[calc(100%-2rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" @interact-outside.prevent>
-              <div class="flex items-start justify-between border-b border-slate-200 p-5"><div><DialogTitle id="supplier-bulk-accept-title" class="text-lg font-bold">批量确认接单 · {{ selectedSources.length }} 张订单</DialogTitle><DialogDescription class="mt-1 text-xs text-slate-500">正单纸品按厂区保存，样板／杂单逐张保存；各次保存独立生效。部分失败时保留未完成来源，重试不会重复提交已完成来源。</DialogDescription></div><button type="button" aria-label="关闭批量接单窗口" class="rounded-lg p-2 text-slate-500" @click="bulkAcceptOpen = false"><X class="size-4" /></button></div>
+              <div class="flex items-start justify-between border-b border-slate-200 p-5"><div><DialogTitle class="text-lg font-bold">批量确认接单 · {{ selectedSources.length }} 张订单</DialogTitle><DialogDescription class="mt-1 text-xs text-slate-500">正单纸品按厂区保存，样板／杂单逐张保存；各次保存独立生效。部分失败时保留未完成来源，重试不会重复提交已完成来源。</DialogDescription></div><button type="button" aria-label="关闭批量接单窗口" class="rounded-lg p-2 text-slate-500" @click="bulkAcceptOpen = false"><X class="size-4" /></button></div>
               <p v-if="error" role="alert" class="mx-5 mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
               <div class="min-h-0 space-y-3 overflow-auto p-5"><div v-for="order in selectedOrders" :key="order.id" class="rounded-lg border border-slate-200 p-3"><h3 class="mb-2 text-sm font-bold">{{ factoryDisplayName(order.factory_id) }} · {{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}</h3><div v-for="line in order.lines.filter(needsAcceptance)" :key="line.id" class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 py-2 text-xs"><span>{{ line.packaging_type }} · {{ line.child_no }} · 需求 {{ line.required_quantity }} {{ line.unit }}</span><label>承诺交期 <input v-model="dates[line.id]" @input="dirtyDates.add(line.id)" type="date" :aria-label="`批量接单 ${line.child_no} 承诺交期`" :disabled="busy" class="ml-1 h-9 rounded-lg border border-slate-200 px-2"></label><p v-if="promiseDifference(order.planned_date, dates[line.id] || '')" role="status" class="w-full font-semibold text-amber-700">{{ promiseDifference(order.planned_date, dates[line.id] || '') }}</p></div></div>
               <div v-for="row in selectedSpecialOrders" :key="selectionKey('SPECIAL', row)" class="rounded-lg border border-slate-200 p-3 text-xs"><h3 class="font-semibold">{{ factoryDisplayName(row.factory_id) }} · {{ specialKinds[row.kind] }} · {{ row.request_no }}</h3><p class="mt-1 text-slate-600">本版本全部纸品共用一个承诺交期。</p><label class="mt-2 block">承诺交期<input v-model="specialDates[selectionKey('SPECIAL', row)]!.date" type="date" :aria-label="`批量接单 ${row.request_no} 整单承诺交期`" :disabled="busy || specialRetries.has(selectionKey('SPECIAL', row))" class="ml-2 h-9 rounded-lg border border-slate-200 px-2" @input="specialDates[selectionKey('SPECIAL', row)]!.dirty = true"></label><p v-if="specialRetries.has(selectionKey('SPECIAL', row))" class="mt-2 text-amber-900">上次结果未确认，重试保留原日期与同一次提交。</p></div></div>
               <div class="flex justify-end gap-2 border-t border-slate-200 p-4"><button type="button" :disabled="busy" class="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold" @click="bulkAcceptOpen = false">取消</button><button type="button" :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40" @click="confirmBulkAccept">{{ busy ? '正在确认…' : '确认所选订单接单' }}</button></div>
+            </DialogContent>
+          </DialogRoot>
+
+          <DialogRoot :open="canApprove && orderImportOffers.length > 0" @update:open="value => { if (!value) closeOrderImportOffer() }">
+            <DialogOverlay class="fixed inset-0 z-[64] bg-slate-950/45" />
+            <DialogContent class="fixed left-1/2 top-1/2 z-[65] flex max-h-[88dvh] w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+              @interact-outside.prevent @escape-key-down="busy && $event.preventDefault()">
+              <header class="border-b border-border p-4 sm:p-5">
+                <DialogTitle class="text-lg font-bold">接单完成，导出东康模板？</DialogTitle>
+                <DialogDescription class="mt-1 text-sm text-muted-foreground">可按厂区下载本次接单的采购单，也可稍后在「采购单与送货单」勾选导出。</DialogDescription>
+              </header>
+              <div class="min-h-0 space-y-3 overflow-y-auto p-4 sm:p-5">
+                <p v-if="orderImportOfferError" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ orderImportOfferError }}</p>
+                <div v-for="batch in orderImportOffers" :key="documentKey(batch[0]!)" class="rounded-lg border border-border p-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p class="text-sm font-semibold">{{ factoryDisplayName(batch[0]!.factory_id) }}</p>
+                      <p class="text-xs text-muted-foreground">{{ batch.length }} 张采购单 · {{ batch.reduce((total, row) => total + row.orders.length, 0) }} 张订单</p>
+                    </div>
+                    <button type="button" :disabled="busy" class="min-h-9 rounded-lg bg-teal-700 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40" @click="exportOrderImportOffer(batch)">导出东康模板</button>
+                  </div>
+                  <details class="mt-2 text-xs text-muted-foreground">
+                    <summary class="cursor-pointer">查看本批单据</summary>
+                    <ul class="mt-1 space-y-1">
+                      <li v-for="row in batch" :key="documentKey(row)" class="break-words">{{ row.document_no }} · {{ row.orders.map(order => order.contract_no || order.order_no).join('、') }}</li>
+                    </ul>
+                  </details>
+                </div>
+              </div>
+              <footer class="flex justify-end border-t border-border p-4">
+                <button type="button" :disabled="busy" class="min-h-9 rounded-lg border border-border px-3 py-1.5 text-sm font-semibold disabled:opacity-40" @click="closeOrderImportOffer">稍后导出</button>
+              </footer>
             </DialogContent>
           </DialogRoot>
 
@@ -1648,12 +1796,26 @@ async function download(id: string, factoryId: string, filename: string) {
 
         <template v-else-if="activeTab === 'documents'">
           <section :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 class="text-base font-bold">采购单与送货单</h2><p class="mt-1 text-xs text-slate-500">仓库同一次批量确认的订单自动合并为一张采购单，保留各订单明细；请先核对是否接单；未完整接单导出东康导入模板时必须确认提醒，导出不会自动接单。</p></div><div class="flex flex-wrap gap-2"><button type="button" :disabled="busy || !selectedDocuments.some(row => row.kind === 'PURCHASE')" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-4 text-xs font-bold text-teal-800 disabled:opacity-40" @click="exportSelectedOrderImports">导出东康导入模板（{{ selectedDocuments.filter(row => row.kind === 'PURCHASE').length }} 张采购单）</button><button type="button" :disabled="!selectedDocuments.length" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white disabled:opacity-40" @click="openMergedDocuments">预览并导出 {{ selectedDocuments.length }} 张单据</button></div></div>
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4">
+              <div>
+                <h2 class="text-base font-bold">采购单与送货单</h2>
+                <p class="mt-1 text-xs text-slate-500">新采购单在完整接单后显示。合并采购单等包含的订单全部接齐，可在这里按厂区勾选导出。</p>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" :disabled="busy || !selectedOrderImportDocuments.length" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-4 text-xs font-bold text-teal-800 disabled:opacity-40" @click="exportSelectedOrderImports">导出东康导入模板（{{ selectedOrderImportDocuments.length }} 张采购单）</button>
+                <button type="button" :disabled="!selectedDocuments.length" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white disabled:opacity-40" @click="openMergedDocuments">预览并导出 {{ selectedDocuments.length }} 张单据</button>
+              </div>
+              <p v-if="excludedOrderImportCount" role="status" class="basis-full text-xs text-slate-600">
+                所选单据中有 {{ excludedOrderImportCount }} 张不适用东康模板，可用「预览并导出」下载。
+                <template v-if="selectedDocuments.some(row => row.is_cancellation)">取消采购通知请下载核对，并在东康系统停止或关闭原单。</template>
+              </p>
+            </div>
             <CartonFilterBar label="供应商单据筛选" >
 <label >厂区<select v-model="documentFactory" aria-label="单据厂区筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部厂区</option><option v-for="item in memberships" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }}</option></select></label>
 <label >类型<select v-model="documentKind" aria-label="单据类型筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部类型</option><option value="PURCHASE">采购单</option><option value="DELIVERY">送货单</option></select></label>
 <label >业务类型<select v-model="documentBusinessKind" aria-label="单据业务类型筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部业务类型</option><option value="REGULAR">正单</option><option value="SAMPLE">样板</option><option value="MISC">杂单</option><option value="UNKNOWN">待分类</option></select></label>
 <label >状态<select v-model="documentStatus" aria-label="单据状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部状态</option><option value="已生成">已生成</option><option value="SENT">待仓库确认</option><option value="RECEIVED">已核实</option><option value="RECEIPT_REVERSED">收料已冲销，待更正</option><option value="NOT_RECEIVED">仓库未收到</option></select></label>
+<label>东康模板<select v-model="documentImportStatus" aria-label="东康模板导出筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部记录</option><option value="UNEXPORTED">未导出</option><option value="EXPORTED">已导出</option></select></label>
 <label class="text-xs">日期从 <input v-model="documentDateFrom" type="date" aria-label="单据日期开始" class="h-9 rounded-lg border border-slate-200 px-2"></label>
 <label class="text-xs">至 <input v-model="documentDateTo" type="date" aria-label="单据日期结束" class="h-9 rounded-lg border border-slate-200 px-2"></label>
 
@@ -1662,7 +1824,13 @@ async function download(id: string, factoryId: string, filename: string) {
 </CartonFilterBar>
             <p v-if="documentReadError" role="alert" class="m-3 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-3 text-xs text-red-700">单据读取失败：{{ documentReadError }}<button type="button" class="rounded-lg border border-red-200 bg-white px-3 py-1.5 font-semibold" @click="loadExtra('documents')">重新读取单据</button></p>
             <div class="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-2 text-xs"><span aria-live="polite">{{ extraLoadingState.documents ? '正在读取单据…' : documentReadError ? documents.length ? '上次读取的单据' : '单据数量暂不可用' : `单据 ${filteredDocuments.length} / ${documents.length} 张` }}</span><span>已选 {{ selectedDocuments.length }} 张单据 · {{ mergedDocumentOrders.length }} 张订单<template v-if="hiddenDocumentSelectionCount">（筛选外 {{ hiddenDocumentSelectionCount }} 张单据）</template></span><span class="text-slate-500">一次最多 100 张单据</span><button type="button" :disabled="!selectedDocumentKeys.length" class="text-slate-500 disabled:opacity-40" @click="selectedDocumentKeys = []">清空选择</button></div>
-            <div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[980px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 font-bold text-slate-600"><tr><th class="px-4 py-3"><input type="checkbox" aria-label="全选当前筛选单据" :checked="allVisibleDocumentsSelected" :disabled="busy" @change="toggleVisibleDocuments($event)"></th><th class="px-3 py-3">类型</th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">单据号</th><th class="px-3 py-3">日期</th><th class="px-3 py-3">包含订单</th><th class="px-3 py-3">纸品条数</th><th class="px-3 py-3">状态</th><th class="px-3 py-3">是否接单</th><th class="px-3 py-3" title="从启用导出次数记录起，每次成功生成 Excel 累计一次；合并导出涉及的每张单据分别计一次">导出次数</th><th class="px-3 py-3 text-right">操作</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredDocuments" :key="documentKey(row)" :class="[busy ? '' : 'cursor-pointer hover:bg-teal-50/50', { 'bg-teal-50': selectedDocumentKeys.includes(documentKey(row)) }]" @click="selectDocumentRow"><td data-label="选择" class="px-4 py-3"><input :checked="selectedDocumentKeys.includes(documentKey(row))" type="checkbox" :aria-label="`选择单据 ${row.document_no}`" :disabled="busy" @change="toggleDocument(row, $event)"></td><td data-label="类型" class="px-3 py-3">{{ row.kind === 'PURCHASE' ? (row.is_cancellation ? '取消采购通知' : row.is_batch ? '合并采购单' : '采购单') : '送货单' }}</td><td data-label="送货厂区" class="px-3 py-3">{{ factoryDisplayName(row.factory_id) }}</td><td data-label="单据号" class="px-3 py-3 font-bold">{{ row.document_no }}</td><td data-label="日期" class="px-3 py-3">{{ row.date }}</td><td data-label="包含订单" class="px-3 py-3">{{ row.orders.length }} 张订单<span v-if="row.unmatched_line_count"> · {{ row.unmatched_line_count }} 条无单纸品</span><span v-if="row.orders.some(item => item.contract_no?.trim())"> · {{ row.orders.map(item => item.contract_no?.trim()).filter(Boolean).join('、') }}</span><p class="mt-1 text-slate-500">{{ documentBusinessLabel(row) }}</p></td><td data-label="纸品条数" class="px-3 py-3">{{ row.lines.length }}</td><td data-label="状态" class="px-3 py-3">{{ row.status === 'RECEIPT_REVERSED' ? '收料已冲销，待更正' : row.status === 'SENT' ? '待仓库确认' : row.status === 'RECEIVED' ? '已核实' : row.status === 'NOT_RECEIVED' ? '仓库未收到' : row.status }}</td><td data-label="是否接单" class="px-3 py-3" :aria-label="`${row.document_no} 接单状态`"><span :class="row.supplier_acceptance?.status === 'ACCEPTED' ? 'text-emerald-700' : 'text-amber-700'">{{ row.kind === 'PURCHASE' ? row.supplier_acceptance?.label || '接单状态待核实' : '—' }}</span><p v-if="row.kind === 'PURCHASE' && row.supplier_acceptance" class="mt-1 text-slate-500">{{ row.supplier_acceptance.accepted_line_count }}/{{ row.supplier_acceptance.total_line_count }} 条已接</p></td><td data-label="导出次数" class="px-3 py-3" :aria-label="`${row.document_no} 导出 ${row.export_count ?? 0} 次`">{{ row.export_count ?? 0 }}</td><td data-label="操作" class="px-3 py-3 text-right"><button v-if="row.kind === 'DELIVERY'" type="button" :aria-label="`打印送货单 ${row.document_no}`" class="mr-1 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 font-semibold text-teal-800" @click="printDeliveryNote(row)">打印</button><button type="button" :aria-label="`查看单据 ${row.document_no} 明细`" title="悬停预览单据明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold" @mouseenter="showDocumentDetail(row)" @mouseleave="closeDocumentDetailPreview" @focus="showDocumentDetail(row)" @blur="closeDocumentDetailPreview" @click="showDocumentDetail(row, true)">明细</button></td></tr><tr v-if="!filteredDocuments.length && !documentReadError && !extraLoadingState.documents"><td colspan="11" class="p-10 text-center text-slate-500">暂无符合条件的单据</td></tr></tbody></table></div>
+            <div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[980px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 font-bold text-slate-600"><tr><th class="px-4 py-3"><input type="checkbox" aria-label="全选当前筛选单据" :checked="allVisibleDocumentsSelected" :disabled="busy" @change="toggleVisibleDocuments($event)"></th><th class="px-3 py-3">类型</th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">单据号</th><th class="px-3 py-3">日期</th><th class="px-3 py-3">包含订单</th><th class="px-3 py-3">纸品条数</th><th class="px-3 py-3">状态</th><th class="px-3 py-3">是否接单</th><th class="px-3 py-3">导出记录</th><th class="px-3 py-3 text-right">操作</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredDocuments" :key="documentKey(row)" :class="[busy ? '' : 'cursor-pointer hover:bg-teal-50/50', { 'bg-teal-50': selectedDocumentKeys.includes(documentKey(row)) }]" @click="selectDocumentRow"><td data-label="选择" class="px-4 py-3"><input :checked="selectedDocumentKeys.includes(documentKey(row))" type="checkbox" :aria-label="`选择单据 ${row.document_no}`" :disabled="busy" @change="toggleDocument(row, $event)"></td><td data-label="类型" class="px-3 py-3">{{ row.kind === 'PURCHASE' ? (row.is_cancellation ? '取消采购通知' : row.is_batch ? '合并采购单' : '采购单') : '送货单' }}</td><td data-label="送货厂区" class="px-3 py-3">{{ factoryDisplayName(row.factory_id) }}</td><td data-label="单据号" class="px-3 py-3 font-bold">{{ row.document_no }}</td><td data-label="日期" class="px-3 py-3">{{ row.date }}</td><td data-label="包含订单" class="px-3 py-3">{{ row.orders.length }} 张订单<span v-if="row.unmatched_line_count"> · {{ row.unmatched_line_count }} 条无单纸品</span><span v-if="row.orders.some(item => item.contract_no?.trim())"> · {{ row.orders.map(item => item.contract_no?.trim()).filter(Boolean).join('、') }}</span><p class="mt-1 text-slate-500">{{ documentBusinessLabel(row) }}</p></td><td data-label="纸品条数" class="px-3 py-3">{{ row.lines.length }}</td><td data-label="状态" class="px-3 py-3">{{ row.status === 'RECEIPT_REVERSED' ? '收料已冲销，待更正' : row.status === 'SENT' ? '待仓库确认' : row.status === 'RECEIVED' ? '已核实' : row.status === 'NOT_RECEIVED' ? '仓库未收到' : row.status }}</td><td data-label="是否接单" class="px-3 py-3" :aria-label="`${row.document_no} 接单状态`"><span :class="row.supplier_acceptance?.status === 'ACCEPTED' ? 'text-emerald-700' : 'text-amber-700'">{{ row.kind === 'PURCHASE' ? row.supplier_acceptance?.label || '接单状态待核实' : '—' }}</span><p v-if="row.kind === 'PURCHASE' && row.supplier_acceptance" class="mt-1 text-slate-500">{{ row.supplier_acceptance.accepted_line_count }}/{{ row.supplier_acceptance.total_line_count }} 条已接</p></td><td data-label="导出记录" class="px-3 py-3">
+                    <template v-if="row.kind === 'PURCHASE'">
+                      <p class="font-medium" :class="{ 'text-teal-800': orderImportExportState(row) === 'EXPORTED' }">{{ orderImportExportLabel(row) }}</p>
+                      <time v-if="row.order_import_last_export_at" class="block text-slate-500" :datetime="row.order_import_last_export_at">{{ formatBusinessDateTime(row.order_import_last_export_at) }}</time>
+                    </template>
+                    <p class="text-slate-500">{{ row.order_import_export_count === undefined ? '单据导出' : '普通单据下载' }} <span :aria-label="`${row.document_no} 导出 ${documentDownloadCount(row)} 次`">{{ documentDownloadCount(row) }}</span> 次</p>
+                  </td><td data-label="操作" class="px-3 py-3 text-right"><button v-if="row.kind === 'DELIVERY'" type="button" :aria-label="`打印送货单 ${row.document_no}`" class="mr-1 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 font-semibold text-teal-800" @click="printDeliveryNote(row)">打印</button><button type="button" :aria-label="`查看单据 ${row.document_no} 明细`" title="悬停预览单据明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold" @mouseenter="showDocumentDetail(row)" @mouseleave="closeDocumentDetailPreview" @focus="showDocumentDetail(row)" @blur="closeDocumentDetailPreview" @click="showDocumentDetail(row, true)">明细</button></td></tr><tr v-if="!filteredDocuments.length && !documentReadError && !extraLoadingState.documents"><td colspan="11" class="p-10 text-center text-slate-500">暂无符合条件的单据</td></tr></tbody></table></div>
           </section>
           <div v-if="detailDocument" data-testid="supplier-document-detail-overlay" class="fixed inset-0 z-[64] flex items-center justify-center p-4" :class="detailDocumentPinned ? 'pointer-events-auto bg-slate-950/45' : 'pointer-events-none bg-slate-950/25'" @click.self="closeDocumentDetail">
             <div ref="documentDetailDialog" role="dialog" aria-labelledby="supplier-document-title" :aria-modal="detailDocumentPinned ? 'true' : undefined" :inert="detailDocumentPinned ? undefined : true" class="flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl" @keydown="trapDialogTab">

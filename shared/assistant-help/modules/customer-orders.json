@@ -210,7 +210,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "4ecbd68bfc4ecff79d4077c6bb78202a4f3b1e370d313c31f2073326db499c0a"
+        "sha256": "3bf038258b726a4206570c291b3ae4e9a115051323abffcd38ca9df1c88e5fa9"
       },
       {
         "path": "src/components/CartonQuickUploadDialog.vue",

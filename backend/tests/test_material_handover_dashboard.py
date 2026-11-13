@@ -22,7 +22,7 @@ def test_pending_counts_documents_excluding_drafts_voids_requests_and_completed(
     _, request_headers = issuer(client, '领用车间', 'REQUESTOR')
     confirmed(client, request_headers, source='ISSUE')
     voided = confirmed(client, headers, workbook(title='送货单 单号：VOID 2026-07-18'), source='VOID')
-    result = client.post(BASE + '/documents/' + voided['id'] + '/actions/void', params={'factory_id': FACTORY}, json={
+    result = client.post(BASE + '/external/documents/' + voided['id'] + '/void', headers=headers, json={
         'request_id': str(uuid4()), 'expected_revision': voided['revision'], 'reason': '取消未送货单据'})
     assert result.status_code == 200, result.text
     done = confirmed(client, headers, workbook(title='送货单 单号：COMPLETE 2026-07-18'), source='COMPLETE')
