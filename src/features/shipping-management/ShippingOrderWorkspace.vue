@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   CalendarClock,
   ChevronLeft,
@@ -12,7 +12,7 @@ import {
   X,
 } from '@lucide/vue'
 import StatusPill from '@/components/common/StatusPill.vue'
-import type { ShippingFactoryProfile, ShippingOrder } from './contracts'
+import type { ShippingFactoryProfile, ShippingOrder, ShippingOrderStatus } from './contracts'
 import { shippingOrderStatusMeta } from './contracts'
 
 const props = defineProps<{ profile: ShippingFactoryProfile }>()
@@ -21,28 +21,53 @@ const emit = defineEmits<{ notify: [message: string] }>()
 const PAGE_SIZE = 10
 
 const actionCards = [
-  { id: 'so-export', title: 'SO排出货表', hint: '按 SO 汇总待出运明细', icon: FileSpreadsheet },
-  { id: 'vehicle-export', title: '车的排出货表', hint: '按车次汇总交仓出货明细', icon: Truck },
-  { id: 'si-supplement', title: '补料', hint: 'SI 截止前补料与截补料提醒', icon: CalendarClock },
+  { id: 'so-export', title: 'SO排出货表', hint: '按 SO 汇总出货明细', icon: FileSpreadsheet },
+  { id: 'vehicle-export', title: '车的排出货表', hint: '按车汇总交仓出货明细', icon: Truck },
+  { id: 'si-supplement', title: '补料', hint: 'SI 截止前补料与配补料提醒', icon: CalendarClock },
   { id: 'customs-pack', title: '通关一体化资料', hint: '报关单 / 装箱单 / 发票', icon: ShieldCheck },
 ]
 
-const searchInput = ref('')
-const appliedQuery = ref('')
+interface OrderFilters {
+  keyword: string
+  port: string
+  containerType: string
+  status: '' | ShippingOrderStatus
+  from: string
+  to: string
+}
+
+function emptyFilters(): OrderFilters {
+  return { keyword: '', port: '', containerType: '', status: '', from: '', to: '' }
+}
+
+const filters = reactive<OrderFilters>(emptyFilters())
 
 const page = ref(1)
 const detail = ref<ShippingOrder | null>(null)
 const refreshNote = ref('')
 const closeButton = ref<HTMLButtonElement | null>(null)
 
+const ports = computed(() => [...new Set(props.profile.orders.map((order) => order.port))])
+const containerTypes = computed(() => [...new Set(props.profile.orders.map((order) => order.containerType))])
+const statuses = computed(() => Object.keys(shippingOrderStatusMeta) as ShippingOrderStatus[])
+
+/** 所有条件都是即时筛选：下拉、日期、关键字变化后立即重新过滤。 */
 const filteredOrders = computed(() => {
-  const keyword = appliedQuery.value.trim().toLowerCase()
+  const keyword = filters.keyword.trim().toLowerCase()
   return props.profile.orders
     .filter((order) => {
-      if (!keyword) return true
-      return order.products.some((product) =>
-        product.code.toLowerCase().includes(keyword) || product.name.toLowerCase().includes(keyword),
-      )
+      if (keyword) {
+        const matched = order.products.some((product) =>
+          product.code.toLowerCase().includes(keyword) || product.name.toLowerCase().includes(keyword),
+        )
+        if (!matched) return false
+      }
+      if (filters.port && order.port !== filters.port) return false
+      if (filters.containerType && order.containerType !== filters.containerType) return false
+      if (filters.status && order.status !== filters.status) return false
+      if (filters.from && (!order.departureDate || order.departureDate < filters.from)) return false
+      if (filters.to && (!order.departureDate || order.departureDate > filters.to)) return false
+      return true
     })
     .sort((a, b) => (b.departureDate || '').localeCompare(a.departureDate || ''))
 })
@@ -59,14 +84,8 @@ watch(pageCount, (count) => {
   if (page.value > count) page.value = count
 })
 
-function applySearch() {
-  appliedQuery.value = searchInput.value.trim()
-  page.value = 1
-}
-
-function clearSearch() {
-  searchInput.value = ''
-  appliedQuery.value = ''
+function clearFilters() {
+  Object.assign(filters, emptyFilters())
   refreshNote.value = ''
   page.value = 1
 }
@@ -111,12 +130,12 @@ function statusTone(order: ShippingOrder) {
 
 <template>
   <div class="space-y-4">
-    <section aria-label="船务作业" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+    <section aria-label="船务作业" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       <button
         v-for="action in actionCards"
         :key="action.id"
         type="button"
-        class="group flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition hover:border-teal-200 hover:bg-teal-50/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
+        class="group flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition hover:border-teal-200 hover:bg-slate-50/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
         :aria-label="action.title"
         @click="preview(action.title)"
       >
@@ -125,7 +144,7 @@ function statusTone(order: ShippingOrder) {
         </span>
         <span class="min-w-0">
           <span class="block text-[13px] font-bold text-slate-900">{{ action.title }}</span>
-          <span class="mt-0.5 block text-[11px] leading-4 text-slate-500">{{ action.hint }}</span>
+          <span class="mt-1 block text-[11px] leading-4 text-slate-500">{{ action.hint }}</span>
         </span>
       </button>
     </section>
@@ -155,25 +174,34 @@ function statusTone(order: ShippingOrder) {
 
       <div class="border-b border-slate-100 px-4 py-3 sm:px-5">
         <div class="flex flex-wrap items-center gap-2">
-          <label class="relative min-w-[220px] flex-1">
+          <label class="relative min-w-[190px] flex-1">
             <span class="sr-only">搜索货号或货名</span>
             <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
             <input
-              v-model="searchInput"
+              v-model="filters.keyword"
               type="search"
               aria-label="搜索货号或货名"
               placeholder="搜索货号或货名"
-              class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-[13px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-3 focus:ring-blue-500/15"
-              @keydown.enter="applySearch"
+              class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-[13px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-3 focus:ring-teal-500/15"
             >
           </label>
-          <button
-            type="button"
-            class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-[13px] font-semibold text-white shadow-sm transition hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
-            @click="applySearch"
-          >
-            <Search class="size-4" aria-hidden="true" />搜索
-          </button>
+          <select v-model="filters.port" aria-label="筛选港口" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-800 outline-none transition focus:border-teal-500 focus:ring-3 focus:ring-teal-500/15">
+            <option value="">全部港口</option>
+            <option v-for="port in ports" :key="port" :value="port">{{ port }}</option>
+          </select>
+          <select v-model="filters.containerType" aria-label="筛选柜型" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-800 outline-none transition focus:border-teal-500 focus:ring-3 focus:ring-teal-500/15">
+            <option value="">全部柜型</option>
+            <option v-for="type in containerTypes" :key="type" :value="type">{{ type }}</option>
+          </select>
+          <select v-model="filters.status" aria-label="筛选状态" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-800 outline-none transition focus:border-teal-500 focus:ring-3 focus:ring-teal-500/15">
+            <option value="">全部状态</option>
+            <option v-for="status in statuses" :key="status" :value="status">{{ status }}</option>
+          </select>
+          <div class="flex items-center gap-1">
+            <input v-model="filters.from" type="date" aria-label="开航日期起" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-800 outline-none transition focus:border-teal-500 focus:ring-3 focus:ring-teal-500/15">
+            <span class="text-[11px] text-slate-400">至</span>
+            <input v-model="filters.to" type="date" aria-label="开航日期止" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-[12px] text-slate-800 outline-none transition focus:border-teal-500 focus:ring-3 focus:ring-teal-500/15">
+          </div>
         </div>
       </div>
 
@@ -236,8 +264,8 @@ function statusTone(order: ShippingOrder) {
 
       <div v-if="!pagedOrders.length" class="px-5 py-12 text-center" role="status">
         <p class="text-[13px] font-semibold text-slate-800">没有匹配的出货单</p>
-        <p class="mt-1 text-[12px] text-slate-500">换个货号或货名再试，或清空搜索查看全部 {{ profile.orders.length }} 票。</p>
-        <button type="button" class="mt-3 text-[12px] font-semibold text-teal-700 hover:underline" @click="clearSearch">清空搜索</button>
+        <p class="mt-1 text-[12px] text-slate-500">调整关键字或筛选条件，或清空筛选查看全部 {{ profile.orders.length }} 票。</p>
+        <button type="button" class="mt-3 text-[12px] font-semibold text-teal-700 hover:underline" @click="clearFilters">清空筛选</button>
       </div>
 
       <footer class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-3 sm:px-5">

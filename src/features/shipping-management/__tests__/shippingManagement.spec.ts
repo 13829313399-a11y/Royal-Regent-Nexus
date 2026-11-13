@@ -52,7 +52,16 @@ describe('shipping order management workspace', () => {
     expect(rows(wrapper)[0]!.text()).toContain('1001')
     expect(rows(wrapper)[0]!.text()).toContain('SHZ8265013')
     expect(rows(wrapper)[0]!.text()).toContain('美国 · 洛杉矶')
-    expect(wrapper.findAll('[aria-label="船务作业"] button')).toHaveLength(4)
+    const cards = wrapper.findAll('[aria-label="船务作业"] button')
+    expect(cards).toHaveLength(4)
+    expect(cards[0]!.text()).toContain('SO排出货表')
+    expect(cards[0]!.text()).toContain('按 SO 汇总出货明细')
+    expect(cards[1]!.text()).toContain('车的排出货表')
+    expect(cards[1]!.text()).toContain('按车汇总交仓出货明细')
+    expect(cards[2]!.text()).toContain('补料')
+    expect(cards[2]!.text()).toContain('SI 截止前补料与配补料提醒')
+    expect(cards[3]!.text()).toContain('通关一体化资料')
+    expect(cards[3]!.text()).toContain('报关单 / 装箱单 / 发票')
 
     wrapper.unmount()
   })
@@ -72,29 +81,47 @@ describe('shipping order management workspace', () => {
     wrapper.unmount()
   })
 
-  it('searches by product code or name and clears the query', async () => {
+  it('filters live by keyword, port, container type, status and departure range', async () => {
     const { wrapper } = mountView('huaxing')
     const input = wrapper.get('input[aria-label="搜索货号或货名"]')
-    const searchButton = () => wrapper.findAll('button').find((button) => button.text().trim() === '搜索')!
 
     expect(input.attributes('placeholder')).toBe('搜索货号或货名')
     expect(wrapper.text()).toContain('共 12 条')
+    expect(wrapper.findAll('button').some((button) => button.text().trim() === '搜索')).toBe(false)
 
     await input.setValue('15754')
-    await searchButton().trigger('click')
     expect(wrapper.text()).toContain('共 4 条')
     expect(rows(wrapper)).toHaveLength(4)
 
     await input.setValue('链条枪')
-    await searchButton().trigger('click')
-    expect(wrapper.text()).toContain('共 4 条')
+    expect(rows(wrapper)).toHaveLength(4)
 
     await input.setValue('ZZZ999')
-    await searchButton().trigger('click')
+    expect(rows(wrapper)).toHaveLength(0)
+    expect(wrapper.text()).toContain('没有匹配的出货单')
+    await wrapper.findAll('button').find((button) => button.text().includes('清空筛选'))!.trigger('click')
+    expect(wrapper.text()).toContain('共 12 条')
+
+    await wrapper.get('select[aria-label="筛选港口"]').setValue('蛇口')
+    expect(rows(wrapper)).toHaveLength(1)
+    expect(rows(wrapper)[0]!.text()).toContain('1009')
+    await wrapper.get('select[aria-label="筛选港口"]').setValue('')
+
+    await wrapper.get('select[aria-label="筛选柜型"]').setValue('1*20GP')
+    expect(wrapper.text()).toContain('共 3 条')
+    await wrapper.get('select[aria-label="筛选柜型"]').setValue('')
+
+    await wrapper.get('select[aria-label="筛选状态"]').setValue('已取消')
+    expect(rows(wrapper)).toHaveLength(1)
+    expect(rows(wrapper)[0]!.text()).toContain('1012')
+    await wrapper.get('select[aria-label="筛选状态"]').setValue('')
+
+    await wrapper.get('input[aria-label="开航日期起"]').setValue('2000-01-01')
+    await wrapper.get('input[aria-label="开航日期止"]').setValue('2000-12-31')
     expect(rows(wrapper)).toHaveLength(0)
     expect(wrapper.text()).toContain('没有匹配的出货单')
 
-    await wrapper.findAll('button').find((button) => button.text().includes('清空搜索'))!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('清空筛选'))!.trigger('click')
     expect(wrapper.text()).toContain('共 12 条')
 
     wrapper.unmount()
@@ -140,7 +167,7 @@ describe('shipping order management workspace', () => {
     wrapper.unmount()
   })
 
-  it('keeps refresh, row actions and top actions explicit previews', async () => {
+  it('keeps entry cards, refresh and row actions explicit previews', async () => {
     const { wrapper } = mountView('huaxing')
 
     await wrapper.findAll('button').find((button) => button.text().includes('刷新'))!.trigger('click')
