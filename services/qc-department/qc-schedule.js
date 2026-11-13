@@ -26,11 +26,17 @@
   function dateCell(row) {
     const range = dateRange(row);
     if (!range) return '<span class="qs-date-main">待确认</span>';
+    const weekday = value => '日一二三四五六'[new Date(value + 'T00:00:00Z').getUTCDay()];
+    if (range.from !== range.to && range.from.slice(0, 7) === range.to.slice(0, 7)) {
+      const [year, month, start] = range.from.split('-');
+      const end = range.to.slice(8);
+      return '<span class="qs-date-main">' + month + '月' + start + '–' + end + '日</span>' +
+        '<span class="qs-date-meta">' + year + ' · 周' + weekday(range.from) + '至周' + weekday(range.to) + '</span>';
+    }
     const endpoint = value => {
       const [year, month, day] = value.split('-');
-      const weekday = '日一二三四五六'[new Date(value + 'T00:00:00Z').getUTCDay()];
       return '<span class="qs-date-main">' + month + '月' + day + '日</span>' +
-        '<span class="qs-date-meta">' + year + ' · 周' + weekday + '</span>';
+        '<span class="qs-date-meta">' + year + ' · 周' + weekday(value) + '</span>';
     };
     return endpoint(range.from) + (range.to === range.from ? '' :
       '<span class="qs-date-through">至</span>' + endpoint(range.to));
@@ -65,15 +71,6 @@
   }
   function orderedRows(rows) {
     return rows.slice().sort((a,b) => {const x=dateRange(a)?.from,y=dateRange(b)?.from;return (!x)-(!y)||(x&&y?y.localeCompare(x):0)||text(a.customer).localeCompare(text(b.customer),'zh-CN')||text(a.id).localeCompare(text(b.id));});
-  }
-  function groups(rows) {
-    const result = [];
-    for (const row of orderedRows(rows)) {
-      const key = dateLabel(row);
-      if (!result.length || result[result.length - 1].key !== key) result.push({key, rows:[]});
-      result[result.length - 1].rows.push(row);
-    }
-    return result;
   }
   function exportRows(rows) {
     return orderedRows(rows).map(row => COLUMNS.map(([key]) => {
@@ -138,19 +135,19 @@
       body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后按此模板显示排期。当前可设置筛选条件，或导出空模板。':'')+'</p></div></td></tr>';
       updatePush();return;
     }
-    body.innerHTML=groups(rows).map(group => group.rows.map((row, index) =>
-      '<tr data-qs-row="' + escape(row.id) + '" tabindex="0" aria-selected="false"' +
-      (index === 0 ? ' class="qs-date-group-start"' : '') + '>' +
+    body.innerHTML=orderedRows(rows).map(row =>
+      '<tr data-qs-row="' + escape(row.id) + '" tabindex="0" aria-selected="false">' +
       '<td class="qs-pick-cell">' + (model.phase === 'ready' ?
         '<input type="checkbox" class="qwf-pick" data-pick="' + escape(row.id) +
         '" aria-label="选择 ' + escape(row.productNo) + '" ' +
         (model.checked.has(row.id) ? 'checked' : '') +
         (row.sourceStatus !== 'active' || !root.__QC_NEXUS?.workflow?.create ? ' disabled' : '') + '/>' : '') +
       '</td>' + COLUMNS.map(([key]) => {
-      if (key === 'date') return index === 0 ?
-        '<td data-column="date" class="qs-date-cell" rowspan="' + group.rows.length +
-        '" title="' + escape(group.key || '日期待确认') + '">' + dateCell(row) + '</td>' : '';
-      const value=key==='date'?dateLabel(row):text(key==='remark'?(row.sourceRemark??row.remark):row[key]);
+      if (key === 'date') {
+        return '<td data-column="date" class="qs-date-cell" title="' +
+          escape(dateLabel(row) || '日期待确认') + '">' + dateCell(row) + '</td>';
+      }
+      const value=text(key==='remark'?(row.sourceRemark??row.remark):row[key]);
       if(key==='completion') {
         const tasks=model.phase==='ready'?row.tasks||[]:[];
         const states={completed:'已完成',waiting:'待验货',draft:'验货中',pending:'待审核',returned:'已退回',approved:'已审核'};
@@ -160,7 +157,7 @@
       }
       if(key==='remark') return '<td class="qs-write"><span class="qs-feedback-text">'+escape(value)+'</span></td>';
       return '<td data-column="'+key+'"'+(['quantity','unitsPerCarton','cartonCount'].includes(key)?' class="qs-number"':'')+'>'+escape(value)+'</td>';
-    }).join('')+'</tr>').join('')).join('');
+    }).join('')+'</tr>').join('');
     updatePush();freezeScheduleColumns();
   }
   function applyFilters() { model.checked.clear();updateDateLabel();renderTable();updatePush(); }
@@ -327,7 +324,7 @@
   function navigationState() {
     return {busy:scheduleBusy||model.exporting,dirty:Boolean(scheduleDialog?.open)};
   }
-  root.QcSchedule={filterRows,choices,weekRange,dateRange,dateLabel,groups,exportRows,buildWorkbook,resetFilters,afterPush,openNew,navigationState};
+  root.QcSchedule={filterRows,choices,weekRange,dateRange,dateLabel,exportRows,buildWorkbook,resetFilters,afterPush,openNew,navigationState};
   root.renderSalesSchedule=refresh;
   if(root.document)root.document.addEventListener('DOMContentLoaded',mount);
 })(typeof window!=='undefined'?window:globalThis);

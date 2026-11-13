@@ -5,6 +5,9 @@ from calendar import monthrange
 from hashlib import sha256
 from pathlib import Path
 import re
+import math
+import unicodedata
+from lxml import etree as E
 
 from fastapi import HTTPException
 from openpyxl.utils import get_column_letter
@@ -125,4 +128,92 @@ def workbook(report_data):
                                  if len(cell.get('r').rstrip('0123456789')) > 1
                                  or cell.get('r').rstrip('0123456789') > get_column_letter(col)), len(target))
             target.insert(position, package.cell(target, col, value, style))
+    _format_daily_sheet(package, sheet, sheet_rows, sheet_name, report_data)
     return package.finish()
+
+
+def _format_daily_sheet(package, sheet, rows, name, data):
+    # The source template includes formatted empty rows and columns through IT.
+    last = 3 + len(data['rows'])
+    for row in list(rows):
+        if int(row.get('r')) > last:
+            rows.remove(row)
+            continue
+        for cell in list(row):
+            if cell.get('r').rstrip('0123456789') not in list('ABCDEFGHIJKLM'):
+                row.remove(cell)
+    cols = sheet.find(tag('cols'))
+    cols.clear()
+    widths = [18, 18, 15, 20, 30, 12, 14, 14, 12, 42, 16, 16, 36]
+    for index, width in enumerate(widths, 1):
+        E.SubElement(cols, tag('col'), min=str(index), max=str(index),
+                     width=str(width), customWidth='1')
+    styles = package.styles.find(tag('cellXfs'))
+    body_styles = []
+    for col in range(13):
+        style = deepcopy(styles[13])
+        alignment = style.find(tag('alignment'))
+        if alignment is None:
+            alignment = E.SubElement(style, tag('alignment'))
+        alignment.attrib.clear()
+        alignment.set('horizontal', 'right' if col == 5 else 'center' if col in (2, 6, 7, 8) else 'left')
+        alignment.set('vertical', 'center')
+        alignment.set('wrapText', '1')
+        style.set('applyAlignment', '1')
+        style.set('numFmtId', '0' if col == 5 else '49')
+        body_styles.append(str(len(styles)))
+        styles.append(style)
+    styles.set('count', str(len(styles)))
+    by_number = {int(row.get('r')): row for row in rows}
+    for number, item in enumerate(data['rows'], 4):
+        row = by_number[number]
+        row[:] = [E.Element(tag('c'), r=get_column_letter(col)+str(number), s=body_styles[col-1])
+                  if value == '' or value is None else package.cell(row, col, value, body_styles[col-1])
+                  for col, value in enumerate(item['values'], 1)]
+        lines = 1
+        for value, width in zip(item['values'], widths):
+            count = sum(max(1, math.ceil(sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1
+                                            for c in line) / (width - 2)))
+                        for line in str(value).splitlines())
+            lines = max(lines, count)
+        row.set('ht', str(min(409, max(32, lines * 16 + 8))))
+        row.set('customHeight', '1')
+    view = sheet.find(tag('sheetViews'))[0]
+    # The template was saved scrolled to A42; frozen panes must start at A1.
+    view.set('topLeftCell', 'A1')
+    for node in list(view):
+        if node.tag in (tag('pane'), tag('selection')):
+            view.remove(node)
+    E.SubElement(view, tag('pane'), xSplit='4', ySplit='3', topLeftCell='E4', activePane='bottomRight', state='frozen')
+    E.SubElement(view, tag('selection'), pane='bottomRight', activeCell='E4', sqref='E4')
+    view.set('showGridLines', '0')
+    props = sheet.find(tag('sheetPr'))
+    if props is None:
+        props = E.SubElement(sheet, tag('sheetPr'))
+    setup_props = props.find(tag('pageSetUpPr'))
+    if setup_props is None:
+        setup_props = E.SubElement(props, tag('pageSetUpPr'))
+    setup_props.set('fitToPage', '1')
+    setup = sheet.find(tag('pageSetup'))
+    if setup is None:
+        setup = E.SubElement(sheet, tag('pageSetup'))
+    setup.attrib.update({'orientation': 'landscape', 'paperSize': '8', 'fitToWidth': '1', 'fitToHeight': '0'})
+    setup.attrib.pop('scale', None)
+    for key in ('rowBreaks', 'colBreaks'):
+        node = sheet.find(tag(key))
+        if node is not None:
+            sheet.remove(node)
+    names = package.book.find(tag('definedNames'))
+    if names is None:
+        names = E.Element(tag('definedNames'))
+        # OOXML requires definedNames before calcPr and the later workbook nodes.
+        after = {'sheets', 'functionGroups', 'externalReferences'}
+        position = max(i for i, node in enumerate(package.book)
+                       if E.QName(node).localname in after) + 1
+        package.book.insert(position, names)
+    for node in list(names):
+        if node.get('name') in ('_xlnm.Print_Area', '_xlnm.Print_Titles'):
+            names.remove(node)
+    quoted = "'" + name.replace("'", "''") + "'!"
+    E.SubElement(names, tag('definedName'), name='_xlnm.Print_Area', localSheetId='0').text = quoted + '$A$1:$M$' + str(last)
+    E.SubElement(names, tag('definedName'), name='_xlnm.Print_Titles', localSheetId='0').text = quoted + '$1:$3'

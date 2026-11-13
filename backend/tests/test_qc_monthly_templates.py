@@ -34,7 +34,7 @@ def test_calendar_population_layout_and_read_only(db):
     assert data['dateTo']=='2026-11-30' and data['total']==4
     assert len(data['tables']['caixing'])==1 and len(data['tables']['issues'])==1
     assert data['tables']['issues'][0]['values'][8]=='PASS' and len(data['tables']['issues'][0]['photos'])==1
-    assert [len(t['headers']) for t in data['templates']]==[13,18,12,18]
+    assert [len(t['headers']) for t in data['templates']]==[15,18,12,18]
     assert data['tables']['summary'][0]['values'][1:]==[1,1,'','']
     assert hashes()==before and not monthly._path().exists()
     with pytest.raises(HTTPException):monthly.query('huadeng',DAY)
@@ -48,7 +48,7 @@ def test_saved_blanks_returns_conflicts_month_isolation_and_no_record_mutation(d
     assert [changed['tables'][k][0]['values'][i] for k,i in [('all',3),('customers',3),('caixing',2),('issues',2)]]==['0000123']*4
     monthly.save('huaxing',ACTOR,body(changed,'returns','2'))
     changed=monthly.query('huaxing',DAY)
-    assert changed['tables']['summary'][0]['values'][3:]==['2','']
+    assert changed['tables']['summary'][0]['values'][3:]==['2',2.0]
     assert not weekly._path().exists() and monthly.query('huaxing','2026-12-01')['fields']=={}
     assert all(hashes()[p]==h for p,h in before.items())
     with pytest.raises(HTTPException) as e:monthly.save('huaxing',ACTOR,{**request,'requestKey':uuid4().hex,'value':'different'})
@@ -75,7 +75,7 @@ def test_four_exports_headers_all_photos_and_no_history(db):
         spec=next(t for t in monthly.TEMPLATES if t['id']==kind);hr=0 if kind=='caixing' else 1
         for s in book.sheets():
             assert s.row_values(hr)==spec['headers']
-            assert not s.merged_cells
+            assert (bool(s.merged_cells) if kind=='caixing' else not s.merged_cells)
             assert all(book.xf_list[s.cell_xf_index(hr,c)].alignment.hor_align==2 for c in range(len(spec['headers'])))
             if kind!='caixing':
                 title_col=next(c for c in range(s.ncols) if s.cell_value(0,c))
@@ -109,7 +109,7 @@ def test_exports_many_rows_preserve_footer_and_all_records(db):
     for kind in ('all','caixing','customers'):
         book=xlrd.open_workbook(file_contents=excel.render(data,kind));s=book.sheet_by_index(0)
         assert s.nrows>=301 and s.cell_value(300,0)!=''
-        if kind=='caixing': assert s.cell_value(s.nrows-2,4)=='实际退货次数'
+        if kind=='caixing': assert s.cell_value(s.nrows-2,4)=='不合格(退货)单数'
 
 def test_export_tickets_versions_and_owner(db,monkeypatch):
     issue(db,1,customer='彩星');data=monthly.query('huaxing',DAY)

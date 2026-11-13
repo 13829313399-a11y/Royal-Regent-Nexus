@@ -21,7 +21,7 @@ def fixture(count=120):
         data['tables']['group'].append(dict(id=key,values=common+[f'GROUP-END-{n:04}']))
         data['tables']['footer'].append(dict(id=key,values=common+['返工&A0D原样保留',f'FOOTER-END-{n:04}']))
         data['tables']['internal'].append(dict(id=key,values=[name,1,'0','100.0%',common[5],'第一/二责任人','处理明细：已安排复检。'*8,f'INTERNAL-END-{n:04}']))
-    for kind in ['group','internal']:
+    for kind in ['group']:
         spec=next(t for t in data['templates'] if t['id']==kind)
         data['totals'][kind]=weekly._totals(spec['headers'],data['tables'][kind])
     return data
@@ -36,7 +36,7 @@ def records(content):
     return result
 
 
-@pytest.mark.parametrize('kind',['detail','group','internal'])
+@pytest.mark.parametrize('kind',['detail','group'])
 @pytest.mark.parametrize('count',[1,220])
 def test_original_template_fields_styles_dynamic_rows_formulas_and_totals(kind,count):
     data=fixture(count)
@@ -77,10 +77,12 @@ def test_original_template_fields_styles_dynamic_rows_formulas_and_totals(kind,c
 
 
 def test_blank_zero_rates_safe_literal_and_tamper(monkeypatch,tmp_path):
-    data=fixture(2);data['tables']['internal'][0]['values'][2]=''
-    sheet=xlrd.open_workbook(file_contents=excel.render(data,'internal')).sheet_by_index(0)
-    assert sheet.cell_value(2,3)=='' and sheet.cell_value(3,3)==1
-    assert sheet.cell_value(4,2)=='待补全' and sheet.cell_value(4,3)==''
+    data=fixture(2);data['tables']['group'][0]['values'][3]=''
+    sheet=xlrd.open_workbook(file_contents=excel.render(data,'group')).sheet_by_index(0)
+    assert sheet.cell_value(2,4)=='' and sheet.cell_value(3,4)==0
+    assert sheet.cell_value(4,3)=='待补全' and sheet.cell_value(4,4)==''
+    with pytest.raises(HTTPException) as retired:excel.render(data,'internal')
+    assert retired.value.status_code==422
     with pytest.raises(HTTPException) as exc:excel.render(fixture(0),'group')
     assert exc.value.status_code==409
     (tmp_path/'group.xls').write_bytes(b'wrong file')

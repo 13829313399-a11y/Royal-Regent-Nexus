@@ -1,14 +1,17 @@
 {
   "caixing": {
     "file": "caixing.xls",
-    "sha256": "5e566a2f0a4e7ef8b6449ee671c38727162743df60f14cbf7c29c30e088d13d4",
-    "sourceFile": "彩星6-10月验货汇总表.xls",
-    "sourceSha256": "bb4066a591725a2dfca2e225a4ab2f18412812bdca7bdd1bb4e705414e8fba50",
+    "sha256": "bee044e3df00f865b0becb3a3e4a8c39556609e9e325460cc23d5789a75bf81a",
+    "sourceFile": "彩星验货汇总表.xls",
+    "sourceSha256": "2dedc279d7e75d2288dce99a65a30aacb93ae9d49ddfe3de4428d93e5cab41ec",
     "sourceSheets": [
-      "10月 "
+      "11月"
     ],
     "headerRow": 0,
-    "dataRow": 1
+    "dataRow": 1,
+    "summaryTitleRow": 18,
+    "summaryHeaderRow": 19,
+    "summaryDataRow": 20
   },
   "all": {
     "file": "all.xls",

@@ -8,16 +8,9 @@
   },
   "group": {
     "file": "group.xls",
-    "sha256": "207b542220b047fcd371205aa3b11277ee66b323e915562cc20936afc730c883",
+    "sha256": "d1fd66d1606bd0531f6542560e7bd3925ef6b116a76f9cdecdf5c4ca7f0e2943",
     "sourceFile": "2026年华登集团验货汇总（10.26.10.30)4.xls",
     "sourceSha256": "d5736ac17ad577c34c4ecdf2f8e4d1144a4763ba6fc6bc5cc1f46fcdae414e0d",
-    "sourceSheet": "7.27-7.31"
-  },
-  "internal": {
-    "file": "internal.xls",
-    "sha256": "082ef1404c02bf9b935562ba53e3d517c8f775dd59747973dbb6307defd6a560",
-    "sourceFile": "2026年（华兴）每周验货汇总3.xls",
-    "sourceSha256": "a54a69b382f15d89e2b890f5e10154bbb8712fe22786f0dcc4df9d37513969f7",
     "sourceSheet": "7.27-7.31"
   }
 }

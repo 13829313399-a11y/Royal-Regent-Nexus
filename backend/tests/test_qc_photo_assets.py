@@ -73,6 +73,7 @@ def test_extended_formats_with_legacy_original_and_browser_readable_versions(fmt
     raw=out.getvalue()
     saved=upload_retained(entry(),raw)
     photo=saved['photos'][0]
+    assert sheet.photo_info('huaxing',saved['id']) == {'items':[{**photo,'originalAvailable':True}]}
     assert sheet.read_photo_version('huaxing',saved['id'],photo['id'],'original') == (raw,mime)
     preview,preview_mime=sheet.read_photo_version('huaxing',saved['id'],photo['id'])
     assert preview_mime=='image/jpeg'
@@ -85,6 +86,9 @@ def test_extended_formats_with_legacy_original_and_browser_readable_versions(fmt
         assert preview_image.size==displayed.size==((240,320) if fmt=='MPO' else (320,240))
         r,g,b=preview_image.convert('RGB').getpixel((0,0))
         assert r>200 and g<30 and b<30
+    with pytest.raises(HTTPException) as error:
+        sheet.photo_info('huadeng',saved['id'])
+    assert error.value.status_code==404
 
 
 def test_duplicate_retry_revision_and_factory_boundaries():
@@ -119,6 +123,7 @@ def test_preview_only_upload_retries_without_leaving_original_or_broken_photo(mo
         assert conn.execute('SELECT length(content) FROM photos WHERE id=?',(p,)).fetchone()[0]==0
     with pytest.raises(HTTPException,match='仅保留了预览图'):
         sheet.read_photo_version('huaxing',e['id'],p,'original')
+    assert sheet.photo_info('huaxing',e['id'])['items'][0]['originalAvailable'] is False
 
 
 def test_malformed_oversize_and_decode_limits():
