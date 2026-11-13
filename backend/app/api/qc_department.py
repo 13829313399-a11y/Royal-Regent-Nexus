@@ -395,7 +395,7 @@ async def monthly_templates_request(path, request, db, user, factory_id):
         data['canEdit'] = can(user, 'qc_inspection:result_write', factory_id, 'qc')
         data['canExport'] = can(user, 'qc_inspection:report_export', factory_id, 'qc')
         return JSONResponse(data, headers=NO_CACHE)
-    if path not in {'api/monthly-templates/save', 'api/monthly-templates/excel', 'api/monthly-templates/excel/options'} or request.method != 'POST':
+    if path not in {'api/monthly-templates/save', 'api/monthly-templates/excel'} or request.method != 'POST':
         raise HTTPException(405, '不支持此操作')
     if not exporting:
         _ensure_permission(db, user, 'qc_inspection:result_write', factory_id)
@@ -412,9 +412,7 @@ async def monthly_templates_request(path, request, db, user, factory_id):
         body = json.loads(raw)
     except (ValueError, UnicodeError):
         raise HTTPException(400, '无效 JSON') from None
-    if path=='api/monthly-templates/excel/options':
-        result = await run_in_threadpool(qc_monthly_excel.photo_options, factory_id, body)
-    elif exporting:
+    if exporting:
         result = await run_in_threadpool(qc_monthly_excel.prepare, factory_id, owner, body)
     else:
         result = await run_in_threadpool(qc_monthly_templates.save, factory_id,
@@ -488,7 +486,10 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         result=await run_in_threadpool(service.return_to_inspection,factory_id,parts[2],body,actor,source_rows)
     elif len(parts)==3 and parts[0]=='entries' and parts[2] in {'save','photos','remove-photo','submit'}:
         method={'save':service.save,'photos':service.add_photo,'remove-photo':service.remove_photo,'submit':service.submit}[parts[2]]
-        result=method(factory_id,parts[1],body,actor)
+        if parts[2]=='photos':
+            result=await run_in_threadpool(method,factory_id,parts[1],body,actor)
+        else:
+            result=method(factory_id,parts[1],body,actor)
     else:raise HTTPException(404,'接口不存在')
     return JSONResponse(result,headers=NO_CACHE)
 

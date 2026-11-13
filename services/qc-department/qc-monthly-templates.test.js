@@ -40,22 +40,7 @@ test('failed save preserves exact request and blocks month/page changes',async()
  const q=page(saved);try{await q.w.QcMonthlyTemplates.open('caixing');assert.equal(q.d.querySelector('[data-field="returns"]').textContent,'3');let retry;q.w.fetch=async(_,init)=>{retry=JSON.parse(init.body);return q.response({...retry,version:1});};q.d.getElementById('qmtRetry').click();await new Promise(r=>setTimeout(r,20));assert.deepEqual(retry,req);assert.equal(q.w.QcMonthlyTemplates.navigationState().dirty,false);}finally{q.dom.window.close();}
 });
 test('export current template, no writes before export, empty state disables download',async()=>{
- const p=page();try{p.w.HTMLAnchorElement.prototype.click=function(){};await p.w.QcMonthlyTemplates.open('issues');let request;p.w.fetch=async(_,init)=>{request=JSON.parse(init.body);return p.response({url:'api/monthly-templates/excel/abc',filename:'问题表.xlsx'});};p.d.getElementById('qmtExcel').click();await new Promise(r=>setTimeout(r,20));assert.equal(request.template,'issues');assert.equal(request.date,'2026-11-01');assert.match(p.d.getElementById('qmtExcelStatus').textContent,/已生成/);
+ const p=page();try{p.w.HTMLAnchorElement.prototype.click=function(){};await p.w.QcMonthlyTemplates.open('issues');let request;p.w.fetch=async(url,init)=>{assert.ok(url.endsWith('/excel'));request=JSON.parse(init.body);return p.response({url:'api/monthly-templates/excel/abc',filename:'问题表.xlsx'});};p.d.getElementById('qmtExcel').click();await new Promise(r=>setTimeout(r,20));assert.equal(request.template,'issues');assert.equal(request.photoQuality,undefined);assert.equal(p.d.querySelector('dialog'),null);assert.equal(request.date,'2026-11-01');assert.match(p.d.getElementById('qmtExcelStatus').textContent,/已生成/);
  p.data.tables.caixing=[];p.data.tables.summary=[];p.w.fetch=async()=>p.response(p.data);await p.w.QcMonthlyTemplates.open('caixing');assert.equal(p.d.getElementById('qmtExcel').disabled,true);assert.match(p.d.getElementById('qmtTables').textContent,/没有符合/);
- }finally{p.dom.window.close();}
-});
-
-test('photo quality chooser defaults to preview, blocks missing originals without consent and cancels without export',async()=>{
- const p=page();try{
-  p.w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};p.w.HTMLDialogElement.prototype.close=function(){this.open=false;};p.w.HTMLAnchorElement.prototype.click=function(){};
-  await p.w.QcMonthlyTemplates.open('issues');const exports=[];
-  p.w.fetch=async(url,init)=>{if(url.endsWith('/options'))return p.response({count:2,missingOriginals:1,displayConversions:0});exports.push(JSON.parse(init.body));return p.response({url:'api/monthly-templates/excel/abc',filename:'测试.xlsx'});};
-  const wait=()=>new Promise(r=>setTimeout(r,20));
-  p.d.getElementById('qmtExcel').click();await wait();let dlg=p.d.querySelector('dialog');assert.equal(dlg.querySelector('[value=preview]').checked,true);
-  dlg.querySelector('[data-cancel]').click();await wait();assert.equal(exports.length,0);assert.equal(p.d.querySelector('dialog'),null);
-  p.d.getElementById('qmtExcel').click();await wait();dlg=p.d.querySelector('dialog');dlg.querySelector('[value=original]').click();assert.equal(dlg.querySelector('[data-confirm]').disabled,true);
-  dlg.querySelector('[data-fallback] input').click();dlg.querySelector('[data-confirm]').click();await wait();assert.equal(exports[0].photoQuality,'original');assert.equal(exports[0].allowPreviewFallback,true);
-  p.data.tables.issues[0].photos=[];p.w.fetch=async(url,init)=>{if(!init?.body)return p.response(p.data);assert.ok(!url.endsWith('/options'));exports.push(JSON.parse(init.body));return p.response({url:'api/monthly-templates/excel/abc',filename:'测试.xlsx'});};
-  await p.w.QcMonthlyTemplates.open('issues');p.d.getElementById('qmtExcel').click();await wait();assert.equal(p.d.querySelector('dialog'),null);assert.equal(exports.length,2);assert.equal(exports[1].photoQuality,undefined);
  }finally{p.dom.window.close();}
 });

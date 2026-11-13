@@ -349,7 +349,7 @@ def sync(factory, rows, copy_photos=True):
                     continue
                 try:
                     content = wf.read_file(factory,base['workflowId'],attachment['id'])['content']
-                    photo_assets.inspect(content)
+                    details=photo_assets.inspect(content)
                 except (HTTPException,OSError):
                     # Keep the original attachment untouched and retry on a later ordinary page refresh.
                     # An unavailable historical photo must not hide readable inspection text.
@@ -357,7 +357,7 @@ def sync(factory, rows, copy_photos=True):
                 photo_id=uuid4().hex
                 conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',
                     (photo_id,entry_id,attachment['name'],b'',sha256(content).hexdigest(),origin,wf.now()))
-                photo_assets.save(conn,photo_id,content)
+                photo_assets.save(conn,photo_id,content,details=details)
                 conn.execute('UPDATE entries SET revision=revision+1 WHERE id=?',(entry_id,))
         # Preserve existing inspection history. Pre-push source caches stay hidden until
         # a confirmed task adopts them above, including any previously saved input.
@@ -472,8 +472,8 @@ def add_photo(factory, entry_id, body, actor, review=False):
         content=base64.b64decode(body['content'],validate=True)
     except (ValueError,TypeError,binascii.Error):
         raise HTTPException(422,'照片内容无效') from None
-    photo_assets.inspect(content)
-    digest=sha256(content).hexdigest()
+    details=photo_assets.inspect(content)
+    digest=details['sha256']
     with store(True) as conn:
         row=get(conn,factory,entry_id)
         origin='upload:'+body['requestKey']
@@ -485,13 +485,14 @@ def add_photo(factory, entry_id, body, actor, review=False):
         ensure_editable(conn,row,review)
         before=unpack(conn,row)
         revision(row,body)
-        count,total=conn.execute('''SELECT count(*),coalesce(sum(CASE WHEN a.photo_id IS NULL THEN length(p.content) ELSE coalesce(json_extract(a.metadata,'$.original.size'),length(p.content)) END),0) FROM photos p LEFT JOIN photo_assets a ON a.photo_id=p.id WHERE p.entry_id=? AND p.removed=0''',(entry_id,)).fetchone()
+        count,total=conn.execute('''SELECT count(*),coalesce(sum(coalesce(json_extract(a.metadata,'$.sourceSize'),
+            json_extract(a.metadata,'$.original.size'),length(p.content))),0)
+            FROM photos p LEFT JOIN photo_assets a ON a.photo_id=p.id WHERE p.entry_id=? AND p.removed=0''',(entry_id,)).fetchone()
         if count>=50 or total+len(content)>100*1024*1024:
             raise HTTPException(413,'每条任务最多 50 张、100 MB')
         photo_id=uuid4().hex
         conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',(photo_id,entry_id,name,b'',digest,origin,wf.now()))
-        try:photo_assets.save(conn,photo_id,content)
-        except OSError:raise HTTPException(503,'原图保存失败，请重试；未创建照片记录') from None
+        photo_assets.save(conn,photo_id,content,'preview-only',details=details)
         return changed(conn,row,'upload',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
 
 
