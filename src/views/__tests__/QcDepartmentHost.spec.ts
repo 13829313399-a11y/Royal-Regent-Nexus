@@ -345,27 +345,19 @@ it('uses a native header in both phone tables, synchronizes columns and preserve
     const reviewSheet = sheet.cloneNode(true) as HTMLElement
     const reviewTable = reviewSheet.querySelector('table')!
     const reviewHead = reviewTable.tHead!.rows[0]!
-    reviewHead.className = 'qis-review-column-head'
     reviewHead.querySelector('[data-column=result]')!.textContent = '审核结果'
-    const lineGroup = reviewTable.tBodies[0]!
-    lineGroup.prepend(reviewHead)
-    reviewTable.tHead!.remove()
-    const customerGroup = lineGroup.cloneNode(true) as HTMLTableSectionElement
-    reviewTable.append(customerGroup)
     Object.defineProperty(reviewSheet, 'clientWidth', { value: 320 })
     vi.spyOn(reviewHead, 'getBoundingClientRect').mockReturnValue({ top: 20 } as DOMRect)
-    vi.spyOn(lineGroup, 'getBoundingClientRect').mockReturnValue({ bottom: 140 } as DOMRect)
-    vi.spyOn(customerGroup.rows[0]!, 'getBoundingClientRect').mockReturnValue({ top: 160 } as DOMRect)
-    vi.spyOn(customerGroup, 'getBoundingClientRect').mockReturnValue({ bottom: 300 } as DOMRect)
+    vi.spyOn(reviewTable, 'getBoundingClientRect').mockReturnValue({ bottom: 300 } as DOMRect)
     doc.querySelector('#page-review')!.append(reviewSheet); await flushPromises()
     const reviewBounds = wrapper.findAll('.qc-table-header-bounds').map(item => item.element as HTMLElement)
-    expect(reviewBounds.map(item => [item.style.top, item.style.height])).toEqual([['68px', '120px'], ['208px', '140px']])
+    expect(reviewBounds.map(item => [item.style.top, item.style.height])).toEqual([['68px', '280px']])
     expect(layer.hidden).toBe(false)
     const reviewStrip = wrapper.get('.qc-table-header-strip').element as HTMLElement
     expect(reviewStrip.textContent).toContain('审核结果')
     reviewSheet.scrollLeft = 460; reviewSheet.dispatchEvent(new Event('scroll'))
     expect(reviewStrip.scrollLeft).toBe(460)
-    expect((wrapper.findAll('.qc-table-header-strip')[1]!.element as HTMLElement).scrollLeft).toBe(460)
+    expect(wrapper.findAll('.qc-table-header-strip')).toHaveLength(1)
     sheet.scrollLeft = 900; sheet.dispatchEvent(new Event('scroll'))
     expect(reviewStrip.scrollLeft).toBe(460) // The previous page's listener has been removed.
     doc.documentElement.classList.remove('qc-mobile'); await flushPromises()

@@ -244,6 +244,7 @@
     if(['inspector','institution'].includes(key)){
       const list=options[key==='inspector'?'inspectors':'institutions']||[], idKey=key==='inspector'?'inspectorId':'institutionId', d=draft(row);
       const selected=d.inspectionExecution[idKey]||'', historical=value&&!list.some(x=>x.id===selected);
+      if(key==='institution'&&!list.length)return '<input'+attr+' type="text" maxlength="255" placeholder="填写第三方机构" value="'+esc(value??'')+'">';
       return '<select class="qis-review-input" data-person-field="'+key+'" aria-label="'+esc(label)+'"><option value="">'+(list.length?'未填写':'尚未配置选项')+'</option>'+ (historical?'<option value="__history__" selected>'+esc(value)+'（历史）</option>':'')+list.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===selected?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select>';
     }
     if(key==='firstResponsible'||key==='secondResponsible'){
@@ -290,12 +291,12 @@
     if(!canEdit(row))return '<span class="qis-review-value">'+esc(value)+'</span>';
     return '<div class="qis-inline-value"'+(hasContent(value)?' data-show-value':'')+'><button type="button" class="qis-review-value" aria-label="'+esc(label+'：'+value+'，点击编辑')+'">'+esc(value)+'</button>'+control+'</div>';
   }
-  function rowHTML(row,columns=model.columns){
+  function rowHTML(row,columns=model.columns,customerStart=false){
     const d=draft(row),disabled=canEdit(row)?'':'disabled';
     // Fixed-height inner cells keep long text, save feedback and photos within one standard row.
     const mobileKey='<small class="qis-mobile-key" title="'+esc(row.poNo+' · '+row.productNo)+'">'+esc(row.poNo)+' · '+esc(row.productNo)+'</small>';
     const action=model.view==='review'?(model.reviewTab==='pending'?'<button class="qis-row-action" data-confirm="'+row.id+'" '+(editable()?'':'disabled')+'>审核确认</button>'+(canReturn(row)?'<button class="qis-row-action qis-return-action" data-return="'+row.id+'" '+(editable()?'':'disabled')+'>退回验货台</button>':''):'<button class="qis-row-action" data-revoke="'+row.id+'" '+(editable()?'':'disabled')+'>反审核</button>'):row.submittedAt&&row.reviewState!=='returned_to_inspection'?'<span class="qis-action-state">历史已完成</span>':'<button class="qis-row-action" data-submit="'+row.id+'" '+disabled+'>提交审核</button>';
-    return '<tr tabindex="0" aria-selected="'+(row.id===model.selectedId)+'" class="'+(row.id===model.selectedId?'qis-selected':'')+'" data-entry="'+row.id+'">'+columns.map(({key})=>{
+    return '<tr tabindex="0" aria-selected="'+(row.id===model.selectedId)+'" class="'+(row.id===model.selectedId?'qis-selected ':'')+(customerStart?'qis-review-customer-start':'')+'" data-entry="'+row.id+'">'+columns.map(({key})=>{
       const cell=(content,attributes='')=>'<td data-column="'+key+'"'+attributes+'><div class="qis-cell">'+content+'</div></td>';
       if(key==='inspectionExecution.institution'&&reviewGroup(row)!=='客验')return cell('—',' class="qis-not-applicable"');
       if(key==='result'){
@@ -344,23 +345,16 @@
     });
   }
   function reviewTableBody(rows,columns,headerCells){
-    const header='<tr class="qis-review-column-head">'+headerCells+'</tr>';
     const groups=new Map([['行验',[]],['客验',[]],['',[]]]);
     for(const row of rows)groups.get(reviewGroup(row)).push(row);
     let body='';
     for(const [name,items] of groups){
       if(!items.length)continue;
-      const heading=name
-        ? '<tr class="qis-review-gap" aria-hidden="true"><td colspan="'+columns.length+'"></td></tr>'+
-          '<tr class="qis-review-group"><th scope="rowgroup" colspan="'+columns.length+'"><div class="qis-review-group-label">'+
-          '<span class="qis-review-group-tag">'+name+'</span>'+
-          '<span class="qis-review-group-count">'+items.length+' 条</span></div></th></tr>'
-        : '';
-      body+='<tbody'+(name?' data-review-method="'+name+'"':' class="qis-review-unclassified" aria-label="未记录验货类型"')+'>'+
-        heading+(name||!body?header:'')+items.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
+      body+=items.map((row,index)=>rowHTML(row,columns,name==='客验'&&index===0)).join('');
     }
-    return body;
+    return '<thead><tr>'+headerCells+'</tr></thead><tbody>'+body+'</tbody>';
   }
+
   function render(){
     const host=root.document.getElementById(model.view==='review'?'reviewTableWrap':'recordsTableWrap');if(!host)return;
     host.classList.add('qis-wrap');updateTaskFilters();root.updateRecordsDateLabel?.();

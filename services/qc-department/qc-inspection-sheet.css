@@ -364,38 +364,14 @@ html.qc-mobile.qc-short-viewport body.qc-liquid-glass .qis-mobile-header-toggle{
 html.qc-mobile.qc-short-viewport body.qc-liquid-glass:has(.qis-mobile-header-toggle) .topbar-right{grid-row:2}
 html.qc-mobile.qc-short-viewport #page-records:not(.qis-tools-open) .records-filters{display:none}
 
-/* Keep group labels compact and column headers attached to their row groups. */
-body.qc-liquid-glass #reviewTableWrap.qis-wrap:has(.qis-table){
-  background:transparent;border:0;
+/* Only the first customer-inspection record marks the boundary in the continuous table. */
+body.qc-liquid-glass #page-review .qis-table .qis-review-customer-start td{
+  background:#fff5cf!important;
 }
-body.theme-light.qc-liquid-glass #page-review .qis-table .qis-review-column-head th{background:#e9eeeb!important}
-#page-review .qis-table tbody :is(.qis-review-group,.qis-review-column-head){height:auto}
-/* A sticky table row can extend past its tbody in Chromium. Clip it at the group edge. */
-#page-review .qis-table tbody{clip-path:inset(0)}
-#page-review .qis-table .qis-review-column-head{position:sticky;top:0;z-index:6}
-#page-review .qis-table .qis-review-column-head th{position:static}
-#page-review .qis-table .qis-review-column-head :is(th[data-column=customer],th[data-column=poNo]){
-  position:sticky;top:auto;
-}
-#page-review .qis-table tbody .qis-review-gap,
-body.qc-liquid-glass #page-review .qis-table .qis-review-gap td{
-  height:12px;padding:0;border:0;background:transparent;
-}
-body.qc-liquid-glass #page-review .qis-table .qis-review-group th{
-  position:static;padding:0!important;height:34px;vertical-align:middle;
-  border:0;background:transparent!important;color:var(--text-hi)!important;
-  cursor:default;user-select:none;
-}
-#page-review .qis-table .qis-review-group:hover{background:transparent!important}
-#page-review .qis-review-group-label{
-  position:sticky;left:12px;display:inline-flex;align-items:baseline;gap:8px;margin-inline:12px;
-}
-#page-review .qis-review-group-tag{font-size:15px;font-weight:700}
-#page-review .qis-review-group-count{
-  color:var(--text-dim);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums;
+body.theme-dark.qc-liquid-glass #page-review .qis-table .qis-review-customer-start td{
+  background:#514522!important;
 }
 #page-review .qis-not-applicable{color:var(--text-dim);font-weight:400}
-#page-review .qis-table tbody + .qis-review-unclassified tr:first-child td{border-top:1px solid var(--border-hi)}
 :is(#page-records,#page-review) .qis-table [data-column="inspectionExecution.sampleQuantity"]{min-width:90px;width:90px;max-width:100px}
 :is(#page-records,#page-review) .qis-table [data-column="inspectionExecution.sampleQuantity"] input{width:76px;min-width:0}
 :is(#page-records,#page-review) .qis-table [data-column="inspector"]{min-width:120px;max-width:160px}

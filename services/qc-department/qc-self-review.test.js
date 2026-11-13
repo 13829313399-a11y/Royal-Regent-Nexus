@@ -339,28 +339,26 @@ test('module navigation offers an actionable state-conflict choice instead of an
  }finally{p.dom.window.close();}
 });
 
-test('review shows matching headers below each group title and retains unclassified records',async()=>{
+test('review uses one header, internal-first ordering and a yellow first customer row, retaining unclassified records',async()=>{
  const p=await page();try{
   p.rows[0].inspectionMethod='external';p.rows[1].inspectionMethod='internal';p.rows[2].inspectionMethod='';p.rows[2].agency='某某检验公司';
   await p.w.QcInspectionSheet.loadReview('pending');
   const table=p.d.querySelector('#reviewTableWrap table');
   assert.equal(p.d.querySelectorAll('#reviewTableWrap table').length,1);
-  assert.equal(table.tHead,null);
-  assert.deepEqual([...table.querySelectorAll('.qis-review-group-tag')].map(x=>x.textContent),['行验','客验']);
-  assert.equal(table.querySelector('.qis-review-unclassified [data-entry]').dataset.entry,'c');
-  const headings=[...table.querySelectorAll('.qis-review-group')];
+  assert.equal(table.tHead.rows.length,1);
+  assert.equal(table.tBodies.length,1);
+  assert.equal(table.querySelector('.qis-review-group'),null);
   const columnOrder=[...table.querySelectorAll('tr[data-entry="b"] td')].map(cell=>cell.dataset.column);
-  assert.equal(table.querySelectorAll('.qis-review-column-head').length,2);
-  for(const heading of headings){
-    const header=heading.nextElementSibling;
-    assert.ok(header.matches('.qis-review-column-head'));
-    assert.deepEqual([...header.cells].map(cell=>cell.dataset.column),columnOrder);
-    assert.equal(heading.cells[0].colSpan,columnOrder.length);
-  }
+  assert.deepEqual([...table.tHead.rows[0].cells].map(cell=>cell.dataset.column),columnOrder);
+  const marker=table.querySelector('.qis-review-customer-start');
+  assert.equal(table.querySelectorAll('.qis-review-customer-start').length,1);
+  assert.equal(marker.dataset.entry,'a');
+  assert.equal(table.tBodies[0].rows.length,3);
+  assert.equal(marker.previousElementSibling.dataset.entry,'b');
   assert.deepEqual([...p.d.querySelectorAll('tr[data-entry]')].map(x=>x.dataset.entry),['b','a','c']);
-  assert.ok(p.d.querySelector('[data-entry=a] [data-person-field=institution]'));
-  assert.equal(p.d.querySelector('[data-entry=b] [data-person-field=institution]'),null);
-  assert.equal(p.d.querySelector('[data-entry=c] [data-person-field=institution]'),null);
+  assert.ok(p.d.querySelector('[data-entry=a] [data-execution-field=institution]'));
+  assert.equal(p.d.querySelector('[data-entry=b] [data-execution-field=institution]'),null);
+  assert.equal(p.d.querySelector('[data-entry=c] [data-execution-field=institution]'),null);
   assert.equal(p.d.querySelector('[data-entry=b] [data-column="inspectionExecution.institution"]').textContent,'—');
   p.d.querySelectorAll('[data-review-check]').forEach(x=>{x.checked=true;x.dispatchEvent(new p.w.Event('change'));});
   assert.equal(p.w.QcInspectionSheet.model.checked.size,3);
@@ -368,7 +366,48 @@ test('review shows matching headers below each group title and retains unclassif
   search.value='PO2';search.dispatchEvent(new p.w.Event('input'));
   assert.deepEqual([...p.d.querySelectorAll('#reviewTableWrap tr[data-entry]')].map(x=>x.dataset.entry),['c']);
   assert.equal(p.d.querySelector('#reviewTableWrap .qis-review-group'),null);
-  assert.ok(p.d.querySelector('.qis-review-unclassified .qis-review-column-head th[data-column="poNo"]'));
+  assert.ok(p.d.querySelector('thead th[data-column="poNo"]'));
+  assert.equal(p.d.querySelector('.qis-review-customer-start'),null);
   assert.equal(p.d.querySelector('#reviewTableWrap th[data-column="inspectionExecution.institution"]'),null);
+ }finally{p.dom.window.close();}
+});
+
+
+test('customer boundary follows filtered sorting and confirmed method takes precedence over agency',async()=>{
+ const p=await page();try{
+  Object.assign(p.rows[0],{inspectionMethod:'external',agency:'行验',dateFrom:'2026-11-01'});
+  Object.assign(p.rows[1],{inspectionMethod:'internal',agency:'客验',dateFrom:'2026-11-02'});
+  Object.assign(p.rows[2],{inspectionMethod:'',agency:'客验',dateFrom:'2026-11-03'});
+  await p.w.QcInspectionSheet.loadReview('pending');
+  const ids=()=>[...p.d.querySelectorAll('#reviewTableWrap [data-entry]')].map(x=>x.dataset.entry);
+  assert.deepEqual(ids(),['b','c','a']);
+  assert.equal(p.d.querySelector('.qis-review-customer-start').dataset.entry,'c');
+  const sort=p.d.querySelector('[data-rfilter=sort]');sort.value='date-asc';sort.dispatchEvent(new p.w.Event('input'));
+  assert.deepEqual(ids(),['b','a','c']);
+  assert.equal(p.d.querySelector('.qis-review-customer-start').dataset.entry,'a');
+  const search=p.d.querySelector('[data-rfilter=search]');search.value='PO2';search.dispatchEvent(new p.w.Event('input'));
+  assert.deepEqual(ids(),['c']);assert.equal(p.d.querySelector('.qis-review-customer-start').dataset.entry,'c');
+  search.value='PO1';search.dispatchEvent(new p.w.Event('input'));assert.equal(p.d.querySelector('.qis-review-customer-start'),null);
+ }finally{p.dom.window.close();}
+});
+
+test('customer institution allows manual entry without options and keeps configured selection and approved values',async()=>{
+ const p=await page();try{
+  p.rows[0].inspectionMethod='external';
+  await p.w.QcInspectionSheet.loadReview('pending');
+  const input=p.d.querySelector('[data-entry=a] [data-execution-field=institution]');
+  assert.equal(input.tagName,'INPUT');assert.equal(input.maxLength,255);
+  input.value='手动测试机构';input.dispatchEvent(new p.w.Event('input'));await p.w.QcInspectionSheet.pump('a');
+  assert.equal(p.rows[0].inspectionExecution.institution,'手动测试机构');
+  const fetch=p.w.fetch;p.w.fetch=async(url,opts)=>url.endsWith('/options')?{ok:true,json:async()=>({inspectors:[],institutions:[{id:'agency-1',name:'配置测试机构'}]})}:fetch(url,opts);
+  await p.w.QcInspectionSheet.loadReview('pending');
+  const select=p.d.querySelector('[data-entry=a] [data-person-field=institution]');
+  assert.equal(select.tagName,'SELECT');assert.match(select.textContent,/手动测试机构（历史）/);
+  select.value='agency-1';select.dispatchEvent(new p.w.Event('change'));await tick();await p.w.QcInspectionSheet.pump('a');
+  assert.equal(p.rows[0].inspectionExecution.institutionId,'agency-1');
+  assert.equal(p.rows[0].inspectionExecution.institution,'配置测试机构');
+  p.rows[0].reviewState='approved';await p.w.QcInspectionSheet.loadReview('approved');
+  const cell=p.d.querySelector('[data-entry=a] [data-column="inspectionExecution.institution"]');
+  assert.equal(cell.textContent,'配置测试机构');assert.equal(cell.querySelector('input,select'),null);
  }finally{p.dom.window.close();}
 });
