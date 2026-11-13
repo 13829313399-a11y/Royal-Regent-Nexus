@@ -18,7 +18,7 @@ async function page(){
   else if(url.endsWith('/return-to-inspection')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(body.revision,row.revision);row.revision++;row.reviewState='returned_to_inspection';
    events.push({eventId:++eventId,entryId:row.id,customer:row.customer,poNo:row.poNo,productNo:row.productNo,reason:body.reason,at:'2026-11-01T17:26:00Z',workbench:true});
    value={item:structuredClone(row),eventId};}
-  else if(url.endsWith('/entries'))value={results:['PASS','FAIL','PENDING','LG'],items:structuredClone(url.includes('review/')?rows:rows.filter(r=>r.reviewState==='returned_to_inspection')),columns:['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','completion','result','remark','photos','improvement','submit'].map(key=>({key,label:key}))};
+  else if(url.endsWith('/entries'))value={results:['PASS','FAIL','PENDING','LG'],items:structuredClone(url.includes('review/')?rows:rows.filter(r=>r.reviewState==='returned_to_inspection')),columns:['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','result','remark','photos','improvement','submit'].map(key=>({key,label:key}))};
   else if(url.endsWith('/save')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);Object.assign(row,{...body,...(body.inspectionExecution?{inspectionExecution:{...row.inspectionExecution,...body.inspectionExecution}}:{})},{revision:row.revision+1,lastLocation:'审核中心 · 待审核'});value=structuredClone(row);}
   else if(url.endsWith('/photos')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);row.photos.push({id:'p-'+row.photos.length,name:body.name});row.revision++;value=structuredClone(row);}
   else if(/review\/(confirm|revoke)$/.test(url)){
@@ -32,11 +32,12 @@ async function page(){
 test('review uses the fixed workbench order followed by supplements for every row, retaining frozen actions',async()=>{
  const p=await page();try{
   p.rows[1].inspectionExecution={defects:[{desc:'标签错位',qty:'0'}]};p.rows[2].remark='长备注';await p.w.QcInspectionSheet.loadReview('pending');
-  const expected=['date','customer','poNo','actualDate','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','completion','result','inspectionExecution.sampleQuantity','inspectionProblem','remark','photos','inspector','inspectionExecution.analysisReason','improvement','firstResponsible','secondResponsible','reportStatus','otherRemark','inspectionExecution.defects','submittedAt','confirmedAt','reviewState','lastChangedAt','lastLocation','lastActor.name'];
+  const expected=['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','result','inspectionExecution.sampleQuantity','remark','photos','inspector','inspectionProblem','inspectionExecution.analysisReason','improvement','firstResponsible','secondResponsible','reportStatus','otherRemark','inspectionExecution.defects','submittedAt','confirmedAt','reviewState','lastChangedAt','lastLocation','lastActor.name'];
   assert.deepEqual([...p.d.querySelectorAll('#reviewTableWrap table:first-of-type th[data-column]')].map(c=>c.dataset.column),expected);
   for(const row of p.d.querySelectorAll('#reviewTableWrap tr[data-entry]'))assert.deepEqual([...row.querySelectorAll('td[data-column]')].map(c=>c.dataset.column),expected);
   assert.equal(p.d.querySelector('[data-confirm=a]').closest('td').dataset.column,'poNo');assert.equal(p.d.querySelector('[data-audit=a]').closest('td').dataset.column,'customer');
-  assert.equal(p.d.querySelector('[data-entry=a] [data-execution-field=actualDate]').closest('td').nextElementSibling.dataset.column,'country');
+  assert.equal(p.d.querySelector('[data-column=actualDate],[data-column=completion],[data-execution-field=actualDate]'),null);
+  assert.equal(p.d.querySelector('[data-entry=a] [data-column=inspectionProblem]').nextElementSibling.dataset.column,'inspectionExecution.analysisReason');
  }finally{p.dom.window.close();}
 });
 test('active-only, technical-only and repeated main content hide source entrance without deleting audit or source data',async()=>{
@@ -314,17 +315,17 @@ test('review has one transient success message; failure and conflict remain visi
 for(const state of ['approved','returned_to_inspection'])test('stale review '+state+' keeps cancelled input and releases only the explicitly discarded row without retrying a locked save',async()=>{
  const p=await page();try{
   const fetch=p.w.fetch;p.w.fetch=async(url,opts)=>url.endsWith('/save')?{ok:false,status:409,json:async()=>({detail:'只有待审核记录可编辑，请刷新核对状态'})}:fetch(url,opts);
-  p.rows[0].reviewState=state;p.rows[0].revision++;p.rows[0].inspectionExecution={actualDate:'2026-11-06'};
-  const date=p.d.querySelector('[data-entry=a] [data-execution-field=actualDate]');date.value='2026-11-15';date.dispatchEvent(new p.w.Event('input'));await p.w.QcInspectionSheet.pump('a');
+  p.rows[0].reviewState=state;p.rows[0].revision++;p.rows[0].inspectionExecution={analysisReason:'原分析原因'};
+  const analysis=p.d.querySelector('[data-entry=a] [data-execution-field=analysisReason]');analysis.value='需保留分析';analysis.dispatchEvent(new p.w.Event('input'));await p.w.QcInspectionSheet.pump('a');
   const draft=p.w.QcInspectionSheet.model.drafts.get('a');assert.equal(draft.conflict,true);
   let prompt='';p.w.confirm=text=>{prompt=text;return false;};await p.w.QcInspectionSheet.retry('a');
-  assert.match(prompt,/实际验货日期.*2026-11-15/);assert.equal(p.w.QcInspectionSheet.model.drafts.get('a'),draft);assert.equal(p.w.QcInspectionSheet.navigationState().dirty,true);
+  assert.match(prompt,/分析原因.*需保留分析/);assert.equal(p.w.QcInspectionSheet.model.drafts.get('a'),draft);assert.equal(p.w.QcInspectionSheet.navigationState().dirty,true);
   const other=p.w.QcInspectionSheet.model.drafts.get('b');other.dirty=true;other.error='其他行网络失败';other.remark='其他行输入';
   const writes=p.calls.filter(c=>c.body).length;p.w.confirm=()=>true;await p.w.QcInspectionSheet.retry('a');
   assert.equal(p.calls.filter(c=>c.body).length,writes);assert.equal(p.d.querySelector('[data-entry=a]'),null);assert.equal(p.w.QcInspectionSheet.model.drafts.has('a'),false);
   assert.equal(other.remark,'其他行输入');assert.equal(other.error,'其他行网络失败');assert.equal(p.w.QcInspectionSheet.navigationState().dirty,true);
   other.dirty=false;other.error='';assert.equal(p.w.QcInspectionSheet.navigationState().dirty,false);
-  assert.equal(p.rows[0].reviewState,state);assert.equal(p.rows[0].inspectionExecution.actualDate,'2026-11-06');
+  assert.equal(p.rows[0].reviewState,state);assert.equal(p.rows[0].inspectionExecution.analysisReason,'原分析原因');
  }finally{p.dom.window.close();}
 });
 
