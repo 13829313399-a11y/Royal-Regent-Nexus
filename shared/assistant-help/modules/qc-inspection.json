@@ -54,7 +54,7 @@
       {
         "path": "backend/app/services/qc_workflow.py",
         "symbol": "create_tasks",
-        "sha256": "8c86ab61faa996392ca8f56148d535f58f80734b929e357c63e3f606af1e9e14"
+        "sha256": "ebf8af357755717ce62a9e4bc260ab31c3ce170d6be10b08811825e8ffbe1885"
       },
       {
         "path": "backend/app/services/qc_inspection_sheet.py",
@@ -69,7 +69,7 @@
       {
         "path": "backend/app/services/qc_cumulative.py",
         "symbol": "def store",
-        "sha256": "9a4ae7b0c7e4a1785915911e7c833d825d642d8eb224b18c0ccdcadc386bc67d"
+        "sha256": "b4c6d5299eb72c17268e9eeffae19768a9abc4d6798cf42c82e6c99cb70064e3"
       },
       {
         "path": "backend/app/services/qc_workbook_xml.py",
@@ -94,7 +94,7 @@
       {
         "path": "backend/app/services/qc_weekly_templates.py",
         "symbol": "def query",
-        "sha256": "f6aeb157276291e92ded600aac5b535fecd73865eaf748f95a086e1228f7a9bc"
+        "sha256": "6a4ceb34a4f50d2387dcad7b2229324345a13de67173d3fce9a6ce38bb1bbaee"
       },
       {
         "path": "services/qc-department/qc-weekly-templates.js",
@@ -104,7 +104,7 @@
       {
         "path": "backend/app/services/qc_weekly_excel.py",
         "symbol": "def render",
-        "sha256": "c93b419a78a62c948f490302e4bb710f5e05df98904d28362f607ebebf1dff9f"
+        "sha256": "5503af4bf172aa443969b8d089f4a5f45f2f56d993755f5b4ec6ecd11aa7d0ae"
       },
       {
         "path": "backend/app/services/qc_monthly_templates.py",
@@ -114,7 +114,7 @@
       {
         "path": "backend/app/services/qc_monthly_excel.py",
         "symbol": "def render",
-        "sha256": "821c75537f8a90820482dda62666344feae6623ea311bcf6bb15a3e29721d591"
+        "sha256": "aa62e7160c19dfb04068c86ce71fa6299c0487662a7b4031b16a2347ca67e6f0"
       },
       {
         "path": "services/qc-department/qc-monthly-templates.js",
