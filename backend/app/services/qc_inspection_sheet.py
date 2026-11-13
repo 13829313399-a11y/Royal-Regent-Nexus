@@ -82,7 +82,7 @@ REVIEW_FIELDS = {'responsible': ('responsible', 200), 'firstResponsible': ('firs
     'inspectionFactory': ('inspection_factory', 200), 'reportStatus': ('report_status', 200), 'customerRequirements': ('customer_requirements', 20000), 'shipDate': ('ship_date', 10),
     'contractNo': ('contract_no', 200), 'customerCode': ('customer_code', 200), 'shippedQuantity': ('shipped_quantity', 32)}
 REVIEW_EXECUTION_FIELDS = ('actualDate','actualQuantity','sampleQuantity','inspector','institution','reportNo',
-    'reportMissingReason','resultExplanation','defects','measurements')
+    'reportMissingReason','resultExplanation','defects','measurements','inspectorId','institutionId','analysisReason')
 
 
 def clean_review_execution(raw):
@@ -90,8 +90,10 @@ def clean_review_execution(raw):
         raise HTTPException(422,'验货补录字段不正确')
     # Reuse existing date, quantity and structured-detail validation. Only supplied
     # fields override the immutable source; result/remark have their own editors.
-    defaults={k:[] if k in {'defects','measurements'} else '' for k in REVIEW_EXECUTION_FIELDS}
-    clean=wf.clean_execution({**defaults,**raw,'result':'PENDING','remark':''})
+    extra={'inspectorId','institutionId','analysisReason'}
+    defaults={k:[] if k in {'defects','measurements'} else '' for k in REVIEW_EXECUTION_FIELDS if k not in extra}
+    clean=wf.clean_execution({**defaults,**{k:v for k,v in raw.items() if k not in extra},'result':'PENDING','remark':''})
+    clean.update({k:wf.text(raw[k],4000 if k=='analysisReason' else 255) for k in extra if k in raw})
     return {k:clean[k] for k in raw}
 
 
@@ -186,11 +188,13 @@ def candidates(factory, records, tasks, sources, examples=(), references=()):
         base['actualDate']=wf.source_date(execution.get('actualDate'))
         base['referenceData']=bool(task.get('reference') or task.get('legacyId') in references)
         remark = execution.get('remark','')
-        if base.get('testData') and remark == (task.get('legacyOriginal') or {}).get('remark'):
-            remark = base['sourceNote']
+        if task.get('legacyId') is not None:
+            if base.get('testData') and remark == (task.get('legacyOriginal') or {}).get('remark'):
+                remark = base['sourceNote']
+            remark = remark or base['sourceNote']
         base['testData'] = bool(base.get('testData') or task.get('testEntry'))
         key = 'legacy:'+str(task['legacyId']) if task.get('legacyId') is not None else 'workflow:'+task['id']
-        result.append((key,base,execution.get('result',''),remark or base['sourceNote'],task['attachments']))
+        result.append((key,base,execution.get('result',''),remark,task['attachments']))
     # Sales schedules enter this journal only through an explicitly created task.
     return result
 
@@ -414,13 +418,22 @@ def save(factory, entry_id, body, actor, review=False):
             raise HTTPException(422,'此字段请填写单行文字')
     if 'shipDate' in body:wf.day(body['shipDate'])
     if 'shippedQuantity' in body:wf.number(body['shippedQuantity'])
-    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate'}):
-        raise HTTPException(422,'验货台只允许补充实际验货日期')
+    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate','sampleQuantity','inspectorId'}):
+        raise HTTPException(422,'验货台只允许填写实际日期、抽查数量和检验人员')
     execution_patch=clean_review_execution(body['inspectionExecution']) if 'inspectionExecution' in body else {}
     with store(True) as conn:
         row=get(conn,factory,entry_id);ensure_editable(conn,row,review)
         revision(row,body)
         before=unpack(conn,row)
+        from app.services import qc_options
+        for id_key, name_key, group in [('inspectorId','inspector','inspectors'),('institutionId','institution','institutions')]:
+            old=before.get('inspectionExecution') or {}
+            if id_key in execution_patch:
+                identity=execution_patch[id_key]
+                execution_patch[name_key] = old.get(name_key,'') if identity and identity==old.get(id_key) else qc_options.selection(factory,actor,group,identity)
+            elif name_key in execution_patch and execution_patch[name_key] != old.get(name_key):
+                # Legacy text-only clients must not retain another person's stable ID.
+                execution_patch[id_key]=''
         if all(body.get(k,before.get(k,''))==before.get(k,'') for k in ('result','remark','improvement','inspectionProblem',*REVIEW_FIELDS)) and all((before.get('inspectionExecution') or {}).get(k)==v for k,v in execution_patch.items()):return before
         conn.execute("INSERT INTO entry_details(entry_id,improvement,inspection_problem) VALUES(?,?,?) ON CONFLICT(entry_id) DO UPDATE SET improvement=excluded.improvement,inspection_problem=excluded.inspection_problem",
             (entry_id,body.get('improvement',before['improvement']),body.get('inspectionProblem',before.get('inspectionProblem'))))
@@ -505,6 +518,18 @@ def remove_photo(factory, entry_id, body, actor, review=False):
         if not found.rowcount:
             raise HTTPException(404,'照片不存在或已删除')
         return changed(conn,row,'remove-photo',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
+
+
+def photo_info(factory, entry_id):
+    with store() as conn:
+        get(conn,factory,entry_id)
+        rows=conn.execute('''SELECT p.id,p.name,a.metadata
+            FROM photos p LEFT JOIN photo_assets a ON a.photo_id=p.id
+            WHERE p.entry_id=? AND p.removed=0 ORDER BY p.created_at,p.id''',(entry_id,))
+        return {'items': [
+            {'id':r['id'],'name':r['name'],'originalAvailable':bool(r['metadata'] and json.loads(r['metadata']).get('original'))}
+            for r in rows
+        ]}
 
 
 def read_photo_version(factory, entry_id, photo_id, variant='preview'):

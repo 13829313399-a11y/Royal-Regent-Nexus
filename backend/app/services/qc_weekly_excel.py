@@ -125,15 +125,15 @@ def render(data, kind):
     selected = next((c['label'] for c in data['customers'] if c['key']==data['customer']), '')
     title(0,0,spec['title']+'（'+period+'）'+(' '+selected if selected else ''))
     block_row(1,1,spec['headers'],list(range(sheet.ncols)))
-    def summary(start, entries, headers, columns, spans, source_row, total_source, internal=False):
-        ci,ri,pi = (1,2,3) if internal else (2,3,4)
+    def summary(start, entries, headers, columns, spans, source_row, total_source):
+        ci,ri,pi = (2,3,4)
         for index,entry in enumerate(entries):
             row = start+index; values=list(entry['values'])
             values[ri] = int(values[ri]) if values[ri] != '' else ''
             block_row(row,source_row,values,columns,spans)
             count_ref=xlwt.Utils.rowcol_to_cell(row,columns[ci]);return_ref=xlwt.Utils.rowcol_to_cell(row,columns[ri])
-            value = (1-values[ri]/values[ci] if internal else values[ri]/values[ci]) if values[ri]!='' and values[ci] else ''
-            formula(row,columns[pi],f'IF(OR({count_ref}=0,{return_ref}=""),"",'+('1-' if internal else '')+f'{return_ref}/{count_ref})',value,style(source_row,columns[pi],'0.0%'))
+            value = (values[ri]/values[ci]) if values[ri]!='' and values[ci] else ''
+            formula(row,columns[pi],f'IF(OR({count_ref}=0,{return_ref}=""),"",'+f'{return_ref}/{count_ref})',value,style(source_row,columns[pi],'0.0%'))
         total_row=start+len(entries)
         total=weekly._totals(headers,entries)
         block_row(total_row,total_source,total,columns,spans)
@@ -142,8 +142,8 @@ def render(data, kind):
             expr=f'SUM({a}:{b})' if index==ci else f'IF(COUNT({a}:{b})<{len(entries)},"待补全",SUM({a}:{b}))'
             formula(total_row,col,expr,total[index],style(total_source,col))
         a=xlwt.Utils.rowcol_to_cell(total_row,columns[ci]);b=xlwt.Utils.rowcol_to_cell(total_row,columns[ri])
-        value=(1-total[ri]/total[ci] if internal else total[ri]/total[ci]) if isinstance(total[ri],int) and total[ci] else ''
-        formula(total_row,columns[pi],f'IF(OR({a}=0,NOT(ISNUMBER({b}))),"",'+('1-' if internal else '')+f'{b}/{a})',value,style(total_source,columns[pi],'0.0%'))
+        value=(total[ri]/total[ci]) if isinstance(total[ri],int) and total[ci] else ''
+        formula(total_row,columns[pi],f'IF(OR({a}=0,NOT(ISNUMBER({b}))),"",'+f'{b}/{a})',value,style(total_source,columns[pi],'0.0%'))
     if kind == 'detail':
         for index,entry in enumerate(rows,2):
             values=list(entry['values']);values[1]=date.fromisoformat(values[1])
@@ -154,7 +154,7 @@ def render(data, kind):
         block_row(footer_title+3,131,spec['summaryHeaders'],FOOTER_COLUMNS,FOOTER_SPANS)
         summary(footer_title+4,data['tables']['footer'],spec['summaryHeaders'],FOOTER_COLUMNS,FOOTER_SPANS,133,142)
     else:
-        summary(2,rows,spec['headers'],list(range(8)),None,3,15,kind=='internal')
+        summary(2,rows,spec['headers'],list(range(8)),None,3,15)
     stream=BytesIO();book.save(stream);content=stream.getvalue()
     if len(content)>MAX_BYTES:raise HTTPException(422,'Excel 文件过大，请缩小筛选范围')
     return content
@@ -191,7 +191,7 @@ def prepare(factory, owner, body):
     keys = {'date', 'customer', 'template', 'sourceRevision', 'versions'}
     if not isinstance(body, dict) or set(body) != keys or any(not isinstance(body[k], str) for k in keys-{'versions'}):
         raise HTTPException(422, 'Excel 导出参数不正确')
-    if body['template'] not in {'detail', 'group', 'internal'}:
+    if body['template'] not in {'detail', 'group'}:
         raise HTTPException(422, '请选择有效的模板')
     data = weekly.query(factory, body['date'], body['customer'])
     # Compare both source records and all visible saved supplement versions.
@@ -216,7 +216,7 @@ def prepare(factory, owner, body):
 
 
 def download(owner, token):
-    match = re.fullmatch(r'([a-f0-9]{32})\.(\d{10})\.(detail|group|internal)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.([a-f0-9]{64})', token)
+    match = re.fullmatch(r'([a-f0-9]{32})\.(\d{10})\.(detail|group)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.([a-f0-9]{64})', token)
     if not match or not hmac.compare_digest(_signature(owner, token.rsplit('.', 1)[0]), match[6]):
         raise HTTPException(404, 'Excel 下载不存在')
     if int(match[2]) < time.time():

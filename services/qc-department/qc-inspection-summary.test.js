@@ -89,7 +89,7 @@ test('dossier restores requested QC report fields while preserving photos and co
   p.d.querySelector('[data-summary-id]').click();await tick();const names=[...p.d.querySelectorAll('dialog dt')].map(e=>e.textContent);
   assert.equal(names.includes('来源文件'),false);
   for(const restored of ['报告状态','责任人','报告暂缺说明','结论说明'])assert.ok(names.includes(restored));
-  for(const retained of ['第一责任人','第二责任人','QC备注','改进措施','提交时间（北京时间）','确认时间（北京时间）','来源','记录标识'])assert.ok(names.includes(retained));
+  for(const retained of ['第一责任人','第二责任人','QC备注','改善措施','提交时间（北京时间）','确认时间（北京时间）','来源','记录标识'])assert.ok(names.includes(retained));
   assert.equal(p.d.querySelectorAll('dialog img').length,2);assert.match(p.d.querySelector('dialog').textContent,/2026\/11\/02 01:25/);
  }finally{p.dom.window.close();}
 });
@@ -337,7 +337,7 @@ test('product identity precedes QC and photos; original is only requested explic
   assert.equal(fields['数量'],'168');
   assert.equal(fields['实际数量'],'160');
   assert.equal(fields['验货问题'],'模拟检查：未发现异常。');
-  assert.equal(fields['改进措施'],'核对清单');
+  assert.equal(fields['改善措施'],'核对清单');
   assert.equal(fields['不合格项'],undefined);
   p.d.querySelector('[data-photo]').click();const box=p.d.querySelector('.qsum-lightbox'),img=box.querySelector('img');assert.ok(!img.src.includes('original'));
   box.querySelector('[data-photo-original]').click();assert.ok(img.src.endsWith('?variant=original-display'));img.onerror();assert.match(box.textContent,/原图加载失败/);

@@ -56,13 +56,13 @@ def test_shared_supplements_totals_idempotency_and_record_immutability(db):
     assert weekly.save('huaxing', ACTOR, body) == first
     data = weekly.query('huaxing', DAY)
     assert data['tables']['group'][0]['values'][3:5] == ['1', '50.0%']
-    assert data['tables']['internal'][0]['values'][2:4] == ['1', '50.0%']
+    assert 'internal' not in data['tables']
     assert data['tables']['footer'][0]['values'][3:5] == ['1', '50.0%']
     assert data['totals']['group'][2:5] == [2, 1, '50.0%']
-    assert data['totals']['internal'][1:4] == [2, 1, '50.0%']
+    assert 'internal' not in data['totals']
     weekly.save('huaxing', ACTOR, payload(data, 'weeklyRemark', '人工备注\n完整保留'))
     again = weekly.query('huaxing', DAY)
-    assert all(again['tables'][name][0]['values'][-1] == '人工备注\n完整保留' for name in ('group','internal','footer'))
+    assert all(again['tables'][name][0]['values'][-1] == '人工备注\n完整保留' for name in ('group','footer'))
     assert weekly.query('huaxing', '2026-11-12')['total'] == 0
     after = hashes()
     assert all(after[path] == digest for path, digest in before.items())
@@ -136,7 +136,7 @@ def test_http_mapping_permission_factory_and_persistence(monkeypatch, tmp_path):
         from pydantic import SecretStr
         monkeypatch.setattr(active_excel.settings,'qc_department_gateway_token',SecretStr('isolated-weekly-export-token'*2))
         data=client.get(url,params={'date':DAY}).json()
-        for kind in ['detail','group','internal']:
+        for kind in ['detail','group']:
             export=dict(date=DAY,customer='',template=kind,sourceRevision=data['sourceRevision'],versions=active_excel.versions(data))
             assert client.post(url+'/excel',json=export,headers={'sec-fetch-site':'cross-site'}).status_code==403
             prepared=client.post(url+'/excel',json=export)
@@ -183,7 +183,7 @@ def test_blank_report_fields_save_per_entry_and_export_without_rewriting_approva
     fresh = weekly.query('huaxing', DAY)
     assert fresh['tables']['detail'][0]['values'][3] == '000123'
     assert fresh['tables']['detail'][1]['values'][3] == ''
-    assert fresh['tables']['internal'][0]['values'][5] == '周报跟进人'
+    assert fresh['fields'][fresh['customers'][0]['key']]['responsible']['value']=='周报跟进人' # retained archival supplement
     assert all(hashes()[path] == digest for path, digest in before.items())
     output = xlrd.open_workbook(file_contents=excel.render(fresh, 'detail'))
     assert output.sheet_by_index(0).cell_value(2, 3) == '000123'

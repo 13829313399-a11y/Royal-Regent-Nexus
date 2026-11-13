@@ -147,7 +147,7 @@ def query(factory, day, customer=''):
     for item, marker in snapshots:
         key, info = approved._customer(item)
         groups.setdefault(key, {**info, 'items': []})['items'].append((item, marker))
-    details, grouped, internal, footer = [], [], [], []
+    details, grouped, footer = [], [], []
     fields = {}
     customers = sorted(groups.values(), key=lambda g: (g['name'], g['code']))
     for group in customers:
@@ -177,10 +177,9 @@ def query(factory, day, customer=''):
         common = ['华兴', group['name'], count, returns, _rate(returns, count), val('returnReason'), val('hongKongContact')]
         grouped.append(dict(id=key, values=common + [val('weeklyRemark')]))
         footer.append(dict(id=key, values=common + [val('reworkA0D'), val('weeklyRemark')]))
-        internal.append(dict(id=key, values=[group['name'], count, returns, _rate(returns, count, True),
-                        val('returnReason'), owners, val('handling'), val('weeklyRemark')], editableFields=owner_fields))
+
     specifications = deepcopy(TEMPLATES)
-    tables = dict(detail=details, group=grouped, internal=internal, footer=footer)
+    tables = dict(detail=details, group=grouped, footer=footer)
     totals = {spec['id']: _totals(spec['headers'], tables[spec['id']]) for spec in specifications if spec['id'] != 'detail'}
     return dict(date=day, dateFrom=start, dateTo=end, sourceRevision=revision, templates=specifications,
                 customers=[{k: g[k] for k in ('key', 'name', 'code', 'label')} for g in customers],
