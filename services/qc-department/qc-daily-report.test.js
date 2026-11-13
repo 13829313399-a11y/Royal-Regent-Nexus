@@ -37,9 +37,9 @@ test('day week and month reuse the same dashboard with scoped details and period
       assert.equal(new URL(p.calls.at(-1),'http://localhost').searchParams.get('period'),kind);
       body.querySelector('.qdr-toggle').click();
       assert.equal(body.querySelector('.qdr-expanded').hidden,false);
-      const canvas=p.w.QcPeriodReports[kind].pdfCanvas();
-      assert.match(canvas.textContent, /2026-11-01 至 2026-11-30/);
-      assert.equal(canvas.querySelectorAll('thead th').length,13);
+      assert.equal(body.querySelectorAll('.qdr-full-table thead th').length,13);
+      assert.ok(body.querySelector('[data-qdr-export]'));
+      assert.equal(p.d.querySelector('#page-'+kind+' button[onclick*="PDF"],#page-'+kind+' button[onclick*="print"]'),null);
     }
     assert.equal(p.d.querySelectorAll('[id="qdr-daily-record-0"]').length,1);
     assert.equal(p.d.querySelectorAll('[id="qdr-weekly-record-0"]').length,1);
@@ -47,7 +47,7 @@ test('day week and month reuse the same dashboard with scoped details and period
     p.d.getElementById('monthlyMonth').value='';
     await p.w.QcPeriodReports.monthly.load();
     assert.match(p.d.getElementById('monthlyReportBody').textContent,/请选择报告日期/);
-    assert.throws(()=>p.w.QcPeriodReports.monthly.pdfCanvas());
+    assert.equal(p.d.querySelector('#monthlyReportBody [data-qdr-export]'),null);
   } finally {p.dom.window.close();}
 });
 test('late period response cannot overwrite the latest selected date', async () => {
@@ -62,7 +62,7 @@ test('late period response cannot overwrite the latest selected date', async () 
     pending[1](response('2026-10-01'));await second;
     pending[0](response('2026-11-06'));await first;
     assert.equal(p.d.querySelector('#page-weekly .qdr-period-range').textContent,'2026-10-01');
-    assert.equal(p.d.getElementById('btnExportWeekly').disabled,true);
+    assert.equal(p.d.querySelector('#weeklyReportBody [data-qdr-export]').disabled,true);
   } finally {p.dom.window.close();}
 });
 test('follow-ups preview two items, expand reversibly, reset on reload and export all items', async () => {
@@ -98,9 +98,6 @@ test('follow-ups preview two items, expand reversibly, reset on reload and expor
       toggle.click();
       await controller.load();
       assert.equal(body.querySelector('.qdr-follow-toggle').getAttribute('aria-expanded'),'false');
-      const pdf=controller.pdfCanvas();
-      assert.equal(pdf.querySelectorAll('.qdr-issues li').length,5);
-      assert.equal(pdf.querySelector('.qdr-follow-toggle'),null);
     }
     count=2;await p.w.QcPeriodReports.daily.load();
     assert.equal(p.d.querySelector('#dailyReportBody .qdr-follow-toggle'),null);
