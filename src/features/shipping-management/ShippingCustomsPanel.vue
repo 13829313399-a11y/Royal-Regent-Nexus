@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { Download, RefreshCw } from '@lucide/vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { ChevronDown, ChevronLeft, ChevronRight, Download, RefreshCw, Search } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   downloadCustomsDoc,
@@ -12,11 +12,57 @@ import {
 const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string]; back: [] }>()
 
+const PAGE_SIZE = 10
+
 const docs = ref<CustomsDoc[]>([])
-const unread = ref(0)
 const incoming = ref(0)
 const loading = ref(false)
 const message = ref('')
+const searchInput = ref('')
+const appliedQuery = ref('')
+const portFilter = ref('')
+const typeFilter = ref('')
+const page = ref(1)
+
+const ports = computed(() => [...new Set(docs.value.map((doc) => doc.port).filter(Boolean))])
+const containerTypes = computed(() => [...new Set(docs.value.map((doc) => doc.container_type).filter(Boolean))])
+
+const filtered = computed(() => {
+  const keyword = appliedQuery.value.trim().toLowerCase()
+  return docs.value.filter((doc) => {
+    if (portFilter.value && doc.port !== portFilter.value) return false
+    if (typeFilter.value && doc.container_type !== typeFilter.value) return false
+    if (!keyword) return true
+    return doc.filename.toLowerCase().includes(keyword) || doc.subject.toLowerCase().includes(keyword)
+  })
+})
+const total = computed(() => filtered.value.length)
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
+const pagedDocs = computed(() => filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
+
+watch(filtered, () => { page.value = 1 })
+watch(pageCount, (count) => { if (page.value > count) page.value = count })
+
+function applySearch() {
+  appliedQuery.value = searchInput.value.trim()
+  page.value = 1
+}
+
+function resetSearch() {
+  searchInput.value = ''
+  appliedQuery.value = ''
+  portFilter.value = ''
+  typeFilter.value = ''
+  page.value = 1
+}
+
+function formatMonthDayTime(value: string) {
+  if (!value) return '—'
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/)
+  if (!match) return value
+  const [, , month, day, hour, minute] = match
+  return hour ? `${Number(month)}/${Number(day)} ${hour}:${minute}` : `${Number(month)}/${Number(day)}`
+}
 
 function sizeLabel(size: number) {
   if (size > 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`
@@ -28,12 +74,9 @@ async function load(markRead = false) {
   try {
     const result = await listCustomsDocs(props.factoryId)
     docs.value = result.docs
-    unread.value = result.unread
     incoming.value = result.unread
     message.value = ''
-    if (result.unread) {
-      emit('notify', `有 ${result.unread} 份通关一体化资料到，请查看。`)
-    }
+    if (result.unread) emit('notify', `有 ${result.unread} 份通关一体化资料到，请查看。`)
     if (result.unread && markRead) await markCustomsDocsRead(props.factoryId)
   } catch (error) {
     message.value = `读取通关一体化资料失败：${getApiErrorMessage(error)}`
@@ -60,51 +103,113 @@ onMounted(() => load(true))
 </script>
 
 <template>
-  <section class="space-y-4" aria-label="通关一体化资料">
-    <div class="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/50 p-4">
-      <div class="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h2 class="text-[16px] font-bold text-emerald-950">通关一体化资料</h2>
-          <p class="mt-0.5 text-[11px] text-slate-500">自动识别邮件中的「出货资料 / 通关一体化资料」，保存柜装箱单附件。</p>
-        </div>
+  <section class="enterprise-panel overflow-hidden rounded-xl" aria-label="通关一体化资料">
+    <header class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-4 sm:px-5">
+      <div class="min-w-0">
         <div class="flex items-center gap-2">
-          <button type="button" class="text-[11px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
-          <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[12px] text-slate-600" @click="load(false)">
-            <RefreshCw class="size-3.5" :class="loading ? 'animate-spin' : ''" />刷新
-          </button>
+          <h2 class="text-[17px] font-semibold tracking-[-0.02em] text-slate-950">通关一体化资料</h2>
+          <span v-if="total" class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-800">{{ total }}</span>
         </div>
+        <p class="mt-1 text-[11px] text-slate-500">自动识别邮件中的「出货资料 / 通关一体化资料」，保存柜装箱单附件。</p>
       </div>
-      <p v-if="message" class="mt-2 text-[11px] text-rose-600">{{ message }}</p>
-      <p v-if="incoming" class="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-800" role="status">
-        有 {{ incoming }} 份通关一体化资料到，请查看下方列表。
-      </p>
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="text-[11px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
+        <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-semibold text-slate-600" @click="load(false)">
+          <RefreshCw class="size-3.5" :class="loading ? 'animate-spin' : ''" />刷新
+        </button>
+      </div>
+    </header>
+
+    <p v-if="incoming" class="border-b border-amber-100 bg-amber-50 px-4 py-2 text-[12px] font-semibold text-amber-800" role="status">
+      有 {{ incoming }} 份通关一体化资料到，请查看下方列表。
+    </p>
+    <p v-if="message" class="border-b border-rose-100 bg-rose-50 px-4 py-2 text-[11px] text-rose-600">{{ message }}</p>
+
+    <div class="border-b border-slate-100 px-4 py-3 sm:px-5">
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="relative min-w-[220px] flex-1">
+          <span class="sr-only">搜索文件名或邮件主题</span>
+          <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <input
+            v-model="searchInput"
+            type="search"
+            aria-label="搜索文件名或邮件主题"
+            placeholder="搜索文件名或邮件主题"
+            class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-[13px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/15"
+            @keydown.enter="applySearch"
+          >
+        </label>
+        <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white" @click="applySearch">
+          <Search class="size-4" aria-hidden="true" />搜索
+        </button>
+        <label class="relative">
+          <span class="sr-only">全部港口</span>
+          <select v-model="portFilter" aria-label="全部港口" class="h-9 appearance-none rounded-lg border border-slate-200 bg-white pl-3 pr-8 text-[12px] font-medium text-slate-700 outline-none focus:border-emerald-500">
+            <option value="">全部港口</option>
+            <option v-for="name in ports" :key="name" :value="name">{{ name }}</option>
+          </select>
+          <ChevronDown class="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+        </label>
+        <label class="relative">
+          <span class="sr-only">全部柜型</span>
+          <select v-model="typeFilter" aria-label="全部柜型" class="h-9 appearance-none rounded-lg border border-slate-200 bg-white pl-3 pr-8 text-[12px] font-medium text-slate-700 outline-none focus:border-emerald-500">
+            <option value="">全部柜型</option>
+            <option v-for="name in containerTypes" :key="name" :value="name">{{ name }}</option>
+          </select>
+          <ChevronDown class="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+        </label>
+        <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600" @click="resetSearch">重置</button>
+      </div>
     </div>
 
-    <div class="rounded-xl border border-emerald-100/80 bg-white p-4">
-      <h3 class="text-[13px] font-bold text-slate-800">资料列表</h3>
-      <div class="mt-2 overflow-x-auto">
-        <table class="w-full min-w-[760px] text-left text-[11px]">
-          <thead class="bg-slate-50 text-slate-500">
-            <tr><th class="px-2 py-2">文件名</th><th class="px-2 py-2">邮件主题</th><th class="px-2 py-2 text-right">大小</th><th class="px-2 py-2">到达时间</th><th class="px-2 py-2 text-right">操作</th></tr>
-          </thead>
-          <tbody class="divide-y divide-slate-100">
-            <tr v-for="doc in docs" :key="doc.id">
-              <td class="px-2 py-2 font-semibold text-slate-800">{{ doc.filename }}</td>
-              <td class="max-w-[420px] truncate px-2 py-2 text-slate-600">{{ doc.subject }}</td>
-              <td class="px-2 py-2 text-right tabular-nums text-slate-500">{{ sizeLabel(doc.size) }}</td>
-              <td class="px-2 py-2 tabular-nums text-slate-500">{{ doc.created_at.replace('T', ' ') }}</td>
-              <td class="px-2 py-2 text-right">
-                <button type="button" class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700" @click="download(doc)">
-                  <Download class="size-3.5" />下载
-                </button>
-              </td>
-            </tr>
-            <tr v-if="!docs.length">
-              <td colspan="5" class="px-2 py-8 text-center text-slate-400">暂无通关一体化资料</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[1080px] text-left text-[12px]">
+        <thead class="bg-slate-50 text-[11px] font-semibold text-slate-500">
+          <tr>
+            <th class="px-3 py-2">文件名</th>
+            <th class="px-3 py-2">邮件主题</th>
+            <th class="px-3 py-2">港口</th>
+            <th class="px-3 py-2">柜型</th>
+            <th class="px-3 py-2">SI截止 / 截关期</th>
+            <th class="px-3 py-2">特殊要求</th>
+            <th class="px-3 py-2 text-right">大小</th>
+            <th class="px-3 py-2">到达时间</th>
+            <th class="px-3 py-2 text-right">操作</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          <tr v-for="doc in pagedDocs" :key="doc.id" class="bg-white hover:bg-slate-50/60">
+            <td class="px-3 py-2 font-semibold text-slate-800">{{ doc.filename }}</td>
+            <td class="max-w-[340px] truncate px-3 py-2 text-slate-600">{{ doc.subject }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ doc.port || '—' }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ doc.container_type || '—' }}</td>
+            <td class="px-3 py-2 tabular-nums text-slate-600">{{ formatMonthDayTime(doc.si_cutoff) }}</td>
+            <td class="max-w-[180px] truncate px-3 py-2 text-[11px] text-slate-500" :title="doc.special_note || '—'">{{ doc.special_note || '—' }}</td>
+            <td class="px-3 py-2 text-right tabular-nums text-slate-500">{{ sizeLabel(doc.size) }}</td>
+            <td class="px-3 py-2 tabular-nums text-slate-500">{{ formatMonthDayTime(doc.created_at) }}</td>
+            <td class="px-3 py-2 text-right">
+              <button type="button" class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700" @click="download(doc)">
+                <Download class="size-3.5" />下载
+              </button>
+            </td>
+          </tr>
+          <tr v-if="!pagedDocs.length">
+            <td colspan="9" class="px-3 py-12 text-center text-slate-400">{{ docs.length ? '没有匹配的资料' : '暂无通关一体化资料' }}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
+
+    <footer class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-2.5 sm:px-5">
+      <span class="text-[11px] text-slate-500">第 {{ page }} / {{ pageCount }} 页 · 本页 {{ pagedDocs.length }} 条</span>
+      <div class="flex items-center gap-2">
+        <button type="button" class="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-600 disabled:opacity-40" :disabled="page <= 1" @click="page -= 1">
+          <ChevronLeft class="size-3.5" />上一页
+        </button>
+        <button type="button" class="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-600 disabled:opacity-40" :disabled="page >= pageCount" @click="page += 1">
+          下一页<ChevronRight class="size-3.5" />
+        </button>
+      </div>
+    </footer>
   </section>
 </template>

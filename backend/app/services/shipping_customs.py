@@ -18,13 +18,17 @@ def _now() -> str:
     return datetime.now().isoformat(timespec='seconds')
 
 
-def capture_from_eml(db, factory_id: str, mail_item_id: str, raw: bytes) -> int:
+def capture_from_eml(db, factory_id: str, mail_item_id: str, raw: bytes, fields: dict | None = None) -> int:
     try:
         message = email.message_from_bytes(raw, policy=policy.default)
     except Exception:  # noqa: BLE001
         return 0
     subject = str(message.get('Subject') or '')
     saved = 0
+    fields = fields or {}
+    port = str(fields.get('from_port') or fields.get('terminal') or '')[:120]
+    container_type = str(fields.get('container_type') or '')[:60]
+    si_cutoff = str(fields.get('cutoff_date') or '')[:40]
     for part in message.walk():
         filename = part.get_filename()
         if not filename:
@@ -46,7 +50,8 @@ def capture_from_eml(db, factory_id: str, mail_item_id: str, raw: bytes) -> int:
             continue
         db.add(ShippingCustomsDoc(
             id=f'customs-{uuid4().hex}', factory_id=factory_id, mail_item_id=mail_item_id,
-            subject=subject[:500], filename=filename[:500], content=payload,
+            subject=subject[:500], port=port, container_type=container_type, si_cutoff=si_cutoff,
+            special_note='', filename=filename[:500], content=payload,
             created_at=_now(), read_at='',
         ))
         saved += 1
@@ -56,6 +61,8 @@ def capture_from_eml(db, factory_id: str, mail_item_id: str, raw: bytes) -> int:
 def _doc(row: ShippingCustomsDoc) -> dict:
     return {
         'id': row.id, 'factory_id': row.factory_id, 'subject': row.subject,
+        'port': row.port, 'container_type': row.container_type, 'si_cutoff': row.si_cutoff,
+        'special_note': row.special_note,
         'filename': row.filename, 'size': len(row.content or b''),
         'created_at': row.created_at, 'read': bool(row.read_at),
     }

@@ -542,6 +542,10 @@ export interface CustomsDoc {
   id: string
   filename: string
   subject: string
+  port: string
+  container_type: string
+  si_cutoff: string
+  special_note: string
   size: number
   created_at: string
   read: boolean

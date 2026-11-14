@@ -99,7 +99,7 @@ def create_batch_internal(
         items.append(item)
         if filename.lower().endswith('.eml'):
             from app.services.shipping_customs import capture_from_eml
-            capture_from_eml(db, factory_id, item.id, raw)
+            capture_from_eml(db, factory_id, item.id, raw, _loads(item.fields_json))
         batch.total_count += 1
         if item.status == 'failed':
             batch.failed_count += 1
