@@ -60,12 +60,12 @@
       {
         "path": "backend/app/services/cutting_orders.py",
         "symbol": "def submit",
-        "sha256": "4eaae9ca164c87a5c023b953ca9fbefb0aa3b2e4d3b32a8119e8b42ea83e9535"
+        "sha256": "ce376c3d534cbe9f67f5dc39bc42d05b51b0da010b55c01cb5fd61ce4a795c5c"
       },
       {
         "path": "backend/app/api/cutting_operations.py",
         "symbol": "def order_command",
-        "sha256": "54517d287f2a0d61118ececbbb29be4a69798e2eaafa9f826659b1aca48e4a70"
+        "sha256": "553529797782dbfdd43a36643df00c9ba057b4bc30720519b0f973b7817ab073"
       },
       {
         "path": "backend/app/services/cutting_planning.py",

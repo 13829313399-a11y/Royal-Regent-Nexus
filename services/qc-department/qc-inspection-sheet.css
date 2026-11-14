@@ -236,8 +236,6 @@ body.qc-liquid-glass .qia-notification[data-notice-state=closing]{opacity:0;tran
 .qia-event summary span{color:var(--text-dim)}.qia-event-content{padding:8px 12px;line-height:1.65}.qia-event summary:focus-visible{outline:2px solid var(--glass-primary);outline-offset:4px}
 .qis-table .qis-review-input{width:100%;min-width:0;max-width:100%;box-sizing:border-box;min-height:28px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg-input);color:var(--text-hi);font:inherit}
 .qis-table input.qis-review-input{height:28px}.qis-table [data-review-status]{display:block;font-size:10px;line-height:14px;color:var(--text-dim)}
-#page-review .qis-table :is([data-column=responsible],[data-column=firstResponsible],[data-column=secondResponsible],[data-column=inspectionFactory]) .qis-cell{width:68px}
-#page-review .qis-table textarea.qis-review-input{min-width:0;width:100%} #page-review .qis-table [data-column=otherRemark] .qis-cell{width:120px}
 @media(prefers-reduced-motion:reduce){body.qc-liquid-glass .qia-notification{animation:none!important;transform:none!important;transition:opacity .06s linear!important}.qia-event summary::after{transition:none}}
 
 /* Round five polish: local glass chrome; keep table geometry and opaque frozen cells. */
@@ -269,14 +267,8 @@ body.theme-dark.qc-liquid-glass :is(#page-records,#page-review) .qis-table :is(s
 body.theme-dark.qc-liquid-glass :is(#page-records,#page-review) .qis-table .qis-error{color:var(--red)}
 body.theme-dark.qc-liquid-glass .qis-notice :is([data-locate],[data-view-entry]){color:var(--accent)}
 
-/* Review supplements use bounded cells; structured details open without expanding the row. */
-#page-review .qis-table td:has([data-execution-field]) .qis-cell{width:96px}
-:is(#page-records,#page-review) .qis-table td:has([data-execution-field="actualDate"]) .qis-cell{width:116px}
-
 /* Review keeps one transient row status and read-only source/history details. */
 #page-review [data-save-status][hidden]{display:none}
-#page-review .qis-table td:has(textarea[data-execution-field]) .qis-cell{width:120px}
-#page-review .qis-table td:has([data-review-field="reportStatus"]) .qis-cell{width:68px}
 .qis-detail-button{font:inherit;white-space:nowrap;border:1px solid var(--border-hi);border-radius:6px;background:var(--bg-input);color:var(--text-hi);padding:5px 7px;cursor:pointer}
 .qis-details-dialog{width:min(900px,95vw);max-width:95vw}.qis-detail-grid{overflow:auto;max-height:55vh}
 .qis-detail-grid table{border-collapse:collapse;width:100%;font-size:12px}.qis-detail-grid th,.qis-detail-grid td{padding:6px;border:1px solid var(--border-hi);vertical-align:top}
@@ -293,8 +285,6 @@ body.theme-dark.qc-liquid-glass .qis-notice :is([data-locate],[data-view-entry])
 .qia-dialog footer{display:flex;justify-content:flex-end;gap:8px}.qia-dialog footer button{font:inherit;padding:7px 12px;min-height:34px}
 #page-review .qis-table [data-column=customerRequirements] .qis-cell{width:180px}
 #page-review .qis-table [data-column=shipDate] .qis-cell{width:132px}
-body.qc-liquid-glass #page-review .qis-table :is(input.qis-review-input,textarea){border:1px solid var(--border);border-radius:6px;padding:4px 6px;background:color-mix(in srgb,var(--bg-panel) 82%,transparent);color:var(--text-hi);font:inherit;box-sizing:border-box}
-body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,textarea):focus{outline:2px solid #16876b;outline-offset:1px;border-color:#16876b;box-shadow:0 0 0 2px color-mix(in srgb,#16876b 15%,transparent);background:var(--bg-card)}
 body.qc-liquid-glass .qia-notification[data-notice-state=visible]{opacity:1;transform:translate3d(0,0,0);transition:opacity .18s cubic-bezier(.16,1,.3,1),transform .18s cubic-bezier(.16,1,.3,1)}
 @media(max-width:640px){#page-review .qis-wrap{--qis-po-text:174px}#page-review .qis-row-actions{gap:4px}}
 
@@ -370,3 +360,44 @@ html.qc-mobile.qc-short-viewport body.qc-liquid-glass:has(.qis-mobile-header-tog
 html.qc-mobile.qc-short-viewport body.qc-liquid-glass .qis-mobile-header-toggle{grid-column:3;grid-row:1;order:2}
 html.qc-mobile.qc-short-viewport body.qc-liquid-glass:has(.qis-mobile-header-toggle) .topbar-right{grid-row:2}
 html.qc-mobile.qc-short-viewport #page-records:not(.qis-tools-open) .records-filters{display:none}
+
+/* Only the first customer-inspection record marks the boundary in the continuous table. */
+body.qc-liquid-glass #page-review .qis-table .qis-review-customer-start td{
+  background:#fff5cf!important;
+}
+body.theme-dark.qc-liquid-glass #page-review .qis-table .qis-review-customer-start td{
+  background:#514522!important;
+}
+#page-review .qis-not-applicable{color:var(--text-dim);font-weight:400}
+:is(#page-records,#page-review) .qis-table [data-column="inspectionExecution.sampleQuantity"]{min-width:90px;width:90px;max-width:100px}
+:is(#page-records,#page-review) .qis-table [data-column="inspectionExecution.sampleQuantity"] input{width:76px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="inspector"]{min-width:120px;max-width:160px}
+
+/* Review: matching widths for short fields and multiline fields; stored values read like other cells. */
+#page-review .qis-wrap{--qis-short-field:132px;--qis-long-field:179px;--qis-short-height:34px;--qis-long-height:51px}
+#page-review .qis-table :is([data-column=result],[data-column=firstResponsible],[data-column=secondResponsible],[data-column=reportStatus],[data-column="inspectionExecution.institution"]){
+  box-sizing:border-box;width:calc(var(--qis-short-field) + 17px);min-width:calc(var(--qis-short-field) + 17px);max-width:calc(var(--qis-short-field) + 17px);
+}
+#page-review .qis-table :is([data-column=result],[data-column=firstResponsible],[data-column=secondResponsible],[data-column=reportStatus],[data-column="inspectionExecution.institution"]) .qis-cell{width:var(--qis-short-field)}
+html body #page-review .qis-table :is([data-column=inspectionProblem],[data-column=remark],[data-column="inspectionExecution.analysisReason"],[data-column=improvement],[data-column=otherRemark]){
+  box-sizing:border-box;width:calc(var(--qis-long-field) + 17px);min-width:calc(var(--qis-long-field) + 17px);max-width:calc(var(--qis-long-field) + 17px);
+}
+html body #page-review .qis-table :is([data-column=inspectionProblem],[data-column=remark],[data-column="inspectionExecution.analysisReason"],[data-column=improvement],[data-column=otherRemark]) .qis-cell{width:var(--qis-long-field)}
+html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-result],[data-problem],[data-remark],[data-improvement]){
+  width:100%;min-width:0;max-width:100%;box-sizing:border-box;border:1px solid var(--border-hi);border-radius:6px;background:var(--bg-input);color:var(--text-hi);padding:4px 7px;
+}
+html body #page-review .qis-table :is(input.qis-review-input,select.qis-review-input,select[data-result]){height:var(--qis-short-height);min-height:var(--qis-short-height)}
+html body #page-review .qis-table textarea{height:var(--qis-long-height);min-height:var(--qis-long-height);max-height:var(--qis-long-height)}
+#page-review .qis-table select{appearance:auto;cursor:pointer}
+html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-result],[data-problem],[data-remark],[data-improvement]):focus{outline:2px solid #16876b;outline-offset:-2px;box-shadow:none}
+#page-review .qis-review-value{white-space:pre-wrap;overflow-wrap:anywhere}
+#page-review button.qis-review-value{
+  display:block;width:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:inherit;text-align:start;cursor:text;
+}
+#page-review button.qis-review-value:hover{text-decoration:underline;text-decoration-color:var(--text-dim);text-underline-offset:3px}
+#page-review button.qis-review-value:focus-visible{outline-offset:-2px}
+#page-review .qis-inline-value:not([data-show-value])>.qis-review-value,
+#page-review .qis-inline-value[data-show-value]>:is(input,select,textarea){display:none}
+@media(max-width:640px){
+  #page-review .qis-wrap{--qis-short-field:132px;--qis-long-field:clamp(133px,calc(100vw - 205px),179px);--qis-short-height:44px;--qis-long-height:64px}
+}

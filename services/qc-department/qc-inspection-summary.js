@@ -118,13 +118,19 @@
       if(img.complete&&!img.naturalWidth)show();
     });
   }
-  function photoPreview(row,photos,start,detailDialog){
-    if(!photos.length||!row.entryId||!detailDialog.isConnected)return;
+  function photoPreview(row,photos,start,detailDialog=null,trigger=root.document.activeElement){
+    if(!photos[start]||!row.entryId||(detailDialog&&!detailDialog.isConnected))return;
     if(activePhoto?.el.isConnected){activePhoto.el.focus();return;}
-    const trigger=root.document.activeElement,body=detailDialog.querySelector('.qrd-content');
-    const position={top:body.scrollTop,left:body.scrollLeft};
+    const body=detailDialog?.querySelector('.qrd-content');
+    const position=body&&{top:body.scrollTop,left:body.scrollLeft};
     const el=root.document.createElement('dialog');el.className='qsum-lightbox';el.setAttribute('aria-label','验货照片预览');
     el.innerHTML='<header><strong data-photo-title></strong><button type="button" data-photo-close aria-label="关闭照片预览">关闭</button></header><div class="qsum-lightbox-tools"><button type="button" data-photo-prev aria-label="上一张照片">← 上一张</button><button type="button" data-photo-next aria-label="下一张照片">下一张 →</button><button type="button" data-photo-minus aria-label="缩小照片">−</button><output data-photo-scale aria-live="polite">100%</output><button type="button" data-photo-plus aria-label="放大照片">＋</button><button type="button" data-photo-fit>适应窗口</button><button type="button" data-photo-original>查看原图</button><span data-photo-quality role="status"></span></div><div class="qsum-lightbox-viewport" tabindex="0" aria-label="照片区域，可滚轮缩放、捏合及拖动"><div class="qsum-lightbox-canvas"><img><p data-photo-error hidden role="alert">照片加载失败，请重试。</p></div></div><footer><span data-photo-name></span><button type="button" data-photo-retry hidden>重新加载照片</button></footer>';
+    const originalDownload=root.document.createElement('a');
+    originalDownload.className='btn btn-secondary';
+    originalDownload.dataset.photoDownload='';
+    originalDownload.textContent='下载原文件';
+    originalDownload.hidden=true;
+    el.querySelector('footer').append(originalDownload);
     root.document.body.append(el);
     let variant='preview',index=start,scale=1,fit=1,x=0,y=0,width=0,height=0,loaded=false,raf=null,closed=false,nativeGesture=null,lastPointer=null;
     const viewport=el.querySelector('.qsum-lightbox-viewport'),img=el.querySelector('img'),error=el.querySelector('[data-photo-error]'),retry=el.querySelector('[data-photo-retry]');
@@ -152,7 +158,13 @@
       variant=original===true?'original-display':'preview';
       if(closed)return;
       endNativeGesture();loaded=false;pointers.clear();lastPointer=null;scale=1;width=height=0;img.style.visibility='hidden';error.hidden=retry.hidden=true;
-      const p=photos[index];img.alt=p.name||'验货照片';img.src='api/inspection-sheet/entries/'+encodeURIComponent(row.entryId)+'/photos/'+encodeURIComponent(p.id)+(variant==='preview'?'':'?variant='+variant);
+      const p=photos[index];
+      const path='api/inspection-sheet/entries/'+encodeURIComponent(row.entryId)+'/photos/'+encodeURIComponent(p.id);
+      img.alt=p.name||'验货照片';
+      img.src=path+(variant==='preview'?'':'?variant='+variant);
+      originalDownload.hidden=!p.originalAvailable;
+      originalDownload.href=path+'?variant=original';
+      originalDownload.download=p.name||'验货照片';
       const originalButton=el.querySelector('[data-photo-original]');originalButton.disabled=!p.originalAvailable;originalButton.textContent=variant==='preview'?'查看原图':'返回预览图';
       el.querySelector('[data-photo-quality]').textContent=variant==='preview'?(p.originalAvailable?'预览图':'预览图 · 原图不可用'):'正在加载原图…';
       el.querySelector('[data-photo-title]').textContent='验货照片 '+(index+1)+' / '+photos.length;
@@ -220,15 +232,16 @@
       if(closed)return;closed=true;endNativeGesture();observer?.disconnect();pointers.clear();
       if(raf!==null)(root.cancelAnimationFrame?.bind(root)||root.clearTimeout)(raf);
       img.onload=img.onerror=null;img.removeAttribute('src');
-      detailDialog.removeEventListener('close',closePhoto);el.remove();
+      detailDialog?.removeEventListener('close',closePhoto);el.remove();
       if(activePhoto?.el===el)activePhoto=null;
-      if(detailDialog.isConnected){if(trigger?.isConnected)trigger.focus({preventScroll:true});body.scrollTop=position.top;body.scrollLeft=position.left;}
+      if(trigger?.isConnected)trigger.focus({preventScroll:true});
+      if(body?.isConnected){body.scrollTop=position.top;body.scrollLeft=position.left;}
     }
-    el.addEventListener('close',cleanup);detailDialog.addEventListener('close',closePhoto,{once:true});
+    el.addEventListener('close',cleanup);detailDialog?.addEventListener('close',closePhoto,{once:true});
     activePhoto={el,close:closePhoto};
     el.showModal();show();
   }
-  const dossierLabels={customer_q:'客 Q',line_q:'行 Q',requested_ship_date:'客户要求交期',received_date:'来单日期',packaging:'包装方式',standard:'国家 / 客户标准',contact:'联系人',date_code:'日期码',production_no:'生产参考号',label:'产品或包装标签',customer_label:'外箱贴纸',remarks:'业务备注',note:'订单备注',product_name_zh:'中文品名',product_name_en:'英文品名',contract_no:'合同号',po_no:'客户 PO',units_per_carton:'每箱数量',carton_count:'箱数',country:'出口国原始值',id:'订单标识',reference_no:'参考号',product_no:'货号',quantity:'订单数量',shipped_quantity:'已走货数量',customer_name:'客户',customer_code:'客户编码',status:'业务订单状态',result:'验货结果',remark:'验货备注',inspectionProblem:'验货问题',improvement:'改进措施',firstResponsible:'第一责任人',secondResponsible:'第二责任人',otherRemark:'其他备注',actualDate:'实际验货日期',actualQuantity:'实际数量',reportStatus:'报告状态',contractNo:'合同号',shipDate:'走货日期'};
+  const dossierLabels={customer_q:'客 Q',line_q:'行 Q',requested_ship_date:'客户要求交期',received_date:'来单日期',packaging:'包装方式',standard:'国家 / 客户标准',contact:'联系人',date_code:'日期码',production_no:'生产参考号',label:'产品或包装标签',customer_label:'外箱贴纸',remarks:'业务备注',note:'订单备注',product_name_zh:'中文品名',product_name_en:'英文品名',contract_no:'合同号',po_no:'客户 PO',units_per_carton:'每箱数量',carton_count:'箱数',country:'出口国原始值',id:'订单标识',reference_no:'参考号',product_no:'货号',quantity:'订单数量',shipped_quantity:'已走货数量',customer_name:'客户',customer_code:'客户编码',status:'业务订单状态',result:'验货结果',remark:'验货备注',inspectionProblem:'验货问题',improvement:'改善措施',firstResponsible:'第一责任人',secondResponsible:'第二责任人',otherRemark:'其他备注',actualDate:'实际验货日期',actualQuantity:'实际数量',reportStatus:'报告状态',contractNo:'合同号',shipDate:'走货日期'};
   const hasBusinessValue=value=>value!==null&&value!==undefined&&(typeof value!=='string'||value.trim()!=='')&&(typeof value!=='object'||Object.values(value).some(hasBusinessValue));
   const dossierValue=value=>!hasBusinessValue(value)?'<span class="qsum-dossier-empty" aria-label="空值"></span>':Array.isArray(value)?'<ul class="qsum-value-list">'+value.filter(hasBusinessValue).map(v=>'<li>'+dossierValue(v)+'</li>').join('')+'</ul>':typeof value==='object'?'<dl class="qsum-value-object">'+Object.entries(value).filter(([,v])=>hasBusinessValue(v)).map(([k,v])=>'<dt>'+esc(dossierLabels[k]||k)+'</dt><dd>'+dossierValue(v)+'</dd>').join('')+'</dl>':esc(value);
   const dossierGroup=(title,fields)=>'<section class="qsum-dossier-section"><h3>'+esc(title)+'</h3><dl class="qsum-detail">'+fields.map(([label,value])=>'<dt>'+esc(label)+'</dt><dd>'+dossierValue(value)+'</dd>').join('')+'</dl></section>';
@@ -261,7 +274,7 @@
     return detailPanelSection('业务资料', notice + grid + collected + restricted);
   }
   const reviewActions=new Set(['submit','confirm','revoke','return-to-inspection']);
-  const historyLabels={...dossierLabels,measurements:'测量明细',defects:'不良明细',institution:'第三方机构',reportNo:'报告编号',reportMissingReason:'报告暂缺说明',resultExplanation:'结论说明',remark:'QC备注',reviewState:'审核状态',submittedAt:'提交时间',submittedBy:'提交人',confirmedAt:'确认时间',confirmedBy:'确认人',customerRequirements:'客户要求',sampleQuantity:'抽查数量',inspector:'检验人员',reason:'操作原因',expectedRevision:'操作时版本',legacyCompleted:'历史完成记录',revision:'版本',updated_at:'业务更新时间',warning:'核验说明',phase:'关联阶段',eventAt:'事件时间',observationKind:'采集类型'};
+  const historyLabels={...dossierLabels,measurements:'测量明细',defects:'不良明细',institution:'第三方机构',reportNo:'报告编号',reportMissingReason:'报告暂缺说明',resultExplanation:'结论说明',remark:'QC备注',reviewState:'审核状态',submittedAt:'提交时间',submittedBy:'提交人',confirmedAt:'确认时间',confirmedBy:'确认人',customerRequirements:'客户要求',analysisReason:'分析原因',inspectorId:'检验人员标识',institutionId:'机构标识',sampleQuantity:'抽查数量',inspector:'检验人员',reason:'操作原因',expectedRevision:'操作时版本',legacyCompleted:'历史完成记录',revision:'版本',updated_at:'业务更新时间',warning:'核验说明',phase:'关联阶段',eventAt:'事件时间',observationKind:'采集类型'};
   const historyStates={pending:'待审核',approved:'已审核',returned_to_inspection:'退回验货台',completed:'已完成',returned:'已退回',rejected:'未通过',task:'任务创建',approval:'审核确认',linked:'已关联',missing:'未关联',ambiguous:'关联待核实'};
   const historyName=key=>key.split('.').map(k=>historyLabels[k]||({data:'业务字段',record:'业务订单',inspectionExecution:'验货明细'}[k])||k).join(' · ');
   const historyTime=value=>value&&Number.isFinite(Date.parse(value))?time(value):'未记录';
@@ -333,7 +346,7 @@
     const productRight = ['客PO#','合同号','数量'];
     const inspectionLeft = ['实际验货日期','最终采用日期','最终日期来源'];
     const inspectionRight = ['检验人员','验货工厂'];
-    const noteLabels = ['验货问题','改进措施','QC备注'];
+    const noteLabels = ['验货问题','分析原因','改善措施','QC备注'];
     const present = (fields, labels) => labels.filter(label => hasBusinessValue(fields.get(label)));
     const displayFields = (fields, labels) => labels.map(label => [label,display(fields.get(label))]);
 
@@ -376,7 +389,7 @@
       if(closed)return;if(!data.qc)throw Error('资料格式不完整，请刷新后重试');
       const row=data.qc,e=row.inspectionExecution||{},src=row.sourceRecord||{},photos=row.photos||[];
       const basic=[['原始计划日期',row.scheduleDate?(row.scheduleDate+(row.scheduleDateTo&&row.scheduleDateTo!==row.scheduleDate?' 至 '+row.scheduleDateTo:'')):''],['客户',row.customer],['PO#',row.poNo],['出口国',row.country],['货号',row.productNo],['产品名称',row.productName],['数量',row.quantity],['装箱',row.unitsPerCarton],['箱数',row.cartonCount],['生产',row.production],['机构',row.agency],['客PO#',row.customerPo],['完成情况',row.submissionStatus==='completed'?'已完成':row.completion],['合同号',row.contractNo??src.contractNo],['客户编码',row.customerCode??src.customerCode],['走货日期',row.shipDate??src.shipDate],['原始要求走货日期',src.shipDate],['已出货数量',row.shippedQuantity??src.shippedQuantity],['来源订单状态',src.sourceStatus]];
-      const inspection=[['验货结果',row.result],['状态',labels[row.status]],['实际验货日期',row.actualDate??e.actualDate],['最终采用日期',row.inspectionDate],['最终日期来源',dateSource(row)],['验货类型',row.inspectionType],['实际数量',row.actualQuantity??e.actualQuantity],['抽查数量',e.sampleQuantity],['检验人员',row.inspector??e.inspector],['第三方机构',e.institution],['报告状态',row.reportStatus],['报告编号',e.reportNo],['验货问题',row.inspectionProblem],['第一责任人',row.firstResponsible],['第二责任人',row.secondResponsible],['改进措施',row.improvement],['QC备注',row.remark],['其他备注',row.otherRemark],['客户要求',row.customerRequirements],['验货工厂',row.inspectionFactory]];
+      const inspection=[['验货结果',row.result],['状态',labels[row.status]],['实际验货日期',row.actualDate??e.actualDate],['最终采用日期',row.inspectionDate],['最终日期来源',dateSource(row)],['验货类型',row.inspectionType],['实际数量',row.actualQuantity??e.actualQuantity],['抽查数量',e.sampleQuantity],['检验人员',row.inspector??e.inspector],['第三方机构',e.institution],['报告状态',row.reportStatus],['报告编号',e.reportNo],['验货问题',row.inspectionProblem],['第一责任人',row.firstResponsible],['第二责任人',row.secondResponsible],['分析原因',e.analysisReason],['改善措施',row.improvement],['QC备注',row.remark],['其他备注',row.otherRemark],['客户要求',row.customerRequirements],['验货工厂',row.inspectionFactory]];
       const record=[['当前审核状态',row.reviewState==='approved'?'已审核':row.reviewState==='pending'?'待审核':labels[row.status]||row.status],['提交时间（北京时间）',row.submittedAt?time(row.submittedAt):''],['提交人',row.submittedBy],['确认人',row.confirmedBy],['确认时间（北京时间）',time(row.confirmedAt)],['归档时间（北京时间）',time(row.archivedAt)],['来源',row.sourceLabel],['工作表 / 行',[row.sourceSheet,row.sourceRow].filter(Boolean).join(' / ')],['记录标识',row.id]];
       const photographs=photos.map((p,i)=>'<button class="qsum-photo-thumb" data-photo="'+i+'" aria-label="放大验货照片 '+(i+1)+' '+esc(p.name)+'"><img alt="'+esc(p.name)+'" src="api/inspection-sheet/entries/'+encodeURIComponent(row.entryId)+'/photos/'+encodeURIComponent(p.id)+'" loading="lazy"><span>'+esc(p.name||'照片 '+(i+1))+'</span><span data-photo-error hidden role="status">照片加载失败，点击重试或查看</span></button>').join('')||'<p class="qsum-photo-empty">暂无照片</p>';
       const arrays=['defects','measurements'].filter(k=>e[k]?.length).map(k=>dossierGroup(k==='defects'?'不良明细':'测量明细',e[k].map((v,i)=>[String(i+1),v]))).join('');
@@ -438,5 +451,5 @@
       message('历史预览完成，请核对后确认导入。');
     }catch(error){message(error.message,true);}finally{state.busy=false;}
   }
-  root.QcInspectionSummary={load,get busy(){return state.busy;}};
+  root.QcInspectionSummary={load,openPhoto:photoPreview,get busy(){return state.busy;}};
 })(window);

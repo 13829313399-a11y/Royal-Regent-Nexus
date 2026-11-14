@@ -12,6 +12,17 @@ from app.services.transaction_lock import lock_transaction
 TABLES = (CuttingOrder.__table__, CuttingOrderRevision.__table__)
 AUTOMATIC_RECEIPT_ACTOR = 'system:cutting-auto-receipt'
 NOTE_RECEIPT_FIELDS = {'note', 'version', 'change_reason', 'shipped_quantity', 'remaining_quantity'}
+WORKFLOW_STATUS_GROUPS = {
+    'pending_confirmation': ('awaiting_receipt', 'cancelled_receipt'),
+    'pending_engineering': ('awaiting_bom', 'awaiting_submission'),
+    'pending_procurement': ('reconciliation', 'awaiting_reply', 'partial_reply'),
+    'procurement_ready': ('complete_reply', 'no_purchase'),
+}
+UNCONFIRMED_STATUSES = frozenset(WORKFLOW_STATUS_GROUPS['pending_confirmation'])
+
+
+def workflow_filter_statuses(status):
+    return WORKFLOW_STATUS_GROUPS.get(status, (status,)) if status else ()
 
 
 def schema_ready(bind):
@@ -155,6 +166,7 @@ def planning_rows(db, query):
 
 
 def list_orders(db, page, q, status=None, plan_status=None, *, changes_only=False):
+    statuses = workflow_filter_statuses(status)
     newest = select(OrderLedgerDispatch.line_id, func.max(OrderLedgerDispatch.version).label('version')).where(
         OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting').group_by(
         OrderLedgerDispatch.line_id).subquery()
@@ -186,28 +198,28 @@ def list_orders(db, page, q, status=None, plan_status=None, *, changes_only=Fals
                 actor_id=current_row.actor_id, created_at=current_row.created_at, reason=current_row.reason)
             data = current['data'] if current else {}
             needs_receipt = order is None or order.dispatch_id != dispatch.id
-            if status and workflow_status(data, dispatch.snapshot.get('status'), needs_receipt) != status: continue
+            if statuses and workflow_status(data, dispatch.snapshot.get('status'), needs_receipt) not in statuses: continue
             state = summary(db, data, needs_receipt)
             if plan_status not in state['states']: continue
             if (page-1)*50 <= total < page*50:
                 matches.append(view(db, dispatch, (order, current), state))
             total += 1
         return dict(data=matches, total=total, page=page, page_size=50)
-    if status:
+    if statuses:
         query = query.outerjoin(CuttingOrder, CuttingOrder.line_id == OrderLedgerDispatch.line_id).outerjoin(
             CuttingOrderRevision, (CuttingOrderRevision.line_id == CuttingOrder.line_id) &
             (CuttingOrderRevision.version == CuttingOrder.version))
         stale = or_(CuttingOrder.line_id.is_(None), CuttingOrder.dispatch_id != OrderLedgerDispatch.id)
-        if status in {'awaiting_receipt', 'cancelled_receipt'}:
+        if UNCONFIRMED_STATUSES.issuperset(statuses):
             query = query.where(stale)
         else:
-            query = query.where(~stale, or_(CuttingOrderRevision.data['workflow_status'].as_string() == status,
-                CuttingOrderRevision.data['workflow_status'].as_string().is_(None)))
+            recorded_status = CuttingOrderRevision.data['workflow_status'].as_string()
+            query = query.where(~stale, or_(recorded_status.in_(statuses), recorded_status.is_(None)))
         # Only legacy snapshots lacking the derived status need a compatibility scan.
         matches, total = [], 0
         for dispatch in db.scalars(query.order_by(OrderLedgerDispatch.created_at.desc(), OrderLedgerDispatch.id)).yield_per(50):
             result = view(db, dispatch)
-            if result['workflow_status'] != status:
+            if result['workflow_status'] not in statuses:
                 continue
             if (page-1)*50 <= total < page*50:
                 matches.append(result)

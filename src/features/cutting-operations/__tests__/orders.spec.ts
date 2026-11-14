@@ -84,11 +84,11 @@ describe('cutting order workflow and save protection', () => {
     vi.mocked(ordersApi.list).mockResolvedValue({data:[row],total:51,page:1,page_size:50})
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
     await wrapper.get('input[maxlength="80"]').setValue('NEW')
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('pending_confirmation')
     await button('下一页').trigger('click');await flushPromises()
     expect(ordersApi.list).toHaveBeenLastCalledWith(2,'','','')
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','awaiting_receipt','')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','pending_confirmation','')
   })
 
   it.each([false, true])('opens material operations only in the materials workspace (request permission: %s)', async permitted => {
@@ -249,20 +249,25 @@ describe('cutting order workflow and save protection', () => {
   it('applies the reply status filter server-side and labels passed estimates without claiming receipt', async () => {
     await open({ ...received, workflow_status: 'partial_reply', expected_date_passed: true })
     expect(wrapper.text()).toContain('预计日期已过，实收待核实')
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('partial_reply')
+    const filter = wrapper.get('[aria-label="办理状态筛选"]')
+    expect(filter.findAll('option').map(option => option.text())).toEqual([
+      '全部状态', '待确认', '待工程处理', '待采购处理', '物料已齐／无需采购', '已取消',
+    ])
+    expect(wrapper.find('.order-ledger-table tbody').text()).toContain('采购部分回复')
+    await filter.setValue('pending_procurement')
     await wrapper.get('form.order-toolbar').trigger('submit'); await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'partial_reply', '')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'pending_procurement', '')
   })
   it('refreshes filtered rows and totals after a save changes the workflow status', async () => {
     await open()
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('pending_confirmation')
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
     await button('查看').trigger('click')
     await receiptForm()
     vi.mocked(ordersApi.command).mockResolvedValue(received)
     vi.mocked(ordersApi.list).mockResolvedValue(page([]))
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'awaiting_receipt', '')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'pending_confirmation', '')
     expect(wrapper.text()).not.toContain('ORDER-001')
     expect(wrapper.text()).toContain('共 0 条')
   })
