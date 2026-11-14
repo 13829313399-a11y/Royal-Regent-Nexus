@@ -651,6 +651,7 @@ export interface CartonImportPreviewRow {
 export interface CartonReceiptResponse {
   source_requests?: CartonSourceRequest[]
   delivery_id?: string | null
+  original_delivery_note_no?: string | null
   business_kinds?: string[]
   special_request_id?: string
   id: string
@@ -682,6 +683,7 @@ export interface CartonReceiptResponse {
     document_no?: string | null
     responsibility?: 'OWN' | 'SUPPLIER' | null
     settlement_unit_price?: string | null
+    pending_cost_movement_id?: string | null
     order_line_id: string | null
     customer_code: string
     customer_name: string
@@ -1464,6 +1466,7 @@ export const cartonProcurementApi = {
 export interface CartonReceiptSummary {
   source_requests?: CartonSourceRequest[]
   delivery_id?: string | null
+  original_delivery_note_no?: string | null
   business_kinds?: string[]
   id: string; receipt_no: string; delivery_note_no: string; delivery_date: string; acceptance_date: string | null
   status: CartonReceiptResponse['status']; confirmed_at: string | null; operator: string; line_count: number; customers: string; contracts: string

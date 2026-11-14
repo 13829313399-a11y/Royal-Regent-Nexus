@@ -123,7 +123,7 @@ describe('carton-style fabric selection and batch receiving', () => {
     search.value = 'ST1'; submitted.value++; await flushPromises()
     expect(sourceApi.lines).toHaveBeenLastCalledWith('PENDING', 'ST1', 0, 'OUTSTANDING', expect.any(Object))
     expect(body().find('[aria-label="选择供应商复期范围"]').exists()).toBe(true)
-    await button('来源 / 核对').trigger('click'); await flushPromises()
+    await button('采购详情').trigger('click'); await flushPromises()
     await new Promise(resolve => setTimeout(resolve, 450))
     expect(sourceApi.lines).toHaveBeenCalledTimes(2)
     expect(body().get('[role="dialog"]').text()).toContain('采购来源详情')

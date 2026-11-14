@@ -1511,6 +1511,34 @@ def get_inventory_balances(
     return [row for row in rows if not customer_code.strip() or row.customer_code == customer_code.strip()]
 
 
+@router.post("/inventory/issue-photo")
+def post_inventory_issue_photo(
+    request: Request,
+    factory_id: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_issue_photo import MAX_PHOTO_BYTES, PHOTO_EXTENSIONS
+
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    _ensure_permission(db, current_user, "carton_procurement:inventory_write", factory_id)
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in PHOTO_EXTENSIONS:
+        raise HTTPException(422, "请上传 JPG 或 PNG 领料单照片。")
+    content = file.file.read(MAX_PHOTO_BYTES + 1)
+    if not content:
+        raise HTTPException(422, "请上传领料单照片。")
+    if len(content) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "领料单照片不能超过 12 MB。")
+    db.rollback()
+    result = file_jobs.run_file_job("issue_photo", content, extension)
+    user = get_current_user(request=request, db=db)
+    _ensure_permission(db, user, "carton_procurement:read", factory_id)
+    _ensure_permission(db, user, "carton_procurement:inventory_write", factory_id)
+    return result
+
+
 @router.get("/inventory/report", response_model=CartonInventoryReportOut)
 def get_inventory_report(
     factory_id: str,

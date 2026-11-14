@@ -112,7 +112,7 @@ describe('fabric receipt history', () => {
     expect(api.handoverDetail).toHaveBeenLastCalledWith('B1', expect.any(AbortSignal))
     expect(detail.text()).toContain('部分批次已冲销')
     expect(detail.text()).toContain('原入库 0.3 码')
-    expect(detail.get('.receipt-detail-main-metric dd').text()).toBe('0.1 码')
+    expect(detail.get('.fabric-detail-overview dd').text()).toBe('0.1 码')
     expect(detail.findAll('.receipt-detail-batch-table tbody tr')).toHaveLength(2)
     expect(detail.get('a[aria-label="查看批次 B2 的入库记录"]').attributes('href')).toContain('receipt=B2')
     expect(detail.get('[aria-label="逐卷差异"]').text()).toContain('0.3')

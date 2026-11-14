@@ -195,7 +195,7 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
             continue
         order, line = candidates[0]
         item.update(order_no=order["order_no"], child_no=line["child_no"],
-            order_line_id=line["id"], issue_id=order["issue_id"], order_revision=order["revision"],
+            order_line_id=line["id"], issue_id=order["issue_id"], order_revision=order["revision"], unit=line["unit"],
             document_no=order["document_no"], responsibility=order.get("responsibility"), replenishment=bool(order.get("replenishment")))
         item["receipt_link_eligible"] = bool(not order.get("replenishment") and order["issue_id"] and order["status"] != "CANCELLED"
             and not order["awaiting_issue"] and not line["shipping_blocked_reason"])

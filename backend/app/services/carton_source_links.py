@@ -6,11 +6,36 @@ from app.models.carton_procurement import CartonReceiptLine, CartonAuditEvent
 from app.models.carton_price_review import CartonPriceReview
 from app.models.carton_supplier_portal import SupplierShipment
 
+MANUAL_PAPERS_ADDED = 'WAREHOUSE_DELIVERY_PAPERS_ADDED'
+
+
+def delivery_extensions(db, factory, group_ids):
+    result = {}
+    if group_ids:
+        for event in db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
+                CartonAuditEvent.entity_type == 'carton_unified_delivery', CartonAuditEvent.entity_id.in_(group_ids),
+                CartonAuditEvent.event_type == MANUAL_PAPERS_ADDED).order_by(CartonAuditEvent.sequence)):
+            result.setdefault(event.entity_id, []).append(json.loads(event.detail_json))
+    return result
+
+
+def delivery_children(db, group, extensions=None):
+    children = json.loads(group.children_json)
+    if extensions is None:
+        extensions = delivery_extensions(db, group.factory_id, [group.id])
+    for entry in extensions.get(group.id, []):
+        if entry.get('formal_id'):
+            children['formal_id'] = entry['formal_id']
+        children['special_ids'].extend(entry['special_ids'])
+    return children
+
 
 def delivery_ids(db, factory):
     result = {}
-    for group in db.scalars(select(UnifiedDelivery).where(UnifiedDelivery.factory_id == factory)):
-        children = json.loads(group.children_json)
+    groups = list(db.scalars(select(UnifiedDelivery).where(UnifiedDelivery.factory_id == factory)))
+    extensions = delivery_extensions(db, factory, [group.id for group in groups])
+    for group in groups:
+        children = delivery_children(db, group, extensions)
         for identifier in [children.get('formal_id'), *children.get('special_ids', [])]:
             if identifier:
                 result[identifier] = group.id
@@ -76,7 +101,7 @@ def receipt_sources(db, receipt, papers=None):
             events = db.scalars(select(CartonAuditEvent).where(
                 CartonAuditEvent.factory_id == receipt.factory_id,
                 CartonAuditEvent.entity_type == 'supplier_shipment',
-                CartonAuditEvent.event_type == 'SUPPLIER_SHIPMENT_RECEIVED'))
+                CartonAuditEvent.event_type.in_(['SUPPLIER_SHIPMENT_RECEIVED', 'SUPPLIER_SHIPMENT_RECEIPT_LINKED'])))
             for event in events:
                 if json.loads(event.detail_json).get('receipt_id') != receipt.id:
                     continue
@@ -89,5 +114,8 @@ def receipt_sources(db, receipt, papers=None):
         kinds.add('PURCHASE')
     if any(not paper.order_line_id and not sources.get(paper.id, {}).get('kind') for paper in papers):
         kinds.add('LEGACY')
-    return dict(source_requests=list(requests.values()), delivery_id=identifiers[0] if len(identifiers) == 1 else None,
+    delivery_id = identifiers[0] if len(identifiers) == 1 else None
+    group = db.get(UnifiedDelivery, delivery_id) if delivery_id and not delivery_id.startswith(('FORMAL:', 'SPECIAL:')) else None
+    return dict(source_requests=list(requests.values()), delivery_id=delivery_id,
+        original_delivery_note_no=group.delivery_note_no if group and group.factory_id == receipt.factory_id else None,
         business_kinds=sorted(kinds))

@@ -926,6 +926,7 @@ class CartonReceiptLineOut(BaseModel):
     unordered_receipt: bool = False
     dimension_unit: str | None = None
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
+    pending_cost_movement_id: str | None = None
     replenishment_issue_id: str | None = None
     child_request_id: str | None = None
     parent_request_id: str | None = None
@@ -962,6 +963,7 @@ class CartonReceiptLineOut(BaseModel):
 class CartonReceiptOut(BaseModel):
     source_requests: list[dict[str, str]] = Field(default_factory=list)
     delivery_id: str | None = None
+    original_delivery_note_no: str | None = None
     business_kinds: list[str] = Field(default_factory=list)
     special_request_id: str | None = None
     special_shipment_id: str | None = None
@@ -1002,12 +1004,12 @@ class CartonReceiptConfirmRequest(BaseModel):
 
 
 class CartonReceiptReverseRequest(CartonReceiptConfirmRequest):
-    reason: str = Field(min_length=4, max_length=2000)
+    reason: str = Field(default="", max_length=2000)
 
     @field_validator("reason", mode="before")
     @classmethod
-    def trim_reason(cls, value: str) -> str:
-        return value.strip()
+    def trim_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class CartonInventoryRelocateRequest(BaseModel):
@@ -1065,6 +1067,7 @@ class CartonInventoryMovementCreate(BaseModel):
 
 
 class CartonInventoryBulkItem(BaseModel):
+    movement_type: Literal["OUTBOUND"] = Field(default="OUTBOUND", exclude=True)
     workshop_id: str = Field(default="", max_length=96)
     location_id: str = ""
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -1091,6 +1094,7 @@ class CartonInventoryBulkItem(BaseModel):
 
 
 class CartonInventoryBulkCreate(BaseModel):
+    movement_type: Literal["OUTBOUND"] = Field(default="OUTBOUND", exclude=True)
     return_date: str | None = None
     workshop_id: str = Field(default="", max_length=96)
     issue_kind: Literal["USAGE", "RETURN", "LOSS", "LOAN", "OTHER", "UNKNOWN"] = "UNKNOWN"

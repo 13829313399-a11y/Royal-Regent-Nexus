@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import Workspace from '../FabricProcurementWorkspace.vue'
-import type { PurchasePreview } from '@/api/fabricProcurement'
+import type { PurchaseDetail, PurchasePreview } from '@/api/fabricProcurement'
 
 const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
@@ -260,11 +260,64 @@ describe('real fabric procurement workspace', () => {
   it('marking changes read uses the displayed revision and never calls receiving or import', async () => {
     api.lines.mockResolvedValue({ total: 1, items: [{ id: 'L1', revision: 3, facts: { order_no: 'CGDD1', status: 'RETURNED', ordered_quantity: '100', reported_received_quantity: '100' }, unreviewed_changes: 1, tracking: { arrival_review: true } }] })
     api.detail.mockResolvedValue({ id: 'L1', revision: 3, facts: {}, evidence: [], can_review: true, unreviewed_changes: 1, tracking: { arrival_review: true } })
-    await open('pending'); await button('来源 / 核对').trigger('click'); await flushPromises()
+    await open('pending'); await button('采购详情').trigger('click'); await flushPromises()
     api.reviewChanges.mockResolvedValue({ reviewed: 1, stock_posted: false })
+    const history = document.querySelector<HTMLDetailsElement>('details:has(summary .purchase-detail-unread)')!
+    expect(history.open).toBe(false)
+    history.open = true
     dialogButton('将变更标记已读（不确认收料）').click(); await flushPromises()
     expect(api.reviewChanges).toHaveBeenCalledWith('L1', 3)
     expect(wrapper!.text()).toContain('采购报到货待核对事项继续保留')
     expect(api.apply).not.toHaveBeenCalled()
+  })
+
+  it('keeps routine purchase details compact and puts original shortage correction with its evidence', async () => {
+    const detail = {
+      id: 'L1', revision: 2, active: true, can_review: true, evidence: [],
+      starting_chase_quantity: '37', warehouse_received_quantity: '10', warehouse_outstanding_quantity: '27',
+      promise_text: '下周交货', facts: { order_no: 'CGDD1', supplier: '供货方', material_code: '000123', material_name: '白色布', unit: '码' },
+    } as PurchaseDetail
+    api.lines.mockResolvedValue({ total: 1, items: [detail] })
+    api.detail.mockResolvedValue(detail)
+    await open('pending'); await button('采购详情').trigger('click'); await flushPromises()
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    expect(dialog.querySelector('[aria-label="待收概览"]')?.textContent).toContain('27 码')
+    expect(dialog.querySelector('[aria-label="待收概览"]')?.textContent).toContain('下周交货')
+    expect(dialog.querySelector('.purchase-detail-review')).toBeNull()
+    expect([...dialog.querySelectorAll<HTMLDetailsElement>('details')].every(section => !section.open)).toBe(true)
+    expect(dialogButton('更正原欠数量').closest('details')?.querySelector('summary')?.textContent).toBe('待收计算依据')
+    session.currentUser = { id: 'keeper' }
+    await flushPromises()
+    expect(document.querySelector('[role="dialog"]')).toBe(dialog)
+    session.authorizationVersion++
+    await flushPromises()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it.each([
+    { receipt_identity_review_required: false, can_review: true, showConfirmation: true },
+    { receipt_identity_review_required: true, can_review: true, showConfirmation: false },
+    { receipt_identity_review_required: false, can_review: false, showConfirmation: false },
+  ])('shows the applicable purchase exception and keeps confirmation permission-scoped (%j)', async (scenario) => {
+    const detail = {
+      id: 'L1', revision: 2, active: true, evidence: [], warehouse_received_quantity: '10',
+      warehouse_outstanding_quantity: null, receipt_quantity_review_required: true,
+      receipt_identity_review_required: scenario.receipt_identity_review_required, can_review: scenario.can_review,
+      facts: { order_no: 'CGDD1', supplier: '供货方', material_name: '白色布', unit: '码' },
+    } as PurchaseDetail
+    api.lines.mockResolvedValue({ total: 1, items: [detail] })
+    api.detail.mockResolvedValue(detail)
+    await open('pending'); await button('采购详情').trigger('click'); await flushPromises()
+
+    expect(document.querySelector('[aria-label="待收概览"] dl dd')?.textContent?.trim()).toBe('待核对')
+    expect(document.querySelector('.purchase-detail-review')?.textContent).toContain(scenario.receipt_identity_review_required ? '采购来源待核对' : '待收数量需核对')
+    expect(Boolean(dialogButton('确认原欠数量'))).toBe(scenario.showConfirmation)
+    if (scenario.showConfirmation) {
+      dialogButton('确认原欠数量').click(); await flushPromises()
+      expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('确认原欠数量')
+      dialogButton('返回采购详情').click(); await flushPromises()
+      expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('采购来源详情')
+    }
   })
 })

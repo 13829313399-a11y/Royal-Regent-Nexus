@@ -46,7 +46,7 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     "result": "接单状态和承诺交期可供本厂查看。",
     "reminders": [
       "批量操作先看成功和失败结果，不要重做已成功的单。",
-      "单独或批量接齐后，符合东康模板条件且尚未导出的采购单会弹出导出提示，可立即导出或选择稍后导出。"
+      "单独、批量或从“订单与变更”接齐后，符合东康模板条件的采购单会弹出导出提示，沿用已有单号。已导出的会标明次数和最近时间，可核对后重新导出。"
     ],
     "image": {
       "src": "/carton-guide/quick-supplier-accept.svg",

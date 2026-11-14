@@ -1855,11 +1855,15 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive, *, commit=
             if len(prior_ids) != 1 or replacement_id and replacement_id not in prior_ids:
                 raise HTTPException(409, '原批次补单来源须保持一致，请核实原收料')
             replacement_id = next(iter(prior_ids))
+        zero_price_kind = ("FREE" if item.price_action == "FREE" else "PENDING" if item.price_action == "PENDING" and item.unit_price == 0 else item.zero_price_kind)
+        if item.unit_price == 0 and item.price_action == "PROPOSE" and json.loads(shipped.snapshot_json).get("source_origin") == "WAREHOUSE_MANUAL":
+            # Warehouse may propose free; only confirmed evidence establishes a zero stock cost.
+            zero_price_kind = "PENDING"
         receipt_lines.append(CartonReceiptLineCreate(replenishment_issue_id=replacement_id, material_correction_id=material_correction['id'] if material_correction else '',
             order_line_id=line.id, delivered_quantity=available_quantity if closing else item.received_quantity,
             received_quantity=item.received_quantity, damaged_quantity=item.damaged_quantity, rejected_quantity=item.rejected_quantity,
             unusable_quantity=item.unusable_quantity, unit_price=item.unit_price,
-            zero_price_kind=("FREE" if item.price_action == "FREE" else "PENDING" if item.price_action == "PENDING" and item.unit_price == 0 else item.zero_price_kind), paper_quality=item.paper_quality,
+            zero_price_kind=zero_price_kind, paper_quality=item.paper_quality,
             specification=item.specification, location_allocations=item.location_allocations, feedback_note=item.difference_reason))
         receipt_sources.append((shipped, item))
     try:

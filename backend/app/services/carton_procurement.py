@@ -3055,10 +3055,11 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
     # One coordinated original note can legitimately contain both formal and
     # special children. Only its exact immutable formal link permits this path.
     from app.models.carton_special_requests import UnifiedDelivery
+    from app.services.carton_source_links import delivery_children
     unified_note = db.scalar(select(UnifiedDelivery).where(UnifiedDelivery.factory_id == factory_id,
         UnifiedDelivery.supplier_id == supplier.id, UnifiedDelivery.delivery_note_no == payload.delivery_note_no))
     unified_formal = bool(unified_note and supplier_shipment_id and
-        json.loads(unified_note.children_json).get("formal_id") == supplier_shipment_id)
+        delivery_children(db, unified_note).get("formal_id") == supplier_shipment_id)
     if not special_request_id and db.scalar(select(SpecialShipment.id).where(SpecialShipment.factory_id == factory_id,
         SpecialShipment.supplier_id == supplier.id, SpecialShipment.delivery_note_no == payload.delivery_note_no)) and not unified_formal:
         raise HTTPException(409, "此送货单已关联样板或车间需求，请沿原需求验收，不可重复入库")
@@ -3326,6 +3327,19 @@ def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
         CartonOrderLine.factory_id == receipt.factory_id, CartonOrderLine.id.in_(order_line_ids))).all()} if order_line_ids else {}
     from app.services.carton_receipt_pricing import declarations
     zero_prices = declarations(db, receipt.factory_id, receipt.id)
+    from app.services.carton_price_correction import COST_EVENT
+    unpriced_lines = [line.id for line in receipt_lines
+                      if line.unit_price == 0 and line.effective_quantity > 0 and zero_prices.get(line.id) != "FREE"]
+    pending_costs = {}
+    if receipt.status == "POSTED" and unpriced_lines:
+        priced = select(CartonAuditEvent.entity_id).where(CartonAuditEvent.factory_id == receipt.factory_id,
+            CartonAuditEvent.entity_type == "carton_inventory_movement",
+            CartonAuditEvent.event_type.in_(["INVENTORY_PRICE_CONFIRMED", COST_EVENT]))
+        pending_costs = dict(db.execute(select(CartonInventoryMovement.source_line_id, CartonInventoryMovement.id).where(
+            CartonInventoryMovement.factory_id == receipt.factory_id, CartonInventoryMovement.source_id == receipt.id,
+            CartonInventoryMovement.source_type == "RECEIPT", CartonInventoryMovement.movement_type == "INBOUND",
+            CartonInventoryMovement.source_line_id.in_(unpriced_lines), CartonInventoryMovement.unit_price == 0,
+            CartonInventoryMovement.id.not_in(priced))).all())
     from app.models.carton_special_requests import SpecialReceiptLink, SpecialShipmentLine, SpecialShipment
     special_source = db.execute(select(SpecialShipment.request_id, SpecialShipment.id).join(SpecialShipmentLine,
         SpecialShipmentLine.shipment_id == SpecialShipment.id).join(SpecialReceiptLink,
@@ -3354,7 +3368,11 @@ def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
         created_at=receipt.created_at,
         updated_at=receipt.updated_at,
         confirmed_at=receipt.confirmed_at,
-        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={**public_link(links.get(line.id)), "zero_price_kind": zero_prices.get(line.id, "PENDING" if line.unit_price == 0 else None), "unordered_receipt": line.customer_code == "__UNORDERED__", "dimension_unit": dimension_unit_for_display(getattr(order_lines.get(line.order_line_id), "dimension_unit", None), line.specification), "location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in receipt_lines],
+        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={**public_link(links.get(line.id)),
+            "zero_price_kind": zero_prices.get(line.id, "PENDING" if line.unit_price == 0 else None),
+            "pending_cost_movement_id": pending_costs.get(line.id), "unordered_receipt": line.customer_code == "__UNORDERED__",
+            "dimension_unit": dimension_unit_for_display(getattr(order_lines.get(line.order_line_id), "dimension_unit", None), line.specification),
+            "location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in receipt_lines],
     )
 
 
@@ -3836,6 +3854,8 @@ def _prepare_inventory_movement(
     user: AuthContext,
 ) -> tuple[CartonInventoryMovement, Decimal, CartonAuditEvent]:
     factory_id = require_carton_factory(payload.factory_id)
+    if payload.movement_type == "ADJUSTMENT":
+        raise HTTPException(409, "库存账实差异请从“库存管理 → 库存盘点”按仓位登记实盘数量。")
     from app.services.carton_order_split import PREFIX, target_origin
     if payload.order_line_id and payload.order_line_id.startswith(PREFIX):
         if not target_origin(db, factory_id, payload.order_line_id):
@@ -3884,11 +3904,9 @@ def _prepare_inventory_movement(
     _ensure_period_open(db, factory_id, customer_code, timestamp)
     current = _inventory_balance_for_key(db, factory_id, movement_key)
     current_location = _inventory_locations(db, factory_id).get(movement_key)
-    signed_quantity = -payload.quantity if payload.movement_type == "OUTBOUND" else payload.quantity
-    if payload.movement_type == "OUTBOUND" and current < payload.quantity:
+    signed_quantity = -payload.quantity
+    if current < payload.quantity:
         raise HTTPException(status_code=409, detail="库存不足，不能出库")
-    if current + signed_quantity < 0:
-        raise HTTPException(status_code=409, detail="调整后库存不能小于 0")
     movement_id = f"CIM-{uuid4().hex}"
     movement = CartonInventoryMovement(
         id=movement_id,
@@ -3913,17 +3931,16 @@ def _prepare_inventory_movement(
         source_line_id=movement_id,
         reversal_of_movement_id=None,
         reason=payload.reason,
-        issue_kind=payload.issue_kind if payload.movement_type == "OUTBOUND" else "OTHER",
-        workshop_id=payload.workshop_id if payload.movement_type == "OUTBOUND" else "",
-        workshop_name=master_data.workshop_snapshot(db, factory_id, payload.workshop_id) if payload.movement_type == "OUTBOUND" else "",
+        issue_kind=payload.issue_kind,
+        workshop_id=payload.workshop_id,
+        workshop_name=master_data.workshop_snapshot(db, factory_id, payload.workshop_id),
         actor_user_id=user.id,
         actor_name=user.display_name,
         occurred_at=timestamp,
     )
-    if signed_quantity < 0:
-        movement.unit_price = _issue_cost_price(db, movement)
+    movement.unit_price = _issue_cost_price(db, movement)
     from app.services.carton_supplier_settlement import movement_guard, return_supplier
-    if movement.movement_type == "OUTBOUND" and movement.issue_kind == "RETURN" and not return_supplier(db, movement):
+    if movement.issue_kind == "RETURN" and not return_supplier(db, movement):
         raise HTTPException(status_code=409, detail="该库存无法确定供应商，暂不能登记退供应商；请先核实原收料来源。库存尚未扣减。")
     from app.services import carton_return_dates
     return_day = carton_return_dates.require_date(payload.return_date) if carton_return_dates.is_return(movement) else None
@@ -4121,6 +4138,8 @@ def reverse_receipt(
     previous_status = receipt.status
     lines = _receipt_lines(db, receipt.id)
     ensure_receipt_operation(db, user, factory_id, lines)
+    if previous_status == "PENDING_CONFIRMATION" and len(payload.reason) < 4:
+        raise HTTPException(status_code=422, detail="作废待确认收料单须填写至少 4 个字的原因")
     timestamp = now_text()
     reversals = []
     if previous_status == "POSTED":
@@ -4239,6 +4258,8 @@ def reverse_inventory_movement(
         raise HTTPException(409, "补单出库已关联供应商补单，不能通过普通库存冲销取消")
     if original.source_type in {"ORDER_SPLIT", "SPLIT_REVERSAL"}:
         raise HTTPException(409, "拆单归属调整须整组撤销，不能单独冲销一侧库存")
+    if original.source_type == "STOCKTAKE":
+        raise HTTPException(409, "盘点差异已入账，请按实际库存重新盘点。")
     from app.services.carton_return_collaboration import reversal_guard
     reversal_guard(db, original)
     from app.services.carton_supplier_settlement import movement_guard
@@ -4255,7 +4276,7 @@ def reverse_inventory_movement(
     _ensure_period_open(db, factory_id, original.customer_code, timestamp)
     current = _inventory_balance_for_key(db, factory_id, _movement_key(original))
     if current - original.quantity < 0:
-        raise HTTPException(status_code=409, detail="冲销后库存将小于 0，请先冲销后续出库或补做调整")
+        raise HTTPException(status_code=409, detail="冲销后库存将小于 0，请先核对后续出库，或按实际库存办理盘点")
     reversal_id = f"CIM-{uuid4().hex}"
     reversal = CartonInventoryMovement(
         id=reversal_id,
@@ -5733,13 +5754,19 @@ def confirm_inventory_price(db: Session, movement_id: str, payload: CartonInvent
     row = db.get(CartonInventoryMovement, movement_id)
     if row is None or row.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="库存流水不存在")
+    if row.source_type == "RECEIPT":
+        receipt = db.get(CartonReceipt, row.source_id)
+        if receipt is None or receipt.factory_id != factory_id or receipt.status != "POSTED":
+            raise HTTPException(409, "原收料已冲销或未入库，请核对原收料记录")
     from app.services.carton_supplier_settlement import movement_guard
     movement_guard(db, row)
     if row.quantity <= 0 or row.movement_type == "REVERSAL" or row.unit_price != 0:
         raise HTTPException(status_code=409, detail="仅可核实缺价的入库或期初正调整记录")
+    from app.services.carton_price_correction import COST_EVENT
     existing = db.scalar(select(CartonAuditEvent.id).where(
         CartonAuditEvent.factory_id == factory_id,
-        CartonAuditEvent.event_type == "INVENTORY_PRICE_CONFIRMED",
+        CartonAuditEvent.entity_type == "carton_inventory_movement",
+        CartonAuditEvent.event_type.in_(["INVENTORY_PRICE_CONFIRMED", COST_EVENT]),
         CartonAuditEvent.entity_id == row.id,
     ))
     if existing:

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models.carton_procurement import CartonOrder, CartonOrderLine
 from app.services.carton_dimensions import specification_unit
+from app.services.carton_header_aliases import DELIVERY_IDENTITY_ALIASES
 from app.services.carton_material_identity import material_conflicts
 from app.services.carton_schedule_tracking import identity as schedule_identity, tracked, effective_po
 
@@ -79,11 +80,9 @@ WEEKLY_ALIASES = {
 }
 
 DELIVERY_ALIASES = {
-    "customer_po": {"客户po", "客户采购单号", "客户订单号", "customerpo"},
+    **DELIVERY_IDENTITY_ALIASES,
     "delivery_date": {"日期", "送货日期", "送货时间", "入库日期", "date"},
     "delivery_note_no": {"入库单号", "送货单号", "送货单", "dnno", "dn"},
-    "contract_no": {"po", "合同号", "合同", "pono", "订单编号", "客户单号"},
-    "item_no": {"货号", "产品编号", "itemno", "item", "客户料号"},
     "quantity": {"外箱", "送货数量", "数量", "入库数量", "qty", "quantity"},
     "paper_quality": {"纸质", "材质", "paperquality", "description"},
     "dimension_unit": {"尺寸单位", "dimensionunit"},

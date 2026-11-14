@@ -16,7 +16,7 @@ const submitted = ref<Payload>(), requestId = warehouseRequestId()
 let alive = true, saved = false
 const received = computed(() => receiptQuantity(props.source.warehouse_received_quantity ?? '0') ?? 0n)
 const remaining = computed(() => { const start = receiptQuantity(amount.value); return start === undefined ? '待填写' : quantityText(start > received.value ? start - received.value : 0n) })
-function leave() { return !busy.value && (saved || (amount.value === initial && !evidence.value && !submitted.value) || window.confirm(submitted.value ? '核对保存结果尚未确认，请先查来源详情再重复办理。确定离开？' : '起始待收核对尚未保存，确定离开？')) }
+function leave() { return !busy.value && (saved || (amount.value === initial && !evidence.value && !submitted.value) || window.confirm(submitted.value ? '保存结果尚未确认，请先查采购来源详情。确定离开？' : '原欠数量尚未保存，确定离开？')) }
 function close() { if (leave()) emit('close') }
 onBeforeRouteLeave(leave); onBeforeRouteUpdate(leave); onBeforeUnmount(() => { alive = false })
 async function save() {
@@ -32,15 +32,34 @@ async function save() {
 }
 </script>
 <template>
-  <DialogRoot :open="true" @update:open="value => { if (!value) close() }"><DialogPortal><DialogOverlay class="warehouse-guide-overlay" /><DialogContent class="warehouse-guide fabric-edit-dialog">
-    <header class="warehouse-guide-heading"><div><DialogTitle>核对起始待收量</DialogTitle><DialogDescription>确认本系统首次入库之前还要追多少货；库存不会改变。</DialogDescription></div><Button variant="outline" :disabled="busy" @click="close">关闭</Button></header>
+  <DialogRoot :open="true" @update:open="value => { if (!value) close() }"><DialogPortal><DialogOverlay class="warehouse-guide-overlay" /><DialogContent class="warehouse-guide fabric-edit-dialog fabric-chase-dialog">
+    <header class="warehouse-guide-heading"><div><DialogTitle>确认原欠数量</DialogTitle><DialogDescription>保存后重新计算采购剩余待收。库存保持原数。</DialogDescription></div><Button variant="outline" :disabled="busy" @click="close">关闭</Button></header>
     <form class="warehouse-guide-body fabric-master-form" @submit.prevent="save">
-      <p><strong>{{ source.facts.order_no }} · {{ source.facts.material_name }}</strong><br />{{ source.facts.supplier }} · 原单位 {{ source.facts.unit }}</p>
-      <p class="fabric-intake-alert">请填起始数量，包含本系统已经登记的实收。例如已入库 10、现在欠 27，起始待收填 37。确认起始待收为 0 表示已核对无需继续追货。</p>
-      <fieldset :disabled="busy || !!submitted"><label>起始待收数量 · {{ source.facts.unit }}<input v-model="amount" aria-label="起始待收数量" inputmode="decimal" maxlength="32" required /></label><label>核对依据<textarea v-model="evidence" aria-label="起始待收核对依据" placeholder="原始欠料记录、与采购核对的结果等" maxlength="2000" required /></label></fieldset>
-      <p class="fabric-chase-equation">{{ amount || '待填写' }} − {{ source.warehouse_received_quantity ?? '0' }} = <strong>{{ remaining }} {{ source.facts.unit }}</strong><small>起始待收 − 本系统已入库 = 剩余待收（最低为 0）</small></p>
+      <p><strong>{{ source.facts.order_no }} · {{ source.facts.material_name }}</strong><br />{{ source.facts.supplier }}</p>
+      <fieldset :disabled="busy || !!submitted">
+        <label>本系统首次入库前还欠多少（{{ source.facts.unit }}）
+          <input v-model="amount" aria-label="本系统首次入库前还欠多少" inputmode="decimal" maxlength="32" required />
+          <small>如果本系统已入库 10 {{ source.facts.unit }}、现在还欠 27 {{ source.facts.unit }}，这里填 37。</small>
+        </label>
+        <label>采购确认依据
+          <textarea v-model="evidence" aria-label="采购确认依据" placeholder="填写原始欠料记录或与采购核对的结果" maxlength="2000" required />
+        </label>
+      </fieldset>
+      <p class="fabric-chase-equation">{{ amount || '待填写' }} − {{ source.warehouse_received_quantity ?? '0' }} = <strong>{{ remaining }} {{ source.facts.unit }}</strong><small>原欠量 − 本系统已入库 = 保存后的剩余待收（最低为 0）</small></p>
       <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
-      <div class="fabric-dialog-actions"><Button variant="outline" type="button" :disabled="busy" @click="close">返回</Button><Button type="submit" :disabled="busy || (!submitted && (receiptQuantity(amount) === undefined || !evidence.trim()))">{{ busy ? '正在保存…' : submitted ? '重试确认' : '确认起始待收（库存不变）' }}</Button></div>
+      <div class="fabric-dialog-actions"><Button variant="outline" type="button" :disabled="busy" @click="close">返回采购详情</Button><Button type="submit" :disabled="busy || (!submitted && (receiptQuantity(amount) === undefined || !evidence.trim()))">{{ busy ? '正在保存…' : submitted ? '重试保存' : '保存原欠数量' }}</Button></div>
     </form>
   </DialogContent></DialogPortal></DialogRoot>
 </template>
+
+<style scoped>
+.fabric-chase-dialog { height: fit-content; max-height: calc(100dvh - 40px); grid-template-rows: auto minmax(0, 1fr); }
+.fabric-chase-dialog .warehouse-guide-heading { padding-block: 14px; }
+.fabric-chase-dialog .warehouse-guide-body { gap: 14px; overscroll-behavior: contain; }
+.fabric-chase-dialog .warehouse-guide-body p { margin-top: 0; }
+.fabric-chase-dialog fieldset { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+@media (max-width: 700px) {
+  .fabric-chase-dialog { width: 100%; height: 100dvh; max-height: none; border: 0; border-radius: 0; }
+  .fabric-chase-dialog .fabric-dialog-actions { flex-wrap: wrap; }
+}
+</style>

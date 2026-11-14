@@ -41,7 +41,7 @@ def validate_delivery_quantity(total, declared, *, label='本单该采购明细�
 
 
 def schema_ready(db):
-    inspector = inspect(db.get_bind())
+    inspector = inspect(db.connection())
     return {model.__tablename__ for model in MODELS} <= set(inspector.get_table_names()) and "baseline_known" in {c["name"] for c in inspector.get_columns("fabric_receipts")}
 
 
@@ -79,7 +79,7 @@ def receipt_context(db):
         if item["reference_order"] == order and (reported != item["prior_received_quantity"] or
             any(facts.get(key) != item["source_facts"].get(key) for key in ("material_code", "material_name", "unit", "supplier"))):
             item["reference_review_required"] = True
-    inspector = inspect(db.get_bind())
+    inspector = inspect(db.connection())
     if "fabric_receipts" not in inspector.get_table_names():
         return totals
     known_column = FabricReceipt.baseline_known if "baseline_known" in {c["name"] for c in inspector.get_columns("fabric_receipts")} else literal(True).label("baseline_known")

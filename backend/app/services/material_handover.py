@@ -438,11 +438,16 @@ def confirm(db, access, identifier, payload):
     for line in data.lines:
         line.quantity = inventory.text(quantity(line.quantity, '单据数量'))
         if line.unit_price:line.unit_price=inventory.text(quantity(line.unit_price,'参考单价',allow_zero=True))
+    from app.services.material_handover_procurement import reference_key
+    source_key = reference_key(data.source_no) if data.kind == 'DELIVERY' else data.source_no
     for old in db.scalars(select(HandoverDocument).where(HandoverDocument.factory_id == FACTORY,
         HandoverDocument.status == 'CONFIRMED', HandoverDocument.id != identifier)):
         existing = json.loads(old.data_json)
+        if existing['kind'] != data.kind:
+            continue
         same_party=(supplier_identity(db,old,existing)==data.supplier_id) if data.kind=='DELIVERY' else existing['counterparty']==data.counterparty
-        if same_party and all(existing[k] == getattr(data, k) for k in ('kind', 'source_no')):
+        existing_source_key = reference_key(existing['source_no']) if data.kind == 'DELIVERY' else existing['source_no']
+        if same_party and existing_source_key == source_key:
             raise HTTPException(409, '同一制单方和原单号已确认，请使用原单二维码，勿重复建单')
     row.data_json = data.model_dump_json(); row.status = 'CONFIRMED'; row.revision += 1; row.code_version = 1
     row.confirmed_by = access.key; row.confirmed_at = row.updated_at = business_now().isoformat()

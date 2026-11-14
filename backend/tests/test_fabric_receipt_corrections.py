@@ -64,11 +64,11 @@ def test_whole_receipt_reversal_preserves_original_price_and_evidence_restores_c
     with database.SessionLocal() as db:
         saved = db.get(model, receipt['id'])
         assert (saved.source_json, saved.payload_json, saved.quantity, saved.request_hash) == frozen
-    corrected = request(source, receipt_date='2026-10-10', unit_price='6', price_unit='码', currency='CNY',
+    corrected = request(source, receipt_date='2026-10-10', delivery_reference='ｄｎ－００１', unit_price='6', price_unit='码', currency='CNY',
         batches=[{'quantity': '7.5', 'location': 'A01', 'dye_lot': '00001'}])
     new = receive(client, source, corrected)
     assert new.status_code == 200, new.text
-    assert new.json()['id'] != receipt['id'] and new.json()['delivery_reference'] == body['delivery_reference']
+    assert new.json()['id'] != receipt['id'] and new.json()['delivery_reference'] == corrected['delivery_reference']
     assert new.json()['replaces_receipt_ids'] == [receipt['id']]
     assert quantities(client) == Decimal('7.5')
     assert Decimal(stored(client)['items'][0]['warehouse_outstanding_quantity']) == Decimal('92.5')
@@ -133,5 +133,5 @@ def test_correct_reentry_cannot_backdate_before_its_reversal(client):
     _, receipt, _, _ = original(client)
     assert reverse(client, receipt)[0].status_code == 200
     source = stored(client)['items'][0]
-    assert receive(client, source, request(source, receipt_date='2026-09-16')).status_code == 422
+    assert receive(client, source, request(source, receipt_date='2026-09-16', delivery_reference='dn-001')).status_code == 422
     assert quantities(client) == 0

@@ -257,14 +257,24 @@ def test_supplier_can_void_unreceived_document_and_reissue_same_number(client):
     _, headers = issuer(client)
     original = confirmed(client, headers)
     url = BASE + '/external/documents/' + original['id']
+    variant = workbook(rows=[['01-01-00001', '测试布料', 42, '码', 'LOT-1']], title='送货单 单号：ｄｏｃ－００１ 2026-07-18')
+    draft = upload(client, headers, variant)
+    draft_url = BASE + '/external/documents/' + draft['id'] + '/confirm'
+    draft_data = {**draft['data'], 'source_no': 'ｄｏｃ－００１'}
+    confirmation = dict(request_id=str(uuid4()), expected_revision=draft['revision'], acknowledge_warnings=True, data=draft_data)
+    blocked = client.post(draft_url, headers=headers, json=confirmation)
+    assert blocked.status_code == 409 and '原单号已确认' in blocked.json()['detail']
+    assert workspace(client)['stock'] == []
     void_body = dict(request_id=str(uuid4()), expected_revision=original['revision'], reason='数量写错')
     result = client.post(url + '/void', headers=headers, json=void_body)
     assert result.status_code == 200, result.text
     assert result.json()['status'] == 'VOID'
     assert client.get(url + '/qr', headers=headers).status_code == 409
     assert client.post(BASE + '/scan', json={'factory_id': FACTORY, 'code': original['code']}).status_code == 409
-    replacement = confirmed(client, headers, workbook(rows=[['01-01-00001', '测试布料', 42, '码', 'LOT-1']]))
-    assert replacement['code'] != original['code'] and replacement['data']['source_no'] == original['data']['source_no']
+    confirmed_replacement = client.post(draft_url, headers=headers, json=confirmation)
+    assert confirmed_replacement.status_code == 200, confirmed_replacement.text
+    replacement = confirmed_replacement.json()
+    assert replacement['code'] != original['code'] and replacement['data']['source_no'] == 'ｄｏｃ－００１'
     assert replacement['data']['lines'][0]['quantity'] == '42'
     warehouse = client.get(BASE + '/documents', params={'factory_id': FACTORY}).json()['items']
     assert {item['id']: item['status'] for item in warehouse} == {original['id']: 'VOID', replacement['id']: 'CONFIRMED'}
