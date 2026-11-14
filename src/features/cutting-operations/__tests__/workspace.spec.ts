@@ -215,6 +215,7 @@ describe('cutting read-only workspaces',()=>{
     vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date('2026-10-24T03:00:00Z'))
     vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,total:51,page:2,token:'old'})
       .mockRejectedValueOnce(status ? {response:{status}} : new Error('offline'))
+      .mockRejectedValueOnce(new Error('still offline'))
       .mockResolvedValueOnce({...empty,token:'fresh'})
     wrapper=mount(Activity,{props:{embedded:true,initialSource:'warehouse'},global:{plugins:[router]}});await flushPromises()
     await wrapper.get('[name=order_q]').setValue('DRAFT')
@@ -225,7 +226,10 @@ describe('cutting read-only workspaces',()=>{
       expect(wrapper.text()).not.toContain('共 51 条')
       return
     }
-    expect(wrapper.text()).toContain('刷新失败，仍显示上次结果')
+    const failureText='刷新失败，仍显示上次结果，请检查网络后重试'
+    expect(wrapper.get('[role=alert]').text()).toContain(failureText)
+    expect(wrapper.text()).not.toContain('请求未完成，请检查连接后重试')
+    expect(wrapper.text().split('刷新失败，仍显示上次结果')).toHaveLength(2)
     expect(wrapper.text()).toContain('第 2 页 · 共 51 条')
     expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-24T03:00:00.000Z')
     const details=wrapper.get('details')
@@ -233,6 +237,11 @@ describe('cutting read-only workspaces',()=>{
     expect(details.get('summary').text()).toBe('查看重试条件')
     expect(details.get('p').text()).toContain('订单号／货号 全部')
     expect(details.get('p').text()).not.toContain('DRAFT')
+    details.element.setAttribute('open','')
+    await button('按原条件重试（第 1 页）').trigger('click');await flushPromises()
+    expect(wrapper.get('[role=alert]').text()).toContain(failureText)
+    expect(wrapper.get('details').attributes('open')).toBe('')
+    expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-24T03:00:00.000Z')
     vi.setSystemTime(new Date('2026-10-24T04:00:00Z'))
     await button('按原条件重试（第 1 页）').trigger('click');await flushPromises()
     expect(workspaceApi.activity).toHaveBeenLastCalledWith(expect.objectContaining({page:1,order_q:'',expected_token:undefined}))
