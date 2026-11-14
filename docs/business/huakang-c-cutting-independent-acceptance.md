@@ -234,6 +234,26 @@ backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_samples.py
 backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_closing_location.py
 ```
 
+## 物料库存「收发记录」慢网重试回归
+
+使用已核实连接独立数据库副本的本地 API 和有收发记录查询权限的合成岗位。在项目根目录启动专用预览，下面的 8000 是本次验收副本的 API 端口，换环境时先核实对应进程的数据源。
+
+```powershell
+$env:VITE_API_PROXY_TARGET = 'http://127.0.0.1:8000'
+New-Item -ItemType Directory -Force .tmp/cutting-status-groups-qa | Out-Null
+node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 15184 --strictPort --config scripts/cutting-movements-browser.config.ts
+```
+
+用 Chrome DevTools 打开 15184 的华康 C「物料库存 → 收发记录」。用至少两页的样本，记下第 2 页记录、页码及更新时间。延迟开关每次请求都会读取，只影响该预览里华康 C 的收发记录查询。
+
+1. 模拟断网，点击「刷新当前结果」。提示「刷新失败，仍显示上次结果，请检查网络后重试」只出现一次，第 2 页和更新时间保留。展开「查看重试条件」，目标应是已应用条件的第 1 页。
+2. 恢复联网，在另一终端执行 `Set-Content -LiteralPath .tmp/cutting-status-groups-qa/delay-movements.flag -Value 16000`。用键盘启动重试后按 Tab 移到「查看重试条件」。等待期间详情持续展开，旧记录、页码及更新时间保持。超过客户端 15 秒超时后，条件仍展开，焦点仍在详情，且可按同一条件重试。
+3. 把延迟改为 12000 毫秒。再次用键盘启动重试，等待期间把焦点移到「订单号／货号」，填写任意字样并保持未提交。成功后显示原条件第 1 页，更新时间更新，失败提示和重试详情消失，输入内容和筛选框焦点保留。核对网络请求使用的是已应用条件。
+4. 再次制造刷新失败并展开详情。恢复联网，使用低于 15 秒的延迟启动重试并 Tab 到详情。成功移除详情时，焦点应落到「刷新当前结果」。另复验未主动移焦的键盘重试，成功时焦点回到记录表区域。
+5. 用浏览器检查等待、超时和成功状态。测试结束执行 `Remove-Item -LiteralPath .tmp/cutting-status-groups-qa/delay-movements.flag`，恢复正常联网，并清除本轮未提交的筛选输入。
+
+本次 Chrome DevTools 复验在 640×800 通过等待、超时与移焦到筛选框后的继续重试。样本共 57 条，超时后保留第 2 页的 7 条记录与原更新时间，成功后按同条件返回第 1 页的 50 条记录。网络面板核对超时请求取消、同条件重试返回 200，未提交的订单号没有进入请求。1280×850 复验也通过详情消失后的刷新按钮焦点，以及未移焦时记录表区域接收焦点。
+
 ## P5c 本地副本备份恢复
 
 既有发布 `releases/20261023T040421Z/recovery/` 保留此前备份、新恢复库、临时 API 日志、三份恢复后导出及 `verification.json`。使用 SQLite 只读源连接完成两次备份，411张现有表（含版本表）逻辑内容一致；恢复库在独立临时端口、冻结后端源码与副本专用文件目录下启动完整 API，验证历史月结和跨月付款、库存、12元应付／5元已付／7元余额、三份命名列金额及8个合成岗位会话。6项核对通过；结束后只停止该演练持有的 API 进程。

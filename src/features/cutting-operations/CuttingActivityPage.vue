@@ -21,6 +21,7 @@ const retryDetails=ref<HTMLDetailsElement>(),retryDetailsOpen=ref(false)
 const focusCleanups=new Set<()=>void>()
 const unapplied=computed(()=>source.value!==applied.value.source||query.value!==applied.value.q||orderQuery.value!==applied.value.order_q||(month.value||undefined)!==applied.value.month)
 let generation=0,alive=true
+const refreshButtonId=`${filterId}-refresh`
 const sources:Record<string,string>={master:'基础资料',order:'接单／工程／排期',production:'每日填数与交接',warehouse:'领料／实发／签收／退仓',material:'耗用／成本／归属',period:'内部月结',settlement:'外发结算',payment:'付款核销'}
 const targetLabel=(value:ActivityQuery)=>`业务来源 ${sources[value.source]||'全部授权来源'}；订单号／货号 ${value.order_q||'全部'}；业务期间 ${value.month||'全部期间'}；单据／操作人／原因 ${value.q||'未限定'}，第 ${value.page} 页`
 const readTimeLabel=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})
@@ -77,7 +78,13 @@ async function read(request:ActivityQuery,retry=false,keyboardRetry=false,keepFi
     }
   }}
   finally{
-    if(alive&&ticket===generation){busy.value=false;readingTarget.value=undefined;await nextTick()}
+    if(alive&&ticket===generation){
+      const focusedRetryDetails=succeeded&&retryDetails.value?.contains(document.activeElement)
+      busy.value=false;readingTarget.value=undefined;await nextTick()
+      if(focusedRetryDetails&&alive&&ticket===generation&&document.activeElement===document.body){
+        document.getElementById(refreshButtonId)?.focus({preventScroll:true})
+      }
+    }
     cleanupFocus()
     if(restoreFocus&&alive&&ticket===generation&&document.activeElement===document.body){
       const target=succeeded?resultRegion.value:failedQuery.value?retryAlert.value?.querySelector<HTMLButtonElement>('button'):undefined
@@ -94,7 +101,7 @@ watchCuttingWorkspace(()=>void load())
   <section :class="embedded?'cutting-overview':'cutting-page cutting-overview'">
     <PageHeader v-if="!embedded" title="操作日志" description="追溯原单、版本、操作人及更正依据；仅展示当前权限可查看的业务记录。" />
     <SectionPanel title="业务操作与关联记录" class="cutting-content-panel">
-      <form class="order-toolbar" @submit.prevent="load(1,true)"><label :for="`${filterId}-source`">业务来源<select :id="`${filterId}-source`" v-model="source" name="source"><option value="">全部授权来源</option><option v-for="(label,key) in sources" :key="key" :value="key">{{label}}</option></select></label><label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="orderQuery" name="order_q" maxlength="80" /></label><label :for="`${filterId}-month`">业务期间<input :id="`${filterId}-month`" v-model="month" name="month" type="month" min="2000-01" /></label><label :for="`${filterId}-query`">单据／操作人／原因<input :id="`${filterId}-query`" v-model="query" name="q" maxlength="80" /></label><Button type="submit" :disabled="busy">查询</Button><Button type="button" variant="outline" :disabled="busy" :title="embedded ? refreshHint : undefined" @click="load(1)">刷新当前结果</Button><Button type="button" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></form>
+      <form class="order-toolbar" @submit.prevent="load(1,true)"><label :for="`${filterId}-source`">业务来源<select :id="`${filterId}-source`" v-model="source" name="source"><option value="">全部授权来源</option><option v-for="(label,key) in sources" :key="key" :value="key">{{label}}</option></select></label><label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="orderQuery" name="order_q" maxlength="80" /></label><label :for="`${filterId}-month`">业务期间<input :id="`${filterId}-month`" v-model="month" name="month" type="month" min="2000-01" /></label><label :for="`${filterId}-query`">单据／操作人／原因<input :id="`${filterId}-query`" v-model="query" name="q" maxlength="80" /></label><Button type="submit" :disabled="busy">查询</Button><Button :id="refreshButtonId" type="button" variant="outline" :disabled="busy" :title="embedded ? refreshHint : undefined" @click="load(1)">刷新当前结果</Button><Button type="button" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></form>
       <p v-if="embedded && result && lastSuccessAt" class="cutting-muted activity-summary">当前结果：{{appliedSummary}}<span class="activity-read-time"> · 更新于 <time :datetime="lastSuccessAt" :title="`${readTimeLabel(lastSuccessAt)}（页面读取时间）`">{{readClockLabel(lastSuccessAt)}}</time></span></p>
       <template v-if="!embedded">
         <p class="cutting-muted">当前查询条件：业务来源 {{sources[applied.source]||'全部授权来源'}}；订单号／货号 {{applied.order_q||'全部'}}；业务期间 {{applied.month||'全部期间'}}；单据／操作人／原因 {{applied.q||'未限定'}}。</p>
