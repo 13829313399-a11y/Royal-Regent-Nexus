@@ -13,7 +13,7 @@ const props=defineProps<{embedded?:boolean;initialSource?:string}>()
 const source=ref(props.initialSource??''),query=ref(''),orderQuery=ref(''),month=ref(''),result=ref<Page<ActivityRow>>(),busy=ref(false),error=ref('')
 const applied=ref({source:source.value,q:'',order_q:'',month:undefined as string|undefined})
 type ActivityQuery=typeof applied.value & {page:number;expected_token?:string}
-const failedQuery=ref<ActivityQuery>(),readingTarget=ref<ActivityQuery & {retry:boolean}>(),staleResult=ref(false),restartRequired=ref(false)
+const failedQuery=ref<ActivityQuery>(),readingTarget=ref<ActivityQuery & {retry:boolean;expiredBasis:boolean}>(),staleResult=ref(false),restartRequired=ref(false)
 const firstPageFailed=ref(false)
 const lastSuccessAt=ref<string>()
 const resultRegion=ref<HTMLElement>(),retryAlert=ref<HTMLElement>(),filterId=`cutting-activity-${useId()}`
@@ -26,7 +26,11 @@ const targetLabel=(value:ActivityQuery)=>`业务来源 ${sources[value.source]||
 const readTimeLabel=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})
 const readClockLabel=(value:string)=>new Date(value).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})
 const refreshHint='从第 1 页按已应用的筛选刷新。'
-const retryBasisHint=computed(()=>restartRequired.value?'原分页依据已失效，将从第 1 页重新读取。':failedQuery.value?.expected_token?'保留原分页依据。':'将从第 1 页重新读取并获取分页依据。')
+const retryDetailsQuery=computed(()=>failedQuery.value??(readingTarget.value?.retry&&retryDetailsOpen.value?readingTarget.value:undefined))
+const retryBasisHint=computed(()=>{
+  if(failedQuery.value?restartRequired.value:readingTarget.value?.expiredBasis)return '原分页依据已失效，将从第 1 页重新读取。'
+  return retryDetailsQuery.value?.expected_token?'保留原分页依据。':'将从第 1 页重新读取并获取分页依据。'
+})
 const appliedSummary=computed(()=>{
   const {source,order_q,month,q}=applied.value
   return [sources[source]||'全部授权来源',order_q&&`订单号／货号 ${order_q}`,month&&`业务期间 ${month}`,q&&`单据／操作人／原因 ${q}`].filter(Boolean).join(' · ')
@@ -55,7 +59,7 @@ async function read(request:ActivityQuery,retry=false,keyboardRetry=false,keepFi
   const cleanupFocus=()=>{document.removeEventListener('focusin',cancelFocus);document.removeEventListener('pointerdown',cancelFocus);document.removeEventListener('keydown',cancelOnTab);focusCleanups.delete(cleanupFocus)}
   if(keyboardRetry){document.addEventListener('focusin',cancelFocus);document.addEventListener('pointerdown',cancelFocus);document.addEventListener('keydown',cancelOnTab)}
   if(keyboardRetry)focusCleanups.add(cleanupFocus)
-  readingTarget.value={...request,retry}
+  readingTarget.value={...request,retry,expiredBasis}
   if(request.page===1&&!keepResult){result.value=undefined;lastSuccessAt.value=undefined}
   staleResult.value=Boolean(result.value)
   try{const value=await workspaceApi.activity(request);if(alive&&ticket===generation){result.value=value;lastSuccessAt.value=new Date().toISOString();staleResult.value=false;succeeded=true}}
@@ -99,7 +103,7 @@ watchCuttingWorkspace(()=>void load())
       <p v-if="unapplied" class="cutting-muted" role="status">{{embedded ? '有未应用的筛选，点击「查询」更新结果。' : '筛选有未查询的修改，当前结果仍按上次查询条件展示；翻页和刷新不应用新输入，点击“查询”才应用。'}}</p>
       <p v-if="busy" role="status">{{readingTarget?.retry?(embedded?`正在按原条件重试第 ${readingTarget.page} 页…`:`正在按原条件重试：${targetLabel(readingTarget)}。`):'正在读取操作记录…'}}</p>
       <p v-if="error" ref="retryAlert" role="alert">{{error}} <Button v-if="failedQuery" type="button" variant="outline" :disabled="busy" @click="retry">{{restartRequired?'按原条件重读第 1 页':`按原条件重试（第 ${failedQuery.page} 页）`}}</Button></p>
-      <details v-if="embedded&&failedQuery" ref="retryDetails" :open="retryDetailsOpen" class="cutting-muted activity-summary"><summary>查看重试条件</summary><p>{{targetLabel(failedQuery)}}。{{retryBasisHint}}</p></details>
+      <details v-if="embedded&&retryDetailsQuery" ref="retryDetails" :open="retryDetailsOpen" class="cutting-muted activity-summary"><summary>查看重试条件</summary><p>{{targetLabel(retryDetailsQuery)}}。{{retryBasisHint}}</p></details>
       <p v-else-if="failedQuery" class="cutting-muted">重试目标：{{targetLabel(failedQuery)}}。{{restartRequired?'原分页依据已失效，重新从第 1 页核对，不再使用旧依据。':failedQuery.expected_token?'保留原分页依据。':'本次没有分页依据，将按原条件从第 1 页重新读取并获取新依据。'}}不应用尚未查询的新输入，不提交业务记录。</p>
       <p v-if="staleResult&&result&&!(embedded&&firstPageFailed)" class="cutting-muted" role="status">{{embedded ? `仍显示上次读取的第 ${result.page} 页` : `以下仍为上次成功读取的第 ${result.page} 页结果，尚未取得本次请求的新结果，请勿将其视为已刷新数据。`}}</p>
       <p v-if="!embedded&&result&&lastSuccessAt" class="cutting-muted">上次成功读取时间：<time :datetime="lastSuccessAt">{{readTimeLabel(lastSuccessAt)}}</time>（页面读取时间，非业务日期）</p>
