@@ -21,10 +21,15 @@ import { useAppStore } from '@/stores/app'
 import ShippingOrderWorkspace from './ShippingOrderWorkspace.vue'
 import ShippingEmailImportPanel from './ShippingEmailImportPanel.vue'
 import ShippingCodeMappingPanel from './ShippingCodeMappingPanel.vue'
+import ShippingSoSchedulePanel from './ShippingSoSchedulePanel.vue'
+import ShippingTruckSheetPanel from './ShippingTruckSchedulePanel.vue'
+import ShippingSupplementPanel from './ShippingSupplementPanel.vue'
+import ShippingCustomsPanel from './ShippingCustomsPanel.vue'
+import ShippingProductHistoryPanel from './ShippingProductHistoryPanel.vue'
 import ShippingMasterDataPanel from './ShippingMasterDataPanel.vue'
 import { isShippingFactory, SHIPPING_FACTORY_IDS, shippingFactoryProfiles } from './contracts'
 
-type ShippingPage = 'email' | 'orders' | 'codes' | 'master'
+type ShippingPage = 'email' | 'orders' | 'so' | 'truck' | 'supplement' | 'customs' | 'codes' | 'master' | 'daily'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,7 +40,7 @@ const menu = [
   { id: 'orders', label: '工厂排期单', icon: ClipboardList, page: 'orders' },
   { id: 'codes', label: '货号映射', icon: Tags, page: 'codes' },
   { id: 'vendor', label: '厂商映射', icon: Building2, page: 'master' },
-  { id: 'daily', label: '每日单据监控', icon: CalendarClock, page: null },
+  { id: 'daily', label: '一键出货', icon: CalendarClock, page: 'daily' },
   { id: 'pallet', label: '卡板据统计', icon: Package, page: null },
   { id: 'container', label: '提箱柜核对', icon: ClipboardCheck, page: null },
   { id: 'users', label: '用户管理', icon: Users, page: null },
@@ -47,8 +52,13 @@ const departmentRoute = computed(() => getFactoryScopedRoute('/modules/pmc-wareh
 
 function normalizePage(value: unknown): ShippingPage {
   if (value === 'orders' || value === 'tasks') return 'orders'
+  if (value === 'so' || value === 'loading' || value === 'zuru') return 'so'
+  if (value === 'truck') return 'truck'
+  if (value === 'supplement') return 'supplement'
+  if (value === 'customs') return 'customs'
   if (value === 'codes') return 'codes'
   if (value === 'master') return 'master'
+  if (value === 'daily') return 'daily'
   return 'email'
 }
 
@@ -57,9 +67,10 @@ const feedback = ref('')
 let feedbackTimer: ReturnType<typeof setTimeout> | undefined
 
 const activeMenuId = computed(() => {
-  if (activePage.value === 'orders') return 'orders'
+  if (activePage.value === 'orders' || activePage.value === 'so' || activePage.value === 'truck' || activePage.value === 'supplement' || activePage.value === 'customs') return 'orders'
   if (activePage.value === 'codes') return 'codes'
   if (activePage.value === 'master') return 'vendor'
+  if (activePage.value === 'daily') return 'daily'
   return 'email'
 })
 
@@ -190,13 +201,28 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
 
         <div class="min-w-0 flex-1">
           <section v-if="activePage === 'email'" aria-label="邮件导入">
-            <ShippingEmailImportPanel @notify="notify" />
+            <ShippingEmailImportPanel :factory-id="factoryId" @notify="notify" />
+          </section>
+          <section v-else-if="activePage === 'so'" aria-label="SO出货表">
+            <ShippingSoSchedulePanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />
+          </section>
+          <section v-else-if="activePage === 'daily'" aria-label="一键出货">
+            <ShippingProductHistoryPanel :factory-id="factoryId" @notify="notify" />
+          </section>
+          <section v-else-if="activePage === 'truck'" aria-label="车的排出货表">
+            <ShippingTruckSheetPanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />
+          </section>
+          <section v-else-if="activePage === 'supplement'" aria-label="补料单">
+            <ShippingSupplementPanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />
+          </section>
+          <section v-else-if="activePage === 'customs'" aria-label="通关一体化资料">
+            <ShippingCustomsPanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />
           </section>
           <section v-else-if="activePage === 'codes'" aria-label="货号映射">
             <ShippingCodeMappingPanel @notify="notify" />
           </section>
           <section v-else-if="activePage === 'orders'" aria-label="出货单管理">
-            <ShippingOrderWorkspace :profile="profile" @notify="notify" />
+            <ShippingOrderWorkspace :profile="profile" @notify="notify" @open-so-sheet="setPage('so')" @open-truck-sheet="setPage('truck')" @open-supplement="setPage('supplement')" @open-customs="setPage('customs')" />
           </section>
           <section v-else aria-label="基础资料">
             <ShippingMasterDataPanel :profile="profile" />

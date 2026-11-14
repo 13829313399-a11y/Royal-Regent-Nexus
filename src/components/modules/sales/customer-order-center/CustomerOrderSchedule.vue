@@ -10,6 +10,7 @@ import {
 import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
 import type { FeedbackContext } from '@/api/moduleFeedback'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
+import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
 import CasdonWorkbookTools from './CasdonWorkbookTools.vue'
 
@@ -41,6 +42,11 @@ const organizeInput = ref<HTMLInputElement | null>(null)
 const organizing = ref(false)
 const organizeMessage = ref('')
 const organizeReport = ref<CustomerOrderScheduleOrganizeReport | null>(null)
+const shippingTasks = ref<ShippingScheduleTask[]>([])
+const shippingQuery = ref('')
+const shippingBusy = ref(false)
+const shippingMessage = ref('')
+let shippingRequestSequence = 0
 const is360Selected = computed(() => props.factoryId === 'huakang-a' && draft.value.customerCode === '360')
 const inspectionGrouping = computed(() => props.factoryId === 'huakang-a' && schedule.value?.customer_code === '360'
   ? schedule.value.inspection_grouping : undefined)
@@ -70,6 +76,7 @@ function pageCount(key: SectionKey) {
 function resetForFactory() {
   customersRequestSequence += 1
   scheduleRequestSequence += 1
+  shippingRequestSequence += 1
   customers.value = []
   customerMessage.value = ''
   loading.value = false
@@ -80,7 +87,37 @@ function resetForFactory() {
   pages.value = initialPages()
   visibleColumnKeys.value = []
   selectedLineId.value = ''
+  shippingTasks.value = []
+  shippingQuery.value = ''
+  shippingMessage.value = ''
+  shippingBusy.value = false
   resetOrganizer()
+}
+
+async function loadShippingSchedule() {
+  const factoryId = props.factoryId
+  if (!factoryId) return
+  const token = ++shippingRequestSequence
+  shippingBusy.value = true
+  shippingMessage.value = ''
+  try {
+    const tasks = await listShippingTasks(factoryId, { q: shippingQuery.value.trim() })
+    if (token !== shippingRequestSequence || factoryId !== props.factoryId) return
+    shippingTasks.value = tasks
+    shippingMessage.value = tasks.length
+      ? `已拿取 ${tasks.length} 条船务排期（来自邮件导入）。`
+      : '没有匹配的船务排期，请先确认船务管理已完成邮件解析或调整筛选。'
+  } catch (error) {
+    if (token !== shippingRequestSequence || factoryId !== props.factoryId) return
+    shippingTasks.value = []
+    shippingMessage.value = `拿取船务排期失败：${getApiErrorMessage(error)}`
+  } finally {
+    if (token === shippingRequestSequence) shippingBusy.value = false
+  }
+}
+
+function shippingStatusLabel(status: string) {
+  return ({ review: '待复核', confirmed: '已确认', planned: '已排期', cancelled: '已取消' } as Record<string, string>)[status] || status || '-'
 }
 
 function resetForCustomer() {
@@ -334,6 +371,37 @@ watch(() => props.factoryId, () => {
       <button class="customer-schedule__button customer-schedule__button--primary" type="button" @click="emit('import')">导入客户订单</button>
     </header>
 
+    <section class="shipping-schedule mb-4 rounded-xl border border-slate-200 bg-white p-4" aria-label="客户订单中心船务排期">
+      <h3 class="text-[14px] font-bold text-slate-900">船务排期（来自邮件导入）</h3>
+      <p class="mt-1 text-[11px] text-slate-500">从船务管理的邮件导入结果拿取 SO 排期，可按订仓号 / 客户 / 港口筛选；确认建单后的排期会出现在这里。</p>
+      <div class="mt-3 flex flex-wrap items-end gap-2">
+        <label class="text-[11px] text-slate-600">订仓号 / 客户 / 港口
+          <input v-model="shippingQuery" type="search" placeholder="输入后点击拿取排期" class="mt-1 block h-9 w-[240px] rounded-lg border border-slate-200 bg-white px-3 text-[12px] outline-none focus:border-teal-500" @keydown.enter.prevent="loadShippingSchedule">
+        </label>
+        <button class="customer-schedule__button customer-schedule__button--primary" type="button" :disabled="shippingBusy" @click="loadShippingSchedule">
+          {{ shippingBusy ? '拿取中…' : '拿取排期' }}
+        </button>
+      </div>
+      <p v-if="shippingMessage" class="mt-2 text-[11px] text-slate-500" role="status">{{ shippingMessage }}</p>
+      <div v-if="shippingTasks.length" class="mt-3 overflow-x-auto">
+        <table data-testid="customer-shipping-schedule" class="w-full text-left text-[11px]">
+          <thead class="bg-slate-50 text-slate-500">
+            <tr><th class="px-2 py-1.5">SO号</th><th class="px-2 py-1.5">港口</th><th class="px-2 py-1.5">计划开航</th><th class="px-2 py-1.5">SI截止</th><th class="px-2 py-1.5">截关</th><th class="px-2 py-1.5">状态</th></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr v-for="task in shippingTasks" :key="task.id">
+              <td class="px-2 py-1.5 font-semibold text-slate-800">{{ task.so_number || '-' }}</td>
+              <td class="px-2 py-1.5">{{ task.port || '-' }}</td>
+              <td class="px-2 py-1.5">{{ task.planned_ship_date || '-' }}</td>
+              <td class="px-2 py-1.5">{{ task.si_deadline ? task.si_deadline.replace('T', ' ') : '-' }}</td>
+              <td class="px-2 py-1.5">{{ task.cutoff_date ? task.cutoff_date.replace('T', ' ') : '-' }}</td>
+              <td class="px-2 py-1.5">{{ shippingStatusLabel(task.status) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <form class="customer-schedule__filters" @submit.prevent="applyFilters">
       <label>客户
         <select v-model="draft.customerCode" :disabled="customersLoading" @change="resetForCustomer">
@@ -418,4 +486,6 @@ watch(() => props.factoryId, () => {
 .customer-schedule{color:#191b23}.customer-schedule__header{display:flex;justify-content:space-between;gap:18px;align-items:start;margin-bottom:18px}.customer-schedule__header h2,.customer-schedule__header p,.customer-schedule h3{margin:0}.customer-schedule__header h2{margin-top:4px;font-size:28px}.customer-schedule__header>div>p:last-child,.customer-schedule__note,.customer-schedule__cancelled>p{color:#596070;font-size:13px;line-height:1.5}.customer-schedule__eyebrow{color:#003d9b;font-size:11px!important;font-weight:800;letter-spacing:.08em}.customer-schedule__filters{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:10px}.customer-schedule__filters label{display:grid;gap:4px;color:#434654;font-size:12px;font-weight:700}.customer-schedule__filters input,.customer-schedule__filters select{min-width:150px;border:1px solid #c3c6d6;border-radius:6px;padding:8px;font:inherit}.customer-schedule__button{border:1px solid #c3c6d6;border-radius:6px;background:#fff;padding:8px 12px;color:#303440;font-weight:800}.customer-schedule__button:disabled{cursor:not-allowed;opacity:.55}.customer-schedule__button--primary{border-color:#003d9b;background:#003d9b;color:#fff}.customer-schedule__message{margin:8px 0;color:#93000a}.customer-schedule__summary{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:10px;margin:18px 0}.customer-schedule__summary div{display:grid;gap:4px;padding:12px;border:1px solid #dce0eb;border-radius:8px;background:#fff}.customer-schedule__summary span{color:#596070;font-size:12px}.customer-schedule__summary strong{font-size:17px}.customer-schedule__unknown{margin:0 0 12px;border-left:3px solid #a86500;background:#fff3dc;padding:9px;color:#6b3d00;font-size:13px}.customer-schedule__columns{margin:0 0 16px;border:1px solid #d9dbe5;border-radius:7px;padding:10px;background:#fafaff}.customer-schedule__columns summary{cursor:pointer;color:#003d9b;font-size:13px;font-weight:800}.customer-schedule__columns label{display:inline-flex;gap:4px;margin:9px 12px 0 0;font-size:12px}.customer-schedule__section,.customer-schedule__cancelled{margin-top:20px}.customer-schedule__section h3,.customer-schedule__cancelled summary{font-size:17px}.customer-schedule__section h3 small{color:#596070;font-size:12px;font-weight:400}.customer-schedule__table-wrap{overflow:auto;margin-top:10px;border:1px solid #cfd2df;border-radius:8px;background:#fff}.customer-schedule table{width:100%;min-width:1500px;border-collapse:separate;border-spacing:0;font-size:12px}.customer-schedule th,.customer-schedule td{padding:10px;border-bottom:1px solid #e6e7ee;text-align:left;white-space:nowrap;background:#fff}.customer-schedule th{background:#f3f3fd;color:#434654}.customer-schedule__sticky{position:sticky;left:0;z-index:1;box-shadow:1px 0 0 #d9dbe5}.customer-schedule th.customer-schedule__sticky{z-index:2;background:#f3f3fd}.customer-schedule__reference{font-family:ui-monospace,Consolas,monospace}.customer-schedule__link{border:0;background:transparent;color:#003d9b;font-weight:800}.customer-schedule__pagination{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:10px}.customer-schedule__pagination span{margin-right:auto;color:#596070;font-size:12px}.customer-schedule__cancelled{border:1px solid #d9dbe5;border-radius:8px;padding:14px;background:#fafaff}.customer-schedule__cancelled summary{cursor:pointer;font-weight:800}@media(max-width:800px){.customer-schedule__header{display:grid}.customer-schedule__summary{grid-template-columns:repeat(2,minmax(0,1fr))}.customer-schedule__filters label{width:100%}.customer-schedule__filters input,.customer-schedule__filters select{width:100%}}
 .customer-schedule__organize{margin:16px 0;padding:14px;border:1px solid #d9dbe5;border-radius:8px;background:#fafaff}.customer-schedule__organize label,.customer-schedule__organize span{display:inline-block;margin:0 12px 10px 0;font-size:13px}.customer-schedule__date-warning{display:block;max-width:260px;white-space:normal;color:#8b4d00;line-height:1.5}
 .customer-schedule__organize-report{margin-top:12px;font-size:13px;line-height:1.6}.customer-schedule__organize-report p{margin:6px 0}.customer-schedule__organize-report ul{margin:6px 0;padding-left:22px}.customer-schedule__organize-report>.customer-schedule__date-warning{max-width:none}.customer-schedule__organize-warnings{color:#8b4d00}
+.shipping-schedule table{min-width:0;width:100%;table-layout:fixed}
+.shipping-schedule th,.shipping-schedule td{padding:6px 8px;white-space:normal}
 </style>

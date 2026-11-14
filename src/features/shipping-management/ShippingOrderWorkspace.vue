@@ -16,7 +16,7 @@ import type { ShippingFactoryProfile, ShippingOrder, ShippingOrderStatus } from 
 import { shippingOrderStatusMeta } from './contracts'
 
 const props = defineProps<{ profile: ShippingFactoryProfile }>()
-const emit = defineEmits<{ notify: [message: string] }>()
+const emit = defineEmits<{ notify: [message: string]; 'open-so-sheet': []; 'open-truck-sheet': []; 'open-supplement': []; 'open-customs': [] }>()
 
 const PAGE_SIZE = 10
 
@@ -99,6 +99,26 @@ function preview(title: string) {
   emit('notify', `界面预览：${title}尚未接入后端接口。`)
 }
 
+function openAction(action: { id: string; title: string }) {
+  if (action.id === 'so-export') {
+    emit('open-so-sheet')
+    return
+  }
+  if (action.id === 'vehicle-export') {
+    emit('open-truck-sheet')
+    return
+  }
+  if (action.id === 'si-supplement') {
+    emit('open-supplement')
+    return
+  }
+  if (action.id === 'customs-pack') {
+    emit('open-customs')
+    return
+  }
+  preview(action.title)
+}
+
 function openDetail(order: ShippingOrder) {
   detail.value = order
   void nextTick(() => closeButton.value?.focus())
@@ -137,7 +157,7 @@ function statusTone(order: ShippingOrder) {
         type="button"
         class="group flex min-w-0 items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-teal-200 hover:bg-slate-50/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
         :aria-label="action.title"
-        @click="preview(action.title)"
+        @click="openAction(action)"
       >
         <span class="flex size-7 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-600 transition group-hover:bg-teal-100/70 group-hover:text-teal-800" aria-hidden="true">
           <component :is="action.icon" class="size-3.5" />

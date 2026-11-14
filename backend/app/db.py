@@ -930,6 +930,7 @@ def init_db() -> None:
         qc_inspection,  # noqa: F401
         raw_material,  # noqa: F401
         three_d_printing,  # noqa: F401
+        shipping_mail,  # noqa: F401
     )
     from app.services.auth import seed_auth_defaults
     from app.services.carton_procurement import seed_carton_supplier_defaults

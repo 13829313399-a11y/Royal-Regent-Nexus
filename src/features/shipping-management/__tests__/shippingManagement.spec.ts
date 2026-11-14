@@ -60,14 +60,14 @@ describe('shipping order management workspace', () => {
     const { wrapper } = mountView('huaxing')
 
     expect(wrapper.find('[role="tablist"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('将 .eml 文件拖到此处，或点击上传（支持多封邮件）')
+    expect(wrapper.text()).toContain('将邮件或扫描件拖到此处，或点击上传（支持多封）')
     expect(wrapper.text()).toContain('解析邮件（0封）')
     expect(wrapper.text()).toContain('AI自动解析')
     expect(wrapper.text()).toContain('从邮箱直接导入')
     expect(wrapper.text()).toContain('保存并连接')
     expect(wrapper.text()).toContain('解析记录（4780）')
     expect(wrapper.text()).toContain('查看员 admin')
-    for (const item of ['邮件导入', '工厂排期单', '货号映射', '厂商映射', '每日单据监控', '卡板据统计', '提箱柜核对', '用户管理']) {
+    for (const item of ['邮件导入', '工厂排期单', '货号映射', '厂商映射', '一键出货', '卡板据统计', '提箱柜核对', '用户管理']) {
       expect(wrapper.text()).toContain(item)
     }
 
@@ -75,16 +75,16 @@ describe('shipping order management workspace', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('解析记录（4780）'))!.trigger('click')
     expect(wrapper.text()).toContain('SHZ8265013 出货通知')
 
-    await wrapper.findAll('button').find((button) => button.text().includes('保存并连接'))!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：保存并连接尚未接入后端接口')
+    expect(wrapper.text()).toContain('立即同步')
+    expect(wrapper.text()).toContain('每天 08:00–23:00 每小时自动收件（华兴 / 华登 / 华康A / 华康B / 华康D）')
 
-    for (const label of ['仓库', '车类型', '收货国家', '入仓时间', '截数期', '订舱号']) {
+    for (const label of ['码头', 'FROM', 'TO', '国家', '航次号', '订仓号', '合同号', '合同后四位', '订仓日期']) {
       expect(wrapper.text()).toContain(label)
     }
     expect(wrapper.text()).toContain('Packing List 明细')
     expect(wrapper.text()).toContain('确认创建出货单')
     await wrapper.findAll('button').find((button) => button.text().includes('确认创建出货单'))!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：确认创建出货单尚未接入后端接口')
+    expect(wrapper.text()).toContain('确认建单目前仅支持 .eml 邮件')
 
     wrapper.unmount()
   })
@@ -104,11 +104,11 @@ describe('shipping order management workspace', () => {
     expect(wrapper.text()).toContain('客户与柜号序列')
     expect(wrapper.text()).toContain('下一柜号')
 
-    await openMenu(wrapper, '每日单据监控')
-    expect(wrapper.text()).toContain('界面预览：每日单据监控尚未接入后端接口')
+    await openMenu(wrapper, '一键出货')
+    expect(wrapper.text()).toContain('每日新增出货资料')
 
     await openMenu(wrapper, '邮件导入')
-    expect(wrapper.text()).toContain('将 .eml 文件拖到此处')
+    expect(wrapper.text()).toContain('将邮件或扫描件拖到此处')
 
     wrapper.unmount()
   })
@@ -275,17 +275,20 @@ describe('shipping order management workspace', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('刷新'))!.trigger('click')
     expect(wrapper.text()).toContain('已刷新 · 共 12 条')
 
-    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === 'SO排出货表')!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：SO排出货表尚未接入后端接口')
-
-    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === '车的排出货表')!.trigger('click')
-    expect(wrapper.text()).toContain('界面预览：车的排出货表尚未接入后端接口')
-
     await rows(wrapper)[0]!.findAll('button').find((button) => button.text() === '修改')!.trigger('click')
     expect(wrapper.text()).toContain('界面预览：修改出货单 SHZ8265013（1001）尚未接入后端接口')
 
     await rows(wrapper)[0]!.findAll('button').find((button) => button.text() === '柜单')!.trigger('click')
     expect(wrapper.text()).toContain('界面预览：柜单 SHZ8265013尚未接入后端接口')
+
+    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === 'SO排出货表')!.trigger('click')
+    expect(wrapper.text()).toContain('SO 出货表')
+    await wrapper.findAll('button').find((button) => button.text().includes('返回工厂排期单'))!.trigger('click')
+    expect(wrapper.text()).toContain('工厂货期排单')
+
+    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === '车的排出货表')!.trigger('click')
+    expect(wrapper.text()).toContain('车的排出货表')
+    expect(wrapper.text()).toContain('盐田仓 CFS')
 
     wrapper.unmount()
   })

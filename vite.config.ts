@@ -42,6 +42,7 @@ export default defineConfig(({ mode }) => {
           '**/.tmp/**',
           '**/.tmp-tests/**',
           '**/.local-dev/**',
+          '**/refs/**',
           '**/backend/.pytest-tmp*/**',
           '**/dist/**',
           '**/*.tmpdir/**',

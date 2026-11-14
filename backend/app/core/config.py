@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     qc_department_data_dir: str = str(BACKEND_DIR / "data" / "qc-department" / "companies")
     qc_department_url: str = "http://127.0.0.1:3411"
     qc_department_gateway_token: SecretStr = SecretStr("")
+    shipping_mail_imap_enabled: bool = False
+    shipping_mail_imap_secret: SecretStr = SecretStr("")
+    shipping_mail_imap_weekdays: str = "0,1,2,3,4,5,6"
+    shipping_mail_imap_hour: int = Field(default=8, ge=0, le=23)
+    shipping_mail_imap_end_hour: int = Field(default=23, ge=0, le=23)
+    shipping_mail_imap_poll_seconds: int = Field(default=300, ge=30, le=86400)
+    shipping_mail_imap_factories: str = "huaxing,huadeng,huakang-a,huakang-b,huakang-d"
     app_name: str = "Royal Regent Nexus API"
     app_env: str = "development"
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'royal_regent_nexus.db'}"

@@ -24,6 +24,11 @@ INDONESIA_MATERIAL_PERMISSION_CODES = tuple('indonesia_material:' + action for a
     'read', 'write', 'receipt_confirm', 'export',
 ))
 
+# 船务管理：读取、导入邮件/附件、确认建任务、人工录入与状态推进。
+SHIPPING_MANAGEMENT_PERMISSION_CODES = tuple('shipping:' + action for action in (
+    'read', 'import', 'confirm', 'write',
+))
+
 UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
     "read", "master_write", "plan_write", "production_write", "quality_write",
     "shift_write", "handover_write", "inventory_write", "cost_read", "cost_write",
@@ -238,6 +243,7 @@ BUSINESS_PERMISSION_CODES = (
     *MATERIAL_PLAN_PERMISSION_CODES,
     *MATERIAL_PURCHASE_PERMISSION_CODES,
     *INDONESIA_MATERIAL_PERMISSION_CODES,
+    *SHIPPING_MANAGEMENT_PERMISSION_CODES,
     *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     *CUTTING_OPS_PERMISSION_CODES,
     *FABRIC_WAREHOUSE_PERMISSION_CODES,

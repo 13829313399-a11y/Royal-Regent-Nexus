@@ -1,0 +1,569 @@
+import { http } from '../lib/http.js'
+
+export interface ShippingMailLine {
+  product_code?: string
+  product_name?: string
+  customer_po?: string
+  quantity?: number | null
+  cartons?: number | null
+  cbm?: number | null
+  gross_weight?: number | null
+  net_weight?: number | null
+  source_file?: string
+}
+
+export interface ShippingAttachment {
+  filename: string
+  kind?: string
+  status?: string
+  warnings?: string[]
+}
+
+export interface ShippingMailPreview {
+  filename: string
+  subject?: string
+  sender?: string
+  received_at?: string
+  fields: Record<string, unknown>
+  items: ShippingMailLine[]
+  attachments: ShippingAttachment[]
+  warnings: string[]
+  rule_trace?: unknown[]
+  parser_version?: string
+  status?: string
+}
+
+export interface ShippingMailBatch {
+  id: string
+  file_name?: string
+  filename?: string
+  status: string
+  total_count: number
+  parsed_count: number
+  failed_count: number
+  created_at: string
+}
+
+export interface ShippingMailBatchItem {
+  id: string
+  filename: string
+  status: string
+  subject?: string
+  fields?: Record<string, unknown>
+  items?: ShippingMailLine[]
+  warnings?: string[]
+}
+
+export interface ShippingMailConfirmResult {
+  batch: ShippingMailBatch
+  tasks: Array<Record<string, unknown>>
+}
+
+export async function previewShippingMail(factoryId: string, file: File): Promise<ShippingMailPreview> {
+  const form = new FormData()
+  form.append('factory_id', factoryId)
+  form.append('file', file)
+  const { data } = await http.post<ShippingMailPreview>('/shipping/mail/preview', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120_000,
+  })
+  return data
+}
+
+export async function createShippingMailBatch(factoryId: string, files: File[]) {
+  const form = new FormData()
+  form.append('factory_id', factoryId)
+  for (const file of files) form.append('files', file)
+  const { data } = await http.post<{ batch: ShippingMailBatch; items: ShippingMailBatchItem[] }>(
+    '/shipping/mail/batches',
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000 },
+  )
+  return data
+}
+
+export async function confirmShippingMailBatch(batchId: string, factoryId: string, itemIds: string[]) {
+  const { data } = await http.post<ShippingMailConfirmResult>(
+    `/shipping/mail/batches/${batchId}/confirm`,
+    { factory_id: factoryId, item_ids: itemIds },
+    { timeout: 120_000 },
+  )
+  return data
+}
+
+export async function listShippingMailBatches(factoryId: string) {
+  const { data } = await http.get<{ batches: ShippingMailBatch[] }>('/shipping/mail/batches', {
+    params: { factory_id: factoryId },
+  })
+  return data.batches
+}
+
+export interface ShippingMailAccount {
+  configured: boolean
+  factory_id: string
+  host: string
+  port: number
+  username: string
+  use_ssl: boolean
+  folder: string
+  enabled: boolean
+  has_password: boolean
+  last_sync_at: string
+  last_status: string
+  last_error: string
+}
+
+export interface ShippingMailSyncRun {
+  id: string
+  factory_id: string
+  trigger: string
+  status: string
+  fetched: number
+  imported: number
+  confirmed: number
+  failed: number
+  message: string
+  started_at: string
+  finished_at: string
+}
+
+export async function getShippingMailAccount(factoryId: string) {
+  const { data } = await http.get<{ account: ShippingMailAccount }>('/shipping/mail/account', {
+    params: { factory_id: factoryId },
+  })
+  return data.account
+}
+
+export async function saveShippingMailAccount(payload: {
+  factory_id: string
+  host: string
+  port: number
+  username: string
+  password: string
+  use_ssl: boolean
+  folder: string
+  enabled: boolean
+}) {
+  const { data } = await http.put<{ account: ShippingMailAccount }>('/shipping/mail/account', payload)
+  return data.account
+}
+
+export async function testShippingMailAccount(factoryId: string, password = '') {
+  const { data } = await http.post<{ ok: boolean; message: string }>('/shipping/mail/account/test', {
+    factory_id: factoryId,
+    password,
+  })
+  return data
+}
+
+export async function syncShippingMailAccount(factoryId: string) {
+  const { data } = await http.post<{ run: ShippingMailSyncRun }>('/shipping/mail/account/sync', null, {
+    params: { factory_id: factoryId },
+    timeout: 120_000,
+  })
+  return data.run
+}
+
+export async function listShippingMailRuns(factoryId: string) {
+  const { data } = await http.get<{ runs: ShippingMailSyncRun[] }>('/shipping/mail/account/runs', {
+    params: { factory_id: factoryId },
+  })
+  return data.runs
+}
+
+export interface LoadingLine {
+  id: string
+  tradingCompany: string
+  contract: string
+  filingCode: string
+  declareCode: string
+  coefficient?: number | null
+  quantity: number | null
+  cartons: number | null
+  grossWeight: number | null
+  netWeight: number | null
+  cbm: number | null
+  category: string
+  grossPerCarton: number | null
+  netPerCarton: number | null
+  description: string
+  department: string
+}
+
+export interface LoadingHeader {
+  shipper: string
+  consignee: string
+  tradingCompany: string
+  soNo: string
+  vessel: string
+  voyage: string
+  containerType: string
+  cutoff: string
+  sheetDate: string
+  preparer: string
+  brandNote: string
+  originPort: string
+  transportCompany: string
+  number: string
+  plate: string
+  containerNo: string
+  sealNo: string
+  tareWeight: string
+  destinationCountry: string
+  bookingDate: string
+  photoNote: string
+  department: string
+}
+
+export interface LoadingDraft {
+  number: string
+  header: LoadingHeader
+  lines: LoadingLine[]
+  totals: Record<string, number>
+  taskId: string
+}
+
+export async function draftLoadingSheet(factoryId: string, taskId: string): Promise<LoadingDraft> {
+  const { data } = await http.post<LoadingDraft>('/shipping/loading-sheets/draft', {
+    factory_id: factoryId,
+    task_id: taskId,
+  })
+  return data
+}
+
+export async function exportLoadingSheet(factoryId: string, draft: LoadingDraft): Promise<Blob> {
+  const { data } = await http.post('/shipping/loading-sheets/export', {
+    factory_id: factoryId,
+    taskId: draft.taskId,
+    header: draft.header,
+    lines: draft.lines,
+  }, { responseType: 'blob', timeout: 120_000 })
+  return data as Blob
+}
+
+export interface ZuruLine {
+  id: string
+  tradingHouse: string
+  contract: string
+  filingCode: string
+  declareCode: string
+  brand: string
+  coefficient?: number | null
+  quantity: number | null
+  cartons: number | null
+  grossWeight: number | null
+  netWeight: number | null
+  cbm: number | null
+  cbmPerCarton?: number | null
+  country: string
+  grossPerCarton: number | null
+  netPerCarton: number | null
+  remark: string
+  po: string
+}
+
+export interface ZuruHeader {
+  toNames: string[]
+  fromName: string
+  sheetDate: string
+  cutoff: string
+  number: string
+  soNo: string
+  vesselVoyage: string
+  blNo: string
+  transportCompany: string
+  containerType: string
+  tradeTerm: string
+  plate: string
+  containerNo: string
+  sealNo: string
+  tareWeight: string
+  originPort: string
+  destinationCountry: string
+}
+
+export interface ZuruDraft {
+  taskId: string
+  header: ZuruHeader
+  lines: ZuruLine[]
+  totals: Record<string, number>
+}
+
+export async function draftZuruSheet(factoryId: string, taskId: string): Promise<ZuruDraft> {
+  const { data } = await http.post<ZuruDraft>('/shipping/loading-sheets/zuru/draft', {
+    factory_id: factoryId,
+    task_id: taskId,
+  })
+  return data
+}
+
+export async function exportZuruSheet(factoryId: string, draft: ZuruDraft): Promise<Blob> {
+  const { data } = await http.post('/shipping/loading-sheets/zuru/export', {
+    factory_id: factoryId,
+    taskId: draft.taskId,
+    header: draft.header,
+    lines: draft.lines,
+  }, { responseType: 'blob', timeout: 120_000 })
+  return data as Blob
+}
+
+export interface ProductHistoryRecord {
+  id: string
+  product_code: string
+  product_name: string
+  category: string
+  gross_per_carton: string
+  net_per_carton: string
+  customer: string
+  source: string
+  updated_at: string
+}
+
+export async function importProductHistory(factoryId: string, customer: string, files: File[]) {
+  const form = new FormData()
+  form.append('factory_id', factoryId)
+  form.append('customer', customer)
+  for (const file of files) form.append('files', file)
+  const { data } = await http.post<{
+    created: number
+    updated: number
+    total: number
+    records: ProductHistoryRecord[]
+  }>('/shipping/product-history/import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120_000,
+  })
+  return data
+}
+
+export async function listProductHistory(factoryId: string, customer = '') {
+  const { data } = await http.get<{ records: ProductHistoryRecord[] }>('/shipping/product-history', {
+    params: { factory_id: factoryId, customer },
+  })
+  return data.records
+}
+
+export interface TruckLine {
+  id: string
+  department: string
+  tradingHouse: string
+  contract: string
+  filingCode: string
+  declareCode: string
+  name: string
+  country: string
+  category: string
+  quantity: number | null
+  coefficient: number | null
+  pieces: number | null
+  grossWeight: number | null
+  netWeight: number | null
+  cbm: number | null
+  cartonMark: string
+  totalCartons: string
+  grossPerCarton: number | null
+  netPerCarton: number | null
+  remark: string
+}
+
+export interface TruckHeader {
+  shipper: string
+  consignee: string
+  reference: string
+  toName: string
+  vehicle: string
+  cfs: string
+  tradeTerm: string
+  cc: string
+  tableName: string
+  consolidator: string
+  scheduleText: string
+  brandNote: string
+  plate: string
+  cutoff: string
+  sheetDate: string
+  preparer: string
+  bookingDate: string
+}
+
+export interface TruckDraft {
+  taskId: string
+  header: TruckHeader
+  lines: TruckLine[]
+  totals: Record<string, number>
+}
+
+export async function draftTruckSheet(factoryId: string, taskId: string): Promise<TruckDraft> {
+  const { data } = await http.post<TruckDraft>('/shipping/loading-sheets/truck/draft', {
+    factory_id: factoryId,
+    task_id: taskId,
+  })
+  return data
+}
+
+export async function exportTruckSheet(factoryId: string, draft: TruckDraft): Promise<Blob> {
+  const { data } = await http.post('/shipping/loading-sheets/truck/export', {
+    factory_id: factoryId,
+    taskId: draft.taskId,
+    header: draft.header,
+    lines: draft.lines,
+  }, { responseType: 'blob', timeout: 120_000 })
+  return data as Blob
+}
+
+export interface BulkTruckLine {
+  id: string
+  tradingHouse: string
+  contract: string
+  filingCode: string
+  declareCode: string
+  coefficient: number | null
+  quantity: number | null
+  cartons: number | null
+  boards: string
+  grossWeight: number | null
+  netWeight: number | null
+  cbm: number | null
+  country: string
+  grossPerCarton: number | null
+  netPerCarton: number | null
+  cbmPerCarton: number | null
+  brand: string
+  so: string
+  po: string
+  shippingNote: string
+  remark: string
+}
+
+export interface BulkTruckHeader {
+  toNames: string[]
+  fromName: string
+  sheetDate: string
+  vehicle: string
+  transport: string
+  truckType: string
+  tradeTerm: string
+  tableName: string
+  cutoff: string
+  originPort: string
+}
+
+export interface BulkTruckDraft {
+  taskId: string
+  header: BulkTruckHeader
+  lines: BulkTruckLine[]
+  totals: Record<string, number>
+}
+
+export async function draftBulkTruckSheet(factoryId: string, taskId: string): Promise<BulkTruckDraft> {
+  const { data } = await http.post<BulkTruckDraft>('/shipping/loading-sheets/bulk-truck/draft', {
+    factory_id: factoryId,
+    task_id: taskId,
+  })
+  return data
+}
+
+export async function exportBulkTruckSheet(factoryId: string, draft: BulkTruckDraft): Promise<Blob> {
+  const { data } = await http.post('/shipping/loading-sheets/bulk-truck/export', {
+    factory_id: factoryId,
+    taskId: draft.taskId,
+    header: draft.header,
+    lines: draft.lines,
+  }, { responseType: 'blob', timeout: 120_000 })
+  return data as Blob
+}
+
+export interface SupplementLine {
+  id: string
+  mixNo: string
+  containerNo: string
+  sealNo: string
+  size: string
+  itemNo: string
+  description: string
+  salesConf: string
+  po: string
+  ctns: number | null
+  pallet: string
+  qty: number | null
+  booking: string
+  deliveryDate: string
+  cbmPerCarton: number | null
+  cbm: number | null
+  gwPerCarton: number | null
+  gw: number | null
+  pack: string
+  tare: number | null
+  vgm: number | null
+}
+
+export interface SupplementHeader {
+  to: string
+  from: string
+  subject: string
+  ref: string
+  date: string
+  customerMarket: string
+  vessel: string
+  portOfLoading: string
+  portOfDischarge: string
+  etd: string
+  invoice: string
+  origin: string
+  receipt: string
+}
+
+export interface SupplementDraft {
+  taskId: string
+  header: SupplementHeader
+  lines: SupplementLine[]
+  totals: Record<string, number>
+}
+
+export async function draftSupplementSheet(factoryId: string, taskId: string): Promise<SupplementDraft> {
+  const { data } = await http.post<SupplementDraft>('/shipping/loading-sheets/supplement/draft', {
+    factory_id: factoryId,
+    task_id: taskId,
+  })
+  return data
+}
+
+export async function exportSupplementSheet(factoryId: string, draft: SupplementDraft): Promise<Blob> {
+  const { data } = await http.post('/shipping/loading-sheets/supplement/export', {
+    factory_id: factoryId,
+    taskId: draft.taskId,
+    header: draft.header,
+    lines: draft.lines,
+  }, { responseType: 'blob', timeout: 120_000 })
+  return data as Blob
+}
+
+export interface CustomsDoc {
+  id: string
+  filename: string
+  subject: string
+  size: number
+  created_at: string
+  read: boolean
+}
+
+export async function listCustomsDocs(factoryId: string) {
+  const { data } = await http.get<{ docs: CustomsDoc[]; unread: number }>('/shipping/customs-docs', {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
+export async function markCustomsDocsRead(factoryId: string) {
+  const { data } = await http.post<{ marked: number }>('/shipping/customs-docs/read', { factory_id: factoryId })
+  return data
+}
+
+export async function downloadCustomsDoc(factoryId: string, docId: string) {
+  const { data } = await http.get(`/shipping/customs-docs/${docId}/download`, {
+    params: { factory_id: factoryId },
+    responseType: 'blob',
+    timeout: 120_000,
+  })
+  return data as Blob
+}
