@@ -107,6 +107,24 @@ describe('cutting read-only workspaces',()=>{
     if(action==='newer')expect(wrapper.find('time').exists()).toBe(true)
     if(action==='failure')expect(document.activeElement).toBe(button('按原条件重试（第 1 页）').element)
   })
+  it.each(['filter','details'] as const)('handles a deliberate focus move to %s during an embedded retry',async target=>{
+    let resolve!:(value:Page<ActivityRow>)=>void
+    vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,token:'old'})
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(()=>new Promise(r=>{resolve=r}))
+    wrapper=mount(Activity,{props:{embedded:true,initialSource:'warehouse'},attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    await button('刷新当前结果').trigger('click');await flushPromises()
+    wrapper.get('details').element.setAttribute('open','')
+    const retry=button('按原条件重试（第 1 页）')
+    retry.element.focus()
+    retry.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+    const destination=wrapper.get<HTMLElement>(target==='filter'?'input[name="order_q"]':'details summary').element
+    destination.focus()
+    expect(document.activeElement).toBe(destination)
+    resolve({...empty,token:'fresh'});await flushPromises()
+    expect(wrapper.find('details').exists()).toBe(false)
+    expect(document.activeElement).toBe(target==='filter'?destination:button('刷新当前结果').element)
+  })
   it('provides unique named activity filters with explicit labels for embedded instances',async()=>{
     vi.mocked(workspaceApi.activity).mockResolvedValue({...empty,token:'basis'})
     wrapper=mount({components:{Activity},template:'<Activity embedded /><Activity embedded />'},{global:{plugins:[router]}});await flushPromises()
