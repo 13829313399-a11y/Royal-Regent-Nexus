@@ -44,22 +44,26 @@ function link(row:ActivityRow){
   const target=cuttingDestination(row.line_id,row.business_day?.slice(0,7)??'',row.source==='production'?'reporting':row.source==='warehouse'?'materials':row.source==='material'?(row.action==='price'||row.action==='allocate'?'costs':'materials'):'planning',row.source==='production'?'report':row.source==='warehouse'?'warehouse':row.source==='material'?'usage':undefined,row.document_id)
   return {...target,query:{...target.query,...(row.business_day?{day:row.business_day}:{})}}
 }
-async function load(page=1,apply=false){
+async function load(page=1,apply=false,keyboardTrigger?:HTMLElement){
   if(apply){applied.value={source:source.value,q:query.value,order_q:orderQuery.value,month:month.value||undefined};page=1}
   const token=page>1?result.value?.token:undefined
-  await read({...applied.value,page,expected_token:token},false,false,!apply)
+  await read({...applied.value,page,expected_token:token},false,keyboardTrigger,!apply)
 }
-async function read(request:ActivityQuery,retry=false,keyboardRetry=false,keepFirstPageResult=false){
+async function read(request:ActivityQuery,retry=false,keyboardTrigger?:HTMLElement,keepFirstPageResult=false){
   const keepResult=props.embedded&&(keepFirstPageResult||retry)
   const expiredBasis=keepResult&&restartRequired.value
   retryDetailsOpen.value=retry&&Boolean(retryDetails.value?.open)
   const ticket=++generation;busy.value=true;error.value='';failedQuery.value=undefined;restartRequired.value=false;firstPageFailed.value=false
-  let restoreFocus=keyboardRetry,succeeded=false
+  let restoreFocus=Boolean(keyboardTrigger),succeeded=false
   const cancelFocus=()=>{restoreFocus=false}
   const cancelOnTab=(event:KeyboardEvent)=>{if(event.key==='Tab')cancelFocus()}
   const cleanupFocus=()=>{document.removeEventListener('focusin',cancelFocus);document.removeEventListener('pointerdown',cancelFocus);document.removeEventListener('keydown',cancelOnTab);focusCleanups.delete(cleanupFocus)}
-  if(keyboardRetry){document.addEventListener('focusin',cancelFocus);document.addEventListener('pointerdown',cancelFocus);document.addEventListener('keydown',cancelOnTab)}
-  if(keyboardRetry)focusCleanups.add(cleanupFocus)
+  if(keyboardTrigger){
+    document.addEventListener('focusin',cancelFocus)
+    document.addEventListener('pointerdown',cancelFocus)
+    document.addEventListener('keydown',cancelOnTab)
+    focusCleanups.add(cleanupFocus)
+  }
   readingTarget.value={...request,retry,expiredBasis}
   if(request.page===1&&!keepResult){result.value=undefined;lastSuccessAt.value=undefined}
   staleResult.value=Boolean(result.value)
@@ -86,13 +90,20 @@ async function read(request:ActivityQuery,retry=false,keyboardRetry=false,keepFi
       }
     }
     cleanupFocus()
-    if(restoreFocus&&alive&&ticket===generation&&document.activeElement===document.body){
-      const target=succeeded?resultRegion.value:failedQuery.value?retryAlert.value?.querySelector<HTMLButtonElement>('button'):undefined
+    if(restoreFocus&&alive&&ticket===generation&&(document.activeElement===document.body||document.activeElement===keyboardTrigger)){
+      const target=failedQuery.value?retryAlert.value?.querySelector<HTMLButtonElement>('button'):succeeded&&retry?resultRegion.value:undefined
       target?.focus({preventScroll:true})
     }
   }
 }
-function retry(event:MouseEvent){if(failedQuery.value&&!busy.value)void read({...failedQuery.value},true,event.detail===0&&event.currentTarget===document.activeElement)}
+function focusedKeyboardButton(event:MouseEvent){
+  const button=event.currentTarget
+  if(event.detail===0&&button instanceof HTMLElement&&button===document.activeElement)return button
+}
+function refresh(event:MouseEvent){
+  if(!busy.value)void load(1,false,props.embedded?focusedKeyboardButton(event):undefined)
+}
+function retry(event:MouseEvent){if(failedQuery.value&&!busy.value)void read({...failedQuery.value},true,focusedKeyboardButton(event))}
 function clearFilters(){source.value=props.initialSource??'';query.value='';orderQuery.value='';month.value='';void load(1,true)}
 onMounted(()=>void load());onBeforeUnmount(()=>{alive=false;generation++;for(const cleanup of focusCleanups)cleanup()})
 watchCuttingWorkspace(()=>void load())
@@ -101,7 +112,7 @@ watchCuttingWorkspace(()=>void load())
   <section :class="embedded?'cutting-overview':'cutting-page cutting-overview'">
     <PageHeader v-if="!embedded" title="操作日志" description="追溯原单、版本、操作人及更正依据；仅展示当前权限可查看的业务记录。" />
     <SectionPanel title="业务操作与关联记录" class="cutting-content-panel">
-      <form class="order-toolbar" @submit.prevent="load(1,true)"><label :for="`${filterId}-source`">业务来源<select :id="`${filterId}-source`" v-model="source" name="source"><option value="">全部授权来源</option><option v-for="(label,key) in sources" :key="key" :value="key">{{label}}</option></select></label><label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="orderQuery" name="order_q" maxlength="80" /></label><label :for="`${filterId}-month`">业务期间<input :id="`${filterId}-month`" v-model="month" name="month" type="month" min="2000-01" /></label><label :for="`${filterId}-query`">单据／操作人／原因<input :id="`${filterId}-query`" v-model="query" name="q" maxlength="80" /></label><Button type="submit" :disabled="busy">查询</Button><Button :id="refreshButtonId" type="button" variant="outline" :disabled="busy" :title="embedded ? refreshHint : undefined" @click="load(1)">刷新当前结果</Button><Button type="button" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></form>
+      <form class="order-toolbar" @submit.prevent="load(1,true)"><label :for="`${filterId}-source`">业务来源<select :id="`${filterId}-source`" v-model="source" name="source"><option value="">全部授权来源</option><option v-for="(label,key) in sources" :key="key" :value="key">{{label}}</option></select></label><label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="orderQuery" name="order_q" maxlength="80" /></label><label :for="`${filterId}-month`">业务期间<input :id="`${filterId}-month`" v-model="month" name="month" type="month" min="2000-01" /></label><label :for="`${filterId}-query`">单据／操作人／原因<input :id="`${filterId}-query`" v-model="query" name="q" maxlength="80" /></label><Button type="submit" :disabled="busy">查询</Button><Button :id="refreshButtonId" type="button" variant="outline" :disabled="busy" :title="embedded ? refreshHint : undefined" @click="refresh">刷新当前结果</Button><Button type="button" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></form>
       <p v-if="embedded && result && lastSuccessAt" class="cutting-muted activity-summary">当前结果：{{appliedSummary}}<span class="activity-read-time"> · 更新于 <time :datetime="lastSuccessAt" :title="`${readTimeLabel(lastSuccessAt)}（页面读取时间）`">{{readClockLabel(lastSuccessAt)}}</time></span></p>
       <template v-if="!embedded">
         <p class="cutting-muted">当前查询条件：业务来源 {{sources[applied.source]||'全部授权来源'}}；订单号／货号 {{applied.order_q||'全部'}}；业务期间 {{applied.month||'全部期间'}}；单据／操作人／原因 {{applied.q||'未限定'}}。</p>
