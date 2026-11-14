@@ -17,6 +17,7 @@ const failedQuery=ref<ActivityQuery>(),readingTarget=ref<ActivityQuery & {retry:
 const firstPageFailed=ref(false)
 const lastSuccessAt=ref<string>()
 const resultRegion=ref<HTMLElement>(),retryAlert=ref<HTMLElement>(),filterId=`cutting-activity-${useId()}`
+const retryDetails=ref<HTMLDetailsElement>(),retryDetailsOpen=ref(false)
 const focusCleanups=new Set<()=>void>()
 const unapplied=computed(()=>source.value!==applied.value.source||query.value!==applied.value.q||orderQuery.value!==applied.value.order_q||(month.value||undefined)!==applied.value.month)
 let generation=0,alive=true
@@ -46,6 +47,7 @@ async function load(page=1,apply=false){
 async function read(request:ActivityQuery,retry=false,keyboardRetry=false,keepFirstPageResult=false){
   const keepResult=props.embedded&&(keepFirstPageResult||retry)
   const expiredBasis=keepResult&&restartRequired.value
+  retryDetailsOpen.value=retry&&Boolean(retryDetails.value?.open)
   const ticket=++generation;busy.value=true;error.value='';failedQuery.value=undefined;restartRequired.value=false;firstPageFailed.value=false
   let restoreFocus=keyboardRetry,succeeded=false
   const cancelFocus=()=>{restoreFocus=false}
@@ -65,6 +67,9 @@ async function read(request:ActivityQuery,retry=false,keyboardRetry=false,keepFi
       restartRequired.value=expiredBasis||(status===409&&Boolean(request.expected_token)&&error.value==='操作日志已新增或查看范围已变化，请刷新第一页后继续。')
       failedQuery.value=restartRequired.value?{...request,page:1,expected_token:undefined}:{...request}
       firstPageFailed.value=request.page===1
+      if(props.embedded&&firstPageFailed.value&&result.value){
+        error.value=!status||status===408?'刷新失败，仍显示上次结果，请检查网络后重试':`刷新失败，仍显示上次结果。${error.value}`
+      }
     }
   }}
   finally{
@@ -94,9 +99,9 @@ watchCuttingWorkspace(()=>void load())
       <p v-if="unapplied" class="cutting-muted" role="status">{{embedded ? '有未应用的筛选，点击「查询」更新结果。' : '筛选有未查询的修改，当前结果仍按上次查询条件展示；翻页和刷新不应用新输入，点击“查询”才应用。'}}</p>
       <p v-if="busy" role="status">{{readingTarget?.retry?(embedded?`正在按原条件重试第 ${readingTarget.page} 页…`:`正在按原条件重试：${targetLabel(readingTarget)}。`):'正在读取操作记录…'}}</p>
       <p v-if="error" ref="retryAlert" role="alert">{{error}} <Button v-if="failedQuery" type="button" variant="outline" :disabled="busy" @click="retry">{{restartRequired?'按原条件重读第 1 页':`按原条件重试（第 ${failedQuery.page} 页）`}}</Button></p>
-      <details v-if="embedded&&failedQuery" class="cutting-muted activity-summary"><summary>查看重试条件</summary><p>{{targetLabel(failedQuery)}}。{{retryBasisHint}}</p></details>
+      <details v-if="embedded&&failedQuery" ref="retryDetails" :open="retryDetailsOpen" class="cutting-muted activity-summary"><summary>查看重试条件</summary><p>{{targetLabel(failedQuery)}}。{{retryBasisHint}}</p></details>
       <p v-else-if="failedQuery" class="cutting-muted">重试目标：{{targetLabel(failedQuery)}}。{{restartRequired?'原分页依据已失效，重新从第 1 页核对，不再使用旧依据。':failedQuery.expected_token?'保留原分页依据。':'本次没有分页依据，将按原条件从第 1 页重新读取并获取新依据。'}}不应用尚未查询的新输入，不提交业务记录。</p>
-      <p v-if="staleResult&&result" class="cutting-muted" role="status">{{embedded ? (firstPageFailed ? '刷新失败，仍显示上次结果' : `仍显示上次读取的第 ${result.page} 页`) : `以下仍为上次成功读取的第 ${result.page} 页结果，尚未取得本次请求的新结果，请勿将其视为已刷新数据。`}}</p>
+      <p v-if="staleResult&&result&&!(embedded&&firstPageFailed)" class="cutting-muted" role="status">{{embedded ? `仍显示上次读取的第 ${result.page} 页` : `以下仍为上次成功读取的第 ${result.page} 页结果，尚未取得本次请求的新结果，请勿将其视为已刷新数据。`}}</p>
       <p v-if="!embedded&&result&&lastSuccessAt" class="cutting-muted">上次成功读取时间：<time :datetime="lastSuccessAt">{{readTimeLabel(lastSuccessAt)}}</time>（页面读取时间，非业务日期）</p>
       <div ref="resultRegion" class="cutting-table-scroll" role="region" tabindex="0" aria-label="可追溯操作日志"><table><thead><tr><th>操作时间／业务日期</th><th>来源与操作</th><th>单据／版本</th><th>操作人</th><th>依据与关联</th><th>操作</th></tr></thead><tbody><tr v-for="row in result?.data" :key="`${row.source}:${row.id}:${row.version}`">
         <td>{{new Date(row.occurred_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}}<br />{{row.business_day||row.month||'未单独登记业务日期'}}</td>
