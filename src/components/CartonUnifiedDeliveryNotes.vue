@@ -7,6 +7,7 @@ import { cartonSpecialRequestsApi } from '@/api/cartonSpecialRequests'
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import CartonSourceLinks from '@/components/CartonSourceLinks.vue'
 import CartonSplitReceiptReview from '@/components/CartonSplitReceiptReview.vue'
+import CartonMobileReceiptTotals from '@/features/carton-procurement/CartonMobileReceiptTotals.vue'
 import { cartonSupplierPortalApi, type PortalOrder, type PortalShipment, type ShipmentReceiptOption } from '@/api/cartonSupplierPortal'
 import type { CartonLocation, LocationAllocation } from '@/api/cartonPositions'
 import { getApiErrorMessage } from '@/lib/http'
@@ -18,7 +19,7 @@ const displayQuantity = (value: unknown) => {
   const number = Number(value ?? 0)
   return Number.isFinite(number) ? number.toLocaleString('zh-CN', { maximumFractionDigits: 4 }) : String(value ?? '')
 }
-const props = withDefaults(defineProps<{ group: UnifiedDelivery; supplier?: boolean; collapsible?: boolean; canReceive?: boolean; readBlocked?: boolean; autoOpen?: boolean; receiptEntryPaperIds?: string[]; reopenOnly?: boolean; locations?: CartonLocation[]; workshops?: { id: string; name: string }[]; viewerKey?: string; orders?: PortalOrder[] }>(), { locations: () => [], workshops: () => [], orders: () => [] })
+const props = withDefaults(defineProps<{ group: UnifiedDelivery; supplier?: boolean; collapsible?: boolean; canReceive?: boolean; readBlocked?: boolean; autoOpen?: boolean; receiptEntryPaperIds?: string[]; reopenOnly?: boolean; locations?: CartonLocation[]; workshops?: { id: string; name: string }[]; viewerKey?: string; orders?: PortalOrder[]; mobile?: boolean }>(), { locations: () => [], workshops: () => [], orders: () => [] })
 const emit = defineEmits<{ changed: []; 'shortfall-reopened': [quantities: string]; reverse: [receiptId: string]; 'link-receipt': [shipment: PortalShipment]; 'locations-changed': []; busy: [value: boolean] }>()
 interface Row { source: UnifiedDeliveryLine; received: string; damaged: string; rejected: string; unusable: string; allocations: LocationAllocation[]; action: PriceAction; price: string; reason: string; difference: string; close: boolean }
 const editing = ref(false), busy = ref(false), error = ref(''), message = ref(''), rows = ref<Row[]>([])
@@ -81,6 +82,13 @@ const receiptEntries = computed(() => editableRows.value
   }))
 const closingShortfall = computed(() => receiptEntries.value.some(entry => entry.closing))
 const receiptSummary = computed(() => receiptEntries.value.filter(entry => entry.entered || entry.closing))
+const mobileReceiptTotals = computed(() => receiptEntries.value.map(entry => ({
+  unit: entry.row.source.unit,
+  inbound: entry.quantityValid && entry.entered ? Number(decimal(entry.inbound)) : 0,
+  remaining: Number(decimal(entry.quantityValid && entry.entered
+    ? entry.closing ? 0n : entry.remaining
+    : scaled(receivableQuantity(entry.row.source)))),
+})))
 const receiptProblem = computed(() => {
   const entries = receiptEntries.value
   if (entries.some(entry => entry.closing && !entry.entered)) return '请填写结案纸品的本批实到数量。未到填写 0。'
@@ -120,7 +128,9 @@ function open() {
     action: originalPrice(source) == null ? 'PENDING' : Number(originalPrice(source)) === 0 ? source.free_confirmed ? 'FREE' : 'PENDING' : 'MATCH', price: originalPrice(source) ?? '', reason: supplierReceiptPrice(source).price_reason, difference: '', close: false }))
   void checkCandidates()
   extra.value = Object.fromEntries(props.group.special.filter(item => item.origin === 'SUPPLIER_EXTRA').map(item => [item.id, { kind: item.shipments.some(shipment => shipment.receipts?.some(receipt => receipt.status === 'POSTED')) && item.kind === 'SAMPLE' ? 'SAMPLE' : item.shipments.some(shipment => shipment.receipts?.some(receipt => receipt.status === 'POSTED')) && item.kind === 'WORKSHOP_MISC' ? 'WORKSHOP_MISC' : '', requester: item.requester_name || '', workshop: item.workshop_id || '' }]))
-  if (papers) void nextTick(() => {
+  if (props.mobile || papers) void nextTick(() => {
+    if (props.mobile && editing.value) receiptForm.value?.focus({ preventScroll: true })
+    if (!papers) return
     if (!editing.value || focusedPaperIds.value !== papers) return
     const field = receiptForm.value?.querySelector<HTMLElement>('[data-receipt-entry-focus], [data-receipt-entry-waiting]')
     field?.focus()
@@ -268,7 +278,10 @@ async function download(line: UnifiedDeliveryLine) {
     <p v-if="error && !editing" role="alert" class="rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p><p v-if="message" role="status" class="text-xs text-teal-700">{{ message }}</p>
     <div v-show="!reopenOnly" v-for="line in group.lines" :key="line.id" class="rounded-lg bg-slate-50 p-3 text-xs"><p class="font-semibold">{{ businessLabel(line) }} · {{ line.order_no }} · {{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }}</p><p v-if="line.customer_name || line.contract_no || line.item_no" class="mt-1 break-words">{{ line.customer_name }} · 合同 {{ line.contract_no || '未填写' }} · PO {{ line.customer_po || '未填写' }} · 货号 {{ line.item_no || '未填写' }}</p><CartonSourceLinks :factory-id="group.factory_id" :sources="sources(line)" :supplier="supplier" :receiving="!supplier" :marks="!supplier && group.special.find(item => item.id === line.special_request_id)?.permissions.can_view_order_resources !== false" /><p class="mt-1">发货 {{ displayQuantity(line.quantity) }} {{ line.unit }} · 到货 {{ displayQuantity(line.received_quantity) }} · 拒收退回 {{ displayQuantity(line.rejected_quantity) }} · 破损 {{ displayQuantity(line.damaged_quantity) }} · 其他不可用 {{ displayQuantity(line.unusable_quantity) }} · 实际入库 {{ inboundLabel(line) }} · 待收 {{ displayQuantity(line.receivable_quantity ?? line.remaining_quantity) }} · 已结束余量 {{ displayQuantity(line.closed_quantity) }} · 供应商原价 {{ originalPrice(line) == null ? '未填写（待核价）' : `${line.currency || 'CNY'} ${originalPrice(line)}` }}</p><p v-if="whollyRejected(line)" class="mt-1 font-semibold text-red-700">此项已全部拒收退回，入库 0，不计货款。</p><p v-if="line.source_origin === 'WAREHOUSE_MANUAL'" class="mt-1 text-amber-800">仓库代录 · 记录单价 {{ line.warehouse_unit_price == null ? '未填写' : line.warehouse_unit_price }} · 待双方核价</p><p v-if="originalPrice(line) != null && Number(originalPrice(line)) === 0" class="mt-1 font-semibold text-amber-800">{{ line.free_confirmed ? '供应商已明确本行免费，请核实实物。' : '原单价为 0，但未明确声明免费，等待供应商确认；可先收货，仓库不修改原价。' }}</p><Button v-if="line.mark_attachment_id && group.special.find(item => item.id === line.special_request_id)?.permissions.can_view_order_resources !== false" size="sm" variant="ghost" :disabled="busy" @click="download(line)">查看本批箱唛</Button><span v-else-if="line.source_kind === 'SPECIAL'" class="mt-1 block text-slate-500">{{ line.mark_mode === 'NONE' ? '无需箱唛 / 空白箱' : '原批资料待核实' }}</span></div>
     <form v-if="reopening && receiptAuthority" class="space-y-3 rounded-xl border border-amber-200 p-4" aria-label="重开短送余量" @submit.prevent="submitReopening"><p class="text-xs text-slate-600">只更正本原单误关闭、真正未到货的余量，恢复待收，不增加库存或应付。已到货但损坏或不合格的数量不能在这里重开；相关月份已确认对账时须先由内部说明原因重核。</p><fieldset v-for="row in reopenRows" :key="row.source.id" :disabled="busy" class="grid gap-3 rounded-lg border p-3 sm:grid-cols-2"><label class="flex items-center gap-2"><input v-model="row.selected" type="checkbox" :aria-label="`${row.source.id}选择重开`" class="!m-0 !min-h-0 !w-4">{{ row.source.packaging_type }} · {{ row.source.specification }} · 已结束 {{ row.source.closed_quantity }} {{ row.source.unit }}</label><label>本次重开数量<input v-model="row.quantity" :aria-label="`${row.source.id}重开数量`" :disabled="!row.selected" inputmode="decimal"></label></fieldset><label>更正原因<input v-model="reopenReason" aria-label="重开短送原因" :disabled="busy" minlength="4" required></label><div class="flex flex-wrap gap-2"><Button :disabled="readBlocked || busy">{{ busy ? '正在保存…' : '确认恢复待收' }}</Button><Button type="button" variant="outline" :disabled="busy" @click="reopening = false">返回</Button></div></form>
-    <form v-if="editing && receiptAuthority" ref="receiptForm" class="space-y-4 rounded-xl border border-teal-200 p-3 sm:p-4" aria-label="统一送货验收" @submit.prevent="submit">
+    <div v-if="editing && receiptAuthority" :class="{ 'fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40': mobile }">
+    <form ref="receiptForm" :role="mobile ? 'dialog' : undefined" :aria-modal="mobile ? true : undefined" :tabindex="mobile ? -1 : undefined" :class="mobile ? 'carton-phone-dialog carton-phone-receipt flex w-full max-w-xl flex-col bg-white' : 'rounded-xl border border-teal-200 p-3 sm:p-4'" aria-label="统一送货验收" @submit.prevent="submit" @keydown.esc="mobile && !busy && (editing = false)">
+      <h2 v-if="mobile" class="shrink-0 break-words border-b px-4 py-3 text-lg font-bold">验收 {{ group.delivery_note_no }}</h2>
+      <div class="space-y-4" :class="{ 'carton-phone-receipt-body flex-1 p-4': mobile }">
       <div v-if="focusedPaperIds" class="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm">
         <p class="break-words"><strong>原送货单 {{ group.delivery_note_no }}</strong> · 本次核实所选纸品，尚未核实的其他纸品继续待收。</p>
         <p v-if="!focusedPaperAvailable" tabindex="-1" data-receipt-entry-waiting>所选纸品须等当前原单更正完成后再收料。</p>
@@ -292,10 +305,13 @@ async function download(line: UnifiedDeliveryLine) {
               <Button type="button" size="sm" variant="outline" :aria-label="row.source.id + '按余量全收'" @click="row.received = receivableQuantity(row.source)">按余量全收</Button>
             </div>
           </div>
+          <component :is="mobile ? 'details' : 'div'" :class="{ 'rounded-lg border px-3 py-1': mobile }">
+          <summary v-if="mobile" class="flex cursor-pointer items-center text-xs font-semibold text-teal-800">查看供应商单价</summary>
           <label>供应商单价 {{ row.source.currency || 'CNY' }}
             <input :value="row.price" :aria-label="row.source.id + '供应商单价'" readonly placeholder="未填写（待核价）">
             <span class="mt-1 block text-xs text-slate-500">{{ row.action === 'PENDING' ? originalPrice(row.source) == null ? '原单未填写单价，可先入库，等待供应商补价' : '原单单价为0，未确认免费，等待供应商核实' : row.action === 'FREE' ? '供应商已明确确认免费' : '按供应商送货原价入库' }}</span>
           </label>
+          </component>
         </div>
         <details class="rounded-lg border px-3 py-2">
           <summary class="cursor-pointer text-sm font-semibold text-teal-800" :aria-label="row.source.id + '填写验收差异'">
@@ -312,7 +328,7 @@ async function download(line: UnifiedDeliveryLine) {
         </details>
         <div v-show="quantityValid && inbound > 0n" class="space-y-1">
           <p class="text-xs font-semibold">入库仓位</p>
-          <CartonReceiptAllocations v-model="row.allocations" :effective="quantityValid ? Number(decimal(inbound)) : 0" :locations="locations" :factory-id="group.factory_id" :disabled="busy" class="!min-w-0 [&>div]:flex-wrap" @created="emit('locations-changed')" />
+          <CartonReceiptAllocations v-model="row.allocations" :mobile="mobile" :effective="quantityValid ? Number(decimal(inbound)) : 0" :locations="locations" :factory-id="group.factory_id" :disabled="busy" class="!min-w-0 [&>div]:flex-wrap" @created="emit('locations-changed')" />
           <p v-if="missingLocation" class="text-xs text-amber-800">请选择入库仓位。</p>
         </div>
       </fieldset>
@@ -339,8 +355,10 @@ async function download(line: UnifiedDeliveryLine) {
       </label>
       <CartonSplitReceiptReview v-if="hasSplits" :factory="group.factory_id" :lines="splitLines" @update:confirmation="splitConfirmation = $event" />
       <p v-if="candidateLoading" class="text-xs">正在检查原收料记录…</p><p v-if="candidateError" role="alert" class="text-xs text-red-700">{{ candidateError }}<button type="button" class="ml-2 underline" @click="checkCandidates">重试</button></p><div v-if="usesFormalReceipt && group.formal && (candidates.length || group.formal.requires_receipt_link)" class="rounded-lg bg-amber-50 p-3 text-xs"><p>原收料可能已入库，后补凭证须关联原记录，避免重复记账。</p><Button type="button" variant="outline" size="sm" :disabled="busy" @click="emit('link-receipt', group.formal)">关联原收料</Button><label v-if="!group.formal.requires_receipt_link" class="mt-2 flex items-center gap-2"><input v-model="newDeliveryConfirmed" type="checkbox" class="!m-0 !min-h-0 !w-4">已核对，这是新一批实际到货</label></div>
-      <div class="space-y-3 border-t pt-3">
-        <section v-if="receiptSummary.length" aria-label="本批验收汇总" aria-live="polite" class="space-y-2">
+      </div>
+      <div class="space-y-2 border-t pt-3" :class="mobile ? 'carton-phone-footer shrink-0 px-4' : 'mt-4'">
+        <CartonMobileReceiptTotals v-if="mobile" :rows="mobileReceiptTotals" />
+        <section v-else-if="receiptSummary.length" aria-label="本批验收汇总" aria-live="polite" class="space-y-2">
           <div v-for="entry in receiptSummary" :key="entry.row.source.id" class="rounded-lg bg-muted/60 px-3 py-2 text-xs">
             <p class="mb-1 font-semibold">{{ entry.row.source.packaging_type }} · {{ entry.row.source.specification }} · {{ entry.row.source.order_no }}</p>
             <dl class="flex flex-wrap gap-x-5 gap-y-1 tabular-nums">
@@ -360,7 +378,7 @@ async function download(line: UnifiedDeliveryLine) {
         </section>
         <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
         <p v-if="receiptProblem && focusedPaperAvailable" class="text-xs text-slate-600" role="status">{{ receiptProblem }}</p>
-        <div class="flex flex-wrap gap-2">
+        <div class="flex flex-wrap gap-2" :class="{ '[&>button:first-child]:flex-1': mobile }">
           <Button type="submit" :disabled="readBlocked || busy || !focusedPaperAvailable || candidateLoading || !!candidateError || !!receiptProblem">
             {{ busy ? '正在保存…' : closingShortfall ? '确认验收并结案' : '确认本次收货' }}
           </Button>
@@ -368,6 +386,7 @@ async function download(line: UnifiedDeliveryLine) {
         </div>
       </div>
     </form>
+    </div>
     <details v-if="closureNotes.length && !reopenOnly" class="text-xs"><summary class="cursor-pointer font-semibold">送货核对与短送结束说明</summary><p v-for="(note, index) in closureNotes" :key="index" class="mt-2">{{ note }}</p></details>
     <details v-if="group.shortfall_reopen_history?.length" class="text-xs"><summary class="cursor-pointer font-semibold">短送重开记录</summary><p v-for="(item, index) in group.shortfall_reopen_history" :key="index" class="mt-2">{{ item.created_at }} · {{ item.reason }} · 仅恢复原单待收</p></details>
     <details v-if="receiptHistory.length && !reopenOnly" class="text-xs">
@@ -383,4 +402,5 @@ async function download(line: UnifiedDeliveryLine) {
 <style scoped>
 .unified-receipt label { display:block; min-width:0; font-size:12px; font-weight:600; }
 .unified-receipt input,.unified-receipt select { display:block; min-width:0; width:100%; min-height:38px; margin-top:6px; border:1px solid var(--input); border-radius:10px; padding:8px 10px; background:var(--card); font-weight:400; }
+.unified-receipt .carton-phone-receipt :is(input:not([type=checkbox]):not([type=radio]), select, textarea) { min-height:44px; font-size:16px; }
 </style>

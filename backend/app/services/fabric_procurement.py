@@ -23,7 +23,7 @@ def require_factory(factory_id):
 
 def ensure_schema(db):
     from sqlalchemy import inspect
-    names = set(inspect(db.get_bind()).get_table_names())
+    names = set(inspect(db.connection()).get_table_names())
     expected = {model.__tablename__ for model in (FabricProcurementState, FabricProcurementLine, FabricProcurementImport, FabricProcurementEvidence)}
     if not expected <= names:
         raise HTTPException(503, "布料仓采购来源数据库尚未升级，请先备份并执行迁移 20261005_0134")
@@ -395,7 +395,14 @@ def line_detail(db, line_id):
     line = db.scalar(select(FabricProcurementLine).where(FabricProcurementLine.factory_id == FACTORY, FabricProcurementLine.id == line_id))
     if not line:
         raise HTTPException(404, "找不到该厂区的采购明细")
-    sources = db.execute(select(FabricProcurementEvidence, FabricProcurementImport).join(FabricProcurementImport, FabricProcurementEvidence.import_id == FabricProcurementImport.id).where(FabricProcurementEvidence.factory_id == FACTORY, FabricProcurementEvidence.line_id == line.id).order_by(FabricProcurementImport.occurred_at.desc()).limit(100))
+    # Finish reading evidence before the progress and schema queries so a waiting writer can commit.
+    sources = db.execute(
+        select(FabricProcurementEvidence, FabricProcurementImport)
+        .join(FabricProcurementImport, FabricProcurementEvidence.import_id == FabricProcurementImport.id)
+        .where(FabricProcurementEvidence.factory_id == FACTORY, FabricProcurementEvidence.line_id == line.id)
+        .order_by(FabricProcurementImport.occurred_at.desc())
+        .limit(100)
+    ).all()
     from app.services.fabric_procurement_tracking import tracking_context, line_tracking
     from app.services.fabric_master import material_info, records, ready
     from app.models.fabric_master import FabricChaseResolution

@@ -1,22 +1,50 @@
 <script setup lang="ts">
 export interface SupplierRowPresentation {
   orderNo: string; factory: string; kind: string; customer: string; identity: string; context: string
-  items: string; product: string; marks: string; marksTone: string; marksHelp?: string
+  items: string; product: string
+  marks: { label: string; help?: string; tone?: 'available' | 'error' }
   orderDate: string; plannedDate: string; due: string; dueTone: string; differences: string[]
   progress: string; lines: { id: string; label: string; required: number; received: number; inTransit?: number; unit: string }[]
   status: string; statusTone: string; notice?: string; noticeTone?: string
 }
-defineProps<{ row: SupplierRowPresentation; selected: boolean; selectable: boolean }>()
+const props = defineProps<{ row: SupplierRowPresentation; selected: boolean; selectable: boolean }>()
 const emit = defineEmits<{ select: [selected: boolean]; marks: []; preview: []; leave: []; detail: [] }>()
 const format = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+
+function selectFromRow(event: MouseEvent) {
+  if (!props.selectable || !(event.target instanceof Element)) return
+  if (event.target.closest('button, input, a, select, textarea, label, details, [contenteditable]')) return
+
+  const selection = window.getSelection()
+  if (selection && !selection.isCollapsed && selection.containsNode(event.currentTarget as Node, true)) return
+
+  emit('select', !props.selected)
+}
 </script>
 <template>
-  <tr class="hover:bg-teal-50/40">
+  <tr :class="{
+    'cursor-pointer': selectable,
+    'hover:bg-teal-50/40': selectable && !selected,
+    'bg-teal-50/60 shadow-[inset_3px_0_0_var(--color-teal-600)]': selected,
+  }" @click="selectFromRow">
     <td data-label="选择"><input type="checkbox" :checked="selected" :aria-label="`选择订单 ${row.orderNo}`" :disabled="!selectable" class="size-4 accent-teal-700 disabled:cursor-not-allowed disabled:opacity-40" @change="emit('select', ($event.target as HTMLInputElement).checked)"></td>
     <td data-label="厂区 / 类型"><b class="text-teal-800">{{ row.factory }}</b><p class="mt-1 text-slate-600">{{ row.kind }}</p></td>
     <td data-label="客户 / 合同 / 单号"><b class="text-slate-900">{{ row.customer }}</b><p class="mt-1 font-semibold">{{ row.identity }}</p><p class="mt-1 text-slate-500">{{ row.context }}</p></td>
     <td data-label="货号 / 产品"><b>{{ row.items }}</b><p class="mt-1 text-slate-500">{{ row.product }}</p></td>
-    <td data-label="箱唛资料"><button type="button" :aria-label="`查看订单 ${row.orderNo} 箱唛资料`" :title="row.marksHelp || '在订单明细中查看和下载箱唛资料'" class="rounded-lg px-2 py-1 font-semibold" :class="row.marksTone" @click="emit('marks')">{{ row.marks }}</button></td>
+    <td data-label="箱唛资料">
+      <button
+        type="button"
+        :aria-label="`查看订单 ${row.orderNo} 箱唛资料`"
+        :aria-description="row.marks.label"
+        aria-haspopup="dialog"
+        :title="`${row.marks.label} · ${row.marks.help || '在订单明细中查看和下载箱唛资料'}`"
+        class="max-w-full cursor-pointer truncate rounded-lg px-2 py-1 align-top font-semibold tabular-nums focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
+        :class="row.marks.tone === 'available' ? 'bg-teal-50 text-teal-800 hover:bg-teal-100' : row.marks.tone === 'error' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'"
+        @click="emit('marks')"
+      >
+        {{ row.marks.label }}
+      </button>
+    </td>
     <td data-label="日期 / 交期"><p class="text-slate-500">下单 {{ row.orderDate }}</p><p class="mt-1">计划 {{ row.plannedDate }}</p><span class="mt-1 block font-semibold" :class="row.dueTone">{{ row.due }}</span><details v-if="row.differences.length" class="mt-1 text-amber-700"><summary class="cursor-pointer font-semibold">承诺交期有差异</summary><p v-for="difference in row.differences" :key="difference" class="mt-1 leading-5">{{ difference }}</p></details></td>
     <td data-label="纸品 / 收货进度"><p class="mb-1 text-slate-500">{{ row.progress }}</p><div v-for="line in row.lines" :key="line.id" class="mb-1"><b>{{ line.label }}</b> {{ format(line.received) }} / {{ format(line.required) }} {{ line.unit }}<span v-if="line.inTransit && line.inTransit > 0" class="block text-amber-700">在途 {{ format(line.inTransit) }} {{ line.unit }}</span></div><span v-if="!row.lines.length" class="text-slate-400">无有效需求</span></td>
     <td data-label="订单状态"><span class="inline-flex rounded-lg px-2 py-1 font-bold ring-1 ring-inset" :class="row.statusTone">{{ row.status }}</span><p v-if="row.notice" class="mt-1" :class="row.noticeTone || 'text-amber-700'">{{ row.notice }}</p></td>

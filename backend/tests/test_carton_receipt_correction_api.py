@@ -39,7 +39,8 @@ def test_receipt_reversal_restores_order_and_preserves_evidence_and_allows_reent
         order = _create_order(client)
         doc = receipt(client, order)
         originals = movements(client)
-        response = reverse(client, doc)
+        response = client.post(f"/api/carton-procurement/receipts/{doc['id']}/reverse", json={
+            "factory_id": "huaxing", "expected_revision": doc["revision"]})
         assert response.status_code == 200, response.text
         result = response.json()
         assert result["status"] == "REVERSED" and result["revision"] == doc["revision"] + 1
@@ -51,6 +52,7 @@ def test_receipt_reversal_restores_order_and_preserves_evidence_and_allows_reent
         assert len(all_rows) == 2 * len(originals)
         assert sum(Decimal(row["quantity"]) for row in all_rows) == 0
         assert {row["reversal_of_movement_id"] for row in all_rows if row["movement_type"] == "REVERSAL"} == {row["id"] for row in originals}
+        assert all(row["reason"] == "" for row in all_rows if row["movement_type"] == "REVERSAL")
         assert client.get("/api/carton-procurement/inventory/summary", params={"factory_id": "huaxing"}).json() == []
         assert reverse(client, doc).status_code == 409
         assert len(movements(client)) == len(all_rows)
