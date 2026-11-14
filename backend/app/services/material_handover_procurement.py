@@ -199,7 +199,7 @@ def purchase_attributions(db):
 
 
 def linked_operations(db):
-    if WarehouseOperation.__tablename__ not in inspect(db.get_bind()).get_table_names():
+    if WarehouseOperation.__tablename__ not in inspect(db.connection()).get_table_names():
         return []
     rows = list(db.scalars(select(WarehouseOperation).where(
         WarehouseOperation.factory_id == FACTORY, WarehouseOperation.warehouse == 'fabric').order_by(WarehouseOperation.sequence)))

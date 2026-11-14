@@ -22,7 +22,7 @@ def ensure_stock_reversible(db, receipt_id):
 
 
 def reversal_rows(db):
-    if WarehouseOperation.__tablename__ not in inspect(db.get_bind()).get_table_names():
+    if WarehouseOperation.__tablename__ not in inspect(db.connection()).get_table_names():
         return {}
     result = {}
     for row in db.scalars(select(WarehouseOperation).where(WarehouseOperation.factory_id == FACTORY,
@@ -39,10 +39,13 @@ def display_reference(receipt):
 
 
 def same_reference_receipts(db, reference, source_id=None):
+    from app.services.material_handover_procurement import reference_key
+
+    key = reference_key(reference)
     query = select(FabricReceipt).where(FabricReceipt.factory_id == FACTORY)
     if source_id:
         query = query.where(FabricReceipt.source_line_id == source_id)
-    return [receipt for receipt in db.scalars(query) if display_reference(receipt) == reference]
+    return [receipt for receipt in db.scalars(query) if reference_key(display_reference(receipt)) == key]
 
 
 def apply_original_reversal(stock, entries, entry):

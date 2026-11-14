@@ -23,7 +23,8 @@ def main():
         os.environ[key] = str(source.parent)
     if os.name != "nt":
         import resource
-        resource.setrlimit(resource.RLIMIT_AS, (1024**3, 1024**3))
+        memory_limit = int(sys.argv[5]) * 1024**3 if len(sys.argv) > 5 else 1024**3
+        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
         resource.setrlimit(resource.RLIMIT_CPU, (max(1, math.ceil(remaining)), max(2, math.ceil(remaining) + 1)))
     from fastapi import HTTPException
     from app.workers.customer_order_job import job_slot
@@ -46,6 +47,9 @@ def main():
             elif operation == "order_import_read":
                 from app.services.carton_order_import_file import read
                 value = read(*args)
+            elif operation == "issue_photo":
+                from app.services.carton_issue_photo import read_issue_photo
+                value = read_issue_photo(*args)
             elif operation == "combined_export":
                 from app.services.carton_procurement_export import build_combined_purchase_order_workbook
                 value = build_combined_purchase_order_workbook(args[0], generated_at=args[1])

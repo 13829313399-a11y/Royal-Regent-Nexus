@@ -43,9 +43,14 @@ def test_zero_price_declarations_post_once_and_keep_monthly_meaning(monkeypatch)
         pending_movement = next(m for m in movements if m['source_line_id'] == receipt['lines'][1]['id'])
         assert Decimal(free_movement['cost_amount']) == 0
         assert pending_movement['cost_amount'] is None
+        assert receipt['lines'][0]['pending_cost_movement_id'] is None
+        assert receipt['lines'][1]['pending_cost_movement_id'] == pending_movement['id']
         saved = client.post(BASE + f"/inventory/movements/{pending_movement['id']}/price-confirmation", json={
             'factory_id': 'huaxing', 'unit_price': '2.5', 'reason': '供应商报价核实'})
         assert saved.status_code == 204, saved.text
+        detail = client.get(BASE + f"/receipts/{receipt['id']}", params={'factory_id': 'huaxing'})
+        assert detail.status_code == 200, detail.text
+        assert all(line['pending_cost_movement_id'] is None for line in detail.json()['lines'])
         with SessionLocal() as db:
             rows, *_ = sources(db, 'huaxing', row['supplier_id'], '2026-08', 'CNY')
             assert all(item['unit_price'] is not None for item in rows)

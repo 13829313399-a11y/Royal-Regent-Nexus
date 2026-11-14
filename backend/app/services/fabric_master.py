@@ -13,7 +13,7 @@ from app.services.fabric_supplier_identity import receipt_supplier, supplier_ali
 
 
 def ready(db):
-    return {"fabric_master_records", "fabric_master_changes", "fabric_chase_resolutions"} <= set(inspect(db.get_bind()).get_table_names())
+    return {"fabric_master_records", "fabric_master_changes", "fabric_chase_resolutions"} <= set(inspect(db.connection()).get_table_names())
 
 
 def ensure_schema(db):

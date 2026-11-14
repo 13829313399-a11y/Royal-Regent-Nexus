@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { ref } from 'vue'
 import { CalendarDate } from '@internationalized/date'
 import StockLedger from '../WarehouseStockLedger.vue'
@@ -17,7 +17,7 @@ let wrapper: VueWrapper | undefined
 const search = ref('')
 function open(rows: WarehouseBatch[], canOperate = true) {
   search.value = ''
-  wrapper = mount(StockLedger, { props: { rows, warehouse: 'fabric', canOperate, loading: false }, global: {
+  wrapper = mount(StockLedger, { attachTo: document.body, props: { rows, warehouse: 'fabric', canOperate, loading: false }, global: {
     provide: { [inventorySearchKey as symbol]: { search, submitted: ref(0), active: ref(true) } },
     stubs: { RouterLink: { template: '<a><slot /></a>' }, DateRangeFilter: { name: 'DateRangeFilter', props: ['modelValue'], emits: ['update:modelValue'], template: '<button>日期</button>' } },
   } })
@@ -26,6 +26,24 @@ function open(rows: WarehouseBatch[], canOperate = true) {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined })
 
 describe('fabric stock queries and selection', () => {
+  it('shows current quantity and location while keeping batch identifiers in the collapsed history', async () => {
+    const view = open([batch('BATCH-1', { quality_status: 'HOLD' })])
+    const trigger = view.findAll('tbody button').find(button => button.text() === '详情')!
+    trigger.element.focus()
+    await trigger.trigger('click'); await flushPromises()
+    const dialog = new DOMWrapper(document.body).get('[role="dialog"]')
+    expect(dialog.get('h2').text()).toBe('库存批次详情')
+    expect(dialog.get('[aria-label="批次概览"] dl').text()).toContain('当前库存0.1 码仓位A / A1')
+    expect(dialog.text()).toContain('暂停发料')
+    expect(dialog.get('details').attributes('open')).toBeUndefined()
+    expect(dialog.get('details').text()).toContain('RECEIPT-BATCH-1')
+    const close = dialog.get('[aria-label="关闭库存批次详情"]')
+    expect(document.activeElement).toBe(close.element)
+    await close.trigger('click'); await flushPromises()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger.element)
+  })
+
   it('keeps restricted batches transferable without offering issue actions, and filters their restriction', async () => {
     const view = open([batch('HOLD', { quality_status: 'HOLD' }), batch('BAD', { quality_status: 'REJECTED' })])
     await view.setProps({ restrictedOnly: true })
