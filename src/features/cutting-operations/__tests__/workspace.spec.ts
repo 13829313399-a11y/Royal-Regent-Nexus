@@ -107,6 +107,24 @@ describe('cutting read-only workspaces',()=>{
     if(action==='newer')expect(wrapper.find('time').exists()).toBe(true)
     if(action==='failure')expect(document.activeElement).toBe(button('按原条件重试（第 1 页）').element)
   })
+  it.each(['none','filter','tab'] as const)('handles embedded keyboard refresh timeout after focus action %s',async action=>{
+    let reject!:(reason:Error)=>void
+    vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,token:'old'})
+      .mockImplementationOnce(()=>new Promise((_resolve,fail)=>{reject=fail}))
+    wrapper=mount(Activity,{props:{embedded:true,initialSource:'warehouse'},attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    const refresh=button('刷新当前结果').element
+    const input=wrapper.get<HTMLInputElement>('input[name="order_q"]').element
+    refresh.focus()
+    refresh.click()
+    await flushPromises()
+    expect(refresh.disabled).toBe(true)
+    if(action==='filter')input.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    const activeBeforeFailure=document.activeElement
+    reject(Object.assign(new Error('timeout'),{code:'ECONNABORTED'}));await flushPromises()
+    const retry=button('按原条件重试（第 1 页）').element
+    expect(document.activeElement).toBe(action==='none'?retry:activeBeforeFailure)
+  })
   it.each(['filter','details'] as const)('handles a deliberate focus move to %s during an embedded retry',async target=>{
     let resolve!:(value:Page<ActivityRow>)=>void
     vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,token:'old'})
