@@ -19,4 +19,5 @@ export function yinhuiProfileForModel(model: string): YinhuiProfileId {
 export function yinhuiTemplateUrl(profile: YinhuiProfileId = 'standard') { return `/templates/${YINHUI_PROFILES[profile].file}` }
 // Bound automatic BOM growth; import and export must apply the same limit.
 export const YINHUI_MAX_MECHANICAL_ROWS = 200
+export const YINHUI_MAX_ELECTRONIC_ROWS = 200
 export const YINHUI_MAX_PACKAGING_ROWS = 200
