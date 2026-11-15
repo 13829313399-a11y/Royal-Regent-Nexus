@@ -3866,14 +3866,13 @@ body.qc-liquid-glass .main-wrap:has(> #page-dashboard.active) > .topbar :is(.top
 }
 }
 
-/* Customer schedule: one date cell per contiguous date range, selection per record. */
+/* Customer schedule: date and selection cells for each record. */
 #page-sales-schedule .qs-table .qs-pick-cell { padding:10px 6px; text-align:center; }
 #page-sales-schedule .qs-table .qs-pick-cell input { margin:0; vertical-align:middle; }
 #page-sales-schedule .qs-table .qs-date-cell { background:#20352c; color:#dcebe2; vertical-align:middle; }
 #page-sales-schedule .qs-date-main { display:block; font-size:12px; font-weight:600; white-space:nowrap; }
 #page-sales-schedule .qs-date-meta { display:block; margin-top:4px; font-size:11px; color:#adc2b5; white-space:nowrap; }
 #page-sales-schedule .qs-date-through { display:block; margin:4px 0; font-size:11px; color:var(--text-muted); }
-#page-sales-schedule .qs-table .qs-date-group-start:not(:first-child) > td { border-top:1px solid var(--border-hi); }
 body.theme-light #page-sales-schedule .qs-table .qs-date-cell { background:#f0f5f1; color:#254739; }
 body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
 

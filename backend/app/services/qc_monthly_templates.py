@@ -13,15 +13,15 @@ from app.services import qc_weekly_templates as weekly
 from app.services.qc_inspection_summary import dump, text
 
 HEADERS = ['序号','日期','客户','合同','出口国','货号','产品名称','数量','装箱','箱数','结果','报告','生产部门','验货机构','验货问题','第一责任人','第二责任人','备注']
-CAIXING = [1,2,3,4,5,6,7,8,9,10,14,17,18]
+CAIXING = [1,2,3,4,5,6,7,8,9,10,14,19,18,20,17]
 ISSUES = [1,2,3,5,6,7,8,9,10,14,12,17]
 TEMPLATES = [
-    dict(id='caixing', title='彩星月度验货明细及汇总表', sourceFile='彩星6-10月验货汇总表.xls', headers=['日期','客户','合同','出口国','货号','产品名称','数量','装箱','箱数','结果','验货问题','备注','改善措施']),
+    dict(id='caixing', title='彩星月度验货明细及汇总表', sourceFile='彩星验货汇总表.xls · 11月', headers=['日期','客户','合同','出口国','货号','产品名称','数量','装箱','箱数','结果','验货问题','原因分析','改善措施','不良次数','备注']),
     dict(id='all', title='月度验货明细表（全客户）', sourceFile='2026年每周验货情况统计表1.xls', headers=HEADERS),
     dict(id='issues', title='月度验货问题图文记录表', sourceFile='每周验货问题统计表.xlsx', headers=['日期','客户','合同','货号','产品名称','数量','装箱','箱数','结果','验货问题','生产','备注']),
     dict(id='customers', title='月度验货明细表（按客户）', sourceFile='2026年客户验货汇总.xls', headers=HEADERS),
 ]
-DETAIL_FIELDS = {**weekly.DETAIL_FIELDS, 18: 'improvement'}
+DETAIL_FIELDS = {**weekly.DETAIL_FIELDS, 18: 'improvement', 19: 'analysisReason'}
 DETAIL_FIELD = weekly.DETAIL_FIELD
 
 
@@ -61,7 +61,7 @@ def _supplements(factory, start):
 
 def _detail(item, marker, index):
     row = weekly._detail(item, marker, index)
-    row['values'].append(text(item.get('improvement')))
+    row['values'].extend([text(item.get('improvement')),text((item.get('inspectionExecution') or {}).get('analysisReason')),''])
     row['editableFields'] = {i:f'detail:{row["id"]}:{field}' for i,field in DETAIL_FIELDS.items()
                              if isinstance(row['values'][i],str) and not row['values'][i].strip()}
     # References are from the same frozen approval as the text, never PO/name matching.
@@ -98,6 +98,8 @@ def query(factory, day, customer=''):
             total['values'][1]+=1
             total['values'][2]+=item.get('result')=='PASS'
         if str(row['values'][14]).strip(): issues.append(_project(row,ISSUES))
+    for total in summary.values():
+        v=total['values'];v[4]=int(v[3])/v[1] if v[3]!='' and v[1] else ''
     numbered=[];counts={}
     for row in rows:
         key=row['customerKey'];counts[key]=counts.get(key,0)+1
@@ -105,7 +107,7 @@ def query(factory, day, customer=''):
     return dict(date=day,dateFrom=start,dateTo=end,sourceRevision=revision,templates=TEMPLATES,
                 customers=list(customers.values()),customer=customer,fields=fields,
                 tables=dict(all=rows,customers=numbered,caixing=caixing,issues=issues,summary=list(summary.values())),total=len(rows),
-                summaryHeaders=['月份','验货总单数','合格单数','实际退货次数','不良率'],
+                summaryHeaders=['月份','验货总单数','合格单数','不合格(退货)单数','不良率'],
                 scheduleCount=sum(r['dateSource']=='schedule' for r in rows),recordFieldsReadOnly=True)
 
 

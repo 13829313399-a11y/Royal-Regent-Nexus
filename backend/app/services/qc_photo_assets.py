@@ -39,7 +39,14 @@ def bounded(fn):
 
 created_files = ContextVar('qc_photo_created_files', default=None)
 log = logging.getLogger(__name__)
-MIMES = {'JPEG':'image/jpeg','PNG':'image/png','WEBP':'image/webp','HEIF':'image/heif','HEIC':'image/heic'}
+MIMES = {
+    'JPEG': 'image/jpeg', 'MPO': 'image/jpeg',
+    'PNG': 'image/png', 'WEBP': 'image/webp',
+    'HEIF': 'image/heif', 'HEIC': 'image/heic', 'AVIF': 'image/avif',
+    'TIFF': 'image/tiff', 'BMP': 'image/bmp', 'GIF': 'image/gif',
+}
+DISPLAY_AS_PNG = {'MPO', 'HEIF', 'HEIC', 'AVIF', 'TIFF', 'BMP'}
+DISPLAY_MIME_FALLBACK = {'image/heif', 'image/heic', 'image/avif', 'image/tiff', 'image/bmp'}
 
 
 def root():
@@ -54,13 +61,20 @@ def inspect(content):
         with warnings.catch_warnings():
             warnings.simplefilter('error',Image.DecompressionBombWarning)
             with Image.open(BytesIO(content)) as im:
-                if im.format not in MIMES or im.width*im.height>40_000_000:raise ValueError()
-                meta=dict(mime=MIMES[im.format],size=len(content),width=im.width,height=im.height,
+                if im.format not in MIMES:
+                    raise HTTPException(422,'照片格式不支持，请选择 JPG、PNG、WebP、HEIC、HEIF、AVIF、TIFF、BMP 或 GIF')
+                if im.width*im.height>40_000_000:
+                    raise HTTPException(422,'单张照片最多 4000 万像素，请缩小尺寸后重试')
+                # Pillow identifies some iPhone JPEGs as MPO. Its first image is
+                # the primary JPEG; extra frames stay in the unmodified original.
+                meta=dict(mime=MIMES[im.format],format=im.format,size=len(content),width=im.width,height=im.height,
                           sha256=sha256(content).hexdigest(),orientation=im.getexif().get(274,1))
                 im.load()
         return meta
-    except (OSError,ValueError,UnidentifiedImageError,Image.DecompressionBombWarning,Image.DecompressionBombError):
-        raise HTTPException(422,'图片损坏或格式不支持，请选择 JPG、PNG、WebP 或受支持的手机照片') from None
+    except (Image.DecompressionBombWarning,Image.DecompressionBombError):
+        raise HTTPException(422,'单张照片最多 4000 万像素，请缩小尺寸后重试') from None
+    except (OSError,ValueError,EOFError,UnidentifiedImageError):
+        raise HTTPException(422,'无法读取这张照片。请确认文件完整，或另存为 JPG 或 PNG 后重试') from None
 
 
 def preview(content):
@@ -112,16 +126,21 @@ def read_file(info):
     return data
 
 
-def save(conn, photo_id, content, original=True):
-    meta={'version':1,'original':None,'preview':None,'error':'','originalStatus':'available' if original else 'unavailable-legacy'}
-    details=inspect(content)
-    if original:meta['original']={**details,'path':write_file(content)}
+def save(conn, photo_id, content, original_status='available', *, details=None):
+    details=details or inspect(content)
+    meta={'version':1,'original':None,'preview':None,'error':'',
+          'originalStatus':original_status,'sourceSize':details['size']}
+    if original_status=='available':
+        meta['original']={**details,'path':write_file(content)}
     try:
         raw,details=preview(content)
         meta['preview']={**details,'path':write_file(raw)}
         status='ready'
     except Exception:
-        # Original survives a preview failure. Retry worker does not touch QC revision.
+        if original_status=='preview-only':
+            # There is no retained source for a background retry.
+            raise HTTPException(503,'预览图生成或保存失败，照片未上传，请重试') from None
+        # Retained original/legacy content survives a failed preview.
         meta['error']='预览图生成失败，后台将重试';status='failed'
         log.warning('qc_photo_preview_failed photo=%s',photo_id)
     conn.execute('INSERT INTO photo_assets(photo_id,metadata,status,retry_at) VALUES(?,?,?,?)',
@@ -149,9 +168,11 @@ def read(conn,row,variant='preview'):
     if variant not in {'preview','original','original-display'}:raise HTTPException(422,'照片版本不正确')
     meta=metadata(conn,row['id'])
     if variant!='preview':
+        if meta and meta['originalStatus']=='preview-only':
+            raise HTTPException(409,'这张照片上传时仅保留了预览图')
         if not meta or not meta['original']:raise HTTPException(409,'此历史照片没有可确认的原图，仍可查看已有预览图')
         info=meta['original'];raw=read_file(info)
-        if variant=='original-display' and info['mime'] in {'image/heif','image/heic'}:
+        if variant=='original-display' and (info.get('format') in DISPLAY_AS_PNG or info['mime'] in DISPLAY_MIME_FALLBACK):
             return display_png(raw),'image/png'
         return raw,info['mime']
     if meta and meta['preview']:return read_file(meta['preview']),'image/jpeg'
@@ -195,7 +216,7 @@ def backfill_batch(limit=8):
                             if sha256(sheet.normalize_photo(candidate)).hexdigest()==row['digest']:
                                 raw=candidate;original=True
                         except (HTTPException,OSError):pass
-                    save(conn,row['id'],raw,original)
+                    save(conn,row['id'],raw,'available' if original else 'unavailable-legacy')
                 done+=1
             except Exception:
                 if old:

@@ -361,10 +361,10 @@ def mutate(db, user, factory, line_id, action, body, permission):
 
 @router.post("/lines/{line_id}/amend")
 def amend(line_id: str, factory_id: str, body: AmendIn, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
-    # A sent order's changes notify the original recipients, so dispatch authority remains required.
-    if db.scalar(select(Dispatch.id).where(Dispatch.line_id == line_id, Dispatch.factory_id == factory_id).limit(1)):
-        authorize(db, current_user, factory_id, "dispatch")
-    return mutate(db, current_user, factory_id, line_id, ledger.amend, body, "write")
+    def action(db, line, body, actor):
+        ledger.amend(db, line, body, actor,
+            authorize_dispatch=lambda: authorize_locked_dispatch(db, current_user, factory_id))
+    return mutate(db, current_user, factory_id, line_id, action, body, "write")
 
 
 def authorize_locked_dispatch(db, user, factory_id):

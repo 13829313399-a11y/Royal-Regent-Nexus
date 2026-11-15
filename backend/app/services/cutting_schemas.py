@@ -170,6 +170,8 @@ class ReconcileRequisition(WithdrawRequisition):
 OrderAction = Literal['receive', 'bom', 'requisition', 'eta', 'withdraw', 'reconcile', 'plan', 'plan-publish']
 WorkflowStatus = Literal['awaiting_receipt', 'cancelled_receipt', 'cancelled', 'reconciliation',
                          'awaiting_bom', 'awaiting_submission', 'awaiting_reply', 'partial_reply', 'complete_reply', 'no_purchase']
+WorkflowStatusGroup = Literal['pending_confirmation', 'pending_engineering', 'pending_procurement', 'procurement_ready']
+WorkflowStatusFilter = WorkflowStatus | WorkflowStatusGroup
 
 
 class RecoverOperation(Strict):

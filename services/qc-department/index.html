@@ -82,7 +82,7 @@
         </span>
         <span class="theme-switch-label" id="themeLabel" aria-hidden="true">浅色</span>
       </button>
-      <button class="btn-icon" onclick="exportPDF()" title="导出PDF">⬇ PDF</button>
+      <button id="qcPagePdf" class="btn-icon" onclick="exportPDF()" title="导出PDF">⬇ PDF</button>
       <div id="sysSwitch" style="position:relative;display:inline-block">
         <button class="btn-icon" onclick="event.stopPropagation();document.getElementById('sysSwitchMenu').hidden=!document.getElementById('sysSwitchMenu').hidden" title="切换系统">⇄ 切换系统 ▾</button>
         <div id="sysSwitchMenu" hidden style="position:absolute;right:0;top:110%;z-index:60;background:#fff;color:#1f2937;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,.25);overflow:hidden;min-width:180px;text-align:left">
@@ -320,10 +320,6 @@
     <div class="page-inner report-page" id="dailyReportContent">
       <div class="report-toolbar">
         <label>选择日期：<input type="date" id="dailyDate" onchange="renderDailyReport()" /></label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn-secondary" onclick="window.print()" title="浏览器打印">🖨 打印</button>
-          <button class="btn-primary" id="btnExportDaily" onclick="exportReportPDF('daily')">⬇ 导出 PDF</button>
-        </div>
         <div class="report-type-slot" data-report-type-slot></div>
       </div>
       <div id="dailyReportBody"></div>
@@ -335,14 +331,6 @@
     <div class="page-inner report-page" id="weeklyReportContent">
       <div class="report-toolbar">
         <label>选择周起始日：<input type="date" id="weeklyDate" onchange="renderWeeklyReport()" /></label>
-        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);cursor:pointer;user-select:none">
-            <input type="checkbox" id="weeklyAppendix" style="accent-color:var(--accent);width:14px;height:14px" />
-            附录：全部验货明细
-          </label>
-          <button class="btn-secondary" onclick="window.print()" title="浏览器打印">🖨 打印</button>
-          <button class="btn-primary" id="btnExportWeekly" onclick="exportReportPDF('weekly')">⬇ 导出 PDF</button>
-        </div>
         <div class="report-type-slot" data-report-type-slot>
           <div id="reportPeriodSwitch" class="report-period-switch" role="group" aria-label="报告周期">
             <span class="report-period-glass" aria-hidden="true"></span>
@@ -393,10 +381,6 @@
         <label>选择月份：
           <input type="month" id="monthlyMonth" onchange="renderMonthlyReport()" />
         </label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn-secondary" onclick="window.print()">🖨 打印</button>
-          <button class="btn-primary" id="btnExportMonthly" onclick="exportMonthlyReportPDF()">⬇ 导出 PDF</button>
-        </div>
         <div class="report-type-slot" data-report-type-slot></div>
       </div>
       <nav id="qmtEntries" aria-label="月报 Excel 模板" hidden></nav>
@@ -416,9 +400,6 @@
                         color:var(--text-main);border:1px solid var(--border-hi);
                         border-radius:var(--radius)" />
         </label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn-primary" onclick="exportYearlyReportPDF()">⬇ 导出 PDF</button>
-        </div>
       </div>
       <div id="yearlyReportBody"></div>
     </div>
@@ -870,6 +851,8 @@
 <script defer src="qc-daily-report.js"></script>
 <link rel="stylesheet" href="qc-weekly-templates.css">
 <script defer src="qc-weekly-templates.js"></script>
+<link rel="stylesheet" href="qc-issue-reports.css">
+<script defer src="qc-issue-reports.js"></script>
 <link rel="stylesheet" href="qc-monthly-templates.css">
 <script defer src="qc-monthly-templates.js"></script>
 <script defer src="mobile.js"></script><!-- 移动端侧栏抽屉交互 -->

@@ -2,7 +2,7 @@
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from test_cutting_ops import client, BASE, user, create, command
-from test_cutting_orders import flow
+from test_cutting_orders import amend, batch, flow, post, submitted
 from test_cutting_planning import planned, resource, task, save, publish
 from test_cutting_materials import bridge
 from test_cutting_usage import custody, consume, write
@@ -37,6 +37,33 @@ def test_planning_counts_current_publication_not_new_draft(planned):
         ledger = p.get(BASE+'/orders', params={'factory_id':'huakang-c','plan_status':state}).json()
         assert summary['stats']['total'] == ledger['total']
         assert summary['stats']['total'] == summary['stats']['scheduled']+summary['stats']['unscheduled']
+
+
+def test_grouped_status_filters_match_ledger_and_metrics(flow):
+    def check(group, state):
+        for status in (group, state):
+            for plan_filter in ({}, {'plan_status': 'unplanned'}):
+                params = dict(status=status, **plan_filter)
+                summary = get(flow, 'planning', **params)
+                response = flow.get(BASE+'/orders', params=dict(factory_id='huakang-c', **params))
+                assert response.status_code == 200
+                ledger = response.json()
+                assert ledger['total'] == summary['stats']['total'] == 1
+                assert [row['workflow_status'] for row in ledger['data']] == [state]
+        assert get(flow, 'planning', status=group, page=2)['stats']['total'] == 1
+        assert get(flow, 'planning', status=group, page=2)['data'] == []
+
+    check('pending_engineering', 'awaiting_bom')
+    submitted(flow)
+    check('pending_procurement', 'awaiting_reply')
+    assert post(flow, 'eta', expected_version=3, requisition_version=3, batches=[batch()]).status_code == 200
+    check('pending_procurement', 'partial_reply')
+    assert post(flow, 'eta', expected_version=4, requisition_version=3,
+                batches=[batch(quantity='7'), batch(row=1, quantity='8')]).status_code == 200
+    check('procurement_ready', 'complete_reply')
+    assert get(flow, 'planning', status='pending_procurement')['stats']['total'] == 0
+    amend(flow)
+    check('pending_confirmation', 'awaiting_receipt')
 
 
 def test_inventory_preserves_signed_balance_and_has_no_costs(custody):

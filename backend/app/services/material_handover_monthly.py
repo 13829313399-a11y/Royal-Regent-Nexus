@@ -10,7 +10,9 @@ from sqlalchemy import select
 from app.models.material_handover import HandoverDocument
 from app.models.fabric_receiving import FabricReceipt
 from app.services import material_handover as service
+from app.services import material_handover_receipts as receipts
 from app.services.fabric_procurement_parser import digest
+from app.services.fabric_receipt_corrections import PREFIX, display_reference
 
 
 def bounds(month):
@@ -31,7 +33,16 @@ def report(db, access, month, supplier_id=''):
     docs={row.id:(row,json.loads(row.data_json)) for row in rows}
     entries=[service.inventory.entry_data(row) for row in service.inventory.documents(db,'fabric')]
     by_id={entry['id']:entry for entry in entries}
+    links=receipts.receipt_links(db,docs)
+    reversals=receipts.reversals_by_receipt(by_id)
     events=defaultdict(list);unlinked=[]
+    for link in links.values():
+        movements=events[link['document_id'],link['line_id']]
+        amount=Decimal(link['quantity'])
+        movements.append((link['business_date'],amount,link['id']))
+        correction=reversals.get(link['receipt_id'])
+        if correction:
+            movements.append((correction['business_date'],-amount,correction['id']))
     for entry in entries:
         if entry['kind']=='RECEIPT':source=entry;sign=1
         elif entry['kind']=='CORRECTION':
@@ -39,6 +50,7 @@ def report(db, access, month, supplier_id=''):
             if not source or source['kind']!='RECEIPT':continue
             sign=-1
         else:continue  # workshop issues/returns/transfers are not supplier purchases
+        if source['id'] in links:continue
         body=source['data'];identifier=body.get('handover_document_id');line=body.get('handover_line_id')
         amount=Decimal(body['quantity'])*sign
         if identifier in docs and line:
@@ -50,13 +62,14 @@ def report(db, access, month, supplier_id=''):
     if not access.issuer_id:
         for receipt in db.scalars(select(FabricReceipt).where(FabricReceipt.factory_id==service.FACTORY,
             FabricReceipt.receipt_date>=start,FabricReceipt.receipt_date<=end)):
+            if PREFIX+receipt.id in links:continue
             facts=json.loads(receipt.source_json)
-            unlinked.append({'id':receipt.id,'source_no':receipt.delivery_reference,'date':receipt.receipt_date,
+            unlinked.append({'id':receipt.id,'source_no':display_reference(receipt),'date':receipt.receipt_date,
                 'counterparty':facts.get('supplier',''),'item_code':facts.get('material_code',''),
                 'quantity':receipt.quantity,'unit':receipt.unit,'reason':'已有采购实收原单，未关联本入口；不得重复入库'})
     details=[];groups={};units={}
     for identifier,(row,body) in docs.items():
-        if body['kind']!='DELIVERY' or not body.get('document_date') or body['document_date']>end:continue
+        if body['kind']!='DELIVERY' or not body.get('document_date'):continue
         party=service.supplier_identity(db,row,body)
         if supplier_id and party!=supplier_id:continue
         for line in body['lines']:
@@ -65,6 +78,7 @@ def report(db, access, month, supplier_id=''):
             received=sum((amount for when,amount,_ in moves if start<=when<=end and amount>0),Decimal(0))
             reversed_amount=-sum((amount for when,amount,_ in moves if start<=when<=end and amount<0),Decimal(0))
             closing=prior+received-reversed_amount;outstanding=max(Decimal(0),target-closing)
+            if body['document_date']>end and not (received or reversed_amount):continue
             # Include outstanding carryovers and every movement (even a net-zero correction).
             if not (start<=body['document_date']<=end or received or reversed_amount or outstanding):continue
             notes=[]

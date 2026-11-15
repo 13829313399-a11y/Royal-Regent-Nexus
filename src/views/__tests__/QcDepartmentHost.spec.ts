@@ -283,7 +283,7 @@ it('uses a native header in both phone tables, synchronizes columns and preserve
     let contentHeight = 1000, frameTop = 48
     const measureMain = vi.spyOn(main, 'getBoundingClientRect').mockImplementation(() => ({ height: contentHeight } as DOMRect))
     vi.spyOn(iframe, 'getBoundingClientRect').mockImplementation(() => ({ top: frameTop, bottom: frameTop + contentHeight } as DOMRect))
-    vi.spyOn(head, 'getBoundingClientRect').mockReturnValue({ top: 100, bottom: 134 } as DOMRect)
+    vi.spyOn(head.rows[0]!, 'getBoundingClientRect').mockReturnValue({ top: 100, bottom: 134 } as DOMRect)
     vi.spyOn(table, 'getBoundingClientRect').mockImplementation(() => ({ bottom: contentHeight } as DOMRect))
     Object.assign(iframe.contentWindow!, { document: doc })
     await wrapper.get('iframe').trigger('load'); await flushPromises()
@@ -291,14 +291,15 @@ it('uses a native header in both phone tables, synchronizes columns and preserve
     expect(document.documentElement.classList.contains('qc-viewport-locked')).toBe(false)
     expect(doc.documentElement.classList.contains('qc-page-scroll')).toBe(true)
     expect(iframe.style.height).toBe('1000px')
+    const layer = wrapper.get('.qc-table-header-layer').element as HTMLElement
     const bounds = wrapper.get('.qc-table-header-bounds').element as HTMLElement
     const strip = wrapper.get('.qc-table-header-strip').element as HTMLElement
-    expect(bounds.hidden).toBe(false)
+    expect(layer.hidden).toBe(false)
     expect(bounds.style.top).toBe('148px')
     expect(bounds.style.height).toBe('900px') // Native sticky cannot outlive its table.
     expect(bounds.style.width).toBe('320px')
-    expect(bounds.getAttribute('aria-hidden')).toBe('true')
-    expect(bounds.hasAttribute('inert')).toBe(true)
+    expect(layer.getAttribute('aria-hidden')).toBe('true')
+    expect(layer.hasAttribute('inert')).toBe(true)
     expect(bounds.querySelectorAll('input,button,select,[id],th')).toHaveLength(0)
     expect(Array.from(strip.children).map(el => (el as HTMLElement).style.width)).toEqual(['79px', '97px', '128px'])
     expect((strip.children[1] as HTMLElement).style.left).toBe('79px')
@@ -326,35 +327,44 @@ it('uses a native header in both phone tables, synchronizes columns and preserve
     await flushPromises()
     expect(strip.textContent).toContain('更新后的标题') // Same-height replacement is observed.
     doc.body.classList.add('qc-sidebar-open'); await flushPromises()
-    expect(bounds.hidden).toBe(true)
+    expect(layer.hidden).toBe(true)
     doc.body.classList.remove('qc-sidebar-open'); await flushPromises()
-    expect(bounds.hidden).toBe(false)
+    expect(layer.hidden).toBe(false)
     const dialog = doc.createElement('dialog'); doc.body.append(dialog)
     dialog.setAttribute('open', ''); await flushPromises()
-    expect(bounds.hidden).toBe(true)
+    expect(layer.hidden).toBe(true)
     dialog.remove(); await flushPromises()
-    expect(bounds.hidden).toBe(false)
+    expect(layer.hidden).toBe(false)
     // Switching out of inspection, or back to desktop, restores the existing workspace.
     doc.querySelector('#page-records')!.classList.remove('active'); await flushPromises()
     expect(iframe.style.height).toBe('')
     expect(document.documentElement.classList.contains('qc-viewport-locked')).toBe(true)
-    expect(bounds.hidden).toBe(true)
+    expect(layer.hidden).toBe(true)
     doc.querySelector('#page-review')!.classList.add('active'); await flushPromises()
     expect(iframe.style.height).toBe('300px')
     const reviewSheet = sheet.cloneNode(true) as HTMLElement
-    reviewSheet.querySelector('[data-column=result]')!.textContent = '审核结果'
+    const reviewTable = reviewSheet.querySelector('table')!
+    const reviewHead = reviewTable.tHead!.rows[0]!
+    reviewHead.querySelector('[data-column=result]')!.textContent = '审核结果'
+    Object.defineProperty(reviewSheet, 'clientWidth', { value: 320 })
+    vi.spyOn(reviewHead, 'getBoundingClientRect').mockReturnValue({ top: 20 } as DOMRect)
+    vi.spyOn(reviewTable, 'getBoundingClientRect').mockReturnValue({ bottom: 300 } as DOMRect)
     doc.querySelector('#page-review')!.append(reviewSheet); await flushPromises()
-    expect(bounds.hidden).toBe(false)
-    expect(strip.textContent).toContain('审核结果')
+    const reviewBounds = wrapper.findAll('.qc-table-header-bounds').map(item => item.element as HTMLElement)
+    expect(reviewBounds.map(item => [item.style.top, item.style.height])).toEqual([['68px', '280px']])
+    expect(layer.hidden).toBe(false)
+    const reviewStrip = wrapper.get('.qc-table-header-strip').element as HTMLElement
+    expect(reviewStrip.textContent).toContain('审核结果')
     reviewSheet.scrollLeft = 460; reviewSheet.dispatchEvent(new Event('scroll'))
-    expect(strip.scrollLeft).toBe(460)
+    expect(reviewStrip.scrollLeft).toBe(460)
+    expect(wrapper.findAll('.qc-table-header-strip')).toHaveLength(1)
     sheet.scrollLeft = 900; sheet.dispatchEvent(new Event('scroll'))
-    expect(strip.scrollLeft).toBe(460) // The previous page's listener has been removed.
+    expect(reviewStrip.scrollLeft).toBe(460) // The previous page's listener has been removed.
     doc.documentElement.classList.remove('qc-mobile'); await flushPromises()
     expect(iframe.style.height).toBe('')
     expect(doc.documentElement.classList.contains('qc-page-scroll')).toBe(false)
-    expect(bounds.hidden).toBe(true)
-    expect(strip.children).toHaveLength(0)
+    expect(layer.hidden).toBe(true)
+    expect(layer.children).toHaveLength(0)
     expect(state.get).toHaveBeenCalledTimes(1)
     wrapper.unmount()
     expect(disconnect).toHaveBeenCalled()

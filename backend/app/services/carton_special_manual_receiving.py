@@ -1,11 +1,8 @@
 """Warehouse-recorded physical notes, using the existing shipment/receipt ledgers."""
-import json
 from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select
-from app.models.carton_special_requests import UnifiedDelivery, SpecialShipment, SpecialShipmentLine
-from app.models.carton_supplier_portal import SupplierShipment
-from app.models.carton_procurement import CartonReceipt
+from app.models.carton_special_requests import SpecialShipment, SpecialShipmentLine
 from app.schemas import carton_special_requests as schema
 from app.services import carton_special_requests as special
 
@@ -17,16 +14,9 @@ def pending_deliveries(db, row, selected_line_ids=None):
         and paper.quantity > consumed.get(paper.id, Decimal(0))})
     if not shipment_ids:
         return [], []
-    groups = list(db.scalars(select(UnifiedDelivery).where(
-        UnifiedDelivery.factory_id == row.factory_id, UnifiedDelivery.supplier_id == row.supplier_id)))
-    delivery_ids = []
-    grouped = set()
-    for group in groups:
-        matching = set(json.loads(group.children_json)["special_ids"]) & set(shipment_ids)
-        if matching:
-            delivery_ids.append(group.id)
-            grouped.update(matching)
-    delivery_ids.extend("SPECIAL:" + identifier for identifier in shipment_ids if identifier not in grouped)
+    from app.services.carton_source_links import delivery_ids as group_by_source
+    groups = group_by_source(db, row.factory_id)
+    delivery_ids = list(dict.fromkeys(groups.get(identifier, 'SPECIAL:' + identifier) for identifier in shipment_ids))
     return shipment_ids, delivery_ids
 
 
@@ -41,47 +31,16 @@ def receive(db, user, identifier, payload: schema.ManualReceive):
         digest, saved = special.replay(db, user, payload, "MANUAL_RECEIVE", identifier)
         if saved:
             return saved
-        special.require_revision(row, payload)
-        if not special.flags(db, user, row, False)["can_manual_receive"]:
-            raise HTTPException(409, "请先确认并锁定样板或杂单，再登记实际收料")
-        shipment_ids, delivery_ids = pending_deliveries(db, row, {line.line_id for line in payload.lines})
-        if shipment_ids:
-            raise HTTPException(409, dict(code="EXISTING_DELIVERY_PENDING",
-                message="已有待收或冲销待更正送货，请沿原送货单核实，不能另建手动收料",
-                shipment_ids=shipment_ids, delivery_ids=delivery_ids))
-        if len({item.line_id for item in payload.lines}) != len(payload.lines):
-            raise HTTPException(422, "本次收料纸品不能重复")
-        for model in (UnifiedDelivery, SupplierShipment, SpecialShipment, CartonReceipt):
-            if db.scalar(select(model.id).where(model.factory_id == row.factory_id,
-                model.supplier_id == row.supplier_id, model.delivery_note_no == payload.delivery_note_no)):
-                raise HTTPException(409, "供应商原送货单号已登记，请核对原单")
-        papers = {paper.id: paper for paper in special.lines(db, row)}
-        totals = special.state_counts(db, row)[3]
-        for item in payload.lines:
-            paper = papers.get(item.line_id)
-            if paper is None:
-                raise HTTPException(422, "收料纸品不属于当前订单")
-            # Warehouse records physical acceptance or rejection independently
-            # of printing approval; the source mark state stays in the snapshot.
-            if item.received_quantity > paper.quantity - totals.get(paper.id, Decimal(0)):
-                raise HTTPException(409, "本次收料数量超过订单剩余需求，请先核实需求")
-        shipment, receipt_lines = build_shipment(db, user, row, payload)
-        group = UnifiedDelivery(id=special.uid("CUD-"), factory_id=row.factory_id, supplier_id=row.supplier_id,
-            delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
-            children_json=special.pack({"formal_id": "", "special_ids": [shipment.id],
-                "source_origin": "WAREHOUSE_MANUAL"}), request_key=payload.request_id,
-            fingerprint=digest, created_by=user.id, created_at=special.core.now_text())
-        db.add(group)
-        db.flush()
-        special.core._audit(db, user, row.factory_id, "SPECIAL_MANUAL_DELIVERY_RECORDED",
-            "carton_special_request", row.id, {"shipment_id": shipment.id, "delivery_id": group.id,
-                "source_origin": "WAREHOUSE_MANUAL", "supplier_price_confirmed": False})
+        from app.schemas.carton_unified_deliveries import WarehouseReceive, WarehouseSpecial
+        from app.services import carton_warehouse_receiving as warehouse
         from app.services.carton_unified_deliveries import child_key
-        special.receive(db, user, row.id, shipment.id, schema.Receive(factory_id=row.factory_id,
-            request_id=child_key(payload.request_id, "MANUAL_RECEIVE"), expected_revision=row.revision,
-            acceptance_date=payload.acceptance_date, lines=receipt_lines), commit=False)
+        result = warehouse.receive(db, user, WarehouseReceive(factory_id=payload.factory_id,
+            request_id=child_key(payload.request_id, 'WAREHOUSE_MANUAL'), delivery_note_no=payload.delivery_note_no,
+            delivery_date=payload.delivery_date, acceptance_date=payload.acceptance_date,
+            special_requests=[WarehouseSpecial(id=row.id, expected_revision=payload.expected_revision, lines=payload.lines)]),
+            refresh_actor=lambda: user, commit=False)
         response = special.finish(db, user, payload, row, "MANUAL_RECEIVE", digest, commit=False,
-            response_extra={"manual_delivery_id": group.id}, receiving=True)
+            response_extra={"manual_delivery_id": result['delivery_id']}, receiving=True)
         db.commit()
         return response
     except Exception:
@@ -89,17 +48,18 @@ def receive(db, user, identifier, payload: schema.ManualReceive):
         raise
 
 
-def build_shipment(db, user, row, payload):
+def build_shipment(db, user, row, payload, *, shipment=None):
     """Trusted builder after the caller validates and locks every source."""
     from app.services.carton_supplier_evidence_guard import ensure_evidence_open
     ensure_evidence_open(db, row.factory_id, row.supplier_id, payload.delivery_date)
     papers = {paper.id: paper for paper in special.lines(db, row)}
-    shipment = SpecialShipment(id=special.uid("CSSP-"), factory_id=row.factory_id,
-        supplier_id=row.supplier_id, request_id=row.id, version_id=row.current_version_id,
-        delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
-        created_by=user.id, created_at=special.core.now_text())
-    db.add(shipment)
-    db.flush()
+    if shipment is None:
+        shipment = SpecialShipment(id=special.uid("CSSP-"), factory_id=row.factory_id,
+            supplier_id=row.supplier_id, request_id=row.id, version_id=row.current_version_id,
+            delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
+            created_by=user.id, created_at=special.core.now_text())
+        db.add(shipment)
+        db.flush()
     receipt_lines = []
     manifest = special.snapshot(db, row)["material_manifest"]
     from app.services.carton_special_stock import replacement

@@ -46,8 +46,10 @@ test('week selection uses complete Monday-to-Sunday interval including year boun
  assert.deepEqual(JSON.parse(JSON.stringify(api.weekRange('2026-10-26',1))),{from:'2026-11-02',to:'2026-11-08'});
 });
 test('cross-day records appear once and dates remain full-year values',()=>{
- const groups=api.groups(rows);assert.equal(groups.reduce((s,g)=>s+g.rows.length,0),4);
- assert.equal(groups[0].key,'2026-10-30');assert.equal(api.dateLabel(rows[0]),'2026-10-27 — 2026-10-29');
+ const exported=api.exportRows(rows);
+ assert.equal(exported.length,4);
+ assert.equal(exported[0][0],'2026-10-30');
+ assert.equal(api.dateLabel(rows[0]),'2026-10-27 — 2026-10-29');
 });
 function xlsx(){const c={Uint8Array,ArrayBuffer};vm.createContext(c);vm.runInContext(fs.readFileSync(path.join(project,'services/qc-department/vendor/xlsx-js-style.min.js'),'utf8'),c);return c.XLSX;}
 test('real XLSX round trip exports filtered rows, literal identifiers/notes, zero quantities and all 14 columns',()=>{
@@ -209,10 +211,11 @@ test('partial push retains failed selection and filters; full success resets and
  }finally{dom.window.close()}
 });
 
-test('merged date cells preserve record selection, ranges and filtered row spans', async () => {
+test('every schedule row shows its date, including repeated dates and ranges', async () => {
  const items = [
   {id:'a',dateFrom:'2026-12-22',customer:'A',productNo:'A',sourceStatus:'active'},
   {id:'b',dateFrom:'2026-12-22',customer:'B',productNo:'B',sourceStatus:'active'},
+  {id:'week',dateFrom:'2026-11-16',dateTo:'2026-11-19',productNo:'W',sourceStatus:'active'},
   {id:'range',dateFrom:'2025-12-31',dateTo:'2026-01-02',productNo:'R',sourceStatus:'active'},
   {id:'missing',dateFrom:'',productNo:'M',sourceStatus:'cancelled'},
  ];
@@ -221,12 +224,15 @@ test('merged date cells preserve record selection, ranges and filtered row spans
   const w=dom.window,d=w.document;
   w.__QC_NEXUS.workflow={create:true};await w.renderSalesSchedule();
   assert.equal(d.querySelectorAll('#qsRows .qs-group').length,0);
-  assert.equal(d.querySelectorAll('#qsRows tr').length,4);
+  assert.equal(d.querySelectorAll('#qsRows tr').length,5);
   const dates=d.querySelectorAll('#qsRows .qs-date-cell');
-  assert.equal(dates.length,3);assert.equal(dates[0].rowSpan,2);
+  assert.equal(dates.length,5);
+  assert.ok([...dates].every(cell=>cell.rowSpan===1));
   assert.match(dates[0].textContent,/12月22日2026 · 周二/);
-  assert.match(dates[1].textContent,/12月31日2025 · 周三至01月02日2026 · 周五/);
-  assert.equal(dates[2].textContent,'待确认');
+  assert.equal(dates[1].textContent,dates[0].textContent);
+  assert.match(dates[2].textContent,/11月16–19日2026 · 周一至周四/);
+  assert.match(dates[3].textContent,/12月31日2025 · 周三至01月02日2026 · 周五/);
+  assert.equal(dates[4].textContent,'待确认');
   d.querySelector('[data-pick="b"]').click();
   assert.equal(d.querySelector('[data-pick="b"]').checked,true);
   assert.equal(d.querySelector('[data-pick="a"]').checked,false);

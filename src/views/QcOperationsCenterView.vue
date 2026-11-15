@@ -42,8 +42,7 @@ const error = ref('')
 const switching = ref(false)
 const frameVersion = ref(0)
 const viewportStyle = ref<Record<string, string>>({})
-const headerBounds = ref<HTMLDivElement | null>(null)
-const headerStrip = ref<HTMLDivElement | null>(null)
+const headerLayer = ref<HTMLDivElement | null>(null)
 let viewport: VisualViewport | null = null
 let viewportFrame = 0
 let scrollFrame = 0
@@ -51,65 +50,90 @@ let frameResize: ResizeObserver | undefined
 let frameChanges: MutationObserver | undefined
 let layoutDocument: Document | undefined
 let headerSheet: HTMLElement | null = null
-let headerSignature = ''
+const headerMirrors: { bounds: HTMLDivElement; strip: HTMLDivElement; signature: string }[] = []
 function syncHeaderScroll() {
-  if (headerStrip.value && headerSheet) headerStrip.value.scrollLeft = headerSheet.scrollLeft
+  if (!headerSheet) return
+  for (const { strip } of headerMirrors) strip.scrollLeft = headerSheet.scrollLeft
 }
 function clearHeader() {
   headerSheet?.removeEventListener('scroll', syncHeaderScroll)
   headerSheet = null
-  headerSignature = ''
-  if (headerBounds.value) headerBounds.value.hidden = true
-  headerStrip.value?.replaceChildren()
+  headerMirrors.length = 0
+  if (headerLayer.value) {
+    headerLayer.value.hidden = true
+    headerLayer.value.replaceChildren()
+  }
 }
 function measureHeader(doc: Document, element: HTMLIFrameElement) {
-  const bounds = headerBounds.value, strip = headerStrip.value
+  const layer = headerLayer.value
   const sheet = doc.querySelector<HTMLElement>('#page-records.active .qis-wrap,#page-review.active .qis-wrap')
   const table = sheet?.querySelector<HTMLTableElement>('.qis-table')
-  if (!bounds || !strip || !sheet || !table?.tHead || !table.tBodies[0]?.rows.length) { clearHeader(); return }
+  if (!layer || !sheet || !table?.tBodies[0]?.rows.length) { clearHeader(); return }
+  const workbenchHeader = table.tHead?.rows[0]
+  const rows = workbenchHeader ? [workbenchHeader] : Array.from(table.querySelectorAll<HTMLTableRowElement>('.qis-review-column-head'))
   if (headerSheet !== sheet) {
     clearHeader()
     headerSheet = sheet
     sheet.addEventListener('scroll', syncHeaderScroll, { passive: true })
   }
-  const headBox = table.tHead.getBoundingClientRect(), sheetBox = sheet.getBoundingClientRect()
-  // This box is anchored to the table in document coordinates. Native sticky
-  // handles vertical motion on the compositor, without scroll-event transforms.
-  Object.assign(bounds.style, {
-    top: `${element.offsetTop + headBox.top}px`,
-    left: `${element.offsetLeft + sheetBox.left + sheet.clientLeft}px`,
-    width: `${sheet.clientWidth}px`,
-    height: `${Math.max(0, table.getBoundingClientRect().bottom - headBox.top)}px`,
+  while (headerMirrors.length > rows.length) headerMirrors.pop()?.bounds.remove()
+  const sheetBox = sheet.getBoundingClientRect()
+  rows.forEach((row, index) => {
+    let mirror = headerMirrors[index]
+    if (!mirror) {
+      const bounds = document.createElement('div')
+      const sticky = document.createElement('div')
+      const strip = document.createElement('div')
+      bounds.className = 'qc-table-header-bounds'
+      sticky.className = 'qc-table-header-sticky'
+      strip.className = 'qc-table-header-strip'
+      sticky.append(strip)
+      bounds.append(sticky)
+      layer.append(bounds)
+      mirror = { bounds, strip, signature: '' }
+      headerMirrors.push(mirror)
+    }
+    // On phones, the host document scrolls and each mirrored header sticks
+    // only within its own row group. The workbench header spans the full table.
+    const rowBox = row.getBoundingClientRect()
+    const end = workbenchHeader ? table : row.closest('tbody') ?? table
+    Object.assign(mirror.bounds.style, {
+      top: `${element.offsetTop + rowBox.top}px`,
+      left: `${element.offsetLeft + sheetBox.left + sheet.clientLeft}px`,
+      width: `${sheet.clientWidth}px`,
+      height: `${Math.max(0, end.getBoundingClientRect().bottom - rowBox.top)}px`,
+    })
+    const cells = Array.from(row.cells).map(th => {
+      const style = doc.defaultView!.getComputedStyle(th)
+      const box = th.getBoundingClientRect()
+      const frozen = th.dataset.column === 'customer' || th.dataset.column === 'poNo'
+      return { text: th.textContent || '', column: th.dataset.column || '', style: {
+        width: `${box.width}px`, height: `${box.height}px`,
+        fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight,
+        lineHeight: style.lineHeight, letterSpacing: style.letterSpacing, textAlign: style.textAlign,
+        padding: style.padding, color: style.color, background: style.backgroundColor,
+        borderRight: style.borderRight, borderBottom: style.borderBottom,
+        position: frozen ? 'sticky' : 'relative', left: frozen ? style.left : 'auto',
+        zIndex: frozen ? '2' : '1',
+      } }
+    })
+    const signature = JSON.stringify(cells)
+    if (signature !== mirror.signature) {
+      // Presentational labels only: do not duplicate inputs, IDs or accessibility headers.
+      mirror.strip.replaceChildren(...cells.map(cell => {
+        const label = document.createElement('span')
+        label.textContent = cell.text
+        label.dataset.column = cell.column
+        Object.assign(label.style, cell.style)
+        return label
+      }))
+      mirror.signature = signature
+    }
   })
-  const cells = Array.from(table.tHead.querySelectorAll('th')).map(th => {
-    const style = doc.defaultView!.getComputedStyle(th)
-    const box = th.getBoundingClientRect()
-    const frozen = th.dataset.column === 'customer' || th.dataset.column === 'poNo'
-    return { text: th.textContent || '', column: th.dataset.column || '', style: {
-      width: `${box.width}px`, height: `${box.height}px`,
-      font: style.font, letterSpacing: style.letterSpacing, textAlign: style.textAlign,
-      padding: style.padding, color: style.color, background: style.backgroundColor,
-      borderRight: style.borderRight, borderBottom: style.borderBottom,
-      position: frozen ? 'sticky' : 'relative', left: frozen ? style.left : 'auto',
-      zIndex: frozen ? '2' : '1',
-    } }
-  })
-  const signature = JSON.stringify(cells)
-  if (signature !== headerSignature) {
-    // Presentational labels only: do not duplicate inputs, IDs or accessibility headers.
-    strip.replaceChildren(...cells.map(cell => {
-      const label = document.createElement('span')
-      label.textContent = cell.text
-      label.dataset.column = cell.column
-      Object.assign(label.style, cell.style)
-      return label
-    }))
-    headerSignature = signature
-  }
   const overlayOpen = doc.body.classList.contains('qc-sidebar-open') || !!doc.querySelector('dialog[open]')
     || Array.from(doc.querySelectorAll<HTMLElement>('.modal-overlay,.import-confirm-overlay,.backup-confirm-overlay,#rptExportOverlay'))
       .some(overlay => overlay.getClientRects().length && doc.defaultView!.getComputedStyle(overlay).visibility !== 'hidden')
-  bounds.hidden = overlayOpen
+  layer.hidden = overlayOpen
   syncHeaderScroll()
 }
 function disconnectLayout() {
@@ -311,9 +335,7 @@ watch(frame, scheduleViewport, { flush: 'post' })
       </section>
       <iframe v-if="ready" ref="frame" :key="`${factoryId}:${frameVersion}`" :src="frameUrl" :class="{ invisible: !frameLoaded }" @load="onFrameLoad" title="QC_department 验货工作台" class="h-full min-h-0 w-full border-0 bg-white" />
     </template>
-    <div ref="headerBounds" class="qc-table-header-bounds" hidden aria-hidden="true" inert>
-      <div class="qc-table-header-sticky"><div ref="headerStrip" class="qc-table-header-strip" /></div>
-    </div>
+    <div ref="headerLayer" class="qc-table-header-layer" hidden aria-hidden="true" inert />
   </main>
 </template>
 
@@ -372,10 +394,11 @@ watch(frame, scheduleViewport, { flush: 'post' })
   .qc-orbit-inner { animation: none; }
 }
 .qc-department-host iframe { display:block; }
-.qc-table-header-bounds { position:absolute; pointer-events:none; z-index:5; }
-.qc-table-header-sticky { position:sticky; top:0; }
-.qc-table-header-strip { display:flex; overflow:hidden; }
-.qc-table-header-strip :deep(span) { display:block; flex:none; box-sizing:border-box; white-space:nowrap; }
+.qc-table-header-layer { position:absolute; inset:0; pointer-events:none; z-index:5; }
+.qc-table-header-layer :deep(.qc-table-header-bounds) { position:absolute; }
+.qc-table-header-layer :deep(.qc-table-header-sticky) { position:sticky; top:0; }
+.qc-table-header-layer :deep(.qc-table-header-strip) { display:flex; overflow:hidden; }
+.qc-table-header-layer :deep(.qc-table-header-strip span) { display:block; flex:none; box-sizing:border-box; white-space:nowrap; }
 .qc-host-factory { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .qc-host-factory select { min-height: 36px; max-width: 180px; border: 1px solid var(--input); border-radius: 10px; padding: 4px 10px; background: var(--card, white); font: inherit; }
 /* Scoped QC frame chrome; Nexus theme and authorization/factory bridge are unchanged. */

@@ -9,6 +9,7 @@ from app.models.carton_supplier_portal import SupplierShipment
 from app.models.carton_special_requests import UnifiedDelivery, SpecialRequest, SpecialLine, SpecialShipment, SpecialShipmentLine, SpecialReceiptLink
 from app.schemas import carton_special_requests as ss, carton_supplier_portal as ps
 from app.services import carton_special_requests as special, carton_supplier_portal as portal
+from app.services.carton_source_links import delivery_children, delivery_extensions
 
 
 def child_key(root, suffix):
@@ -28,7 +29,7 @@ def descriptors(db, user, factory, identifier, *, external=False, read_only_all=
     group = db.get(UnifiedDelivery, identifier)
     if group:
         if group.factory_id != factory or group.supplier_id != vendor: raise HTTPException(404, "送货单不存在")
-        data = json.loads(group.children_json)
+        data = delivery_children(db, group)
         formal_id, special_ids = data["formal_id"], data["special_ids"]
         note, day, created = group.delivery_note_no, group.delivery_date, group.created_at
     elif identifier.startswith("FORMAL:"):
@@ -141,8 +142,9 @@ def workspace(db, user, factory, *, external=False, responsibility_scope="OWN"):
     groups = list(db.scalars(select(UnifiedDelivery).where(UnifiedDelivery.factory_id == factory, UnifiedDelivery.supplier_id == vendor)))
     linked_formal, linked_special = set(), set()
     identifiers = []
+    extensions = delivery_extensions(db, factory, [group.id for group in groups])
     for group in groups:
-        children = json.loads(group.children_json)
+        children = delivery_children(db, group, extensions)
         linked_formal.add(children["formal_id"]); linked_special.update(children["special_ids"])
         identifiers.append(group.id)
     identifiers.extend("FORMAL:" + row.id for row in db.scalars(select(SupplierShipment).where(

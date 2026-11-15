@@ -6,7 +6,12 @@ import { WAREHOUSES, WAREHOUSE_HOME, warehousePath } from '../navigation'
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span>当前账号</span>' } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'warehouse' }, authorizationVersion: 1 }) }))
-const api = vi.hoisted(() => ({ lines: vi.fn().mockResolvedValue({ total: 0, items: [] }), imports: vi.fn().mockResolvedValue([]), apply: vi.fn() }))
+const api = vi.hoisted(() => ({
+  lines: vi.fn().mockResolvedValue({ total: 0, items: [] }),
+  groups: vi.fn().mockResolvedValue({ total: 0, line_total: 0, groups: [] }),
+  imports: vi.fn().mockResolvedValue([]),
+  apply: vi.fn(),
+}))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
 vi.mock('@/api/materialHandover', () => ({ handoverApi: () => ({ pendingDeliveries: vi.fn().mockResolvedValue({ total: 0, items: [], stock_totals: [] }) }) }))
 const receivingApi = vi.hoisted(() => ({ receipts: vi.fn().mockResolvedValue({ total: 0, items: [] }), stock: vi.fn().mockResolvedValue({ total: 0, items: [] }) }))
@@ -184,7 +189,12 @@ describe('warehouse framework navigation', () => {
           await flushPromises()
         }
         if (wrapper!.find('.fabric-procurement').exists()) {
-          expect(wrapper!.text()).toContain('采购历史不增加库存')
+          if (view.id === 'pending') {
+            expect(wrapper!.text()).toContain('按供应商和物料查看待收与复期')
+            expect(wrapper!.findAll('a').map(link => link.text())).toContain('送货单入库')
+          } else {
+            expect(wrapper!.text()).toContain('采购历史不增加库存')
+          }
           expect(wrapper!.find('fieldset[disabled]').exists()).toBe(false)
           continue
         }

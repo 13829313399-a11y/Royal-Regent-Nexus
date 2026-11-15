@@ -10,10 +10,12 @@ import Workspace from '../FabricProcurementWorkspace.vue'
 import { receiptQuantity, receiptTotal, receiptAmount, receiptAmountTotals } from '../receiptQuantities'
 import type { PurchaseDetail } from '@/api/fabricProcurement'
 
-const api = vi.hoisted(() => ({ receive: vi.fn(), receipts: vi.fn(), stock: vi.fn() }))
+const api = vi.hoisted(() => ({ receive: vi.fn(), receiveManual: vi.fn(), receipts: vi.fn(), stock: vi.fn() }))
 const sourceApi = vi.hoisted(() => ({ groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn() }))
+const masterApi = vi.hoisted(() => ({ list: vi.fn() }))
 vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: api, materialCategoryLabels: { FABRIC: '布料', ACCESSORY: '辅料', THREAD: '线' } }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: sourceApi }))
+vi.mock('@/api/fabricMaster', () => ({ fabricMasterApi: masterApi }))
 const source: PurchaseDetail = { id: 'L1', revision: 2, receipt_count: 0, prior_received_quantity: '50', warehouse_received_quantity: '0', can_receive: true,
   facts: { order_no: 'PO1', supplier: '供应商', material_code: '001', material_name: '白色布', unit: '码', ordered_quantity: '100', reported_received_quantity: '50', source_category: 'SUPPLEMENT',
     status: 'PENDING', source_line_id: '', production_no: 'P1', plan_no: '', old_material_code: '', contract_no: '', unit_price: '0',
@@ -285,7 +287,7 @@ describe('fabric actual receiving', () => {
   it('opens receiving from a freshly read source, refreshes the list after posting, and respects read-only accounts', async () => {
     wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises()
     await button('按采购明细').trigger('click'); await flushPromises()
-    await button('登记入库').trigger('click'); await flushPromises()
+    await wrapper!.get('tbody').findAll('button').find(item => item.text() === '登记入库')!.trigger('click'); await flushPromises()
     expect(sourceApi.detail).toHaveBeenCalledWith('L1')
     await fill(); api.receive.mockResolvedValue({ id: 'R1', quantity: '0.1', unit: '码' })
     await button('保存并入库').trigger('click'); await flushPromises()
@@ -294,6 +296,47 @@ describe('fabric actual receiving', () => {
     sourceApi.lines.mockResolvedValue({ total: 1, items: [source], can_receive: false })
     await wrapper!.get('form').trigger('submit'); await flushPromises()
     expect(wrapper!.findAll('button').some(item => item.text() === '登记入库')).toBe(false)
+  })
+  it.each(['ORDER', 'PENDING'])('opens the receipt from a purchase row for %s and links the saved voucher', async mode => {
+    sourceApi.groups.mockResolvedValue({ total: 0, line_total: 0, groups: [], can_receive: true, can_receive_pending_purchase: true })
+    sourceApi.lines.mockResolvedValue({ total: 1, items: [source], can_receive: true, can_receive_pending_purchase: true })
+    masterApi.list.mockImplementation(async (kind: string) => ({ items: ({
+      MATERIAL: [{ id: 'M1', code: '001', name: '白色布', revision: 3, data: { category: 'FABRIC', unit: '码' } }],
+      SUPPLIER: [{ id: 'S1', code: 'SUP1', name: '供应商', revision: 4, data: {} }],
+      LOCATION: [{ id: 'A01', code: 'A01', data: { warehouse: '一仓', category: 'FABRIC' } }],
+    } as Record<string, object[]>)[kind] ?? [] }))
+    wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } })
+    await flushPromises()
+    expect(wrapper.get('.fabric-receiving-actions').findAll('button')).toHaveLength(0)
+    await button('按采购明细').trigger('click'); await flushPromises()
+    await wrapper.get('tbody').findAll('button').find(item => item.text() === '登记入库')!.trigger('click'); await flushPromises()
+    if (mode === 'ORDER') {
+      api.receive.mockResolvedValueOnce({ id: 'R-LINKED', quantity: '0.1', unit: '码' })
+    } else {
+      await button('采购待核对').trigger('click'); await flushPromises()
+      await body().get('[aria-label="选择入库物料"]').setValue('M1')
+      await body().get('[aria-label="选择入库供应商"]').setValue('S1')
+      api.receiveManual.mockResolvedValueOnce({ id: 'FM-PENDING', quantity: '0.1', unit: '码', purchase_status: 'PENDING' })
+    }
+    await fill()
+    if (mode === 'PENDING') {
+      expect(button('保存并入库').attributes('disabled')).toBeDefined()
+      await body().get('[aria-label="采购待核对原因"]').setValue('纸单没有采购编号')
+    }
+    await button('保存并入库').trigger('click'); await flushPromises()
+    const receiptId = mode === 'ORDER' ? 'R-LINKED' : 'FM-PENDING'
+    expect(wrapper!.findAll('a').find(link => link.text() === '查看本次入库')?.attributes('href')).toContain(`view=history&receipt=${receiptId}`)
+    if (mode === 'ORDER') {
+      expect(api.receive).toHaveBeenCalledWith('L1', expect.objectContaining({ expected_source_revision: 2 }))
+      expect(api.receiveManual).not.toHaveBeenCalled()
+    } else {
+      expect(api.receiveManual).toHaveBeenCalledWith(expect.objectContaining({
+        material_id: 'M1', material_revision: 3, supplier_id: 'S1', supplier_revision: 4,
+        procurement_pending_reason: '纸单没有采购编号',
+        batches: [expect.objectContaining({ quantity: '0.1', location_id: 'A01' })],
+      }))
+      expect(api.receive).not.toHaveBeenCalled()
+    }
   })
   it('loads posted receipt/stock views and clears protected records on a denied query', async () => {
     api.stock.mockResolvedValue({ total: 1, items: [{ id: 'B1', receipt_id: 'R1', movement_id: 'M1', facts: source.facts, quantity: '0.3', unit: '码', material_category: 'FABRIC', location_id: 'A01', location: '一仓／A01', dye_lot: '', roll_no: '', receipt_date: '2026-09-16', accounting_month: '2026-09', delivery_reference: 'DN1' }] })
@@ -397,8 +440,13 @@ describe('purchase receipt v2 differences', () => {
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     await body().get('[aria-label="第2项实点数量"]').setValue('1')
     await body().get('[aria-label="第2项卷号"]').setValue('0002')
-    expect(body().text()).toContain('同缸号、卷号和仓位重复')
+    expect(body().text()).toContain('第 1 项和第 2 项的缸号、卷号和仓位相同')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="第1项卷号"]').setValue('')
+    await body().get('[aria-label="第2项卷号"]').setValue('')
+    expect(button('保存并入库').attributes('disabled')).toBeUndefined()
+    await body().get('[aria-label="第1项卷号"]').setValue('0002')
+    await body().get('[aria-label="第2项卷号"]').setValue('0002')
     await body().get('[aria-label="第2项仓位"]').setValue('一仓／A02')
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
   })
@@ -414,7 +462,7 @@ describe('purchase receipt v2 differences', () => {
   it('shows a zero-stock success notice after saving from the purchase workspace', async () => {
     wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises()
     await button('按采购明细').trigger('click'); await flushPromises()
-    await button('登记入库').trigger('click'); await flushPromises(); await fill()
+    await wrapper!.get('tbody').findAll('button').find(item => item.text() === '登记入库')!.trigger('click'); await flushPromises(); await fill()
     await body().get('[aria-label="第1项拒收数量"]').setValue('0.1')
     api.receive.mockResolvedValue({ id: 'ZERO', quantity: '0', unit: '码', stock_posted: false })
     await button('保存并入库').trigger('click'); await flushPromises()

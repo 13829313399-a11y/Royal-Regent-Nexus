@@ -8,7 +8,7 @@ import { cartonPrintSplitsApi, type PrintFile } from '@/api/cartonPrintSplits'
 import { factoryContexts } from '@/data/enterpriseMock'
 
 const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; viewerKey?: string; internal?: boolean; readOnly?: boolean; sourceId?: string; sourceKinds?: SupplierChangeTask['source_kind'][]; embedded?: boolean; showClosed?: boolean; taskFilter?: SupplierChangeFilter }>(), { factoryId: '', internal: false, embedded: false, showClosed: undefined })
-const emit = defineEmits<{ changed: []; 'pending-state': [state: SupplierChangePendingState]; 'update:showClosed': [value: boolean] }>()
+const emit = defineEmits<{ changed: [task: SupplierChangeTask, action: SupplierChangeAction]; 'pending-state': [state: SupplierChangePendingState]; 'update:showClosed': [value: boolean] }>()
 const tasks = ref<SupplierChangeTask[]>([]), loading = ref(false), busy = ref(false), error = ref(''), success = ref('')
 const localShowClosed = ref(false)
 const showClosed = computed({ get: () => props.showClosed ?? localShowClosed.value, set: value => { localShowClosed.value = value; emit('update:showClosed', value) } })
@@ -130,7 +130,7 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
   if (!requests.has(signature)) requests.set(signature, createRandomUuid())
   readSequence++; loading.value = false; busy.value = true; error.value = ''; success.value = ''; responseError.value = null
   try {
-    await api.respond({ ...body, request_id: requests.get(signature)! }, controller.signal)
+    const saved = await api.respond({ ...body, request_id: requests.get(signature)! }, controller.signal)
     if (token !== generation) return
     requests.delete(signature)
     success.value = action === 'READ' ? '已记录查看，待办仍须明确回应。' : action === 'ACK_CANCEL' ? '已确认收到停止通知；费用及赔偿仍须另行协商。' : action === 'DISPUTE' ? '异议已保留，此版本暂停执行。' : '已确认本版本全部纸品及承诺交期。'
@@ -139,7 +139,7 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
     await nextTick()
     if (token !== generation) return
     if (focused && !focused.isConnected && document.activeElement === document.body) refreshButton.value?.focus()
-    emit('changed')
+    emit('changed', saved, action)
   } catch (cause) { if (token === generation) fail(`回应结果待核对：${getApiErrorMessage(cause)}`) }
   finally { if (token === generation) busy.value = false }
 }
