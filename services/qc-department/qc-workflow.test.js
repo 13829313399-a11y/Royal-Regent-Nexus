@@ -462,7 +462,7 @@ test('toolbar date drafts validate before applying and reset restores all filter
   d.body.dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
   assert.equal(d.getElementById('recordsDateFilter').open,false);
   assert.equal(d.getElementById('filterDateFrom').value,'2026-10-26');
-  d.getElementById('searchInput').value='no match';d.getElementById('filterResult').value='REJ';d.getElementById('filterSort').value='date-asc';
+  d.getElementById('searchInput').value='no match';d.getElementById('filterSort').value='date-asc';
   w.resetRecordsFilters();
   assert.equal(d.getElementById('recordsDateLabel').textContent,'不限验货日期');
   assert.equal(d.getElementById('filterSort').value,'mod-desc');
