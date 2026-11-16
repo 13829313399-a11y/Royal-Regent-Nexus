@@ -343,6 +343,17 @@ describe('warehouse framework navigation', () => {
 
   it('uses one record list while retaining deep links and one header search across views', async () => {
     const router = await open(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=transfers`)
+    const filters = [
+      wrapper!.get('.fabric-header-search input'),
+      wrapper!.get('[aria-label="收发业务类型"]'),
+      wrapper!.get('[aria-label="收发单据状态"]'),
+      wrapper!.get('[aria-label="收发记录排序"]'),
+      wrapper!.get('[aria-label="选择业务分区"]'),
+    ]
+    const filterIds = filters.map(field => field.attributes('id'))
+    expect(filterIds.every(Boolean)).toBe(true)
+    expect(new Set(filterIds).size).toBe(filters.length)
+    expect(filters.map(field => field.attributes('name'))).toEqual(['inventory_q', 'record_kind', 'record_state', 'record_sort', 'warehouse_view'])
     expect(wrapper!.findAll('.warehouse-tabs button').map(button => button.text())).toEqual(['库存台账', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
     expect(wrapper!.get('.warehouse-tabs button[aria-pressed=true]').text()).toBe('收发记录')
     expect(wrapper!.find('.fabric-inventory-record-tabs').exists()).toBe(false)
