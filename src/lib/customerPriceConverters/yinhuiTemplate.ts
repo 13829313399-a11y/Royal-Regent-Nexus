@@ -1,7 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { createXlsxWorkbook, excelDateSerial, parseXlsxWorkbook } from './xlsxLite'
 import { pricingRate } from './pricingSettings'
-import { YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS } from './yinhuiProfiles'
+import { YINHUI_MAX_ELECTRONIC_ROWS, YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS } from './yinhuiProfiles'
 import { validateYinhuiExport, yinhuiTotals, yinhuiCostRows, yinhuiToolMaterialPrice, YINHUI_HKD_USD, type YinhuiConversionResult, type YinhuiCostRow } from './yinhui'
 
 export interface YinhuiProductImage { bytes: Uint8Array; extension: 'png' | 'jpg' }
@@ -92,7 +92,7 @@ function keepStatic(sheet: number, ref: string, layout: ReturnType<typeof templa
   }
   return ['A2', 'B3', 'L3', 'B4', 'F4', 'L4', 'B5', 'F5'].includes(ref) || r === 7 || ref === `D${layout.tools[sheet - 4]}`
 }
-export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanicalCapacity?: number; packagingCapacity?: number } = {}) {
+export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanicalCapacity?: number; electronicCapacity?: number; packagingCapacity?: number } = {}) {
   const source = unzipSync(new Uint8Array(buffer))
   const parsed = parseXlsxWorkbook(buffer)
   const layout = templateLayout(parsed)
@@ -147,6 +147,13 @@ export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanica
     output[path] = serialize(doc)
   })
   const first = layout.bom[0]!
+  // Grow BOM sections from bottom to top so both insertion points use the original layout.
+  // The unshaded row before FABRIC COST is outside the quantity subtotal and has no amount formula.
+  const electronicCapacity = options.electronicCapacity ?? 0
+  if (!Number.isInteger(electronicCapacity) || electronicCapacity < 0 || electronicCapacity > YINHUI_MAX_ELECTRONIC_ROWS) throw new Error(`银辉电子材料容量须在 0 至 ${YINHUI_MAX_ELECTRONIC_ROWS} 行之间，不能截断明细`)
+  const electronicSpacer = first.fabric - 1
+  const extraElectronic = electronicCapacity - (electronicSpacer - first.electronic - 1)
+  if (extraElectronic > 0) extendDetailRows(output, 2, electronicSpacer, extraElectronic, { heading: first.electronic, section: '电子' })
   const extraRows = Math.max(0, (options.mechanicalCapacity || 0) - (first.electronic - first.mechanical - 1))
   if (extraRows) extendMechanicalRows(output, first.mechanical, first.electronic, extraRows)
   const packDoc = xml(strFromU8(output['xl/worksheets/sheet2.xml']!))
@@ -175,12 +182,12 @@ function packagingReservedRows(doc: Document) {
 
 function extendMechanicalRows(zip: Record<string, Uint8Array>, heading: number, before: number, count: number) {
   if (!Number.isInteger(count) || count <= 0 || before - heading - 1 + count > YINHUI_MAX_MECHANICAL_ROWS) throw new Error('银辉模板扩展行数无效')
-  extendDetailRows(zip, 2, before, count, heading)
+  extendDetailRows(zip, 2, before, count, { heading, section: '五金' })
 }
 
 // Insert styled detail rows in a sanitized working copy and shift all references
 // to that sheet, including shared formulas, merged cells and print ranges.
-function extendDetailRows(zip: Record<string, Uint8Array>, sheetIndex: number, before: number, count: number, mechanicalHeading?: number) {
+function extendDetailRows(zip: Record<string, Uint8Array>, sheetIndex: number, before: number, count: number, subtotal?: { heading: number; section: '五金' | '电子' }) {
   const docs = YINHUI_SHEET_NAMES.map((_, i) => xml(strFromU8(zip[`xl/worksheets/sheet${i + 1}.xml`]!)))
   const target = docs[sheetIndex]!
   const sample = elements(target, 'row').find(row => Number(row.getAttribute('r')) === before - 1)
@@ -198,14 +205,16 @@ function extendDetailRows(zip: Record<string, Uint8Array>, sheetIndex: number, b
       if (i === sheetIndex && f.hasAttribute('ref')) f.setAttribute('ref', shiftRef(f.getAttribute('ref')!))
     }
     if (i === sheetIndex) {
-      if (mechanicalHeading !== undefined) for (const [totalColumn, detailColumn] of [['H', 'H'], ['K', 'J']]) {
-        const heading = mechanicalHeading
+      if (subtotal) for (const [totalColumn, detailColumn] of [['H', 'H'], ['K', 'J']]) {
+        const { heading, section } = subtotal
         const cell = elements(doc, 'c').find(c => c.getAttribute('r') === `${totalColumn}${heading}`)
         const f = cell && elements(cell, 'f')[0]
-        if (!f) throw new Error('银辉五金小计公式缺失，不能安全扩展')
-        const expected = `SUM(${detailColumn}${heading + 1}:${detailColumn}${before - 1})`
-        if ((f.textContent || '').replace(/[$\s]/g, '').toUpperCase() !== expected) throw new Error('银辉五金小计公式无法安全扩展')
-        f.textContent = `SUM(${detailColumn}${heading + 1}:${detailColumn}${before + count - 1})`
+        if (!f) throw new Error(`银辉${section}小计公式缺失，不能安全扩展`)
+        // Only the electrical amount subtotal includes its trailing spacer.
+        const end = section === '电子' && detailColumn === 'J' ? before : before - 1
+        const rangeSum = (last: number) => `SUM(${detailColumn}${heading + 1}:${detailColumn}${last})`
+        if ((f.textContent || '').replace(/[$\s]/g, '').toUpperCase() !== shiftFormula(rangeSum(end), true)) throw new Error(`银辉${section}小计公式无法安全扩展`)
+        f.textContent = rangeSum(end + count)
       }
       for (const row of elements(doc, 'row')) if (Number(row.getAttribute('r')) >= before) row.setAttribute('r', String(Number(row.getAttribute('r')) + count))
       for (const cell of elements(doc, 'c')) cell.setAttribute('r', shiftRef(cell.getAttribute('r')!))
@@ -421,14 +430,14 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
   if (total.missingMaterialPrices.length && !options.missingMaterialPricesConfirmed) throw new Error(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。请确认单价留空、合计暂未包含这些料价后再导出。`)
   if (d.mechanical.length > YINHUI_MAX_MECHANICAL_ROWS) throw new Error(`银辉五金超过 ${YINHUI_MAX_MECHANICAL_ROWS} 行容量，不能截断明细`)
   if (d.packagingRows.length > YINHUI_MAX_PACKAGING_ROWS) throw new Error(`银辉包装材料超过 ${YINHUI_MAX_PACKAGING_ROWS} 行容量，不能截断明细`)
-  const prepared = sanitizeYinhuiTemplate(template, { mechanicalCapacity: d.mechanical.length, packagingCapacity: d.packagingRows.length })
+  const prepared = sanitizeYinhuiTemplate(template, { mechanicalCapacity: d.mechanical.length, electronicCapacity: d.electronic.length, packagingCapacity: d.packagingRows.length })
   const layout = templateLayout(parseXlsxWorkbook(prepared.buffer.slice(prepared.byteOffset, prepared.byteOffset + prepared.byteLength) as ArrayBuffer))
   const first = layout.bom[0]!
   for (const [label, count, capacity] of [
     ['Tool Plan', d.tools.length, layout.tools[0]! - 8],
     ['塑料外购', d.plastic.length, first.mechanical - first.plastic - 2],
     ['五金', d.mechanical.length, first.electronic - first.mechanical - 1],
-    ['电子', d.electronic.length, first.fabric - first.electronic - 1],
+    ['电子', d.electronic.length, first.fabric - first.electronic - 2],
     ['车缝', (d.fabric || []).length, first.labor - first.fabric - 1],
   ] as const) if (count > capacity) throw new Error(`银辉${label}有 ${count} 行，超过该客表 ${capacity} 行容量，不能截断明细`)
   const zip = unzipSync(prepared)
@@ -543,7 +552,7 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     b(`I${area.plastic + 1}`, molded); b(`J${area.plastic + 1}`, molded)
     rowCosts(b, second ? [] : d.plastic, area.plastic + 2, area.mechanical - area.plastic - 2)
     rowCosts(b, second ? [] : d.mechanical, area.mechanical + 1, area.electronic - area.mechanical - 1)
-    rowCosts(b, second ? [] : d.electronic, area.electronic + 1, area.fabric - area.electronic - 1)
+    rowCosts(b, second ? [] : d.electronic, area.electronic + 1, area.fabric - area.electronic - 2)
     rowCosts(b, second ? [] : d.fabric || [], area.fabric + 1, area.labor - area.fabric - 1)
     b(`J${area.labor + 1}`, second ? 0 : total.injection)
     for (const [offset, amount] of [[2, d.assemblyHkd], [8, d.sprayingHkd]]) {

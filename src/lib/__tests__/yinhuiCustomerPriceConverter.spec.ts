@@ -6,7 +6,7 @@ import { buildYinhuiCustomerQuoteFileName, convertYinhuiInternalQuote, convertYi
 import { createYinhuiCustomerQuoteWorkbook, sanitizeYinhuiTemplate, YINHUI_SHEET_NAMES } from '@/lib/customerPriceConverters/yinhuiTemplate'
 import { createXlsxWorkbook, parseXlsxWorkbook, type XlsxCellInput } from '@/lib/customerPriceConverters/xlsxLite'
 import { P4_SECTION_CODES, type P4InternalQuoteArtifact } from '@/lib/customerPriceConverters/p4Artifact'
-import { YINHUI_PROFILES, YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS } from '@/lib/customerPriceConverters/yinhuiProfiles'
+import { YINHUI_PROFILES, YINHUI_MAX_ELECTRONIC_ROWS, YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS } from '@/lib/customerPriceConverters/yinhuiProfiles'
 import { createYinhuiDraft, loadYinhuiDraft, saveYinhuiDraft } from '@/lib/customerPriceConverters/yinhuiDraft'
 
 function buffer(bytes: Uint8Array) { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer }
@@ -206,6 +206,55 @@ describe('Silverlit temporary independent mapping', () => {
     data.mechanical = Array.from({ length: YINHUI_MAX_MECHANICAL_ROWS + 1 }, () => ({ ...data.mechanical[0]! }))
     expect(() => createYinhuiCustomerQuoteWorkbook({ ...convertYinhuiInternalQuote(input(33), '银辉00012.xlsx'), quoteData: data }, template)).toThrow(/五金.*容量/)
   })
+  it('exports all 11 imported electronic materials with their mapped quantities, prices and totals', () => {
+    const names = ['PCB', 'LED', 'Speaker', 'Slide switch', 'Push button', 'Resistor', 'Capacitor', 'Diode', 'Wire harness', 'Connector', 'Inductor']
+    const items = names.map((name, i) => {
+      const qty = 1 + Math.floor(i / 4)
+      return { description: `${name} (${qty}PCS)`, qty, internal: qty * (i + 1) * .20, unit: (i + 1) * .21 }
+    })
+    const source = changedLegacy(([main]) => {
+      main!.rows[11]![7] = 1
+      main!.rows[11]![9] = 2 / 1.1
+      main!.rows.splice(37, 1, ...items.map(item => [null, '电子', item.description, item.internal, null, null, item.unit * item.qty]))
+    })
+    const draft = loadYinhuiDraft(saveYinhuiDraft(createYinhuiDraft(source, '银辉00012.xlsx')))
+    expect(draft.result.quoteData.importIssues).toEqual([])
+    expect(draft.result.quoteData.electronic).toHaveLength(11)
+    const bytes = buffer(createYinhuiCustomerQuoteWorkbook(draft.result, template))
+    const [summary, , bom] = parseXlsxWorkbook(bytes, { includeFormulas: true }).sheets
+    const lines = bom!.rows.slice(46, 57)
+    expect(lines.map(row => row[1])).toEqual(items.map(item => item.description))
+    items.forEach(({ qty, unit }, i) => {
+      const row = lines[i]!
+      expect([row[0], row[6], row[7]]).toEqual([i + 1, 'pc', qty])
+      expect(row[8]).toBeCloseTo(unit, 8)
+      expect(row[9]).toBeCloseTo(qty * unit, 8)
+    })
+    expect(bom!.cellFormulas?.J57).toBe('I57*H57')
+    expect(bom!.cellFormulas?.H46).toBe('SUM(H47:H57)')
+    expect(bom!.cellFormulas?.K46).toBe('SUM(J47:J58)')
+    expect(bom!.rows[45]![7]).toBe(21)
+    expect(bom!.rows[45]![10]).toBeCloseTo(31.92, 8)
+    expect(bom!.rows[58]![1]).toBe('FABRIC COST')
+    expect(summary!.rows[14]![7]).toBeCloseTo(31.92, 8)
+    expect(summary!.rows[29]![9]).toBeCloseTo(47.535, 8)
+    expect(summary!.rows[31]![9]).toBeCloseTo(47.635, 8)
+    if (process.env.YINHUI_FEEDBACK_OUTPUT) writeFileSync(`${process.env.YINHUI_FEEDBACK_OUTPUT}/银辉电子材料11条-验证客表.xlsx`, new Uint8Array(bytes))
+  })
+
+  it('uses the same electronic material limit at import and export', () => {
+    const count = YINHUI_MAX_ELECTRONIC_ROWS
+    const source = (length: number) => changedLegacy(([main]) => {
+      main!.rows.splice(37, 1, ...Array.from({ length }, (_, i) => [null, '电子', `Part ${i + 1}`, 1, null, null, 1.05]))
+    })
+    const result = convertYinhuiInternalQuote(source(count), '银辉00012.xlsx')
+    const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    expect(output.sheets[2]!.rows[45 + count]![1]).toBe(`Part ${count}`)
+    expect(output.sheets[0]!.rows[14]![7]).toBeCloseTo(count * 1.05, 8)
+    expect(() => convertYinhuiInternalQuote(source(count + 1), '银辉00012.xlsx')).toThrow(/电子.*容量/)
+    result.quoteData.electronic.push(result.quoteData.electronic[0]!)
+    expect(() => createYinhuiCustomerQuoteWorkbook(result, template)).toThrow(/电子.*容量/)
+  }, 20000)
   it.each(['ABS', 'PVC80', 'GPPS'])('converts source gram prices for %s without requiring a fixed resin mapping', resin => {
     const source = changedLegacy(sheets => {
       sheets[0]!.rows[10]![5] = '料价(G)'
@@ -254,7 +303,7 @@ describe('Silverlit temporary independent mapping', () => {
     expect(output.sheets[0]!.rows[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory, 8)
   }, 20000)
 
-  it.each(Object.keys(YINHUI_PROFILES) as Array<keyof typeof YINHUI_PROFILES>)('exports all 23 packaging materials in %s with totals, styles and merged rows intact', profile => {
+  it.each(Object.keys(YINHUI_PROFILES) as Array<keyof typeof YINHUI_PROFILES>)('expands packaging, mechanical and electronic materials together in %s with correct totals and styles', profile => {
     const variant = buffer(readFileSync(`public/templates/${YINHUI_PROFILES[profile].file}`))
     const original = new Uint8Array(variant).slice()
     const result = convertYinhuiInternalQuote(legacy(), '银辉MT28.xlsx')
@@ -266,6 +315,10 @@ describe('Silverlit temporary independent mapping', () => {
     }
     result.quoteData.packagingRows = Array.from({ length: 23 }, (_, i) => ({ description: i === 0 ? '彩盒' : `胶袋 ${i + 1}`, source: `明细!D${i + 30}`, quantity: i + 1, amountHkd: (i + 1) * .13, internalHkd: .1 }))
     result.quoteData.mechanical = Array.from({ length: 38 }, (_, i) => ({ description: `Screw ${i}`, source: 'test', quantity: 2, amountHkd: .1, internalHkd: .09 }))
+    const electronicCount = profile === '88753' ? 18 : 10
+    result.quoteData.electronic = Array.from({ length: electronicCount }, (_, i) => ({
+      description: `LED ${i + 1}`, source: 'test', quantity: 2, amountHkd: (i + 1) * .2, internalHkd: (i + 1) * .18,
+    }))
     const out = buffer(createYinhuiCustomerQuoteWorkbook(result, variant))
     const parsed = parseXlsxWorkbook(out, { includeFormulas: true })
     const pack = parsed.sheets[1]!
@@ -290,6 +343,20 @@ describe('Silverlit temporary independent mapping', () => {
     const row = (d: Document, n: number) => Array.from(d.getElementsByTagName('row')).find(r => r.getAttribute('r') === String(n))!
     expect(row(after, 44 + offset).getAttribute('ht')).toBe(row(before, 44).getAttribute('ht'))
     const styles = (r: Element) => Array.from(r.children).map(c => [c.getAttribute('r')!.replace(/\d+$/, ''), c.getAttribute('s')])
+    const bom = parsed.sheets[2]!
+    const electronic = bom.rows.findIndex(r => r[1] === "ELECTRICAL MAT'L") + 1
+    const last = electronic + electronicCount
+    expect(bom.rows.slice(electronic, last).map(r => r[1])).toEqual(result.quoteData.electronic.map(line => line.description))
+    expect(bom.cellFormulas?.[`J${last}`]).toBe(`I${last}*H${last}`)
+    expect(bom.rows[electronic - 1]![7]).toBe(electronicCount * 2)
+    expect(parsed.sheets[0]!.rows[14]![7]).toBeCloseTo(electronicCount * (electronicCount + 1) * .1, 8)
+    expect(parsed.sheets[0]!.cellFormulas?.H16).toBe(`'BOM (1)'!K${last + 2}`)
+    const bomDoc = doc(afterZip['xl/worksheets/sheet3.xml']!)
+    const originalBom = doc(beforeZip['xl/worksheets/sheet3.xml']!)
+    const originalLast = Array.from(originalBom.getElementsByTagName('row')).find(r => r.textContent?.includes('FABRIC COST'))!
+    const originalFabric = Number(originalLast.getAttribute('r'))
+    expect(styles(row(bomDoc, last))).toEqual(styles(row(originalBom, originalFabric - 2)))
+    expect(styles(row(bomDoc, last + 1))).toEqual(styles(row(originalBom, originalFabric - 1)))
     expect(styles(row(after, 44 + offset))).toEqual(styles(row(before, 44)))
     expect(Array.from(after.getElementsByTagName('mergeCell')).map(m => m.getAttribute('ref'))).toEqual(Array.from(before.getElementsByTagName('mergeCell')).map(m => m.getAttribute('ref')!.replace('A48:C51', `A${48 + offset}:C${51 + offset}`)))
     const printArea = (bytes: Uint8Array) => Array.from(doc(bytes).getElementsByTagName('definedName')).find(n => n.getAttribute('name') === '_xlnm.Print_Area' && n.getAttribute('localSheetId') === '1')!.textContent!
@@ -298,7 +365,7 @@ describe('Silverlit temporary independent mapping', () => {
 
     // Clear both early/shared and expanded detail cells without leaving cached
     // zeroes or orphaning formulas in the surrounding priced rows.
-    const pendingLines = [result.quoteData.packagingRows[0]!, result.quoteData.packagingRows[1]!, result.quoteData.packagingRows[22]!, result.quoteData.mechanical[0]!]
+    const pendingLines = [result.quoteData.packagingRows[0]!, result.quoteData.packagingRows[1]!, result.quoteData.packagingRows[22]!, result.quoteData.mechanical[0]!, result.quoteData.electronic[electronicCount - 1]!]
     pendingLines.forEach(line => { line.pricePending = true; line.amountHkd = 0; line.internalHkd = 0 })
     result.quoteData.productName = '待译产品'
     result.quoteData.tools[0]!.description = '待译零件'
@@ -323,7 +390,7 @@ describe('Silverlit temporary independent mapping', () => {
         }
       })
     }
-    expect(missingCount).toBe(4)
+    expect(missingCount).toBe(pendingLines.length)
     expect(pending.sheets[0]?.rows[3]?.[2]).toBe('待译产品')
     expect(pending.sheets[0]?.rows[5]?.[2]).toContain('PRICE PENDING')
     expect(pending.sheets[0]?.rows[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory, 8)
