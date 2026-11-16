@@ -66,6 +66,7 @@ def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
     lock_transaction(db, 'cutting-master', c.FACTORY)
     from app.services.cutting_materials import receipt_reader
     receipt_entries = receipt_reader(db)
+    statuses = orders.workflow_filter_statuses(status)
     stats = dict(total=0, scheduled=0, unscheduled=0, partial=0, review=0)
     rows = []
     for dispatch, order, revision in sources(db, q):
@@ -73,7 +74,7 @@ def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
             continue
         data = revision.data if revision else {}
         needs = order is None or order.dispatch_id != dispatch.id
-        if status and orders.workflow_status(data, dispatch.snapshot.get('status'), needs) != status:
+        if statuses and orders.workflow_status(data, dispatch.snapshot.get('status'), needs) not in statuses:
             continue
         summary = plans.summary(db, data, needs, receipt_entries=receipt_entries)
         if plan_status and plan_status not in summary['states']:
@@ -106,9 +107,11 @@ def task_board(db, day, q='', execution='', scope='daily', page=1):
     previous = (day-timedelta(days=1)).isoformat()
     date = day.isoformat()
     today = plans.business_today().isoformat()
+    order_changes = 0
     for dispatch, order, revision, docs in production_sources(db, q):
         if not order or not revision:
             continue
+        order_changes += int(order.dispatch_id != dispatch.id)
         data = revision.data
         published = data.get('planning', {}).get('published') or {}
         summary = plans.summary(db, data, order.dispatch_id != dispatch.id, receipt_entries=receipt_entries)
@@ -156,7 +159,7 @@ def task_board(db, day, q='', execution='', scope='daily', page=1):
     stats = dict(tasks=len(daily), reported=sum(r['reported'] for r in daily),
         unreported=sum(not r['reported'] for r in daily), planned=sum(r['planned'] for r in daily),
         completed=sum(r['day_completed'] for r in all_rows), handed=sum(r['day_handed'] for r in all_rows),
-        abnormal=sum(bool(r['reasons']) for r in all_rows),
+        abnormal=sum(bool(r['reasons']) for r in all_rows), order_changes=order_changes,
         unplanned_facts=sum(r['has_fact'] and not r['planned'] for r in all_rows))
     rows = [r for r in all_rows if
         (scope == 'daily' and r['planned']) or

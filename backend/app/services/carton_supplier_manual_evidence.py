@@ -107,6 +107,11 @@ def match(db, user, group, rows, day):
         if not receipt or receipt.status != "POSTED" or receipt.factory_id != group.factory_id or receipt.supplier_id != group.supplier_id:
             raise HTTPException(409, "原手工收料状态或来源异常，请先核实")
         receipt_guard(db, receipt)  # Includes all-rejected batches without a price review.
+    from app.services.carton_shipment_receiving import batches
+    from app.services.carton_unified_deliveries import descriptors
+    formal, _, _, _, _ = descriptors(db, user, group.factory_id, group.id, external=True)
+    legacy_papers = {source_id: receipt_line_id for batch in batches(db, formal)
+        for source_id, receipt_line_id in batch.get('warehouse_legacy_lines', {}).items()} if formal else {}
     used, result = set(), []
     for row in rows:
         if any(not row.get(key) or row[key] == "待复核" for key in ("paper_quality", "specification")):
@@ -121,14 +126,17 @@ def match(db, user, group, rows, day):
         paper = matches[0]; used.add(paper["id"])
         reviews = list(db.scalars(select(CartonPriceReview).where(CartonPriceReview.factory_id == group.factory_id,
             CartonPriceReview.supplier_id == group.supplier_id, CartonPriceReview.shipment_line_id == paper["id"])))
-        for review in reviews:
-            receipt = db.get(CartonReceipt, db.get(CartonReceiptLine, review.receipt_line_id).receipt_id)
+        targets = [(review.receipt_line_id, review.shipment_id, review.source_kind) for review in reviews]
+        if not targets and paper['id'] in legacy_papers:
+            targets = [(legacy_papers[paper['id']], formal.id, 'REGULAR')]
+        for receipt_line_id, _, _ in targets:
+            receipt = db.get(CartonReceipt, db.get(CartonReceiptLine, receipt_line_id).receipt_id)
             if receipt.status != "POSTED":
                 raise HTTPException(409, "原收料包含冲销记录，请沿原验收记录核实")
             receipt_guard(db, receipt)
-        if Decimal(str(paper.get("effective_quantity", "0"))) > 0 and not reviews:
+        if Decimal(str(paper.get("effective_quantity", "0"))) > 0 and not targets:
             raise HTTPException(409, "原收料价格关联不完整，请核实后补证")
-        result.append((paper, row, reviews))
+        result.append((paper, row, targets))
     return result
 
 
@@ -143,10 +151,10 @@ def attach(db, user, group, rows, day, evidence):
         return dict(id=group.id, delivery_note_no=group.delivery_note_no, linked_existing_receipt=True)
     ensure_evidence_open(db, group.factory_id, group.supplier_id, day)
     pairs = match(db, user, group, rows, day)
-    for paper, row, reviews in pairs:
-        for review in reviews:
-            adopt(db, user, db.get(CartonReceiptLine, review.receipt_line_id), supplier_id=group.supplier_id,
-                shipment_id=review.shipment_id, shipment_line_id=review.shipment_line_id, source_kind=review.source_kind,
+    for paper, row, targets in pairs:
+        for receipt_line_id, shipment_id, source_kind in targets:
+            adopt(db, user, db.get(CartonReceiptLine, receipt_line_id), supplier_id=group.supplier_id,
+                shipment_id=shipment_id, shipment_line_id=paper['id'], source_kind=source_kind,
                 raw_price=row.get("unit_price"), evidence=evidence, free=False)
     core._audit(db, user, group.factory_id, DOCUMENT_EVENT, "carton_unified_delivery", group.id,
         {"evidence": evidence, "rows": [{"shipment_line_id": paper["id"], **row} for paper, row, _ in pairs]})

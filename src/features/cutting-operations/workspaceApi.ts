@@ -9,7 +9,7 @@ export interface TaskRow extends Identity {
   day_completed:number;day_handed:number;completed:number;target_sets:number;returned:number;accepted:number;historical:boolean;reasons:string[]
 }
 export interface TaskView extends Page<TaskRow> {
-  day:string;stats:{tasks:number;reported:number;unreported:number;planned:number;completed:number;handed:number;abnormal:number;unplanned_facts:number}
+  day:string;stats:{tasks:number;reported:number;unreported:number;planned:number;completed:number;handed:number;abnormal:number;unplanned_facts:number;order_changes?:number}
 }
 export interface PlanningView extends Page<CuttingOrder> { stats:{total:number;scheduled:number;unscheduled:number;partial:number;review:number} }
 export interface InventoryView extends Page<UsageIssue & Identity & {unsigned_quantity:string;issue_count?:number}> {units:Record<string,Record<string,string>>}

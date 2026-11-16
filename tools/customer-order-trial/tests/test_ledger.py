@@ -236,7 +236,7 @@ def test_missing_delivery_persists_blank_and_only_dispatch_requires_amendment(tm
         assert inbox['total']==1
 
 
-def test_quantity_conflict_requires_selected_existing_ledger_revision(tmp_path):
+def test_quantity_difference_saves_independently_and_explicit_revision_remains_available(tmp_path):
     from io import BytesIO
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import DecodedStreamObject, NameObject
@@ -253,10 +253,12 @@ def test_quantity_conflict_requires_selected_existing_ledger_revision(tmp_path):
         r=c.post('/api/orders/preview',headers=HEADERS,data=fields,files=files)
         assert r.status_code==200,r.text
         parsed=r.json();issue=next(i for row in parsed['rows'] for i in row['issues'] if i['code']=='existing_quantity_conflict')
-        assert issue['severity']=='blocked' and not issue['can_skip']
+        assert issue['severity']=='warning'
         fields.update(confirmed='true',preview_fingerprint=parsed['preview_fingerprint'],skipped_issue_keys='[]',manual_overrides='[]')
         r=c.post(P+'/imports/'+code,headers=HEADERS,data=fields,files=files)
-        assert r.status_code==400 and '阻断' in r.text
+        assert r.status_code==200,r.text
+        assert r.json()['created_count']==1 and r.json()['items'][0]['id']!=line['id']
+        assert r.json()['items'][0]['quantity']=='3000'
         fields.update(reconcile_line_id=line['id'],expected_revision=str(line['revision']),reconciliation_reason='正式PO数量已核对')
         r=c.post(P+'/imports/'+code,headers=HEADERS,data=fields,files=files)
         assert r.status_code==200,r.text

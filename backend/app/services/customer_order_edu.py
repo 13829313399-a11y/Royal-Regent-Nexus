@@ -98,7 +98,8 @@ def validate_controls(workbook, rows, overrides):
         candidates = reservation_candidates(workbook, row['product_no'])
         selected = str(row.get('edu_reservation_row') or '').strip()
         if selected and (not selected.isdigit() or int(selected) not in {c['row'] for c in candidates}):
-            raise CustomerOrderUnifiedError('EDU 备料行号必须是原 ITEM表中该货号的绿色备料行，请重新核对')
-        if candidates and not selected:
-            raise CustomerOrderUnifiedError('EDU 必须选择当前货号的备料行，不能跳过扣减')
-        row['_edu_skip_reservation'] = not bool(candidates)
+            row['issues'].append(_editable(row, 'edu_reservation_unresolved', 'edu_reservation_row',
+                '备料行与当前货号不匹配，本次只保留订单明细，不扣备料。'))
+            row['edu_reservation_row'] = ''
+            selected = ''
+        row['_edu_skip_reservation'] = not bool(selected)

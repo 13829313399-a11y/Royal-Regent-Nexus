@@ -30,7 +30,7 @@ async function prepare() {
   return wrapper
 }
 describe('factory trial operations', () => {
-  it.each([false, true])('only reconciles quantity when the selected target matches (other blocker: %s)', async (otherBlocker) => {
+  it.each([false, true])('requires explicit selection and reason for a revision; other reminders do not gate (%s)', async (otherBlocker) => {
     const data = result(true)
     mock.preview.mockResolvedValue({ ...data, rows: [{ ...data.rows[0], reference_no: 'REF-001', issues: [
       { ...issue, code: 'existing_quantity_conflict', field: 'quantity', can_edit: false, message: '相同订单数量不同' },
@@ -42,33 +42,27 @@ describe('factory trial operations', () => {
     const wrapper = await prepare()
     const save = wrapper.get('[data-testid=save]')
     const generate = wrapper.get('[data-testid=export]')
-    expect(save.attributes('disabled')).toBeDefined()
+    expect(save.attributes('disabled')).toBeUndefined()
     const link = wrapper.getComponent(ExistingOrderLink)
     await link.get('input[type=checkbox]').setValue(true)
     await flushPromises()
     await link.get('textarea').setValue('核对原订单数量修订')
     expect(save.attributes('disabled')).toBeDefined()
     await link.get('select').setValue('other-reference')
-    expect(save.attributes('disabled')).toBeDefined()
+    expect(save.attributes('disabled')).toBeUndefined()
     await link.get('select').setValue('matching')
-    expect(generate.attributes('disabled')).toBeDefined()
-    if (otherBlocker) {
-      expect(save.attributes('disabled')).toBeDefined()
-      await save.trigger('click')
-      expect(mock.save).not.toHaveBeenCalled()
-    } else {
-      expect(save.attributes('disabled')).toBeUndefined()
-      await save.trigger('click')
-      await flushPromises()
-      const body = mock.save.mock.calls[0]![1] as FormData
-      expect(body.get('reconcile_line_id')).toBe('matching')
-      expect(body.get('expected_revision')).toBe('7')
-      expect(body.get('skipped_issue_keys')).toBe('[]')
-    }
+    expect(generate.attributes('disabled')).toBeUndefined()
+    expect(save.attributes('disabled')).toBeUndefined()
+    await save.trigger('click')
+    await flushPromises()
+    const body = mock.save.mock.calls[0]![1] as FormData
+    expect(body.get('reconcile_line_id')).toBe('matching')
+    expect(body.get('expected_revision')).toBe('7')
+    expect(body.get('skipped_issue_keys')).toBe('[]')
     expect(mock.export).not.toHaveBeenCalled()
   })
 
-  it('keeps pending fields blank without confirmation and requires a reason only after editing', async () => {
+  it('keeps pending fields blank and optional edits do not require a reason', async () => {
     const pending = { ...issue, severity: 'warning', code: 'missing_ship_date', field: 'requested_ship_date', message: '客户交期待补', pending_information: true, can_skip: true, edit_field: 'requested_ship_date', edit_label: '客户交期', edit_input_type: 'date' }
     const data = result()
     mock.preview.mockResolvedValue({ ...data, rows: [{ ...data.rows[0], status: 'warning', status_label: '待补', requested_ship_date: '', issues: [pending] }] })
@@ -87,7 +81,7 @@ describe('factory trial operations', () => {
     expect((wrapper.get('.issue input[type=date]').element as HTMLInputElement).value).toBe('')
     await wrapper.get('.issue input[type=date]').setValue('2027-01-01')
     expect(wrapper.find('[data-testid=pending-information]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
     await wrapper.get('.reason textarea').setValue('客户已确认交期')
     expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
   })
@@ -97,17 +91,17 @@ describe('factory trial operations', () => {
     mock.preview.mockResolvedValue({ ...data, rows: [{ ...data.rows[0], issues: [{ ...issue, pending_information: true }, { ...issue, severity: 'warning', pending_information: false, code: 'ocr_review', message: '请核对OCR' }] }] })
     const wrapper = await prepare()
     expect(wrapper.find('[data-testid=pending-information]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid=export]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid=export]').attributes('disabled')).toBeUndefined()
   })
-  it('requires the original blocking controls and reason; rejected save preserves all inputs', async () => {
+  it('allows business reminders and optional edits; rejected save preserves all inputs', async () => {
     mock.preview.mockResolvedValue(result(true))
     mock.save.mockRejectedValue(new Error('保存未完成，请核对本机台账'))
     const wrapper = await prepare()
-    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('.issue input[type=checkbox]').exists()).toBe(false)
     await wrapper.get('.issue textarea').setValue('00001=007.15000')
-    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
     await wrapper.get('.reason textarea').setValue('按客户原件核对')
     await wrapper.get('[data-testid=save]').trigger('click')
     await flushPromises()

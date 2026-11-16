@@ -104,7 +104,7 @@ export function createCustomerOrderLedgerApi(client: CustomerOrderLedgerHttpClie
       return (await client.post<CustomerOrderLedgerLine>(`${base}/shipments/${encodeURIComponent(id)}/reverse?${query({ factory_id: factoryId })}`, payload)).data
     },
     async importConfirmed(customerCode: string, payload: FormData) {
-      return (await client.post<{ items: CustomerOrderLedgerLine[]; created_count: number; existing_count: number; reconciled_count: number; warehouse_sync?: WarehouseScheduleSyncResult }>(
+      return (await client.post<{ items: CustomerOrderLedgerLine[]; created_count: number; existing_count: number; reconciled_count: number; advisory_count?: number; warehouse_sync?: WarehouseScheduleSyncResult }>(
         `${base}/imports/${encodeURIComponent(customerCode)}`,
         payload,
         // Leave room for the bounded worker to stop and return its final save/sync result.

@@ -101,3 +101,38 @@ def test_legacy_approved_without_timestamp_cannot_be_resubmitted(db):
  before=sheet.audit('huaxing',r['id'])
  with pytest.raises(HTTPException) as error:sheet.submit('huaxing',r['id'],{'revision':r['revision']},ACTOR)
  assert error.value.status_code==409 and sheet.audit('huaxing',r['id'])==before
+
+
+def test_comprehensive_execution_fields_survive_return_confirm_and_archive(db):
+ r=item(db);source=deepcopy(r['sourceRecord'])
+ r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'sampleQuantity':'0','inspectorId':str(ACTOR['id'])}),ACTOR)
+ assert r['inspectionExecution']['sampleQuantity']=='0'
+ assert r['inspectionExecution']['inspector']==ACTOR['name']
+ assert r['inspectionExecution']['inspectorId']==str(ACTOR['id'])
+ r=sheet.submit('huaxing',r['id'],{'revision':r['revision']},ACTOR)
+ r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',reportStatus='无',improvement='修正参数',inspectionExecution={'analysisReason':'参数偏差\n已确认'}),ACTOR,review=True)
+ r=command(r)['results'][0]['item']
+ detail=summary.detail('huaxing',summary.listing('huaxing',{})['items'][0]['id'])
+ assert detail['inspectionExecution']['analysisReason']=='参数偏差\n已确认'
+ assert detail['inspectionExecution']['sampleQuantity']=='0'
+ assert detail['reportStatus']=='无' and detail['sourceRecord']==source
+ r=command(r,'revoke')['results'][0]['item']
+ r=sheet.return_to_inspection('huaxing',r['id'],dict(revision=r['revision'],reason='复查',requestKey=uuid4().hex),ACTOR,[])['item']
+ assert r['inspectionExecution']['sampleQuantity']=='0'
+ assert r['improvement']=='修正参数'
+ r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'sampleQuantity':''}),ACTOR)
+ assert r['inspectionExecution']['sampleQuantity'] is None
+ assert r['inspectionExecution']['analysisReason']=='参数偏差\n已确认'
+ for value in ['-1','not a number','1000000000001']:
+  with pytest.raises(HTTPException):sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'sampleQuantity':value}),ACTOR)
+ with pytest.raises(HTTPException):sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspectorId':'invented'}),ACTOR)
+
+
+def test_legacy_name_change_clears_stable_identity_but_noop_preserves_it(db):
+ r=item(db)
+ r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspectorId':str(ACTOR['id'])}),ACTOR)
+ r=sheet.submit('huaxing',r['id'],dict(revision=r['revision']),ACTOR)
+ same=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspector':ACTOR['name']}),ACTOR,review=True)
+ assert same['revision']==r['revision'] and same['inspectionExecution']['inspectorId']==str(ACTOR['id'])
+ changed=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspector':'历史客户端填写'}),ACTOR,review=True)
+ assert changed['inspectionExecution']['inspectorId']=='' and changed['inspectionExecution']['inspector']=='历史客户端填写'

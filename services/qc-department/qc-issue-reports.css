@@ -1,0 +1,32 @@
+.qir-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:min(1280px,96vw);max-width:96vw;max-height:92vh;padding:20px;border:1px solid var(--border,#dbe2df);border-radius:18px;background:var(--bg-card,#fff);color:var(--text-hi,#25342e);font:inherit}
+.qir-dialog::backdrop{background:rgb(20 35 28 / .28);backdrop-filter:blur(3px)}
+.qir-dialog header,.qir-dialog footer{display:flex;align-items:center;gap:12px;justify-content:space-between}.qir-dialog h2{font-size:18px;margin:0}
+.qir-controls{display:flex;align-items:end;gap:12px;flex-wrap:wrap}.qir-controls label{display:flex;flex-direction:column;gap:6px;font-size:12px}.qir-controls label[hidden]{display:none}
+.qir-dialog button,.qir-dialog select{min-height:36px;padding:7px 12px;border:1px solid var(--border,#dbe2df);border-radius:8px;background:var(--bg-input,#f6f8f7);color:inherit;font:inherit;max-width:100%}.qir-dialog [data-export]{background:#2475df;color:white;border-color:transparent}.qir-dialog button:disabled{opacity:.45;cursor:default}
+.qir-dialog .qir-error{color:var(--danger,#bb3535)}
+.qir-scroll{overflow:auto;max-height:55vh;border:1px solid var(--border,#dbe2df);border-radius:10px;margin:12px 0}.qir-scroll table{border-collapse:collapse;min-width:1500px;font-size:12px}.qir-scroll th{position:sticky;top:0;background:var(--bg-panel,#f1f5f2)}.qir-scroll td,.qir-scroll th{padding:8px;border:1px solid var(--border,#dbe2df);white-space:pre-wrap;min-width:70px;max-width:250px;vertical-align:top}.qir-photos{min-width:160px!important}.qir-photos img{object-fit:contain;width:140px;height:110px;background:var(--bg-input,#f6f8f7);border-radius:6px}
+@media(max-width:640px){.qir-dialog{padding:12px;width:98vw;max-width:98vw}.qir-controls{gap:8px}.qir-dialog button,.qir-dialog select{min-height:44px}.qir-scroll{max-height:48vh}.qir-dialog footer{flex-wrap:wrap}}
+
+.qir-page{position:static;inset:auto;margin:0;width:100%;max-width:none;max-height:none;border:0;border-radius:0;padding:0;background:transparent;min-width:0}
+.qir-page .qir-scroll{max-height:65vh;background:var(--bg-card,#fff)}
+.page.qdr-active>.page-inner:has(>.qir-page),#page-analysis>.page-inner:has(>.qir-page){max-width:none;width:100%;box-sizing:border-box}
+body.qc-liquid-glass #page-analysis>.page-inner:has(>.qir-page){padding:20px 22px}
+.page-inner:has(>.qir-page)>[hidden]{display:none!important}
+.qir-page header{flex-wrap:wrap;margin-bottom:12px}
+.qir-page .qir-controls{padding:12px 0;border-block:1px solid var(--border,#dbe2df)}
+.qir-entry-footer{display:flex;justify-content:flex-end;margin-top:12px}
+#qstats-root .qir-entry-footer button{height:26px;min-height:26px;padding:3px 8px;font-size:11px;line-height:18px}
+@media(max-width:640px){body.qc-liquid-glass #page-analysis>.page-inner:has(>.qir-page){padding:12px}.qir-page{width:100%;max-width:100%;padding:0}.qir-page .qir-scroll{max-height:60vh}.qir-page .qir-controls label{max-width:100%}.qir-page footer{flex-wrap:wrap}}
+
+/* Match the existing monthly workbook controls, cells and photo grid in place. */
+.qir-inline{min-width:0}
+.qir-inline .qir-controls label{display:block;font-size:inherit;max-width:100%}
+.qir-inline [data-export]{margin-left:auto}
+.qir-inline [data-status]{font-size:12px;color:var(--text-dim)}
+.qir-inline [data-status].qir-error{color:var(--red,#a42828)}
+.qir-inline footer{margin-top:10px}
+.qir-inline footer[hidden]{display:none!important}
+.qir-inline .qir-photos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding:4px;min-width:0!important}
+#qwtView .qir-photo{padding:2px;min-height:0}
+.qir-inline .qir-photos img{display:block;width:100%;height:100px;object-fit:contain}
+#qwtView td:has(.qir-photos){vertical-align:top!important}

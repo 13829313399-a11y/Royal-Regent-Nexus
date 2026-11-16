@@ -244,12 +244,14 @@ def _dedupe_revision_orders(
         )
     for po_number, entries in grouped.items():
         entries.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-        result.append(entries[0][3])
-        if len(entries) > 1:
-            report.append(
-                f"PO {po_number}：保留 {entries[0][2]}，去掉 "
-                + "、".join(item[2] for item in entries[1:])
-            )
+        latest = [entry for entry in entries if entry[0] == entries[0][0]]
+        result.extend(entry[3] for entry in latest)
+        if len(latest) > 1:
+            report.append(f'PO {po_number}：同修订版的多份资料均保留，不按识别完整度挑选数量。')
+        if len(entries) > len(latest):
+            kept_names = '、'.join(str(entry[2]) for entry in latest)
+            older_names = '、'.join(str(entry[2]) for entry in entries if entry not in latest)
+            report.append(f'PO {po_number}：依据明确修订号保留 {kept_names}，忽略 {older_names}。')
     return result, report
 
 

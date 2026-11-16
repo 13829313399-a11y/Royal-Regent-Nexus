@@ -268,7 +268,9 @@ def merge_edu_po_results(results: Iterable[dict[str, Any]]) -> tuple[list[dict[s
                 fields = ('item_no', 'quantity', 'case_pack', 'ship_date', 'unit_price', 'amount', 'customer', 'country', 'product_name', 'packaging', 'standards', 'notes')
                 signature = lambda values: sorted(tuple(str(row.get(field) or '') for field in fields) for row in values)
                 if signature(rows) != signature(current[1]):
-                    raise ValueError(f"EDU 合同/PO {' / '.join(key)} 在 {current[0]['filename']} 与 {result['filename']} 存在同版本内容冲突，请确认正式修订版后重新导入")
+                    report.append(f"EDU 合同/PO {' / '.join(key)}：同版本内容有差异，保留两份原始明细供核对。")
+                    chosen[key] = current[0], [*current[1], *rows]
+                    continue
             if current is None or revision >= old_revision:
                 if current:
                     report.append(f"EDU 合同/PO {' / '.join(key)}：保留 {result['filename']}，忽略较旧版本 {current[0]['filename']}")

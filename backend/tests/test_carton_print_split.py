@@ -226,6 +226,9 @@ def test_print_split_materializes_once_and_child_ships_own_fixed_version(monkeyp
         assert Decimal(child['lines'][0]['required_quantity'])==10
         assert child['print_split']['role']=='CHILD'
         assert child['lines'][0]['id']!=parent['lines'][0]['id']
+        documents = client.get(SUP + '/documents', params={'factory_id': 'huaxing'})
+        assert documents.status_code == 200, documents.text
+        assert {parent['issue_id'], child['issue_id']} <= {row['id'] for row in documents.json()}
         file = client.get(SUP+f"/print-splits/{plan['id']}/files/PRINT-B", params={'factory_id':'huaxing'})
         assert file.status_code==200 and file.content.endswith(b'B')
         shipped=client.post(SUP+'/shipments', json=ship_payload(child))

@@ -31,8 +31,9 @@ def local_models():
 
 
 class LocalOcr:
-    def __init__(self, previews):
+    def __init__(self, previews, *, detection_side=736):
         self.previews, self.preview_bytes, self.pages = previews, 0, 0
+        self.detection_side = detection_side
         self.engine = None
         self.identity = None
 
@@ -51,7 +52,7 @@ class LocalOcr:
                            'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                            'EngineConfig.onnxruntime.enable_cpu_mem_arena': False,
                            'Global.log_level': 'error', 'Global.text_score': 0,
-                           'Det.limit_side_len': 736, 'Det.limit_type': 'max', 'Rec.rec_batch_num': 1})
+                           'Det.limit_side_len': self.detection_side, 'Det.limit_type': 'max', 'Rec.rec_batch_num': 1})
             self.engine = RapidOCR(params=params)
             hashes = {}
             for key, path in models.items():
@@ -73,13 +74,14 @@ class LocalOcr:
         # The preview and OCR share these exact pixels and top-left coordinates.
         image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
         image = image.convert('RGB')
-        target = BytesIO()
-        image.save(target, format='PNG')
-        raw = target.getvalue()
-        self.preview_bytes += len(raw)
-        if self.preview_bytes > MAX_PREVIEW_BYTES:
-            raise OcrError('ocr_preview_limit')
-        self.previews[str(page)] = base64.b64encode(raw).decode('ascii')
+        if self.previews is not None:
+            target = BytesIO()
+            image.save(target, format='PNG')
+            raw = target.getvalue()
+            self.preview_bytes += len(raw)
+            if self.preview_bytes > MAX_PREVIEW_BYTES:
+                raise OcrError('ocr_preview_limit')
+            self.previews[str(page)] = base64.b64encode(raw).decode('ascii')
         try:
             output = self.engine(np.asarray(image))
         except MemoryError:

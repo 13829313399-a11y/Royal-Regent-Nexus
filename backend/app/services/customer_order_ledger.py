@@ -31,6 +31,11 @@ PUBLIC_FIELDS = (
     "barcode", "parent_product_no", "port", "printing_requirement", "contact",
     "merchandiser", "customer_release_no", "recheck_notice",
 )
+IMPORT_METADATA_FIELDS = {
+    "id", "status", "status_label", "issues", "lineage", "source_po_file_name", "received_date",
+    "input_template", "target_template", "item_sheet_name", "source_kind", "import_controls",
+    "intake_notice", "related_order_id",
+}
 
 
 def uid() -> str:
@@ -239,7 +244,8 @@ def dispatch_out(item: Dispatch) -> dict:
     )} | {"status": "received" if item.received_at else "sent"}
 
 
-def publish(db: Session, line: Line, recipients, actor: str, reason="") -> None:
+def publish(db: Session, line: Line, recipients, actor: str, reason="", *, receive_first_cutting=False,
+            cutting_note_from=None) -> None:
     for recipient in set(recipients):
         existing = db.scalar(select(Dispatch.id).where(Dispatch.line_id == line.id, Dispatch.version == line.version, Dispatch.recipient == recipient))
         if existing:
@@ -252,8 +258,16 @@ def publish(db: Session, line: Line, recipients, actor: str, reason="") -> None:
             shipped_quantity=decimal_text(line.shipped_quantity),
             remaining_quantity="0" if line.status == "cancelled" else decimal_text(None if line.quantity is None else line.quantity - line.shipped_quantity),
             history_cutoff_date=line.data.get("history_migration", {}).get("cutoff_date", ""))
-        db.add(Dispatch(id=uid(), line_id=line.id, factory_id=line.factory_id, recipient=recipient,
-            version=line.version, snapshot=json_copy(snapshot), actor=actor, created_at=now_text(), received_at="", received_by=""))
+        item = Dispatch(id=uid(), line_id=line.id, factory_id=line.factory_id, recipient=recipient,
+            version=line.version, snapshot=json_copy(snapshot), actor=actor, created_at=now_text(), received_at="", received_by="")
+        if receive_first_cutting and recipient == 'cutting':
+            from app.services.cutting_orders import add_dispatch_with_first_receipt
+            add_dispatch_with_first_receipt(db, item)
+        elif cutting_note_from is not None and recipient == 'cutting' and line.factory_id == 'huakang-c':
+            from app.services.cutting_orders import add_dispatch_with_note_receipt
+            add_dispatch_with_note_receipt(db, item, cutting_note_from)
+        else:
+            db.add(item)
 
 
 def _existing_recipients(db: Session, line: Line):
@@ -292,15 +306,61 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             continue
         reference = str(row.get("reference_no") or row.get("contract_no") or row.get("po_no") or "").strip()
         product = str(row.get("product_no") or "").strip()
-        if not reference or not product:
-            raise HTTPException(400, "保存订单需要订单参考号和产品编号；请先在预览中核对")
-        identity = identity_for(row, customer)
-        # Keep every public customer extension and original lineage, without parser working objects.
+        # Missing identity/quantity can be saved as source-backed pending facts.
+        # Never invent a PO, product or quantity merely to pass an intake check.
+        incomplete_identity = not reference or not product or (
+            customer == 'edu' and not any(str(row.get(k) or '').strip() for k in ('contract_no', 'po_no')))
+        identity = (digest(['incomplete-intake', sorted(source.sha256 for source in sources if source.kind != 'schedule'), row['id']])
+                    if incomplete_identity else identity_for(row, customer))
         data = json_copy({key: value for key, value in row.items() if not key.startswith("_")})
         data.update(source_kind=source_kind, import_controls=controls)
-        qty = number(row.get("quantity"), optional=True)
+        try:
+            qty = number(row.get("quantity"), optional=True)
+        except HTTPException:
+            if reconcile_line:
+                raise
+            qty = None
+        if incomplete_identity or qty is None:
+            data['intake_notice'] = '订单资料待补；原始内容已保存，未推测缺失的单号、货号或数量。'
+        facts = {key: value for key, value in data.items() if key not in IMPORT_METADATA_FIELDS}
+        variant_identity = digest(['intake-variant', identity, facts])
+        variant_alias = db.get(Identity, (factory, customer, variant_identity)) if not reconcile_line else None
         alias = db.get(Identity, (factory, customer, identity))
-        line = resolve_existing_line(db, factory, customer, row, identity)
+        try:
+            if variant_alias is not None:
+                # An earlier source variant owns this retry even if the original
+                # order was subsequently revised to the same facts or cancelled.
+                identity, alias = variant_identity, variant_alias
+                line = db.get(Line, variant_alias.line_id)
+            else:
+                line = (db.get(Line, alias.line_id) if alias else None) if incomplete_identity else resolve_existing_line(db, factory, customer, row, identity)
+        except HTTPException as exc:
+            if reconcile_line or customer != 'edu' or exc.status_code != 409 or '多条历史订单' not in str(exc.detail):
+                raise
+            # Ambiguous historical candidates are never merged or selected for
+            # the user. Keep this source separately; mutation APIs stay strict.
+            data['intake_notice'] = '匹配到多条历史订单；本次原始明细另存，未关联或覆盖任何历史订单。'
+            identity = digest(['ambiguous-intake', identity,
+                sorted(source.sha256 for source in sources if source.kind != 'schedule'), row['id']])
+            alias = db.get(Identity, (factory, customer, identity))
+            line = db.get(Line, alias.line_id) if alias else None
+        if line and not reconcile_line and variant_alias is None:
+            ignored = IMPORT_METADATA_FIELDS
+            changed_fields = [key for key in data if key not in ignored
+                and not (customer == 'edu' and key in {'reference_no', 'production_no'})
+                and not (customer == 'edu' and _same_edu_import_representation(key, data, line))
+                and not _same_360_shipping_item_representation(key, data, line)
+                and data.get(key) != line.data.get(key)]
+            if line.quantity != qty or changed_fields:
+                # An advisory must not become an unrequested amendment. Keep a
+                # separate, idempotent source variant and leave old versions,
+                # dispatches and shipment quantities exactly as they were.
+                data['intake_notice'] = '同订单编号和货号存在不同资料；本次明细另存，已有订单及走货记录保持不变。'
+                data['related_order_id'] = line.id
+                identity = digest(['intake-variant', identity, facts])
+                alias = db.get(Identity, (factory, customer, identity))
+                line = db.get(Line, alias.line_id) if alias else db.scalar(select(Line).where(
+                    Line.factory_id == factory, Line.customer_code == customer, Line.identity_key == identity))
         if reconcile_line:
             incoming_product = normalize_edu_item(product) if customer == "edu" else product
             existing_product = normalize_edu_item(reconcile_line.product_no) if customer == "edu" else reconcile_line.product_no
@@ -327,21 +387,7 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             record_version(db, line, reason, actor)
             publish(db, line, _existing_recipients(db, line), actor, reason)
         elif line:
-            if (_is_360_legacy_number_mapping(line, data) and line.quantity == qty
-                    and str(line.data.get("requested_ship_date", "")) == str(data.get("requested_ship_date", ""))):
-                # Reference + product already identifies this very same line. Never accept a
-                # silent remap: the existing formal-PO flow records and publishes a new version.
-                raise HTTPException(409, f"{reference} / {product} 检测到旧 360 单号对应关系，请在台账关联原订单核对并修订合同号、客户 PO 和外箱贴纸等信息，避免重复新建")
-            if line.quantity != qty or str(line.data.get("requested_ship_date", "")) != str(data.get("requested_ship_date", "")) or str(line.data.get("po_no", "")) != str(data.get("po_no", "")):
-                raise HTTPException(409, f"{reference} / {product} 已存在且订单字段不同，请到台账核对并变更，不能重复建单")
-            # A formal PO may have new prices/requirements. Never silently replace the earlier contract.
-            changed_fields = [key for key in data if key not in {"id", "status", "status_label", "issues", "lineage", "source_po_file_name", "received_date", "input_template", "target_template", "item_sheet_name", "source_kind", "import_controls"}
-                              and not (customer == "edu" and key in {"reference_no", "production_no"})
-                              and not (customer == "edu" and _same_edu_import_representation(key, data, line))
-                              and not _same_360_shipping_item_representation(key, data, line)
-                              and data.get(key) != line.data.get(key)]
-            if changed_fields:
-                raise HTTPException(409, f"{reference} / {product} 已有订单的客户字段存在差异，请核对后关联正式 PO：{', '.join(changed_fields[:6])}")
+            pass  # Exact re-import: attach source evidence without rewriting the order.
         else:
             line = Line(id=uid(), factory_id=factory, customer_code=customer,
                 customer_name=str(preview.get("customer_name") or customer), identity_key=identity,
@@ -349,7 +395,7 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
                 status="active", version=1, revision=1, data=data, created_at=now_text(), updated_at=now_text())
             db.add(line)
             db.flush()
-            record_version(db, line, reason or "核对 PO 后保存订单", actor)
+            record_version(db, line, reason or "保存原始 PO 明细（业务提醒保留）", actor)
             created += 1
         if alias is None:
             db.add(Identity(factory_id=factory, customer_code=customer, identity_key=identity, line_id=line.id))
@@ -364,17 +410,32 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
         raise HTTPException(400, "当前批次没有可保存的订单明细")
     db.flush()
     return {"items": [line_out(db, line) for line in lines], "created_count": created,
-            "existing_count": len(lines) - created, "reconciled_count": 1 if reconcile_line else 0}
+            "existing_count": len(lines) - created, "reconciled_count": 1 if reconcile_line else 0,
+            "advisory_count": sum(bool(line.data.get("intake_notice")) for line in lines)}
 
 
-def amend(db: Session, line: Line, body, actor: str) -> None:
+def amend(db: Session, line: Line, body, actor: str, *, authorize_dispatch=None) -> None:
+    cutting_locked = False
+    if line.factory_id == 'huakang-c' and body.note != (line.data.get('note') or ''):
+        from app.core.config import settings
+        from app.services.transaction_lock import lock_transaction
+        if settings.cutting_ops_enabled:
+            # Cutting writers (including month close) take the factory lock before the source row.
+            lock_transaction(db, 'cutting-master', line.factory_id)
+            cutting_locked = True
     lock_line(db, line, body.expected_revision)
     if line.status != "active":
         raise HTTPException(409, "已取消订单不能修改")
+    recipients = _existing_recipients(db, line)
+    if recipients and authorize_dispatch:
+        authorize_dispatch()
     qty = number(body.quantity)
     if qty < line.shipped_quantity:
         raise HTTPException(409, "订单数量不能小于已确认走货数量")
     data = deepcopy(line.data)
+    delivery_changed = body.requested_ship_date != str(data.get('requested_ship_date') or '')
+    note_only = cutting_locked and qty == line.quantity and not delivery_changed and body.note != (data.get('note') or '')
+    previous_version = line.version
     notices = []
     if qty != line.quantity:
         for key in ("carton_count", "cartons", "amount_hkd", "amount_usd", "amount", "total_amount", "total_cartons"):
@@ -389,7 +450,7 @@ def amend(db: Session, line: Line, body, actor: str) -> None:
             )
             data.setdefault("lineage", {})["amount_usd"] = "订单台账数量已调整，美元金额已清空，待新 PO 核对"
         notices.append("数量已调整，原箱数、金额等派生数据已清空，请按新 PO 核对。")
-    if body.requested_ship_date != str(data.get("requested_ship_date") or ""):
+    if delivery_changed:
         for key in ("line_q", "customer_q", "date_code", "inspection_date", "planned_inspection_date", "fcd_date"):
             if key in data:
                 data[key] = ""
@@ -401,7 +462,8 @@ def amend(db: Session, line: Line, body, actor: str) -> None:
     line.data = {**data, "quantity": decimal_text(qty), "requested_ship_date": body.requested_ship_date, "note": body.note}
     line.version += 1
     record_version(db, line, body.reason, actor)
-    publish(db, line, _existing_recipients(db, line), actor, body.reason)
+    publish(db, line, recipients, actor, body.reason,
+            cutting_note_from=previous_version if note_only else None)
     db.flush()
 
 
@@ -454,7 +516,7 @@ def dispatch(db: Session, line: Line, body, actor: str) -> None:
         raise HTTPException(409, "已取消订单不能新发送")
     if line.quantity is None or line.quantity <= 0 or not line.data.get("requested_ship_date"):
         raise HTTPException(400, "发送订单前请补齐有效数量和走货期")
-    publish(db, line, body.recipients, actor)
+    publish(db, line, body.recipients, actor, receive_first_cutting=True)
     db.flush()
 
 

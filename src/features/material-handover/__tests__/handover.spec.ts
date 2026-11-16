@@ -6,7 +6,7 @@ import { AxiosError } from 'axios'
 import View from '../MaterialHandoverView.vue'
 import type { HandoverDocument, HandoverWorkspace } from '@/api/materialHandover'
 
-const api = vi.hoisted(() => ({ workspace: vi.fn(), list: vi.fn(), pendingDeliveries: vi.fn(), issuers: vi.fn(), detail: vi.fn(), purchaseSources: vi.fn(), post: vi.fn(), scan: vi.fn(), action: vi.fn(), save: vi.fn(), upload: vi.fn(), context: vi.fn(), file: vi.fn(), printFile: vi.fn() }))
+const api = vi.hoisted(() => ({ workspace: vi.fn(), list: vi.fn(), pendingDeliveries: vi.fn(), issuers: vi.fn(), detail: vi.fn(), purchaseSources: vi.fn(), post: vi.fn(), linkReceipt: vi.fn(), unlinkReceipt: vi.fn(), recordRejectionFollowup: vi.fn(), scan: vi.fn(), action: vi.fn(), save: vi.fn(), upload: vi.fn(), context: vi.fn(), file: vi.fn(), printFile: vi.fn() }))
 const originalRender = vi.hoisted(() => ({ ready: true }))
 vi.mock('../HandoverOriginalPrint.vue', async () => {
   const { defineComponent, onMounted } = await import('vue')
@@ -565,6 +565,94 @@ describe('material handover workflow', () => {
     expect(body.expected_revision).toBe(3); expect(body.expected_inventory_revision).toBe(8)
     expect(body.lines).toEqual([{ line_id: 'A', quantity: '7.5', batch_id: '', location_id: 'BIN', lot: 'LOT', roll_no: '' }])
   })
+  it.each([true, false])('requires reviewing an existing manual receipt before posting (same number: %s)', async (exact) => {
+    const row = fixture()
+    row.prior_receipts = { A: { review_token: 'a'.repeat(64), items: [{
+      id: 'ORIGINAL', reference: exact ? 'DN-1' : 'DN-01', date: '2026-10-12', quantity: '12',
+      production_no: 'PROD-1', contract_no: 'C-1', order_no: '',
+      parts: [{ lot: 'LOT', roll_no: 'R1', location: '一仓 A01' }],
+      exact_reference: exact, blocks_posting: exact, can_link: true, reason: '',
+    }] } }
+    api.detail.mockResolvedValue(row)
+    api.purchaseSources.mockResolvedValue({ document_revision: 3, lines: {} })
+    api.post.mockResolvedValue(fixture())
+    await open(); await select()
+    expect(wrapper!.get('.prior-receipts').text()).toContain('生产单 PROD-1')
+    await wrapper!.get('.receipt-material input[type=checkbox]').setValue(true)
+    await quantityInput().setValue('7.5')
+    await locationInput().setValue('一仓 A01')
+    await click('确认本次实物收发')
+    expect(api.post).not.toHaveBeenCalled()
+    if (exact) {
+      const linked = { ...fixture(), revision: 4, progress: { ...row.progress, A: { processed: '22', remaining: '18' } } }
+      api.linkReceipt.mockResolvedValue(linked)
+      api.purchaseSources.mockResolvedValue({ document_revision: 4, lines: {} })
+      await click('关联这笔入库')
+      expect(api.linkReceipt).not.toHaveBeenCalled()
+      await click('确认补关联')
+      expect(api.linkReceipt).toHaveBeenCalledWith('D1', expect.objectContaining({
+        expected_revision: 3, line_id: 'A', receipt_id: 'ORIGINAL',
+      }))
+      expect(quantityInput().element.value).toBe('7.5')
+      expect(locationInput().element.value).toBe('一仓 A01')
+      expect(wrapper!.get('.receipt-metrics').text()).toContain('18 码')
+      await click('确认本次实物收发')
+      expect(api.post).toHaveBeenCalledWith('D1', expect.objectContaining({ expected_revision: 4 }))
+    } else {
+      await wrapper!.get('.prior-receipts input[type=checkbox]').setValue(true)
+      await click('确认本次实物收发')
+      expect(api.post).toHaveBeenCalledWith('D1', expect.objectContaining({
+        manual_receipt_reviews: { A: 'a'.repeat(64) },
+      }))
+    }
+  })
+  it('lets a receipt with conflicting purchase candidates record a reason and enter purchase review', async () => {
+    api.purchaseSources.mockResolvedValue({ document_revision: 3, match_status: { A: 'NOT_FOUND' }, lines: { A: [purchase('P1')] } })
+    api.post.mockResolvedValue(fixture())
+    await open(); await select()
+    await wrapper!.get('.receipt-material input[type=checkbox]').setValue(true)
+    await quantityInput().setValue('20')
+    await locationInput().setValue('一仓 A01')
+    await wrapper!.get('[aria-label="A采购待核对"]').setValue(true)
+    await click('确认本次实物收发')
+    expect(api.post).not.toHaveBeenCalled()
+    expect(wrapper!.text()).toContain('请填写采购待核对原因')
+    await wrapper!.get('[aria-label="A采购待核对原因"]').setValue('原合同与候选不同')
+    await click('确认本次实物收发')
+    const part = api.post.mock.calls[0]![1].lines[0]
+    expect(part).toMatchObject({ line_id: 'A', quantity: '20', procurement_pending_reason: '原合同与候选不同' })
+    expect(part).not.toHaveProperty('purchase_source_id')
+    expect(wrapper!.text()).toContain('收料入库 → 入库记录')
+  })
+  it('previews revoking a manual receipt link, requires a reason, and shows the audit entry', async () => {
+    const row = fixture()
+    row.progress.A = { processed: '30', remaining: '10' }
+    row.movements = [{
+      operation_id: 'LINK-1', line_id: 'A', quantity: '20', business_date: '2026-10-12',
+      reversed: false, manual_reference: 'OLD-1',
+    }, { operation_id: 'RC-1', line_id: 'A', quantity: '10', business_date: '2026-10-13', reversed: false }]
+    api.detail.mockResolvedValue(row)
+    api.purchaseSources.mockResolvedValue({ document_revision: 3, lines: {} })
+    api.unlinkReceipt.mockResolvedValue({ ...row, revision: 4, progress: { ...row.progress, A: { processed: '10', remaining: '30' } },
+      movements: [row.movements[1]], revoked_receipt_links: [{
+        link_id: 'LINK-1', line_id: 'A', reference: 'OLD-1', quantity: '20', business_date: '2026-10-12',
+        revoked_at: '2026-10-14T09:00:00+08:00', revoked_by: '仓管甲', reason: '旧记录归属另一张单',
+      }],
+    })
+    await open(); await select()
+    await click('撤回关联')
+    const form = wrapper!.get('.receipt-unlink-form')
+    expect(form.text()).toContain('已收 30 → 10 码 · 待收 10 → 30 码')
+    expect(form.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await form.get('input').setValue('旧记录归属另一张单')
+    api.purchaseSources.mockResolvedValue({ document_revision: 4, lines: {} })
+    await form.trigger('submit'); await flushPromises()
+    expect(api.unlinkReceipt).toHaveBeenCalledWith('D1', expect.objectContaining({
+      link_id: 'LINK-1', expected_revision: 3, expected_processed: '30', reason: '旧记录归属另一张单',
+    }))
+    expect(wrapper!.text()).toContain('已撤回关联 · OLD-1')
+    expect(wrapper!.text()).toContain('旧记录归属另一张单')
+  })
   it('carries the current quantity into the count fields and posts the calculated net', async () => {
     api.post.mockResolvedValue(fixture())
     await open(); await select()
@@ -620,6 +708,74 @@ describe('material handover workflow', () => {
     expect(line).toMatchObject({ quantity: '0', location_id: '', receipt_counts: { rejected_quantity: '5' } })
     expect(line.purchase_source_id).toBeUndefined()
     expect(wrapper!.text()).toContain('本次收料差异已保存，净入库量为零')
+  })
+  it('warns about the two duplicate splits and preserves deliberately blank rolls in the submission', async () => {
+    const row = fixture()
+    row.data.lines[0]!.roll_no = 'R1'
+    api.detail.mockResolvedValue(row)
+    api.post.mockResolvedValue(row)
+    await open(); await select()
+    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
+    await locationInput().setValue('一仓 A01')
+    await quantityInput().setValue('5')
+    await click('增加仓位')
+    await locationInput(2).setValue('一仓 A01')
+    await quantityInput(2).setValue('5')
+    expect(wrapper!.get('.receipt-allocations [role="alert"]').text()).toContain('第 1 项和第 2 项')
+    await click('确认本次实物收发')
+    expect(api.post).not.toHaveBeenCalled()
+    for (const part of wrapper!.get('.posting-row').findAll('.receipt-allocation')) {
+      await part.findAll('input[maxlength="128"]')[1]!.setValue('')
+    }
+    await click('确认本次实物收发')
+    expect(api.post.mock.calls[0]![1].lines).toEqual([
+      expect.objectContaining({ location_id: 'BIN', roll_no: '', roll_no_is_blank: true }),
+      expect.objectContaining({ location_id: 'BIN', roll_no: '', roll_no_is_blank: true }),
+    ])
+  })
+  it('shows a full rejection on the list and saves an audited follow-up with a frozen retry', async () => {
+    const row = fixture()
+    row.issuer_id = 'SUPPLIER-1'
+    row.processing_status = 'PENDING'
+    row.progress.A = { processed: '0', remaining: '40' }
+    row.receipt_rejection = { rejected_quantity: '40', unit: '码', status: null }
+    row.receipt_observations = [{ request_id: 'OBS-1', business_date: '2026-10-13', actor_name: '记录人', lines: [{
+      line_id: 'A', item_name: '物料A', item_code: 'A', unit: '码',
+      full_rejection: { rejected_quantity: '40', followup: null },
+      parts: [{ counted_quantity: '40', rejected_quantity: '40', damaged_quantity: '0', other_unusable_quantity: '0', accepted_quantity: '0', lot: 'LOT', roll_no: '' }],
+    }] }]
+    const saved = clone(row)
+    saved.revision = 4
+    saved.receipt_rejection!.status = 'PENDING_REDELIVERY'
+    saved.receipt_observations![0]!.lines[0]!.full_rejection!.followup = {
+      status: 'PENDING_REDELIVERY', reason: '请补送同款', actor_name: '仓管甲', recorded_at: '2026-10-13T16:30:00+08:00',
+    }
+    api.detail.mockResolvedValue(row)
+    api.list.mockResolvedValue({ items: [{ ...row, line_count: 2 }], limit: 50, offset: 0 })
+    api.recordRejectionFollowup.mockRejectedValueOnce(new AxiosError('网络断开')).mockResolvedValueOnce(saved)
+    await open(); await select()
+    const list = wrapper!.get('.document-list')
+    expect(list.text()).toContain('全拒收')
+    expect(list.text()).toContain('拒收 40 码 · 本项实收 0 码')
+    expect(list.text()).not.toContain('待收货')
+    await quantityInput().setValue('4')
+    await click('查看收料差异')
+    await click('处理拒收')
+    const form = wrapper!.get('.rejection-followup-form')
+    await form.get('select').setValue('PENDING_REDELIVERY')
+    expect(form.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await form.get('textarea').setValue('请补送同款')
+    await form.trigger('submit'); await flushPromises()
+    expect(api.recordRejectionFollowup).toHaveBeenCalledWith('D1', expect.objectContaining({
+      expected_revision: 3, observation_request_id: 'OBS-1', line_id: 'A', status: 'PENDING_REDELIVERY', reason: '请补送同款',
+    }))
+    api.list.mockResolvedValue({ items: [{ ...saved, line_count: 2 }], limit: 50, offset: 0 })
+    await click('重试原提交')
+    expect(api.recordRejectionFollowup.mock.calls[1]).toEqual(api.recordRejectionFollowup.mock.calls[0])
+    expect(list.text()).toContain('待补送')
+    expect(wrapper!.get('.rejection-evidence').text()).toContain('请补送同款 · 仓管甲')
+    expect(quantityInput().element.value).toBe('4')
+    expect(api.post).not.toHaveBeenCalled()
   })
   it('splits one receipt line across eligible warehouses with an exact quantity cap and frozen retry', async () => {
     const row = fixture()

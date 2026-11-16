@@ -20,7 +20,8 @@ watchCuttingWorkspace(()=>void load())
     <CuttingMetrics :items="[
       {label:'总订单数量',value:result?.stats.total??'—',unit:'笔',hint:'当前筛选内有效下发订单行'},
       {label:'已排期订单数量',value:result?.stats.scheduled??'—',unit:'笔',hint:`有效已发布且有日计划；部分排期 ${result?.stats.partial??'—'} 笔`},
-      {label:'未排期订单数量',value:result?.stats.unscheduled??'—',unit:'笔',hint:`含仅草稿或已失效；待复核 ${result?.stats.review??'—'} 笔`},
+      {label:'未排期订单数量',value:result?.stats.unscheduled??'—',unit:'笔',hint:'含仅草稿或已失效'},
+      {label:'待复核',value:result?.stats.review??'—',unit:'笔',hint:'单列提示，不计入合计公式'},
     ]" />
     <p class="cutting-muted">总数＝已排期＋未排期，按订单行去重，统计不受当前页限制；取消订单不计入上述卡片，仍可在下方台账处理历史通知。</p>
     <p v-if="busy" role="status">正在核对排期统计…</p><p v-if="error" role="alert">{{error}} <Button variant="outline" size="sm" @click="load">重试统计</Button></p>

@@ -162,8 +162,8 @@ def test_existing_quantity_conflict_still_blocks_export():
     workbook = template(quantity_conflict=True)
     args = arguments(workbook)
     preview = service.create_unified_customer_preview(**args)
-    assert preview["rows"][0]["status"] == "blocked"
+    assert preview["rows"][0]["status"] == "warning"
     assert any(i["code"] == "existing_quantity_conflict" for i in preview["rows"][0]["issues"])
-    with pytest.raises(service.CustomerOrderUnifiedError, match="数量"):
-        service.export_unified_customer_schedule(**args)
+    content, _, resolved = service.export_unified_customer_schedule(**args)
+    assert content.startswith(b"PK") and resolved["summary"]["blocked"] == 0
     workbook.close()

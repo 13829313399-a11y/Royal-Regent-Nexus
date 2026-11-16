@@ -580,23 +580,3 @@ def commit_history(factory, actor, identity):
             upsert(conn, factory, row['sourceKey'], item, batch=identity, fingerprint=row['fingerprint'])
         conn.execute("UPDATE batches SET status='committed',committed_at=? WHERE id=?", (workflow.now(), identity))
         return {'status': 'committed', 'id': identity, 'count': counts['new'], 'duplicate': counts['duplicate'], 'conflict': counts['conflict']}
-
-
-def history_batches(factory):
-    with store() as conn:
-        return {'items': [dict(r) for r in conn.execute('''SELECT b.id,b.filename,b.status,b.created_at,b.committed_at,b.rolled_back_at,
-            (SELECT count(*) FROM records r WHERE r.batch_id=b.id AND r.active=1) AS count
-            FROM batches b WHERE factory=? AND status<>'preview' ORDER BY created_at DESC LIMIT 100''', (factory,))]}
-
-
-def rollback_history(factory, identity):
-    with store(True) as conn:
-        batch = conn.execute('SELECT * FROM batches WHERE factory=? AND id=?', (factory, identity)).fetchone()
-        if batch is None:
-            raise HTTPException(404, '历史导入批次不存在')
-        if batch['status'] not in ('committed', 'rolled_back'):
-            raise HTTPException(409, '仅可回滚已确认导入的历史批次')
-        count = conn.execute("UPDATE records SET active=0 WHERE factory=? AND batch_id=? AND active=1 AND status='unverified'",
-                             (factory, identity)).rowcount
-        conn.execute("UPDATE batches SET status='rolled_back',rolled_back_at=? WHERE id=?", (workflow.now(), identity))
-        return {'status': 'rolled_back', 'count': count}

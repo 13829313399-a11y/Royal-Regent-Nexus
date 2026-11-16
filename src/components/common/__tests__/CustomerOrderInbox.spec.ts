@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import CartonBusinessChangeDialog from '../CartonBusinessChangeDialog.vue'
 import CustomerOrderInbox from '../CustomerOrderInbox.vue'
 
 const httpMock = vi.hoisted(() => ({
@@ -21,6 +22,7 @@ vi.mock('@/lib/http', () => ({
 }))
 
 vi.mock('vue-router', () => ({
+  RouterLink: { template: '<a><slot /></a>' },
   useRoute: () => routeState,
   useRouter: () => ({ replace: routerReplaceMock }),
 }))
@@ -58,10 +60,14 @@ const baseItem = {
   status: 'sent',
 } as const
 
-function configureApi(options: { receive?: boolean; items?: unknown[] } = {}) {
+function configureApi(options: { receive?: boolean; cartonChange?: boolean; items?: unknown[] } = {}) {
   httpMock.get.mockImplementation((url: string) => {
     if (url.endsWith('/capabilities')) {
-      return Promise.resolve({ data: { inbox_read: true, inbox_receive: options.receive ?? true } })
+      return Promise.resolve({ data: {
+        inbox_read: true,
+        inbox_receive: options.receive ?? true,
+        carton_change: options.cartonChange ?? false,
+      } })
     }
     return Promise.resolve({
       data: {
@@ -158,6 +164,35 @@ describe('CustomerOrderInbox', () => {
     await flushPromises()
 
     expect(httpMock.post).toHaveBeenCalledWith(
+      '/customer-order-ledger/inbox/inbox-1/receive',
+      undefined,
+      { params: { factory_id: 'huaxing', recipient: 'pmc' } },
+    )
+    wrapper.unmount()
+  })
+
+  it('opens the carton change review separately from acknowledging the notification', async () => {
+    configureApi({ cartonChange: true, items: [{ ...baseItem, latest_version: baseItem.version }] })
+    const wrapper = mount(CustomerOrderInbox, { global: { stubs: { CartonBusinessChangeDialog: true } } })
+    await flushPromises()
+
+    const review = wrapper.get('button[data-carton-change="inbox-1"]')
+    expect(review.text()).toBe('查看改单差异')
+    await review.trigger('click')
+
+    const dialog = wrapper.getComponent(CartonBusinessChangeDialog)
+    expect(dialog.props('dispatchId')).toBe('inbox-1')
+    expect(httpMock.post).not.toHaveBeenCalled()
+    dialog.vm.$emit('close')
+    await flushPromises()
+
+    const acknowledge = wrapper.findAll('button').find(button => button.text() === '仅签收')!
+    expect(wrapper.get('#' + acknowledge.attributes('aria-describedby')).text()).toBe('只记录收到')
+    await acknowledge.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findComponent(CartonBusinessChangeDialog).exists()).toBe(false)
+    expect(httpMock.post).toHaveBeenCalledExactlyOnceWith(
       '/customer-order-ledger/inbox/inbox-1/receive',
       undefined,
       { params: { factory_id: 'huaxing', recipient: 'pmc' } },

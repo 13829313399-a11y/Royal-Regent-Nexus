@@ -427,7 +427,7 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
         </div>
       </SectionPanel>
 
-      <SectionPanel title="03 · 明细与提醒" subtitle="可直接生成问单 Excel；缺项与待核对事项只作提醒。" class="jp-panel">
+      <SectionPanel title="03 · 明细与提醒" subtitle="可直接生成问单 Excel；缺项与待核对事项只作提醒，合同列统一填 TBA。" class="jp-panel">
         <template #action><StatusPill :label="preview ? `${preview.rows.length} 条明细` : '等待解析'" :tone="preview ? 'teal' : 'slate'" /></template>
         <template v-if="preview">
           <div class="jp-review-summary" aria-label="明细核对概况">

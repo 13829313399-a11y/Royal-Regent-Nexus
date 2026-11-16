@@ -27,6 +27,7 @@ def test_withdraw_reconcile_edit_resubmit_preserves_history(flow):
     _, bom = submitted(flow)
     assert post(flow, 'withdraw', expected_version=3, requisition_version=3).status_code == 200
     assert read(flow)['workflow_status'] == 'reconciliation'
+    assert read(flow)['pending_purchase']['has_purchase_evidence'] is False
     assert post(flow, 'eta', expected_version=4, requisition_version=3, batches=[]).status_code == 409
     assert reconcile(flow, 4).status_code == 200
     assert read(flow)['workflow_status'] == 'awaiting_submission'
@@ -61,6 +62,10 @@ def test_commitment_evidence_cannot_be_erased_by_deleting_eta(flow):
     assert post(flow, 'eta', expected_version=3, requisition_version=3, batches=[batch()]).status_code == 200
     assert post(flow, 'eta', expected_version=4, requisition_version=3, batches=[]).status_code == 200
     assert post(flow, 'withdraw', expected_version=5, requisition_version=3).status_code == 200
+    pending = read(flow)['pending_purchase']
+    assert pending['batches'] == []
+    assert pending['has_purchase_evidence'] is True
+    assert pending['prior_purchase_reply'] == dict(revision=4, batches=[batch()])
     assert reconcile(flow, 6).status_code == 422
     args = dict(expected_version=6, requisition_version=3, disposition='cancelled_or_reallocated', evidence='PO001旧采购全部转用，原需求不再占用', all_handled=False)
     assert post(flow, 'reconcile', **args).status_code == 422
@@ -124,18 +129,25 @@ def test_recovery_returns_original_result_after_source_change_and_write_revocati
 
 
 def test_recovery_seals_unexecuted_command_even_when_feature_disabled(flow, monkeypatch):
-    body = command(dispatch_id=read(flow)['dispatch_id'])
+    amend(flow)
+    original = read(flow)
+    assert original['needs_receipt']
+    body = command(dispatch_id=original['dispatch_id'], expected_version=original['current']['version'])
     from app.core.config import settings
     monkeypatch.setattr(settings, 'cutting_ops_enabled', False)
     assert recover(flow, 'receive', body).json() == {'state': 'abandoned'}
     monkeypatch.setattr(settings, 'cutting_ops_enabled', True)
     assert flow.post(BASE + '/orders/line-1/receive', json=body).status_code == 409
-    assert read(flow)['current'] is None
+    after = read(flow)
+    assert after['needs_receipt'] and after['current'] == original['current']
     assert recover(flow, 'receive', body).json() == {'state': 'abandoned'}
 
 
 def test_recovery_racing_original_write_has_one_permanent_outcome(flow):
-    body = command(dispatch_id=read(flow)['dispatch_id'])
+    amend(flow)
+    original = read(flow)
+    assert original['needs_receipt']
+    body = command(dispatch_id=original['dispatch_id'], expected_version=original['current']['version'])
     with ThreadPoolExecutor(max_workers=2) as pool:
         writer = pool.submit(flow.post, BASE + '/orders/line-1/receive', json=body)
         resolver = pool.submit(recover, flow, 'receive', body)
@@ -143,7 +155,9 @@ def test_recovery_racing_original_write_has_one_permanent_outcome(flow):
     assert result.status_code == 200
     committed = result.json()['state'] == 'committed'
     assert response.status_code == (200 if committed else 409)
-    assert (read(flow)['current'] is not None) == committed
+    after = read(flow)
+    assert after['needs_receipt'] != committed
+    assert after['current']['version'] == original['current']['version'] + int(committed)
     assert flow.post(BASE + '/orders/line-1/receive', json=body).status_code == (200 if committed else 409)
 
 

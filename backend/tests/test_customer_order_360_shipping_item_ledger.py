@@ -54,9 +54,9 @@ def test_new_derived_shipping_field_reuses_old_id_without_rewriting_data(db, old
 def test_missing_old_value_does_not_authorize_manual_or_nonexact_shipping_code(db, incoming_shipping):
     line = db.get(Line, save(db, shipping_payload())["items"][0]["id"])
     before = deepcopy(line.data)
-    with pytest.raises(HTTPException) as error:
-        save(db, shipping_payload(incoming_shipping))
-    assert error.value.status_code == 409 and "shipping_item" in error.value.detail
+    variant = save(db, shipping_payload(incoming_shipping))
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.data == before and line.version == 1
 
 
@@ -64,9 +64,9 @@ def test_missing_old_value_does_not_authorize_manual_or_nonexact_shipping_code(d
 def test_existing_nonempty_shipping_value_changes_require_explicit_revision(db, previous, incoming):
     line = db.get(Line, save(db, shipping_payload(previous))["items"][0]["id"])
     before = deepcopy(line.data)
-    with pytest.raises(HTTPException) as error:
-        save(db, shipping_payload(incoming))
-    assert error.value.status_code == 409 and "shipping_item" in error.value.detail
+    variant = save(db, shipping_payload(incoming))
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.data == before and line.version == line.revision == 1
 
 
@@ -80,19 +80,19 @@ def test_derived_shipping_compatibility_does_not_hide_other_business_changes(db,
     before = deepcopy(line.data)
     incoming = shipping_payload("7654001")
     incoming["rows"][0].update(changes)
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
-    assert error.value.status_code == 409
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.data == before and line.version == line.revision == 1
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
 
 
 @pytest.mark.parametrize("factory,customer", [("huaxing", "360"), ("huakang-a", "green-toys")])
 def test_new_shipping_field_compatibility_is_limited_to_huakang_a_360(db, factory, customer):
     line = db.get(Line, save(db, shipping_payload(factory=factory, customer=customer))["items"][0]["id"])
-    with pytest.raises(HTTPException) as error:
-        save(db, shipping_payload("7654001", factory=factory, customer=customer))
-    assert error.value.status_code == 409 and "shipping_item" in error.value.detail
+    variant = save(db, shipping_payload("7654001", factory=factory, customer=customer))
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert "shipping_item" not in line.data and line.version == 1
 
 

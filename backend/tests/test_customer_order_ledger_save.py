@@ -140,3 +140,13 @@ def test_warehouse_timeout_does_not_hide_committed_save_or_duplicate_retry(clien
     assert len(sync_calls) == 2 and calls == ["_export_special_batch_schedule"] * 2
     for model, expected in ((Line, 1), (Source, 2), (Version, 1)):
         assert db.scalar(select(func.count()).select_from(model)) == expected
+
+
+@pytest.mark.parametrize('variant', ['dickie', 'dickie-legacy', 'disney'])
+def test_save_allows_business_reminders_without_reason_or_acknowledgement(client, db, monkeypatch, variant):
+    args, preview, form, files = confirmed_upload(monkeypatch, variant)
+    inline_jobs(monkeypatch)
+    form.update(skipped_issue_keys='[]', confirmation_reason='')
+    response = client.post('/api/customer-order-ledger/imports/' + args['customer_code'], data=form, files=files)
+    assert response.status_code == 200, response.text
+    assert response.json()['created_count'] == len(preview['rows'])

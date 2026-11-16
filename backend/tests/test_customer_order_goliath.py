@@ -252,7 +252,7 @@ def test_sample_purchase_order_is_not_assumed_regular():
     for row in preview['rows']:
         assert row.get('order_type', '') != '正单'
         if not row.get('order_type'):
-            assert any(issue['code'] == 'order_type_unresolved' and not issue['can_skip']
+            assert any(issue['code'] == 'order_type_unresolved' and issue['severity'] == 'warning'
                        and issue['requires_source_correction']
                        for issue in row['issues'])
 
@@ -266,7 +266,7 @@ def test_unknown_explicit_document_type_requires_source_correction(label):
     row = preview['rows'][0]
     assert not row.get('order_type')
     assert any(issue['code'] == 'order_type_unresolved' and issue['requires_source_correction']
-               and not issue['can_skip'] for issue in row['issues'])
+               and issue['severity'] == 'warning' for issue in row['issues'])
 
 
 @pytest.mark.parametrize('title,expected', [
@@ -284,7 +284,7 @@ def test_purchase_order_title_variants(title, expected):
     assert row.get('order_type', '') == expected
     if not expected:
         assert any(issue['code'] == 'order_type_unresolved' and issue['requires_source_correction']
-                   and not issue['can_skip'] for issue in row['issues'])
+                   and issue['severity'] == 'warning' for issue in row['issues'])
 
 
 def test_goliath_empty_price_keeps_amount_and_does_not_inherit_old_price():
