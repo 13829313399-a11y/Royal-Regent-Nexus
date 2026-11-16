@@ -53,6 +53,25 @@ def test_actual_excel_preview_original_missing_fallback_and_owner(db,monkeypatch
     assert len(sheet._images)==2 and sheet.max_row==3 and sheet['M2'].value=='照片'
     assert sheet['L2'].value=='照片备注' and out['filename']==name
     assert sheet['B3'].value=='彩星' and data['title'] in ''.join(str(c.value or '') for c in sheet[1])
+    if period=='weekly':
+        assert str(next(iter(sheet.merged_cells.ranges)))=='A1:M1'
+        assert sheet.freeze_panes=='D3'
+        assert [c.value for c in sheet[2]][:11]==data['headers'][:11]
+        for cell in sheet[2]:
+            assert cell.fill.fgColor.rgb=='00F3F3F3'
+            assert cell.alignment.horizontal==cell.alignment.vertical=='center'
+        for cell in sheet[3]:
+            assert cell.alignment.horizontal==cell.alignment.vertical=='center'
+            assert cell.alignment.wrap_text
+        assert sheet.row_dimensions[3].height>=170
+        for photo in sheet._images:
+            assert photo.anchor._from.col==12
+            assert photo.anchor._from.colOff+photo.anchor.ext.cx<=490*9525
+            assert photo.anchor._from.rowOff+photo.anchor.ext.cy<=sheet.row_dimensions[3].height/0.75*9525
+    elif period=='yearly':
+        assert not sheet.merged_cells.ranges and sheet.freeze_panes=='A3'
+        assert sheet['L3'].alignment.horizontal=='left' and sheet['L3'].alignment.vertical=='top'
+        assert sheet.column_dimensions['M'].width==100
     with pytest.raises(HTTPException):excel.download('other-owner',out['url'].split('/')[-1])
     body['photoQuality']='original'
     with pytest.raises(HTTPException) as err:reports.prepare('huaxing','owner',body)

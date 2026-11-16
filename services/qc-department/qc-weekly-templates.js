@@ -6,7 +6,7 @@
   const editable = {detail:{},group:{3:'returns',5:'returnReason',6:'hongKongContact',7:'weeklyRemark'},footer:{3:'returns',5:'returnReason',6:'hongKongContact',7:'reworkA0D',8:'weeklyRemark'}};
   const fields = [...new Set(Object.values(editable).flatMap(columns=>Object.values(columns)))];
   const columns = (kind,row) => ({...editable[kind],...row.editableFields});
-  const widths = {detail:[42,100,100,108,80,105,160,72,56,60,72,48,90,90,180,90,90,180],group:[65,110,94,74,74,200,100,220],footer:[65,110,94,74,74,180,100,220,190]};
+  const widths = {detail:[48,82,90,128,150,140,210,75,60,75,60,60,80,80,180,95,95,160],group:[85,130,150,120,110,270,130,200],footer:[85,130,150,120,110,270,130,200,200]};
   let exporting=false, exportMessage='', contactOptions=[];
   const issueBusy=()=>active==='issues'&&root.QcIssueReports?.navigationState().busy;
   // Missing/null supplements are blank editable values; zero remains a real value.

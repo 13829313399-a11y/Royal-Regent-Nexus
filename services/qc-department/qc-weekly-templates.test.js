@@ -53,7 +53,7 @@ test('issue workbook keeps week controls and template navigation, reloads dates,
   assert.equal(p.d.getElementById('qwtView').hidden,false);assert.ok(p.d.querySelector('#qwtView .qir-inline'));
   assert.equal(p.d.getElementById('qwtEntries').hidden,false);assert.equal(p.d.querySelector('.qir-page'),null);assert.equal(p.d.querySelector('[data-quality]'),null);
   assert.equal(p.d.querySelector('#qwtEntries [data-template="issues"]').getAttribute('aria-current'),'page');
-  assert.equal(p.d.querySelectorAll('#qwtView th').length,12);
+  assert.equal(p.d.querySelectorAll('#qwtView th').length,13);
   // Re-entering through the sidebar resolves report-center to this same weekly page.
   const app=fs.readFileSync(path.join(__dirname,'app.js'),'utf8');
   p.w.eval('var currentPage="weekly", REPORT_CENTER_PAGES=["weekly","daily","monthly","analysis"], PAGE_TITLES={};'+app.slice(app.indexOf('function showPage('),app.indexOf("const SIDEBAR_KEY")));
@@ -61,7 +61,7 @@ test('issue workbook keeps week controls and template navigation, reloads dates,
   const issuePanel=p.d.querySelector('#qwtView .qir-inline');
   p.w.showPage('report-center');
   assert.equal(p.d.querySelector('#qwtView .qir-inline'),issuePanel);
-  assert.equal(p.d.querySelectorAll('#qwtView th').length,12);
+  assert.equal(p.d.querySelectorAll('#qwtView th').length,13);
   p.d.querySelector('.qir-photo').click();assert.ok(p.d.querySelector('dialog[open]'));
   const date=p.d.getElementById('weeklyDate');date.value='2026-11-12';date.dispatchEvent(new p.w.Event('change'));await tick();
   assert.match(p.calls.at(-1).url,/date=2026-11-12/);assert.equal(p.d.querySelector('dialog'),null);

@@ -13,6 +13,7 @@
     const host=parent?.querySelector('.page-inner');
     if(pageMode&&!host)return;
     const el=doc.createElement(inline||pageMode?'section':'dialog');dialog=el;el.className=inline?'qir-inline':'qir-dialog'+(pageMode?' qir-page':'');
+    if(period==='weekly')el.classList.add('qir-weekly');
     const previousChildren=pageMode?[...host.children].map(node=>({node,hidden:node.hidden})):[];
     const previousScroll=parent?.scrollTop||0;
     el.setAttribute('aria-label','验货问题图文记录表');
@@ -44,8 +45,12 @@
       if(!data)return;
       q('h2').textContent=data.title;q('[data-period]').textContent=data.dateFrom+' 至 '+data.dateTo+(period==='weekly'?'（周日至周六）':'')+' · '+data.total+' 条已审核记录';
       const rows=data.tables.issues.slice(page*30,(page+1)*30);
-      const widths=[100,90,110,100,160,74,60,60,72,220,90,340];
-      q('[data-table]').innerHTML='<table style="min-width:'+widths.reduce((a,b)=>a+b,0)+'px"><colgroup>'+widths.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr>'+data.headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.values.map((v,i)=>'<td><span>'+esc(v)+'</span>'+(i===11?'<div class="qir-photos">'+r.photos.map(p=>'<button class="qir-photo" data-src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" aria-label="查看'+esc(p.name)+'"><img loading="lazy" src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" alt="'+esc(p.name)+'"></button>').join('')+'</div>':'')+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+      const weekly=period==='weekly';
+      const widths=weekly?[105,90,120,140,155,70,65,70,65,170,80,165,490]:[100,90,110,100,160,74,60,60,72,220,90,340];
+      // Match the selected original XLSX: photo remarks and photos have separate columns.
+      const headers=weekly?[...data.headers.slice(0,11),'照片备注','照片']:data.headers;
+      const photos=r=>'<div class="qir-photos">'+r.photos.map(p=>'<button class="qir-photo" data-src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" aria-label="查看'+esc(p.name)+'"><img loading="lazy" src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" alt="'+esc(p.name)+'"></button>').join('')+'</div>';
+      q('[data-table]').innerHTML='<table style="min-width:'+widths.reduce((a,b)=>a+b,0)+'px"><colgroup>'+widths.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.values.map((v,i)=>'<td><span>'+esc(v)+'</span>'+(!weekly&&i===11?photos(r):'')+'</td>').join('')+(weekly?'<td>'+photos(r)+'</td>':'')+'</tr>').join('')+'</tbody></table>';
       el.querySelectorAll('.qir-photo').forEach(button=>button.onclick=()=>{
         photoDialog?.remove();const modal=doc.createElement('dialog');photoDialog=modal;modal.className='qmt-photo-dialog';
         modal.innerHTML='<button aria-label="关闭照片">关闭</button><img alt="验货照片">';modal.querySelector('img').src=button.dataset.src;
