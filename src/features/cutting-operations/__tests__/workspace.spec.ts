@@ -143,6 +143,28 @@ describe('cutting read-only workspaces',()=>{
     expect(wrapper.find('details').exists()).toBe(false)
     expect(document.activeElement).toBe(target==='filter'?destination:button('刷新当前结果').element)
   })
+  it.each(['focused','filter','pointer','unfocused','failure'] as const)('handles mouse focus after an embedded activity retry: %s',async action=>{
+    let resolve!:(value:Page<ActivityRow>)=>void,reject!:(reason:Error)=>void
+    vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,token:'old'})
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(()=>new Promise((res,rej)=>{resolve=res;reject=rej}))
+    wrapper=mount(Activity,{props:{embedded:true,initialSource:'warehouse'},attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    await button('刷新当前结果').trigger('click');await flushPromises()
+    const retry=button('按原条件重试（第 1 页）').element
+    if(action!=='unfocused')retry.focus()
+    retry.dispatchEvent(new MouseEvent('click',{detail:1,bubbles:true}));await flushPromises()
+    const input=wrapper.get<HTMLInputElement>('input[name="order_q"]').element
+    if(action==='filter')input.focus()
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='failure'){
+      reject(new Error('still offline'));await flushPromises()
+      expect(document.activeElement).not.toBe(button('按原条件重试（第 1 页）').element)
+      return
+    }
+    resolve({...empty,token:'fresh'});await flushPromises()
+    const expected=action==='focused'?wrapper.get('[aria-label="可追溯操作日志"]').element:action==='filter'?input:document.body
+    expect(document.activeElement).toBe(expected)
+  })
   it('provides unique named activity filters with explicit labels for embedded instances',async()=>{
     vi.mocked(workspaceApi.activity).mockResolvedValue({...empty,token:'basis'})
     wrapper=mount({components:{Activity},template:'<Activity embedded /><Activity embedded />'},{global:{plugins:[router]}});await flushPromises()
