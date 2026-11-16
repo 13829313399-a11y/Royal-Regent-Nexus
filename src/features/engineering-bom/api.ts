@@ -1,9 +1,20 @@
 import { http } from '@/lib/http'
+import type { BomData as CuttingBomData, EngineeringBomSource, MasterRecord } from '@/features/cutting-operations/api'
 export interface Material { actor_id?: string; occurred_at?: string; reason?: string; id: string; code: string; name: string; version: number; status: string; data: { unit: string; spec?: string; color?: string; old_code?: string; category?: string; engineering?: { group: string; department: string; attribute: string; approval: string } } }
 export interface Node { key: string; parent: string; material_id: string; material_version: number; source_code: string; source_name: string; unit: string; numerator: string; denominator: string; process: string; exempt_loss: boolean; note: string; source: Record<string, string>; review_required: boolean; review_note: string }
 export interface BomData { item_no: string; name: string; specification: string; source_reference: string; source_sha256?: string; nodes: Node[] }
 export interface Bom { id: string; version: number; effective_version: number | null; status: string; data: BomData; materials: Record<string, Material>; actor_id?: string; occurred_at?: string; reason?: string }
-export interface Access { enabled: boolean; schema_ready: boolean; permissions: string[] }
+export interface Access { enabled: boolean; schema_ready: boolean; permissions: string[]; cutting_publication?: boolean }
+export interface CuttingChoices {
+  source: EngineeringBomSource; name: string; existing: MasterRecord | null
+  rows: Array<{ key: string; row: number; name: string; code: string; process: string; path: string; quantity: string; unit: string; can_be_part: boolean }>
+}
+export interface CuttingSelection {
+  source_version: number; style: string; color: string; part_keys: string[]
+  materials: Array<{ key: string; part_keys: string[]; required_for_cutting: boolean }>
+}
+export interface CuttingPreview { data: CuttingBomData; expected_version: number; token: string }
+export interface CuttingPublish { factory_id: string; operation_id: string; expected_version: number; reason: string; selection: CuttingSelection; token: string }
 export type BomEvidence = Record<string, string | number | boolean | string[]>
 export interface MaterialBomUsage {
   material_id: string; material_version: number; code: string; name: string; checked_at: string; bom_count: number
@@ -25,6 +36,9 @@ export interface ImportPreview { filename: string; sha256: string; row_count: nu
 const base = '/engineering-bom'
 const params = { factory_id: 'huakang-c' }
 export const engineeringApi = {
+  async cuttingChoices(id: string, version: number): Promise<CuttingChoices> { return (await http.get(`${base}/boms/${encodeURIComponent(id)}/cutting`, { params: { ...params, version } })).data },
+  async previewCutting(id: string, body: CuttingSelection): Promise<CuttingPreview> { return (await http.post(`${base}/boms/${encodeURIComponent(id)}/cutting/preview`, body, { params })).data },
+  async publishCutting(id: string, body: CuttingPublish): Promise<MasterRecord> { return (await http.post(`${base}/boms/${encodeURIComponent(id)}/cutting/publish`, body)).data },
   async access(): Promise<Access> { return (await http.get(`${base}/access`, { params })).data },
   async workspace(): Promise<{ materials: Material[]; boms: Bom[] }> { return (await http.get(`${base}/workspace`, { params })).data },
   async history(id: string): Promise<{ items: Array<Bom | Material> }> { return (await http.get(`${base}/history/${encodeURIComponent(id)}`, { params })).data },

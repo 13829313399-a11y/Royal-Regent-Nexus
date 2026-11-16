@@ -7,7 +7,12 @@ export interface WorkCalendarData { weekdays: number[]; exceptions: Array<{ day:
 export interface ResourceData { calendar?: WorkCalendarData | null; preparation_workdays?: number; name: string; execution: 'internal' | 'outsourced'; process: 'cutting'; contact: string; source_reference: string }
 export interface Part { code: string; name: string; pieces_per_set: number }
 export interface Requirement { material_id: string; material_version: number; part_codes: string[]; quantity_per_set: string; unit: string; required_for_cutting: boolean; stage: string; note: string }
-export interface BomData { name: string; item_no: string; style: string; color: string; source_reference: string; parts: Part[]; requirements: Requirement[] }
+export interface EngineeringBomSource {
+  bom_id: string; version: number; item_no: string; event_id: string; actor_id: string; occurred_at: string
+  parts?: Array<{ code: string; key: string; row: number }>
+  materials?: Array<{ key: string; row: number; code: string; name: string; material_id: string; material_version: number; path_keys: string[] }>
+}
+export interface BomData { name: string; item_no: string; style: string; color: string; source_reference: string; parts: Part[]; requirements: Requirement[]; engineering_source?: EngineeringBomSource }
 export type MasterData = MaterialData | ResourceData | BomData
 export interface MasterRecord { id: string; factory_id: string; kind: Kind; code: string; version: number; status: 'active' | 'inactive' | 'draft' | 'published'; data: MasterData; actor_id: string; created_at: string; reason: string; material_references?: Record<string, { code: string; name: string }> }
 export interface MasterPage { data: MasterRecord[]; total: number; page: number; page_size: number }

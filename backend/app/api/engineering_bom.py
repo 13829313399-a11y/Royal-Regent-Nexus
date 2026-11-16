@@ -8,6 +8,7 @@ from app.services import engineering_bom as service
 from app.services import engineering_bom_comparison as comparison
 from app.services import engineering_bom_checks as checks
 from app.services import engineering_material_usage as material_usage
+from app.services import cutting_ops as cutting, engineering_cutting_bom as cutting_bom
 from app.services.engineering_bom_import import preview, LIMIT
 from app.schemas.engineering_bom import Command, Material, SaveBom
 
@@ -20,10 +21,24 @@ def check(db, user, factory, action='read'):
     service.ensure(db)
 
 
+def can_publish_cutting(user):
+    return settings.cutting_ops_enabled and service.allowed(user, 'bom_approve') and all(
+        cutting.allowed(user, action) for action in ('read', 'bom_write', 'bom_publish'))
+
+
+def check_cutting(db, user, factory):
+    check(db, user, factory, 'bom_approve')
+    for action in ('read', 'bom_write', 'bom_publish'):
+        cutting.authorize(user, factory, action)
+    cutting.require(settings.cutting_ops_enabled and cutting.schema_ready(db.connection()),
+                    '裁床基础资料尚未启用或需完成迁移', 503)
+
+
 @router.get('/access')
 def access(factory_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
     service.authorize(user, factory_id)
     return dict(enabled=settings.engineering_bom_enabled, schema_ready=service.ready(db),
+                cutting_publication=can_publish_cutting(user),
                 permissions=[a for a in service.ACTIONS if service.allowed(user, a)])
 
 
@@ -90,6 +105,27 @@ def save(identity: str, body: SaveBom, db: Session = Depends(get_db), user=Depen
 def approve(identity: str, body: Command, db: Session = Depends(get_db), user=Depends(get_current_user)):
     check(db, user, body.factory_id, 'bom_approve')
     return service.approve_bom(db, user, body, identity)
+
+
+@router.get('/boms/{identity}/cutting')
+def cutting_choices(identity: str, factory_id: str, version: int = Query(..., ge=1),
+                    db: Session = Depends(get_db), user=Depends(get_current_user)):
+    check_cutting(db, user, factory_id)
+    return cutting_bom.choices(db, identity, version)
+
+
+@router.post('/boms/{identity}/cutting/preview')
+def preview_cutting(identity: str, factory_id: str, body: cutting_bom.Selection,
+                    db: Session = Depends(get_db), user=Depends(get_current_user)):
+    check_cutting(db, user, factory_id)
+    return cutting_bom.preview(db, identity, body)
+
+
+@router.post('/boms/{identity}/cutting/publish')
+def publish_cutting(identity: str, body: cutting_bom.Publish,
+                    db: Session = Depends(get_db), user=Depends(get_current_user)):
+    check_cutting(db, user, body.factory_id)
+    return cutting_bom.publish(db, user, identity, body)
 
 
 @router.post('/preview')

@@ -182,7 +182,9 @@ def preview(db, user, content, name, parsed):
         current = c.view(db, existing)
         used_source = db.scalar(select(CuttingRevision.version).where(CuttingRevision.master_id == existing.id,
                                 CuttingRevision.data['source_reference'].as_string() == source).limit(1))
-        if used_source is not None:
+        if current['data'].get('engineering_source'):
+            issues.append(dict(sheet='产品与版本', row=2, message='工程执行 BOM 请从工程部发布新版本'))
+        elif used_source is not None:
             issues.append(dict(sheet='产品与版本', row=2, message='该 BOM 的工程来源版本已经登记，请核对版本记录'))
         elif current['status'] != 'published':
             issues.append(dict(sheet='产品与版本', row=2, message='此编码已有待处理草稿，请先核对现有草稿'))
