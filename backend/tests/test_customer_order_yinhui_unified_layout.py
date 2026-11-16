@@ -176,8 +176,9 @@ def test_preview_blocks_conflicting_pack_until_explicit_confirmation_and_exports
     assert preview['rows'][0]['unit_price_usd'] == '2.91'
     issue = next(i for i in preview['rows'][0]['issues'] if i['code'] == 'case_pack_source_conflict')
     assert issue['can_edit'] and issue['edit_field'] == 'units_per_carton'
-    with pytest.raises(unified.CustomerOrderUnifiedError, match='仍有阻断项'):
-        unified.export_unified_customer_schedule(**args)
+    original_output, _, reminders = unified.export_unified_customer_schedule(**args)
+    assert reminders['summary']['blocked'] == 0
+    assert openpyxl.load_workbook(BytesIO(original_output))['ITEM表']['L5'].value == 12
     keys = {i['skip_key'] for r in preview['rows'] for i in r['issues'] if i.get('can_skip')}
     content, _, _ = unified.export_unified_customer_schedule(
         **args, skipped_issue_keys=keys,

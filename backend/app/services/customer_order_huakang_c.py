@@ -169,12 +169,15 @@ def _deduplicate(orders: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
             ),
             reverse=True,
         )
-        result.append(entries[0])
-        if len(entries) > 1:
-            report.append(
-                f"PO {po_number}：保留 {_text(entries[0].get('filename'))}；忽略 "
-                + "、".join(_text(entry.get("filename")) for entry in entries[1:])
-            )
+        newest = _revision(_text(entries[0].get('filename')), entries[0])
+        latest = [entry for entry in entries if _revision(_text(entry.get('filename')), entry) == newest]
+        result.extend(latest)
+        if len(latest) > 1:
+            report.append(f'PO {po_number}：同修订版的多份资料均保留，请留意数量及字段差异。')
+        if len(entries) > len(latest):
+            kept_names = '、'.join(str(entry.get('filename', '')) for entry in latest)
+            older_names = '、'.join(str(entry.get('filename', '')) for entry in entries if entry not in latest)
+            report.append(f'PO {po_number}：依据明确修订号保留 {kept_names}，忽略 {older_names}。')
     return result, report
 
 

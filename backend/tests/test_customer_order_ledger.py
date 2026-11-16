@@ -86,16 +86,21 @@ def test_import_is_persisted_idempotent_and_preserves_extensions(db):
         assert service.get_line(second, "huaxing", line.id).quantity == Decimal("10000")
 
 
-def test_batch_conflict_rolls_back_all_new_rows_and_files(db):
-    ingest(db)
+def test_batch_conflict_preserves_old_line_and_saves_source_variant(db):
+    original = ingest(db)
     payload = preview()
-    payload["rows"] = [preview(reference="NEW")["rows"][0], preview(qty="3")["rows"][0]]
-    with pytest.raises(HTTPException) as error:
-        api.transaction(db, lambda: service.import_preview(db, preview=payload,
-            files=[("NEW.pdf", b"NEW", "formal")], source_kind="formal", actor="a", reason="", controls={}))
-    assert error.value.status_code == 409
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
-    assert db.scalar(select(func.count()).select_from(Source)) == 1
+    payload['rows'] = [preview(reference='NEW')['rows'][0], preview(qty='3')['rows'][0], preview(qty='7')['rows'][0]]
+    def save():
+        return api.transaction(db, lambda: service.import_preview(db, preview=payload,
+            files=[('NEW.pdf', b'NEW', 'formal')], source_kind='formal', actor='a', reason='', controls={}))
+    result = save()
+    assert result['created_count'] == 3 and result['advisory_count'] == 2
+    assert original.quantity == Decimal('10000') and original.version == 1
+    assert {r['quantity'] for r in result['items']} == {'10000', '3', '7'}
+    again = save()
+    assert again['created_count'] == 0
+    assert {r['id'] for r in again['items']} == {r['id'] for r in result['items']}
+    assert db.scalar(select(func.count()).select_from(Line)) == 4
 
 
 def test_cross_factory_identity_and_access_are_separate(db):
@@ -188,9 +193,9 @@ def test_formal_po_reconciliation_keeps_id_shipments_old_references_and_notifies
     assert db.scalar(select(func.count()).select_from(Line)) == 1
     assert db.scalar(select(Dispatch).where(Dispatch.version == 2)).snapshot["carton_mark"] == "CUSTOMER MARK"
     assert db.scalar(select(Dispatch).where(Dispatch.version == 2)).snapshot["label"] == "EXACT LABEL"
-    with pytest.raises(HTTPException):
-        api.transaction(db, lambda: ingest(db, preview()))
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
+    variant = api.transaction(db, lambda: ingest(db, preview()))
+    assert variant.id != line.id and line.quantity == 9000 and line.shipped_quantity == 3000
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
     assert len(service.detail(db, line)["sources"]) == 2
 
 
@@ -538,10 +543,9 @@ def test_api_reconciles_changed_po_against_schedule_containing_old_quantity(clie
     changed = create_unified_customer_preview(**changed_args)
     api.mapping._finalize_preview(changed, received_date=args["received_date"], current_user=user(["read", "write"]), factory_id="huaxing")
     conflict = next(i for row in changed["rows"] for i in row["issues"] if i["code"] == "existing_quantity_conflict")
-    assert conflict["can_skip"] is False
-    # Ordinary new-order export may not confirm a changed quantity away.
-    with pytest.raises(Exception, match="阻断"):
-        export_unified_customer_schedule(**changed_args)
+    assert conflict["severity"] == "warning"
+    output_schedule, _, warnings = export_unified_customer_schedule(**changed_args)
+    assert output_schedule.startswith(b"PK") and warnings["summary"]["blocked"] == 0
     keys = [i["skip_key"] for row in changed["rows"] for i in row["issues"] if i.get("can_skip")]
     response = client.post("/api/customer-order-ledger/imports/disney", data={
         "factory_id": "huaxing", "received_date": args["received_date"], "confirmed": "true",

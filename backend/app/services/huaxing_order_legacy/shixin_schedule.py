@@ -113,7 +113,16 @@ def excel_date(value: Any, datemode: int = 0) -> str:
     return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}" if match else text
 
 
-def add_state(record: dict[str, Any]) -> dict[str, Any]:
+def _known_number(value: Any) -> float | None:
+    try:
+        result = float(str(value).replace(',', '').strip())
+        return result if math.isfinite(result) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def add_state(record: dict[str, Any], *, preserve_missing: bool = False) -> dict[str, Any]:
+    original = {key: record.get(key) for key in ('quantity', 'unit_price', 'amount')}
     record["quantity"] = number(record.get("quantity"))
     record["unit_price"] = number(record.get("unit_price"))
     record["amount"] = number(record.get("amount")) or round(record["quantity"] * record["unit_price"], 2)
@@ -134,6 +143,12 @@ def add_state(record: dict[str, Any]) -> dict[str, Any]:
         risks.append("QF超扣")
     record["risk_text"] = "、".join(risks)
     record["risk_level"] = "high" if any(x in risks for x in ("QF超扣", "缺走货期", "金额与数量×单价不符")) else "medium" if risks else "normal"
+    if preserve_missing:
+        for key in ('quantity', 'unit_price'):
+            if _known_number(original[key]) is None:
+                record[key] = original[key]
+        if _known_number(original['amount']) is None and any(_known_number(original[key]) is None for key in ('quantity', 'unit_price')):
+            record['amount'] = original['amount']
     return record
 
 
@@ -651,6 +666,7 @@ def parse_order_documents(
     data: bytes,
     filename: str,
     schedule_records: list[dict[str, Any]] | None = None,
+    *, allow_pending: bool = False,
 ) -> dict[str, Any]:
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
@@ -674,6 +690,11 @@ def parse_order_documents(
     rejected: list[dict[str, Any]] = []
     for record in records:
         errors = _critical_errors(record)
+        if errors and allow_pending:
+            warnings.append(f"{filename} / {record.get('item_no') or '未识别货号'}：资料待补或有差异（{'、'.join(errors)}），保留原始明细。")
+            record.setdefault('flags', []).extend({'level': 'high', 'code': 'source_information_pending', 'text': error} for error in errors)
+            valid.append(add_state(record, preserve_missing=True))
+            continue
         if errors:
             rejected.append({**record, "errors": errors})
             warnings.append(
@@ -681,7 +702,7 @@ def parse_order_documents(
                 f"缺少或冲突字段（{'、'.join(errors)}），本行未生成且未入库"
             )
             continue
-        valid.append(add_state(record))
+        valid.append(add_state(record, preserve_missing=allow_pending))
     if not records:
         warnings.append(f"{filename}：未识别到施信{kind}产品明细行，本文件未生成且未入库")
     status = "success" if valid and not rejected else "partial" if valid else "failed"
@@ -698,7 +719,7 @@ def parse_order_documents(
     }
 
 
-def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str, Any]]) -> dict[str, Any]:
+def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str, Any]], *, preserve_differences: bool = False) -> dict[str, Any]:
     def identity(record: dict[str, Any]) -> tuple[str, str, str]:
         item = clean(record.get("item_no")).upper()
         if record.get("po_no"):
@@ -730,6 +751,13 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
             rid = identity(r)
             if all(rid[1:]):
                 if rid in _seen_ids:
+                    previous = incoming[_seen_ids[rid]]
+                    facts = lambda row: {k: v for k, v in row.items() if k not in {'source_file', 'filename', '_source_po_file_name', '_advisory_source_difference'}}
+                    if preserve_differences and facts(previous) != facts(r):
+                        previous['_advisory_source_difference'] = r['_advisory_source_difference'] = True
+                        incoming.append(r)
+                        _dup_warnings.append(f"{doc.get('filename', '')}：同单同货号资料不同，保留各行，预备单扣减待核对。")
+                        continue
                     incoming[_seen_ids[rid]] = r
                     _dup_warnings.append(
                         f"{doc.get('filename', '')} 与之前上传的文件是同一单据（{rid[1]} / {rid[2]}），数量只计一次"
@@ -754,6 +782,10 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
             candidate
             for candidate in batch_qf_by_item.get(clean(record.get("item_no")).upper(), [])
             if number(candidate.get("quantity")) == number(record.get("quantity"))
+            and (not preserve_differences or (
+                _known_number(candidate.get('quantity')) is not None
+                and _known_number(record.get('quantity')) is not None
+                and _known_number(record.get('quantity')) > 0))
             and (
                 not clean(candidate.get("customer"))
                 or not clean(record.get("customer"))
@@ -781,7 +813,8 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
             continue
         schedule_quantities = {number(item.get("quantity")) for item in matches}
         incoming_quantity = number(record.get("quantity"))
-        if incoming_quantity in schedule_quantities:
+        if incoming_quantity in schedule_quantities and (not preserve_differences or (
+                _known_number(record.get('quantity')) is not None and incoming_quantity > 0)):
             existing_records.append(record)
             continue
         record["risk_level"] = "high"
@@ -796,11 +829,17 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
         if not all(key):
             continue
         qty = number(record.get("quantity"))
+        pending_qty = _known_number(record.get('quantity'))
+        unknown_qty = preserve_differences and (pending_qty is None or pending_qty <= 0)
         if record.get("po_no") or record.get("document_type") == "正式PO":
             groups[key]["po"] += qty
+            if unknown_qty:
+                groups[key]['unknown_po'] = True
         else:
             groups[key]["qf"] += qty
             groups[key]["has_qf"] = True
+            if unknown_qty:
+                groups[key]['unknown_qf'] = True
     warnings = [warning for doc in documents for warning in doc.get("warnings", [])] + _dup_warnings
     for record in existing_records:
         warnings.append(
@@ -809,8 +848,9 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
         )
     for record in modification_records:
         warnings.append(
-            f"{record.get('po_no') or record.get('oqf_no')} / {record.get('item_no')}："
-            f"当前排期数量与本次 {record.get('quantity')} 不同，疑似修改/补单，已拦截并交人工处理"
+            f"{record.get('po_no') or record.get('oqf_no')} / {record.get('item_no')}：" +
+            (f"当前排期数量与本次 {record.get('quantity')} 不同，保留来源明细，请留意修改/补单差异" if preserve_differences else
+             f"当前排期数量与本次 {record.get('quantity')} 不同，疑似修改/补单，已拦截并交人工处理")
         )
     for record in new_records:
         key = (clean(record.get("oqf_no")).upper(), clean(record.get("item_no")).upper())
@@ -820,8 +860,17 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
         record["qf_quantity"] = state["qf"] if state["has_qf"] else None
         record["po_total"] = state["po"]
         record["remaining_qf"] = state["qf"] - state["po"] if state["has_qf"] else None
+        if state.get('unknown_qf'):
+            record['qf_quantity'] = record['remaining_qf'] = None
+        if state.get('unknown_po'):
+            record['po_total'] = record['remaining_qf'] = None
+        if state.get('unknown_qf') or state.get('unknown_po'):
+            warnings.append(f"{key[0]} / {key[1]} 来源数量待补，相关合计和预备余量留空。")
         if record.get("po_no") and key[0] and not state["has_qf"]:
             warnings.append(f"{key[0]} / {key[1]} 未提供对应QF预备数量，剩余数量未知，请另行核对预备单扣减")
+        if preserve_differences and any(r.get('_advisory_source_difference') and
+                (clean(r.get('oqf_no')).upper(), clean(r.get('item_no')).upper()) == key for r in incoming):
+            record['qf_quantity'] = record['po_total'] = record['remaining_qf'] = None
         if record["remaining_qf"] is not None and record["remaining_qf"] < 0:
             record["risk_level"], record["risk_text"] = "high", "QF数量不足，正式PO累计超扣"
             warnings.append(f"{record.get('oqf_no')} / {record.get('item_no')} 正式PO累计超出QF {abs(record['remaining_qf'])} 件")
@@ -839,7 +888,7 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
     failed_count = sum(1 for item in files if item["status"] == "failed")
     message = (
         f"已处理 {len(documents)} 份施信 QF/PO：安全新单 {len(new_records)} 行，"
-        f"当前排期已存在 {len(existing_records)} 行，修改/冲突拦截 {len(modification_records)} 行。"
+        f"当前排期已存在 {len(existing_records)} 行，修改/冲突{'提醒' if preserve_differences else '拦截'} {len(modification_records)} 行。"
     )
     return {
         "documents": documents,

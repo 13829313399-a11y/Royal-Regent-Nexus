@@ -95,8 +95,10 @@ def test_manual_pack_is_used_in_excel_and_resolved_preview():
 
 
 def test_wrong_manual_stock_row_rejected():
-    with pytest.raises(service.CustomerOrderUnifiedError, match='备料行号'):
-        export_with_override(preview_args(po_bytes(['C1']), stock_book()), 'edu_reservation_row', '7')
+    content, _, resolved = export_with_override(preview_args(po_bytes(['C1']), stock_book()), 'edu_reservation_row', '7')
+    assert content.startswith(b'PK')
+    assert resolved['rows'][0]['_edu_skip_reservation']
+    assert any(i['code'] == 'edu_reservation_unresolved' for i in resolved['rows'][0]['issues'])
 
 
 def test_repeat_prefers_its_own_manual_pack_over_other_orders_or_stock():
@@ -132,6 +134,8 @@ def test_quantity_conflict_cannot_be_turned_into_optional_confirmation():
     args.update(schedule_content=output, po_files=[('changed.xls', po_bytes(['C1'], quantities=[576]))])
     preview = decorate_manual_resolution_policy(service.create_unified_customer_preview(**args))
     issue = next(i for i in preview['rows'][0]['issues'] if i['code'] == 'existing_quantity_conflict')
-    assert not issue['can_skip'] and not issue['can_edit']
-    with pytest.raises(service.CustomerOrderUnifiedError):
-        service.export_unified_customer_schedule(**args, skipped_issue_keys={issue['skip_key']})
+    assert issue['severity'] == 'warning' and not issue['can_edit']
+    content, _, resolved = service.export_unified_customer_schedule(**args)
+    book = openpyxl.load_workbook(BytesIO(content))
+    assert book['ITEM待补资料']['K4'].value == 576
+    assert resolved['summary']['blocked'] == 0

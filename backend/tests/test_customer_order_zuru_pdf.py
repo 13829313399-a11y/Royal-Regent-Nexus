@@ -130,8 +130,8 @@ def test_revision_selection_uses_document_record_and_whole_po():
 def test_same_revision_different_sources_conflict_even_with_filename_hint():
     a = parse_po('rev1.pdf', sample_pdf(revision=1))
     b = parse_po('rev999.pdf', sample_pdf(revision=1, qty=104))
-    with pytest.raises(ValueError, match='同版本'):
-        select_versions([('rev1.pdf', a), ('rev999.pdf', b)])
+    selected, notes = select_versions([('rev1.pdf', a), ('rev999.pdf', b)])
+    assert len(selected) == 2 and any('均保留' in note for note in notes)
     assert len(select_versions([('one.pdf', a), ('copy.pdf', a)])[0]) == 1
 
 

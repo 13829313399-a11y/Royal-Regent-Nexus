@@ -103,9 +103,10 @@ def test_zuru_ledger_import_is_idempotent_preserves_identity_and_rejects_conflic
     assert save(p)['existing_count'] == 2
     changed = deepcopy(p)
     changed['rows'][0]['quantity'] = '104'
-    with pytest.raises(HTTPException) as error:
-        save(changed)
-    assert error.value.status_code == 409
+    result = save(changed)
+    assert result["created_count"] == 1 and result["advisory_count"] == 1
+    assert result["items"][0]["id"] != first["items"][0]["id"]
+    assert save(changed)["created_count"] == 0
 
 
 @pytest.mark.parametrize('route', ['preview', 'export'])

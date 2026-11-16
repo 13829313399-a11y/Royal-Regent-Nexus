@@ -378,7 +378,7 @@ def test_yinhui_scanned_pdf_manual_pack_override_is_written_to_export(monkeypatc
         next(issue for issue in row["issues"] if issue["code"] == "missing_case_pack")
         for row in preview["rows"]
     ]
-    assert preview["summary"] == {"total": 2, "valid": 0, "warning": 0, "blocked": 2}
+    assert preview["summary"] == {"total": 2, "valid": 0, "warning": 2, "blocked": 0}
     assert all(issue["can_edit"] for issue in pack_issues)
     assert all(issue["edit_field"] == "case_pack" for issue in pack_issues)
     assert all(issue["edit_input_type"] == "number" for issue in pack_issues)

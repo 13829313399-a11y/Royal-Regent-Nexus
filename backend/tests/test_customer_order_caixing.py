@@ -483,7 +483,7 @@ def test_caixing_three_po_batch_allows_missing_matrix_columns(monkeypatch):
     assert exported_preview["summary"]["blocked"] == 0
 
 
-def test_caixing_existing_order_line_requires_test_confirmation(monkeypatch):
+def test_caixing_existing_order_line_is_advisory_without_confirmation(monkeypatch):
     monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
     source = openpyxl.load_workbook(BytesIO(build_caixing_schedule()))
     order = source[service.ORDER_SHEET]
@@ -522,14 +522,13 @@ def test_caixing_existing_order_line_requires_test_confirmation(monkeypatch):
         "blocked": 1,
     }
 
-    with pytest.raises(service.CustomerOrderWorkbookError, match="仍有阻断项"):
-        service.export_caixing_batch_schedule(
-            factory_id="huaxing",
-            received_date="2026-07-29",
-            po_files=po_files,
-            schedule_file_name="2026年彩星排期.xlsx",
-            schedule_content=schedule_content,
-        )
+    service.export_caixing_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星排期.xlsx",
+        schedule_content=schedule_content,
+    )
 
     exported, file_name, exported_preview = service.export_caixing_batch_schedule(
         factory_id="huaxing",
@@ -541,7 +540,7 @@ def test_caixing_existing_order_line_requires_test_confirmation(monkeypatch):
     )
     assert exported.startswith(b"PK")
     assert file_name == "2026年彩星排期.xlsx"
-    assert exported_preview["summary"]["blocked"] == 1
+    assert exported_preview["summary"]["blocked"] == 0
 
 
 def test_caixing_legacy_xls_uses_converter_and_preserves_format(monkeypatch):
