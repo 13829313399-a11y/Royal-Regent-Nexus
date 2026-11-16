@@ -191,6 +191,19 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(wrapper.findAll('.moldingInjectionTable .snapshot-cell').map((cell) => cell.text())).toEqual(['0.015', '2.083', '0.675', '2.758'])
   })
 
+  it('records the engineering source for both a single quote-only grade and a manual grade selection', async () => {
+    const modelValue = moldingModel({ material: '', grade: '导电PP' })
+    const wrapper = mount(InternalQuoteSectionForm, { props: { code: 'molding', modelValue,
+      referenceSnapshot: { ...referenceSnapshot, material_prices: { ...referenceSnapshot.material_prices, '导电pp|导电': '11.6' } },
+      materialSources: new Map([['mold-no:M12#1', ['', '导电PP']]]) } })
+    await wrapper.get('[data-injection-field="material"]').setValue('导电pp')
+    expect(modelValue.injection_lines[0]).toMatchObject({ material: '导电pp', grade: '导电', material_choice_for: ['', '导电PP'] })
+    await wrapper.get('[data-injection-field="material"]').setValue('1#PP')
+    await wrapper.get('[data-injection-field="grade"]').setValue(JSON.stringify(['1#PP', '7032 E3']))
+    expect(modelValue.injection_lines[0]).toMatchObject({ material: '1#PP', grade: '7032 E3', material_choice_for: ['', '导电PP'] })
+    wrapper.unmount()
+  })
+
   it('copies an independent row while retaining the original link until explicit detach', async () => {
     const modelValue = moldingModel()
     const wrapper = mount(InternalQuoteSectionForm, {

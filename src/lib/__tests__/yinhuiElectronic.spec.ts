@@ -101,6 +101,53 @@ describe('Yinhui supplier IC source evidence', () => {
     const parsed = readYinhuiSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)
     expect(readYinhuiElectronicSources(parsed.sheets)[0]!.chips[0]!.source).toBe('電子 報價!E93')
   })
+  describe('RFID controller and TAG card quotations', () => {
+    const quote = (product: string, model: string): XlsxParsedSheet => ({
+      name: '电子报价', cellFillIds: [], rows: [
+        [`产品名称：${product}  产品编号：${model}  客户：银辉`],
+        ['零件名称', '规格', '用量', '单价HKD', '合计HKD'],
+        ['IC', `IC,${product}`, 1, .5, .5],
+      ],
+    })
+    const input = [
+      { description: '电子（RFID指令器)', quantity: 1, internalHkd: 2, amountHkd: 3, source: 'main!D64' },
+      { description: '卡牌*26pcs', quantity: 26, internalHkd: 20, amountHkd: 26, source: 'main!D65' },
+    ]
+    const controller = quote('RFID指令器', '87768')
+    const cards = () => quote('TAG小卡片（单个）', '87768-TAG')
+    it('uses the component identities regardless of tab and BOM order', () => {
+      const grouped = splitYinhuiLegacyElectronics([...input].reverse(), [controller, cards()], main, '87768')
+      expect(grouped.map(row => [row.description, row.quantity])).toEqual([
+        ['卡牌*26pcs', 26], ['IC,TAG小卡片(单个)', 26], ['电子（RFID指令器)', 1], ['IC,RFID指令器', 1],
+      ])
+      expect(grouped[0]!.amountHkd + grouped[1]!.amountHkd).toBeCloseTo(26, 10)
+      expect(grouped[2]!.amountHkd + grouped[3]!.amountHkd).toBeCloseTo(3, 10)
+      expect(splitYinhuiLegacyElectronics(input, [cards(), controller], main, '87768').map(r => r.description))
+        .toEqual([input[0]!.description, 'IC,RFID指令器', input[1]!.description, 'IC,TAG小卡片(单个)'])
+    })
+    it('reopens a temporary card grouping label while keeping the original supplier model authoritative', () => {
+      const source = cards()
+      source.rows[1]!.push('备注', '仅用于导入分组的产品编号：87768-RX')
+      const legacyRows = [input[0]!, { ...input[1]!, description: '卡牌〔导入分组 RX〕*26pcs' }]
+      expect(splitYinhuiLegacyElectronics(legacyRows, [source, controller], main, '87768')[3]!.quantity).toBe(26)
+      source.rows[0] = ['产品名称：TAG小卡片（单个） 产品编号：87769-TAG']
+      expect(() => splitYinhuiLegacyElectronics(legacyRows, [source, controller], main, '87768')).toThrow(/型号/)
+      source.rows[0] = ['产品名称：TAG小卡片（单个） 产品编号： 客户：银辉']
+      expect(() => splitYinhuiLegacyElectronics(legacyRows, [source, controller], main, '87768')).toThrow(/型号/)
+    })
+    it.each(['877680-TAG', '87768-A-TAG', '87768-TAG2', '87768-TAG-X'])('preserves the full identity of %s', model => {
+      expect(() => splitYinhuiLegacyElectronics(input, [quote('TAG小卡片（单个）', model)], main, '87768')).toThrow(/型号/)
+    })
+    it('preserves an exact standalone TAG SKU and rejects contradictory, missing or duplicate component evidence', () => {
+      const generic = { ...input[1]!, description: '电子总成' }
+      expect(splitYinhuiLegacyElectronics([generic], [cards()], main, '87768-TAG')).toHaveLength(2)
+      expect(() => splitYinhuiLegacyElectronics([generic], [cards()], main, '87768')).toThrow(/唯一/)
+      expect(() => splitYinhuiLegacyElectronics([input[0]!], [cards()], main, '87768')).toThrow(/唯一/)
+      expect(() => splitYinhuiLegacyElectronics([input[0]!], [quote('通用电子', '87768')], main, '87768')).toThrow(/唯一/)
+      expect(() => splitYinhuiLegacyElectronics([...input, input[1]!], [cards()], main, '87768')).toThrow(/唯一/)
+      expect(() => splitYinhuiLegacyElectronics(input, [cards(), cards()], main, '87768')).toThrow(/唯一/)
+    })
+  })
   it.each(['IC', 'ic,driver', 'ＩＣ，OTP'])('recognizes %s', name => expect(isYinhuiIc(name)).toBe(true))
   it.each(['MIC', 'MICROPHONE', 'PCB IC SOCKET', 'ICICLE'])('does not mistake %s for an IC part', name => expect(isYinhuiIc(name)).toBe(false))
   it.each([null, '', '#VALUE!', -1, true])('rejects invalid IC price %s', price => {

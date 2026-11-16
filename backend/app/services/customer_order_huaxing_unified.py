@@ -404,20 +404,23 @@ def validate_edited_identities(preview, original, history, available_sheets, ove
         elif len(lanes) == 1:
             row['item_sheet_name'] = next(iter(lanes))
         else:
-            raise unified.CustomerOrderUnifiedError('修改后的货号无法唯一确定 ITEM 分类页，请修订 PO 后重新预览')
+            row['item_sheet_name'] = ''
+            row.setdefault('issues', []).append(unified._issue('warning', 'edited_category_unknown', 'product_no',
+                '修改后的货号分类待补，本次写入 ITEM待补资料，不推测所属分类。'))
         same_order = [h for h in matches if h.reference_no and identity_key(h.reference_no) == identity_key(row.get('reference_no'))]
         batch_matches = [other for other in preview['rows'] if other is not row and
                          identity_key(other.get('product_no')) == identity_key(row.get('product_no')) and
                          identity_key(other.get('reference_no')) == identity_key(row.get('reference_no'))]
         if row.get('_huaxing_customer') == 'edu':
             if not any(edu_order_key(row.get('contract_no'), row.get('po_no'))):
-                raise unified.CustomerOrderUnifiedError('EDU 修改后缺少客户合同号或客户 PO，请重新核对')
+                row.setdefault('issues', []).append(unified._issue('warning', 'edu_missing_business_identity', 'contract_no', '客户合同号或 PO 待补，保留原始明细。'))
             same_order += edu_history_matches(row, matches)
             identity = edu_identity(row.get('contract_no'), row.get('po_no'), row.get('product_no'))
             batch_matches += [other for other in preview['rows'] if other is not row and
                               edu_identity(other.get('contract_no'), other.get('po_no'), other.get('product_no')) == identity]
         if same_order or batch_matches:
-            raise unified.CustomerOrderUnifiedError('修改后的订单身份存在重复或数量冲突，原重复确认不适用，请修订 PO 后重新预览')
+            row.setdefault('issues', []).append(unified._issue('warning', 'edited_identity_overlap', 'reference_no',
+                '修改后的订单身份存在重复或数量差异，本次明细独立保留，请留意。'))
 
 
 def _repair_shushupapa_summary_amounts(workbook, order_row, review_row, row):
@@ -442,18 +445,55 @@ def _repair_shushupapa_summary_amounts(workbook, order_row, review_row, row):
             sheet.cell(number, column).number_format = '#,##0.00'
 
 
+def export_advisory_rows(workbook, rows, message):
+    """Preserve unclassifiable source rows without guessing a category or stock deduction."""
+    if not rows:
+        return
+    from app.services import customer_order_unified as unified
+    from app.services.huakang_a_order_legacy.unified_schedule import output_slots
+    name = 'ITEM待补资料'
+    if name not in workbook.sheetnames:
+        sheet = workbook.create_sheet(name)
+        for column, header in enumerate(unified.ITEM_HEADERS, 1):
+            sheet.cell(3, column, header)
+        sheet.cell(3, 29, '资料提醒')
+        sheet.cell(5, 1, '取消单')
+    slots = output_slots(workbook, len(rows), sheet_counts={name: len(rows), '接单表': len(rows), '正单评审表': len(rows)})
+    for index, row in enumerate(rows):
+        row.setdefault('issues', []).append(unified._issue('warning', 'unclassified_source', 'product_no', message))
+        row['item_sheet_name'] = name
+        number = slots[name][index]
+        unified._write_item_row(workbook[name], number, row)
+        workbook[name].cell(number, 29, message).data_type = 's'
+        for summary in ('接单表', '正单评审表'):
+            unified._write_summary_row(workbook[summary], slots[summary][index], row,
+                                      item_row=number, item_sheet=workbook[name])
+
+
 def export_rows(workbook, rows):
+    from app.services import customer_order_unified as unified
     if rows and all(row.get('_huaxing_customer') == 'yinhui' for row in rows):
         from .customer_order_yinhui_unified import export_rows as export_yinhui
         return export_yinhui(workbook, rows)
     if rows and all(row.get('_huaxing_customer') == 'edu' for row in rows):
         from app.services.huaxing_order_legacy.edu_grouped_export import export_rows as export_edu
-        return export_edu(workbook, rows)
+        try:
+            return export_edu(workbook, rows)
+        except unified.CustomerOrderUnifiedError as exc:
+            # EDU validates source identities/reservations before touching cells.
+            # Uncertain business facts may export, but never debit guessed stock.
+            if not any(term in str(exc) for term in ('订单身份', '数量冲突', '内部编号', '一致正式单', '备料', '原收单日期')):
+                raise
+            return export_advisory_rows(workbook, rows, str(exc) + '；本次保留在 ITEM待补资料，未扣备料。')
     from app.services import customer_order_unified as unified
     from app.services.huakang_a_order_legacy.unified_schedule import output_slots
-    for row in rows:
-        if row.get('item_sheet_name') not in item_sheets(workbook, row['_huaxing_customer']):
-            raise unified.CustomerOrderUnifiedError('尚未确定产品的 ITEM 分类页，请核对货号及分类后重新预览')
+    unresolved = [row for row in rows if row.get('item_sheet_name') not in item_sheets(workbook, row['_huaxing_customer'])]
+    if unresolved:
+        resolved = [row for row in rows if row not in unresolved]
+        if resolved:
+            export_rows(workbook, resolved)
+        export_advisory_rows(workbook, unresolved, '产品分类待补，保留原始明细；接单表及正单评审表关联本页。')
+        return
     buzzbee_column = None
     if any(row.get('_huaxing_customer') == 'buzzbee' for row in rows):
         from app.services.customer_order_buzzbee_color_box import prepare_review

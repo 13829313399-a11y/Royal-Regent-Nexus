@@ -38,7 +38,7 @@ from app.services.customer_order_manual import (
 )
 
 
-PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v5"
+PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v6"
 TARGET_TEMPLATE = "HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1"
 ITEM_SHEET = "ITEM表"
 ORDER_SHEET = "接单表"
@@ -799,12 +799,12 @@ def _parse_huaxing_rows(
     elif customer_code == "seasons":
         documents = []
         for file_name, content in po_files:
-            document = shixin_schedule.parse_order_documents(content, file_name, [])
+            document = shixin_schedule.parse_order_documents(content, file_name, [], allow_pending=True)
             for record in document.get("records", []):
                 record["_source_po_file_name"] = file_name
             warnings.extend(document.get("warnings", []))
             documents.append(document)
-        reconciled = shixin_schedule.reconcile_documents(documents, [])
+        reconciled = shixin_schedule.reconcile_documents(documents, [], preserve_differences=True)
         records = reconciled.get("records", [])
         warnings.extend(reconciled.get("warnings", []))
 
@@ -987,10 +987,6 @@ def _parse_huadeng_rows(
                 records.append(line)
 
     elif customer_code == "simba":
-        excel_stems = {
-            Path(name).stem.casefold() for name, _ in po_files
-            if Path(name).suffix.lower() in {".xlsx", ".xlsm"}
-        }
         selected: list[tuple[str, bytes]] = []
         seen_hashes: set[str] = set()
         for file_name, content in po_files:
@@ -999,11 +995,8 @@ def _parse_huadeng_rows(
                 warnings.append(f"{file_name}：完全相同的重复文件未再次处理。")
                 continue
             seen_hashes.add(digest)
-            if Path(file_name).suffix.lower() == ".pdf" and Path(file_name).stem.casefold() in excel_stems:
-                warnings.append(f"{file_name}：检测到同名 Excel，已优先采用 Excel。")
-                continue
             selected.append((file_name, content))
-        merged: dict[tuple[str, ...], dict[str, Any]] = {}
+        merged: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         order_keys: list[tuple[str, ...]] = []
         for file_name, content in selected:
             try:
@@ -1024,13 +1017,20 @@ def _parse_huadeng_rows(
                 key = service._simba_identity(record)
                 current = merged.get(key)
                 if current is None:
-                    merged[key] = record
+                    merged[key] = [record]
                     order_keys.append(key)
-                elif service._simba_signature(current) != service._simba_signature(record) and service._simba_priority(file_name, record) > service._simba_priority(_text(current.get("source_file")), current):
-                    merged[key] = record
+                    continue
+                revision = service._revision(file_name)
+                old_revision = service._revision(_text(current[0].get('source_file')))
+                if revision > old_revision:
+                    merged[key] = [record]
+                    warnings.append(f'{file_name}：依据明确修订号替代旧版明细。')
+                elif revision == old_revision and not any(service._simba_signature(old) == service._simba_signature(record) for old in current):
+                    current.append(record)
+                    warnings.append(f'{file_name}：同修订明细有差异，均保留供核对，不按文件格式或识别完整度挑选。')
                 else:
-                    warnings.append(f"{file_name} / {record.get('item_no')}：同单重复或低优先级版本未再次写入。")
-        records = [merged[key] for key in order_keys]
+                    warnings.append(f'{file_name}：相同明细或明确较旧修订版未重复写入。')
+        records = [record for key in order_keys for record in merged[key]]
 
     else:
         seen: set[tuple[str, ...]] = set()
@@ -1235,6 +1235,26 @@ def _create_customer_rows(
     return _parse_huakang_c_rows(customer_code, po_files, received_date, factory_id)
 
 
+def _green_summary_recovery(workbook, rows, history):
+    try:
+        recovery = huakang_unified.green_summary_recovery(workbook, rows, history)
+        # A recovered summary pair belongs to exactly one source row. Reusing
+        # it for two differing lines would overwrite the first row's formulas.
+        keys = [(_text(row.get('contract_no')), _key(row.get('product_no'))) for row in rows]
+        ambiguous = {key for key in recovery if keys.count(key) > 1}
+        for row, key in zip(rows, keys):
+            if key in ambiguous and not any(i.get('code') == 'green_summary_difference' for i in row.get('issues', [])):
+                row.setdefault('issues', []).append(_issue('warning', 'green_summary_difference', 'reference_no',
+                    '同合同同产品有多行资料，旧摘要保留，各明细及摘要分别追加。'))
+        return {key: value for key, value in recovery.items() if key not in ambiguous}
+    except CustomerOrderUnifiedError as exc:
+        for row in rows:
+            if not any(i.get('code') == 'green_summary_difference' for i in row.get('issues', [])):
+                row.setdefault('issues', []).append(_issue('warning', 'green_summary_difference', 'reference_no',
+                    str(exc) + '；旧摘要保留，本次另行追加明细。'))
+        return {}
+
+
 def create_unified_customer_preview(
     *,
     customer_code: str,
@@ -1282,7 +1302,7 @@ def create_unified_customer_preview(
     if factory_id == 'huakang-a' and customer_code == 'green-toys':
         workbook = _load_workbook(schedule_content)
         try:
-            recovery = huakang_unified.green_summary_recovery(workbook, detail_rows, history)
+            recovery = _green_summary_recovery(workbook, detail_rows, history)
         finally:
             workbook.close()
         assigned = {key: value['reference'] for key, value in recovery.items()}
@@ -1341,14 +1361,9 @@ def create_unified_customer_preview(
     for row in rows:
         mark_pending_information(row)
         _refresh_status(row)
-    parent_blockers = [issue['message'] for row in rows if row.get('row_role') == 'parent'
-                       for issue in row['issues'] if issue.get('severity') == 'blocked'
-                       and (issue.get('requires_source_correction') or 'conflict' in str(issue.get('code', ''))
-                            or issue.get('field') in {'quantity', 'product_no'})
-                       and issue.get('code') not in {'duplicate_reference', 'existing_order_line',
-                           'duplicate_batch_order_line', 'duplicate_existing_order'}]
-    if parent_blockers:
-        raise CustomerOrderUnifiedError('汇总行仍有阻断项：' + '；'.join(dict.fromkeys(parent_blockers)))
+    # Summary-only findings must remain visible even though only detail rows export.
+    parser_warnings.extend(issue['message'] for row in rows if row.get('row_role') == 'parent'
+                           for issue in row.get('issues', []))
     _mark_batch_duplicates(detail_rows)
     if customer_code == 'zuru':
         for row in detail_rows:
@@ -1677,53 +1692,20 @@ def _validate_manually_changed_identities(preview, original, history) -> None:
                     if _order_identity(row, item.reference_no, item.product_no) == identity]
         quantities = [_number(other.get('quantity')) for other in peers] + [_number(item.quantity) for item in existing]
         if quantities:
-            if any(value != _number(row.get('quantity')) for value in quantities):
-                raise CustomerOrderUnifiedError('补录后订单编号与产品已存在，但数量不同，请核对原单和排期，不能作为新单导入。')
-            raise CustomerOrderUnifiedError('补录后与本批或现有排期的订单身份重复，请修订原单后重新预览并核对重复记录。')
+            row.setdefault('issues', []).append(_issue('warning', 'edited_identity_overlap', 'reference_no',
+                '补录后与本批或现有排期的订单身份相同，请留意数量及改单差异；本次明细独立保留。'))
 
 
 def _validate_resolutions(preview: dict[str, Any], requested: set[str], reconciliation_target=None) -> None:
-    # Only the ledger API supplies this target, read from its authorized database
-    # record. A normal export/skip request cannot enable quantity reconciliation.
-    reconciled_row_id = None
-    details = [row for row in preview['rows'] if row.get('row_role') != 'parent']
-    if reconciliation_target and len(details) == 1:
-        row = details[0]
-        target = reconciliation_target
-        if (target.get('factory_id') == preview.get('factory_id')
-                and target.get('customer_code') == preview.get('customer_code')
-                and _order_identity(row, row.get('reference_no'), row.get('product_no')) ==
-                    _order_identity(row, target.get('reference_no'), target.get('product_no'))):
-            reconciled_row_id = row['id']
-    for row in preview["rows"]:
-        if row.get("row_role") == "parent":
-            continue
-        reference = _text(row.get("reference_no")) or _text(row.get("contract_no")) or _text(row.get("po_no"))
-        if not reference or not _text(row.get("product_no")):
-            raise CustomerOrderUnifiedError("订单编号和产品编号须明确，不能将缺少订单身份作为提示放行。")
-        quantity = _number(row.get("quantity"))
-        if quantity is None or quantity <= 0:
-            raise CustomerOrderUnifiedError("数量必须为有效正数，不能仅确认缺失后保存或导出。")
+    decorate_manual_resolution_policy(preview)
     available = {
         issue.get("skip_key")
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue.get("skip_key") and (issue.get('can_skip') or issue.get('can_edit')) and not issue.get('requires_source_correction')
+        if issue.get("skip_key") and (issue.get('can_skip') or issue.get('can_edit'))
     }
     if requested - available:
         raise CustomerOrderUnifiedError("所选确认项已失效，请重新预览后再生成")
-    blockers = [
-        issue["message"]
-        for row in preview["rows"]
-        for issue in row["issues"]
-        if issue.get("severity") == "blocked"
-        and not (row.get('id') == reconciled_row_id and issue.get('code') == 'existing_quantity_conflict')
-        and (not issue.get("required_for_intake") or issue.get("requires_source_correction")) and (
-            issue.get('requires_source_correction') or not issue.get('can_skip') or issue.get("skip_key") not in requested
-        )
-    ]
-    if blockers:
-        raise CustomerOrderUnifiedError("仍有阻断项：" + "；".join(dict.fromkeys(blockers)))
 
 
 def export_unified_customer_schedule(
@@ -1828,7 +1810,7 @@ def export_unified_customer_schedule(
             version_columns = huakang_unified.ensure_360_version_columns(workbook) if factory_id == 'huakang-a' and customer_code == '360' else {}
             recovery = {}
             if factory_id == 'huakang-a' and customer_code == 'green-toys':
-                recovery = huakang_unified.green_summary_recovery(workbook, rows,
+                recovery = _green_summary_recovery(workbook, rows,
                     read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code))
             recovered_rows = [recovery.get((_text(row.get('contract_no')), _key(row.get('product_no')))) for row in rows]
             if any(recovered_rows):
@@ -1879,8 +1861,7 @@ def export_unified_customer_schedule(
             for name, summary_row, item_row in green_pairs:
                 detail = workbook[ITEM_SHEET]
                 summary = workbook[name]
-                if (not _text(detail.cell(item_row, 5).value) or not _text(detail.cell(item_row, 8).value)
-                        or [_text(detail.cell(item_row, c).value) for c in range(4, 9)] !=
+                if ([_text(detail.cell(item_row, c).value) for c in range(4, 9)] !=
                            [_text(summary.cell(summary_row, c).value) for c in range(3, 8)]):
                     raise CustomerOrderUnifiedError('Green Toys 导出三表身份不一致，已停止生成，请重新核对')
                 for c, ic in ((1,1),(2,2),(8,9),(9,10),(10,11),(11,12),(12,13),(13,14),(18,25),(19,26)):
@@ -1917,4 +1898,4 @@ def export_unified_customer_schedule(
         workbook.save(output)
     finally:
         workbook.close()
-    return output.getvalue(), preview["output_file_name"], preview
+    return output.getvalue(), preview["output_file_name"], decorate_manual_resolution_policy(preview)

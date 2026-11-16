@@ -268,9 +268,9 @@ def test_quantity_conflicts_stay_blocked_but_exact_duplicate_is_warning():
     book.active['X15'], book.active['Z15'], book.active['AA15'] = 104, 260, 26
     book.active['X17'], book.active['Z17'], book.active['AA17'] = 304, 760, 76
     params['po_files'] = [('changed.xlsx', data(book))]
-    assert unified.create_unified_customer_preview(**params)['summary']['blocked'] > 0
-    with pytest.raises(unified.CustomerOrderUnifiedError):
-        unified.export_unified_customer_schedule(**params)
+    assert unified.create_unified_customer_preview(**params)['summary']['blocked'] == 0
+    content, _, reminders = unified.export_unified_customer_schedule(**params)
+    assert content.startswith(b'PK') and reminders['summary']['blocked'] == 0
 
 
 def test_full_product_punctuation_does_not_create_false_history_conflict():

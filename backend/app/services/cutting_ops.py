@@ -100,7 +100,9 @@ def save(db, user, body, entity_id=None):
         item = master(db, entity_id)
         require(item.kind == body.kind and item.code == body.code, '资料类型及编码不可修改', 422)
         require(item.version == body.expected_version, '资料已更新，请重新读取后再保存')
-        require(view(db, item)['status'] != 'inactive', '请先启用资料后再修订')
+        previous = view(db, item)
+        require(not previous['data'].get('engineering_source'), '工程执行 BOM 请从工程部发布新版本')
+        require(previous['status'] != 'inactive', '请先启用资料后再修订')
     else:
         require(body.expected_version == 0, '新资料版本必须为零')
         exists = db.scalar(select(CuttingMaster.id).where(CuttingMaster.factory_id == FACTORY,

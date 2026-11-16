@@ -245,30 +245,33 @@ def parse_po(name, content):
 
 
 def select_versions(parsed_files):
-    """One complete source per real PO. Only native revision records select versions."""
-    selected, notes = {}, []
+    """Only evidenced revision ancestry replaces a source; ambiguity is advisory."""
+    selected, notes = [], []
     for filename, parsed in parsed_files:
-        po = parsed['po']
-        if po not in selected:
-            selected[po] = filename, parsed
-            continue
-        old_name, old = selected[po]
-        if old['source_digest'] == parsed['source_digest']:
-            notes.append(f'PO {po}：{filename} 与 {old_name} 内容相同，仅保留一份。')
-            continue
-        left, right = old['revision_history'], parsed['revision_history']
-        if left is None or right is None or left == right:
-            raise ValueError(f'PO {po} 存在同版本或版本不明的不同文件：{old_name} / {filename}；请只保留确认版本')
-        newer = right if len(right) > len(left) else left
-        older = left if newer is right else right
-        if newer[:len(older)] != older or not newer:
-            raise ValueError(f'PO {po} 的原单修订记录相互冲突，不能按文件名猜测最新版本')
-        if newer is right:
-            selected[po] = filename, parsed
-            notes.append(f'PO {po}：依据原单修订记录 {right[-1][0]} / {right[-1][1]} 使用 {filename}，替代 {old_name}。')
-        else:
-            notes.append(f'PO {po}：依据原单修订记录 {left[-1][0]} / {left[-1][1]} 保留 {old_name}，忽略旧版 {filename}。')
-    return list(selected.values()), notes
+        keep = True
+        replaced = []
+        for index, (old_name, old) in enumerate(selected):
+            if old['po'] != parsed['po']:
+                continue
+            if old['source_digest'] == parsed['source_digest']:
+                notes.append(f"PO {parsed['po']}：{filename} 与 {old_name} 内容相同，仅保留一份。")
+                keep = False
+                break
+            left, right = old['revision_history'], parsed['revision_history']
+            if left is not None and right is not None and left != right:
+                if len(right) > len(left) and right[:len(left)] == left:
+                    replaced.append(index)
+                    notes.append(f"PO {parsed['po']}：依据原单修订记录 {right[-1][0]} / {right[-1][1]} 使用 {filename}，替代 {old_name}。")
+                    continue
+                if len(left) > len(right) and left[:len(right)] == right:
+                    notes.append(f"PO {parsed['po']}：依据原单修订记录 {left[-1][0]} / {left[-1][1]} 保留 {old_name}，忽略旧版 {filename}。")
+                    keep = False
+                    break
+            notes.append(f"PO {parsed['po']}：{old_name} / {filename} 同版本或修订关系不明确，均保留原始明细，请留意差异。")
+        if keep:
+            selected = [entry for i, entry in enumerate(selected) if i not in replaced]
+            selected.append((filename, parsed))
+    return selected, notes
 
 
 def create_rows(po_files, received_date, history):

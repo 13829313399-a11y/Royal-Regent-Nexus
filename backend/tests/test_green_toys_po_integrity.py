@@ -188,12 +188,12 @@ def test_recovery_preserves_five_suffix_and_manual_price_without_summary_duplica
         assert any(cell.value == '保留旧内容' for cell in sheet['A'])
     # A new import sees restored ITEM history and retains controlled duplicates.
     repeated = preview(output)
-    assert repeated['summary']['blocked'] == 8
+    assert repeated['summary']['blocked'] == 0
     assert all(any(i['code'] == 'duplicate_existing_order' for i in r['issues']) for r in repeated['rows'])
 
 
 @pytest.mark.parametrize('change', ['missing-peer', 'literal-quantity', 'different-product', 'duplicate-reference', 'reference-in-use'])
-def test_recovery_refuses_conflicting_or_manual_summary_fields(change):
+def test_recovery_preserves_conflicting_manual_summary_and_appends_new_rows(change):
     book = openpyxl.load_workbook(BytesIO(recovery_template()))
     if change == 'missing-peer':
         book[service.REVIEW_SHEET]['C4'] = None
@@ -209,8 +209,19 @@ def test_recovery_refuses_conflicting_or_manual_summary_fields(change):
         item['F4'], item['H4'] = '7848-1', 'SUBY-1033'
     buffer = BytesIO()
     book.save(buffer)
-    with pytest.raises(service.CustomerOrderUnifiedError):
-        preview(buffer.getvalue())
+    before = {name: [tuple(c.value for c in book[name][r]) for r in (4, 5)]
+              for name in (service.ORDER_SHEET, service.REVIEW_SHEET)}
+    result = preview(buffer.getvalue())
+    assert result['summary']['blocked'] == 0
+    assert any(i['code'] == 'green_summary_difference' for row in result['rows'] for i in row['issues'])
+    output, _, _ = service.export_unified_customer_schedule(customer_code='green-toys', factory_id='huakang-a',
+        received_date='2026-10-05', po_files=[('7848.html', html_po())],
+        schedule_file_name='Green Toys.xlsx', schedule_content=buffer.getvalue())
+    after = openpyxl.load_workbook(BytesIO(output))
+    for name, originals in before.items():
+        for r, values in zip((4, 5), originals):
+            assert tuple(after[name].cell(r, c).value for c in range(1, len(values) + 1)) == values
+    after.close()
 
 
 def test_native_html_keeps_factory_isolation():

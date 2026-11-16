@@ -226,7 +226,7 @@ def test_preview_semantic_version_changes_fingerprint_without_changing_inputs(db
     install(db)
     files = [('versioned.eml', mail())]
     current = preview(db, files)
-    assert current['preview_schema_version'] == 'huakang-b-jp-preview-v5'
+    assert current['preview_schema_version'] == 'huakang-b-jp-preview-v6'
     with monkeypatch.context() as ctx:
         ctx.setattr(intake, 'PREVIEW_SCHEMA_VERSION', 'huakang-b-jp-preview-v4')
         old = preview(db, files)

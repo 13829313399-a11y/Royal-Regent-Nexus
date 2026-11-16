@@ -241,12 +241,12 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",
         "symbol": "remaining_quantity",
-        "sha256": "afa400f5dfb08297d3d4ebf4cd2eb06078f8ae075d706d7a11edb41b10364d47"
+        "sha256": "1d008a383ca82c971c0c0081469d2ca0b9c0afaaac734701cab90bbe5882c1a8"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def amend",
-        "sha256": "49ca06455d950d4cd44231abbd32f1170673996dcde0d88d652415ec4563eb1d"
+        "sha256": "5b523fb9c5bef4d854fbba46e9d0d034b744a97c525138efed00c684ad78e50a"
       }
     ],
     "knowledge_version": "2026.11.10-qc-source-outbox-compatible",
