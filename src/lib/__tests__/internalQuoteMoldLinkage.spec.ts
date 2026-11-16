@@ -25,6 +25,20 @@ describe('stable whole mold linkage', () => {
     }
   })
 
+  it('keeps an explicit price pair through save and clears it when the engineering resin changes', () => {
+    const source = engineering([{ mold_id: 'm1', material_type: '导电PP', net_weight_g: 34 }])
+    const draft = linkEngineeringMolding(source, molding())
+    Object.assign(draft.injection_lines[0]!, { material: '1#PP', grade: '7032 E3', material_choice_for: [] })
+    const saved = linkEngineeringMolding(source, molding(draft.injection_lines))
+    expect(saved.injection_lines[0]).toMatchObject({ material: '1#PP', grade: '7032 E3', material_choice_for: ['', '导电PP'] })
+    source.molds[0]!.net_weight_g = 35
+    expect(linkEngineeringMolding(source, saved).injection_lines[0]).toMatchObject({ grade: '7032 E3', net_weight_g: 35 })
+    source.molds[0]!.material_type = 'PVC'
+    const changed = linkEngineeringMolding(source, saved).injection_lines[0]!
+    expect(changed).toMatchObject({ material: 'PVC', grade: '' })
+    expect(changed.material_choice_for).toBeUndefined()
+  })
+
   it.each(['C-PP', 'C-ABS'])('clears a legacy %s family-as-grade for explicit frozen selection', hint => {
     const source = engineering([{ mold_id: 'resin-mold', material_type: hint }])
     const selected = molding([{ engineering_mold_id: 'resin-mold', material: hint, grade: hint,

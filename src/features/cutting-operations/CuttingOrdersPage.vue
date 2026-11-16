@@ -358,7 +358,11 @@ function status(row: CuttingOrder) {
       <CuttingPlanningMetrics v-if="workspace.path==='planning'" :query="appliedQuery" :status="appliedStatus" :plan-status="appliedPlanStatus" :refresh="summaryRefresh" />
       <SectionPanel v-if="workspace.path==='planning' && selected" title="当前订单排期摘要" :subtitle="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`" class="cutting-content-panel">
         <dl class="cutting-review-grid cutting-review-facts">
-          <div><dt>关联 BOM</dt><dd>{{ data?.bom ? `${data.bom.code} V${data.bom.version}` : '待关联' }}</dd></div>
+          <div><dt>关联 BOM</dt><dd>{{ data?.bom ? `${data.bom.code} V${data.bom.version}` : '待关联' }}</dd>
+            <dd v-if="data?.bom && (data.bom.data as BomData).engineering_source">
+              <RouterLink class="underline" :to="{ path: '/modules/production/cutting/master', query: { factory: CUTTING_FACTORY, master_id: data.bom.id, master_version: data.bom.version } }">追溯工程 BOM V{{ (data.bom.data as BomData).engineering_source?.version }}</RouterLink>
+            </dd>
+          </div>
           <div><dt>发布计划</dt><dd>{{ publishedPlan ? `V${publishedPlan.version}${selected.planning_summary?.published_stale ? ' · 待复核' : ''}` : '未发布' }}</dd></div>
           <div><dt>预计供数</dt><dd>{{ singlePublishedTask?.estimated_supply_date ?? (publishedPlan && !singlePublishedTask ? '按任务核对' : '待核定') }}</dd></div>
           <div><dt>实际领料</dt><dd>{{ singlePublishedTask?.actual_issue_date ?? (publishedPlan && !singlePublishedTask ? '按任务核对' : '待核定') }}</dd></div>
@@ -465,7 +469,7 @@ function status(row: CuttingOrder) {
               <div class="order-toolbar"><label>BOM 编码／货号／名称／款式／颜色 <input :id="editorId('bom_query')" name="bom_query" v-model="bomQuery" maxlength="80" /></label><Button variant="outline" type="button" @click="searchBoms()">查找 BOM</Button></div>
               <ul><li v-for="b in bomRows" :key="b.id">{{ b.code }} · {{ b.data.name }} <Button variant="outline" type="button" @click="loadVersions(b.id)">查看发布版本</Button></li></ul>
               <div v-if="bomTotal" class="order-toolbar"><Button variant="outline" type="button" :disabled="bomPage <= 1" @click="searchBoms(bomPage-1)">BOM 上一页</Button><Button variant="outline" type="button" :disabled="bomPage*50 >= bomTotal" @click="searchBoms(bomPage+1)">BOM 下一页</Button></div>
-              <ul><li v-for="b in versions" :key="b.version">{{ b.code }} V{{ b.version }} · {{ (b.data as BomData).item_no }} · {{ (b.data as BomData).style }} / {{ (b.data as BomData).color }} <Button variant="outline" type="button" @click="chosenBom = b">选择此发布版</Button></li></ul>
+              <ul><li v-for="b in versions" :key="b.version">{{ b.code }} V{{ b.version }} · {{ (b.data as BomData).item_no }} · {{ (b.data as BomData).style }} / {{ (b.data as BomData).color }}<span v-if="(b.data as BomData).engineering_source"> · 工程来源 V{{ (b.data as BomData).engineering_source?.version }}</span> <Button variant="outline" type="button" @click="chosenBom = b">选择此发布版</Button></li></ul>
               <p v-if="versionId && !versions.length">此页没有发布版本。</p>
               <div v-if="versionId" class="order-toolbar"><Button variant="outline" type="button" :disabled="versionPage <= 1" @click="loadVersions(versionId, versionPage-1)">版本上一页</Button><Button variant="outline" type="button" :disabled="versionPage*50 >= versionTotal" @click="loadVersions(versionId, versionPage+1)">版本下一页</Button></div>
               <p>已选择：{{ chosenBom ? `${chosenBom.code} V${chosenBom.version}` : '尚未选择' }}。新发布版本不会自动替换本订单。</p>
@@ -523,6 +527,9 @@ function status(row: CuttingOrder) {
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
+          <p v-if="r.data.bom && (r.data.bom.data as BomData).engineering_source">
+            <RouterLink class="underline" :to="{ path: '/modules/production/cutting/master', query: { factory: CUTTING_FACTORY, master_id: r.data.bom.id, master_version: r.data.bom.version } }">追溯工程 BOM V{{ (r.data.bom.data as BomData).engineering_source?.version }}</RouterLink>
+          </p>
           <CuttingPlanSummary v-if="r.data.planning?.published" :plan="r.data.planning.published" title="该版本发布计划" />
           <CuttingPlanSummary v-if="r.data.planning?.draft" :plan="r.data.planning.draft" title="该版本计划草稿" draft />
           <p v-if="r.data.purchase_reconciliation_required">旧采购需求待核对</p>
