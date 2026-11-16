@@ -28,7 +28,7 @@ from .prices import PriceTable
 
 FACTORY = "huakang-b"
 CUSTOMER = "jp-huakang-b"
-PREVIEW_SCHEMA_VERSION = "huakang-b-jp-preview-v5"
+PREVIEW_SCHEMA_VERSION = "huakang-b-jp-preview-v6"
 KINDS = {"schedule", "price", "confirmed"}
 MAX_FILE = 20 * 1024 * 1024
 MAX_TOTAL = 50 * 1024 * 1024
@@ -397,7 +397,7 @@ def workbook(rows, first, prefix, actor, merchandiser=""):
     s.append(COLUMNS)
     for offset, row in enumerate(rows):
         values = [f"{prefix}-{first + offset:04d}" if first else "", row["customer"], row.get("customer_po"), row["order_date"],
-            row.get("sales_order", ""), row.get("item_t", ""), "JP", "华康B", row.get("sub_item_t", ""),
+            "TBA", row.get("item_t", ""), "JP", "华康B", row.get("sub_item_t", ""),
             row.get("product_t", ""), row["baby_item"], row.get("pkg", ""), int(Decimal(row["qty"])), "",
             int(Decimal(row["carton_t"])) if row["carton_t"] else "", row.get("country", ""), "", row["ship_date"], "", row["cutoff_date"],
             Decimal(row["price_t"]) if row["price_t"] else "", "", "", Decimal(row["factory_price_t"]) if row["factory_price_t"] else "",

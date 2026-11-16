@@ -341,12 +341,12 @@ def merge_revisions(documents: Iterable[dict[str, Any]]) -> tuple[list[dict[str,
             key=lambda item: (int(item.get("revision") or 0), _clean(item.get("filename"))),
             reverse=True,
         )
-        selected.append(entries[0])
-        if len(entries) > 1:
-            warnings.append(
-                f"PO {entries[0]['po_number']}：保留最新修订 {entries[0]['filename']}，忽略 "
-                + "、".join(_clean(item.get("filename")) for item in entries[1:])
-            )
+        latest = [entry for entry in entries if int(entry.get('revision') or 0) == int(entries[0].get('revision') or 0)]
+        selected.extend(latest)
+        if len(latest) > 1:
+            warnings.append(f"PO {entries[0]['po_number']}：同修订版的不同文件均保留，请留意数量及字段差异。")
+        if len(entries) > len(latest):
+            warnings.append(f"PO {entries[0]['po_number']}：依据明确修订号保留最新修订版，忽略较旧版本。")
     for document in ignored:
         warnings.extend(
             f"{document.get('filename')}：{message}"

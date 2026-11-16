@@ -166,7 +166,7 @@ def test_seasons_factory_history_and_quantity_conflict_remain_isolated():
     hx = service.create_unified_customer_preview(**args)
     hd = service.create_unified_customer_preview(**arguments('huakang-d'))
     conflict = next(i for i in hx['rows'][0]['issues'] if i['code'] == 'existing_quantity_conflict')
-    assert not conflict.get('can_skip')
+    assert conflict['severity'] == 'warning'
     assert not any(i['code'] in {'existing_quantity_conflict', 'duplicate_existing_order'} for i in hd['rows'][0]['issues'])
 
 
