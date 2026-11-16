@@ -396,6 +396,28 @@ def test_transparent_resin_category_does_not_overwrite_selected_grade():
             assert draft == before
 
 
+def test_explicit_material_choice_uses_frozen_price_and_expires_on_source_change():
+    from app.services.internal_quote_calculator import calculate_section
+
+    mold = {"mold_no": "1", "material_type": "导电PP", "net_weight_g": 34, "quantity": 1, "target_output": 3000}
+    source = {"molds": [mold]}
+    draft = prefill_molding_from_engineering(source, {})
+    draft["injection_lines"][0].update(material="导电pp", grade="导电", material_choice_for=[], machine_code="24A")
+    bound = prefill_molding_from_engineering(source, draft)
+    assert bound["injection_lines"][0]["material_choice_for"] == ["", "导电PP"]
+    mold.update(material_type="导电pp", net_weight_g=35)
+    kept = prefill_molding_from_engineering(source, bound)
+    assert kept["injection_lines"][0]["grade"] == "导电"
+    assert kept["injection_lines"][0]["net_weight_g"] == 35
+    snapshot = {"material_prices": {"导电pp|导电": "11.6"}, "machine_prices": [{"range": "24A", "shift_price_hkd": "1920"}]}
+    assert calculate_section("molding", kept, snapshot, "ref")["status"] == "valid"
+    assert calculate_section("molding", kept, {**snapshot, "material_prices": {}}, "ref")["status"] == "blocked"
+    mold["material_type"] = "PVC"
+    row = prefill_molding_from_engineering(source, kept)["injection_lines"][0]
+    assert (row["material"], row["grade"]) == ("PVC", "")
+    assert "material_choice_for" not in row
+
+
 def test_historical_category_in_grade_becomes_unselected_without_guessing_price():
     engineering = {"molds": [{"mold_no": "1", "material_type": "C-PP"}]}
     for material in ("", "C-PP"):
