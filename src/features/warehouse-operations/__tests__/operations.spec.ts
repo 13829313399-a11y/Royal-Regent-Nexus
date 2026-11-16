@@ -195,11 +195,23 @@ describe('warehouse actual operations', () => {
     const input={quantity:'6.5',unit:'米',source_no:'CUT-1',item_code:'FAB1',item_name:'蓝布',counterparty:'本厂',allocations:[],
       cutting_request:{line_id:'line',order_no:'O1',task_name:'裁剪任务',resource_name:'本厂',bom_version:2,plan_version:8,mapping_basis:'规格颜色原单位一致',
         cutting_material:{code:'M1',name:'蓝布',specification:'规格A',color:'蓝'},warehouse_material:{code:'FAB1',name:'蓝布',revision:3,spec:'规格A',color:'蓝',unit:'米',category:'FABRIC'}}} as WarehouseDocumentInput
-    data.documents=[{id:'REQ',kind:'REQUEST',sequence:1,business_date:'2026-10-01',actor_name:'文员',occurred_at:'',data:input,issued_quantity:'2'}]
+    const partial: WarehouseDocument = { id: 'REQ', kind: 'REQUEST', sequence: 1, business_date: '2026-10-01',
+      actor_name: '文员', occurred_at: '', data: input, issued_quantity: '2' }
+    data.documents = [
+      partial,
+      { ...partial, id: 'COMPLETE', issued_quantity: '6.50', data: { ...input, source_no: 'CUT-COMPLETE' } },
+      { ...partial, id: 'REVERSED', reversed: true, data: { ...input, source_no: 'CUT-REVERSED' } },
+    ]
     const body=await open('inventory','pending-issues',data)
     expect(wrapper!.text()).toContain('裁床订单 O1')
     expect(wrapper!.text()).toContain('规格颜色原单位一致')
+    for (const source of ['CUT-COMPLETE', 'CUT-REVERSED']) {
+      const row = wrapper!.findAll('tbody tr').find(entry => entry.text().includes(source))!
+      expect(row.findAll('button').map(button => button.text())).toEqual(['详情'])
+    }
     await wrapper!.findAll('button').find(b=>b.text()==='关闭未发余量')!.trigger('click')
+    const original = body.get<HTMLSelectElement>('[aria-label="关联原单"]')
+    expect(Array.from(original.element.options, option => option.value)).toEqual(['', 'REQ'])
     expect(body.find('[aria-label="本次数量"]').exists()).toBe(false)
     expect(body.get('[aria-label="业务依据"]').attributes('required')).toBeDefined()
     await body.get('[aria-label="业务依据"]').setValue('计划改版，关闭尚未发出的余量')
@@ -209,6 +221,71 @@ describe('warehouse actual operations', () => {
     data.documents[0]!.closed=true
     await wrapper!.findAll('button').find(b=>b.text()==='刷新')!.trigger('click');await flushPromises()
     expect(wrapper!.findAll('button').some(b=>b.text()==='办理出库')).toBe(false)
+    expect(wrapper!.findAll('button').some(b=>b.text()==='关闭未发余量')).toBe(false)
+  })
+  it('offers only matching batches for a cutting request and clears an incompatible selection when the request changes', async () => {
+    const stock: WarehouseOperationsWorkspace['stock'][number] = {
+      id: 'blue', item_code: 'FAB1', item_name: '蓝布', unit: '米', process_state: '', material_category: 'FABRIC',
+      location: 'A01', lot: '01', roll_no: '', quantity: '20', available_quantity: '20',
+      quality_status: 'PENDING_INSPECTION', source_no: '', source_document: 'receipt',
+      received_on: '2026-10-01', counterparty: '供应商', production_no: '',
+    }
+    const request: WarehouseDocument = {
+      id: 'CUT-1', kind: 'REQUEST', sequence: 1, business_date: '2026-10-01', actor_name: '文员', occurred_at: '',
+      data: {
+        item_code: 'FAB1', item_name: '蓝布', unit: '米', process_state: '', material_category: 'FABRIC',
+        quantity: '6', counterparty: '裁床组', source_no: 'CUT-1',
+        cutting_request: {
+          line_id: 'line', order_no: 'O1', task_name: '裁剪任务', resource_name: '裁床组',
+          bom_version: 2, plan_version: 8, mapping_basis: '规格颜色原单位一致',
+          cutting_material: { code: 'M1', name: '蓝布', specification: '规格A', color: '蓝' },
+          warehouse_material: { code: 'FAB1', name: '蓝布', revision: 3, spec: '规格A', color: '蓝', unit: '米', category: 'FABRIC' },
+        },
+      } as WarehouseDocumentInput,
+    }
+    const unmatched = { ...request, id: 'CUT-2', data: { ...request.data, source_no: 'CUT-2', item_code: 'FAB2', item_name: '绿布' } }
+    const body = await open('inventory', 'pending-issues', {
+      ...empty(), documents: [request, unmatched],
+      stock: [
+        stock,
+        { ...stock, id: 'other-code', item_code: 'OTHER' },
+        { ...stock, id: 'other-unit', unit: '码' },
+        { ...stock, id: 'other-name', item_name: '黑布' },
+        { ...stock, id: 'other-category', material_category: 'ACCESSORY' },
+        { ...stock, id: 'other-state', process_state: '已加工' },
+        { ...stock, id: 'hold', quality_status: 'HOLD' },
+        { ...stock, id: 'empty', quantity: '0', available_quantity: '0' },
+        { ...stock, id: 'unverified', location_verified: false },
+      ],
+    })
+    const requestRow = wrapper!.findAll('tbody tr').find(row => row.text().includes('CUT-1'))!
+    await requestRow.findAll('button').find(button => button.text() === '办理出库')!.trigger('click')
+    const batch = body.get<HTMLSelectElement>('[aria-label="实际批次"]')
+    const original = body.get<HTMLSelectElement>('[aria-label="关联原单"]')
+    const quantity = body.get<HTMLInputElement>('[aria-label="本次数量"]')
+    const submit = body.get('button[type="submit"]')
+    expect(Array.from(batch.element.options, option => option.value)).toEqual(['', 'blue'])
+    await batch.setValue('blue')
+    await quantity.setValue('2')
+    expect(submit.attributes('disabled')).toBeUndefined()
+
+    await original.setValue('CUT-2')
+    expect(Array.from(batch.element.options, option => option.value)).toEqual([''])
+    expect(quantity.element.value).toBe('')
+    expect(body.text()).toContain('该申请暂无匹配的可出库批次')
+    expect(submit.attributes('disabled')).toBeDefined()
+    await body.get('form[role="dialog"]').trigger('submit')
+    expect(api.post).not.toHaveBeenCalled()
+
+    await original.setValue('CUT-1')
+    await batch.setValue('blue')
+    await quantity.setValue('2')
+    api.post.mockResolvedValue({ id: 'issue' })
+    await body.get('form[role="dialog"]').trigger('submit')
+    await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('fabric', expect.objectContaining({
+      kind: 'ISSUE', original_id: 'CUT-1', batch_id: 'blue', counterparty: '裁床组', quantity: '2',
+    }))
   })
   it.each([true, false])('links receipt details to the original receipt without duplicating reversal (%s)', async correct => {
     const receipt = { id: 'OP-1', kind: 'RECEIPT', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '',

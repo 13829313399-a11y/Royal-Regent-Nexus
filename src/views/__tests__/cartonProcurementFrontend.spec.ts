@@ -2136,7 +2136,9 @@ it('shows supplier date differences in both the internal ledger and order detail
   it('focuses a 900-row schedule on current work while retaining shipped, future and old cancellation evidence', async () => {
     const masterGet = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue(emptyMaster())
     const created = { ...orderFixture('CT-FAR-CREATED', businessDateOffset(60)), contract_no: 'FAR-CREATED', item_no: 'ITEM-SCHEDULE', customer_po: 'PO-FAR-CREATED' }
-    mockReceiptWorkspace([created])
+    const completed = { ...orderFixture('CT-DATE-MISMATCH-DONE', businessDateOffset(5), 'COMPLETED'),
+      contract_no: 'DATE-MISMATCH-DONE', item_no: 'ITEM-SCHEDULE', customer_po: 'PO-DATE-MISMATCH-DONE', product_order_quantity: '240' }
+    mockReceiptWorkspace([created, completed])
     const rows = [
       pendingScheduleFixture('LATE-NOW', 4, { customer_due_date: businessDateOffset(9) }),
       pendingScheduleFixture('FAR-CREATED', 5, { order_id: created.id, customer_due_date: businessDateOffset(70) }),
@@ -2144,7 +2146,8 @@ it('shows supplier date differences in both the internal ledger and order detail
       pendingScheduleFixture('PLACED-CHANGED', 7, { manual_ordered: true, customer_due_date: businessDateOffset(70), match_status: 'QUANTITY_MISMATCH' }),
       pendingScheduleFixture('LIVE-CANCELLATION', 8, { manual_ordered: true, schedule_section: 'CANCELLED', schedule_change: 'CANCELLED_AFTER_ORDER', match_status: 'REVIEW_REQUIRED' }),
       pendingScheduleFixture('OLD-CANCELLATION', 9, { order_type: '取消单', schedule_section: 'CANCELLED', schedule_change: 'NOT_TRACKED', match_status: 'REVIEW_REQUIRED', procurement_state: undefined }),
-      ...Array.from({ length: 622 }, (_, index) => pendingScheduleFixture(`SHIPPED-${index}`, index + 10,
+      pendingScheduleFixture('DATE-MISMATCH-DONE', 10, { order_id: completed.id, match_status: 'DATE_MISMATCH', procurement_state: 'COMPLETED' }),
+      ...Array.from({ length: 621 }, (_, index) => pendingScheduleFixture(`SHIPPED-${index}`, index + 11,
         { schedule_section: 'SHIPPED', match_status: 'REVIEW_REQUIRED', procurement_state: undefined })),
       ...Array.from({ length: 272 }, (_, index) => pendingScheduleFixture(`FUTURE-${index}`, index + 632,
         { customer_due_date: businessDateOffset(40 + index) })),
@@ -2153,7 +2156,9 @@ it('shows supplier date differences in both the internal ledger and order detail
     const wrapper = mountView('weekly-check')
     try {
       await flushPromises()
-      expect(wrapper.get('[aria-label="当前需处理"]').attributes('aria-pressed')).toBe('true')
+      const attentionView = wrapper.get('[aria-label="当前需处理"]')
+      expect(attentionView.attributes('aria-pressed')).toBe('true')
+      expect(attentionView.text()).toContain('5')
       const table = wrapper.get('.weekly-schedule-table')
       expect(table.findAll('tbody tr')).toHaveLength(5)
       expect(table.text()).toContain('FAR-CREATED')
@@ -2163,6 +2168,7 @@ it('shows supplier date differences in both the internal ledger and order detail
       expect(table.text()).not.toContain('SHIPPED-0')
       expect(table.text()).not.toContain('FUTURE-0')
       expect(table.text()).not.toContain('OLD-CANCELLATION')
+      expect(table.text()).not.toContain('DATE-MISMATCH-DONE')
       expect(wrapper.get('[aria-label="全部排期"]').text()).toContain('900')
       const pager = wrapper.get('[aria-label="排期分页"]').element
       expect(Boolean(table.element.compareDocumentPosition(pager) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
@@ -2173,6 +2179,7 @@ it('shows supplier date differences in both the internal ledger and order detail
       await wrapper.get('[aria-label="已下单 / 历史"]').trigger('click')
       expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('第 1 /')
       expect(table.text()).toContain('SHIPPED-0')
+      expect(table.get('tr:has([data-schedule-action="DATE-MISMATCH-DONE ITEM-SCHEDULE"])').text()).toContain('交期差异')
       await wrapper.get('[aria-label="全部排期"]').trigger('click')
       expect(wrapper.get('[aria-label="排期分页"]').text()).toContain('共 900 条')
       await wrapper.get('[aria-label="顶部搜索"]').setValue('FUTURE-271')
