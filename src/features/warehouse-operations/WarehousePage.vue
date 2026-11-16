@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef, ref, watch } from 'vue'
+import { computed, shallowRef, ref, useId, watch } from 'vue'
 import { RouterLink, useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { ArrowUpRight, ClipboardList, Info, FileText } from '@lucide/vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -27,6 +27,7 @@ const props = defineProps<{ warehouse: WarehouseWorkspace; section: WarehouseSec
 const emit = defineEmits<{ viewChange: [path: string, view: string] }>()
 const route = useRoute()
 const router = useRouter()
+const mobileViewId = 'warehouse-view-' + useId()
 const dates = shallowRef<DateRange>({ start: undefined, end: undefined })
 const currentView = computed(() => {
   const requestedId = route.query.view === undefined ? props.rememberedView : route.query.view
@@ -161,7 +162,7 @@ const dateLabel = computed(() => {
       <div v-if="section.views.length > 1" class="warehouse-tabs" role="group" aria-label="业务分区">
         <button v-for="item in navigationViews" :key="item.id" type="button" :aria-pressed="navigationActive(item.id)" @click="selectView(item)">{{ item.title }}</button>
       </div>
-      <label v-if="section.views.length > 1" class="warehouse-mobile-view">当前业务分区<select :value="currentView.id" aria-label="选择业务分区" @change="selectMobileView"><option v-for="item in navigationViews" :key="item.id" :value="item.id">{{ item.title }}</option></select></label>
+      <label v-if="section.views.length > 1" class="warehouse-mobile-view">当前业务分区<select :id="mobileViewId" name="warehouse_view" :value="currentView.id" aria-label="选择业务分区" @change="selectMobileView"><option v-for="item in navigationViews" :key="item.id" :value="item.id">{{ item.title }}</option></select></label>
       <details v-if="fabricReceipts" class="fabric-receiving-help">
         <summary><Info :size="15" aria-hidden="true" />收料说明</summary>
         <div class="fabric-receiving-help-content">
