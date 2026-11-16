@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.db import get_db
 from app.services.auth import AuthContext, can, get_current_user
 from app.api.qc_inspection import _ensure_permission
-from app.services import qc_workflow, qc_schedule_downloads, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
+from app.services import qc_workflow, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
 from starlette.concurrency import run_in_threadpool
 from app.services import qc_weekly_excel, qc_monthly_templates, qc_monthly_excel
 from urllib.parse import quote
@@ -169,24 +169,6 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         result = await run_in_threadpool(dossier_detail, factory_id, identity,
             full_business=can(user, 'customer_order:read', factory_id, 'sales-business'))
         return JSONResponse(result, headers=NO_CACHE)
-    if asset_path == "api/schedule-export" and request.method == "POST":
-        _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
-        if request.headers.get("sec-fetch-site") == "cross-site":
-            raise HTTPException(403, "不接受跨站请求")
-        if request.headers.get("content-type", "").split(";")[0].strip().lower() != qc_schedule_downloads.MIME:
-            raise HTTPException(415, "请提交 Excel 文件")
-        content = bytearray()
-        async for chunk in request.stream():
-            content.extend(chunk)
-            if len(content) > qc_schedule_downloads.MAX_BYTES:
-                raise HTTPException(413, "导出文件超过 8 MB")
-        return JSONResponse(qc_schedule_downloads.prepare(bytes(content), request.query_params.get("mode"), factory_id + ":" + actor), headers=NO_CACHE)
-    if asset_path.startswith("api/schedule-export/") and request.method in {"GET", "HEAD"}:
-        _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
-        content, filename = qc_schedule_downloads.download(asset_path.removeprefix("api/schedule-export/"), factory_id + ":" + actor)
-        return Response(content if request.method == "GET" else b"", media_type=qc_schedule_downloads.MIME,
-                        headers={**NO_CACHE, "Content-Disposition": "attachment; filename=QC-schedule.xlsx; filename*=UTF-8''" + quote(filename, safe=""),
-                                 "Content-Length": str(len(content)), "Referrer-Policy": "no-referrer"})
     if asset_path == "api/schedule-source" and request.method == "GET":
         return JSONResponse(qc_workflow.sources(db, factory_id), headers=NO_CACHE)
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":

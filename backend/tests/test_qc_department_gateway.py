@@ -236,93 +236,16 @@ def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatc
         assert len(gateway.schedule_example('huaxing')['items']) == 47  # Legacy provenance only.
 
 
-def workbook_bytes():
-    import io
-    import zipfile
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, 'w') as archive:
-        archive.writestr('[Content_Types].xml', '<Types/>')
-        archive.writestr('xl/workbook.xml', '<workbook/>')
-    return out.getvalue()
-
-
-def test_schedule_http_download_scoping_and_exact_bytes(monkeypatch):
-    from pydantic import SecretStr
-    from urllib.parse import quote
+def test_removed_schedule_download_is_unavailable(monkeypatch):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
-        module = importlib.import_module('app.api.qc_department')
-        helper = importlib.import_module('app.services.qc_schedule_downloads')
-        monkeypatch.setattr(module.settings, 'qc_department_gateway_token', SecretStr('test-download-secret'))
         login_as(client, 'qc_inspector')
         base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
         calls.clear()
-        content = workbook_bytes()
-        result = client.post(base+'api/schedule-export?mode=example',content=content,headers={'Content-Type':helper.MIME})
-        assert result.status_code == 200, result.text
-        url = base + result.json()['url']
-        downloaded = client.get(url)
-        assert downloaded.status_code == 200
-        assert downloaded.content == content
-        assert downloaded.headers['content-type'] == helper.MIME
-        assert downloaded.headers['cache-control'] == 'no-store'
-        assert quote('QC客排期_示例数据.xlsx') in downloaded.headers['content-disposition']
-        head = client.head(url)
-        assert head.status_code == 200 and head.content == b''
-        assert int(head.headers['content-length']) == len(content)
-        assert client.get(url[:-1]+('0' if url[-1]!='0' else '1')).status_code == 404
-        assert client.get(url.replace('/huaxing/','/huakang-a/')).status_code == 403
-        assert not list(helper.folder().parent.rglob('qc.db'))
+        assert client.post(base + 'api/schedule-export', content=b'workbook').status_code == 404
+        assert client.get(base + 'api/schedule-export/old-ticket').status_code == 404
+        assert client.head(base + 'api/schedule-export/old-ticket').status_code == 404
         assert calls == []
-        login_as(client,'qc_supervisor')
-        assert client.get(url).status_code == 409
-
-
-def test_schedule_http_download_validation_and_expiry(monkeypatch):
-    from pydantic import SecretStr
-    with make_client(monkeypatch) as client:
-        install_upstream(monkeypatch)
-        helper = importlib.import_module('app.services.qc_schedule_downloads')
-        monkeypatch.setattr(helper.settings,'qc_department_gateway_token',SecretStr('test-download-secret'))
-        login_as(client,'qc_inspector')
-        base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        endpoint = base+'api/schedule-export?mode=example'
-        headers = {'Content-Type':helper.MIME}
-        content=workbook_bytes()
-        assert client.post(endpoint,content=content).status_code == 415
-        assert client.post(endpoint,content=content,headers={**headers,'Sec-Fetch-Site':'cross-site'}).status_code == 403
-        assert client.post(endpoint,content=b'invalid',headers=headers).status_code == 422
-        assert client.post(base+'api/schedule-export?mode=other',content=content,headers=headers).status_code == 422
-        monkeypatch.setattr(helper,'MAX_BYTES',len(content)-1)
-        assert client.post(endpoint,content=content,headers=headers).status_code == 413
-        monkeypatch.setattr(helper,'MAX_BYTES',8*1024*1024)
-        ticket=client.post(endpoint,content=content,headers=headers).json()
-        token=ticket['url'].rsplit('/',1)[1]
-        owner=base.split('/')[3]+':'+base.split('/')[4][2:]
-        assert helper.download(token,owner)[0]==content
-        with pytest.raises(Exception) as denied:
-            helper.download(token,'another-actor')
-        assert denied.value.status_code==404
-        monkeypatch.setattr(helper,'time',type('Clock',(),{'time':staticmethod(lambda:int(token.split('.')[1])+1)})())
-        assert client.get(base+ticket['url']).status_code==410
-
-
-def test_schedule_http_download_rechecks_export_permission(monkeypatch):
-    from pydantic import SecretStr
-    monkeypatch.setenv('AUTHZ_MODE','enforce')
-    with make_client(monkeypatch) as client:
-        install_upstream(monkeypatch)
-        helper=importlib.import_module('app.services.qc_schedule_downloads')
-        monkeypatch.setattr(helper.settings,'qc_department_gateway_token',SecretStr('test-download-secret'))
-        login_as(client,'qc_inspector')
-        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        headers={'Content-Type':helper.MIME}
-        result=client.post(base+'api/schedule-export?mode=template',content=workbook_bytes(),headers=headers)
-        assert result.status_code==200
-        grant_permission_override('qc_inspector','qc_inspection:report_export',effect='deny',factory_id='huaxing',department='qc')
-        newbase=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        assert client.get(newbase+result.json()['url']).status_code==403
-        assert client.post(newbase+'api/schedule-export?mode=template',content=workbook_bytes(),headers=headers).status_code==403
 
 
 def test_real_sessions_inspector_submit_supervisor_review_complete_workflow(monkeypatch):

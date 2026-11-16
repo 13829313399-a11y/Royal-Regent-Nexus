@@ -72,47 +72,11 @@
   function orderedRows(rows) {
     return rows.slice().sort((a,b) => {const x=dateRange(a)?.from,y=dateRange(b)?.from;return (!x)-(!y)||(x&&y?y.localeCompare(x):0)||text(a.customer).localeCompare(text(b.customer),'zh-CN')||text(a.id).localeCompare(text(b.id));});
   }
-  function exportRows(rows) {
-    return orderedRows(rows).map(row => COLUMNS.map(([key]) => {
-      if (key === 'date') return dateLabel(row);
-      const value = key === 'remark' ? (row.sourceRemark ?? row.remark) : row[key];
-      if (typeof value === 'number' && !Number.isFinite(value)) return '';
-      if (value == null || !['string','number','boolean'].includes(typeof value)) return '';
-      return ['quantity','unitsPerCarton','cartonCount'].includes(key) ? value : String(value);
-    }));
-  }
-  function buildWorkbook(XLSX, rows, filters, company, disconnected) {
-    const caption = (company ? company + ' · ' : '') + 'QC 客排期' + (disconnected ? '（空模板，业务数据待接通）' : '');
-    const period = [filters.from || '不限', filters.to || '不限'].join(' 至 ');
-    const status = filters.completion === 'empty' ? '无反馈' : filters.completion?.startsWith('value:') ? filters.completion.slice(6) : '全部';
-    const data = [[caption], ['日期：' + period + '；客户：' + (filters.customer || '全部') + '；完成情况：' + status + (filters.query ? '；搜索：' + filters.query : '')],
-      ['业务部排期', ...Array(11).fill(''), '完成情况与业务备注（只读）', ''], COLUMNS.map(c => c[1]), ...exportRows(rows)];
-    const ws = XLSX.utils.aoa_to_sheet(data);
-    ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:13}}, {s:{r:1,c:0},e:{r:1,c:13}}, {s:{r:2,c:0},e:{r:2,c:11}}, {s:{r:2,c:12},e:{r:2,c:13}}];
-    ws['!cols'] = [26,18,25,20,20,32,12,10,10,12,12,22,20,42].map(wch => ({wch}));
-    ws['!rows'] = data.map((_,i) => ({hpt:i === 0 ? 30 : i === 1 ? 32 : 28}));
-    ws['!autofilter'] = {ref:'A4:N' + Math.max(4,data.length)};
-    for (let r=0;r<data.length;r++) for(let c=0;c<14;c++) {
-      const address = XLSX.utils.encode_cell({r,c});
-      const cell = ws[address] || (ws[address]={t:'s',v:''});
-      // Text identifiers and remarks are literal strings, never spreadsheet formulas.
-      delete cell.f;
-      if (typeof cell.v === 'string') cell.t='s';
-      cell.s = {font:{name:'PingFang SC',sz:r===0?16:11,bold:r===0||r===3,color:{rgb:r===1?'526173':'243746'}},
-        alignment:{vertical:'center',horizontal:r===1?'left':r<4?'center':([6,7,8].includes(c)?'right':'left'),wrapText:true},
-        border:{top:{style:'thin',color:{rgb:'E2E8F0'}},
-          bottom:{style:r===3?'medium':'thin',color:{rgb:r===3?'64748B':'94A3B8'}},
-          left:{style:'thin',color:{rgb:'94A3B8'}},right:{style:'thin',color:{rgb:'94A3B8'}}},
-        fill:{fgColor:{rgb:r<4?'EAF4FC':c>=12?'F0F8FF':'FFFFFF'}}};
-    }
-    const wb = XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb, ws, '客排期');return wb;
-  }
-  const model = {items:[], phase:'initial', request:0, exporting:false, checked:new Set()};
+  const model = {items:[], phase:'initial', request:0, checked:new Set()};
   const el = id => root.document?.getElementById(id);
   function filters() {
     return {from:el('qsDateFrom').value,to:el('qsDateTo').value,customer:el('qsCustomer').value,completion:el('qsCompletion').value,query:el('qsSearch').value};
   }
-  function allowedExport() { return root.__QC_NEXUS?.exportAllowed === true; }
   function updateChoices() {
     for(const [id,key,first] of [['qsCustomer','customer','全部客户'],['qsCompletion','completion','全部完成情况']]) {
       const select=el(id), old=select.value;
@@ -126,13 +90,11 @@
     const body=el('qsRows'), error=el('qsFilterError');let rows;
     error.textContent='';
     try { rows=filterRows(model.items,filters()); } catch(e) { error.textContent=e.message;rows=[]; }
-    el('qsExport').disabled=model.exporting || !allowedExport() || !['pending','ready'].includes(model.phase) || !!error.textContent;
-    el('qsExport').title=!allowedExport()?'当前账号没有导出权限':model.phase==='pending'?'业务数据待接通，导出空白排期模板':'导出当前筛选结果';
     el('qsCount').textContent=model.phase==='pending'?'待接通':`${rows.length} / ${model.items.length} 条`;
     el('qsCount').title='当前显示 / 总计';
     if(!rows.length) {
       const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期，可点击“新增验货”添加排期':'没有符合筛选条件的排期';
-      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后按此模板显示排期。当前可设置筛选条件，或导出空模板。':'')+'</p></div></td></tr>';
+      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户和完成情况筛选排期。':'')+'</p></div></td></tr>';
       updatePush();return;
     }
     body.innerHTML=orderedRows(rows).map(row =>
@@ -226,30 +188,6 @@
   }
   function clearDates() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo'])el(id).value='';dateError();applyFilters();closeDatePanel(true); }
   function resetFilters() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo','qsCustomer','qsCompletion','qsSearch'])el(id).value='';dateError();closeDatePanel();applyFilters(); }
-  async function exportExcel() {
-    if(model.exporting)return;
-    if(!allowedExport()) { root.showToast?.('当前账号没有导出权限','error');return; }
-    if(!['pending','ready'].includes(model.phase)) { root.showToast?.('请先成功读取排期接口状态','error');return; }
-    const request=model.request;model.exporting=true;el('qsExport').disabled=true;el('qsExport').textContent='正在准备…';
-    try {
-      const f=filters(), rows=filterRows(model.items,f);
-      if(!root.XLSX)await root.QcAssets?.load('excel');
-      if(request!==model.request)throw new Error('排期页面已刷新，请重新导出');
-      if(!root.XLSX)throw new Error('Excel 导出组件未加载');
-      const company=typeof root.getCompanyName==='function'?root.getCompanyName():'';
-      const ready=model.phase==='ready';
-      const bytes=root.XLSX.write(buildWorkbook(root.XLSX,rows,f,company,!ready),{type:'array',bookType:'xlsx'});
-      const response=await root.fetch('api/schedule-export?mode='+(ready?'formal':'template'),{method:'POST',headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'},body:bytes});
-      const result=await response.json();
-      if(!response.ok)throw new Error(typeof result.detail==='string'?result.detail:'准备下载失败，请重试');
-      if(request!==model.request)throw new Error('排期页面已刷新，请重新导出');
-      if(!/^api\/schedule-export\/[a-f0-9]{32}\.\d{10}\.(template|formal)\.[a-f0-9]{64}$/.test(result.url)||typeof result.filename!=='string')throw new Error('下载地址无效，请重试');
-      const link=root.document.createElement('a');link.href=result.url;link.download=result.filename;link.target='_top';link.rel='noopener';
-      root.document.body.appendChild(link);link.click();link.remove();
-      root.showToast?.('已发起 Excel 下载（'+rows.length+' 条'+'排期），请查看浏览器下载列表','success');
-    }catch(e){root.showToast?.(e.message||'导出失败','error');}
-    finally {model.exporting=false;el('qsExport').textContent='导出 Excel';renderTable();}
-  }
   function freezeScheduleColumns(){
     const host=root.document.querySelector('#page-sales-schedule .qs-table-scroll'),customer=host?.querySelector('th[data-column="customer"]');
     if(customer)host.style.setProperty('--qs-customer-width',customer.getBoundingClientRect().width+'px');
@@ -290,7 +228,7 @@
     const table=root.document.querySelector('#page-sales-schedule .qs-table');
     if(root.ResizeObserver)new root.ResizeObserver(freezeScheduleColumns).observe(table);
     sizeScheduleTable();freezeScheduleColumns();
-    el('qsRefresh').addEventListener('click',refresh);el('qsExport').addEventListener('click',exportExcel);
+    el('qsRefresh').addEventListener('click',refresh);
     el('qsThisWeek').addEventListener('click',()=>setWeek(0));el('qsLastWeek').addEventListener('click',()=>setWeek(-1));el('qsNextWeek').addEventListener('click',()=>setWeek(1));
     el('qsClearDates').addEventListener('click',clearDates);el('qsReset').addEventListener('click',resetFilters);
 
@@ -322,9 +260,9 @@
     };root.document.body.append(dialog);dialog.showModal();dialog.querySelector('input').focus();
   }
   function navigationState() {
-    return {busy:scheduleBusy||model.exporting,dirty:Boolean(scheduleDialog?.open)};
+    return {busy:scheduleBusy,dirty:Boolean(scheduleDialog?.open)};
   }
-  root.QcSchedule={filterRows,choices,weekRange,dateRange,dateLabel,exportRows,buildWorkbook,resetFilters,afterPush,openNew,navigationState};
+  root.QcSchedule={filterRows,choices,weekRange,dateRange,dateLabel,resetFilters,afterPush,openNew,navigationState};
   root.renderSalesSchedule=refresh;
   if(root.document)root.document.addEventListener('DOMContentLoaded',mount);
 })(typeof window!=='undefined'?window:globalThis);

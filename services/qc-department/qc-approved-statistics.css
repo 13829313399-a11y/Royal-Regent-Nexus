@@ -408,7 +408,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 
   /* Target only screen controls. Export templates and handlers are separate. */
   body.qc-liquid-glass.qstats-shell.theme-light :is(
-    #qsum-export,#qsExport,#btnExportInspectionExcel,
+    #qsum-export,#btnExportInspectionExcel,
     .topbar button[onclick="exportPDF()"],
     .report-toolbar button[onclick^="export"],
     button[onclick="backupExportJSON()"]) {
@@ -421,7 +421,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
 
   body.qc-liquid-glass.qstats-shell.theme-light :is(
-    #qsum-export,#qsExport,#btnExportInspectionExcel,
+    #qsum-export,#btnExportInspectionExcel,
     .topbar button[onclick="exportPDF()"],
     .report-toolbar button[onclick^="export"],
     button[onclick="backupExportJSON()"]):hover:not(:disabled) {
@@ -545,7 +545,6 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   #page-sales-schedule #qsToolbar .qs-select-all { min-height: var(--qs-control-height); }
   #page-sales-schedule #qsToolbar #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
   #page-sales-schedule #qsToolbar #qsCount { margin-left: auto; white-space: nowrap; }
-  #page-sales-schedule #qsToolbar .qs-secondary-actions { display: flex; gap: 7px; flex-wrap: wrap; }
   #page-sales-schedule #qsToolbar .qs-button {
     display: inline-flex;
     align-items: center;
@@ -555,7 +554,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     white-space: nowrap;
   }
   #page-sales-schedule #qsToolbar #qsRefresh { border-color: transparent; background: transparent; color: var(--text-dim); }
-  #page-sales-schedule #qsToolbar :is(#qsRefresh,#qsExport,#qsPush)::before {
+  #page-sales-schedule #qsToolbar :is(#qsRefresh,#qsPush)::before {
     content: "";
     flex: none;
     width: 14px;
@@ -564,9 +563,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     mask: var(--qs-action-icon) center / contain no-repeat;
   }
   #page-sales-schedule #qsToolbar #qsRefresh { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3'/%3E%3C/svg%3E"); }
-  #page-sales-schedule #qsToolbar #qsExport { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'/%3E%3C/svg%3E"); }
   #page-sales-schedule #qsToolbar #qsPush { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 17 17 7M7 7h10v10'/%3E%3C/svg%3E"); }
-  #page-sales-schedule #qsToolbar #qsExport { background: var(--bg-input); color: var(--text-main); font-weight: 500; }
   #page-sales-schedule #qsToolbar #qsPush { background: var(--accent); border-color: var(--accent); color: #fff; }
   #page-sales-schedule #qsToolbar #qsPush:disabled {
     background: var(--bg-hover);
@@ -574,7 +571,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     color: var(--text-dim);
     opacity: 1;
   }
-  #page-sales-schedule #qsToolbar :is(#qsRefresh,#qsExport):hover:not(:disabled) { background: var(--bg-hover); }
+  #page-sales-schedule #qsToolbar #qsRefresh:hover:not(:disabled) { background: var(--bg-hover); }
   #page-sales-schedule #qsToolbar #qsFilterError:not(:empty) { margin: 10px 0 0; }
   @container (max-width: 900px) {
     #page-sales-schedule #qsToolbar .qs-filters { grid-template-columns: minmax(160px,1.2fr) minmax(110px,1fr) minmax(130px,1.1fr) auto; }
@@ -585,7 +582,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     #page-sales-schedule #qsToolbar .qs-date-filter { grid-column: 1 / -1; }
     #page-sales-schedule #qsToolbar .qs-filter-actions { grid-column: 3; }
     #page-sales-schedule #qsToolbar .qs-actions { gap: 8px; }
-    #page-sales-schedule #qsToolbar .qs-secondary-actions { margin-left: auto; }
+    #page-sales-schedule #qsToolbar #qsRefresh { margin-left: auto; }
     #page-sales-schedule #qsToolbar #qsCount { flex-basis: calc(100% - 130px); text-align: right; }
   }
   @media (max-width: 640px), (pointer: coarse) {
