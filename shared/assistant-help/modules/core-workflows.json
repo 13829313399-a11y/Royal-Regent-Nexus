@@ -297,7 +297,7 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "inventoryMoneySummary",
-        "sha256": "3e1f30a58b11775028ca775bfa7b2999ae2b06ecf9d3358ba265d889b77acbea"
+        "sha256": "bd9c6c4a19287ac52958de52a5d4fe533390e751592a3b058cc87f9ee32fc089"
       }
     ],
     "knowledge_version": "2026-10-29-carton-asset-v1b",
