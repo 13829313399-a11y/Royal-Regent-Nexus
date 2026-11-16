@@ -30,7 +30,7 @@ EXPORT_NAMES = {'caixing':'彩星汇总_月度验货明细', 'all':'全客明细
 
 def filename(kind, start, end, quality=None, period='monthly'):
     suffix=({'preview':'_预览图','original':'_原图','mixed':'_原图及预览替代'}.get(quality,'')) if kind=='issues' else ''
-    name=EXPORT_NAMES[kind] if period=='monthly' else '问题图文_'+{'weekly':'每周','yearly':'年度'}[period]+'验货'
+    name=EXPORT_NAMES[kind] if period=='monthly' else {'weekly':'周验货问题及照片','yearly':'问题图文_年度验货'}[period]
     return f'{name}_{start}_{end}{suffix}'+extension(kind)
 
 def _center_column(widths):

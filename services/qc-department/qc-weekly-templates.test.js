@@ -44,7 +44,7 @@ test('issue workbook keeps week controls and template navigation, reloads dates,
  const p=page();try{
   p.w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};p.w.HTMLDialogElement.prototype.close=function(){this.dispatchEvent(new p.w.Event('close'));};
   const oldFetch=p.w.fetch;p.w.fetch=async(url,init={})=>{
-   if(String(url).startsWith('api/issue-reports?')){p.calls.push({url,init});return p.response({title:'每周验货问题图文记录表',dateFrom:'2026-11-01',dateTo:'2026-11-07',total:1,canExport:true,sourceRevision:'issues-r1',customers:[{key,label:'合成客户'}],headers:Array(12).fill('字段'),tables:{issues:[{id:'entry-1',values:Array(12).fill('只读内容'),photos:[{id:'photo-1',name:'照片'}]}]}});}
+   if(String(url).startsWith('api/issue-reports?')){p.calls.push({url,init});return p.response({title:'周验货问题及照片',dateFrom:'2026-11-01',dateTo:'2026-11-07',total:1,canExport:true,sourceRevision:'issues-r1',customers:[{key,label:'合成客户'}],headers:Array(12).fill('字段'),tables:{issues:[{id:'entry-1',values:Array(12).fill('只读内容'),photos:[{id:'photo-1',name:'照片'}]}]}});}
    return oldFetch(url,init);
   };
   p.w.eval(fs.readFileSync(path.join(__dirname,'qc-issue-reports.js'),'utf8'));

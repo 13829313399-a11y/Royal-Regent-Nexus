@@ -121,5 +121,5 @@ def test_sanitized_templates_contain_only_structure():
     for spec in weekly.TEMPLATES:
         book=xlrd.open_workbook(excel.TEMPLATE_DIR/(spec['id']+'.xls'))
         assert book.nsheets==1
-        allowed=set(spec['headers']+spec.get('summaryHeaders',[])+[spec['title'],'华兴客户周验货汇总','合计',''])
+        allowed=set(spec['headers']+spec.get('summaryHeaders',[])+[spec['title'],'华兴周验货明细及客户汇总表','华兴周验货汇总表','华兴客户周验货汇总','合计',''])
         assert all(cell.value in allowed for row in book.sheet_by_index(0).get_rows() for cell in row)

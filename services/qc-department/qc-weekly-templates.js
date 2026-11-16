@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   const doc = root.document;
-  const titles = {detail:'华兴周验货明细及客户汇总表',group:'华兴周验货汇总表',issues:'每周验货问题图文记录表'};
+  const titles = {detail:'周验货明细及客户汇总',group:'周验货数据汇总',issues:'周验货问题及照片'};
   const editable = {detail:{},group:{3:'returns',5:'returnReason',6:'hongKongContact',7:'weeklyRemark'},footer:{3:'returns',5:'returnReason',6:'hongKongContact',7:'reworkA0D',8:'weeklyRemark'}};
   const fields = [...new Set(Object.values(editable).flatMap(columns=>Object.values(columns)))];
   const columns = (kind,row) => ({...editable[kind],...row.editableFields});
