@@ -45,13 +45,11 @@
     if(model.view!=='records')return;
     const toolbar=root.document.querySelector('#page-records .records-filters');if(!toolbar)return;
     if(!root.document.getElementById('qisTaskDate')){
-      toolbar.classList.add('qis-task-filters');
       const previous=root.document.getElementById('recordsDateFilter');if(previous)previous.hidden=true;
       for(const [id,label,first] of [['qisTaskCustomer','客户筛选','全部客户'],['qisTaskDate','计划验货日期筛选','全部日期']]){
         const select=root.document.createElement('select');select.id=id;select.setAttribute('aria-label',label);select.innerHTML='<option value="">'+first+'</option>';toolbar.prepend(select);
         select.onchange=()=>{if(id==='qisTaskDate')for(const key of ['filterDateFrom','filterDateTo'])root.document.getElementById(key).value=select.value;render();};
       }
-      const search=toolbar.querySelector('.records-search');if(search)toolbar.append(search);
     }
     if(model.loading||!model.loaded)return;
     const dates=[...new Set(model.items.map(taskStart).filter(Boolean))].sort(),multiYear=new Set(dates.map(value=>value.slice(0,4))).size>1;
@@ -201,14 +199,14 @@
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
     const f=model.reviewFilters,isReview=model.view==='review';
-    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),result=isReview?f.result:value('filterResult'),from=isReview?f.from:value('filterDateFrom'),to=isReview?f.to:value('filterDateTo'),sort=isReview?f.sort:value('filterSort');
+    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),sort=isReview?f.sort:value('filterSort');
+    const {result,from,to}=f;
     const day=value('qisTaskDate'),customer=value('qisTaskCustomer');
     return model.items.filter(row=>{
       if(isReview&&(model.reviewTab==='pending'?row.reviewState!=='pending':row.reviewState!=='approved'&&!row.legacyCompleted))return false;
       const d=draft(row);
       return (!q||[row.customer,row.poNo,row.customerPo,row.productNo,row.productName,d.remark].join(' ').toLowerCase().includes(q))&&
-        (!result||d.result===(result==='REJ'?'FAIL':result))&&
-        (isReview?(!(from||to)||(row.dateFrom&&(!from||(row.dateTo||row.dateFrom)>=from)&&(!to||row.dateFrom<=to))):(!day||taskStart(row)===day)&&(!customer||taskCustomer(row).key===customer));
+        (isReview?(!result||d.result===result)&&(!(from||to)||(row.dateFrom&&(!from||(row.dateTo||row.dateFrom)>=from)&&(!to||row.dateFrom<=to))):(!day||taskStart(row)===day)&&(!customer||taskCustomer(row).key===customer));
     }).sort((a,b)=>{
       if(sort.startsWith('date')){
         if(!a.dateFrom||!b.dateFrom){if(a.dateFrom||b.dateFrom)return a.dateFrom?-1:1;}
@@ -501,7 +499,11 @@
     finally{d.submitting=false;}
   }
   function refreshResultFilters(){
-    for(const selector of ['#filterResult','[data-rfilter=result]']){const input=root.document.querySelector(selector);if(!input)continue;const value=input.value;input.innerHTML='<option value="">全部判定</option>'+model.results.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');input.value=value;}
+    const input=root.document.querySelector('[data-rfilter=result]');
+    if(!input)return;
+    const value=input.value;
+    input.innerHTML='<option value="">全部判定</option>'+model.results.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
+    input.value=value;
   }
   function syncReviewFilters(){
     const {from,to}=model.reviewFilters;

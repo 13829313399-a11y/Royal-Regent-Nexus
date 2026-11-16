@@ -122,7 +122,7 @@ test('customer identities use current source codes and names, preserving same-na
   assert.ok(p.calls.some(c=>c.toast?.includes('全部客户')));assert.equal(p.calls.filter(c=>c.body).length,0);
  }finally{p.dom.window.close();}
 });
-test('date AND customer AND existing keyword/result filters keep stable options, matching rows and empty state',async()=>{
+test('date, customer and search filters keep stable options, matching rows and empty state',async()=>{
  const p=await page();try{
   Object.assign(p.rows[0],{dateFrom:'2026-11-05',dateTo:'2026-11-07',customer:'ZURU',sourceRecord:{customerCode:'01'},result:'PASS'});
   Object.assign(p.rows[1],{dateFrom:'2026-11-05',dateTo:'2026-11-05',customer:'Dickie',result:'FAIL'});
@@ -132,8 +132,7 @@ test('date AND customer AND existing keyword/result filters keep stable options,
   const search=p.d.getElementById('searchInput');search.value='00000';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['a']);
   assert.equal(p.d.querySelectorAll('[data-entry]').length,1);
   assert.deepEqual(optionValues(p,'qisTaskDate'),dates);assert.deepEqual(optionValues(p,'qisTaskCustomer'),customers);
-  p.d.getElementById('filterResult').value='FAIL';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),[]);assert.match(p.d.getElementById('recordsTableWrap').textContent,/没有|暂无/);
-  p.d.getElementById('filterResult').value='';search.value='不存在';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),[]);
+  search.value='不存在';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),[]);assert.match(p.d.getElementById('recordsTableWrap').textContent,/没有|暂无/);
   search.value='';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['a']);assert.equal(p.d.getElementById('qisTaskDate').value,'2026-11-05');assert.equal(p.d.getElementById('qisTaskCustomer').value,customerKey('01','ZURU'));
   assert.equal(p.calls.filter(c=>c.body).length,0);
  }finally{p.dom.window.close();}
@@ -149,10 +148,11 @@ test('refresh adds task choices, retains valid choices, and resets removed choic
   p.rows.splice(0);await p.w.QcInspectionSheet.load();assert.deepEqual(optionValues(p,'qisTaskDate'),['']);assert.deepEqual(optionValues(p,'qisTaskCustomer'),['']);
  }finally{p.dom.window.close();}
 });
-test('search control is reused at toolbar end; reset clears new and legacy filters without changing inputs or tasks',async()=>{
+test('search comes first, sorting and print come last, and reset clears the task filters',async()=>{
  const p=await page();try{
-  const input=p.d.getElementById('searchInput'),toolbar=p.d.querySelector('#page-records .records-filters');
-  assert.equal(toolbar.lastElementChild.querySelector('input'),input);assert.equal(input.type,'search');assert.equal(input.getAttribute('oninput'),'filterRecords()');assert.ok(p.d.getElementById('recordsDateFilter').hidden);
+  const input=p.d.getElementById('searchInput'),toolbar=p.d.querySelector('#page-records .records-toolbar-inner');
+  assert.equal(toolbar.firstElementChild.querySelector('input'),input);assert.equal(input.type,'search');assert.equal(input.getAttribute('oninput'),'filterRecords()');assert.ok(p.d.getElementById('recordsDateFilter').hidden);
+  assert.deepEqual([...toolbar.querySelectorAll('select, .records-reset, #qcInspectionPrint')].map(el=>el.id||el.textContent),['qisTaskDate','qisTaskCustomer','重置筛选','filterSort','qcInspectionPrint']);
   choose(p,'qisTaskDate','2026-10-29');choose(p,'qisTaskCustomer',customerKey('','客户中文'));input.value='长PO-0123456789'.repeat(15);p.w.QcInspectionSheet.render();assert.equal(input.value,'长PO-0123456789'.repeat(15));
   const app=fs.readFileSync(path.join(sourceRoot,'services/qc-department/app.js'),'utf8');const start=app.indexOf('function resetRecordsFilters()'),end=app.indexOf('\nfunction ',start+1);p.w.filterRecords=()=>p.w.QcInspectionSheet.render();p.w.closeRecordsDateFilter=()=>{};p.w.syncRecordsDateFilter=()=>{};p.w.eval(app.slice(start,end));p.w.resetRecordsFilters();
   assert.equal(input.value,'');assert.equal(p.d.getElementById('qisTaskDate').value,'');assert.equal(p.d.getElementById('qisTaskCustomer').value,'');assert.equal(p.d.getElementById('filterDateFrom').value,'');assert.equal(visibleIds(p).length,3);
@@ -240,11 +240,10 @@ test('unavailable historical photo warning stays visible while text remains edit
   assert.equal(p.rows[0].remark,'仍可录入');assert.match(p.d.querySelector('[data-photo-list="a"]').textContent,/来源照片暂不可用/);
  }finally{p.dom.window.close();}
 });
-test('PENDING persists independently through reload and filtering',async()=>{
+test('PENDING persists independently through reload',async()=>{
  const p=await page();try{
   const q=p.w.QcInspectionSheet;
   q.edit('a','result','PENDING',true);await q.flush();await q.load();
-  p.d.getElementById('filterResult').value='PENDING';q.render();assert.equal(q.filtered().length,1);
   assert.equal(p.d.querySelector('[data-result="a"]').value,'PENDING');
  }finally{p.dom.window.close();}
 });
