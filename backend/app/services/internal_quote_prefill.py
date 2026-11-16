@@ -453,7 +453,17 @@ def prefill_molding_from_engineering(
         # in either material column. Treat that as a category hint and let Molding
         # retain/select the concrete frozen material grade instead of rebuilding an
         # invalid pair such as "blank + PP" or "PP + blank" on every quote read.
-        if generic_material_hint:
+        # A deliberate Molding selection is priced by the quote snapshot. Keep
+        # the pair together until Engineering changes its source material.
+        source_pair = [_match_token(source_material), _match_token(source_material_type)]
+        choice_for = row.get("material_choice_for")
+        keep_choice = choice_for == [] or choice_for == source_pair
+        if choice_for is not None and not keep_choice:
+            row.pop("material_choice_for", None)
+            row["material"] = row["grade"] = ""
+        if keep_choice:
+            row["material_choice_for"] = source_pair
+        elif generic_material_hint:
             selected_material = _text(row.get("material"))
             selected_grade = _text(row.get("grade"))
             if (selected_grade and _same_material_family(generic_material_hint, selected_material)
