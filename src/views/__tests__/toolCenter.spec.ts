@@ -218,6 +218,26 @@ describe('public tool center', () => {
     await flushPromises()
     expect(wrapper.get('[aria-label="华兴 PDF 批量改名"]').isVisible()).toBe(true)
   })
+
+  it('offers one ZIP for a completed multi-file PDF split opened from recent jobs', async () => {
+    const piece = { ...source.artifacts[0]!, role: 'result', filename: 'split-001.pdf' }
+    const split = { ...job, id: 'split-job', operation: 'pdf_split', artifacts: [
+      piece, { ...piece, id: 'second', filename: 'split-002.pdf' },
+      { ...piece, id: 'report', role: 'report', format: 'json', filename: 'report.json' },
+    ] }
+    vi.mocked(documentTools.jobs).mockResolvedValue({ items: [split], total: 1, page: 1, page_size: 20 })
+    vi.mocked(documentTools.job).mockResolvedValue(split)
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.find('a[download]').exists()).toBe(false)
+    Object.assign(wrapper.get('.dt-tasks-dialog').element, { close: vi.fn() })
+    await wrapper.get('.dt-recent-task button').trigger('click')
+    await flushPromises()
+    const link = wrapper.get('.dt-result-actions a[download]')
+    expect(link.text()).toBe('批量下载（2 个 PDF）')
+    expect(link.attributes('href')).toBe('/api/tools/jobs/split-job/split-files.zip')
+    expect(wrapper.get('.dt-result-actions').text()).toContain('split-002.pdf')
+  })
   it('uses the measured middle workspace width for comparison and leaves comparison when it narrows', async () => {
     const observers: Array<{
       callback: ResizeObserverCallback
