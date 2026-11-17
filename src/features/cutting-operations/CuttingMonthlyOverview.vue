@@ -47,7 +47,7 @@ watchCuttingWorkspace(()=>void load())
 </script>
 <template>
   <div class="cutting-overview">
-    <div class="cutting-review-filters"><form class="order-toolbar" @submit.prevent="load()"><label :for="`${formId}-month`">核对月份<input :id="`${formId}-month`" name="month" v-model="month" type="month" min="2000-01" :max="businessDay().slice(0,7)" required /></label><Button :disabled="busy">查询／刷新</Button></form></div>
+    <div class="cutting-review-filters"><form class="order-toolbar" @submit.prevent="load()"><label :for="`${formId}-month`">核对月份<input :id="`${formId}-month`" name="month" v-model="month" type="month" min="2000-01" :max="businessDay().slice(0,7)" required /></label><Button :disabled="busy">{{exportsOnly?'查询／刷新':'刷新月结总览'}}</Button></form></div>
     <p v-if="busy" role="status">正在读取 {{readingMonth}} 月结进度…</p><p v-if="error" role="alert">{{error}}</p>
     <div v-if="failedRead" ref="retryRegion"><CuttingReadTarget :target="failedRead" :label="exportsOnly?'冻结报表列表':'月结进度'" retry-label="按原月份重试" :disabled="busy" readable @retry="retry" /></div>
     <div v-if="value" ref="resultRegion" class="cutting-overview" role="region" tabindex="-1" :aria-label="exportsOnly?'冻结报表读取结果':'月结总览读取结果'">

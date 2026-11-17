@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, useId, watch } from 'vue'
-import { closingPresentationKey, type ClosingReadLocation } from './closingPresentation'
+import { closingPresentationKey, closingReadTime, type ClosingReadLocation } from './closingPresentation'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, useRoute } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -180,7 +180,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
         </form>
         <template v-if="record?.data&&!draft">
           <CuttingReportExport v-if="record.selected_state==='locked'&&record.event_id" :selection="{kind:'period',month,event_id:record.event_id}" :access="rights" :disabled="busy||!!pending" />
-          <p>取数时间：{{record.data.snapshot.generated_at}} · {{record.selected_state==='locked'?'冻结快照':'编制快照，提交与锁月时重新核验依据'}}</p>
+          <p>取数时间：<time :datetime="record.data.snapshot.generated_at">{{closingReadTime(record.data.snapshot.generated_at)}}</time> · {{record.selected_state==='locked'?'冻结快照':'编制快照，提交与锁月时重新核验依据'}}</p>
           <p v-if="record.data.local_admin_acceptance" class="cutting-notice">本版本使用本地管理员验收模式，不代表真实双岗位验收。</p>
           <p v-for="(item,index) in record.data.snapshot.blockers" :key="index" class="cutting-error">待处理：{{item.message}}</p>
           <p v-for="(item,index) in record.data.snapshot.notices.filter(item=>item.code!=='period_wip_unconfirmed')" :key="`stored-notice-${index}`">本版本核对事项：{{item.message}} <RouterLink v-if="item.line_id" :to="issueLink(item)">查看当前处理记录</RouterLink></p>
