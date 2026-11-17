@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   if(!root.__QC_NEXUS)return;
-  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',reviewTab:'pending',checked:new Set(),reviewBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
+  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
   let notificationGeneration=0;
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
@@ -14,7 +14,6 @@
   const requestKey=()=>root.crypto.randomUUID?.()||Array.from(root.crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
   const entryPath=id=>(model.view==='review'?'review/':'')+'entries/'+id;
   const canEdit=row=>editable()&&(model.view==='review'?row.reviewState==='pending':row.reviewState==='returned_to_inspection'||!row.submittedAt&&!row.legacyCompleted);
-  const canReturn=row=>canEdit(row)&&row.reviewState==='pending'&&!row.sourceCancelled&&row.sourceRecord?.sourceStatus!=='cancelled';
   const audit=()=>root.QcInspectionAudit;
   const reviewColumns=[['firstResponsible','第一责任人'],['secondResponsible','第二责任人'],['reportStatus','报告状态'],['otherRemark','其他备注'],['inspectionExecution.defects','不良明细'],['inspectionExecution.measurements','测量明细'],['submittedAt','提交时间（北京时间）'],['confirmedAt','确认时间（北京时间）'],['reviewState','审核状态'],['lastChangedAt','最后修改（北京时间）'],['lastLocation','操作位置'],['lastActor.name','操作人员'],['inspectionExecution.institution','第三方机构']];
   let options={inspectors:[],institutions:[]};
@@ -29,7 +28,7 @@
   const textFields=['remark','improvement','inspectionProblem'];
   const savedFields=d=>{const fields=Object.fromEntries(['result',...textFields.filter(k=>model.view==='review'||k!=='improvement'),...(model.view==='review'?Object.keys(reviewFields):[])].map(k=>[k,d[k]??'']));const keys=[...d.executionDirty].filter(k=>model.view==='review'||['sampleQuantity','inspectorId'].includes(k));if(keys.length)fields.inspectionExecution=Object.fromEntries(keys.map(k=>[k,JSON.parse(JSON.stringify(d.inspectionExecution[k]))]));return fields;};
   const differs=(d,sent)=>JSON.stringify(savedFields(d))!==JSON.stringify(sent);
-  function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(selected));});}
+  function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(model.view==='records'?model.recordChecked.has(n.dataset.entry):model.reviewTab==='pending'?model.checked.has(n.dataset.entry):selected));});}
   function freezeColumns(host){const first=host.querySelector('th[data-column=customer]');if(first){host.style.setProperty('--qis-customer-width',first.getBoundingClientRect().width+'px');host.style.setProperty('--qis-frozen-width',(first.getBoundingClientRect().width+(host.querySelector('th[data-column=poNo]')?.getBoundingClientRect().width||0))+'px');}}
   function displayColumns(columns){
     const tail=['result','inspectionExecution.sampleQuantity',...(model.view==='review'?[]:['inspectionProblem']),'remark','photos','inspector',...(model.view==='review'?['inspectionProblem','inspectionExecution.analysisReason','improvement']:[])];
@@ -40,18 +39,16 @@
   // The API has already projected task plans into dateFrom; never substitute QC actualDate.
   const taskStart=row=>root.QcSchedule?.dateRange({dateFrom:row.dateFrom,dateTo:row.dateFrom})?.from||'';
   const taskCustomer=row=>{const name=String(row.customer??'').trim(),code=String(row.sourceRecord?.customerCode??'').trim();return {name,code,key:name?JSON.stringify([code,name]):''};};
-  function resetTaskFilters(){for(const id of ['qisTaskDate','qisTaskCustomer']){const select=root.document.getElementById(id);if(select)select.value='';}}
+  function resetTaskFilters(){model.recordsSort='date-asc';for(const id of ['qisTaskDate','qisTaskCustomer']){const select=root.document.getElementById(id);if(select)select.value='';}}
   function updateTaskFilters(){
     if(model.view!=='records')return;
     const toolbar=root.document.querySelector('#page-records .records-filters');if(!toolbar)return;
     if(!root.document.getElementById('qisTaskDate')){
-      toolbar.classList.add('qis-task-filters');
       const previous=root.document.getElementById('recordsDateFilter');if(previous)previous.hidden=true;
       for(const [id,label,first] of [['qisTaskCustomer','客户筛选','全部客户'],['qisTaskDate','计划验货日期筛选','全部日期']]){
         const select=root.document.createElement('select');select.id=id;select.setAttribute('aria-label',label);select.innerHTML='<option value="">'+first+'</option>';toolbar.prepend(select);
         select.onchange=()=>{if(id==='qisTaskDate')for(const key of ['filterDateFrom','filterDateTo'])root.document.getElementById(key).value=select.value;render();};
       }
-      const search=toolbar.querySelector('.records-search');if(search)toolbar.append(search);
     }
     if(model.loading||!model.loaded)return;
     const dates=[...new Set(model.items.map(taskStart).filter(Boolean))].sort(),multiYear=new Set(dates.map(value=>value.slice(0,4))).size>1;
@@ -83,15 +80,17 @@
     if(!model.drafts.has(row.id))model.drafts.set(row.id,{...Object.fromEntries(Object.keys(reviewFields).map(k=>[k,row[k]??''])),inspectionExecution:Object.fromEntries(Object.keys(executionFields).map(k=>[k,row.inspectionExecution?.[k]??row[k]??(['defects','measurements'].includes(k)?[]:'')])),executionDirty:new Set(),result:row.result,remark:row.remark,improvement:row.improvement||'',inspectionProblem:row.inspectionProblem||'',dirty:false,busy:false,error:'',timer:null,queue:[],conflict:false});
     return model.drafts.get(row.id);
   }
-  function navigationState(){return {dirty:Boolean(model.detailEditing)||[...model.drafts.values()].some(d=>d.dirty||d.queue.length||d.error),busy:model.reviewBusy||[...model.drafts.values()].some(d=>d.busy||d.reading||d.submitting)};}
-  function status(id){
+  function navigationState(){return {dirty:Boolean(model.detailEditing)||[...model.drafts.values()].some(d=>d.dirty||d.queue.length||d.error),busy:model.submitBusy||model.reviewBusy||[...model.drafts.values()].some(d=>d.busy||d.reading||d.submitting)};}
+  function status(id,skipRecordControls=false){
     const d=model.drafts.get(id),node=root.document.querySelector('[data-save-status="'+id+'"]');
     if(!node||!d)return;
-    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy)?'保存中…':d.dirty?'等待自动保存…':model.view!=='review'||d.savedUntil>Date.now()?'已保存':'';
+    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy)?'保存中…':d.dirty?'等待自动保存…':'';
     node.hidden=!node.textContent;
+    node.closest('.qis-save-feedback').hidden=node.hidden;
     node.classList.toggle('qis-error',Boolean(d.error));
     root.document.querySelectorAll('[data-review-status="'+id+'"]').forEach(label=>{label.textContent=node.textContent;label.classList.toggle('qis-error',Boolean(d.error));});
     root.document.querySelectorAll('[data-retry="'+id+'"],[data-photo-retry="'+id+'"]').forEach(retry=>{retry.hidden=!d.error;retry.textContent=d.rejectedPhoto?'清除失败照片':d.fileError?'清除失败选择':d.conflict?'核对版本并重试':'重试';});
+    if(!skipRecordControls)updateRowSelection();
     const photoStatus=root.document.querySelector('[data-photo-status="'+id+'"]');
     if(photoStatus){photoStatus.textContent=d.error?'未完成：'+d.error:d.reading?'正在读取照片…':d.busyKind==='photo'&&d.busy||d.queue.some(job=>job.action==='photos')?'照片上传中…':byId(id)?.photos.length?'已附 '+byId(id).photos.length+' 张':'';photoStatus.classList.toggle('qis-error',Boolean(d.error));}
   }
@@ -100,11 +99,6 @@
     if(index>=0&&model.items[index].revision>saved.revision)return;
     if(index>=0&&model.items[index].photoWarning&&!('photoWarning' in saved))saved={...saved,photoWarning:model.items[index].photoWarning};
     if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;}
-    const d=model.drafts.get(id);
-    if(d&&model.view==='review'){
-      d.savedUntil=Date.now()+2000;clearTimeout(d.successTimer);
-      d.successTimer=setTimeout(()=>{if(model.drafts.get(id)===d){d.savedUntil=0;status(id);}},2000);
-    }
     const entryNode=root.document.querySelector('[data-entry="'+id+'"]');if(entryNode&&model.view==='review'){
       const hint=audit().hint(saved);entryNode.querySelectorAll('[data-audit]').forEach(button=>{button.title=hint;button.setAttribute('aria-label',hint+'；查看修改历史');});
       for(const key of ['customer','poNo']){const cell=entryNode.querySelector('[data-column="'+key+'"]');if(cell)cell.title=(saved[key]||'')+'\n'+hint;}
@@ -148,7 +142,7 @@
     finally{d.busy=false;d.busyKind=null;status(id);}
   }
   function edit(id,key,value,immediate=false){
-    const d=draft(byId(id));if(d[key]===value)return;d[key]=value;d.dirty=true;clearTimeout(d.timer);status(id);
+    if(model.submitBusy||model.reviewBusy)return;const d=draft(byId(id));if(d[key]===value)return;d[key]=value;d.dirty=true;clearTimeout(d.timer);status(id);
     if(!d.error){if(immediate)pump(id);else d.timer=setTimeout(()=>pump(id),650);}
   }
   function offerConflictRecovery(){
@@ -177,7 +171,7 @@
           const message='该记录'+state+'，不能从当前页面直接保存。'+(latest.reviewState==='approved'?'如需修改，请先在“已审核”中反审核。':'请在对应页面继续处理。')+'\n\n本行未保存的输入：\n'+(changes.join('\n')||'文字和数值与服务器一致')+(d.queue.length?'\n另有 '+d.queue.length+' 项未完成的照片操作':'')+'\n\n确定：放弃本行未保存输入并更新状态，恢复页面切换。\n取消：继续保留当前输入，可先复制上述内容。';
           if(!root.confirm(message))return;
           if(model.drafts.get(id)!==d||d.busy||d.reading)return;
-          clearTimeout(d.timer);clearTimeout(d.successTimer);model.drafts.delete(id);model.checked.delete(id);accept(id,latest);render();
+          clearTimeout(d.timer);model.drafts.delete(id);model.checked.delete(id);accept(id,latest);render();
           root.showToast?.('已同步记录状态；如需修改已审核记录，请先反审核','success');return;
         }
         const comparison=[['result','验货结果'],['inspectionProblem','验货问题'],['remark','备注'],['improvement','改进措施'],...Object.entries(reviewFields),...Object.entries(executionFields).map(([k,v])=>['inspectionExecution.'+k,v[0]])].map(([key,label])=>label+'\n服务器：'+JSON.stringify(key.split('.').reduce((v,k)=>v?.[k],latest)??'—')+'\n本行输入：'+JSON.stringify(key.split('.').reduce((v,k)=>v?.[k],d)??'—')).join('\n\n');
@@ -189,9 +183,11 @@
     d.error='';d.conflict=false;await pump(id);
   }
   async function load(view='records',tab=model.reviewTab){
+    finishRowDrag(true);
     if(model.loading){model.nextLoad={view,tab};return;}
     if(navigationState().dirty||navigationState().busy){root.showToast?.('请先完成本行保存或重试；未保存内容仍保留。','error');return;}
     if(model.view!==view){root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();model.items=[];model.drafts.clear();model.checked.clear();}
+    model.recordChecked.clear();
     if(model.reviewTab!==tab)model.checked.clear();model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
@@ -201,14 +197,14 @@
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
     const f=model.reviewFilters,isReview=model.view==='review';
-    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),result=isReview?f.result:value('filterResult'),from=isReview?f.from:value('filterDateFrom'),to=isReview?f.to:value('filterDateTo'),sort=isReview?f.sort:value('filterSort');
+    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),sort=isReview?f.sort:model.recordsSort;
+    const {result,from,to}=f;
     const day=value('qisTaskDate'),customer=value('qisTaskCustomer');
     return model.items.filter(row=>{
       if(isReview&&(model.reviewTab==='pending'?row.reviewState!=='pending':row.reviewState!=='approved'&&!row.legacyCompleted))return false;
       const d=draft(row);
       return (!q||[row.customer,row.poNo,row.customerPo,row.productNo,row.productName,d.remark].join(' ').toLowerCase().includes(q))&&
-        (!result||d.result===(result==='REJ'?'FAIL':result))&&
-        (isReview?(!(from||to)||(row.dateFrom&&(!from||(row.dateTo||row.dateFrom)>=from)&&(!to||row.dateFrom<=to))):(!day||taskStart(row)===day)&&(!customer||taskCustomer(row).key===customer));
+        (isReview?(!result||d.result===result)&&(!(from||to)||(row.dateFrom&&(!from||(row.dateTo||row.dateFrom)>=from)&&(!to||row.dateFrom<=to))):(!day||taskStart(row)===day)&&(!customer||taskCustomer(row).key===customer));
     }).sort((a,b)=>{
       if(sort.startsWith('date')){
         if(!a.dateFrom||!b.dateFrom){if(a.dateFrom||b.dateFrom)return a.dateFrom?-1:1;}
@@ -237,7 +233,7 @@
         (canEdit(row)?'<button type="button" data-remove-photo="'+esc(photo.id)+'" aria-label="删除 '+esc(photo.name)+'">×</button>':'')+'</span>';
     }).join('');
   }
-  function editExecution(id,key,value,immediate=false){const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
+  function editExecution(id,key,value,immediate=false){if(model.submitBusy||model.reviewBusy)return;const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
   function reviewEditor(row,key,label,type,value){
     const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
     if(['inspector','institution'].includes(key)){
@@ -291,10 +287,10 @@
     return '<div class="qis-inline-value"'+(hasContent(value)?' data-show-value':'')+'><button type="button" class="qis-review-value" aria-label="'+esc(label+'：'+value+'，点击编辑')+'">'+esc(value)+'</button>'+control+'</div>';
   }
   function rowHTML(row,columns=model.columns,customerStart=false){
-    const d=draft(row),disabled=canEdit(row)?'':'disabled';
+    const d=draft(row),disabled=canEdit(row)&&!model.submitBusy?'':'disabled';
     // Fixed-height inner cells keep long text, save feedback and photos within one standard row.
     const mobileKey='<small class="qis-mobile-key" title="'+esc(row.poNo+' · '+row.productNo)+'">'+esc(row.poNo)+' · '+esc(row.productNo)+'</small>';
-    const action=model.view==='review'?(model.reviewTab==='pending'?'<button class="qis-row-action" data-confirm="'+row.id+'" '+(editable()?'':'disabled')+'>审核确认</button>'+(canReturn(row)?'<button class="qis-row-action qis-return-action" data-return="'+row.id+'" '+(editable()?'':'disabled')+'>退回验货台</button>':''):'<button class="qis-row-action" data-revoke="'+row.id+'" '+(editable()?'':'disabled')+'>反审核</button>'):row.submittedAt&&row.reviewState!=='returned_to_inspection'?'<span class="qis-action-state">历史已完成</span>':'<button class="qis-row-action" data-submit="'+row.id+'" '+disabled+'>提交审核</button>';
+    const action=model.view==='review'&&model.reviewTab==='approved'?'<button class="qis-row-action" data-revoke="'+row.id+'" '+(editable()?'':'disabled')+'>反审核</button>':'';
     return '<tr tabindex="0" aria-selected="'+(row.id===model.selectedId)+'" class="'+(row.id===model.selectedId?'qis-selected ':'')+(customerStart?'qis-review-customer-start':'')+'" data-entry="'+row.id+'">'+columns.map(({key})=>{
       const cell=(content,attributes='')=>'<td data-column="'+key+'"'+attributes+'><div class="qis-cell">'+content+'</div></td>';
       if(key==='inspectionExecution.institution'&&reviewGroup(row)!=='客验')return cell('—',' class="qis-not-applicable"');
@@ -319,8 +315,8 @@
       const value=key==='date'?dateText(row):key==='reviewState'?(row.legacyCompleted?'历史已完成':{pending:'待审核',approved:'已审核'}[row.reviewState]||'—'):Array.isArray(raw)?raw.map(v=>Object.entries(v).map(([k,x])=>k+'：'+x).join('；')).join('\n'):raw;
       const note=key==='date'?[row.dateFrom,row.dateTo].filter(Boolean).join(' 至 '):scalar(value);
       const history=key==='poNo'&&row.sourceWarning?row.sourceWarning:key==='poNo'&&row.historicalResult&&!d.result?'原历史结论：'+row.historicalResult+'；请选择 PASS / FAIL / PENDING / LG':'';
-      if(key==='poNo')return cell('<div class="qis-po-info" title="'+esc(note+(row.batch?' · '+row.batch:''))+'">'+esc(value??'')+(row.reviewState==='returned_to_inspection'?'<small class="qis-reinspection">退回重新验货</small>':row.batch?'<small>'+esc(row.batch)+'</small>':'')+(history?'<small class="qis-error">'+esc(history)+'</small>':'')+'</div><div class="qis-row-actions">'+action+'</div>',' class="qis-po-actions"');
-      return cell((key==='customer'&&model.view==='review'?audit().reversalBadge(row):'')+(key==='customer'&&model.view==='review'?'<input type="checkbox" data-review-check="'+row.id+'" aria-label="选择 '+esc(row.customer+' '+row.poNo)+'" '+(model.checked.has(row.id)?'checked':'')+'> ':'')+esc(value??'')+(key==='customer'&&row.testData?'<small>测试数据</small>':'')+(key==='poNo'&&row.batch?'<small>'+esc(row.batch)+'</small>':'')+(history?'<small class="qis-error">'+esc(history)+'</small>':'')+(key==='customer'&&model.view==='review'?audit().badge(row):''),' title="'+esc(note+(model.view==='review'&&['customer','poNo'].includes(key)?'\n'+audit().hint(row):''))+'"');
+      if(key==='poNo')return cell('<div class="qis-po-info" title="'+esc(note+(row.batch?' · '+row.batch:''))+'">'+esc(value??'')+(row.reviewState==='returned_to_inspection'?'<small class="qis-reinspection">退回重新验货</small>':row.batch?'<small>'+esc(row.batch)+'</small>':'')+(history?'<small class="qis-error">'+esc(history)+'</small>':'')+'</div>'+(action?'<div class="qis-row-actions">'+action+'</div>':''),' class="qis-po-actions"');
+      return cell((key==='customer'&&model.view==='review'?audit().reversalBadge(row):'')+(key==='customer'&&model.view==='review'&&model.reviewTab==='approved'?'<input type="checkbox" data-review-check="'+row.id+'" aria-label="选择 '+esc(row.customer+' '+row.poNo)+'" '+(model.checked.has(row.id)?'checked':'')+'> ':'')+esc(value??'')+(key==='customer'&&row.testData?'<small>测试数据</small>':'')+(key==='poNo'&&row.batch?'<small>'+esc(row.batch)+'</small>':'')+(history?'<small class="qis-error">'+esc(history)+'</small>':'')+(key==='customer'&&model.view==='review'?audit().badge(row):''),' title="'+esc(note+(model.view==='review'&&['customer','poNo'].includes(key)?'\n'+audit().hint(row):''))+'"');
     }).join('')+'</tr>';
   }
   const scalar=value=>value==null?'':String(value);
@@ -354,6 +350,7 @@
   }
 
   function render(){
+    finishRowDrag(true);
     const host=root.document.getElementById(model.view==='review'?'reviewTableWrap':'recordsTableWrap');if(!host)return;
     host.classList.add('qis-wrap');updateTaskFilters();root.updateRecordsDateLabel?.();
     const active=root.document.activeElement;
@@ -370,8 +367,12 @@
       }
       return true;
     });
-    if(reviewing)updateReviewControls(rows);
-    const headerCells=columns.map(c=>'<th scope="col" data-column="'+c.key+'">'+esc(c.label)+'</th>').join('');
+    if(reviewing)updateReviewControls(rows);else updateRecordControls();
+    const ascending=model.recordsSort==='date-asc';
+    const sortHint=ascending?'点击按验货日期倒序，较晚日期在前':'点击按验货日期正序，较早日期在前';
+    const headerCells=columns.map(c=>!reviewing&&c.key==='date'
+      ? '<th scope="col" data-column="date" aria-sort="'+(ascending?'ascending':'descending')+'"><button type="button" class="qis-date-sort" title="'+sortHint+'" aria-label="'+sortHint+'">验货日期 <span aria-hidden="true">'+(ascending?'↑':'↓')+'</span></button></th>'
+      : '<th scope="col" data-column="'+c.key+'">'+esc(c.label)+'</th>').join('');
     const body=reviewing
       ? reviewTableBody(rows,columns,headerCells)
       : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
@@ -379,12 +380,15 @@
       (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
       ((!reviewing||rows.length)?'<table class="qis-table">'+body+'</table>':'')+
       (!rows.length&&!model.loading?'<p>没有符合条件的验货任务。</p>':'');
+    const sortButton=host.querySelector('.qis-date-sort');
+    if(sortButton)sortButton.onclick=()=>{model.recordsSort=ascending?'date-desc':'date-asc';render();host.querySelector('.qis-date-sort')?.focus({preventScroll:true});};
+    if(active?.matches('.qis-date-sort'))sortButton?.focus({preventScroll:true});
     host.tabIndex=0;host.setAttribute('role','region');host.setAttribute('aria-label','验货表格，可横向滚动');
     host.scrollTop=scrollTop;host.scrollLeft=scrollLeft;freezeColumns(host);
     if(!host._qisObserved&&root.ResizeObserver){host._qisObserved=true;new root.ResizeObserver(()=>freezeColumns(host)).observe(host);}
     rows.forEach(row=>{
       const d=draft(row),node=host.querySelector('[data-entry="'+row.id+'"]');
-      node.onclick=()=>selectRow(row.id);node.addEventListener('focusin',()=>selectRow(row.id));
+      node.onclick=()=>{if(!suppressRowClick&&!rowDrag)selectRow(row.id);};node.addEventListener('focusin',()=>selectRow(row.id));
       const result=node.querySelector('[data-result]');if(result)result.onchange=e=>edit(row.id,'result',e.target.value,true);
       for(const [field,attribute] of [['remark','remark'],['improvement','improvement'],['inspectionProblem','problem'],...Object.keys(reviewFields).map(k=>[k,'review-field="'+k+'"'])]){
         const input=node.querySelector('[data-'+attribute+']');if(!input)continue;
@@ -410,14 +414,14 @@
         d.inspectionExecution[key]=selected?.name||'';d.executionDirty.add(key);editExecution(row.id,idKey,input.value,true);
       });
       node.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>detailEditor(row.id,button.dataset.detail));
-      const submit=node.querySelector('[data-submit]');if(submit)submit.onclick=()=>submitRow(row.id);
       const check=node.querySelector('[data-review-check]');if(check)check.onchange=()=>{check.checked?model.checked.add(row.id):model.checked.delete(row.id);updateReviewControls(filtered());};
-      const returnButton=node.querySelector('[data-return]');if(returnButton)returnButton.onclick=()=>returnToInspection(row.id);
-      const confirm=node.querySelector('[data-confirm]'),revoke=node.querySelector('[data-revoke]');if(confirm)confirm.onclick=()=>reviewAction('confirm',[row.id]);if(revoke)revoke.onclick=()=>reviewAction('revoke',[row.id]);
+      const revoke=node.querySelector('[data-revoke]');if(revoke)revoke.onclick=()=>reviewAction('revoke',[row.id]);
       node.querySelectorAll('[data-retry],[data-photo-retry]').forEach(button=>button.onclick=()=>retry(row.id));
       node.querySelectorAll('input[type=file]').forEach(control=>control.onchange=()=>upload(row.id,control));
-      bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id);
+      bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id,true);
     });
+    if(reviewing)updateReviewControls(rows);else updateRecordControls();
+    bindRowSelection(host);
     audit()?.bind(host,model.items);
     if(!editing?.entry)return;
     const next=editing.field.startsWith('execution:')?host.querySelector('[data-entry="'+editing.entry+'"] [data-execution-field="'+editing.field.slice(10)+'"]'):editing.field.startsWith('review:')?host.querySelector('[data-entry="'+editing.entry+'"] [data-review-field="'+editing.field.slice(7)+'"]'):host.querySelector('[data-'+editing.field+'="'+editing.entry+'"]');
@@ -433,6 +437,7 @@
     try{await uploadFiles(id,files);}finally{control.value='';control.disabled=false;}
   }
   async function uploadFiles(id,files){
+    if(model.submitBusy||model.reviewBusy)return;
     const row=byId(id);if(!row||!canEdit(row)||!files.length)return;
     const d=draft(row);d.reading=(d.reading||0)+1;status(id);
     // Preserve paste/file-selection order and keep navigation guarded through all reads.
@@ -457,7 +462,7 @@
     if(!row||!host?.querySelector('[data-entry="'+row.id+'"]')){root.showToast?.('请先点击选中要添加照片的记录','error');return;}
     event.preventDefault();
     if(!canEdit(row)){root.showToast?.('当前记录只读；如需修改，请先反审核','error');return;}
-    if(model.loading||model.reviewBusy||draft(row).submitting){root.showToast?.('正在处理记录，请完成后再粘贴照片','error');return;}
+    if(model.loading||model.reviewBusy||model.submitBusy||draft(row).submitting){root.showToast?.('正在处理记录，请完成后再粘贴照片','error');return;}
     uploadFiles(row.id,files);
   }
   root.document.addEventListener('paste',pastePhotos);
@@ -473,35 +478,155 @@
     do{await pump(id);if(d.busy||d.reading)await new Promise(resolve=>setTimeout(resolve,20));}while(d.busy||d.reading);
     if(d.dirty||d.error||d.queue.length){const error=Error(d.error||'本行仍有未保存内容或失败照片，请先重试保存。');error.field=d.errorKind==='photo'||d.queue.length?'photos':'remark';throw error;}
   }
-  const notices=new Map();
-  function notifySubmissionFailure(row,error){
-    notices.get(row.id)?.();
-    let host=root.document.getElementById('qis-notifications');
-    if(!host){host=root.document.createElement('aside');host.id='qis-notifications';host.setAttribute('aria-label','验货操作通知');root.document.body.append(host);}
-    const field=error.field||(/验货结果|PASS|FAIL|PENDING|LG/.test(error.message)?'result':''),labels={result:'验货结果',remark:'备注、改进措施或验货问题',photos:'照片'};
-    const panel=root.document.createElement('section');panel.className='qis-notice';panel.setAttribute('role','alert');panel.setAttribute('aria-atomic','true');panel.dataset.noticeEntry=row.id;
-    panel.innerHTML='<button type="button" class="qis-notice-close" aria-label="关闭提交失败通知">×</button><strong>ⓘ 无法提交审核</strong><p>客户：'+esc(row.customer||'—')+'<br>PO：'+esc(row.poNo||'—')+'</p>'+(field?'<p>需检查：'+esc(labels[field])+'</p>':'')+'<p>'+esc(error.message||'未收到提交确认，请刷新核对后重试。')+'</p><button type="button" data-locate>定位记录'+(field?'及字段':'')+'</button>';
-    host.append(panel);
-    const notice=audit().lifecycle(panel,{onRemove:()=>{if(notices.get(row.id)===notice.destroy)notices.delete(row.id);}});
-    notices.set(row.id,notice.destroy);panel.querySelector('.qis-notice-close').onclick=notice.close;
-    panel.querySelector('[data-locate]').onclick=()=>{
-      const node=root.document.querySelector('[data-entry="'+row.id+'"]');if(!node)return;
-      selectRow(row.id);const cell=node.querySelector('[data-column="'+(field||'poNo')+'"]'),input=cell?.querySelector('select,textarea,button,input');
-      (input||cell||node).scrollIntoView?.({block:'nearest',inline:'center'});input?.focus();cell?.classList.add('qis-attention');setTimeout(()=>cell?.classList.remove('qis-attention'),7000);
+  function recordReadyReason(row){
+    if(!canEdit(row))return '当前记录不可提交';
+    const d=draft(row);
+    if(!model.results.includes(d.result))return '请先填写验货结果';
+    if(d.error)return '请先处理保存失败';
+    if(d.reading||d.busy||d.dirty||d.queue.length||d.composing||d.submitting)return '等待内容和照片保存完成';
+    return '';
+  }
+  function recordControls(){
+    const table=root.document.getElementById('recordsTableWrap');
+    if(!table||root.document.getElementById('qis-record-batch'))return;
+    const actions=root.document.createElement('div');actions.className='qis-submit-actions';
+    const button=root.document.createElement('button');button.type='button';button.id='qis-record-batch';button.className='qis-submit-batch';
+    actions.append(button);table.after(actions);button.onclick=submitSelected;
+  }
+  function updateRecordControls(){
+    if(model.view!=='records')return;
+    recordControls();
+    const key=JSON.stringify(['searchInput','qisTaskDate','qisTaskCustomer'].map(id=>root.document.getElementById(id)?.value||''));
+    if(key!==model.recordFilterKey){model.recordChecked.clear();model.recordAnchor='';model.recordFilterKey=key;}
+    const rows=filtered(),ids=new Set(rows.map(r=>r.id));
+    for(const id of model.recordChecked)if(!ids.has(id))model.recordChecked.delete(id);
+    const selected=rows.filter(r=>model.recordChecked.has(r.id));
+    const button=root.document.getElementById('qis-record-batch');if(!button)return;
+    button.disabled=!selected.length||selected.some(recordReadyReason)||model.loading||!!model.error||model.submitBusy||!editable();
+    button.textContent=model.submitBusy?'正在提交…':'提交审核'+(selected.length?'（'+selected.length+'）':'');
+    root.document.querySelectorAll('#recordsTableWrap [data-entry]').forEach(node=>{
+      const selected=model.recordChecked.has(node.dataset.entry);
+      node.classList.toggle('qis-batch-selected',selected);node.classList.toggle('qis-selected',node.dataset.entry===model.selectedId);node.setAttribute('aria-selected',String(selected));
+    });
+  }
+  const selectionKey=()=>model.view==='review'?'checked':'recordChecked';
+  const anchorKey=()=>model.view==='review'?'reviewAnchor':'recordAnchor';
+  const cursorKey=()=>model.view==='review'?'reviewCursor':'recordCursor';
+  const selectionReason=row=>model.view==='review'?(!canEdit(row)||!model.results.includes(draft(row).result)?'当前记录不可确认':''):recordReadyReason(row);
+  const updateRowSelection=()=>model.view==='review'?updateReviewControls(filtered()):updateRecordControls();
+  // Review groups reorder the displayed rows; ranges must follow the actual table order.
+  const visibleSelectionRows=host=>[...host.querySelectorAll('[data-entry]')].map(node=>byId(node.dataset.entry)).filter(Boolean);
+  let rowDrag=null,rowDragFrame=0,suppressRowClick=false;
+  function finishRowDrag(cancel=false){
+    if(!rowDrag)return;
+    const drag=rowDrag;rowDrag=null;root.cancelAnimationFrame(rowDragFrame);rowDragFrame=0;
+    drag.host.classList.remove('qis-drag-selecting');
+    if(drag.host.hasPointerCapture?.(drag.pointer))drag.host.releasePointerCapture(drag.pointer);
+    if(cancel)model[selectionKey()]=drag.before;
+    model.selectedId=model[selectionKey()].size===1?[...model[selectionKey()]][0]:'';
+    suppressRowClick=true;setTimeout(()=>{suppressRowClick=false;},0);
+    updateRowSelection();
+  }
+  function chooseRowRange(rows,start,end){
+    const next=new Set(rows.slice(Math.min(start,end),Math.max(start,end)+1).filter(row=>!selectionReason(row)).map(row=>row.id));
+    if(next.size===model[selectionKey()].size&&[...next].every(id=>model[selectionKey()].has(id)))return;
+    model[selectionKey()]=next;
+    model.selectedId=model[selectionKey()].size===1?[...model[selectionKey()]][0]:'';
+    updateRowSelection();
+  }
+  root.addEventListener('blur',()=>finishRowDrag(true));
+  root.addEventListener('pagehide',()=>finishRowDrag(true));
+  function bindRowSelection(host){
+    if(host._qisDragBound)return;host._qisDragBound=true;
+    const interactive=target=>target.closest('input,select,textarea,button,a,label,[contenteditable=true],[role=button]');
+    const allowed=()=>(model.view==='records'||model.view==='review'&&model.reviewTab==='pending')&&editable()&&!model.loading&&!model.error&&!model.submitBusy&&!model.reviewBusy&&!root.document.querySelector('dialog[open]');
+    const update=()=>{
+      if(!rowDrag)return;
+      const nodes=rowDrag.nodes;
+      let index=nodes.findIndex(node=>rowDrag.y<=node.getBoundingClientRect().bottom);if(index<0)index=nodes.length-1;
+      chooseRowRange(rowDrag.rows,rowDrag.start,index);
+    };
+    const scroll=()=>{
+      if(!rowDrag)return;
+      const box=host.getBoundingClientRect(),head=host.querySelector('thead')?.getBoundingClientRect().height||0;
+      const top=Math.max(box.top+head,0)+28,bottom=Math.min(box.bottom,root.innerHeight)-28;
+      const delta=rowDrag.y<top?-Math.min(16,(top-rowDrag.y)/3):rowDrag.y>bottom?Math.min(16,(rowDrag.y-bottom)/3):0;
+      if(delta)host.scrollTop+=delta;
+      update();rowDragFrame=root.requestAnimationFrame(scroll);
+    };
+    host.addEventListener('pointerdown',event=>{
+      if(!allowed()||event.button!==0||event.pointerType==='touch'||interactive(event.target))return;
+      const node=event.target.closest('[data-entry]');if(!node)return;
+      const rows=visibleSelectionRows(host),start=rows.findIndex(row=>row.id===node.dataset.entry);if(start<0)return;
+      event.preventDefault();host.focus({preventScroll:true});model[anchorKey()]=node.dataset.entry;model[cursorKey()]=node.dataset.entry;
+      rowDrag={host,pointer:event.pointerId,start,rows,nodes:[...host.querySelectorAll('[data-entry]')],y:event.clientY,before:new Set(model[selectionKey()])};
+      host.setPointerCapture?.(event.pointerId);host.classList.add('qis-drag-selecting');update();rowDragFrame=root.requestAnimationFrame(scroll);
+    });
+    host.addEventListener('pointermove',event=>{if(rowDrag&&event.pointerId===rowDrag.pointer){rowDrag.y=event.clientY;update();}});
+    host.addEventListener('pointerup',()=>finishRowDrag());
+    host.addEventListener('pointercancel',()=>finishRowDrag(true));
+    host.addEventListener('lostpointercapture',()=>finishRowDrag(true));
+    host.addEventListener('click',event=>{
+      if(!allowed()||suppressRowClick||interactive(event.target))return;
+      const node=event.target.closest('[data-entry]'),row=node&&byId(node.dataset.entry);if(!row)return;
+      model[selectionKey()]=new Set(!selectionReason(row)?[row.id]:[]);model[anchorKey()]=row.id;model[cursorKey()]=row.id;model.selectedId=row.id;updateRowSelection();
+    });
+    host.addEventListener('keydown',event=>{
+      if(!allowed()||interactive(event.target))return;
+      if(event.key==='Escape'){event.preventDefault();finishRowDrag(true);model[selectionKey()].clear();model.selectedId='';updateRowSelection();return;}
+      if(!['ArrowUp','ArrowDown',' '].includes(event.key))return;
+      event.preventDefault();const rows=visibleSelectionRows(host);if(!rows.length)return;
+      let current=rows.findIndex(r=>r.id===model[cursorKey()]);
+      current=event.key===' '?Math.max(0,current):current<0?(event.key==='ArrowDown'?0:rows.length-1):Math.max(0,Math.min(rows.length-1,current+(event.key==='ArrowDown'?1:-1)));
+      model[cursorKey()]=rows[current].id;
+      const anchor=event.shiftKey?rows.findIndex(r=>r.id===model[anchorKey()]):-1;
+      if(anchor<0)model[anchorKey()]=rows[current].id;
+      chooseRowRange(rows,anchor<0?current:anchor,current);
+      host.querySelector('[data-entry="'+rows[current].id+'"]')?.scrollIntoView?.({block:'nearest',inline:'nearest'});
+    });
+  }
+  function submitSelected(){
+    if(model.submitBusy||model.loading||model.error||model.view!=='records'||!editable())return;
+    const selected=filtered().filter(r=>model.recordChecked.has(r.id));
+    if(!selected.length||selected.some(recordReadyReason))return;
+    const el=audit().dialog('确认批量提交审核',
+      '<p>提交以下 <strong>'+selected.length+'</strong> 条记录到审核中心：</p><ul class="qis-submit-list">'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' <strong>'+esc(draft(r).result)+'</strong></li>').join('')+'</ul><p>只提交所选记录。未填写结果、未保存完成的记录仍留在验货台。</p><p data-feedback role="status"></p><div class="qis-submit-dialog-actions"><button type="button" data-cancel>返回检查</button><button type="button" class="qis-submit-batch" data-execute>确认提交 '+selected.length+' 条</button></div>');
+    const button=el.querySelector('[data-execute]'),feedback=el.querySelector('[data-feedback]');
+    el.querySelector('[data-cancel]').onclick=()=>{if(!model.submitBusy)el.close();};
+    el.addEventListener('cancel',event=>{if(model.submitBusy)event.preventDefault();});
+    let started=false;
+    button.onclick=async()=>{
+      if(started||model.submitBusy)return;started=true;model.submitBusy=true;
+      el.querySelectorAll('button').forEach(b=>b.disabled=true);render();
+      const failed=[];let succeeded=0;
+      for(const original of selected){
+        const row=byId(original.id);let d;
+        try{
+          if(!row||!editable())throw Error('记录或操作权限已变化，请刷新核对');
+          const reason=recordReadyReason(row);if(reason)throw Error(reason);
+          d=draft(row);d.submitting=true;
+          await flushRow(row.id);
+          const saved=await api('entries/'+row.id+'/submit',{revision:byId(row.id).revision});
+          accept(row.id,saved);clearTimeout(d.timer);
+          model.items=model.items.filter(r=>r.id!==row.id);model.recordChecked.delete(row.id);model.drafts.delete(row.id);succeeded++;
+        }catch(error){failed.push({row:original,message:error.message});}
+        finally{if(d)d.submitting=false;}
+        feedback.textContent='已处理 '+(succeeded+failed.length)+' / '+selected.length+' 条';
+      }
+      model.submitBusy=false;render();
+      el.querySelector('[data-close]').disabled=false;el.querySelector('[data-cancel]').disabled=false;
+      if(failed.length){
+        feedback.innerHTML='成功 '+succeeded+' 条，失败 '+failed.length+' 条。失败记录保留选中：<ul>'+failed.map(({row,message})=>'<li>'+esc(row.customer)+' · '+esc(row.poNo)+' · '+esc(row.productNo)+'：'+esc(message)+'</li>').join('')+'</ul>关闭后核对并重试，不会重复提交已成功记录。';
+        button.hidden=true;el.querySelector('[data-cancel]').textContent='返回处理失败记录';
+      }else{el.close();root.showToast?.('已提交 '+succeeded+' 条，请到审核中心复核确认','success');}
     };
   }
-  async function submitRow(id){
-    const row=byId(id);if(!row||!canEdit(row))return;const d=draft(row);if(d.submitting)return;
-    const button=root.document.querySelector('[data-submit="'+id+'"]');if(button)button.disabled=true;d.submitting=true;
-    try{
-      if(!model.results.includes(d.result)){const error=Error('该订单尚未选择有效验货结果，请选择 PASS、FAIL、PENDING 或 LG 后重试。');error.field='result';throw error;}
-      await flushRow(id);const saved=await api('entries/'+id+'/submit',{revision:byId(id).revision});
-      accept(id,saved);notices.get(id)?.();model.items=model.items.filter(r=>r.id!==id);model.drafts.delete(id);render();root.showToast?.('已提交审核，请到审核中心复核确认','success');
-    }catch(error){notifySubmissionFailure(row,error);if(button)button.disabled=false;}
-    finally{d.submitting=false;}
-  }
   function refreshResultFilters(){
-    for(const selector of ['#filterResult','[data-rfilter=result]']){const input=root.document.querySelector(selector);if(!input)continue;const value=input.value;input.innerHTML='<option value="">全部判定</option>'+model.results.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');input.value=value;}
+    const input=root.document.querySelector('[data-rfilter=result]');
+    if(!input)return;
+    const value=input.value;
+    input.innerHTML='<option value="">全部判定</option>'+model.results.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
+    input.value=value;
   }
   function syncReviewFilters(){
     const {from,to}=model.reviewFilters;
@@ -525,7 +650,7 @@
       <div class="qis-review-filterbar" aria-label="审核中心筛选">
         <label class="qis-review-search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
-          <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" placeholder="搜索客户 / PO / 货号">
+          <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" placeholder="客户 / PO / 货号">
         </label>
         <details id="qis-review-date" class="qis-review-date">
           <summary aria-label="筛选验货日期">
@@ -550,7 +675,7 @@
           <option value="date-asc">验货日期 ↑</option>
           <option value="mod-desc">修改日期 ↓</option>
         </select>
-        <button type="button" class="qis-review-reset" data-reset-review>重置筛选</button>
+        <button type="button" class="qis-review-reset" data-reset-review aria-label="重置筛选">重置</button>
       </div>
       <div class="qis-review-actions">
         <div class="qis-review-context" role="status">
@@ -558,14 +683,14 @@
         </div>
         <div class="qis-review-batch-actions">
           <label><input id="qis-review-all" type="checkbox">全选当前筛选</label>
-          <button id="qis-review-batch" type="button">审核确认所选</button>
+          <button id="qis-review-batch" type="button">反审核所选</button>
         </div>
       </div>`;
     refreshResultFilters();
     syncReviewFilters();
-    const applyFilters=()=>{model.checked.clear();render();};
+    const applyFilters=()=>{finishRowDrag(true);model.checked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
     host.querySelectorAll('[data-rfilter]').forEach(input=>{
-      input.oninput=()=>{model.reviewFilters[input.dataset.rfilter]=input.value;applyFilters();};
+      input.oninput=()=>{if(model.reviewBusy){syncReviewFilters();return;}model.reviewFilters[input.dataset.rfilter]=input.value;applyFilters();};
     });
     const dates=host.querySelector('#qis-review-date');
     const trigger=dates.querySelector('summary');
@@ -580,6 +705,7 @@
       error.hidden=true;
     };
     const applyDates=(start,end)=>{
+      if(model.reviewBusy)return;
       Object.assign(model.reviewFilters,{from:start,to:end});
       syncReviewFilters();
       closeDates();
@@ -594,14 +720,14 @@
       applyDates(from.value,to.value);
     };
     form.querySelector('[data-clear-review-date]').onclick=()=>applyDates('','');
-    host.querySelector('[data-reset-review]').onclick=()=>{resetReviewFilters();applyFilters();};
+    host.querySelector('[data-reset-review]').onclick=()=>{if(model.reviewBusy)return;resetReviewFilters();applyFilters();};
     root.document.addEventListener('click',event=>{
       if(dates.open&&!dates.contains(event.target))dates.open=false;
     });
     dates.addEventListener('keydown',event=>{
       if(event.key==='Escape'&&dates.open){event.preventDefault();closeDates();}
     });
-    host.querySelector('#qis-review-all').onchange=event=>{model.checked=new Set(event.target.checked?filtered().map(r=>r.id):[]);render();};
+    host.querySelector('#qis-review-all').onchange=event=>{if(model.reviewBusy)return;model.checked=new Set(event.target.checked?filtered().map(r=>r.id):[]);render();};
     host.querySelector('#qis-review-batch').onclick=()=>reviewAction(model.reviewTab==='pending'?'confirm':'revoke',filtered().filter(r=>model.checked.has(r.id)).map(r=>r.id));
   }
   function updateReviewControls(rows){
@@ -609,16 +735,41 @@
     const count=root.document.getElementById('reviewCountPending');if(count)count.textContent=pending;
     const badge=root.document.getElementById('reviewNavBadge');if(badge){badge.textContent=pending;badge.style.display=pending?'':'none';}
     for(const tab of ['pending','approved'])root.document.getElementById('reviewTab'+tab[0].toUpperCase()+tab.slice(1))?.classList.toggle('active',model.reviewTab===tab);
-    const eligible=rows,selected=eligible.filter(r=>model.checked.has(r.id));
-    const all=root.document.getElementById('qis-review-all');if(all){all.checked=Boolean(eligible.length&&selected.length===eligible.length);all.indeterminate=selected.length>0&&selected.length<eligible.length;all.disabled=!eligible.length||model.reviewBusy;}
+    const eligible=rows.filter(row=>model.reviewTab!=='pending'||!selectionReason(row)),ids=new Set(eligible.map(r=>r.id));
+    for(const id of model.checked)if(!ids.has(id))model.checked.delete(id);
+    const selected=eligible.filter(r=>model.checked.has(r.id));
+    const pendingTab=model.reviewTab==='pending',controls=root.document.getElementById('qis-review-controls');
+    controls?.classList.toggle('qis-pending-review',pendingTab);
+    const all=root.document.getElementById('qis-review-all');if(all){all.checked=Boolean(eligible.length&&selected.length===eligible.length);all.indeterminate=selected.length>0&&selected.length<eligible.length;all.disabled=!eligible.length||model.reviewBusy||!editable();}
     const countMessage=root.document.getElementById('qis-review-count');if(countMessage)countMessage.textContent=rows.length+' 条记录';
     const selectionMessage=root.document.getElementById('qis-review-selected');if(selectionMessage)selectionMessage.textContent=selected.length?'已选 '+selected.length+' 条':'未选中记录';
-    const button=root.document.getElementById('qis-review-batch');if(button){button.disabled=!editable()||!selected.length||model.reviewBusy;button.textContent=(model.reviewTab==='pending'?'审核确认所选':'反审核所选')+(selected.length?'（'+selected.length+'）':'');button.classList.toggle('qis-confirm-ready',model.reviewTab==='pending'&&!button.disabled);}
+    const button=root.document.getElementById('qis-review-batch');
+    if(button){
+      button.disabled=!editable()||!selected.length||model.reviewBusy||model.loading||!!model.error;
+      button.textContent=(model.reviewBusy?'正在处理…':pendingTab?'审核确认':'反审核所选')+(!model.reviewBusy&&selected.length?'（'+selected.length+'）':'');
+      button.classList.toggle('qis-confirm-ready',pendingTab&&!button.disabled);
+    }
+    root.document.querySelectorAll('#reviewTableWrap [data-entry]').forEach(node=>{
+      const selected=pendingTab&&model.checked.has(node.dataset.entry);
+      node.classList.toggle('qis-batch-selected',selected);
+      node.classList.toggle('qis-selected',node.dataset.entry===model.selectedId);
+      node.setAttribute('aria-selected',String(pendingTab?selected:node.dataset.entry===model.selectedId));
+    });
+    // Freeze edits and filters while saving the selected revisions and confirming them.
+    root.document.querySelectorAll('#reviewTableWrap input,#reviewTableWrap select,#reviewTableWrap textarea,#reviewTableWrap button,#qis-review-controls input,#qis-review-controls select,#qis-review-controls button').forEach(input=>{
+      if(input===button||input===all)return;
+      if(model.reviewBusy){if(!input.disabled){input.dataset.qisBusyDisabled='1';input.disabled=true;}}
+      else if(input.dataset.qisBusyDisabled){delete input.dataset.qisBusyDisabled;input.disabled=false;}
+    });
   }
+
   function reviewAction(action,ids){
-    if(!ids.length||model.reviewBusy)return;
-    const selected=ids.map(byId).filter(Boolean),label=action==='confirm'?'审核确认':'反审核';
-    const el=audit().dialog(label, '<p>本次'+label+' <strong>'+selected.length+'</strong> 条，仅处理下列明确选中的记录。</p><ul>'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' · 验货结果：'+esc(r.result||'未填写')+(r.legacyCompleted?'（历史已完成；确认反审核后转入待审核）':'')+'</li>').join('')+'</ul>'+(action==='revoke'?'<label>反审核说明（可留空）<textarea data-reason rows="3" maxlength="20000"></textarea></label>':'<p>确认后记录进入验货汇总，当前内容将保存为审核快照。</p>')+'<p data-feedback role="status"></p><button data-cancel>取消</button> <button data-execute>'+(action==='revoke'?'确认反审核':label)+' '+selected.length+' 条</button>');
+    if(!ids.length||model.reviewBusy||model.loading||model.error||!editable()||model.view!=='review')return;
+    const visible=new Set(filtered().map(row=>row.id));
+    const selected=[...new Set(ids)].filter(id=>visible.has(id)).map(byId).filter(row=>row&&(action==='confirm'?row.reviewState==='pending':row.reviewState==='approved'||row.legacyCompleted));
+    if(!selected.length)return;
+    const label=action==='confirm'?'审核确认':'反审核';
+    const el=audit().dialog(label, '<p>本次'+label+' <strong>'+selected.length+'</strong> 条，仅处理下列明确选中的记录。</p><ul>'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' · 验货结果：'+esc(draft(r).result||'未填写')+(r.legacyCompleted?'（历史已完成；确认反审核后转入待审核）':'')+'</li>').join('')+'</ul>'+(action==='revoke'?'<label>反审核说明（可留空）<textarea data-reason rows="3" maxlength="20000"></textarea></label>':'<p>确认后记录进入验货汇总，当前内容将保存为审核快照。</p>')+'<p data-feedback role="status"></p><button data-cancel>取消</button> <button data-execute>'+(action==='revoke'?'确认反审核':label)+' '+selected.length+' 条</button>');
     let request=null;el.querySelector('[data-cancel]').onclick=()=>{if(!model.reviewBusy)el.close();};
     const button=el.querySelector('[data-execute]'),feedback=el.querySelector('[data-feedback]');
     el.addEventListener('cancel',event=>{if(model.reviewBusy)event.preventDefault();});
@@ -634,25 +785,6 @@
         else{el.close();root.showToast?.(label+'成功 '+result.succeeded+' 条','success');}
       }catch(error){feedback.textContent=error.message+'；可重试同一请求，系统会核对是否已经成功。';}
       finally{model.reviewBusy=false;button.disabled=false;el.querySelector('[data-close]').disabled=false;updateReviewControls(filtered());}
-    };
-  }
-  function returnToInspection(id){
-    const row=byId(id);if(!row||model.reviewBusy||!canReturn(row))return;
-    const el=audit().dialog('确认退回验货台？','<p>即将把以下订单退回验货台重新验货：</p><p>客户：'+esc(row.customer)+'<br>PO：'+esc(row.poNo)+'</p><p>该订单将从待审核列表移出，并重新出现在验货台中。原有验货内容和照片保留，可以重新检查和填写。</p><label>退回原因（选填）<textarea data-reason maxlength="20000" rows="3"></textarea></label><p data-feedback role="alert"></p><footer><button data-cancel>取消</button><button class="qis-return-action" data-return-confirm>确认退回</button></footer>');
-    let request=null;const feedback=el.querySelector('[data-feedback]'),button=el.querySelector('[data-return-confirm]'),reason=el.querySelector('[data-reason]');
-    el.querySelector('[data-cancel]').onclick=()=>{if(!model.reviewBusy)el.close();};el.addEventListener('cancel',e=>{if(model.reviewBusy)e.preventDefault();});
-    button.onclick=async()=>{
-      if(model.reviewBusy)return;model.reviewBusy=true;el.querySelectorAll('button').forEach(b=>b.disabled=true);updateReviewControls(filtered());
-      try{
-        if(!request){
-          await flushRow(id);
-          request={revision:byId(id).revision,requestKey:requestKey(),reason:reason.value};
-          reason.disabled=true;
-        }
-        const result=await api('review/entries/'+id+'/return-to-inspection',request);
-        accept(id,result.item);model.checked.delete(id);model.drafts.delete(id);render();el.close();root.showToast?.('已退回验货台：'+row.customer+' · '+row.poNo,'success');
-      }catch(error){feedback.textContent=error.message+'；数据保留，可重试或关闭后刷新核对。';}
-      finally{model.reviewBusy=false;el.querySelectorAll('button').forEach(b=>b.disabled=false);updateReviewControls(filtered());}
     };
   }
   async function reviewNotifications(view,generation){

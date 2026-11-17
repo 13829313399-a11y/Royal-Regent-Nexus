@@ -104,3 +104,17 @@ def test_actual_invalid_values_still_reject_without_reserving_numbers(client, db
         'overrides': json.dumps([{'id': preview['rows'][0]['id'], 'field': field, 'value': value}])})
     assert response.status_code == 400
     assert db.get(JPCounter, 'huakang-b') is None
+
+
+@pytest.mark.parametrize('sales_order', ['', 'SO-20261116-001', '=1+1'])
+def test_contract_column_is_always_tba_without_rewriting_source_sales_order(sales_order):
+    from copy import deepcopy
+    row = dict(customer='WM CA', customer_po='PO-1', order_date='2026/11/16',
+        sales_order=sales_order, baby_item='45819', qty='3000', carton_t='',
+        ship_date='', cutoff_date='', price_t='', factory_price_t='')
+    before = deepcopy(row)
+    content = intake.workbook([row], 0, 'B', '业务员')
+    sheet = openpyxl.load_workbook(BytesIO(content)).active
+    assert sheet.cell(1, 5).value == '合同' and sheet.cell(2, 5).value == 'TBA'
+    assert sheet.cell(2, 5).data_type == 's' and sheet.max_column == 44
+    assert row == before

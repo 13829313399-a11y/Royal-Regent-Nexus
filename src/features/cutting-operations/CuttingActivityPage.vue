@@ -13,6 +13,7 @@ const props=defineProps<{embedded?:boolean;initialSource?:string}>()
 const source=ref(props.initialSource??''),query=ref(''),orderQuery=ref(''),month=ref(''),result=ref<Page<ActivityRow>>(),busy=ref(false),error=ref('')
 const applied=ref({source:source.value,q:'',order_q:'',month:undefined as string|undefined})
 type ActivityQuery=typeof applied.value & {page:number;expected_token?:string}
+type FocusTrigger={button:HTMLElement;onFailure:boolean}
 const failedQuery=ref<ActivityQuery>(),readingTarget=ref<ActivityQuery & {retry:boolean;expiredBasis:boolean}>(),staleResult=ref(false),restartRequired=ref(false)
 const firstPageFailed=ref(false)
 const lastSuccessAt=ref<string>()
@@ -47,18 +48,19 @@ function link(row:ActivityRow){
 async function load(page=1,apply=false,keyboardTrigger?:HTMLElement){
   if(apply){applied.value={source:source.value,q:query.value,order_q:orderQuery.value,month:month.value||undefined};page=1}
   const token=page>1?result.value?.token:undefined
-  await read({...applied.value,page,expected_token:token},false,keyboardTrigger,!apply)
+  const focusTrigger=keyboardTrigger?{button:keyboardTrigger,onFailure:true}:undefined
+  await read({...applied.value,page,expected_token:token},false,focusTrigger,!apply)
 }
-async function read(request:ActivityQuery,retry=false,keyboardTrigger?:HTMLElement,keepFirstPageResult=false){
+async function read(request:ActivityQuery,retry=false,focusTrigger?:FocusTrigger,keepFirstPageResult=false){
   const keepResult=props.embedded&&(keepFirstPageResult||retry)
   const expiredBasis=keepResult&&restartRequired.value
   retryDetailsOpen.value=retry&&Boolean(retryDetails.value?.open)
   const ticket=++generation;busy.value=true;error.value='';failedQuery.value=undefined;restartRequired.value=false;firstPageFailed.value=false
-  let restoreFocus=Boolean(keyboardTrigger),succeeded=false
+  let restoreFocus=Boolean(focusTrigger),succeeded=false
   const cancelFocus=()=>{restoreFocus=false}
   const cancelOnTab=(event:KeyboardEvent)=>{if(event.key==='Tab')cancelFocus()}
   const cleanupFocus=()=>{document.removeEventListener('focusin',cancelFocus);document.removeEventListener('pointerdown',cancelFocus);document.removeEventListener('keydown',cancelOnTab);focusCleanups.delete(cleanupFocus)}
-  if(keyboardTrigger){
+  if(focusTrigger){
     document.addEventListener('focusin',cancelFocus)
     document.addEventListener('pointerdown',cancelFocus)
     document.addEventListener('keydown',cancelOnTab)
@@ -90,20 +92,25 @@ async function read(request:ActivityQuery,retry=false,keyboardTrigger?:HTMLEleme
       }
     }
     cleanupFocus()
-    if(restoreFocus&&alive&&ticket===generation&&(document.activeElement===document.body||document.activeElement===keyboardTrigger)){
-      const target=failedQuery.value?retryAlert.value?.querySelector<HTMLButtonElement>('button'):succeeded&&retry?resultRegion.value:undefined
-      target?.focus({preventScroll:true})
+    if(restoreFocus&&focusTrigger&&alive&&ticket===generation&&(document.activeElement===document.body||document.activeElement===focusTrigger.button)){
+      if(succeeded&&retry)resultRegion.value?.focus({preventScroll:true})
+      if(focusTrigger.onFailure&&failedQuery.value)retryAlert.value?.querySelector<HTMLButtonElement>('button')?.focus({preventScroll:true})
     }
   }
 }
-function focusedKeyboardButton(event:MouseEvent){
+function focusedButton(event:MouseEvent){
   const button=event.currentTarget
-  if(event.detail===0&&button instanceof HTMLElement&&button===document.activeElement)return button
+  if(button instanceof HTMLElement&&button===document.activeElement)return button
 }
 function refresh(event:MouseEvent){
-  if(!busy.value)void load(1,false,props.embedded?focusedKeyboardButton(event):undefined)
+  if(!busy.value)void load(1,false,props.embedded&&event.detail===0?focusedButton(event):undefined)
 }
-function retry(event:MouseEvent){if(failedQuery.value&&!busy.value)void read({...failedQuery.value},true,focusedKeyboardButton(event))}
+function retry(event:MouseEvent){
+  if(!failedQuery.value||busy.value)return
+  const keyboard=event.detail===0
+  const button=keyboard||props.embedded?focusedButton(event):undefined
+  void read({...failedQuery.value},true,button?{button,onFailure:keyboard}:undefined)
+}
 function clearFilters(){source.value=props.initialSource??'';query.value='';orderQuery.value='';month.value='';void load(1,true)}
 onMounted(()=>void load());onBeforeUnmount(()=>{alive=false;generation++;for(const cleanup of focusCleanups)cleanup()})
 watchCuttingWorkspace(()=>void load())

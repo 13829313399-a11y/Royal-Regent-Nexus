@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, useId, watch } from 'vue'
-import { closingPresentationKey } from './closingPresentation'
+import { closingPresentationKey, closingReadTime } from './closingPresentation'
 import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -95,7 +95,7 @@ watch(filtered,()=>{page.value=1})
     <Button v-if="batch>1&&(!result||error)" variant="outline" :disabled="busy||!allowed||accessLoading" @click="run(false,1)">返回第一批重新读取</Button>
     <p v-if="changed">月份、范围或分批条件已改变，请读取对应系统依据。</p>
     <template v-if="result&&!changed&&allowed&&!accessLoading">
-      <p>期初截止：{{result.cutoff}}；取数时间：{{result.generated_at}}。补录、更正、反结会改变新预览，本表不是冻结期初。</p>
+      <p>期初截止：{{result.cutoff}}；取数时间：<time :datetime="result.generated_at">{{closingReadTime(result.generated_at)}}</time>。补录、更正、反结会改变新预览，本表不是冻结期初。</p>
       <nav v-if="result.batch" class="order-pagination" aria-label="期初核对批次">
         <span>第 {{result.batch.number}} / {{result.batch.pages}} 批 · 当前筛选共 {{result.batch.total}} {{result.batch.unit}}</span>
         <Button variant="outline" :disabled="busy||batch<=1" @click="run(false,batch-1)">上一批</Button>

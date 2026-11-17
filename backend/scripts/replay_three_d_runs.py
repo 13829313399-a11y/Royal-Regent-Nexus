@@ -126,6 +126,7 @@ class StateEventRow:
 
     def __init__(self, row):
         self.device_job_key = ""
+        self.payload_version = int(row.get("payload_version") or 1)
         self.printer_id = row.get("printer_id", "")
         self.machine_no = int(row.get("machine_no") or 0)
         self.state = row.get("state", "")
@@ -185,7 +186,11 @@ def replay_runs(events, *, min_progress: int = MIN_RUN_PROGRESS):
         current: ReplayRun | None = None
         for item in items:
             state = (item.state or "").strip().upper()
-            progress = int(item.progress or 0)
+            if getattr(item, "payload_version", 1) == 2:
+                from app.services.three_d_telemetry_storage import recent_detail
+                progress, current_file = recent_detail(item)
+            else:
+                progress, current_file = int(item.progress or 0), item.current_file
             observed = item.observed_at or item.received_at
             job_key = _stored_job_key(item)
             if job_key:
@@ -225,13 +230,13 @@ def replay_runs(events, *, min_progress: int = MIN_RUN_PROGRESS):
             if current is None:
                 if state != "RUNNING":
                     continue
-                if not key and not item.current_file:
+                if not key and not current_file:
                     continue
                 current = ReplayRun(
                     printer_id=printer_id,
                     machine_no=int(item.machine_no),
                     device_job_key=key,
-                    current_file=item.current_file or "",
+                    current_file=current_file or "",
                     started_at=observed,
                     last_seen_at=observed,
                     max_progress=progress,
@@ -245,8 +250,8 @@ def replay_runs(events, *, min_progress: int = MIN_RUN_PROGRESS):
             current.last_seen_at = observed
             current.max_progress = max(current.max_progress, progress)
             current.event_count += 1
-            if not current.current_file and item.current_file:
-                current.current_file = item.current_file
+            if not current.current_file and current_file:
+                current.current_file = current_file
         if current is not None:
             current.closed_by_observation = True
             current.end_evidence = "still_open_at_end_of_data"

@@ -425,8 +425,7 @@ test('inspection list uses schedule ranges without replacing incoming, actual or
    p.d.getElementById('filterDateFrom').value=date;p.d.getElementById('filterDateTo').value=date;p.w.filterRecords();assert.deepEqual(ids(),[31]);
   }
   p.d.getElementById('filterDateFrom').value='';p.d.getElementById('filterDateTo').value='';
-  p.d.getElementById('filterSort').value='date-asc';p.w.filterRecords();assert.deepEqual(ids(),[31,32,33]);
-  p.d.getElementById('filterSort').value='date-desc';p.w.filterRecords();assert.deepEqual(ids(),[32,31,33]);
+  p.w.filterRecords();assert.deepEqual(ids(),[33,32,31]);assert.equal(p.d.getElementById('filterSort'),null);
   assert.equal(p.w.inspectionPlanRange(records[2]),null);
   assert.equal(p.w.inspectionPlanRange({inspectionPlan:{from:'2026-02-30'}}),null);
   assert.equal(records[0].date,'2025-01-01');assert.equal(records[0].inspDate,'2025-02-02');
@@ -462,10 +461,10 @@ test('toolbar date drafts validate before applying and reset restores all filter
   d.body.dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
   assert.equal(d.getElementById('recordsDateFilter').open,false);
   assert.equal(d.getElementById('filterDateFrom').value,'2026-10-26');
-  d.getElementById('searchInput').value='no match';d.getElementById('filterResult').value='REJ';d.getElementById('filterSort').value='date-asc';
+  d.getElementById('searchInput').value='no match';
   w.resetRecordsFilters();
   assert.equal(d.getElementById('recordsDateLabel').textContent,'不限验货日期');
-  assert.equal(d.getElementById('filterSort').value,'mod-desc');
+  assert.equal(d.getElementById('searchInput').value,'');assert.equal(d.getElementById('filterSort'),null);
  }finally{p.dom.window.close();}
 });
 
@@ -474,8 +473,8 @@ test('select all uses current filters, supports half/none, and blocks cancelled 
  const sources=[{...source,id:'a',productNo:'A-1'},{...source,id:'b',productNo:'A-2'},{...source,id:'c',productNo:'B-1'},{...source,id:'x',sourceStatus:'cancelled'}];
  const p=await page({sources});try{
   await p.w.renderSalesSchedule();const all=p.d.getElementById('qsSelectAll'),push=p.d.getElementById('qsPush');all.click();
-  assert.equal(p.d.querySelectorAll('[data-pick]:checked').length,3);assert.match(push.textContent,/（3）/);
-  p.d.querySelector('[data-pick="a"]').click();assert.equal(all.indeterminate,true);all.click();assert.equal(all.checked,true);all.click();assert.equal(push.disabled,true);
+  assert.equal(p.d.querySelectorAll('[data-pick]:checked').length,3);assert.equal(p.d.getElementById('qsCount').textContent,'已选 3 条');
+  p.d.querySelector('[data-pick="a"]').click();assert.equal(p.d.getElementById('qsCount').textContent,'已选 2 条');assert.equal(all.indeterminate,true);all.click();assert.equal(all.checked,true);all.click();assert.equal(push.disabled,true);
   const search=p.d.getElementById('qsSearch');search.value='A-';search.dispatchEvent(new p.w.Event('input'));all.click();assert.equal(p.d.querySelectorAll('[data-pick]:checked').length,2);
   push.click();await settled(p);
   assert.deepEqual(p.calls.find(c=>c.url==='api/workflow/tasks'&&c.body).body.items.map(x=>x.sourceId).sort(),['a','b']);
@@ -486,7 +485,7 @@ test('select all uses current filters, supports half/none, and blocks cancelled 
 
 test('all 47 schedule rows directly enter one batch request',async()=>{
  const p=await page({sources:Array.from({length:47},(_,i)=>({...source,id:'s-'+i,productNo:'SKU-'+i}))});try{
-  await p.w.renderSalesSchedule();p.d.getElementById('qsSelectAll').click();assert.match(p.d.getElementById('qsPush').textContent,/（47）/);p.d.getElementById('qsPush').click();
+  await p.w.renderSalesSchedule();p.d.getElementById('qsSelectAll').click();assert.equal(p.d.getElementById('qsCount').textContent,'已选 47 条');p.d.getElementById('qsPush').click();
   assert.equal(p.d.querySelector('.qwf-dialog'),null);await settled(p);
   const calls=p.calls.filter(c=>c.url==='api/workflow/tasks'&&c.body);assert.equal(calls.length,1);assert.equal(new Set(calls[0].body.items.map(x=>x.sourceId)).size,47);
  }finally{p.dom.window.close();}

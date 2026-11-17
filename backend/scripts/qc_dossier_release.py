@@ -24,13 +24,14 @@ from app.services.qc_dossier_worker import validate_installed
 
 PARENT = '20261107_0193'
 REVISION = '20261110_0194'
+QC_READY_REVISIONS = (REVISION, '20261116_0195')
 
 
 def version():
     with engine.connect() as conn:
         values = list(conn.execute(text('SELECT version_num FROM alembic_version')).scalars())
-    if len(values) != 1 or values[0] not in (PARENT, REVISION):
-        raise RuntimeError('Main database must be verified at 0193 or 0194; refusing unrelated historical migrations')
+    if len(values) != 1 or values[0] not in (PARENT, *QC_READY_REVISIONS):
+        raise RuntimeError('Main database must be at a verified QC-compatible revision; refusing unrelated migrations')
     return values[0]
 
 
@@ -124,7 +125,7 @@ def prepare(backup, source=None):
     integrity(root)
     if before == PARENT:
         subprocess.run([sys.executable, '-m', 'alembic', '-c', str(BACKEND/'alembic.ini'), 'upgrade', REVISION], cwd=BACKEND, check=True)
-    if version() != REVISION:
+    if version() not in QC_READY_REVISIONS:
         raise RuntimeError('Main migration did not reach required version')
     archive.migrate()
     validate_installed(engine)
@@ -174,7 +175,7 @@ def start():
         marker = Path(archive.settings.qc_department_data_dir)/'.qc-dossier-ready.json'
         if not marker.is_file() or json.loads(marker.read_text()).get('revision') != REVISION:
             raise RuntimeError('QC release preparation missing; run the versioned deployment flow before startup')
-        if version()!=REVISION:
+        if version() not in QC_READY_REVISIONS:
             raise RuntimeError('QC main migration is not ready')
         validate_installed(engine)
     else:

@@ -1,5 +1,5 @@
 import { normalizeInternalQuotePayload, type EngineeringPayload, type EngineeringMoldRow, type InjectionRow, type MoldingPayload } from './internalQuoteSectionPayload'
-import { moldingMaterialFamily, normalizedReferenceToken as token } from './internalQuoteMoldingReferences'
+import { moldingMaterialFamily, moldingMaterialReferences, normalizedReferenceToken as token, type MoldingMaterialReference } from './internalQuoteMoldingReferences'
 import { createRandomUuid } from './randomUuid'
 
 const genericMaterials = new Set(['ABS', '透明ABS', 'C-ABS', 'HIPS', 'GP', 'PP', '1#PP', '透明PP', 'C-PP', 'POM', 'PVC', 'LDPE', 'HDPE', 'TPR', 'K料', 'PC料'])
@@ -45,10 +45,8 @@ export function normalizeEngineeringMoldIdentities(payload: EngineeringPayload):
   return result
 }
 
-/** Projects explicit children as descriptive detail; cost stays once on the whole mold. */
-export function linkEngineeringMolding(engineering: EngineeringPayload, molding: MoldingPayload, factoryId = ''): MoldingPayload {
-  if (molding.engineering_prefill_paused === true) return clone(molding)
-  const molds: PartSource[] = engineering.molds.flatMap(mold => {
+function moldingSources(engineering: EngineeringPayload, factoryId: string): PartSource[] {
+  return engineering.molds.flatMap(mold => {
     if (factoryId !== 'huadeng' || mold.molding_profile !== 'huadeng_parts_v1') return [mold]
     return mold.parts.map(part => ({ ...mold, parts: [], legacy_source_key: '', part_source_id: part.part_id,
       item: part.name, chinese_name: part.name, material: part.material || '', material_type: part.material_type || '',
@@ -59,7 +57,34 @@ export function linkEngineeringMolding(engineering: EngineeringPayload, molding:
       remark: part.remark || '', source_row: part.source_row || 0, image_attachment_ids: part.image_attachment_ids || [],
     }))
   })
+}
+
+export function engineeringMaterialSources(engineering: EngineeringPayload, factoryId: string) {
+  const molds = moldingSources(engineering, factoryId)
+  return new Map(engineeringSourceKeys(molds).map((key, index) => {
+    const mold = molds[index]!
+    return [key, [token(mold.material), token(mold.material_type)]]
+  }))
+}
+
+function linkedQuoteMaterial(row: InjectionRow, material: string, grade: string, references: MoldingMaterialReference[]) {
+  const resin = token(row.material)
+  if (!resin || (material || grade) !== resin || (grade && grade !== resin)) return
+  const options = references.filter(option => token(option.material) === resin)
+  if (!options.length) return
+  const selectedGrade = token(row.grade)
+  const matches = options.filter(option => token(option.grade) === selectedGrade)
+  if (matches.length === 1) return matches[0]
+  if (!selectedGrade || selectedGrade === resin) return options.length === 1 ? options[0] : { material: row.material, grade: '' }
+  return { material: row.material, grade: row.grade }
+}
+
+/** Projects explicit children as descriptive detail; cost stays once on the whole mold. */
+export function linkEngineeringMolding(engineering: EngineeringPayload, molding: MoldingPayload, factoryId = '', snapshot?: Record<string, unknown>): MoldingPayload {
+  if (molding.engineering_prefill_paused === true) return clone(molding)
+  const molds = moldingSources(engineering, factoryId)
   const result = clone(molding)
+  const references = moldingMaterialReferences(snapshot)
   const existing = result.injection_lines
   const used = new Set<number>()
   const keys = engineeringSourceKeys(molds)
@@ -144,7 +169,20 @@ export function linkEngineeringMolding(engineering: EngineeringPayload, molding:
       : genericMaterials.has(grade) && !material ? mold.material_type
         : genericMaterials.has(material) && genericMaterials.has(grade) && moldingMaterialFamily(material) === moldingMaterialFamily(grade)
           ? (material.length >= grade.length ? mold.material : mold.material_type) : mold.part_source_id && !material ? mold.material_type : ''
-    if (generic) {
+    const choiceFor = row.material_choice_for
+    const quoteMaterial = !generic && !choiceFor ? linkedQuoteMaterial(row, material, grade, references) : undefined
+    const keepChoice = choiceFor && (choiceFor.length === 0 || (choiceFor[0] === material && choiceFor[1] === grade))
+    if (choiceFor && !keepChoice) {
+      delete row.material_choice_for
+      row.material = row.grade = ''
+    }
+    if (keepChoice) {
+      row.material_choice_for = [material, grade]
+    } else if (quoteMaterial) {
+      row.material = quoteMaterial.material
+      row.grade = quoteMaterial.grade
+      row.material_choice_for = [material, grade]
+    } else if (generic) {
       // Match server prefill: C-PP/C-ABS are resin families, not concrete grades.
       // Refreshing Engineering must retain a Molding selection in that family;
       // a historical family stored as a grade still needs a frozen-price choice.

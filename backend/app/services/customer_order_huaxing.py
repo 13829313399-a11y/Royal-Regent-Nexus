@@ -422,14 +422,14 @@ def _prepare_seasons(
     for file_name, content in po_files:
         try:
             document = shixin_schedule.parse_order_documents(
-                content, file_name, schedule.get("records", []),
+                content, file_name, schedule.get("records", []), allow_pending=True,
             )
         except Exception as exc:
             raise HuaxingCustomerOrderError(f"{file_name}：无法读取 SEASONS QF/PO：{exc}") from exc
         for row in document.get("records", []):
             row["_source_po_file_name"] = file_name
         documents.append(document)
-    reconciled = shixin_schedule.reconcile_documents(documents, schedule.get("records", []))
+    reconciled = shixin_schedule.reconcile_documents(documents, schedule.get("records", []), preserve_differences=True)
     warnings = [
         _text(item).replace(
             "本次不重复生成、不重复入库",
@@ -443,10 +443,10 @@ def _prepare_seasons(
     ]
     if reconciled.get("modification_records"):
         warnings.append(
-            f"{len(reconciled['modification_records'])} 行数量冲突已按修改/补单拦截，不进入本次新单。"
+            f"{len(reconciled['modification_records'])} 行数量有差异，将保留本次原始明细供核对。"
         )
     return PreparedBatch(
-        [*reconciled.get("records", []), *existing_records],
+        [*reconciled.get("records", []), *existing_records, *reconciled.get("modification_records", [])],
         warnings,
         _text(schedule.get("sheet")) or "正单评审表",
     )
@@ -475,11 +475,14 @@ def _dedupe_multi_orders(orders: list[dict[str, Any]]) -> tuple[list[dict[str, A
         )
     for po_number, entries in grouped.items():
         entries.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        result.append(entries[0][2])
-        if len(entries) > 1:
-            report.append(
-                f"PO {po_number}：保留 {entries[0][1]}，去掉 " + "、".join(item[1] for item in entries[1:])
-            )
+        latest = [entry for entry in entries if entry[0] == entries[0][0]]
+        result.extend(entry[2] for entry in latest)
+        if len(latest) > 1:
+            report.append(f'PO {po_number}：同修订版的多份资料均保留，请留意数量及字段差异。')
+        if len(entries) > len(latest):
+            kept_names = '、'.join(str(entry[1]) for entry in latest)
+            older_names = '、'.join(str(entry[1]) for entry in entries if entry not in latest)
+            report.append(f'PO {po_number}：依据明确修订号保留 {kept_names}，忽略 {older_names}。')
     return result, report
 
 

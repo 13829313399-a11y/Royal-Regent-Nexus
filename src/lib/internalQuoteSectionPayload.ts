@@ -217,6 +217,7 @@ export interface InjectionRow extends Omit<QuotePricingMetadata, 'markup_overrid
   engineering_labor_mode?: 'shared' | 'transfer'
   labor_job_id?: string
   engineering_remark?: string
+  material_choice_for?: string[]
   engineering_machine_hint?: string
   engineering_source_row?: number
   image_attachment_ids?: string[]
@@ -1737,6 +1738,8 @@ function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<st
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
         ...(row.line_id ? { line_id: textValue(row.line_id) } : {}),
+        ...(Array.isArray(row.material_choice_for) && (row.material_choice_for.length === 0 || row.material_choice_for.length === 2)
+          && row.material_choice_for.every((value) => typeof value === 'string') ? { material_choice_for: [...row.material_choice_for] } : {}),
         ...(row.engineering_mold_id ? { engineering_mold_id: textValue(row.engineering_mold_id) } : {}),
         ...(Array.isArray(row.engineering_parts) ? { engineering_parts: engineeringMoldParts({ parts: row.engineering_parts }) } : {}),
         ...(row.cost_scope === 'huadeng_part' ? {

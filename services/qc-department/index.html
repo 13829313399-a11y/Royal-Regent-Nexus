@@ -113,30 +113,30 @@
   <div class="page active" id="page-sales-schedule">
     <div class="qs-workspace">
       <div class="qs-toolbar" id="qsToolbar">
+      <div class="qs-selection" role="group" aria-label="客排期选择与刷新">
+        <label class="qs-select-all"><input type="checkbox" id="qsSelectAll" aria-label="全选当前筛选" disabled>全选</label>
+        <span id="qsCount" aria-live="polite" aria-label="当前显示与总排期数">待接通</span>
+        <button type="button" id="qsRefresh" class="qs-button" aria-label="刷新数据" title="刷新数据"></button>
+      </div>
       <div class="qs-filters" aria-label="客排期筛选">
-        <label class="qs-filter-field qs-search"><span class="qs-sr-only">搜索 PO、客 PO、货号或产品名称</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="qsSearch" placeholder="搜索 PO / 客 PO / 货号 / 产品名称"/></label>
+        <label class="qs-filter-field qs-search"><span class="qs-sr-only">搜索 PO、客 PO、货号或产品名称</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="qsSearch" placeholder="搜索 PO / 货号 / 品名" title="搜索 PO、客 PO、货号或产品名称"/></label>
         <div class="qs-date-filter">
           <input type="hidden" id="qsDateFrom"/><input type="hidden" id="qsDateTo"/>
-          <button type="button" id="qsDateToggle" class="qs-date-toggle" aria-expanded="false" aria-haspopup="dialog" aria-controls="qsDatePanel"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18"/></svg><span id="qsDateLabel">不限日期</span><svg class="qs-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
-          <div id="qsDatePanel" class="qs-date-panel" role="dialog" aria-labelledby="qsDateTitle" hidden>
-            <h3 id="qsDateTitle">日期范围</h3>
-            <div class="qs-date-actions"><button type="button" id="qsLastWeek">上周</button><button type="button" id="qsThisWeek">本周</button><button type="button" id="qsNextWeek">下周</button></div>
-            <div class="qs-date-inputs"><label>开始日期<input type="date" id="qsDraftFrom" aria-describedby="qsDateError"/></label><span aria-hidden="true">—</span><label>结束日期<input type="date" id="qsDraftTo" aria-describedby="qsDateError"/></label></div>
+          <button type="button" id="qsDateToggle" class="qs-date-toggle" aria-expanded="false" aria-haspopup="dialog" aria-controls="qsDatePanel"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18"/></svg><span id="qsDateLabel">筛选日期</span><svg class="qs-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+          <div id="qsDatePanel" class="qs-date-panel" role="dialog" aria-label="筛选排期日期" aria-describedby="qsDateSelection" hidden>
+            <div class="qs-calendar-heading"><button type="button" id="qsPreviousMonth" class="qs-month-nav" aria-label="上个月"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button><h3 id="qsCalendarMonth" aria-live="polite"></h3><button type="button" id="qsNextMonth" class="qs-month-nav" aria-label="下个月"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m10 6 6 6-6 6"/></svg></button></div>
+            <table class="qs-calendar" role="grid" aria-labelledby="qsCalendarMonth" aria-multiselectable="true"><thead><tr><th scope="col">一</th><th scope="col">二</th><th scope="col">三</th><th scope="col">四</th><th scope="col">五</th><th scope="col">六</th><th scope="col">日</th></tr></thead><tbody id="qsCalendarDays"></tbody></table>
+            <input type="hidden" id="qsDraftFrom"/><input type="hidden" id="qsDraftTo"/>
+            <p id="qsDateSelection" class="qs-sr-only" aria-live="polite">请选择开始日期，再选择结束日期；同一天可选择两次。</p>
             <p id="qsDateError" class="qs-error" role="alert"></p>
-            <div class="qs-date-footer"><button type="button" id="qsClearDates" class="qs-link">清除日期</button><button type="button" id="qsApplyDates" class="qs-button qs-primary">确定</button></div>
+            <div class="qs-date-footer"><button type="button" id="qsApplyDates" class="qs-button qs-primary" disabled>应用</button></div>
           </div>
         </div>
-        <label class="qs-filter-field"><span class="qs-sr-only">客户</span><select id="qsCustomer"><option value="">全部客户</option></select></label>
-        <label class="qs-filter-field"><span class="qs-sr-only">完成情况</span><select id="qsCompletion"><option value="">全部完成情况</option><option value="empty">未填写</option></select></label>
+        <label class="qs-filter-field qs-customer"><span class="qs-sr-only">客户</span><select id="qsCustomer"><option value="">全部客户</option></select></label>
         <div class="qs-filter-actions"><button type="button" id="qsReset" class="qs-reset" aria-label="重置全部筛选">重置</button></div>
       </div>
-      <p id="qsFilterError" class="qs-error" role="alert"></p>
-      <div class="qs-actions" aria-label="客排期操作">
-        <label class="qs-select-all"><input type="checkbox" id="qsSelectAll" disabled>全选当前筛选</label>
-        <span id="qsCount" aria-live="polite" aria-label="当前显示与总排期数">待接通</span>
-        <button type="button" id="qsRefresh" class="qs-button">刷新数据</button>
         <button type="button" id="qsPush" class="qs-button qs-primary" disabled>确认推送验货</button>
-      </div>
+      <p id="qsFilterError" class="qs-error" role="alert"></p>
       </div>
       <div class="qs-table-scroll" tabindex="0" role="region" aria-label="客排期表格，可横向滚动">
         <table class="qs-table"><caption class="qs-sr-only">客户验货排期，业务部维护订单信息，完成情况由验货台只读回显，备注读取业务部原文</caption>
@@ -196,21 +196,24 @@
   <!-- PAGE: RECORDS -->
   <div class="page" id="page-records">
     <div class="page-inner">
-      <div class="records-toolbar" aria-label="验货台筛选与操作">
-        <div class="records-filters">
-          <label class="records-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="searchInput" aria-label="搜索客户、PO、货号、产品名称或备注" placeholder="搜索客户 / PO / 货号 / 产品名称 / 备注" oninput="filterRecords()" /></label>
-          <details class="records-date" id="recordsDateFilter" ontoggle="prepareRecordsDates()">
-            <summary aria-label="筛选验货日期"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 2v6m10-6v6M3 11h18"/></svg><span id="recordsDateLabel">不限验货日期</span><span class="records-chevron" aria-hidden="true">⌄</span></summary>
-            <div class="records-date-panel" role="group" aria-label="验货日期范围">
-              <div class="records-date-fields"><label>开始日期<input type="date" id="recordsDateDraftFrom" aria-label="验货日期起始（客排期计划）" /></label><span>至</span><label>结束日期<input type="date" id="recordsDateDraftTo" aria-label="验货日期截止（客排期计划）" /></label></div>
-              <p id="recordsDateError" role="alert" hidden></p>
-              <div class="records-date-actions"><button type="button" class="records-text-btn" onclick="clearRecordsDates()">清除日期</button><button type="button" class="records-export-btn" onclick="applyRecordsDates()">确定</button></div>
-            </div>
-          </details>
-          <input type="hidden" id="filterDateFrom" /><input type="hidden" id="filterDateTo" />
-          <select id="filterResult" aria-label="判定结果" onchange="filterRecords()"><option value="">全部判定</option><option value="PASS">Pass</option><option value="REJ">Fail</option><option value="PENDING">Pending</option></select>
-          <select id="filterSort" aria-label="排序方式" onchange="filterRecords()" title="验货日期按计划开始日期排序，同日按客户归拢；修改日期按最近修改时间排序"><option value="date-desc">验货日期 ↓</option><option value="date-asc" selected>验货日期 ↑</option><option value="mod-desc">修改日期 ↓</option><option value="mod-asc">修改日期 ↑</option></select>
-          <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
+      <div class="records-toolbar" role="group" aria-label="验货台筛选与操作">
+        <div class="records-toolbar-inner">
+          <label class="records-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="searchInput" aria-label="搜索客户、PO、货号、产品名称或备注" title="搜索客户、PO、货号、产品名称或备注" placeholder="客户 / PO / 货号" oninput="filterRecords()" /></label>
+          <div class="records-filters" role="group" aria-label="筛选条件">
+            <details class="records-date" id="recordsDateFilter" ontoggle="prepareRecordsDates()">
+              <summary aria-label="筛选验货日期"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 2v6m10-6v6M3 11h18"/></svg><span id="recordsDateLabel">不限验货日期</span><span class="records-chevron" aria-hidden="true">⌄</span></summary>
+              <div class="records-date-panel" role="group" aria-label="验货日期范围">
+                <div class="records-date-fields"><label>开始日期<input type="date" id="recordsDateDraftFrom" aria-label="验货日期起始（客排期计划）" /></label><span>至</span><label>结束日期<input type="date" id="recordsDateDraftTo" aria-label="验货日期截止（客排期计划）" /></label></div>
+                <p id="recordsDateError" role="alert" hidden></p>
+                <div class="records-date-actions"><button type="button" class="records-text-btn" onclick="clearRecordsDates()">清除日期</button><button type="button" class="records-export-btn" onclick="applyRecordsDates()">确定</button></div>
+              </div>
+            </details>
+            <input type="hidden" id="filterDateFrom" /><input type="hidden" id="filterDateTo" />
+            <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
+          </div>
+          <div class="records-actions" role="group" aria-label="打印">
+            <div class="qip-toolbar-action" hidden><button type="button" id="qcInspectionPrint" hidden aria-haspopup="dialog"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8V3h10v5M7 17H4V8h16v9h-3M7 14h10v7H7zM17 11h.01"/></svg><span>打印</span></button></div>
+          </div>
         </div>
       </div>
 
@@ -233,7 +236,6 @@
           <button class="btn-secondary" onclick="renderReviewPage()" title="重新加载审核列表">↻ 刷新</button>
         </div>
       </div>
-      <details class="review-hint"><summary>审核流程说明</summary><p>验货台提交后进入待审核；自行复核并确认后进入验货汇总。已审核记录可反审核回到待审核，说明允许留空；历史已完成记录仅在主动反审核后转入待审核，原历史保留。</p></details>
       <div id="qis-review-controls"></div><div class="table-wrap" id="reviewTableWrap"></div>
     </div>
   </div>

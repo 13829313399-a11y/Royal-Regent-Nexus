@@ -252,6 +252,7 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
 THREE_D_PRINTING_REVISION = "20260917_0117"
 THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset({"20260728_0039", "20260729_0040"})
 THREE_D_PRINTING_V2_TABLES = {
+    "three_d_printing_telemetry_ticks", "three_d_printing_retention_cursors",
     "three_d_printing_operations_items",
     "three_d_printing_sites", "three_d_printing_network_gateways",
     "three_d_printing_connector_instances", "three_d_printing_printer_connections",
@@ -543,6 +544,8 @@ def ensure_three_d_printing_schema_ready() -> None:
                 missing.add(table)
             else:
                 missing.update(f"{table}.{name}" for name in required - {column["name"] for column in inspector.get_columns(table)})
+    if missing.intersection({"three_d_printing_telemetry_ticks", "three_d_printing_retention_cursors"}) and "three_d_printing_printer_state_events" in tables:
+        raise RuntimeError("3D 遥测归档需要先迁移至 20261116_0195，再启动应用。")
     if not missing and current_revision not in THREE_D_PRINTING_PREVIOUS_REVISIONS:
         return
     raise RuntimeError(

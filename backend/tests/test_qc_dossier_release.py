@@ -36,7 +36,7 @@ def test_release_rejects_old_unknown_main_version_before_writes(tmp_path,monkeyp
         conn.execute(text('CREATE TABLE alembic_version(version_num TEXT)'))
         conn.execute(text("INSERT INTO alembic_version VALUES('20261022_0175')"))
     monkeypatch.setattr(release,'engine',engine)
-    with pytest.raises(RuntimeError,match='0193 or 0194'):release.prepare(tmp_path)
+    with pytest.raises(RuntimeError,match='verified QC-compatible revision'):release.prepare(tmp_path)
     assert not (tmp_path/'qc-before').exists()
 
 

@@ -143,6 +143,28 @@ describe('cutting read-only workspaces',()=>{
     expect(wrapper.find('details').exists()).toBe(false)
     expect(document.activeElement).toBe(target==='filter'?destination:button('刷新当前结果').element)
   })
+  it.each(['focused','filter','pointer','unfocused','failure'] as const)('handles mouse focus after an embedded activity retry: %s',async action=>{
+    let resolve!:(value:Page<ActivityRow>)=>void,reject!:(reason:Error)=>void
+    vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,token:'old'})
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(()=>new Promise((res,rej)=>{resolve=res;reject=rej}))
+    wrapper=mount(Activity,{props:{embedded:true,initialSource:'warehouse'},attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    await button('刷新当前结果').trigger('click');await flushPromises()
+    const retry=button('按原条件重试（第 1 页）').element
+    if(action!=='unfocused')retry.focus()
+    retry.dispatchEvent(new MouseEvent('click',{detail:1,bubbles:true}));await flushPromises()
+    const input=wrapper.get<HTMLInputElement>('input[name="order_q"]').element
+    if(action==='filter')input.focus()
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='failure'){
+      reject(new Error('still offline'));await flushPromises()
+      expect(document.activeElement).not.toBe(button('按原条件重试（第 1 页）').element)
+      return
+    }
+    resolve({...empty,token:'fresh'});await flushPromises()
+    const expected=action==='focused'?wrapper.get('[aria-label="可追溯操作日志"]').element:action==='filter'?input:document.body
+    expect(document.activeElement).toBe(expected)
+  })
   it('provides unique named activity filters with explicit labels for embedded instances',async()=>{
     vi.mocked(workspaceApi.activity).mockResolvedValue({...empty,token:'basis'})
     wrapper=mount({components:{Activity},template:'<Activity embedded /><Activity embedded />'},{global:{plugins:[router]}});await flushPromises()
@@ -696,6 +718,9 @@ describe('cutting read-only workspaces',()=>{
     vi.mocked(workspaceApi.monthly).mockImplementation(async month=>({month,domains:[],frozen:[]}))
     wrapper=mount(Monthly,{props:{month:'2026-09'}});await flushPromises()
     expect(workspaceApi.monthly).toHaveBeenLastCalledWith('2026-09')
+    expect(wrapper.get('form button').text()).toBe('刷新月结总览')
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(workspaceApi.monthly).toHaveBeenCalledTimes(2)
     await wrapper.setProps({month:'2026-08'});await flushPromises()
     expect(workspaceApi.monthly).toHaveBeenLastCalledWith('2026-08')
     await wrapper.get('input[type=month]').setValue('2026-07')
@@ -771,6 +796,7 @@ describe('cutting read-only workspaces',()=>{
   it('exports payment balances with the current payments contract, not a fake frozen payment selection',async()=>{
     vi.mocked(workspaceApi.monthly).mockResolvedValue({month:'2026-10',domains:[],frozen:[{kind:'payment',event_id:'payment-event',document_id:'payment',version:1,month:'2026-10',valid:false,actor:'会计',date:'2026-10-10'}]})
     wrapper=mount(Monthly,{props:{exportsOnly:true,access:{enabled:true,schema_ready:true,permissions:['payment_read']}}});await flushPromises()
+    expect(wrapper.get('form button').text()).toBe('查询／刷新')
     expect(wrapper.findAll('.export-selection').map(p=>JSON.parse(p.text()))).toEqual([{kind:'payments',month:'2026-10'}])
     await button('查看冻结依据').trigger('click')
     expect(wrapper.emitted('open')?.[0]).toEqual(['payment','2026-10','payment','payment-event'])

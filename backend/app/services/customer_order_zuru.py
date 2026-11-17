@@ -1,4 +1,4 @@
-"""Huaxing ZURU native/converted PO adapter for the common three-sheet schedule.
+"""Factory-scoped ZURU native/converted PO adapter for the common schedule.
 
 Native weekly schedules are reference material, never a second order source.
 Keep this adapter separate from the legacy original-format classifier.
@@ -245,33 +245,39 @@ def parse_po(name, content):
 
 
 def select_versions(parsed_files):
-    """One complete source per real PO. Only native revision records select versions."""
-    selected, notes = {}, []
+    """Only evidenced revision ancestry replaces a source; ambiguity is advisory."""
+    selected, notes = [], []
     for filename, parsed in parsed_files:
-        po = parsed['po']
-        if po not in selected:
-            selected[po] = filename, parsed
-            continue
-        old_name, old = selected[po]
-        if old['source_digest'] == parsed['source_digest']:
-            notes.append(f'PO {po}：{filename} 与 {old_name} 内容相同，仅保留一份。')
-            continue
-        left, right = old['revision_history'], parsed['revision_history']
-        if left is None or right is None or left == right:
-            raise ValueError(f'PO {po} 存在同版本或版本不明的不同文件：{old_name} / {filename}；请只保留确认版本')
-        newer = right if len(right) > len(left) else left
-        older = left if newer is right else right
-        if newer[:len(older)] != older or not newer:
-            raise ValueError(f'PO {po} 的原单修订记录相互冲突，不能按文件名猜测最新版本')
-        if newer is right:
-            selected[po] = filename, parsed
-            notes.append(f'PO {po}：依据原单修订记录 {right[-1][0]} / {right[-1][1]} 使用 {filename}，替代 {old_name}。')
-        else:
-            notes.append(f'PO {po}：依据原单修订记录 {left[-1][0]} / {left[-1][1]} 保留 {old_name}，忽略旧版 {filename}。')
-    return list(selected.values()), notes
+        keep = True
+        replaced = []
+        for index, (old_name, old) in enumerate(selected):
+            if old['po'] != parsed['po']:
+                continue
+            if old['source_digest'] == parsed['source_digest']:
+                notes.append(f"PO {parsed['po']}：{filename} 与 {old_name} 内容相同，仅保留一份。")
+                keep = False
+                break
+            left, right = old['revision_history'], parsed['revision_history']
+            if left is not None and right is not None and left != right:
+                if len(right) > len(left) and right[:len(left)] == left:
+                    replaced.append(index)
+                    notes.append(f"PO {parsed['po']}：依据原单修订记录 {right[-1][0]} / {right[-1][1]} 使用 {filename}，替代 {old_name}。")
+                    continue
+                if len(left) > len(right) and left[:len(right)] == right:
+                    notes.append(f"PO {parsed['po']}：依据原单修订记录 {left[-1][0]} / {left[-1][1]} 保留 {old_name}，忽略旧版 {filename}。")
+                    keep = False
+                    break
+            notes.append(f"PO {parsed['po']}：{old_name} / {filename} 同版本或修订关系不明确，均保留原始明细，请留意差异。")
+        if keep:
+            selected = [entry for i, entry in enumerate(selected) if i not in replaced]
+            selected.append((filename, parsed))
+    return selected, notes
 
 
-def create_rows(po_files, received_date, history):
+def create_rows(po_files, received_date, history, *, factory_id='huaxing'):
+    if factory_id not in {'huaxing', 'huakang-a'}:
+        raise ValueError('ZURU 当前只支持华康A、华兴各自的订单排期')
+    input_template = 'HUAKANG_A_ZURU_PO_V2' if factory_id == 'huakang-a' else INPUT_TEMPLATE
     parsed_files = [(filename, parse_po(filename, content)) for filename, content in po_files]
     selected, version_notes = select_versions(parsed_files)
     rows = []
@@ -280,8 +286,8 @@ def create_rows(po_files, received_date, history):
             locations = parsed.get('page_rows', {})
             location = ' / '.join(locations.get(n, f'第{n}行') for n in line['source_rows'])
             source = f"{filename} · {parsed['sheet']} · {location} · Line {line['line']}"
-            row = dict(id=f'huaxing-zuru-{len(rows) + 1}', row_role='detail',
-                _huaxing_customer='zuru', _zuru_customer=True, received_date=received_date, order_type='正单',
+            row = dict(id=f'{factory_id}-zuru-{len(rows) + 1}', row_role='detail',
+                _zuru_customer=True, received_date=received_date, order_type='正单',
                 production_no='', contract_no=parsed['po'], reference_no=f"{parsed['po']}-{line['line']}",
                 po_no=line['customer_po'], customer_name=parsed['customer'] or 'ZURU', country=parsed['country'],
                 product_no=line['spec'], product_name_en=line['name'], product_name_zh='',
@@ -292,7 +298,7 @@ def create_rows(po_files, received_date, history):
                 amount_usd=str(line['amount']) if line['amount'] is not None else '',
                 _zuru_source_quantity=str(line['qty']), _zuru_source_price=str(line['price']) if line['price'] is not None else '',
                 unit_price_hkd='', amount_hkd='', barcode=line['barcode'],
-                input_template=INPUT_TEMPLATE, source_po_file_name=filename,
+                input_template=input_template, source_po_file_name=filename,
                 lineage={'source': source, 'contract_no': f'{source} · ZURU Inc PO#',
                     'reference_no': f'{source} · PO# + 原单Line；不自行续号',
                     'product_no': f'{source} · 完整SKU-SPEC；基础SKU {line["sku"]}仅作来源',
@@ -303,9 +309,35 @@ def create_rows(po_files, received_date, history):
             for i, message in enumerate(line['warnings']):
                 row['issues'].append(dict(severity='warning', code=f'zuru_source_review_{i}',
                     field='row', message=message, can_skip=False, skip_key='', skip_label=''))
+            if factory_id == 'huaxing':
+                row['_huaxing_customer'] = 'zuru'
             rows.append(row)
     return rows, version_notes + ['ZURU 以 PO号＋原单Line、完整SKU-SPEC分别保留订单与产品身份；仅导入正单，不导入MA/库存。',
-                  '原周排期仅作映射参考；本次上传目标为统一ITEM表、接单表、正单评审表。USD与HKD分开，不自动换汇。'], INPUT_TEMPLATE
+                  '原周排期仅作映射参考；本次上传目标为统一ITEM表、接单表、正单评审表。USD与HKD分开，不自动换汇。'], input_template
+
+
+def refresh_edited_history(preview, original, history, overrides=()):
+    """Recheck inherited values after a SKU or terminal-customer correction."""
+    from .customer_order_unified import _key, _text, _unique_history_value
+    from .zuru_original import key
+    for row in preview['rows']:
+        identity = (_text(row.get('product_no')), _text(row.get('customer_name')))
+        if identity == original[row['id']]:
+            continue
+        explicit = {o['field'] for o in overrides if o['row_id'] == row['id']}
+        for field in ('product_name_zh', 'product_name_en', 'units_per_carton', 'standard', 'packaging', 'unit_price_hkd'):
+            lineage = str(row.get('lineage', {}).get(field, ''))
+            if field in explicit or not ('历史' in lineage or '当前' in lineage and '排期' in lineage):
+                continue  # Preserve source PO values and explicit manual corrections.
+            candidates = [h for h in history if key(h.product_no) == key(row.get('product_no'))]
+            if field in {'units_per_carton', 'standard', 'packaging'}:
+                candidates = [h for h in candidates if _key(h.customer_name) == _key(row.get('customer_name'))]
+            if field == 'unit_price_hkd':
+                candidates = []  # Never substitute historical HKD for the source USD.
+            row[field] = _unique_history_value(candidates, row.get('product_no'), field, row.get('customer_name', ''))
+            if field == 'units_per_carton':
+                row['carton_count'] = ''  # Recalculate only when the replacement pack is reliable.
+            row['lineage'][field] = '人工更正货号或终端客户后重新核对最新排期唯一历史值'
 
 
 def finish_row(row):

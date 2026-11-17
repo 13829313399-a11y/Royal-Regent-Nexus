@@ -101,39 +101,29 @@ describe('customer order center static frontend', () => {
     return wrapper
   }
 
-  it.each([false, true])('only saves an existing quantity conflict against the selected matching order (other blocker: %s)', async (otherBlocker) => {
-    const line = { id: 'matching', factory_id: 'huaxing', customer_code: 'dickie', customer_name: 'Dickie', reference_no: 'SYNTHETIC-CONTRACT', product_no: 'SYNTHETIC-ITEM', quantity: '48', shipped_quantity: '0', remaining_quantity: '48', status: 'active', version: 1, revision: 7, dispatch_status: 'unsent', data: {}, created_at: '', updated_at: '' }
-    customerOrderLedgerApiMock.list.mockResolvedValueOnce({ items: [line, { ...line, id: 'other-reference', reference_no: 'OTHER-ORDER' }], total: 2, page: 1, page_size: 50, customers: [] })
-    if (!otherBlocker) customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 0, existing_count: 0, reconciled_count: 1 })
+  it.each([false, true])('saves and exports quantity differences and other reminders without a waiver (%s)', async (otherBlocker) => {
+    customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 1, existing_count: 0, reconciled_count: 0, advisory_count: 1 })
     const wrapper = await mountDickieExportPreview({ quantityConflict: true, otherBlocker })
     onTestFinished(() => wrapper.unmount())
     const save = wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary')
     const generate = wrapper.get('[data-testid="order-preview"] > .view-heading .button--primary')
-    expect(save.attributes('disabled')).toBeDefined()
-    expect(generate.attributes('disabled')).toBeDefined()
-    const card = wrapper.get('[data-testid="order-reconciliation-card"]')
-    await card.get('input[type=checkbox]').setValue(true)
+    expect(save.attributes('disabled')).toBeUndefined()
+    expect(generate.attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="preview-blocker-alert"]').text()).toContain('可直接保存或生成排期')
+    await wrapper.get('[data-testid="open-field-resolution"]').trigger('click')
+    const dialog = wrapper.get('[data-testid="blocker-resolution-dialog"]')
+    expect(dialog.text()).not.toContain('当前不能放行')
+    await dialog.get('footer .button--primary').trigger('click')
+    expect(wrapper.find('[data-testid="blocker-resolution-dialog"]').exists()).toBe(false)
+    await save.trigger('click')
     await flushPromises()
-    await card.get('textarea').setValue('核对原订单数量修订')
-    expect(save.attributes('disabled')).toBeDefined()
-    await card.get('select').setValue('other-reference')
-    expect(save.attributes('disabled')).toBeDefined()
-    await card.get('select').setValue('matching')
-    expect(generate.attributes('disabled')).toBeDefined()
-    if (otherBlocker) {
-      expect(save.attributes('disabled')).toBeDefined()
-      await save.trigger('click')
-      expect(customerOrderLedgerApiMock.importConfirmed).not.toHaveBeenCalled()
-    } else {
-      expect(save.attributes('disabled')).toBeUndefined()
-      await save.trigger('click')
-      await flushPromises()
-      const body = customerOrderLedgerApiMock.importConfirmed.mock.calls[0]![1] as FormData
-      expect(body.get('reconcile_line_id')).toBe('matching')
-      expect(body.get('expected_revision')).toBe('7')
-      expect(body.get('skipped_issue_keys')).toBe('[]')
-    }
-    expect(customerOrderApiMock.exportDickieBatch).not.toHaveBeenCalled()
+    const body = customerOrderLedgerApiMock.importConfirmed.mock.calls[0]![1] as FormData
+    expect(body.get('confirmation_reason')).toBe('')
+    expect(body.get('skipped_issue_keys')).toBe('[]')
+    expect(body.has('reconcile_line_id')).toBe(false)
+    await generate.trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledTimes(1)
   })
 
   it('allows pending information without a skip or reason and still audits optional corrections', async () => {
@@ -157,8 +147,8 @@ describe('customer order center static frontend', () => {
     expect(dialog.find('input[type="checkbox"]').exists()).toBe(false)
     await dialog.get('input[type="text"]').setValue('00042')
     expect(wrapper.find('[data-testid="pending-information"]').exists()).toBe(false)
-    expect(save.attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('确认原因')
+    expect(save.attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('选填')
   })
 
   it.each(['save', 'export', 'sync', 'parse'] as const)('keeps file actions mutually exclusive while %s is pending, including direct repeated events', async action => {
@@ -291,7 +281,7 @@ describe('customer order center static frontend', () => {
       warehouse_sync: { status: 'ERROR', message: '订单处理超时，任务已停止' } })
     await wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('订单已确认并保存：新增 1 条')
+    expect(wrapper.text()).toContain('订单已保存：新增 1 条')
     expect(wrapper.find('[data-testid="preview-save-alert"]').exists()).toBe(false)
     const sync = wrapper.get('[data-testid="warehouse-schedule-sync"]')
     expect(sync.text()).toContain('仓库同步未完成')
@@ -304,7 +294,7 @@ describe('customer order center static frontend', () => {
     onTestFinished(() => wrapper.unmount())
     const headerButton = wrapper.get('[data-testid="order-preview"] > .view-heading .button--primary')
     const nextStepButton = wrapper.get('[data-testid="preview-next-step"] .button')
-    expect(headerButton.text()).toContain('确认警告并生成客户排期')
+    expect(headerButton.text()).toContain('生成客户排期')
     expect(headerButton.attributes('disabled')).toBeUndefined()
     customerOrderApiMock.exportDickieBatch.mockRejectedValueOnce(new Error('合成测试导出失败'))
     await headerButton.trigger('click')
@@ -333,7 +323,7 @@ describe('customer order center static frontend', () => {
     if (outcome === 'success') finishSync({ batch_id: 'synthetic-sync', duplicate: false, message: '同步已完成' })
     else failSync(new Error('合成测试同步失败'))
     await flushPromises()
-    expect(headerButton.text()).toContain('确认警告并生成客户排期')
+    expect(headerButton.text()).toContain('生成客户排期')
     expect(nextStepButton.text()).toContain('生成并下载客户排期')
     expect(retryButton.text()).toBe('重试生成排期')
     for (const button of exportButtons) expect((button.element as HTMLButtonElement).disabled).toBe(false)
@@ -535,14 +525,17 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).not.toContain("code: 'spin-master'")
   })
 
-  it('offers ZURU PDF and Excel unified intake only in Huaxing', async () => {
+  it('offers factory-owned ZURU PDF and Excel intake in Huaxing and Huakang A', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴' },
     })
     await wrapper.get('[data-testid="customer-choice-zuru"]').trigger('click')
     expect(wrapper.findAll('input[type="file"]').map((input) => input.attributes('accept'))).toEqual(['.pdf,.xlsx', '.xlsx'])
     expect(wrapper.text()).toContain('华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）')
-    for (const factoryId of ['huakang-a', 'huakang-d', 'huadeng']) {
+    await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A', initialCustomerCode: 'zuru' })
+    expect(wrapper.get('[data-testid=customer-choice-zuru]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.text()).toContain('华康A ZURU 统一排期')
+    for (const factoryId of ['huakang-d', 'huadeng']) {
       await wrapper.setProps({ factoryId })
       expect(wrapper.find('[data-testid="customer-choice-zuru"]').exists()).toBe(false)
     }
@@ -628,7 +621,7 @@ describe('customer order center static frontend', () => {
     wrapper.unmount()
   })
 
-  it('shows three independent customers in Huakang A and routes 360 with the Huakang A factory id', async () => {
+  it('shows four independent customers in Huakang A and routes 360 with the Huakang A factory id', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huakang-a-mapped-preview-v1',
       customer_code: '360',
@@ -656,7 +649,7 @@ describe('customer order center static frontend', () => {
     })
 
     const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
-    expect(customerButtons).toHaveLength(3)
+    expect(customerButtons).toHaveLength(4)
     expect(customerButtons.map((button) => button.text())).toEqual(
       expect.arrayContaining([
         expect.stringContaining('360'),
@@ -863,7 +856,7 @@ describe('customer order center static frontend', () => {
     wrapper.unmount()
   })
 
-  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech'], ['huakang-d', 'seasons'], ['huaxing', 'seasons'], ['huaxing', 'zuru']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
+  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech'], ['huakang-d', 'seasons'], ['huaxing', 'seasons'], ['huaxing', 'zuru'], ['huakang-a', 'zuru']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
     const targetTemplate = customerCode === 'seasons'
       ? (factoryId === 'huakang-d' ? 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3' : 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1')
       : customerCode === 'ubtech'
@@ -1101,7 +1094,7 @@ describe('customer order center static frontend', () => {
       expect(headings).toContain(field)
     }
 
-    const generateButton = wrapper.findAll('button').find((button) => button.text().includes('确认并生成客户排期'))
+    const generateButton = wrapper.findAll('button').find((button) => button.text().includes('生成客户排期'))
     expect(generateButton).toBeDefined()
     expect((generateButton!.element as HTMLButtonElement).disabled).toBe(true)
     expect(wrapper.text()).toContain('尚未建立真实预览批次')
@@ -1202,7 +1195,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('订单已关联并更新原订单')
     expect(wrapper.emitted('navigate')).not.toContainEqual(['ledger'])
     expect(wrapper.find('[data-testid="order-preview"]').exists()).toBe(true)
-    expect(wrapper.findAll('button').find(button => button.text().includes('确认并生成客户排期'))!.attributes('disabled')).toBeUndefined()
+    expect(wrapper.findAll('button').find(button => button.text().includes('生成客户排期'))!.attributes('disabled')).toBeUndefined()
   })
 
   it('shows duplicate warnings and editable per-PO prices without blocking an empty optional value', async () => {
@@ -1390,7 +1383,7 @@ describe('customer order center static frontend', () => {
     await wrapper.setProps({ activeSection: 'preview' })
 
     const openResolutionButton = wrapper.findAll('button')
-      .find((button) => button.text().includes('打开待确认/阻断处理'))
+      .find((button) => button.text().includes('查看提醒 / 补录字段'))
     expect(openResolutionButton).toBeDefined()
     await openResolutionButton!.trigger('click')
     const resolutionDialog = wrapper.get('[data-testid="blocker-resolution-dialog"]')
@@ -1402,12 +1395,12 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('单价及金额留空，稍后由跟客补充')
     const manualInput = resolutionDialog.get('.manual-override-field input')
     await manualInput.setValue('18.50')
-    expect(wrapper.text()).toContain('已人工补录')
+    expect(wrapper.text()).toContain('已补录')
     expect(wrapper.text()).toContain('18.50')
-    expect(wrapper.get('.summary-strip .blocked strong').text()).toBe('0')
-    expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('人工确认原因')
+    expect(wrapper.get('.summary-strip').text()).toContain('不影响保存和生成')
+    expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('补充说明（选填）')
     const generateButton = wrapper.get('[data-testid="preview-next-step"] .button')
-    expect((generateButton.element as HTMLButtonElement).disabled).toBe(true)
+    expect((generateButton.element as HTMLButtonElement).disabled).toBe(false)
     await wrapper.get('[data-testid="confirmation-reason-card"] textarea').setValue(
       '已向客户确认正确单价并人工补录',
     )
@@ -1771,24 +1764,24 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="import-parse-alert"]').text()).toContain('可人工确认后重复导入')
     await wrapper.setProps({ activeSection: 'preview' })
     const previewAlert = wrapper.get('[data-testid="preview-blocker-alert"]')
-    expect(previewAlert.text()).toContain('当前批次有 1 项待人工处理')
+    expect(previewAlert.text()).toContain('当前批次有 1 项提醒')
     expect(previewAlert.text()).toContain('SC700130503-200.pdf')
     expect(previewAlert.text()).toContain('Iteam表第 561 行')
     expect(wrapper.text()).toContain('待确认')
     const summaryCards = wrapper.findAll('.summary-strip article')
     expect(summaryCards[2]!.text()).toContain('警告/待确认1')
     expect(summaryCards[2]!.text()).toContain('不形成阻断')
-    expect(summaryCards[3]!.text()).toContain('待人工处理0')
+    expect(summaryCards[3]!.text()).toContain('资料提醒1')
     const pendingGenerateButton = wrapper.findAll('button')
-      .find((button) => button.text().includes('确认重复订单后生成'))
-    expect(pendingGenerateButton?.attributes('disabled')).toBeDefined()
+      .find((button) => button.text().includes('生成客户排期'))
+    expect(pendingGenerateButton?.attributes('disabled')).toBeUndefined()
 
     const confirmation = wrapper.get('.skip-issue-option')
     expect(confirmation.text()).toContain('确认重复订单')
     await confirmation.get('input').trigger('change')
 
     expect(wrapper.find('[data-testid="preview-blocker-alert"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('已确认通过')
+    expect(wrapper.text()).toContain('有提醒')
     const generateButton = wrapper.findAll('button')
       .find((button) => button.text().includes('生成并下载客户排期'))
     expect(generateButton?.attributes('disabled')).toBeUndefined()
@@ -1878,7 +1871,7 @@ describe('customer order center static frontend', () => {
     await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.get('.prototype-badge').text()).toBe('华兴厂 · 彩星')
-    expect(wrapper.text()).toContain('重复订单是否允许确认以当前环境策略和预览结果为准')
+    expect(wrapper.text()).toContain('所有客户的资料缺项、重复及差异只作提醒，可直接保存或生成')
     expect(wrapper.text()).toContain('华兴 彩星 最新统一排期（含 ITEM 分类页）')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')

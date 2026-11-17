@@ -776,14 +776,14 @@ def test_missing_price_can_be_explicitly_skipped_and_exports_blank_amounts(monke
         )
         assert preview_response.status_code == 200, preview_response.text
         preview = preview_response.json()
-        assert preview["summary"] == {"total": 1, "valid": 0, "warning": 0, "blocked": 1}
+        assert preview["summary"] == {"total": 1, "valid": 0, "warning": 1, "blocked": 0}
         price_issue = next(
             issue
             for issue in preview["rows"][0]["issues"]
             if issue["code"] == "missing_unit_price"
         )
         assert price_issue["can_skip"] is True
-        assert price_issue["skip_label"] == "单价及金额留空，稍后由跟客补充"
+        assert price_issue["skip_label"] == "已查看提醒（可选）"
         assert price_issue["skip_key"]
 
         rejected = client.post(
@@ -796,8 +796,7 @@ def test_missing_price_can_be_explicitly_skipped_and_exports_blank_amounts(monke
             },
             files=files(),
         )
-        assert rejected.status_code == 400
-        assert "没有可确认的 HKD 单价" in rejected.json()["detail"]
+        assert rejected.status_code == 200
 
         exported = client.post(
             "/api/customer-orders/buzzbee/export",

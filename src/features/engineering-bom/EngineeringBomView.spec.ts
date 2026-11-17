@@ -15,8 +15,8 @@ let wrapper: VueWrapper
 const fixture = (): Bom => ({ id: 'bom-1', version: 1, effective_version: null, status: 'DRAFT', materials: {},
   data: { item_no: '001', name: '测试成品', specification: '', source_reference: '', nodes: [{ ...newNode(), key: 'root', source_name: '测试根项', process: '手工' }] } })
 const button = (label: string) => wrapper.findAll('button').find(b => b.text() === label)!
-async function start(boms: Bom[] = [fixture()], materials: Material[] = []) {
-  vi.spyOn(api, 'access').mockResolvedValue({ enabled: true, schema_ready: true, permissions: ['read', 'bom_write', 'bom_approve', 'material_write', 'material_approve', 'import'] })
+async function start(boms: Bom[] = [fixture()], materials: Material[] = [], cuttingPublication = false) {
+  vi.spyOn(api, 'access').mockResolvedValue({ enabled: true, schema_ready: true, permissions: ['read', 'bom_write', 'bom_approve', 'material_write', 'material_approve', 'import'], cutting_publication: cuttingPublication })
   vi.spyOn(api, 'workspace').mockResolvedValue({ materials, boms })
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: View }] })
   await router.push('/modules/engineering/bom?factory=huakang-c'); await router.isReady()
@@ -31,6 +31,24 @@ beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(window, 'confirm').mockReturnV
 afterEach(() => { wrapper?.unmount() })
 
 describe('engineering BOM editor', () => {
+  it('keeps the effective-version cutting form through a same-session refresh and clears it after an access change', async () => {
+    const bom = { ...fixture(), version: 3, effective_version: 2 }
+    const choices = vi.spyOn(api, 'cuttingChoices').mockResolvedValue({
+      source: { bom_id: bom.id, version: 2, item_no: '001', event_id: 'approval', actor_id: 'engineering', occurred_at: '2026-11-16' },
+      name: '测试成品', rows: [], existing: null,
+    })
+    await start([bom], [], true)
+    await button('生成裁床执行 BOM').trigger('click'); await flushPromises()
+    expect(choices).toHaveBeenCalledWith(bom.id, 2)
+    await wrapper.get('input[name="cutting_style"]').setValue('待核对款式')
+    useAuthStore().sessionVersion++; await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('input[name="cutting_style"]').element.value).toBe('待核对款式')
+    vi.mocked(api.access).mockResolvedValue({ enabled: true, schema_ready: true, permissions: ['read'], cutting_publication: false })
+    useAuthStore().authorizationVersion++; await flushPromises()
+    expect(wrapper.find('input[name="cutting_style"]').exists()).toBe(false)
+    expect(button('生成裁床执行 BOM')).toBeUndefined()
+  })
+
   it('distinguishes same-name parent occurrences by their actual editor row', async () => {
     const existing = fixture()
     existing.data.nodes.push(...['part-a', 'part-b'].map(key => ({ ...newNode(), key, parent: 'root', process: '车缝', source_name: '同名部件' })),
