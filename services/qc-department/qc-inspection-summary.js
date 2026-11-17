@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   const base='api/inspection-summary/', labels={approved:'已审核',completed:'已完成',archived:'已归档',unverified:'历史待核实',withdrawn:'归档已撤回'};
-  const state={filters:{dateBasis:'report',year:'',month:'',day:'',search:'',type:'',status:'',page:1,pageSize:30},data:null,sequence:0,busy:false};
+  const state={filters:{dateBasis:'report',year:'',month:'',day:'',search:'',type:'',page:1,pageSize:30},data:null,sequence:0,busy:false};
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const display=v=>v===undefined||v===null||v===''?'—':esc(v);
   const time=v=>root.QcInspectionAudit.time(v);
@@ -44,9 +44,6 @@
           <label class="qsum-select">验货类型
             <select id="qsum-type"><option value="">全部类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
           </label>
-          <label class="qsum-select">归档状态
-            <select id="qsum-status"><option value="">全部历史</option><option value="approved">已审核</option><option value="completed">已完成</option><option value="archived">已归档</option><option value="unverified">历史待核实</option><option value="withdrawn">归档已撤回</option></select>
-          </label>
           <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
         </div>
         <p id="qsum-message" role="status" aria-live="polite"></p>
@@ -64,11 +61,11 @@
         </div>
       </div>
       <input id="qsum-file" type="file" accept=".xls,.xlsx" hidden>`;
-    ['year','month','day','type','status'].forEach(key=>root.document.getElementById('qsum-'+key).addEventListener('change',event=>{
+    ['year','month','day','type'].forEach(key=>root.document.getElementById('qsum-'+key).addEventListener('change',event=>{
       state.filters[key]=event.target.value;if(key==='year')state.filters.month=state.filters.day='';if(key==='month')state.filters.day='';state.filters.page=1;controls();void load();
     }));
     root.document.getElementById('qsum-search').addEventListener('input',event=>{state.filters.search=event.target.value;state.filters.page=1;clearTimeout(timer);timer=setTimeout(load,250);});
-    root.document.getElementById('qsum-reset').onclick=()=>{Object.assign(state.filters,{year:'',month:'',day:'',search:'',type:'',status:'',page:1});root.document.getElementById('qsum-search').value='';controls();void load();};
+    root.document.getElementById('qsum-reset').onclick=()=>{Object.assign(state.filters,{year:'',month:'',day:'',search:'',type:'',page:1});root.document.getElementById('qsum-search').value='';controls();void load();};
     root.document.getElementById('qsum-refresh').onclick=load;
     root.document.getElementById('qsum-prev').onclick=()=>{state.filters.page--;void load();};
     root.document.getElementById('qsum-next').onclick=()=>{state.filters.page++;void load();};
@@ -85,7 +82,7 @@
     options('month',Array.from({length:12},(_,i)=>String(i+1)),'全部月份',!f.year);
     const days=f.year&&f.month?new Date(Date.UTC(Number(f.year),Number(f.month),0)).getUTCDate():0;
     options('day',Array.from({length:days},(_,i)=>String(i+1)),'全部日期',!f.month);
-    for(const key of ['type','status'])root.document.getElementById('qsum-'+key).value=f[key];
+    root.document.getElementById('qsum-type').value=f.type;
   }
   function message(text,error=false){const el=root.document.getElementById('qsum-message');if(el){el.textContent=text;el.classList.toggle('qsum-error',error);}}
   async function load(){

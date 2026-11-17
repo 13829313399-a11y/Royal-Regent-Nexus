@@ -8,7 +8,8 @@
 :is(#page-records,#page-review) .qis-cell{height:calc(var(--qis-row-height) - 13px);overflow:auto;overflow-wrap:anywhere}
 :is(#page-records,#page-review) .qis-table thead tr{position:static;z-index:auto;background:transparent}
 :is(#page-records,#page-review) .qis-table th{position:sticky;top:0;z-index:3;background:#edf3f1;white-space:nowrap;padding:10px 8px}
-:is(#page-records,#page-review) .qis-table [data-column=date]{min-width:132px;position:static}
+:is(#page-records,#page-review) .qis-table [data-column=date]{min-width:132px}
+:is(#page-records,#page-review) .qis-table td[data-column=date]{position:static}
 #page-records .qis-table th[data-column=date]{padding:0!important}
 #page-records .qis-date-sort{display:flex;align-items:center;gap:7px;width:100%;min-height:38px;padding:10px 8px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;font-weight:inherit;text-align:left;cursor:pointer}
 #page-records .qis-date-sort span{font-size:12px;color:#70837b}
@@ -99,7 +100,8 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 #qis-review-controls:has(.qis-review-date[open]) {position:relative;z-index:20}
 #page-review #qis-review-controls .qis-review-filterbar {
   display:grid;
-  grid-template-columns:minmax(125px,2fr) minmax(145px,1.45fr) minmax(85px,1fr) minmax(105px,1fr) auto;
+  grid-template-columns:minmax(125px,210px) minmax(145px,205px) minmax(85px,120px) minmax(105px,140px) auto;
+  justify-content:start;
   align-items:center;
   gap:8px;
   padding:11px;
@@ -117,6 +119,7 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
   font-size:13px;
 }
 #qis-review-controls :is(.qis-review-search,.qis-review-date summary) {display:flex;align-items:center;gap:8px}
+#qis-review-controls .qis-review-search {max-width:210px}
 #qis-review-controls .qis-review-search input {
   min-width:0;
   width:100%;
@@ -180,6 +183,9 @@ body.theme-dark .qis-review-date-fields input {color-scheme:dark}
   #page-review #qis-review-controls .qis-review-filterbar {grid-template-columns:repeat(2,minmax(0,1fr))}
   #qis-review-controls .qis-review-search {grid-column:1/-1}
   #qis-review-controls [data-reset-review] {justify-self:end}
+}
+@container (max-width:480px) {
+  #qis-review-controls .qis-review-search {max-width:none}
 }
 @media (pointer:coarse) {
   #qis-review-controls :is(.qis-review-search,.qis-review-search input,.qis-review-date summary,.qis-review-filterbar select,.qis-review-date-fields input,.qis-review-reset,.qis-review-date-apply,.qis-review-batch-actions label),
