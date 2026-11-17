@@ -3217,11 +3217,10 @@ body.theme-light #yearlyReportBody  .section-card {
 
 /* ── 审核中心 ── */
 @media screen {
-  /* 列表独立滚动，让状态栏及提示始终可见；高度随工具栏换行自适应。 */
+  /* 列表独立滚动，让状态栏始终可见；高度随工具栏换行自适应。 */
   #page-review { min-height: 0; overflow: hidden; }
   #page-review .page-inner { height: 100%; min-height: 0; }
-  #page-review .toolbar,
-  #page-review .review-hint { flex-shrink: 0; }
+  #page-review .toolbar { flex-shrink: 0; }
   #reviewTableWrap { flex: 1; min-height: 0; overflow: auto; }
   #reviewTableWrap thead tr {
     position: sticky;
@@ -3238,11 +3237,6 @@ body.theme-light #yearlyReportBody  .section-card {
   display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px;
   border-radius: 9px; background: var(--accent); color: #001018;
   font-size: 11px; font-weight: 700; text-align: center;
-}
-.review-hint {
-  font-size: 12px; color: var(--text-dim); line-height: 1.6;
-  padding: 10px 14px; background: var(--bg-card);
-  border: 1px solid var(--border); border-radius: var(--radius-lg);
 }
 .nav-badge {
   display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px;
@@ -3885,3 +3879,50 @@ body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
 .report-type-slot { align-items:center; gap:12px; }
 .report-type-slot > #reportTypeSelect { margin-left:auto; width:8.5rem; max-width:100%; min-height:36px; border:1px solid var(--border); border-radius:8px; padding:5px 10px; background:var(--bg-input); color:var(--text-hi); font:inherit; }
 .report-toolbar label[hidden] { display:none!important; }
+
+/* Screen-only QC table reading baseline; workbook and print layouts stay independent. */
+@media screen {
+  /* Keep native editing/validation, but let the table cell be the input surface.
+     Include the legacy measurement/defect grids, which render without <table>. */
+  html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
+  :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]) {
+    background:transparent!important;
+    border-color:transparent!important;
+    border-radius:0!important;
+    box-shadow:none!important;
+    text-align:center!important;
+    caret-color:var(--accent,#16876b);
+  }
+  html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
+  :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]):not(:disabled):not([readonly]):focus {
+    outline:2px solid var(--accent,#16876b)!important;
+    outline-offset:-2px;
+  }
+  html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
+  :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]):is([aria-invalid=true],:user-invalid) {
+    outline:2px solid var(--red,#c53030)!important;
+    outline-offset:-2px;
+  }
+  body.qc-liquid-glass .page table :is(th,td),
+  body.qc-liquid-glass .qir-dialog table :is(th,td) {
+    text-align:center!important;
+    vertical-align:middle!important;
+    font-variant-numeric:tabular-nums;
+  }
+  body.qc-liquid-glass .page table :is(.qwt-editor,.qmt-editor) { text-align:center; }
+  body.qc-liquid-glass .page table .qia-badge { margin-inline:auto; }
+  #page-sales-schedule .qs-table { min-width:1510px; }
+  #page-sales-schedule .qs-table col:nth-child(7) { width:132px!important; }
+  #page-sales-schedule .qs-table col:nth-child(8) { width:64px!important; }
+  #page-sales-schedule .qs-table col:nth-child(9),
+  #page-sales-schedule .qs-table col:nth-child(10) { width:54px!important; }
+  #page-sales-schedule .qs-table col:nth-child(11),
+  #page-sales-schedule .qs-table col:nth-child(12) { width:60px!important; }
+  #page-sales-schedule .qs-table col:nth-child(13) { width:110px!important; }
+  #page-sales-schedule .qs-table col:nth-child(15) { width:168px!important; }
+  #page-sales-schedule .qs-table :is(th,td) { padding-inline:7px; }
+  #page-defectlib .table-wrap { width:fit-content; max-width:calc(100% - 44px); }
+  #page-defectlib .table-wrap table { width:760px!important; min-width:760px; }
+  #page-defectlib .table-wrap col:nth-child(4) { width:220px!important; }
+  #page-defectlib .table-wrap :is(th,td) { white-space:normal; overflow-wrap:anywhere; }
+}

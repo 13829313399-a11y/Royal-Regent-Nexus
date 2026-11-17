@@ -71,10 +71,29 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
   stroke-linejoin: round;
 }
 
+#qsum-root #qsum-refresh {
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  box-shadow: none;
+  flex-shrink: 0;
+}
+#qsum-root #qsum-refresh svg { width: 14px; height: 14px; stroke-width: 1.7; }
+#qsum-root #qsum-refresh:hover:not(:disabled) { background: var(--bg-hover); }
+@media (max-width: 640px), (pointer: coarse) {
+  #qsum-root #qsum-refresh { width: 44px; height: 44px; min-height: 44px; }
+}
+
 .qsum-note{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;color:var(--text-main);line-height:1.7}
 .qsum-filter-bar {
   display: grid;
-  grid-template-columns: minmax(11rem, 220px) minmax(255px, 270px) minmax(6.25rem, 120px) minmax(7rem, 140px) auto;
+  grid-template-columns: minmax(11rem, 220px) minmax(255px, 270px) minmax(6.25rem, 120px) auto;
   justify-content: start;
   align-items: end;
   gap: 10px 14px;
@@ -191,15 +210,16 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 #qsum-page { font-variant-numeric: tabular-nums; }
 #qsum-message:not(:empty) { padding: 0 16px 8px; }
 
-@container qsum (max-width: 810px) {
-  .qsum-filter-bar { grid-template-columns: minmax(0, 220px) minmax(0, 1fr) auto; }
-  .qsum-date-filters { grid-column: 2 / -1; }
+@container qsum (max-width: 680px) {
+  .qsum-filter-bar { grid-template-columns: minmax(0, 220px) minmax(0, 270px); }
+  .qsum-select { max-width: 120px; }
+  #qsum-reset { justify-self: start; }
 }
 
 @container qsum (max-width: 480px) {
   .qsum-toolbar { padding-inline: 10px; }
   .qsum-actions { margin-inline-start: 0; }
-  .qsum-filter-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; padding-inline: 10px; gap: 8px; }
+  .qsum-filter-bar { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 10px; gap: 8px; }
   .qsum-filter-bar :is(.qsum-search, .qsum-date-filters) { grid-column: 1 / -1; }
   .qsum-search, .qsum-date-filters { max-width: none; }
   .qsum-filter-bar .qsum-date-filters select { padding-inline: 5px; font-size: 13px; }
@@ -554,4 +574,11 @@ body.qc-liquid-glass .qsum-record-detail .qsum-photo-thumb {
   .qsum-record-detail .qsum-history-heading { display: none; }
   .qsum-record-detail .qsum-history-entry > summary { row-gap: 5px; }
   .qsum-record-detail .qsum-history-content > * { grid-column: 1; }
+}
+
+@media screen {
+  #qsum-root .qsum-workspace { max-width:960px; }
+  #qsum-root .qsum-table { width:100%; min-width:760px; }
+  #qsum-root .qsum-table :is(th,td) { padding:8px 10px; max-width:160px; white-space:normal; overflow-wrap:anywhere; }
+  #qsum-root .qsum-table :is(th,td):first-child { min-width:100px; }
 }

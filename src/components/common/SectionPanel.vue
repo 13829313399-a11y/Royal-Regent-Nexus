@@ -1,8 +1,18 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+
 defineProps<{
   title?: string
   subtitle?: string
 }>()
+
+const heading = ref<HTMLHeadingElement>()
+function focusTitle() {
+  if (!heading.value) return
+  heading.value.tabIndex = -1
+  heading.value.focus()
+}
+defineExpose({ focusTitle })
 </script>
 
 <template>
@@ -12,7 +22,7 @@ defineProps<{
       class="flex flex-col gap-3 border-b border-slate-100/90 px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6 sm:py-5"
     >
       <div class="min-w-0">
-        <h2 v-if="title" class="text-[17px] font-semibold tracking-[-0.02em] text-slate-950">
+        <h2 v-if="title" ref="heading" class="text-[17px] font-semibold tracking-[-0.02em] text-slate-950">
           {{ title }}
         </h2>
         <p v-if="subtitle" class="mt-1.5 text-sm leading-5 text-slate-500">
