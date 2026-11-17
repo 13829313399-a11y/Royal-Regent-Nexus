@@ -403,6 +403,18 @@ html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-re
 html body #page-review .qis-table :is(input.qis-review-input,select.qis-review-input,select[data-result]){height:var(--qis-short-height);min-height:var(--qis-short-height)}
 html body #page-review .qis-table textarea{height:var(--qis-long-height);min-height:var(--qis-long-height);max-height:var(--qis-long-height)}
 #page-review .qis-table select{appearance:auto;cursor:pointer}
+/* Center report-status text independently of the native checkmark/arrow gutters. */
+@supports (appearance:base-select){
+  html body #page-review .qis-table select[data-review-field=reportStatus],
+  html body #page-review .qis-table select[data-review-field=reportStatus]::picker(select){appearance:base-select}
+  html body #page-review .qis-table select[data-review-field=reportStatus]{position:relative;display:flex;align-items:center;justify-content:center;padding-inline:20px;gap:0}
+  #page-review select[data-review-field=reportStatus]::picker-icon{position:absolute;right:7px}
+  #page-review select[data-review-field=reportStatus]::picker(select){min-width:anchor-size(width);padding:0;border:1px solid var(--border-hi);border-radius:4px;background:var(--bg-card);color:var(--text-hi)}
+  #page-review select[data-review-field=reportStatus] option{position:relative;display:flex;align-items:center;justify-content:center;gap:0;min-height:34px;padding:4px 20px;box-sizing:border-box;text-align:center}
+  #page-review select[data-review-field=reportStatus] option::checkmark{position:absolute;left:5px}
+  #page-review select[data-review-field=reportStatus] option:is(:hover,:focus,:checked){background:color-mix(in srgb,var(--accent) 14%,var(--bg-card));color:var(--text-hi)}
+  @media(pointer:coarse){#page-review select[data-review-field=reportStatus] option{min-height:44px}}
+}
 html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-result],[data-problem],[data-remark],[data-improvement]):focus{outline:2px solid #16876b;outline-offset:-2px;box-shadow:none}
 #page-review .qis-review-value{white-space:pre-wrap;overflow-wrap:anywhere}
 #page-review button.qis-review-value{
