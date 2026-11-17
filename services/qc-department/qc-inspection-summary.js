@@ -26,8 +26,8 @@
             <button type="button" class="btn btn-secondary" id="qsum-import">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h4l4 4v14H7v-4M7 9V3h6v5h5M3 13h11m-4-4 4 4-4 4"/></svg>历史导入
             </button>
-            <button type="button" class="btn btn-secondary" id="qsum-refresh">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 8M20 3v5h-5"/></svg>刷新
+            <button type="button" class="btn btn-secondary" id="qsum-refresh" aria-label="刷新数据" title="刷新数据">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3"/></svg>
             </button>
           </div>
         </div>
