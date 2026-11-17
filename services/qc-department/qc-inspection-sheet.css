@@ -86,7 +86,7 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 @media(max-width:640px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:84px;--qis-po-text:108px}:is(#page-records,#page-review) .qis-table [data-column=customer],:is(#page-records,#page-review) .qis-table [data-column=poNo]{min-width:0}}
 .qis-review-actions button,.qia-dialog button{padding:8px 14px;border:1px solid var(--border,#cbd5e1);border-radius:8px;background:var(--surface,#fff);color:inherit}.qia-badge{display:block;font-size:11px;border:0;border-bottom:1px dotted currentColor;background:transparent;color:var(--text-dim,#52657d);padding:0;cursor:pointer}.qia-dialog{max-height:88vh;max-width:min(760px,95vw);overflow:auto}.qia-dialog textarea{display:block;box-sizing:border-box;width:100%;font:inherit;padding:10px}.qia-event{padding:12px 0;border-bottom:1px solid var(--border,#cbd5e1);white-space:pre-wrap;overflow-wrap:anywhere}.qia-event p{margin:6px 0}.qia-badge:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
 
-#page-review .page-inner{display:flex;flex-direction:column}#page-review .toolbar,#page-review .review-hint,#qis-review-controls{flex:none}#page-review .review-hint{margin:6px 0;font-size:12px}:is(#page-records,#page-review) .qis-table input,:is(#page-records,#page-review) .qis-table textarea,:is(#page-records,#page-review) .qis-table select{scroll-margin-inline-start:calc(var(--qis-frozen-width,330px) + 12px)}
+#page-review .page-inner{display:flex;flex-direction:column}#page-review .toolbar,#qis-review-controls{flex:none}:is(#page-records,#page-review) .qis-table input,:is(#page-records,#page-review) .qis-table textarea,:is(#page-records,#page-review) .qis-table select{scroll-margin-inline-start:calc(var(--qis-frozen-width,330px) + 12px)}
 @media(max-width:420px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:62px;--qis-po-text:80px}}
 /* Small screens need a reachable table even when the review filters fill the viewport. */
 @media(max-width:640px){#page-review .page-inner{overflow:auto}#page-review .qis-wrap{flex:1 0 280px;min-height:280px}}
@@ -105,9 +105,6 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 /* Keep the table reachable in short sidebar viewports as well as narrow phones. */
 #page-review .page-inner{overflow:auto;gap:10px}
 #page-review .qis-wrap{flex:1 0 220px;min-height:220px}
-#page-review .review-hint{margin:0;padding:8px 12px}
-#page-review .review-hint summary{cursor:pointer;color:var(--text-dim)}
-#page-review .review-hint p{margin:8px 0 0;line-height:1.6}
 #page-review .toolbar{flex-direction:row;align-items:center;padding:8px 10px;margin:0;gap:8px}
 #page-review .toolbar-left,#page-review .toolbar-right{width:auto;flex:0 1 auto}
 #page-review .toolbar .btn-secondary{flex:0 0 auto;width:auto}
