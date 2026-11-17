@@ -59,6 +59,22 @@
 :is(#page-records,#page-review) .qis-table th[data-column=customer],:is(#page-records,#page-review) .qis-table th[data-column=poNo]{z-index:5;background:#edf3f1}
 :is(#page-records,#page-review) .qis-table [data-column=customer] .qis-cell{width:var(--qis-customer-text)}
 :is(#page-records,#page-review) .qis-table [data-column=poNo] .qis-cell{width:var(--qis-po-text)}
+/* Workbench widths follow field content, not the viewport or the longest value. */
+#page-records .qis-table :is([data-column=date],[data-column=country],[data-column=productNo],[data-column=productName],[data-column=quantity],[data-column=unitsPerCarton],[data-column=cartonCount],[data-column=production],[data-column=agency],[data-column=customerPo]){min-width:0}
+#page-records .qis-table [data-column=date]{--qis-text-width:116px}
+#page-records .qis-table [data-column=country]{--qis-text-width:176px}
+#page-records .qis-table [data-column=productNo]{--qis-text-width:120px}
+#page-records .qis-table td[data-column=productNo]{min-width:0}
+#page-records .qis-table [data-column=productName]{--qis-text-width:176px}
+#page-records .qis-table [data-column=quantity]{--qis-text-width:80px}
+#page-records .qis-table [data-column=unitsPerCarton]{--qis-text-width:60px}
+#page-records .qis-table [data-column=cartonCount]{--qis-text-width:70px}
+#page-records .qis-table [data-column=production]{--qis-text-width:100px}
+#page-records .qis-table [data-column=agency]{--qis-text-width:60px}
+#page-records .qis-table [data-column=customerPo]{--qis-text-width:140px}
+#page-records .qis-table :is([data-column=date],[data-column=country],[data-column=productNo],[data-column=productName],[data-column=quantity],[data-column=unitsPerCarton],[data-column=cartonCount],[data-column=production],[data-column=agency],[data-column=customerPo]) .qis-cell{width:var(--qis-text-width);white-space:normal;overflow-wrap:anywhere;line-height:17px}
+#page-records .qis-table :is([data-column=quantity],[data-column=unitsPerCarton],[data-column=cartonCount]){text-align:right;font-variant-numeric:tabular-nums}
+@media(min-width:641px){#page-records .qis-wrap{--qis-customer-text:92px;--qis-po-text:168px}}
 :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#e4f1e9!important}
 body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#25473c!important}
 :is(#page-records,#page-review) .qis-table tr:focus-visible{outline:2px solid #16876b;outline-offset:-2px}
