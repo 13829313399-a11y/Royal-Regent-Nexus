@@ -458,3 +458,9 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 .qis-submit-list{padding-left:20px;max-height:40vh;overflow:auto;line-height:1.8}
 .qis-submit-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 @media(max-width:640px){#page-records #qis-record-batch{min-height:44px}}
+
+/* Successful autosaves are silent; reserve feedback space only while needed. */
+:is(#page-records,#page-review) .qis-save-feedback[hidden],
+:is(#page-records,#page-review) .qis-save-feedback:has([data-save-status]:empty):not(:has(button:not([hidden]))),
+:is(#page-records,#page-review) [data-review-status]:empty{display:none}
+:is(#page-records,#page-review) .qis-result-editor{justify-content:center}

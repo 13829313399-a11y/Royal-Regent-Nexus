@@ -85,8 +85,9 @@
   function status(id,skipRecordControls=false){
     const d=model.drafts.get(id),node=root.document.querySelector('[data-save-status="'+id+'"]');
     if(!node||!d)return;
-    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy)?'保存中…':d.dirty?'等待自动保存…':model.view!=='review'||d.savedUntil>Date.now()?'已保存':'';
+    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy)?'保存中…':d.dirty?'等待自动保存…':'';
     node.hidden=!node.textContent;
+    node.closest('.qis-save-feedback').hidden=node.hidden;
     node.classList.toggle('qis-error',Boolean(d.error));
     root.document.querySelectorAll('[data-review-status="'+id+'"]').forEach(label=>{label.textContent=node.textContent;label.classList.toggle('qis-error',Boolean(d.error));});
     root.document.querySelectorAll('[data-retry="'+id+'"],[data-photo-retry="'+id+'"]').forEach(retry=>{retry.hidden=!d.error;retry.textContent=d.rejectedPhoto?'清除失败照片':d.fileError?'清除失败选择':d.conflict?'核对版本并重试':'重试';});
@@ -99,11 +100,6 @@
     if(index>=0&&model.items[index].revision>saved.revision)return;
     if(index>=0&&model.items[index].photoWarning&&!('photoWarning' in saved))saved={...saved,photoWarning:model.items[index].photoWarning};
     if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;}
-    const d=model.drafts.get(id);
-    if(d&&model.view==='review'){
-      d.savedUntil=Date.now()+2000;clearTimeout(d.successTimer);
-      d.successTimer=setTimeout(()=>{if(model.drafts.get(id)===d){d.savedUntil=0;status(id);}},2000);
-    }
     const entryNode=root.document.querySelector('[data-entry="'+id+'"]');if(entryNode&&model.view==='review'){
       const hint=audit().hint(saved);entryNode.querySelectorAll('[data-audit]').forEach(button=>{button.title=hint;button.setAttribute('aria-label',hint+'；查看修改历史');});
       for(const key of ['customer','poNo']){const cell=entryNode.querySelector('[data-column="'+key+'"]');if(cell)cell.title=(saved[key]||'')+'\n'+hint;}
@@ -176,7 +172,7 @@
           const message='该记录'+state+'，不能从当前页面直接保存。'+(latest.reviewState==='approved'?'如需修改，请先在“已审核”中反审核。':'请在对应页面继续处理。')+'\n\n本行未保存的输入：\n'+(changes.join('\n')||'文字和数值与服务器一致')+(d.queue.length?'\n另有 '+d.queue.length+' 项未完成的照片操作':'')+'\n\n确定：放弃本行未保存输入并更新状态，恢复页面切换。\n取消：继续保留当前输入，可先复制上述内容。';
           if(!root.confirm(message))return;
           if(model.drafts.get(id)!==d||d.busy||d.reading)return;
-          clearTimeout(d.timer);clearTimeout(d.successTimer);model.drafts.delete(id);model.checked.delete(id);accept(id,latest);render();
+          clearTimeout(d.timer);model.drafts.delete(id);model.checked.delete(id);accept(id,latest);render();
           root.showToast?.('已同步记录状态；如需修改已审核记录，请先反审核','success');return;
         }
         const comparison=[['result','验货结果'],['inspectionProblem','验货问题'],['remark','备注'],['improvement','改进措施'],...Object.entries(reviewFields),...Object.entries(executionFields).map(([k,v])=>['inspectionExecution.'+k,v[0]])].map(([key,label])=>label+'\n服务器：'+JSON.stringify(key.split('.').reduce((v,k)=>v?.[k],latest)??'—')+'\n本行输入：'+JSON.stringify(key.split('.').reduce((v,k)=>v?.[k],d)??'—')).join('\n\n');
@@ -605,7 +601,7 @@
           d=draft(row);d.submitting=true;
           await flushRow(row.id);
           const saved=await api('entries/'+row.id+'/submit',{revision:byId(row.id).revision});
-          accept(row.id,saved);clearTimeout(d.timer);clearTimeout(d.successTimer);
+          accept(row.id,saved);clearTimeout(d.timer);
           model.items=model.items.filter(r=>r.id!==row.id);model.recordChecked.delete(row.id);model.drafts.delete(row.id);succeeded++;
         }catch(error){failed.push({row:original,message:error.message});}
         finally{if(d)d.submitting=false;}

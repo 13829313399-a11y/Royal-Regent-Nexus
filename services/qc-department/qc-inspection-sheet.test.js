@@ -178,7 +178,9 @@ test('rapid PASS to FAIL and long bilingual remarks save in order, reload and ot
   assert.equal(p.rows[0].result,'FAIL');assert.equal(p.rows[1].result,'');
   await p.w.QcInspectionSheet.load();assert.equal(p.d.querySelector('[data-result="a"]').value,'FAIL');
   assert.equal(p.d.querySelector('[data-remark="a"]').value,'中文 English 0123 !\n'.repeat(100));
-  assert.match(p.d.querySelector('[data-save-status="a"]').textContent,/已保存/);
+  assert.equal(p.d.querySelector('[data-save-status="a"]').textContent,'');
+  assert.equal(p.d.querySelector('[data-save-status="a"]').closest('.qis-save-feedback').hidden,true);
+  assert.equal(p.d.querySelector('[data-review-status="a"]').textContent,'');
  }finally{p.dom.window.close();}
 });
 test('failed saves keep draft through filtering, block reload and can retry without loss',async()=>{
