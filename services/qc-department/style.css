@@ -3293,10 +3293,10 @@ body.theme-light #page-sales-schedule .qs-toolbar { background:#f3f4f6; }
 #page-sales-schedule .qs-primary { color:#fff; background:#007fdb; border-color:#007fdb; font-weight:600; }
 #page-sales-schedule button:disabled { opacity:.5; cursor:not-allowed; }
 #page-sales-schedule :is(button,input,select,textarea):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
-#page-sales-schedule .qs-filters { display:grid; grid-template-columns:minmax(210px,2.6fr) minmax(180px,1.5fr) minmax(110px,1fr) minmax(130px,1.1fr) auto; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--border); border-radius:7px; background:var(--bg-card); }
+#page-sales-schedule .qs-filters { display:grid; grid-template-columns:minmax(210px,2.6fr) minmax(180px,1.5fr) minmax(110px,1fr) auto; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--border); border-radius:7px; background:var(--bg-card); }
 #page-sales-schedule .qs-date-filter { position:relative; min-width:0; }
-#page-sales-schedule .qs-date-toggle { display:flex; align-items:center; gap:9px; width:100%; height:40px; padding:0 10px; border:1px solid var(--border-hi); border-radius:5px; color:var(--text-hi); background:var(--bg-input); cursor:pointer; text-align:left; }
-#page-sales-schedule .qs-date-toggle span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#page-sales-schedule .qs-date-toggle { display:flex; align-items:center; gap:9px; width:100%; min-height:40px; height:auto; padding:6px 10px; border:1px solid var(--border-hi); border-radius:5px; color:var(--text-hi); background:var(--bg-input); cursor:pointer; text-align:left; }
+#page-sales-schedule .qs-date-toggle span { flex:1; min-width:0; white-space:normal; font-variant-numeric:tabular-nums; }
 #page-sales-schedule .qs-filters svg { width:18px; height:18px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
 #page-sales-schedule .qs-date-toggle[aria-expanded="true"] { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
 #page-sales-schedule .qs-date-toggle[aria-expanded="true"] .qs-chevron { transform:rotate(180deg); }
@@ -3328,15 +3328,15 @@ body.theme-light #page-sales-schedule .qs-toolbar { background:#f3f4f6; }
 #page-sales-schedule .qs-reset, #page-sales-schedule .qs-link { border:0; background:none; color:var(--accent-dim); cursor:pointer; padding:3px 0; }
 #page-sales-schedule .qs-reset { height:40px; padding:0 4px 0 14px; border-left:1px solid var(--border); white-space:nowrap; }
 @container (max-width:900px) {
-  #page-sales-schedule .qs-filters { grid-template-columns:minmax(210px,1.5fr) minmax(130px,1fr) minmax(150px,1.1fr) auto; }
+  #page-sales-schedule .qs-filters { grid-template-columns:minmax(210px,1.5fr) minmax(130px,1fr) auto; }
   #page-sales-schedule .qs-search { grid-column:1/-1; }
 }
 @container (max-width:560px) {
-  #page-sales-schedule .qs-filters { grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; gap:10px; }
+  #page-sales-schedule .qs-filters { grid-template-columns:minmax(0,1fr) auto; gap:10px; }
   #page-sales-schedule .qs-date-filter { grid-column:1/-1; }
   #page-sales-schedule .qs-date-panel { width:330px; max-width:calc(100vw - 32px); padding:12px; }
   #page-sales-schedule .qs-reset { padding-left:10px; }
-  #page-sales-schedule .qs-filter-actions { grid-column:1/-1; justify-content:flex-end; }
+  #page-sales-schedule .qs-filter-actions { grid-column:2; justify-content:flex-end; }
 }
 #page-sales-schedule .qs-filter-actions { display:flex; align-items:center; gap:12px; white-space:nowrap; }
 @media (pointer:coarse) {

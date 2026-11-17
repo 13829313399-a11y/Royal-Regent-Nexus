@@ -7,7 +7,7 @@ const html=fs.readFileSync(path.join(project,'services/qc-department/index.html'
 const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 const sandbox={};vm.createContext(sandbox);vm.runInContext(source,sandbox);const api=sandbox.QcSchedule;
 const response=url=>({ok:true,json:async()=>JSON.parse(JSON.stringify({factory_id:'huaxing',contract_version:'2',status:'ready',mapping_version:'qc-task-v1',source_available:true,items:rows}))});
-const base={from:'',to:'',customer:'',completion:'',query:''};
+const base={from:'',to:'',customer:'',query:''};
 const rows=[
  {id:'1',dateFrom:'2026-10-27',dateTo:'2026-10-29',customer:'Dickie',poNo:'00123',productNo:'A',productName:'消防车',quantity:300,unitsPerCarton:6,cartonCount:50,completion:'已完成',remark:'箱唛待复核'},
  {id:'2',dateFrom:'2026-10-27',customer:'BUZZBEE',poNo:'00234',productNo:'B',productName:'水枪',quantity:7512,completion:'未验：待补件'},
@@ -17,17 +17,13 @@ const rows=[
 const ids=x=>Array.from(x,r=>r.id);
 for(const [name,filters,want] of [
  ['all',{},['1','2','3','4']],['date only',{from:'2026-10-28',to:'2026-10-28'},['1']],
- ['customer only',{customer:'Dickie'},['1','3','4']],['completion only',{completion:'value:已完成'},['1']],
+ ['customer only',{customer:'Dickie'},['1','3','4']],
  ['date and customer',{from:'2026-10-27',to:'2026-10-27',customer:'BUZZBEE'},['2']],
- ['date and completion',{from:'2026-10-27',to:'2026-10-30',completion:'empty'},['3']],
- ['customer and completion',{customer:'Dickie',completion:'value:已完成'},['1']],
- ['three filters',{from:'2026-10-29',to:'2026-10-29',customer:'Dickie',completion:'value:已完成'},['1']],
- ['zero matches',{from:'2026-10-29',to:'2026-10-29',customer:'BUZZBEE',completion:'value:已完成'},[]],
+ ['zero matches',{from:'2026-10-29',to:'2026-10-29',customer:'BUZZBEE'},[]],
  ['range left boundary',{from:'2026-10-26',to:'2026-10-27'},['1','2']],
  ['range right boundary',{from:'2026-10-29',to:'2026-10-30'},['1','3']],
  ['from only',{from:'2026-10-30'},['3']],['to only',{to:'2026-10-27'},['1','2']],
- ['search plus three filters',{from:'2026-10-29',to:'2026-10-29',customer:'Dickie',completion:'value:已完成',query:'消防'},['1']],
- ['literal unfilled is separate',{completion:'value:未填写'},['4']],
+ ['search plus date and customer filters',{from:'2026-10-29',to:'2026-10-29',customer:'Dickie',query:'消防'},['1']],
 ])test('independent/composed filtering: '+name,()=>{
  const before=JSON.stringify(rows);assert.deepEqual(ids(api.filterRows(rows,{...base,...filters})),want);assert.equal(JSON.stringify(rows),before);
 });
@@ -35,9 +31,8 @@ test('invalid and reversed dates are rejected, unknown dates remain available wi
  for(const f of [{from:'2026-02-30'},{from:'2026-10-30',to:'2026-10-27'}])assert.throws(()=>api.filterRows(rows,{...base,...f}));
  assert.equal(api.dateRange({dateFrom:'2026-02-30'}),null);assert.equal(api.dateRange({dateFrom:'2026-10-29',dateTo:'2026-10-27'}),null);
 });
-test('free text completion values build distinct choices without a predefined status workflow',()=>{
- assert.deepEqual(new Set(api.choices(rows,'completion')),new Set(['已完成','未填写','未验：待补件']));
- assert.equal(api.filterRows(rows,{...base,completion:'empty'})[0].id,'3');
+test('customer choices are distinct',()=>{
+ assert.deepEqual(new Set(api.choices(rows,'customer')),new Set(['Dickie','BUZZBEE']));
 });
 test('week selection uses complete Monday-to-Sunday interval including year boundaries',()=>{
  assert.deepEqual(JSON.parse(JSON.stringify(api.weekRange('2027-01-01',0))),{from:'2026-12-28',to:'2027-01-03'});

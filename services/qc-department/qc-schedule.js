@@ -51,9 +51,6 @@
       if (filters.from && range.to < filters.from) return false;
       if (filters.to && range.from > filters.to) return false;
       if (filters.customer && text(row.customer).trim() !== filters.customer) return false;
-      const completion = text(row.completion).trim();
-      if (filters.completion === 'empty' && completion) return false;
-      if (filters.completion?.startsWith('value:') && completion !== filters.completion.slice(6)) return false;
       return !query || [row.poNo, row.customerPo, row.productNo, row.productName].some(v => text(v).toLocaleLowerCase().includes(query));
     });
   }
@@ -75,26 +72,22 @@
   const model = {items:[], phase:'initial', request:0, checked:new Set()};
   const el = id => root.document?.getElementById(id);
   function filters() {
-    return {from:el('qsDateFrom').value,to:el('qsDateTo').value,customer:el('qsCustomer').value,completion:el('qsCompletion').value,query:el('qsSearch').value};
+    return {from:el('qsDateFrom').value,to:el('qsDateTo').value,customer:el('qsCustomer').value,query:el('qsSearch').value};
   }
   function updateChoices() {
-    for(const [id,key,first] of [['qsCustomer','customer','全部客户'],['qsCompletion','completion','全部完成情况']]) {
-      const select=el(id), old=select.value, oldLabel=select.selectedOptions[0]?.textContent;
-      select.innerHTML='<option value="">'+first+'</option>'+(key==='completion'?'<option value="empty">无反馈</option>':'')+
-        choices(model.items,key).map(v=>'<option value="'+escape(key==='completion'?'value:'+v:v)+'">'+escape(v)+'</option>').join('');
-      select.value=old;
-      if (select.selectedIndex < 0 && old) {const option=root.document.createElement('option');option.value=old;option.textContent=oldLabel;select.append(option);select.value=old;}
-    }
+    const select=el('qsCustomer'), old=select.value, oldLabel=select.selectedOptions[0]?.textContent;
+    select.innerHTML='<option value="">全部客户</option>'+
+      choices(model.items,'customer').map(v=>'<option value="'+escape(v)+'">'+escape(v)+'</option>').join('');
+    select.value=old;
+    if (select.selectedIndex < 0 && old) {const option=root.document.createElement('option');option.value=old;option.textContent=oldLabel;select.append(option);select.value=old;}
   }
   function renderTable() {
     const body=el('qsRows'), error=el('qsFilterError');let rows;
     error.textContent='';
     try { rows=filterRows(model.items,filters()); } catch(e) { error.textContent=e.message;rows=[]; }
-    el('qsCount').textContent=model.phase==='pending'?'待接通':`${rows.length} / ${model.items.length} 条`;
-    el('qsCount').title='当前显示 / 当前日期范围总计';
     if(!rows.length) {
       const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期，可点击“新增验货”添加排期':'没有符合筛选条件的排期';
-      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户和完成情况筛选排期。':'')+'</p></div></td></tr>';
+      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户筛选或搜索排期。':'')+'</p></div></td></tr>';
       updatePush();return;
     }
     body.innerHTML=orderedRows(rows).map(row =>
@@ -238,7 +231,7 @@
       if(seq===model.request){el('qsRefresh').disabled=false;updateChoices();renderTable();updatePush();}
     }
   }
-  function resetFilters() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo','qsCustomer','qsCompletion','qsSearch'])el(id).value='';dateError();closeDatePanel();return applyDateFilters(); }
+  function resetFilters() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo','qsCustomer','qsSearch'])el(id).value='';dateError();closeDatePanel();return applyDateFilters(); }
   function freezeScheduleColumns(){
     const host=root.document.querySelector('#page-sales-schedule .qs-table-scroll'),customer=host?.querySelector('th[data-column="customer"]');
     if(customer)host.style.setProperty('--qs-customer-width',customer.getBoundingClientRect().width+'px');
@@ -252,7 +245,14 @@
     for(const id of model.checked)if(!ids.has(id))model.checked.delete(id);
     const all=el('qsSelectAll');
     if(all){all.disabled=!rows.length;all.checked=!!rows.length&&model.checked.size===rows.length;all.indeterminate=model.checked.size>0&&model.checked.size<rows.length;}
-    if(el('qsPush')){el('qsPush').disabled=!model.checked.size;el('qsPush').textContent='确认推送验货'+(model.checked.size?'（'+model.checked.size+'）':'');}
+    const count=el('qsCount');
+    if(count){
+      let visible=0;try{visible=filterRows(model.items,filters()).length;}catch{}
+      count.textContent=model.checked.size?'已选 '+model.checked.size+' 条':model.phase==='pending'?'待接通':`${visible} / ${model.items.length} 条`;
+      count.setAttribute('aria-label',model.checked.size?'已选排期数':'当前显示与总排期数');
+      count.title=`当前显示 ${visible} / 当前日期范围总计 ${model.items.length} 条`;
+    }
+    if(el('qsPush')){el('qsPush').disabled=!model.checked.size;el('qsPush').textContent='确认推送验货';}
   }
   function sizeScheduleTable() {
     const page=el('page-sales-schedule'),toolbar=el('qsToolbar');
@@ -264,7 +264,7 @@
   function mount() {
     if(!el('page-sales-schedule'))return;
     for(const id of ['qsDateFrom','qsDateTo'])el(id).addEventListener('change',applyDateFilters);
-    for(const id of ['qsCustomer','qsCompletion'])el(id).addEventListener('change',applyFilters);
+    el('qsCustomer').addEventListener('change',applyFilters);
     el('qsSearch').addEventListener('input',applyFilters);
     el('qsDateToggle').addEventListener('click',()=>el('qsDatePanel').hidden?openDatePanel():closeDatePanel(true));
     el('qsApplyDates').addEventListener('click',applyDates);
