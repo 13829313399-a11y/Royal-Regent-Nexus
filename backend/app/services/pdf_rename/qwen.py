@@ -129,9 +129,13 @@ def recognize_qwen_region(pdf_bytes: bytes, region: NormalizedRegion) -> Recogni
             _cache.move_to_end(key)
             return cached[1]
     try:
+        prompt = RED_NUMBER_PROMPT if region.red_only else PROMPT
+        if region.key == "ei_booking_no":
+            prompt += "\n本图是船务订舱单。只返回 EI Booking No. 标签及其本格内的完整原值，保留大小写及前导零。" \
+                      "不要取 Pickup Location、Notes 或其他栏位的号码。缺失、歧义或有多个值时标记 uncertain_fields。"
         response = qwen_ocr.recognize(settings, _render_region(pdf_bytes, region),
                                       task="text", layout=True,
-                                      prompt=RED_NUMBER_PROMPT if region.red_only else PROMPT)
+                                      prompt=prompt)
     except ToolError as exc:
         raise PdfRenameServiceError("PDF_RENAME_" + exc.code, str(exc),
                                     action="请检查现有千问连接配置，或稍后重新识别。",
