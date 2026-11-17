@@ -100,7 +100,8 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 #qis-review-controls:has(.qis-review-date[open]) {position:relative;z-index:20}
 #page-review #qis-review-controls .qis-review-filterbar {
   display:grid;
-  grid-template-columns:minmax(125px,240px) minmax(145px,1.45fr) minmax(85px,1fr) minmax(105px,1fr) auto;
+  grid-template-columns:minmax(125px,210px) minmax(145px,205px) minmax(85px,120px) minmax(105px,140px) auto;
+  justify-content:start;
   align-items:center;
   gap:8px;
   padding:11px;
@@ -118,7 +119,7 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
   font-size:13px;
 }
 #qis-review-controls :is(.qis-review-search,.qis-review-date summary) {display:flex;align-items:center;gap:8px}
-#qis-review-controls .qis-review-search {max-width:240px}
+#qis-review-controls .qis-review-search {max-width:210px}
 #qis-review-controls .qis-review-search input {
   min-width:0;
   width:100%;
