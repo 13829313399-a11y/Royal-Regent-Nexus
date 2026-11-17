@@ -173,25 +173,25 @@ test('nonempty reversal reason is escaped and displayed without trusting browser
  }finally{p.dom.window.close();}
 });
 
-test('responsibility dropdowns retain historical names, save independently, and become readonly after confirmation',async()=>{
+test('manual responsibility names retain history, save independently, and become readonly after confirmation',async()=>{
  const p=await page();try{
   p.rows[0].secondResponsible='历史责任人';
   await p.w.QcInspectionSheet.loadReview('pending');
-  const field=name=>p.d.querySelector('[data-entry=a] select[data-review-field="'+name+'"]');
+  const field=name=>p.d.querySelector('[data-entry=a] input[data-review-field="'+name+'"]');
   const first=field('firstResponsible'),second=field('secondResponsible');
-  assert.deepEqual([...first.options].map(option=>option.value),['','测试检验员']);
-  assert.equal(second.selectedOptions[0].textContent,'历史责任人（历史）');
-  first.value='测试检验员';first.dispatchEvent(new p.w.Event('change'));
+  assert.equal(first.type,'text');assert.equal(first.maxLength,200);
+  assert.equal(second.value,'历史责任人');
+  first.value='手动填写甲';first.dispatchEvent(new p.w.Event('input'));
   await p.w.QcInspectionSheet.flush();
   const save=p.calls.find(c=>c.url.endsWith('/save'));
-  assert.equal(save.body.firstResponsible,'测试检验员');assert.equal(save.body.secondResponsible,'历史责任人');
+  assert.equal(save.body.firstResponsible,'手动填写甲');assert.equal(save.body.secondResponsible,'历史责任人');
   assert.equal(save.body.remark,'原备注');assert.equal(save.body.improvement,'原措施');assert.ok(!('poNo' in save.body));
-  second.value='';second.dispatchEvent(new p.w.Event('change'));
+  second.value='';second.dispatchEvent(new p.w.Event('input'));
   await p.w.QcInspectionSheet.flush();await p.w.QcInspectionSheet.loadReview('pending');
-  assert.equal(field('firstResponsible').value,'测试检验员');assert.equal(field('secondResponsible').value,'');
+  assert.equal(field('firstResponsible').value,'手动填写甲');assert.equal(field('secondResponsible').value,'');
   confirmRow(p,'a');p.d.querySelector('[data-execute]').click();await tick();await tick();
   await p.w.QcInspectionSheet.loadReview('approved');assert.equal(field('firstResponsible'),null);
-  assert.equal(p.d.querySelector('[data-entry=a] [data-column=firstResponsible]').textContent,'测试检验员');
+  assert.equal(p.d.querySelector('[data-entry=a] [data-column=firstResponsible]').textContent,'手动填写甲');
  }finally{p.dom.window.close();}
 });
 

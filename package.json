@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev-system.mjs",
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "dev:local": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1",
     "dev:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Action Status",
     "dev:stop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Action Stop",

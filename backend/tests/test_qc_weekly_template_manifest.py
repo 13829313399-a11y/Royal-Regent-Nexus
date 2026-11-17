@@ -5,7 +5,7 @@ from pathlib import Path
 
 def test_confirmed_weekly_workbook_contracts():
     source = Path(__file__).resolve().parents[1] / 'app/templates/qc-weekly/templates.json'
-    templates = {item['id']: item for item in json.loads(source.read_text())}
+    templates = {item['id']: item for item in json.loads(source.read_text(encoding='utf-8'))}
     assert set(templates) == {'detail', 'group'}
     assert all(item['verifiedSheetCount'] == 42 for item in templates.values())
     assert templates['detail']['headers'] == [

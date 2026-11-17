@@ -457,14 +457,14 @@ test('batch selection waits for the latest sample quantity and queued photo befo
  }finally{p.dom.window.close();}
 });
 
-test('sample quantity and inspector selection persist with stable identity without editing old measures',async()=>{
+test('sample quantity and manually entered inspector persist without editing old measures',async()=>{
  const p=await page();try{
   p.rows[0].improvement='历史措施';await p.w.QcInspectionSheet.load();
   const sample=p.d.querySelector('[data-entry=a] [data-execution-field=sampleQuantity]');sample.value='0';sample.dispatchEvent(new p.w.Event('input'));
-  const person=p.d.querySelector('[data-entry=a] [data-person-field=inspector]');person.value='qc-test';person.dispatchEvent(new p.w.Event('change'));
+  const person=p.d.querySelector('[data-entry=a] input[data-execution-field=inspector]');assert.equal(person.type,'text');person.value='手动检验员';person.dispatchEvent(new p.w.Event('input'));
   await p.w.QcInspectionSheet.flush();await p.w.QcInspectionSheet.load();
-  assert.equal(p.rows[0].inspectionExecution.sampleQuantity,'0');assert.equal(p.rows[0].inspectionExecution.inspectorId,'qc-test');assert.equal(p.rows[0].inspectionExecution.inspector,'测试检验员');
-  assert.equal(p.d.querySelector('[data-person-field=inspector]').value,'qc-test');assert.equal(p.rows[0].improvement,'历史措施');
+  assert.equal(p.rows[0].inspectionExecution.sampleQuantity,'0');assert.equal(p.rows[0].inspectionExecution.inspector,'手动检验员');
+  assert.equal(p.d.querySelector('input[data-execution-field=inspector]').value,'手动检验员');assert.equal(p.rows[0].improvement,'历史措施');
   assert.ok(p.calls.filter(c=>c.url?.endsWith('/save')).every(c=>!Object.hasOwn(c.body,'improvement')));
  }finally{p.dom.window.close();}
 });
