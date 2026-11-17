@@ -418,6 +418,21 @@ def test_explicit_material_choice_uses_frozen_price_and_expires_on_source_change
     assert "material_choice_for" not in row
 
 
+def test_quote_material_recovers_only_a_unique_or_selected_grade():
+    source = {"molds": [{"mold_no": "1", "material_type": "导电PP"}]}
+    for grade, grades, expected in [
+        ("导电PP", ["导电"], "导电"), ("导电", ["导电", "加强"], "导电"),
+        ("导电PP", ["导电", "加强"], ""), ("未登记", ["导电"], "未登记"),
+        ("导电PP", ["导电PP", "导电"], "导电PP"),
+    ]:
+        draft = {"injection_lines": [{"mold_no": "1", "material": "导电PP", "grade": grade}]}
+        prices = {f"导电PP|{value}": "11.6" for value in grades}
+        saved = prefill_molding_from_engineering(source, draft, material_prices=prices)
+        reopened = prefill_molding_from_engineering(source, saved)["injection_lines"][0]
+        assert (reopened["material"], reopened["grade"]) == ("导电PP", expected)
+        assert reopened["material_choice_for"] == ["", "导电PP"]
+
+
 def test_historical_category_in_grade_becomes_unselected_without_guessing_price():
     engineering = {"molds": [{"mold_no": "1", "material_type": "C-PP"}]}
     for material in ("", "C-PP"):

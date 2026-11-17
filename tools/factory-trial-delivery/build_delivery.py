@@ -27,7 +27,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = Path(__file__).resolve().parent
 FACTORIES = {
-    'huakang-a': ('01_华康A_订单排期', 'HuakangA_Trial', '华康A', '360、Green Toys、HeadStart'),
+    'huakang-a': ('01_华康A_订单排期', 'HuakangA_Trial', '华康A', 'ZURU、360、Green Toys、HeadStart'),
     'huakang-b': ('02_华康B_JP问单', 'HuakangB_JP_Trial', '华康B', 'JP问单录入、44列金山格式导出'),
     'huakang-d': ('03_华康D_订单排期', 'HuakangD_Trial', '华康D', 'INDEX、JAZAWARES、MAXX、STROTTMAN、优必选、迪士尼、施信'),
     'huaxing': ('04_华兴_订单排期', 'Huaxing_Trial', '华兴', 'ZURU、BuzzBee、Dickie、彩星、EDU、360、银辉、施信、Maxx、Shushupapa、Barter、迪士尼'),
@@ -236,7 +236,7 @@ def readme(factory: str, release: str):
 1. 排期参照、货价表均可选；有参照时可匹配历史和价格，无参照也能解析生成。没有历史编号依据时编号留空，不会擅自从首号开始。
 2. 上传 EML、邮件ZIP，或从邮件中直接复制正文表格粘贴；同一封邮件通常选一种方式。填写来单日期和金山人员名称对应的业务跟单。
 3. 解析后查看明细。缺资料、候选价格和未识别来源只作提醒；本次生成已识别且选中的明细，缺值留空。改客名或装箱数后旧价清空，可之后补充。
-4. 点击“生成问单Excel”直接生成44列文件，无需核对勾选或填写原因。文件保持待核对状态；生成不表示已经核准价格。
+4. 点击“生成问单Excel”直接生成44列文件，合同列统一为TBA，无需核对勾选或填写原因。文件保持待核对状态；生成不表示已经核准价格。
 5. 已生成记录可下载原Excel，也可“复制全部44列”粘贴到Excel，不含表头；重复下载或复制不重新占号。剪贴板被限制时，按页面提示选中只读内容手动复制。
 
 这是问单工具，不包含PO入正式排期入口。编号仅在本包数据中延续，不与线上或其他电脑共用。
@@ -246,7 +246,7 @@ def readme(factory: str, release: str):
         common += '''
 订单／排期使用顺序
 1. 选择本厂客户、上传客户PO与对应原排期，填写来单日期后解析。
-2. 在预览中逐项核对。“资料待补”可先留空保存或生成排期；人工补录及允许确认的异常须填写原因。订单号、货号、有效数量和原单冲突仍须核对。
+2. 预览中的缺资料、数量或字段差异只作提醒，可直接保存或生成排期，不要求勾选核对或填写原因。缺值留空；同单号不同资料另存，已有订单和走货记录保留。
 3. “保存订单”写入本机台账；“生成排期”下载完整排期副本。这是两个独立操作。
 4. 缺货期可先入台账，补齐并保存货期后才能发送到本机部门收件箱；可登记分批走货，走货撤回须保留原因。
 5. 本机发送记录不是发给线上员工的通知，也不会更新正式仓库、库存或生产任务。
@@ -255,6 +255,8 @@ def readme(factory: str, release: str):
 少数旧 .xls 文件的保格式转换调用本机 Microsoft Excel；普通 .xlsx 不需要该转换。
 本包不代替正式生产系统；本地发送、签收、走货记录需负责人核对流程后再决定正式上线方式。
 '''
+    if factory == 'huakang-a':
+        common += '\nZURU已接入与其他客户相同的统一导入流程：选择ZURU，上传PDF/Excel PO及三表统一排期，预览后生成。演示资料/ZURU内有合成示例及空白统一模板。原周排期的MA、库存不自动迁入。\n'
     return common
 
 
@@ -330,8 +332,9 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
                 'sha256': sha256(destination.read_bytes()).hexdigest(), 'customers': customers})
             print(json.dumps(records[-1], ensure_ascii=False), flush=True)
     (output / '交付文件校验.json').write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding='utf-8')
-    (output / '06_华康C_当前状态说明.txt').write_text('华康C当前没有开放的普通客户订单／排期入口。\n'
-        '本次没有生成会重新开放隐藏或历史客户映射的试用程序。\n华康C裁床/BOM/生产模块不在本次订单问单试用范围。\n', encoding='utf-8-sig')
+    if set(selected) == set(FACTORIES):
+        (output / '06_华康C_当前状态说明.txt').write_text('华康C当前没有开放的普通客户订单／排期入口。\n'
+            '本次没有生成会重新开放隐藏或历史客户映射的试用程序。\n华康C裁床/BOM/生产模块不在本次订单问单试用范围。\n', encoding='utf-8-sig')
     with (output / '00_交接登记.csv').open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.writer(stream)
         writer.writerow(['厂区', '试用包', '客户／功能', '对接人', '交付日期', '启动结果', '试用问题'])
@@ -344,7 +347,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
         '不需要总系统账号。仅适用于Windows 10/11 64位。\n'
         '功能范围：华康B只保留JP问单；订单包包含本地订单台账、发送收件、分批走货和排期生成。\n'
         '数据保存在各自解压目录的data中，互不共享，不写入线上系统。\n'
-        '发票不在本次范围；华康C当前无普通订单入口，另附状态说明。\n'
+        '发票不在本次范围。各厂区数据和压缩包独立。\n'
         '00_交接登记.csv可填写负责人及反馈。各包内有详细使用说明。\n'
         'Windows实机和金山导入尚需对接人现场试用核对；本地API/业务回归与构建验证见交付验证说明。\n', encoding='utf-8-sig')
     return records

@@ -15,6 +15,8 @@ async function page(){
  const dom=new JSDOM(html,{runScripts:'outside-only',url:'http://localhost/api/qc-department/huaxing/u-test/'}),w=dom.window,calls=[];
  let rows=['a','b','c'].map((id,i)=>({id,sourceKey:'source:'+id,customer:'客户中文',poNo:'0000'+i,productNo:'0001',productName:'同款产品',result:'',remark:'',photos:[],revision:0,dateFrom:'2026-10-29',dateTo:'2026-10-29',updatedAt:'',quantity:10}));
  let fail=false,delay=0,active=0,maxActive=0;
+ w.requestAnimationFrame=fn=>w.setTimeout(fn,16);w.cancelAnimationFrame=id=>w.clearTimeout(id);
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  w.__QC_NEXUS={exportAllowed:true,workflow:{edit:true}};w.confirm=()=>true;w.showToast=(msg)=>calls.push({toast:msg});
  w.HTMLAnchorElement.prototype.click=function() {calls.push({download:this.href});};
  w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjectURL=()=>{};
@@ -148,13 +150,13 @@ test('refresh adds task choices, retains valid choices, and resets removed choic
   p.rows.splice(0);await p.w.QcInspectionSheet.load();assert.deepEqual(optionValues(p,'qisTaskDate'),['']);assert.deepEqual(optionValues(p,'qisTaskCustomer'),['']);
  }finally{p.dom.window.close();}
 });
-test('search comes first, sorting and print come last, and reset clears the task filters',async()=>{
+test('search comes first, print stays last, and reset clears task filters and restores date order',async()=>{
  const p=await page();try{
   const input=p.d.getElementById('searchInput'),toolbar=p.d.querySelector('#page-records .records-toolbar-inner');
   assert.equal(toolbar.firstElementChild.querySelector('input'),input);assert.equal(input.type,'search');assert.equal(input.getAttribute('oninput'),'filterRecords()');assert.ok(p.d.getElementById('recordsDateFilter').hidden);
-  assert.deepEqual([...toolbar.querySelectorAll('select, .records-reset, #qcInspectionPrint')].map(el=>el.id||el.textContent),['qisTaskDate','qisTaskCustomer','重置筛选','filterSort','qcInspectionPrint']);
+  assert.deepEqual([...toolbar.querySelectorAll('select, .records-reset, #qcInspectionPrint')].map(el=>el.id||el.textContent),['qisTaskDate','qisTaskCustomer','重置筛选','qcInspectionPrint']);
   choose(p,'qisTaskDate','2026-10-29');choose(p,'qisTaskCustomer',customerKey('','客户中文'));input.value='长PO-0123456789'.repeat(15);p.w.QcInspectionSheet.render();assert.equal(input.value,'长PO-0123456789'.repeat(15));
-  const app=fs.readFileSync(path.join(sourceRoot,'services/qc-department/app.js'),'utf8');const start=app.indexOf('function resetRecordsFilters()'),end=app.indexOf('\nfunction ',start+1);p.w.filterRecords=()=>p.w.QcInspectionSheet.render();p.w.closeRecordsDateFilter=()=>{};p.w.syncRecordsDateFilter=()=>{};p.w.eval(app.slice(start,end));p.w.resetRecordsFilters();
+  const app=fs.readFileSync(path.join(sourceRoot,'services/qc-department/app.js'),'utf8');const start=app.indexOf('function resetRecordsFilters()'),end=app.indexOf('\nfunction ',start+1);p.w.filterRecords=()=>p.w.QcInspectionSheet.render();p.w.closeRecordsDateFilter=()=>{};p.w.syncRecordsDateFilter=()=>{};p.w.eval(app.slice(start,end));p.d.querySelector('.qis-date-sort').click();p.w.resetRecordsFilters();assert.equal(p.w.QcInspectionSheet.model.recordsSort,'date-asc');
   assert.equal(input.value,'');assert.equal(p.d.getElementById('qisTaskDate').value,'');assert.equal(p.d.getElementById('qisTaskCustomer').value,'');assert.equal(p.d.getElementById('filterDateFrom').value,'');assert.equal(visibleIds(p).length,3);
   assert.equal(p.calls.filter(c=>c.body).length,0);
  }finally{p.dom.window.close();}
@@ -176,7 +178,9 @@ test('rapid PASS to FAIL and long bilingual remarks save in order, reload and ot
   assert.equal(p.rows[0].result,'FAIL');assert.equal(p.rows[1].result,'');
   await p.w.QcInspectionSheet.load();assert.equal(p.d.querySelector('[data-result="a"]').value,'FAIL');
   assert.equal(p.d.querySelector('[data-remark="a"]').value,'中文 English 0123 !\n'.repeat(100));
-  assert.match(p.d.querySelector('[data-save-status="a"]').textContent,/已保存/);
+  assert.equal(p.d.querySelector('[data-save-status="a"]').textContent,'');
+  assert.equal(p.d.querySelector('[data-save-status="a"]').closest('.qis-save-feedback').hidden,true);
+  assert.equal(p.d.querySelector('[data-review-status="a"]').textContent,'');
  }finally{p.dom.window.close();}
 });
 test('failed saves keep draft through filtering, block reload and can retry without loss',async()=>{
@@ -261,9 +265,9 @@ test('dates keep their year and a filled result clears the historical blank warn
   assert.match(p.d.querySelector('[data-entry="a"]').textContent,/原历史结论：COND/);
  }finally{p.dom.window.close();}
 });
-test('planned date default groups customers within each day, keeps missing dates last and modification sort independent',async()=>{
+test('date header toggles planned order, preserves customer groups and missing dates last, and review sorting remains independent',async()=>{
  const p=await page();try{
-  assert.equal(p.d.getElementById('filterSort').value,'date-asc');
+  assert.equal(p.d.getElementById('filterSort'),null);assert.equal(p.w.QcInspectionSheet.model.recordsSort,'date-asc');
   const seed=p.w.QcInspectionSheet.model.items[0];
   const rows=[
    {id:'e',dateFrom:'2026-10-29',customer:'EDU',updatedAt:'6'},
@@ -276,21 +280,29 @@ test('planned date default groups customers within each day, keeps missing dates
   p.w.QcInspectionSheet.model.items=rows;
   const ids=()=>Array.from(p.w.QcInspectionSheet.filtered(),r=>r.id);
   assert.deepEqual(ids(),['c','a','b','d','e','z']);
-  p.d.getElementById('filterSort').value='date-desc';
-  assert.deepEqual(ids(),['e','d','c','a','b','z']);
-  p.d.getElementById('filterSort').value='mod-desc';
-  assert.deepEqual(ids(),['e','b','c','a','d','z']);
+  p.w.QcInspectionSheet.render();
+  const header=()=>p.d.querySelector('#recordsTableWrap th[data-column=date]'),button=()=>p.d.querySelector('.qis-date-sort');
+  assert.equal(header().getAttribute('aria-sort'),'ascending');assert.match(button().title,/倒序/);
+  button().focus();button().click();
+  assert.deepEqual(ids(),['e','d','c','a','b','z']);assert.deepEqual(visibleIds(p),ids());
+  assert.equal(header().getAttribute('aria-sort'),'descending');assert.match(button().title,/正序/);assert.equal(p.d.activeElement,button());
+  button().click();assert.deepEqual(ids(),['c','a','b','d','e','z']);assert.equal(header().getAttribute('aria-sort'),'ascending');
+  p.d.getElementById('searchInput').value='不匹配';p.w.QcInspectionSheet.render();button().click();assert.deepEqual(visibleIds(p),[]);
+  p.d.getElementById('searchInput').value='';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['e','d','c','a','b','z']);
+  assert.equal(p.calls.filter(c=>c.body).length,0);
+  rows.forEach(r=>r.reviewState='pending');p.w.QcInspectionSheet.model.view='review';p.w.QcInspectionSheet.model.reviewFilters.sort='mod-desc';
+  assert.deepEqual(ids(),['e','b','c','a','d','z']);p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('#reviewTableWrap .qis-date-sort'),null);
   assert.deepEqual(rows.map(r=>r.id),['e','b','c','a','d','z']);
  }finally{p.dom.window.close();}
 });
 test('input events debounce independently and stable row selection survives rerender and sort',async()=>{
  const p=await page();try{
-  const row=p.d.querySelector('[data-entry="b"]');row.click();assert.equal(p.d.querySelectorAll('.qis-selected').length,1);assert.equal(row.getAttribute('aria-selected'),'true');
+  const row=p.d.querySelector('[data-entry="b"]');row.click();assert.equal(p.d.querySelectorAll('.qis-selected').length,1);assert.equal(row.getAttribute('aria-selected'),'false','an unfinished row is a paste target, not a submission selection');
   const input=row.querySelector('[data-remark]');input.focus();assert.equal(p.w.QcInspectionSheet.model.selectedId,'b');input.value='真实输入事件自动保存';input.dispatchEvent(new p.w.Event('input'));
   assert.equal(p.rows[1].remark,'');await new Promise(r=>setTimeout(r,720));assert.equal(p.rows[1].remark,'真实输入事件自动保存');
   p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
-  p.d.getElementById('filterSort').value='date-desc';p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
-  assert.deepEqual([...p.d.querySelectorAll('#recordsTableWrap thead th')].map(e=>e.dataset.column).slice(0,3),['date','customer','poNo']);
+  p.d.querySelector('.qis-date-sort').click();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
+  assert.deepEqual([...p.d.querySelectorAll('#recordsTableWrap thead th')].map(e=>e.dataset.column).filter(k=>k!=='selection').slice(0,3),['date','customer','poNo']);
  }finally{p.dom.window.close();}
 });
 test('timed out autosave retains input and retry uses CAS without pretending success',async()=>{
@@ -306,35 +318,55 @@ test('timed out autosave retains input and retry uses CAS without pretending suc
  }finally{p.dom.window.close();}
 });
 
-test('empty result has contextual closable notification and focus, without submitting or dropping the row',async()=>{
+function pointer(p,target,type,y){const e=new p.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientY:y});Object.defineProperties(e,{pointerId:{value:1},pointerType:{value:'mouse'}});target.dispatchEvent(e);}
+function dragRecords(p,from,to,cancel=false){const host=p.d.getElementById('recordsTableWrap'),nodes=[...host.querySelectorAll('[data-entry]')];host.getBoundingClientRect=()=>({top:60,bottom:600});nodes.forEach((n,i)=>n.getBoundingClientRect=()=>({top:100+i*64,bottom:164+i*64}));const a=nodes.findIndex(n=>n.dataset.entry===from),b=nodes.findIndex(n=>n.dataset.entry===to);pointer(p,nodes[a].querySelector('td'),'pointerdown',115+a*64);pointer(p,host,'pointermove',115+b*64);pointer(p,host,cancel?'pointercancel':'pointerup',115+b*64);}
+const selectRecord=(p,id)=>{const ids=[...p.w.QcInspectionSheet.model.recordChecked,id],ordered=visibleIds(p).filter(x=>ids.includes(x));dragRecords(p,ordered[0],ordered.at(-1));};
+const openBatch=p=>{p.d.getElementById('qis-record-batch').click();return p.d.querySelector('dialog');};
+const ready=async(p,ids=['a','b'])=>{for(const id of ids)p.w.QcInspectionSheet.edit(id,'result',id==='b'?'FAIL':'PASS',true);await p.w.QcInspectionSheet.flush();};
+test('batch selection rejects incomplete and unsaved rows without posting; sorting preserves selection and filters clear it',async()=>{
  const p=await page();try{
-  p.d.querySelector('[data-submit="a"]').click();await tick();
-  const notice=p.d.querySelector('.qis-notice[role=alert]');assert.match(notice.textContent,/无法提交审核.*客户中文.*00000.*验货结果/s);
-  assert.equal(p.calls.filter(c=>c.url?.endsWith('/submit')).length,0);assert.ok(p.d.querySelector('[data-entry=a]'));
-  notice.querySelector('[data-locate]').click();assert.equal(p.d.activeElement.dataset.result,'a');
-  notice.querySelector('button[aria-label="关闭提交失败通知"]').click();assert.equal(notice.dataset.noticeState,'closing');await new Promise(resolve=>setTimeout(resolve,150));assert.equal(p.d.querySelector('.qis-notice'),null);
+  assert.equal(p.d.querySelector('[data-record-check]'),null);assert.equal(p.d.getElementById('qis-record-batch').disabled,true);assert.equal(p.d.querySelector('[data-submit]'),null);
+  await ready(p);selectRecord(p,'a');p.d.querySelector('.qis-date-sort').click();assert.equal(p.w.QcInspectionSheet.model.recordChecked.has('a'),true);
+  p.d.getElementById('searchInput').value='00001';p.w.QcInspectionSheet.render();assert.equal(p.w.QcInspectionSheet.model.recordChecked.size,0);
+  p.d.getElementById('searchInput').value='';p.w.QcInspectionSheet.render();dragRecords(p,'a','c');
+  assert.deepEqual([...p.w.QcInspectionSheet.model.recordChecked].sort(),['a','b']);
+  p.fail=true;p.w.QcInspectionSheet.edit('a','remark','保留未保存文字',true);await p.w.QcInspectionSheet.flush().catch(()=>{});
+  assert.equal(p.d.getElementById('qis-record-batch').disabled,true);assert.equal(p.d.getElementById('qis-record-blocked'),null);
+  assert.equal(p.calls.filter(c=>c.url?.endsWith('/submit')).length,0);
  }finally{p.dom.window.close();}
+});
+test('batch confirmation cancellation makes no requests and successful submit only removes the explicit selection',async()=>{
+ const p=await page();try{
+  await ready(p);selectRecord(p,'a');selectRecord(p,'b');let dialog=openBatch(p);assert.match(dialog.textContent,/确认提交 2 条/);dialog.querySelector('[data-cancel]').click();assert.equal(p.calls.filter(c=>c.url?.endsWith('/submit')).length,0);
+  dialog=openBatch(p);await dialog.querySelector('[data-execute]').onclick();
+  assert.deepEqual(visibleIds(p),['c']);assert.equal(p.w.QcInspectionSheet.model.recordChecked.size,0);
+  assert.equal(p.calls.filter(c=>c.url?.endsWith('/submit')).length,2);assert.equal(p.d.querySelector('dialog'),null);
+ }finally{p.dom.window.close();}
+});
+test('partial failure retains failed selection and retry never resubmits successful rows',async()=>{
+ const p=await page();try{
+  await ready(p);selectRecord(p,'a');selectRecord(p,'b');const original=p.w.fetch;let failOnce=true;const sent=[];
+  p.w.fetch=async(url,opts)=>{if(url.endsWith('/submit')){sent.push(url);if(url.includes('/b/')&&failOnce){failOnce=false;return {ok:false,status:409,json:async()=>({detail:'记录状态已变化'})};}}return original(url,opts);};
+  let dialog=openBatch(p);await dialog.querySelector('[data-execute]').onclick();assert.match(dialog.textContent,/成功 1 条，失败 1 条/);assert.match(dialog.textContent,/记录状态已变化/);assert.deepEqual(visibleIds(p),['b','c']);assert.equal(p.w.QcInspectionSheet.model.recordChecked.has('b'),true);
+  dialog.querySelector('[data-cancel]').click();dialog=openBatch(p);await dialog.querySelector('[data-execute]').onclick();
+  assert.equal(sent.filter(url=>url.includes('/a/')).length,1);assert.equal(sent.filter(url=>url.includes('/b/')).length,2);assert.deepEqual(visibleIds(p),['c']);
+ }finally{p.dom.window.close();}
+});
+test('in-flight batch blocks duplicate clicks, navigation and editing; network failure preserves the row',async()=>{
+ const p=await page();try{
+  await ready(p,['a']);selectRecord(p,'a');const original=p.w.fetch;let requests=0,release;
+  p.w.fetch=async(url,opts)=>{if(url.endsWith('/submit')){requests++;await new Promise(resolve=>release=resolve);throw new p.w.TypeError('Failed to fetch');}return original(url,opts);};
+  const dialog=openBatch(p),button=dialog.querySelector('[data-execute]');const pending=button.onclick();await tick();button.onclick();
+  assert.equal(requests,1);assert.equal(p.w.QcInspectionSheet.navigationState().busy,true);assert.equal(p.d.querySelector('[data-result=a]').disabled,true);
+  p.w.QcInspectionSheet.edit('a','remark','should not edit');assert.notEqual(p.w.QcInspectionSheet.model.drafts.get('a').remark,'should not edit');
+  await p.w.QcInspectionSheet.loadReview();assert.equal(p.w.QcInspectionSheet.model.view,'records');release();await pending;
+  assert.equal(p.w.QcInspectionSheet.navigationState().busy,false);assert.match(dialog.textContent,/网络连接异常/);assert.ok(p.d.querySelector('[data-entry=a]'));assert.equal(p.w.QcInspectionSheet.model.recordChecked.has('a'),true);
+ }finally{p.dom.window.close();}
+});
+test('read-only permissions and stale loads never permit batch submission',async()=>{
+ const p=await page();try{await ready(p);p.w.__QC_NEXUS.workflow.edit=false;p.w.QcInspectionSheet.render();dragRecords(p,'a','c');assert.equal(p.w.QcInspectionSheet.model.recordChecked.size,0);assert.equal(p.d.querySelector('[data-record-check]'),null);assert.equal(p.d.getElementById('qis-record-batch').disabled,true);p.w.__QC_NEXUS.workflow.edit=true;p.w.QcInspectionSheet.render();selectRecord(p,'a');p.w.QcInspectionSheet.model.error='stale';p.w.QcInspectionSheet.render();assert.equal(p.d.getElementById('qis-record-batch').disabled,true);}finally{p.dom.window.close();}
 });
 
-test('backend rejection and failed save keep drafts and expose actual causes',async()=>{
- const p=await page();try{
-  p.w.QcInspectionSheet.edit('a','result','PASS',true);await p.w.QcInspectionSheet.flush();
-  const original=p.w.fetch;p.w.fetch=async(url,opts)=>url.endsWith('/submit')?{ok:false,status:409,json:async()=>({detail:'记录状态已变化，请刷新核对'})}:original(url,opts);
-  p.d.querySelector('[data-submit=a]').click();await tick();assert.match(p.d.querySelector('.qis-notice').textContent,/记录状态已变化/);assert.ok(p.d.querySelector('[data-entry=a]'));
-  p.fail=true;p.w.QcInspectionSheet.edit('a','remark','保留备注');p.d.querySelector('[data-submit=a]').click();await tick();await tick();
-  assert.match(p.d.querySelector('.qis-notice').textContent,/网络断开，未保存/);assert.equal(p.w.QcInspectionSheet.model.drafts.get('a').remark,'保留备注');
- }finally{p.dom.window.close();}
-});
-
-test('network failure is explicit and rapid submit clicks create only one in-flight request',async()=>{
- const p=await page();try{
-  p.w.QcInspectionSheet.edit('a','result','PASS',true);await p.w.QcInspectionSheet.flush();
-  const original=p.w.fetch;let submissions=0,release;
-  p.w.fetch=async(url,opts)=>{if(url.endsWith('/submit')){submissions++;await new Promise(r=>release=r);throw new p.w.TypeError('Failed to fetch');}return original(url,opts);};
-  const button=p.d.querySelector('[data-submit=a]');button.click();button.click();await tick();assert.equal(submissions,1);release();await tick();
-  assert.match(p.d.querySelector('.qis-notice').textContent,/网络连接异常/);assert.equal(button.disabled,false);assert.ok(p.d.querySelector('[data-entry=a]'));
- }finally{p.dom.window.close();}
-});
 function pasteEvent(p,target,files=[],items=null){const event=new p.w.Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(event,'clipboardData',{value:{files,items:items||files.map(file=>({kind:'file',type:file.type,getAsFile:()=>file}))}});target.dispatchEvent(event);return event;}
 test('native image paste follows the highlighted row, keeps burst order and survives reload',async()=>{
  const p=await page();try{
@@ -403,7 +435,7 @@ test('failed and conflicting sample saves retain input, compare revisions and ke
  }finally{p.dom.window.close();}
 });
 
-test('immediate submit waits for the latest sample quantity and queued photo before sending its revision',async()=>{
+test('batch selection waits for the latest sample quantity and queued photo before sending its revision',async()=>{
  const p=await page();try{
   p.delay=40;p.w.QcInspectionSheet.edit('a','result','PASS',true);
   const input=p.d.querySelector('[data-entry="a"] [data-execution-field="sampleQuantity"]');
@@ -413,7 +445,8 @@ test('immediate submit waits for the latest sample quantity and queued photo bef
   const original=p.w.fetch;let complete;
   const submittedRequest=new Promise(resolve=>complete=resolve);
   p.w.fetch=async(url,opts)=>{const response=await original(url,opts);if(url.endsWith('/submit'))complete();return response;};
-  p.d.querySelector('[data-submit=a]').click();
+  assert.equal(p.d.querySelector('[data-record-check]'),null);
+  await p.w.QcInspectionSheet.flush();selectRecord(p,'a');openBatch(p).querySelector('[data-execute]').click();
   let timeout;try{await Promise.race([submittedRequest,new Promise((_,reject)=>timeout=setTimeout(()=>reject(new Error('Sample/photo queue did not submit')),3000))]);}finally{clearTimeout(timeout);}
   await tick();assert.equal(p.d.querySelector('[data-entry="a"]'),null);
   const requests=p.calls.filter(c=>c.url?.includes('/entries/a/'));
@@ -433,5 +466,24 @@ test('sample quantity and inspector selection persist with stable identity witho
   assert.equal(p.rows[0].inspectionExecution.sampleQuantity,'0');assert.equal(p.rows[0].inspectionExecution.inspectorId,'qc-test');assert.equal(p.rows[0].inspectionExecution.inspector,'测试检验员');
   assert.equal(p.d.querySelector('[data-person-field=inspector]').value,'qc-test');assert.equal(p.rows[0].improvement,'历史措施');
   assert.ok(p.calls.filter(c=>c.url?.endsWith('/save')).every(c=>!Object.hasOwn(c.body,'improvement')));
+ }finally{p.dom.window.close();}
+});
+
+test('drag selects both directions, skips unfinished rows, cancels safely and excludes input controls',async()=>{
+ const p=await page();try{
+  await ready(p,['a','c']);dragRecords(p,'c','a');assert.deepEqual([...p.w.QcInspectionSheet.model.recordChecked].sort(),['a','c']);assert.equal(p.w.QcInspectionSheet.model.selectedId,'','multiple rows are not an implicit paste destination');
+  dragRecords(p,'a','a',true);assert.deepEqual([...p.w.QcInspectionSheet.model.recordChecked].sort(),['a','c']);
+  const input=p.d.querySelector('[data-remark=b]');pointer(p,input,'pointerdown',180);pointer(p,p.d.getElementById('recordsTableWrap'),'pointermove',260);pointer(p,p.d.getElementById('recordsTableWrap'),'pointerup',260);assert.deepEqual([...p.w.QcInspectionSheet.model.recordChecked].sort(),['a','c']);
+  assert.equal(p.d.querySelector('[data-column=selection]'),null);assert.equal(p.d.getElementById('recordsTableWrap').style.getPropertyValue('--qis-frozen-width'),'0px','no retired checkbox width is reserved');assert.equal(p.d.getElementById('qis-record-controls'),null);assert.equal(p.d.querySelector('.qis-submit-actions').children.length,1);
+  assert.equal(p.d.querySelector('.qis-submit-actions').textContent,'提交审核（2）');
+  p.d.getElementById('recordsTableWrap').dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(p.w.QcInspectionSheet.model.recordChecked.size,0);
+ }finally{p.dom.window.close();}
+});
+test('keyboard range selection and changed filters share the same eligibility and no hidden selections',async()=>{
+ const p=await page();try{
+  await ready(p,['a','c']);const host=p.d.getElementById('recordsTableWrap');
+  for(const shiftKey of [false,true,true])host.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'ArrowDown',shiftKey,bubbles:true}));
+  assert.deepEqual([...p.w.QcInspectionSheet.model.recordChecked].sort(),['a','c']);
+  p.d.getElementById('searchInput').value='00001';p.w.QcInspectionSheet.render();assert.equal(p.w.QcInspectionSheet.model.recordChecked.size,0);assert.equal(p.d.getElementById('qis-record-batch').disabled,true);
  }finally{p.dom.window.close();}
 });

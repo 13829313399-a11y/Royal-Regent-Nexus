@@ -565,7 +565,7 @@ def _factory_allowed(customer_code: str, factory_id: str) -> bool:
     if customer_code == 'ubtech':
         return factory_id == 'huakang-d'
     if customer_code == 'zuru':
-        return factory_id == 'huaxing'
+        return factory_id in {'huaxing', 'huakang-a'}
     if customer_code in {'disney', 'seasons'}:
         return factory_id in {'huaxing', 'huakang-d'}
     if customer_code == 'spin-master' or (customer_code == 'jp' and factory_id == 'huakang-d'):
@@ -585,8 +585,7 @@ def _customer_name(customer_code: str, factory_id: str) -> str:
     if customer_code == 'ubtech':
         return '优必选'
     if customer_code == 'zuru':
-        from .customer_order_huaxing import get_huaxing_customer_mapping
-        return get_huaxing_customer_mapping(customer_code).name
+        return 'ZURU'
     if customer_code == "360" and factory_id == "huakang-a":
         from app.services.customer_order_huakang_a import get_huakang_a_customer_mapping
         return get_huakang_a_customer_mapping(customer_code).name
@@ -1216,7 +1215,7 @@ def _create_customer_rows(
 ) -> tuple[list[dict[str, Any]], list[str], str]:
     if customer_code == 'zuru':
         from app.services.customer_order_zuru import create_rows
-        return create_rows(po_files, received_date, history)
+        return create_rows(po_files, received_date, history, factory_id=factory_id)
     if customer_code == 'ubtech':
         from app.services.customer_order_ubtech import create_rows
         return create_rows(po_files, received_date, history)
@@ -1341,7 +1340,7 @@ def create_unified_customer_preview(
         if huakang_unified.enabled(factory_id, customer_code):
             row["target_template"] = huakang_unified.TARGET_TEMPLATE
             for field in ("barcode", "port", "printing_requirement", "country"):
-                if customer_code == '360':
+                if customer_code in {'360', 'zuru'}:
                     continue
                 if not _text(row.get(field)):
                     candidates = {item.extras[field] for item in history if _key(item.product_no) == _key(row.get("product_no")) and item.extras.get(field)}
@@ -1731,6 +1730,7 @@ def export_unified_customer_schedule(
     decorate_manual_resolution_policy(preview)
     original_identities = {row['id']: tuple(_text(row.get(k)) for k in ('product_no', 'reference_no', 'contract_no', 'po_no')) for row in preview['rows']}
     original_core = {row['id']: (*original_identities[row['id']], _text(row.get('quantity'))) for row in preview['rows']}
+    original_zuru = {row['id']: (_text(row.get('product_no')), _text(row.get('customer_name'))) for row in preview['rows']}
     apply_overrides_to_preview(preview, manual_overrides or [])
     if customer_code == 'zuru':
         for override in manual_overrides or []:
@@ -1786,6 +1786,10 @@ def export_unified_customer_schedule(
                 huaxing.read_history(workbook, customer_code), huaxing.item_sheets(workbook, customer_code), manual_overrides or [])
         finally:
             workbook.close()
+    if customer_code == 'zuru' and manual_overrides:
+        from .customer_order_zuru import refresh_edited_history
+        refresh_edited_history(preview, original_zuru,
+            read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code), manual_overrides)
     for row in preview["rows"]:
         _recalculate_preview_row(row)
     if manual_overrides and not huaxing.enabled(factory_id, customer_code):
@@ -1850,6 +1854,9 @@ def export_unified_customer_schedule(
                         huakang_unified.write_360_version(workbook[name], summary_row, version_columns[name], row)
                     if factory_id == 'huakang-a' and customer_code == 'green-toys':
                         green_pairs.append((name, summary_row, row_number))
+                    if factory_id == 'huakang-a' and customer_code == 'zuru':
+                        from app.services.customer_order_zuru import write_summary as write_zuru_summary
+                        write_zuru_summary(workbook[name], summary_row, row)
                     if customer_code == 'ubtech':
                         from app.services.customer_order_ubtech import write_summary
                         write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])

@@ -1376,7 +1376,6 @@ function clearRecordsDates() {
 function resetRecordsFilters() {
   window.QcInspectionSheet?.resetTaskFilters();
   ['searchInput','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
-  document.getElementById('filterSort').value = window.QcInspectionSheet ? 'date-asc' : 'mod-desc';
   document.getElementById('recordsDateFilter').open = false;
   filterRecords();
 }
@@ -1412,18 +1411,11 @@ function filterRecords() {
       if ((dfrom || dto) && (!plan || (dfrom && plan.to < dfrom) || (dto && plan.from > dto))) return false;
       return true;
     }).sort((a, b) => {
-      const mode = document.getElementById('filterSort')?.value || 'mod-desc';
-      if (mode === 'date-asc' || mode === 'date-desc') {
-        const pa=inspectionPlanRange(a),pb=inspectionPlanRange(b);
-        if(!pa||!pb)return pa?-1:pb?1:0;
-        const order=pa.from.localeCompare(pb.from)||pa.to.localeCompare(pb.to);
-        return mode==='date-asc'?order:-order;
-      }
       const ka = formatModifiedDate(a.updatedAt) || '';
       const kb = formatModifiedDate(b.updatedAt) || '';
       /* 修改日期相同再按来料日期，保证同一天录入的明细聚在一起且稳定 */
       if (ka === kb) return String(b.date || '').localeCompare(String(a.date || ''));
-      return mode === 'mod-asc' ? ka.localeCompare(kb) : kb.localeCompare(ka);
+      return kb.localeCompare(ka);
     });
 
 

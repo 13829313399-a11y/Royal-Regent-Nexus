@@ -379,9 +379,15 @@ describe('warehouse framework navigation', () => {
     expect(router.currentRoute.value.query).toMatchObject({factory:'huakang-c',view:'movements',kind:'RECEIPT'})
     await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=movements&kind=RETURN`); await flushPromises()
     expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('RETURN')
-    await wrapper!.findAll('button').find(button => button.text() === '重置筛选')!.trigger('click'); await flushPromises()
+    const reset = wrapper!.findAll('button').find(button => button.text() === '重置筛选')!
+    const inventorySearch = wrapper!.get<HTMLInputElement>('[aria-label="查找库存物料与单据"]')
+    await inventorySearch.setValue('布料')
+    reset.element.focus()
+    await reset.trigger('click'); await flushPromises()
     expect(router.currentRoute.value.query.kind).toBeUndefined()
     expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('')
+    expect(inventorySearch.element.value).toBe('')
+    expect(document.activeElement).toBe(inventorySearch.element)
   })
 
   it('restores a section view after navigating away and supports refresh, shared URLs and browser back', async () => {
