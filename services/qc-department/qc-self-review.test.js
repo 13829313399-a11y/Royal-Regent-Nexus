@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {JSDOM}=require('jsdom');const tick=()=>new Promise(r=>setTimeout(r,10));
 async function page(){
  const dom=new JSDOM(fs.readFileSync(path.join(__dirname,'index.html'),'utf8'),{runScripts:'outside-only',url:'http://localhost/'}),w=dom.window,calls=[];
- w.requestAnimationFrame=fn=>w.setTimeout(fn,0);Object.defineProperty(w.document,'hidden',{value:false});w.document.getElementById('page-review').classList.add('active');
+ w.requestAnimationFrame=fn=>w.setTimeout(fn,0);w.cancelAnimationFrame=id=>w.clearTimeout(id);Object.defineProperty(w.document,'hidden',{value:false});w.document.getElementById('page-review').classList.add('active');
  w.__QC_NEXUS={workflow:{edit:true},exportAllowed:false};w.showToast=()=>{};
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  const rows=['a','b','c'].map((id,i)=>({id,customer:'客户'+i,poNo:'PO'+i,productNo:'ITEM'+i,dateFrom:'2026-11-03',dateTo:'2026-11-03',result:'PASS',remark:'原备注',improvement:'原措施',inspectionMethod:'internal',photos:[],revision:1,submittedAt:'2026-11-01T17:00:00Z',reviewState:'pending',flowVersion:2,lastActor:{name:'后台用户'},lastLocation:'验货台',lastChangedAt:'2026-11-01T17:00:00Z'}));
@@ -15,9 +15,6 @@ async function page(){
    value={items:events.filter(e=>!seen.has(e.eventId)&&Boolean(e.workbench)===workbench&&rows.find(r=>r.id===e.entryId)?.reviewState===(workbench?'returned_to_inspection':'pending'))};
   }
   else if(url.endsWith('/notifications/shown')){body.eventIds.forEach(id=>seen.add(id));value={shown:body.eventIds};}
-  else if(url.endsWith('/return-to-inspection')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(body.revision,row.revision);row.revision++;row.reviewState='returned_to_inspection';
-   events.push({eventId:++eventId,entryId:row.id,customer:row.customer,poNo:row.poNo,productNo:row.productNo,reason:body.reason,at:'2026-11-01T17:26:00Z',workbench:true});
-   value={item:structuredClone(row),eventId};}
   else if(url.endsWith('/entries'))value={results:['PASS','FAIL','PENDING','LG'],items:structuredClone(url.includes('review/')?rows:rows.filter(r=>r.reviewState==='returned_to_inspection')),columns:['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','result','remark','photos','improvement','submit'].map(key=>({key,label:key}))};
   else if(url.endsWith('/save')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);Object.assign(row,{...body,...(body.inspectionExecution?{inspectionExecution:{...row.inspectionExecution,...body.inspectionExecution}}:{})},{revision:row.revision+1,lastLocation:'审核中心 · 待审核'});value=structuredClone(row);}
   else if(url.endsWith('/photos')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);row.photos.push({id:'p-'+row.photos.length,name:body.name});row.revision++;value=structuredClone(row);}
@@ -27,15 +24,23 @@ async function page(){
   return{ok:true,json:async()=>value};
  };
  for(const file of ['qc-photo-paste.js','qc-inspection-audit.js','qc-inspection-sheet.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
- await tick();await w.QcInspectionSheet.loadReview('pending');return{dom,w,d:w.document,rows,calls,set failId(v){failId=v;}};
+ await tick();await w.QcInspectionSheet.loadReview('pending');return{dom,w,d:w.document,rows,calls,events,set failId(v){failId=v;}};
 }
+function pointer(p,target,type,y){const e=new p.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientY:y});Object.defineProperties(e,{pointerId:{value:1},pointerType:{value:'mouse'}});target.dispatchEvent(e);}
+function dragReview(p,from,to,cancel=false){
+ const host=p.d.getElementById('reviewTableWrap'),nodes=[...host.querySelectorAll('[data-entry]')];
+ host.getBoundingClientRect=()=>({top:60,bottom:600});nodes.forEach((n,i)=>n.getBoundingClientRect=()=>({top:100+i*64,bottom:164+i*64}));
+ const a=nodes.findIndex(n=>n.dataset.entry===from),b=nodes.findIndex(n=>n.dataset.entry===to);
+ pointer(p,nodes[a].querySelector('td'),'pointerdown',115+a*64);pointer(p,host,'pointermove',115+b*64);pointer(p,host,cancel?'pointercancel':'pointerup',115+b*64);
+}
+function confirmRow(p,id){dragReview(p,id,id);p.d.getElementById('qis-review-batch').click();}
 test('review uses the fixed workbench order followed by supplements for every row, retaining frozen actions',async()=>{
  const p=await page();try{
   p.rows[1].inspectionExecution={defects:[{desc:'标签错位',qty:'0'}]};p.rows[2].remark='长备注';await p.w.QcInspectionSheet.loadReview('pending');
   const expected=['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','result','inspectionExecution.sampleQuantity','remark','photos','inspector','inspectionProblem','inspectionExecution.analysisReason','improvement','firstResponsible','secondResponsible','reportStatus','otherRemark','inspectionExecution.defects','submittedAt','confirmedAt','reviewState','lastChangedAt','lastLocation','lastActor.name'];
   assert.deepEqual([...p.d.querySelectorAll('#reviewTableWrap table:first-of-type th[data-column]')].map(c=>c.dataset.column),expected);
   for(const row of p.d.querySelectorAll('#reviewTableWrap tr[data-entry]'))assert.deepEqual([...row.querySelectorAll('td[data-column]')].map(c=>c.dataset.column),expected);
-  assert.equal(p.d.querySelector('[data-confirm=a]').closest('td').dataset.column,'poNo');assert.equal(p.d.querySelector('[data-audit=a]').closest('td').dataset.column,'customer');
+  assert.equal(p.d.querySelector('[data-confirm]'),null);assert.equal(p.d.querySelector('[data-audit=a]').closest('td').dataset.column,'customer');
   assert.equal(p.d.querySelector('[data-column=actualDate],[data-column=completion],[data-execution-field=actualDate]'),null);
   assert.equal(p.d.querySelector('[data-entry=a] [data-column=inspectionProblem]').nextElementSibling.dataset.column,'inspectionExecution.analysisReason');
  }finally{p.dom.window.close();}
@@ -72,7 +77,7 @@ test('two tabs, full fields, server audit hints and read-only confirmed rows',as
 });
 test('batch confirmation flushes text, uses explicit selection and reports partial failure',async()=>{
  const p=await page();try{
-  for(const id of ['a','b'])p.d.querySelector('[data-review-check="'+id+'"]').click();p.failId='b';
+  dragReview(p,'a','b');p.failId='b';
   p.w.QcInspectionSheet.edit('a','remark','还未防抖的备注');p.d.getElementById('qis-review-batch').click();
   assert.match(p.d.querySelector('dialog').textContent,/2 条/);p.d.querySelector('[data-execute]').click();await tick();await tick();
   const req=p.calls.find(c=>c.url.endsWith('review/confirm'));assert.deepEqual(req.body.entries.map(e=>e.id),['a','b']);assert.equal(req.body.entries[0].revision,2);
@@ -82,17 +87,17 @@ test('batch confirmation flushes text, uses explicit selection and reports parti
 });
 test('changing filter clears selection; all means only visible rows',async()=>{
  const p=await page();try{
-  p.d.getElementById('qis-review-all').click();assert.equal(p.w.QcInspectionSheet.model.checked.size,3);
+  dragReview(p,'a','c');assert.equal(p.w.QcInspectionSheet.model.checked.size,3);
   const search=p.d.querySelector('[data-rfilter=search]');search.value='PO1';search.dispatchEvent(new p.w.Event('input'));assert.equal(p.w.QcInspectionSheet.model.checked.size,0);
-  p.d.getElementById('qis-review-all').click();assert.deepEqual([...p.w.QcInspectionSheet.model.checked],['b']);
+  dragReview(p,'b','b');assert.deepEqual([...p.w.QcInspectionSheet.model.checked],['b']);
  }finally{p.dom.window.close();}
 });
 
 test('confirmation active class and count follow zero, one, two, three and cancelled selections',async()=>{
  const p=await page();try{
   const button=p.d.getElementById('qis-review-batch');assert.ok(button.disabled);assert.ok(!button.classList.contains('qis-confirm-ready'));
-  for(const [i,id] of ['a','b','c'].entries()){p.d.querySelector('[data-review-check='+id+']').click();assert.equal(button.disabled,false);assert.ok(button.classList.contains('qis-confirm-ready'));assert.equal(button.textContent,'审核确认所选（'+(i+1)+'）');}
-  p.d.getElementById('qis-review-all').click();assert.ok(button.disabled);assert.ok(!button.classList.contains('qis-confirm-ready'));
+  for(const [i,id] of ['a','b','c'].entries()){dragReview(p,'a',id);assert.equal(button.disabled,false);assert.ok(button.classList.contains('qis-confirm-ready'));assert.equal(button.textContent,'审核确认（'+(i+1)+'）');}
+  p.d.getElementById('reviewTableWrap').dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.ok(button.disabled);assert.ok(!button.classList.contains('qis-confirm-ready'));
  }finally{p.dom.window.close();}
 });
 test('Beijing cross-day timestamps have no current-time fallback',async()=>{
@@ -113,7 +118,7 @@ test('LG uses server result contract and legacy completed rows expose both revok
 test('row actions stay under frozen PO and retain the original confirmation flow',async()=>{
  const p=await page();try{
   assert.equal(p.d.querySelector('th[data-column=submit]'),null);
-  const pending=p.d.querySelector('[data-confirm=a]');assert.equal(pending.closest('td').dataset.column,'poNo');
+  const pending=p.d.getElementById('qis-review-batch');assert.equal(pending.parentElement.previousElementSibling.id,'reviewTableWrap');dragReview(p,'a','a');
   assert.equal(p.d.querySelector('[data-audit]').closest('td').dataset.column,'customer');
   pending.click();p.d.querySelector('[data-execute]').click();await tick();await tick();
   const confirm=p.calls.find(c=>c.url.endsWith('review/confirm'));assert.deepEqual(confirm.body.entries.map(x=>x.id),['a']);
@@ -140,10 +145,9 @@ test('revoke receipt is centered, lists successes and failures, and return badge
 
 test('returned inspection rows show reasons on entering the workbench and can be located',async()=>{
  const p=await page();try{
-  p.d.querySelector('[data-return=a]').click();
-  const dialog=p.d.querySelector('dialog');
-  dialog.querySelector('[data-reason]').value='重验标签\n<包装>';
-  dialog.querySelector('[data-return-confirm]').click();await tick();
+  // Historical returned rows and their unseen notices remain readable after retiring the action.
+  p.rows[0].reviewState='returned_to_inspection';
+  p.events.push({eventId:1,entryId:'a',customer:'客户0',poNo:'PO0',productNo:'ITEM0',reason:'重验标签\n<包装>',at:'2026-11-01T17:26:00Z',workbench:true});
   assert.equal(p.d.querySelector('.qis-reversal-notice'),null);
   p.d.getElementById('page-review').classList.remove('active');
   p.d.getElementById('page-records').classList.add('active');
@@ -185,7 +189,7 @@ test('responsibility dropdowns retain historical names, save independently, and 
   second.value='';second.dispatchEvent(new p.w.Event('change'));
   await p.w.QcInspectionSheet.flush();await p.w.QcInspectionSheet.loadReview('pending');
   assert.equal(field('firstResponsible').value,'测试检验员');assert.equal(field('secondResponsible').value,'');
-  p.d.querySelector('[data-confirm=a]').click();p.d.querySelector('[data-execute]').click();await tick();await tick();
+  confirmRow(p,'a');p.d.querySelector('[data-execute]').click();await tick();await tick();
   await p.w.QcInspectionSheet.loadReview('approved');assert.equal(field('firstResponsible'),null);
   assert.equal(p.d.querySelector('[data-entry=a] [data-column=firstResponsible]').textContent,'测试检验员');
  }finally{p.dom.window.close();}
@@ -244,8 +248,15 @@ test('review image paste uses the pending endpoint and never changes approved ro
  }finally{p.dom.window.close();}
 });
 
-test('return button is next to confirm, cancel writes nothing, confirmed return uses same row',async()=>{
- const p=await page();try{const a=p.d.querySelector('[data-confirm=a]'),b=p.d.querySelector('[data-return=a]');assert.equal(a.nextElementSibling,b);assert.ok(b.classList.contains('qis-return-action'));b.click();assert.match(p.d.querySelector('dialog').textContent,/客户：客户0.*PO：PO0/s);const before=p.calls.length;p.d.querySelector('[data-cancel]').click();assert.equal(p.calls.length,before);assert.equal(p.rows[0].reviewState,'pending');b.click();p.d.querySelector('[data-return-confirm]').click();await tick();await tick();assert.equal(p.rows[0].reviewState,'returned_to_inspection');assert.equal(p.d.querySelector('[data-entry=a]'),null);assert.equal(p.rows[1].reviewState,'pending');}finally{p.dom.window.close();}
+test('pending review has only the bottom confirmation button and no selection or return controls',async()=>{
+ const p=await page();try{
+  assert.equal(p.d.querySelector('[data-confirm],[data-return],[data-return-confirm],[data-review-check]'),null);
+  const button=p.d.getElementById('qis-review-batch'),actions=button.parentElement;
+  assert.equal(actions.id,'qis-review-submit-actions');assert.equal(actions.children.length,1);
+  assert.equal(actions.previousElementSibling.id,'reviewTableWrap');assert.ok(p.d.querySelector('.qis-review-actions').hidden);
+  confirmRow(p,'a');const before=p.calls.length;p.d.querySelector('[data-cancel]').click();assert.equal(p.calls.length,before);assert.equal(p.rows[0].reviewState,'pending');
+  assert.ok(!fs.readFileSync(path.join(__dirname,'qc-inspection-sheet.js'),'utf8').includes('return-to-inspection'));
+ }finally{p.dom.window.close();}
 });
 test('protected source and historical fields are readonly and absent from every review save',async()=>{
  const p=await page();try{
@@ -261,10 +272,6 @@ test('protected source and historical fields are readonly and absent from every 
   assert.equal(p.d.querySelector('[data-entry=b] [data-review-info]'),null);
  }finally{p.dom.window.close();}
 });
-test('cancelled sources never show a return-to-workbench action',async()=>{
- const p=await page();try{p.rows[0].sourceCancelled=true;await p.w.QcInspectionSheet.loadReview('pending');assert.equal(p.d.querySelector('[data-return=a]'),null);assert.ok(p.d.querySelector('[data-return=b]'));}finally{p.dom.window.close();}
-});
-
 test('retired review contract column preserves leading-zero history through other edits',async()=>{
  const p=await page();try{
   p.rows[0].contractNo='000012';p.rows[0].responsible='历史责任人';p.rows[0].inspectionFactory='历史工厂';p.rows[0].actualQuantity=0;
@@ -360,7 +367,7 @@ test('review uses one header, internal-first ordering and a yellow first custome
   assert.equal(p.d.querySelector('[data-entry=b] [data-execution-field=institution]'),null);
   assert.equal(p.d.querySelector('[data-entry=c] [data-execution-field=institution]'),null);
   assert.equal(p.d.querySelector('[data-entry=b] [data-column="inspectionExecution.institution"]').textContent,'—');
-  p.d.querySelectorAll('[data-review-check]').forEach(x=>{x.checked=true;x.dispatchEvent(new p.w.Event('change'));});
+  dragReview(p,'b','c');
   assert.equal(p.w.QcInspectionSheet.model.checked.size,3);
   const search=p.d.querySelector('[data-rfilter=search]');
   search.value='PO2';search.dispatchEvent(new p.w.Event('input'));
@@ -409,5 +416,44 @@ test('customer institution allows manual entry without options and keeps configu
   p.rows[0].reviewState='approved';await p.w.QcInspectionSheet.loadReview('approved');
   const cell=p.d.querySelector('[data-entry=a] [data-column="inspectionExecution.institution"]');
   assert.equal(cell.textContent,'配置测试机构');assert.equal(cell.querySelector('input,select'),null);
+ }finally{p.dom.window.close();}
+});
+
+test('review drag follows displayed groups both ways, cancellation restores selection and editors do not start a range',async()=>{
+ const p=await page();try{
+  p.rows[0].inspectionMethod='external';p.rows[2].inspectionMethod='';p.rows[2].agency='';await p.w.QcInspectionSheet.loadReview('pending');
+  dragReview(p,'b','a');assert.deepEqual([...p.w.QcInspectionSheet.model.checked],['b','a']);
+  dragReview(p,'c','a');assert.deepEqual([...p.w.QcInspectionSheet.model.checked],['a','c']);
+  dragReview(p,'b','b',true);assert.deepEqual([...p.w.QcInspectionSheet.model.checked],['a','c']);
+  assert.equal(p.w.QcInspectionSheet.model.selectedId,'');
+  const host=p.d.getElementById('reviewTableWrap'),input=p.d.querySelector('[data-remark=b]');
+  pointer(p,input,'pointerdown',115);pointer(p,host,'pointermove',260);pointer(p,host,'pointerup',260);assert.deepEqual([...p.w.QcInspectionSheet.model.checked],['a','c']);
+  host.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(p.w.QcInspectionSheet.model.checked.size,0);
+  host.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
+  host.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'ArrowDown',shiftKey:true,bubbles:true}));assert.ok(p.w.QcInspectionSheet.model.checked.size>=1);
+ }finally{p.dom.window.close();}
+});
+test('review drag refuses readonly, stale and loading pages, clears filtered selection and cannot confirm blanks',async()=>{
+ const p=await page();try{
+  const m=p.w.QcInspectionSheet.model,button=p.d.getElementById('qis-review-batch');
+  for(const field of ['loading','error']){m[field]=field==='error'?'读取失败':true;dragReview(p,'a','c');assert.equal(m.checked.size,0);m[field]=field==='error'?'':false;}
+  p.w.__QC_NEXUS.workflow.edit=false;dragReview(p,'a','c');assert.equal(m.checked.size,0);p.w.__QC_NEXUS.workflow.edit=true;
+  p.rows[1].result='';await p.w.QcInspectionSheet.loadReview('pending');dragReview(p,'a','c');assert.deepEqual([...m.checked],['a','c']);
+  m.error='网络失败';p.w.QcInspectionSheet.render();assert.ok(button.disabled);m.error='';
+  p.rows[0].reviewState='approved';await p.w.QcInspectionSheet.loadReview('approved');dragReview(p,'a','a');assert.equal(m.checked.size,0);assert.ok(p.d.querySelector('[data-review-check=a]'));assert.ok(p.d.querySelector('[data-revoke=a]'));
+  assert.ok(p.d.getElementById('qis-review-submit-actions').hidden);assert.equal(button.closest('#qis-review-controls')?.id,'qis-review-controls');
+ }finally{p.dom.window.close();}
+});
+test('confirm freezes edits and duplicate execution, flushes latest revision, and preserves failed-save drafts',async()=>{
+ const p=await page();try{
+  confirmRow(p,'a');const fetch=p.w.fetch;let release;
+  p.w.fetch=async(url,opts)=>url.endsWith('/confirm')?new Promise(resolve=>{release=()=>fetch(url,opts).then(resolve);}):fetch(url,opts);
+  const execute=p.d.querySelector('[data-execute]');execute.click();await tick();
+  assert.ok(p.d.querySelector('[data-remark=a]').disabled);assert.ok(p.d.querySelector('[data-rfilter=search]').disabled);assert.ok(p.d.getElementById('qis-review-batch').disabled);
+  p.w.QcInspectionSheet.edit('a','remark','不能写入');execute.click();release();await tick();await tick();
+  assert.equal(p.rows[0].remark,'原备注');assert.equal(p.calls.filter(c=>c.url.endsWith('/confirm')).length,1);
+  p.w.fetch=async(url,opts)=>url.endsWith('/save')?{ok:false,status:409,json:async()=>({detail:'版本冲突'})}:fetch(url,opts);
+  dragReview(p,'b','b');p.w.QcInspectionSheet.edit('b','remark','保留草稿');p.d.getElementById('qis-review-batch').click();p.d.querySelector('[data-execute]').click();await tick();await tick();
+  assert.equal(p.calls.filter(c=>c.url.endsWith('/confirm')).length,1);assert.equal(p.rows[1].reviewState,'pending');assert.equal(p.w.QcInspectionSheet.model.drafts.get('b').remark,'保留草稿');assert.ok(p.w.QcInspectionSheet.model.checked.has('b'));assert.match(p.d.querySelector('[data-feedback]').textContent,/版本冲突/);
  }finally{p.dom.window.close();}
 });
