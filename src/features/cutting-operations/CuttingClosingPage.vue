@@ -134,9 +134,15 @@ const currentMonth = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',y
 const month=ref(currentMonth),query=ref(''),page=ref(1),total=ref(0),rows=ref<CuttingOrder[]>([])
 const access=ref<Access>(),selected=ref<CuttingOrder>(),result=ref<ClosingPreview>(),loading=ref(false),error=ref('')
 const reportTab=ref<ClosingReportTab>('production')
-const failedPreview=ref<{order:CuttingOrder;month:string;tab:ClosingReportTab}>()
+const failedPreview=ref<{order:CuttingOrder;month:string;tab:ClosingReportTab;connectionFailed:boolean}>()
 const previewRetry=computed(()=>closingView.value==='overview'?failedPreview.value:undefined)
 const previousResult=computed(()=>!!result.value&&(loading.value||!!previewRetry.value))
+const errorNotice=computed(()=>{
+  if(!error.value||!result.value||!previewRetry.value)return error.value
+  return previewRetry.value.connectionFailed
+    ?'刷新失败，仍显示上次结果，请检查网络后重试'
+    :`刷新失败，仍显示上次结果。${error.value}`
+})
 const previewReport=ref<InstanceType<typeof CuttingClosingReport>>()
 const retryArea=ref<HTMLElement>()
 let previewFocus:AbortController|undefined
@@ -233,9 +239,10 @@ async function preview(
   }catch(e){
     if(!alive||ticket!==generation)return
     const status=(e as {response?:{status?:number}})?.response?.status
+    const connectionFailed=status===undefined||status===408
     const canRetry=closingView.value==='overview'&&viewGeneration===financialGeneration
-      &&(status===undefined||status===408||status===429||status>=500)
-    failedPreview.value=canRetry?{order,month:requestedMonth,tab}:undefined
+      &&(connectionFailed||status===429||status>=500)
+    failedPreview.value=canRetry?{order,month:requestedMonth,tab,connectionFailed}:undefined
     if(!canRetry){result.value=undefined;rows.value=[];selected.value=undefined}
     accessUnavailable.value=status!==401&&status!==403
     access.value=undefined
@@ -271,7 +278,7 @@ onMounted(()=>void loadLocation())
     <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('settlement',target,context)" @restored="(target,context)=>restoredMonth('settlement',target,context)" @payment="openPayment" /></div>
     <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('payment',target,context)" @restored="(target,context)=>restoredMonth('payment',target,context)" @settlement="openSettlement" /></div>
     <div v-if="error||previewRetry" ref="retryArea" class="space-y-3">
-      <p v-if="error" role="alert" class="cutting-error">{{previousResult?`刷新失败，仍显示上次结果。${error}`:error}}</p>
+      <p v-if="error" role="alert" class="cutting-error">{{errorNotice}}</p>
       <p v-if="previewRetry" class="cutting-notice cutting-read-target"><span>重试目标：{{previewRetry.order.snapshot.reference_no}} · {{previewRetry.month}} · {{closingReportTabs[previewRetry.tab]}}</span></p>
       <Button variant="outline" :disabled="loading" @click="retryWorkspace">{{previewRetry?'重试原订单预览':'重新读取月结工作区'}}</Button>
     </div>

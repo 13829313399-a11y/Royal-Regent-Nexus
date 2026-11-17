@@ -1,6 +1,12 @@
 import type { InjectionKey } from 'vue'
+import { formatBusinessDateTime } from '@/lib/dateTime'
 
 export interface ClosingReadLocation {month:string;id?:string;eventId?:string}
+
+export function closingReadTime(value:string):string {
+  const time=formatBusinessDateTime(value,{includeSeconds:true,fallback:''})
+  return time?`${time}（北京时间）`:'未记录'
+}
 
 export const closingReportTabs={
   production:'生产与外发数量',

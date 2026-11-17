@@ -4,7 +4,7 @@ import { RouterLink } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import type { ClosingPreview } from './closingApi'
-import { closingReportTabs, type ClosingReportTab } from './closingPresentation'
+import { closingReadTime, closingReportTabs, type ClosingReportTab } from './closingPresentation'
 import { cuttingDestination } from './location'
 import CuttingClosingTrace from './CuttingClosingTrace.vue'
 const props=defineProps<{value:ClosingPreview;storedSnapshot?:boolean;previousResult?:boolean}>()
@@ -23,7 +23,7 @@ function destination(issue:ClosingPreview['issues'][number]) {
 <template>
   <SectionPanel ref="panel" :title="storedSnapshot?'月结依据快照':'月度核对预览'" class="cutting-content-panel">
     <div class="closing-content">
-      <p>{{value.start}} 至 {{value.through}}<span v-if="value.partial"> · 本月尚未结束，月末为 {{value.end}}</span> · {{previousResult?'上次取数时间':'取数时间'}}：<time :datetime="value.generated_at">{{value.generated_at}}</time></p>
+      <p>{{value.start}} 至 {{value.through}}<span v-if="value.partial"> · 本月尚未结束，月末为 {{value.end}}</span> · {{previousResult?'上次取数时间':'取数时间'}}：<time :datetime="value.generated_at">{{closingReadTime(value.generated_at)}}</time></p>
       <p v-if="storedSnapshot" class="cutting-notice">以下为该月结版本保存时的生产、物料、价格与追溯依据，后续操作不改写此快照。月末在制与完工归属见上方月结汇总；外发加工费仍另行结算。</p>
       <p v-else-if="previousResult" class="cutting-notice">以下为上次取数时的计划和有效记录，请在刷新成功后核对最新结果。</p>
       <p v-else class="cutting-notice">补录和更正按业务日期更新未锁月结果，以下数量采用最新有效记录。计划使用当前发布版本；本页不代表已结清、正式月末在制或外发可付款金额。</p>
