@@ -48,7 +48,7 @@ function showMonth(d,month) {
  if(d.getElementById('qsDatePanel').hidden)d.getElementById('qsDateToggle').click();
  const [year,number]=month.split('-').map(Number);
  for(let i=0;i<240;i++){
-  const label=d.getElementById('qsCalendarMonth').textContent.match(/(\d+)年(\d+)月/);
+  const label=d.getElementById('qsCalendarMonth').getAttribute('aria-label').match(/(\d+)年(\d+)月/);
   const difference=(year-Number(label[1]))*12+number-Number(label[2]);
   if(!difference)return;
   d.getElementById(difference>0?'qsNextMonth':'qsPreviousMonth').click();
@@ -85,7 +85,7 @@ test('calendar drafts do not fetch or change other filters; a same-day range app
   assert.equal(d.getElementById('qsApplyDates').disabled,false);
   d.getElementById('qsApplyDates').click();await tick();
   assert.equal(calls.at(-1),'api/schedule-source?dateFrom=2026-10-28&dateTo=2026-10-28');
-  assert.equal(d.getElementById('qsDateLabel').textContent,'2026/10/28');
+  assert.equal(d.getElementById('qsDateLabel').textContent,'10/28');
   assert.equal(d.getElementById('qsCustomer').value,'Dickie');
   assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.activeElement.id,'qsDateToggle');
   assert.equal(d.querySelectorAll('tr[data-qs-row]').length,1);
@@ -99,7 +99,10 @@ test('reverse selection becomes an inclusive range across month/year boundaries'
   assert.equal(d.getElementById('qsDraftFrom').value,'2026-12-30');assert.equal(d.getElementById('qsDraftTo').value,'2027-01-02');
   assert.equal(d.querySelectorAll('#qsCalendarDays [aria-selected="true"]').length,4);
   d.getElementById('qsApplyDates').click();await tick();
-  assert.equal(d.getElementById('qsDateLabel').textContent,'2026/12/30 — 2027/01/02');
+  assert.equal(d.getElementById('qsDateLabel').textContent,'12/30 — 01/02');
+  assert.equal(d.getElementById('qsDateToggle').title,'2026-12-30 至 2027-01-02');
+  assert.equal(d.getElementById('qsCalendarMonth').textContent,'12月');
+  assert.equal(d.getElementById('qsCalendarMonth').getAttribute('aria-label'),'2026年12月');
   selectDate(d,'2026-12-31');assert.equal(d.getElementById('qsDraftTo').value,'');
   assert.equal(d.getElementById('qsApplyDates').disabled,true,'a new first click starts a fresh range');
  }finally{dom.window.close();}

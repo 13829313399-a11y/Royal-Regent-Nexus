@@ -122,8 +122,8 @@
     return refresh();
   }
   function updateDateLabel() {
-    const from=el('qsDateFrom').value,to=el('qsDateTo').value,format=d=>d.replaceAll('-','/');
-    const label=from&&to?(from===to?format(from):format(from)+' — '+format(from.slice(0,4)===to.slice(0,4)?to.slice(5):to)):from?format(from)+' 起':to?'截至 '+format(to):'筛选日期';
+    const from=el('qsDateFrom').value,to=el('qsDateTo').value,format=d=>d.slice(5).replaceAll('-','/');
+    const label=from&&to?(from===to?format(from):format(from)+' — '+format(to)):from?format(from)+' 起':to?'截至 '+format(to):'筛选日期';
     el('qsDateLabel').textContent=label;el('qsDateToggle').title=from||to?[from||'不限起日',to||'不限止日'].join(' 至 '):'筛选日期';
   }
   const calendar={month:'',focus:''};
@@ -145,7 +145,8 @@
   function renderCalendar(focus=false) {
     const from=el('qsDraftFrom').value,to=el('qsDraftTo').value,today=businessToday();
     const first=calendar.month+'-01',offset=(new Date(first+'T00:00:00Z').getUTCDay()+6)%7;
-    el('qsCalendarMonth').textContent=calendar.month.slice(0,4)+'年'+Number(calendar.month.slice(5))+'月';
+    el('qsCalendarMonth').textContent=Number(calendar.month.slice(5))+'月';
+    el('qsCalendarMonth').setAttribute('aria-label',calendar.month.slice(0,4)+'年'+Number(calendar.month.slice(5))+'月');
     const days=Array.from({length:42},(_,i)=>addDays(first,i-offset));
     const focused=days.includes(calendar.focus)?calendar.focus:first;
     el('qsCalendarDays').innerHTML=Array.from({length:6},(_,row)=>'<tr>'+days.slice(row*7,row*7+7).map(value=>{
