@@ -8,11 +8,11 @@ import type { Capabilities, Draft, PageContext } from '../types'
 describe('draft scope and explicit search choices',()=>{
   it('explicitly accumulates unique records only within the same page and factory',()=>{
     const draft=reactive<Draft>({text:'原问题',attachments:[],documents:[]})
-    const page=ref<PageContext>({module_id:'injection-scheduling',route_name:'injection-scheduling',factory_id:'huakang-a'})
+    const page=ref<PageContext>({module_id:'spray-production',route_name:'spray-demands',factory_id:'huakang-a'})
     const selected=ref('a')
-    const unregister=registerAssistantSelection('injection-scheduling',()=>({selection_id:selected.value,resources:[{module_id:'injection-scheduling',resource_type:'demand',resource_id:selected.value}],filters:{factory_id:page.value.factory_id ?? null}}))
+    const unregister=registerAssistantSelection('spray-production',()=>({selection_id:selected.value,resources:[{module_id:'spray-production',resource_type:'demand',resource_id:selected.value}],filters:{factory_id:page.value.factory_id ?? null}}))
     try {
-      const binding=useDraftScope(()=>draft,()=>page.value,()=> '注塑排产')
+      const binding=useDraftScope(()=>draft,()=>page.value,()=> '喷油生产')
       binding.freeze();selected.value='b'
       expect(binding.scope.value.selection?.resources).toHaveLength(1)
       expect(binding.includeCurrent()).toBe('');binding.includeCurrent()
@@ -29,9 +29,9 @@ describe('draft scope and explicit search choices',()=>{
   })
   it('freezes identifiers and filters, permits per-record removal, and only adopts new scope explicitly',()=>{
     const draft=reactive<Draft>({text:'',attachments:[],documents:[]})
-    const page=ref<PageContext|null>({module_id:'injection-scheduling',route_name:'injection-scheduling',factory_id:'huakang-a'})
-    const source={selection_id:'selection-a',resources:[{module_id:'injection-scheduling',resource_type:'demand',resource_id:'a'},{module_id:'injection-scheduling',resource_type:'demand',resource_id:'b'}],filters:{status:'READY'}}
-    const unregister=registerAssistantSelection('injection-scheduling',()=>source)
+    const page=ref<PageContext|null>({module_id:'spray-production',route_name:'spray-demands',factory_id:'huakang-a'})
+    const source={selection_id:'selection-a',resources:[{module_id:'spray-production',resource_type:'demand',resource_id:'a'},{module_id:'spray-production',resource_type:'demand',resource_id:'b'}],filters:{status:'READY'}}
+    const unregister=registerAssistantSelection('spray-production',()=>source)
     try {
       const binding=useDraftScope(()=>draft,()=>page.value,()=>page.value?.factory_id || '')
       binding.freeze(); draft.text='原问题'

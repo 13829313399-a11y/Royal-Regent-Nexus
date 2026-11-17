@@ -24,7 +24,7 @@ from app.services.qc_dossier_worker import validate_installed
 
 PARENT = '20261107_0193'
 REVISION = '20261110_0194'
-QC_READY_REVISIONS = (REVISION, '20261116_0195')
+QC_READY_REVISIONS = (REVISION, '20261116_0195', '20261116_inj_retire')
 
 
 def version():
@@ -46,8 +46,8 @@ def file_hash(path):
 def inventory(root):
     result = {}
     for path in sorted(root.rglob('*')):
-        if path.is_symlink():
-            raise RuntimeError('QC backup contains a symlink; explicit review required')
+        if path.is_symlink() or (os.name == 'nt' and path.is_junction()):
+            raise RuntimeError('QC backup contains a symlink or directory junction; explicit review required')
         if path.is_file():
             result[str(path.relative_to(root))] = file_hash(path)
     return result

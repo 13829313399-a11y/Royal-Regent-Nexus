@@ -94,7 +94,7 @@
       {
         "path": "backend/app/services/qc_weekly_templates.py",
         "symbol": "def query",
-        "sha256": "7d5d20d385fc50f21ae594af799cb0e82377cfab22197c06df4d27fca7bd1d4f"
+        "sha256": "da6ac94ebf55ee15bb5ba46b54ad39dd25a2cb7574808420550fc861010a4046"
       },
       {
         "path": "services/qc-department/qc-weekly-templates.js",
@@ -104,7 +104,7 @@
       {
         "path": "backend/app/services/qc_weekly_excel.py",
         "symbol": "def render",
-        "sha256": "49974a7853b92fd0c3780d00517c3026d83108b0cf49adbf7c532fad446559d5"
+        "sha256": "bd8ba1ab2b44b0fa8a1bb6907a17c6dd0c7e40c36423794ccc574a08b155018a"
       },
       {
         "path": "backend/app/services/qc_monthly_templates.py",
@@ -114,7 +114,7 @@
       {
         "path": "backend/app/services/qc_monthly_excel.py",
         "symbol": "def render",
-        "sha256": "be45f8fecb5a2ad948c6553727186257e55cf5a55db8eec3f0c2d9e511f99799"
+        "sha256": "7ae563147412ff1c5336d4ead37ea06c5b4c55f35cfae4c1293ea3d974331b35"
       },
       {
         "path": "services/qc-department/qc-monthly-templates.js",
