@@ -71,6 +71,25 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
   stroke-linejoin: round;
 }
 
+#qsum-root #qsum-refresh {
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  box-shadow: none;
+  flex-shrink: 0;
+}
+#qsum-root #qsum-refresh svg { width: 14px; height: 14px; stroke-width: 1.7; }
+#qsum-root #qsum-refresh:hover:not(:disabled) { background: var(--bg-hover); }
+@media (max-width: 640px), (pointer: coarse) {
+  #qsum-root #qsum-refresh { width: 44px; height: 44px; min-height: 44px; }
+}
+
 .qsum-note{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;color:var(--text-main);line-height:1.7}
 .qsum-filter-bar {
   display: grid;
