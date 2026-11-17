@@ -75,7 +75,7 @@ def find(sheet, ref):
     return next(r for r in range(4,sheet.max_row+1) if sheet.cell(r,ref_col).value==ref)
 
 
-def test_new_details_group_by_complete_item_above_stock_and_link_actual_rows():
+def test_details_group_but_summaries_append_in_input_order_and_link_actual_rows():
     wb=fixture_workbook()
     rows=[record('SC-NEW-B1','203757005'), record('SC-NEW-A','203747020'),
           record('SC-NEW-B2','20 375 7005')]
@@ -87,10 +87,15 @@ def test_new_details_group_by_complete_item_above_stock_and_link_actual_rows():
         new_a=find(sheet,'SC-NEW-A')
         new_b1=find(sheet,'SC-NEW-B1')
         new_b2=find(sheet,'SC-NEW-B2')
-        assert new_a==old_a+1
-        assert new_b2==new_b1+1
-        assert new_b1==find(sheet,'SC-OLD-B')+1
-        assert sheet.cell(new_a+1,2).value=='MO单'
+        if name == 'ITEM表':
+            assert new_a==old_a+1
+            assert new_b2==new_b1+1
+            assert new_b1==find(sheet,'SC-OLD-B')+1
+            assert sheet.cell(new_a+1,2).value=='MO单'
+        else:
+            assert (old_a, find(sheet,'SC-OLD-B')) == (5, 9)
+            assert (new_b1, new_a, new_b2) == (11, 12, 13)
+            assert sheet.cell(10,2).value=='MO单'
         assert sheet.cell(new_a,ref_col).font.color.rgb=='FF0000FF'
         assert sheet.cell(new_a,product_col).fill.patternType is None
         assert sheet.cell(old_a,40).value=='手工历史备注-SC-OLD-A'
@@ -112,7 +117,11 @@ def test_stock_only_group_uses_normal_style_and_other_item_suffix_is_not_merged(
     mapping.export_rows(wb,[record('SC-NEW-A','203747020'),record('SC-NEW-C','203747028')])
     for name in ('ITEM表','接单表','正单评审表'):
         s=wb[name]
-        assert find(s,'SC-NEW-A')<find(s,'SC-OLD-B')
+        if name == 'ITEM表':
+            assert find(s,'SC-NEW-A')<find(s,'SC-OLD-B')
+        else:
+            assert find(s,'SC-NEW-A') == 11
+            assert find(s,'SC-NEW-C') == 12
         assert find(s,'SC-NEW-C')>find(s,'SC-OLD-B')
         assert s.cell(find(s,'SC-NEW-A'),columns(s)[1]).fill.patternType is None
 
@@ -123,9 +132,10 @@ def test_only_business_confirmed_series_members_share_group_but_keep_full_codes(
     for name in ('ITEM表','接单表','正单评审表'):
         s=wb[name]
         r=find(s,'SC-SERIES')
-        assert r==find(s,'SC-OLD-A')+1
+        assert r == (find(s,'SC-OLD-A')+1 if name == 'ITEM表' else 11)
         assert s.cell(r,columns(s)[1]).value=='20 374 7029'
-        assert s.cell(r+1,2).value=='MO单'
+        if name == 'ITEM表':
+            assert s.cell(r+1,2).value=='MO单'
 
 
 def test_dinosaur_lane_is_independent_and_duplicate_font_is_retained():
@@ -134,7 +144,7 @@ def test_dinosaur_lane_is_independent_and_duplicate_font_is_retained():
     for name in (mapping.DICKIE_EXTRA,'接单表','正单评审表'):
         s=wb[name]
         r=find(s,'SC-DINO')
-        assert r==find(s,'SC-OLD-A')+1
+        assert r == (find(s,'SC-OLD-A')+1 if name == mapping.DICKIE_EXTRA else 11)
         assert s.cell(r,columns(s)[0]).font.color.rgb=='FFFF0000'
     assert all(c.value!='SC-DINO' for c in wb['ITEM表']['E'])
 
@@ -252,7 +262,7 @@ def test_order_notes_containing_cancellation_words_are_not_section_titles():
     mapping.export_rows(wb,[record('SC-NEW-B','203757005')])
     for name in ('ITEM表','接单表','正单评审表'):
         s=wb[name]
-        assert find(s,'SC-NEW-B')==find(s,'SC-OLD-B')+1
+        assert find(s,'SC-NEW-B') == (find(s,'SC-OLD-B')+1 if name == 'ITEM表' else 11)
         assert s.cell(4,40).value=='客户要求核对取消单后再安排'
 
 
@@ -267,6 +277,80 @@ def test_unknown_product_summary_is_inserted_before_annual_totals():
         s=wb[name]
         total=next(c.row for c in s['J'] if c.value=='2026年接单')
         assert find(s,'SC-NEW-UNKNOWN')<total
+
+
+def test_summary_append_is_independent_across_sheets_lanes_and_repeated_batches():
+    wb = fixture_workbook()
+    # Review has its own extra historical row, manual content and annual total.
+    review = wb['正单评审表']
+    review['D12'], review['G12'], review['J12'] = 'SC-REVIEW-ONLY', '203747029', 30
+    review['AN12'] = '保留人工资料'
+    review['J15'] = '2026年接单'
+    review['O15'] = '=SUM(O4:O14)'
+    rows = [record('SC-FIRST-B', '203757005'),
+            record('SC-DINO-A', '203747020', lane=mapping.DICKIE_EXTRA),
+            record('SC-LAST-B', '203757005')]
+    mapping.export_rows(wb, rows)
+    for name, start in [('接单表', 11), ('正单评审表', 13)]:
+        sheet = wb[name]
+        assert [sheet.cell(start+i,4).value for i in range(3)] == [r['reference_no'] for r in rows]
+        assert find(sheet,'SC-OLD-A') == 5 and find(sheet,'SC-OLD-B') == 9
+        for row in rows:
+            item_number = find(wb[row['item_sheet_name']], row['reference_no'])
+            number = find(sheet, row['reference_no'])
+            assert sheet.cell(number,10).value == f'=IF(LEN(\'{row["item_sheet_name"]}\'!K{item_number})=0,"",\'{row["item_sheet_name"]}\'!K{item_number})'
+    mapping.export_rows(wb, [record('SC-NEXT-A','203747029')])
+    assert find(wb['接单表'],'SC-NEXT-A') == 14
+    assert find(review,'SC-NEXT-A') == 16
+    assert review['AN12'].value == '保留人工资料'
+    total = next(c.row for c in review['J'] if c.value == '2026年接单')
+    assert total == 19 and review.cell(total,15).value == '=SUM(O4:O18)'
+    # Later ITEM inserts must also shift the first batch's summary references.
+    for name in ('接单表','正单评审表'):
+        sheet = wb[name]
+        item_number = find(wb['ITEM表'],'SC-FIRST-B')
+        number = find(sheet,'SC-FIRST-B')
+        assert sheet.cell(number,10).value == f'=IF(LEN(\'ITEM表\'!K{item_number})=0,"",\'ITEM表\'!K{item_number})'
+
+
+@pytest.mark.parametrize('end', [9, 11])
+def test_appended_orders_enter_current_annual_sum_without_adding_excluded_mo_or_old_years(end):
+    from app.services.customer_order_dickie_layout import _local_sum_ranges
+    wb = fixture_workbook()
+    for name in ('接单表','正单评审表'):
+        sheet = wb[name]
+        sheet['O5'], sheet['O9'], sheet['O10'] = 10, 20, 500
+        sheet['J12'], sheet['O12'] = '2026年接单', f'=SUM(O5:O{end})'
+        sheet['J14'], sheet['O14'] = '2025年接单', '=SUM(O5:O5)'
+    for batch in range(2):
+        row = record(f'SC-NEW-{batch}', '203747020')
+        row.update(unit_price_hkd='2', amount_hkd='48')
+        mapping.export_rows(wb, [row])
+    for name in ('接单表','正单评审表'):
+        sheet = wb[name]
+        total = next(c.row for c in sheet['J'] if c.value == '2026年接单')
+        ranges = _local_sum_ranges(sheet.cell(total,15))
+        counted = [r for first,last in ranges for r in range(first,last+1)]
+        assert counted.count(11) == counted.count(12) == 1
+        assert (10 in counted) == (end == 11)  # Preserve the original MO inclusion policy.
+        historical_total = next(c.row for c in sheet['J'] if c.value == '2025年接单')
+        assert sheet.cell(historical_total,15).value == '=SUM(O5:O5)'
+        assert sheet['O10'].value == 500
+
+
+def test_formula_looking_total_text_is_preserved_as_text():
+    wb = fixture_workbook()
+    for name in ('接单表','正单评审表'):
+        sheet = wb[name]
+        sheet['J12'] = '2026年接单'
+        sheet['O12'] = '=SUM(O5:O9)'
+        sheet['O12'].data_type = 's'
+    mapping.export_rows(wb, [record('SC-NEW-A','203747020')])
+    for name in ('接单表','正单评审表'):
+        sheet = wb[name]
+        total = next(c.row for c in sheet['J'] if c.value == '2026年接单')
+        assert sheet.cell(total,15).value == '=SUM(O5:O9)'
+        assert sheet.cell(total,15).data_type == 's'
 
 
 def test_blank_display_formula_keys_do_not_hide_historical_section_title():

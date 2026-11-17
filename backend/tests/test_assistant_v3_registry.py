@@ -6,7 +6,7 @@ from test_assistant_api import env, session, payload
 
 def test_only_bound_connectors_are_callable_and_planned_states_are_honest():
     from app.services.assistant import registry, business
-    assert len(registry.coverage()) == 8
+    assert len(registry.coverage()) == 7
     assert {c.tool_name for c in registry.CALLABLE} == business.NAMES
     assert all(c["coverage_state"] != "connected" for c in registry.coverage())
     assert all(not c["tools"] and c["reason"] for c in registry.coverage() if c["coverage_state"] == "planned")
@@ -16,7 +16,7 @@ def test_only_bound_connectors_are_callable_and_planned_states_are_honest():
         registry.validate([registry.CONNECTORS[0], registry.CONNECTORS[0]])
 
 
-@pytest.mark.parametrize("module", ["unregistered"])
+@pytest.mark.parametrize("module", ["unregistered", "injection-scheduling"])
 def test_missing_module_does_not_fall_back_to_personal_work(module):
     from app.services.assistant import registry
     from app.services.assistant.errors import AssistantError
@@ -29,7 +29,6 @@ def test_missing_module_does_not_fall_back_to_personal_work(module):
 def test_record_type_is_bound_to_module():
     from app.services.assistant import registry
     from app.services.assistant.errors import AssistantError
-    assert registry.resolve("injection-scheduling", "demand") == "get_injection_overview"
     assert registry.resolve('carton-procurement', 'order') == 'get_carton_overview'
     assert registry.resolve('carton-procurement', 'inventory') == 'get_carton_overview'
     assert registry.resolve('internal-quote', 'quote') == 'get_internal_quote_overview'
@@ -66,7 +65,7 @@ def test_supplier_cannot_reach_any_internal_connector_via_registered_selection_o
     supplier=actor('alice',factory='huakang-a',department='pmc-warehouse',permissions=('carton_supplier:read',))
     assert help_registry.supplier_only(supplier)
     assert all(article.audience in ('all','supplier') for article in help_registry.visible(supplier))
-    resources=[('injection-scheduling','demand'),('internal-quote','quote')]
+    resources=[('customer-orders','order'),('internal-quote','quote')]
     assert business.permitted_tools(supplier,'huakang-a')==[]
     with dbm.SessionLocal() as db:
         for name in business.NAMES:

@@ -92,7 +92,7 @@ export interface HelpSource extends SourceBase {
 }
 export interface BusinessSource extends SourceBase {
   kind: 'business';
-  tool_name: 'get_my_work' | 'get_injection_overview' | 'get_printer_status' | 'list_customer_orders' | 'get_carton_overview' | 'get_internal_quote_overview' | 'get_uv_operations_snapshot' | 'get_spray_operations_snapshot';
+  tool_name: 'get_my_work' | 'get_printer_status' | 'list_customer_orders' | 'get_carton_overview' | 'get_internal_quote_overview' | 'get_uv_operations_snapshot' | 'get_spray_operations_snapshot';
   resources: ResourceRef[];
   scope: Scope;
   as_of: ISOTime;

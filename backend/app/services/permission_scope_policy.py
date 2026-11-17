@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-from app.services.permission_codes import INJECTION_SCHEDULING_PERMISSION_CODES
 from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS
 
 
@@ -323,14 +322,6 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
         return ScopePolicy(("system",), guidance="开发反馈专用权限，仅按明确授权的厂区和系统部门生效；普通业务职位不继承")
     if permission_code.startswith("uv_ops:"):
         return ScopePolicy(("production",), guidance="仅华康 A 生产部；新 UV 权限需单独授权，不沿用退役模块权限")
-    if permission_code in INJECTION_SCHEDULING_PERMISSION_CODES:
-        return ScopePolicy(
-            (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-            guidance=(
-                "在生产/啤机或管理范围生效；业务限定华兴、华登、华康A/B。"
-                "共享模具维护影响四厂资料，不扩大其他厂订单或设备的操作范围。"
-            ),
-        )
     return MOLDING_PERMISSION_SCOPE_POLICIES.get(
         permission_code,
         QC_INSPECTION_PERMISSION_SCOPE_POLICIES.get(
