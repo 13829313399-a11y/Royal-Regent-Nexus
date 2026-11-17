@@ -20,7 +20,8 @@ def test_supplier_batch_matches_legacy_and_bounds_queries(count):
     from app.models.carton_supplier_portal import SupplierCommitment
     from app.services import carton_procurement as core, carton_supplier_portal as portal
     from app.services import carton_supplier_changes as changes
-    from app.services.carton_supplier_projection import order_page_out, evidence
+    from app.services.carton_supplier_projection import order_page_out
+    from app.services.carton_supplier_read_inputs import BATCH_SIZE, order_inputs
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     queries = []
@@ -56,7 +57,7 @@ def test_supplier_batch_matches_legacy_and_bounds_queries(count):
             assert actual == expected
             assert len(queries) <= 35 * ((count + 199) // 200) + 20, len(queries)
             assert all(query.lstrip().upper().startswith("SELECT") for query in queries)
-        own = evidence(db, orders[:35])
+        own = order_inputs(db, orders[:35])
         for order in orders[:35]:
             version = portal.latest_issue(db, order)
             before = changes._task(db, SimpleNamespace(), order, version, "REGULAR", internal=True)
@@ -65,8 +66,13 @@ def test_supplier_batch_matches_legacy_and_bounds_queries(count):
             # Historical presentation must not mutate the shared current state.
             assert changes._task(db, SimpleNamespace(), order, version, "REGULAR", internal=True, projection=own[order.id]) == before
         other = SimpleNamespace(id="foreign", factory_id="huadeng")
+        queries.clear()
         with pytest.raises(ValueError, match="one factory"):
-            evidence(db, [orders[0], other])
+            order_inputs(db, [orders[0], other])
+        if count > BATCH_SIZE:
+            with pytest.raises(ValueError, match="at most 200 orders"):
+                order_inputs(db, orders)
+        assert not queries
 
 
 def test_supplier_projection_keeps_partial_receipt_quantities(monkeypatch, tmp_path):

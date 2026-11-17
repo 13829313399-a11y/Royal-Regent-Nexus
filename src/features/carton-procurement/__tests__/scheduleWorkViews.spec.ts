@@ -58,18 +58,28 @@ describe('carton schedule staff work views', () => {
     expect(scheduleWorkViewMatches(item, 'ORDERED')).toBe(true)
   })
 
-  it.each(['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'] as const)('keeps ordered %s evidence in the queue', match_status => {
+  it.each(['QUANTITY_MISMATCH', 'AMBIGUOUS'] as const)('keeps ordered %s evidence in the queue', match_status => {
     expect(work({ match_status }, '2026-10-04', 'ORDERED', 'PENDING_SUPPLIER'))
       .toMatchObject({ attention: true, future: false, ordered: true })
   })
 
-  it('keeps placed split targets awaiting warehouse confirmation in both attention and placed views', () => {
-    const reminder = scheduleOrderReminder(source, { ...options, orderStatus: 'PENDING_SUPPLIER', orderCount: 1 })
-    const item = scheduleWorkItem(row, { category: 'ORDERED', reminder, result: reminder!.label, source, pendingSplit: true })
+  it.each([
+    ['ORDERED', 'PENDING_SUPPLIER'],
+    ['COMPLETED', 'COMPLETED'],
+  ] as const)('keeps %s schedules with only a date mismatch in history', (category, orderStatus) => {
+    const item = work({ match_status: 'DATE_MISMATCH' }, '2026-10-04', category, orderStatus)
+    expect(scheduleWorkViewMatches(item, 'ATTENTION')).toBe(false)
+    expect(scheduleWorkViewMatches(item, 'ORDERED')).toBe(true)
+  })
+
+  it('keeps a pending warehouse split visible when its order has a date mismatch', () => {
+    const mismatch = { ...source, match_status: 'DATE_MISMATCH' as const }
+    const reminder = scheduleOrderReminder(mismatch, { ...options, orderStatus: 'PENDING_SUPPLIER', orderCount: 1 })
+    const item = scheduleWorkItem(row, { category: 'ORDERED', reminder, result: '交期差异', source: mismatch, pendingSplit: true })
     expect(item).toMatchObject({ attention: true, ordered: true, future: false, priority: 4, reason: '拆单待仓库确认' })
     expect(scheduleWorkViewMatches(item, 'ATTENTION')).toBe(true)
     expect(scheduleWorkViewMatches(item, 'ORDERED')).toBe(true)
-    expect(scheduleWorkItem(row, { category: 'ORDERED', reminder, result: reminder!.label, source, pendingSplit: false }))
+    expect(scheduleWorkItem(row, { category: 'ORDERED', reminder, result: '交期差异', source: mismatch, pendingSplit: false }))
       .toMatchObject({ attention: false, ordered: true, future: false })
   })
 

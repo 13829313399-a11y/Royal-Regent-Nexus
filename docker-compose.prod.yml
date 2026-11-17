@@ -37,6 +37,10 @@ services:
   api:
     image: royal-regent-nexus-api:local
     environment:
+      QC_DOSSIER_ENABLED: "true"
+      QC_DOSSIER_EMERGENCY_DISABLED: "${QC_DOSSIER_EMERGENCY_DISABLED:-false}"
+      QC_DOSSIER_FACTORIES: "${QC_DOSSIER_FACTORIES:-huaxing}"
+      QC_DEPARTMENT_DATA_DIR: "${QC_DEPARTMENT_DATA_DIR:-/app/backend/data/qc-department/companies}"
       QC_DEPARTMENT_MANAGED: "false"
       QC_DEPARTMENT_URL: http://qc-department:3411
       QC_DEPARTMENT_GATEWAY_TOKEN: "${QC_DEPARTMENT_GATEWAY_TOKEN:?QC gateway token is required}"
@@ -51,6 +55,7 @@ services:
       qc-department:
         condition: service_healthy
     volumes:
+      - qc-api-data:${QC_DEPARTMENT_DATA_DIR:-/app/backend/data/qc-department/companies}
       - three-d-assets:/app/backend/data/three-d-printing-assets
       - document-assets:/app/backend/data/document-tools
       - assistant-assets:/app/backend/data/assistant
@@ -97,6 +102,7 @@ services:
     logging: *default-logging
 
 volumes:
+  qc-api-data:
   qc-department-data:
   postgres-data:
   three-d-assets:

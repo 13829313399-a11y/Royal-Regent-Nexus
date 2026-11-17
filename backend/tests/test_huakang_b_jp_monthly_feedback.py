@@ -1,3 +1,4 @@
+from app.services.huakang_b_jp import intake
 """Synthetic monthly enquiry layouts; no private mail or order data in Git."""
 from datetime import date, datetime
 from io import BytesIO
@@ -148,15 +149,15 @@ def test_multiple_item_packages_stay_unresolved_and_do_not_fall_back_to_global_o
     assert not any(row.get('pkg_from_ref') for row in result['orders'])
 
 
-def test_monthly_preview_requires_missing_commercial_fields_then_exports_all_44_columns(db):
+def test_monthly_missing_commercial_fields_are_optional_in_44_column_output(db):
     install(db)
     files = [('synthetic-monthly.eml', mail(monthly(), 'WM US monthly enquiry'))]
     parsed = preview(db, files)
     assert len(parsed['rows']) == 39 and parsed['failed_sources'] == []
     assert all(row['sub_item_t'] == row['baby_item'] for row in parsed['rows'])
     assert all(not row['carton_t'] and not row['price_t'] for row in parsed['rows'])
-    with pytest.raises(HTTPException):
-        export(db, parsed, files=files)
+    pending = intake.resolve_rows(parsed, [row['id'] for row in parsed['rows']], [])
+    assert all(row['generation_reminders'] for row in pending)
     changes = [{'id': row['id'], 'field': field, 'value': value} for row in parsed['rows']
                for field, value in [('carton_t', '2'), ('price_t', '3'), ('factory_price_t', '2.5')]]
     result = export(db, parsed, overrides=changes, files=files)
@@ -166,5 +167,5 @@ def test_monthly_preview_requires_missing_commercial_fields_then_exports_all_44_
     assert sheet.cell(2, 3).value == '880000000' and sheet.cell(2, 11).value == '71000'
     assert sheet.cell(2, 20).value == datetime(2027, 1, 20)
     assert sheet.cell(40, 20).value == datetime(2027, 3, 2)
-    assert all(row['manual_price_review'] for row in result.data['rows'])
+    assert all(row['review_status'] == 'pending' for row in result.data['rows'])
     assert export(db, parsed, overrides=changes, files=files).id == result.id

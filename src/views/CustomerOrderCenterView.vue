@@ -41,6 +41,11 @@ const orderWorkspace = ref<InstanceType<typeof CustomerOrderCenterWorkspace> | n
 const feedbackHub = ref<InstanceType<typeof ModuleFeedbackHub> | null>(null)
 const feedbackUnread = ref(0)
 const activeFactory = computed(() => appStore.activeProductionFactory)
+const initialCustomerCode = computed(() => route.query.factory === activeFactory.value.id
+  && route.query.customer === 'zuru' && ['huakang-a', 'huaxing'].includes(activeFactory.value.id) ? 'zuru' : '')
+watch(() => [initialCustomerCode.value, route.query.section], () => {
+  if (initialCustomerCode.value && route.query.section === 'import') activeSection.value = 'import'
+}, { immediate: true })
 const poTestBridge = computed(() => activeFactory.value.id === 'huakang-c' && isCuttingPoTestBridgeEnabled())
 const focusedOrderId = computed(() => route.query.factory === activeFactory.value.id
   && typeof route.query.order === 'string' && route.query.order.length <= 64 ? route.query.order : '')
@@ -218,12 +223,13 @@ function navigate(section: CustomerOrderCenterSection) {
         :factory-id="activeFactory.id"
         :factory-name="activeFactory.shortName"
         :focus-line-id="focusedOrderId"
+        :initial-customer-code="initialCustomerCode"
         @close-order="clearFocusedOrder"
         @navigate="navigate"
         @feedback="reportProblem"
       />
       <div v-if="activeSection === 'materials'" class="space-y-4">
-        <CartonQuickAssetLibrary :key="`quick-${activeFactory.id}`" :factory-id="activeFactory.id" audience="sales" :search="materialsSearch" />
+        <CartonQuickAssetLibrary v-model:search="materialsSearch" :key="`quick-${activeFactory.id}`" :factory-id="activeFactory.id" audience="sales" />
 
       </div>
       <HuakangBJPIntake v-if="activeSection === 'jp-intake' && activeFactory.id === 'huakang-b'"

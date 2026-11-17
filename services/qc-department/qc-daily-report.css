@@ -56,7 +56,6 @@ body:has(.page.active.qdr-active) #topbarKpis { display: none !important; }
 .qdr-footer .qdr-export { font-size: 12px; }
 .qdr-export:disabled { opacity: .55; cursor: default; }
 .qdr-empty, .qdr-message { padding: 20px 13px; color: var(--text-dim); }
-.qdr-pdf .qdr { --text-main:#202936; --text-hi:#172334; --text-dim:#47586d; --bg-card:#fff; --bg-hover:#f3f6f9; --border:#d8e0ea; --accent:#25568d; }
 @media (max-width: 760px) {
   .qdr-overview { grid-template-columns: minmax(0,1fr); }
   .qdr-expanded dl { grid-template-columns: repeat(3,minmax(0,1fr)); }

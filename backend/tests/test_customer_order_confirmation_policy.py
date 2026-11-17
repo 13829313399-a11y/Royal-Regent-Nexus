@@ -47,83 +47,20 @@ def test_duplicate_confirmation_defaults_off_in_production_and_on_elsewhere():
     assert testing.effective_customer_order_test_duplicate_confirmation_enabled
 
 
-def test_preview_exposes_duplicate_as_confirmation_when_test_policy_is_enabled(monkeypatch):
-    monkeypatch.setattr(
-        customer_order.settings,
-        "customer_order_test_duplicate_confirmation_enabled",
-        True,
-    )
-
-    preview = customer_order._apply_customer_order_confirmation_policy(deepcopy(PREVIEW))
-
-    issue = preview["rows"][0]["issues"][0]
-    assert preview["duplicate_confirmation_enabled"] is True
-    assert preview["confirmation_count"] == 1
-    assert issue["severity"] == "confirmation"
-    assert issue["can_skip"] is True
-    assert preview["rows"][0]["status"] == "warning"
-    assert preview["summary"] == {
-        "total": 1,
-        "valid": 0,
-        "warning": 1,
-        "blocked": 0,
-    }
+@pytest.mark.parametrize('enabled', [True, False])
+@pytest.mark.parametrize('authorized', [True, False])
+def test_duplicate_is_advisory_in_production_without_extra_confirmation(monkeypatch, enabled, authorized):
+    monkeypatch.setattr(customer_order.settings, 'customer_order_test_duplicate_confirmation_enabled', enabled)
+    preview = customer_order._apply_customer_order_confirmation_policy(deepcopy(PREVIEW), duplicate_confirmation_authorized=authorized)
+    assert preview['confirmation_count'] == 0
+    assert preview['summary'] == {'total': 1, 'valid': 0, 'warning': 1, 'blocked': 0}
+    assert preview['rows'][0]['issues'][0]['severity'] == 'warning'
+    assert customer_order._prepare_export_confirmation(None, None, 'huaxing', {'row-1|duplicate_reference|reference_no'}, '') == ''
 
 
-def test_preview_keeps_duplicate_blocked_when_test_policy_is_disabled(monkeypatch):
-    monkeypatch.setattr(
-        customer_order.settings,
-        "customer_order_test_duplicate_confirmation_enabled",
-        False,
-    )
-
-    preview = customer_order._apply_customer_order_confirmation_policy(deepcopy(PREVIEW))
-
-    issue = preview["rows"][0]["issues"][0]
-    assert preview["duplicate_confirmation_enabled"] is False
-    assert preview["confirmation_count"] == 0
-    assert issue["severity"] == "blocked"
-    assert issue["can_skip"] is False
-    assert issue["skip_label"] == ""
-    assert "当前环境未启用重复订单确认" in issue["message"]
-    assert preview["summary"]["blocked"] == 1
-
-
-def test_preview_keeps_duplicate_blocked_without_independent_confirmation_permission(monkeypatch):
-    monkeypatch.setattr(
-        customer_order.settings,
-        "customer_order_test_duplicate_confirmation_enabled",
-        True,
-    )
-
-    preview = customer_order._apply_customer_order_confirmation_policy(
-        deepcopy(PREVIEW),
-        duplicate_confirmation_authorized=False,
-    )
-
-    issue = preview["rows"][0]["issues"][0]
-    assert preview["duplicate_confirmation_enabled"] is True
-    assert preview["duplicate_confirmation_authorized"] is False
-    assert preview["confirmation_count"] == 0
-    assert issue["severity"] == "blocked"
-    assert issue["can_skip"] is False
-    assert "没有重复订单确认权限" in issue["message"]
-
-
-def test_export_rejects_duplicate_confirmation_key_when_policy_is_disabled(monkeypatch):
-    monkeypatch.setattr(
-        customer_order.settings,
-        "customer_order_test_duplicate_confirmation_enabled",
-        False,
-    )
-
-    with pytest.raises(HTTPException) as exc_info:
-        customer_order._ensure_test_duplicate_confirmation_allowed(
-            {"row-1|duplicate_reference|reference_no"}
-        )
-
-    assert exc_info.value.status_code == 409
-    assert "未启用" in exc_info.value.detail
+def test_legacy_duplicate_acknowledgement_does_not_require_test_mode(monkeypatch):
+    monkeypatch.setattr(customer_order.settings, 'customer_order_test_duplicate_confirmation_enabled', False)
+    customer_order._ensure_test_duplicate_confirmation_allowed({'row-1|duplicate_reference|reference_no'})
 
 
 def test_confirmation_key_limit_supports_large_test_batches():
@@ -132,11 +69,12 @@ def test_confirmation_key_limit_supports_large_test_batches():
     assert customer_order._parse_skipped_issue_keys(json.dumps(keys)) == set(keys)
 
 
-def test_confirmation_reason_is_required_only_when_an_issue_is_confirmed():
+def test_confirmation_reason_is_optional_even_when_fields_are_corrected():
     assert customer_order._validated_confirmation_reason(set(), "") == ""
-    with pytest.raises(HTTPException) as exc_info:
-        customer_order._validated_confirmation_reason({"row-1|missing|field"}, "测试")
-    assert exc_info.value.status_code == 400
+    assert customer_order._validated_confirmation_reason({"row-1|missing|field"}, "测试") == "测试"
+    assert customer_order._validated_confirmation_reason({"row-1|missing|field"}, "") == ""
+    with pytest.raises(HTTPException):
+        customer_order._validated_confirmation_reason(set(), "字" * 501)
 
     assert customer_order._validated_confirmation_reason(
         {"row-1|missing|field"},
@@ -166,12 +104,12 @@ def test_hard_blocker_exposes_manual_edit_and_confirm_release_paths():
     finalized = customer_order._apply_customer_order_confirmation_policy(preview)
     issue = finalized["rows"][0]["issues"][0]
 
-    assert issue["severity"] == "blocked"
+    assert issue["severity"] == "warning"
     assert issue["can_skip"] is True
     assert issue["can_edit"] is True
     assert issue["edit_field"] == "inspection_result"
     assert issue["edit_label"] == "验货结果"
-    assert issue["skip_label"] == "资料暂缺，已人工核对并确认放行"
+    assert issue["skip_label"] == "已查看提醒（可选）"
 
 
 def test_manual_override_payload_is_typed_and_bound_to_current_preview():

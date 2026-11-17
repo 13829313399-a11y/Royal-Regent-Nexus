@@ -32,9 +32,12 @@ export function normalizeCuts(cuts: number[], extent: number) {
     ),
   ].sort((a, b) => a - b)
 }
+export function normalizeGroupSeparators(input: string): string {
+  return input.replace(/；/g, ';').replace(/，/g, ',')
+}
 export function parseGroups(input: string, pages: number): number[][] {
   if (!input.trim()) return []
-  return input.split(';').map((group) =>
+  return normalizeGroupSeparators(input).split(';').map((group) =>
     group.split(',').flatMap((token) => {
       const match = token.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/)
       if (!match) throw new Error('分组格式应为 1-3;4,6,5')

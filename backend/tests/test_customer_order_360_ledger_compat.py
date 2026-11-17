@@ -47,7 +47,7 @@ def seed(db, **kwargs):
 
 
 @pytest.mark.parametrize("production", ["", REFERENCE, RELEASE])
-def test_old_number_mapping_reimport_requires_explicit_revision_without_duplicate(db, production):
+def test_old_number_mapping_keeps_original_and_preserves_corrected_source_as_variant(db, production):
     old = payload()
     old["rows"][0]["production_no"] = production
     line = db.get(Line, save(db, old)["items"][0]["id"])
@@ -57,16 +57,15 @@ def test_old_number_mapping_reimport_requires_explicit_revision_without_duplicat
     assert service.identity_for(old["rows"][0], "360") == service.identity_for(incoming["rows"][0], "360")
     assert service.resolve_existing_line(db, "huakang-a", "360", incoming["rows"][0]).id == line.id
 
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
 
-    assert error.value.status_code == 409
-    assert "旧 360 单号对应关系" in error.value.detail and "关联原订单" in error.value.detail
     assert line.data == before and line.identity_key == old_key
     assert line.version == line.revision == 1
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
-    assert db.scalar(select(func.count()).select_from(Version)) == 1
-    assert db.scalar(select(func.count()).select_from(Source)) == 1
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
+    assert db.scalar(select(func.count()).select_from(Version)) == 2
+    assert db.scalar(select(func.count()).select_from(Source)) == 2
 
 
 def test_explicit_reconciliation_keeps_id_shipments_history_and_sent_snapshots(db):
@@ -114,9 +113,9 @@ def test_explicit_reconciliation_keeps_id_shipments_history_and_sent_snapshots(d
         assert "unit_price_hkd" not in item.snapshot and "lineage" not in item.snapshot
     assert save(db, payload(corrected=True))["items"][0]["id"] == line.id
     assert line.version == 2 and db.scalar(select(func.count()).select_from(Dispatch)) == 4
-    with pytest.raises(HTTPException) as error:
-        save(db, payload())
-    assert error.value.status_code == 409
+    variant = save(db, payload())
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.version == 2 and line.data["po_no"] == CUSTOMER_PO
 
 
@@ -127,9 +126,9 @@ def test_number_mapping_prompt_does_not_disguise_quantity_or_date_changes(db, ch
     line = seed(db)
     incoming = payload(corrected=True)
     incoming["rows"][0].update(change)
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
-    assert error.value.status_code == 409 and "旧 360 单号对应关系" not in error.value.detail
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.version == 1 and line.data["po_no"] == REFERENCE
 
 
@@ -144,11 +143,11 @@ def test_corrected_order_real_customer_field_changes_still_block(db, change):
     before = deepcopy(line.data)
     incoming = payload(corrected=True)
     incoming["rows"][0].update(change)
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
-    assert error.value.status_code == 409 and "旧 360 单号对应关系" not in error.value.detail
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.version == line.revision == 1 and line.data == before
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
 
 
 @pytest.mark.parametrize("factory,customer", [("huaxing", "360"), ("huakang-a", "green-toys")])
@@ -156,9 +155,9 @@ def test_prompt_is_limited_to_huakang_a_360_and_does_not_relax_other_customers(d
     line = seed(db, factory=factory, customer=customer)
     assert save(db, payload(factory=factory, customer=customer))["items"][0]["id"] == line.id
     incoming = payload(corrected=True, factory=factory, customer=customer)
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
-    assert error.value.status_code == 409 and "旧 360 单号对应关系" not in error.value.detail
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.version == 1 and line.data["contract_no"] == RELEASE
 
 

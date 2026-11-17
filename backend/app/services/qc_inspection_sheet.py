@@ -17,6 +17,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.config import settings
 from app.services import qc_workflow as wf
+from app.services import qc_photo_assets as photo_assets
 from app.services.qc_inspection_results import RESULTS, EDITABLE_RESULTS, ALLOWED_INSPECTION_RESULTS
 
 # Shared Excel MIME for summary/report downloads.
@@ -25,7 +26,7 @@ MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 COLUMNS = [('date', '日期'), ('customer', '客户'), ('poNo', 'PO#'), ('country', '出口国'),
            ('productNo', '货号'), ('productName', '产品名称'), ('quantity', '数量'),
            ('unitsPerCarton', '装箱'), ('cartonCount', '箱数'), ('production', '生产'),
-           ('agency', '机构'), ('customerPo', '客PO#'), ('completion', '完成情况'),
+           ('agency', '机构'), ('customerPo', '客PO#'),
            ('result', '验货结果'), ('remark', '备注'), ('photos', '照片'), ('improvement', '改进措施'), ('submit', '提交')]
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS entries (
@@ -51,9 +52,11 @@ def store(write=False, review=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=20)
     conn.row_factory = sqlite3.Row
+    new_files=[]
+    file_token=photo_assets.created_files.set(new_files)
     try:
         conn.execute('PRAGMA foreign_keys=ON')
-        conn.executescript(SCHEMA)
+        conn.executescript(SCHEMA + photo_assets.SCHEMA)
         migrate_pending(conn)
         conn.execute("CREATE TABLE IF NOT EXISTS entry_details (entry_id TEXT PRIMARY KEY REFERENCES entries(id), improvement TEXT NOT NULL DEFAULT '', submitted_at TEXT NOT NULL DEFAULT '', submitted_snapshot TEXT NOT NULL DEFAULT '');")
         migrate_review(conn)
@@ -67,8 +70,10 @@ def store(write=False, review=False):
         conn.commit()
     except Exception:
         conn.rollback()
+        for file in new_files:file.unlink(missing_ok=True)
         raise
     finally:
+        photo_assets.created_files.reset(file_token)
         conn.close()
 
 
@@ -77,7 +82,7 @@ REVIEW_FIELDS = {'responsible': ('responsible', 200), 'firstResponsible': ('firs
     'inspectionFactory': ('inspection_factory', 200), 'reportStatus': ('report_status', 200), 'customerRequirements': ('customer_requirements', 20000), 'shipDate': ('ship_date', 10),
     'contractNo': ('contract_no', 200), 'customerCode': ('customer_code', 200), 'shippedQuantity': ('shipped_quantity', 32)}
 REVIEW_EXECUTION_FIELDS = ('actualDate','actualQuantity','sampleQuantity','inspector','institution','reportNo',
-    'reportMissingReason','resultExplanation','defects','measurements')
+    'reportMissingReason','resultExplanation','defects','measurements','inspectorId','institutionId','analysisReason')
 
 
 def clean_review_execution(raw):
@@ -85,8 +90,10 @@ def clean_review_execution(raw):
         raise HTTPException(422,'验货补录字段不正确')
     # Reuse existing date, quantity and structured-detail validation. Only supplied
     # fields override the immutable source; result/remark have their own editors.
-    defaults={k:[] if k in {'defects','measurements'} else '' for k in REVIEW_EXECUTION_FIELDS}
-    clean=wf.clean_execution({**defaults,**raw,'result':'PENDING','remark':''})
+    extra={'inspectorId','institutionId','analysisReason'}
+    defaults={k:[] if k in {'defects','measurements'} else '' for k in REVIEW_EXECUTION_FIELDS if k not in extra}
+    clean=wf.clean_execution({**defaults,**{k:v for k,v in raw.items() if k not in extra},'result':'PENDING','remark':''})
+    clean.update({k:wf.text(raw[k],4000 if k=='analysisReason' else 255) for k in extra if k in raw})
     return {k:clean[k] for k in raw}
 
 
@@ -118,6 +125,8 @@ def base_fields(source):
     start, end = wf.source_date(source.get('dateFrom')), wf.source_date(source.get('dateTo'))
     result.update(dateFrom=start, dateTo=end or start, sourceRevision=source.get('sourceRevision'),
                   sourceNote=scalar(source.get('sourceRemark', source.get('remark', ''))))
+    # Keep the captured source contract stable even though completion is no longer a display column.
+    result['completion'] = source.get('completion', '')
     result['sourceRecord'] = {k:v for k,v in source.items() if k not in {'input','tasks'}}
     result['actualDate'] = wf.source_date(source.get('actualDate'))
     for key in ('inspectionProblem','otherRemark','inspectionFactory','reportStatus','responsible','firstResponsible','secondResponsible'):
@@ -181,11 +190,13 @@ def candidates(factory, records, tasks, sources, examples=(), references=()):
         base['actualDate']=wf.source_date(execution.get('actualDate'))
         base['referenceData']=bool(task.get('reference') or task.get('legacyId') in references)
         remark = execution.get('remark','')
-        if base.get('testData') and remark == (task.get('legacyOriginal') or {}).get('remark'):
-            remark = base['sourceNote']
+        if task.get('legacyId') is not None:
+            if base.get('testData') and remark == (task.get('legacyOriginal') or {}).get('remark'):
+                remark = base['sourceNote']
+            remark = remark or base['sourceNote']
         base['testData'] = bool(base.get('testData') or task.get('testEntry'))
         key = 'legacy:'+str(task['legacyId']) if task.get('legacyId') is not None else 'workflow:'+task['id']
-        result.append((key,base,execution.get('result',''),remark or base['sourceNote'],task['attachments']))
+        result.append((key,base,execution.get('result',''),remark,task['attachments']))
     # Sales schedules enter this journal only through an explicitly created task.
     return result
 
@@ -204,16 +215,34 @@ def reversal_metadata(event):
             'reason':json.loads(event['diff']).get('reason','')}
 
 
-def reversal_notifications(factory, actor, body=None):
-    """Read receipts live on existing audit events, isolated by authenticated user."""
+def review_notifications(factory, actor, body=None, *, action):
+    """Read unseen audit events for the destination page and authenticated user."""
+    destination = {'revoke': 'pending', 'return-to-inspection': 'returned_to_inspection'}[action]
     user=str(actor['id'])
     if body is not None and (set(body)!={'eventIds'} or not isinstance(body['eventIds'],list)
             or any(type(i) is not int or i<1 for i in body['eventIds'])):
         raise HTTPException(422,'通知事件编号不正确')
     with store(body is not None) as conn:
-        events=list(conn.execute("SELECT c.* FROM changes c JOIN entries e ON e.id=c.entry_id JOIN entry_details d ON d.entry_id=e.id WHERE e.factory=? AND c.action='revoke' AND d.review_state='pending' ORDER BY c.id",(factory,)))
+        events = list(conn.execute("""
+            SELECT c.* FROM changes c
+            JOIN entries e ON e.id=c.entry_id
+            JOIN entry_details d ON d.entry_id=e.id
+            WHERE e.factory=? AND c.action=? AND d.review_state=?
+              AND (c.action='revoke' OR c.id=(
+                  SELECT max(previous.id) FROM changes previous
+                  WHERE previous.entry_id=c.entry_id AND previous.action=c.action))
+            ORDER BY c.id
+        """, (factory, action, destination)))
         if body is None:
-            return {'items':[reversal_metadata(e) for e in events if user not in json.loads(e['notification_seen_by'])]}
+            items = []
+            for event in events:
+                if user in json.loads(event['notification_seen_by']):
+                    continue
+                item = reversal_metadata(event)
+                if action == 'return-to-inspection':
+                    item['productNo'] = json.loads(event['snapshot']).get('productNo', '')
+                items.append(item)
+            return {'items': items}
         wanted=set(body['eventIds']);seen=[]
         # Only acknowledgment metadata changes; original event/snapshot stays immutable.
         for event in events:
@@ -223,6 +252,10 @@ def reversal_notifications(factory, actor, body=None):
             conn.execute('UPDATE changes SET notification_seen_by=? WHERE id=?',(wf.dump(users),event['id']))
             seen.append(event['id'])
         return {'shown':seen}
+
+
+def reversal_notifications(factory, actor, body=None):
+    return review_notifications(factory, actor, body, action='revoke')
 
 
 def unpack(conn, row, include_photos=True):
@@ -238,7 +271,6 @@ def unpack(conn, row, include_photos=True):
     if extension and extension['inspection_problem'] is not None:base['inspectionProblem']=extension['inspection_problem']
     for key, (column, _) in REVIEW_FIELDS.items():
         if extension and extension[column] is not None:base[key]=extension[column]
-    if base['submittedAt']:base['completion']='待审核' if base['reviewState']=='pending' else '已完成'
     base['legacyCompleted']=bool(not base['flowVersion'] and (base['submittedAt'] or base.get('legacyReviewState')=='approved'))
     if not base['flowVersion'] and base.get('legacyReviewState') in {'pending','returned'}:base['reviewState']='pending'
     if extension and extension['submitted_snapshot']:
@@ -261,11 +293,11 @@ def unpack(conn, row, include_photos=True):
     for key in ('contractNo','customerCode','shippedQuantity'):
         if not extension or extension[REVIEW_FIELDS[key][0]] is None:
             base[key]=scalar((base.get('sourceRecord') or {}).get(key))
-    if base['reviewState']=='returned_to_inspection':base['completion']='退回重新验货'
     raw=base.get('sourceResult','')
     cumulative_result=raw if raw in {'REJ','COND','HOLD'} and not base.get('resultOverride') else row['result']
     return {**base, 'id':row['id'], 'sourceKey':row['source_key'], 'cumulativeResult':cumulative_result,
-            'result':row['result'], 'remark':row['remark'], 'revision':row['revision'],
+            'result':row['result'], 'completion':'已完成' if row['result']=='PASS' else '未完成',
+            'remark':row['remark'], 'revision':row['revision'],
             'updatedAt':row['updated_at'], 'photos':photos}
 
 
@@ -322,13 +354,15 @@ def sync(factory, rows, copy_photos=True):
                     continue
                 try:
                     content = wf.read_file(factory,base['workflowId'],attachment['id'])['content']
-                    content = normalize_photo(content)
+                    details=photo_assets.inspect(content)
                 except (HTTPException,OSError):
                     # Keep the original attachment untouched and retry on a later ordinary page refresh.
                     # An unavailable historical photo must not hide readable inspection text.
                     photo_warnings.add(entry_id);continue
+                photo_id=uuid4().hex
                 conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',
-                    (uuid4().hex,entry_id,attachment['name'],content,sha256(content).hexdigest(),origin,wf.now()))
+                    (photo_id,entry_id,attachment['name'],b'',sha256(content).hexdigest(),origin,wf.now()))
+                photo_assets.save(conn,photo_id,content,details=details)
                 conn.execute('UPDATE entries SET revision=revision+1 WHERE id=?',(entry_id,))
         # Preserve existing inspection history. Pre-push source caches stay hidden until
         # a confirmed task adopts them above, including any previously saved input.
@@ -385,13 +419,22 @@ def save(factory, entry_id, body, actor, review=False):
             raise HTTPException(422,'此字段请填写单行文字')
     if 'shipDate' in body:wf.day(body['shipDate'])
     if 'shippedQuantity' in body:wf.number(body['shippedQuantity'])
-    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate'}):
-        raise HTTPException(422,'验货台只允许补充实际验货日期')
+    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate','sampleQuantity','inspectorId'}):
+        raise HTTPException(422,'验货台只允许填写实际日期、抽查数量和检验人员')
     execution_patch=clean_review_execution(body['inspectionExecution']) if 'inspectionExecution' in body else {}
     with store(True) as conn:
         row=get(conn,factory,entry_id);ensure_editable(conn,row,review)
         revision(row,body)
         before=unpack(conn,row)
+        from app.services import qc_options
+        for id_key, name_key, group in [('inspectorId','inspector','inspectors'),('institutionId','institution','institutions')]:
+            old=before.get('inspectionExecution') or {}
+            if id_key in execution_patch:
+                identity=execution_patch[id_key]
+                execution_patch[name_key] = old.get(name_key,'') if identity and identity==old.get(id_key) else qc_options.selection(factory,actor,group,identity)
+            elif name_key in execution_patch and execution_patch[name_key] != old.get(name_key):
+                # Legacy text-only clients must not retain another person's stable ID.
+                execution_patch[id_key]=''
         if all(body.get(k,before.get(k,''))==before.get(k,'') for k in ('result','remark','improvement','inspectionProblem',*REVIEW_FIELDS)) and all((before.get('inspectionExecution') or {}).get(k)==v for k,v in execution_patch.items()):return before
         conn.execute("INSERT INTO entry_details(entry_id,improvement,inspection_problem) VALUES(?,?,?) ON CONFLICT(entry_id) DO UPDATE SET improvement=excluded.improvement,inspection_problem=excluded.inspection_problem",
             (entry_id,body.get('improvement',before['improvement']),body.get('inspectionProblem',before.get('inspectionProblem'))))
@@ -443,23 +486,27 @@ def add_photo(factory, entry_id, body, actor, review=False):
         content=base64.b64decode(body['content'],validate=True)
     except (ValueError,TypeError,binascii.Error):
         raise HTTPException(422,'照片内容无效') from None
-    content=normalize_photo(content)
-    digest=sha256(content).hexdigest()
+    details=photo_assets.inspect(content)
+    digest=details['sha256']
     with store(True) as conn:
         row=get(conn,factory,entry_id)
         origin='upload:'+body['requestKey']
         previous=conn.execute('SELECT digest FROM photos WHERE entry_id=? AND origin=?',(entry_id,origin)).fetchone()
         if previous:
-            if previous['digest'] != digest:
+            if previous['digest'] != digest and previous['digest'] != sha256(normalize_photo(content)).hexdigest():
                 raise HTTPException(409,'同一上传编号不能用于不同照片')
             return unpack(conn,row)
         ensure_editable(conn,row,review)
         before=unpack(conn,row)
         revision(row,body)
-        count,total=conn.execute('SELECT count(*),coalesce(sum(length(content)),0) FROM photos WHERE entry_id=? AND removed=0',(entry_id,)).fetchone()
+        count,total=conn.execute('''SELECT count(*),coalesce(sum(coalesce(json_extract(a.metadata,'$.sourceSize'),
+            json_extract(a.metadata,'$.original.size'),length(p.content))),0)
+            FROM photos p LEFT JOIN photo_assets a ON a.photo_id=p.id WHERE p.entry_id=? AND p.removed=0''',(entry_id,)).fetchone()
         if count>=50 or total+len(content)>100*1024*1024:
             raise HTTPException(413,'每条任务最多 50 张、100 MB')
-        conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',(uuid4().hex,entry_id,name,content,digest,origin,wf.now()))
+        photo_id=uuid4().hex
+        conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',(photo_id,entry_id,name,b'',digest,origin,wf.now()))
+        photo_assets.save(conn,photo_id,content,'preview-only',details=details)
         return changed(conn,row,'upload',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
 
 
@@ -474,13 +521,28 @@ def remove_photo(factory, entry_id, body, actor, review=False):
         return changed(conn,row,'remove-photo',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
 
 
-def read_photo(factory, entry_id, photo_id):
+def photo_info(factory, entry_id):
     with store() as conn:
         get(conn,factory,entry_id)
-        row=conn.execute('SELECT content FROM photos WHERE id=? AND entry_id=? AND removed=0',(photo_id,entry_id)).fetchone()
-        if row is None:
-            raise HTTPException(404,'照片不存在')
-        return row['content']
+        rows=conn.execute('''SELECT p.id,p.name,a.metadata
+            FROM photos p LEFT JOIN photo_assets a ON a.photo_id=p.id
+            WHERE p.entry_id=? AND p.removed=0 ORDER BY p.created_at,p.id''',(entry_id,))
+        return {'items': [
+            {'id':r['id'],'name':r['name'],'originalAvailable':bool(r['metadata'] and json.loads(r['metadata']).get('original'))}
+            for r in rows
+        ]}
+
+
+def read_photo_version(factory, entry_id, photo_id, variant='preview'):
+    with store() as conn:
+        get(conn,factory,entry_id)
+        row=conn.execute('SELECT * FROM photos WHERE id=? AND entry_id=? AND removed=0',(photo_id,entry_id)).fetchone()
+        if row is None:raise HTTPException(404,'照片不存在')
+        return photo_assets.read(conn,row,variant)
+
+
+def read_photo(factory, entry_id, photo_id):
+    return read_photo_version(factory,entry_id,photo_id)[0]
 
 
 def migrate_pending(conn):
@@ -599,13 +661,18 @@ def review_batch(factory, action, body, actor):
 
 
 def return_to_inspection(factory, entry_id, body, actor, sources=None):
-    if set(body)!={'revision','requestKey'} or type(body['revision']) is not int or not re.fullmatch(r'[a-f0-9-]{16,64}',str(body['requestKey'])):
+    if not {'revision','requestKey'} <= set(body) or set(body)-{'revision','requestKey','reason'} or type(body['revision']) is not int or not re.fullmatch(r'[a-f0-9-]{16,64}',str(body['requestKey'])):
         raise HTTPException(422,'退回请求或版本不正确')
+    reason = body.get('reason', '')
+    if not isinstance(reason, str) or len(reason)>20000 or any(ord(c)<32 and c not in '\n\r\t' for c in reason):
+        raise HTTPException(422,'退回原因最多20000字')
     with store(True,review=True) as conn:
         row=get(conn,factory,entry_id);before=unpack(conn,row)
         receipt=conn.execute('SELECT * FROM changes WHERE entry_id=? AND request_key=?',(entry_id,body['requestKey'])).fetchone()
         if receipt:
-            if receipt['action']!='return-to-inspection' or json.loads(receipt['actor']).get('id')!=actor['id'] or json.loads(receipt['diff']).get('expectedRevision')!=body['revision']:
+            previous = json.loads(receipt['diff'])
+            if (receipt['action'] != 'return-to-inspection' or json.loads(receipt['actor']).get('id') != actor['id']
+                    or previous.get('expectedRevision') != body['revision'] or previous.get('reason', '') != reason):
                 raise HTTPException(409,'同一请求编号不能用于不同操作')
             return {'item':before,'eventId':receipt['id'],'replayed':True}
         revision(row,body)
@@ -613,7 +680,7 @@ def return_to_inspection(factory, entry_id, body, actor, sources=None):
         source=next((s for s in sources or [] if s['id']==before.get('sourceId')),before.get('sourceRecord') or {})
         if source.get('sourceStatus')=='cancelled':raise HTTPException(409,'来源订单已取消，不能退回重新验货')
         conn.execute("UPDATE entry_details SET review_state='returned_to_inspection',flow_version=2 WHERE entry_id=?",(entry_id,))
-        item=changed(conn,row,'return-to-inspection',actor,before=before,location='审核中心 · 待审核',request_key=body['requestKey'],extra={'expectedRevision':body['revision']})
+        item=changed(conn,row,'return-to-inspection',actor,before=before,location='审核中心 · 待审核',request_key=body['requestKey'],extra={'expectedRevision':body['revision'],'reason':reason})
         # Defensive deactivation preserves the existing archive and all past payloads.
         identity=sha256((factory+'\0entry:'+entry_id).encode()).hexdigest()[:32]
         conn.execute('INSERT INTO qsum.changes(record_id,created_at,payload) SELECT id,?,payload FROM qsum.records WHERE id=? AND factory=? AND active=1',(wf.now(),identity,factory))

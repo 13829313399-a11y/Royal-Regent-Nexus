@@ -5,6 +5,7 @@ from sqlalchemy import func, or_, select
 
 from app.models import three_d_printing as m
 from app.services import three_d_printing as business
+from app.services.three_d_telemetry_storage import recent_detail
 
 
 def page(
@@ -177,14 +178,15 @@ def printer_detail(db, printer_id):
             {
                 "id": e.id,
                 "state": e.state,
-                "progress": e.progress,
-                "current_file": e.current_file,
+                "progress": progress,
+                "current_file": current_file,
                 "error_text": e.error_text,
                 "connection_session_id": e.connection_session_id,
                 "observed_at": e.observed_at,
                 "received_at": e.received_at,
             }
             for e in events
+            for progress, current_file in [recent_detail(e)]
         ],
         "commands": [business.command_out(c) for c in commands],
     }

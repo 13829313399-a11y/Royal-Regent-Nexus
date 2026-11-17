@@ -86,16 +86,21 @@ def test_import_is_persisted_idempotent_and_preserves_extensions(db):
         assert service.get_line(second, "huaxing", line.id).quantity == Decimal("10000")
 
 
-def test_batch_conflict_rolls_back_all_new_rows_and_files(db):
-    ingest(db)
+def test_batch_conflict_preserves_old_line_and_saves_source_variant(db):
+    original = ingest(db)
     payload = preview()
-    payload["rows"] = [preview(reference="NEW")["rows"][0], preview(qty="3")["rows"][0]]
-    with pytest.raises(HTTPException) as error:
-        api.transaction(db, lambda: service.import_preview(db, preview=payload,
-            files=[("NEW.pdf", b"NEW", "formal")], source_kind="formal", actor="a", reason="", controls={}))
-    assert error.value.status_code == 409
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
-    assert db.scalar(select(func.count()).select_from(Source)) == 1
+    payload['rows'] = [preview(reference='NEW')['rows'][0], preview(qty='3')['rows'][0], preview(qty='7')['rows'][0]]
+    def save():
+        return api.transaction(db, lambda: service.import_preview(db, preview=payload,
+            files=[('NEW.pdf', b'NEW', 'formal')], source_kind='formal', actor='a', reason='', controls={}))
+    result = save()
+    assert result['created_count'] == 3 and result['advisory_count'] == 2
+    assert original.quantity == Decimal('10000') and original.version == 1
+    assert {r['quantity'] for r in result['items']} == {'10000', '3', '7'}
+    again = save()
+    assert again['created_count'] == 0
+    assert {r['id'] for r in again['items']} == {r['id'] for r in result['items']}
+    assert db.scalar(select(func.count()).select_from(Line)) == 4
 
 
 def test_cross_factory_identity_and_access_are_separate(db):
@@ -188,9 +193,9 @@ def test_formal_po_reconciliation_keeps_id_shipments_old_references_and_notifies
     assert db.scalar(select(func.count()).select_from(Line)) == 1
     assert db.scalar(select(Dispatch).where(Dispatch.version == 2)).snapshot["carton_mark"] == "CUSTOMER MARK"
     assert db.scalar(select(Dispatch).where(Dispatch.version == 2)).snapshot["label"] == "EXACT LABEL"
-    with pytest.raises(HTTPException):
-        api.transaction(db, lambda: ingest(db, preview()))
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
+    variant = api.transaction(db, lambda: ingest(db, preview()))
+    assert variant.id != line.id and line.quantity == 9000 and line.shipped_quantity == 3000
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
     assert len(service.detail(db, line)["sources"]) == 2
 
 
@@ -432,7 +437,11 @@ def test_restore_rechecks_recipients_after_lock_without_partial_commit(client, d
     assert db.scalar(select(func.count()).select_from(Version)) == 2
 
 
-def test_cancel_rechecks_dispatch_authority_after_lock(client, db, monkeypatch):
+@pytest.mark.parametrize('action, fields', [
+    ('cancel', {'reason': '误取消订单'}),
+    ('amend', {'quantity': '9000', 'requested_ship_date': '2026-10-02', 'note': '追加备注', 'reason': '测试变更通知'}),
+])
+def test_change_rechecks_dispatch_authority_after_lock(client, db, monkeypatch, action, fields):
     line = ingest(db)
     client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write"])
     original = service.lock_line
@@ -441,11 +450,12 @@ def test_cancel_rechecks_dispatch_authority_after_lock(client, db, monkeypatch):
         service.publish(db, line, ["pmc"], "并发发送人员")
         db.flush()
     monkeypatch.setattr(service, "lock_line", locked_with_dispatch)
-    response = client.post(f"/api/customer-order-ledger/lines/{line.id}/cancel?factory_id=huaxing",
-        json={"expected_revision": line.revision, "reason": "误取消订单"})
+    response = client.post(f"/api/customer-order-ledger/lines/{line.id}/{action}?factory_id=huaxing",
+        json={"expected_revision": line.revision, **fields})
     assert response.status_code == 403
     db.refresh(line)
     assert (line.status, line.revision) == ("active", 1)
+    assert not db.scalar(select(Dispatch.id).where(Dispatch.line_id == line.id))
 
 
 def test_api_permission_and_factory_isolation(client, db):
@@ -533,10 +543,9 @@ def test_api_reconciles_changed_po_against_schedule_containing_old_quantity(clie
     changed = create_unified_customer_preview(**changed_args)
     api.mapping._finalize_preview(changed, received_date=args["received_date"], current_user=user(["read", "write"]), factory_id="huaxing")
     conflict = next(i for row in changed["rows"] for i in row["issues"] if i["code"] == "existing_quantity_conflict")
-    assert conflict["can_skip"] is False
-    # Ordinary new-order export may not confirm a changed quantity away.
-    with pytest.raises(Exception, match="阻断"):
-        export_unified_customer_schedule(**changed_args)
+    assert conflict["severity"] == "warning"
+    output_schedule, _, warnings = export_unified_customer_schedule(**changed_args)
+    assert output_schedule.startswith(b"PK") and warnings["summary"]["blocked"] == 0
     keys = [i["skip_key"] for row in changed["rows"] for i in row["issues"] if i.get("can_skip")]
     response = client.post("/api/customer-order-ledger/imports/disney", data={
         "factory_id": "huaxing", "received_date": args["received_date"], "confirmed": "true",

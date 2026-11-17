@@ -88,7 +88,7 @@ MAX_CONFIRMATION_REASON_LENGTH = 500
 MIN_CONFIRMATION_REASON_LENGTH = 4
 MAX_MANUAL_OVERRIDES = MAX_BATCH_PO_FILES * 200
 MAX_MANUAL_OVERRIDE_VALUE_LENGTH = 500
-PREVIEW_FINGERPRINT_VERSION = "customer-order-preview-fingerprint-v1"
+PREVIEW_FINGERPRINT_VERSION = "customer-order-preview-fingerprint-v2-reminders"
 TEST_DUPLICATE_ISSUE_CODES = frozenset({
     "duplicate_reference",
     "existing_order_line",
@@ -385,15 +385,9 @@ def _is_test_duplicate_issue_key(issue_key: str) -> bool:
 
 
 def _ensure_test_duplicate_confirmation_allowed(issue_keys: set[str]) -> None:
-    if (
-        settings.effective_customer_order_test_duplicate_confirmation_enabled
-        or not any(_is_test_duplicate_issue_key(key) for key in issue_keys)
-    ):
-        return
-    raise HTTPException(
-        status_code=409,
-        detail="当前环境未启用测试阶段重复订单确认；请移除重复订单后重新解析",
-    )
+    # Compatibility hook for packaged clients. Business duplicates are reminders
+    # in every environment; this does not authorize changing an existing order.
+    return None
 
 
 def _has_duplicate_confirmation_permission(
@@ -413,54 +407,10 @@ def _apply_customer_order_confirmation_policy(
     *,
     duplicate_confirmation_authorized: bool = True,
 ) -> dict:
-    enabled = settings.effective_customer_order_test_duplicate_confirmation_enabled
-    preview["duplicate_confirmation_enabled"] = enabled
+    # Business reminders apply in production and to ordinary import/export users.
+    # Duplicate acknowledgement is optional; it never grants mutation privileges.
+    preview["duplicate_confirmation_enabled"] = False
     preview["duplicate_confirmation_authorized"] = duplicate_confirmation_authorized
-    confirmation_allowed = enabled and duplicate_confirmation_authorized
-    confirmation_rows = 0
-
-    for row in preview.get("rows", []):
-        issues = row.get("issues", [])
-        duplicate_issues = [
-            issue for issue in issues
-            if issue.get("code") in TEST_DUPLICATE_ISSUE_CODES
-        ]
-        if not duplicate_issues:
-            continue
-
-        if confirmation_allowed:
-            for issue in duplicate_issues:
-                if issue.get("can_skip"):
-                    issue["severity"] = "confirmation"
-            if any(issue.get("severity") == "confirmation" for issue in issues):
-                confirmation_rows += 1
-                if not any(issue.get("severity") == "blocked" for issue in issues):
-                    row["status"] = "warning"
-                    row["status_label"] = "待确认"
-        else:
-            for issue in duplicate_issues:
-                issue["severity"] = "blocked"
-                issue["can_skip"] = False
-                issue["skip_label"] = ""
-                message = str(issue.get("message") or "").rstrip("；。")
-                reason = (
-                    "当前环境未启用重复订单确认"
-                    if not enabled
-                    else "当前账号没有重复订单确认权限"
-                )
-                issue["message"] = f"{message}；{reason}"
-            row["status"] = "blocked"
-            row["status_label"] = "阻断"
-
-    rows = preview.get("rows", [])
-    preview["confirmation_count"] = confirmation_rows if confirmation_allowed else 0
-    summary = preview.setdefault("summary", {})
-    summary.update({
-        "total": len(rows),
-        "valid": sum(row.get("status") == "valid" for row in rows),
-        "warning": sum(row.get("status") == "warning" for row in rows),
-        "blocked": sum(row.get("status") == "blocked" for row in rows),
-    })
     return decorate_manual_resolution_policy(preview)
 
 
@@ -508,10 +458,6 @@ def _finalize_preview(
 
 def _validated_confirmation_reason(issue_keys: set[str], raw_reason: str) -> str:
     reason = raw_reason.strip()
-    if not issue_keys:
-        return ""
-    if len(reason) < MIN_CONFIRMATION_REASON_LENGTH:
-        raise HTTPException(status_code=400, detail="存在人工确认或跳过项时，请填写至少 4 个字的确认原因")
     if len(reason) > MAX_CONFIRMATION_REASON_LENGTH:
         raise HTTPException(status_code=400, detail="确认原因不能超过 500 个字符")
     return reason
@@ -524,14 +470,6 @@ def _prepare_export_confirmation(
     issue_keys: set[str],
     raw_reason: str,
 ) -> str:
-    _ensure_test_duplicate_confirmation_allowed(issue_keys)
-    if any(_is_test_duplicate_issue_key(key) for key in issue_keys):
-        _ensure_customer_order_permission(
-            db,
-            current_user,
-            "customer_order:duplicate_confirm",
-            factory_id,
-        )
     return _validated_confirmation_reason(issue_keys, raw_reason)
 
 

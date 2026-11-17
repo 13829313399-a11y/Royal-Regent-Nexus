@@ -53,6 +53,20 @@ def save(row,result='',remark=''):
     return sheet.save('huaxing',row['id'],{'revision':row['revision'],'result':result,'remark':remark},ACTOR)
 
 
+def test_pushed_schedule_source_note_does_not_prefill_qc_remark():
+    order=source('imported')
+    order['remark']='原始业务备注'
+    order['sourceRemark']='原始业务备注\n原表完成情况：PASS'
+    row,=sheet.sync('huaxing',pushed_candidates([order]))['items']
+    assert row['remark']==''
+    assert row['sourceNote']==order['sourceRemark']
+    assert row['sourceRecord']['remark']==order['remark']
+    save(row,'PASS','验货员手填备注')
+    refreshed,=sheet.sync('huaxing',pushed_candidates([{**order,'sourceRemark':'业务更新备注'}]))['items']
+    assert refreshed['remark']=='验货员手填备注'
+    assert refreshed['sourceNote']=='业务更新备注'
+
+
 def photo(row,color='red',key=None,fmt='PNG'):
     output=BytesIO();Image.new('RGB',(160,90),color).save(output,format=fmt)
     body={'revision':row['revision'],'name':'现场照片.'+fmt.lower(),'content':base64.b64encode(output.getvalue()).decode(),'requestKey':key or uuid4().hex}
@@ -194,3 +208,41 @@ def test_pending_migrates_old_check_without_losing_photos_changes_or_ids():
     assert saved['result']==saved['cumulativeResult']=='PENDING'
     assert len(saved['photos'])==1
     with sheet.store() as conn:assert sheet.get(conn,'huaxing',a['id'])['result']=='PENDING'
+
+
+@pytest.mark.parametrize('result,completion', [('PASS','已完成'),('FAIL','未完成'),('PENDING','未完成'),('LG','未完成'),('','未完成')])
+def test_completion_uses_result_without_changing_review_membership_or_source(result,completion):
+    row=seed()[0]
+    updated=save(row,result=result)
+    assert updated['completion']==completion
+    assert updated['reviewState']==row['reviewState'] and updated['submittedAt']==row['submittedAt']
+    assert updated['sourceRecord']==row['sourceRecord']
+    assert 'completion' not in {key for key,_ in sheet.COLUMNS}
+    if result:
+        submitted=sheet.submit('huaxing',row['id'],{'revision':updated['revision']},ACTOR)
+        assert submitted['completion']==completion and submitted['reviewState']=='pending'
+        response=sheet.review_batch('huaxing','confirm',{'entries':[{'id':row['id'],'revision':submitted['revision']}],'requestKey':uuid4().hex},ACTOR)
+        assert response['succeeded']==1
+        approved=response['results'][0]['item']
+        assert approved['completion']==completion and approved['reviewState']=='approved'
+        response=sheet.review_batch('huaxing','revoke',{'entries':[{'id':row['id'],'revision':approved['revision']}],'requestKey':uuid4().hex},ACTOR)
+        pending=response['results'][0]['item']
+        assert pending['completion']==completion and pending['reviewState']=='pending'
+        returned=sheet.return_to_inspection('huaxing',row['id'],{'revision':pending['revision'],'requestKey':uuid4().hex,'reason':'测试退回'},ACTOR)['item']
+        assert returned['completion']==completion and returned['reviewState']=='returned_to_inspection'
+
+
+def test_hidden_completion_preserves_source_base_and_revision_on_resync():
+    original=source('completion-history')
+    original['completion']='旧业务完成描述'
+    candidates=pushed_candidates([original])
+    before=sheet.sync('huaxing',candidates)['items'][0]
+    with sheet.store() as conn:
+        captured=conn.execute('SELECT base FROM entries WHERE id=?',(before['id'],)).fetchone()[0]
+    assert sheet.base_fields(original)['completion']=='旧业务完成描述'
+    after=sheet.sync('huaxing',pushed_candidates([original]))['items'][0]
+    assert after['revision']==before['revision']
+    assert after['completion']=='未完成'
+    assert after['sourceRecord']['completion']=='旧业务完成描述'
+    with sheet.store() as conn:
+        assert conn.execute('SELECT base FROM entries WHERE id=?',(before['id'],)).fetchone()[0]==captured

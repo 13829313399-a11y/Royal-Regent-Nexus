@@ -24,7 +24,7 @@ JOB_SECONDS = 240
 RESULT_SECONDS = 1800
 MAX_RESULT_BYTES = 32 * 1024 * 1024
 MAX_JOBS = 8
-OPERATIONS = {"parse", "combined_export", "sheets", "master_parse", "demand_parse", "order_import_read"}
+OPERATIONS = {"parse", "combined_export", "sheets", "master_parse", "demand_parse", "order_import_read", "issue_photo"}
 _slot = BoundedSemaphore(1)
 _registry_lock = Lock()
 _jobs = {}
@@ -69,9 +69,10 @@ def _compute(folder, operation, args):
     with source.open("wb") as stream:
         # Only private server-generated IPC, never deserialize uploaded bytes.
         pickle.dump((operation, args), stream, protocol=5)
-    budget = Budget()
+    photo = operation == "issue_photo"
+    budget = Budget(deadline=time.monotonic() + (45 if photo else JOB_SECONDS))
     code = _run_worker([sys.executable, "-m", "app.workers.carton_file_job",
-        str(source), str(result), str(budget.deadline), str(LOCK_PATH)], budget)
+        str(source), str(result), str(budget.deadline), str(LOCK_PATH), str(2 if photo else 1)], budget)
     if not result.is_file() or result.stat().st_size > MAX_RESULT_BYTES:
         raise HTTPException(422, "纸箱文件超出处理资源限制，请拆分后重试；未保存导入批次。")
     with result.open("rb") as stream:

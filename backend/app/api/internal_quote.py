@@ -67,6 +67,8 @@ from app.services.internal_quote_alternative_groups import copy_alternative_grou
 from app.services.internal_quote_alternative_export import export_alternatives
 from app.services.internal_quote_series_export import export_series
 from app.services.internal_quote_document_clone import DocumentCloneRequest, clone_document
+from app.schemas.internal_quote_alternatives import DocumentFreezeRequest
+from app.services.internal_quote_freeze import get_freeze_options, set_document_frozen
 from app.services.internal_quote_alternatives import (
     list_alternatives, copy_alternative, select_alternative, archive_alternative, report_alternative, issue_alternative,
 )
@@ -224,6 +226,17 @@ def post_alternative_archive(quote_id: str, payload: AlternativeArchiveRequest, 
 def post_alternative_reported(quote_id: str, payload: InternalQuoteRevisionRequest, request: Request,
                               db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     return report_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.get("/{quote_id}/freeze-options")
+def freeze_options(quote_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return get_freeze_options(db, quote_id, user)
+
+
+@router.post("/{quote_id}/freeze", response_model=list[InternalQuoteOut])
+def freeze_document(quote_id: str, payload: DocumentFreezeRequest, request: Request,
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return set_document_frozen(db, quote_id, payload, user, request)
 
 
 @router.post("/{quote_id}/direct-issue", response_model=InternalQuoteExportFileOut)

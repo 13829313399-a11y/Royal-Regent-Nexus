@@ -1,0 +1,307 @@
+using Dapper;
+using IndoShipping.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Mvc;
+
+namespace IndoShipping.Api.Controllers;
+
+[ApiController]
+[Route("api/materials")]
+public class MaterialsController(ISqlConnectionFactory factory) : ControllerBase
+{
+    [HttpGet]
+    public async Task<IActionResult> List([FromQuery] string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            return BadRequest(new { error = "code required" });
+        using var c = factory.Create();
+        var rows = await c.QueryAsync(@"
+            SELECT m.*, i.data_url AS image
+            FROM materials m LEFT JOIN images i ON i.id = m.image_id
+            WHERE m.product_code=@code ORDER BY m.sort_order, m.id", new { code });
+        return Ok(rows);
+    }
+
+    // 按 id 批量取物料（走货明细核对警告需要已存明细的 gross/net 等）
+    [HttpGet("by-ids")]
+    public async Task<IActionResult> ByIds([FromQuery] string? ids)
+    {
+        var idList = (ids ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => int.TryParse(s, out var n) ? n : (int?)null)
+            .Where(n => n.HasValue).Select(n => n!.Value).Distinct().ToArray();
+        if (idList.Length == 0) return Ok(Array.Empty<object>());
+        using var c = factory.Create();
+        var rows = await c.QueryAsync(@"
+            SELECT m.*, i.data_url AS image, t.related_product_code, t.tool_kind
+            FROM materials m LEFT JOIN images i ON i.id = m.image_id
+            LEFT JOIN tool_materials t ON t.material_id=m.id
+            WHERE m.id = ANY(@ids)
+            ORDER BY array_position(@ids, m.id)", new { ids = idList });
+        foreach (IDictionary<string, object> row in rows)
+            if (row["tool_kind"] != null) row["product_code"] = row["related_product_code"];
+        return Ok(rows);
+    }
+
+    public class DimsBody
+    {
+        public decimal? length { get; set; }
+        public decimal? width { get; set; }
+        public decimal? height { get; set; }
+        public decimal? weight_per_carton { get; set; }
+        public decimal? gross_per_pc { get; set; }
+        public decimal? net_per_pc { get; set; }
+        public string? unit_kg { get; set; }
+    }
+
+    // 走货明细写回货号库：仅尺寸/毛净重/单位（旧系统 s3SaveMatField/s3SaveUnit 行为）
+    [HttpPut("{id:int}/dims")]
+    public async Task<IActionResult> UpdateDims(int id, [FromBody] DimsBody body)
+    {
+        using var c = factory.Create();
+        c.Open();
+        using var tx = c.BeginTransaction();
+        var unit = await c.QuerySingleOrDefaultAsync<string?>(@"
+            UPDATE materials SET
+                length=@length, width=@width, height=@height,
+                weight_per_carton=@weight_per_carton, gross_per_pc=@gross_per_pc, net_per_pc=@net_per_pc,
+                unit_kg=COALESCE(NULLIF(@unit_kg,''),'KGM')
+            WHERE id=@id
+            RETURNING unit_kg",
+            new
+            {
+                id,
+                length = body.length ?? 0m, width = body.width ?? 0m, height = body.height ?? 0m,
+                weight_per_carton = body.weight_per_carton ?? 0m,
+                gross_per_pc = body.gross_per_pc ?? 0m, net_per_pc = body.net_per_pc ?? 0m,
+                unit_kg = body.unit_kg ?? "",
+            }, tx);
+        if (unit is null)
+        {
+            tx.Rollback();
+            return NotFound(new { error = "物料不存在" });
+        }
+        var linked = await c.ExecuteAsync(@"
+            UPDATE po_items SET ship_unit=@unit
+            WHERE material_id=@id AND ship_unit IS DISTINCT FROM @unit",
+            new { id, unit }, tx);
+        await c.ExecuteAsync("UPDATE tool_materials SET revision=revision+1 WHERE material_id=@id", new { id }, tx);
+        tx.Commit();
+        return Ok(new { ok = true, id, unit_links_updated = linked });
+    }
+
+    public class BulkBody
+    {
+        public List<Dictionary<string, object?>>? materials { get; set; }
+    }
+
+    [HttpPut("bulk/by-code")]
+    public Task<IActionResult> BulkReplaceByCode([FromQuery] string code, [FromBody] BulkBody body) => BulkReplace(code, body);
+
+    [HttpPut("bulk/{code}")]
+    public async Task<IActionResult> BulkReplace(string code, [FromBody] BulkBody body)
+    {
+        var list = body?.materials ?? new();
+        using var c = factory.Create();
+        c.Open();
+        using var tx = c.BeginTransaction();
+        try
+        {
+            var existing = (await c.QueryAsync<int>("SELECT id FROM materials WHERE product_code=@code", new { code }, tx)).ToHashSet();
+            var keepIds = new HashSet<int>();
+            var enteredTranslations = new List<(string Keyword, string English)>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                var m = list[i];
+                object? Get(string k) => m.TryGetValue(k, out var v) ? v : null;
+                decimal Dec(string k) => decimal.TryParse(Get(k)?.ToString(), out var d) ? d : 0m;
+                decimal usageVal = Dec("usage");
+                if (usageVal == 0m) usageVal = Dec("usage_qty");
+                if (usageVal == 0m) usageVal = 1m;
+                int? id = int.TryParse(Get("id")?.ToString(), out var pid) ? pid : (int?)null;
+                var enteredZh = (Get("nameZh")?.ToString() ?? "").Trim();
+                var enteredEn = (Get("nameEn")?.ToString() ?? "").Trim();
+                if (enteredZh.Length > 0 && enteredEn.Length > 0)
+                    enteredTranslations.Add((enteredZh, enteredEn));
+
+                if (id is int x && existing.Contains(x))
+                {
+                    await c.ExecuteAsync(@"
+                        UPDATE materials SET item_no=@itemNo, name_zh=@nameZh, name_en=@nameEn, spec=@spec,
+                            category=@category, material_code=@materialCode, hs_cn=@hsCN, hs_id=@hsID,
+                            supplier=@supplier, customs_company=@customsCompany, unit_kg=@unitKg,
+                            gross_per_pc=@grossPerPc, net_per_pc=@netPerPc, length=@length, width=@width, height=@height,
+                            qty_per_carton=@qtyPerCarton, weight_per_carton=@weightPerCarton,
+                            image_id=@imageId, active=@active, sort_order=@sortOrder, usage_qty=@usageQty
+                        WHERE id=@id",
+                        new
+                        {
+                            id = x,
+                            itemNo = Get("itemNo")?.ToString() ?? "",
+                            nameZh = Get("nameZh")?.ToString() ?? "",
+                            nameEn = Get("nameEn")?.ToString() ?? "",
+                            spec = Get("spec")?.ToString() ?? "",
+                            category = Get("category")?.ToString() ?? "",
+                            materialCode = Get("materialCode")?.ToString() ?? "",
+                            hsCN = Get("hsCN")?.ToString() ?? "",
+                            hsID = Get("hsID")?.ToString() ?? "",
+                            supplier = Get("supplier")?.ToString() ?? "",
+                            customsCompany = Get("customsCompany")?.ToString() ?? "",
+                            unitKg = Get("unitKg")?.ToString() ?? "KGM",
+                            grossPerPc = Dec("grossPerPc"),
+                            netPerPc = Dec("netPerPc"),
+                            length = Dec("length"),
+                            width = Dec("width"),
+                            height = Dec("height"),
+                            qtyPerCarton = Dec("qtyPerCarton"),
+                            weightPerCarton = Dec("weightPerCarton"),
+                            imageId = Get("imageId")?.ToString(),
+                            active = Get("active") is bool b ? b : true,
+                            sortOrder = i,
+                            usageQty = usageVal,
+                        }, tx);
+                    keepIds.Add(x);
+                }
+                else
+                {
+                    var newId = await c.ExecuteScalarAsync<int>(@"
+                        INSERT INTO materials(product_code, item_no, name_zh, name_en, spec, category, material_code,
+                            hs_cn, hs_id, supplier, customs_company, unit_kg,
+                            gross_per_pc, net_per_pc, length, width, height, qty_per_carton, weight_per_carton,
+                            image_id, active, sort_order, usage_qty)
+                        VALUES (@product_code, @itemNo, @nameZh, @nameEn, @spec, @category, @materialCode,
+                            @hsCN, @hsID, @supplier, @customsCompany, @unitKg,
+                            @grossPerPc, @netPerPc, @length, @width, @height, @qtyPerCarton, @weightPerCarton,
+                            @imageId, @active, @sortOrder, @usageQty)
+                        RETURNING id",
+                        new
+                        {
+                            product_code = code,
+                            itemNo = Get("itemNo")?.ToString() ?? "",
+                            nameZh = Get("nameZh")?.ToString() ?? "",
+                            nameEn = Get("nameEn")?.ToString() ?? "",
+                            spec = Get("spec")?.ToString() ?? "",
+                            category = Get("category")?.ToString() ?? "",
+                            materialCode = Get("materialCode")?.ToString() ?? "",
+                            hsCN = Get("hsCN")?.ToString() ?? "",
+                            hsID = Get("hsID")?.ToString() ?? "",
+                            supplier = Get("supplier")?.ToString() ?? "",
+                            customsCompany = Get("customsCompany")?.ToString() ?? "",
+                            unitKg = Get("unitKg")?.ToString() ?? "KGM",
+                            grossPerPc = Dec("grossPerPc"),
+                            netPerPc = Dec("netPerPc"),
+                            length = Dec("length"),
+                            width = Dec("width"),
+                            height = Dec("height"),
+                            qtyPerCarton = Dec("qtyPerCarton"),
+                            weightPerCarton = Dec("weightPerCarton"),
+                            imageId = Get("imageId")?.ToString(),
+                            active = Get("active") is bool b ? b : true,
+                            sortOrder = i,
+                            usageQty = usageVal,
+                        }, tx);
+                    keepIds.Add(newId);
+                }
+            }
+
+            foreach (var oldId in existing.Where(e => !keepIds.Contains(e)))
+            {
+                var refd = await c.ExecuteScalarAsync<int>(
+                    "SELECT (SELECT COUNT(*) FROM po_items WHERE material_id=@id)+(SELECT COUNT(*) FROM outbound WHERE material_id=@id)+(SELECT COUNT(*) FROM shipment_items WHERE material_id=@id)",
+                    new { id = oldId }, tx);
+                if (refd > 0)
+                    await c.ExecuteAsync("UPDATE materials SET active=false WHERE id=@id", new { id = oldId }, tx);
+                else
+                    await c.ExecuteAsync("DELETE FROM materials WHERE id=@id", new { id = oldId }, tx);
+            }
+
+            // 物料库的单位是走货单位的唯一来源。保存货号物料后，同步所有已关联的采购明细，
+            // 避免采购单保留旧单位或被手工改成与货号库不一致的值。
+            var unitLinksUpdated = keepIds.Count == 0 ? 0 : await c.ExecuteAsync(@"
+                UPDATE po_items p
+                SET ship_unit=COALESCE(NULLIF(m.unit_kg,''),'PCE')
+                FROM materials m
+                WHERE p.material_id=m.id
+                  AND m.id = ANY(@ids)
+                  AND p.ship_unit IS DISTINCT FROM COALESCE(NULLIF(m.unit_kg,''),'PCE')",
+                new { ids = keepIds.ToArray() }, tx);
+
+            // Learn only confirmed Chinese + English pairs. Existing dictionary choices are
+            // never silently overwritten; conflicting user input is returned to the UI.
+            var learned = 0;
+            var conflicts = new List<object>();
+            var seenThisSave = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (keyword, english) in enteredTranslations)
+            {
+                if (seenThisSave.TryGetValue(keyword, out var firstEnglish))
+                {
+                    if (!string.Equals(firstEnglish, english, StringComparison.OrdinalIgnoreCase))
+                        conflicts.Add(new { keyword, savedEnglish = firstEnglish, enteredEnglish = english });
+                    continue;
+                }
+                seenThisSave[keyword] = english;
+
+                var savedEnglish = await c.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT english_name FROM dict_translation WHERE keyword=@keyword",
+                    new { keyword }, tx);
+                if (savedEnglish is not null)
+                {
+                    if (!string.Equals(savedEnglish.Trim(), english, StringComparison.OrdinalIgnoreCase))
+                        conflicts.Add(new { keyword, savedEnglish, enteredEnglish = english });
+                    continue;
+                }
+
+                learned += await c.ExecuteAsync(@"
+                    INSERT INTO dict_translation(keyword, english_name, active, source, priority, updated_at)
+                    VALUES (@keyword, @english, true, 'material-save', 100, now())
+                    ON CONFLICT (keyword) DO NOTHING", new { keyword, english }, tx);
+            }
+
+            tx.Commit();
+            return Ok(new { ok = true, count = list.Count, unit_links_updated = unitLinksUpdated, translation_learned = learned, translation_conflicts = conflicts });
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
+    }
+
+    [HttpPatch("{id:int}")]
+    public async Task<IActionResult> Patch(int id, [FromBody] Dictionary<string, object?> body)
+    {
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "name_zh","name_en","spec","category","supplier","customs_company","unit_kg",
+            "gross_per_pc","net_per_pc","length","width","height","qty_per_carton","weight_per_carton",
+            "hs_cn","hs_id","active","image_id","usage_qty"
+        };
+        body ??= new();
+        var cols = body.Keys.Where(k => allowed.Contains(k)).ToList();
+        if (cols.Count == 0) return Ok(new { ok = true, noop = true });
+        using var c = factory.Create();
+        var sets = string.Join(",", cols.Select(k => $"{k}=@{k}"));
+        var dyn = new DynamicParameters();
+        foreach (var k in cols) dyn.Add(k, ParamValues.Normalize(body[k]));
+        dyn.Add("id", id);
+        c.Open();
+        using var tx = c.BeginTransaction();
+        var n = await c.ExecuteAsync($"UPDATE materials SET {sets} WHERE id=@id", dyn, tx);
+        await c.ExecuteAsync("UPDATE tool_materials SET revision=revision+1 WHERE material_id=@id", new { id }, tx);
+        if (n == 0)
+        {
+            tx.Rollback();
+            return NotFound(new { error = "物料不存在" });
+        }
+        var linked = 0;
+        if (cols.Contains("unit_kg", StringComparer.OrdinalIgnoreCase))
+        {
+            linked = await c.ExecuteAsync(@"
+                UPDATE po_items p
+                SET ship_unit=COALESCE(NULLIF(m.unit_kg,''),'PCE')
+                FROM materials m
+                WHERE p.material_id=m.id AND m.id=@id
+                  AND p.ship_unit IS DISTINCT FROM COALESCE(NULLIF(m.unit_kg,''),'PCE')",
+                new { id }, tx);
+        }
+        tx.Commit();
+        return Ok(new { ok = true, unit_links_updated = linked });
+    }
+}

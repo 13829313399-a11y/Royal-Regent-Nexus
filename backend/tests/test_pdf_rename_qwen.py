@@ -71,6 +71,48 @@ def test_caixing_cloud_validates_labelled_values_without_fabricating_boxes(cloud
     assert all(not field.text_boxes for field in preview.items[0].fields)
 
 
+@pytest.mark.parametrize('uncertain', [['Batch no.'], ['report_no'], ['报告号'], ['报告号（Batch no.）']])
+def test_caixing_cloud_keeps_clear_fields_when_batch_is_uncertain(cloud, monkeypatch, uncertain):
+    monkeypatch.setattr(qwen.qwen_ocr, 'recognize', Mock(return_value=response([
+        'Playmates International Company Limited', 'SHIPMENT QUALITY INSPECTION REPORT',
+        'Batch no.: RR6015P', 'Item number: 57812NMC4', 'P/O no.: 1931771',
+        'Quantity (Pcs): 2,800', 'DATE: 3/04/2026'], uncertain=uncertain)))
+    preview = build_pdf_rename_preview(CaixingInspectionRule(), (PdfRenameSource('old.pdf', pdf()),))
+    row = preview.items[0]
+    assert row.status == 'ERROR' and not row.target_file_name and row.filename_template
+    fields = {field.key: field for field in row.fields}
+    assert fields['report_no'].normalized_text == '' and fields['report_no'].validation_error
+    assert fields['item_no'].normalized_text == '57812'
+    assert fields['po_numbers'].normalized_text == '1931771'
+    assert fields['quantity'].normalized_text == '2800'
+    assert fields['report_date'].normalized_text == '2026.3.4'
+    assert 'Batch no.: RR6015P' in fields['report_header'].raw_text
+
+
+def test_caixing_cloud_unbound_uncertainty_cannot_release_apparently_valid_fields(cloud, monkeypatch):
+    monkeypatch.setattr(qwen.qwen_ocr, 'recognize', Mock(return_value=response([
+        'Playmates International Company Limited', 'SHIPMENT QUALITY INSPECTION REPORT',
+        'Batch no.: RR6015P', 'Item number: 57812NMC4', 'P/O no.: 1931771',
+        'Quantity (Pcs): 2,800', 'DATE: 3/04/2026'], uncertain=['unknown field'])))
+    row = build_pdf_rename_preview(CaixingInspectionRule(), (PdfRenameSource('old.pdf', pdf()),)).items[0]
+    assert row.status == 'ERROR' and not row.target_file_name
+    assert len([field for field in row.fields if field.validation_error]) == 5
+
+
+@pytest.mark.parametrize('marker', ['Batch no.: [无法辨认]', '[无法辨认]'])
+def test_caixing_unreadable_marker_remains_blocking_without_provider_uncertainty_list(cloud, monkeypatch, marker):
+    lines = ['Playmates International Company Limited', 'SHIPMENT QUALITY INSPECTION REPORT',
+             'Item number: 57812NMC4', 'P/O no.: 1931771', 'Quantity (Pcs): 2,800', 'DATE: 3/04/2026']
+    if marker == '[无法辨认]':
+        lines.append('Batch no.: RR6015P')
+    monkeypatch.setattr(qwen.qwen_ocr, 'recognize', Mock(return_value=response([*lines, marker])))
+    row = build_pdf_rename_preview(CaixingInspectionRule(), (PdfRenameSource('old.pdf', pdf()),)).items[0]
+    assert row.status == 'ERROR' and not row.target_file_name
+    errors = {field.key for field in row.fields if field.validation_error}
+    assert errors == ({'report_no'} if marker.startswith('Batch no.') else
+                      {'report_no', 'item_no', 'po_numbers', 'quantity', 'report_date'})
+
+
 @pytest.mark.parametrize("lines", [
     ["S/C:-52963+52973", "S/C:-52989"],
     ["S/C:-52963+529 14452923"],

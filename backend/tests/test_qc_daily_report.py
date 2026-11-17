@@ -96,6 +96,15 @@ def test_report_and_template_download(monkeypatch, tmp_path):
         sheet = wb.active
         assert [cell.value for cell in sheet[3][:13]] == report['headers']
         assert {str(r) for r in sheet.merged_cells.ranges} == {'A1:M1','A2:M2'}
+        assert (sheet.max_row, sheet.max_column) == (9, 13)
+        assert sheet.freeze_panes == 'E4'
+        assert sheet.sheet_view.topLeftCell == 'A1'
+        assert sheet.sheet_view.pane.topLeftCell == 'E4'
+        assert sheet.page_setup.orientation == 'landscape'
+        assert sheet.page_setup.fitToWidth == 1 and sheet.page_setup.fitToHeight == 0
+        assert sheet.print_title_rows == '$1:$3'
+        assert '$A$1:$M$9' in str(sheet.print_area)
+        assert sheet['E4'].alignment.wrap_text and sheet['M4'].alignment.wrap_text
         for row, item in enumerate(report['rows'], 4):
             assert [sheet.cell(row,col).value for col in range(1,14)] == [
                 None if value == '' else value for value in item['values']]
@@ -109,3 +118,21 @@ def test_report_and_template_download(monkeypatch, tmp_path):
         grant_permission_override('qc_inspector', 'qc_inspection:report_export', effect='deny', factory_id='huaxing', department='qc')
         newbase = client.get(health).json()['frame_url']
         assert client.get(newbase+'api/daily-report/export', params=params).status_code == 403
+
+
+def test_daily_layout_preserves_edge_values_and_empty_report():
+    from app.services.qc_daily_report import workbook
+    values = ['示例客户', '0000123', 'UK', '=001-ABC', '中文长产品名称 / Long product ' * 5,
+              0, '', '', 'PASS', '第一行问题\n第二行问题', '', '', '长备注与问题独立\n' * 8]
+    data = dict(date='2026-11-13', period='daily', rows=[{'values': values}])
+    sheet = load_workbook(BytesIO(workbook(data))).active
+    assert [sheet.cell(4, col).value for col in range(1, 14)] == [None if v == '' else v for v in values]
+    assert sheet['B4'].data_type == sheet['D4'].data_type == 's'
+    assert sheet['F4'].data_type == 'n' and sheet['F4'].value == 0
+    assert sheet.row_dimensions[4].height >= 136
+    values[5] = 12.3456
+    assert load_workbook(BytesIO(workbook(data))).active['F4'].value == 12.3456
+    empty = load_workbook(BytesIO(workbook({**data, 'rows': []}))).active
+    assert (empty.max_row, empty.max_column) == (3, 13)
+    assert empty.sheet_view.topLeftCell == 'A1'
+    assert '$A$1:$M$3' in str(empty.print_area)

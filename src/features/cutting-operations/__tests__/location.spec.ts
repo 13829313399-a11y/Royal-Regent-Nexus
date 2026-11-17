@@ -60,7 +60,7 @@ describe('monthly reconciliation destinations',()=>{
   it('opens the same order and summary date from the planning production summary',async()=>{
     vi.mocked(ordersApi.read).mockResolvedValue({ ...order, current: { ...order.current!, data: { ...order.current!.data, planning: {} } } })
     const router = await open('planning', true)
-    const link = wrapper.findAll('a').find(a => a.text() === '进入每日填数查看明细')!
+    const link = wrapper.findAll('a').find(a => a.text() === '进入每日记录查看明细')!
     await link.trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/modules/production/cutting/reporting')
@@ -101,17 +101,18 @@ describe('monthly reconciliation destinations',()=>{
   it.each([403,404])('separates reporting order lookup failure (%i) from module availability and recovers to the list',async status=>{
     const router = await open('reporting')
     vi.mocked(ordersApi.read).mockRejectedValueOnce({response:{status,data:{detail:'关联订单无法查看'}}})
-    await router.push(cuttingDestination('missing','', 'reporting'))
+    const missing = cuttingDestination('missing','', 'reporting')
+    await router.push({...missing,query:{...missing.query,day:'2026-10-14',task_day:'2026-10-13'}})
     await flushPromises()
     expect(wrapper.text()).toContain('无法定位关联订单')
     expect(wrapper.text()).toContain('关联订单无法查看')
-    expect(wrapper.text()).not.toContain('每日填数尚未启用')
+    expect(wrapper.text()).not.toContain('每日记录尚未启用')
     expect(wrapper.text()).not.toContain('TARGET-ORDER')
-    await wrapper.findAll('a').find(a=>a.text()==='返回订单列表')!.trigger('click')
+    await wrapper.findAll('a').find(a=>a.text()==='返回当日任务')!.trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c'})
-    expect(ordersApi.list).toHaveBeenCalledWith(1, '')
-    expect(wrapper.text()).toContain('已签收订单')
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',day:'2026-10-13'})
+    expect(ordersApi.list).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('当日任务')
     expect(wrapper.text()).not.toContain('无法定位关联订单')
   })
   it('ignores an earlier order response after query navigation',async()=>{

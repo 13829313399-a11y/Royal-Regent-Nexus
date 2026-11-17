@@ -3,12 +3,14 @@
     #qstats-root * { box-sizing:border-box; }
     #qstats-root button,#qstats-root select { font:inherit; }
     #qstats-root .qc-content { padding:23px; }
-    #qstats-root .qc-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:18px; }
-    #qstats-root h1 { font-size:24px; line-height:1.3; margin:0 0 5px; font-weight:600; }
-    #qstats-root .qc-subtitle { color:var(--qc-dim); font-size:12px; }
-    #qstats-root .qc-preview { color:var(--qc-dim); border:1px solid var(--qc-line); border-radius:5px; padding:4px 8px; font-size:11px; white-space:nowrap; }
     #qstats-root .qc-filter { background:var(--qc-paper); border:1px solid var(--qc-line); border-radius:9px; padding:15px 16px 12px; }
-    #qstats-root .qc-filter-fields { display:grid; grid-template-columns:1fr 1fr 1fr 1.65fr auto; gap:12px; align-items:end; }
+    #qstats-root .qc-filter-fields { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; }
+    #qstats-root .qc-filter-fields > label { display:flex; align-items:center; gap:8px; white-space:nowrap; }
+    #qstats-root .qc-year-field select { width:100px; }
+    #qstats-root .qc-client-field select { width:180px; }
+    #qstats-root .qc-year-field select { background:color-mix(in srgb,var(--qc-paper) 90%,var(--qc-pass)); color:var(--qc-pass); }
+    #qstats-root #qstats-reset { border-color:transparent; color:var(--qc-pass); background:transparent; padding:0 6px; }
+    #qstats-root #qstats-reset:hover { background:var(--qc-head); }
     #qstats-root label { display:grid; gap:6px; min-width:0; font-size:12px; color:var(--qc-dim); }
     #qstats-root select { width:100%; height:38px; border:1px solid var(--qc-line); border-radius:6px; background:var(--qc-paper); color:var(--qc-ink); padding:0 9px; min-width:0; }
     #qstats-root select:disabled { background:var(--qc-bg); opacity:.65; }
@@ -33,10 +35,7 @@
     #qstats-root td { padding:var(--qc-row-pad) 7px; border-bottom:1px solid var(--qc-line); text-align:center; }
     #qstats-root .qc-month-table td + td,#qstats-root .qc-month-table th + th { border-left:1px solid var(--qc-line); }
     #qstats-root .qc-month-table tr:last-child td { border-bottom:0; }
-    #qstats-root .qc-month-table tbody tr.selected td { background:var(--qc-tint); }
     #qstats-root .qc-month-table tbody tr:hover td { background:var(--qc-head); }
-    #qstats-root .qc-month-link { color:var(--qc-blue); background:none; border:0; padding:0; white-space:nowrap; }
-    #qstats-root .qc-month-link:disabled { color:var(--qc-dim); opacity:.65; }
     #qstats-root .qc-month-table tfoot td { font-weight:600; background:var(--qc-head); border-top:1px solid var(--qc-line); }
     #qstats-root .qc-empty { color:var(--qc-dim); }
     #qstats-root .qc-chart-panel { min-width:0; padding:18px 16px; display:flex; flex-direction:column; }
@@ -53,7 +52,6 @@
     #qstats-root .qc-bars { position:absolute; inset:12px 0 26px 35px; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:5px; align-items:end; }
     #qstats-root .qc-bar-slot { height:100%; position:relative; display:flex; flex-direction:column; justify-content:end; align-items:center; }
     #qstats-root .qc-bar-hit { width:100%; height:100%; position:relative; background:transparent; border:0; padding:0; display:flex; flex-direction:column; justify-content:end; align-items:center; }
-    #qstats-root .qc-bar-hit:disabled { opacity:.55; }
     #qstats-root .qc-bar-fill { width:70%; min-width:4px; border-radius:3px 3px 0 0; background:var(--qc-rate-green); transition:height .18s ease,background-color .18s ease; display:block; position:relative; }
     #qstats-root .qc-bar-hit:hover .qc-bar-fill { filter:brightness(1.14); }
     #qstats-root .qc-bar-label { position:absolute; top:-20px; left:50%; transform:translateX(-50%); color:var(--qc-ink); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -106,7 +104,6 @@ body.qstats-shell .nav-item .nav-icon svg { width:16px; height:16px; }
 #qstats-root { container-type:inline-size; }
 #qstats-root .qstats-empty-row { text-align:center; padding:32px; }
 #qstats-root .qc-detail-table td { vertical-align:top; }
-#qstats-root .qc-preview { margin-left:auto; }
 #qstats-root .qc-reset { white-space:nowrap; }
 
 /* Report proportions follow the accepted compact workbook layout. */
@@ -118,9 +115,11 @@ body.qstats-shell .nav-item { min-height:36px; padding:8px; gap:7px; font-size:1
 body.qstats-shell .topbar { background:var(--qs-sidebar-paper); border-bottom:1px solid var(--qs-sidebar-line); box-shadow:none; backdrop-filter:none; }
 body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-shadow:none; border-radius:6px; }
 #qstats-root .qc-content { padding:22px 24px; }
-#qstats-root .qc-heading { margin-bottom:16px; }
-#qstats-root h1 { letter-spacing:-.5px; }
-#qstats-root .qc-filter { padding:14px 16px 12px; }
+#qstats-root .qc-filter { display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px; padding:10px 12px; }
+#qstats-root .qc-filter-fields { flex:1 1 auto; min-width:0; }
+#qstats-root .report-type-slot { flex:0 0 104px; margin:0; padding:0; }
+#qstats-root .report-type-slot > #reportTypeSelect { width:104px; height:38px; }
+#qstats-root .qstats-status { flex:0 0 100%; order:3; margin:0; }
 #qstats-root :is(select,.qc-reset) { box-shadow:none; background-image:none; }
 #qstats-root select { appearance:auto; }
 #qstats-root .qc-metrics { margin:16px 0; padding:16px 0; }
@@ -130,11 +129,10 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 #qstats-root .qc-month-table { min-width:0; }
 #qstats-root .qc-month-table th { padding:10px 5px; }
 #qstats-root .qc-month-table td { padding:7px 5px; }
-#qstats-root .qc-month-link { font-size:11px; line-height:16.5px; }
 #qstats-root .qc-chart-panel { border-top:0; }
 #qstats-root .qc-chart-lines .qc-gridline:not(:last-child) { border-top-style:dashed; }
 #qstats-root .qc-bar-fill { max-width:32px; }
-#qstats-root :is(button,select):focus-visible { outline:2px solid var(--qc-blue); outline-offset:2px; }
+#qstats-root :is(button,select,.qc-bar-hit):focus-visible { outline:2px solid var(--qc-blue); outline-offset:2px; }
 @media(min-width:801px) {
   body.qc-approved-analysis .topbar { padding:8px 16px; gap:10px; min-height:52px; flex-wrap:nowrap; }
   body.qc-approved-analysis .topbar-left { flex:0 0 auto; gap:8px; }
@@ -145,7 +143,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 }
 @container (max-width:800px) {
   #qstats-root .qc-content { padding:18px 16px; }
-  #qstats-root .qc-filter-fields { grid-template-columns:1fr 1fr 1.2fr 1.4fr auto; gap:8px; }
+  #qstats-root .qc-filter-fields { gap:8px; }
   #qstats-root select { padding:0 7px; font-size:12px; }
   #qstats-root .qc-chart-panel { padding:16px 10px; }
   #qstats-root .qc-color-legend { font-size:10px; gap:5px 8px; }
@@ -158,15 +156,23 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   #qstats-root .qc-report-grid { grid-template-columns:minmax(0,1fr); }
   #qstats-root .qc-table-panel { border-right:0; }
   #qstats-root .qc-chart-panel { border-top:1px solid var(--qc-line); }
-  #qstats-root .qc-filter-fields { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
-  #qstats-root .qc-client-field { grid-column:span 2; }
+}
+@container (max-width:600px) {
+  #qstats-root .qc-filter-fields { flex-basis:100%; }
+  #qstats-root .report-type-slot { margin-left:auto; }
 }
 @container (max-width:480px) {
   #qstats-root .qc-content { padding:16px 12px; }
-  #qstats-root .qc-filter-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  #qstats-root .qc-client-field { grid-column:auto; }
+  #qstats-root .qc-filter { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  #qstats-root .qc-filter-fields { display:contents; }
+  #qstats-root .qc-filter-fields > label { flex-direction:column; align-items:stretch; gap:5px; }
+  #qstats-root :is(.qc-year-field,.qc-client-field) select { width:100%; }
+  #qstats-root .qc-reset { justify-self:start; }
+  #qstats-root .report-type-slot { justify-self:end; }
+  #qstats-root .report-type-slot > #reportTypeSelect { min-height:44px; }
+  #qstats-root .qstats-status { grid-column:1 / -1; }
   #qstats-root select { min-height:44px; font-size:16px; }
-  #qstats-root .qc-filter-fields > .qc-reset { grid-column:1 / -1; min-height:44px; }
+  #qstats-root .qc-filter-fields > .qc-reset { min-height:44px; }
   #qstats-root .qc-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); row-gap:16px; }
   #qstats-root .qc-metric:nth-child(2) { border:0; }
   #qstats-root .qc-metric-value { font-size:23px; }
@@ -187,7 +193,6 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   body.qstats-shell #userBadge { gap:4px !important; margin-right:0 !important; }
   body.qstats-shell #userBadge :is(.user-badge-name,.user-badge-role,.user-badge-logout) { font-size:10px; }
   body.qstats-shell #userBadge .user-badge-logout { padding:3px 5px; }
-  body.qstats-shell #qcFactorySelect { font-size:11px; padding:3px 5px; min-width:48px; }
 }
 
 /* Extend the accepted statistics palette to the embedded QC workspace.
@@ -408,8 +413,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 
   /* Target only screen controls. Export templates and handlers are separate. */
   body.qc-liquid-glass.qstats-shell.theme-light :is(
-    #qsum-export,#qsExport,#btnExportInspectionExcel,
-    .topbar button[onclick="exportPDF()"],
+    #qsum-export,#btnExportInspectionExcel,
     .report-toolbar button[onclick^="export"],
     button[onclick="backupExportJSON()"]) {
     color:var(--text-hi);
@@ -421,8 +425,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
 
   body.qc-liquid-glass.qstats-shell.theme-light :is(
-    #qsum-export,#qsExport,#btnExportInspectionExcel,
-    .topbar button[onclick="exportPDF()"],
+    #qsum-export,#btnExportInspectionExcel,
     .report-toolbar button[onclick^="export"],
     button[onclick="backupExportJSON()"]):hover:not(:disabled) {
     background:linear-gradient(178deg,#fff,#e4eee4);
@@ -504,11 +507,16 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 
 }
 
-/* Approved schedule toolbar: filters first, then selection and actions. */
+/* Compact schedule toolbar: selection, fixed-width filters, primary action. */
 @media screen {
   #page-sales-schedule #qsToolbar {
     --qs-control-height: 36px;
-    padding: 15px;
+    display: grid;
+    grid-template-columns: max-content 240px 170px 140px max-content minmax(0,1fr) max-content;
+    grid-template-areas: "selection search date customer reset space push";
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
     border: 1px solid var(--border);
     border-radius: 12px;
     background: var(--bg-card);
@@ -516,15 +524,21 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     backdrop-filter: none;
     font-size: 13px;
   }
-  #page-sales-schedule #qsToolbar .qs-filters {
-    grid-template-columns: minmax(210px,2.1fr) minmax(160px,1.2fr) minmax(110px,1fr) minmax(130px,1.1fr) auto;
-    gap: 8px;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
+  #page-sales-schedule #qsToolbar .qs-filters { display: contents; }
+  #page-sales-schedule #qsToolbar .qs-selection {
+    grid-area: selection;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-right: 10px;
+    border-right: 1px solid var(--border);
   }
+  #page-sales-schedule #qsToolbar .qs-search { grid-area: search; width: 240px; max-width: 100%; }
+  #page-sales-schedule #qsToolbar .qs-date-filter { grid-area: date; width: 170px; max-width: 100%; }
+  #page-sales-schedule #qsToolbar .qs-customer { grid-area: customer; width: 140px; max-width: 100%; }
+  #page-sales-schedule #qsToolbar .qs-filter-actions { grid-area: reset; }
+  #page-sales-schedule #qsToolbar #qsPush { grid-area: push; justify-self: end; }
+  #page-sales-schedule #qsToolbar #qsFilterError { grid-column: 1 / -1; margin: 0; }
   #page-sales-schedule #qsToolbar :is(.qs-filter-field input,.qs-filter-field select,.qs-date-toggle,.qs-button,.qs-reset) {
     min-height: var(--qs-control-height);
     height: var(--qs-control-height);
@@ -535,17 +549,9 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
   #page-sales-schedule #qsToolbar .qs-search svg { top: calc((var(--qs-control-height) - 18px) / 2); }
   #page-sales-schedule #qsToolbar .qs-reset { padding: 0 4px; border: 0; }
-  #page-sales-schedule #qsToolbar .qs-actions {
-    align-items: center;
-    gap: 10px;
-    margin-top: 13px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
-  }
   #page-sales-schedule #qsToolbar .qs-select-all { min-height: var(--qs-control-height); }
   #page-sales-schedule #qsToolbar #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
-  #page-sales-schedule #qsToolbar #qsCount { margin-left: auto; white-space: nowrap; }
-  #page-sales-schedule #qsToolbar .qs-secondary-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+  #page-sales-schedule #qsToolbar #qsCount { margin: 0; min-width: 76px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   #page-sales-schedule #qsToolbar .qs-button {
     display: inline-flex;
     align-items: center;
@@ -554,19 +560,21 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     padding: 0 10px;
     white-space: nowrap;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh { border-color: transparent; background: transparent; color: var(--text-dim); }
-  #page-sales-schedule #qsToolbar :is(#qsRefresh,#qsExport,#qsPush)::before {
+  #page-sales-schedule #qsToolbar #qsRefresh {
+    width: var(--qs-control-height);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  #page-sales-schedule #qsToolbar #qsRefresh::before {
     content: "";
-    flex: none;
     width: 14px;
     height: 14px;
     background: currentColor;
-    mask: var(--qs-action-icon) center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3'/%3E%3C/svg%3E") center / contain no-repeat;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3'/%3E%3C/svg%3E"); }
-  #page-sales-schedule #qsToolbar #qsExport { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'/%3E%3C/svg%3E"); }
-  #page-sales-schedule #qsToolbar #qsPush { --qs-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 17 17 7M7 7h10v10'/%3E%3C/svg%3E"); }
-  #page-sales-schedule #qsToolbar #qsExport { background: var(--bg-input); color: var(--text-main); font-weight: 500; }
   #page-sales-schedule #qsToolbar #qsPush { background: var(--accent); border-color: var(--accent); color: #fff; }
   #page-sales-schedule #qsToolbar #qsPush:disabled {
     background: var(--bg-hover);
@@ -574,22 +582,65 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     color: var(--text-dim);
     opacity: 1;
   }
-  #page-sales-schedule #qsToolbar :is(#qsRefresh,#qsExport):hover:not(:disabled) { background: var(--bg-hover); }
-  #page-sales-schedule #qsToolbar #qsFilterError:not(:empty) { margin: 10px 0 0; }
-  @container (max-width: 900px) {
-    #page-sales-schedule #qsToolbar .qs-filters { grid-template-columns: minmax(160px,1.2fr) minmax(110px,1fr) minmax(130px,1.1fr) auto; }
-    #page-sales-schedule #qsToolbar .qs-search { grid-column: 1 / -1; }
+  #page-sales-schedule #qsToolbar #qsRefresh:hover:not(:disabled) { background: var(--bg-hover); }
+  @container (max-width: 1040px) {
+    #page-sales-schedule #qsToolbar {
+      grid-template-columns: max-content minmax(180px,240px) minmax(120px,170px) minmax(100px,140px) max-content minmax(0,1fr) max-content;
+      gap: 6px;
+      padding: 10px;
+    }
+    #page-sales-schedule #qsToolbar .qs-selection { gap: 6px; padding-right: 8px; }
+    #page-sales-schedule #qsToolbar #qsCount { min-width: 68px; }
+    #page-sales-schedule #qsToolbar :is(.qs-search,.qs-date-filter,.qs-customer) { width: 100%; }
   }
-  @container (max-width: 560px) {
-    #page-sales-schedule #qsToolbar .qs-filters { grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; }
-    #page-sales-schedule #qsToolbar .qs-date-filter { grid-column: 1 / -1; }
-    #page-sales-schedule #qsToolbar .qs-filter-actions { grid-column: 3; }
-    #page-sales-schedule #qsToolbar .qs-actions { gap: 8px; }
-    #page-sales-schedule #qsToolbar .qs-secondary-actions { margin-left: auto; }
-    #page-sales-schedule #qsToolbar #qsCount { flex-basis: calc(100% - 130px); text-align: right; }
+  @container (max-width: 790px) {
+    #page-sales-schedule #qsToolbar {
+      grid-template-columns: max-content 140px 92px minmax(0,1fr) max-content;
+      grid-template-areas: "selection search search . push" "date customer reset . .";
+    }
+    #page-sales-schedule #qsToolbar .qs-search { width: 240px; }
+    #page-sales-schedule #qsToolbar .qs-date-filter { width: 170px; }
+    #page-sales-schedule #qsToolbar .qs-customer { width: 140px; }
+  }
+  @container (max-width: 600px) {
+    #page-sales-schedule #qsToolbar {
+      grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+      grid-template-areas: "selection selection" "search search" "date customer" "reset push";
+    }
+    #page-sales-schedule #qsToolbar .qs-selection { justify-self: start; border-right: 0; padding-right: 0; }
+    #page-sales-schedule #qsToolbar .qs-filter-actions { justify-self: start; }
   }
   @media (max-width: 640px), (pointer: coarse) {
-    #page-sales-schedule #qsToolbar { --qs-control-height: 44px; padding: 12px; }
+    #page-sales-schedule #qsToolbar { --qs-control-height: 44px; }
     #page-sales-schedule #qsToolbar :is(.qs-filter-field input,.qs-filter-field select) { font-size: 16px; }
+    #page-sales-schedule #qsToolbar .qs-select-all { padding-right: 6px; }
+  }
+}
+
+/* Keep both date endpoints readable, including when the sidebar narrows the toolbar. */
+@media screen {
+  #page-sales-schedule #qsToolbar .qs-date-toggle { height: auto; }
+  #page-sales-schedule #qsToolbar:has(.qs-selection) {
+    grid-template-columns: max-content 240px max-content 140px max-content minmax(0,1fr) max-content;
+  }
+  #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-date-filter { width: max-content; max-width: 100%; }
+  @container (max-width: 1040px) {
+    #page-sales-schedule #qsToolbar:has(.qs-selection) {
+      grid-template-columns: max-content minmax(180px,240px) max-content minmax(100px,140px) max-content minmax(0,1fr) max-content;
+    }
+  }
+  @container (max-width: 960px) {
+    #page-sales-schedule #qsToolbar:has(.qs-selection) {
+      grid-template-columns: max-content minmax(100px,140px) minmax(40px,92px) minmax(0,1fr) max-content;
+      grid-template-areas: "selection search search . push" "date customer reset . .";
+    }
+    #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-search { width: 240px; }
+    #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-customer { width: 140px; }
+  }
+  @container (max-width: 600px) {
+    #page-sales-schedule #qsToolbar:has(.qs-selection) {
+      grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+      grid-template-areas: "selection selection" "search search" "date date" "customer customer" "reset push";
+    }
   }
 }

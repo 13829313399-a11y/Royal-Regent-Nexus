@@ -1,0 +1,688 @@
+// Parse 工程放产资料 Excel — extract moldings + materials for a given product.
+// Ported from legacy 印尼走货明细生成系统.html importEngineeringFile() + extractSheetImages().
+
+import JSZip from 'jszip'
+import { Buffer } from 'buffer'
+import type { Material, Molding, MoldingPart } from '../api/client'
+import { translatePartName } from './partTranslate'
+
+// HS 编码字典：按名称关键字匹配（顺序=先具体后通用）。移植自旧版 HS_DICT + inferHsCode。
+const HS_DICT: { test: RegExp; hsCN: string; hsID: string }[] = [
+  { test: /螺丝|螺母|铆钉|垫圈|弹簧/, hsCN: '7318159001', hsID: '731815' },
+  { test: /铁线|钢丝/, hsCN: '7223000000', hsID: '722300' },
+  { test: /轮轴|轮架|轴承/, hsCN: '8482109000', hsID: '848210' },  // 仅真正的轮轴/轴承，避免「前轮挡泥板」误判
+  { test: /搪胶|公仔|玩具|figure|toy/i, hsCN: '9503009000', hsID: '950300' },
+  { test: /喷油|印刷件/, hsCN: '3923900000', hsID: '392390' },
+  { test: /塑胶|塑料|车身|车窗|车底|底架|车架|外壳|配件|按钮|手柄|罩|底盖|盖|片|杆|柱|架/, hsCN: '3923900000', hsID: '392390' },
+  { test: /吸塑|blister/i, hsCN: '3923300090', hsID: '392330' },
+  { test: /彩盒|彩咭|内咭|绑咭|咭|gift\s*box|color\s*box|carton/i, hsCN: '4819200000', hsID: '481920' },
+  { test: /纸箱|外箱/, hsCN: '4819100000', hsID: '481910' },
+  { test: /雪梨纸|tissue/i, hsCN: '4823909000', hsID: '480640' },
+  { test: /说明书|利宝|booklet|manual|instruction/i, hsCN: '4911101000', hsID: '491110' },
+  { test: /贴纸|标贴|sticker|label/i, hsCN: '4911999090', hsID: '491199' },
+  { test: /胶袋|OPP|PE\s*袋|气泡袋|polybag/i, hsCN: '3923210000', hsID: '392321' },
+  { test: /胶带|tape/i, hsCN: '3919900000', hsID: '391990' },
+  { test: /胶水|glue|adhesive/i, hsCN: '3506990000', hsID: '350699' },
+  { test: /电池|battery/i, hsCN: '8506101100', hsID: '850610' },
+  { test: /电线|电缆|wire|cable/i, hsCN: '8544422100', hsID: '854442' },
+  { test: /喇叭|speaker|horn/i, hsCN: '8518290000', hsID: '851829' },
+  { test: /电板|PCB|电子件/i, hsCN: '8534001000', hsID: '853400' },
+  { test: /马达|motor/i, hsCN: '8501101900', hsID: '850110' },
+  { test: /橡皮筋|橡胶|rubber\s*band/i, hsCN: '4007000000', hsID: '400700' },
+  { test: /发泡|EVA|foam/i, hsCN: '3921110000', hsID: '392111' },
+  { test: /pvc|PVC/, hsCN: '3920430090', hsID: '392043' },
+]
+export interface HsDictEntry { keyword?: string; hsCN?: string; hsID?: string }
+// 用户字典优先（含关键字即命中），再退回内置规则。与旧版 inferHsCode 一致。
+export function inferHsCode(name?: string, userDict?: HsDictEntry[]): { hsCN: string; hsID: string } {
+  const t = String(name || '')
+  for (const r of (userDict || [])) {
+    if (!r.keyword) continue
+    if (t.includes(r.keyword)) return { hsCN: r.hsCN || '', hsID: r.hsID || '' }
+  }
+  for (const r of HS_DICT) if (r.test.test(t)) return { hsCN: r.hsCN, hsID: r.hsID }
+  return { hsCN: '', hsID: '' }
+}
+
+// 从 xlsx 某个 sheet 提取内嵌图片 → [{row,col,dataUrl}]（row/col 0-indexed）
+// 兼容：① 标准 xdr 锚定图片 ② WPS DISPIMG 单元格图(cellimages.xml)。移植自旧版 extractSheetImages。
+export async function extractSheetImages(zip: JSZip, targetSheetName: string, rowByCenter = false, options?: {
+  includes: (row: number, col: number) => boolean
+  read: (path: string, row: number, col: number) => Promise<string | null>
+  missing?: (row: number, col: number) => void
+}): Promise<{ row: number; col: number; dataUrl: string }[]> {
+  try {
+    const wbFile = zip.file('xl/workbook.xml'); if (!wbFile) return []
+    const wbXml = await wbFile.async('string')
+    const wbDoc = new DOMParser().parseFromString(wbXml, 'application/xml')
+    const sheetNodes = wbDoc.getElementsByTagName('sheet')
+    let sheetIdx: number | null = null
+    for (let i = 0; i < sheetNodes.length; i++) {
+      if (sheetNodes[i].getAttribute('name') === targetSheetName) { sheetIdx = i + 1; break }
+    }
+    if (!sheetIdx) return []
+    const hasControlCharacter = (value: string) => Array.from(value).some(char => char.charCodeAt(0) < 32)
+    const resolvePart = (from: string, target: string): string | null => {
+      const uri = target.trim()
+      if (!uri || /^[A-Za-z][A-Za-z0-9+.-]*:|^\/\//.test(uri) || /[\\?#]/.test(uri) || hasControlCharacter(uri)) throw new Error('非法工作簿关系路径')
+      // ZIP entry names are decoded strings, unlike URL.pathname. Decode once
+      // before dot-segment normalization, and reject escaping the package root.
+      const decoded = decodeURIComponent(uri)
+      if (/^[A-Za-z][A-Za-z0-9+.-]*:|^\/\//.test(decoded) || decoded.includes('\\') || hasControlCharacter(decoded)) throw new Error('非法工作簿关系路径')
+      const parts = decoded.startsWith('/') ? [] : from.split('/').slice(0, -1)
+      for (const part of decoded.split('/')) {
+        if (!part || part === '.') continue
+        if (part === '..') {
+          if (!parts.length) throw new Error('工作簿关系路径超出文件范围')
+          parts.pop()
+        } else parts.push(part)
+      }
+      const name = parts.join('/')
+      const entry = zip.file(name)
+      if (entry?.unsafeOriginalName && entry.unsafeOriginalName !== name) throw new Error('非法 ZIP 条目路径')
+      return entry && !entry.dir ? name : null
+    }
+    const relationshipsPart = (path: string) => path.replace(/^(.*\/)([^/]+)$/, '$1_rels/$2.rels')
+    let sheetPath = `xl/worksheets/sheet${sheetIdx}.xml`
+    const workbookRels = zip.file('xl/_rels/workbook.xml.rels')
+    const sheetId = sheetNodes[sheetIdx - 1].getAttribute('r:id')
+    if (workbookRels && sheetId) {
+      const doc = new DOMParser().parseFromString(await workbookRels.async('string'), 'application/xml')
+      const relationship = Array.from(doc.getElementsByTagName('Relationship'))
+        .find(rel => rel.getAttribute('Id') === sheetId)
+      if (relationship?.getAttribute('TargetMode')?.toLowerCase() === 'external') return []
+      const target = relationship?.getAttribute('Target')
+      if (!target) return []
+      const resolved = resolvePart('xl/workbook.xml', target)
+      if (!resolved) return []
+      sheetPath = resolved
+    }
+    const rowHeights = new Map<number, number>()
+    let defaultRowHeight = 15 * 12700
+    if (rowByCenter) {
+      const sheetFile = zip.file(sheetPath)
+      if (sheetFile) {
+        const doc = new DOMParser().parseFromString(await sheetFile.async('string'), 'application/xml')
+        defaultRowHeight = Number(doc.getElementsByTagName('sheetFormatPr')[0]?.getAttribute('defaultRowHeight') || 15) * 12700
+        for (const row of Array.from(doc.getElementsByTagName('row'))) {
+          rowHeights.set(Number(row.getAttribute('r')) - 1, Number(row.getAttribute('ht') || defaultRowHeight / 12700) * 12700)
+        }
+      }
+    }
+    const imgList: { row: number; col: number; dataUrl: string }[] = []
+    const toDataUrl = async (mediaPath: string): Promise<string | null> => {
+      const f = zip.file(mediaPath); if (!f) return null
+      const u8 = await f.async('uint8array')
+      const ext = (mediaPath.split('.').pop() || '').toLowerCase()
+      const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/' + ext
+      let bin = ''; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i])
+      return 'data:' + mime + ';base64,' + btoa(bin)
+    }
+    const decoded = new Map<string, string | null>()
+    const addImage = async (row: number, col: number, path: string) => {
+      if (options && !options.includes(row, col)) return
+      if (!options && !decoded.has(path)) decoded.set(path, await toDataUrl(path))
+      const dataUrl = options ? await options.read(path, row, col) : decoded.get(path)
+      if (dataUrl) imgList.push({ row, col, dataUrl })
+    }
+    const missingImage = (row: number, col: number) => {
+      if (options?.includes(row, col)) options.missing?.(row, col)
+    }
+    // ① 标准 xdr 锚定
+    const relsFile = zip.file(relationshipsPart(sheetPath))
+    let anchors: Element[] = []
+    const embedToTarget: Record<string, string> = {}
+    if (relsFile) {
+      const relsDoc = new DOMParser().parseFromString(await relsFile.async('string'), 'application/xml')
+      let drawingPath: string | null = null
+      for (const rel of Array.from(relsDoc.getElementsByTagName('Relationship'))) {
+        if (rel.getAttribute('TargetMode')?.toLowerCase() === 'external') continue
+        if (!(rel.getAttribute('Type') || '').endsWith('/drawing')) continue
+        try { drawingPath = resolvePart(sheetPath, rel.getAttribute('Target') || '') } catch { continue }
+        if (drawingPath) break
+      }
+      if (drawingPath) {
+        const drawingFile = zip.file(drawingPath)
+        if (drawingFile) {
+          const drawingDoc = new DOMParser().parseFromString(await drawingFile.async('string'), 'application/xml')
+          anchors = [
+            ...Array.from(drawingDoc.getElementsByTagName('xdr:twoCellAnchor')),
+            ...Array.from(drawingDoc.getElementsByTagName('xdr:oneCellAnchor')),
+          ]
+          const dRelsFile = zip.file(relationshipsPart(drawingPath))
+          if (dRelsFile) {
+            const dRelsDoc = new DOMParser().parseFromString(await dRelsFile.async('string'), 'application/xml')
+            for (const rel of Array.from(dRelsDoc.getElementsByTagName('Relationship'))) {
+              if (rel.getAttribute('TargetMode')?.toLowerCase() === 'external') continue
+              const target = rel.getAttribute('Target')
+              try {
+                const resolved = target && resolvePart(drawingPath, target)
+                if (resolved) embedToTarget[rel.getAttribute('Id') || ''] = resolved
+              } catch { /* This relationship cannot invalidate unrelated images. */ }
+            }
+          }
+        }
+      }
+    }
+    for (const anchor of anchors) {
+      const fromNode = anchor.getElementsByTagName('xdr:from')[0]; if (!fromNode) continue
+      const rowEl = fromNode.getElementsByTagName('xdr:row')[0]; if (!rowEl) continue
+      let row = parseInt(rowEl.textContent || '0', 10)
+      if (rowByCenter) {
+        // WPS 可将下行图片锚在上行末尾；按图片中心而不是起点归属。
+        const to = anchor.getElementsByTagName('xdr:to')[0]
+        const fromOffset = Number(fromNode.getElementsByTagName('xdr:rowOff')[0]?.textContent || 0)
+        let height = Number(anchor.getElementsByTagName('xdr:ext')[0]?.getAttribute('cy') || 0)
+        if (to) {
+          const endRow = Number(to.getElementsByTagName('xdr:row')[0]?.textContent || row)
+          height = Number(to.getElementsByTagName('xdr:rowOff')[0]?.textContent || 0) - fromOffset
+          for (let i = row; i < endRow; i++) height += rowHeights.get(i) ?? defaultRowHeight
+        }
+        let offset = fromOffset + Math.max(0, height) / 2
+        while (row < 1048575 && offset >= (rowHeights.get(row) ?? defaultRowHeight)) {
+          offset -= rowHeights.get(row) ?? defaultRowHeight
+          row++
+        }
+      }
+      const colEl = fromNode.getElementsByTagName('xdr:col')[0]
+      const col = colEl ? parseInt(colEl.textContent || '0', 10) : 0
+      const blip = anchor.getElementsByTagName('a:blip')[0]; if (!blip) continue
+      const target = embedToTarget[blip.getAttribute('r:embed') || '']
+      if (!target) { missingImage(row, col); continue }
+      await addImage(row, col, target)
+    }
+    // ② WPS DISPIMG 单元格图
+    try {
+      const ciFile = zip.file('xl/cellimages.xml')
+      const ciRelsFile = zip.file('xl/_rels/cellimages.xml.rels')
+      if (ciFile && ciRelsFile) {
+        const ciDoc = new DOMParser().parseFromString(await ciFile.async('string'), 'application/xml')
+        const ciRelsDoc = new DOMParser().parseFromString(await ciRelsFile.async('string'), 'application/xml')
+        const embed2target: Record<string, string> = {}
+        for (const rel of Array.from(ciRelsDoc.getElementsByTagName('Relationship'))) {
+          if (rel.getAttribute('TargetMode')?.toLowerCase() === 'external') continue
+          embed2target[rel.getAttribute('Id') || ''] = rel.getAttribute('Target') || ''
+        }
+        const idToTarget = new Map<string, string>()
+        const picNodes = ciDoc.getElementsByTagNameNS('*', 'cellImage')
+        for (let i = 0; i < picNodes.length; i++) {
+          const pic = picNodes[i]
+          const id = pic.getElementsByTagNameNS('*', 'cNvPr')[0]?.getAttribute('name') || pic.getAttribute('name') || ''
+          const blip = pic.getElementsByTagNameNS('*', 'blip')[0]
+          if (!blip || !id) continue
+          const target = embed2target[blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed') || blip.getAttribute('r:embed') || '']
+          if (target) idToTarget.set(id, target)
+        }
+        const sheetFile = zip.file(sheetPath)
+        if (sheetFile) {
+          const sheetXml = await sheetFile.async('string')
+          const colLetterToNum = (s: string) => { let n = 0; for (const c of s) n = n * 26 + (c.charCodeAt(0) - 64); return n - 1 }
+          // Parse each cell separately: a regex spanning XML could attach AC2's
+          // image to A1 (the first preceding cell), then column filtering loses it.
+          const sheetDoc = new DOMParser().parseFromString(sheetXml, 'application/xml')
+          for (const cell of Array.from(sheetDoc.getElementsByTagNameNS('*', 'c'))) {
+            const address = /^([A-Z]+)(\d+)$/.exec(cell.getAttribute('r') || '')
+            const formula = cell.getElementsByTagNameNS('*', 'f')[0]?.textContent || ''
+            const match = /(?:_xlfn\.)?DISPIMG\s*\(\s*"([^"]+)"/i.exec(formula)
+            const target = match && idToTarget.get(match[1])
+            if (!address || !match) continue
+            const row = Number(address[2]) - 1, col = colLetterToNum(address[1])
+            if (!target) { missingImage(row, col); continue }
+            try {
+              const path = resolvePart('xl/cellimages.xml', target)
+              const legacyPath = path ? null : resolvePart('xl/cellimages.xml', target.replace(/^\.\.\//, ''))
+              const resolved = path || legacyPath
+              if (resolved) await addImage(row, col, resolved)
+              else missingImage(row, col)
+            } catch { missingImage(row, col) }
+          }
+        }
+      }
+    } catch { /* ignore DISPIMG parse errors */ }
+    // 仅过滤明显的装饰图（同一张图出现 >=5 次，如页眉 logo/边框）。
+    // 共用产品照（如加强性胶钉 60/80/90 用同一张、吸塑 A/B/C 共用）出现 2~3 次，需保留。
+    const cnt: Record<string, number> = {}
+    for (const it of imgList) cnt[it.dataUrl] = (cnt[it.dataUrl] || 0) + 1
+    return rowByCenter ? imgList : imgList.filter(it => cnt[it.dataUrl] < 5)
+  } catch { return [] }
+}
+
+export interface EngineeringImportResult {
+  code: string
+  name: string
+  customer?: string
+  moldings: Molding[]
+  materials: Material[]
+}
+
+export function isZipWorkbookBuffer(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 2) return false
+  const signature = new Uint8Array(buffer, 0, 2)
+  return signature[0] === 0x50 && signature[1] === 0x4b
+}
+
+const isValidName = (s: string) => !!s && s.length >= 1 && !/^[\d.\-_+]+$/.test(s) && /[一-鿿A-Za-z]/.test(s)
+
+function stripCodePrefix(s: string, code: string): string {
+  if (!s) return ''
+  const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return String(s).replace(new RegExp('^' + esc + '[-\\s]?'), '').trim()
+}
+function stripAnyCode(s: string, code: string): string {
+  if (!s) return ''
+  const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return String(s)
+    .replace(new RegExp('^' + esc + '[-\\s]?', 'i'), '')
+    .replace(/^\d{4,6}[A-Z]?[-\s]+/i, '')
+    .replace(/\s*-\s*\d{4,6}[A-Z]?\s*-\s*/g, '-')
+    .trim()
+}
+
+// 标准物料类别（与"类别 / 金额 / 备注"对照表一致）
+export const MATERIAL_CATEGORIES = [
+  '原料', '色粉', '化学品-油漆', '化学品-其它', '电子类', '机器设备', '工具',
+  '五金', '吸塑', '利宝说明书', '彩盒/彩咭', '纸箱类', '车缝类', '其它类', '大陆送半成品',
+]
+
+// 按关键字把任意文本(类别原值 / 物料名 / 规格)归类到标准类别
+export function inferMaterialCategory(s: string): string {
+  const t = String(s || '')
+  if (!t.trim()) return ''
+  if (MATERIAL_CATEGORIES.includes(t.trim())) return t.trim()
+  if (/油漆|paint/i.test(t)) return '化学品-油漆'
+  if (/油墨|化学|溶剂|稀释|ink|glue|胶水/i.test(t)) return '化学品-其它'
+  if (/吸塑|blister/i.test(t)) return '吸塑'
+  if (/彩盒|彩咭|彩卡|彩咕|color\s*box|gift\s*box|底托|底卡|加固咭|insert\s*card/i.test(t)) return '彩盒/彩咭'
+  if (/纸箱|外箱|carton|卡板|栈板|pallet/i.test(t)) return '纸箱类'
+  if (/利宝|说明书|insert|贴纸|sticker|标贴|条码|barcode|吊牌|卡头/i.test(t)) return '利宝说明书'
+  if (/电池|pcba|电子|喇叭|pcb|\bic\b|线材|端子|马达|灯|喇叭/i.test(t)) return '电子类'
+  if (/螺丝|螺母|铆钉|弹簧|车轮轴|轴承|介子|垫片|\b钉\b|五金|hardware/i.test(t)) return '五金'
+  if (/夹具|治具|模具|tooling|mould|mold/i.test(t)) return '工具'
+  if (/裁片|车缝|布料|绒|sewing|fabric/i.test(t)) return '车缝类'
+  if (/胶件|吹气|搪胶|半成品|大陆送/i.test(t)) return '大陆送半成品'
+  if (/色粉|pigment|colorant/i.test(t)) return '色粉'
+  if (/原料|塑料粒|abs|\bpp\b|\bpvc\b|\bpe\b|resin/i.test(t)) return '原料'
+  if (/机器|设备|machine|equipment/i.test(t)) return '机器设备'
+  return '其它类'
+}
+
+// Parse quantities only, never evaluate spreadsheet expressions as JavaScript.
+export function parseEngineeringUsage(value: unknown, fallback: number): number {
+  if (value == null || (typeof value === 'string' && !value.trim())) return fallback
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  const text = String(value).replace(/[¼-¾⅐-⅞]/g, char => ` ${char}`)
+    .normalize('NFKC').replace(/[⁄／]/g, '/').replace(/又/g, ' ').trim().replace(/^=\s*/, '')
+  const fraction = text.match(/^([+-]?)(?:(\d+)\s+)?(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/)
+  let result: number
+  if (fraction) {
+    const denominator = Number(fraction[4])
+    if (denominator === 0) throw new Error('用量分数的分母不能为 0')
+    result = (fraction[1] === '-' ? -1 : 1) * (Number(fraction[2] || 0) + Number(fraction[3]) / denominator)
+  } else {
+    const numeric = text.replace(/^(\d{1,3}(?:,\d{3})+)(?=\.|$)/, grouped => grouped.replace(/,/g, ''))
+    result = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(numeric) ? Number(numeric) : NaN
+  }
+  if (!Number.isFinite(result)) throw new Error(`无法识别用量“${String(value)}”，请填写数字或分数（如 1/2）`)
+  return result
+}
+
+function usageAt(cell: { t: string; v?: unknown } | undefined, fallback: number, sheet: string, row: number): number {
+  try {
+    if (cell?.t === 'e') throw new Error('用量单元格为 Excel 错误，请修正后重新导入')
+    return parseEngineeringUsage(cell?.v, fallback)
+  }
+  catch (error) { throw new Error(`${sheet} 第 ${row} 行：${(error as Error).message}`, { cause: error }) }
+}
+
+export async function importEngineeringFile(file: File, opts?: { hsDict?: HsDictEntry[] }): Promise<EngineeringImportResult> {
+  const hsDict = opts?.hsDict
+  // SheetJS 在浏览器中读取大型 OLE2 工作簿时，默认会把每个字节展开成普通 JS 数组。
+  // 100MB 以上的工程资料会因此触发 `Invalid array length`。提供 Buffer 实现并直接以
+  // 二进制缓冲读取，可保持为紧凑的 Uint8Array，同时也兼容真正的 .xlsx 文件。
+  const runtimeGlobal = globalThis as unknown as {
+    Buffer?: typeof Buffer
+    process?: { versions?: { node?: string } }
+  }
+  if (!runtimeGlobal.Buffer) runtimeGlobal.Buffer = Buffer
+  // SheetJS 0.20 只有在 Buffer 与 process.versions.node 同时存在时才走
+  // Buffer.concat 路径。浏览器没有 process，因此需提供最小运行标记。
+  if (!runtimeGlobal.process?.versions?.node) runtimeGlobal.process = { versions: { node: 'browser' } }
+  const XLSX = await import('xlsx')
+  const ab = await file.arrayBuffer()
+  const wb = XLSX.read(Buffer.from(ab), { type: 'buffer' })
+  // 仅 OOXML (.xlsx，PK 开头) 才能按 zip 提取内嵌图片。
+  // 部分 WPS 文件虽然扩展名是 .xlsx，实际仍是 OLE2 (.xls，D0 CF 开头)；
+  // 直接交给 JSZip 会误识别文件内部的 PK 字节，并可能抛出 Invalid array length。
+  const zip = isZipWorkbookBuffer(ab) ? await JSZip.loadAsync(ab).catch(() => null) : null
+
+  const findSheet = (kws: string[]) => wb.SheetNames.find(n => kws.some(k => n.includes(k)))
+  const snMold = findSheet(['排模'])
+  const snExt  = findSheet(['外购'])
+
+  if (!snMold && !snExt) throw new Error('未找到 "排模表" 或 "外购清单" sheet')
+
+  // -------- 1. read code/name from 排模或外购 sheet header --------
+  // 有些工程资料只有外购清单，没有排模表；两种表头使用相同的产品/客户字段。
+  let code = '', name = '', customer = ''
+  for (const headerSheet of [snMold, snExt]) {
+    if (!headerSheet) continue
+    const grid = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[headerSheet], { header: 1, defval: null })
+    // 关键字按优先级排（产品编号/产品名称 优先；编号/名称 兜底）。
+    // 注意：整张抬头常被合并成「单个大字符串」(如 "...文件 编号: HSQR0008 ... 产品编号:46720J ...")，
+    // 所以必须「按关键字优先级跨所有行扫描」，否则前面行的 文件编号 会先命中 编号。
+    const codeKeys = ['产品编号', '产品编码', '产品code', '货号', 'Product Number', 'Product No', 'ItemNo', 'Item No', '编号']
+    const nameKeys = ['产品名称', '品名', '产品名', 'Product Name', 'ProductName', '名称']
+    const scanRows = Math.min(10, grid.length)
+    const boundary = '(?<![\\u4e00-\\u9fa5])'  // 前一字符非中文：允许英文双语前缀，仍挡住 客户名称→名称/工模编号→编号
+    // 按关键字优先级查值：valRe 取值正则（同格）；否则邻格取值。整列扫描后返回首个命中。
+    // reject：跳过某些值（如客户的英文占位 TomyCustomer），继续找下一个
+    const findVal = (keys: string[], valRe: (k: string) => RegExp, reject?: (v: string) => boolean): string => {
+      for (const k of keys) {
+        for (let r = 0; r < scanRows; r++) {
+          const row = grid[r] || []
+          for (let c = 0; c < row.length; c++) {
+            const s = String(row[c] ?? '').trim()
+            if (!s) continue
+            // 同格：遍历所有匹配（一格内可能有多个同名标签，如 客户名称:TomyCustomer 客户名称：TOMY）
+            let hadMatch = false
+            for (const m of s.matchAll(valRe(k))) {
+              hadMatch = true
+              const v = (m[1] || '').trim()
+              if (v && !(reject && reject(v))) return v
+            }
+            // 邻格：本格含关键字（作标签，整格无内联值），值在右邻 1~3 格（去前导冒号/空格）
+            // 例 "产品编号 Produk Nomer" | ": 47712A"
+            if (!hadMatch && new RegExp(`${boundary}${k}`, 'i').test(s)) {
+              for (let off = 1; off <= 3 && c + off < row.length; off++) {
+                const v = String(row[c + off] ?? '').replace(/^[：:\s]+/, '').trim()
+                if (v && !(reject && reject(v))) return v
+              }
+            }
+          }
+        }
+      }
+      return ''
+    }
+    // 取值截断：遇「2+空格(列分隔)」或「下一个标签词」或行尾即止（应对同格多字段且仅单空格分隔）
+    const STOP = '(?=\\s{2,}|\\s+(?:客户|产品|编制|审核|批准|日期|版本|文件|页码|PAGE|Product|Customer|No\\.|Revisi|Tgl|Halaman|Nama|Nomer|Disiapkan|Diperiksa|Disetujui|Tanggal)|$)'
+    // 货号值：取冒号后连续非空白；名称/客户值：到截断处之前
+    const headerCode = findVal(codeKeys, k => new RegExp(`${boundary}${k}\\s*[：:]\\s*(\\S+)`, 'gi')).replace(/\s*\/\s*/g, '/')
+    // Some Spin Master mold headers use the family number; the purchased-parts
+    // header identifies the exact product/pack. Prefer that full code, not its prefix.
+    const moreSpecificCode = !!code && !code.includes('/') && headerCode.startsWith(code + '/')
+    if (!code || moreSpecificCode) code = headerCode
+    // 客户：跳过英文占位（含 Customer/Name/名称）；取首个真实值（如 TOMY）
+    const customerKeys = ['客户名称', '客户', 'Customer', '客户名']
+    customer ||= findVal(customerKeys,
+      k => new RegExp(`${boundary}${k}\\s*[：:]\\s*([^\\s].*?)${STOP}`, 'gi'),
+      v => /customer|name|名称/i.test(v))
+    const headerName = findVal(nameKeys, k => new RegExp(`${boundary}${k}\\s*[：:]\\s*([^\\s].*?)${STOP}`, 'gi'))
+    if (!name || moreSpecificCode) name = headerName || name
+  }
+  if (/^spin\s*master$/i.test(customer)) customer = 'Spin Master'
+  if (!code) {
+    // Dump first few rows for debugging
+    const previewSheet = snMold ?? snExt!
+    const grid = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[previewSheet], { header: 1, defval: null })
+    const preview = grid.slice(0, 5).map((r, i) => `行${i + 1}: ${(r || []).map(c => String(c ?? '').slice(0, 30)).join(' | ')}`).join('\n')
+    throw new Error(`未在排模表或外购清单前 10 行找到"产品编号"。试过关键字：${['产品编号', '货号', '产品编码', '编号', 'ItemNo'].join(', ')}\n\n${previewSheet} 前 5 行预览：\n${preview}`)
+  }
+
+  const moldings: Molding[] = []
+  const materials: Material[] = []
+
+  // -------- 2. 排模表: 工模 → 子零件 --------
+  if (snMold) {
+    const worksheet = wb.Sheets[snMold]
+    const rangeStart = XLSX.utils.decode_range(worksheet['!ref'] || 'A1').s
+    const grid = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: null })
+    let hdrIdx = 3
+    for (let r = 0; r < Math.min(10, grid.length); r++) {
+      const joined = (grid[r] || []).map(c => String(c ?? '').replace(/\s+/g, '')).join('|')
+      if (joined.includes('工模编号') && /物料名称|零件名称|NamaPart/.test(joined)) { hdrIdx = r; break }
+    }
+    const headers = (grid[hdrIdx] || []).map((c: any) => String(c ?? '').replace(/\s+/g, ''))
+    const colOf = (...kws: string[]) => {
+      for (const k of kws) { const i = headers.findIndex(h => h.includes(k)); if (i >= 0) return i }
+      return -1
+    }
+    const cMoldId   = colOf('工模编号', 'MoldNumber')
+    const cMoldName = colOf('工模名称', 'MoldName')
+    const cPartNo   = colOf('零件编号', 'PartNumber', 'NoPart')
+    const cPartName = colOf('物料名称', 'MaterialName', '零件名称', 'NamaPart')
+    const cPartEn   = colOf('英文物料', 'Englishmaterial')
+    const cLegacyMaterial = colOf('用料名称', 'Materialused')
+    // Match the added aliases as complete labels: 材料编号/材料颜色 are different columns.
+    const cMaterial = cLegacyMaterial >= 0 ? cLegacyMaterial : headers.findIndex(h =>
+      /^(?:MaterialPart(?:材料)?|材料(?:MaterialPart)?)$/i.test(h))
+    const cColor    = colOf('顔色', '颜色', 'Color')
+    const cPigment  = colOf('色粉号', 'PigmentNumber', 'Pigment')
+    const cNet      = colOf('整啤净重', 'Netweight')
+    const cNetPer   = colOf('单净重', '单个净重', '零件重量', 'BeratPerpart', 'NetWeight(perunit)', 'NetWeightperunit', 'Netweightperunit')
+    const cGrossPer = colOf('单毛重', '单个毛重', 'GrossWeight(perunit)', 'Grossweightperunit')
+    const cUsage    = colOf('用量', '数量', 'Qty', 'Quantity')
+    const cSets     = colOf('套数', 'Sets')
+    const cEjections= colOf('出模数', 'Ejections', 'NumberofEjections')
+    const cPlace    = colOf('生产地', 'PlaceofManufacture', 'Manufacture', '产地')
+    const cMachine = headers.findIndex(h => /啤机机型|MesinModel|MachineModel/i.test(h))
+    const machineAt = (row: number) => {
+      if (cMachine < 0) return ''
+      const cell = { r: rangeStart.r + row, c: rangeStart.c + cMachine }
+      // 只读取该机型单元格自身的合并区域，不能沿用上一模具的机型。
+      const merged = worksheet['!merges']?.find(range => cell.r >= range.s.r && cell.r <= range.e.r
+        && cell.c >= range.s.c && cell.c <= range.e.c)
+      return String(worksheet[XLSX.utils.encode_cell(merged?.s || cell)]?.v ?? '')
+        .normalize('NFKC').replace(/\s+/g, '')
+    }
+
+    let curMold: { prefix: string; cat: string; place: string; entry: Molding } | null = null
+    for (let r = hdrIdx + 1; r < grid.length; r++) {
+      const row = grid[r] || []
+      // A footer has both column labels; part names/notes containing 料型 must not end the import.
+      const footerLabels = row.map(cell => String(cell ?? '').replace(/\s+/g, '')
+        .replace(/（/g, '(').replace(/）/g, ')'))
+      if (footerLabels.some(cell => /^(?:MaterialTipe(?:料型)?|料型(?:MaterialTipe)?)$/i.test(cell)) &&
+          footerLabels.some(cell => /^(?:Penggunaan(?:用量)?|用量(?:Penggunaan)?)(?:\(G\))?$/i.test(cell))) break
+      const moldName = cMoldName >= 0 ? String(row[cMoldName] ?? '').trim() : ''
+      const partName = cPartName >= 0 ? String(row[cPartName] ?? '').trim() : ''
+      const partEn   = cPartEn   >= 0 ? String(row[cPartEn]   ?? '').trim() : ''
+      const partNo   = cPartNo   >= 0 ? String(row[cPartNo]   ?? '').trim() : ''
+      const mat      = cMaterial >= 0 ? String(row[cMaterial] ?? '').trim() : ''
+      if (isValidName(moldName)) {
+        // start new 工模
+        const prefix = /搪胶/.test(mat) || /搪胶炉/.test(machineAt(r)) ? '搪胶件' : '塑胶件'
+        const cat = prefix === '搪胶件' ? '搪胶' : '塑胶'
+        const place = cPlace >= 0 ? String(row[cPlace] ?? '').trim() : ''
+        const rawColor = cColor >= 0 ? String(row[cColor] ?? '').trim() : ''
+        let colorName = rawColor, colorCode = ''
+        const splitIdx = rawColor.search(/[/／|]/)
+        if (splitIdx >= 0) {
+          colorName = rawColor.slice(0, splitIdx).trim()
+          colorCode = rawColor.slice(splitIdx + 1).trim()
+        }
+        const pigmentCode = cPigment >= 0 ? String(row[cPigment] ?? '').trim() : ''
+        const netG = Number(row[cNet]) || 0
+        const entry: Molding = {
+          moldId: cMoldId >= 0 ? String(row[cMoldId] ?? '').trim() : '',
+          moldName, materialName: mat,
+          colorCode, colorName, pigmentCode,
+          netGramsPerShot: netG,
+          setsPerShot: 1,
+          workshop: prefix === '搪胶件' ? '华登' : '兴信A车间',
+          parts: [], notes: '',
+        }
+        if (!place || /中国|China|CN/i.test(place)) moldings.push(entry)
+        curMold = { prefix, cat, place, entry }
+        continue
+      }
+      // sub part row
+      if (!curMold || !isValidName(partName)) continue
+      if (curMold.place && !/中国|China|CN/i.test(curMold.place)) continue
+      const cleanName = stripCodePrefix(partName, code)
+      const cleanEn   = stripCodePrefix(partEn, code)
+      const enPrefix = curMold.prefix === '搪胶件' ? 'Vinyl parts' : 'Plastic parts'
+      // Excel 无英文 → 用本地词典翻译中文部件名
+      const enBody = cleanEn || translatePartName(cleanName)
+      const partFullName = curMold.prefix + '-' + cleanName
+      const partHs = inferHsCode(partFullName, hsDict)
+      const part: MoldingPart = {
+        partCode: partNo || '',
+        partName: partFullName,
+        partNameEn: enBody ? `${enPrefix} - ${enBody}` : '',
+        hsCN: partHs.hsCN,
+        hsID: partHs.hsID,
+        category: curMold.cat,
+        ejections: cEjections >= 0 ? (Number(row[cEjections]) || 0) : 0,
+        usage:     cUsage    >= 0 ? usageAt(worksheet[XLSX.utils.encode_cell({ r: rangeStart.r + r, c: rangeStart.c + cUsage })], 0, snMold, rangeStart.r + r + 1) : 0,
+        grossPerPc: cGrossPer >= 0 ? ((Number(row[cGrossPer]) || 0) / 1000) : 0,
+        netPerPc:   cNetPer   >= 0 ? ((Number(row[cNetPer])   || 0) / 1000) : 0,
+      }
+      curMold.entry.parts!.push(part)
+      // first 套数 → setsPerShot
+      if (cSets >= 0 && (curMold.entry.setsPerShot ?? 1) <= 1) {
+        const s = Number(row[cSets]) || 0
+        if (s > 0) curMold.entry.setsPerShot = s
+      }
+      // 注意：排模表的塑胶/搪胶件只保留在 moldings（排模表），不写入物料子表，
+      // 避免与「外购清单」重复（与旧版 importEngineeringFile 行为一致）。
+    }
+  }
+
+  // -------- 3. 外购清单 --------
+  if (snExt) {
+    // 使用 Excel 显示值读取外购清单，避免 01020100 这类物料编码被当作数字后丢失前导 0。
+    const worksheet = wb.Sheets[snExt]
+    const rangeStart = XLSX.utils.decode_range(worksheet['!ref'] || 'A1').s
+    const grid = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: null, raw: false })
+    // Read quantities from their actual cells: JSON conversion drops Excel
+    // errors, and formatted display text can round fraction/decimal values.
+    let hdrIdx = 3
+    for (let r = 0; r < Math.min(10, grid.length); r++) {
+      const joined = (grid[r] || []).map(c => String(c ?? '').replace(/\s+/g, '')).join('|')
+      if (joined.includes('物料名称') && joined.includes('类别')) { hdrIdx = r; break }
+    }
+    const headers = (grid[hdrIdx] || []).map((c: any) => String(c ?? '').replace(/\s+/g, ''))
+    const colOf = (...kws: string[]) => {
+      for (const k of kws) { const i = headers.findIndex(h => h.includes(k)); if (i >= 0) return i }
+      return -1
+    }
+    const cCat      = colOf('类别', 'Jenis')
+    const cName     = colOf('物料名称', 'MaterialName')
+    const cEn       = colOf('英文名', 'Englishname')
+    const cMaterialCode = colOf('物料编码', '物料编号', 'MaterialCode', 'KodeMaterial')
+    const cSpec     = colOf('规格', 'Spesifikasi')
+    const cSupplier = colOf('供应商', 'Supplier')
+    const cWt       = colOf('单重', 'Berat')
+    const cPlace    = colOf('生产地', 'PlaceofManufacture', 'Manufacture', '产地')
+    const cUsage    = colOf('用量', '数量', 'Qty', 'Quantity')
+
+    for (let r = hdrIdx + 1; r < grid.length; r++) {
+      const row = grid[r] || []
+      const rawName = cName >= 0 ? String(row[cName] ?? '').trim() : ''
+      if (!rawName) continue
+      if (cPlace >= 0) {
+        const place = String(row[cPlace] ?? '').trim()
+        if (place && !/中国|China|CN/i.test(place)) continue
+      }
+      const catRaw = cCat >= 0 ? String(row[cCat] ?? '').trim() : ''
+      if (/\bIC\b/i.test(catRaw + ' ' + rawName)) continue
+      const cleanName = stripAnyCode(stripCodePrefix(rawName, code), code)
+      const rawEn = cEn >= 0 ? String(row[cEn] ?? '').trim() : ''
+      const cleanEn = stripAnyCode(rawEn, code)
+      let fullName: string, fullEn: string, cat: string
+      if (/五金|Hardware/i.test(catRaw)) {
+        cat = '五金'
+        if (/螺丝|螺母/.test(cleanName)) {
+          fullName = cleanName; fullEn = cleanEn
+        } else {
+          fullName = '五金配件-' + cleanName
+          fullEn = cleanEn ? ('Hardware Accessories - ' + cleanEn) : ''
+        }
+      } else {
+        cat = inferMaterialCategory(catRaw + ' ' + rawName + ' ' + (cSpec >= 0 ? String(row[cSpec] ?? '') : ''))
+        fullName = cleanName; fullEn = cleanEn
+      }
+      materials.push({
+        id: 0,
+        product_code: code,
+        item_no: code,
+        name_zh: fullName,
+        name_en: fullEn,
+        material_code: cMaterialCode >= 0 ? String(row[cMaterialCode] ?? '').trim() : '',
+        spec: cSpec >= 0 ? String(row[cSpec] ?? '').trim() : '',
+        category: cat,
+        supplier: cSupplier >= 0 ? String(row[cSupplier] ?? '').trim() : '',
+        customs_company: '',
+        ...((h) => ({ hs_cn: h.hsCN, hs_id: h.hsID }))(inferHsCode(fullName + ' ' + cat, hsDict)),
+        unit_kg: 'KGM',
+        gross_per_pc: 0,
+        net_per_pc: cWt >= 0 ? ((Number(row[cWt]) || 0) / 1000) : 0,
+        length: 0, width: 0, height: 0,
+        qty_per_carton: 0, weight_per_carton: 0,
+        active: true,
+        usage_qty: cUsage >= 0 ? usageAt(worksheet[XLSX.utils.encode_cell({ r: rangeStart.r + r, c: rangeStart.c + cUsage })], 1, snExt, rangeStart.r + r + 1) : 1,
+      })
+    }
+  }
+
+  // -------- 4. BOM图 / 外购图：格子排版图片 + 附近文字标签 → 匹配到物料/排模件 --------
+  // 移植自旧版：图片在 row N，名称多在 row N+1~N+2 同列；按"去公共词"后的核心名匹配。
+  if (zip) {
+    const imageSheets: string[] = []
+    const snBom = findSheet(['BOM', 'bom'])
+    if (snBom) imageSheets.push(snBom)
+    for (const sn of wb.SheetNames) {
+      if (sn === snBom) continue
+      if (/外购/.test(sn) && (/图/.test(sn) || /规格/.test(sn))) imageSheets.push(sn)
+    }
+    if (imageSheets.length) {
+      const productStripStr = String(name || '').replace(/[^一-龥A-Za-z]/g, '')
+      const stripCommon = (s: any): string => {
+        let r = String(s ?? '')
+          .replace(/^(塑胶件|塑料件|搪胶件|吸塑件|五金件|五金配件)[-：:\s]?/, '')
+          .replace(/^\d{4,6}[A-Z]?[-\s]+/i, '')
+        if (productStripStr && productStripStr.length >= 3) r = r.split(productStripStr).join('')
+        return r.replace(/\s+|[-_·.,()（）【】《》""''「」/]/g, '').toLowerCase()
+      }
+      const nameMap: Record<string, { image?: string }> = {}
+      for (const m of materials) { if (!m.name_zh) continue; const k = stripCommon(m.name_zh); if (k && !nameMap[k]) nameMap[k] = m }
+      for (const md of moldings) for (const pt of (md.parts || [])) { if (!pt.partName) continue; const k = stripCommon(pt.partName); if (k && !nameMap[k]) nameMap[k] = pt }
+      const looseMatch = (cellText: any): { image?: string } | null => {
+        const k = stripCommon(cellText)
+        if (!k || k.length < 2) return null
+        if (nameMap[k]) return nameMap[k]
+        // ① 标签核心词 完整包含 物料核心词（取最长，防短词覆盖长词）
+        const cands = Object.entries(nameMap).filter(([nk]) => nk.length >= 2 && k.includes(nk)).sort((a, b) => b[0].length - a[0].length)
+        if (cands.length) return cands[0][1]
+        // ② 反向后缀：物料核心 以 标签核心 结尾（如 标签"左门" ⊂ 料"车左门"、"按件" ⊂ "车顶按件"）。
+        //    只认"结尾"可挡住误挂——标签"后车轮"不是料"前后车轮轴"(以轴结尾)的后缀。取多余前缀最短者。
+        const rev = Object.entries(nameMap).filter(([nk]) => nk.length > k.length && nk.endsWith(k)).sort((a, b) => a[0].length - b[0].length)
+        return rev.length ? rev[0][1] : null
+      }
+      for (const sn of imageSheets) {
+        const imgs = await extractSheetImages(zip, sn)
+        const grid = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[sn], { header: 1, defval: null })
+        const used = new Set<string>()
+        for (const { row: r, col: c, dataUrl } of imgs) {
+          if (!dataUrl) continue
+          const key = r + '_' + c; if (used.has(key)) continue; used.add(key)
+          // 只看图片正下方 1~2 行同列（BOM 布局：图在上、标签紧贴下一行）。
+          // 不再向下越界扫描，避免本图标签匹配不到时串到下一组的标签上（如 B吸塑→胶水）。
+          let hit: { image?: string } | null = null
+          for (const dr of [1, 2]) {
+            if (hit) break
+            const probe = grid[r + dr]; if (!probe) continue
+            for (const dc of [0, 1, -1]) {
+              const cell = probe[c + dc]; if (cell == null || cell === '') continue
+              const cand = looseMatch(cell)
+              if (cand) { hit = cand; break }
+            }
+          }
+          if (hit && !hit.image) hit.image = dataUrl
+        }
+      }
+    }
+  }
+
+  return { code, name, customer, moldings, materials }
+}

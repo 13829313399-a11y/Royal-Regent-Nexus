@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   mmToPt,
   normalizeCuts,
+  normalizeGroupSeparators,
   parseGroups,
   pointerToVisiblePoint,
   ptToMm,
@@ -43,4 +44,32 @@ describe('visible-page PDF coordinates', () => {
     expect(() => parseGroups('4-2', 6)).toThrow()
     expect(() => parseGroups('1-7', 6)).toThrow()
   })
+})
+
+describe('PDF output groups', () => {
+  it('normalizes only separators for compatibility with existing workers', () => {
+    expect(normalizeGroupSeparators('1-10； 11-20；21，23,22;31-42')).toBe(
+      '1-10; 11-20;21,23,22;31-42',
+    )
+  })
+
+  it('accepts Chinese and mixed separators without changing page order or duplicates', () => {
+    expect(parseGroups('1-3； 4，6,5; 5', 6)).toEqual([
+      [1, 2, 3], [4, 6, 5], [5],
+    ])
+  })
+
+  it('splits the reported 42-page selection into four complete groups', () => {
+    expect(parseGroups('1-10；11-20；21-30；31-42', 42)).toEqual([
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+      [21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
+      [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42],
+    ])
+  })
+
+  it.each(['0-2；3', '4-2；3', '1-43；2', '1；；2', '1，；2', '1-2；三', '1-2；3/4'])(
+    'still rejects invalid selection %s',
+    (input) => expect(() => parseGroups(input, 42)).toThrow(),
+  )
 })

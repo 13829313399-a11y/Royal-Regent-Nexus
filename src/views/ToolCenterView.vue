@@ -42,6 +42,7 @@ import ResultReview from '@/features/document-tools/ResultReview.vue'
 import TaskActions from '@/features/document-tools/TaskActions.vue'
 import {
   normalizeCuts,
+  normalizeGroupSeparators,
   parseGroups,
 } from '@/features/document-tools/coordinates'
 import '@/features/document-tools/workbench.css'
@@ -595,6 +596,7 @@ async function start() {
     )
     if (operation.value === 'pdf_split') {
       if (['groups', 'extract'].includes(String(payload.split_mode))) {
+        payload.groups = normalizeGroupSeparators(String(payload.groups ?? ''))
         const groups = parseGroups(
           String(payload.groups ?? ''),
           currentSource.value.manifest.pages?.length ?? 0,

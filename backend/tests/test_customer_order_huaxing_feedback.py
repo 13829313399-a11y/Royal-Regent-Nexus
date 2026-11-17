@@ -44,12 +44,13 @@ def test_quantity_conflict_cannot_be_exported_with_forged_confirmation_keys():
     preview = decorate_manual_resolution_policy(service.create_unified_customer_preview(**args))
     row, = preview['rows']
     conflict = next(i for i in row['issues'] if i['code'] == 'existing_quantity_conflict')
-    assert conflict['severity'] == 'blocked'
-    assert not conflict['can_skip'] and not conflict['can_edit']
+    assert conflict['severity'] == 'warning'
+    assert conflict['can_skip'] and not conflict['can_edit']
+    assert api._actual_confirmed_issue_keys(preview, {conflict['skip_key']}) == {conflict['skip_key']}
     with pytest.raises(HTTPException):
-        api._actual_confirmed_issue_keys(preview, {conflict['skip_key']})
-    with pytest.raises(service.CustomerOrderUnifiedError):
-        service.export_unified_customer_schedule(**args, skipped_issue_keys={conflict['skip_key']})
+        api._actual_confirmed_issue_keys(preview, {'invented-key'})
+    output, _, resolved = service.export_unified_customer_schedule(**args)
+    assert output.startswith(b'PK') and resolved['summary']['blocked'] == 0
 
 
 def test_batch_quantity_conflict_remains_hard_after_advisory_policy():
@@ -60,8 +61,8 @@ def test_batch_quantity_conflict_remains_hard_after_advisory_policy():
     mapping.apply_advisory_policy(rows)
     decorate_manual_resolution_policy({'rows': rows})
     issue = next(i for i in rows[1]['issues'] if i['code'] == 'existing_quantity_conflict')
-    assert issue['severity'] == 'blocked' and issue['requires_source_correction']
-    assert not issue['can_skip'] and not issue['can_edit']
+    assert issue['severity'] == 'warning' and issue['requires_source_correction']
+    assert issue['can_skip'] and not issue['can_edit']
 
 
 def test_optional_date_code_can_stay_blank_or_be_exported_as_text():

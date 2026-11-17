@@ -14,6 +14,7 @@ from app.services.permission_codes import (
     INDONESIA_MATERIAL_PERMISSION_CODES,
     WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     APPLICATION_PERMISSION_CODES,
+    INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES,
     FABRIC_WAREHOUSE_PERMISSION_CODES,
     SPRAY_OPS_PERMISSION_CODES,
     CUTTING_OPS_PERMISSION_CODES,
@@ -211,6 +212,7 @@ GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
         # New material-ledger roles are granted explicitly at business cutover.
         *CARTON_ASSET_PERMISSION_CODES,
         *INDONESIA_MATERIAL_PERMISSION_CODES,
+        *INDONESIA_SHIPPING_BUSINESS_PERMISSION_CODES,
         *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         *UV_OPS_PERMISSION_CODES,
         *SPRAY_OPS_PERMISSION_CODES,
@@ -362,7 +364,7 @@ PAINTING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 # 啤机职位可跨厂只读查看正式工程啤办看板与明细，并操作
-# 啤办生产任务和注塑排产。范围模式负责区分文员的“跨厂查看 / 本厂操作”
+# 啤办生产任务。范围模式负责区分文员的“跨厂查看 / 本厂操作”
 # 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
 MOLDING_CLERK_PERMISSION_CODES = (
     "customer_order:inbox_read",

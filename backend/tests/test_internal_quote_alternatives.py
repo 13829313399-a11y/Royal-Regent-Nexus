@@ -27,6 +27,9 @@ def fill(client, quote):
     for code, payload in payloads.items():
         current = client.get(f"/api/internal-quotes/{quote['id']}").json()
         section = next(row for row in current["sections"] if row["department"] == code)
+        if code == "sales" and section["payload"].get("pricing_mode") == "component":
+            payload = {**payload, "pricing_mode": "component", "pricing_components": section["payload"]["pricing_components"],
+                       "color_box_size_in": {"length": 6, "width": 4, "height": 3}}
         response = client.put(f"/api/internal-quotes/{quote['id']}/sections/{code}", json={"revision": section["revision"], "payload": payload, "reason": "填写测试资料"})
         assert response.status_code == 200, response.text
         assert response.json()["calculation_status"] == "valid", response.text
@@ -39,6 +42,17 @@ def fork(client, quote, kind="scenario", name="开窗盒"):
         "revision": quote["header_revision"], "family_revision": family["revision"],
         "kind": kind, "name": name, "change_note": "客户要求比较另一种包装",
     })
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def freeze_versions(client, quotes):
+    products = [{"quote_id": q["id"],
+                 "revision": client.get(f"/api/internal-quotes/{q['id']}").json()["header_revision"],
+                 "family_revision": client.get(f"/api/internal-quotes/{q['id']}/alternatives").json()["revision"]}
+                for q in quotes]
+    response = client.post(f"/api/internal-quotes/{quotes[0]['id']}/freeze",
+                           json={"frozen": True, "reason": "确认冻结当前产品", "products": products})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -73,6 +87,7 @@ def test_independent_options_issue_history_and_selection(monkeypatch):
         unchanged = client.get(f"/api/internal-quotes/{source['id']}").json()
         assert next(row for row in unchanged["sections"] if row["department"] == "sales")["payload"] == source_sales["payload"]
         target = client.get(f"/api/internal-quotes/{target['id']}").json()
+        freeze_versions(client, [target])
         issued = client.post(f"/api/internal-quotes/{target['id']}/direct-issue", json={"revision": target["header_revision"]})
         assert issued.status_code == 200, issued.text
         record = issued.json()
@@ -168,7 +183,9 @@ def test_batch_archive_cannot_change_issued_sibling_and_defaults_are_direct(monk
         root = response.json()
         assert root["module_version"] == "v4"
         products = client.get(f"/api/internal-quotes/{root['id']}/batch-products").json()
+        root = fill(client, root)
         sibling = fill(client, client.get(f"/api/internal-quotes/{products[1]['quote_id']}").json())
+        freeze_versions(client, [root, sibling])
         issued = client.post(f"/api/internal-quotes/{sibling['id']}/direct-issue", json={"revision": sibling["header_revision"]})
         assert issued.status_code == 200, issued.text
         before = client.get(f"/api/internal-quotes/{sibling['id']}").json()

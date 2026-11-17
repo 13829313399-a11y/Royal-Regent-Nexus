@@ -322,6 +322,57 @@ def test_migration_upgrade_and_downgrade_protect_source_evidence(tmp_path):
             assert "fabric_procurement_lines" not in sa.inspect(connection).get_table_names()
 
 
+def test_purchase_detail_finishes_evidence_read_before_checking_schema(tmp_path):
+    import sqlite3
+    from contextlib import closing
+    from types import SimpleNamespace
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import Session
+
+    service = importlib.import_module("app.services.fabric_procurement")
+    parser = importlib.import_module("app.services.fabric_procurement_parser")
+    models = importlib.import_module("app.models.fabric_procurement")
+    path = tmp_path / "detail.db"
+    engine = create_engine(f"sqlite:///{path}")
+    tables = [model.__table__ for model in (models.FabricProcurementState, models.FabricProcurementLine,
+              models.FabricProcurementImport, models.FabricProcurementEvidence)]
+    importlib.import_module("app.db").Base.metadata.create_all(engine, tables=tables)
+    actor = SimpleNamespace(id="actor", display_name="Warehouse")
+    with Session(engine) as db:
+        for quantity in (100, 120):
+            parsed = parser.parse_workbook("source.xlsx", book([row(订单数量=quantity)]))
+            token = service.preview(db, parsed, actor.id)["preview_token"]
+            service.apply(db, parsed, actor, "source.xlsx", str(uuid4()), token,
+                          confirmed=True, acknowledge_excluded=True)
+        line_id = db.scalar(select(models.FabricProcurementLine.id))
+
+    connections = set()
+    evidence_selected = False
+    writer_committed = False
+
+    def commit_before_next_read(connection, cursor, statement, parameters, context, executemany):
+        nonlocal evidence_selected, writer_committed
+        connections.add(connection)
+        if evidence_selected and not writer_committed:
+            # A separate writer can commit only after the evidence cursor releases its read lock.
+            with closing(sqlite3.connect(path, timeout=0)) as writer, writer:
+                writer.execute("UPDATE fabric_procurement_state SET revision = revision + 1")
+            writer_committed = True
+        if "ORDER BY fabric_procurement_imports.occurred_at DESC" in statement:
+            evidence_selected = True
+
+    event.listen(engine, "before_cursor_execute", commit_before_next_read)
+    try:
+        with Session(engine) as db:
+            detail = service.line_detail(db, line_id)
+        assert writer_committed
+        assert len(detail["evidence"]) == 2
+        assert len(connections) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", commit_before_next_read)
+        engine.dispose()
+
+
 @pytest.mark.parametrize("same_request", [True, False])
 def test_concurrent_saves_are_idempotent_or_reject_stale_preview(tmp_path, same_request):
     from concurrent.futures import ThreadPoolExecutor

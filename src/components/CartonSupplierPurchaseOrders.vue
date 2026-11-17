@@ -16,6 +16,7 @@ watch(() => [props.factoryId, props.orderNo], async () => {
 }, { immediate: true })
 onBeforeUnmount(() => { generation++ })
 const context = computed<CartonPurchaseOrderContextResponse>(() => ({ factory_id: props.factoryId, order_no: props.orderNo, order_revision: 0, pending_type: 'NONE', pending_product_quantity: null, pending_line_count: 0, can_generate: false, latest_document_no: documents.value[0]?.document_no || '', historical_baseline: false,
+  empty_reason: '新采购单在完整接单后显示。合并采购单须等所含订单全部接齐。',
   issues: documents.value.map((doc, index) => ({ id: doc.id, factory_id: doc.factory_id, order_no: props.orderNo, document_no: doc.document_no, document_type: doc.document_type as CartonPurchaseOrderIssueResponse['document_type'], issue_sequence: index + 1, source_order_revision: 0, before_product_quantity: null, after_product_quantity: null, product_quantity_delta: null, generated_by: '', generated_by_name: '', generated_at: doc.created_at, is_cancellation: doc.is_cancellation, is_replenishment: doc.replenishment })) }))
 async function download(issue: CartonPurchaseOrderIssueResponse) {
   const row = documents.value.find(doc => doc.id === issue.id)

@@ -198,7 +198,7 @@ describe('cutting workspace entry', () => {
       if (workspace.path === 'master') {
         expect(wrapper!.text()).toContain('基础资料尚未启用')
       } else if (workspace.path === 'reporting') {
-        expect(wrapper!.text()).toContain('每日填数尚未启用')
+        expect(wrapper!.text()).toContain('每日记录尚未启用')
         expect(wrapper!.find('form').exists()).toBe(false)
       } else if (workspace.path === 'costs') {
         expect(wrapper!.text()).toContain('实际材料费用尚未启用')

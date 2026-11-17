@@ -115,6 +115,10 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert issued.status_code == 200, issued.text
         assert issued.json()["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "original.xlsx"
         assert issued.json()["export_manifest"]["source_spreadsheet_attachments"][0]["file_name"] == "original.xlsx"
+        editable = client.get(root + "/output-layout?include_source_workbooks=false").json()
+        assert editable["read_only"] is False and any(g["editable"] for g in editable["groups"])
+        from test_internal_quote_alternatives import freeze_versions
+        freeze_versions(client, [current])
         from sqlalchemy import event
         from app.db import engine
         import re

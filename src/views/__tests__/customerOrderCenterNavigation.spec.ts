@@ -23,7 +23,7 @@ vi.mock('@/components/modules/sales/customer-order-center/HuakangBJPIntake.vue',
   default: { props: ['factoryId'], template: '<div data-testid="jp-workspace">JP问单 {{ factoryId }}</div>' },
 }))
 vi.mock('@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue', () => ({
-  default: { name: 'CustomerOrderCenterWorkspace', props: ['activeSection', 'factoryId', 'focusLineId'], emits: ['navigate'],
+  default: { name: 'CustomerOrderCenterWorkspace', props: ['activeSection', 'factoryId', 'focusLineId', 'initialCustomerCode'], emits: ['navigate'],
     template: '<div data-testid="formal-workspace">{{ factoryId }} {{ activeSection }} {{ focusLineId }}</div>' },
 }))
 
@@ -103,5 +103,19 @@ it('preserves explicit historical-order links without enabling B PO intake', asy
   await wrapper.get('.order-new-button').trigger('click')
   expect(state.replace).toHaveBeenCalledWith({ query: { factory: 'huakang-b', order: undefined } })
   expect(wrapper.find('[data-testid="jp-workspace"]').exists()).toBe(true)
+  wrapper.unmount()
+})
+
+
+it('opens the replacement ZURU link in the matching factory import workspace', async () => {
+  state.store.activeProductionFactory = { id: 'huakang-a', shortName: '华康A' }
+  state.route.query = { factory: 'huakang-a', customer: 'zuru', section: 'import' }
+  const wrapper = mount(CustomerOrderCenterView)
+  await flushPromises()
+  const workspace = wrapper.getComponent({ name: 'CustomerOrderCenterWorkspace' })
+  expect(workspace.props()).toMatchObject({ factoryId: 'huakang-a', activeSection: 'import', initialCustomerCode: 'zuru' })
+  state.route.query.factory = 'huaxing'
+  await flushPromises()
+  expect(workspace.props('initialCustomerCode')).toBe('')
   wrapper.unmount()
 })

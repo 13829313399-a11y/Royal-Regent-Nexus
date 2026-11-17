@@ -19,3 +19,21 @@
 @container (max-width:600px) {
   .carton-table-fit :is(tbody,tfoot) > tr { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
+
+.carton-phone-dialog { height: 100dvh; max-height: 100dvh; }
+.carton-phone-footer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.carton-phone-issue :is(input, select) { min-height: 44px; font-size: 16px; }
+.carton-phone-issue-rows .carton-table-fit tbody > tr > td:nth-child(5) { grid-column: 1 / -1; }
+.carton-phone-issue-rows .carton-table-fit tbody > tr > td:last-child { grid-column: 1 / -1; }
+.carton-phone-receipt { overflow: hidden; }
+.carton-phone-receipt-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.carton-phone-receipt :is(input:not([type=checkbox]):not([type=radio]), select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  font-size: 16px;
+}
+.carton-phone-receipt :is(button, summary) { min-height: 44px; }
+.carton-phone-receipt-body [data-mobile-first-paper] { scroll-margin-top: 8px; }
+.carton-phone-receiving-list > article { overflow-wrap: anywhere; }
+.carton-phone-receiving-list > article button { min-height: 44px; }

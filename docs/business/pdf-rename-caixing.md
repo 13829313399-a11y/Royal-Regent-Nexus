@@ -1,6 +1,6 @@
 # 彩星行验报告批量改名
 
-规则 `caixing-inspection` v1.0.0，仅适用于华兴（`huaxing`）。与 BuzzBee 规则独立，沿用公共工具栏的上传、预览、人工改名放行及 ZIP 下载流程。
+规则 `caixing-inspection` v1.0.2，仅适用于华兴（`huaxing`）。与 BuzzBee 规则独立，沿用公共工具栏的上传、预览、人工补充/改名放行及 ZIP 下载流程。
 
 ## 命名与正文取值
 
@@ -18,33 +18,35 @@
 
 ## 识别与校验
 
+- 原文件名与“预览并补充”入口打开当前上传 PDF 的预览窗口。桌面端原件和补填区并排显示，窄屏上下排列；可缩放、适合宽度及翻页。窗口内与表格行共用补填值和确认状态，可直接应用修改并重新预览，关闭窗口不丢失输入。
+- 原件预览使用当前上传文件的浏览器临时地址，不重新上传或调用识别；按行索引绑定文件，同名文件不会串行。关闭、切换文件、清空、切换厂区或离开工作区时释放预览地址。Escape 可关闭，关闭后焦点返回原文件入口。
 - 支持样本所示 Playmates International Company / SHIPMENT QUALITY INSPECTION REPORT 首页布局。
-- 渲染第 1 页后，仅识别上部固定区域（归一化坐标 0.07、0.05、0.95、0.26），强制使用本地 RapidOCR；忽略可能错误的内嵌 OCR 层。渲染与识别仅在内存执行，不保存原件或识别历史。
+- 渲染第 1 页后，仅识别上部固定区域（归一化坐标 0.07、0.05、0.95、0.26），忽略可能错误的内嵌 OCR 层。已配置千问时使用该连接，否则使用本地 RapidOCR；不长期保存原件或识别历史。
 - 使用识别文字框的相对位置与标签基线配对同一行右侧单元格，支持样本中的轻微倾斜；列边界防止取到邻列。OCR 输出顺序不作为字段关联依据。
 - 标签/值缺失、重复、位置歧义、低置信度（低于 0.85）或字段格式错误时阻止自动命名；不猜测 O/0 等易混字符，不拼接缺失数字，也不截断多个 PO。
-- 所有 OCR 结果均须对照 PDF 复核。异常可输入完整文件名、逐份确认放行、重新预览后再最终确认下载；损坏/加密 PDF、缺页、OCR 组件故障、非法文件名和重名仍不可绕过。
-- 9 份提供的样本以无业务信息的上传名称完成实样验证；预览与执行再次识别结果一致，ZIP 内 9 份 PDF 的字节与输入完全一致。
+- 五项字段独立校验：个别字段缺失、模糊或格式错误时，保留其余已通过校验的内容及原始依据，列出全部待补充字段。例如仅 Batch no. 不清晰时，货号、PO、数量和日期仍直接展示，用户只需填写报告号。千问明确标记不确定的字段同样需要补充，不能因为文字看似符合格式而自动采用；无法对应具体字段的不确定性会阻止全部字段自动通过。
+- 部分识别结果返回 `filename_template` 和字段的 `validation_error`，可执行的 `target_file_name` 保持空白。页面实时展示已识别内容与待补充位置，所有缺项填齐后才生成完整人工文件名；占位文字不会提交下载。应用补充后的预览期间保留原先用于拼名的已识别值，不让重新识别覆盖已确认内容。
+- 本地 OCR 结果须对照 PDF 复核；完整且校验通过的千问结果可直接下载。字段补充沿用逐份确认放行、重新预览及最终复核流程；不支持字段补充的异常仍可输入完整文件名。损坏/加密 PDF、缺页、OCR 组件故障、非法文件名和重名仍不可绕过。
 
 ## 运行边界
 
-使用项目已有的 RapidOCR、ONNX Runtime、本地模型及 pypdfium2，不依赖云端识别。新部署应提前准备本地模型。复杂旋转、不同版式、多 PO、不同位数报告号/货号/PO 不在首版自动识别范围，可人工改名或补充独立规则。通用规则仍默认原生文字优先、Tesseract 回退，BuzzBee 的 OCR 参数和解析规则不变。
+本地模式使用项目已有的 RapidOCR、ONNX Runtime、本地模型及 pypdfium2；千问模式沿用文档工具已有连接。新部署应提前准备对应识别配置。复杂旋转、不同版式、多 PO、不同位数报告号/货号/PO 不在自动识别范围，可人工补充、改名或补充独立规则。通用规则仍默认原生文字优先、Tesseract 回退，BuzzBee 的 OCR 参数和解析规则不变。
 
 ## 实现入口与验收
 
-本次变更：
+主要入口：
 
 - `backend/app/services/pdf_rename/rules/caixing_inspection.py`：独立命名规则。
 - `backend/app/services/pdf_rename/rules/__init__.py`：注册规则。
 - `backend/app/services/pdf_rename/contracts.py`、`ocr.py`：可选版面识别与内部文字框证据，原有默认值保持不变。
-- `src/features/document-studio/components/PdfBatchRenameWorkspace.vue`：人工文件名提示和最终复核文案通用化。
-- `backend/tests/test_caixing_pdf_rename.py`、`src/features/document-studio/__tests__/PdfBatchRenameWorkspace.spec.ts`：规则、范围、异常及工作流测试。
+- `src/features/pdf-rename/PdfBatchRenameWorkspace.vue`：字段补充、完整文件名拼接及最终复核流程。
+- `backend/tests/test_caixing_pdf_rename.py`、`backend/tests/test_pdf_rename_qwen.py`、`src/features/pdf-rename/PdfBatchRenameWorkspace.spec.ts`：规则、范围、部分识别、异常及工作流测试。
 - 本说明与 `PROJECT_MEMORY.md`：维护规则边界及取值约定。
 
-已运行的验证：
+验证要点：
 
-- `pytest tests/test_caixing_pdf_rename.py tests/test_buzzbee_pdf_rename.py tests/test_pdf_rename_manual.py tests/test_pdf_batch_rename.py tests/test_document_tools_simplified.py -q -p no:cacheprovider`：159 项通过，使用进程级隔离 SQLite，不写入业务数据库。
-- `vitest run` 定向运行 PdfBatchRenameWorkspace、tools API、documentStudio、toolCenter 四组测试：29 项通过。
-- `vue-tsc -b`、`vue-tsc --noEmit -p tsconfig.test.json`、`vite build`：通过。项目未配置 lint；构建保留已有 VueUse PURE 注释提示。
-- 实样 9/9 按正文匹配，ZIP 原字节校验通过；浏览器用 RR6015P、RR6017 完成规则选择、预览、复核和下载，页面明确显示已生成并打包下载 2 份 PDF。
+- 后端规则与千问测试覆盖单项/多项缺失、低置信度、字段格式错误、未绑定的不确定性、原始依据保留和空目标阻断；人工确认后沿用 ZIP 原字节、重名、失效预览及厂区范围回归。
+- 前端 `PdfBatchRenameWorkspace.spec.ts` 覆盖只补 Batch no.、多项补齐、文件名实时拼接、确认后应用、再次修改撤销确认，以及下载使用与预览一致的完整文件名。
+- 运行对应前后端测试、`npm run typecheck:test` 和 `npm run build`。实际版式识别准确度及页面布局仍须在对应运行环境用样本分别验收。
 
 该功能不新增数据库表或迁移。

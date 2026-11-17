@@ -33,6 +33,20 @@ class AlternativeGroupProduct(SeriesExportProduct):
     family_revision: int = Field(ge=0)
 
 
+class DocumentFreezeRequest(BaseModel):
+    products: list[AlternativeGroupProduct] = Field(min_length=1, max_length=20)
+    frozen: bool
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("请填写冻结或解除冻结说明")
+        return value
+
+
 class AlternativeGroupCopyRequest(BaseModel):
     products: list[AlternativeGroupProduct] = Field(min_length=2, max_length=20)
     kind: Literal["scenario", "version"]

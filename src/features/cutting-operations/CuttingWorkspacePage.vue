@@ -38,7 +38,7 @@ const currentTab = computed(() => props.workspace.tabs[selectedTab.value] ?? pro
     <details class="cutting-panel cutting-rules" open>
       <summary>业务口径与办理顺序</summary>
       <ul><li v-for="rule in workspace.rules" :key="rule">{{ rule }}</li></ul>
-      <p class="cutting-flow">业务下发订单 → 工程确认 BOM → 采购回复交期 → 裁床排期 → 每日填数 → 物料及费用核对 → 月结</p>
+      <p class="cutting-flow">业务下发订单 → 工程确认 BOM → 采购回复交期 → 裁床排期 → 每日记录 → 物料及费用核对 → 月结</p>
     </details>
   </section>
 </template>

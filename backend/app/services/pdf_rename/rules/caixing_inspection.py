@@ -7,9 +7,32 @@ from datetime import date
 from typing import Mapping
 
 from ..contracts import (
-    NormalizedRegion, PdfRenamePlan, PdfRenameRuleBase, PdfRenameRuleDefinition,
-    PdfRenameSource, RecognizedRegionValue, RecognizedTextBox, RegionRecognizer,
+    NormalizedRegion, PdfRenameIssue, PdfRenamePlan, PdfRenameRuleBase, PdfRenameRuleDefinition,
+    PdfRenameServiceError, PdfRenameSource, RecognizedRegionValue, RecognizedTextBox, RegionRecognizer,
 )
+
+FILENAME_TEMPLATE = "{report_no}-#{item_no}-{po_numbers}-{quantity}-{report_date}.pdf"
+
+
+def _uncertain_keys(names: tuple[str, ...]) -> set[str]:
+    aliases = {
+        "report_no": ("Batch no.", "报告号", "报告号（Batch no.）"),
+        "item_no": ("Item number", "货号", "货号（Item number 前 5 位）"),
+        "po_numbers": ("P/O no.", "PO", "PO 号", "PO 号（P/O no.）"),
+        "quantity": ("Quantity (Pcs)", "数量", "Pcs", "数量（Pcs）"),
+        "report_date": ("DATE", "日期", "日期（DATE，月/日/年）"),
+    }
+    def canonical(value: str) -> str:
+        return re.sub(r"[\W_]+", "", _text(value)).casefold()
+    lookup = {canonical(alias): key for key, values in aliases.items() for alias in (key, *values)}
+    keys = set()
+    for name in names:
+        key = lookup.get(canonical(name))
+        if key is None:
+            # An unbound uncertainty must not silently certify any naming field.
+            return set(aliases)
+        keys.add(key)
+    return keys
 
 
 def _text(value: str) -> str:
@@ -82,50 +105,85 @@ def _fields(value: RecognizedRegionValue) -> tuple[RecognizedRegionValue, ...]:
         ("report_date", "日期（DATE，月/日/年）", r"DATE\b(?!\s+Code\b)", r"[0-9]{1,2}\s*/\s*[0-9]{1,2}\s*/\s*[0-9]{4}", 1.0),
     )
     fields = []
+    uncertain = _uncertain_keys(value.uncertain_fields)
     for key, label, source_label, pattern, right in specs:
-        parsed, raw, confidence = _field(value, source_label, pattern, right, label)
-        if key == "item_no":
-            parsed = parsed[:5]
-        elif key == "report_no":
-            parsed = parsed.upper()
-        elif key == "quantity":
-            quantity = int(parsed.replace(",", ""))
-            if quantity <= 0:
-                raise ValueError("Quantity (Pcs) 必须大于 0，请人工核对数量。")
-            parsed = str(quantity)
-        elif key == "report_date":
-            month, day, year = map(int, parsed.split("/"))
-            try:
-                date(year, month, day)
-            except ValueError as exc:
-                raise ValueError("DATE 不是有效的月/日/年日期，请人工核对。") from exc
-            parsed = f"{year}.{month}.{day}"
-        fields.append(RecognizedRegionValue(key, label, raw, parsed, value.route, confidence))
+        raw, confidence = "", None
+        try:
+            parsed, raw, confidence = _field(value, source_label, pattern, right, label)
+            if key in uncertain:
+                raise ValueError(f"千问标记{label}不确定，请对照原 PDF 补充。")
+            if key == "item_no":
+                parsed = parsed[:5]
+            elif key == "report_no":
+                parsed = parsed.upper()
+            elif key == "quantity":
+                quantity = int(parsed.replace(",", ""))
+                if quantity <= 0:
+                    raise ValueError("Quantity (Pcs) 必须大于 0，请人工核对数量。")
+                parsed = str(quantity)
+            elif key == "report_date":
+                month, day, year = map(int, parsed.split("/"))
+                try:
+                    date(year, month, day)
+                except ValueError as exc:
+                    raise ValueError("DATE 不是有效的月/日/年日期，请人工核对。") from exc
+                parsed = f"{year}.{month}.{day}"
+        except ValueError as exc:
+            fields.append(RecognizedRegionValue(key, label, raw, "", value.route, confidence,
+                                               validation_error=str(exc)))
+        else:
+            fields.append(RecognizedRegionValue(key, label, raw, parsed, value.route, confidence))
     return tuple(fields)
 
 
 class CaixingInspectionRule(PdfRenameRuleBase):
     definition = PdfRenameRuleDefinition(
-        rule_id="caixing-inspection", label="彩星行验报告", version="1.0.1",
+        rule_id="caixing-inspection", label="彩星行验报告", version="1.0.2",
         factory_ids=("huaxing",),
         description=(
             "仅限华兴厂区。按首页正文生成 报告号-#货号-PO号-数量-日期.pdf。"
             "报告号取 Batch no.（保留 P），货号取 Item number 前 5 位，PO 取 P/O no.，"
             "数量取 Quantity (Pcs)，DATE 按月/日/年读取并转为 年.月.日。"
             "不使用 Date Code、箱数或原文件名补值；千问识别完整且校验通过即可下载。"
+            "个别字段不清晰时保留其余结果，只需补充未识别字段。"
         ),
         regions=(NormalizedRegion(
             "report_header", "彩星首页标识与命名字段", 1, .07, .05, .95, .26,
-            language="eng", ocr_only=True, ocr_engine="rapidocr",
+            language="eng", ocr_only=True, ocr_engine="rapidocr", allow_partial_fields=True,
         ),),
     )
 
     def build_interval_name(self, values: Mapping[str, RecognizedRegionValue]) -> str:
-        report, item, po, quantity, report_date = (field.normalized_text for field in _fields(values["report_header"]))
-        return f"{report}-#{item}-{po}-{quantity}-{report_date}"
+        fields = _fields(values["report_header"])
+        if errors := [field.validation_error for field in fields if field.validation_error]:
+            raise ValueError("；".join(errors))
+        return FILENAME_TEMPLATE.format(**{field.key: field.normalized_text for field in fields})[:-4]
 
     def create_plan(self, source: PdfRenameSource, recognizer: RegionRecognizer) -> PdfRenamePlan:
-        plan = super().create_plan(source, recognizer)
-        if plan.status == "ERROR":
-            return plan
-        return replace(plan, fields=(*plan.fields, *_fields(plan.fields[0])))
+        try:
+            value = recognizer(source.content, self.definition.regions[0])
+        except PdfRenameServiceError as exc:
+            return PdfRenamePlan(source.source_file_name, "", "", "ERROR",
+                                 issues=(PdfRenameIssue(exc.code, exc.message),))
+        plan = PdfRenamePlan(source.source_file_name, "", "", "ERROR", fields=(value,))
+        try:
+            fields = _fields(value)
+        except ValueError as exc:
+            return replace(plan, issues=(PdfRenameIssue("PDF_RENAME_INTERVAL_INVALID", str(exc)),))
+        issues = tuple(PdfRenameIssue("PDF_RENAME_INTERVAL_INVALID", field.validation_error)
+                       for field in fields if field.validation_error)
+        plan = replace(plan, fields=(value, *fields), issues=issues)
+        if issues:
+            # Keep valid fields, but never publish a downloadable placeholder name.
+            return replace(plan, filename_template=FILENAME_TEMPLATE)
+        interval = FILENAME_TEMPLATE.format(**{field.key: field.normalized_text for field in fields})[:-4]
+        try:
+            target = self.build_target_file_name(interval)
+        except ValueError as exc:
+            return replace(plan, interval_name=interval,
+                           issues=(PdfRenameIssue("PDF_RENAME_TARGET_INVALID", str(exc)),))
+        needs_review = value.route == "LOCAL_OCR" or (value.confidence is not None and value.confidence < .85)
+        return replace(plan, target_file_name=target, interval_name=interval,
+                       status="REVIEW" if needs_review else "READY", issues=(
+                           PdfRenameIssue("PDF_RENAME_OCR_REVIEW_REQUIRED", "区间名来自扫描区域 OCR，请对照原 PDF 复核。"),
+                       ) if needs_review else ())

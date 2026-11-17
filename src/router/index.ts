@@ -12,6 +12,7 @@ import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGua
 import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
 import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
 import { guardUvNavigation } from '@/features/uv-operations/navigationGuard'
+import { guardShippingNavigation } from '@/features/indonesia-shipping/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
 import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
@@ -213,6 +214,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/pmc-warehouse/shipping-management',
+    name: 'shipping-management',
+    component: () => import('@/features/shipping-management/ShippingManagementView.vue'),
+    meta: {
+      title: '船务管理',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/sales-business/mainland-invoice',
     redirect: to => ({ name: 'mainland-invoice', query: to.query, hash: to.hash }),
   },
@@ -292,6 +303,10 @@ const routes: RouteRecordRaw[] = [
     redirect: '/modules/sales-business',
   },
   {
+    path: '/modules/sales-business/zuru-intake',
+    redirect: { name: 'customer-order-center', query: { factory: 'huakang-a', customer: 'zuru', section: 'import' } },
+  },
+  {
     path: '/modules/sales-business/po-schedule-intake',
     name: 'customer-order-center',
     component: () => import('@/views/CustomerOrderCenterView.vue'),
@@ -300,6 +315,16 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['customer_order:read'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/modules/sales-business/indonesia-shipping',
+    name: 'indonesia-shipping',
+    component: () => import('@/views/IndonesiaShippingView.vue'),
+    meta: {
+      title: '印尼走货明细', fullPage: true, requiresAuth: true,
+      permissions: ['indonesia_shipping:read'], permissionDepartment: 'sales-business',
       enforcePermissions: true,
     },
   },
@@ -738,6 +763,7 @@ router.beforeEach(async (to, from) => {
   if (!guardCartonNavigation(to, from)) return false
   if (!await guardQuoteNavigation(to, from)) return false
   if (!guardUvNavigation(to, from)) return false
+  if (!await guardShippingNavigation(to, from)) return false
   if (to.name === 'three-d-printing-management' && to.query.factory !== 'huakang-a') {
     return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
   }

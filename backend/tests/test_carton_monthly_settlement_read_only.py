@@ -1,6 +1,8 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
+from sqlalchemy import event
+
 from test_molding_sample_api import make_client, login_as
 from test_carton_master_api import prepare
 from test_carton_procurement_api import _order_payload, _submit_order
@@ -12,14 +14,34 @@ SUPPLIER = "/api/carton-supplier"
 MONTH = "/monthly-settlements/workspace"
 
 
+def read_month(client, portal, query):
+    from app.db import engine
+
+    statements = []
+
+    def record_sql(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.upper().split()))
+
+    event.listen(engine, "before_cursor_execute", record_sql)
+    try:
+        response = client.get(portal + MONTH, params=query)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_sql)
+
+    assert response.status_code == 200, response.text
+    writes = [statement for statement in statements if statement.startswith(
+        ("BEGIN IMMEDIATE", "UPDATE ", "INSERT ", "DELETE ")
+    ) or "PG_ADVISORY_XACT_LOCK" in statement]
+    assert not writes, writes
+    assert "BEGIN" in statements
+    return response.json()
+
+
 def test_monthly_settlement_workspace_is_read_only(monkeypatch):
     with make_client(monkeypatch) as client:
         prepare(client)
         login_as(client, "admin")
-        workspace = client.get(BASE + "/monthly-settlements/workspace",
-                               params={"factory_id": "huaxing", "period": "2026-10", "currency": "CNY"})
-        assert workspace.status_code == 200, workspace.text
-        body = workspace.json()
+        body = read_month(client, BASE, {"factory_id": "huaxing", "period": "2026-10", "currency": "CNY"})
         assert body["read_only"] is True
         assert body["can_submit"] is False and body["can_lock"] is False
         assert "totals" in body and "lines" in body
@@ -67,17 +89,13 @@ def test_monthly_customer_totals_and_original_documents_agree_between_portals(mo
         posted = confirm(client, manual.json())
         assert posted.status_code == 200, posted.text
 
-        internal = client.get(BASE + MONTH, params=query)
-        assert internal.status_code == 200, internal.text
-        warehouse = internal.json()
+        warehouse = read_month(client, BASE, query)
         accepted = [row for row in warehouse["lines"] if row["document_no"] == "DN-PORTAL"]
         assert len(accepted) == 2
         assert all(row["reference"] == {"kind": "RECEIPT", "id": receipt_id} for row in accepted)
 
         supplier_login(client)
-        external = client.get(SUPPLIER + MONTH, params=query)
-        assert external.status_code == 200, external.text
-        east = external.json()
+        east = read_month(client, SUPPLIER, query)
         assert east["totals"] == warehouse["totals"]
         assert east["customers"] == warehouse["customers"]
         assert east["global_issues"] == []

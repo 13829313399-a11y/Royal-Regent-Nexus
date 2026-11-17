@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { inject, nextTick, onBeforeUnmount, onMounted, provide, ref, useId, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, provide, ref, useId, watch } from 'vue'
 import { routeLocationKey, routerKey, type LocationQueryRaw } from 'vue-router'
-import { closingPresentationKey, type ClosingReadLocation } from './closingPresentation'
+import { closingPresentationKey, closingReportTabs, readClosingReportTab, type ClosingReadLocation, type ClosingReportTab } from './closingPresentation'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -26,10 +26,12 @@ const financialContext=ref(0)
 let financialGeneration=0
 let locationPending=true
 async function changeClosingView(value:string){
+ if(value==='overview'&&closingView.value==='overview')return
  locationPending=false
  restoringLocation=false
  financialGeneration++
  financialContext.value++
+ failedPreview.value=undefined
  closingView.value=value;await nextTick()
  if(value==='period')periodPanel.value?.activateMonth(month.value)
  if(value==='settlement')settlementPanel.value?.activateMonth(month.value)
@@ -52,16 +54,25 @@ async function persistOverviewLocation(){
     if(target)return persistFinancialLocation(closingView.value,target)
     return
   }
+  const preview=closingView.value==='overview'?result.value:undefined
+  // Keep the last successful order link while its preview is being refreshed.
+  const linkedOrder=route.query.line_id&&(route.query.view===undefined||route.query.view==='overview')
+  if(!preview&&selected.value&&closingView.value==='overview'&&linkedOrder)return
+  const appliedMonth=preview?.month??appliedOverviewMonth.value
+  if(!appliedMonth)return
   const query={...route.query}
-  if(!appliedOverviewMonth.value)return
-  query.view=closingView.value;query.month=appliedOverviewMonth.value
-  for(const key of ['document_id','event_id','line_id','focus_kind','focus_id'])delete query[key]
+  query.view=closingView.value;query.month=appliedMonth
+  for(const key of ['document_id','event_id','line_id','focus_kind','focus_id','report_tab'])delete query[key]
+  if(preview){
+    query.line_id=preview.line_id
+    if(reportTab.value!=='production')query.report_tab=reportTab.value
+  }
   await persistQuery(query)
 }
 async function persistFinancialLocation(kind:string,location:ClosingReadLocation){
   if(!router||!route||restoringLocation||closingView.value!==kind)return
   const query:LocationQueryRaw={...route.query,view:kind,month:location.month}
-  for(const key of ['document_id','event_id','line_id','focus_kind','focus_id'])delete query[key]
+  for(const key of ['document_id','event_id','line_id','focus_kind','focus_id','report_tab'])delete query[key]
   if(location.id)query.document_id=location.id
   if(location.eventId)query.event_id=location.eventId
   await persistQuery(query)
@@ -109,12 +120,25 @@ async function loadLocation(){
   }
   if(alive&&ticket===navigationGeneration){restoringLocation=false;if(!error.value&&access.value?.enabled&&['period','settlement','payment'].includes(closingView.value))void persistOverviewLocation()}
 }
-async function retryWorkspace(){if(locationPending)await loadLocation();else await load(1)}
+async function retryWorkspace(){
+  if(loading.value)return
+  const target=previewRetry.value
+  if(target){await preview(target.order,target.month,target.tab);return}
+  if(locationPending)await loadLocation()
+  else await load(1)
+}
 
 defineProps<{workspace:CuttingWorkspace}>()
 const currentMonth = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),query=ref(''),page=ref(1),total=ref(0),rows=ref<CuttingOrder[]>([])
 const access=ref<Access>(),selected=ref<CuttingOrder>(),result=ref<ClosingPreview>(),loading=ref(false),error=ref('')
+const reportTab=ref<ClosingReportTab>('production')
+const failedPreview=ref<{order:CuttingOrder;month:string;tab:ClosingReportTab}>()
+const previewRetry=computed(()=>closingView.value==='overview'?failedPreview.value:undefined)
+function selectReportTab(tab:ClosingReportTab){
+  reportTab.value=tab
+  void persistOverviewLocation()
+}
 const accessUnavailable=ref(false)
 const paymentPanel=ref<InstanceType<typeof CuttingPayments>>()
 async function openPayment(targetMonth:string,id:string,eventId?:string){await openMonthly('payment',targetMonth,id,eventId)}
@@ -123,7 +147,7 @@ async function openSettlement(targetMonth:string,id:string,eventId?:string){awai
 let generation=0,alive=true
 const location=useCuttingLocation(()=>true,()=>{if(route&&presentationPaths.delete(route.fullPath))return;void loadLocation()})
 onBeforeUnmount(()=>{alive=false;generation++;financialGeneration++})
-function clearPreview(){generation++;result.value=undefined;loading.value=false;error.value=''}
+function clearPreview(){generation++;result.value=undefined;failedPreview.value=undefined;loading.value=false;error.value=''}
 watch(month,()=>{financialContext.value++;clearPreview()},{flush:'sync'})
 function restoredMonth(kind:'period'|'settlement'|'payment',targetMonth:string,context:number|undefined){
   if(!alive||context!==financialContext.value||closingView.value!==kind||loading.value||accessUnavailable.value||!access.value?.enabled)return
@@ -142,6 +166,8 @@ async function load(nextPage=1,followLocation=false,apply=false){
   if(apply){appliedQuery.value=query.value;nextPage=1}
   const target=followLocation?location.value:undefined
   if(target?.month)month.value=target.month
+  reportTab.value='production'
+  failedPreview.value=undefined
   const ticket=++generation;result.value=undefined;selected.value=undefined;rows.value=[];access.value=undefined;accessUnavailable.value=false;loading.value=true;error.value=''
   try{
     const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
@@ -149,30 +175,54 @@ async function load(nextPage=1,followLocation=false,apply=false){
     if(target){
       const order=await ordersApi.read(target.lineId);if(!alive||ticket!==generation)return
       rows.value=[order];page.value=1;total.value=1
-      if(order.current)await preview(order)
+      if(order.current)await preview(order,month.value,readClosingReportTab(route?.query.report_tab))
       return
     }
     const response=await ordersApi.list(nextPage,appliedQuery.value)
-    if(alive&&ticket===generation){rows.value=response.data;page.value=response.page;total.value=response.total}
+    if(alive&&ticket===generation){
+      rows.value=response.data;page.value=response.page;total.value=response.total
+      if(closingView.value==='overview')void persistOverviewLocation()
+    }
   }catch(e){if(alive&&ticket===generation){const status=(e as {response?:{status?:number}}).response?.status;accessUnavailable.value=status!==401&&status!==403;access.value=undefined;error.value=errorMessage(e)}}
   finally{if(alive&&ticket===generation)loading.value=false}
 }
-async function preview(order=selected.value){
+async function preview(
+  order=selected.value,
+  requestedMonth=month.value,
+  tab:ClosingReportTab=order?.line_id===selected.value?.line_id?reportTab.value:'production',
+){
   if(!order)return
-  const ticket=++generation,requestedMonth=month.value;result.value=undefined;selected.value=order;accessUnavailable.value=false;loading.value=true;error.value=''
+  const ticket=++generation,viewGeneration=financialGeneration
+  result.value=undefined;selected.value=order;reportTab.value=tab;accessUnavailable.value=false;loading.value=true;error.value=''
   try{
-    const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
-    if(!ready(rights)){rows.value=[];return}
+    const rights=await cuttingApi.access();if(!alive||ticket!==generation)return
+    if(!ready(rights)){access.value=rights;rows.value=[];selected.value=undefined;failedPreview.value=undefined;return}
     const response=await closingApi.read(order.line_id,requestedMonth,rights.permissions.includes('cost_read'))
-    if(alive&&ticket===generation)result.value=response
-  }catch(e){if(alive&&ticket===generation){const status=(e as {response?:{status?:number}}).response?.status;accessUnavailable.value=status!==401&&status!==403;result.value=undefined;rows.value=[];access.value=undefined;error.value=errorMessage(e)}}
+    if(alive&&ticket===generation){
+      access.value=rights
+      result.value=response
+      failedPreview.value=undefined
+      if(!restoringLocation&&closingView.value==='overview')locationPending=false
+      if(closingView.value==='overview')void persistOverviewLocation()
+    }
+  }catch(e){
+    if(!alive||ticket!==generation)return
+    const status=(e as {response?:{status?:number}})?.response?.status
+    const canRetry=closingView.value==='overview'&&viewGeneration===financialGeneration
+      &&(status===undefined||status===408||status===429||status>=500)
+    failedPreview.value=canRetry?{order,month:requestedMonth,tab}:undefined
+    if(!canRetry){rows.value=[];selected.value=undefined}
+    accessUnavailable.value=status!==401&&status!==403
+    access.value=undefined
+    error.value=errorMessage(e)
+  }
   finally{if(alive&&ticket===generation)loading.value=false}
 }
 onMounted(()=>void loadLocation())
 </script>
 
 <template>
-  <section class="cutting-page cutting-master">
+  <section class="cutting-page cutting-review-page cutting-master">
     <PageHeader :title="workspace.title" description="内部月结、外发加工费与付款分别办理，实时核对和冻结快照分别追溯。" />
     <CuttingSubnav :model-value="closingView" @update:model-value="changeClosingView" :items="closingTabs" label="月结工作视图" />
     <p class="cutting-notice">内部材料月结与外发加工费结算分别办理。实时核对不代表锁月；冻结报表按所选版本追溯，当前有效状态以版本提示为准。付款登记与核销不操作银行。</p>
@@ -182,7 +232,8 @@ onMounted(()=>void loadLocation())
     <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('settlement',target,context)" @restored="(target,context)=>restoredMonth('settlement',target,context)" @payment="openPayment" /></div>
     <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('payment',target,context)" @restored="(target,context)=>restoredMonth('payment',target,context)" @settlement="openSettlement" /></div>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
-    <Button v-if="error" variant="outline" :disabled="loading" @click="retryWorkspace">重新读取月结工作区</Button>
+    <p v-if="previewRetry" class="cutting-notice cutting-read-target"><span>重试目标：{{previewRetry.order.snapshot.reference_no}} · {{previewRetry.month}} · {{closingReportTabs[previewRetry.tab]}}</span></p>
+    <Button v-if="error||previewRetry" variant="outline" :disabled="loading" @click="retryWorkspace">{{previewRetry?'重试原订单预览':'重新读取月结工作区'}}</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>
     <p v-if="access&&!access.enabled" class="cutting-notice">月结前核对尚未启用。</p>
     <p v-else-if="access&&!ready(access)" class="cutting-notice">请先完成订单、每日填数及耗用的显式迁移；缺少依据时不以零数代替。</p>
@@ -203,7 +254,7 @@ onMounted(()=>void loadLocation())
         <nav class="order-pagination" aria-label="月结订单分页"><span>第 {{page}} 页 · 共 {{total}} 条</span><Button variant="outline" :disabled="loading||page<=1" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="loading||page*50>=total" @click="load(page+1)">下一页</Button></nav>
       </SectionPanel>
       <p v-if="selected">当前订单：{{selected.snapshot.reference_no}} · {{orderProductName(selected.snapshot)}}</p>
-      <CuttingClosingReport v-if="result" :key="result.line_id+result.month" :value="result" />
+      <CuttingClosingReport v-if="result" :key="result.line_id+result.month" :tab="reportTab" :value="result" @update:tab="selectReportTab" />
       </div>
     </template>
   </section>

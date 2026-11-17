@@ -5,7 +5,7 @@ export { selectYinhuiMainSheet } from './yinhuiSource'
 import { parseP4InternalQuoteArtifact, type P4InternalQuoteArtifact, type P4SectionCode } from './p4Artifact'
 import { extractYinhuiProductImage, type YinhuiProductImage } from './yinhuiTemplate'
 import { isYinhuiIc, splitYinhuiElectronicRow, splitYinhuiLegacyElectronics, yinhuiIcCost } from './yinhuiElectronic'
-import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS, yinhuiProfileForModel, type YinhuiProfileId } from './yinhuiProfiles'
+import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, YINHUI_MAX_ELECTRONIC_ROWS, YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS, yinhuiProfileForModel, type YinhuiProfileId } from './yinhuiProfiles'
 
 export const YINHUI_CUSTOMER_QUOTE_TEMPLATE_URL = '/templates/yinhui-customer-quote-template.bin'
 export { YINHUI_MATERIAL_PRICES_HKD_KG } from './yinhuiProfiles'
@@ -205,9 +205,6 @@ export function yinhuiReviewNotices(data: YinhuiQuoteData) {
     ? [{ source: row.source, description: row.description, handling: '保留物料，单价和金额留空并标注待补价', impact: '本项暂未计入合计，当前仅为已知成本小计' }]
     : row.sourceAmountWasBlank ? [{ source: row.source, description: row.description, handling: '原金额为空，已人工补正为 0', impact: '保留物料，按 0 元计入合计' }] : [])
   if (/[\u3400-\u9fff]/.test(data.productName)) notices.push({ source: '产品名称', description: data.productName, handling: '翻译未完成，保留原文输出', impact: '不影响金额，请核对客户能否接受原文' })
-  data.tools.forEach((row, i) => {
-    if (/[\u3400-\u9fff]/.test(row.description)) notices.push({ source: `Tool Plan ${i + 1}`, description: row.description, handling: '翻译未完成，保留原文输出', impact: '不影响金额，请核对客户能否接受原文' })
-  })
   return notices
 }
 export function yinhuiTotals(data: YinhuiQuoteData) {
@@ -246,8 +243,7 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
   // Only the first packaging detail row has the customer's three dimension input cells.
   const colorBox = data.packagingRows.findIndex((r) => /彩盒|color box/i.test(r.description))
   if (colorBox > 0) data.packagingRows.unshift(data.packagingRows.splice(colorBox, 1)[0]!)
-  const extended = data.templateId === '88753'
-  const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, YINHUI_MAX_MECHANICAL_ROWS], ['电子', data.electronic.length, extended ? 18 : 10], ['包装材料', data.packagingRows.length, YINHUI_MAX_PACKAGING_ROWS]]
+  const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, YINHUI_MAX_MECHANICAL_ROWS], ['电子', data.electronic.length, YINHUI_MAX_ELECTRONIC_ROWS], ['包装材料', data.packagingRows.length, YINHUI_MAX_PACKAGING_ROWS]]
   for (const [name, count, max] of limits) if (count > max) {
     const message = `银辉${name}有 ${count} 行，超过当前模板 ${max} 行容量，请先扩展映射，不能截断明细`
     if (!data.importIssues) throw new Error(message)
@@ -724,7 +720,7 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   if (!isYinhuiCustomer(artifact.customer)) throw new Error('受控文件客户与银辉映射不一致')
   if (!/huaxing|华兴|華興/i.test(artifact.factoryAndWorkshop)) throw new Error('银辉映射仅适用于华兴受控报价')
   const data = emptyData()
-  const warnings = ['银辉临时映射按单 BOM 输出；请核对 BOM 原文、产品及 Tool Plan 英文名称、型号和运费。']
+  const warnings = ['银辉临时映射按单 BOM 输出；请核对 BOM 与 Tool Plan 原文、产品英文名称、型号和运费。']
   data.productName = artifact.productName
   if (artifact.quoteDate) data.quoteDate = artifact.quoteDate
   data.model = artifact.productName.match(/#\s*([\w-]+)/)?.[1] || ''

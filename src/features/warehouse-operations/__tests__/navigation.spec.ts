@@ -6,7 +6,12 @@ import { WAREHOUSES, WAREHOUSE_HOME, warehousePath } from '../navigation'
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span>当前账号</span>' } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'warehouse' }, authorizationVersion: 1 }) }))
-const api = vi.hoisted(() => ({ lines: vi.fn().mockResolvedValue({ total: 0, items: [] }), imports: vi.fn().mockResolvedValue([]), apply: vi.fn() }))
+const api = vi.hoisted(() => ({
+  lines: vi.fn().mockResolvedValue({ total: 0, items: [] }),
+  groups: vi.fn().mockResolvedValue({ total: 0, line_total: 0, groups: [] }),
+  imports: vi.fn().mockResolvedValue([]),
+  apply: vi.fn(),
+}))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
 vi.mock('@/api/materialHandover', () => ({ handoverApi: () => ({ pendingDeliveries: vi.fn().mockResolvedValue({ total: 0, items: [], stock_totals: [] }) }) }))
 const receivingApi = vi.hoisted(() => ({ receipts: vi.fn().mockResolvedValue({ total: 0, items: [] }), stock: vi.fn().mockResolvedValue({ total: 0, items: [] }) }))
@@ -184,7 +189,12 @@ describe('warehouse framework navigation', () => {
           await flushPromises()
         }
         if (wrapper!.find('.fabric-procurement').exists()) {
-          expect(wrapper!.text()).toContain('采购历史不增加库存')
+          if (view.id === 'pending') {
+            expect(wrapper!.text()).toContain('按供应商和物料查看待收与复期')
+            expect(wrapper!.findAll('a').map(link => link.text())).toContain('送货单入库')
+          } else {
+            expect(wrapper!.text()).toContain('采购历史不增加库存')
+          }
           expect(wrapper!.find('fieldset[disabled]').exists()).toBe(false)
           continue
         }
@@ -333,6 +343,17 @@ describe('warehouse framework navigation', () => {
 
   it('uses one record list while retaining deep links and one header search across views', async () => {
     const router = await open(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=transfers`)
+    const filters = [
+      wrapper!.get('.fabric-header-search input'),
+      wrapper!.get('[aria-label="收发业务类型"]'),
+      wrapper!.get('[aria-label="收发单据状态"]'),
+      wrapper!.get('[aria-label="收发记录排序"]'),
+      wrapper!.get('[aria-label="选择业务分区"]'),
+    ]
+    const filterIds = filters.map(field => field.attributes('id'))
+    expect(filterIds.every(Boolean)).toBe(true)
+    expect(new Set(filterIds).size).toBe(filters.length)
+    expect(filters.map(field => field.attributes('name'))).toEqual(['inventory_q', 'record_kind', 'record_state', 'record_sort', 'warehouse_view'])
     expect(wrapper!.findAll('.warehouse-tabs button').map(button => button.text())).toEqual(['库存台账', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
     expect(wrapper!.get('.warehouse-tabs button[aria-pressed=true]').text()).toBe('收发记录')
     expect(wrapper!.find('.fabric-inventory-record-tabs').exists()).toBe(false)
@@ -358,9 +379,15 @@ describe('warehouse framework navigation', () => {
     expect(router.currentRoute.value.query).toMatchObject({factory:'huakang-c',view:'movements',kind:'RECEIPT'})
     await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=movements&kind=RETURN`); await flushPromises()
     expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('RETURN')
-    await wrapper!.findAll('button').find(button => button.text() === '重置筛选')!.trigger('click'); await flushPromises()
+    const reset = wrapper!.findAll('button').find(button => button.text() === '重置筛选')!
+    const inventorySearch = wrapper!.get<HTMLInputElement>('[aria-label="查找库存物料与单据"]')
+    await inventorySearch.setValue('布料')
+    reset.element.focus()
+    await reset.trigger('click'); await flushPromises()
     expect(router.currentRoute.value.query.kind).toBeUndefined()
     expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('')
+    expect(inventorySearch.element.value).toBe('')
+    expect(document.activeElement).toBe(inventorySearch.element)
   })
 
   it('restores a section view after navigating away and supports refresh, shared URLs and browser back', async () => {

@@ -71,7 +71,7 @@ const canResponsibleRelease = computed(() => (
 ))
 const finalPanelTitle = computed(() => {
   if (archived.value) return '报价已归档，暂停业务操作'
-  if (isDirectOutput.value) return isReleased.value ? '此方案版本已输出并保留' : '资料完整后可直接输出当前方案'
+  if (isDirectOutput.value) return isReleased.value ? '此方案版本已冻结，可在首页解除冻结后修改' : '资料完整后可直接输出当前方案'
   if (!isWholeQuoteReview.value) return allSectionsReady.value
     ? (quote.value.status === 'final_pending' ? '等待负责跟客确认放行' : canOpenExport.value ? '已放行，可查看受控导出' : isReleased.value && !canExport.value ? (isForeignQuote.value ? '已放行，跨厂仅供查看' : '已放行，当前账号无受控导出权限') : '整单已准备就绪')
     : '等待全部责任分段完成'
@@ -83,7 +83,7 @@ const finalPanelTitle = computed(() => {
   return '等待全部参与部门保存有效内容'
 })
 const finalPanelDescription = computed(() => archived.value ? '请返回整单协作，在包装方案与版本中恢复整单或此版本；数据与历史文件保留。' : isDirectOutput.value
-  ? '无需人工审核。输出时保留完整版本并交接客价转换台；后续修改请从当前版复制新版本，其他方案独立保留。'
+  ? '无需人工审核。输出后可继续修改同一版报价和汇总表，每次输出文件分别保留；需锁定时在报价首页冻结整单。'
   : isWholeQuoteReview.value
   ? '整份报价只提交一次，并且只能由创建时指定的整单审核人统一通过或退回；审核通过后才开放受控输出。'
   : '全部参与分段完成审批后，由业务部分段的提交跟客一人确认放行；请求携带报价头 revision，服务端冻结完整放行清单并生成受控文件。')
@@ -96,7 +96,7 @@ const getQuoteRoute = (path: string) => getFactoryScopedRoute(
 )
 const versionCandidates = computed(() => quoteStore.versionCandidates[quote.value.id] ?? [])
 const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: string }> = {
-  sealed: { label: '已输出并冻结', tone: 'green' },
+  sealed: { label: '已冻结', tone: 'green' },
   draft: { label: '草稿', tone: 'slate' },
   pending_review: { label: '待审核', tone: 'amber' },
   approved: { label: '已通过', tone: 'green' },

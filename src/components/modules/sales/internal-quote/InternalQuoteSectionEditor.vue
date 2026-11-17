@@ -15,7 +15,7 @@ import { calculateElectronicSectionSummary, cloneInternalQuotePayload, electroni
 import { useAuthStore } from '@/stores/auth'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { normalizeInternalQuoteDraft } from '@/lib/internalQuoteMoldingReferences'
-import { linkEngineeringMolding, normalizeEngineeringMoldIdentities } from '@/lib/internalQuoteMoldLinkage'
+import { engineeringMaterialSources, linkEngineeringMolding, normalizeEngineeringMoldIdentities } from '@/lib/internalQuoteMoldLinkage'
 import type { EngineeringPayload, MoldingPayload } from '@/lib/internalQuoteSectionPayload'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
@@ -293,7 +293,7 @@ let resolveUnsavedPrompt: ((choice: UnsavedNavigationChoice) => void) | undefine
 let pendingUnsavedPrompt: Promise<UnsavedNavigationChoice> | undefined
 
 const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: string }> = {
-  sealed: { label: '已输出并冻结', tone: 'green' },
+  sealed: { label: '已冻结', tone: 'green' },
   draft: { label: '草稿', tone: 'slate' }, pending_review: { label: '待业务审核人审核', tone: 'amber' },
   approved: { label: '审核通过', tone: 'green' }, rejected: { label: '已退回', tone: 'red' },
   na_pending: { label: '不适用待审', tone: 'amber' }, not_applicable: { label: '不适用', tone: 'slate' },
@@ -304,7 +304,7 @@ const activeStatusMeta = computed(() => {
     draft: { label: props.section.filledAt ? '部门内容已保存' : '等待填写', tone: props.section.filledAt ? 'green' : 'slate' },
     pending_review: { label: '已锁定，待整单审核', tone: 'amber' },
     approved: { label: '整单审核通过', tone: 'green' },
-    sealed: { label: '已输出并冻结', tone: 'green' },
+    sealed: { label: '已冻结', tone: 'green' },
     rejected: { label: '整单已退回，可修改', tone: 'red' },
     na_pending: { label: '已锁定，待整单审核', tone: 'amber' },
     not_applicable: { label: '本单不适用', tone: 'slate' },
@@ -336,7 +336,7 @@ const lockMessage = computed(() => {
   if (props.wholeQuoteReview) {
     if (mutable.value) return '当前账号没有本部门编辑权限，内容保持只读。'
     if (props.section.status === 'pending_review') return '整份报价已经提交并统一锁定，等待指定整单审核人处理。'
-    if (props.section.status === 'sealed') return '此方案版本已输出并保留；需要修改时，请复制新版本。'
+    if (props.section.status === 'sealed') return '此方案版本已冻结；请由有权限的用户在报价首页解除整单冻结后修改。'
     if (props.section.status === 'approved') return '整单审核已经通过，本部门内容保持锁定。'
     return `当前部门内容为“${activeStatusMeta.value.label}”，暂不可编辑。`
   }
@@ -480,15 +480,19 @@ watch(draftPayload, () => {
     emit('block-progress', props.section.code, getInternalQuoteFormBlocks('electronic', draftPayload.value))
   }
 }, { deep: true })
+const materialSources = computed(() => props.section.code === 'molding' && props.engineeringPayload
+  ? engineeringMaterialSources(cloneInternalQuotePayload('engineering', props.engineeringPayload) as unknown as EngineeringPayload, props.quote.factoryId)
+  : undefined)
 function resumeEngineeringPrefill() {
   draftPayload.value = normalizedDraft({ ...draftPayload.value, engineering_prefill_paused: false })
 }
-watch([() => props.engineeringPayload, () => draftPayload.value.engineering_prefill_paused], ([engineering]) => {
+watch([() => props.engineeringPayload, () => draftPayload.value.engineering_prefill_paused, () => props.quote.referenceSnapshot], ([engineering]) => {
   if (props.section.code !== 'molding' || !editable.value || !engineering) return
   const linked = linkEngineeringMolding(
     cloneInternalQuotePayload('engineering', engineering) as unknown as EngineeringPayload,
     cloneInternalQuotePayload('molding', draftPayload.value) as unknown as MoldingPayload,
     props.quote.factoryId,
+    props.quote.referenceSnapshot,
   )
   const next = normalizedDraft(linked as unknown as Record<string, unknown>)
   if (JSON.stringify(next) !== JSON.stringify(draftPayload.value)) draftPayload.value = next
@@ -1038,7 +1042,7 @@ function confirmRemoveParticipation() {
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
     <div v-if="section.code === 'molding' && draftPayload.engineering_prefill_paused === true" class="section-note" role="status"><p>复制时未选择啤机部，当前保留为空待填写。可手工填写，或从本方案工程资料生成胶件。</p><button type="button" :disabled="!editable || quoteStore.submitting || !engineeringPayload" @click="resumeEngineeringPrefill">从工程生成胶件</button></div>
-    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :can-edit-material-prices="canEditMaterialPrices" :calculation="currentCalculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @upload-painting-image="uploadPaintingRowImage" @request-material-prices="emit('request-material-prices')" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
+    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :material-sources="materialSources" :can-edit-material-prices="canEditMaterialPrices" :calculation="currentCalculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @upload-painting-image="uploadPaintingRowImage" @request-material-prices="emit('request-material-prices')" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"

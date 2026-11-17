@@ -217,7 +217,7 @@ def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifac
             if str(quote_sheet.cell(row, 2).value or "").startswith("报价（MOQ")
         )
         settlement_row = quote_row - 1
-        assert quote_sheet["Q6"].value == 0.02
+        assert quote_sheet["Q6"].value == 0.03
         assert quote_sheet.cell(settlement_row, 3).value == "÷"
         assert quote_sheet.cell(settlement_row, 4).value == "=1-$Q$6"
         assert quote_sheet.cell(settlement_row, 4).number_format == "0.0000"
@@ -233,12 +233,12 @@ def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifac
         deduction_row = tax_header_row + 3
         assert all(
             quote_sheet.cell(deduction_row, column).data_type == "f"
-            for column in (6, 7, *range(10, 13), 14, 15, 16)
+            for column in (6, *range(10, 13), 15, 16)
         )
-        # Hair and sewing do not receive tax deductions in any factory.
-        assert quote_sheet.cell(deduction_row, 8).value in (None, "")
-        assert quote_sheet.cell(deduction_row, 9).value in (None, "")
-        assert quote_sheet.cell(deduction_row, 13).value in (None, "")
+        # Huaxing has no slush/hair/sewing deduction; carton and labor must
+        # not be deducted a second time in the management summary.
+        for column in (7, 8, 9, 13, 14):
+            assert quote_sheet.cell(deduction_row, column).value in (None, "")
         assert quote_sheet["A1"].border.left.style == "medium"
         assert quote_sheet["A1"].border.top.style == "medium"
         assert quote_sheet["R1"].border.right.style == "medium"
@@ -255,7 +255,7 @@ def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifac
         assert "外购清单" not in workbook.sheetnames
         assert all(
             workbook[name].sheet_state == "veryHidden"
-            for name in workbook.sheetnames[1:] if name != "工模报价"
+            for name in workbook.sheetnames[1:] if name not in {"工模报价", "采用价目表"}
         )
         assert workbook["审批与版本"]["B4"].value == "P4 最终业务放行"
         assert workbook["审批与版本"]["B5"].value == "最终业务放行完成，可交接客价转换台"
@@ -460,7 +460,7 @@ def test_p4_legacy_layout_export_is_refreshed_without_replacing_release_handoff(
         assert "外购清单" not in workbook.sheetnames
         assert all(
             workbook[name].sheet_state == "veryHidden"
-            for name in workbook.sheetnames[1:] if name != "工模报价"
+            for name in workbook.sheetnames[1:] if name not in {"工模报价", "采用价目表"}
         )
         workbook.close()
 

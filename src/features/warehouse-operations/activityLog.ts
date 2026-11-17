@@ -1,5 +1,5 @@
 import type { WarehouseDocument } from '@/api/warehouseOperations'
-import { operationLabels, qualityLabels } from './operations'
+import { fabricOperationLabel, qualityLabels } from './operations'
 
 export function operationTime(value: string) {
   if (!value) return ''
@@ -10,7 +10,7 @@ export function operationTime(value: string) {
   }).format(date)
 }
 export function activityLabel(row: WarehouseDocument) {
-  return row.read_only ? '采购实收入库 · 批次' : operationLabels[row.kind]
+  return row.read_only ? '采购实收入库 · 批次' : fabricOperationLabel(row.kind)
 }
 export function activitySummary(row: WarehouseDocument) {
   const data = row.data as typeof row.data & { book_quantity?: string; actual_quantity?: string }
@@ -19,7 +19,7 @@ export function activitySummary(row: WarehouseDocument) {
   if (row.kind === 'LOCATION_BIND') return `仓位 ${place} → ${data.location || '未记录'}；数量不变`
   if (row.kind === 'TRANSFER') return `${place} → ${data.location || '未记录'}；调仓 ${data.quantity} ${unit}`
   if (row.kind === 'STOCKTAKE') return `账面 ${data.book_quantity ?? '未记录'} → 实盘 ${data.actual_quantity ?? '未记录'} ${unit}；差异 ${data.quantity}`
-  if (row.kind === 'CORRECTION') return `冲销${operationLabels[data.reversed_kind || 'RECEIPT'].replace(/^登记/, '')} ${data.quantity} ${unit}；原单保留`
+  if (row.kind === 'CORRECTION') return `冲销${fabricOperationLabel(data.reversed_kind || 'RECEIPT').replace(/^登记/, '')} ${data.quantity} ${unit}；原单保留`
   if (row.kind === 'QUALITY') return `历史质检：${row.batch_snapshot?.quality_status ? qualityLabels[row.batch_snapshot.quality_status] : '未记录'} → ${qualityLabels[data.quality_status] || '未记录'}`
   if (row.kind === 'REQUEST') return `领料申请 ${data.quantity} ${unit}，登记申请不扣库存`
   return `${row.kind === 'ISSUE' ? '发出' : row.kind === 'RETURN' ? '退回' : row.kind === 'OPENING' ? '建立期初' : '实收'} ${data.quantity} ${unit}${data.location ? ` · ${data.location}` : ''}`

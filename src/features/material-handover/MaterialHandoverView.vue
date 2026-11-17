@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { ChevronDown, FileText, Plus, RefreshCw } from '@lucide/vue'
 import WarehouseLocationPicker from '../warehouse-operations/WarehouseLocationPicker.vue'
 import HandoverPurchaseDetails from './HandoverPurchaseDetails.vue'
+import HandoverOriginalPrint from './HandoverOriginalPrint.vue'
 import HandoverSummaryPrint from './HandoverSummaryPrint.vue'
+import HandoverRejectionSummary from './HandoverRejectionSummary.vue'
 import MaterialHandoverMonthly from './MaterialHandoverMonthly.vue'
 import { handoverReviewIssues } from './handoverReview'
 import { suggestMaterialCategory } from '../warehouse-operations/materialCategorySuggestion'
-import { quantityText, receiptQuantity } from '../warehouse-operations/receiptQuantities'
-const HandoverOriginalPrint = defineAsyncComponent(() => import('./HandoverOriginalPrint.vue').then(module => module.default))
+import { duplicateReceiptSplitMessage, newReceiptCounts, quantityText, receiptCountFields, receiptNetQuantity, receiptQuantity } from '../warehouse-operations/receiptQuantities'
+import type { ReceiptCounts } from '@/api/fabricReceiving'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, RouterLink } from 'vue-router'
 import axios from 'axios'
-import { getApiErrorMessage } from '@/lib/http'
+import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { handoverApi, HANDOVER_FACTORY, type HandoverAction, type HandoverData, type HandoverDocument, type HandoverIssuer, type HandoverLine, type HandoverPosting, type HandoverSave, type HandoverSummary, type HandoverWorkspace, type HandoverLinkInput, type HandoverLinkAction, type HandoverPurchaseSources, type HandoverListFilters } from '@/api/materialHandover'
+import type { HandoverPriorReceipt, HandoverReceiptLink, HandoverReceiptUnlink, HandoverRejectionFollowup, HandoverRejectionStatus } from '@/api/materialHandover'
 
 const props = defineProps<{ external?: boolean }>()
 const supplierTemplateUrl = `${import.meta.env.BASE_URL}templates/material-handover/supplier-delivery-v1.xlsx`
@@ -28,6 +32,8 @@ const filters = ref(emptyFilters()), appliedFilters = ref(emptyFilters()), total
 const hasFilters = computed(() => Object.entries(appliedFilters.value).some(([key, value]) => value !== emptyFilters()[key as keyof HandoverListFilters]))
 const pendingDeliveriesOnly = computed(() => !props.external && route.query.deliveries === 'pending')
 const selected = ref<HandoverDocument | null>(null), draft = ref<HandoverData | null>(null)
+const documentPanel = ref<HTMLElement | null>(null)
+const supplierDetailsOpen = ref(false)
 const manualCategories = new Set<string>()
 const error = ref(''), notice = ref(''), busy = ref(false), loading = ref(false)
 const showOptional = ref(false), voidReason = ref(''), showVoid = ref(false)
@@ -38,17 +44,33 @@ const compactSupplierForm = computed(() => props.external && !showOptional.value
 const sourceUrl = ref(''), qrUrl = ref(''), scanCode = ref(''), fileInput = ref<HTMLInputElement | null>(null)
 const fileSequence = { source: 0, qr: 0 }
 const scanInput = ref<HTMLInputElement | null>(null)
+type PrintMode = 'original' | 'summary'
 const printBlob = shallowRef<Blob>(), printUrl = ref(''), printCorner = ref<'left'|'right'>('right')
-const printPreparing = ref(false), printRendering = ref(false), printReady = ref(false), printWanted = ref(false), printToken = ref('')
-const printPreviewOpen = computed(() => printPreparing.value || Boolean(printBlob.value))
-const printPreviewError = ref('')
-const printTrigger = ref<HTMLButtonElement | null>(null), printClose = ref<HTMLButtonElement | null>(null)
+const printPreparing = ref<PrintMode | null>(null), printReady = ref(false), printToken = ref('')
+const originalPrintActive = ref(false)
+const printTrigger = ref<HTMLButtonElement | null>(null), summaryPrintTrigger = ref<HTMLButtonElement | null>(null)
 const codeHeading = ref<HTMLElement | null>(null)
-const printMode = ref<'original'|'summary'>('original')
 let printSequence = 0
-type PostingPart = { key: number; quantity: string; warehouse: string; location_id: string; lot: string; roll_no: string }
-type PostingRow = { selected: boolean; parts: PostingPart[]; batch_id: string; purchase_source_id: string; difference_reason: string }
+type PostingPart = { key: number; quantity: string; warehouse: string; location_id: string; lot: string; roll_no: string; counts?: ReceiptCounts }
+type PostingRow = {
+  selected: boolean
+  parts: PostingPart[]
+  batch_id: string
+  purchase_source_id: string
+  difference_reason: string
+  procurementPending: boolean
+  procurementPendingReason: string
+  showReceiptCounts: boolean
+  previousRemaining?: string
+  purchaseChoiceNeedsReview?: boolean
+}
 const posting = ref<Record<string, PostingRow>>({})
+const receiptToLink = ref<{ lineId: string; receiptId: string } | null>(null)
+const receiptToUnlink = ref('')
+const unlinkReason = ref('')
+const receiptObservationHistory = ref<HTMLDetailsElement | null>(null)
+const rejectionDraft = ref<{ observationId: string; lineId: string; status: HandoverRejectionStatus | ''; reason: string } | null>(null)
+const confirmedNewReceipts = ref<Record<string, boolean>>({})
 const maxPostingParts = 100
 let nextPostingPartKey = 0
 const receivingLocations = computed(() => (workspace.value?.inventory.locations ?? []).filter(location => location.status === 'ACTIVE'))
@@ -61,6 +83,11 @@ type Management = { kind: 'create' | 'renew' | 'bind' | 'revoke'; id: string; bo
 const managementPending = ref<Management | null>(null)
 const statusLabels = { DRAFT: '待核对', CONFIRMED: '已确认', VOID: '已作废' }
 const progressLabels = { PENDING: '未收发', PARTIAL: '部分完成', COMPLETE: '全部完成' }
+const receiptProgress = {
+  PENDING: { label: '待收货', classes: 'bg-slate-100 text-slate-700' },
+  PARTIAL: { label: '部分收货', classes: 'bg-amber-50 text-amber-700' },
+  COMPLETE: { label: '收货完成', classes: 'bg-emerald-50 text-emerald-700' },
+} as const
 const dirty = computed(() => Boolean(selected.value?.status === 'DRAFT' && draft.value && JSON.stringify(draft.value) !== JSON.stringify(selected.value.data)))
 const canUpload = computed(() => Boolean(props.external ? issuer.value : workspace.value?.can_operate))
 const warehouseSupplierDocument = computed(() => !props.external && Boolean(selected.value?.issuer_id) && selected.value?.data.kind === 'DELIVERY')
@@ -70,22 +97,34 @@ const summaryDocument = computed(() =>
     : null,
 )
 const canPrepare = computed(() => canUpload.value && !warehouseSupplierDocument.value)
-const locked = computed(() => busy.value || loading.value || purchaseLoading.value || printPreparing.value || printRendering.value || Boolean(pending.value) || Boolean(managementPending.value))
+const locked = computed(() => busy.value || loading.value || purchaseLoading.value ||
+  (printPreparing.value === 'original' && !printReady.value) ||
+  Boolean(pending.value) || Boolean(managementPending.value))
+const printButtonsLocked = computed(() => locked.value || printPreparing.value !== null)
 const draftEditable = computed(() => selected.value?.status === 'DRAFT' && canPrepare.value && !locked.value)
 const suppliers = computed(() => workspace.value?.suppliers || [])
 const activeSuppliers = computed(() => suppliers.value.filter(row => row.status === 'ACTIVE'))
 const canMonthly = computed(() => props.external && Boolean(issuer.value?.kind === 'SUPPLIER' && issuer.value.supplier_id))
-type Pending = { kind: 'save' | 'confirm' | 'void' | 'post'; id: string; body: HandoverSave | HandoverAction | HandoverPosting; print_after?: boolean }
+type Pending = { kind: 'save' | 'confirm' | 'void' | 'post' | 'linkReceipt' | 'unlinkReceipt' | 'rejectionFollowup'; id: string; body: HandoverSave | HandoverAction | HandoverPosting | HandoverReceiptLink | HandoverReceiptUnlink | HandoverRejectionFollowup; print_after?: boolean }
 const pending = ref<Pending | null>(null)
 let generation = 0
 const uploadRequests = new WeakMap<File, string>()
 const failedFiles = ref<File[]>([])
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 function uuid() { return crypto.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const n = Math.floor(Math.random() * 16); return (c === 'x' ? n : (n & 3) | 8).toString(16) }) }
-function releasePrint() { printSequence++; if(printUrl.value)URL.revokeObjectURL(printUrl.value); printUrl.value='';printBlob.value=undefined;printPreparing.value=false;printRendering.value=false;printReady.value=false;printWanted.value=false;printToken.value='';printPreviewError.value='' }
-function releaseUrls() { fileSequence.source++; fileSequence.qr++; for (const value of [sourceUrl.value, qrUrl.value]) if (value) URL.revokeObjectURL(value); sourceUrl.value = ''; qrUrl.value = ''; releasePrint(); printMode.value='original' }
-function clear() { generation++; purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''; workspace.value = null; issuer.value = null; summaries.value = []; moreAvailable.value = false; total.value = 0; filters.value = emptyFilters(); appliedFilters.value = emptyFilters(); selected.value = null; draft.value = null; posting.value = {}; issuers.value = []; pending.value = null; managementPending.value = null; bindSupplier.value = {}; failedFiles.value = []; newLink.value = ''; scanCode.value = ''; releaseUrls(); error.value = ''; notice.value = ''; busy.value = false; loading.value = false }
-function showError(e: unknown) { if (axios.isAxiosError(e) && [401, 403].includes(e.response?.status || 0)) clear(); error.value = getApiErrorMessage(e) }
+function releasePrint() {
+  printSequence++
+  if (printUrl.value) URL.revokeObjectURL(printUrl.value)
+  printUrl.value = ''
+  printBlob.value = undefined
+  printPreparing.value = null
+  printReady.value = false
+  printToken.value = ''
+  originalPrintActive.value = false
+}
+function releaseUrls() { fileSequence.source++; fileSequence.qr++; for (const value of [sourceUrl.value, qrUrl.value]) if (value) URL.revokeObjectURL(value); sourceUrl.value = ''; qrUrl.value = ''; releasePrint() }
+function clear() { generation++; purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''; workspace.value = null; issuer.value = null; summaries.value = []; moreAvailable.value = false; total.value = 0; filters.value = emptyFilters(); appliedFilters.value = emptyFilters(); selected.value = null; draft.value = null; rejectionDraft.value = null; posting.value = {}; issuers.value = []; pending.value = null; managementPending.value = null; bindSupplier.value = {}; failedFiles.value = []; newLink.value = ''; scanCode.value = ''; releaseUrls(); error.value = ''; notice.value = ''; busy.value = false; loading.value = false }
+function showError(e: unknown, message = getApiErrorMessage(e)) { if (axios.isAxiosError(e) && [401, 403].includes(e.response?.status || 0)) clear(); error.value = message }
 function scopeValid() { return props.external ? Boolean(key.value) : route.query.factory === HANDOVER_FACTORY }
 function readList(offset = 0) { return pendingDeliveriesOnly.value ? api.value.pendingDeliveries(offset) : api.value.list(offset, appliedFilters.value) }
 async function reloadList() { const epoch = generation; const result = await readList(); if (epoch === generation) { summaries.value = result.items; total.value = result.total ?? result.items.length; moreAvailable.value = typeof result.total === 'number' ? result.offset + result.items.length < result.total : result.items.length === result.limit } }
@@ -102,6 +141,12 @@ async function searchDocuments(reset = false) {
 watch([tab, locked, selected], async () => {
   if (tab.value === 'scan' && !locked.value && !selected.value) { await nextTick(); scanInput.value?.focus() }
 })
+watch(() => selected.value?.id, () => {
+  supplierDetailsOpen.value = false
+  if (warehouseSupplierDocument.value && selected.value?.status === 'CONFIRMED' && workspace.value?.can_operate) {
+    documentPanel.value?.scrollIntoView?.({ block: 'start', inline: 'nearest' })
+  }
+}, { flush: 'post' })
 async function initialize() {
   clear(); const epoch = generation
   tab.value = !props.external && route.query.tab === 'scan' ? 'scan' : 'documents'
@@ -127,16 +172,40 @@ watch([
   () => route.query.document, () => route.query.deliveries, () => route.query.tab,
   () => auth.currentUser?.id, () => auth.authorizationVersion,
 ], initialize, { immediate: true })
-function accept(row: HandoverDocument) {
-  if (selected.value?.id !== row.id || row.status === 'VOID') { showVoid.value = false; voidReason.value = '' }
+function accept(row: HandoverDocument, preserveReceipt = false) {
+  const previous = selected.value
+  const keepReceipt = preserveReceipt && previous?.id === row.id && previous.factory_id === row.factory_id &&
+    previous.status === 'CONFIRMED' && row.status === 'CONFIRMED' && row.data.kind === 'DELIVERY'
+  receiptToLink.value = null
+  receiptToUnlink.value = ''
+  unlinkReason.value = ''
+  confirmedNewReceipts.value = {}
+  if (selected.value?.id !== row.id || row.status === 'VOID') { showVoid.value = false; voidReason.value = ''; rejectionDraft.value = null }
   manualCategories.clear()
   row.data.lines.filter(line => line.material_category).forEach(line => manualCategories.add(line.id))
   purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''
   selected.value = row; draft.value = clone(row.data); showOptional.value = false
-  posting.value = Object.fromEntries(row.data.lines.map(line => [line.id, {
-    selected: false, parts: [newPostingPart(line, row.progress[line.id]?.remaining || line.quantity)],
-    batch_id: '', purchase_source_id: '', difference_reason: '',
-  }]))
+  posting.value = Object.fromEntries(row.data.lines.map(line => {
+    const remaining = row.progress[line.id]?.remaining
+    const quantity = remaining || line.quantity
+    const existing = keepReceipt ? posting.value[line.id] : undefined
+    if (existing && previous) {
+      const oldRemaining = previous.progress[line.id]?.remaining
+      existing.previousRemaining = receiptDisplayQuantity(oldRemaining) !== receiptDisplayQuantity(remaining) ? oldRemaining : undefined
+      const first = existing.parts[0]
+      // Only an untouched quantity suggestion follows the refreshed remainder.
+      if (!existing.selected && existing.parts.length === 1 && first && !first.counts &&
+        !first.warehouse && !first.location_id && first.quantity === (oldRemaining || line.quantity)) {
+        first.quantity = quantity
+      }
+      return [line.id, existing]
+    }
+    return [line.id, {
+      selected: false, parts: [newPostingPart(line, quantity)],
+      batch_id: '', purchase_source_id: '', difference_reason: '', showReceiptCounts: false,
+      procurementPending: false, procurementPendingReason: '',
+    }]
+  }))
 }
 function newPostingPart(line: HandoverLine, quantity = ''): PostingPart {
   return { key: ++nextPostingPartKey, quantity, warehouse: '', location_id: '', lot: line.lot, roll_no: line.roll_no }
@@ -146,7 +215,7 @@ function receiptWarehouses(line: HandoverLine) {
 }
 function receiptWarehouse(line: HandoverLine, part: PostingPart) {
   const warehouses = receiptWarehouses(line)
-  if (warehouses.includes(part.warehouse)) return part.warehouse
+  if (part.warehouse) return warehouses.includes(part.warehouse) ? part.warehouse : ''
   return warehouses.length === 1 ? warehouses[0]! : ''
 }
 function changeReceiptWarehouse(part: PostingPart, event: Event) {
@@ -161,23 +230,83 @@ function postingPartQuantity(value: string) {
   const plain = /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(text) ? text.replaceAll(',', '') : text.replace(/^\+/, '')
   return receiptQuantity(plain.replace(/^0+(?=\d)/, ''))
 }
+function receiptCountDefaults(part: PostingPart) {
+  const quantity = postingPartQuantity(part.quantity)
+  return newReceiptCounts(quantity === undefined ? '' : quantityText(quantity))
+}
+function toggleReceiptCounts(row: PostingRow) {
+  if (!row.showReceiptCounts) {
+    for (const part of row.parts) part.counts ??= receiptCountDefaults(part)
+  } else {
+    const untouched = row.parts.every(part => {
+      const defaults = receiptCountDefaults(part)
+      return receiptCountFields.every(field => part.counts?.[field.key] === defaults[field.key])
+    })
+    if (untouched) for (const part of row.parts) delete part.counts
+  }
+  row.showReceiptCounts = !row.showReceiptCounts
+}
+function addReceiptPart(row: PostingRow, line: HandoverLine) {
+  const part = newPostingPart(line)
+  if (row.parts[0]?.counts) part.counts = newReceiptCounts()
+  row.parts.push(part)
+}
+function postingPartAmount(part: PostingPart) {
+  return part.counts ? receiptNetQuantity(part.counts) : postingPartQuantity(part.quantity)
+}
+function calculatedNetText(part: PostingPart) {
+  const amount = postingPartAmount(part)
+  return amount === undefined ? '' : quantityText(amount)
+}
 function postingTotal(parts: PostingPart[]) {
   let total = 0n
   for (const part of parts) {
-    const amount = postingPartQuantity(part.quantity)
+    const amount = postingPartAmount(part)
     if (amount === undefined) return undefined
     total += amount
   }
   return total
 }
+function receiptDuplicateIssue(line: HandoverLine, row: PostingRow) {
+  if (line.material_category !== 'FABRIC') return
+  return duplicateReceiptSplitMessage(row.parts.map(part => ({
+    dye_lot: part.lot.trim() || line.lot,
+    roll_no: part.roll_no,
+    location_id: (postingPartAmount(part) ?? 0n) > 0n ? part.location_id : '',
+  })))
+}
+function receiptInputIssue(line: HandoverLine, row: PostingRow) {
+  const progressIssue = receiptProgressIssue(line.id, row)
+  if (progressIssue) return progressIssue
+  for (const part of row.parts) {
+    const amount = postingPartAmount(part)
+    if (part.counts) {
+      if (amount === undefined) return '请核对实点、破损、拒收和其他不可用数量。'
+      if (receiptQuantity(part.counts.counted_quantity) === 0n) return '实点数量须大于零，未到货的物料留待下次收料。'
+      if (amount === 0n) continue
+    }
+    if ((!part.counts && !part.quantity.trim()) || !part.location_id) {
+      return part.counts ? '有净入库量的分项请选择仓库和仓位。' : '请为每个入库仓位填写净入库量，并选择仓库和仓位。'
+    }
+    if (!receiptLocations(line, receiptWarehouse(line, part)).some(location => location.id === part.location_id)) {
+      return '所选仓位已不可用，请重新选择仓库和仓位。'
+    }
+  }
+  return receiptDuplicateIssue(line, row)
+}
 function receiptTotalLabel(line: HandoverLine) {
   const total = postingTotal(posting.value[line.id]!.parts)
   return total === undefined ? '—' : `${quantityText(total)} ${line.unit}`
 }
-function exceedsDocumentRemainder(id: string, row: PostingRow) {
+function receiptDisplayQuantity(value: string | undefined) {
+  const amount = value ? receiptQuantity(value) : undefined
+  return amount === undefined ? value || '—' : quantityText(amount)
+}
+function receiptProgressIssue(id: string, row: PostingRow) {
   const remaining = receiptQuantity(selected.value?.progress[id]?.remaining ?? '')
+  if (remaining === 0n) return row.selected ? '该物料已收货完成，请取消勾选。' : undefined
   const total = postingTotal(row.parts)
-  return remaining !== undefined && total !== undefined && total > remaining
+  if (remaining !== undefined && total !== undefined && total > remaining) return '分仓净入库合计超过单据尚余，请核对各仓位数量。'
 }
 async function loadPurchaseSources() {
   const doc = selected.value
@@ -194,18 +323,30 @@ async function loadPurchaseSources() {
     if (epoch !== generation || ticket !== purchaseSequence || selected.value?.id !== doc.id) return
     if (result.document_revision !== selected.value.revision) { purchaseError.value = '单据已变化，请重新打开后核对采购实收进度。'; return }
     purchaseSources.value = result
-    for (const [lineId, values] of Object.entries(result.lines)) {
-      const state = posting.value[lineId]; if (!state) continue
-      const old = values.find(value => value.id === state.purchase_source_id && value.can_receive)
+    for (const [lineId, state] of Object.entries(posting.value)) {
+      const values = result.lines[lineId] ?? []
+      if (state.purchase_source_id) {
+        if (!values.some(value => value.id === state.purchase_source_id && value.can_receive)) {
+          state.purchase_source_id = ''
+          state.purchaseChoiceNeedsReview = true
+        }
+        continue
+      }
+      if (state.purchaseChoiceNeedsReview) continue
       const recommended = result.match_status?.[lineId] === 'MATCHED' ? values.filter(value => value.suggested) : []
-      state.purchase_source_id = old?.id || (recommended.length === 1 && recommended[0]!.can_receive ? recommended[0]!.id : '')
+      if (recommended.length === 1 && recommended[0]!.can_receive) state.purchase_source_id = recommended[0]!.id
     }
     purchaseReady.value = true
   } catch (e) { if (epoch === generation && ticket === purchaseSequence) { if (axios.isAxiosError(e) && [401,403].includes(e.response?.status || 0)) showError(e); else purchaseError.value = getApiErrorMessage(e) } }
   finally { if (epoch === generation && ticket === purchaseSequence) purchaseLoading.value = false }
 }
-function purchaseChoice(line: HandoverLine) { return purchaseSources.value?.lines[line.id]?.find(value => value.id === posting.value[line.id]?.purchase_source_id) }
+function purchaseChoice(line: HandoverLine) {
+  const state = posting.value[line.id]
+  return state?.procurementPending ? undefined : purchaseSources.value?.lines[line.id]?.find(value => value.id === state?.purchase_source_id)
+}
 function purchaseMatchMessage(line: HandoverLine) {
+  const state = posting.value[line.id]
+  if (state?.purchaseChoiceNeedsReview && !state.purchase_source_id) return '原关联采购明细已变化，请重新选择。'
   switch (purchaseSources.value?.match_status?.[line.id]) {
     case 'MATCHED': {
       const exact = purchaseSources.value?.lines[line.id]?.filter(source => source.primary_match) ?? []
@@ -221,17 +362,17 @@ function purchaseOverage(line: HandoverLine) {
   const choice = purchaseChoice(line)
   const remaining = receiptQuantity(choice?.remaining ?? '')
   if (!choice || remaining === undefined) return false
-  const parts = Object.values(posting.value).filter(row => row.selected && row.purchase_source_id === choice.id).flatMap(row => row.parts)
+  const parts = Object.values(posting.value).filter(row => row.selected && !row.procurementPending && row.purchase_source_id === choice.id).flatMap(row => row.parts)
   const total = postingTotal(parts)
   return total !== undefined && total > remaining
 }
-async function open(id: string, force = false) {
-  if (locked.value || (dirty.value && !force)) { error.value = dirty.value ? '请先保存当前核对内容，再切换单据。' : '请先核对未确认的提交结果。'; return }
+async function open(id: string, { preserveReceipt = false } = {}) {
+  if (locked.value || dirty.value) { error.value = dirty.value ? '请先保存当前核对内容，再切换单据。' : '请先核对未确认的提交结果。'; return }
   releaseUrls()
   const epoch = generation, client = api.value; loading.value = true; error.value = ''
   try {
     const row = await client.detail(id); if (epoch !== generation) return
-    accept(row)
+    accept(row, preserveReceipt)
     if (!props.external) { const latest = await client.workspace(); if (epoch !== generation) return; workspace.value = latest }
     await loadPurchaseSources()
   }
@@ -282,15 +423,32 @@ async function mutate(value: Pending) {
     let result: HandoverDocument
     if (frozen.kind === 'save') result = await client.save(frozen.id, frozen.body as HandoverSave)
     else if (frozen.kind === 'post') result = await client.post(frozen.id, frozen.body as HandoverPosting)
+    else if (frozen.kind === 'linkReceipt') result = await client.linkReceipt(frozen.id, frozen.body as HandoverReceiptLink)
+    else if (frozen.kind === 'unlinkReceipt') result = await client.unlinkReceipt(frozen.id, frozen.body as HandoverReceiptUnlink)
+    else if (frozen.kind === 'rejectionFollowup') result = await client.recordRejectionFollowup(frozen.id, frozen.body as HandoverRejectionFollowup)
     else result = await client.action(frozen.id, frozen.kind, frozen.body as HandoverAction)
     if (epoch !== generation) return
     pending.value = null
     if (frozen.kind === 'void') releaseUrls()
-    accept(result)
-    if (frozen.kind === 'post') {
-      notice.value = (frozen.body as HandoverPosting).lines.some(line => line.purchase_source_id)
-        ? '本次实收已保存，库存、单据剩余数量和采购待收进度已同步更新。'
-        : '本次实际收发已保存，库存和剩余数量已更新。'
+    accept(result, frozen.kind === 'linkReceipt' || frozen.kind === 'unlinkReceipt' || frozen.kind === 'rejectionFollowup')
+    if (frozen.kind === 'linkReceipt') {
+      notice.value = '原实收已关联，送货单进度已更新。'
+    } else if (frozen.kind === 'unlinkReceipt') {
+      notice.value = '已撤回关联，送货单进度已更新。'
+    } else if (frozen.kind === 'rejectionFollowup') {
+      rejectionDraft.value = null
+      notice.value = '拒收处理结果已保存。'
+    } else if (frozen.kind === 'post') {
+      const lines = (frozen.body as HandoverPosting).lines
+      if (lines.every(line => line.receipt_counts && receiptQuantity(line.quantity) === 0n)) {
+        notice.value = '本次收料差异已保存，净入库量为零。可在本单收料差异记录中查看。'
+      } else if (lines.some(line => line.procurement_pending_reason)) {
+        notice.value = '本次实收已入库，待核对批次可到「收料入库 → 入库记录」补关联采购。'
+      } else if (lines.some(line => line.purchase_source_id)) {
+        notice.value = '本次实收已保存，库存、单据剩余数量和采购待收进度已同步更新。'
+      } else {
+        notice.value = '本次实际收发已保存，库存和剩余数量已更新。'
+      }
     } else if (supplierPortal.value) {
       notice.value = frozen.kind === 'save' ? '草稿已保存，仅本供应商可见。'
         : frozen.kind === 'confirm' ? '送货单已确认，已生成交接二维码，仓库可按单收货。'
@@ -300,7 +458,7 @@ async function mutate(value: Pending) {
         ? '已保存为待核对单据。仓库可在单据管理中查看原件并补全；补齐并确认后才能打印交接二维码。'
         : '单据已保存。'
     }
-    if (frozen.print_after) { try { await printConfirmed() } catch (e) { if (epoch === generation) error.value = `单据已确认保存；原单加码准备失败，可重试：${getApiErrorMessage(e)}` } }
+    if (frozen.print_after) await startPrint('original')
     // Refresh failures must never change a completed write into a failed write.
     try { await reloadList(); if (!props.external) { const inventory = await client.workspace(); if (epoch === generation) { workspace.value = inventory; await loadPurchaseSources() } } }
     catch (e) { if (epoch === generation) error.value = `操作已保存；刷新失败，请重新打开单据核对：${getApiErrorMessage(e)}` }
@@ -339,22 +497,110 @@ async function scan() {
   catch (e) { if (epoch === generation) showError(e) }
   finally { if (epoch === generation) loading.value = false }
 }
+function confirmReceiptLink(lineId: string, receipt: HandoverPriorReceipt) {
+  if (!selected.value || locked.value || !receipt.can_link) return
+  void mutate({ kind: 'linkReceipt', id: selected.value.id, body: {
+    factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: selected.value.revision,
+    line_id: lineId, receipt_id: receipt.id,
+  } })
+}
+const unlinkImpact = computed(() => {
+  const doc = selected.value
+  const movement = doc?.movements.find(item => item.operation_id === receiptToUnlink.value)
+  if (!doc || !movement || movement.manual_reference === undefined) return
+  const progress = doc.progress[movement.line_id]
+  const line = doc.data.lines.find(item => item.id === movement.line_id)
+  if (!line || !progress) return
+  const received = receiptQuantity(progress.processed)
+  const remaining = receiptQuantity(progress.remaining)
+  const change = movement.reversed ? 0n : receiptQuantity(movement.quantity)
+  if (received === undefined || remaining === undefined || change === undefined) return
+  return { line, progress, received: quantityText(received - change), remaining: quantityText(remaining + change) }
+})
+function confirmReceiptUnlink() {
+  if (!selected.value || !unlinkImpact.value || locked.value || !unlinkReason.value.trim()) return
+  void mutate({ kind: 'unlinkReceipt', id: selected.value.id, body: {
+    factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: selected.value.revision,
+    link_id: receiptToUnlink.value, expected_processed: unlinkImpact.value.progress.processed, reason: unlinkReason.value.trim(),
+  } })
+}
+function showReceiptObservations() {
+  const history = receiptObservationHistory.value
+  if (!history) return
+  history.open = true
+  history.scrollIntoView?.({ block: 'start' })
+  history.querySelector('summary')?.focus({ preventScroll: true })
+}
+async function editRejection(observationId: string, lineId: string, status: HandoverRejectionStatus | null) {
+  if (locked.value || !workspace.value?.can_operate || selected.value?.status !== 'CONFIRMED') return
+  rejectionDraft.value = { observationId, lineId, status: status ?? '', reason: '' }
+  await nextTick()
+  receiptObservationHistory.value?.querySelector<HTMLSelectElement>('.rejection-followup-form select')?.focus()
+}
+function saveRejectionFollowup() {
+  const doc = selected.value, followup = rejectionDraft.value
+  if (!doc || doc.status !== 'CONFIRMED' || !workspace.value?.can_operate || locked.value || !followup?.status || !followup.reason.trim()) return
+  void mutate({ kind: 'rejectionFollowup', id: doc.id, body: {
+    factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: doc.revision,
+    observation_request_id: followup.observationId, line_id: followup.lineId,
+    status: followup.status, reason: followup.reason.trim(),
+  } })
+}
 function post() {
   if (!selected.value || !workspace.value || locked.value) return
   const receiving = selected.value.data.kind === 'DELIVERY'
   if (receiving && !purchaseReady.value) { error.value = '请先加载并核对采购待收明细。'; return }
   const selectedRows = Object.entries(posting.value).filter(([, row]) => row.selected)
   if (!selectedRows.length) { error.value = '请勾选本次实际收到或发出的明细。'; return }
-  if (selectedRows.some(([id,row]) => (purchaseSources.value?.lines[id]?.length || 0) > 0 && !row.purchase_source_id)) { error.value = '请为本次实收选择对应采购待收明细。'; return }
-  if (receiving && selectedRows.some(([id, row]) => exceedsDocumentRemainder(id, row))) { error.value = '分仓净入库合计超过单据尚余，请核对各仓位数量。'; return }
-  if (receiving && selectedRows.some(([, row]) => row.parts.some(part => !part.quantity.trim() || !part.location_id))) { error.value = '请为每个入库仓位填写净入库量，并选择仓库和仓位。'; return }
+  const manualReceiptReviews: Record<string, string> = {}
+  if (receiving) {
+    for (const [id, row] of selectedRows) {
+      const hasStock = row.parts.some(part => !part.counts || (postingPartAmount(part) ?? 0n) > 0n)
+      const review = selected.value.prior_receipts?.[id]
+      if (hasStock && review) {
+        if (review.items.some(item => item.blocks_posting)) {
+          error.value = '同单号已有实收，请先核对并关联原入库。'
+          return
+        }
+        if (!confirmedNewReceipts.value[id]) {
+          error.value = '请核对可能对应的旧入库，关联原实收或确认本批为新到货。'
+          return
+        }
+        manualReceiptReviews[id] = review.review_token
+      }
+      if (hasStock && row.procurementPending && !row.procurementPendingReason.trim()) {
+        error.value = '请填写采购待核对原因。'
+        return
+      }
+      if (hasStock && !row.procurementPending && (purchaseSources.value?.lines[id]?.length || 0) > 0 && !row.purchase_source_id) {
+        error.value = '请为本次实收选择对应采购待收明细。'
+        return
+      }
+      const line = selected.value.data.lines.find(line => line.id === id)!
+      const issue = receiptInputIssue(line, row)
+      if (issue) { error.value = issue; return }
+    }
+  }
   const lines = selectedRows.flatMap(([line_id, row]) => {
-    const choice = purchaseSources.value?.lines[line_id]?.find(value => value.id === row.purchase_source_id)
-    return row.parts.map(part => ({ line_id, quantity: part.quantity, batch_id: row.batch_id, location_id: part.location_id, lot: part.lot, roll_no: part.roll_no,
-      ...(choice ? { purchase_source_id: choice.id, expected_source_revision: choice.revision, expected_receipt_count: choice.receipt_count, difference_reason: row.difference_reason } : {}) }))
+    const originalRoll = selected.value?.data.lines.find(line => line.id === line_id)?.roll_no
+    const choice = row.procurementPending ? undefined : purchaseSources.value?.lines[line_id]?.find(value => value.id === row.purchase_source_id)
+    return row.parts.map(part => {
+      const quantity = part.counts ? calculatedNetText(part) : part.quantity
+      const zeroReceipt = !!part.counts && quantity === '0'
+      return { line_id, quantity, batch_id: row.batch_id, location_id: zeroReceipt ? '' : part.location_id, lot: part.lot, roll_no: part.roll_no,
+        ...(receiving && originalRoll && !part.roll_no.trim() ? { roll_no_is_blank: true } : {}),
+        ...(part.counts ? { receipt_counts: { ...part.counts } } : {}),
+        ...(row.procurementPending && !zeroReceipt ? { procurement_pending_reason: row.procurementPendingReason.trim() } : {}),
+        ...(choice && !zeroReceipt ? { purchase_source_id: choice.id, expected_source_revision: choice.revision, expected_receipt_count: choice.receipt_count, difference_reason: row.difference_reason } : {}) }
+    })
   })
   if (lines.length > maxPostingParts) { error.value = '一次最多办理 100 条收发明细，请分次办理。'; return }
-  void mutate({ kind: 'post', id: selected.value.id, body: { factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: selected.value.revision, expected_inventory_revision: workspace.value.inventory.revision, code_version: selected.value.code_version, business_date: businessDate.value, lines } })
+  void mutate({ kind: 'post', id: selected.value.id, body: {
+    factory_id: HANDOVER_FACTORY, request_id: uuid(), expected_revision: selected.value.revision,
+    expected_inventory_revision: workspace.value.inventory.revision, code_version: selected.value.code_version,
+    business_date: businessDate.value, lines,
+    ...(Object.keys(manualReceiptReviews).length ? { manual_receipt_reviews: manualReceiptReviews } : {}),
+  } })
 }
 function batches(line: HandoverLine) { return (workspace.value?.inventory.stock || []).filter(b => b.item_code === line.item_code && b.unit === line.unit && Number(b.available_quantity) > 0 && (!line.lot || b.lot === line.lot)) }
 async function preview(kind: 'source' | 'qr') {
@@ -385,17 +631,59 @@ async function manage(value: Management) {
 }
 function linkAction(value: HandoverIssuer, kind: 'renew'|'bind'|'revoke') { void manage({ kind, id: value.id, body: { request_id: uuid(), expected_revision: value.revision, ...(kind==='renew'?{valid_days:issuerDays.value}:{}), ...(kind==='bind'?{supplier_id:bindSupplier.value[value.id] || ''}:{}) } }) }
 function chooseSupplier() { const supplier=activeSuppliers.value.find(row=>row.id===draft.value?.supplier_id);if(draft.value)draft.value.counterparty=supplier?.name || '' }
-async function printConfirmed() {
-  if(!selected.value || warehouseSupplierDocument.value || selected.value.status!=='CONFIRMED' || printPreparing.value)return
-  releasePrint();printMode.value='original';const epoch=generation,id=selected.value.id,ticket=printSequence,client=api.value
-  printPreparing.value=true;error.value=''
-  void nextTick(() => { if (epoch === generation && ticket === printSequence) printClose.value?.focus() })
-  try{const blob=await client.printFile(id,selected.value.revision,printCorner.value)
-    if(epoch!==generation || ticket!==printSequence || selected.value?.id!==id)return
-    printUrl.value=URL.createObjectURL(blob);printToken.value=`${epoch}:${ticket}:${id}`;printWanted.value=true;printRendering.value=true;printBlob.value=blob
-  }catch(e){if(axios.isAxiosError(e) && e.response?.data instanceof Blob){try{e.response.data=JSON.parse(await e.response.data.text())}catch{}}
-    if(epoch===generation && ticket===printSequence){showError(e);if(scopeValid())error.value=`原单加码准备失败，单据仍已保存：${getApiErrorMessage(e)}`}}
-  finally{if(epoch===generation && ticket===printSequence)printPreparing.value=false}
+function isPrintCurrent(id: string, ticket: number) {
+  return ticket === printSequence && summaryDocument.value?.id === id &&
+    summaryDocument.value.status === 'CONFIRMED' && scopeValid()
+}
+async function openPrintDialog(mode: PrintMode, id: string, ticket: number) {
+  if (!isPrintCurrent(id, ticket)) return
+  originalPrintActive.value = mode === 'original'
+  await nextTick()
+  if (isPrintCurrent(id, ticket)) {
+    try { window.print() }
+    catch (e) {
+      originalPrintActive.value = false
+      error.value = `无法打开打印弹窗：${getApiErrorMessage(e)}`
+    }
+  } else if (ticket === printSequence) {
+    originalPrintActive.value = false
+  }
+}
+async function startPrint(mode: PrintMode) {
+  const row = summaryDocument.value
+  if (row?.status !== 'CONFIRMED' || printPreparing.value || !scopeValid()) return
+  const reuseOriginal = mode === 'original' && printReady.value
+  if (!reuseOriginal) releasePrint()
+  const ticket = printSequence
+  let waitingForOriginalPages = false
+  printPreparing.value = mode
+  error.value = ''
+  try {
+    if (reuseOriginal) {
+      if (await printCopyIsCurrent(printToken.value)) await openPrintDialog(mode, row.id, ticket)
+    } else if (mode === 'original') {
+      const blob = await api.value.printFile(row.id, row.revision, printCorner.value)
+      if (!isPrintCurrent(row.id, ticket)) return
+      printUrl.value = URL.createObjectURL(blob)
+      printToken.value = String(ticket)
+      waitingForOriginalPages = true
+      printBlob.value = blob
+    } else {
+      const qr = await preview('qr')
+      if (!qr || !isPrintCurrent(row.id, ticket)) return
+      await nextTick()
+      const picture = document.querySelector<HTMLImageElement>('.print-qr')
+      if (picture?.decode) await picture.decode()
+      if (qr.ticket === fileSequence.qr) await openPrintDialog(mode, row.id, ticket)
+    }
+  } catch (e) {
+    const message = await getApiErrorMessageAsync(e)
+    if (isPrintCurrent(row.id, ticket)) {
+      showError(e, mode === 'original' ? `原单加码准备失败，单据仍已保存：${message}` : `统一明细准备失败：${message}`)
+    }
+  } finally {
+    if (ticket === printSequence && !waitingForOriginalPages) printPreparing.value = null
+  }
 }
 function discardStalePrint(row?: HandoverDocument) {
   releaseUrls()
@@ -416,19 +704,22 @@ async function printCopyIsCurrent(token: string) {
   return false
 }
 async function originalReady(token: string) {
-  if (token !== printToken.value || !scopeValid()) return
-  printRendering.value = false; printReady.value = true
-  await nextTick()
-  if (token !== printToken.value || !printWanted.value) return
-  printWanted.value = false
-  if (await printCopyIsCurrent(token) && token === printToken.value) window.print()
-}
-function originalFailed(token:string,message:string){if(token!==printToken.value)return;printRendering.value=false;printWanted.value=false;printPreviewError.value=`原单已准备，浏览器预览失败：${message}。可下载加码 PDF 打印。`}
-async function reprintPrepared() {
-  const token = printToken.value
-  if (printReady.value && await printCopyIsCurrent(token) && token === printToken.value) {
-    printMode.value = 'original'; window.print()
+  if (token !== printToken.value || printPreparing.value !== 'original' || printReady.value) return
+  const id = selected.value?.id
+  const ticket = printSequence
+  printReady.value = true
+  try {
+    if (id && await printCopyIsCurrent(token)) await openPrintDialog('original', id, ticket)
+  } finally {
+    if (ticket === printSequence) printPreparing.value = null
   }
+}
+function originalFailed(token: string, message: string) {
+  if (token !== printToken.value) return
+  printPreparing.value = null
+  printReady.value = false
+  printBlob.value = undefined
+  error.value = `原单已准备，浏览器无法生成打印页：${message}。可下载加码 PDF 打印。`
 }
 function downloadFile(url: string, fileName: string) {
   const link = document.createElement('a')
@@ -445,38 +736,38 @@ async function downloadQr() {
   const qr = await preview('qr')
   if (id && selected.value?.id === id && qr?.ticket === fileSequence.qr) downloadFile(qr.url, id + '.svg')
 }
-async function closeOriginalPreview() {
+async function cancelPrint() {
+  const trigger = printPreparing.value === 'summary' ? summaryPrintTrigger : printTrigger
+  if (printPreparing.value === 'summary') fileSequence.qr++
   releasePrint()
   const ticket = printSequence
   await nextTick()
   if (ticket !== printSequence) return
-  if (printTrigger.value && !printTrigger.value.disabled) printTrigger.value.focus()
+  if (trigger.value && !trigger.value.disabled) trigger.value.focus()
   else codeHeading.value?.focus()
 }
 watch(printCorner,releasePrint)
-async function print() {
-  if (selected.value?.status !== 'CONFIRMED' || warehouseSupplierDocument.value) return
-  const id = selected.value.id
-  releasePrint();printMode.value='summary'
-  const qr = await preview('qr')
-  if (!qr) return
-  await nextTick()
-  const picture = document.querySelector<HTMLImageElement>('.print-qr')
-  if (picture?.decode) await picture.decode()
-  if (qr.ticket === fileSequence.qr && selected.value?.id === id && selected.value.status === 'CONFIRMED' && printMode.value === 'summary' && scopeValid()) window.print()
-}
+function finishPrint() { originalPrintActive.value = false }
 function preventUnload(event: BeforeUnloadEvent) { if (dirty.value || pending.value || managementPending.value) { event.preventDefault(); event.returnValue = '' } }
 function refreshAuthorization() { void initialize() }
 window.addEventListener('authorization-context-changed', refreshAuthorization)
 window.addEventListener('beforeunload', preventUnload)
+window.addEventListener('afterprint', finishPrint)
 onBeforeRouteLeave(() => { if (dirty.value || pending.value || managementPending.value) { error.value = '请先保存核对内容或确认提交结果，再离开。'; return false }; return true })
 onBeforeRouteUpdate(() => { if (dirty.value || pending.value || managementPending.value) { error.value = '请先保存核对内容或确认提交结果，再切换单据。'; return false }; return true })
-onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener('authorization-context-changed', refreshAuthorization); window.removeEventListener('beforeunload', preventUnload) })
+onBeforeUnmount(() => {
+  generation++
+  releaseUrls()
+  window.removeEventListener('authorization-context-changed', refreshAuthorization)
+  window.removeEventListener('beforeunload', preventUnload)
+  window.removeEventListener('afterprint', finishPrint)
+})
 </script>
 
 <template>
-  <main class="handover" :class="{ 'handover-warehouse-mobile': !external, 'original-print-active': printMode==='original' && printReady, 'has-summary-print': summaryDocument }">
+  <main class="handover" :class="{ 'handover-warehouse-mobile': !external, 'original-print-active': originalPrintActive, 'has-summary-print': summaryDocument }">
     <HandoverSummaryPrint v-if="summaryDocument" :document="summaryDocument" :qr-url="qrUrl" />
+    <HandoverOriginalPrint v-if="printBlob" :file="printBlob" :token="printToken" @ready="originalReady" @failed="originalFailed" />
     <header class="handover-header">
       <RouterLink v-if="!external" class="handover-back" to="/modules/pmc-warehouse/fabric-warehouse/receipts?factory=huakang-c&view=pending"><span aria-hidden="true">←</span> 返回待收料</RouterLink>
       <div><p class="eyebrow">{{ external ? '专用制单入口' : '华康C · 布料仓' }}</p><h1>制单与扫码交接</h1><p>{{ external ? `${issuer?.name || '制单方'} · 上传原单，核对明细后生成交接二维码` : '统一整理送货与领料单据，按实际数量分批收发' }}</p></div>
@@ -487,22 +778,6 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
     <p v-if="loading || busy" class="handover-message" role="status">{{ busy ? '正在处理，请稍候…' : '正在加载…' }}</p>
     <aside v-if="pending && !busy" class="handover-message warning"><p>提交结果尚未确认，已保留原提交内容。可重试原提交；请勿另建一笔重复收发。</p><button @click="mutate(pending)">重试原提交</button></aside>
     <aside v-if="managementPending && !busy" class="handover-message warning"><p>链接操作结果待确认，已保留原请求。</p><button @click="manage(managementPending)">重试原链接操作</button></aside>
-    <section v-if="printPreviewOpen" id="original-print-preview" class="original-print-preview" aria-labelledby="original-preview-title" @keydown.esc.prevent.stop="closeOriginalPreview">
-      <header class="original-preview-heading">
-        <div>
-          <h2 id="original-preview-title">原单加码打印预览</h2>
-          <p>保留原单内容，顶部预留二维码位置。请核对文字、分页与缸号；识别明细有修改时附系统确认明细。</p>
-        </div>
-        <button ref="printClose" type="button" @click="closeOriginalPreview">关闭预览</button>
-      </header>
-      <div v-if="printUrl" class="actions original-preview-actions">
-        <button type="button" :disabled="!printReady || locked" @click="reprintPrepared">打印已准备原单</button>
-         <button type="button" class="print-download" :disabled="locked" @click="downloadPrepared">下载加码原单 PDF</button>
-      </div>
-      <p v-if="printPreparing" class="handover-message" role="status">正在按原单版式准备加码打印，请稍候…</p>
-      <p v-if="printPreviewError" class="handover-message error" role="alert">{{ printPreviewError }}</p>
-      <HandoverOriginalPrint v-if="printBlob" :file="printBlob" :token="printToken" @ready="originalReady" @failed="originalFailed" />
-    </section>
     <MaterialHandoverMonthly v-if="tab === 'monthly' && canMonthly" :client="api" :external="external" :suppliers="suppliers" />
     <section v-else-if="tab === 'issuers' && !external && workspace?.can_manage" class="card">
       <h2>发放专用制单链接</h2><p>每家供应商使用固定入口，只能查看本供应商通过专用入口提交的单据；领用方只能查看本入口单据。仓库内部上传的原件不会自动对外开放，实物收发由仓库确认。</p>
@@ -543,13 +818,75 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
           <div class="list-heading"><h2>单据列表 <span class="list-count">{{ total }}</span></h2><button :disabled="locked || dirty" @click="searchDocuments()">刷新</button></div>
           <small class="list-order">最近更新在前 · 已显示 {{ summaries.length }} 张</small>
           <p v-if="!summaries.length && !loading" class="list-empty">{{ hasFilters ? '没有符合条件的单据，请调整筛选或重置。' : pendingDeliveriesOnly ? '当前没有待入库的送货单。' : '暂无单据，上传原单或等待制单方提交。' }}</p>
-          <button v-for="row in summaries" :key="row.id" class="document-item" :class="{ selected: selected?.id === row.id }" :aria-pressed="selected?.id === row.id" :disabled="locked || dirty" @click="open(row.id)"><span class="document-title">{{ row.data.source_no || '原单号待补' }}<span class="status-tag" :class="row.status.toLowerCase()">{{ statusLabels[row.status] }}</span></span><span class="document-party">{{ row.data.counterparty || '制单方待核对' }}</span><small>{{ row.data.kind === 'DELIVERY' ? '送货单' : '领料单' }} · {{ row.line_count }} 项 <span>{{ row.data.document_date || '日期待核对' }}</span></small></button>
+          <button
+            v-for="row in summaries"
+            :key="row.id"
+            class="document-item"
+            :class="{ selected: selected?.id === row.id }"
+            :aria-pressed="selected?.id === row.id"
+            :disabled="locked || dirty"
+            @click="open(row.id)"
+          >
+            <span class="document-title">
+              <span class="document-number">{{ row.data.source_no || '原单号待补' }}</span>
+              <span class="document-statuses">
+                <span class="status-tag" :class="row.status.toLowerCase()">{{ statusLabels[row.status] }}</span>
+                <span
+                  v-if="!external && row.status === 'CONFIRMED' && row.data.kind === 'DELIVERY' && row.processing_status && (row.processing_status !== 'PENDING' || !row.receipt_rejection)"
+                  class="status-tag"
+                  :class="receiptProgress[row.processing_status].classes"
+                >{{ receiptProgress[row.processing_status].label }}</span>
+              </span>
+            </span>
+            <span class="document-party">{{ row.data.counterparty || '制单方待核对' }}</span>
+            <HandoverRejectionSummary v-if="!external && row.receipt_rejection" :summary="row.receipt_rejection" />
+            <small>{{ row.data.kind === 'DELIVERY' ? '送货单' : '领料单' }} · {{ row.line_count }} 项 <span>{{ row.data.document_date || '日期待核对' }}</span></small>
+          </button>
           <button v-if="moreAvailable" :disabled="locked" @click="loadMore">加载更早单据</button>
         </aside>
-        <section class="card document-detail">
+        <section ref="documentPanel" class="card document-detail">
           <div v-if="!selected" class="empty"><span class="empty-symbol" aria-hidden="true">{{ tab === 'scan' ? '▦' : '≡' }}</span><h2>{{ tab === 'scan' ? '等待扫描交接二维码' : '选择单据，查看原件与明细' }}</h2><p>{{ tab === 'scan' ? '使用上方扫码框，或从左侧选择单据。' : external ? '从左侧选择已有单据，也可上传原单后开始核对。' : '从左侧选择单据。供应商已确认的送货单可直接收料。' }}</p><div class="empty-steps"><span><b>01</b>{{ !external ? '打开交接单' : '上传或选择原单' }}</span><span><b>02</b>{{ !external ? '核对本次数量与仓位' : '核对数量与单位' }}</span><span><b>03</b>{{ !external ? '确认本次实物收发' : '确认并打印二维码' }}</span></div><small>{{ !external ? '未到货或未发出的物料不勾选，剩余数量保留到下次办理。' : '原件与核对明细一起保留；确认单据后，实物收发仍需仓库办理。' }}</small></div>
           <template v-else-if="draft">
-            <div class="detail-heading"><div><p class="eyebrow">{{ statusLabels[selected.status] }} · {{ progressLabels[selected.processing_status] }}</p><h2>{{ selected.data.source_no || selected.file_name }}</h2><p>{{ selected.file_name }} · {{ selected.data.counterparty || '制单方待补' }}</p></div><button @click="preview('source')">查看原件</button></div>
+            <div v-if="warehouseSupplierDocument" class="detail-heading supplier-document-heading">
+              <div>
+                <div class="supplier-document-title">
+                  <h2>{{ selected.data.source_no || selected.file_name }}</h2>
+                  <span class="status-tag" :class="selected.status.toLowerCase()">{{ statusLabels[selected.status] }}</span>
+                  <span v-if="selected.status !== 'VOID'" class="supplier-document-progress">{{ progressLabels[selected.processing_status] }}</span>
+                </div>
+                <p class="supplier-document-meta">
+                  <strong>{{ selected.data.counterparty || '制单方待补' }}</strong>
+                  <span v-if="selected.data.document_date">送货日期 <time :datetime="selected.data.document_date">{{ selected.data.document_date }}</time></span>
+                  <span>{{ selected.data.lines.length }} 项物料</span>
+                </p>
+              </div>
+              <div class="supplier-document-actions">
+                <button type="button" class="receipt-secondary-action" @click="preview('source')">
+                  <FileText :size="15" aria-hidden="true" />查看原件
+                </button>
+                <button
+                  type="button"
+                  class="receipt-secondary-action"
+                  :aria-expanded="supplierDetailsOpen"
+                  aria-controls="handover-supplier-document-details"
+                  @click="supplierDetailsOpen = !supplierDetailsOpen"
+                >
+                  <ChevronDown :size="15" aria-hidden="true" />单据明细
+                </button>
+              </div>
+            </div>
+            <div v-else class="detail-heading">
+              <div>
+                <p class="eyebrow">{{ statusLabels[selected.status] }} · {{ progressLabels[selected.processing_status] }}</p>
+                <h2>{{ selected.data.source_no || selected.file_name }}</h2>
+                <p>{{ selected.file_name }} · {{ selected.data.counterparty || '制单方待补' }}</p>
+              </div>
+              <button @click="preview('source')">查看原件</button>
+            </div>
+            <div v-if="!external && selected.receipt_rejection" class="receipt-rejection-overview">
+              <HandoverRejectionSummary :summary="selected.receipt_rejection" />
+              <button type="button" class="receipt-secondary-action" @click="showReceiptObservations">查看收料差异</button>
+            </div>
             <iframe v-if="sourceUrl && selected.file_name.toLowerCase().endsWith('.pdf')" :src="sourceUrl" title="单据原件" class="source-preview" />
             <img v-else-if="sourceUrl && /\.(png|jpe?g|webp)$/i.test(selected.file_name)" :src="sourceUrl" alt="单据原件" class="source-preview" />
             <a v-else-if="sourceUrl" :href="sourceUrl" :download="selected.file_name">下载原始文档核对</a>
@@ -559,26 +896,40 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
                <p v-if="supplierPortal">请填齐必填项并核对原单。草稿仅本供应商可见，确认后仓库才可按单收货。</p>
                <p v-else>{{ external ? '不清楚的信息可留空，点击下方“保存，交仓库补全”。仓库可查看原件并继续补录。' : '可先保存待核对单据，补齐后再确认。保存和确认单据均不会直接入库。' }}</p>
             </section>
-            <details v-if="selected.warnings.length" class="review-warning recognition-notes"><summary>原单识别提示 · {{ selected.warnings.length }} 项</summary><p>识别提示供对照原件参考，不影响保存。确认打印前请核对数量和单位。</p><ul><li v-for="text in selected.warnings" :key="text">{{ text }}</li></ul></details>
-            <fieldset class="fields document-fields" :class="{ compact: compactSupplierForm }" :disabled="!draftEditable"><label>单据用途<select v-model="draft.kind" :disabled="external || Boolean(selected.issuer_id)"><option value="DELIVERY">送货单</option><option value="ISSUE">领料申请 / 发料依据</option></select></label><label>原单号<input v-model="draft.source_no" maxlength="128" aria-label="原单号" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('原单号')" /></label><label>单据日期<input v-model="draft.document_date" type="date" aria-label="单据日期" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('单据日期')" /></label><label v-if="!external && !selected.issuer_id && draft.kind==='DELIVERY'">供应商基础资料<select v-model="draft.supplier_id" @change="chooseSupplier" aria-label="制单供应商" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单供应商')"><option value="">请选择已启用供应商</option><option v-for="party in activeSuppliers" :key="party.id" :value="party.id">{{ party.code }} · {{ party.name }}</option></select></label><label>供应商 / 领用方<input v-model="draft.counterparty" :readonly="external || Boolean(selected.issuer_id) || draft.kind==='DELIVERY'" maxlength="255" aria-label="制单方" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单方')" /></label><label v-if="draft.kind === 'DELIVERY'" class="optional-field">采购订单号（行未注明时用）<input v-model="draft.purchase_order_no" maxlength="128" aria-label="整单采购订单号" /></label><label class="optional-field">合同号<input v-model="draft.contract_no" maxlength="128" /></label><label class="optional-field">放产 / 生产单号<input v-model="draft.production_no" maxlength="128" /></label><label class="optional-field">货号<input v-model="draft.product_no" maxlength="128" /></label><label class="optional-field">说明<input v-model="draft.note" maxlength="1000" /></label></fieldset>
-            <div class="line-heading"><h3 id="handover-lines-title">物料明细</h3><div class="actions"><button v-if="external" :aria-expanded="showOptional" @click="showOptional = !showOptional">{{ showOptional ? '收起选填信息' : '展开选填信息' }}</button><button v-if="selected.status === 'DRAFT' && canPrepare" :disabled="!draftEditable || draft.lines.length >= 200" @click="addLine">添加明细</button></div></div>
-             <p v-if="supplierPortal && selected.status === 'DRAFT'" class="line-help">每行须填物料编码、名称、数量、单位和分类。规格、缸号和价格等按原单选填。</p>
-             <p v-else-if="external && selected.status === 'DRAFT'" class="line-help">按原单核对名称、数量和单位。物料编码不清楚可留空，由仓库补全；规格、缸号和价格等可展开选填。</p>
-            <p v-if="selected.status === 'DRAFT'" class="line-help">分类按单位默认建议，可手动修改；无法判断时请自行选择。</p>
-            <p v-if="!external && selected.status === 'DRAFT' && draft.kind === 'DELIVERY' && workspace?.can_operate" class="line-help">确认单据后，在「本次实际收料入库」选择仓库和仓位。同一条物料可分到多个仓位。</p>
-            <div class="table-scroll lines-scroll" role="region" aria-labelledby="handover-lines-title" tabindex="0"><table class="lines" :class="{ compact: compactSupplierForm }"><thead><tr><th>物料编码 / 名称</th><th>规格 / 颜色</th><th>单据数量 / 单位</th><th>类别</th><th>单价依据（选填）</th><th>缸号 / 卷号</th><th>关联 / 说明</th><th>进度 / 操作</th></tr></thead><tbody><tr v-for="(line, index) in draft.lines" :key="line.id"><td data-label="物料编码 / 名称"><input v-model="line.item_code" :disabled="!draftEditable" :aria-label="`第${index+1}行物料编码`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料编码`)" placeholder="物料编码" /><input v-model="line.item_name" :disabled="!draftEditable" :aria-label="`第${index+1}行物料名称`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料名称`)" placeholder="物料名称" /><small class="line-source">{{ line.source_line || `补录第 ${index + 1} 行` }}</small></td><td data-label="规格 / 颜色"><input v-model="line.specification" :disabled="!draftEditable" placeholder="规格" /><input v-model="line.color" :disabled="!draftEditable" placeholder="颜色" /></td><td data-label="单据数量 / 单位"><input v-model="line.quantity" inputmode="decimal" :disabled="!draftEditable" :aria-label="`第${index+1}行单据数量`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单据数量`)" /><input :value="line.unit" @input="unitChanged(line, $event)" :disabled="!draftEditable" :aria-label="`第${index+1}行单位`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单位`)" placeholder="单位" /></td><td data-label="类别"><select v-model="line.material_category" @change="manualCategories.add(line.id)" :aria-label="`第${index+1}行物料分类`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料分类`)" :disabled="!draftEditable"><option value="">待分类</option><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></td><td data-label="单价依据（选填）"><input v-model="line.unit_price" inputmode="decimal" :disabled="!draftEditable" :aria-label="`第${index+1}行参考单价`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行参考单价`)" placeholder="单价，空白为未记录" /><small class="price-unit-hint" v-if="linePriceUnit(line)">{{ line.price_unit && line.price_unit !== line.unit ? '原单按' : '单价按' }}{{ linePriceUnit(line) }}计价</small><small v-else-if="line.unit_price" class="price-unit-hint">计价单位未注明</small><select :value="lineCurrency(line)" @change="currencyChanged(line, $event)" :aria-label="`第${index+1}行币种`" :disabled="!draftEditable"><option v-if="selected.status !== 'DRAFT' || draft.kind !== 'DELIVERY'" value="">币种未注明</option><option value="CNY">CNY 人民币</option><option value="HKD">HKD 港币</option><option value="USD">USD 美元</option><option value="EUR">EUR 欧元</option></select><input v-model="line.price_note" :disabled="!draftEditable" placeholder="报价 / 含税口径等原单依据" /></td><td data-label="缸号 / 卷号"><input v-model="line.lot" :disabled="!draftEditable" placeholder="缸号" /><input v-model="line.roll_no" :disabled="!draftEditable" placeholder="卷号" /><small v-if="line.roll_quantities">逐卷：{{ line.roll_quantities }}</small></td><td data-label="关联 / 说明"><input v-model="line.production_no" :disabled="!draftEditable" placeholder="放产 / 生产单号" :aria-label="`第${index+1}行生产单号`" /><input v-model="line.note" :disabled="!draftEditable" placeholder="说明" />
-              <details v-if="draft.kind === 'DELIVERY'" class="line-purchase-references">
-                <summary>原单采购信息<span v-if="line.purchase_order_no || line.ordered_quantity"> · {{ line.purchase_order_no }} {{ line.ordered_quantity ? `${line.ordered_quantity} ${line.unit}` : '' }}</span></summary>
-                <fieldset :disabled="!draftEditable">
-                  <label v-if="!external">采购明细 ID<input v-model="line.purchase_detail_id" maxlength="128" :aria-label="`第${index+1}行采购明细 ID`" /></label>
-                  <label>采购订单号<input v-model="line.purchase_order_no" maxlength="128" :aria-label="`第${index+1}行采购订单号`" /></label>
-                  <label>合同号<input v-model="line.contract_no" maxlength="128" :aria-label="`第${index+1}行合同号`" /></label>
-                  <label>计划跟踪号<input v-model="line.plan_no" maxlength="255" :aria-label="`第${index+1}行计划跟踪号`" /></label>
-                  <label>货号<input v-model="line.product_no" maxlength="128" :aria-label="`第${index+1}行货号`" /></label>
-                  <label>原下单量<input v-model="line.ordered_quantity" inputmode="decimal" maxlength="32" placeholder="按本行单位" :aria-label="`第${index+1}行原下单量`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行原下单量`)" /></label>
-                </fieldset>
+            <div
+              v-show="!warehouseSupplierDocument || supplierDetailsOpen"
+              :id="warehouseSupplierDocument ? 'handover-supplier-document-details' : undefined"
+              :class="warehouseSupplierDocument ? 'supplier-document-details' : 'document-review-fields'"
+            >
+              <p v-if="warehouseSupplierDocument" class="supplier-document-note">原始文件 {{ selected.file_name }}</p>
+              <p v-if="warehouseSupplierDocument && selected.status === 'CONFIRMED'" class="supplier-document-note">
+                原单有误请联系供应商更正重开。
+              </p>
+              <details v-if="selected.warnings.length" class="review-warning recognition-notes">
+                <summary>原单识别提示 · {{ selected.warnings.length }} 项</summary>
+                <p v-if="!warehouseSupplierDocument">识别提示供对照原件参考，不影响保存。确认打印前请核对数量和单位。</p>
+                <ul><li v-for="text in selected.warnings" :key="text">{{ text }}</li></ul>
               </details>
-            </td><td data-label="进度 / 操作"><template v-if="selected.status === 'CONFIRMED'"><p>已{{ selected.data.kind === 'DELIVERY' ? '收' : '发' }} {{ selected.progress[line.id]?.processed }} {{ line.unit }}</p><small>未完成 {{ selected.progress[line.id]?.remaining }} {{ line.unit }}</small></template><button v-else-if="selected.status === 'DRAFT' && canPrepare" :disabled="!draftEditable" @click="draft.lines.splice(index, 1)">移除此行</button></td></tr></tbody></table></div>
+              <fieldset class="fields document-fields" :class="{ compact: compactSupplierForm }" :disabled="!draftEditable"><label>单据用途<select v-model="draft.kind" :disabled="external || Boolean(selected.issuer_id)"><option value="DELIVERY">送货单</option><option value="ISSUE">领料申请 / 发料依据</option></select></label><label>原单号<input v-model="draft.source_no" maxlength="128" aria-label="原单号" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('原单号')" /></label><label>单据日期<input v-model="draft.document_date" type="date" aria-label="单据日期" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('单据日期')" /></label><label v-if="!external && !selected.issuer_id && draft.kind==='DELIVERY'">供应商基础资料<select v-model="draft.supplier_id" @change="chooseSupplier" aria-label="制单供应商" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单供应商')"><option value="">请选择已启用供应商</option><option v-for="party in activeSuppliers" :key="party.id" :value="party.id">{{ party.code }} · {{ party.name }}</option></select></label><label>供应商 / 领用方<input v-model="draft.counterparty" :readonly="external || Boolean(selected.issuer_id) || draft.kind==='DELIVERY'" maxlength="255" aria-label="制单方" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单方')" /></label><label v-if="draft.kind === 'DELIVERY'" class="optional-field">采购订单号（行未注明时用）<input v-model="draft.purchase_order_no" maxlength="128" aria-label="整单采购订单号" /></label><label class="optional-field">合同号<input v-model="draft.contract_no" maxlength="128" /></label><label class="optional-field">放产 / 生产单号<input v-model="draft.production_no" maxlength="128" /></label><label class="optional-field">货号<input v-model="draft.product_no" maxlength="128" /></label><label class="optional-field">说明<input v-model="draft.note" maxlength="1000" /></label></fieldset>
+              <div class="line-heading"><h3 id="handover-lines-title">物料明细</h3><div class="actions"><button v-if="external" :aria-expanded="showOptional" @click="showOptional = !showOptional">{{ showOptional ? '收起选填信息' : '展开选填信息' }}</button><button v-if="selected.status === 'DRAFT' && canPrepare" :disabled="!draftEditable || draft.lines.length >= 200" @click="addLine">添加明细</button></div></div>
+               <p v-if="supplierPortal && selected.status === 'DRAFT'" class="line-help">每行须填物料编码、名称、数量、单位和分类。规格、缸号和价格等按原单选填。</p>
+               <p v-else-if="external && selected.status === 'DRAFT'" class="line-help">按原单核对名称、数量和单位。物料编码不清楚可留空，由仓库补全；规格、缸号和价格等可展开选填。</p>
+              <p v-if="selected.status === 'DRAFT'" class="line-help">分类按单位默认建议，可手动修改；无法判断时请自行选择。</p>
+              <p v-if="!external && selected.status === 'DRAFT' && draft.kind === 'DELIVERY' && workspace?.can_operate" class="line-help">确认单据后，在「本次实际收料入库」选择仓库和仓位。同一条物料可分到多个仓位。</p>
+              <div class="table-scroll lines-scroll" role="region" aria-labelledby="handover-lines-title" tabindex="0"><table class="lines" :class="{ compact: compactSupplierForm }"><thead><tr><th>物料编码 / 名称</th><th>规格 / 颜色</th><th>单据数量 / 单位</th><th>类别</th><th>单价依据（选填）</th><th>缸号 / 卷号</th><th>关联 / 说明</th><th>进度 / 操作</th></tr></thead><tbody><tr v-for="(line, index) in draft.lines" :key="line.id"><td data-label="物料编码 / 名称"><input v-model="line.item_code" :disabled="!draftEditable" :aria-label="`第${index+1}行物料编码`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料编码`)" placeholder="物料编码" /><input v-model="line.item_name" :disabled="!draftEditable" :aria-label="`第${index+1}行物料名称`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料名称`)" placeholder="物料名称" /><small class="line-source">{{ line.source_line || `补录第 ${index + 1} 行` }}</small></td><td data-label="规格 / 颜色"><input v-model="line.specification" :disabled="!draftEditable" placeholder="规格" /><input v-model="line.color" :disabled="!draftEditable" placeholder="颜色" /></td><td data-label="单据数量 / 单位"><input v-model="line.quantity" inputmode="decimal" :disabled="!draftEditable" :aria-label="`第${index+1}行单据数量`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单据数量`)" /><input :value="line.unit" @input="unitChanged(line, $event)" :disabled="!draftEditable" :aria-label="`第${index+1}行单位`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单位`)" placeholder="单位" /></td><td data-label="类别"><select v-model="line.material_category" @change="manualCategories.add(line.id)" :aria-label="`第${index+1}行物料分类`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料分类`)" :disabled="!draftEditable"><option value="">待分类</option><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></td><td data-label="单价依据（选填）"><input v-model="line.unit_price" inputmode="decimal" :disabled="!draftEditable" :aria-label="`第${index+1}行参考单价`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行参考单价`)" placeholder="单价，空白为未记录" /><small class="price-unit-hint" v-if="linePriceUnit(line)">{{ line.price_unit && line.price_unit !== line.unit ? '原单按' : '单价按' }}{{ linePriceUnit(line) }}计价</small><small v-else-if="line.unit_price" class="price-unit-hint">计价单位未注明</small><select :value="lineCurrency(line)" @change="currencyChanged(line, $event)" :aria-label="`第${index+1}行币种`" :disabled="!draftEditable"><option v-if="selected.status !== 'DRAFT' || draft.kind !== 'DELIVERY'" value="">币种未注明</option><option value="CNY">CNY 人民币</option><option value="HKD">HKD 港币</option><option value="USD">USD 美元</option><option value="EUR">EUR 欧元</option></select><input v-model="line.price_note" :disabled="!draftEditable" placeholder="报价 / 含税口径等原单依据" /></td><td data-label="缸号 / 卷号"><input v-model="line.lot" :disabled="!draftEditable" placeholder="缸号" /><input v-model="line.roll_no" :disabled="!draftEditable" placeholder="卷号" /><small v-if="line.roll_quantities">逐卷：{{ line.roll_quantities }}</small></td><td data-label="关联 / 说明"><input v-model="line.production_no" :disabled="!draftEditable" placeholder="放产 / 生产单号" :aria-label="`第${index+1}行生产单号`" /><input v-model="line.note" :disabled="!draftEditable" placeholder="说明" />
+                <details v-if="draft.kind === 'DELIVERY'" class="line-purchase-references">
+                  <summary>原单采购信息<span v-if="line.purchase_order_no || line.ordered_quantity"> · {{ line.purchase_order_no }} {{ line.ordered_quantity ? `${line.ordered_quantity} ${line.unit}` : '' }}</span></summary>
+                  <fieldset :disabled="!draftEditable">
+                    <label v-if="!external">采购明细 ID<input v-model="line.purchase_detail_id" maxlength="128" :aria-label="`第${index+1}行采购明细 ID`" /></label>
+                    <label>采购订单号<input v-model="line.purchase_order_no" maxlength="128" :aria-label="`第${index+1}行采购订单号`" /></label>
+                    <label>合同号<input v-model="line.contract_no" maxlength="128" :aria-label="`第${index+1}行合同号`" /></label>
+                    <label>计划跟踪号<input v-model="line.plan_no" maxlength="255" :aria-label="`第${index+1}行计划跟踪号`" /></label>
+                    <label>货号<input v-model="line.product_no" maxlength="128" :aria-label="`第${index+1}行货号`" /></label>
+                    <label>原下单量<input v-model="line.ordered_quantity" inputmode="decimal" maxlength="32" placeholder="按本行单位" :aria-label="`第${index+1}行原下单量`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行原下单量`)" /></label>
+                  </fieldset>
+                </details>
+              </td><td data-label="进度 / 操作"><template v-if="selected.status === 'CONFIRMED'"><p>已{{ selected.data.kind === 'DELIVERY' ? '收' : '发' }} {{ selected.progress[line.id]?.processed }} {{ line.unit }}</p><small>未完成 {{ selected.progress[line.id]?.remaining }} {{ line.unit }}</small></template><button v-else-if="selected.status === 'DRAFT' && canPrepare" :disabled="!draftEditable" @click="draft.lines.splice(index, 1)">移除此行</button></td></tr></tbody></table></div>
+            </div>
              <footer v-if="selected.status === 'DRAFT' && !warehouseSupplierDocument" class="actions document-confirmation">
                <button :class="{ primary: external && !supplierPortal && reviewIssues.length > 0 }" :disabled="!draftEditable || ((!external || supplierPortal) && !dirty)" @click="save">{{ supplierPortal ? '保存草稿' : external ? '保存，交仓库补全' : '保存核对内容' }}</button>
                <label v-if="!supplierPortal">原单二维码位置<select v-model="printCorner" :disabled="locked" aria-label="原单二维码位置"><option value="right">右上角</option><option value="left">左上角</option></select></label>
@@ -586,7 +937,7 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
                <p v-if="supplierPortal" id="confirmation-help" class="confirmation-help">{{ reviewIssues.length ? '请更正上面列出的问题后再确认。' : '确认后单据锁定并生成交接二维码，之后可选择打印方式。' }}</p>
                <p v-else id="confirmation-help" class="confirmation-help">{{ reviewIssues.length ? '上方已列出待补项。可先保存，补齐后再确认打印。' : '点击“确认并打印原单”表示已对照原件核对明细、数量和单位；确认后明细将锁定。' }}</p>
             </footer>
-             <section v-if="selected.status === 'CONFIRMED' && !warehouseSupplierDocument" class="code-card">
+             <section v-if="selected.status === 'CONFIRMED' && !warehouseSupplierDocument" class="code-card" @keydown.esc="printPreparing && cancelPrint()">
               <div>
                 <h3 ref="codeHeading" tabindex="-1">交接二维码</h3>
                 <p>原单纸面保留供应商信息与物料表，二维码放在新增顶部空白区域，不盖住原内容。可重复打印、分批使用；每次扫码仍需核对本次实物。</p>
@@ -594,61 +945,172 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
                 <div class="actions code-actions">
                    <button type="button" :disabled="locked" @click="preview('qr')">显示二维码</button>
                   <label>原单二维码位置<select v-model="printCorner" :disabled="locked" aria-label="原单二维码位置"><option value="right">右上角</option><option value="left">左上角</option></select></label>
-                  <button ref="printTrigger" class="code-print" type="button" :disabled="locked" :aria-expanded="printPreviewOpen" :aria-controls="printPreviewOpen ? 'original-print-preview' : undefined" @click="printConfirmed">原单加码打印</button>
-                  <button class="code-print" type="button" :disabled="locked" @click="print">打印统一明细（备用）</button>
+                  <button ref="printTrigger" class="code-print" type="button" :disabled="printButtonsLocked" @click="startPrint('original')">原单加码打印</button>
+                  <button ref="summaryPrintTrigger" class="code-print" type="button" :disabled="printButtonsLocked" @click="startPrint('summary')">打印统一明细（备用）</button>
+                  <button v-if="printUrl" type="button" class="print-download" :disabled="printButtonsLocked" @click="downloadPrepared">下载加码原单 PDF</button>
                    <button v-if="qrUrl" type="button" class="print-download" :disabled="locked" @click="downloadQr">下载二维码</button>
+                  <button v-if="printPreparing" type="button" @click="cancelPrint">取消准备</button>
                 </div>
+                <p v-if="printPreparing" class="print-preparing" role="status">{{ printPreparing === 'original' ? '正在准备加码原单…' : '正在准备统一明细…' }}</p>
               </div>
               <img v-if="qrUrl" :src="qrUrl" alt="交接二维码" class="qr-image" />
             </section>
-             <p v-if="selected.status === 'CONFIRMED' && warehouseSupplierDocument" class="handover-message">此单由供应商确认。原单有误请联系供应商更正重开；收料按本次实际到货数量和仓位登记。</p>
-            <section v-if="selected.status === 'CONFIRMED' && !external && workspace?.can_operate" class="posting-card">
-              <div class="line-heading"><h3>本次实际{{ selected.data.kind === 'DELIVERY' ? '收料入库' : '发料出库' }}</h3><label>实际日期<input v-model="businessDate" type="date" :disabled="locked" /></label></div>
-              <p v-if="selected.data.kind === 'DELIVERY'">勾选本次收料明细，填实点扣除破损、拒收和其他不可用后的净入库量。同一行可分批收货。关联采购明细后按净入库量扣减采购待收，同一批货只登记一次。</p>
-              <p v-else>勾选本次发料明细，按原单位填写实际发出量。同一行可分批发料。</p>
+            <section v-if="selected.status === 'CONFIRMED' && !external && workspace?.can_operate" class="posting-card" :class="{ 'receipt-card': selected.data.kind === 'DELIVERY' }">
               <template v-if="selected.data.kind === 'DELIVERY'">
+                <div class="receipt-toolbar">
+                  <div>
+                    <h3>本次实际收料入库</h3>
+                    <p>勾选本次核对的物料。展开「实点与差异」后，按点到的总数核对实点。</p>
+                  </div>
+                  <div class="receipt-toolbar-controls">
+                    <label class="receipt-date">实际日期<input v-model="businessDate" type="date" :disabled="locked" /></label>
+                    <button
+                      type="button"
+                      class="receipt-secondary-action"
+                      aria-label="刷新采购与库存进度"
+                      title="刷新采购与库存进度"
+                      :disabled="locked"
+                      @click="open(selected.id, { preserveReceipt: true })"
+                    >
+                      <RefreshCw :size="15" aria-hidden="true" />刷新进度
+                    </button>
+                  </div>
+                </div>
                 <p v-if="purchaseLoading" role="status">正在读取采购待收明细与最新实收进度…</p>
                 <p v-if="purchaseError" class="review-warning error" role="alert">{{ purchaseError }}</p>
                 <p v-if="workspace.can_read_purchase === false" class="review-warning">本账号没有采购来源查询权限；有采购来源的送货单需要取得布料仓查询及收料权限后关联办理。</p>
-                <button :disabled="locked" @click="open(selected.id)">刷新采购与库存进度</button>
+              </template>
+              <template v-else>
+                <div class="line-heading"><h3>本次实际发料出库</h3><label>实际日期<input v-model="businessDate" type="date" :disabled="locked" /></label></div>
+                <p>勾选本次发料明细，按原单位填写实际发出量。同一行可分批发料。</p>
               </template>
               <fieldset :disabled="locked">
-                <div v-for="(line, lineIndex) in selected.data.lines" :key="line.id" class="posting-row">
-                  <label class="check-label"><input v-model="posting[line.id]!.selected" type="checkbox" :disabled="Number(selected.progress[line.id]?.remaining) <= 0" />{{ line.item_name }} · {{ line.item_code }}</label>
+                <div
+                  v-for="(line, lineIndex) in selected.data.lines"
+                  :key="line.id"
+                  class="posting-row"
+                  :class="{ 'receipt-line': selected.data.kind === 'DELIVERY', 'receipt-line-selected': posting[line.id]!.selected }"
+                >
                   <template v-if="selected.data.kind === 'DELIVERY'">
-                    <div class="receipt-allocations">
-                      <div class="receipt-allocation-heading">
-                        <div>
-                          <p>送货单数量 {{ line.quantity }} {{ line.unit }} · 单据尚余 {{ selected.progress[line.id]?.remaining }} {{ line.unit }}</p>
-                          <strong>本次净入库合计 {{ receiptTotalLabel(line) }}</strong>
-                        </div>
-                        <button type="button" :disabled="Number(selected.progress[line.id]?.remaining) <= 0 || posting[line.id]!.parts.length >= maxPostingParts" @click="posting[line.id]!.parts.push(newPostingPart(line))">＋ 增加仓位</button>
+                    <div class="receipt-line-heading">
+                      <label class="check-label receipt-material">
+                        <input v-model="posting[line.id]!.selected" type="checkbox" :disabled="!posting[line.id]!.selected && Number(selected.progress[line.id]?.remaining) <= 0" />
+                        <span><strong>{{ line.item_name }}</strong><small>{{ line.item_code }}</small></span>
+                      </label>
+                      <div class="receipt-line-summary">
+                        <dl class="receipt-metrics">
+                          <div><dt>送货单数量</dt><dd>{{ receiptDisplayQuantity(line.quantity) }} {{ line.unit }}</dd></div>
+                          <div><dt>单据尚余</dt><dd>{{ receiptDisplayQuantity(selected.progress[line.id]?.remaining) }} {{ line.unit }}</dd></div>
+                          <div class="receipt-metric-total"><dt>本次净入库合计</dt><dd>{{ receiptTotalLabel(line) }}</dd></div>
+                        </dl>
+                        <button
+                          type="button"
+                          class="receipt-secondary-action"
+                          :aria-expanded="posting[line.id]!.showReceiptCounts"
+                          :disabled="Number(selected.progress[line.id]?.remaining) <= 0"
+                          @click="toggleReceiptCounts(posting[line.id]!)"
+                        >
+                          <ChevronDown :size="15" aria-hidden="true" />实点与差异
+                        </button>
+                        <button
+                          type="button"
+                          class="receipt-secondary-action"
+                          :disabled="Number(selected.progress[line.id]?.remaining) <= 0 || posting[line.id]!.parts.length >= maxPostingParts"
+                          @click="addReceiptPart(posting[line.id]!, line)"
+                        >
+                          <Plus :size="15" aria-hidden="true" />增加仓位
+                        </button>
                       </div>
-                      <p v-if="!receiptWarehouses(line).length" class="review-warning" role="status">没有匹配物料分类的可用仓位，请先到基础资料启用仓位。</p>
-                      <p v-if="exceedsDocumentRemainder(line.id, posting[line.id]!)" class="review-warning error" role="alert">分仓净入库合计超过单据尚余，请核对各仓位数量。</p>
+                    </div>
+                    <details v-if="selected.prior_receipts?.[line.id]?.items.length" open class="prior-receipts">
+                      <summary>核对已有入库 · {{ selected.prior_receipts[line.id]!.items.length }} 笔</summary>
+                      <ul>
+                        <li v-for="old in selected.prior_receipts[line.id]!.items" :key="old.id">
+                          <div>
+                            <strong>{{ old.reference || '旧记录未填单号' }}</strong>
+                            <span> · {{ old.date }} · {{ receiptDisplayQuantity(old.quantity) }} {{ line.unit }}</span>
+                            <span v-if="old.exact_reference"> · 同单号</span>
+                            <small v-if="old.order_no || old.production_no || old.contract_no">
+                              {{ [old.order_no && `采购单 ${old.order_no}`, old.production_no && `生产单 ${old.production_no}`, old.contract_no && `合同 ${old.contract_no}`].filter(Boolean).join(' · ') }}
+                            </small>
+                            <small v-for="(part, index) in old.parts" :key="index">
+                              {{ [part.location, part.lot && `缸 ${part.lot}`, part.roll_no && `卷 ${part.roll_no}`].filter(Boolean).join(' · ') }}
+                            </small>
+                            <small v-if="old.reason">{{ old.reason }}</small>
+                          </div>
+                          <button v-if="old.can_link" type="button" :aria-label="`关联旧入库 ${old.reference || old.date}`"
+                            @click="receiptToLink = { lineId: line.id, receiptId: old.id }">关联这笔入库</button>
+                          <div v-if="receiptToLink?.lineId === line.id && receiptToLink.receiptId === old.id" class="prior-receipt-confirm">
+                            <p>确认是本单同一批货后，将原实收 {{ receiptDisplayQuantity(old.quantity) }} {{ line.unit }}计入送货单进度。库存只计原入库。</p>
+                            <button type="button" @click="receiptToLink = null">取消</button>
+                            <button type="button" class="primary" @click="confirmReceiptLink(line.id, old)">确认补关联</button>
+                          </div>
+                        </li>
+                      </ul>
+                      <label v-if="!selected.prior_receipts[line.id]!.items.some(item => item.blocks_posting)" class="check-label">
+                        <input v-model="confirmedNewReceipts[line.id]" type="checkbox" />
+                        <span>已核对以上记录，本次是新到货</span>
+                      </label>
+                    </details>
+                    <div class="receipt-allocations">
+                      <p v-if="posting[line.id]!.previousRemaining !== undefined" class="review-warning" role="status">
+                        单据尚余由 {{ receiptDisplayQuantity(posting[line.id]!.previousRemaining) }} {{ line.unit }}更新为 {{ receiptDisplayQuantity(selected.progress[line.id]?.remaining) }} {{ line.unit }}。请核对本次净入库量。
+                      </p>
+                      <p v-if="postingTotal(posting[line.id]!.parts) !== 0n && !receiptWarehouses(line).length" class="review-warning" role="status">没有匹配物料分类的可用仓位，请先到基础资料启用仓位。</p>
+                      <p v-if="receiptProgressIssue(line.id, posting[line.id]!)" class="review-warning error" role="alert">{{ receiptProgressIssue(line.id, posting[line.id]!) }}</p>
+                      <p v-if="receiptDuplicateIssue(line, posting[line.id]!)" class="review-warning error" role="alert">{{ receiptDuplicateIssue(line, posting[line.id]!) }}</p>
                       <div v-for="(part, partIndex) in posting[line.id]!.parts" :key="part.key" class="receipt-allocation">
-                        <div class="receipt-allocation-heading">
+                        <div v-if="posting[line.id]!.parts.length > 1" class="receipt-allocation-heading">
                           <strong>入库仓位 {{ partIndex + 1 }}</strong>
-                          <button v-if="posting[line.id]!.parts.length > 1" type="button" :aria-label="`移除第${lineIndex + 1}项的第${partIndex + 1}个仓位`" @click="posting[line.id]!.parts.splice(partIndex, 1)">移除仓位</button>
+                          <button type="button" :aria-label="`移除第${lineIndex + 1}项的第${partIndex + 1}个仓位`" @click="posting[line.id]!.parts.splice(partIndex, 1)">移除仓位</button>
                         </div>
                         <div class="receipt-allocation-fields">
                           <label>仓库
-                            <select :value="receiptWarehouse(line, part)" :aria-label="`第${lineIndex + 1}项第${partIndex + 1}个入库仓库`" :disabled="!receiptWarehouses(line).length" @change="changeReceiptWarehouse(part, $event)">
+                            <select :value="receiptWarehouse(line, part)" :aria-label="`第${lineIndex + 1}项第${partIndex + 1}个入库仓库`" :disabled="!receiptWarehouses(line).length || (!!part.counts && calculatedNetText(part) === '0')" @change="changeReceiptWarehouse(part, $event)">
                               <option value="" disabled>请选择仓库</option>
                               <option v-for="warehouse in receiptWarehouses(line)" :key="warehouse" :value="warehouse">{{ warehouse }}</option>
                             </select>
                           </label>
                           <label>仓位
-                            <WarehouseLocationPicker v-if="receiptWarehouse(line, part)" :key="receiptWarehouse(line, part)" v-model="part.location_id" :locations="receiptLocations(line, receiptWarehouse(line, part))" :category="line.material_category" :disabled="locked" :label="`第${lineIndex + 1}项第${partIndex + 1}个入库仓位`" />
+                            <WarehouseLocationPicker
+                              v-if="receiptWarehouse(line, part)"
+                              :key="receiptWarehouse(line, part)"
+                              v-model="part.location_id"
+                              :locations="receiptLocations(line, receiptWarehouse(line, part))"
+                              :category="line.material_category"
+                              :disabled="locked || (!!part.counts && calculatedNetText(part) === '0')"
+                              :label="`第${lineIndex + 1}项第${partIndex + 1}个入库仓位`"
+                              short-help
+                            />
                             <input v-else disabled placeholder="请先选择仓库" />
                           </label>
-                          <label>本次净入库量<input v-model="part.quantity" inputmode="decimal" maxlength="32" :aria-label="`第${lineIndex + 1}项第${partIndex + 1}个仓位净入库量`" /></label>
+                          <label v-if="!posting[line.id]!.showReceiptCounts || !part.counts" class="receipt-quantity">
+                            本次净入库量
+                            <input v-if="part.counts" :value="calculatedNetText(part)" readonly :aria-label="`第${lineIndex + 1}项第${partIndex + 1}个仓位净入库量`" />
+                            <input v-else v-model="part.quantity" inputmode="decimal" maxlength="32" :aria-label="`第${lineIndex + 1}项第${partIndex + 1}个仓位净入库量`" />
+                          </label>
                           <label>本次缸号<input v-model="part.lot" maxlength="128" /></label>
                           <label>卷号<input v-model="part.roll_no" maxlength="128" /></label>
                         </div>
+                        <div v-if="posting[line.id]!.showReceiptCounts && part.counts" class="receipt-allocation-fields receipt-count-fields">
+                          <label v-for="field in receiptCountFields" :key="field.key">
+                            {{ field.label }}
+                            <input
+                              v-model.trim="part.counts[field.key]"
+                              inputmode="decimal"
+                              maxlength="32"
+                              :aria-label="`第${lineIndex + 1}项第${partIndex + 1}个仓位${field.label}`"
+                            />
+                          </label>
+                          <label class="receipt-quantity">
+                            净入库量（自动）
+                            <input :value="calculatedNetText(part)" readonly :aria-label="`第${lineIndex + 1}项第${partIndex + 1}个仓位净入库量`" />
+                          </label>
+                        </div>
+                        <p v-if="part.counts && receiptQuantity(part.counts.counted_quantity) !== 0n && calculatedNetText(part) === '0'" class="receipt-count-note">本分项净入库为零，仅保存差异。</p>
                       </div>
                     </div>
-                    <div v-if="purchaseSources?.lines[line.id]?.length" class="receipt-purchase-source">
+                    <div v-if="!posting[line.id]!.procurementPending && postingTotal(posting[line.id]!.parts) !== 0n && purchaseSources?.lines[line.id]?.length" class="receipt-purchase-source">
                       <label>对应采购待收明细
                         <select v-model="posting[line.id]!.purchase_source_id" :aria-label="`${line.id}采购待收明细`">
                           <option value="">请选择对应采购单</option>
@@ -658,18 +1120,101 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
                       <p v-if="Number(selected.progress[line.id]?.remaining) > 0" class="purchase-match-message" role="status">{{ purchaseMatchMessage(line) }}</p>
                       <HandoverPurchaseDetails v-if="Number(selected.progress[line.id]?.remaining) > 0 && purchaseReady && purchaseChoice(line)" :source="purchaseChoice(line)!" :line="line" />
                     </div>
-                    <p v-else-if="purchaseReady && workspace.can_read_purchase !== false" class="review-warning">未匹配到本物料、单位和供应商的采购来源。本次可记录实际库存，采购欠货暂不能同步扣减，请先核对是否缺少采购资料。</p>
+                    <p v-else-if="!posting[line.id]!.procurementPending && postingTotal(posting[line.id]!.parts) !== 0n && purchaseReady && workspace.can_read_purchase !== false" class="receipt-source-note">
+                      <strong>{{ posting[line.id]!.purchaseChoiceNeedsReview ? '原关联采购明细已不可用' : '未匹配采购来源' }}</strong>
+                      <span>可登记实收，采购待收保持原数量。请核对采购资料。</span>
+                    </p>
+                    <div v-if="postingTotal(posting[line.id]!.parts) !== 0n && purchaseReady && workspace.can_read_purchase !== false" class="receipt-purchase-source">
+                      <label class="check-label"><input v-model="posting[line.id]!.procurementPending" type="checkbox" :aria-label="`${line.id}采购待核对`" />采购待核对</label>
+                      <label v-if="posting[line.id]!.procurementPending">待核对原因
+                        <input v-model="posting[line.id]!.procurementPendingReason" :aria-label="`${line.id}采购待核对原因`" maxlength="1000" placeholder="例如原件合同号与候选采购单不符" />
+                      </label>
+                    </div>
                     <label v-if="purchaseOverage(line)">超收说明<input v-model="posting[line.id]!.difference_reason" :aria-label="`${line.id}超收说明`" maxlength="1000" /></label>
                   </template>
                   <template v-else>
+                    <label class="check-label"><input v-model="posting[line.id]!.selected" type="checkbox" :disabled="Number(selected.progress[line.id]?.remaining) <= 0" />{{ line.item_name }} · {{ line.item_code }}</label>
                     <label>本次数量<input v-model="posting[line.id]!.parts[0]!.quantity" inputmode="decimal" :aria-label="`本次${line.item_code}数量`" /><small>{{ line.unit }} · 单据尚余 {{ selected.progress[line.id]?.remaining }}</small></label>
                     <label>实际出库批次<select v-model="posting[line.id]!.batch_id"><option value="">请选择批次与仓位</option><option v-for="batch in batches(line)" :key="batch.id" :value="batch.id">{{ batch.location }} · {{ batch.lot || '无缸号' }} / {{ batch.roll_no || '无卷号' }} · 可发 {{ batch.available_quantity }} {{ batch.unit }}</option></select></label>
                   </template>
                 </div>
               </fieldset>
-              <footer class="posting-submit"><span>只办理已勾选明细，按本次实物数量记账。</span><button class="primary" :disabled="locked || (selected.data.kind === 'DELIVERY' && !purchaseReady)" @click="post">确认本次实物收发</button></footer>
+              <footer class="posting-submit">
+                <span>{{ selected.data.kind === 'DELIVERY' ? '按勾选物料的净入库量记账，同一批货只登记一次。' : '只办理已勾选明细，按本次实物数量记账。' }}</span>
+                <button class="primary" :disabled="locked || (selected.data.kind === 'DELIVERY' && !purchaseReady)" @click="post">确认本次实物收发</button>
+              </footer>
             </section>
-            <details v-if="selected.movements.length" class="history"><summary>本单实际收发记录 · {{ selected.movements.length }} 笔</summary><p v-for="movement in selected.movements" :key="movement.operation_id">{{ movement.business_date }} · {{ movement.line_id }} · {{ movement.quantity }} · {{ movement.reversed ? '已冲销' : '已入库存流水' }} · {{ movement.operation_id }}</p></details>
+            <details v-if="!external && selected.receipt_observations?.length" :key="selected.id" ref="receiptObservationHistory"
+              :open="Boolean(selected.receipt_rejection)" class="history receipt-observation-history">
+              <summary>收料差异记录 · {{ selected.receipt_observations.length }} 次</summary>
+              <article v-for="entry in selected.receipt_observations" :key="entry.request_id">
+                <strong>{{ entry.business_date }} · {{ entry.actor_name }}</strong>
+                <div v-for="line in entry.lines" :key="line.line_id">
+                  <p>{{ line.item_name }} · {{ line.item_code }}</p>
+                  <p v-if="line.delivered_quantity">本批送货 {{ line.delivered_quantity }} {{ line.unit }} · 短少 {{ line.shortage_quantity }} {{ line.unit }}</p>
+                  <p v-for="(part, index) in line.parts" :key="index">
+                    {{ [part.location, part.lot, part.roll_no].filter(Boolean).join(' / ') || '本次分项' }}
+                    · 实点 {{ part.counted_quantity }} {{ line.unit }}
+                    · 破损 {{ part.damaged_quantity }} · 拒收 {{ part.rejected_quantity }} · 其他不可用 {{ part.other_unusable_quantity }}
+                    · 净入库 {{ part.accepted_quantity }} {{ line.unit }}
+                    <span v-if="selected.movements.some(move => move.operation_id === part.operation_id && move.reversed)">· 入库已冲销</span>
+                  </p>
+                  <div v-if="line.full_rejection" class="receipt-rejection-followup">
+                    <HandoverRejectionSummary :summary="{ rejected_quantity: line.full_rejection.rejected_quantity,
+                      unit: line.unit, status: line.full_rejection.followup?.status ?? null }" />
+                    <p v-if="line.full_rejection.followup" class="rejection-evidence">
+                      {{ line.full_rejection.followup.reason }} · {{ line.full_rejection.followup.actor_name }}
+                      · {{ line.full_rejection.followup.recorded_at.slice(0, 16).replace('T', ' ') }}
+                    </p>
+                    <template v-if="selected.status === 'CONFIRMED' && workspace?.can_operate">
+                      <form v-if="rejectionDraft?.observationId === entry.request_id && rejectionDraft.lineId === line.line_id"
+                        class="rejection-followup-form" @submit.prevent="saveRejectionFollowup">
+                        <label>处理结果<select v-model="rejectionDraft.status" required :disabled="locked">
+                          <option value="" disabled>请选择处理结果</option>
+                          <option value="PENDING_REDELIVERY">待补送</option>
+                          <option value="RESOLVED">差异已处理</option>
+                        </select></label>
+                        <label>处理原因<textarea v-model="rejectionDraft.reason" maxlength="1000" rows="2" required :disabled="locked" /></label>
+                        <div class="prior-receipt-confirm">
+                          <button type="button" :disabled="locked" @click="rejectionDraft = null">取消</button>
+                          <button type="submit" class="rejection-save" :disabled="locked || !rejectionDraft.status || !rejectionDraft.reason.trim()">保存处理结果</button>
+                        </div>
+                      </form>
+                      <button v-else type="button" class="receipt-secondary-action" :disabled="locked"
+                        @click="editRejection(entry.request_id, line.line_id, line.full_rejection.followup?.status ?? null)">
+                        {{ line.full_rejection.followup ? '修改处理结果' : '处理拒收' }}
+                      </button>
+                    </template>
+                  </div>
+                </div>
+              </article>
+            </details>
+            <details v-if="selected.movements.length || selected.revoked_receipt_links?.length" class="history">
+              <summary>本单实际收发记录 · {{ selected.movements.length }} 笔<span v-if="selected.revoked_receipt_links?.length"> · 撤回关联 {{ selected.revoked_receipt_links.length }} 笔</span></summary>
+              <div v-for="movement in selected.movements" :key="movement.operation_id" class="receipt-history-entry">
+                <p>
+                  {{ movement.business_date }} · {{ movement.line_id }} · {{ receiptDisplayQuantity(movement.quantity) }}
+                  · {{ movement.reversed ? '已冲销' : '已入库存流水' }}
+                  <template v-if="movement.manual_reference !== undefined"> · 关联旧入库 {{ movement.manual_reference }}</template>
+                  <template v-else> · {{ movement.operation_id }}</template>
+                  <button v-if="movement.manual_reference !== undefined && !external && workspace?.can_operate" type="button"
+                    :disabled="locked" @click="receiptToUnlink = movement.operation_id; unlinkReason = ''">撤回关联</button>
+                </p>
+                <form v-if="receiptToUnlink === movement.operation_id && unlinkImpact" class="receipt-unlink-form" @submit.prevent="confirmReceiptUnlink">
+                  <strong>{{ unlinkImpact.line.item_name }}</strong>
+                  <p>已收 {{ unlinkImpact.progress.processed }} → {{ unlinkImpact.received }} {{ unlinkImpact.line.unit }} · 待收 {{ unlinkImpact.progress.remaining }} → {{ unlinkImpact.remaining }} {{ unlinkImpact.line.unit }}</p>
+                  <label>撤回原因<input v-model="unlinkReason" maxlength="1000" required :disabled="locked" /></label>
+                  <div class="prior-receipt-confirm">
+                    <button type="button" :disabled="locked" @click="receiptToUnlink = ''">取消</button>
+                    <button type="submit" class="receipt-unlink-button" :disabled="locked || !unlinkReason.trim()">确认撤回关联</button>
+                  </div>
+                </form>
+              </div>
+              <p v-for="item in selected.revoked_receipt_links" :key="item.link_id" class="receipt-history-entry">
+                已撤回关联 · {{ item.reference }} · {{ receiptDisplayQuantity(item.quantity) }} · {{ item.revoked_by }}
+                · {{ item.revoked_at.slice(0, 16).replace('T', ' ') }} · {{ item.reason }}
+              </p>
+            </details>
             <details v-if="selected.raw_text" class="history"><summary>查看识别原文与字段出处</summary><pre>{{ selected.raw_text }}</pre><pre>{{ JSON.stringify(selected.evidence, null, 2) }}</pre></details>
              <div v-if="selected.status !== 'VOID' && canPrepare" class="actions"><button :disabled="locked || selected.movements.length > 0" @click="showVoid = !showVoid">作废未执行单据</button><form v-if="showVoid" @submit.prevent="voidDocument"><p v-if="supplierPortal && selected.status === 'CONFIRMED'">作废后旧二维码失效。请上传正确的原单，重新确认和打印。</p><label>作废原因<input v-model="voidReason" required maxlength="1000" /></label><button :disabled="locked || !voidReason.trim()">确认作废</button></form></div>
           </template>
@@ -698,7 +1243,7 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
 .card{border-color:#e2e8f0;box-shadow:0 1px 2px #0f172a04}
 .handover-layout{grid-template-columns:320px minmax(0,1fr);gap:16px}
 .document-list{padding:16px}
-.document-detail{min-height:390px}
+.document-detail{min-height:390px;scroll-margin-top:12px}
 .document-tools{margin-bottom:16px;padding:16px 18px}
 .scope-note{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px}
 .scope-note strong{font-size:15px}
@@ -729,6 +1274,8 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
 .document-item:hover{border-color:#5bb8ab}
 .document-item.selected{background:#f0fdfa;border-color:#0f766e;box-shadow:inset 3px 0 #0f766e}
 .document-title{display:flex;align-items:start;justify-content:space-between;gap:8px;width:100%;overflow-wrap:anywhere;color:#0f172a}
+.document-number{min-width:0}
+.document-statuses{display:flex;flex:none;flex-direction:column;min-inline-size:56px;gap:3px;text-align:center;white-space:nowrap}
 .document-item .document-party{font-size:13px;font-weight:400;color:#475569}
 .document-item small{display:flex;justify-content:space-between;gap:10px;width:100%;font-size:12px;color:#64748b}
 .document-item small span{font-weight:400}
@@ -792,11 +1339,19 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
 @media print{.document-tools,.scope-badge{display:none!important}.handover{padding:0;background:white}.handover-layout{display:block}.document-detail{min-height:0}}
 </style>
 <style scoped>
-@page material-handover{size:A4 landscape;margin:12mm}
+@page material-handover {
+  size: A4 landscape;
+  margin: 12mm;
+  @bottom-right {
+    content: "第 " counter(page) " / " counter(pages) " 页";
+    color: #364640;
+    font: 9pt "Microsoft YaHei", "Noto Sans CJK SC", "PingFang SC", Arial, sans-serif;
+  }
+}
 @media print {
   .handover { page: material-handover; min-height: 0; }
   .handover.has-summary-print:not(.original-print-active) > :not(.handover-summary-print),
-  .document-detail > .fields, .lines, .detail-heading, .line-heading, .code-card { display: none !important; }
+  .document-detail .document-fields, .supplier-document-details, .lines, .detail-heading, .line-heading, .code-card { display: none !important; }
 }
 </style>
 
@@ -806,42 +1361,313 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
 .code-actions{align-items:flex-end;margin:12px 0 0}
 .code-actions label{font-size:13px;gap:4px}
 .code-actions select{display:block;width:100%;margin:0;padding-block:7px}
-.code-actions :is(button,select,a),.original-preview-actions :is(button,a),.original-preview-heading > button{min-height:38px;font-size:13px}
+.code-actions :is(button,select,a){min-height:38px;font-size:13px}
 .print-download{display:inline-flex;align-items:center;justify-content:center;padding:8px 14px;border:1px solid #cadbd5;border-radius:7px;background:#fff;color:#264d42;text-align:center;text-decoration:none}
 .print-download:hover{border-color:#0f766e;color:#0f766e}
-.original-print-preview{margin:20px 0;padding:20px;border:1px solid #dce5e1;border-radius:10px;background:#fff}
-.original-preview-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
-.original-preview-heading > button{flex:none;white-space:nowrap}
-.original-preview-heading h2{font-size:18px;font-weight:650}
-.original-preview-heading p{margin:6px 0 0;color:#64748b;font-size:13px}
-.original-preview-actions{margin:12px 0}
+.print-preparing{margin:6px 0 0;font-size:13px}
 @media screen and (max-width:720px){
   .code-card > div{width:100%}
   .code-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   .code-actions :is(button,a){padding-inline:5px}
   .code-actions .code-print{align-self:stretch}
-  .code-actions :is(button,a),.original-preview-actions :is(button,a){white-space:normal}
-  .code-actions :is(button,select,a),.original-preview-actions :is(button,a),.original-preview-heading > button{min-height:44px}
-  .original-print-preview{padding:14px}
+  .code-actions :is(button,a){white-space:normal}
+  .code-actions :is(button,select,a){min-height:44px}
 }
 @media print{
   .handover.original-print-active{page:auto;margin:0!important;padding:0!important;background:white!important}
-  .handover.original-print-active>:not(.original-print-preview){display:none!important}
-  .original-print-preview{margin:0!important;padding:0!important;border:0!important;border-radius:0!important}
-  .original-preview-heading,.original-preview-actions{display:none!important}
+  .handover.original-print-active>:not(.handover-original-print){display:none!important}
+  .handover.original-print-active > .handover-original-print{display:block}
 }
 </style>
 
 <style scoped>
-.receipt-allocations{flex:1 0 100%;width:100%;min-width:0;display:grid;gap:12px}
+.document-review-fields {
+  display: contents;
+}
+.supplier-document-heading {
+  gap: 10px 20px;
+}
+.supplier-document-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+}
+.supplier-document-title h2 {
+  color: var(--foreground);
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.supplier-document-title .status-tag,
+.supplier-document-progress {
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.supplier-document-progress {
+  color: var(--muted-foreground);
+  background: var(--secondary);
+}
+.detail-heading .supplier-document-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 14px;
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.supplier-document-meta strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.supplier-document-actions,
+.receipt-toolbar-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.supplier-document-actions {
+  flex-shrink: 0;
+}
+.receipt-secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--primary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.receipt-secondary-action:hover:not(:disabled),
+.receipt-secondary-action[aria-expanded="true"] {
+  background: var(--accent);
+}
+.receipt-secondary-action[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.receipt-secondary-action:focus-visible,
+.receipt-card :is(input, select):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.supplier-document-details {
+  margin: 12px 0;
+  padding: 12px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.supplier-document-note {
+  margin: 0 0 8px;
+  color: #53665e;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.receipt-card {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-color: var(--border);
+}
+.receipt-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+.receipt-toolbar h3 {
+  color: var(--foreground);
+  font-size: 17px;
+  font-weight: 650;
+}
+.receipt-toolbar p {
+  margin: 2px 0 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.receipt-toolbar .receipt-date {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.receipt-date input {
+  min-height: 36px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.posting-row.receipt-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+.receipt-line.receipt-line-selected {
+  border-color: #8ac7be;
+  box-shadow: inset 3px 0 var(--primary);
+}
+.receipt-line-heading,
+.receipt-line-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-width: 0;
+}
+.receipt-line-heading {
+  justify-content: space-between;
+}
+.receipt-line-heading .receipt-material {
+  flex: 1 1 180px;
+  gap: 10px;
+  min-width: 0;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.receipt-material input {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+}
+.receipt-material strong,
+.receipt-material small {
+  display: block;
+}
+.receipt-material strong {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 650;
+}
+.receipt-material small {
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.receipt-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  min-width: 0;
+  margin: 0;
+}
+.receipt-metrics dt {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.receipt-metrics dd {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.receipt-metric-total dd {
+  color: var(--primary);
+}
+.prior-receipts {
+  min-width: 0;
+  padding: 10px 12px;
+  background: #fff7e8;
+  border: 1px solid #eadabb;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.prior-receipts summary { font-weight: 650; cursor: pointer; }
+.prior-receipts ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.prior-receipts li {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-top: 1px solid #eadabb;
+}
+.prior-receipts small { display: block; color: var(--muted-foreground); }
+.prior-receipt-confirm { flex-basis: 100%; }
+.prior-receipt-confirm p { margin: 0 0 8px; }
+.prior-receipt-confirm button + button { margin-left: 8px; }
+.receipt-history-entry { margin: 10px 0; overflow-wrap: anywhere; }
+.receipt-history-entry > p > button { margin-left: 8px; }
+.receipt-unlink-form, .rejection-followup-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.receipt-unlink-form p { margin: 0; }
+.receipt-unlink-form .receipt-unlink-button { background: #a2392d; color: white; border-color: #a2392d; }
+.receipt-rejection-overview { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0 12px; }
+.receipt-rejection-followup { margin: 8px 0 12px; display: grid; gap: 8px; justify-items: start; }
+.rejection-followup-form { width: min(100%, 480px); }
+.receipt-rejection-followup .rejection-evidence { margin: 0; }
+.rejection-followup-form .rejection-save { color: white; background: #0f766e; border-color: #0f766e; }
+.receipt-allocations{min-width:0;display:grid;gap:8px}
 .receipt-allocation-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 16px}
 .receipt-allocation-heading strong{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
-.receipt-allocation{border:1px solid var(--border);border-radius:8px;padding:12px;min-width:0}
-.receipt-allocation-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%, 9rem),1fr));gap:10px 12px;margin-top:8px}
+.receipt-allocation{background:#f6f8f9;border-radius:8px;padding:10px 12px;min-width:0}
+.receipt-allocation-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%, 8.5rem),1fr));gap:10px 12px}
+.receipt-allocation-heading + .receipt-allocation-fields{margin-top:8px}
+.receipt-count-note {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.receipt-count-fields {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.receipt-observation-history article {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
 .receipt-allocation-fields label,.posting-row .receipt-allocation-fields>label:first-child{min-width:0}
-.receipt-allocation-fields :is(input,select){width:100%;max-width:none;min-width:0}
+.receipt-allocation-fields :is(input,select){width:100%;max-width:none;min-width:0;min-height:38px;border-radius:8px}
+.receipt-quantity input {
+  border-color: #83bdb4;
+  background: #f2fbf9;
+  color: #134e4a;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
 .receipt-purchase-source{display:grid;gap:8px;flex:1 0 100%;min-width:0;max-width:100%}
 .receipt-purchase-source>label:first-child{min-width:0}
+.receipt-source-note {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.receipt-source-note strong {
+  color: #875a1d;
+  font-weight: 650;
+}
 .purchase-match-message{font-size:12px;line-height:1.6;margin:0}
 .line-purchase-references{max-width:100%;font-size:12px;overflow-wrap:anywhere}
 .line-purchase-references summary{cursor:pointer;color:#126d5b}
@@ -850,6 +1676,9 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
 .posting-submit{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .posting-submit span{font-size:12px;color:#53665e}
 @media screen and (max-width:720px){
+  .supplier-document-heading{flex-wrap:wrap}
+  .receipt-line-heading .receipt-material{flex-basis:100%}
+  .receipt-line-summary{width:100%;justify-content:space-between}
   .handover-warehouse-mobile{overflow-wrap:anywhere}
   .handover-warehouse-mobile :is(input:not([type="checkbox"]),select){font-size:16px;min-height:44px;min-width:0;max-width:100%}
   .handover-warehouse-mobile button{min-height:44px;white-space:normal}

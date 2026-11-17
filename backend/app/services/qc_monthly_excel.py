@@ -6,6 +6,7 @@ from hashlib import sha256
 from io import BytesIO
 import json, math, re, sqlite3, unicodedata
 from pathlib import Path
+from threading import BoundedSemaphore
 import xlrd, xlwt, openpyxl
 from xlutils.filter import XLWTWriter
 from openpyxl.drawing.image import Image
@@ -14,16 +15,23 @@ from openpyxl.drawing.xdr import XDRPositiveSize2D
 from PIL import Image as PILImage
 from fastapi import HTTPException
 from app.core.config import settings
-from app.services import qc_monthly_templates as monthly, qc_weekly_excel as shared
+from app.services import qc_monthly_templates as monthly, qc_weekly_excel as shared, qc_photo_assets as assets
 
 TEMPLATE_DIR=Path(__file__).resolve().parents[1]/'templates/qc-monthly'
 ASSETS=json.loads((TEMPLATE_DIR/'templates.json').read_text(encoding='utf-8'))
 MAX_BYTES=32*1024*1024
+PHOTO_GRID_WIDTH=665
+PHOTO_GRID_HEIGHT=530
+PHOTO_PADDING=8
+EMU_PER_PIXEL=9525
+export_slots=BoundedSemaphore(2)
 EXPORT_NAMES = {'caixing':'彩星汇总_月度验货明细', 'all':'全客明细_月度验货',
                 'issues':'问题图文_月度验货', 'customers':'分客明细_月度验货'}
 
-def filename(kind, start, end):
-    return f'{EXPORT_NAMES[kind]}_{start}_{end}'+extension(kind)
+def filename(kind, start, end, quality=None, period='monthly'):
+    suffix=({'preview':'_预览图','original':'_原图','mixed':'_原图及预览替代'}.get(quality,'')) if kind=='issues' else ''
+    name=EXPORT_NAMES[kind] if period=='monthly' else {'weekly':'周验货问题及照片','yearly':'问题图文_年度验货'}[period]
+    return f'{name}_{start}_{end}{suffix}'+extension(kind)
 
 def _center_column(widths):
     """Nearest column centre to the table midpoint, without merged cells."""
@@ -40,17 +48,27 @@ def _asset(kind):
     return raw,spec
 
 
-def _photo(factory, entry, photo):
+def _photo(factory, entry, photo, quality='preview', allow_fallback=False, fallback_photos=None):
     path=Path(settings.qc_department_data_dir).resolve()/'_inspection_sheet/inspections.sqlite3'
     try:
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as conn:
-            row=conn.execute('''SELECT p.content FROM photos p JOIN entries e ON e.id=p.entry_id
+            conn.row_factory=sqlite3.Row
+            row=conn.execute("""SELECT p.* FROM photos p JOIN entries e ON e.id=p.entry_id
                 JOIN entry_details d ON d.entry_id=e.id WHERE e.factory=? AND e.id=? AND e.revision=?
-                AND d.review_state='approved' AND p.id=? AND p.removed=0''',
+                AND d.review_state='approved' AND p.id=? AND p.removed=0""",
                 (factory,entry['id'],entry['revision'],photo['id'])).fetchone()
-        if row is None: raise HTTPException(409,'验货照片或审核记录已变化，请刷新核对后导出')
-        return row[0]
-    except sqlite3.Error as exc: raise HTTPException(503,'验货照片读取失败，请重试') from exc
+            if row is None:raise HTTPException(409,'验货照片或审核记录已变化，请刷新核对后导出')
+            if quality=='original' and not assets.public_metadata(conn,row['id'])['originalAvailable']:
+                if not allow_fallback:
+                    raise HTTPException(409,dict(code='original_missing',message='部分照片未保留原图。请选择预览图，或明确勾选允许缺失原图的照片使用预览图。'))
+                quality='preview'
+                if fallback_photos is not None:fallback_photos.append(photo['id'])
+            return assets.read(conn,row,quality)[0]
+    except sqlite3.Error as exc:raise HTTPException(503,'验货照片读取失败，请重试') from exc
+
+
+def _needs_excel_conversion(image_format, orientation):
+    return image_format not in {'JPEG','PNG'} or orientation!=1
 
 
 def _name(name, used):
@@ -125,71 +143,140 @@ def _xls(data,kind):
                 customer_info=next(c for c in data['customers'] if c['key']==summary['customerKey'])
                 label='彩星 '+period+' 月度验货统计汇总表'
                 if len(data['tables']['summary'])>1:label+=' · '+customer_info['label']
-                title(foot,1,6,label,20,1,440)
-                write(foot+1,data['summaryHeaders'],21,1)
+                target.write_merge(foot,foot,1,5,label,style(asset['summaryTitleRow'],1));target.row(foot).height=440
+                write(foot+1,data['summaryHeaders'],asset['summaryHeaderRow'],1)
                 values=list(summary['values']);values[3]=int(values[3]) if values[3]!='' else ''
-                write(foot+2,values,21,1);foot+=4
+                write(foot+2,values,asset['summaryDataRow'],1)
+                rr=foot+2;formula=xlwt.Formula(f'IF(OR(C{rr+1}=0,E{rr+1}=""),"",E{rr+1}/C{rr+1})')
+                st=style(asset['summaryDataRow'],5);st.num_format_str='0.0%'
+                target._cell_overwrite_ok=True
+                target.row(rr).insert_cell(5,shared.CachedFormulaCell(rr,5,book.add_style(st),formula,values[4]))
+                foot+=4
+            target.portrait=False;target.fit_num_pages=True;target.fit_width_to_pages=1;target.fit_height_to_pages=0
+            target.print_in_rows=True
     stream=BytesIO();book.save(stream);return stream.getvalue()
+
+
+def _photo_slots(count, width=PHOTO_GRID_WIDTH, height=PHOTO_GRID_HEIGHT):
+    """Choose the grid with the most space per photo inside one Excel row."""
+    def cell_size(columns):
+        rows=math.ceil(count/columns)
+        return ((width-PHOTO_PADDING)/columns-PHOTO_PADDING,
+                (height-PHOTO_PADDING)/rows-PHOTO_PADDING)
+
+    columns=max(range(1,count+1),key=lambda c:min(cell_size(c)))
+    return columns,*cell_size(columns)
 
 
 def _xlsx(data,factory):
     raw,_=_asset('issues');book=openpyxl.load_workbook(BytesIO(raw));sheet=book.active
+    weekly_layout=data.get('period')=='weekly'
+    if weekly_layout:
+        # Keep the verified source headers, using a clean default font so column
+        # character widths and pixel-based photo anchors agree across viewers.
+        headers=[cell.value for cell in sheet[1][:12]]
+        book=openpyxl.Workbook();sheet=book.active
+        sheet.append(headers)
     sheet.title=data['dateFrom'][:7]+'问题记录'
-    model=[copy(c._style) for c in sheet[2]]
+    model=[copy(c._style) for c in sheet[2][:12]]
+    model.append(model[-1])
     sheet.delete_rows(2,sheet.max_row)
     header_height=sheet.row_dimensions[1].height or 30
     sheet.insert_rows(1)
     sheet.row_dimensions[1].height=26
     sheet.row_dimensions[2].height=header_height
     sheet.column_dimensions['A'].width=max(13,sheet.column_dimensions['A'].width)
-    sheet.column_dimensions['L'].width=max(70,sheet.column_dimensions['L'].width)
-    anchor=1+_center_column([sheet.column_dimensions[openpyxl.utils.get_column_letter(c)].width or 10 for c in range(1,13)])
-    title=sheet.cell(1,anchor,data['dateFrom'][:7]+' 月度验货问题图文记录表')
+    sheet.column_dimensions['L'].width=28
+    sheet.column_dimensions['M'].width=100
+    sheet['L2']='照片备注'
+    sheet['M2']='照片'
+    sheet['M2']._style=copy(sheet['L2']._style)
+    if weekly_layout:
+        for col,pixels in enumerate([105,90,120,140,155,70,65,70,65,170,80,165,490],1):
+            sheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width=(pixels-5)/7
+        border=openpyxl.styles.Side(style='thin',color='D4D4D4')
+        for cell in sheet[2]:
+            cell.font=openpyxl.styles.Font(name='Arial',size=11,bold=True,color='222222')
+            cell.fill=openpyxl.styles.PatternFill('solid',fgColor='F3F3F3')
+            cell.border=openpyxl.styles.Border(left=border,right=border,top=border,bottom=border)
+            cell.alignment=openpyxl.styles.Alignment(horizontal='center',vertical='center',wrap_text=True)
+        sheet.row_dimensions[1].height=38;sheet.row_dimensions[2].height=44
+    widths=[sheet.column_dimensions[openpyxl.utils.get_column_letter(c)].width or 10 for c in range(1,14)]
+    anchor=1 if weekly_layout else 1+_center_column(widths)
+    if weekly_layout:sheet.merge_cells('A1:M1')
+    title=sheet.cell(1,anchor,data.get('title',data['dateFrom'][:7]+' 月度验货问题图文记录表')+' '+(data['dateFrom']+' 至 '+data['dateTo'] if data.get('period') else ''))
     title.font=copy(sheet.cell(2,1).font)
     title.alignment=openpyxl.styles.Alignment(horizontal='center',vertical='center')
+    if weekly_layout:title.font=openpyxl.styles.Font(name='Arial',size=16,bold=True,color='222222')
     sheet.freeze_panes='A3';sheet.print_title_rows='1:2';sheet.sheet_view.topLeftCell='A1'
-    rownum=3;photo_bytes=0
-    for entry in data['tables']['issues']:
-        photos=entry['photos'];batches=[photos[i:i+4] for i in range(0,len(photos),4)] or [[]]
-        if photos and str(entry['values'][11]).strip(): batches.insert(0,[])
-        for page,batch in enumerate(batches):
-            values=list(entry['values']);values[0]=date.fromisoformat(values[0])
-            for c,v in enumerate(values,1):
-                cell=sheet.cell(rownum,c,v);cell._style=copy(model[c-1]);cell.alignment=copy(cell.alignment);cell.alignment=openpyxl.styles.Alignment(horizontal='center',vertical='center',wrap_text=True)
-                if isinstance(v,str):cell.data_type='s'
-            sheet.cell(rownum,1).number_format='yyyy-mm-dd'
-            # Each row is independent; extra image batches repeat identifying fields.
-            if page:sheet.cell(rownum,12,f'照片续行 {page+1}/{len(batches)}')
-            text_lines=max(math.ceil(len(str(v))/max(4,float(sheet.column_dimensions[openpyxl.utils.get_column_letter(c)].width or 10)/1.5)) for c,v in enumerate(values,1))
-            photo_top=30 if page else 5
-            height=max(60,min(405,text_lines*15),photo_top+len(range(0,len(batch),2))*145)
-            sheet.row_dimensions[rownum].height=height
-            sheet.cell(rownum,12).alignment=openpyxl.styles.Alignment(horizontal='left',vertical='top',wrap_text=True)
-            for j,photo in enumerate(batch):
-                content=_photo(factory,entry,photo);photo_bytes+=len(content)
+    if weekly_layout:sheet.freeze_panes='D3';sheet.sheet_view.showGridLines=False
+    photo_bytes=0;embedded_bytes=0
+    rows=data['tables']['issues']
+    for rownum,entry in enumerate(rows,3):
+        values=[*entry['values'],''];values[0]=date.fromisoformat(values[0])
+        for c,v in enumerate(values,1):
+            cell=sheet.cell(rownum,c,v)
+            cell._style=copy(model[c-1])
+            cell.alignment=openpyxl.styles.Alignment(
+                horizontal='left' if c==12 and not weekly_layout else 'center',
+                vertical='top' if c==12 and not weekly_layout else 'center',wrap_text=True)
+            if weekly_layout:
+                cell.font=openpyxl.styles.Font(name='Arial',size=11,color='222222')
+                cell.fill=openpyxl.styles.PatternFill('solid',fgColor='FFFFFF')
+                cell.border=copy(sheet.cell(2,c).border)
+            if isinstance(v,str):cell.data_type='s'
+        sheet.cell(rownum,1).number_format='yyyy-mm-dd'
+        text_lines=max(sum(max(1,math.ceil(sum(2 if unicodedata.east_asian_width(ch) in ('W','F') else 1
+                            for ch in line)/max(4,width/1.5))) for line in str(v).split('\n'))
+                       for v,width in zip(values,widths))
+        photo_bottom=0
+        photos=entry['photos']
+        row_images=[]
+        grid_height=min(530,max(226,text_lines*20)) if len(photos)<=4 else 530
+        if photos:
+            columns,slot_width,slot_height=_photo_slots(len(photos),490,grid_height) if weekly_layout else _photo_slots(len(photos))
+            for j,photo in enumerate(photos):
+                content=_photo(factory,entry,photo, data.get('photoQuality','preview'), data.get('allowPreviewFallback',False), data.get('fallbackPhotos'));photo_bytes+=len(content)
                 if photo_bytes>MAX_BYTES:raise HTTPException(422,'照片总量过大，请按客户筛选后分别导出')
                 try:
                     with PILImage.open(BytesIO(content)) as original:
-                        original.load();out=BytesIO();original.convert('RGB').save(out,format='PNG')
-                    image=Image(BytesIO(out.getvalue()));ratio=min(230/image.width,175/image.height,1)
+                        if _needs_excel_conversion(original.format,original.getexif().get(274,1)):
+                            content=assets.display_png(content)
+                    embedded_bytes+=len(content)
+                    if embedded_bytes>MAX_BYTES:raise HTTPException(422,'图片总量过大，请缩小导出范围')
+                    image=Image(BytesIO(content));ratio=min(slot_width/image.width,slot_height/image.height,1)
                     image.width*=ratio;image.height*=ratio
-                    marker=AnchorMarker(col=11,row=rownum-1,colOff=int((5+(j%2)*240)*9525),rowOff=int((photo_top+(j//2)*190)*9525))
-                    image.anchor=OneCellAnchor(_from=marker,ext=XDRPositiveSize2D(int(image.width*9525),int(image.height*9525)))
+                    left=PHOTO_PADDING+(j%columns)*(slot_width+PHOTO_PADDING)+(slot_width-image.width)/2
+                    top=PHOTO_PADDING+(j//columns)*(slot_height+PHOTO_PADDING)
+                    if weekly_layout:top+=(slot_height-image.height)/2
+                    photo_bottom=max(photo_bottom,top+image.height+PHOTO_PADDING)
+                    marker=AnchorMarker(col=12,row=rownum-1,colOff=round(left*EMU_PER_PIXEL),rowOff=round(top*EMU_PER_PIXEL))
+                    image.anchor=OneCellAnchor(_from=marker,ext=XDRPositiveSize2D(
+                        round(image.width*EMU_PER_PIXEL),round(image.height*EMU_PER_PIXEL)))
                     sheet.add_image(image)
+                    row_images.append(image)
                 except (OSError,ValueError) as exc:raise HTTPException(422,'验货照片无法解码，未生成缺图文件') from exc
-            rownum+=1
-    sheet.column_dimensions['A'].width=max(13,sheet.column_dimensions['A'].width)
-    sheet.column_dimensions['L'].width=max(70,sheet.column_dimensions['L'].width)
-    sheet.print_area=f'A1:L{rownum-1}';sheet.page_setup.orientation='landscape';sheet.page_setup.paperSize=sheet.PAPERSIZE_A3
+        sheet.row_dimensions[rownum].height=max(60,min(405,text_lines*15),math.ceil(photo_bottom*0.75))
+        if weekly_layout:
+            sheet.row_dimensions[rownum].height=max(170 if photos else 60,min(405,text_lines*15),grid_height*0.75 if photos else 0)
+            # Center the entire photo grid when text requires a taller row.
+            offset=sheet.row_dimensions[rownum].height/0.75-grid_height
+            for image in row_images:image.anchor._from.rowOff+=round(max(0,offset)/2*EMU_PER_PIXEL)
+    sheet.print_area=f'A1:M{len(rows)+2}';sheet.page_setup.orientation='landscape';sheet.page_setup.paperSize=sheet.PAPERSIZE_A3
+    sheet.sheet_properties.pageSetUpPr.fitToPage=True
+    sheet.page_setup.fitToWidth=1;sheet.page_setup.fitToHeight=0;sheet.page_setup.scale=None
     stream=BytesIO();book.save(stream);return stream.getvalue()
 
 
 def render(data,kind,factory='huaxing'):
     if kind not in ASSETS:raise HTTPException(422,'月报模板不正确')
     if not data['tables'][kind]:raise HTTPException(409,'当前模板没有验货记录，无法导出空白文件')
-    content=_xlsx(data,factory) if kind=='issues' else _xls(data,kind)
-    if len(content)>MAX_BYTES:raise HTTPException(422,'Excel 文件过大，请按客户筛选后导出')
-    return content
+    if not export_slots.acquire(timeout=5):raise HTTPException(429,'Excel 导出繁忙，请稍后重试')
+    try:
+        content=_xlsx(data,factory) if kind=='issues' else _xls(data,kind)
+        if len(content)>MAX_BYTES:raise HTTPException(422,'Excel 文件过大，请按客户筛选后导出')
+        return content
+    finally:export_slots.release()
 
 import hmac, os, secrets, time
 TTL=600
@@ -222,30 +309,48 @@ def _clean():
     return files
 
 
-def prepare(factory, owner, body):
+def checked_data(factory, body):
     keys = {'date', 'customer', 'template', 'sourceRevision', 'versions'}
-    if not isinstance(body, dict) or set(body) != keys or any(not isinstance(body[k], str) for k in keys-{'versions'}):
+    if not isinstance(body, dict) or not keys <= set(body) or set(body)-keys-{'photoQuality','allowPreviewFallback'} or any(not isinstance(body[k], str) for k in keys-{'versions'}):
         raise HTTPException(422, 'Excel 导出参数不正确')
     if body['template'] not in set(ASSETS):
         raise HTTPException(422, '请选择有效的模板')
+    # Previously loaded clients can still submit the preview variant explicitly.
+    if body.get('photoQuality','preview')!='preview' or body.get('allowPreviewFallback',False) is not False:
+        raise HTTPException(422,'报告中心仅支持导出预览图，请刷新页面后重试')
     data = monthly.query(factory, body['date'], body['customer'])
     # Compare both source records and all visible saved supplement versions.
     if body['sourceRevision'] != data['sourceRevision'] or body['versions'] != versions(data):
         raise HTTPException(409, '验货记录或月报补充内容已变化，请刷新核对后再导出 Excel')
-    content = render(data, body['template'], factory)
+    return data
+
+
+def prepare(factory, owner, body):
+    data=checked_data(factory,body)
+    kind=body['template']
+    content = render(data, kind, factory)
     fresh = monthly.query(factory, body['date'], body['customer'])
     if fresh['sourceRevision'] != data['sourceRevision'] or versions(fresh) != versions(data):
         raise HTTPException(409, '导出期间记录已变化，请刷新后重试')
-    download_name = filename(body['template'],data['dateFrom'],data['dateTo'])
+    photo_quality='preview' if kind=='issues' and any(row['photos'] for row in data['tables']['issues']) else None
+    download_name = filename(kind,data['dateFrom'],data['dateTo'],photo_quality)
+    return store_download(owner,content,kind,data['dateFrom'],data['dateTo'],photo_quality)
+
+
+def store_download(owner,content,kind,start,end,quality=None,period='monthly'):
+    download_name=filename(kind,start,end,quality,period)
     nonce = secrets.token_hex(16)
-    value = f"{nonce}.{int(time.time())+TTL}.{body['template']}.{data['dateFrom']}.{data['dateTo']}"
+    value = f"{nonce}.{int(time.time())+TTL}.{kind}.{start}.{end}"
+    if quality:
+        value+='.'+quality
+    if period!='monthly':value+='.'+period
     token = value+'.'+_signature(owner, value)
     try:
         _folder().mkdir(parents=True, exist_ok=True)
         files = _clean()
         if len(files) >= 64 or sum(files)+len(content) > 128*1024*1024:
             raise HTTPException(429, 'Excel 下载任务较多，请稍后重试')
-        with os.fdopen(os.open(_folder()/(nonce+extension(body['template'])), os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600), 'wb') as stream:
+        with os.fdopen(os.open(_folder()/(nonce+extension(kind)), os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600), 'wb') as stream:
             stream.write(content)
     except OSError:
         raise HTTPException(503, 'Excel 下载文件暂时无法保存，请重试') from None
@@ -253,8 +358,8 @@ def prepare(factory, owner, body):
 
 
 def download(owner, token):
-    match = re.fullmatch(r'([a-f0-9]{32})\.(\d{10})\.(caixing|all|issues|customers)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.([a-f0-9]{64})', token)
-    if not match or not hmac.compare_digest(_signature(owner, token.rsplit('.', 1)[0]), match[6]):
+    match = re.fullmatch(r'([a-f0-9]{32})\.(\d{10})\.(caixing|all|issues|customers)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})(?:\.(preview|original|mixed))?(?:\.(weekly|yearly))?\.([a-f0-9]{64})', token)
+    if not match or not hmac.compare_digest(_signature(owner, token.rsplit('.', 1)[0]), match[8]):
         raise HTTPException(404, 'Excel 下载不存在')
     if int(match[2]) < time.time():
         _clean(); raise HTTPException(410, 'Excel 下载已过期，请重新导出')
@@ -262,4 +367,4 @@ def download(owner, token):
         content = (_folder()/(match[1]+extension(match[3]))).read_bytes()
     except OSError:
         raise HTTPException(410, 'Excel 下载已过期，请重新导出') from None
-    return content, filename(match[3],match[4],match[5])
+    return content, filename(match[3],match[4],match[5],match[6],match[7] or 'monthly')

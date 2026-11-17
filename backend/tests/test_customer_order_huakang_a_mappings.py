@@ -199,6 +199,7 @@ def _headstart_schedule_bytes() -> bytes:
 
 def test_huakang_a_360_registry_coexists_with_huaxing_360() -> None:
     assert set(service.HUAKANG_A_CUSTOMER_MAPPINGS) == {
+        "zuru",
         "360",
         "green-toys",
         "headstart",

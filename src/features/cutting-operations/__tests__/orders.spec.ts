@@ -25,13 +25,13 @@ function button(text: string) {
   if (!b) throw new Error(`Missing button: ${text}`)
   return b
 }
-async function open(record = row, permissions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile']) {
+async function open(record = row, permissions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile'], attach = false) {
   vi.mocked(cuttingApi.access).mockResolvedValue({ enabled: true, schema_ready: true, orders_schema_ready: true, permissions })
   vi.mocked(ordersApi.list).mockResolvedValue(page([record]))
   vi.mocked(ordersApi.read).mockResolvedValue(record)
   router = createRouter({ history: createMemoryHistory(), routes: [...cuttingOperationsRoutes, { path: '/modules/production', component: { template: '<div>生产部</div>' } }] })
   await router.push(path); await router.isReady()
-  wrapper = mount(RouterView, { global: { plugins: [router] } }); await flushPromises()
+  wrapper = mount(RouterView, { global: { plugins: [router] }, ...(attach ? { attachTo: document.body } : {}) }); await flushPromises()
   await button('查看').trigger('click')
 }
 async function receiptForm() {
@@ -84,11 +84,11 @@ describe('cutting order workflow and save protection', () => {
     vi.mocked(ordersApi.list).mockResolvedValue({data:[row],total:51,page:1,page_size:50})
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
     await wrapper.get('input[maxlength="80"]').setValue('NEW')
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('pending_confirmation')
     await button('下一页').trigger('click');await flushPromises()
     expect(ordersApi.list).toHaveBeenLastCalledWith(2,'','','')
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','awaiting_receipt','')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','pending_confirmation','')
   })
 
   it.each([false, true])('opens material operations only in the materials workspace (request permission: %s)', async permitted => {
@@ -249,20 +249,25 @@ describe('cutting order workflow and save protection', () => {
   it('applies the reply status filter server-side and labels passed estimates without claiming receipt', async () => {
     await open({ ...received, workflow_status: 'partial_reply', expected_date_passed: true })
     expect(wrapper.text()).toContain('预计日期已过，实收待核实')
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('partial_reply')
+    const filter = wrapper.get('[aria-label="办理状态筛选"]')
+    expect(filter.findAll('option').map(option => option.text())).toEqual([
+      '全部状态', '待确认', '待工程处理', '待采购处理', '物料已齐／无需采购', '已取消',
+    ])
+    expect(wrapper.find('.order-ledger-table tbody').text()).toContain('采购部分回复')
+    await filter.setValue('pending_procurement')
     await wrapper.get('form.order-toolbar').trigger('submit'); await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'partial_reply', '')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'pending_procurement', '')
   })
   it('refreshes filtered rows and totals after a save changes the workflow status', async () => {
     await open()
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('pending_confirmation')
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
     await button('查看').trigger('click')
     await receiptForm()
     vi.mocked(ordersApi.command).mockResolvedValue(received)
     vi.mocked(ordersApi.list).mockResolvedValue(page([]))
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'awaiting_receipt', '')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'pending_confirmation', '')
     expect(wrapper.text()).not.toContain('ORDER-001')
     expect(wrapper.text()).toContain('共 0 条')
   })
@@ -331,13 +336,69 @@ describe('engineering requisitions and procurement form operations', () => {
     await open(pending)
     expect(wrapper.findAll('button').some(b => b.text() === '采购回复分批交期')).toBe(false)
     await button('采购核对旧需求').trigger('click')
-    await wrapper.get('[aria-label="旧采购处理结果"]').setValue('cancelled_or_reallocated')
+    await wrapper.get('[name="disposition"]').setValue('cancelled_or_reallocated')
     const fields = wrapper.findAll('form.order-form textarea')
     await fields[0]!.setValue('PO001全部已转用并核对数量'); await fields[1]!.setValue('采购核对完成')
     await wrapper.get('form.order-form input[type="checkbox"]').setValue(true)
     vi.mocked(ordersApi.command).mockResolvedValue(boundRow)
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
     expect(ordersApi.command).toHaveBeenCalledWith('line-1', 'reconcile', expect.objectContaining({ requisition_version: 3, disposition: 'cancelled_or_reallocated', all_handled: true, evidence: 'PO001全部已转用并核对数量' }))
+  })
+  it.each([true, false])('requires an explicit purchase disposition and returns focus (historical evidence: %s)', async hasEvidence => {
+    const original = submittedRow.current!.data
+    const prior = { revision: 4, batches: [{ row: 0, quantity: '5', expected_date: '2026-11-10', supplier: '原供应商', purchase_reference: 'PO-HISTORY' }] }
+    const pending: CuttingOrder = { ...submittedRow, pending_purchase: { ...original, batches: [], has_purchase_evidence: hasEvidence, prior_purchase_reply: hasEvidence ? prior : null },
+      current: { ...submittedRow.current!, data: { ...original, purchase_reconciliation_required: true } } }
+    await open(pending, undefined, true)
+    const trigger = button('采购核对旧需求')
+    ;(trigger.element as HTMLElement).focus()
+    await trigger.trigger('click'); await flushPromises()
+    const select = wrapper.get<HTMLSelectElement>('select[name="disposition"]')
+    expect(document.activeElement).toBe(select.element)
+    expect(select.element.value).toBe('')
+    expect(select.attributes('aria-invalid')).toBe('false')
+    expect(wrapper.get('[name="all_handled"]').attributes('aria-invalid')).toBe('false')
+    expect(wrapper.get('form.order-form').text()).toContain('本次核对原需求 V3')
+    expect(select.get<HTMLOptionElement>('option[value="not_ordered"]').element.disabled).toBe(hasEvidence)
+    expect(wrapper.text().includes('原需求已有采购交期记录')).toBe(hasEvidence)
+    const details = wrapper.find('form.order-form details')
+    expect(details.exists()).toBe(hasEvidence)
+    if (hasEvidence) {
+      expect(details.get('summary').text()).toBe('查看原交期凭据 · 原需求 V3')
+      expect(details.text()).toContain('裁床记录 V4')
+      expect(details.text()).toContain('PO-HISTORY')
+    }
+    await select.trigger('invalid'); await flushPromises()
+    expect(select.attributes('aria-invalid')).toBe('true')
+    expect(wrapper.get('[name="all_handled"]').attributes('aria-invalid')).toBe('true')
+    await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
+    expect(ordersApi.command).not.toHaveBeenCalled()
+    await select.setValue('cancelled_or_reallocated')
+    expect(select.attributes('aria-invalid')).toBe('false')
+    await select.setValue('')
+    const cancel = button('取消编辑')
+    ;(cancel.element as HTMLElement).focus()
+    await cancel.trigger('click'); await flushPromises()
+    expect(document.activeElement).toBe(button('采购核对旧需求').element)
+  })
+  it('uses the same Beijing time in note history and its expanded receipt', async () => {
+    const created_at = '2026-11-12T08:53:46.645533+00:00'
+    const published_at = '2026-11-12T08:51:35.886458+00:00'
+    const history = { ...received.current!, version: 8, created_at, reason: '仅备注变更，沿用生产依据',
+      data: { ...received.current!.data, receipt: { mode: 'note_only' as const, source_version: 3, received_at: created_at },
+        planning: { published: { version: 6, tasks: [], allocated_sets: 20, unallocated_sets: 0, actor_id: 'planner', created_at: published_at, reason: '核对采购交期' } } } }
+    await open(received)
+    vi.mocked(ordersApi.history).mockResolvedValue(page([history]))
+    await button('查看历史版本').trigger('click'); await flushPromises()
+    const summary = wrapper.get('details summary time')
+    const receiptTime = wrapper.get('details .receipt-evidence time')
+    expect(summary.text()).toBe('2026/11/12 16:53:46（北京时间）')
+    expect(receiptTime.text()).toBe(summary.text())
+    expect(summary.attributes('datetime')).toBe(created_at)
+    expect(receiptTime.attributes('datetime')).toBe(created_at)
+    expect(wrapper.get('details .plan-summary time').text()).toBe('2026/11/12 16:51:35（北京时间）')
+    expect(wrapper.get('details .plan-summary time').attributes('datetime')).toBe(published_at)
+    expect(wrapper.get('details .plan-summary time').element.parentElement?.textContent).toBe('计划发布时间：2026/11/12 16:51:35（北京时间）')
   })
 })
 

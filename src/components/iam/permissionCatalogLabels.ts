@@ -70,6 +70,28 @@ const ACTION_LABELS: Record<string, string> = {
 }
 
 const PERMISSION_LABELS: Record<string, string> = {
+  'indonesia_shipping:read': '进入印尼走货工作区',
+  'indonesia_shipping:users_manage': '已停用：原系统账号管理',
+  'indonesia_shipping:database_manage': '已停用：原系统数据库管理',
+  'indonesia_shipping:products_read': '查看印尼货号、图片与字典',
+  'indonesia_shipping:products_write': '维护印尼货号、图片与字典',
+  'indonesia_shipping:materials_read': '查看印尼物料',
+  'indonesia_shipping:materials_write': '维护印尼物料',
+  'indonesia_shipping:customers_read': '查看印尼客户',
+  'indonesia_shipping:customers_write': '维护印尼客户',
+  'indonesia_shipping:schedules_read': '查看印尼排期',
+  'indonesia_shipping:schedules_write': '维护印尼排期',
+  'indonesia_shipping:purchase_read': '查看印尼采购与物料追踪',
+  'indonesia_shipping:purchase_write': '维护印尼采购与物料追踪',
+  'indonesia_shipping:quotes_read': '查看印尼报价',
+  'indonesia_shipping:quotes_write': '维护印尼报价',
+  'indonesia_shipping:molding_read': '查看印尼生产单',
+  'indonesia_shipping:molding_write': '维护印尼生产单',
+  'indonesia_shipping:outbound_read': '查看印尼出库',
+  'indonesia_shipping:outbound_write': '维护印尼出库',
+  'indonesia_shipping:shipments_read': '查看印尼走货明细',
+  'indonesia_shipping:shipments_write': '维护印尼走货明细',
+
   'indonesia_material:read': '查看送印尼物料',
   'indonesia_material:write': '维护合同、物料、分配及确认出货',
   'indonesia_material:receipt_confirm': '船务确认河源回料数量',

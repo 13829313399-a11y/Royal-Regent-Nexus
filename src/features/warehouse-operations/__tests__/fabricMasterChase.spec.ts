@@ -185,7 +185,7 @@ describe('fabric master data and chase confirmation', () => {
   it('shows the original chase equation and confirms only the start quantity, without posting stock', async () => {
     const source = { id: 'L1', revision: 2, receipt_count: 1, warehouse_received_quantity: '10', can_review: true, facts: { order_no: 'PO1', material_name: '白色布', supplier: '供应商', unit: '码' } } as PurchaseDetail
     wrapper = mount(Chase, { props: { source }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises()
-    await body().get('[aria-label="起始待收数量"]').setValue('37'); await body().get('[aria-label="起始待收核对依据"]').setValue('采购确认原始欠37')
+    await body().get('[aria-label="本系统首次入库前还欠多少"]').setValue('37'); await body().get('[aria-label="采购确认依据"]').setValue('采购确认原始欠37')
     expect(body().get('.fabric-chase-equation').text()).toContain('37 − 10 = 27 码')
     procurement.resolveChase.mockResolvedValue({ stock_posted: false }); await body().get('form').trigger('submit'); await flushPromises()
     expect(procurement.resolveChase).toHaveBeenCalledWith('L1', expect.objectContaining({ expected_source_revision: 2, expected_receipt_count: 1, expected_resolution_revision: 0, starting_quantity: '37', confirmed_start: true }))

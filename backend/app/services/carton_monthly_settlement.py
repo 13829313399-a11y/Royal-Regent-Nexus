@@ -6,6 +6,7 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app import db as database
 from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement, CartonReceiptLine
 from app.models.carton_special_requests import SpecialShipment, UnifiedDelivery
 from app.models.carton_supplier_portal import SupplierShipment
@@ -230,6 +231,24 @@ def supplier_line(row):
 def workspace(db, factory: str, period: str, currency: str) -> dict:
     factory = core.require_carton_factory(factory)
     core._lock_receipt_factory(db, factory)
+    return _build_workspace(db, factory, period, currency)
+
+
+def read_workspace(factory: str, period: str, currency: str) -> dict:
+    """Read reconciliation in one transaction-scoped snapshot."""
+    factory = core.require_carton_factory(factory)
+    with database.SessionLocal() as snapshot:
+        connection = snapshot.connection()
+        if connection.dialect.name == "postgresql":
+            connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        elif connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("BEGIN")
+        else:
+            raise RuntimeError("Monthly reconciliation snapshots require PostgreSQL or SQLite")
+        return _build_workspace(snapshot, factory, period, currency)
+
+
+def _build_workspace(db, factory: str, period: str, currency: str) -> dict:
     supplier = portal.fixed_supplier(db, factory)
     try:
         core._period_bounds(period)

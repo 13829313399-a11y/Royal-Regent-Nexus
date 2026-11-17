@@ -217,6 +217,10 @@ function isHistorical(item: CustomerOrderInboxItem) {
   return item.version < item.latest_version
 }
 
+function canReviewCartonChange(item: CustomerOrderInboxItem) {
+  return capabilities.value?.carton_change === true && item.version > 1 && !isHistorical(item)
+}
+
 function isExpanded(itemId: string) {
   return expandedItemIds.value.has(itemId)
 }
@@ -455,9 +459,10 @@ watch(
               <small v-if="item.carton_processed" class="received-label">纸箱已改单 · {{ item.carton_processed.processed_by }}</small>
             </td>
             <td>
-              <button v-if="capabilities?.carton_change && item.version > 1 && !isHistorical(item)" type="button" class="receive-button"
+              <button v-if="canReviewCartonChange(item)" type="button" class="receive-button"
+                :class="{ 'change-review-button': !item.carton_processed }" aria-haspopup="dialog"
                 :data-carton-change="item.id" :disabled="!!receivingId" @click="openChange(item, $event)">
-                {{ item.carton_processed ? '查看改单结果' : '收到并改单' }}
+                {{ item.carton_processed ? '查看改单结果' : '查看改单差异' }}
               </button>
               <button type="button" class="requirement-button" @click="toggleDetails(item.id)">
                 {{ isExpanded(item.id) ? '收起客户要求' : '客户要求' }}
@@ -466,13 +471,15 @@ watch(
                 type="button"
                 class="receive-button"
                 :disabled="item.status === 'received' || receivingId === item.id || !capabilities?.inbox_receive"
+                :aria-describedby="canReviewCartonChange(item) && item.status !== 'received' ? 'carton-receive-note-' + item.id : undefined"
                 :title="capabilities?.inbox_receive ? '幂等签收该版本' : `当前账号没有${selectedRecipientLabel}签收权限`"
                 @click="receive(item)"
               >
                 <LoaderCircle v-if="receivingId === item.id" class="spinning" aria-hidden="true" />
                 <Check v-else-if="item.status === 'received'" aria-hidden="true" />
-                {{ item.status === 'received' ? '已签收' : capabilities?.carton_change && item.version > 1 && !isHistorical(item) ? '仅签收' : '签收' }}
+                {{ item.status === 'received' ? '已签收' : canReviewCartonChange(item) ? '仅签收' : '签收' }}
               </button>
+              <small v-if="canReviewCartonChange(item) && item.status !== 'received'" :id="'carton-receive-note-' + item.id" class="receive-note">只记录收到</small>
             </td>
           </tr>
           <tr v-if="isExpanded(item.id)" class="requirements-row">
@@ -551,6 +558,10 @@ h1 { margin: 0; color: #13213b; font-size: clamp(26px, 3vw, 38px); line-height: 
 .received-label { color: #047857 !important; font-weight: 800; }
 .sent-label { color: #9a6700 !important; font-weight: 800; }
 .receive-button { min-height: 32px; border-radius: 8px; padding: 0 10px; color: #0f766e; font-size: 11px; }
+.change-review-button { border-color: #0f766e; background: #0f766e; color: #fff; }
+.change-review-button:hover:not(:disabled) { border-color: #115e59; background: #115e59; }
+.change-review-button:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+.inbox-table td > .receive-note { color: #526277; }
 .requirement-button { display: block; min-height: 28px; margin-bottom: 7px; border: 0; background: transparent; color: #2563eb; cursor: pointer; font-size: 11px; font-weight: 800; text-decoration: underline; text-underline-offset: 2px; }
 .requirements-row td { background: #f8fafc; padding: 0; }
 .requirements-panel { margin: 0; padding: 14px 16px 16px; border-top: 1px solid #dbe4ef; }

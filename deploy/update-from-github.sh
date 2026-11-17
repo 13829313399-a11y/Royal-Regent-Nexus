@@ -269,7 +269,8 @@ git fetch --prune origin
 target_commit="$(git rev-parse "$UPSTREAM")"
 
 if [ "$old_commit" = "$target_commit" ]; then
-  echo "Production is already at $target_commit"
+  echo "Production is already at $target_commit; verifying QC readiness"
+  compose exec -T api python scripts/qc_dossier_release.py verify
   exit 0
 fi
 git merge-base --is-ancestor "$old_commit" "$target_commit" \
@@ -316,6 +317,27 @@ compose build api web
 
 begin_maintenance_notice
 
+# QC now owns persistent SQLite data in the API as well as the legacy QC service.
+# Quiesce every Compose writer BEFORE the final multi-store backup and migration.
+echo "Stopping writers for consistent QC and PostgreSQL backup"
+compose stop api document-tools-worker qc-department
+qc_path="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$api_id" | sed -n 's/^QC_DEPARTMENT_DATA_DIR=//p')"
+qc_path="${qc_path:-/app/backend/data/qc-department/companies}"
+mkdir "$backup_dir/qc-api-data"
+docker cp "$api_id:$qc_path/." "$backup_dir/qc-api-data/" || fail "Cannot preserve old API QC data; no new volume was mounted"
+qc_id="$(compose ps -a -q qc-department)"
+[ -n "$qc_id" ] || fail "QC service container missing"
+mkdir "$backup_dir/qc-service-data"
+docker cp "$qc_id:/app/data/." "$backup_dir/qc-service-data/" || fail "Cannot back up QC workbooks and attachments"
+compose exec -T db sh -lc 'pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"' > "$backup_dir/database-stopped.dump"
+(cd "$backup_dir" && sha256sum database-stopped.dump > database-stopped.sha256 && sha256sum -c database-stopped.sha256)
+compose exec -T db pg_restore -l < "$backup_dir/database-stopped.dump" > "$backup_dir/database-stopped.restore-list.txt"
+compose run --rm --no-deps -T -e QC_DOSSIER_ENABLED=false -v "$backup_dir:/qc-release-backup:ro" --entrypoint python api scripts/qc_dossier_release.py prepare --backup-dir /qc-release-backup --source /qc-release-backup/qc-api-data > "$backup_dir/qc-preparation.json"
+compose up -d --no-deps qc-department
+# Always use one API during this cutover; never let old/new SQLite writers overlap.
+migration_changes="${migration_changes}
+QC persistent-store preparation"
+
 if [ -z "$migration_changes" ]; then
   network_name="$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$api_id")"
   [ -n "$network_name" ] || fail "Cannot determine the production Docker network"
@@ -360,6 +382,14 @@ else
   wait_for_healthy "$web_id" "Web"
 fi
 
+# Collection may finish asynchronously; readiness must pass before opening Web.
+waited=0
+until compose exec -T api python scripts/qc_dossier_release.py verify > "$backup_dir/qc-readiness.json" 2> "$backup_dir/qc-readiness-error.txt"; do
+  [ "$waited" -lt "$HEALTH_TIMEOUT_SECONDS" ] || fail "QC collection/read API readiness failed; maintenance remains active"
+  sleep 2
+  waited=$((waited + 2))
+done
+compose up -d --no-deps document-tools-worker
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1/health > "$backup_dir/health.json"
 if [ -n "$notice_id" ]; then
   # The business route intentionally returns 503 until all checks finish.

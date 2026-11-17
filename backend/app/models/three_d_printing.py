@@ -5,6 +5,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -620,6 +621,29 @@ class ThreeDPrintingPrinterStateEvent(Base):
     error_text: Mapped[str] = mapped_column(String(255), default="")
     payload_version: Mapped[int] = mapped_column(Integer, default=1)
     raw_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class ThreeDPrintingTelemetryTick(Base):
+    """Exact timing and retry proof for an ordinary frame after its raw body expires."""
+    __tablename__ = "three_d_printing_telemetry_ticks"
+    __table_args__ = (Index("ix_3d_tick_clock", "factory_id", "machine_no", "observed_at"),)
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    machine_no: Mapped[int] = mapped_column(Integer)
+    observed_at: Mapped[str] = mapped_column(String(32))
+    received_at: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(32))
+    payload_digest: Mapped[bytes] = mapped_column(LargeBinary(32))
+
+
+class ThreeDPrintingRetentionCursor(Base):
+    __tablename__ = "three_d_printing_retention_cursors"
+
+    factory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    printer_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    received_at: Mapped[str] = mapped_column(String(32), default="")
+    event_id: Mapped[str] = mapped_column(String(96), default="")
 
 
 class ThreeDPrintingTelemetryRollup(Base):

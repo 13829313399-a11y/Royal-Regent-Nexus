@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import { fabricProcurementApi, type PurchaseLine } from '@/api/fabricProcurement'
 import { handoverApi, type PendingDeliveries } from '@/api/materialHandover'
+import HandoverRejectionSummary from '../material-handover/HandoverRejectionSummary.vue'
 import { WAREHOUSE_FACTORY, WAREHOUSE_HOME } from './navigation'
 
 const auth = useAuthStore(), route = useRoute()
@@ -89,7 +90,17 @@ onBeforeUnmount(() => { generation++; clearInterval(timer); window.removeEventLi
           <template v-else-if="deliveries">
             <p class="panel-note">已确认且尚未收完的送货单，部分入库继续保留。</p>
             <p v-if="!deliveries.items.length" class="todo-empty">当前没有待入库的供应商送货单。</p>
-            <ul v-else class="todo-list"><li v-for="row in deliveries.items" :key="row.id"><div class="todo-copy"><strong>送货单 {{ row.data.source_no }}</strong><p>{{ row.data.counterparty }} · {{ row.data.document_date || '日期未提供' }}</p><p>{{ row.processing_status === 'PARTIAL' ? '部分已入库' : '待核实入库' }} · {{ row.pending_line_count }} 项待收 · {{ row.first_item_name }}</p></div><RouterLink class="todo-action filled" :to="deliveryLink(row.id)">核实入库</RouterLink></li></ul>
+            <ul v-else class="todo-list">
+              <li v-for="row in deliveries.items" :key="row.id">
+                <div class="todo-copy">
+                  <strong>送货单 {{ row.data.source_no }}</strong>
+                  <p>{{ row.data.counterparty }} · {{ row.data.document_date || '日期未提供' }}</p>
+                  <p><span v-if="row.processing_status === 'PARTIAL' || !row.receipt_rejection">{{ row.processing_status === 'PARTIAL' ? '部分已入库' : '待核实入库' }} · </span>{{ row.pending_line_count }} 项待收 · {{ row.first_item_name }}</p>
+                  <HandoverRejectionSummary v-if="row.receipt_rejection" :summary="row.receipt_rejection" />
+                </div>
+                <RouterLink class="todo-action filled" :to="deliveryLink(row.id)">核实入库</RouterLink>
+              </li>
+            </ul>
           </template>
         </article>
         <article class="todo-panel request-panel" aria-labelledby="fabric-request-heading">
