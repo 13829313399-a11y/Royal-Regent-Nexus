@@ -3882,6 +3882,26 @@ body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
 
 /* Screen-only QC table reading baseline; workbook and print layouts stay independent. */
 @media screen {
+  /* Table navigation and native selects must not add a frame around the data. */
+  html body.qc-liquid-glass .page :is(table,table tr,table td,table th,.table-wrap,.qis-wrap,.qsum-table-wrap,.qs-table-scroll,.qdr-scroll,.qwt-scroll,.qmt-scroll):focus {
+    outline:none!important;
+  }
+  html body.qc-liquid-glass .page table select:focus {
+    outline:none!important;
+    box-shadow:none!important;
+  }
+  /* Manual entry keeps its caret, without a second frame on click or focus. */
+  html body.qc-liquid-glass :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date],input[type=search],input[type=email],input[type=tel],input[type=url],input[type=password],input[type=month],input[type=time],input[type=datetime-local]):focus {
+    outline:none!important;
+    box-shadow:none!important;
+  }
+  html body.qc-liquid-glass :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date],input[type=search],input[type=email],input[type=tel],input[type=url],input[type=password],input[type=month],input[type=time],input[type=datetime-local]):focus:not([aria-invalid=true]):not(:user-invalid):not(.qc-date-input-warning) {
+    border-color:var(--border)!important;
+  }
+  html body.qc-liquid-glass :is(#qwtView,#qmtView,#page-review) table td :is(.qwt-cell,.qmt-cell,button.qis-review-value):focus {
+    outline:none!important;
+    box-shadow:none!important;
+  }
   /* Keep native editing/validation, but let the table cell be the input surface.
      Include the legacy measurement/defect grids, which render without <table>. */
   html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
@@ -3895,8 +3915,8 @@ body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
   }
   html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
   :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]):not(:disabled):not([readonly]):focus {
-    outline:2px solid var(--accent,#16876b)!important;
-    outline-offset:-2px;
+    outline:none!important;
+    box-shadow:none!important;
   }
   html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
   :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]):is([aria-invalid=true],:user-invalid) {
