@@ -8,7 +8,8 @@
 :is(#page-records,#page-review) .qis-cell{height:calc(var(--qis-row-height) - 13px);overflow:auto;overflow-wrap:anywhere}
 :is(#page-records,#page-review) .qis-table thead tr{position:static;z-index:auto;background:transparent}
 :is(#page-records,#page-review) .qis-table th{position:sticky;top:0;z-index:3;background:#edf3f1;white-space:nowrap;padding:10px 8px}
-:is(#page-records,#page-review) .qis-table [data-column=date]{min-width:132px;position:static}
+:is(#page-records,#page-review) .qis-table [data-column=date]{min-width:132px}
+:is(#page-records,#page-review) .qis-table td[data-column=date]{position:static}
 #page-records .qis-table th[data-column=date]{padding:0!important}
 #page-records .qis-date-sort{display:flex;align-items:center;gap:7px;width:100%;min-height:38px;padding:10px 8px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;font-weight:inherit;text-align:left;cursor:pointer}
 #page-records .qis-date-sort span{font-size:12px;color:#70837b}
