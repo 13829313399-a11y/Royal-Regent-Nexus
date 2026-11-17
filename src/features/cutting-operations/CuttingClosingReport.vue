@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import type { ClosingPreview } from './closingApi'
+import { closingReportTabs, type ClosingReportTab } from './closingPresentation'
 import { cuttingDestination } from './location'
 import CuttingClosingTrace from './CuttingClosingTrace.vue'
 const props=defineProps<{value:ClosingPreview;storedSnapshot?:boolean}>()
-const tab=ref(0)
-const tabs=computed(()=>['生产与外发数量','领退料及耗用',props.storedSnapshot?'本版本材料费用':'材料费用试算','来源及更正追溯'])
+const tab=defineModel<ClosingReportTab>('tab',{default:'production'})
+const tabs=computed(()=>({...closingReportTabs,costs:props.storedSnapshot?'本版本材料费用':closingReportTabs.costs}))
 // Older immutable snapshots also contain this P4a-only notice. Do not rewrite them.
 const issues=computed(()=>props.value.issues.filter(issue=>!props.storedSnapshot||issue.code!=='period_wip_unconfirmed'))
 function destination(issue:ClosingPreview['issues'][number]) {
@@ -23,13 +24,13 @@ function destination(issue:ClosingPreview['issues'][number]) {
       <p>{{value.start}} 至 {{value.through}}<span v-if="value.partial"> · 本月尚未结束，月末为 {{value.end}}</span> · 取数时间：{{value.generated_at}}</p>
       <p v-if="storedSnapshot" class="cutting-notice">以下为该月结版本保存时的生产、物料、价格与追溯依据，后续操作不改写此快照。月末在制与完工归属见上方月结汇总；外发加工费仍另行结算。</p>
       <p v-else class="cutting-notice">补录和更正按业务日期更新未锁月结果，以下数量采用最新有效记录。计划使用当前发布版本；本页不代表已结清、正式月末在制或外发可付款金额。</p>
-      <p v-if="value.plan_stale" role="alert" class="cutting-error">已发布计划依据已变化，需重新核对。本期计划及漏报提示仅作参考，实际生产数量仍按生效记录统计。</p>
+      <p v-if="value.plan_stale" role="alert" class="cutting-error">已发布计划依据已变化，需重新核对。截至核对日的计划和漏报提示仅作参考，实际生产数量仍按生效记录统计。</p>
       <details><summary>本次取数依据</summary><p>订单版本 {{value.basis.order_version}} · {{storedSnapshot?'保存时计划版本':'当前计划版本'}} {{value.basis.plan_version??'未发布'}} · 耗用流水 {{value.basis.usage_revision}} · 仓库流水 {{value.basis.warehouse_revision}}</p></details>
-      <div class="cutting-section-nav" aria-label="月度核对视图"><Button v-for="(label,index) in tabs" :key="label" variant="outline" :aria-pressed="tab===index" @click="tab=index">{{label}}</Button></div>
-      <template v-if="tab===0">
+      <div class="cutting-section-nav" aria-label="月度核对视图"><Button v-for="(label,key) in tabs" :key="key" variant="outline" :aria-pressed="tab===key" @click="tab=key">{{label}}</Button></div>
+      <template v-if="tab==='production'">
         <p>生产和交接以套为单位，散片另列。外发自报、收回及验收分别记录，合格完成仅计验收合格。</p>
         <div class="cutting-table-scroll" role="region" aria-label="月度生产核对" tabindex="0"><table>
-          <thead><tr><th>任务／执行方</th><th>期初累计完成</th><th>本期计划</th><th>本期合格完成</th><th>本期交接</th><th>期末累计完成</th><th>期末完工未交接</th><th>计划日未报</th></tr></thead>
+          <thead><tr><th>任务／执行方</th><th>期初累计完成</th><th>截至核对日计划</th><th>本期合格完成</th><th>本期交接</th><th>期末累计完成</th><th>期末完工未交接</th><th>计划日未报</th></tr></thead>
           <tbody><tr v-for="row in value.production" :key="row.task_id"><td>{{row.task_name}} · {{row.resource_name}}</td><td>{{row.opening_completed}}</td><td>{{row.planned}}</td><td>{{row.completed}}</td><td>{{row.handed}}</td><td>{{row.closing_completed}}</td><td>{{row.completed_unhanded}}</td><td>{{row.missing_days.join('、')||'无'}}</td></tr></tbody>
         </table></div>
         <p v-if="!value.production.length" class="cutting-no-records">该订单暂无生产任务或有效实绩，不代表核对完成。</p>
@@ -39,7 +40,7 @@ function destination(issue:ClosingPreview['issues'][number]) {
           <p v-for="part in row.loose" :key="part.code">{{part.name}}（{{part.code}}）：期末散片 {{part.quantity}} 片，本期不良 {{part.rejected}} 片、报废 {{part.scrap}} 片。</p>
         </article>
       </template>
-      <template v-else-if="tab===1">
+      <template v-else-if="tab==='materials'">
         <p>期初现场余料＋本期签收－退仓－正常耗用－损耗＝期末现场余料。仓库实发与签收分别展示，未签物料不计入现场余料；不同单位不相加。</p>
         <div class="cutting-table-scroll" role="region" aria-label="月度领退耗存核对" tabindex="0"><table>
           <thead><tr><th>原实发／任务／物料</th><th>原单位</th><th>期初余料</th><th>本期实发</th><th>本期签收</th><th>本期退仓</th><th>正常耗用</th><th>损耗</th><th>期末余料</th><th>期末已发未签</th></tr></thead>
@@ -47,7 +48,7 @@ function destination(issue:ClosingPreview['issues'][number]) {
         </table></div>
         <p v-if="!value.materials.length" class="cutting-no-records">截至核对日无有效关联实发；不能据此确认全部应领物料已齐。</p>
       </template>
-      <template v-else-if="tab===2">
+      <template v-else-if="tab==='costs'">
         <p v-if="value.costs===undefined" class="cutting-notice">材料费用需单独授予成本查询权限；当前仅显示生产及实物数量。</p>
         <template v-else>
           <p v-if="storedSnapshot" class="cutting-notice">采用本版本保存的原批次成本，正常费用与损耗分列、币种分别核对。此历史版本不随后续改价更新。</p>
