@@ -3888,6 +3888,27 @@ body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
 
 /* Screen-only QC table reading baseline; workbook and print layouts stay independent. */
 @media screen {
+  /* Keep native editing/validation, but let the table cell be the input surface.
+     Include the legacy measurement/defect grids, which render without <table>. */
+  html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
+  :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]) {
+    background:transparent!important;
+    border-color:transparent!important;
+    border-radius:0!important;
+    box-shadow:none!important;
+    text-align:center!important;
+    caret-color:var(--accent,#16876b);
+  }
+  html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
+  :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]):not(:disabled):not([readonly]):focus {
+    outline:2px solid var(--accent,#16876b)!important;
+    outline-offset:-2px;
+  }
+  html body.qc-liquid-glass :is(table td,#measRows,#defectsRows)
+  :is(textarea,input:not([type]),input[type=text],input[type=number],input[type=date]):is([aria-invalid=true],:user-invalid) {
+    outline:2px solid var(--red,#c53030)!important;
+    outline-offset:-2px;
+  }
   body.qc-liquid-glass .page table :is(th,td),
   body.qc-liquid-glass .qir-dialog table :is(th,td) {
     text-align:center!important;
