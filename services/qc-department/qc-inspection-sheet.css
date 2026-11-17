@@ -42,7 +42,7 @@
 :is(#page-records,#page-review) .qis-photo-actions{display:flex;flex:none;gap:4px;margin-top:0}
 :is(#page-records,#page-review) .qis-photo-actions label{position:relative;display:flex;align-items:center;justify-content:center;min-height:44px;min-width:52px;padding:5px;border:1px solid #bbc8c4;border-radius:4px;cursor:pointer;overflow:hidden;box-sizing:border-box}
 :is(#page-records,#page-review) .qis-photo-actions input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}
-:is(#page-records,#page-review) .qis-table :focus-visible{outline:2px solid #16876b;outline-offset:2px}
+:is(#page-records,#page-review) .qis-table :is(button,a):focus-visible{outline:2px solid #16876b;outline-offset:2px}
 :is(#page-records,#page-review) .qis-table :is(input,textarea){caret-color:#16876b}
 :is(#page-records,#page-review) .qis-table ::selection{color:#133a2d;background:#c9e8d9}
 :is(#page-records,#page-review) :is(.qis-table,.qis-review-batch-actions) input[type="checkbox"]{accent-color:#16876b}
@@ -82,7 +82,6 @@
 @media(min-width:641px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:92px;--qis-po-text:168px}#page-records .qis-wrap{--qis-po-text:156px}}
 :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#e4f1e9!important}
 body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#25473c!important}
-:is(#page-records,#page-review) .qis-table tr:focus-visible{outline:2px solid #16876b;outline-offset:-2px}
 @media(max-width:640px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:84px;--qis-po-text:108px}:is(#page-records,#page-review) .qis-table [data-column=customer],:is(#page-records,#page-review) .qis-table [data-column=poNo]{min-width:0}}
 .qis-review-actions button,.qia-dialog button{padding:8px 14px;border:1px solid var(--border,#cbd5e1);border-radius:8px;background:var(--surface,#fff);color:inherit}.qia-badge{display:block;font-size:11px;border:0;border-bottom:1px dotted currentColor;background:transparent;color:var(--text-dim,#52657d);padding:0;cursor:pointer}.qia-dialog{max-height:88vh;max-width:min(760px,95vw);overflow:auto}.qia-dialog textarea{display:block;box-sizing:border-box;width:100%;font:inherit;padding:10px}.qia-event{padding:12px 0;border-bottom:1px solid var(--border,#cbd5e1);white-space:pre-wrap;overflow-wrap:anywhere}.qia-event p{margin:6px 0}.qia-badge:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
 
@@ -270,7 +269,7 @@ body.qc-liquid-glass .qia-event summary span{margin-left:auto;font-size:12px}
 body.qc-liquid-glass .qia-event-content{padding:4px 12px 12px;border-left:2px solid var(--border-hi);margin:0 8px 10px;white-space:pre-wrap}
 body.qc-liquid-glass .qis-table .qis-review-input{border-color:var(--border);transition:border-color .16s ease,background .16s ease,box-shadow .16s ease}
 body.qc-liquid-glass .qis-table .qis-review-input:hover{border-color:var(--border-hi)}
-body.qc-liquid-glass .qis-table .qis-review-input:focus{border-color:#16876b;background:var(--bg-card);box-shadow:0 0 0 2px color-mix(in srgb,#16876b 14%,transparent)}
+body.qc-liquid-glass .qis-table .qis-review-input:focus{border-color:var(--border);background:var(--bg-card);box-shadow:none}
 body.theme-dark.qc-liquid-glass .qis-notice{box-shadow:0 16px 48px #0006,inset 0 1px 0 #ffffff0d}
 body.theme-dark .qis-reversal-badge{background:#263853;color:#d7e6ff;border-color:#516a90}
 @media(max-width:640px){body.qc-liquid-glass .qia-event summary{flex-wrap:wrap;gap:5px 10px}body.qc-liquid-glass .qia-event summary span{margin-left:0}body.qc-liquid-glass .qis-table input.qis-review-input{font-size:16px}}
@@ -418,7 +417,7 @@ html body #page-review .qis-table textarea{height:var(--qis-long-height);min-hei
   #page-review select[data-review-field=reportStatus] option:is(:hover,:focus,:checked){background:color-mix(in srgb,var(--accent) 14%,var(--bg-card));color:var(--text-hi)}
   @media(pointer:coarse){#page-review select[data-review-field=reportStatus] option{min-height:44px}}
 }
-html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-result],[data-problem],[data-remark],[data-improvement]):focus{outline:2px solid #16876b;outline-offset:-2px;box-shadow:none}
+html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-result],[data-problem],[data-remark],[data-improvement]):focus{outline:none;box-shadow:none}
 #page-review .qis-review-value{white-space:pre-wrap;overflow-wrap:anywhere}
 #page-review button.qis-review-value{
   display:block;width:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:inherit;text-align:center;cursor:text;
