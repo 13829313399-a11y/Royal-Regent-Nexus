@@ -26,7 +26,17 @@ def test_volume_bootstrap_never_overwrites_existing_files(tmp_path):
 def test_empty_or_symlink_backups_are_rejected(tmp_path):
     release=module();source=tmp_path/'source';source.mkdir()
     with pytest.raises(RuntimeError,match='empty'):release.restore_empty_volume(source,tmp_path/'target')
-    (source/'link').symlink_to(tmp_path/'elsewhere')
+    link = source / 'link'
+    target = tmp_path / 'elsewhere'
+    target.mkdir()
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) != 1314:
+            raise
+        # Windows permits directory junctions without the symlink privilege.
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
     with pytest.raises(RuntimeError,match='symlink'):release.inventory(source)
 
 

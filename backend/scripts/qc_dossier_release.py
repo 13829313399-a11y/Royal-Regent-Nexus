@@ -46,8 +46,8 @@ def file_hash(path):
 def inventory(root):
     result = {}
     for path in sorted(root.rglob('*')):
-        if path.is_symlink():
-            raise RuntimeError('QC backup contains a symlink; explicit review required')
+        if path.is_symlink() or (os.name == 'nt' and path.is_junction()):
+            raise RuntimeError('QC backup contains a symlink or directory junction; explicit review required')
         if path.is_file():
             result[str(path.relative_to(root))] = file_hash(path)
     return result
