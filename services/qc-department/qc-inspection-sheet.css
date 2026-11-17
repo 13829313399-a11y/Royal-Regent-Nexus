@@ -32,8 +32,8 @@
 :is(#page-records,#page-review) .qis-table [data-save-status]{display:block;flex:1;min-height:0;overflow:auto;max-width:180px;font-size:11px;color:#526e63;line-height:16px;margin-top:0}
 :is(#page-records,#page-review) .qis-save-feedback button{flex:none;min-height:32px;font:inherit;font-size:11px}
 :is(#page-records,#page-review) .qis-table .qis-error,:is(#page-records,#page-review) .qis-error{color:#b42318}
-:is(#page-records,#page-review) .qis-table [data-column=photos]{width:220px;min-width:220px;max-width:220px;box-sizing:border-box}
-:is(#page-records,#page-review) .qis-photo-editor{display:flex;align-items:flex-start;gap:6px;height:var(--qis-content-height);width:203px}
+:is(#page-records,#page-review) .qis-table [data-column=photos]{width:var(--qis-photo-width);min-width:var(--qis-photo-width);max-width:var(--qis-photo-width);box-sizing:border-box}
+:is(#page-records,#page-review) .qis-photo-editor{display:flex;align-items:flex-start;gap:6px;height:var(--qis-content-height);width:calc(var(--qis-photo-width) - 17px);justify-content:center}
 :is(#page-records,#page-review) .qis-photos{display:flex;flex-wrap:nowrap;gap:6px;min-width:0;flex:1;height:var(--qis-content-height);overflow-x:auto;overflow-y:hidden}
 :is(#page-records,#page-review) .qis-photos:empty{display:none}
 :is(#page-records,#page-review) .qis-photo{display:inline-flex;flex:none;position:relative;padding-right:25px;height:36px}
@@ -49,8 +49,8 @@
 @media(max-width:640px){:is(#page-records,#page-review) .qis-wrap{--qis-row-height:88px}:is(#page-records,#page-review) .qis-table .qis-mobile-key{display:block;color:inherit;height:20px;line-height:20px;margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}:is(#page-records,#page-review) .qis-table textarea{font-size:16px}:is(#page-records,#page-review) .qis-table select{font-size:16px}:is(#page-records,#page-review) .qis-result-editor select{min-height:44px}}
 
 
-:is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]){width:196px;min-width:196px;max-width:196px;box-sizing:border-box}
-:is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]) .qis-cell{width:179px}
+:is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]){width:166px;min-width:166px;max-width:166px;box-sizing:border-box}
+:is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]) .qis-cell{width:149px}
 :is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]) textarea{width:100%;min-width:0}
 
 :is(#page-records,#page-review) .qis-wrap{--qis-customer-text:clamp(140px,16vw,220px);--qis-po-text:clamp(170px,16vw,220px)}
@@ -59,6 +59,27 @@
 :is(#page-records,#page-review) .qis-table th[data-column=customer],:is(#page-records,#page-review) .qis-table th[data-column=poNo]{z-index:5;background:#edf3f1}
 :is(#page-records,#page-review) .qis-table [data-column=customer] .qis-cell{width:var(--qis-customer-text)}
 :is(#page-records,#page-review) .qis-table [data-column=poNo] .qis-cell{width:var(--qis-po-text)}
+/* Bounded content widths shared by the workbench and review tables. */
+:is(#page-records,#page-review) .qis-table td:is([data-column="date"],[data-column="country"],[data-column="productNo"],[data-column="productName"],[data-column="quantity"],[data-column="unitsPerCarton"],[data-column="cartonCount"],[data-column="production"],[data-column="agency"],[data-column="customerPo"],[data-column="submittedAt"],[data-column="confirmedAt"],[data-column="lastChangedAt"],[data-column="reviewState"],[data-column="lastLocation"],[data-column="lastActor.name"]){min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="date"]{--qis-min-text:104px;--qis-max-text:116px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="country"]{--qis-min-text:64px;--qis-max-text:156px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="productNo"]{--qis-min-text:92px;--qis-max-text:128px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="productName"]{--qis-min-text:76px;--qis-max-text:132px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="quantity"]{--qis-min-text:44px;--qis-max-text:80px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="unitsPerCarton"]{--qis-min-text:36px;--qis-max-text:60px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="cartonCount"]{--qis-min-text:40px;--qis-max-text:68px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="production"]{--qis-min-text:40px;--qis-max-text:76px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="agency"]{--qis-min-text:36px;--qis-max-text:64px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="customerPo"]{--qis-min-text:68px;--qis-max-text:120px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="submittedAt"]{--qis-min-text:108px;--qis-max-text:108px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="confirmedAt"]{--qis-min-text:108px;--qis-max-text:108px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="lastChangedAt"]{--qis-min-text:108px;--qis-max-text:108px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="reviewState"]{--qis-min-text:60px;--qis-max-text:76px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="lastLocation"]{--qis-min-text:72px;--qis-max-text:100px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="lastActor.name"]{--qis-min-text:64px;--qis-max-text:88px;min-width:0}
+:is(#page-records,#page-review) .qis-table :is([data-column="date"],[data-column="country"],[data-column="productNo"],[data-column="productName"],[data-column="quantity"],[data-column="unitsPerCarton"],[data-column="cartonCount"],[data-column="production"],[data-column="agency"],[data-column="customerPo"],[data-column="submittedAt"],[data-column="confirmedAt"],[data-column="lastChangedAt"],[data-column="reviewState"],[data-column="lastLocation"],[data-column="lastActor.name"]) .qis-cell{width:max-content;min-width:var(--qis-min-text);max-width:var(--qis-max-text);margin-inline:auto;white-space:normal;overflow-wrap:anywhere;line-height:17px}
+:is(#page-records,#page-review) .qis-table th:is([data-column=submittedAt],[data-column=confirmedAt],[data-column=lastChangedAt]){width:108px;max-width:108px;white-space:normal}
+@media(min-width:641px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:92px;--qis-po-text:168px}#page-records .qis-wrap{--qis-po-text:156px}}
 :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#e4f1e9!important}
 body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#25473c!important}
 :is(#page-records,#page-review) .qis-table tr:focus-visible{outline:2px solid #16876b;outline-offset:-2px}
@@ -373,7 +394,7 @@ body.theme-dark.qc-liquid-glass #page-review .qis-table .qis-review-customer-sta
 :is(#page-records,#page-review) .qis-table [data-column="inspector"]{min-width:120px;max-width:160px}
 
 /* Review: matching widths for short fields and multiline fields; stored values read like other cells. */
-#page-review .qis-wrap{--qis-short-field:132px;--qis-long-field:179px;--qis-short-height:34px;--qis-long-height:51px}
+#page-review .qis-wrap{--qis-short-field:100px;--qis-long-field:149px;--qis-short-height:34px;--qis-long-height:51px}
 #page-review .qis-table :is([data-column=result],[data-column=firstResponsible],[data-column=secondResponsible],[data-column=reportStatus],[data-column="inspectionExecution.institution"]){
   box-sizing:border-box;width:calc(var(--qis-short-field) + 17px);min-width:calc(var(--qis-short-field) + 17px);max-width:calc(var(--qis-short-field) + 17px);
 }
@@ -391,7 +412,7 @@ html body #page-review .qis-table textarea{height:var(--qis-long-height);min-hei
 html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-result],[data-problem],[data-remark],[data-improvement]):focus{outline:2px solid #16876b;outline-offset:-2px;box-shadow:none}
 #page-review .qis-review-value{white-space:pre-wrap;overflow-wrap:anywhere}
 #page-review button.qis-review-value{
-  display:block;width:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:inherit;text-align:start;cursor:text;
+  display:block;width:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit;font:inherit;text-align:center;cursor:text;
 }
 #page-review button.qis-review-value:hover{text-decoration:underline;text-decoration-color:var(--text-dim);text-underline-offset:3px}
 #page-review button.qis-review-value:focus-visible{outline-offset:-2px}
@@ -400,3 +421,40 @@ html body.qc-liquid-glass #page-review .qis-table :is(.qis-review-input,[data-re
 @media(max-width:640px){
   #page-review .qis-wrap{--qis-short-field:132px;--qis-long-field:clamp(133px,calc(100vw - 205px),179px);--qis-short-height:44px;--qis-long-height:64px}
 }
+
+/* Keep alignment stable between saved text, editors and row actions. */
+:is(#page-records,#page-review) .qis-table{--qis-photo-width:72px}
+:is(#page-records,#page-review) .qis-table:has(.qis-photo-actions){--qis-photo-width:132px}
+:is(#page-records,#page-review) .qis-table:has(.qis-photo){--qis-photo-width:112px}
+:is(#page-records,#page-review) .qis-table:has(.qis-photo-actions):has(.qis-photo){--qis-photo-width:206px}
+:is(#page-records,#page-review) .qis-photo:not(:has(button)){padding-right:0}
+:is(#page-records,#page-review) .qis-cell{align-content:safe center;text-align:center}
+:is(#page-records,#page-review) .qis-table :is(input:not([type=checkbox]):not([type=file]),select,textarea){text-align:center;text-align-last:center}
+#page-records .qis-date-sort{justify-content:center;text-align:center}
+:is(#page-records,#page-review) .qis-row-actions{justify-content:center}
+:is(#page-records,#page-review) .qis-po-info{align-content:safe center}
+:is(#page-records,#page-review) .qia-badge{margin-inline:auto}
+:is(#page-records,#page-review) .qis-result-editor{justify-content:center}
+:is(#page-records,#page-review) .qis-photo-editor,:is(#page-records,#page-review) .qis-photos{align-items:center}
+:is(#page-records,#page-review) .qis-table [data-column=inspector]{min-width:100px;max-width:117px}
+:is(#page-records,#page-review) .qis-table [data-column=inspector] .qis-cell{width:100px}
+:is(#page-records,#page-review) .qis-table [data-column=inspector] select{min-width:0;width:100%;max-width:100%}
+@media(max-width:640px){:is(#page-records,#page-review) .qis-table:has(.qis-photo-actions):has(.qis-photo){--qis-photo-width:196px}}
+html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-table [data-column=photos]{width:var(--qis-photo-width);min-width:var(--qis-photo-width);max-width:var(--qis-photo-width)}
+html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-editor{width:calc(var(--qis-photo-width) - 17px)}
+
+@media(min-width:641px){
+  #page-review .qis-wrap{--qis-customer-text:124px;--qis-po-text:168px}
+  #page-review .qis-reversal-badge{margin:0 auto 1px;padding:0 5px;line-height:14px}
+}
+
+/* Workbench drag selection: business columns and frozen offsets stay unchanged. */
+#page-records .qis-submit-actions{display:flex;justify-content:flex-end;flex:0 0 auto;position:sticky;bottom:0;z-index:5;padding:0;border:0;background:none;box-shadow:none}
+#page-records #qis-record-batch,.qia-dialog .qis-submit-batch{padding:8px 13px;border:1px solid var(--accent);border-radius:7px;background:var(--accent);color:#fff;font:inherit;white-space:nowrap;cursor:pointer;min-height:36px}
+#page-records #qis-record-batch:disabled{background:var(--bg-hover);border-color:var(--border);color:var(--text-dim);cursor:not-allowed}
+#page-records .qis-table tr.qis-batch-selected>td{background:color-mix(in srgb,var(--accent) 14%,var(--bg-card))!important}
+#page-records .qis-table tr.qis-batch-selected>td:first-child{box-shadow:inset 3px 0 var(--accent)}
+#page-records .qis-drag-selecting,#page-records .qis-drag-selecting *{user-select:none!important;cursor:crosshair!important}
+.qis-submit-list{padding-left:20px;max-height:40vh;overflow:auto;line-height:1.8}
+.qis-submit-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+@media(max-width:640px){#page-records #qis-record-batch{min-height:44px}}

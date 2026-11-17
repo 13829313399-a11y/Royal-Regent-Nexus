@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   if(!root.__QC_NEXUS)return;
-  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
+  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
   let notificationGeneration=0;
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
@@ -29,7 +29,7 @@
   const textFields=['remark','improvement','inspectionProblem'];
   const savedFields=d=>{const fields=Object.fromEntries(['result',...textFields.filter(k=>model.view==='review'||k!=='improvement'),...(model.view==='review'?Object.keys(reviewFields):[])].map(k=>[k,d[k]??'']));const keys=[...d.executionDirty].filter(k=>model.view==='review'||['sampleQuantity','inspectorId'].includes(k));if(keys.length)fields.inspectionExecution=Object.fromEntries(keys.map(k=>[k,JSON.parse(JSON.stringify(d.inspectionExecution[k]))]));return fields;};
   const differs=(d,sent)=>JSON.stringify(savedFields(d))!==JSON.stringify(sent);
-  function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(selected));});}
+  function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(model.view==='records'?model.recordChecked.has(n.dataset.entry):selected));});}
   function freezeColumns(host){const first=host.querySelector('th[data-column=customer]');if(first){host.style.setProperty('--qis-customer-width',first.getBoundingClientRect().width+'px');host.style.setProperty('--qis-frozen-width',(first.getBoundingClientRect().width+(host.querySelector('th[data-column=poNo]')?.getBoundingClientRect().width||0))+'px');}}
   function displayColumns(columns){
     const tail=['result','inspectionExecution.sampleQuantity',...(model.view==='review'?[]:['inspectionProblem']),'remark','photos','inspector',...(model.view==='review'?['inspectionProblem','inspectionExecution.analysisReason','improvement']:[])];
@@ -81,8 +81,8 @@
     if(!model.drafts.has(row.id))model.drafts.set(row.id,{...Object.fromEntries(Object.keys(reviewFields).map(k=>[k,row[k]??''])),inspectionExecution:Object.fromEntries(Object.keys(executionFields).map(k=>[k,row.inspectionExecution?.[k]??row[k]??(['defects','measurements'].includes(k)?[]:'')])),executionDirty:new Set(),result:row.result,remark:row.remark,improvement:row.improvement||'',inspectionProblem:row.inspectionProblem||'',dirty:false,busy:false,error:'',timer:null,queue:[],conflict:false});
     return model.drafts.get(row.id);
   }
-  function navigationState(){return {dirty:Boolean(model.detailEditing)||[...model.drafts.values()].some(d=>d.dirty||d.queue.length||d.error),busy:model.reviewBusy||[...model.drafts.values()].some(d=>d.busy||d.reading||d.submitting)};}
-  function status(id){
+  function navigationState(){return {dirty:Boolean(model.detailEditing)||[...model.drafts.values()].some(d=>d.dirty||d.queue.length||d.error),busy:model.submitBusy||model.reviewBusy||[...model.drafts.values()].some(d=>d.busy||d.reading||d.submitting)};}
+  function status(id,skipRecordControls=false){
     const d=model.drafts.get(id),node=root.document.querySelector('[data-save-status="'+id+'"]');
     if(!node||!d)return;
     node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy)?'保存中…':d.dirty?'等待自动保存…':model.view!=='review'||d.savedUntil>Date.now()?'已保存':'';
@@ -90,6 +90,7 @@
     node.classList.toggle('qis-error',Boolean(d.error));
     root.document.querySelectorAll('[data-review-status="'+id+'"]').forEach(label=>{label.textContent=node.textContent;label.classList.toggle('qis-error',Boolean(d.error));});
     root.document.querySelectorAll('[data-retry="'+id+'"],[data-photo-retry="'+id+'"]').forEach(retry=>{retry.hidden=!d.error;retry.textContent=d.rejectedPhoto?'清除失败照片':d.fileError?'清除失败选择':d.conflict?'核对版本并重试':'重试';});
+    if(model.view==='records'&&!skipRecordControls)updateRecordControls();
     const photoStatus=root.document.querySelector('[data-photo-status="'+id+'"]');
     if(photoStatus){photoStatus.textContent=d.error?'未完成：'+d.error:d.reading?'正在读取照片…':d.busyKind==='photo'&&d.busy||d.queue.some(job=>job.action==='photos')?'照片上传中…':byId(id)?.photos.length?'已附 '+byId(id).photos.length+' 张':'';photoStatus.classList.toggle('qis-error',Boolean(d.error));}
   }
@@ -146,7 +147,7 @@
     finally{d.busy=false;d.busyKind=null;status(id);}
   }
   function edit(id,key,value,immediate=false){
-    const d=draft(byId(id));if(d[key]===value)return;d[key]=value;d.dirty=true;clearTimeout(d.timer);status(id);
+    if(model.submitBusy)return;const d=draft(byId(id));if(d[key]===value)return;d[key]=value;d.dirty=true;clearTimeout(d.timer);status(id);
     if(!d.error){if(immediate)pump(id);else d.timer=setTimeout(()=>pump(id),650);}
   }
   function offerConflictRecovery(){
@@ -187,9 +188,11 @@
     d.error='';d.conflict=false;await pump(id);
   }
   async function load(view='records',tab=model.reviewTab){
+    finishRecordDrag(true);
     if(model.loading){model.nextLoad={view,tab};return;}
     if(navigationState().dirty||navigationState().busy){root.showToast?.('请先完成本行保存或重试；未保存内容仍保留。','error');return;}
     if(model.view!==view){root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();model.items=[];model.drafts.clear();model.checked.clear();}
+    model.recordChecked.clear();
     if(model.reviewTab!==tab)model.checked.clear();model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
@@ -235,7 +238,7 @@
         (canEdit(row)?'<button type="button" data-remove-photo="'+esc(photo.id)+'" aria-label="删除 '+esc(photo.name)+'">×</button>':'')+'</span>';
     }).join('');
   }
-  function editExecution(id,key,value,immediate=false){const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
+  function editExecution(id,key,value,immediate=false){if(model.submitBusy)return;const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
   function reviewEditor(row,key,label,type,value){
     const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
     if(['inspector','institution'].includes(key)){
@@ -289,10 +292,10 @@
     return '<div class="qis-inline-value"'+(hasContent(value)?' data-show-value':'')+'><button type="button" class="qis-review-value" aria-label="'+esc(label+'：'+value+'，点击编辑')+'">'+esc(value)+'</button>'+control+'</div>';
   }
   function rowHTML(row,columns=model.columns,customerStart=false){
-    const d=draft(row),disabled=canEdit(row)?'':'disabled';
+    const d=draft(row),disabled=canEdit(row)&&!model.submitBusy?'':'disabled';
     // Fixed-height inner cells keep long text, save feedback and photos within one standard row.
     const mobileKey='<small class="qis-mobile-key" title="'+esc(row.poNo+' · '+row.productNo)+'">'+esc(row.poNo)+' · '+esc(row.productNo)+'</small>';
-    const action=model.view==='review'?(model.reviewTab==='pending'?'<button class="qis-row-action" data-confirm="'+row.id+'" '+(editable()?'':'disabled')+'>审核确认</button>'+(canReturn(row)?'<button class="qis-row-action qis-return-action" data-return="'+row.id+'" '+(editable()?'':'disabled')+'>退回验货台</button>':''):'<button class="qis-row-action" data-revoke="'+row.id+'" '+(editable()?'':'disabled')+'>反审核</button>'):row.submittedAt&&row.reviewState!=='returned_to_inspection'?'<span class="qis-action-state">历史已完成</span>':'<button class="qis-row-action" data-submit="'+row.id+'" '+disabled+'>提交审核</button>';
+    const action=model.view==='review'?(model.reviewTab==='pending'?'<button class="qis-row-action" data-confirm="'+row.id+'" '+(editable()?'':'disabled')+'>审核确认</button>'+(canReturn(row)?'<button class="qis-row-action qis-return-action" data-return="'+row.id+'" '+(editable()?'':'disabled')+'>退回验货台</button>':''):'<button class="qis-row-action" data-revoke="'+row.id+'" '+(editable()?'':'disabled')+'>反审核</button>'):'';
     return '<tr tabindex="0" aria-selected="'+(row.id===model.selectedId)+'" class="'+(row.id===model.selectedId?'qis-selected ':'')+(customerStart?'qis-review-customer-start':'')+'" data-entry="'+row.id+'">'+columns.map(({key})=>{
       const cell=(content,attributes='')=>'<td data-column="'+key+'"'+attributes+'><div class="qis-cell">'+content+'</div></td>';
       if(key==='inspectionExecution.institution'&&reviewGroup(row)!=='客验')return cell('—',' class="qis-not-applicable"');
@@ -317,7 +320,7 @@
       const value=key==='date'?dateText(row):key==='reviewState'?(row.legacyCompleted?'历史已完成':{pending:'待审核',approved:'已审核'}[row.reviewState]||'—'):Array.isArray(raw)?raw.map(v=>Object.entries(v).map(([k,x])=>k+'：'+x).join('；')).join('\n'):raw;
       const note=key==='date'?[row.dateFrom,row.dateTo].filter(Boolean).join(' 至 '):scalar(value);
       const history=key==='poNo'&&row.sourceWarning?row.sourceWarning:key==='poNo'&&row.historicalResult&&!d.result?'原历史结论：'+row.historicalResult+'；请选择 PASS / FAIL / PENDING / LG':'';
-      if(key==='poNo')return cell('<div class="qis-po-info" title="'+esc(note+(row.batch?' · '+row.batch:''))+'">'+esc(value??'')+(row.reviewState==='returned_to_inspection'?'<small class="qis-reinspection">退回重新验货</small>':row.batch?'<small>'+esc(row.batch)+'</small>':'')+(history?'<small class="qis-error">'+esc(history)+'</small>':'')+'</div><div class="qis-row-actions">'+action+'</div>',' class="qis-po-actions"');
+      if(key==='poNo')return cell('<div class="qis-po-info" title="'+esc(note+(row.batch?' · '+row.batch:''))+'">'+esc(value??'')+(row.reviewState==='returned_to_inspection'?'<small class="qis-reinspection">退回重新验货</small>':row.batch?'<small>'+esc(row.batch)+'</small>':'')+(history?'<small class="qis-error">'+esc(history)+'</small>':'')+'</div>'+(action?'<div class="qis-row-actions">'+action+'</div>':''),' class="qis-po-actions"');
       return cell((key==='customer'&&model.view==='review'?audit().reversalBadge(row):'')+(key==='customer'&&model.view==='review'?'<input type="checkbox" data-review-check="'+row.id+'" aria-label="选择 '+esc(row.customer+' '+row.poNo)+'" '+(model.checked.has(row.id)?'checked':'')+'> ':'')+esc(value??'')+(key==='customer'&&row.testData?'<small>测试数据</small>':'')+(key==='poNo'&&row.batch?'<small>'+esc(row.batch)+'</small>':'')+(history?'<small class="qis-error">'+esc(history)+'</small>':'')+(key==='customer'&&model.view==='review'?audit().badge(row):''),' title="'+esc(note+(model.view==='review'&&['customer','poNo'].includes(key)?'\n'+audit().hint(row):''))+'"');
     }).join('')+'</tr>';
   }
@@ -352,6 +355,7 @@
   }
 
   function render(){
+    finishRecordDrag(true);
     const host=root.document.getElementById(model.view==='review'?'reviewTableWrap':'recordsTableWrap');if(!host)return;
     host.classList.add('qis-wrap');updateTaskFilters();root.updateRecordsDateLabel?.();
     const active=root.document.activeElement;
@@ -368,7 +372,7 @@
       }
       return true;
     });
-    if(reviewing)updateReviewControls(rows);
+    if(reviewing)updateReviewControls(rows);else updateRecordControls();
     const ascending=model.recordsSort==='date-asc';
     const sortHint=ascending?'点击按验货日期倒序，较晚日期在前':'点击按验货日期正序，较早日期在前';
     const headerCells=columns.map(c=>!reviewing&&c.key==='date'
@@ -389,7 +393,7 @@
     if(!host._qisObserved&&root.ResizeObserver){host._qisObserved=true;new root.ResizeObserver(()=>freezeColumns(host)).observe(host);}
     rows.forEach(row=>{
       const d=draft(row),node=host.querySelector('[data-entry="'+row.id+'"]');
-      node.onclick=()=>selectRow(row.id);node.addEventListener('focusin',()=>selectRow(row.id));
+      node.onclick=()=>{if(!suppressRecordClick&&!recordDrag)selectRow(row.id);};node.addEventListener('focusin',()=>selectRow(row.id));
       const result=node.querySelector('[data-result]');if(result)result.onchange=e=>edit(row.id,'result',e.target.value,true);
       for(const [field,attribute] of [['remark','remark'],['improvement','improvement'],['inspectionProblem','problem'],...Object.keys(reviewFields).map(k=>[k,'review-field="'+k+'"'])]){
         const input=node.querySelector('[data-'+attribute+']');if(!input)continue;
@@ -415,14 +419,14 @@
         d.inspectionExecution[key]=selected?.name||'';d.executionDirty.add(key);editExecution(row.id,idKey,input.value,true);
       });
       node.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>detailEditor(row.id,button.dataset.detail));
-      const submit=node.querySelector('[data-submit]');if(submit)submit.onclick=()=>submitRow(row.id);
       const check=node.querySelector('[data-review-check]');if(check)check.onchange=()=>{check.checked?model.checked.add(row.id):model.checked.delete(row.id);updateReviewControls(filtered());};
       const returnButton=node.querySelector('[data-return]');if(returnButton)returnButton.onclick=()=>returnToInspection(row.id);
       const confirm=node.querySelector('[data-confirm]'),revoke=node.querySelector('[data-revoke]');if(confirm)confirm.onclick=()=>reviewAction('confirm',[row.id]);if(revoke)revoke.onclick=()=>reviewAction('revoke',[row.id]);
       node.querySelectorAll('[data-retry],[data-photo-retry]').forEach(button=>button.onclick=()=>retry(row.id));
       node.querySelectorAll('input[type=file]').forEach(control=>control.onchange=()=>upload(row.id,control));
-      bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id);
+      bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id,true);
     });
+    if(!reviewing){updateRecordControls();bindRecordSelection(host);}
     audit()?.bind(host,model.items);
     if(!editing?.entry)return;
     const next=editing.field.startsWith('execution:')?host.querySelector('[data-entry="'+editing.entry+'"] [data-execution-field="'+editing.field.slice(10)+'"]'):editing.field.startsWith('review:')?host.querySelector('[data-entry="'+editing.entry+'"] [data-review-field="'+editing.field.slice(7)+'"]'):host.querySelector('[data-'+editing.field+'="'+editing.entry+'"]');
@@ -438,6 +442,7 @@
     try{await uploadFiles(id,files);}finally{control.value='';control.disabled=false;}
   }
   async function uploadFiles(id,files){
+    if(model.submitBusy)return;
     const row=byId(id);if(!row||!canEdit(row)||!files.length)return;
     const d=draft(row);d.reading=(d.reading||0)+1;status(id);
     // Preserve paste/file-selection order and keep navigation guarded through all reads.
@@ -462,7 +467,7 @@
     if(!row||!host?.querySelector('[data-entry="'+row.id+'"]')){root.showToast?.('请先点击选中要添加照片的记录','error');return;}
     event.preventDefault();
     if(!canEdit(row)){root.showToast?.('当前记录只读；如需修改，请先反审核','error');return;}
-    if(model.loading||model.reviewBusy||draft(row).submitting){root.showToast?.('正在处理记录，请完成后再粘贴照片','error');return;}
+    if(model.loading||model.reviewBusy||model.submitBusy||draft(row).submitting){root.showToast?.('正在处理记录，请完成后再粘贴照片','error');return;}
     uploadFiles(row.id,files);
   }
   root.document.addEventListener('paste',pastePhotos);
@@ -478,32 +483,141 @@
     do{await pump(id);if(d.busy||d.reading)await new Promise(resolve=>setTimeout(resolve,20));}while(d.busy||d.reading);
     if(d.dirty||d.error||d.queue.length){const error=Error(d.error||'本行仍有未保存内容或失败照片，请先重试保存。');error.field=d.errorKind==='photo'||d.queue.length?'photos':'remark';throw error;}
   }
-  const notices=new Map();
-  function notifySubmissionFailure(row,error){
-    notices.get(row.id)?.();
-    let host=root.document.getElementById('qis-notifications');
-    if(!host){host=root.document.createElement('aside');host.id='qis-notifications';host.setAttribute('aria-label','验货操作通知');root.document.body.append(host);}
-    const field=error.field||(/验货结果|PASS|FAIL|PENDING|LG/.test(error.message)?'result':''),labels={result:'验货结果',remark:'备注、改进措施或验货问题',photos:'照片'};
-    const panel=root.document.createElement('section');panel.className='qis-notice';panel.setAttribute('role','alert');panel.setAttribute('aria-atomic','true');panel.dataset.noticeEntry=row.id;
-    panel.innerHTML='<button type="button" class="qis-notice-close" aria-label="关闭提交失败通知">×</button><strong>ⓘ 无法提交审核</strong><p>客户：'+esc(row.customer||'—')+'<br>PO：'+esc(row.poNo||'—')+'</p>'+(field?'<p>需检查：'+esc(labels[field])+'</p>':'')+'<p>'+esc(error.message||'未收到提交确认，请刷新核对后重试。')+'</p><button type="button" data-locate>定位记录'+(field?'及字段':'')+'</button>';
-    host.append(panel);
-    const notice=audit().lifecycle(panel,{onRemove:()=>{if(notices.get(row.id)===notice.destroy)notices.delete(row.id);}});
-    notices.set(row.id,notice.destroy);panel.querySelector('.qis-notice-close').onclick=notice.close;
-    panel.querySelector('[data-locate]').onclick=()=>{
-      const node=root.document.querySelector('[data-entry="'+row.id+'"]');if(!node)return;
-      selectRow(row.id);const cell=node.querySelector('[data-column="'+(field||'poNo')+'"]'),input=cell?.querySelector('select,textarea,button,input');
-      (input||cell||node).scrollIntoView?.({block:'nearest',inline:'center'});input?.focus();cell?.classList.add('qis-attention');setTimeout(()=>cell?.classList.remove('qis-attention'),7000);
-    };
+  function recordReadyReason(row){
+    if(!canEdit(row))return '当前记录不可提交';
+    const d=draft(row);
+    if(!model.results.includes(d.result))return '请先填写验货结果';
+    if(d.error)return '请先处理保存失败';
+    if(d.reading||d.busy||d.dirty||d.queue.length||d.composing||d.submitting)return '等待内容和照片保存完成';
+    return '';
   }
-  async function submitRow(id){
-    const row=byId(id);if(!row||!canEdit(row))return;const d=draft(row);if(d.submitting)return;
-    const button=root.document.querySelector('[data-submit="'+id+'"]');if(button)button.disabled=true;d.submitting=true;
-    try{
-      if(!model.results.includes(d.result)){const error=Error('该订单尚未选择有效验货结果，请选择 PASS、FAIL、PENDING 或 LG 后重试。');error.field='result';throw error;}
-      await flushRow(id);const saved=await api('entries/'+id+'/submit',{revision:byId(id).revision});
-      accept(id,saved);notices.get(id)?.();model.items=model.items.filter(r=>r.id!==id);model.drafts.delete(id);render();root.showToast?.('已提交审核，请到审核中心复核确认','success');
-    }catch(error){notifySubmissionFailure(row,error);if(button)button.disabled=false;}
-    finally{d.submitting=false;}
+  function recordControls(){
+    const table=root.document.getElementById('recordsTableWrap');
+    if(!table||root.document.getElementById('qis-record-batch'))return;
+    const actions=root.document.createElement('div');actions.className='qis-submit-actions';
+    const button=root.document.createElement('button');button.type='button';button.id='qis-record-batch';button.className='qis-submit-batch';
+    actions.append(button);table.after(actions);button.onclick=submitSelected;
+  }
+  function updateRecordControls(){
+    if(model.view!=='records')return;
+    recordControls();
+    const key=JSON.stringify(['searchInput','qisTaskDate','qisTaskCustomer'].map(id=>root.document.getElementById(id)?.value||''));
+    if(key!==model.recordFilterKey){model.recordChecked.clear();model.recordAnchor='';model.recordFilterKey=key;}
+    const rows=filtered(),ids=new Set(rows.map(r=>r.id));
+    for(const id of model.recordChecked)if(!ids.has(id))model.recordChecked.delete(id);
+    const selected=rows.filter(r=>model.recordChecked.has(r.id));
+    const button=root.document.getElementById('qis-record-batch');if(!button)return;
+    button.disabled=!selected.length||selected.some(recordReadyReason)||model.loading||!!model.error||model.submitBusy||!editable();
+    button.textContent=model.submitBusy?'正在提交…':'提交审核'+(selected.length?'（'+selected.length+'）':'');
+    root.document.querySelectorAll('#recordsTableWrap [data-entry]').forEach(node=>{
+      const selected=model.recordChecked.has(node.dataset.entry);
+      node.classList.toggle('qis-batch-selected',selected);node.classList.toggle('qis-selected',node.dataset.entry===model.selectedId);node.setAttribute('aria-selected',String(selected));
+    });
+  }
+  let recordDrag=null,recordDragFrame=0,suppressRecordClick=false;
+  function finishRecordDrag(cancel=false){
+    if(!recordDrag)return;
+    const drag=recordDrag;recordDrag=null;root.cancelAnimationFrame(recordDragFrame);recordDragFrame=0;
+    drag.host.classList.remove('qis-drag-selecting');
+    if(drag.host.hasPointerCapture?.(drag.pointer))drag.host.releasePointerCapture(drag.pointer);
+    if(cancel)model.recordChecked=drag.before;
+    model.selectedId=model.recordChecked.size===1?[...model.recordChecked][0]:'';
+    suppressRecordClick=true;setTimeout(()=>{suppressRecordClick=false;},0);
+    updateRecordControls();
+  }
+  function chooseRecordRange(rows,start,end){
+    const next=new Set(rows.slice(Math.min(start,end),Math.max(start,end)+1).filter(row=>!recordReadyReason(row)).map(row=>row.id));
+    if(next.size===model.recordChecked.size&&[...next].every(id=>model.recordChecked.has(id)))return;
+    model.recordChecked=next;
+    model.selectedId=model.recordChecked.size===1?[...model.recordChecked][0]:'';
+    updateRecordControls();
+  }
+  root.addEventListener('blur',()=>finishRecordDrag(true));
+  root.addEventListener('pagehide',()=>finishRecordDrag(true));
+  function bindRecordSelection(host){
+    if(host._qisDragBound)return;host._qisDragBound=true;
+    const interactive=target=>target.closest('input,select,textarea,button,a,label,[contenteditable=true],[role=button]');
+    const allowed=()=>model.view==='records'&&editable()&&!model.loading&&!model.error&&!model.submitBusy;
+    const update=()=>{
+      if(!recordDrag)return;
+      const nodes=recordDrag.nodes;
+      let index=nodes.findIndex(node=>recordDrag.y<=node.getBoundingClientRect().bottom);if(index<0)index=nodes.length-1;
+      chooseRecordRange(recordDrag.rows,recordDrag.start,index);
+    };
+    const scroll=()=>{
+      if(!recordDrag)return;
+      const box=host.getBoundingClientRect(),head=host.querySelector('thead')?.getBoundingClientRect().height||0;
+      const top=Math.max(box.top+head,0)+28,bottom=Math.min(box.bottom,root.innerHeight)-28;
+      const delta=recordDrag.y<top?-Math.min(16,(top-recordDrag.y)/3):recordDrag.y>bottom?Math.min(16,(recordDrag.y-bottom)/3):0;
+      if(delta)host.scrollTop+=delta;
+      update();recordDragFrame=root.requestAnimationFrame(scroll);
+    };
+    host.addEventListener('pointerdown',event=>{
+      if(!allowed()||event.button!==0||event.pointerType==='touch'||interactive(event.target))return;
+      const node=event.target.closest('[data-entry]');if(!node)return;
+      const rows=filtered(),start=rows.findIndex(row=>row.id===node.dataset.entry);if(start<0)return;
+      event.preventDefault();host.focus({preventScroll:true});model.recordAnchor=node.dataset.entry;
+      recordDrag={host,pointer:event.pointerId,start,rows,nodes:[...host.querySelectorAll('[data-entry]')],y:event.clientY,before:new Set(model.recordChecked)};
+      host.setPointerCapture?.(event.pointerId);host.classList.add('qis-drag-selecting');update();recordDragFrame=root.requestAnimationFrame(scroll);
+    });
+    host.addEventListener('pointermove',event=>{if(recordDrag&&event.pointerId===recordDrag.pointer){recordDrag.y=event.clientY;update();}});
+    host.addEventListener('pointerup',()=>finishRecordDrag());
+    host.addEventListener('pointercancel',()=>finishRecordDrag(true));
+    host.addEventListener('lostpointercapture',()=>finishRecordDrag(true));
+    host.addEventListener('click',event=>{
+      if(!allowed()||suppressRecordClick||interactive(event.target))return;
+      const node=event.target.closest('[data-entry]'),row=node&&byId(node.dataset.entry);if(!row)return;
+      model.recordChecked=new Set(!recordReadyReason(row)?[row.id]:[]);model.recordAnchor=row.id;updateRecordControls();
+    });
+    host.addEventListener('keydown',event=>{
+      if(!allowed()||interactive(event.target))return;
+      if(event.key==='Escape'){event.preventDefault();finishRecordDrag(true);model.recordChecked.clear();model.selectedId='';updateRecordControls();return;}
+      if(!['ArrowUp','ArrowDown',' '].includes(event.key))return;
+      event.preventDefault();const rows=filtered();if(!rows.length)return;
+      let current=rows.findIndex(r=>r.id===model.recordCursor);
+      current=event.key===' '?Math.max(0,current):current<0?(event.key==='ArrowDown'?0:rows.length-1):Math.max(0,Math.min(rows.length-1,current+(event.key==='ArrowDown'?1:-1)));
+      model.recordCursor=rows[current].id;
+      const anchor=event.shiftKey?rows.findIndex(r=>r.id===model.recordAnchor):-1;
+      if(anchor<0)model.recordAnchor=rows[current].id;
+      chooseRecordRange(rows,anchor<0?current:anchor,current);
+      host.querySelector('[data-entry="'+rows[current].id+'"]')?.scrollIntoView?.({block:'nearest',inline:'nearest'});
+    });
+  }
+  function submitSelected(){
+    if(model.submitBusy||model.loading||model.error||model.view!=='records'||!editable())return;
+    const selected=filtered().filter(r=>model.recordChecked.has(r.id));
+    if(!selected.length||selected.some(recordReadyReason))return;
+    const el=audit().dialog('确认批量提交审核',
+      '<p>提交以下 <strong>'+selected.length+'</strong> 条记录到审核中心：</p><ul class="qis-submit-list">'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' <strong>'+esc(draft(r).result)+'</strong></li>').join('')+'</ul><p>只提交所选记录。未填写结果、未保存完成的记录仍留在验货台。</p><p data-feedback role="status"></p><div class="qis-submit-dialog-actions"><button type="button" data-cancel>返回检查</button><button type="button" class="qis-submit-batch" data-execute>确认提交 '+selected.length+' 条</button></div>');
+    const button=el.querySelector('[data-execute]'),feedback=el.querySelector('[data-feedback]');
+    el.querySelector('[data-cancel]').onclick=()=>{if(!model.submitBusy)el.close();};
+    el.addEventListener('cancel',event=>{if(model.submitBusy)event.preventDefault();});
+    let started=false;
+    button.onclick=async()=>{
+      if(started||model.submitBusy)return;started=true;model.submitBusy=true;
+      el.querySelectorAll('button').forEach(b=>b.disabled=true);render();
+      const failed=[];let succeeded=0;
+      for(const original of selected){
+        const row=byId(original.id);let d;
+        try{
+          if(!row||!editable())throw Error('记录或操作权限已变化，请刷新核对');
+          const reason=recordReadyReason(row);if(reason)throw Error(reason);
+          d=draft(row);d.submitting=true;
+          await flushRow(row.id);
+          const saved=await api('entries/'+row.id+'/submit',{revision:byId(row.id).revision});
+          accept(row.id,saved);clearTimeout(d.timer);clearTimeout(d.successTimer);
+          model.items=model.items.filter(r=>r.id!==row.id);model.recordChecked.delete(row.id);model.drafts.delete(row.id);succeeded++;
+        }catch(error){failed.push({row:original,message:error.message});}
+        finally{if(d)d.submitting=false;}
+        feedback.textContent='已处理 '+(succeeded+failed.length)+' / '+selected.length+' 条';
+      }
+      model.submitBusy=false;render();
+      el.querySelector('[data-close]').disabled=false;el.querySelector('[data-cancel]').disabled=false;
+      if(failed.length){
+        feedback.innerHTML='成功 '+succeeded+' 条，失败 '+failed.length+' 条。失败记录保留选中：<ul>'+failed.map(({row,message})=>'<li>'+esc(row.customer)+' · '+esc(row.poNo)+' · '+esc(row.productNo)+'：'+esc(message)+'</li>').join('')+'</ul>关闭后核对并重试，不会重复提交已成功记录。';
+        button.hidden=true;el.querySelector('[data-cancel]').textContent='返回处理失败记录';
+      }else{el.close();root.showToast?.('已提交 '+succeeded+' 条，请到审核中心复核确认','success');}
+    };
   }
   function refreshResultFilters(){
     const input=root.document.querySelector('[data-rfilter=result]');
