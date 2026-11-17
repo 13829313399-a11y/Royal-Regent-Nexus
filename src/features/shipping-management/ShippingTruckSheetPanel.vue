@@ -99,7 +99,7 @@ onMounted(loadTasks)
           <h2 class="text-[16px] font-bold text-emerald-950">车的排出货表</h2>
           <p class="mt-0.5 text-[11px] text-slate-500">盐田仓 CFS 客上车（B 线车货）；W 车次手动填写，表格按 CFS + 车次命名。</p>
         </div>
-        <button type="button" class="text-[11px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
+        <button type="button" class="text-[13px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <select v-model="selectedTaskId" aria-label="选择工厂排期" class="h-9 rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadDraft">

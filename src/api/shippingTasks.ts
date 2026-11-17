@@ -1,5 +1,19 @@
 import { http } from '../lib/http.js'
 
+export interface ShippingTaskItem {
+  product_code?: string
+  product_name?: string
+  quantity?: number | null
+  cartons?: number | null
+  coefficient?: number | null
+  gross_weight?: number | null
+  net_weight?: number | null
+  cbm?: number | null
+  contract_no?: string
+  customer_po?: string
+  country?: string
+}
+
 export interface ShippingScheduleTask {
   id: string
   factory_id: string
@@ -14,6 +28,7 @@ export interface ShippingScheduleTask {
   planned_ship_date: string
   si_deadline: string
   cutoff_date: string
+  items?: ShippingTaskItem[]
   created_at: string
   updated_at: string
 }

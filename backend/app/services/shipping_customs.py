@@ -101,3 +101,30 @@ def get_content(db, user: AuthContext, factory_id: str, doc_id: str) -> tuple[st
         from fastapi import HTTPException
         raise HTTPException(404, '资料不存在')
     return row.filename, row.content
+
+
+def open_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
+    from app.services.file_open import open_bytes
+    filename, content = get_content(db, user, factory_id, doc_id)
+    path = open_bytes(filename, content)
+    return {'opened': True, 'path': path}
+
+
+def delete_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
+    authorize(user, factory_id, 'write')
+    row = db.scalar(select(ShippingCustomsDoc).where(
+        ShippingCustomsDoc.id == doc_id, ShippingCustomsDoc.factory_id == factory_id,
+    ))
+    if row is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, '资料不存在')
+    db.delete(row)
+    db.commit()
+    return {'deleted': True}
+
+
+def save_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
+    from app.services.file_open import save_to_downloads
+    filename, content = get_content(db, user, factory_id, doc_id)
+    path = save_to_downloads(filename, content)
+    return {'saved': True, 'path': path}

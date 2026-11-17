@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ChevronDown, ChevronLeft, ChevronRight, Download, RefreshCw, Search } from '@lucide/vue'
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
-  downloadCustomsDoc,
+  deleteCustomsDoc,
   listCustomsDocs,
   markCustomsDocsRead,
+  openCustomsDoc,
   type CustomsDoc,
 } from '@/api/shippingMail'
 
@@ -23,6 +24,8 @@ const appliedQuery = ref('')
 const portFilter = ref('')
 const typeFilter = ref('')
 const page = ref(1)
+const pendingId = ref('')
+const busyId = ref('')
 
 const ports = computed(() => [...new Set(docs.value.map((doc) => doc.port).filter(Boolean))])
 const containerTypes = computed(() => [...new Set(docs.value.map((doc) => doc.container_type).filter(Boolean))])
@@ -85,17 +88,35 @@ async function load(markRead = false) {
   }
 }
 
-async function download(doc: CustomsDoc) {
+function downloadUrl(doc: CustomsDoc) {
+  return `/api/shipping/customs-docs/${doc.id}/download?factory_id=${encodeURIComponent(props.factoryId)}`
+}
+
+function askDelete(doc: CustomsDoc) {
+  pendingId.value = doc.id
+  window.setTimeout(() => {
+    if (pendingId.value === doc.id) pendingId.value = ''
+  }, 5000)
+}
+
+async function confirmDelete(doc: CustomsDoc) {
+  busyId.value = doc.id
   try {
-    const blob = await downloadCustomsDoc(props.factoryId, doc.id)
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = doc.filename
-    link.click()
-    URL.revokeObjectURL(url)
+    await deleteCustomsDoc(props.factoryId, doc.id)
+    pendingId.value = ''
+    await load(false)
   } catch (error) {
-    message.value = `下载失败：${getApiErrorMessage(error)}`
+    message.value = `删除失败：${getApiErrorMessage(error)}`
+  } finally {
+    busyId.value = ''
+  }
+}
+
+async function openFile(doc: CustomsDoc) {
+  try {
+    await openCustomsDoc(props.factoryId, doc.id)
+  } catch (error) {
+    message.value = `打开失败：${getApiErrorMessage(error)}`
   }
 }
 
@@ -113,7 +134,7 @@ onMounted(() => load(true))
         <p class="mt-1 text-[11px] text-slate-500">自动识别邮件中的「出货资料 / 通关一体化资料」，保存柜装箱单附件。</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <button type="button" class="text-[11px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
+        <button type="button" class="text-[13px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
         <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-semibold text-slate-600" @click="load(false)">
           <RefreshCw class="size-3.5" :class="loading ? 'animate-spin' : ''" />刷新
         </button>
@@ -188,9 +209,26 @@ onMounted(() => load(true))
             <td class="px-3 py-2 text-right tabular-nums text-slate-500">{{ sizeLabel(doc.size) }}</td>
             <td class="px-3 py-2 tabular-nums text-slate-500">{{ formatMonthDayTime(doc.created_at) }}</td>
             <td class="px-3 py-2 text-right">
-              <button type="button" class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700" @click="download(doc)">
-                <Download class="size-3.5" />下载
-              </button>
+              <div class="flex items-center justify-end gap-3">
+                <button type="button" class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700" @click="openFile(doc)">
+                  <ExternalLink class="size-3.5" />打开
+                </button>
+                <a :href="downloadUrl(doc)" :download="doc.filename" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                  <Download class="size-3.5" />下载
+                </a>
+                <button
+                  v-if="pendingId === doc.id"
+                  type="button"
+                  class="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 disabled:opacity-50"
+                  :disabled="busyId === doc.id"
+                  @click="confirmDelete(doc)"
+                >
+                  <Trash2 class="size-3.5" />确认删除
+                </button>
+                <button v-else type="button" class="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600" @click="askDelete(doc)">
+                  <Trash2 class="size-3.5" />删除
+                </button>
+              </div>
             </td>
           </tr>
           <tr v-if="!pagedDocs.length">

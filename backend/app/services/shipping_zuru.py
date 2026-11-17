@@ -12,7 +12,8 @@ from sqlalchemy import select
 
 from app.models.shipping_mail import ShippingMailItem, ShippingTask
 from app.services.auth import AuthContext
-from app.services.shipping_mail_service import authorize
+from app.services.shipping_loading import _container_label, sheet_title, sheet_xlsx_filename, task_transport
+from app.services.shipping_mail_service import authorize, task_fields
 
 TO_NAMES = ('苏迪', '罗梓良')
 FROM_NAME = '农建壮'
@@ -46,7 +47,7 @@ def _line(item: dict, contract: str, country: str) -> dict:
     return {
         'id': uuid4().hex,
         'tradingHouse': '',
-        'contract': contract,
+        'contract': str(item.get('contract_no') or contract),
         'filingCode': str(item.get('product_code') or ''),
         'declareCode': str(item.get('product_code') or ''),
         'brand': '',
@@ -98,17 +99,15 @@ def draft_zuru(db, user: AuthContext, factory_id: str, task_id: str) -> dict:
     task = db.scalar(select(ShippingTask).where(ShippingTask.id == task_id, ShippingTask.factory_id == factory_id))
     if task is None:
         raise HTTPException(404, '船务排期不存在')
-    fields = {}
-    if task.mail_item_id:
-        item = db.get(ShippingMailItem, task.mail_item_id)
-        if item is not None:
-            fields = json.loads(item.fields_json or '{}')
+    fields = task_fields(db, task)
+
     country = str(task.destination_country or fields.get('destination_country') or '')
     lines = [_line(item, str(fields.get('contract_no') or ''), COUNTRY_EN.get(country, country))
              for item in json.loads(task.items_json or '[]')]
     if not lines:
         lines = [_blank_line(COUNTRY_EN.get(country, country))]
     vessel_voyage = ' '.join(part for part in (str(fields.get('vessel_name') or ''), str(fields.get('voyage_no') or '')) if part)
+    first_po = next((str(item.get('customer_po') or '') for item in json.loads(task.items_json or '[]') if item.get('customer_po')), '')
     header = {
         'toNames': list(TO_NAMES),
         'fromName': FROM_NAME,
@@ -116,10 +115,11 @@ def draft_zuru(db, user: AuthContext, factory_id: str, task_id: str) -> dict:
         'cutoff': _display_cutoff(task.cutoff_date or str(fields.get('cutoff_date') or '')),
         'number': 'W187',
         'soNo': task.so_number or str(fields.get('so_number') or ''),
+        'poNo': first_po,
         'vesselVoyage': vessel_voyage,
         'blNo': '',
-        'transportCompany': '',
-        'containerType': (task.container_type or str(fields.get('container_type') or '40HQ')).replace('1*', ''),
+        'transportCompany': task_transport(task, fields, '建联派'),
+        'containerType': _container_label(task.container_type or str(fields.get('container_type') or '40HQ')),
         'tradeTerm': 'FOB',
         'plate': '',
         'containerNo': '',
@@ -142,7 +142,7 @@ def render_zuru_xlsx(payload: dict) -> bytes:
     totals = compute_totals(lines)
     book = Workbook()
     sheet = book.active
-    sheet.title = (header.get('originPort') or header.get('number') or 'SO出货表')[:31]
+    sheet.title = sheet_title(header)[:31]
     widths = {'A': 5, 'B': 9, 'C': 16, 'D': 18, 'E': 12, 'F': 9, 'G': 8, 'H': 9, 'I': 9,
               'J': 9, 'K': 8, 'L': 12, 'M': 18, 'N': 8, 'O': 8, 'P': 9, 'Q': 16, 'R': 16}
     for column, width in widths.items():

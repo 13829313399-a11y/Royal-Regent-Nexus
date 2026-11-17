@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services.shipping_mail.documents import DocumentText
 from app.services.shipping_mail.fields import extract_fields
 from app.services.shipping_mail.pipeline import parse_shipping_document, parse_shipping_email
 
@@ -143,7 +144,8 @@ def test_text_pdf_booking_is_parsed():
     assert result['fields']['planned_ship_date'] == '2026-11-04'
 
 
-def test_scanned_pdf_requires_manual_entry():
+def test_scanned_pdf_requires_manual_entry(monkeypatch):
+    monkeypatch.setattr('app.services.shipping_mail.pipeline.read_pdf_ocr_text', lambda data: DocumentText('', 1, False))
     canvas = pytest.importorskip('reportlab.pdfgen.canvas')
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer)
@@ -156,7 +158,8 @@ def test_scanned_pdf_requires_manual_entry():
     assert any('扫描件' in warning for warning in result['warnings'])
 
 
-def test_email_attachment_scan_warns_and_body_fields_survive():
+def test_email_attachment_scan_warns_and_body_fields_survive(monkeypatch):
+    monkeypatch.setattr('app.services.shipping_mail.pipeline.read_pdf_ocr_text', lambda data: DocumentText('', 1, False))
     canvas = pytest.importorskip('reportlab.pdfgen.canvas')
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer)
@@ -212,7 +215,69 @@ def test_unsupported_attachment_is_reported_not_fatal():
 
 
 @pytest.mark.skipif(not REAL_SAMPLE.is_file(), reason='本机真实扫描样本不存在')
-def test_real_scanned_booking_sample_needs_ocr():
+def test_real_scanned_booking_sample_is_ocr_parsed():
     result = parse_shipping_document(REAL_SAMPLE.read_bytes(), REAL_SAMPLE.name)
-    assert result['status'] == 'needs_ocr'
-    assert any('扫描件' in warning for warning in result['warnings'])
+    assert result['status'] == 'parsed'
+    assert result['fields']['so_number']
+    assert result['fields']['port']
+
+
+def test_booking_confirmation_carrier_layout_fields():
+    text = """Booking Confirmation Update (2)
+Booking Number:
+48420550
+Quotation/Contract No.:
+AND INSURANCE BUILDING NO.5013 Customer Reference:CCN4047078-V1
+166636625
+Request Booking Date:
+From To Vessel
+21-NOV-2026 00:01 29-DEC-2026 23:00 MANILA EXPRESS 19-OCT-2026
+CNYTN YANTIAN DEHAM HAMBURG DP Voyage: 207677
+Voy. No: 646W
+1 x 42GP, 1 x 45GP
+Shipping instruction closing CNYTN 18-NOV-2026 12:00
+VGM cut off CNYTN 19-NOV-2026 10:00
+GERMANY HAMBURG"""
+    fields = extract_fields(text, received_at='2026-11-16').fields
+    assert fields['so_number'] == '48420550'
+    assert fields['contract_no'] == '166636625'
+    assert fields['vessel_name'] == 'MANILA EXPRESS'
+    assert fields['voyage_no'] == '646W'
+    assert fields['container_type'] == '1*42GP, 1*45GP'
+    assert fields['from_port'] == '盐田'
+    assert fields['to_port'] == 'DEHAM HAMBURG'
+    assert fields['destination_country'] == '德国'
+    assert fields['si_deadline'] == '2026-11-18T12:00'
+    assert fields['cutoff_date'] == '2026-11-19T10:00'
+    assert fields['booking_date'] == '2026-10-19'
+
+
+def test_maersk_booking_amendment_scanned_layout():
+    text = """BOOKING AMENDMENT
+Booking No.: 279188253
+From:
+Yantian,Guangdong,China
+To:
+Houston,Texas,United States
+Service Contract:
+298379137
+SI Cut Off(截补料时间):星期一，10月 26,2026 20:30
+CY Closing - Latest Return Container Date(截重柜时间-最晚还柜时间):星期二， 10月 27, 2026 17:00
+Vessel
+Voy No.
+MVS
+MAERSK SALTORO
+643E
+2026-10-29
+40 DRY
+1"""
+    fields = extract_fields(text, received_at='2026-10-16').fields
+    assert fields['so_number'] == '279188253'
+    assert fields['contract_no'] == '298379137'
+    assert fields['vessel_name'] == 'MAERSK SALTORO'
+    assert fields['voyage_no'] == '643E'
+    assert fields['container_type'] == '1*40GP'
+    assert fields['from_port'] == '盐田'
+    assert fields['destination_country'] == '美国'
+    assert fields['si_deadline'] == '2026-10-26T20:30'
+    assert fields['cutoff_date'] == '2026-10-27T17:00'

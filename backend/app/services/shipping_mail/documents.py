@@ -23,6 +23,29 @@ def read_pdf_text(data: bytes) -> DocumentText:
     return DocumentText(text=text, pages=len(texts), scanned=bool(texts) and len(text) < SCANNED_TEXT_THRESHOLD)
 
 
+_OCR_ENGINE = None
+
+
+def read_pdf_ocr_text(data: bytes, resolution: int = 220) -> DocumentText:
+    """OCR a scanned PDF page-by-page with RapidOCR (offline ONNX models)."""
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        from rapidocr import RapidOCR
+
+        _OCR_ENGINE = RapidOCR()
+    lines: list[str] = []
+    pages = 0
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        pages = len(pdf.pages)
+        for page in pdf.pages:
+            image = page.to_image(resolution=resolution).original
+            result = _OCR_ENGINE(image)
+            for text in getattr(result, 'txts', None) or []:
+                if text and str(text).strip():
+                    lines.append(str(text).strip())
+    return DocumentText(text='\n'.join(lines).strip(), pages=pages, scanned=False)
+
+
 def read_xlsx_rows(data: bytes) -> list[list]:
     workbook = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     try:

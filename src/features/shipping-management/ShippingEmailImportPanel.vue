@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ChevronDown, CloudUpload, RefreshCw, UserRound } from '@lucide/vue'
+import { ChevronDown, CloudUpload, RefreshCw, Trash2, UserRound } from '@lucide/vue'
 import {
-  confirmShippingMailBatch,
-  createShippingMailBatch,
+  confirmShippingMailBatch,  createShippingMailBatch,
+  deleteShippingMailBatch,
+  generateShippingDocs,
   getShippingMailAccount,
+  getShippingMailBatch,
   listShippingMailBatches,
   previewShippingMail,
   saveShippingMailAccount,
@@ -18,16 +20,26 @@ import {
 import { getApiErrorMessage } from '@/lib/http'
 
 const props = defineProps<{ factoryId: string }>()
-const emit = defineEmits<{ notify: [message: string] }>()
+const emit = defineEmits<{ notify: [message: string]; 'open-module': [page: 'so' | 'truck' | 'supplement' | 'customs'] }>()
 
 const selectedFiles = ref<File[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 const recordsOpen = ref(false)
+const selectedBatchId = ref('')
+const selectedBatchItem = ref<{ id: string; status: string; task_ids: string[] } | null>(null)
+const pendingBatchDelete = ref('')
+const deletingBatch = ref(false)
+const batchLoading = ref(false)
+const selectedBatchIds = ref<string[]>([])
+const bulkDeleteArmed = ref(false)
+const bulkDeleting = ref(false)
 const mailServer = ref('')
 const mailAddress = ref('')
 const mailPassword = ref('')
 const parsing = ref(false)
 const confirming = ref(false)
+const confirmedTaskId = ref('')
+const createError = ref('')
 const previews = ref<ShippingMailPreview[]>([])
 const batches = ref<ShippingMailBatch[]>([])
 const loadError = ref('')
@@ -43,6 +55,9 @@ const summary = reactive({
   country: '',
   voyageNo: '',
   bookingNo: '',
+  containerSo: '',
+  vesselName: '',
+  shipper: '',
   contractNo: '',
   contractTails: '',
   bookingDate: '',
@@ -53,11 +68,14 @@ const summaryFields = [
   { key: 'fromPort', label: 'FROM' },
   { key: 'toPort', label: 'TO' },
   { key: 'country', label: '国家' },
-  { key: 'voyageNo', label: '航次号' },
+  { key: 'voyageNo', label: '航次' },
   { key: 'bookingNo', label: '订仓号' },
+  { key: 'containerSo', label: '柜S/O' },
+  { key: 'vesselName', label: '船名' },
+  { key: 'shipper', label: '发货商' },
   { key: 'contractNo', label: '合同号' },
   { key: 'contractTails', label: '合同后四位' },
-  { key: 'bookingDate', label: '订仓日期' },
+  { key: 'bookingDate', label: '截止日期' },
 ] as const
 
 const demoPackingList: ShippingMailLine[] = [
@@ -68,10 +86,10 @@ const demoPackingList: ShippingMailLine[] = [
 ]
 
 const demoRecords = [
-  { subject: 'SHZ8265013 出货通知', from: 'shipping@customer.com', time: '11/13 09:42', status: '已确认', tone: 'blue' },
-  { subject: 'SO 822 出货明细更新', from: 'ops@forwarder.com', time: '11/13 09:15', status: '已解析', tone: 'blue' },
-  { subject: 'Fwd: 柜号 C260304887 装柜照片', from: 'warehouse@example.com', time: '11/13 08:51', status: '待确认', tone: 'orange' },
-  { subject: 'SO 823 附件缺失', from: 'ops@forwarder.com', time: '11/13 08:20', status: '解析失败', tone: 'red' },
+  { id: '', subject: 'SHZ8265013 出货通知', from: 'shipping@customer.com', time: '11/13 09:42', status: '已确认', tone: 'blue' },
+  { id: '', subject: 'SO 822 出货明细更新', from: 'ops@forwarder.com', time: '11/13 09:15', status: '已解析', tone: 'blue' },
+  { id: '', subject: 'Fwd: 柜号 C260304887 装柜照片', from: 'warehouse@example.com', time: '11/13 08:51', status: '待确认', tone: 'orange' },
+  { id: '', subject: 'SO 823 附件缺失', from: 'ops@forwarder.com', time: '11/13 08:20', status: '解析失败', tone: 'red' },
 ]
 
 const statusDot: Record<string, string> = {
@@ -82,12 +100,14 @@ const statusDot: Record<string, string> = {
 
 const items = computed<ShippingMailLine[]>(() => {
   const parsed = previews.value.flatMap((preview) => preview.items ?? [])
-  return parsed.length ? parsed : demoPackingList
+  if (parsed.length) return parsed
+  return selectedBatchId.value ? [] : demoPackingList
 })
 
 const recordRows = computed(() => {
   if (!batches.value.length) return demoRecords
   return batches.value.map((batch) => ({
+    id: batch.id,
     subject: batch.filename ?? batch.file_name ?? batch.id,
     from: `解析 ${batch.parsed_count}/${batch.total_count} 条`,
     time: batch.created_at,
@@ -100,7 +120,7 @@ const tableName = computed(() => `${summary.terminal || '待定码头'}SO排期�
 
 const warnings = computed(() => [...new Set(previews.value.flatMap((preview) => preview.warnings ?? []))])
 
-const canConfirm = computed(() => selectedFiles.value.some((file) => file.name.toLowerCase().endsWith('.eml')))
+const canConfirm = computed(() => selectedFiles.value.length > 0)
 
 function previewMessage(title: string) {
   emit('notify', `界面预览：${title}尚未接入后端接口。`)
@@ -180,9 +200,18 @@ function onDrop(event: DragEvent) {
   setFiles([...(event.dataTransfer?.files ?? [])])
 }
 
+function resetSummary() {
+  for (const field of summaryFields) summary[field.key as keyof typeof summary] = ''
+}
+
 function setFiles(files: File[]) {
   selectedFiles.value = files
   previews.value = []
+  selectedBatchId.value = ''
+  selectedBatchItem.value = null
+  confirmedTaskId.value = ''
+  createError.value = ''
+  resetSummary()
   loadError.value = ''
   if (files.length) {
     emit('notify', `已选择 ${files.length} 个文件，正在自动解析…`)
@@ -204,9 +233,12 @@ function applyFields(preview: ShippingMailPreview) {
   if (!summary.country) summary.country = str('destination_country')
   if (!summary.voyageNo) summary.voyageNo = str('voyage_no')
   if (!summary.bookingNo) summary.bookingNo = str('booking_no') || str('so_number')
+  if (!summary.containerSo) summary.containerSo = str('container_so') || str('so_number')
+  if (!summary.vesselName) summary.vesselName = str('vessel_name')
+  if (!summary.shipper) summary.shipper = str('shipper') || '华兴玩具制品（河源）有限公司'
   if (!summary.contractNo) summary.contractNo = str('contract_no')
   if (!summary.contractTails) summary.contractTails = Array.isArray(tails) ? tails.join(' / ') : ''
-  if (!summary.bookingDate) summary.bookingDate = str('booking_date')
+  if (!summary.bookingDate) summary.bookingDate = str('cutoff_date') || str('si_deadline') || str('booking_date')
 }
 
 async function parseSelected() {
@@ -216,6 +248,9 @@ async function parseSelected() {
   }
   parsing.value = true
   loadError.value = ''
+  createError.value = ''
+  resetSummary()
+  confirmedTaskId.value = ''
   const results: ShippingMailPreview[] = []
   try {
     for (const file of selectedFiles.value) {
@@ -232,37 +267,246 @@ async function parseSelected() {
   }
 }
 
-async function confirmCreate() {
+const missingBooking = computed(() => previews.value.length > 0 && !summary.bookingNo && !summary.contractNo)
+
+async function ensureConfirmedTask(): Promise<string | null> {
+  if (confirmedTaskId.value) return confirmedTaskId.value
+  createError.value = ''
+  if (selectedBatchId.value && selectedBatchItem.value) {
+    const item = selectedBatchItem.value
+    if (item.status === 'confirmed') {
+      confirmedTaskId.value = String(item.task_ids[0] || '')
+      if (confirmedTaskId.value) return confirmedTaskId.value
+      createError.value = '该解析记录已确认，但没有关联排期'
+      return null
+    }
+    if (item.status !== 'pending') {
+      createError.value = `该解析记录状态为 ${item.status}，不能创建`
+      return null
+    }
+    confirming.value = true
+    try {
+      const confirmed = await confirmShippingMailBatch(selectedBatchId.value, props.factoryId, [item.id])
+      const taskId = String((confirmed.tasks?.[0] as { id?: string } | undefined)?.id || '')
+      confirmedTaskId.value = taskId
+      selectedBatchItem.value = { ...item, status: 'confirmed', task_ids: taskId ? [taskId] : [] }
+      emit('notify', '已确认该解析记录并生成排期。')
+      await loadBatches()
+      return taskId || null
+    } catch (error) {
+      createError.value = `创建失败：${getApiErrorMessage(error)}`
+      return null
+    } finally {
+      confirming.value = false
+    }
+  }
   if (!canConfirm.value) {
-    emit('notify', '确认建单目前仅支持 .eml 邮件；扫描件请人工补录后再建单。')
-    return
+    createError.value = '请先上传并解析邮件或附件，再创建单据。'
+    return null
   }
   if (!previews.value.length) {
-    emit('notify', '请先点击「解析邮件」预览字段，再确认创建出货单。')
-    return
+    createError.value = '请先上传并解析邮件，再创建单据。'
+    return null
+  }
+  if (!summary.bookingNo) {
+    createError.value = '没有识别到订舱号/订舱信息，无法创建排期；请上传订舱确认邮件，或在上方补填订舱号后再试。'
+    return null
   }
   confirming.value = true
   try {
-    const emlFiles = selectedFiles.value.filter((file) => file.name.toLowerCase().endsWith('.eml'))
-    const created = await createShippingMailBatch(props.factoryId, emlFiles)
+    const created = await createShippingMailBatch(props.factoryId, selectedFiles.value)
     const pending = created.items.filter((item) => item.status === 'pending').map((item) => item.id)
     if (!pending.length) throw new Error('没有可确认的邮件')
-    await confirmShippingMailBatch(created.batch.id, props.factoryId, pending)
+    const confirmed = await confirmShippingMailBatch(created.batch.id, props.factoryId, pending, {
+      so_number: summary.bookingNo.trim(),
+      contract_no: summary.contractNo.trim(),
+      from_port: summary.fromPort.trim(),
+      to_port: summary.toPort.trim(),
+      destination_country: summary.country.trim(),
+      voyage_no: summary.voyageNo.trim(),
+      vessel_name: summary.vesselName.trim(),
+      container_so: summary.containerSo.trim(),
+      shipper: summary.shipper.trim(),
+      cutoff_date: summary.bookingDate.trim(),
+      terminal: summary.terminal.trim(),
+    })
+    const taskId = String((confirmed.tasks?.[0] as { id?: string } | undefined)?.id || '')
+    confirmedTaskId.value = taskId
     emit('notify', `已创建 ${pending.length} 条 SO 排期（${tableName.value}）。`)
     await loadBatches()
+    return taskId || null
   } catch (error) {
-    emit('notify', `创建失败：${getApiErrorMessage(error)}`)
+    createError.value = `创建失败：${getApiErrorMessage(error)}`
+    return null
   } finally {
     confirming.value = false
+  }
+}
+
+async function createModule(module: 'so' | 'truck' | 'supplement' | 'customs') {
+  const taskId = await ensureConfirmedTask()
+  if (!taskId) return
+  if (module !== 'customs') {
+    try {
+      const result = await generateShippingDocs(props.factoryId, taskId, [module])
+      emit('notify', result.docs.length ? `已创建 ${result.docs.length} 份文件。` : '文件已存在，正在打开模块。')
+    } catch (error) {
+      createError.value = `创建失败：${getApiErrorMessage(error)}`
+      return
+    }
+  }
+  emit('open-module', module)
+}
+
+async function confirmCreate() {
+  await ensureConfirmedTask()
+}
+
+async function openBatch(batchId: string) {
+  if (!batchId) return
+  selectedBatchId.value = batchId
+  batchLoading.value = true
+  resetSummary()
+  try {
+    const detail = await getShippingMailBatch(props.factoryId, batchId)
+    const item = detail.items[0]
+    if (!item) {
+      loadError.value = '该解析记录没有邮件明细'
+      previews.value = []
+      return
+    }
+    previews.value = [{
+      filename: item.filename,
+      fields: item.fields ?? {},
+      items: item.items ?? [],
+      warnings: item.warnings ?? [],
+      attachments: [],
+      rule_trace: [],
+      status: item.status,
+      parser_version: '',
+    } as ShippingMailPreview]
+    selectedBatchItem.value = { id: item.id, status: item.status, task_ids: item.task_ids ?? [] }
+    confirmedTaskId.value = item.status === 'confirmed' ? String(item.task_ids?.[0] || '') : ''
+    applyFields(previews.value[0])
+    createError.value = ''
+    loadError.value = ''
+  } catch (error) {
+    loadError.value = getApiErrorMessage(error)
+  } finally {
+    batchLoading.value = false
+  }
+}
+
+async function createFromBatch(batchId: string, module: 'so' | 'truck' | 'supplement' | 'customs') {
+  if (!batchId) return
+  createError.value = ''
+  try {
+    const detail = await getShippingMailBatch(props.factoryId, batchId)
+    const item = detail.items[0]
+    if (!item) throw new Error('该解析记录没有邮件明细')
+    let taskId = item.status === 'confirmed' ? String(item.task_ids?.[0] || '') : ''
+    if (!taskId) {
+      if (item.status !== 'pending') throw new Error(`该记录状态为 ${item.status}，不能创建`)
+      const confirmed = await confirmShippingMailBatch(batchId, props.factoryId, [item.id])
+      taskId = String((confirmed.tasks?.[0] as { id?: string } | undefined)?.id || '')
+    }
+    if (!taskId) throw new Error('没有生成排期任务')
+    if (module !== 'customs') {
+      await generateShippingDocs(props.factoryId, taskId, [module])
+    }
+    await loadBatches()
+    emit('open-module', module)
+    emit('notify', '已从解析记录创建单据。')
+  } catch (error) {
+    createError.value = `创建失败：${getApiErrorMessage(error)}`
+  }
+}
+
+function onCreateFromRecord(event: Event, batchId: string) {
+  const select = event.target as HTMLSelectElement
+  const module = select.value as 'so' | 'truck' | 'supplement' | 'customs' | ''
+  select.value = ''
+  if (module) void createFromBatch(batchId, module)
+}
+
+function askDeleteBatch(batchId: string) {
+  pendingBatchDelete.value = batchId
+  window.setTimeout(() => {
+    if (pendingBatchDelete.value === batchId) pendingBatchDelete.value = ''
+  }, 5000)
+}
+
+async function confirmDeleteBatch(batchId: string) {
+  deletingBatch.value = true
+  try {
+    await deleteShippingMailBatch(props.factoryId, batchId)
+    pendingBatchDelete.value = ''
+    if (selectedBatchId.value === batchId) {
+      selectedBatchId.value = ''
+      selectedBatchItem.value = null
+      previews.value = []
+      resetSummary()
+    }
+    await loadBatches()
+    emit('notify', '解析记录已删除。')
+  } catch (error) {
+    loadError.value = getApiErrorMessage(error)
+  } finally {
+    deletingBatch.value = false
   }
 }
 
 async function loadBatches() {
   try {
     batches.value = await listShippingMailBatches(props.factoryId)
+    const ids = new Set(batches.value.map((batch) => batch.id))
+    selectedBatchIds.value = selectedBatchIds.value.filter((id) => ids.has(id))
     loadError.value = ''
   } catch (error) {
     loadError.value = getApiErrorMessage(error)
+  }
+}
+
+const selectableBatchIds = computed(() => recordRows.value.filter((row) => row.id).map((row) => row.id))
+const allBatchesSelected = computed(() => selectableBatchIds.value.length > 0 && selectableBatchIds.value.every((id) => selectedBatchIds.value.includes(id)))
+
+function toggleBatch(id: string) {
+  selectedBatchIds.value = selectedBatchIds.value.includes(id)
+    ? selectedBatchIds.value.filter((value) => value !== id)
+    : [...selectedBatchIds.value, id]
+  bulkDeleteArmed.value = false
+}
+
+function onToggleAll(event: Event) {
+  const checked = (event.target as HTMLInputElement).checked
+  selectedBatchIds.value = checked ? [...selectableBatchIds.value] : []
+  bulkDeleteArmed.value = false
+}
+
+async function bulkDeleteBatches() {
+  if (!selectedBatchIds.value.length) return
+  if (!bulkDeleteArmed.value) {
+    bulkDeleteArmed.value = true
+    window.setTimeout(() => { bulkDeleteArmed.value = false }, 5000)
+    return
+  }
+  bulkDeleting.value = true
+  try {
+    let deleted = 0
+    for (const batchId of [...selectedBatchIds.value]) {
+      try {
+        await deleteShippingMailBatch(props.factoryId, batchId)
+        deleted += 1
+      } catch {
+        // continue deleting the rest
+      }
+    }
+    selectedBatchIds.value = []
+    bulkDeleteArmed.value = false
+    await loadBatches()
+    emit('notify', `已删除 ${deleted} 条解析记录。`)
+  } finally {
+    bulkDeleting.value = false
   }
 }
 
@@ -365,9 +609,24 @@ async function refreshRecords() {
       <div class="flex items-center justify-between gap-2 px-4 py-2.5">
         <button type="button" class="flex min-w-0 items-center gap-1.5 text-[13px] font-bold text-emerald-950" :aria-expanded="recordsOpen" @click="toggleRecords">
           <ChevronDown class="size-4 transition" :class="recordsOpen ? 'rotate-180' : ''" aria-hidden="true" />
-          解析记录（4780）
+          解析记录（{{ batches.length }}）
         </button>
         <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+            :class="bulkDeleteArmed ? 'border-rose-300 bg-rose-50 text-rose-700' : 'border-rose-200 bg-white text-rose-600 hover:bg-rose-50'"
+            :disabled="!selectedBatchIds.length || bulkDeleting"
+            @click="bulkDeleteBatches"
+          >
+            <Trash2 class="size-3.5" aria-hidden="true" />{{ bulkDeleteArmed ? `确认删除 ${selectedBatchIds.length} 条` : `删除${selectedBatchIds.length ? ` (${selectedBatchIds.length})` : ''}` }}
+          </button>
+          <button
+            v-if="bulkDeleteArmed"
+            type="button"
+            class="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50"
+            @click="bulkDeleteArmed = false"
+          >取消删除</button>
           <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 text-[11px] font-semibold text-emerald-800 transition hover:border-emerald-300 hover:bg-emerald-50" @click="refreshRecords">
             <RefreshCw class="size-3.5" aria-hidden="true" />刷新
           </button>
@@ -378,15 +637,28 @@ async function refreshRecords() {
         <table class="w-full text-left text-[11px]">
           <thead class="text-slate-400">
             <tr>
+              <th scope="col" class="w-8 py-1.5 font-medium">
+                <input type="checkbox" aria-label="全选解析记录" :checked="allBatchesSelected" @change="onToggleAll">
+              </th>
               <th scope="col" class="py-1.5 font-medium">邮件主题</th>
               <th scope="col" class="py-1.5 font-medium">发件人 / 条数</th>
               <th scope="col" class="py-1.5 font-medium">解析时间</th>
               <th scope="col" class="py-1.5 text-right font-medium">状态</th>
+              <th scope="col" class="py-1.5 text-right font-medium">操作</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-emerald-50 text-slate-600">
-            <tr v-for="record in recordRows" :key="record.subject">
-              <td class="max-w-[280px] truncate py-1.5 font-medium text-slate-800">{{ record.subject }}</td>
+            <tr v-for="record in recordRows" :key="record.id || record.subject" :class="record.id ? 'cursor-pointer hover:bg-emerald-50/60' : ''" @click="openBatch(record.id)">
+              <td class="py-1.5" @click.stop>
+                <input
+                  v-if="record.id"
+                  type="checkbox"
+                  :aria-label="`选择 ${record.subject}`"
+                  :checked="selectedBatchIds.includes(record.id)"
+                  @change="toggleBatch(record.id)"
+                >
+              </td>
+              <td class="max-w-[280px] truncate py-1.5 font-medium" :class="record.id ? 'text-emerald-800 underline decoration-emerald-200 underline-offset-2' : 'text-slate-800'">{{ record.subject }}</td>
               <td class="py-1.5">{{ record.from }}</td>
               <td class="py-1.5 tabular-nums">{{ record.time }}</td>
               <td class="py-1.5 text-right">
@@ -394,6 +666,34 @@ async function refreshRecords() {
                   <span class="size-1.5 rounded-full" :class="statusDot[record.tone]" aria-hidden="true" />
                   {{ record.status }}
                 </span>
+              </td>
+              <td class="py-1.5 text-right" @click.stop>
+                <select
+                  v-if="record.id"
+                  class="mr-1 h-6 rounded border border-emerald-200 bg-white px-1 text-[10px] text-emerald-800"
+                  aria-label="从解析记录创建单据"
+                  @change="onCreateFromRecord($event, record.id)"
+                >
+                  <option value="">创建…</option>
+                  <option value="so">创建SO出货表</option>
+                  <option value="truck">创建车的排出货表</option>
+                  <option value="supplement">创建补料单</option>
+                  <option value="customs">创建通关一体化资料</option>
+                </select>
+                <button
+                  v-if="record.id && pendingBatchDelete === record.id"
+                  type="button"
+                  class="text-[11px] font-semibold text-rose-700 disabled:opacity-50"
+                  :disabled="deletingBatch"
+                  @click="confirmDeleteBatch(record.id)"
+                >确认删除</button>
+                <button
+                  v-else-if="record.id"
+                  type="button"
+                  class="text-[11px] font-semibold text-rose-600"
+                  @click="askDeleteBatch(record.id)"
+                >删除</button>
+                <span v-else class="text-slate-300">—</span>
               </td>
             </tr>
           </tbody>
@@ -450,7 +750,13 @@ async function refreshRecords() {
         </table>
       </div>
 
-      <div class="mt-3 flex justify-end">
+      <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('so')">创建SO出货表</button>
+          <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('truck')">创建车的排出货表</button>
+          <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('supplement')">创建补料单</button>
+          <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('customs')">创建通关一体化资料</button>
+        </div>
         <button
           type="button"
           class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white shadow-sm transition hover:bg-emerald-800 disabled:opacity-60"
@@ -460,6 +766,10 @@ async function refreshRecords() {
           {{ confirming ? '创建中…' : '确认创建出货单' }}
         </button>
       </div>
+      <p v-if="missingBooking" class="mt-2 text-[11px] font-medium text-amber-700">
+        只识别到装箱明细：未识别到订舱号/合同号，无法创建排期。请在上方补填订舱号，或上传订舱确认邮件（含 SO、船名、港口）。
+      </p>
+      <p v-if="createError" class="mt-1 text-[11px] font-medium text-rose-600">{{ createError }}</p>
     </section>
   </div>
 </template>

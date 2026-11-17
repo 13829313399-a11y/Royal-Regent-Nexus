@@ -15,6 +15,7 @@ PORTS = {
 COUNTRY_HINTS = (
     (('UNITED STATES', 'U.S.A', 'USA', 'US', 'TEXAS', 'CALIFORNIA', 'HOUSTON', 'LOS ANGELES'), '美国'),
     (('CANADA', 'TORONTO', 'VANCOUVER'), '加拿大'),
+    (('FRANCE', 'LE HAVRE', 'MARSEILLE'), '法国'),
     (('UNITED KINGDOM', 'UK', 'ENGLAND', 'LONDON', 'FELIXSTOWE'), '英国'),
     (('GERMANY', 'HAMBURG', 'BREMERHAVEN'), '德国'),
     (('NETHERLANDS', 'ROTTERDAM'), '荷兰'),
@@ -41,22 +42,44 @@ _SI_LABELS = (
     re.compile(r'S\s*[/\\.]\s*I\s*(?:CUT|CLOSING|DEADLINE)', re.I),
     re.compile(r'截\s*补\s*料\s*(?:时间|日期)?', re.I),
     re.compile(r'SI\s*截\s*止', re.I),
+    re.compile(r'Shipping\s+instruction\s+closing', re.I),
+    re.compile(r'SI\s+General\s+Cut-?\s*off', re.I),
+    re.compile(r'INTENDED\s+SHIPPING\s+INSTRUCTION\s+CUT-?\s*OFF', re.I),
+    re.compile(r'截止单证', re.I),
+    re.compile(r'交重截数时间', re.I),
+    re.compile(r'截数时间', re.I),
+    re.compile(r'Doc\s+Cut-?\s*off', re.I),
 )
 _CY_LABELS = (
     re.compile(r'CY\s*CUT\s*(?:OFF)?', re.I),
     re.compile(r'CY\s*CLOSING', re.I),
     re.compile(r'截\s*关\s*(?:时间|日期)?', re.I),
     re.compile(r'CY\s*截', re.I),
+    re.compile(r'VGM\s*cut\s*off', re.I),
+    re.compile(r'FCL\s+delivery\s+date', re.I),
+    re.compile(r'FCL\s+CY\s+CUT-?\s*OFF', re.I),
+    re.compile(r'Cargo\s+Cut-?\s*off', re.I),
+    re.compile(r'VGM\s+Closing\s+Date', re.I),
+    re.compile(r'INTENDED\s+FCL\s+CONTAINER\s+DELIVERY\s+CUT-?\s*OFF', re.I),
+    re.compile(r'INTENDED\s+VGM\s+CUT-?\s*OFF', re.I),
+    re.compile(r'交重截数时间', re.I),
+    re.compile(r'Port\s+Cut-?\s*off\s+Date/Time', re.I),
+    re.compile(r'Port\s+Cargo\s+Cut-?\s*off', re.I),
+    re.compile(r'VGM\s+Cut-?\s*off', re.I),
+    re.compile(r'Full\s+Return\s+CY\s+Cut-?\s*off', re.I),
 )
 _SO_PATTERNS = (
+    re.compile(r'Bill\s+of\s+Lading\s*#\s*[::]\s*([A-Z0-9-]{5,})', re.I),
     re.compile(r'\bBN\b\s*[::#]?\s*([A-Z]{0,4}\d{6,})', re.I),
     re.compile(r'\bROSS\b\s*[::#]?\s*(\d{8,})', re.I),
-    re.compile(r'Booking\s*(?:No|Number|#)\s*[::.]?\s*([A-Z0-9]{6,})', re.I),
-    re.compile(r'\bSO\s*[#::]\s*(?!SO\b)([A-Z0-9]{6,})', re.I),
+    re.compile(r'Booking\s+reference\s*[::]\s*([A-Z0-9-]{5,})', re.I),
+    re.compile(r'BKG\s+Ref\.?\s*No\s*[::]\s*([A-Z0-9-]{5,})', re.I),
+    re.compile(r'Booking\s*(?:No|Number|#)\s*[:\s.]*\s*([A-Z0-9][A-Z0-9-]{5,})', re.I),
+    re.compile(r'\bSO\s*[#::]\s*(?!SO\b)([A-Z0-9][A-Z0-9-]{5,})', re.I),
     re.compile(r'订舱号\s*[::\s]*([A-Z0-9]{6,})', re.I),
 )
-_CONTAINER = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|45)\s*(HQ|GP|HC|OT|FR|RF)', re.I)
-_TYPE_CONTAINER = re.compile(r'Type\s*[::]\s*((?:\d+\s*[*xX×]\s*)?(20|40|45)\s*(HQ|GP|HC|OT|FR|RF))', re.I)
+_CONTAINER = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|42|45)\s*(HQ|GP|HC|OT|FR|RF)', re.I)
+_TYPE_CONTAINER = re.compile(r'Type\s*[::]\s*((?:\d+\s*[*xX×]\s*)?(20|40|42|45)\s*(HQ|GP|HC|OT|FR|RF))', re.I)
 _VESSEL = (
     re.compile(r'Vessel\s*(?:Name)?\s*[::]\s*([^\n]{2,60})', re.I),
     re.compile(r'船\s*名\s*[::\s]*([^\n]{2,40})'),
@@ -70,10 +93,26 @@ _CUSTOMER = (
     re.compile(r'Customer\s*[::]\s*([^\n]{2,60})', re.I),
     re.compile(r'客户(?:名称)?\s*[::]\s*([^\n]{2,40})'),
 )
+_TRANSPORT = (
+    re.compile(r'运输公司\s*[::]\s*([^\n]{2,50})'),
+    re.compile(r'(?:拖车公司|车队|车行|运输行|物流公司)\s*[::]\s*([^\n]{2,50})'),
+    re.compile(r'(?:Trucker|Haulier|Transport(?:ation)?\s+Company|Trucking\s+Company)\s*[::]\s*([^\n]{2,50})', re.I),
+)
 _CONTRACT = (
-    re.compile(r'Contract\s*(?:No\.?|Number|#)\s*[::.#]?\s*([A-Z0-9][A-Z0-9/\- ]{2,60})', re.I),
+    re.compile(r'Service\s+Contract\s*[::]\s*([A-Z0-9][A-Z0-9/\-]{2,40})', re.I),
+    re.compile(r'Quotation\s*/\s*Contract\s*No\.?\s*[::]?\s*[\s\S]{0,240}?\b(\d{8,})\b', re.I),
+    re.compile(r'Contract\s*(?:No\.?|Number|#)\s*[::.#]?\s*([A-Z0-9][A-Z0-9/\-]{2,40})', re.I),
     re.compile(r'合\s*同\s*(?:编)?\s*号\s*[::\s]*([A-Z0-9][A-Z0-9/\- ]{2,60})', re.I),
 )
+_BOOKING_VESSEL = re.compile(r'([A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){1,3})\s+(\d{2}-[A-Z]{3}-\d{4})')
+_BOOKING_TYPES = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|42|45)\s*(HQ|GP|HC|OT|FR|RF)', re.I)
+_BOOKING_VOYAGE = re.compile(r'Voy\.?\s*No\.?\s*[::]\s*([A-Z0-9]+)', re.I)
+_MAERSK_CONTRACT = re.compile(r'Service\s+Contract\s*[::]?\s*[\s\S]{0,200}?\b(\d{8,})\b', re.I)
+_MAERSK_VESSEL = re.compile(r'\bMVS\s+([A-Z][A-Z ]{3,40}?)\s+(\d{3}[A-Z])\b')
+_MAERSK_CONTAINER = re.compile(r'^\s*(\d{1,2})\s+(DRY|GP|HQ|HC|RF|OT|FR)\s*$', re.M)
+_MAERSK_FROM = re.compile(r'^From:\s*\n([^\n]+)', re.M)
+_MAERSK_TO = re.compile(r'^To:\s*\n([^\n]+)', re.M)
+_MAERSK_ETD = re.compile(r'\b(\d{4}-\d{2}-\d{2})\s*$', re.M)
 _BOOKING_DATE = (
     re.compile(r'(?:Booking|Booked)\s*Date\s*[::]\s*([^\n]{4,30})', re.I),
     re.compile(r'订\s*(?:舱|仓)\s*日\s*期\s*[::\s]*([^\n]{4,30})', re.I),
@@ -103,7 +142,41 @@ _TERMINAL_CODES = {
     'CCT': '赤湾集装箱码头',
 }
 
-PARSER_VERSION = '2026-11-13.p2'
+PARSER_VERSION = '2026-11-16.p5'
+
+_COMMON_CONTRACT = (
+    re.compile(r'RATE\s+AGREEMENT\s+REFERENCE\s*[::]\s*([A-Z0-9][A-Z0-9\-/]{3,40})', re.I),
+    re.compile(r'Rate\s+Agreement\s+No\.?\s*[::]\s*([A-Z0-9][A-Z0-9\-/]{3,40})', re.I),
+    re.compile(r'Contract\s+No\s*\(SQ/SC\)\s*[::]\s*([A-Z0-9][A-Z0-9\-/]{3,40})', re.I),
+    re.compile(r'\bS/C\s*[::]\s*([A-Z0-9][A-Z0-9\-/]{3,40})', re.I),
+    re.compile(r'服务合同号\s*/\s*运价协议号\s*[::]\s*([A-Z0-9][A-Z0-9\-/]{3,40})'),
+    re.compile(r'Service\s+Contract\s+no\.?\s*[\\\s]*VIP\s+Code\s*[::]\s*([A-Z0-9][A-Z0-9\-/]{3,40})', re.I),
+)
+_COMMON_LOADING = (
+    re.compile(r'Port\s+of\s+Loading\s*[::]\s*([^\n]+)', re.I),
+    re.compile(r'装货港\s*[::]\s*([^\n;]+)'),
+    re.compile(r'装港(?:\(挂靠码头\))?\s*[::]\s*([^\n(]+)'),
+    re.compile(r'\bPOR\s*[::]\s*([^\n]+)', re.I),
+)
+_COMMON_DISCHARGE = (
+    re.compile(r'Port\s+of\s+Discharg\w*\s*[::]\s*([^\n]+)', re.I),
+    re.compile(r'卸货港\s*[::]\s*([^\n;]+)'),
+    re.compile(r'卸港\s*[::]\s*([^\n/]+)'),
+    re.compile(r'PORT\s+OF\s+DISCHARGE\s*[::]\s*([^\n]+)', re.I),
+)
+_COMMON_VESSEL = (
+    re.compile(r'(?:1st\s+)?Vessel\s*/\s*Voyage\s*[::]\s*([^\n]+)', re.I),
+    re.compile(r'船名\s*/\s*航次\s*[::]\s*([^\n]+)'),
+    re.compile(r'INTENDED\s+VESSEL\s*/\s*VOYAGE\s*[::]\s*([^\n]+)', re.I),
+    re.compile(r'VESSEL\s*/\s*VOYAGE\s*[::]\s*([^\n]+)', re.I),
+    re.compile(r'Vessel\s+Voyage(?:\s+Dir)?\s*[::]\s*([^\n]+)', re.I),
+)
+_COMMON_CONTAINER = (
+    re.compile(r'(\d+)\s*[xX×]\s*(\d{2})\s*\'?\s*(HIGH\s+CUBE|HI-?\s*CUBE|HC|HQ|DRY\s+VAN|DRY|GP)', re.I),
+    re.compile(r'(\d+)\s*[xX×]\s*HC\s*(\d{2})', re.I),
+    re.compile(r'(\d{2})\s*\'\s*(HIGH\s+CUBE|HI-?\s*CUBE|DRY\s+VAN|DRY)', re.I),
+    re.compile(r'Equipment\s+Size\s*[::]\s*(4H)', re.I),
+)
 
 
 @dataclass
@@ -171,6 +244,9 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
     contract = _first_group(text, _CONTRACT)
     result.fields['contract_no'] = contract
     result.fields['contract_tails'] = _contract_tails(contract)
+    transport = _first_group(text, _TRANSPORT)
+    if transport:
+        result.fields['transport_company'] = transport
     result.trace.append(_trace('SHIP-CON-001', {
         'contract_no': contract, 'contract_tails': result.fields['contract_tails'],
     }))
@@ -196,6 +272,24 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
     result.fields['booking_date'] = booking_date.isoformat() if booking_date else ''
     result.trace.append(_trace('SHIP-BDATE-001', {'booking_date': result.fields['booking_date']}))
 
+    if re.search(r'Booking\s+Confirmation|HAPAG-LLOYD', text, re.I):
+        _apply_booking_confirmation(text, result, year)
+        port = result.fields.get('port') or port
+        cutoff = result.fields.get('cutoff_date') or cutoff
+        si = result.fields.get('si_deadline') or si
+        container_type = result.fields.get('container_type') or container_type
+    if re.search(r'\bMAERSK\b|BOOKING\s+AMENDMENT', text, re.I):
+        _apply_maersk_booking(text, result, year)
+        port = result.fields.get('port') or port
+        cutoff = result.fields.get('cutoff_date') or cutoff
+        si = result.fields.get('si_deadline') or si
+        container_type = result.fields.get('container_type') or container_type
+    _apply_common_labels(text, result)
+    port = result.fields.get('port') or port
+    cutoff = result.fields.get('cutoff_date') or cutoff
+    si = result.fields.get('si_deadline') or si
+    container_type = result.fields.get('container_type') or container_type
+
     terminal = _terminal(text, port)
     result.fields['terminal'] = terminal
     result.fields['table_name'] = f'{terminal or port or "待定码头"}SO排期表'
@@ -208,6 +302,12 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
         received_at=received_at,
     )
     result.fields['planned_ship_date'] = planned.isoformat() if planned else ''
+    if result.fields.get('maersk_etd'):
+        try:
+            from datetime import date as _date
+            result.fields['planned_ship_date'] = _date.fromisoformat(result.fields['maersk_etd']).isoformat()
+        except ValueError:
+            pass
     result.trace.append(_trace('SHIP-DATE-001', {'planned_ship_date': result.fields['planned_ship_date']}))
     mode = 'warehouse' if re.search(r'交仓|入仓|散货收货站|\bCFS\b', text, re.I) else ('container' if container_type else 'unknown')
     result.fields['shipment_mode'] = mode
@@ -216,12 +316,196 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
     return result
 
 
+def _apply_booking_confirmation(text: str, result: FieldExtraction, year: int) -> None:
+    if 'CNYTN YANTIAN' in text.upper():
+        result.fields['from_port'] = '盐田'
+        result.fields['port'] = '盐田'
+    """Override fields with the structured layout of carrier booking confirmations."""
+    fields = result.fields
+    contract = _first_group(text, (_CONTRACT[0],))
+    if contract:
+        fields['contract_no'] = contract
+        fields['contract_tails'] = _contract_tails(contract)
+
+    vessel_match = _BOOKING_VESSEL.search(text)
+    if vessel_match:
+        fields['vessel_name'] = _clean(vessel_match.group(1))
+        parsed = parse_schedule_date(vessel_match.group(2), year)
+        if parsed:
+            fields['booking_date'] = parsed.isoformat()
+
+    voyage = _first_group(text, (_BOOKING_VOYAGE,))
+    if voyage:
+        fields['voyage_no'] = voyage
+
+    container_types: list[str] = []
+    for count, size, kind in _BOOKING_TYPES.findall(text):
+        value = f'{count}*{size}{kind.upper()}'
+        if value not in container_types:
+            container_types.append(value)
+    if container_types:
+        fields['container_type'] = ', '.join(container_types)
+
+    from_match = re.search(r'\b(CN[A-Z]{3})\s+([A-Z][A-Z ]{2,30})', text)
+    if from_match:
+        fields['from_port'] = '盐田' if from_match.group(1) == 'CNYTN' else _clean(from_match.group(0))
+        fields['port'] = fields['from_port']
+    to_match = re.search(r'\b(DE[A-Z]{3})\s+([A-Z][A-Z ]{2,30})', text)
+    if to_match:
+        fields['to_port'] = _clean(to_match.group(0)).split(' DP ')[0].strip()
+        fields['destination'] = fields['to_port']
+        fields['destination_country'] = _country(to_match.group(2)) or _country(text)
+
+    si, _ = _deadline(text, (re.compile(r'Shipping\s+instruction\s+closing', re.I),), year)
+    if si:
+        fields['si_deadline'] = si
+    cutoff, _ = _deadline(text, (re.compile(r'VGM\s*cut\s*off', re.I), re.compile(r'FCL\s+delivery\s+date', re.I)), year)
+    if cutoff:
+        fields['cutoff_date'] = cutoff
+
+    result.trace.append(_trace('SHIP-BOOKING-001', {
+        'vessel_name': fields.get('vessel_name'), 'voyage_no': fields.get('voyage_no'),
+        'container_type': fields.get('container_type'), 'contract_no': fields.get('contract_no'),
+        'from_port': fields.get('from_port'), 'to_port': fields.get('to_port'),
+        'cutoff_date': fields.get('cutoff_date'), 'si_deadline': fields.get('si_deadline'),
+    }))
+
+
+def _clean_port(value: str) -> str:
+    text = re.split(r'\s+/\s+|\s+(?:ETA|ETD|TML|Facility|Terminal|Port\s+Cut-?|Port\s+Cargo|SI\s+Cut)\b|[,;]', _clean(value), maxsplit=1, flags=re.I)[0]
+    return text.strip(' .:-')
+
+
+def _parse_vessel_voyage(raw: str) -> tuple[str, str]:
+    text = re.sub(r'\([^)]*\)', '', _clean(raw))
+    text = re.split(r'\s+(?:ETD|ETA|ETB|Vessel\s+Code)\b', text, maxsplit=1, flags=re.I)[0]
+    if '/' in text:
+        left, right = text.rsplit('/', 1)
+        if re.fullmatch(r'(?=[A-Z0-9]*\d)[A-Z0-9]{3,12}', right.strip()):
+            return _clean(left), _clean(right)
+    tokens = text.split()
+    for index in range(len(tokens) - 1, -1, -1):
+        if re.fullmatch(r'(?=[A-Z0-9]*\d)[A-Z0-9]{3,12}', tokens[index]):
+            return ' '.join(tokens[:index]), tokens[index]
+    return text, ''
+
+
+def _apply_common_labels(text: str, result: FieldExtraction) -> None:
+    """Fill fields from labels shared by HMM / MSC / OOCL / COSCO / ZIM layouts."""
+    fields = result.fields
+
+    contract = _first_group(text, _COMMON_CONTRACT)
+    if contract and (not fields.get('contract_no') or not re.search(r'\d', fields['contract_no'])):
+        fields['contract_no'] = contract
+        fields['contract_tails'] = _contract_tails(contract)
+
+    loading = _clean_port(_first_group(text, _COMMON_LOADING))
+    if loading:
+        fields['from_port'] = '盐田' if 'YANTIAN' in loading.upper() else loading
+        fields['port'] = fields['from_port']
+
+    discharge = _clean_port(_first_group(text, _COMMON_DISCHARGE))
+    if discharge:
+        fields['to_port'] = discharge
+        fields['destination'] = discharge
+        fields['destination_country'] = _country(discharge) or _country(text)
+
+    vessel_raw = _first_group(text, _COMMON_VESSEL)
+    if vessel_raw:
+        name, voyage = _parse_vessel_voyage(vessel_raw)
+        if name:
+            fields['vessel_name'] = name
+        if voyage:
+            fields['voyage_no'] = voyage
+
+    candidates: list[tuple[str, str, str]] = []
+    for match in _COMMON_CONTAINER[0].finditer(text):
+        candidates.append((match.group(1), match.group(2), match.group(3)))
+    for match in _COMMON_CONTAINER[1].finditer(text):
+        candidates.append((match.group(1), match.group(2), 'HC'))
+    for match in _COMMON_CONTAINER[2].finditer(text):
+        candidates.append(('1', match.group(1), match.group(2)))
+    if _COMMON_CONTAINER[3].search(text):
+        candidates.append(('1', '40', 'HC'))
+    if candidates and ',' not in str(fields.get('container_type') or ''):
+        chosen = next((item for item in candidates if 'HIGH' in item[2].upper() or item[2].upper() in ('HC', 'HQ')), candidates[0])
+        count, size, kind = chosen
+        normalized = 'HQ' if 'HIGH' in kind.upper() or 'HI-' in kind.upper() or kind.upper() in ('HC', 'HQ') else ('GP' if 'DRY' in kind.upper() else kind.upper())
+        fields['container_type'] = f'{count}*{size}{normalized}'
+
+    result.trace.append(_trace('SHIP-LABELS-001', {
+        'contract_no': fields.get('contract_no'), 'from_port': fields.get('from_port'),
+        'to_port': fields.get('to_port'), 'vessel_name': fields.get('vessel_name'),
+        'voyage_no': fields.get('voyage_no'), 'container_type': fields.get('container_type'),
+    }))
+
+
+def _apply_maersk_booking(text: str, result: FieldExtraction, year: int) -> None:
+    """Override fields for Maersk booking amendments / scanned booking PDFs."""
+    fields = result.fields
+    contract = _first_group(text, (_MAERSK_CONTRACT,))
+    if contract and contract != fields.get('so_number'):
+        fields['contract_no'] = contract
+        fields['contract_tails'] = _contract_tails(contract)
+
+    vessel = _MAERSK_VESSEL.search(text)
+    if vessel:
+        fields['vessel_name'] = _clean(vessel.group(1))
+        fields['voyage_no'] = vessel.group(2)
+        etd = _MAERSK_ETD.search(text[vessel.end():vessel.end() + 240])
+        if etd:
+            fields['maersk_etd'] = etd.group(1)
+
+    container = _MAERSK_CONTAINER.search(text)
+    if container:
+        kind = 'GP' if container.group(2).upper() == 'DRY' else container.group(2).upper()
+        fields['container_type'] = f'1*{container.group(1)}{kind}'
+
+    origin_match = _MAERSK_FROM.search(text)
+    if origin_match:
+        origin = _clean(origin_match.group(1))
+        fields['from_port'] = '盐田' if 'YANTIAN' in origin.upper() else origin
+        fields['port'] = fields['from_port']
+    destination_match = _MAERSK_TO.search(text)
+    if destination_match:
+        destination = _clean(destination_match.group(1))
+        fields['to_port'] = destination
+        fields['destination'] = destination
+        fields['destination_country'] = _country(destination) or _country(text)
+
+    result.trace.append(_trace('SHIP-MAERSK-001', {
+        'so_number': fields.get('so_number'), 'contract_no': fields.get('contract_no'),
+        'vessel_name': fields.get('vessel_name'), 'voyage_no': fields.get('voyage_no'),
+        'container_type': fields.get('container_type'), 'from_port': fields.get('from_port'),
+        'to_port': fields.get('to_port'), 'destination_country': fields.get('destination_country'),
+        'maersk_etd': fields.get('maersk_etd'),
+    }))
+
+
 def _deadline(text: str, labels, year: int) -> tuple[str, list[str]]:
     candidates: list[str] = []
     for label in labels:
         for match in label.finditer(text):
             window = text[match.end():match.end() + 160]
             parsed = parse_schedule_date(window, year)
+            if parsed is None:
+                from datetime import date as _date
+                fallback = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', window)
+                if fallback:
+                    try:
+                        parsed = _date(int(fallback.group(3)), int(fallback.group(2)), int(fallback.group(1)))
+                    except ValueError:
+                        parsed = None
+            if parsed is None:
+                from datetime import date as _date
+                months = {name: index for index, name in enumerate(
+                    ('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'), start=1)}
+                compact = re.search(r'(\d{1,2})\s*([A-Za-z]{3})\s*(\d{2})\b', window)
+                if compact and compact.group(2).lower() in months:
+                    try:
+                        parsed = _date(2000 + int(compact.group(3)), months[compact.group(2).lower()], int(compact.group(1)))
+                    except ValueError:
+                        parsed = None
             if parsed is None:
                 continue
             clock = re.search(r'(\d{1,2})\s*[::]\s*(\d{2})', window[:80])

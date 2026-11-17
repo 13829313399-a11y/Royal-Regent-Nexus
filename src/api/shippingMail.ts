@@ -52,6 +52,7 @@ export interface ShippingMailBatchItem {
   fields?: Record<string, unknown>
   items?: ShippingMailLine[]
   warnings?: string[]
+  task_ids?: string[]
 }
 
 export interface ShippingMailConfirmResult {
@@ -82,10 +83,30 @@ export async function createShippingMailBatch(factoryId: string, files: File[]) 
   return data
 }
 
-export async function confirmShippingMailBatch(batchId: string, factoryId: string, itemIds: string[]) {
+export async function deleteShippingMailBatch(factoryId: string, batchId: string) {
+  const { data } = await http.delete<{ deleted: boolean; items: number }>(`/shipping/mail/batches/${batchId}`, {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
+export async function getShippingMailBatch(factoryId: string, batchId: string) {
+  const { data } = await http.get<{ batch: ShippingMailBatch; items: ShippingMailBatchItem[] }>(
+    `/shipping/mail/batches/${batchId}`,
+    { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
+export async function confirmShippingMailBatch(
+  batchId: string,
+  factoryId: string,
+  itemIds: string[],
+  fields: Record<string, string> = {},
+) {
   const { data } = await http.post<ShippingMailConfirmResult>(
     `/shipping/mail/batches/${batchId}/confirm`,
-    { factory_id: factoryId, item_ids: itemIds },
+    { factory_id: factoryId, item_ids: itemIds, fields },
     { timeout: 120_000 },
   )
   return data
@@ -195,6 +216,8 @@ export interface LoadingHeader {
   consignee: string
   tradingCompany: string
   soNo: string
+  contractNo?: string
+  filingCode?: string
   vessel: string
   voyage: string
   containerType: string
@@ -221,6 +244,13 @@ export interface LoadingDraft {
   lines: LoadingLine[]
   totals: Record<string, number>
   taskId: string
+}
+
+export async function lookupScheduleLines(factoryId: string, q: string) {
+  const { data } = await http.get<{ lines: Array<Record<string, unknown>> }>('/shipping/loading-sheets/schedule-lines', {
+    params: { factory_id: factoryId, q },
+  })
+  return data.lines
 }
 
 export async function draftLoadingSheet(factoryId: string, taskId: string): Promise<LoadingDraft> {
@@ -570,4 +600,146 @@ export async function downloadCustomsDoc(factoryId: string, docId: string) {
     timeout: 120_000,
   })
   return data as Blob
+}
+
+export async function importFactorySchedule(factoryId: string, history = false) {
+  const { data } = await http.post<{
+    factory_id: string
+    created: number
+    updated: number
+    groups: number
+    lines: number
+    history?: boolean
+  }>('/shipping/schedule-import', null, { params: { factory_id: factoryId, history }, timeout: 120_000 })
+  return data
+}
+
+export interface GeneratedDoc {
+  id: string
+  module: string
+  filename: string
+  task_id: string
+  created_at: string
+}
+
+export async function listGeneratedDocs(factoryId: string, module: string) {
+  const { data } = await http.get<{ docs: GeneratedDoc[] }>('/shipping/generated-docs', {
+    params: { factory_id: factoryId, module },
+  })
+  return data.docs
+}
+
+export interface GeneratedDocDetail extends GeneratedDoc {
+  header: Record<string, unknown>
+  lines: Array<Record<string, unknown>>
+}
+
+export async function getGeneratedDoc(factoryId: string, docId: string) {
+  const { data } = await http.get<GeneratedDocDetail>(`/shipping/generated-docs/${docId}`, {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
+export async function updateGeneratedDoc(
+  factoryId: string,
+  docId: string,
+  header: Record<string, unknown>,
+  lines: Array<Record<string, unknown>>,
+) {
+  const { data } = await http.patch<GeneratedDocDetail>(`/shipping/generated-docs/${docId}`, {
+    factory_id: factoryId,
+    header,
+    lines,
+  })
+  return data
+}
+
+export async function downloadGeneratedDoc(factoryId: string, docId: string) {
+  const { data } = await http.get(`/shipping/generated-docs/${docId}/download`, {
+    params: { factory_id: factoryId },
+    responseType: 'blob',
+    timeout: 120_000,
+  })
+  return data as Blob
+}
+
+export async function openGeneratedDoc(factoryId: string, docId: string) {
+  const { data } = await http.post<{ opened: boolean; path: string }>(
+    `/shipping/generated-docs/${docId}/open`, null, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
+export async function openCustomsDoc(factoryId: string, docId: string) {
+  const { data } = await http.post<{ opened: boolean; path: string }>(
+    `/shipping/customs-docs/${docId}/open`, null, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
+export async function deleteGeneratedDoc(factoryId: string, docId: string) {
+  const { data } = await http.delete<{ deleted: boolean }>(`/shipping/generated-docs/${docId}`, {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
+export async function deleteCustomsDoc(factoryId: string, docId: string) {
+  const { data } = await http.delete<{ deleted: boolean }>(`/shipping/customs-docs/${docId}`, {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
+export async function saveGeneratedDoc(factoryId: string, docId: string) {
+  const { data } = await http.post<{ saved: boolean; path: string }>(
+    `/shipping/generated-docs/${docId}/save`, null, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
+export async function saveCustomsDoc(factoryId: string, docId: string) {
+  const { data } = await http.post<{ saved: boolean; path: string }>(
+    `/shipping/customs-docs/${docId}/save`, null, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
+export async function generateShippingDocs(factoryId: string, taskId: string, modules: string[]) {
+  const { data } = await http.post<{ docs: Array<{ module: string; filename: string; id: string }> }>(
+    '/shipping/generated-docs/generate',
+    { factory_id: factoryId, task_id: taskId, modules },
+    { timeout: 120_000 },
+  )
+  return data
+}
+
+export interface ShippingScheduleRow {
+  task_id: string
+  so_number: string
+  customer: string
+  container_type: string
+  port: string
+  destination_country: string
+  planned_ship_date: string
+  si_deadline: string
+  cutoff_date: string
+  status: string
+  contract_no: string
+  product_code: string
+  product_name: string
+  customer_po: string
+  quantity: number | null
+  cartons: number | null
+  cbm: number | null
+}
+
+/** 工厂排期单明细：一个备案货号可能对应多个合同号，接口已按 合同 × 货号 拆行。 */
+export async function listScheduleRows(factoryId: string) {
+  const { data } = await http.get<{ rows: ShippingScheduleRow[]; tasks: number }>(
+    '/shipping/schedule/rows',
+    { params: { factory_id: factoryId } },
+  )
+  return data
 }

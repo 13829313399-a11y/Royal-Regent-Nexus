@@ -43,7 +43,8 @@ def authorize(user: AuthContext, factory_id: str, action: str = 'read') -> None:
 def preview(factory_id: str, filename: str, raw: bytes, user: AuthContext) -> dict:
     """Parse one uploaded file without persisting anything."""
     authorize(user, factory_id, 'import')
-    if filename.lower().endswith('.eml'):
+    filename = _decoded_filename(filename)
+    if _is_email_message(raw, filename):
         return parse_shipping_email(raw, filename)
     result = parse_shipping_document(raw, filename)
     return {
@@ -97,7 +98,7 @@ def create_batch_internal(
                 continue
         db.add(item)
         items.append(item)
-        if filename.lower().endswith('.eml'):
+        if item.filename.lower().endswith('.eml') or _is_email_message(raw, item.filename):
             from app.services.shipping_customs import capture_from_eml
             capture_from_eml(db, factory_id, item.id, raw, _loads(item.fields_json))
         batch.total_count += 1
@@ -124,6 +125,21 @@ def list_batches(db, user: AuthContext, factory_id: str) -> list[dict]:
     return [_batch_dict(row) for row in rows]
 
 
+def delete_batch(db, user: AuthContext, batch_id: str, factory_id: str) -> dict:
+    authorize(user, factory_id, 'write')
+    batch = _load_batch(db, batch_id, factory_id)
+    items = db.scalars(select(ShippingMailItem).where(ShippingMailItem.batch_id == batch.id)).all()
+    item_ids = [item.id for item in items]
+    if item_ids:
+        for task in db.scalars(select(ShippingTask).where(ShippingTask.mail_item_id.in_(item_ids))).all():
+            task.mail_item_id = None
+        for item in items:
+            db.delete(item)
+    db.delete(batch)
+    db.commit()
+    return {'deleted': True, 'items': len(items)}
+
+
 def batch_detail(db, user: AuthContext, batch_id: str, factory_id: str) -> dict:
     authorize(user, factory_id, 'read')
     batch = _load_batch(db, batch_id, factory_id)
@@ -133,7 +149,29 @@ def batch_detail(db, user: AuthContext, batch_id: str, factory_id: str) -> dict:
     return {'batch': _batch_dict(batch), 'items': [_item_dict(item) for item in items]}
 
 
-def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_ids: list[str]) -> dict:
+def task_fields(db, task) -> dict:
+    """Fields from the task's own email, or from a same-SO email task (factory schedule + email merge)."""
+    item = None
+    if task.mail_item_id:
+        item = db.get(ShippingMailItem, task.mail_item_id)
+    if item is None and task.so_number:
+        related = db.scalar(select(ShippingTask).where(
+            ShippingTask.factory_id == task.factory_id,
+            ShippingTask.so_number == task.so_number,
+            ShippingTask.mail_item_id.isnot(None),
+        ))
+        if related is not None:
+            item = db.get(ShippingMailItem, related.mail_item_id)
+    if item is None:
+        return {}
+    fields = json.loads(item.fields_json or '{}')
+    if item.received_at:
+        fields['received_at'] = item.received_at
+    return fields
+
+
+def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_ids: list[str],
+                  overrides: dict | None = None) -> dict:
     authorize(user, factory_id, 'confirm')
     batch = _load_batch(db, batch_id, factory_id)
     if not item_ids:
@@ -150,6 +188,14 @@ def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_id
         if item.status != 'pending':
             raise HTTPException(409, f'{item.filename} 当前状态为 {item.status}，不能建任务')
         fields = _loads(item.fields_json)
+        if overrides:
+            changed = False
+            for key, value in overrides.items():
+                if value not in (None, ''):
+                    fields[key] = value
+                    changed = True
+            if changed:
+                item.fields_json = json.dumps(fields, ensure_ascii=False)
         if not str(fields.get('so_number') or '').strip():
             raise HTTPException(422, f'{item.filename} 缺少 SO/BN 订舱号，请人工补充后再确认')
         planned = resolve_planned_ship_date(
@@ -158,16 +204,47 @@ def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_id
             si_deadline=fields.get('si_deadline', ''),
             received_at=item.received_at,
         )
+        if planned is None and overrides:
+            planned = date.today()
         if planned is None:
             raise HTTPException(422, f'{item.filename} 缺少可用日期：需要明确出货日或截关/SI 截止时间')
         existing = db.scalar(select(ShippingTask).where(ShippingTask.mail_item_id == item.id))
+        so_number = str(fields.get('so_number') or '').strip()
         if existing is None:
-            task = _new_task(
-                factory_id=factory_id, fields=fields, items=_loads(item.items_json),
-                source='mail', mail_item_id=item.id, warnings=_loads(item.warnings_json), planned=planned,
-            )
-            db.add(task)
-            db.flush()
+            schedule_task = db.scalar(select(ShippingTask).where(
+                ShippingTask.factory_id == factory_id,
+                ShippingTask.source == 'schedule',
+                ShippingTask.so_number == so_number,
+                ShippingTask.mail_item_id.is_(None),
+            ).order_by(ShippingTask.planned_ship_date.desc()))
+            if schedule_task is None:
+                schedule_task = db.scalar(select(ShippingTask).where(
+                    ShippingTask.factory_id == factory_id,
+                    ShippingTask.source == 'schedule',
+                    ShippingTask.so_number == so_number,
+                ).order_by(ShippingTask.planned_ship_date.desc(), ShippingTask.created_at.desc()))
+            if schedule_task is not None:
+                schedule_task.mail_item_id = item.id
+                for key, value in (
+                    ('container_type', fields.get('container_type')),
+                    ('port', fields.get('from_port')),
+                    ('destination_country', fields.get('destination_country')),
+                    ('si_deadline', fields.get('si_deadline')),
+                    ('cutoff_date', fields.get('cutoff_date')),
+                ):
+                    text = str(value or '').strip()
+                    if text:
+                        setattr(schedule_task, key, text)
+                if not str(schedule_task.planned_ship_date or '').strip():
+                    schedule_task.planned_ship_date = planned.isoformat()[:10] if hasattr(planned, 'isoformat') else str(planned)
+                task = schedule_task
+            else:
+                task = _new_task(
+                    factory_id=factory_id, fields=fields, items=_loads(item.items_json),
+                    source='mail', mail_item_id=item.id, warnings=_loads(item.warnings_json), planned=planned,
+                )
+                db.add(task)
+                db.flush()
         else:
             task = existing
         item.status = 'confirmed'
@@ -176,7 +253,60 @@ def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_id
         tasks.append(task)
     batch.status = 'confirmed'
     db.commit()
+    try:
+        from app.services.shipping_autogen import generate_for_task
+        for task in tasks:
+            generate_for_task(db, user, factory_id, task.id, replace=True)
+    except Exception:  # noqa: BLE001 - generation must not fail the confirmation
+        pass
     return {'batch': _batch_dict(batch), 'tasks': [_task_dict(task) for task in tasks]}
+
+
+def schedule_rows(db, user: AuthContext, factory_id: str) -> dict:
+    """工厂排期单按 合同号 × 备案货号 拆行，供页面直接展示两个编号。"""
+    authorize(user, factory_id, 'read')
+    tasks = db.scalars(
+        select(ShippingTask)
+        .where(ShippingTask.factory_id == factory_id, ShippingTask.source == 'schedule')
+        .order_by(ShippingTask.planned_ship_date.desc(), ShippingTask.created_at.desc())
+    ).all()
+    return {'rows': expand_schedule_rows(tasks), 'tasks': len(tasks)}
+
+
+def expand_schedule_rows(tasks) -> list[dict]:
+    """One row per item so a 备案货号 with several 合同号 appears as several rows."""
+    rows: list[dict] = []
+    for task in tasks:
+        items = _loads(task.items_json) or []
+        exportable = [item for item in items if isinstance(item, dict)]
+        if not exportable:
+            rows.append(_schedule_row(task, {}))
+            continue
+        for item in exportable:
+            rows.append(_schedule_row(task, item))
+    return rows
+
+
+def _schedule_row(task: ShippingTask, item: dict) -> dict:
+    return {
+        'task_id': task.id,
+        'so_number': task.so_number,
+        'customer': task.customer,
+        'container_type': task.container_type,
+        'port': task.port,
+        'destination_country': task.destination_country,
+        'planned_ship_date': task.planned_ship_date,
+        'si_deadline': task.si_deadline,
+        'cutoff_date': task.cutoff_date,
+        'status': task.status,
+        'contract_no': str(item.get('contract_no') or ''),
+        'product_code': str(item.get('product_code') or ''),
+        'product_name': str(item.get('product_name') or ''),
+        'customer_po': str(item.get('customer_po') or ''),
+        'quantity': item.get('quantity'),
+        'cartons': item.get('cartons'),
+        'cbm': item.get('cbm'),
+    }
 
 
 def create_manual_task(db, user: AuthContext, payload: dict) -> dict:
@@ -241,9 +371,28 @@ def update_task_status(db, user: AuthContext, task_id: str, factory_id: str, sta
     return {'task': _task_dict(task)}
 
 
+def _decoded_filename(filename: str) -> str:
+    from email.header import decode_header
+    parts = []
+    for value, charset in decode_header(filename or ''):
+        if isinstance(value, bytes):
+            parts.append(value.decode(charset or 'utf-8', errors='replace'))
+        else:
+            parts.append(value)
+    return ''.join(parts) or 'upload.bin'
+
+
+def _is_email_message(raw: bytes, filename: str) -> bool:
+    if filename.lower().endswith('.eml'):
+        return True
+    head = raw[:4000].lstrip()
+    return head.startswith(b'Subject:') and b'Content-Type:' in raw[:8000]
+
+
 def _build_item(factory_id: str, batch_id: str, filename: str, raw: bytes, now: str) -> ShippingMailItem:
+    filename = _decoded_filename(filename)
     try:
-        if filename.lower().endswith('.eml'):
+        if _is_email_message(raw, filename):
             parsed = parse_shipping_email(raw, filename)
             status = 'pending'
             if any(attachment['status'] == 'needs_ocr' for attachment in parsed['attachments']):

@@ -146,3 +146,18 @@ class ShippingCustomsDoc(Base):
     content: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[str] = mapped_column(String(40))
     read_at: Mapped[str] = mapped_column(String(40), default='')
+
+
+class ShippingGeneratedDoc(Base):
+    """Auto-generated shipping sheets (SO / truck / supplement) from a confirmed email task."""
+    __tablename__ = 'shipping_generated_docs'
+    __table_args__ = (UniqueConstraint('task_id', 'module', name='uq_shipping_generated_doc'),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    task_id: Mapped[str] = mapped_column(String(64), index=True)
+    module: Mapped[str] = mapped_column(String(32), index=True)
+    filename: Mapped[str] = mapped_column(String(300))
+    header_json: Mapped[str] = mapped_column(Text)
+    lines_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40))
+    created_by: Mapped[str] = mapped_column(String(64), default='')

@@ -124,6 +124,7 @@ def sync_account(db, factory_id: str, *, trigger: str = 'manual', user: AuthCont
     )
     db.add(run)
     db.commit()
+    generated_task_ids: list[str] = []
     try:
         password = decrypt_password(account.password_enc)
         messages = fetch_recent(
@@ -139,6 +140,7 @@ def sync_account(db, factory_id: str, *, trigger: str = 'manual', user: AuthCont
             item_ids = [item['id'] for item in result.get('items') or []]
             run.imported = len(item_ids)
             run.confirmed = 0
+            generated_task_ids = []
             run.message = f'拉取 {len(messages)} 封，新增 {run.imported} 封'
             if result.get('duplicates'):
                 run.message += f'，跳过重复 {result["duplicates"]} 封'
@@ -166,6 +168,7 @@ def sync_account(db, factory_id: str, *, trigger: str = 'manual', user: AuthCont
                 item.status = 'confirmed'
                 item.task_ids_json = json.dumps([task.id])
                 item.updated_at = _now()
+                generated_task_ids.append(task.id)
                 run.confirmed += 1
             if run.confirmed:
                 run.message += f'，自动生成 {run.confirmed} 条 SO 排期'
@@ -197,6 +200,19 @@ def sync_account(db, factory_id: str, *, trigger: str = 'manual', user: AuthCont
         db.add(run)
         db.add(account)
         db.commit()
+        if generated_task_ids:
+            try:
+                from sqlalchemy import select as sa_select
+                from app.models.auth import AuthUser
+                from app.services.auth import build_auth_context
+                from app.services.shipping_autogen import generate_for_task
+                admin = db.scalar(sa_select(AuthUser).where(AuthUser.username == 'admin'))
+                if admin is not None:
+                    context = build_auth_context(db, admin)
+                    for task_id in generated_task_ids:
+                        generate_for_task(db, context, factory_id, task_id)
+            except Exception:  # noqa: BLE001
+                pass
     return run_payload(run)
 
 

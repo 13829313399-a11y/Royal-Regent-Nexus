@@ -158,12 +158,20 @@ async def application_lifespan(app: FastAPI):
     photo_task = asyncio.create_task(photo_worker())
     from app.services.shipping_mail import imap_worker as shipping_mail_worker
     shipping_mail_task = asyncio.create_task(shipping_mail_worker.worker()) if settings.shipping_mail_imap_enabled else None
+    from app.services import shipping_schedule_import as shipping_schedule_bridge
+    shipping_schedule_task = asyncio.create_task(shipping_schedule_bridge.worker()) if settings.shipping_schedule_import_enabled else None
     try:
         yield
     finally:
         photo_task.cancel()
         try:await photo_task
         except asyncio.CancelledError:pass
+        if shipping_schedule_task:
+            shipping_schedule_task.cancel()
+            try:
+                await shipping_schedule_task
+            except asyncio.CancelledError:
+                pass
         if shipping_mail_task:
             shipping_mail_task.cancel()
             try:

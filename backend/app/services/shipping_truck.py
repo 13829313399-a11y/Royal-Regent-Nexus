@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.models.shipping_mail import ShippingMailItem, ShippingTask
 from app.services.auth import AuthContext
-from app.services.shipping_mail_service import authorize
+from app.services.shipping_mail_service import authorize, task_fields
 
 SHIPPER = '华兴玩具制品（河源）有限公司'
 CONSIGNEE = '华登玩具制品有限公司'
@@ -42,7 +42,7 @@ def _line(item: dict, country: str) -> dict:
         'id': uuid4().hex, 'department': '', 'tradingHouse': 'Buzzbee',
         'contract': '', 'filingCode': str(item.get('product_code') or ''),
         'declareCode': str(item.get('product_code') or ''),
-        'name': str(item.get('product_name') or ''), 'country': country, 'category': '',
+        'name': str(item.get('product_name') or ''), 'country': country, 'category': '塑胶',
         'quantity': _round(quantity), 'coefficient': _round(coefficient), 'pieces': _round(pieces),
         'grossWeight': _round(gross_per * pieces) if gross_per and pieces else None,
         'netWeight': _round(net_per * pieces) if net_per and pieces else None,
@@ -62,17 +62,14 @@ def draft_truck(db, user: AuthContext, factory_id: str, task_id: str) -> dict:
     task = db.scalar(select(ShippingTask).where(ShippingTask.id == task_id, ShippingTask.factory_id == factory_id))
     if task is None:
         raise HTTPException(404, '船务排期不存在')
-    fields = {}
-    if task.mail_item_id:
-        item = db.get(ShippingMailItem, task.mail_item_id)
-        if item is not None:
-            fields = json.loads(item.fields_json or '{}')
+    fields = task_fields(db, task)
+
     country = str(task.destination_country or fields.get('destination_country') or '')
     lines = [_line(item, country) for item in json.loads(task.items_json or '[]')]
     if not lines:
         lines = [{
             'id': uuid4().hex, 'department': '', 'tradingHouse': 'Buzzbee', 'contract': '',
-            'filingCode': '', 'declareCode': '', 'name': '', 'country': country, 'category': '',
+            'filingCode': '', 'declareCode': '', 'name': '', 'country': country, 'category': '塑胶',
             'quantity': None, 'coefficient': None, 'pieces': None, 'grossWeight': None,
             'netWeight': None, 'cbm': None, 'cartonMark': '', 'totalCartons': '',
             'grossPerCarton': None, 'netPerCarton': None, 'remark': '',

@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from .documents import read_docx_text, read_pdf_text, read_xlsx_rows
+from .documents import read_docx_text, read_pdf_ocr_text, read_pdf_text, read_xlsx_rows
 from .email import read_eml
 from .fields import PARSER_VERSION, extract_fields
 
@@ -29,15 +29,29 @@ def parse_shipping_email(raw: bytes, filename: str = 'message.eml', *, received_
     trace = list(extraction.trace)
     items: list[dict] = []
     attachments: list[dict] = []
+    booking_fields: dict = {}
     for attachment in message.attachments:
         parsed = _parse_attachment(attachment.filename, attachment.data)
         attachments.append(parsed)
         warnings.extend(parsed['warnings'])
         items.extend(parsed['items'])
+        if parsed.get('kind') == 'booking':
+            for key, value in (parsed.get('fields') or {}).items():
+                if value:
+                    booking_fields[key] = value
         # 正文里的最新指令优先，附件只补正文缺失的字段。
         for key, value in (parsed.get('fields') or {}).items():
             if value and not fields.get(key):
                 fields[key] = value
+    if booking_fields:
+        fields.update(booking_fields)
+        fields['table_name'] = f"{fields.get('terminal') or fields.get('port') or '待定码头'}SO排期表"
+    if fields.get('so_number'):
+        warnings = [w for w in warnings if 'SO/BN' not in w]
+    if fields.get('si_deadline'):
+        warnings = [w for w in warnings if 'SI 截止' not in w]
+    if fields.get('cutoff_date'):
+        warnings = [w for w in warnings if '截关' not in w]
     if items and not fields.get('cargo_source'):
         fields['cargo_source'] = 'attachment'
     warnings = _dedupe(warnings)
@@ -87,11 +101,20 @@ def _parse_attachment(filename: str, data: bytes) -> dict:
     if suffix == '.pdf':
         document = read_pdf_text(data)
         if document.scanned:
-            return {
-                'filename': filename, 'kind': 'scanned_document', 'status': 'needs_ocr',
-                'fields': {}, 'items': [],
-                'warnings': [f'{filename} 是扫描件（{document.pages} 页，无文本层），需人工录入或启用 OCR'],
-            }
+            try:
+                document = read_pdf_ocr_text(data)
+            except Exception as error:  # noqa: BLE001
+                return {
+                    'filename': filename, 'kind': 'scanned_document', 'status': 'needs_ocr',
+                    'fields': {}, 'items': [],
+                    'warnings': [f'{filename} 是扫描件，OCR 失败（{type(error).__name__}），需人工录入'],
+                }
+            if not document.text:
+                return {
+                    'filename': filename, 'kind': 'scanned_document', 'status': 'needs_ocr',
+                    'fields': {}, 'items': [],
+                    'warnings': [f'{filename} 是扫描件，OCR 未识别到文字，需人工录入'],
+                }
         extraction = extract_fields(document.text)
         return {
             'filename': filename, 'kind': 'booking', 'status': 'parsed',

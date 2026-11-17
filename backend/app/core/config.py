@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     shipping_mail_imap_end_hour: int = Field(default=23, ge=0, le=23)
     shipping_mail_imap_poll_seconds: int = Field(default=300, ge=30, le=86400)
     shipping_mail_imap_factories: str = "huaxing,huadeng,huakang-a,huakang-b,huakang-d"
+    shipping_schedule_import_enabled: bool = False
     app_name: str = "Royal Regent Nexus API"
     app_env: str = "development"
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'royal_regent_nexus.db'}"

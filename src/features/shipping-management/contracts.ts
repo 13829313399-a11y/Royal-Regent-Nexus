@@ -112,6 +112,7 @@ export interface ShippingOrder {
   id: string
   containerNo: string
   so: string
+  customer: string
   containerType: string
   /** 出场时间，与开航日期一致，用于排序与区间筛选。 */
   departureDate: string
@@ -738,8 +739,9 @@ type OrderRow = [
 ]
 
 function orderRows(pool: ShippingProduct[], rows: OrderRow[]): ShippingOrder[] {
+  const customers = ['ZURU', 'PLAYMATES', 'MOOSE', 'EDU', 'TIG']
   return rows.map(([id, containerNo, so, containerType, departureDate, siDeadline, cutoff, port, destination, plCount, cbm, special, status], index) => ({
-    id, containerNo, so, containerType, departureDate, siDeadline, cutoff, port, destination, plCount, cbm, special, status,
+    id, containerNo, so, customer: customers[index % customers.length]!, containerType, departureDate, siDeadline, cutoff, port, destination, plCount, cbm, special, status,
     products: [pool[index % pool.length]!, pool[(index + 3) % pool.length]!],
   }))
 }

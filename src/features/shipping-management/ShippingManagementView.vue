@@ -201,7 +201,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
 
         <div class="min-w-0 flex-1">
           <section v-if="activePage === 'email'" aria-label="邮件导入">
-            <ShippingEmailImportPanel :factory-id="factoryId" @notify="notify" />
+            <ShippingEmailImportPanel :factory-id="factoryId" @notify="notify" @open-module="setPage" />
           </section>
           <section v-else-if="activePage === 'so'" aria-label="SO出货表">
             <ShippingSoSchedulePanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />

@@ -49,10 +49,24 @@ def _connect(host: str, port: int, use_ssl: bool):
         raise ImapError(f'连接邮件服务器失败：{error}') from error
 
 
+def _identify(conn) -> None:
+    """Send the IMAP ID command required by NetEase (163/126) mailboxes."""
+    imaplib.Commands['ID'] = ('AUTH',)
+    try:
+        conn._simple_command(
+            'ID',
+            '("name" "dsh-shipping" "version" "1.0" "vendor" "royal-regent-nexus")',
+        )
+        conn._untagged_response('OK', [None], 'ID')
+    except Exception:  # noqa: BLE001 - servers without ID support ignore it
+        pass
+
+
 def test_connection(host: str, port: int, username: str, password: str, use_ssl: bool, folder: str) -> None:
     conn = _connect(host, port, use_ssl)
     try:
         conn.login(username, password)
+        _identify(conn)
         status, _ = conn.select(folder or 'INBOX', readonly=True)
         if status != 'OK':
             raise ImapError(f'无法打开邮箱文件夹 {folder or "INBOX"}')
@@ -82,6 +96,7 @@ def fetch_recent(
     messages: list[tuple[str, str, bytes]] = []
     try:
         conn.login(username, password)
+        _identify(conn)
         status, _ = conn.select(folder or 'INBOX', readonly=True)
         if status != 'OK':
             raise ImapError(f'无法打开邮箱文件夹 {folder or "INBOX"}')

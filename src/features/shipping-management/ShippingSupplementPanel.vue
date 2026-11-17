@@ -9,6 +9,7 @@ import {
   type SupplementLine,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
+import ShippingGeneratedDocs from './ShippingGeneratedDocs.vue'
 
 const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string]; back: [] }>()
@@ -105,13 +106,14 @@ onMounted(loadTasks)
 
 <template>
   <section class="space-y-4" aria-label="补料单">
+    <ShippingGeneratedDocs :factory-id="factoryId" module="supplement" label="补料单" />
     <div class="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/50 p-4">
       <div class="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 class="text-[16px] font-bold text-emerald-950">补料单 / SHIPMENT ADVICE</h2>
           <p class="mt-0.5 text-[11px] text-slate-500">按船务排期生成补料单；船名、港口、ETD、箱数等来自邮件/排期，合计自动汇总。</p>
         </div>
-        <button type="button" class="text-[11px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
+        <button type="button" class="text-[13px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <select v-model="selectedTaskId" aria-label="选择工厂排期" class="h-9 rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadDraft">
