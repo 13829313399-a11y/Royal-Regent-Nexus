@@ -199,7 +199,7 @@ body.theme-dark .qis-review-date-fields input {color-scheme:dark}
 .qis-review-batch-actions label {white-space:nowrap}
 .qis-review-batch-actions input {margin:0;accent-color:var(--accent)}
 #qis-review-controls #qis-review-batch {min-height:32px;padding:5px 10px;white-space:nowrap;font-size:13px}
-#page-review #qis-review-batch:disabled,#page-review .qis-submit-actions #qis-review-batch:disabled {background:var(--bg-hover);color:var(--text-dim);border-color:var(--border);opacity:1;cursor:default}
+#page-review #qis-review-batch:disabled {background:var(--bg-hover);color:var(--text-dim);border-color:var(--border);opacity:1;cursor:default}
 @container (max-width:590px) {
   #page-review #qis-review-controls .qis-review-filterbar {grid-template-columns:repeat(2,minmax(0,1fr))}
   #qis-review-controls .qis-review-search {grid-column:1/-1}
@@ -213,7 +213,7 @@ body.theme-dark .qis-review-date-fields input {color-scheme:dark}
   #qis-review-controls #qis-review-batch {min-height:44px}
   #qis-review-controls :is(.qis-review-search input,.qis-review-filterbar select,.qis-review-date-fields input) {font-size:16px}
 }
-#page-review #qis-review-batch.qis-confirm-ready,#page-review .qis-submit-actions #qis-review-batch.qis-confirm-ready{background:#15803d;color:#fff;border-color:#15803d;cursor:pointer;box-shadow:0 2px 5px #15803d22}
+#page-review #qis-review-batch.qis-confirm-ready{background:#15803d;color:#fff;border-color:#15803d;cursor:pointer;box-shadow:0 2px 5px #15803d22}
 #page-review #qis-review-batch:focus-visible{outline:2px solid var(--glass-primary);outline-offset:3px}
 #qis-notifications{position:fixed;top:16px;right:16px;z-index:10050;width:min(370px,calc(100vw - 32px));max-height:75vh;overflow:auto;display:grid;gap:10px}
 body.qc-liquid-glass .qis-notice{position:relative;padding:18px 20px;border:1px solid var(--border-hi);border-radius:18px;background:var(--bg-panel);color:var(--text-main);box-shadow:0 12px 40px #16335326;animation:qis-notice-in .18s ease-out}
@@ -446,8 +446,8 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 }
 
 /* Workbench drag selection: business columns and frozen offsets stay unchanged. */
-:is(#page-records,#page-review) .qis-submit-actions{display:flex;justify-content:flex-end;flex:0 0 auto;position:sticky;bottom:0;z-index:5;padding:0;border:0;background:none;box-shadow:none}
-#page-records #qis-record-batch,#page-review .qis-submit-actions #qis-review-batch,.qia-dialog .qis-submit-batch{padding:8px 13px;border:1px solid var(--accent);border-radius:7px;background:var(--accent);color:#fff;font:inherit;white-space:nowrap;cursor:pointer;min-height:36px}
+#page-records .qis-submit-actions{display:flex;justify-content:flex-end;flex:0 0 auto;position:sticky;bottom:0;z-index:5;padding:0;border:0;background:none;box-shadow:none}
+#page-records #qis-record-batch,.qia-dialog .qis-submit-batch{padding:8px 13px;border:1px solid var(--accent);border-radius:7px;background:var(--accent);color:#fff;font:inherit;white-space:nowrap;cursor:pointer;min-height:36px}
 #page-records #qis-record-batch:disabled{background:var(--bg-hover);border-color:var(--border);color:var(--text-dim);cursor:not-allowed}
 :is(#page-records,#page-review) .qis-table tr.qis-batch-selected>td{background:color-mix(in srgb,var(--accent) 14%,var(--bg-card))!important}
 :is(#page-records,#page-review) .qis-table tr.qis-batch-selected>td:first-child{box-shadow:inset 3px 0 var(--accent)}
@@ -462,5 +462,7 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 :is(#page-records,#page-review) [data-review-status]:empty{display:none}
 :is(#page-records,#page-review) .qis-result-editor{justify-content:center}
 
-#page-review #qis-review-controls .qis-review-actions[hidden],#page-review .qis-submit-actions[hidden]{display:none}
-@media(max-width:640px){#page-review .qis-submit-actions #qis-review-batch{min-height:44px}}
+/* Pending review keeps its one action in the original upper-right toolbar. */
+#qis-review-controls.qis-pending-review .qis-review-actions{justify-content:flex-end}
+#qis-review-controls.qis-pending-review :is(.qis-review-context,.qis-review-batch-actions label){display:none}
+#page-review #reviewTableWrap:focus{outline:none}

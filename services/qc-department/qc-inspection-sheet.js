@@ -686,8 +686,6 @@
           <button id="qis-review-batch" type="button">反审核所选</button>
         </div>
       </div>`;
-    const actions=root.document.createElement('div');actions.className='qis-submit-actions';actions.id='qis-review-submit-actions';
-    root.document.getElementById('reviewTableWrap').after(actions);
     refreshResultFilters();
     syncReviewFilters();
     const applyFilters=()=>{finishRowDrag(true);model.checked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
@@ -741,15 +739,12 @@
     for(const id of model.checked)if(!ids.has(id))model.checked.delete(id);
     const selected=eligible.filter(r=>model.checked.has(r.id));
     const pendingTab=model.reviewTab==='pending',controls=root.document.getElementById('qis-review-controls');
-    const top=controls?.querySelector('.qis-review-actions'),bottom=root.document.getElementById('qis-review-submit-actions');
-    if(top)top.hidden=pendingTab;if(bottom)bottom.hidden=!pendingTab;
+    controls?.classList.toggle('qis-pending-review',pendingTab);
     const all=root.document.getElementById('qis-review-all');if(all){all.checked=Boolean(eligible.length&&selected.length===eligible.length);all.indeterminate=selected.length>0&&selected.length<eligible.length;all.disabled=!eligible.length||model.reviewBusy||!editable();}
     const countMessage=root.document.getElementById('qis-review-count');if(countMessage)countMessage.textContent=rows.length+' 条记录';
     const selectionMessage=root.document.getElementById('qis-review-selected');if(selectionMessage)selectionMessage.textContent=selected.length?'已选 '+selected.length+' 条':'未选中记录';
     const button=root.document.getElementById('qis-review-batch');
     if(button){
-      const parent=pendingTab?bottom:controls?.querySelector('.qis-review-batch-actions');
-      if(parent&&button.parentElement!==parent)parent.append(button);
       button.disabled=!editable()||!selected.length||model.reviewBusy||model.loading||!!model.error;
       button.textContent=(model.reviewBusy?'正在处理…':pendingTab?'审核确认':'反审核所选')+(!model.reviewBusy&&selected.length?'（'+selected.length+'）':'');
       button.classList.toggle('qis-confirm-ready',pendingTab&&!button.disabled);
