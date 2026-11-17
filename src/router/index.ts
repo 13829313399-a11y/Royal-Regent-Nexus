@@ -311,6 +311,10 @@ const routes: RouteRecordRaw[] = [
     redirect: '/modules/sales-business',
   },
   {
+    path: '/modules/sales-business/zuru-intake',
+    redirect: { name: 'customer-order-center', query: { factory: 'huakang-a', customer: 'zuru', section: 'import' } },
+  },
+  {
     path: '/modules/sales-business/po-schedule-intake',
     name: 'customer-order-center',
     component: () => import('@/views/CustomerOrderCenterView.vue'),

@@ -160,7 +160,7 @@
       {
         "path": "backend/app/services/huakang_a_order_legacy/unified_schedule.py",
         "symbol": "def map_record",
-        "sha256": "af0d55437cc96963ccf9df9765476d5c3d7412bfa6d64e911e4e10ec71ad3fc9"
+        "sha256": "12fe80cae00ad3403cd15d022f65cfd9a26c5787aec3f4f7ab4a39901b1d02aa"
       },
       {
         "path": "backend/app/services/huakang_a_order_legacy/schedule_parser.py",
@@ -275,7 +275,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue",
         "symbol": "async function confirmAndGenerateSchedule",
-        "sha256": "b506301a1294b6c956e772e9ffb6dd7e1c313aabebcc20ab3d966bda64d46e4b"
+        "sha256": "d32208ce6fb97d61cb41e7b2016c1fed4f22452d03220bf9a1c8aa594a35f585"
       },
       {
         "path": "src/api/customerOrder.ts",
@@ -295,7 +295,7 @@
       {
         "path": "src/views/CustomerOrderCenterView.vue",
         "symbol": "const huakangBSections",
-        "sha256": "73527246a569c9d53a8990d15bb30d2199aeaf6b2cc71e6e863399eab4f37c0e"
+        "sha256": "5f3d47e31f7123e17c469471e12dbb6a3e4d6932219d835dc261f594679f38e5"
       },
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",

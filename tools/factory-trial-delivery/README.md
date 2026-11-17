@@ -4,7 +4,7 @@
 
 | 包 | 流程 |
 | --- | --- |
-| 华康 A | 360、Green Toys、HeadStart |
+| 华康 A | ZURU、360、Green Toys、HeadStart |
 | 华康 B | JP 邮件问单、参照版本、编号与 44 列金山格式导出；没有 PO 入排期 |
 | 华康 D | INDEX、JAZAWARES、MAXX、STROTTMAN、优必选、迪士尼、施信 |
 | 华兴 | ZURU、BuzzBee、Dickie、彩星、EDU、360、银辉、施信、Maxx、Shushupapa、Barter、迪士尼 |
