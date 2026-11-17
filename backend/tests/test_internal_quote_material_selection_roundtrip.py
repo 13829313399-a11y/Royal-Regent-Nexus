@@ -61,9 +61,20 @@ def test_added_material_survives_save_refresh_repeated_save_and_excel(monkeypatc
         assert response.status_code == 200, response.text
         payload = deepcopy(section("molding")["payload"])
         payload["injection_lines"][0].update(material=alias, grade=grade, quantity=3)
-        if material == "导电PP":
+        if existing_grade:
             payload["injection_lines"][0]["material_choice_for"] = ["", "导电PP"]
-        selected = save("molding", payload)
+        if material == "导电PP" and not existing_grade:
+            # The very first write is the whole-product form, including a
+            # historical draft that has no client-supplied selection marker.
+            response = client.put(base + "/sections/save-all", json={"sections": [
+                {"section_code": s["department"], "revision": s["revision"],
+                 "payload": payload if s["department"] == "molding" else s["payload"]}
+                for s in current()["sections"] if s["is_required"]]})
+            assert response.status_code == 200, response.text
+            selected = section("molding")
+            assert selected["payload"]["injection_lines"][0]["material_choice_for"] == ["", "导电PP"]
+        else:
+            selected = save("molding", payload)
         assert selected["calculation_status"] == "valid", selected
         assert selected["payload"]["injection_lines"][0]["grade"] == grade
         # Exercise the whole-product transaction and then the department save,
