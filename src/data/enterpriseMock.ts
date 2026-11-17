@@ -434,7 +434,7 @@ export function getFactoryScopedModule(
     route: module.route ? getFactoryScopedRoute(module.route, resolvedFactoryId) : undefined,
     stats: usesSharedRawMaterialCatalog && isNewFactoryContext
       ? `${factoryName} · 公共原料资料已接入`
-      : usesIndependentEmptyState
+      : usesIndependentEmptyState && module.stats
         ? `${factoryName} · 当前暂无本厂数据`
         : module.stats,
     statusMetrics: module.statusMetrics.map((metric) => {
@@ -914,24 +914,15 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         id: 'injection-scheduling',
         title: '注塑排产中枢',
         owner: '啤机部 / PMC',
-        summary: '四厂独立排产、共享模具资料，连接计划表、现场开工和白夜班报数',
-        status: '业务工作台',
-        statusTone: 'teal',
-        stats: '真实排程 · 班次累计报工',
+        summary: '啤机部与 PMC 的注塑排产入口。',
+        status: '待重新设计',
+        statusTone: 'slate',
+        stats: '',
         route: getDepartmentRoute('production', 'injection-scheduling'),
-        permissions: ['injection_scheduling:read'],
         icon: CalendarClock,
-        statusMetrics: [
-          { label: '排程', value: '机台甘特', tone: 'teal' },
-          { label: '执行', value: '白夜报工', tone: 'teal' },
-          { label: '资料', value: '四厂共享模具', tone: 'slate' },
-        ],
-        todos: ['查看未排需求与交期风险', '填写实际开工和班次累计数'],
-        children: [
-          { label: '排程工作台', summary: '机台甘特、自动排产与手动调整' },
-          { label: '全字段计划表', summary: '精确查询、参数维护与 Excel 往返' },
-          { label: '现场执行', summary: '开工、转机、白夜班报数与滚动回算' },
-        ],
+        statusMetrics: [],
+        todos: [],
+        children: [],
       },
       {
         id: 'production-plan',

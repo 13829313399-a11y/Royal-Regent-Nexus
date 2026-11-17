@@ -99,7 +99,9 @@ def test_raw_retention_keeps_normalized_state_and_audit(environment):
         assert row.raw_payload_json != "{}"
         retention.retain(db, execute=True)
         db.refresh(row)
-        assert row.raw_payload_json == "{}" and row.state == "RUNNING"
+        retained = json.loads(row.raw_payload_json)
+        assert row.payload_version == 3 and retained["device_job_key"] == "job-1"
+        assert retained["connected"] and "progress_percent" not in retained and row.state == "RUNNING"
         assert db.query(env[2].ThreeDPrintingAuditEvent).count() == audit_count
         assert retention.retain(db, execute=True)["raw_bodies"] == 0
 
