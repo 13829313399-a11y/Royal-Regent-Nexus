@@ -575,3 +575,10 @@ body.qc-liquid-glass .qsum-record-detail .qsum-photo-thumb {
   .qsum-record-detail .qsum-history-entry > summary { row-gap: 5px; }
   .qsum-record-detail .qsum-history-content > * { grid-column: 1; }
 }
+
+@media screen {
+  #qsum-root .qsum-workspace { max-width:960px; }
+  #qsum-root .qsum-table { width:100%; min-width:760px; }
+  #qsum-root .qsum-table :is(th,td) { padding:8px 10px; max-width:160px; white-space:normal; overflow-wrap:anywhere; }
+  #qsum-root .qsum-table :is(th,td):first-child { min-width:100px; }
+}

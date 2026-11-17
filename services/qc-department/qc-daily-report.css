@@ -126,3 +126,17 @@ body:has(.page.active.qdr-active) #topbarKpis { display: none !important; }
   .qdr-issues-more > div { overflow:visible; }
   .qdr-issues-preview::after, .qdr-follow-toggle-zone { display:none!important; }
 }
+
+/* Balance compact report columns even when one product has a long English name. */
+@media screen {
+  .qdr table :is(th,td) { white-space:normal; overflow-wrap:anywhere; }
+}
+@media screen and (min-width:531px) {
+  .qdr table[aria-label="精简验货明细"] { table-layout:fixed; }
+  .qdr table[aria-label="精简验货明细"] th:nth-child(1) { width:30%; }
+  .qdr table[aria-label="精简验货明细"] th:nth-child(2) { width:16%; }
+  .qdr table[aria-label="精简验货明细"] th:nth-child(3) { width:11%; }
+  .qdr table[aria-label="精简验货明细"] th:nth-child(4) { width:10%; }
+  .qdr table[aria-label="精简验货明细"] th:nth-child(5) { width:23%; }
+  .qdr table[aria-label="精简验货明细"] th:nth-child(6) { width:10%; }
+}
