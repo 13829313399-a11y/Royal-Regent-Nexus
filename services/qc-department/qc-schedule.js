@@ -70,7 +70,7 @@
     return {from, to:d.toISOString().slice(0,10)};
   }
   function orderedRows(rows) {
-    return rows.slice().sort((a,b) => {const x=dateRange(a)?.from,y=dateRange(b)?.from;return (!x)-(!y)||(x&&y?y.localeCompare(x):0)||text(a.customer).localeCompare(text(b.customer),'zh-CN')||text(a.id).localeCompare(text(b.id));});
+    return rows.slice().sort((a,b) => {const x=dateRange(a)?.from,y=dateRange(b)?.from;return (!x)-(!y)||(x&&y?x.localeCompare(y):0)||text(a.customer).localeCompare(text(b.customer),'zh-CN')||text(a.id).localeCompare(text(b.id));});
   }
   const model = {items:[], phase:'initial', request:0, checked:new Set()};
   const el = id => root.document?.getElementById(id);
@@ -79,11 +79,11 @@
   }
   function updateChoices() {
     for(const [id,key,first] of [['qsCustomer','customer','全部客户'],['qsCompletion','completion','全部完成情况']]) {
-      const select=el(id), old=select.value;
+      const select=el(id), old=select.value, oldLabel=select.selectedOptions[0]?.textContent;
       select.innerHTML='<option value="">'+first+'</option>'+(key==='completion'?'<option value="empty">无反馈</option>':'')+
         choices(model.items,key).map(v=>'<option value="'+escape(key==='completion'?'value:'+v:v)+'">'+escape(v)+'</option>').join('');
       select.value=old;
-      if (select.selectedIndex < 0) select.value='';
+      if (select.selectedIndex < 0 && old) {const option=root.document.createElement('option');option.value=old;option.textContent=oldLabel;select.append(option);select.value=old;}
     }
   }
   function renderTable() {
@@ -91,7 +91,7 @@
     error.textContent='';
     try { rows=filterRows(model.items,filters()); } catch(e) { error.textContent=e.message;rows=[]; }
     el('qsCount').textContent=model.phase==='pending'?'待接通':`${rows.length} / ${model.items.length} 条`;
-    el('qsCount').title='当前显示 / 总计';
+    el('qsCount').title='当前显示 / 当前日期范围总计';
     if(!rows.length) {
       const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期，可点击“新增验货”添加排期':'没有符合筛选条件的排期';
       body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户和完成情况筛选排期。':'')+'</p></div></td></tr>';
@@ -123,10 +123,15 @@
     updatePush();freezeScheduleColumns();
   }
   function applyFilters() { model.checked.clear();updateDateLabel();renderTable();updatePush(); }
+  function applyDateFilters() {
+    updateDateLabel();
+    try { filterRows([], filters()); } catch(e) { ++model.request;model.items=[];model.phase='ready';el('qsRefresh').disabled=false;applyFilters();return Promise.resolve(); }
+    return refresh();
+  }
   function updateDateLabel() {
     const from=el('qsDateFrom').value,to=el('qsDateTo').value,format=d=>d.replaceAll('-','/');
-    const label=from&&to?(from===to?format(from):format(from)+' — '+format(from.slice(0,4)===to.slice(0,4)?to.slice(5):to)):from?format(from)+' 起':to?'截至 '+format(to):'不限日期';
-    el('qsDateLabel').textContent=label;el('qsDateToggle').title=from||to?[from||'不限起日',to||'不限止日'].join(' 至 '):'不限日期';
+    const label=from&&to?(from===to?format(from):format(from)+' — '+format(from.slice(0,4)===to.slice(0,4)?to.slice(5):to)):from?format(from)+' 起':to?'截至 '+format(to):'今天及未来';
+    el('qsDateLabel').textContent=label;el('qsDateToggle').title=from||to?[from||'不限起日',to||'不限止日'].join(' 至 '):'今天及未来（北京时间）';
   }
   function dateError(message='') {
     el('qsDateError').textContent=message;
@@ -157,7 +162,7 @@
       if(!from.validity.valid||!to.validity.valid)throw new Error('请填写有效的完整日期');
       filterRows([],{...filters(),from:from.value,to:to.value});
     } catch(error){dateError(error.message);from.focus();return;}
-    el('qsDateFrom').value=from.value;el('qsDateTo').value=to.value;dateError();applyFilters();closeDatePanel(true);
+    el('qsDateFrom').value=from.value;el('qsDateTo').value=to.value;dateError();closeDatePanel(true);void applyDateFilters();
   }
   async function refresh() {
     if(!el('page-sales-schedule'))return;
@@ -165,7 +170,9 @@
     model.checked.clear();updatePush();model.phase='loading';model.items=[];renderTable();
     el('qsRefresh').disabled=true;
     try {
-      const response=await root.fetch('api/schedule-source',{cache:'no-store'});
+      const params=new URLSearchParams();
+      for(const [key,value] of [['dateFrom',el('qsDateFrom').value],['dateTo',el('qsDateTo').value]])if(value)params.set(key,value);
+      const response=await root.fetch('api/schedule-source'+(params.size?'?'+params:''),{cache:'no-store'});
       if(!response.ok)throw new Error('HTTP '+response.status);
       const data=await response.json();if(seq!==model.request)return;
       const ready=data.contract_version==='2'&&data.status==='ready'&&data.mapping_version==='qc-task-v1'&&data.source_available===true;
@@ -186,8 +193,8 @@
     el('qsDraftFrom').value=range.from;el('qsDraftTo').value=range.to;dateError();
     for(const [id,value] of [['qsLastWeek',-1],['qsThisWeek',0],['qsNextWeek',1]])el(id).setAttribute('aria-pressed',String(value===offset));
   }
-  function clearDates() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo'])el(id).value='';dateError();applyFilters();closeDatePanel(true); }
-  function resetFilters() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo','qsCustomer','qsCompletion','qsSearch'])el(id).value='';dateError();closeDatePanel();applyFilters(); }
+  function clearDates() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo'])el(id).value='';dateError();closeDatePanel(true);return applyDateFilters(); }
+  function resetFilters() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo','qsCustomer','qsCompletion','qsSearch'])el(id).value='';dateError();closeDatePanel();return applyDateFilters(); }
   function freezeScheduleColumns(){
     const host=root.document.querySelector('#page-sales-schedule .qs-table-scroll'),customer=host?.querySelector('th[data-column="customer"]');
     if(customer)host.style.setProperty('--qs-customer-width',customer.getBoundingClientRect().width+'px');
@@ -212,7 +219,8 @@
   }
   function mount() {
     if(!el('page-sales-schedule'))return;
-    for(const id of ['qsDateFrom','qsDateTo','qsCustomer','qsCompletion'])el(id).addEventListener('change',applyFilters);
+    for(const id of ['qsDateFrom','qsDateTo'])el(id).addEventListener('change',applyDateFilters);
+    for(const id of ['qsCustomer','qsCompletion'])el(id).addEventListener('change',applyFilters);
     el('qsSearch').addEventListener('input',applyFilters);
     el('qsDateToggle').addEventListener('click',()=>el('qsDatePanel').hidden?openDatePanel():closeDatePanel(true));
     el('qsApplyDates').addEventListener('click',applyDates);
@@ -235,10 +243,10 @@
     el('qsSelectAll')?.addEventListener('change',event=>{model.checked.clear();if(event.target.checked)for(const row of selectableRows())model.checked.add(text(row.id));renderTable();});
     el('qsPush')?.addEventListener('click',()=>root.QcWorkflow?.preparePush(model.items.filter(r=>model.checked.has(text(r.id)))));
     el('qsRows').addEventListener('click',event=>{const task=event.target.closest('[data-qs-task]');if(task){root.QcWorkflow?.openTask(task.dataset.qsTask,'records');return;}if(event.target.matches('[data-pick]')){const id=event.target.dataset.pick;event.target.checked?model.checked.add(id):model.checked.delete(id);updatePush();return;}});
-    renderTable();
+    updateDateLabel();renderTable();
   }
 
-  async function afterPush(successIds){const failed=[...model.checked].filter(id=>!successIds.includes(id));if(!failed.length)resetFilters();await refresh();model.checked=new Set(failed);renderTable();updatePush();}
+  async function afterPush(successIds){const failed=[...model.checked].filter(id=>!successIds.includes(id));if(!failed.length){await resetFilters();return;}await refresh();model.checked=new Set(failed);renderTable();updatePush();}
   let scheduleDialog=null, scheduleBusy=false;
   function openNew(){
     if(!root.__QC_NEXUS?.workflow?.create)return;
@@ -254,7 +262,7 @@
       const row=Object.fromEntries(new FormData(e.target));const signature=JSON.stringify(row);
       if(!pending||pending.signature!==signature)pending={signature,requestKey:root.crypto.randomUUID()};
       scheduleBusy=true;dialog.querySelectorAll('button').forEach(b=>b.disabled=true);
-      try{const response=await root.fetch('api/workflow/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requestKey:pending.requestKey,row})});const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:'保存失败');dialog.close();dialog.remove();scheduleBusy=false;await root.showPage('sales-schedule');resetFilters();await refresh();root.showToast?.('排期已保存，尚未推送','success');}
+      try{const response=await root.fetch('api/workflow/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requestKey:pending.requestKey,row})});const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:'保存失败');dialog.close();dialog.remove();scheduleBusy=false;await root.showPage('sales-schedule');await resetFilters();root.showToast?.('排期已保存，尚未推送','success');}
       catch(error){dialog.querySelector('[data-error]').textContent=error.message+'；输入已保留，可以重试。';}
       finally{scheduleBusy=false;dialog.querySelectorAll('button').forEach(b=>b.disabled=false);}
     };root.document.body.append(dialog);dialog.showModal();dialog.querySelector('input').focus();

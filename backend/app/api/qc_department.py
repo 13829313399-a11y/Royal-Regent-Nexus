@@ -170,7 +170,14 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             full_business=can(user, 'customer_order:read', factory_id, 'sales-business'))
         return JSONResponse(result, headers=NO_CACHE)
     if asset_path == "api/schedule-source" and request.method == "GET":
-        return JSONResponse(qc_workflow.sources(db, factory_id), headers=NO_CACHE)
+        from app.services import qc_schedule_view
+        if set(request.query_params) - {'dateFrom', 'dateTo'} or any(
+            len(request.query_params.getlist(key)) != 1 for key in request.query_params
+        ):
+            raise HTTPException(422, '排期日期参数不正确')
+        return JSONResponse(qc_schedule_view.listing(db, factory_id,
+            date_from=request.query_params.get('dateFrom', ''),
+            date_to=request.query_params.get('dateTo', '')), headers=NO_CACHE)
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
         keys = {"date", "revision"} if exporting else {"date"}
