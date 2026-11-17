@@ -384,7 +384,10 @@ body.theme-dark.qc-liquid-glass #page-review .qis-table .qis-review-customer-sta
 }
 #page-review .qis-not-applicable{color:var(--text-dim);font-weight:400}
 :is(#page-records,#page-review) .qis-table [data-column="inspectionExecution.sampleQuantity"]{min-width:90px;width:90px;max-width:100px}
-:is(#page-records,#page-review) .qis-table [data-column="inspectionExecution.sampleQuantity"] input{width:76px;min-width:0}
+:is(#page-records,#page-review) .qis-table [data-column="inspectionExecution.sampleQuantity"] input{width:76px;min-width:0;appearance:textfield;-moz-appearance:textfield}
+/* Sample quantities are typed directly; suppress the browser's stepper buttons. */
+.qis-table input[data-execution-field=sampleQuantity]::-webkit-inner-spin-button,
+.qis-table input[data-execution-field=sampleQuantity]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 :is(#page-records,#page-review) .qis-table [data-column="inspector"]{min-width:120px;max-width:160px}
 
 /* Review: matching widths for short fields and multiline fields; stored values read like other cells. */
