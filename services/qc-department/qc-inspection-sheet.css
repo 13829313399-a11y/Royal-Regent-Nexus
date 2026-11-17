@@ -9,6 +9,11 @@
 :is(#page-records,#page-review) .qis-table thead tr{position:static;z-index:auto;background:transparent}
 :is(#page-records,#page-review) .qis-table th{position:sticky;top:0;z-index:3;background:#edf3f1;white-space:nowrap;padding:10px 8px}
 :is(#page-records,#page-review) .qis-table [data-column=date]{min-width:132px;position:static}
+#page-records .qis-table th[data-column=date]{padding:0!important}
+#page-records .qis-date-sort{display:flex;align-items:center;gap:7px;width:100%;min-height:38px;padding:10px 8px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;font-weight:inherit;text-align:left;cursor:pointer}
+#page-records .qis-date-sort span{font-size:12px;color:#70837b}
+#page-records .qis-date-sort:hover{background:#e1ebe5}
+#page-records .qis-date-sort:focus-visible{outline:2px solid #46765e;outline-offset:-3px}
 :is(#page-records,#page-review) .qis-table td[data-column=productNo],:is(#page-records,#page-review) .qis-table td[data-column=productName]{min-width:150px}
 :is(#page-records,#page-review) .qis-table small{display:block;font-size:11px;color:#63736f;margin-top:3px}
 :is(#page-records,#page-review) .qis-table .qis-mobile-key{display:none}
@@ -296,7 +301,7 @@ html.qc-mobile body.qc-liquid-glass .menu-toggle{width:44px;height:44px}
 html.qc-mobile #page-records .records-toolbar{--records-control-height:44px}
 html.qc-mobile #page-records .records-toolbar-inner{gap:6px;padding:6px}
 html.qc-mobile #page-records .records-toolbar :is(select,#searchInput){font-size:16px}
-html.qc-mobile #page-records:not(.qis-tools-open) :is(#filterSort,.records-reset){display:none}
+html.qc-mobile #page-records:not(.qis-tools-open) .records-reset{display:none}
 html.qc-mobile #page-records:not(.qis-tools-open) .records-actions:has(.qip-toolbar-action[hidden]){display:none}
 html.qc-mobile #page-records .records-toolbar button{min-height:var(--records-control-height)}
 html.qc-mobile #page-review .toolbar{position:static}

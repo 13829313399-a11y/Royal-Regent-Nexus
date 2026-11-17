@@ -3402,11 +3402,10 @@ body.theme-light #page-sales-schedule .qs-table tr.qs-selected > td { background
 #page-records .records-filters > :is(select,.records-date) { flex:1; min-width:0; }
 #page-records .records-filters > [hidden] { display:none; }
 #page-records .records-actions { border-inline-start:1px solid var(--border); padding-inline-start:10px; }
-#page-records .records-actions select { width:116px; }
 #page-records .records-search { box-sizing:border-box; display:flex; align-items:center; gap:8px; padding:0 10px; height:var(--records-control-height); border:1px solid var(--border-hi); border-radius:7px; background:color-mix(in srgb,var(--bg-input) 65%,var(--bg-hover)); color:var(--text-muted); min-width:0; }
 #page-records .records-search input { min-width:0; width:100%; height:100%; padding:0; border:0; outline:none; background:transparent; color:var(--text-main); font:inherit; font-size:13px; }
 #page-records .records-search:focus-within { border-color:var(--accent); }
-#page-records .records-filters select, #page-records .records-actions select, #page-records .records-date summary { box-sizing:border-box; height:var(--records-control-height); border:1px solid var(--border); border-radius:7px; padding:0 8px; background:var(--bg-input); color:var(--text-main); font:inherit; font-size:13px; text-overflow:ellipsis; }
+#page-records .records-filters select, #page-records .records-date summary { box-sizing:border-box; height:var(--records-control-height); border:1px solid var(--border); border-radius:7px; padding:0 8px; background:var(--bg-input); color:var(--text-main); font:inherit; font-size:13px; text-overflow:ellipsis; }
 #page-records .records-date { position:relative; min-width:0; }
 #page-records .records-date summary { display:flex; align-items:center; gap:10px; list-style:none; cursor:pointer; }
 #page-records .records-date summary::-webkit-details-marker { display:none; }
