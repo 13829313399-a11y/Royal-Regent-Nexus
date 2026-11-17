@@ -9083,7 +9083,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
               <span>{{ view.label }}</span><strong class="text-lg tabular-nums">{{ scheduleWorkCounts[view.id] }}</strong>
             </button>
           </div>
-          <p class="mb-4 mt-2 text-[11px] text-slate-500">当前需处理包括最迟下单日已到或 3 天内到期、已建单待确认、取消变更或差异待核。正常远期放在后续安排，已完单、已送货及旧退单可在历史查看；原状态保留，上方数量按当前筛选统计。</p>
+          <p class="mb-4 mt-2 text-[11px] text-slate-500">最迟下单日已到或 3 天内到期、已建单待确认、退单变更、数量差异等事项列入「当前需处理」。已下单或已完单且只有交期差异的排期可在「已下单 / 历史」查看。上方数量按当前筛选统计。</p>
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div><h2 class="font-bold text-slate-950">按客户查看排期变化</h2><p class="mt-1 text-[11px] text-slate-500">首次导入作为基准；以后按同一客户的上次有效排期识别新加单、退单和已送货。未出现在新文件里的订单不自动判退单。</p></div>
             <span class="text-[11px] text-slate-500">人工“已下单”标记跨批次保留；退单仍需人工核实采购单</span>

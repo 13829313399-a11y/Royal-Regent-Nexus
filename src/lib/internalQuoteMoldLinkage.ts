@@ -1,5 +1,5 @@
 import { normalizeInternalQuotePayload, type EngineeringPayload, type EngineeringMoldRow, type InjectionRow, type MoldingPayload } from './internalQuoteSectionPayload'
-import { moldingMaterialFamily, normalizedReferenceToken as token } from './internalQuoteMoldingReferences'
+import { moldingMaterialFamily, moldingMaterialReferences, normalizedReferenceToken as token, type MoldingMaterialReference } from './internalQuoteMoldingReferences'
 import { createRandomUuid } from './randomUuid'
 
 const genericMaterials = new Set(['ABS', '透明ABS', 'C-ABS', 'HIPS', 'GP', 'PP', '1#PP', '透明PP', 'C-PP', 'POM', 'PVC', 'LDPE', 'HDPE', 'TPR', 'K料', 'PC料'])
@@ -67,11 +67,24 @@ export function engineeringMaterialSources(engineering: EngineeringPayload, fact
   }))
 }
 
+function linkedQuoteMaterial(row: InjectionRow, material: string, grade: string, references: MoldingMaterialReference[]) {
+  const resin = token(row.material)
+  if (!resin || (material || grade) !== resin || (grade && grade !== resin)) return
+  const options = references.filter(option => token(option.material) === resin)
+  if (!options.length) return
+  const selectedGrade = token(row.grade)
+  const matches = options.filter(option => token(option.grade) === selectedGrade)
+  if (matches.length === 1) return matches[0]
+  if (!selectedGrade || selectedGrade === resin) return options.length === 1 ? options[0] : { material: row.material, grade: '' }
+  return { material: row.material, grade: row.grade }
+}
+
 /** Projects explicit children as descriptive detail; cost stays once on the whole mold. */
-export function linkEngineeringMolding(engineering: EngineeringPayload, molding: MoldingPayload, factoryId = ''): MoldingPayload {
+export function linkEngineeringMolding(engineering: EngineeringPayload, molding: MoldingPayload, factoryId = '', snapshot?: Record<string, unknown>): MoldingPayload {
   if (molding.engineering_prefill_paused === true) return clone(molding)
   const molds = moldingSources(engineering, factoryId)
   const result = clone(molding)
+  const references = moldingMaterialReferences(snapshot)
   const existing = result.injection_lines
   const used = new Set<number>()
   const keys = engineeringSourceKeys(molds)
@@ -157,12 +170,17 @@ export function linkEngineeringMolding(engineering: EngineeringPayload, molding:
         : genericMaterials.has(material) && genericMaterials.has(grade) && moldingMaterialFamily(material) === moldingMaterialFamily(grade)
           ? (material.length >= grade.length ? mold.material : mold.material_type) : mold.part_source_id && !material ? mold.material_type : ''
     const choiceFor = row.material_choice_for
+    const quoteMaterial = !generic && !choiceFor ? linkedQuoteMaterial(row, material, grade, references) : undefined
     const keepChoice = choiceFor && (choiceFor.length === 0 || (choiceFor[0] === material && choiceFor[1] === grade))
     if (choiceFor && !keepChoice) {
       delete row.material_choice_for
       row.material = row.grade = ''
     }
     if (keepChoice) {
+      row.material_choice_for = [material, grade]
+    } else if (quoteMaterial) {
+      row.material = quoteMaterial.material
+      row.grade = quoteMaterial.grade
       row.material_choice_for = [material, grade]
     } else if (generic) {
       // Match server prefill: C-PP/C-ABS are resin families, not concrete grades.

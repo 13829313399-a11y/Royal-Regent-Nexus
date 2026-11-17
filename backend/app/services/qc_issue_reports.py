@@ -6,7 +6,7 @@ from app.services import qc_weekly_templates as weekly, qc_monthly_templates as 
 from app.services.qc_inspection_summary import dump
 
 MAX_REPORT_ROWS = 5000
-PERIOD_TITLES = {'weekly':'每周验货问题图文记录表', 'monthly':'月度验货问题图文记录表',
+PERIOD_TITLES = {'weekly':'周验货问题及照片', 'monthly':'月度验货问题图文记录表',
                  'yearly':'年度验货问题图文记录表'}
 
 

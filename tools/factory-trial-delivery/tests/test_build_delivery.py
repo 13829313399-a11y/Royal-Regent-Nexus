@@ -173,6 +173,7 @@ import demo
         assert zipped.read(prefix + "START.cmd").endswith(b"if errorlevel 1 pause\r\n")
     assert sha256(zipped_path.read_bytes()).hexdigest() == result[0]["sha256"]
     assert not list(output.glob("*.part"))
+    assert not list(output.glob("*华康C*"))
 
 
 def test_available_real_cache_has_complete_pinned_windows_dependencies():
@@ -184,3 +185,13 @@ def test_available_real_cache_has_complete_pinned_windows_dependencies():
     assert any(record["name"].lower() == "colorama" for record in records)
     sources = delivery.verify_native_sources(cache)
     assert len(sources["native_downloads"]) == 3 and len(sources["ocr_languages"]) == 2
+
+
+def test_huakang_a_and_b_delivery_describes_current_intake_contract():
+    assert 'ZURU' in delivery.FACTORIES['huakang-a'][3]
+    a = delivery.readme('huakang-a', '2026-11-17')
+    b = delivery.readme('huakang-b', '2026-11-17')
+    assert '资料差异' not in a or '只作提醒' in a
+    assert '不要求勾选核对或填写原因' in a
+    assert '合同列统一为TBA' in b
+    assert '不包含PO入正式排期入口' in b

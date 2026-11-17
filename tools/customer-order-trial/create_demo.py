@@ -72,6 +72,30 @@ def build(destination, factory):
         '7. 在台账打开一条订单，发送给 PMC；到“本机部门收件”选择 PMC 并签收该版本。这些记录只在当前电脑，不会通知线上员工。\n'
         '8. 回到该订单登记一笔演示走货：数量 1、实际走货日期选当天或之前、出货单号 DEMO-SHIP-001；确认后查看走货记录及剩余数量，也可按界面填写原因试用冲销。\n'
         '9. 演示记录保留在本机 data 中。开始真实资料试用请另用一份从 ZIP 全新解压的包，避免与演示记录混在一起。\n', encoding='utf-8-sig')
+    if factory == 'huakang-a':
+        # ZURU uses the same public three-sheet headers; no private PO/history is
+        # copied into delivery. Keep this blank template reusable for first use.
+        zuru = destination / 'ZURU'
+        zuru.mkdir()
+        fixture = fixtures('test_customer_order_zuru_unified.py', {'po_book', 'data'})
+        (zuru / 'DEMO_ZURU_PO.xlsx').write_bytes(fixture['data'](fixture['po_book']()))
+        template_fixture = fixtures('test_customer_order_unified.py', {'_template_bytes'}, unified=service)
+        book = openpyxl.load_workbook(BytesIO(template_fixture['_template_bytes']()))
+        for sheet in book:
+            sheet.freeze_panes = 'H4'
+            for row in sheet.iter_rows(min_row=4):
+                for cell in row:
+                    if cell.value not in {'取消单', '已走货订单'}:
+                        cell.value = None
+        book.save(zuru / 'ZURU统一排期空白模板.xlsx')
+        book.close()
+        (zuru / 'ZURU试用说明.txt').write_text(
+            '本目录的DEMO订单是合成测试资料，不是生产订单。\n'
+            '选择华康A的ZURU，上传DEMO_ZURU_PO.xlsx及ZURU统一排期空白模板.xlsx。\n'
+            '解析应得到2行：9560-S001数量100，9560-S004-MB数量200；美元总额750，港币不自动换算。\n'
+            '可直接保存到本机台账或生成排期，不需要勾选核对或填写原因。旧版分类入单功能已由此流程替代。\n'
+            '真实试用时上传自己的普通ZURU PDF/Excel PO。首次可使用此空白统一模板；以后上传已保存的统一排期继续追加。\n'
+            '原周排期、MA及库存表不是统一模板，不会自动迁入历史订单。\n', encoding='utf-8-sig')
 
 
 if __name__ == '__main__':

@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.time import parse_business_timestamp
 from app.models import three_d_printing as m
 from app.services.three_d_network_health import network_health_snapshot
+from app.services import three_d_telemetry_storage as history
 
 FACTORY = "huakang-a"
 SITE = "3dsite-huakang-a-heyuan"
@@ -178,6 +179,9 @@ def audit(
     actor_type="cloud_connector",
     actor_name="云端打印机连接器",
 ):
+    source_id = data.get("event_id") if isinstance(data, dict) else None
+    if source_id:
+        history.promote(db.get(m.ThreeDPrintingPrinterStateEvent, source_id))
     db.add(
         m.ThreeDPrintingAuditEvent(
             id="3dca-" + uuid4().hex,
@@ -404,6 +408,8 @@ def start_session(db, payload):
     )
     if used:
         raise HTTPException(409, "会话标识不可重复使用")
+    if meta.get("last_state_event_id"):
+        history.promote(db.get(m.ThreeDPrintingPrinterStateEvent, meta["last_state_event_id"]))
     save_metadata(
         printer,
         {
@@ -453,9 +459,14 @@ def store_event(db, payload):
     encoded = encode(payload.model_dump(mode="json"))
     existing = db.get(m.ThreeDPrintingPrinterStateEvent, payload.event_id)
     if existing:
-        if existing.factory_id != FACTORY or existing.raw_payload_json != encoded:
+        if existing.factory_id != FACTORY or not history.body_matches(existing, encoded):
             raise HTTPException(409, "事件标识已用于不同内容")
         return {"event_id": existing.id, "accepted": True, "duplicate": True}
+    tick = db.get(m.ThreeDPrintingTelemetryTick, payload.event_id)
+    if tick is not None:
+        if tick.factory_id != FACTORY or tick.payload_digest != history.payload_digest(encoded):
+            raise HTTPException(409, "事件标识已用于不同内容")
+        return {"event_id": tick.id, "accepted": True, "duplicate": True}
     if payload.sequence <= meta.get("sequence", 0):
         raise HTTPException(409, "拒绝乱序状态事件")
     if payload.observed_at:
@@ -467,6 +478,22 @@ def store_event(db, payload):
             or (previous and payload.observed_at < previous)
         ):
             raise HTTPException(409, "设备观测时间过期、超前或倒退")
+    dispatching = False
+    if row.connection_owner == OWNER and settings.three_d_connector_control_enabled:
+        command = m.ThreeDPrintingPrinterCommand
+        dispatching = db.scalar(select(command.id).where(
+            command.factory_id == FACTORY, command.printer_id == printer.id,
+            command.status == "dispatching", command.leased_until >= stamp(now),
+        ).limit(1)) is not None
+    keep, boundary = history.history_policy(printer, meta, payload, now, dispatching=dispatching)
+    if not settings.three_d_telemetry_sparse_history:
+        keep = True
+    if boundary and meta.get("last_state_event_id"):
+        history.promote(db.get(m.ThreeDPrintingPrinterStateEvent, meta["last_state_event_id"]))
+    if keep:
+        meta["history_anchor_at"] = stamp(now)
+        meta["history_session_id"] = payload.connection_session_id
+    meta["last_state_event_id"] = payload.event_id
     event = m.ThreeDPrintingPrinterStateEvent(
         id=payload.event_id,
         factory_id=FACTORY,
@@ -478,15 +505,15 @@ def store_event(db, payload):
         observed_at=stamp(payload.observed_at) if payload.observed_at else "",
         received_at=stamp(now),
         state=payload.state,
-        progress=payload.progress_percent,
-        remaining_minutes=payload.remaining_minutes,
-        current_file=payload.current_file,
+        progress=payload.progress_percent if keep else 0,
+        remaining_minutes=payload.remaining_minutes if keep else 0,
+        current_file=payload.current_file if keep else "",
         temperatures_json=encode(
             {"nozzle": payload.nozzle_temperature, "bed": payload.bed_temperature}
-        ),
+        ) if keep else "{}",
         error_code=payload.error_code,
         error_text="",
-        payload_version=1,
+        payload_version=history.FULL_EVENT if keep else history.JOURNAL_FRAME,
         raw_payload_json=encoded,
     )
     db.add(event)
@@ -609,7 +636,7 @@ def reconcile(db, payload):
             m.ThreeDPrintingPrinterStateEvent.sequence == meta.get("sequence", 0),
         )
     )
-    if event is None:
+    if event is None or event.payload_version == history.RETAINED_EVIDENCE:
         return {"reconciled": False, "reason": "awaiting_full_status"}
     state = StateEvent.model_validate_json(event.raw_payload_json)
     fresh = (

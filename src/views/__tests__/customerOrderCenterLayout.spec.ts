@@ -525,14 +525,17 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).not.toContain("code: 'spin-master'")
   })
 
-  it('offers ZURU PDF and Excel unified intake only in Huaxing', async () => {
+  it('offers factory-owned ZURU PDF and Excel intake in Huaxing and Huakang A', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴' },
     })
     await wrapper.get('[data-testid="customer-choice-zuru"]').trigger('click')
     expect(wrapper.findAll('input[type="file"]').map((input) => input.attributes('accept'))).toEqual(['.pdf,.xlsx', '.xlsx'])
     expect(wrapper.text()).toContain('华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）')
-    for (const factoryId of ['huakang-a', 'huakang-d', 'huadeng']) {
+    await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A', initialCustomerCode: 'zuru' })
+    expect(wrapper.get('[data-testid=customer-choice-zuru]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.text()).toContain('华康A ZURU 统一排期')
+    for (const factoryId of ['huakang-d', 'huadeng']) {
       await wrapper.setProps({ factoryId })
       expect(wrapper.find('[data-testid="customer-choice-zuru"]').exists()).toBe(false)
     }
@@ -618,7 +621,7 @@ describe('customer order center static frontend', () => {
     wrapper.unmount()
   })
 
-  it('shows three independent customers in Huakang A and routes 360 with the Huakang A factory id', async () => {
+  it('shows four independent customers in Huakang A and routes 360 with the Huakang A factory id', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huakang-a-mapped-preview-v1',
       customer_code: '360',
@@ -646,7 +649,7 @@ describe('customer order center static frontend', () => {
     })
 
     const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
-    expect(customerButtons).toHaveLength(3)
+    expect(customerButtons).toHaveLength(4)
     expect(customerButtons.map((button) => button.text())).toEqual(
       expect.arrayContaining([
         expect.stringContaining('360'),
@@ -853,7 +856,7 @@ describe('customer order center static frontend', () => {
     wrapper.unmount()
   })
 
-  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech'], ['huakang-d', 'seasons'], ['huaxing', 'seasons'], ['huaxing', 'zuru']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
+  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech'], ['huakang-d', 'seasons'], ['huaxing', 'seasons'], ['huaxing', 'zuru'], ['huakang-a', 'zuru']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
     const targetTemplate = customerCode === 'seasons'
       ? (factoryId === 'huakang-d' ? 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3' : 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1')
       : customerCode === 'ubtech'

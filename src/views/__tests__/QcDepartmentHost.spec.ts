@@ -299,7 +299,7 @@ it('uses a native header in both phone tables, synchronizes columns and preserve
     expect(bounds.style.height).toBe('900px') // Native sticky cannot outlive its table.
     expect(bounds.style.width).toBe('320px')
     expect(layer.getAttribute('aria-hidden')).toBe('true')
-    expect(layer.hasAttribute('inert')).toBe(true)
+    expect(layer.hasAttribute('inert')).toBe(false)
     expect(bounds.querySelectorAll('input,button,select,[id],th')).toHaveLength(0)
     expect(Array.from(strip.children).map(el => (el as HTMLElement).style.width)).toEqual(['79px', '97px', '128px'])
     expect((strip.children[1] as HTMLElement).style.left).toBe('79px')
@@ -335,6 +335,25 @@ it('uses a native header in both phone tables, synchronizes columns and preserve
     expect(layer.hidden).toBe(true)
     dialog.remove(); await flushPromises()
     expect(layer.hidden).toBe(false)
+    // The floating date label forwards clicks to the current iframe button, including after replacement.
+    sheet.id = 'recordsTableWrap'
+    const dateHead = doc.createElement('th'); dateHead.dataset.column = 'date'
+    dateHead.innerHTML = '<button class="qis-date-sort" title="点击倒序">验货日期 ↑</button>'
+    const sortClick = vi.fn(() => { dateHead.querySelector('button')!.title = '点击正序'; dateHead.querySelector('button')!.textContent = '验货日期 ↓' })
+    dateHead.querySelector('button')!.onclick = sortClick
+    head.rows[0]!.append(dateHead); await flushPromises()
+    const mirrorDate = wrapper.get('.qc-date-sort-mirror')
+    expect(mirrorDate.attributes('title')).toBe('点击倒序')
+    expect(mirrorDate.element.closest('[inert]')).toBeNull()
+    await mirrorDate.trigger('click'); await flushPromises()
+    expect(sortClick).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.qc-date-sort-mirror').text()).toBe('验货日期 ↓')
+    dateHead.innerHTML = '<button class="qis-date-sort" title="点击正序">验货日期 ↓</button>'
+    const replacementClick = vi.fn(); dateHead.querySelector('button')!.onclick = replacementClick
+    await flushPromises(); await wrapper.get('.qc-date-sort-mirror').trigger('click')
+    expect(replacementClick).toHaveBeenCalledTimes(1)
+    expect(input.value).toBe('保留正在填写的内容')
+    dateHead.remove(); await flushPromises()
     // Switching out of inspection, or back to desktop, restores the existing workspace.
     doc.querySelector('#page-records')!.classList.remove('active'); await flushPromises()
     expect(iframe.style.height).toBe('')

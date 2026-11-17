@@ -23,8 +23,7 @@ export interface ScheduleWorkProjection {
   pendingSplit?: boolean
 }
 
-const reviewResults = new Set(['数量差异', '交期差异', '待人工选择', '待人工确认', '匹配不唯一'])
-const substantiveReviewResults = new Set(['数量差异', '交期差异', '待人工选择', '匹配不唯一'])
+const substantiveReviewResults = new Set(['数量差异', '待人工选择', '匹配不唯一'])
 const reviewReminderStates = new Set<ScheduleOrderReminder['state']>(['REVIEW', 'DATE_REVIEW', 'RULE_REVIEW', 'CHANGE_REVIEW'])
 
 /** Read-only queue membership; it never changes source evidence or action eligibility. */
@@ -39,8 +38,10 @@ export function scheduleWorkItem(row: WeeklyCheckRow, projection: ScheduleWorkPr
   if (['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.scheduleChange || '')) return item(0, '核实退单')
   if (row.scheduleSection === 'CANCELLED' && (ordered || category === 'CREATED')) return item(0, '核实退单')
 
+  const dateMismatch = result === '交期差异' || source?.match_status === 'DATE_MISMATCH'
   const substantiveReview = substantiveReviewResults.has(result)
-    || ['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source?.match_status || '')
+    || ['QUANTITY_MISMATCH', 'AMBIGUOUS'].includes(source?.match_status || '')
+    || (!ordered && dateMismatch)
     || row.identityDuplicate || source?.schedule_identity_duplicate || source?.legacy_match_stale
     || row.scheduleChange === 'REVIEW_REQUIRED'
   const historicalSource = row.scheduleSection === 'SHIPPED'
@@ -57,9 +58,7 @@ export function scheduleWorkItem(row: WeeklyCheckRow, projection: ScheduleWorkPr
   if (projection.pendingSplit) return item(4, '拆单待仓库确认')
   if (row.scheduleChange === 'REOPENED') return item(4, '核实恢复下单')
   if (row.dateReviewRequired || source?.date_review_required) return item(4, '核实日期原文')
-  if (row.identityDuplicate || source?.schedule_identity_duplicate || source?.legacy_match_stale
-    || row.scheduleChange === 'REVIEW_REQUIRED' || category === 'REVIEW'
-    || reviewResults.has(result) || ['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source?.match_status || '')
+  if (substantiveReview || category === 'REVIEW' || result === '待人工确认'
     || (reminder && reviewReminderStates.has(reminder.state))) return item(4, '核实排期差异或资料')
 
   // Legacy evidence without a timing projection remains visible for review rather than guessed as far future.

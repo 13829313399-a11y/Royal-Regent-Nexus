@@ -16,6 +16,7 @@ from openpyxl.worksheet.formula import ArrayFormula
 TARGET_TEMPLATE = "HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4"
 
 ITEM_TAILS = {
+    "zuru": (),  # Shared columns plus explicit ZURU summary USD fields only.
     "360": ("条码", "MS Container Type (FCL/LCL)", "Consolidated ID", "Port of Discharge", "备注", "版本"),
     "green-toys": (
         "走货国家", "落货港", "完成状态", "走货方式", "单价US", "货价总金额US$",

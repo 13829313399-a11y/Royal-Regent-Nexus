@@ -51,9 +51,6 @@
       if (filters.from && range.to < filters.from) return false;
       if (filters.to && range.from > filters.to) return false;
       if (filters.customer && text(row.customer).trim() !== filters.customer) return false;
-      const completion = text(row.completion).trim();
-      if (filters.completion === 'empty' && completion) return false;
-      if (filters.completion?.startsWith('value:') && completion !== filters.completion.slice(6)) return false;
       return !query || [row.poNo, row.customerPo, row.productNo, row.productName].some(v => text(v).toLocaleLowerCase().includes(query));
     });
   }
@@ -70,31 +67,27 @@
     return {from, to:d.toISOString().slice(0,10)};
   }
   function orderedRows(rows) {
-    return rows.slice().sort((a,b) => {const x=dateRange(a)?.from,y=dateRange(b)?.from;return (!x)-(!y)||(x&&y?y.localeCompare(x):0)||text(a.customer).localeCompare(text(b.customer),'zh-CN')||text(a.id).localeCompare(text(b.id));});
+    return rows.slice().sort((a,b) => {const x=dateRange(a)?.from,y=dateRange(b)?.from;return (!x)-(!y)||(x&&y?x.localeCompare(y):0)||text(a.customer).localeCompare(text(b.customer),'zh-CN')||text(a.id).localeCompare(text(b.id));});
   }
   const model = {items:[], phase:'initial', request:0, checked:new Set()};
   const el = id => root.document?.getElementById(id);
   function filters() {
-    return {from:el('qsDateFrom').value,to:el('qsDateTo').value,customer:el('qsCustomer').value,completion:el('qsCompletion').value,query:el('qsSearch').value};
+    return {from:el('qsDateFrom').value,to:el('qsDateTo').value,customer:el('qsCustomer').value,query:el('qsSearch').value};
   }
   function updateChoices() {
-    for(const [id,key,first] of [['qsCustomer','customer','全部客户'],['qsCompletion','completion','全部完成情况']]) {
-      const select=el(id), old=select.value;
-      select.innerHTML='<option value="">'+first+'</option>'+(key==='completion'?'<option value="empty">无反馈</option>':'')+
-        choices(model.items,key).map(v=>'<option value="'+escape(key==='completion'?'value:'+v:v)+'">'+escape(v)+'</option>').join('');
-      select.value=old;
-      if (select.selectedIndex < 0) select.value='';
-    }
+    const select=el('qsCustomer'), old=select.value, oldLabel=select.selectedOptions[0]?.textContent;
+    select.innerHTML='<option value="">全部客户</option>'+
+      choices(model.items,'customer').map(v=>'<option value="'+escape(v)+'">'+escape(v)+'</option>').join('');
+    select.value=old;
+    if (select.selectedIndex < 0 && old) {const option=root.document.createElement('option');option.value=old;option.textContent=oldLabel;select.append(option);select.value=old;}
   }
   function renderTable() {
     const body=el('qsRows'), error=el('qsFilterError');let rows;
     error.textContent='';
     try { rows=filterRows(model.items,filters()); } catch(e) { error.textContent=e.message;rows=[]; }
-    el('qsCount').textContent=model.phase==='pending'?'待接通':`${rows.length} / ${model.items.length} 条`;
-    el('qsCount').title='当前显示 / 总计';
     if(!rows.length) {
       const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期，可点击“新增验货”添加排期':'没有符合筛选条件的排期';
-      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户和完成情况筛选排期。':'')+'</p></div></td></tr>';
+      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户筛选或搜索排期。':'')+'</p></div></td></tr>';
       updatePush();return;
     }
     body.innerHTML=orderedRows(rows).map(row =>
@@ -123,14 +116,71 @@
     updatePush();freezeScheduleColumns();
   }
   function applyFilters() { model.checked.clear();updateDateLabel();renderTable();updatePush(); }
+  function applyDateFilters() {
+    updateDateLabel();
+    try { filterRows([], filters()); } catch(e) { ++model.request;model.items=[];model.phase='ready';el('qsRefresh').disabled=false;applyFilters();return Promise.resolve(); }
+    return refresh();
+  }
   function updateDateLabel() {
-    const from=el('qsDateFrom').value,to=el('qsDateTo').value,format=d=>d.replaceAll('-','/');
-    const label=from&&to?(from===to?format(from):format(from)+' — '+format(from.slice(0,4)===to.slice(0,4)?to.slice(5):to)):from?format(from)+' 起':to?'截至 '+format(to):'不限日期';
-    el('qsDateLabel').textContent=label;el('qsDateToggle').title=from||to?[from||'不限起日',to||'不限止日'].join(' 至 '):'不限日期';
+    const from=el('qsDateFrom').value,to=el('qsDateTo').value,format=d=>d.slice(5).replaceAll('-','/');
+    const label=from&&to?(from===to?format(from):format(from)+' — '+format(to)):from?format(from)+' 起':to?'截至 '+format(to):'筛选日期';
+    el('qsDateLabel').textContent=label;el('qsDateToggle').title=from||to?[from||'不限起日',to||'不限止日'].join(' 至 '):'筛选日期';
+  }
+  const calendar={month:'',focus:''};
+  function businessToday() {
+    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+    return ['year','month','day'].map(type=>parts.find(p=>p.type===type).value).join('-');
+  }
+  function addDays(value,offset) {
+    const day=new Date(value+'T00:00:00Z');day.setUTCDate(day.getUTCDate()+offset);
+    return day.toISOString().slice(0,10);
+  }
+  function shiftMonth(value,offset) {
+    const day=new Date(value+'T00:00:00Z'),original=day.getUTCDate();
+    day.setUTCDate(1);day.setUTCMonth(day.getUTCMonth()+offset);
+    const last=new Date(day.getTime());last.setUTCMonth(last.getUTCMonth()+1);last.setUTCDate(0);
+    day.setUTCDate(Math.min(original,last.getUTCDate()));
+    return day.toISOString().slice(0,10);
+  }
+  function renderCalendar(focus=false) {
+    const from=el('qsDraftFrom').value,to=el('qsDraftTo').value,today=businessToday();
+    const first=calendar.month+'-01',offset=(new Date(first+'T00:00:00Z').getUTCDay()+6)%7;
+    el('qsCalendarMonth').textContent=Number(calendar.month.slice(5))+'月';
+    el('qsCalendarMonth').setAttribute('aria-label',calendar.month.slice(0,4)+'年'+Number(calendar.month.slice(5))+'月');
+    const days=Array.from({length:42},(_,i)=>addDays(first,i-offset));
+    const focused=days.includes(calendar.focus)?calendar.focus:first;
+    el('qsCalendarDays').innerHTML=Array.from({length:6},(_,row)=>'<tr>'+days.slice(row*7,row*7+7).map(value=>{
+      const selected=Boolean(from&&(to?value>=from&&value<=to:value===from));
+      const edge=value===from||value===to,classes=[selected?'qs-range-day':'',value===from?'qs-range-start':'',value===to?'qs-range-end':'',edge?'qs-range-edge':''].filter(Boolean).join(' ');
+      return '<td role="gridcell" aria-selected="'+selected+'" class="'+classes+'"><button type="button" data-qs-day="'+value+'" tabindex="'+(value===focused?'0':'-1')+'" class="qs-calendar-day'+(value.slice(0,7)!==calendar.month?' qs-other-month':'')+'" aria-label="'+value.replaceAll('-','/')+(value===from?'，开始日期':'')+(value===to?'，结束日期':'')+'"'+(value===today?' aria-current="date"':'')+'>'+Number(value.slice(8))+'</button></td>';
+    }).join('')+'</tr>').join('');
+    el('qsApplyDates').disabled=!(date(from)&&date(to)&&from<=to);
+    el('qsDateSelection').textContent=!from?'请选择开始日期，再选择结束日期；同一天可选择两次。':!to?'已选开始日期 '+from+'，请选择结束日期。':'已选 '+from+' 至 '+to+'，点击应用筛选。';
+    positionDatePanel();
+    if(focus)el('qsCalendarDays').querySelector('[data-qs-day="'+focused+'"]')?.focus();
+  }
+  function chooseCalendarDay(value) {
+    if(!date(value))return;
+    const from=el('qsDraftFrom'),to=el('qsDraftTo');
+    if(!from.value||to.value){from.value=value;to.value='';}
+    else {to.value=value;if(to.value<from.value)[from.value,to.value]=[to.value,from.value];}
+    calendar.month=value.slice(0,7);calendar.focus=value;dateError();renderCalendar(true);
+  }
+  function changeCalendarMonth(offset) {
+    const next=shiftMonth(calendar.month+'-01',offset);
+    if(!date(next))return;
+    calendar.month=next.slice(0,7);calendar.focus=next;renderCalendar();
+  }
+  function calendarKeydown(event) {
+    const button=event.target.closest('[data-qs-day]');if(!button)return;
+    const value=button.dataset.qsDay,weekday=(new Date(value+'T00:00:00Z').getUTCDay()+6)%7;
+    const offsets={ArrowLeft:-1,ArrowRight:1,ArrowUp:-7,ArrowDown:7,Home:-weekday,End:6-weekday};
+    const next=Object.hasOwn(offsets,event.key)?addDays(value,offsets[event.key]):event.key==='PageUp'?shiftMonth(value,-1):event.key==='PageDown'?shiftMonth(value,1):'';
+    if(!date(next))return;
+    event.preventDefault();calendar.focus=next;calendar.month=next.slice(0,7);renderCalendar(true);
   }
   function dateError(message='') {
     el('qsDateError').textContent=message;
-    for(const id of ['qsDraftFrom','qsDraftTo'])el(id).setAttribute('aria-invalid',String(Boolean(message)));
   }
   function positionDatePanel() {
     if(el('qsDatePanel').hidden)return;
@@ -139,25 +189,26 @@
     const below=root.innerHeight-rect.bottom-22,above=rect.top-22,up=below<panel.scrollHeight&&above>below;
     panel.style.top=up?'auto':'calc(100% + 10px)';panel.style.bottom=up?'calc(100% + 10px)':'auto';
     panel.style.maxHeight=Math.max(100,up?above:below)+'px';
+    panel.style.left='0px';
+    const bounds=panel.getBoundingClientRect();
+    panel.style.left=Math.max(16-rect.left,Math.min(0,root.innerWidth-16-bounds.right))+'px';
   }
   function closeDatePanel(restoreFocus=false) {
     el('qsDatePanel').hidden=true;el('qsDateToggle').setAttribute('aria-expanded','false');
     if(restoreFocus)el('qsDateToggle').focus();
   }
   function openDatePanel() {
-
     el('qsDraftFrom').value=el('qsDateFrom').value;el('qsDraftTo').value=el('qsDateTo').value;dateError();
-    for(const id of ['qsLastWeek','qsThisWeek','qsNextWeek'])el(id).setAttribute('aria-pressed','false');
-    el('qsDatePanel').hidden=false;el('qsDateToggle').setAttribute('aria-expanded','true');positionDatePanel();el('qsDraftFrom').focus();
+    calendar.focus=date(el('qsDraftFrom').value)||date(el('qsDraftTo').value)||businessToday();calendar.month=calendar.focus.slice(0,7);
+    el('qsDatePanel').hidden=false;el('qsDateToggle').setAttribute('aria-expanded','true');renderCalendar(true);
   }
   function applyDates() {
-
     const from=el('qsDraftFrom'),to=el('qsDraftTo');
     try {
-      if(!from.validity.valid||!to.validity.valid)throw new Error('请填写有效的完整日期');
+      if(!date(from.value)||!date(to.value))throw new Error('请选择开始日期和结束日期');
       filterRows([],{...filters(),from:from.value,to:to.value});
-    } catch(error){dateError(error.message);from.focus();return;}
-    el('qsDateFrom').value=from.value;el('qsDateTo').value=to.value;dateError();applyFilters();closeDatePanel(true);
+    } catch(error){dateError(error.message);return;}
+    el('qsDateFrom').value=from.value;el('qsDateTo').value=to.value;dateError();closeDatePanel(true);void applyDateFilters();
   }
   async function refresh() {
     if(!el('page-sales-schedule'))return;
@@ -165,7 +216,9 @@
     model.checked.clear();updatePush();model.phase='loading';model.items=[];renderTable();
     el('qsRefresh').disabled=true;
     try {
-      const response=await root.fetch('api/schedule-source',{cache:'no-store'});
+      const params=new URLSearchParams();
+      for(const [key,value] of [['dateFrom',el('qsDateFrom').value],['dateTo',el('qsDateTo').value]])if(value)params.set(key,value);
+      const response=await root.fetch('api/schedule-source'+(params.size?'?'+params:''),{cache:'no-store'});
       if(!response.ok)throw new Error('HTTP '+response.status);
       const data=await response.json();if(seq!==model.request)return;
       const ready=data.contract_version==='2'&&data.status==='ready'&&data.mapping_version==='qc-task-v1'&&data.source_available===true;
@@ -179,15 +232,7 @@
       if(seq===model.request){el('qsRefresh').disabled=false;updateChoices();renderTable();updatePush();}
     }
   }
-  function setWeek(offset) {
-    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
-    const part=type=>parts.find(p=>p.type===type).value;
-    const range=weekRange(`${part('year')}-${part('month')}-${part('day')}`,offset);
-    el('qsDraftFrom').value=range.from;el('qsDraftTo').value=range.to;dateError();
-    for(const [id,value] of [['qsLastWeek',-1],['qsThisWeek',0],['qsNextWeek',1]])el(id).setAttribute('aria-pressed',String(value===offset));
-  }
-  function clearDates() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo'])el(id).value='';dateError();applyFilters();closeDatePanel(true); }
-  function resetFilters() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo','qsCustomer','qsCompletion','qsSearch'])el(id).value='';dateError();closeDatePanel();applyFilters(); }
+  function resetFilters() { for(const id of ['qsDateFrom','qsDateTo','qsDraftFrom','qsDraftTo','qsCustomer','qsSearch'])el(id).value='';dateError();closeDatePanel();return applyDateFilters(); }
   function freezeScheduleColumns(){
     const host=root.document.querySelector('#page-sales-schedule .qs-table-scroll'),customer=host?.querySelector('th[data-column="customer"]');
     if(customer)host.style.setProperty('--qs-customer-width',customer.getBoundingClientRect().width+'px');
@@ -201,7 +246,14 @@
     for(const id of model.checked)if(!ids.has(id))model.checked.delete(id);
     const all=el('qsSelectAll');
     if(all){all.disabled=!rows.length;all.checked=!!rows.length&&model.checked.size===rows.length;all.indeterminate=model.checked.size>0&&model.checked.size<rows.length;}
-    if(el('qsPush')){el('qsPush').disabled=!model.checked.size;el('qsPush').textContent='确认推送验货'+(model.checked.size?'（'+model.checked.size+'）':'');}
+    const count=el('qsCount');
+    if(count){
+      let visible=0;try{visible=filterRows(model.items,filters()).length;}catch{}
+      count.textContent=model.checked.size?'已选 '+model.checked.size+' 条':model.phase==='pending'?'待接通':`${visible} / ${model.items.length} 条`;
+      count.setAttribute('aria-label',model.checked.size?'已选排期数':'当前显示与总排期数');
+      count.title=`当前显示 ${visible} / 当前日期范围总计 ${model.items.length} 条`;
+    }
+    if(el('qsPush')){el('qsPush').disabled=!model.checked.size;el('qsPush').textContent='确认推送验货';}
   }
   function sizeScheduleTable() {
     const page=el('page-sales-schedule'),toolbar=el('qsToolbar');
@@ -212,16 +264,17 @@
   }
   function mount() {
     if(!el('page-sales-schedule'))return;
-    for(const id of ['qsDateFrom','qsDateTo','qsCustomer','qsCompletion'])el(id).addEventListener('change',applyFilters);
+    for(const id of ['qsDateFrom','qsDateTo'])el(id).addEventListener('change',applyDateFilters);
+    el('qsCustomer').addEventListener('change',applyFilters);
     el('qsSearch').addEventListener('input',applyFilters);
     el('qsDateToggle').addEventListener('click',()=>el('qsDatePanel').hidden?openDatePanel():closeDatePanel(true));
     el('qsApplyDates').addEventListener('click',applyDates);
-    for(const id of ['qsDraftFrom','qsDraftTo'])el(id).addEventListener('input',()=>{dateError();for(const key of ['qsLastWeek','qsThisWeek','qsNextWeek'])el(key).setAttribute('aria-pressed','false');});
-    el('qsDatePanel').addEventListener('keydown',event=>{if(event.key==='Enter'&&event.target.matches('input')){event.preventDefault();applyDates();}});
+    el('qsCalendarDays').addEventListener('click',event=>{const button=event.target.closest('[data-qs-day]');if(button)chooseCalendarDay(button.dataset.qsDay);});
+    el('qsCalendarDays').addEventListener('keydown',calendarKeydown);
+    el('qsPreviousMonth').addEventListener('click',()=>changeCalendarMonth(-1));el('qsNextMonth').addEventListener('click',()=>changeCalendarMonth(1));
     root.document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!el('qsDatePanel').hidden){event.preventDefault();closeDatePanel(true);}});
-    root.document.addEventListener('click',event=>{if(!el('qsDatePanel').hidden&&!el('qsDateToggle').parentElement.contains(event.target))closeDatePanel();});
-    // Native date pickers may return focus to the document before Confirm receives its click.
-    // Dismiss via an explicit outside click or Escape, never on focus loss alone.
+    root.document.addEventListener('click',event=>{if(!el('qsDatePanel').hidden&&!event.composedPath().includes(el('qsDateToggle').parentElement))closeDatePanel();});
+    // Keep draft selection local until Apply; focus movement alone never dismisses it.
     root.addEventListener('resize',()=>{sizeScheduleTable();freezeScheduleColumns();});
     el('page-sales-schedule').addEventListener('scroll',positionDatePanel,{passive:true});
     if(root.ResizeObserver){const observer=new root.ResizeObserver(sizeScheduleTable);observer.observe(el('page-sales-schedule'));observer.observe(el('qsToolbar'));}
@@ -229,16 +282,15 @@
     if(root.ResizeObserver)new root.ResizeObserver(freezeScheduleColumns).observe(table);
     sizeScheduleTable();freezeScheduleColumns();
     el('qsRefresh').addEventListener('click',refresh);
-    el('qsThisWeek').addEventListener('click',()=>setWeek(0));el('qsLastWeek').addEventListener('click',()=>setWeek(-1));el('qsNextWeek').addEventListener('click',()=>setWeek(1));
-    el('qsClearDates').addEventListener('click',clearDates);el('qsReset').addEventListener('click',resetFilters);
+    el('qsReset').addEventListener('click',resetFilters);
 
     el('qsSelectAll')?.addEventListener('change',event=>{model.checked.clear();if(event.target.checked)for(const row of selectableRows())model.checked.add(text(row.id));renderTable();});
     el('qsPush')?.addEventListener('click',()=>root.QcWorkflow?.preparePush(model.items.filter(r=>model.checked.has(text(r.id)))));
     el('qsRows').addEventListener('click',event=>{const task=event.target.closest('[data-qs-task]');if(task){root.QcWorkflow?.openTask(task.dataset.qsTask,'records');return;}if(event.target.matches('[data-pick]')){const id=event.target.dataset.pick;event.target.checked?model.checked.add(id):model.checked.delete(id);updatePush();return;}});
-    renderTable();
+    updateDateLabel();renderTable();
   }
 
-  async function afterPush(successIds){const failed=[...model.checked].filter(id=>!successIds.includes(id));if(!failed.length)resetFilters();await refresh();model.checked=new Set(failed);renderTable();updatePush();}
+  async function afterPush(successIds){const failed=[...model.checked].filter(id=>!successIds.includes(id));if(!failed.length){await resetFilters();return;}await refresh();model.checked=new Set(failed);renderTable();updatePush();}
   let scheduleDialog=null, scheduleBusy=false;
   function openNew(){
     if(!root.__QC_NEXUS?.workflow?.create)return;
@@ -254,7 +306,7 @@
       const row=Object.fromEntries(new FormData(e.target));const signature=JSON.stringify(row);
       if(!pending||pending.signature!==signature)pending={signature,requestKey:root.crypto.randomUUID()};
       scheduleBusy=true;dialog.querySelectorAll('button').forEach(b=>b.disabled=true);
-      try{const response=await root.fetch('api/workflow/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requestKey:pending.requestKey,row})});const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:'保存失败');dialog.close();dialog.remove();scheduleBusy=false;await root.showPage('sales-schedule');resetFilters();await refresh();root.showToast?.('排期已保存，尚未推送','success');}
+      try{const response=await root.fetch('api/workflow/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requestKey:pending.requestKey,row})});const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:'保存失败');dialog.close();dialog.remove();scheduleBusy=false;await root.showPage('sales-schedule');await resetFilters();root.showToast?.('排期已保存，尚未推送','success');}
       catch(error){dialog.querySelector('[data-error]').textContent=error.message+'；输入已保留，可以重试。';}
       finally{scheduleBusy=false;dialog.querySelectorAll('button').forEach(b=>b.disabled=false);}
     };root.document.body.append(dialog);dialog.showModal();dialog.querySelector('input').focus();

@@ -229,6 +229,15 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
   ],
   'huakang-a': [
     {
+      code: 'zuru', name: 'ZURU', version: 'V2',
+      poAccept: '.pdf,.xlsx', poExtensions: ['.pdf', '.xlsx'],
+      scheduleAccept: '.xlsx', scheduleExtensions: ['.xlsx'],
+      poDescription: 'ZURU PDF 正单或已转换的 Excel 正单',
+      templateDescription: '华康A ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）',
+      targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4',
+      ruleDescription: '上传 ZURU 订单与统一排期，预览后直接生成排期副本。',
+    },
+    {
       code: '360',
       name: '360',
       version: 'V1',
@@ -412,16 +421,17 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
       profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
       profile.templateDescription = `华兴 ${profile.name} 最新统一排期（含 ITEM 分类页）`
       profile.ruleDescription = '按主要公共字段匹配最新排期，BuzzBee 和迪奇按产品对应 ITEM 分类页。各表在自己的取消单前追加，接单表、正单评审表关联实际明细页和行；合同、SO、客户 PO 分别映射，保留历史订单、公式和人工字段。'
-      if (profile.code === 'zuru') {
-        profile.templateDescription = '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）'
-        profile.ruleDescription = '按 PO号、原单行号和完整货号识别 ZURU 正单，逐行读取客户PO，美元原价单独保留、不换算港币。核对后写入华兴统一排期，保留历史订单、公式及人工字段；原周排期的MA和库存记录不作为正单导入。'
-      }
       if (profile.code === 'buzzbee') {
         profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
       }
       if (profile.code === 'edu') {
         profile.ruleDescription = 'EDU 每条新明细续编 EDUHX，并同步三张排期与 PO订单。按去尾码货号归组到绿色备料行上方；先匹配扣数PO，否则扣同货号最后一条绿色行，余额允许负数。装箱可补录，重复单保留原号、不再次扣料，历史与走货资料保留。'
       }
+    }
+    if (profile.code === 'zuru') {
+      const factoryName = factoryId === 'huakang-a' ? '华康A' : '华兴'
+      profile.templateDescription = `${factoryName} ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）`
+      profile.ruleDescription = `按 PO号、原单行号和完整货号识别 ZURU 正单，逐行读取客户PO，美元原价单独保留、不换算港币。生成${factoryName}统一排期，保留历史、公式及人工字段；资料差异只作提醒，MA和库存不作为正单导入。`
     }
   })
 })
@@ -554,6 +564,7 @@ const props = defineProps<{
   factoryId: string
   factoryName: string
   focusLineId?: string
+  initialCustomerCode?: string
 }>()
 
 const emit = defineEmits<{
@@ -1804,6 +1815,11 @@ watch(
     acknowledgedExceptionIds.value = []
   },
 )
+
+watch(() => [props.factoryId, props.initialCustomerCode], () => {
+  const customer = availableCustomers.value.find(item => item.code === props.initialCustomerCode)
+  if (customer) selectCustomer(customer.code)
+}, { immediate: true })
 
 watch(sourceKind, (kind) => {
   if (kind === 'formal' || !reconciliation.value.enabled) return

@@ -1,7 +1,7 @@
 [
   {
     "id": "detail",
-    "title": "华兴周验货明细及客户汇总表",
+    "title": "周验货明细及客户汇总",
     "sourceFile": "10.26-10.30(华兴）各客每周验货汇总2.xls",
     "sourceSha256": "a81ec70cbdd3ca94ecdd2f7d528342618b53f8be2da80291ed75c90a8bb8483d",
     "sampleSheet": "5.4-5.8",
@@ -61,7 +61,7 @@
   },
   {
     "id": "group",
-    "title": "华兴周验货汇总表",
+    "title": "周验货数据汇总",
     "sourceFile": "2026年华登集团验货汇总（10.26.10.30)4.xls",
     "sourceSha256": "d5736ac17ad577c34c4ecdf2f8e4d1144a4763ba6fc6bc5cc1f46fcdae414e0d",
     "sampleSheet": "7.27-7.31",

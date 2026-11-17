@@ -122,7 +122,7 @@ test('customer identities use current source codes and names, preserving same-na
   assert.ok(p.calls.some(c=>c.toast?.includes('全部客户')));assert.equal(p.calls.filter(c=>c.body).length,0);
  }finally{p.dom.window.close();}
 });
-test('date AND customer AND existing keyword/result filters keep stable options, matching rows and empty state',async()=>{
+test('date, customer and search filters keep stable options, matching rows and empty state',async()=>{
  const p=await page();try{
   Object.assign(p.rows[0],{dateFrom:'2026-11-05',dateTo:'2026-11-07',customer:'ZURU',sourceRecord:{customerCode:'01'},result:'PASS'});
   Object.assign(p.rows[1],{dateFrom:'2026-11-05',dateTo:'2026-11-05',customer:'Dickie',result:'FAIL'});
@@ -132,8 +132,7 @@ test('date AND customer AND existing keyword/result filters keep stable options,
   const search=p.d.getElementById('searchInput');search.value='00000';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['a']);
   assert.equal(p.d.querySelectorAll('[data-entry]').length,1);
   assert.deepEqual(optionValues(p,'qisTaskDate'),dates);assert.deepEqual(optionValues(p,'qisTaskCustomer'),customers);
-  p.d.getElementById('filterResult').value='FAIL';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),[]);assert.match(p.d.getElementById('recordsTableWrap').textContent,/没有|暂无/);
-  p.d.getElementById('filterResult').value='';search.value='不存在';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),[]);
+  search.value='不存在';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),[]);assert.match(p.d.getElementById('recordsTableWrap').textContent,/没有|暂无/);
   search.value='';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['a']);assert.equal(p.d.getElementById('qisTaskDate').value,'2026-11-05');assert.equal(p.d.getElementById('qisTaskCustomer').value,customerKey('01','ZURU'));
   assert.equal(p.calls.filter(c=>c.body).length,0);
  }finally{p.dom.window.close();}
@@ -149,12 +148,13 @@ test('refresh adds task choices, retains valid choices, and resets removed choic
   p.rows.splice(0);await p.w.QcInspectionSheet.load();assert.deepEqual(optionValues(p,'qisTaskDate'),['']);assert.deepEqual(optionValues(p,'qisTaskCustomer'),['']);
  }finally{p.dom.window.close();}
 });
-test('search control is reused at toolbar end; reset clears new and legacy filters without changing inputs or tasks',async()=>{
+test('search comes first, print stays last, and reset clears task filters and restores date order',async()=>{
  const p=await page();try{
-  const input=p.d.getElementById('searchInput'),toolbar=p.d.querySelector('#page-records .records-filters');
-  assert.equal(toolbar.lastElementChild.querySelector('input'),input);assert.equal(input.type,'search');assert.equal(input.getAttribute('oninput'),'filterRecords()');assert.ok(p.d.getElementById('recordsDateFilter').hidden);
+  const input=p.d.getElementById('searchInput'),toolbar=p.d.querySelector('#page-records .records-toolbar-inner');
+  assert.equal(toolbar.firstElementChild.querySelector('input'),input);assert.equal(input.type,'search');assert.equal(input.getAttribute('oninput'),'filterRecords()');assert.ok(p.d.getElementById('recordsDateFilter').hidden);
+  assert.deepEqual([...toolbar.querySelectorAll('select, .records-reset, #qcInspectionPrint')].map(el=>el.id||el.textContent),['qisTaskDate','qisTaskCustomer','重置筛选','qcInspectionPrint']);
   choose(p,'qisTaskDate','2026-10-29');choose(p,'qisTaskCustomer',customerKey('','客户中文'));input.value='长PO-0123456789'.repeat(15);p.w.QcInspectionSheet.render();assert.equal(input.value,'长PO-0123456789'.repeat(15));
-  const app=fs.readFileSync(path.join(sourceRoot,'services/qc-department/app.js'),'utf8');const start=app.indexOf('function resetRecordsFilters()'),end=app.indexOf('\nfunction ',start+1);p.w.filterRecords=()=>p.w.QcInspectionSheet.render();p.w.closeRecordsDateFilter=()=>{};p.w.syncRecordsDateFilter=()=>{};p.w.eval(app.slice(start,end));p.w.resetRecordsFilters();
+  const app=fs.readFileSync(path.join(sourceRoot,'services/qc-department/app.js'),'utf8');const start=app.indexOf('function resetRecordsFilters()'),end=app.indexOf('\nfunction ',start+1);p.w.filterRecords=()=>p.w.QcInspectionSheet.render();p.w.closeRecordsDateFilter=()=>{};p.w.syncRecordsDateFilter=()=>{};p.w.eval(app.slice(start,end));p.d.querySelector('.qis-date-sort').click();p.w.resetRecordsFilters();assert.equal(p.w.QcInspectionSheet.model.recordsSort,'date-asc');
   assert.equal(input.value,'');assert.equal(p.d.getElementById('qisTaskDate').value,'');assert.equal(p.d.getElementById('qisTaskCustomer').value,'');assert.equal(p.d.getElementById('filterDateFrom').value,'');assert.equal(visibleIds(p).length,3);
   assert.equal(p.calls.filter(c=>c.body).length,0);
  }finally{p.dom.window.close();}
@@ -240,11 +240,10 @@ test('unavailable historical photo warning stays visible while text remains edit
   assert.equal(p.rows[0].remark,'仍可录入');assert.match(p.d.querySelector('[data-photo-list="a"]').textContent,/来源照片暂不可用/);
  }finally{p.dom.window.close();}
 });
-test('PENDING persists independently through reload and filtering',async()=>{
+test('PENDING persists independently through reload',async()=>{
  const p=await page();try{
   const q=p.w.QcInspectionSheet;
   q.edit('a','result','PENDING',true);await q.flush();await q.load();
-  p.d.getElementById('filterResult').value='PENDING';q.render();assert.equal(q.filtered().length,1);
   assert.equal(p.d.querySelector('[data-result="a"]').value,'PENDING');
  }finally{p.dom.window.close();}
 });
@@ -262,9 +261,9 @@ test('dates keep their year and a filled result clears the historical blank warn
   assert.match(p.d.querySelector('[data-entry="a"]').textContent,/原历史结论：COND/);
  }finally{p.dom.window.close();}
 });
-test('planned date default groups customers within each day, keeps missing dates last and modification sort independent',async()=>{
+test('date header toggles planned order, preserves customer groups and missing dates last, and review sorting remains independent',async()=>{
  const p=await page();try{
-  assert.equal(p.d.getElementById('filterSort').value,'date-asc');
+  assert.equal(p.d.getElementById('filterSort'),null);assert.equal(p.w.QcInspectionSheet.model.recordsSort,'date-asc');
   const seed=p.w.QcInspectionSheet.model.items[0];
   const rows=[
    {id:'e',dateFrom:'2026-10-29',customer:'EDU',updatedAt:'6'},
@@ -277,10 +276,18 @@ test('planned date default groups customers within each day, keeps missing dates
   p.w.QcInspectionSheet.model.items=rows;
   const ids=()=>Array.from(p.w.QcInspectionSheet.filtered(),r=>r.id);
   assert.deepEqual(ids(),['c','a','b','d','e','z']);
-  p.d.getElementById('filterSort').value='date-desc';
-  assert.deepEqual(ids(),['e','d','c','a','b','z']);
-  p.d.getElementById('filterSort').value='mod-desc';
-  assert.deepEqual(ids(),['e','b','c','a','d','z']);
+  p.w.QcInspectionSheet.render();
+  const header=()=>p.d.querySelector('#recordsTableWrap th[data-column=date]'),button=()=>p.d.querySelector('.qis-date-sort');
+  assert.equal(header().getAttribute('aria-sort'),'ascending');assert.match(button().title,/倒序/);
+  button().focus();button().click();
+  assert.deepEqual(ids(),['e','d','c','a','b','z']);assert.deepEqual(visibleIds(p),ids());
+  assert.equal(header().getAttribute('aria-sort'),'descending');assert.match(button().title,/正序/);assert.equal(p.d.activeElement,button());
+  button().click();assert.deepEqual(ids(),['c','a','b','d','e','z']);assert.equal(header().getAttribute('aria-sort'),'ascending');
+  p.d.getElementById('searchInput').value='不匹配';p.w.QcInspectionSheet.render();button().click();assert.deepEqual(visibleIds(p),[]);
+  p.d.getElementById('searchInput').value='';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['e','d','c','a','b','z']);
+  assert.equal(p.calls.filter(c=>c.body).length,0);
+  rows.forEach(r=>r.reviewState='pending');p.w.QcInspectionSheet.model.view='review';p.w.QcInspectionSheet.model.reviewFilters.sort='mod-desc';
+  assert.deepEqual(ids(),['e','b','c','a','d','z']);p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('#reviewTableWrap .qis-date-sort'),null);
   assert.deepEqual(rows.map(r=>r.id),['e','b','c','a','d','z']);
  }finally{p.dom.window.close();}
 });
@@ -290,7 +297,7 @@ test('input events debounce independently and stable row selection survives rere
   const input=row.querySelector('[data-remark]');input.focus();assert.equal(p.w.QcInspectionSheet.model.selectedId,'b');input.value='真实输入事件自动保存';input.dispatchEvent(new p.w.Event('input'));
   assert.equal(p.rows[1].remark,'');await new Promise(r=>setTimeout(r,720));assert.equal(p.rows[1].remark,'真实输入事件自动保存');
   p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
-  p.d.getElementById('filterSort').value='date-desc';p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
+  p.d.querySelector('.qis-date-sort').click();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
   assert.deepEqual([...p.d.querySelectorAll('#recordsTableWrap thead th')].map(e=>e.dataset.column).slice(0,3),['date','customer','poNo']);
  }finally{p.dom.window.close();}
 });

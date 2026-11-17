@@ -153,9 +153,34 @@ const locationCategory = computed(() => {
   if (draft.value?.kind === 'TRANSFER') return selectedBatch.value?.material_category ?? ''
   return draft.value?.material_category ?? ''
 })
-const originalOptions = computed(() => (data.value?.documents ?? []).filter(row => !row.reversed && !row.closed && (draft.value?.kind !== 'REQUEST_CLOSE' || !!row.data.cutting_request) && referenceKinds(draft.value?.kind ?? 'RECEIPT').includes(row.kind)))
+const fabricIssue = computed(() => props.warehouse === 'fabric' && draft.value?.kind === 'ISSUE')
+function matchesIssueRequest(batch: WarehouseBatch, request: WarehouseDocument) {
+  const item = request.data
+  return batch.item_code === item.item_code && batch.unit === item.unit
+    && (batch.process_state ?? '') === (item.process_state ?? '')
+    && (!item.cutting_request || (batch.item_name === item.item_name && batch.material_category === item.material_category))
+}
+function hasUnissuedRemainder(row: WarehouseDocument) {
+  return row.kind === 'REQUEST' && !row.reversed && !row.closed && Number(remaining(row.data.quantity, row.issued_quantity)) > 0
+}
+function canCloseRequest(row: WarehouseDocument) {
+  return !!row.data.cutting_request && hasUnissuedRemainder(row)
+}
+const originalOptions = computed(() => (data.value?.documents ?? []).filter(row =>
+  !row.reversed && !row.closed && (draft.value?.kind !== 'REQUEST_CLOSE' || canCloseRequest(row))
+  && referenceKinds(draft.value?.kind ?? 'RECEIPT').includes(row.kind)
+  && (!fabricIssue.value || !fixedBatch.value || !selectedBatch.value || matchesIssueRequest(selectedBatch.value, row))))
+const linkedFabricIssue = computed(() => fabricIssue.value && !!draft.value?.original_id)
+const linkedIssueRequest = computed(() => linkedFabricIssue.value
+  ? originalOptions.value.find(row => row.id === draft.value?.original_id)
+  : undefined)
 const tasks = computed(() => (data.value?.documents ?? []).filter(row => row.kind === 'TASK' && !row.reversed))
-const selectableBatches = computed(() => (data.value?.stock ?? []).filter(row => Number(row.quantity) > 0 && (draft.value?.kind === 'LOCATION_BIND' ? !row.location_verified : row.location_verified) && (['TRANSFER', 'LOCATION_BIND'].includes(draft.value?.kind ?? '') || !['HOLD', 'REJECTED'].includes(row.quality_status))))
+const selectableBatches = computed(() => (data.value?.stock ?? []).filter(row =>
+  Number(row.quantity) > 0 && (draft.value?.kind === 'LOCATION_BIND' ? !row.location_verified : row.location_verified)
+  && (['TRANSFER', 'LOCATION_BIND'].includes(draft.value?.kind ?? '') || !['HOLD', 'REJECTED'].includes(row.quality_status))
+  && (!linkedFabricIssue.value || (linkedIssueRequest.value && matchesIssueRequest(row, linkedIssueRequest.value)))))
+const linkedIssueBatchBlocked = computed(() => linkedFabricIssue.value
+  && !selectableBatches.value.some(row => row.id === draft.value?.batch_id))
 const dirty = computed(() => !!draft.value && JSON.stringify(draft.value) !== initial.value)
 function permitted(kind: WarehouseDocumentInput['kind']) { return kind !== 'QUALITY' && !!data.value?.permissions[['CORRECTION', 'LOCATION_BIND'].includes(kind) ? 'correct' : 'operate'] }
 async function load() {
@@ -203,8 +228,13 @@ function correct(row: WarehouseDocument) {
   if (draft.value) { correctionTarget.value = row; draft.value.original_id = row.id; draft.value.source_no = row.data.source_no; initial.value = JSON.stringify(draft.value) }
 }
 function selectOriginal() {
+  if (!draft.value) return
   const original = data.value?.documents.find(row => row.id === draft.value?.original_id)
-  if (draft.value) draft.value.counterparty = original?.data.counterparty ?? ''
+  draft.value.counterparty = original?.data.counterparty ?? ''
+  if (!fixedBatch.value && draft.value.batch_id && linkedIssueBatchBlocked.value) {
+    draft.value.batch_id = ''
+    draft.value.quantity = ''
+  }
 }
 function canLeave() {
   if (saving.value || frozen.value) { formError.value = '本次保存结果尚未确认，请使用原内容重试。'; return false }
@@ -223,7 +253,11 @@ watch([search, from, to, recordKind, recordState, recordSort, recordActor], () =
 async function submit() {
   if (!draft.value || saving.value || (!frozen.value && !permitted(draft.value.kind))) return
   if (!frozen.value) {
-    if (cuttingReturnBlocked.value) return
+    if (cuttingReturnBlocked.value || linkedIssueBatchBlocked.value) return
+    if (draft.value.kind === 'REQUEST_CLOSE' && !originalOptions.value.some(row => row.id === draft.value?.original_id)) {
+      formError.value = '该领料申请已无可关闭的未发余量，请重新核对原单。'
+      return
+    }
     if (draft.value.kind === 'CORRECTION' && (!draft.value.confirmed || !draft.value.reason.trim())) { formError.value = '请填写原因并确认整单冲销'; return }
     if (needsLocation.value && !activeLocations.value.some(row => row.id === draft.value?.location_id && matchesLocationCategory(row, locationCategory.value))) { formError.value = '请选择基础资料中已启用的仓位'; return }
     if (draft.value.location_id) draft.value.location = activeLocations.value.find(row => row.id === draft.value?.location_id)?.label ?? ''
@@ -304,7 +338,14 @@ function exportFabricIssues() {
             <td data-label="物料 / 数量进度"><strong>{{ rowTitle(row) }}</strong><small>{{ row.data.item_code || row.batch_snapshot?.item_code }}<template v-if="row.data.process_state || row.batch_snapshot?.process_state"> · {{ row.data.process_state || row.batch_snapshot?.process_state }}</template></small><span v-if="row.data.quantity">{{ row.data.quantity }} {{ row.data.unit || row.batch_snapshot?.unit }}</span><small v-if="fabricInventory && row.kind === 'ISSUE' && !row.reversed">已退 {{ row.returned_quantity || '0' }} · <template v-if="cuttingIssue(row)"><template v-if="row.cutting_return_limit">{{ row.cutting_return_limit.day }} 可退 {{ row.cutting_return_limit.quantity }} {{ row.data.unit || row.batch_snapshot?.unit }}</template><template v-else>可退额度待核对</template></template><template v-else>可退 {{ remaining(row.data.quantity, row.returned_quantity) }} {{ row.data.unit || row.batch_snapshot?.unit }}</template></small><small v-else>{{ documentProgress(row) }}</small></td>
             <td :data-label="fabricExceptions ? '更正原因' : '仓位 / 去向'"><template v-if="fabricExceptions">{{ row.data.reason || '—' }}</template><template v-else-if="row.kind === 'TRANSFER'">{{ row.batch_snapshot?.location }} → {{ row.data.location }}</template><template v-else>{{ row.data.location || row.batch_snapshot?.location || '—' }}<small>{{ row.data.counterparty || '—' }}</small></template></td>
             <td data-label="来源凭证">{{ row.data.source_no || '未另填凭证' }}<small v-if="row.data.original_id">已关联原单</small><small v-if="issueGroupFor(row)">配套：{{ issueGroupFor(row)?.order_no }} · {{ issueGroupFor(row)?.name }}</small><small v-if="row.data.cutting_request">裁床订单 {{row.data.cutting_request.order_no}} · {{row.data.cutting_request.task_name}} · BOM V{{row.data.cutting_request.bom_version}} / 计划V{{row.data.cutting_request.plan_version}}<br />仓库：{{row.data.cutting_request.warehouse_material.code}} / {{row.data.cutting_request.warehouse_material.spec}} / {{row.data.cutting_request.warehouse_material.color}} / {{row.data.cutting_request.warehouse_material.unit}}<br />裁床：{{row.data.cutting_request.cutting_material.code}} / {{row.data.cutting_request.cutting_material.specification}} / {{row.data.cutting_request.cutting_material.color}}<br />对应依据：{{row.data.cutting_request.mapping_basis}}</small></td>
-            <td data-label="经办人">{{ row.actor_name }}</td><td class="warehouse-record-actions"><Button v-if="canCorrectMovement(row)" title="原单录错时整单冲销，保留原记录和更正原因" variant="outline" size="sm" :disabled="loading || !permitted('CORRECTION')" @click="correct(row)">冲销</Button><Button v-if="isReturnableIssue(row)" title="原出库正确，车间实际退回材料时登记；可分次退料" variant="outline" size="sm" :disabled="loading || !permitted('RETURN')" @click="returnIssue(row)">退料</Button><Button v-if="row.kind === 'REQUEST' && !row.reversed && !row.closed && Number(remaining(row.data.quantity, row.issued_quantity)) > 0" size="sm" :disabled="!permitted('ISSUE')" @click="issueRequest(row)">办理出库</Button><Button v-if="row.kind === 'REQUEST' && row.data.cutting_request && !row.closed" variant="outline" size="sm" :disabled="!permitted('REQUEST_CLOSE')" @click="closeRequest(row)">关闭未发余量</Button><Button variant="outline" size="sm" @click="detail = row">详情</Button></td>
+            <td data-label="经办人">{{ row.actor_name }}</td>
+            <td class="warehouse-record-actions">
+              <Button v-if="canCorrectMovement(row)" title="原单录错时整单冲销，保留原记录和更正原因" variant="outline" size="sm" :disabled="loading || !permitted('CORRECTION')" @click="correct(row)">冲销</Button>
+              <Button v-if="isReturnableIssue(row)" title="原出库正确，车间实际退回材料时登记；可分次退料" variant="outline" size="sm" :disabled="loading || !permitted('RETURN')" @click="returnIssue(row)">退料</Button>
+              <Button v-if="hasUnissuedRemainder(row)" size="sm" :disabled="!permitted('ISSUE')" @click="issueRequest(row)">办理出库</Button>
+              <Button v-if="canCloseRequest(row)" variant="outline" size="sm" :disabled="!permitted('REQUEST_CLOSE')" @click="closeRequest(row)">关闭未发余量</Button>
+              <Button variant="outline" size="sm" @click="detail = row">详情</Button>
+            </td>
           </tr>
         </tbody></table>
       </div>
@@ -328,7 +369,7 @@ function exportFabricIssues() {
               <small v-else-if="returnQuantityExceeded" role="status">本次数量超过所选业务日期的可退余料。</small>
             </template>
           </div>
-          <div v-if="selectedBatch" class="operation-stock-card"><strong>{{ selectedBatch.item_name }}</strong><span>{{ selectedBatch.item_code }} · {{ selectedBatch.lot || '—' }} <template v-if="selectedBatch.roll_no">· 卷 {{ selectedBatch.roll_no }}</template></span><div><span>当前仓位：{{ selectedBatch.location_label || selectedBatch.location }} <b v-if="!selectedBatch.location_verified">（待核实）</b></span><strong>结余 {{ selectedBatch.quantity }} {{ selectedBatch.unit }}</strong></div></div>
+           <div v-if="selectedBatch && !linkedIssueBatchBlocked" class="operation-stock-card"><strong>{{ selectedBatch.item_name }}</strong><span>{{ selectedBatch.item_code }} · {{ selectedBatch.lot || '—' }} <template v-if="selectedBatch.roll_no">· 卷 {{ selectedBatch.roll_no }}</template></span><div><span>当前仓位：{{ selectedBatch.location_label || selectedBatch.location }} <b v-if="!selectedBatch.location_verified">（待核实）</b></span><strong>结余 {{ selectedBatch.quantity }} {{ selectedBatch.unit }}</strong></div></div>
           <p v-if="needsLocation && !activeLocations.length" class="fabric-error">尚无可用仓位，请先到基础资料建立仓库与仓位。</p>
           <p v-if="draft.kind === 'LOCATION_BIND'" class="fabric-message">核实旧记录的实际存放位置，只关联正式仓位，不增加或扣减库存。实物已经移动的情况需另行登记调仓。</p>
           <fieldset :disabled="saving || !!frozen" class="warehouse-operation-fields">
@@ -337,7 +378,16 @@ function exportFabricIssues() {
             <template v-if="needsItem"><label>来源明细编号<input v-model.trim="draft.source_line" required maxlength="128" aria-label="来源明细编号" /></label><label>来源版本（选填）<input v-model.trim="draft.source_version" maxlength="128" aria-label="来源版本" /></label><label>物料 / 产品编码<input v-model.trim="draft.item_code" required maxlength="128" aria-label="物料产品编码" /></label><label>名称规格<input v-model.trim="draft.item_name" required maxlength="255" aria-label="名称规格" /></label><label>原单位<input v-model.trim="draft.unit" required maxlength="32" aria-label="原单位" placeholder="码、米、件等" /></label><label v-if="warehouse === 'semi'">{{ draft.kind === 'TASK' ? '计划产出加工状态' : '加工状态' }}<input v-model.trim="draft.process_state" required maxlength="64" aria-label="加工状态" placeholder="如车缝完成、冲棉完成" /></label><label v-else>物料分类<select v-model="draft.material_category" aria-label="物料分类"><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></label><label>来源单位 / 领用方 / 加工方<input v-model.trim="draft.counterparty" required maxlength="255" aria-label="往来单位" /></label><label>生产 / 放产单号（选填）<input v-model.trim="draft.production_no" maxlength="128" aria-label="生产放产单号" /></label><label v-if="draft.kind !== 'RECEIPT'">{{ draft.kind === 'TASK' ? '加工工序 / 返工说明' : '领用用途（选填）' }}<input v-model.trim="draft.purpose" :required="draft.kind === 'TASK'" maxlength="255" aria-label="用途工序" /></label><label v-if="draft.kind === 'TASK'">要求回货日期（选填）<input v-model="draft.due_date" type="date" aria-label="要求回货日期" /></label></template>
             <label v-if="referenceKinds(draft.kind).length" class="full">{{ draft.kind === 'ISSUE' ? '关联领料申请（选填）' : '关联原单' }}<select v-model="draft.original_id" :disabled="!!correctionTarget || fixedReturnOriginal" :required="draft.kind !== 'ISSUE'" aria-label="关联原单" @change="selectOriginal"><option value="">{{ draft.kind === 'ISSUE' ? '不关联申请，直接出库' : '请选择原发出单' }}</option><option v-for="row in originalOptions" :key="row.id" :value="row.id">{{ row.data.source_no }} · {{ rowTitle(row) }} · {{ documentProgress(row) }} · {{ row.id }}</option></select></label>
             <label v-if="draft.kind === 'PROCESS_SEND'" class="full">本轮加工任务<select v-model="draft.task_id" required aria-label="本轮加工任务"><option value="">请选择任务</option><option v-for="row in tasks" :key="row.id" :value="row.id">{{ row.data.source_no }} · {{ row.data.item_name }} · {{ row.data.process_state }} · {{ row.data.counterparty }}</option></select></label>
-            <p v-if="data?.documents.find(r => r.id === draft?.original_id)?.data.cutting_request" class="full fabric-message">裁床申请按冻结订单、任务、BOM及物料版本核对；发料不代表裁床已签收或生产耗用。关闭余量不冲回已发数量。</p><label v-if="needsBatch" class="full">{{ draft.kind === 'TRANSFER' ? '来源批次 / 仓位' : '出入库批次' }}<select v-model="draft.batch_id" required :disabled="fixedBatch" aria-label="实际批次"><option value="">请选择批次</option><option v-for="row in selectableBatches" :key="row.id" :value="row.id">{{ row.item_code }} · {{ row.item_name }} · {{ row.process_state }} · {{ row.location_label || row.location }} · {{ row.lot }} · 结余 {{ row.quantity }} {{ row.unit }} · {{ row.received_on }} · {{ row.id.slice(-8) }}</option></select><small v-if="selectedBatch">原单位：{{ selectedBatch.unit }}，实物结余：{{ selectedBatch.quantity }}，可出库：{{ selectedBatch.available_quantity }}</small></label>
+            <p v-if="data?.documents.find(r => r.id === draft?.original_id)?.data.cutting_request" class="full fabric-message">裁床申请按冻结订单、任务、BOM及物料版本核对；发料不代表裁床已签收或生产耗用。关闭余量不冲回已发数量。</p>
+            <label v-if="needsBatch" class="full">
+              {{ draft.kind === 'TRANSFER' ? '来源批次 / 仓位' : '出入库批次' }}
+              <select v-model="draft.batch_id" required :disabled="fixedBatch" aria-label="实际批次">
+                <option value="">请选择批次</option>
+                <option v-for="row in selectableBatches" :key="row.id" :value="row.id">{{ row.item_code }} · {{ row.item_name }} · {{ row.process_state }} · {{ row.location_label || row.location }} · {{ row.lot }} · 结余 {{ row.quantity }} {{ row.unit }} · {{ row.received_on }} · {{ row.id.slice(-8) }}</option>
+              </select>
+              <small v-if="selectedBatch && !linkedIssueBatchBlocked">原单位：{{ selectedBatch.unit }}，实物结余：{{ selectedBatch.quantity }}，可出库：{{ selectedBatch.available_quantity }}</small>
+              <small v-else-if="linkedFabricIssue && !selectableBatches.length" role="status">该申请暂无匹配的可出库批次。</small>
+            </label>
             <label v-if="!['QUALITY', 'CORRECTION', 'LOCATION_BIND', 'REQUEST_CLOSE'].includes(draft.kind)">{{ draft.kind === 'REQUEST' ? '申请数量' : draft.kind === 'TASK' ? '计划产出数量' : draft.kind === 'PROCESS_RETURN' ? '本次实际产出数量' : '本次实际数量' }}<input v-model.trim="draft.quantity" required inputmode="decimal" aria-label="本次数量" placeholder="请按本次实物填写" /></label>
             <label v-if="draft.kind === 'PROCESS_RETURN'">本次核销发出量（原发出单位）<input v-model.trim="draft.consumed_quantity" required inputmode="decimal" aria-label="核销发出量" /></label>
             <label v-if="draft.kind === 'ISSUE'">领用部门 / 领用方<input v-model.trim="draft.counterparty" required maxlength="255" aria-label="领用方" :readonly="!!draft.original_id" placeholder="例如裁床、车间或外发厂" /></label>
@@ -353,7 +403,7 @@ function exportFabricIssues() {
           </fieldset>
           <div v-if="frozen"><a href="/login" target="_blank" rel="noopener">重新登录</a><Button type="button" variant="outline" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button></div><p v-if="formError" role="alert" class="fabric-error">{{ formError }}</p>
         </div>
-        <footer><span>保存后保留原单与经办记录</span><Button type="submit" :disabled="saving || (!frozen && (cuttingReturnBlocked || (needsLocation && !activeLocations.length)))">{{ saving ? '正在保存…' : frozen ? '用原内容重试' : draft.kind === 'CORRECTION' ? '确认整单冲销' : '确认保存' }}</Button></footer>
+        <footer><span>保存后保留原单与经办记录</span><Button type="submit" :disabled="saving || (!frozen && (cuttingReturnBlocked || linkedIssueBatchBlocked || (needsLocation && !activeLocations.length)))">{{ saving ? '正在保存…' : frozen ? '用原内容重试' : draft.kind === 'CORRECTION' ? '确认整单冲销' : '确认保存' }}</Button></footer>
       </form></FocusScope></div>
       <FabricMovementDetail v-if="detail && warehouse === 'fabric'" :record="detail" :issue-group="issueGroupFor(detail)" :print-error="printError"
         @close="detail = undefined" @print="printFabricIssueNote" />
