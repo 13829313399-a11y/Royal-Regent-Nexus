@@ -419,7 +419,7 @@ def save(factory, entry_id, body, actor, review=False):
             raise HTTPException(422,'此字段请填写单行文字')
     if 'shipDate' in body:wf.day(body['shipDate'])
     if 'shippedQuantity' in body:wf.number(body['shippedQuantity'])
-    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate','sampleQuantity','inspectorId'}):
+    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate','sampleQuantity','inspector','inspectorId'}):
         raise HTTPException(422,'验货台只允许填写实际日期、抽查数量和检验人员')
     execution_patch=clean_review_execution(body['inspectionExecution']) if 'inspectionExecution' in body else {}
     with store(True) as conn:

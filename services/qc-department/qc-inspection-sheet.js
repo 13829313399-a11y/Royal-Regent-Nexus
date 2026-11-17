@@ -26,7 +26,7 @@
   const executionFields={inspectorId:['检验人员标识','text'],institutionId:['机构标识','text'],analysisReason:['分析原因','multiline'],actualQuantity:['实际数量','number'],inspector:['检验人员','text'],sampleQuantity:['抽查数量','number'],institution:['第三方机构','text'],reportNo:['报告编号','text'],reportMissingReason:['报告暂缺说明','multiline'],resultExplanation:['结论说明','multiline'],defects:['不良明细','details'],measurements:['测量明细','details']};
   const executionKey=column=>Object.hasOwn(executionFields,column)?column:column.startsWith('inspectionExecution.')&&Object.hasOwn(executionFields,column.slice(20))?column.slice(20):null;
   const textFields=['remark','improvement','inspectionProblem'];
-  const savedFields=d=>{const fields=Object.fromEntries(['result',...textFields.filter(k=>model.view==='review'||k!=='improvement'),...(model.view==='review'?Object.keys(reviewFields):[])].map(k=>[k,d[k]??'']));const keys=[...d.executionDirty].filter(k=>model.view==='review'||['sampleQuantity','inspectorId'].includes(k));if(keys.length)fields.inspectionExecution=Object.fromEntries(keys.map(k=>[k,JSON.parse(JSON.stringify(d.inspectionExecution[k]))]));return fields;};
+  const savedFields=d=>{const fields=Object.fromEntries(['result',...textFields.filter(k=>model.view==='review'||k!=='improvement'),...(model.view==='review'?Object.keys(reviewFields):[])].map(k=>[k,d[k]??'']));const keys=[...d.executionDirty].filter(k=>model.view==='review'||['sampleQuantity','inspector','inspectorId'].includes(k));if(keys.length)fields.inspectionExecution=Object.fromEntries(keys.map(k=>[k,JSON.parse(JSON.stringify(d.inspectionExecution[k]))]));return fields;};
   const differs=(d,sent)=>JSON.stringify(savedFields(d))!==JSON.stringify(sent);
   function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(model.view==='records'?model.recordChecked.has(n.dataset.entry):model.reviewTab==='pending'?model.checked.has(n.dataset.entry):selected));});}
   function freezeColumns(host){const first=host.querySelector('th[data-column=customer]');if(first){host.style.setProperty('--qis-customer-width',first.getBoundingClientRect().width+'px');host.style.setProperty('--qis-frozen-width',(first.getBoundingClientRect().width+(host.querySelector('th[data-column=poNo]')?.getBoundingClientRect().width||0))+'px');}}
@@ -236,23 +236,11 @@
   function editExecution(id,key,value,immediate=false){if(model.submitBusy||model.reviewBusy)return;const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
   function reviewEditor(row,key,label,type,value){
     const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
-    if(['inspector','institution'].includes(key)){
+    if(key==='institution'){
       const list=options[key==='inspector'?'inspectors':'institutions']||[], idKey=key==='inspector'?'inspectorId':'institutionId', d=draft(row);
       const selected=d.inspectionExecution[idKey]||'', historical=value&&!list.some(x=>x.id===selected);
       if(key==='institution'&&!list.length)return '<input'+attr+' type="text" maxlength="255" placeholder="填写第三方机构" value="'+esc(value??'')+'">';
       return '<select class="qis-review-input" data-person-field="'+key+'" aria-label="'+esc(label)+'"><option value="">'+(list.length?'未填写':'尚未配置选项')+'</option>'+ (historical?'<option value="__history__" selected>'+esc(value)+'（历史）</option>':'')+list.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===selected?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select>';
-    }
-    if(key==='firstResponsible'||key==='secondResponsible'){
-      // These fields store display names in audit snapshots and reports.
-      const names=[...new Set((options.inspectors||[])
-        .map(person=>person.name.trim()).filter(name=>name&&name.length<=200))];
-      const historical=value&&!names.includes(value)
-        ? '<option value="'+esc(value)+'" selected>'+esc(value)+'（历史）</option>'
-        : '';
-      const choices=names.map(name=>'<option value="'+esc(name)+'"'+
-        (name===value?' selected':'')+'>'+esc(name)+'</option>').join('');
-      return '<select'+attr+'><option value="">'+(names.length?'未填写':'尚未配置人员')+
-        '</option>'+historical+choices+'</select>';
     }
     const control=key==='reportStatus'?'<select'+attr+'><option value="">未填写</option>'+[...new Set(['有','无',value].filter(v=>v!==undefined&&v!==null&&String(v).trim()))].map(v=>'<option value="'+esc(v)+'" '+(v===value?'selected':'')+'>'+esc(v)+'</option>').join('')+'</select>':type==='multiline'?'<textarea rows="2" maxlength="'+(['otherRemark','customerRequirements'].includes(key)?20000:4000)+'"'+attr+'>'+esc(value)+'</textarea>':'<input size="1" type="'+type+'"'+(type==='number'?' min="0" max="1000000000000" step="0.0001"':type==='text'?' maxlength="'+(executionFields[key]?255:200)+'"':'')+attr+' value="'+esc(value)+'">';
     return control+(model.view==='review'?'':'<small data-review-status="'+row.id+'" role="status"></small>');

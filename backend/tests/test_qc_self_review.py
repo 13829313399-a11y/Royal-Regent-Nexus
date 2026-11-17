@@ -136,3 +136,27 @@ def test_legacy_name_change_clears_stable_identity_but_noop_preserves_it(db):
  assert same['revision']==r['revision'] and same['inspectionExecution']['inspectorId']==str(ACTOR['id'])
  changed=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspector':'历史客户端填写'}),ACTOR,review=True)
  assert changed['inspectionExecution']['inspectorId']=='' and changed['inspectionExecution']['inspector']=='历史客户端填写'
+
+
+def test_workbench_manual_inspector_names_preserve_history_and_clear_stale_identity(db):
+ r=item(db)
+ def save_name(value):
+  return sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspector':value}),ACTOR)
+ r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspectorId':str(ACTOR['id'])}),ACTOR)
+ same=save_name(ACTOR['name'])
+ assert same['revision']==r['revision'] and same['inspectionExecution']['inspectorId']==str(ACTOR['id'])
+ r=save_name('手动检验员 Alice')
+ assert r['inspectionExecution']['inspector']=='手动检验员 Alice' and r['inspectionExecution']['inspectorId']==''
+ with sheet.store() as conn:
+  assert sheet.unpack(conn,sheet.get(conn,'huaxing',r['id']))['inspectionExecution']['inspector']=='手动检验员 Alice'
+ r=save_name('')
+ assert r['inspectionExecution']['inspector']==''
+ with pytest.raises(HTTPException):save_name('超'*256)
+ r=save_name('复核检验员')
+ r=sheet.submit('huaxing',r['id'],{'revision':r['revision']},ACTOR)
+ r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',firstResponsible='手动第一人',secondResponsible='手动第二人'),ACTOR,review=True)
+ r=command(r)['results'][0]['item']
+ detail=summary.detail('huaxing',summary.listing('huaxing',{})['items'][0]['id'])
+ assert detail['inspectionExecution']['inspector']=='复核检验员'
+ assert detail['firstResponsible']=='手动第一人' and detail['secondResponsible']=='手动第二人'
+ with pytest.raises(HTTPException):save_name('不可改写已审核')
