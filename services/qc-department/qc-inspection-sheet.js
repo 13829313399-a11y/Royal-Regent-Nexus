@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   if(!root.__QC_NEXUS)return;
-  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',reviewTab:'pending',checked:new Set(),reviewBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
+  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
   let notificationGeneration=0;
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
@@ -40,7 +40,7 @@
   // The API has already projected task plans into dateFrom; never substitute QC actualDate.
   const taskStart=row=>root.QcSchedule?.dateRange({dateFrom:row.dateFrom,dateTo:row.dateFrom})?.from||'';
   const taskCustomer=row=>{const name=String(row.customer??'').trim(),code=String(row.sourceRecord?.customerCode??'').trim();return {name,code,key:name?JSON.stringify([code,name]):''};};
-  function resetTaskFilters(){for(const id of ['qisTaskDate','qisTaskCustomer']){const select=root.document.getElementById(id);if(select)select.value='';}}
+  function resetTaskFilters(){model.recordsSort='date-asc';for(const id of ['qisTaskDate','qisTaskCustomer']){const select=root.document.getElementById(id);if(select)select.value='';}}
   function updateTaskFilters(){
     if(model.view!=='records')return;
     const toolbar=root.document.querySelector('#page-records .records-filters');if(!toolbar)return;
@@ -199,7 +199,7 @@
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
     const f=model.reviewFilters,isReview=model.view==='review';
-    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),sort=isReview?f.sort:value('filterSort');
+    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),sort=isReview?f.sort:model.recordsSort;
     const {result,from,to}=f;
     const day=value('qisTaskDate'),customer=value('qisTaskCustomer');
     return model.items.filter(row=>{
@@ -369,7 +369,11 @@
       return true;
     });
     if(reviewing)updateReviewControls(rows);
-    const headerCells=columns.map(c=>'<th scope="col" data-column="'+c.key+'">'+esc(c.label)+'</th>').join('');
+    const ascending=model.recordsSort==='date-asc';
+    const sortHint=ascending?'点击按验货日期倒序，较晚日期在前':'点击按验货日期正序，较早日期在前';
+    const headerCells=columns.map(c=>!reviewing&&c.key==='date'
+      ? '<th scope="col" data-column="date" aria-sort="'+(ascending?'ascending':'descending')+'"><button type="button" class="qis-date-sort" title="'+sortHint+'" aria-label="'+sortHint+'">验货日期 <span aria-hidden="true">'+(ascending?'↑':'↓')+'</span></button></th>'
+      : '<th scope="col" data-column="'+c.key+'">'+esc(c.label)+'</th>').join('');
     const body=reviewing
       ? reviewTableBody(rows,columns,headerCells)
       : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
@@ -377,6 +381,9 @@
       (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
       ((!reviewing||rows.length)?'<table class="qis-table">'+body+'</table>':'')+
       (!rows.length&&!model.loading?'<p>没有符合条件的验货任务。</p>':'');
+    const sortButton=host.querySelector('.qis-date-sort');
+    if(sortButton)sortButton.onclick=()=>{model.recordsSort=ascending?'date-desc':'date-asc';render();host.querySelector('.qis-date-sort')?.focus({preventScroll:true});};
+    if(active?.matches('.qis-date-sort'))sortButton?.focus({preventScroll:true});
     host.tabIndex=0;host.setAttribute('role','region');host.setAttribute('aria-label','验货表格，可横向滚动');
     host.scrollTop=scrollTop;host.scrollLeft=scrollLeft;freezeColumns(host);
     if(!host._qisObserved&&root.ResizeObserver){host._qisObserved=true;new root.ResizeObserver(()=>freezeColumns(host)).observe(host);}

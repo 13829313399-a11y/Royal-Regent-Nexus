@@ -211,8 +211,7 @@
             <input type="hidden" id="filterDateFrom" /><input type="hidden" id="filterDateTo" />
             <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
           </div>
-          <div class="records-actions" role="group" aria-label="排序与打印">
-            <select id="filterSort" aria-label="排序方式" onchange="filterRecords()" title="验货日期按计划开始日期排序，同日按客户归拢；修改日期按最近修改时间排序"><option value="date-desc">验货日期 ↓</option><option value="date-asc" selected>验货日期 ↑</option><option value="mod-desc">修改日期 ↓</option><option value="mod-asc">修改日期 ↑</option></select>
+          <div class="records-actions" role="group" aria-label="打印">
             <div class="qip-toolbar-action" hidden><button type="button" id="qcInspectionPrint" hidden aria-haspopup="dialog"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8V3h10v5M7 17H4V8h16v9h-3M7 14h10v7H7zM17 11h.01"/></svg><span>打印</span></button></div>
           </div>
         </div>
