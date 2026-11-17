@@ -24,7 +24,7 @@ const snapshot:ClosingPreview={line_id:'line',month:'2026-10',start:'2026-10-01'
 let wrapper:VueWrapper
 const button=(text:string)=>wrapper.findAll('button').find(b=>b.text()===text)!
 const overviewForm=()=>wrapper.findAll('form').find(form=>form.findAll('button').some(item=>item.text()==='查询订单'))!
-async function open(path='/'){const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingClosingPage,props:{workspace:CUTTING_WORKSPACES.find(w=>w.path==='closing')}},{path:'/away',component:{template:'<div>其他工作区</div>'}}]});await router.push(path);await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises();return router}
+async function open(path='/',attachTo?:HTMLElement){const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingClosingPage,props:{workspace:CUTTING_WORKSPACES.find(w=>w.path==='closing')}},{path:'/away',component:{template:'<div>其他工作区</div>'}}]});await router.push(path);await router.isReady();wrapper=mount(RouterView,{attachTo,global:{plugins:[router]}});await flushPromises();return router}
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(rights);vi.mocked(ordersApi.list).mockResolvedValue({data:[order],total:1,page:1,page_size:50});vi.mocked(closingApi.read).mockResolvedValue(snapshot)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('P4a monthly reconciliation',()=>{
@@ -353,12 +353,83 @@ describe('P4a monthly reconciliation',()=>{
     vi.mocked(closingApi.read).mockRejectedValueOnce(new Error('offline'))
     await button('刷新所选订单核对').trigger('click');await flushPromises()
     expect(button('重试原订单预览')).toBeDefined()
+    expect(wrapper.text()).toContain('上次取数时间')
     vi.mocked(cuttingApi.access).mockRejectedValueOnce({response:{status,data:{detail:'权限已变更'}}})
     await button('重试原订单预览').trigger('click');await flushPromises()
     expect(closingApi.read).toHaveBeenCalledTimes(2)
     expect(button('重试原订单预览')).toBeUndefined()
     expect(wrapper.text()).not.toContain('ORDER-1')
+    expect(wrapper.text()).not.toContain('上次取数时间')
     expect(wrapper.text()).toContain('权限已变更')
+  })
+  it('keeps the matching preview, focuses retry after failures and focuses the preview title after success',async()=>{
+    await open('/?factory=huakang-c&view=overview&month=2026-10',document.body)
+    await button('月度核对').trigger('click');await flushPromises()
+    await button('材料费用试算').trigger('click')
+
+    vi.mocked(cuttingApi.access).mockRejectedValueOnce(new Error('offline'))
+    const refresh=button('刷新所选订单核对')
+    refresh.element.focus();await refresh.trigger('click');await flushPromises()
+    const retry=button('重试原订单预览')
+    expect(document.activeElement).toBe(retry.element)
+    expect(wrapper.text()).toContain('刷新失败，仍显示上次结果')
+    expect(wrapper.text()).toContain(`上次取数时间：${snapshot.generated_at}`)
+    expect(wrapper.text()).toContain('上次取数依据')
+    expect(wrapper.text()).toContain('16.25')
+
+    vi.mocked(closingApi.read).mockRejectedValueOnce({response:{status:503}})
+    await retry.trigger('click');await flushPromises()
+    expect(document.activeElement).toBe(retry.element)
+    expect(wrapper.text()).toContain(`上次取数时间：${snapshot.generated_at}`)
+
+    const refreshed={...snapshot,generated_at:'2026-10-15T13:00:00+08:00'}
+    vi.mocked(closingApi.read).mockResolvedValueOnce(refreshed)
+    await retry.trigger('click');await flushPromises()
+    expect(document.activeElement?.tagName).toBe('H2')
+    expect(document.activeElement?.textContent).toBe('月度核对预览')
+    expect(wrapper.text()).toContain(`取数时间：${refreshed.generated_at}`)
+    expect(wrapper.text()).not.toContain('上次取数时间')
+    expect(button('材料费用试算').attributes('aria-pressed')).toBe('true')
+  })
+  it('leaves focus where the user moved it while retrying the live preview',async()=>{
+    await open('/?factory=huakang-c&view=overview&month=2026-10',document.body)
+    await button('月度核对').trigger('click');await flushPromises()
+    vi.mocked(cuttingApi.access).mockRejectedValueOnce(new Error('offline'))
+    await button('刷新所选订单核对').trigger('click');await flushPromises()
+    let finish!:(value:ClosingPreview)=>void
+    vi.mocked(closingApi.read).mockReturnValueOnce(new Promise(resolve=>finish=resolve))
+    const retry=button('重试原订单预览')
+    retry.element.focus();await retry.trigger('click');await flushPromises()
+    const other=button('月结总览').element
+    other.focus();finish(snapshot);await flushPromises()
+    expect(document.activeElement).toBe(other)
+    expect(wrapper.text()).not.toContain('刷新失败，仍显示上次结果')
+  })
+  it('never shows the old cost report once the current access check removes the cost grant',async()=>{
+    await open('/?factory=huakang-c&view=overview&month=2026-10')
+    await button('月度核对').trigger('click');await flushPromises()
+    await button('材料费用试算').trigger('click')
+    expect(wrapper.text()).toContain('16.25')
+    vi.mocked(cuttingApi.access).mockResolvedValueOnce({...rights,permissions:['read']})
+    vi.mocked(closingApi.read).mockRejectedValueOnce({response:{status:503}})
+    await button('刷新所选订单核对').trigger('click');await flushPromises()
+    expect(closingApi.read).toHaveBeenLastCalledWith('line','2026-10',false)
+    expect(button('重试原订单预览')).toBeDefined()
+    expect(wrapper.text()).not.toContain('上次取数时间')
+    expect(wrapper.text()).not.toContain('16.25')
+  })
+  it('does not retain a previous preview for another order',async()=>{
+    const other={...order,line_id:'other',snapshot:{...order.snapshot,reference_no:'ORDER-2'}}
+    vi.mocked(ordersApi.list).mockResolvedValueOnce({data:[order,other],total:2,page:1,page_size:50})
+    await open('/?factory=huakang-c&view=overview&month=2026-10')
+    await button('月度核对').trigger('click');await flushPromises()
+    await button('材料费用试算').trigger('click')
+    vi.mocked(cuttingApi.access).mockRejectedValueOnce(new Error('offline'))
+    const otherRow=wrapper.findAll('tr').find(row=>row.text().includes('ORDER-2'))!
+    await otherRow.get('button').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('ORDER-2 · 2026-10')
+    expect(wrapper.text()).not.toContain('上次取数时间')
+    expect(wrapper.text()).not.toContain('16.25')
   })
   it('shows stale-plan warning and links to the exact task',async()=>{
     vi.mocked(closingApi.read).mockResolvedValue({...snapshot,plan_stale:true,issues:[{code:'outsourced_unreturned',message:'尚未收回10套',workspace:'reporting',document_id:'',task_id:'task-1'}]})
