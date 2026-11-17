@@ -41,9 +41,9 @@
             <select id="qsum-month" aria-label="汇总月份"></select>
             <select id="qsum-day" aria-label="汇总日期"></select>
           </div>
-          <label class="qsum-select">验货类型
-            <select id="qsum-type"><option value="">全部类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
-          </label>
+          <div class="qsum-select">
+            <select id="qsum-type" aria-label="验货类型"><option value="">验货类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
+          </div>
           <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
         </div>
         <p id="qsum-message" role="status" aria-live="polite"></p>
