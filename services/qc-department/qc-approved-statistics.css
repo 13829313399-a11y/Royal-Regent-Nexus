@@ -276,7 +276,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     font-weight:600;
   }
 
-  body.qstats-shell :is(.card-label,.chart-badge,.review-hint,.qsum-footer) {
+  body.qstats-shell :is(.card-label,.chart-badge,.qsum-footer) {
     color:var(--text-dim);
   }
 

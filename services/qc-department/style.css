@@ -3217,11 +3217,10 @@ body.theme-light #yearlyReportBody  .section-card {
 
 /* ── 审核中心 ── */
 @media screen {
-  /* 列表独立滚动，让状态栏及提示始终可见；高度随工具栏换行自适应。 */
+  /* 列表独立滚动，让状态栏始终可见；高度随工具栏换行自适应。 */
   #page-review { min-height: 0; overflow: hidden; }
   #page-review .page-inner { height: 100%; min-height: 0; }
-  #page-review .toolbar,
-  #page-review .review-hint { flex-shrink: 0; }
+  #page-review .toolbar { flex-shrink: 0; }
   #reviewTableWrap { flex: 1; min-height: 0; overflow: auto; }
   #reviewTableWrap thead tr {
     position: sticky;
@@ -3238,11 +3237,6 @@ body.theme-light #yearlyReportBody  .section-card {
   display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px;
   border-radius: 9px; background: var(--accent); color: #001018;
   font-size: 11px; font-weight: 700; text-align: center;
-}
-.review-hint {
-  font-size: 12px; color: var(--text-dim); line-height: 1.6;
-  padding: 10px 14px; background: var(--bg-card);
-  border: 1px solid var(--border); border-radius: var(--radius-lg);
 }
 .nav-badge {
   display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px;
