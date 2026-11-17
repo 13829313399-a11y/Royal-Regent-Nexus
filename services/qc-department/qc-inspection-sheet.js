@@ -650,7 +650,7 @@
       <div class="qis-review-filterbar" aria-label="审核中心筛选">
         <label class="qis-review-search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
-          <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" placeholder="搜索客户 / PO / 货号">
+          <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" placeholder="客户 / PO / 货号">
         </label>
         <details id="qis-review-date" class="qis-review-date">
           <summary aria-label="筛选验货日期">
@@ -675,7 +675,7 @@
           <option value="date-asc">验货日期 ↑</option>
           <option value="mod-desc">修改日期 ↓</option>
         </select>
-        <button type="button" class="qis-review-reset" data-reset-review>重置筛选</button>
+        <button type="button" class="qis-review-reset" data-reset-review aria-label="重置筛选">重置</button>
       </div>
       <div class="qis-review-actions">
         <div class="qis-review-context" role="status">
