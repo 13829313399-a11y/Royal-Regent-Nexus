@@ -49,59 +49,105 @@ async function page(fetchImpl){
  w.eval(source);await new Promise(resolve=>w.document.addEventListener('DOMContentLoaded',resolve,{once:true}));await w.renderSalesSchedule();
  return dom;
 }
-test('date validation, clear and reset controls update independently',async()=>{
- const dom=await page();try{const d=dom.window.document,w=dom.window;
- d.getElementById('qsDateFrom').value='2026-10-30';d.getElementById('qsDateTo').value='2026-10-27';d.getElementById('qsDateTo').dispatchEvent(new w.Event('change'));
- assert.match(d.getElementById('qsFilterError').textContent,/开始日期/);
- d.getElementById('qsSearch').value='00123';d.getElementById('qsClearDates').click();await tick();assert.equal(d.getElementById('qsSearch').value,'00123');assert.equal(d.getElementById('qsFilterError').textContent,'');
- d.getElementById('qsReset').click();await tick();assert.equal(d.getElementById('qsSearch').value,'');
- d.getElementById('qsDateToggle').click();d.getElementById('qsThisWeek').click();d.getElementById('qsApplyDates').click();await tick();assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(d.getElementById('qsDateFrom').value));
+function showMonth(d,month) {
+ if(d.getElementById('qsDatePanel').hidden)d.getElementById('qsDateToggle').click();
+ const [year,number]=month.split('-').map(Number);
+ for(let i=0;i<240;i++){
+  const label=d.getElementById('qsCalendarMonth').textContent.match(/(\d+)年(\d+)月/);
+  const difference=(year-Number(label[1]))*12+number-Number(label[2]);
+  if(!difference)return;
+  d.getElementById(difference>0?'qsNextMonth':'qsPreviousMonth').click();
+ }
+ throw new Error('calendar month was unreachable');
+}
+function selectDate(d,value){showMonth(d,value.slice(0,7));d.querySelector('[data-qs-day="'+value+'"]').click();}
+function selectRange(d,from,to=from){selectDate(d,from);selectDate(d,to);}
+test('calendar starts unselected with a placeholder and only the Apply footer action',async()=>{
+ const dom=await page();try{const d=dom.window.document;
+  assert.equal(d.getElementById('qsDateLabel').textContent,'筛选日期');
+  d.getElementById('qsDateToggle').click();
+  assert.equal(d.getElementById('qsApplyDates').disabled,true);
+  assert.equal(d.querySelectorAll('#qsCalendarDays [aria-selected="true"]').length,0);
+  assert.equal(d.querySelectorAll('#qsCalendarDays button').length,42);
+  assert.equal(d.querySelectorAll('#qsCalendarDays button[tabindex="0"]').length,1);
+  assert.ok(d.activeElement.matches('[data-qs-day]'));
+  assert.equal(d.querySelectorAll('.qs-date-footer button').length,1);
+  assert.equal(d.querySelector('.qs-date-footer button').textContent,'应用');
+  assert.doesNotMatch(d.getElementById('qsDatePanel').textContent,/今天及未来|上周|本周|下周|清除日期/);
  }finally{dom.window.close();}
 });
-test('compact date panel only applies on confirmation and preserves other filters',async()=>{
- const dom=await page();try{const d=dom.window.document,w=dom.window;
-  assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.getElementById('qsDateLabel').textContent,'今天及未来');
+test('calendar drafts do not fetch or change other filters; a same-day range applies on confirmation',async()=>{
+ const calls=[],dom=await page(async url=>{calls.push(url);return response(url)});
+ try{const d=dom.window.document,w=dom.window;
   d.getElementById('qsCustomer').value='Dickie';d.getElementById('qsCustomer').dispatchEvent(new w.Event('change'));
-  const before=d.getElementById('qsRows').innerHTML;d.getElementById('qsDateToggle').click();
-  assert.equal(d.getElementById('qsDateToggle').getAttribute('aria-expanded'),'true');assert.equal(d.activeElement.id,'qsDraftFrom');
-  d.getElementById('qsDraftFrom').value='2026-10-28';d.getElementById('qsDraftTo').value='2026-10-28';
-  d.getElementById('qsDraftTo').dispatchEvent(new w.Event('input'));assert.equal(d.getElementById('qsRows').innerHTML,before);assert.equal(d.getElementById('qsDateFrom').value,'');
-  d.getElementById('qsApplyDates').click();await tick();assert.equal(d.getElementById('qsDateFrom').value,'2026-10-28');assert.equal(d.getElementById('qsDateLabel').textContent,'2026/10/28');
-  assert.equal(d.getElementById('qsCustomer').value,'Dickie');assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.activeElement.id,'qsDateToggle');
-  const shown=api.filterRows(rows,{...base,customer:'Dickie',from:'2026-10-28',to:'2026-10-28'});assert.equal(d.querySelectorAll('tr[data-qs-row]').length,shown.length);
- }finally{dom.window.close();}
-});
-test('date input losing focus to the page must not hide Confirm before its click is delivered',async()=>{
- const dom=await page();try{const d=dom.window.document,w=dom.window;
-  d.getElementById('qsDateToggle').click();d.getElementById('qsDraftFrom').value='2026-10-28';d.getElementById('qsDraftTo').value='2026-10-28';
-  // Native date controls / non-focusable mouse targets may return focus to the document before click.
-  d.getElementById('qsDraftFrom').dispatchEvent(new w.FocusEvent('focusout',{bubbles:true,relatedTarget:d.body}));
-  assert.equal(d.getElementById('qsDatePanel').hidden,false,'Confirm must remain available until an explicit dismissal or confirmation');
-  d.getElementById('qsApplyDates').click();await tick();
-  assert.equal(d.getElementById('qsDateFrom').value,'2026-10-28');assert.equal(d.getElementById('qsDateLabel').textContent,'2026/10/28');
-  // Fixture has 8 single-day rows plus 17 schedules spanning October 27-29.
-  assert.equal(d.querySelectorAll('tr[data-qs-row]').length,1);assert.match(d.getElementById('qsCount').textContent,/1 \/ 4/);
-  d.getElementById('qsDateToggle').click();d.getElementById('qsDraftFrom').value='2030-01-01';d.getElementById('qsDraftTo').value='2030-01-02';d.getElementById('qsApplyDates').click();await tick();
-  assert.equal(d.querySelectorAll('tr[data-qs-row]').length,0);assert.match(d.getElementById('qsCount').textContent,/0 \/ 4/);
- }finally{dom.window.close();}
-});
-test('outside click and Escape discard draft dates, while invalid ranges keep panel open',async()=>{
- const dom=await page();try{const d=dom.window.document,w=dom.window;
-  d.getElementById('qsDateToggle').click();d.getElementById('qsDraftFrom').value='2026-10-30';d.getElementById('qsDraftTo').value='2026-10-27';
-  d.getElementById('qsApplyDates').click();await tick();assert.match(d.getElementById('qsDateError').textContent,/开始日期/);assert.equal(d.getElementById('qsDatePanel').hidden,false);
+  const before=d.getElementById('qsRows').innerHTML,count=calls.length;
+  selectDate(d,'2026-10-28');
+  assert.equal(d.getElementById('qsApplyDates').disabled,true);
+  assert.equal(d.getElementById('qsDatePanel').hidden,false,'redrawing clicked cells must not trigger outside dismissal');
   assert.equal(d.getElementById('qsDateFrom').value,'');
-  d.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.activeElement.id,'qsDateToggle');
-  d.getElementById('qsDateToggle').click();assert.equal(d.getElementById('qsDraftFrom').value,'');d.getElementById('qsDraftFrom').value='2026-10-28';d.getElementById('qsSearch').click();
-  assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.getElementById('qsDateFrom').value,'');
+  selectDate(d,'2026-10-28');
+  assert.equal(d.getElementById('qsRows').innerHTML,before);assert.equal(calls.length,count);
+  assert.equal(d.getElementById('qsApplyDates').disabled,false);
+  d.getElementById('qsApplyDates').click();await tick();
+  assert.equal(calls.at(-1),'api/schedule-source?dateFrom=2026-10-28&dateTo=2026-10-28');
+  assert.equal(d.getElementById('qsDateLabel').textContent,'2026/10/28');
+  assert.equal(d.getElementById('qsCustomer').value,'Dickie');
+  assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.activeElement.id,'qsDateToggle');
+  assert.equal(d.querySelectorAll('tr[data-qs-row]').length,1);
+  d.getElementById('qsDateToggle').click();
+  assert.equal(d.querySelectorAll('#qsCalendarDays [aria-selected="true"]').length,1);
  }finally{dom.window.close();}
 });
-test('date clear, one-sided range, Enter and full reset have distinct effects',async()=>{
+test('reverse selection becomes an inclusive range across month/year boundaries',async()=>{
+ const dom=await page();try{const d=dom.window.document;
+  selectRange(d,'2027-01-02','2026-12-30');
+  assert.equal(d.getElementById('qsDraftFrom').value,'2026-12-30');assert.equal(d.getElementById('qsDraftTo').value,'2027-01-02');
+  assert.equal(d.querySelectorAll('#qsCalendarDays [aria-selected="true"]').length,4);
+  d.getElementById('qsApplyDates').click();await tick();
+  assert.equal(d.getElementById('qsDateLabel').textContent,'2026/12/30 — 2027/01/02');
+  selectDate(d,'2026-12-31');assert.equal(d.getElementById('qsDraftTo').value,'');
+  assert.equal(d.getElementById('qsApplyDates').disabled,true,'a new first click starts a fresh range');
+ }finally{dom.window.close();}
+});
+test('Escape and outside clicks discard drafts and focus movement does not hide Apply',async()=>{
  const dom=await page();try{const d=dom.window.document,w=dom.window;
-  d.getElementById('qsSearch').value='123';d.getElementById('qsDateToggle').click();d.getElementById('qsDraftFrom').value='2026-10-28';
-  d.getElementById('qsDraftFrom').dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));assert.equal(d.getElementById('qsDateLabel').textContent,'2026/10/28 起');
-  d.getElementById('qsDateToggle').click();d.getElementById('qsClearDates').click();await tick();assert.equal(d.getElementById('qsSearch').value,'123');assert.equal(d.getElementById('qsDateLabel').textContent,'今天及未来');
-  d.getElementById('qsDateToggle').click();d.getElementById('qsNextWeek').click();assert.equal(d.getElementById('qsNextWeek').getAttribute('aria-pressed'),'true');assert.equal(d.getElementById('qsDateFrom').value,'');
-  d.getElementById('qsReset').click();await tick();assert.equal(d.getElementById('qsSearch').value,'');assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.getElementById('qsDraftFrom').value,'');
+  selectRange(d,'2026-10-28');d.getElementById('qsApplyDates').click();await tick();
+  selectRange(d,'2026-10-29','2026-10-30');
+  d.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.activeElement.id,'qsDateToggle');
+  d.getElementById('qsDateToggle').click();assert.equal(d.getElementById('qsDraftFrom').value,'2026-10-28');
+  selectDate(d,'2026-10-30');d.getElementById('qsSearch').click();
+  assert.equal(d.getElementById('qsDatePanel').hidden,true);assert.equal(d.getElementById('qsDateFrom').value,'2026-10-28');
+  selectRange(d,'2026-10-29');
+  d.activeElement.dispatchEvent(new w.FocusEvent('focusout',{bubbles:true,relatedTarget:d.body}));
+  assert.equal(d.getElementById('qsDatePanel').hidden,false);
+  d.getElementById('qsApplyDates').click();await tick();assert.equal(d.getElementById('qsDateFrom').value,'2026-10-29');
+ }finally{dom.window.close();}
+});
+test('calendar keyboard navigation handles leap days, weeks and month boundaries without applying',async()=>{
+ const dom=await page();try{const d=dom.window.document,w=dom.window;
+  showMonth(d,'2028-02');assert.ok(d.querySelector('[data-qs-day="2028-02-29"]'));
+  const day=d.querySelector('[data-qs-day="2028-02-29"]');day.focus();
+  const key=k=>d.activeElement.dispatchEvent(new w.KeyboardEvent('keydown',{key:k,bubbles:true,cancelable:true}));
+  key('ArrowRight');assert.equal(d.activeElement.dataset.qsDay,'2028-03-01');
+  key('Home');assert.equal(d.activeElement.dataset.qsDay,'2028-02-28');
+  key('End');assert.equal(d.activeElement.dataset.qsDay,'2028-03-05');
+  key('ArrowDown');assert.equal(d.activeElement.dataset.qsDay,'2028-03-12');
+  key('PageUp');assert.equal(d.activeElement.dataset.qsDay,'2028-02-12');
+  key('PageDown');assert.equal(d.activeElement.dataset.qsDay,'2028-03-12');
+  assert.equal(d.getElementById('qsDraftFrom').value,'');assert.equal(d.getElementById('qsDateFrom').value,'');
+ }finally{dom.window.close();}
+});
+test('reset clears both calendar selection and all filters; invalid external ranges remain rejected',async()=>{
+ const dom=await page();try{const d=dom.window.document,w=dom.window;
+  d.getElementById('qsDateFrom').value='2026-10-30';d.getElementById('qsDateTo').value='2026-10-27';d.getElementById('qsDateTo').dispatchEvent(new w.Event('change'));
+  assert.match(d.getElementById('qsFilterError').textContent,/开始日期/);
+  d.getElementById('qsSearch').value='00123';d.getElementById('qsReset').click();await tick();
+  assert.equal(d.getElementById('qsSearch').value,'');assert.equal(d.getElementById('qsFilterError').textContent,'');
+  selectRange(d,'2026-10-27','2026-10-29');d.getElementById('qsApplyDates').click();await tick();
+  d.getElementById('qsReset').click();await tick();assert.equal(d.getElementById('qsDateLabel').textContent,'筛选日期');
+  assert.equal(d.getElementById('qsDatePanel').hidden,true);d.getElementById('qsDateToggle').click();
+  assert.equal(d.getElementById('qsDraftFrom').value,'');assert.equal(d.getElementById('qsApplyDates').disabled,true);
  }finally{dom.window.close();}
 });
 for(const payload of [{factory_id:'hy-other',contract_version:'1',status:'mapping_required',items:[]},{factory_id:'huaxing',contract_version:'1',status:'ready',items:rows}])test('unexpected data or wrong factory fails closed '+payload.status,async()=>{
@@ -141,7 +187,7 @@ test('date confirmation fetches historical business rows and reset fetches the d
   assert.deepEqual([...d.querySelectorAll('[data-qs-row]')].map(r=>r.dataset.qsRow),['3']);
   d.getElementById('qsCustomer').value='Future customer';d.getElementById('qsCustomer').dispatchEvent(new w.Event('change'));
   const before=calls.length;
-  d.getElementById('qsDateToggle').click();d.getElementById('qsDraftFrom').value='2026-10-28';d.getElementById('qsDraftTo').value='2026-10-28';
+  selectRange(d,'2026-10-28');
   assert.equal(calls.length,before,'draft dates do not fetch until confirmed');
   d.getElementById('qsApplyDates').click();await tick();
   assert.equal(calls.at(-1),'api/schedule-source?dateFrom=2026-10-28&dateTo=2026-10-28');
@@ -152,7 +198,7 @@ test('date confirmation fetches historical business rows and reset fetches the d
   assert.equal(calls.length,before+1,'customer filtering stays within the fetched date scope');
   d.getElementById('qsRefresh').click();await tick();assert.match(calls.at(-1),/dateFrom=2026-10-28/);
   await w.QcSchedule.resetFilters();assert.equal(calls.at(-1),'api/schedule-source');
-  assert.equal(d.getElementById('qsDateLabel').textContent,'今天及未来');assert.equal(d.querySelector('[data-qs-row]').dataset.qsRow,'3');
+  assert.equal(d.getElementById('qsDateLabel').textContent,'筛选日期');assert.equal(d.querySelector('[data-qs-row]').dataset.qsRow,'3');
  }finally{dom.window.close();}
 });
 
@@ -161,9 +207,9 @@ test('late history response cannot replace a newer default-scope response',async
  const payload=items=>({ok:true,json:async()=>({factory_id:'huaxing',contract_version:'2',status:'ready',mapping_version:'qc-task-v1',source_available:true,items})});
  const dom=await page(url=>url.includes('?')?new Promise(resolve=>{release=()=>resolve(payload([rows[0]]));}):Promise.resolve(payload([rows[2]])));
  try{const w=dom.window,d=w.document;
-  d.getElementById('qsDateToggle').click();d.getElementById('qsDraftTo').value='2026-10-28';d.getElementById('qsApplyDates').click();
+  selectRange(d,'2026-10-28');d.getElementById('qsApplyDates').click();
   await w.QcSchedule.resetFilters();release();await tick();
-  assert.equal(d.querySelector('[data-qs-row]').dataset.qsRow,'3');assert.equal(d.getElementById('qsDateLabel').textContent,'今天及未来');
+  assert.equal(d.querySelector('[data-qs-row]').dataset.qsRow,'3');assert.equal(d.getElementById('qsDateLabel').textContent,'筛选日期');
  }finally{dom.window.close();}
 });
 
