@@ -118,7 +118,7 @@ test('LG uses server result contract and legacy completed rows expose both revok
 test('row actions stay under frozen PO and retain the original confirmation flow',async()=>{
  const p=await page();try{
   assert.equal(p.d.querySelector('th[data-column=submit]'),null);
-  const pending=p.d.getElementById('qis-review-batch');assert.equal(pending.parentElement.previousElementSibling.id,'reviewTableWrap');dragReview(p,'a','a');
+  const pending=p.d.getElementById('qis-review-batch');assert.equal(pending.closest('#qis-review-controls')?.id,'qis-review-controls');dragReview(p,'a','a');
   assert.equal(p.d.querySelector('[data-audit]').closest('td').dataset.column,'customer');
   pending.click();p.d.querySelector('[data-execute]').click();await tick();await tick();
   const confirm=p.calls.find(c=>c.url.endsWith('review/confirm'));assert.deepEqual(confirm.body.entries.map(x=>x.id),['a']);
@@ -248,12 +248,13 @@ test('review image paste uses the pending endpoint and never changes approved ro
  }finally{p.dom.window.close();}
 });
 
-test('pending review has only the bottom confirmation button and no selection or return controls',async()=>{
+test('pending review has only the original upper toolbar confirmation button and no selection or return controls',async()=>{
  const p=await page();try{
   assert.equal(p.d.querySelector('[data-confirm],[data-return],[data-return-confirm],[data-review-check]'),null);
   const button=p.d.getElementById('qis-review-batch'),actions=button.parentElement;
-  assert.equal(actions.id,'qis-review-submit-actions');assert.equal(actions.children.length,1);
-  assert.equal(actions.previousElementSibling.id,'reviewTableWrap');assert.ok(p.d.querySelector('.qis-review-actions').hidden);
+  assert.ok(actions.classList.contains('qis-review-batch-actions'));
+  assert.equal(button.closest('#qis-review-controls')?.id,'qis-review-controls');assert.ok(p.d.getElementById('qis-review-controls').classList.contains('qis-pending-review'));
+  assert.equal(p.d.getElementById('qis-review-submit-actions'),null);
   confirmRow(p,'a');const before=p.calls.length;p.d.querySelector('[data-cancel]').click();assert.equal(p.calls.length,before);assert.equal(p.rows[0].reviewState,'pending');
   assert.ok(!fs.readFileSync(path.join(__dirname,'qc-inspection-sheet.js'),'utf8').includes('return-to-inspection'));
  }finally{p.dom.window.close();}
@@ -441,7 +442,7 @@ test('review drag refuses readonly, stale and loading pages, clears filtered sel
   p.rows[1].result='';await p.w.QcInspectionSheet.loadReview('pending');dragReview(p,'a','c');assert.deepEqual([...m.checked],['a','c']);
   m.error='网络失败';p.w.QcInspectionSheet.render();assert.ok(button.disabled);m.error='';
   p.rows[0].reviewState='approved';await p.w.QcInspectionSheet.loadReview('approved');dragReview(p,'a','a');assert.equal(m.checked.size,0);assert.ok(p.d.querySelector('[data-review-check=a]'));assert.ok(p.d.querySelector('[data-revoke=a]'));
-  assert.ok(p.d.getElementById('qis-review-submit-actions').hidden);assert.equal(button.closest('#qis-review-controls')?.id,'qis-review-controls');
+  assert.equal(p.d.getElementById('qis-review-submit-actions'),null);assert.equal(p.d.getElementById('qis-review-controls').classList.contains('qis-pending-review'),false);assert.equal(button.closest('#qis-review-controls')?.id,'qis-review-controls');
  }finally{p.dom.window.close();}
 });
 test('confirm freezes edits and duplicate execution, flushes latest revision, and preserves failed-save drafts',async()=>{
