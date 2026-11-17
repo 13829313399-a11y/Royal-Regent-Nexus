@@ -64,7 +64,7 @@
       {
         "path": "services/qc-department/qc-inspection-sheet.js",
         "symbol": "function pump",
-        "sha256": "3af9439b945aff48026919bdc9085703984d489ad17e00ac30a1c7f8d162fb86"
+        "sha256": "72e030196c372b405cc9bd71cb0af403f9ece59f88aaebbff3ea0166c6bf5c53"
       },
       {
         "path": "backend/app/services/qc_cumulative.py",

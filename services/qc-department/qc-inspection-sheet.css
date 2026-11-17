@@ -459,7 +459,26 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 :is(#page-records,#page-review) [data-review-status]:empty{display:none}
 :is(#page-records,#page-review) .qis-result-editor{justify-content:center}
 
-/* Pending review keeps its one action in the original upper-right toolbar. */
-#qis-review-controls.qis-pending-review .qis-review-actions{justify-content:flex-end}
+/* Pending filters and their single review action share one compact toolbar. */
+#qis-review-controls.qis-pending-review{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:11px}
+#page-review #qis-review-controls.qis-pending-review :is(.qis-review-filterbar,.qis-review-actions){display:contents}
+#qis-review-controls.qis-pending-review .qis-review-search{flex:0 1 148px;max-width:148px}
+#qis-review-controls.qis-pending-review .qis-review-date{flex:0 0 148px}
+#qis-review-controls.qis-pending-review [data-rfilter=result]{width:86px}
+#qis-review-controls.qis-pending-review [data-rfilter=sort]{width:106px}
+#qis-review-controls.qis-pending-review .qis-review-batch-actions{margin-inline-start:auto}
+#qis-review-controls.qis-pending-review #qis-review-batch{min-width:116px;min-height:36px}
 #qis-review-controls.qis-pending-review :is(.qis-review-context,.qis-review-batch-actions label){display:none}
+@container (max-width:590px){
+  #qis-review-controls.qis-pending-review .qis-review-search{flex:1 1 180px;max-width:none}
+}
+@container (max-width:480px){
+  #qis-review-controls.qis-pending-review .qis-review-search{flex-basis:100%}
+}
+@media(pointer:coarse){
+  #qis-review-controls.qis-pending-review #qis-review-batch{min-height:44px}
+  #qis-review-controls.qis-pending-review .qis-review-date{flex-basis:160px}
+  #qis-review-controls.qis-pending-review [data-rfilter=result]{width:104px}
+  #qis-review-controls.qis-pending-review [data-rfilter=sort]{width:128px}
+}
 #page-review #reviewTableWrap:focus{outline:none}
