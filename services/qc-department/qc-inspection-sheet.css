@@ -53,13 +53,13 @@
 :is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]) .qis-cell{width:149px}
 :is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]) textarea{width:100%;min-width:0}
 
-:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:82px;--qis-po-text:128px}
+:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:82px;--qis-po-text:112px}
 :is(#page-records,#page-review) .qis-table [data-column=customer],:is(#page-records,#page-review) .qis-table [data-column=poNo]{position:sticky;z-index:2;left:0;background:var(--bg-card,#fff)}
 :is(#page-records,#page-review) .qis-table [data-column=poNo]{left:var(--qis-customer-width,0px);box-shadow:2px 0 0 #c4d7d2}
 :is(#page-records,#page-review) .qis-table th[data-column=customer],:is(#page-records,#page-review) .qis-table th[data-column=poNo]{z-index:5;background:#edf3f1}
 :is(#page-records,#page-review) .qis-table :is([data-column=customer],[data-column=poNo]){padding-inline:4px!important}
 :is(#page-records,#page-review) .qis-table [data-column=customer] .qis-cell{width:var(--qis-customer-text)}
-:is(#page-records,#page-review) .qis-table [data-column=poNo] .qis-cell{width:var(--qis-po-text)}
+:is(#page-records,#page-review) .qis-table [data-column=poNo] .qis-cell{width:max-content;max-width:var(--qis-po-text);margin-inline:auto}
 /* Bounded content widths shared by the workbench and review tables. */
 :is(#page-records,#page-review) .qis-table td:is([data-column="date"],[data-column="country"],[data-column="productNo"],[data-column="productName"],[data-column="quantity"],[data-column="unitsPerCarton"],[data-column="cartonCount"],[data-column="production"],[data-column="agency"],[data-column="customerPo"],[data-column="submittedAt"],[data-column="confirmedAt"],[data-column="lastChangedAt"],[data-column="reviewState"],[data-column="lastLocation"],[data-column="lastActor.name"]){min-width:0}
 :is(#page-records,#page-review) .qis-table [data-column="date"]{--qis-min-text:104px;--qis-max-text:116px;min-width:0}
@@ -92,9 +92,11 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 
 /* Primary row actions stay in the frozen PO cell; use the existing action handlers. */
 :is(#page-records,#page-review) .qis-table .qis-po-actions>.qis-cell{display:flex;flex-direction:column;gap:3px;overflow:hidden}
-:is(#page-records,#page-review) .qis-po-info{flex:1;min-height:0;overflow:auto;overflow-wrap:anywhere;line-height:16px}
-:is(#page-records,#page-review) .qis-po-info small{display:inline;margin:0 0 0 6px}
-:is(#page-records,#page-review) .qis-po-info small:not(.qis-error){display:inline-block;max-width:100%}
+:is(#page-records,#page-review) .qis-po-info{flex:1;min-height:0;overflow:auto;white-space:nowrap;font-family:Arial,sans-serif;line-height:16px}
+:is(#page-records,#page-review) .qis-po-info small{display:block;margin:0;white-space:normal;font-family:var(--font-body,sans-serif)}
+/* Fit the PO, batch and revoke button into an approved row. */
+#page-review .qis-table td.qis-po-actions:has(.qis-row-actions){padding-block:2px!important}
+#page-review .qis-table .qis-po-actions>.qis-cell:has(.qis-row-actions){height:calc(var(--qis-row-height) - 5px);gap:1px}
 :is(#page-records,#page-review) .qis-row-actions{flex:none;display:flex;align-items:center;min-height:26px}
 :is(#page-records,#page-review) .qis-row-action{min-height:26px;padding:3px 8px;border:1px solid var(--glass-primary,#3277d5);border-radius:7px;background:var(--glass-primary,#3277d5);color:#fff;font:inherit;line-height:18px;white-space:nowrap;cursor:pointer}
 :is(#page-records,#page-review) .qis-row-action:disabled{opacity:.45;cursor:default}
