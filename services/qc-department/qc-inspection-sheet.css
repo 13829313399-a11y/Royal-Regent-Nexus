@@ -53,10 +53,11 @@
 :is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]) .qis-cell{width:149px}
 :is(#page-records,#page-review) .qis-table :is([data-column=inspectionProblem],[data-column=improvement],[data-column=remark]) textarea{width:100%;min-width:0}
 
-:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:clamp(140px,16vw,220px);--qis-po-text:clamp(170px,16vw,220px)}
+:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:82px;--qis-po-text:clamp(170px,16vw,220px)}
 :is(#page-records,#page-review) .qis-table [data-column=customer],:is(#page-records,#page-review) .qis-table [data-column=poNo]{position:sticky;z-index:2;left:0;background:var(--bg-card,#fff)}
 :is(#page-records,#page-review) .qis-table [data-column=poNo]{left:var(--qis-customer-width,0px);box-shadow:2px 0 0 #c4d7d2}
 :is(#page-records,#page-review) .qis-table th[data-column=customer],:is(#page-records,#page-review) .qis-table th[data-column=poNo]{z-index:5;background:#edf3f1}
+:is(#page-records,#page-review) .qis-table [data-column=customer]{padding-inline:4px!important}
 :is(#page-records,#page-review) .qis-table [data-column=customer] .qis-cell{width:var(--qis-customer-text)}
 :is(#page-records,#page-review) .qis-table [data-column=poNo] .qis-cell{width:var(--qis-po-text)}
 /* Bounded content widths shared by the workbench and review tables. */
@@ -79,7 +80,7 @@
 :is(#page-records,#page-review) .qis-table [data-column="lastActor.name"]{--qis-min-text:64px;--qis-max-text:88px;min-width:0}
 :is(#page-records,#page-review) .qis-table :is([data-column="date"],[data-column="country"],[data-column="productNo"],[data-column="productName"],[data-column="quantity"],[data-column="unitsPerCarton"],[data-column="cartonCount"],[data-column="production"],[data-column="agency"],[data-column="customerPo"],[data-column="submittedAt"],[data-column="confirmedAt"],[data-column="lastChangedAt"],[data-column="reviewState"],[data-column="lastLocation"],[data-column="lastActor.name"]) .qis-cell{width:max-content;min-width:var(--qis-min-text);max-width:var(--qis-max-text);margin-inline:auto;white-space:normal;overflow-wrap:anywhere;line-height:17px}
 :is(#page-records,#page-review) .qis-table th:is([data-column=submittedAt],[data-column=confirmedAt],[data-column=lastChangedAt]){width:108px;max-width:108px;white-space:normal}
-@media(min-width:641px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:92px;--qis-po-text:168px}#page-records .qis-wrap{--qis-po-text:156px}}
+@media(min-width:641px){:is(#page-records,#page-review) .qis-wrap{--qis-po-text:168px}#page-records .qis-wrap{--qis-po-text:156px}}
 :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#e4f1e9!important}
 body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#25473c!important}
 @media(max-width:640px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:84px;--qis-po-text:108px}:is(#page-records,#page-review) .qis-table [data-column=customer],:is(#page-records,#page-review) .qis-table [data-column=poNo]{min-width:0}}
@@ -434,7 +435,6 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-table [
 html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-editor{width:calc(var(--qis-photo-width) - 17px)}
 
 @media(min-width:641px){
-  #page-review .qis-wrap{--qis-customer-text:124px;--qis-po-text:168px}
   #page-review .qis-reversal-badge{margin:0 auto 1px;padding:0 5px;line-height:14px}
 }
 
