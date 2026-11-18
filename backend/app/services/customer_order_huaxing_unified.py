@@ -235,6 +235,19 @@ def map_record(row, record, customer_code):
                    contract_no=get('contract_no'), po_no=get('customer_po'),
                    source_product_no=get('source_item_no') or get('item_no'),
                    source_order_date=get('order_date'))
+        if record.get('source_pdf'):
+            from .customer_order_unified import _issue
+            row['_edu_pdf'] = True
+            if record.get('source_identity_pending'):
+                row.setdefault('issues', []).append(_issue('warning', 'ambiguous_edu_batch', 'contract_no',
+                    '本批 PDF 与 Excel 的合同/客户关系未能唯一确定，保留待补明细，不猜合同或扣备料。'))
+            row.setdefault('lineage', {})['pdf_detail'] = get('source_text')
+            row['lineage']['pdf_currency'] = get('source_currency') or '原单未识别币种'
+            row['lineage']['pdf_so'] = get('so_no') or '原单未识别 SO；不以 SO 代填合同'
+            if get('source_currency') != 'HKD' or record.get('unit_price') is None:
+                row['price_basis'] = 'incomplete'
+            for notice in record.get('source_notices', []):
+                row.setdefault('issues', []).append(_issue('warning', 'edu_pdf_review', 'row', notice))
     elif customer_code == '360':
         row.update(reference_no=get('production_no'), contract_no='',
                    po_no=get('unified_customer_po') or get('customer_po') or get('po_no'), product_no=get('item_full') or row.get('product_no', ''),
@@ -337,6 +350,18 @@ def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxi
         if not any(edu_order_key(row.get('contract_no'), row.get('po_no'))):
             row.setdefault('issues', []).append(_issue('blocked', 'edu_missing_business_identity', 'contract_no',
                 'EDU 缺少客户合同号或客户 PO；自动分配的 EDUHX 编号不能替代客户订单身份'))
+        if (row.get('_edu_pdf') and not row.get('contract_no') and row.get('po_no') and
+                not any(issue.get('code') == 'ambiguous_edu_batch' for issue in row.get('issues', []))):
+            same_po = [h for h in matches if edu_order_key('', h.po_no)[1] == edu_order_key('', row['po_no'])[1]]
+            identities = {(h.contract_no, h.reference_no) for h in same_po}
+            customer_matches = all(not h.customer_name or not row.get('customer_name') or
+                                   _key(h.customer_name) == _key(row['customer_name']) for h in same_po)
+            if len(identities) == 1 and customer_matches:
+                row['contract_no'] = same_po[0].contract_no
+                row.setdefault('lineage', {})['contract_no'] = 'PDF未列合同；沿用当前排期同PO、同货号的唯一订单合同'
+            elif same_po:
+                row.setdefault('issues', []).append(_issue('warning', 'ambiguous_edu_history', 'contract_no',
+                    'PDF未列合同，同PO与货号存在不同历史订单/客户；本次保留待补明细，不猜合同或扣备料。'))
         same_order = edu_history_matches(row, matches)
         refs = {h.reference_no for h in same_order}
         contracts = {h.contract_no for h in same_order}
@@ -477,6 +502,13 @@ def export_rows(workbook, rows):
         return export_yinhui(workbook, rows)
     if rows and all(row.get('_huaxing_customer') == 'edu' for row in rows):
         from app.services.huaxing_order_legacy.edu_grouped_export import export_rows as export_edu
+        unresolved = [row for row in rows if row.get('_edu_pdf') and not row.get('contract_no') and
+                      any(issue.get('code') in {'ambiguous_edu_history', 'ambiguous_edu_batch'} for issue in row.get('issues', []))]
+        if unresolved:
+            resolved = [row for row in rows if row not in unresolved]
+            if resolved:
+                export_rows(workbook, resolved)
+            return export_advisory_rows(workbook, unresolved, 'EDU PDF 未列合同且存在多个订单身份或客户不一致；保留原始明细，未扣备料。')
         try:
             return export_edu(workbook, rows)
         except unified.CustomerOrderUnifiedError as exc:
@@ -484,7 +516,8 @@ def export_rows(workbook, rows):
             # Uncertain business facts may export, but never debit guessed stock.
             if not any(term in str(exc) for term in ('订单身份', '数量冲突', '内部编号', '一致正式单', '备料', '原收单日期')):
                 raise
-            return export_advisory_rows(workbook, rows, str(exc) + '；本次保留在 ITEM待补资料，未扣备料。')
+            return export_advisory_rows(workbook, [row for row in rows if not row.get('_edu_existing_order')],
+                                        str(exc) + '；本次保留在 ITEM待补资料，未扣备料。')
     from app.services import customer_order_unified as unified
     from app.services.huakang_a_order_legacy.unified_schedule import output_slots
     unresolved = [row for row in rows if row.get('item_sheet_name') not in item_sheets(workbook, row['_huaxing_customer'])]

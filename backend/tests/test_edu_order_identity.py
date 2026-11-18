@@ -48,18 +48,23 @@ def test_nine_distinct_contracts_with_repeated_item_export_all_three_sheets():
         assert len(written) == 9
         assert {row[offset].value for row in written} == set(refs)
     retry = service.create_unified_customer_preview(**{**args, 'schedule_content': output})
-    assert retry['summary']['blocked'] == 9
+    assert retry['summary']['blocked'] == 0
     assert all(any(i['code'] == 'duplicate_existing_order' for i in r['issues']) for r in retry['rows'])
+    retried, _, _ = service.export_unified_customer_schedule(**{**args, 'schedule_content': output})
+    after = openpyxl.load_workbook(BytesIO(retried))
+    for name, offset in [('ITEM表', 4), ('接单表', 3), ('正单评审表', 3)]:
+        assert sum(row[offset - 1].value in contracts for row in after[name]) == 9
 
 
-@pytest.mark.parametrize('qty,code,skippable', [(6360, 'duplicate_batch_order_line', True),
-                                              (6000, 'existing_quantity_conflict', False)])
-def test_real_batch_duplicates_and_quantity_conflicts_remain_blocked(qty, code, skippable):
+@pytest.mark.parametrize('qty,code', [(6360, 'duplicate_batch_order_line'),
+                                    (6000, 'existing_quantity_conflict')])
+def test_real_batch_duplicates_and_quantity_conflicts_remain_visible(qty, code):
     preview = service.create_unified_customer_preview(**preview_args(po_bytes(['C1/EP1', 'C1/EP1'], quantities=[6360, qty])))
     row = preview['rows'][1]
     issue = next(i for i in row['issues'] if i['code'] == code)
-    assert row['status'] == 'blocked'
-    assert issue['can_skip'] is skippable
+    assert row['status'] == 'warning'
+    assert issue['severity'] == 'warning'
+    assert row['quantity'] == str(qty)
 
 
 def test_every_new_detail_has_own_reference_even_when_contract_and_po_match():
@@ -79,16 +84,19 @@ def test_full_composite_contract_matches_history_but_sibling_suffix_does_not():
 
 def test_missing_customer_identity_is_not_replaced_by_allocated_edu_number():
     preview = service.create_unified_customer_preview(**preview_args(po_bytes([''])))
-    assert preview['summary']['blocked'] == 1
+    assert preview['summary']['blocked'] == 0
     assert any(i['code'] == 'edu_missing_business_identity' for i in preview['rows'][0]['issues'])
+    assert not preview['rows'][0]['contract_no'] and not preview['rows'][0]['po_no']
+    output, _, _ = service.export_unified_customer_schedule(**preview_args(po_bytes([''])))
+    assert 'ITEM待补资料' in openpyxl.load_workbook(BytesIO(output)).sheetnames
 
 
 def test_manual_contract_change_rechecks_business_identity_not_only_internal_reference():
     history = [service.UnifiedHistoryRow(row=4, contract_no='C1/EP1', reference_no='EDUHX00042', product_no='I1')]
     row = dict(id='r', contract_no='C1/EP1', po_no='', reference_no='EDUHX00099', product_no='I1', _huaxing_customer='edu')
     original = {'r': ('I1', 'EDUHX00099', 'C2/EP2', '')}
-    with pytest.raises(service.CustomerOrderUnifiedError, match='重复'):
-        mapping.validate_edited_identities({'rows': [row]}, original, history, ['ITEM表'])
+    mapping.validate_edited_identities({'rows': [row]}, original, history, ['ITEM表'])
+    assert any(i['code'] == 'edited_identity_overlap' and i['severity'] == 'warning' for i in row['issues'])
 
 
 def test_factory_scope_still_rejects_edu_in_huakang_a():
@@ -106,7 +114,7 @@ def test_multi_order_workbook_revision_does_not_drop_unrelated_orders():
     assert len({r['reference_no'] for r in rows}) == 3
 
 
-def test_history_quantity_conflict_cannot_be_confirmed_as_duplicate():
+def test_history_quantity_conflict_exports_separately_without_changing_history():
     wb = template('edu')
     sheet = wb['ITEM表']
     sheet['D4'], sheet['E4'], sheet['H4'], sheet['K4'] = 'C1/EP1', 'EDUHX00042', 'F12-MS907-B3080000', 6300
@@ -114,9 +122,11 @@ def test_history_quantity_conflict_cannot_be_confirmed_as_duplicate():
     row = service.create_unified_customer_preview(**args)['rows'][0]
     assert row['reference_no'] == 'EDUHX00042'
     issue = next(i for i in row['issues'] if i['code'] == 'existing_quantity_conflict')
-    assert issue['can_skip'] is False
-    with pytest.raises(service.CustomerOrderUnifiedError):
-        service.export_unified_customer_schedule(**args)
+    assert issue['severity'] == 'warning'
+    output, _, _ = service.export_unified_customer_schedule(**args)
+    after = openpyxl.load_workbook(BytesIO(output))
+    assert after['ITEM表']['K4'].value == 6300
+    assert after['ITEM待补资料']['K4'].value == 6360
 
 
 def test_batch_internal_reference_collision_is_not_confirmable():
@@ -130,11 +140,13 @@ def test_batch_internal_reference_collision_is_not_confirmable():
 def test_same_revision_conflicting_files_are_not_silently_replaced():
     args = preview_args(po_bytes(['C1'], quantities=[6360]))
     args['po_files'].append(('EDU副本.xls', po_bytes(['C1'], quantities=[6400])))
-    with pytest.raises(service.CustomerOrderUnifiedError, match='同版本内容冲突'):
-        service.create_unified_customer_preview(**args)
+    preview = service.create_unified_customer_preview(**args)
+    assert {r['quantity'] for r in preview['rows']} == {'6360', '6400'}
+    assert preview['summary']['blocked'] == 0
+    assert any('同版本内容有差异' in s for s in preview['warnings'])
 
 
-def test_shared_history_internal_reference_for_other_contract_stays_blocked():
+def test_shared_history_internal_reference_collision_remains_visible():
     wb = template('edu')
     for i, contract in enumerate(['C1', 'C2'], 4):
         sheet = wb['ITEM表']
@@ -143,4 +155,4 @@ def test_shared_history_internal_reference_for_other_contract_stays_blocked():
         sheet.cell(i, 8, 'F12-MS907-B3080000')
         sheet.cell(i, 11, 6360)
     row = service.create_unified_customer_preview(**preview_args(po_bytes(['C1']), wb))['rows'][0]
-    assert any(i['code'] == 'edu_reference_collision' and not i['can_skip'] for i in row['issues'])
+    assert any(i['code'] == 'edu_reference_collision' and i['severity'] == 'warning' for i in row['issues'])

@@ -1110,6 +1110,35 @@ describe('customer order center static frontend', () => {
     expect(scheduleView.text()).not.toContain('生产未完成')
   })
 
+  it('accepts an EDU PDF and sends the original with the unified XLSX schedule', async () => {
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      customer_code: 'edu', factory_id: 'huaxing', preview_fingerprint: 'edu-pdf',
+      po_file_count: 1, po_file_names: ['EDU.pdf'], po_file_name: 'EDU.pdf', schedule_file_name: 'EDU.xlsx',
+      input_template: 'EDU', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 }, rows: [], warnings: [],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, { props: {
+      activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴',
+    } })
+    await wrapper.get('[data-testid="customer-choice-edu"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toContain('.pdf')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
+    const pdf = new File(['%PDF-original'], 'EDU.pdf', { type: 'application/pdf' })
+    for (const [index, file] of [pdf, new File(['xlsx'], 'EDU.xlsx')].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find(b => b.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.previewMappedBatch).toHaveBeenCalled()
+    const [customer, files] = customerOrderApiMock.previewMappedBatch.mock.calls[0]!
+    expect(customer).toBe('edu')
+    expect(files[0]).toBe(pdf)
+    expect(wrapper.text()).not.toContain('PO 只支持 .xls')
+    wrapper.unmount()
+  })
+
   it('uses the unified xlsx schedule for Caixing', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: {

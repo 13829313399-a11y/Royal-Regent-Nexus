@@ -737,7 +737,7 @@ def _parse_huaxing_rows(
             {"huaxing_po": item.reference_no} for item in history
         ])
         for file_name, content in po_files:
-            parsed = edu_po_parser.parse_po_file(content, filename=file_name)
+            parsed = edu_po_parser.parse_edu_po_file(content, filename=file_name)
             if parsed.get("customer_type") != "EDU":
                 raise CustomerOrderUnifiedError(
                     f"{file_name}：识别为 {parsed.get('customer_type') or '未知客户'}，当前入口只处理 EDU"
