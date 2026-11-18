@@ -499,15 +499,16 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 
 .qis-name-editor{position:relative;display:block}
 .qis-name-editor .qis-fill-handle{
-  position:absolute;right:0;bottom:0;width:14px;height:14px;
-  cursor:crosshair;touch-action:none;user-select:none;
+  --edge:4px;
+  position:absolute;inset:0;cursor:crosshair;touch-action:none;user-select:none;
+  /* Hit-test only the four edges. The center belongs to the text input. */
+  clip-path:polygon(evenodd,0 0,100% 0,100% 100%,0 100%,0 0,
+    var(--edge) var(--edge),var(--edge) calc(100% - var(--edge)),
+    calc(100% - var(--edge)) calc(100% - var(--edge)),calc(100% - var(--edge)) var(--edge),
+    var(--edge) var(--edge),0 0);
 }
-.qis-fill-handle::after{
-  content:"";position:absolute;right:1px;bottom:1px;width:7px;height:7px;
-  background:var(--green,#188453);border:1px solid var(--bg-card,#fff);box-sizing:border-box;
-}
+@media(pointer:coarse){.qis-name-editor .qis-fill-handle{--edge:7px}}
 .qis-name-editor:has(input:placeholder-shown) .qis-fill-handle{visibility:hidden}
-:is(#page-records,#page-review) .qis-table td.qis-fill-target .qis-name-editor input{
-  outline:2px solid var(--green,#188453);outline-offset:-2px;
-  background:color-mix(in srgb,var(--green,#188453) 15%,var(--bg-card,#fff));
+:is(#page-records,#page-review) .qis-table tr[data-entry]>td.qis-fill-target{
+  background:color-mix(in srgb,var(--accent) 10%,var(--bg-card))!important;
 }
