@@ -242,8 +242,8 @@ def test_tools_roundtrip_citations_audience_and_unknown_usage(env, tmp_path):
         async def chunks():
             if len(bodies) == 1:
                 values = [
-                    {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tool-one","function":{"name":"help_describe_element","arguments":'{"help_id":"injection.'}}]}}]},
-                    {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"remaining_shots\"}"}}]},"finish_reason":"tool_calls"}]},
+                    {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tool-one","function":{"name":"help_describe_element","arguments":'{"help_id":"three-d-printing.'}}]}}]},
+                    {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"overview\"}"}}]},"finish_reason":"tool_calls"}]},
                 ]
             else:
                 values = [{"choices":[{"delta":{"content":"根据经过核对的注塑说明。"},"finish_reason":"stop"}]}, {"choices":[],"usage":{"total_tokens":20}}]
@@ -256,7 +256,7 @@ def test_tools_roundtrip_citations_audience_and_unknown_usage(env, tmp_path):
     assert "run.completed" in result.text, result.text
     assert len(bodies)==2 and bodies[1]["messages"][-1]["role"]=="tool"
     message = client.get(f"/api/assistant/sessions/{sid}/messages").json()["items"][-1]
-    assert message["help_citations"][0]["id"]=="injection.remaining_shots"
+    assert message["help_citations"][0]["id"]=="three-d-printing.overview"
     assert client.get(f'/api/assistant/runs/{message["run_id"]}').json()["usage"] is None
     from types import SimpleNamespace
     with dbm.SessionLocal() as db:
@@ -356,7 +356,7 @@ def test_help_scope_forgery_stale_sources_and_optional_flags(env):
     from types import SimpleNamespace
     supplier=SimpleNamespace(permissions=["carton_supplier:read"])
     assert all(a.audience in ("all","supplier") for a in registry.visible(supplier))
-    with pytest.raises(Exception): registry.get(supplier,"injection.remaining_shots")
+    with pytest.raises(Exception): registry.get(supplier,"three-d-printing.overview")
     with pytest.raises(Exception): registry.tool(supplier,"business_write",{"query":"x"})
     assert client.get("/api/assistant/help/context",params={"module_id":"injection-scheduling","route_name":"carton-supplier"}).status_code==422
     sid=session(client)

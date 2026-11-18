@@ -12,7 +12,7 @@ describe('Huakang B JP API', () => {
     const controller = new AbortController()
     await api.clipboard('huakang-b', 'id/1', controller.signal)
     expect(http.get).toHaveBeenNthCalledWith(1, '/huakang-b-jp/references?factory_id=huakang-b', undefined)
-    expect(http.post).toHaveBeenCalledWith('/huakang-b-jp/preview', form, { timeout: 270000, headers: { 'X-JP-Intake': '1' } })
+    expect(http.post).toHaveBeenCalledWith('/huakang-b-jp/preview', form, { timeout: 270000, headers: { 'Content-Type': 'multipart/form-data', 'X-JP-Intake': '1' } })
     expect(http.get).toHaveBeenNthCalledWith(2, '/huakang-b-jp/exports/id%2F1/download?factory_id=huakang-b', { responseType: 'blob' })
     expect(http.get).toHaveBeenNthCalledWith(3, '/huakang-b-jp/exports/id%2F1/clipboard?factory_id=huakang-b', { signal: controller.signal })
   })

@@ -112,7 +112,7 @@ def test_clear_override_preserves_other_execution_source_and_audit(db):
 @pytest.mark.parametrize('patch', [
     {'actualDate': '2026-02-30'}, {'actualDate': '11/05'}, {'actualDate': '20261105'},
     {'actualDate': '2026-11-05T00:00:00Z'}, {'actualDate': True},
-    {'actualDate': '2026-11-06', 'reportNo': 'FORBIDDEN'}, {'inspector': 'FORBIDDEN'},
+    {'actualDate': '2026-11-06', 'reportNo': 'FORBIDDEN'}, {'inspector': ['invalid text type']},
     {'actualDate': '', 'actualQuantity': '5'}, {'inspectionDateSource': 'qc_manual'}, [],
 ])
 def test_invalid_or_out_of_scope_workbench_patch_never_writes(db, patch):

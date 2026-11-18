@@ -26,7 +26,17 @@ def test_volume_bootstrap_never_overwrites_existing_files(tmp_path):
 def test_empty_or_symlink_backups_are_rejected(tmp_path):
     release=module();source=tmp_path/'source';source.mkdir()
     with pytest.raises(RuntimeError,match='empty'):release.restore_empty_volume(source,tmp_path/'target')
-    (source/'link').symlink_to(tmp_path/'elsewhere')
+    link = source / 'link'
+    target = tmp_path / 'elsewhere'
+    target.mkdir()
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) != 1314:
+            raise
+        # Windows permits directory junctions without the symlink privilege.
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
     with pytest.raises(RuntimeError,match='symlink'):release.inventory(source)
 
 
@@ -38,6 +48,19 @@ def test_release_rejects_old_unknown_main_version_before_writes(tmp_path,monkeyp
     monkeypatch.setattr(release,'engine',engine)
     with pytest.raises(RuntimeError,match='verified QC-compatible revision'):release.prepare(tmp_path)
     assert not (tmp_path/'qc-before').exists()
+
+
+@pytest.mark.parametrize("revision", ["20261116_0195", "20261116_inj_retire"])
+def test_qc_recognizes_existing_compatible_successors(tmp_path, monkeypatch, revision):
+    release = module()
+    engine = create_engine("sqlite:///" + (tmp_path / "main.db").as_posix())
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version(version_num TEXT)"))
+        connection.execute(text("INSERT INTO alembic_version VALUES (:revision)"), {"revision": revision})
+    monkeypatch.setattr(release, "engine", engine)
+    assert release.version() == revision
+    assert revision in release.QC_READY_REVISIONS
+    engine.dispose()
 
 
 def test_start_requires_preparation_and_readiness_requires_collection(tmp_path,monkeypatch):

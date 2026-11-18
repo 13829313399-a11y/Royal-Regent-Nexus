@@ -2335,7 +2335,7 @@ onBeforeUnmount(() => {
           <span><FileCheck2 aria-hidden="true" /></span>
           <div>
             <strong>解析已完成，当前尚未输出排期</strong>
-            <p>请核对下方明细，按提示补录或确认资料；数量、订单身份等冲突须纠正后才能生成排期。</p>
+            <p>下方资料缺失或差异仅作提醒，可直接保存订单或生成排期；不确定的字段可先留空，无需逐项确认或填写原因。</p>
           </div>
           <button
             type="button"
