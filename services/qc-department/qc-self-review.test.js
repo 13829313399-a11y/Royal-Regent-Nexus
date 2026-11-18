@@ -37,7 +37,7 @@ function confirmRow(p,id){dragReview(p,id,id);p.d.getElementById('qis-review-bat
 test('review uses the fixed workbench order followed by supplements for every row, retaining frozen actions',async()=>{
  const p=await page();try{
   p.rows[1].inspectionExecution={defects:[{desc:'标签错位',qty:'0'}]};p.rows[2].remark='长备注';await p.w.QcInspectionSheet.loadReview('pending');
-  const expected=['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','result','inspectionExecution.sampleQuantity','remark','photos','inspector','inspectionProblem','inspectionExecution.analysisReason','improvement','firstResponsible','secondResponsible','reportStatus','otherRemark','inspectionExecution.defects','submittedAt','confirmedAt','reviewState','lastChangedAt','lastLocation','lastActor.name'];
+  const expected=['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','result','inspectionExecution.sampleQuantity','remark','photos','inspector','inspectionProblem','inspectionExecution.analysisReason','improvement','firstResponsible','secondResponsible','inspectionFactory','reportStatus','otherRemark','inspectionExecution.defects','submittedAt','confirmedAt','reviewState','lastChangedAt','lastLocation','lastActor.name'];
   assert.deepEqual([...p.d.querySelectorAll('#reviewTableWrap table:first-of-type th[data-column]')].map(c=>c.dataset.column),expected);
   for(const row of p.d.querySelectorAll('#reviewTableWrap tr[data-entry]'))assert.deepEqual([...row.querySelectorAll('td[data-column]')].map(c=>c.dataset.column),expected);
   assert.equal(p.d.querySelector('[data-confirm]'),null);assert.equal(p.d.querySelector('[data-audit=a]').closest('td').dataset.column,'customer');
@@ -277,7 +277,7 @@ test('retired review contract column preserves leading-zero history through othe
  const p=await page();try{
   p.rows[0].contractNo='000012';p.rows[0].responsible='历史责任人';p.rows[0].inspectionFactory='历史工厂';p.rows[0].actualQuantity=0;
   await p.w.QcInspectionSheet.loadReview('pending');
-  for(const field of ['contractNo','responsible','inspectionFactory','actualQuantity','inspectionExecution.reportNo'])assert.equal(p.d.querySelector('th[data-column="'+field+'"]'),null);
+  for(const field of ['contractNo','responsible','actualQuantity','inspectionExecution.reportNo'])assert.equal(p.d.querySelector('th[data-column="'+field+'"]'),null);
   const input=p.d.querySelector('[data-entry=a] [data-review-field=otherRemark]');input.value='补充';input.dispatchEvent(new p.w.Event('input'));await p.w.QcInspectionSheet.flush();
   assert.equal(p.rows[0].contractNo,'000012');assert.equal(p.rows[0].responsible,'历史责任人');assert.equal(p.rows[0].actualQuantity,0);assert.equal(p.rows[0].inspectionFactory,'历史工厂');
  }finally{p.dom.window.close();}
@@ -556,7 +556,82 @@ test('review name history groups a whole fill, restores distinct names and branc
     key(input,'y',{ctrlKey:true});
     await p.w.QcInspectionSheet.flush();
     assert.deepEqual(names(),['林青','王宁','']);
-    assert.ok(key(nodes[1].querySelector('[data-remark]'),'z',{ctrlKey:true}));
+    assert.ok(key(p.d.querySelector('[data-rfilter=search]'),'z',{ctrlKey:true}));
     assert.equal(p.w.QcInspectionSheet.model.checked.size,0);
   }finally{p.dom.window.close();}
+});
+
+test('fill starts on an unselected cell, ignores a stationary grid click, and restores each remark',async()=>{
+ const p=await page();
+ try{
+  for(const [i,row] of p.rows.entries())row.remark=['首行备注','另一条备注',''][i];
+  await p.w.QcInspectionSheet.loadReview('pending');
+  const host=p.d.getElementById('reviewTableWrap'),nodes=[...host.querySelectorAll('[data-entry]')];
+  nodes.forEach((node,i)=>node.getBoundingClientRect=()=>({bottom:164+i*64}));
+  const source=nodes[0].querySelector('[data-fill-name=remark]');
+  assert.equal(source.parentElement.tagName,'TD');
+  assert.equal(source.closest('tr').getAttribute('aria-selected'),'false');
+  for(const key of ['firstResponsible','secondResponsible','inspectionFactory','remark','otherRemark','inspectionProblem','analysisReason','improvement']){
+   assert.ok(nodes[0].querySelector('[data-fill-name="'+key+'"]'),key);
+  }
+  for(const key of ['result','sampleQuantity','reportStatus'])assert.equal(host.querySelector('[data-fill-name="'+key+'"]'),null);
+  pointer(p,source,'pointerdown',165);pointer(p,host,'pointerup',165);
+  assert.equal(p.calls.filter(call=>call.url.endsWith('/save')).length,0);
+  pointer(p,source,'pointerdown',165);pointer(p,host,'pointerup',270);
+  await p.w.QcInspectionSheet.flush();
+  assert.deepEqual(p.rows.map(row=>row.remark),Array(3).fill('首行备注'));
+  const shortcut=(key,mods)=>host.dispatchEvent(new p.w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...mods}));
+  shortcut('z',{metaKey:true});await p.w.QcInspectionSheet.flush();
+  assert.deepEqual(p.rows.map(row=>row.remark),['首行备注','另一条备注','']);
+  assert.equal(nodes[1].querySelector('[data-column=remark] button').textContent,'另一条备注');
+  shortcut('y',{metaKey:true});await p.w.QcInspectionSheet.flush();
+  assert.deepEqual(p.rows.map(row=>row.remark),Array(3).fill('首行备注'));
+  const select=nodes[0].querySelector('[data-result]');
+  select.value='FAIL';select.dispatchEvent(new p.w.Event('change'));await p.w.QcInspectionSheet.flush();
+  shortcut('z',{ctrlKey:true});await p.w.QcInspectionSheet.flush();assert.equal(p.rows[0].result,'PASS');
+  shortcut('Z',{ctrlKey:true,shiftKey:true});await p.w.QcInspectionSheet.flush();assert.equal(p.rows[0].result,'FAIL');
+ }finally{p.dom.window.close();}
+});
+
+test('detail edits support local shortcuts and a saved detail change is one sheet history step',async()=>{
+ const p=await page();
+ try{
+  p.rows[0].inspectionExecution={defects:[{desc:'旧描述',qty:'1',remark:'',level:''}]};
+  await p.w.QcInspectionSheet.loadReview('pending');
+  p.d.querySelector('[data-detail=defects]').click();
+  const field=()=>p.d.querySelector('[data-detail-key=desc]');
+  const shortcut=(target,key,mods)=>target.dispatchEvent(new p.w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...mods}));
+  field().value='新描述';field().dispatchEvent(new p.w.Event('input'));
+  shortcut(field(),'z',{metaKey:true});assert.equal(field().value,'旧描述');
+  shortcut(field(),'y',{metaKey:true});assert.equal(field().value,'新描述');
+  p.d.querySelector('[data-detail-save]').click();await tick();await tick();
+  assert.equal(p.rows[0].inspectionExecution.defects[0].desc,'新描述');
+  const host=p.d.getElementById('reviewTableWrap');
+  shortcut(host,'z',{ctrlKey:true});await p.w.QcInspectionSheet.flush();
+  assert.equal(p.rows[0].inspectionExecution.defects[0].desc,'旧描述');
+  shortcut(host,'y',{ctrlKey:true});await p.w.QcInspectionSheet.flush();
+  assert.equal(p.rows[0].inspectionExecution.defects[0].desc,'新描述');
+ }finally{p.dom.window.close();}
+});
+
+test('institution fill and history preserve identities for listed and historical names',async()=>{
+ const p=await page();
+ try{
+  p.rows[0].inspectionMethod=p.rows[1].inspectionMethod='external';
+  p.rows[0].inspectionExecution={institution:'机构甲',institutionId:'listed'};
+  p.rows[1].inspectionExecution={institution:'机构乙',institutionId:''};
+  const fetch=p.w.fetch;
+  p.w.fetch=(url,opts)=>url.endsWith('/options')?Promise.resolve({ok:true,json:async()=>({institutions:[{id:'listed',name:'机构甲'}],inspectors:[]})}):fetch(url,opts);
+  await p.w.QcInspectionSheet.loadReview('pending');
+  const host=p.d.getElementById('reviewTableWrap'),nodes=[...host.querySelectorAll('[data-entry]')];
+  nodes.forEach((n,i)=>n.getBoundingClientRect=()=>({bottom:164+i*64}));
+  const from=host.querySelector('[data-entry=a] [data-fill-name=institution]');
+  pointer(p,from,'pointerdown',228);pointer(p,host,'pointerup',260);
+  await p.w.QcInspectionSheet.flush();
+  const selected=host.querySelector('[data-entry=b] [data-person-field=institution]');
+  assert.equal(selected.value,'listed');assert.equal(p.rows[1].inspectionExecution.institution,'机构甲');
+  p.d.querySelector('#page-review [data-name-history=undo]').click();await p.w.QcInspectionSheet.flush();
+  assert.equal(selected.value,'__history__');assert.equal(p.rows[1].inspectionExecution.institution,'机构乙');
+  assert.equal(p.rows[1].inspectionExecution.institutionId,'');assert.equal(p.rows[2].inspectionExecution,undefined);
+ }finally{p.dom.window.close();}
 });

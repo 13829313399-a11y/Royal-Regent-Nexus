@@ -550,3 +550,18 @@ test('inspector name history restores verified identity and redoes a manual IME 
     assert.ok(undo.disabled);
   }finally{p.dom.window.close();}
 });
+
+test('workbench quantity supports undo and redo without a fill target',async()=>{
+ const p=await page();
+ try{
+  p.rows[0].inspectionExecution={sampleQuantity:'0'};
+  await p.w.QcInspectionSheet.load();
+  const input=p.d.querySelector('[data-entry=a] [data-execution-field=sampleQuantity]');
+  assert.equal(input.closest('td').querySelector('[data-fill-name]'),null);
+  input.value='17';input.dispatchEvent(new p.w.Event('input'));await p.w.QcInspectionSheet.flush();
+  for(const [key,value] of [['z','0'],['y','17']]){
+   input.dispatchEvent(new p.w.KeyboardEvent('keydown',{key,ctrlKey:true,bubbles:true,cancelable:true}));
+   await p.w.QcInspectionSheet.flush();assert.equal(input.value,value);assert.equal(p.rows[0].inspectionExecution.sampleQuantity,value);
+  }
+ }finally{p.dom.window.close();}
+});

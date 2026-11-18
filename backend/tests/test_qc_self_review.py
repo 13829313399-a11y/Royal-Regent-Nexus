@@ -147,3 +147,12 @@ def test_restore_manual_inspector_with_same_name_as_linked_inspector(db):
  assert r['inspectionExecution']['inspectorId']=='' and r['inspectionExecution']['inspector']==ACTOR['name']
  r=save({'inspectorId':str(ACTOR['id'])})
  assert r['inspectionExecution']['inspectorId']==str(ACTOR['id'])
+
+
+def test_restore_unlinked_institution_name_in_pending_review(db):
+ r=item(db)
+ r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark=''),ACTOR)
+ r=sheet.submit('huaxing',r['id'],dict(revision=r['revision']),ACTOR)
+ for name in ['手填机构','另一家机构','手填机构']:
+  r=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'institutionId':'','institution':name}),ACTOR,review=True)
+  assert r['inspectionExecution']['institutionId']=='' and r['inspectionExecution']['institution']==name

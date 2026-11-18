@@ -481,13 +481,13 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 #page-review #reviewTableWrap:focus{outline:none}
 
 /* The table grid, including its padding, defines the fill corner. */
-.qis-table td:has(.qis-name-editor){position:relative}
-.qis-name-editor{display:block}
-.qis-name-editor .qis-fill-handle{
-  position:absolute;right:0;bottom:0;width:32px;height:24px;
+.qis-table td.qis-fill-cell{position:relative;overflow:visible}
+.qis-fill-cell>.qis-fill-handle{
+  /* Include the grid lines on both sides of their intersection. */
+  position:absolute;right:-3px;bottom:-3px;width:36px;height:28px;z-index:1;
   cursor:crosshair;touch-action:none;user-select:none;
 }
-.qis-name-editor:has(input:placeholder-shown) .qis-fill-handle{visibility:hidden}
+.qis-fill-handle[hidden]{display:none}
 :is(#page-records,#page-review) .qis-table tr[data-entry]>td.qis-fill-target{
   background:color-mix(in srgb,var(--accent) 10%,var(--bg-card))!important;
 }
