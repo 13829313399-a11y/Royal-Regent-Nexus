@@ -14,7 +14,7 @@
 
 ## 数据边界
 
-- 每包首次启动创建自己的 `data`，不复制任何生产数据库、真实订单或凭据。演示资料全部合成。
+- 每包首次启动创建自己的 `data`，不复制任何生产数据库或凭据。演示资料全部合成；仅在用户明确指定时，B 包可额外携带私有排期和货价参照副本，原件不进入 Git。
 - JP 保留原编号、业务身份幂等和证据保护，但编号只在本包中延续，不适合多个副本共同分配正式编号。
 - 原业务状态服务按源文件复制并记录 SHA256；本地适配仅替换在线身份、路由及存储接线。未知数据库拒绝打开，证据表保留原不可修改触发器。
 - 仅接受精确本机 Host／Origin；写请求需要页面设置的自定义头。无跨域开放，也不监听局域网。
@@ -32,6 +32,8 @@ python tools/factory-trial-delivery/build_delivery.py --cache /absolute/runtime-
 ```
 
 交付日期默认取上海当天，也可用 `--release-date YYYY-MM-DD` 固定本次发布的文件名和说明日期。更新已有试用包前先退出旧程序并备份整个旧目录；将同厂区旧包的 `data` 目录复制到新包后再启动，保留本地台账与记录，不能混用不同厂区的数据。
+
+为 B 包预置用户指定的参照时，同时传入 `--jp-schedule /absolute/schedule.xlsx --jp-price /absolute/price.xlsx` 并选择 `--factory huakang-b`。构建器用实际业务解析器验证两份文件，并记录原名及 SHA256；首次启动在一个事务中补充尚不存在的参照类型。已有参照优先，重启或迁移旧 `data` 不覆盖更新后的版本、编号和历史导出。采用随包新表替换旧参照时，在页面选择 `reference-seed` 内的对应 XLSX 更新一次；以后自动复用。默认构建不包含私有参照。
 
 构建缓存需要 `python-3.12.10-embed-amd64.zip`、`wheels-pinned/` 以及 `tesseract-extracted/`。上游地址和校验值见 `runtime-sources.json`；依赖见 `requirements-windows.txt`。Windows wheels 可在其他系统上准备：
 

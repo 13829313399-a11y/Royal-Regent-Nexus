@@ -233,7 +233,7 @@ def readme(factory: str, release: str):
     if factory == 'huakang-b':
         common += '''
 华康B使用顺序
-1. 排期参照、货价表均可选；有参照时可匹配历史和价格，无参照也能解析生成。没有历史编号依据时编号留空，不会擅自从首号开始。
+1. 排期参照、货价表保存一次后会自动复用，仅在表格有更新时替换。有“预置参照说明.txt”的包首次启动即载入随包参照。参照均可选，无参照也能解析生成；没有历史编号依据时编号留空，不会擅自从首号开始。
 2. 上传 EML、邮件ZIP，或从邮件中直接复制正文表格粘贴；同一封邮件通常选一种方式。填写来单日期和金山人员名称对应的业务跟单。
 3. 解析后查看明细。缺资料、候选价格和未识别来源只作提醒；本次生成已识别且选中的明细，缺值留空。改客名或装箱数后旧价清空，可之后补充。
 4. 点击“生成问单Excel”直接生成44列文件，合同列统一为TBA，无需核对勾选或填写原因。文件保持待核对状态；生成不表示已经核准价格。
@@ -260,7 +260,31 @@ def readme(factory: str, release: str):
     return common
 
 
-def build(cache: Path, output: Path, selected, release_date: str | None = None):
+def package_reference_seed(package: Path, schedule: Path, price: Path):
+    """Only explicitly supplied private inputs enter this delivery, never Git sources."""
+    directory = package / 'reference-seed'
+    directory.mkdir()
+    records = []
+    for kind, source in (('schedule', schedule), ('price', price)):
+        if source.is_symlink() or source.suffix.lower() != '.xlsx' or not 0 < source.stat().st_size <= 20 * 1024**2:
+            raise ValueError('Initial JP references must be regular XLSX files under 20MB.')
+        content = source.read_bytes()
+        (directory / (kind + '.xlsx')).write_bytes(content)
+        records.append({'kind': kind, 'file': kind + '.xlsx', 'name': source.name,
+            'sha256': sha256(content).hexdigest()})
+    (directory / 'manifest.json').write_text(json.dumps({'format': 1, 'factory_id': 'huakang-b',
+        'files': records}, ensure_ascii=False, indent=2), encoding='utf-8')
+    environment = {**os.environ, 'PYTHONPATH': str(package / 'backend'), 'PYTHONDONTWRITEBYTECODE': '1'}
+    validation = subprocess.run([sys.executable, '-B', '-m', 'app.reference_seed', str(directory)],
+        env=environment, check=True, capture_output=True, text=True)
+    return json.loads(validation.stdout)
+
+
+def build(cache: Path, output: Path, selected, release_date: str | None = None,
+        jp_schedule: Path | None = None, jp_price: Path | None = None):
+    seeded = jp_schedule is not None or jp_price is not None
+    if seeded and (jp_schedule is None or jp_price is None or 'huakang-b' not in selected):
+        raise ValueError('Supply both JP references and include huakang-b in the selected delivery.')
     release_day = date.fromisoformat(release_date) if release_date else datetime.now(ZoneInfo("Asia/Shanghai")).date()
     release = release_day.isoformat()
     stamp = release_day.strftime("%Y%m%d")
@@ -278,6 +302,18 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
             package = staging / folder
             package.mkdir()
             subprocess.run([sys.executable, '-B', str(source / 'prepare_backend.py'), str(package / 'backend')], check=True)
+            has_seed = kind == 'jp' and seeded
+            if has_seed:
+                stats = package_reference_seed(package, jp_schedule, jp_price)
+                (package / '预置参照说明.txt').write_text(
+                    '本包已带上交付时指定的华康B排期和货价原件副本。首次启动自动保存，后续自动复用。\n'
+                    '日常直接导入邮件；只有原表更新时，才在“当前参照”选择新文件并点击“验证并更新”。\n'
+                    '关闭页面或重启不会丢失；请保留整个data文件夹。\n'
+                    '如迁移旧包data，已有参照和导出历史优先保留，不会被预置文件覆盖。\n'
+                    '需要采用本包的新参照时，在页面选择reference-seed内对应XLSX更新一次即可。\n'
+                    'schedule.xlsx为排期，price.xlsx为货价；原始文件名及校验见manifest.json。\n'
+                    '本包包含指定的业务参照，请交给相应华康B试用人员。\n'
+                    f'校验记录数：排期{stats["schedule"]["rows"]}，货价{stats["price"]["rows"]}。\n', encoding='utf-8-sig')
             web = source / 'build' / 'web'
             if not (web / 'index.html').is_file():
                 raise RuntimeError(f'Missing built frontend: {web}')
@@ -285,10 +321,14 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
             copy_tree(shared_runtime, package / 'runtime')
             shutil.copyfile(TOOL / 'launch.py', package / 'launch.py')
             (package / 'START.cmd').write_bytes(START.encode('ascii'))
-            (package / '先看使用说明.txt').write_text(readme(factory, release), encoding='utf-8-sig')
+            instructions = readme(factory, release)
+            if has_seed:
+                instructions = instructions.replace('请负责人先完成演示资料流程，再用真实样本逐项核对金额、数量、交期和版式。',
+                    '本包已预置参照，可直接导入真实邮件。演示操作请在另一个解压副本中进行，不要把演示数据迁入日常工作副本。')
+            (package / '先看使用说明.txt').write_text(instructions, encoding='utf-8-sig')
             (package / 'trial.json').write_text(json.dumps({'kind': kind, 'factory_id': factory,
                 'name': f'{name}问单本地试用' if kind == 'jp' else f'{name}订单排期本地试用',
-                'release': release, 'source_commit': source_commit,
+                'release': release, 'source_commit': source_commit, 'reference_seed': has_seed,
                 'source_commit_role': 'Base checkout; see BUILD-SOURCES.json for exact uncommitted build inputs.'}, ensure_ascii=False, indent=2), encoding='utf-8')
             if kind == 'orders':
                 ocr = package / 'ocr'
@@ -312,6 +352,11 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
                 if kind == 'orders':
                     command += ['--factory', factory]
                 subprocess.run(command, check=True)
+                if has_seed:
+                    demo_instructions = package / '演示资料/演示操作说明.txt'
+                    demo_instructions.write_text('本包已预置真实参照，日常录入无需上传下列演示参照。\n'
+                        '以下演示仅在另一个解压副本中进行；不要把演示data复制回日常工作包。\n\n'
+                        + demo_instructions.read_text(encoding='utf-8-sig'), encoding='utf-8-sig')
             (package / 'DEPENDENCIES.json').write_text(json.dumps(dependencies, indent=2), encoding='utf-8')
             for filename in ('runtime-sources.json', 'requirements-windows.txt'):
                 shutil.copyfile(TOOL / filename, package / filename)
@@ -359,5 +404,8 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--factory', action='append', choices=FACTORIES)
     parser.add_argument('--release-date', help='Release date YYYY-MM-DD; defaults to the Shanghai calendar date.')
+    parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
+    parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
     args = parser.parse_args()
-    build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date)
+    build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date,
+        args.jp_schedule, args.jp_price)

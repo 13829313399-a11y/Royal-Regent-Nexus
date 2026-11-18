@@ -54,6 +54,7 @@ def ready(db):
 
 @router.get('/access')
 def access(db: Db, user: User, factory_id: str = ''):
+    from app.services.cutting_purchase_links import source_access
     c.authorize(user, factory_id)
     enabled = settings.cutting_ops_enabled
     migrated = c.schema_ready(db.connection()) if enabled else False
@@ -63,6 +64,7 @@ def access(db: Db, user: User, factory_id: str = ''):
                 periods_schema_ready=period_guards.schema_ready(db.connection()) if enabled else False,
                 settlements_schema_ready=settlement.schema_ready(db.connection()) if enabled else False,
                 payments_schema_ready=payments.schema_ready(db.connection()) if enabled else False,
+                can_link_purchase=enabled and c.allowed(user, 'eta_write') and source_access(user),
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
 
@@ -498,7 +500,7 @@ def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page:
     c.require(order is not None and order.factory_id == c.FACTORY, '裁床订单不存在', 404)
     numbers = db.scalars(select(CuttingOrderRevision.version).where(CuttingOrderRevision.line_id == line_id)
         .order_by(CuttingOrderRevision.version.desc()).offset((page-1)*50).limit(50))
-    revisions = [orders.revision(db, order, v) for v in numbers]
+    revisions = [orders.display_revision(orders.revision(db, order, v)) for v in numbers]
     orders.include_note_comparisons(db, ((line_id, row) for row in revisions))
     return dict(data=revisions, total=order.version, page=page, page_size=50)
 
@@ -512,6 +514,35 @@ def read_order(line_id: str, db: Db, user: User, factory_id: str = ''):
     result = orders.view(db, dispatch)
     orders.include_note_comparisons(db, [(line_id, result['current'])])
     return result
+
+
+def current_purchase_data(db, line_id):
+    orders_ready(db)
+    dispatch = orders.latest(db, line_id)
+    order = db.get(CuttingOrder, line_id)
+    c.require(dispatch is not None and order is not None and order.factory_id == c.FACTORY, '裁床订单不存在', 404)
+    c.require(dispatch.id == order.dispatch_id and dispatch.snapshot.get('status') == 'active',
+              '订单已变更或取消，请核对当前来源版本', 409)
+    return orders.revision(db, order)['data']
+
+
+@router.get('/orders/{line_id}/purchase-candidates')
+def order_purchase_candidates(line_id: str, db: Db, user: User, row: int = Query(ge=0, le=299),
+                              reference: str = Query(min_length=1, max_length=128),
+                              supplier: str = Query(min_length=1, max_length=255), factory_id: str = ''):
+    from app.services.cutting_purchase_links import candidates, require_source_access
+    c.authorize(user, factory_id, 'eta_write')
+    require_source_access(user)
+    return candidates(db, current_purchase_data(db, line_id), row, reference.strip(), supplier.strip())
+
+
+@router.get('/orders/{line_id}/purchase-progress')
+def order_purchase_progress(line_id: str, db: Db, user: User, factory_id: str = ''):
+    from app.services.cutting_purchase_links import progress
+    c.authorize(user, factory_id)
+    data = current_purchase_data(db, line_id)
+    c.require(not data.get('purchase_reconciliation_required'), '原需求待采购核对，请先处理版本变更', 409)
+    return JSONResponse(progress(db, line_id, data), headers={'Cache-Control': 'no-store'})
 
 
 def order_command(db, user, line_id, body, action, handler):

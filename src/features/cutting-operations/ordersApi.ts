@@ -5,7 +5,16 @@ import type { Command, MasterRecord, Requirement } from './api'
 
 export interface DemandInput { row: number; quantity: string; purchase_mode: 'purchase' | 'no_purchase'; no_purchase_reason: string }
 export interface Demand extends Requirement { row: number; quantity: string; purchase_mode?: 'purchase' | 'no_purchase'; no_purchase_reason?: string; theoretical_quantity: string; replied_quantity: string; awaiting_reply_quantity: string; material: { code: string; name: string } }
-export interface EtaBatch { row: number; quantity: string; expected_date: string; supplier: string; purchase_reference: string }
+export interface EtaPurchaseSource { id: string; revision: number }
+export interface PurchaseCandidate extends EtaPurchaseSource {
+  detail_no: string; production_no: string; quantity: string | null; unit: string
+}
+export interface PurchaseProgress {
+  sources: { row: number; id: string; order_no: string; detail_no: string; unit: string; linked_revision: number; current_revision: number | null
+    status: 'active' | 'identity_changed' | 'unavailable'; received_quantity: string | null; outstanding_quantity: string | null }[]
+  cutting: { row: number; unit: string; signed_quantity: string; returned_quantity: string }[]
+}
+export interface EtaBatch { row: number; quantity: string; expected_date: string; supplier: string; purchase_reference: string; purchase_source?: EtaPurchaseSource }
 export interface OrderReceipt {
   mode: 'automatic' | 'manual' | 'note_only'
   source_version: number
@@ -37,6 +46,12 @@ export const ordersApi = {
   async read(id: string): Promise<CuttingOrder> { return (await http.get(`${base}/${encodeURIComponent(id)}`, { params })).data },
   async list(page = 1, q = '', status = '', planStatus = '', changesOnly = false): Promise<Page<CuttingOrder>> { return (await http.get(base, { params: { ...params, page, q, ...(status ? { status } : {}), ...(planStatus ? { plan_status: planStatus } : {}), ...(changesOnly ? { changes_only: true } : {}) } })).data },
   async history(id: string, page = 1): Promise<Page<OrderRevision>> { return (await http.get(`${base}/${encodeURIComponent(id)}/versions`, { params: { ...params, page } })).data },
+  async purchaseCandidates(id: string, row: number, reference: string, supplier: string): Promise<{ items: PurchaseCandidate[] }> {
+    return (await http.get(`${base}/${encodeURIComponent(id)}/purchase-candidates`, { params: { ...params, row, reference, supplier } })).data
+  },
+  async purchaseProgress(id: string): Promise<PurchaseProgress> {
+    return (await http.get(`${base}/${encodeURIComponent(id)}/purchase-progress`, { params })).data
+  },
   async command(id: string, action: OrderAction, body: OrderCommand): Promise<CuttingOrder> { return (await http.post(`${base}/${encodeURIComponent(id)}/${action}`, body)).data },
   async recover(id: string, action: OrderAction, command: OrderCommand): Promise<{ state: 'committed'; result: CuttingOrder } | { state: 'abandoned' }> { return (await http.post(`${base}/${encodeURIComponent(id)}/operations/recover`, { action, command })).data },
 }
