@@ -116,6 +116,8 @@ def main() -> int:
         options = dict(data_dir=data, static_dir=root / 'web', host='127.0.0.1', port=port)
         if config['kind'] == 'orders':
             options['factory_id'] = config['factory_id']
+        elif config.get('reference_seed'):
+            options['reference_seed_dir'] = root / 'reference-seed'
         app = create_app(**options)
 
         # Registered before the root StaticFiles mount, so the local reopening
