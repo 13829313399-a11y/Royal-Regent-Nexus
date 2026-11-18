@@ -275,7 +275,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue",
         "symbol": "async function confirmAndGenerateSchedule",
-        "sha256": "d32208ce6fb97d61cb41e7b2016c1fed4f22452d03220bf9a1c8aa594a35f585"
+        "sha256": "db8d0e3e754281675f75e55b59c90b3c1ce2f1564139178fe2afbe01c0cf06c1"
       },
       {
         "path": "src/api/customerOrder.ts",
