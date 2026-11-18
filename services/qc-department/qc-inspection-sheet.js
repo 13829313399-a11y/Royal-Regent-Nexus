@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   if(!root.__QC_NEXUS)return;
-  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
+  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:''}};
   let notificationGeneration=0;
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
@@ -15,7 +15,7 @@
   const entryPath=id=>(model.view==='review'?'review/':'')+'entries/'+id;
   const canEdit=row=>editable()&&(model.view==='review'?row.reviewState==='pending':row.reviewState==='returned_to_inspection'||!row.submittedAt&&!row.legacyCompleted);
   const audit=()=>root.QcInspectionAudit;
-  const reviewColumns=[['firstResponsible','第一责任人'],['secondResponsible','第二责任人'],['reportStatus','报告状态'],['otherRemark','其他备注'],['inspectionExecution.defects','不良明细'],['inspectionExecution.measurements','测量明细'],['submittedAt','提交时间（北京时间）'],['confirmedAt','确认时间（北京时间）'],['reviewState','审核状态'],['lastChangedAt','最后修改（北京时间）'],['lastLocation','操作位置'],['lastActor.name','操作人员'],['inspectionExecution.institution','第三方机构']];
+  const reviewColumns=[['firstResponsible','第一责任人'],['secondResponsible','第二责任人'],['inspectionFactory','验货工厂'],['reportStatus','报告状态'],['otherRemark','其他备注'],['inspectionExecution.defects','不良明细'],['inspectionExecution.measurements','测量明细'],['submittedAt','提交时间（北京时间）'],['confirmedAt','确认时间（北京时间）'],['reviewState','审核状态'],['lastChangedAt','最后修改（北京时间）'],['lastLocation','操作位置'],['lastActor.name','操作人员'],['inspectionExecution.institution','第三方机构']];
   let options={inspectors:[],institutions:[]};
   function reviewGroup(row){
     if(row.inspectionMethod==='internal')return '行验';
@@ -40,6 +40,20 @@
   const taskStart=row=>root.QcSchedule?.dateRange({dateFrom:row.dateFrom,dateTo:row.dateFrom})?.from||'';
   const taskCustomer=row=>{const name=String(row.customer??'').trim(),code=String(row.sourceRecord?.customerCode??'').trim();return {name,code,key:name?JSON.stringify([code,name]):''};};
   function resetTaskFilters(){model.recordsSort='date-asc';for(const id of ['qisTaskDate','qisTaskCustomer']){const select=root.document.getElementById(id);if(select)select.value='';}}
+  function plannedDateChoices(rows){
+    const dates=[...new Set(rows.map(taskStart).filter(Boolean))].sort();
+    const multiYear=new Set(dates.map(value=>value.slice(0,4))).size>1;
+    return dates.map(value=>({value,label:(multiYear?Number(value.slice(0,4))+'年':'')+Number(value.slice(5,7))+'月'+Number(value.slice(8,10))+'日'}));
+  }
+  function updateChoiceList(select,first,items){
+    const html='<option value="">'+first+'</option>'+items.map(c=>'<option value="'+esc(c.value)+'">'+esc(c.label)+'</option>').join('');
+    if(select._choices===html)return false;
+    const old=select.value;
+    select.innerHTML=html;
+    select._choices=html;
+    select.value=items.some(c=>c.value===old)?old:'';
+    return Boolean(old&&!select.value);
+  }
   function updateTaskFilters(){
     if(model.view!=='records')return;
     const toolbar=root.document.querySelector('#page-records .records-filters');if(!toolbar)return;
@@ -51,15 +65,12 @@
       }
     }
     if(model.loading||!model.loaded)return;
-    const dates=[...new Set(model.items.map(taskStart).filter(Boolean))].sort(),multiYear=new Set(dates.map(value=>value.slice(0,4))).size>1;
     const customers=[...new Map(model.items.map(taskCustomer).filter(value=>value.key).map(value=>[value.key,value])).values()].sort((a,b)=>a.name.localeCompare(b.name,'zh-CN')||a.code.localeCompare(b.code));
     const nameCounts=new Map();for(const c of customers)nameCounts.set(c.name,(nameCounts.get(c.name)||0)+1);
-    const choices=[['qisTaskDate','全部日期',dates.map(value=>({value,label:(multiYear?Number(value.slice(0,4))+'年':'')+Number(value.slice(5,7))+'月'+Number(value.slice(8,10))+'日'}))],['qisTaskCustomer','全部客户',customers.map(c=>({value:c.key,label:c.name+(nameCounts.get(c.name)>1?'（'+(c.code?'客户编码：'+c.code:'未提供客户编码')+'）':'')}))]];
+    const choices=[['qisTaskDate','全部日期',plannedDateChoices(model.items)],['qisTaskCustomer','全部客户',customers.map(c=>({value:c.key,label:c.name+(nameCounts.get(c.name)>1?'（'+(c.code?'客户编码：'+c.code:'未提供客户编码')+'）':'')}))]];
     const reset=[];
     for(const [id,first,items] of choices){
-      const select=root.document.getElementById(id),old=select.value,html='<option value="">'+first+'</option>'+items.map(c=>'<option value="'+esc(c.value)+'">'+esc(c.label)+'</option>').join('');
-      if(select._choices!==html){select.innerHTML=html;select._choices=html;select.value=items.some(c=>c.value===old)?old:'';}
-      if(old&&!select.value){reset.push(first);if(id==='qisTaskDate')for(const key of ['filterDateFrom','filterDateTo'])root.document.getElementById(key).value='';}
+      if(updateChoiceList(root.document.getElementById(id),first,items)){reset.push(first);if(id==='qisTaskDate')for(const key of ['filterDateFrom','filterDateTo'])root.document.getElementById(key).value='';}
     }
     if(reset.length)root.showToast?.('当前任务已变化，筛选已恢复为'+reset.join('、'),'info');
   }
@@ -186,9 +197,14 @@
     finishRowDrag(true);
     if(model.loading){model.nextLoad={view,tab};return;}
     if(navigationState().dirty||navigationState().busy){root.showToast?.('请先完成本行保存或重试；未保存内容仍保留。','error');return;}
+    typingStep=null;fieldHistory.undo.length=0;fieldHistory.redo.length=0;
     if(model.view!==view){root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();model.items=[];model.drafts.clear();model.checked.clear();}
     model.recordChecked.clear();
-    if(model.reviewTab!==tab)model.checked.clear();model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
+    if(model.reviewTab!==tab){
+      model.checked.clear();
+      reviewDates?.setRange(model.reviewFilters.from,model.reviewFilters.to);
+    }
+    model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
     catch(error){model.error=error.message;}
@@ -197,22 +213,20 @@
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
     const f=model.reviewFilters,isReview=model.view==='review';
-    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),sort=isReview?f.sort:model.recordsSort;
+    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),ascending=isReview||model.recordsSort==='date-asc';
     const {result,from,to}=f;
-    const day=value('qisTaskDate'),customer=value('qisTaskCustomer');
-    return model.items.filter(row=>{
+    const pendingReview=isReview&&model.reviewTab==='pending';
+    const day=isReview?(pendingReview?value('qisPendingDate'):''):value('qisTaskDate'),customer=value('qisTaskCustomer');
+    const items=isReview&&!pendingReview&&(from||to)?root.QcSchedule.filterRows(model.items,{from,to}):model.items;
+    return items.filter(row=>{
       if(isReview&&(model.reviewTab==='pending'?row.reviewState!=='pending':row.reviewState!=='approved'&&!row.legacyCompleted))return false;
       const d=draft(row);
       return (!q||[row.customer,row.poNo,row.customerPo,row.productNo,row.productName,d.remark].join(' ').toLowerCase().includes(q))&&
-        (isReview?(!result||d.result===result)&&(!(from||to)||(row.dateFrom&&(!from||(row.dateTo||row.dateFrom)>=from)&&(!to||row.dateFrom<=to))):(!day||taskStart(row)===day)&&(!customer||taskCustomer(row).key===customer));
+        (!day||taskStart(row)===day)&&(isReview?(!result||d.result===result):(!customer||taskCustomer(row).key===customer));
     }).sort((a,b)=>{
-      if(sort.startsWith('date')){
-        if(!a.dateFrom||!b.dateFrom){if(a.dateFrom||b.dateFrom)return a.dateFrom?-1:1;}
-        const dateOrder=String(a.dateFrom||'').localeCompare(String(b.dateFrom||''))*(sort.endsWith('asc')?1:-1);
-        return dateOrder||String(a.customer||'').trim().localeCompare(String(b.customer||'').trim(),'zh-CN',{numeric:true,sensitivity:'base'})||a.id.localeCompare(b.id);
-      }
-      const key=sort.startsWith('date')?'dateFrom':'updatedAt',direction=sort.endsWith('asc')?1:-1;
-      return String(a[key]||'').localeCompare(String(b[key]||''))*direction||a.id.localeCompare(b.id);
+      if(!a.dateFrom||!b.dateFrom){if(a.dateFrom||b.dateFrom)return a.dateFrom?-1:1;}
+      const dateOrder=String(a.dateFrom||'').localeCompare(String(b.dateFrom||''))*(ascending?1:-1);
+      return dateOrder||String(a.customer||'').trim().localeCompare(String(b.customer||'').trim(),'zh-CN',{numeric:true,sensitivity:'base'})||a.id.localeCompare(b.id);
     });
   }
   function dateText(row){
@@ -233,19 +247,167 @@
         (canEdit(row)?'<button type="button" data-remove-photo="'+esc(photo.id)+'" aria-label="删除 '+esc(photo.name)+'">×</button>':'')+'</span>';
     }).join('');
   }
-  function editInspector(row,name,identity=''){
+  const fillableFields=new Set(['inspector','firstResponsible','secondResponsible','inspectionFactory','institution','remark','otherRemark','inspectionProblem','analysisReason','improvement']);
+  const fieldHistory={undo:[],redo:[]};
+  let typingStep=null;
+  // Arrays in detail editors are replaced on save. Copy them for durable undo snapshots.
+  function fieldValue(row,key){
+    const d=draft(row),execution=Object.hasOwn(executionFields,key);
+    const value=execution?d.inspectionExecution[key]:d[key];
+    const identity=key==='inspector'||key==='institution'?d.inspectionExecution[key+'Id']:'';
+    return {value:Array.isArray(value)?JSON.parse(JSON.stringify(value)):value??'',identity};
+  }
+  const sameField=(a,b)=>a.identity===b.identity&&JSON.stringify(a.value)===JSON.stringify(b.value);
+  function writeField(row,key,snapshot,{restore=false,immediate=false}={}){
+    const {value,identity}=snapshot;
+    if(key==='inspector')return editInspector(row,value,identity,restore);
+    if(key==='institution'){
+      const d=draft(row);
+      d.executionDirty.add('institution');
+      d.executionDirty.add('institutionId');
+      edit(row.id,'inspectionExecution',{...d.inspectionExecution,institution:value,institutionId:identity},immediate);
+    }else if(Object.hasOwn(executionFields,key))editExecution(row.id,key,value,immediate);
+    else edit(row.id,key,value,immediate);
+  }
+  function syncControl(input,snapshot){
+    if(!input)return;
+    const {value,identity}=snapshot;
+    if(input.dataset.personField){
+      input.querySelector('option[value="__history__"]')?.remove();
+      if(value&&!options.institutions.some(item=>item.id===identity)){
+        input.add(new root.Option(value+'（历史）','__history__'));
+        input.value='__history__';
+      }else input.value=identity;
+    }else input.value=value;
+    const wrap=input.closest('.qis-inline-value');
+    if(wrap){
+      const button=wrap.querySelector('button');
+      button.textContent=value;
+      button.setAttribute('aria-label',input.getAttribute('aria-label')+'：'+value+'，点击编辑');
+      wrap.toggleAttribute('data-show-value',hasContent(value)&&root.document.activeElement!==input);
+    }
+    const handle=input.closest('td').querySelector('[data-fill-name]');
+    if(handle)handle.hidden=!String(value).trim();
+  }
+  function rememberFields(key,changes){
+    if(!changes.length)return null;
+    const step={key,changes};
+    fieldHistory.undo.push(step);
+    if(fieldHistory.undo.length>100)fieldHistory.undo.shift();
+    fieldHistory.redo.length=0;
+    updateHistoryButtons();
+    return step;
+  }
+  function bindFieldEditor(input,row){
+    const cell=input.closest('td'),key=executionKey(cell.dataset.column)||cell.dataset.column,d=draft(row);
+    input.dataset.sheetField=key;
+    if(fillableFields.has(key)){
+      const handle=root.document.createElement('span');
+      handle.className='qis-fill-handle';handle.dataset.fillName=key;
+      handle.setAttribute('aria-hidden','true');
+      handle.title='向下拖动填充'+(cell.closest('table').querySelector('th[data-column="'+cell.dataset.column+'"]')?.textContent||'');
+      handle.hidden=!String(fieldValue(row,key).value).trim();
+      cell.classList.add('qis-fill-cell');cell.append(handle);
+    }
+    const select=input.tagName==='SELECT';
+    const applyInput=()=>{
+      if(d.composing||model.submitBusy||model.reviewBusy||!canEdit(row))return;
+      const before=fieldValue(row,key);
+      let value=input.value,identity='';
+      if(input.dataset.personField){
+        if(value==='__history__')return;
+        identity=value;value=options.institutions.find(item=>item.id===identity)?.name||'';
+      }else if(String(before.value)===value)return;
+      const after={value,identity};
+      if(sameField(before,after))return;
+      writeField(row,key,after,{immediate:select});
+      const handle=cell.querySelector('[data-fill-name]');
+      if(handle)handle.hidden=!String(value).trim();
+      if(!select&&typingStep&&typingStep===fieldHistory.undo.at(-1)&&typingStep.key===key&&typingStep.changes[0].id===row.id){
+        typingStep.changes[0].after=after;
+        if(sameField(typingStep.changes[0].before,after)){fieldHistory.undo.pop();typingStep=null;updateHistoryButtons();}
+      }else{
+        const step=rememberFields(key,[{id:row.id,before,after}]);
+        typingStep=select?null:step;
+      }
+    };
+    if(!select)input.oninput=applyInput;
+    input.onchange=applyInput;
+    input.addEventListener('compositionstart',()=>{clearTimeout(d.timer);d.timer=null;d.composing=true;});
+    input.addEventListener('compositionend',()=>{d.composing=false;applyInput();if(d.dirty&&!d.timer)pump(row.id);});
+    input.onblur=()=>{typingStep=null;if(d.dirty&&!d.composing)pump(row.id);};
+  }
+  function applyFieldHistory(action){
+    const stack=fieldHistory[action],step=stack.at(-1);
+    if(!step||!editable()||model.loading||model.error||model.submitBusy||model.reviewBusy||rowDrag)return;
+    const undo=action==='undo',key=step.key;
+    for(const change of step.changes){
+      const row=byId(change.id);
+      if(!row||!canEdit(row)||draft(row).conflict||draft(row).composing||!sameField(fieldValue(row,key),undo?change.after:change.before)){
+        root.showToast?.('字段或记录状态已变化，无法执行本次操作','error');
+        return;
+      }
+    }
+    typingStep=null;
+    stack.pop();
+    fieldHistory[undo?'redo':'undo'].push(step);
+    const host=root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap');
+    for(const change of step.changes){
+      const value=undo?change.before:change.after;
+      writeField(byId(change.id),key,value,{restore:true});
+      const input=host.querySelector('[data-entry="'+change.id+'"] [data-sheet-field="'+key+'"]');
+      syncControl(input,value);
+    }
+    if(executionFields[key]?.[1]==='details')render();
+    updateHistoryButtons();
+  }
+  function updateHistoryButtons(){
+    const records=model.view==='records';
+    const toolbar=root.document.querySelector(records?'#page-records .records-actions':'#page-review .toolbar-left');
+    if(!toolbar)return;
+    let group=toolbar.querySelector('.qis-name-history');
+    if(!group){
+      group=root.document.createElement('span');group.className='qis-name-history';
+      group.setAttribute('role','group');group.setAttribute('aria-label','表格编辑历史');
+      for(const [action,label,shortcut] of [['undo','撤销','⌘Z / Ctrl+Z'],['redo','重做','⇧⌘Z / ⌘Y / Ctrl+Y / Ctrl+Shift+Z']]){
+        const button=root.document.createElement('button');
+        button.type='button';button.dataset.nameHistory=action;button.textContent=label;
+        button.title=label+'表格编辑（'+shortcut+'）';button.onclick=()=>applyFieldHistory(action);
+        group.append(button);
+      }
+      if(records){toolbar.setAttribute('aria-label','表格编辑和打印');toolbar.prepend(group);}else toolbar.append(group);
+    }
+    group.hidden=!editable()||(!records&&model.reviewTab!=='pending');
+    for(const button of group.children)button.disabled=!fieldHistory[button.dataset.nameHistory].length||model.loading||!!model.error||model.reviewBusy||model.submitBusy;
+  }
+  function historyShortcut(event){
+    if(event.defaultPrevented||event.isComposing||event.keyCode===229||event.altKey||!(event.metaKey||event.ctrlKey))return null;
+    const key=event.key.toLowerCase();
+    return key==='z'?(event.shiftKey?'redo':'undo'):key==='y'&&!event.shiftKey?'redo':null;
+  }
+  root.document.addEventListener('keydown',event=>{
+    const action=historyShortcut(event);
+    if(!action)return;
+    const target=event.target;
+    const page=root.document.getElementById('page-'+model.view);
+    if(!page||(!page.contains(target)&&!(target===root.document.body&&page.classList.contains('active')))||root.document.querySelector('dialog[open]'))return;
+    if(target.closest('input,textarea,select,[contenteditable=true]')&&!target.closest('[data-sheet-field]'))return;
+    if(!fieldHistory[action].length&&!target.closest('[data-sheet-field]'))return;
+    event.preventDefault();
+    applyFieldHistory(action);
+  });
+  function editInspector(row,name,identity='',restore=false){
     const d=draft(row),current=d.inspectionExecution;
-    if(current.inspector===name&&(!identity||identity===current.inspectorId))return;
+    if(current.inspector===name&&((!restore&&!identity)||identity===current.inspectorId))return;
     // Free-text names go through the existing name-only API. A verified ID is
     // sent only when the fill source actually carries one.
-    if(identity)d.executionDirty.add('inspectorId');else d.executionDirty.delete('inspectorId');
+    if(identity||restore)d.executionDirty.add('inspectorId');else d.executionDirty.delete('inspectorId');
     d.executionDirty.add('inspector');
     edit(row.id,'inspectionExecution',{...current,inspector:name,inspectorId:identity});
   }
   function editExecution(id,key,value,immediate=false){if(model.submitBusy||model.reviewBusy)return;if(key==='inspector')return editInspector(byId(id),value);const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
   function reviewEditor(row,key,label,type,value){
-    const fillable=model.view==='records'?key==='inspector':['firstResponsible','secondResponsible'].includes(key);
-    const attr=(fillable?' placeholder=" "':'')+' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
+    const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
     if(key==='institution'){
       const list=options[key==='inspector'?'inspectors':'institutions']||[], idKey=key==='inspector'?'inspectorId':'institutionId', d=draft(row);
       const selected=d.inspectionExecution[idKey]||'', historical=value&&!list.some(x=>x.id===selected);
@@ -253,30 +415,57 @@
       return '<select class="qis-review-input" data-person-field="'+key+'" aria-label="'+esc(label)+'"><option value="">'+(list.length?'未填写':'尚未配置选项')+'</option>'+ (historical?'<option value="__history__" selected>'+esc(value)+'（历史）</option>':'')+list.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===selected?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select>';
     }
     const control=key==='reportStatus'?'<select'+attr+'><option value="">未填写</option>'+[...new Set(['有','无',value].filter(v=>v!==undefined&&v!==null&&String(v).trim()))].map(v=>'<option value="'+esc(v)+'" '+(v===value?'selected':'')+'>'+esc(v)+'</option>').join('')+'</select>':type==='multiline'?'<textarea rows="2" maxlength="'+(['otherRemark','customerRequirements'].includes(key)?20000:4000)+'"'+attr+'>'+esc(value)+'</textarea>':'<input size="1" type="'+type+'"'+(type==='number'?' min="0" max="1000000000000" step="0.0001"':type==='text'?' maxlength="'+(executionFields[key]?255:200)+'"':'')+attr+' value="'+esc(value)+'">';
-    if(fillable){
-      const title=esc('向下拖动填充'+label);
-      return '<span class="qis-name-editor">'+control+'<span class="qis-fill-handle" data-fill-name="'+key+'" title="'+title+'" aria-hidden="true"></span></span>'+(model.view==='records'?'<small data-review-status="'+row.id+'" role="status"></small>':'');
-    }
     return control+(model.view==='review'?'':'<small data-review-status="'+row.id+'" role="status"></small>');
   }
   function detailEditor(id,key){
     const row=byId(id),d=draft(row),writable=canEdit(row),label=executionFields[key][0];
     const columns=key==='defects'?[['desc','不良描述','text'],['qty','数量','number'],['level','等级','level'],['remark','备注','text']]:[['item','测量项目','text'],['standard','标准','text'],['values','实测值','text'],['result','结果','result'],['remark','备注','text']];
     let values=JSON.parse(JSON.stringify(d.inspectionExecution[key]||[])),busy=false;
+    const before=fieldValue(row,key);
+    const localHistory={undo:[],redo:[]};
+    let typingInput=null;
     const el=audit().dialog(label,'<p>'+esc(row.customer+' · '+row.poNo)+'</p><div class="qis-detail-grid"></div><p role="alert" class="qis-error"></p>'+(writable?'<footer><button type="button" data-detail-add>新增一行</button><button type="button" data-detail-save>保存明细</button></footer>':''));
     el.classList.add('qis-details-dialog');model.detailEditing=true;
     el.addEventListener('close',()=>{model.detailEditing=false;});el.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    function checkpoint(){
+      localHistory.undo.push(JSON.stringify(values));
+      if(localHistory.undo.length>100)localHistory.undo.shift();
+      localHistory.redo.length=0;
+    }
+    el.addEventListener('keydown',event=>{
+      const action=historyShortcut(event);
+      if(!writable||busy||!action)return;
+      event.preventDefault();
+      const snapshot=localHistory[action].pop();
+      if(snapshot===undefined)return;
+      localHistory[action==='undo'?'redo':'undo'].push(JSON.stringify(values));
+      const input=event.target.closest('[data-detail-key]');
+      const selector=input&&'[data-detail-row="'+input.dataset.detailRow+'"][data-detail-key="'+input.dataset.detailKey+'"]';
+      values=JSON.parse(snapshot);
+      draw();
+      if(selector)el.querySelector(selector)?.focus();
+    });
     function draw(){
+      typingInput=null;
       el.querySelector('.qis-detail-grid').innerHTML='<table><thead><tr>'+columns.map(c=>'<th>'+c[1]+'</th>').join('')+(writable?'<th>操作</th>':'')+'</tr></thead><tbody>'+values.map((v,i)=>'<tr>'+columns.map(([name,title,type])=>{const attr=' data-detail-row="'+i+'" data-detail-key="'+name+'" aria-label="第 '+(i+1)+' 行'+title+'" '+(!writable?'disabled':'');let input;if(type==='level'||type==='result'){const options=type==='level'?['','CR','MAJ 0.65','MAJ 1.0','MIN 2.5']:['','PASS','FAIL','NA'];input='<select'+attr+'>'+options.map(o=>'<option value="'+o+'" '+(v[name]===o?'selected':'')+'>'+esc(o||'未选择')+'</option>').join('')+'</select>';}else input='<input type="'+type+'" maxlength="1000"'+(type==='number'?' min="0" max="1000000000000" step="0.0001"':'')+(name==='desc'||name==='item'||name==='qty'?' required':'')+attr+' value="'+esc(v[name]??'')+'">';return '<td>'+input+'</td>';}).join('')+(writable?'<td><button type="button" data-detail-remove="'+i+'" aria-label="删除第 '+(i+1)+' 行">删除</button></td>':'')+'</tr>').join('')+'</tbody></table>'+(!values.length?'<p>暂无明细</p>':'');
-      el.querySelectorAll('[data-detail-key]').forEach(input=>{const update=()=>values[Number(input.dataset.detailRow)][input.dataset.detailKey]=input.value;input.oninput=update;input.onchange=update;});
-      el.querySelectorAll('[data-detail-remove]').forEach(button=>button.onclick=()=>{values.splice(Number(button.dataset.detailRemove),1);draw();});
+      el.querySelectorAll('[data-detail-key]').forEach(input=>{
+        const update=()=>{
+          const item=values[Number(input.dataset.detailRow)],field=input.dataset.detailKey;
+          if(String(item[field]??'')===input.value)return;
+          if(typingInput!==input)checkpoint();
+          typingInput=input.tagName==='SELECT'?null:input;
+          item[field]=input.value;
+        };
+        input.oninput=update;input.onchange=update;input.onblur=()=>{typingInput=null;};
+      });
+      el.querySelectorAll('[data-detail-remove]').forEach(button=>button.onclick=()=>{checkpoint();values.splice(Number(button.dataset.detailRemove),1);draw();});
     }
     draw();if(!writable)return;
-    el.querySelector('[data-detail-add]').onclick=()=>{if(values.length>=200){el.querySelector('[role=alert]').textContent='明细最多 200 行';return;}values.push(Object.fromEntries(columns.map(([k])=>[k,k==='qty'?'0':''])));draw();el.querySelector('[data-detail-row="'+(values.length-1)+'"]').focus();};
+    el.querySelector('[data-detail-add]').onclick=()=>{if(values.length>=200){el.querySelector('[role=alert]').textContent='明细最多 200 行';return;}checkpoint();values.push(Object.fromEntries(columns.map(([k])=>[k,k==='qty'?'0':''])));draw();el.querySelector('[data-detail-row="'+(values.length-1)+'"]').focus();};
     el.querySelector('[data-detail-save]').onclick=async()=>{
       if([...el.querySelectorAll('[data-detail-key]')].some(input=>!input.reportValidity()))return;
       busy=true;el.querySelectorAll('button,input,select').forEach(n=>n.disabled=true);el.querySelector('[role=alert]').textContent='';
-      try{if(d.conflict)throw Error('版本已更新，请关闭明细后使用本行“核对版本并重试”；输入仍保留。');d.error='';editExecution(id,key,JSON.parse(JSON.stringify(values)));await flushRow(id);el.close();render();}
+      try{if(d.conflict)throw Error('版本已更新，请关闭明细后使用本行“核对版本并重试”；输入仍保留。');d.error='';editExecution(id,key,JSON.parse(JSON.stringify(values)));await flushRow(id);const after=fieldValue(row,key);if(!sameField(before,after))rememberFields(key,[{id,before,after}]);el.close();render();}
       catch(error){el.querySelector('[role=alert]').textContent=error.message;}
       finally{busy=false;el.querySelectorAll('button,input,select').forEach(n=>n.disabled=false);}
     };
@@ -358,8 +547,9 @@
     const active=root.document.activeElement;
     const editing=host.contains(active)&&active.matches('[data-remark],[data-result],[data-improvement],[data-problem],[data-review-field],[data-execution-field]')?{entry:active.closest('tr')?.dataset.entry||'',field:active.dataset.executionField?'execution:'+active.dataset.executionField:active.dataset.reviewField?'review:'+active.dataset.reviewField:active.dataset.remark!=null?'remark':active.dataset.improvement!=null?'improvement':active.dataset.problem!=null?'problem':'result',start:active.selectionStart,end:active.selectionEnd}:null;
     const scrollTop=host.scrollTop,scrollLeft=host.scrollLeft;
-    const rows=filtered();
     const reviewing=model.view==='review';
+    if(reviewing)updateReviewDateControls();
+    const rows=filtered();
     const hasCustomerReview=reviewing&&rows.some(row=>reviewGroup(row)==='客验');
     const columns=model.columns.filter(({key})=>{
       if(key==='inspectionExecution.institution')return hasCustomerReview;
@@ -391,16 +581,9 @@
     rows.forEach(row=>{
       const d=draft(row),node=host.querySelector('[data-entry="'+row.id+'"]');
       node.onclick=()=>{if(!suppressRowClick&&!rowDrag)selectRow(row.id);};node.addEventListener('focusin',()=>selectRow(row.id));
-      const result=node.querySelector('[data-result]');if(result)result.onchange=e=>edit(row.id,'result',e.target.value,true);
-      for(const [field,attribute] of [['remark','remark'],['improvement','improvement'],['inspectionProblem','problem'],...Object.keys(reviewFields).map(k=>[k,'review-field="'+k+'"'])]){
-        const input=node.querySelector('[data-'+attribute+']');if(!input)continue;
-        input.onblur=()=>{if(d.dirty)pump(row.id);};
-        if(input.tagName==='SELECT')input.onchange=()=>edit(row.id,field,input.value,true);
-        input.oncompositionstart=()=>{clearTimeout(d.timer);d.composing=true;};
-        input.oncompositionend=()=>{d.composing=false;d[field]=input.value;d.dirty=true;clearTimeout(d.timer);d.timer=setTimeout(()=>pump(row.id),650);status(row.id);};
-        input.oninput=()=>{if(d.composing){d[field]=input.value;d.dirty=true;status(row.id);}else edit(row.id,field,input.value);};
-      }
-      node.querySelectorAll('[data-execution-field]').forEach(input=>{const key=input.dataset.executionField;input.onblur=()=>{if(d.dirty)pump(row.id);};input.oncompositionstart=()=>{clearTimeout(d.timer);d.composing=true;};input.oncompositionend=()=>{d.composing=false;editExecution(row.id,key,input.value);};input.oninput=()=>{if(d.composing)return;editExecution(row.id,key,input.value);};input.onchange=()=>editExecution(row.id,key,input.value);});
+      node.querySelectorAll('[data-result],[data-remark],[data-problem],[data-improvement],[data-review-field],[data-execution-field],[data-person-field]').forEach(input=>{
+        if(canEdit(row)&&!input.disabled)bindFieldEditor(input,row);
+      });
       node.querySelectorAll('.qis-inline-value').forEach(wrap=>{
         const button=wrap.querySelector('button'),input=wrap.querySelector('input,select,textarea');
         button.onclick=()=>{wrap.removeAttribute('data-show-value');input.focus();};
@@ -410,11 +593,6 @@
           wrap.toggleAttribute('data-show-value',hasContent(input.value));
         });
       });
-      node.querySelectorAll('[data-person-field]').forEach(input=>input.onchange=()=>{
-        const key=input.dataset.personField,idKey=key==='inspector'?'inspectorId':'institutionId';if(input.value==='__history__')return;
-        const selected=(options[key==='inspector'?'inspectors':'institutions']||[]).find(x=>x.id===input.value);
-        d.inspectionExecution[key]=selected?.name||'';d.executionDirty.add(key);editExecution(row.id,idKey,input.value,true);
-      });
       node.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>detailEditor(row.id,button.dataset.detail));
       const check=node.querySelector('[data-review-check]');if(check)check.onchange=()=>{check.checked?model.checked.add(row.id):model.checked.delete(row.id);updateReviewControls(filtered());};
       const revoke=node.querySelector('[data-revoke]');if(revoke)revoke.onclick=()=>reviewAction('revoke',[row.id]);
@@ -423,6 +601,7 @@
       bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id,true);
     });
     if(reviewing)updateReviewControls(rows);else updateRecordControls();
+    updateHistoryButtons();
     bindRowSelection(host);
     audit()?.bind(host,model.items);
     if(!editing?.entry)return;
@@ -526,14 +705,19 @@
     if(drag.host.hasPointerCapture?.(drag.pointer))drag.host.releasePointerCapture(drag.pointer);
     if(drag.fill){
       suppressRowClick=true;setTimeout(()=>{suppressRowClick=false;},0);
+      const changes=[];
       for(const cell of drag.targets){
         cell.classList.remove('qis-fill-target');
         const row=byId(cell.closest('[data-entry]').dataset.entry);
         if(cancel||!row||!canEdit(row)||model.loading||model.error||model.submitBusy||model.reviewBusy)continue;
-        cell.querySelector('input').value=drag.fill.value;
-        if(drag.fill.key==='inspector')editInspector(row,drag.fill.value,drag.fill.identity);
-        else edit(row.id,drag.fill.key,drag.fill.value);
+        const key=drag.fill.key,before=fieldValue(row,key);
+        if(sameField(before,drag.fill.snapshot))continue;
+        writeField(row,key,drag.fill.snapshot,{restore:true});
+        const after=fieldValue(row,key);
+        syncControl(cell.querySelector('[data-sheet-field]'),after);
+        if(!sameField(before,after))changes.push({id:row.id,before,after});
       }
+      if(changes.length){typingStep=null;rememberFields(drag.fill.key,changes);}
       return;
     }
     if(cancel)model[selectionKey()]=drag.before;
@@ -559,6 +743,10 @@
       const nodes=rowDrag.nodes;
       let index=nodes.findIndex(node=>rowDrag.y<=node.getBoundingClientRect().bottom);if(index<0)index=nodes.length-1;
       if(rowDrag.fill){
+        if(!rowDrag.moved){
+          if(rowDrag.y-rowDrag.originY<3)return;
+          rowDrag.moved=true;
+        }
         if(index===rowDrag.end)return;
         rowDrag.end=index;
         const cells=nodes.slice(rowDrag.start+1,index+1).map(node=>node.querySelector('[data-fill-name="'+rowDrag.fill.key+'"]')?.closest('td')).filter(Boolean);
@@ -573,7 +761,7 @@
       const box=host.getBoundingClientRect(),head=host.querySelector('thead')?.getBoundingClientRect().height||0;
       const top=Math.max(box.top+head,0)+28,bottom=Math.min(box.bottom,root.innerHeight)-28;
       const delta=rowDrag.y<top?-Math.min(16,(top-rowDrag.y)/3):rowDrag.y>bottom?Math.min(16,(rowDrag.y-bottom)/3):0;
-      if(delta)host.scrollTop+=delta;
+      if(delta&&(!rowDrag.fill||rowDrag.moved))host.scrollTop+=delta;
       update();rowDragFrame=root.requestAnimationFrame(scroll);
     };
     host.addEventListener('pointerdown',event=>{
@@ -583,15 +771,14 @@
       const rows=visibleSelectionRows(host),start=rows.findIndex(row=>row.id===node.dataset.entry);if(start<0)return;
       let fill=null;
       if(handle){
-        const key=handle.dataset.fillName,value=handle.parentElement.querySelector('input').value;
-        const source=draft(rows[start]);
-        if(!value.trim()||source.composing||!canEdit(rows[start]))return;
-        fill={key,value,identity:source.inspectionExecution.inspectorId};
+        const key=handle.dataset.fillName,snapshot=fieldValue(rows[start],key);
+        if(!String(snapshot.value).trim()||draft(rows[start]).composing||!canEdit(rows[start]))return;
+        fill={key,snapshot};
       }else{
         model[anchorKey()]=node.dataset.entry;model[cursorKey()]=node.dataset.entry;
       }
       event.preventDefault();host.focus({preventScroll:true});
-      rowDrag={host,pointer:event.pointerId,start,rows,fill,targets:new Set(),nodes:[...host.querySelectorAll('[data-entry]')],y:event.clientY,before:new Set(model[selectionKey()])};
+      rowDrag={host,pointer:event.pointerId,start,rows,fill,targets:new Set(),nodes:[...host.querySelectorAll('[data-entry]')],originY:event.clientY,y:event.clientY,before:new Set(model[selectionKey()])};
       host.setPointerCapture?.(event.pointerId);host.classList.add('qis-drag-selecting');update();rowDragFrame=root.requestAnimationFrame(scroll);
     });
     host.addEventListener('pointermove',event=>{if(rowDrag&&event.pointerId===rowDrag.pointer){rowDrag.y=event.clientY;update();}});
@@ -665,20 +852,40 @@
     input.innerHTML='<option value="">全部判定</option>'+model.results.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
     input.value=value;
   }
+  let reviewDates;
   function syncReviewFilters(){
     const {from,to}=model.reviewFilters;
     root.document.querySelectorAll('[data-rfilter]').forEach(input=>{
       input.value=model.reviewFilters[input.dataset.rfilter];
     });
-    const label=root.document.getElementById('qis-review-date-label');
-    if(!label)return;
-    label.textContent=from&&to?(from===to?from:from+' 至 '+to):from?from+' 起':to?'截至 '+to:'不限验货日期';
-    label.title=label.textContent;
+    reviewDates?.setRange(from,to);
+  }
+  function updateReviewDateControls(){
+    const select=root.document.getElementById('qisPendingDate');
+    if(!select)return;
+    const pending=model.reviewTab==='pending';
+    select.hidden=!pending;
+    root.document.getElementById('qis-review-date').hidden=pending;
+    if(pending&&model.loaded&&!model.loading&&!model.error){
+      const choices=plannedDateChoices(model.items.filter(row=>row.reviewState==='pending'));
+      if(updateChoiceList(select,'全部日期',choices)){
+        model.checked.clear();
+        root.showToast?.('当前任务已变化，筛选已恢复为全部日期','info');
+      }
+    }
+  }
+  function clearReviewDates(){
+    const select=root.document.getElementById('qisPendingDate');
+    if(select)select.value='';
+    Object.assign(model.reviewFilters,{from:'',to:''});
+    reviewDates?.setRange('','');
+    model.checked.clear();
   }
   function resetReviewFilters(){
-    Object.assign(model.reviewFilters,{search:'',result:'',from:'',to:'',sort:'date-desc'});
-    const dates=root.document.getElementById('qis-review-date');
-    if(dates)dates.open=false;
+    model.checked.clear();
+    Object.assign(model.reviewFilters,{search:'',result:''});
+    if(model.reviewTab==='pending')root.document.getElementById('qisPendingDate').value='';
+    else Object.assign(model.reviewFilters,{from:'',to:''});
     syncReviewFilters();
   }
   function reviewControls(){
@@ -689,29 +896,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
           <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" placeholder="客户 / PO / 货号">
         </label>
-        <details id="qis-review-date" class="qis-review-date">
-          <summary aria-label="筛选验货日期">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 2v6m10-6v6M3 11h18"/></svg>
-            <span id="qis-review-date-label">不限验货日期</span><span aria-hidden="true">⌄</span>
-          </summary>
-          <form class="qis-review-date-panel" aria-label="计划验货日期范围">
-            <div class="qis-review-date-fields">
-              <label>开始日期<input type="date" name="from"></label>
-              <label>结束日期<input type="date" name="to"></label>
-            </div>
-            <p role="alert" hidden>请填写有效日期，结束日期不能早于开始日期。</p>
-            <div class="qis-review-date-actions">
-              <button type="button" class="qis-review-reset" data-clear-review-date>清除日期</button>
-              <button type="submit" class="qis-review-date-apply">确定</button>
-            </div>
-          </form>
-        </details>
+        <select id="qisPendingDate" aria-label="计划验货日期筛选"><option value="">全部日期</option></select>
+        <div class="qs-date-filter" id="qis-review-date"></div>
         <select data-rfilter="result" aria-label="判定结果"></select>
-        <select data-rfilter="sort" aria-label="排序方式">
-          <option value="date-desc">验货日期 ↓</option>
-          <option value="date-asc">验货日期 ↑</option>
-          <option value="mod-desc">修改日期 ↓</option>
-        </select>
         <button type="button" class="qis-review-reset" data-reset-review aria-label="重置筛选">重置</button>
       </div>
       <div class="qis-review-actions">
@@ -724,46 +911,18 @@
         </div>
       </div>`;
     refreshResultFilters();
-    syncReviewFilters();
     const applyFilters=()=>{finishRowDrag(true);model.checked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
+    host.querySelector('#qisPendingDate').onchange=applyFilters;
     host.querySelectorAll('[data-rfilter]').forEach(input=>{
       input.oninput=()=>{if(model.reviewBusy){syncReviewFilters();return;}model.reviewFilters[input.dataset.rfilter]=input.value;applyFilters();};
     });
-    const dates=host.querySelector('#qis-review-date');
-    const trigger=dates.querySelector('summary');
-    const form=dates.querySelector('form');
-    const from=form.querySelector('[name=from]'),to=form.querySelector('[name=to]');
-    const error=form.querySelector('[role=alert]');
-    const closeDates=()=>{dates.open=false;trigger.focus();};
-    dates.ontoggle=()=>{
-      if(!dates.open)return;
-      from.value=model.reviewFilters.from;
-      to.value=model.reviewFilters.to;
-      error.hidden=true;
-    };
-    const applyDates=(start,end)=>{
-      if(model.reviewBusy)return;
-      Object.assign(model.reviewFilters,{from:start,to:end});
-      syncReviewFilters();
-      closeDates();
+    reviewDates=root.QcSchedule.mountDateFilter(host.querySelector('#qis-review-date'),'qisReview','筛选计划验货日期',(from,to)=>{
+      if(model.reviewBusy){syncReviewFilters();return;}
+      Object.assign(model.reviewFilters,{from,to});
       applyFilters();
-    };
-    form.onsubmit=event=>{
-      event.preventDefault();
-      if(!from.validity.valid||!to.validity.valid||(from.value&&to.value&&from.value>to.value)){
-        error.hidden=false;
-        return;
-      }
-      applyDates(from.value,to.value);
-    };
-    form.querySelector('[data-clear-review-date]').onclick=()=>applyDates('','');
+    });
+    syncReviewFilters();
     host.querySelector('[data-reset-review]').onclick=()=>{if(model.reviewBusy)return;resetReviewFilters();applyFilters();};
-    root.document.addEventListener('click',event=>{
-      if(dates.open&&!dates.contains(event.target))dates.open=false;
-    });
-    dates.addEventListener('keydown',event=>{
-      if(event.key==='Escape'&&dates.open){event.preventDefault();closeDates();}
-    });
     host.querySelector('#qis-review-all').onchange=event=>{if(model.reviewBusy)return;model.checked=new Set(event.target.checked?filtered().map(r=>r.id):[]);render();};
     host.querySelector('#qis-review-batch').onclick=()=>reviewAction(model.reviewTab==='pending'?'confirm':'revoke',filtered().filter(r=>model.checked.has(r.id)).map(r=>r.id));
   }
@@ -855,7 +1014,7 @@
     resetReviewFilters();
     selectRow(id);render();const node=root.document.querySelector('[data-entry="'+id+'"]');node?.scrollIntoView?.({block:'center'});node?.focus();
   }
-  root.QcInspectionSheet={model,load,focusReview,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
+  root.QcInspectionSheet={model,load,focusReview,clearReviewDates,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
   root.addEventListener('beforeunload',event=>{if(navigationState().dirty||navigationState().busy){event.preventDefault();event.returnValue='';}});
   root.document.addEventListener('DOMContentLoaded',()=>{
     if(root.__QC_INITIAL_PAGE?.()==='review')load('review');else load();

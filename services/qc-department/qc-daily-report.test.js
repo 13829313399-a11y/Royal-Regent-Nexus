@@ -104,3 +104,73 @@ test('follow-ups preview two items, expand reversibly, reset on reload and expor
     assert.equal(p.d.querySelectorAll('#dailyReportBody .qdr-issues li').length,2);
   } finally {p.dom.window.close();}
 });
+
+test('themed pickers commit one original field change and respect a template veto', async () => {
+  const p = page();
+  try {
+    for (const kind of ['daily','weekly','monthly']) await p.w.QcPeriodReports[kind].load();
+    function triggerFor(input) {
+      const trigger = input.parentElement.querySelector('.qdr-date-trigger');
+      trigger.getBoundingClientRect = () => ({left:16, top:40, bottom:74, width:130});
+      return trigger;
+    }
+    const panel = () => p.d.querySelector('.qdr-date-panel');
+    const choice = label => [...panel().querySelectorAll('button')].find(b=>b.getAttribute('aria-label')===label);
+    const week = p.d.getElementById('weeklyDate'), weekTrigger = triggerFor(week);
+    let changes = 0;
+    week.addEventListener('change', () => { changes++; });
+    weekTrigger.click();
+    choice('下个月').click();
+    choice('2026-12-02').click();
+    assert.equal(week.value,'2026-12-02');
+    assert.equal(changes,1);
+    assert.equal(panel(),null);
+    assert.equal(p.d.activeElement,weekTrigger);
+    const month = p.d.getElementById('monthlyMonth'), monthTrigger = triggerFor(month);
+    const original = month.value;
+    month.addEventListener('change', event => {
+      month.value = original;
+      event.stopImmediatePropagation();
+    }, {capture:true, once:true});
+    monthTrigger.click();
+    choice('2026年').click();
+    choice('2027年').click();
+    choice('2027年4月').click();
+    assert.equal(month.value,original);
+    assert.equal(monthTrigger.textContent,'2026年11月');
+    monthTrigger.click();
+    choice('清除').click();
+    assert.equal(month.value,'');
+    monthTrigger.click();
+    choice('本月').click();
+    assert.equal(month.value,'2026-11');
+    const daily = p.d.getElementById('dailyDate'), dailyTrigger = triggerFor(daily);
+    dailyTrigger.click();
+    p.d.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    assert.equal(panel(),null);
+    assert.equal(daily.value,'2026-11-06');
+  } finally { p.dom.window.close(); }
+});
+
+test('annual picker offers only enabled report years and follows empty or disabled states', () => {
+  const p = page();
+  try {
+    const field = p.d.createElement('div');
+    field.className = 'report-date-field';
+    field.innerHTML = '<label for="test-year">年份</label><select id="test-year"><option value="2024">2024年</option><option disabled value="2023">2023年</option><option value="2020">2020年</option></select>';
+    p.d.body.append(field);
+    const select = field.querySelector('select');
+    p.w.QcReportDates.sync(select);
+    const trigger = field.querySelector('.qdr-date-trigger');
+    trigger.getBoundingClientRect = () => ({left:16, top:40, bottom:74, width:100});
+    trigger.click();
+    const years = [...p.d.querySelectorAll('.qdr-periods button')];
+    assert.deepEqual(years.map(b=>b.textContent),['2024年','2020年']);
+    years[1].click();
+    assert.equal(select.value,'2020');
+    assert.equal(trigger.textContent,'2020年');
+    select.disabled = true;
+    p.w.QcReportDates.sync(select);
+    assert.equal(trigger.disabled,true);
+  } finally { p.dom.window.close(); }
+});

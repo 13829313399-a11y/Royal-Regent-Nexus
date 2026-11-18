@@ -290,8 +290,8 @@ test('date header toggles planned order, preserves customer groups and missing d
   p.d.getElementById('searchInput').value='不匹配';p.w.QcInspectionSheet.render();button().click();assert.deepEqual(visibleIds(p),[]);
   p.d.getElementById('searchInput').value='';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['e','d','c','a','b','z']);
   assert.equal(p.calls.filter(c=>c.body).length,0);
-  rows.forEach(r=>r.reviewState='pending');p.w.QcInspectionSheet.model.view='review';p.w.QcInspectionSheet.model.reviewFilters.sort='mod-desc';
-  assert.deepEqual(ids(),['e','b','c','a','d','z']);p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('#reviewTableWrap .qis-date-sort'),null);
+  rows.forEach(r=>r.reviewState='pending');p.w.QcInspectionSheet.model.view='review';
+  assert.deepEqual(ids(),['c','a','b','d','e','z']);p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('#reviewTableWrap .qis-date-sort'),null);
   assert.deepEqual(rows.map(r=>r.id),['e','b','c','a','d','z']);
  }finally{p.dom.window.close();}
 });
@@ -524,4 +524,44 @@ test('inspector fill previews editable rows, cancels, then saves the source name
     await p.w.QcInspectionSheet.flush();
     assert.deepEqual(p.calls.filter(c=>c.url?.endsWith('/save')).at(-1).body.inspectionExecution,{inspector:'手填姓名'});
   }finally{p.dom.window.close();}
+});
+
+test('inspector name history restores verified identity and redoes a manual IME name',async()=>{
+  const p=await page();
+  try{
+    p.rows[0].inspectionExecution={inspector:'测试检验员',inspectorId:'qc-test'};
+    await p.w.QcInspectionSheet.load();
+    const input=p.d.querySelector('[data-entry=a] [data-execution-field=inspector]');
+    input.dispatchEvent(new p.w.Event('compositionstart'));
+    input.value='陈';
+    input.dispatchEvent(new p.w.Event('input'));
+    input.value='陈明';
+    input.dispatchEvent(new p.w.Event('compositionend'));
+    await p.w.QcInspectionSheet.flush();
+    const undo=p.d.querySelector('#page-records [data-name-history=undo]');
+    undo.click();
+    await p.w.QcInspectionSheet.flush();
+    assert.equal(p.rows[0].inspectionExecution.inspectorId,'qc-test');
+    assert.equal(input.value,'测试检验员');
+    input.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Z',ctrlKey:true,shiftKey:true,bubbles:true}));
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(p.rows[0].inspectionExecution,{inspector:'陈明',inspectorId:''});
+    await p.w.QcInspectionSheet.load();
+    assert.ok(undo.disabled);
+  }finally{p.dom.window.close();}
+});
+
+test('workbench quantity supports undo and redo without a fill target',async()=>{
+ const p=await page();
+ try{
+  p.rows[0].inspectionExecution={sampleQuantity:'0'};
+  await p.w.QcInspectionSheet.load();
+  const input=p.d.querySelector('[data-entry=a] [data-execution-field=sampleQuantity]');
+  assert.equal(input.closest('td').querySelector('[data-fill-name]'),null);
+  input.value='17';input.dispatchEvent(new p.w.Event('input'));await p.w.QcInspectionSheet.flush();
+  for(const [key,value] of [['z','0'],['y','17']]){
+   input.dispatchEvent(new p.w.KeyboardEvent('keydown',{key,ctrlKey:true,bubbles:true,cancelable:true}));
+   await p.w.QcInspectionSheet.flush();assert.equal(input.value,value);assert.equal(p.rows[0].inspectionExecution.sampleQuantity,value);
+  }
+ }finally{p.dom.window.close();}
 });

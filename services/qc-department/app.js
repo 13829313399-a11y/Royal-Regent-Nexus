@@ -414,7 +414,9 @@ function showPage(name, focusReportType = false) {
   // Hide the inspection drawer synchronously; destination rendering can fail
   // or be delayed, and must never control whether it leaks across pages.
   window.QcWorkflow?.beforePageChange(name);
+  if(currentPage!==name)window.QcReportDates?.close();
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
+  if(currentPage==='review'&&name!=='review')window.QcInspectionSheet?.clearReviewDates?.();
   if (currentPage === 'dashboard' && name !== 'dashboard') closeDashboardFailurePopover();
   if(currentPage!==name)window.QcIssueReports?.pageChanged();
   currentPage = name;
@@ -4437,6 +4439,7 @@ function renderDailyReport() {
   const dateEl = document.getElementById('dailyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = todayStr();
+  window.QcReportDates?.sync(dateEl);
   const date = dateEl.value;
   const data = recs().filter(r => r.date === date || r.inspDate === date);
 
@@ -4510,6 +4513,7 @@ function renderWeeklyReport() {
   const dateEl = document.getElementById('weeklyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = weekStart();
+  window.QcReportDates?.sync(dateEl);
   const ws   = dateEl.value;
   const we   = weekEnd(ws);
   const data = recs().filter(r => r.date >= ws && r.date <= we);
@@ -6433,6 +6437,7 @@ function renderMonthlyReport() {
     const n = new Date();
     el.value = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
   }
+  window.QcReportDates?.sync(el);
   const [year, month] = el.value.split('-').map(Number);
   const data = getMonthRecords(year, month);
   const s    = summarizeRecords(data);
