@@ -23,7 +23,7 @@ async function page(){
   }else if(url.endsWith('/audit'))value={items:[]};else throw Error(url);
   return{ok:true,json:async()=>value};
  };
- for(const file of ['qc-photo-paste.js','qc-inspection-audit.js','qc-inspection-sheet.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
+ for(const file of ['qc-schedule.js','qc-photo-paste.js','qc-inspection-audit.js','qc-inspection-sheet.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
  await tick();await w.QcInspectionSheet.loadReview('pending');return{dom,w,d:w.document,rows,calls,events,set failId(v){failId=v;}};
 }
 function pointer(p,target,type,y){const e=new p.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientY:y});Object.defineProperties(e,{pointerId:{value:1},pointerType:{value:'mouse'}});target.dispatchEvent(e);}
@@ -381,6 +381,46 @@ test('review uses one header, internal-first ordering and a yellow first custome
 });
 
 
+test('pending uses task start days and approved retains its independent range calendar',async()=>{
+ const p=await page();
+ try {
+  Object.assign(p.rows[0],{dateFrom:'2020-01-01',dateTo:'2020-01-03'});
+  Object.assign(p.rows[1],{dateFrom:'2021-01-02',dateTo:'2021-01-02'});
+  p.rows.push({...p.rows[0],id:'undated',dateFrom:'',dateTo:''});
+  Object.assign(p.rows[2],{dateFrom:'2019-12-01',dateTo:'2019-12-01',reviewState:'approved'});
+  const sheet=p.w.QcInspectionSheet;
+  await sheet.loadReview('pending');
+  const ids=()=>Array.from(sheet.filtered(),r=>r.id);
+  const el=name=>p.d.getElementById('qisReview'+name);
+  const select=p.d.getElementById('qisPendingDate'),calendar=p.d.getElementById('qis-review-date');
+  const choose=day=>{select.value=day;select.dispatchEvent(new p.w.Event('change'));};
+  assert.equal(calendar.hidden,true);
+  assert.equal(select.hidden,false);
+  assert.deepEqual(Array.from(select.options,o=>o.textContent),['全部日期','2020年1月1日','2021年1月2日']);
+  assert.deepEqual(ids(),['a','b','undated']);
+  sheet.model.checked.add('b');choose('2020-01-01');
+  assert.deepEqual(ids(),['a']);assert.equal(sheet.model.checked.size,0);
+  await sheet.loadReview('approved');
+  assert.equal(select.hidden,true);assert.equal(calendar.hidden,false);
+  assert.deepEqual(ids(),['c']);
+  el('DateToggle').click();
+  const today=el('CalendarDays').querySelector('[aria-current=date]').dataset.qsDay;
+  const clickToday=()=>el('CalendarDays').querySelector('[data-qs-day="'+today+'"]').click();
+  clickToday();assert.equal(el('ApplyDates').disabled,true);
+  clickToday();el('ApplyDates').click();assert.deepEqual(ids(),[]);
+  await sheet.loadReview('pending');assert.deepEqual(ids(),['a']);
+  p.d.querySelector('[data-reset-review]').click();
+  assert.deepEqual(ids(),['a','b','undated']);
+  await sheet.loadReview('approved');
+  assert.equal(el('DateFrom').value,today);assert.deepEqual(ids(),[]);
+  p.d.querySelector('[data-reset-review]').click();assert.deepEqual(ids(),['c']);
+  await sheet.loadReview('pending');choose('2021-01-02');
+  p.rows[1].reviewState='approved';
+  await sheet.loadReview('pending');
+  assert.equal(select.value,'');assert.deepEqual(ids(),['a','undated']);
+ }finally{p.dom.window.close();}
+});
+
 test('customer boundary follows filtered sorting and confirmed method takes precedence over agency',async()=>{
  const p=await page();try{
   Object.assign(p.rows[0],{inspectionMethod:'external',agency:'行验',dateFrom:'2026-11-01'});
@@ -388,9 +428,7 @@ test('customer boundary follows filtered sorting and confirmed method takes prec
   Object.assign(p.rows[2],{inspectionMethod:'',agency:'客验',dateFrom:'2026-11-03'});
   await p.w.QcInspectionSheet.loadReview('pending');
   const ids=()=>[...p.d.querySelectorAll('#reviewTableWrap [data-entry]')].map(x=>x.dataset.entry);
-  assert.deepEqual(ids(),['b','c','a']);
-  assert.equal(p.d.querySelector('.qis-review-customer-start').dataset.entry,'c');
-  const sort=p.d.querySelector('[data-rfilter=sort]');sort.value='date-asc';sort.dispatchEvent(new p.w.Event('input'));
+  assert.deepEqual(Array.from(p.d.querySelectorAll('#qis-review-controls select'),select=>select.getAttribute('aria-label')),['计划验货日期筛选','判定结果']);
   assert.deepEqual(ids(),['b','a','c']);
   assert.equal(p.d.querySelector('.qis-review-customer-start').dataset.entry,'a');
   const search=p.d.querySelector('[data-rfilter=search]');search.value='PO2';search.dispatchEvent(new p.w.Event('input'));

@@ -161,6 +161,7 @@
       input.closest('.page').classList.add('qdr-active');
       if (!initialized && !input.value) input.value = period === 'monthly' ? root.todayStr().slice(0,7) : root.todayStr();
       initialized = true;
+      root.QcReportDates?.sync(input);
       const day = selectedDate();
       snapshot = null;
       const rangeLabel = input.closest('.report-toolbar').querySelector('.qdr-period-range');
@@ -177,7 +178,7 @@
         let range = input.closest('.report-toolbar').querySelector('.qdr-period-range');
         if (!range) {
           range = doc.createElement('span'); range.className = 'qdr-period-range qdr-muted';
-          input.closest('label').after(range);
+          input.closest('.report-date-field').after(range);
         }
         range.textContent = period === 'daily' ? '' : periodLabel(report);
         snapshot = report;
@@ -223,4 +224,228 @@
     monthly: createReport('monthly', 'monthlyMonth', '验货月报', '本月验货概览'),
   };
   root.QcDailyReport = root.QcPeriodReports.daily;
+})(window);
+
+/* Report pickers write through the original control and its existing change handlers. */
+(function (root) {
+  'use strict';
+  const doc = root.document;
+  const pad = value => String(value).padStart(2, '0');
+  const yearText = year => String(year).padStart(4, '0');
+  const monthKey = (year, month) => yearText(year) + '-' + pad(month);
+  const today = () => root.todayStr();
+  const buttons = new WeakMap();
+  let open = null;
+
+  function close(restoreFocus = false) {
+    if (!open) return;
+    const {trigger, panel} = open;
+    open = null;
+    panel.remove();
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.removeAttribute('aria-controls');
+    if (restoreFocus) trigger.focus();
+  }
+
+  function commit(value) {
+    const input = open.input;
+    close(true);
+    if (input.disabled || input.value === value) return;
+    input.value = value;
+    input.dispatchEvent(new root.Event('change', {bubbles:true}));
+    sync(input); // A template with an unsaved edit may have restored the previous value.
+  }
+
+  function place() {
+    if (!open) return;
+    const {panel, trigger} = open;
+    const rect = trigger.getBoundingClientRect();
+    if (!rect.width) { close(); return; }
+    const left = Math.max(8, Math.min(rect.left, root.innerWidth - panel.offsetWidth - 8));
+    const below = root.innerHeight - rect.bottom - 12;
+    const above = rect.top - 12;
+    const up = panel.scrollHeight > below && above > below;
+    panel.style.maxHeight = Math.max(80, up ? above : below) + 'px';
+    panel.style.left = left + 'px';
+    panel.style.top = (up ? Math.max(6, rect.top - panel.offsetHeight - 5) : rect.bottom + 5) + 'px';
+  }
+
+  function makeButton(text, action, label = text) {
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.textContent = text;
+    button.setAttribute('aria-label', label);
+    button.onclick = action;
+    return button;
+  }
+
+  function draw(focusGrid = true) {
+    const {input, panel, kind, view, year, month} = open;
+    const selected = input.value;
+    const prefix = monthKey(year, month);
+    const startYear = year - (year - 1) % 12;
+    panel.replaceChildren();
+    const header = doc.createElement('div');
+    header.className = 'qdr-picker-head';
+    const title = view === 'days' ? year + '年' + month + '月' : view === 'months' ? year + '年' :
+      kind === 'year' ? '选择年份' : startYear + ' — ' + Math.min(9999, startYear + 11);
+    if (kind !== 'year') {
+      const step = view === 'days' ? 1 : view === 'months' ? 12 : 144;
+      const navigate = delta => {
+        const offset = (year - 1) * 12 + month - 1 + delta * step;
+        open.year = Math.floor(offset / 12) + 1;
+        open.month = offset % 12 + 1;
+        draw(false);
+        open.panel.querySelector(delta < 0 ? '.qdr-prev' : '.qdr-next')?.focus();
+      };
+      const unit = view === 'days' ? '个月' : view === 'months' ? '一年' : '一组年份';
+      const prev = makeButton('‹', () => navigate(-1), '上' + unit);
+      const next = makeButton('›', () => navigate(1), '下' + unit);
+      prev.className = 'qdr-prev'; next.className = 'qdr-next';
+      prev.disabled = (year - 1) * 12 + month - 1 < step;
+      next.disabled = (year - 1) * 12 + month - 1 + step >= 9999 * 12;
+      const heading = view === 'years' ? doc.createElement('strong') :
+        makeButton(title, () => { open.view = view === 'days' ? 'months' : 'years'; draw(); });
+      heading.textContent = title;
+      header.append(prev, heading, next);
+      panel.append(header);
+    }
+    const grid = doc.createElement('div');
+    grid.className = 'qdr-picker-grid ' + (view === 'days' ? 'qdr-days' : 'qdr-periods');
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-label', title);
+    function choice(text, label, current, action, isToday = false) {
+      const b = makeButton(text, action, label);
+      b.setAttribute('aria-pressed', String(current));
+      if (isToday) b.setAttribute('aria-current', 'date');
+      grid.append(b);
+    }
+    if (view === 'days') {
+      for (const name of '一二三四五六日') {
+        const weekday = doc.createElement('span');
+        weekday.textContent = name; grid.append(weekday);
+      }
+      const first = new Date(prefix + '-01T00:00:00Z');
+      grid.style.setProperty('--first-column', String((first.getUTCDay() + 6) % 7 + 1));
+      first.setUTCMonth(first.getUTCMonth() + 1, 0);
+      const currentDate = today();
+      for (let day = 1; day <= first.getUTCDate(); day++) {
+        const value = prefix + '-' + pad(day);
+        choice(day, value, selected === value, () => commit(value), currentDate === value);
+      }
+    } else if (view === 'months') {
+      for (let m = 1; m <= 12; m++) {
+        const value = monthKey(year, m);
+        choice(m + '月', year + '年' + m + '月', selected.slice(0,7) === value, () => {
+          if (kind === 'month') commit(value);
+          else { open.month = m; open.view = 'days'; draw(); }
+        });
+      }
+    } else {
+      const years = kind === 'year' ? [...input.options].filter(o=>o.value && !o.disabled).map(o=>o.value) :
+        Array.from({length:Math.min(12, 10000 - startYear)}, (_, i) => yearText(startYear + i));
+      if (kind === 'year') panel.style.setProperty('--qdr-year-columns',String(Math.max(1, Math.min(3, years.length))));
+      for (const y of years) choice(Number(y) + '年', Number(y) + '年', selected.slice(0,4) === y, () => {
+        if (kind === 'year') commit(y);
+        else { open.year = Number(y); open.view = 'months'; draw(); }
+      });
+    }
+    panel.append(grid);
+    const choices = [...grid.querySelectorAll('button')];
+    if (choices.length) {
+      const cursor = grid.querySelector('[aria-pressed="true"]') || grid.querySelector('[aria-current="date"]') || choices[0];
+      choices.forEach(b=>{ b.tabIndex = b === cursor ? 0 : -1; });
+      grid.onkeydown = event => {
+        const i = choices.indexOf(event.target);
+        if (i < 0) return;
+        const columns = view === 'days' ? 7 : 3;
+        const moves = {ArrowLeft:i-1,ArrowRight:i+1,ArrowUp:i-columns,ArrowDown:i+columns,Home:0,End:choices.length-1};
+        if (!Object.hasOwn(moves,event.key)) return;
+        event.preventDefault();
+        const next = choices[Math.max(0,Math.min(choices.length-1,moves[event.key]))];
+        event.target.tabIndex = -1; next.tabIndex = 0; next.focus();
+      };
+      if (focusGrid) cursor.focus({preventScroll:true});
+    }
+    if (kind !== 'year') {
+      const footer = doc.createElement('div');
+      footer.className = 'qdr-picker-footer';
+      footer.append(makeButton('清除', () => commit('')), makeButton(kind === 'month' ? '本月' : '今天',
+        () => commit(kind === 'month' ? today().slice(0,7) : today())));
+      panel.append(footer);
+    }
+    place();
+  }
+
+  function toggle(input, trigger) {
+    if (open?.trigger === trigger) { close(true); return; }
+    close();
+    if (input.disabled) return;
+    const kind = input.tagName === 'SELECT' ? 'year' : input.getAttribute('type') === 'month' ? 'month' : 'day';
+    const [year, month] = (input.value || today()).split('-').map(Number);
+    const panel = doc.createElement('div');
+    panel.className = 'qdr-date-panel';
+    panel.dataset.kind = kind;
+    panel.id = input.id + '-panel';
+    panel.setAttribute('role','dialog');
+    panel.setAttribute('aria-label',trigger.getAttribute('aria-label'));
+    doc.body.append(panel);
+    open = {input, trigger, panel, year, month:month || 1, kind, view:{year:'years',month:'months',day:'days'}[kind]};
+    trigger.setAttribute('aria-controls',panel.id);
+    trigger.setAttribute('aria-expanded','true');
+    draw();
+  }
+
+  function sync(input) {
+    const field = input.closest('.report-date-field');
+    if (!field) return;
+    let trigger = buttons.get(input);
+    if (!trigger) {
+      trigger = makeButton('', () => toggle(input,trigger));
+      buttons.set(input,trigger);
+      trigger.className = 'qdr-date-trigger';
+      trigger.setAttribute('aria-haspopup','dialog');
+      trigger.setAttribute('aria-expanded','false');
+      field.append(trigger);
+      field.classList.add('qdr-date-ready');
+      if (input.tagName === 'SELECT') {
+        input.hidden = true;
+        field.querySelector('label').htmlFor = trigger.id = input.id + '-trigger';
+      }
+      input.addEventListener('keydown', event => {
+        if (event.key === 'F4' || (event.altKey && event.key === 'ArrowDown')) {
+          event.preventDefault(); toggle(input,trigger);
+        }
+      });
+      input.addEventListener('change', () => sync(input));
+    }
+    const [y,m,d] = input.value.split('-').map(Number);
+    const label = field.querySelector('label').textContent;
+    const display = y ? y+'年'+(m ? m+'月' : '')+(d ? d+'日' : '') : '选择'+label;
+    trigger.textContent = input.tagName === 'SELECT' ? (input.selectedOptions[0]?.textContent || display) : display;
+    trigger.setAttribute('aria-label', label+'，'+trigger.textContent);
+    trigger.disabled = input.disabled;
+    if (input.disabled && open?.input === input) close();
+  }
+
+  doc.addEventListener('pointerdown', event => {
+    if (open && !open.panel.contains(event.target) && !open.trigger.contains(event.target)) close();
+  });
+  doc.addEventListener('focusin', event => {
+    if (open && !open.panel.contains(event.target) && open.trigger !== event.target) close();
+  });
+  doc.addEventListener('keydown', event => {
+    if (!open) return;
+    if (event.key === 'Escape') { event.preventDefault(); close(true); }
+    if (event.key === 'Tab' && open.panel.contains(event.target)) {
+      const stops = [...open.panel.querySelectorAll('button:not(:disabled)')].filter(b=>b.tabIndex >= 0);
+      if (event.target === (event.shiftKey ? stops[0] : stops.at(-1))) {
+        // Resume the toolbar's tab order when leaving the portaled panel.
+        close(true);
+      }
+    }
+  });
+  root.addEventListener('resize',place);
+  doc.addEventListener('scroll',event=>{if(open && !open.panel.contains(event.target))place();},true);
+  root.QcReportDates = {sync, close};
 })(window);

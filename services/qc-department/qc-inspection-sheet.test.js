@@ -290,8 +290,8 @@ test('date header toggles planned order, preserves customer groups and missing d
   p.d.getElementById('searchInput').value='不匹配';p.w.QcInspectionSheet.render();button().click();assert.deepEqual(visibleIds(p),[]);
   p.d.getElementById('searchInput').value='';p.w.QcInspectionSheet.render();assert.deepEqual(visibleIds(p),['e','d','c','a','b','z']);
   assert.equal(p.calls.filter(c=>c.body).length,0);
-  rows.forEach(r=>r.reviewState='pending');p.w.QcInspectionSheet.model.view='review';p.w.QcInspectionSheet.model.reviewFilters.sort='mod-desc';
-  assert.deepEqual(ids(),['e','b','c','a','d','z']);p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('#reviewTableWrap .qis-date-sort'),null);
+  rows.forEach(r=>r.reviewState='pending');p.w.QcInspectionSheet.model.view='review';
+  assert.deepEqual(ids(),['c','a','b','d','e','z']);p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('#reviewTableWrap .qis-date-sort'),null);
   assert.deepEqual(rows.map(r=>r.id),['e','b','c','a','d','z']);
  }finally{p.dom.window.close();}
 });

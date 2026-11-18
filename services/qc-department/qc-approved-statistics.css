@@ -539,7 +539,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   #page-sales-schedule #qsToolbar .qs-filter-actions { grid-area: reset; }
   #page-sales-schedule #qsToolbar #qsPush { grid-area: push; justify-self: end; }
   #page-sales-schedule #qsToolbar #qsFilterError { grid-column: 1 / -1; margin: 0; }
-  #page-sales-schedule #qsToolbar :is(.qs-filter-field input,.qs-filter-field select,.qs-date-toggle,.qs-button,.qs-reset) {
+  :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) :is(.qs-filter-field input,.qs-filter-field select,.qs-date-toggle,.qs-button,.qs-reset) {
     min-height: var(--qs-control-height);
     height: var(--qs-control-height);
     border-radius: 7px;
@@ -552,7 +552,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   #page-sales-schedule #qsToolbar .qs-select-all { min-height: var(--qs-control-height); }
   #page-sales-schedule #qsToolbar #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
   #page-sales-schedule #qsToolbar #qsCount { margin: 0; min-width: 76px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  #page-sales-schedule #qsToolbar .qs-button {
+  :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) .qs-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -619,7 +619,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 
 /* Keep both date endpoints readable, including when the sidebar narrows the toolbar. */
 @media screen {
-  #page-sales-schedule #qsToolbar .qs-date-toggle { height: auto; }
+  :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) .qs-date-toggle { height: auto; }
   #page-sales-schedule #qsToolbar:has(.qs-selection) {
     grid-template-columns: max-content 210px max-content 140px max-content minmax(0,1fr) max-content;
   }

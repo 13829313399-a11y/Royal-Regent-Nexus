@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   if(!root.__QC_NEXUS)return;
-  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:'',sort:'date-desc'}};
+  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:''}};
   let notificationGeneration=0;
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
@@ -40,6 +40,20 @@
   const taskStart=row=>root.QcSchedule?.dateRange({dateFrom:row.dateFrom,dateTo:row.dateFrom})?.from||'';
   const taskCustomer=row=>{const name=String(row.customer??'').trim(),code=String(row.sourceRecord?.customerCode??'').trim();return {name,code,key:name?JSON.stringify([code,name]):''};};
   function resetTaskFilters(){model.recordsSort='date-asc';for(const id of ['qisTaskDate','qisTaskCustomer']){const select=root.document.getElementById(id);if(select)select.value='';}}
+  function plannedDateChoices(rows){
+    const dates=[...new Set(rows.map(taskStart).filter(Boolean))].sort();
+    const multiYear=new Set(dates.map(value=>value.slice(0,4))).size>1;
+    return dates.map(value=>({value,label:(multiYear?Number(value.slice(0,4))+'年':'')+Number(value.slice(5,7))+'月'+Number(value.slice(8,10))+'日'}));
+  }
+  function updateChoiceList(select,first,items){
+    const html='<option value="">'+first+'</option>'+items.map(c=>'<option value="'+esc(c.value)+'">'+esc(c.label)+'</option>').join('');
+    if(select._choices===html)return false;
+    const old=select.value;
+    select.innerHTML=html;
+    select._choices=html;
+    select.value=items.some(c=>c.value===old)?old:'';
+    return Boolean(old&&!select.value);
+  }
   function updateTaskFilters(){
     if(model.view!=='records')return;
     const toolbar=root.document.querySelector('#page-records .records-filters');if(!toolbar)return;
@@ -51,15 +65,12 @@
       }
     }
     if(model.loading||!model.loaded)return;
-    const dates=[...new Set(model.items.map(taskStart).filter(Boolean))].sort(),multiYear=new Set(dates.map(value=>value.slice(0,4))).size>1;
     const customers=[...new Map(model.items.map(taskCustomer).filter(value=>value.key).map(value=>[value.key,value])).values()].sort((a,b)=>a.name.localeCompare(b.name,'zh-CN')||a.code.localeCompare(b.code));
     const nameCounts=new Map();for(const c of customers)nameCounts.set(c.name,(nameCounts.get(c.name)||0)+1);
-    const choices=[['qisTaskDate','全部日期',dates.map(value=>({value,label:(multiYear?Number(value.slice(0,4))+'年':'')+Number(value.slice(5,7))+'月'+Number(value.slice(8,10))+'日'}))],['qisTaskCustomer','全部客户',customers.map(c=>({value:c.key,label:c.name+(nameCounts.get(c.name)>1?'（'+(c.code?'客户编码：'+c.code:'未提供客户编码')+'）':'')}))]];
+    const choices=[['qisTaskDate','全部日期',plannedDateChoices(model.items)],['qisTaskCustomer','全部客户',customers.map(c=>({value:c.key,label:c.name+(nameCounts.get(c.name)>1?'（'+(c.code?'客户编码：'+c.code:'未提供客户编码')+'）':'')}))]];
     const reset=[];
     for(const [id,first,items] of choices){
-      const select=root.document.getElementById(id),old=select.value,html='<option value="">'+first+'</option>'+items.map(c=>'<option value="'+esc(c.value)+'">'+esc(c.label)+'</option>').join('');
-      if(select._choices!==html){select.innerHTML=html;select._choices=html;select.value=items.some(c=>c.value===old)?old:'';}
-      if(old&&!select.value){reset.push(first);if(id==='qisTaskDate')for(const key of ['filterDateFrom','filterDateTo'])root.document.getElementById(key).value='';}
+      if(updateChoiceList(root.document.getElementById(id),first,items)){reset.push(first);if(id==='qisTaskDate')for(const key of ['filterDateFrom','filterDateTo'])root.document.getElementById(key).value='';}
     }
     if(reset.length)root.showToast?.('当前任务已变化，筛选已恢复为'+reset.join('、'),'info');
   }
@@ -189,7 +200,11 @@
     typingStep=null;nameHistory.undo.length=0;nameHistory.redo.length=0;
     if(model.view!==view){root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();model.items=[];model.drafts.clear();model.checked.clear();}
     model.recordChecked.clear();
-    if(model.reviewTab!==tab)model.checked.clear();model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
+    if(model.reviewTab!==tab){
+      model.checked.clear();
+      reviewDates?.setRange(model.reviewFilters.from,model.reviewFilters.to);
+    }
+    model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
     catch(error){model.error=error.message;}
@@ -198,22 +213,20 @@
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
     const f=model.reviewFilters,isReview=model.view==='review';
-    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),sort=isReview?f.sort:model.recordsSort;
+    const q=(isReview?f.search:value('searchInput')).trim().toLowerCase(),ascending=isReview||model.recordsSort==='date-asc';
     const {result,from,to}=f;
-    const day=value('qisTaskDate'),customer=value('qisTaskCustomer');
-    return model.items.filter(row=>{
+    const pendingReview=isReview&&model.reviewTab==='pending';
+    const day=isReview?(pendingReview?value('qisPendingDate'):''):value('qisTaskDate'),customer=value('qisTaskCustomer');
+    const items=isReview&&!pendingReview&&(from||to)?root.QcSchedule.filterRows(model.items,{from,to}):model.items;
+    return items.filter(row=>{
       if(isReview&&(model.reviewTab==='pending'?row.reviewState!=='pending':row.reviewState!=='approved'&&!row.legacyCompleted))return false;
       const d=draft(row);
       return (!q||[row.customer,row.poNo,row.customerPo,row.productNo,row.productName,d.remark].join(' ').toLowerCase().includes(q))&&
-        (isReview?(!result||d.result===result)&&(!(from||to)||(row.dateFrom&&(!from||(row.dateTo||row.dateFrom)>=from)&&(!to||row.dateFrom<=to))):(!day||taskStart(row)===day)&&(!customer||taskCustomer(row).key===customer));
+        (!day||taskStart(row)===day)&&(isReview?(!result||d.result===result):(!customer||taskCustomer(row).key===customer));
     }).sort((a,b)=>{
-      if(sort.startsWith('date')){
-        if(!a.dateFrom||!b.dateFrom){if(a.dateFrom||b.dateFrom)return a.dateFrom?-1:1;}
-        const dateOrder=String(a.dateFrom||'').localeCompare(String(b.dateFrom||''))*(sort.endsWith('asc')?1:-1);
-        return dateOrder||String(a.customer||'').trim().localeCompare(String(b.customer||'').trim(),'zh-CN',{numeric:true,sensitivity:'base'})||a.id.localeCompare(b.id);
-      }
-      const key=sort.startsWith('date')?'dateFrom':'updatedAt',direction=sort.endsWith('asc')?1:-1;
-      return String(a[key]||'').localeCompare(String(b[key]||''))*direction||a.id.localeCompare(b.id);
+      if(!a.dateFrom||!b.dateFrom){if(a.dateFrom||b.dateFrom)return a.dateFrom?-1:1;}
+      const dateOrder=String(a.dateFrom||'').localeCompare(String(b.dateFrom||''))*(ascending?1:-1);
+      return dateOrder||String(a.customer||'').trim().localeCompare(String(b.customer||'').trim(),'zh-CN',{numeric:true,sensitivity:'base'})||a.id.localeCompare(b.id);
     });
   }
   function dateText(row){
@@ -454,8 +467,9 @@
     const active=root.document.activeElement;
     const editing=host.contains(active)&&active.matches('[data-remark],[data-result],[data-improvement],[data-problem],[data-review-field],[data-execution-field]')?{entry:active.closest('tr')?.dataset.entry||'',field:active.dataset.executionField?'execution:'+active.dataset.executionField:active.dataset.reviewField?'review:'+active.dataset.reviewField:active.dataset.remark!=null?'remark':active.dataset.improvement!=null?'improvement':active.dataset.problem!=null?'problem':'result',start:active.selectionStart,end:active.selectionEnd}:null;
     const scrollTop=host.scrollTop,scrollLeft=host.scrollLeft;
-    const rows=filtered();
     const reviewing=model.view==='review';
+    if(reviewing)updateReviewDateControls();
+    const rows=filtered();
     const hasCustomerReview=reviewing&&rows.some(row=>reviewGroup(row)==='客验');
     const columns=model.columns.filter(({key})=>{
       if(key==='inspectionExecution.institution')return hasCustomerReview;
@@ -768,20 +782,40 @@
     input.innerHTML='<option value="">全部判定</option>'+model.results.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
     input.value=value;
   }
+  let reviewDates;
   function syncReviewFilters(){
     const {from,to}=model.reviewFilters;
     root.document.querySelectorAll('[data-rfilter]').forEach(input=>{
       input.value=model.reviewFilters[input.dataset.rfilter];
     });
-    const label=root.document.getElementById('qis-review-date-label');
-    if(!label)return;
-    label.textContent=from&&to?(from===to?from:from+' 至 '+to):from?from+' 起':to?'截至 '+to:'不限验货日期';
-    label.title=label.textContent;
+    reviewDates?.setRange(from,to);
+  }
+  function updateReviewDateControls(){
+    const select=root.document.getElementById('qisPendingDate');
+    if(!select)return;
+    const pending=model.reviewTab==='pending';
+    select.hidden=!pending;
+    root.document.getElementById('qis-review-date').hidden=pending;
+    if(pending&&model.loaded&&!model.loading&&!model.error){
+      const choices=plannedDateChoices(model.items.filter(row=>row.reviewState==='pending'));
+      if(updateChoiceList(select,'全部日期',choices)){
+        model.checked.clear();
+        root.showToast?.('当前任务已变化，筛选已恢复为全部日期','info');
+      }
+    }
+  }
+  function clearReviewDates(){
+    const select=root.document.getElementById('qisPendingDate');
+    if(select)select.value='';
+    Object.assign(model.reviewFilters,{from:'',to:''});
+    reviewDates?.setRange('','');
+    model.checked.clear();
   }
   function resetReviewFilters(){
-    Object.assign(model.reviewFilters,{search:'',result:'',from:'',to:'',sort:'date-desc'});
-    const dates=root.document.getElementById('qis-review-date');
-    if(dates)dates.open=false;
+    model.checked.clear();
+    Object.assign(model.reviewFilters,{search:'',result:''});
+    if(model.reviewTab==='pending')root.document.getElementById('qisPendingDate').value='';
+    else Object.assign(model.reviewFilters,{from:'',to:''});
     syncReviewFilters();
   }
   function reviewControls(){
@@ -792,29 +826,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
           <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" placeholder="客户 / PO / 货号">
         </label>
-        <details id="qis-review-date" class="qis-review-date">
-          <summary aria-label="筛选验货日期">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 2v6m10-6v6M3 11h18"/></svg>
-            <span id="qis-review-date-label">不限验货日期</span><span aria-hidden="true">⌄</span>
-          </summary>
-          <form class="qis-review-date-panel" aria-label="计划验货日期范围">
-            <div class="qis-review-date-fields">
-              <label>开始日期<input type="date" name="from"></label>
-              <label>结束日期<input type="date" name="to"></label>
-            </div>
-            <p role="alert" hidden>请填写有效日期，结束日期不能早于开始日期。</p>
-            <div class="qis-review-date-actions">
-              <button type="button" class="qis-review-reset" data-clear-review-date>清除日期</button>
-              <button type="submit" class="qis-review-date-apply">确定</button>
-            </div>
-          </form>
-        </details>
+        <select id="qisPendingDate" aria-label="计划验货日期筛选"><option value="">全部日期</option></select>
+        <div class="qs-date-filter" id="qis-review-date"></div>
         <select data-rfilter="result" aria-label="判定结果"></select>
-        <select data-rfilter="sort" aria-label="排序方式">
-          <option value="date-desc">验货日期 ↓</option>
-          <option value="date-asc">验货日期 ↑</option>
-          <option value="mod-desc">修改日期 ↓</option>
-        </select>
         <button type="button" class="qis-review-reset" data-reset-review aria-label="重置筛选">重置</button>
       </div>
       <div class="qis-review-actions">
@@ -827,46 +841,18 @@
         </div>
       </div>`;
     refreshResultFilters();
-    syncReviewFilters();
     const applyFilters=()=>{finishRowDrag(true);model.checked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
+    host.querySelector('#qisPendingDate').onchange=applyFilters;
     host.querySelectorAll('[data-rfilter]').forEach(input=>{
       input.oninput=()=>{if(model.reviewBusy){syncReviewFilters();return;}model.reviewFilters[input.dataset.rfilter]=input.value;applyFilters();};
     });
-    const dates=host.querySelector('#qis-review-date');
-    const trigger=dates.querySelector('summary');
-    const form=dates.querySelector('form');
-    const from=form.querySelector('[name=from]'),to=form.querySelector('[name=to]');
-    const error=form.querySelector('[role=alert]');
-    const closeDates=()=>{dates.open=false;trigger.focus();};
-    dates.ontoggle=()=>{
-      if(!dates.open)return;
-      from.value=model.reviewFilters.from;
-      to.value=model.reviewFilters.to;
-      error.hidden=true;
-    };
-    const applyDates=(start,end)=>{
-      if(model.reviewBusy)return;
-      Object.assign(model.reviewFilters,{from:start,to:end});
-      syncReviewFilters();
-      closeDates();
+    reviewDates=root.QcSchedule.mountDateFilter(host.querySelector('#qis-review-date'),'qisReview','筛选计划验货日期',(from,to)=>{
+      if(model.reviewBusy){syncReviewFilters();return;}
+      Object.assign(model.reviewFilters,{from,to});
       applyFilters();
-    };
-    form.onsubmit=event=>{
-      event.preventDefault();
-      if(!from.validity.valid||!to.validity.valid||(from.value&&to.value&&from.value>to.value)){
-        error.hidden=false;
-        return;
-      }
-      applyDates(from.value,to.value);
-    };
-    form.querySelector('[data-clear-review-date]').onclick=()=>applyDates('','');
+    });
+    syncReviewFilters();
     host.querySelector('[data-reset-review]').onclick=()=>{if(model.reviewBusy)return;resetReviewFilters();applyFilters();};
-    root.document.addEventListener('click',event=>{
-      if(dates.open&&!dates.contains(event.target))dates.open=false;
-    });
-    dates.addEventListener('keydown',event=>{
-      if(event.key==='Escape'&&dates.open){event.preventDefault();closeDates();}
-    });
     host.querySelector('#qis-review-all').onchange=event=>{if(model.reviewBusy)return;model.checked=new Set(event.target.checked?filtered().map(r=>r.id):[]);render();};
     host.querySelector('#qis-review-batch').onclick=()=>reviewAction(model.reviewTab==='pending'?'confirm':'revoke',filtered().filter(r=>model.checked.has(r.id)).map(r=>r.id));
   }
@@ -958,7 +944,7 @@
     resetReviewFilters();
     selectRow(id);render();const node=root.document.querySelector('[data-entry="'+id+'"]');node?.scrollIntoView?.({block:'center'});node?.focus();
   }
-  root.QcInspectionSheet={model,load,focusReview,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
+  root.QcInspectionSheet={model,load,focusReview,clearReviewDates,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
   root.addEventListener('beforeunload',event=>{if(navigationState().dirty||navigationState().busy){event.preventDefault();event.returnValue='';}});
   root.document.addEventListener('DOMContentLoaded',()=>{
     if(root.__QC_INITIAL_PAGE?.()==='review')load('review');else load();
