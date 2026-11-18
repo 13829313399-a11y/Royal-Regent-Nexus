@@ -2,6 +2,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
 
@@ -230,6 +231,7 @@ def test_split_purchase_arrivals_issues_and_cutting_signatures(handoff):
                             production_no='P001', quantity='6.5', unit='米')]
     link = {k: matched[0][k] for k in ('id', 'revision')}
     promises = [dict(b, purchase_source=link) for b in original_promises]
+    rendered_promises = [dict(b, purchase_source=link | {'detail_no': 'SPLIT-1'}) for b in original_promises]
     eta_command = command(expected_version=read(p)['current']['version'], requisition_version=current['data']['requisition']['version'],
                           batches=promises)
     eta_url = '/api/cutting-operations/orders/line-1/eta'
@@ -237,15 +239,16 @@ def test_split_purchase_arrivals_issues_and_cutting_signatures(handoff):
     assert p.post(eta_url, json=eta_command | {'batches': [dict(promises[0], purchase_source=link | {'revision': 99})]}).status_code == 409
     linked_reply = p.post(eta_url, json=eta_command)
     assert linked_reply.status_code == 200, linked_reply.text
-    assert linked_reply.json()['current']['data']['batches'] == promises
+    assert linked_reply.json()['current']['data']['batches'] == rendered_promises
     assert not linked_reply.json()['planning_summary']['published_stale']
     assert p.post(eta_url, json=eta_command).json() == linked_reply.json()
     linked_version = linked_reply.json()['current']['version']
     history = p.get('/api/cutting-operations/orders/line-1/versions', params={'factory_id': 'huakang-c'})
-    assert history.json()['data'][0]['data']['batches'] == promises
+    assert history.json()['data'][0]['data']['batches'] == rendered_promises
     with Session(p.engine) as db:
         stored_revision = db.get(CuttingOrderRevision, ('line-1', linked_version)).data
         assert stored_revision['batches'] == original_promises
+        assert stored_revision['purchase_links']['sources']['0']['detail_no'] == 'SPLIT-1'
         legacy_edit = dict(stored_revision, batches=[dict(original_promises[0], expected_date='2026-10-13')])
         assert display_batches(legacy_edit) == legacy_edit['batches']
 
@@ -281,6 +284,7 @@ def test_split_purchase_arrivals_issues_and_cutting_signatures(handoff):
         assert Decimal(before['received_quantity']) == Decimal(signed_total) - Decimal(quantity)
         assert Decimal(before['issued_quantity']) == Decimal(signed_total)
         metrics = p.get(progress).json()
+        assert datetime.fromisoformat(metrics['read_at']).utcoffset().total_seconds() == 0
         assert len(metrics['sources']) == 1
         source_metrics = metrics['sources'][0]
         assert source_metrics['status'] == 'active'
@@ -297,7 +301,7 @@ def test_split_purchase_arrivals_issues_and_cutting_signatures(handoff):
         assert Decimal(totals['issued_quantity']) == Decimal(totals['received_quantity']) == Decimal(signed_total)
         assert Decimal(totals['outstanding_quantity']) == Decimal(outstanding)
         facts = read(p)['current']['data']
-        assert facts['batches'] == promises
+        assert facts['batches'] == rendered_promises
         assert facts['planning']['published']['tasks'][0]['date_basis'] == 'estimated'
 
     actual = task(executor, date_basis='actual', actual_issue_date='2026-10-12', material_receipt_ids=signatures,

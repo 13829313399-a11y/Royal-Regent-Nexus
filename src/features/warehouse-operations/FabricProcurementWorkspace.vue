@@ -20,7 +20,7 @@ import { warehouseRequestId } from './requestIdentity'
 import { getApiErrorMessage } from '@/lib/http'
 import { fabricProcurementApi as api, type ImportAction, type PurchaseScope, type PurchasePreview, type PurchaseLine, type PurchaseDetail, type PurchaseImport, type PurchaseFacts, type PurchaseView, type TrackingSummary, type WithdrawalPreview } from '@/api/fabricProcurement'
 
-const props = defineProps<{ mode: 'import' | 'pending' | 'orders' | 'returned'; tracking?: string; orderNo?: string }>()
+const props = defineProps<{ mode: 'import' | 'pending' | 'orders' | 'returned'; tracking?: string; orderNo?: string; purchaseId?: string }>()
 const auth = useAuthStore()
 const pendingImport = computed(() => pendingFabricImports.get(auth.currentUser?.id ?? ''))
 const importSaving = computed(() => !!pendingImport.value?.inFlight)
@@ -32,6 +32,9 @@ const headerSearch = inject(purchaseSearchKey, undefined)
 const search = headerSearch?.search ?? ref(''), lines = ref<PurchaseLine[]>([]), total = ref<number>(), offset = ref(0)
 const history = ref<PurchaseImport[]>([]), detail = ref<PurchaseDetail>(), detailOpen = ref(false)
 const purchaseDetailTrigger = ref<HTMLButtonElement>()
+const linkedPurchase = computed(() => props.mode === 'pending' && props.purchaseId && /^[\w-]{1,64}$/.test(props.purchaseId) ? props.purchaseId : '')
+const linkedDetailError = ref('')
+let handledPurchase = ''
 const detailIdentityReview = computed(() => !!(detail.value?.receipt_identity_review_required || detail.value?.receipt_reconciliation_required))
 const detailNeedsQuantityReview = computed(() => !!detail.value && (
   detail.value.receipt_quantity_review_required || detail.value.warehouse_outstanding_quantity == null || detail.value.warehouse_outstanding_quantity === ''
@@ -122,10 +125,15 @@ async function load() {
         else selected.value = selected.value.flatMap(line => { const current = data.items.find(item => item.id === line.id); return current ? eligible(current) ? [current] : [] : [line] })
       }
     }
+    if (ticket === sequence && linkedPurchase.value && handledPurchase !== linkedPurchase.value) await loadLinkedDetail(ticket)
   } catch (e) { if (ticket === sequence) error.value = getApiErrorMessage(e) }
   finally { if (ticket === sequence) busy.value = false }
 }
 watch(importSaving, saving => { if (!saving && deferredLoad) void load() })
+watch(linkedPurchase, () => {
+  handledPurchase = ''; linkedDetailError.value = ''; detailOpen.value = false; detail.value = undefined
+  void load()
+})
 watch(() => [props.mode, props.tracking, props.orderNo], () => { clearImport(); activeGroup.value = undefined; groupOffset.value = 0; file.value = undefined; search.value = ''; filters.value = { ...defaultFilters(), order_no: props.mode === 'pending' ? (props.orderNo ?? '').slice(0, 128) : '' }; chaseSource.value = undefined; offset.value = 0; pendingView.value = props.mode === 'pending' && trackingViews.has(props.tracking as PurchaseView) ? props.tracking as PurchaseView : 'OUTSTANDING'; withdrawOpen.value = false; withdrawal.value = undefined; receiptSource.value = undefined; batchSources.value = undefined; selected.value = []; notice.value = ''; void load() }, { immediate: true })
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 watch(search, () => {
@@ -157,6 +165,7 @@ watch([() => auth.currentUser?.id, () => auth.authorizationVersion], () => {
   lines.value = []; groups.value = []; total.value = undefined; summary.value = undefined; options.value = undefined
   history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false; canPendingPurchase.value = false; savedReceiptId.value = ''
   selected.value = []; receiptSource.value = undefined; batchSources.value = undefined; chaseSource.value = undefined
+  handledPurchase = ''; linkedDetailError.value = ''
   withdrawal.value = undefined; withdrawOpen.value = false; activeGroup.value = undefined; notice.value = ''
   busy.value = false
   if (!importSaving.value) void load()
@@ -212,6 +221,25 @@ async function showDetail(id: string, event: MouseEvent) {
   busy.value = true; error.value = ''; detail.value = undefined; detailOpen.value = false
   try { const data = await api.detail(id); if (ticket === sequence) { detail.value = data; detailOpen.value = true } }
   catch (e) { if (ticket === sequence) { error.value = getApiErrorMessage(e); lines.value = []; total.value = undefined } }
+  finally { if (ticket === sequence) busy.value = false }
+}
+async function loadLinkedDetail(ticket: number) {
+  const id = linkedPurchase.value
+  if (!id) return
+  handledPurchase = id
+  linkedDetailError.value = ''
+  purchaseDetailTrigger.value = undefined
+  try {
+    const data = await api.detail(id)
+    if (ticket === sequence && linkedPurchase.value === id) { detail.value = data; detailOpen.value = true }
+  } catch (failure) {
+    if (ticket === sequence && linkedPurchase.value === id) linkedDetailError.value = getApiErrorMessage(failure)
+  }
+}
+async function retryLinkedDetail() {
+  const ticket = ++sequence
+  busy.value = true
+  try { await loadLinkedDetail(ticket) }
   finally { if (ticket === sequence) busy.value = false }
 }
 function restorePurchaseDetailFocus(event: Event) {
@@ -322,6 +350,10 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
     <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="fabric-success" role="status">{{ notice }} <RouterLink v-if="savedReceiptId && notice.includes(savedReceiptId)" class="underline" :to="{ path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'history', receipt: savedReceiptId } }">查看本次入库</RouterLink></p>
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
+    <div v-if="linkedDetailError" class="fabric-error">
+      <p role="alert">无法打开原采购明细。{{ linkedDetailError }}</p>
+      <Button type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
+    </div>
     <p v-if="pendingImport" class="fabric-message" role="status">导入结果尚未确认，文件和提交内容已锁定。<Button v-if="canRetryImport && !confirmOpen" variant="outline" size="sm" :disabled="busy || importSaving" @click="saveImport">核对原导入结果</Button><span v-if="!canRetryImport">请使用原提交账号核对结果。</span></p>
     <template v-if="mode === 'import'">
       <div class="fabric-import-controls">

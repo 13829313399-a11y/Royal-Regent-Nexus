@@ -38,8 +38,8 @@ const currentView = computed(() => {
 })
 watch(() => currentView.value.id, id => emit('viewChange', warehousePath(props.warehouse, props.section.path), id), { immediate: true })
 function selectView(view: WarehouseView) {
-  if (currentView.value.id === view.id && !route.query.source && !route.query.receipt) return
-  return router.push({ path: route.path, query: { ...route.query, view: view.id, source: undefined, receipt: undefined, ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}) } })
+  if (currentView.value.id === view.id && !route.query.source && !route.query.receipt && !route.query.purchase_id) return
+  return router.push({ path: route.path, query: { ...route.query, view: view.id, source: undefined, receipt: undefined, purchase_id: undefined, ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}) } })
 }
 async function selectMobileView(event: Event) {
   const select = event.target as HTMLSelectElement
@@ -181,7 +181,7 @@ const dateLabel = computed(() => {
       <FabricInventorySetup v-else-if="fabricInventory && (currentView.id === 'opening' || currentView.id === 'stocktake')" :key="currentView.id" :mode="currentView.id" />
       <FabricOrderSummary v-else-if="!semi && section.path === 'inventory' && currentView.id === 'order-summary'" />
       <WarehouseOperationsWorkspace v-else-if="liveOperations" :warehouse="semi ? 'semi' : 'fabric'" :section="section.path" :view="currentView.id" :title="currentView.title" :description="currentView.description" />
-      <FabricProcurementWorkspace v-else-if="procurementMode" :mode="procurementMode" :tracking="typeof route.query.tracking === 'string' ? route.query.tracking : undefined" :order-no="typeof route.query.order_no === 'string' ? route.query.order_no : undefined" />
+      <FabricProcurementWorkspace v-else-if="procurementMode" :mode="procurementMode" :tracking="typeof route.query.tracking === 'string' ? route.query.tracking : undefined" :order-no="typeof route.query.order_no === 'string' ? route.query.order_no : undefined" :purchase-id="typeof route.query.purchase_id === 'string' ? route.query.purchase_id : undefined" />
       <FabricReceivingRecords v-else-if="receivingMode" :mode="receivingMode" />
       <SemiLocationWorkspace v-else-if="semiLocations" /><FabricMasterWorkspace v-else-if="masterMode" :view="currentView.id" />
       <FabricSourcePlaceholder v-else-if="sourcePlaceholder" :mode="sourcePlaceholder" />
