@@ -496,3 +496,18 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
   #qis-review-controls.qis-pending-review [data-rfilter=sort]{width:128px}
 }
 #page-review #reviewTableWrap:focus{outline:none}
+
+.qis-name-editor{position:relative;display:block}
+.qis-name-editor .qis-fill-handle{
+  position:absolute;right:0;bottom:0;width:14px;height:14px;
+  cursor:crosshair;touch-action:none;user-select:none;
+}
+.qis-fill-handle::after{
+  content:"";position:absolute;right:1px;bottom:1px;width:7px;height:7px;
+  background:var(--green,#188453);border:1px solid var(--bg-card,#fff);box-sizing:border-box;
+}
+.qis-name-editor:has(input:placeholder-shown) .qis-fill-handle{visibility:hidden}
+:is(#page-records,#page-review) .qis-table td.qis-fill-target .qis-name-editor input{
+  outline:2px solid var(--green,#188453);outline-offset:-2px;
+  background:color-mix(in srgb,var(--green,#188453) 15%,var(--bg-card,#fff));
+}

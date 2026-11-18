@@ -487,3 +487,41 @@ test('keyboard range selection and changed filters share the same eligibility an
   p.d.getElementById('searchInput').value='00001';p.w.QcInspectionSheet.render();assert.equal(p.w.QcInspectionSheet.model.recordChecked.size,0);assert.equal(p.d.getElementById('qis-record-batch').disabled,true);
  }finally{p.dom.window.close();}
 });
+
+test('inspector fill previews editable rows, cancels, then saves the source name and identity',async()=>{
+  const p=await page();
+  try{
+    p.rows[0].inspectionExecution={inspector:'测试检验员',inspectorId:'qc-test'};
+    p.rows[1].legacyCompleted=true;
+    p.rows[2].inspectionExecution={inspector:'原姓名'};
+    await p.w.QcInspectionSheet.load();
+    const host=p.d.getElementById('recordsTableWrap');
+    const nodes=[...host.querySelectorAll('[data-entry]')];
+    nodes.forEach((n,i)=>n.getBoundingClientRect=()=>({bottom:164+i*64}));
+    const handle=nodes[0].querySelector('[data-fill-name=inspector]');
+    assert.equal(nodes[1].querySelector('[data-fill-name]'),null);
+    const preview=()=>{
+      pointer(p,handle,'pointerdown',132);
+      pointer(p,host,'pointermove',280);
+      assert.equal(host.querySelectorAll('.qis-fill-target').length,1);
+      assert.equal(nodes[2].querySelector('input[data-execution-field=inspector]').value,'原姓名');
+    };
+    preview();
+    pointer(p,host,'pointercancel',280);
+    assert.equal(host.querySelector('.qis-fill-target'),null);
+    assert.equal(p.w.QcInspectionSheet.navigationState().dirty,false);
+    preview();
+    pointer(p,host,'pointerup',280);
+    await p.w.QcInspectionSheet.flush();
+    const saves=p.calls.filter(c=>c.url?.endsWith('/save'));
+    assert.equal(saves.length,1);
+    assert.equal(saves[0].url,'api/inspection-sheet/entries/c/save');
+    assert.deepEqual(saves[0].body.inspectionExecution,{inspector:'测试检验员',inspectorId:'qc-test'});
+    assert.equal(p.w.QcInspectionSheet.model.recordChecked.size,0);
+    const input=nodes[2].querySelector('[data-execution-field=inspector]');
+    input.value='手填姓名';
+    input.dispatchEvent(new p.w.Event('input'));
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(p.calls.filter(c=>c.url?.endsWith('/save')).at(-1).body.inspectionExecution,{inspector:'手填姓名'});
+  }finally{p.dom.window.close();}
+});
