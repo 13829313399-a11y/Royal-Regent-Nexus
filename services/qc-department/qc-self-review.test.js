@@ -458,3 +458,32 @@ test('confirm freezes edits and duplicate execution, flushes latest revision, an
   assert.equal(p.calls.filter(c=>c.url.endsWith('/confirm')).length,1);assert.equal(p.rows[1].reviewState,'pending');assert.equal(p.w.QcInspectionSheet.model.drafts.get('b').remark,'保留草稿');assert.ok(p.w.QcInspectionSheet.model.checked.has('b'));assert.match(p.d.querySelector('[data-feedback]').textContent,/版本冲突/);
  }finally{p.dom.window.close();}
 });
+
+test('responsibility fill follows the displayed filtered rows and only writes the dragged column',async()=>{
+  const p=await page();
+  try{
+    p.rows[0].firstResponsible='王一';
+    p.rows[0].secondResponsible='李二';
+    p.rows[1].reviewState='approved';
+    p.rows[2].firstResponsible='原第一人';
+    p.rows[2].secondResponsible='原第二人';
+    await p.w.QcInspectionSheet.loadReview('pending');
+    const host=p.d.getElementById('reviewTableWrap');
+    const nodes=[...host.querySelectorAll('[data-entry]')];
+    assert.deepEqual(nodes.map(n=>n.dataset.entry),['a','c']);
+    nodes.forEach((n,i)=>n.getBoundingClientRect=()=>({bottom:164+i*64}));
+    for(const field of ['firstResponsible','secondResponsible']){
+      pointer(p,nodes[0].querySelector('[data-fill-name="'+field+'"]'),'pointerdown',132);
+      pointer(p,host,'pointermove',196);
+      assert.equal(host.querySelector('.qis-fill-target').dataset.column,field);
+      pointer(p,host,'pointerup',196);
+      await p.w.QcInspectionSheet.flush();
+      assert.equal(p.rows[2][field],p.rows[0][field]);
+      if(field==='firstResponsible')assert.equal(p.rows[2].secondResponsible,'原第二人');
+    }
+    assert.equal(p.rows[1].firstResponsible,undefined);
+    assert.equal(p.w.QcInspectionSheet.model.checked.size,0);
+    await p.w.QcInspectionSheet.loadReview('approved');
+    assert.equal(host.querySelector('[data-fill-name]'),null);
+  }finally{p.dom.window.close();}
+});

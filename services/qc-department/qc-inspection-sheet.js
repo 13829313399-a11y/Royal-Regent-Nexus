@@ -233,9 +233,19 @@
         (canEdit(row)?'<button type="button" data-remove-photo="'+esc(photo.id)+'" aria-label="删除 '+esc(photo.name)+'">×</button>':'')+'</span>';
     }).join('');
   }
-  function editExecution(id,key,value,immediate=false){if(model.submitBusy||model.reviewBusy)return;const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
+  function editInspector(row,name,identity=''){
+    const d=draft(row),current=d.inspectionExecution;
+    if(current.inspector===name&&(!identity||identity===current.inspectorId))return;
+    // Free-text names go through the existing name-only API. A verified ID is
+    // sent only when the fill source actually carries one.
+    if(identity)d.executionDirty.add('inspectorId');else d.executionDirty.delete('inspectorId');
+    d.executionDirty.add('inspector');
+    edit(row.id,'inspectionExecution',{...current,inspector:name,inspectorId:identity});
+  }
+  function editExecution(id,key,value,immediate=false){if(model.submitBusy||model.reviewBusy)return;if(key==='inspector')return editInspector(byId(id),value);const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
   function reviewEditor(row,key,label,type,value){
-    const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
+    const fillable=model.view==='records'?key==='inspector':['firstResponsible','secondResponsible'].includes(key);
+    const attr=(fillable?' placeholder=" "':'')+' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
     if(key==='institution'){
       const list=options[key==='inspector'?'inspectors':'institutions']||[], idKey=key==='inspector'?'inspectorId':'institutionId', d=draft(row);
       const selected=d.inspectionExecution[idKey]||'', historical=value&&!list.some(x=>x.id===selected);
@@ -243,6 +253,10 @@
       return '<select class="qis-review-input" data-person-field="'+key+'" aria-label="'+esc(label)+'"><option value="">'+(list.length?'未填写':'尚未配置选项')+'</option>'+ (historical?'<option value="__history__" selected>'+esc(value)+'（历史）</option>':'')+list.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===selected?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select>';
     }
     const control=key==='reportStatus'?'<select'+attr+'><option value="">未填写</option>'+[...new Set(['有','无',value].filter(v=>v!==undefined&&v!==null&&String(v).trim()))].map(v=>'<option value="'+esc(v)+'" '+(v===value?'selected':'')+'>'+esc(v)+'</option>').join('')+'</select>':type==='multiline'?'<textarea rows="2" maxlength="'+(['otherRemark','customerRequirements'].includes(key)?20000:4000)+'"'+attr+'>'+esc(value)+'</textarea>':'<input size="1" type="'+type+'"'+(type==='number'?' min="0" max="1000000000000" step="0.0001"':type==='text'?' maxlength="'+(executionFields[key]?255:200)+'"':'')+attr+' value="'+esc(value)+'">';
+    if(fillable){
+      const title=esc('向下拖动填充'+label);
+      return '<span class="qis-name-editor">'+control+'<span class="qis-fill-handle" data-fill-name="'+key+'" title="'+title+'" aria-hidden="true"></span></span>'+(model.view==='records'?'<small data-review-status="'+row.id+'" role="status"></small>':'');
+    }
     return control+(model.view==='review'?'':'<small data-review-status="'+row.id+'" role="status"></small>');
   }
   function detailEditor(id,key){
@@ -510,6 +524,18 @@
     const drag=rowDrag;rowDrag=null;root.cancelAnimationFrame(rowDragFrame);rowDragFrame=0;
     drag.host.classList.remove('qis-drag-selecting');
     if(drag.host.hasPointerCapture?.(drag.pointer))drag.host.releasePointerCapture(drag.pointer);
+    if(drag.fill){
+      suppressRowClick=true;setTimeout(()=>{suppressRowClick=false;},0);
+      for(const cell of drag.targets){
+        cell.classList.remove('qis-fill-target');
+        const row=byId(cell.closest('[data-entry]').dataset.entry);
+        if(cancel||!row||!canEdit(row)||model.loading||model.error||model.submitBusy||model.reviewBusy)continue;
+        cell.querySelector('input').value=drag.fill.value;
+        if(drag.fill.key==='inspector')editInspector(row,drag.fill.value,drag.fill.identity);
+        else edit(row.id,drag.fill.key,drag.fill.value);
+      }
+      return;
+    }
     if(cancel)model[selectionKey()]=drag.before;
     model.selectedId=model[selectionKey()].size===1?[...model[selectionKey()]][0]:'';
     suppressRowClick=true;setTimeout(()=>{suppressRowClick=false;},0);
@@ -532,7 +558,15 @@
       if(!rowDrag)return;
       const nodes=rowDrag.nodes;
       let index=nodes.findIndex(node=>rowDrag.y<=node.getBoundingClientRect().bottom);if(index<0)index=nodes.length-1;
-      chooseRowRange(rowDrag.rows,rowDrag.start,index);
+      if(rowDrag.fill){
+        if(index===rowDrag.end)return;
+        rowDrag.end=index;
+        const cells=nodes.slice(rowDrag.start+1,index+1).map(node=>node.querySelector('[data-fill-name="'+rowDrag.fill.key+'"]')?.closest('td')).filter(Boolean);
+        const next=new Set(cells);
+        for(const cell of rowDrag.targets)if(!next.has(cell))cell.classList.remove('qis-fill-target');
+        for(const cell of next)if(!rowDrag.targets.has(cell))cell.classList.add('qis-fill-target');
+        rowDrag.targets=next;
+      }else chooseRowRange(rowDrag.rows,rowDrag.start,index);
     };
     const scroll=()=>{
       if(!rowDrag)return;
@@ -543,16 +577,30 @@
       update();rowDragFrame=root.requestAnimationFrame(scroll);
     };
     host.addEventListener('pointerdown',event=>{
-      if(!allowed()||event.button!==0||event.pointerType==='touch'||interactive(event.target))return;
+      const handle=event.target.closest('[data-fill-name]');
+      if(rowDrag||!allowed()||event.button!==0||(!handle&&(event.pointerType==='touch'||interactive(event.target))))return;
       const node=event.target.closest('[data-entry]');if(!node)return;
       const rows=visibleSelectionRows(host),start=rows.findIndex(row=>row.id===node.dataset.entry);if(start<0)return;
-      event.preventDefault();host.focus({preventScroll:true});model[anchorKey()]=node.dataset.entry;model[cursorKey()]=node.dataset.entry;
-      rowDrag={host,pointer:event.pointerId,start,rows,nodes:[...host.querySelectorAll('[data-entry]')],y:event.clientY,before:new Set(model[selectionKey()])};
+      let fill=null;
+      if(handle){
+        const key=handle.dataset.fillName,value=handle.parentElement.querySelector('input').value;
+        const source=draft(rows[start]);
+        if(!value.trim()||source.composing||!canEdit(rows[start]))return;
+        fill={key,value,identity:source.inspectionExecution.inspectorId};
+      }else{
+        model[anchorKey()]=node.dataset.entry;model[cursorKey()]=node.dataset.entry;
+      }
+      event.preventDefault();host.focus({preventScroll:true});
+      rowDrag={host,pointer:event.pointerId,start,rows,fill,targets:new Set(),nodes:[...host.querySelectorAll('[data-entry]')],y:event.clientY,before:new Set(model[selectionKey()])};
       host.setPointerCapture?.(event.pointerId);host.classList.add('qis-drag-selecting');update();rowDragFrame=root.requestAnimationFrame(scroll);
     });
     host.addEventListener('pointermove',event=>{if(rowDrag&&event.pointerId===rowDrag.pointer){rowDrag.y=event.clientY;update();}});
-    host.addEventListener('pointerup',()=>finishRowDrag());
-    host.addEventListener('pointercancel',()=>finishRowDrag(true));
+    host.addEventListener('pointerup',event=>{
+      if(!rowDrag||event.pointerId!==rowDrag.pointer)return;
+      if(rowDrag.fill){rowDrag.y=event.clientY;update();}
+      finishRowDrag();
+    });
+    host.addEventListener('pointercancel',event=>{if(rowDrag?.pointer===event.pointerId)finishRowDrag(true);});
     host.addEventListener('lostpointercapture',()=>finishRowDrag(true));
     host.addEventListener('click',event=>{
       if(!allowed()||suppressRowClick||interactive(event.target))return;
@@ -561,6 +609,7 @@
     });
     host.addEventListener('keydown',event=>{
       if(!allowed()||interactive(event.target))return;
+      if(event.key==='Escape'&&rowDrag?.fill){event.preventDefault();finishRowDrag(true);return;}
       if(event.key==='Escape'){event.preventDefault();finishRowDrag(true);model[selectionKey()].clear();model.selectedId='';updateRowSelection();return;}
       if(!['ArrowUp','ArrowDown',' '].includes(event.key))return;
       event.preventDefault();const rows=visibleSelectionRows(host);if(!rows.length)return;
