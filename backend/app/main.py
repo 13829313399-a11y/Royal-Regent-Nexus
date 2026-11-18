@@ -360,6 +360,8 @@ app.include_router(mainland_invoice_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(qc_department_router)
+from app.api.qc_mobile import router as qc_mobile_router
+app.include_router(qc_mobile_router)
 app.include_router(system_router)
 app.include_router(work_center_router)
 from app.api.three_d_operations import router as three_d_operations_router
