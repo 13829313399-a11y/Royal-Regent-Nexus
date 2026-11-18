@@ -4,7 +4,7 @@ from collections import defaultdict
 from decimal import Decimal
 from hashlib import sha256
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from app.models.fabric_procurement import FabricProcurementLine
 from app.services import cutting_ops as c, fabric_procurement as procurement
@@ -38,15 +38,35 @@ def display_batches(data):
     if (not links or links['requisition_version'] != (data.get('requisition') or {}).get('version')
             or links['batch_signature'] != batch_signature(batches)):
         return batches
-    return [dict(batch, purchase_source=links['sources'][str(index)]) if str(index) in links['sources'] else batch
+    return [dict(batch, purchase_source=dict(links['sources'][str(index)])) if str(index) in links['sources'] else batch
             for index, batch in enumerate(batches)]
 
 
-def save_batches(data, batches):
+def include_detail_numbers(db, data_items):
+    refs = [batch['purchase_source'] for data in data_items if data
+            for batch in data.get('batches', []) if batch.get('purchase_source') and not batch['purchase_source'].get('detail_no')]
+    ids = sorted({ref['id'] for ref in refs})
+    if not ids or not inspect(db.connection()).has_table(FabricProcurementLine.__tablename__):
+        return
+    labels = {}
+    for start in range(0, len(ids), 200):
+        for line in db.scalars(source_query().where(FabricProcurementLine.id.in_(ids[start:start + 200]))):
+            labels[line.id, line.revision] = json.loads(line.payload_json).get('source_line_id')
+    for ref in refs:
+        if label := labels.get((ref['id'], ref['revision'])):
+            ref['detail_no'] = label
+
+
+def save_batches(db, data, batches, previous):
     plain = [b.model_dump(mode='json', exclude={'purchase_source'}) for b in batches]
     sources = {str(index): b.purchase_source.model_dump(mode='json') for index, b in enumerate(batches) if b.purchase_source}
     data['batches'] = plain
     if sources:
+        prior = {(ref['id'], ref['revision']): ref.get('detail_no') for batch in previous if (ref := batch.get('purchase_source'))}
+        for ref in sources.values():
+            if label := prior.get((ref['id'], ref['revision'])):
+                ref['detail_no'] = label
+        include_detail_numbers(db, [{'batches': [{'purchase_source': ref} for ref in sources.values()]}])
         data['purchase_links'] = dict(requisition_version=data['requisition']['version'],
                                       batch_signature=batch_signature(plain), sources=sources)
     else:

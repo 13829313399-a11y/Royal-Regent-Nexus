@@ -5,11 +5,12 @@ import type { Command, MasterRecord, Requirement } from './api'
 
 export interface DemandInput { row: number; quantity: string; purchase_mode: 'purchase' | 'no_purchase'; no_purchase_reason: string }
 export interface Demand extends Requirement { row: number; quantity: string; purchase_mode?: 'purchase' | 'no_purchase'; no_purchase_reason?: string; theoretical_quantity: string; replied_quantity: string; awaiting_reply_quantity: string; material: { code: string; name: string } }
-export interface EtaPurchaseSource { id: string; revision: number }
+export interface EtaPurchaseSource { id: string; revision: number; detail_no?: string }
 export interface PurchaseCandidate extends EtaPurchaseSource {
   detail_no: string; production_no: string; quantity: string | null; unit: string
 }
 export interface PurchaseProgress {
+  read_at: string
   sources: { row: number; id: string; order_no: string; detail_no: string; unit: string; linked_revision: number; current_revision: number | null
     status: 'active' | 'identity_changed' | 'unavailable'; received_quantity: string | null; outstanding_quantity: string | null }[]
   cutting: { row: number; unit: string; signed_quantity: string; returned_quantity: string }[]

@@ -3,8 +3,9 @@ import { computed, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
 import { errorMessage } from './api'
 import { ordersApi, type EtaPurchaseSource, type PurchaseCandidate } from './ordersApi'
+import CuttingPurchaseSourceReference from './CuttingPurchaseSourceReference.vue'
 
-const props = defineProps<{ orderId: string; row: number; reference: string; supplier: string; fieldId: string; fieldName: string; canSearch: boolean }>()
+const props = defineProps<{ orderId: string; row: number; reference: string; supplier: string; fieldId: string; fieldName: string; canSearch: boolean; canOpen?: boolean }>()
 const source = defineModel<EtaPurchaseSource | undefined>('source')
 const choices = ref<PurchaseCandidate[]>([])
 const loading = ref(false)
@@ -45,7 +46,9 @@ function choose(event: Event) {
   else if (!select.value) source.value = undefined
 }
 
-function applyChoice(choice: PurchaseCandidate) { source.value = { id: choice.id, revision: choice.revision } }
+function applyChoice(choice: PurchaseCandidate) {
+  source.value = { id: choice.id, revision: choice.revision, detail_no: choice.detail_no }
+}
 </script>
 
 <template>
@@ -62,11 +65,11 @@ function applyChoice(choice: PurchaseCandidate) { source.value = { id: choice.id
         </option>
       </select>
     </label>
-    <p v-if="source" class="purchase-source-id">
-      已选采购明细 {{ source.id }} · V{{ source.revision }}
+    <div v-if="source" class="purchase-source-id">
+      <span>已选 </span><CuttingPurchaseSourceReference :source="source" :can-open="canOpen" />
       <Button v-if="availableUpdate" type="button" variant="outline" @click="applyChoice(availableUpdate)">确认当前明细版本</Button>
       <Button type="button" variant="outline" @click="source = undefined">移除关联</Button>
-    </p>
+    </div>
     <p v-if="message" role="status">{{ message }}</p>
   </div>
 </template>

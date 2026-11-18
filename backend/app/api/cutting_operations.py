@@ -1,4 +1,5 @@
 from typing import Annotated, Literal
+from datetime import UTC, datetime
 from hashlib import sha256
 from fastapi import APIRouter, Depends, Query, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -65,6 +66,7 @@ def access(db: Db, user: User, factory_id: str = ''):
                 settlements_schema_ready=settlement.schema_ready(db.connection()) if enabled else False,
                 payments_schema_ready=payments.schema_ready(db.connection()) if enabled else False,
                 can_link_purchase=enabled and c.allowed(user, 'eta_write') and source_access(user),
+                can_read_purchase=enabled and source_access(user),
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
 
@@ -489,7 +491,18 @@ def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge
     orders_ready(db)
     result = orders.list_orders(db, page, q, status, plan_status, changes_only=changes_only)
     orders.include_note_comparisons(db, ((row['line_id'], row['current']) for row in result['data']))
+    include_order_purchase_numbers(db, result['data'])
     return result
+
+
+def include_order_purchase_numbers(db, rows):
+    from app.services.cutting_purchase_links import include_detail_numbers
+    data_items = []
+    for row in rows:
+        data_items.append((row.get('current') or {}).get('data'))
+        pending = row.get('pending_purchase') or {}
+        data_items.extend((pending, pending.get('prior_purchase_reply')))
+    include_detail_numbers(db, data_items)
 
 
 @router.get('/orders/{line_id}/versions')
@@ -502,6 +515,7 @@ def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page:
         .order_by(CuttingOrderRevision.version.desc()).offset((page-1)*50).limit(50))
     revisions = [orders.display_revision(orders.revision(db, order, v)) for v in numbers]
     orders.include_note_comparisons(db, ((line_id, row) for row in revisions))
+    include_order_purchase_numbers(db, [{'current': row} for row in revisions])
     return dict(data=revisions, total=order.version, page=page, page_size=50)
 
 
@@ -513,6 +527,7 @@ def read_order(line_id: str, db: Db, user: User, factory_id: str = ''):
     c.require(dispatch is not None, '华康C裁床来源订单不存在', 404)
     result = orders.view(db, dispatch)
     orders.include_note_comparisons(db, [(line_id, result['current'])])
+    include_order_purchase_numbers(db, [result])
     return result
 
 
@@ -542,7 +557,8 @@ def order_purchase_progress(line_id: str, db: Db, user: User, factory_id: str = 
     c.authorize(user, factory_id)
     data = current_purchase_data(db, line_id)
     c.require(not data.get('purchase_reconciliation_required'), '原需求待采购核对，请先处理版本变更', 409)
-    return JSONResponse(progress(db, line_id, data), headers={'Cache-Control': 'no-store'})
+    return JSONResponse({**progress(db, line_id, data), 'read_at': datetime.now(UTC).isoformat()},
+                        headers={'Cache-Control': 'no-store'})
 
 
 def order_command(db, user, line_id, body, action, handler):

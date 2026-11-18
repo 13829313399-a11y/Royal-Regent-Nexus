@@ -427,8 +427,9 @@ def reply_eta(db, user, line_id, body):
         row['replied_quantity'] = str(totals[row['row']])
         row['awaiting_reply_quantity'] = str(Decimal(row['quantity']) - totals[row['row']])
     from app.services.cutting_purchase_links import display_batches, save_batches, validate_sources
-    validate_sources(db, user, req, body.batches, display_batches(data))
-    save_batches(data, body.batches)
+    previous = display_batches(data)
+    validate_sources(db, user, req, body.batches, previous)
+    save_batches(db, data, body.batches, previous)
     return append(db, user, order, data, body.reason)
 
 
