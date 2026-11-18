@@ -186,6 +186,7 @@
     finishRowDrag(true);
     if(model.loading){model.nextLoad={view,tab};return;}
     if(navigationState().dirty||navigationState().busy){root.showToast?.('请先完成本行保存或重试；未保存内容仍保留。','error');return;}
+    typingStep=null;nameHistory.undo.length=0;nameHistory.redo.length=0;
     if(model.view!==view){root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();model.items=[];model.drafts.clear();model.checked.clear();}
     model.recordChecked.clear();
     if(model.reviewTab!==tab)model.checked.clear();model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
@@ -233,12 +234,107 @@
         (canEdit(row)?'<button type="button" data-remove-photo="'+esc(photo.id)+'" aria-label="删除 '+esc(photo.name)+'">×</button>':'')+'</span>';
     }).join('');
   }
-  function editInspector(row,name,identity=''){
+  const nameHistory={undo:[],redo:[]};
+  let typingStep=null;
+  const sameName=(a,b)=>a.name===b.name&&a.identity===b.identity;
+  function nameValue(row,key){
+    const d=draft(row);
+    return key==='inspector'?{name:d.inspectionExecution.inspector,identity:d.inspectionExecution.inspectorId}:{name:d[key],identity:''};
+  }
+  function writeName(row,key,value){
+    if(key==='inspector')editInspector(row,value.name,value.identity,true);
+    else edit(row.id,key,value.name);
+  }
+  function rememberNames(key,changes){
+    if(!changes.length)return null;
+    const step={key,changes};
+    nameHistory.undo.push(step);
+    if(nameHistory.undo.length>100)nameHistory.undo.shift();
+    nameHistory.redo.length=0;
+    updateNameButtons();
+    return step;
+  }
+  function bindNameEditor(input,row){
+    const key=input.dataset.reviewField||input.dataset.executionField,d=draft(row);
+    const applyInput=()=>{
+      if(d.composing||model.submitBusy||model.reviewBusy||!canEdit(row))return;
+      const before=nameValue(row,key);
+      if(before.name===input.value)return;
+      if(key==='inspector')editInspector(row,input.value);else edit(row.id,key,input.value);
+      const after=nameValue(row,key);
+      if(typingStep&&typingStep===nameHistory.undo.at(-1)&&typingStep.key===key&&typingStep.changes[0].id===row.id){
+        typingStep.changes[0].after=after;
+        if(sameName(typingStep.changes[0].before,after)){nameHistory.undo.pop();typingStep=null;updateNameButtons();}
+      }else typingStep=rememberNames(key,[{id:row.id,before,after}]);
+    };
+    input.oninput=applyInput;
+    input.onchange=applyInput;
+    input.oncompositionstart=input.oncompositionend=null;
+    input.addEventListener('compositionstart',()=>{clearTimeout(d.timer);d.timer=null;d.composing=true;});
+    input.addEventListener('compositionend',()=>{d.composing=false;applyInput();if(d.dirty&&!d.timer)pump(row.id);});
+    input.onblur=()=>{typingStep=null;if(d.dirty&&!d.composing)pump(row.id);};
+  }
+  function applyNameHistory(action){
+    const stack=nameHistory[action],step=stack.at(-1);
+    if(!step||!editable()||model.loading||model.error||model.submitBusy||model.reviewBusy||rowDrag)return;
+    const undo=action==='undo',key=step.key;
+    for(const change of step.changes){
+      const row=byId(change.id);
+      if(!row||!canEdit(row)||draft(row).conflict||draft(row).composing||!sameName(nameValue(row,key),undo?change.after:change.before)){
+        root.showToast?.('姓名或记录状态已变化，无法执行本次操作','error');
+        return;
+      }
+    }
+    typingStep=null;
+    stack.pop();
+    nameHistory[undo?'redo':'undo'].push(step);
+    const host=root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap');
+    for(const change of step.changes){
+      const value=undo?change.before:change.after;
+      writeName(byId(change.id),key,value);
+      const input=host.querySelector('[data-entry="'+change.id+'"] [data-column="'+key+'"] input');
+      if(input)input.value=value.name;
+    }
+    updateNameButtons();
+  }
+  function updateNameButtons(){
+    const records=model.view==='records';
+    const toolbar=root.document.querySelector(records?'#page-records .records-actions':'#page-review .toolbar-left');
+    if(!toolbar)return;
+    let group=toolbar.querySelector('.qis-name-history');
+    if(!group){
+      group=root.document.createElement('span');group.className='qis-name-history';
+      group.setAttribute('role','group');group.setAttribute('aria-label','姓名编辑历史');
+      for(const [action,label,shortcut] of [['undo','撤销','⌘Z / Ctrl+Z'],['redo','重做','⇧⌘Z / Ctrl+Y / Ctrl+Shift+Z']]){
+        const button=root.document.createElement('button');
+        button.type='button';button.dataset.nameHistory=action;button.textContent=label;
+        button.title=label+'姓名编辑（'+shortcut+'）';button.onclick=()=>applyNameHistory(action);
+        group.append(button);
+      }
+      if(records){toolbar.setAttribute('aria-label','姓名编辑和打印');toolbar.prepend(group);}else toolbar.append(group);
+    }
+    group.hidden=!editable()||(!records&&model.reviewTab!=='pending');
+    for(const button of group.children)button.disabled=!nameHistory[button.dataset.nameHistory].length||model.loading||!!model.error||model.reviewBusy||model.submitBusy;
+  }
+  root.document.addEventListener('keydown',event=>{
+    if(event.defaultPrevented||event.isComposing||event.altKey||!(event.metaKey||event.ctrlKey))return;
+    const key=event.key.toLowerCase();
+    const action=key==='z'?(event.shiftKey?'redo':'undo'):key==='y'&&event.ctrlKey&&!event.shiftKey?'redo':null;
+    if(!action)return;
+    const target=event.target;
+    const page=root.document.getElementById('page-'+model.view);
+    if(!page||(!page.contains(target)&&!(target===root.document.body&&page.classList.contains('active')))||root.document.querySelector('dialog[open]'))return;
+    if(target.closest('input,textarea,select,[contenteditable=true]')&&!target.closest('.qis-name-editor'))return;
+    if(!nameHistory[action].length&&!target.closest('.qis-name-editor'))return;
+    event.preventDefault();
+    applyNameHistory(action);
+  });
+  function editInspector(row,name,identity='',restore=false){
     const d=draft(row),current=d.inspectionExecution;
-    if(current.inspector===name&&(!identity||identity===current.inspectorId))return;
+    if(current.inspector===name&&((!restore&&!identity)||identity===current.inspectorId))return;
     // Free-text names go through the existing name-only API. A verified ID is
     // sent only when the fill source actually carries one.
-    if(identity)d.executionDirty.add('inspectorId');else d.executionDirty.delete('inspectorId');
+    if(identity||restore)d.executionDirty.add('inspectorId');else d.executionDirty.delete('inspectorId');
     d.executionDirty.add('inspector');
     edit(row.id,'inspectionExecution',{...current,inspector:name,inspectorId:identity});
   }
@@ -410,6 +506,7 @@
           wrap.toggleAttribute('data-show-value',hasContent(input.value));
         });
       });
+      node.querySelectorAll('.qis-name-editor input').forEach(input=>bindNameEditor(input,row));
       node.querySelectorAll('[data-person-field]').forEach(input=>input.onchange=()=>{
         const key=input.dataset.personField,idKey=key==='inspector'?'inspectorId':'institutionId';if(input.value==='__history__')return;
         const selected=(options[key==='inspector'?'inspectors':'institutions']||[]).find(x=>x.id===input.value);
@@ -423,6 +520,7 @@
       bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id,true);
     });
     if(reviewing)updateReviewControls(rows);else updateRecordControls();
+    updateNameButtons();
     bindRowSelection(host);
     audit()?.bind(host,model.items);
     if(!editing?.entry)return;
@@ -526,14 +624,19 @@
     if(drag.host.hasPointerCapture?.(drag.pointer))drag.host.releasePointerCapture(drag.pointer);
     if(drag.fill){
       suppressRowClick=true;setTimeout(()=>{suppressRowClick=false;},0);
+      const changes=[];
       for(const cell of drag.targets){
         cell.classList.remove('qis-fill-target');
         const row=byId(cell.closest('[data-entry]').dataset.entry);
         if(cancel||!row||!canEdit(row)||model.loading||model.error||model.submitBusy||model.reviewBusy)continue;
+        const before=nameValue(row,drag.fill.key);
         cell.querySelector('input').value=drag.fill.value;
         if(drag.fill.key==='inspector')editInspector(row,drag.fill.value,drag.fill.identity);
         else edit(row.id,drag.fill.key,drag.fill.value);
+        const after=nameValue(row,drag.fill.key);
+        if(!sameName(before,after))changes.push({id:row.id,before,after});
       }
+      if(changes.length){typingStep=null;rememberNames(drag.fill.key,changes);}
       return;
     }
     if(cancel)model[selectionKey()]=drag.before;

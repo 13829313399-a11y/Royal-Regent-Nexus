@@ -525,3 +525,28 @@ test('inspector fill previews editable rows, cancels, then saves the source name
     assert.deepEqual(p.calls.filter(c=>c.url?.endsWith('/save')).at(-1).body.inspectionExecution,{inspector:'手填姓名'});
   }finally{p.dom.window.close();}
 });
+
+test('inspector name history restores verified identity and redoes a manual IME name',async()=>{
+  const p=await page();
+  try{
+    p.rows[0].inspectionExecution={inspector:'测试检验员',inspectorId:'qc-test'};
+    await p.w.QcInspectionSheet.load();
+    const input=p.d.querySelector('[data-entry=a] [data-execution-field=inspector]');
+    input.dispatchEvent(new p.w.Event('compositionstart'));
+    input.value='陈';
+    input.dispatchEvent(new p.w.Event('input'));
+    input.value='陈明';
+    input.dispatchEvent(new p.w.Event('compositionend'));
+    await p.w.QcInspectionSheet.flush();
+    const undo=p.d.querySelector('#page-records [data-name-history=undo]');
+    undo.click();
+    await p.w.QcInspectionSheet.flush();
+    assert.equal(p.rows[0].inspectionExecution.inspectorId,'qc-test');
+    assert.equal(input.value,'测试检验员');
+    input.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Z',ctrlKey:true,shiftKey:true,bubbles:true}));
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(p.rows[0].inspectionExecution,{inspector:'陈明',inspectorId:''});
+    await p.w.QcInspectionSheet.load();
+    assert.ok(undo.disabled);
+  }finally{p.dom.window.close();}
+});

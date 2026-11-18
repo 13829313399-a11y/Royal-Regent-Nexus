@@ -487,3 +487,38 @@ test('responsibility fill follows the displayed filtered rows and only writes th
     assert.equal(host.querySelector('[data-fill-name]'),null);
   }finally{p.dom.window.close();}
 });
+
+test('review name history groups a whole fill, restores distinct names and branches on new typing',async()=>{
+  const p=await page();
+  try{
+    for(const [i,row] of p.rows.entries())row.firstResponsible=['林青','陈明',''][i];
+    await p.w.QcInspectionSheet.loadReview('pending');
+    const host=p.d.getElementById('reviewTableWrap');
+    const nodes=[...host.querySelectorAll('[data-entry]')];
+    nodes.forEach((n,i)=>n.getBoundingClientRect=()=>({bottom:164+i*64}));
+    const names=()=>p.rows.map(r=>r.firstResponsible);
+    const key=(target,key,mods)=>target.dispatchEvent(new p.w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...mods}));
+    pointer(p,nodes[0].querySelector('[data-fill-name=firstResponsible]'),'pointerdown',132);
+    pointer(p,host,'pointerup',270);
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(names(),['林青','林青','林青']);
+    key(host,'z',{metaKey:true});
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(names(),['林青','陈明','']);
+    key(host,'Z',{metaKey:true,shiftKey:true});
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(names(),['林青','林青','林青']);
+    p.d.querySelector('#page-review [data-name-history=undo]').click();
+    const input=nodes[1].querySelector('[data-review-field=firstResponsible]');
+    for(const value of ['王','王宁']){input.value=value;input.dispatchEvent(new p.w.Event('input',{bubbles:true}));}
+    assert.ok(p.d.querySelector('#page-review [data-name-history=redo]').disabled);
+    key(input,'z',{ctrlKey:true});
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(names(),['林青','陈明','']);
+    key(input,'y',{ctrlKey:true});
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(names(),['林青','王宁','']);
+    assert.ok(key(nodes[1].querySelector('[data-remark]'),'z',{ctrlKey:true}));
+    assert.equal(p.w.QcInspectionSheet.model.checked.size,0);
+  }finally{p.dom.window.close();}
+});

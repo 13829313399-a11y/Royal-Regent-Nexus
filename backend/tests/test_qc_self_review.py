@@ -136,3 +136,14 @@ def test_legacy_name_change_clears_stable_identity_but_noop_preserves_it(db):
  assert same['revision']==r['revision'] and same['inspectionExecution']['inspectorId']==str(ACTOR['id'])
  changed=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution={'inspector':'历史客户端填写'}),ACTOR,review=True)
  assert changed['inspectionExecution']['inspectorId']=='' and changed['inspectionExecution']['inspector']=='历史客户端填写'
+
+
+def test_restore_manual_inspector_with_same_name_as_linked_inspector(db):
+ r=item(db)
+ def save(execution):
+  return sheet.save('huaxing',r['id'],dict(revision=r['revision'],result='PASS',remark='',inspectionExecution=execution),ACTOR)
+ r=save({'inspectorId':str(ACTOR['id'])})
+ r=save({'inspectorId':'','inspector':ACTOR['name']})
+ assert r['inspectionExecution']['inspectorId']=='' and r['inspectionExecution']['inspector']==ACTOR['name']
+ r=save({'inspectorId':str(ACTOR['id'])})
+ assert r['inspectionExecution']['inspectorId']==str(ACTOR['id'])

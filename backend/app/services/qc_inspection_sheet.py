@@ -431,6 +431,9 @@ def save(factory, entry_id, body, actor, review=False):
             old=before.get('inspectionExecution') or {}
             if id_key in execution_patch:
                 identity=execution_patch[id_key]
+                # An explicit unlinked inspector may have the same display name as a listed person.
+                if id_key=='inspectorId' and identity=='' and name_key in execution_patch:
+                    continue
                 execution_patch[name_key] = old.get(name_key,'') if identity and identity==old.get(id_key) else qc_options.selection(factory,actor,group,identity)
             elif name_key in execution_patch and execution_patch[name_key] != old.get(name_key):
                 # Legacy text-only clients must not retain another person's stable ID.
