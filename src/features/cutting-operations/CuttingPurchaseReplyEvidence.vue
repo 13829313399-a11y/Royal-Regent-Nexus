@@ -14,6 +14,7 @@ const unit = (row: number) => props.purchase.requisition?.lines.find(line => lin
     <ul v-if="batches.length">
       <li v-for="(batch, index) in batches" :key="index">
         需求行 {{ batch.row + 1 }} · {{ batch.expected_date }} · {{ batch.quantity }} {{ unit(batch.row) }} · {{ batch.supplier }} · {{ batch.purchase_reference }}
+        <span v-if="batch.purchase_source"> · 采购明细 {{ batch.purchase_source.id }} · V{{ batch.purchase_source.revision }}</span>
       </li>
     </ul>
     <p v-else-if="purchase.has_purchase_evidence">原需求有历史交期记录，当前版本暂未提供批次明细。</p>

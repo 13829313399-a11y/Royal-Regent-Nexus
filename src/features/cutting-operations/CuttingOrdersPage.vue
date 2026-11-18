@@ -26,6 +26,8 @@ import CuttingSubnav from './CuttingSubnav.vue'
 import CuttingScheduleImport from './CuttingScheduleImport.vue'
 import CuttingOrderReceipt from './CuttingOrderReceipt.vue'
 import CuttingPurchaseReplyEvidence from './CuttingPurchaseReplyEvidence.vue'
+import CuttingPurchaseSourcePicker from './CuttingPurchaseSourcePicker.vue'
+import CuttingPurchaseProgress from './CuttingPurchaseProgress.vue'
 
 const props=defineProps<{ workspace: CuttingWorkspace }>()
 const filterId=`cutting-orders-${useId()}`
@@ -60,6 +62,13 @@ const bomMatchBasis = ref('')
 const chosenBom = ref<MasterRecord | null>(null), bomQuery = ref(''), bomRows = ref<MasterRecord[]>([])
 const bomPage = ref(1), bomTotal = ref(0), versionPage = ref(1), versionTotal = ref(0), versionId = ref(''), versions = ref<MasterRecord[]>([])
 const demands = ref<DemandInput[]>([]), batches = ref<EtaBatch[]>([])
+const batchKeys = new WeakMap<EtaBatch, number>()
+let nextBatchKey = 0
+function batchKey(batch: EtaBatch) {
+  let key = batchKeys.get(batch)
+  if (key === undefined) { key = nextBatchKey++; batchKeys.set(batch, key) }
+  return key
+}
 const disposition = ref<'' | 'not_ordered' | 'cancelled_or_reallocated'>(''), evidence = ref(''), allHandled = ref(false)
 const reconcileValidationShown = ref(false)
 const orderEditor = ref<HTMLFormElement>()
@@ -452,6 +461,8 @@ function status(row: CuttingOrder) {
         <div v-if="data?.requisition" class="cutting-table-scroll"><table><caption>需求版本 V{{ data.requisition.version }}；无交期批次表示尚待回复</caption><thead><tr><th>需求行／物料</th><th>阶段／部件</th><th>裁剪必需</th><th>理论净用量</th><th>工程需求量</th><th>已回复／待回复</th><th>预计交期批次</th></tr></thead><tbody>
           <tr v-for="r in data.requisition.lines" :key="r.row"><td>{{ r.row + 1 }} · {{ r.material.code }} {{ r.material.name }}</td><td>{{ r.stage }} / {{ r.part_codes.join('、') }}</td><td>{{ r.required_for_cutting ? '是' : '否' }}</td><td>{{ r.theoretical_quantity }} {{ r.unit }}</td><td>{{ r.quantity }} {{ r.unit }}<p v-if="r.purchase_mode === 'no_purchase'">本次不采购：{{ r.no_purchase_reason }}</p></td><td>{{ r.replied_quantity }} / {{ r.awaiting_reply_quantity }} {{ r.unit }}</td><td><p v-for="(b, i) in data.batches.filter(b => b.row === r.row)" :key="i">{{ b.expected_date }} / {{ b.quantity }} {{ r.unit }} / {{ b.supplier }} / {{ b.purchase_reference }}</p><span v-if="r.purchase_mode === 'no_purchase'">无需采购交期</span><span v-else-if="!data.batches.some(b => b.row === r.row)">待回复</span></td></tr>
         </tbody></table></div>
+        <CuttingPurchaseProgress v-if="writable && data && !data.purchase_reconciliation_required && data.batches.some(b => b.purchase_source)"
+          :key="`${selected.line_id}-${selected.current?.version}`" :order-id="selected.line_id" />
         <template v-if="workspace.path === 'planning' && data?.planning">
           <CuttingProductionSummary v-if="access?.reporting_schema_ready && selected.current" :key="selected.current.version" :line-id="selected.line_id" />
           <CuttingPlanSummary v-if="data.planning.published" :plan="data.planning.published" title="当前发布计划" :stale="selected.planning_summary?.published_stale" />
@@ -488,12 +499,15 @@ function status(row: CuttingOrder) {
             </template>
             <template v-if="action === 'eta'">
               <p>保存将形成新的完整交期版本；未覆盖数量仍待回复。删除批次只修订预计交期，不撤销采购单。</p>
-              <div v-for="(b, i) in batches" :key="i" class="eta-row">
+              <div v-for="(b, i) in batches" :key="batchKey(b)" class="eta-row">
                 <label>需求行 <select :id="editorId('batch_row',i)" :name="`batches[${i}].row`" v-model.number="b.row"><option v-for="r in data?.requisition?.lines.filter(r => r.purchase_mode !== 'no_purchase')" :key="r.row" :value="r.row">{{ r.row+1 }} · {{ r.material.code }} {{ r.material.name }} / {{ r.stage }} / {{ r.part_codes.join('、') }} / {{ r.unit }}</option></select></label>
                 <label>批次数量 <input :id="editorId('batch_quantity',i)" :name="`batches[${i}].quantity`" v-model="b.quantity" inputmode="decimal" required /></label>
                 <label>预计到料 <input :id="editorId('expected_date',i)" :name="`batches[${i}].expected_date`" v-model="b.expected_date" type="date" required /></label>
-                <label>供应商 <input :id="editorId('supplier',i)" :name="`batches[${i}].supplier`" v-model="b.supplier" maxlength="120" required /></label>
-                <label>采购来源单号 <input :id="editorId('purchase_reference',i)" :name="`batches[${i}].purchase_reference`" v-model="b.purchase_reference" maxlength="120" required /></label>
+                <label>供应商 <input :id="editorId('supplier',i)" :name="`batches[${i}].supplier`" v-model="b.supplier" maxlength="255" required /></label>
+                <label>采购来源单号 <input :id="editorId('purchase_reference',i)" :name="`batches[${i}].purchase_reference`" v-model="b.purchase_reference" maxlength="128" required /></label>
+                <CuttingPurchaseSourcePicker v-if="access?.can_link_purchase || b.purchase_source" v-model:source="b.purchase_source" :order-id="selected.line_id"
+                  :row="b.row" :reference="b.purchase_reference" :supplier="b.supplier"
+                  :field-id="editorId('purchase_source',i)" :field-name="`batches[${i}].purchase_source`" :can-search="!!access?.can_link_purchase" />
                 <Button variant="outline" type="button" @click="batches.splice(i, 1)">移除此批次</Button>
               </div><Button variant="outline" type="button" @click="addBatch">增加交期批次</Button>
             </template>
@@ -535,7 +549,7 @@ function status(row: CuttingOrder) {
           <p v-if="r.data.purchase_reconciliation_required">旧采购需求待核对</p>
           <p v-if="r.data.reconciliation_request">申请依据：{{ r.data.reconciliation_request.reason }}</p><p v-if="r.data.reconciliation">需求 V{{ r.data.reconciliation.requisition_version }} 采购核对依据：{{ r.data.reconciliation.evidence }}</p>
           <ul><li v-for="line in r.data.requisition?.lines" :key="line.row">{{ line.row+1 }} · {{ line.material.name }} / {{ line.stage }} · 需求 {{ line.quantity }} {{ line.unit }}<span v-if="line.purchase_mode === 'no_purchase'"> · 本次不采购：{{ line.no_purchase_reason }}</span></li></ul>
-          <ul><li v-for="(batch, i) in r.data.batches" :key="i">需求行 {{ batch.row+1 }} · {{ batch.expected_date }} / {{ batch.quantity }} / {{ batch.supplier }} / {{ batch.purchase_reference }}</li></ul>
+          <ul><li v-for="(batch, i) in r.data.batches" :key="i">需求行 {{ batch.row+1 }} · {{ batch.expected_date }} / {{ batch.quantity }} / {{ batch.supplier }} / {{ batch.purchase_reference }}<span v-if="batch.purchase_source"> · 采购明细 {{ batch.purchase_source.id }} · V{{ batch.purchase_source.revision }}</span></li></ul>
         </details>
       </SectionPanel>
       </div>
