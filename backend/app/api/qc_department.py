@@ -30,6 +30,7 @@ COMPANIES = {
     "huadeng": "hy-huadeng", "huaxing": "hy-huaxing",
 }
 STATIC_FILES = {
+    "qc-mobile-entry.js", "qc-mobile-entry.css",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",
