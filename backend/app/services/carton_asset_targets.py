@@ -1,6 +1,7 @@
 """Explicit old-asset targets, including pre-purchase schedule identity snapshots."""
 import hashlib,json
 from collections import defaultdict
+from dataclasses import dataclass
 from sqlalchemy import select
 from fastapi import HTTPException
 from app.models.carton_procurement import CartonImportBatch,CartonAuditEvent
@@ -18,12 +19,13 @@ def identity(row):
     return list(material_identity(row))
 
 
-def schedules(db,factory):
+def schedules(db,factory,*,warehouse=False):
     seen=set(); result=[]
     from app.services import carton_procurement as core
     from app.services.carton_schedule_tracking import mark_for_row
     state=core.schedule_order_state(db,factory)
-    orders=assets.available_orders(db,factory)
+    purchase_identities = {material_identity(dict(customer_code=order.customer_code, contract_no=order.contract_no,
+        item_no=order.item_no, customer_po=order.customer_po)) for order in assets.available_orders(db, factory)}
     from app.services.carton_schedule_coverage import batches
     # Reimports may share the same second. The existing immutable import audit
     # sequence, rather than random batch IDs, defines the newest source.
@@ -41,9 +43,17 @@ def schedules(db,factory):
                 contract_no=row.get('contract_no',''),item_no=row.get('item_no',''),customer_po=effective_po(row),supplier_id='')
             if not item['sheet'] or not item['row']:continue
             item['identity']=identity(item);item['fingerprint']=digest(dict(batch=batch.id,row=row,customer=code))
-            item['ordered']=bool(mark_for_row(row,state).get('marked') or
-                state.get(row.get('schedule_identity'),{}).get('order_ids') or
-                any(identity(dict(customer_code=o.customer_code,contract_no=o.contract_no,item_no=o.item_no,customer_po=o.customer_po))==item['identity'] for o in orders))
+            mark = mark_for_row(row, state)
+            order_state = state.get(row.get('schedule_identity'), {})
+            item['ordered'] = bool(mark.get('marked') or order_state.get('order_ids')
+                                   or tuple(item['identity']) in purchase_identities)
+            if warehouse:
+                if not tracked(row) or not isinstance(row.get('quantity'), (int, float)) or row['quantity'] <= 0:
+                    continue
+                item.update(schedule_po=row.get('customer_po') or '', schedule_so=row.get('source_reference') or '',
+                            schedule_state='EXTERNAL' if mark.get('marked') else 'REVIEW'
+                            if item['ordered'] or order_state.get('matching_order_ids') or order_state.get('ambiguous_order_ids')
+                            else 'PENDING')
             result.append(item)
     return result
 
@@ -70,6 +80,10 @@ def schedule_customer_allowed(db,user,factory,code):
 
 def candidates(db,user,factory,contract='',*,supplier=None,scope='ALL',retain=None):
     from app.services import carton_supplier_portal as portal
+    if scope == 'WAREHOUSE':
+        from app.services.carton_asset_access import require_warehouse_targets
+        require_warehouse_targets(user, factory, supplier=supplier, asset=retain)
+        return warehouse_picker(db, user, factory, contract=contract, asset=retain).rows
     result=[]
     eligible=portal._supplier_mark_orders(db,user,factory)[2] if supplier else None
     for order in assets.available_orders(db,factory):
@@ -83,7 +97,10 @@ def candidates(db,user,factory,contract='',*,supplier=None,scope='ALL',retain=No
             item_no=snapshot.get('item_no',order.item_no),customer_code=order.customer_code,
             customer_name=snapshot.get('customer_name',order.customer_name),customer_po=snapshot.get('customer_po',order.customer_po),
             supplier_id=order.supplier_id,revision=order.revision,issue_id=issue.id if issue else '')
-        row['identity']=identity(row);row['fingerprint']=digest(row);result.append(row)
+        row['identity']=identity(row);row['fingerprint']=digest(row)
+        if not supplier:
+            row['order_no'] = order.order_no
+        result.append(row)
     if not supplier and scope!='ORDERS':
         for row in schedules(db,factory):
             try:schedule_customer_allowed(db,user,factory,row['customer_code'])
@@ -128,12 +145,24 @@ def candidates(db,user,factory,contract='',*,supplier=None,scope='ALL',retain=No
     return result
 
 
-def resolve(db,user,factory,target,*,supplier=None,scope='ALL',retain=None):
-    values=candidates(db,user,factory,supplier=supplier,scope=scope,retain=retain)
-    found=next((x for x in values if (x['kind'],x['id'],x['sheet'],x['row'])==(target.kind,target.id,target.sheet,target.row)),None)
-    if not found:raise HTTPException(404,'关联目标不存在、已失效或无当前权限')
-    if target.fingerprint!=found['fingerprint']:raise HTTPException(409,'关联目标已更新，请刷新重新选择')
-    return found
+def target_key(row):
+    return row['kind'], row['id'], row['sheet'], row['row']
+
+
+def resolve_selected(choices, selected):
+    by_key = {target_key(row): row for row in choices}
+    result = {}
+    for target in selected:
+        key = target.kind, target.id, target.sheet, target.row
+        row = by_key.get(key)
+        if row is None or row.get('association_locked'):
+            raise HTTPException(404, '关联目标不存在、已失效或无当前权限，请刷新重新选择')
+        if target.fingerprint != row['fingerprint']:
+            raise HTTPException(409, '关联目标已更新，请刷新重新选择')
+        if key in result:
+            raise HTTPException(422, '关联订单不能重复')
+        result[key] = row
+    return list(result.values())
 
 
 def states(db,factory,ids=None):
@@ -274,6 +303,106 @@ def _schedule_purchase_ids(target, source, unique, links):
     return result
 
 
+def _current_schedule_match(db, factory, target, latest, source_cache, original=None, unique=False):
+    exact = [row for row in latest if target_key(row) == target_key(target) and row['identity'] == target['identity']]
+    if len(exact) == 1:
+        return exact[0]
+    if unique:
+        matches = [row for row in latest if row['identity'] == target['identity']]
+        if len(matches) == 1:
+            source, _, _ = _saved_schedule_source(db, factory, matches[0], source_cache)
+            if source is not None and normalized(source.get('customer_po')) == normalized(original.get('customer_po')):
+                return matches[0]
+    return None
+
+
+@dataclass
+class WarehousePicker:
+    rows: list[dict]
+    bindings: dict[tuple, list[dict]]
+    preserved: list[dict]
+
+    def save(self, selected):
+        result = {target_key(row): row for row in self.preserved}
+        for row in selected:
+            key = target_key(row)
+            if key in self.bindings:
+                result.update((target_key(saved), saved) for saved in self.bindings[key])
+                continue
+            result[key] = {name: value for name, value in row.items() if name not in {'association_selected', 'association_locked'}}
+            if row['kind'] == 'SCHEDULE':
+                result[key]['warehouse_association'] = True
+        return list(result.values())
+
+
+def warehouse_picker(db, user, factory, *, contract='', asset=None):
+    purchases = candidates(db, user, factory, contract, scope='ORDERS')
+    regular = {row['id']: target_key(row) for row in purchases if row['kind'] == 'REGULAR'}
+    authorization = {}
+
+    def allowed(row):
+        code = row['customer_code']
+        if code not in authorization:
+            try:
+                customer_allowed(db, user, factory, code)
+                authorization[code] = True
+            except HTTPException:
+                authorization[code] = False
+        return authorization[code]
+
+    source_cache = {}
+    links = _purchase_links(db, factory) if regular else {}
+    latest = [row for row in schedules(db, factory, warehouse=True)
+              if (not contract or assets.identity(row['contract_no']) == assets.identity(contract)) and allowed(row)]
+    # Suppress a schedule row only if its own source evidence proves an
+    # available regular order. Similar contracts and external marks are separate.
+    pending = []
+    purchase_matches = {}
+    for row in latest:
+        source, key, unique = _saved_schedule_source(db, factory, row, source_cache) if links else (None, '', False)
+        matched = _schedule_purchase_ids(row, source, unique, links[key]) & regular.keys() if key in links else set()
+        purchase_matches[target_key(row)] = matched
+        if not matched:
+            pending.append(row)
+
+    choices = {target_key(row): row for row in purchases + pending}
+    bindings = defaultdict(list)
+    preserved, protected_choices = [], set()
+    for saved in current(db, asset, factory) if asset else []:
+        saved_key = target_key(saved)
+        if saved['kind'] != 'SCHEDULE':
+            option = choices.get(saved_key)
+            if option and option['identity'] == saved['identity'] and option['supplier_id'] == saved.get('supplier_id'):
+                bindings[saved_key].append(option)
+            else:
+                preserved.append(saved)
+            continue
+
+        source, key, unique = _saved_schedule_source(db, factory, saved, source_cache)
+        matched = purchase_matches.get(saved_key) if source is not None else set()
+        if matched is None:
+            matched = _schedule_purchase_ids(saved, source, unique, links[key]) & regular.keys() if key in links else set()
+        keys = [regular[order_id] for order_id in sorted(matched)]
+        if not keys and source is not None:
+            active = _current_schedule_match(db, factory, saved, latest, source_cache, source, unique)
+            if active and target_key(active) in choices:
+                keys = [target_key(active)]
+        if not keys or not saved.get('warehouse_association'):
+            preserved.append(saved)
+            protected_choices.update(keys)
+            if not keys and allowed(saved):
+                choices[saved_key] = dict(saved, schedule_state='REVIEW')
+                protected_choices.add(saved_key)
+            continue
+        for option_key in keys:
+            bindings[option_key].append(saved)
+
+    rows = [dict(row, association_selected=key in bindings or key in protected_choices,
+                 association_locked=key in protected_choices and key not in bindings)
+            for key, row in choices.items()]
+    return WarehousePicker(rows, bindings, preserved)
+
+
 def valid(db,asset,factory=None,*,schedule_rows_by_factory=None):
     factory=factory or asset.factory_id
     from app.models.carton_procurement import CartonOrder
@@ -291,21 +420,17 @@ def valid(db,asset,factory=None,*,schedule_rows_by_factory=None):
                     if factory not in schedule_rows_by_factory:
                         schedule_rows_by_factory[factory]=schedules(db,factory)
                     latest=schedule_rows_by_factory[factory]
-            exact=[x for x in latest if (x['id'],x['sheet'],x['row'],x['identity'])==(target['id'],target['sheet'],target['row'],target['identity'])]
-            if len(exact) == 1:
-                result.append(exact[0])
-                continue
-            original, key, unique = _saved_schedule_source(db, factory, target, source_cache)
-            if original is None:
-                continue
-            # An old duplicate has only its original batch/sheet/row identity.
-            # A later singleton does not tell us which of the duplicates survived.
-            matches = [x for x in latest if x['identity'] == target['identity']] if unique else []
-            if len(matches) == 1:
-                current_source, _, _ = _saved_schedule_source(db, factory, matches[0], source_cache)
-                if current_source is not None and normalized(current_source.get('customer_po')) == normalized(original.get('customer_po')):
-                    result.append(matches[0])
+            match = _current_schedule_match(db, factory, target, latest, source_cache)
+            if match is None:
+                original, key, unique = _saved_schedule_source(db, factory, target, source_cache)
+                if original is None:
                     continue
+                # A later singleton cannot identify which of two old duplicate rows survived.
+                if unique:
+                    match = _current_schedule_match(db, factory, target, latest, source_cache, original, unique)
+            if match is not None:
+                result.append(dict(match, warehouse_association=True) if target.get('warehouse_association') else match)
+                continue
             if factory == asset.factory_id:
                 if links is None:
                     links = _purchase_links(db, factory)
@@ -409,9 +534,11 @@ def shared_with_supplier(db,asset,supplier):
 
 
 def sync_legacy(db,user,asset):
-    """Replace quick provenance after a legacy explicit binding edit as well."""
+    """Refresh legacy order choices while retaining warehouse schedule provenance."""
     if not asset.owner_department:return
     rows=legacy_targets(db,asset,current_authorized=True)
+    rows.extend(row for row in current(db,asset)
+                if row['kind']=='SCHEDULE' and row.get('warehouse_association'))
     # Never rebuild an implicit contract-wide match for an owned source.
     assets.audit(db,user,asset,EVENT,dict(revision=asset.revision,targets=rows,sha256=asset.sha256))
     db.flush()

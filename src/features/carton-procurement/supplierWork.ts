@@ -21,28 +21,35 @@ export function specialSupplierCanPromise(order: SpecialRequest) {
 export function specialSupplierPromise(order: SpecialRequest) {
   return specialSupplierAccepted(order) ? order.supplier_confirmation?.promised_date || order.promised_date || '' : ''
 }
+export function regularAwaitingShipment(order: PortalOrder) {
+  return Boolean(order.issue_id) && !order.awaiting_issue && ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order.status)
+    && order.lines.filter(line => Number(line.required_quantity) > 0).every(line => line.accepted)
+    && order.lines.some(line => Number(line.required_quantity) > 0 && Number(line.remaining_to_ship) > 0 && !line.shipping_blocked_reason)
+}
+export function specialAwaitingShipment(order: SpecialRequest) {
+  return specialSupplierActive(order) && Boolean(order.current_version_id) && specialSupplierAccepted(order)
+    && order.lines.some(line => Number(line.remaining_to_ship ?? line.remaining_quantity ?? line.quantity) > 0)
+}
 export function specialSupplierStage(order: SpecialRequest) {
   if (order.status === 'COMPLETED' || order.status === 'CANCELLED') return order.status
   if (!specialSupplierActive(order) || !order.current_version_id) return 'PENDING_ISSUE'
   if (order.shipments.some(shipment => shipment.lines.some(line => Number(line.remaining_quantity) > 0))) return 'RECEIPT_PENDING'
-  if (specialSupplierOrigin(order)) return 'WAITING_SHIPMENT'
+  if (specialSupplierOrigin(order) && specialAwaitingShipment(order)) return 'WAITING_SHIPMENT'
   if (specialSupplierNeedsAcceptance(order)) return 'PENDING_ACCEPTANCE'
-  if (order.status === 'PARTIALLY_RECEIVED' && order.lines.some(line => Number(line.remaining_to_ship ?? line.remaining_quantity ?? line.quantity) > 0)) return 'WAITING_SHIPMENT'
+  if (order.status === 'PARTIALLY_RECEIVED' && specialAwaitingShipment(order)) return 'WAITING_SHIPMENT'
   return 'ACCEPTED'
 }
 
 export function awaitsWarehouseReceipt(shipment: PortalShipment) {
   return Boolean(shipment.requires_correction || shipment.receipt_status === 'REVERSED'
-    || shipment.status === 'SENT')
+    || shipment.status === 'RECEIPT_REVERSED' || shipment.status === 'SENT')
 }
 
 export function supplierWorkCounts(orders: PortalOrder[], shipments: PortalShipment[], special: SpecialRequest[] = []) {
   const active = orders.filter(order => !order.awaiting_issue && ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order.status))
   return {
     acceptance: active.filter(order => order.lines.some(line => Number(line.required_quantity) > 0 && !line.accepted)).length + special.filter(specialSupplierNeedsAcceptance).length,
-    shipment: active.filter(order => order.lines.filter(line => Number(line.required_quantity) > 0).every(line => line.accepted)
-      && order.lines.some(line => Number(line.remaining_to_ship) > 0 && !line.shipping_blocked_reason)).length
-      + special.filter(order => specialSupplierActive(order) && specialSupplierAccepted(order) && order.lines.some(line => Number(line.remaining_to_ship ?? line.remaining_quantity ?? line.quantity) > 0)).length,
+    shipment: active.filter(regularAwaitingShipment).length + special.filter(specialAwaitingShipment).length,
     receipt: shipments.filter(awaitsWarehouseReceipt).length,
   }
 }

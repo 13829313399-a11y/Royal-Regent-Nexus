@@ -1248,6 +1248,31 @@ it('shows supplier date differences in both the internal ledger and order detail
     }
     wrapper.unmount()
   })
+  it('opens the exact follow-up scope from the dashboard, clearing stale ledger filters without syncing customers', async () => {
+    mockReceiptWorkspace([])
+    const wrapper = mountView('orders'); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="查看客户范围"]').setValue('ALL')
+      await wrapper.get('[aria-label="订单类型筛选"]').setValue('WORKSHOP_MISC')
+      await wrapper.get('[aria-label="供应商接单状态筛选"]').setValue('ACCEPTED')
+      await wrapper.get('[aria-label="订单状态筛选"]').setValue('COMPLETED')
+      routeState.query.tab = 'dashboard'; await flushPromises()
+      const syncs = cartonApiMock.synchronizeBusinessCustomers.mock.calls.length
+      await wrapper.get('select[aria-describedby="dashboard-customer-scope"]').setValue('Dickie')
+      await wrapper.get('[aria-label="顶部搜索"]').setValue('SP-021')
+      await new Promise(resolve => setTimeout(resolve, 230)); await flushPromises()
+      expect(dashboardMock.workspace).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({
+        customer: 'Dickie', responsibility_scope: 'ALL', search: 'SP-021',
+      }))
+      await wrapper.get('[aria-label="查看待跟进订单"]').trigger('click')
+      routeState.query.tab = 'orders'; await flushPromises()
+      expect(unifiedApiMock.ledger).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({
+        kind: 'ALL', responsibility_scope: 'ALL', customer_name: 'Dickie', search: 'SP-021', status_filter: 'FOLLOW_UP',
+        collaboration_filter: 'ALL', due_filter: 'ALL', order_from: '', order_to: '', offset: 0,
+      }), expect.any(AbortSignal))
+      expect(cartonApiMock.synchronizeBusinessCustomers).toHaveBeenCalledTimes(syncs)
+    } finally { wrapper.unmount() }
+  })
   it('keeps repeated SO rows actionable with separate source keys and pre-fills the actual customer PO', async () => {
     mockReceiptWorkspace([])
     mockWeeklySchedule([
@@ -2028,25 +2053,22 @@ it('shows supplier date differences in both the internal ledger and order detail
     wrapper.unmount()
   })
 
-  it('shows whole-order return only with inventory permission and sends the received order to the return endpoint', async () => {
+  it('opens the common order return dialog for a received regular order with inventory permission', async () => {
     const order = orderFixture('CT-RETURN-ACCESS', businessDateOffset(3), 'COMPLETED')
     mockReceiptWorkspace([order])
-    cartonApiMock.returnOrder.mockResolvedValue({ ...order, status: 'CANCELLED', revision: 2 })
-    let wrapper = mountView('orders'); await flushPromises()
+    let wrapper = mountView('orders', { CartonSpecialStockActionDialog: true }); await flushPromises()
     await openOrderMoreActions(wrapper.get(`[data-order-no="${order.order_no}"]`), order.order_no)
-    await wrapper.get(`[aria-label="整单退货 ${order.order_no}"]`).trigger('click')
-    await wrapper.get('[aria-label="订单取消退单原因"]').setValue('客户取消余货退回供应商')
-    await wrapper.findAll('form').find(form => form.text().includes(`退单 ${order.order_no}`))!.trigger('submit')
+    await wrapper.get(`[aria-label="订单退货 ${order.order_no}"]`).trigger('click')
+    expect(wrapper.getComponent({ name: 'CartonSpecialStockActionDialog' }).props()).toMatchObject({
+      factoryId: 'huaxing', requestId: order.order_no, requestNo: order.order_no, action: 'RETURN', regularOrder: true,
+    })
+    expect(wrapper.find('[aria-label="订单取消退单原因"]').exists()).toBe(false)
     expect(cartonApiMock.returnOrder).not.toHaveBeenCalled()
-    await wrapper.get('[aria-label="整单实际退货日期"]').setValue('2026-08-01')
-    await wrapper.findAll('form').find(form => form.text().includes(`退单 ${order.order_no}`))!.trigger('submit')
-    await flushPromises()
-    expect(cartonApiMock.returnOrder).toHaveBeenCalledWith('huaxing', expect.objectContaining({ order_no: order.order_no }), '客户取消余货退回供应商', '2026-08-01')
     wrapper.unmount()
     authStoreMock.can.mockImplementation(permission => permission !== 'carton_procurement:inventory_write')
     wrapper = mountView('orders'); await flushPromises()
     await openOrderMoreActions(wrapper.get(`[data-order-no="${order.order_no}"]`), order.order_no)
-    expect(wrapper.find(`[aria-label="整单退货 ${order.order_no}"]`).exists()).toBe(false)
+    expect(wrapper.find(`[aria-label="订单退货 ${order.order_no}"]`).exists()).toBe(false)
     wrapper.unmount()
   })
 

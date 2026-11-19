@@ -34,3 +34,39 @@ export const cartonSpecialStockActionsApi = {
     return (await http.post<SpecialStockResult>(`${path(id)}/undo`, body, { signal })).data
   },
 }
+
+export interface OrderStockReturnLine extends Pick<SpecialStockLine, 'location_id' | 'location_label' | 'packaging_type' | 'paper_quality' | 'specification' | 'dimension_unit' | 'unit' | 'safe_quantity' | 'blockers'> {
+  order_line_id: string
+}
+export interface OrderStockReturnCommand extends SpecialStockUndo {
+  action: 'RETURN'
+  source_fingerprint: string
+  return_date: string
+  lines: (Pick<OrderStockReturnLine, 'order_line_id' | 'location_id'> & { quantity: string })[]
+}
+interface OrderStockReturnPreview {
+  order_no: string
+  revision: number
+  status: string
+  source_fingerprint: string
+  blockers: string[]
+  lines: OrderStockReturnLine[]
+}
+
+const orderReturnPath = (orderNo: string) => `/carton-procurement/orders/${encodeURIComponent(orderNo)}/return-stock`
+export const cartonOrderStockReturnApi = {
+  async preview(factory: string, orderNo: string, signal?: AbortSignal) {
+    const { data } = await http.get<OrderStockReturnPreview>(orderReturnPath(orderNo), { params: { factory_id: factory }, signal })
+    return {
+      source_request: { id: data.order_no, request_no: data.order_no, revision: data.revision, status: data.status },
+      source_fingerprint: data.source_fingerprint,
+      can_return: data.lines.some(line => Number(line.safe_quantity) > 0 && !line.blockers.length),
+      can_replenish: false, blockers: data.blockers, lines: data.lines, replacement: null,
+    }
+  },
+  async submit(orderNo: string, body: OrderStockReturnCommand, signal?: AbortSignal) {
+    const { action, ...payload } = body
+    await http.post(orderReturnPath(orderNo), payload, { signal })
+    return { action, replenishment_request: null }
+  },
+}

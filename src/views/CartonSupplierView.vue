@@ -17,7 +17,7 @@ import CartonPriceReviews from '@/components/CartonPriceReviews.vue'
 import { cartonUnifiedDeliveriesApi, toPortalShipment, type UnifiedDelivery } from '@/api/cartonUnifiedDeliveries'
 import { cartonSpecialRequestsApi, type SpecialRequest } from '@/api/cartonSpecialRequests'
 import CartonImportDifference from '@/components/CartonImportDifference.vue'
-import { supplierWorkCounts, specialSupplierOrigin, specialSupplierActive, specialSupplierAccepted, specialSupplierNeedsAcceptance, specialSupplierCanPromise, specialSupplierPromise, specialSupplierStage, specialSupplierStatusLabel } from '@/features/carton-procurement/supplierWork'
+import { supplierWorkCounts, regularAwaitingShipment, specialAwaitingShipment, specialSupplierOrigin, specialSupplierActive, specialSupplierAccepted, specialSupplierNeedsAcceptance, specialSupplierCanPromise, specialSupplierPromise, specialSupplierStage, specialSupplierStatusLabel } from '@/features/carton-procurement/supplierWork'
 import { deliveryNoteHtml } from '@/features/carton-procurement/deliveryNotePrint'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import CartonFeedbackCenter from '@/components/CartonFeedbackCenter.vue'
@@ -85,7 +85,7 @@ async function loadSpecialRequests() {
   specialRequests.value = [...results.flatMap(result => result.status === 'fulfilled' ? result.value.items : []), ...specialRequests.value.filter(row => failedFactories.has(row.factory_id))]
   syncSpecialDrafts()
   const validKeys = new Set(specialRequests.value.filter(row => failedFactories.has(row.factory_id) || canSelectSpecial(row)).map(row => selectionKey('SPECIAL', row)))
-  selectedOrderIds.value = selectedOrderIds.value.filter(key => !key.startsWith('["SPECIAL",') || validKeys.has(key))
+  selectedOrderIds.value = selectedOrderIds.value.filter(key => !key.startsWith('["SPECIAL",') || validKeys.has(key) || retainedPromiseSelections.value.has(key))
   const failures = results.flatMap((result, index) => result.status === 'rejected' ? [`${factoryDisplayName(scopes[index]!)}：${getApiErrorMessage(result.reason)}`] : [])
   specialError.value = failures.length ? `样板与杂单读取失败：${failures.join('；')}` : ''
 }
@@ -133,6 +133,7 @@ watch(factoryFilter, factory => { if (factory && specialSelection.value?.factory
 const workspace = ref<SupplierWorkspace | null>(null)
 const workspaceReadError = ref('')
 const membershipReadError = ref('')
+const specialMembershipReadError = ref('')
 const monthlySearch = ref('')
 const monthlyFactory = ref('')
 const monthlyPeriod = ref(formatBusinessDate(new Date().toISOString()).slice(0, 7))
@@ -144,7 +145,7 @@ const payablesSearch = ref('')
 const unifiedDeliveries = ref<UnifiedDelivery[]>([])
 const deliveryError = ref('')
 const deliveryLoading = ref(false)
-const deliveryCountsUnknown = computed(() => discovering.value || deliveryLoading.value || specialLoading.value || Boolean(deliveryError.value || membershipReadError.value || specialError.value))
+const deliveryCountsUnknown = computed(() => discovering.value || deliveryLoading.value || Boolean(deliveryError.value || membershipReadError.value || specialMembershipReadError.value))
 let deliveryGeneration = 0
 async function loadUnifiedDeliveries() {
   const token = ++deliveryGeneration, context = importContext.value
@@ -158,7 +159,9 @@ async function loadUnifiedDeliveries() {
   deliveryLoading.value = false
 }
 const unifiedShipmentRows = computed(() => unifiedDeliveries.value.map(group => ({ ...toPortalShipment(group), factory_id: group.factory_id, group })))
-const matchingUnifiedShipments = computed(() => filterShipments(unifiedShipmentRows.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), shipmentFilters.value))
+const inFactoryFilter = (row: { factory_id: string }) => !factoryFilter.value || row.factory_id === factoryFilter.value
+const scopedUnifiedShipments = computed(() => unifiedShipmentRows.value.filter(inFactoryFilter))
+const matchingUnifiedShipments = computed(() => filterShipments(scopedUnifiedShipments.value, shipmentFilters.value))
 type OrderMarkCount = { current: number; history: number }
 type FactoryMarkState = { loading: boolean; error: string; counts: Record<string, OrderMarkCount> }
 const orderMarks = ref<Record<string, FactoryMarkState>>({})
@@ -208,16 +211,15 @@ function orderMarkPresentation(order: SupplierOrder): SupplierRowPresentation['m
   if (count?.current) return { label: `资料${count.current}份`, tone: 'available' }
   return { label: count?.history ? `历史 ${count.history} 份` : '暂无资料' }
 }
-const workCounts = computed(() => {
-  const regular = supplierWorkCounts(orders.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), (workspace.value?.shipments || []).filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), specialRequests.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value))
-  return { ...regular,
-    receipt: unifiedDeliveries.value.filter(row => (!factoryFilter.value || row.factory_id === factoryFilter.value) && ['SENT', 'RECEIPT_REVERSED'].includes(row.status)).length,
-  }
-})
+const workCounts = computed(() => supplierWorkCounts(orders.value.filter(inFactoryFilter), scopedUnifiedShipments.value, specialRequests.value.filter(inFactoryFilter)))
+function openPendingShipments() {
+  clearFilters(true)
+  statusFilter.value = 'WAITING_SHIPMENT'
+  void openTab('orders')
+}
 function openPendingReceipts() {
-  if (specialRequests.value.some(row => (!factoryFilter.value || row.factory_id === factoryFilter.value) && specialStage(row) === 'RECEIPT_PENDING')) {
-    activeTab.value = 'orders'; orderKind.value = 'ALL'; statusFilter.value = 'RECEIPT_PENDING'; customerFilter.value = ''; search.value = ''; selectedOnly.value = false; orderDateFrom.value = ''; orderDateTo.value = ''
-  } else { activeTab.value = 'shipments'; shipmentFilters.value = { ...emptyShipmentFilters(), status: 'PENDING_RECEIPT' } }
+  shipmentFilters.value = { ...emptyShipmentFilters(), status: 'PENDING_RECEIPT' }
+  void openTab('shipments')
 }
 const materialCorrection = ref<MaterialCorrection | null>(null)
 const materialCorrections = computed(() => [...new Map((workspace.value?.orders.flatMap(order => order.material_corrections || []) || []).map(row => [row.id, row])).values()])
@@ -334,7 +336,18 @@ const activityTypes: Record<string, string> = { ORDER_CANCELLED: '内部取消�
 const bulkAcceptOpen = ref(false)
 const bulkPromiseOpen = ref(false)
 const bulkPromiseUniform = ref('')
-const bulkPromiseDates = reactive<Record<string, string>>({})
+type RegularPromiseLines = Parameters<typeof api.acceptBatch>[1]
+type PromiseAttempt = { kind: 'REGULAR'; lines: RegularPromiseLines } | { kind: 'SPECIAL'; body: SpecialAcceptBody }
+type PromiseOrderDraft = {
+  key: string; factoryId: string; orderNo: string; label: string; plannedDate: string; version: string
+  dates: { id: string; label: string; original: string; value: string }[]
+  attempt?: PromiseAttempt
+  error: string
+}
+const bulkPromiseDrafts = ref<PromiseOrderDraft[]>([])
+const bulkPromiseStatus = ref('')
+let bulkPromiseGeneration = 0
+let bulkPromiseTrigger: HTMLElement | null = null
 const search = ref('')
 const customerFilter = ref('')
 const statusFilter = ref('ALL')
@@ -364,8 +377,8 @@ const detailOrderId = ref('')
 const detailPinned = ref(false)
 const acceptOrderId = ref('')
 const acceptSpecialKey = ref('')
-const specialDates = reactive<Record<string, { version: string; revision: number; date: string; dirty: boolean }>>({})
-type SpecialAcceptBody = { factory_id: string; source_kind: 'SPECIAL'; source_id: string; expected_revision: number; action: 'ACCEPT'; promised_date: string; request_id: string }
+const specialDates = reactive<Record<string, { version: string; revision: number; acceptanceId: string; date: string; dirty: boolean }>>({})
+type SpecialAcceptBody = { factory_id: string; source_kind: 'SPECIAL'; source_id: string; expected_revision: number; action: 'ACCEPT'; promised_date: string; request_id: string; expected_acceptance_id?: string }
 const specialRetries = reactive(new Map<string, SpecialAcceptBody>())
 const unresolvedSpecialRequests = reactive(new Map<string, SpecialAcceptBody>())
 const completedAcceptances = new Set<string>()
@@ -418,7 +431,7 @@ const importContext = computed(() => JSON.stringify([
 watch(importContext, () => {
   workspaceController.abort(); workspaceController = new AbortController(); workspaceStates.value = {}; lastReadStarted = 0
   auxiliaryController.abort(); auxiliaryController = new AbortController(); auxiliaryGeneration++; auxiliaryLoading = false
-  collaborationCategory.value = 'ORDERS'; collaborationExpanded.value = false; materialHistory.value = false; workspaceReadError.value = ''; membershipReadError.value = ''
+  collaborationCategory.value = 'ORDERS'; collaborationExpanded.value = false; materialHistory.value = false; workspaceReadError.value = ''; membershipReadError.value = ''; specialMembershipReadError.value = ''
   acceptSpecialKey.value = ''; specialRetries.clear(); unresolvedSpecialRequests.clear(); completedAcceptances.clear(); bulkVersions.clear(); bulkAcceptedIssues.clear()
   orderImportOffers.value = []; orderImportOfferError.value = ''
   for (const key of Object.keys(specialDates)) delete specialDates[key]
@@ -436,6 +449,7 @@ watch(importContext, () => {
   ++extraGeneration.documents; ++extraGeneration.activity; extraLoaded.documents = extraLoaded.activity = false; extraLoadingState.documents = extraLoadingState.activity = false
   documentReadError.value = ''; activityReadError.value = ''
   closeDocumentDetail(); closeMergedDocuments(); bulkAcceptOpen.value = false; loading.value = false; discovering.value = false
+  bulkPromiseGeneration++; bulkPromiseOpen.value = false; bulkPromiseDrafts.value = []; bulkPromiseStatus.value = ''; bulkPromiseUniform.value = ''; bulkPromiseTrigger = null
   dirtyDates.clear(); for (const key of Object.keys(dates)) delete dates[key]; for (const key of Object.keys(dateIssueIds)) delete dateIssueIds[key]
   selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; importFreeConfirmations.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false; busy.value = false
   clearFilters(); orderSort.value = 'DEFAULT'
@@ -444,7 +458,7 @@ watch(importContext, () => {
   activityPage.value = 1; activityTotal.value = 0
   if (activityTimer) { clearTimeout(activityTimer); activityTimer = undefined }
 })
-onBeforeUnmount(() => { workspaceController.abort(); auxiliaryController.abort(); auxiliaryGeneration++; importGeneration++; generation++; specialGeneration++; deliveryGeneration++; clearOrderMarks() })
+onBeforeUnmount(() => { workspaceController.abort(); auxiliaryController.abort(); auxiliaryGeneration++; importGeneration++; generation++; specialGeneration++; deliveryGeneration++; bulkPromiseGeneration++; clearOrderMarks() })
 function importGroupReady(group: DeliveryImportGroup) { return importModes.value[importNoteKey(group)] === 'EXISTING_RECEIPT' ? Boolean(group.receipt_link_ready) : group.ready }
 const dates = reactive<Record<string, string>>({})
 const dateIssueIds: Record<string, string> = {}
@@ -484,7 +498,8 @@ function compareOrders(a: SupplierOrder, b: SupplierOrder) {
 const filteredOrders = computed(() => orders.value.filter(order => {
   if (factoryFilter.value && order.factory_id !== factoryFilter.value) return false
   if (customerFilter.value && order.customer_name !== customerFilter.value) return false
-  if (statusFilter.value !== 'ALL' && (statusFilter.value === 'PARTIALLY_RECEIVED' ? order.status !== statusFilter.value : orderStage(order) !== statusFilter.value)) return false
+  if (statusFilter.value === 'WAITING_SHIPMENT' ? !regularAwaitingShipment(order) :
+    statusFilter.value !== 'ALL' && (statusFilter.value === 'PARTIALLY_RECEIVED' ? order.status !== statusFilter.value : orderStage(order) !== statusFilter.value)) return false
   if (orderDateFrom.value && (!orderQueryDate(order) || orderQueryDate(order) < orderDateFrom.value)) return false
   if (orderDateTo.value && (!orderQueryDate(order) || orderQueryDate(order) > orderDateTo.value)) return false
   if (!query.value) return true
@@ -505,7 +520,8 @@ function specialDate(row: SpecialRequest) { return orderDateField.value === 'ORD
 const filteredSpecialOrders = computed(() => specialRequests.value.filter(row => (orderKind.value === 'ALL' || orderKind.value === row.kind)
   && (!factoryFilter.value || row.factory_id === factoryFilter.value)
   && (!customerFilter.value || row.customer_name === customerFilter.value)
-  && (statusFilter.value === 'ALL' || (statusFilter.value === 'PARTIALLY_RECEIVED' ? row.status === statusFilter.value : ['SENT', 'QUOTED', 'READY'].includes(statusFilter.value) ? ['SAMPLE', 'WORKSHOP_MISC'].includes(row.kind) && row.status === statusFilter.value : specialStage(row) === statusFilter.value))
+  && (statusFilter.value === 'WAITING_SHIPMENT' ? specialAwaitingShipment(row) :
+    statusFilter.value === 'ALL' || (statusFilter.value === 'PARTIALLY_RECEIVED' ? row.status === statusFilter.value : ['SENT', 'QUOTED', 'READY'].includes(statusFilter.value) ? ['SAMPLE', 'WORKSHOP_MISC'].includes(row.kind) && row.status === statusFilter.value : specialStage(row) === statusFilter.value))
   && (!orderDateFrom.value || specialDate(row) >= orderDateFrom.value)
   && (!orderDateTo.value || Boolean(specialDate(row)) && specialDate(row) <= orderDateTo.value)
   && (!query.value || [row.request_no, row.title, row.requester_name, row.customer_name, row.purpose, ...row.lines.flatMap(line => [line.packaging_type, line.paper_quality, line.specification, line.item_no])].join(' ').toLocaleLowerCase().includes(query.value))))
@@ -525,6 +541,10 @@ const acceptSpecial = computed(() => specialRequests.value.find(row => selection
 const selectedOrders = computed(() => orders.value.filter(order => selectedOrderIds.value.includes(selectionKey('REGULAR', order))))
 const selectedSpecialOrders = computed(() => specialRequests.value.filter(order => selectedOrderIds.value.includes(selectionKey('SPECIAL', order))))
 const selectedSources = computed<SupplierSelection[]>(() => [...selectedOrders.value.map(order => ({ kind: 'REGULAR' as const, order })), ...selectedSpecialOrders.value.map(order => ({ kind: 'SPECIAL' as const, order }))])
+const bulkPromiseSources = computed(() => new Map<string, SupplierSelection>([
+  ...orders.value.map(order => [selectionKey('REGULAR', order), { kind: 'REGULAR', order }] as const),
+  ...specialRequests.value.map(order => [selectionKey('SPECIAL', order), { kind: 'SPECIAL', order }] as const),
+]))
 const selectableVisibleOrders = computed(() => [...visibleOrders.value.filter(canSelectOrder).map(row => selectionKey('REGULAR', row)), ...visibleSpecialOrders.value.filter(canSelectSpecial).map(row => selectionKey('SPECIAL', row))])
 const allVisibleSelected = computed(() => selectableVisibleOrders.value.length > 0 && selectableVisibleOrders.value.every(key => selectedOrderIds.value.includes(key)))
 const someVisibleSelected = computed(() => selectableVisibleOrders.value.some(key => selectedOrderIds.value.includes(key)))
@@ -678,15 +698,17 @@ function specialVersion(row: SpecialRequest) { return JSON.stringify([row.curren
 function syncSpecialDrafts() {
   for (const row of specialRequests.value) {
     const key = selectionKey('SPECIAL', row), previous = specialDates[key]
-    if (previous && (previous.version !== row.current_version_id || previous.revision !== row.revision)) {
+    const acceptanceId = row.supplier_confirmation?.acceptance_id || ''
+    const changed = previous && (previous.version !== row.current_version_id || previous.revision !== row.revision || previous.acceptanceId !== acceptanceId)
+    if (changed) {
       if (acceptSpecialKey.value === key) {
         closeSpecialAccept()
         error.value = specialRetries.has(key) ? '订单版本已变化；上次接单结果仍未确认，已保留原提交，请先核对版本回执。' : '订单版本已变化，已关闭旧接单窗口；请核对当前版本后重新操作。'
       }
     }
-    if (!previous || previous.version !== row.current_version_id || previous.revision !== row.revision || !previous.dirty && !specialRetries.has(key)) {
+    if (!previous || changed || !previous.dirty && !specialRetries.has(key)) {
       const retry = specialRetries.get(key)
-      specialDates[key] = { version: row.current_version_id, revision: row.revision, date: retry?.source_id === row.current_version_id ? retry.promised_date : specialSupplierPromise(row) || row.required_date, dirty: false }
+      specialDates[key] = { version: row.current_version_id, revision: row.revision, acceptanceId, date: retry?.source_id === row.current_version_id ? retry.promised_date : specialSupplierPromise(row) || row.required_date, dirty: false }
     }
   }
 }
@@ -696,6 +718,7 @@ function closeSpecialAccept() {
 }
 function showSpecialAccept(row: SpecialRequest, event: Event) {
   if (!specialApprovalAllowed(row) || !specialSupplierCanPromise(row)) return
+  if (hasBulkPromiseAttempt(selectionKey('SPECIAL', row))) { error.value = '这张订单有待核实的批量改期，请先在批量改期窗口处理。'; return }
   specialAcceptTrigger = event.currentTarget as HTMLElement
   closeOrderDetail(); closeDeliveryImport(); acceptOrderId.value = ''; error.value = ''; message.value = ''
   acceptSpecialKey.value = selectionKey('SPECIAL', row)
@@ -704,31 +727,54 @@ async function submitSpecialAcceptance(row: SpecialRequest, context: string) {
   const key = selectionKey('SPECIAL', row), draft = specialDates[key]
   if (context !== importContext.value || !specialApprovalAllowed(row) || !specialSupplierCanPromise(row) || !draft?.date
     || draft.version !== row.current_version_id || draft.revision !== row.revision) throw new Error('采购版本或权限已变化，请刷新后重新核对承诺交期。')
+  if (hasBulkPromiseAttempt(key)) throw new Error('这张订单有待核实的批量改期，请先在批量改期窗口处理。')
   let body = specialRetries.get(key)
   if (body && body.source_id !== row.current_version_id) throw new Error('旧提交结果尚未确认，采购版本已替换，请先核对历史回执，再明确选择处理当前版本。')
   if (!body) {
-    body = { factory_id: row.factory_id, source_kind: 'SPECIAL', source_id: row.current_version_id, expected_revision: row.revision, action: 'ACCEPT', promised_date: draft.date, request_id: createRandomUuid() }
+    const accepted = specialSupplierAccepted(row)
+    if (accepted && (!draft.acceptanceId || draft.acceptanceId !== row.supplier_confirmation?.acceptance_id)) {
+      throw new Error('当前接单回执待核实，请重新读取后改期。')
+    }
+    body = specialAcceptanceBody(row, draft.date, accepted ? draft.acceptanceId : undefined)
     specialRetries.set(key, body)
   }
   let result: SupplierChangeTask
   try { result = await cartonSupplierChangesApi.respond(body) }
   catch (reason) {
     const status = (reason as { response?: { status?: number } })?.response?.status
-    if (context === importContext.value && status === 409 && body.source_id === row.current_version_id
-      && body.expected_revision !== row.revision && getApiErrorMessage(reason).includes('订单修订已变化')) {
-      specialRetries.delete(key)
-      throw new Error('原提交未记录成功回执，订单修订已变化；请核对当前资料后重新确认。')
+    if (context === importContext.value && status === 409 && body.source_id === row.current_version_id) {
+      const detail = getApiErrorMessage(reason)
+      if (detail.includes('接单回执已变化')) {
+        specialRetries.delete(key)
+        closeSpecialAccept()
+        await loadSpecialRequests()
+        throw new Error('原提交未记录成功回执，当前接单回执已变化，请重新核对。')
+      }
+      if (body.expected_revision !== row.revision && detail.includes('订单修订已变化')) {
+        specialRetries.delete(key)
+        throw new Error('原提交未记录成功回执，订单修订已变化；请核对当前资料后重新确认。')
+      }
     }
     throw reason
   }
   if (context !== importContext.value) return
   specialRetries.delete(key)
-  invalidateDocuments()
   draft.dirty = false
+  publishSpecialAcceptance(key, body, result)
+}
+function specialAcceptanceBody(row: SpecialRequest, date: string, expectedAcceptanceId?: string): SpecialAcceptBody {
+  return { factory_id: row.factory_id, source_kind: 'SPECIAL', source_id: row.current_version_id,
+    expected_revision: row.revision, action: 'ACCEPT', promised_date: date, request_id: createRandomUuid(),
+    ...(expectedAcceptanceId ? { expected_acceptance_id: expectedAcceptanceId } : {}) }
+}
+function publishSpecialAcceptance(key: string, body: SpecialAcceptBody, result: SupplierChangeTask) {
+  invalidateDocuments()
   const current = specialRequests.value.find(item => selectionKey('SPECIAL', item) === key)
-  if (current?.current_version_id === body.source_id && current.revision === body.expected_revision) {
+  if (current?.current_version_id === body.source_id && current.revision === body.expected_revision
+    && (current.supplier_confirmation?.acceptance_id || '') === (body.expected_acceptance_id || '')) {
     current.promised_date = body.promised_date
-    current.supplier_confirmation = { status: 'ACCEPTED', version_id: body.source_id, promised_date: body.promised_date, reason: '', responded_at: result.responded_at || '', responded_by: result.responded_by || '' }
+    current.supplier_confirmation = { status: 'ACCEPTED', version_id: body.source_id, acceptance_id: result.acceptance_id,
+      promised_date: body.promised_date, reason: '', responded_at: result.responded_at || '', responded_by: result.responded_by || '' }
   }
 }
 function useCurrentSpecialVersion(row: SpecialRequest) {
@@ -762,7 +808,7 @@ function orderStage(order: PortalOrder) {
   if (order.status === 'COMPLETED') return 'COMPLETED'
   if (order.lines.some(line => Number(line.in_transit_quantity) > 0)) return 'RECEIPT_PENDING'
   if (order.lines.some(needsAcceptance)) return 'PENDING_ACCEPTANCE'
-  if (order.status === 'PARTIALLY_RECEIVED' && order.lines.some(line => Number(line.remaining_to_ship) > 0)) return 'WAITING_SHIPMENT'
+  if (order.status === 'PARTIALLY_RECEIVED' && regularAwaitingShipment(order)) return 'WAITING_SHIPMENT'
   return 'ACCEPTED'
 }
 const stagePriority: Record<string, number> = {
@@ -810,9 +856,9 @@ function stageClass(stage: string) {
 function shipmentStatus(shipment: PortalShipment) {
   return shipment.requires_receipt_link ? '后补凭证待关联' : shipment.linked_existing_receipt && !shipment.requires_correction ? '已关联原入库' : shipment.status === 'RECEIPT_REVERSED' ? '收料已冲销，待更正' : shipment.status === 'SENT' ? shipment.partially_received ? '部分已收，余货待收' : '待仓库验收' : shipment.status === 'NOT_RECEIVED' ? '仓库未收到' : '仓库已核实'
 }
-function clearFilters() {
+function clearFilters(keepFactory = false) {
   orderKind.value = 'ALL'
-  factoryFilter.value = ''
+  if (!keepFactory) factoryFilter.value = ''
   search.value = ''
   customerFilter.value = ''
   statusFilter.value = 'ALL'
@@ -928,6 +974,7 @@ function onDetailKeydown(event: KeyboardEvent) {
 }
 function showAccept(order: SupplierOrder) {
   if (!canApprove.value) return
+  if (hasBulkPromiseAttempt(selectionKey('REGULAR', order))) { error.value = '这张订单有待核实的批量改期，请先在批量改期窗口处理。'; return }
   closeOrderDetail()
   closeDeliveryImport()
   error.value = ''
@@ -937,9 +984,9 @@ function showAccept(order: SupplierOrder) {
 function openBulkAccept() {
   if (!canApprove.value) return
   error.value = ''
-  if (!selectedSources.value.length || selectedSources.value.some(source => source.kind === 'REGULAR'
+  if (!selectedSources.value.length || selectedSources.value.some(source => hasBulkPromiseAttempt(selectionKey(source.kind, source.order)) || (source.kind === 'REGULAR'
     ? !open(source.order) || !source.order.lines.some(needsAcceptance)
-    : !specialApprovalAllowed(source.order) || !specialSupplierCanPromise(source.order) || !specialSupplierNeedsAcceptance(source.order))) {
+    : !specialApprovalAllowed(source.order) || !specialSupplierCanPromise(source.order) || !specialSupplierNeedsAcceptance(source.order)))) {
     error.value = '请只选择待接单且当前采购单已生成的订单。'
     return
   }
@@ -996,7 +1043,7 @@ async function onSupplierChange(task: SupplierChangeTask, action: SupplierChange
 }
 async function confirmBulkAccept() {
   if (busy.value || !canApprove.value) return
-  if (selectedSources.value.some(source => bulkVersions.get(selectionKey(source.kind, source.order)) !== acceptanceVersion(source)
+  if (selectedSources.value.some(source => hasBulkPromiseAttempt(selectionKey(source.kind, source.order)) || bulkVersions.get(selectionKey(source.kind, source.order)) !== acceptanceVersion(source)
     || (source.kind === 'SPECIAL' ? !specialApprovalAllowed(source.order) || !specialSupplierCanPromise(source.order) || !specialSupplierNeedsAcceptance(source.order) : !open(source.order)))) {
     error.value = '所选订单版本或接单状态已变化，请关闭窗口并重新核对。'; return
   }
@@ -1069,49 +1116,213 @@ async function confirmBulkAccept() {
     busy.value = false
   }
 }
-const selectedPromiseLines = computed(() => selectedOrders.value.flatMap(order => order.lines
-  .filter(line => line.accepted && order.issue_id)
-  .map(line => ({ order, line }))))
-function openBulkPromise() {
-  if (!canApprove.value) return
-  error.value = ''
-  if (!selectedPromiseLines.value.length) { error.value = '请选择已接单的订单；待接单请用“批量确认接单”。'; return }
-  for (const { line } of selectedPromiseLines.value) bulkPromiseDates[line.id] = line.promised_date || ''
-  bulkPromiseUniform.value = ''
+const acceptedPromisePapers = (order: PortalOrder) => order.lines.filter(line => line.accepted && Number(line.required_quantity) > 0)
+const retainedPromiseSelections = computed(() => new Set(bulkPromiseDrafts.value.map(draft => draft.key)))
+const hasUncertainPromise = computed(() => bulkPromiseDrafts.value.some(draft => draft.attempt))
+function hasBulkPromiseAttempt(key: string) {
+  return bulkPromiseDrafts.value.some(draft => draft.key === key && draft.attempt)
+}
+function bulkPromiseVersion(source: SupplierSelection) {
+  if (source.kind === 'SPECIAL') {
+    const order = source.order
+    return JSON.stringify([specialVersion(order), order.supplier_confirmation?.acceptance_id])
+  }
+  return JSON.stringify([source.order.issue_id, acceptedPromisePapers(source.order).map(line => [line.id, line.commitment_revision]).sort()])
+}
+function bulkPromiseEligibility(source: SupplierSelection) {
+  const order = source.order
+  if (!canApprove.value || !auth.can('carton_supplier:approve', order.factory_id, '*')) return '无本厂接单确认权限。'
+  if (order.status === 'COMPLETED' || order.status === 'CANCELLED') return '订单已完成或取消。'
+  if (source.kind === 'SPECIAL') {
+    if (specialReadFailures.value.has(order.factory_id)) return '本厂样板与杂单读取失败，请重新读取。'
+    if (specialSupplierOrigin(source.order)) return '供应商来源的订单沿用原处理流程。'
+    if (!specialSupplierCanPromise(source.order)) return '采购版本待生成或订单已停止执行。'
+    if (!specialSupplierAccepted(source.order)) return '当前采购版本待接单或有异议，请先处理版本回执。'
+    if (!source.order.supplier_confirmation?.acceptance_id) return '当前接单回执待核实，请重新读取后改期。'
+    if (specialRetries.has(selectionKey('SPECIAL', source.order))) return '单张接单提交仍待核实，请先处理原提交。'
+  } else {
+    if (!open(source.order) || !source.order.issue_id) return '采购版本待生成或订单已停止执行。'
+    if (!acceptedPromisePapers(source.order).length) return '当前采购版本没有已接单的纸品，请先确认接单。'
+  }
+  return ''
+}
+function newBulkPromiseDraft(source: SupplierSelection): PromiseOrderDraft {
+  const { kind, order } = source
+  const dates = kind === 'SPECIAL'
+    ? [{ id: order.id, label: '整单', original: specialSupplierPromise(order), value: specialSupplierPromise(order) }]
+    : acceptedPromisePapers(order).map(line => ({ id: line.id, label: `${line.packaging_type} · ${line.child_no}`, original: line.promised_date, value: line.promised_date }))
+  return {
+    key: selectionKey(kind, order), factoryId: order.factory_id, orderNo: kind === 'SPECIAL' ? order.request_no : order.order_no,
+    label: kind === 'SPECIAL' ? specialKinds[order.kind] || order.kind : `正单 · ${order.contract_no} · ${order.item_no}`,
+    plannedDate: kind === 'SPECIAL' ? order.required_date : order.planned_date, dates,
+    version: bulkPromiseVersion(source), error: '',
+  }
+}
+function openBulkPromise(event: Event) {
+  if (busy.value || !canApprove.value) return
+  bulkPromiseTrigger = event.currentTarget as HTMLElement
+  const previous = new Map(bulkPromiseDrafts.value.map(draft => [draft.key, draft]))
+  const keys = new Set([...selectedOrderIds.value, ...bulkPromiseDrafts.value.filter(draft => draft.attempt).map(draft => draft.key)])
+  bulkPromiseDrafts.value = [...keys].flatMap(key => {
+    const source = bulkPromiseSources.value.get(key)
+    const draft = previous.get(key)
+    if (draft?.attempt || draft && (!source || draft.version === bulkPromiseVersion(source))) return [draft]
+    return source ? [newBulkPromiseDraft(source)] : []
+  })
+  if (!bulkPromiseDrafts.value.length) {
+    error.value = '请选择要改期的订单。'
+    return
+  }
+  error.value = ''; message.value = ''; bulkPromiseStatus.value = ''; bulkPromiseUniform.value = ''
   bulkPromiseOpen.value = true
+}
+function closeBulkPromise() {
+  if (!busy.value) bulkPromiseOpen.value = false
+}
+function restoreBulkPromiseFocus(event: Event) {
+  if (bulkPromiseTrigger?.isConnected) {
+    event.preventDefault()
+    bulkPromiseTrigger.focus()
+  }
+}
+function bulkPromiseReason(draft: PromiseOrderDraft) {
+  const source = bulkPromiseSources.value.get(draft.key)
+  if (!source) return '当前订单不可读取，请重新读取后核对。'
+  const reason = bulkPromiseEligibility(source)
+  if (reason) return reason
+  if (draft.attempt && bulkPromiseAttemptState(draft, source, draft.attempt) === 'CHANGED') {
+    return '原提交结果待核实，采购版本或承诺交期已变化，请核对原记录。'
+  }
+  if (!draft.attempt && draft.version !== bulkPromiseVersion(source)) return '采购版本或承诺交期已变化，请关闭窗口后重新核对。'
+  return ''
+}
+function canReviewOriginalPromise(draft: PromiseOrderDraft) {
+  const source = bulkPromiseSources.value.get(draft.key)
+  return Boolean(canApprove.value && source && auth.can('carton_supplier:approve', draft.factoryId, '*') && draft.attempt
+    && (source.order.status === 'COMPLETED' || source.order.status === 'CANCELLED'
+      || bulkPromiseAttemptState(draft, source, draft.attempt) === 'CHANGED'))
+}
+function reviewOriginalPromise(draft: PromiseOrderDraft) {
+  const source = bulkPromiseSources.value.get(draft.key)
+  if (busy.value || !source || !canReviewOriginalPromise(draft)) return
+  const replacement = newBulkPromiseDraft(source)
+  bulkPromiseDrafts.value = bulkPromiseDrafts.value.map(item => item.key === draft.key ? replacement : item)
+  bulkPromiseStatus.value = `${draft.orderNo} 已载入当前版本，请核对接单状态和新交期。`
+}
+function changeablePromiseDate(draft: PromiseOrderDraft, date: PromiseOrderDraft['dates'][number], value: string) {
+  if (busy.value || draft.attempt || bulkPromiseReason(draft)) return
+  date.value = value
+  draft.error = ''
 }
 function applyBulkPromiseDate() {
   if (!bulkPromiseUniform.value) return
-  for (const { line } of selectedPromiseLines.value) bulkPromiseDates[line.id] = bulkPromiseUniform.value
+  for (const draft of bulkPromiseDrafts.value) for (const date of draft.dates) changeablePromiseDate(draft, date, bulkPromiseUniform.value)
+}
+function prepareBulkPromise(draft: PromiseOrderDraft, source: SupplierSelection): PromiseAttempt | undefined {
+  const changed = draft.dates.filter(date => date.value !== date.original)
+  if (draft.dates.some(date => !date.value)) { draft.error = '请填写新承诺交期。'; return }
+  if (!changed.length) { draft.error = '承诺交期未修改。'; return }
+  if (source.kind === 'SPECIAL') {
+    const order = source.order
+    return { kind: 'SPECIAL', body: specialAcceptanceBody(order, changed[0]!.value, order.supplier_confirmation?.acceptance_id) }
+  }
+  if (changed.length > 200) { draft.error = '一张正单每次最多修改 200 条纸品，请分次核对。'; return }
+  const papers = new Map(acceptedPromisePapers(source.order).map(line => [line.id, line]))
+  return { kind: 'REGULAR', lines: changed.map(date => ({
+    order_line_id: date.id, issue_id: source.order.issue_id,
+    expected_revision: papers.get(date.id)!.commitment_revision, promised_date: date.value,
+  })) }
+}
+function regularPromiseState(order: PortalOrder, lines: RegularPromiseLines) {
+  const papers = new Map(acceptedPromisePapers(order).map(line => [line.id, line]))
+  if (lines.every(line => {
+    const paper = papers.get(line.order_line_id)
+    return order.issue_id === line.issue_id && paper?.commitment_revision === line.expected_revision + 1 && paper.promised_date === line.promised_date
+  })) return 'MATCHED'
+  if (lines.every(line => order.issue_id === line.issue_id && papers.get(line.order_line_id)?.commitment_revision === line.expected_revision)) return 'ORIGINAL'
+  return 'CHANGED'
+}
+function bulkPromiseAttemptState(draft: PromiseOrderDraft, source: SupplierSelection, attempt: PromiseAttempt) {
+  if (source.kind === 'REGULAR' && attempt.kind === 'REGULAR') return regularPromiseState(source.order, attempt.lines)
+  if (source.kind !== 'SPECIAL' || attempt.kind !== 'SPECIAL') return 'CHANGED'
+  const order = source.order
+  if (order.current_version_id !== attempt.body.source_id || order.revision !== attempt.body.expected_revision) return 'CHANGED'
+  if (specialSupplierPromise(order) === attempt.body.promised_date) return 'MATCHED'
+  return bulkPromiseVersion(source) === draft.version ? 'ORIGINAL' : 'CHANGED'
+}
+function uncertainPromiseError(reason: unknown) {
+  const status = (reason as { response?: { status?: number } } | undefined)?.response?.status
+  return !status || status === 408 || status >= 500
 }
 async function confirmBulkPromise() {
   if (busy.value || !canApprove.value) return
-  error.value = ''
-  const pending = selectedPromiseLines.value.filter(({ line }) => bulkPromiseDates[line.id])
-  if (pending.length !== selectedPromiseLines.value.length) { error.value = '请为每条纸品填写承诺交期。'; return }
+  const context = importContext.value, token = ++bulkPromiseGeneration
+  const isCurrent = () => context === importContext.value && token === bulkPromiseGeneration
   busy.value = true
-  message.value = ''
-  const context = importContext.value
+  error.value = ''; message.value = ''; bulkPromiseStatus.value = ''
+  const saved = new Set<string>()
+  let verified = 0, attempted = false
+  function complete(draft: PromiseOrderDraft) {
+    saved.add(draft.key)
+    selectedOrderIds.value = selectedOrderIds.value.filter(key => key !== draft.key)
+    invalidateDocuments()
+    extraLoaded.activity = false
+  }
   try {
-    for (const factoryId of [...new Set(pending.map(({ order }) => order.factory_id))]) {
-      if (context !== importContext.value) return
-      const lines = pending.filter(({ order }) => order.factory_id === factoryId)
-      await api.acceptBatch(factoryId, lines.map(({ order, line }) => ({
-        order_line_id: line.id, issue_id: order.issue_id,
-        expected_revision: line.commitment_revision, promised_date: bulkPromiseDates[line.id]!,
-      })))
+    for (const draft of bulkPromiseDrafts.value) {
+      if (!isCurrent()) return
+      const source = bulkPromiseSources.value.get(draft.key)
+      if (!source || bulkPromiseReason(draft)) continue
+      const wasUncertain = Boolean(draft.attempt)
+      const attempt = draft.attempt ?? prepareBulkPromise(draft, source)
+      if (!attempt) continue
+      if (wasUncertain && bulkPromiseAttemptState(draft, source, attempt) === 'MATCHED') {
+        complete(draft)
+        verified++
+        continue
+      }
+      attempted = true
+      try {
+        if (attempt.kind === 'SPECIAL') {
+          const result = await cartonSupplierChangesApi.respond(attempt.body)
+          if (!isCurrent()) return
+          publishSpecialAcceptance(draft.key, attempt.body, result)
+        } else {
+          await api.acceptBatch(draft.factoryId, attempt.lines)
+          if (!isCurrent()) return
+        }
+        complete(draft)
+      } catch (reason) {
+        if (!isCurrent()) return
+        // Preserve the original dates, revisions and request key after a lost response.
+        if (uncertainPromiseError(reason) || wasUncertain) draft.attempt = attempt
+        draft.error = `${draft.attempt ? '提交结果待核实：' : '更新失败：'}${getApiErrorMessage(reason)}`
+      }
     }
-    if (context !== importContext.value) return
-    message.value = `已更新 ${pending.length} 条纸品的承诺交期；订单页会显示新的承诺日期和差异。`
-    selectedOrderIds.value = []
-    bulkPromiseOpen.value = false
-  } catch (reason) {
-    if (context === importContext.value) failure(reason)
+    if (attempted) {
+      const [refreshError] = await Promise.all([load(false, false), loadSpecialRequests()])
+      if (!isCurrent()) return
+      void changeTasks.value?.refresh()
+      const refreshFailure = [refreshError, specialError.value].filter(Boolean).join('；')
+      if (refreshFailure) error.value = `订单列表刷新失败：${refreshFailure}。请重新读取以核对结果。`
+      for (const draft of bulkPromiseDrafts.value) {
+        if (saved.has(draft.key) || !draft.attempt) continue
+        const source = bulkPromiseSources.value.get(draft.key)
+        if (source && !bulkPromiseEligibility(source) && bulkPromiseAttemptState(draft, source, draft.attempt) === 'MATCHED') {
+          complete(draft)
+          verified++
+        }
+      }
+    }
+    bulkPromiseDrafts.value = bulkPromiseDrafts.value.filter(draft => !saved.has(draft.key))
+    const remaining = bulkPromiseDrafts.value.length
+    bulkPromiseStatus.value = `已更新 ${saved.size} 张订单${verified ? `（${verified} 张已核对新承诺日期）` : ''}。${remaining ? `另有 ${remaining} 张尚待处理，请核对各单状态。` : ''}`
+    if (!remaining) {
+      message.value = bulkPromiseStatus.value
+      bulkPromiseOpen.value = false
+    }
   } finally {
-    if (context !== importContext.value) return
-    const [refreshError] = await Promise.all([load(false, false), loadSpecialRequests()])
-    if (refreshError) error.value = `${message.value} 提交已保存，但列表刷新失败：${refreshError}。请刷新查看。`
-    busy.value = false
+    if (isCurrent()) busy.value = false
   }
 }
 async function openTab(tab: typeof activeTab.value) {
@@ -1355,7 +1566,7 @@ async function load(quiet = false, includeSpecial = true, onlyFactory = '') {
     if (priorVersion !== JSON.stringify(data.orders)) { extraLoaded.documents = false; extraLoaded.activity = false }
     const orderIds = new Set(data.orders.map(order => order.id))
     const selectableOrderIds = new Set(data.orders.filter(canSelectOrder).map(order => selectionKey('REGULAR', order)))
-    selectedOrderIds.value = selectedOrderIds.value.filter(key => !key.startsWith('["REGULAR",') || selectableOrderIds.has(key))
+    selectedOrderIds.value = selectedOrderIds.value.filter(key => !key.startsWith('["REGULAR",') || selectableOrderIds.has(key) || retainedPromiseSelections.value.has(key))
     if (detailOrderId.value && !orderIds.has(detailOrderId.value)) closeOrderDetail()
     if (acceptOrderId.value && !orderIds.has(acceptOrderId.value)) acceptOrderId.value = ''
     for (const order of data.orders) for (const line of order.lines) {
@@ -1399,6 +1610,7 @@ async function refresh() {
     if (context !== importContext.value) return
     const available = regularResult.status === 'fulfilled' ? regularResult.value : []
     membershipReadError.value = regularResult.status === 'rejected' ? getApiErrorMessage(regularResult.reason) : ''
+    specialMembershipReadError.value = specialResult.status === 'rejected' ? getApiErrorMessage(specialResult.reason) : ''
     workspaceReadError.value = membershipReadError.value
     specialMemberships.value = specialResult.status === 'fulfilled' ? specialResult.value : []
     memberships.value = available
@@ -1614,7 +1826,7 @@ async function download(id: string, factoryId: string, filename: string) {
               <CartonReplenishmentOrders v-show="collaborationCategory === 'REPLENISHMENT'" :orders="workspace?.orders || []" :can-approve="canApprove" :viewer-key="importContext" accepted-only embedded @changed="load()" />
               <section v-show="collaborationCategory === 'PRICES'" class="min-w-0 space-y-4" aria-label="供应商价格核对厂区">
                 <label class="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-600">核价厂区<select v-model="priceReviewFactory" aria-label="供应商核价厂区" :disabled="!serviceFactories.length" class="h-9 max-w-full rounded-lg border border-slate-200 bg-white px-2 text-xs"><option v-for="item in serviceFactories" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }}</option></select></label>
-                <p class="text-xs leading-5 text-slate-600">下方核对当前厂区的缺价或价格异议；月结按供应商送货单原价计算，与本厂使用同一份金额。</p>
+                <p class="text-xs leading-5 text-slate-600">在此核对当前厂区的缺价或价格异议。供应商送货单原价供核对，月结以核实结果为准。</p>
                 <p v-if="!priceReviewFactory" class="text-xs text-slate-500">{{ discovering ? '正在读取核价厂区…' : membershipReadError ? '核价厂区暂不可用，请刷新页面重新读取。' : '暂无可核价的服务厂区。' }}</p>
                 <CartonPriceReviews v-if="priceReviewFactory" :factory-id="priceReviewFactory" :viewer-key="importContext" supplier embedded @review-state="updatePriceReviewState" @changed="load()" @full-correction="openPriceCorrection(priceReviewFactory, $event)" />
                 <p v-if="priceReviewFactory && !priceReviewState.canRead" class="text-xs text-slate-600">当前账号无本厂核价查看权限，请核对厂区或联系授权人员。</p>
@@ -1624,7 +1836,7 @@ async function download(id: string, factoryId: string, filename: string) {
         <div :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="grid grid-cols-2 gap-2 lg:grid-cols-4" aria-label="供应商工作统计">
           <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">已发送订单</p><p class="text-xl font-bold">{{ orderCount(orders.length + specialRequests.length) }} <span class="text-xs font-normal">张</span></p></div>
           <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">待接单</p><p class="text-xl font-bold text-teal-700">{{ orderCount(workCounts.acceptance) }} <span class="text-xs font-normal">张订单</span></p></div>
-          <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">待发货</p><p class="text-xl font-bold text-teal-700">{{ orderCount(workCounts.shipment) }} <span class="text-xs font-normal">张订单</span></p></div>
+            <button type="button" class="rounded-xl border bg-white px-4 py-2 text-left hover:border-teal-400" @click="openPendingShipments"><p class="text-xs text-slate-500">待发货</p><p class="text-xl font-bold text-teal-700">{{ orderCount(workCounts.shipment) }} <span class="text-xs font-normal">张订单</span></p></button>
           <button type="button" class="rounded-xl border bg-white px-4 py-2 text-left hover:border-teal-400" @click="openPendingReceipts"><p class="text-xs text-slate-500">待仓库验收</p><p class="text-xl font-bold text-amber-700">{{ deliveryCountsUnknown ? '待核实' : workCounts.receipt }} <span class="text-xs font-normal">张送货单</span></p></button>
         </div>
           <CartonMaterialCorrectionDialog v-if="materialCorrection" :factory-id="materialCorrection.factory_id" :order-no="materialCorrection.order_no" :record-id="materialCorrection.id" supplier @close="materialCorrection = null" @changed="load()" />
@@ -1654,18 +1866,18 @@ async function download(id: string, factoryId: string, filename: string) {
 <label >厂区<select v-model="factoryFilter" aria-label="供应商订单厂区筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700"><option value="">全部厂区</option><option v-for="item in serviceFactories" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }} · {{ item.supplier_name }}</option></select></label>
 <label >类型<select v-model="orderKind" aria-label="供应商订单类型筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="ALL">全部类型</option><option value="PURCHASE">正单</option><option value="SAMPLE">样板单</option><option value="WORKSHOP_MISC">车间杂单</option><option value="SUPPLIER_GIFT">供应商赠送</option></select></label>
 <label >客户<select v-model="customerFilter" aria-label="供应商订单客户筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部客户</option><option v-for="name in customers" :key="name" :value="name">{{ name }}</option></select></label>
-<label >状态<select v-model="statusFilter" aria-label="供应商订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="ALL">全部状态</option><option value="PENDING_ACCEPTANCE">待接单</option><option value="WAITING_SHIPMENT">待送货</option><option value="ACCEPTED">已确认接单</option><option value="PARTIALLY_RECEIVED">部分收料</option><option value="RECEIPT_PENDING">待仓库验收</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option><option value="PENDING_ISSUE">变更待生成</option></select></label>
+              <label >状态<select v-model="statusFilter" aria-label="供应商订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="ALL">全部状态</option><option value="PENDING_ACCEPTANCE">待接单</option><option value="WAITING_SHIPMENT">待发货</option><option value="ACCEPTED">已确认接单</option><option value="PARTIALLY_RECEIVED">部分收料</option><option value="RECEIPT_PENDING">待仓库验收</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option><option value="PENDING_ISSUE">变更待生成</option></select></label>
 <template #more><label class="flex items-center gap-1 text-xs text-slate-600">起始日期<input v-model="orderDateFrom" type="date" aria-label="下单日期开始" :max="orderDateTo || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
 <label class="flex items-center gap-1 text-xs text-slate-600">至<input v-model="orderDateTo" type="date" aria-label="下单日期结束" :min="orderDateFrom || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
 <label >日期口径<select v-model="orderDateField" aria-label="供应商订单日期口径" class="h-9 rounded-lg border px-2 text-xs"><option value="ORDER">下单日期</option><option value="PLANNED">计划交期</option><option value="PROMISED">最早未交纸品承诺交期</option></select></label>
 <label >排序<select v-model="orderSort" aria-label="供应商订单排序" class="h-9 rounded-lg border px-2 text-xs"><option value="DEFAULT">处理阶段 / 计划交期</option><option value="PLANNED_ASC">计划交期由近到远</option><option value="PROMISED_ASC">最早未交纸品承诺交期</option><option value="ORDER_DESC">下单日期由新到旧</option></select></label>
 <button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="orderSort = 'DEFAULT'">恢复默认排序</button></template>
-<template #actions><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:text-teal-700" @click="clearFilters">清空筛选</button></template>
+              <template #actions><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:text-teal-700" @click="clearFilters()">清空筛选</button></template>
 
 </CartonFilterBar>
             <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5 text-xs">
               <div class="flex flex-wrap items-center gap-3"><span class="font-semibold text-slate-700">订单台账 {{ visibleOrderRows.length }} / {{ orderCount(orders.length + specialRequests.length) }} 张</span><span class="text-slate-500">已选 <b class="text-teal-700">{{ selectedOrderIds.length }}</b> 张订单（筛选外 {{ hiddenSelectedCount }} 张）</span><button type="button" class="font-semibold text-teal-700 hover:text-teal-900" @click="selectedOnly = !selectedOnly">{{ selectedOnly ? '查看全部' : '查看已选' }}</button><button type="button" :disabled="!selectedOrderIds.length" class="text-slate-500 hover:text-slate-800 disabled:opacity-40" @click="selectedOrderIds = []; selectedOnly = false">清空选择</button></div>
-              <div class="flex flex-wrap gap-2"><button v-if="canApprove" type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkAccept">批量确认接单</button><button v-if="canApprove" type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg border border-teal-200 bg-white px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkPromise">批量改承诺交期</button><button v-if="canEdit" type="button" :disabled="busy" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white hover:bg-teal-800 disabled:opacity-40" @click="openDeliveryImport">导入送货单</button></div>
+              <div class="flex flex-wrap gap-2"><button v-if="canApprove" type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkAccept">批量确认接单</button><button v-if="canApprove" type="button" :disabled="(!selectedOrderIds.length && !hasUncertainPromise) || busy" class="h-9 rounded-lg border border-teal-200 bg-white px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkPromise">批量改承诺交期</button><button v-if="canEdit" type="button" :disabled="busy" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white hover:bg-teal-800 disabled:opacity-40" @click="openDeliveryImport">导入送货单</button></div>
             </div>
             <div class="supplier-order-surface carton-table-wrap">
               <table class="supplier-order-table text-left text-xs carton-table-fit">
@@ -1718,24 +1930,34 @@ async function download(id: string, factoryId: string, filename: string) {
             </DialogContent>
           </DialogRoot>
 
-          <DialogRoot :open="canApprove && bulkPromiseOpen" @update:open="value => { if (!value) bulkPromiseOpen = false }">
+          <DialogRoot :open="canApprove && bulkPromiseOpen" @update:open="value => { if (!value) closeBulkPromise() }">
             <DialogOverlay class="fixed inset-0 z-[64] bg-slate-950/45" />
-            <DialogContent class="fixed left-1/2 top-1/2 z-[65] flex max-h-[88vh] w-[calc(100%-2rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" @interact-outside.prevent>
-              <div class="flex items-start justify-between border-b border-slate-200 p-5"><div><DialogTitle class="text-lg font-bold">批量更新承诺交期 · {{ selectedPromiseLines.length }} 条纸品</DialogTitle><DialogDescription class="mt-1 text-xs text-slate-500">只更新已接单的纸品；未接单请先用“批量确认接单”。改期会通知本厂，并在订单页显示新的承诺日期和差异。</DialogDescription></div><button type="button" aria-label="关闭批量改期窗口" class="rounded-lg p-2 text-slate-500" @click="bulkPromiseOpen = false"><X class="size-4" /></button></div>
-              <p v-if="error" role="alert" class="mx-5 mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
+            <DialogContent class="fixed left-1/2 top-1/2 z-[65] flex max-h-[88vh] w-[calc(100%-2rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" @interact-outside.prevent @close-auto-focus="restoreBulkPromiseFocus">
+              <div class="flex items-start justify-between border-b border-slate-200 p-5">
+                <div><DialogTitle class="text-lg font-bold">批量更新承诺交期 · {{ bulkPromiseDrafts.length }} 张订单</DialogTitle><DialogDescription class="mt-1 text-xs text-slate-500">正单按已接纸品修改，样板和杂单按整单修改。请逐张核对新旧交期。</DialogDescription></div>
+                <button type="button" :disabled="busy" aria-label="关闭批量改期窗口" class="rounded-lg p-2 text-slate-500 disabled:opacity-40" @click="closeBulkPromise"><X class="size-4" /></button>
+              </div>
               <div class="min-h-0 space-y-3 overflow-auto p-5">
-                <div class="flex flex-wrap items-end gap-2 rounded-lg border border-teal-200 bg-teal-50 p-3 text-xs"><label class="space-y-1"><span class="block text-[10px] font-bold text-teal-900">统一日期</span><input v-model="bulkPromiseUniform" type="date" aria-label="统一承诺日期" :disabled="busy" class="h-9 rounded-lg border px-2"></label><button type="button" :disabled="busy || !bulkPromiseUniform" class="h-9 rounded-lg bg-teal-700 px-3 font-bold text-white disabled:opacity-40" @click="applyBulkPromiseDate">应用到全部</button><span class="text-[10px] text-teal-800">再逐条核对，可单独改某一条。</span></div>
-                <div v-for="order in selectedOrders.filter(order => order.lines.some(line => line.accepted))" :key="order.id" class="rounded-lg border border-slate-200 p-3">
-                  <h3 class="mb-2 text-sm font-bold">{{ factoryDisplayName(order.factory_id) }} · {{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}</h3>
-                  <div v-for="line in order.lines.filter(line => line.accepted)" :key="line.id" class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 py-2 text-xs">
-                    <span>{{ line.packaging_type }} · {{ line.child_no }} · 原承诺 {{ line.promised_date || '未填写' }}</span>
-                    <label>新承诺 <input v-model="bulkPromiseDates[line.id]" type="date" :aria-label="`批量改期 ${line.child_no} 承诺日期`" :disabled="busy" class="ml-1 h-9 rounded-lg border border-slate-200 px-2"></label>
-                    <p v-if="promiseDifference(order.planned_date, bulkPromiseDates[line.id] || '')" class="w-full font-semibold text-amber-700">{{ promiseDifference(order.planned_date, bulkPromiseDates[line.id] || '') }}</p>
+                <p v-if="bulkPromiseStatus" role="status" class="rounded-lg bg-teal-50 p-3 text-xs text-teal-900">{{ bulkPromiseStatus }}</p>
+                <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
+                <div class="flex flex-wrap items-end gap-2 rounded-lg border border-teal-200 bg-teal-50 p-3 text-xs">
+                  <label>统一日期 <input v-model="bulkPromiseUniform" type="date" aria-label="统一承诺日期" :disabled="busy" class="ml-1 h-9 rounded-lg border bg-white px-2"></label>
+                  <button type="button" :disabled="busy || !bulkPromiseUniform" class="h-9 rounded-lg bg-teal-700 px-3 font-bold text-white disabled:opacity-40" @click="applyBulkPromiseDate">应用到全部可编辑项</button>
+                </div>
+                <div v-for="draft in bulkPromiseDrafts" :key="draft.key" class="rounded-lg border border-slate-200 p-3">
+                  <h3 class="mb-2 break-words text-sm font-bold">{{ factoryDisplayName(draft.factoryId) }} · {{ draft.orderNo }} · {{ draft.label }}</h3>
+                  <p v-if="bulkPromiseReason(draft)" class="mb-2 text-xs font-semibold text-amber-800">{{ bulkPromiseReason(draft) }}</p>
+                  <p v-if="draft.error" class="mb-2 text-xs font-semibold text-amber-800">{{ draft.error }}</p>
+                  <p v-if="draft.attempt" class="mb-2 text-xs text-slate-600">原提交的日期已锁定，确认时核对或重试原提交。</p>
+                  <button v-if="canReviewOriginalPromise(draft)" type="button" :disabled="busy" class="mb-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-teal-800 disabled:opacity-40" @click="reviewOriginalPromise(draft)">已核对原记录，载入当前版本</button>
+                  <div v-for="date in draft.dates" :key="date.id" class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 py-2 text-xs">
+                    <span>{{ date.label }} · 原承诺 {{ date.original || '未填写' }}</span>
+                    <label>新承诺 <input :value="date.value" type="date" :aria-label="`批量改期 ${date.label === '整单' ? draft.orderNo + ' 整单' : date.label} 承诺日期`" :disabled="busy || Boolean(draft.attempt) || Boolean(bulkPromiseReason(draft))" class="ml-1 h-9 rounded-lg border border-slate-200 px-2" @input="changeablePromiseDate(draft, date, ($event.target as HTMLInputElement).value)"></label>
+                    <p v-if="date.value !== date.original && promiseDifference(draft.plannedDate, date.value)" class="w-full font-semibold text-amber-700">{{ promiseDifference(draft.plannedDate, date.value) }}</p>
                   </div>
                 </div>
-                <p class="text-xs text-slate-500">样板／杂单的承诺交期请在订单明细里逐张更新。</p>
               </div>
-              <div class="flex justify-end gap-2 border-t border-slate-200 p-4"><button type="button" :disabled="busy" class="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold" @click="bulkPromiseOpen = false">取消</button><button type="button" :disabled="busy || !selectedPromiseLines.length" class="rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40" @click="confirmBulkPromise">{{ busy ? '正在保存…' : '确认更新承诺交期' }}</button></div>
+              <div class="flex justify-end gap-2 border-t border-slate-200 p-4"><button type="button" :disabled="busy" class="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold disabled:opacity-40" @click="closeBulkPromise">关闭</button><button type="button" :disabled="busy || !bulkPromiseDrafts.some(draft => !bulkPromiseReason(draft))" class="rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40" @click="confirmBulkPromise">{{ busy ? '正在保存…' : '确认更新承诺交期' }}</button></div>
             </DialogContent>
           </DialogRoot>
 

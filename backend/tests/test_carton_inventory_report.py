@@ -1,4 +1,5 @@
 from decimal import Decimal as D
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -8,6 +9,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.models.carton_procurement import CartonInventoryMovement as Movement
 from app.models.carton_procurement import CartonOrder as Order, CartonOrderLine as OrderLine
+from app.models.carton_procurement import CartonAuditEvent, CartonReceiptLine
+from app.models.carton_price_review import CartonPriceReview
+from app.models.carton_special_requests import SpecialRequest, SpecialReceiptLink, SpecialShipment, SpecialShipmentLine, UnifiedDelivery
 from app.services.carton_inventory_report import inventory_report
 
 
@@ -20,6 +24,9 @@ def db():
     CartonPositionEntry.__table__.create(engine)
     Order.__table__.create(engine)
     OrderLine.__table__.create(engine)
+    for model in (CartonAuditEvent, CartonReceiptLine, CartonPriceReview, SpecialRequest,
+                  SpecialShipment, SpecialShipmentLine, SpecialReceiptLink, UnifiedDelivery):
+        model.__table__.create(engine)
     with Session(engine) as session:
         yield session
     engine.dispose()
@@ -159,6 +166,23 @@ def test_manual_batch_lines_share_document_number_with_type_boundary(db):
     row = inventory_report(db, "huaxing").rows[0]
     assert row.document_count == 2
     assert row.line_count == 3
+
+
+def test_legacy_order_returns_count_each_proven_batch_and_keep_printed_numbers(db):
+    order_line(db, "paper")
+    number = "RET-order-paper"
+    common = dict(order_line_id="paper", issue_kind="RETURN", document_no=number)
+    seed(db, movement("receive", "10", order_line_id="paper"),
+         *(movement(key, "-1", **common) for key in ("a", "b1", "b2", "unlinked1", "unlinked2")))
+    def batch(key, members, factory="huaxing"):
+        return CartonAuditEvent(id=key, factory_id=factory, event_type="INVENTORY_BULK_OUTBOUND_CREATED",
+            entity_type="carton_inventory_batch", entity_id=number, detail_json=json.dumps({"movement_ids": members}),
+            actor_user_id="u", actor_name="User", created_at="2026-09-01T09:00:00+08:00")
+    seed(db, batch("first", ["a"]), batch("second", ["b1", "b2"]), batch("foreign", ["unlinked1"], "huadeng"))
+    report = inventory_report(db, "huaxing")
+    for row in (report.rows[0], report.order_rows[0]):
+        assert (row.line_count, row.document_count, row.outbound_quantity, row.ending_quantity) == (6, 4, 5, 5)
+    assert {row.document_no for row in report.movements if row.movement_type == "OUTBOUND"} == {number}
 
 
 @pytest.mark.parametrize("start,end", [("2026-02-30", ""), ("2026-09-02", "2026-09-01")])

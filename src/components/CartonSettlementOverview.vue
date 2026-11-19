@@ -90,6 +90,7 @@ const visibleCounts = computed(() => ({
   refund: lines.value.filter(row => row.kind === 'RETURN_REFUND').length,
 }))
 const format = (value: string | null) => value === null ? '待核价' : Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const formatUnitPrice = (value: string) => Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
 const currencyName = (code: string) => ({ CNY: '人民币', HKD: '港币', USD: '美元' } as Record<string, string>)[code] || code
 const factoryName = (id: string) => factoryContexts.find(item => item.id === id)?.shortName ?? id
 const kindLabel = (kind: string) => kind === 'RETURN' ? '退货' : kind === 'RETURN_REFUND' ? '退款' : '送货'
@@ -219,8 +220,11 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
           </article>
           <article class="min-w-0 rounded-xl border border-teal-200 bg-teal-50/40 p-4 shadow-sm">
             <div class="text-[11px] font-bold text-teal-800">本月应结</div>
-            <div class="mt-2 break-words text-2xl font-bold tabular-nums text-teal-900">{{ format(data.totals.net) }} <span class="text-xs font-medium text-slate-500">{{ currencyName(data.currency) }}</span></div>
+            <div class="mt-2 break-words text-2xl font-bold tabular-nums" :class="data.totals.net === null ? 'text-amber-800' : 'text-teal-900'">{{ format(data.totals.net) }} <span class="text-xs font-medium text-slate-500">{{ currencyName(data.currency) }}</span></div>
             <p v-if="references?.net" class="mt-1 break-words text-xs tabular-nums text-teal-700">{{ references.net }}</p>
+            <p v-if="data.totals.pending_price_lines" class="mt-1 text-xs tabular-nums text-amber-800">
+              <span v-if="data.totals.verified_net !== null">已核实净额小计 {{ format(data.totals.verified_net) }} · </span>待核价 {{ data.totals.pending_price_lines }} 行
+            </p>
             <div class="mt-1 text-[10px] text-teal-700">送货金额 − 退货贷项 ＋ 本月已核实现金退款</div>
           </article>
         </div>
@@ -233,8 +237,11 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
           <span>已验收送货 <b>{{ format(customer.totals.inbound) }}</b></span>
           <span>退货贷项 <b>{{ format(customer.totals.returns) }}</b></span>
           <span>已核实退款 <b>{{ format(customer.totals.refunds) }}</b></span>
-          <span class="text-teal-800">应结 <b>{{ format(customer.totals.net) }}</b></span>
+          <span :class="customer.totals.net === null ? 'text-amber-800' : 'text-teal-800'">应结 <b>{{ format(customer.totals.net) }}</b></span>
         </div>
+        <p v-if="customer.totals.pending_price_lines" class="tabular-nums text-amber-800">
+          <span v-if="customer.totals.verified_net !== null">已核实净额小计 {{ format(customer.totals.verified_net) }} · </span>待核价 {{ customer.totals.pending_price_lines }} 行
+        </p>
       </section>
 
       <article class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="本月对账待处理清单">
@@ -255,11 +262,11 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
 
       <article class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" :aria-label="supplier ? '供应商本月对账明细' : '本月对账明细'">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
-          <div><h2 class="font-bold text-slate-950">本月明细<span v-if="customer"> · {{ customer.name }}</span></h2><p class="mt-1 text-[11px] text-slate-500">金额按原币，退货列为扣减，现金退款列为正项。</p></div>
+          <div><h2 class="font-bold text-slate-950">本月明细<span v-if="customer"> · {{ customer.name }}</span></h2><p class="mt-1 text-[11px] text-slate-500">金额按原币，退货贷项为扣减，现金退款为正项。原价参考按有效验收数量计算。</p></div>
           <span class="text-[11px] text-slate-500">{{ visibleCounts.receipt }} 行送货 · {{ visibleCounts.returns }} 笔退货 · {{ visibleCounts.refund }} 笔退款</span>
         </div>
         <div class="overflow-x-auto carton-table-wrap"><table class="w-full text-left text-xs carton-table-fit" aria-label="本月对账明细表">
-          <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2">类型</th><th class="px-3 py-2">单号</th><th class="px-3 py-2">验收/交接日</th><th class="px-3 py-2">客户</th><th class="px-3 py-2">货号 / 纸品</th><th class="px-3 py-2 text-right">数量</th><th class="px-3 py-2 text-right">单价</th><th class="px-3 py-2 text-right">金额</th><th class="px-3 py-2">原凭证</th></tr></thead>
+          <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2">类型</th><th class="px-3 py-2">单号</th><th class="px-3 py-2">验收/交接日</th><th class="px-3 py-2">客户</th><th class="px-3 py-2">货号 / 纸品</th><th class="px-3 py-2 text-right">数量</th><th class="px-3 py-2 text-right">结算单价</th><th class="px-3 py-2 text-right">结算金额</th><th class="px-3 py-2">原凭证</th></tr></thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-for="row in lines" :key="row.source_key" :class="row.kind === 'RETURN' ? 'bg-rose-50/40' : ''">
               <td data-label="类型" class="px-3 py-2"><span class="rounded px-1.5 py-0.5 text-[10px] font-bold" :class="row.kind === 'RECEIPT' ? 'bg-teal-50 text-teal-800' : 'bg-rose-50 text-rose-700'">{{ kindLabel(row.kind) }}</span></td>
@@ -268,9 +275,19 @@ onBeforeUnmount(() => { generation++; sourceController.abort() })
               <td data-label="客户" class="px-3 py-2">{{ row.customer_name || '—' }}</td>
               <td data-label="货号 / 纸品" class="px-3 py-2">{{ row.item_no || '—' }}<span class="text-slate-500"> · {{ row.packaging_type || '纸品待补' }}</span></td>
               <td data-label="数量" class="px-3 py-2 text-right tabular-nums">{{ signedQuantity(row) }}</td>
-              <td data-label="单价" class="px-3 py-2 text-right tabular-nums">{{ row.unit_price === null ? '—' : format(row.unit_price) }}</td>
-              <td data-label="金额" class="px-3 py-2 text-right font-semibold tabular-nums">{{ signedAmount(row) }}</td>
-              <td data-label="原凭证" class="px-3 py-2"><button v-if="row.reference" type="button" class="rounded text-left font-semibold text-teal-800 underline underline-offset-2" @click="openSource(row, $event)">{{ sourceAction(row) }}</button><span v-else>—</span><p v-if="row.price_basis === 'SUPPLIER_ORIGINAL'" class="mt-1 text-[10px] text-teal-800">按供应商原单价</p></td>
+              <td data-label="结算单价" class="px-3 py-2 text-right tabular-nums">
+                {{ row.unit_price === null ? '—' : formatUnitPrice(row.unit_price) }}
+                <p v-if="row.supplier_original_price" class="mt-1 text-[11px] text-slate-500">
+                  供应商原价 {{ row.supplier_original_price.unit_price === null ? '未提供' : formatUnitPrice(row.supplier_original_price.unit_price) }}
+                </p>
+              </td>
+              <td data-label="结算金额" class="px-3 py-2 text-right tabular-nums">
+                <span class="font-semibold" :class="row.amount === null ? 'text-amber-800' : ''">{{ signedAmount(row) }}</span>
+                <p v-if="row.supplier_original_price && row.supplier_original_price.reference_amount !== null" class="mt-1 text-[11px] text-slate-500">
+                  原价参考 {{ format(row.supplier_original_price.reference_amount) }}
+                </p>
+              </td>
+              <td data-label="原凭证" class="px-3 py-2"><button v-if="row.reference" type="button" class="rounded text-left font-semibold text-teal-800 underline underline-offset-2" @click="openSource(row, $event)">{{ sourceAction(row) }}</button><span v-else>—</span></td>
             </tr>
             <tr v-if="!lines.length"><td colspan="9" class="px-4 py-8 text-center text-xs text-slate-500">当前范围没有已验收送货、退货或退款明细</td></tr>
           </tbody>
