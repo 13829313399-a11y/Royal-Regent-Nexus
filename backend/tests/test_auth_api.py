@@ -132,6 +132,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_order:read",
                         "fabric_operations:read",
                         "fabric_warehouse:read",
+                        "injection_scheduling:read",
                         "indonesia_material:read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",

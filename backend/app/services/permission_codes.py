@@ -43,6 +43,12 @@ SPRAY_OPS_PERMISSION_CODES = tuple("spray_ops:" + action for action in (
     "cost_read", "cost_write", "payroll_read", "payroll_write", "settle", "import", "export",
 ))
 
+INJECTION_SCHEDULING_PERMISSION_CODES = (
+    "injection_scheduling:read",
+    "injection_scheduling:plan",
+    "injection_scheduling:report",
+    "injection_scheduling:master_write",
+)
 
 MOLDING_SAMPLE_PERMISSION_CODES = (
     "molding_sample:read",
@@ -237,6 +243,7 @@ BUSINESS_PERMISSION_CODES = (
     *FABRIC_WAREHOUSE_PERMISSION_CODES,
     *UV_OPS_PERMISSION_CODES,
     *SPRAY_OPS_PERMISSION_CODES,
+    *INJECTION_SCHEDULING_PERMISSION_CODES,
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
     *CARTON_ASSET_PERMISSION_CODES,

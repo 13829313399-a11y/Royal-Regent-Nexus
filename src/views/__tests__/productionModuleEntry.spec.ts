@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { getDepartmentModule, getFactoryScopedModule } from '@/data/enterpriseMock'
 
 const enterpriseSource = readFileSync(join(process.cwd(), 'src/data/enterpriseMock.ts'), 'utf8')
 const moduleCenterSource = readFileSync(join(process.cwd(), 'src/views/ModuleCenterView.vue'), 'utf8')
@@ -15,25 +14,16 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('keeps one scheduling placeholder without retired permissions or workbench', () => {
+  it('restores the scheduling workbench behind its dedicated permission without duplicating the card', () => {
     expect(enterpriseSource).toContain("id: 'injection-scheduling'")
     expect(enterpriseSource).toContain("title: '注塑排产中枢'")
     expect(enterpriseSource.match(/id: 'injection-scheduling'/g)).toHaveLength(1)
     expect(enterpriseSource).toContain("route: getDepartmentRoute('production', 'injection-scheduling')")
-    expect(enterpriseSource).not.toContain("injection_scheduling:read")
-    expect(enterpriseSource).toContain("status: '待重新设计'")
+    expect(enterpriseSource).toContain("permissions: ['injection_scheduling:read']")
     expect(enterpriseSource).not.toContain('production:injection_scheduling:')
     expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
-    expect(routerSource).toContain('InjectionSchedulingPlaceholderView.vue')
-    expect(routerSource).not.toContain('InjectionSchedulingView.vue')
-    expect(routerSource).not.toContain('injection_scheduling:read')
-
-    const entry = getDepartmentModule('production', 'injection-scheduling')!
-    for (const factory of ['huaxing', 'huakang-c', 'huakang-d'] as const) {
-      const scoped = getFactoryScopedModule(entry, factory)
-      expect(scoped).toMatchObject({ stats: '', statusMetrics: [], children: [], todos: [] })
-      expect(scoped.route).toBe('/modules/production/injection-scheduling?factory=' + factory)
-    }
+    expect(routerSource).toContain('InjectionSchedulingView.vue')
+    expect(routerSource).toMatch(/name: 'injection-scheduling'[\s\S]{0,350}strictPermissions: true/)
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {

@@ -145,7 +145,7 @@ it.each(['fallback','native-focus','assistant-focus','same-record','guard-cancel
   } finally {w.unmount();app.remove();assistant.remove();modal.remove();navigate.mockRestore();resolve.mockRestore()}
 })
 
-it('shows readable historical filter summaries without displaying stored query JSON', async()=>{
+it('shows the readable injection scope while retaining raw native queries only in the frozen payload', async()=>{
   const w=mount(AssistantContext,{props:{changed:false,currentTitle:'注塑排期',scope:{page:{module_id:'injection-scheduling',route_name:'injection-scheduling',factory_id:'huakang-a'},title:'注塑排期',selection:{selection_id:'filters',resources:[],filters:{factory_id:'huakang-a',query_summary:'需求状态 = 待料；模号前缀 SYN-',filter_json:'{"field":"dispatch_state"}',search_json:'{"text":"SYN-"}',sort_json:'[]'}}}}})
   await w.get('[aria-label="查看本轮范围"]').trigger('click')
   expect(w.text()).toContain('列表范围')
