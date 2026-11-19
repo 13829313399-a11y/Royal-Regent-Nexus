@@ -170,7 +170,7 @@ def ensure_unified_schedule(
         raise CustomerOrderUnifiedError("客户排期必须使用 .xlsx 格式的《河源业务统一排期》")
     if len(schedule_content) > MAX_SCHEDULE_BYTES:
         raise CustomerOrderUnifiedError("客户排期超过 35MB 限制")
-    workbook = _load_workbook(schedule_content, read_only=factory_id == 'huadeng' and customer_code in {'jakks','goliath'})
+    workbook = _load_workbook(schedule_content, read_only=factory_id == 'huadeng' and customer_code in {'jakks','goliath','casdon','spin','simba'})
     try:
         if factory_id == 'huaxing' and customer_code == 'yinhui':
             from .customer_order_yinhui_unified import validate
@@ -933,6 +933,14 @@ def _parse_huadeng_rows(
             for line in order.get("lines", []):
                 values = schedule_module._compose_row(order, line, index)
                 record = service._legacy_row_record(customer_code, order, line, values)
+                # Preserve source currency/precision before legacy conversion.
+                record['_source_currency'] = str(line.get('currency') or 'USD').upper()
+                record['_source_unit_price'] = line.get('unit_price') if line.get('price_identified', True) else None
+                record['_source_amount'] = line.get('total_usd') if line.get('amount_identified', True) else None
+                if not is_casdon and 'price_per' in line:
+                    price, per = _number(line.get('price_per')), _number(line.get('price_per_qty'))
+                    record['_source_unit_price'] = price / per if price is not None and per is not None and per > 0 and line.get('price_identified', True) and line.get('price_basis_identified', True) else None
+                    record['_source_amount'] = line.get('net_value_pdf') if line.get('price_identified', True) else None
                 if not is_casdon:
                     record['unified_reference'] = values.get(schedule_module.COL['item'])
                     record['material_group'] = line.get('material_group')
@@ -1014,6 +1022,13 @@ def _parse_huadeng_rows(
             warnings.extend(f"{file_name}：{message}" for message in parsed.get("warnings", []))
             for source in parsed.get("rows", []):
                 record = dict(source)
+                currency = str(record.get('currency') or ('USD' if record.get('unit_price_usd') is not None or record.get('total_usd') is not None else 'HKD')).upper()
+                record['_source_currency'] = currency
+                record['_source_unit_price'] = record.get('unit_price_usd' if currency == 'USD' else 'unit_price_hkd')
+                record['_source_amount'] = record.get('total_usd' if currency == 'USD' else 'total_hkd')
+                if currency in {'USD','HKD'} and record.get('unit_price_usd') not in (None,'') and record.get('unit_price_hkd') not in (None,''):
+                    record['_source_currency'] = 'BOTH'
+                    record['_source_prices'] = {k:record.get(k) for k in ('unit_price_usd','total_usd','unit_price_hkd','total_hkd')}
                 for field_name in ("outer_length_cm", "outer_width_cm", "outer_height_cm"):
                     record.pop(field_name, None)
                 record["english_name"] = service._simba_first_english_sentence(record.get("english_name"))
@@ -1368,7 +1383,7 @@ def create_unified_customer_preview(
         if customer_code == 'ubtech':
             from app.services.customer_order_ubtech import finish_row
             finish_row(row)
-    if factory_id == 'huadeng' and customer_code in {'jakks', 'goliath'}:
+    if factory_id == 'huadeng' and customer_code in {'jakks', 'goliath', 'casdon', 'spin', 'simba'}:
         from .customer_order_huadeng_usd import apply_preview
         book = _load_workbook(schedule_content, read_only=True)
         try: apply_preview(book, detail_rows)
@@ -1437,7 +1452,7 @@ def create_unified_customer_preview(
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
     preview = {
-        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else '-caixing-mix-price-v1' if factory_id == 'huaxing' and customer_code == 'caixing' else '-jakks-source-line-cancel-v2' if factory_id == 'huadeng' and customer_code == 'jakks' else ''),
+        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-huadeng-source-price-v1' if factory_id == 'huadeng' else '') + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else '-caixing-mix-price-v1' if factory_id == 'huaxing' and customer_code == 'caixing' else '-jakks-source-line-cancel-v2' if factory_id == 'huadeng' and customer_code == 'jakks' else ''),
         "customer_code": customer_code,
         "factory_id": factory_id,
         "po_file_name": file_names[0] if len(file_names) == 1 else f"{len(file_names)}个文件",
@@ -1755,7 +1770,7 @@ def export_unified_customer_schedule(
     if factory_id == 'huadeng':
         for row in preview['rows']:
             row['_regional_manual_fields'] = [o['field'] for o in manual_overrides or [] if o['row_id'] == row['id']]
-    if customer_code == 'zuru' or (factory_id == 'huadeng' and customer_code in {'jakks','goliath'}):
+    if customer_code == 'zuru' or (factory_id == 'huadeng' and customer_code in {'jakks','goliath','casdon','spin','simba'}):
         for override in manual_overrides or []:
             if override['field'] == 'unit_price_usd':
                 row = next((r for r in preview['rows'] if r['id'] == override['row_id']), None)
@@ -1824,7 +1839,7 @@ def export_unified_customer_schedule(
     workbook = _load_workbook(schedule_content)
     try:
         rows = [row for row in preview["rows"] if row.get("row_role") != "parent" or customer_code == "caixing"]
-        if factory_id == 'huadeng' and customer_code in {'jakks','goliath'}:
+        if factory_id == 'huadeng' and customer_code in {'jakks','goliath','casdon','spin','simba'}:
             from .customer_order_huadeng_usd import apply_preview
             apply_preview(workbook, rows)
         if (factory_id, customer_code) == ('huadeng', 'jakks'):
@@ -1899,10 +1914,12 @@ def export_unified_customer_schedule(
                     if customer_code == 'ubtech':
                         from app.services.customer_order_ubtech import write_summary
                         write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])
-                if factory_id == 'huadeng' and customer_code in {'jakks','goliath'}:
+                if factory_id == 'huadeng' and row.get('_huadeng_source_currency'):
                     from .customer_order_huadeng_usd import write_prices
                     write_prices(workbook,row,slots_by_sheet[ORDER_SHEET][summary_index],slots_by_sheet[REVIEW_SHEET][summary_index])
-                if (factory_id, customer_code) == ('huadeng', 'casdon'):
+                if (factory_id, customer_code) == ('huadeng', 'casdon') and row.get('_huadeng_source_currency'):
+                    casdon.link_money(workbook, row_number, slots_by_sheet[ORDER_SHEET][summary_index])
+                elif (factory_id, customer_code) == ('huadeng', 'casdon'):
                     casdon.write_prices(workbook, row, row_number,
                         slots_by_sheet[ORDER_SHEET][summary_index], slots_by_sheet[REVIEW_SHEET][summary_index])
                 if not recovered_rows[index]:
