@@ -263,4 +263,4 @@ def test_three_native_domains_keep_independent_facts_times_and_authority(env, tm
     assert len(tool_messages) == 3
     assert "PRIVATE-PRICE" not in json.dumps(replay.calls) and "commercial_price" not in json.dumps(replay.calls)
     instruction = replay.calls[1]["messages"][0]["content"]
-    assert "不能声称原子一致" in instruction and "没有权威映射" in instruction
+    assert "无共同快照不称原子一致" in instruction and "无权威映射不关联订单与生产" in instruction
