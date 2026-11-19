@@ -88,13 +88,13 @@ def test_one_failed_domain_preserves_others_and_hides_internal_exception(env):
     client, _, _, patch = env
     original = business.authorize
     def failed(db, user, name, factory):
-        if name == 'get_printer_status':
+        if name == 'get_injection_overview':
             raise OperationalError('PRIVATE_SQL', {}, RuntimeError('PRIVATE_DATABASE_PATH'))
         return original(db, user, name, factory)
     patch.setattr(business, 'authorize', failed)
     response = client.get('/api/assistant/coverage', params={'factory_id': 'huaxing'})
     rows = items(response)
-    assert rows['three-d-printing']['state'] == 'not_connected'
+    assert rows['injection-scheduling']['state'] == 'not_connected'
     assert rows['work-center']['state'] == 'business_read'
     assert 'PRIVATE_' not in response.text
 

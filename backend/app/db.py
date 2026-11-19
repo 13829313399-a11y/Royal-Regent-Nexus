@@ -608,6 +608,30 @@ def ensure_sqlite_legacy_columns() -> None:
                 )
 
 
+def ensure_injection_v3_schema_ready() -> None:
+    from app.models import injection_scheduling  # noqa: F401
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        missing = []
+        for table in Base.metadata.sorted_tables:
+            if not table.name.startswith("injection_v3_"):
+                continue
+            if table.name not in names:
+                missing.append(table.name)
+                continue
+            columns = {c["name"] for c in inspector.get_columns(table.name)}
+            missing.extend(f"{table.name}.{c.name}" for c in table.columns if c.name not in columns)
+        if missing:
+            raise RuntimeError(
+                "注塑排产 V3 尚未迁移至 20260905_0100；请在备份与迁移演练后升级目标数据库。缺少："
+                + ", ".join(missing)
+            )
+
+
 def ensure_carton_stocktake_schema_ready() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -866,7 +890,21 @@ def ensure_collaboration_schema_ready() -> None:
             raise RuntimeError("成员协作需要显式迁移至 20261010_0156；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def require_active_injection_history(revisions) -> None:
+    if "20261116_inj_retire" in revisions:
+        raise RuntimeError(
+            "This database has applied the archived injection retirement. "
+            "Recover the scheduling records and grants from a verified pre-retirement backup "
+            "in isolation before switching releases."
+        )
+
+
 def init_db() -> None:
+    with engine.connect() as connection:
+        if inspect(connection).has_table("alembic_version"):
+            require_active_injection_history(
+                connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalars()
+            )
     from app.models import (
         indonesia_materials,  # noqa: F401
         collaboration,  # noqa: F401
@@ -903,6 +941,7 @@ def init_db() -> None:
         internal_quote,  # noqa: F401
         module_feedback,  # noqa: F401
         customer_price_settings,  # noqa: F401
+        injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
         qc_inspection,  # noqa: F401
@@ -935,6 +974,7 @@ def init_db() -> None:
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
     ensure_carton_feedback_schema_ready()
+    ensure_injection_v3_schema_ready()
     ensure_carton_stocktake_schema_ready()
     ensure_carton_positions_schema_ready()
     ensure_carton_master_schema_ready()
@@ -1003,6 +1043,8 @@ def init_db() -> None:
             from app.services.spray_ops.common import seed_factories
             seed_factories(db)
             db.commit()
+        from app.services.injection_scheduling.common import seed_settings
+        seed_settings(db)
         seed_auth_defaults(db)
         seed_carton_supplier_defaults(db)
         seed_internal_quote_pricing_baseline_defaults(db)

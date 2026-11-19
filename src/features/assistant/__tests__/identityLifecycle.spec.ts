@@ -11,7 +11,7 @@ const input: Omit<SendPayload,'client_request_id'> = {text:'你好',attachment_i
 beforeEach(() => { vi.restoreAllMocks(); setActivePinia(createPinia()) })
 describe('identity and stream ownership', () => {
   it('freezes the actual full-page factory, including the fixed UV workspace', () => {
-    expect(pageContext('injection-scheduling','group','huaxing')).toBeNull()
+    expect(pageContext('injection-scheduling','group','huaxing')?.factory_id).toBe('huaxing')
     expect(pageContext('uv-live','huakang-b')?.factory_id).toBe('huakang-a')
     expect(pageContext('dashboard','group','forged')?.factory_id).toBe('group')
   })

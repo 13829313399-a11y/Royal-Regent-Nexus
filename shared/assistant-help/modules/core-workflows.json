@@ -56,6 +56,78 @@
     "status": "verified"
   },
   {
+    "id": "injection-scheduling.remaining-guide",
+    "module_id": "injection-scheduling",
+    "title": "剩余啤数为什么未知或与产量不同",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "injection-scheduling"
+    ],
+    "factory_ids": [
+      "huaxing",
+      "huadeng",
+      "huakang-a",
+      "huakang-b"
+    ],
+    "anchor_id": "injection.factory",
+    "field_keys": [
+      "planned_shots",
+      "remaining_shots",
+      "production_duration_hours"
+    ],
+    "summary": "核对厂区、数量模式和实际报产；剩余啤数、件数、估算工时各有独立口径。",
+    "content": "计划表的“欠数”对应 remaining_shots，单位为啤，不是欠件数。\n\n顺序啤数模式以计划啤数 + 调整啤数 −（期初啤数 + 已报啤数）计算带符号余额；展示剩余啤数下限为 0，超产另列。缺少计划啤数时仍是未知，不能补成 0。\n\n共出件数模式先计算 max(0, 需求件数 − 良品件数)，再除以每啤有效出数向上取整。缺少需求件数、每啤出数无效或不大于 0 时，剩余啤数未知。啤与件不能直接相加；共出任务也不能把各产品的啤数简单重复累计。\n\n估算生产工时 = 剩余啤数 ÷（目标日产啤数 ÷ 基准小时数），缺少有效产能时未知；这不是承诺交付时间。排查时先核对厂区和任务行，再核对数量模式、期初、报产及参数。未保存编辑或执行中的操作会阻止切换视图；先在原页面处理草稿，不让引导替你保存或丢弃。",
+    "steps": [
+      {
+        "title": "核对厂区",
+        "description": "不同厂区的需求和参数独立。",
+        "anchor_id": "injection.factory",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对工作视图",
+        "description": "准备进入表格；已有草稿先在原页面处理。",
+        "anchor_id": "injection.views",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "定位欠数（剩余啤数）",
+        "description": "查看“欠数”表头与该行啤数，再核对数量模式和原始参数。",
+        "anchor_id": "injection.remaining_shots",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/injection_scheduling/calculations.py",
+        "symbol": "def quantities",
+        "sha256": "f72706a7b992e2f3a1b704fa18479d93a4c980e35a7ba81075c0f07ddfe786c5"
+      },
+      {
+        "path": "src/views/InjectionSchedulingView.vue",
+        "symbol": "injection.views",
+        "sha256": "11079e375d091f3fe28adfbe04f8cfbade4c1792d8fb488112da477d9bc302e6"
+      },
+      {
+        "path": "src/features/injection-scheduling/PlanTable.vue",
+        "symbol": "remaining_shots",
+        "sha256": "a8cf72e6411a77edd87ddc3363c7818c7f1a23ba6fd6299d6a83443062239cda"
+      },
+      {
+        "path": "backend/app/services/injection_scheduling/field_registry.py",
+        "symbol": "remaining_shots",
+        "sha256": "f466a1c3fd614bafcf19e590ac76c994ee0e23fbbd322ae23138a943689727bd"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v2",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
     "id": "three-d-printing.telemetry-guide",
     "module_id": "three-d-printing",
     "title": "设备离线、待更新与打印完成的区别",

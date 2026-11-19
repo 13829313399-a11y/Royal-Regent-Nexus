@@ -75,6 +75,15 @@
       "unread_only": true
     }
   },
+  "injection": {
+    "demand_count": 3,
+    "held_count": 2,
+    "wait_material_count": 1,
+    "remaining_material_kg": "120.50",
+    "forecast_late_count": 1,
+    "warehouse_shortage_kg": null,
+    "actual_delivery_late_count": null
+  },
   "printers": [
     {
       "id": "SYN-P001",

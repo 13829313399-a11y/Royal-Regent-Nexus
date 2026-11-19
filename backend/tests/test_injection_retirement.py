@@ -10,7 +10,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.util import CommandError
 
-MIGRATION_PATH = Path(__file__).resolve().parents[1] / "alembic/versions/20261116_inj_retire_scheduling.py"
+MIGRATION_PATH = Path(__file__).resolve().parents[1] / "alembic/archived/20261116_inj_retire_scheduling.py"
 
 
 @pytest.fixture
@@ -134,33 +134,3 @@ def test_purge_is_repeatable_but_downgrade_cannot_invent_lost_data(migration, db
     assert db.exec_driver_sql("SELECT version FROM auth_role_metadata").scalar_one() == 5
     with pytest.raises(CommandError, match="backup"):
         migration.downgrade()
-
-
-def test_retired_api_permissions_and_assistant_cannot_read_or_recreate_tables(env):
-    from sqlalchemy import event, inspect
-    from app.services.assistant import business, registry, visibility
-    from app.services.assistant.errors import AssistantError
-    from app.services.permission_codes import APPLICATION_PERMISSION_CODES
-    from test_work_center_api import actor
-    client, database, calls, patch = env
-    assert client.get('/api/injection-scheduling/state', params={'factory_id':'huaxing'}).status_code == 404
-    assert client.get('/api/injection-ops/factories/huaxing/capabilities').status_code == 404
-    assert not any(n.startswith(('injection_v3_', 'injection_schedule_', 'injection_scheduling_', 'injection_ops_')) for n in inspect(database.engine).get_table_names())
-    assert not any(p.startswith('injection_scheduling:') for p in APPLICATION_PERMISSION_CODES)
-    assert 'get_injection_overview' not in business.NAMES
-    with pytest.raises(AssistantError):
-        registry.resolve('injection-scheduling', 'demand')
-    statements = []
-    def capture(conn, cursor, statement, *args):
-        statements.append(statement)
-    event.listen(database.engine, 'before_cursor_execute', capture)
-    try:
-        with pytest.raises(AssistantError):
-            business.query(actor(), 'get_injection_overview', {'factory_id':'huaxing'}, 'retired')
-        assert not visibility.allowed(actor(), [{'kind':'business', 'tool_name':'get_injection_overview', 'scope':{'factory_id':'huaxing'}}])
-    finally:
-        event.remove(database.engine, 'before_cursor_execute', capture)
-    assert not any('injection_v3_' in s for s in statements)
-    assert not calls
-
-from test_assistant_api import env
