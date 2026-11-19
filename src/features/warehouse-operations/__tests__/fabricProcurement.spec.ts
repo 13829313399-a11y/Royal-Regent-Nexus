@@ -1,9 +1,10 @@
 import { pendingFabricImports, pendingFabricMasterSaves } from '../pendingFabricRequests'
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import Workspace from '../FabricProcurementWorkspace.vue'
+import { purchaseSearchKey } from '../purchaseSearch'
 import type { PurchaseDetail, PurchasePreview } from '@/api/fabricProcurement'
 
 const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
@@ -31,7 +32,67 @@ async function file() {
 function button(text: string) { return wrapper!.findAll('button').find(b => b.text() === text)! }
 function dialogButton(text: string) { return [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === text)! }
 
+const linkedDetail = {
+  id: 'source-1', revision: 1, active: true, evidence: [], warehouse_outstanding_quantity: '3',
+  facts: { order_no: 'PO-11', supplier: '供货方', material_name: '布料', unit: '米' },
+} as PurchaseDetail
+async function openLinkedPurchase() {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{
+    path: '/receipts', component: Workspace,
+    props: route => ({ mode: 'pending', purchaseId: route.query.purchase_id }),
+  }] })
+  await router.push('/receipts?factory=huakang-c&view=pending&purchase_id=source-1')
+  wrapper = mount({ template: '<input aria-label="查找采购明细"><router-view />' }, {
+    attachTo: document.body,
+    global: { plugins: [router], provide: {
+      [purchaseSearchKey as symbol]: { search: ref(''), submitted: ref(0), focus: () => wrapper!.get('input').element.focus() },
+    } },
+  })
+  await flushPromises()
+  return router
+}
+
 describe('real fabric procurement workspace', () => {
+  it('returns focus to purchase search when a deep-linked detail closes', async () => {
+    api.detail.mockResolvedValueOnce(linkedDetail)
+    await openLinkedPurchase()
+    const close = document.querySelector<HTMLButtonElement>('[aria-label="关闭采购来源详情"]')!
+    expect(document.activeElement).toBe(close)
+    close.click()
+    await vi.waitFor(() => {
+      expect(document.querySelector('[role="dialog"]')).toBeNull()
+      expect(document.activeElement).toBe(wrapper!.get('input').element)
+    })
+  })
+
+  it('returns to the purchase list on a missing detail and preserves the factory and view', async () => {
+    api.detail.mockRejectedValueOnce({ isAxiosError: true, response: { status: 404 } })
+    const router = await openLinkedPurchase()
+    expect(wrapper!.get('[role="alert"]').text()).toContain('找不到该厂区的原采购明细')
+    expect(button('重试原采购明细')).toBeUndefined()
+    await button('返回采购列表').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ factory: 'huakang-c', view: 'pending' })
+    expect(api.detail).toHaveBeenCalledExactlyOnceWith('source-1')
+    expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper!.get('input').element)
+  })
+
+  it('retries the same linked detail when the first detail and list reads lose connection', async () => {
+    const offline = { isAxiosError: true, code: 'ERR_NETWORK' }
+    api.groups.mockRejectedValueOnce(offline)
+    api.detail.mockRejectedValueOnce(offline).mockResolvedValueOnce(linkedDetail)
+    await openLinkedPurchase()
+    expect(button('返回采购列表')).toBeUndefined()
+    expect(wrapper!.findAll('[role="alert"]').map(alert => alert.text())).toEqual([expect.stringContaining('无法打开原采购明细')])
+    await button('重试原采购明细').trigger('click')
+    await flushPromises()
+    expect(api.detail.mock.calls).toEqual([['source-1'], ['source-1']])
+    expect(api.groups).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('采购来源详情')
+    expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+  })
+
   async function submitUnknownImport(mounted = false) {
     if (!mounted) await open()
     await file(); api.preview.mockResolvedValue(preview)

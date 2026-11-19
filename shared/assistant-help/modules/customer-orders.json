@@ -265,7 +265,7 @@
       {
         "path": "backend/app/services/customer_order_casdon.py",
         "symbol": "def _casdon_export",
-        "sha256": "404a08e24c58a78344ee3318f972bc27d145bb5779d55870bfaed0d1750b7c4e"
+        "sha256": "cd52a0289b83626156e88619941e3c448912b3f971baff28e23dc7fe5581374f"
       },
       {
         "path": "backend/app/services/customer_order_yinhui_unified.py",
