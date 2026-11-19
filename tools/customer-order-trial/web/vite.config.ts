@@ -61,6 +61,6 @@ export default defineConfig(({ mode }) => {
   }],
   define: { 'import.meta.env.VITE_API_BASE_URL': JSON.stringify('/api') },
   resolve: { alias: [...(workspace ? [{ find: /^@\/api\/customerOrder$/, replacement: path.join(root, huaxing ? 'src/huaxingTrialOrderApi.ts' : huadeng ? 'src/huadengOrderApi.ts' : 'src/greenToysOrderApi.ts') }] : []), ...aliases] },
-  build: { outDir: path.resolve(root, huaxing ? '../build/web-huaxing-recent' : huadeng ? '../build/web-huadeng' : greenToys ? '../build/web-green-toys' : '../build/web'), emptyOutDir: true, sourcemap: false },
+  build: { target: 'chrome108', cssTarget: 'chrome108', cssMinify: 'lightningcss', outDir: path.resolve(root, huaxing ? '../build/web-huaxing-recent' : huadeng ? '../build/web-huadeng' : greenToys ? '../build/web-green-toys' : '../build/web'), emptyOutDir: true, sourcemap: false },
  }
 })

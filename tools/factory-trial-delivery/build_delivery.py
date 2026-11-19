@@ -33,8 +33,7 @@ FACTORIES = {
     'huaxing': ('04_华兴_订单排期', 'Huaxing_Trial', '华兴', 'ZURU、BuzzBee、Dickie、彩星、EDU、360、银辉、施信、Maxx、Shushupapa、Barter、迪士尼'),
     'huadeng': ('05_华登_订单排期', 'Huadeng_Trial', '华登', 'Goliath、Casdon、Jakks、Simba、Spin'),
 }
-START = ('@echo off\r\nchcp 65001 >nul\r\nsetlocal\r\ncd /d "%~dp0"\r\n'
-         '"runtime\\python.exe" -X utf8 launch.py\r\nif errorlevel 1 pause\r\n')
+START = (TOOL / 'start.cmd').read_text(encoding='ascii').replace('\n', '\r\n')
 
 
 def safe_archive_name(name: str):
@@ -68,9 +67,9 @@ def extract(archive: Path, destination: Path):
             zipped.extract(entry, destination)
 
 
-def dependency_inventory(cache: Path):
+def dependency_inventory(cache: Path, legacy=False):
     pins = {}
-    for line in (TOOL / 'requirements-windows.txt').read_text(encoding='utf-8').splitlines():
+    for line in (TOOL / ('requirements-win7.txt' if legacy else 'requirements-windows.txt')).read_text(encoding='utf-8').splitlines():
         if not line.strip() or line.lstrip().startswith('#'):
             continue
         requirement = Requirement(line)
@@ -81,17 +80,20 @@ def dependency_inventory(cache: Path):
         if name in pins:
             raise ValueError(f'Duplicate dependency pin: {name}')
         pins[name] = specs[0].version
-    supported = set(cpython_tags((3, 12), abis=['cp312'], platforms=['win_amd64']))
-    supported.update(compatible_tags((3, 12), interpreter='cp312', platforms=['win_amd64']))
+    version, abi, platform = ((3, 8), 'cp38', 'win32') if legacy else ((3, 12), 'cp312', 'win_amd64')
+    supported = set(cpython_tags(version, abis=[abi], platforms=[platform]))
+    supported.update(compatible_tags(version, interpreter=abi, platforms=[platform]))
     environment = default_environment()
     environment.update(os_name='nt', sys_platform='win32', platform_system='Windows', platform_machine='AMD64',
         python_version='3.12', python_full_version='3.12.10', implementation_name='cpython',
         implementation_version='3.12.10', platform_python_implementation='CPython', extra='')
+    if legacy:
+        environment.update(platform_machine='x86', python_version='3.8', python_full_version='3.8.10', implementation_version='3.8.10')
     records, metadata_by_name = [], {}
     for wheel in sorted((cache / 'wheels-pinned').glob('*.whl')):
         name, version, _, tags = parse_wheel_filename(wheel.name)
         if not supported.intersection(tags):
-            raise ValueError(f'Wheel is not compatible with CPython 3.12 Windows x64: {wheel.name}')
+            raise ValueError(f'Wheel is not compatible with {abi} {platform}: {wheel.name}')
         if name not in pins or str(version) != pins[name] or name in metadata_by_name:
             raise ValueError(f'Unexpected, duplicate or wrong-version wheel: {wheel.name}')
         with ZipFile(wheel) as zipped:
@@ -100,11 +102,11 @@ def dependency_inventory(cache: Path):
                 raise ValueError(f'Wheel has ambiguous metadata: {wheel.name}')
             metadata = Parser().parsestr(zipped.read(entries[0]).decode('utf-8'))
             for path in zipped.namelist():
-                if '.data/' in path and '.data/scripts/' not in path:
+                if '.data/' in path and '.data/scripts/' not in path and '.data/headers/' not in path:
                     raise ValueError(f'Wheel requires an unsupported installation relocation: {path}')
         if canonicalize_name(metadata['Name']) != name or metadata['Version'] != pins[name]:
             raise ValueError(f'Wheel filename and metadata disagree: {wheel.name}')
-        if metadata['Requires-Python'] and '3.12.10' not in SpecifierSet(metadata['Requires-Python']):
+        if metadata['Requires-Python'] and environment['python_full_version'] not in SpecifierSet(metadata['Requires-Python']):
             raise ValueError(f'Wheel requires another Python version: {wheel.name}')
         metadata_by_name[name] = metadata
         records.append({'name': metadata['Name'], 'version': metadata['Version'], 'wheel': wheel.name,
@@ -123,8 +125,8 @@ def dependency_inventory(cache: Path):
     return records
 
 
-def verify_native_sources(cache: Path):
-    sources = json.loads((TOOL / 'runtime-sources.json').read_text(encoding='utf-8'))
+def verify_native_sources(cache: Path, legacy=False):
+    sources = json.loads((TOOL / ('runtime-sources-win7.json' if legacy else 'runtime-sources.json')).read_text(encoding='utf-8'))
     for section in ('native_downloads', 'ocr_languages'):
         for record in sources[section]:
             path = cache / record['name'] if section == 'native_downloads' else cache / 'tesseract-extracted/tessdata' / record['name']
@@ -133,11 +135,12 @@ def verify_native_sources(cache: Path):
     return sources
 
 
-def runtime(cache: Path, destination: Path):
-    verify_native_sources(cache)
-    records = dependency_inventory(cache)
-    archive = cache / 'python-3.12.10-embed-amd64.zip'
-    expected = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
+def runtime(cache: Path, destination: Path, legacy=False):
+    native = verify_native_sources(cache, legacy)
+    records = dependency_inventory(cache, legacy)
+    selected = next(record for record in native['native_downloads'] if record['name'].startswith('python-'))
+    archive = cache / selected['name']
+    expected = selected['sha256']
     if sha256(archive.read_bytes()).hexdigest() != expected:
         raise ValueError('Python runtime checksum mismatch')
     destination.mkdir(parents=True)
@@ -147,8 +150,9 @@ def runtime(cache: Path, destination: Path):
     for record in records:
         wheel = cache / 'wheels-pinned' / record['wheel']
         extract(wheel, packages)
-    (destination / 'python312._pth').write_text(
-        'python312.zip\n.\nLib/site-packages\n../backend\nimport site\n', encoding='utf-8')
+    stdlib = 'python38' if legacy else 'python312'
+    (destination / (stdlib + '._pth')).write_text(
+        stdlib + '.zip\n.\nLib/site-packages\n../backend\nimport site\n', encoding='utf-8')
     return records
 
 
@@ -194,7 +198,7 @@ def build_provenance(source: Path, package: Path, source_commit: str):
             directories[:] = sorted(name for name in directories if name not in {'build', 'node_modules', '__pycache__', '.git', '.pytest_cache', 'dist'})
             for filename in sorted(files):
                 path = Path(parent) / filename
-                if path.suffix not in {'.py', '.ts', '.js', '.vue', '.json', '.html', '.css', '.txt', '.md'}:
+                if path.suffix not in {'.py', '.ts', '.js', '.vue', '.json', '.html', '.css', '.txt', '.md', '.cmd'}:
                     continue
                 if path.is_symlink() or filename.startswith('.env'):
                     raise ValueError(f'Forbidden build input: {path.relative_to(ROOT)}')
@@ -281,7 +285,10 @@ def package_reference_seed(package: Path, schedule: Path, price: Path):
 
 
 def build(cache: Path, output: Path, selected, release_date: str | None = None,
-        jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False, huaxing_customer: str | None = None):
+        jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False, huaxing_customer: str | None = None,
+        legacy_windows: bool = False):
+    if legacy_windows and not (green_toys_only and selected == ['huakang-a']):
+        raise ValueError('Windows 7兼容构建目前仅验收华康A Green Toys。')
     if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie'}):
         raise ValueError('华兴专客包需指定华兴及一个支持客户')
     if green_toys_only and selected != ['huakang-a']:
@@ -298,11 +305,13 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
     with tempfile.TemporaryDirectory(prefix='factory-trial-delivery-', dir=cache) as temporary:
         staging = Path(temporary)
         shared_runtime = staging / 'runtime'
-        dependencies = runtime(cache, shared_runtime)
+        dependencies = runtime(cache, shared_runtime, True) if legacy_windows else runtime(cache, shared_runtime)
         for factory in selected:
             zip_name, folder, name, customers = FACTORIES[factory]
             if green_toys_only:
                 zip_name, folder, customers = '01_华康A_GreenToys_订单入排期', 'HuakangA_GreenToys_Trial', 'Green Toys'
+            if legacy_windows:
+                zip_name, folder = '华康A_GreenToys_Win7_Win10_32及64位', 'GT_Trial'
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
                 zip_name, folder = f'05_华兴_{customers}_订单入排期', f'Huaxing_{huaxing_customer}_Trial'
@@ -311,6 +320,9 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             package = staging / folder
             package.mkdir()
             subprocess.run([sys.executable, '-B', str(source / 'prepare_backend.py'), str(package / 'backend')], check=True)
+            if legacy_windows:
+                from legacy_python import prepare
+                prepare(package / 'backend')
             has_seed = kind == 'jp' and seeded
             if has_seed:
                 stats = package_reference_seed(package, jp_schedule, jp_price)
@@ -341,6 +353,14 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             shutil.copyfile(TOOL / 'launch.py', package / 'launch.py')
             (package / 'START.cmd').write_bytes(START.encode('ascii'))
             instructions = readme(factory, release, green_toys_only)
+            if legacy_windows:
+                instructions = instructions.replace('Windows 10/11 64位电脑。', 'Windows 7 SP1、Windows 10，32位和64位电脑。')
+                instructions = instructions.replace('页面会在默认浏览器打开', '页面会在随包浏览器打开')
+                instructions += '\n本包使用32位运行环境，可在32位和64位Windows运行，无需选择版本。\nWindows 7需已安装SP1及微软通用C运行库更新（KB2999226）。如提示缺少api-ms-win-crt或VCRUNTIME DLL，请运行随包support/VC_redist.x86.exe安装微软官方运行库，再重新启动；即使64位电脑也用本包的x86安装文件。系统缺少SP1时需先由电脑维护人员更新。\n随包浏览器仅打开本机试用页面。程序启动失败时请附STARTUP-ERROR.txt及data/startup-error.log。\n'
+                copy_tree(TOOL / 'desktop', package / 'desktop')
+                extract(cache / 'electron-v22.3.27-win32-ia32.zip', package / 'browser')
+                (package / 'support').mkdir()
+                shutil.copyfile(cache / 'vc_redist.x86.exe', package / 'support' / 'VC_redist.x86.exe')
             if green_toys_only:
                 instructions = instructions.replace(FACTORIES[factory][3], 'Green Toys')
                 instructions += '\n本包直接复用GitHub订单中心导入/预览页面和外框样式，只开放Green Toys。\n货期可留空直接生成，后续在Excel手动填写。请勿混入其他客户的data目录。\n'
@@ -356,6 +376,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             (package / 'trial.json').write_text(json.dumps({'kind': kind, 'factory_id': factory,
                 'name': f'{name}问单本地试用' if kind == 'jp' else f'{name}订单排期本地试用',
                 'release': release, 'source_commit': source_commit, 'reference_seed': has_seed,
+                **({'runtime_profile': 'win7-sp1-win10-x86', 'architectures': ['x86', 'x64']} if legacy_windows else {}),
                 **({'customer_codes': [huaxing_customer]} if huaxing_customer else {'customer_codes': ['green-toys']} if green_toys_only else {}),
                 'source_commit_role': 'Base checkout; see BUILD-SOURCES.json for exact uncommitted build inputs.'}, ensure_ascii=False, indent=2), encoding='utf-8')
             if kind == 'orders':
@@ -390,7 +411,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                         '以下演示仅在另一个解压副本中进行；不要把演示data复制回日常工作包。\n\n'
                         + demo_instructions.read_text(encoding='utf-8-sig'), encoding='utf-8-sig')
             (package / 'DEPENDENCIES.json').write_text(json.dumps(dependencies, indent=2), encoding='utf-8')
-            for filename in ('runtime-sources.json', 'requirements-windows.txt'):
+            for filename in (('runtime-sources-win7.json', 'requirements-win7.txt') if legacy_windows else ('runtime-sources.json', 'requirements-windows.txt')):
                 shutil.copyfile(TOOL / filename, package / filename)
             provenance = build_provenance(source, package, source_commit)
             (package / 'BUILD-SOURCES.json').write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -419,11 +440,13 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             filename, _, name, customers = FACTORIES[factory]
             if green_toys_only:
                 filename, customers = '01_华康A_GreenToys_订单入排期', 'Green Toys'
+            if legacy_windows:
+                filename = '华康A_GreenToys_Win7_Win10_32及64位'
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
                 filename = f'05_华兴_{customers}_订单入排期'
             writer.writerow([name, f'{filename}_Windows试用_{stamp}.zip', customers, '', '', '', ''])
-    (output / '00_总说明_先看这里.txt').write_text('各厂区订单／排期与华康B问单｜Windows单机试用包\n\n'
+    overview = ('各厂区订单／排期与华康B问单｜Windows单机试用包\n\n'
         + '本文件夹包含：' + '、'.join(FACTORIES[key][2] for key in selected) + '。\n' +
         '每个ZIP都是独立包，请把对应厂区的ZIP交给负责人，完整解压后双击START.cmd。\n'
         '不需要总系统账号。仅适用于Windows 10/11 64位。\n'
@@ -431,7 +454,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
         '数据保存在各自解压目录的data中，互不共享，不写入线上系统。\n'
         '发票不在本次范围。各厂区数据和压缩包独立。\n'
         '00_交接登记.csv可填写负责人及反馈。各包内有详细使用说明。\n'
-        'Windows实机和金山导入尚需对接人现场试用核对；本地API/业务回归与构建验证见交付验证说明。\n', encoding='utf-8-sig')
+        'Windows实机和金山导入尚需对接人现场试用核对；本地API/业务回归与构建验证见交付验证说明。\n')
+    if legacy_windows:
+        overview = overview.replace('仅适用于Windows 10/11 64位。', '本兼容包适用于Windows 7 SP1与Windows 10的32位和64位；Win7需微软通用C运行库更新。')
+    (output / '00_总说明_先看这里.txt').write_text(overview, encoding='utf-8-sig')
     return records
 
 
@@ -445,6 +471,7 @@ if __name__ == '__main__':
     parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
     parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
     parser.add_argument('--green-toys-only', action='store_true', help='Huakang A Green Toys only; reuse the GitHub order workspace frontend.')
+    parser.add_argument('--legacy-windows', action='store_true', help='Win7 SP1/Win10 x86 runtime and bundled local browser; Green Toys only.')
     args = parser.parse_args()
     build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date,
-        args.jp_schedule, args.jp_price, args.green_toys_only, args.huaxing_customer)
+        args.jp_schedule, args.jp_price, args.green_toys_only, args.huaxing_customer, args.legacy_windows)
