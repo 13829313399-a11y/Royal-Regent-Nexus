@@ -9,8 +9,7 @@
 .report-page .skim td{font-size:14px!important;padding:13px 9px!important}
 .report-page .skim th{font-size:13px!important;padding:9px 8px!important;color:var(--sheet-muted)!important;white-space:nowrap}
 .report-page .skim .skim-groups th{padding:0 4px!important;border:0!important;position:relative}
-.skim-groups span{display:block;padding:9px 2px 7px;border-bottom:1px solid #808981;font-size:13px;font-weight:650;color:var(--sheet-ink)}
-.theme-dark .skim-groups span{border-color:#94a196}
+.skim-groups span{display:block;padding:9px 2px 7px;font-size:13px;font-weight:650;color:var(--sheet-ink)}
 .skim tbody tr:last-child td{border-bottom:0!important}
 .skim strong{font-size:12px;font-weight:650}.result-PASS{color:#316447}.result-FAIL,.result-REJ{color:#9d473c}
 dialog#wb-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:calc(100vw - 32px);max-width:1800px;height:calc(100dvh - 32px);max-height:none;padding:0;background:#fff;color:#23382d;border:1px solid #b8c6bb;border-radius:12px;box-shadow:0 20px 90px #14231b40;font:14px/1.4 -apple-system,"PingFang SC",sans-serif;overflow:hidden}
