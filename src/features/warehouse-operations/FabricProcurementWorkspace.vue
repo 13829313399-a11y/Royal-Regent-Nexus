@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
-import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, type RouteLocationNormalized } from 'vue-router'
+import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter, type RouteLocationNormalized } from 'vue-router'
+import { isAxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import { pendingFabricImports } from './pendingFabricRequests'
 import { ClipboardList, Truck } from '@lucide/vue'
@@ -22,6 +23,7 @@ import { fabricProcurementApi as api, type ImportAction, type PurchaseScope, typ
 
 const props = defineProps<{ mode: 'import' | 'pending' | 'orders' | 'returned'; tracking?: string; orderNo?: string; purchaseId?: string }>()
 const auth = useAuthStore()
+const route = useRoute(), router = useRouter()
 const pendingImport = computed(() => pendingFabricImports.get(auth.currentUser?.id ?? ''))
 const importSaving = computed(() => !!pendingImport.value?.inFlight)
 const canRetryImport = computed(() => !!pendingImport.value && pendingImport.value.actorId === auth.currentUser?.id)
@@ -33,8 +35,9 @@ const search = headerSearch?.search ?? ref(''), lines = ref<PurchaseLine[]>([]),
 const history = ref<PurchaseImport[]>([]), detail = ref<PurchaseDetail>(), detailOpen = ref(false)
 const purchaseDetailTrigger = ref<HTMLButtonElement>()
 const linkedPurchase = computed(() => props.mode === 'pending' && props.purchaseId && /^[\w-]{1,64}$/.test(props.purchaseId) ? props.purchaseId : '')
-const linkedDetailError = ref('')
+const linkedDetailError = ref<{ message: string; missing: boolean }>()
 let handledPurchase = ''
+let purchaseListFailed = false
 const detailIdentityReview = computed(() => !!(detail.value?.receipt_identity_review_required || detail.value?.receipt_reconciliation_required))
 const detailNeedsQuantityReview = computed(() => !!detail.value && (
   detail.value.receipt_quantity_review_required || detail.value.warehouse_outstanding_quantity == null || detail.value.warehouse_outstanding_quantity === ''
@@ -104,7 +107,10 @@ async function load() {
   if (importSaving.value) { deferredLoad = true; return }
   deferredLoad = false
   const ticket = ++sequence
+  let listError = ''
+  purchaseListFailed = false
   busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
+  const linkedRead = linkedPurchase.value && handledPurchase !== linkedPurchase.value ? loadLinkedDetail(ticket) : undefined
   try {
     if (props.mode === 'import') {
       const records = await api.imports(historyOffset.value)
@@ -125,13 +131,19 @@ async function load() {
         else selected.value = selected.value.flatMap(line => { const current = data.items.find(item => item.id === line.id); return current ? eligible(current) ? [current] : [] : [line] })
       }
     }
-    if (ticket === sequence && linkedPurchase.value && handledPurchase !== linkedPurchase.value) await loadLinkedDetail(ticket)
-  } catch (e) { if (ticket === sequence) error.value = getApiErrorMessage(e) }
-  finally { if (ticket === sequence) busy.value = false }
+  } catch (e) { listError = getApiErrorMessage(e) }
+  finally {
+    await linkedRead
+    if (ticket === sequence) {
+      purchaseListFailed = !!listError
+      if (listError && (!linkedRead || !linkedDetailError.value || linkedDetailError.value.missing)) error.value = listError
+      busy.value = false
+    }
+  }
 }
 watch(importSaving, saving => { if (!saving && deferredLoad) void load() })
 watch(linkedPurchase, () => {
-  handledPurchase = ''; linkedDetailError.value = ''; detailOpen.value = false; detail.value = undefined
+  handledPurchase = ''; linkedDetailError.value = undefined; detailOpen.value = false; detail.value = undefined
   void load()
 })
 watch(() => [props.mode, props.tracking, props.orderNo], () => { clearImport(); activeGroup.value = undefined; groupOffset.value = 0; file.value = undefined; search.value = ''; filters.value = { ...defaultFilters(), order_no: props.mode === 'pending' ? (props.orderNo ?? '').slice(0, 128) : '' }; chaseSource.value = undefined; offset.value = 0; pendingView.value = props.mode === 'pending' && trackingViews.has(props.tracking as PurchaseView) ? props.tracking as PurchaseView : 'OUTSTANDING'; withdrawOpen.value = false; withdrawal.value = undefined; receiptSource.value = undefined; batchSources.value = undefined; selected.value = []; notice.value = ''; void load() }, { immediate: true })
@@ -165,7 +177,7 @@ watch([() => auth.currentUser?.id, () => auth.authorizationVersion], () => {
   lines.value = []; groups.value = []; total.value = undefined; summary.value = undefined; options.value = undefined
   history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false; canPendingPurchase.value = false; savedReceiptId.value = ''
   selected.value = []; receiptSource.value = undefined; batchSources.value = undefined; chaseSource.value = undefined
-  handledPurchase = ''; linkedDetailError.value = ''
+  handledPurchase = ''; linkedDetailError.value = undefined
   withdrawal.value = undefined; withdrawOpen.value = false; activeGroup.value = undefined; notice.value = ''
   busy.value = false
   if (!importSaving.value) void load()
@@ -226,26 +238,44 @@ async function showDetail(id: string, event: MouseEvent) {
 async function loadLinkedDetail(ticket: number) {
   const id = linkedPurchase.value
   if (!id) return
-  handledPurchase = id
-  linkedDetailError.value = ''
   purchaseDetailTrigger.value = undefined
   try {
     const data = await api.detail(id)
-    if (ticket === sequence && linkedPurchase.value === id) { detail.value = data; detailOpen.value = true }
+    if (ticket !== sequence || linkedPurchase.value !== id) return
+    handledPurchase = id
+    linkedDetailError.value = undefined
+    detail.value = data
+    detailOpen.value = true
   } catch (failure) {
-    if (ticket === sequence && linkedPurchase.value === id) linkedDetailError.value = getApiErrorMessage(failure)
+    if (ticket !== sequence || linkedPurchase.value !== id) return
+    handledPurchase = id
+    linkedDetailError.value = { message: getApiErrorMessage(failure), missing: isAxiosError(failure) && failure.response?.status === 404 }
   }
 }
 async function retryLinkedDetail() {
+  if (busy.value || !linkedDetailError.value || linkedDetailError.value.missing) return
+  if (purchaseListFailed) {
+    handledPurchase = ''
+    await load()
+    return
+  }
   const ticket = ++sequence
   busy.value = true
   try { await loadLinkedDetail(ticket) }
   finally { if (ticket === sequence) busy.value = false }
 }
+async function returnToPurchaseList() {
+  const failure = await router.replace({ path: route.path, query: { ...route.query, purchase_id: undefined }, hash: route.hash })
+  if (!failure) headerSearch?.focus?.()
+}
 function restorePurchaseDetailFocus(event: Event) {
-  if (!chaseSource.value && purchaseDetailTrigger.value?.isConnected) {
+  if (!alive || chaseSource.value) return
+  if (purchaseDetailTrigger.value?.isConnected) {
     event.preventDefault()
     purchaseDetailTrigger.value.focus()
+  } else if (linkedPurchase.value && detail.value?.id === linkedPurchase.value && headerSearch?.focus) {
+    event.preventDefault()
+    headerSearch.focus()
   }
 }
 async function startReceive(id: string) {
@@ -351,8 +381,9 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
     <p v-if="notice" class="fabric-success" role="status">{{ notice }} <RouterLink v-if="savedReceiptId && notice.includes(savedReceiptId)" class="underline" :to="{ path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'history', receipt: savedReceiptId } }">查看本次入库</RouterLink></p>
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
     <div v-if="linkedDetailError" class="fabric-error">
-      <p role="alert">无法打开原采购明细。{{ linkedDetailError }}</p>
-      <Button type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
+      <p role="alert">{{ linkedDetailError.missing ? '找不到该厂区的原采购明细，可返回采购列表查找。' : `无法打开原采购明细。${linkedDetailError.message}` }}</p>
+      <Button v-if="linkedDetailError.missing" type="button" variant="outline" @click="returnToPurchaseList">返回采购列表</Button>
+      <Button v-else type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
     </div>
     <p v-if="pendingImport" class="fabric-message" role="status">导入结果尚未确认，文件和提交内容已锁定。<Button v-if="canRetryImport && !confirmOpen" variant="outline" size="sm" :disabled="busy || importSaving" @click="saveImport">核对原导入结果</Button><span v-if="!canRetryImport">请使用原提交账号核对结果。</span></p>
     <template v-if="mode === 'import'">
