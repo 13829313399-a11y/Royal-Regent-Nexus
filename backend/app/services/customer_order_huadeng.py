@@ -680,11 +680,29 @@ def _simba_identity(row: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _simba_signature(row: dict[str, Any]) -> tuple[str, ...]:
+    from decimal import Decimal, InvalidOperation
+    numeric = {'quantity', 'unit_price_hkd', 'total_hkd', 'unit_price_usd', 'total_usd',
+               'inner_pack', 'outer_pack', 'cbf'}
+    def value(field):
+        text = re.sub(r'\s+', ' ', _text(row.get(field))).strip().casefold()
+        if field in numeric and text:
+            try:
+                number = Decimal(text.replace(',', ''))
+                if number.is_finite():
+                    return format(number.normalize(), 'f')
+            except InvalidOperation:
+                pass
+        return text  # Punctuation in prices, labels and descriptions is evidence.
     return tuple(
-        _simba_normalize(row.get(field_name))
+        value(field_name)
         for field_name in (
             "contract_no", "customer_po", "item_no", "product_name", "quantity", "unit",
             "po_ship_date", "master_contract_no", "po_contract_no",
+            "unit_price_hkd", "total_hkd", "unit_price_usd", "total_usd", "currency",
+            "inner_pack", "outer_pack", "english_name", "customer", "contact",
+            "inspection_date", "shipping_mark", "customer_label", "brand",
+            "certificate", "ship_country", "shipping_info", "special_remark",
+            "material_order_no", "barcode_item_no", "cbf",
         )
     )
 
@@ -894,7 +912,8 @@ def _record_fields(customer_code: str, record: dict[str, Any]) -> dict[str, Any]
     if customer_code in {"casdon", "spin"}:
         return record
     if customer_code == "jakks":
-        unit_usd = float(record.get("unit_price_usd") or 0)
+        source_price = record.get("unit_price_usd")
+        unit_usd = float(source_price) if source_price not in (None, "") else None
         quantity = float(record.get("quantity") or 0)
         return {
             "po_no": record.get("customer_po"),
@@ -908,8 +927,8 @@ def _record_fields(customer_code: str, record: dict[str, Any]) -> dict[str, Any]
             "units_per_carton": record.get("outer_pack"),
             "carton_count": record.get("cartons"),
             "standard": _joined(record.get("unit"), record.get("confirmation_no")),
-            "unit_price_hkd": round(unit_usd * 7.75, 6) if unit_usd else "",
-            "amount_hkd": round(quantity * unit_usd * 7.75, 2) if unit_usd else "",
+            "unit_price_hkd": round(unit_usd * 7.75, 6) if unit_usd is not None else "",
+            "amount_hkd": round(quantity * unit_usd * 7.75, 2) if unit_usd is not None else "",
             "packaging": record.get("special_note"),
             "line_q": record.get("inspection_date"),
             "customer_q": "",

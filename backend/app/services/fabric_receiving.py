@@ -56,12 +56,17 @@ def valid_reference(value):
     return amount if amount is not None and 0 <= amount < Decimal("1e12") and amount.as_tuple().exponent >= -6 else None
 
 
-def receipt_context(db):
+def receipt_context(db, *, source_ids=None):
+    if source_ids is not None and not source_ids:
+        return {}
     totals = {}
     # Derive the starting chase reference from active import evidence, never stock.
     # Later spreadsheet receipts may include our own postings: don't subtract twice.
-    events = db.execute(select(FabricProcurementEvidence, FabricProcurementImport).join(FabricProcurementImport,
-        FabricProcurementImport.id == FabricProcurementEvidence.import_id).where(FabricProcurementEvidence.factory_id == source.FACTORY))
+    evidence_query = select(FabricProcurementEvidence, FabricProcurementImport).join(FabricProcurementImport,
+        FabricProcurementImport.id == FabricProcurementEvidence.import_id).where(FabricProcurementEvidence.factory_id == source.FACTORY)
+    if source_ids is not None:
+        evidence_query = evidence_query.where(FabricProcurementEvidence.line_id.in_(source_ids))
+    events = db.execute(evidence_query)
     imports = []
     for event, batch in events:
         metadata = json.loads(batch.result_json)
@@ -84,8 +89,11 @@ def receipt_context(db):
         return totals
     known_column = FabricReceipt.baseline_known if "baseline_known" in {c["name"] for c in inspector.get_columns("fabric_receipts")} else literal(True).label("baseline_known")
     # Existing 0135 receipts remain readable until the explicit additive upgrade.
-    receipt_rows = db.execute(select(FabricReceipt.id, FabricReceipt.source_line_id, FabricReceipt.prior_received_quantity,
-        FabricReceipt.source_json, FabricReceipt.payload_json, FabricReceipt.quantity, FabricReceipt.occurred_at, known_column).where(FabricReceipt.factory_id == source.FACTORY))
+    receipt_query = select(FabricReceipt.id, FabricReceipt.source_line_id, FabricReceipt.prior_received_quantity,
+        FabricReceipt.source_json, FabricReceipt.payload_json, FabricReceipt.quantity, FabricReceipt.occurred_at, known_column).where(FabricReceipt.factory_id == source.FACTORY)
+    if source_ids is not None:
+        receipt_query = receipt_query.where(FabricReceipt.source_line_id.in_(source_ids))
+    receipt_rows = db.execute(receipt_query)
     frozen_receipts = [dict(id=receipt.id, source_line_id=receipt.source_line_id,
         prior_received_quantity=receipt.prior_received_quantity, baseline_known=receipt.baseline_known,
         facts=json.loads(receipt.source_json), chase_reference=json.loads(receipt.payload_json).get('chase_reference'),
@@ -99,7 +107,10 @@ def receipt_context(db):
     # Linked handover operations already own the physical stock. Only project their
     # effective quantities here; do not create a second FabricReceipt or movement.
     grouped = {}
+    selected_sources = set(source_ids) if source_ids is not None else None
     for receipt, body, link, reversed_receipt in linked_operations(db):
+        if selected_sources is not None and link['source_line_id'] not in selected_sources:
+            continue
         amount = Decimal(0) if reversed_receipt else Decimal(body['quantity'])
         group_id = body.get('manual_receipt_id')
         if group_id in grouped:
@@ -121,7 +132,10 @@ def receipt_context(db):
         item["warehouse_received_quantity"] += receipt['quantity']
     from app.services.fabric_master import ready
     if ready(db):
-        for resolution in db.scalars(select(FabricChaseResolution).where(FabricChaseResolution.factory_id == source.FACTORY).order_by(FabricChaseResolution.revision)):
+        resolution_query = select(FabricChaseResolution).where(FabricChaseResolution.factory_id == source.FACTORY)
+        if source_ids is not None:
+            resolution_query = resolution_query.where(FabricChaseResolution.source_line_id.in_(source_ids))
+        for resolution in db.scalars(resolution_query.order_by(FabricChaseResolution.revision)):
             item = totals.setdefault(resolution.source_line_id, {"receipt_count": 0, "warehouse_received_quantity": Decimal(0)})
             item["resolution"] = {"id": resolution.id, "revision": resolution.revision, "starting_quantity": resolution.starting_quantity,
                 "facts": json.loads(resolution.source_json), "cutoff": json.loads(resolution.cutoff_json), "evidence": resolution.evidence,

@@ -104,3 +104,4 @@ export interface CustomerOrderImportPreview {
   rows: CustomerOrderPreviewRow[]
   warnings: string[]
 }
+export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback' | 'jp-intake' | 'materials'

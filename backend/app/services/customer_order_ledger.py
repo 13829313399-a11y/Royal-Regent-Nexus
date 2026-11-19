@@ -20,7 +20,7 @@ from app.models.customer_order_ledger import (
     OrderLedgerIdentity as Identity,
 )
 from app.services.auth import now_text
-from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item
+from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item, full_edu_item
 
 RECIPIENTS = {"pmc": ("pmc-warehouse",), "warehouse": ("pmc-warehouse", "warehouse"), "injection": ("production", "molding")}
 PUBLIC_FIELDS = (
@@ -63,7 +63,7 @@ def identity_for(row: dict, customer: str) -> str:
     product = str(row.get("product_no") or "").strip().casefold()
     if customer == "edu":
         # EDUHX is allocated from a user's workbook; it is a display reference, not a PO identity.
-        identity = _edu_identity_key(row, normalize_edu_item(product).casefold())
+        identity = _edu_identity_key(row, full_edu_item(product, row.get('source_product_no')).casefold())
         if identity is None:
             raise HTTPException(400, "EDU 保存订单需要客户合同号或客户 PO，不能仅使用底表续编号")
         return identity
@@ -92,9 +92,10 @@ def resolve_existing_line(db: Session, factory: str, customer: str, row: dict,
         Line.factory_id == factory, Line.customer_code == customer,
         or_(stored_product == product, stored_product.like(product + "____"))))
         if normalize_edu_item(line.product_no).casefold() == product}
-    candidates = {direct.id: direct} if direct is not None else {}
+    candidates = {}
     if scoped:
         owned = {line.id: {line.identity_key} for line in scoped.values()}
+        complete_identities = {line.id: set() for line in scoped.values()}
         for item in db.scalars(select(Identity).where(Identity.factory_id == factory,
                 Identity.customer_code == customer, Identity.line_id.in_(scoped))):
             owned[item.line_id].add(item.identity_key)
@@ -105,22 +106,38 @@ def resolve_existing_line(db: Session, factory: str, customer: str, row: dict,
             normalized = _edu_identity_key(data, normalize_edu_item(old_product).casefold())
             # A snapshot is evidence only for an identity this line actually owns. This also
             # resolves previous contract/PO aliases retained by explicit reconciliation.
-            if normalized == identity and (raw in owned[line_id] or normalized in owned[line_id]):
+            complete = full_edu_item(old_product, data.get('source_product_no')).casefold()
+            exact = _edu_identity_key(data, complete)
+            proven = raw in owned[line_id] or normalized in owned[line_id] or exact in owned[line_id]
+            if proven and complete != product:
+                complete_identities[line_id].add(complete)
+            if exact == identity and proven:
                 candidates[line_id] = scoped[line_id]
 
         for line in scoped.values():
             consider(line.id, line.data)
         for line_id, data in db.execute(select(Version.line_id, Version.data).where(Version.line_id.in_(scoped))):
             consider(line_id, data)
+        if any(len(complete_identities[line_id]) > 1 for line_id in candidates):
+            raise HTTPException(409, "EDU 多条历史订单完整货号来源冲突；不能复用混合了不同尾码的历史记录")
+    if direct is not None and direct.id not in candidates:
+        raise HTTPException(409, "EDU 多条历史订单身份索引与完整货号证据不一致；不能自动关联")
+    wanted = full_edu_item(row.get('product_no'), row.get('source_product_no')).casefold()
+    if not candidates:
+        same_order = [line for line in scoped.values() if _edu_identity_key(line.data, product) == _edu_identity_key(row, product)]
+        uncertain = [line for line in same_order if wanted == product or
+            full_edu_item(line.product_no, line.data.get('source_product_no')).casefold() == product]
+        if uncertain:
+            raise HTTPException(409, "EDU 匹配到多条历史订单或短货号尚未核实；请补充完整货号，不能自动关联")
     if len(candidates) > 1:
-        raise HTTPException(409, "EDU 同一客户合同 / PO / 去尾码货号匹配到多条历史订单，请先核对，不能自动合并或重复建单")
+        raise HTTPException(409, "EDU 同一客户合同 / PO / 完整货号匹配到多条历史订单，请先核对，不能自动合并或重复建单")
     return next(iter(candidates.values()), None)
 
 
 def _same_edu_import_representation(key: str, data: dict, line: Line) -> bool:
     if key == "edu_reservation_row":
         return True  # An uploaded workbook coordinate is not a persisted order fact.
-    if key == "source_order_date" and not line.data.get(key):
+    if key in {"source_order_date", "source_ship_date"} and not line.data.get(key):
         return True  # Older previews did not expose this original-source metadata.
     if key == "units_per_carton":
         def pack(value):
@@ -135,10 +152,10 @@ def _same_edu_import_representation(key: str, data: dict, line: Line) -> bool:
         return old is not None and old == new
     if key not in {"product_no", "source_product_no"}:
         return False
-    product = normalize_edu_item(line.product_no).casefold()
-    old = line.data.get(key) or line.data.get("product_no") or line.product_no
-    new = data.get(key) or data.get("product_no")
-    return normalize_edu_item(old).casefold() == product == normalize_edu_item(new).casefold()
+    old = full_edu_item(line.data.get('product_no') or line.product_no, line.data.get('source_product_no'))
+    new = full_edu_item(data.get('product_no'), data.get('source_product_no'))
+    return old.casefold() == new.casefold()
+
 
 
 def _is_360_legacy_number_mapping(line: Line, data: dict) -> bool:
@@ -362,8 +379,8 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
                 line = db.get(Line, alias.line_id) if alias else db.scalar(select(Line).where(
                     Line.factory_id == factory, Line.customer_code == customer, Line.identity_key == identity))
         if reconcile_line:
-            incoming_product = normalize_edu_item(product) if customer == "edu" else product
-            existing_product = normalize_edu_item(reconcile_line.product_no) if customer == "edu" else reconcile_line.product_no
+            incoming_product = full_edu_item(product, row.get('source_product_no')) if customer == "edu" else product
+            existing_product = full_edu_item(reconcile_line.product_no, reconcile_line.data.get('source_product_no')) if customer == "edu" else reconcile_line.product_no
             if incoming_product.casefold() != existing_product.casefold():
                 raise HTTPException(409, "正式 PO 货号与已有订单不一致，不能关联")
             if line and line.id != reconcile_line.id:

@@ -38,7 +38,7 @@ def records(content):
 
 @pytest.mark.parametrize('kind',['detail','group'])
 @pytest.mark.parametrize('count',[1,220])
-def test_original_template_fields_styles_dynamic_rows_formulas_and_totals(kind,count):
+def test_original_fields_neutral_reading_layout_dynamic_rows_formulas_and_totals(kind,count):
     data=fixture(count)
     data['tables']['detail'][0]['values'][3]='0000123'
     data['tables']['detail'][0]['values'][-1]='=HYPERLINK("https://example.invalid")'
@@ -48,12 +48,17 @@ def test_original_template_fields_styles_dynamic_rows_formulas_and_totals(kind,c
     source=xlrd.open_workbook(excel.TEMPLATE_DIR/(kind+'.xls'),formatting_info=True);base=source.sheet_by_index(0)
     assert sheet.row_values(1)==base.row_values(1)
     for col in range(base.ncols):
-        assert sheet.colinfo_map[col].width==base.colinfo_map[col].width
-        actual=book.xf_list[sheet.cell_xf_index(1,col)];expected=source.xf_list[base.cell_xf_index(1,col)]
-        assert actual.border.__dict__==expected.border.__dict__
-        a=book.font_list[actual.font_index];b=source.font_list[expected.font_index]
-        assert (a.name,a.height,a.bold)==(b.name,b.height,b.bold)
-        assert book.xf_list[sheet.cell_xf_index(2,col)].alignment.text_wrapped
+        actual=book.xf_list[sheet.cell_xf_index(1,col)]
+        assert book.colour_map[actual.background.pattern_colour_index]==(243,243,243)
+        assert book.colour_map[actual.border.bottom_colour_index]==(212,212,212)
+        assert book.font_list[actual.font_index].bold
+        for row in (1,2):
+            style=book.xf_list[sheet.cell_xf_index(row,col)]
+            assert style.alignment.text_wrapped and style.alignment.hor_align==2 and style.alignment.vert_align==1
+        body=book.xf_list[sheet.cell_xf_index(2,col)]
+        assert book.colour_map[body.background.pattern_colour_index]==(255,255,255)
+    assert sheet.colinfo_map[14 if kind=='detail' else 5].width>20*256
+    assert sheet.rowinfo_map[2].height>1000  # The long issue/reason is visible without a fixed-height crop.
     assert sheet.nrows==count*2+7 if kind=='detail' else sheet.nrows==count+3
     values=[cell.value for row in sheet.get_rows() for cell in row]
     for n in range(count):
@@ -62,7 +67,7 @@ def test_original_template_fields_styles_dynamic_rows_formulas_and_totals(kind,c
         assert mark in values
     assert '合计' in values
     assert sheet.cell_value(sheet.nrows-1,3 if kind=='detail' else 2 if kind=='group' else 1)==count
-    assert sheet.cell_value(sheet.nrows-1,7 if kind=='detail' else 4 if kind=='group' else 3)==(1.0 if kind=='internal' else 0.0)
+    assert sheet.cell_value(sheet.nrows-1,5 if kind=='detail' else 4)==0.0
     formulas=[r for op,r in records(content) if op==0x06]
     assert len(formulas)==count+3
     assert all(struct.unpack_from('<H',r,14)[0]&3==3 for r in formulas)
@@ -70,7 +75,7 @@ def test_original_template_fields_styles_dynamic_rows_formulas_and_totals(kind,c
         assert sheet.cell(2,3).ctype==xlrd.XL_CELL_TEXT and sheet.cell_value(2,3)=='0000123'
         assert sheet.cell(2,17).ctype==xlrd.XL_CELL_TEXT
         assert sheet.cell(2,1).ctype==xlrd.XL_CELL_DATE
-        assert book.format_map[book.xf_list[sheet.cell_xf_index(2,1)].format_key].format_str=='m.d'
+        assert book.format_map[book.xf_list[sheet.cell_xf_index(2,1)].format_key].format_str=='mm-dd'
         assert book.xf_list[sheet.cell_xf_index(2,17)].border.bottom_line_style
         assert [sheet.cell_value(count+5,c) for c in excel.FOOTER_COLUMNS]==weekly.TEMPLATES[0]['summaryHeaders']
     assert not any(cell.ctype==xlrd.XL_CELL_ERROR for row in sheet.get_rows() for cell in row)
@@ -116,5 +121,5 @@ def test_sanitized_templates_contain_only_structure():
     for spec in weekly.TEMPLATES:
         book=xlrd.open_workbook(excel.TEMPLATE_DIR/(spec['id']+'.xls'))
         assert book.nsheets==1
-        allowed=set(spec['headers']+spec.get('summaryHeaders',[])+[spec['title'],'华兴客户周验货汇总','合计',''])
+        allowed=set(spec['headers']+spec.get('summaryHeaders',[])+[spec['title'],'华兴周验货明细及客户汇总表','华兴周验货汇总表','华兴客户周验货汇总','合计',''])
         assert all(cell.value in allowed for row in book.sheet_by_index(0).get_rows() for cell in row)

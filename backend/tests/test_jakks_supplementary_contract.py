@@ -161,10 +161,10 @@ def test_supplement_exports_and_followup_po_does_not_duplicate(monkeypatch):
     later = unified.create_unified_customer_preview(
         **args, po_files=[('formal.pdf', b'formal')], schedule_content=output,
     )
-    assert later['summary']['blocked'] == 1
+    assert later['summary']['blocked'] == 0
     assert any(i['code'] == 'duplicate_existing_order' for i in later['rows'][0]['issues'])
-    with pytest.raises(unified.CustomerOrderUnifiedError):
-        unified.export_unified_customer_schedule(**args, po_files=[('formal.pdf', b'formal')], schedule_content=output)
+    repeated, _, _ = unified.export_unified_customer_schedule(**args, po_files=[('formal.pdf', b'formal')], schedule_content=output)
+    assert openpyxl.load_workbook(BytesIO(repeated))[unified.ITEM_SHEET]['D5'].value == '811784'
     batch = unified.create_unified_customer_preview(
         **args, po_files=[('order-SUP.pdf', b'supplement'), ('formal.pdf', b'formal')], schedule_content=original,
     )

@@ -1,7 +1,9 @@
 import hashlib
 import os
 import time
+import zipfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
@@ -327,6 +329,38 @@ def content(artifact_id: str, user: User, db: DB):
 @router.get("/artifacts/{artifact_id}/download")
 def download(artifact_id: str, user: User, db: DB):
     return serve_artifact(artifact_id, user, db, True)
+
+
+def _download_directory():
+    with TemporaryDirectory(prefix="rr-split-download-") as directory:
+        yield Path(directory)
+
+
+@router.get("/jobs/{job_id}/split-files.zip")
+def download_split_files(job_id: str, user: User, db: DB,
+                        directory: Annotated[Path, Depends(_download_directory)]):
+    job = service.owned(db, Job, job_id, user.id)
+    if job.operation != "pdf_split" or job.execution_status != "succeeded":
+        service.fail("RESULT_NOT_READY", "请先生成分页文件", 409)
+    files = db.scalars(select(Artifact).where(
+        Artifact.job_id == job.id, Artifact.owner_user_id == user.id,
+        Artifact.revision == job.artifact_revision, Artifact.role == "result",
+        Artifact.format == "pdf").order_by(Artifact.filename)).all()
+    if not files:
+        service.fail("FILE_NOT_FOUND", "没有可下载的分页文件", 404)
+    source = service.owned(db, Source, job.source_id, user.id)
+    archive_path = directory / "split.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for artifact in files:
+            if artifact.expires_at is not None and artifact.expires_at <= time.time():
+                service.fail("ARTIFACT_EXPIRED", "分页文件已过期，请重新生成", 410)
+            try:
+                archive.write(storage.resolve(artifact.storage_key), storage.safe_name(artifact.filename))
+            except FileNotFoundError:
+                service.fail("FILE_NOT_FOUND", "分页文件缺失，请重新生成", 404)
+    return FileResponse(archive_path, media_type="application/zip",
+                        filename=f"{Path(source.original_name).stem}-分页文件.zip",
+                        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/packages", status_code=202)

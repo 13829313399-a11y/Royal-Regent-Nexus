@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   const base='api/inspection-summary/', labels={approved:'已审核',completed:'已完成',archived:'已归档',unverified:'历史待核实',withdrawn:'归档已撤回'};
-  const state={filters:{dateBasis:'report',year:'',month:'',day:'',search:'',type:'',status:'',page:1,pageSize:30},data:null,sequence:0,busy:false};
+  const state={filters:{dateBasis:'report',year:'',month:'',day:'',search:'',type:'',page:1,pageSize:30},data:null,sequence:0,busy:false};
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const display=v=>v===undefined||v===null||v===''?'—':esc(v);
   const time=v=>root.QcInspectionAudit.time(v);
@@ -26,8 +26,8 @@
             <button type="button" class="btn btn-secondary" id="qsum-import">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h4l4 4v14H7v-4M7 9V3h6v5h5M3 13h11m-4-4 4 4-4 4"/></svg>历史导入
             </button>
-            <button type="button" class="btn btn-secondary" id="qsum-refresh">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 8M20 3v5h-5"/></svg>刷新
+            <button type="button" class="btn btn-secondary" id="qsum-refresh" aria-label="刷新数据" title="刷新数据">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3"/></svg>
             </button>
           </div>
         </div>
@@ -41,12 +41,9 @@
             <select id="qsum-month" aria-label="汇总月份"></select>
             <select id="qsum-day" aria-label="汇总日期"></select>
           </div>
-          <label class="qsum-select">验货类型
-            <select id="qsum-type"><option value="">全部类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
-          </label>
-          <label class="qsum-select">归档状态
-            <select id="qsum-status"><option value="">全部历史</option><option value="approved">已审核</option><option value="completed">已完成</option><option value="archived">已归档</option><option value="unverified">历史待核实</option><option value="withdrawn">归档已撤回</option></select>
-          </label>
+          <div class="qsum-select">
+            <select id="qsum-type" aria-label="验货类型"><option value="">验货类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
+          </div>
           <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
         </div>
         <p id="qsum-message" role="status" aria-live="polite"></p>
@@ -64,11 +61,11 @@
         </div>
       </div>
       <input id="qsum-file" type="file" accept=".xls,.xlsx" hidden>`;
-    ['year','month','day','type','status'].forEach(key=>root.document.getElementById('qsum-'+key).addEventListener('change',event=>{
+    ['year','month','day','type'].forEach(key=>root.document.getElementById('qsum-'+key).addEventListener('change',event=>{
       state.filters[key]=event.target.value;if(key==='year')state.filters.month=state.filters.day='';if(key==='month')state.filters.day='';state.filters.page=1;controls();void load();
     }));
     root.document.getElementById('qsum-search').addEventListener('input',event=>{state.filters.search=event.target.value;state.filters.page=1;clearTimeout(timer);timer=setTimeout(load,250);});
-    root.document.getElementById('qsum-reset').onclick=()=>{Object.assign(state.filters,{year:'',month:'',day:'',search:'',type:'',status:'',page:1});root.document.getElementById('qsum-search').value='';controls();void load();};
+    root.document.getElementById('qsum-reset').onclick=()=>{Object.assign(state.filters,{year:'',month:'',day:'',search:'',type:'',page:1});root.document.getElementById('qsum-search').value='';controls();void load();};
     root.document.getElementById('qsum-refresh').onclick=load;
     root.document.getElementById('qsum-prev').onclick=()=>{state.filters.page--;void load();};
     root.document.getElementById('qsum-next').onclick=()=>{state.filters.page++;void load();};
@@ -85,7 +82,7 @@
     options('month',Array.from({length:12},(_,i)=>String(i+1)),'全部月份',!f.year);
     const days=f.year&&f.month?new Date(Date.UTC(Number(f.year),Number(f.month),0)).getUTCDate():0;
     options('day',Array.from({length:days},(_,i)=>String(i+1)),'全部日期',!f.month);
-    for(const key of ['type','status'])root.document.getElementById('qsum-'+key).value=f[key];
+    root.document.getElementById('qsum-type').value=f.type;
   }
   function message(text,error=false){const el=root.document.getElementById('qsum-message');if(el){el.textContent=text;el.classList.toggle('qsum-error',error);}}
   async function load(){

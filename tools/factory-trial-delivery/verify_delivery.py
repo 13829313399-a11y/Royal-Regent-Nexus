@@ -72,10 +72,32 @@ def serve(package, python, config):
                 application = json.loads(fetch(address, '/api/config'))
                 assert application['factory_id'] == config['factory_id']
                 assert application['customers']
+                if config.get('customer_codes'):
+                    assert [row['code'] for row in application['customers']]==config['customer_codes']
+                    for catalog in ('history/customers','schedule/customers'):
+                        entries=json.loads(fetch(address,'/api/customer-order-ledger/'+catalog+'?factory_id='+config['factory_id']))
+                        assert [row['code'] for row in entries['items']]==config['customer_codes']
+                    assert not (package/'演示资料/ZURU').exists()
+                    assert 'ZURU' not in (package/'先看使用说明.txt').read_text(encoding='utf-8-sig')
                 ledger = json.loads(fetch(address, '/api/customer-order-ledger/lines?factory_id=' + config['factory_id']))
                 assert ledger['total'] == 0, 'Delivery must start with an empty ledger'
                 assert json.loads(fetch(address, '/api/orders/exports'))['total'] == 0
-            return {'service': health['service'], 'assets': len(assets), 'factory_id': config['factory_id']}
+            refs = {}
+            if config['kind'] == 'jp':
+                base = '/api/huakang-b-jp'
+                refs = json.loads(fetch(address, base + '/references?factory_id=huakang-b'))
+                assert json.loads(fetch(address, base + '/exports?factory_id=huakang-b'))['total'] == 0
+                if config.get('reference_seed'):
+                    seed = json.loads((package / 'reference-seed/manifest.json').read_text())
+                    assert set(refs) == {'schedule', 'price'}
+                    for row in seed['files']:
+                        saved = refs[row['kind']]
+                        assert saved['sha256'] == row['sha256'] and saved['name'] == row['name']
+                        assert saved['revision'] == 1
+                else:
+                    assert refs == {}
+            return {'service': health['service'], 'assets': len(assets), 'factory_id': config['factory_id'],
+                'references': {kind: {'sha256': row['sha256'], 'revision': row['revision']} for kind, row in refs.items()}}
         finally:
             if process.poll() is None:
                 process.send_signal(signal.CTRL_BREAK_EVENT if os.name == 'nt' else signal.SIGINT)

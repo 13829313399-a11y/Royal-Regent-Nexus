@@ -27,7 +27,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = Path(__file__).resolve().parent
 FACTORIES = {
-    'huakang-a': ('01_华康A_订单排期', 'HuakangA_Trial', '华康A', '360、Green Toys、HeadStart'),
+    'huakang-a': ('01_华康A_订单排期', 'HuakangA_Trial', '华康A', 'ZURU、360、Green Toys、HeadStart'),
     'huakang-b': ('02_华康B_JP问单', 'HuakangB_JP_Trial', '华康B', 'JP问单录入、44列金山格式导出'),
     'huakang-d': ('03_华康D_订单排期', 'HuakangD_Trial', '华康D', 'INDEX、JAZAWARES、MAXX、STROTTMAN、优必选、迪士尼、施信'),
     'huaxing': ('04_华兴_订单排期', 'Huaxing_Trial', '华兴', 'ZURU、BuzzBee、Dickie、彩星、EDU、360、银辉、施信、Maxx、Shushupapa、Barter、迪士尼'),
@@ -205,7 +205,7 @@ def build_provenance(source: Path, package: Path, source_commit: str):
         'build_inputs': inputs}
 
 
-def readme(factory: str, release: str):
+def readme(factory: str, release: str, green_toys_only: bool = False):
     _, _, name, customers = FACTORIES[factory]
     common = f'''{name} 单机试用版｜{release}
 
@@ -233,10 +233,10 @@ def readme(factory: str, release: str):
     if factory == 'huakang-b':
         common += '''
 华康B使用顺序
-1. 排期参照、货价表均可选；有参照时可匹配历史和价格，无参照也能解析生成。没有历史编号依据时编号留空，不会擅自从首号开始。
+1. 排期参照、货价表保存一次后会自动复用，仅在表格有更新时替换。有“预置参照说明.txt”的包首次启动即载入随包参照。参照均可选，无参照也能解析生成；没有历史编号依据时编号留空，不会擅自从首号开始。
 2. 上传 EML、邮件ZIP，或从邮件中直接复制正文表格粘贴；同一封邮件通常选一种方式。填写来单日期和金山人员名称对应的业务跟单。
 3. 解析后查看明细。缺资料、候选价格和未识别来源只作提醒；本次生成已识别且选中的明细，缺值留空。改客名或装箱数后旧价清空，可之后补充。
-4. 点击“生成问单Excel”直接生成44列文件，无需核对勾选或填写原因。文件保持待核对状态；生成不表示已经核准价格。
+4. 点击“生成问单Excel”直接生成44列文件，合同列统一为TBA，无需核对勾选或填写原因。文件保持待核对状态；生成不表示已经核准价格。
 5. 已生成记录可下载原Excel，也可“复制全部44列”粘贴到Excel，不含表头；重复下载或复制不重新占号。剪贴板被限制时，按页面提示选中只读内容手动复制。
 
 这是问单工具，不包含PO入正式排期入口。编号仅在本包数据中延续，不与线上或其他电脑共用。
@@ -246,7 +246,7 @@ def readme(factory: str, release: str):
         common += '''
 订单／排期使用顺序
 1. 选择本厂客户、上传客户PO与对应原排期，填写来单日期后解析。
-2. 在预览中逐项核对。“资料待补”可先留空保存或生成排期；人工补录及允许确认的异常须填写原因。订单号、货号、有效数量和原单冲突仍须核对。
+2. 预览中的缺资料、数量或字段差异只作提醒，可直接保存或生成排期，不要求勾选核对或填写原因。缺值留空；同单号不同资料另存，已有订单和走货记录保留。
 3. “保存订单”写入本机台账；“生成排期”下载完整排期副本。这是两个独立操作。
 4. 缺货期可先入台账，补齐并保存货期后才能发送到本机部门收件箱；可登记分批走货，走货撤回须保留原因。
 5. 本机发送记录不是发给线上员工的通知，也不会更新正式仓库、库存或生产任务。
@@ -255,10 +255,38 @@ def readme(factory: str, release: str):
 少数旧 .xls 文件的保格式转换调用本机 Microsoft Excel；普通 .xlsx 不需要该转换。
 本包不代替正式生产系统；本地发送、签收、走货记录需负责人核对流程后再决定正式上线方式。
 '''
+    if factory == 'huakang-a' and not green_toys_only:
+        common += '\nZURU已接入与其他客户相同的统一导入流程：选择ZURU，上传PDF/Excel PO及三表统一排期，预览后生成。演示资料/ZURU内有合成示例及空白统一模板。原周排期的MA、库存不自动迁入。\n'
     return common
 
 
-def build(cache: Path, output: Path, selected, release_date: str | None = None):
+def package_reference_seed(package: Path, schedule: Path, price: Path):
+    """Only explicitly supplied private inputs enter this delivery, never Git sources."""
+    directory = package / 'reference-seed'
+    directory.mkdir()
+    records = []
+    for kind, source in (('schedule', schedule), ('price', price)):
+        if source.is_symlink() or source.suffix.lower() != '.xlsx' or not 0 < source.stat().st_size <= 20 * 1024**2:
+            raise ValueError('Initial JP references must be regular XLSX files under 20MB.')
+        content = source.read_bytes()
+        (directory / (kind + '.xlsx')).write_bytes(content)
+        records.append({'kind': kind, 'file': kind + '.xlsx', 'name': source.name,
+            'sha256': sha256(content).hexdigest()})
+    (directory / 'manifest.json').write_text(json.dumps({'format': 1, 'factory_id': 'huakang-b',
+        'files': records}, ensure_ascii=False, indent=2), encoding='utf-8')
+    environment = {**os.environ, 'PYTHONPATH': str(package / 'backend'), 'PYTHONDONTWRITEBYTECODE': '1'}
+    validation = subprocess.run([sys.executable, '-B', '-m', 'app.reference_seed', str(directory)],
+        env=environment, check=True, capture_output=True, text=True)
+    return json.loads(validation.stdout)
+
+
+def build(cache: Path, output: Path, selected, release_date: str | None = None,
+        jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False):
+    if green_toys_only and selected != ['huakang-a']:
+        raise ValueError('Green Toys专用包必须只选择华康A。')
+    seeded = jp_schedule is not None or jp_price is not None
+    if seeded and (jp_schedule is None or jp_price is None or 'huakang-b' not in selected):
+        raise ValueError('Supply both JP references and include huakang-b in the selected delivery.')
     release_day = date.fromisoformat(release_date) if release_date else datetime.now(ZoneInfo("Asia/Shanghai")).date()
     release = release_day.isoformat()
     stamp = release_day.strftime("%Y%m%d")
@@ -271,22 +299,44 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
         dependencies = runtime(cache, shared_runtime)
         for factory in selected:
             zip_name, folder, name, customers = FACTORIES[factory]
+            if green_toys_only:
+                zip_name, folder, customers = '01_华康A_GreenToys_订单入排期', 'HuakangA_GreenToys_Trial', 'Green Toys'
             kind = 'jp' if factory == 'huakang-b' else 'orders'
             source = ROOT / 'tools' / ('huakang-b-jp-trial' if kind == 'jp' else 'customer-order-trial')
             package = staging / folder
             package.mkdir()
             subprocess.run([sys.executable, '-B', str(source / 'prepare_backend.py'), str(package / 'backend')], check=True)
-            web = source / 'build' / 'web'
+            has_seed = kind == 'jp' and seeded
+            if has_seed:
+                stats = package_reference_seed(package, jp_schedule, jp_price)
+                (package / '预置参照说明.txt').write_text(
+                    '本包已带上交付时指定的华康B排期和货价原件副本。首次启动自动保存，后续自动复用。\n'
+                    '日常直接导入邮件；只有原表更新时，才在“当前参照”选择新文件并点击“验证并更新”。\n'
+                    '关闭页面或重启不会丢失；请保留整个data文件夹。\n'
+                    '如迁移旧包data，已有参照和导出历史优先保留，不会被预置文件覆盖。\n'
+                    '需要采用本包的新参照时，在页面选择reference-seed内对应XLSX更新一次即可。\n'
+                    'schedule.xlsx为排期，price.xlsx为货价；原始文件名及校验见manifest.json。\n'
+                    '本包包含指定的业务参照，请交给相应华康B试用人员。\n'
+                    f'校验记录数：排期{stats["schedule"]["rows"]}，货价{stats["price"]["rows"]}。\n', encoding='utf-8-sig')
+            web = source / 'build' / ('web-green-toys' if green_toys_only else 'web')
             if not (web / 'index.html').is_file():
                 raise RuntimeError(f'Missing built frontend: {web}')
             copy_tree(web, package / 'web')
             copy_tree(shared_runtime, package / 'runtime')
             shutil.copyfile(TOOL / 'launch.py', package / 'launch.py')
             (package / 'START.cmd').write_bytes(START.encode('ascii'))
-            (package / '先看使用说明.txt').write_text(readme(factory, release), encoding='utf-8-sig')
+            instructions = readme(factory, release, green_toys_only)
+            if green_toys_only:
+                instructions = instructions.replace(FACTORIES[factory][3], 'Green Toys')
+                instructions += '\n本包直接复用GitHub订单中心导入/预览页面和外框样式，只开放Green Toys。\n货期可留空直接生成，后续在Excel手动填写。请勿混入其他客户的data目录。\n'
+            if has_seed:
+                instructions = instructions.replace('请负责人先完成演示资料流程，再用真实样本逐项核对金额、数量、交期和版式。',
+                    '本包已预置参照，可直接导入真实邮件。演示操作请在另一个解压副本中进行，不要把演示数据迁入日常工作副本。')
+            (package / '先看使用说明.txt').write_text(instructions, encoding='utf-8-sig')
             (package / 'trial.json').write_text(json.dumps({'kind': kind, 'factory_id': factory,
                 'name': f'{name}问单本地试用' if kind == 'jp' else f'{name}订单排期本地试用',
-                'release': release, 'source_commit': source_commit,
+                'release': release, 'source_commit': source_commit, 'reference_seed': has_seed,
+                **({'customer_codes': ['green-toys']} if green_toys_only else {}),
                 'source_commit_role': 'Base checkout; see BUILD-SOURCES.json for exact uncommitted build inputs.'}, ensure_ascii=False, indent=2), encoding='utf-8')
             if kind == 'orders':
                 ocr = package / 'ocr'
@@ -309,7 +359,14 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
                 command = [sys.executable, '-B', str(demo_script), str(package / '演示资料')]
                 if kind == 'orders':
                     command += ['--factory', factory]
+                    if green_toys_only:
+                        command += ['--green-toys-only']
                 subprocess.run(command, check=True)
+                if has_seed:
+                    demo_instructions = package / '演示资料/演示操作说明.txt'
+                    demo_instructions.write_text('本包已预置真实参照，日常录入无需上传下列演示参照。\n'
+                        '以下演示仅在另一个解压副本中进行；不要把演示data复制回日常工作包。\n\n'
+                        + demo_instructions.read_text(encoding='utf-8-sig'), encoding='utf-8-sig')
             (package / 'DEPENDENCIES.json').write_text(json.dumps(dependencies, indent=2), encoding='utf-8')
             for filename in ('runtime-sources.json', 'requirements-windows.txt'):
                 shutil.copyfile(TOOL / filename, package / filename)
@@ -330,13 +387,16 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
                 'sha256': sha256(destination.read_bytes()).hexdigest(), 'customers': customers})
             print(json.dumps(records[-1], ensure_ascii=False), flush=True)
     (output / '交付文件校验.json').write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding='utf-8')
-    (output / '06_华康C_当前状态说明.txt').write_text('华康C当前没有开放的普通客户订单／排期入口。\n'
-        '本次没有生成会重新开放隐藏或历史客户映射的试用程序。\n华康C裁床/BOM/生产模块不在本次订单问单试用范围。\n', encoding='utf-8-sig')
+    if set(selected) == set(FACTORIES):
+        (output / '06_华康C_当前状态说明.txt').write_text('华康C当前没有开放的普通客户订单／排期入口。\n'
+            '本次没有生成会重新开放隐藏或历史客户映射的试用程序。\n华康C裁床/BOM/生产模块不在本次订单问单试用范围。\n', encoding='utf-8-sig')
     with (output / '00_交接登记.csv').open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.writer(stream)
         writer.writerow(['厂区', '试用包', '客户／功能', '对接人', '交付日期', '启动结果', '试用问题'])
         for factory in selected:
             filename, _, name, customers = FACTORIES[factory]
+            if green_toys_only:
+                filename, customers = '01_华康A_GreenToys_订单入排期', 'Green Toys'
             writer.writerow([name, f'{filename}_Windows试用_{stamp}.zip', customers, '', '', '', ''])
     (output / '00_总说明_先看这里.txt').write_text('各厂区订单／排期与华康B问单｜Windows单机试用包\n\n'
         + '本文件夹包含：' + '、'.join(FACTORIES[key][2] for key in selected) + '。\n' +
@@ -344,7 +404,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None):
         '不需要总系统账号。仅适用于Windows 10/11 64位。\n'
         '功能范围：华康B只保留JP问单；订单包包含本地订单台账、发送收件、分批走货和排期生成。\n'
         '数据保存在各自解压目录的data中，互不共享，不写入线上系统。\n'
-        '发票不在本次范围；华康C当前无普通订单入口，另附状态说明。\n'
+        '发票不在本次范围。各厂区数据和压缩包独立。\n'
         '00_交接登记.csv可填写负责人及反馈。各包内有详细使用说明。\n'
         'Windows实机和金山导入尚需对接人现场试用核对；本地API/业务回归与构建验证见交付验证说明。\n', encoding='utf-8-sig')
     return records
@@ -356,5 +416,9 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--factory', action='append', choices=FACTORIES)
     parser.add_argument('--release-date', help='Release date YYYY-MM-DD; defaults to the Shanghai calendar date.')
+    parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
+    parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
+    parser.add_argument('--green-toys-only', action='store_true', help='Huakang A Green Toys only; reuse the GitHub order workspace frontend.')
     args = parser.parse_args()
-    build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date)
+    build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date,
+        args.jp_schedule, args.jp_price, args.green_toys_only)

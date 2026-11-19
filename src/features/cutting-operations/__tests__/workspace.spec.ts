@@ -718,6 +718,9 @@ describe('cutting read-only workspaces',()=>{
     vi.mocked(workspaceApi.monthly).mockImplementation(async month=>({month,domains:[],frozen:[]}))
     wrapper=mount(Monthly,{props:{month:'2026-09'}});await flushPromises()
     expect(workspaceApi.monthly).toHaveBeenLastCalledWith('2026-09')
+    expect(wrapper.get('form button').text()).toBe('刷新月结总览')
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(workspaceApi.monthly).toHaveBeenCalledTimes(2)
     await wrapper.setProps({month:'2026-08'});await flushPromises()
     expect(workspaceApi.monthly).toHaveBeenLastCalledWith('2026-08')
     await wrapper.get('input[type=month]').setValue('2026-07')
@@ -793,6 +796,7 @@ describe('cutting read-only workspaces',()=>{
   it('exports payment balances with the current payments contract, not a fake frozen payment selection',async()=>{
     vi.mocked(workspaceApi.monthly).mockResolvedValue({month:'2026-10',domains:[],frozen:[{kind:'payment',event_id:'payment-event',document_id:'payment',version:1,month:'2026-10',valid:false,actor:'会计',date:'2026-10-10'}]})
     wrapper=mount(Monthly,{props:{exportsOnly:true,access:{enabled:true,schema_ready:true,permissions:['payment_read']}}});await flushPromises()
+    expect(wrapper.get('form button').text()).toBe('查询／刷新')
     expect(wrapper.findAll('.export-selection').map(p=>JSON.parse(p.text()))).toEqual([{kind:'payments',month:'2026-10'}])
     await button('查看冻结依据').trigger('click')
     expect(wrapper.emitted('open')?.[0]).toEqual(['payment','2026-10','payment','payment-event'])

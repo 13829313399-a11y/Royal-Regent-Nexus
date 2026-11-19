@@ -8,6 +8,21 @@ const molding = (injection_lines: unknown[] = []) => normalizeInternalQuotePaylo
 
 describe('stable whole mold linkage', () => {
   it.each([
+    ['导电PP', ['导电'], '导电'],
+    ['导电', ['导电', '加强'], '导电'],
+    ['导电PP', ['导电', '加强'], ''],
+    ['未登记', ['导电'], '未登记'],
+    ['导电PP', ['导电PP', '导电'], '导电PP'],
+  ] as const)('binds the quote grade on a legacy linked row (%s, %j)', (grade, grades, expected) => {
+    const src = engineering([{ mold_id: 'm1', material_type: '导电PP' }])
+    const draft = molding([{ engineering_mold_id: 'm1', material: '导电PP', grade }])
+    const snapshot = { material_prices: Object.fromEntries(grades.map(value => [`导电PP|${value}`, 11.6])) }
+    const saved = linkEngineeringMolding(src, draft, 'huaxing', snapshot)
+    expect(linkEngineeringMolding(src, saved).injection_lines[0]).toMatchObject({
+      material: '导电PP', grade: expected, material_choice_for: ['', '导电PP'],
+    })
+  })
+  it.each([
     ['C-PP', 'C-PP', '5090T'], ['C-PP', '透明PP', '5090T'],
     ['C-ABS', 'C-ABS', 'TR558/920'], ['C-ABS', '透明ABS', 'TR558/920'],
   ])('retains the selected %s grade through repeated engineering refreshes', (hint, material, grade) => {

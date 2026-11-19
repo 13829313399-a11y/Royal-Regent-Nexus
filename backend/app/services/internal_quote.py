@@ -4237,14 +4237,6 @@ def preview_quote_costs(
             # an Engineering draft actually submitted for this preview.
             payload_overrides[section_code] = {"mold_allocation_enabled": False}
 
-    if "molding" in payload_overrides:
-        engineering = by_code.get("engineering")
-        if engineering and engineering.is_required and engineering.status != "not_applicable":
-            payload_overrides["molding"] = _project_molding_parts(
-                payload_overrides.get("engineering", _json_object(engineering.payload_json)),
-                payload_overrides["molding"], factory_id=quote.factory_id,
-            )
-
     reference = _find_reference_set(db, quote)
     if reference is None:
         raise HTTPException(status_code=409, detail="报价缺少冻结参考快照，暂时无法实时试算")
@@ -4253,7 +4245,8 @@ def preview_quote_costs(
     calculation_overrides: dict[str, dict[str, object]] = {}
     if "molding" in payload_overrides and by_code.get("engineering") and by_code["engineering"].is_required:
         payload_overrides["molding"] = prefill_molding_from_engineering(
-            payload_overrides.get("engineering", _json_object(by_code["engineering"].payload_json)), payload_overrides["molding"], factory_id=quote.factory_id)
+            payload_overrides.get("engineering", _json_object(by_code["engineering"].payload_json)),
+            payload_overrides["molding"], factory_id=quote.factory_id, material_prices=snapshot.get("material_prices"))
         draft_by_code["molding"].payload = payload_overrides["molding"]
     elif "engineering" in payload_overrides and by_code.get("molding"):
         if by_code["molding"].dependency_hash != content_hash(_calculation_dependencies(db, quote, "molding", payload_overrides=payload_overrides)):
@@ -4459,7 +4452,10 @@ def _save_section_in_transaction(
     if section.department == "molding":
         engineering = _get_section(db, quote.id, "engineering")
         if engineering.is_required:
-            next_payload = prefill_molding_from_engineering(_json_object(engineering.payload_json), next_payload, factory_id=quote.factory_id)
+            reference = _find_reference_set(db, quote)
+            prices = _json_object(reference.snapshot_json).get("material_prices") if reference else None
+            next_payload = prefill_molding_from_engineering(
+                _json_object(engineering.payload_json), next_payload, factory_id=quote.factory_id, material_prices=prices)
     if section.department == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in next_payload:
         raise HTTPException(status_code=409, detail="电子部包含多份独立报价，请刷新页面后逐份编辑，不能用旧版单份数据覆盖")
     next_payload_json = canonical_json(next_payload)
@@ -4597,9 +4593,8 @@ def save_whole_product_sections(
         # Engineering dependency invalidation during this batch is not a race.
         if "engineering" in drafts:
             drafts["engineering"].payload = normalize_engineering_mold_identities(drafts["engineering"].payload, _json_object(by_code["engineering"].payload_json))
-        if "molding" in drafts and by_code.get("engineering") and by_code["engineering"].is_required:
-            engineering_payload = drafts["engineering"].payload if "engineering" in drafts else _json_object(by_code["engineering"].payload_json)
-            drafts["molding"].payload = prefill_molding_from_engineering(engineering_payload, drafts["molding"].payload, factory_id=quote.factory_id)
+        # Engineering is saved first. Project Molding once inside its section
+        # save, with the actual saved Engineering inputs and quote price list.
         for section_code in SECTION_CODE_ORDER:
             draft = drafts.get(section_code)
             if draft is None:

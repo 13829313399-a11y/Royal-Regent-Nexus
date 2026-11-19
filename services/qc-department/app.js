@@ -414,7 +414,9 @@ function showPage(name, focusReportType = false) {
   // Hide the inspection drawer synchronously; destination rendering can fail
   // or be delayed, and must never control whether it leaks across pages.
   window.QcWorkflow?.beforePageChange(name);
+  if(currentPage!==name)window.QcReportDates?.close();
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
+  if(currentPage==='review'&&name!=='review')window.QcInspectionSheet?.clearReviewDates?.();
   if (currentPage === 'dashboard' && name !== 'dashboard') closeDashboardFailurePopover();
   if(currentPage!==name)window.QcIssueReports?.pageChanged();
   currentPage = name;
@@ -1375,8 +1377,7 @@ function clearRecordsDates() {
 }
 function resetRecordsFilters() {
   window.QcInspectionSheet?.resetTaskFilters();
-  ['searchInput','filterResult','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
-  document.getElementById('filterSort').value = window.QcInspectionSheet ? 'date-asc' : 'mod-desc';
+  ['searchInput','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('recordsDateFilter').open = false;
   filterRecords();
 }
@@ -1396,7 +1397,6 @@ function filterRecords() {
   try {
     const data = state.records.filter(r => ['approved','rejected'].includes(recStatus(r)) && !window.QcWorkflow?.isLinked(r.id)).concat(window.QcWorkflow?.recordItems() || []);
     const search = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
-    const resF   = document.getElementById('filterResult')?.value || '';
     const dfrom  = document.getElementById('filterDateFrom')?.value || '';
     const dto    = document.getElementById('filterDateTo')?.value   || '';
 
@@ -1409,24 +1409,15 @@ function filterRecords() {
           .filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(search)) return false;
       }
-      if (resF === 'PASS' && !isPass(r)) return false;
-      if (resF === 'REJ'  && !isFail(r)) return false;
       const plan=inspectionPlanRange(r);
       if ((dfrom || dto) && (!plan || (dfrom && plan.to < dfrom) || (dto && plan.from > dto))) return false;
       return true;
     }).sort((a, b) => {
-      const mode = document.getElementById('filterSort')?.value || 'mod-desc';
-      if (mode === 'date-asc' || mode === 'date-desc') {
-        const pa=inspectionPlanRange(a),pb=inspectionPlanRange(b);
-        if(!pa||!pb)return pa?-1:pb?1:0;
-        const order=pa.from.localeCompare(pb.from)||pa.to.localeCompare(pb.to);
-        return mode==='date-asc'?order:-order;
-      }
       const ka = formatModifiedDate(a.updatedAt) || '';
       const kb = formatModifiedDate(b.updatedAt) || '';
       /* 修改日期相同再按来料日期，保证同一天录入的明细聚在一起且稳定 */
       if (ka === kb) return String(b.date || '').localeCompare(String(a.date || ''));
-      return mode === 'mod-asc' ? ka.localeCompare(kb) : kb.localeCompare(ka);
+      return kb.localeCompare(ka);
     });
 
 
@@ -4448,6 +4439,7 @@ function renderDailyReport() {
   const dateEl = document.getElementById('dailyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = todayStr();
+  window.QcReportDates?.sync(dateEl);
   const date = dateEl.value;
   const data = recs().filter(r => r.date === date || r.inspDate === date);
 
@@ -4521,6 +4513,7 @@ function renderWeeklyReport() {
   const dateEl = document.getElementById('weeklyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = weekStart();
+  window.QcReportDates?.sync(dateEl);
   const ws   = dateEl.value;
   const we   = weekEnd(ws);
   const data = recs().filter(r => r.date >= ws && r.date <= we);
@@ -4709,11 +4702,9 @@ function _recordsExportQuery() {
   params.set('company', getCompany());   /* 导出当前厂区的数据 */
   params.set('dateBasis', 'inspection-plan');
   const search = getVal('searchInput');
-  const result = getVal('filterResult');
   const from = getVal('filterDateFrom');
   const to = getVal('filterDateTo');
   if (search) params.set('search', search);
-  if (result) params.set('result', result);
   if (from) params.set('dateFrom', from);
   if (to) params.set('dateTo', to);
   const qs = params.toString();
@@ -4737,7 +4728,7 @@ function exportCSV() {
   if (currentPage === 'records') filterRecords();
   if (_downloadServerExport('records.csv', 'CSV')) return;
   try {
-    const hasActiveFilter = ['searchInput', 'filterResult', 'filterDateFrom', 'filterDateTo']
+    const hasActiveFilter = ['searchInput', 'filterDateFrom', 'filterDateTo']
       .some(id => getVal(id));
     if (currentPage !== 'records' && hasActiveFilter) filterRecords();
     const data = currentPage === 'records' || hasActiveFilter ? filteredRecs : recs();
@@ -4770,7 +4761,6 @@ async function exportFactoryExcel() {
     if (typeof XLSX === 'undefined') await window.QcAssets.load('excel');
     const hasActiveFilter = !!(
       getVal('searchInput') ||
-      getVal('filterResult') ||
       getVal('filterDateFrom') ||
       getVal('filterDateTo')
     );
@@ -6447,6 +6437,7 @@ function renderMonthlyReport() {
     const n = new Date();
     el.value = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
   }
+  window.QcReportDates?.sync(el);
   const [year, month] = el.value.split('-').map(Number);
   const data = getMonthRecords(year, month);
   const s    = summarizeRecords(data);

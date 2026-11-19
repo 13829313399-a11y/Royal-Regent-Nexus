@@ -56,16 +56,26 @@ class LocalBoundary:
         await self.app(scope,bounded_receive,private_send)
 
 
-def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',port=8765):
+def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',port=8765,customer_codes=None):
     if factory_id not in CUSTOMERS: raise ValueError('本试用版未开放该厂区订单映射。')
+    if customer_codes is not None and (not isinstance(customer_codes,(list,tuple)) or not customer_codes or
+            any(code not in CUSTOMERS[factory_id] for code in customer_codes)):
+        raise ValueError('本试用包客户范围无效。')
     if host!='127.0.0.1' or not isinstance(port,int) or not 1<=port<=65535:raise ValueError('试用版仅支持 127.0.0.1 本地端口。')
     history=History(data_dir,factory_id)
+    if customer_codes is not None:
+        with history.connect() as db:
+            stored={row[0] for row in db.execute('SELECT DISTINCT customer_code FROM exports')}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_ledger_lines'").fetchone():
+                stored.update(row[0] for row in db.execute('SELECT DISTINCT customer_code FROM order_ledger_lines'))
+            if stored-set(customer_codes):
+                raise RuntimeError('数据目录含本试用包范围外的客户，请保留原数据并用完整厂区包打开。')
     jobs.OPERATIONS=OPERATIONS
     jobs.LOCK_PATH=Path(data_dir).resolve()/'.file-worker.lock'
     app=FastAPI(title=FACTORIES[factory_id]+'订单排期本地试用',docs_url=None,redoc_url=None,openapi_url=None)
     app.state.history=history;app.state.factory_id=factory_id
     app.add_middleware(LocalBoundary,authority=f'{host}:{port}')
-    registered=profiles(factory_id)
+    registered=[row for row in profiles(factory_id) if customer_codes is None or row['code'] in customer_codes]
 
     @app.get('/api/health')
     def health():return {'status':'ok','service':'customer-order-trial','factory_id':factory_id,'schema':1}
@@ -73,7 +83,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
     @app.get('/api/config')
     def config():return {'factory_id':factory_id,'factory_name':FACTORIES[factory_id],
         'customers':registered,'duplicate_confirmation_enabled':True,
-        'capabilities':{'history_import':True,'ledger_schedule':True,'workbook_tools':True},
+        'capabilities':{'history_import':True,'ledger_schedule':True,'workbook_tools':any(row['code'] in {'360','casdon'} for row in registered)},
         'scope':'本机订单台账、排期导出、部门收件及走货记录；不连接线上系统，发送仅写入本机部门收件箱。',
         'limits':{'po_files':contract.MAX_BATCH_PO_FILES,'po_bytes':contract.MAX_PO_BYTES,
                   'batch_po_bytes':contract.MAX_BATCH_PO_BYTES,'schedule_bytes':contract.MAX_SCHEDULE_BYTES}}
@@ -166,9 +176,9 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
         return output_response(row)
 
     from app.local_ledger import ledger_router
-    app.include_router(ledger_router(history,factory_id,scoped,prepare_confirmed))
+    app.include_router(ledger_router(history,factory_id,scoped,prepare_confirmed,registered))
     from app.schedule_tools import schedule_tools_router
-    app.include_router(schedule_tools_router(history,factory_id,output_response))
+    app.include_router(schedule_tools_router(history,factory_id,output_response,scoped))
 
     if static_dir is not None:
         directory=Path(static_dir).resolve()

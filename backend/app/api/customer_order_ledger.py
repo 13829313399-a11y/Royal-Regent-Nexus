@@ -81,7 +81,7 @@ async def history_parse(db, user, factory, customer, upload):
     authorize(db, user, factory)
     mapping._ensure_customer_factory(customer, factory)
     content = await upload.read(history.MAX_BYTES + 1)
-    workbook = await run_order_job(history.parse_workbook, content, db=db)
+    workbook = await run_order_job(history.parse_workbook, content, recover_edu_items=customer == 'edu', db=db)
     parsed = history.preview(db, content, upload.filename or "", factory, customer, mapping.CUSTOMER_NAMES[customer], workbook=workbook)
     return content, parsed
 

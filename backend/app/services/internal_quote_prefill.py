@@ -158,6 +158,38 @@ def _generic_material_hint(material: object, material_type: object) -> str:
     return ""
 
 
+def _quote_material_grades(material_prices: dict[str, Any] | None) -> dict[str, list[tuple[str, str]]]:
+    grades: dict[str, list[tuple[str, str]]] = {}
+    if not isinstance(material_prices, dict):
+        return grades
+    for key in material_prices:
+        material, separator, grade = key.partition("|")
+        if separator and _text(grade):
+            grades.setdefault(_match_token(material), []).append((material, grade))
+    return grades
+
+
+def _linked_quote_material(
+    row: dict[str, Any], source_pair: list[str], grades: dict[str, list[tuple[str, str]]],
+) -> tuple[str, str] | None:
+    # Old linked drafts may contain the Engineering resin in both cells and
+    # lack a selection marker. Resolve only against this quote's own snapshot.
+    material = _match_token(row.get("material"))
+    if not material or material not in source_pair or any(value and value != material for value in source_pair):
+        return None
+    options = grades.get(material, [])
+    if not options:
+        return None
+    grade = _match_token(row.get("grade"))
+    matches = [option for option in options if _match_token(option[1]) == grade]
+    if len(matches) == 1:
+        return matches[0]
+    if grade in ("", material):
+        return options[0] if len(options) == 1 else (_text(row["material"]), "")
+    # Keep an unknown explicit grade blocked, including on the next save.
+    return _text(row["material"]), _text(row.get("grade"))
+
+
 def _a_code(value: object) -> Decimal | None:
     token = _match_token(value)
     if token.endswith("A"):
@@ -262,6 +294,7 @@ def prefill_molding_from_engineering(
     *,
     remove_missing_only: bool = False,
     factory_id: str = "",
+    material_prices: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a molding payload with engineering molds projected into injection rows.
 
@@ -282,6 +315,7 @@ def prefill_molding_from_engineering(
         # field that makes an untouched department look edited or invalid.
         return deepcopy(molding_payload)
     keys = _source_keys(molds)
+    quote_grades = _quote_material_grades(material_prices)
     legacy_keys = [_text(source.get("legacy_source_key")) if source.get("mold_id") else key
                    for source, key in zip(molds, keys, strict=True)]
     if remove_missing_only:
@@ -462,6 +496,9 @@ def prefill_molding_from_engineering(
             row.pop("material_choice_for", None)
             row["material"] = row["grade"] = ""
         if keep_choice:
+            row["material_choice_for"] = source_pair
+        elif not generic_material_hint and choice_for is None and (selected := _linked_quote_material(row, source_pair, quote_grades)):
+            row["material"], row["grade"] = selected
             row["material_choice_for"] = source_pair
         elif generic_material_hint:
             selected_material = _text(row.get("material"))

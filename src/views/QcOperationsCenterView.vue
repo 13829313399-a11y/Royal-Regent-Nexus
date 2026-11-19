@@ -107,7 +107,8 @@ function measureHeader(doc: Document, element: HTMLIFrameElement) {
       const style = doc.defaultView!.getComputedStyle(th)
       const box = th.getBoundingClientRect()
       const frozen = th.dataset.column === 'customer' || th.dataset.column === 'poNo'
-      return { text: th.textContent || '', column: th.dataset.column || '', style: {
+      const dateSort = sheet.id === 'recordsTableWrap' ? th.querySelector<HTMLButtonElement>('.qis-date-sort') : null
+      return { sortTitle: dateSort?.title || '', text: th.textContent || '', column: th.dataset.column || '', style: {
         width: `${box.width}px`, height: `${box.height}px`,
         fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight,
         lineHeight: style.lineHeight, letterSpacing: style.letterSpacing, textAlign: style.textAlign,
@@ -119,12 +120,18 @@ function measureHeader(doc: Document, element: HTMLIFrameElement) {
     })
     const signature = JSON.stringify(cells)
     if (signature !== mirror.signature) {
-      // Presentational labels only: do not duplicate inputs, IDs or accessibility headers.
+      // Keep the original accessible control in the iframe; the date label forwards pointer clicks.
       mirror.strip.replaceChildren(...cells.map(cell => {
         const label = document.createElement('span')
         label.textContent = cell.text
         label.dataset.column = cell.column
         Object.assign(label.style, cell.style)
+        if (cell.sortTitle) {
+          label.className = 'qc-date-sort-mirror'
+          label.title = cell.sortTitle
+          label.style.padding = '10px 8px'
+          label.onclick = () => sheet.querySelector<HTMLButtonElement>('.qis-date-sort')?.click()
+        }
         return label
       }))
       mirror.signature = signature
@@ -184,7 +191,7 @@ function measureFrame(height: number) {
 }
 function connectLayout() {
   const doc = child()?.document
-  if (doc && doc !== layoutDocument) {
+  if (doc?.body && doc !== layoutDocument) {
     disconnectLayout()
     layoutDocument = doc
     const main = doc.querySelector('.main-wrap')
@@ -335,7 +342,7 @@ watch(frame, scheduleViewport, { flush: 'post' })
       </section>
       <iframe v-if="ready" ref="frame" :key="`${factoryId}:${frameVersion}`" :src="frameUrl" :class="{ invisible: !frameLoaded }" @load="onFrameLoad" title="QC_department 验货工作台" class="h-full min-h-0 w-full border-0 bg-white" />
     </template>
-    <div ref="headerLayer" class="qc-table-header-layer" hidden aria-hidden="true" inert />
+    <div ref="headerLayer" class="qc-table-header-layer" hidden aria-hidden="true" />
   </main>
 </template>
 
@@ -399,6 +406,8 @@ watch(frame, scheduleViewport, { flush: 'post' })
 .qc-table-header-layer :deep(.qc-table-header-sticky) { position:sticky; top:0; }
 .qc-table-header-layer :deep(.qc-table-header-strip) { display:flex; overflow:hidden; }
 .qc-table-header-layer :deep(.qc-table-header-strip span) { display:block; flex:none; box-sizing:border-box; white-space:nowrap; }
+.qc-table-header-layer :deep(.qc-date-sort-mirror) { pointer-events:auto; cursor:pointer; }
+.qc-table-header-layer :deep(.qc-date-sort-mirror:hover) { background:#e1ebe5!important; }
 .qc-host-factory { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .qc-host-factory select { min-height: 36px; max-width: 180px; border: 1px solid var(--input); border-radius: 10px; padding: 4px 10px; background: var(--card, white); font: inherit; }
 /* Scoped QC frame chrome; Nexus theme and authorization/factory bridge are unchanged. */

@@ -42,7 +42,7 @@ def test_po_match_then_last_green_row_and_normalized_pack(po, expected):
     row = preview['rows'][0]
     assert row['edu_reservation_row'] == expected
     assert row['reference_no'] == 'EDUHX00104'
-    assert row['product_no'] == PRODUCT
+    assert row['product_no'] == PRODUCT + '0000'
     assert row['source_product_no'] == PRODUCT + '0000'
     assert row['source_order_date'] == '2026-09-29'
     assert row['units_per_carton'] == '16'

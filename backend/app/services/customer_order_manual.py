@@ -8,6 +8,7 @@ from typing import Any, Iterable
 MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
     "po_no": {"label": "P/O#", "input_type": "text"},
     "so_no": {"label": "SO", "input_type": "text"},
+    "reference_no": {"label": "EDU 生产单号", "input_type": "text"},
     "contract_no": {"label": "Contract No.", "input_type": "text"},
     "customer_country": {"label": "客名/国家", "input_type": "text"},
     "customer_name": {"label": "客户名称", "input_type": "text"},
@@ -60,7 +61,7 @@ MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
 }
 
 PREVIEW_VALUE_FIELDS = frozenset({
-    "po_no", "contract_no", "customer_country", "customer_name", "country",
+    "po_no", "reference_no", "contract_no", "customer_country", "customer_name", "country",
     "product_no", "product_name_zh", "product_name_en", "quantity",
     "units_per_carton", "carton_count", "standard", "unit_price_hkd",
     "amount_hkd", "packaging", "line_q", "customer_q", "requested_ship_date", "product_version", "shipping_item", "date_code", "edu_reservation_row",

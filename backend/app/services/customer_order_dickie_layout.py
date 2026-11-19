@@ -1,4 +1,4 @@
-"""Dickie exact-item/explicit-series placement; never consumes MO reservations."""
+"""Dickie grouped ITEM details and appended summaries; never consumes MO stock."""
 from collections import defaultdict
 import re
 
@@ -57,18 +57,19 @@ def active_boundary(sheet):
     return min(historical + totals)
 
 
-def _placement(sheet, product_key):
+def _placement(sheet, product_key=None):
+    """A product key groups ITEM rows; summaries append after active content."""
     from app.services.customer_order_unified import _text
     _, product, _ = _columns(sheet)
     boundary = active_boundary(sheet)
-    matches = [r for r in range(4, boundary)
+    matches = [] if product_key is None else [r for r in range(4, boundary)
                if sheet.cell(r, product).data_type != 'f'
                and series_key(sheet.cell(r, product).value) == product_key]
     stock = [r for r in matches if _stock(sheet, r)]
     if matches:
         start = min(stock) if stock else max(matches) + 1
     else:
-        # A genuinely new item starts a new group at the active-area end.
+        # Summaries and genuinely new ITEM groups append at the active-area end.
         occupied = [r for r in range(4, boundary) if any(
             c.value not in (None, '') and c.data_type != 'f' for c in sheet[r])]
         start = max(occupied, default=3) + 1
@@ -79,6 +80,57 @@ def _placement(sheet, product_key):
     choices = same_item or ordinary or matches or [max(4, start - 1)]
     source = min(choices, key=lambda r: abs(r - start))
     return start, sheet.cell(source, product)
+
+
+def _local_sum_ranges(cell):
+    """Only explicit same-column SUM ranges; never guess a named/dynamic total."""
+    if cell.data_type != 'f' or not isinstance(cell.value, str):
+        return []
+    match = re.fullmatch(r'=SUM\(([^()]*)\)', re.sub(r'\s+', '', cell.value), re.I)
+    if not match:
+        return []
+    from openpyxl.utils import column_index_from_string
+    ranges = []
+    for argument in match[1].split(','):
+        part = re.fullmatch(r'\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)', argument, re.I)
+        if not part or any(column_index_from_string(part[i].upper()) != cell.column for i in (1, 3)):
+            return []
+        start, end = int(part[2]), int(part[4])
+        if start < 4 or end < start:
+            return []
+        ranges.append((start, end))
+    return ranges
+
+
+def _summary_totals(sheet):
+    """Capture the first active annual SUM block, excluding past-year blocks."""
+    boundary = active_boundary(sheet)
+    label = re.sub(r'\s+', '', str(sheet.cell(boundary, 10).value or ''))
+    if not re.fullmatch(r'20\d{2}(?:[-–—/]20\d{2})?年接单(?:合计)?', label):
+        return []
+    ref, product, _ = _columns(sheet)
+    orders = [r for r in range(4, boundary) if not _stock(sheet, r)
+              and all(sheet.cell(r, c).value not in (None, '') and sheet.cell(r, c).data_type != 'f'
+                      for c in (ref, product))]
+    last_order = max(orders, default=0)
+    totals = []
+    for cell in sheet[boundary]:
+        ranges = _local_sum_ranges(cell)
+        if ranges and all(end < boundary for _, end in ranges) and any(start <= last_order <= end for start, end in ranges):
+            totals.append(cell)
+    return totals
+
+
+def _include_appended_totals(totals, start, count):
+    from openpyxl.utils import get_column_letter
+    end = start + count - 1
+    for cell in totals:
+        # The insertion engine already expands adjacent ranges. A separated
+        # range needs a new SUM argument, without including excluded MO/notes.
+        ranges = _local_sum_ranges(cell)
+        if ranges and not any(first <= start and end <= last for first, last in ranges):
+            column = get_column_letter(cell.column)
+            cell.value = f'{cell.value.rstrip()[:-1]},{column}{start}:{column}{end})'
 
 
 def allocate_rows(workbook, rows):
@@ -94,22 +146,28 @@ def allocate_rows(workbook, rows):
             raise CustomerOrderUnifiedError('Dickie 新单缺少完整货号，不能确定分组')
         groups[(row['item_sheet_name'], product)].append((index, row))
     handles = [dict() for _ in rows]
-    for (lane, product), group in groups.items():
-        for name in (lane, '接单表', '正单评审表'):
-            sheet = workbook[name]
-            start, source = _placement(sheet, product)
-            _insert(workbook, sheet, start, len(group))
-            ref_col, product_col, quantity_col = _columns(sheet)
-            clear_stock_fill = all(_green(sheet.cell(source.row, c)) for c in (ref_col, product_col, quantity_col))
-            for offset, (index, row) in enumerate(group):
-                number = start + offset
-                _copy_template_row(sheet, source.row, number)
-                if clear_stock_fill:
-                    for cell in sheet[number]:
-                        if _green(cell):
-                            cell.fill = PatternFill()
-                # Seed keys now; a later group can safely inspect allocated rows.
-                sheet.cell(number, ref_col).value = row.get('reference_no')
-                sheet.cell(number, product_col).value = row.get('product_no')
-                handles[index][name] = sheet.cell(number, product_col)
+    allocations = [(lane, product, group) for (lane, product), group in groups.items()]
+    if rows:
+        # Both summaries retain input order even when ITEM grouping changes it
+        # or the same batch spans different ITEM category sheets.
+        allocations.extend((name, None, list(enumerate(rows))) for name in ('接单表', '正单评审表'))
+    for name, product, group in allocations:
+        sheet = workbook[name]
+        start, source = _placement(sheet, product)
+        totals = _summary_totals(sheet) if product is None else []
+        _insert(workbook, sheet, start, len(group))
+        _include_appended_totals(totals, start, len(group))
+        ref_col, product_col, quantity_col = _columns(sheet)
+        clear_stock_fill = all(_green(sheet.cell(source.row, c)) for c in (ref_col, product_col, quantity_col))
+        for offset, (index, row) in enumerate(group):
+            number = start + offset
+            _copy_template_row(sheet, source.row, number)
+            if clear_stock_fill:
+                for cell in sheet[number]:
+                    if _green(cell):
+                        cell.fill = PatternFill()
+            # Seed keys now; a later group can safely inspect allocated rows.
+            sheet.cell(number, ref_col).value = row.get('reference_no')
+            sheet.cell(number, product_col).value = row.get('product_no')
+            handles[index][name] = sheet.cell(number, product_col)
     return handles

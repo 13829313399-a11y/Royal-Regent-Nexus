@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'royal_regent_nexus.db'}"
     session_cookie_secure: bool = False
+    qc_mobile_public_origin: str = ""
     seed_default_accounts: bool = True
     seed_admin_password: str = ""
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
     three_d_connector_enabled: bool = False
     three_d_connector_token: str = ""
     three_d_connector_control_enabled: bool = False
+    three_d_telemetry_sparse_history: bool = True
     three_d_connector_verified_machines: list[int] = []
     three_d_command_ttl_seconds: int = 120
     three_d_command_poll_interval_seconds: int = 3

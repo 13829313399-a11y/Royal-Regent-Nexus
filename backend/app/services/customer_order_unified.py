@@ -473,11 +473,7 @@ def _enrich_row(
         and _order_identity(row, item.reference_no, item.product_no) == identity
     ]
     if row.get('_huaxing_customer') == 'edu':
-        reference_matches = matches
         matches = huaxing.edu_history_matches(row, [item for item in history if _key(item.product_no) == _key(product_no)])
-        if any(item not in matches for item in reference_matches):
-            row['issues'].append(_issue('blocked', 'edu_reference_collision', 'contract_no',
-                'EDU 内部编号与产品已被另一客户合同/PO占用，请核对原订单；不能作为普通重复单放行'))
     if matches and not any(
         issue.get("code") in {"duplicate_reference", "existing_order_line", "duplicate_existing_order"}
         for issue in row["issues"]
@@ -512,20 +508,13 @@ def _order_identity(row, reference, product):
 
 def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
     seen: dict[tuple[str, ...], dict[str, Any]] = {}
-    edu_references: dict[tuple[str, str], tuple[str, ...]] = {}
     for row in rows:
         if row.get("row_role") == "parent":
             continue
         identity = _order_identity(row, row.get("reference_no"), row.get("product_no"))
         is_edu = row.get('_huaxing_customer') == 'edu'
         if is_edu:
-            reference_identity = identity
             identity = huaxing.edu_identity(row.get('contract_no'), row.get('po_no'), row.get('product_no'))
-            previous_identity = edu_references.setdefault(reference_identity, identity)
-            if all(reference_identity) and previous_identity != identity:
-                row['issues'].append(_issue('blocked', 'edu_reference_collision', 'contract_no',
-                    '本批不同客户合同/PO使用了相同 EDU 内部编号与产品，请核对原订单'))
-                _refresh_status(row)
         if not identity[-1] or not any(identity[:-1]):
             continue
         previous = seen.get(identity)
@@ -565,7 +554,7 @@ def _factory_allowed(customer_code: str, factory_id: str) -> bool:
     if customer_code == 'ubtech':
         return factory_id == 'huakang-d'
     if customer_code == 'zuru':
-        return factory_id == 'huaxing'
+        return factory_id in {'huaxing', 'huakang-a'}
     if customer_code in {'disney', 'seasons'}:
         return factory_id in {'huaxing', 'huakang-d'}
     if customer_code == 'spin-master' or (customer_code == 'jp' and factory_id == 'huakang-d'):
@@ -585,8 +574,7 @@ def _customer_name(customer_code: str, factory_id: str) -> str:
     if customer_code == 'ubtech':
         return '优必选'
     if customer_code == 'zuru':
-        from .customer_order_huaxing import get_huaxing_customer_mapping
-        return get_huaxing_customer_mapping(customer_code).name
+        return 'ZURU'
     if customer_code == "360" and factory_id == "huakang-a":
         from app.services.customer_order_huakang_a import get_huakang_a_customer_mapping
         return get_huakang_a_customer_mapping(customer_code).name
@@ -738,7 +726,7 @@ def _parse_huaxing_rows(
             {"huaxing_po": item.reference_no} for item in history
         ])
         for file_name, content in po_files:
-            parsed = edu_po_parser.parse_po_file(content, filename=file_name)
+            parsed = edu_po_parser.parse_edu_po_file(content, filename=file_name)
             if parsed.get("customer_type") != "EDU":
                 raise CustomerOrderUnifiedError(
                     f"{file_name}：识别为 {parsed.get('customer_type') or '未知客户'}，当前入口只处理 EDU"
@@ -1216,7 +1204,7 @@ def _create_customer_rows(
 ) -> tuple[list[dict[str, Any]], list[str], str]:
     if customer_code == 'zuru':
         from app.services.customer_order_zuru import create_rows
-        return create_rows(po_files, received_date, history)
+        return create_rows(po_files, received_date, history, factory_id=factory_id)
     if customer_code == 'ubtech':
         from app.services.customer_order_ubtech import create_rows
         return create_rows(po_files, received_date, history)
@@ -1341,7 +1329,7 @@ def create_unified_customer_preview(
         if huakang_unified.enabled(factory_id, customer_code):
             row["target_template"] = huakang_unified.TARGET_TEMPLATE
             for field in ("barcode", "port", "printing_requirement", "country"):
-                if customer_code == '360':
+                if customer_code in {'360', 'zuru'}:
                     continue
                 if not _text(row.get(field)):
                     candidates = {item.extras[field] for item in history if _key(item.product_no) == _key(row.get("product_no")) and item.extras.get(field)}
@@ -1415,14 +1403,14 @@ def create_unified_customer_preview(
             warnings[0] = '银辉三表按实际表头写入，兼容接单表没有订单类型、ITEM增加放版及抽版日期的排期；两项手填日期保留。'
             warnings[1] = '新单在各表首个合计、取消或已走货边界前追加；数量、价格和日期关联实际列，源排期不会被覆盖。'
         if customer_code == 'edu':
-            warnings[0] = 'EDU 新单按货号归组到绿色备料行上方，摘要关联实际 ITEM 行，同时更新 PO订单。'
-            warnings[2] = 'EDU 按客户完整合同/PO＋产品查重，EDUHX 仅为内部编号；不同客户订单独立续编号，源排期不会被覆盖。'
+            warnings[0] = 'EDU ITEM按基础货号归组到绿色备料行上方；接单表和正单评审表按导入顺序连续追加到活动区末尾，新单统一蓝字，货号完整显示。'
+            warnings[2] = 'EDU 按客户完整合同/PO＋完整货号查重；同货号可手填相同生产单号，不合并不同订单，源排期不会被覆盖。'
             warnings.extend([
-                'EDU 每条新订单明细独立续编 EDUHX，重复单保留原编号并避免再次写入及扣备料；同步更新 PO订单。',
+                'EDU默认续编EDUHX，可手动更正；重复单保留原编号，不再次写入或扣备料。货期遇周末提前到周五，验货期提前一周，空白日期保持空白。',
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
     preview = {
-        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else ''),
+        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else ''),
         "customer_code": customer_code,
         "factory_id": factory_id,
         "po_file_name": file_names[0] if len(file_names) == 1 else f"{len(file_names)}个文件",
@@ -1639,6 +1627,7 @@ def _write_summary_row(worksheet, row_number: int, row: dict[str, Any], *, item_
 
 
 def _recalculate_preview_row(row: dict[str, Any]) -> None:
+    regional.recalculate_dates(row, row.get('_regional_manual_fields', []))
     if not _text(row.get("reference_no")):
         row["reference_no"] = _text(row.get("contract_no")) or _text(row.get("po_no"))
     quantity = _number(row.get("quantity"))
@@ -1690,6 +1679,11 @@ def _validate_manually_changed_identities(preview, original, history) -> None:
                  and _order_identity(other, other.get('reference_no'), other.get('product_no')) == identity]
         existing = [item for item in history
                     if _order_identity(row, item.reference_no, item.product_no) == identity]
+        if row.get('_huaxing_customer') == 'edu':
+            identity = huaxing.edu_identity(row.get('contract_no'), row.get('po_no'), row.get('product_no'))
+            peers = [other for other in details if other is not row and huaxing.edu_identity(
+                other.get('contract_no'), other.get('po_no'), other.get('product_no')) == identity]
+            existing = huaxing.edu_history_matches(row, [item for item in history if _key(item.product_no) == _key(row.get('product_no'))])
         quantities = [_number(other.get('quantity')) for other in peers] + [_number(item.quantity) for item in existing]
         if quantities:
             row.setdefault('issues', []).append(_issue('warning', 'edited_identity_overlap', 'reference_no',
@@ -1731,7 +1725,11 @@ def export_unified_customer_schedule(
     decorate_manual_resolution_policy(preview)
     original_identities = {row['id']: tuple(_text(row.get(k)) for k in ('product_no', 'reference_no', 'contract_no', 'po_no')) for row in preview['rows']}
     original_core = {row['id']: (*original_identities[row['id']], _text(row.get('quantity'))) for row in preview['rows']}
+    original_zuru = {row['id']: (_text(row.get('product_no')), _text(row.get('customer_name'))) for row in preview['rows']}
     apply_overrides_to_preview(preview, manual_overrides or [])
+    if factory_id == 'huadeng':
+        for row in preview['rows']:
+            row['_regional_manual_fields'] = [o['field'] for o in manual_overrides or [] if o['row_id'] == row['id']]
     if customer_code == 'zuru':
         for override in manual_overrides or []:
             if override['field'] == 'unit_price_usd':
@@ -1786,6 +1784,10 @@ def export_unified_customer_schedule(
                 huaxing.read_history(workbook, customer_code), huaxing.item_sheets(workbook, customer_code), manual_overrides or [])
         finally:
             workbook.close()
+    if customer_code == 'zuru' and manual_overrides:
+        from .customer_order_zuru import refresh_edited_history
+        refresh_edited_history(preview, original_zuru,
+            read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code), manual_overrides)
     for row in preview["rows"]:
         _recalculate_preview_row(row)
     if manual_overrides and not huaxing.enabled(factory_id, customer_code):
@@ -1850,6 +1852,9 @@ def export_unified_customer_schedule(
                         huakang_unified.write_360_version(workbook[name], summary_row, version_columns[name], row)
                     if factory_id == 'huakang-a' and customer_code == 'green-toys':
                         green_pairs.append((name, summary_row, row_number))
+                    if factory_id == 'huakang-a' and customer_code == 'zuru':
+                        from app.services.customer_order_zuru import write_summary as write_zuru_summary
+                        write_zuru_summary(workbook[name], summary_row, row)
                     if customer_code == 'ubtech':
                         from app.services.customer_order_ubtech import write_summary
                         write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])

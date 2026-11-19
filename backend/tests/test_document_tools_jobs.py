@@ -1,6 +1,7 @@
 """Real private uploads, durable leases, revisions and file delivery."""
 import io
 import time
+from zipfile import ZipFile
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -191,6 +192,41 @@ def test_path_guard(runtime):
     from app.services.document_tools.document_ir import ToolError
     with pytest.raises(ToolError):
         storage.resolve('../escape')
+
+
+def test_split_download_contains_only_current_pdfs_and_enforces_expiry(runtime):
+    from pypdf import PdfWriter
+    client, sessions, current = runtime
+    writer = PdfWriter()
+    for width in (200, 300):
+        writer.add_blank_page(width=width, height=400)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    source = upload(client, "shipping.pdf", buffer.getvalue())
+    assert pipeline.run_one(sessions)
+    response = client.post("/api/tools/jobs", json={
+        "source_id": source["source_id"], "operation": "pdf_split",
+        "options": {"split_mode": "each"}, "client_request_id": jobs.uid(),
+    })
+    job_id = response.json()["job_id"]
+    url = f"/api/tools/jobs/{job_id}/split-files.zip"
+    assert client.get(url).status_code == 409
+    assert pipeline.run_one(sessions)
+    result = client.get(f"/api/tools/jobs/{job_id}").json()
+    pdfs = {item["filename"]: item["id"] for item in result["artifacts"] if item["role"] == "result"}
+    response = client.get(url)
+    assert response.status_code == 200 and response.headers["content-type"] == "application/zip"
+    assert "shipping-" in response.headers["content-disposition"]
+    with ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["split-001.pdf", "split-002.pdf"]
+        for name in archive.namelist():
+            assert archive.read(name) == client.get(f"/api/tools/artifacts/{pdfs[name]}/download").content
+    current.id = "bob"
+    assert client.get(url).status_code == 404
+    current.id = "alice"
+    with sessions.begin() as db:
+        db.get(Artifact, pdfs["split-002.pdf"]).expires_at = time.time() - 1
+    assert client.get(url).status_code == 410
 
 
 def test_conversion_rejects_missing_office_before_enqueue(runtime, monkeypatch):
