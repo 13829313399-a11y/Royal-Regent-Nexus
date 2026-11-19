@@ -138,9 +138,12 @@ def verify(output, python):
             config = json.loads((package / 'trial.json').read_text())
             assert config['factory_id'] == record['factory_id'] == manifest['factory_id']
             assert (package / 'runtime/python.exe').read_bytes()[:2] == b'MZ'
-            pth = (package / 'runtime/python312._pth').read_text()
+            legacy = config.get('runtime_profile') == 'win7-sp1-win10-x86'
+            pth = (package / ('runtime/python38._pth' if legacy else 'runtime/python312._pth')).read_text()
             assert 'Lib/site-packages' in pth and '../backend' in pth and 'import site' in pth
-            assert b'"runtime\\python.exe" -X utf8 launch.py\r\n' in (package / 'START.cmd').read_bytes()
+            assert b'"%TRIAL_ROOT%runtime\\python.exe" -X utf8 "%TRIAL_ROOT%launch.py"' in (package / 'START.cmd').read_bytes()
+            if legacy:
+                assert (package / 'browser/electron.exe').read_bytes()[:2] == b'MZ'
             instructions = '演示操作说明.txt' if config['kind'] == 'jp' else '演示操作.txt'
             assert (package / '演示资料' / instructions).is_file()
             first = serve(package, python, config)

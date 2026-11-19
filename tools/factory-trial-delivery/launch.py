@@ -8,11 +8,20 @@ import logging
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import threading
 import time
 from uuid import uuid4
 import webbrowser
+
+
+def open_page(root: Path, address: str):
+    browser = root / 'browser' / 'electron.exe'
+    if os.name == 'nt' and browser.is_file():
+        subprocess.Popen([str(browser), str(root / 'desktop'), address], cwd=root)
+    else:
+        webbrowser.open(address)
 
 
 class InstanceLock:
@@ -67,7 +76,7 @@ def reopen_running(data: Path, no_browser: bool) -> bool:
         if isinstance(port, int) and 1 <= port <= 65535 and instance_is_ready(port, value['id']):
             print(f'程序已启动：http://127.0.0.1:{port}/', flush=True)
             if not no_browser:
-                webbrowser.open(f'http://127.0.0.1:{port}/')
+                open_page(data.parent, f'http://127.0.0.1:{port}/')
             return True
     except (OSError, ValueError, KeyError, TypeError):
         pass
@@ -149,7 +158,7 @@ def main() -> int:
                     return
                 if instance_is_ready(port, instance):
                     if not arguments.no_browser:
-                        webbrowser.open(address)
+                        open_page(root, address)
                     return
                 time.sleep(0.1)
         threading.Thread(target=open_when_ready, daemon=True).start()
