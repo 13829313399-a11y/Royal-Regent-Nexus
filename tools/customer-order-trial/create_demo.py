@@ -37,7 +37,23 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None, si
             raise RuntimeError(f'Demo fixture changed: {filename}')
         return namespace
 
-    if single_customer == 'casdon':
+    if single_customer in {'spin', 'simba'}:
+        fixture = fixtures('test_huadeng_trial_inputs.py', {'TRIAL_TEXT', 'converted_po'})
+        customer, files, rows = single_customer.title(), [(f'DEMO_{single_customer}.xlsx', fixture['converted_po'](single_customer))], 1
+        template = fixtures('test_customer_order_unified.py', {'_template_bytes'}, unified=service)
+        content = template['_template_bytes']()
+    elif single_customer == 'jakks':
+        from reportlab.pdfgen import canvas
+        fixture = fixtures('test_jakks_supplementary_contract.py', {'SAMPLES', 'contract_text'})
+        stream = BytesIO(); doc = canvas.Canvas(stream, pagesize=(1000,1200))
+        doc.setFont('Helvetica', 9)
+        for i, line in enumerate(fixture['contract_text'](formal=True).splitlines()):
+            doc.drawString(25, 1160-i*14, line)
+        doc.save()
+        customer, files, rows = 'Jakks', [('DEMO_Jakks.pdf', stream.getvalue())], 1
+        template = fixtures('test_customer_order_unified.py', {'_template_bytes'}, unified=service)
+        content = template['_template_bytes']()
+    elif single_customer == 'casdon':
         pdf = fixtures('test_customer_order_goliath.py', {'_pdf_document'})
         fixture = fixtures('test_casdon_original_sku.py', {'casdon_po'}, _pdf_document=pdf['_pdf_document'])
         customer, files, rows = 'Casdon', [('DEMO_Casdon.pdf', fixture['casdon_po']())], 2
@@ -106,7 +122,7 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None, si
         f'1. 在本厂客户中选择 {customer}，台账资料类型保持“正式 PO”。\n'
         '2. 在“客户原始 PO”上传同目录 DEMO 开头的 PDF、Excel 或 HTML 文件；在“客户现有排期”上传 DEMO_统一排期.xlsx。\n'
         '3. 来单日期选择 2026-11-09，点击“解析并进入预览”。\n'
-        f'4. 应得到 {rows} 条明细。{reminder}核对表中货号、数量和交期后继续，不需要填写人工处理原因。\n'
+        f'4. 应得到 {rows} 条明细。' + ('彩星另显示1条分组行，不计入上述明细数。' if huaxing_customer == 'caixing' else '') + f'{reminder}核对表中货号、数量和交期后继续，不需要填写人工处理原因。\n'
         '5. 点击“确认并保存订单”，再到“订单台账与走货”查看保存的明细。重复保存相同资料不会重复新增。\n'
         '6. 回到导入预览，点击“确认警告并生成客户排期”下载新文件；也可到“排期文件历史”重新下载。原始演示文件保持不变。\n'
         '7. 在台账打开一条订单，发送给 PMC；到“本机部门收件”选择 PMC 并签收该版本。这些记录只在当前电脑，不会通知线上员工。\n'
@@ -143,7 +159,7 @@ if __name__ == '__main__':
     parser.add_argument('destination', type=Path)
     parser.add_argument('--factory', required=True, choices=['huakang-a', 'huakang-d', 'huaxing', 'huadeng'])
     parser.add_argument('--green-toys-only', action='store_true')
-    parser.add_argument('--single-customer', choices=['casdon','zuru'])
+    parser.add_argument('--single-customer', choices=['casdon','jakks','goliath','simba','spin','zuru'])
     parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie'])
     args = parser.parse_args()
     build(args.destination, args.factory, args.green_toys_only, args.huaxing_customer, args.single_customer)

@@ -15,6 +15,7 @@ const customer = ref('zuru')
 const customerName = ref('ZURU')
 const failure = ref('')
 const notice = ref('')
+const huadengCustomers: Record<string, string> = { casdon: 'Casdon', jakks: 'Jakks', goliath: 'Goliath', simba: 'Simba', spin: 'Spin' }
 const navigation: { id: Section; label: string; icon: typeof FileInput }[] = [
   { id: 'import', label: 'PO 与排期导入', icon: FileInput },
   { id: 'preview', label: '预览与确认', icon: ClipboardList },
@@ -28,13 +29,13 @@ async function load() {
   try {
     const config = await api.config()
     const code = config.customers[0]?.code
-    if (config.customers.length !== 1 || !((config.factory_id === 'huakang-a' && code === 'zuru') || (config.factory_id === 'huadeng' && code === 'casdon'))) {
+    if (config.customers.length !== 1 || !((config.factory_id === 'huakang-a' && code === 'zuru') || (config.factory_id === 'huadeng' && code && Object.hasOwn(huadengCustomers, code)))) {
       throw new Error('启动配置与专客试用包不一致，请使用完整解压后的专用包。')
     }
     factory.value = config.factory_id
     factoryName.value = config.factory_id === 'huadeng' ? '华登' : '华康A'
     customer.value = code!
-    customerName.value = code === 'casdon' ? 'Casdon' : 'ZURU'
+    customerName.value = huadengCustomers[code!] ?? 'ZURU'
     ready.value = true
   } catch (error) { failure.value = await errorMessage(error) }
 }

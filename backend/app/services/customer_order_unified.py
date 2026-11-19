@@ -1845,6 +1845,8 @@ def export_unified_customer_schedule(
     workbook = _load_workbook(schedule_content)
     try:
         rows = [row for row in preview["rows"] if row.get("row_role") != "parent" or customer_code == "caixing"]
+        from .customer_order_huadeng_headers import ensure_headers, link_new_prices, clear_new_manual_fields
+        huadeng_columns = ensure_headers(workbook, factory_id, customer_code)
         if factory_id == 'huadeng' and customer_code in {'jakks','goliath','casdon','spin','simba'}:
             from .customer_order_huadeng_usd import apply_preview
             apply_preview(workbook, rows)
@@ -1853,7 +1855,7 @@ def export_unified_customer_schedule(
             history = read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code, _workbook=workbook)
             cancellations = [row for row in rows if row.get('document_kind') == 'cancellation']
             from .customer_order_jakks_unified import export_cancellations
-            export_cancellations(workbook, cancellations, history, preview['warnings'])
+            export_cancellations(workbook, cancellations, history, preview['warnings'], price_columns=huadeng_columns)
             rows = [row for row in rows if row not in cancellations]
             from .customer_order_jakks_unified import upgrade_supplements
             upgrade_supplements(workbook, rows, history, preview['warnings'])
@@ -1898,6 +1900,8 @@ def export_unified_customer_schedule(
             for index, row in enumerate(rows):
                 row_number = slots_by_sheet[ITEM_SHEET][index]
                 _write_item_row(workbook[ITEM_SHEET], row_number, row)
+                if huadeng_columns:
+                    clear_new_manual_fields(workbook[ITEM_SHEET], row_number)
                 if huakang_unified.enabled(factory_id, customer_code):
                     huakang_unified.write_extras(workbook[ITEM_SHEET], row_number, row, customer_code)
                     if version_columns:
@@ -1928,6 +1932,8 @@ def export_unified_customer_schedule(
                 elif (factory_id, customer_code) == ('huadeng', 'casdon'):
                     casdon.write_prices(workbook, row, row_number,
                         slots_by_sheet[ORDER_SHEET][summary_index], slots_by_sheet[REVIEW_SHEET][summary_index])
+                if huadeng_columns and customer_code != 'casdon':
+                    link_new_prices(workbook, huadeng_columns, row_number, slots_by_sheet[ORDER_SHEET][summary_index])
                 if not recovered_rows[index]:
                     summary_index += 1
             for name, summary_row, item_row in green_pairs:

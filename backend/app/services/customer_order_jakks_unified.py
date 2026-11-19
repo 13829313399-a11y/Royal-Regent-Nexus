@@ -59,12 +59,15 @@ def describe_history(row, history):
                     message='排期已有相同批次、合同、PO、完整货号、数量及货期；生成时保留原记录，不重复追加。')
 
 
-def export_cancellations(workbook, rows, history, warnings):
+def export_cancellations(workbook, rows, history, warnings, *, price_columns=None):
     from copy import copy
     from openpyxl.styles import PatternFill
     from .customer_order_unified import (_marker_row, _copy_template_row, _write_item_row,
         _write_summary_row, _text, _number, _excel_value)
     from .huakang_a_order_legacy.unified_schedule import _insert_rows
+    from .customer_order_huadeng_headers import ensure_headers, link_new_prices
+    if rows and price_columns is None:
+        price_columns = ensure_headers(workbook, 'huadeng', 'jakks')
     green = PatternFill('solid', fgColor='B7E1A1')
     def mark(sheet, rowno):
         sheet.cell(rowno, 2).value = '取消单'
@@ -112,12 +115,15 @@ def export_cancellations(workbook, rows, history, warnings):
             _copy_template_row(sheet, header_row(sheet) + 1, target)
             slots[name] = target
         _write_item_row(workbook['ITEM表'], slots['ITEM表'], row)
+        from .customer_order_huadeng_headers import clear_new_manual_fields
+        clear_new_manual_fields(workbook['ITEM表'], slots['ITEM表'])
         for name in ('接单表', '正单评审表'):
             sheet = workbook[name]
             r = slots[name]
             _write_summary_row(sheet, r, row, item_row=slots['ITEM表'], item_sheet=workbook['ITEM表'])
             for col, field in ((14,'unit_price_hkd'),(15,'amount_hkd'),(16,'unit_price_usd'),(17,'amount_usd')):
                 sheet.cell(r, col).value = _excel_value(_number(row.get(field)))
+        link_new_prices(workbook, price_columns, slots['ITEM表'], slots['接单表'])
         for name, r in slots.items():
             mark(workbook[name], r)
         from .customer_order_unified import UnifiedHistoryRow

@@ -6,10 +6,10 @@ export type { MappedCustomerCode } from '../../../../src/api/customerOrder'
 // Keep the online page's multipart controls and download decoding unchanged.
 export const customerOrderApi = createCustomerOrderApi({
   async post<T>(url: string, data?: unknown, config?: unknown) {
-    const match = /^\/customer-orders\/(casdon|zuru)\/(preview|export)-batch$/.exec(url)
+    const match = /^\/customer-orders\/(casdon|jakks|goliath|simba|spin|zuru)\/(preview|export)-batch$/.exec(url)
     const customer = match?.[1]
     const operation = match?.[2]
-    const factory = customer === 'casdon' ? 'huadeng' : 'huakang-a'
+    const factory = customer === 'zuru' ? 'huakang-a' : 'huadeng'
     if (!operation || !(data instanceof FormData) || data.get('factory_id') !== factory) {
       throw new Error('本专客试用包仅开放指定厂区和客户。')
     }
