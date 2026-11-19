@@ -5,6 +5,7 @@ const byId = id => document.getElementById(id);
 const periods = {
   daily: {date:'dailyDate',customer:'qdrCustomer',templates:{daily:'验货明细'}},
   weekly: {date:'weeklyDate',customer:'qwtCustomer',templates:{detail:'各客户验货明细及汇总',issues:'验货问题与整改跟踪表'}},
+  yearly: {date:'qstats-year',customer:'qstats-client',templates:{'annual-stats':'年度验货统计','annual-issues':'验货问题与整改跟踪表'}},
   monthly: {date:'monthlyMonth',customer:'qmtCustomer',templates:{orders:'订单对账明细',tracking:'问题整改跟踪',quality:'客户质量签核'}}
 };
 const selected = {daily:'daily',weekly:'detail',monthly:'quality'};
@@ -15,7 +16,10 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;
 let reload, opener, exporting=false, receipt=null;
 function params(kind=selected[period]) {
   const cfg=periods[period],date=byId(cfg.date).value;
-  return new URLSearchParams({kind,day:period==='monthly'?date+'-01':date,customer:byId(cfg.customer).value}).toString();
+  const day=period==='yearly'?date+'-01-01':period==='monthly'?date+'-01':date;
+  const query=new URLSearchParams({kind,day,customer:byId(cfg.customer).value});
+  if(kind==='annual-stats')query.set('result',document.querySelector('#qstats-root [data-result][aria-pressed=true]').dataset.result);
+  return query.toString();
 }
 async function api(endpoint,query,options) {
   const response=await fetch('api/'+endpoint+'?'+query,options);
@@ -61,17 +65,24 @@ function mount(periodKey, kind, host, data, refresh){
     button.title='打开完整工作簿';button.setAttribute('aria-label',button.title);button.innerHTML=expandIcon;bar.append(button);
   }
   host.replaceChildren();const scroll=document.createElement('div');scroll.className='skim-scroll';host.append(scroll);
-  const rows=data.rows||data.tables[kind];
-  if(kind==='quality'){
+  button.disabled=false;
+  const rows=data.rows||data.tables?.[kind]||[];
+  if(kind==='annual-stats'){
+    const rates=new Map(data.months.map(m=>[Number(m.month.slice(-2)),m.passRate]));
+    showMonthlyRates(scroll,Array.from({length:12},(_,i)=>{
+      const rate=rates.get(i+1);
+      return {month:(i+1)+'月',label:rate==null?'':rate.toFixed(1)+'%'};
+    }));
+  }else if(kind==='quality'){
     showMonthlyRates(scroll,data.overview.months.map(m=>({month:m.month+'月',label:m.rate===''?'':(m.rate*100).toFixed(1)+'%'})));
   }else{
-    const groups=columns[kind], cols=groups.flatMap(g=>g[1]);
-    const band=periodKey==='monthly'?'<tr class="skim-groups">'+groups.map(([name,items])=>'<th scope="colgroup" colspan="'+items.length+'"><span>'+esc(name)+'</span></th>').join('')+'</tr>':'';
+    const groups=columns[kind==='annual-issues'?'tracking':kind], cols=groups.flatMap(g=>g[1]);
+    const band=['monthly','yearly'].includes(periodKey)?'<tr class="skim-groups">'+groups.map(([name,items])=>'<th scope="colgroup" colspan="'+items.length+'"><span>'+esc(name)+'</span></th>').join('')+'</tr>':'';
     scroll.innerHTML='<table class="skim"><thead>'+band+'<tr>'+cols.map(([label])=>'<th scope="col">'+esc(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([,i])=>'<td>'+esc(r.values[i]===''?'—':r.values[i])+'</td>').join('')+'</tr>').join('')+(!rows.length?'<tr><td colspan="'+cols.length+'">此期间没有记录</td></tr>':'')+'</tbody></table>';
   }
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;
-  if(rows.length)setTimeout(async()=>{
+  if(periodKey!=='yearly'&&rows.length)setTimeout(async()=>{
     const cfg=periods[periodKey];
     for(const key of [kind,...Object.keys(cfg.templates).filter(k=>k!==kind)]){
       if(ticket!==requestId||!host.isConnected||document.hidden||!section.closest('.page.active')||dialog.open)return;
@@ -267,10 +278,10 @@ async function closeBook(){
   grid.activeElement?.blur();
   if(exporting||!await flush())return;
   ++bookRequest;dialog.close();bookQuery='';
-  const tab=byId('template-'+period+'-'+selected[period]);
+  const tab=period==='yearly'?byId(selected.yearly==='annual-stats'?'qstats-summary-tab':'qstats-tracking-tab'):byId('template-'+period+'-'+selected[period]);
   if(tab&&tab.getAttribute('aria-selected')!=='true')tab.click();
-  else await reload?.();
-  (byId('page-'+period)?.querySelector('.wb-open')||opener)?.focus();
+  else if(period!=='yearly')await reload?.();
+  (byId('page-'+(period==='yearly'?'analysis':period))?.querySelector('.wb-open')||opener)?.focus();
 }
 window.addEventListener('beforeunload',e=>{if(changes.size){e.preventDefault();e.returnValue='';}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&changes.size)flush();});
@@ -284,14 +295,17 @@ byId('wb-export').onclick=async()=>{
   const link=document.createElement('a');
   try{
     statusText.textContent='正在生成 Excel…';
-    if(kind==='daily'){
-      const response=await fetch('api/daily-report/export?'+new URLSearchParams({date,customer,revision:book.sourceRevision}));
+    if(kind==='daily'||kind==='annual-stats'){
+      const annual=kind==='annual-stats';
+      const filters=annual?{year:date.slice(0,4),result:scope.get('result')}:{date};
+      const endpoint=annual?'approved-statistics/report/excel':'daily-report/export';
+      const response=await fetch('api/'+endpoint+'?'+new URLSearchParams({...filters,customer,revision:book.sourceRevision}));
       if(!response.ok)throw Error('导出失败，请刷新报告后重试');
-      link.href=URL.createObjectURL(await response.blob());link.download='每日验货情况统计表_'+date+'.xlsx';
+      link.href=URL.createObjectURL(await response.blob());link.download=annual?'华兴'+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
       setTimeout(()=>URL.revokeObjectURL(link.href),30000);
     }else{
-      const issue=kind==='issues';
-      const payload={date,customer,sourceRevision:book.sourceRevision,...(issue?{period:'weekly',photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
+      const issue=kind==='issues'||kind==='annual-issues';
+      const payload={date,customer,sourceRevision:book.sourceRevision,...(issue?{period,photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
       const result=await api((issue?'issue-reports':period+'-templates')+'/excel','',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       if(!/^api\/(weekly|monthly)-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
       link.href=result.url;link.download=result.filename;

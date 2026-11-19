@@ -183,10 +183,13 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
         from app.services.qc_report_workbook import preview
         params = request.query_params
-        if set(params) != {'kind','day','customer'} or any(len(params.getlist(k)) != 1 for k in params):
+        expected = {'kind', 'day', 'customer'}
+        if params.get('kind') == 'annual-stats':
+            expected.add('result')
+        if set(params) != expected or any(len(params.getlist(k)) != 1 for k in params):
             raise HTTPException(422, '工作簿预览参数不正确')
         result = await run_in_threadpool(preview, factory_id, params['kind'], params['day'], params['customer'],
-                                         can(user, 'qc_inspection:result_write', factory_id, 'qc'))
+                                         can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
         return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
@@ -215,6 +218,25 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return await monthly_templates_request(asset_path, request, db, user, factory_id)
     if asset_path in {"api/weekly-templates", "api/weekly-templates/save", "api/weekly-templates/excel"} or asset_path.startswith('api/weekly-templates/excel/'):
         return await weekly_templates_request(asset_path, request, db, user, factory_id)
+    if asset_path == "api/approved-statistics/report/excel":
+        if request.method != "GET":
+            raise HTTPException(405, "年报只支持下载")
+        if factory_id != "huaxing":
+            raise HTTPException(404, "该厂区未配置此模板")
+        _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
+        args = dict(request.query_params)
+        if (set(args) != {"year", "customer", "result", "revision"} or not args["year"]
+                or any(len(request.query_params.getlist(k)) != 1 for k in args)):
+            raise HTTPException(422, "年报导出参数不正确")
+        revision = args.pop("revision")
+        report = await run_in_threadpool(qc_approved_statistics.report, factory_id, args, all_detail_rows=True)
+        if report["revision"] != revision or not report["totals"]["total"]:
+            raise HTTPException(409, "年报数据已变化或为空，请刷新后导出")
+        from app.services.qc_annual_excel import workbook
+        content = await run_in_threadpool(workbook, report)
+        name = quote(f"华兴{args['year']}年验货统计表.xlsx", safe="")
+        return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
+            "Content-Disposition": "attachment; filename=QC-annual.xlsx; filename*=UTF-8''" + name})
     stats_handlers = {
         "api/approved-statistics": qc_approved_statistics.query,
         "api/approved-statistics/report": qc_approved_statistics.report,

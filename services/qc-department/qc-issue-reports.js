@@ -47,6 +47,11 @@
       if(!data)return;
       q('h2').textContent=data.title;q('[data-period]').textContent=data.dateFrom+' 至 '+data.dateTo+(period==='weekly'?'（周一至周日）':'')+' · '+data.total+' 条已审核记录';
       const rows=data.tables.issues.slice(page*30,(page+1)*30);
+      q('[data-page]').textContent=data.total+' 条 · '+(page+1)+' / '+Math.max(1,Math.ceil(data.total/30));
+      q('[data-prev]').disabled=page===0;q('[data-next]').disabled=(page+1)*30>=data.total;
+      q('footer').hidden=data.total<=30;
+      q('[data-export]').disabled=busy||!data.canExport||!data.total;
+      if(inline&&period==='yearly'&&root.QcReportWorkbook?.mount('yearly','annual-issues',q('[data-table]'),{rows},load))return;
       const {headers,widths,groups}=data;
       const band=groups.map(([count,label])=>'<th scope="colgroup" colspan="'+count+'"><span>'+esc(label)+'</span></th>').join('');
       const photos=r=>'<div class="qir-photos qmt-photos">'+r.photos.map(p=>'<button class="qir-photo qmt-photo" data-src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" aria-label="查看'+esc(p.name)+'"><img loading="lazy" src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" alt="'+esc(p.name)+'"></button>').join('')+'</div>';
@@ -57,10 +62,6 @@
         modal.querySelector('button').onclick=()=>modal.close();modal.onclose=()=>{modal.remove();if(photoDialog===modal)photoDialog=null;};doc.body.append(modal);modal.showModal();
       });
       el.querySelectorAll('.qir-photos img').forEach(img=>img.onerror=()=>{img.alt='照片加载失败，点击重试查看';});
-      q('[data-page]').textContent=data.total+' 条 · '+(page+1)+' / '+Math.max(1,Math.ceil(data.total/30));
-      q('[data-prev]').disabled=page===0;q('[data-next]').disabled=(page+1)*30>=data.total;
-      q('footer').hidden=data.total<=30;
-      q('[data-export]').disabled=busy||!data.canExport||!data.total;
     }
     async function load(first=false){
       if(busy)return;const token=++generation;data=null;q('[data-export]').disabled=true;status.textContent='正在读取…';status.className='';q('[data-table]').innerHTML='';q('[data-page]').textContent='';q('[data-prev]').disabled=true;q('[data-next]').disabled=true;
