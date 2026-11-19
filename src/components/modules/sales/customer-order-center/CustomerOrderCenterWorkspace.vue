@@ -822,6 +822,7 @@ const resolvedIssueKeys = computed(() => [...new Set([
 const skippedIssueCount = computed(() => resolvedIssueKeys.value.length)
 const confirmationReasonInvalid = computed(() => confirmationReason.value.trim().length > 500)
 const canReconcilePreview = computed(() => Boolean(
+  !previewBatch.value?.rows.some(row => row.document_kind === 'cancellation') &&
   previewBatch.value
   && previewBatch.value.rows.length === 1
   && sourceKind.value === 'formal',

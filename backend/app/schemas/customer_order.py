@@ -31,6 +31,13 @@ class CustomerOrderLineOut(BaseModel):
     product_no: str
     shipping_item: str = ""
     reference_no: str = ""
+    confirmation_no: str = ""
+    source_line_no: str = ""
+    document_kind: str = ""
+    cancellation_evidence: str = ""
+    caixing_mix_no: str = ""
+    source_unit_price_hkd: str = ""
+    price_factor: str = ""
     source_product_no: str = ""
     source_order_date: str = ""
     edu_reservation_row: str = ""

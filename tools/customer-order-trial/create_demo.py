@@ -9,7 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def build(destination, factory, green_toys_only=False):
+def build(destination, factory, green_toys_only=False, huaxing_customer=None):
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(destination.parent / 'backend'))
@@ -47,6 +47,27 @@ def build(destination, factory, green_toys_only=False):
         customer = 'Goliath'
         files = [('DEMO_Goliath.pdf', fixture['po']())]
         content, rows = fixture['template'](), 1
+    elif factory == 'huaxing' and huaxing_customer:
+        from reportlab.pdfgen import canvas
+        template = fixtures('test_customer_order_huaxing_unified.py', {'template', 'data'}, mapping=hx_mapping)
+        content = template['data'](template['template'](huaxing_customer))
+        if huaxing_customer == 'edu':
+            fixture = fixtures('test_customer_order_edu_pdf.py', {'page'})
+            pages, customer, rows = [fixture['page']()], 'EDU', 1
+        elif huaxing_customer == 'dickie':
+            fixture = fixtures('test_customer_order_dickie.py', {'STANDARD_PAGES'})
+            pages, customer, rows = fixture['STANDARD_PAGES'], 'Dickie', 1
+        else:
+            fixture = fixtures('test_customer_order_caixing.py', {'PLAYMATES_PO_TEXT'})
+            pages, customer, rows = [fixture['PLAYMATES_PO_TEXT']], '彩星', 2
+        stream = BytesIO()
+        doc = canvas.Canvas(stream, pagesize=(1000,1200))
+        for page in pages:
+            doc.setFont('Helvetica', 9)
+            for i,line in enumerate(page.splitlines()): doc.drawString(25,1160-i*14,line)
+            doc.showPage()
+        doc.save()
+        files = [(f'DEMO_{huaxing_customer}.pdf',stream.getvalue())]
     else:
         template = fixtures('test_customer_order_huaxing_unified.py', {'template', 'data'}, mapping=hx_mapping)
         fixture = fixtures('test_customer_order_disney_factory.py', {'disney_po', 'arguments'},
@@ -103,5 +124,6 @@ if __name__ == '__main__':
     parser.add_argument('destination', type=Path)
     parser.add_argument('--factory', required=True, choices=['huakang-a', 'huakang-d', 'huaxing', 'huadeng'])
     parser.add_argument('--green-toys-only', action='store_true')
+    parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie'])
     args = parser.parse_args()
-    build(args.destination, args.factory, args.green_toys_only)
+    build(args.destination, args.factory, args.green_toys_only, args.huaxing_customer)

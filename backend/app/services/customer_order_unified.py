@@ -170,7 +170,7 @@ def ensure_unified_schedule(
         raise CustomerOrderUnifiedError("客户排期必须使用 .xlsx 格式的《河源业务统一排期》")
     if len(schedule_content) > MAX_SCHEDULE_BYTES:
         raise CustomerOrderUnifiedError("客户排期超过 35MB 限制")
-    workbook = _load_workbook(schedule_content)
+    workbook = _load_workbook(schedule_content, read_only=factory_id == 'huadeng' and customer_code in {'jakks','goliath','casdon','spin','simba'})
     try:
         if factory_id == 'huaxing' and customer_code == 'yinhui':
             from .customer_order_yinhui_unified import validate
@@ -189,10 +189,10 @@ def ensure_unified_schedule(
         }
         for sheet_name, expected in expected_by_sheet.items():
             worksheet = workbook[sheet_name]
-            actual = tuple(
-                _normalized_header(worksheet.cell(3, column).value)
-                for column in range(1, len(expected) + 1)
-            )
+            from .customer_order_jakks_unified import header_row
+            header = header_row(worksheet) if (factory_id, customer_code) == ('huadeng', 'jakks') else 3
+            actual = tuple(_normalized_header(value) for value in next(worksheet.iter_rows(
+                min_row=header, max_row=header, max_col=len(expected), values_only=True)))
             normalized_expected = tuple(_normalized_header(value) for value in expected)
             if actual != normalized_expected:
                 first = next(
@@ -204,7 +204,7 @@ def ensure_unified_schedule(
                     1,
                 )
                 raise CustomerOrderUnifiedError(
-                    f"{sheet_name} 第3行公共字段不匹配（第{first}列应为“{expected[first - 1]}”）"
+                    f"{sheet_name} 第{header}行公共字段不匹配（第{first}列应为“{expected[first - 1]}”）"
                 )
     finally:
         workbook.close()
@@ -223,16 +223,16 @@ def is_unified_schedule(schedule_content: bytes) -> bool:
 
 def _marker_row(worksheet) -> int:
     candidates = [row for (row, _), cell in worksheet._cells.items()
-                  if row >= 4 and "取消单" in _text(cell.value)]
+                  if row >= 4 and cell.column == 1 and _text(cell.value) == "取消单"]
     if candidates:
         return min(candidates)
     raise CustomerOrderUnifiedError(f"{worksheet.title} 未找到“取消单”边界")
 
 
 def read_unified_history(
-    schedule_content: bytes, *, factory_id: str = "", customer_code: str = "",
+    schedule_content: bytes, *, factory_id: str = "", customer_code: str = "", _workbook=None,
 ) -> list[UnifiedHistoryRow]:
-    workbook = _load_workbook(schedule_content)
+    workbook = _workbook if _workbook is not None else _load_workbook(schedule_content)
     try:
         if huaxing.enabled(factory_id, customer_code):
             return huaxing.read_history(workbook, customer_code)
@@ -240,6 +240,8 @@ def read_unified_history(
         regional_mapping = regional.enabled(factory_id, customer_code)
         item_sheet = workbook[ITEM_SHEET]
         order_sheet = workbook[ORDER_SHEET]
+        from .customer_order_jakks_unified import header_row
+        header = header_row(item_sheet) if (factory_id, customer_code) == ('huadeng', 'jakks') else 3
         marker = _marker_row(item_sheet)
         price_by_key: dict[tuple[str, str], str] = {}
         for row in range(4, _marker_row(order_sheet)):
@@ -260,11 +262,12 @@ def read_unified_history(
                 price_by_key[(reference, product)] = price
 
         history: list[UnifiedHistoryRow] = []
+        from .customer_order_jakks_unified import shipped_evidence
         extra_columns = huakang_unified.extra_columns(item_sheet, customer_code) if huakang else {}
         if regional_mapping:
             extra_columns = regional.extra_columns(item_sheet, factory_id, customer_code)
-        remark_column = next((c.column for c in item_sheet[3] if _normalized_header(c.value) == "备注"), None)
-        for row in range(4, (item_sheet.max_row + 1) if huakang or regional_mapping else marker):
+        remark_column = next((c.column for c in item_sheet._cells.values() if c.row == header and _normalized_header(c.value) == "备注"), None)
+        for row in range(header + 1, (item_sheet.max_row + 1) if huakang or regional_mapping else marker):
             remark = _text(item_sheet.cell(row, remark_column).value) if remark_column else ""
             if "模拟数据" in remark:
                 continue
@@ -300,19 +303,21 @@ def read_unified_history(
                 packaging=_text(item_sheet.cell(row, 20).value),
                 date_code=_text(item_sheet.cell(row, 21).value) or (
                     _text(item_sheet.cell(row, 29).value)
-                    if _normalized_header(item_sheet.cell(3, 29).value) == "日期码" else ""
+                    if _normalized_header(item_sheet.cell(header, 29).value) == "日期码" else ""
                 ),
                 requested_ship_date=_text(item_sheet.cell(row, 26).value),
                 unit_price_hkd=price_by_key.get((_key(reference), _key(product)), ""),
                 extras={
-                    field: _text(item_sheet.cell(row, column).value)
+                    **({'shipped_evidence': shipped_evidence(item_sheet, row, header)} if (factory_id, customer_code) == ('huadeng', 'jakks') else {}),
+                    **{field: _text(item_sheet.cell(row, column).value)
                     for field, column in {**extra_columns, **({"manual": 15} if huakang and customer_code == "360" else {})}.items()
-                    if item_sheet.cell(row, column).data_type != "f"
+                    if item_sheet.cell(row, column).data_type != "f"}
                 },
             ))
         return history
     finally:
-        workbook.close()
+        if _workbook is None:
+            workbook.close()
 
 
 def _unique_history_value(
@@ -472,6 +477,13 @@ def _enrich_row(
         if identity[0] and identity[1]
         and _order_identity(row, item.reference_no, item.product_no) == identity
     ]
+    if row.get('_huaxing_customer') == 'caixing':
+        matches = [h for h in matches if _key(h.po_no) == _key(row.get('po_no'))]
+        if row.get('caixing_mix_no'):
+            if any(not h.extras.get('caixing_mix_no') for h in matches):
+                row['issues'].append(_issue('warning', 'caixing_legacy_mix_unknown', 'caixing_mix_no',
+                    '历史有同SO、PO及子货号但未记录MIX编号；本次保留各组明细，请核对是否已录入，未自动合并历史。'))
+            matches = [h for h in matches if _key(h.extras.get('caixing_mix_no')) == _key(row['caixing_mix_no'])]
     if row.get('_huaxing_customer') == 'edu':
         matches = huaxing.edu_history_matches(row, [item for item in history if _key(item.product_no) == _key(product_no)])
     if matches and not any(
@@ -500,6 +512,8 @@ def _enrich_row(
 
 
 def _order_identity(row, reference, product):
+    if row.get('_huaxing_customer') == 'caixing':
+        return _key(reference), _key(row.get('po_no')), _key(row.get('caixing_mix_no')), _key(product)
     if row.get('_zuru_customer'):
         from .zuru_original import key
         return key(reference), key(product)
@@ -660,22 +674,30 @@ def _parse_special_rows(
         from app.services import customer_order_caixing as service
 
         class UnifiedMatrix:
+            unified = True
             @staticmethod
             def matrix_columns_for(_product_no: str) -> tuple[str, str]:
                 return "", ""
 
+        from .customer_order_caixing_unified import prepare
         rows = []
         for file_name, content in po_files:
-            for parsed in service.parse_caixing_pdf(file_name, content):
-                rows.append(service._preview_row(
-                    parsed,
-                    file_name=file_name,
-                    row_index=len(rows) + 1,
-                    received_date=received_date,
-                    schedule=UnifiedMatrix(),
-                    existing=set(),
-                ))
-        return rows, ["彩星套装仅写入小货号明细，避免大货号汇总与明细重复计数。"], service.INPUT_TEMPLATE
+            parsed_lines = service.parse_caixing_pdf(file_name, content)
+            shown = set()
+            for parsed in parsed_lines:
+                if parsed.mix_no and parsed.group_id not in shown:
+                    shown.add(parsed.group_id)
+                    parent = service._parent_preview_row(parsed, file_name=file_name,
+                        row_index=len(rows)+1, received_date=received_date)
+                    parent.update(product_no=parsed.mix_no, caixing_mix_no=parsed.mix_no,
+                        reference_no=parsed.contract_no, contract_no='', item_sheet_name=ITEM_SHEET,
+                        _huaxing_customer='caixing', quantity='', units_per_carton='', carton_count='',
+                        order_type='混装组头', issues=[])
+                    rows.append(parent)
+                row = service._preview_row(parsed, file_name=file_name, row_index=len(rows)+1,
+                    received_date=received_date, schedule=UnifiedMatrix(), existing=set())
+                rows.append(prepare(row, parsed))
+        return rows, ['混装按原单MIX编号分组；蓝底组头不计数量及金额，小货号明细独立计入。'], service.INPUT_TEMPLATE
 
     raise CustomerOrderUnifiedError(f"不支持的客户映射：{customer_code}")
 
@@ -911,6 +933,14 @@ def _parse_huadeng_rows(
             for line in order.get("lines", []):
                 values = schedule_module._compose_row(order, line, index)
                 record = service._legacy_row_record(customer_code, order, line, values)
+                # Preserve source currency/precision before legacy conversion.
+                record['_source_currency'] = str(line.get('currency') or 'USD').upper()
+                record['_source_unit_price'] = line.get('unit_price') if line.get('price_identified', True) else None
+                record['_source_amount'] = line.get('total_usd') if line.get('amount_identified', True) else None
+                if not is_casdon and 'price_per' in line:
+                    price, per = _number(line.get('price_per')), _number(line.get('price_per_qty'))
+                    record['_source_unit_price'] = price / per if price is not None and per is not None and per > 0 and line.get('price_identified', True) and line.get('price_basis_identified', True) else None
+                    record['_source_amount'] = line.get('net_value_pdf') if line.get('price_identified', True) else None
                 if not is_casdon:
                     record['unified_reference'] = values.get(schedule_module.COL['item'])
                     record['material_group'] = line.get('material_group')
@@ -939,13 +969,10 @@ def _parse_huadeng_rows(
         with TemporaryDirectory(prefix="huadeng-unified-jakks-") as temp_dir:
             root = Path(temp_dir)
             for number, (file_name, content) in enumerate(po_files, start=1):
-                if re.search(r"(?:^|[-_])CXL(?:[-_]|$)", Path(file_name).stem, re.I):
-                    warnings.append(f"{file_name}：文件名含 CXL，按取消单拦截。")
-                    continue
                 po_path = root / f"{number:03d}_{Path(file_name).name}"
                 po_path.write_bytes(content)
                 try:
-                    order = jakks_po_parser.parse_po(po_path)
+                    order = jakks_po_parser.parse_po(po_path, allow_cancellation=True)
                 except Exception as exc:
                     warnings.append(f"{file_name}：{exc}")
                     continue
@@ -954,7 +981,7 @@ def _parse_huadeng_rows(
                 parsed_orders.append(order)
         seen_exact: set[tuple[str, ...]] = set()
         seen_business: set[tuple[str, ...]] = set()
-        for order in parsed_orders:
+        for order in sorted(parsed_orders, key=lambda o: o.get('document_kind') == 'supplementary_contract'):
             warnings.extend(f"{order.get('filename')}：{message}" for message in order.get("warnings", []))
             for raw_line in order.get("lines", []):
                 line = dict(raw_line)
@@ -995,6 +1022,13 @@ def _parse_huadeng_rows(
             warnings.extend(f"{file_name}：{message}" for message in parsed.get("warnings", []))
             for source in parsed.get("rows", []):
                 record = dict(source)
+                currency = str(record.get('currency') or ('USD' if record.get('unit_price_usd') is not None or record.get('total_usd') is not None else 'HKD')).upper()
+                record['_source_currency'] = currency
+                record['_source_unit_price'] = record.get('unit_price_usd' if currency == 'USD' else 'unit_price_hkd')
+                record['_source_amount'] = record.get('total_usd' if currency == 'USD' else 'total_hkd')
+                if currency in {'USD','HKD'} and record.get('unit_price_usd') not in (None,'') and record.get('unit_price_hkd') not in (None,''):
+                    record['_source_currency'] = 'BOTH'
+                    record['_source_prices'] = {k:record.get(k) for k in ('unit_price_usd','total_usd','unit_price_hkd','total_hkd')}
                 for field_name in ("outer_length_cm", "outer_width_cm", "outer_height_cm"):
                     record.pop(field_name, None)
                 record["english_name"] = service._simba_first_english_sentence(record.get("english_name"))
@@ -1343,9 +1377,17 @@ def create_unified_customer_preview(
                 prepare_shipping_item(row, history, shipping_map)
         elif regional.enabled(factory_id, customer_code):
             regional.enrich(row, history, factory_id, customer_code)
+            if (factory_id, customer_code) == ('huadeng', 'jakks'):
+                from .customer_order_jakks_unified import describe_history
+                describe_history(row, history)
         if customer_code == 'ubtech':
             from app.services.customer_order_ubtech import finish_row
             finish_row(row)
+    if factory_id == 'huadeng' and customer_code in {'jakks', 'goliath', 'casdon', 'spin', 'simba'}:
+        from .customer_order_huadeng_usd import apply_preview
+        book = _load_workbook(schedule_content, read_only=True)
+        try: apply_preview(book, detail_rows)
+        finally: book.close()
     for row in rows:
         mark_pending_information(row)
         _refresh_status(row)
@@ -1410,7 +1452,7 @@ def create_unified_customer_preview(
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
     preview = {
-        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else ''),
+        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-huadeng-source-price-v1' if factory_id == 'huadeng' else '') + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else '-caixing-mix-price-v1' if factory_id == 'huaxing' and customer_code == 'caixing' else '-jakks-source-line-cancel-v2' if factory_id == 'huadeng' and customer_code == 'jakks' else ''),
         "customer_code": customer_code,
         "factory_id": factory_id,
         "po_file_name": file_names[0] if len(file_names) == 1 else f"{len(file_names)}个文件",
@@ -1429,7 +1471,7 @@ def create_unified_customer_preview(
             "warning": sum(row["status"] == "warning" for row in detail_rows),
             "blocked": sum(row["status"] == "blocked" for row in detail_rows),
         },
-        "rows": detail_rows,
+        "rows": rows if customer_code == "caixing" else detail_rows,
         "warnings": warnings,
     }
     return decorate_manual_resolution_policy(preview)
@@ -1439,8 +1481,10 @@ def _copy_template_row(worksheet, source_row: int, target_row: int) -> None:
     from app.services.customer_order_360_manual_column import manual_value_columns
     manual_columns = manual_value_columns(worksheet)
     worksheet.row_dimensions[target_row].height = worksheet.row_dimensions[source_row].height
-    for column in range(1, worksheet.max_column + 1):
-        source = worksheet.cell(source_row, column)
+    for source in list(worksheet._cells.values()):
+        if source.row != source_row:
+            continue
+        column = source.column
         target = worksheet.cell(target_row, column)
         if source.has_style:
             target._style = copy(source._style)
@@ -1606,7 +1650,8 @@ def _write_summary_row(worksheet, row_number: int, row: dict[str, Any], *, item_
         # reserved rows already contain #REF!, so bind only new summary rows.
         linked = {1: 1, 2: 2, 8: 9, 9: 10, 10: 11, 11: 12, 12: 13, 13: 14, 18: 25, 19: 26}
         if item_sheet is not None and _normalized_header(worksheet.cell(3, 20).value) == '备注':
-            remarks = [c.column for c in item_sheet[3] if _normalized_header(c.value) == '备注']
+            from .customer_order_jakks_unified import header_row
+            remarks = [c.column for c in item_sheet._cells.values() if c.row == header_row(item_sheet) and _normalized_header(c.value) == '备注']
             if len(remarks) == 1:
                 linked[20] = remarks[0]
         for summary_column, item_column in linked.items():
@@ -1614,19 +1659,11 @@ def _write_summary_row(worksheet, row_number: int, row: dict[str, Any], *, item_
             ref = f"'{item_name}'!{get_column_letter(item_column)}{item_row}"
             worksheet.cell(row_number, summary_column).value = f'=IF(LEN({ref})=0,"",{ref})'
         _fit_generated_text(worksheet, row_number, {c: item_sheet.cell(item_row, ic).value for c, ic in linked.items()} if item_sheet is not None else None)
-        if row.get('_regional_customer') == 'goliath' and _number(row.get('unit_price_usd')) is None:
-            for column in (14, 15, 16):
-                worksheet.cell(row_number, column).value = None
-            # The PO's explicit USD amount remains evidence even with no unit price.
-            worksheet.cell(row_number, 17).value = _excel_value(_number(row.get('amount_usd')))
-        if row.get('_regional_customer') == 'goliath' and _number(row.get('unit_price_usd')) is not None:
-            worksheet.cell(row_number, 16).value = _excel_value(_number(row['unit_price_usd']))
-            worksheet.cell(row_number, 14).value = f'=P{row_number}*7.75'
-            worksheet.cell(row_number, 15).value = f'=J{row_number}*N{row_number}'
-            worksheet.cell(row_number, 17).value = f'=J{row_number}*P{row_number}'
 
 
 def _recalculate_preview_row(row: dict[str, Any]) -> None:
+    from .customer_order_caixing_unified import recalculate
+    recalculate(row)
     regional.recalculate_dates(row, row.get('_regional_manual_fields', []))
     if not _text(row.get("reference_no")):
         row["reference_no"] = _text(row.get("contract_no")) or _text(row.get("po_no"))
@@ -1727,10 +1764,13 @@ def export_unified_customer_schedule(
     original_core = {row['id']: (*original_identities[row['id']], _text(row.get('quantity'))) for row in preview['rows']}
     original_zuru = {row['id']: (_text(row.get('product_no')), _text(row.get('customer_name'))) for row in preview['rows']}
     apply_overrides_to_preview(preview, manual_overrides or [])
+    if customer_code == 'caixing':
+        for row in preview['rows']:
+            row['_caixing_manual_price'] = any(o['row_id'] == row['id'] and o['field'] == 'unit_price_hkd' for o in manual_overrides or [])
     if factory_id == 'huadeng':
         for row in preview['rows']:
             row['_regional_manual_fields'] = [o['field'] for o in manual_overrides or [] if o['row_id'] == row['id']]
-    if customer_code == 'zuru':
+    if customer_code == 'zuru' or (factory_id == 'huadeng' and customer_code in {'jakks','goliath','casdon','spin','simba'}):
         for override in manual_overrides or []:
             if override['field'] == 'unit_price_usd':
                 row = next((r for r in preview['rows'] if r['id'] == override['row_id']), None)
@@ -1798,7 +1838,23 @@ def export_unified_customer_schedule(
 
     workbook = _load_workbook(schedule_content)
     try:
-        rows = [row for row in preview["rows"] if row.get("row_role") != "parent"]
+        rows = [row for row in preview["rows"] if row.get("row_role") != "parent" or customer_code == "caixing"]
+        if factory_id == 'huadeng' and customer_code in {'jakks','goliath','casdon','spin','simba'}:
+            from .customer_order_huadeng_usd import apply_preview
+            apply_preview(workbook, rows)
+        if (factory_id, customer_code) == ('huadeng', 'jakks'):
+            from .customer_order_jakks_unified import existing_rows
+            history = read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code, _workbook=workbook)
+            cancellations = [row for row in rows if row.get('document_kind') == 'cancellation']
+            from .customer_order_jakks_unified import export_cancellations
+            export_cancellations(workbook, cancellations, history, preview['warnings'])
+            rows = [row for row in rows if row not in cancellations]
+            from .customer_order_jakks_unified import upgrade_supplements
+            upgrade_supplements(workbook, rows, history, preview['warnings'])
+            repeats = [row for row in rows if existing_rows(row, history)]
+            if repeats:
+                preview['warnings'].append(f'Jakks 排期已有 {len(repeats)} 条相同批次、合同、PO、完整货号、数量及货期；本次未重复追加，原记录与走货资料保留。')
+                rows = [row for row in rows if row not in repeats]
         if huaxing.enabled(factory_id, customer_code):
             huaxing.export_rows(workbook, rows)
         elif huakang_unified.enabled(factory_id, customer_code) or regional.enabled(factory_id, customer_code):
@@ -1858,7 +1914,12 @@ def export_unified_customer_schedule(
                     if customer_code == 'ubtech':
                         from app.services.customer_order_ubtech import write_summary
                         write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])
-                if (factory_id, customer_code) == ('huadeng', 'casdon'):
+                if factory_id == 'huadeng' and row.get('_huadeng_source_currency'):
+                    from .customer_order_huadeng_usd import write_prices
+                    write_prices(workbook,row,slots_by_sheet[ORDER_SHEET][summary_index],slots_by_sheet[REVIEW_SHEET][summary_index])
+                if (factory_id, customer_code) == ('huadeng', 'casdon') and row.get('_huadeng_source_currency'):
+                    casdon.link_money(workbook, row_number, slots_by_sheet[ORDER_SHEET][summary_index])
+                elif (factory_id, customer_code) == ('huadeng', 'casdon'):
                     casdon.write_prices(workbook, row, row_number,
                         slots_by_sheet[ORDER_SHEET][summary_index], slots_by_sheet[REVIEW_SHEET][summary_index])
                 if not recovered_rows[index]:

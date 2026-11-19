@@ -121,6 +121,7 @@ def test_small_delivery_has_no_pyc_and_honest_source_hashes(tmp_path, monkeypatc
     tool.mkdir(parents=True)
     (source / "build/web").mkdir(parents=True)
     (source / "build/web/index.html").write_text("<html>synthetic</html>")
+    (source / "build/web/source-manifest.json").write_text(json.dumps({"sources": [], "contracts": []}))
     (tool / "launch.py").write_text("# synthetic launcher")
     (tool / "requirements-windows.txt").write_text("demo==1.0\n")
     (tool / "runtime-sources.json").write_text("{}")
