@@ -281,7 +281,9 @@ def package_reference_seed(package: Path, schedule: Path, price: Path):
 
 
 def build(cache: Path, output: Path, selected, release_date: str | None = None,
-        jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False):
+        jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False, huaxing_customer: str | None = None):
+    if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie'}):
+        raise ValueError('华兴专客包需指定华兴及一个支持客户')
     if green_toys_only and selected != ['huakang-a']:
         raise ValueError('Green Toys专用包必须只选择华康A。')
     seeded = jp_schedule is not None or jp_price is not None
@@ -301,6 +303,9 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             zip_name, folder, name, customers = FACTORIES[factory]
             if green_toys_only:
                 zip_name, folder, customers = '01_华康A_GreenToys_订单入排期', 'HuakangA_GreenToys_Trial', 'Green Toys'
+            if huaxing_customer:
+                customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
+                zip_name, folder = f'05_华兴_{customers}_订单入排期', f'Huaxing_{huaxing_customer}_Trial'
             kind = 'jp' if factory == 'huakang-b' else 'orders'
             source = ROOT / 'tools' / ('huakang-b-jp-trial' if kind == 'jp' else 'customer-order-trial')
             package = staging / folder
@@ -318,9 +323,19 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                     'schedule.xlsx为排期，price.xlsx为货价；原始文件名及校验见manifest.json。\n'
                     '本包包含指定的业务参照，请交给相应华康B试用人员。\n'
                     f'校验记录数：排期{stats["schedule"]["rows"]}，货价{stats["price"]["rows"]}。\n', encoding='utf-8-sig')
-            web = source / 'build' / ('web-green-toys' if green_toys_only else 'web')
+            web = source / 'build' / ('web-huaxing-recent' if huaxing_customer else 'web-green-toys' if green_toys_only else 'web-huadeng' if factory == 'huadeng' else 'web')
             if not (web / 'index.html').is_file():
                 raise RuntimeError(f'Missing built frontend: {web}')
+            frontend_manifest = json.loads((web / 'source-manifest.json').read_text(encoding='utf-8'))
+            if green_toys_only or huaxing_customer or factory == 'huadeng':
+                expected_mode = 'huaxing-recent' if huaxing_customer else 'green-toys' if green_toys_only else 'huadeng'
+                expected_entry = 'src/huaxingTrialMain.ts' if huaxing_customer else 'src/greenToysMain.ts' if green_toys_only else 'src/huadengMain.ts'
+                if (frontend_manifest.get('build_mode') != expected_mode or frontend_manifest.get('entry') != expected_entry
+                        or not all(frontend_manifest.get(k) for k in ('sources', 'contracts', 'local_sources'))):
+                    raise RuntimeError('Missing or incorrect standalone frontend manifest; rebuild the selected mode')
+            for entry in frontend_manifest.get('sources', []) + frontend_manifest.get('contracts', []) + frontend_manifest.get('local_sources', []):
+                if sha256((ROOT / entry['path']).read_bytes()).hexdigest() != entry['sha256']:
+                    raise RuntimeError(f'Stale frontend source: {entry["path"]}; rebuild before packaging')
             copy_tree(web, package / 'web')
             copy_tree(shared_runtime, package / 'runtime')
             shutil.copyfile(TOOL / 'launch.py', package / 'launch.py')
@@ -329,6 +344,11 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if green_toys_only:
                 instructions = instructions.replace(FACTORIES[factory][3], 'Green Toys')
                 instructions += '\n本包直接复用GitHub订单中心导入/预览页面和外框样式，只开放Green Toys。\n货期可留空直接生成，后续在Excel手动填写。请勿混入其他客户的data目录。\n'
+            if huaxing_customer:
+                instructions = instructions.replace(FACTORIES[factory][3], customers)
+                instructions += f'\n本包仅开放华兴{customers}，直接复用GitHub订单中心页面；请使用该客户自己的排期。\n'
+            if factory == 'huadeng':
+                instructions += '\n本包直接复用GitHub订单中心导入、预览、台账和排期页面，开放华登五客；资料提醒不要求填写放行原因。\nJakks原单Line#区分分批，完全相同历史批次不重复追加。取消通知保留原始数量证据，订单类型标为取消单。\n'
             if has_seed:
                 instructions = instructions.replace('请负责人先完成演示资料流程，再用真实样本逐项核对金额、数量、交期和版式。',
                     '本包已预置参照，可直接导入真实邮件。演示操作请在另一个解压副本中进行，不要把演示数据迁入日常工作副本。')
@@ -336,7 +356,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             (package / 'trial.json').write_text(json.dumps({'kind': kind, 'factory_id': factory,
                 'name': f'{name}问单本地试用' if kind == 'jp' else f'{name}订单排期本地试用',
                 'release': release, 'source_commit': source_commit, 'reference_seed': has_seed,
-                **({'customer_codes': ['green-toys']} if green_toys_only else {}),
+                **({'customer_codes': [huaxing_customer]} if huaxing_customer else {'customer_codes': ['green-toys']} if green_toys_only else {}),
                 'source_commit_role': 'Base checkout; see BUILD-SOURCES.json for exact uncommitted build inputs.'}, ensure_ascii=False, indent=2), encoding='utf-8')
             if kind == 'orders':
                 ocr = package / 'ocr'
@@ -359,6 +379,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                 command = [sys.executable, '-B', str(demo_script), str(package / '演示资料')]
                 if kind == 'orders':
                     command += ['--factory', factory]
+                    if huaxing_customer:
+                        command += ['--huaxing-customer', huaxing_customer]
                     if green_toys_only:
                         command += ['--green-toys-only']
                 subprocess.run(command, check=True)
@@ -397,6 +419,9 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             filename, _, name, customers = FACTORIES[factory]
             if green_toys_only:
                 filename, customers = '01_华康A_GreenToys_订单入排期', 'Green Toys'
+            if huaxing_customer:
+                customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
+                filename = f'05_华兴_{customers}_订单入排期'
             writer.writerow([name, f'{filename}_Windows试用_{stamp}.zip', customers, '', '', '', ''])
     (output / '00_总说明_先看这里.txt').write_text('各厂区订单／排期与华康B问单｜Windows单机试用包\n\n'
         + '本文件夹包含：' + '、'.join(FACTORIES[key][2] for key in selected) + '。\n' +
@@ -416,9 +441,10 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--factory', action='append', choices=FACTORIES)
     parser.add_argument('--release-date', help='Release date YYYY-MM-DD; defaults to the Shanghai calendar date.')
+    parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie'])
     parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
     parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
     parser.add_argument('--green-toys-only', action='store_true', help='Huakang A Green Toys only; reuse the GitHub order workspace frontend.')
     args = parser.parse_args()
     build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date,
-        args.jp_schedule, args.jp_price, args.green_toys_only)
+        args.jp_schedule, args.jp_price, args.green_toys_only, args.huaxing_customer)

@@ -32,7 +32,7 @@ HEADERS = {
     "外箱贴纸": "customer_label", "箱唛": "carton_mark", "布标规格": "fabric_label", "布标格": "fabric_label",
     "包装": "packaging", "日期码": "date_code", "验货日期": "inspection_date",
     "客要求走货期": "requested_ship_date", "备注": "note", "国家": "country", "条码": "barcode",
-    "印刷要求": "printing_requirement", "联系人": "contact",
+    "印刷要求": "printing_requirement", "联系人": "contact", "mix编号": "caixing_mix_no",
 }
 MARKERS = {
     "取消单": "cancelled", "已走货订单": "shipped", "未走货订单": "unshipped",
@@ -108,7 +108,9 @@ def parse_workbook(content: bytes, *, recover_edu_items=False) -> tuple[list[dic
                 f"{sheet.title} 超过迁入范围限制，请整理后重试", 400)
             if row_count < 4 or not column_count:
                 continue
-            header_cells = next(sheet.iter_rows(min_row=3, max_row=3, max_col=column_count))
+            from .customer_order_jakks_unified import header_row
+            header = header_row(sheet)
+            header_cells = next(sheet.iter_rows(min_row=header, max_row=header, max_col=column_count))
             headers = [text(c.value) for c in header_cells]
             fields = [HEADERS.get(key(h)) for h in headers]
             if not all(f in fields for f in ("product_no", "quantity", "reference_no", "po_no")):
@@ -120,10 +122,12 @@ def parse_workbook(content: bytes, *, recover_edu_items=False) -> tuple[list[dic
             source_items = _source_item_comments(formulas, sheet) if recover_edu_items else {}
             section = "unshipped"
             found_markers = []
-            for r, (cells, caches) in enumerate(zip(sheet.iter_rows(min_row=4, max_row=row_count, max_col=column_count),
-                    values[sheet.title].iter_rows(min_row=4, max_row=row_count, max_col=column_count)), 4):
+            for r, (cells, caches) in enumerate(zip(sheet.iter_rows(min_row=header + 1, max_row=row_count, max_col=column_count),
+                    values[sheet.title].iter_rows(min_row=header + 1, max_row=row_count, max_col=column_count)), header + 1):
                 raw = [cell_text(c, v) for c, v in zip(cells, caches)]
                 data = {f: raw[i] for i, f in enumerate(fields) if f and counts[f] == 1}
+                if data.get('order_type') == '混装组头':
+                    continue
                 if source_items and data.get('product_no') and counts['product_no'] == 1:
                     product_cell = cells[fields.index('product_no')]
                     source_item = source_items.get(product_cell.coordinate)

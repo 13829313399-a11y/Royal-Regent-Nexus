@@ -130,8 +130,9 @@ def test_regular_po_still_requires_prices_and_cancelled_file_stays_blocked(monke
     with pytest.raises(ValueError, match='取消单'):
         parser.parse_po(tmp_path / 'customer-CXL.pdf')
     monkeypatch.setattr(parser, 'extract_text', lambda _: (contract_text(formal=True), False))
-    with pytest.raises(ValueError, match='正文未识别'):
-        parser.parse_po(tmp_path / 'customer-SUP.pdf')
+    parsed = parser.parse_po(tmp_path / 'customer-SUP.pdf')
+    assert parsed['document_kind'] == 'contract'
+    assert any('文件名含 SUP' in w for w in parsed['warnings'])
 
 
 def test_supplement_exports_and_followup_po_does_not_duplicate(monkeypatch):
@@ -150,7 +151,7 @@ def test_supplement_exports_and_followup_po_does_not_duplicate(monkeypatch):
     book = openpyxl.load_workbook(BytesIO(output))
     item = book[unified.ITEM_SHEET]
     assert [item.cell(5, c).value for c in (2, 4, 5, 6, 8, 11, 12, 20)] == [
-        '补充合同', '811784', '5475162', '48NSNBBP', '416984-PB', 424, 4, 'POLYBAG',
+        '补充合同', '811784', '5475162-1', '48NSNBBP', '416984-PB', 424, 4, 'POLYBAG',
     ]
     assert item.cell(5, 26).value.date().isoformat() == '2026-11-24'
     for name in unified.SHEETS:
@@ -164,7 +165,12 @@ def test_supplement_exports_and_followup_po_does_not_duplicate(monkeypatch):
     assert later['summary']['blocked'] == 0
     assert any(i['code'] == 'duplicate_existing_order' for i in later['rows'][0]['issues'])
     repeated, _, _ = unified.export_unified_customer_schedule(**args, po_files=[('formal.pdf', b'formal')], schedule_content=output)
-    assert openpyxl.load_workbook(BytesIO(repeated))[unified.ITEM_SHEET]['D5'].value == '811784'
+    rb = openpyxl.load_workbook(BytesIO(repeated))
+    assert rb[unified.ITEM_SHEET]['D5'].value == '811784'
+    assert rb[unified.ITEM_SHEET]['B5'].value == '正式PO'
+    assert rb[unified.ORDER_SHEET]['P5'].value == 2
+    assert rb[unified.ORDER_SHEET]['Q5'].data_type == 'f'
+    assert rb[unified.ITEM_SHEET]['K5'].value == 424
     batch = unified.create_unified_customer_preview(
         **args, po_files=[('order-SUP.pdf', b'supplement'), ('formal.pdf', b'formal')], schedule_content=original,
     )

@@ -141,7 +141,7 @@
       "remaining_quantity"
     ],
     "summary": "订单有效性、发送状态和走货事实分别核对；取消不等于已经走货。",
-    "content": "订单数量是该明细的数量；已走货来自历史期初和有效走货记录，未走货按当前订单数量减实际已走货计算。原数量未知时仍需核对，不能当成 0；订单数量不能改成低于已走货数量。\n\n有效 / 已取消是订单生命周期；未发送 / 已发送 / 有变更是发送状态；未走货 / 已走货筛选针对走货范围。这些状态不能互相替代。恢复取消订单保留原编号和历史，只新增版本，不自动恢复生产任务或调整库存。\n\n排查：先检查厂区、客户、搜索和走货状态筛选；按参考号、产品与版本核对同一明细。走货需原页面凭出货单确认，日期、数量和单号不符合原系统规则时不能靠助手绕过。需要纠错时在原记录保留原因并撤销对应批次，不能通过重复确认抵消错误。已发送订单的修改还需要发送权限。",
+    "content": "订单数量是该明细的数量；已走货来自历史期初和有效走货记录，未走货按当前订单数量减实际已走货计算。原数量未知时仍需核对，不能当成 0；订单数量不能改成低于已走货数量。\n\n有效 / 已取消是订单生命周期；未发送 / 已发送 / 有变更是发送状态；未走货 / 已走货筛选针对走货范围。这些状态不能互相替代。恢复取消订单保留原编号和历史，只新增版本，不自动恢复生产任务或调整库存。\n\n排查：先检查厂区、客户、搜索和走货状态筛选；按参考号、产品与版本核对同一明细。走货需原页面凭出货单确认，日期、数量和单号不符合原系统规则时不能靠助手绕过。需要纠错时在原记录保留原因并撤销对应批次，不能通过重复确认抵消错误。已发送订单的修改还需要发送权限。\n\n华登Jakks导入的取消通知是独立归档凭证，不计待走货，不能恢复为有效订单；如需取消或恢复实际订单，请操作原订单明细。补充合同与正式单的合同、PO、原单Line、货号、数量和货期均一致且尚未走货时，可原位转正式单，保留历史版本及发送记录，不增加数量。",
     "steps": [
       {
         "title": "检查台账筛选",
@@ -169,16 +169,16 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",
         "symbol": "remaining_quantity",
-        "sha256": "1d008a383ca82c971c0c0081469d2ca0b9c0afaaac734701cab90bbe5882c1a8"
+        "sha256": "6fdbfbfc5d5a3fe5b62e5fadb1c95aa42543852397032ed543bf793c8d0fcf03"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def amend",
-        "sha256": "d2d71103e027536fb9107252087ab20956058dedf9e18ee136b165d5af4a6d75"
+        "sha256": "d90fca5444e5340ac8c292c019bf45b3a903db698fde710a9d01868805cbd149"
       }
     ],
-    "knowledge_version": "2026.11.10-qc-source-outbox-compatible",
-    "verified_commit": "6c466bef-working-tree-source-review",
+    "knowledge_version": "2026.11.19-jakks-notice-and-contract",
+    "verified_commit": "39851ec9-working-tree-source-review",
     "status": "verified"
   },
   {

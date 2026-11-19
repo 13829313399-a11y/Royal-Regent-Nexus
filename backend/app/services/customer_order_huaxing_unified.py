@@ -149,8 +149,8 @@ def outer_pack(value):
 def extra_columns(sheet):
     from app.services.customer_order_unified import _normalized_header
     result = {}
-    for field, header in (('remarks', '备注'), ('contact', '联系人'), ('pdq', 'PDQ')):
-        columns = [cell.column for cell in sheet[3] if cell.column > 28 and _normalized_header(cell.value) == header]
+    for field, header in (('remarks', '备注'), ('contact', '联系人'), ('pdq', 'PDQ'), ('caixing_mix_no', 'MIX编号')):
+        columns = [cell.column for cell in sheet[3] if cell.column > (19 if sheet.title in {'接单表','正单评审表'} else 28) and _normalized_header(cell.value) == header]
         if len(columns) == 1:
             result[field] = columns[0]
     return result
@@ -209,6 +209,8 @@ def read_history(workbook, customer_code):
             values = {field: _text(sheet.cell(r, col).value) if sheet.cell(r, col).data_type != 'f' else '' for col, field in fields.items()}
             remarks = _text(sheet.cell(r, extras['remarks']).value) if 'remarks' in extras else ''
             reference = values['reference_no'] or values['contract_no'] or values['po_no']
+            if _text(sheet.cell(r, 2).value) == '混装组头':
+                continue
             if not values['product_no'] or values['product_no'] == '产品编号' or '模拟数据' in remarks:
                 continue
             values['reference_no'] = reference
@@ -538,6 +540,9 @@ def export_rows(workbook, rows):
             export_rows(workbook, resolved)
         export_advisory_rows(workbook, unresolved, '产品分类待补，保留原始明细；接单表及正单评审表关联本页。')
         return
+    if any(row.get('_huaxing_customer') == 'caixing' for row in rows):
+        from .customer_order_360_manual_column import ensure_manual_columns
+        ensure_manual_columns(workbook, factory_id='huaxing', customer_code='caixing', label='MIX编号', aliases={'MIX编号'}, scopes=(('huaxing','caixing'),))
     buzzbee_column = None
     if any(row.get('_huaxing_customer') == 'buzzbee' for row in rows):
         from app.services.customer_order_buzzbee_color_box import prepare_review
@@ -598,6 +603,12 @@ def export_rows(workbook, rows):
                 workbook, buzzbee_column, slots['正单评审表'][index], workbook[name], item_row,
                 order_row=slots['接单表'][index], row=row,
             )
+        if row.get('_huaxing_customer') == 'caixing':
+            from .customer_order_caixing_unified import write_group_and_prices
+            write_group_and_prices(workbook, row, item_row, slots['接单表'][index], slots['正单评审表'][index])
+            for title in ('接单表','正单评审表'):
+                column = extra_columns(workbook[title]).get('caixing_mix_no')
+                if column: workbook[title].cell(slots[title][index],column).value = row.get('caixing_mix_no') or None
         if row.get('_huaxing_customer') == 'shushupapa':
             _repair_shushupapa_summary_amounts(
                 workbook, slots['接单表'][index], slots['正单评审表'][index], row,

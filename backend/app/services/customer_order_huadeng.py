@@ -573,12 +573,13 @@ def _dedupe_text(value: Any) -> str:
 
 def _jakks_line_identity(line: dict[str, Any], *, business: bool = False) -> tuple[str, ...]:
     fields = (
-        "contract_no", "customer_po", "confirmation_no", "item_no", "quantity", "unit", "ship_date",
+        "contract_no", "customer_po", "confirmation_no", "source_line_no", "document_kind", "item_no", "quantity", "unit", "ship_date",
     ) if business else (
-        "contract_no", "customer_po", "confirmation_no", "item_no", "quantity", "unit", "ship_date",
+        "contract_no", "customer_po", "confirmation_no", "source_line_no", "document_kind", "item_no", "quantity", "unit", "ship_date",
         "unit_price_usd", "total_usd", "outer_pack", "cartons", "special_note", "po_description",
     )
-    return tuple(_dedupe_text(line.get(field)) for field in fields)
+    return tuple(('cancellation' if line.get(field) == 'cancellation' else '') if field == 'document_kind'
+                 else _dedupe_text(line.get(field)) for field in fields)
 
 
 def _prepare_jakks(
@@ -611,7 +612,7 @@ def _prepare_jakks(
         seen_exact: set[tuple[str, ...]] = set()
         seen_business: dict[tuple[str, ...], dict[str, Any]] = {}
         duplicate_count = 0
-        for order in parsed_orders:
+        for order in sorted(parsed_orders, key=lambda o: o.get('document_kind') == 'supplementary_contract'):
             warnings.extend(f"{order.get('filename')}：{item}" for item in order.get("warnings") or [])
             for raw_line in order.get("lines") or []:
                 line = dict(raw_line)

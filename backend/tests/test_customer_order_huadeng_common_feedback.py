@@ -74,6 +74,7 @@ def test_jakks_explicit_zero_price_never_inherits_historical_99(monkeypatch):
     data=args('jakks');data['schedule_content']=workbook_bytes()
     output,_,preview=service.export_unified_customer_schedule(**data)
     row=preview['rows'][0]
-    assert float(row['unit_price_hkd'])==float(row['amount_hkd'])==0
+    assert float(row['unit_price_usd'])==float(row['amount_usd'])==0
+    assert row['unit_price_hkd']==row['amount_hkd']==''  # No rate in this synthetic template.
     book=openpyxl.load_workbook(BytesIO(output))
     assert book[service.ORDER_SHEET]['N4'].value==99

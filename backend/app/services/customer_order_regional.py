@@ -62,6 +62,11 @@ def map_huadeng(row, record, customer_code):
         row['po_no'] = _text(record.get('contract_no'))
         row['reference_no'] = _text(record.get('contract_no'))
     elif customer_code == 'jakks':
+        row['order_type'] = row.get('order_type') or '正单'
+        if record.get('document_kind') == 'cancellation':
+            row['document_kind'] = 'cancellation'
+            row['order_type'] = '取消单'
+            row['cancellation_evidence'] = _text(record.get('cancellation_evidence'))
         if record.get('document_kind') == 'supplementary_contract':
             row['_jakks_supplementary'] = True
             row.setdefault('issues', []).append({
@@ -73,7 +78,14 @@ def map_huadeng(row, record, customer_code):
         for field, label in (('standard', 'PRODUCT MEETS'), ('packaging', 'NOTES')):
             if row.get(field):
                 row.setdefault('lineage', {})[field] = f"{record.get('source_file', '')} · PO {label}"
-        row['reference_no'] = _text(record.get('confirmation_no')) or _text(record.get('contract_no'))
+        row['unit_price_usd'] = _text(record.get('unit_price_usd'))
+        row['amount_usd'] = _text(record.get('total_usd'))
+        row['confirmation_no'] = _text(record.get('confirmation_no'))
+        row['source_line_no'] = _text(record.get('source_line_no'))
+        row['reference_no'] = row['confirmation_no'] or _text(record.get('contract_no'))
+        if row['confirmation_no'] and row['source_line_no']:
+            row['reference_no'] += '-' + row['source_line_no']
+            row.setdefault('lineage', {})['source_line_no'] = f"PO Line#: {record.get('source_line_no_raw') or row['source_line_no']}"
         row['_missing_confirmation'] = not _text(record.get('confirmation_no'))
         unit = _text(record.get('unit')).upper()
         if unit and unit not in {'PC', 'PCS', 'PCE', 'EA', 'EACH', '件', '个'}:
@@ -105,10 +117,10 @@ def map_huadeng(row, record, customer_code):
         for field in ('unit_price_usd','amount_usd','barcode','po_order_date','remarks'):
             row[field] = _text(record.get(field))
             row['lineage'][field] = f"{record.get('source_file')} · {record.get('source_sheet')} · {field}"
-        row['unit_price_hkd'] = str(Decimal(row['unit_price_usd']) * Decimal('7.75')) if row['unit_price_usd'] else ''
+        row['unit_price_hkd'] = ''  # Converted after reading this workbook's P1.
         if not row['unit_price_usd']:
             row['price_basis'] = 'incomplete'  # A blank source price is not a historical-price lookup.
-        row['lineage']['unit_price_hkd'] = 'Goliath Ai 方案 · USD × 7.75'
+        row['lineage']['unit_price_hkd'] = '美元原价 × 当前接单表P1汇率'
         row['customer_q'] = _text(record.get('customer_inspection_date'))
         recalculate_dates(row, {'requested_ship_date'})
     return row
