@@ -34,6 +34,9 @@ FACTORIES = {
     'huadeng': ('05_华登_订单排期', 'Huadeng_Trial', '华登', 'Goliath、Casdon、Jakks、Simba、Spin'),
 }
 START = (TOOL / 'start.cmd').read_text(encoding='ascii').replace('\n', '\r\n')
+SINGLE_CUSTOMERS = {'casdon': ('huadeng', 'Casdon'), 'jakks': ('huadeng', 'Jakks'),
+    'goliath': ('huadeng', 'Goliath'), 'simba': ('huadeng', 'Simba'),
+    'spin': ('huadeng', 'Spin'), 'zuru': ('huakang-a', 'ZURU')}
 
 
 def safe_archive_name(name: str):
@@ -287,9 +290,9 @@ def package_reference_seed(package: Path, schedule: Path, price: Path):
 def build(cache: Path, output: Path, selected, release_date: str | None = None,
         jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False, huaxing_customer: str | None = None,
         legacy_windows: bool = False, single_customer: str | None = None):
-    if single_customer and (selected != [{'casdon': 'huadeng', 'zuru': 'huakang-a'}.get(single_customer)] or green_toys_only or huaxing_customer):
+    if single_customer and (selected != [SINGLE_CUSTOMERS.get(single_customer, ('', ''))[0]] or green_toys_only or huaxing_customer):
         raise ValueError('专客包必须选择对应厂区及唯一客户')
-    if legacy_windows and not (single_customer or (green_toys_only and selected == ['huakang-a'])):
+    if legacy_windows and not (single_customer or huaxing_customer or (green_toys_only and selected == ['huakang-a'])):
         raise ValueError('Windows 7兼容构建需选择已验证的专客模式。')
     if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie'}):
         raise ValueError('华兴专客包需指定华兴及一个支持客户')
@@ -315,12 +318,14 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if legacy_windows:
                 zip_name, folder = '华康A_GreenToys_Win7_Win10_32及64位', 'GT_Trial'
             if single_customer:
-                customers = {'casdon': 'Casdon', 'zuru': 'ZURU'}[single_customer]
+                customers = SINGLE_CUSTOMERS[single_customer][1]
                 folder = f'{customers}_Trial'
                 zip_name = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
                 zip_name, folder = f'05_华兴_{customers}_订单入排期', f'Huaxing_{huaxing_customer}_Trial'
+                if legacy_windows:
+                    zip_name = f'华兴_{customers}_Win7_Win10_32及64位'
             kind = 'jp' if factory == 'huakang-b' else 'orders'
             source = ROOT / 'tools' / ('huakang-b-jp-trial' if kind == 'jp' else 'customer-order-trial')
             package = staging / folder
@@ -380,6 +385,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                 instructions += f'\n本包只开放{name} {customers}，前端直接复用 GitHub 客户订单中心。新包请勿混入其他客户的 data。\n'
                 if single_customer == 'casdon':
                     instructions += '货号保留原单写法，AW/SS版本不拼接到货号；新单插入各表同货号的有效订单组，原历史不覆盖。旧文件里已有的错误尾码或重复记录不会自动清除，请保留原件核对。\n'
+            if factory == 'huadeng':
+                instructions += '生成排期时补齐ITEM主表的跟单、版本、国家、船务、QC、品牌、条码等缺失表头。已有同义表头保留；船务和QC数据仍需手动录入，补表头不代表自动导入。产品单价按美元/港币分别显示，开票价格独立留空。\n'
             if has_seed:
                 instructions = instructions.replace('请负责人先完成演示资料流程，再用真实样本逐项核对金额、数量、交期和版式。',
                     '本包已预置参照，可直接导入真实邮件。演示操作请在另一个解压副本中进行，不要把演示数据迁入日常工作副本。')
@@ -456,11 +463,13 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if legacy_windows:
                 filename = '华康A_GreenToys_Win7_Win10_32及64位'
             if single_customer:
-                customers = {'casdon': 'Casdon', 'zuru': 'ZURU'}[single_customer]
+                customers = SINGLE_CUSTOMERS[single_customer][1]
                 filename = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
                 filename = f'05_华兴_{customers}_订单入排期'
+                if legacy_windows:
+                    filename = f'华兴_{customers}_Win7_Win10_32及64位'
             writer.writerow([name, f'{filename}_Windows试用_{stamp}.zip', customers, '', '', '', ''])
     overview = ('各厂区订单／排期与华康B问单｜Windows单机试用包\n\n'
         + '本文件夹包含：' + '、'.join(FACTORIES[key][2] for key in selected) + '。\n' +
@@ -487,7 +496,7 @@ if __name__ == '__main__':
     parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
     parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
     parser.add_argument('--green-toys-only', action='store_true', help='Huakang A Green Toys only; reuse the GitHub order workspace frontend.')
-    parser.add_argument('--single-customer', choices=['casdon', 'zuru'])
+    parser.add_argument('--single-customer', choices=SINGLE_CUSTOMERS)
     parser.add_argument('--legacy-windows', action='store_true', help='Win7 SP1/Win10 x86 runtime and bundled local browser; validated single-customer profiles.')
     args = parser.parse_args()
     build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date,

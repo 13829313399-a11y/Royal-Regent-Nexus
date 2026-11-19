@@ -15,7 +15,7 @@ beforeEach(() => {
 })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-it.each([['huakang-a', 'zuru'], ['huadeng', 'casdon']])('uses the actual GitHub workspace and exports blank dates without a waiver or warehouse sync: %s %s', async (factory, customer) => {
+it.each([['huakang-a', 'zuru'], ...['casdon','jakks','goliath','simba','spin'].map(code => ['huadeng',code])])('uses the actual GitHub workspace and exports blank dates without a waiver or warehouse sync: %s %s', async (factory, customer) => {
   mocks.config.mockResolvedValue({ factory_id: factory, customers: [{code: customer}] })
   const wrapper = mount(SingleCustomerApp)
   await flushPromises()
