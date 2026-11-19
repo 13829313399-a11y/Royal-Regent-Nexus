@@ -29,10 +29,11 @@ function localSources(directory: string): string[] {
 }
 const contracts = ['backend/app/services/customer_order_ledger.py', 'backend/app/services/huaxing_order_legacy/edu_schedule.py', 'src/types/customerOrder.ts', 'src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue']
 export default defineConfig(({ mode }) => {
+ const single = mode === 'single-customer'
  const greenToys = mode === 'green-toys'
  const huadeng = mode === 'huadeng'
  const huaxing = mode === 'huaxing-recent'
- const workspace = greenToys || huadeng || huaxing
+ const workspace = single || greenToys || huadeng || huaxing
  const sources = workspace ? [...reused, ...greenToysReused] : reused
  return {
   root, envDir: false, envPrefix: '__TRIAL_INTERNAL_UNUSED_', publicDir: false, base: '/', cacheDir: path.resolve(root, '../build/vite-cache'),
@@ -40,7 +41,7 @@ export default defineConfig(({ mode }) => {
     name: 'order-trial-source-boundary',
     transformIndexHtml: {
       order: 'pre',
-      handler(html) { return workspace ? html.replace('/src/main.ts', huaxing ? '/src/huaxingTrialMain.ts' : huadeng ? '/src/huadengMain.ts' : '/src/greenToysMain.ts') : html },
+      handler(html) { return workspace ? html.replace('/src/main.ts', single ? '/src/singleCustomerMain.ts' : huaxing ? '/src/huaxingTrialMain.ts' : huadeng ? '/src/huadengMain.ts' : '/src/greenToysMain.ts') : html },
     },
     generateBundle() {
       for (const id of this.getModuleIds()) {
@@ -52,7 +53,7 @@ export default defineConfig(({ mode }) => {
       }
       this.emitFile({ type: 'asset', fileName: 'source-manifest.json', source: JSON.stringify({
         application: 'customer-order-trial', build_mode: mode,
-        entry: huaxing ? 'src/huaxingTrialMain.ts' : huadeng ? 'src/huadengMain.ts' : greenToys ? 'src/greenToysMain.ts' : 'src/main.ts',
+        entry: single ? 'src/singleCustomerMain.ts' : huaxing ? 'src/huaxingTrialMain.ts' : huadeng ? 'src/huadengMain.ts' : greenToys ? 'src/greenToysMain.ts' : 'src/main.ts',
         local_sources: [...localSources(path.join(root, 'src')), 'tools/customer-order-trial/web/vite.config.ts', 'tools/customer-order-trial/web/index.html'].map(file => ({ path: file, sha256: createHash('sha256').update(readFileSync(path.join(repository, file))).digest('hex') })),
         sources: sources.map(file => ({ path: file, sha256: createHash('sha256').update(readFileSync(path.join(repository, file))).digest('hex') })),
         contracts: contracts.map(file => ({ path: file, sha256: createHash('sha256').update(readFileSync(path.join(repository, file))).digest('hex') })),
@@ -60,7 +61,7 @@ export default defineConfig(({ mode }) => {
     },
   }],
   define: { 'import.meta.env.VITE_API_BASE_URL': JSON.stringify('/api') },
-  resolve: { alias: [...(workspace ? [{ find: /^@\/api\/customerOrder$/, replacement: path.join(root, huaxing ? 'src/huaxingTrialOrderApi.ts' : huadeng ? 'src/huadengOrderApi.ts' : 'src/greenToysOrderApi.ts') }] : []), ...aliases] },
-  build: { target: 'chrome108', cssTarget: 'chrome108', cssMinify: 'lightningcss', outDir: path.resolve(root, huaxing ? '../build/web-huaxing-recent' : huadeng ? '../build/web-huadeng' : greenToys ? '../build/web-green-toys' : '../build/web'), emptyOutDir: true, sourcemap: false },
+  resolve: { alias: [...(workspace ? [{ find: /^@\/api\/customerOrder$/, replacement: path.join(root, single ? 'src/singleCustomerOrderApi.ts' : huaxing ? 'src/huaxingTrialOrderApi.ts' : huadeng ? 'src/huadengOrderApi.ts' : 'src/greenToysOrderApi.ts') }] : []), ...aliases] },
+  build: { target: 'chrome108', cssTarget: 'chrome108', cssMinify: 'lightningcss', outDir: path.resolve(root, single ? '../build/web-single-customer' : huaxing ? '../build/web-huaxing-recent' : huadeng ? '../build/web-huadeng' : greenToys ? '../build/web-green-toys' : '../build/web'), emptyOutDir: true, sourcemap: false },
  }
 })

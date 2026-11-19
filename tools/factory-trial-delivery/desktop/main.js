@@ -17,7 +17,7 @@ else {
       callback({ cancel: !permitted })
     })
     const window = new BrowserWindow({ width: 1366, height: 900, minWidth: 900, minHeight: 600,
-      title: '华康A · Green Toys 订单排期', autoHideMenuBar: true,
+      title: '客户订单中心 · 本机试用', autoHideMenuBar: true,
       webPreferences: { session: local, nodeIntegration: false, contextIsolation: true, sandbox: true } })
     window.webContents.setWindowOpenHandler(({ url }) => {
       const target = new URL(url)

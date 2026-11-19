@@ -147,6 +147,9 @@ def money_columns(workbook):
 
 
 def prepare_money(workbook):
+    from .customer_order_360_manual_column import ensure_manual_columns
+    ensure_manual_columns(workbook, factory_id='huadeng', customer_code='casdon',
+        label='备注', aliases={'备注'}, scopes=(('huadeng', 'casdon'),), sheets=('ITEM表',))
     columns = money_columns(workbook)
     fixed = 0
     for name in SHEETS[1:]:
