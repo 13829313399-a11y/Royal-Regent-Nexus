@@ -933,6 +933,12 @@ def _parse_huadeng_rows(
             for line in order.get("lines", []):
                 values = schedule_module._compose_row(order, line, index)
                 record = service._legacy_row_record(customer_code, order, line, values)
+                if is_casdon and not line.get('is_charge'):
+                    # AW/SS is a packaging season, not part of the PO's item code.
+                    # Keep the original SKU (including actual customer suffixes).
+                    record['product_no'] = _text(line.get('item_code'))
+                    record['_casdon_original_sku'] = True
+                    record['remarks'] = f"原单版本：{order['version']}" if order.get('version') else ''
                 # Preserve source currency/precision before legacy conversion.
                 record['_source_currency'] = str(line.get('currency') or 'USD').upper()
                 record['_source_unit_price'] = line.get('unit_price') if line.get('price_identified', True) else None
@@ -1452,7 +1458,7 @@ def create_unified_customer_preview(
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
     preview = {
-        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-huadeng-source-price-v1' if factory_id == 'huadeng' else '') + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else '-caixing-mix-price-v1' if factory_id == 'huaxing' and customer_code == 'caixing' else '-jakks-source-line-cancel-v2' if factory_id == 'huadeng' and customer_code == 'jakks' else ''),
+        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-huadeng-source-price-v1' if factory_id == 'huadeng' else '') + ('-casdon-original-sku-v1' if (factory_id, customer_code) == ('huadeng', 'casdon') else '') + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else '-caixing-mix-price-v1' if factory_id == 'huaxing' and customer_code == 'caixing' else '-jakks-source-line-cancel-v2' if factory_id == 'huadeng' and customer_code == 'jakks' else ''),
         "customer_code": customer_code,
         "factory_id": factory_id,
         "po_file_name": file_names[0] if len(file_names) == 1 else f"{len(file_names)}个文件",

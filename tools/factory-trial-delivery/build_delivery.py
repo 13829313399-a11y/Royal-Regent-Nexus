@@ -260,7 +260,7 @@ def readme(factory: str, release: str, green_toys_only: bool = False):
 本包不代替正式生产系统；本地发送、签收、走货记录需负责人核对流程后再决定正式上线方式。
 '''
     if factory == 'huakang-a' and not green_toys_only:
-        common += '\nZURU已接入与其他客户相同的统一导入流程：选择ZURU，上传PDF/Excel PO及三表统一排期，预览后生成。演示资料/ZURU内有合成示例及空白统一模板。原周排期的MA、库存不自动迁入。\n'
+        common += '\nZURU已接入与其他客户相同的统一导入流程：选择ZURU，上传PDF/Excel PO及三表统一排期，预览后生成。演示资料内有合成示例及统一模板。原周排期的MA、库存不自动迁入。\n'
     return common
 
 
@@ -286,9 +286,11 @@ def package_reference_seed(package: Path, schedule: Path, price: Path):
 
 def build(cache: Path, output: Path, selected, release_date: str | None = None,
         jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False, huaxing_customer: str | None = None,
-        legacy_windows: bool = False):
-    if legacy_windows and not (green_toys_only and selected == ['huakang-a']):
-        raise ValueError('Windows 7兼容构建目前仅验收华康A Green Toys。')
+        legacy_windows: bool = False, single_customer: str | None = None):
+    if single_customer and (selected != [{'casdon': 'huadeng', 'zuru': 'huakang-a'}.get(single_customer)] or green_toys_only or huaxing_customer):
+        raise ValueError('专客包必须选择对应厂区及唯一客户')
+    if legacy_windows and not (single_customer or (green_toys_only and selected == ['huakang-a'])):
+        raise ValueError('Windows 7兼容构建需选择已验证的专客模式。')
     if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie'}):
         raise ValueError('华兴专客包需指定华兴及一个支持客户')
     if green_toys_only and selected != ['huakang-a']:
@@ -312,6 +314,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                 zip_name, folder, customers = '01_华康A_GreenToys_订单入排期', 'HuakangA_GreenToys_Trial', 'Green Toys'
             if legacy_windows:
                 zip_name, folder = '华康A_GreenToys_Win7_Win10_32及64位', 'GT_Trial'
+            if single_customer:
+                customers = {'casdon': 'Casdon', 'zuru': 'ZURU'}[single_customer]
+                folder = f'{customers}_Trial'
+                zip_name = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
                 zip_name, folder = f'05_华兴_{customers}_订单入排期', f'Huaxing_{huaxing_customer}_Trial'
@@ -335,13 +341,13 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                     'schedule.xlsx为排期，price.xlsx为货价；原始文件名及校验见manifest.json。\n'
                     '本包包含指定的业务参照，请交给相应华康B试用人员。\n'
                     f'校验记录数：排期{stats["schedule"]["rows"]}，货价{stats["price"]["rows"]}。\n', encoding='utf-8-sig')
-            web = source / 'build' / ('web-huaxing-recent' if huaxing_customer else 'web-green-toys' if green_toys_only else 'web-huadeng' if factory == 'huadeng' else 'web')
+            web = source / 'build' / ('web-single-customer' if single_customer else 'web-huaxing-recent' if huaxing_customer else 'web-green-toys' if green_toys_only else 'web-huadeng' if factory == 'huadeng' else 'web')
             if not (web / 'index.html').is_file():
                 raise RuntimeError(f'Missing built frontend: {web}')
             frontend_manifest = json.loads((web / 'source-manifest.json').read_text(encoding='utf-8'))
-            if green_toys_only or huaxing_customer or factory == 'huadeng':
-                expected_mode = 'huaxing-recent' if huaxing_customer else 'green-toys' if green_toys_only else 'huadeng'
-                expected_entry = 'src/huaxingTrialMain.ts' if huaxing_customer else 'src/greenToysMain.ts' if green_toys_only else 'src/huadengMain.ts'
+            if single_customer or green_toys_only or huaxing_customer or factory == 'huadeng':
+                expected_mode = 'single-customer' if single_customer else 'huaxing-recent' if huaxing_customer else 'green-toys' if green_toys_only else 'huadeng'
+                expected_entry = 'src/singleCustomerMain.ts' if single_customer else 'src/huaxingTrialMain.ts' if huaxing_customer else 'src/greenToysMain.ts' if green_toys_only else 'src/huadengMain.ts'
                 if (frontend_manifest.get('build_mode') != expected_mode or frontend_manifest.get('entry') != expected_entry
                         or not all(frontend_manifest.get(k) for k in ('sources', 'contracts', 'local_sources'))):
                     raise RuntimeError('Missing or incorrect standalone frontend manifest; rebuild the selected mode')
@@ -367,8 +373,13 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if huaxing_customer:
                 instructions = instructions.replace(FACTORIES[factory][3], customers)
                 instructions += f'\n本包仅开放华兴{customers}，直接复用GitHub订单中心页面；请使用该客户自己的排期。\n'
-            if factory == 'huadeng':
+            if factory == 'huadeng' and not single_customer:
                 instructions += '\n本包直接复用GitHub订单中心导入、预览、台账和排期页面，开放华登五客；资料提醒不要求填写放行原因。\nJakks原单Line#区分分批，完全相同历史批次不重复追加。取消通知保留原始数量证据，订单类型标为取消单。\n'
+            if single_customer:
+                instructions = instructions.replace(FACTORIES[factory][3], customers)
+                instructions += f'\n本包只开放{name} {customers}，前端直接复用 GitHub 客户订单中心。新包请勿混入其他客户的 data。\n'
+                if single_customer == 'casdon':
+                    instructions += '货号保留原单写法，AW/SS版本不拼接到货号；新单插入各表同货号的有效订单组，原历史不覆盖。旧文件里已有的错误尾码或重复记录不会自动清除，请保留原件核对。\n'
             if has_seed:
                 instructions = instructions.replace('请负责人先完成演示资料流程，再用真实样本逐项核对金额、数量、交期和版式。',
                     '本包已预置参照，可直接导入真实邮件。演示操作请在另一个解压副本中进行，不要把演示数据迁入日常工作副本。')
@@ -377,7 +388,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                 'name': f'{name}问单本地试用' if kind == 'jp' else f'{name}订单排期本地试用',
                 'release': release, 'source_commit': source_commit, 'reference_seed': has_seed,
                 **({'runtime_profile': 'win7-sp1-win10-x86', 'architectures': ['x86', 'x64']} if legacy_windows else {}),
-                **({'customer_codes': [huaxing_customer]} if huaxing_customer else {'customer_codes': ['green-toys']} if green_toys_only else {}),
+                **({'customer_codes': [single_customer]} if single_customer else {'customer_codes': [huaxing_customer]} if huaxing_customer else {'customer_codes': ['green-toys']} if green_toys_only else {}),
                 'source_commit_role': 'Base checkout; see BUILD-SOURCES.json for exact uncommitted build inputs.'}, ensure_ascii=False, indent=2), encoding='utf-8')
             if kind == 'orders':
                 ocr = package / 'ocr'
@@ -402,6 +413,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                     command += ['--factory', factory]
                     if huaxing_customer:
                         command += ['--huaxing-customer', huaxing_customer]
+                    if single_customer:
+                        command += ['--single-customer', single_customer]
                     if green_toys_only:
                         command += ['--green-toys-only']
                 subprocess.run(command, check=True)
@@ -442,6 +455,9 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                 filename, customers = '01_华康A_GreenToys_订单入排期', 'Green Toys'
             if legacy_windows:
                 filename = '华康A_GreenToys_Win7_Win10_32及64位'
+            if single_customer:
+                customers = {'casdon': 'Casdon', 'zuru': 'ZURU'}[single_customer]
+                filename = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
                 filename = f'05_华兴_{customers}_订单入排期'
@@ -471,7 +487,8 @@ if __name__ == '__main__':
     parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
     parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
     parser.add_argument('--green-toys-only', action='store_true', help='Huakang A Green Toys only; reuse the GitHub order workspace frontend.')
-    parser.add_argument('--legacy-windows', action='store_true', help='Win7 SP1/Win10 x86 runtime and bundled local browser; Green Toys only.')
+    parser.add_argument('--single-customer', choices=['casdon', 'zuru'])
+    parser.add_argument('--legacy-windows', action='store_true', help='Win7 SP1/Win10 x86 runtime and bundled local browser; validated single-customer profiles.')
     args = parser.parse_args()
     build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date,
-        args.jp_schedule, args.jp_price, args.green_toys_only, args.huaxing_customer, args.legacy_windows)
+        args.jp_schedule, args.jp_price, args.green_toys_only, args.huaxing_customer, args.legacy_windows, args.single_customer)

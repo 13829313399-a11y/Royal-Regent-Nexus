@@ -13,7 +13,7 @@ CUSTOMERS = {
 TARGET_TEMPLATE = 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3'
 CASDON_HEADERS = {
     'country': '走货国家', 'container_type': '柜型/车型', 'brand': '品牌',
-    'end_customer_po': '客PO',
+    'end_customer_po': '客PO', 'remarks': '备注',
 }
 
 
@@ -58,6 +58,8 @@ def map_huadeng(row, record, customer_code):
     row['standard'] = _text(record.get('national_standard'))
     row['packaging'] = _text(record.get('product_packaging'))
     if customer_code == 'casdon':
+        row['remarks'] = _text(record.get('remarks'))
+        row['_casdon_original_sku'] = bool(record.get('_casdon_original_sku'))
         row['end_customer_po'] = _text(record.get('po_no'))
         row['po_no'] = _text(record.get('contract_no'))
         row['reference_no'] = _text(record.get('contract_no'))
@@ -207,6 +209,8 @@ def reconcile_product(row, history, factory_id, customer_code):
             row['reference_no'] = references.pop()
             row.setdefault('lineage', {})['reference_no'] = 'ITEM表 · 同合同同货号唯一历史确认号'
     if (factory_id, customer_code) != ('huadeng', 'casdon'):
+        return
+    if row.get('_casdon_original_sku'):
         return
     product = _text(row.get('product_no'))
     # Customer-specific article suffixes are only reusable with matching version.

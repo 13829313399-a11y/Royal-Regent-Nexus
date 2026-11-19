@@ -9,7 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def build(destination, factory, green_toys_only=False, huaxing_customer=None):
+def build(destination, factory, green_toys_only=False, huaxing_customer=None, single_customer=None):
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(destination.parent / 'backend'))
@@ -37,7 +37,18 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None):
             raise RuntimeError(f'Demo fixture changed: {filename}')
         return namespace
 
-    if factory == 'huakang-a':
+    if single_customer == 'casdon':
+        pdf = fixtures('test_customer_order_goliath.py', {'_pdf_document'})
+        fixture = fixtures('test_casdon_original_sku.py', {'casdon_po'}, _pdf_document=pdf['_pdf_document'])
+        customer, files, rows = 'Casdon', [('DEMO_Casdon.pdf', fixture['casdon_po']())], 2
+        template = fixtures('test_customer_order_unified.py', {'_template_bytes'}, unified=service)
+        content = template['_template_bytes']()
+    elif single_customer == 'zuru':
+        fixture = fixtures('test_customer_order_zuru_unified.py', {'po_book', 'data'})
+        customer, files, rows = 'ZURU', [('DEMO_ZURU_PO.xlsx', fixture['data'](fixture['po_book']()))], 2
+        template = fixtures('test_customer_order_unified.py', {'_template_bytes'}, unified=service)
+        content = template['_template_bytes']()
+    elif factory == 'huakang-a':
         fixture = fixtures('test_green_toys_po_integrity.py', {'LINES', 'html_po', 'recovery_template'}, mapping=a_mapping)
         customer = 'Green Toys'
         files = [('DEMO_GreenToys.html', fixture['html_po']())]
@@ -75,6 +86,14 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None):
         args = fixture['arguments'](factory, fixture['disney_po']())
         customer = '迪士尼 / Disney'
         files, content, rows = args['po_files'], args['schedule_content'], 1
+    if single_customer:
+        book = openpyxl.load_workbook(BytesIO(content))
+        for sheet in book:
+            sheet.freeze_panes = 'H4'
+            for row in sheet.iter_rows(min_row=4):
+                for cell in row:
+                    if cell.value not in {'取消单', '已走货订单'}: cell.value = None
+        stream = BytesIO(); book.save(stream); book.close(); content = stream.getvalue()
     for name, data in files:
         (destination / ('DEMO_' + Path(name).name if not name.startswith('DEMO_') else name)).write_bytes(data)
     (destination / 'DEMO_统一排期.xlsx').write_bytes(content)
@@ -85,7 +104,7 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None):
     (destination / '演示操作.txt').write_text(
         '这些文件是自动测试用的合成示例，不是客户真实订单，不能用于生产。\n\n'
         f'1. 在本厂客户中选择 {customer}，台账资料类型保持“正式 PO”。\n'
-        '2. 在“客户原始 PO”上传同目录 DEMO 开头的 PDF 或 HTML 文件；在“客户现有排期”上传 DEMO_统一排期.xlsx。\n'
+        '2. 在“客户原始 PO”上传同目录 DEMO 开头的 PDF、Excel 或 HTML 文件；在“客户现有排期”上传 DEMO_统一排期.xlsx。\n'
         '3. 来单日期选择 2026-11-09，点击“解析并进入预览”。\n'
         f'4. 应得到 {rows} 条明细。{reminder}核对表中货号、数量和交期后继续，不需要填写人工处理原因。\n'
         '5. 点击“确认并保存订单”，再到“订单台账与走货”查看保存的明细。重复保存相同资料不会重复新增。\n'
@@ -93,7 +112,7 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None):
         '7. 在台账打开一条订单，发送给 PMC；到“本机部门收件”选择 PMC 并签收该版本。这些记录只在当前电脑，不会通知线上员工。\n'
         '8. 回到该订单登记一笔演示走货：数量 1、实际走货日期选当天或之前、出货单号 DEMO-SHIP-001；确认后查看走货记录及剩余数量，也可按界面填写原因试用冲销。\n'
         '9. 演示记录保留在本机 data 中。开始真实资料试用请另用一份从 ZIP 全新解压的包，避免与演示记录混在一起。\n', encoding='utf-8-sig')
-    if factory == 'huakang-a' and not green_toys_only:
+    if factory == 'huakang-a' and not green_toys_only and not single_customer:
         # ZURU uses the same public three-sheet headers; no private PO/history is
         # copied into delivery. Keep this blank template reusable for first use.
         zuru = destination / 'ZURU'
@@ -124,6 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('destination', type=Path)
     parser.add_argument('--factory', required=True, choices=['huakang-a', 'huakang-d', 'huaxing', 'huadeng'])
     parser.add_argument('--green-toys-only', action='store_true')
+    parser.add_argument('--single-customer', choices=['casdon','zuru'])
     parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie'])
     args = parser.parse_args()
-    build(args.destination, args.factory, args.green_toys_only, args.huaxing_customer)
+    build(args.destination, args.factory, args.green_toys_only, args.huaxing_customer, args.single_customer)

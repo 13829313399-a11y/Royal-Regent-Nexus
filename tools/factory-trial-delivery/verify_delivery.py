@@ -78,7 +78,7 @@ def serve(package, python, config):
                         entries=json.loads(fetch(address,'/api/customer-order-ledger/'+catalog+'?factory_id='+config['factory_id']))
                         assert [row['code'] for row in entries['items']]==config['customer_codes']
                     assert not (package/'演示资料/ZURU').exists()
-                    assert 'ZURU' not in (package/'先看使用说明.txt').read_text(encoding='utf-8-sig')
+                    if config['customer_codes'] != ['zuru']: assert 'ZURU' not in (package/'先看使用说明.txt').read_text(encoding='utf-8-sig')
                 ledger = json.loads(fetch(address, '/api/customer-order-ledger/lines?factory_id=' + config['factory_id']))
                 assert ledger['total'] == 0, 'Delivery must start with an empty ledger'
                 assert json.loads(fetch(address, '/api/orders/exports'))['total'] == 0
