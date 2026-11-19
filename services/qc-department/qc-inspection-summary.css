@@ -582,3 +582,15 @@ body.qc-liquid-glass .qsum-record-detail .qsum-photo-thumb {
   #qsum-root .qsum-table :is(th,td) { padding:8px 10px; max-width:160px; white-space:normal; overflow-wrap:anywhere; }
   #qsum-root .qsum-table :is(th,td):first-child { min-width:100px; }
 }
+
+/* The workbook already supplies the photo context. Keep only its image in view. */
+#wb-photo-viewer{
+  width:100%;height:var(--qc-visible-height,100dvh);max-height:none;
+  inset:var(--qc-visible-top,0px) 0 auto;margin:0;border:0;border-radius:0;
+  background:transparent;box-shadow:none;backdrop-filter:none;animation:none;
+}
+#wb-photo-viewer::backdrop{background:rgba(0,0,0,.24)}
+#wb-photo-viewer header,#wb-photo-viewer footer,#wb-photo-viewer .qsum-lightbox-tools{display:none}
+#wb-photo-viewer .qsum-lightbox-viewport{background:transparent;outline:0;cursor:zoom-out}
+#wb-photo-viewer img{pointer-events:auto;cursor:grab}
+#wb-photo-viewer .is-dragging img{cursor:grabbing}

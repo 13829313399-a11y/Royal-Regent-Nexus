@@ -95,7 +95,7 @@ function mount(periodKey, kind, host, data, refresh){
 document.body.insertAdjacentHTML('beforeend','<dialog id="wb-dialog" aria-label="工作簿预览"><div class="wb-head"><div class="wb-nav"><span class="file-mark" aria-hidden="true">▤</span><div id="wb-templates" role="group" aria-label="报告模板"></div></div><span id="wb-status" role="status"></span><button id="wb-discard" hidden>撤销未保存修改</button><button id="wb-export">导出 Excel</button><button id="wb-close" aria-label="关闭工作簿" title="关闭">×</button></div><div class="wb-formula"><output id="wb-address">A1</output><i>ƒx</i><input id="wb-value" aria-label="单元格内容" readonly></div><div id="wb-grid"></div><div class="wb-foot"><div id="wb-tabs" aria-label="工作表"></div><button id="wb-next" title="跳到下一个可编辑单元格">定位可编辑格 ↗</button></div></dialog>');
 const dialog=byId('wb-dialog'), valueInput=byId('wb-value'), statusText=byId('wb-status');
 const grid=byId('wb-grid').attachShadow({mode:'open'});
-const gridCSS='<style>:host{display:block;background:#f3f4f2;overflow:auto}table{border-spacing:0;table-layout:fixed;background:white;color:#181c19;font:13px/1.3 Calibri,"PingFang SC",sans-serif}td,th{box-sizing:border-box}td{position:relative;overflow-wrap:anywhere;cursor:cell;min-width:16px;white-space:pre-wrap}td.selected{outline:2px solid #287447;outline-offset:-2px}td.writable{cursor:text}td.writable:hover{box-shadow:inset 0 0 0 1px #73947e}td>.cell-editor{position:absolute;z-index:1;inset:0;width:100%;height:100%;box-sizing:border-box;resize:none;border:2px solid #287447;outline:0;background:white;color:#17231c;padding:2px 3px;font:inherit;text-align:inherit}th.row-num,th.col-num{background:#f2f4f1;color:#657369;border:solid #d5dcd5;border-width:0 1px 1px 0;text-align:center;font:11px/1.2 -apple-system,sans-serif}th.row-num{position:sticky;left:0;min-width:36px;z-index:2}thead{position:sticky;top:0;z-index:3}th.col-num{height:24px}td[contenteditable=true]{white-space:pre-wrap;outline:2px solid #287447;outline-offset:-2px}img{max-width:none}</style>';
+const gridCSS='<style>:host{display:block;background:#f3f4f2;overflow:auto}table{border-spacing:0;table-layout:fixed;background:white;color:#181c19;font:13px/1.3 Calibri,"PingFang SC",sans-serif}td,th{box-sizing:border-box}td{position:relative;overflow-wrap:anywhere;cursor:cell;min-width:16px;white-space:pre-wrap}td.selected{outline:2px solid #287447;outline-offset:-2px}td.writable{cursor:text}td.writable:hover{box-shadow:inset 0 0 0 1px #73947e}td>.cell-editor{position:absolute;z-index:1;inset:0;width:100%;height:100%;box-sizing:border-box;resize:none;border:2px solid #287447;outline:0;background:white;color:#17231c;padding:2px 3px;font:inherit;text-align:inherit}th.row-num,th.col-num{background:#f2f4f1;color:#657369;border:solid #d5dcd5;border-width:0 1px 1px 0;text-align:center;font:11px/1.2 -apple-system,sans-serif}th.row-num{position:sticky;left:0;min-width:36px;z-index:2}thead{position:sticky;top:0;z-index:3}th.col-num{height:24px}td[contenteditable=true]{white-space:pre-wrap;outline:2px solid #287447;outline-offset:-2px}img{max-width:none}.wb-photo{padding:0;border:0;background:none;cursor:zoom-in;line-height:0;vertical-align:middle}.wb-photo:focus-visible{outline:2px solid #287447}</style>';
 function openBook(){
   byId('wb-discard').hidden=true;
   byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
@@ -181,6 +181,19 @@ function drawSheet(index){
     td.onkeydown=e=>{
       if(e.target===td&&e.key==='Enter'){e.preventDefault();startEdit(td);}
     };
+  }
+  if(['issues','tracking','annual-issues'].includes(selected[period])){
+    const images=[...table.querySelectorAll('td img')];
+    images.forEach((image,i)=>{
+      const button=document.createElement('button');
+      button.type='button';button.className='wb-photo';button.title='点击放大现场照片';
+      button.setAttribute('aria-label','放大现场照片 '+image.closest('td').dataset.addr);
+      button.onclick=event=>{
+        event.stopPropagation();
+        window.QcInspectionSummary.openWorkbookPhotos(images,i,dialog);
+      };
+      image.replaceWith(button);button.append(image);
+    });
   }
   table.onclick=e=>{
     const td=e.target.closest('td');
