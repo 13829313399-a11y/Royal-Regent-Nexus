@@ -21,9 +21,12 @@ function page(storage){
 }
 test('four independent layouts, month query, photos and return through 月',async()=>{
  const p=page();try{
- assert.equal(p.d.querySelectorAll('#qmtEntries button').length,4);
- for(const k of Object.keys(titles)){await p.w.QcMonthlyTemplates.open(k);assert.match(p.calls.at(-1).url,/date=2026-11-01/);assert.equal(p.d.querySelectorAll('#qmtTables table')[0].querySelectorAll('thead tr:last-child th').length,k==='caixing'?15:k==='issues'?12:18);assert.equal(p.d.querySelectorAll('#qmtTables [colspan],#qmtTables [rowspan]').length,0);}
+ assert.deepEqual(Array.from(p.d.querySelectorAll('#qmtChoice option:not([value=""])'), option=>option.value),['orders','tracking','quality']);
+ for(const k of Object.keys(titles)){await p.w.QcMonthlyTemplates.open(k);assert.match(p.calls.at(-1).url,/date=2026-11-01/);assert.equal(p.d.querySelectorAll('#qmtTables table')[0].querySelectorAll('thead tr:last-child th').length,k==='caixing'?15:k==='issues'?13:18);assert.equal(p.d.querySelectorAll('#qmtTables [colspan],#qmtTables [rowspan]').length,0);}
  await p.w.QcMonthlyTemplates.open('issues');assert.equal(p.d.querySelectorAll('.qmt-photo img').length,1);
+ const cells=p.d.querySelectorAll('#qmtTables tbody tr:first-child td');
+ assert.equal(cells.length,13);assert.equal(cells[11].textContent,'备注');assert.equal(cells[11].querySelector('img'),null);
+ assert.equal(cells[12].querySelectorAll('img').length,1);
  assert.ok(p.w.QcMonthlyTemplates.returnToReport());assert.equal(p.d.getElementById('monthlyReportBody').hidden,false);
  }finally{p.dom.window.close();}
 });
@@ -59,5 +62,26 @@ test('composing input is dirty before commit and blur persists final Chinese tex
   assert.equal(p.w.QcMonthlyTemplates.navigationState().dirty,true);
   await new Promise(resolve=>setTimeout(resolve,700));input.blur();await new Promise(resolve=>setTimeout(resolve,40));assert.equal(p.w.QcMonthlyTemplates.navigationState().dirty,false);
   await p.w.QcMonthlyTemplates.open('all');assert.equal(p.d.querySelector('[data-field="detail:cccccccccccccccccccccccccccccccc:contractNo"]').textContent,'最终中文');
+ }finally{p.dom.window.close();}
+});
+
+test('overview keeps total-denominator rates, editable blanks, institutions and signed export versions',async()=>{
+ const p=page(),meta='d'.repeat(64);try{
+  p.data.templates.push({id:'overview',title:'客户月度验货总结',headers:['客户','验货总单数','合格','退货','合格率','退货率','备注']});
+  p.data.fields[key].overviewRemark={value:'',version:0};
+  p.data.fields[meta]={};
+  for(const f of ['overview:preparer','overview:reportDate','overview:reviewer'])p.data.fields[meta][f]={value:'',version:0};
+  for(let i=1;i<=50;i++)for(const [section,names] of [['issue',['problem','analysis','action','completion','owner']],['distribution',['count','rate','name']]])for(const n of names)p.data.fields[meta]['overview:'+section+':'+i+':'+n]={value:'',version:0};
+  const row={id:entry,customerKey:key,values:['彩星','2026-11-05','彩星','','','SKU',100,'10','10','PASS','生产','机构',''],editableFields:{3:field}};
+  p.data.tables.overview=[row];
+  p.data.overview={metadataKey:meta,headers:p.data.templates.at(-1).headers,rows:[{customerKey:key,values:['彩星',4,1,'',.25,'',''],editableFields:{3:'returns',6:'overviewRemark'}}],details:[row],detailHeaders:['客户分组','验货日期','客户','合同号','客名','货号','数量','装箱','总箱数','结果','生产拉','机构','退货原因'],months:Array.from({length:12},(_,i)=>({month:i+1,rate:i===10?.25:''})),distributionHeaders:['批次','比率','不合格品分布'],issueHeaders:['序号','问题描述','问题分析','纠正预防措施','完成情况','责任人'],issues:[],signatures:{customerKey:meta,values:['','',''],editableFields:{0:'overview:preparer',1:'overview:reportDate',2:'overview:reviewer'}}};
+  await p.w.QcMonthlyTemplates.open('overview');assert.match(p.calls.at(-1).url,/template=overview/);
+  let cells=p.d.querySelectorAll('#qmtTables tbody tr:first-child td');assert.equal(cells[4].textContent,'25.00%');assert.equal(cells[5].textContent,'');
+  p.edit('returns','1').blur();await p.w.QcMonthlyTemplates.flush();cells=p.d.querySelectorAll('#qmtTables tbody tr:first-child td');assert.equal(cells[5].textContent,'25.00%');
+  assert.equal(JSON.parse(p.calls.find(c=>c.init.body).init.body).template,'overview');
+  p.edit('overview:preparer','张三').blur();await p.w.QcMonthlyTemplates.flush();assert.equal(p.d.querySelector('[data-field="overview:preparer"]').textContent,'张三');
+  p.d.querySelector('[data-overview-tab="details"]').click();assert.equal(p.d.querySelectorAll('#qmtTables th')[11].textContent,'机构');assert.equal(p.d.querySelectorAll('#qmtTables th').length,13);
+  p.w.HTMLAnchorElement.prototype.click=function(){};p.w.fetch=async(url,init)=>{p.calls.push({url,init});return p.response({url:'api/monthly-templates/excel/test.xlsx',filename:'客户月度验货总结.xlsx'});};
+  p.d.getElementById('qmtExcel').click();await new Promise(r=>setTimeout(r,15));const req=JSON.parse(p.calls.at(-1).init.body);assert.equal(req.template,'overview');assert.equal(req.versions[meta]['overview:preparer'],1);
  }finally{p.dom.window.close();}
 });

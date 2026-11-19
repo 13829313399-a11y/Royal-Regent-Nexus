@@ -74,7 +74,7 @@ def test_report_and_template_download(monkeypatch, tmp_path):
         assert client.get(endpoint, params={'date': '2026-11-06'}).json()['total'] == 0
         assert client.get(endpoint, params={'date': '2026-11-99'}).status_code == 422
         assert client.get(endpoint, params={'date': DAY, 'company': 'hy-huadeng'}).status_code == 403
-        for period, start, end in [('weekly','2026-11-02','2026-11-08'), ('monthly','2026-11-01','2026-11-30')]:
+        for period, start, end in [('daily',DAY,DAY), ('weekly','2026-11-02','2026-11-08'), ('monthly','2026-11-01','2026-11-30')]:
             params = {'date': DAY, 'period': period}
             scoped = client.get(endpoint, params=params)
             assert scoped.status_code == 200, scoped.text
@@ -83,7 +83,20 @@ def test_report_and_template_download(monkeypatch, tmp_path):
             download = client.get(endpoint+'/export', params={**params,'revision':scoped['revision']})
             assert download.status_code == 200, download.text
             assert load_workbook(BytesIO(download.content)).active['D9'].value == scoped['rows'][-1]['values'][3]
-            assert client.get(endpoint+'/export', params={**params,'revision':report['revision']}).status_code == 409
+            if period != 'daily':
+                assert client.get(endpoint+'/export', params={**params,'revision':report['revision']}).status_code == 409
+            key = next(c['key'] for c in scoped['customers'] if c['name'] == '示例洋行 B')
+            params = {'date': DAY, 'period': period, 'customer': key}
+            selected = client.get(endpoint, params=params).json()
+            assert (selected['customer'], selected['total'], selected['passed'], selected['failed']) == (key, 2, 1, 1)
+            assert selected['customers'] == scoped['customers']
+            assert all(r['values'][0] == '示例洋行 B' for r in selected['rows'])
+            assert client.get(endpoint+'/export', params={**params, 'revision': scoped['revision']}).status_code == 409
+            book = client.get(endpoint+'/export', params={**params, 'revision': selected['revision']})
+            assert book.status_code == 200
+            sheet = load_workbook(BytesIO(book.content)).active
+            assert [sheet[f'A{i}'].value for i in (4,5,6)] == ['示例洋行 B','示例洋行 B',None]
+            assert client.get(endpoint, params={**params, 'customer':'invalid'}).status_code == 422
         assert client.get(endpoint, params={'date': DAY, 'period': 'yearly'}).status_code == 422
         assert client.get(endpoint, params=[('date',DAY),('period','weekly'),('period','monthly')]).status_code == 422
         export_url = endpoint + '/export'
@@ -97,9 +110,10 @@ def test_report_and_template_download(monkeypatch, tmp_path):
         assert [cell.value for cell in sheet[3][:13]] == report['headers']
         assert {str(r) for r in sheet.merged_cells.ranges} == {'A1:M1','A2:M2'}
         assert (sheet.max_row, sheet.max_column) == (9, 13)
-        assert sheet.freeze_panes == 'E4'
+        assert sheet.freeze_panes == 'A4'
         assert sheet.sheet_view.topLeftCell == 'A1'
-        assert sheet.sheet_view.pane.topLeftCell == 'E4'
+        assert sheet.sheet_view.pane.xSplit is None
+        assert sheet.sheet_view.zoomScale == 95
         assert sheet.page_setup.orientation == 'landscape'
         assert sheet.page_setup.fitToWidth == 1 and sheet.page_setup.fitToHeight == 0
         assert sheet.print_title_rows == '$1:$3'

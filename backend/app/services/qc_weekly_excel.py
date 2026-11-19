@@ -28,11 +28,11 @@ TTL, MAX_BYTES = 600, 32 * 1024 * 1024
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / 'templates/qc-weekly'
 ASSETS = json.loads((TEMPLATE_DIR/'export-templates.json').read_text(encoding='utf-8'))
 SOURCE_FOOTER_COLUMNS = [0, 1, 3, 5, 7, 10, 14, 15, 16]
-FOOTER_COLUMNS = [0, 1, 3, 4, 5, 6, 11, 13, 16]
-FOOTER_SPANS = [(0,0),(1,2),(3,3),(4,4),(5,5),(6,10),(11,12),(13,15),(16,17)]
+FOOTER_COLUMNS = [0, 1, 3, 4, 5, 6, 7, 9, 11]
+FOOTER_SPANS = [(0,0),(1,2),(3,3),(4,4),(5,5),(6,6),(7,8),(9,10),(11,12)]
 WIDTHS = {
-    'detail': [48,82,90,128,150,140,210,75,60,75,60,60,80,80,180,95,95,160],
-    'group': [85,130,150,120,110,270,130,200],
+    'detail': [46,88,88,102,94,105,150,68,54,62,62,70,76,70,170,85,85,152],
+    'group': [78,115,113,112,104,205,105,154],
 }
 
 
@@ -85,7 +85,7 @@ def render(data, kind):
     book, target = writer.wtbook, writer.wtsheet
     target.first_visible_row = target.first_visible_col = 0
     target.panes_frozen = True; target.horz_split_pos = 2; target.horz_split_first_visible = 2
-    target.vert_split_pos = 3 if kind == 'detail' else 0; target.split_position_units_are_twips = False
+    target.vert_split_pos = 0; target.split_position_units_are_twips = False
     for index, rgb in source.colour_map.items():
         if 8 <= index <= 63 and rgb: book.set_colour_RGB(index, *rgb)
     # Local palette entries are applied to every output cell, never to the source assets.
@@ -118,7 +118,7 @@ def render(data, kind):
         target.row(row).insert_cell(col,CachedFormulaCell(row,col,book.add_style(cell_style),parsed,value))
     def height(row, source_row, values, columns, spans=None):
         writer.row(source_row,row)
-        estimate = (46 if source_row==131 else 42 if source_row==1 else 54 if kind=='detail' and source_row==3 else 40 if kind=='group' else 33)*20
+        estimate = (27 if source_row in (1,131) else 21)*20
         for i,(col,value) in enumerate(zip(columns,values)):
             if value in ('',None): continue
             start,end = spans[i] if spans else (col,col)
@@ -139,9 +139,10 @@ def render(data, kind):
     def title(row, source_row, text, span_rows=1):
         for r in range(span_rows):
             writer.row(source_row+r,row+r)
-            target.row(row+r).height=round((38 if row==0 else 35)/span_rows*20)
+            target.row(row+r).height=round((28 if row==0 else 26)/span_rows*20)
             target.row(row+r).height_mismatch=True
-        target.write_merge(row,row+span_rows-1,0,sheet.ncols-1,text,style(source_row,0))
+        last_col = FOOTER_SPANS[-1][1] if source_row == 128 else sheet.ncols-1
+        target.write_merge(row,row+span_rows-1,0,last_col,text,style(source_row,0))
     period = data['dateFrom']+' 至 '+data['dateTo']
     selected = next((c['label'] for c in data['customers'] if c['key']==data['customer']), '')
     title(0,0,spec['title']+'（'+period+'）'+(' '+selected if selected else ''))
@@ -172,7 +173,8 @@ def render(data, kind):
             target.write(index,1,values[1],style(3,1,'mm-dd'))
         footer_title=len(rows)+2
         title(footer_title,128,'华兴客户周验货汇总（'+period+'）',3)
-        block_row(footer_title+3,131,spec['summaryHeaders'],FOOTER_COLUMNS,FOOTER_SPANS)
+        labels = [spec['summaryHeaderLabels'].get(header, header) for header in spec['summaryHeaders']]
+        block_row(footer_title+3,131,labels,FOOTER_COLUMNS,FOOTER_SPANS)
         summary(footer_title+4,data['tables']['footer'],spec['summaryHeaders'],FOOTER_COLUMNS,FOOTER_SPANS,133,142)
     else:
         summary(2,rows,spec['headers'],list(range(8)),None,3,15)
