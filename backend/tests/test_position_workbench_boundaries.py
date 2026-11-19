@@ -186,7 +186,7 @@ def test_postgres_simultaneous_self_submission_has_one_open_review(postgres):
     assert sorted(r["changed"] for r in rows) == [False, True]
 
 
-def test_registration_history_uses_current_and_scheduled_person_scope(client):
+def test_registration_history_uses_current_and_scheduled_person_scope(client, monkeypatch):
     row, preview = registration(client)
     assert commit(client, row["item_key"], preview)[0].status_code == 200
     uid = row["user"]["id"]
@@ -195,8 +195,26 @@ def test_registration_history_uses_current_and_scheduled_person_scope(client):
     submitted = client.post("/api/auth/me/position-reviews", json={"declaration":declaration})
     assert submitted.status_code == 200, submitted.text
     login(client, "admin")
-    key, _, preview = plan(client, submitted.json()["review"], keep=True)
-    assert commit(client, key, preview)[0].status_code == 200
+    from app.core.config import settings
+    from test_access_studio import draft_for, source_rows
+    monkeypatch.setattr(settings, "iam_access_studio_writes_enabled", True)
+    key = "position:" + submitted.json()["review"]["id"]
+    item = client.get("/api/iam/position-workbench/items/" + key).json()
+    original = source_rows(uid)
+    link = {"item_key": key, "expected_source_revision": item["source_revision"],
+            "confirmed_profile": {k: v for k, v in declaration.items() if k != "note"}}
+    url = f"/api/iam/users/{uid}/access-studio"
+    preview = client.post(url + "/preview", json=draft_for(identity(client, uid), position_review=link))
+    assert preview.status_code == 200, preview.text
+    assert not preview.json()["permission_diffs"]["added"] and not preview.json()["permission_diffs"]["removed"]
+    command = client.post(url + "/commit", headers={"Idempotency-Key": str(uuid4())},
+                          json={"preview_token": preview.json()["preview_token"], "risk_acknowledged": True})
+    assert command.status_code == 200, command.text
+    after = source_rows(uid)
+    for binding_id, (role_id, meta) in original.items():
+        assert after[binding_id][0] == role_id
+        assert {k: v for k, v in after[binding_id][1].items() if k != "assignment_id"} == {
+            k: v for k, v in meta.items() if k != "assignment_id"}
     create_user("a-scope-reviewer", "admin", "huakang-a", "engineering")
     login(client, "a-scope-reviewer")
     assert client.get(f"/api/system/users/{uid}/identity").status_code == 403
@@ -222,3 +240,27 @@ def test_rejected_applicant_resubmission_uses_new_declaration_not_unconfirmed_pr
     assert detail.status_code == 200, detail.text
     assert detail.json()["current_official"] is None
     assert detail.json()["declaration"]["org_unit_id"] == "huakang-b"
+
+def test_old_fingerprint_fails_closed_and_existing_package_is_never_replaced(client, monkeypatch):
+    from app.core.config import settings
+    from app.services import position_workbench as workbench
+    from test_access_studio import source_rows
+    uid = employee(client)
+    review = submit(client)
+    login(client, "admin")
+    initial = source_rows(uid)
+    original = workbench.dependencies
+    with monkeypatch.context() as old_client:
+        def old_policy(*args):
+            return {**original(*args), "policy": "position-workbench-v1"}
+        old_client.setattr(workbench, "dependencies", old_policy)
+        key, _, stale = plan(client, review)
+    refused = commit(client, key, stale)[0]
+    assert refused.status_code == 409 and refused.json()["code"] == "AUTHORIZATION_CHANGED"
+    assert source_rows(uid) == initial
+    # This is a supported old single-selection request during a frontend rollback.
+    monkeypatch.setattr(settings, "iam_access_studio_writes_enabled", False)
+    _, _, fresh = plan(client, review, role="position_engineering_engineer")
+    assert all(not fresh["permission_diffs"][field] for field in ("added", "removed", "source_changed"))
+    assert commit(client, key, fresh)[0].status_code == 200
+    assert source_rows(uid) == initial

@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import { formatBusinessDateTime } from '@/lib/dateTime'
 const props = defineProps<{ requestId: string; readonly?: boolean }>()
-const emit = defineEmits<{ back: []; saved: []; locked: [boolean] }>()
+const emit = defineEmits<{ back: []; saved: []; refreshed: []; locked: [boolean] }>()
 const auth = useAuthStore(), row = ref<WorkspacePasswordDetail>(), verified = ref(false), reason = ref('')
 const loading = ref(false), busy = ref(false), uncertain = ref(false), error = ref(''), notice = ref('')
 const guard = ref<InstanceType<typeof IamLeaveGuard>>()
@@ -27,7 +27,7 @@ async function read(check = false) {
     const data = await iamWorkspaceApi.passwordReset(props.requestId)
     if (current !== generation || actor !== viewer.value) return
     row.value = data
-    if (check && (data.status !== pendingStatus || data.issue_count !== pendingIssue)) { uncertain.value = false; pending = undefined; pendingOwner = ''; reason.value = ''; verified.value = false; notice.value = '已读取最新处理结果。'; emit('saved') }
+    if (check && (data.status !== pendingStatus || data.issue_count !== pendingIssue)) { uncertain.value = false; pending = undefined; pendingOwner = ''; reason.value = ''; verified.value = false; notice.value = '已读取最新处理结果。'; emit('refreshed') }
     else if (check) notice.value = '暂未观察到状态变化。可继续核查，或使用原处理内容重试。'
   } catch (e) {
     if (current !== generation || actor !== viewer.value) return

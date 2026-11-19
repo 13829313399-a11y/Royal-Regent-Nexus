@@ -61,8 +61,6 @@ describe('IAM management view semantics and accessibility', () => {
       'previewRoleAccess',
       'commitRoleAccess',
       'getManageableScopes',
-      'type="checkbox"',
-      'type="radio"',
       '变更原因',
       '撤销修改',
       '预览职位影响',
@@ -81,7 +79,7 @@ describe('IAM management view semantics and accessibility', () => {
       "const canReadPermissionCatalog = computed(() => authStore.can('system:permission_catalog_read'))",
     )
     expect(source).toMatch(
-      /async function loadData\(\) \{\s+if \(!canReadPermissionCatalog\.value\) \{[\s\S]*?return\s+\}/,
+      /async function loadData\(\) \{[\s\S]*?if \(!canReadPermissionCatalog\.value\) \{[\s\S]*?return\s+\}/,
     )
     expect(source).toContain('iamx-role-layout')
     expect(source).not.toContain('class="iam-workspace')

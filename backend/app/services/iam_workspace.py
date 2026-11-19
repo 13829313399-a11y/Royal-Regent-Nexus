@@ -6,14 +6,13 @@ failures are explicit and make counts unknown instead of reporting a false zero.
 """
 import json
 import logging
-from datetime import datetime, timezone
-from sqlalchemy import select, func, literal, union_all, or_
+from sqlalchemy import JSON, cast, select, func, literal, union_all, or_, type_coerce
 from sqlalchemy.orm import load_only
 from fastapi import HTTPException
 from app.core.config import settings
-from app.core.time import serialize_process_local_timestamp
+from app.core.time import parse_business_timestamp, serialize_process_local_timestamp
 from app.models.auth import AuthUser, EmployeeProfile, AuthRegistrationRequest, AuthPasswordResetRequest, AuthAccessRequest, AuthUserPermissionOverride, AuthUserRole, AuthRoleBindingMetadata
-from app.models.identity import IamOrgUnit, EmployeeAssignment, IamRoleVersion
+from app.models.identity import IamOrgUnit, EmployeeAssignment, IamRoleVersion, IamMutationReceipt
 from app.models.position_review import PositionReview
 from app.services.auth import can, parse_time
 from app.services.identity_policy import fail, is_group_manager, additional_source_scopes, ensure_change_authority
@@ -23,7 +22,6 @@ from app.services.iam_management_scopes import complete_scopes
 from app.services.identity_sources import role_definition
 from app.services import position_workbench_read as positions, position_reviews, system
 
-KINDS = ("position", "registration", "password-reset", "identity-change")
 log = logging.getLogger(__name__)
 
 
@@ -65,17 +63,22 @@ def password_detail(db, actor, request_id):
 
 
 class Projection:
-    def __init__(self, db, actor, now):
+    def __init__(self, db, actor, now, *, user_ids=None, open_only=False):
         self.db, self.actor, self.now = db, actor, now
+        self.user_ids = user_ids
+        self.open_only = open_only
         self._people = None
         self._scopes = None
+
+    def for_users(self, statement, column):
+        return statement if self.user_ids is None else statement.where(column.in_(self.user_ids))
 
     @property
     def people(self):
         if self._people is None:
             f, d, title, org = identity_columns(include_org=True)
             self._people = {u.id: (u, p, o or factory or "", dept or "", t or "") for u, p, factory, dept, t, o in
-                self.db.execute(select(AuthUser, EmployeeProfile, f, d, title, org).outerjoin(EmployeeProfile).options(
+                self.db.execute(self.for_users(select(AuthUser, EmployeeProfile, f, d, title, org).outerjoin(EmployeeProfile), AuthUser.id).options(
                     load_only(AuthUser.id, AuthUser.username, AuthUser.display_name, AuthUser.status),
                     load_only(EmployeeProfile.user_id, EmployeeProfile.identity_mode, EmployeeProfile.employment_epoch, EmployeeProfile.employment_status)))}
         return self._people
@@ -93,7 +96,32 @@ class Projection:
     def task(self, kind, row, uid, org, dept, proposed, raw, state, actions, blocked, created, revision):
         person = self.people.get(uid)
         u = person[0] if person else None
-        return {"key": f"{kind}:{row.id}", "kind": kind, "source_id": row.id, "source_revision": str(revision),
+        detail = {"record_actor_id": getattr(row, "reviewer_user_id", None) or getattr(row, "decision_by_user_id", None) or "",
+                  "record_reason": getattr(row, "review_comment", None) or getattr(row, "decision_comment", None) or getattr(row, "reason", "")}
+        if kind == "position":
+            from app.services.position_reviews import review_out
+            review = review_out(row)
+            detail["record_before"] = (review.get("base_official") or {}).get("position", "")
+            detail["record_after"] = (review.get("confirmed_profile") or {}).get("position", "")
+            detail["record_decision_at"] = row.decision_at if raw in {"returned", "applied"} else ""
+            detail["record_receipt_id"] = row.receipt_command_id if detail["record_decision_at"] else ""
+            if not detail["record_decision_at"]:
+                detail["record_actor_id"] = ""
+                detail["record_reason"] = ""
+        elif kind == "registration":
+            detail["record_decision_at"] = local_stamp(row.reviewed_at)
+        elif kind == "password-reset":
+            decision = row.rejected_at if raw == "rejected" else row.last_issued_at or row.approved_at
+            detail["record_decision_at"] = local_stamp(decision)
+            detail["record_completed_at"] = local_stamp(row.completed_at)
+        else:
+            detail["record_decision_at"] = row.decided_at
+            if raw == "cancelled" and row.effective_at and row.updated_at != row.decided_at:
+                # Older cancellations of scheduled changes left the original
+                # approver and approval time in place.
+                detail["record_decision_at"] = ""
+                detail["record_actor_id"] = ""
+        return {**detail, "key": f"{kind}:{row.id}", "kind": kind, "source_id": row.id, "source_revision": str(revision),
             "subject": {"user_id": uid or "", "display_name": u.display_name if u else getattr(row, "display_name", "未匹配账号"),
                         "username": u.username if u else getattr(row, "username", "")},
             "org_unit_id": org, "department": dept, "current_position": person[4] if person else "", "proposed_position": proposed,
@@ -102,9 +130,13 @@ class Projection:
     def position(self, registration=False):
         position_reviews.require_schema(self.db)
         codes = ("system:user_manage", "system:access_manage")
-        provisional = positions.provisional_registration_users(self.db) if registration else set()
-        extras = additional_source_scopes(self.db) if registration else {}
-        rows = self.db.scalars(select(AuthRegistrationRequest if registration else PositionReview))
+        provisional = positions.provisional_registration_users(self.db, self.user_ids) if registration else set()
+        extras = additional_source_scopes(self.db, self.user_ids) if registration else {}
+        model = AuthRegistrationRequest if registration else PositionReview
+        query = self.for_users(select(model), model.user_id)
+        if self.open_only:
+            query = query.where(model.status.in_(("pending", "returned")))
+        rows = self.db.scalars(query)
         output = []
         for row in rows:
             declared = positions.declaration(row)
@@ -130,7 +162,10 @@ class Projection:
 
     def password(self):
         output = []
-        for row in self.db.scalars(select(AuthPasswordResetRequest)):
+        query = self.for_users(select(AuthPasswordResetRequest), AuthPasswordResetRequest.user_id)
+        if self.open_only:
+            query = query.where(AuthPasswordResetRequest.status.in_(("pending", "approved", "expired")))
+        for row in self.db.scalars(query):
             if not system.can_access_password_reset_request(self.db, self.actor, row,
                     target_scopes=self.scopes.get(row.user_id, set())):
                 continue
@@ -143,7 +178,10 @@ class Projection:
     def changes(self):
         output = []
         orgs = {o.id: o.legacy_factory_id or o.id for o in self.db.scalars(select(IamOrgUnit))}
-        for row in self.db.scalars(select(AuthAccessRequest).where(AuthAccessRequest.request_type.like("identity:%"))):
+        query = select(AuthAccessRequest).where(AuthAccessRequest.request_type.like("identity:%"))
+        if self.open_only:
+            query = query.where(AuthAccessRequest.lifecycle_state.in_(("draft", "pending_approval", "scheduled")))
+        for row in self.db.scalars(self.for_users(query, AuthAccessRequest.target_user_id)):
             if not is_group_manager(self.actor) and row.requester_user_id != self.actor.id: continue
             if not self.allowed(row.target_user_id, ("system:user_manage",)): continue
             payload = json.loads(row.payload_json)
@@ -166,8 +204,7 @@ class Projection:
                     required.update((f or "*", binding.department or "*") for f in factories)
                     authority_scopes.update((f, f, binding.department or "*") for f in factories)
                 if row.request_type == "identity:confirm_identity":
-                    # Confirmation repins the latest definition and removes the
-                    # old ceiling in the existing domain transition.
+                    # Retain the read boundary for historical/in-flight confirmation requests.
                     proposed = ["*"] if definition["scope_mode"] == "cross_factory_operate" else [binding.factory_id]
                     required.update((f or "*", binding.department or "*") for f in proposed)
                     authority_scopes.update((f, f, binding.department or "*") for f in proposed)
@@ -180,6 +217,31 @@ class Projection:
                 if not assignment or assignment.user_id != row.target_user_id: continue
                 required.add((orgs.get(assignment.org_unit_id, assignment.org_unit_id), assignment.department_code))
                 authority_scopes.add((assignment.org_unit_id, orgs.get(assignment.org_unit_id, assignment.org_unit_id), assignment.department_code))
+                if row.request_type == "identity:adjust_packages":
+                    delta = payload.get("package_delta") or {}
+                    spec = {"org_unit_id": assignment.org_unit_id, "department_code": assignment.department_code,
+                            "role_bindings": delta.get("add_packages", [])}
+                    link = payload.get("position_review")
+                    if link:
+                        review = self.db.get(PositionReview, link["item_key"].split(":", 1)[1])
+                        if not review or review.user_id != row.target_user_id: continue
+                        try:
+                            positions.ensure_item_scope(self.db, self.actor, review)
+                        except HTTPException:
+                            continue
+                        official = link["confirmed_profile"]
+                        spec.update(org_unit_id=official["org_unit_id"], department_code=official["department_code"],
+                                    official_position_title=official["position"])
+                    recorded_scopes = json.loads(row.result_json or "{}").get("reviewed_scopes", [])
+                    for organization, factory, department in recorded_scopes:
+                        required.add((factory or organization, department))
+                        authority_scopes.add((organization, factory, department))
+                    touched = delta.get("remove_binding_ids", []) + delta.get("upgrade_binding_ids", [])
+                    for binding_id in ([] if recorded_scopes and row.lifecycle_state == "applied" else touched):
+                        meta = self.db.get(AuthRoleBindingMetadata, binding_id)
+                        if not meta or meta.assignment_id != assignment.id or not include_binding(
+                                self.db.get(AuthUserRole, binding_id), meta, True):
+                            invalid_reference = True
                 if row.request_type == "identity:upgrade_packages":
                     effective = instant(row.effective_at) if row.effective_at else self.now
                     for meta in self.db.scalars(select(AuthRoleBindingMetadata).where(
@@ -218,6 +280,8 @@ class Projection:
             raw = row.lifecycle_state
             if raw == "scheduled" and row.effective_at and instant(row.effective_at) <= self.now: raw = "applied"
             writes = settings.authz_mode == "enforce" and settings.authz_writes_enabled and settings.iam_identity_writes_enabled
+            if row.request_type == "identity:adjust_packages" or row.id.startswith("studio-confirm-"):
+                writes = writes and settings.iam_access_studio_writes_enabled and self.actor.id not in {row.requester_user_id, row.target_user_id}
             authority = True
             try: ensure_change_authority(self.db, self.actor, row.target_user_id, authority_scopes, roles)
             except HTTPException: authority = False
@@ -232,41 +296,41 @@ class Projection:
         return output
 
 
-def tasks(db, actor, *, page=1, page_size=30, q="", kind="", state="open", org_unit_id="", target_user_id="", from_at="", to_at=""):
-    if not (("system:user_manage" in actor.permissions) or ("system:access_manage" in actor.permissions)):
-        fail("FORBIDDEN", "无权查看办理工作区", 403)
-    now = utc_now()
-    projection = Projection(db, actor, now)
-    coverage, items, partial = [], [], False
-    readers = {"position": lambda: projection.position(), "registration": lambda: projection.position(True),
+def source_matches(kind, source):
+    return not kind or source == kind or kind == "position-registration" and source in {"position", "registration"}
+
+
+def read_sources(projection, kind=""):
+    actor = projection.actor
+    coverage, items = [], []
+    readers = {"position": projection.position, "registration": lambda: projection.position(True),
                "password-reset": projection.password, "identity-change": projection.changes}
-    for source in KINDS:
-        readable = ("system:user_manage" in actor.permissions) and (source not in {"position", "registration"} or ("system:access_manage" in actor.permissions))
+    for source, reader in readers.items():
+        readable = "system:user_manage" in actor.permissions and (
+            source not in {"position", "registration"} or "system:access_manage" in actor.permissions)
         if not readable:
             coverage.append({"kind": source, "readable": False, "state": "not_authorized"})
             continue
-        if kind and kind != source and not (kind == "position-registration" and source in {"position", "registration"}):
-            coverage.append({"kind": source, "readable": True, "state": "ready"})
-            continue
-        try:
-            with db.no_autoflush:
-                items.extend(readers[source]())
-            coverage.append({"kind": source, "readable": True, "state": "ready"})
-        except Exception:
-            # A failed read transaction must not poison subsequent adapters.
-            db.rollback()
-            partial = True
-            coverage.append({"kind": source, "readable": True, "state": "unavailable", "message": "此来源暂不可用，请重试"})
-            log.exception("IAM workspace source unavailable: %s", source)
-    # Scope and derived lifecycle eligibility precede SQL COUNT / UNION paging.
-    eligible = {r["key"]: r for r in items if (not org_unit_id or org_unit_id == r["org_unit_id"])
-        and (not state or (state == "open" and r["state"] != "closed") or r["state"] == state)}
+        if source_matches(kind, source):
+            try:
+                with projection.db.no_autoflush:
+                    items.extend(reader())
+            except Exception:
+                projection.db.rollback()
+                coverage.append({"kind": source, "readable": True, "state": "unavailable", "message": "此来源暂不可用，请重试"})
+                log.exception("IAM workspace source unavailable: %s", source)
+                continue
+        coverage.append({"kind": source, "readable": True, "state": "ready"})
+    return items, coverage
+
+
+def filtered_union(items, q, target_user_id, from_at, to_at):
     branches = []
     models = {"position": PositionReview, "registration": AuthRegistrationRequest,
               "password-reset": AuthPasswordResetRequest, "identity-change": AuthAccessRequest}
     from app.services.work_center.service import Epoch
     for source, model in models.items():
-        ids = [r["source_id"] for r in eligible.values() if r["kind"] == source]
+        ids = [r["source_id"] for r in items if r["kind"] == source]
         if not ids: continue
         uid = model.target_user_id if source == "identity-change" else model.user_id
         created = model.submitted_at if source == "password-reset" else model.created_at
@@ -279,14 +343,70 @@ def tasks(db, actor, *, page=1, page_size=30, q="", kind="", state="open", org_u
         if from_at: branch = branch.where(Epoch(created) >= instant(from_at).timestamp())
         if to_at: branch = branch.where(Epoch(created) <= instant(to_at).timestamp())
         branches.append(branch)
+    return union_all(*branches).subquery() if branches else None
+
+
+def attach_receipts(db, items):
+    # Only expose a command number linked to the visible task and its recorded
+    # outcome. Reading a full receipt still requires the original operator.
+    data = (type_coerce(IamMutationReceipt.result_json, JSON) if db.get_bind().dialect.name == "sqlite"
+            else cast(IamMutationReceipt.result_json, JSON))
+    for source, operations, id_field, state_field in (
+            ("registration", ["position_workbench"], "item_key", "source_status"),
+            ("identity-change", ["identity_commit", "identity_approve"], "id", "state"),
+            ("identity-change", ["access_studio"], "change_id", "decision")):
+        visible = {item["key"] if source == "registration" else item["source_id"]: item
+                   for item in items if item["kind"] == source}
+        if not visible:
+            continue
+        identifier = data[id_field].as_string()
+        query = select(identifier, data[state_field].as_string(), IamMutationReceipt.idempotency_key).where(
+            IamMutationReceipt.operation.in_(operations), identifier.in_(visible)).order_by(IamMutationReceipt.created_at)
+        for key, status, command in db.execute(query):
+            if visible[key]["raw_status"] == status:
+                visible[key]["record_receipt_id"] = command
+
+
+def tasks(db, actor, *, page=1, page_size=30, q="", kind="", state="open", org_unit_id="",
+          target_user_id="", from_at="", to_at="", include_bucket_counts=False, sort="oldest"):
+    if not ({"system:user_manage", "system:access_manage"} & actor.permissions):
+        fail("FORBIDDEN", "无权查看办理工作区", 403)
+    now = utc_now()
+    projection = Projection(db, actor, now, user_ids=[target_user_id] if target_user_id else None)
+    items, coverage = read_sources(projection, "" if include_bucket_counts else kind)
+    partial = any(c["state"] == "unavailable" and source_matches(kind, c["kind"]) for c in coverage)
+    org_items = [r for r in items if not org_unit_id or r["org_unit_id"] == org_unit_id]
+    eligible = {r["key"]: r for r in org_items if source_matches(kind, r["kind"]) and (
+        not state or state == "open" and r["state"] != "closed" or r["state"] == state)}
+    union = filtered_union(eligible.values(), q, target_user_id, from_at, to_at)
     total, actionable, result = 0, 0, []
-    if branches:
-        union = union_all(*branches).subquery()
+    if union is not None:
         total = db.scalar(select(func.count()).select_from(union))
         actionable_ids = [r["key"] for r in eligible.values() if r["state"] == "actionable"]
         actionable = db.scalar(select(func.count()).select_from(union).where((union.c.kind + ":" + union.c.id).in_(actionable_ids)))
-        keys = db.execute(select(union).order_by(union.c.created, union.c.id, union.c.kind).offset((page-1)*page_size).limit(page_size)).mappings()
-        result = [eligible[f"{r['kind']}:{r['id']}"] for r in keys]
-    return {"items": result, "page": page, "page_size": page_size,
+        offset = (page - 1) * page_size
+        if sort == "activity":
+            # These scoped projections are already in memory. Normalize each source's
+            # clock at its adapter before ordering across legacy local and UTC times.
+            keys = db.execute(select(union.c.kind, union.c.id))
+            visible = [eligible[f"{kind}:{source_id}"] for kind, source_id in keys]
+            def activity(item):
+                when = item.get("record_completed_at") or item.get("record_decision_at") or item["created_at"]
+                timestamp = parse_business_timestamp(when)
+                return (timestamp.timestamp() if timestamp else 0, item["key"])
+            result = sorted(visible, key=activity, reverse=True)[offset:offset + page_size]
+            attach_receipts(db, result)
+        else:
+            order = (union.c.created.desc(), union.c.id.desc(), union.c.kind.desc()) if sort == "newest" else (union.c.created, union.c.id, union.c.kind)
+            keys = db.execute(select(union).order_by(*order).offset(offset).limit(page_size)).mappings()
+            result = [eligible[f"{r['kind']}:{r['id']}"] for r in keys]
+    response = {"items": result, "page": page, "page_size": page_size,
         "visible_total": None if partial else total, "actionable_total": None if partial else actionable,
         "count_scope": "current_normalized_filter", "coverage": coverage, "partial": partial, "server_now": stamp(now)}
+    if include_bucket_counts:
+        buckets = {c["kind"]: 0 if c["state"] == "ready" else None for c in coverage}
+        opened = filtered_union([r for r in org_items if r["state"] != "closed"], q, target_user_id, from_at, to_at)
+        if opened is not None:
+            buckets.update(db.execute(select(opened.c.kind, func.count()).group_by(opened.c.kind)).all())
+        response["bucket_counts"] = buckets
+    return response

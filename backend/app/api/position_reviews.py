@@ -1,5 +1,5 @@
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.schemas.position_review import AdminAdjustment, CommitInput, DecisionInput, SubmitReview, UpdateReview, WithdrawReview, PreviewInput
 from app.schemas.position_review import Position
+from app.schemas.access_studio import LegacyConfirmation, StudioCommit, StudioDraft, StudioLifecycle
 from app.schemas.identity import FactoryScope
+from app.services import access_studio
 from app.services.auth import AuthContext, get_current_user
 from app.services import position_reviews as self_service, position_workbench as workbench, position_workbench_read as reads
 
@@ -21,11 +23,21 @@ class PositionRoute(APIRoute):
                 response = await original(request)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                details = dict(detail.get("details", {}))
+                if request.url.path.endswith(("/preview", "/legacy-preview", "/lifecycle-preview")):
+                    details.update(allowed_to_commit=False, blocked_reasons=[detail.get("message", "当前方案无法办理")])
                 response = JSONResponse(status_code=exc.status_code, content={"code": detail.get("code", "POSITION_REQUEST_FAILED"),
-                    "message": detail.get("message", "请求未完成"), "details": detail.get("details", {}), "request_id": request_id}, headers=exc.headers)
+                    "message": detail.get("message", "请求未完成"), "details": details, "request_id": request_id}, headers=exc.headers)
             except RequestValidationError as exc:
-                response = JSONResponse(status_code=422, content={"code": "INVALID_FIELDS", "message": "请核对填写内容",
-                    "details": {"fields": [".".join(map(str, error["loc"][1:])) for error in exc.errors()]}, "request_id": request_id})
+                fields = [".".join(map(str, error["loc"][1:])) for error in exc.errors()]
+                details = {"fields": fields}
+                message = "请核对填写内容"
+                if request.url.path.endswith(("/preview", "/legacy-preview")):
+                    if any(field.endswith(".department") or field.endswith(".permission_department") for field in fields):
+                        message = "请明确选择每个权限包或个人例外的作用部门"
+                    details.update(allowed_to_commit=False, blocked_reasons=[message])
+                response = JSONResponse(status_code=422, content={"code": "INVALID_FIELDS", "message": message,
+                    "details": details, "request_id": request_id})
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Request-ID"] = request_id
             return response
@@ -109,3 +121,41 @@ def decide(item_key: str, payload: DecisionInput, db: Session = Depends(get_db),
 @router.get("/iam/position-workbench/receipts/{command_id}")
 def receipt(command_id: UUID, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return workbench.read_receipt(db, user.id, command_id)
+
+
+@router.post("/iam/users/{user_id}/access-studio/preview")
+def studio_preview(user_id: str, payload: StudioDraft | StudioLifecycle, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return access_studio.preview(db, user.id, user_id, payload)
+
+
+@router.get("/iam/access-studio/package-abilities")
+def studio_package_abilities(db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from sqlalchemy import select
+    from app.models.auth import AuthRolePermission, AuthPermission
+    from app.services.iam import _ensure_iam_manager, _ensure_permission_catalog_reader
+    _ensure_iam_manager(db, user)
+    _ensure_permission_catalog_reader(db, user)
+    rows = db.execute(select(AuthRolePermission.role_id, AuthPermission.code, AuthPermission.name)
+        .join(AuthPermission, AuthPermission.id == AuthRolePermission.permission_id)
+        .order_by(AuthRolePermission.role_id, AuthPermission.code))
+    result = {}
+    for role_id, code, name in rows:
+        result.setdefault(role_id, []).append({"code": code, "name": name})
+    return result
+
+
+@router.post("/iam/users/{user_id}/access-studio/legacy-preview")
+def studio_legacy_preview(user_id: str, payload: LegacyConfirmation, db: Session = Depends(get_db),
+                          user: AuthContext = Depends(get_current_user)):
+    return access_studio.preview(db, user.id, user_id, payload)
+
+
+@router.post("/iam/users/{user_id}/access-studio/commit")
+def studio_commit(user_id: str, payload: StudioCommit, idempotency_key: UUID = Header(),
+                  db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return access_studio.commit(db, user.id, user_id, payload, idempotency_key)
+
+
+@router.get("/iam/access-studio/receipts/{command_id}")
+def studio_receipt(command_id: UUID, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return access_studio.read_receipt(db, user.id, command_id)

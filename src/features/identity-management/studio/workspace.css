@@ -1,0 +1,441 @@
+.iam2-queues {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.iam2-queues button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 14px;
+}
+.iam2-filters {
+  position: relative;
+}
+.iam2-filters summary {
+  cursor: pointer;
+  padding: 9px 12px;
+  white-space: nowrap;
+  font-size: 13px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.iam2-filters > div {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 5px);
+  inset-inline-start: 0;
+  display: grid;
+  gap: 10px;
+  min-width: 182px;
+  max-width: min(300px, 88vw);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+.iam2-filters label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.iam2-filters select {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+.iam2-queues strong {
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+.iam2-workbench button[aria-pressed='true'],
+.iam2-person button[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+}
+.iam2-people {
+  display: grid;
+  grid-template-columns: minmax(158px, 16%) minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  gap: 12px;
+}
+.iam2-org,
+.iam2-directory {
+  min-height: 0;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+.iam2-org {
+  padding: 14px 8px;
+  overflow: auto;
+}
+.iam2-org h2,
+.iam2-directory h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 16px;
+}
+.iam2-org h2 {
+  padding: 2px 10px 14px;
+}
+.iam2-org button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.iam2-org svg {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.iam2-org button:hover,
+.iam2-table tbody tr:hover {
+  background: var(--muted);
+}
+.iam2-departments {
+  border-left: 1px solid var(--border);
+  margin-left: 16px;
+  padding-left: 6px;
+}
+.iam2-directory {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.iam2-directory > header,
+.iam2-editor > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.iam2-directory > header {
+  flex-shrink: 0;
+  min-height: 56px;
+  padding: 12px 18px;
+}
+.iam2-directory > header > span {
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.iam2-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.iam2-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.iam2-table th,
+.iam2-table td {
+  text-align: left;
+  vertical-align: middle;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.iam2-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  white-space: nowrap;
+}
+.iam2-table td:first-child {
+  min-width: 136px;
+}
+.iam2-table td:nth-child(3) {
+  max-width: 280px;
+}
+.iam2-table small,
+.iam2-disclosure small {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.iam2-name {
+  display: inline-flex;
+  align-items: center;
+  text-align: left;
+  gap: 9px;
+}
+.iam2-action,
+.iam2-name strong {
+  color: var(--primary);
+}
+.iam2-action {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.iam2-tags,
+.iam2-factories,
+.iam2-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.iam2-tags span {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.iamx-dialog.iamx-drawer:has(.iam2-person) {
+  width: min(68vw, 1380px);
+  max-width: 100vw;
+}
+@media (min-width: 901px) and (max-width: 1439px) {
+  .iamx-dialog.iamx-drawer:has(.iam2-person) {
+    width: 78vw;
+  }
+}
+@media (max-width: 900px) {
+  .iamx-dialog.iamx-drawer:has(.iam2-person) {
+    width: 100vw;
+  }
+}
+.iam2-tabs {
+  display: flex;
+  gap: 16px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--border);
+}
+.iam2-tabs button {
+  padding: 10px 4px;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+}
+.iam2-tabs button[aria-pressed='true'] {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 650;
+}
+.iam2-person {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.iam2-editor,
+.iam2-fields,
+.iam2-choice,
+.iam2-impact {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+.iam2-editor h3,
+.iam2-person h3 {
+  font-weight: 650;
+  font-size: 16px;
+}
+.iam2-editor h4 {
+  font-weight: 650;
+  font-size: 14px;
+}
+.iam2-editor > fieldset,
+.iam2-editor fieldset {
+  min-width: 0;
+}
+.iam2-fields > label {
+  display: grid;
+  gap: 6px;
+}
+.iam2-fields :is(input:not([type='checkbox']), select, textarea) {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: var(--card);
+}
+.iam2-factories {
+  gap: 8px 14px;
+  padding: 6px 0;
+}
+.iam2-factories label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  gap: 6px;
+}
+.iam2-binding,
+.iam2-choice,
+.iam2-impact,
+.iam2-disclosure {
+  padding: 12px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+.iam2-binding {
+  display: flex;
+  gap: 8px;
+  align-items: start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.iam2-binding p,
+.iam2-binding details {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  margin: 4px 0;
+}
+.iam2-binding .pw-badge {
+  margin-left: 7px;
+}
+.iam2-person summary {
+  min-height: 32px;
+  padding-block: 5px;
+  cursor: pointer;
+}
+.iam2-person ul {
+  margin: 5px 0;
+}
+.iam2-disclosure li {
+  padding-block: 5px;
+  border-top: 1px solid var(--border);
+}
+.iam2-ops button,
+.iam2-fields > button,
+.iam2-impact > button {
+  justify-self: start;
+}
+.iam2-person :focus-visible,
+.iam2-workbench :focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+@media (max-width: 1100px) {
+  .iam2-people {
+    grid-template-columns: 148px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .iam2-table td,
+  .iam2-table th {
+    padding: 9px 8px;
+  }
+}
+@media (max-width: 767px) {
+  .iam2-queues {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .iam2-queues button {
+    padding: 8px 10px;
+  }
+  .iam2-people {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .iam2-org {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 6px;
+    max-height: 20dvh;
+  }
+  .iam2-org h2 {
+    width: 100%;
+    padding: 2px 6px;
+    font-size: 13px;
+  }
+  .iam2-org > button,
+  .iam2-org section {
+    width: auto;
+  }
+  .iam2-org button {
+    padding: 4px 7px;
+  }
+  .iam2-departments {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .iam2-table thead {
+    display: none;
+  }
+  .iam2-table :is(table, tbody),
+  .iam2-table {
+    display: block;
+  }
+  .iam2-table tr {
+    display: grid;
+    gap: 5px;
+    padding: 11px;
+    border-top: 1px solid var(--border);
+  }
+  .iam2-table td {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 7px;
+    align-items: baseline;
+    border: 0;
+    padding: 0;
+  }
+  .iam2-table td:before {
+    content: attr(data-label);
+    color: var(--muted-foreground);
+    font-size: 12px;
+  }
+  .iam2-table td:first-child {
+    display: block;
+  }
+  .iam2-table td:first-child:before {
+    content: none;
+  }
+  .iam2-table td small {
+    grid-column: 2;
+  }
+  .iam2-table td:nth-child(3) {
+    max-width: none;
+  }
+  .iamx-dialog.iamx-drawer:has(.iam2-person) {
+    width: 100%;
+    border-radius: 0;
+  }
+  .iam2-tabs {
+    justify-content: space-around;
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .iam2-tabs button {
+    font-size: 13px;
+  }
+  .iam2-person {
+    gap: 12px;
+  }
+  .iam2-ops {
+    width: 100%;
+  }
+}
+@media (max-width: 900px) {
+  .iam2-workbench.iw-mobile-detail:has(.iw-workspace.has-detail) .iam2-queues {
+    display: none;
+  }
+}

@@ -59,6 +59,29 @@ def test_four_sources_stable_sql_pages_and_exact_filtered_counts(client):
     assert none["visible_total"] == none["actionable_total"] == 0
 
 
+def test_audit_sorts_recorded_decisions_before_paging_and_links_registration_receipt(client):
+    from app.models.identity import IamMutationReceipt
+    uid = employee(client)
+    login(client, "admin")
+    seed_sources(uid, 2)
+    dbm, m, p, _ = modules()
+    with dbm.SessionLocal() as db:
+        newer_decision = db.get(m.AuthRegistrationRequest, "mixed-000")
+        newer_decision.reviewed_at = "2026-10-22T13:00:00Z"
+        db.get(p.PositionReview, "mixed-001").decision_at = "2026-10-22T12:59:59Z"
+        admin_id = db.scalar(select(m.AuthUser.id).where(m.AuthUser.username == "admin"))
+        db.add(IamMutationReceipt(id="registration-test-receipt", actor_id=admin_id, operation="position_workbench",
+            idempotency_key="recorded-command", payload_hash="test", created_at=newer_decision.reviewed_at,
+            result_json=json.dumps({"item_key": "registration:mixed-000", "source_status": "approved"})))
+        db.commit()
+    query = {"sort": "activity", "state": "", "kind": "position-registration", "target_user_id": uid, "page_size": 1}
+    first = client.get("/api/iam/workspace/tasks", params=query).json()["items"][0]
+    assert first["key"] == "registration:mixed-000" and first["record_receipt_id"] == "recorded-command"
+    assert first["record_decision_at"].startswith("2026-10-22") and first["created_at"].startswith("2026-10-13")
+    second = client.get("/api/iam/workspace/tasks", params={**query, "page": 2}).json()["items"][0]
+    assert second["key"] == "position:mixed-001"
+
+
 def test_reading_all_sources_and_expired_password_does_not_write(client):
     uid = employee(client)
     login(client, "admin")

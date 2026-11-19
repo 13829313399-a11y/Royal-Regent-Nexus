@@ -2,11 +2,11 @@ import { expect, it, vi } from 'vitest'
 import type { LocationQuery } from 'vue-router'
 import { consolidatedIamTarget } from '../iamCompatibility'
 import { workspaceCapabilities } from '@/features/identity-management/workspace/contracts'
-const normalize = (url: string, enabled = true) => {
+const normalize = (url: string, enabled = true, studio = false) => {
   const parsed = new URL(url, 'http://localhost')
   const query: LocationQuery = {}
   for (const [key,value] of parsed.searchParams) query[key] = query[key] ? [String(query[key]), value] : value
-  const result = consolidatedIamTarget({path: parsed.pathname, query, hash: parsed.hash}, enabled)
+  const result = consolidatedIamTarget({path: parsed.pathname, query, hash: parsed.hash}, enabled, studio)
   return result || { path: parsed.pathname, query }
 }
 it.each([
@@ -47,4 +47,15 @@ it.each([
   vi.resetModules(); vi.stubEnv('VITE_IAM_CONSOLIDATED_UI_ENABLED',merged);vi.stubEnv('VITE_IAM_IDENTITY_UI_ENABLED',identity);vi.stubEnv('VITE_POSITION_WORKBENCH_ENABLED',position)
   try { expect((await import('@/components/iam/workspace/iam-navigation')).consolidatedIamEnabled).toBe(expected) }
   finally {vi.unstubAllEnvs();vi.resetModules()}
+})
+
+it.each([
+  ['/system/users', '/system/users', {view:'inbox'}],
+  ['/system/users?view=people&department=engineering&has_packages=yes', '/system/users', {view:'people', department:'engineering',has_packages:'yes'}],
+  ['/system/users?person=P&tab=packages','/system/users',{view:'people', person:'P',panel:'profile',tab:'packages'}],
+  ['/system/iam/roles?role=A&compare=B&tab=permissions','/system/iam/roles',{role:'A',compare:'B',tab:'permissions'}],
+  ['/system/iam/audit?type=all','/system/iam/audit',{type:'all'}],
+  ['/system/users/registration?tab=password-reset&request_id=R','/system/users',{view:'inbox',task:'password-reset:R',kind:'password-reset'}],
+])('resolves the studio route %s without a mutation', (url,path,query) => {
+  expect(normalize(url as string,true,true)).toMatchObject({path,query})
 })

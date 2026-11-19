@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   CheckCircle2,
+  ChevronDown,
   CircleOff,
   Code2,
   Copy,
@@ -21,7 +22,9 @@ import IamDialogSurface from '@/components/iam/workspace/IamDialogSurface.vue'
 import IamDisclosure from '@/components/iam/workspace/IamDisclosure.vue'
 import IamNavigation from '@/components/iam/IamNavigation.vue'
 import PermissionPackageSummary from '@/components/iam/workspace/PermissionPackageSummary.vue'
-import { consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
+import RoleExplorer from '@/features/identity-management/studio/RoleExplorer.vue'
+import '@/features/identity-management/studio/role-catalog.css'
+import { consolidatedIamEnabled, iamStudioEnabled } from '@/components/iam/workspace/iam-navigation'
 import {
   permissionAccessKindLabel,
   permissionDisplayLabel,
@@ -37,6 +40,8 @@ type DisplayPermission = PermissionCatalogItem & { catalog_missing?: boolean }
 
 const authStore = useAuthStore()
 const route = useRoute()
+const router = iamStudioEnabled ? useRouter() : undefined
+const selectedSummary = computed(() => roles.value.find(role => role.id === roleAccess.value?.id))
 const viewer = computed(() => `${authStore.currentUser?.id}:${authStore.authorizationVersion}:${authStore.currentUser?.identity?.employment_epoch}:${authStore.currentUser?.identity?.effective_context_key}`)
 let listSequence = 0
 const roles = ref<RoleSummary[]>([])
@@ -46,6 +51,8 @@ const roleAccess = ref<RoleAccessResponse | null>(null)
 const roleSearchQuery = ref('')
 const permissionSearchQuery = ref('')
 const selectedModuleCode = ref('all')
+const actionFilter = ref('all')
+const riskFilter = ref(false)
 const permissionViewMode = ref<PermissionViewMode>('configured')
 const permissionViewOptions: Array<{ value: PermissionViewMode; label: string }> = [
   { value: 'configured', label: '已包含' },
@@ -62,6 +69,7 @@ const errorMessage = ref('')
 let roleAccessRequestSequence = 0
 
 const canReadPermissionCatalog = computed(() => authStore.can('system:permission_catalog_read'))
+const canReadRoleMembers = computed(() => authStore.can('system:user_manage'))
 const configuredPermissionCodes = computed(() => new Set(roleAccess.value?.permission_codes ?? []))
 const configuredPermissionCount = computed(() => roleAccess.value?.permission_codes.length ?? 0)
 const isGeneralManager = computed(() => roleAccess.value?.id === 'position_general_manager')
@@ -117,6 +125,7 @@ const filteredPermissionGroups = computed(() => {
   const groups = new Map<string, { moduleName: string; permissions: DisplayPermission[] }>()
 
   allDisplayPermissions.value
+    .filter(p => !iamStudioEnabled || ((!riskFilter.value || p.risk_level === 'high') && (actionFilter.value === 'all' || p.access_kind === actionFilter.value)))
     .filter(
       (permission) =>
         selectedModuleCode.value === 'all' || permission.module_code === selectedModuleCode.value,
@@ -158,6 +167,7 @@ const groupedSystemPositions = computed(() => {
   const groups = new Map<string, { department: string; name: string; roles: RoleSummary[] }>()
   const sortedRoles = [...roles.value].sort(
     (left, right) =>
+      (iamStudioEnabled ? Number(right.is_system_position) - Number(left.is_system_position) : 0) ||
       left.position_sort_order - right.position_sort_order ||
       left.name.localeCompare(right.name, 'zh-CN'),
   )
@@ -169,7 +179,7 @@ const groupedSystemPositions = computed(() => {
     else
       groups.set(department, {
         department,
-        name: role.position_department_name || department,
+        name: role.position_department_name || (iamStudioEnabled && department === 'other' ? '其他权限方案' : department),
         roles: [role],
       })
   })
@@ -203,7 +213,7 @@ const roleDataScopeSummary = computed(() =>
     : roleScopeModeLabel(roleAccess.value?.scope_mode),
 )
 const hasPermissionFilters = computed(() =>
-  Boolean(permissionSearchQuery.value.trim() || selectedModuleCode.value !== 'all'),
+  Boolean(permissionSearchQuery.value.trim() || selectedModuleCode.value !== 'all' || riskFilter.value || actionFilter.value !== 'all'),
 )
 
 function isConfigured(permissionCode: string) {
@@ -216,6 +226,8 @@ function roleSourceLabel(source?: string) {
 
 function clearPermissionFilters() {
   permissionSearchQuery.value = ''
+  riskFilter.value = false
+  actionFilter.value = 'all'
   selectedModuleCode.value = 'all'
 }
 
@@ -278,6 +290,10 @@ async function loadRoleAccess(roleId: string, resetPermissionScroll = true) {
 
 async function requestRoleChange(roleId: string) {
   if (!roleId || (roleId === selectedRoleId.value && roleAccess.value?.id === roleId)) return true
+  if (router) {
+    await router.replace({ query: { ...route.query, role: roleId, compare: route.query.compare === roleId ? undefined : route.query.compare } })
+    return true
+  }
   return loadRoleAccess(roleId)
 }
 
@@ -303,15 +319,22 @@ async function loadData() {
   errorMessage.value = ''
   try {
     const [roleItems, permissionItems] = await Promise.all([
-      iamApi.listSystemPositions(),
+      iamStudioEnabled ? iamApi.listRoles(true) : iamApi.listSystemPositions(),
       iamApi.listPermissions('all'),
     ])
     if (sequence !== listSequence) return
     roles.value = roleItems
     permissions.value = permissionItems
     const requested = typeof route.query.role === 'string' ? route.query.role : ''
-    if (requested && !roleItems.some(r => r.id === requested)) errorMessage.value = '指定方案不存在或不可查看，请从列表重新选择。'
-    else if (roleItems.length) await loadRoleAccess(requested || roleItems[0].id)
+    if (requested && !roleItems.some(r => r.id === requested)) {
+      selectedRoleId.value = ''
+      roleAccess.value = null
+      isRoleLoading.value = false
+      errorMessage.value = '指定方案不存在或不可查看，请从列表重新选择。'
+    } else if (roleItems.length) {
+      const firstCatalogRole = groupedSystemPositions.value[0]?.roles[0]
+      await loadRoleAccess(requested || (iamStudioEnabled ? firstCatalogRole?.id : undefined) || roleItems[0].id)
+    }
   } catch (error) {
     if (sequence !== listSequence) return
     roles.value = []; permissions.value = []; roleAccess.value = null
@@ -330,7 +353,15 @@ watch(viewer, () => {
   roleSearchQuery.value = ''; permissionSearchQuery.value = ''; showDefinitionDetails.value = false
   void loadData()
 }, { flush: 'sync' })
-watch(() => route.query.role, () => { if (consolidatedIamEnabled) void loadData() })
+watch(() => route.query.role, (requested) => {
+  if (!consolidatedIamEnabled) return
+  if (iamStudioEnabled && typeof requested === 'string' && roles.value.some(role => role.id === requested)) {
+    if (requested !== selectedRoleId.value || requested !== roleAccess.value?.id) void loadRoleAccess(requested)
+  } else {
+    ++roleAccessRequestSequence
+    void loadData()
+  }
+})
 onBeforeUnmount(() => {
   ++listSequence
   ++roleAccessRequestSequence
@@ -338,7 +369,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="iamx-role-page">
+  <section class="iamx-role-page" :class="{ 'iam-catalog': iamStudioEnabled }">
+    <h1 v-if="iamStudioEnabled" class="sr-only">权限方案库</h1>
     <IamNavigation
       v-if="!consolidatedIamEnabled"
       data-testid="role-templates-sticky-navigation"
@@ -374,11 +406,11 @@ onBeforeUnmount(() => {
       >
         <div class="shrink-0 border-b border-slate-100 p-3">
           <div class="flex items-center justify-between gap-3 px-1 py-1">
-            <h2 class="text-sm font-bold text-slate-900">内置职位目录</h2>
-            <span class="text-xs font-semibold text-slate-400">{{ roles.length }} 个职位</span>
+            <h2 class="text-sm font-bold text-slate-900">{{ iamStudioEnabled ? '权限方案目录' : '内置职位目录' }}</h2>
+            <span class="iam-catalog-total text-xs font-semibold text-slate-400">{{ isLoading && !roles.length ? '读取中…' : roles.length + (iamStudioEnabled ? ' 个方案' : ' 个职位') }}</span>
           </div>
           <label class="mt-2 grid gap-1.5 text-xs font-semibold text-slate-600">
-            搜索职位
+            <span :class="{ 'sr-only': iamStudioEnabled }">搜索职位</span>
             <span class="iamx-search-control">
               <Search
                 class="size-4 text-slate-400"
@@ -388,19 +420,19 @@ onBeforeUnmount(() => {
                 v-model="roleSearchQuery"
                 type="search"
                 class="h-9 text-[13px] font-normal"
-                placeholder="部门、职位或代码"
+                :placeholder="iamStudioEnabled ? '搜索部门、职位包或代码…' : '部门、职位或代码'"
               />
             </span>
           </label>
-          <p class="mt-2 px-1 text-xs text-slate-500" aria-live="polite">
-            显示 {{ visibleSystemPositionCount }} / {{ roles.length }} 个职位
+          <p v-if="!iamStudioEnabled || roleSearchQuery" class="mt-2 px-1 text-xs text-slate-500" aria-live="polite">
+            显示 {{ visibleSystemPositionCount }} / {{ roles.length }} {{ iamStudioEnabled ? '个方案' : '个职位' }}
           </p>
         </div>
 
         <div
           data-testid="role-directory-scroll-region"
           role="region"
-          aria-label="内置职位目录"
+          :aria-label="iamStudioEnabled ? '权限方案目录' : '内置职位目录'"
           tabindex="0"
           class="iam-directory-scroll min-h-0 flex-1 p-2.5 outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-200"
         >
@@ -428,7 +460,16 @@ onBeforeUnmount(() => {
               :aria-current="selectedRoleId === role.id ? 'true' : undefined"
               @click="requestRoleChange(role.id)"
             >
-              <span class="flex min-w-0 items-center gap-2">
+              <template v-if="iamStudioEnabled">
+                <span class="iam-role-directory-title"><strong>{{ role.name }}</strong><small>{{ roleScopeModeLabel(role.scope_mode) }}</small></span>
+                <span class="iam-role-directory-counts">
+                  <span :title="role.permission_count + ' 项权限'">{{ role.permission_count }} 权</span>
+                  <span :title="!canReadRoleMembers || role.scoped_member_count == null ? '成员资料受保护' : role.scoped_member_count + ' 名可见成员'">
+                    {{ !canReadRoleMembers || role.scoped_member_count == null || role.scoped_binding_count == null ? '受限' : role.scoped_binding_count + ' 条 · ' + role.scoped_member_count + ' 人' }}
+                  </span>
+                </span>
+              </template>
+              <template v-else><span class="flex min-w-0 items-center gap-2">
                 <b class="min-w-0 flex-1 truncate text-sm">{{ role.name }}</b>
                 <LockKeyhole
                   v-if="role.scope_mode_locked"
@@ -438,8 +479,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="mt-1 block truncate text-[11px] text-slate-500"
                 >{{ roleScopeModeLabel(role.scope_mode) }} · {{ role.permission_count }} 项权限 ·
-                {{ role.binding_count }} 条绑定</span
-              >
+                {{ role.binding_count }} 条绑定</span></template>
             </button>
           </section>
           <p
@@ -453,7 +493,7 @@ onBeforeUnmount(() => {
 
       <section class="iamx-role-content">
         <label class="mb-4 grid gap-1.5 text-sm font-semibold text-slate-700 xl:hidden">
-          选择内置职位
+          {{ iamStudioEnabled ? '选择权限方案' : '选择内置职位' }}
           <select
             :value="selectedRoleId"
             class="h-10 rounded-[10px] border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
@@ -508,7 +548,41 @@ onBeforeUnmount(() => {
         </div>
 
         <template v-else>
-          <div data-testid="role-viewer-panel" class="iam-viewer-panel grid min-h-0 gap-3">
+          <RoleExplorer v-if="iamStudioEnabled" :role="roleAccess" :summary="selectedSummary" :roles="roles" :permissions="allDisplayPermissions"
+            :module="selectedModuleCode" @filter="selectedModuleCode = $event" @definition="openDefinitionDetails">
+            <template #filters>
+              <div data-testid="permission-filter-toolbar" class="iam-capability-filters">
+                <label class="iamx-search-control"><Search :size="15" aria-hidden="true" />
+                  <input v-model="permissionSearchQuery" type="search" aria-label="搜索权限" placeholder="搜索权限名称、模块或代码">
+                </label>
+                <select v-model="actionFilter" aria-label="能力类型"><option value="all">全部类型</option><option value="read">仅查看</option><option value="operate">仅操作</option></select>
+                <select v-model="permissionViewMode" aria-label="权限显示范围"><option v-for="option in permissionViewOptions" :key="option.value" :value="option.value">{{ option.label }}（{{ option.value === 'configured' ? configuredPermissionCount : allDisplayPermissions.length }}）</option></select>
+                <label class="iam-risk-filter"><input v-model="riskFilter" type="checkbox">仅高风险</label>
+                <button v-if="hasPermissionFilters" type="button" @click="clearPermissionFilters">清除筛选</button>
+              </div>
+            </template>
+            <div ref="permissionScrollContainer" data-testid="role-permission-scroll-region" role="region" :aria-label="roleAccess.name + '的权限清单'" tabindex="0" class="iam-capability-scroll">
+              <div class="iam-capability-grid">
+                <div class="iam-capability-heading"><strong>权限名称与代码</strong><span>模块 / 读写类型 / 风险级别</span></div>
+                <template v-for="group in filteredPermissionGroups" :key="group.moduleCode">
+                  <details v-for="permission in group.permissions" :key="permission.code" class="iam-capability-row">
+                    <summary>
+                      <span class="iam-capability-name"><ChevronDown :size="12" aria-hidden="true" /><span><strong>{{ permissionDisplayLabel(permission) }}</strong> <code>{{ permission.code }}</code></span></span>
+                      <span class="iam-catalog-badge">{{ group.moduleName }}</span>
+                      <span class="iam-catalog-badge" :class="{ 'tone-blue': permission.access_kind !== 'read' }">{{ permission.access_kind === 'read' ? '查看只读' : '业务操作' }}</span>
+                      <span class="iam-catalog-badge" :class="permission.risk_level === 'high' ? 'tone-red' : 'tone-green'">{{ permission.risk_level === 'high' ? '高风险' : '常规' }}</span>
+                      <span v-if="permissionViewMode === 'all' || permission.status === 'inactive' || permission.catalog_missing" class="iam-capability-status">
+                        {{ isConfigured(permission.code) ? '已包含' : '未包含' }}{{ permission.catalog_missing ? ' · 权限目录缺失' : permission.status === 'inactive' ? ' · 已停用' : '' }}
+                      </span>
+                    </summary>
+                    <div class="iam-capability-more"><p>{{ permission.description || '暂无说明。' }}</p><p>{{ permissionEffectiveScopeLabel(permission, roleAccess.scope_mode) }}<template v-if="permission.scope_guidance"> · {{ permission.scope_guidance }}</template></p></div>
+                  </details>
+                </template>
+                <p v-if="!filteredPermissionCount" class="iam-catalog-notice">当前筛选没有匹配的权限。</p>
+              </div>
+            </div>
+          </RoleExplorer>
+          <div v-else data-testid="role-viewer-panel" class="iam-viewer-panel grid min-h-0 gap-3">
             <header
               data-testid="role-summary-panel"
               class="shrink-0 rounded-[14px] border border-slate-200 bg-white px-5 py-4 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_4px_12px_rgba(15,23,42,0.03)]"
@@ -520,7 +594,7 @@ onBeforeUnmount(() => {
                     <span
                       class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800"
                     >
-                      <LockKeyhole class="size-3" aria-hidden="true" />代码固定 · 只读
+                      <LockKeyhole class="size-3" aria-hidden="true" />{{ iamStudioEnabled && !roleAccess.is_system_position ? '配置方案 · 只读' : '代码固定 · 只读' }}
                     </span>
                   </div>
                   <p class="mt-1 truncate text-[13px] text-slate-500">
@@ -556,9 +630,9 @@ onBeforeUnmount(() => {
                   </dd>
                 </div>
                 <div class="min-w-0">
-                  <dt class="text-[11px] font-semibold text-slate-400">授权绑定</dt>
+                  <dt class="text-[11px] font-semibold text-slate-400">{{ iamStudioEnabled ? '可见绑定 / 去重人数' : '授权绑定' }}</dt>
                   <dd class="mt-0.5 text-[13px] font-bold text-slate-800">
-                    {{ roleAccess.binding_count }} 条
+                    {{ iamStudioEnabled ? (selectedSummary?.scoped_binding_count == null ? '成员受限' : selectedSummary.scoped_binding_count + ' 条 · ' + selectedSummary.scoped_member_count + ' 人') : roleAccess.binding_count + ' 条' }}
                   </dd>
                 </div>
                 <div class="min-w-0">
@@ -770,7 +844,7 @@ onBeforeUnmount(() => {
             <LockKeyhole class="mt-0.5 size-4 shrink-0 text-emerald-700" aria-hidden="true" />
             <p>
               <b>{{ roleSourceLabel(roleAccess.source) }} · 只读。</b>
-              内置职位由系统代码固定维护；管理员可以查看，但不能在线修改。
+              {{ iamStudioEnabled && !roleAccess?.is_system_position ? '此方案的能力由已保存的授权配置定义。' : '内置职位由系统代码固定维护；管理员可以查看，但不能在线修改。' }}
             </p>
           </div>
 
@@ -803,7 +877,7 @@ onBeforeUnmount(() => {
             <div class="sm:col-span-2">
               <dt class="text-xs font-semibold text-slate-500">修改方式</dt>
               <dd class="mt-1 text-sm leading-6 text-slate-800">
-                提交明确需求，通过代码变更、测试和发布流程生效。
+                {{ iamStudioEnabled && roleAccess.source !== 'code' ? '当前显示已保存的方案配置。' : '提交明确需求，通过代码变更、测试和发布流程生效。' }}
               </dd>
             </div>
             <div class="sm:col-span-2">
@@ -841,7 +915,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.iamx-role-layout {
+.iamx-role-page:not(.iam-catalog) .iamx-role-layout {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 20px;
@@ -856,7 +930,7 @@ onBeforeUnmount(() => {
 .iam-viewer-panel > * {
   min-width: 0;
 }
-.iam-directory-panel {
+.iamx-role-page:not(.iam-catalog) .iam-directory-panel {
   max-height: calc(100dvh - 168px);
   position: sticky;
   top: 20px;
@@ -907,7 +981,7 @@ onBeforeUnmount(() => {
   background: #fff5f3;
 }
 @media (max-width: 1279px) {
-  .iamx-role-layout {
+  .iamx-role-page:not(.iam-catalog) .iamx-role-layout {
     grid-template-columns: minmax(0, 1fr);
   }
 }

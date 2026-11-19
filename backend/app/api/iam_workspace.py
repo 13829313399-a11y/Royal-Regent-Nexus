@@ -13,12 +13,13 @@ router = APIRouter(prefix="/api/iam/workspace", route_class=PositionRoute)
 @router.get("/tasks")
 def tasks(page: int = Query(1, ge=1), page_size: int = Query(30, ge=1, le=100), q: str = Query("", max_length=128),
           kind: Literal["", "position-registration", "position", "registration", "password-reset", "identity-change"] = "",
+          sort: Literal["oldest", "newest", "activity"] = "oldest",
           state: Literal["", "open", "actionable", "blocked", "waiting_employee", "scheduled", "closed"] = "open",
           org_unit_id: str = Query("", max_length=64), target_user_id: str = Query("", max_length=64),
-          from_at: datetime | None = None, to_at: datetime | None = None,
+          from_at: datetime | None = None, to_at: datetime | None = None, include_bucket_counts: bool = False,
           db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return workspace.tasks(db, user, page=page, page_size=page_size, q=q, kind=kind, state=state,
-        org_unit_id=org_unit_id, target_user_id=target_user_id, from_at=from_at, to_at=to_at)
+        org_unit_id=org_unit_id, target_user_id=target_user_id, from_at=from_at, to_at=to_at, include_bucket_counts=include_bucket_counts, sort=sort)
 
 
 @router.get("/password-resets/{request_id}")
