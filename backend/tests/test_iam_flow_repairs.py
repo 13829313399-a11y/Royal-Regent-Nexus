@@ -149,25 +149,44 @@ def test_business_scope_denial_requires_independent_approval_and_notifies_review
     assert task["id"] in {t["id"] for t in client.get("/api/work-center/snapshot?view=history").json()["items"]}
 
 
-def test_upgrade_preserves_revoked_role_history_and_rejects_ended_assignment(client):
+def test_upgrade_preserves_revoked_role_history_and_rejects_ended_assignment(client, monkeypatch):
+    from app.core.config import settings
+    from test_access_studio import draft_for
+
     uid = employee(client)
     review = submit(client)
     login(client, "admin")
     key, _, impact = plan(client, review)
     assert commit(client, key, impact)[0].status_code == 200
+    person = identity(client, uid)
+    assignment = person["primary_assignment"]["id"]
+    bindings = {b["role_id"]: b for b in person["role_bindings"] if b["assignment_id"] == assignment and b["state"] == "active"}
+    old_id = bindings["position_engineering_engineer"]["id"]
+    active_id = bindings["position_engineering_supervisor"]["id"]
+
+    monkeypatch.setattr(settings, "iam_access_studio_writes_enabled", True)
+    url = f"/api/iam/users/{uid}/access-studio"
+    removal = client.post(url + "/preview", json=draft_for(person, remove_binding_ids=[old_id]))
+    assert removal.status_code == 200, removal.text
+    result = client.post(url + "/commit", headers={"Idempotency-Key": uuid4().hex},
+        json={"preview_token": removal.json()["preview_token"], "risk_acknowledged": True})
+    assert result.status_code == 200, result.text
     dbm, m, _ = modules()
     with dbm.SessionLocal() as db:
-        old = db.scalar(select(m.AuthRoleBindingMetadata).join(m.AuthUserRole, m.AuthUserRole.id == m.AuthRoleBindingMetadata.user_role_id)
-            .where(m.AuthUserRole.user_id == uid, m.AuthRoleBindingMetadata.state == "revoked"))
-        old_id, before = old.user_role_id, (old.role_version_id, old.version)
+        old = db.get(m.AuthRoleBindingMetadata, old_id)
+        assert old.state == "revoked" and old.role_version_id
+        before = (old.role_version_id, old.version)
+        active = db.get(m.AuthRoleBindingMetadata, active_id)
+        assert active.state == "active"
+        active_revision = active.version
         p = db.scalar(select(m.AuthPermission).where(m.AuthPermission.code == "three_d_printing:read"))
         db.add(m.AuthRolePermission(id=uuid4().hex, role_id="position_engineering_engineer", permission_id=p.id))
         db.commit()
-    assignment = identity(client, uid)["primary_assignment"]["id"]
     assert identity_commit(client, draft(client, uid, "upgrade_packages", source_assignment_id=assignment)).status_code == 200
     with dbm.SessionLocal() as db:
         old = db.get(m.AuthRoleBindingMetadata, old_id)
-        assert (old.role_version_id, old.version) == before
+        assert old.state == "revoked" and (old.role_version_id, old.version) == before
+        assert db.get(m.AuthRoleBindingMetadata, active_id).version == active_revision + 1
     assert identity_commit(client, draft(client, uid, "end_assignment", source_assignment_id=assignment)).status_code == 200
     ended = draft(client, uid, "upgrade_packages", source_assignment_id=assignment)
     assert client.post(f"/api/iam/identity-changes/{ended['id']}/preview").status_code == 409
