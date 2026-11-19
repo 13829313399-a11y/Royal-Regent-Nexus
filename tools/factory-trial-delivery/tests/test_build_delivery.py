@@ -121,6 +121,7 @@ def test_small_delivery_has_no_pyc_and_honest_source_hashes(tmp_path, monkeypatc
     tool.mkdir(parents=True)
     (source / "build/web").mkdir(parents=True)
     (source / "build/web/index.html").write_text("<html>synthetic</html>")
+    (source / "build/web/source-manifest.json").write_text(json.dumps({"sources": [], "contracts": []}))
     (tool / "launch.py").write_text("# synthetic launcher")
     (tool / "requirements-windows.txt").write_text("demo==1.0\n")
     (tool / "runtime-sources.json").write_text("{}")
@@ -170,7 +171,10 @@ import demo
             content = zipped.read(prefix + item["path"])
             assert sha256(content).hexdigest() == item["sha256"] and len(content) == item["bytes"]
         assert "uncommitted" in manifest["source_commit_role"]
-        assert zipped.read(prefix + "START.cmd").endswith(b"if errorlevel 1 pause\r\n")
+        start = zipped.read(prefix + "START.cmd")
+        assert b'"%TRIAL_ROOT%runtime\\python.exe" -X utf8 "%TRIAL_ROOT%launch.py"' in start
+        assert b'DisableDelayedExpansion\r\n' in start
+        assert b'STARTUP-ERROR.txt' in start and b'\n' not in start.replace(b'\r\n', b'')
     assert sha256(zipped_path.read_bytes()).hexdigest() == result[0]["sha256"]
     assert not list(output.glob("*.part"))
     assert not list(output.glob("*华康C*"))

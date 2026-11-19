@@ -150,7 +150,7 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     "reminders": [
       "本页只读，无需在系统内确认或提异议；看完不代表已经收款。",
       "没数据先核对筛选和厂区、月份、币种，再联系本厂查实际收料。",
-      "期初库存、车间领料不算新增供货或退货；缺价不是免费。"
+      "期初库存和车间领料不计入本月供货。价格还在商量时，原单价和参考金额留在明细，核价后才计入应结。"
     ],
     "image": {
       "src": "/carton-guide/quick-supplier-monthly.svg",

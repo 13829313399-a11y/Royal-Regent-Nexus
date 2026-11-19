@@ -13,7 +13,7 @@ const config = {
   purchase: { label: '采购单', icon: Download, tone: 'teal' }, date: { label: '调整交期', icon: CalendarClock, tone: 'blue' },
   replenish: { label: '补单（原数量不变）', icon: Plus, tone: 'teal' }, append: { label: '追加订单', icon: Plus, tone: 'amber' },
   reduce: { label: '减少未入库量', icon: Minus, tone: 'danger' }, adjust: { label: '调整订单', icon: Pencil, tone: 'neutral' },
-  'return-stock': { label: '退货', icon: Truck, tone: 'danger' }, 'undo-replenish': { label: '撤销未发货补单', icon: X, tone: 'danger' },
+  'return-stock': { label: '订单退货', icon: Truck, tone: 'danger' }, 'undo-replenish': { label: '撤销未发货补单', icon: X, tone: 'danger' },
   cancel: { label: '取消订单', icon: X, tone: 'danger' }, delete: { label: '删除订单', icon: Trash2, tone: 'danger' },
 } as const
 </script>

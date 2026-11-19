@@ -19,23 +19,24 @@ function page(options={}){
     return response({...body,version:body.baseVersion+1});
   };
   if(options.storage)for(const [k,v]of Object.entries(options.storage))w.localStorage.setItem(k,v);
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-daily-report.js'),'utf8'));
+  w.QcPeriodReports.weekly.load=()=>{};
   w.eval(fs.readFileSync(path.join(__dirname,'qc-weekly-templates.js'),'utf8'));d.dispatchEvent(new w.Event('DOMContentLoaded'));
   const edit=(field,value)=>{d.querySelector('[data-field="'+field+'"]').click();const input=d.querySelector('.qwt-editor');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));return input;};
   return {dom,w,d,calls,data,response,edit};
 }
 
-test('all original columns, dynamic rows, two totals, independent cells and locked source',async()=>{
+test('all original columns, dynamic rows, customer totals, independent cells and locked source',async()=>{
   const p=page({n:220});try{
-    assert.equal(p.d.querySelectorAll('#qwtEntries button').length,3);
+    assert.deepEqual([...p.d.querySelectorAll('#qwtChoice option:not([value=""])')].map(o=>o.value),['detail','issues']);
     await p.w.QcWeeklyTemplates.open('detail');
     assert.equal(p.d.querySelectorAll('#qwtTables table')[0].querySelectorAll('tbody tr').length,220);
     assert.equal(p.d.querySelectorAll('#qwtTables table')[0].querySelectorAll('.qwt-cell').length,0);
     assert.equal(p.d.querySelectorAll('#qwtTables [colspan],#qwtTables [rowspan]').length,0);
-    for(const kind of ['group']){
-      await p.w.QcWeeklyTemplates.open(kind);
-      assert.equal(p.d.querySelectorAll('tfoot td').length,8);
-      assert.match(p.d.querySelector('tfoot').textContent,/合计220待补全/);
-    }
+    const footer=p.d.querySelectorAll('#qwtTables table')[1];
+    assert.equal(footer.querySelectorAll('tfoot td').length,9);
+    assert.match(footer.querySelector('tfoot').textContent,/合计220待补全/);
+    assert.equal(footer.querySelectorAll('th')[7].title,templates[0].summaryHeaders[7]);
     assert.equal(p.d.querySelector('[data-field="firstResponsible"]'),null);
   }finally{p.dom.window.close();}
 });
@@ -44,7 +45,7 @@ test('issue workbook keeps week controls and template navigation, reloads dates,
  const p=page();try{
   p.w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};p.w.HTMLDialogElement.prototype.close=function(){this.dispatchEvent(new p.w.Event('close'));};
   const oldFetch=p.w.fetch;p.w.fetch=async(url,init={})=>{
-   if(String(url).startsWith('api/issue-reports?')){p.calls.push({url,init});return p.response({title:'周验货问题及照片',dateFrom:'2026-11-01',dateTo:'2026-11-07',total:1,canExport:true,sourceRevision:'issues-r1',customers:[{key,label:'合成客户'}],headers:Array(12).fill('字段'),tables:{issues:[{id:'entry-1',values:Array(12).fill('只读内容'),photos:[{id:'photo-1',name:'照片'}]}]}});}
+   if(String(url).startsWith('api/issue-reports?')){p.calls.push({url,init});return p.response({title:'周验货问题及照片',dateFrom:'2026-11-01',dateTo:'2026-11-07',total:1,canExport:true,sourceRevision:'issues-r1',customers:[{key,label:'合成客户'}],groups:[[5,'订单与产品'],[5,'合同与装箱'],[4,'验货问题与照片'],[5,'整改跟踪']],widths:Array(19).fill(100),headers:Array(19).fill('字段'),tables:{issues:[{id:'entry-1',values:Array(19).fill('只读内容'),photos:[{id:'photo-1',name:'照片'}]}]}});}
    return oldFetch(url,init);
   };
   p.w.eval(fs.readFileSync(path.join(__dirname,'qc-issue-reports.js'),'utf8'));
@@ -52,20 +53,24 @@ test('issue workbook keeps week controls and template navigation, reloads dates,
   await p.w.QcWeeklyTemplates.open('issues');
   assert.equal(p.d.getElementById('qwtView').hidden,false);assert.ok(p.d.querySelector('#qwtView .qir-inline'));
   assert.equal(p.d.getElementById('qwtEntries').hidden,false);assert.equal(p.d.querySelector('.qir-page'),null);assert.equal(p.d.querySelector('[data-quality]'),null);
-  assert.equal(p.d.querySelector('#qwtEntries [data-template="issues"]').getAttribute('aria-current'),'page');
-  assert.equal(p.d.querySelectorAll('#qwtView th').length,13);
+  assert.equal(p.d.getElementById('qwtChoice').value,'issues');
+  assert.equal(p.d.querySelector('#qwtView select[data-customer]'),null);
+  const selector=p.d.getElementById('qwtCustomer');
+  selector.value=key;selector.dispatchEvent(new p.w.Event('change'));await tick();
+  assert.match(p.calls.at(-1).url,new RegExp('customer='+key));
+  assert.equal(p.d.querySelectorAll('#qwtView th[scope=col]').length,19);
   // Re-entering through the sidebar resolves report-center to this same weekly page.
   const app=fs.readFileSync(path.join(__dirname,'app.js'),'utf8');
   p.w.eval('var currentPage="weekly", REPORT_CENTER_PAGES=["weekly","daily","monthly","analysis"], PAGE_TITLES={};'+app.slice(app.indexOf('function showPage('),app.indexOf("const SIDEBAR_KEY")));
-  p.w.canView=()=>true;p.w.reportCenterLandingPage=()=> 'weekly';p.w.mountReportTypeSelect=()=>{};p.w.requestAnimationFrame=()=>{};
+  p.w.canView=()=>true;p.w.reportCenterLandingPage=()=> 'weekly';p.w.mountReportTypeSelect=()=>{};p.w.syncReportCenterNav=()=>{};p.w.requestAnimationFrame=()=>{};
   const issuePanel=p.d.querySelector('#qwtView .qir-inline');
   p.w.showPage('report-center');
   assert.equal(p.d.querySelector('#qwtView .qir-inline'),issuePanel);
-  assert.equal(p.d.querySelectorAll('#qwtView th').length,13);
+  assert.equal(p.d.querySelectorAll('#qwtView th[scope=col]').length,19);
   p.d.querySelector('.qir-photo').click();assert.ok(p.d.querySelector('dialog[open]'));
   const date=p.d.getElementById('weeklyDate');date.value='2026-11-12';date.dispatchEvent(new p.w.Event('change'));await tick();
   assert.match(p.calls.at(-1).url,/date=2026-11-12/);assert.equal(p.d.querySelector('dialog'),null);
-  await p.w.QcWeeklyTemplates.open('group');assert.equal(p.d.querySelector('.qir-inline'),null);assert.ok(p.d.querySelector('#qwtTables table'));
+  await p.w.QcWeeklyTemplates.open('detail');assert.equal(p.d.querySelector('.qir-inline'),null);assert.ok(p.d.querySelector('#qwtTables table'));
   await p.w.QcWeeklyTemplates.open('issues');assert.equal(p.w.QcWeeklyTemplates.returnToReport(),true);assert.equal(p.d.getElementById('qwtView').hidden,true);assert.equal(p.d.getElementById('weeklyReportBody').hidden,false);
   await p.w.QcWeeklyTemplates.open('issues');p.w.showPage('daily');
   assert.equal(p.d.querySelector('.qir-inline'),null);
@@ -73,32 +78,32 @@ test('issue workbook keeps week controls and template navigation, reloads dates,
  }finally{p.dom.window.close();}
 });
 
-test('existing week control returns without a back button, protects drafts and cancels late loads',async()=>{
+test('reselecting the weekly period keeps its template and leaving the period cancels late loads',async()=>{
   const p=page();try{
     const source=fs.readFileSync(path.join(__dirname,'app.js'),'utf8');
     p.w.eval('var currentPage="weekly";'+source.slice(source.indexOf('function changeReportPeriod('),source.indexOf('function changeReportType(')));
     const week=p.d.querySelector('[data-report-page="weekly"]');
-    await p.w.QcWeeklyTemplates.open('group');
+    await p.w.QcWeeklyTemplates.open('detail');
     assert.equal(p.d.getElementById('qwtBack'),null);
     p.edit('returns','1');p.w.changeReportPeriod(week);
     assert.equal(p.d.getElementById('qwtView').hidden,false);
     await p.w.QcWeeklyTemplates.flush();p.w.changeReportPeriod(week);
-    assert.equal(p.d.getElementById('qwtView').hidden,true);
-    assert.equal(p.d.getElementById('weeklyReportBody').hidden,false);
+    assert.equal(p.d.getElementById('qwtView').hidden,false);
+    assert.equal(p.d.getElementById('weeklyReportBody').hidden,true);
     p.w.QcWeeklyTemplates.pageChanged('daily');
     let resolve;p.w.fetch=()=>new Promise(r=>resolve=r);
-    const loading=p.w.QcWeeklyTemplates.open('detail');p.w.changeReportPeriod(week);
+    const loading=p.w.QcWeeklyTemplates.open('detail');p.w.QcWeeklyTemplates.pageChanged('daily');
     resolve(p.response({hongKongContacts:[]}));await tick();resolve(p.response(p.data));await loading;
     assert.equal(p.d.getElementById('qwtView').hidden,true);
     p.w.fetch=async()=>{throw Error('读取失败');};await p.w.QcWeeklyTemplates.open('detail');
     assert.equal(p.d.getElementById('qwtBack'),null);p.w.changeReportPeriod(week);
-    assert.equal(p.d.getElementById('weeklyReportBody').hidden,false);
+    assert.equal(p.d.getElementById('weeklyReportBody').hidden,true);
   }finally{p.dom.window.close();}
 });
 
-test('fast edits serialize with updated versions and share values across templates',async()=>{
+test('fast edits serialize with updated versions in the customer footer',async()=>{
   const p=page();try{
-    await p.w.QcWeeklyTemplates.open('group');
+    await p.w.QcWeeklyTemplates.open('detail');
     const deferred=[];p.w.fetch=(url,init)=>new Promise(resolve=>deferred.push({resolve,body:JSON.parse(init.body)}));
     const input=p.edit('weeklyRemark','第一版');const saving=p.w.QcWeeklyTemplates.flush();
     input.value='第二版';input.dispatchEvent(new p.w.Event('input',{bubbles:true}));
@@ -106,7 +111,7 @@ test('fast edits serialize with updated versions and share values across templat
     assert.equal(deferred.length,2);assert.equal(deferred[1].body.value,'第二版');assert.equal(deferred[1].body.baseVersion,1);
     deferred[1].resolve(p.response({...deferred[1].body,version:2}));await saving;
     assert.equal(p.w.QcWeeklyTemplates.navigationState().dirty,false);
-    await p.w.QcWeeklyTemplates.open('group');
+    await p.w.QcWeeklyTemplates.open('detail');
     assert.equal(p.d.querySelector('[data-field="weeklyRemark"]').textContent,'第二版');
     assert.equal(p.w.localStorage.length,0);
   }finally{p.dom.window.close();}
@@ -114,14 +119,14 @@ test('fast edits serialize with updated versions and share values across templat
 
 test('unknown network outcome retains exact idempotency key; reload restores draft',async()=>{
   const p=page();let storage;try{
-    await p.w.QcWeeklyTemplates.open('group');p.edit('returns','1');
+    await p.w.QcWeeklyTemplates.open('detail');p.edit('returns','1');
     let first;p.w.fetch=async(url,init)=>{first=JSON.parse(init.body);throw Error('网络断开');};
     await p.w.QcWeeklyTemplates.flush();
     assert.match(p.d.getElementById('qwtStatus').textContent,/网络断开/);
     const date=p.d.getElementById('weeklyDate');date.value='2026-12-01';date.dispatchEvent(new p.w.Event('change',{bubbles:true}));assert.equal(date.value,'2026-11-05');
     storage=Object.fromEntries(Object.keys(p.w.localStorage).map(k=>[k,p.w.localStorage.getItem(k)]));
     const q=page({storage});try{
-      await q.w.QcWeeklyTemplates.open('group');
+      await q.w.QcWeeklyTemplates.open('detail');
       assert.equal(q.d.querySelector('[data-field="returns"]').textContent,'1');
       let retry;q.w.fetch=async(url,init)=>{retry=JSON.parse(init.body);return q.response({...retry,version:1});};
       q.d.getElementById('qwtRetry').click();await tick();
@@ -133,7 +138,7 @@ test('unknown network outcome retains exact idempotency key; reload restores dra
 
 test('conflicts require explicit choice and never overwrite another editor silently',async()=>{
   const p=page();try{
-    await p.w.QcWeeklyTemplates.open('group');p.edit('weeklyRemark','我的处理');
+    await p.w.QcWeeklyTemplates.open('detail');p.edit('weeklyRemark','我的处理');
     p.w.fetch=async()=>p.response({detail:{code:'cell_conflict',message:'冲突',current:{value:'别人处理',version:3}}},409);
     await p.w.QcWeeklyTemplates.flush();assert.match(p.d.getElementById('qwtConflict').textContent,/别人处理/);
     let request;p.w.fetch=async(url,init)=>{request=JSON.parse(init.body);return p.response({...request,version:4});};
@@ -144,17 +149,17 @@ test('conflicts require explicit choice and never overwrite another editor silen
 
 test('read failures clear visible table, read-only permission, empty records and other factories',async()=>{
   const p=page();try{
-    p.data.canEdit=false;await p.w.QcWeeklyTemplates.open('group');assert.equal(p.d.querySelectorAll('.qwt-cell').length,0);
+    p.data.canEdit=false;await p.w.QcWeeklyTemplates.open('detail');assert.equal(p.d.querySelectorAll('.qwt-cell').length,0);
     p.w.fetch=async()=>{throw Error('无法读取');};p.d.getElementById('qwtRefresh').click();await tick();
     assert.equal(p.d.querySelector('#qwtView table'),null);assert.match(p.d.getElementById('qwtView').textContent,/无法读取/);
   }finally{p.dom.window.close();}
-  const q=page({factory:'huadeng'});try{await q.w.QcWeeklyTemplates.open('group');assert.equal(q.calls.length,0);assert.equal(q.d.getElementById('qwtEntries').hidden,true);}finally{q.dom.window.close();}
-  const r=page({n:0});try{r.data.tables={detail:[],group:[],internal:[],footer:[]};await r.w.QcWeeklyTemplates.open('group');assert.match(r.d.getElementById('qwtView').textContent,/没有已审核/);assert.equal(r.d.querySelectorAll('tfoot td').length,8);}finally{r.dom.window.close();}
+  const q=page({factory:'huadeng'});try{await q.w.QcWeeklyTemplates.open('detail');assert.equal(q.calls.length,0);assert.equal(q.d.getElementById('qwtEntries').hidden,true);}finally{q.dom.window.close();}
+  const r=page({n:0});try{r.data.tables={detail:[],group:[],internal:[],footer:[]};await r.w.QcWeeklyTemplates.open('detail');assert.match(r.d.getElementById('qwtView').textContent,/没有已审核/);assert.equal(r.d.querySelectorAll('tfoot td').length,9);}finally{r.dom.window.close();}
 });
 
 test('Tab starts inline editing, Escape restores text, and source refresh compares pending versions',async()=>{
   const p=page();try{
-    await p.w.QcWeeklyTemplates.open('group');
+    await p.w.QcWeeklyTemplates.open('detail');
     const input=p.edit('returns','1');input.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
     assert.equal(p.d.querySelector('.qwt-editor').getAttribute('aria-label'),'合成客户 退货原因');
     let current=p.d.querySelector('.qwt-editor');current.value='撤销内容';current.dispatchEvent(new p.w.Event('input',{bubbles:true}));
@@ -173,21 +178,20 @@ test('Tab starts inline editing, Escape restores text, and source refresh compar
   }finally{p.dom.window.close();}
 });
 
-test('all allowed empty supplements normalize missing/null values and persist across three templates',async()=>{
+test('all allowed empty supplements normalize missing/null values and persist in the customer footer',async()=>{
   const p=page();try{
     p.data.fields[key]={returns:{value:null,version:0},returnReason:null,weeklyRemark:{value:undefined,version:0}};
-    const groups={detail:['returns','returnReason','hongKongContact','reworkA0D','weeklyRemark'],group:['returns','returnReason','hongKongContact','weeklyRemark']};
-    for(const [kind,allowed]of Object.entries(groups)){
-      await p.w.QcWeeklyTemplates.open(kind);
-      for(const field of allowed){p.edit(field,field==='returns'?'0':kind+'已补充');await p.w.QcWeeklyTemplates.flush();}
-      assert.equal(p.w.QcWeeklyTemplates.navigationState().dirty,false);
+    await p.w.QcWeeklyTemplates.open('detail');
+    for(const field of ['returns','returnReason','hongKongContact','reworkA0D','weeklyRemark']){
+      p.edit(field,field==='returns'?'0':'已补充');await p.w.QcWeeklyTemplates.flush();
     }
+    assert.equal(p.w.QcWeeklyTemplates.navigationState().dirty,false);
     await p.w.QcWeeklyTemplates.open('detail');
     assert.equal(p.d.querySelector('[data-field="returns"]').textContent,'0');
-    assert.equal(p.d.querySelector('[data-field="weeklyRemark"]').textContent,'group已补充');
+    assert.equal(p.d.querySelector('[data-field="weeklyRemark"]').textContent,'已补充');
     p.d.querySelector('.qwt-cell').click();p.d.querySelector('.qwt-editor').dispatchEvent(new p.w.Event('blur'));
     p.d.getElementById('qwtRefresh').click();await tick();
-    assert.equal(p.d.querySelector('[data-field="weeklyRemark"]').textContent,'group已补充');
+    assert.equal(p.d.querySelector('[data-field="weeklyRemark"]').textContent,'已补充');
   }finally{p.dom.window.close();}
 });
 
@@ -197,16 +201,14 @@ test('template width is scoped; Excel exports selected template, saved versions 
     p.d.addEventListener('click',e=>{if(e.target.tagName==='A'){link={url:e.target.getAttribute('href'),name:e.target.download};e.preventDefault();}},true);
     const original=p.w.fetch;
     p.w.fetch=async(url,init)=>{if(url.endsWith('/excel')){captures.push(JSON.parse(init.body));return p.response({url:'api/weekly-templates/excel/abc123.token',filename:'表格.xls'});}return original(url,init);};
-    for(const kind of ['detail','group']){
-      await p.w.QcWeeklyTemplates.open(kind);
-      assert(p.d.getElementById('weeklyReportContent').classList.contains('qwt-open'));
-      p.d.getElementById('qwtExcel').click();await tick();
-      assert.equal(captures.at(-1).template,kind);assert.equal('paper' in captures.at(-1),false);
-      assert.deepEqual(captures.at(-1).versions,{[key]:Object.fromEntries(fields.map(f=>[f,0]))});
-      assert.equal(link.url,'api/weekly-templates/excel/abc123.token');
-      p.w.QcWeeklyTemplates.returnToReport();assert(!p.d.getElementById('weeklyReportContent').classList.contains('qwt-open'));
-    }
-    await p.w.QcWeeklyTemplates.open('group');
+    await p.w.QcWeeklyTemplates.open('detail');
+    assert(p.d.getElementById('weeklyReportContent').classList.contains('qwt-open'));
+    p.d.getElementById('qwtExcel').click();await tick();
+    assert.equal(captures.at(-1).template,'detail');assert.equal('paper' in captures.at(-1),false);
+    assert.deepEqual(captures.at(-1).versions,{[key]:Object.fromEntries(fields.map(f=>[f,0]))});
+    assert.equal(link.url,'api/weekly-templates/excel/abc123.token');
+    p.w.QcWeeklyTemplates.returnToReport();assert(!p.d.getElementById('weeklyReportContent').classList.contains('qwt-open'));
+    await p.w.QcWeeklyTemplates.open('detail');
     const customer=p.d.getElementById('qwtCustomer');customer.value=key;customer.dispatchEvent(new p.w.Event('change'));await tick();
     p.d.getElementById('qwtExcel').click();await tick();assert.equal(captures.at(-1).customer,key);
     p.edit('weeklyRemark','待保存');assert.equal(p.d.getElementById('qwtExcel').disabled,true);
@@ -239,11 +241,11 @@ test('blank detail cells are editable per entry and reload their saved value',as
 
 test('composing input is dirty before commit and blur persists final Chinese text',async()=>{
  const p=page();try{
-  await p.w.QcWeeklyTemplates.open('group');const input=p.edit('weeklyRemark','');
+  await p.w.QcWeeklyTemplates.open('detail');const input=p.edit('weeklyRemark','');
   input.dispatchEvent(new p.w.CompositionEvent('compositionstart',{bubbles:true}));input.value='最终中文';
   input.dispatchEvent(new p.w.InputEvent('input',{bubbles:true,isComposing:true}));
   assert.equal(p.w.QcWeeklyTemplates.navigationState().dirty,true);
   await new Promise(resolve=>setTimeout(resolve,700));input.blur();await new Promise(resolve=>setTimeout(resolve,40));assert.equal(p.w.QcWeeklyTemplates.navigationState().dirty,false);
-  await p.w.QcWeeklyTemplates.open('group');assert.equal(p.d.querySelector('[data-field="weeklyRemark"]').textContent,'最终中文');
+  await p.w.QcWeeklyTemplates.open('detail');assert.equal(p.d.querySelector('[data-field="weeklyRemark"]').textContent,'最终中文');
  }finally{p.dom.window.close();}
 });

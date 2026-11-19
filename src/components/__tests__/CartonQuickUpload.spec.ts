@@ -30,6 +30,13 @@ async function chooseFiles(files: File[]) {
   Object.defineProperty(input.element, 'files', { value: files, configurable: true })
   await input.trigger('change'); await flushPromises()
 }
+function applyWarehouseSession() {
+  const session = quickSession(['pmc-warehouse'])
+  session.permissions.push('carton_procurement:read')
+  session.effective_access?.push({ permission_code: 'carton_procurement:read', factory_id: 'huaxing',
+    department: 'pmc-warehouse', effect: 'allow', allowed: true, source_type: 'role_binding', source_ids: ['pmc-warehouse'] })
+  useAuthStore().applySession(session)
+}
 beforeEach(() => {
   setActivePinia(createPinia()); useAuthStore().applySession(quickSession())
   vi.clearAllMocks(); legacy.listAssets.mockResolvedValue([]); api.candidates.mockResolvedValue([]); api.upload.mockResolvedValue(quickAsset())
@@ -81,6 +88,23 @@ describe('one quick-upload modal for all audiences', () => {
     await dialog().get('[aria-label="选择关联订单"] input[type="checkbox"]').setValue(true)
     await dialog().trigger('submit'); await flushPromises()
     expect(api.upload.mock.calls[0]![1]).toMatchObject({ target_scope: 'ORDERS', targets: [expect.objectContaining({ kind: 'REGULAR', id: 'purchase-one' })] })
+  })
+  it('offers pending schedules and created order numbers in the warehouse upload form', async () => {
+    applyWarehouseSession()
+    const pending = quickTarget({ schedule_state: 'PENDING', schedule_po: 'PO-NEW', schedule_so: 'SO-NEW' })
+    const order = quickTarget({ kind: 'REGULAR', id: 'purchase-one', sheet: '', row: 0,
+      order_no: 'CT-ALREADY', contract_no: 'PURCHASE-VISIBLE', fingerprint: 'c'.repeat(64) })
+    api.candidates.mockResolvedValue([pending, order])
+    await open('warehouse'); await typeText()
+    await vi.waitFor(() => expect(dialog().text()).toContain('已建单 · CT-ALREADY'))
+    expect(dialog().text()).toContain('待建单 · QUICK-1234')
+    expect(dialog().text()).toContain('PO PO-NEW · SO SO-NEW')
+    expect(api.candidates).toHaveBeenCalledWith('huaxing', 'pmc-warehouse', '', expect.any(AbortSignal), 'WAREHOUSE')
+    await dialog().get('[aria-label="搜索关联订单"]').setValue('SO-NEW')
+    await dialog().get('[aria-label="选择关联订单"] input[type="checkbox"]').setValue(true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[0]![1]).toMatchObject({ target_scope: 'WAREHOUSE', association: 'MANUAL',
+      targets: [expect.objectContaining({ kind: 'SCHEDULE', id: pending.id })] })
   })
   it.each(['sales', 'warehouse', 'supplier'] as const)('saves one plain text material with PENDING by default (%s)', async audience => {
     const department = audience === 'supplier' ? 'supplier' : audience === 'warehouse' ? 'pmc-warehouse' : 'sales-business'
@@ -755,6 +779,24 @@ describe('shared document library', () => {
     await button(dialog(), '保存').trigger('click'); await flushPromises()
     expect(api.associate.mock.calls[0]![2]).toHaveLength(2)
     expect(api.associate.mock.calls[0]![5]).toBe('PENDING_SCHEDULE')
+  })
+  it('presents a prebound schedule as the selected built purchase and keeps protected links out of edits', async () => {
+    applyWarehouseSession()
+    const built = quickTarget({ kind: 'REGULAR', id: 'built-order', sheet: '', row: 0, order_no: 'CT-BUILT',
+      association_selected: true, fingerprint: 'c'.repeat(64) })
+    const business = quickTarget({ id: 'business-schedule', fingerprint: 'b'.repeat(64),
+      schedule_state: 'EXTERNAL', association_selected: true, association_locked: true })
+    const asset = quickAsset({ owner_department: 'pmc-warehouse', can_associate: true, targets: [quickTarget(), business] })
+    api.list.mockResolvedValue({ items: [asset], total: 1 })
+    api.candidates.mockResolvedValue([built, business])
+    const wrapper = await library('warehouse'); await button(wrapper, '关联订单').trigger('click'); await flushPromises()
+    expect(dialog().text()).toContain('已建单 · CT-BUILT')
+    expect(dialog().text()).toContain('外部已下单')
+    expect(dialog().get<HTMLInputElement>('input[value="' + built.fingerprint + '"]').element.checked).toBe(true)
+    expect(dialog().get<HTMLInputElement>('input[type="checkbox"]:disabled').element.checked).toBe(true)
+    await button(dialog(), '保存').trigger('click'); await flushPromises()
+    expect(api.associate.mock.calls[0]![2]).toEqual([expect.objectContaining({ kind: 'REGULAR', id: 'built-order' })])
+    expect(api.associate.mock.calls[0]![5]).toBe('WAREHOUSE')
   })
   it('requires an authorized supplier scope and ignores late actions after context changes', async () => {
     useAuthStore().applySession(supplierQuickSession())

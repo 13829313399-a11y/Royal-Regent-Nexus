@@ -10,20 +10,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.time import parse_business_timestamp
-from app.models.carton_procurement import CartonInventoryMovement, CartonOrder, CartonOrderLine
+from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement, CartonOrder, CartonOrderLine
 from app.schemas.carton_inventory_report import (
     CartonInventoryReportMovement,
     CartonInventoryReportOut,
     CartonInventoryReportRow,
     CartonInventoryOrderReportRow,
 )
-
-
-def _inventory_identity(row: CartonInventoryMovement) -> tuple:
-    # Preserve the ledger's formal-line/standalone distinction, plus explicit
-    # customer/material/unit scope so malformed legacy IDs cannot widen a match.
-    return (row.factory_id, row.customer_code, row.order_line_id, row.contract_no,
-            row.item_no, row.packaging_type, row.paper_quality, row.specification, row.unit)
+from app.services.carton_inventory_report_sources import (
+    inventory_identity as _inventory_identity, is_unattributed, movement_sources, serialized_key,
+)
 
 
 def _validate_dates(date_from: str, date_to: str) -> None:
@@ -42,21 +38,46 @@ def _line_identity(line: CartonOrderLine) -> tuple:
             line.item_no, line.packaging_type, line.paper_quality, line.specification, line.unit)
 
 
-def _document_identity(movement: CartonInventoryMovement) -> tuple:
+def _legacy_return_batches(db, factory_id, movements, formal_lines):
+    # Older order returns reused RET-<order number>. Each bulk audit identifies
+    # exactly the movements in one handover, including multi-location returns.
+    from app.services.carton_supplier_read_inputs import batches
+
+    candidates = defaultdict(set)
+    for movement in movements:
+        formal = formal_lines.get(movement.order_line_id)
+        if (formal and movement.source_type == "MANUAL" and movement.issue_kind == "RETURN"
+                and movement.document_no == f"RET-{formal[1].order_no}"):
+            candidates[movement.document_no].add(movement.id)
+    result = {}
+    for numbers in batches(list(candidates)):
+        for event in db.scalars(select(CartonAuditEvent).where(
+                CartonAuditEvent.factory_id == factory_id, CartonAuditEvent.entity_type == "carton_inventory_batch",
+                CartonAuditEvent.event_type == "INVENTORY_BULK_OUTBOUND_CREATED", CartonAuditEvent.entity_id.in_(numbers))):
+            for movement_id in json.loads(event.detail_json).get("movement_ids", []):
+                if movement_id in candidates[event.entity_id]:
+                    result[movement_id] = event.id
+    return result
+
+
+def _document_identity(movement: CartonInventoryMovement, legacy_return_batches) -> tuple:
+    if movement.id in legacy_return_batches:
+        return ("RETURN_BATCH", legacy_return_batches[movement.id])
     return ((movement.source_type, movement.movement_type, movement.document_no)
             if movement.source_type == "MANUAL" and movement.document_no
             else (movement.source_type, movement.source_id or movement.document_no or movement.id))
 
 
-def _order_report(dated_rows, formal_lines, matched_lines, details, date_from, date_to):
+def _order_report(dated_rows, formal_lines, matched_lines, details, date_from, date_to, sources, legacy_return_batches):
     groups: dict[tuple, CartonInventoryOrderReportRow] = {}
     documents: dict[tuple, set[tuple]] = defaultdict(set)
     detail_by_id = {detail.id: detail for detail in details}
 
     def make_row(identity, customer_name, order=None):
         return CartonInventoryOrderReportRow(
-            key=json.dumps(identity, ensure_ascii=False, separators=(",", ":")),
+            key=serialized_key(identity),
             order_id=order.id if order else None, order_line_id=identity[2],
+            source_request=sources.requests.get(identity), unattributed=is_unattributed(identity),
             order_date=order.order_date if order else "", customer_code=identity[1],
             customer_name=customer_name, contract_no=identity[3], item_no=identity[4],
             product_name=order.product_name if order else "", packaging_type=identity[5],
@@ -70,7 +91,7 @@ def _order_report(dated_rows, formal_lines, matched_lines, details, date_from, d
         day = timestamp.date().isoformat()
         if date_to and day > date_to:
             break
-        identity = _inventory_identity(movement)
+        identity = sources.movement_keys[movement.id]
         formal = formal_lines.get(movement.order_line_id)
         if identity not in groups:
             groups[identity] = make_row(identity, movement.customer_name, formal[1] if formal else None)
@@ -86,7 +107,7 @@ def _order_report(dated_rows, formal_lines, matched_lines, details, date_from, d
                  "ADJUSTMENT": "adjustment_quantity"}[detail.flow_category]
         setattr(row, field, getattr(row, field) + detail.flow_quantity)
         row.line_count += 1
-        documents[identity].add(_document_identity(movement))
+        documents[identity].add(_document_identity(movement, legacy_return_batches))
         row.document_count = len(documents[identity])
 
     # Orders without postings are useful in the all-date overview. With dates,
@@ -124,6 +145,7 @@ def inventory_report(
         query = query.where(CartonInventoryMovement.customer_code == customer_code)
     all_rows = list(db.scalars(query))
     by_id = {row.id: row for row in all_rows}
+    sources = movement_sources(db, factory_id, all_rows)
     line_query = select(CartonOrderLine, CartonOrder).join(
         CartonOrder, (CartonOrder.id == CartonOrderLine.order_id)
         & (CartonOrder.factory_id == CartonOrderLine.factory_id),
@@ -139,18 +161,22 @@ def inventory_report(
             order.product_name, line.packaging_type, line.paper_quality, line.specification,
         )).casefold()]
         matched_line_ids = {line.id for line, _ in matched_lines}
-        matched = {
-            _inventory_identity(row) for row in all_rows
+        matched_sources = {key for key, ref in sources.requests.items() if keyword == ref.request_no.casefold()}
+        matched = matched_sources or {
+            sources.movement_keys[row.id] for row in all_rows
             if row.order_line_id in matched_line_ids or keyword in " ".join((row.document_no, row.customer_code, row.customer_name,
                                      row.contract_no, row.item_no, row.packaging_type,
                                      row.paper_quality, row.specification, row.location)).casefold()
         }
-        all_rows = [row for row in all_rows if _inventory_identity(row) in matched]
+        if not matched_sources:
+            matched.update(key for key, ref in sources.requests.items() if keyword in ref.request_no.casefold())
+        all_rows = [row for row in all_rows if sources.movement_keys[row.id] in matched]
         # A historical document/location match still displays its formal line,
         # without making unrelated lines of the same order match the keyword.
-        matched_lines = [pair for pair in formal_lines.values()
+        matched_lines = [] if matched_sources else [pair for pair in formal_lines.values()
                          if pair[0].id in matched_line_ids or _line_identity(pair[0]) in matched]
 
+    legacy_return_batches = _legacy_return_batches(db, factory_id, all_rows, formal_lines)
     dated_rows = []
     for row in all_rows:
         timestamp = parse_business_timestamp(row.occurred_at)
@@ -200,32 +226,75 @@ def inventory_report(
         group.line_count += 1
         # Source document identities avoid collapsing distinct receipt documents
         # or correction events which happen to share a printed document number.
-        document_identity = _document_identity(movement)
+        document_identity = _document_identity(movement, legacy_return_batches)
         documents[group_key].add(document_identity)
         group.document_count = len(documents[group_key])
-        derived = {"business_date", "occurred_at", "flow_category", "flow_quantity"}
+        derived = {"business_date", "occurred_at", "flow_category", "flow_quantity", "source_request", "unattributed"}
+        key = sources.movement_keys[movement.id]
         details.append(CartonInventoryReportMovement(
             **{field: getattr(movement, field) for field in CartonInventoryReportMovement.model_fields
                if field not in derived},
             business_date=day, occurred_at=timestamp.isoformat(),
             flow_category=category, flow_quantity=flow_quantity,
+            source_request=sources.requests.get(key), unattributed=is_unattributed(key),
         ))
 
-    from app.services.carton_usage import usage_by_key
-    from app.services.carton_positions import position_balances, inventory_key
-    usage = usage_by_key(db, factory_id)
-    position_rows = position_balances(db, factory_id)
-    order_rows = _order_report(dated_rows, formal_lines, matched_lines, details, date_from, date_to)
-    for row in order_rows:
-        key = inventory_key(row)
-        state = usage.get(key, {})
-        row.current_usage_quantity = state.get("usage", Decimal(0))
-        row.current_usage_status = state.get("status", "NOT_RECEIVED")
-        row.current_usage_label = state.get("label", "未入库")
-        row.current_positions = [{"location": p.latest_location, "quantity": str(p.balance)} for p in position_rows if p.inventory_key == key and p.balance > 0]
+    order_rows = _order_report(dated_rows, formal_lines, matched_lines, details, date_from, date_to, sources, legacy_return_batches)
+    _annotate_current_stock(db, factory_id, order_rows, by_id.values(), sources, date_from, date_to)
     return CartonInventoryReportOut(
         factory_id=factory_id, date_from=date_from, date_to=date_to,
         rows=[groups[key] for key in sorted(groups, key=lambda key: (-date.fromisoformat(key[0]).toordinal(), key[1], key[2]))],
         order_rows=order_rows,
         movements=list(reversed(details)),
     )
+
+
+def _annotate_current_stock(db, factory_id, rows, movements, sources, date_from, date_to):
+    from app.services.carton_usage import LABELS, usage_by_key, usage_for_movements
+    from app.services.carton_positions import position_balances, inventory_key
+
+    # Preserve inventory-key status for ordinary stock. Shared identities use
+    # the same attributed movements as the report, without borrowing usage or
+    # physical positions from a different request.
+    sourced_pools = {key[:9] for key in sources.requests}
+    usage = usage_by_key(db, factory_id)
+    sourced_movements = [row for row in movements if sources.movement_keys[row.id][:9] in sourced_pools]
+    usage.update(usage_for_movements(sourced_movements, lambda row: sources.movement_keys[row.id]))
+    positions = defaultdict(list)
+    for position in position_balances(db, factory_id):
+        if position.balance > 0:
+            positions[position.inventory_key].append(
+                {"location": position.latest_location, "quantity": str(position.balance)})
+    unresolved = defaultdict(Decimal)
+    unresolved_opening = defaultdict(Decimal)
+    unresolved_current = defaultdict(Decimal)
+    for movement in movements:
+        affected = sources.unattributed_sources.get(movement.id)
+        if not affected:
+            continue
+        timestamp = parse_business_timestamp(movement.occurred_at)
+        day = timestamp.date().isoformat() if timestamp else ""
+        for key in affected:
+            unresolved_current[key] += movement.quantity
+            if date_from and day < date_from:
+                unresolved_opening[key] += movement.quantity
+            if not date_to or day <= date_to:
+                unresolved[key] += movement.quantity
+    for row in rows:
+        physical_key = inventory_key(row)
+        report_key = tuple(json.loads(row.key))
+        base = report_key[:9]
+        if base in sourced_pools:
+            row.opening_unconfirmed = bool(row.opening_quantity and unresolved_opening[report_key])
+            row.balance_unconfirmed = bool(row.ending_quantity and unresolved[report_key])
+            owners = sources.current_owners[base]
+            row.positions_shared = bool(positions[physical_key]) and (
+                len(owners) > 1 or any(is_unattributed(key) for key in owners))
+        state = usage.get(report_key if base in sourced_pools else physical_key, {})
+        row.current_usage_quantity = state.get("usage", Decimal(0))
+        row.current_usage_status = ("UNKNOWN" if row.unattributed or unresolved_current[report_key]
+                                    else state.get("status", "NOT_RECEIVED"))
+        row.current_usage_label = LABELS[row.current_usage_status]
+        if not row.positions_shared and (
+                base not in sourced_pools or report_key in sources.current_owners[base]):
+            row.current_positions = positions[physical_key]

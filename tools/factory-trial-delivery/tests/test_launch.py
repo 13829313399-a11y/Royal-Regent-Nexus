@@ -20,7 +20,7 @@ spec.loader.exec_module(launcher)
 
 
 def package(tmp_path, fail=False):
-    root = tmp_path / "中文 空格 试用包"
+    root = tmp_path / "中文 空格 (试用) & ! 包"
     backend = root / "backend/app"
     backend.mkdir(parents=True)
     (backend / "__init__.py").write_text("")
@@ -53,7 +53,7 @@ def create_app(data_dir, static_dir, host, port):
 def start(root):
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
     return subprocess.Popen([sys.executable, str(root / "launch.py"), "--no-browser"],
-        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", **options)
+        cwd=root.parent, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", **options)
 
 
 def ready(root, process):

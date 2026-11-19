@@ -51,7 +51,7 @@ def test_edu_outer_pack_uses_the_right_hand_count_without_guessing(raw, expected
     assert row["source_item_no"] == "F12-ZZ901-C9010000"
     assert row["cartons"] == (round(120 / expected, 2) if expected else None)
     edu_schedule.add_derived_fields(row, today=date(2026, 10, 16))
-    assert row["item_no"] == "F12-ZZ901-C901"
+    assert row["item_no"] == "F12-ZZ901-C9010000"
     assert row["source_item_no"] == "F12-ZZ901-C9010000"
     assert row["source_case_pack"] == raw
 
@@ -68,7 +68,7 @@ def test_source_item_evidence_retains_original_whitespace():
     original = " \tF12-ZZ901-C9010000\n"
     row = dict(customer_type="EDU", item_no=original)
     edu_schedule.add_derived_fields(row)
-    assert row["item_no"] == "F12-ZZ901-C901"
+    assert row["item_no"] == "F12-ZZ901-C9010000"
     assert row["source_item_no"] == original
 
 
@@ -105,7 +105,7 @@ def test_chinese_edu_reference_sheet_identifies_customer_before_numeric_coercion
     parsed = edu_po_parser.parse_po_file(payload, filename=f"华兴代工订单.{kind}")
     assert parsed["customer_type"] == "EDU"
     row, = parsed["rows"]
-    assert (row["item_no"], row["case_pack"], row["cartons"]) == ("F12-YY902-B902", 16, 10)
+    assert (row["item_no"], row["case_pack"], row["cartons"]) == ("F12-YY902-B9020000", 16, 10)
     assert (row["source_item_no"], row["source_case_pack"]) == ("F12-YY902-B9020000", "1/16")
     assert (row["source_sheet"], row["source_row"]) == ("订单", 4)
     assert (row["contract_no"], row["customer_po"], row["quantity"]) == ("SAMPLE-C001", "PO#900000001", 160)

@@ -14,12 +14,11 @@ from app.services import customer_order_ledger as ledger,customer_order_queries 
 from app.services.auth import now_text
 from app.services.customer_order_jobs import order_job_request,run_order_job
 
-from app.catalog import profiles
 
 ACTOR='本机试用操作员 (local-trial)'
 
 
-def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
+def ledger_router(history,fixed_factory,scoped,prepare_confirmed,registered):
     sessions=local_sessions(history.path,new_database=history.new_database)
     router=APIRouter(prefix='/api/customer-order-ledger')
     router.add_event_handler('shutdown',sessions.kw['bind'].dispose)
@@ -150,7 +149,7 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
     @router.get('/history/customers')
     def history_customers(factory_id:str):
         factory(factory_id)
-        return {'items':[{'code':item['code'],'name':item['name']} for item in profiles(fixed_factory)]}
+        return {'items':[{'code':item['code'],'name':item['name']} for item in registered]}
 
     async def history_parse(db,factory_id,customer_code,upload):
         factory(factory_id);profile=scoped(customer_code,factory_id)
@@ -186,7 +185,7 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
     @router.get('/schedule/customers')
     def schedule_customers(factory_id:str):
         factory(factory_id)
-        return {'factory_id':fixed_factory,'items':[{'code':item['code'],'name':item['name']} for item in profiles(fixed_factory)]}
+        return {'factory_id':fixed_factory,'items':[{'code':item['code'],'name':item['name']} for item in registered]}
 
     @router.get('/schedule')
     def customer_schedule(factory_id:str,customer_code:str=Query(...,min_length=1,max_length=64),

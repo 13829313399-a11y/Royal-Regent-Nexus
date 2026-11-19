@@ -1,6 +1,12 @@
 import { http } from '@/lib/http'
 
 export type InventoryFlowCategory = 'INBOUND' | 'OUTBOUND' | 'ADJUSTMENT'
+export interface InventoryReportSource {
+  id: string
+  request_no: string
+  kind: 'SAMPLE' | 'WORKSHOP_MISC' | 'SUPPLIER_GIFT'
+  line_id: string
+}
 export interface InventoryReportRow {
   business_date: string
   customer_code: string
@@ -34,6 +40,8 @@ export interface InventoryReportMovement {
   reason: string
   location: string
   actor_name: string
+  source_request?: InventoryReportSource | null
+  unattributed?: boolean
 }
 export interface InventoryOrderReportRow extends Omit<InventoryReportRow, 'business_date'> {
   key: string
@@ -50,6 +58,11 @@ export interface InventoryOrderReportRow extends Omit<InventoryReportRow, 'busin
   current_usage_status?: string
   current_usage_label?: string
   current_positions?: Array<{ location: string; quantity: string }>
+  source_request?: InventoryReportSource | null
+  unattributed?: boolean
+  opening_unconfirmed?: boolean
+  balance_unconfirmed?: boolean
+  positions_shared?: boolean
   last_movement_at: string
 }
 export interface InventoryReport {

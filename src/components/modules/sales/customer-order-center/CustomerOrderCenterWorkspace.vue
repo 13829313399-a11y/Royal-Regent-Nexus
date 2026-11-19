@@ -47,7 +47,7 @@ import type {
   CustomerOrderPreviewRow,
   WarehouseScheduleSyncResult,
 } from '@/types/customerOrder'
-import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView.vue'
+import type { CustomerOrderCenterSection } from '@/types/customerOrder'
 
 type OrderStatus = 'valid' | 'warning' | 'blocked'
 type DeliveryStatus = 'overdue' | 'due-soon' | 'upcoming' | 'planned'
@@ -126,14 +126,14 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       code: 'edu',
       name: 'EDU',
       version: 'V1',
-      poAccept: '.xls,.xlsx,.xlsm',
-      poExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
       scheduleAccept: '.xls,.xlsx,.xlsm',
       scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
-      poDescription: 'EDU Excel PO（支持同 PO 修订版批量导入）',
+      poDescription: 'EDU 文字或扫描 PDF、Excel PO（支持同 PO 修订版批量导入）',
       templateDescription: 'EDU 华兴排期底表',
       targetTemplate: 'HUAXING_EDU_NEW_ORDER_V1',
-      ruleDescription: '每条新明细续编 EDUHX，按货号分组并更新 PO订单；先匹配扣数PO，否则扣同货号最后一条绿色备料行。装箱可补录，重复单保留原号且不重复扣料。',
+      ruleDescription: '完整货号区分订单，ITEM按基础货号归组；接单表和正单评审表新单按导入顺序连续追加、统一蓝字。生产单号可手填，货期周末提前至周五，空白可保留。',
     },
     {
       code: '360',
@@ -425,7 +425,7 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
         profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
       }
       if (profile.code === 'edu') {
-        profile.ruleDescription = 'EDU 每条新明细续编 EDUHX，并同步三张排期与 PO订单。按去尾码货号归组到绿色备料行上方；先匹配扣数PO，否则扣同货号最后一条绿色行，余额允许负数。装箱可补录，重复单保留原号、不再次扣料，历史与走货资料保留。'
+        profile.ruleDescription = 'EDU保留完整货号，ITEM按基础货号归组到绿色备料行上方；接单表和正单评审表按导入顺序连续追加，新单统一蓝字。默认续编EDUHX，也可手填同一生产单号。货期周末提前至周五、验货期提前一周，空白可保留。先匹配扣数PO，否则扣同货号最后一条绿色行，重复单不再次扣料。'
       }
     }
     if (profile.code === 'zuru') {
@@ -565,6 +565,8 @@ const props = defineProps<{
   factoryName: string
   focusLineId?: string
   initialCustomerCode?: string
+  customerCodes?: readonly string[]
+  localOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -599,12 +601,14 @@ let warehouseSyncController: AbortController | null = null
 let warehouseUpload: { file: File; kind: 'UPLOADED' | 'GENERATED'; customer: string; factory: string } | null = null
 
 function showWarehouseSync(result: WarehouseScheduleSyncResult | null | undefined, kind: 'UPLOADED' | 'GENERATED') {
+  if (props.localOnly) { warehouseSync.value = { state: 'idle', message: '' }; return }
   warehouseSync.value = result?.status === 'SUCCESS'
     ? { state: 'success', message: `${result.message}。${kind === 'UPLOADED' ? '本次新增 PO 将在生成客户排期后自动更新。' : '仓库可查看最新排期并下单。'}` }
     : { state: 'error', message: `纸箱仓库同步未完成：${result?.message || '服务端未返回同步结果'}。业务解析及排期下载仍可继续。` }
 }
 
 async function retryWarehouseSync() {
+  if (props.localOnly) return
   if (!warehouseUpload || fileOperationBusy.value) return
   const { file, kind, customer, factory } = warehouseUpload
   const sequence = ++warehouseSyncSequence
@@ -740,7 +744,7 @@ let saveRequestSequence = 0
 let reconciliationRequestSequence = 0
 
 const availableCustomers = computed(
-  () => CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? [],
+  () => (CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? []).filter(customer => !props.customerCodes || props.customerCodes.includes(customer.code)),
 )
 const selectedCustomer = computed(
   () => availableCustomers.value.find(
@@ -818,6 +822,7 @@ const resolvedIssueKeys = computed(() => [...new Set([
 const skippedIssueCount = computed(() => resolvedIssueKeys.value.length)
 const confirmationReasonInvalid = computed(() => confirmationReason.value.trim().length > 500)
 const canReconcilePreview = computed(() => Boolean(
+  !previewBatch.value?.rows.some(row => row.document_kind === 'cancellation') &&
   previewBatch.value
   && previewBatch.value.rows.length === 1
   && sourceKind.value === 'formal',
@@ -2062,7 +2067,7 @@ onBeforeUnmount(() => {
                 <h3>导入客户现有排期</h3>
                 <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
                 <strong>{{ selectedScheduleFile }}</strong>
-                <small>解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。</small>
+                <small>{{ localOnly ? '生成新的排期副本；保存的订单保留在本机台账。' : '解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。' }}</small>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
                 <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
               </article>
@@ -2487,7 +2492,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">
@@ -2580,11 +2585,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'customer-schedule'" key="customer-schedule" class="order-view" data-testid="order-customer-schedule">
-        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="false" key="schedule" class="order-view" data-testid="order-schedule-static">

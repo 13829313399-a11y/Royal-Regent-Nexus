@@ -5,7 +5,7 @@ import { FileUp, X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/stores/auth'
 import { cartonQuickAssetsApi, type AssetDepartment, type QuickAsset, type QuickAssetStatus, type QuickTarget, type QuickUploadBody } from '@/api/cartonQuickAssets'
-import { canQuickAsset, departmentLabel, quickStatusLabel, responseStatus, suggestedContract, targetLabel, targetOrderTime, targetRef, uploadDepartments, viewerKey, type QuickAudience } from '@/features/carton-procurement/quickAssets'
+import { canBindWarehouseSchedule, canQuickAsset, departmentLabel, matchesTargetSearch, quickStatusLabel, responseStatus, suggestedContract, targetLabel, targetOrderTime, targetPurchaseReferences, targetRef, uploadDepartments, viewerKey, warehouseTargetLabel, type QuickAudience } from '@/features/carton-procurement/quickAssets'
 import { getApiErrorMessage } from '@/lib/http'
 import { factoryContexts } from '@/data/enterpriseMock'
 import { createRandomUuid } from '@/lib/randomUuid'
@@ -39,8 +39,9 @@ const activeLocked = computed(() => activeFile.value?.state === 'saved' || activ
 const savedCount = computed(() => queue.value.filter(row => row.state === 'saved').length)
 const pendingCount = computed(() => queue.value.length - savedCount.value)
 const rowState = { pending: '待保存', saving: '保存中', saved: '已保存', failed: '保存失败', unknown: '结果待核实' }
-const targetScope = computed(() => props.audience === 'sales' ? 'PENDING_SCHEDULE' as const : 'ORDERS' as const)
-const visibleTargets = computed(() => candidates.value.filter(x => !orderSearch.value.trim() || [x.contract_no, x.customer_po, x.item_no, x.customer_name, x.order_no, targetOrderTime(x)].join(' ').toLowerCase().includes(orderSearch.value.trim().toLowerCase())))
+const warehouseScope = computed(() => props.audience === 'warehouse' && canBindWarehouseSchedule(auth, props.factoryId, department.value))
+const targetScope = computed(() => warehouseScope.value ? 'WAREHOUSE' as const : props.audience === 'sales' ? 'PENDING_SCHEDULE' as const : 'ORDERS' as const)
+const visibleTargets = computed(() => candidates.value.filter(target => matchesTargetSearch(target, orderSearch.value)))
 const contractMatches = computed(() => contract.value ? candidates.value.filter(x => x.contract_no.trim().toUpperCase() === contract.value.trim().toUpperCase()) : [])
 const shareOptions = computed(() => factoryContexts.filter(x => (props.supplierFactories || [props.factoryId]).includes(x.id)))
 const validContent = computed(() => !!text.value.trim() && text.value.length <= 20000)
@@ -101,7 +102,7 @@ function suggestSingleTarget() {
   for (const row of [...queue.value, textSelection]) {
     if (row.needsReview || row.associationTouched || 'request' in row && row.request || 'state' in row && row.state === 'saved') continue
     const matches = row.contract ? candidates.value.filter(target => target.contract_no.trim().toUpperCase() === row.contract.trim().toUpperCase()) : []
-    row.chosenTargets = matches.length === 1 ? [matches[0]!.fingerprint] : []
+    row.chosenTargets = matches.length === 1 && matches[0]!.schedule_state !== 'REVIEW' ? [matches[0]!.fingerprint] : []
   }
 }
 watch([contract, candidates, loaded, loading], suggestSingleTarget)
@@ -121,7 +122,7 @@ async function loadCandidates(token: number) {
   try {
     const response = await cartonQuickAssetsApi.candidates(props.factoryId, department.value as AssetDepartment, '', searchController.signal, targetScope.value)
     if (token !== searchGeneration || original !== context.value) return
-    const rows = response.filter(row => props.audience === 'sales' || row.kind !== 'SCHEDULE')
+    const rows = response.filter(row => targetScope.value !== 'ORDERS' || row.kind !== 'SCHEDULE')
     const available = new Set(rows.map(row => row.fingerprint))
     for (const row of [...queue.value, textSelection]) {
       if ('request' in row && row.request || 'state' in row && row.state === 'saved') continue
@@ -252,8 +253,8 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
               <p v-if="mode === 'file' && file" class="break-all text-xs font-semibold text-primary">正在核对：{{ file.name }}</p>
               <div class="flex flex-wrap items-center justify-between gap-2"><h3 class="text-sm font-semibold">{{ audience === 'sales' ? '关联排期订单（未下单）' : '关联订单' }} <span class="font-normal text-muted-foreground">可多选</span></h3><button type="button" class="text-xs text-primary underline" @click="clearLinks">暂不关联</button></div>
               <p class="text-xs text-muted-foreground">选择这份资料适用的订单，货号和 PO 从订单带出，不用重复填写。同合同的资料不一定通用。</p>
-              <p class="text-xs text-muted-foreground">{{ audience === 'sales' ? '勾选后，仓库能在对应排期看到资料，下单时会沿用关联。' : '这里只显示可关联的已建采购单、样板和杂单。勾选关联不会提交采购。' }}</p>
-              <input v-model="orderSearch" aria-label="搜索关联订单" placeholder="搜索客户、合同 / PO、货号" class="h-10 w-full min-w-0 rounded-lg border border-input bg-card px-3 text-sm">
+              <p class="text-xs text-muted-foreground">{{ warehouseScope ? '未建单可以先勾选排期。从同一条排期建单后，订单里可查看这份资料。' : audience === 'sales' ? '勾选后，仓库能在对应排期看到资料，下单时会沿用关联。' : '这里只显示可关联的已建采购单、样板和杂单。勾选关联不会提交采购。' }}</p>
+              <input v-model="orderSearch" aria-label="搜索关联订单" :placeholder="warehouseScope ? '搜索客户、合同、货号、PO / SO 或单号' : '搜索客户、合同 / PO、货号'" class="h-10 w-full min-w-0 rounded-lg border border-input bg-card px-3 text-sm">
               <p v-if="contract && loaded && !associationTouched" class="text-xs text-muted-foreground">识别到合同 {{ contract }}；{{ contractMatches.length > 1 ? `找到 ${contractMatches.length} 条订单，请按货号、PO 勾选适用订单，不会自动全选。` : chosenTargets.length ? '仅找到一条匹配订单，已推荐勾选，请核对后保存。' : '请核对并勾选对应订单，也可暂不关联。' }}</p>
               <p v-if="loading" role="status" class="text-sm text-muted-foreground">正在读取可关联订单…</p>
               <div v-else-if="candidateError" role="alert" class="space-y-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm" data-testid="association-load-error">
@@ -268,7 +269,15 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
                 </div>
               </div>
               <div v-else class="max-h-56 space-y-1 overflow-y-auto">
-                <label v-for="target in visibleTargets" :key="target.fingerprint" class="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5"><input v-model="chosenTargets" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0" @change="confirmSelection"><span class="min-w-0"><span class="block break-words font-semibold">{{ ['SAMPLE', 'MISC'].includes(target.kind) ? targetLabel(target) : `${target.contract_no || '未填合同'} · ${target.item_no || '未填货号'}` }}</span><span class="mt-1 block break-words text-xs text-muted-foreground">{{ ['SAMPLE', 'MISC'].includes(target.kind) ? (target.customer_name || '客户未填写') : `${target.customer_name} · PO ${target.customer_po || '未填写'} · ${target.kind === 'SCHEDULE' ? '未下单排期' : targetLabel(target)}` }}</span><span v-if="targetOrderTime(target)" class="mt-1 block text-xs tabular-nums text-muted-foreground">{{ targetOrderTime(target) }}</span><span v-if="target.kind === 'SCHEDULE'" class="block text-xs text-muted-foreground">{{ target.sheet }} 第{{ target.row }}行</span></span></label>
+                <label v-for="target in visibleTargets" :key="target.fingerprint" class="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                  <input v-model="chosenTargets" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0" @change="confirmSelection">
+                  <span v-if="warehouseScope" class="min-w-0">
+                    <span class="block break-words font-semibold">{{ warehouseTargetLabel(target) }}</span>
+                    <span v-if="targetPurchaseReferences(target, true)" class="mt-1 block break-words text-xs text-muted-foreground">{{ targetPurchaseReferences(target, true) }}</span>
+                    <span v-if="targetOrderTime(target)" class="mt-1 block text-xs tabular-nums text-muted-foreground">{{ targetOrderTime(target) }}</span>
+                  </span>
+                  <span v-else class="min-w-0"><span class="block break-words font-semibold">{{ ['SAMPLE', 'MISC'].includes(target.kind) ? targetLabel(target) : `${target.contract_no || '未填合同'} · ${target.item_no || '未填货号'}` }}</span><span class="mt-1 block break-words text-xs text-muted-foreground">{{ ['SAMPLE', 'MISC'].includes(target.kind) ? (target.customer_name || '客户未填写') : `${target.customer_name} · PO ${target.customer_po || '未填写'} · ${target.kind === 'SCHEDULE' ? '未下单排期' : targetLabel(target)}` }}</span><span v-if="targetOrderTime(target)" class="mt-1 block text-xs tabular-nums text-muted-foreground">{{ targetOrderTime(target) }}</span><span v-if="target.kind === 'SCHEDULE'" class="block text-xs text-muted-foreground">{{ target.sheet }} 第{{ target.row }}行</span></span>
+                </label>
                 <p v-if="loaded && !visibleTargets.length" class="py-3 text-sm text-muted-foreground">{{ orderSearch ? '没有匹配结果，请换个关键词；也可以暂不关联。' : audience === 'sales' ? '暂无未下单排期。可先保存资料，再补充关联。' : '暂无可关联订单，可先保存资料。' }}</p>
               </div>
               <p class="text-sm" role="status">{{ chosenTargets.length ? `已选择 ${chosenTargets.length} 条（包含搜索后隐藏的选择）` : '未关联，保存后可在资料库补充关联。' }}</p>

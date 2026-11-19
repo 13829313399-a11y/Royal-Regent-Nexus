@@ -344,6 +344,20 @@ function reportCenterLandingPage() {
   return REPORT_CENTER_PAGES.find(page => canView(page));
 }
 
+function syncReportCenterNav(name) {
+  const nav = document.getElementById('reportCenterNav');
+  if (!nav) return;
+  const visible = window.__QC_NEXUS?.factory === 'huaxing' && REPORT_CENTER_PAGES.includes(name);
+  nav.hidden = !visible;
+  document.body.classList.toggle('qc-report-center', visible);
+  if (!visible) return;
+  for (const button of nav.querySelectorAll('[data-report-mode]')) {
+    const annual = button.dataset.reportMode === 'analysis';
+    button.hidden = button.disabled = annual ? !canView('analysis') : !intraReportLandingPage();
+    button.setAttribute('aria-pressed', String(annual === (name === 'analysis')));
+  }
+}
+
 function mountReportTypeSelect(page, name) {
   const slot = page?.querySelector('[data-report-type-slot]');
   const select = document.getElementById('reportTypeSelect');
@@ -369,8 +383,12 @@ function mountReportTypeSelect(page, name) {
   const visible = buttons.filter(button => !button.hidden);
   const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
   control.style.setProperty('--report-period-count', String(visible.length || 1));
-  if (control.parentElement !== slot) slot.append(control);
-  if (select.parentElement !== slot) slot.append(select);
+  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory === 'huaxing') {
+    if (slot.firstElementChild !== select || select.nextElementSibling !== control) slot.prepend(select, control);
+  } else {
+    if (control.parentElement !== slot) slot.append(control);
+    if (select.parentElement !== slot) slot.append(select);
+  }
   control.hidden = name === 'analysis';
   if (name !== 'analysis') lastIntraReportPage = name;
   select.value = name === 'analysis' ? 'analysis' : 'intra-month';
@@ -379,24 +397,21 @@ function mountReportTypeSelect(page, name) {
   if (wasVisible && previousPage !== name && glass.animate &&
       !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
     glass.animate([{transform: previousTransform}, {transform: 'translateX(' + index * 100 + '%)'}],
-      {duration:260, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
+      {duration:300, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
   }
 }
 
 function changeReportPeriod(button) {
   if (button.disabled) return;
-  if (button.dataset.reportPage === currentPage) {
-    if (currentPage === 'weekly') window.QcWeeklyTemplates?.returnToReport();
-    if (currentPage === 'monthly') window.QcMonthlyTemplates?.returnToReport();
-    return;
-  }
+  if (button.dataset.reportPage === currentPage) return;
   showPage(button.dataset.reportPage, true);
 }
 
-function changeReportType(select) {
-  const nextPage = select.value === 'intra-month' ? intraReportLandingPage() : select.value;
-  select.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
-  if (REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, true);
+function changeReportType(control) {
+  const mode = control.dataset.reportMode || control.value;
+  const nextPage = mode === 'intra-month' ? intraReportLandingPage() : mode;
+  if (!control.dataset.reportMode) control.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
+  if (nextPage !== currentPage && REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, control.dataset.reportMode ? 'mode' : true);
 }
 
 function showPage(name, focusReportType = false) {
@@ -441,6 +456,7 @@ function showPage(name, focusReportType = false) {
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
   if (nav) nav.classList.add('active');
+  syncReportCenterNav(name);
   if (inReportCenter) mountReportTypeSelect(pg, name);
   const titleEl = document.getElementById('pageTitle');
   if (titleEl) titleEl.textContent = inReportCenter ? '报告中心' : (PAGE_TITLES[name] || name);
@@ -470,7 +486,10 @@ function showPage(name, focusReportType = false) {
         if (name === 'import')           _backupStats();
         if (name === 'defectlib')        renderDefectLibPage();
         if (focusReportType && inReportCenter && currentPage === name) {
-          (document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]') || document.getElementById('reportTypeSelect'))?.focus({ preventScroll: true });
+          const activeMode = document.querySelector('#reportCenterNav:not([hidden]) [data-report-mode][aria-pressed="true"]');
+          const period = document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]');
+          const target = activeMode && (focusReportType === 'mode' || name === 'analysis') ? activeMode : period || document.getElementById('reportTypeSelect');
+          target?.focus({ preventScroll: true });
         }
       } catch(e) { console.error('[showPage] render error:', e); }
     });
@@ -4435,7 +4454,10 @@ function buildQcProblemNotes(data) {
 }
 
 function renderDailyReport() {
-  if (window.QcDailyReport?.enabled()) return window.QcDailyReport.load();
+  if (window.QcDailyReport?.enabled()) {
+    window.QcReportSheets.mountRefresh('daily');
+    return window.QcDailyReport.load();
+  }
   const dateEl = document.getElementById('dailyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = todayStr();
@@ -4509,7 +4531,7 @@ function renderDailyReport() {
 }
 
 function renderWeeklyReport() {
-  if (window.QcPeriodReports?.weekly.enabled()) return window.QcPeriodReports.weekly.load();
+  if (window.QcPeriodReports?.weekly.enabled()) return window.QcReportSheets.enter('weekly');
   const dateEl = document.getElementById('weeklyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = weekStart();
@@ -6429,7 +6451,7 @@ function _mrChart(id, option) {
    §19.1  验货月报
 ───────────────────────────────────────*/
 function renderMonthlyReport() {
-  if (window.QcPeriodReports?.monthly.enabled()) return window.QcPeriodReports.monthly.load();
+  if (window.QcPeriodReports?.monthly.enabled()) return window.QcReportSheets.enter('monthly');
   const el = document.getElementById('monthlyMonth');
   if (!el) return;
   /* 初始化默认月份 */

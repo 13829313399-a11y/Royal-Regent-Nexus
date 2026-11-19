@@ -77,7 +77,10 @@ def test_original_fields_neutral_reading_layout_dynamic_rows_formulas_and_totals
         assert sheet.cell(2,1).ctype==xlrd.XL_CELL_DATE
         assert book.format_map[book.xf_list[sheet.cell_xf_index(2,1)].format_key].format_str=='mm-dd'
         assert book.xf_list[sheet.cell_xf_index(2,17)].border.bottom_line_style
-        assert [sheet.cell_value(count+5,c) for c in excel.FOOTER_COLUMNS]==weekly.TEMPLATES[0]['summaryHeaders']
+        expected = weekly.TEMPLATES[0]['summaryHeaders'].copy()
+        expected[7] = '未退货返工及客人A0D单数'
+        assert [sheet.cell_value(count+5,c) for c in excel.FOOTER_COLUMNS] == expected
+        assert sheet.cell_value(count+6,9) == '返工&A0D原样保留'
     assert not any(cell.ctype==xlrd.XL_CELL_ERROR for row in sheet.get_rows() for cell in row)
 
 

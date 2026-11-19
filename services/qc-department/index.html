@@ -63,7 +63,7 @@
 <main class="main-wrap">
 
   <!-- TOP BAR -->
-  <header class="topbar">
+  <header class="topbar" id="qcTopbar">
     <div class="topbar-left">
       <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
       <div class="topbar-title" id="pageTitle">客排期</div>
@@ -103,6 +103,13 @@
       </div>
       <div id="userBadge" style="display:inline-flex;align-items:center;gap:6px;margin-right:4px"></div>
       <button class="btn-icon btn-add" onclick="QcSchedule.openNew()" title="新增排期">＋ 新增验货</button>
+    </div>
+    <div id="reportCenterNav" hidden>
+      <div class="report-mode-tabs report-period-switch" role="group" aria-label="报告类型">
+        <span class="report-period-glass" aria-hidden="true"></span>
+        <button type="button" data-report-mode="intra-month" onclick="changeReportType(this)">月内报告</button>
+        <button type="button" data-report-mode="analysis" onclick="changeReportType(this)">年报</button>
+      </div>
     </div>
   </header>
   <div id="qcReferenceBanner" role="status" hidden style="flex-shrink:0;padding:10px 24px;background:#fff3cd;color:#664d03;font-size:14px;line-height:1.6"></div>
@@ -307,8 +314,9 @@
   <div class="page" id="page-daily">
     <div class="page-inner report-page" id="dailyReportContent">
       <div class="report-toolbar">
-        <div class="report-date-field"><label for="dailyDate">报告日期</label><input type="date" id="dailyDate" onchange="renderDailyReport()" /></div>
         <div class="report-type-slot" data-report-type-slot></div>
+        <div class="report-date-field"><label for="dailyDate">报告日期</label><input type="date" id="dailyDate" onchange="renderDailyReport()" /></div>
+        <select id="qdrCustomer" class="report-customer" aria-label="日报客户" title="筛选整个日报的客户" hidden><option value="">全部客户</option></select>
       </div>
       <div id="dailyReportBody"></div>
     </div>
@@ -318,7 +326,6 @@
   <div class="page" id="page-weekly">
     <div class="page-inner report-page" id="weeklyReportContent">
       <div class="report-toolbar">
-        <div class="report-date-field"><label for="weeklyDate">周起始日</label><input type="date" id="weeklyDate" onchange="renderWeeklyReport()" /></div>
         <div class="report-type-slot" data-report-type-slot>
           <div id="reportPeriodSwitch" class="report-period-switch" role="group" aria-label="报告周期">
             <span class="report-period-glass" aria-hidden="true"></span>
@@ -331,8 +338,13 @@
               <option value="analysis">年报</option>
             </select>
         </div>
+        <div class="report-date-field"><label for="weeklyDate">周起始日</label><input type="date" id="weeklyDate" onchange="renderWeeklyReport()" /></div>
+        <select id="qwtCustomer" class="report-customer" aria-label="周报客户" title="筛选整个周报的客户" hidden><option value="">全部客户</option></select>
+        <label id="qwtEntries" class="report-template-nav" hidden>
+          <span>周报模板</span>
+          <select id="qwtChoice"><option value="">周报概览</option></select>
+        </label>
       </div>
-      <nav id="qwtEntries" aria-label="周报 Excel 模板" hidden></nav>
       <section id="qwtView" aria-label="周报模板明细" hidden></section>
       <div id="weeklyReportBody"></div>
     </div>
@@ -366,10 +378,15 @@
   <div class="page" id="page-monthly">
     <div class="page-inner report-page" id="monthlyReportContent">
       <div class="report-toolbar">
+        <div class="report-type-slot" data-report-type-slot>
+        </div>
         <div class="report-date-field"><label for="monthlyMonth">报告月份</label><input type="month" id="monthlyMonth" onchange="renderMonthlyReport()" /></div>
-        <div class="report-type-slot" data-report-type-slot></div>
+        <select id="qmtCustomer" class="report-customer" aria-label="月报客户" title="筛选整个月报的客户" hidden><option value="">全部客户</option></select>
+        <label id="qmtEntries" class="report-template-nav" hidden>
+          <span>月报模板</span>
+          <select id="qmtChoice"><option value="">月报概览</option></select>
+        </label>
       </div>
-      <nav id="qmtEntries" aria-label="月报 Excel 模板" hidden></nav>
       <section id="qmtView" aria-label="月报模板明细" hidden></section>
       <div id="monthlyReportBody"></div>
     </div>
@@ -835,6 +852,8 @@
 <link rel="stylesheet" href="qc-approved-statistics.css">
 <script defer src="qc-approved-statistics.js"></script>
 <link rel="stylesheet" href="qc-daily-report.css">
+<link rel="stylesheet" href="qc-report-workbook.css">
+<script defer src="qc-report-workbook.js"></script>
 <script defer src="qc-daily-report.js"></script>
 <link rel="stylesheet" href="qc-weekly-templates.css">
 <script defer src="qc-weekly-templates.js"></script>

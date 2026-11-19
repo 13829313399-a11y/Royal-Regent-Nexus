@@ -20,7 +20,7 @@ from app.models.customer_order_ledger import (
     OrderLedgerIdentity as Identity,
 )
 from app.services.auth import now_text
-from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item
+from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item, full_edu_item
 
 RECIPIENTS = {"pmc": ("pmc-warehouse",), "warehouse": ("pmc-warehouse", "warehouse"), "injection": ("production", "molding")}
 PUBLIC_FIELDS = (
@@ -61,9 +61,12 @@ def _edu_identity_key(row: dict, product: str) -> str | None:
 
 def identity_for(row: dict, customer: str) -> str:
     product = str(row.get("product_no") or "").strip().casefold()
+    if customer == 'caixing' and row.get('caixing_mix_no'):
+        return digest(['caixing-mix', str(row.get('reference_no') or row.get('contract_no') or '').strip().casefold(),
+                       str(row.get('po_no') or '').strip().casefold(), str(row['caixing_mix_no']).strip().casefold(), product])
     if customer == "edu":
         # EDUHX is allocated from a user's workbook; it is a display reference, not a PO identity.
-        identity = _edu_identity_key(row, normalize_edu_item(product).casefold())
+        identity = _edu_identity_key(row, full_edu_item(product, row.get('source_product_no')).casefold())
         if identity is None:
             raise HTTPException(400, "EDU 保存订单需要客户合同号或客户 PO，不能仅使用底表续编号")
         return identity
@@ -92,9 +95,10 @@ def resolve_existing_line(db: Session, factory: str, customer: str, row: dict,
         Line.factory_id == factory, Line.customer_code == customer,
         or_(stored_product == product, stored_product.like(product + "____"))))
         if normalize_edu_item(line.product_no).casefold() == product}
-    candidates = {direct.id: direct} if direct is not None else {}
+    candidates = {}
     if scoped:
         owned = {line.id: {line.identity_key} for line in scoped.values()}
+        complete_identities = {line.id: set() for line in scoped.values()}
         for item in db.scalars(select(Identity).where(Identity.factory_id == factory,
                 Identity.customer_code == customer, Identity.line_id.in_(scoped))):
             owned[item.line_id].add(item.identity_key)
@@ -105,22 +109,38 @@ def resolve_existing_line(db: Session, factory: str, customer: str, row: dict,
             normalized = _edu_identity_key(data, normalize_edu_item(old_product).casefold())
             # A snapshot is evidence only for an identity this line actually owns. This also
             # resolves previous contract/PO aliases retained by explicit reconciliation.
-            if normalized == identity and (raw in owned[line_id] or normalized in owned[line_id]):
+            complete = full_edu_item(old_product, data.get('source_product_no')).casefold()
+            exact = _edu_identity_key(data, complete)
+            proven = raw in owned[line_id] or normalized in owned[line_id] or exact in owned[line_id]
+            if proven and complete != product:
+                complete_identities[line_id].add(complete)
+            if exact == identity and proven:
                 candidates[line_id] = scoped[line_id]
 
         for line in scoped.values():
             consider(line.id, line.data)
         for line_id, data in db.execute(select(Version.line_id, Version.data).where(Version.line_id.in_(scoped))):
             consider(line_id, data)
+        if any(len(complete_identities[line_id]) > 1 for line_id in candidates):
+            raise HTTPException(409, "EDU 多条历史订单完整货号来源冲突；不能复用混合了不同尾码的历史记录")
+    if direct is not None and direct.id not in candidates:
+        raise HTTPException(409, "EDU 多条历史订单身份索引与完整货号证据不一致；不能自动关联")
+    wanted = full_edu_item(row.get('product_no'), row.get('source_product_no')).casefold()
+    if not candidates:
+        same_order = [line for line in scoped.values() if _edu_identity_key(line.data, product) == _edu_identity_key(row, product)]
+        uncertain = [line for line in same_order if wanted == product or
+            full_edu_item(line.product_no, line.data.get('source_product_no')).casefold() == product]
+        if uncertain:
+            raise HTTPException(409, "EDU 匹配到多条历史订单或短货号尚未核实；请补充完整货号，不能自动关联")
     if len(candidates) > 1:
-        raise HTTPException(409, "EDU 同一客户合同 / PO / 去尾码货号匹配到多条历史订单，请先核对，不能自动合并或重复建单")
+        raise HTTPException(409, "EDU 同一客户合同 / PO / 完整货号匹配到多条历史订单，请先核对，不能自动合并或重复建单")
     return next(iter(candidates.values()), None)
 
 
 def _same_edu_import_representation(key: str, data: dict, line: Line) -> bool:
     if key == "edu_reservation_row":
         return True  # An uploaded workbook coordinate is not a persisted order fact.
-    if key == "source_order_date" and not line.data.get(key):
+    if key in {"source_order_date", "source_ship_date"} and not line.data.get(key):
         return True  # Older previews did not expose this original-source metadata.
     if key == "units_per_carton":
         def pack(value):
@@ -135,10 +155,10 @@ def _same_edu_import_representation(key: str, data: dict, line: Line) -> bool:
         return old is not None and old == new
     if key not in {"product_no", "source_product_no"}:
         return False
-    product = normalize_edu_item(line.product_no).casefold()
-    old = line.data.get(key) or line.data.get("product_no") or line.product_no
-    new = data.get(key) or data.get("product_no")
-    return normalize_edu_item(old).casefold() == product == normalize_edu_item(new).casefold()
+    old = full_edu_item(line.data.get('product_no') or line.product_no, line.data.get('source_product_no'))
+    new = full_edu_item(data.get('product_no'), data.get('source_product_no'))
+    return old.casefold() == new.casefold()
+
 
 
 def _is_360_legacy_number_mapping(line: Line, data: dict) -> bool:
@@ -171,6 +191,19 @@ def _same_360_shipping_item_representation(key: str, data: dict, line: Line) -> 
     # Use the persisted product identity, not a proposed replacement, and keep
     # exact string equality so leading zeroes/manual alternatives are protected.
     return data.get(key) == derive_shipping_item(line.product_no)
+
+
+def _same_jakks_source_metadata(key: str, data: dict, line: Line) -> bool:
+    if key not in {'confirmation_no', 'source_line_no'} or (line.factory_id, line.customer_code) != ('huadeng', 'jakks'):
+        return False
+    old = line.data
+    if old.get(key) not in (None, ''):
+        return False
+    confirmation, source_line = data.get('confirmation_no'), data.get('source_line_no')
+    return (bool(confirmation and source_line)
+            and line.reference_no == data.get('reference_no') == f'{confirmation}-{source_line}'
+            and all(str(old.get(k) or '') == str(data.get(k) or '') and data.get(k)
+                    for k in ('contract_no', 'po_no', 'product_no')))
 
 
 def number(value, *, optional=False) -> Decimal | None:
@@ -274,12 +307,34 @@ def _existing_recipients(db: Session, line: Line):
     return db.scalars(select(Dispatch.recipient).where(Dispatch.line_id == line.id).distinct()).all()
 
 
+
+def _jakks_contract_transition(line, data, qty):
+    """A proven unshipped SUP/formal pair is one order, not two intake variants."""
+    if (line.factory_id != 'huadeng' or line.customer_code != 'jakks' or line.status != 'active'
+            or line.shipped_quantity or qty != line.quantity):
+        return ''
+    old = line.data
+    incoming_sup = data.get('order_type') == '补充合同'
+    stored_sup = old.get('order_type') == '补充合同'
+    if incoming_sup == stored_sup or data.get('document_kind') == 'cancellation':
+        return ''
+    for field in ('contract_no', 'po_no', 'reference_no', 'product_no', 'requested_ship_date', 'confirmation_no', 'source_line_no'):
+        if not data.get(field) or str(data[field]).strip() != str(old.get(field) or '').strip():
+            return ''
+    allowed = {'order_type', 'document_kind', 'unit_price_hkd', 'amount_hkd', 'unit_price_usd', 'amount_usd', 'price_basis'}
+    if any(old.get(k) not in (None, '') and data.get(k) not in (None, '') and data[k] != old[k]
+           for k in data if k not in IMPORT_METADATA_FIELDS and k not in allowed):
+        return ''
+    return 'upgrade' if stored_sup else 'earlier-supplement'
+
 def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, str]], source_kind: str,
                    actor: str, reason: str, controls: dict, reconcile_line: Line | None = None, expected_revision: int | None = None) -> dict:
     factory = preview["factory_id"]
     customer = preview["customer_code"]
     details = [row for row in preview["rows"] if row.get("row_role") != "parent"]
     if reconcile_line:
+        if any(row.get('document_kind') == 'cancellation' for row in details):
+            raise HTTPException(400, '取消通知只能独立归档，不能作为正式 PO 关联或覆盖已有订单')
         if len(details) != 1 or reconcile_line.factory_id != factory or reconcile_line.customer_code != customer:
             raise HTTPException(400, "关联已有订单必须是同厂区、同客户的一条订单明细")
         if expected_revision is None or len(reason.strip()) < 4:
@@ -322,6 +377,10 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             qty = None
         if incomplete_identity or qty is None:
             data['intake_notice'] = '订单资料待补；原始内容已保存，未推测缺失的单号、货号或数量。'
+        cancellation_notice = factory == 'huadeng' and customer == 'jakks' and row.get('document_kind') == 'cancellation'
+        if cancellation_notice:
+            identity = digest(['jakks-cancellation-notice', identity, row.get('contract_no'), row.get('po_no'), row.get('quantity')])
+            data['intake_notice'] = '取消通知已存档，不计待走货数量；原台账订单保持不变，如需同步取消请在对应订单执行取消。'
         facts = {key: value for key, value in data.items() if key not in IMPORT_METADATA_FIELDS}
         variant_identity = digest(['intake-variant', identity, facts])
         variant_alias = db.get(Identity, (factory, customer, variant_identity)) if not reconcile_line else None
@@ -344,12 +403,32 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
                 sorted(source.sha256 for source in sources if source.kind != 'schedule'), row['id']])
             alias = db.get(Identity, (factory, customer, identity))
             line = db.get(Line, alias.line_id) if alias else None
-        if line and not reconcile_line and variant_alias is None:
+        transition = _jakks_contract_transition(line, data, qty) if line and not reconcile_line else ''
+        if transition == 'upgrade':
+            lock_line(db, line, line.revision)
+            if _jakks_contract_transition(line, data, qty) != 'upgrade':
+                raise HTTPException(409, '补充合同已被更新，请刷新后重新导入正式单')
+            # Preserve nonempty manual/history fields and all shipment/dispatch
+            # records. A new version is available for an explicit later send.
+            old_facts = {k:v for k,v in line.data.items() if k not in IMPORT_METADATA_FIELDS}
+            old_variant = digest(['intake-variant', identity, old_facts])
+            if db.get(Identity, (factory, customer, old_variant)) is None:
+                db.add(Identity(factory_id=factory, customer_code=customer, identity_key=old_variant, line_id=line.id))
+            merged = deepcopy(line.data)
+            merged.update({k:v for k,v in data.items() if v not in (None, '')})
+            merged['intake_notice'] = '已将同批补充合同原位转为正式单，未增加数量；历史版本与发送记录保留。'
+            line.data = merged
+            line.version += 1
+            record_version(db, line, '同批补充合同转正式单（合同、PO、Line、货号、数量及货期一致）', actor)
+            if db.get(Identity, (factory, customer, variant_identity)) is None:
+                db.add(Identity(factory_id=factory, customer_code=customer, identity_key=variant_identity, line_id=line.id))
+        if line and not reconcile_line and variant_alias is None and not transition:
             ignored = IMPORT_METADATA_FIELDS
             changed_fields = [key for key in data if key not in ignored
                 and not (customer == 'edu' and key in {'reference_no', 'production_no'})
                 and not (customer == 'edu' and _same_edu_import_representation(key, data, line))
                 and not _same_360_shipping_item_representation(key, data, line)
+                and not _same_jakks_source_metadata(key, data, line)
                 and data.get(key) != line.data.get(key)]
             if line.quantity != qty or changed_fields:
                 # An advisory must not become an unrequested amendment. Keep a
@@ -362,8 +441,8 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
                 line = db.get(Line, alias.line_id) if alias else db.scalar(select(Line).where(
                     Line.factory_id == factory, Line.customer_code == customer, Line.identity_key == identity))
         if reconcile_line:
-            incoming_product = normalize_edu_item(product) if customer == "edu" else product
-            existing_product = normalize_edu_item(reconcile_line.product_no) if customer == "edu" else reconcile_line.product_no
+            incoming_product = full_edu_item(product, row.get('source_product_no')) if customer == "edu" else product
+            existing_product = full_edu_item(reconcile_line.product_no, reconcile_line.data.get('source_product_no')) if customer == "edu" else reconcile_line.product_no
             if incoming_product.casefold() != existing_product.casefold():
                 raise HTTPException(409, "正式 PO 货号与已有订单不一致，不能关联")
             if line and line.id != reconcile_line.id:
@@ -392,7 +471,7 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             line = Line(id=uid(), factory_id=factory, customer_code=customer,
                 customer_name=str(preview.get("customer_name") or customer), identity_key=identity,
                 reference_no=reference, product_no=product, quantity=qty, shipped_quantity=Decimal(0),
-                status="active", version=1, revision=1, data=data, created_at=now_text(), updated_at=now_text())
+                status="cancelled" if cancellation_notice else "active", version=1, revision=1, data=data, created_at=now_text(), updated_at=now_text())
             db.add(line)
             db.flush()
             record_version(db, line, reason or "保存原始 PO 明细（业务提醒保留）", actor)
@@ -482,6 +561,8 @@ def cancel(db: Session, line: Line, body, actor: str, *, authorize_dispatch=None
 
 
 def restore(db: Session, line: Line, body, actor: str, *, authorize_dispatch=None) -> None:
+    if line.data.get('document_kind') == 'cancellation':
+        raise HTTPException(409, '取消通知属于归档凭证，不能恢复为有效订单；请操作原订单')
     if body.confirmed is not True:
         raise HTTPException(400, "请再次确认恢复此订单明细")
     lock_line(db, line, body.expected_revision)

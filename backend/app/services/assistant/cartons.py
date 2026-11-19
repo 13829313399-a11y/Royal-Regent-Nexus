@@ -38,7 +38,8 @@ ROW_FIELDS = {'resource_ref', 'id', 'kind', 'number', 'factory_id', 'customer_co
               'packaging_type', 'paper_quality', 'specification', 'unit', 'opening_quantity', 'inbound_quantity',
               'outbound_quantity', 'adjustment_quantity', 'ending_quantity', 'last_movement_at',
               'current_usage_quantity', 'current_usage_status', 'current_usage_label', 'current_positions',
-              'position_count', 'positions_truncated', 'available_quantity'}
+              'position_count', 'positions_truncated', 'available_quantity', 'source_request_no',
+              'source_request_kind', 'unattributed', 'positions_shared'}
 DEFINITIONS = {
     'carton.count.v1': '完整授权筛选范围的单据数；包含正单、样板、车间杂单及供应商赠品，以kind区分。不是当前页行数。',
     'carton.pending.v1': '原合并台账统计：状态不是COMPLETED/CANCELLED的单据数。',
@@ -52,7 +53,7 @@ DEFINITIONS = {
     'carton.inbound.v1': '原库存报表期间有效入库，包含原入库的冲回负数；不是当前页流水之和。',
     'carton.outbound.v1': '原库存报表期间有效出库，包含原出库的冲回负数。',
     'carton.adjustment.v1': '原库存报表期间有符号库存调整。',
-    'carton.ending.v1': '原库存报表期间末日账面结存=期初+入库-出库+调整；未指定末日则截至本次读取。不是可分配量。',
+    'carton.ending.v1': '原库存报表期间末日账面结存=期初+入库-出库+调整；未指定末日则截至本次读取。同纸品混存且无法归单时，单笔期初或结存保持未知。',
     'carton.positions.v1': 'current_positions为本次读取时正结存仓位，current_usage为当前使用进度；两者均不是历史报表末日状态，不与历史结存混算。',
     'carton.scope.v1': '订单默认OWN本人负责范围；ALL仅使用原台账允许的全部范围，特殊单仍逐单检查创建者/负责人权限。库存报表沿用原厂区read权限，不冒称本人订单范围。',
     'carton.time.v1': 'as_of为本轮数据库一致性读取时间；updated_at/last_movement_at保留原记录时间。读取不会刷新业务数据。',
@@ -237,8 +238,16 @@ def inventory_out(raw):
     row = {k: clipped(getattr(raw, k), k, truncated) for k in ('order_id', 'order_line_id', 'order_date', 'customer_code',
         'customer_name', 'contract_no', 'item_no', 'product_name', 'packaging_type', 'paper_quality', 'specification', 'unit',
         'current_usage_status', 'current_usage_label')}
-    row.update({k: decimal(getattr(raw, k)) for k in ('opening_quantity', 'inbound_quantity', 'outbound_quantity',
-        'adjustment_quantity', 'ending_quantity', 'current_usage_quantity')})
+    row.update({k: decimal(getattr(raw, k)) for k in ('inbound_quantity', 'outbound_quantity',
+        'adjustment_quantity', 'current_usage_quantity')})
+    row.update(
+        opening_quantity=None if raw.unattributed or raw.opening_unconfirmed else decimal(raw.opening_quantity),
+        ending_quantity=None if raw.unattributed or raw.balance_unconfirmed else decimal(raw.ending_quantity),
+        source_request_no=raw.source_request.request_no if raw.source_request else None,
+        source_request_kind=raw.source_request.kind if raw.source_request else None,
+        unattributed=raw.unattributed,
+        positions_shared=raw.positions_shared,
+    )
     row.update(id=ident, kind='INVENTORY', resource_ref='carton-procurement:inventory:'+ident,
         last_movement_at=timestamp(raw.last_movement_at), available_quantity=None,
         current_positions=[dict(location=clipped(p['location'], 'current_positions.location', truncated),
@@ -269,6 +278,7 @@ def totals(rows, view, statistics):
     metrics = {'record_count': metric(len(rows), '库存标识行' if view == 'inventory' else '单据', 'stock_count' if view == 'inventory' else 'count')}
     metrics['available_quantity'] = metric(None, '未确定', 'available')
     sums = defaultdict(lambda: defaultdict(Decimal))
+    unknown_stock = set()
     if view == 'orders':
         for row in rows:
             for paper in row['lines']:
@@ -282,10 +292,13 @@ def totals(rows, view, statistics):
     else:
         for row in rows:
             for key in ('opening', 'inbound', 'outbound', 'adjustment', 'ending'):
-                sums[row['unit']][key] += Decimal(row[key+'_quantity'])
+                value = row[key+'_quantity']
+                if value is None:
+                    unknown_stock.add((row['unit'], key))
+                sums[row['unit']][key] += Decimal(value or 0)
     for unit, fields in sums.items():
         for key, value in fields.items():
-            metrics[key+'_quantity['+unit+']'] = metric(decimal(value), unit, key)
+            metrics[key+'_quantity['+unit+']'] = metric(None if (unit, key) in unknown_stock else decimal(value), unit, key)
     return metrics
 
 
@@ -339,6 +352,12 @@ def query(user, arguments, run_id, *, tool_call_id=None, step_id=None):
                 row['positions_truncated'] = row['position_count'] > 50
                 row['current_positions'] = row['current_positions'][:50]
         unknowns = [dict(field='available_quantity', reason=DEFINITIONS['carton.available.v1'])]
+        if args.view == 'inventory':
+            for field in ('opening_quantity', 'ending_quantity'):
+                if any(row[field] is None for row in all_rows):
+                    unknowns.append(dict(field=field, reason='同纸品混存后有无法归单的流水，无法确认单据结存。'))
+            if any(row['positions_shared'] for row in all_rows):
+                unknowns.append(dict(field='current_positions', reason='同纸品共用仓位，单据仓位数量无法确认。'))
         if any(row['truncated_fields'] or row.get('lines_truncated') or row.get('positions_truncated') for row in rows):
             unknowns.append(dict(field='rows', reason='部分长文本仅返回前300字，纸品行及仓位最多50条；完整指标仍按全部源记录计算。'))
         retrieved = core.business_now().isoformat()
@@ -366,7 +385,7 @@ def query(user, arguments, run_id, *, tool_call_id=None, step_id=None):
             if args.view == 'inventory':
                 if args.date_from: query['carton_from'] = args.date_from
                 if args.date_to: query['carton_to'] = args.date_to
-            actions.append(dict(type='open_record', label='打开原记录：'+str(row.get('number') or row.get('contract_no') or row.get('item_no') or '库存')[:60],
+            actions.append(dict(type='open_record', label='打开原记录：'+str(row.get('number') or row.get('source_request_no') or row.get('contract_no') or row.get('item_no') or '库存')[:60],
                 route_name='carton-procurement', params={}, query=query,
                 resource=dict(module_id='carton-procurement', resource_type=resource_type, resource_id=row['id'])))
         truncated = offset + len(rows) < len(all_rows)

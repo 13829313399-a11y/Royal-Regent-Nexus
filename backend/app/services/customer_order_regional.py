@@ -13,7 +13,7 @@ CUSTOMERS = {
 TARGET_TEMPLATE = 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3'
 CASDON_HEADERS = {
     'country': '走货国家', 'container_type': '柜型/车型', 'brand': '品牌',
-    'end_customer_po': '客PO',
+    'end_customer_po': '客PO', 'remarks': '备注',
 }
 
 
@@ -58,10 +58,17 @@ def map_huadeng(row, record, customer_code):
     row['standard'] = _text(record.get('national_standard'))
     row['packaging'] = _text(record.get('product_packaging'))
     if customer_code == 'casdon':
+        row['remarks'] = _text(record.get('remarks'))
+        row['_casdon_original_sku'] = bool(record.get('_casdon_original_sku'))
         row['end_customer_po'] = _text(record.get('po_no'))
         row['po_no'] = _text(record.get('contract_no'))
         row['reference_no'] = _text(record.get('contract_no'))
     elif customer_code == 'jakks':
+        row['order_type'] = row.get('order_type') or '正单'
+        if record.get('document_kind') == 'cancellation':
+            row['document_kind'] = 'cancellation'
+            row['order_type'] = '取消单'
+            row['cancellation_evidence'] = _text(record.get('cancellation_evidence'))
         if record.get('document_kind') == 'supplementary_contract':
             row['_jakks_supplementary'] = True
             row.setdefault('issues', []).append({
@@ -73,7 +80,14 @@ def map_huadeng(row, record, customer_code):
         for field, label in (('standard', 'PRODUCT MEETS'), ('packaging', 'NOTES')):
             if row.get(field):
                 row.setdefault('lineage', {})[field] = f"{record.get('source_file', '')} · PO {label}"
-        row['reference_no'] = _text(record.get('confirmation_no')) or _text(record.get('contract_no'))
+        row['unit_price_usd'] = _text(record.get('unit_price_usd'))
+        row['amount_usd'] = _text(record.get('total_usd'))
+        row['confirmation_no'] = _text(record.get('confirmation_no'))
+        row['source_line_no'] = _text(record.get('source_line_no'))
+        row['reference_no'] = row['confirmation_no'] or _text(record.get('contract_no'))
+        if row['confirmation_no'] and row['source_line_no']:
+            row['reference_no'] += '-' + row['source_line_no']
+            row.setdefault('lineage', {})['source_line_no'] = f"PO Line#: {record.get('source_line_no_raw') or row['source_line_no']}"
         row['_missing_confirmation'] = not _text(record.get('confirmation_no'))
         unit = _text(record.get('unit')).upper()
         if unit and unit not in {'PC', 'PCS', 'PCE', 'EA', 'EACH', '件', '个'}:
@@ -101,23 +115,77 @@ def map_huadeng(row, record, customer_code):
                 row[field] = _text(record[source])
                 break
     row.setdefault('lineage', {})['reference_no'] = f'华登 {customer_code} PO · 订单识别号'
+    if customer_code in {'jakks', 'goliath'}:
+        row['_huadeng_source_currency'] = 'USD'
+    if '_source_currency' in record:
+        currency = record['_source_currency']
+        row['_huadeng_source_currency'] = currency
+        row['price_basis'] = 'incomplete'  # Never substitute a historical price for this PO.
+        for field in ('unit_price_usd','amount_usd','unit_price_hkd','amount_hkd'):
+            row[field] = ''
+        if currency == 'BOTH':
+            prices = record['_source_prices']
+            row['_huadeng_original_amounts'] = {suffix:prices.get('total_'+suffix) for suffix in ('usd','hkd')}
+            for suffix in ('usd','hkd'):
+                row['unit_price_'+suffix] = _text(prices.get('unit_price_'+suffix))
+                row['amount_'+suffix] = _text(prices.get('total_'+suffix))
+            row.setdefault('issues', []).append(dict(severity='warning',code='dual_source_prices',field='currency',
+                message='原单同时提供美元及港币价格，分别保留原值；请核对两种原价，不用汇率覆盖。',can_skip=False))
+        elif currency in {'USD', 'HKD'}:
+            suffix = currency.lower()
+            row['_huadeng_original_amounts'] = {suffix:record.get('_source_amount')}
+            row['unit_price_'+suffix] = _text(record.get('_source_unit_price'))
+            row['amount_'+suffix] = _text(record.get('_source_amount'))
+            row['lineage']['unit_price_'+suffix] = f'原单{currency}单价；保留原始计价精度'
+            if not row['unit_price_'+suffix]:
+                row.setdefault('issues', []).append(dict(severity='warning',code='source_unit_price_missing',field='unit_price_'+suffix,
+                    message='未识别到原单每件单价或计价基数；单价留空，已识别的原单金额保留，可后补。',can_skip=False))
+        else:
+            row.setdefault('issues', []).append(dict(severity='warning',code='source_currency_unsupported',field='currency',
+                message=f'原单币种为{currency}，原单单价{record.get("_source_unit_price")}、金额{record.get("_source_amount")}；未当作美元或港币写入，请人工换算。',can_skip=False))
     if customer_code == 'goliath':
         for field in ('unit_price_usd','amount_usd','barcode','po_order_date','remarks'):
             row[field] = _text(record.get(field))
             row['lineage'][field] = f"{record.get('source_file')} · {record.get('source_sheet')} · {field}"
-        row['unit_price_hkd'] = str(Decimal(row['unit_price_usd']) * Decimal('7.75')) if row['unit_price_usd'] else ''
+        row['unit_price_hkd'] = ''  # Converted after reading this workbook's P1.
         if not row['unit_price_usd']:
             row['price_basis'] = 'incomplete'  # A blank source price is not a historical-price lookup.
-        row['lineage']['unit_price_hkd'] = 'Goliath Ai 方案 · USD × 7.75'
+        row['lineage']['unit_price_hkd'] = '美元原价 × 当前接单表P1汇率'
         row['customer_q'] = _text(record.get('customer_inspection_date'))
-        if row.get('requested_ship_date'):
-            code_date = date.fromisoformat(row['requested_ship_date']) - timedelta(days=10)
-            while code_date.weekday() >= 5:
-                code_date -= timedelta(days=1)
-            row['date_code'] = f'RR{code_date.timetuple().tm_yday:03d}{code_date.year % 10}'
-            row['lineage']['date_code'] = f'Goliath Ai 方案 · 走货期前10天，周末前移至{code_date.isoformat()}；节假日待复核'
-            row.setdefault('issues', []).append({'severity':'warning','code':'holiday_calendar_review','field':'date_code','message':'日期码已按走货期前10天并避开周末计算，节假日待复核。','can_skip':False})
+        recalculate_dates(row, {'requested_ship_date'})
     return row
+
+
+def recalculate_dates(row, fields):
+    """Keep customer-specific derived dates consistent with explicit corrections."""
+    from app.services.huadeng_order_legacy import casdon_schedule
+    customer = row.get('_regional_customer')
+    if customer not in {'casdon', 'goliath'}:
+        return
+    fields = set(fields)
+    if not fields & {'requested_ship_date', 'line_q', 'customer_q', 'product_no'}:
+        return
+    ship = casdon_schedule.parse_date(row.get('requested_ship_date'))
+    lineage = row.setdefault('lineage', {})
+    if customer == 'casdon':
+        if 'requested_ship_date' in fields and not fields & {'line_q', 'customer_q'}:
+            inspection = casdon_schedule._previous_weekday(ship - timedelta(days=7)) if ship else None
+            row['line_q'] = row['customer_q'] = inspection.date().isoformat() if inspection else ''
+            lineage['line_q'] = 'Casdon · 按补录走货期提前7天，周末前移至周五'
+        else:
+            field = 'line_q' if 'line_q' in fields else 'customer_q'
+            inspection = casdon_schedule.parse_date(row.get(field) if field in fields else row.get('customer_q') or row.get('line_q'))
+            if fields & {'line_q', 'customer_q'}:
+                row['line_q'] = row['customer_q'] = inspection.date().isoformat() if inspection else ''
+        if 'date_code' not in fields:
+            row['date_code'] = casdon_schedule._date_code(row.get('product_no'), inspection)
+            lineage['date_code'] = 'Casdon · 货号前3位 + ROY + 验货期前两周的年周码'
+    elif 'requested_ship_date' in fields and 'date_code' not in fields:
+        code_date = casdon_schedule._previous_weekday(ship - timedelta(days=10)) if ship else None
+        row['date_code'] = f'RR{code_date.timetuple().tm_yday:03d}{code_date.year % 10}' if code_date else ''
+        lineage['date_code'] = 'Goliath Ai 方案 · 走货期前10天，周末前移至周五；节假日待复核'
+        if code_date and not any(i.get('code') == 'holiday_calendar_review' for i in row.get('issues', [])):
+            row.setdefault('issues', []).append({'severity':'warning','code':'holiday_calendar_review','field':'date_code','message':'日期码已按走货期前10天并避开周末计算，节假日待复核。','can_skip':False})
 
 
 def map_huakang_d(row, order, line, customer_code):
@@ -141,6 +209,8 @@ def reconcile_product(row, history, factory_id, customer_code):
             row['reference_no'] = references.pop()
             row.setdefault('lineage', {})['reference_no'] = 'ITEM表 · 同合同同货号唯一历史确认号'
     if (factory_id, customer_code) != ('huadeng', 'casdon'):
+        return
+    if row.get('_casdon_original_sku'):
         return
     product = _text(row.get('product_no'))
     # Customer-specific article suffixes are only reusable with matching version.

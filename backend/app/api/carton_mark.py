@@ -108,7 +108,7 @@ async def quick_upload(request: Request, factory_id: str, metadata: str = Form(.
 
 @router.get('/api/carton-mark/assets/quick/candidates')
 def quick_candidates(factory_id: str, contract_number: str = Query('',max_length=128), owner_department: str | None = None,
-    target_scope: str = Query('ALL',pattern='^(ALL|PENDING_SCHEDULE|ORDERS)$'), asset_id: str = Query('',max_length=96),
+    target_scope: quick_schema.TargetScope = 'ALL', asset_id: str = Query('',max_length=96),
     db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
     from app.services import carton_asset_targets
     department,_=asset_access.owner(db,user,factory_id,owner_department,supplier=owner_department=='supplier')
@@ -119,6 +119,8 @@ def quick_candidates(factory_id: str, contract_number: str = Query('',max_length
         retained=db.get(CartonMarkAsset,asset_id)
         if not retained:raise HTTPException(404,'资料不存在')
         asset_access.ensure(db,user,retained,write=True,supplier=supplier,view_factory=factory_id,collaborate=True,collaboration_action='associate')
+    if target_scope == 'WAREHOUSE':
+        asset_access.require_warehouse_targets(user, factory_id, department=department, supplier=supplier, asset=retained)
     rows=carton_asset_targets.candidates(db,user,factory_id,contract_number,supplier=supplier,scope=target_scope,retain=retained)
     if supplier:rows=[{k:v for k,v in row.items() if k not in {'customer_code','identity','revision','supplier_id'}} for row in rows]
     return dict(items=rows,total=len(rows))

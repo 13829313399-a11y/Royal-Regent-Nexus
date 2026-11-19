@@ -412,8 +412,8 @@ def _date_code(item: Any, inspection_date: datetime | None) -> str:
     if not base or not inspection_date:
         return ""
     production_week = inspection_date - timedelta(days=14)
-    iso = production_week.isocalendar()
-    return f"{base[:3]}ROY{iso.year % 100:02d}{iso.week:02d}"
+    iso_year, iso_week, _ = production_week.isocalendar()
+    return f"{base[:3]}ROY{iso_year % 100:02d}{iso_week:02d}"
 
 
 def _casdon_packaging(customer: str) -> tuple[str, str]:
