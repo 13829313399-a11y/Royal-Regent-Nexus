@@ -1,0 +1,76 @@
+.sheet-tab-bar{justify-content:space-between;align-items:center;gap:8px}
+.wb-open{display:grid;place-items:center;flex:none;width:32px;height:32px;border:0;border-radius:6px;color:var(--sheet-muted);background:transparent;cursor:pointer}
+.wb-open svg{width:20px;height:20px}
+.wb-open:hover,.wb-open:focus-visible{background:var(--sheet-head);color:var(--sheet-ink)}
+.single-name{padding:13px 10px;font-weight:600}
+.skim-scroll{margin:10px 16px 16px;overflow:auto;color:var(--sheet-ink)}
+.report-page .skim{width:100%;border-collapse:collapse;table-layout:auto;font-family:var(--sheet-font);font-variant-numeric:tabular-nums}
+.report-page .skim :is(th,td){text-align:center!important;vertical-align:middle!important;border:0!important;border-bottom:1px solid var(--sheet-line)!important;background:transparent!important;color:var(--sheet-ink)!important;letter-spacing:normal!important;white-space:normal;line-height:1.55!important}
+.report-page .skim td{font-size:14px!important;padding:13px 9px!important}
+.report-page .skim th{font-size:13px!important;padding:9px 8px!important;color:var(--sheet-muted)!important;white-space:nowrap}
+.report-page .skim .skim-groups th{padding:0 4px!important;border:0!important;position:relative}
+.skim-groups span{display:block;padding:9px 2px 7px;border-bottom:1px solid #808981;font-size:13px;font-weight:650;color:var(--sheet-ink)}
+.theme-dark .skim-groups span{border-color:#94a196}
+.skim tbody tr:last-child td{border-bottom:0!important}
+.skim strong{font-size:12px;font-weight:650}.result-PASS{color:#316447}.result-FAIL,.result-REJ{color:#9d473c}
+dialog#wb-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:calc(100vw - 32px);max-width:1800px;height:calc(100dvh - 32px);max-height:none;padding:0;background:#fff;color:#23382d;border:1px solid #b8c6bb;border-radius:12px;box-shadow:0 20px 90px #14231b40;font:14px/1.4 -apple-system,"PingFang SC",sans-serif;overflow:hidden}
+#wb-dialog[open]{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto}
+#wb-dialog::backdrop{background:#1d2b254d}
+.wb-head,.wb-formula,.wb-foot{display:flex;align-items:center;gap:12px;border-bottom:1px solid #d8dfd8}
+.wb-head{padding:10px 14px;min-height:48px}
+.wb-head>div{display:flex;align-items:center;gap:9px}.file-mark{color:#37764e;font-size:23px}
+#wb-status{margin-left:auto;font-size:12px;color:#52695a}
+#wb-dialog button{font:inherit;cursor:pointer}
+#wb-export{background:#355a46;color:white;padding:6px 14px;border:1px solid #31513e;border-radius:7px;white-space:nowrap}
+#wb-close{padding:0 8px;font-size:24px!important;border:0;background:transparent;color:#566359}
+.wb-formula{gap:0;height:35px;background:#fafbf9}
+#wb-address{min-width:68px;text-align:center;font-size:12px}
+.wb-formula i{border-inline:1px solid #d8dfd8;padding:0 12px;color:#718077}
+#wb-value{flex:1;min-width:0;height:100%;padding:0 10px;border:none;background:#fff;color:#283c32;font-size:13px;outline-offset:-2px}
+#wb-grid{min-height:0;overflow:auto;overscroll-behavior:contain}
+.wb-foot{background:#f8faf7;justify-content:space-between;border:0;border-top:1px solid #d8dfd8;padding:0 10px;gap:5px}
+#wb-tabs{display:flex;overflow:auto}
+.wb-foot button{border:0;background:transparent;color:#4b6154;white-space:nowrap;padding:10px}
+#wb-tabs button[aria-pressed=true]{font-weight:650;color:#2c6342;background:white;box-shadow:inset 0 -2px #447553}
+#wb-next{font-size:12px!important}
+#wb-dialog button:disabled{opacity:.5;cursor:default}
+@media(max-width:650px){.skim-scroll{margin:8px}.report-page .skim{min-width:620px}dialog#wb-dialog{width:100vw;height:100dvh;border-radius:0}.wb-head{gap:6px;padding:6px}.sheet-tabs button{font-size:12px}.wb-foot{flex-wrap:wrap}.wb-head strong{font-size:13px}}
+body.qc-report-center .report-page .skim thead tr{position:static;background:var(--sheet)!important}
+
+#wb-discard{border:0;border-radius:5px;background:#f2f4f0;color:#455b4d;padding:5px 9px}
+.rate-chart{margin:0;padding:12px clamp(4px,2vw,28px) 32px;font-family:var(--sheet-font);color:var(--sheet-ink);font-variant-numeric:tabular-nums}
+.rate-chart figcaption{font-size:16px;font-weight:600;margin:0 0 32px}
+.rate-plot{position:relative;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));height:clamp(180px,29vh,280px);margin-left:44px}
+.rate-line{position:absolute;inset-inline:0;border-top:1px solid var(--sheet-line)}
+.rate-line span{position:absolute;right:calc(100% + 8px);transform:translateY(-50%);font-size:12px;color:var(--sheet-muted)}
+.rate-column{position:relative;display:flex;align-items:flex-end;justify-content:center}
+.rate-month{position:absolute;top:calc(100% + 7px);font-size:12px;color:var(--sheet-muted);white-space:nowrap}
+.rate-bar{position:relative;width:52%;max-width:46px;min-height:2px;background:#758e7d;border-radius:3px 3px 0 0}
+.rate-bar span{position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);font-size:12px;font-weight:600;color:var(--sheet-ink)}
+@container (max-width:540px){.rate-chart{padding-inline:0}.rate-plot{min-width:410px}}
+
+/* Keep the template selector visually distinct from the worksheet tabs below. */
+.wb-head{padding-block:0;min-height:46px}
+.wb-head .wb-nav{min-width:0;gap:12px;align-self:stretch}
+.wb-nav .file-mark{flex:none;font-size:19px;line-height:1}
+#wb-templates{display:flex;align-items:stretch;gap:14px;min-width:0;overflow-x:auto;scrollbar-width:thin}
+#wb-templates strong{align-self:center;font-size:13px}
+#wb-templates button{position:relative;flex:none;padding:0 2px;min-height:44px;border:0;background:transparent;white-space:nowrap;font-size:13px;line-height:1.4;font-weight:450;color:#5c6c61}
+#wb-templates button[aria-pressed=true]{font-weight:600;color:#2d503a}
+#wb-templates button[aria-pressed=true]::after{content:"";position:absolute;bottom:0;inset-inline:2px;height:2px;background:#50755c}
+#wb-templates button:hover{color:#274833}
+#wb-templates button:focus-visible{outline:2px solid #789981;outline-offset:-3px;border-radius:4px}
+@media(max-width:700px){
+  .wb-head{flex-wrap:wrap;padding:0 10px 6px;gap:4px 8px}
+  .wb-head .wb-nav{flex:1 0 100%;gap:10px}
+  #wb-status{margin-left:0;margin-right:auto;flex:1}
+  #wb-templates{gap:12px}
+}
+
+.report-toolbar .report-toolbar-refresh::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    background: currentColor;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3'/%3E%3C/svg%3E") center / contain no-repeat;
+}

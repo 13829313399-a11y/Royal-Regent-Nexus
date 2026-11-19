@@ -4,7 +4,16 @@
   const doc = root.document;
   const enabled = () => root.__QC_NEXUS?.factory === 'huaxing';
   const exportAllowed = () => root.__QC_NEXUS?.exportAllowed === true;
-  function createReport(period, inputId, label, overviewLabel) {
+  function syncCustomerOptions(select, customers) {
+    if (!Array.isArray(customers)) return;
+    const previous = select.selectedOptions[0];
+    const value = select.value;
+    const options = customers.map(item => new Option(item.label,item.key));
+    if (value && !customers.some(item => item.key === value)) options.push(previous);
+    select.replaceChildren(new Option('全部客户',''),...options);
+    select.value = value;
+  }
+  function createReport(period, inputId, customerId, label, overviewLabel) {
     const area = () => doc.getElementById(period + 'ReportBody');
     const dateInput = () => doc.getElementById(inputId);
     const esc = value => root._esc(value);
@@ -96,8 +105,10 @@
       const host = area();
       host.querySelector('[data-qdr-compact]').hidden = mode !== 'compact';
       host.querySelector('[data-qdr-full]').hidden = mode !== 'full';
-      host.querySelectorAll('[data-qdr-view]').forEach(button =>
-        button.setAttribute('aria-pressed', String(button.dataset.qdrView === mode)));
+      host.querySelectorAll('[data-qdr-view]').forEach(button => {
+        const active = button.dataset.qdrView === mode;
+        button.setAttribute('aria-pressed', String(active));
+      });
     }
 
     function locateDetail(index) {
@@ -114,15 +125,27 @@
     }
 
     function paint(report) {
-      area().innerHTML = '<div class="qdr">' + overview(report, true) +
+      const footer = exportAllowed() ? '<div class="qdr-footer"><button type="button" class="qdr-export" data-qdr-export' +
+        (report.total ? '' : ' disabled') + '>导出 Excel</button><span class="qdr-muted" role="status" data-qdr-export-status></span></div>' : '';
+      if (period === 'daily') {
+        const empty = '<p class="qdr-empty">该日期暂无可列入报表的已审核验货记录</p>';
+        area().innerHTML = '<section class="qdr template-sheet" aria-label="日报验货明细">' +
+          '<div class="daily-sheet-body"><div class="daily-table-scroll" role="region" aria-label="完整验货明细" tabindex="0" data-qdr-full>' +
+          (report.total ? fullTable(report) : empty) + '</div>' +
+          footer + '</div></section>';
+      } else {
+        area().innerHTML = '<div class="qdr">' + overview(report, true) +
         '<section class="qdr-panel qdr-detail" aria-label="验货明细"><div class="qdr-heading"><div><h3>验货明细</h3><small>' +
         report.total + ' 条记录</small></div>' + (report.total ? '<div class="qdr-views" role="group" aria-label="明细视图">' +
         '<button type="button" data-qdr-view="compact">精简</button><button type="button" data-qdr-view="full">完整 13 列</button></div>' : '') + '</div>' +
         (report.total ? '<div data-qdr-compact>' + compactTable(report) + '</div><div class="qdr-scroll" data-qdr-full hidden role="region" aria-label="完整 13 列" tabindex="0">' + fullTable(report, true) + '</div>'
           : '<p class="qdr-empty">该日期暂无可列入报表的已审核验货记录</p>') + '</section>' +
-        (exportAllowed() ? '<div class="qdr-footer"><button type="button" class="qdr-export" data-qdr-export' +
-          (report.total ? '' : ' disabled') + '>导出 Excel</button><span class="qdr-muted" role="status" data-qdr-export-status></span></div>' : '') + '</div>';
-      if (!report.total) return;
+        footer + '</div>';
+      }
+      const button = area().querySelector('[data-qdr-export]');
+      if (button && report.total) button.onclick = () => download(report, button);
+      if(period==='daily')root.QcReportWorkbook?.mount('daily','daily',area().querySelector('[data-qdr-full]'),report,load);
+      if (period === 'daily' || !report.total) return;
       setMode();
       const followToggle = area().querySelector('.qdr-follow-toggle');
       if (followToggle) followToggle.onclick = () => {
@@ -151,13 +174,14 @@
           button.setAttribute('aria-label', button.textContent + '第 ' + (index+1) + ' 条验货详情');
         };
       });
-      const button = area().querySelector('[data-qdr-export]');
-      if (button) button.onclick = () => download(report, button);
     }
 
     async function load() {
       const id = ++sequence;
       const input = dateInput();
+      const customerSelect = doc.getElementById(customerId);
+      customerSelect.hidden = false;
+      if (period === 'daily') customerSelect.onchange = load;
       input.closest('.page').classList.add('qdr-active');
       if (!initialized && !input.value) input.value = period === 'monthly' ? root.todayStr().slice(0,7) : root.todayStr();
       initialized = true;
@@ -170,10 +194,16 @@
       area().innerHTML = '<p class="qdr-message" role="status">' + (day ? '正在读取已审核验货记录…' : '请选择报告日期') + '</p>';
       if (!day) return;
       try {
-        const response = await read(path + '?' + new URLSearchParams({date:day,period}));
+        const params = new URLSearchParams({date:day,period});
+        const customer = customerSelect.value;
+        if (customer) params.set('customer',customer);
+        const response = await read(path + '?' + params);
         const report = await response.json();
         if (id !== sequence || selectedDate() !== day) return;
         if (report.date !== day || report.period !== period) throw Error('返回的报表日期不一致，请重试');
+        if ((report.customer || '') !== customer) throw Error('报告客户与当前筛选不一致，请重试');
+        if (period === 'weekly' && root.QcWeeklyTemplates) root.QcWeeklyTemplates.syncCustomers(report.customers);
+        else syncCustomerOptions(customerSelect,report.customers);
         paint(report);
         let range = input.closest('.report-toolbar').querySelector('.qdr-period-range');
         if (!range) {
@@ -197,6 +227,7 @@
       status.textContent = '正在生成…';
       try {
         const params = new URLSearchParams({date:report.date,period,revision:report.revision});
+        if (report.customer) params.set('customer',report.customer);
         const response = await read(path + '/export?' + params);
         const data = await response.blob();
         if (snapshot !== report || selectedDate() !== report.date) return;
@@ -216,12 +247,12 @@
       }
     }
 
-    return {enabled, load};
+    return {enabled, load, syncCustomers: customers => syncCustomerOptions(doc.getElementById(customerId),customers)};
   }
   root.QcPeriodReports = {
-    daily: createReport('daily', 'dailyDate', '验货日报', '当日验货概览'),
-    weekly: createReport('weekly', 'weeklyDate', '验货周报', '本周验货概览'),
-    monthly: createReport('monthly', 'monthlyMonth', '验货月报', '本月验货概览'),
+    daily: createReport('daily', 'dailyDate', 'qdrCustomer', '验货日报', '当日验货概览'),
+    weekly: createReport('weekly', 'weeklyDate', 'qwtCustomer', '验货周报', '本周验货概览'),
+    monthly: createReport('monthly', 'monthlyMonth', 'qmtCustomer', '验货月报', '本月验货概览'),
   };
   root.QcDailyReport = root.QcPeriodReports.daily;
 })(window);
@@ -396,6 +427,19 @@
     draw();
   }
 
+  // The weekly report always covers Monday through Sunday for the chosen day.
+  function weekCaption(value) {
+    const monday = new Date(value + 'T00:00:00Z');
+    monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
+    const sunday = new Date(monday);
+    sunday.setUTCDate(monday.getUTCDate() + 6);
+    const short = date => (date.getUTCMonth() + 1) + '月' + date.getUTCDate() + '日';
+    if (monday.getUTCMonth() === sunday.getUTCMonth()) {
+      return (monday.getUTCMonth() + 1) + '月' + monday.getUTCDate() + '–' + sunday.getUTCDate() + '日';
+    }
+    return short(monday) + '–' + short(sunday);
+  }
+
   function sync(input) {
     const field = input.closest('.report-date-field');
     if (!field) return;
@@ -421,7 +465,12 @@
     }
     const [y,m,d] = input.value.split('-').map(Number);
     const label = field.querySelector('label').textContent;
-    const display = y ? y+'年'+(m ? m+'月' : '')+(d ? d+'日' : '') : '选择'+label;
+    let display = y ? y+'年'+(m ? m+'月' : '')+(d ? d+'日' : '') : '选择'+label;
+    if (y && root.__QC_NEXUS?.factory === 'huaxing') {
+      if (input.id === 'weeklyDate') display = weekCaption(input.value);
+      if (input.id === 'dailyDate') display = m+'月'+d+'日';
+      if (input.id === 'monthlyMonth') display = m+'月';
+    }
     trigger.textContent = input.tagName === 'SELECT' ? (input.selectedOptions[0]?.textContent || display) : display;
     trigger.setAttribute('aria-label', label+'，'+trigger.textContent);
     trigger.disabled = input.disabled;
@@ -448,4 +497,112 @@
   root.addEventListener('resize',place);
   doc.addEventListener('scroll',event=>{if(open && !open.panel.contains(event.target))place();},true);
   root.QcReportDates = {sync, close};
+})(window);
+
+/* Direct Huaxing report views. The template controllers own edits, data and export permissions. */
+(function (root) {
+  const doc = root.document;
+  const catalog = {
+    weekly: {detail:'各客户验货明细及汇总', issues:'验货问题与整改跟踪表'},
+    monthly: {orders:'订单对账明细', tracking:'问题整改跟踪', quality:'客户质量签核'},
+  };
+  const remembered = {};
+  for (const period of Object.keys(catalog)) {
+    try {
+      const key = root.localStorage.getItem('qc.huaxing.template.' + period);
+      if (Object.hasOwn(catalog[period],key)) remembered[period] = key;
+    } catch { /* Selection remains available within this session. */ }
+  }
+  const id = name => doc.getElementById(name);
+  function mountRefresh(period) {
+    const page = id('page-' + period);
+    const toolbar = page.querySelector('.report-toolbar');
+    if (toolbar.querySelector('.report-toolbar-refresh')) return;
+    const content = id({daily:'dailyReportBody', weekly:'qwtView', monthly:'qmtView'}[period]);
+    const refresh = doc.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'qc-refresh-icon report-toolbar-refresh';
+    refresh.title = '刷新数据';
+    refresh.setAttribute('aria-label', refresh.title);
+    toolbar.append(refresh);
+    const source = () => content.querySelector('[data-refresh],#qmtRefresh,#qwtRefresh,#qmtLoadRetry,#qwtLoadRetry');
+    function sync() {
+      refresh.disabled = period === 'daily' ? !!content.querySelector('.qdr-message[role=status]') : !source() || source().disabled;
+    }
+    refresh.onclick = () => period === 'daily' ? root.QcDailyReport.load() : source()?.click();
+    new MutationObserver(sync).observe(content, {childList:true, subtree:true, attributes:true, attributeFilter:['disabled']});
+    sync();
+  }
+  function createTabs(period, panel, choice, controller) {
+    const sheet = doc.createElement('div');
+    sheet.className = 'template-sheet';
+    panel.before(sheet);
+    const bar = doc.createElement('div');
+    bar.className = 'sheet-tab-bar';
+    const nav = doc.createElement('div');
+    nav.className = 'sheet-tabs';
+    nav.setAttribute('role','tablist');
+    nav.setAttribute('aria-label',period === 'weekly' ? '周报模板' : '月报模板');
+    bar.append(nav);
+    sheet.append(bar,panel);
+    panel.setAttribute('role','tabpanel');
+    panel.tabIndex = 0;
+    for (const [key,label] of Object.entries(catalog[period])) {
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.title = Array.from(choice.options).find(option => option.value === key)?.textContent || label;
+      button.id = 'template-' + period + '-' + key;
+      button.dataset.key = key;
+      button.setAttribute('role','tab');
+      button.setAttribute('aria-controls',panel.id);
+      button.onclick = () => {
+        if (choice.value !== key) controller.open(key);
+        // open() accepts or rejects the selection synchronously before loading.
+        updateTabs(period,nav,panel,choice.value);
+      };
+      nav.append(button);
+    }
+    nav.onkeydown = event => {
+      const buttons = Array.from(nav.children);
+      const index = buttons.indexOf(event.target);
+      const next = {ArrowRight:(index+1)%buttons.length, ArrowLeft:(index+buttons.length-1)%buttons.length, Home:0, End:buttons.length-1}[event.key];
+      if (index < 0 || next === undefined) return;
+      event.preventDefault();
+      buttons[next].focus();
+      buttons[next].click();
+    };
+    return nav;
+  }
+  function updateTabs(period,nav,panel,key) {
+    for (const button of nav.children) {
+      const active = button.dataset.key === key;
+      button.setAttribute('aria-selected',String(active));
+      button.tabIndex = active ? 0 : -1;
+      if (active) {
+        panel.setAttribute('aria-labelledby',button.id);
+        if (remembered[period] !== key) {
+          remembered[period] = key;
+          try { root.localStorage.setItem('qc.huaxing.template.' + period,key); } catch {}
+        }
+      }
+    }
+  }
+  function enter(period) {
+    const weekly = period === 'weekly';
+    const prefix = weekly ? 'qwt' : 'qmt';
+    const controller = weekly ? root.QcWeeklyTemplates : root.QcMonthlyTemplates;
+    const input = id(weekly ? 'weeklyDate' : 'monthlyMonth');
+    if (!input.value) input.value = weekly ? root.todayStr() : root.todayStr().slice(0,7);
+    root.QcReportDates.sync(input);
+    id('page-' + period).classList.add('qdr-active');
+    mountRefresh(period);
+    const panel = id(prefix+'View'), choice = id(prefix+'Choice');
+    const nav = panel.parentElement.querySelector('.sheet-tabs') || createTabs(period,panel,choice,controller);
+    const key = remembered[period] || (weekly ? 'detail' : 'quality');
+    const loading = choice.value ? undefined : controller.open(key);
+    updateTabs(period,nav,panel,choice.value);
+    return loading;
+  }
+  root.QcReportSheets = {enter,mountRefresh};
 })(window);

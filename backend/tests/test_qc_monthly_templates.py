@@ -34,7 +34,7 @@ def test_calendar_population_layout_and_read_only(db):
     assert data['dateTo']=='2026-11-30' and data['total']==4
     assert len(data['tables']['caixing'])==1 and len(data['tables']['issues'])==1
     assert data['tables']['issues'][0]['values'][8]=='PASS' and len(data['tables']['issues'][0]['photos'])==1
-    assert [len(t['headers']) for t in data['templates']]==[15,18,12,18]
+    assert [len(t['headers']) for t in data['templates']]==[15,18,12,18,7]
     assert data['tables']['summary'][0]['values'][1:]==[1,1,'','']
     assert hashes()==before and not monthly._path().exists()
     with pytest.raises(HTTPException):monthly.query('huadeng',DAY)
@@ -77,6 +77,14 @@ def test_four_exports_headers_all_photos_and_no_history(db):
             assert s.row_values(hr)==spec['headers']
             assert (bool(s.merged_cells) if kind=='caixing' else not s.merged_cells)
             assert all(book.xf_list[s.cell_xf_index(hr,c)].alignment.hor_align==2 for c in range(len(spec['headers'])))
+            for row in range(s.nrows):
+                for column in range(s.ncols):
+                    cell=s.cell(row,column)
+                    if cell.ctype==xlrd.XL_CELL_EMPTY:continue
+                    xf=book.xf_list[cell.xf_index]
+                    assert (xf.alignment.hor_align,xf.alignment.vert_align)==(2,1)
+                    expected=(243,243,243) if row==hr or (kind=='caixing' and row==s.nrows-2) else (255,255,255)
+                    assert book.colour_map[xf.background.pattern_colour_index]==expected
             if kind!='caixing':
                 title_col=next(c for c in range(s.ncols) if s.cell_value(0,c))
                 assert title_col>0 and book.xf_list[s.cell_xf_index(0,title_col)].alignment.hor_align==2
@@ -100,6 +108,12 @@ def test_four_exports_headers_all_photos_and_no_history(db):
     title_cell=next(c for c in s[1] if c.value)
     assert title_cell.column>1 and title_cell.alignment.horizontal=='center'
     assert all(c.alignment.horizontal=='center' for c in s[2])
+    for row in s.iter_rows():
+        for cell in row:
+            assert (cell.alignment.horizontal,cell.alignment.vertical)==('center','center')
+            assert cell.fill.fgColor.rgb[-6:]==('F3F3F3' if cell.row==2 else 'FFFFFF')
+            if cell.row>2:assert cell.alignment.wrap_text
+    assert s.freeze_panes=='A3' and not s.sheet_view.showGridLines
     assert len(excel._asset('issues')[0])<100000
 
 def test_exports_many_rows_preserve_footer_and_all_records(db):
@@ -147,6 +161,10 @@ def test_gateway_permissions_export_and_monthly_route(monkeypatch,tmp_path):
         url=base+'api/monthly-templates';response=client.get(url,params={'date':DAY})
         assert response.status_code==200,response.text
         data=response.json();assert data['total']==6 and data['canEdit']
+        overview=client.get(url,params={'date':DAY,'template':'overview'})
+        assert overview.status_code==200 and len(overview.json()['overview']['details'])==6
+        assert overview.json()['overview']['detailHeaders'][11]=='机构'
+        assert client.get(url,params={'date':DAY,'template':'unknown'}).status_code==422
         assert client.get(base+'qc-monthly-templates.js').status_code==200
         assert client.get(url,params=[('date',DAY),('date',DAY)]).status_code==422
         assert client.get(url,params={'date':DAY,'company':'hy-huadeng'}).status_code==403
@@ -165,3 +183,43 @@ def test_gateway_permissions_export_and_monthly_route(monkeypatch,tmp_path):
         newbase=client.get(health).json()['frame_url']
         assert client.post(newbase+'api/monthly-templates/excel',json=req).status_code==403
         assert client.get(newbase+result.json()['url']).status_code==403
+
+
+def test_three_approved_exports_share_supplements_scope_and_real_photos(db,monkeypatch):
+    first=issue(db,1,customer='彩星',result='PASS',photos=2)
+    approval(db,2,customer='彩星玩具',result='FAIL')
+    before=hashes()
+    orders=monthly.query('huaxing',DAY,design_id='orders')
+    key=next(c['key'] for c in orders['customers'] if c['name']=='彩星')
+    field=f'detail:{first["id"]}:contractNo'
+    monthly.save('huaxing',ACTOR,body(orders,field,'001234',key))
+    monthly.save('huaxing',ACTOR,body(orders,'returns','0',key))
+    monkeypatch.setattr(excel.settings,'qc_department_gateway_token',SecretStr('monthly-design-test-key'))
+    def export(kind,scope=''):
+        data=monthly.query('huaxing',DAY,scope,design_id=kind)
+        assert [t['id'] for t in data['templates']]==['orders','tracking','quality']
+        payload=dict(date=DAY,customer=scope,template=kind,sourceRevision=data['sourceRevision'],versions=excel.versions(data))
+        output=excel.prepare('huaxing','reader',payload)
+        content,name=excel.download('reader',output['url'].split('/')[-1])
+        assert name.startswith(monthly.design.NAMES[kind]) and name.endswith('.xlsx')
+        return openpyxl.load_workbook(BytesIO(content),data_only=True)
+    w=export('orders')
+    assert w.sheetnames==['订单查询与对账','彩星交付样式']
+    assert w.active['U6'].value=='备注' and w.active['A5'].fill.patternType is None
+    assert '客户内序号' not in [c.value for c in w.active[6]]
+    assert w.worksheets[1]['C7'].value=='001234' and w.worksheets[1]['E11'].value==0
+    other=next(c['key'] for c in orders['customers'] if c['name']=='彩星玩具')
+    empty_delivery=export('orders',other).worksheets[1]
+    assert empty_delivery['A7'].value is None and empty_delivery['E9'].value=='不良率'
+    w=export('tracking')
+    assert w.sheetnames==['问题照片与整改进度'] and w.active.max_row==8
+    assert len(w.active._images)==2 and all(im.anchor._from.col==12 for im in w.active._images)
+    w=export('quality')
+    assert w.sheetnames==['客户质量汇总与签核','验货明细与退货原因']
+    assert [c.value for c in w.active[9]][:8]==['合计',2,1,1,1,None,.5,None]
+    assert len(w.active._charts)==1
+    w=export('quality',key)
+    assert [c.value for c in w.active[8]][:8]==['合计',1,1,0,1,0,1,0]
+    assert w.worksheets[1]['D7'].value=='001234' and w.worksheets[1].max_column==19
+    after=hashes()
+    assert {p:after[p] for p in before}==before
