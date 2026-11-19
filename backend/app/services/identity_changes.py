@@ -72,11 +72,53 @@ def save_draft(db, actor_id, payload: IdentityChange, *, change_id=None, expecte
     return result_out(row)
 
 
+def plan_role_bindings(db, actor, org, bindings, dependencies, scopes):
+    from app.services.identity_catalog import DEPARTMENTS, FACTORIES
+    roles = []
+    for binding in bindings:
+        definition = role_definition(db, binding.role_id)
+        if definition["role_code"] == "admin" or any(p.startswith("system:") for p in definition["permissions"]):
+            fail("ADMINISTRATION_SEPARATE", "系统管理权须通过独立授权办理", 422)
+        if binding.department not in DEPARTMENTS:
+            fail("INVALID_SCOPE", "请选择权限包作用部门", 422)
+        from app.services.permission_scope_policy import role_scope_policy
+        from app.services.iam import _ensure_scope_applicable
+        factories = ([org.legacy_factory_id] if binding.factory_scope.kind == "home" else sorted(FACTORIES)
+                     if binding.factory_scope.kind == "all_current" else sorted(set(binding.factory_scope.factory_ids)))
+        if not factories or any(f not in FACTORIES for f in factories):
+            fail("INVALID_SCOPE", "职能组织必须选择具体业务厂区", 422)
+        for factory in factories:
+            business_org = db.get(IamOrgUnit, factory)
+            if not business_org or business_org.status != "active":
+                fail("INVALID_SCOPE", "业务厂区已停用，请重新选择", 422)
+            dependencies.setdefault("business_organizations", []).append([factory, business_org.revision, business_org.status])
+            scopes.append((business_org.id, factory, binding.department))
+            _ensure_scope_applicable(role_scope_policy(definition["role_code"]), factory, binding.department, subject=definition["role_name"])
+        version = snapshot_role(db, binding.role_id, actor.id)
+        if binding.role_version_id and version.id != binding.role_version_id:
+            fail("ROLE_VERSION_CHANGED", "权限包已发布新版本，请重新预览")
+        roles.append({**definition, "version_id": version.id, "hash": version.definition_hash,
+                      "factories": factories, "department": binding.department})
+    return roles
+
+
 def prepare(db, row, actor):
     from app.services.auth import build_auth_context
     from app.services.iam import _get_revision
     from app.services.identity_catalog import DEPARTMENTS, FACTORIES
-    payload = IdentityChange.model_validate_json(row.payload_json)
+    if row.request_type == "identity:adjust_packages" or row.id.startswith(("studio-confirm-", "studio-action-")):
+        from app.services.access_studio import require_studio_writes
+        from app.services.iam import _has_scoped_permission
+        require_studio_writes()
+        if not _has_scoped_permission(db, actor.id, "system:access_manage"):
+            fail("OUTSIDE_MANAGEABLE_SCOPE", "需要权限配置办理权限", 403)
+        if row.id.startswith("studio-action-") and actor.id == row.target_user_id:
+            fail("SELF_ESCALATION", "本人的任职或账号状态须由其他管理员办理", 403)
+    if row.request_type == "identity:adjust_packages":
+        from app.schemas.access_studio import StudioChange
+        payload = StudioChange.model_validate_json(row.payload_json)
+    else:
+        payload = IdentityChange.model_validate_json(row.payload_json)
     profile = db.get(EmployeeProfile, row.target_user_id)
     user = db.get(AuthUser, row.target_user_id)
     missing_profile = profile is None
@@ -101,7 +143,8 @@ def prepare(db, row, actor):
     if scheduled and (payload.request_type in {"freeze", "unfreeze", "leave", "rehire", "confirm_identity", "profile_correction", "upgrade_packages"}
                       or not settings.iam_identity_scheduling_enabled):
         fail("SCHEDULING_UNAVAILABLE", "此操作当前只支持立即办理", 422)
-    if payload.request_type not in {"confirm_identity", "freeze", "unfreeze", "leave"} and profile.identity_mode != "v2":
+    if profile.identity_mode != "v2" and (row.id.startswith("studio-action-") or
+            payload.request_type not in {"confirm_identity", "freeze", "unfreeze", "leave"}):
         fail("IDENTITY_REVIEW_REQUIRED", "请先明确历史授权来源并确认正式任职")
     if profile.employment_status == "left" and payload.request_type != "rehire":
         fail("REHIRE_REQUIRED", "离职人员须重新确认任职后复职")
@@ -122,10 +165,22 @@ def prepare(db, row, actor):
             fail("SOURCE_CHANGED", "来源任职在生效时点无效")
         if payload.request_type == "primary_assignment_transfer" and not source.is_primary:
             fail("INVALID_CHANGE", "调动的来源必须为主职", 422)
+        if row.id.startswith("studio-action-") and payload.request_type == "end_assignment" and source.is_primary:
+            fail("INVALID_CHANGE", "结束兼任需要明确选择副职，主职请单独办理调动或离职", 422)
+    if row.id.startswith("studio-action-") and payload.request_type in {"freeze", "add_assignment", "end_assignment"} and (
+            user.status != "active" or profile.employment_status != "active"):
+        fail("INACTIVE_EMPLOYEE", "此操作仅适用于启用且在职的人员", 422)
     roles = []
     dependencies = {"identity": profile.identity_version, "authorization": revision, "source": source.revision if source else None,
                     "actor_authorization": actor.authorization_version, "actor_identity": actor.identity["effective_context_key"],
                     "missing_profile": missing_profile}
+    authorization_deadline = None
+    if payload.request_type in {"adjust_packages", "confirm_identity"} or row.id.startswith("studio-action-"):
+        subject = build_auth_context(db, user, at=effective)
+        upcoming = [instant(i["next_transition_at"]) for i in (actor.identity, subject.identity) if i.get("next_transition_at")]
+        authorization_deadline = min(upcoming, default=None)
+        if payload.request_type == "adjust_packages" or row.id.startswith("studio-action-"):
+            dependencies["target_context"] = [subject.identity["effective_context_key"], subject.identity.get("next_transition_at")]
     from app.models.identity import IamDelegation
     dependencies["delegations"] = sorted((d.id, d.revision, d.status, d.role_ids_json, d.factory_ids_json)
         for d in db.scalars(select(IamDelegation).where(IamDelegation.user_id == actor.id)))
@@ -155,30 +210,16 @@ def prepare(db, row, actor):
             fail("INVALID_TIME_RANGE", "临时支援和代理必须填写结束时间", 422)
         dependencies["organization"] = [org.id, org.revision, dept.revision]
         scopes.append((org.id, org.legacy_factory_id, spec.department_code))
-        for binding in spec.role_bindings:
-            definition = role_definition(db, binding.role_id)
-            if definition["role_code"] == "admin" or any(p.startswith("system:") for p in definition["permissions"]):
-                fail("ADMINISTRATION_SEPARATE", "系统管理权须通过独立授权办理", 422)
-            if binding.department not in DEPARTMENTS:
-                fail("INVALID_SCOPE", "请选择权限包作用部门", 422)
-            from app.services.permission_scope_policy import role_scope_policy
-            from app.services.iam import _ensure_scope_applicable
-            factories = ([org.legacy_factory_id] if binding.factory_scope.kind == "home" else sorted(FACTORIES)
-                         if binding.factory_scope.kind == "all_current" else sorted(set(binding.factory_scope.factory_ids)))
-            if not factories or any(f not in FACTORIES for f in factories):
-                fail("INVALID_SCOPE", "职能组织必须选择具体业务厂区", 422)
-            for factory in factories:
-                business_org = db.get(IamOrgUnit, factory)
-                if not business_org or business_org.status != "active":
-                    fail("INVALID_SCOPE", "业务厂区已停用，请重新选择", 422)
-                dependencies.setdefault("business_organizations", []).append([factory, business_org.revision, business_org.status])
-                scopes.append((business_org.id, factory, binding.department))
-                _ensure_scope_applicable(role_scope_policy(definition["role_code"]), factory, binding.department, subject=definition["role_name"])
-            version = snapshot_role(db, binding.role_id, actor.id)
-            if binding.role_version_id and version.id != binding.role_version_id:
-                fail("ROLE_VERSION_CHANGED", "权限包已发布新版本，请重新预览")
-            roles.append({**definition, "version_id": version.id, "hash": version.definition_hash,
-                          "factories": factories, "department": binding.department})
+        roles = plan_role_bindings(db, actor, org, spec.role_bindings, dependencies, scopes)
+        if row.id.startswith("studio-action-") and roles:
+            from app.services.iam import _ensure_permission_catalog_reader
+            _ensure_permission_catalog_reader(db, actor)
+            for role in roles:
+                for factory in role["factories"]:
+                    target = db.get(IamOrgDepartment, (factory, role["department"]))
+                    if target is None or target.status != "active":
+                        fail("INVALID_SCOPE", "所选业务厂区的作用部门不可用", 422)
+                    dependencies.setdefault("target_departments", []).append([factory, target.department_code, target.revision])
         dependencies["roles"] = [(r["role_id"], r["hash"]) for r in roles]
     if payload.request_type == "upgrade_packages":
         for meta in db.scalars(select(AuthRoleBindingMetadata).where(AuthRoleBindingMetadata.assignment_id == source.id,
@@ -195,6 +236,9 @@ def prepare(db, row, actor):
                 ["*"] if definition["scope_mode"] == "cross_factory_operate" else [binding.factory_id])
             scopes.extend((factory, factory, binding.department) for factory in factories)
             roles.append({**definition, "factories": factories})
+    if payload.request_type == "adjust_packages":
+        from app.services.access_studio import plan_delta
+        roles = plan_delta(db, row, actor, user, profile, source, payload, effective, dependencies, scopes)
     overrides = list(db.scalars(select(AuthUserPermissionOverride).where(AuthUserPermissionOverride.user_id == user.id,
                                                                        AuthUserPermissionOverride.status == "active")))
     decisions = {d.override_id: d.decision for d in payload.exception_decisions}
@@ -214,6 +258,8 @@ def prepare(db, row, actor):
     dependencies["overrides"] = [[o.id, o.status, o.valid_from, o.valid_until, o.assignment_id, o.effect, o.factory_id, o.department] for o in overrides]
     bindings = list(db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)))
     if payload.request_type == "confirm_identity":
+        if any(d.decision != "keep_original_scope" for d in payload.exception_decisions):
+            fail("MIGRATION_MUST_PRESERVE", "历史核实须保留全部个人允许，完成后请另办调整", 422)
         confirmed = bool(profile.primary_factory_id or profile.primary_org_unit_id) and bool(profile.primary_department) and profile.confirmation_status == "confirmed"
         if (confirmed and (spec.org_unit_id != (profile.primary_org_unit_id or profile.primary_factory_id)
                 or spec.department_code != profile.primary_department or spec.official_position_title != profile.position)) or spec.role_bindings:
@@ -230,7 +276,6 @@ def prepare(db, row, actor):
             definition = role_definition(db, b.role_id)
             if (role.code == "admin" or any(p.startswith("system:") for p in definition["permissions"])) and dispositions[b.id] != "system_administration":
                 fail("ADMINISTRATION_SEPARATE", "系统管理员来源必须独立保留", 422)
-            snapshot_role(db, b.role_id, actor.id)
         dependencies["migration_roles"] = [(b.id, definition_hash(role_definition(db, b.role_id))) for b in bindings]
     dependencies["bindings"] = [[b.id, b.role_id, b.factory_id, b.department,
                                  (m.version if (m := db.get(AuthRoleBindingMetadata, b.id)) else None)] for b in bindings]
@@ -244,7 +289,7 @@ def prepare(db, row, actor):
     return {"payload": payload, "profile": profile, "source": source, "roles": roles, "dependencies": dependencies,
             "missing_profile": missing_profile,
             "effective": stamp(effective), "scheduled": scheduled, "requires_approval": requires_approval,
-            "scopes": scopes, "identity": identity, "user": user}
+            "scopes": scopes, "identity": identity, "user": user, "authorization_deadline": authorization_deadline}
 
 
 def revoke_sessions(db, user_id):
@@ -352,13 +397,17 @@ def apply_plan(db, row, actor, plan):
                     meta = AuthRoleBindingMetadata(user_role_id=binding.id, state="active")
                     db.add(meta)
                 meta.assignment_id = new_id if disposition.source == "assignment" else None
-                meta.role_version_id = snapshot_role(db, binding.role_id, actor.id).id
-                meta.scope_ceiling_json = None  # Explicitly preserve legacy template expansion.
+                if not meta.role_version_id:
+                    meta.role_version_id = snapshot_role(db, binding.role_id, actor.id).id
                 meta.employment_epoch = profile.employment_epoch
                 meta.source_type = disposition.source
                 meta.version = (meta.version or 0) + 1
             for override in db.scalars(select(AuthUserPermissionOverride).where(AuthUserPermissionOverride.user_id == user.id)):
                 override.employment_epoch = profile.employment_epoch
+    if kind == "adjust_packages":
+        from app.services.access_studio import apply_delta
+        apply_delta(db, row, actor, plan)
+        new_id = plan["package_evidence"].get("transfer", {}).get("assignment_id")
     if kind == "profile_correction":
         if payload.display_name:
             user.display_name = payload.display_name
@@ -398,29 +447,147 @@ def apply_plan(db, row, actor, plan):
         profile.primary_department = identity["primary_department"]
         profile.position = identity["position"]
     db.flush()
-    return {"assignment_id": new_id, "source_assignment_id": source.id if source else None, "old_source_until": old_end,
+    return {**({"package_changes": plan["package_evidence"]} if kind == "adjust_packages" else {}),
+            "assignment_id": new_id, "source_assignment_id": source.id if source else None, "old_source_until": old_end,
             "exception_before": exception_before,
             "source_revision": source.revision if source else None, "identity_version": profile.identity_version,
             "authorization_version": revision.revision, "identity": identity}
 
 
-def access_matrix(db, user_id, at):
-    from app.services.auth import authorization_decision, build_auth_context
+def access_matrix(db, user_id, at, *, include_provenance=False):
+    from app.models.auth import AuthPermission
+    from app.services.auth import authorization_decision, build_auth_context, has_permission_in_scope
     from app.services.identity_catalog import DEPARTMENTS, FACTORIES
     context = build_auth_context(db, db.get(AuthUser, user_id), at=at)
-    result = {}
-    for factory in [*FACTORIES, "*"]:
-        for department in [*DEPARTMENTS, "system", "*"]:
-            for permission in context.active_permission_codes:
-                allowed, _, ids, _ = authorization_decision(context, permission, factory, department, at=at)
+    provenance = {}
+    if include_provenance:
+        bindings = select(AuthUserRole.id, AuthUserRole.role_id, AuthUserRole.factory_id, AuthUserRole.department,
+            AuthRoleBindingMetadata.assignment_id, AuthRoleBindingMetadata.role_version_id, AuthRoleBindingMetadata.scope_ceiling_json,
+            AuthRoleBindingMetadata.valid_from, AuthRoleBindingMetadata.valid_until, AuthRoleBindingMetadata.source_type,
+            AuthRoleBindingMetadata.source_id, AuthRoleBindingMetadata.employment_epoch).outerjoin(AuthRoleBindingMetadata,
+            AuthRoleBindingMetadata.user_role_id == AuthUserRole.id).where(AuthUserRole.user_id == user_id)
+        overrides = select(AuthUserPermissionOverride.id, AuthUserPermissionOverride.assignment_id,
+            AuthUserPermissionOverride.permission_id, AuthUserPermissionOverride.factory_id, AuthUserPermissionOverride.department,
+            AuthUserPermissionOverride.effect, AuthUserPermissionOverride.valid_from, AuthUserPermissionOverride.valid_until,
+            AuthUserPermissionOverride.lifecycle_policy, AuthUserPermissionOverride.employment_epoch).where(
+            AuthUserPermissionOverride.user_id == user_id)
+        for query in (bindings, overrides):
+            for values in db.execute(query):
+                provenance[values[0]] = tuple(values)
+    # Empty string is the wire key for an omitted department. Send None to
+    # both evaluators. A caller explicitly supplying "*" asks a different question.
+    factories = {*FACTORIES, "*", "group-management", *db.scalars(select(IamOrgUnit.id).where(IamOrgUnit.kind != "group"))}
+    departments = {*DEPARTMENTS, "system", "*", "", *db.scalars(select(IamOrgDepartment.department_code).distinct())}
+    for source in (*context.grants, *context.overrides):
+        if source.factory_id:
+            factories.add(source.factory_id)
+        if source.department:
+            departments.add(source.department)
+    for grant in context.grants:
+        factories.update(grant.factory_ceiling or ())
+    # Retired codes can still be present in a historical grant. The runtime
+    # compatibility evaluator and canonical IAM may treat them differently.
+    permissions = set(db.scalars(select(AuthPermission.code)))
+    permissions.update(code for grant in context.grants for code in grant.permissions)
+    permissions.update(o.permission_code for o in context.overrides)
+    result, configured = {}, set()
+    for factory in factories:
+        for department in departments:
+            for permission in permissions:
+                key = (permission, factory, department)
+                allowed, _, ids, _ = authorization_decision(context, permission, factory, department or None, at=at)
                 if allowed:
-                    result[(permission, factory, department)] = ids
-    return result
+                    result[key] = tuple(provenance.get(i, i) for i in ids) if include_provenance else ids
+                if has_permission_in_scope(context, permission, factory, department or None, at=at):
+                    configured.add(key)
+    return result, configured
+
+
+def simulate_change(db, actor, row, *, transient=False):
+    from app.services.identity_handover import assess
+    persistent_plan = None
+    studio_action = row.id.startswith("studio-action-")
+    if not transient and not studio_action and row.request_type not in {"identity:adjust_packages", "identity:confirm_identity"}:
+        persistent_plan = prepare(db, row, actor)
+    with db.begin_nested() as simulation:
+        if transient:
+            db.add(row)
+            db.flush()
+        plan = persistent_plan or prepare(db, row, actor)
+        at = instant(plan["effective"])
+        before, configured_before = access_matrix(db, row.target_user_id, at,
+            include_provenance=row.request_type == "identity:adjust_packages" or row.id.startswith("studio-confirm-"))
+        boundaries = {}
+        if row.request_type == "identity:confirm_identity":
+            windows = [
+                select(AuthRoleBindingMetadata.valid_from, AuthRoleBindingMetadata.valid_until)
+                    .join(AuthUserRole, AuthUserRole.id == AuthRoleBindingMetadata.user_role_id)
+                    .where(AuthUserRole.user_id == row.target_user_id),
+                select(AuthUserPermissionOverride.valid_from, AuthUserPermissionOverride.valid_until)
+                    .where(AuthUserPermissionOverride.user_id == row.target_user_id),
+                select(EmployeeAssignment.valid_from, EmployeeAssignment.valid_until)
+                    .where(EmployeeAssignment.user_id == row.target_user_id)]
+            points = {instant(value) for query in windows for period in db.execute(query) for value in period if value}
+            if plan["payload"].new_assignment.valid_until:
+                points.add(instant(plan["payload"].new_assignment.valid_until))
+            instants = {point + timedelta(microseconds=offset) for point in points if point > at for offset in (-1, 0, 1)}
+            for point in sorted(instants):
+                canonical, configured = access_matrix(db, row.target_user_id, point)
+                boundaries[point] = (set(canonical), configured)
+        apply_plan(db, row, actor, plan)
+        post_denials = []
+        if transient:
+            from app.services.position_workbench_read import current_sources
+            post_denials = current_sources(db, row.target_user_id)[2]
+        after, configured_after = access_matrix(db, row.target_user_id, at,
+            include_provenance=row.request_type == "identity:adjust_packages" or row.id.startswith("studio-confirm-"))
+        for point, expected in boundaries.items():
+            canonical, configured = access_matrix(db, row.target_user_id, point)
+            if expected != (set(canonical), configured):
+                fail("MIGRATION_PERMISSION_DRIFT", "确认任职会改变未来授权边界上的实际权限，请重新核实")
+        if row.request_type == "identity:adjust_packages" or studio_action:
+            ensure_admin_survives(db)
+        after_identity = resolve_identity_at(db, row.target_user_id, at)
+        simulation.rollback()
+    title_only = row.request_type == "identity:adjust_packages" and not any(plan["payload"].package_delta.model_dump().values())
+    if (plan["payload"].request_type == "confirm_identity" or title_only) and (set(before) != set(after) or configured_before != configured_after):
+        fail("MIGRATION_PERMISSION_DRIFT", "来源映射改变实际权限，请重新核实")
+    if title_only:
+        payload = plan["payload"]
+        posting = payload.position_review.confirmed_profile if payload.position_review else payload.official_posting
+        moving = posting and (posting.org_unit_id, posting.department_code) != (plan["source"].org_unit_id, plan["source"].department_code)
+        if not moving and before != after:
+            fail("MIGRATION_SOURCE_DRIFT", "仅更正岗位文字时，现有授权来源必须完整保留")
+    from app.services.position_workbench_read import permission_tuples, permission_diff_risk
+    from app.models.auth import AuthPermission
+    permissions = {p.code: p for p in db.scalars(select(AuthPermission))}
+    def tuples(keys):
+        return permission_tuples(db, keys, permissions=permissions)
+    summary = {"before_identity": plan["identity"], "after_identity": after_identity,
+               "permission_diffs": {"added": tuples(after.keys() - before.keys()), "removed": tuples(before.keys() - after.keys()),
+                                    "retained": tuples(after.keys() & before.keys()),
+                                    "source_changed": tuples(k for k in after.keys() & before.keys() if after[k] != before[k])},
+               "requires_approval": plan["requires_approval"], "high_risk": bool(after.keys() - before.keys()) or plan["payload"].request_type in {"leave", "freeze"},
+               "handover_summary": assess(db, row.target_user_id), "effective_at": plan["effective"],
+               "server_now": stamp(), "request_revision": row.revision, "explicit_denials": post_denials,
+               "retained_sources": [o.id for o in db.scalars(select(AuthUserPermissionOverride).where(AuthUserPermissionOverride.user_id == row.target_user_id, AuthUserPermissionOverride.status == "active"))
+                                    if o.id not in {d.override_id for d in plan["payload"].exception_decisions if d.decision == "end"}]}
+    if studio_action or row.request_type in {"identity:confirm_identity", "identity:adjust_packages"}:
+        summary["high_risk"] |= permission_diff_risk(db, summary["permission_diffs"], permissions)
+    if row.request_type == "identity:adjust_packages":
+        summary["requires_empty_confirmation"] = plan["dependencies"]["clears_assignment_packages"]
+        summary["high_risk"] |= summary["requires_empty_confirmation"] or plan["dependencies"]["edits_high_risk"]
+    dependencies = plan["dependencies"]
+    if (row.request_type == "identity:adjust_packages" or studio_action) and row.lifecycle_state == "pending_approval":
+        from app.services.access_studio import submission_hash
+        if json.loads(row.result_json or "{}").get("submitted_plan_hash") != submission_hash(dependencies, summary):
+            fail("AUTHORIZATION_CHANGED", "提交审核后的人员、方案或权限差异已变化，请退回重新办理")
+    fingerprint = digest({"payload": row.payload_json, "revision": row.revision, "dependencies": dependencies})
+    return summary, fingerprint, dependencies
 
 
 def preview_change(db, actor_id, change_id):
     from app.services.iam import _store_preview
-    from app.services.identity_handover import assess
     require_writes()
     lock_mutation(db)
     actor = fresh_actor(db, actor_id)
@@ -428,36 +595,9 @@ def preview_change(db, actor_id, change_id):
     ensure_reader(db, actor, row.target_user_id)
     if row.lifecycle_state not in {"draft", "pending_approval"}:
         fail("CHANGE_STATE_CONFLICT", "此变更已处理")
-    plan = prepare(db, row, actor)
-    at = instant(plan["effective"])
-    before = access_matrix(db, row.target_user_id, at)
-    with db.begin_nested() as simulation:
-        applied = apply_plan(db, row, actor, plan)
-        after = access_matrix(db, row.target_user_id, at)
-        after_identity = resolve_identity_at(db, row.target_user_id, at)
-        simulation.rollback()
-    if plan["payload"].request_type == "confirm_identity" and set(before) != set(after):
-        fail("MIGRATION_PERMISSION_DRIFT", "来源映射改变实际权限，请重新核实")
-    from app.models.auth import AuthPermission
-    from app.services.identity_catalog import FACTORIES, DEPARTMENTS
-    permission_names = {p.code: p.name for p in db.scalars(select(AuthPermission))}
-    def tuples(keys):
-        return [{"permission_code": p, "permission_name": permission_names.get(p, p), "factory_id": f,
-                 "factory_name": FACTORIES.get(f, "集团管理范围"), "department": d,
-                 "department_name": DEPARTMENTS.get(d, "系统管理" if d == "system" else "通用范围")} for p, f, d in sorted(keys)]
-    summary = {"before_identity": plan["identity"], "after_identity": after_identity,
-               "permission_diffs": {"added": tuples(after.keys() - before.keys()), "removed": tuples(before.keys() - after.keys()),
-                                    "retained": tuples(after.keys() & before.keys()),
-                                    "source_changed": tuples(k for k in after.keys() & before.keys() if after[k] != before[k])},
-               "requires_approval": plan["requires_approval"], "high_risk": bool(after.keys() - before.keys()) or plan["payload"].request_type in {"leave", "freeze"},
-               "handover_summary": assess(db, row.target_user_id), "effective_at": plan["effective"],
-               "server_now": stamp(), "request_revision": row.revision,
-               "retained_sources": [o.id for o in db.scalars(select(AuthUserPermissionOverride).where(AuthUserPermissionOverride.user_id == row.target_user_id, AuthUserPermissionOverride.status == "active"))
-                                    if o.id not in {d.override_id for d in plan["payload"].exception_decisions if d.decision == "end"}]}
-    dependencies = plan["dependencies"]
-    fingerprint = digest({"payload": row.payload_json, "revision": row.revision, "dependencies": dependencies})
+    summary, fingerprint, dependencies = simulate_change(db, actor, row)
     token, expires = _store_preview(db, actor_id, "identity_change", row.id, row.revision,
-        {"fingerprint": fingerprint, "dependencies": dependencies, "effective_at": plan["effective"]}, summary)
+        {"fingerprint": fingerprint, "dependencies": dependencies, "effective_at": summary["effective_at"]}, summary)
     db.commit()
     return {**summary, "preview_token": token, "expires_at": expires, "preview_fingerprint": fingerprint}
 
@@ -470,8 +610,7 @@ def commit_change(db, actor_id, change_id, payload, idempotency_key, *, approvin
 
 def commit_change_tx(db, actor_id, change_id, payload, idempotency_key, *, approving=False):
     """Flush-only core. The caller owns commit and rolls back on any exception."""
-    from app.services.iam import _add_event, _load_preview
-    from app.services.identity_handover import persist_items
+    from app.services.iam import _load_preview
     require_writes()
     if not idempotency_key or len(idempotency_key) > 128:
         fail("IDEMPOTENCY_KEY_REQUIRED", "请提供有效的幂等键", 422)
@@ -490,18 +629,44 @@ def commit_change_tx(db, actor_id, change_id, payload, idempotency_key, *, appro
     if row.revision != payload.expected_request_revision or row.lifecycle_state != ("pending_approval" if approving else "draft"):
         fail("DRAFT_CONFLICT", "变更单已被修改或处理，请刷新")
     preview, evidence, summary = _load_preview(db, payload.preview_token, actor_id, "identity_change", row.id)
+    studio_command = row.request_type in {"identity:adjust_packages", "identity:confirm_identity"} or row.id.startswith("studio-action-")
+    if studio_command:
+        checked, _, _ = simulate_change(db, actor, row)
+        for field in ("permission_diffs", "high_risk", "requires_approval", "requires_empty_confirmation"):
+            if checked.get(field) != summary.get(field):
+                fail("AUTHORIZATION_CHANGED", "预览后的实际权限、风险或审批条件已变化，请重新核对")
     plan = prepare(db, row, actor)
     if evidence["fingerprint"] != digest({"payload": row.payload_json, "revision": row.revision, "dependencies": plan["dependencies"]}):
         fail("AUTHORIZATION_CHANGED", "预览后的授权或组织已变化，请重新预览")
-    if approving and (plan["requires_approval"] or actor_id == row.requester_user_id and row.target_user_id == actor_id):
+    if studio_command:
+        if plan["requires_approval"] != checked["requires_approval"]:
+            fail("AUTHORIZATION_CHANGED", "办理权限已变化，请重新预览")
+        plan["effective"] = checked["effective_at"]
+        plan["verified_diffs"] = checked["permission_diffs"]
+    independent_review = row.request_type == "identity:adjust_packages" or row.id.startswith(("studio-confirm-", "studio-action-"))
+    if approving and (plan["requires_approval"] or actor_id == row.requester_user_id and (row.target_user_id == actor_id or independent_review)):
         fail("GRANT_NOT_DELEGABLE", "需要有完整授权范围的独立管理员审核", 403)
     if summary["high_risk"] and not payload.confirm_high_risk:
         fail("CONFIRM_HIGH_RISK", "请确认预览中的新增权限或停止访问影响", 422)
     # Immediate changes begin at the instant confirmed in the preview; future
     # plans that passed their boundary while awaiting approval require repreview.
-    plan["effective"] = evidence["effective_at"]
+    if not studio_command:
+        plan["effective"] = evidence["effective_at"]
     if plan["payload"].effective_at and instant(plan["effective"]) <= utc_now():
         fail("SOURCE_CHANGED", "预约生效点已过，请重新安排")
+    preview.consumed_at = stamp()
+    plan["command_id"] = idempotency_key
+    result = apply_or_submit(db, row, actor, plan)
+    db.add(IamMutationReceipt(id=uuid4().hex, actor_id=actor_id, operation=operation, idempotency_key=idempotency_key,
+                             payload_hash=body_hash, result_json=encoded(result), created_at=stamp()))
+    db.flush()
+    return result
+
+
+def apply_or_submit(db, row, actor, plan):
+    from app.services.iam import _add_event
+    from app.services.identity_handover import persist_items
+    actor_id = actor.id
     if plan["requires_approval"]:
         row.lifecycle_state = "pending_approval"
         row.submitted_at = stamp()
@@ -510,7 +675,16 @@ def commit_change_tx(db, actor_id, change_id, payload, idempotency_key, *, appro
     else:
         before = resolve_identity_at(db, row.target_user_id)
         result = apply_plan(db, row, actor, plan)
+        if "verified_diffs" in plan:
+            diffs = plan["verified_diffs"]
+            result["permission_diffs"] = {k: diffs[k] for k in ("added", "removed", "source_changed")}
+            result["retained_count"] = len(diffs["retained"])
+            if row.request_type == "identity:adjust_packages":
+                result["reviewed_scopes"] = sorted(set(plan["scopes"]))
         ensure_admin_survives(db)
+        if row.request_type == "identity:adjust_packages" and plan["payload"].position_review:
+            from app.services.access_studio_reviews import complete_review
+            complete_review(db, row, actor, plan)
         row.lifecycle_state = "scheduled" if plan["scheduled"] else "applied"
         row.status = "approved"
         from app.services.identity_review_notifications import close
@@ -524,14 +698,11 @@ def commit_change_tx(db, actor_id, change_id, payload, idempotency_key, *, appro
                    target_user_id=row.target_user_id, before=before, after=result, reason=row.reason, access_request_id=row.id)
         db.add(IamOutbox(id=f"identity-notify-{row.id}", aggregate_id=row.id, kind="identity_changed",
                         payload_json=encoded({"user_id": row.target_user_id, "change_id": row.id}), created_at=stamp()))
-    preview.consumed_at = stamp()
     row.revision += 1
     row.updated_at = stamp()
-    result = result_out(row)
-    db.add(IamMutationReceipt(id=uuid4().hex, actor_id=actor_id, operation=operation, idempotency_key=idempotency_key,
-                             payload_hash=body_hash, result_json=encoded(result), created_at=stamp()))
-    db.flush()
-    return result
+    if plan["authorization_deadline"] and plan["authorization_deadline"] <= utc_now():
+        fail("AUTHORIZATION_CHANGED", "办理过程中授权已到达生效或结束边界，请重新预览")
+    return result_out(row)
 
 
 def cancel_or_reject(db, actor_id, change_id, payload, *, reject=False):
@@ -583,6 +754,8 @@ def cancel_or_reject(db, actor_id, change_id, payload, *, reject=False):
     from app.services.identity_review_notifications import close
     close(db, row.id)
     row.status = "rejected"
+    row.updated_at = row.decided_at = stamp()
+    row.decision_by_user_id = actor_id
     row.decision_comment = payload.reason
     row.revision += 1
     _add_event(db, actor_id, "identity_" + row.lifecycle_state, "identity_change", row.id,

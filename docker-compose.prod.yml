@@ -90,6 +90,10 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         VITE_API_BASE_URL: /api
+        VITE_IAM_IDENTITY_UI_ENABLED: "${VITE_IAM_IDENTITY_UI_ENABLED:-true}"
+        VITE_POSITION_WORKBENCH_ENABLED: "${VITE_POSITION_WORKBENCH_ENABLED:-false}"
+        VITE_IAM_CONSOLIDATED_UI_ENABLED: "${VITE_IAM_CONSOLIDATED_UI_ENABLED:-false}"
+        VITE_IAM_STUDIO_ENABLED: "${VITE_IAM_STUDIO_ENABLED:-false}"
         VITE_COLLABORATION_ENABLED: "${VITE_COLLABORATION_ENABLED:-true}"
     depends_on:
       api:

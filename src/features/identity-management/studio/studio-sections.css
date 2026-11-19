@@ -1,0 +1,24 @@
+.iams-section { padding: 16px 20px; min-width: 0; color: var(--foreground); background: var(--card); border: 1px solid var(--border); border-radius: 14px; }
+.iams-line, .iams-tabs, .iams-coverage, .iams-packages { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.iams-line { justify-content: space-between; margin: 6px 0 10px; }
+.iams-section :is(button,select,input:not([type=checkbox])), .iams-tabs a { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; min-height: 34px; background: var(--card); color: var(--foreground); font-size: 13px; max-width: 100%; }
+.iams-section button:disabled { opacity: .55; cursor: default; }
+.iams-section :is(button[aria-pressed=true],a[aria-current=page]) { color: var(--primary); border-color: var(--primary); font-weight: 650; }
+.iams-section :is(a,button,input,select,summary):focus-visible,.iams-member summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.iams-coverage button { font-size: 12px; }
+.iams-compare { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,180px),1fr)); gap: 10px; }
+.iams-member,.iams-compare details,.iams-event { padding: 10px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.iams-member summary,.iams-compare summary { cursor: pointer; font-weight: 600; }
+.iams-member :is(li,p),.iams-compare li { padding-block: 4px; }
+.iams-section small,.iams-section code,.iams-member small,.iams-packages span { color: var(--muted-foreground); font-size: 12px; }
+.iams-packages li { display: grid; gap: 2px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.iams-references label { display: inline-flex; align-items: center; gap: 6px; margin: 3px 12px 3px 0; }
+.iams-references h3,.iams-progress li + li { margin-top: 10px; }
+.iams-event h3 { font-size: 15px; font-weight: 650; }
+.iams-event p { margin-top: 4px; }
+.iams-event a { color: var(--primary); text-decoration: underline; }
+.iams-event pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto; }
+@media(max-width:600px) { .iams-section { padding: 12px; } .iams-line { align-items: flex-start; } .iams-line > label { display: grid; max-width: 100%; } }
+
+.iams-action-filters button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.iams-action-filters button[aria-pressed=true] { background: var(--primary); color: var(--primary-foreground); }

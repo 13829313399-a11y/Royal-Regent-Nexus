@@ -14,7 +14,7 @@ from test_identity_changes import draft, commit as identity_commit
 from test_iam_api import login, create_user
 
 
-def test_business_write_revoked_in_existing_employee_session(client):
+def test_legacy_transfer_without_source_choices_preserves_existing_employee_session(client):
     employee(client)
     cookie = client.cookies.get('rr_session')
     def business_request():
@@ -24,14 +24,23 @@ def test_business_write_revoked_in_existing_employee_session(client):
     assert before.status_code == 201, before.text
     review = client.post('/api/auth/me/position-reviews', json={'declaration': {'org_unit_id':'huakang-a','department_code':'pmc-warehouse','position':'仓管员','note':''}}).json()['review']
     login(client, 'admin')
-    key, _, preview = plan(client, review, role='position_warehouse_keeper')
-    assert any(t['permission_code'] == 'molding_sample:create' for t in preview['permission_diffs']['removed'])
-    assert commit(client, key, preview)[0].status_code == 200
+    key = "position:" + review["id"]
+    item = client.get(f"/api/iam/position-workbench/items/{key}").json()
+    selected = next(p for p in client.get("/api/iam/position-workbench/packages", params={"item_key": key}).json()["items"]
+                    if p["role_id"] == "position_warehouse_keeper")
+    proposed = {"expected_source_revision": item["source_revision"], "decision": "apply_package",
+        "confirmed_profile": {k: v for k, v in review["declaration"].items() if k != "note"},
+        "package_selection": {"role_id": selected["role_id"], "definition_hash": selected["definition_hash"],
+            "permission_department": selected["department"], "factory_scope": {"kind": "home", "factory_ids": []}},
+        "independent_allow_decisions": []}
+    refused = client.post(f"/api/iam/position-workbench/items/{key}/preview", json=proposed)
+    assert refused.status_code == 409 and refused.json()["code"] == "EXPLICIT_SOURCE_DECISIONS_REQUIRED"
+    assert refused.json()["details"]["allowed_to_commit"] is False
+    assert client.get(f"/api/iam/position-workbench/items/{key}").json()["status"] == "pending"
     client.cookies.clear()
     client.cookies.set('rr_session', cookie)
-    assert client.get('/api/auth/me/position-profile').json()['official_position']['position'] == '仓管员'
-    after = business_request()
-    assert after.status_code == 403, after.text
+    assert client.get('/api/auth/me/position-profile').json()['official_position']['position'] != '仓管员'
+    assert business_request().status_code == 201
 
 
 def test_freeze_leave_and_actor_loss_block_workbench_commit(client):

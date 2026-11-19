@@ -1,5 +1,6 @@
 import importlib
 import sys
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -497,7 +498,10 @@ def test_user_override_preview_commit_is_atomic_and_token_is_one_time(monkeypatc
 
         events = client.get(f"/api/iam/audit-events?target_user_id={engineer_id}")
         assert events.status_code == 200
-        assert events.json()[0]["event_type"] == "permission_override_set"
+        recorded = events.json()[0]
+        assert recorded["event_type"] == "permission_override_set"
+        assert recorded["target_type"] == "permission_override" and recorded["target_id"]
+        assert datetime.fromisoformat(recorded["occurred_at"]).utcoffset() is not None
 
 
 def test_scoped_manager_cross_scope_change_requires_direct_superadmin_action(monkeypatch):
