@@ -125,6 +125,52 @@ describe('库存汇总工作台', () => {
     expect(rows[3]!.text()).toContain('无单库存')
     expect(wrapper.text()).toContain('2 张订单 · 4 项纸品（含 1 项无单库存）')
   })
+  it('shows the actual special request number in summary, details and the exact timeline target', async () => {
+    const report = data()
+    const source = { id: 'special', request_no: 'SP-PARENT', kind: 'WORKSHOP_MISC' as const, line_id: 'paper' }
+    report.order_rows = [{ ...report.order_rows[0]!, key: 'special-paper-key', order_id: null, order_line_id: null,
+      contract_no: '', source_request: source, inbound_quantity: '100', outbound_quantity: '15', ending_quantity: '85' }]
+    report.movements[0] = { ...report.movements[0]!, contract_no: '', source_request: source }
+    api.get.mockResolvedValue(report)
+    const wrapper = mount(CartonInventorySummary, {
+      props: { factoryId: 'huaxing', customers: [customer], search: 'SP-PARENT', refreshKey: 0, connected: true },
+      global: { stubs: { CartonOrderTimeline: true } },
+    })
+    await flushPromises()
+    expect(api.get.mock.lastCall?.[1].search).toBe('SP-PARENT')
+    expect(wrapper.text()).toContain('1 张订单 · 1 项纸品')
+    const row = wrapper.get('[aria-label="收发汇总表"] tbody tr')
+    expect(row.get('[data-label="合同号 / 来源"]').text()).toBe('SP-PARENT杂单')
+    expect(row.text()).not.toContain('无单库存')
+    expect(row.get('[data-label="入库"]').text()).toBe('100')
+    expect(row.get('[data-label="出库"]').text()).toBe('15')
+    expect(row.get('[data-label="当前结存"]').text()).toBe('85')
+    await row.get('button').trigger('click')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('SP-PARENT')
+    expect(wrapper.findComponent({ name: 'CartonOrderTimeline' }).props('inventoryKey')).toBe('special-paper-key')
+    await wrapper.findAll('[role="tab"]').find(tab => tab.text() === '出库明细')!.trigger('click')
+    expect(wrapper.get('[aria-label="库存汇总明细表"]').text()).toContain('SP-PARENT')
+    wrapper.unmount()
+  })
+  it('shows unknown order balances without labeling mixed issues as no-order stock', async () => {
+    const report = data(), row = report.order_rows[0]!
+    report.order_rows = [
+      { ...row, key: 'request', order_id: null, contract_no: '', positions_shared: true,
+        source_request: { id: 'request', request_no: 'SP-MIXED', kind: 'WORKSHOP_MISC', line_id: 'one' },
+        balance_unconfirmed: true },
+      { ...row, key: 'unattributed', order_id: null, contract_no: '', unattributed: true,
+        inbound_quantity: '0', outbound_quantity: '4', ending_quantity: '-4' },
+    ]
+    api.get.mockResolvedValue(report)
+    const wrapper = open(); await flushPromises()
+    const rows = wrapper.get('[aria-label="收发汇总表"]').findAll('tbody tr')
+    expect(rows[0]!.get('[data-label="当前结存"]').text()).toBe('待核对')
+    expect(rows[0]!.get('[data-label="当前仓位分布"]').text()).toBe('同纸品共用仓位')
+    expect(rows[1]!.get('[data-label="合同号 / 来源"]').text()).toContain('未归单流水')
+    expect(rows[1]!.get('[data-label="出库"]').text()).toBe('4')
+    expect(wrapper.text()).not.toContain('无单库存）')
+    wrapper.unmount()
+  })
   it('opens only the current order on click and closes on scope change', async () => {
     const wrapper = mount(CartonInventorySummary, {
       props: { factoryId: 'huaxing', customers: [customer], search: '', refreshKey: 0, connected: true },

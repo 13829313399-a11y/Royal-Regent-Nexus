@@ -6,6 +6,7 @@ import { formatBusinessDateTime } from '@/lib/dateTime'
 export type QuickAudience = 'sales' | 'warehouse' | 'supplier'
 type Auth = ReturnType<typeof useAuthStore>
 export const internalDepartments: AssetDepartment[] = ['sales-business', 'pmc-warehouse', 'carton']
+const warehouseDepartments = ['pmc-warehouse', 'carton'] as const
 export const departmentLabel: Record<AssetDepartment, string> = { 'sales-business': '业务部', 'pmc-warehouse': '仓库', carton: '纸箱部', supplier: '东康' }
 export const quickStatusLabel: Record<string, string> = { DRAFT: '初稿', PENDING: '待确认', READY: '已确认', HISTORY: '历史版本', UNCLASSIFIED: '待分类' }
 const explicitSources = ['override', 'user_override', 'inactive_permission', 'inactive_account']
@@ -34,6 +35,14 @@ export function canQuickAsset(auth: Auth, factory: string, department: AssetDepa
 export function uploadDepartments(auth: Auth, factory: string, audience: QuickAudience) {
   return (audience === 'supplier' ? ['supplier' as const] : internalDepartments).filter(d => canQuickAsset(auth, factory, d, 'manage'))
 }
+export function canBindWarehouseSchedule(auth: Auth, factory: string, department: AssetDepartment | '') {
+  return (department === 'pmc-warehouse' || department === 'carton')
+    && canQuickAsset(auth, factory, department, 'manage')
+    && warehouseDepartments.some(value => auth.can('carton_procurement:read', factory, value))
+}
+export function warehouseBindingDepartment(auth: Auth, factory: string) {
+  return warehouseDepartments.find(department => canBindWarehouseSchedule(auth, factory, department))
+}
 export function viewerKey(auth: Auth) {
   return JSON.stringify([auth.currentUser?.id, auth.currentUser?.identity?.employment_epoch, auth.authorizationVersion, getAuthenticationGeneration()])
 }
@@ -43,6 +52,25 @@ export function targetRef(target: QuickTarget): QuickTargetRef {
 export function targetLabel(target: Pick<QuickTarget, 'kind' | 'contract_no' | 'item_no' | 'customer_name' | 'sheet' | 'row' | 'order_no'>) {
   const type = { REGULAR: '采购单（已建单）', SCHEDULE: '业务排期（采购前可关联）', SAMPLE: '样板', MISC: '杂单' }[target.kind]
   return [type, ['SAMPLE', 'MISC'].includes(target.kind) ? target.order_no : '', target.contract_no, target.customer_name, target.item_no, target.kind === 'SCHEDULE' ? `${target.sheet} 第${target.row}行` : ''].filter(Boolean).join(' · ')
+}
+export function warehouseTargetLabel(target: QuickTarget) {
+  if (target.kind === 'REGULAR') {
+    return ['已建单', target.order_no, target.contract_no, target.customer_name, target.item_no].filter(Boolean).join(' · ')
+  }
+  if (target.kind !== 'SCHEDULE') return targetLabel(target)
+  const states = { PENDING: '待建单', EXTERNAL: '外部已下单', REVIEW: '待核对' }
+  return [states[target.schedule_state || 'PENDING'], target.contract_no, target.customer_name, target.item_no,
+    `${target.sheet} 第${target.row}行`].filter(Boolean).join(' · ')
+}
+export function targetPurchaseReferences(target: QuickTarget, warehouse: boolean) {
+  if (warehouse && target.kind === 'SCHEDULE') {
+    return [target.schedule_po && `PO ${target.schedule_po}`, target.schedule_so && `SO ${target.schedule_so}`].filter(Boolean).join(' · ')
+  }
+  return target.customer_po ? `PO ${target.customer_po}` : ''
+}
+export function matchesTargetSearch(target: QuickTarget, query: string) {
+  return [target.customer_name, target.contract_no, target.customer_po, target.schedule_po, target.schedule_so,
+    target.item_no, target.order_no, targetOrderTime(target)].join(' ').toLowerCase().includes(query.trim().toLowerCase())
 }
 export function targetOrderTime(target: Pick<QuickTarget, 'kind' | 'ordered_at'>) {
   return ['SAMPLE', 'MISC'].includes(target.kind) ? `下单时间：${formatBusinessDateTime(target.ordered_at, { fallback: '未记录' })}` : ''

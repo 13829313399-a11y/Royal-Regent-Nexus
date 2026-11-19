@@ -139,10 +139,12 @@ def make_router(external=False):
     @router.post("/{identifier}/attachments", status_code=201)
     async def attachment(identifier: str, factory_id: str = Form(...), request_id: str = Form(...), expected_revision: int = Form(...),
         role: Literal["REFERENCE", "DRAFT", "CONFIRMED"] = Form(...), file: UploadFile = File(...), line_id: str = Form(default=""),
+        owner_department: Literal["sales-business", "pmc-warehouse", "carton", "supplier"] | None = Form(default=None),
         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
         content = await file.read(10 * 1024 * 1024 + 1)
         return service.attachment(db, user, identifier, schema.Command(factory_id=factory_id, request_id=request_id,
-            expected_revision=expected_revision), role, file.filename or "attachment", content, external=external, line_id=line_id)
+            expected_revision=expected_revision), role, file.filename or "attachment", content, external=external,
+            line_id=line_id, owner_department=owner_department)
 
     @router.get("/{identifier}/attachments/{attachment_id}")
     def download(identifier: str, attachment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):

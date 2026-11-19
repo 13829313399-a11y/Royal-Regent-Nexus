@@ -68,6 +68,7 @@ from app.schemas.carton_procurement import (
     CartonOrderBulkSubmitRequest,
     CartonOrderCancelRequest,
     CartonOrderReturnRequest,
+    CartonOrderStockReturnRequest,
     CartonOrderCreate,
     CartonOrderDatesRequest,
     CartonOrderRushRequest,
@@ -2745,6 +2746,8 @@ def list_orders(
         statistics.update(zip(("overdue", "today", "dueSoon", "pending"), (int(value or 0) for value in totals[1:])))
     else:
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    if limit == 0:
+        return int(total), []
     if sort == "DUE_ASC":
         priority = case((~open_order, 5), (~valid_due, 4),
             (CartonOrder.due_date < today, 0), (CartonOrder.due_date == today, 1),
@@ -3967,7 +3970,7 @@ def _issue_cost_price(db: Session, movement: CartonInventoryMovement) -> Decimal
 
 def _inventory_request(
     db: Session,
-    payload: CartonInventoryMovementCreate | CartonInventoryBulkCreate,
+    payload: CartonInventoryMovementCreate | CartonInventoryBulkCreate | CartonOrderStockReturnRequest,
     user: AuthContext,
     kind: str,
 ) -> tuple[str, str, list[CartonInventoryMovementOut] | None]:
@@ -4036,11 +4039,21 @@ def create_inventory_movements_bulk(
     payload: CartonInventoryBulkCreate,
     user: AuthContext,
 ) -> list[CartonInventoryMovementOut]:
-    factory_id = require_carton_factory(payload.factory_id)
     event_id, fingerprint, replay = _inventory_request(db, payload, user, "bulk")
     if replay is not None:
         db.commit()
         return replay
+    return _post_inventory_movements_bulk(db, payload, user, event_id, fingerprint)
+
+
+def _post_inventory_movements_bulk(
+    db: Session,
+    payload: CartonInventoryBulkCreate,
+    user: AuthContext,
+    event_id: str,
+    fingerprint: str,
+) -> list[CartonInventoryMovementOut]:
+    factory_id = require_carton_factory(payload.factory_id)
     prepared: list[tuple[CartonInventoryMovement, Decimal, CartonAuditEvent]] = []
     for item in payload.items:
         prepared.append(
@@ -4088,6 +4101,102 @@ def create_inventory_movements_bulk(
         db.rollback()
         raise HTTPException(status_code=409, detail="批量出库流水冲突，请刷新库存后重试") from exc
     return result
+
+
+def _require_order_stock_return_permissions(user: AuthContext, factory_id: str) -> None:
+    if not all(any(can(user, f"carton_procurement:{permission}", factory_id, department)
+                   for department in CARTON_DEPARTMENTS) for permission in ("read", "order_write", "inventory_write")):
+        raise HTTPException(403, "订单退货须具备本厂订单和库存操作权限")
+
+
+def _stock_return_order(db: Session, user: AuthContext, factory_id: str, order_no: str) -> CartonOrder:
+    _require_order_stock_return_permissions(user, factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
+    return order
+
+
+def _order_stock_return_preview(db: Session, order: CartonOrder) -> dict:
+    from app.services.carton_supplier_settlement import return_supplier
+
+    blockers: list[str] = []
+    lines: list[dict] = []
+    evidence = []
+    if order.status not in {"PARTIALLY_RECEIVED", "COMPLETED"}:
+        blockers.append("只有已发生入库的订单可退货")
+    else:
+        papers = {line.id: line for line in _order_lines(db, order.id)}
+        supplier_check: dict[str, bool] = {}
+        balances = [row for row in positions.position_balances(db, order.factory_id, order.customer_code)
+                    if row.inventory_key in papers and row.balance > 0]
+        balances.sort(key=lambda row: (papers[row.inventory_key].line_no, row.latest_location, row.location_id))
+        for position in balances:
+            paper = papers[position.inventory_key]
+            if paper.id not in supplier_check:
+                movement = db.get(CartonInventoryMovement, position.latest_movement_id)
+                supplier_check[paper.id] = bool(movement and return_supplier(db, movement))
+            line_blockers = [] if supplier_check[paper.id] else ["供应商来源未核实，请先核对原收料"]
+            line = {
+                "order_line_id": paper.id,
+                "location_id": position.location_id,
+                "location_label": position.latest_location,
+                "packaging_type": paper.packaging_type,
+                "paper_quality": paper.paper_quality,
+                "specification": paper.specification,
+                "dimension_unit": dimension_unit_for_display(paper.dimension_unit, paper.specification),
+                "unit": paper.unit,
+                "safe_quantity": format(quantity(0 if line_blockers else position.balance), "f"),
+                "blockers": line_blockers,
+            }
+            lines.append(line)
+            evidence.append([line, position.position_revision])
+        if not lines:
+            blockers.append("本单暂无可退库存，请核对已确认入库数量及仓位")
+    fingerprint = hashlib.sha256(json.dumps([order.id, order.revision, evidence],
+                                            ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return {
+        "order_no": order.order_no, "revision": order.revision, "status": order.status,
+        "source_fingerprint": fingerprint, "blockers": blockers, "lines": lines,
+    }
+
+
+def preview_order_stock_return(db: Session, factory_id: str, order_no: str, user: AuthContext) -> dict:
+    factory_id = require_carton_factory(factory_id)
+    return _order_stock_return_preview(db, _stock_return_order(db, user, factory_id, order_no))
+
+
+def submit_order_stock_return(
+    db: Session, order_no: str, payload: CartonOrderStockReturnRequest, user: AuthContext, *, refresh_actor,
+) -> list[CartonInventoryMovementOut]:
+    from app.services.identity_policy import lock_mutation
+    from app.services.carton_return_dates import require_date
+
+    factory_id = require_carton_factory(payload.factory_id)
+    _require_order_stock_return_permissions(user, factory_id)
+    lock_mutation(db)
+    _lock_receipt_factory(db, factory_id)
+    user = refresh_actor()
+    order = _stock_return_order(db, user, factory_id, order_no)
+    event_id, fingerprint, replay = _inventory_request(db, payload, user, f"order-stock-return:{order.id}")
+    if replay is not None:
+        db.commit()
+        return replay
+
+    preview = _order_stock_return_preview(db, order)
+    if order.revision != payload.expected_revision or preview["source_fingerprint"] != payload.source_fingerprint:
+        raise HTTPException(409, "订单或仓位库存已变化，请重新核对，本次未扣减库存")
+    positions_by_key = {(line["order_line_id"], line["location_id"]): Decimal(line["safe_quantity"])
+                        for line in preview["lines"]}
+    if any(line.quantity > positions_by_key.get((line.order_line_id, line.location_id), Decimal(0))
+           for line in payload.lines):
+        raise HTTPException(409, "所选纸品或仓位的可退库存不足，请重新核对")
+
+    batch = CartonInventoryBulkCreate(
+        factory_id=factory_id, request_id=payload.request_id, document_no=f"RET-{order.order_no}-{event_id[-20:]}",
+        reason=payload.reason, issue_kind="RETURN", return_date=require_date(payload.return_date),
+        items=payload.model_dump()["lines"],
+    )
+    return _post_inventory_movements_bulk(db, batch, user, event_id, fingerprint)
 
 
 def list_inventory_flow_summary(

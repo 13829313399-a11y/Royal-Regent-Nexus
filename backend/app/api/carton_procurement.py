@@ -70,6 +70,7 @@ from app.schemas.carton_procurement import (
     CartonOrderBulkSubmitRequest,
     CartonOrderCancelRequest,
     CartonOrderReturnRequest,
+    CartonOrderStockReturnRequest,
     CartonOrderCreate,
     CartonOrderDatesRequest,
     CartonOrderRushRequest,
@@ -143,6 +144,8 @@ from app.services.carton_procurement import (
     reverse_receipt,
     relocate_inventory,
     return_order,
+    preview_order_stock_return,
+    submit_order_stock_return,
     search_order_history_items,
     submit_order_to_supplier,
     update_order,
@@ -362,6 +365,7 @@ def get_dashboard(
 def get_dashboard_workspace(
     factory_id: str,
     customer: str = Query("", max_length=128), search: str = Query("", max_length=128),
+    responsibility_scope: Literal["OWN", "ALL"] = "OWN",
     status: Literal["OPEN", "ALL"] = "OPEN",
     kind: Literal["ALL", "ACTIONABLE", "TIMING", "REDUCTION", "MISSING_ORDER", "NEW_ORDER", "QUANTITY_INCREASE", "QUANTITY_DECREASE", "QUANTITY_REVIEW", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER"] = "ALL",
     offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50),
@@ -369,7 +373,8 @@ def get_dashboard_workspace(
 ):
     from app.services.carton_dashboard import workspace
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
-    return workspace(db, factory_id, customer=customer, search=search, status=status, kind=kind, offset=offset, limit=limit)
+    return workspace(db, factory_id, current_user, customer=customer, search=search, responsibility_scope=responsibility_scope,
+                     status=status, kind=kind, offset=offset, limit=limit)
 
 
 @router.get("/dashboard/alert-context")
@@ -679,6 +684,28 @@ def post_order_return(
     for permission in ("order_write", "inventory_write"):
         _ensure_permission(db, current_user, f"carton_procurement:{permission}", payload.factory_id)
     return order_out(db, return_order(db, order_no, payload, current_user))
+
+
+@router.get("/orders/{order_no}/return-stock")
+def get_order_stock_return(
+    order_no: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return preview_order_stock_return(db, factory_id, order_no, current_user)
+
+
+@router.post("/orders/{order_no}/return-stock", response_model=list[CartonInventoryMovementOut], status_code=201)
+def post_order_stock_return(
+    order_no: str,
+    payload: CartonOrderStockReturnRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return submit_order_stock_return(db, order_no, payload, current_user,
+                                     refresh_actor=lambda: get_current_user(request, db))
 
 
 @router.post("/orders/bulk-cancel", response_model=list[CartonOrderOut])

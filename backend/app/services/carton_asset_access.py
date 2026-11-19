@@ -6,14 +6,19 @@ from app.services.auth import authorization_decision
 from app.core.config import settings
 
 DEPARTMENTS = ('sales-business','pmc-warehouse','carton')
+WAREHOUSE_DEPARTMENTS = ('pmc-warehouse', 'carton')
 
 
 def enabled():
     return os.getenv('CARTON_ASSET_V1_ENABLED',str(settings.carton_asset_v1_enabled)).lower() == 'true'
 
 
+def writes_enabled():
+    return enabled() and os.getenv('CARTON_ASSET_V1_WRITES_ENABLED', str(settings.carton_asset_v1_writes_enabled)).lower() == 'true'
+
+
 def writes():
-    if not enabled() or os.getenv('CARTON_ASSET_V1_WRITES_ENABLED',str(settings.carton_asset_v1_writes_enabled)).lower() != 'true':
+    if not writes_enabled():
         raise HTTPException(403,'快速资料写入已关闭；现有归属和资料仍保留')
 
 
@@ -33,6 +38,19 @@ def internal_scope(user,factory,action='read'):
     if not any(allowed(user,factory,d,action) for d in DEPARTMENTS):
         raise HTTPException(403,'没有当前厂区部门资料权限')
     return factory
+
+
+def require_warehouse_targets(user, factory, *, department=None, supplier=None, asset=None):
+    from app.services.business_authz import canonical_permission_for_departments
+    from app.services.carton_procurement import require_carton_factory
+
+    require_carton_factory(factory)
+    if (supplier is not None or department is not None and department not in WAREHOUSE_DEPARTMENTS
+            or not any(allowed(user, factory, value, 'manage') for value in WAREHOUSE_DEPARTMENTS)
+            or not canonical_permission_for_departments(user, 'carton_procurement:read', factory, WAREHOUSE_DEPARTMENTS)):
+        raise HTTPException(403, '提前关联排期须具备本厂仓库资料维护及采购读取权限')
+    if asset is not None and asset.factory_id != factory:
+        raise HTTPException(403, '在资料原厂区维护排期关联')
 
 
 def owner(db,user,factory,department=None,*,supplier=False):

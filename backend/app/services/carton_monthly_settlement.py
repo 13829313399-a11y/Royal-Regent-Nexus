@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app import db as database
+from app.models.carton_price_review import CartonPriceReview
 from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement, CartonReceiptLine
 from app.models.carton_special_requests import SpecialShipment, UnifiedDelivery
 from app.models.carton_supplier_portal import SupplierShipment
@@ -89,9 +90,14 @@ def _amount(row) -> Decimal | None:
     return None if row["amount"] is None else Decimal(str(row["amount"]))
 
 
-def _sum(rows) -> Decimal | None:
+def _known_subtotal(rows) -> tuple[Decimal, int]:
     amounts = [_amount(row) for row in rows]
-    return None if any(value is None for value in amounts) else money(sum(amounts, Decimal(0)))
+    return money(sum((value for value in amounts if value is not None), Decimal(0))), amounts.count(None)
+
+
+def _sum(rows) -> Decimal | None:
+    subtotal, pending = _known_subtotal(rows)
+    return None if pending else subtotal
 
 
 def blocking_issues(rows, issues, undated) -> list[str]:
@@ -101,7 +107,7 @@ def blocking_issues(rows, issues, undated) -> list[str]:
     unpriced = [row for row in rows if row["kind"] == "RECEIPT" and row["amount"] is None]
     if unpriced:
         names = "、".join(f"{row.get('document_no') or '无单号'} {row.get('item_no') or ''}".strip() for row in unpriced[:6])
-        result.append(f"{len(unpriced)} 行送货单缺价，不能计入应付：{names}")
+        result.append(f"{len(unpriced)} 行送货单价待核实：{names}")
     unpriced_returns = [row for row in rows if row["kind"] == "RETURN" and row["amount"] is None]
     if unpriced_returns:
         names = "、".join(str(row.get("document_no") or "无单号") for row in unpriced_returns[:6])
@@ -122,13 +128,18 @@ def _totals(rows):
     receipts = [row for row in rows if row["kind"] == "RECEIPT"]
     returns = [row for row in rows if row["kind"] == "RETURN"]
     refunds = [row for row in rows if row["kind"] == "RETURN_REFUND"]
-    inbound, return_amount, refund_amount = _sum(receipts), _sum(returns), _sum(refunds)
-    net = None if inbound is None or return_amount is None else money(inbound - return_amount + (refund_amount or Decimal(0)))
+    inbound, pending_receipts = _known_subtotal(receipts)
+    return_amount, pending_returns = _known_subtotal(returns)
+    refund_amount, pending_refunds = _known_subtotal(refunds)
+    pending = pending_receipts + pending_returns + pending_refunds
+    known_net = money(inbound - return_amount + refund_amount)
     return {
-        "inbound": None if inbound is None else str(inbound),
-        "returns": None if return_amount is None else str(return_amount),
-        "refunds": None if refund_amount is None else str(refund_amount),
-        "net": None if net is None else str(net),
+        "inbound": None if pending_receipts else str(inbound),
+        "returns": None if pending_returns else str(return_amount),
+        "refunds": None if pending_refunds else str(refund_amount),
+        "net": None if pending else str(known_net),
+        "verified_net": str(known_net) if len(rows) > pending else None,
+        "pending_price_lines": pending,
         "documents": len({row["document_no"] for row in receipts if row.get("document_no")}),
         "receipt_lines": len(receipts), "return_lines": len(returns), "refund_lines": len(refunds),
     }
@@ -172,6 +183,9 @@ def _reconciliation_details(db, factory, supplier_id, rows):
     receipts = {row["source_key"].removeprefix("RECEIPT:"): row["receipt_id"] for row in rows if row["kind"] == "RECEIPT"}
     receipt_codes = dict(db.execute(select(CartonReceiptLine.id, CartonReceiptLine.customer_code).where(
         CartonReceiptLine.factory_id == factory, CartonReceiptLine.id.in_(receipts))).all()) if receipts else {}
+    reviews = dict(db.execute(select(CartonPriceReview.receipt_line_id, CartonPriceReview.original_unit_price).where(
+        CartonPriceReview.factory_id == factory, CartonPriceReview.supplier_id == supplier_id,
+        CartonPriceReview.receipt_line_id.in_(receipts))).all()) if receipts else {}
     return_ids = {_return_id(row) for row in rows} - {""}
     return_codes = dict(db.execute(select(CartonInventoryMovement.id, CartonInventoryMovement.customer_code).where(
         CartonInventoryMovement.factory_id == factory, CartonInventoryMovement.id.in_(return_ids))).all()) if return_ids else {}
@@ -182,6 +196,15 @@ def _reconciliation_details(db, factory, supplier_id, rows):
         if row["kind"] == "RECEIPT":
             line_id = row["source_key"].removeprefix("RECEIPT:")
             code = receipt_codes.get(line_id)
+            original_delivery = row.get("supplier_delivery") or {}
+            has_delivery_price = original_delivery.get("currency") == row["currency"] and "original_unit_price" in original_delivery
+            if line_id in reviews or has_delivery_price:
+                raw_price = reviews[line_id] if line_id in reviews else original_delivery["original_unit_price"]
+                original_price = None if raw_price is None else Decimal(raw_price)
+                row["supplier_original_price"] = {
+                    "unit_price": None if original_price is None else str(original_price),
+                    "reference_amount": None if original_price is None else str(legacy.money(Decimal(row["quantity"]) * original_price)),
+                }
             row["reference"] = {"kind": "RECEIPT", "id": row["receipt_id"]}
             if line_id in delivery_links:
                 row["supplier_reference"] = {"kind": "DELIVERY", "id": delivery_links[line_id]}
@@ -222,8 +245,8 @@ def supplier_line(row):
             safe["issues"].append("退货贷项金额待核实")
     elif row["issues"]:
         safe["issues"].append("退款与原退货的关联待核实")
-    if row.get("price_basis") == "SUPPLIER_ORIGINAL":
-        safe["price_basis"] = "SUPPLIER_ORIGINAL"
+    if (original := row.get("supplier_original_price")) is not None:
+        safe["supplier_original_price"] = {key: original[key] for key in ("unit_price", "reference_amount")}
     safe["reference"] = row.get("supplier_reference")
     return safe
 
@@ -256,7 +279,6 @@ def _build_workspace(db, factory: str, period: str, currency: str) -> dict:
         raise HTTPException(422, "账期月份无效")
     currency = core.normalize_currency(currency)
     rows, fingerprint, issues, undated = legacy.sources(db, factory, supplier.id, period, currency)
-    adopt_supplier_original_prices(db, factory, rows)
     totals = _totals(rows)
     customers = _reconciliation_details(db, factory, supplier.id, rows)
     receipt_groups = defaultdict(list)
@@ -292,30 +314,6 @@ def _build_workspace(db, factory: str, period: str, currency: str) -> dict:
         "blockers": blockers,
         "lines": rows,
     }
-
-
-def adopt_supplier_original_prices(db, factory: str, rows) -> None:
-    """A supplier's own delivery-note price settles the line; no manual correction queue.
-
-    When the receipt price is unresolved (zero/blank pending review) but the
-    supplier note recorded a positive price at receipt time, use that supplier price.
-    Confirmed free prices are already projected by the canonical source builder.
-    """
-    from app.models.carton_price_review import CartonPriceReview
-    reviews = {row.receipt_line_id: row for row in db.scalars(
-        select(CartonPriceReview).where(CartonPriceReview.factory_id == factory))}
-    for row in rows:
-        if row["kind"] != "RECEIPT" or row["amount"] is not None:
-            continue
-        review = reviews.get(row["source_key"].removeprefix("RECEIPT:"))
-        if review is None or review.original_unit_price is None or review.original_unit_price <= 0:
-            continue
-        price = Decimal(str(review.original_unit_price))
-        row["unit_price"] = str(price)
-        row["amount"] = str(money(Decimal(str(row["quantity"])) * price))
-        row["price_basis"] = "SUPPLIER_ORIGINAL"
-        row["issues"] = [issue for issue in row["issues"]
-                         if issue not in {"入库单价待核实", "送货价格待双方核实，不能完成月结确认"}]
 
 
 def _permissions(db, user, factory: str) -> None:
