@@ -1010,9 +1010,9 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('@keyframes order-rise-in')
     expect(workspaceSource).toContain('@keyframes order-drop-pulse')
     expect(workspaceSource).toContain('@media (prefers-reduced-motion: reduce)')
-    expect(viewSource).toContain('font-size: 18px')
-    expect(viewSource).toContain('font-size: 14px')
-    expect(viewSource).toContain('@keyframes order-main-enter')
+    expect(read('src/styles/customer-order-center-shell.css')).toContain('font-size: 18px')
+    expect(read('src/styles/customer-order-center-shell.css')).toContain('font-size: 14px')
+    expect(read('src/styles/customer-order-center-shell.css')).toContain('@keyframes order-main-enter')
   })
 
   it('renders the reference-inspired dashboard and navigates to the import flow', async () => {

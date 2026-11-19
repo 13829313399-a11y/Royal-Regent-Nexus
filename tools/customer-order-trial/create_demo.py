@@ -9,7 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def build(destination, factory):
+def build(destination, factory, green_toys_only=False):
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(destination.parent / 'backend'))
@@ -72,7 +72,7 @@ def build(destination, factory):
         '7. 在台账打开一条订单，发送给 PMC；到“本机部门收件”选择 PMC 并签收该版本。这些记录只在当前电脑，不会通知线上员工。\n'
         '8. 回到该订单登记一笔演示走货：数量 1、实际走货日期选当天或之前、出货单号 DEMO-SHIP-001；确认后查看走货记录及剩余数量，也可按界面填写原因试用冲销。\n'
         '9. 演示记录保留在本机 data 中。开始真实资料试用请另用一份从 ZIP 全新解压的包，避免与演示记录混在一起。\n', encoding='utf-8-sig')
-    if factory == 'huakang-a':
+    if factory == 'huakang-a' and not green_toys_only:
         # ZURU uses the same public three-sheet headers; no private PO/history is
         # copied into delivery. Keep this blank template reusable for first use.
         zuru = destination / 'ZURU'
@@ -102,5 +102,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('destination', type=Path)
     parser.add_argument('--factory', required=True, choices=['huakang-a', 'huakang-d', 'huaxing', 'huadeng'])
+    parser.add_argument('--green-toys-only', action='store_true')
     args = parser.parse_args()
-    build(args.destination, args.factory)
+    build(args.destination, args.factory, args.green_toys_only)

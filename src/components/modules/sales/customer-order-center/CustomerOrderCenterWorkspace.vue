@@ -47,7 +47,7 @@ import type {
   CustomerOrderPreviewRow,
   WarehouseScheduleSyncResult,
 } from '@/types/customerOrder'
-import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView.vue'
+import type { CustomerOrderCenterSection } from '@/types/customerOrder'
 
 type OrderStatus = 'valid' | 'warning' | 'blocked'
 type DeliveryStatus = 'overdue' | 'due-soon' | 'upcoming' | 'planned'
@@ -565,6 +565,8 @@ const props = defineProps<{
   factoryName: string
   focusLineId?: string
   initialCustomerCode?: string
+  customerCodes?: readonly string[]
+  localOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -599,12 +601,14 @@ let warehouseSyncController: AbortController | null = null
 let warehouseUpload: { file: File; kind: 'UPLOADED' | 'GENERATED'; customer: string; factory: string } | null = null
 
 function showWarehouseSync(result: WarehouseScheduleSyncResult | null | undefined, kind: 'UPLOADED' | 'GENERATED') {
+  if (props.localOnly) { warehouseSync.value = { state: 'idle', message: '' }; return }
   warehouseSync.value = result?.status === 'SUCCESS'
     ? { state: 'success', message: `${result.message}。${kind === 'UPLOADED' ? '本次新增 PO 将在生成客户排期后自动更新。' : '仓库可查看最新排期并下单。'}` }
     : { state: 'error', message: `纸箱仓库同步未完成：${result?.message || '服务端未返回同步结果'}。业务解析及排期下载仍可继续。` }
 }
 
 async function retryWarehouseSync() {
+  if (props.localOnly) return
   if (!warehouseUpload || fileOperationBusy.value) return
   const { file, kind, customer, factory } = warehouseUpload
   const sequence = ++warehouseSyncSequence
@@ -740,7 +744,7 @@ let saveRequestSequence = 0
 let reconciliationRequestSequence = 0
 
 const availableCustomers = computed(
-  () => CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? [],
+  () => (CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? []).filter(customer => !props.customerCodes || props.customerCodes.includes(customer.code)),
 )
 const selectedCustomer = computed(
   () => availableCustomers.value.find(
@@ -2062,7 +2066,7 @@ onBeforeUnmount(() => {
                 <h3>导入客户现有排期</h3>
                 <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
                 <strong>{{ selectedScheduleFile }}</strong>
-                <small>解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。</small>
+                <small>{{ localOnly ? '生成新的排期副本；保存的订单保留在本机台账。' : '解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。' }}</small>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
                 <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
               </article>
@@ -2487,7 +2491,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">
@@ -2580,11 +2584,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'customer-schedule'" key="customer-schedule" class="order-view" data-testid="order-customer-schedule">
-        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="false" key="schedule" class="order-view" data-testid="order-schedule-static">

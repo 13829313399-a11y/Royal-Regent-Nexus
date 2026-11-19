@@ -280,7 +280,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue",
         "symbol": "async function confirmAndGenerateSchedule",
-        "sha256": "6cd988a23358ff8c8900f592600fb7ad1f27cff2115e176b4459cff90cc2f195"
+        "sha256": "8760d386380da632e3a20773727735c84819297f67e38c09a0ff8cb238e986ee"
       },
       {
         "path": "src/api/customerOrder.ts",
@@ -300,7 +300,7 @@
       {
         "path": "src/views/CustomerOrderCenterView.vue",
         "symbol": "const huakangBSections",
-        "sha256": "5f3d47e31f7123e17c469471e12dbb6a3e4d6932219d835dc261f594679f38e5"
+        "sha256": "fadf0c82c9ba4db8ce6cc6b0a6bbbf258e78da03bc4e5ac51499479c85e358c5"
       },
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",

@@ -205,7 +205,7 @@ def build_provenance(source: Path, package: Path, source_commit: str):
         'build_inputs': inputs}
 
 
-def readme(factory: str, release: str):
+def readme(factory: str, release: str, green_toys_only: bool = False):
     _, _, name, customers = FACTORIES[factory]
     common = f'''{name} 单机试用版｜{release}
 
@@ -255,7 +255,7 @@ def readme(factory: str, release: str):
 少数旧 .xls 文件的保格式转换调用本机 Microsoft Excel；普通 .xlsx 不需要该转换。
 本包不代替正式生产系统；本地发送、签收、走货记录需负责人核对流程后再决定正式上线方式。
 '''
-    if factory == 'huakang-a':
+    if factory == 'huakang-a' and not green_toys_only:
         common += '\nZURU已接入与其他客户相同的统一导入流程：选择ZURU，上传PDF/Excel PO及三表统一排期，预览后生成。演示资料/ZURU内有合成示例及空白统一模板。原周排期的MA、库存不自动迁入。\n'
     return common
 
@@ -281,7 +281,9 @@ def package_reference_seed(package: Path, schedule: Path, price: Path):
 
 
 def build(cache: Path, output: Path, selected, release_date: str | None = None,
-        jp_schedule: Path | None = None, jp_price: Path | None = None):
+        jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False):
+    if green_toys_only and selected != ['huakang-a']:
+        raise ValueError('Green Toys专用包必须只选择华康A。')
     seeded = jp_schedule is not None or jp_price is not None
     if seeded and (jp_schedule is None or jp_price is None or 'huakang-b' not in selected):
         raise ValueError('Supply both JP references and include huakang-b in the selected delivery.')
@@ -297,6 +299,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
         dependencies = runtime(cache, shared_runtime)
         for factory in selected:
             zip_name, folder, name, customers = FACTORIES[factory]
+            if green_toys_only:
+                zip_name, folder, customers = '01_华康A_GreenToys_订单入排期', 'HuakangA_GreenToys_Trial', 'Green Toys'
             kind = 'jp' if factory == 'huakang-b' else 'orders'
             source = ROOT / 'tools' / ('huakang-b-jp-trial' if kind == 'jp' else 'customer-order-trial')
             package = staging / folder
@@ -314,14 +318,17 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                     'schedule.xlsx为排期，price.xlsx为货价；原始文件名及校验见manifest.json。\n'
                     '本包包含指定的业务参照，请交给相应华康B试用人员。\n'
                     f'校验记录数：排期{stats["schedule"]["rows"]}，货价{stats["price"]["rows"]}。\n', encoding='utf-8-sig')
-            web = source / 'build' / 'web'
+            web = source / 'build' / ('web-green-toys' if green_toys_only else 'web')
             if not (web / 'index.html').is_file():
                 raise RuntimeError(f'Missing built frontend: {web}')
             copy_tree(web, package / 'web')
             copy_tree(shared_runtime, package / 'runtime')
             shutil.copyfile(TOOL / 'launch.py', package / 'launch.py')
             (package / 'START.cmd').write_bytes(START.encode('ascii'))
-            instructions = readme(factory, release)
+            instructions = readme(factory, release, green_toys_only)
+            if green_toys_only:
+                instructions = instructions.replace(FACTORIES[factory][3], 'Green Toys')
+                instructions += '\n本包直接复用GitHub订单中心导入/预览页面和外框样式，只开放Green Toys。\n货期可留空直接生成，后续在Excel手动填写。请勿混入其他客户的data目录。\n'
             if has_seed:
                 instructions = instructions.replace('请负责人先完成演示资料流程，再用真实样本逐项核对金额、数量、交期和版式。',
                     '本包已预置参照，可直接导入真实邮件。演示操作请在另一个解压副本中进行，不要把演示数据迁入日常工作副本。')
@@ -329,6 +336,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             (package / 'trial.json').write_text(json.dumps({'kind': kind, 'factory_id': factory,
                 'name': f'{name}问单本地试用' if kind == 'jp' else f'{name}订单排期本地试用',
                 'release': release, 'source_commit': source_commit, 'reference_seed': has_seed,
+                **({'customer_codes': ['green-toys']} if green_toys_only else {}),
                 'source_commit_role': 'Base checkout; see BUILD-SOURCES.json for exact uncommitted build inputs.'}, ensure_ascii=False, indent=2), encoding='utf-8')
             if kind == 'orders':
                 ocr = package / 'ocr'
@@ -351,6 +359,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                 command = [sys.executable, '-B', str(demo_script), str(package / '演示资料')]
                 if kind == 'orders':
                     command += ['--factory', factory]
+                    if green_toys_only:
+                        command += ['--green-toys-only']
                 subprocess.run(command, check=True)
                 if has_seed:
                     demo_instructions = package / '演示资料/演示操作说明.txt'
@@ -385,6 +395,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
         writer.writerow(['厂区', '试用包', '客户／功能', '对接人', '交付日期', '启动结果', '试用问题'])
         for factory in selected:
             filename, _, name, customers = FACTORIES[factory]
+            if green_toys_only:
+                filename, customers = '01_华康A_GreenToys_订单入排期', 'Green Toys'
             writer.writerow([name, f'{filename}_Windows试用_{stamp}.zip', customers, '', '', '', ''])
     (output / '00_总说明_先看这里.txt').write_text('各厂区订单／排期与华康B问单｜Windows单机试用包\n\n'
         + '本文件夹包含：' + '、'.join(FACTORIES[key][2] for key in selected) + '。\n' +
@@ -406,6 +418,7 @@ if __name__ == '__main__':
     parser.add_argument('--release-date', help='Release date YYYY-MM-DD; defaults to the Shanghai calendar date.')
     parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
     parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
+    parser.add_argument('--green-toys-only', action='store_true', help='Huakang A Green Toys only; reuse the GitHub order workspace frontend.')
     args = parser.parse_args()
     build(args.cache.resolve(), args.output.resolve(), args.factory or list(FACTORIES), args.release_date,
-        args.jp_schedule, args.jp_price)
+        args.jp_schedule, args.jp_price, args.green_toys_only)
