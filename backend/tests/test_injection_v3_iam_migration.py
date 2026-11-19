@@ -13,6 +13,7 @@ from app.api import injection_scheduling as injection_api
 from app.core.config import settings
 from app.db import Base, get_db
 from app.models import auth as models
+from app.models import identity
 from app.services import auth
 from app.services.injection_scheduling.common import seed_settings
 from app.services.permission_codes import INJECTION_SCHEDULING_PERMISSION_CODES
@@ -166,7 +167,8 @@ def iam_env(tmp_path, monkeypatch):
     metadata = MetaData()
     auth_tables = {
         value.__table__.name
-        for value in vars(models).values()
+        for model_module in (models, identity)
+        for value in vars(model_module).values()
         if isinstance(value, type) and hasattr(value, "__table__")
     }
     for table in Base.metadata.sorted_tables:
