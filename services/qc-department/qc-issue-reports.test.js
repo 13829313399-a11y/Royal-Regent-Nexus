@@ -35,7 +35,7 @@ test('page empty and failure states disable export and retry without opening a m
  p.d.querySelector('[data-refresh]').click();await tick();assert.match(p.d.querySelector('[data-status]').textContent,/没有验货问题记录/);assert.equal(p.d.querySelector('[data-export]').disabled,true);assert.equal(p.d.querySelector('dialog'),null);
  }finally{p.dom.window.close();}});
 
-test('weekly photo columns match the selected workbook while other periods retain their layout',async()=>{const p=page();try{
+test('weekly and annual photo columns match their workbooks and monthly retains the combined cell',async()=>{const p=page();try{
  const originalFetch=p.w.fetch;
  p.w.fetch=async(...args)=>{const response=await originalFetch(...args);const data=await response.json();data.tables.issues[0].values[9]='问题\n完整保留';data.tables.issues[0].values[11]='原始照片备注';data.tables.issues[0].photos=[{id:'photo-1',name:'验货照片.jpg'}];return{ok:true,json:async()=>data};};
  const host=p.d.createElement('section');host.id='qwtView';p.d.querySelector('#weekly-main').append(host);
@@ -47,7 +47,8 @@ test('weekly photo columns match the selected workbook while other periods retai
  assert.deepEqual([...p.d.querySelectorAll('thead th')].slice(-2).map(n=>n.textContent),['照片备注','照片']);
  for(const period of ['monthly','yearly']){
   await p.w.QcIssueReports.open(period,'2026-11-09');
-  assert.equal(p.d.querySelectorAll('thead th').length,12);assert.equal(p.d.querySelector('tbody td:last-child img').alt,'验货照片.jpg');
+  assert.equal(p.d.querySelectorAll('thead th').length,period==='yearly'?13:12);assert.equal(p.d.querySelector('tbody td:last-child img').alt,'验货照片.jpg');
+  if(period==='yearly')assert.equal(p.d.querySelector('tbody td:nth-child(12)').textContent,'原始照片备注');
   assert.equal(p.d.querySelector('.qir-weekly'),null);
  }
  }finally{p.dom.window.close();}});

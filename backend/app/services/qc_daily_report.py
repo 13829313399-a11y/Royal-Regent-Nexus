@@ -144,7 +144,7 @@ def _format_daily_sheet(package, sheet, rows, name, data):
                 row.remove(cell)
     cols = sheet.find(tag('cols'))
     cols.clear()
-    widths = [18, 18, 15, 20, 30, 12, 14, 14, 12, 42, 16, 16, 36]
+    widths = [16, 16, 16, 16, 24, 11, 14, 16, 12, 32, 15, 15, 28]
     for index, width in enumerate(widths, 1):
         E.SubElement(cols, tag('col'), min=str(index), max=str(index),
                      width=str(width), customWidth='1')

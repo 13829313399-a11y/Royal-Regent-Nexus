@@ -170,8 +170,8 @@ def _photo_slots(count, width=PHOTO_GRID_WIDTH, height=PHOTO_GRID_HEIGHT):
 
 def _xlsx(data,factory):
     raw,_=_asset('issues');book=openpyxl.load_workbook(BytesIO(raw));sheet=book.active
-    weekly_layout=data.get('period')=='weekly'
-    if weekly_layout:
+    photo_grid_layout = data.get('period') in {'weekly', 'yearly'}
+    if photo_grid_layout:
         # Keep the verified source headers, using a clean default font so column
         # character widths and pixel-based photo anchors agree across viewers.
         headers=[cell.value for cell in sheet[1][:12]]
@@ -191,7 +191,7 @@ def _xlsx(data,factory):
     sheet['L2']='照片备注'
     sheet['M2']='照片'
     sheet['M2']._style=copy(sheet['L2']._style)
-    if weekly_layout:
+    if photo_grid_layout:
         for col,pixels in enumerate([105,90,120,140,155,70,65,70,65,170,80,165,490],1):
             sheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width=(pixels-5)/7
         border=openpyxl.styles.Side(style='thin',color='D4D4D4')
@@ -202,14 +202,14 @@ def _xlsx(data,factory):
             cell.alignment=openpyxl.styles.Alignment(horizontal='center',vertical='center',wrap_text=True)
         sheet.row_dimensions[1].height=38;sheet.row_dimensions[2].height=44
     widths=[sheet.column_dimensions[openpyxl.utils.get_column_letter(c)].width or 10 for c in range(1,14)]
-    anchor=1 if weekly_layout else 1+_center_column(widths)
-    if weekly_layout:sheet.merge_cells('A1:M1')
+    anchor=1 if photo_grid_layout else 1+_center_column(widths)
+    if photo_grid_layout:sheet.merge_cells('A1:M1')
     title=sheet.cell(1,anchor,data.get('title',data['dateFrom'][:7]+' 月度验货问题图文记录表')+' '+(data['dateFrom']+' 至 '+data['dateTo'] if data.get('period') else ''))
     title.font=copy(sheet.cell(2,1).font)
     title.alignment=openpyxl.styles.Alignment(horizontal='center',vertical='center')
-    if weekly_layout:title.font=openpyxl.styles.Font(name='Arial',size=16,bold=True,color='222222')
+    if photo_grid_layout:title.font=openpyxl.styles.Font(name='Arial',size=16,bold=True,color='222222')
     sheet.freeze_panes='A3';sheet.print_title_rows='1:2';sheet.sheet_view.topLeftCell='A1'
-    if weekly_layout:sheet.freeze_panes='D3';sheet.sheet_view.showGridLines=False
+    if photo_grid_layout:sheet.freeze_panes='D3';sheet.sheet_view.showGridLines=False
     photo_bytes=0;embedded_bytes=0
     rows=data['tables']['issues']
     for rownum,entry in enumerate(rows,3):
@@ -218,9 +218,9 @@ def _xlsx(data,factory):
             cell=sheet.cell(rownum,c,v)
             cell._style=copy(model[c-1])
             cell.alignment=openpyxl.styles.Alignment(
-                horizontal='left' if c==12 and not weekly_layout else 'center',
-                vertical='top' if c==12 and not weekly_layout else 'center',wrap_text=True)
-            if weekly_layout:
+                horizontal='left' if c==12 and not photo_grid_layout else 'center',
+                vertical='top' if c==12 and not photo_grid_layout else 'center',wrap_text=True)
+            if photo_grid_layout:
                 cell.font=openpyxl.styles.Font(name='Arial',size=11,color='222222')
                 cell.fill=openpyxl.styles.PatternFill('solid',fgColor='FFFFFF')
                 cell.border=copy(sheet.cell(2,c).border)
@@ -234,7 +234,7 @@ def _xlsx(data,factory):
         row_images=[]
         grid_height=min(530,max(226,text_lines*20)) if len(photos)<=4 else 530
         if photos:
-            columns,slot_width,slot_height=_photo_slots(len(photos),490,grid_height) if weekly_layout else _photo_slots(len(photos))
+            columns,slot_width,slot_height=_photo_slots(len(photos),490,grid_height) if photo_grid_layout else _photo_slots(len(photos))
             for j,photo in enumerate(photos):
                 content=_photo(factory,entry,photo, data.get('photoQuality','preview'), data.get('allowPreviewFallback',False), data.get('fallbackPhotos'));photo_bytes+=len(content)
                 if photo_bytes>MAX_BYTES:raise HTTPException(422,'照片总量过大，请按客户筛选后分别导出')
@@ -248,7 +248,7 @@ def _xlsx(data,factory):
                     image.width*=ratio;image.height*=ratio
                     left=PHOTO_PADDING+(j%columns)*(slot_width+PHOTO_PADDING)+(slot_width-image.width)/2
                     top=PHOTO_PADDING+(j//columns)*(slot_height+PHOTO_PADDING)
-                    if weekly_layout:top+=(slot_height-image.height)/2
+                    if photo_grid_layout:top+=(slot_height-image.height)/2
                     photo_bottom=max(photo_bottom,top+image.height+PHOTO_PADDING)
                     marker=AnchorMarker(col=12,row=rownum-1,colOff=round(left*EMU_PER_PIXEL),rowOff=round(top*EMU_PER_PIXEL))
                     image.anchor=OneCellAnchor(_from=marker,ext=XDRPositiveSize2D(
@@ -257,7 +257,7 @@ def _xlsx(data,factory):
                     row_images.append(image)
                 except (OSError,ValueError) as exc:raise HTTPException(422,'验货照片无法解码，未生成缺图文件') from exc
         sheet.row_dimensions[rownum].height=max(60,min(405,text_lines*15),math.ceil(photo_bottom*0.75))
-        if weekly_layout:
+        if photo_grid_layout:
             sheet.row_dimensions[rownum].height=max(170 if photos else 60,min(405,text_lines*15),grid_height*0.75 if photos else 0)
             # Center the entire photo grid when text requires a taller row.
             offset=sheet.row_dimensions[rownum].height/0.75-grid_height

@@ -114,7 +114,7 @@
       {
         "path": "backend/app/services/qc_monthly_excel.py",
         "symbol": "def render",
-        "sha256": "7ae563147412ff1c5336d4ead37ea06c5b4c55f35cfae4c1293ea3d974331b35"
+        "sha256": "5f9454dce345bd610fd86dd6a7bebddc8a4851feac3200c8dff2e95bef10e2c7"
       },
       {
         "path": "services/qc-department/qc-monthly-templates.js",
@@ -149,7 +149,7 @@
       {
         "path": "services/qc-department/qc-issue-reports.js",
         "symbol": "QcIssueReports",
-        "sha256": "169f0f4b8c236307eda5f615031f7dc9664185250eafd0c78a597d8276c9f789"
+        "sha256": "8976f40c376c3ea868015466116d59a600695c24e8c9ab0a4d16558aabfe9736"
       },
       {
         "path": "backend/app/api/qc_mobile.py",
