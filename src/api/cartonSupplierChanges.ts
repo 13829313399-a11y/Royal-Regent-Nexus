@@ -16,6 +16,7 @@ export interface SupplierChangeTask {
   order_id: string; order_no: string; document_no: string; expected_revision: number; status: string
   publication_version?: number; customer_name?: string; contract_no?: string; customer_po?: string; item_nos?: string[]
   is_cancellation: boolean; read: boolean; read_at: string; reason: string; responded_by: string; responded_at: string
+  acceptance_id?: string
   promised_date: string; planned_date: string; before_date: string; created_at: string; age_days: number
   change_reason?: string; customer_due_date?: string; before_customer_due_date?: string
   overdue: boolean; action: string; responsibility: string; lines: SupplierChangeLine[]; material_changed: boolean
@@ -34,7 +35,7 @@ export const cartonSupplierChangesApi = {
   async list(factory: string, internal = false, signal?: AbortSignal) {
     return (await http.get<SupplierChangeWorkspace>(`/carton-supplier/${internal ? 'internal/' : ''}changes`, { params: { factory_id: factory }, signal })).data
   },
-  async respond(body: { factory_id: string; source_kind: SupplierChangeTask['source_kind']; source_id: string; expected_revision: number; action: SupplierChangeAction; request_id: string; promised_date?: string; reason?: string; produced_quantities?: Record<string, string> }, signal?: AbortSignal) {
+  async respond(body: { factory_id: string; source_kind: SupplierChangeTask['source_kind']; source_id: string; expected_revision: number; action: SupplierChangeAction; request_id: string; promised_date?: string; expected_acceptance_id?: string; reason?: string; produced_quantities?: Record<string, string> }, signal?: AbortSignal) {
     return (await http.post<SupplierChangeTask>('/carton-supplier/changes/respond', body, { signal })).data
   },
 }

@@ -35,9 +35,16 @@ const modes = [
   { id: 'OUTBOUND' as const, label: '出库明细' },
   { id: 'ADJUSTMENT' as const, label: '调整明细' },
 ]
-const orderCount = computed(() => new Set(report.value.order_rows.filter(row => row.order_id).map(row => row.order_id)).size)
-const standaloneCount = computed(() => report.value.order_rows.filter(row => !row.order_id).length)
+const orderCount = computed(() => new Set(report.value.order_rows.flatMap(row =>
+  row.order_id ? [`order:${row.order_id}`] : row.source_request ? [`request:${row.source_request.id}`] : [],
+)).size)
+const standaloneCount = computed(() => report.value.order_rows.filter(row => !row.order_id && !row.source_request && !row.unattributed).length)
+const hasUnconfirmedBalances = computed(() => report.value.order_rows.some(row => row.opening_unconfirmed || row.balance_unconfirmed || row.unattributed))
+const sourceLabels = { SAMPLE: '样板', WORKSHOP_MISC: '杂单', SUPPLIER_GIFT: '赠品' }
 const detailRows = computed(() => report.value.movements.filter(row => row.flow_category === mode.value))
+function sourceNumber(row: InventoryOrderReportRow) {
+  return row.source_request?.request_no || row.contract_no || (row.unattributed ? '未归单流水' : '无单库存')
+}
 function format(value: string) {
   const negative = value.startsWith('-')
   const [whole = '0', fraction = ''] = value.replace(/^-/, '').split('.')
@@ -83,12 +90,13 @@ async function load() {
 }
 async function openOrderTimeline(row: InventoryOrderReportRow) {
   const selectionVersion = ++timelineVersion
-  timelineTarget.value = { orderId: row.order_id ?? '', inventoryKey: row.order_id ? '' : row.key, label: `${row.contract_no || '无单库存'} · ${row.item_no}` }
+  const label = `${sourceNumber(row)} · ${row.item_no}`
+  timelineTarget.value = { orderId: row.order_id ?? '', inventoryKey: row.order_id ? '' : row.key, label }
   const version = requestVersion, factory = props.factoryId
   try {
     const id = await cartonInventoryIdentity(row.key)
     if (selectionVersion === timelineVersion && version === requestVersion && factory === props.factoryId && timelineTarget.value)
-      emit('selected', id, `${row.contract_no || '无单库存'} · ${row.item_no}`, { date_from: from.value, date_to: to.value })
+      emit('selected', id, label, { date_from: from.value, date_to: to.value })
   } catch { /* No selected identity is advertised when the browser cannot hash it. */ }
 }
 function closeTimeline() {
@@ -154,40 +162,59 @@ watch([loading, error, customerCode, from, to, mode, () => props.search, () => p
 <template #actions><button :disabled="!filtersActive" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 disabled:opacity-40" @click="clearFilters">清空筛选</button></template>
 <template #footer><span class="ml-auto text-xs text-slate-500">{{ from && to ? `${from} 至 ${to}` : '全部日期' }} · 统计随筛选更新</span></template>
 </CartonFilterBar>
-      <p v-if="search.trim()" class="border-t border-slate-100 px-4 py-2 text-xs text-teal-700">正在查询“{{ search.trim() }}”对应的库存，保留其完整收发记录。</p>
+      <p v-if="search.trim()" class="border-t border-slate-100 px-4 py-2 text-xs text-teal-700">正在查询“{{ search.trim() }}”对应的库存和已归单收发记录。</p>
     <div v-if="!connected" role="status" class="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800">连接正式台账后显示库存汇总。</div>
     <div v-else-if="error" role="alert" class="flex items-center justify-between rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"><span>{{ error }}</span><button class="rounded-lg border border-red-200 px-3 py-2 font-bold" @click="load">重新读取</button></div>
     <div v-else-if="loading" role="status" class="rounded-xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">正在核对收发流水…</div>
       <template v-else>
+        <p v-if="hasUnconfirmedBalances" class="border-t border-amber-100 bg-amber-50 px-4 py-2 text-xs leading-5 text-amber-800">同纸品混存时，无法确认归属的收发按纸品查看。请在实时库存核对纸品实际结存。</p>
         <div class="overflow-x-auto carton-table-wrap">
           <table v-if="mode === 'SUMMARY'" class="w-full min-w-[1220px] text-left text-xs carton-table-fit" aria-label="收发汇总表">
-            <thead class="bg-slate-50 text-slate-500"><tr><th class="px-4 py-3">下单日期</th><th class="px-4 py-3">客户</th><th class="px-4 py-3">合同号</th><th class="px-4 py-3">货号 / 产品名称</th><th class="px-4 py-3">纸品 / 规格</th><th class="px-4 py-3">单位</th><th class="px-4 py-3 text-right">期初</th><th class="px-4 py-3 text-right">入库</th><th class="px-4 py-3 text-right">出库</th><th class="px-4 py-3 text-right">调整</th><th class="px-4 py-3 text-right">{{ to ? '期末结存' : '当前结存' }}</th><th class="px-4 py-3">当前领用</th><th class="px-4 py-3">当前仓位分布</th><th class="px-4 py-3 text-right">操作</th></tr></thead>
+            <thead class="bg-slate-50 text-slate-500"><tr><th class="px-4 py-3">下单日期</th><th class="px-4 py-3">客户</th><th class="px-4 py-3">合同号 / 来源</th><th class="px-4 py-3">货号 / 产品名称</th><th class="px-4 py-3">纸品 / 规格</th><th class="px-4 py-3">单位</th><th class="px-4 py-3 text-right">期初</th><th class="px-4 py-3 text-right">入库</th><th class="px-4 py-3 text-right">出库</th><th class="px-4 py-3 text-right">调整</th><th class="px-4 py-3 text-right">{{ to ? '期末结存' : '当前结存' }}</th><th class="px-4 py-3">当前领用</th><th class="px-4 py-3">当前仓位分布</th><th class="px-4 py-3 text-right">操作</th></tr></thead>
             <tbody class="divide-y divide-slate-100">
               <tr v-for="row in report.order_rows" :key="row.key" class="hover:bg-slate-50/60">
                 <td data-label="下单日期" class="whitespace-nowrap px-4 py-4 font-semibold">{{ row.order_date || '—' }}</td>
                 <td data-label="客户" class="px-4 py-4 font-semibold">{{ row.customer_name }}</td>
-                <td data-label="合同号" class="px-4 py-4"><div class="font-mono font-semibold">{{ row.contract_no || '—' }}</div><span v-if="!row.order_id" class="mt-1 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">无单库存</span></td>
+                <td data-label="合同号 / 来源" class="px-4 py-4">
+                  <div v-if="row.source_request">
+                    <div class="break-all font-mono font-semibold">{{ row.source_request.request_no }}</div>
+                    <div class="mt-1 text-[10px] text-teal-700">{{ sourceLabels[row.source_request.kind] }}</div>
+                  </div>
+                  <template v-else>
+                    <div class="font-mono font-semibold">{{ row.contract_no || '—' }}</div>
+                    <span v-if="!row.order_id" class="mt-1 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">{{ row.unattributed ? '未归单流水' : '无单库存' }}</span>
+                  </template>
+                </td>
                 <td data-label="货号 / 产品名称" class="px-4 py-4"><div class="font-mono font-semibold">{{ row.item_no }}</div><div v-if="row.product_name" class="mt-1 text-slate-500">{{ row.product_name }}</div></td>
                 <td data-label="纸品 / 规格" class="px-4 py-4"><div class="font-semibold">{{ row.packaging_type }} {{ row.paper_quality }}</div><div class="mt-1 text-slate-400">{{ row.specification }}</div><div v-if="!row.line_count && scaled(row.opening_quantity) === 0n" class="mt-1 text-[10px] text-slate-400">暂无收发</div></td>
                 <td data-label="单位" class="px-4 py-4">{{ row.unit || '未标单位' }}</td>
-                <td data-label="期初" class="px-4 py-4 text-right tabular-nums">{{ format(row.opening_quantity) }}</td>
+                <td data-label="期初" class="px-4 py-4 text-right tabular-nums">
+                  <span v-if="row.opening_unconfirmed" class="text-amber-700">待核对</span>
+                  <span v-else>{{ row.unattributed ? '—' : format(row.opening_quantity) }}</span>
+                </td>
                 <td data-label="入库" class="px-4 py-4 text-right text-teal-700 tabular-nums">{{ format(row.inbound_quantity) }}</td>
                 <td data-label="出库" class="px-4 py-4 text-right text-blue-700 tabular-nums">{{ format(row.outbound_quantity) }}</td>
                 <td data-label="调整" class="px-4 py-4 text-right text-amber-700 tabular-nums">{{ format(row.adjustment_quantity) }}</td>
-                <td :data-label="to ? '期末结存' : '当前结存'" class="px-4 py-4 text-right text-sm font-bold text-teal-800 tabular-nums">{{ format(row.ending_quantity) }}</td>
+                <td :data-label="to ? '期末结存' : '当前结存'" class="px-4 py-4 text-right text-sm font-bold text-teal-800 tabular-nums">
+                  <span v-if="row.balance_unconfirmed" class="text-xs font-medium text-amber-700">待核对</span>
+                  <span v-else>{{ row.unattributed ? '—' : format(row.ending_quantity) }}</span>
+                </td>
                 <td data-label="当前领用" class="whitespace-nowrap px-4 py-4"><div class="font-semibold text-teal-700">{{ row.current_usage_label || '未入库' }}</div><div class="mt-1 text-[10px] text-slate-500">{{ row.current_usage_status === 'UNKNOWN' ? '已明确领用' : '净领用' }} {{ format(row.current_usage_quantity || '0') }} {{ row.unit }}</div></td>
-                <td data-label="当前仓位分布" class="px-4 py-4"><details v-if="row.current_positions?.length" class="min-w-32"><summary class="cursor-pointer text-teal-700">{{ row.current_positions.length }} 个仓位</summary><div v-for="part in row.current_positions" :key="part.location" class="mt-1 whitespace-nowrap text-[10px]">{{ part.location }}：{{ format(part.quantity) }} {{ row.unit }}</div></details><span v-else class="text-slate-400">无结存</span></td>
-                <td data-label="操作" class="px-4 py-4 text-right"><button type="button" :aria-label="`查看 ${row.contract_no || '无单库存'} ${row.item_no} 订单流水`" class="whitespace-nowrap rounded-lg border border-teal-200 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-50" title="点击查看订单流水" aria-haspopup="dialog" @click="openOrderTimeline(row)">订单流水</button></td>
+                <td data-label="当前仓位分布" class="px-4 py-4"><details v-if="row.current_positions?.length" class="min-w-32"><summary class="cursor-pointer text-teal-700">{{ row.current_positions.length }} 个仓位</summary><div v-for="part in row.current_positions" :key="part.location" class="mt-1 whitespace-nowrap text-[10px]">{{ part.location }}：{{ format(part.quantity) }} {{ row.unit }}</div></details><span v-else class="text-slate-500">{{ row.positions_shared ? '同纸品共用仓位' : '无结存' }}</span></td>
+                <td data-label="操作" class="px-4 py-4 text-right"><button type="button" :aria-label="`查看 ${sourceNumber(row)} ${row.item_no} 订单流水`" class="whitespace-nowrap rounded-lg border border-teal-200 px-3 py-2 text-xs font-bold text-teal-700 hover:bg-teal-50" title="点击查看订单流水" aria-haspopup="dialog" @click="openOrderTimeline(row)">订单流水</button></td>
               </tr>
               <tr v-if="!report.order_rows.length"><td colspan="14" class="px-4 py-12 text-center text-slate-400">所选条件下没有订单或库存记录</td></tr>
             </tbody>
           </table>
           <table v-else class="w-full min-w-[1150px] text-left text-xs carton-table-fit" aria-label="库存汇总明细表">
-            <thead class="bg-slate-50 text-slate-500"><tr><th class="px-4 py-3">记账时间 / 单据</th><th class="px-4 py-3">客户</th><th class="px-4 py-3">合同号</th><th class="px-4 py-3">货号</th><th class="px-4 py-3">纸品 / 规格</th><th class="px-4 py-3">类型</th><th class="px-4 py-3 text-right">{{ mode === 'OUTBOUND' ? '出库数量' : mode === 'INBOUND' ? '入库数量' : '调整数量' }}</th><th class="px-4 py-3">仓位</th><th class="px-4 py-3">经手人 / 原因</th></tr></thead>
-            <tbody class="divide-y divide-slate-100"><tr v-for="row in detailRows" :key="row.id" class="hover:bg-slate-50/60"><td data-label="记账时间 / 单据" class="px-4 py-4"><div>{{ row.occurred_at.replace('T', ' ').slice(0, 16) }}</div><div class="mt-1 font-mono font-semibold">{{ row.document_no || '未填写' }}</div></td><td data-label="客户" class="px-4 py-4">{{ row.customer_name }}</td><td data-label="合同号" class="px-4 py-4 font-mono">{{ row.contract_no || '非正式收料' }}</td><td data-label="货号" class="px-4 py-4 font-mono">{{ row.item_no }}</td><td data-label="纸品 / 规格" class="px-4 py-4"><div class="font-semibold">{{ row.packaging_type }} {{ row.paper_quality }}</div><div class="mt-1 text-slate-400">{{ row.specification }}</div></td><td data-label="类型" class="px-4 py-4"><span :class="row.movement_type === 'REVERSAL' ? 'text-rose-700' : 'text-slate-600'">{{ row.movement_type === 'REVERSAL' ? '冲销' : mode === 'INBOUND' ? '入库' : mode === 'OUTBOUND' ? '出库' : '调整' }}</span></td><td :data-label="mode === 'OUTBOUND' ? '出库数量' : mode === 'INBOUND' ? '入库数量' : '调整数量'" class="px-4 py-4 text-right font-bold tabular-nums" :class="Number(row.flow_quantity) < 0 ? 'text-rose-700' : 'text-teal-700'">{{ format(row.flow_quantity) }} <span class="font-normal">{{ row.unit }}</span></td><td data-label="仓位" class="px-4 py-4">{{ row.location || '未填写' }}</td><td data-label="经手人 / 原因" class="max-w-60 px-4 py-4"><div>{{ row.actor_name }}</div><div class="mt-1 break-words text-slate-400">{{ row.reason || '—' }}</div></td></tr><tr v-if="!detailRows.length"><td colspan="9" class="px-4 py-12 text-center text-slate-400">所选条件下没有{{ modes.find(tab => tab.id === mode)?.label }}</td></tr></tbody>
+            <thead class="bg-slate-50 text-slate-500"><tr><th class="px-4 py-3">记账时间 / 单据</th><th class="px-4 py-3">客户</th><th class="px-4 py-3">合同号 / 来源</th><th class="px-4 py-3">货号</th><th class="px-4 py-3">纸品 / 规格</th><th class="px-4 py-3">类型</th><th class="px-4 py-3 text-right">{{ mode === 'OUTBOUND' ? '出库数量' : mode === 'INBOUND' ? '入库数量' : '调整数量' }}</th><th class="px-4 py-3">仓位</th><th class="px-4 py-3">经手人 / 原因</th></tr></thead>
+            <tbody class="divide-y divide-slate-100"><tr v-for="row in detailRows" :key="row.id" class="hover:bg-slate-50/60"><td data-label="记账时间 / 单据" class="px-4 py-4"><div>{{ row.occurred_at.replace('T', ' ').slice(0, 16) }}</div><div class="mt-1 font-mono font-semibold">{{ row.document_no || '未填写' }}</div></td><td data-label="客户" class="px-4 py-4">{{ row.customer_name }}</td><td data-label="合同号 / 来源" class="px-4 py-4">
+            <div class="break-all font-mono">{{ row.source_request?.request_no || row.contract_no || (row.unattributed ? '未归单流水' : '非正式收料') }}</div>
+            <div v-if="row.source_request" class="mt-1 text-[10px] text-teal-700">{{ sourceLabels[row.source_request.kind] }}</div>
+          </td><td data-label="货号" class="px-4 py-4 font-mono">{{ row.item_no }}</td><td data-label="纸品 / 规格" class="px-4 py-4"><div class="font-semibold">{{ row.packaging_type }} {{ row.paper_quality }}</div><div class="mt-1 text-slate-400">{{ row.specification }}</div></td><td data-label="类型" class="px-4 py-4"><span :class="row.movement_type === 'REVERSAL' ? 'text-rose-700' : 'text-slate-600'">{{ row.movement_type === 'REVERSAL' ? '冲销' : mode === 'INBOUND' ? '入库' : mode === 'OUTBOUND' ? '出库' : '调整' }}</span></td><td :data-label="mode === 'OUTBOUND' ? '出库数量' : mode === 'INBOUND' ? '入库数量' : '调整数量'" class="px-4 py-4 text-right font-bold tabular-nums" :class="Number(row.flow_quantity) < 0 ? 'text-rose-700' : 'text-teal-700'">{{ format(row.flow_quantity) }} <span class="font-normal">{{ row.unit }}</span></td><td data-label="仓位" class="px-4 py-4">{{ row.location || '未填写' }}</td><td data-label="经手人 / 原因" class="max-w-60 px-4 py-4"><div>{{ row.actor_name }}</div><div class="mt-1 break-words text-slate-400">{{ row.reason || '—' }}</div></td></tr><tr v-if="!detailRows.length"><td colspan="9" class="px-4 py-12 text-center text-slate-400">所选条件下没有{{ modes.find(tab => tab.id === mode)?.label }}</td></tr></tbody>
           </table>
         </div>
-        <div class="space-y-1 border-t border-slate-100 bg-slate-50/60 px-4 py-3 text-[11px] leading-5 text-slate-500"><p>入库、出库均含冲销净数量；盘盈、盘亏和期初库存单列调整。每张订单按纸品分别统计，不同订单和单位不混加；无单入库单独标记。</p><p>未选日期时查看累计收发；选择日期后查看期间收发，期初保留此前结存。收发按记账时间筛选；未收发订单按下单日期筛选。金额在月结对账中核对。领用状态和仓位分布显示当前累计情况，不随所选历史日期回溯。</p></div>
+        <div class="space-y-1 border-t border-slate-100 bg-slate-50/60 px-4 py-3 text-[11px] leading-5 text-slate-500"><p>入库、出库均含冲销净数量；盘盈、盘亏和期初库存单列调整。每张订单按纸品分别统计，样板和杂单显示需求号。无单库存和混存后未归单的流水分别标记。</p><p>未选日期时查看累计收发；选择日期后查看期间收发，期初保留此前结存。收发按记账时间筛选；未收发订单按下单日期筛选。金额在月结对账中核对。领用状态和仓位分布显示当前累计情况，不随所选历史日期回溯。</p></div>
       </template>
       </article>
     <div v-if="timelineTarget" data-testid="order-timeline-overlay" class="fixed inset-0 z-[62] flex items-center justify-center bg-slate-950/45 p-4" @click.self="closeTimeline">

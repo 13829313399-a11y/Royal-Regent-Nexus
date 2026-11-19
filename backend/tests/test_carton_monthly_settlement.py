@@ -13,6 +13,20 @@ def test_totals_require_every_price_to_be_known():
     assert monthly._sum([]) == Decimal("0")
 
 
+def test_partial_totals_only_include_verified_amounts_and_keep_return_signs():
+    lines = [row("RECEIPT", "30.00"), row("RECEIPT", "0.00"), row("RECEIPT", None),
+             row("RETURN", "5.00"), row("RETURN", None), row("RETURN_REFUND", "2.00")]
+    totals = monthly._totals(lines)
+    assert totals["inbound"] is None and totals["returns"] is None and totals["net"] is None
+    assert totals["refunds"] == "2.00"
+    assert totals["verified_net"] == "27.00" and totals["pending_price_lines"] == 2
+
+    complete = monthly._totals([line for line in lines if line["amount"] is not None])
+    assert complete["net"] == "27.00" and complete["pending_price_lines"] == 0
+    assert monthly._totals([row("RECEIPT", None)])["verified_net"] is None
+    assert monthly._totals([row("RECEIPT", "0.00"), row("RECEIPT", None)])["verified_net"] == "0.00"
+
+
 def test_blocking_issues_explain_each_reason_a_month_cannot_lock():
     rows = [
         row("RECEIPT", "100.00"),
@@ -22,7 +36,7 @@ def test_blocking_issues_explain_each_reason_a_month_cannot_lock():
     ]
     issues = monthly.blocking_issues(rows, ["退货 RT-9 无法确定唯一供应商"], [{"document_no": "DN-OLD"}])
     joined = "\n".join(issues)
-    assert "1 行送货单缺价" in joined and "DN-2" in joined
+    assert "1 行送货单价待核实" in joined and "DN-2" in joined
     assert "1 笔退货还没有供应商贷项价格" in joined and "RT-1" in joined
     assert "收料与有效入库流水不一致" in joined
     assert "未核实实际验收日期" in joined and "DN-OLD" in joined

@@ -103,7 +103,7 @@ def link_event(db, user, asset, row, line, attachment_id, confirmed=False):
         customer_code=row.customer_code))
 
 
-def publish_attachment(db, user, row, paper, attachment, external=False):
+def publish_attachment(db, user, row, paper, attachment, external=False, *, owner_department=None):
     """Keep the execution snapshot immutable; library copy has its own lifecycle."""
     from pathlib import Path
     from app.services import carton_mark_sharing as sharing, carton_mark_assets as assets
@@ -118,7 +118,8 @@ def publish_attachment(db, user, row, paper, attachment, external=False):
         warning='', revision=1, is_archived=False, created_by=user.id, created_by_name=user.display_name,
         created_at=attachment.created_at, updated_at=attachment.created_at)
     from app.services import carton_asset_access as ownership
-    ownership.legacy(db,user,asset,department='supplier' if external else None,supplier_id=row.supplier_id if external else None)
+    ownership.legacy(db, user, asset, department='supplier' if external else owner_department,
+                     supplier_id=row.supplier_id if external else None)
     db.add(asset); db.flush()
     lifecycle.initialize(db, user, asset, CartonMarkAssetUploadOptions(status='PENDING'))
     sharing.record(db, user, asset, 'SUPPLIER', row.supplier_id)

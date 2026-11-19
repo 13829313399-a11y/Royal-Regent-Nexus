@@ -5,9 +5,9 @@ import { Button } from '@/components/ui/button'
 import CartonFilterBar from './CartonFilterBar.vue'
 import CartonQuickUploadDialog from './CartonQuickUploadDialog.vue'
 import CartonMarkAssetLibrary from './CartonMarkAssetLibrary.vue'
-import { cartonQuickAssetsApi, type AssetDepartment, type QuickAsset, type QuickAssetAudience, type QuickAssetStatus, type QuickTarget, type QuickTargetRef } from '@/api/cartonQuickAssets'
+import { cartonQuickAssetsApi, type AssetDepartment, type QuickAsset, type QuickAssetAudience, type QuickAssetStatus, type QuickTarget, type QuickTargetRef, type QuickTargetScope } from '@/api/cartonQuickAssets'
 import { useAuthStore } from '@/stores/auth'
-import { canQuickAsset, departmentLabel, internalDepartments, quickStatusLabel, responseStatus, targetLabel, targetOrderTime, targetRef, uploadDepartments, viewerKey, type QuickAudience } from '@/features/carton-procurement/quickAssets'
+import { canQuickAsset, departmentLabel, internalDepartments, matchesTargetSearch, quickStatusLabel, responseStatus, targetLabel, targetOrderTime, targetPurchaseReferences, targetRef, uploadDepartments, viewerKey, warehouseBindingDepartment, warehouseTargetLabel, type QuickAudience } from '@/features/carton-procurement/quickAssets'
 import { getApiErrorMessage, http } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { factoryContexts } from '@/data/enterpriseMock'
@@ -137,18 +137,18 @@ const pageCount = computed(() => Math.max(1, Math.ceil(ordered.value.length / 20
 const paged = computed(() => ordered.value.slice((page.value - 1) * 20, page.value * 20))
 watch([filter, keyword, mine, format, customer, binding, orderKind, sort, () => props.search], () => { page.value = 1 })
 watch(pageCount, count => { page.value = Math.min(page.value, count) })
-const editor = shallowRef<{ asset: QuickAsset; mode: 'associate' | 'share' } | null>(null)
+const editor = shallowRef<{ asset: QuickAsset; mode: 'associate' | 'share'; scope: QuickTargetScope } | null>(null)
 const candidates = ref<QuickTarget[]>([]), selected = ref<string[]>([]), sharedFactories = ref<string[]>([]), candidateLoading = ref(false), candidateError = ref('')
 const orderSearch = ref('')
-const targetScope = computed(() => props.audience === 'sales' ? 'PENDING_SCHEDULE' as const : 'ORDERS' as const)
+const warehouseScope = computed(() => editor.value?.scope === 'WAREHOUSE')
 const associationLabel = computed(() => props.audience === 'sales' ? '关联排期订单' : '关联订单')
-const visibleCandidates = computed(() => candidates.value.filter(x => (props.audience === 'sales' || x.kind !== 'SCHEDULE') && (!orderSearch.value.trim() || [x.customer_name, x.contract_no, x.customer_po, x.item_no, x.order_no, targetOrderTime(x)].join(' ').toLowerCase().includes(orderSearch.value.trim().toLowerCase()))))
+const visibleCandidates = computed(() => candidates.value.filter(target => matchesTargetSearch(target, orderSearch.value)))
 const shareOptions = computed(() => factoryContexts.filter(x => (props.supplierFactories || [props.factoryId]).includes(x.id)))
 const requiredSharedFactories = computed(() => editor.value?.asset.required_shared_factory_ids || [])
 const shareDescription = computed(() => requiredSharedFactories.value.length
   ? '来源厂区保留可见；可选择其他有权限的厂区共享给业务和仓库。'
   : '默认无；选择后该厂业务和仓库可见。')
-type Command = { factory: string; asset: Pick<QuickAsset, 'id' | 'revision'>; requestId: string } & ({ kind: 'classify'; status: QuickAssetStatus } | { kind: 'associate'; targets: QuickTargetRef[] } | { kind: 'share'; factories: string[] } | { kind: 'audience'; mode: QuickAssetAudience })
+type Command = { factory: string; asset: Pick<QuickAsset, 'id' | 'revision'>; requestId: string } & ({ kind: 'classify'; status: QuickAssetStatus } | { kind: 'associate'; targets: QuickTargetRef[]; scope: QuickTargetScope } | { kind: 'share'; factories: string[] } | { kind: 'audience'; mode: QuickAssetAudience })
 const pending = shallowRef<Command | null>(null)
 let generation = 0, actionGeneration = 0, editorGeneration = 0, downloadGeneration = 0
 let controller = new AbortController(), actionController = new AbortController(), editorController = new AbortController(), downloadController = new AbortController()
@@ -196,7 +196,7 @@ async function execute(command?: Command) {
   busy.value = true; actionError.value = ''; actionController = new AbortController()
   try {
     if (request.kind === 'classify') await cartonQuickAssetsApi.classify(request.factory, request.asset, request.status, request.requestId, actionController.signal)
-    else if (request.kind === 'associate') await cartonQuickAssetsApi.associate(request.factory, request.asset, request.targets, request.requestId, actionController.signal, targetScope.value)
+    else if (request.kind === 'associate') await cartonQuickAssetsApi.associate(request.factory, request.asset, request.targets, request.requestId, actionController.signal, request.scope)
     else if (request.kind === 'audience') await cartonQuickAssetsApi.audience(request.factory, request.asset, request.mode, request.requestId, actionController.signal)
     else await cartonQuickAssetsApi.share(request.factory, request.asset, request.factories, request.requestId, actionController.signal)
     if (context.value !== original || token !== actionGeneration) return
@@ -210,28 +210,37 @@ async function execute(command?: Command) {
 }
 async function edit(asset: QuickAsset, mode: 'associate' | 'share', event: MouseEvent) {
   rememberOpener(event)
-  editor.value = { asset, mode }; selected.value = []; orderSearch.value = ''; sharedFactories.value = [...(asset.shared_factory_ids || [])]; candidateError.value = ''; candidates.value = []
+  const factory = assetFactory(asset)
+  const warehouse = props.audience === 'warehouse' && asset.factory_id === factory
+    ? warehouseBindingDepartment(auth, factory) : undefined
+  const scope = warehouse ? 'WAREHOUSE' : props.audience === 'sales' ? 'PENDING_SCHEDULE' : 'ORDERS'
+  editor.value = { asset, mode, scope }; selected.value = []; orderSearch.value = ''; sharedFactories.value = [...(asset.shared_factory_ids || [])]; candidateError.value = ''; candidates.value = []
   if (mode === 'share') return
   const token = ++editorGeneration, original = context.value
   editorController.abort(); editorController = new AbortController(); candidateLoading.value = true
   try {
-    const factory = assetFactory(asset)
-    const owner: AssetDepartment = props.audience === 'supplier' ? 'supplier' : readableDepartments(factory).find(d => canQuickAsset(auth, factory, d, 'manage')) || readableDepartments(factory)[0]!
-    const rows = await cartonQuickAssetsApi.candidates(factory, owner, '', editorController.signal, targetScope.value, asset.id)
+    const owner: AssetDepartment = warehouse || (props.audience === 'supplier' ? 'supplier' : readableDepartments(factory).find(d => canQuickAsset(auth, factory, d, 'manage')) || readableDepartments(factory)[0]!)
+    const rows = await cartonQuickAssetsApi.candidates(factory, owner, '', editorController.signal, scope, asset.id)
     if (token !== editorGeneration || original !== context.value) return
-    candidates.value = rows.filter(x => props.audience === 'sales' || x.kind !== 'SCHEDULE')
-    selected.value = candidates.value.filter(x => asset.targets.some(y => y.kind === x.kind && y.id === x.id && y.sheet === x.sheet && y.row === x.row)).map(x => x.fingerprint)
+    candidates.value = rows.filter(x => scope !== 'ORDERS' || x.kind !== 'SCHEDULE')
+    selected.value = candidates.value.filter(x => !x.association_locked && (scope === 'WAREHOUSE'
+      ? x.association_selected
+      : asset.targets.some(y => y.kind === x.kind && y.id === x.id && y.sheet === x.sheet && y.row === x.row))).map(x => x.fingerprint)
   } catch (cause) { if (token === editorGeneration && original === context.value) candidateError.value = getApiErrorMessage(cause) }
   finally { if (token === editorGeneration) candidateLoading.value = false }
 }
 function closeEditor(open: boolean) { if (!open && !busy.value && !pending.value) { editor.value = null; editorGeneration++; editorController.abort() } }
 function saveEditor() {
-  if (!editor.value || candidateLoading.value || candidateError.value) return
-  if (editor.value.mode === 'associate' && editor.value.asset.targets.some(t => !(targetScope.value === 'ORDERS' && t.kind === 'SCHEDULE') && !candidates.value.some(c => c.kind === t.kind && c.id === t.id && c.sheet === t.sheet && c.row === t.row))) {
+  const current = editor.value
+  if (!current || candidateLoading.value || candidateError.value) return
+  if (current.mode === 'associate' && current.scope !== 'WAREHOUSE' && current.asset.targets.some(t => !(current.scope === 'ORDERS' && t.kind === 'SCHEDULE') && !candidates.value.some(c => c.kind === t.kind && c.id === t.id && c.sheet === t.sheet && c.row === t.row))) {
     actionError.value = '原关联中有当前不可维护的订单，请刷新并核实；本次未保存，原关联保留。'; return
   }
-  const base = commandBase(editor.value.asset)
-  void execute(editor.value.mode === 'share' ? { ...base, kind: 'share', factories: [...sharedFactories.value] } : { ...base, kind: 'associate', targets: candidates.value.filter(x => selected.value.includes(x.fingerprint)).map(targetRef) })
+  const base = commandBase(current.asset)
+  void execute(current.mode === 'share' ? { ...base, kind: 'share', factories: [...sharedFactories.value] } : {
+    ...base, kind: 'associate', scope: current.scope,
+    targets: candidates.value.filter(x => !x.association_locked && selected.value.includes(x.fingerprint)).map(targetRef),
+  })
 }
 async function download(asset: QuickAsset) {
   if (downloading.value) return
@@ -365,8 +374,30 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelRequests() })
     <DialogRoot :open="!!editor" @update:open="closeEditor"><DialogPortal><DialogOverlay class="fixed inset-0 z-50 bg-slate-950/45" /><DialogContent class="fixed left-1/2 top-1/2 z-50 flex max-h-[85dvh] overflow-hidden w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-border bg-card p-5 shadow-xl" @close-auto-focus="restoreDialogFocus" @escape-key-down="(busy || pending) && $event.preventDefault()" @interact-outside="(busy || pending) && $event.preventDefault()">
       <DialogTitle class="text-lg font-bold">{{ editor?.mode === 'share' ? '共享厂区' : associationLabel }}</DialogTitle><DialogDescription class="mt-1 break-all text-sm text-muted-foreground">{{ editor?.asset.file_name }} · {{ editor?.mode === 'share' ? shareDescription : '可选择多个订单；取消全部选择可解除本次可维护的订单关联。' }}</DialogDescription>
       <p v-if="editor?.mode === 'associate' && audience === 'supplier' && requiredSharedFactories.length" class="mt-2 text-xs text-muted-foreground">业务原有的排期关联保留；这里调整本供应商已收到的同客户订单。</p>
-      <p v-if="editor?.mode === 'associate'" class="mt-2 text-xs text-muted-foreground">{{ audience === 'supplier' ? '可关联当前厂区已向本供应商开放的采购单、样板或杂单。关联不会提交采购。' : audience === 'sales' ? '新增关联选择未下单排期；已关联的排期下单后继续保留。仓库能在排期中查看资料。' : '这里只选择已建采购单、样板或杂单。已有业务排期关联由业务端维护，本次保存会保留。' }}</p>
-      <div class="my-4 min-h-0 flex-1 overflow-y-auto overscroll-contain" data-testid="asset-association-scroll"><fieldset :disabled="busy || !!pending" class="min-w-0 space-y-3 disabled:opacity-60"><template v-if="editor?.mode === 'share'"><label v-for="option in shareOptions" :key="option.id" class="flex items-center gap-2 text-sm"><input v-model="sharedFactories" type="checkbox" :value="option.id" :disabled="requiredSharedFactories.includes(option.id)">{{ option.shortName }}<span v-if="requiredSharedFactories.includes(option.id)" class="text-xs text-muted-foreground">来源厂区，保留可见</span></label></template><template v-else><p v-if="candidateLoading" role="status">正在读取可关联订单…</p><p v-else-if="candidateError" role="alert">{{ candidateError }}</p><input v-model="orderSearch" aria-label="搜索关联订单" placeholder="搜索客户、合同 / PO、货号" class="h-10 w-full rounded-lg border border-input bg-card px-3 text-sm"><p class="text-xs text-muted-foreground">已选择 {{ selected.length }} 条</p><label v-for="target in visibleCandidates" :key="target.fingerprint" class="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5"><input v-model="selected" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0"><span class="min-w-0"><span class="block break-words font-medium">{{ targetLabel(target) }}</span><span v-if="target.customer_po" class="mt-1 block text-xs text-muted-foreground">PO {{ target.customer_po }}</span><span v-if="targetOrderTime(target)" class="mt-1 block text-xs tabular-nums text-muted-foreground">{{ targetOrderTime(target) }}</span><span v-if="target.kind === 'SCHEDULE'" class="mt-1 block text-xs text-muted-foreground">{{ target.ordered ? '已下单，保留关联' : '未下单' }}</span></span></label><p v-if="!candidateLoading && !candidateError && !candidates.length" class="text-sm text-muted-foreground">暂无可关联订单</p></template></fieldset></div>
+      <p v-if="editor?.mode === 'associate'" class="mt-2 text-xs text-muted-foreground">{{ warehouseScope ? '可选择待建单排期或已建采购单。从同一条排期建单后，订单里可查看这份资料。' : audience === 'supplier' ? '可关联当前厂区已向本供应商开放的采购单、样板或杂单。关联不会提交采购。' : audience === 'sales' ? '新增关联选择未下单排期；已关联的排期下单后继续保留。仓库能在排期中查看资料。' : '这里只选择已建采购单、样板或杂单。已有业务排期关联由业务端维护，本次保存会保留。' }}</p>
+      <div class="my-4 min-h-0 flex-1 overflow-y-auto overscroll-contain" data-testid="asset-association-scroll">
+        <fieldset :disabled="busy || !!pending" class="min-w-0 space-y-3 disabled:opacity-60">
+          <template v-if="editor?.mode === 'share'"><label v-for="option in shareOptions" :key="option.id" class="flex items-center gap-2 text-sm"><input v-model="sharedFactories" type="checkbox" :value="option.id" :disabled="requiredSharedFactories.includes(option.id)">{{ option.shortName }}<span v-if="requiredSharedFactories.includes(option.id)" class="text-xs text-muted-foreground">来源厂区，保留可见</span></label></template>
+          <template v-else>
+            <p v-if="candidateLoading" role="status">正在读取可关联订单…</p>
+            <p v-else-if="candidateError" role="alert">{{ candidateError }}</p>
+            <input v-model="orderSearch" aria-label="搜索关联订单" :placeholder="warehouseScope ? '搜索客户、合同、货号、PO / SO 或单号' : '搜索客户、合同 / PO、货号'" class="h-10 w-full rounded-lg border border-input bg-card px-3 text-sm">
+            <p class="text-xs text-muted-foreground">已选择 {{ selected.length }} 条</p>
+            <label v-for="target in visibleCandidates" :key="target.fingerprint" class="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+              <input v-if="target.association_locked" type="checkbox" checked disabled class="mt-1 shrink-0">
+              <input v-else v-model="selected" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0">
+              <span class="min-w-0">
+                <span class="block break-words font-medium">{{ warehouseScope ? warehouseTargetLabel(target) : targetLabel(target) }}</span>
+                <span v-if="targetPurchaseReferences(target, warehouseScope)" class="mt-1 block break-words text-xs text-muted-foreground">{{ targetPurchaseReferences(target, warehouseScope) }}</span>
+                <span v-if="targetOrderTime(target)" class="mt-1 block text-xs tabular-nums text-muted-foreground">{{ targetOrderTime(target) }}</span>
+                <span v-if="target.association_locked" class="mt-1 block text-xs text-muted-foreground">原有关联保留</span>
+                <span v-else-if="!warehouseScope && target.kind === 'SCHEDULE'" class="mt-1 block text-xs text-muted-foreground">{{ target.ordered ? '已下单，保留关联' : '未下单' }}</span>
+              </span>
+            </label>
+            <p v-if="!candidateLoading && !candidateError && !candidates.length" class="text-sm text-muted-foreground">暂无可关联订单</p>
+          </template>
+        </fieldset>
+      </div>
       <p v-if="actionError" role="alert" class="mb-3 text-sm text-destructive">{{ actionError }}</p><footer class="flex shrink-0 justify-end gap-2 border-t border-border pt-4"><Button type="button" variant="outline" :disabled="busy || !!pending" @click="closeEditor(false)">取消</Button><Button type="button" :disabled="busy || candidateLoading || !!candidateError" @click="pending ? execute() : saveEditor()">{{ busy ? '保存中…' : pending ? '原样重试' : '保存' }}</Button></footer>
     </DialogContent></DialogPortal></DialogRoot>
   </section>

@@ -371,6 +371,32 @@ class CartonOrderReturnRequest(CartonOrderCancelRequest):
         return _validate_iso_date(value) if value else None
 
 
+class CartonOrderStockReturnLine(BaseModel):
+    order_line_id: str = Field(min_length=1, max_length=96)
+    location_id: str = Field(min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+
+
+class CartonOrderStockReturnRequest(CartonOrderReturnRequest):
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
+    return_date: str
+    source_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    lines: list[CartonOrderStockReturnLine] = Field(min_length=1, max_length=100)
+
+    @field_validator("return_date")
+    @classmethod
+    def valid_return_date(cls, value: str) -> str:
+        return _validate_iso_date(value)
+
+    @model_validator(mode="after")
+    def validate_return_lines(self):
+        if len(self.reason) < 4:
+            raise ValueError("退货原因至少填写四字")
+        if len({(line.order_line_id, line.location_id) for line in self.lines}) != len(self.lines):
+            raise ValueError("同一纸品仓位只能退货一次")
+        return self
+
+
 class CartonOrderSubmitRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)

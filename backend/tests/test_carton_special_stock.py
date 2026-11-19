@@ -1,7 +1,7 @@
 """Isolated service transactions: never open configured data or use HTTP sockets."""
 import json
+from dataclasses import replace
 from decimal import Decimal as D
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -17,10 +17,17 @@ from app.models.carton_special_requests import SpecialRequest, SpecialLine, Spec
 from app.schemas import carton_special_requests as schema
 from app.schemas.carton_procurement import CartonReceiptReverseRequest, CartonInventoryReversalRequest
 from app.services import carton_special_requests as special, carton_special_stock as stock, carton_procurement as core, carton_positions as positions
+from app.services.auth import AuthContext
 
 FACTORY = "huaxing"
 NOW = "2026-10-21T12:00:00+08:00"
-USER = SimpleNamespace(id="operator", display_name="测试操作员", scopes={"read", "order_write", "inventory_write", "receipt_write", "order_adjust", "closing_manage"})
+USER = AuthContext(
+    id="operator", username="operator", display_name="测试操作员", roles=(), role_codes=(),
+    permissions=frozenset(f"carton_procurement:{action}" for action in (
+        "read", "order_write", "inventory_write", "receipt_write", "order_adjust", "closing_manage",
+    )),
+    factory_scopes=(FACTORY,), department_scopes=("pmc-warehouse",),
+)
 REAL_DETAIL = special.detail
 
 
@@ -35,7 +42,10 @@ def db(monkeypatch):
         core._lock_receipt_factory(db, factory)
         return user  # IAM identity is synthetic; factory serialization/refresh is real.
     monkeypatch.setattr(special, "locked_actor", locked_actor)
-    monkeypatch.setattr(special, "allowed", lambda user, factory, key: factory == FACTORY and key in user.scopes)
+    def allowed(user, factory, key):
+        return factory == FACTORY and f"carton_procurement:{key}" in user.permissions
+
+    monkeypatch.setattr(special, "allowed", allowed)
     monkeypatch.setattr(special, "notify", lambda *args, **kwargs: None)
     monkeypatch.setattr(core, "now_text", lambda: NOW)
     monkeypatch.setattr(core, "ensure_receipt_operation", lambda *args: None)
@@ -44,8 +54,16 @@ def db(monkeypatch):
     from app.services import auth
     monkeypatch.setattr(auth, "authorization_decision", lambda *args: (True, "test-fixture"))
     from app.services import carton_customer_assignment
-    monkeypatch.setattr(carton_customer_assignment, "allowed", lambda user, factory, key: factory == FACTORY and key in user.scopes)
-    monkeypatch.setattr(special, "detail", lambda db, user, factory, identifier, **kwargs: stock.summary(db.get(SpecialRequest, identifier)))
+    monkeypatch.setattr(carton_customer_assignment, "authorization_decision", lambda user, permission, factory, department: (
+        factory == FACTORY and permission in user.permissions, "test-fixture", (), "",
+    ))
+    monkeypatch.setattr(carton_customer_assignment, "allowed", allowed)
+    def detail(db, user, factory, identifier, **kwargs):
+        if kwargs.get("receiving"):
+            return REAL_DETAIL(db, user, factory, identifier, mark_assets_by_order={}, **kwargs)
+        return stock.summary(db.get(SpecialRequest, identifier))
+
+    monkeypatch.setattr(special, "detail", detail)
     with Session(engine, autoflush=False, expire_on_commit=False) as session:
         session.add(CartonSupplier(id="supplier", factory_id=FACTORY, supplier_code="HEYUAN-DONGKANG",
             supplier_name="测试供应商", status="ACTIVE", created_at=NOW, updated_at=NOW))
@@ -63,41 +81,41 @@ def command(row=None, **extra):
     return {"factory_id": FACTORY, "request_id": uuid4().hex, "expected_revision": row.revision if row else 0, **extra}
 
 
-def source(db, *, kind="SAMPLE", allocations=True, quantity="100", price="2"):
-    row = SpecialRequest(id="parent", factory_id=FACTORY, supplier_id="supplier", request_no="SP-PARENT",
+def source(db, *, kind="SAMPLE", allocations=True, quantity="100", price="2", suffix="", at=NOW):
+    row = SpecialRequest(id="parent"+suffix, factory_id=FACTORY, supplier_id="supplier", request_no="SP-PARENT"+suffix,
         kind=kind, title="测试需求", requester_name="测试人", purpose="", required_date="2026-10-20", status="COMPLETED",
         revision=1, current_version_id="", quote_version_id="", pricing_kind="CHARGEABLE", promised_date="2026-10-20",
-        created_by=USER.id, created_at=NOW, updated_at=NOW, origin="INTERNAL")
+        created_by=USER.id, created_at=at, updated_at=at, origin="INTERNAL")
     db.add(row); db.flush()
-    paper = SpecialLine(id="paper", factory_id=FACTORY, request_id=row.id, line_no=1,
+    paper = SpecialLine(id="paper"+suffix, factory_id=FACTORY, request_id=row.id, line_no=1,
         **{key: value for key, value in paper_input(quantity=D(quantity)).items() if key != "mark_mode"}, unit_price=D(price), mark_mode="NONE")
     db.add(paper); db.flush()
     special.version(db, USER, row, "SEND", execution=True)
-    shipment = SpecialShipment(id="shipment", factory_id=FACTORY, supplier_id="supplier", request_id=row.id,
-        version_id=row.current_version_id, delivery_note_no="NOTE", delivery_date="2026-10-20", created_by=USER.id, created_at=NOW)
+    shipment = SpecialShipment(id="shipment"+suffix, factory_id=FACTORY, supplier_id="supplier", request_id=row.id,
+        version_id=row.current_version_id, delivery_note_no="NOTE"+suffix, delivery_date="2026-10-20", created_by=USER.id, created_at=at)
     db.add(shipment); db.flush()
-    shipped = SpecialShipmentLine(id="shipped", factory_id=FACTORY, shipment_id=shipment.id, request_line_id=paper.id,
+    shipped = SpecialShipmentLine(id="shipped"+suffix, factory_id=FACTORY, shipment_id=shipment.id, request_line_id=paper.id,
         quantity=D(quantity), snapshot_json=special.pack(special.line_out(paper) | {"kind": kind, "pricing_kind": "CHARGEABLE",
             "customer_code": "", "customer_name": "", "request_no": row.request_no}))
     db.add(shipped); db.flush()
-    receipt = CartonReceipt(id="receipt", factory_id=FACTORY, receipt_no="R1", delivery_note_no="NOTE#SP", delivery_date="2026-10-20",
+    receipt = CartonReceipt(id="receipt"+suffix, factory_id=FACTORY, receipt_no="R1"+suffix, delivery_note_no="NOTE#SP"+suffix, delivery_date="2026-10-20",
         acceptance_date="2026-10-20", supplier_id="supplier", supplier_name_snapshot="测试供应商", status="POSTED", revision=2,
         created_by=USER.id, created_by_name=USER.display_name, confirmed_by=USER.id, confirmed_by_name=USER.display_name,
-        created_at=NOW, updated_at=NOW, confirmed_at=NOW)
+        created_at=at, updated_at=at, confirmed_at=at)
     db.add(receipt); db.flush()
     loc = positions.create_location(db, FACTORY, "测试仓", "A")
     marker = "__SAMPLE__" if kind == "SAMPLE" else "__WORKSHOP_MISC__"
-    receipt_paper = CartonReceiptLine(id="receipt-paper", factory_id=FACTORY, receipt_id=receipt.id, line_no=1, source_type="AD_HOC", order_line_id=None,
+    receipt_paper = CartonReceiptLine(id="receipt-paper"+suffix, factory_id=FACTORY, receipt_id=receipt.id, line_no=1, source_type="AD_HOC", order_line_id=None,
         customer_code=marker, customer_name="测试需求", contract_no="", item_no=paper.item_no, packaging_type=paper.packaging_type,
         paper_quality=paper.paper_quality, specification=core._unordered_specification(paper.specification, "cm"),
         delivered_quantity=D(quantity), received_quantity=D(quantity), damaged_quantity=0, rejected_quantity=0, unusable_quantity=0,
         effective_quantity=D(quantity), unit="个", unit_price=D(price), currency="CNY", location="",
         location_allocations_json=special.pack([{"location_id": loc.id, "quantity": quantity}]) if allocations else "[]")
     db.add(receipt_paper); db.flush()
-    db.add(SpecialReceiptLink(id="link", factory_id=FACTORY, shipment_line_id=shipped.id, receipt_line_id=receipt_paper.id)); db.flush()
-    movement = Movement(id="incoming", **{key: getattr(receipt_paper, key) for key in ("factory_id", "order_line_id", "customer_code", "customer_name", "contract_no", "item_no", "packaging_type", "paper_quality", "specification", "unit", "unit_price", "currency")},
-        movement_type="INBOUND", quantity=D(quantity), location="", document_no="NOTE", source_type="RECEIPT", source_id=receipt.id,
-        source_line_id=receipt_paper.id, actor_user_id=USER.id, actor_name=USER.display_name, occurred_at=NOW)
+    db.add(SpecialReceiptLink(id="link"+suffix, factory_id=FACTORY, shipment_line_id=shipped.id, receipt_line_id=receipt_paper.id)); db.flush()
+    movement = Movement(id="incoming"+suffix, **{key: getattr(receipt_paper, key) for key in ("factory_id", "order_line_id", "customer_code", "customer_name", "contract_no", "item_no", "packaging_type", "paper_quality", "specification", "unit", "unit_price", "currency")},
+        movement_type="INBOUND", quantity=D(quantity), location="", document_no="NOTE"+suffix, source_type="RECEIPT", source_id=receipt.id,
+        source_line_id=receipt_paper.id, actor_user_id=USER.id, actor_name=USER.display_name, occurred_at=at)
     positions.post(db, movement, allocations=[{"location_id": loc.id, "quantity": quantity}] if allocations else None)
     core._audit(db, USER, FACTORY, "RECEIPT_CONFIRMED", "carton_receipt", receipt.id)
     db.commit()
@@ -236,7 +254,7 @@ def test_unknown_cost_or_changed_parent_material_is_blocked(db):
 def test_stale_fingerprint_atomic_no_debit_and_live_actor_before_replay(db):
     row, _, _, _, incoming, loc = source(db)
     result, payload = submit(db, row)
-    denied = SimpleNamespace(id=USER.id, display_name=USER.display_name, scopes={"read", "order_write"})
+    denied = replace(USER, permissions=frozenset({"carton_procurement:read", "carton_procurement:order_write"}))
     with pytest.raises(HTTPException) as err:
         stock.submit(db, USER, row.id, payload, refresh_actor=lambda: denied)
     assert err.value.status_code == 403
@@ -629,3 +647,174 @@ def test_external_special_feedback_and_unified_note_show_free_settlement_not_sto
     frozen = db.scalar(select(SpecialShipmentLine).join(SpecialShipment, SpecialShipment.id == SpecialShipmentLine.shipment_id)
         .where(SpecialShipment.request_id == child.id))
     assert D(json.loads(frozen.snapshot_json)["unit_price"]) == 0  # Carrying cost was never copied into vendor evidence.
+
+
+def issue_from_pool(db, source_movement, location, quantity):
+    from app.schemas.carton_procurement import CartonInventoryMovementCreate
+
+    return core.create_inventory_movement(db, CartonInventoryMovementCreate(
+        factory_id=FACTORY, request_id=uuid4().hex, reference_movement_id=source_movement.id,
+        movement_type="OUTBOUND", issue_kind="USAGE", quantity=quantity, location_id=location.id,
+        document_no="WORKSHOP-ISSUE", reason="测试领用",
+    ), USER)
+
+
+def add_legacy_receipt_to_pool(db, incoming, loc):
+    fields = ("factory_id", "order_line_id", "customer_code", "customer_name", "contract_no", "item_no",
+              "packaging_type", "paper_quality", "specification", "unit", "unit_price", "currency")
+    legacy = Movement(id="legacy-in", **{key: getattr(incoming, key) for key in fields},
+        movement_type="INBOUND", quantity=D(10), location="", document_no="LEGACY-ONLY",
+        source_type="RECEIPT", source_id="legacy-receipt", source_line_id="legacy-line",
+        actor_user_id=USER.id, actor_name=USER.display_name, occurred_at="2026-10-21T13:00:00+08:00")
+    positions.post(db, legacy, location_id=loc.id)
+    db.commit()
+
+
+def test_inventory_report_finds_received_misc_request_by_actual_number(db, monkeypatch):
+    from app.services.carton_inventory_report import inventory_report
+    from app.services.carton_order_timeline import order_timeline
+
+    row, _, _, _, incoming, loc = source(db, kind="WORKSHOP_MISC")
+    before = inventory_report(db, FACTORY, search="sp-parent")
+    assert len(before.order_rows) == 1
+    assert before.order_rows[0].source_request.request_no == row.request_no
+    assert before.order_rows[0].source_request.kind == "WORKSHOP_MISC"
+    assert (before.order_rows[0].inbound_quantity, before.order_rows[0].outbound_quantity,
+            before.order_rows[0].ending_quantity) == (100, 0, 100)
+
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-22T13:00:00+08:00")
+    issue = issue_from_pool(db, incoming, loc, "15")
+    report = inventory_report(db, FACTORY, search="SP-PARENT", date_from="2026-10-22", date_to="2026-10-22")
+    assert len(report.order_rows) == 1
+    summary = report.order_rows[0]
+    assert (summary.opening_quantity, summary.inbound_quantity, summary.outbound_quantity,
+            summary.ending_quantity, summary.current_usage_quantity) == (100, 0, 15, 85, 15)
+    assert not summary.balance_unconfirmed and not summary.positions_shared
+    assert [D(part["quantity"]) for part in summary.current_positions] == [85]
+    assert [(move.id, move.source_request.id) for move in report.movements] == [(issue.id, row.id)]
+    timeline = order_timeline(db, FACTORY, inventory_key=summary.key).events
+    assert [(event.event_type, D(event.quantity_change)) for event in timeline if event.quantity_change] == [
+        ("INBOUND", 100), ("OUTBOUND", -15)]
+    assert not inventory_report(db, "huadeng", search="SP-PARENT").order_rows
+
+
+def test_inventory_report_keeps_mixed_request_stock_and_unattributed_issues_separate(db, monkeypatch):
+    from app.services.assistant.cartons import inventory_out, totals
+    from app.services.carton_inventory_report import inventory_report
+    from app.services.carton_order_timeline import order_timeline
+
+    parent, _, _, _, incoming, loc = source(db, kind="WORKSHOP_MISC")
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-21T12:01:00+08:00")
+    replenished, _ = submit(db, parent)
+    child = db.get(SpecialRequest, replenished["replenishment_request"]["id"])
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-21T12:03:00+08:00")
+    child_receipt = receive_child(db, child, loc)
+    add_legacy_receipt_to_pool(db, incoming, loc)
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-22T09:00:00+08:00")
+    issue = issue_from_pool(db, incoming, loc, "7")
+
+    complete = inventory_report(db, FACTORY, search="TEST")
+    summaries = {item.source_request.id if item.source_request else item.unattributed: item for item in complete.order_rows}
+    assert set(summaries) == {parent.id, child.id, True, False}
+    assert (summaries[parent.id].inbound_quantity, summaries[parent.id].outbound_quantity) == (100, 20)
+    assert (summaries[child.id].inbound_quantity, summaries[child.id].outbound_quantity) == (20, 0)
+    assert (summaries[False].inbound_quantity, summaries[True].outbound_quantity) == (10, 7)
+    assert len(complete.movements) == 5
+    assert sum(item.ending_quantity for item in complete.order_rows) == 103
+    assert all(item.positions_shared and not item.current_positions for item in summaries.values())
+    assert summaries[parent.id].balance_unconfirmed and summaries[child.id].balance_unconfirmed
+
+    earlier = inventory_report(db, FACTORY, search=parent.request_no, date_to="2026-10-21")
+    assert earlier.order_rows[0].ending_quantity == 80 and not earlier.order_rows[0].balance_unconfirmed
+    later = inventory_report(db, FACTORY, search=parent.request_no, date_from="2026-10-23")
+    assert later.order_rows[0].opening_unconfirmed and later.order_rows[0].balance_unconfirmed
+    selected = inventory_report(db, FACTORY, search=child.request_no)
+    assert [row.source_request.id for row in selected.order_rows] == [child.id]
+    assert [row.id for row in selected.movements] == [child_receipt.id]
+    assert {event.id for event in order_timeline(db, FACTORY, inventory_key=summaries[True].key).events} == {
+        f"movement:{issue.id}"}
+    assistant = inventory_out(selected.order_rows[0])
+    assert assistant["source_request_no"] == child.request_no
+    assert assistant["ending_quantity"] is None and assistant["available_quantity"] is None
+    assert totals([assistant], "inventory", {})["ending_quantity[个]"]["status"] == "unknown"
+
+
+def test_inventory_report_reverses_special_debits_with_the_original_request(db, monkeypatch):
+    from app.services.carton_inventory_report import inventory_report
+
+    parent, _, _, _, _, _ = source(db, kind="WORKSHOP_MISC")
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-21T12:01:00+08:00")
+    result, _ = submit(db, parent)
+    child = db.get(SpecialRequest, result["replenishment_request"]["id"])
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-22T09:00:00+08:00")
+    stock.undo(db, USER, child.id, schema.Delete(**command(child, reason="测试撤销原补单")),
+        refresh_actor=lambda: USER)
+
+    report = inventory_report(db, FACTORY, search=parent.request_no, date_from="2026-10-22")
+    assert len(report.order_rows) == 1
+    row = report.order_rows[0]
+    assert (row.opening_quantity, row.inbound_quantity, row.outbound_quantity, row.ending_quantity) == (80, 0, -20, 100)
+    assert not row.balance_unconfirmed
+    movement = report.movements[0]
+    assert movement.source_request.id == parent.id and movement.flow_category == "OUTBOUND"
+    assert movement.reversal_of_movement_id == result["movement_ids"][0]
+
+
+def test_inventory_report_timeline_keeps_single_source_and_mixed_pool_relocations(db, monkeypatch):
+    from app.schemas.carton_positions import PositionTransfer
+    from app.services.carton_inventory_report import inventory_report
+    from app.services.carton_order_timeline import order_timeline
+
+    parent, _, _, _, incoming, loc = source(db, kind="WORKSHOP_MISC")
+    target = positions.create_location(db, FACTORY, "测试仓", "B")
+
+    def move(at, note):
+        monkeypatch.setattr(core, "now_text", lambda: at)
+        current = next(row for row in positions.position_balances(db, FACTORY) if row.location_id == loc.id)
+        positions.transfer(db, PositionTransfer(factory_id=FACTORY, request_id=uuid4().hex,
+            position_key=current.position_key, expected_position_revision=current.position_revision,
+            location_id=target.id, quantity=D(5), note=note), USER)
+
+    move("2026-10-21T12:30:00+08:00", "单一来源调仓")
+    add_legacy_receipt_to_pool(db, incoming, loc)
+    move("2026-10-21T14:00:00+08:00", "混存后调仓")
+
+    row = inventory_report(db, FACTORY, search=parent.request_no).order_rows[0]
+    assert (row.inbound_quantity, row.outbound_quantity, row.ending_quantity) == (100, 0, 100)
+    factory_moves = [event for event in order_timeline(db, FACTORY).events
+                     if event.event_type == "INVENTORY_LOCATION_CHANGED"]
+    assert [event.reason for event in factory_moves] == ["单一来源调仓", "混存后调仓"]
+    assert all(event.quantity_change is None for event in factory_moves)
+    assert factory_moves[0].inventory_key == row.key
+    assert factory_moves[1].inventory_key.endswith('"UNATTRIBUTED"]')
+    assert "调仓归属待核对" in factory_moves[1].description
+    order_moves = [event for event in order_timeline(db, FACTORY, inventory_key=row.key).events
+                   if event.event_type == "INVENTORY_LOCATION_CHANGED"]
+    assert [event.reason for event in order_moves] == ["单一来源调仓"]
+
+
+def test_inventory_report_starts_new_attribution_after_mixed_pool_is_emptied(db, monkeypatch):
+    from app.services.carton_inventory_report import inventory_report
+    from app.services.carton_order_timeline import order_timeline
+
+    first, _, _, _, incoming, loc = source(db, kind="WORKSHOP_MISC", quantity="10")
+    source(db, kind="WORKSHOP_MISC", quantity="10", suffix="-B", at="2026-10-21T13:00:00+08:00")
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-22T09:00:00+08:00")
+    ambiguous = issue_from_pool(db, incoming, loc, "20")
+    resumed, _, _, _, resumed_in, _ = source(
+        db, kind="WORKSHOP_MISC", quantity="10", suffix="-C", at="2026-10-23T09:00:00+08:00")
+    monkeypatch.setattr(core, "now_text", lambda: "2026-10-24T09:00:00+08:00")
+    certain = issue_from_pool(db, resumed_in, loc, "3")
+
+    report = inventory_report(db, FACTORY, search=resumed.request_no, date_from="2026-10-24")
+    summary = report.order_rows[0]
+    assert (summary.opening_quantity, summary.outbound_quantity, summary.ending_quantity) == (10, 3, 7)
+    assert not summary.opening_unconfirmed and not summary.balance_unconfirmed
+    assert summary.current_usage_quantity == 3 and summary.current_usage_status == "PARTIAL"
+    assert not summary.positions_shared and [D(item["quantity"]) for item in summary.current_positions] == [7]
+    assert [move.id for move in report.movements] == [certain.id]
+    timeline = order_timeline(db, FACTORY, inventory_key=summary.key)
+    assert [(D(event.quantity_before), D(event.quantity_after)) for event in timeline.events if event.quantity_change] == [
+        (0, 10), (10, 7)]
+    assert inventory_report(db, FACTORY, search=first.request_no).order_rows[0].balance_unconfirmed
+    assert next(item for item in inventory_report(db, FACTORY).movements if item.id == ambiguous.id).unattributed

@@ -10,7 +10,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.carton_procurement import CartonAuditEvent, CartonOrder, CartonPurchaseOrderIssue
 from app.models.carton_special_requests import SpecialRequest, SpecialVersion
@@ -23,9 +23,13 @@ def response_state(db, factory, source_kind, source_id):
     return response_states(db, factory, source_kind, [source_id])[source_id]
 
 
+def _pending_response():
+    return {"status": "PENDING", "reason": "", "promised_date": "", "read": False, "responded_at": "",
+            "responded_by": "", "acceptance_id": "", "read_at": "", "history": []}
+
+
 def response_states(db, factory, source_kind, source_ids):
-    result = {identifier: {"status": "PENDING", "reason": "", "promised_date": "", "read": False,
-              "responded_at": "", "responded_by": "", "read_at": "", "history": []} for identifier in source_ids}
+    result = {identifier: _pending_response() for identifier in source_ids}
     if not result:
         return result
     events = db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
@@ -45,7 +49,7 @@ def response_states(db, factory, source_kind, source_ids):
         else:
             state.update(status=saved["status"], reason=saved.get("reason", ""),
                 promised_date=saved.get("promised_date", ""), responded_at=event.created_at,
-                responded_by=event.actor_name)
+                responded_by=event.actor_name, acceptance_id=event.id if saved["status"] == "ACCEPTED" else "")
     return result
 
 
@@ -54,25 +58,51 @@ def record_response(db, user, factory, source_kind, source_id, status, *, reason
         {"source_kind": source_kind, "status": status, "reason": reason, "promised_date": promised_date})
 
 
+def special_confirmations(db, factory, rows):
+    """Resolve current responses and any legacy quote evidence for a batch of requests."""
+    version_ids = {row.current_version_id for row in rows if row.current_version_id}
+    owners = {}
+    if version_ids:
+        owners = dict(db.execute(select(SpecialVersion.id, SpecialVersion.request_id).where(
+            SpecialVersion.factory_id == factory, SpecialVersion.id.in_(version_ids),
+            SpecialVersion.request_id.in_([row.id for row in rows]))).all())
+    states = response_states(db, factory, "SPECIAL", list(owners))
+    result, legacy = {}, []
+    for row in rows:
+        valid_version = row.current_version_id and owners.get(row.current_version_id) == row.id
+        state = dict(states[row.current_version_id]) if valid_version else _pending_response()
+        state["version_id"] = row.current_version_id if valid_version else ""
+        result[row.id] = state
+        if row.status != "CANCELLED" and (row.origin == "SUPPLIER_EXTRA" or row.kind == "SUPPLIER_GIFT"):
+            state.update(status="SUPPLIER_ORIGIN", acceptance_id="")
+        elif (valid_version or not row.current_version_id) and state["status"] == "PENDING" and row.quote_version_id:
+            legacy.append(row)
+    if not legacy:
+        return result
+    quotes = {v.id: v for v in db.scalars(select(SpecialVersion).where(
+        SpecialVersion.factory_id == factory, SpecialVersion.action == "QUOTE",
+        SpecialVersion.id.in_([row.quote_version_id for row in legacy])))}
+    latest = select(SpecialVersion.request_id, func.max(SpecialVersion.revision).label("revision")).where(
+        SpecialVersion.factory_id == factory, SpecialVersion.request_id.in_([row.id for row in legacy]),
+        SpecialVersion.action.in_(["SEND", "ADJUSTED", "MATERIAL_CHANGED", "CANCEL"])
+    ).group_by(SpecialVersion.request_id).subquery()
+    requirements = {v.request_id: v for v in db.scalars(select(SpecialVersion).join(latest,
+        (SpecialVersion.request_id == latest.c.request_id) & (SpecialVersion.revision == latest.c.revision)
+    ).where(SpecialVersion.factory_id == factory))}
+    for row in legacy:
+        quote, requirement = quotes.get(row.quote_version_id), requirements.get(row.id)
+        if not quote or quote.request_id != row.id:
+            continue
+        if requirement and (quote.revision <= requirement.revision or
+                            json.loads(requirement.snapshot_json).get("supplier_document_after_acceptance")):
+            continue
+        result[row.id].update(status="ACCEPTED", promised_date=row.promised_date,
+            responded_by=quote.actor_name, responded_at=quote.created_at, acceptance_id=quote.id)
+    return result
+
+
 def special_confirmation(db, row):
-    state = response_state(db, row.factory_id, "SPECIAL", row.current_version_id)
-    state["version_id"] = row.current_version_id
-    # Supplier-authored extra goods do not pretend to have an internal acceptance.
-    if row.status != "CANCELLED" and (row.origin == "SUPPLIER_EXTRA" or row.kind == "SUPPLIER_GIFT"):
-        state["status"] = "SUPPLIER_ORIGIN"
-        return state
-    if state["status"] == "PENDING" and row.quote_version_id:
-        quoted = db.get(SpecialVersion, row.quote_version_id)
-        latest_requirement = db.scalar(select(SpecialVersion).where(SpecialVersion.factory_id == row.factory_id,
-            SpecialVersion.request_id == row.id,
-            SpecialVersion.action.in_(["SEND", "ADJUSTED", "MATERIAL_CHANGED", "CANCEL"]))
-            .order_by(SpecialVersion.revision.desc()).limit(1))
-        legacy_requirement = not latest_requirement or not json.loads(latest_requirement.snapshot_json).get("supplier_document_after_acceptance")
-        if quoted and quoted.action == "QUOTE" and legacy_requirement and (
-                not latest_requirement or quoted.revision > latest_requirement.revision):
-            state.update(status="ACCEPTED", promised_date=row.promised_date,
-                responded_by=quoted.actor_name, responded_at=quoted.created_at)
-    return state
+    return special_confirmations(db, row.factory_id, [row])[row.id]
 
 
 def _special_deleted(db, row):
@@ -293,6 +323,7 @@ def _task(db, user, row, version, kind, *, internal=False, projection=None):
         "is_cancellation": cancelled, "read": state["read"], "read_at": state["read_at"],
         "reason": state["reason"], "responded_by": state["responded_by"], "responded_at": state["responded_at"],
         "promised_date": state["promised_date"], "planned_date": plan, "before_date": before_date,
+        **({"acceptance_id": state["acceptance_id"]} if kind == "SPECIAL" else {}),
         "customer_due_date": customer_date, "before_customer_due_date": before_customer_date,
         "change_reason": str(after.get("change_reason") or after.get("reason") or ""),
         "created_at": created, "age_days": max(0, age_days), "overdue": pending and age_days >= 1,
@@ -388,6 +419,12 @@ def respond(db, user, payload):
     if payload.action != "READ" and row.status == "COMPLETED" and payload.source_kind != "REPLENISHMENT":
         raise HTTPException(409, "此订单已收料完成，仅保留历史回执，不补造供应商接单")
     cancelled = row.status == "CANCELLED" and payload.source_kind != "REPLENISHMENT"
+    if payload.source_kind == "SPECIAL" and payload.action == "ACCEPT":
+        confirmation = special_confirmation(db, row)
+        # An omitted receipt means this page saw no current acceptance.
+        current_receipt = confirmation["acceptance_id"] if confirmation["status"] == "ACCEPTED" else None
+        if current_receipt != payload.expected_acceptance_id:
+            raise HTTPException(409, "接单回执已变化，请刷新核对当前接单与承诺交期")
     if payload.action == "READ":
         if not response_state(db, payload.factory_id, payload.source_kind, version.id)["read"]:
             core._audit(db, user, payload.factory_id, "SUPPLIER_CHANGE_READ", "carton_supplier_change", version.id,
