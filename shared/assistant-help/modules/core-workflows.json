@@ -174,7 +174,7 @@
       {
         "path": "backend/app/services/customer_order_ledger.py",
         "symbol": "def amend",
-        "sha256": "5b523fb9c5bef4d854fbba46e9d0d034b744a97c525138efed00c684ad78e50a"
+        "sha256": "d2d71103e027536fb9107252087ab20956058dedf9e18ee136b165d5af4a6d75"
       }
     ],
     "knowledge_version": "2026.11.10-qc-source-outbox-compatible",

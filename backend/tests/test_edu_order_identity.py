@@ -129,12 +129,11 @@ def test_history_quantity_conflict_exports_separately_without_changing_history()
     assert after['ITEM待补资料']['K4'].value == 6360
 
 
-def test_batch_internal_reference_collision_is_not_confirmable():
+def test_shared_internal_reference_keeps_distinct_customer_orders():
     rows = [dict(id=f'r{i}', reference_no='EDUHX00042', contract_no=f'C{i}', product_no='I1', po_no='',
                  quantity='12', issues=[], _huaxing_customer='edu') for i in range(2)]
     service._mark_batch_duplicates(rows)
-    issue = next(i for i in rows[1]['issues'] if i['code'] == 'edu_reference_collision')
-    assert issue['can_skip'] is False
+    assert all(not r['issues'] for r in rows)
 
 
 def test_same_revision_conflicting_files_are_not_silently_replaced():
@@ -155,4 +154,5 @@ def test_shared_history_internal_reference_collision_remains_visible():
         sheet.cell(i, 8, 'F12-MS907-B3080000')
         sheet.cell(i, 11, 6360)
     row = service.create_unified_customer_preview(**preview_args(po_bytes(['C1']), wb))['rows'][0]
-    assert any(i['code'] == 'edu_reference_collision' and i['severity'] == 'warning' for i in row['issues'])
+    assert not any(i['code'] == 'edu_reference_collision' for i in row['issues'])
+    assert row['_edu_existing_order']

@@ -268,7 +268,7 @@ def merge_edu_po_results(results: Iterable[dict[str, Any]]) -> tuple[list[dict[s
                 continue
             candidates = [other for other in known if
                 edu_order_key('', other.get('customer_po')) == edu_order_key('', row['customer_po']) and
-                normalize_edu_item(other.get('item_no')) == normalize_edu_item(row.get('item_no'))]
+                str(other.get('item_no') or '').casefold() == str(row.get('item_no') or '').casefold()]
             contracts = {other['contract_no'] for other in candidates}
             customer = str(row.get('customer') or '').strip().casefold()
             same_customer = bool(customer) and all(str(other.get('customer') or '').strip().casefold() == customer for other in candidates)

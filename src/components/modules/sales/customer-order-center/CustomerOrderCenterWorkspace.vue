@@ -133,7 +133,7 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poDescription: 'EDU 文字或扫描 PDF、Excel PO（支持同 PO 修订版批量导入）',
       templateDescription: 'EDU 华兴排期底表',
       targetTemplate: 'HUAXING_EDU_NEW_ORDER_V1',
-      ruleDescription: '每条新明细续编 EDUHX，按货号分组并更新 PO订单；先匹配扣数PO，否则扣同货号最后一条绿色备料行。装箱可补录，重复单保留原号且不重复扣料。',
+      ruleDescription: '完整货号区分订单，ITEM按基础货号归组；接单表和正单评审表新单按导入顺序连续追加、统一蓝字。生产单号可手填，货期周末提前至周五，空白可保留。',
     },
     {
       code: '360',
@@ -425,7 +425,7 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
         profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
       }
       if (profile.code === 'edu') {
-        profile.ruleDescription = 'EDU 每条新明细续编 EDUHX，并同步三张排期与 PO订单。按去尾码货号归组到绿色备料行上方；先匹配扣数PO，否则扣同货号最后一条绿色行，余额允许负数。装箱可补录，重复单保留原号、不再次扣料，历史与走货资料保留。'
+        profile.ruleDescription = 'EDU保留完整货号，ITEM按基础货号归组到绿色备料行上方；接单表和正单评审表按导入顺序连续追加，新单统一蓝字。默认续编EDUHX，也可手填同一生产单号。货期周末提前至周五、验货期提前一周，空白可保留。先匹配扣数PO，否则扣同货号最后一条绿色行，重复单不再次扣料。'
       }
     }
     if (profile.code === 'zuru') {

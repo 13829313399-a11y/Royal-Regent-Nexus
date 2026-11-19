@@ -90,7 +90,7 @@ def test_grouped_insert_before_green_keeps_formula_and_historical_values():
     assert wb['ITEM表']['K7'].value == '=3000-300-300'
     assert not exporter.is_reservation_row(wb['ITEM表'], 6)
     assert exporter.is_reservation_row(wb['ITEM表'], 7)
-    assert wb['ITEM表']['H6'].value == PRODUCT
+    assert wb['ITEM表']['H6'].value == PRODUCT + '0003'
     assert wb['ITEM表']['H6'].comment.text.endswith(PRODUCT + '0003')
     assert wb['ITEM表']['M6'].value == '=K6/L6'
     assert old_formula.value == '=K4/16'
@@ -182,8 +182,8 @@ def test_linked_summary_stock_is_not_double_deducted_literal_summary_budget_is_u
         for cell in sheet[7]: cell.fill = copy(GREEN)
     exporter.export_rows(wb, [order(edu_reservation_row='6')])
     assert wb['ITEM表']['K7'].value == '=0-300'
-    assert wb['接单表']['J8'].value == '=IF(LEN(\'ITEM表\'!K7)=0,"",\'ITEM表\'!K7)'
-    assert wb['正单评审表']['J8'].value == '=0-300'
+    assert wb['接单表']['J7'].value == '=IF(LEN(\'ITEM表\'!K7)=0,"",\'ITEM表\'!K7)'
+    assert wb['正单评审表']['J7'].value == '=0-300'
 
 
 def test_po_appends_source_date_normalized_product_and_blank_price_preserving_side_notes():
@@ -196,7 +196,7 @@ def test_po_appends_source_date_normalized_product_and_blank_price_preserving_si
     assert po['F2'].value == 9.99 and po['F2'].comment.text == '价格不能覆盖'
     assert po['N3'].value == '人工价格备注'
     assert po['A4'].value == date(2026,10,9)
-    assert po['B4'].value == 'EDUHX00104' and po['C4'].value == PRODUCT
+    assert po['B4'].value == 'EDUHX00104' and po['C4'].value == PRODUCT + '0003'
     assert po['F4'].value is None
     assert po['G4'].value == '=IF(OR(E4="",F4=""),"",E4*F4)'
     assert po['C4'].comment.text.endswith(PRODUCT+'0003')

@@ -52,7 +52,7 @@ def test_native_pdf_is_supported_without_changing_caixing_dispatch(monkeypatch):
     result = edu_po_parser.parse_edu_po_file(pdf_bytes(page()), 'native.pdf')
     row, = result['rows']
     assert result['meta']['used_ocr'] is False
-    assert row['customer_po'] == '990001234' and row['item_no'] == 'F12-ZZ901-C901'
+    assert row['customer_po'] == '990001234' and row['item_no'] == 'F12-ZZ901-C9010000'
     assert row['source_item_no'] == 'F12-ZZ901-C9010000'
     assert row['quantity'] == 1200 and row['unit_price'] == 2.5 and row['amount'] == 3000
     assert row['ship_date'] == '2026-12-28' and row['inspection_date'] == '2026-12-21'
@@ -130,7 +130,7 @@ def test_unified_export_missing_pack_and_contract_are_not_gates(monkeypatch):
     book = openpyxl.load_workbook(BytesIO(output))
     sheet = book['ITEM表']
     new = next(r for r in range(4, sheet.max_row + 1) if sheet.cell(r, 6).value == '990001234')
-    assert sheet.cell(new, 8).value == 'F12-ZZ901-C901'
+    assert sheet.cell(new, 8).value == 'F12-ZZ901-C9010000'
     assert sheet.cell(new, 11).value == 1200 and sheet.cell(new, 12).value is None
     assert row['unit_price_hkd'] == '2.5' and sheet.cell(new, 4).value is None
     for name in ('接单表', '正单评审表'):
@@ -147,7 +147,7 @@ def test_unified_export_missing_pack_and_contract_are_not_gates(monkeypatch):
 def test_pdf_reconciles_only_unique_historical_contract(monkeypatch):
     wb = template('edu');ws = wb['ITEM表']
     for col, value in {4:'CONTRACT/ONE', 5:'EDUHX00123', 6:'990001234', 7:'TEST CUSTOMER',
-                       8:'F12-ZZ901-C901', 11:1200, 12:12}.items():
+                       8:'F12-ZZ901-C9010000', 11:1200, 12:12}.items():
         ws.cell(4, col, value)
     args = args_for(monkeypatch, wb=wb)
     preview = service.create_unified_customer_preview(**args)
@@ -155,7 +155,7 @@ def test_pdf_reconciles_only_unique_historical_contract(monkeypatch):
     assert row['contract_no'] == 'CONTRACT/ONE' and row['reference_no'] == 'EDUHX00123'
     assert any(i['code'] == 'duplicate_existing_order' for i in row['issues'])
     for col, value in {4:'CONTRACT/TWO', 5:'EDUHX00124', 6:'990001234', 7:'TEST CUSTOMER',
-                       8:'F12-ZZ901-C901', 11:1200, 12:12}.items(): ws.cell(5,col,value)
+                       8:'F12-ZZ901-C9010000', 11:1200, 12:12}.items(): ws.cell(5,col,value)
     output, _, preview = service.export_unified_customer_schedule(**{**args,'schedule_content':data(wb)})
     assert preview['summary']['blocked'] == 0
     assert any(i['code']=='ambiguous_edu_history' for i in preview['rows'][0]['issues'])
@@ -165,7 +165,7 @@ def test_pdf_reconciles_only_unique_historical_contract(monkeypatch):
 @pytest.mark.parametrize('currency', ['USD', 'XXX', ''])
 def test_non_hkd_never_inherits_historical_hkd_prices(monkeypatch, currency):
     wb=template('edu');ws=wb['ITEM表']
-    for col, value in {4:'OTHER',5:'EDUHX00001',6:'OTHER',7:'TEST CUSTOMER',8:'F12-ZZ901-C901',11:100,16:999}.items(): ws.cell(4,col,value)
+    for col, value in {4:'OTHER',5:'EDUHX00001',6:'OTHER',7:'TEST CUSTOMER',8:'F12-ZZ901-C9010000',11:100,16:999}.items(): ws.cell(4,col,value)
     args=args_for(monkeypatch,page(currency=currency),wb)
     row,=service.create_unified_customer_preview(**args)['rows']
     assert not row['unit_price_hkd'] and not row['amount_hkd']
@@ -205,7 +205,7 @@ def test_ambiguous_pdf_does_not_stage_duplicate_or_prevent_normal_new_order(monk
     from test_customer_order_edu_grouped_export import template as stock_template, reserve, find_row
     wb = stock_template(); ws = wb['ITEM表']; reserve(wb, 8, quantity=10000)
     for r, contract, po in [(4,'C1','990001234'), (5,'C2','990001234'), (6,'C3','990001235')]:
-        for col, value in {4:contract,5:f'EDUHX00{r:03}',6:po,7:'TEST CUSTOMER',8:'F12-ZZ901-C901',11:1200,12:12}.items():
+        for col, value in {4:contract,5:f'EDUHX00{r:03}',6:po,7:'TEST CUSTOMER',8:'F12-ZZ901-C9010000',11:1200,12:12}.items():
             ws.cell(r,col,value)
     monkeypatch.setattr(edu_po_parser, 'parse_edu_po_file', lambda content, filename:
         edu_pdf.parse_pages([page(po=filename[:-4])],filename))

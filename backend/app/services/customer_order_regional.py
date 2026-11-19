@@ -110,14 +110,40 @@ def map_huadeng(row, record, customer_code):
             row['price_basis'] = 'incomplete'  # A blank source price is not a historical-price lookup.
         row['lineage']['unit_price_hkd'] = 'Goliath Ai 方案 · USD × 7.75'
         row['customer_q'] = _text(record.get('customer_inspection_date'))
-        if row.get('requested_ship_date'):
-            code_date = date.fromisoformat(row['requested_ship_date']) - timedelta(days=10)
-            while code_date.weekday() >= 5:
-                code_date -= timedelta(days=1)
-            row['date_code'] = f'RR{code_date.timetuple().tm_yday:03d}{code_date.year % 10}'
-            row['lineage']['date_code'] = f'Goliath Ai 方案 · 走货期前10天，周末前移至{code_date.isoformat()}；节假日待复核'
-            row.setdefault('issues', []).append({'severity':'warning','code':'holiday_calendar_review','field':'date_code','message':'日期码已按走货期前10天并避开周末计算，节假日待复核。','can_skip':False})
+        recalculate_dates(row, {'requested_ship_date'})
     return row
+
+
+def recalculate_dates(row, fields):
+    """Keep customer-specific derived dates consistent with explicit corrections."""
+    from app.services.huadeng_order_legacy import casdon_schedule
+    customer = row.get('_regional_customer')
+    if customer not in {'casdon', 'goliath'}:
+        return
+    fields = set(fields)
+    if not fields & {'requested_ship_date', 'line_q', 'customer_q', 'product_no'}:
+        return
+    ship = casdon_schedule.parse_date(row.get('requested_ship_date'))
+    lineage = row.setdefault('lineage', {})
+    if customer == 'casdon':
+        if 'requested_ship_date' in fields and not fields & {'line_q', 'customer_q'}:
+            inspection = casdon_schedule._previous_weekday(ship - timedelta(days=7)) if ship else None
+            row['line_q'] = row['customer_q'] = inspection.date().isoformat() if inspection else ''
+            lineage['line_q'] = 'Casdon · 按补录走货期提前7天，周末前移至周五'
+        else:
+            field = 'line_q' if 'line_q' in fields else 'customer_q'
+            inspection = casdon_schedule.parse_date(row.get(field) if field in fields else row.get('customer_q') or row.get('line_q'))
+            if fields & {'line_q', 'customer_q'}:
+                row['line_q'] = row['customer_q'] = inspection.date().isoformat() if inspection else ''
+        if 'date_code' not in fields:
+            row['date_code'] = casdon_schedule._date_code(row.get('product_no'), inspection)
+            lineage['date_code'] = 'Casdon · 货号前3位 + ROY + 验货期前两周的年周码'
+    elif 'requested_ship_date' in fields and 'date_code' not in fields:
+        code_date = casdon_schedule._previous_weekday(ship - timedelta(days=10)) if ship else None
+        row['date_code'] = f'RR{code_date.timetuple().tm_yday:03d}{code_date.year % 10}' if code_date else ''
+        lineage['date_code'] = 'Goliath Ai 方案 · 走货期前10天，周末前移至周五；节假日待复核'
+        if code_date and not any(i.get('code') == 'holiday_calendar_review' for i in row.get('issues', [])):
+            row.setdefault('issues', []).append({'severity':'warning','code':'holiday_calendar_review','field':'date_code','message':'日期码已按走货期前10天并避开周末计算，节假日待复核。','can_skip':False})
 
 
 def map_huakang_d(row, order, line, customer_code):
