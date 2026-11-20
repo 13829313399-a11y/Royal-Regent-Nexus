@@ -52,7 +52,7 @@ def detail(factory, identity, *, full_business=False):
             qc['inspectionExecution']={k:v for k,v in (item.get('inspectionExecution') or {}).items() if k in EXECUTION_FIELDS}
             src=item.get('sourceRecord') or {}
             qc['sourceRecord']={k:src[k] for k in ('id','factory','sourceVersion','sourceRevision','shipDate','contractNo','customerCode','shippedQuantity','sourceStatus','sourceNote') if k in src}
-            qc['photos']=[{k:p[k] for k in ('id','name','caption','mime','size') if k in p} for p in item.get('photos',[]) if isinstance(p,dict)]
+            qc['photos']=[{k:p[k] for k in ('id','name','caption','mime','size','annotations') if k in p} for p in item.get('photos',[]) if isinstance(p,dict)]
             qc['reportDate']=summary_report_date(item,item.get('inspectionDate',''))
             qc['scheduleDate']=business_date(item.get('dateFrom')) or business_date(src.get('dateFrom')) if item.get('entryId') else ''
             qc['scheduleDateTo']=business_date(item.get('dateTo')) or business_date(src.get('dateTo')) or qc['scheduleDate'] if item.get('entryId') else ''
@@ -76,7 +76,7 @@ def detail(factory, identity, *, full_business=False):
                 events=summary.execute('SELECT * FROM journal.changes WHERE entry_id=? ORDER BY id DESC',(entry_id,)).fetchall()
                 for event in events:
                     delta=json.loads(event['diff']) if 'diff' in event.keys() else {}
-                    safe_delta={k:v for k,v in delta.items() if k in QC_FIELDS or k in ('reason','expectedRevision','legacyCompleted') or k.startswith('inspectionExecution.') and k.split('.',1)[1] in EXECUTION_FIELDS}
+                    safe_delta={k:v for k,v in delta.items() if k in QC_FIELDS or k in ('reason','expectedRevision','legacyCompleted','photoName','photoMarks') or k.startswith('inspectionExecution.') and k.split('.',1)[1] in EXECUTION_FIELDS}
                     value=dict(id=event['id'],revision=event['revision'],action=event['action'],actor=json.loads(event['actor']),at=event['created_at'],location=event['location'] if 'location' in event.keys() else '',changes=safe_delta)
                     output['changes'].append(value)
                     if event['action'] in REVIEW_ACTIONS:output['audit'].append(value)
