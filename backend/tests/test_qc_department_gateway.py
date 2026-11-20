@@ -248,6 +248,31 @@ def test_removed_schedule_download_is_unavailable(monkeypatch):
         assert calls == []
 
 
+def test_inspection_print_uses_actor_factory_and_export_permission(monkeypatch):
+    with make_client(monkeypatch) as client:
+        calls = install_upstream(monkeypatch)
+        service = importlib.import_module('app.services.qc_inspection_print')
+        render_calls = []
+        def preview(factory, body):
+            render_calls.append((factory, body))
+            return {'count': 1}
+
+        monkeypatch.setattr(service, 'preview', preview)
+        login_as(client, 'qc_inspector')
+        health = '/api/qc-department/huaxing/api/health'
+        base = client.get(health).json()['frame_url']
+        target = base + 'api/inspection-sheet/print-preview'
+        body = {'template': '各客验货排期', 'entries': [{'id': 'a' * 32, 'revision': 0}]}
+        calls.clear()
+        response = client.post(target, json=body)
+        assert response.status_code == 200 and response.json() == {'count': 1}
+        assert response.headers['cache-control'] == 'no-store'
+        assert client.post(target, json=body, headers={'Sec-Fetch-Site': 'cross-site'}).status_code == 403
+        assert client.post(target.replace('/huaxing/', '/huakang-a/'), json=body).status_code == 403
+        assert render_calls == [('huaxing', body)]
+        assert calls == []
+
+
 def test_real_sessions_inspector_submit_supervisor_review_complete_workflow(monkeypatch):
     from decimal import Decimal
     import base64

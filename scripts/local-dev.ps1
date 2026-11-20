@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Status', 'Stop')][string]$Action = 'Start',
+    [ValidateSet('Start', 'Status', 'Stop', 'RestartApi')][string]$Action = 'Start',
     [string]$Python,
     [ValidateRange(1024, 65535)][int]$ApiPort = 8000,
     [ValidateRange(1024, 65535)][int]$FrontendPort = 5173,
@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backendRoot = Join-Path $projectRoot 'backend'
+$apiPythonOptions = @('-X', 'utf8')
 $viteScript = Join-Path $projectRoot 'node_modules\vite\bin\vite.js'
 if ($ApiPort -eq $FrontendPort) { throw 'API and frontend must use different ports.' }
 if (-not $RuntimeDirectory) { $RuntimeDirectory = Join-Path $projectRoot '.local-dev' }
@@ -50,6 +51,13 @@ function Test-Api {
         $response = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/health" -TimeoutSec 2
         return $response.status -eq 'ok' -and $response.service -eq 'Royal Regent Nexus API'
     } catch { return $false }
+}
+
+function Start-Api {
+    # The API loads bundled UTF-8 templates at import time, including on Chinese Windows.
+    $apiArguments = $apiPythonOptions + @('-m', 'uvicorn', 'app.main:app', '--app-dir', $backendRoot, '--host', '127.0.0.1', '--port', "$ApiPort")
+    $process = Start-ServiceProcess 'api' $Python $apiArguments $backendRoot
+    Wait-Ready 'api' $process { Test-Api } 45
 }
 
 function Test-Frontend {
@@ -185,6 +193,33 @@ print(json.dumps(dict(storage=str(Path(settings.document_tools_storage_dir).reso
     if (-not $backendConfig.enabled) { throw 'DOCUMENT_TOOLS_ENABLED is disabled. The launcher does not change feature flags.' }
 
     $apiOwner = Get-Listener $ApiPort
+    if ($Action -eq 'RestartApi') {
+        $record = $services['api']
+        $tracked = Test-TrackedProcess $record
+        if ($tracked) {
+            if ($record.CommandLine -notmatch '\buvicorn\s+app\.main:app\b') {
+                throw 'The tracked process is not the Royal Regent Nexus API.'
+            }
+            # The venv launcher can own a child Python process that holds the listening socket.
+            if ($apiOwner -and $apiOwner.ProcessId -ne $record.ProcessId -and $apiOwner.ParentProcessId -ne $record.ProcessId) {
+                throw "Port $ApiPort belongs to a different process. See -Action Status."
+            }
+            Push-Location -LiteralPath $backendRoot
+            try {
+                & $Python @apiPythonOptions -c 'from app.main import app'
+                if ($LASTEXITCODE -ne 0) { throw 'The replacement API could not load. The current API is still running.' }
+            } finally { Pop-Location }
+            & taskkill.exe /PID $record.ProcessId /T /F | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Unable to stop the tracked local API (PID $($record.ProcessId))." }
+            $services.Remove('api')
+            Save-State
+        } elseif ($apiOwner -or (Test-Api)) {
+            throw "The API on port $ApiPort does not match the saved launcher identity."
+        }
+        Start-Api
+        Write-Host "Local API ready: http://127.0.0.1:$ApiPort/health"
+        return
+    }
     $frontendOwner = Get-Listener $FrontendPort
     $worker = Get-Worker
     $apiOnline = Test-Api
@@ -227,8 +262,7 @@ print(json.dumps(dict(storage=str(Path(settings.document_tools_storage_dir).reso
     if ($backendConfig.office_enabled -and -not (Test-Office)) { throw 'Online document service is unavailable. Check its configured private connection.' }
 
     if (-not $apiOnline) {
-        $process = Start-ServiceProcess 'api' $Python @('-m', 'uvicorn', 'app.main:app', '--app-dir', $backendRoot, '--host', '127.0.0.1', '--port', "$ApiPort") $backendRoot
-        Wait-Ready 'api' $process { Test-Api } 45
+        Start-Api
     } else { Write-Host "Reusing healthy API (PID $($apiOwner.ProcessId))." }
 
     if (-not $worker) {

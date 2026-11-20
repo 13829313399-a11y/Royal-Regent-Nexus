@@ -2,12 +2,13 @@ from __future__ import annotations
 from app.services.carton_quantity import rule as paper_rule, field as paper_field
 
 import json
+from copy import copy
 from datetime import datetime
 from io import BytesIO
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, range_boundaries
 
 from app.services.carton_dimensions import specification_for_display
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonPurchaseOrderIssue
@@ -29,6 +30,28 @@ PURCHASE_ORDER_TYPE_LABELS = {
     "REDUCE": "减单通知",
     "ADJUSTMENT": "采购变更单",
 }
+
+
+def _add_process_notes(sheet, header_row, notes):
+    """Append to the printable detail only when an order paper contains instructions."""
+    if not notes:
+        return
+    column = sheet.max_column + 1
+    letter = get_column_letter(column)
+    header = sheet.cell(header_row, column, "工艺备注")
+    header._style = copy(sheet.cell(header_row, column - 1)._style)
+    sheet.column_dimensions[letter].width = 36
+    for row, note in notes:
+        cell = sheet.cell(row, column, note)
+        cell.data_type = "s"
+        cell._style = copy(sheet.cell(row, column - 1)._style)
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        lines = sum(max(1, (len(part) + 16) // 17) for part in note.splitlines())
+        sheet.row_dimensions[row].height = max(sheet.row_dimensions[row].height or 15, min(409, lines * 16 + 6))
+    if sheet.auto_filter.ref:
+        first_column, first_row, _, last_row = range_boundaries(sheet.auto_filter.ref)
+        sheet.auto_filter.ref = f"{get_column_letter(first_column)}{first_row}:{letter}{last_row}"
+    sheet.print_area = f"A1:{letter}{sheet.max_row}"
 
 
 def _known_number(value):
@@ -224,6 +247,7 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.print_area = f"A1:J{generated_row}"
+    _add_process_notes(sheet, 9, [(first_line_row + i, line["process_note"]) for i, line in enumerate(lines) if line.get("process_note")])
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
@@ -288,6 +312,7 @@ def build_purchase_order_issue_batch_workbook(
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
+    process_notes = []
     current_row = 6
     has_cancellation = False
     for issue_index, issue in enumerate(issues, start=1):
@@ -296,6 +321,8 @@ def build_purchase_order_issue_batch_workbook(
         order = snapshot["order"]
         document_label = _issue_document_label(issue, snapshot)
         for line in snapshot["lines"]:
+            if line.get("process_note"):
+                process_notes.append((current_row, line["process_note"]))
             values = [
                 issue_index,
                 issue.document_no,
@@ -346,6 +373,7 @@ def build_purchase_order_issue_batch_workbook(
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.auto_filter.ref = f"A5:Q{current_row - 1}"
     sheet.print_area = f"A1:Q{notice_row}"
+    _add_process_notes(sheet, 5, process_notes)
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
@@ -504,6 +532,7 @@ def build_purchase_order_workbook(
         sheet.column_dimensions[get_column_letter(index)].width = width
 
     sheet.print_area = f"A1:H{notice_row}"
+    _add_process_notes(sheet, 9, [(first_line_row + i, line.process_note) for i, line in enumerate(lines) if line.process_note])
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
@@ -634,8 +663,11 @@ def build_combined_purchase_order_workbook(
         horizontal="center" if column in {1, 7, 8, 15} else "right" if column in {9, 13, 14} else "left",
         vertical="center", wrap_text=column in {3, 4, 5, 6, 12},
     ) for column in range(1, 17)}
+    process_notes = []
     for order_index, (order, lines) in enumerate(orders, start=1):
         for line_index, line in enumerate(lines, start=1):
+            if line.process_note:
+                process_notes.append((current_row, line.process_note))
             values = [
                 order_index,
                 order.order_no,
@@ -721,6 +753,7 @@ def build_combined_purchase_order_workbook(
 
     sheet.auto_filter.ref = f"A7:P{current_row - 1}"
     sheet.print_area = f"A1:P{notice_row}"
+    _add_process_notes(sheet, 7, process_notes)
     sheet.print_title_rows = "1:7"
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"

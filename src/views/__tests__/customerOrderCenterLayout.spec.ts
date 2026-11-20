@@ -101,6 +101,17 @@ describe('customer order center static frontend', () => {
     return wrapper
   }
 
+  it('shows unmatched cancellation reminders without claiming new saved orders', async () => {
+    customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 0,
+      existing_count: 0, reconciled_count: 0, unapplied_count: 1,
+      warnings: ['台账未唯一匹配未走货原订单，取消未应用；未新增订单。'] })
+    const wrapper = await mountDickieExportPreview({ quantityConflict: false, otherBlocker: false })
+    onTestFinished(() => wrapper.unmount())
+    await wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('台账未唯一匹配未走货原订单')
+  })
+
   it.each([false, true])('saves and exports quantity differences and other reminders without a waiver (%s)', async (otherBlocker) => {
     customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 1, existing_count: 0, reconciled_count: 0, advisory_count: 1 })
     const wrapper = await mountDickieExportPreview({ quantityConflict: true, otherBlocker })

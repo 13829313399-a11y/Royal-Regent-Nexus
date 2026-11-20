@@ -327,8 +327,66 @@ def _jakks_contract_transition(line, data, qty):
         return ''
     return 'upgrade' if stored_sup else 'earlier-supplement'
 
+def _apply_jakks_cancellation(db, row, factory, customer, actor, sources, peers, authorize_dispatch):
+    """Amend a uniquely proven original line; notices never create ledger orders."""
+    from types import SimpleNamespace
+    from .customer_order_jakks_unified import cancellation_matches, is_shipped
+    notice_key = digest(['jakks-applied-cancellation', {k: row.get(k) for k in
+        ('contract_no','po_no','reference_no','product_no','quantity','requested_ship_date')}])
+    alias = db.get(Identity, (factory, customer, notice_key))
+    if alias:
+        # A replay after explicit restoration is historical evidence, not a new cancellation.
+        return db.get(Line, alias.line_id), ''
+    scoped = db.scalars(select(Line).where(Line.factory_id == factory, Line.customer_code == customer)).all()
+    candidates = []
+    for line in scoped:
+        if line.data.get('document_kind') == 'cancellation':
+            continue  # Preserve old standalone notices as historical evidence.
+        candidates.append(SimpleNamespace(line=line, row=line.id, order_type=line.data.get('order_type',''),
+            contract_no=line.data.get('contract_no',''), po_no=line.data.get('po_no',''),
+            reference_no=line.reference_no, product_no=line.product_no, quantity=line.quantity,
+            requested_ship_date=line.data.get('requested_ship_date',''),
+            extras={'shipped_evidence': bool(line.shipped_quantity)}))
+    matches = cancellation_matches(row, candidates)
+    if len(matches) != 1 or is_shipped(matches[0]):
+        return None, f"{row.get('reference_no','')}：台账未唯一匹配未走货原订单，取消未应用；未新增订单。"
+    target = matches[0]
+    claims = {r.get('source_line_no') for r in peers
+        if any(m.row == target.row for m in cancellation_matches(r, candidates))}
+    if len(claims) > 1:
+        return None, f"{row.get('reference_no','')}：多个取消批次对应同一原订单，未改写台账。"
+    line = target.line
+    if line.status != 'cancelled':
+        lock_line(db, line, line.revision)
+        if line.shipped_quantity:
+            return None, f"{line.reference_no}：原订单已有走货，取消未应用。"
+        if _existing_recipients(db, line):
+            if authorize_dispatch is None:
+                return None, f"{line.reference_no}：原订单已有发送记录，请在台账取消；本次未改写。"
+            authorize_dispatch()
+        old_facts = {k:v for k,v in line.data.items() if k not in IMPORT_METADATA_FIELDS}
+        old_variant = digest(['intake-variant', line.identity_key, old_facts])
+        if db.get(Identity, (factory, customer, old_variant)) is None:
+            db.add(Identity(factory_id=factory, customer_code=customer, identity_key=old_variant, line_id=line.id))
+        line.status = 'cancelled'
+        line.data = {**line.data, 'intake_notice': '已按取消 PO 在原订单取消，原数量、资料和历史版本保留。'}
+        line.version += 1
+        record_version(db, line, '取消 PO 匹配原订单，原位取消', actor)
+        publish(db, line, _existing_recipients(db, line), actor, '取消 PO 匹配原订单，原位取消')
+    db.add(Identity(factory_id=factory, customer_code=customer, identity_key=notice_key, line_id=line.id))
+    # The numbered original-PO identity can also refer to the legacy bare SO.
+    normal_key = identity_for(row, customer)
+    if db.get(Identity, (factory, customer, normal_key)) is None:
+        db.add(Identity(factory_id=factory, customer_code=customer, identity_key=normal_key, line_id=line.id))
+    for source in sources:
+        if db.get(LineSource, (line.id, source.id)) is None:
+            db.add(LineSource(line_id=line.id, source_id=source.id))
+    db.flush()
+    return line, ''
+
+
 def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, str]], source_kind: str,
-                   actor: str, reason: str, controls: dict, reconcile_line: Line | None = None, expected_revision: int | None = None) -> dict:
+                   actor: str, reason: str, controls: dict, reconcile_line: Line | None = None, expected_revision: int | None = None, authorize_dispatch=None) -> dict:
     factory = preview["factory_id"]
     customer = preview["customer_code"]
     details = [row for row in preview["rows"] if row.get("row_role") != "parent"]
@@ -354,10 +412,21 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             db.flush()
         sources.append(source)
     created = 0
+    cancellation_warnings = []
+    cancellation_rows = [r for r in details if factory == "huadeng" and customer == "jakks" and r.get("document_kind") == "cancellation"]
     lines = []
     seen = set()
     for row in preview["rows"]:
         if row.get("row_role") == "parent":
+            continue
+        if row in cancellation_rows:
+            line, warning = _apply_jakks_cancellation(db, row, factory, customer, actor, sources,
+                cancellation_rows, authorize_dispatch)
+            if warning:
+                cancellation_warnings.append(warning)
+            if line and line.id not in seen:
+                lines.append(line)
+                seen.add(line.id)
             continue
         reference = str(row.get("reference_no") or row.get("contract_no") or row.get("po_no") or "").strip()
         product = str(row.get("product_no") or "").strip()
@@ -377,10 +446,6 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             qty = None
         if incomplete_identity or qty is None:
             data['intake_notice'] = '订单资料待补；原始内容已保存，未推测缺失的单号、货号或数量。'
-        cancellation_notice = factory == 'huadeng' and customer == 'jakks' and row.get('document_kind') == 'cancellation'
-        if cancellation_notice:
-            identity = digest(['jakks-cancellation-notice', identity, row.get('contract_no'), row.get('po_no'), row.get('quantity')])
-            data['intake_notice'] = '取消通知已存档，不计待走货数量；原台账订单保持不变，如需同步取消请在对应订单执行取消。'
         facts = {key: value for key, value in data.items() if key not in IMPORT_METADATA_FIELDS}
         variant_identity = digest(['intake-variant', identity, facts])
         variant_alias = db.get(Identity, (factory, customer, variant_identity)) if not reconcile_line else None
@@ -422,7 +487,14 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             record_version(db, line, '同批补充合同转正式单（合同、PO、Line、货号、数量及货期一致）', actor)
             if db.get(Identity, (factory, customer, variant_identity)) is None:
                 db.add(Identity(factory_id=factory, customer_code=customer, identity_key=variant_identity, line_id=line.id))
-        if line and not reconcile_line and variant_alias is None and not transition:
+        cancelled_repeat = False
+        if line and factory == 'huadeng' and customer == 'jakks' and line.status == 'cancelled':
+            from types import SimpleNamespace
+            from .customer_order_jakks_unified import cancellation_matches
+            old = SimpleNamespace(**{**line.data, 'row':line.id, 'reference_no':line.reference_no,
+                'product_no':line.product_no, 'quantity':line.quantity})
+            cancelled_repeat = bool(cancellation_matches(row, [old]))
+        if line and not reconcile_line and variant_alias is None and not transition and not cancelled_repeat:
             ignored = IMPORT_METADATA_FIELDS
             changed_fields = [key for key in data if key not in ignored
                 and not (customer == 'edu' and key in {'reference_no', 'production_no'})
@@ -471,7 +543,7 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             line = Line(id=uid(), factory_id=factory, customer_code=customer,
                 customer_name=str(preview.get("customer_name") or customer), identity_key=identity,
                 reference_no=reference, product_no=product, quantity=qty, shipped_quantity=Decimal(0),
-                status="cancelled" if cancellation_notice else "active", version=1, revision=1, data=data, created_at=now_text(), updated_at=now_text())
+                status="active", version=1, revision=1, data=data, created_at=now_text(), updated_at=now_text())
             db.add(line)
             db.flush()
             record_version(db, line, reason or "保存原始 PO 明细（业务提醒保留）", actor)
@@ -485,12 +557,13 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
         if line.id not in seen:
             lines.append(line)
             seen.add(line.id)
-    if not lines:
+    if not lines and not cancellation_warnings:
         raise HTTPException(400, "当前批次没有可保存的订单明细")
     db.flush()
     return {"items": [line_out(db, line) for line in lines], "created_count": created,
             "existing_count": len(lines) - created, "reconciled_count": 1 if reconcile_line else 0,
-            "advisory_count": sum(bool(line.data.get("intake_notice")) for line in lines)}
+            "advisory_count": sum(bool(line.data.get("intake_notice")) for line in lines),
+            "warnings": cancellation_warnings, "unapplied_count": len(cancellation_warnings)}
 
 
 def amend(db: Session, line: Line, body, actor: str, *, authorize_dispatch=None) -> None:

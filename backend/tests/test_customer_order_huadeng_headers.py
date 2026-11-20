@@ -58,7 +58,7 @@ def test_casdon_price_aliases_remain_single_existing_columns():
     assert [item.cell(4,c).value for c in range(31,35)] == [123]*4
 
 
-def test_new_jakks_cancellation_links_its_own_summary_and_clears_manual_fields(monkeypatch):
+def test_unmatched_jakks_cancellation_never_creates_order_or_copies_manual_fields(monkeypatch):
     from test_jakks_line_cancel import args, text, p
     monkeypatch.setattr(p, 'extract_text', lambda _: (text(two=False), False))
     params = args(files=[('CXL.pdf', b'cancel')])
@@ -66,16 +66,11 @@ def test_new_jakks_cancellation_links_its_own_summary_and_clears_manual_fields(m
     book['ITEM表']['AE3'] = '发票号'
     book['ITEM表']['AE4'] = '="OLD-INVOICE"'
     stream=BytesIO(); book.save(stream); params['schedule_content']=stream.getvalue()
-    output, _, _ = service.export_unified_customer_schedule(**params)
+    output, _, preview = service.export_unified_customer_schedule(**params)
     book = openpyxl.load_workbook(BytesIO(output))
-    item, order = book['ITEM表'], book['接单表']
-    columns = headers.ensure_headers(book, 'huadeng', 'jakks')
-    r = next(c.row for c in item['B'] if c.value == '取消单')
-    target = next(c.row for c in order['B'] if c.value == '取消单')
-    assert order.cell(target, 16).value == 2
-    assert item[f'{columns["单价USD"][0]}{r}'].value == f'=IF(LEN(\'接单表\'!P{target})=0,"",\'接单表\'!P{target})'
-    assert item[f'{columns["发票号"][0]}{r}'].value is None
-    assert item['AE4'].value == '="OLD-INVOICE"'
+    assert not any(c.value == '取消单' for c in book['ITEM表']['B'])
+    assert book['ITEM表']['AE4'].value == '="OLD-INVOICE"'
+    assert any('取消未应用' in w for w in preview['warnings'])
 
 
 @pytest.mark.parametrize('customer', headers.CUSTOMERS)

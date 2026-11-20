@@ -23,7 +23,8 @@ from app.services import qc_daily_report as daily, qc_weekly_templates as weekly
 from app.services import qc_weekly_excel, qc_monthly_excel, qc_issue_reports
 from app.services.document_tools.office_engine import office_executable
 
-KINDS = {'daily', 'detail', 'issues', *monthly.design.NAMES}
+ANNUAL_KINDS = {'annual-stats', 'annual-issues'}
+KINDS = {'daily', 'detail', 'issues', *monthly.design.NAMES, *ANNUAL_KINDS}
 _cache = OrderedDict()
 _render_lock = Lock()
 MAX_CACHE_BYTES = 32 * 1024 * 1024
@@ -89,7 +90,16 @@ def resident_render(executable, source):
     return False
 
 
-def projection(factory, kind, day, customer):
+def projection(factory, kind, day, customer, result='FAIL'):
+    if kind in ANNUAL_KINDS:
+        if factory != 'huaxing':
+            raise HTTPException(404, '该厂区未配置此模板')
+        start, _ = qc_issue_reports.bounds(day, 'yearly')
+        if kind == 'annual-issues':
+            return qc_issue_reports.query(factory, start, 'yearly', customer)
+        from app.services import qc_approved_statistics
+        return qc_approved_statistics.report(factory, {'year': start[:4], 'customer': customer,
+                                                       'result': result}, all_detail_rows=True)
     if kind == 'daily':
         return daily.report(factory, day, 'daily', customer)
     if kind == 'detail':
@@ -111,7 +121,7 @@ def writable_cells(kind, data):
                 result[address] = dict(customerKey=customer, field=field, value=str(cell['value']),
                                        version=cell['version'], type='completion' if field.endswith(':completion') else 'text')
 
-    if kind in ('daily', 'issues'):
+    if kind in ANNUAL_KINDS or kind in ('daily', 'issues'):
         return result
     rows = data['tables'][kind]
     if kind == 'detail':
@@ -193,7 +203,12 @@ def sheet_html(table, folder, sheet):
 
 
 def render(factory, kind, data):
-    if kind == 'daily':
+    if kind == 'annual-stats':
+        from app.services.qc_annual_excel import workbook
+        content = workbook(data)
+    elif kind == 'annual-issues':
+        content = qc_monthly_excel.render(dict(data, photoQuality='preview'), 'issues', factory)
+    elif kind == 'daily':
         content = daily.workbook(data)
     elif kind == 'detail':
         content = qc_weekly_excel.render(data, kind)
@@ -231,17 +246,20 @@ def render(factory, kind, data):
         return [dict(name=name, html=sheet_html(table, folder, i)) for i,(name,table) in enumerate(zip(names,tables))]
 
 
-def preview(factory, kind, day, customer, can_edit):
+def preview(factory, kind, day, customer, can_edit, result='FAIL'):
     if kind not in KINDS:
         raise HTTPException(404, '模板不存在')
-    data = projection(factory, kind, day, customer)
+    data = projection(factory, kind, day, customer, result)
     cells = writable_cells(kind, data) if can_edit else {}
     revision = data.get('sourceRevision') or data.get('revision')
     versions = qc_weekly_excel.versions(data) if 'fields' in data else {}
-    key = factory, kind, day, customer, revision, sha256(json.dumps(versions, sort_keys=True).encode()).digest()
+    key = factory, kind, day, customer, result, revision, sha256(json.dumps(versions, sort_keys=True).encode()).digest()
     with _render_lock:
         if key not in _cache:
-            rows = data['rows'] if kind == 'daily' else data['tables'][kind]
+            if kind in ANNUAL_KINDS:
+                rows = data['totals']['total'] if kind == 'annual-stats' else data['total']
+            else:
+                rows = data['rows'] if kind == 'daily' else data['tables'][kind]
             sheets = render(factory, kind, data) if rows else []
             size = sum(len(s['html'].encode()) for s in sheets)
             if size <= MAX_CACHE_BYTES:

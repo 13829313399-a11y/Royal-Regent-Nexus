@@ -308,11 +308,11 @@ test('detail entrances count valid business rows, disappear after empty save, an
  }finally{p.dom.window.close();}
 });
 
-test('review autosaves silently while pending saves, failures and conflicts remain visible',async()=>{
+test('review autosaves stay silent in flight while failures and conflicts remain visible',async()=>{
  const p=await page();try{
   const label=()=>p.d.querySelector('[data-save-status=a]');assert.equal(label().textContent,'');assert.equal(p.d.querySelector('[data-review-status]'),null);
   let release;const fetch=p.w.fetch;p.w.fetch=async(url,opts)=>url.endsWith('/save')?new Promise(resolve=>{release=()=>fetch(url,opts).then(resolve);}):fetch(url,opts);
-  p.w.QcInspectionSheet.edit('a','remark','正在保存',true);assert.match(label().textContent,/保存中/);release();await p.w.QcInspectionSheet.flush();assert.equal(label().textContent,'');assert.ok(label().hidden);
+  p.w.QcInspectionSheet.edit('a','remark','正在保存',true);assert.equal(label().textContent,'');assert.ok(label().hidden);assert.equal(p.w.QcInspectionSheet.navigationState().busy,true);release();await p.w.QcInspectionSheet.flush();assert.equal(label().textContent,'');assert.ok(label().hidden);
   p.w.fetch=async(url,opts)=>url.endsWith('/save')?{ok:false,status:409,json:async()=>({detail:'记录已更新，请核对版本'})}:fetch(url,opts);
   p.w.QcInspectionSheet.edit('a','remark','冲突输入',true);await tick();assert.match(label().textContent,/保存失败.*记录已更新/);assert.equal(p.d.querySelector('[data-retry=a]').textContent,'核对版本并重试');assert.equal(p.w.QcInspectionSheet.model.drafts.get('a').remark,'冲突输入');
   assert.match(label().textContent,/保存失败/);assert.equal(label().hidden,false);
@@ -546,10 +546,13 @@ test('review name history groups a whole fill, restores distinct names and branc
     key(host,'Z',{metaKey:true,shiftKey:true});
     await p.w.QcInspectionSheet.flush();
     assert.deepEqual(names(),['林青','林青','林青']);
-    p.d.querySelector('#page-review [data-name-history=undo]').click();
+    assert.doesNotMatch(p.d.querySelector('#page-review .toolbar-left').textContent,/撤销|重做/);
+    key(host,'z',{ctrlKey:true});
     const input=nodes[1].querySelector('[data-review-field=firstResponsible]');
     for(const value of ['王','王宁']){input.value=value;input.dispatchEvent(new p.w.Event('input',{bubbles:true}));}
-    assert.ok(p.d.querySelector('#page-review [data-name-history=redo]').disabled);
+    assert.ok(key(host,'y',{metaKey:true}));
+    await p.w.QcInspectionSheet.flush();
+    assert.deepEqual(names(),['林青','王宁','']);
     key(input,'z',{ctrlKey:true});
     await p.w.QcInspectionSheet.flush();
     assert.deepEqual(names(),['林青','陈明','']);
@@ -630,7 +633,8 @@ test('institution fill and history preserve identities for listed and historical
   await p.w.QcInspectionSheet.flush();
   const selected=host.querySelector('[data-entry=b] [data-person-field=institution]');
   assert.equal(selected.value,'listed');assert.equal(p.rows[1].inspectionExecution.institution,'机构甲');
-  p.d.querySelector('#page-review [data-name-history=undo]').click();await p.w.QcInspectionSheet.flush();
+  host.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'z',metaKey:true,bubbles:true}));
+  await p.w.QcInspectionSheet.flush();
   assert.equal(selected.value,'__history__');assert.equal(p.rows[1].inspectionExecution.institution,'机构乙');
   assert.equal(p.rows[1].inspectionExecution.institutionId,'');assert.equal(p.rows[2].inspectionExecution,undefined);
  }finally{p.dom.window.close();}

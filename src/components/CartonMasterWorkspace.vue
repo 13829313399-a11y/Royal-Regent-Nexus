@@ -14,10 +14,9 @@ import { recognizeNumberTemplates, parseNumberTemplate, describeNumberTemplate }
 import { cartonPositionsApi, type CartonLocation } from '@/api/cartonPositions'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
-import CartonDimensionInput from './CartonDimensionInput.vue'
-import CartonPaperPicker from './CartonPaperPicker.vue'
+import CartonOrderPaperEditor from './CartonOrderPaperEditor.vue'
+import CartonPaperWeightFields from './CartonPaperWeightFields.vue'
 import type { DimensionPreferenceScope, DimensionUnit } from '@/features/carton-procurement/dimensionPreference'
-import { applyCartonDimensionPaste } from '@/lib/cartonDimensionPaste'
 const props = defineProps<{ factoryId: string; customers: CartonCustomerResponse[]; initialTab?: string; search?: string; dimensionUnit?: DimensionUnit; dimensionPreferenceError?: string; preferenceScope?: DimensionPreferenceScope | null }>()
 const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse]; use: [MasterRecord]; 'update:search': [value: string]; 'update:dimensionUnit': [value: string] }>()
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
@@ -399,7 +398,12 @@ async function saveWarehouse() {
       <p v-if="configActionMessage" role="status" class="border-b border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800">{{ configActionMessage }}</p>
       <p class="border-b border-teal-100 bg-teal-50/60 px-3 py-2 text-xs leading-5 text-teal-800">一个货号可以有多个纸品：手工新增时点击“添加纸品”；模板导入时每个纸品写一行，同一套纸品使用相同的“货号 + 配置组”，并在每行重复填写相同的产品名称、推荐、状态和备注。</p>
       <div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[960px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 text-slate-500"><tr><th class="p-3">包装方式</th><th class="p-3">货号 / 产品名称</th><th class="p-3">纸品类型 / 纸质 / 规格 / 单位 / 装箱数</th><th class="p-3">来源 / 状态</th><th class="p-3 text-right">操作</th></tr></thead>
-        <tbody class="divide-y divide-slate-100"><tr v-for="row in rows" :key="row.id" :data-config-id="row.id" class="hover:bg-slate-50/60"><td data-label="包装方式" class="p-3 font-semibold">{{ row.data.packing_name || '其他包装' }}</td><td data-label="货号 / 产品名称" class="p-3"><b class="font-mono">{{ row.code }}</b><div class="mt-1 text-slate-500">{{ row.data.product_name }}</div><p v-if="row.data.net_weight_kg != null || row.data.gross_weight_kg != null" class="mt-1 text-slate-500">历史整单每箱净重 {{ row.data.net_weight_kg ?? '未记录' }} kg · 毛重 {{ row.data.gross_weight_kg ?? '未记录' }} kg</p></td><td data-label="纸品类型 / 纸质 / 规格 / 单位 / 装箱数" class="p-3"><div v-for="(line, i) in row.data.lines" :key="i" class="mb-1">{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · {{ quantityRuleLabel(line) }}<span v-if="line.net_weight_kg != null || line.gross_weight_kg != null" class="ml-2 text-slate-500">每箱净重 {{ line.net_weight_kg ?? '未记录' }} kg · 毛重 {{ line.gross_weight_kg ?? '未记录' }} kg</span></div><span v-if="workspace.records.filter(r => r.kind === 'CONFIG' && r.code === row.code).length > 1" class="text-amber-700">存在不同配置，落单时请核对</span><p class="mt-1 text-slate-500">{{ row.data.note }}</p></td><td data-label="来源 / 状态" class="p-3"><div>{{ row.maintained ? '高级权限维护' : '历史自动加入' }}</div><div class="mt-1" :class="row.status === 'ACTIVE' ? 'text-teal-700' : 'text-slate-400'">{{ row.status === 'ACTIVE' ? '启用' : '停用' }}{{ row.preferred ? ' · 推荐' : '' }}</div><button v-if="row.sources.length" type="button" class="mt-1 text-teal-700 underline" @click="sourceRow = row">{{ row.sources.length }} 条历史来源</button></td><td data-label="操作" class="p-3"><div class="flex justify-end gap-2 whitespace-nowrap"><button v-if="workspace.can_manage" type="button" class="rounded-lg border px-3 py-2" :aria-label="`修改基础资料 ${row.code}`" @click="edit(row)">修改</button><button v-if="workspace.can_manage && row.status === 'ACTIVE'" type="button" class="rounded-lg border border-red-200 px-3 py-2 text-red-700" :aria-label="`删除货号包装 ${row.code}`" @click="configToRemove = row; error = ''">删除</button><button v-if="workspace.can_manage && row.status === 'INACTIVE'" type="button" :disabled="busy" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700 disabled:opacity-50" :aria-label="`恢复货号包装 ${row.code}`" @click="changeConfigAvailability(row, 'ACTIVE')">恢复</button><button v-if="row.status === 'ACTIVE'" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700" @click="emit('use', row)">用于落单</button></div></td></tr><tr v-if="!rows.length"><td colspan="5" class="p-12 text-center text-slate-400">暂无对应资料；正式历史订单中的货号与纸品配置会自动加入。</td></tr></tbody>
+        <tbody class="divide-y divide-slate-100"><tr v-for="row in rows" :key="row.id" :data-config-id="row.id" class="hover:bg-slate-50/60"><td data-label="包装方式" class="p-3 font-semibold">{{ row.data.packing_name || '其他包装' }}</td><td data-label="货号 / 产品名称" class="p-3"><b class="font-mono">{{ row.code }}</b><div class="mt-1 text-slate-500">{{ row.data.product_name }}</div><p v-if="row.data.net_weight_kg != null || row.data.gross_weight_kg != null" class="mt-1 text-slate-500">历史整单每箱净重 {{ row.data.net_weight_kg ?? '未记录' }} kg · 毛重 {{ row.data.gross_weight_kg ?? '未记录' }} kg</p></td><td data-label="纸品类型 / 纸质 / 规格 / 单位 / 装箱数" class="p-3"><div v-for="(line, i) in row.data.lines" :key="i" class="mb-1">{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · {{ quantityRuleLabel(line) }}<span v-if="line.net_weight_kg != null || line.gross_weight_kg != null" class="ml-2 text-slate-500">每箱净重 {{ line.net_weight_kg ?? '未记录' }} kg · 毛重 {{ line.gross_weight_kg ?? '未记录' }} kg</span>
+            <details v-if="line.process_note" class="mt-1 text-xs">
+              <summary class="w-fit cursor-pointer font-medium text-teal-700">工艺备注</summary>
+              <p class="mt-1 whitespace-pre-wrap break-words text-slate-600">{{ line.process_note }}</p>
+            </details>
+          </div><span v-if="workspace.records.filter(r => r.kind === 'CONFIG' && r.code === row.code).length > 1" class="text-amber-700">存在不同配置，落单时请核对</span><p class="mt-1 text-slate-500">{{ row.data.note }}</p></td><td data-label="来源 / 状态" class="p-3"><div>{{ row.maintained ? '高级权限维护' : '历史自动加入' }}</div><div class="mt-1" :class="row.status === 'ACTIVE' ? 'text-teal-700' : 'text-slate-400'">{{ row.status === 'ACTIVE' ? '启用' : '停用' }}{{ row.preferred ? ' · 推荐' : '' }}</div><button v-if="row.sources.length" type="button" class="mt-1 text-teal-700 underline" @click="sourceRow = row">{{ row.sources.length }} 条历史来源</button></td><td data-label="操作" class="p-3"><div class="flex justify-end gap-2 whitespace-nowrap"><button v-if="workspace.can_manage" type="button" class="rounded-lg border px-3 py-2" :aria-label="`修改基础资料 ${row.code}`" @click="edit(row)">修改</button><button v-if="workspace.can_manage && row.status === 'ACTIVE'" type="button" class="rounded-lg border border-red-200 px-3 py-2 text-red-700" :aria-label="`删除货号包装 ${row.code}`" @click="configToRemove = row; error = ''">删除</button><button v-if="workspace.can_manage && row.status === 'INACTIVE'" type="button" :disabled="busy" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700 disabled:opacity-50" :aria-label="`恢复货号包装 ${row.code}`" @click="changeConfigAvailability(row, 'ACTIVE')">恢复</button><button v-if="row.status === 'ACTIVE'" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700" @click="emit('use', row)">用于落单</button></div></td></tr><tr v-if="!rows.length"><td colspan="5" class="p-12 text-center text-slate-400">暂无对应资料；正式历史订单中的货号与纸品配置会自动加入。</td></tr></tbody>
       </table></div>
     </article>
     <div v-if="configToRemove" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4">
@@ -448,29 +452,25 @@ async function saveWarehouse() {
             <p class="text-xs text-teal-700">包装方式：{{ form.data.packing_name || '保存后自动识别' }} · 首次为标准装，后续不同配置请核对。</p>
             <div class="flex flex-wrap items-end gap-3"><label class="min-w-0 basis-full sm:flex-1 sm:basis-auto">产品名称<input v-model="form.data.product_name" maxlength="255" aria-label="基础资料产品名称" class="mt-1 h-9 w-full rounded-lg border px-2"></label><label><input v-model="form.preferred" type="checkbox"> 设为推荐配置</label><button type="button" class="rounded-lg border px-3 py-2" @click="addPaper">添加纸品</button></div>
             <div class="space-y-3" aria-label="包装纸品明细">
-              <section v-for="(line, i) in form.data.lines" :key="i" :aria-label="'纸品明细 ' + (i + 1)" class="min-w-0 rounded-xl border border-slate-200 bg-slate-50/40 p-3 sm:p-4">
-                <div class="mb-3 flex items-center justify-between gap-3">
-                  <h4 class="font-semibold text-slate-800">纸品 {{ i + 1 }}<span v-if="line.packaging_type" class="ml-2 font-normal text-slate-500">{{ line.packaging_type }}</span></h4>
-                  <button type="button" class="rounded-lg px-2 py-1 text-red-600 hover:bg-red-50" @click="removePaper(i)">移除</button>
-                </div>
-                <div class="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-12">
-                  <div class="min-w-0 space-y-1 lg:col-span-3"><p class="font-medium text-slate-600">纸品类型</p><CartonPaperPicker v-model="line.packaging_type" :options="masterPaperOptions(workspace.records, 'packaging_type', workspace.paper_history)" label="资料纸品类型" @update:model-value="suggestMasterQuantityMode(i)" /></div>
-                  <div class="min-w-0 space-y-1 lg:col-span-3"><p class="font-medium text-slate-600">纸质</p><CartonPaperPicker v-model="line.paper_quality" :options="masterPaperOptions(workspace.records, 'paper_quality', workspace.paper_history)" label="资料纸质" /></div>
-                  <label class="min-w-0 space-y-1 font-medium text-slate-600 lg:col-span-4"><span>规格</span><input v-model="line.specification" aria-label="资料规格" placeholder="可粘贴长 宽 高" title="可直接粘贴 Excel 长宽高单元格或用空格分隔的尺寸，无需手动加星号；尺寸单位另行核对。" @paste="applyCartonDimensionPaste($event, value => line.specification = value)" class="block h-9 w-full min-w-0 rounded-lg border bg-white px-2 font-normal text-slate-900"></label>
-                  <label class="min-w-0 space-y-1 font-medium text-slate-600 lg:col-span-2"><span>计量单位</span><input v-model="line.unit" required aria-label="资料计量单位" class="block h-9 w-full min-w-0 rounded-lg border bg-white px-2 font-normal text-slate-900"></label>
-                </div>
-                <div class="mt-4 grid min-w-0 gap-4 border-t border-slate-200 pt-3 lg:grid-cols-3">
-                  <CartonDimensionInput v-model="line.dimension_unit" :specification="line.specification" label="资料尺寸单位" class="min-w-0 break-words" />
-                  <div class="min-w-0 space-y-2">
-                    <CartonQuantityRuleInput v-model="line.quantity_rule" :lines="form.data.lines" :index="i" />
-                    <label v-if="line.quantity_rule?.mode !== 'PER_CARTON'" class="flex min-w-0 items-center gap-2"><span class="shrink-0 text-slate-500">每箱装产品数 *</span><input v-model="line.usage_quantity" type="number" min="0.00000001" step="any" required aria-label="资料装箱数" class="h-9 min-w-0 w-full rounded-lg border bg-white px-2"></label>
-                  </div>
-                  <div class="grid min-w-0 grid-cols-2 gap-3">
-                    <label class="min-w-0 space-y-1 text-slate-600"><span>每箱净重（kg）</span><input v-model="line.net_weight_kg" type="number" min="0" step="0.0001" :aria-label="'资料纸品每箱净重 ' + (i + 1)" class="block h-9 w-full min-w-0 rounded-lg border bg-white px-2 text-slate-900"></label>
-                    <label class="min-w-0 space-y-1 text-slate-600"><span>每箱毛重（kg）</span><input v-model="line.gross_weight_kg" type="number" min="0" step="0.0001" :aria-label="'资料纸品每箱毛重 ' + (i + 1)" class="block h-9 w-full min-w-0 rounded-lg border bg-white px-2 text-slate-900"></label>
-                  </div>
-                </div>
-              </section>
+              <CartonOrderPaperEditor v-for="(line, i) in form.data.lines" :key="i" :index="i" :note-source="line"
+                role="group" :aria-label="'纸品明细 ' + (i + 1)" master process-notes dimension-editable allow-millimeters
+                v-model:packaging="line.packaging_type" v-model:quality="line.paper_quality" v-model:specification="line.specification"
+                v-model:dimension="line.dimension_unit" v-model:unit="line.unit" v-model:process-note="line.process_note"
+                :preferred-unit="dimensionUnit" :packaging-options="masterPaperOptions(workspace.records, 'packaging_type', workspace.paper_history)"
+                :quality-options="masterPaperOptions(workspace.records, 'paper_quality', workspace.paper_history)"
+                :specification-options="masterPaperOptions(workspace.records, 'specification', workspace.paper_history)"
+                @update:packaging="suggestMasterQuantityMode(i)" @remove="removePaper(i)">
+                <template #basis>
+                  <label v-if="line.quantity_rule?.mode !== 'PER_CARTON'" class="min-w-0 space-y-1.5">
+                    <span class="block whitespace-nowrap text-[11px] font-bold leading-4 text-slate-500">每箱装产品数 *</span>
+                    <input v-model="line.usage_quantity" aria-label="资料装箱数" type="number" min="0.00000001" step="any" required class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-right">
+                  </label>
+                  <div v-else class="space-y-1.5"><span class="block text-[11px] font-bold text-slate-500">配套方式</span><div class="flex h-9 items-center text-xs text-slate-500">按箱配套</div></div>
+                </template>
+                <div class="border-t border-slate-200/70 pt-3"><CartonQuantityRuleInput v-model="line.quantity_rule" :lines="form.data.lines" :index="i" /></div>
+                <CartonPaperWeightFields :index="i" :net="line.net_weight_kg" :gross="line.gross_weight_kg" prefix="资料纸品"
+                  @update:net="line.net_weight_kg = $event" @update:gross="line.gross_weight_kg = $event" />
+              </CartonOrderPaperEditor>
             </div>
           </template>
           <label v-if="form.kind === 'CONTRACT'" class="block">关联货号（每行一个）<textarea v-model="itemText" aria-label="合同关联货号" rows="4" class="mt-1 w-full rounded-lg border p-2" /></label>

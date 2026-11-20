@@ -1756,7 +1756,12 @@ async function confirmAndSaveOrder() {
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
     warehouseUpload = null
     showWarehouseSync(result.warehouse_sync, 'GENERATED')
-    notify(result.reconciled_count > 0
+    if (result.warnings?.length) {
+      saveFailureMessage.value = result.warnings.join('\n')
+    }
+    notify(result.unapplied_count
+      ? `已处理匹配订单；${result.unapplied_count} 条取消未应用，未新增订单。请查看提示。`
+      : result.reconciled_count > 0
       ? '订单已关联并更新原订单，原走货与版本记录已保留。'
       : `订单已保存：新增 ${result.created_count} 条，已存在 ${result.existing_count} 条。${result.advisory_count ? `其中 ${result.advisory_count} 条有资料差异或缺项，已保留提醒。` : ""}`)
     // Keep the source files and preview available for the separate Excel export.

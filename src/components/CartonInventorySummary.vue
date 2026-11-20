@@ -18,7 +18,7 @@ const emit = defineEmits<{ clearSearch: []; inventory: []; closing: []; context:
 const customerCode = ref('')
 const dateRange = shallowRef<DateRange>({ start: undefined, end: undefined })
 const mode = ref<'SUMMARY' | InventoryFlowCategory>('SUMMARY')
-const timelineTarget = ref<{ orderId: string; inventoryKey: string; label: string } | null>(null)
+const timelineTarget = ref<{ orderId: string; inventoryKey: string; label: string; paper?: string; processNote?: string } | null>(null)
 const report = ref<InventoryReport>({ rows: [], order_rows: [], movements: [] })
 const loading = ref(false)
 const error = ref('')
@@ -91,7 +91,7 @@ async function load() {
 async function openOrderTimeline(row: InventoryOrderReportRow) {
   const selectionVersion = ++timelineVersion
   const label = `${sourceNumber(row)} · ${row.item_no}`
-  timelineTarget.value = { orderId: row.order_id ?? '', inventoryKey: row.order_id ? '' : row.key, label }
+  timelineTarget.value = { orderId: row.order_id ?? '', inventoryKey: row.order_id ? '' : row.key, label, paper: row.packaging_type, processNote: row.process_note }
   const version = requestVersion, factory = props.factoryId
   try {
     const id = await cartonInventoryIdentity(row.key)
@@ -211,7 +211,7 @@ watch([loading, error, customerCode, from, to, mode, () => props.search, () => p
             <tbody class="divide-y divide-slate-100"><tr v-for="row in detailRows" :key="row.id" class="hover:bg-slate-50/60"><td data-label="记账时间 / 单据" class="px-4 py-4"><div>{{ row.occurred_at.replace('T', ' ').slice(0, 16) }}</div><div class="mt-1 font-mono font-semibold">{{ row.document_no || '未填写' }}</div></td><td data-label="客户" class="px-4 py-4">{{ row.customer_name }}</td><td data-label="合同号 / 来源" class="px-4 py-4">
             <div class="break-all font-mono">{{ row.source_request?.request_no || row.contract_no || (row.unattributed ? '未归单流水' : '非正式收料') }}</div>
             <div v-if="row.source_request" class="mt-1 text-[10px] text-teal-700">{{ sourceLabels[row.source_request.kind] }}</div>
-          </td><td data-label="货号" class="px-4 py-4 font-mono">{{ row.item_no }}</td><td data-label="纸品 / 规格" class="px-4 py-4"><div class="font-semibold">{{ row.packaging_type }} {{ row.paper_quality }}</div><div class="mt-1 text-slate-400">{{ row.specification }}</div></td><td data-label="类型" class="px-4 py-4"><span :class="row.movement_type === 'REVERSAL' ? 'text-rose-700' : 'text-slate-600'">{{ row.movement_type === 'REVERSAL' ? '冲销' : mode === 'INBOUND' ? '入库' : mode === 'OUTBOUND' ? '出库' : '调整' }}</span></td><td :data-label="mode === 'OUTBOUND' ? '出库数量' : mode === 'INBOUND' ? '入库数量' : '调整数量'" class="px-4 py-4 text-right font-bold tabular-nums" :class="Number(row.flow_quantity) < 0 ? 'text-rose-700' : 'text-teal-700'">{{ format(row.flow_quantity) }} <span class="font-normal">{{ row.unit }}</span></td><td data-label="仓位" class="px-4 py-4">{{ row.location || '未填写' }}</td><td data-label="经手人 / 原因" class="max-w-60 px-4 py-4"><div>{{ row.actor_name }}</div><div class="mt-1 break-words text-slate-400">{{ row.reason || '—' }}</div></td></tr><tr v-if="!detailRows.length"><td colspan="9" class="px-4 py-12 text-center text-slate-400">所选条件下没有{{ modes.find(tab => tab.id === mode)?.label }}</td></tr></tbody>
+          </td><td data-label="货号" class="px-4 py-4 font-mono">{{ row.item_no }}</td><td data-label="纸品 / 规格" class="px-4 py-4"><div class="font-semibold">{{ row.packaging_type }} {{ row.paper_quality }}</div><div class="mt-1 text-slate-400">{{ row.specification }}</div><p v-if="row.process_note" class="mt-1 whitespace-pre-wrap break-words text-xs text-teal-800">工艺备注 · {{ row.process_note }}</p></td><td data-label="类型" class="px-4 py-4"><span :class="row.movement_type === 'REVERSAL' ? 'text-rose-700' : 'text-slate-600'">{{ row.movement_type === 'REVERSAL' ? '冲销' : mode === 'INBOUND' ? '入库' : mode === 'OUTBOUND' ? '出库' : '调整' }}</span></td><td :data-label="mode === 'OUTBOUND' ? '出库数量' : mode === 'INBOUND' ? '入库数量' : '调整数量'" class="px-4 py-4 text-right font-bold tabular-nums" :class="Number(row.flow_quantity) < 0 ? 'text-rose-700' : 'text-teal-700'">{{ format(row.flow_quantity) }} <span class="font-normal">{{ row.unit }}</span></td><td data-label="仓位" class="px-4 py-4">{{ row.location || '未填写' }}</td><td data-label="经手人 / 原因" class="max-w-60 px-4 py-4"><div>{{ row.actor_name }}</div><div class="mt-1 break-words text-slate-400">{{ row.reason || '—' }}</div></td></tr><tr v-if="!detailRows.length"><td colspan="9" class="px-4 py-12 text-center text-slate-400">所选条件下没有{{ modes.find(tab => tab.id === mode)?.label }}</td></tr></tbody>
           </table>
         </div>
         <div class="space-y-1 border-t border-slate-100 bg-slate-50/60 px-4 py-3 text-[11px] leading-5 text-slate-500"><p>入库、出库均含冲销净数量；盘盈、盘亏和期初库存单列调整。每张订单按纸品分别统计，样板和杂单显示需求号。无单库存和混存后未归单的流水分别标记。</p><p>未选日期时查看累计收发；选择日期后查看期间收发，期初保留此前结存。收发按记账时间筛选；未收发订单按下单日期筛选。金额在月结对账中核对。领用状态和仓位分布显示当前累计情况，不随所选历史日期回溯。</p></div>
@@ -220,7 +220,7 @@ watch([loading, error, customerCode, from, to, mode, () => props.search, () => p
     <div v-if="timelineTarget" data-testid="order-timeline-overlay" class="fixed inset-0 z-[62] flex items-center justify-center bg-slate-950/45 p-4" @click.self="closeTimeline">
       <div role="dialog" aria-modal="true" aria-labelledby="order-timeline-title" class="flex max-h-[88vh] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div class="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
-          <div><h2 id="order-timeline-title" class="text-lg font-bold text-slate-950">订单流水 — {{ timelineTarget.label }}</h2><p class="mt-1 text-xs text-teal-700">可滚动查看该订单的完整业务流水</p></div>
+          <div><h2 id="order-timeline-title" class="text-lg font-bold text-slate-950">订单流水 — {{ timelineTarget.label }}</h2><p class="mt-1 text-xs text-teal-700">可滚动查看该订单的完整业务流水</p><p v-if="timelineTarget.processNote" class="mt-2 whitespace-pre-wrap break-words text-xs text-teal-800">{{ timelineTarget.paper }} · 工艺备注 · {{ timelineTarget.processNote }}</p></div>
           <button type="button" aria-label="关闭订单流水" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" @click="closeTimeline"><X class="size-4" /></button>
         </div>
         <div class="min-h-0 overflow-y-auto">

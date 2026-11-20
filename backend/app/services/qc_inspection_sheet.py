@@ -46,9 +46,13 @@ CREATE TABLE IF NOT EXISTS exports (
 '''
 
 
+def database_path():
+    return Path(settings.qc_department_data_dir).resolve() / '_inspection_sheet' / 'inspections.sqlite3'
+
+
 @contextmanager
 def store(write=False, review=False):
-    path = Path(settings.qc_department_data_dir).resolve() / '_inspection_sheet' / 'inspections.sqlite3'
+    path = database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=20)
     conn.row_factory = sqlite3.Row

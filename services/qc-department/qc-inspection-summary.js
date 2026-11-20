@@ -21,8 +21,23 @@
     el.innerHTML=`
       <div class="qsum-workspace">
         <div class="qsum-toolbar">
-          <p id="qsum-totals" hidden>审核记录：<strong id="qsum-review-count"></strong> 条</p>
+          <div class="qsum-filter-bar">
+            <div class="qsum-date-filters" role="group" aria-label="验货日期筛选">
+              <select id="qsum-year" aria-label="汇总年份"></select>
+              <select id="qsum-month" aria-label="汇总月份"></select>
+              <select id="qsum-day" aria-label="汇总日期"></select>
+            </div>
+            <div class="qsum-select">
+              <select id="qsum-type" aria-label="验货类型"><option value="">验货类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
+            </div>
+            <label class="qsum-search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+              <input id="qsum-search" type="search" placeholder="搜索汇总" title="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总">
+            </label>
+            <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
+          </div>
           <div class="qsum-actions">
+            <p id="qsum-totals" hidden>审核记录：<strong id="qsum-review-count"></strong> 条</p>
             <button type="button" class="btn btn-secondary" id="qsum-import">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h4l4 4v14H7v-4M7 9V3h6v5h5M3 13h11m-4-4 4 4-4 4"/></svg>历史导入
             </button>
@@ -30,21 +45,6 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3"/></svg>
             </button>
           </div>
-        </div>
-        <div class="qsum-filter-bar">
-          <label class="qsum-search">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
-            <input id="qsum-search" type="search" placeholder="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总">
-          </label>
-          <div class="qsum-date-filters" role="group" aria-label="验货日期筛选">
-            <select id="qsum-year" aria-label="汇总年份"></select>
-            <select id="qsum-month" aria-label="汇总月份"></select>
-            <select id="qsum-day" aria-label="汇总日期"></select>
-          </div>
-          <div class="qsum-select">
-            <select id="qsum-type" aria-label="验货类型"><option value="">验货类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
-          </div>
-          <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
         </div>
         <p id="qsum-message" role="status" aria-live="polite"></p>
         <div class="qsum-results">
@@ -64,7 +64,7 @@
     ['year','month','day','type'].forEach(key=>root.document.getElementById('qsum-'+key).addEventListener('change',event=>{
       state.filters[key]=event.target.value;if(key==='year')state.filters.month=state.filters.day='';if(key==='month')state.filters.day='';state.filters.page=1;controls();void load();
     }));
-    root.document.getElementById('qsum-search').addEventListener('input',event=>{state.filters.search=event.target.value;state.filters.page=1;clearTimeout(timer);timer=setTimeout(load,250);});
+    root.document.getElementById('qsum-search').addEventListener('input',event=>{state.filters.search=event.target.value;state.filters.page=1;updateReset();clearTimeout(timer);timer=setTimeout(load,250);});
     root.document.getElementById('qsum-reset').onclick=()=>{Object.assign(state.filters,{year:'',month:'',day:'',search:'',type:'',page:1});root.document.getElementById('qsum-search').value='';controls();void load();};
     root.document.getElementById('qsum-refresh').onclick=load;
     root.document.getElementById('qsum-prev').onclick=()=>{state.filters.page--;void load();};
@@ -75,7 +75,12 @@
     root.document.getElementById('qsum-import').hidden=!root.__QC_NEXUS?.summaryImportAllowed;
     controls();
   }
+  function updateReset(){
+    const {year,month,day,search,type}=state.filters;
+    root.document.getElementById('qsum-reset').hidden=!(year||month||day||search||type);
+  }
   function controls(){
+    updateReset();
     const f=state.filters;
     const options=(id,values,empty,disabled=false)=>{const el=root.document.getElementById('qsum-'+id);el.innerHTML=`<option value="">${empty}</option>`+values.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');el.value=f[id];el.disabled=disabled;};
     options('year',state.data?.years||[],'全部年份');
@@ -116,12 +121,17 @@
     });
   }
   function photoPreview(row,photos,start,detailDialog=null,trigger=root.document.activeElement){
-    if(!photos[start]||!row.entryId||(detailDialog&&!detailDialog.isConnected))return;
+    const embedded=row===null;
+    if(!photos[start]||(!embedded&&!row.entryId)||(detailDialog&&!detailDialog.isConnected))return;
     if(activePhoto?.el.isConnected){activePhoto.el.focus();return;}
     const body=detailDialog?.querySelector('.qrd-content');
     const position=body&&{top:body.scrollTop,left:body.scrollLeft};
     const el=root.document.createElement('dialog');el.className='qsum-lightbox';el.setAttribute('aria-label','验货照片预览');
     el.innerHTML='<header><strong data-photo-title></strong><button type="button" data-photo-close aria-label="关闭照片预览">关闭</button></header><div class="qsum-lightbox-tools"><button type="button" data-photo-prev aria-label="上一张照片">← 上一张</button><button type="button" data-photo-next aria-label="下一张照片">下一张 →</button><button type="button" data-photo-minus aria-label="缩小照片">−</button><output data-photo-scale aria-live="polite">100%</output><button type="button" data-photo-plus aria-label="放大照片">＋</button><button type="button" data-photo-fit>适应窗口</button><button type="button" data-photo-original>查看原图</button><span data-photo-quality role="status"></span></div><div class="qsum-lightbox-viewport" tabindex="0" aria-label="照片区域，可滚轮缩放、捏合及拖动"><div class="qsum-lightbox-canvas"><img><p data-photo-error hidden role="alert">照片加载失败，请重试。</p></div></div><footer><span data-photo-name></span><button type="button" data-photo-retry hidden>重新加载照片</button></footer>';
+    if(embedded){
+      el.id='wb-photo-viewer';
+      el.setAttribute('aria-description','滚轮缩放，拖动照片，点击暗处或按 Esc 关闭。');
+    }
     const originalDownload=root.document.createElement('a');
     originalDownload.className='btn btn-secondary';
     originalDownload.dataset.photoDownload='';
@@ -151,19 +161,30 @@
       paint();
     }
     function reset(){endNativeGesture();scale=1;x=0;y=0;paint();}
+    function qualityLabel(photo){
+      if(embedded)return '工作簿照片';
+      if(variant==='preview')return photo.originalAvailable?'预览图':'预览图 · 原图不可用';
+      return loaded?'原始高清图':'正在加载原图…';
+    }
     function show(original=false){
       variant=original===true?'original-display':'preview';
       if(closed)return;
       endNativeGesture();loaded=false;pointers.clear();lastPointer=null;scale=1;width=height=0;img.style.visibility='hidden';error.hidden=retry.hidden=true;
       const p=photos[index];
-      const path='api/inspection-sheet/entries/'+encodeURIComponent(row.entryId)+'/photos/'+encodeURIComponent(p.id);
       img.alt=p.name||'验货照片';
-      img.src=path+(variant==='preview'?'':'?variant='+variant);
-      originalDownload.hidden=!p.originalAvailable;
-      originalDownload.href=path+'?variant=original';
-      originalDownload.download=p.name||'验货照片';
-      const originalButton=el.querySelector('[data-photo-original]');originalButton.disabled=!p.originalAvailable;originalButton.textContent=variant==='preview'?'查看原图':'返回预览图';
-      el.querySelector('[data-photo-quality]').textContent=variant==='preview'?(p.originalAvailable?'预览图':'预览图 · 原图不可用'):'正在加载原图…';
+      const originalButton=el.querySelector('[data-photo-original]');
+      originalButton.hidden=embedded;
+      if(embedded){
+        img.src=p.src;
+      }else{
+        const path='api/inspection-sheet/entries/'+encodeURIComponent(row.entryId)+'/photos/'+encodeURIComponent(p.id);
+        img.src=path+(variant==='preview'?'':'?variant='+variant);
+        originalDownload.hidden=!p.originalAvailable;
+        originalDownload.href=path+'?variant=original';
+        originalDownload.download=p.name||'验货照片';
+        originalButton.disabled=!p.originalAvailable;originalButton.textContent=variant==='preview'?'查看原图':'返回预览图';
+      }
+      el.querySelector('[data-photo-quality]').textContent=qualityLabel(p);
       el.querySelector('[data-photo-title]').textContent='验货照片 '+(index+1)+' / '+photos.length;
       el.querySelector('[data-photo-name]').textContent=p.name||'验货照片';
       el.querySelector('[data-photo-prev]').disabled=index===0;el.querySelector('[data-photo-next]').disabled=index===photos.length-1;
@@ -172,7 +193,7 @@
       if(!loaded)return;const next=Math.max(1,Math.min(8,value)),ratio=next/scale;
       x=px-(px-x)*ratio;y=py-(py-y)*ratio;scale=next;paint();
     }
-    img.onload=()=>{if(closed)return;loaded=true;error.hidden=retry.hidden=true;el.querySelector('[data-photo-quality]').textContent=variant==='preview'?(photos[index].originalAvailable?'预览图':'预览图 · 原图不可用'):'原始高清图';img.style.width=img.naturalWidth+'px';img.style.height=img.naturalHeight+'px';img.style.visibility='visible';resize();reset();};
+    img.onload=()=>{if(closed)return;loaded=true;error.hidden=retry.hidden=true;el.querySelector('[data-photo-quality]').textContent=qualityLabel(photos[index]);img.style.width=img.naturalWidth+'px';img.style.height=img.naturalHeight+'px';img.style.visibility='visible';resize();reset();};
     img.onerror=()=>{if(closed)return;loaded=false;error.hidden=retry.hidden=false;el.querySelector('[data-photo-quality]').textContent=variant==='preview'?'预览图加载失败':'原图加载失败';};img.draggable=false;
     viewport.addEventListener('wheel',event=>{
       if(!loaded)return;event.preventDefault();if(nativeGesture)return;const rect=viewport.getBoundingClientRect();
@@ -205,7 +226,11 @@
       root.document.addEventListener('gestureend',finishNativeGesture,{passive:false});
       root.addEventListener('blur',endNativeGesture);
     },{passive:false});
-    viewport.addEventListener('pointerdown',event=>{if(!loaded||event.button>0||nativeGesture)return;event.preventDefault();viewport.focus({preventScroll:true});pointers.set(event.pointerId,local(event));viewport.setPointerCapture?.(event.pointerId);viewport.classList.add('is-dragging');});
+    let pressedOnBackground=false;
+    viewport.addEventListener('pointerdown',event=>{
+      pressedOnBackground=embedded&&event.target!==img&&!pointers.size&&event.button===0;
+      if(pressedOnBackground||!loaded||event.button>0||nativeGesture)return;
+      event.preventDefault();viewport.focus({preventScroll:true});pointers.set(event.pointerId,local(event));viewport.setPointerCapture?.(event.pointerId);viewport.classList.add('is-dragging');});
     viewport.addEventListener('pointermove',event=>{
       const hover=local(event);if(inside(hover))lastPointer=hover;if(nativeGesture)return;
       if(!pointers.has(event.pointerId))return;event.preventDefault();const before=[...pointers.values()],old=pointers.get(event.pointerId),point=local(event);pointers.set(event.pointerId,point);
@@ -217,6 +242,16 @@
     const release=event=>{pointers.delete(event.pointerId);if(!pointers.size)viewport.classList.remove('is-dragging');};
     for(const name of ['pointerup','pointercancel','lostpointercapture'])viewport.addEventListener(name,release);
     const closePhoto=()=>{el.close();cleanup();};
+    if(embedded){
+      el.addEventListener('click',event=>{
+        if(event.target===el||(pressedOnBackground&&event.target!==img))closePhoto();
+      });
+      viewport.addEventListener('keydown',event=>{
+        if(['+','=','-'].includes(event.key)){
+          event.preventDefault();zoom(scale+(event.key==='-'?-.25:.25));
+        }
+      });
+    }
     el.querySelector('[data-photo-close]').onclick=closePhoto;
     el.addEventListener('cancel',event=>{event.preventDefault();closePhoto();});
     el.querySelector('[data-photo-prev]').onclick=()=>{if(index>0){index--;show();}};
@@ -448,5 +483,9 @@
       message('历史预览完成，请核对后确认导入。');
     }catch(error){message(error.message,true);}finally{state.busy=false;}
   }
-  root.QcInspectionSummary={load,openPhoto:photoPreview,get busy(){return state.busy;}};
+  function openWorkbookPhotos(images,start,workbook){
+    const photos=images.map(image=>({src:image.currentSrc||image.src,name:'现场照片 · '+image.closest('td').dataset.addr}));
+    photoPreview(null,photos,start,workbook,images[start].closest('button'));
+  }
+  root.QcInspectionSummary={load,openPhoto:photoPreview,openWorkbookPhotos,get busy(){return state.busy;}};
 })(window);

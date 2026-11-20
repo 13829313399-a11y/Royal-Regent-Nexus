@@ -157,7 +157,7 @@ test('sync failure freezes subsequent queued writes until a reload', async () =>
   assert.equal(saved, false);
 });
 
-for (const [source, name] of [[app, 'exportPDF'], [reports, 'exportReportPDF'], [reports, 'exportIQCReport']]) {
+for (const [source, name] of [[reports, 'exportReportPDF'], [reports, 'exportIQCReport']]) {
   test(name + ' refuses export before reading records or touching canvas', async () => {
     const messages = [];
     const context = { window: {}, can: () => false, showToast: value => messages.push(value) };

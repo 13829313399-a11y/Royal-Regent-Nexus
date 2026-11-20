@@ -21,6 +21,7 @@ class PaperConfiguration(CartonPackingWeights):
     unit: str = Field(min_length=1, max_length=32)
     usage_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=8)
     quantity_rule: PaperQuantityRule | None = None
+    process_note: str = Field(default="", max_length=2000)
 
     @model_validator(mode="after")
     def reusable_quantity_rule(self):

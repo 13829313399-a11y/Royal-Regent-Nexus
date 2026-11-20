@@ -178,7 +178,13 @@ class CartonOrderLineCreate(CartonPackingWeights):
     unit_price: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
     currency: str = Field(default="CNY", min_length=3, max_length=8)
     price_source: str = Field(default="manual", max_length=128)
+    process_note: str | None = Field(default=None, max_length=2000)
     note: str = Field(default="", max_length=2000)
+
+    @field_validator("process_note")
+    @classmethod
+    def trim_process_note(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
 
     @field_validator(
         "packaging_type",
@@ -594,6 +600,7 @@ class CartonOrderLineOut(CartonPackingWeights):
     unit_price: Decimal
     currency: str
     price_source: str
+    process_note: str = ""
     note: str
 
 
@@ -609,6 +616,7 @@ class CartonOrderHistoryLineOut(CartonPackingWeights):
     unit_price: Decimal
     currency: str
     price_source: str
+    process_note: str = ""
     note: str
 
 
