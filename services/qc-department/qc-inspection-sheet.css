@@ -123,7 +123,7 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 #qis-review-controls:has(.qs-date-toggle[aria-expanded="true"]) {position:relative;z-index:20}
 #page-review #qis-review-controls .qis-review-filterbar {
   display:grid;
-  grid-template-columns:minmax(125px,210px) max-content minmax(85px,120px) auto;
+  grid-template-columns:minmax(0,var(--qc-search-width)) max-content minmax(85px,120px) auto;
   justify-content:start;
   align-items:center;
   gap:8px;
@@ -142,7 +142,7 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
   font-size:13px;
 }
 #qis-review-controls :is(.qis-review-search,.qs-date-toggle) {display:flex;align-items:center;gap:8px}
-#qis-review-controls .qis-review-search {max-width:210px}
+#qis-review-controls .qis-review-search {max-width:var(--qc-search-width)}
 #qis-review-controls .qis-review-search input {
   min-width:0;
   width:100%;
@@ -187,9 +187,6 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
   #page-review #qis-review-controls .qis-review-filterbar {grid-template-columns:repeat(2,minmax(0,1fr))}
   #qis-review-controls .qis-review-search {grid-column:1/-1}
   #qis-review-controls [data-reset-review] {justify-self:end}
-}
-@container (max-width:480px) {
-  #qis-review-controls .qis-review-search {max-width:none}
 }
 @media (pointer:coarse) {
   #qis-review-controls .qs-date-filter {--qs-control-height:44px}
@@ -462,7 +459,7 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 /* Pending filters and their single review action share one compact toolbar. */
 #qis-review-controls.qis-pending-review{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:11px}
 #page-review #qis-review-controls.qis-pending-review :is(.qis-review-filterbar,.qis-review-actions){display:contents}
-#qis-review-controls.qis-pending-review .qis-review-search{flex:0 1 148px;max-width:148px}
+#qis-review-controls.qis-pending-review .qis-review-search{flex:0 1 var(--qc-search-width)}
 
 #qis-review-controls #qisPendingDate {width:auto;min-width:100px;max-width:100%}
 #qis-review-controls.qis-pending-review [data-rfilter=result]{width:86px}
@@ -470,12 +467,6 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 #qis-review-controls.qis-pending-review .qis-review-batch-actions{margin-inline-start:auto}
 #qis-review-controls.qis-pending-review #qis-review-batch{min-width:116px;min-height:36px}
 #qis-review-controls.qis-pending-review :is(.qis-review-context,.qis-review-batch-actions label){display:none}
-@container (max-width:590px){
-  #qis-review-controls.qis-pending-review .qis-review-search{flex:1 1 180px;max-width:none}
-}
-@container (max-width:480px){
-  #qis-review-controls.qis-pending-review .qis-review-search{flex-basis:100%}
-}
 @media(pointer:coarse){
   #qis-review-controls.qis-pending-review #qis-review-batch{min-height:44px}
 

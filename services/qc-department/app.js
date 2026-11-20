@@ -3551,8 +3551,8 @@ function renderDefectLibPage() {
     ${canAdd ? '<button class="btn-primary" onclick="_openDefLibModal()">＋ 新增描述</button>' : ''}
   </div>
   <div style="margin:10px 0">
-    <input id="defLibSearch" type="text" placeholder="搜索描述或关键词..." class="form-input"
-           style="max-width:280px" oninput="renderDefectLibPage()"/>
+    <input id="defLibSearch" type="text" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"
+           style="max-width:var(--qc-search-width)" oninput="renderDefectLibPage()"/>
   </div>
   <div class="table-wrap" style="margin-top:8px">
     <table style="table-layout:fixed;width:100%">

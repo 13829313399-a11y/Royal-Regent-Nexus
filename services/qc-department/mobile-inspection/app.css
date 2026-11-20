@@ -18,7 +18,7 @@ svg{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:
 .field-title,.id-row,.id-extra,.row-head,.section-label,.photo-header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
 .secondary,.primary,.back,.icon-button{display:inline-flex;align-items:center;justify-content:center;gap:5px}
 .pending-badge{border-radius:7px;padding:4px 8px}
-.search{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 0 0 11px;border-radius:12px;background:var(--bg);color:var(--muted)}
+.search{width:min(100%,168px);display:flex;align-items:center;gap:8px;min-height:44px;padding:0 0 0 11px;border-radius:12px;background:var(--bg);color:var(--muted)}
 .search input{width:100%;min-width:0;padding:0;border:0;background:transparent;font-size:16px;min-height:44px}
 .search input::placeholder{color:var(--muted);font-size:14px}
 .search input::-webkit-search-cancel-button{display:none}
@@ -445,7 +445,7 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) .mobile-filter-subheading [data-filter-back]{display:flex;align-items:center;justify-self:start;gap:2px;min-height:44px;padding:0 4px 0 0;border:0;background:transparent;color:#007aff;font-size:16px;white-space:nowrap}
 #app:not(.web-layout) .mobile-filter-subheading [data-filter-back] svg{width:18px;height:20px}
 #app:not(.web-layout) .mobile-filter-subheading .mobile-filter-close{justify-self:end}
-#app:not(.web-layout) .mobile-filter-search{display:flex;align-items:center;gap:8px;flex:none;min-height:44px;margin-bottom:12px;padding:0 12px;border-radius:11px;background:#eaeaef;color:#86868b}
+#app:not(.web-layout) .mobile-filter-search{width:min(100%,168px);display:flex;align-items:center;gap:8px;flex:none;min-height:44px;margin-bottom:12px;padding:0 12px;border-radius:11px;background:#eaeaef;color:#86868b}
 #app:not(.web-layout) #filter-customer-search{width:100%;min-width:0;min-height:44px;padding:0;border:0;background:transparent;font-size:16px;outline-offset:0;color:#1d1d1f}
 #app:not(.web-layout) .mobile-filter-options-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scroll-padding:3px;padding-bottom:2px}
 #app:not(.web-layout) .mobile-filter-options button{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:50px;width:100%;padding:12px 14px;border:0;background:#fff;text-align:left;font-size:15px;position:relative}

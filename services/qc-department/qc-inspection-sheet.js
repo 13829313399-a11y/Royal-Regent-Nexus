@@ -872,7 +872,7 @@
       <div class="qis-review-filterbar" aria-label="审核中心筛选">
         <label class="qis-review-search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
-          <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" placeholder="客户 / PO / 货号">
+          <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" title="搜索客户、PO 或货号" placeholder="客户 / PO">
         </label>
         <select id="qisPendingDate" aria-label="计划验货日期筛选"><option value="">全部日期</option></select>
         <div class="qs-date-filter" id="qis-review-date"></div>

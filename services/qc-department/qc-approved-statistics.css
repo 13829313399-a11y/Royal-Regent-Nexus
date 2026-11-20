@@ -330,7 +330,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 
   body.qstats-shell #defLibSearch {
     margin-inline:22px;
-    max-width:min(240px,calc(100% - 44px)) !important;
+    max-width:min(var(--qc-search-width),calc(100% - 44px)) !important;
   }
 
   body.qstats-shell #page-defectlib .table-wrap > table {
@@ -512,7 +512,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   #page-sales-schedule #qsToolbar {
     --qs-control-height: 36px;
     display: grid;
-    grid-template-columns: max-content 210px 170px 140px max-content minmax(0,1fr) max-content;
+    grid-template-columns: max-content var(--qc-search-width) 170px 140px max-content minmax(0,1fr) max-content;
     grid-template-areas: "selection search date customer reset space push";
     align-items: center;
     gap: 8px;
@@ -533,7 +533,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     padding-right: 10px;
     border-right: 1px solid var(--border);
   }
-  #page-sales-schedule #qsToolbar .qs-search { grid-area: search; width: 210px; max-width: 100%; }
+  #page-sales-schedule #qsToolbar .qs-search { grid-area: search; width: var(--qc-search-width); max-width: 100%; }
   #page-sales-schedule #qsToolbar .qs-date-filter { grid-area: date; width: 170px; max-width: 100%; }
   #page-sales-schedule #qsToolbar .qs-customer { grid-area: customer; width: 140px; max-width: 100%; }
   #page-sales-schedule #qsToolbar .qs-filter-actions { grid-area: reset; }
@@ -585,7 +585,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   #page-sales-schedule #qsToolbar #qsRefresh:hover:not(:disabled) { background: var(--bg-hover); }
   @container (max-width: 1040px) {
     #page-sales-schedule #qsToolbar {
-      grid-template-columns: max-content minmax(180px,210px) minmax(120px,170px) minmax(100px,140px) max-content minmax(0,1fr) max-content;
+      grid-template-columns: max-content minmax(120px,var(--qc-search-width)) minmax(120px,170px) minmax(100px,140px) max-content minmax(0,1fr) max-content;
       gap: 6px;
       padding: 10px;
     }
@@ -598,7 +598,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
       grid-template-columns: max-content 140px 92px minmax(0,1fr) max-content;
       grid-template-areas: "selection search search . push" "date customer reset . .";
     }
-    #page-sales-schedule #qsToolbar .qs-search { width: 210px; }
+    #page-sales-schedule #qsToolbar .qs-search { width: var(--qc-search-width); }
     #page-sales-schedule #qsToolbar .qs-date-filter { width: 170px; }
     #page-sales-schedule #qsToolbar .qs-customer { width: 140px; }
   }
@@ -621,12 +621,12 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 @media screen {
   :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) .qs-date-toggle { height: auto; }
   #page-sales-schedule #qsToolbar:has(.qs-selection) {
-    grid-template-columns: max-content 210px max-content 140px max-content minmax(0,1fr) max-content;
+    grid-template-columns: max-content var(--qc-search-width) max-content 140px max-content minmax(0,1fr) max-content;
   }
   #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-date-filter { width: max-content; max-width: 100%; }
   @container (max-width: 1040px) {
     #page-sales-schedule #qsToolbar:has(.qs-selection) {
-      grid-template-columns: max-content minmax(180px,210px) max-content minmax(100px,140px) max-content minmax(0,1fr) max-content;
+      grid-template-columns: max-content minmax(120px,var(--qc-search-width)) max-content minmax(100px,140px) max-content minmax(0,1fr) max-content;
     }
   }
   @container (max-width: 960px) {
@@ -634,13 +634,19 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
       grid-template-columns: max-content minmax(100px,140px) minmax(40px,92px) minmax(0,1fr) max-content;
       grid-template-areas: "selection search search . push" "date customer reset . .";
     }
-    #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-search { width: 210px; }
+    #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-search { width: var(--qc-search-width); }
     #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-customer { width: 140px; }
   }
   @container (max-width: 600px) {
     #page-sales-schedule #qsToolbar:has(.qs-selection) {
       grid-template-columns: minmax(0,1fr) minmax(0,1fr);
       grid-template-areas: "selection selection" "search search" "date date" "customer customer" "reset push";
+    }
+  }
+  @container (350px <= width <= 600px) {
+    #page-sales-schedule #qsToolbar:has(.qs-selection) {
+      grid-template-columns: max-content minmax(0,1fr);
+      grid-template-areas: "selection search" "date date" "customer customer" "reset push";
     }
   }
 }

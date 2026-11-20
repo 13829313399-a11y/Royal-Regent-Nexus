@@ -34,7 +34,7 @@
         <div class="qsum-filter-bar">
           <label class="qsum-search">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
-            <input id="qsum-search" type="search" placeholder="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总">
+            <input id="qsum-search" type="search" placeholder="搜索汇总" title="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总">
           </label>
           <div class="qsum-date-filters" role="group" aria-label="验货日期筛选">
             <select id="qsum-year" aria-label="汇总年份"></select>
