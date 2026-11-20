@@ -7,6 +7,7 @@ import { http, getApiErrorMessage } from '@/lib/http'
 import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { mountQcSelects } from '../../services/qc-department/qc-select.js'
 
 type FactoryOption = { id: string; label: string }
 interface QcFrame extends Window {
@@ -221,7 +222,10 @@ function scheduleViewport() {
   cancelAnimationFrame(viewportFrame)
   viewportFrame = requestAnimationFrame(measureViewport)
 }
+const host = ref<HTMLElement | null>(null)
+let unmountSelects: (() => void) | undefined
 onMounted(() => {
+  if (host.value) unmountSelects = mountQcSelects(host.value)
   document.documentElement.classList.add('qc-viewport-locked')
   viewport = window.visualViewport
   window.addEventListener('resize', scheduleViewport)
@@ -240,6 +244,7 @@ function permitLeave() {
 }
 const unregister = registerFactoryChangeGuard(permitLeave)
 onBeforeUnmount(() => {
+  unmountSelects?.()
   unregister(); sequence++
   disconnectLayout()
   cancelAnimationFrame(viewportFrame)
@@ -319,7 +324,7 @@ watch(frame, scheduleViewport, { flush: 'post' })
 </script>
 
 <template>
-  <main class="qc-department-host" :style="viewportStyle">
+  <main ref="host" class="qc-department-host" :style="viewportStyle">
     <header class="qc-host-header flex flex-wrap items-center justify-between gap-2 border-b bg-white px-4 py-2 text-slate-900">
       <RouterLink :to="{ path: '/modules/qc', query: { factory: contextId } }" class="text-sm font-semibold text-teal-700">返回 QC 模块中心</RouterLink>
       <h1 class="text-sm font-semibold">{{ factoryName }} · QC 验货工作台</h1>
@@ -430,3 +435,4 @@ watch(frame, scheduleViewport, { flush: 'post' })
 }
 @media (prefers-reduced-motion:reduce) { .qc-host-header * { transition:none!important; } }
 </style>
+<style src="../../services/qc-department/qc-select.css"></style>
