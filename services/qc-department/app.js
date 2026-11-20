@@ -92,10 +92,6 @@ function getReportCompanyLabel() {
   return _esc(getCompanyName()) + (window.__QC_REFERENCE_DATA?.count ? ' · 模板参考（非本厂实绩）' : '');
 }
 function getSiteObj(id)   { return QC_SITES.find(s => s.id === id) || QC_SITES[0]; }
-function returnToNexus() {
-  if (window.__QC_CONFIRM_FACTORY_LEAVE && !window.__QC_CONFIRM_FACTORY_LEAVE()) return;
-  window.parent.location.assign('/modules/qc?factory=' + encodeURIComponent(window.__QC_NEXUS.factory));
-}
 
 function _showApp() {
   _initSidebar();
@@ -123,11 +119,8 @@ function _renderUserBadge() {
   const el = document.getElementById('userBadge');
   if (!el || !u) return;
   el.innerHTML =
-    `<span class="user-badge-company">${getSiteObj(getCompanyObj().site).name} · ${getCompanyName()}</span>` +
-    `<span class="user-badge-name">${_esc(u.name || u.username)}</span>` +
-    `<span class="user-badge-role">Nexus 账号</span>` +
-    `<button class="user-badge-logout" onclick="returnToNexus()">返回 Nexus</button>`;
-  window.__QC_RENDER_FACTORY_SELECTOR?.();
+    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span><span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
+    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>Nexus 账号</small></div></details>`;
 }
 
 /* ── 权限应用（按角色显示/隐藏按钮）── */
@@ -450,8 +443,6 @@ function showPage(name, focusReportType = false) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg  = document.getElementById('page-' + name);
   const inReportCenter = REPORT_CENTER_PAGES.includes(name);
-  const pagePdf = document.getElementById('qcPagePdf');
-  if (pagePdf) pagePdf.hidden = inReportCenter || name === 'yearly';
   const navPage = inReportCenter ? 'report-center' : name;
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
@@ -541,16 +532,9 @@ function updateTopKpis() {
     const weekR  = data.filter(r => r.date >= ws && r.date <= we);
     const weekF  = weekR.filter(r => isFail(r)).length;
 
-    const byS = groupBy(data, 'supplier');
-    const hiRisk = Object.values(byS).filter(list => {
-      if (list.length < 2) return false;
-      return list.filter(r => isFail(r)).length / list.length >= 0.15;
-    }).length;
-
-    setText('kpiPassRate',  rateT);
-    setText('kpiWeekFail',  weekF);
-    setText('kpiHighRisk',  hiRisk);
-    setText('kpiWeekBatch', weekR.length);
+    setText('kpiPassRate', rateT);
+    setText('kpiWeekFail', weekF);
+    document.getElementById('kpiWeekFail')?.classList.toggle('has-fail', weekF > 0);
 
     /* 审核中心：待审核数量导航角标 */
     const _rb = document.getElementById('reviewNavBadge');
@@ -4706,17 +4690,6 @@ function renderSupplierReport() {
 /* ════════════════════════════════════════
    §14  EXPORT
 ════════════════════════════════════════ */
-function exportPDF(type) {
-  if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  /* 报告中心只保留 Excel；供应商报告保留独立 PDF。 */
-  const page = type || currentPage;
-  if (REPORT_CENTER_PAGES.includes(page) || page === 'yearly') return;
-  if (page === 'supplier-report' || page === 'supplier')        { exportReportPDF('supplier'); return; }
-  /* 其他页面保持浏览器打印 */
-  showToast('正在调用打印对话框，可选择"另存为PDF"…', 'info');
-  setTimeout(() => window.print(), 400);
-}
-
 function _qcApiBase() {
   const p = location.pathname.replace(/[^/]*$/, '');
   return p.replace(/\/$/, '');

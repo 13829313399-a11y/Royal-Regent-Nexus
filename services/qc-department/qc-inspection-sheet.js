@@ -95,7 +95,7 @@
   function status(id,skipRecordControls=false){
     const d=model.drafts.get(id),node=root.document.querySelector('[data-save-status="'+id+'"]');
     if(!node||!d)return;
-    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':(d.busy)?'保存中…':d.dirty?'等待自动保存…':'';
+    node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':'';
     node.hidden=!node.textContent;
     node.closest('.qis-save-feedback').hidden=node.hidden;
     node.classList.toggle('qis-error',Boolean(d.error));
@@ -385,6 +385,8 @@
     edit(row.id,'inspectionExecution',{...current,inspector:name,inspectorId:identity});
   }
   function editExecution(id,key,value,immediate=false){if(model.submitBusy||model.reviewBusy)return;if(key==='inspector')return editInspector(byId(id),value);const d=draft(byId(id));d.executionDirty.add(key);edit(id,'inspectionExecution',{...d.inspectionExecution,[key]:value},immediate);}
+  // Decimal text inputs cannot be stepped by trackpad/wheel gestures. The save API
+  // retains the existing numeric/range/precision validation and string payload.
   function reviewEditor(row,key,label,type,value){
     const attr=' class="qis-review-input" '+(executionFields[key]?'data-execution-field':'data-review-field')+'="'+key+'" aria-label="'+esc(label)+'"';
     if(key==='institution'){
@@ -393,7 +395,7 @@
       if(key==='institution'&&!list.length)return '<input'+attr+' type="text" maxlength="255" placeholder="填写第三方机构" value="'+esc(value??'')+'">';
       return '<select class="qis-review-input" data-person-field="'+key+'" aria-label="'+esc(label)+'"><option value="">'+(list.length?'未填写':'尚未配置选项')+'</option>'+ (historical?'<option value="__history__" selected>'+esc(value)+'（历史）</option>':'')+list.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===selected?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select>';
     }
-    const control=key==='reportStatus'?'<select'+attr+'><option value="">未填写</option>'+[...new Set(['有','无',value].filter(v=>v!==undefined&&v!==null&&String(v).trim()))].map(v=>'<option value="'+esc(v)+'" '+(v===value?'selected':'')+'>'+esc(v)+'</option>').join('')+'</select>':type==='multiline'?'<textarea rows="2" maxlength="'+(['otherRemark','customerRequirements'].includes(key)?20000:4000)+'"'+attr+'>'+esc(value)+'</textarea>':'<input size="1" type="'+type+'"'+(type==='number'?' min="0" max="1000000000000" step="0.0001"':type==='text'?' maxlength="'+(executionFields[key]?255:200)+'"':'')+attr+' value="'+esc(value)+'">';
+    const control=key==='reportStatus'?'<select'+attr+'><option value="">未填写</option>'+[...new Set(['有','无',value].filter(v=>v!==undefined&&v!==null&&String(v).trim()))].map(v=>'<option value="'+esc(v)+'" '+(v===value?'selected':'')+'>'+esc(v)+'</option>').join('')+'</select>':type==='multiline'?'<textarea rows="2" maxlength="'+(['otherRemark','customerRequirements'].includes(key)?20000:4000)+'"'+attr+'>'+esc(value)+'</textarea>':'<input size="1" type="'+(type==='number'?'text':type)+'"'+(type==='number'?' inputmode="decimal"':type==='text'?' maxlength="'+(executionFields[key]?255:200)+'"':'')+attr+' value="'+esc(value)+'">';
     return control+(model.view==='review'?'':'<small data-review-status="'+row.id+'" role="status"></small>');
   }
   function detailEditor(id,key){
@@ -466,7 +468,7 @@
       if(key==='inspectionExecution.institution'&&reviewGroup(row)!=='客验')return cell('—',' class="qis-not-applicable"');
       if(key==='result'){
         const select='<select data-result="'+row.id+'" aria-label="'+esc(row.poNo+' '+row.productNo)+' 验货结果" '+disabled+'><option value="" '+(!d.result?'selected':'')+'>未填写</option>'+(d.result&&!model.results.includes(d.result)?'<option disabled selected value="'+esc(d.result)+'">历史：'+esc(d.result)+(canEdit(row)?'（需重选）':'')+'</option>':'')+model.results.map(value=>'<option value="'+esc(value)+'" '+(d.result===value?'selected':'')+'>'+esc(value)+'</option>').join('')+ '</select>';
-        return cell((model.view==='review'?'':mobileKey)+'<div class="qis-result-editor">'+reviewValue(row,'验货结果',d.result,select)+'<div class="qis-save-feedback"><span data-save-status="'+row.id+'" role="status"></span><button data-retry="'+row.id+'" hidden>重试</button></div></div>');
+        return cell((model.view==='review'?'':mobileKey)+'<div class="qis-result-editor">'+reviewValue(row,'验货结果',d.result,select)+'<div class="qis-save-feedback" hidden><span data-save-status="'+row.id+'" role="status"></span><button data-retry="'+row.id+'" hidden>重试</button></div></div>');
       }
       if(key==='remark')return cell((model.view==='review'?'':mobileKey)+reviewValue(row,'备注',d.remark,'<textarea data-remark="'+row.id+'" rows="2" maxlength="20000" aria-label="'+esc(row.poNo+' '+row.productNo)+' 备注" '+disabled+'>'+esc(d.remark)+'</textarea>'));
       if(key==='inspectionProblem')return cell(reviewValue(row,'验货问题',d.inspectionProblem,'<textarea data-problem="'+row.id+'" rows="2" maxlength="20000" aria-label="验货问题" '+disabled+'>'+esc(d.inspectionProblem)+'</textarea>'));

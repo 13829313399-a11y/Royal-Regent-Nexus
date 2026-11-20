@@ -191,8 +191,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   body.qstats-shell .topbar .theme-switch-label { width:36px; font-size:11px; }
   body.qstats-shell .topbar .theme-switch[aria-checked="true"] .theme-switch-thumb { transform:translateX(40px); }
   body.qstats-shell #userBadge { gap:4px !important; margin-right:0 !important; }
-  body.qstats-shell #userBadge :is(.user-badge-name,.user-badge-role,.user-badge-logout) { font-size:10px; }
-  body.qstats-shell #userBadge .user-badge-logout { padding:3px 5px; }
+  body.qstats-shell #userBadge :is(.user-badge-name,.user-badge-role) { font-size:10px; }
 }
 
 /* Extend the accepted statistics palette to the embedded QC workspace.
@@ -572,15 +571,13 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     padding: 0 10px;
     white-space: nowrap;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh {
-    width: var(--qs-control-height);
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--text-dim);
-    flex-shrink: 0;
+  :is(#page-sales-schedule #qsToolbar,#page-review,#qmtView,#qwtView,.qir-dialog,#qstats-root) button.qc-refresh-icon {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:var(--qs-control-height,36px); height:var(--qs-control-height,36px);
+    min-width:0; padding:0; flex-shrink:0; border:0; border-radius:6px;
+    background:transparent; box-shadow:none; color:var(--text-dim); cursor:pointer;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh::before {
+  button.qc-refresh-icon::before {
     content: "";
     width: 14px;
     height: 14px;
@@ -594,7 +591,13 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     color: var(--text-dim);
     opacity: 1;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh:hover:not(:disabled) { background: var(--bg-hover); }
+  :is(#page-sales-schedule #qsToolbar,#page-review,#qmtView,#qwtView,.qir-dialog,#qstats-root) button.qc-refresh-icon:hover:not(:disabled) {
+    background:var(--bg-hover); color:var(--text-hi);
+  }
+  button.qc-refresh-icon:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  @media (pointer:coarse) {
+    :is(#page-sales-schedule #qsToolbar,#page-review,#qmtView,#qwtView,.qir-dialog,#qstats-root) button.qc-refresh-icon { width:44px; min-height:44px; }
+  }
   @media (pointer: fine) and (min-width: 641px) {
     #page-sales-schedule #qsToolbar #qsRefresh { width: 26px; }
   }

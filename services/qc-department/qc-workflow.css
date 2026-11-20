@@ -50,9 +50,6 @@
 @media(max-width:640px){.qwf-native input,.qwf-native select,.qwf-native textarea{font-size:16px!important}}
 
 /* Keep the existing company badge as the QC factory switch entry. */
-#userBadge .qc-factory-select{font:inherit;font-weight:600;color:var(--accent);background:var(--bg-input);border:1px solid var(--border-hi);border-radius:8px;min-height:36px;max-width:180px;padding:4px 8px;cursor:pointer}
-#userBadge .qc-factory-select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-#userBadge .qc-factory-select:disabled{cursor:wait;opacity:.65}
 
 /* Inspection detail drawer: list geometry and review dialogs remain untouched. */
 .qwf-dialog.qwf-drawer{position:fixed;inset:auto 0 0 var(--qwf-drawer-left,0px);margin:0;width:auto;max-width:none;height:60dvh;max-height:60dvh;border-radius:14px 14px 0 0;box-shadow:0 -10px 35px #0f172a22;z-index:500}

@@ -308,11 +308,11 @@ test('detail entrances count valid business rows, disappear after empty save, an
  }finally{p.dom.window.close();}
 });
 
-test('review autosaves silently while pending saves, failures and conflicts remain visible',async()=>{
+test('review autosaves stay silent in flight while failures and conflicts remain visible',async()=>{
  const p=await page();try{
   const label=()=>p.d.querySelector('[data-save-status=a]');assert.equal(label().textContent,'');assert.equal(p.d.querySelector('[data-review-status]'),null);
   let release;const fetch=p.w.fetch;p.w.fetch=async(url,opts)=>url.endsWith('/save')?new Promise(resolve=>{release=()=>fetch(url,opts).then(resolve);}):fetch(url,opts);
-  p.w.QcInspectionSheet.edit('a','remark','正在保存',true);assert.match(label().textContent,/保存中/);release();await p.w.QcInspectionSheet.flush();assert.equal(label().textContent,'');assert.ok(label().hidden);
+  p.w.QcInspectionSheet.edit('a','remark','正在保存',true);assert.equal(label().textContent,'');assert.ok(label().hidden);assert.equal(p.w.QcInspectionSheet.navigationState().busy,true);release();await p.w.QcInspectionSheet.flush();assert.equal(label().textContent,'');assert.ok(label().hidden);
   p.w.fetch=async(url,opts)=>url.endsWith('/save')?{ok:false,status:409,json:async()=>({detail:'记录已更新，请核对版本'})}:fetch(url,opts);
   p.w.QcInspectionSheet.edit('a','remark','冲突输入',true);await tick();assert.match(label().textContent,/保存失败.*记录已更新/);assert.equal(p.d.querySelector('[data-retry=a]').textContent,'核对版本并重试');assert.equal(p.w.QcInspectionSheet.model.drafts.get('a').remark,'冲突输入');
   assert.match(label().textContent,/保存失败/);assert.equal(label().hidden,false);
