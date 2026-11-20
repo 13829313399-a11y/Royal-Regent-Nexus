@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
@@ -53,6 +55,7 @@ from app.services.molding_sample import (
     ensure_molding_create_access,
     ensure_molding_cost_read,
     ensure_permission_in_any_factory,
+    factory_label,
     get_exchange_rate,
     get_board_summary,
     get_prices,
@@ -67,6 +70,8 @@ from app.services.molding_sample import (
     list_requisitions,
     list_sensitive_audit_logs,
     load_order,
+    material_unit_prices,
+    monthly_export_warehouse_records,
     order_authorization_factory_id,
     has_notification_scope_permission,
     notification_module_permission,
@@ -87,6 +92,7 @@ from app.services.molding_sample_excel import (
     export_orders_to_excel,
     parse_order_excel,
 )
+from app.services.molding_sample_monthly_excel import build_production_month_workbook
 
 router = APIRouter()
 
@@ -115,7 +121,7 @@ def serialize_order_timing(order) -> MoldingSampleOrderOut:
     return order_out.model_copy(update=updates) if updates else order_out
 
 
-def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResponse:
+def serialize_order(order, current_user: AuthContext, *, include_history: bool = True) -> MoldingSampleDetailResponse:
     authorization_factory_id = order_authorization_factory_id(current_user, order)
     read_source = molding_read_access(current_user, authorization_factory_id) or "local"
     can_view_cost = can_view_molding_cost(current_user, authorization_factory_id, read_source)
@@ -133,6 +139,9 @@ def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResp
             )
             for item in items
         ]
+    fields = dict(order=serialize_order_timing(order), items=items, read_source=read_source, can_view_cost=can_view_cost)
+    if not include_history:
+        return MoldingSampleDetailResponse(**fields)
     notifications = [
         notification
         for notification in order.notifications
@@ -151,15 +160,12 @@ def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResp
         )
     ]
     return MoldingSampleDetailResponse(
-        order=serialize_order_timing(order),
-        items=items,
+        **fields,
         audit_logs=list(order.audit_logs),
         dispatch_logs=list(order.dispatch_logs),
         notifications=notifications,
         problems=list(order.problems),
         trial_reports=list(order.trial_reports),
-        read_source=read_source,
-        can_view_cost=can_view_cost,
     )
 
 
@@ -290,6 +296,50 @@ def get_injection_production_tasks(
             production_factory_id=production_factory_id,
         )
     ]
+
+
+@router.get("/api/injection/production-tasks/monthly-export")
+def export_production_task_month(
+    production_factory_id: str = Query(..., min_length=1),
+    month: str = Query(..., pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$"),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    ensure_export_permission(db, current_user, production_factory_id)
+    orders = list_production_tasks(db, current_user, production_factory_id, order_month=month)
+    if not orders:
+        return Response(status_code=204)
+
+    # A dispatched task remains a document of its origin factory. Preserve the
+    # same document export boundary as the engineering single/batch endpoints.
+    for origin_id in sorted({order.factory_id for order in orders} - {production_factory_id}):
+        try:
+            ensure_export_permission(db, current_user, origin_id)
+        except HTTPException as exc:
+            if exc.status_code != 403:
+                raise
+            raise HTTPException(403, f"该月包含来自{factory_label(origin_id)}的啤办单，需要该来源厂的导出权限") from exc
+
+    factory = factory_label(production_factory_id)
+    records = [serialize_order(order, current_user, include_history=False) for order in orders]
+    prices = material_unit_prices(get_prices(db)) if any(record.can_view_cost for record in records) else {}
+    requisitions, movements = monthly_export_warehouse_records(
+        db, current_user, production_factory_id, [order.id for order in orders],
+    )
+    filename = quote(f"{factory}-{month}-啤办单对账明细.xlsx")
+    return Response(
+        content=build_production_month_workbook(
+            records, factory, month, prices=prices, requisitions=requisitions, movements=movements,
+        ),
+        media_type=XLSX_MIME,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="molding-sample-{production_factory_id}-{month}.xlsx"; '
+                f"filename*=UTF-8''{filename}"
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/api/injection/{order_id}", response_model=MoldingSampleDetailResponse)
