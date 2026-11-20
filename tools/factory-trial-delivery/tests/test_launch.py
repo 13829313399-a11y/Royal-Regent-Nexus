@@ -60,7 +60,8 @@ def ready(root, process):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            pytest.fail("Launcher stopped before readiness: " + process.stdout.read())
+            output = process.stdout.read() if process.stdout else (root / 'data/startup-console.log').read_text(encoding='utf-8', errors='replace')
+            pytest.fail("Launcher stopped before readiness: " + output)
         try:
             value = json.loads((root / "data/running.json").read_text())
             if launcher.instance_is_ready(value["port"], value["id"]):
@@ -150,3 +151,51 @@ def test_failed_server_start_has_nonzero_exit_and_no_running_marker(tmp_path):
         assert not (root / "data/running.json").exists()
     finally:
         stop(process)
+
+
+def test_original_error_is_logged_when_console_write_also_fails(tmp_path):
+    root = package(tmp_path)
+    (root / 'trial.json').write_text('{"kind":"invalid"}', encoding='utf-8')
+    code = '''
+import runpy, sys
+class BrokenConsole:
+    def write(self, value): raise OSError(22, 'console write failed')
+    def flush(self): pass
+sys.stderr = BrokenConsole()
+sys.argv = [sys.argv[1], '--no-browser']
+runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+    result = subprocess.run([sys.executable, '-c', code, str(root / 'launch.py')],
+        capture_output=True, timeout=10)
+    assert result.returncode == 1
+    error = (root / 'data/startup-error.log').read_text(encoding='utf-8')
+    assert 'RuntimeError: 试用包类型不正确' in error
+    assert 'Traceback (most recent call last)' in error
+
+
+def test_ascii_console_does_not_hide_original_startup_error(tmp_path):
+    root = package(tmp_path)
+    (root / 'trial.json').write_text('{"kind":"invalid"}', encoding='utf-8')
+    result = subprocess.run([sys.executable, str(root / 'launch.py'), '--no-browser'],
+        env={**os.environ, 'PYTHONIOENCODING':'ascii:strict'}, capture_output=True, timeout=10)
+    assert result.returncode == 1
+    assert b'Startup failed' in result.stderr
+    assert 'RuntimeError: 试用包类型不正确' in (root / 'data/startup-error.log').read_text(encoding='utf-8')
+
+
+def test_redirected_utf8_startup_keeps_service_and_diagnostics_available(tmp_path):
+    root = package(tmp_path)
+    (root / 'data').mkdir()
+    path = root / 'data/startup-console.log'
+    with path.open('ab') as output:
+        options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {}
+        process = subprocess.Popen([sys.executable, '-X', 'utf8', str(root / 'launch.py'), '--no-browser'],
+            cwd=root.parent, env={**os.environ, 'PYTHONIOENCODING':'utf-8:backslashreplace', 'PYTHONUNBUFFERED':'1'},
+            stdout=output, stderr=subprocess.STDOUT, **options)
+        try:
+            ready(root, process)
+            assert '合成启动测试' in path.read_text(encoding='utf-8')
+        finally:
+            stop(process)
+    assert process.returncode in (0, 130, -signal.SIGINT)
+    assert not (root / 'data/running.json').exists()
