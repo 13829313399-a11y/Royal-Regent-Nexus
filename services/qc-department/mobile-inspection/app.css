@@ -31,8 +31,9 @@ svg{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:
 .filter-trigger.active{color:var(--primary);font-weight:600}
 .filter-divider{width:1px;height:14px;background:var(--line);flex:none}
 .filter-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-height:min(42dvh,320px);overflow:auto;padding:3px;overscroll-behavior:contain}
-.filter-option{min-height:44px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--white);overflow-wrap:anywhere}
-.filter-option[aria-pressed=true]{background:var(--soft);border-color:var(--primary);color:var(--primary);font-weight:600}
+.filter-option{min-height:44px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow-wrap:anywhere}
+.filter-option:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.filter-option[aria-pressed=true]{background:var(--soft);border-color:var(--line-strong);color:var(--accent-deep);font-weight:600}
 .filter-apply{width:100%;min-height:48px;margin-top:18px}
 .filter-reset{width:100%;min-height:44px;border:0;background:none;color:var(--muted);margin-top:4px}
 dialog.filter-sheet::before{content:"";display:block;width:34px;height:4px;border-radius:3px;background:var(--line);margin:0 auto 8px}
@@ -483,6 +484,7 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) .mobile-filter-options button+button::before{content:"";position:absolute;left:14px;right:14px;top:0;height:1px;background:#e5e5ea}
 #app:not(.web-layout) .mobile-filter-options button>span{min-width:0;overflow-wrap:anywhere}
 #app:not(.web-layout) .mobile-filter-options button>svg{width:19px;height:19px;color:#007aff;stroke-width:2}
+#app:not(.web-layout) .mobile-filter-options button[aria-pressed=true]{background:#f2f7ff;color:var(--accent-deep)}
 #app:not(.web-layout) .mobile-filter-setting:active,#app:not(.web-layout) .mobile-filter-options button:active{background:#f0f0f4}
 #app:not(.web-layout) #filter-customer-empty{margin:16px 0;text-align:center;color:#86868b;font-size:14px}
 #app:not(.web-layout) .filter-page-forward{animation:qc-filter-forward 180ms ease-out}
