@@ -36,6 +36,7 @@ STATIC_FILES = {
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",
     "qc-approved-statistics.js", "qc-approved-statistics.css",
+    "qc-inspection-print.js", "qc-inspection-print.css",
     "index.html", "app.js", "style.css", "mobile.js", "mobile.css",
     "qc-backend.js", "report_export.js", "ai-ocr.js", "nexus-integration.js", "qc-schedule.js", "qc-workflow.js", "qc-workflow.css", "qc-photo-paste.js", "qc-inspection-audit.js", "qc-inspection-sheet.js", "qc-inspection-sheet.css", "qc-inspection-summary.js", "qc-inspection-summary.css",
 }
@@ -521,7 +522,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
             return Response(content if request.method=='GET' else b'',media_type=mime,headers=headers)
         raise HTTPException(404,'接口不存在')
     if request.method != 'POST':raise HTTPException(405,'不支持此方法')
-    _ensure_permission(db,user,'qc_inspection:result_write',factory_id)
+    exporting = path in {'print-preview', 'schedule-excel'}
+    _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
     if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'不接受跨站写入')
     if request.headers.get('content-type','').split(';')[0].lower()!='application/json':raise HTTPException(415,'请使用 JSON 提交')
     raw=bytearray()
@@ -532,6 +534,15 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         body=json.loads(raw)
         if not isinstance(body,dict):raise ValueError()
     except (ValueError,UnicodeError):raise HTTPException(400,'无效 JSON') from None
+    if path == 'schedule-excel':
+        from app.services import qc_inspection_schedule_excel
+        content = await run_in_threadpool(qc_inspection_schedule_excel.export, factory_id, body)
+        return Response(content, media_type=service.MIME, headers={**NO_CACHE,
+            'Content-Disposition': "attachment; filename=QC-schedule.xlsx; filename*=UTF-8''" + quote('客户验货排期表.xlsx')})
+    if path == 'print-preview':
+        from app.services import qc_inspection_print
+        result = await run_in_threadpool(qc_inspection_print.preview, factory_id, body)
+        return JSONResponse(result, headers=NO_CACHE)
     notification_action = notification_actions.get(path.removesuffix('/shown')) if path.endswith('/shown') else None
     if notification_action:
         result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)

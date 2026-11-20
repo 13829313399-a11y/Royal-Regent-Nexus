@@ -150,11 +150,11 @@ test('refresh adds task choices, retains valid choices, and resets removed choic
   p.rows.splice(0);await p.w.QcInspectionSheet.load();assert.deepEqual(optionValues(p,'qisTaskDate'),['']);assert.deepEqual(optionValues(p,'qisTaskCustomer'),['']);
  }finally{p.dom.window.close();}
 });
-test('search comes first, print stays last, and reset clears task filters and restores date order',async()=>{
+test('date and customer precede search, print stays last, and reset clears task filters and restores date order',async()=>{
  const p=await page();try{
   const input=p.d.getElementById('searchInput'),toolbar=p.d.querySelector('#page-records .records-toolbar-inner');
-  assert.equal(toolbar.firstElementChild.querySelector('input'),input);assert.equal(input.type,'search');assert.equal(input.getAttribute('oninput'),'filterRecords()');assert.ok(p.d.getElementById('recordsDateFilter').hidden);
-  assert.deepEqual([...toolbar.querySelectorAll('select, .records-reset, #qcInspectionPrint')].map(el=>el.id||el.textContent),['qisTaskDate','qisTaskCustomer','重置筛选','qcInspectionPrint']);
+  assert.equal(input.type,'search');assert.equal(input.getAttribute('oninput'),'filterRecords()');assert.ok(p.d.getElementById('recordsDateFilter').hidden);
+  assert.deepEqual([...toolbar.querySelectorAll('select, #searchInput, .records-reset, #qcInspectionPrint')].map(el=>el.id||el.textContent),['qisTaskDate','qisTaskCustomer','searchInput','重置筛选','qcInspectionPrint']);
   choose(p,'qisTaskDate','2026-10-29');choose(p,'qisTaskCustomer',customerKey('','客户中文'));input.value='长PO-0123456789'.repeat(15);p.w.QcInspectionSheet.render();assert.equal(input.value,'长PO-0123456789'.repeat(15));
   const app=fs.readFileSync(path.join(sourceRoot,'services/qc-department/app.js'),'utf8');const start=app.indexOf('function resetRecordsFilters()'),end=app.indexOf('\nfunction ',start+1);p.w.filterRecords=()=>p.w.QcInspectionSheet.render();p.w.closeRecordsDateFilter=()=>{};p.w.syncRecordsDateFilter=()=>{};p.w.eval(app.slice(start,end));p.d.querySelector('.qis-date-sort').click();p.w.resetRecordsFilters();assert.equal(p.w.QcInspectionSheet.model.recordsSort,'date-asc');
   assert.equal(input.value,'');assert.equal(p.d.getElementById('qisTaskDate').value,'');assert.equal(p.d.getElementById('qisTaskCustomer').value,'');assert.equal(p.d.getElementById('filterDateFrom').value,'');assert.equal(visibleIds(p).length,3);

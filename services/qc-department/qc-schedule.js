@@ -84,7 +84,9 @@
   function renderTable() {
     const body=el('qsRows'), error=el('qsFilterError');let rows;
     error.textContent='';
-    try { rows=filterRows(model.items,filters()); } catch(e) { error.textContent=e.message;rows=[]; }
+    const activeFilters=filters();
+    el('qsReset').hidden=!Object.values(activeFilters).some(Boolean);
+    try { rows=filterRows(model.items,activeFilters); } catch(e) { error.textContent=e.message;rows=[]; }
     if(!rows.length) {
       const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期，可点击“新增验货”添加排期':'没有符合筛选条件的排期';
       body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户筛选或搜索排期。':'')+'</p></div></td></tr>';
@@ -290,7 +292,9 @@
     const count=el('qsCount');
     if(count){
       let visible=0;try{visible=filterRows(model.items,filters()).length;}catch{}
-      count.textContent=model.checked.size?'已选 '+model.checked.size+' 条':model.phase==='pending'?'待接通':`${visible} / ${model.items.length} 条`;
+      const total=model.items.length;
+      const quantity=visible===total ? visible : `${visible} / ${total}`;
+      count.textContent=model.checked.size?'已选 '+model.checked.size+' 条':model.phase==='pending'?'待接通':`${quantity} 条`;
       count.setAttribute('aria-label',model.checked.size?'已选排期数':'当前显示与总排期数');
       count.title=`当前显示 ${visible} / 当前日期范围总计 ${model.items.length} 条`;
     }
