@@ -14,10 +14,21 @@ import sqlite3
 from fastapi import HTTPException
 from app.core.config import settings
 from app.services import qc_inspection_summary as summary
+from app.services.identity_catalog import FACTORIES
 
 MAX_ROWS = 50000
 MAX_CUSTOMERS = 1000
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+
+def factory_label(factory):
+    if factory not in FACTORIES:
+        raise HTTPException(404, '此厂区未配置 QC 报表')
+    return FACTORIES[factory]
+
+
+def company_heading(factory):
+    return '华兴玩具制品（河源）有限公司' if factory == 'huaxing' else factory_label(factory)
 
 
 def _date(value):

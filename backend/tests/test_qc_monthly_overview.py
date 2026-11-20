@@ -80,4 +80,6 @@ def test_conflicts_scope_invalid_rates_and_year_history_invalidate_export(db,mon
     approval(db,2,customer='彩星',actual='2026-10-01')
     with pytest.raises(HTTPException) as exc:excel.prepare('huaxing','owner',req)
     assert exc.value.status_code==409
-    with pytest.raises(HTTPException):monthly.query('huadeng',DAY,include_overview=True)
+    other = monthly.query('huadeng', DAY, include_overview=True)
+    assert other['total'] == 0 and not other['overview']['rows']
+    assert key not in other['fields']

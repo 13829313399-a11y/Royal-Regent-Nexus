@@ -20,6 +20,7 @@ from app.api.qc_inspection import _ensure_permission
 from app.services import qc_workflow, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
 from starlette.concurrency import run_in_threadpool
 from app.services import qc_weekly_excel, qc_monthly_templates, qc_monthly_excel
+from app.services.qc_approved_statistics import factory_label
 from urllib.parse import quote
 
 router = APIRouter(prefix="/api/qc-department", tags=["qc-department"])
@@ -120,7 +121,7 @@ def ui_context(user: AuthContext, factory_id: str) -> dict:
         perms[key].update(e=int(manage), a=int(manage), m=int(manage))
     perms["review"]["a"] = int(allowed("review"))
     perms["import"] = dict(v=int(write and manage), e=0, a=0, m=int(write and manage))
-    return {"factory": factory_id, "company": COMPANIES[factory_id], "exportAllowed": export, "summaryImportAllowed": allowed("result_write") and manage and export,
+    return {"factory": factory_id, "company": COMPANIES[factory_id], "factoryLabel": factory_label(factory_id), "exportAllowed": export, "summaryImportAllowed": allowed("result_write") and manage and export,
             "weeklyTemplatesEditAllowed": allowed("result_write"),
             "workflow": {"create": allowed("schedule_write") and allowed("order_write"), "edit": allowed("result_write"),
                          "review": allowed("review"), "export": export, "manual": write},
@@ -222,8 +223,6 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     if asset_path == "api/approved-statistics/report/excel":
         if request.method != "GET":
             raise HTTPException(405, "年报只支持下载")
-        if factory_id != "huaxing":
-            raise HTTPException(404, "该厂区未配置此模板")
         _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
         args = dict(request.query_params)
         if (set(args) != {"year", "customer", "result", "revision"} or not args["year"]
@@ -235,7 +234,7 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             raise HTTPException(409, "年报数据已变化或为空，请刷新后导出")
         from app.services.qc_annual_excel import workbook
         content = await run_in_threadpool(workbook, report)
-        name = quote(f"华兴{args['year']}年验货统计表.xlsx", safe="")
+        name = quote(f"{factory_label(factory_id)}{report['filters']['year']}年验货统计表.xlsx", safe="")
         return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
             "Content-Disposition": "attachment; filename=QC-annual.xlsx; filename*=UTF-8''" + name})
     stats_handlers = {

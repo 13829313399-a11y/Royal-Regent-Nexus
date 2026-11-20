@@ -21,6 +21,7 @@ import xlrd
 
 from app.services import qc_daily_report as daily, qc_weekly_templates as weekly, qc_monthly_templates as monthly
 from app.services import qc_weekly_excel, qc_monthly_excel, qc_issue_reports
+from app.services.qc_approved_statistics import factory_label
 from app.services.document_tools.office_engine import office_executable
 
 ANNUAL_KINDS = {'annual-stats', 'annual-issues'}
@@ -92,8 +93,7 @@ def resident_render(executable, source):
 
 def projection(factory, kind, day, customer, result='FAIL'):
     if kind in ANNUAL_KINDS:
-        if factory != 'huaxing':
-            raise HTTPException(404, '该厂区未配置此模板')
+        factory_label(factory)
         start, _ = qc_issue_reports.bounds(day, 'yearly')
         if kind == 'annual-issues':
             return qc_issue_reports.query(factory, start, 'yearly', customer)
