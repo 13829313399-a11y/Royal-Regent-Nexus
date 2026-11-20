@@ -263,7 +263,7 @@ def readme(factory: str, release: str, green_toys_only: bool = False):
 本包不代替正式生产系统；本地发送、签收、走货记录需负责人核对流程后再决定正式上线方式。
 '''
     if factory == 'huakang-a' and not green_toys_only:
-        common += '\nZURU已接入与其他客户相同的统一导入流程：选择ZURU，上传PDF/Excel PO及三表统一排期，预览后生成。演示资料内有合成示例及统一模板。原周排期的MA、库存不自动迁入。\n'
+        common += '\nZURU使用原排期专用流程：上传PDF/Excel PO及1至10份原周排期，生成独立18列新单汇总和对应原格式复制页。已有订单单独列出提醒；原周排期、MA和库存不修改。复制时选择数据行（不含表头）并粘贴值。\n'
     return common
 
 
@@ -290,7 +290,7 @@ def package_reference_seed(package: Path, schedule: Path, price: Path):
 def build(cache: Path, output: Path, selected, release_date: str | None = None,
         jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False, huaxing_customer: str | None = None,
         legacy_windows: bool = False, single_customer: str | None = None):
-    if single_customer and (selected != [SINGLE_CUSTOMERS.get(single_customer, ('', ''))[0]] or green_toys_only or huaxing_customer):
+    if single_customer and ((selected not in [['huakang-a'], ['huaxing']] if single_customer == 'zuru' else selected != [SINGLE_CUSTOMERS.get(single_customer, ('', ''))[0]]) or green_toys_only or huaxing_customer):
         raise ValueError('专客包必须选择对应厂区及唯一客户')
     if legacy_windows and not (single_customer or huaxing_customer or (green_toys_only and selected == ['huakang-a'])):
         raise ValueError('Windows 7兼容构建需选择已验证的专客模式。')
@@ -320,6 +320,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if single_customer:
                 customers = SINGLE_CUSTOMERS[single_customer][1]
                 folder = f'{customers}_Trial'
+                if single_customer == 'zuru':
+                    folder = ('HuakangA' if factory == 'huakang-a' else 'Huaxing') + '_ZURU_Trial'
                 zip_name = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
