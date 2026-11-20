@@ -47,8 +47,9 @@ function deferred<T>() {
   })
   return { promise, resolve, reject }
 }
-const mountView = () =>
+const mountView = (readonly = false) =>
   mount(IdentityRecords, {
+    props: { readonly },
     global: {
       stubs: {
         IdentityShell: { template: '<div><slot /></div>' },
@@ -176,4 +177,15 @@ it('retries a lost commit with the same request revision, preview and command ke
   expect(api.commit).toHaveBeenCalledTimes(2)
   expect(api.commit.mock.calls[1]).toEqual(api.commit.mock.calls[0])
   expect(wrapper.text()).not.toContain('使用原办理内容重试')
+})
+
+it('opens original audit requests without an approval, revoke or handover action', async () => {
+  const wrapper = mountView(true)
+  await selectFirst(wrapper)
+  expect(wrapper.text()).toContain('在办理大厅核对本单')
+  expect(wrapper.find('textarea').exists()).toBe(false)
+  await button(wrapper, '权限影响').trigger('mousedown', { button: 0 })
+  expect(wrapper.text()).not.toContain('重新核对并预览')
+  expect(api.preview).not.toHaveBeenCalled()
+  expect(api.handoverCandidates).not.toHaveBeenCalled()
 })

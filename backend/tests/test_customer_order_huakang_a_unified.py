@@ -152,7 +152,8 @@ def test_independent_append_preserves_history_and_fills_reserved_array_formulas(
     assert isinstance(loaded[service.ORDER_SHEET]['H5'].value, ArrayFormula)
 
 
-@pytest.mark.parametrize('customer', mapping.ITEM_TAILS)
+# ZURU has a dedicated source parser and export suite in test_customer_order_zuru_unified.
+@pytest.mark.parametrize('customer', ['360', 'green-toys', 'headstart'])
 def test_preview_and_export_customer_fields(monkeypatch, customer):
     # API regression fixtures reload service modules between tests.
     from app.services.huakang_a_order_legacy import schedule_parser, green_toys_headstart

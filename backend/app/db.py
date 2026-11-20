@@ -252,6 +252,7 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
 THREE_D_PRINTING_REVISION = "20260917_0117"
 THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset({"20260728_0039", "20260729_0040"})
 THREE_D_PRINTING_V2_TABLES = {
+    "three_d_printing_telemetry_ticks", "three_d_printing_retention_cursors",
     "three_d_printing_operations_items",
     "three_d_printing_sites", "three_d_printing_network_gateways",
     "three_d_printing_connector_instances", "three_d_printing_printer_connections",
@@ -543,6 +544,8 @@ def ensure_three_d_printing_schema_ready() -> None:
                 missing.add(table)
             else:
                 missing.update(f"{table}.{name}" for name in required - {column["name"] for column in inspector.get_columns(table)})
+    if missing.intersection({"three_d_printing_telemetry_ticks", "three_d_printing_retention_cursors"}) and "three_d_printing_printer_state_events" in tables:
+        raise RuntimeError("3D 遥测归档需要先迁移至 20261116_0195，再启动应用。")
     if not missing and current_revision not in THREE_D_PRINTING_PREVIOUS_REVISIONS:
         return
     raise RuntimeError(
@@ -674,7 +677,7 @@ def ensure_carton_master_schema_ready() -> None:
             found = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
             missing.extend(f"{name}.{c}" for c in cols if c not in found)
         if missing:
-            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144、纸品重量 20261008_0145 、客户认领/箱唛独立副本 20261008_0146 、纸品数量规则 20261016_0163 及工艺备注 20261119_0195 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
+            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144、纸品重量 20261008_0145 、客户认领/箱唛独立副本 20261008_0146 、纸品数量规则 20261016_0163 及工艺备注 20261119_0196 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
 def ensure_carton_supplier_settlement_schema_ready() -> None:
@@ -887,7 +890,21 @@ def ensure_collaboration_schema_ready() -> None:
             raise RuntimeError("成员协作需要显式迁移至 20261010_0156；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def require_active_injection_history(revisions) -> None:
+    if "20261116_inj_retire" in revisions:
+        raise RuntimeError(
+            "This database has applied the archived injection retirement. "
+            "Recover the scheduling records and grants from a verified pre-retirement backup "
+            "in isolation before switching releases."
+        )
+
+
 def init_db() -> None:
+    with engine.connect() as connection:
+        if inspect(connection).has_table("alembic_version"):
+            require_active_injection_history(
+                connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalars()
+            )
     from app.models import (
         indonesia_materials,  # noqa: F401
         collaboration,  # noqa: F401

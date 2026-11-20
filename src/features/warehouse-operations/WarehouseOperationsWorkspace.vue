@@ -27,6 +27,7 @@ const route = useRoute()
 const router = useRouter()
 const data = ref<WarehouseOperationsWorkspace>(), loading = ref(false), saving = ref(false), error = ref(''), success = ref('')
 const recordFilterId = 'warehouse-record-filter-' + useId()
+const recordSearchInput = ref<HTMLInputElement>()
 const localSearch = ref(''), offset = ref(0), from = ref(''), to = ref('')
 const dates = computed<DateRange>({
   get: () => ({ start: from.value ? parseDate(from.value) : undefined, end: to.value ? parseDate(to.value) : undefined }),
@@ -57,7 +58,20 @@ const recordKind = computed({
     else localRecordKind.value = kind
   },
 })
-function resetRecordFilters() { search.value = ''; from.value = ''; to.value = ''; recordKind.value = ''; recordState.value = ''; recordSort.value = 'DATE_DESC'; recordActor.value = '' }
+async function resetRecordFilters() {
+  search.value = ''
+  from.value = ''
+  to.value = ''
+  recordKind.value = ''
+  recordState.value = ''
+  recordSort.value = 'DATE_DESC'
+  recordActor.value = ''
+  if (!fabricMovements.value) return
+  await nextTick()
+  if (!fabricMovements.value) return
+  if (useHeaderSearch.value) inventoryHeader?.focus?.()
+  else recordSearchInput.value?.focus()
+}
 const recordFiltersActive = computed(() => !!(search.value || from.value || to.value || recordKind.value || recordState.value || recordActor.value || recordSort.value !== 'DATE_DESC'))
 function matchesRecordState(row: WarehouseDocument) {
   if (!recordState.value) return true
@@ -347,7 +361,7 @@ function exportFabricIssues() {
     <div v-if="fabricInventory && view === 'pending-issues'" class="mb-4 flex items-center gap-3"><Button :disabled="loading || !permitted('ISSUE')" @click="issueGroupOpen = true">同订单配套发料</Button><span class="text-xs text-muted-foreground">多张领料单统一选缸，确认后分别更新进度。</span></div>
     <FabricIssueGroupDialog v-if="issueGroupOpen" @close="issueGroupOpen = false; load()" @saved="load" />
     <template v-if="data && !stockMode">
-      <div class="warehouse-operation-toolbar" :class="{ 'fabric-inventory-toolbar': fabricFilters }"><label v-if="!useHeaderSearch" class="grow">查找记录<input :id="`${recordFilterId}-query`" name="record_q" v-model="search" type="search" placeholder="物料名称 / 单号 / 领用方 / 仓位" aria-label="查找仓库收发" /></label><div v-if="warehouse === 'fabric'" class="flex items-center gap-2 whitespace-nowrap text-xs"><span>业务日期</span><DateRangeFilter v-model="dates" label="收发记录日期范围" /></div><template v-else><label>开始日期<input v-model="from" type="date" aria-label="收发开始日期" /></label><label>结束日期<input v-model="to" type="date" aria-label="收发结束日期" /></label></template><template v-if="fabricFilters"><label v-if="fabricExceptions">原业务<select v-model="recordKind" aria-label="更正原业务"><option value="">全部业务</option><option v-for="(label, kind) in originalKindLabels" :key="kind" :value="kind">{{ label }}</option></select></label><label v-if="fabricExceptions">经办人<select v-model="recordActor" aria-label="更正经办人"><option value="">全部经办人</option><option v-for="name in correctionActors" :key="name">{{ name }}</option></select></label><label v-if="view === 'movements'">业务类型<select :id="`${recordFilterId}-kind`" name="record_kind" v-model="recordKind" aria-label="收发业务类型"><option value="">全部类型</option><option v-for="kind in recordKinds" :key="kind" :value="kind">{{ movementKindLabels[kind] }}</option></select></label><label v-if="!fabricExceptions">{{ view === 'pending-issues' ? '办理状态' : '单据状态' }}<select :id="`${recordFilterId}-state`" name="record_state" v-model="recordState" aria-label="收发单据状态"><option value="">全部状态</option><template v-if="view === 'pending-issues'"><option value="PENDING">尚未发完</option><option value="COMPLETE">已发完</option><option value="REVERSED">已冲销</option></template><template v-else><option value="ACTIVE">未冲销</option><option value="REVERSED">已冲销</option></template></select></label><label>排序<select :id="`${recordFilterId}-sort`" name="record_sort" v-model="recordSort" aria-label="收发记录排序"><option value="DATE_DESC">业务日期 · 最新在前</option><option value="DATE_ASC">业务日期 · 最早在前</option></select></label><Button variant="ghost" :disabled="!recordFiltersActive" @click="resetRecordFilters">重置筛选</Button></template><Button v-if="warehouse === 'fabric' && view === 'movements'" variant="outline" :disabled="!issueRecords.length" @click="exportFabricIssues">导出领用记录</Button><Button v-for="kind in config.actions" :key="kind" :disabled="loading || !permitted(kind)" @click="begin(kind)">{{ operationLabels[kind] }}</Button></div>
+      <div class="warehouse-operation-toolbar" :class="{ 'fabric-inventory-toolbar': fabricFilters }"><label v-if="!useHeaderSearch" class="grow">查找记录<input ref="recordSearchInput" :id="`${recordFilterId}-query`" name="record_q" v-model="search" type="search" placeholder="物料名称 / 单号 / 领用方 / 仓位" aria-label="查找仓库收发" /></label><div v-if="warehouse === 'fabric'" class="flex items-center gap-2 whitespace-nowrap text-xs"><span>业务日期</span><DateRangeFilter v-model="dates" label="收发记录日期范围" /></div><template v-else><label>开始日期<input v-model="from" type="date" aria-label="收发开始日期" /></label><label>结束日期<input v-model="to" type="date" aria-label="收发结束日期" /></label></template><template v-if="fabricFilters"><label v-if="fabricExceptions">原业务<select v-model="recordKind" aria-label="更正原业务"><option value="">全部业务</option><option v-for="(label, kind) in originalKindLabels" :key="kind" :value="kind">{{ label }}</option></select></label><label v-if="fabricExceptions">经办人<select v-model="recordActor" aria-label="更正经办人"><option value="">全部经办人</option><option v-for="name in correctionActors" :key="name">{{ name }}</option></select></label><label v-if="view === 'movements'">业务类型<select :id="`${recordFilterId}-kind`" name="record_kind" v-model="recordKind" aria-label="收发业务类型"><option value="">全部类型</option><option v-for="kind in recordKinds" :key="kind" :value="kind">{{ movementKindLabels[kind] }}</option></select></label><label v-if="!fabricExceptions">{{ view === 'pending-issues' ? '办理状态' : '单据状态' }}<select :id="`${recordFilterId}-state`" name="record_state" v-model="recordState" aria-label="收发单据状态"><option value="">全部状态</option><template v-if="view === 'pending-issues'"><option value="PENDING">尚未发完</option><option value="COMPLETE">已发完</option><option value="REVERSED">已冲销</option></template><template v-else><option value="ACTIVE">未冲销</option><option value="REVERSED">已冲销</option></template></select></label><label>排序<select :id="`${recordFilterId}-sort`" name="record_sort" v-model="recordSort" aria-label="收发记录排序"><option value="DATE_DESC">业务日期 · 最新在前</option><option value="DATE_ASC">业务日期 · 最早在前</option></select></label><Button variant="ghost" :disabled="!recordFiltersActive" @click="resetRecordFilters">重置筛选</Button></template><Button v-if="warehouse === 'fabric' && view === 'movements'" variant="outline" :disabled="!issueRecords.length" @click="exportFabricIssues">导出领用记录</Button><Button v-for="kind in config.actions" :key="kind" :disabled="loading || !permitted(kind)" @click="begin(kind)">{{ operationLabels[kind] }}</Button></div>
       <details v-if="section === 'overview' && warehouse === 'fabric'" class="warehouse-quick-help"><summary>登记领料申请怎么用？</summary><p>仓库代录车间需求，只建立申请，办理实际出库后才扣库存。</p></details>
       <p v-if="fabricExceptions" class="exception-record-note">已办理的冲销记录 {{ count }} 笔 · 保留原单与更正原因，查看详情可追溯原单编号。</p>
       <div class="warehouse-table-scroll" tabindex="0" role="region" aria-label="业务记录">

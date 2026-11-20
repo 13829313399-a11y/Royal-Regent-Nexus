@@ -2,6 +2,7 @@
 import importlib
 import json
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 import pytest
 from test_assistant_api import env, session, payload
@@ -92,10 +93,15 @@ def test_cap_005_cross_valid_factory_denied_by_real_authorizer(env):
         original = queries.summary(db, Query(factory_id="huakang-a"))
     user = actor("alice",factory="huakang-a",department="production",permissions=("injection_scheduling:read",))
     result, _, _ = business.query(user,"get_injection_overview",{"factory_id":"huakang-a"},"synthetic-run")
-    assert result["reference_summary"]["values"] == original
-    for key in ("held_count","wait_material_count","forecast_late_count","warehouse_shortage_kg"):
-        assert result["summary"][key] == facts["injection"][key]
-    assert result["summary"]["remaining_material_kg"] == float(facts["injection"]["remaining_material_kg"])
+    metrics = {key: metric["value"] for key, metric in result["metrics"].items()}
+    assert result["total_count"] == original["total_count"] == facts["injection"]["demand_count"]
+    assert metrics["held_count"] == original["held_count"]
+    assert metrics["forecast_late_count"] == original["late_count"]
+    for key in ("held_count", "wait_material_count", "forecast_late_count", "warehouse_shortage_kg", "actual_delivery_late_count"):
+        assert metrics[key] == facts["injection"][key]
+    remaining = Decimal(metrics["remaining_material_kg"])
+    assert remaining == Decimal(str(original["remaining_material_kg"]))
+    assert remaining == Decimal(facts["injection"]["remaining_material_kg"])
     with pytest.raises(AssistantError) as denied:
         business.query(user,"get_injection_overview",{"factory_id":"huakang-b"},"synthetic-run")
     assert denied.value.status_code == 403 and denied.value.detail["code"] == "business_forbidden"

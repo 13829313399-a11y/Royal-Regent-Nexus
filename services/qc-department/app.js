@@ -344,6 +344,20 @@ function reportCenterLandingPage() {
   return REPORT_CENTER_PAGES.find(page => canView(page));
 }
 
+function syncReportCenterNav(name) {
+  const nav = document.getElementById('reportCenterNav');
+  if (!nav) return;
+  const visible = window.__QC_NEXUS?.factory === 'huaxing' && REPORT_CENTER_PAGES.includes(name);
+  nav.hidden = !visible;
+  document.body.classList.toggle('qc-report-center', visible);
+  if (!visible) return;
+  for (const button of nav.querySelectorAll('[data-report-mode]')) {
+    const annual = button.dataset.reportMode === 'analysis';
+    button.hidden = button.disabled = annual ? !canView('analysis') : !intraReportLandingPage();
+    button.setAttribute('aria-pressed', String(annual === (name === 'analysis')));
+  }
+}
+
 function mountReportTypeSelect(page, name) {
   const slot = page?.querySelector('[data-report-type-slot]');
   const select = document.getElementById('reportTypeSelect');
@@ -369,8 +383,12 @@ function mountReportTypeSelect(page, name) {
   const visible = buttons.filter(button => !button.hidden);
   const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
   control.style.setProperty('--report-period-count', String(visible.length || 1));
-  if (control.parentElement !== slot) slot.append(control);
-  if (select.parentElement !== slot) slot.append(select);
+  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory === 'huaxing') {
+    if (slot.firstElementChild !== select || select.nextElementSibling !== control) slot.prepend(select, control);
+  } else {
+    if (control.parentElement !== slot) slot.append(control);
+    if (select.parentElement !== slot) slot.append(select);
+  }
   control.hidden = name === 'analysis';
   if (name !== 'analysis') lastIntraReportPage = name;
   select.value = name === 'analysis' ? 'analysis' : 'intra-month';
@@ -379,24 +397,21 @@ function mountReportTypeSelect(page, name) {
   if (wasVisible && previousPage !== name && glass.animate &&
       !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
     glass.animate([{transform: previousTransform}, {transform: 'translateX(' + index * 100 + '%)'}],
-      {duration:260, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
+      {duration:300, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
   }
 }
 
 function changeReportPeriod(button) {
   if (button.disabled) return;
-  if (button.dataset.reportPage === currentPage) {
-    if (currentPage === 'weekly') window.QcWeeklyTemplates?.returnToReport();
-    if (currentPage === 'monthly') window.QcMonthlyTemplates?.returnToReport();
-    return;
-  }
+  if (button.dataset.reportPage === currentPage) return;
   showPage(button.dataset.reportPage, true);
 }
 
-function changeReportType(select) {
-  const nextPage = select.value === 'intra-month' ? intraReportLandingPage() : select.value;
-  select.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
-  if (REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, true);
+function changeReportType(control) {
+  const mode = control.dataset.reportMode || control.value;
+  const nextPage = mode === 'intra-month' ? intraReportLandingPage() : mode;
+  if (!control.dataset.reportMode) control.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
+  if (nextPage !== currentPage && REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, control.dataset.reportMode ? 'mode' : true);
 }
 
 function showPage(name, focusReportType = false) {
@@ -414,7 +429,9 @@ function showPage(name, focusReportType = false) {
   // Hide the inspection drawer synchronously; destination rendering can fail
   // or be delayed, and must never control whether it leaks across pages.
   window.QcWorkflow?.beforePageChange(name);
+  if(currentPage!==name)window.QcReportDates?.close();
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
+  if(currentPage==='review'&&name!=='review')window.QcInspectionSheet?.clearReviewDates?.();
   if (currentPage === 'dashboard' && name !== 'dashboard') closeDashboardFailurePopover();
   if(currentPage!==name)window.QcIssueReports?.pageChanged();
   currentPage = name;
@@ -439,6 +456,7 @@ function showPage(name, focusReportType = false) {
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
   if (nav) nav.classList.add('active');
+  syncReportCenterNav(name);
   if (inReportCenter) mountReportTypeSelect(pg, name);
   const titleEl = document.getElementById('pageTitle');
   if (titleEl) titleEl.textContent = inReportCenter ? '报告中心' : (PAGE_TITLES[name] || name);
@@ -468,7 +486,10 @@ function showPage(name, focusReportType = false) {
         if (name === 'import')           _backupStats();
         if (name === 'defectlib')        renderDefectLibPage();
         if (focusReportType && inReportCenter && currentPage === name) {
-          (document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]') || document.getElementById('reportTypeSelect'))?.focus({ preventScroll: true });
+          const activeMode = document.querySelector('#reportCenterNav:not([hidden]) [data-report-mode][aria-pressed="true"]');
+          const period = document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]');
+          const target = activeMode && (focusReportType === 'mode' || name === 'analysis') ? activeMode : period || document.getElementById('reportTypeSelect');
+          target?.focus({ preventScroll: true });
         }
       } catch(e) { console.error('[showPage] render error:', e); }
     });
@@ -1375,8 +1396,7 @@ function clearRecordsDates() {
 }
 function resetRecordsFilters() {
   window.QcInspectionSheet?.resetTaskFilters();
-  ['searchInput','filterResult','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
-  document.getElementById('filterSort').value = window.QcInspectionSheet ? 'date-asc' : 'mod-desc';
+  ['searchInput','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('recordsDateFilter').open = false;
   filterRecords();
 }
@@ -1396,7 +1416,6 @@ function filterRecords() {
   try {
     const data = state.records.filter(r => ['approved','rejected'].includes(recStatus(r)) && !window.QcWorkflow?.isLinked(r.id)).concat(window.QcWorkflow?.recordItems() || []);
     const search = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
-    const resF   = document.getElementById('filterResult')?.value || '';
     const dfrom  = document.getElementById('filterDateFrom')?.value || '';
     const dto    = document.getElementById('filterDateTo')?.value   || '';
 
@@ -1409,24 +1428,15 @@ function filterRecords() {
           .filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(search)) return false;
       }
-      if (resF === 'PASS' && !isPass(r)) return false;
-      if (resF === 'REJ'  && !isFail(r)) return false;
       const plan=inspectionPlanRange(r);
       if ((dfrom || dto) && (!plan || (dfrom && plan.to < dfrom) || (dto && plan.from > dto))) return false;
       return true;
     }).sort((a, b) => {
-      const mode = document.getElementById('filterSort')?.value || 'mod-desc';
-      if (mode === 'date-asc' || mode === 'date-desc') {
-        const pa=inspectionPlanRange(a),pb=inspectionPlanRange(b);
-        if(!pa||!pb)return pa?-1:pb?1:0;
-        const order=pa.from.localeCompare(pb.from)||pa.to.localeCompare(pb.to);
-        return mode==='date-asc'?order:-order;
-      }
       const ka = formatModifiedDate(a.updatedAt) || '';
       const kb = formatModifiedDate(b.updatedAt) || '';
       /* 修改日期相同再按来料日期，保证同一天录入的明细聚在一起且稳定 */
       if (ka === kb) return String(b.date || '').localeCompare(String(a.date || ''));
-      return mode === 'mod-asc' ? ka.localeCompare(kb) : kb.localeCompare(ka);
+      return kb.localeCompare(ka);
     });
 
 
@@ -4444,10 +4454,14 @@ function buildQcProblemNotes(data) {
 }
 
 function renderDailyReport() {
-  if (window.QcDailyReport?.enabled()) return window.QcDailyReport.load();
+  if (window.QcDailyReport?.enabled()) {
+    window.QcReportSheets.mountRefresh('daily');
+    return window.QcDailyReport.load();
+  }
   const dateEl = document.getElementById('dailyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = todayStr();
+  window.QcReportDates?.sync(dateEl);
   const date = dateEl.value;
   const data = recs().filter(r => r.date === date || r.inspDate === date);
 
@@ -4517,10 +4531,11 @@ function renderDailyReport() {
 }
 
 function renderWeeklyReport() {
-  if (window.QcPeriodReports?.weekly.enabled()) return window.QcPeriodReports.weekly.load();
+  if (window.QcPeriodReports?.weekly.enabled()) return window.QcReportSheets.enter('weekly');
   const dateEl = document.getElementById('weeklyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = weekStart();
+  window.QcReportDates?.sync(dateEl);
   const ws   = dateEl.value;
   const we   = weekEnd(ws);
   const data = recs().filter(r => r.date >= ws && r.date <= we);
@@ -4709,11 +4724,9 @@ function _recordsExportQuery() {
   params.set('company', getCompany());   /* 导出当前厂区的数据 */
   params.set('dateBasis', 'inspection-plan');
   const search = getVal('searchInput');
-  const result = getVal('filterResult');
   const from = getVal('filterDateFrom');
   const to = getVal('filterDateTo');
   if (search) params.set('search', search);
-  if (result) params.set('result', result);
   if (from) params.set('dateFrom', from);
   if (to) params.set('dateTo', to);
   const qs = params.toString();
@@ -4737,7 +4750,7 @@ function exportCSV() {
   if (currentPage === 'records') filterRecords();
   if (_downloadServerExport('records.csv', 'CSV')) return;
   try {
-    const hasActiveFilter = ['searchInput', 'filterResult', 'filterDateFrom', 'filterDateTo']
+    const hasActiveFilter = ['searchInput', 'filterDateFrom', 'filterDateTo']
       .some(id => getVal(id));
     if (currentPage !== 'records' && hasActiveFilter) filterRecords();
     const data = currentPage === 'records' || hasActiveFilter ? filteredRecs : recs();
@@ -4770,7 +4783,6 @@ async function exportFactoryExcel() {
     if (typeof XLSX === 'undefined') await window.QcAssets.load('excel');
     const hasActiveFilter = !!(
       getVal('searchInput') ||
-      getVal('filterResult') ||
       getVal('filterDateFrom') ||
       getVal('filterDateTo')
     );
@@ -6439,7 +6451,7 @@ function _mrChart(id, option) {
    §19.1  验货月报
 ───────────────────────────────────────*/
 function renderMonthlyReport() {
-  if (window.QcPeriodReports?.monthly.enabled()) return window.QcPeriodReports.monthly.load();
+  if (window.QcPeriodReports?.monthly.enabled()) return window.QcReportSheets.enter('monthly');
   const el = document.getElementById('monthlyMonth');
   if (!el) return;
   /* 初始化默认月份 */
@@ -6447,6 +6459,7 @@ function renderMonthlyReport() {
     const n = new Date();
     el.value = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
   }
+  window.QcReportDates?.sync(el);
   const [year, month] = el.value.split('-').map(Number);
   const data = getMonthRecords(year, month);
   const s    = summarizeRecords(data);

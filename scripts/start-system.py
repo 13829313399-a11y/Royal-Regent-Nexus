@@ -7,12 +7,26 @@ import socket
 import subprocess
 import time
 import urllib.request
+from urllib.parse import urlsplit
+from ipaddress import ip_address
+from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / '.local-dev' / 'unified-system'
 
 
 def main():
+    config = {**dotenv_values(ROOT / 'backend/.env'), **os.environ}
+    mobile_host = config.get('QC_MOBILE_LAN_HOST', '')
+    mobile = urlsplit(config.get('QC_MOBILE_PUBLIC_ORIGIN', ''))
+    if mobile_host:
+        address = ip_address(mobile_host)
+        if (config.get('APP_ENV') == 'production' or not address.is_private or address.is_unspecified
+                or mobile.scheme != 'http' or mobile.hostname != mobile_host or not mobile.port
+                or mobile.path or mobile.query or mobile.fragment or mobile.username):
+            raise SystemExit('Local mobile listener requires a matching explicit private HTTP origin.')
+        with socket.socket(socket.AF_INET6 if address.version == 6 else socket.AF_INET) as probe:
+            probe.bind((mobile_host, mobile.port))
     for port in (5173, 8000, 3411):
         with socket.socket() as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -29,6 +43,9 @@ def main():
         ('api', [str(python), '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000'], ROOT / 'backend'),
         ('web', [node, str(ROOT / 'node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', '5173', '--strictPort'], ROOT),
     ]
+    if mobile_host:
+        jobs.append(('mobile', [str(python), '-m', 'uvicorn', 'app.qc_mobile_app:app',
+                     '--host', mobile_host, '--port', str(mobile.port)], ROOT / 'backend'))
     children, logs = [], []
     pid_path = STATE / 'launcher.pid'
     pid_path.write_text(str(os.getpid()))
@@ -46,7 +63,10 @@ def main():
                 env['VITE_API_PROXY_TARGET'] = 'http://127.0.0.1:8000'
             children.append(subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=log,
                 start_new_session=os.name != 'nt'))
-        for url in ('http://127.0.0.1:8000/health', 'http://127.0.0.1:5173/'):
+        urls = ['http://127.0.0.1:8000/health', 'http://127.0.0.1:5173/']
+        if mobile_host:
+            urls.append(config['QC_MOBILE_PUBLIC_ORIGIN'].rstrip('/') + '/api/qc-mobile/app/')
+        for url in urls:
             for _ in range(90):
                 if any(child.poll() is not None for child in children):
                     raise RuntimeError(f'A service exited; inspect {STATE}')

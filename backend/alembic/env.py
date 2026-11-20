@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 import runpy
 import sys
+from contextlib import nullcontext
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
+from alembic import command, context
 from sqlalchemy import engine_from_config, pool, inspect, text
 
 if context.is_offline_mode():
@@ -17,7 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.config import settings
-from app.db import Base
+from app.db import Base, require_active_injection_history
 from app.models import (
     indonesia_materials,  # noqa: F401
     collaboration,  # noqa: F401
@@ -112,6 +113,22 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         inspector = inspect(connection)
         revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version'))) if inspector.has_table('alembic_version') else set()
+        require_active_injection_history(revisions)
+        legacy_carton_process = '20261119_0195' in revisions
+        if legacy_carton_process:
+            cli_command = getattr(config.cmd_opts, 'cmd', None)
+            if (revisions != {'20261119_0195'} or connection.dialect.name != 'sqlite'
+                    or context.get_x_argument(as_dictionary=True).get('reconcile_carton_process') != '1'
+                    or not cli_command or cli_command[0] is not command.upgrade
+                    or context.get_head_revision() != context.get_revision_argument()):
+                raise RuntimeError('Legacy carton process revision requires a verified backup copy and explicit upgrade to head. See docs/business/carton-migration-identity.md')
+            # The archived local migration and its canonical counterpart add exactly this column to 0194.
+            columns = inspector.get_columns('carton_order_lines')
+            note = next((column for column in columns if column['name'] == 'process_note'), None)
+            if (not note or str(note['type']).upper() != 'TEXT' or note['nullable']
+                    or note['default'] != "''" or inspector.has_table('three_d_printing_telemetry_ticks')
+                    or inspector.has_table('three_d_printing_retention_cursors')):
+                raise RuntimeError('Legacy carton process schema differs from the archived migration; preserve the original database')
         if '20261028_0186' in revisions:
             raise RuntimeError('Legacy local carton 20261028_0186 is not the canonical migration head. Preserve a full backup and reconcile its archived 0185/0186 schema before upgrade; never stamp or replay it blindly. See docs/business/carton-migration-identity.md')
         # The local assistant branch reused the published online-document 0177.
@@ -123,7 +140,7 @@ def run_migrations_online() -> None:
                 'nexus_assistant_subscriptions', 'nexus_assistant_feedback')))
         if assistant_legacy:
             raise RuntimeError('Legacy local assistant 0176/0177 identity requires backup and isolated schema reconciliation; never stamp or replay it blindly. See docs/assistant/MIGRATION_IDENTITY.md')
-        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261119_0195'}
+        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261119_0195', '20261119_0196', '20261119_0197'}
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
                               '20261017_0167', '20261019_0167', '20261020_0168',
                               '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171',
@@ -133,12 +150,12 @@ def run_migrations_online() -> None:
             'jp_intake_counters', 'jp_intake_exports', 'jp_intake_export_identities')):
             preflight = runpy.run_path(str(Path(__file__).parent / 'versions/20261017_0167_reconcile_cutting_jp_collision.py'))['preflight']
             # Extend successor recognition without rewriting the applied migration.
-            if revisions in [{head} for head in later_successors] + [{'20261023_0176', '20261026_0177'}, {'20261023_0176', '20261026_0179'}, {'20261026_0178', '20261026_0179'}, {'20261023_0176', '20261026_0181'}, {'20261026_0178', '20261026_0181'}, {'20261026_0180', '20261026_0181'}, {'20261023_0176', '20261026_0183'}, {'20261026_0178', '20261026_0183'}, {'20261026_0180', '20261026_0183'}, {'20261026_0182', '20261026_0183'}]:
+            if revisions in [{head} for head in later_successors] + [{'20261116_0195', '20261119_0196'}, {'20261023_0176', '20261026_0177'}, {'20261023_0176', '20261026_0179'}, {'20261026_0178', '20261026_0179'}, {'20261023_0176', '20261026_0181'}, {'20261026_0178', '20261026_0181'}, {'20261026_0180', '20261026_0181'}, {'20261023_0176', '20261026_0183'}, {'20261026_0178', '20261026_0183'}, {'20261026_0180', '20261026_0183'}, {'20261026_0182', '20261026_0183'}]:
                 preflight.__globals__['VALID_VERSIONS'].append(revisions)
-            if connection.dialect.name == 'sqlite' and revisions & {'20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261119_0195'}:
+            if connection.dialect.name == 'sqlite' and revisions & {'20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261119_0195', '20261119_0196', '20261119_0197'}:
                 header = runpy.run_path(str(Path(__file__).parent / 'versions/20261028_0185_cutting_period_headers.py'))
                 present = header['index_state'](connection)
-                if revisions & {'20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261119_0195'} and not present:
+                if revisions & {'20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189', '20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261119_0195', '20261119_0196', '20261119_0197'} and not present:
                     raise RuntimeError('0185 cutting header index is missing; preserve database before repair')
                 if present:
                     original_expected = preflight.__globals__['_sqlite_expected']
@@ -174,15 +191,21 @@ def run_migrations_online() -> None:
         # Reflection opens an implicit read transaction. Release it before
         # Alembic takes ownership of the actual migration transaction.
         connection.rollback()
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            include_object=include_object,
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+        with connection.begin() if legacy_carton_process else nullcontext():
+            if legacy_carton_process:
+                # Start a SQLite write transaction before DDL so a failed upgrade also rolls the label back.
+                changed = connection.execute(text(
+                    "UPDATE alembic_version SET version_num='20261119_0196' WHERE version_num='20261119_0195'"))
+                if changed.rowcount != 1:
+                    raise RuntimeError('Legacy carton process revision changed during reconciliation')
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                include_object=include_object,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
 
 
 if context.is_offline_mode():

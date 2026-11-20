@@ -206,6 +206,8 @@ class AccessCommitResponse(BaseModel):
 
 
 class RoleSummaryOut(BaseModel):
+    scoped_member_count: int | None = None
+    scoped_binding_count: int | None = None
     id: str
     code: str
     name: str
@@ -230,6 +232,8 @@ class RoleSummaryOut(BaseModel):
 
 
 class RoleAccessOut(BaseModel):
+    scoped_member_count: int | None = None
+    scoped_binding_count: int | None = None
     id: str
     code: str
     name: str
@@ -316,6 +320,9 @@ class AccessRequestOut(BaseModel):
 class AuditEventOut(BaseModel):
     id: str
     event_type: str
+    target_id: str = ""
+    target_type: str = ""
+    occurred_at: str = ""
     actor_user_id: str
     actor_name: str
     target_user_id: str

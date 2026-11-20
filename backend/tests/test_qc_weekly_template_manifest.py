@@ -5,7 +5,7 @@ from pathlib import Path
 
 def test_confirmed_weekly_workbook_contracts():
     source = Path(__file__).resolve().parents[1] / 'app/templates/qc-weekly/templates.json'
-    templates = {item['id']: item for item in json.loads(source.read_text())}
+    templates = {item['id']: item for item in json.loads(source.read_text(encoding='utf-8'))}
     assert set(templates) == {'detail', 'group'}
     assert all(item['verifiedSheetCount'] == 42 for item in templates.values())
     assert templates['detail']['headers'] == [
@@ -16,7 +16,7 @@ def test_confirmed_weekly_workbook_contracts():
         '客人未退货由工厂自行返工&客人A0D单数', '备注']
     assert templates['group']['headers'] == [
         '厂区', '客户', '本周验货次数', '退货次数', '退货率', '退货原因', '香港跟客', '备注']
-    assert templates['group']['title']=='华兴周验货汇总表'
+    assert templates['group']['title']=='周验货数据汇总'
     assert not (source.parent/'internal.xls').exists()
     assert templates['group']['totalLabelColumn'] == 1
     assert templates['detail']['sourceSha256'] == 'a81ec70cbdd3ca94ecdd2f7d528342618b53f8be2da80291ed75c90a8bb8483d'

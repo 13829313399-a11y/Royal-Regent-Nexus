@@ -8,7 +8,11 @@ const policySource = readFileSync(join(process.cwd(), 'src/config/pageAccessPoli
 describe('system user management routing', () => {
   it('keeps registered permission metadata while globally allowing authenticated page access', () => {
     expect(source).toMatch(/path:\s*'\/register'[\s\S]{0,260}fullPage:\s*true/)
-    expect(source).toMatch(/path:\s*'\/system\/users'[\s\S]{0,420}fullPage:\s*true[\s\S]{0,260}permissions:\s*\[['"]system:user_manage['"]\][\s\S]{0,80}enforcePermissions:\s*true/)
+    const userRoute = source.split("path: '/system/users',")[1]?.split('\n  },')[0] || ''
+    expect(userRoute).toContain('fullPage: true')
+    expect(userRoute).toContain('requiresAuth: true')
+    expect(userRoute).toContain("permissions: consolidatedIamEnabled ? ['system:user_manage', 'system:access_manage'] : ['system:user_manage']")
+    expect(userRoute).toContain('enforcePermissions: true')
     expect(source).toMatch(/path:\s*'\/modules\/molding-sample'[\s\S]{0,360}permissions:\s*\[['"]molding_sample:read['"],\s*['"]molding_sample:cross_factory_read['"]\]/)
     expect(source).toMatch(/path:\s*'\/modules\/molding-sample'[\s\S]{0,420}allowAuthenticatedReadOnly:\s*true/)
     expect(source).toMatch(/path:\s*'\/modules\/production\/molding-sample-tasks'[\s\S]{0,360}permissions:\s*\[['"]molding_sample:production_read['"]\]/)
@@ -19,7 +23,8 @@ describe('system user management routing', () => {
     expect(source).toMatch(/path:\s*'\/modules\/molding-sample'[\s\S]{0,360}enforcePermissions:\s*true/)
     expect(source).toMatch(/path:\s*'\/modules\/production\/molding-sample-tasks'[\s\S]{0,360}enforcePermissions:\s*true/)
     expect(source).toMatch(/name:\s*'forbidden'/)
-    expect(source).toMatch(/authStore\.canAny\(\s*permissions,/)
+    expect(source).toContain('hasRoutePermissions(to.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department), appStore.activeFactoryId)')
+    expect(source).toContain('hasRoutePermissions(currentRoute.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department), useAppStore().activeFactoryId)')
     expect(source).toContain('shouldEnforcePagePermissions(to.meta)')
     expect(source).toContain('shouldEnforcePagePermissions(currentRoute.meta)')
     expect(source).toMatch(/path:\s*'\/forbidden'[\s\S]{0,320}shouldRedirectForbiddenPageToHome\(\)/)
@@ -34,7 +39,12 @@ describe('system user management routing', () => {
       const route = source.split(`path: '/system/iam/${path}',`)[1]?.split('\n  },')[0] || ''
       expect(route).toContain('identityUiEnabled')
       expect(route).toContain('identity-management/IdentityRecords.vue')
-      expect(route).toContain(`permissions: ['system:${permission}']`)
+      if (path === 'audit') {
+        expect(route).toContain("permissions: consolidatedIamEnabled ? ['system:user_manage', 'system:access_manage', 'system:audit_read'] : ['system:audit_read']")
+        expect(route).toContain('identity-management/workspace/WorkspaceRecords.vue')
+      } else {
+        expect(route).toContain(`permissions: ['system:${permission}']`)
+      }
       expect(route).toContain('requiresAuth: true')
       expect(route).toContain('enforcePermissions: true')
       expect(route).toContain("redirect: '/system/users'")

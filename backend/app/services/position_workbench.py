@@ -15,7 +15,7 @@ from app.services.identity_policy import ensure_admin_survives, ensure_reader, f
 from app.services.identity_resolver import instant, resolve_identity_at, stamp, utc_now
 from app.services.identity_sources import definition_hash, role_definition
 from app.services.position_workbench_read import (allowed_scope, current_sources, declaration, detail, ensure_item_scope,
-    load_item, permission_tuples, revision)
+    load_item, permission_tuples, permission_diff_risk, revision)
 from app.services.position_workbench_plan import apply_tx, make_plan, selected_role
 
 OPERATION = "position_workbench"
@@ -34,14 +34,13 @@ def dependencies(db, actor, row, payload):
     metadata = list(db.scalars(select(AuthRoleBindingMetadata).where(AuthRoleBindingMetadata.user_role_id.in_([b.id for b in bindings]))
                               .order_by(AuthRoleBindingMetadata.user_role_id)))
     role_ids = {b.role_id for b in bindings}
-    if payload.package_selection:
-        role_ids.add(payload.package_selection.role_id)
-    return {"policy": "position-workbench-v1", "source": revision(row), "target_status": target.status,
+    role_ids.update(package.role_id for package in payload.selected_packages)
+    return {"policy": "position-workbench-explicit-sources-v2", "source": revision(row), "target_status": target.status,
         "target_identity": resolve_identity_at(db, target.id)["effective_context_key"],
         "target_authorization_version": _get_revision(db, target.id),
         "profile": row_values(profile) if profile else None,
         "actor": [actor.id, actor.authorization_version, actor.identity["effective_context_key"], actor.identity["employment_epoch"]],
-        "draft": payload.model_dump(mode="json"),
+        "draft": payload.model_dump(mode="json", exclude=set() if payload.package_selections else {"package_selections"}),
         "assignments": [row_values(a) for a in db.scalars(select(EmployeeAssignment).where(EmployeeAssignment.user_id.in_(user_ids)).order_by(EmployeeAssignment.id))],
         "bindings": [row_values(b) for b in bindings], "metadata": [row_values(m) for m in metadata],
         "versions": [row_values(v) for v in db.scalars(select(IamRoleVersion).where(IamRoleVersion.id.in_([m.role_version_id for m in metadata if m.role_version_id])).order_by(IamRoleVersion.id))],
@@ -63,15 +62,15 @@ def preview(db, actor_id, item_key, payload):
     row = load_item(db, actor, item_key, payload.expected_source_revision, pending=True)
     fingerprint = changes.digest(dependencies(db, actor, row, payload))
     at = utc_now()
-    before = changes.access_matrix(db, row.user_id, at)
+    before, configured_before = changes.access_matrix(db, row.user_id, at)
     with db.begin_nested() as simulation:
         prepared = make_plan(db, actor, row, payload)
         apply_tx(db, actor, row, prepared)
         ensure_admin_survives(db)
-        after = changes.access_matrix(db, row.user_id, utc_now())
+        after, configured_after = changes.access_matrix(db, row.user_id, utc_now())
         handover = assess(db, row.user_id)
         simulation.rollback()
-    if payload.decision == "keep_permissions" and set(before) != set(after):
+    if payload.decision == "keep_permissions" and (set(before) != set(after) or configured_before != configured_after):
         fail("KEEP_PERMISSION_DRIFT", "当前计划会改变实际权限，不能按保留原权限提交")
     bindings, allows, denies = current_sources(db, row.user_id)
     diff = {"added": permission_tuples(db, after.keys() - before.keys()),
@@ -79,12 +78,11 @@ def preview(db, actor_id, item_key, payload):
             "retained": permission_tuples(db, before.keys() & after.keys()),
             "source_changed": permission_tuples(db, [k for k in before.keys() & after.keys() if before[k] != after[k]])}
     now, expires = stamp(), stamp(utc_now() + timedelta(minutes=5))
-    primary_id = (resolve_identity_at(db, row.user_id).get("primary_assignment") or {}).get("id")
     summary = {"expires_at": expires, "server_now": now, "source_revision": revision(row), "preview_fingerprint": fingerprint,
         "decision": payload.decision, "permission_diffs": diff,
-        "retained_sources": [b["binding_id"] for b in bindings if b["assignment_id"] != primary_id or payload.decision == "keep_permissions"]
+        "retained_sources": [b["binding_id"] for b in bindings]
             + [d.override_id for d in payload.independent_allow_decisions if d.decision == "keep_original_scope"],
-        "explicit_denials": denies, "high_risk": bool(diff["added"]), "requires_independent_approval": False,
+        "explicit_denials": denies, "high_risk": permission_diff_risk(db, diff), "requires_independent_approval": False,
         "allowed_to_commit": True, "blocked_reasons": [],
         "handover_summary": f"检测到 {handover['count']} 项内部报价责任；其他业务责任需人工检查。可在更多管理中办理工作交接。"}
     token = secrets.token_urlsafe(32)
@@ -152,18 +150,21 @@ def commit(db, actor_id, item_key, payload):
     if changes.digest(dependencies(db, actor, row, draft)) != evidence["fingerprint"]:
         fail("AUTHORIZATION_CHANGED", "申报、组织、权限或方案已变化，请重新预览")
     if summary["high_risk"] and not payload.risk_acknowledged:
-        fail("CONFIRM_HIGH_RISK", "请确认本次实际新增权限", 422)
-    before = changes.access_matrix(db, row.user_id, utc_now())
+        fail("CONFIRM_HIGH_RISK", "请确认本次权限及来源变化涉及的风险", 422)
+    before, configured_before = changes.access_matrix(db, row.user_id, utc_now())
     prepared = make_plan(db, actor, row, draft)
     changes_ids = apply_tx(db, actor, row, prepared)
-    after = changes.access_matrix(db, row.user_id, utc_now())
+    after, configured_after = changes.access_matrix(db, row.user_id, utc_now())
     # Time-based source activation may occur without a row/version write.
     expected_diff = summary["permission_diffs"]
-    for key, actual in (("added", after.keys() - before.keys()), ("removed", before.keys() - after.keys())):
+    actual_diff = {"added": after.keys() - before.keys(), "removed": before.keys() - after.keys()}
+    actual_diff.update(retained=before.keys() & after.keys(),
+        source_changed={key for key in before.keys() & after.keys() if before[key] != after[key]})
+    for key, actual in actual_diff.items():
         expected = {(p["permission_code"], p["factory_id"], p["department"]) for p in expected_diff[key]}
         if set(actual) != expected:
             fail("AUTHORIZATION_CHANGED", "权限有效时间或实际差异已变化，请重新预览")
-    if draft.decision == "keep_permissions" and set(before) != set(after):
+    if draft.decision == "keep_permissions" and (set(before) != set(after) or configured_before != configured_after):
         fail("KEEP_PERMISSION_DRIFT", "实际权限发生漂移，未提交任何变更")
     ensure_admin_survives(db)
     if isinstance(row, PositionReview):
@@ -178,8 +179,14 @@ def commit(db, actor_id, item_key, payload):
     else:
         db.add(IamOutbox(id="registration-position-" + row.id, aggregate_id=row.id, kind="identity_changed",
             payload_json=changes.encoded({"user_id": row.user_id, "change_id": changes_ids[0]}), created_at=stamp()))
+    audit = {"decision": draft.decision, "source_revision": revision(row)}
+    if draft.package_selections:
+        audit["packages"] = [{key: role[key] for key in ("role_id", "version_id", "department", "factories")}
+                             for role in prepared["roles"]]
+        audit["binding_ids"] = prepared["installed_binding_ids"]
+        audit["permission_diffs"] = expected_diff
     _add_event(db, actor.id, "position_review_applied", "position_workbench", item_key,
-        target_user_id=row.user_id, after={"decision": draft.decision, "source_revision": revision(row)}, reason="岗位与权限确认")
+        target_user_id=row.user_id, after=audit, reason="岗位与权限确认")
     token.consumed_at = stamp()
     result = save_receipt_tx(db, actor, row, item_key, payload.command_id, body_hash, draft.decision)
     db.commit()
@@ -258,7 +265,7 @@ def packages(db, actor, item_key="", confirmed_profile=None, factory_scope=None)
             blocked = "当前仅可查看，岗位更新暂不可提交"
         if row and not blocked:
             try:
-                position = confirmed_profile or Position.model_validate({k: v for k, v in declaration(row).items() if k != "note"})
+                position = confirmed_profile or Position.model_validate({k: declaration(row)[k] for k in Position.model_fields})
                 # No snapshot writes on this GET. Assignment scope is rechecked
                 # with the administrator's complete draft in preview/commit.
                 from app.services.position_workbench_plan import role_candidate

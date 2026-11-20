@@ -14,12 +14,12 @@ from sqlalchemy.orm import Session
 from app.core.time import business_now, parse_business_timestamp
 from app.models import three_d_printing as m
 from app.services.three_d_fleet import machine_numbers
+from app.services.three_d_telemetry_storage import statistical_frames
 
 FACTORY = "huakang-a"
 HOUR = timedelta(hours=1)
 Rollup = m.ThreeDPrintingTelemetryRollup
 State = m.ThreeDPrintingTelemetryRollupState
-Event = m.ThreeDPrintingPrinterStateEvent
 
 
 def hour(value):
@@ -74,14 +74,15 @@ def bridge(target, previous, current):
 def scan(db, begin, end, *, include_end=False):
     """At most one hour, narrow columns, indexed seeks for each known machine."""
     values = {}
+    frames = statistical_frames()
     for number in machine_numbers(db):
         # Millisecond upper bound includes the possible partial last millisecond;
         # exact Python comparisons below retain the original time-window contract.
-        query = select(Event.observed_at, Event.state, Event.error_code, Event.temperatures_json).where(
-            Event.factory_id == FACTORY, Event.machine_no == number,
-            Event.observed_at >= stamp(begin),
-            Event.observed_at < stamp(end + timedelta(milliseconds=1)),
-        ).order_by(Event.observed_at).execution_options(yield_per=500)
+        query = select(frames.observed_at, frames.state, frames.error_code, frames.temperatures_json).where(
+            frames.factory_id == FACTORY, frames.machine_no == number,
+            frames.observed_at >= stamp(begin),
+            frames.observed_at < stamp(end + timedelta(milliseconds=1)),
+        ).order_by(frames.observed_at, frames.received_at, frames.id).execution_options(yield_per=500)
         for event in db.execute(query):
             timestamp = parse_business_timestamp(event.observed_at)
             if not timestamp or timestamp < begin or timestamp > end or (timestamp == end and not include_end):
@@ -132,10 +133,11 @@ def initialize(engine, *, now=None, progress=None):
         state = db.get(State, FACTORY)
         if state and state.initialized_at:
             return 0
+        frames = statistical_frames()
         buckets = select(
-            Event.factory_id,
-            (func.substr(Event.observed_at, 1, 13) + ":00:00.000+00:00").label("bucket_start"),
-        ).where(Event.factory_id == FACTORY, Event.observed_at != "").distinct()
+            frames.factory_id,
+            (func.substr(frames.observed_at, 1, 13) + ":00:00.000+00:00").label("bucket_start"),
+        ).where(frames.factory_id == FACTORY, frames.observed_at != "").distinct()
         db.execute(insert(db, Rollup).from_select(
             ["factory_id", "bucket_start"], buckets,
         ).on_conflict_do_update(index_elements=[Rollup.factory_id, Rollup.bucket_start],
@@ -183,6 +185,13 @@ async def worker():
             raise
         except Exception:
             logging.getLogger(__name__).warning("three_d_rollup_refresh_failed", exc_info=True)
+        try:
+            from app.services.three_d_telemetry_retention import process_due
+            await asyncio.to_thread(process_due, engine)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).warning("three_d_retention_failed", exc_info=True)
         await asyncio.sleep(60)
 
 

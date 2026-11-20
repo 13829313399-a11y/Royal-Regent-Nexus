@@ -915,6 +915,24 @@ def test_reconcile_upgrades_legacy_production_task_position_matrix_without_losin
             )
 
 
+def test_reconcile_refuses_a_catalog_that_applied_retirement(monkeypatch):
+    with make_client(monkeypatch):
+        database = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        reconcile = importlib.import_module("app.services.system_position_reconcile")
+        with database.SessionLocal() as db:
+            catalog = db.get(models.AuthIamState, reconcile.SYSTEM_POSITION_CATALOG_STATE_KEY)
+            payload = json.loads(catalog.value_json)
+            payload["definition_version"] = "fixed-v34"
+            catalog.value_json = json.dumps(payload)
+            db.commit()
+            before = list(db.scalars(select(models.AuthRolePermission.id).order_by(models.AuthRolePermission.id)))
+            with pytest.raises(RuntimeError, match="already applied the injection retirement"):
+                reconcile.reconcile_system_position_catalog(db)
+            assert list(db.scalars(select(models.AuthRolePermission.id).order_by(models.AuthRolePermission.id))) == before
+            assert json.loads(catalog.value_json) == payload
+
+
 def test_reconcile_metadata_repair_advances_the_virtual_version(monkeypatch):
     with make_client(monkeypatch):
         db_module = importlib.import_module("app.db")

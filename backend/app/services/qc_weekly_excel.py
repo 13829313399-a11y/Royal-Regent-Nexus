@@ -1,4 +1,4 @@
-"""Original XLS template styles, current weekly data and scoped Excel downloads."""
+"""Original weekly fields with the approved neutral reading layout and scoped downloads."""
 from copy import deepcopy
 from datetime import date
 from hashlib import sha256
@@ -26,9 +26,14 @@ from app.services import qc_weekly_templates as weekly
 MIME = 'application/vnd.ms-excel'
 TTL, MAX_BYTES = 600, 32 * 1024 * 1024
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / 'templates/qc-weekly'
-ASSETS = json.loads((TEMPLATE_DIR/'export-templates.json').read_text())
-FOOTER_COLUMNS = [0, 1, 3, 5, 7, 10, 14, 15, 16]
-FOOTER_SPANS = [(0,0),(1,2),(3,4),(5,6),(7,9),(10,13),(14,14),(15,15),(16,17)]
+ASSETS = json.loads((TEMPLATE_DIR/'export-templates.json').read_text(encoding='utf-8'))
+SOURCE_FOOTER_COLUMNS = [0, 1, 3, 5, 7, 10, 14, 15, 16]
+FOOTER_COLUMNS = [0, 1, 3, 4, 5, 6, 7, 9, 11]
+FOOTER_SPANS = [(0,0),(1,2),(3,3),(4,4),(5,5),(6,6),(7,8),(9,10),(11,12)]
+WIDTHS = {
+    'detail': [46,88,88,102,94,105,150,68,54,62,62,70,76,70,170,85,85,152],
+    'group': [78,115,113,112,104,205,105,154],
+}
 
 
 def versions(data):
@@ -70,7 +75,7 @@ def render(data, kind):
     sheet = source.sheet_by_index(0)
     if sheet.row_values(1) != spec['headers']:
         raise HTTPException(503, '原始周报模板字段不匹配')
-    if kind == 'detail' and [sheet.cell_value(131,c) for c in FOOTER_COLUMNS] != spec['summaryHeaders']:
+    if kind == 'detail' and [sheet.cell_value(131,c) for c in SOURCE_FOOTER_COLUMNS] != spec['summaryHeaders']:
         raise HTTPException(503, '原始客户汇总模板字段不匹配')
     rows = data['tables'][kind]
     if len(rows) + (len(data['tables']['footer']) if kind == 'detail' else 0) + 8 > 65536:
@@ -83,15 +88,28 @@ def render(data, kind):
     target.vert_split_pos = 0; target.split_position_units_are_twips = False
     for index, rgb in source.colour_map.items():
         if 8 <= index <= 63 and rgb: book.set_colour_RGB(index, *rgb)
-    for col in range(sheet.ncols):
-        target.col(col).width = sheet.colinfo_map[col].width
+    # Local palette entries are applied to every output cell, never to the source assets.
+    for index, rgb in {60:(243,243,243),61:(247,247,247),62:(212,212,212),63:(34,34,34)}.items():
+        book.set_colour_RGB(index,*rgb)
+    for col, pixels in enumerate(WIDTHS[kind]):
+        target.col(col).width = round((pixels-5)/7*256)
+    target.portrait=False; target.paper_size_code=8 if kind=='detail' else 9
+    target.fit_num_pages=True; target.fit_width_to_pages=1; target.fit_height_to_pages=0
+    target.print_in_rows=True; target.print_grid=False
     def style(row, col, fmt=None):
-        item = deepcopy(writer.style_list[sheet.cell_xf_index(row,col)])
-        item.alignment.wrap = 1
-        if row in (3, 133):
-            for edge in ('top', 'bottom', 'left', 'right'):
-                if not getattr(item.borders, edge):
-                    setattr(item.borders, edge, xlwt.Borders.THIN)
+        source_col = SOURCE_FOOTER_COLUMNS[FOOTER_COLUMNS.index(col)] if row in (131,133,142) else col
+        item = deepcopy(writer.style_list[sheet.cell_xf_index(row,source_col)])
+        heading = row in (1,131); total = row in (15,142); title_row = row in (0,128)
+        item.font.name='Arial'; item.font.height=320 if title_row else 220
+        item.font.bold=heading or total or title_row; item.font.colour_index=63
+        item.alignment=xlwt.Alignment()
+        item.alignment.horz=xlwt.Alignment.HORZ_CENTER; item.alignment.vert=xlwt.Alignment.VERT_CENTER
+        item.alignment.wrap=1
+        item.pattern.pattern=xlwt.Pattern.SOLID_PATTERN
+        item.pattern.pattern_fore_colour=60 if heading else 61 if total else 9
+        for edge in ('top','bottom','left','right'):
+            setattr(item.borders,edge,xlwt.Borders.NO_LINE if title_row else xlwt.Borders.THIN)
+            setattr(item.borders,edge+'_colour',62)
         if fmt: item.num_format_str = fmt
         return item
     def formula(row, col, expression, value, cell_style):
@@ -100,11 +118,11 @@ def render(data, kind):
         target.row(row).insert_cell(col,CachedFormulaCell(row,col,book.add_style(cell_style),parsed,value))
     def height(row, source_row, values, columns, spans=None):
         writer.row(source_row,row)
-        estimate = target.row(row).height
+        estimate = (27 if source_row in (1,131) else 21)*20
         for i,(col,value) in enumerate(zip(columns,values)):
             if value in ('',None): continue
             start,end = spans[i] if spans else (col,col)
-            width = max(2,sum(target.col(c).width/256 for c in range(start,end+1))-1)
+            width = max(2,(sum(target.col(c).width/256 for c in range(start,end+1))-1)*0.8)
             lines = sum(max(1,math.ceil(sum(2 if unicodedata.east_asian_width(ch) in 'WF' else 1 for ch in line)/width)) for line in str(value).split('\n'))
             font_size = style(source_row,col).font.height
             estimate = max(estimate,round(lines*font_size*1.2+80))
@@ -119,8 +137,12 @@ def render(data, kind):
                 target.write_merge(row,row,col,spans[i][1],value,cell_style)
             else: target.write(row,col,value,cell_style)
     def title(row, source_row, text, span_rows=1):
-        for r in range(span_rows):writer.row(source_row+r,row+r)
-        target.write_merge(row,row+span_rows-1,0,sheet.ncols-1,text,style(source_row,0))
+        for r in range(span_rows):
+            writer.row(source_row+r,row+r)
+            target.row(row+r).height=round((28 if row==0 else 26)/span_rows*20)
+            target.row(row+r).height_mismatch=True
+        last_col = FOOTER_SPANS[-1][1] if source_row == 128 else sheet.ncols-1
+        target.write_merge(row,row+span_rows-1,0,last_col,text,style(source_row,0))
     period = data['dateFrom']+' 至 '+data['dateTo']
     selected = next((c['label'] for c in data['customers'] if c['key']==data['customer']), '')
     title(0,0,spec['title']+'（'+period+'）'+(' '+selected if selected else ''))
@@ -148,10 +170,11 @@ def render(data, kind):
         for index,entry in enumerate(rows,2):
             values=list(entry['values']);values[1]=date.fromisoformat(values[1])
             block_row(index,3,values,list(range(18)))
-            target.write(index,1,values[1],style(3,1,'m.d'))
+            target.write(index,1,values[1],style(3,1,'mm-dd'))
         footer_title=len(rows)+2
         title(footer_title,128,'华兴客户周验货汇总（'+period+'）',3)
-        block_row(footer_title+3,131,spec['summaryHeaders'],FOOTER_COLUMNS,FOOTER_SPANS)
+        labels = [spec['summaryHeaderLabels'].get(header, header) for header in spec['summaryHeaders']]
+        block_row(footer_title+3,131,labels,FOOTER_COLUMNS,FOOTER_SPANS)
         summary(footer_title+4,data['tables']['footer'],spec['summaryHeaders'],FOOTER_COLUMNS,FOOTER_SPANS,133,142)
     else:
         summary(2,rows,spec['headers'],list(range(8)),None,3,15)

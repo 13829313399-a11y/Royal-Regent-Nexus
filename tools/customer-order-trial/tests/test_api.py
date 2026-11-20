@@ -123,3 +123,28 @@ def test_factory_host_origin_and_missing_header_are_rejected(tmp_path):
     with pytest.raises(RuntimeError,match='厂区'):create_app(tmp_path,factory_id='huadeng')
     with pytest.raises(ValueError,match='未开放'):create_app(tmp_path/'c',factory_id='huakang-c')
     with pytest.raises(ValueError,match='127'):create_app(tmp_path/'remote',host='0.0.0.0')
+
+
+def test_huakang_a_zuru_real_worker_export_and_local_ledger(tmp_path):
+    po = fixtures('test_customer_order_zuru_unified.py', {'po_book', 'data'})
+    template = fixtures('test_customer_order_unified.py', {'_template_bytes'}, unified=service)
+    fields = dict(factory_id='huakang-a', customer_code='zuru', received_date='2026-11-17')
+    files = uploads([('synthetic-zuru.xlsx', po['data'](po['po_book']()))], template['_template_bytes']())
+    with TestClient(create_app(tmp_path, factory_id='huakang-a'), base_url=BASE) as client:
+        assert 'zuru' in [row['code'] for row in client.get('/api/config').json()['customers']]
+        preview = client.post('/api/orders/preview', data=fields, files=files, headers=HEADERS)
+        assert preview.status_code == 200, preview.text
+        assert len(preview.json()['rows']) == 2
+        fields.update(confirmed='true', preview_fingerprint=preview.json()['preview_fingerprint'])
+        result = client.post('/api/customer-order-ledger/imports/zuru', data=fields, files=files, headers=HEADERS)
+        assert result.status_code == 200, result.text
+        assert result.json()['created_count'] == 2
+        assert all(row['factory_id'] == 'huakang-a' for row in result.json()['items'])
+        output = client.post('/api/orders/export', data=fields, files=files, headers=HEADERS)
+        assert output.status_code == 200, output.text
+        book = openpyxl.load_workbook(BytesIO(output.content))
+        for name in ('接单表', '正单评审表'):
+            added = [row for row in book[name] if str(row[3].value).startswith('4500999001-')]
+            assert len(added) == 2 and sum(row[16].value for row in added) == 750
+            assert all(row[13].value is None for row in added)
+        book.close()

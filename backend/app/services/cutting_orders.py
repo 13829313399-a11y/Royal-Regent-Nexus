@@ -44,6 +44,16 @@ def revision(db, order, version=None):
     return dict(version=r.version, data=r.data, actor_id=r.actor_id, created_at=r.created_at, reason=r.reason)
 
 
+def display_revision(current):
+    if current and current['data'].get('purchase_links'):
+        from app.services.cutting_purchase_links import display_batches
+        data = dict(current['data'])
+        data['batches'] = display_batches(data)
+        data.pop('purchase_links')
+        return {**current, 'data': data}
+    return current
+
+
 def include_note_comparisons(db, revisions):
     """Decorate response revisions from immutable cutting dispatches in one page-level read."""
     targets = []
@@ -83,7 +93,7 @@ def view(db, dispatch, loaded=None, planning_summary=None):
     from app.services.cutting_planning import summary
     return dict(planning_summary=summary(db, data, needs_receipt) if planning_summary is None else planning_summary, line_id=dispatch.line_id, dispatch_id=dispatch.id, source_version=dispatch.version,
         snapshot=dispatch.snapshot, received_at=dispatch.received_at,
-        needs_receipt=needs_receipt, current=current, workflow_status=status,
+        needs_receipt=needs_receipt, current=display_revision(current), workflow_status=status,
         expected_date_passed=overdue, pending_purchase=pending)
 
 
@@ -109,21 +119,24 @@ def workflow_status(data, source_status='active', needs_receipt=False):
 
 
 def purchase_snapshot(db, line_id, version):
+    from app.services.cutting_purchase_links import display_batches
     scope = (CuttingOrderRevision.line_id == line_id,
              CuttingOrderRevision.data['requisition']['version'].as_integer() == version)
     r = db.scalar(select(CuttingOrderRevision).where(*scope).order_by(CuttingOrderRevision.version.desc()).limit(1))
     c.require(r is not None, '待核对的原需求版本缺失，请核对历史', 409)
-    batches = r.data['batches']
+    batches = display_batches(r.data)
     # A revised reply can remove batches without removing the original procurement evidence.
     prior_reply = None
     if not batches:
-        history = db.execute(select(CuttingOrderRevision.version, CuttingOrderRevision.data['batches']).where(
+        history = db.execute(select(CuttingOrderRevision.version, CuttingOrderRevision.data['batches'],
+                                    CuttingOrderRevision.data['purchase_links']).where(
             *scope, CuttingOrderRevision.version < r.version).order_by(
             CuttingOrderRevision.version.desc()).execution_options(yield_per=50))
-        previous = next(((revision, reply) for revision, reply in history if reply), None)
+        previous = next(((revision, reply, links) for revision, reply, links in history if reply), None)
         history.close()
         if previous:
-            prior_reply = dict(revision=previous[0], batches=previous[1])
+            prior_reply = dict(revision=previous[0], batches=display_batches(dict(
+                batches=previous[1], purchase_links=previous[2], requisition=dict(version=version))))
     return dict(requisition=r.data['requisition'], bom=r.data['bom'], order=r.data['order'], batches=batches,
                 has_purchase_evidence=bool(batches or prior_reply), prior_purchase_reply=prior_reply)
 
@@ -396,6 +409,7 @@ def submit(db, user, line_id, body):
     data['requisition'] = dict(version=order.version+1, lines=lines, actor_id=user.id,
         created_at=datetime.now(UTC).isoformat(), supersedes_version=data.get('reconciliation', {}).get('requisition_version'))
     data['batches'] = []
+    data.pop('purchase_links', None)
     return append(db, user, order, data, body.reason)
 
 
@@ -412,7 +426,10 @@ def reply_eta(db, user, line_id, body):
         c.require(totals[row['row']] <= Decimal(row['quantity']), '分批交期数量合计不能超过需求量', 422)
         row['replied_quantity'] = str(totals[row['row']])
         row['awaiting_reply_quantity'] = str(Decimal(row['quantity']) - totals[row['row']])
-    data['batches'] = [b.model_dump(mode='json') for b in body.batches]
+    from app.services.cutting_purchase_links import display_batches, save_batches, validate_sources
+    previous = display_batches(data)
+    validate_sources(db, user, req, body.batches, previous)
+    save_batches(db, data, body.batches, previous)
     return append(db, user, order, data, body.reason)
 
 
@@ -437,6 +454,7 @@ def reconcile(db, user, line_id, body):
     data.update(requisition=None, batches=[], purchase_reconciliation_required=False, pending_requisition_version=None,
         reconciliation=dict(requisition_version=pending, disposition=body.disposition, evidence=body.evidence, all_handled=True,
                             actor_id=user.id, created_at=datetime.now(UTC).isoformat()), reconciliation_request=None)
+    data.pop('purchase_links', None)
     return append(db, user, order, data, body.reason)
 
 

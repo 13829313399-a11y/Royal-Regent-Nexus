@@ -486,12 +486,13 @@ const materialSources = computed(() => props.section.code === 'molding' && props
 function resumeEngineeringPrefill() {
   draftPayload.value = normalizedDraft({ ...draftPayload.value, engineering_prefill_paused: false })
 }
-watch([() => props.engineeringPayload, () => draftPayload.value.engineering_prefill_paused], ([engineering]) => {
+watch([() => props.engineeringPayload, () => draftPayload.value.engineering_prefill_paused, () => props.quote.referenceSnapshot], ([engineering]) => {
   if (props.section.code !== 'molding' || !editable.value || !engineering) return
   const linked = linkEngineeringMolding(
     cloneInternalQuotePayload('engineering', engineering) as unknown as EngineeringPayload,
     cloneInternalQuotePayload('molding', draftPayload.value) as unknown as MoldingPayload,
     props.quote.factoryId,
+    props.quote.referenceSnapshot,
   )
   const next = normalizedDraft(linked as unknown as Record<string, unknown>)
   if (JSON.stringify(next) !== JSON.stringify(draftPayload.value)) draftPayload.value = next

@@ -4,7 +4,19 @@ Vue 3 + Vite + TypeScript enterprise management shell wired with Tailwind CSS v4
 
 ## Scripts
 
-Windows 本地同时启动前端、API 和文档处理 worker：
+日常开发在仓库根目录打开两个终端。第一个终端启动 Vite 前端，默认地址为 `http://127.0.0.1:5173/`。`npm run dev:web` 也可单独启动同一前端。
+
+```sh
+npm run dev
+```
+
+在第二个终端单独启动后端 API。Windows PowerShell 命令如下。
+
+```powershell
+backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+需要同时管理前端、API 和文档处理 worker 时，Windows 可使用以下命令。
 
 ```sh
 npm run dev:local
@@ -20,10 +32,11 @@ npm run dev:stop
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Python 'C:\path to venv\Scripts\python.exe'
 ```
 
-`scripts/start-latest-main-dev.ps1` 保留其最新 main、工作区和端口检查，检查通过后也调用同一启动入口。日常开发允许工作区有未提交修改，使用 `npm run dev:local`；仅需单独运行前端时仍可使用以下命令：
+`scripts/start-latest-main-dev.ps1` 保留其最新 main、工作区和端口检查，检查通过后也调用同一启动入口。`npm run dev:local` 允许工作区有未提交修改。
+
+构建和预览前端使用以下命令。
 
 ```sh
-npm run dev
 npm run build
 npm run preview
 ```
@@ -71,6 +84,3 @@ Current routes:
 - Axios
 - reka-ui
 - Lucide icons
-
-backend:
-backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000

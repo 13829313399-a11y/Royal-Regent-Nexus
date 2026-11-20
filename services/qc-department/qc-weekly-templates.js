@@ -2,11 +2,11 @@
 (function (root) {
   'use strict';
   const doc = root.document;
-  const titles = {detail:'华兴周验货明细及客户汇总表',group:'华兴周验货汇总表',issues:'每周验货问题图文记录表'};
-  const editable = {detail:{},group:{3:'returns',5:'returnReason',6:'hongKongContact',7:'weeklyRemark'},footer:{3:'returns',5:'returnReason',6:'hongKongContact',7:'reworkA0D',8:'weeklyRemark'}};
+  const titles = {detail:'周验货明细及客户汇总',issues:'验货问题与整改跟踪表'};
+  const editable = {detail:{},footer:{3:'returns',5:'returnReason',6:'hongKongContact',7:'reworkA0D',8:'weeklyRemark'}};
   const fields = [...new Set(Object.values(editable).flatMap(columns=>Object.values(columns)))];
   const columns = (kind,row) => ({...editable[kind],...row.editableFields});
-  const widths = {detail:[42,100,100,108,80,105,160,72,56,60,72,48,90,90,180,90,90,180],group:[65,110,94,74,74,200,100,220],footer:[65,110,94,74,74,180,100,220,190]};
+  const widths = {detail:[48,82,90,128,150,140,210,75,60,75,60,60,80,80,180,95,95,160],footer:[68,120,102,86,80,150,100,124,150]};
   let exporting=false, exportMessage='', contactOptions=[];
   const issueBusy=()=>active==='issues'&&root.QcIssueReports?.navigationState().busy;
   // Missing/null supplements are blank editable values; zero remains a real value.
@@ -47,7 +47,7 @@
   function status() {
     const node = el('qwtStatus');
     if (node) {
-      node.textContent = storageError ? '浏览器草稿存储不可用，请勿刷新或关闭；请先保存成功' : error || (sending ? '正在保存…' : dirty() ? '有待保存内容' : '已保存');
+      node.textContent = storageError ? '浏览器草稿存储不可用，请勿刷新或关闭；请先保存成功' : error || (sending ? '正在保存…' : dirty() ? '有待保存内容' : '');
       node.className = error || storageError ? 'qwt-error' : 'qwt-muted';
     }
     const retry=el('qwtRetry'); if(retry) retry.hidden=!paused || !!conflict;
@@ -78,10 +78,11 @@
     if (kind!=='detail') result[4]=rate(result[3],result[2]);
     return result;
   }
-  function table(kind, headers) {
+  function table(kind, headers, labels = {}) {
     const rows=data.tables[kind], totals=Array(headers.length).fill('');
     const sizes=widths[kind];
-    let html='<div class="qwt-scroll" tabindex="0" aria-label="'+esc(kind==='footer'?'客户周汇总':titles[kind])+'"><table style="min-width:'+sizes.reduce((a,b)=>a+b,0)+'px"><colgroup>'+sizes.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>';
+    const width=sizes.reduce((a,b)=>a+b,0);
+    let html='<div class="qwt-scroll" tabindex="0" aria-label="'+esc(kind==='footer'?'客户周汇总':titles[kind])+'"><table style="'+(kind==='footer'?'width:':'min-width:')+width+'px"><colgroup>'+sizes.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr>'+headers.map(h=>'<th scope="col"'+(labels[h]?' title="'+esc(h)+'"':'')+'>'+esc(labels[h] || h)+'</th>').join('')+'</tr></thead><tbody>';
     for(const row of rows) {
       const key=row.customerKey ?? row.id, available=columns(kind,row);
       html+='<tr>'+values(kind,row).map((v,i)=>{
@@ -91,7 +92,7 @@
       }).join('')+'</tr>';
     }
     html+='</tbody>';
-    if(kind==='group') {
+    if(kind==='footer') {
       const ci=2,ri=ci+1;
       totals[ci-1]='合计';totals[ci]=rows.reduce((n,r)=>n+r.values[ci],0);
       totals[ri]=rows.every(r=>fieldValue(r.id,'returns')!=='')?rows.reduce((n,r)=>n+Number(fieldValue(r.id,'returns')),0):'待补全';
@@ -104,7 +105,7 @@
     if(!data || !active || active==='issues' || editor) return;
     const spec=data.templates.find(t=>t.id===active);
     const scrolls=Array.from(el('qwtTables')?.querySelectorAll('.qwt-scroll') || []).map(n=>[n.scrollLeft,n.scrollTop]);
-    el('qwtTables').innerHTML=table(active,spec.headers,spec.sourceColumnWidths)+(active==='detail'?'<h3>客户周汇总</h3>'+table('footer',spec.summaryHeaders):'');
+    el('qwtTables').innerHTML=table(active,spec.headers)+(active==='detail'?'<h3>客户周汇总</h3>'+table('footer',spec.summaryHeaders,spec.summaryHeaderLabels):'');
     el('qwtTables').querySelectorAll('.qwt-scroll').forEach((n,i)=>{if(scrolls[i]) [n.scrollLeft,n.scrollTop]=scrolls[i];});
     el('qwtTables').querySelectorAll('.qwt-cell').forEach(button=>{
       // Keep the previous editor's blur from replacing the clicked target before click fires.
@@ -115,17 +116,18 @@
   function render() {
     const view=el('qwtView');
     applyLayout();
-    el('qwtEntries').querySelectorAll('button').forEach(b=>b.setAttribute('aria-current',b.dataset.template===active?'page':'false'));
+    el('qwtChoice').value=active;
+    syncCustomers();
     view.hidden=!active;el('weeklyReportBody').hidden=!!active;
     if(active==='issues')return;
     if(!active || !data) return;
     const spec=data.templates.find(t=>t.id===active);
-    view.innerHTML='<div class="qwt-heading"><h2>'+esc(spec.title)+'</h2></div><div class="qwt-controls"><label>客户 <select id="qwtCustomer"><option value="">全部客户</option>'+data.customers.map(c=>'<option value="'+c.key+'"'+(customer===c.key?' selected':'')+'>'+esc(c.label)+'</option>').join('')+'</select></label><button id="qwtRefresh">刷新数据</button><button id="qwtExcel">导出 Excel</button></div><div id="qwtExcelStatus" class="qwt-muted" role="status" aria-live="polite"></div><div class="qwt-status-line"><span>'+esc(data.dateFrom+' 至 '+data.dateTo)+' · '+data.total+' 条已审核记录</span><span id="qwtStatus" role="status" aria-live="polite"></span><button id="qwtRetry" hidden>重试保存</button></div><div id="qwtConflict"></div><div id="qwtTables"></div>';
+    view.innerHTML='<div class="qwt-heading"><h2>'+esc(spec.title)+'</h2></div><div class="qwt-controls"><button id="qwtRefresh" type="button" class="qc-refresh-icon" aria-label="刷新数据" title="刷新数据"></button></div><div class="qwt-status-line"><span id="qwtStatus" role="status" aria-live="polite"></span><button id="qwtRetry" hidden>重试保存</button></div><div id="qwtConflict"></div><div id="qwtTables"></div><div class="report-export-footer"><div id="qwtExcelStatus" class="qwt-muted" role="status" aria-live="polite"></div><button id="qwtExcel">导出 Excel</button></div>';
     el('qwtRefresh').onclick=()=>load();
     el('qwtExcel').onclick=exportExcel;
-    el('qwtCustomer').onchange=e=>{customer=e.target.value;load();};
     el('qwtRetry').onclick=retry;
-    renderTables();status();
+    if(dirty()||!root.QcReportWorkbook?.mount('weekly',active,el('qwtTables'),data,()=>load()))renderTables();
+    status();
   }
   function stage(customerKey,field,value) {
     const key=cellKey(customerKey,field), saved=data.fields[customerKey][field];
@@ -222,7 +224,7 @@
     view.hidden=false;el('weeklyReportBody').hidden=true;applyLayout();
     if(active==='issues'){
       render();
-      await root.QcIssueReports.open('weekly',date,customer,{host:view,onCustomerChange:value=>{customer=value;}});
+      await root.QcIssueReports.open('weekly',date,customer,{host:view,sharedCustomer:true,onCustomers:items=>syncCustomers(items,true),onBusy:busy=>{el('qwtCustomer').disabled=busy;}});
       return;
     }
     view.innerHTML='<p class="qwt-message" role="status">正在读取已审核验货记录…</p>';
@@ -230,6 +232,7 @@
       // Read all customer supplements to recover drafts even when a filter was previously selected.
       contactOptions=(await request('api/inspection-sheet/options')).hongKongContacts||[];
       const fresh=await request('api/weekly-templates?date='+encodeURIComponent(date));if(token!==sequence)return;
+      syncCustomers(fresh.customers);
       data=normalizeFields(fresh);
       exportMessage='';
       if(!compare)restore();
@@ -271,19 +274,44 @@
     if(exporting||issueBusy()||!titles[kind]||root.__QC_NEXUS?.factory!=='huaxing')return;
     finish();if(dirty()){root.showToast?.('请先等待保存成功，再切换模板','error');return;}
     if(active==='issues')root.QcIssueReports?.pageChanged();
-    active=kind;if(kind!=='issues'&&valid&&data&&data.date===el('weeklyDate').value)render();else await load();
+    active=kind;el('qwtChoice').value=kind;
+    if(kind!=='issues'&&valid&&data&&data.date===el('weeklyDate').value)render();else await load();
+  }
+  let weekCustomers=[], photoCustomers=[];
+  function syncCustomers(items, photos=false){
+    if(Array.isArray(items)){
+      if(photos) photoCustomers=items;
+      else weekCustomers=items;
+    }
+    const available=new Map(weekCustomers.map(item=>[item.key,item]));
+    if(active==='issues') for(const item of photoCustomers) available.set(item.key,item);
+    root.QcPeriodReports.weekly.syncCustomers([...available.values()]);
   }
   function init(){
     if(root.__QC_NEXUS?.factory!=='huaxing'||!el('qwtEntries'))return;
+    const select=el('qwtCustomer');
+    select.hidden=false;
+    select.onchange=()=>{
+      if(dirty() || editor || exporting || issueBusy()){select.value=customer;return;}
+      customer=select.value;
+      valid=false;
+      if(active) load(); else root.QcPeriodReports.weekly.load();
+    };
     const nav=el('qwtEntries');nav.hidden=false;
-    nav.innerHTML=Object.entries(titles).map(([key,title])=>'<button data-template="'+key+'">'+esc(title)+'</button>').join('');
-    nav.querySelectorAll('button').forEach(b=>b.onclick=()=>open(b.dataset.template));
+    const choice=el('qwtChoice');
+    choice.length=1;
+    for(const [key,title] of Object.entries(titles)) choice.add(new Option(title,key));
+    choice.onchange=()=>{
+      if(choice.value) open(choice.value);
+      else returnToReport();
+      choice.value=active;
+    };
     el('weeklyDate').addEventListener('change',e=>{
       if(dirty()||exporting||issueBusy()){e.stopImmediatePropagation();e.target.value=date;root.showToast?.('请先保存或处理失败的周报补充内容','error');return;}
-      data=null;if(active)load();
+      weekCustomers=[];photoCustomers=[];data=null;if(active)load();
     },true);
     root.addEventListener('beforeunload',e=>{if(dirty()){e.preventDefault();e.returnValue='';}});
   }
-  root.QcWeeklyTemplates={open,flush,returnToReport,navigationState:()=>({dirty:dirty()||exporting||issueBusy(),busy:sending||exporting||issueBusy()}),pageChanged:name=>{if(name!=='weekly'&&!dirty()){finish();if(active==='issues')root.QcIssueReports?.pageChanged();active='';data=null;++sequence;render();}}};
+  root.QcWeeklyTemplates={syncCustomers,open,flush,returnToReport,navigationState:()=>({dirty:dirty()||exporting||issueBusy(),busy:sending||exporting||issueBusy()}),pageChanged:name=>{if(name!=='weekly'&&!dirty()){finish();if(active==='issues')root.QcIssueReports?.pageChanged();active='';data=null;++sequence;render();}}};
   if(doc.readyState==='loading')doc.addEventListener('DOMContentLoaded',init);else init();
 })(window);

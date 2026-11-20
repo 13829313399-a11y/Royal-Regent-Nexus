@@ -434,7 +434,7 @@ export function getFactoryScopedModule(
     route: module.route ? getFactoryScopedRoute(module.route, resolvedFactoryId) : undefined,
     stats: usesSharedRawMaterialCatalog && isNewFactoryContext
       ? `${factoryName} · 公共原料资料已接入`
-      : usesIndependentEmptyState
+      : usesIndependentEmptyState && module.stats
         ? `${factoryName} · 当前暂无本厂数据`
         : module.stats,
     statusMetrics: module.statusMetrics.map((metric) => {

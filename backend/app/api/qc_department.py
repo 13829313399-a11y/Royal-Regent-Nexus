@@ -30,6 +30,8 @@ COMPANIES = {
     "huadeng": "hy-huadeng", "huaxing": "hy-huaxing",
 }
 STATIC_FILES = {
+    "qc-mobile-entry.js", "qc-mobile-entry.css",
+    "qc-report-workbook.js", "qc-report-workbook.css",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",
@@ -170,17 +172,37 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             full_business=can(user, 'customer_order:read', factory_id, 'sales-business'))
         return JSONResponse(result, headers=NO_CACHE)
     if asset_path == "api/schedule-source" and request.method == "GET":
-        return JSONResponse(qc_workflow.sources(db, factory_id), headers=NO_CACHE)
+        from app.services import qc_schedule_view
+        if set(request.query_params) - {'dateFrom', 'dateTo'} or any(
+            len(request.query_params.getlist(key)) != 1 for key in request.query_params
+        ):
+            raise HTTPException(422, '排期日期参数不正确')
+        return JSONResponse(qc_schedule_view.listing(db, factory_id,
+            date_from=request.query_params.get('dateFrom', ''),
+            date_to=request.query_params.get('dateTo', '')), headers=NO_CACHE)
+    if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
+        from app.services.qc_report_workbook import preview
+        params = request.query_params
+        expected = {'kind', 'day', 'customer'}
+        if params.get('kind') == 'annual-stats':
+            expected.add('result')
+        if set(params) != expected or any(len(params.getlist(k)) != 1 for k in params):
+            raise HTTPException(422, '工作簿预览参数不正确')
+        result = await run_in_threadpool(preview, factory_id, params['kind'], params['day'], params['customer'],
+                                         can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
+        return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
         keys = {"date", "revision"} if exporting else {"date"}
+        if "customer" in request.query_params:
+            keys.add("customer")
         if "period" in request.query_params:
             keys.add("period")
         if set(request.query_params) != keys or any(len(request.query_params.getlist(key)) != 1 for key in keys):
             raise HTTPException(422, "日报参数不正确")
         if exporting:
             _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
-        report = await run_in_threadpool(qc_daily_report.report, factory_id, request.query_params["date"], request.query_params.get("period", "daily"))
+        report = await run_in_threadpool(qc_daily_report.report, factory_id, request.query_params["date"], request.query_params.get("period", "daily"), request.query_params.get("customer", ""))
         if not exporting:
             return JSONResponse(report, headers=NO_CACHE)
         if request.query_params["revision"] != report["revision"] or not report["total"]:
@@ -196,6 +218,25 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return await monthly_templates_request(asset_path, request, db, user, factory_id)
     if asset_path in {"api/weekly-templates", "api/weekly-templates/save", "api/weekly-templates/excel"} or asset_path.startswith('api/weekly-templates/excel/'):
         return await weekly_templates_request(asset_path, request, db, user, factory_id)
+    if asset_path == "api/approved-statistics/report/excel":
+        if request.method != "GET":
+            raise HTTPException(405, "年报只支持下载")
+        if factory_id != "huaxing":
+            raise HTTPException(404, "该厂区未配置此模板")
+        _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
+        args = dict(request.query_params)
+        if (set(args) != {"year", "customer", "result", "revision"} or not args["year"]
+                or any(len(request.query_params.getlist(k)) != 1 for k in args)):
+            raise HTTPException(422, "年报导出参数不正确")
+        revision = args.pop("revision")
+        report = await run_in_threadpool(qc_approved_statistics.report, factory_id, args, all_detail_rows=True)
+        if report["revision"] != revision or not report["totals"]["total"]:
+            raise HTTPException(409, "年报数据已变化或为空，请刷新后导出")
+        from app.services.qc_annual_excel import workbook
+        content = await run_in_threadpool(workbook, report)
+        name = quote(f"华兴{args['year']}年验货统计表.xlsx", safe="")
+        return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
+            "Content-Disposition": "attachment; filename=QC-annual.xlsx; filename*=UTF-8''" + name})
     stats_handlers = {
         "api/approved-statistics": qc_approved_statistics.query,
         "api/approved-statistics/report": qc_approved_statistics.report,
@@ -396,10 +437,11 @@ async def monthly_templates_request(path, request, db, user, factory_id):
             'Content-Length': str(len(content)), 'Referrer-Policy': 'no-referrer'})
     if path == 'api/monthly-templates' and request.method == 'GET':
         keys = set(request.query_params)
-        if 'date' not in keys or keys - {'date', 'customer'} or any(len(request.query_params.getlist(k)) != 1 for k in keys):
+        if 'date' not in keys or keys - {'date', 'customer','template'} or request.query_params.get('template') not in (None,'overview',*qc_monthly_templates.design.NAMES) or any(len(request.query_params.getlist(k)) != 1 for k in keys):
             raise HTTPException(422, '月报模板查询参数不正确')
         data = await run_in_threadpool(qc_monthly_templates.query, factory_id,
-            request.query_params['date'], request.query_params.get('customer', ''))
+            request.query_params['date'], request.query_params.get('customer', ''),request.query_params.get('template')=='overview',
+            request.query_params.get('template') if request.query_params.get('template') in qc_monthly_templates.design.NAMES else None)
         data['canEdit'] = can(user, 'qc_inspection:result_write', factory_id, 'qc')
         data['canExport'] = can(user, 'qc_inspection:report_export', factory_id, 'qc')
         return JSONResponse(data, headers=NO_CACHE)

@@ -24,8 +24,6 @@ def source_is_active(db, source, profile, at):
 
 
 def role_definition(db, role_id):
-    from app.services.iam_scope import default_permission_access_kind
-    from app.services.system_positions import get_system_position
     role = db.get(AuthRole, role_id)
     if role is None:
         from app.services.identity_policy import fail
@@ -34,11 +32,18 @@ def role_definition(db, role_id):
     rows = db.execute(select(AuthPermission, AuthPermissionMetadata).join(AuthRolePermission,
         AuthRolePermission.permission_id == AuthPermission.id).outerjoin(AuthPermissionMetadata)
         .where(AuthRolePermission.role_id == role_id).order_by(AuthPermission.code)).all()
-    return {"role_id": role_id, "role_code": role.code, "role_name": role.name,
+    return role_definition_from_rows(role, meta, rows)
+
+
+def role_definition_from_rows(role, meta, rows):
+    """Construct the fixed definition from rows ordered by permission code."""
+    from app.services.iam_scope import default_permission_access_kind
+    from app.services.system_positions import get_system_position
+    return {"role_id": role.id, "role_code": role.code, "role_name": role.name,
             "permissions": [p.code for p, _ in rows],
             "read_permissions": [p.code for p, m in rows if (m.access_kind if m else default_permission_access_kind(p.code)) == "read"],
             "scope_mode": meta.scope_mode if meta else "own_factory",
-            "unrestricted_department": get_system_position(role_id) is not None}
+            "unrestricted_department": get_system_position(role.id) is not None}
 
 
 def definition_hash(definition):

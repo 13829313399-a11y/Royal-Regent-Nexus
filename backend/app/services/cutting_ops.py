@@ -142,6 +142,10 @@ def command_fingerprint(body, action):
         for task in payload.get('tasks', []):
             if not task.get('resource_change_basis'): task.pop('resource_change_basis', None)
             if not task.get('material_receipt_ids'): task.pop('material_receipt_ids', None)
+    if action.startswith('eta_write:'):
+        for batch in payload['batches']:
+            if batch.get('purchase_source') is None:
+                batch.pop('purchase_source', None)
     return payload_fingerprint(payload, action)
 
 

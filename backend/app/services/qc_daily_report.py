@@ -62,21 +62,34 @@ def period_bounds(day, period='daily'):
     return start.isoformat(), end.isoformat()
 
 
-def report(factory, day, period='daily'):
+def report(factory, day, period='daily', customer=''):
     if factory != 'huaxing':
         raise HTTPException(404, '当前厂区未配置华兴日报模板')
     start, end = period_bounds(day, period)
+    if customer and not re.fullmatch('[a-f0-9]{64}', customer):
+        raise HTTPException(422, '报告客户筛选不正确')
     snapshots = []
     source = approved.query(factory, {'from': start, 'to': end}, _report_snapshots=snapshots)
     if source['excluded'].get('missingProjection') or source['excluded'].get('invalidLineage'):
         raise HTTPException(503, '已审核记录与汇总未对齐，请核对后再生成日报')
-    rows = [_report_row(item, date_source) for item, date_source in snapshots if not (
-        item.get('reference') or item.get('referenceData') or item.get('testData'))]
+    rows, customers = [], {}
+    for item, date_source in snapshots:
+        if item.get('reference') or item.get('referenceData') or item.get('testData'):
+            continue
+        key, info = approved._customer(item)
+        customers[key] = info
+        if customer and key != customer:
+            continue
+        rows.append(_report_row(item, date_source))
     total = len(rows)
     passed = sum(row['values'][8] == 'PASS' for row in rows)
     failed = sum(row['values'][8] in {'FAIL', 'REJ'} for row in rows)
-    revision = sha256(dump([day, period, start, end, rows]).encode()).hexdigest()
-    return dict(date=day, period=period, dateFrom=start, dateTo=end, headers=HEADERS, rows=rows, revision=revision,
+    identity = [day, period, start, end, rows]
+    if customer:
+        identity.append(customer)
+    revision = sha256(dump(identity).encode()).hexdigest()
+    return dict(customer=customer, customers=sorted(customers.values(), key=lambda c: c['label']),
+                date=day, period=period, dateFrom=start, dateTo=end, headers=HEADERS, rows=rows, revision=revision,
                 total=total, passed=passed, failed=failed, other=total-passed-failed,
                 rate=round(passed/total*100, 1) if total else None,
                 scheduleCount=sum(row['dateSource'] == 'schedule' for row in rows))
@@ -144,7 +157,7 @@ def _format_daily_sheet(package, sheet, rows, name, data):
                 row.remove(cell)
     cols = sheet.find(tag('cols'))
     cols.clear()
-    widths = [18, 18, 15, 20, 30, 12, 14, 14, 12, 42, 16, 16, 36]
+    widths = [13, 13, 13, 12, 19, 9, 12, 14, 10, 24, 11, 11, 22]
     for index, width in enumerate(widths, 1):
         E.SubElement(cols, tag('col'), min=str(index), max=str(index),
                      width=str(width), customWidth='1')
@@ -165,6 +178,9 @@ def _format_daily_sheet(package, sheet, rows, name, data):
         styles.append(style)
     styles.set('count', str(len(styles)))
     by_number = {int(row.get('r')): row for row in rows}
+    for number, height in enumerate((18, 27, 30), 1):
+        by_number[number].set('ht', str(height))
+        by_number[number].set('customHeight', '1')
     for number, item in enumerate(data['rows'], 4):
         row = by_number[number]
         row[:] = [E.Element(tag('c'), r=get_column_letter(col)+str(number), s=body_styles[col-1])
@@ -176,16 +192,18 @@ def _format_daily_sheet(package, sheet, rows, name, data):
                                             for c in line) / (width - 2)))
                         for line in str(value).splitlines())
             lines = max(lines, count)
-        row.set('ht', str(min(409, max(32, lines * 16 + 8))))
+        row.set('ht', str(21 if lines == 1 else min(409, lines * 16 + 8)))
         row.set('customHeight', '1')
     view = sheet.find(tag('sheetViews'))[0]
     # The template was saved scrolled to A42; frozen panes must start at A1.
     view.set('topLeftCell', 'A1')
+    view.set('zoomScale', '95')
+    view.set('zoomScaleNormal', '95')
     for node in list(view):
         if node.tag in (tag('pane'), tag('selection')):
             view.remove(node)
-    E.SubElement(view, tag('pane'), xSplit='4', ySplit='3', topLeftCell='E4', activePane='bottomRight', state='frozen')
-    E.SubElement(view, tag('selection'), pane='bottomRight', activeCell='E4', sqref='E4')
+    E.SubElement(view, tag('pane'), ySplit='3', topLeftCell='A4', activePane='bottomLeft', state='frozen')
+    E.SubElement(view, tag('selection'), pane='bottomLeft', activeCell='A4', sqref='A4')
     view.set('showGridLines', '0')
     props = sheet.find(tag('sheetPr'))
     if props is None:

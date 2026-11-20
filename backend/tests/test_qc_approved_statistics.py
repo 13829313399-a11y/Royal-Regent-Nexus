@@ -315,6 +315,17 @@ def test_report_facets_details_and_denominator_share_readonly_snapshot(db):
     assert selected['details']['items'][0]['result']=='PENDING'
     assert selected['details']['items'][0]['poNo']=='SYNTHETIC-PO'
     assert 'approved_snapshot' not in selected['details']['items'][0]
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from app.services.qc_annual_excel import workbook
+    full = stats.report('huaxing', {'year':'2026','result':'ALL'}, all_detail_rows=True)
+    assert full['revision'] == page2['revision']
+    sheet = load_workbook(BytesIO(workbook(full))).active
+    assert sheet['B16'].value == 8 and sheet.max_row == 27
+    assert sheet['G16'].value == pytest.approx(0.666667)
+    assert all(sheet.cell(row, 2).number_format == 'General' for row in range(4, 16))
+    assert [cell.value for cell in sheet['A'][19:]] == [r['customer'] for r in full['details']['items']]
+    assert len(sheet._charts) == 1 and sheet._charts[0].series[0].val.numRef.numCache.ptCount == 12
     assert hashes()==before
 
 
