@@ -538,12 +538,13 @@
       }
       return true;
     });
-    if(reviewing)updateReviewControls(rows);else updateRecordControls();
+    if(!reviewing)updateRecordControls();
     const ascending=model.recordsSort==='date-asc';
     const sortHint=ascending?'点击按验货日期倒序，较晚日期在前':'点击按验货日期正序，较早日期在前';
     const headerCells=columns.map(c=>!reviewing&&c.key==='date'
       ? '<th scope="col" data-column="date" aria-sort="'+(ascending?'ascending':'descending')+'"><button type="button" class="qis-date-sort" title="'+sortHint+'" aria-label="'+sortHint+'">验货日期 <span aria-hidden="true">'+(ascending?'↑':'↓')+'</span></button></th>'
-      : '<th scope="col" data-column="'+c.key+'">'+esc(c.label)+'</th>').join('');
+      : '<th scope="col" data-column="'+c.key+'">'+(reviewing&&model.reviewTab==='approved'&&c.key==='customer'
+        ? '<input id="qis-review-all" type="checkbox" aria-label="全选当前筛选" title="全选当前筛选"> ' : '')+esc(c.label)+'</th>').join('');
     const body=reviewing
       ? reviewTableBody(rows,columns,headerCells)
       : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
@@ -551,6 +552,16 @@
       (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
       ((!reviewing||rows.length)?'<table class="qis-table">'+body+'</table>':'')+
       (!rows.length&&!model.loading?'<p>没有符合条件的验货任务。</p>':'');
+    if(reviewing){
+      const all=host.querySelector('#qis-review-all');
+      if(all)all.onchange=event=>{
+        if(model.reviewBusy)return;
+        model.checked=new Set(event.target.checked?rows.map(row=>row.id):[]);
+        render();
+        host.querySelector('#qis-review-all')?.focus({preventScroll:true});
+      };
+      updateReviewControls(rows);
+    }
     const sortButton=host.querySelector('.qis-date-sort');
     if(sortButton)sortButton.onclick=()=>{model.recordsSort=ascending?'date-desc':'date-asc';render();host.querySelector('.qis-date-sort')?.focus({preventScroll:true});};
     if(active?.matches('.qis-date-sort'))sortButton?.focus({preventScroll:true});
@@ -579,7 +590,7 @@
       node.querySelectorAll('input[type=file]').forEach(control=>control.onchange=()=>upload(row.id,control));
       bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id,true);
     });
-    if(reviewing)updateReviewControls(rows);else updateRecordControls();
+    if(!reviewing)updateRecordControls();
     bindRowSelection(host);
     audit()?.bind(host,model.items);
     if(!editing?.entry)return;
@@ -870,13 +881,13 @@
     const host=root.document.getElementById('qis-review-controls');if(!host||host.dataset.ready)return;host.dataset.ready='1';
     host.innerHTML=`
       <div class="qis-review-filterbar" aria-label="审核中心筛选">
+        <select id="qisPendingDate" aria-label="计划验货日期筛选"><option value="">全部日期</option></select>
+        <div class="qs-date-filter" id="qis-review-date"></div>
+        <select data-rfilter="result" aria-label="判定结果"></select>
         <label class="qis-review-search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
           <input type="search" data-rfilter="search" aria-label="搜索客户、PO 或货号" title="搜索客户、PO 或货号" placeholder="客户 / PO">
         </label>
-        <select id="qisPendingDate" aria-label="计划验货日期筛选"><option value="">全部日期</option></select>
-        <div class="qs-date-filter" id="qis-review-date"></div>
-        <select data-rfilter="result" aria-label="判定结果"></select>
         <button type="button" class="qis-review-reset" data-reset-review aria-label="重置筛选">重置</button>
       </div>
       <div class="qis-review-actions">
@@ -884,7 +895,6 @@
           <span id="qis-review-count"></span><strong id="qis-review-selected"></strong>
         </div>
         <div class="qis-review-batch-actions">
-          <label><input id="qis-review-all" type="checkbox">全选当前筛选</label>
           <button id="qis-review-batch" type="button">反审核所选</button>
         </div>
       </div>`;
@@ -901,7 +911,6 @@
     });
     syncReviewFilters();
     host.querySelector('[data-reset-review]').onclick=()=>{if(model.reviewBusy)return;resetReviewFilters();applyFilters();};
-    host.querySelector('#qis-review-all').onchange=event=>{if(model.reviewBusy)return;model.checked=new Set(event.target.checked?filtered().map(r=>r.id):[]);render();};
     host.querySelector('#qis-review-batch').onclick=()=>reviewAction(model.reviewTab==='pending'?'confirm':'revoke',filtered().filter(r=>model.checked.has(r.id)).map(r=>r.id));
   }
   function updateReviewControls(rows){
@@ -914,6 +923,12 @@
     const selected=eligible.filter(r=>model.checked.has(r.id));
     const pendingTab=model.reviewTab==='pending',controls=root.document.getElementById('qis-review-controls');
     controls?.classList.toggle('qis-pending-review',pendingTab);
+    const f=model.reviewFilters;
+    const reset=controls?.querySelector('[data-reset-review]');
+    if(reset){
+      const date=pendingTab ? root.document.getElementById('qisPendingDate')?.value : f.from||f.to;
+      reset.hidden=!(date||f.search||f.result);
+    }
     const all=root.document.getElementById('qis-review-all');if(all){all.checked=Boolean(eligible.length&&selected.length===eligible.length);all.indeterminate=selected.length>0&&selected.length<eligible.length;all.disabled=!eligible.length||model.reviewBusy||!editable();}
     const countMessage=root.document.getElementById('qis-review-count');if(countMessage)countMessage.textContent=rows.length+' 条记录';
     const selectionMessage=root.document.getElementById('qis-review-selected');if(selectionMessage)selectionMessage.textContent=selected.length?'已选 '+selected.length+' 条':'未选中记录';

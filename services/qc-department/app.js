@@ -1370,6 +1370,8 @@ function prepareRecordsDates() {
 }
 function updateRecordsDateLabel() {
   const from = getVal('filterDateFrom'), to = getVal('filterDateTo');
+  const reset=document.querySelector('#page-records .records-reset');
+  if(reset)reset.hidden=!(from||to||getVal('searchInput')||getVal('qisTaskCustomer')||getVal('qisTaskDate')||window.QcInspectionSheet?.model.recordsSort==='date-desc');
   const label = document.getElementById('recordsDateLabel');
   if (!label) return;
   label.textContent = from && to ? (from === to ? from : from + ' 至 ' + to) : from ? from + ' 起' : to ? '截至 ' + to : '不限验货日期';
@@ -3545,14 +3547,12 @@ function renderDefectLibPage() {
   const CATS = ['外观/质量','功能','尺寸/测量','包装','其它'];
   const LVLS = ['CR','MAJ 0.65','MAJ 1.0','MIN 2.5'];
 
+  const query=el.querySelector('#defLibSearch')?.value||'';
   el.innerHTML = `
   <div class="page-header">
     <h2 class="page-title">不良描述库</h2>
+    <input id="defLibSearch" type="search" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"/>
     ${canAdd ? '<button class="btn-primary" onclick="_openDefLibModal()">＋ 新增描述</button>' : ''}
-  </div>
-  <div style="margin:10px 0">
-    <input id="defLibSearch" type="text" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"
-           style="max-width:var(--qc-search-width)" oninput="renderDefectLibPage()"/>
   </div>
   <div class="table-wrap" style="margin-top:8px">
     <table style="table-layout:fixed;width:100%">
@@ -3568,33 +3568,7 @@ function renderDefectLibPage() {
         <th style="text-align:center">状态</th>
         <th style="text-align:center">操作</th>
       </tr></thead>
-      <tbody>
-        ${(() => {
-          const q = (document.getElementById('defLibSearch')?.value||'').toLowerCase();
-          const filtered = q ? lib.filter(d =>
-            d.name.toLowerCase().includes(q) ||
-            (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
-          if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
-          return filtered.map((d,i) => {
-            const realIdx = lib.indexOf(d);
-            const badge = d.enabled
-              ? '<span class="badge badge-pass">启用</span>'
-              : '<span class="badge badge-rej">停用</span>';
-            return `<tr>
-              <td style="font-weight:500">${d.name}</td>
-              <td style="font-size:11px">${d.category||''}</td>
-              <td style="font-size:11px">${d.defaultLevel||''}</td>
-              <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
-              <td style="text-align:center">${badge}</td>
-              <td style="text-align:center">
-                ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
-                ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
-                ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
-              </td>
-            </tr>`;
-          }).join('');
-        })()}
-      </tbody>
+      <tbody></tbody>
     </table>
   </div>
 
@@ -3631,6 +3605,35 @@ function renderDefectLibPage() {
       </div>
     </div>
   </div>`;
+  const search=el.querySelector('#defLibSearch'),body=el.querySelector('tbody');
+  function rowsFor(q){
+    const filtered = q ? lib.filter(d =>
+      d.name.toLowerCase().includes(q) ||
+      (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
+    if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
+    return filtered.map(d => {
+      const realIdx = lib.indexOf(d);
+      const badge = d.enabled
+        ? '<span class="badge badge-pass">启用</span>'
+        : '<span class="badge badge-rej">停用</span>';
+      return `<tr>
+        <td style="font-weight:500">${d.name}</td>
+        <td style="font-size:11px">${d.category||''}</td>
+        <td style="font-size:11px">${d.defaultLevel||''}</td>
+        <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
+        <td style="text-align:center">${badge}</td>
+        <td style="text-align:center">
+          ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
+          ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
+          ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+  search.value=query;
+  const filter=()=>{ body.innerHTML=rowsFor(search.value.toLowerCase()); };
+  search.addEventListener('input',filter);
+  filter();
 }
 
 let _editingDefLibIdx = null;

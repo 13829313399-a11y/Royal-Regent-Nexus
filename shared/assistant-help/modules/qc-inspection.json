@@ -64,7 +64,7 @@
       {
         "path": "services/qc-department/qc-inspection-sheet.js",
         "symbol": "function pump",
-        "sha256": "8b7852ea633646fdcb857f329921f60325b807a58d93eaca2755698de6024e51"
+        "sha256": "56e6eae4498bba955a24cf40da17feb8c7d057e0ed7318b8845bcc8918662f0d"
       },
       {
         "path": "backend/app/services/qc_cumulative.py",
@@ -89,7 +89,7 @@
       {
         "path": "services/qc-department/qc-inspection-summary.js",
         "symbol": "async function load",
-        "sha256": "111002fe1ca259eb2cb6ff3c49d7dcc8a6e5e2a441b0cc9e81991719ee59df7c"
+        "sha256": "c61d44c0bdf5b70228e0144733ed156bdf5566c7f54f354395e5075f922e3229"
       },
       {
         "path": "backend/app/services/qc_weekly_templates.py",

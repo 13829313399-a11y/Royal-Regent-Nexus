@@ -3399,14 +3399,14 @@ body.theme-light #page-sales-schedule .qs-table tr.qs-selected > td { background
 #page-sales-schedule .qs-table tr.qs-selected > td:first-child { box-shadow:inset 4px 0 #007fdb; }
 
 /* Inspection-only toolbar: preserve table geometry and the existing drawer. */
-#page-records .records-toolbar { --records-control-height:38px; container:records-toolbar / inline-size; border:1px solid var(--border); border-radius:8px; background:var(--bg-panel); margin-bottom:12px; color:var(--text-main); }
+#page-records .records-toolbar { --records-control-height:32px; container:records-toolbar / inline-size; border:1px solid var(--border); border-radius:8px; background:var(--bg-panel); margin-bottom:12px; color:var(--text-main); }
 #page-records .records-toolbar svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
-#page-records .records-toolbar-inner { display:grid; grid-template-columns:minmax(0,var(--qc-search-width)) minmax(252px,340px) minmax(max-content,1fr); align-items:center; gap:9px; padding:10px; }
-#page-records :is(.records-filters,.records-actions) { display:flex; align-items:center; gap:8px; min-width:0; }
-#page-records .records-filters > :is(select,.records-date) { flex:1; min-width:0; }
+#page-records .records-toolbar-inner { display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; min-width:0; padding:5px 8px; }
+#page-records .records-filters { display:contents; }
+#page-records .records-filters select { width:120px; max-width:100%; }
 #page-records .records-filters > [hidden] { display:none; }
-#page-records .records-actions { justify-self:end; border-inline-start:1px solid var(--border); padding-inline-start:10px; }
-#page-records .records-search { box-sizing:border-box; display:flex; align-items:center; gap:8px; padding:0 10px; height:var(--records-control-height); border:1px solid var(--border-hi); border-radius:7px; background:color-mix(in srgb,var(--bg-input) 65%,var(--bg-hover)); color:var(--text-muted); min-width:0; }
+#page-records .records-actions { display:flex; align-items:center; margin-inline-start:auto; }
+#page-records .records-search { width:min(100%,var(--qc-search-width)); box-sizing:border-box; display:flex; align-items:center; gap:8px; padding:0 10px; height:var(--records-control-height); border:1px solid var(--border-hi); border-radius:7px; background:color-mix(in srgb,var(--bg-input) 65%,var(--bg-hover)); color:var(--text-muted); min-width:0; }
 #page-records .records-search input { min-width:0; width:100%; height:100%; padding:0; border:0; outline:none; background:transparent; color:var(--text-main); font:inherit; font-size:13px; }
 #page-records .records-search:focus-within { border-color:var(--accent); }
 #page-records .records-filters select, #page-records .records-date summary { box-sizing:border-box; height:var(--records-control-height); border:1px solid var(--border); border-radius:7px; padding:0 8px; background:var(--bg-input); color:var(--text-main); font:inherit; font-size:13px; text-overflow:ellipsis; }
@@ -3427,15 +3427,6 @@ body.theme-light #page-sales-schedule .qs-table tr.qs-selected > td { background
 #page-records .records-toolbar :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 #page-records .records-toolbar button:disabled { opacity:.5; cursor:not-allowed; }
 #page-records .records-toolbar button:disabled[aria-busy="true"] { cursor:wait; }
-@container records-toolbar (max-width:560px) {
-  #page-records .records-toolbar-inner { grid-template-columns:minmax(0,1fr) auto; }
-  #page-records .records-search { grid-column:1/-1; width:min(100%,var(--qc-search-width)); }
-}
-@container records-toolbar (max-width:492px) {
-  #page-records .records-toolbar-inner { grid-template-columns:minmax(0,1fr); }
-  #page-records .records-actions { justify-content:flex-end; border:0; padding:0; }
-}
-
 /* QC Liquid Glass. Visual layer only; print canvases and business grid metrics stay independent. */
 @media screen {
 body.qc-liquid-glass {

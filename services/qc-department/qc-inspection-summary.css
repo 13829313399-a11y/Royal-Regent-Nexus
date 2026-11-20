@@ -28,10 +28,10 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 }
 
 .qsum-toolbar {
-  justify-content: space-between;
-  min-height: 58px;
-  gap: 8px 16px;
-  padding: 9px 16px;
+  justify-content: flex-start;
+  min-height: 42px;
+  gap: 6px 10px;
+  padding: 5px 8px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -91,15 +91,8 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 }
 
 .qsum-note{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;color:var(--text-main);line-height:1.7}
-.qsum-filter-bar {
-  display: grid;
-  grid-template-columns: minmax(0, var(--qc-search-width)) minmax(255px, 270px) minmax(6.25rem, 120px) auto;
-  justify-content: start;
-  align-items: end;
-  gap: 10px 14px;
-  padding: 10px 16px 13px;
-}
-
+.qsum-filter-bar { display: contents; }
+#qsum-root #qsum-reset[hidden] { display: none; }
 .qsum-filter-bar :is(input, select) {
   width: 100%;
   height: 36px;
@@ -126,7 +119,7 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 .qsum-search input::placeholder { color: var(--text-dim); }
 
 .qsum-date-filters {
-  max-width: 270px;
+  width: min(100%, 250px);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   border: 1px solid var(--border-hi);
@@ -210,19 +203,8 @@ body.qc-liquid-glass.theme-light .qsum-workspace {
 #qsum-page { font-variant-numeric: tabular-nums; }
 #qsum-message:not(:empty) { padding: 0 16px 8px; }
 
-@container qsum (max-width: 680px) {
-  .qsum-filter-bar { grid-template-columns: minmax(0, var(--qc-search-width)) minmax(0, 270px); }
-  .qsum-select { max-width: 120px; }
-  #qsum-reset { justify-self: start; }
-}
-
-@container qsum (max-width: 480px) {
-  .qsum-toolbar { padding-inline: 10px; }
-  .qsum-actions { margin-inline-start: 0; }
-  .qsum-filter-bar { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 10px; gap: 8px; }
-  .qsum-filter-bar :is(.qsum-search, .qsum-date-filters) { grid-column: 1 / -1; }
-  .qsum-date-filters { max-width: none; }
-  .qsum-filter-bar .qsum-date-filters select { padding-inline: 5px; font-size: 13px; }
+@media (max-width:640px), (pointer:coarse) {
+  .qsum-filter-bar :is(input,select), #qsum-root .qsum-actions .btn, #qsum-root #qsum-reset { min-height:44px; }
 }
 
 .qsum-table-wrap{max-width:100%;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)}
