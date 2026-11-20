@@ -44,7 +44,6 @@ describe('fabric coordinated issue workflow', () => {
   it('explicitly associates multiple requests before generating a proposal', async () => {
     api.workspace.mockResolvedValue({ ...view(), issue_groups: [] })
     const body = await open()
-    await body.get('[aria-label="配套订单号"]').setValue('O1')
     await body.get('[aria-label="配套组名称"]').setValue('衣身与捆条')
     await body.get('[aria-label="关联领料单 R1"]').setValue(true)
     await body.get('[aria-label="关联领料单 R2"]').setValue(true)
@@ -54,6 +53,64 @@ describe('fabric coordinated issue workflow', () => {
     expect(api.saveIssueGroup).toHaveBeenCalledWith(expect.objectContaining({ order_no: 'O1', name: '衣身与捆条', request_ids: ['R1', 'R2'], expected_revision: 8 }))
     expect(api.issueGroup).not.toHaveBeenCalled()
     expect(body.text()).toContain('关联已保存')
+  })
+  it('offers pending requests for the same order and keeps completed members on their saved group', async () => {
+    const data = view(), request = data.documents[0]!
+    data.documents.push(
+      { ...request, id: 'DONE', issued_quantity: '3.000000' },
+      { ...request, id: 'CLOSED', closed: true },
+      { ...request, id: 'OTHER', data: { ...request.data, production_no: 'O2' } },
+    )
+    api.workspace.mockResolvedValue({ ...data, issue_groups: [] })
+    const body = await open()
+    expect(body.find('[aria-label="关联领料单 DONE"]').exists()).toBe(false)
+    expect(body.find('[aria-label="关联领料单 CLOSED"]').exists()).toBe(false)
+    expect(body.find('[aria-label="关联领料单 OTHER"]').exists()).toBe(true)
+    await body.get('[aria-label="关联领料单 R1"]').setValue(true)
+    const order = body.get<HTMLInputElement>('[aria-label="配套订单号"]')
+    expect(order.element.value).toBe('O1')
+    expect(body.find('[aria-label="关联领料单 OTHER"]').exists()).toBe(false)
+    await body.get('[aria-label="关联领料单 R2"]').setValue(true)
+    await body.get('[aria-label="配套组名称"]').setValue('衣身与捆条')
+    expect(order.element.readOnly).toBe(true)
+    expect(body.text()).toContain('订单号已从领料单带入')
+    expect(body.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+
+    api.workspace.mockResolvedValue({ ...data, issue_groups: [{ ...group, request_ids: ['R1', 'DONE'] }] })
+    session.authorizationVersion++
+    await flushPromises()
+    await body.get('[aria-label="选择配套组"]').setValue('FG-1')
+    expect(body.get<HTMLInputElement>('[aria-label="关联领料单 DONE"]').element.checked).toBe(true)
+    expect(body.get<HTMLInputElement>('[aria-label="关联领料单 DONE"]').element.disabled).toBe(true)
+    expect(body.find('[aria-label="关联领料单 OTHER"]').exists()).toBe(false)
+  })
+  it('uses manual entry only while none of the selected requests has an order number', async () => {
+    const data = view()
+    for (const row of data.documents.slice(0, 2)) row.data.production_no = ''
+    api.workspace.mockResolvedValue({ ...data, issue_groups: [] })
+    const body = await open()
+    const order = body.get<HTMLInputElement>('[aria-label="配套订单号"]')
+    expect(order.element.readOnly).toBe(true)
+    await body.get('[aria-label="关联领料单 R1"]').setValue(true)
+    await body.get('[aria-label="关联领料单 R2"]').setValue(true)
+    await body.get('[aria-label="配套组名称"]').setValue('演练')
+    expect(order.element.readOnly).toBe(false)
+    expect(body.text()).toContain('所选领料单未带订单号')
+    expect(body.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await order.setValue('12312')
+    expect(body.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    await body.get('[aria-label="关联领料单 R3"]').setValue(true)
+    expect(order.element.value).toBe('O1')
+    expect(order.element.readOnly).toBe(true)
+    await body.get('[aria-label="关联领料单 R3"]').setValue(false)
+    expect(order.element.value).toBe('')
+    expect(order.element.readOnly).toBe(false)
+    await order.setValue('MANUAL-1')
+    api.saveIssueGroup.mockResolvedValue({ ...group, order_no: 'MANUAL-1' })
+    await body.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveIssueGroup).toHaveBeenCalledWith(expect.objectContaining({
+      order_no: 'MANUAL-1', request_ids: ['R1', 'R2'],
+    }))
   })
   it('previews lots, permits adjustments and submits all requests together only after confirmation', async () => {
     const body = await open(); await generate(body)

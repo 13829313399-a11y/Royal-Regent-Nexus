@@ -29,6 +29,10 @@ def eligible(user, factory):
 def customer_predicate(user, factory, column):
     if unrestricted(user, factory):
         return True
+    return assigned_customer_predicate(user, factory, column)
+
+
+def assigned_customer_predicate(user, factory, column):
     restricted = select(CartonCustomer.customer_code).join(Assignment, Assignment.customer_id == CartonCustomer.id).where(
         CartonCustomer.factory_id == factory, Assignment.factory_id == factory)
     own = select(CartonCustomer.customer_code).join(Assignment, Assignment.customer_id == CartonCustomer.id).where(

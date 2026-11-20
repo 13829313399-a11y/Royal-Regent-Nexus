@@ -23,14 +23,15 @@ from app.services import qc_dossier as archive
 from app.services.qc_dossier_worker import validate_installed
 
 PARENT = '20261107_0193'
-REVISION = '20261110_0194'
+OUTBOX_REVISION = '20261110_0194'
+REVISION = '20261119_0195'
 
 
 def version():
     with engine.connect() as conn:
         values = list(conn.execute(text('SELECT version_num FROM alembic_version')).scalars())
-    if len(values) != 1 or values[0] not in (PARENT, REVISION):
-        raise RuntimeError('Main database must be verified at 0193 or 0194; refusing unrelated historical migrations')
+    if len(values) != 1 or values[0] not in (PARENT, OUTBOX_REVISION, REVISION):
+        raise RuntimeError('Main database must be verified at 0193, 0194 or 0195; refusing unrelated historical migrations')
     return values[0]
 
 
@@ -122,7 +123,7 @@ def prepare(backup, source=None):
             raise RuntimeError('QC backup changed during capture; stop writers and retry')
         integrity(snapshot)
     integrity(root)
-    if before == PARENT:
+    if before in (PARENT, OUTBOX_REVISION):
         subprocess.run([sys.executable, '-m', 'alembic', '-c', str(BACKEND/'alembic.ini'), 'upgrade', REVISION], cwd=BACKEND, check=True)
     if version() != REVISION:
         raise RuntimeError('Main migration did not reach required version')

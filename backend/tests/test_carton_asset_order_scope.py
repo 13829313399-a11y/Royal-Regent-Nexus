@@ -1,11 +1,14 @@
 """Order-only picking retains upstream schedule links on disposable SQLite."""
 from uuid import uuid4
 
+import json
 import pytest
 from test_molding_sample_api import make_client, login_as
 from test_carton_asset_quick import BASE, F, enable, ok, schedule, upload
 from test_carton_item_schedule import source_row
 from test_carton_supplier_portal import setup_portal, supplier_login, grant_supplier_permissions
+from test_carton_procurement_api import _order_payload
+from test_carton_mark_asset_images import photo_bytes
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +65,86 @@ def test_order_scope_excludes_schedule_and_preserves_existing_schedule_links(mon
         assert any(row['kind'] == 'REGULAR' and row['id'] == order['id'] for row in supplier_orders)
         assert all(row['kind'] != 'SCHEDULE' for row in supplier_orders)
         assert {key(row) for row in supplier_orders} == {key(row) for row in supplier_all if row['kind'] != 'SCHEDULE'}
+
+
+def test_warehouse_prebinds_once_and_follows_the_exact_schedule_purchase(monkeypatch):
+    with make_client(monkeypatch) as client:
+        setup_portal(client)
+        login_as(client, 'admin')
+        enable(monkeypatch)
+        batch = schedule(client, [source_row(), source_row(contract='WAREHOUSE-EXTERNAL', item='ITEM-2')])
+        external = batch['parse_summary']['rows'][1]
+        ok(client.post('/api/carton-procurement/schedule-order-marks', json={
+            **F, 'batch_id': batch['id'], 'source_sheet': external['source_sheet'],
+            'source_row': external['source_row'], 'marked': True,
+        }))
+
+        def choices(asset=None, scope='WAREHOUSE', department='pmc-warehouse'):
+            return ok(client.get(BASE + '/candidates', params={
+                **F, 'owner_department': department, 'target_scope': scope, 'asset_id': asset['id'] if asset else '',
+            }))['items']
+
+        def associate(asset, refs):
+            return client.post(BASE + '/' + asset['id'] + '/associations', params=F, json={
+                'revision': asset['revision'], 'request_id': uuid4().hex, 'target_scope': 'WAREHOUSE', 'targets': refs,
+            })
+
+        before = choices()
+        target = next(row for row in before if row['kind'] == 'SCHEDULE' and row['contract_no'] == '53135')
+        assert target['schedule_state'] == 'PENDING' and target['schedule_po'] == '0989551378'
+        assert any(row['kind'] == 'SCHEDULE' and row['schedule_state'] == 'EXTERNAL' for row in before)
+        assert all(row['kind'] != 'SCHEDULE' for row in choices(scope='ORDERS'))
+        opt_in = dict(owner_department='pmc-warehouse', target_scope='WAREHOUSE', sharing_mode='INTERNAL')
+        original = ok(upload(client, **opt_in, association='MANUAL', targets=[ref(target)]))
+        old = ok(upload(client, **opt_in, association='NONE'))
+        assert old['targets'] == []
+        old = ok(associate(old, [ref(target)]))
+        business = ok(upload(client, association='MANUAL', targets=[ref(target)], target_scope='PENDING_SCHEDULE',
+                             sharing_mode='INTERNAL'))
+        photos = []
+        for color in ('red', 'blue'):
+            meta = dict(**opt_in, request_id=uuid4().hex, association='MANUAL', targets=[ref(target)])
+            photos.append(ok(client.post(BASE, params=F, data={'metadata': json.dumps(meta)},
+                files={'file': (color + '.png', photo_bytes(color=color), 'image/png')})))
+        group = ok(client.post('/api/carton-mark/assets/photo-groups', params=F, json={
+            'assets': [{'id': photo['id'], 'revision': photo['revision']} for photo in photos],
+            'contract_number': '',
+        }))
+        assert len({photo['photo_group_id'] for photo in group}) == 1
+        for photo in photos:
+            retained = ok(client.get(BASE + '/' + photo['id'], params=F))
+            assert [(row['kind'], row['id']) for row in retained['targets']] == [('SCHEDULE', batch['id'])]
+
+        order = ok(client.post('/api/carton-procurement/orders', json={
+            **_order_payload(), 'contract_no': '53135', 'item_no': '0040220-1',
+            'product_order_quantity': 360, 'customer_po': '0989551378', 'customer_due_date': '2026-09-17',
+            'schedule_source': {'batch_id': batch['id'], 'source_sheet': target['sheet'], 'source_row': target['row']},
+        }))
+        for asset in (original, old, business):
+            same_demand = [row for row in choices(asset) if row['contract_no'] == '53135']
+            assert [(row['kind'], row['id'], row['order_no']) for row in same_demand] == [
+                ('REGULAR', order['id'], order['order_no']),
+            ]
+            assert same_demand[0]['association_selected']
+            assert same_demand[0]['association_locked'] == (asset['id'] == business['id'])
+
+        assert upload(client, **opt_in, association='MANUAL', targets=[ref(target)]).status_code == 404
+        built = next(row for row in choices(original) if row['id'] == order['id'])
+        original = ok(associate(original, [ref(built)]))
+        assert [(row['kind'], row['id']) for row in original['targets']] == [('SCHEDULE', batch['id'])]
+        assert ok(associate(business, []))['targets'][0]['kind'] == 'SCHEDULE'
+        assert ok(associate(old, []))['targets'] == []
+        assert original['sharing_mode'] == 'INTERNAL'
+        assert original['workflow']['status'] == 'PENDING'
+
+        schedule(client, [source_row(contract='OTHER-ROW', item='ITEM-3')])
+        files = ok(client.get('/api/carton-mark/assets', params={**F, 'order_id': order['id']}))
+        assert {original['id'], business['id'], *(photo['id'] for photo in photos)} == {row['id'] for row in files}
+        grant_supplier_permissions(permissions=('carton_asset:read', 'carton_asset:manage'))
+        supplier_login(client)
+        assert client.get(BASE + '/candidates', params={
+            **F, 'owner_department': 'supplier', 'target_scope': 'WAREHOUSE',
+        }).status_code == 403
 
 
 def test_special_candidates_show_original_order_time_and_number_without_changing_fingerprint(monkeypatch):

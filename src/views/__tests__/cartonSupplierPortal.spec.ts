@@ -6,6 +6,7 @@ import CartonSupplierView from '../CartonSupplierView.vue'
 import CartonSupplierReceiving from '@/components/CartonSupplierReceiving.vue'
 import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.vue'
 import CartonQuickAssetLibrary from '@/components/CartonQuickAssetLibrary.vue'
+vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span />' } }))
 vi.mock('@/components/CartonMaterialsWorkspace.vue', () => ({ default: { template: '<section data-testid="order-materials-entry" />' } }))
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
@@ -472,7 +473,7 @@ describe('combined supplier order ledger', () => {
   function special(patch: Partial<SpecialRequest> = {}): SpecialRequest {
     return { id: 'SPECIAL-1', request_no: 'SP-1', factory_id: 'huaxing', kind: 'SAMPLE', title: '', requester_name: '需求员工',
       status: 'SENT', revision: 2, current_version_id: 'V1', quote_version_id: '', pricing_kind: 'PENDING_QUOTE', promised_date: '',
-      supplier_confirmation: { version_id: 'V1', status: 'ACCEPTED', promised_date: '2026-10-25', reason: '', responded_at: '', responded_by: '' },
+      supplier_confirmation: { version_id: 'V1', acceptance_id: 'V1-R1', status: 'ACCEPTED', promised_date: '2026-10-25', reason: '', responded_at: '', responded_by: '' },
       customer_code: '', customer_name: '', workshop_id: '', purpose: '', required_date: '2026-10-25', created_at: '2026-10-19 12:00:00',
       lines: [{ id: 'L1', packaging_type: '样板外箱', paper_quality: 'A=B', specification: '10*20*30', dimension_unit: 'cm', quantity: '5', unit: '个', item_no: '' }],
       shipments: [], attachments: [], messages: [], history: [], permissions: { can_ship: true }, ...patch }
@@ -553,6 +554,102 @@ describe('combined supplier order ledger', () => {
     expect(wrapper.find('[aria-label="搜索特殊申请"]').exists()).toBe(false)
     expect(wrapper.find('[aria-label="供应商报价表单"]').exists()).toBe(false)
     wrapper.unmount()
+  })
+  it('fills the order list from the same shippable records counted on the homepage', async () => {
+    const data = fixture()
+    const order = data.orders[0]!
+    order.lines[0]!.in_transit_quantity = '60'
+    order.lines[0]!.remaining_to_ship = '40'
+    const copy = (id: string) => ({ ...structuredClone(order), id, order_no: id })
+    const blocked = copy('BLOCKED')
+    blocked.lines.forEach(line => { line.shipping_blocked_reason = '更正待确认' })
+    const delivered = copy('ALL-SENT')
+    delivered.lines.forEach(line => { line.remaining_to_ship = '0' })
+    const notAccepted = copy('UNACCEPTED')
+    notAccepted.lines[0]!.accepted = false
+    data.orders.push(blocked, delivered, notAccepted, { ...copy('UNISSUED'), awaiting_issue: true }, { ...copy('CANCELLED'), status: 'CANCELLED' })
+    supply([special(), special({ id: 'MISC', request_no: 'SP-MISC', kind: 'WORKSHOP_MISC', status: 'PARTIALLY_RECEIVED' }),
+      special({ id: 'NO-SHIP', request_no: 'SP-BLOCKED',
+        supplier_confirmation: { ...special().supplier_confirmation!, status: 'DISPUTED', acceptance_id: '' } }),
+      special({ id: 'STALE', request_no: 'SP-STALE', current_version_id: 'V2' })])
+    api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }, { factory_id: 'huadeng', supplier_name: '河源东康' }])
+    api.workspace.mockImplementation(async (factory: string) => factory === 'huaxing' ? data : { ...fixture(), factory_id: factory, orders: [copy('OTHER-FACTORY')] })
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="供应商订单厂区筛选"]').setValue('huaxing')
+      await wrapper.get('[aria-label="选择订单 ORDER-A"]').setValue(true)
+      await wrapper.findAll('button').find(button => button.text() === '查看已选')!.trigger('click')
+      await wrapper.get('[aria-label="供应商订单类型筛选"]').setValue('SAMPLE')
+      await wrapper.get('[aria-label="供应商订单客户筛选"]').setValue('Dickie')
+      await wrapper.get('[aria-label="供应商订单状态筛选"]').setValue('CANCELLED')
+      await wrapper.get('[aria-label="下单日期开始"]').setValue('2026-12-01')
+      await wrapper.get('[aria-label="顶部搜索"]').setValue('无匹配')
+      const card = wrapper.get('[aria-label="供应商工作统计"]').findAll('button').find(button => button.text().startsWith('待发货'))!
+      expect(card.text()).toContain('3 张订单')
+      await card.trigger('click')
+      expect(wrapper.get<HTMLSelectElement>('[aria-label="供应商订单厂区筛选"]').element.value).toBe('huaxing')
+      expect(wrapper.get<HTMLSelectElement>('[aria-label="供应商订单状态筛选"]').element.value).toBe('WAITING_SHIPMENT')
+      expect(wrapper.get('tbody').findAll('[data-testid^="supplier-"]')).toHaveLength(3)
+      expect(wrapper.get('tbody').text()).toContain('SP-1')
+      expect(wrapper.get('tbody').text()).toContain('SP-MISC')
+      expect(wrapper.get('[aria-label="查看订单 ORDER-A 明细"]').exists()).toBe(true)
+      expect(wrapper.get('tbody').text()).toContain('待仓库验收')
+      expect(wrapper.get<HTMLInputElement>('[aria-label="选择订单 ORDER-A"]').element.checked).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+  it('lists shippable orders for a read-only supplier while keeping delivery writes unavailable', async () => {
+    can.mockImplementation(permission => permission === 'carton_supplier:read')
+    const sample = special({ permissions: { can_ship: false } })
+    const misc = special({ id: 'MISC', request_no: 'SP-MISC', kind: 'WORKSHOP_MISC', permissions: { can_ship: false } })
+    const own = special({ id: 'GIFT', request_no: 'SP-GIFT', kind: 'SUPPLIER_GIFT', permissions: { can_ship: false },
+      supplier_confirmation: { ...special().supplier_confirmation!, status: 'SUPPLIER_ORIGIN', acceptance_id: '' } })
+    supply([sample, misc, own,
+      special({ id: 'DISPUTED', request_no: 'SP-DISPUTED', permissions: { can_ship: false },
+        supplier_confirmation: { ...sample.supplier_confirmation!, status: 'DISPUTED', acceptance_id: '' } }),
+      special({ id: 'SUPERSEDED', request_no: 'SP-SUPERSEDED', current_version_id: 'V2', permissions: { can_ship: false } })])
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      const card = wrapper.get('[aria-label="供应商工作统计"]').findAll('button').find(button => button.text().startsWith('待发货'))!
+      expect(card.text()).toContain('4 张订单')
+      await card.trigger('click')
+      const rows = wrapper.get('tbody')
+      expect(rows.findAll('[data-testid^="supplier-"]')).toHaveLength(4)
+      expect(rows.get('[aria-label="查看订单 ORDER-A 明细"]').exists()).toBe(true)
+      expect(rows.text()).toContain('SP-1')
+      expect(rows.text()).toContain('SP-MISC')
+      expect(rows.text()).toContain('SP-GIFT')
+      expect(rows.text()).not.toContain('SP-DISPUTED')
+      expect(rows.text()).not.toContain('SP-SUPERSEDED')
+      expect(wrapper.findAll('button').some(button => button.text() === '导入送货单')).toBe(false)
+      expect(api.confirmDeliveryImport).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+  it('opens pending unified notes even when the selected factory has a special order in transit', async () => {
+    const sample = special({ shipments: [{ id: 'SENT', version_id: 'V1', delivery_note_no: 'DN-MIXED', delivery_date: '2026-10-15',
+      lines: [{ id: 'SL-S', request_line_id: 'L1', quantity: '2', remaining_quantity: '2', received_quantity: '0' }], receipts: [] }] })
+    supply([sample])
+    const formal = fixture().shipments[0]!
+    const base = { ...formal, factory_id: 'huaxing', formal, special: [sample], receipts: [], can_operate: true,
+      lines: formal.lines.map(line => ({ ...line, source_kind: 'FORMAL', remaining_quantity: '2' })) }
+    unifiedApi.list.mockResolvedValue({ items: [
+      { ...base, id: 'MIXED', delivery_note_no: 'DN-MIXED', status: 'SENT' },
+      { ...base, id: 'REV', delivery_note_no: 'DN-REV', status: 'RECEIPT_REVERSED' },
+      { ...base, id: 'RECEIVED', delivery_note_no: 'DN-CLOSED', status: 'RECEIVED' },
+    ], total: 3 })
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="供应商订单厂区筛选"]').setValue('huaxing')
+      const card = wrapper.get('[aria-label="供应商工作统计"]').findAll('button').find(button => button.text().startsWith('待仓库验收'))!
+      expect(card.text()).toContain('2 张送货单')
+      await card.trigger('click')
+      expect(wrapper.get<HTMLSelectElement>('[aria-label="送货单状态"]').element.value).toBe('PENDING_RECEIPT')
+      expect(wrapper.get<HTMLSelectElement>('[aria-label="供应商发货厂区筛选"]').element.value).toBe('huaxing')
+      expect(wrapper.text()).toContain('显示 2 张送货单')
+      expect(wrapper.text()).toContain('DN-MIXED')
+      expect(wrapper.text()).toContain('DN-REV')
+      expect(wrapper.text()).not.toContain('DN-CLOSED')
+      expect(wrapper.find('[data-testid="supplier-special-order-row"]').exists()).toBe(false)
+    } finally { wrapper.unmount() }
   })
   it('keeps purchases available and reports a failed special request read', async () => {
     supply([]); specialApi.list.mockRejectedValue(new Error('特殊记录暂不可读'))
@@ -1182,6 +1279,76 @@ describe('supplier batches and document desk', () => {
     wrapper.unmount()
   })
 
+  it.each([undefined, '', ' \n\t '])('only shows filled paper process notes in detail, single and batch acceptance (blank value %j)', async blank => {
+    const data = fixture()
+    const papers = data.orders[0]!.lines
+    for (const paper of papers) paper.accepted = false
+    const note = '沿长边压线\n第二段向内折'
+    papers[0]!.process_note = blank
+    papers[1]!.process_note = note
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(CartonSupplierView, options)
+    try {
+      await flushPromises()
+      await wrapper.get('[aria-label="查看订单 ORDER-A 明细"]').trigger('click')
+      const detailRows = wrapper.get('[aria-label="纸品明细"]').findAll('tbody tr')
+      expect(detailRows[0]!.text()).not.toContain('工艺备注')
+      expect(detailRows[1]!.text()).toContain(note)
+      await wrapper.get('[aria-label="关闭供应商订单明细"]').trigger('click')
+
+      await wrapper.get('[aria-label="确认订单 ORDER-A 接单"]').trigger('click')
+      const dialog = wrapper.get('[role="dialog"]')
+      const singleRows = dialog.findAll('input[type="date"]').map(input => input.element.closest('label')!.parentElement!)
+      expect(singleRows[0]!.textContent).not.toContain('工艺备注')
+      expect(singleRows[1]!.textContent).toContain(note)
+      await dialog.get('[aria-label="关闭接单窗口"]').trigger('click')
+
+      await wrapper.get('[aria-label="选择订单 ORDER-A"]').setValue(true)
+      await wrapper.findAll('button').find(button => button.text() === '批量确认接单')!.trigger('click')
+      const batchRows = wrapper.get('[role="dialog"]').findAll('input[type="date"]').map(input => input.element.closest('label')!.parentElement!)
+      expect(batchRows[0]!.textContent).not.toContain('工艺备注')
+      expect(batchRows[1]!.textContent).toContain(note)
+      expect(api.accept).not.toHaveBeenCalled()
+      expect(api.acceptBatch).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
+  it('enables batch acceptance only while every selected order still has a pending paper', async () => {
+    const data = fixture()
+    const pending = data.orders[0]!
+    const accepted = { ...structuredClone(pending), id: 'DONE', order_no: 'DONE' }
+    accepted.lines.forEach(line => { line.id = 'DONE-' + line.id })
+    data.orders.push(accepted)
+    pending.lines[0]!.accepted = false
+    api.workspace.mockImplementation(async () => structuredClone(data))
+    api.accept.mockImplementation(async () => {
+      pending.lines[0]!.accepted = true
+      return structuredClone(pending)
+    })
+    const wrapper = mount(CartonSupplierView, options)
+    const bulkButton = () => wrapper.findAll('button').find(button => button.text() === '批量确认接单')!
+    try {
+      await flushPromises()
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      await wrapper.get('[aria-label="选择订单 DONE"]').setValue(true)
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      await wrapper.get('[aria-label="选择订单 ORDER-A"]').setValue(true)
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      await wrapper.get('[aria-label="选择订单 DONE"]').setValue(false)
+      expect(bulkButton().attributes('disabled')).toBeUndefined()
+
+      await wrapper.get('[aria-label="确认订单 ORDER-A 接单"]').trigger('click')
+      await wrapper.get('[role="dialog"]').findAll('button').find(button => button.text() === '确认接单')!.trigger('click')
+      await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="选择订单 ORDER-A"]').element.checked).toBe(true)
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      expect(wrapper.get('[aria-label="更新订单 ORDER-A 承诺交期"]').attributes('disabled')).toBeUndefined()
+      expect(api.accept).toHaveBeenCalledTimes(1)
+      expect(api.acceptBatch).not.toHaveBeenCalled()
+      expect(api.exportOrderImport).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
   it('reports the completed factory if a later factory rejects a batch', async () => {
     const first = fixture()
     first.orders[0]!.lines.forEach(line => { line.accepted = false; line.commitment_revision = 0 })
@@ -1267,6 +1434,36 @@ describe('supplier batches and document desk', () => {
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('将所选订单加入发货')
     wrapper.unmount()
+  })
+
+  it('finds an accepted purchase by its receipt paper number even if another factory cannot load', async () => {
+    const order = fixture().orders[0]!
+    const purchase = { id: 'BATCH', kind: 'PURCHASE', factory_id: 'huaxing', document_no: 'CG-1',
+      created_at: '2026-09-21', orders: [order], lines: order.lines,
+      source_documents: [{ id: order.issue_id, document_no: order.document_no, order_no: order.order_no }] }
+    api.memberships.mockResolvedValue(['huaxing', 'huakang-a'].map(factory_id => ({ factory_id, supplier_name: '河源东康' })))
+    api.documents.mockImplementation(async factory => {
+      if (factory === 'huakang-a') throw new Error('读取超时')
+      return [purchase, { ...purchase, kind: 'DELIVERY', document_no: 'DN-1' }]
+    })
+    routeState.query.purchase_order = order.document_no
+    const wrapper = mount(CartonSupplierView, options)
+    try {
+      await flushPromises()
+      const search = wrapper.get<HTMLInputElement>('input[aria-label="顶部搜索"]')
+      expect(search.element.value).toBe(order.document_no)
+      expect(wrapper.get('[aria-label="单据厂区筛选"]').element).toHaveProperty('value', 'huaxing')
+      expect(wrapper.find('[aria-label="选择单据 CG-1"]').exists()).toBe(true)
+      expect(wrapper.find('[aria-label="选择单据 DN-1"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('读取超时')
+      await search.setValue(order.lines[0]!.child_no)
+      expect(wrapper.find('[aria-label="选择单据 CG-1"]').exists()).toBe(true)
+      await search.setValue('ORDER-A/99')
+      expect(wrapper.find('[aria-label="选择单据 CG-1"]').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+      delete routeState.query.purchase_order
+    }
   })
 
   it('filters, inspects and exports selected purchase and delivery documents', async () => {
@@ -1570,6 +1767,8 @@ describe('supplier batches and document desk', () => {
       expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
 
       await wrapper.get('button[aria-label="确认订单 ORDER-B 接单"]').trigger('click')
+      let finishRefresh!: (result: PortalWorkspace) => void
+      api.workspace.mockImplementationOnce(() => new Promise<PortalWorkspace>(resolve => { finishRefresh = resolve }))
       await confirmPaper()
       const offer = wrapper.get('[role="dialog"]').text()
       expect(offer).toContain('接单完成，导出东康模板？')
@@ -1577,6 +1776,9 @@ describe('supplier batches and document desk', () => {
       expect(offer).toContain('1 张采购单 · 2 张订单')
       expect(api.exportOrderImport).not.toHaveBeenCalled()
       await dialogButton('稍后导出').trigger('click')
+      expect(wrapper.text()).toContain('查找采购单 ORDER-B-P00')
+      finishRefresh(structuredClone(data))
+      await flushPromises()
 
       await wrapper.get('button[aria-label="更新订单 ORDER-B 承诺交期"]').trigger('click')
       await dialogButton('保存承诺交期').trigger('click')
@@ -1744,7 +1946,6 @@ describe('supplier collaboration entry', () => {
     expect(rows()[1]!.find('button[aria-label="查看订单 ORDER-WAITING 明细"]').exists()).toBe(true)
     for (const [value, id, label] of [
       ['PENDING_ACCEPTANCE', 'ORDER-PENDING', '待接单'],
-      ['WAITING_SHIPMENT', 'ORDER-WAITING', '待送货'],
       ['ACCEPTED', 'ORDER-ACCEPTED', '已确认接单'],
       ['RECEIPT_PENDING', 'ORDER-TRANSIT', '待仓库验收'],
       ['COMPLETED', 'ORDER-COMPLETE', '已完成'],
@@ -1759,6 +1960,10 @@ describe('supplier collaboration entry', () => {
         expect(rows()[0]!.get(`input[aria-label="选择订单 ${id}"]`).attributes('disabled')).toBeDefined()
       }
     }
+    await filter.setValue('WAITING_SHIPMENT')
+    expect(rows().map(row => row.get('[aria-label^="查看订单"][aria-label$="明细"]').attributes('aria-label'))).toEqual([
+      '查看订单 ORDER-WAITING 明细', '查看订单 ORDER-ACCEPTED 明细', '查看订单 ORDER-TRANSIT 明细',
+    ])
     wrapper.unmount()
   })
   it('shows all authorized factories together while filtering locally and dispatching to each target factory', async () => {
@@ -2450,8 +2655,9 @@ describe('unified supplier acceptance', () => {
   it.each(['SAMPLE', 'WORKSHOP_MISC'] as const)('accepts every paper in one current %s version and updates its same-version promise', async kind => {
     const row = source({ kind }); supply([row])
     changesApi.respond.mockImplementation(async body => {
-      row.supplier_confirmation = { status: 'ACCEPTED', version_id: body.source_id, promised_date: body.promised_date, reason: '', responded_at: '', responded_by: '供应商' }
-      return { responded_at: '', responded_by: '供应商' }
+      const acceptance_id = body.request_id
+      row.supplier_confirmation = { status: 'ACCEPTED', version_id: body.source_id, acceptance_id, promised_date: body.promised_date, reason: '', responded_at: '', responded_by: '供应商' }
+      return { acceptance_id, responded_at: '', responded_by: '供应商' }
     })
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
     const accept = wrapper.get('[aria-label="确认订单 SP-ACCEPT 接单"]')
@@ -2469,10 +2675,134 @@ describe('unified supplier acceptance', () => {
     await wrapper.get('[aria-label="更新订单 SP-ACCEPT 承诺交期"]').trigger('click'); await flushPromises()
     await wrapper.get('[aria-label="SP-ACCEPT 整单承诺交期"]').setValue('2026-10-30')
     await wrapper.get('[role="dialog"]').findAll('button').find(row => row.text() === '保存承诺交期')!.trigger('click'); await flushPromises()
-    expect(changesApi.respond.mock.calls[1]![0]).toMatchObject({ source_id: 'SPECIAL-V7', expected_revision: 7, promised_date: '2026-10-30' })
+    expect(changesApi.respond.mock.calls[1]![0]).toMatchObject({ source_id: 'SPECIAL-V7', expected_revision: 7, expected_acceptance_id: changesApi.respond.mock.calls[0]![0].request_id, promised_date: '2026-10-30' })
     expect(changesApi.respond.mock.calls[1]![0].request_id).not.toBe(changesApi.respond.mock.calls[0]![0].request_id)
     expect(wrapper.get('[data-testid="supplier-special-order-row"]').text()).toContain('承诺 2026-10-30')
     wrapper.unmount()
+  })
+  it('updates mixed promises per order and replays only the failed whole-order write', async () => {
+    const confirmation = { ...source().supplier_confirmation!, status: 'ACCEPTED', acceptance_id: 'ACCEPTANCE-V7', promised_date: '2026-10-25' }
+    const sample = source({ supplier_confirmation: confirmation })
+    const misc = source({ id: 'MISC', request_no: 'SP-MISC', kind: 'WORKSHOP_MISC', current_version_id: 'MISC-V7', supplier_confirmation: { ...confirmation, version_id: 'MISC-V7' } })
+    const stale = source({ id: 'STALE', request_no: 'SP-STALE', current_version_id: 'NEW', supplier_confirmation: confirmation })
+    supply([sample, misc, stale])
+    changesApi.respond.mockRejectedValueOnce(new Error('网络超时')).mockResolvedValue({})
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      for (const id of ['ORDER-A', 'SP-ACCEPT', 'SP-MISC', 'SP-STALE']) await wrapper.get(`[aria-label="选择订单 ${id}"]`).setValue(true)
+      await button(wrapper, '批量改承诺交期').trigger('click')
+      expect(wrapper.get('[role="dialog"]').text()).toContain('4 张订单')
+      expect(wrapper.get('[role="dialog"]').text()).toContain('当前采购版本待接单或有异议')
+      expect(wrapper.get('[role="dialog"]').text()).toContain('原承诺 2026-10-25')
+      await wrapper.get('[aria-label="统一承诺日期"]').setValue('2026-10-29')
+      await button(wrapper, '应用到全部可编辑项').trigger('click')
+      await button(wrapper, '确认更新承诺交期').trigger('click'); await flushPromises()
+      expect(api.acceptBatch).toHaveBeenCalledWith('huaxing', [
+        { order_line_id: 'LINE-0', issue_id: 'ISSUE-A', expected_revision: 1, promised_date: '2026-10-29' },
+        { order_line_id: 'LINE-1', issue_id: 'ISSUE-A', expected_revision: 1, promised_date: '2026-10-29' },
+      ])
+      expect(changesApi.respond.mock.calls.map(([body]) => body.source_id)).toEqual(['SPECIAL-V7', 'MISC-V7'])
+      expect(changesApi.respond.mock.calls[0]![0]).toMatchObject({ expected_acceptance_id: 'ACCEPTANCE-V7' })
+      expect(wrapper.get('[role="dialog"]').text()).toContain('已更新 2 张订单')
+      expect(wrapper.get('[role="dialog"]').text()).toContain('提交结果待核实：网络超时')
+      expect(wrapper.text()).toContain('已选 2 张订单')
+      expect(wrapper.get('[aria-label="批量改期 SP-ACCEPT 整单 承诺日期"]').attributes('disabled')).toBeDefined()
+      await button(wrapper, '关闭').trigger('click')
+      await button(wrapper, '批量改承诺交期').trigger('click')
+      await button(wrapper, '确认更新承诺交期').trigger('click'); await flushPromises()
+      expect(api.acceptBatch).toHaveBeenCalledTimes(1)
+      expect(changesApi.respond.mock.calls[2]![0]).toEqual(changesApi.respond.mock.calls[0]![0])
+      expect(wrapper.get('[role="dialog"]').text()).toContain('已更新 1 张订单')
+      expect(wrapper.text()).toContain('已选 1 张订单')
+    } finally { wrapper.unmount() }
+  })
+  it('requires explicit review before replacing an uncertain same-version promise', async () => {
+    const row = source({ supplier_confirmation: { ...source().supplier_confirmation!, status: 'ACCEPTED', acceptance_id: 'ACCEPTANCE-A', promised_date: '2026-10-25' } })
+    supply([row])
+    changesApi.respond.mockImplementationOnce(async () => {
+      row.supplier_confirmation = { ...row.supplier_confirmation!, acceptance_id: 'ACCEPTANCE-B', promised_date: '2026-10-27' }
+      throw new Error('响应丢失')
+    }).mockResolvedValue({})
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="选择订单 SP-ACCEPT"]').setValue(true)
+      await button(wrapper, '批量改承诺交期').trigger('click')
+      const input = '[aria-label="批量改期 SP-ACCEPT 整单 承诺日期"]'
+      await wrapper.get(input).setValue('2026-10-29')
+      await button(wrapper, '确认更新承诺交期').trigger('click'); await flushPromises()
+      expect(button(wrapper, '确认更新承诺交期').attributes('disabled')).toBeDefined()
+      expect(wrapper.get('[role="dialog"]').text()).toContain('原提交结果待核实')
+      expect(wrapper.get(input).attributes('disabled')).toBeDefined()
+      await button(wrapper, '已核对原记录，载入当前版本').trigger('click')
+      expect(wrapper.get<HTMLInputElement>(input).element.value).toBe('2026-10-27')
+      await wrapper.get(input).setValue('2026-10-30')
+      await button(wrapper, '确认更新承诺交期').trigger('click'); await flushPromises()
+      expect(changesApi.respond.mock.calls[1]![0]).toMatchObject({ expected_acceptance_id: 'ACCEPTANCE-B', promised_date: '2026-10-30' })
+      expect(changesApi.respond.mock.calls[1]![0].request_id).not.toBe(changesApi.respond.mock.calls[0]![0].request_id)
+      expect(wrapper.text()).toContain('已更新 1 张订单')
+    } finally { wrapper.unmount() }
+  })
+  it('verifies a lost paper commitment response by the new dates and exact revisions without resending', async () => {
+    const data = fixture()
+    api.workspace.mockImplementation(async () => structuredClone(data))
+    api.acceptBatch.mockImplementation(async (_factory, lines) => {
+      for (const line of data.orders[0]!.lines) {
+        line.promised_date = lines.find((item: { order_line_id: string }) => item.order_line_id === line.id).promised_date
+        line.commitment_revision++
+      }
+      throw new Error('响应丢失')
+    })
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="选择订单 ORDER-A"]').setValue(true)
+      await button(wrapper, '批量改承诺交期').trigger('click')
+      await wrapper.get('[aria-label="统一承诺日期"]').setValue('2026-10-29')
+      await button(wrapper, '应用到全部可编辑项').trigger('click')
+      await button(wrapper, '确认更新承诺交期').trigger('click'); await flushPromises()
+      expect(api.acceptBatch).toHaveBeenCalledTimes(1)
+      expect(wrapper.text()).toContain('已更新 1 张订单（1 张已核对新承诺日期）')
+      expect(wrapper.text()).toContain('已选 0 张订单')
+      expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    } finally { wrapper.unmount() }
+  })
+  it('retains a verified success when refreshing that order fails', async () => {
+    const data = fixture()
+    api.workspace.mockResolvedValueOnce(data).mockRejectedValue(new Error('订单暂不可读'))
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      await wrapper.get('[aria-label="选择订单 ORDER-A"]').setValue(true)
+      await button(wrapper, '批量改承诺交期').trigger('click')
+      await wrapper.get('[aria-label="统一承诺日期"]').setValue('2026-10-29')
+      await button(wrapper, '应用到全部可编辑项').trigger('click')
+      await button(wrapper, '确认更新承诺交期').trigger('click'); await flushPromises()
+      expect(api.acceptBatch).toHaveBeenCalledTimes(1)
+      expect(wrapper.text()).toContain('已更新 1 张订单')
+      expect(wrapper.text()).toContain('订单列表刷新失败')
+      expect(wrapper.text()).toContain('订单暂不可读')
+      expect(wrapper.text()).toContain('已选 0 张订单')
+    } finally { wrapper.unmount() }
+  })
+  it('stops the remaining mixed writes when the signed-in supplier changes', async () => {
+    const confirmation = { ...source().supplier_confirmation!, status: 'ACCEPTED', acceptance_id: 'ACCEPTANCE-V7', promised_date: '2026-10-25' }
+    supply([source({ supplier_confirmation: confirmation })])
+    let resolveSave!: (data: { order_ids: string[] }) => void
+    const pending = new Promise<{ order_ids: string[] }>(resolve => { resolveSave = resolve })
+    api.acceptBatch.mockReturnValue(pending)
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      for (const id of ['ORDER-A', 'SP-ACCEPT']) await wrapper.get(`[aria-label="选择订单 ${id}"]`).setValue(true)
+      await button(wrapper, '批量改承诺交期').trigger('click')
+      await wrapper.get('[aria-label="统一承诺日期"]').setValue('2026-10-29')
+      await button(wrapper, '应用到全部可编辑项').trigger('click')
+      await button(wrapper, '确认更新承诺交期').trigger('click')
+      expect(api.acceptBatch).toHaveBeenCalledTimes(1)
+      authState.currentUser = { id: 'supplier-new', display_name: '另一供应商' }
+      await flushPromises()
+      resolveSave({ order_ids: ['ORDER-A'] }); await flushPromises()
+      expect(changesApi.respond).not.toHaveBeenCalled()
+      expect(wrapper.text()).not.toContain('已更新 1 张订单')
+      expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    } finally { wrapper.unmount() }
   })
   it('treats stale confirmation and disputes as pending, using only a current accepted promise for date filtering', async () => {
     const stale = source({ supplier_confirmation: { ...source().supplier_confirmation!, version_id: 'OLD', status: 'ACCEPTED', promised_date: '2026-10-28' } })

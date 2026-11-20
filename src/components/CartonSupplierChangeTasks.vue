@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CartonPaperProcessNote from './CartonPaperProcessNote.vue'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createSupplierReadQueue, supplierReadQueueKey } from '@/features/carton-procurement/supplierReadQueue'
 import { cartonSupplierChangesApi as api, type SupplierChangeAction, type SupplierChangeTask, type SupplierChangeLine, type SupplierChangeFilter, type SupplierChangePendingState } from '@/api/cartonSupplierChanges'
@@ -200,7 +201,9 @@ onBeforeUnmount(() => { generation++; controller.abort(); readController.abort()
               <h4 class="font-semibold text-slate-900">纸品 {{ index + 1 }}</h4>
               <div class="mt-2 grid gap-2 sm:grid-cols-2">
                 <div class="min-w-0 rounded-md bg-slate-50 p-2"><p class="font-semibold text-slate-600">上次发布</p><p v-if="line.before_material?.item_no">货号 {{ line.before_material.item_no }}</p><p>{{ beforeMaterial(row, line) || '—' }}</p><p class="tabular-nums">数量 {{ line.before_quantity }} {{ line.before_material?.unit || line.unit }}</p></div>
-                <div class="min-w-0 rounded-md bg-teal-50/60 p-2"><p class="font-semibold text-teal-800">本次发布</p><p v-if="line.removed">本次移除此纸品</p><template v-else><p v-if="line.item_no">货号 {{ line.item_no }}</p><p>{{ material(line) || '—' }}</p><p class="tabular-nums">数量 <b>{{ line.quantity }} {{ line.unit }}</b></p><p v-if="row.source_kind === 'REPLENISHMENT'" class="text-teal-800">当前承诺交期 {{ line.promised_date || '待供应商确认' }}</p></template></div>
+                <div class="min-w-0 rounded-md bg-teal-50/60 p-2"><p class="font-semibold text-teal-800">本次发布</p><p v-if="line.removed">本次移除此纸品</p><template v-else><p v-if="line.item_no">货号 {{ line.item_no }}</p><p>{{ material(line) || '—' }}</p>
+                  <CartonPaperProcessNote v-if="row.source_kind === 'REGULAR' || row.source_kind === 'REPLENISHMENT'" :note="line.process_note" />
+                  <p class="tabular-nums">数量 <b>{{ line.quantity }} {{ line.unit }}</b></p><p v-if="row.source_kind === 'REPLENISHMENT'" class="text-teal-800">当前承诺交期 {{ line.promised_date || '待供应商确认' }}</p></template></div>
               </div>
             </div>
           </section>

@@ -36,7 +36,7 @@ def test_release_rejects_old_unknown_main_version_before_writes(tmp_path,monkeyp
         conn.execute(text('CREATE TABLE alembic_version(version_num TEXT)'))
         conn.execute(text("INSERT INTO alembic_version VALUES('20261022_0175')"))
     monkeypatch.setattr(release,'engine',engine)
-    with pytest.raises(RuntimeError,match='0193 or 0194'):release.prepare(tmp_path)
+    with pytest.raises(RuntimeError,match='0193, 0194 or 0195'):release.prepare(tmp_path)
     assert not (tmp_path/'qc-before').exists()
 
 
@@ -46,6 +46,44 @@ def test_start_requires_preparation_and_readiness_requires_collection(tmp_path,m
     with pytest.raises(RuntimeError,match='preparation missing'):release.start()
     monkeypatch.setattr(release.archive.settings,'qc_dossier_enabled',False)
     assert release.readiness()=={'enabled':False,'status':'emergency-disabled'}
+
+
+def test_prepare_from_existing_outbox_version_and_start(tmp_path, monkeypatch):
+    release = module()
+    engine = create_engine('sqlite:///' + str(tmp_path / 'main.db'))
+    with engine.begin() as conn:
+        conn.execute(text('CREATE TABLE alembic_version(version_num TEXT)'))
+        conn.execute(text('INSERT INTO alembic_version VALUES(:rev)'), {'rev': release.OUTBOX_REVISION})
+    backup = tmp_path / 'backup'
+    backup.mkdir()
+    qc_dir = tmp_path / 'qc'
+    qc_dir.mkdir()
+    (qc_dir / 'existing').write_text('previous data')
+    monkeypatch.setattr(release, 'engine', engine)
+    monkeypatch.setattr(release.archive.settings, 'qc_department_data_dir', str(qc_dir))
+    monkeypatch.setattr(release.archive.settings, 'qc_dossier_enabled', True)
+    monkeypatch.setattr(release.archive, 'migrate', lambda: None)
+    monkeypatch.setattr(release, 'validate_installed', lambda current: None)
+    upgrades = []
+
+    def apply_upgrade(command, *, cwd, check):
+        assert command[-2:] == ['upgrade', release.REVISION] and check
+        upgrades.append(command[-1])
+        with engine.begin() as conn:
+            conn.execute(text('UPDATE alembic_version SET version_num=:rev'), {'rev': command[-1]})
+
+    monkeypatch.setattr(release.subprocess, 'run', apply_upgrade)
+    assert release.prepare(backup)['revision'] == release.REVISION
+    assert release.prepare(backup)['revision'] == release.REVISION
+    assert upgrades == [release.REVISION]
+    assert list(backup.glob('main-before-*.sqlite3'))
+    assert (qc_dir / 'existing').read_text() == 'previous data'
+
+    started = []
+    monkeypatch.setattr(release.os, 'execvp', lambda program, args: started.append((program, args)))
+    release.start()
+    assert started[0][0] == 'uvicorn'
+    engine.dispose()
 
 
 def test_deploy_orders_stop_backup_prepare_enable_health():

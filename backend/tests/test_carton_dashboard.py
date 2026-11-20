@@ -12,6 +12,16 @@ from sqlalchemy.orm import Session
 
 from app.services.carton_dashboard import Context, SourceIndex, alert_page, build_alerts, reminder
 from app.services.carton_schedule_tracking import demand_snapshot
+from app.services.auth import AuthContext, AuthGrantContext
+
+
+@pytest.fixture
+def reader():
+    permissions = frozenset({"carton_procurement:read"})
+    grant = AuthGrantContext(role_id="reviewer", role_name="测试", factory_id="huakang-b",
+                             department="carton", permissions=permissions)
+    return AuthContext("reader", "reader", "测试", (), ("reviewer",), permissions,
+                       ("huakang-b",), ("carton",), grants=(grant,))
 
 
 def row(index=0, **changes):
@@ -224,7 +234,7 @@ def test_alert_categories_filter_before_paging_and_keep_full_counts(classified_a
     assert empty["summary"] == empty["category_summary"] == dict(total=0, missing=0, increase=0, decrease=0)
 
 
-def test_workspace_categories_reuse_one_factory_alert_snapshot(classified_alerts, monkeypatch):
+def test_workspace_categories_reuse_one_factory_alert_snapshot(classified_alerts, monkeypatch, reader):
     from app.services import carton_dashboard
     seen = []
     ctx = context()
@@ -236,7 +246,8 @@ def test_workspace_categories_reuse_one_factory_alert_snapshot(classified_alerts
     monkeypatch.setattr(carton_dashboard, "read_alerts", read_alerts)
     monkeypatch.setattr(carton_dashboard, "weekly_attention", lambda *args: 0)
     monkeypatch.setattr("app.services.carton_positions.position_balances", lambda *args: [])
-    result = carton_dashboard.workspace(None, "huakang-b", customer="TEST", kind="TIMING", limit=1)
+    monkeypatch.setattr("app.services.carton_order_queries.follow_up_count", lambda *args, **kwargs: 0)
+    result = carton_dashboard.workspace(None, "huakang-b", reader, customer="TEST", kind="TIMING", limit=1)
     assert seen == ["huakang-b"]
     assert result["total"] == 2 and len(result["items"]) == 1
     assert result["summary"] == dict(total=2, missing=2, increase=0, decrease=0)
@@ -256,7 +267,7 @@ def db():
     engine.dispose()
 
 
-def test_workspace_reads_all_effective_batches_excludes_deleted_and_limits_payload(db):
+def test_workspace_reads_all_effective_batches_excludes_deleted_and_limits_payload(db, reader):
     from app.models.carton_procurement import CartonCustomer, CartonOrder, CartonImportBatch
     from app.services.carton_dashboard import workspace, alert_context
     audit = dict(created_by="TEST", updated_by="TEST", created_at="2026-10-01", updated_at="2026-10-01")
@@ -268,7 +279,7 @@ def test_workspace_reads_all_effective_batches_excludes_deleted_and_limits_paylo
         db.add(CartonOrder(id=f"O{i}", factory_id="huakang-b", order_no=f"CT{i}", customer_code="TEST", customer_name="TEST", supplier_id="S", supplier_name_snapshot="S",
             contract_no="OTHER", item_no="OTHER", order_date="2026-10-01", due_date="2026-10-12", product_order_quantity=100, status="CONFIRMED", deleted_at=deleted, **audit))
     db.commit()
-    result = workspace(db, "huakang-b", limit=8)
+    result = workspace(db, "huakang-b", reader, limit=8)
     assert result["total"] == 55 and result["pending_order_count"] == 1
     assert len(result["items"]) == 8 and "parse_summary" not in json.dumps(result, default=str)
     assert len(result["recent_orders"]) == 1 and not db.dirty
@@ -355,7 +366,7 @@ def test_search_keeps_contiguous_case_insensitive_text():
     assert not text_matches(["SO-123", "Customer name"], "name Customer")
 
 
-def test_workspace_inventory_keeps_units_precision_and_filters(db, monkeypatch):
+def test_workspace_inventory_keeps_units_precision_and_filters(db, monkeypatch, reader):
     from decimal import Decimal
     from types import SimpleNamespace
     from app.services.carton_dashboard import workspace
@@ -367,9 +378,9 @@ def test_workspace_inventory_keeps_units_precision_and_filters(db, monkeypatch):
         seen.append(factory)
         return [balance("TEST", "个", "100.0001"), balance("TEST", "张", "90"), balance("OTHER", "个", "165"), balance("TEST", "个", "-2")]
     monkeypatch.setattr("app.services.carton_positions.position_balances", balances)
-    result = workspace(db, "huakang-b")
+    result = workspace(db, "huakang-b", reader)
     assert {i["unit"]: i["quantity"] for i in result["inventory_by_unit"]} == {"个": "265.0001", "张": "90"}
-    result = workspace(db, "huakang-b", customer="TEST", search="外箱 A")
+    result = workspace(db, "huakang-b", reader, customer="TEST", search="外箱 A")
     assert {i["unit"]: i["quantity"] for i in result["inventory_by_unit"]} == {"个": "100.0001", "张": "90"}
-    assert workspace(db, "huakang-b", search="not present")["inventory_by_unit"] == []
+    assert workspace(db, "huakang-b", reader, search="not present")["inventory_by_unit"] == []
     assert seen == ["huakang-b"] * 3

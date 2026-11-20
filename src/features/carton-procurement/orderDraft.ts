@@ -24,6 +24,7 @@ export interface OrderDraftMaterial {
   unitPrice: number
   currency: string
   priceSource: string
+  processNote?: string
   note: string
 }
 
@@ -95,6 +96,7 @@ function validDraft(value: unknown, context: OrderDraftContext): value is OrderD
     || !numberInput(form.orderQuantity) || !Array.isArray(form.materials) || form.materials.length < 1 || form.materials.length > 100) return false
   if (!form.materials.every(line => record(line) && materialStrings.every(key => textValue(line[key]))
     && numberInput(line.unitsPerCarton) && numberValue(line.unitPrice) && validQuantityRule(line.quantityRule)
+    && (line.processNote === undefined || textValue(line.processNote))
     && optionalNumbers.every(key => line[key] === undefined || numberInput(line[key])))) return false
   if (value.master !== null && (!record(value.master) || !['id', 'code', 'factory_id'].every(key => textValue(value.master && (value.master as Record<string, unknown>)[key]))
     || value.master.factory_id !== context.factoryId || !numberValue(value.master.revision) || value.master.revision < 1)) return false

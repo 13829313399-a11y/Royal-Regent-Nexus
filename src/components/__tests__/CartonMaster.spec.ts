@@ -271,6 +271,33 @@ it('hides both template and import actions without master permission', async () 
 })
 
 describe('纸箱基础资料', () => {
+  it('shows saved craft instructions on their own paper and saves an explicit clear', async () => {
+    const config = record('CFG')
+    config.data.lines![1]!.process_note = '沿长方向压线'
+    const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [config] })
+    const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(config)
+    const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+    try {
+      await flushPromises()
+      const savedNote = wrapper.get('table details')
+      expect(savedNote.attributes('open')).toBeUndefined()
+      expect(savedNote.text()).toContain('沿长方向压线')
+      await wrapper.get('[aria-label="修改基础资料 00123"]').trigger('click')
+      expect(wrapper.get('[aria-label="纸品 1 工艺备注"]').attributes('aria-expanded')).toBe('false')
+      expect(wrapper.find('[aria-label="纸品工艺备注 1"]').exists()).toBe(false)
+      const card = wrapper.get<HTMLTextAreaElement>('[aria-label="纸品工艺备注 2"]')
+      expect(card.element.value).toBe('沿长方向压线')
+      await card.setValue('')
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+      expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({
+        data: expect.objectContaining({ lines: expect.arrayContaining([
+          expect.objectContaining({ packaging_type: '滑板纸', process_note: '' }),
+        ]) }),
+      }), 'CFG')
+    } finally { wrapper.unmount(); get.mockRestore(); save.mockRestore() }
+  })
+
   it('allows a reader to choose a personal dimension habit without changing shared master data', async () => {
     const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: false })
     const save = vi.spyOn(cartonMasterApi, 'save')

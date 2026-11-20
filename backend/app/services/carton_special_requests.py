@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from uuid import uuid4
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from app.models.auth import AuthUser, SystemNotification
 from app.models.carton_procurement import CartonAuditEvent, CartonCustomer, CartonReceipt, CartonReceiptLine
 from app.models.carton_master import CartonMasterRecord
@@ -35,6 +35,10 @@ def can_submit(user, factory):
 
 def can_receive(user, factory):
     return allowed(user, factory, "receipt_write") and allowed(user, factory, "inventory_write")
+
+
+def can_read_others(user, factory):
+    return allowed(user, factory, "order_write") or can_receive(user, factory)
 
 
 def customer_access(db, user, row):
@@ -72,7 +76,7 @@ def access(db, user, factory, identifier=None, *, external=False, receiving=Fals
         if row is None or row.factory_id != factory or (external and (row.supplier_id != vendor.id or row.status == "SUBMITTED" or not is_published(db, row))):
             raise HTTPException(404, "未找到此厂区纸品需求")
         if not external:
-            if not (allowed(user, factory, "order_write") or can_receive(user, factory)) and row.created_by != user.id:
+            if not can_read_others(user, factory) and row.created_by != user.id:
                 raise HTTPException(403, "只可查看自己提交的纸品需求")
             from app.services.carton_customer_assignment import can_receive_all_customers
             if not (receiving and can_receive_all_customers(user, factory)):
@@ -351,6 +355,10 @@ def detail(db, user, factory, identifier, *, external=False, mark_assets_by_orde
              "receipts": [{key: getattr(receipt_rows[rid], key) for key in ("id", "receipt_no", "status", "revision", "acceptance_date")} |
                 {"lines": [receipt_line_out(paper, external=external, replacement_link=receipt_price_links.get(paper.id)) for paper in core._receipt_lines(db, rid)]} for rid in sorted(linked_ids)]})
     response["permissions"] = flags(db, user, row, external, receiving=receiving)
+    from app.services import carton_asset_access as ownership
+    if not external and response["permissions"]["can_attach"] and ownership.enabled():
+        response["mark_upload_departments"] = ([d for d in ownership.DEPARTMENTS if ownership.allowed(user, factory, d, "manage")]
+                                               if ownership.writes_enabled() else [])
     return response
 
 
@@ -365,6 +373,23 @@ def receipt_line_out(paper, *, external=False, replacement_link=None):
     return result
 
 
+def internal_request_query(user, factory, responsibility_scope, *, receiving=False):
+    """Apply the internal detail and customer-list boundaries before counts or pagination."""
+    from app.services.carton_customer_assignment import assigned_customer_predicate, customer_predicate
+    if responsibility_scope not in {"OWN", "ALL"}:
+        raise HTTPException(422, "客户范围无效")
+    query = select(SpecialRequest).where(SpecialRequest.factory_id == factory, ~deleted_predicate())
+    if not can_read_others(user, factory):
+        query = query.where(SpecialRequest.created_by == user.id)
+    if not receiving:
+        if responsibility_scope == "OWN":
+            query = query.where(customer_predicate(user, factory, SpecialRequest.customer_code))
+        if not allowed(user, factory, "order_adjust"):
+            code = SpecialRequest.customer_code
+            query = query.where(or_(code == "", assigned_customer_predicate(user, factory, func.upper(func.trim(code)))))
+    return query
+
+
 def workspace(db, user, factory, *, external=False, responsibility_scope="OWN", receiving=False):
     access(db, user, factory, external=external)
     from app.services.carton_customer_assignment import can_receive_all_customers
@@ -373,10 +398,8 @@ def workspace(db, user, factory, *, external=False, responsibility_scope="OWN", 
     items = []
     from app.services.carton_special_marks import associated_files
     mark_assets_by_order = associated_files(db, user, factory, external=external)
-    query = select(SpecialRequest).where(SpecialRequest.factory_id == factory, ~deleted_predicate())
-    if not external and responsibility_scope == "OWN" and not receiving:
-        from app.services.carton_customer_assignment import customer_predicate
-        query = query.where(customer_predicate(user, factory, SpecialRequest.customer_code))
+    query = (select(SpecialRequest).where(SpecialRequest.factory_id == factory, ~deleted_predicate()) if external
+             else internal_request_query(user, factory, responsibility_scope, receiving=receiving))
     for row in db.scalars(query.order_by(SpecialRequest.updated_at.desc())):
         try:
             items.append(detail(db, user, factory, row.id, external=external, mark_assets_by_order=mark_assets_by_order, receiving=receiving))
@@ -727,7 +750,7 @@ def receive(db, user, identifier, shipment_id, payload: schema.Receive, *, commi
     return finish(db, user, payload, row, "RECEIVE", digest, commit=commit, receiving=True)
 
 
-def attachment(db, user, identifier, payload, role, filename, content, *, external=False, line_id=""):
+def attachment(db, user, identifier, payload, role, filename, content, *, external=False, line_id="", owner_department=None):
     user = locked_actor(db, user, payload.factory_id)
     row = access(db, user, payload.factory_id, identifier, external=external)
     if not flags(db, user, row, external)["can_attach"]: raise HTTPException(403, "当前需求不可上传附件")
@@ -758,8 +781,15 @@ def attachment(db, user, identifier, payload, role, filename, content, *, extern
     if role == "CONFIRMED" and paper is None:
         raise HTTPException(422, "确认制作稿须指定对应纸品明细")
     extra = {"filename": filename, "role": requested_role, "line_id": line_id, "sha256": hashlib.sha256(content).hexdigest()}
+    if owner_department is not None:
+        if role == "REFERENCE" or external and owner_department != "supplier" or not external and owner_department == "supplier":
+            raise HTTPException(422, "此附件不能使用所选资料归属部门")
+        extra["owner_department"] = owner_department
     digest, saved = replay(db, user, payload, "ATTACHMENT", identifier, extra)
     if saved: return saved
+    if owner_department is not None:
+        from app.services.carton_asset_access import writes
+        writes()
     require_revision(row, payload)
     attachment_id = uid("CSA-SP-")
     attachment_row = SpecialAttachment(id=attachment_id, factory_id=row.factory_id, request_id=row.id, role=role, line_id=line_id,
@@ -767,7 +797,7 @@ def attachment(db, user, identifier, payload, role, filename, content, *, extern
     db.add(attachment_row)
     if role in {'DRAFT', 'CONFIRMED'}:
         from app.services.carton_special_marks import publish_attachment
-        publish_attachment(db, user, row, paper, attachment_row, external=external)
+        publish_attachment(db, user, row, paper, attachment_row, external=external, owner_department=owner_department)
     # No procurement revision is advanced by storing a file.
     # Include the new library association in both the response and its replay.
     db.flush()

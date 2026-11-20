@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from app.models.fabric_master import FabricMasterRecord
 from app.models.fabric_receiving import FabricReceipt
 from app.services import warehouse_operations as operations
+from app.services.cutting_materials import SOURCE as CUTTING_SOURCE
 from app.services.material_handover_monthly import bounds
 from app.services.fabric_procurement_parser import digest
 from app.services.fabric_receipt_pricing import purchase_price_reference
@@ -21,15 +22,16 @@ from app.services.fabric_supplier_identity import supplier_aliases
 FIELDS = ('received', 'receipt_reversed', 'net_received', 'issued', 'issue_reversed',
           'returned', 'net_issued', 'net_outbound', 'stock_change',
           'manual_received', 'scan_received', 'manual_outbound', 'scan_outbound')
-CHANNELS = {'MANUAL': '手动', 'SCAN': '扫码'}
+CHANNELS = ('MANUAL', 'SCAN')
+SOURCES = {'MANUAL': '手工登记', 'HANDOVER': '单据交接 / 扫码', 'CUTTING': '裁床领料实发'}
 
 
 def report(db, month, direction='', channel='', party_key='', search='', unit='', date_order='DESC', *,
-           include_purchase_price=False):
+           include_purchase_price=False, source=''):
     operations.ensure_schema(db)
     start, end = bounds(month)
-    if direction not in ('', 'IN', 'OUT') or channel not in ('', *CHANNELS):
-        raise HTTPException(422, '收发方向或登记方式不正确')
+    if direction not in ('', 'IN', 'OUT') or channel not in ('', *CHANNELS) or source not in ('', *SOURCES):
+        raise HTTPException(422, '收发方向或登记来源不正确')
     search = search.strip()
     if len(search) > 128 or len(unit) > 32 or date_order not in ('ASC', 'DESC'):
         raise HTTPException(422, '关键字、单位或排序条件不正确')
@@ -55,9 +57,7 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
     def event(identifier, when, body, kind, sign=1, original_id='', actor='', purchase_facts=None):
         if not start <= when <= end:
             return
-        if kind == 'RETURN':
-            issue = projected[body['original_id']]['data']
-            body = {**body, 'handover_document_id': issue.get('handover_document_id', '')}
+        source_body = projected[body['original_id']]['data'] if kind == 'RETURN' else body
         supplier = kind == 'RECEIPT'
         recorded_party = body.get('counterparty', '')
         supplier_id = (body.get('handover_supplier_id') or body.get('receipt_supplier_id', '')) if supplier else ''
@@ -68,12 +68,18 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
         else:
             basis = '供应商基础资料编号' if supplier_id else '原单往来名称'
         identity = ('supplier:' + supplier_id if supplier_id else 'supplier-name:' + recorded_party) if supplier else 'recipient:' + recorded_party
-        method = 'SCAN' if body.get('handover_document_id') else 'MANUAL'
+        document_id = source_body.get('handover_document_id', '')
+        method = 'SCAN' if document_id else 'MANUAL'
+        registration_source = 'HANDOVER' if document_id else 'MANUAL'
+        if kind in ('ISSUE', 'RETURN') and source_body.get('source_system') == CUTTING_SOURCE:
+            registration_source = 'CUTTING'
+        label = '采购实收' if body.get('source_system') == 'PROCUREMENT_RECEIVING' else SOURCES[registration_source]
         prices = body.get('handover_line_snapshot', {})
         events.append(dict(id=identifier, date=when, direction='IN' if supplier else 'OUT', kind=kind,
-            correction=sign < 0, original_id=original_id, channel=method, channel_label=CHANNELS[method],
+            correction=sign < 0, original_id=original_id, channel=method, channel_label=label,
+            registration_source=registration_source,
             origin=body.get('source_system') or 'MANUAL', source_no=body.get('source_no') or original_id or identifier,
-            source_line=body.get('source_line', ''), document_id=body.get('handover_document_id', ''),
+            source_line=body.get('source_line', ''), document_id=document_id,
             party_key=identity, party_name=names.get(supplier_id, recorded_party) if supplier else recorded_party,
             recorded_party=recorded_party, supplier_id=supplier_id, identity_basis=basis,
             item_code=body.get('item_code', ''), item_name=body.get('item_name', ''), unit=body.get('unit', ''),
@@ -147,6 +153,7 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
     search_fields = ('item_code', 'item_name', 'party_name', 'recorded_party', 'source_no', 'id', 'original_id')
     details = [row for row in events if (not direction or row['direction'] == direction)
                and (not channel or row['channel'] == channel) and (not party_key or row['party_key'] == party_key)
+               and (not source or row['registration_source'] == source)
                and (not unit or row['unit'] == unit)
                and (not search or any(search.casefold() in row[field].casefold() for field in search_fields))]
     groups, units = {}, {}
@@ -182,7 +189,7 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
     summary = [{**{k: str(v) if isinstance(v, Decimal) else v for k, v in group.items() if k != 'document_ids'},
                 'document_count': len(group['document_ids'])} for group in groups.values()]
     totals = [{k: str(v) if isinstance(v, Decimal) else v for k, v in group.items()} for group in units.values()]
-    result = dict(month=month, direction=direction, channel=channel, party_key=party_key,
+    result = dict(month=month, direction=direction, channel=channel, source=source, party_key=party_key,
         search=search, unit=unit, date_order=date_order, units=available_units,
         parties=sorted(parties.values(), key=lambda r: (r['direction'], r['name'], r['key'])),
         details=sorted(details, key=lambda r: (r['date'], r['id']), reverse=date_order == 'DESC'),
@@ -204,7 +211,7 @@ def export_xlsx(result):
         ('收发数量汇总', result['summary'], [('direction', '方向'), ('party_name', '供应商 / 领用方'),
             ('item_code', '物料编码'), ('item_name', '名称'), ('unit', '单位'), ('document_count', '凭证数')]),
         ('收发原单明细', result['details'], [('date', '业务日期'), ('direction', '方向'), ('party_name', '归属方'),
-            ('recorded_party', '原单往来方'), ('identity_basis', '分组依据'), ('channel_label', '登记方式'),
+            ('recorded_party', '原单往来方'), ('identity_basis', '分组依据'), ('channel_label', '登记来源'),
             ('origin', '来源'), ('source_no', '原单号'), ('source_line', '明细号'), ('id', '库存凭证'),
             ('original_id', '关联原凭证'), ('kind', '业务'), ('correction', '是否冲销'),
             ('item_code', '物料编码'), ('item_name', '名称'), ('quantity', '数量（冲销为负）'), ('unit', '单位'),
@@ -212,8 +219,8 @@ def export_xlsx(result):
     ]
     labels = dict(received='实收', receipt_reversed='收料冲销', net_received='净实收', issued='实发',
         issue_reversed='发料冲销', returned='车间退料', net_issued='实发减冲销', net_outbound='净发料（扣车间退料）',
-        stock_change='本月收发净增减（不含期初、盘点）', manual_received='手动净实收', scan_received='扫码净实收',
-        manual_outbound='手动净发料', scan_outbound='扫码净发料')
+        stock_change='本月收发净增减（不含期初、盘点）', manual_received='采购 / 手工净实收', scan_received='单据交接净实收',
+        manual_outbound='直接出库及裁床领料净发料', scan_outbound='单据交接净发料')
     for title, rows, columns in pages:
         if title == '收发数量汇总':
             columns += [(field, labels[field]) for field in FIELDS]
