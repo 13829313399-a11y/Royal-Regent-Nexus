@@ -231,7 +231,7 @@ def readme(factory: str, release: str, green_toys_only: bool = False):
 - 备份请先退出程序，再复制整个解压文件夹。更新时将同厂区旧包的 data 复制到新包后再启动；不要混用不同厂区的数据。
 - 演示资料仅用于测试。开始真实资料试用时请保留一份未使用的新解压包。
 - 上传的是原件副本，下载会生成新 Excel，不会覆盖原文件。
-- 反馈问题时请注明厂区、客户、按钮、提示原文，并附可授权核对的原件；启动异常可附 data/startup-error.log。
+- 反馈问题时请注明厂区、客户、按钮、提示原文，并附可授权核对的原件；启动异常会自动打开 STARTUP-ERROR.txt，请把报告里的文字反馈；完整日志同时保留在 data。
 
 验证说明
 已验证本地API、业务规则、构建和回归；交付前没有在Windows实机或金山桌面应用中验收。
@@ -369,7 +369,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if legacy_windows:
                 instructions = instructions.replace('Windows 10/11 64位电脑。', 'Windows 7 SP1、Windows 10，32位和64位电脑。')
                 instructions = instructions.replace('页面会在默认浏览器打开', '页面会在随包浏览器打开')
-                instructions += '\n本包使用32位运行环境，可在32位和64位Windows运行，无需选择版本。\nWindows 7需已安装SP1及微软通用C运行库更新（KB2999226）。如提示缺少api-ms-win-crt或VCRUNTIME DLL，请运行随包support/VC_redist.x86.exe安装微软官方运行库，再重新启动；即使64位电脑也用本包的x86安装文件。系统缺少SP1时需先由电脑维护人员更新。\n随包浏览器仅打开本机试用页面。程序启动失败时请附STARTUP-ERROR.txt及data/startup-error.log。\n'
+                instructions += '\n本包使用32位运行环境，可在32位和64位Windows运行，无需选择版本。\nWindows 7需已安装SP1及微软通用C运行库更新（KB2999226）。如提示缺少api-ms-win-crt或VCRUNTIME DLL，请运行随包support/VC_redist.x86.exe安装微软官方运行库，再重新启动；即使64位电脑也用本包的x86安装文件。系统缺少SP1时需先由电脑维护人员更新。\n随包浏览器仅打开本机试用页面。程序启动失败时会自动打开STARTUP-ERROR.txt，报告汇总了完整启动日志，请复制内容反馈。\n'
                 copy_tree(TOOL / 'desktop', package / 'desktop')
                 extract(cache / 'electron-v22.3.27-win32-ia32.zip', package / 'browser')
                 (package / 'support').mkdir()

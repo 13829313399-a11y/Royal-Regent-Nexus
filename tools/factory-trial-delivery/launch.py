@@ -180,19 +180,27 @@ def main() -> int:
         lock.close()
 
 
+def report_startup_error(root: Path, error: Exception):
+    """Persist the original traceback before touching a possibly broken console."""
+    import traceback
+    try:
+        (root / 'data').mkdir(exist_ok=True)
+        with (root / 'data' / 'startup-error.log').open('a', encoding='utf-8') as stream:
+            stream.write('\n--- Startup failure ---\n')
+            traceback.print_exception(type(error), error, error.__traceback__, file=stream)
+    except OSError:
+        pass  # START.cmd also captures interpreter output outside this handler.
+    try:
+        print('Startup failed. See data/startup-error.log and data/startup-console.log.', file=sys.stderr, flush=True)
+    except (OSError, UnicodeError, ValueError):
+        pass
+
+
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
         raise SystemExit(0)
     except Exception as error:
-        import traceback
-        root = Path(__file__).resolve().parent
-        print(f'\n启动未完成：{error}\n请先完整解压文件，再双击 START.cmd。', file=sys.stderr)
-        try:
-            (root / 'data').mkdir(exist_ok=True)
-            with (root / 'data' / 'startup-error.log').open('a', encoding='utf-8') as stream:
-                traceback.print_exc(file=stream)
-        except OSError:
-            pass
+        report_startup_error(Path(__file__).resolve().parent, error)
         raise SystemExit(1)
