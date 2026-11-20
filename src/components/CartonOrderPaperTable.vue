@@ -1,5 +1,6 @@
 <script setup lang="ts">
-withDefaults(defineProps<{ rows: { id: string; label: string; quality: string; specification: string; unit: string; rule: string; required: number; received: number; remaining: number; progress: number; note?: string; inTransit?: number; remainingToShip?: number; acceptance?: string; promised?: string }[]; ruleLabel?: string; supplier?: boolean }>(), { ruleLabel: '每箱个数' })
+import CartonPaperProcessNote from './CartonPaperProcessNote.vue'
+withDefaults(defineProps<{ rows: { id: string; label: string; quality: string; specification: string; unit: string; rule: string; required: number; received: number; remaining: number; progress: number; note?: string; processNote?: string; inTransit?: number; remainingToShip?: number; acceptance?: string; promised?: string }[]; ruleLabel?: string; supplier?: boolean }>(), { ruleLabel: '每箱个数' })
 const format = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 </script>
 <template>
@@ -9,7 +10,10 @@ const format = (value: number) => value.toLocaleString('zh-CN', { maximumFractio
       <thead><tr><th>纸品类型</th><th>纸质</th><th>规格</th><th>{{ supplier ? '接单 / 承诺交期' : ruleLabel }}</th><th class="text-right">纸品数量</th><th class="text-right">已入库</th><th class="text-right">待入库</th><th>{{ supplier ? '在途 / 剩余未送' : '入库进度' }}</th></tr></thead>
       <tbody><tr v-for="row in rows" :key="row.id">
         <td data-label="纸品类型" class="font-semibold">{{ row.label }}<small v-if="row.note">{{ row.note }}</small></td>
-        <td data-label="纸质" class="font-semibold">{{ row.quality }}</td><td data-label="规格">{{ row.specification }}</td><td :data-label="supplier ? '接单 / 承诺交期' : ruleLabel"><template v-if="supplier">{{ row.acceptance || '未记录' }}<small>{{ row.promised || '未记录承诺日期' }}</small></template><template v-else>{{ row.rule }}</template></td>
+        <td data-label="纸质" class="font-semibold">{{ row.quality }}</td><td data-label="规格">
+          {{ row.specification }}
+          <CartonPaperProcessNote v-if="'processNote' in row" :note="row.processNote" />
+        </td><td :data-label="supplier ? '接单 / 承诺交期' : ruleLabel"><template v-if="supplier">{{ row.acceptance || '未记录' }}<small>{{ row.promised || '未记录承诺日期' }}</small></template><template v-else>{{ row.rule }}</template></td>
         <td data-label="纸品数量" class="text-right font-semibold">{{ format(row.required) }} {{ row.unit }}</td><td data-label="已入库" class="text-right font-semibold text-emerald-700">{{ format(row.received) }} {{ row.unit }}</td>
         <td data-label="待入库" class="text-right font-semibold" :class="row.remaining > 0 ? 'text-amber-700' : 'text-slate-500'">{{ format(row.remaining) }} {{ row.unit }}</td>
         <td v-if="supplier" data-label="在途 / 剩余未送">{{ row.inTransit == null ? '—' : format(row.inTransit) }} / {{ row.remainingToShip == null ? '—' : format(row.remainingToShip) }} {{ row.unit }}</td>

@@ -31,7 +31,7 @@ def setup(client, monkeypatch):
     return row
 
 
-def confirm_collaborative_returns(client, sources):
+def confirm_collaborative_returns(client, sources, *, document_date='2026-10-05', unit_price='3', credit_document_no=None):
     """Finish real supplier receipt/credit evidence before reconciling new returns."""
     from app.db import SessionLocal
     from app.models.auth import AuthUser, AuthUserAuthorizationRevision, EmployeeProfile
@@ -74,9 +74,9 @@ def confirm_collaborative_returns(client, sources):
         row = detail(source['source_key'].removeprefix('RETURN:'), external=True)
         if not row['credit']:
             row = act(row, 'RECEIVE', external=True, quantity=row['remaining_quantity'],
-                receipt_date='2026-10-05', document_no='SIGN-' + row['movement_id'])
-            row = act(row, 'PROPOSE_CREDIT', external=True, unit_price='3',
-                credit_date='2026-10-05', document_no='CREDIT-' + row['movement_id'])
+                receipt_date=document_date, document_no='SIGN-' + row['movement_id'])
+            row = act(row, 'PROPOSE_CREDIT', external=True, unit_price=unit_price,
+                credit_date=document_date, document_no=credit_document_no or 'CREDIT-' + row['movement_id'])
             login_as(client, 'carton_supervisor')
             row = detail(row['movement_id'])
             act(row, 'CONFIRM_CREDIT', target_event_id=row['credit']['id'])

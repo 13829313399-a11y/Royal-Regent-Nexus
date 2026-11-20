@@ -33,6 +33,7 @@ const papers = computed(() => (order.value?.order?.lines ?? order.value?.special
   const required = numeric('required_quantity' in line ? line.required_quantity : line.quantity)
   const received = numeric(line.received_quantity), remaining = numeric(line.remaining_quantity)
   return { id: line.id!, label: line.packaging_type, quality: line.paper_quality, specification: line.specification, unit: line.unit,
+    ...('required_quantity' in line ? { processNote: line.process_note } : {}),
     rule: 'usage_quantity' in line && line.usage_quantity != null ? String(line.usage_quantity) : '未记录',
     required, received, remaining, progress: required > 0 ? Math.min(100, Math.round(received / required * 100)) : 0 }
 }))

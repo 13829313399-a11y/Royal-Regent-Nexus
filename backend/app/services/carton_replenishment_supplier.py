@@ -81,7 +81,7 @@ def sources(db, order, *, projection=None):
             promise = commitment(db, order.factory_id, issue.id, line["id"])
             quota = next((Decimal(item["remaining_quantity"]) for item in options.get(line["id"], []) if item["replenishment_issue_id"] == issue.id), Decimal(0))
             shipping = reserved.get((issue.id, line["id"]), Decimal(0))
-            papers.append({**{key: line.get(key, "") for key in ("id", "line_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit")},
+            papers.append({**{key: line.get(key, "") for key in ("id", "line_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit", "process_note")},
                 "order_line_id": line["id"], "child_no": f"{issue.document_no}/{int(line['line_no']):02d}",
                 "required_quantity": str(required), "remaining_to_ship": str(max(Decimal(0), quota-shipping)) if not order.deleted_at and order.status != "CANCELLED" else "0",
                 "received_quantity": str(posted.get((issue.id, line["id"]), Decimal(0))), "in_transit_quantity": str(shipping),

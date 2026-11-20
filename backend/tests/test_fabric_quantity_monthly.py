@@ -73,6 +73,7 @@ def test_all_channels_and_original_split_receipts_are_counted_once_and_exported(
     assert Decimal(incoming['totals'][0]['net_received']) == 85
     scan_only = report(client, direction='IN', channel='SCAN')
     assert scan_only['totals'][0]['net_received'] == '15'
+    assert report(client, direction='IN', source='HANDOVER')['details'] == scan_only['details']
     outgoing = report(client, direction='OUT')
     assert outgoing['summary'][0]['party_name'] == '车间一' and outgoing['totals'][0]['net_outbound'] == '7'
     assert not outgoing['closed'] and not outgoing['amounts_calculated']

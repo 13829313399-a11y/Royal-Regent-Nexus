@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { dimensionLabel, dimensionReference } from '@/features/carton-procurement/paperCatalog'
-const props = defineProps<{ specification: string; label: string; disabled?: boolean; readonly?: boolean; showReference?: boolean; preferredUnit?: 'cm' | 'inch' | 'mm' }>()
+const props = defineProps<{ specification: string; label: string; disabled?: boolean; readonly?: boolean; showReference?: boolean; hideUnitLabel?: boolean; preferredUnit?: 'cm' | 'inch' | 'mm' }>()
 const unit = defineModel<string>({ required: true })
 const shortUnit = computed(() => ({ cm: 'cm', inch: 'inch', in: 'inch', mm: 'mm' })[unit.value.trim().toLowerCase()] || '')
 const reference = computed(() => dimensionReference(props.specification, unit.value, props.readonly ? props.preferredUnit : undefined))
@@ -12,15 +12,15 @@ const convertedReference = computed(() => props.showReference && props.preferred
   && reference.value.endsWith('（换算参考）') ? reference.value : '')
 </script>
 <template>
-  <div class="space-y-1 text-xs" :aria-label="readonly ? label : undefined">
+  <div v-if="!readonly || !hideUnitLabel || convertedReference || warning" class="space-y-1 text-xs" :aria-label="readonly ? label : undefined">
     <label v-if="!readonly" class="flex items-center gap-2">尺寸单位 *
       <select v-model="unit" :aria-label="label" :disabled="disabled" class="h-9 rounded-lg border border-teal-200 bg-white px-2 disabled:bg-slate-100">
         <option value="">请选择尺寸单位</option><option value="cm">厘米（cm）</option><option value="inch">inch</option><option value="mm">毫米（mm）</option><option v-if="unit && !['cm', 'inch', 'mm'].includes(unit)" :value="unit">{{ dimensionLabel(unit) }}</option>
       </select>
     </label>
     <template v-if="readonly">
-      <span v-if="shortUnit" class="text-slate-600" :title="reference">{{ shortUnit }}</span>
-      <span v-if="convertedReference" class="ml-2 text-teal-700">{{ convertedReference }}</span>
+      <span v-if="shortUnit && !hideUnitLabel" class="text-slate-600" :title="reference">{{ shortUnit }}</span>
+      <span v-if="convertedReference" class="text-teal-700" :class="{ 'ml-2': !hideUnitLabel }" :title="reference">{{ convertedReference }}</span>
       <p v-if="warning" class="text-amber-700">{{ warning }}</p>
     </template>
     <template v-else>

@@ -27,6 +27,9 @@ def request_content(payload):
     # Keep legacy default-only requests replayable. Nested omission and explicit
     # null are different weight operations and must never share a fingerprint.
     body = payload.model_dump(mode="json", exclude={"note", "rush", "rush_reason", "order_overrides"})
+    for line in body["lines"]:
+        if line["process_note"] is None:
+            del line["process_note"]
     explicit_nulls = [{"line_no": index, "fields": [field for field in
         ("net_weight_kg", "gross_weight_kg", "quantity_rule")
         if field in line.model_fields_set and getattr(line, field) is None]}

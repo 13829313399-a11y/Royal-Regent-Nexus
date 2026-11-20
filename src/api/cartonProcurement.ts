@@ -64,6 +64,7 @@ export interface CartonOrderLineResponse {
   unit_price: string
   currency: string
   price_source: string
+  process_note?: string
   note: string
 }
 
@@ -267,6 +268,7 @@ export interface CartonOrderCreateRequest {
     unit_price?: number
     currency?: string
     price_source?: string
+    process_note?: string
     note?: string
   }>
 }
@@ -314,6 +316,7 @@ export interface CartonOrderHistorySuggestionResponse {
     unit_price: string
     currency: string
     price_source: string
+    process_note?: string
     note: string
   }>
 }
@@ -1483,5 +1486,5 @@ export interface CartonHistoryOrderPreview {
     lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;
       net_weight_kg?: string | null; gross_weight_kg?: string | null;
       quantity_rule?: PaperQuantityRule | null;
-      usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; note: string }> }>
+      usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; process_note?: string; note: string }> }>
 }

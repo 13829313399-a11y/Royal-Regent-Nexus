@@ -28,6 +28,7 @@ class CartonInventoryReportSource(BaseModel):
 
 
 class CartonInventoryReportMovement(BaseModel):
+    process_note: str = ""
     id: str
     business_date: str
     occurred_at: str
@@ -54,6 +55,7 @@ class CartonInventoryReportMovement(BaseModel):
 
 
 class CartonInventoryOrderReportRow(BaseModel):
+    process_note: str = ""
     current_usage_quantity: Decimal = Decimal(0)
     current_usage_status: str = "NOT_RECEIVED"
     current_usage_label: str = "未入库"

@@ -178,6 +178,11 @@ def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
 
 def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monkeypatch):
     assert _supplier_import_dimensions("18*12.5*17.25", "PO") == [18.0, 12.5, 17.25]
+    order = _order_payload()
+    note = "沿长方向压线 6.25 + 6 + 6.5 + 5.625"
+    order["note"] = "按签样生产"
+    order["lines"][1].update(packaging_type="压线卡", specification="24.375*6", process_note=note, note="旧纸品说明")
+    monkeypatch.setattr("test_carton_procurement_api._order_payload", lambda: order)
     with make_client(monkeypatch) as client:
         setup_portal(client)
         accept_all(client)
@@ -199,7 +204,11 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert rows[1][6] == float(purchase["lines"][0]["change_quantity"])
         assert rows[1][9] == "inch"
         assert rows[1][11].date().isoformat() == purchase["orders"][0]["planned_date"]
-        assert rows[2][5] is None  # flat paper has only two dimensions
+        assert rows[2][3:6] == (24.375, 6, None)
+        assert rows[1][12] == "按签样生产"
+        assert rows[2][12] == f"按签样生产；{note}；旧纸品说明"
+        assert rows[1][13] is None and rows[2][13] is None
+        assert purchase["lines"][1]["process_note"] == note
         book.close()
         counted = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                        if row["id"] == purchase["id"])
@@ -208,6 +217,11 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert counted["order_import_last_export_at"]
         download = client.post(BASE + "/documents/export.xlsx", json={"documents": [selection]})
         assert download.status_code == 200, download.text
+        book = load_workbook(BytesIO(download.content), read_only=True)
+        regular_rows = list(book["采购单"].values)
+        assert regular_rows[0][-1] == "备注" and "工艺备注" not in regular_rows[0]
+        assert [row[-1] for row in regular_rows[1:]] == ["按签样生产", f"按签样生产；{note}"]
+        book.close()
         after_download = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                               if row["id"] == purchase["id"])
         assert after_download["export_count"] == 2
@@ -220,15 +234,23 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
             snapshot = json.loads(issue.snapshot_json)
             snapshot["lines"][0]["specification"] = "18*12.5*17.25"
             snapshot["lines"][0]["dimension_unit"] = ""
+            snapshot["order"].pop("note")
+            snapshot["lines"][1].pop("process_note")
             issue.snapshot_json = json.dumps(snapshot, ensure_ascii=False)
             db.commit()
         cm_export = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
         assert cm_export.status_code == 200, cm_export.text
         cm_book = load_workbook(BytesIO(cm_export.content), read_only=True, data_only=True)
-        cm_row = list(cm_book.active.values)[1]
+        _, cm_row, legacy_paper = list(cm_book.active.values)
         assert cm_row[3:6] == (18, 12.5, 17.25)
         assert cm_row[9] == "cm"
+        assert cm_row[12] is None and legacy_paper[12] == "旧纸品说明"
         cm_book.close()
+        plain = client.post(BASE + "/documents/export.xlsx", json={"documents": [selection]})
+        assert plain.status_code == 200, plain.text
+        book = load_workbook(BytesIO(plain.content), read_only=True)
+        assert "备注" not in next(book["采购单"].values)
+        book.close()
         rejected = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [
             {**selection, "id": "forged-id"},
         ]})
@@ -248,7 +270,7 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert "无法拆成" in malformed.json()["detail"]
         counted = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                        if row["id"] == purchase["id"])
-        assert counted["export_count"] == 3
+        assert counted["export_count"] == 4
         assert counted["order_import_export_count"] == 2
 
 

@@ -930,6 +930,7 @@ function applyMaster(row: MasterRecord) {
     id: `MASTER-${row.id}-${i}`, packagingType: l.packaging_type, paperQuality: l.paper_quality,
     specification: l.specification, dimensionUnit: l.dimension_unit, unit: l.unit,
     quantityRule: reusableQuantityRule(l.quantity_rule), unitsPerCarton: l.usage_quantity == null ? '' as const : Number(l.usage_quantity), unitPrice: 0, currency: 'CNY', priceSource: 'manual', note: '',
+    processNote: l.process_note,
     netWeight: l.net_weight_kg == null ? '' as const : Number(l.net_weight_kg),
     grossWeight: l.gross_weight_kg == null ? '' as const : Number(l.gross_weight_kg),
   })))
@@ -5024,6 +5025,7 @@ async function createLocalOrder() {
         currency: material.currency,
         price_source: material.priceSource,
         note: material.note,
+        process_note: material.processNote,
       })),
     }
     const createPayload = { ...payload, status: 'CONFIRMED' as const,
@@ -6718,6 +6720,7 @@ function applyHistoryItemSuggestion(suggestion: CartonOrderHistorySuggestionResp
     currency: line.currency,
     priceSource: line.price_source,
     note: line.note,
+    processNote: line.process_note,
   })))
   selectedHistoryItemSource.value = suggestion
   historyItemSuggestions.value = []
@@ -7024,6 +7027,7 @@ function copyOrderInformation(orderNo: string) {
     currency: line.currency,
     priceSource: line.price_source,
     note: line.note,
+    processNote: line.process_note,
   })))
   showOrderModal.value = true
 }
@@ -7074,6 +7078,7 @@ function openEditOrderModal(orderNo: string) {
     currency: line.currency,
     priceSource: line.price_source,
     note: line.note,
+    processNote: line.process_note,
   })))
   showOrderModal.value = true
 }
@@ -9504,7 +9509,9 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
                   <td data-label="全选筛选结果" class="px-2 py-3"><input v-model="selectedInventoryTargetIds" class="size-5 accent-teal-600" type="checkbox" :value="row.id" :disabled="row.balance <= 0" :aria-label="`选择库存 ${row.itemNo} ${row.specification}`"></td>
                   <td data-label="客户" class="px-2 py-3 font-semibold">{{ row.customer }}<div class="mt-1 text-[10px] font-normal text-teal-700">{{ (row.businessKinds || ['LEGACY']).map(kind => inventoryKindLabels[kind]).join(' / ') }}</div></td>
                   <td data-label="合同号" class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.poNumber">{{ row.poNumber || '—' }}</div><div v-if="customerPoForLine(row.orderLineId || '')" class="mt-1 break-all text-[10px] text-teal-700">客户 PO {{ customerPoForLine(row.orderLineId || '') }}</div></td><td data-label="货号" class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.itemNo">{{ row.itemNo }}</div></td>
-                  <td data-label="纸品类型 / 纸质 / 规格" class="px-2 py-3"><div class="break-words font-semibold">{{ row.packagingType }} · {{ row.paperQuality }}</div><div class="mt-1 break-words text-slate-500">{{ row.specification }}</div></td>
+                  <td data-label="纸品类型 / 纸质 / 规格" class="px-2 py-3"><div class="break-words font-semibold">{{ row.packagingType }} · {{ row.paperQuality }}</div><div class="mt-1 break-words text-slate-500">{{ row.specification }}</div>
+                    <details v-if="inventoryOrderLines.get(row.orderLineId || '')?.process_note" class="mt-1 text-xs"><summary class="cursor-pointer text-teal-700">纸品明细</summary><p class="mt-1 whitespace-pre-wrap break-words">工艺备注 · {{ inventoryOrderLines.get(row.orderLineId || '')?.process_note }}</p></details>
+                  </td>
                   <td data-label="仓位" class="break-words px-2 py-3">{{ row.location }}</td>
                   <td data-label="累计入库" class="px-2 py-3 text-right tabular-nums text-sm whitespace-nowrap">{{ inventoryQuantity(row.money?.inbound_quantity) }} <span class="text-[10px] text-slate-400">{{ row.unit }}</span></td>
                   <td data-label="累计出库" class="px-2 py-3 text-right tabular-nums text-sm whitespace-nowrap">{{ inventoryQuantity(row.money?.outbound_quantity) }} <span class="text-[10px] text-slate-400">{{ row.unit }}</span></td>
@@ -10024,7 +10031,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
     </div>
 
     <CartonOrderDetailDialog v-if="orderDetailRow" data-testid="order-detail-overlay" :pinned="orderDetailPinned" :title="'订单明细 — ' + orderDetailRow.contractNo + ' / ' + orderDetailRow.itemNo" @close="closeOrderDetails">
-          <CartonOrderDetailContent :order="orderDetailRecord ?? undefined" :fields="[{ label: '客户', value: orderDetailRow.customer }, { label: '订单类型', value: '正单' }, { label: '订单单号', value: orderDetailRow.id }, { label: '客户 PO', value: customerPoForOrder(orderDetailRow.id) || '未填写' }, { label: '产品名称', value: orderDetailRecord?.product_name || '未记录' }, { label: '产品订单数量', value: orderDetailRow.orderQuantity == null ? '未记录' : formatNumber(orderDetailRow.orderQuantity) }, { label: '状态', value: orderDetailRow.status }, { label: '下单日期', value: formatMonthDay(orderDetailRow.orderDate) }, { label: '客户要求交期', value: formatMonthDay(orderDetailRow.customerDueDate) || '未记录' }, { label: '计划交期', value: formatMonthDay(orderDetailRow.dueDate) }, { label: '备注', value: orderDetailRow.note || '—' }]" :rows="orderDetailRow.materials.map(material => ({ id: material.id, label: material.packagingType, quality: material.paperQuality, specification: material.specification, unit: material.unit, rule: orderDetailSourceLine(material)?.quantity_rule?.mode === 'PER_CARTON' ? quantityRuleLabel(orderDetailSourceLine(material)!) : material.unitsPerCarton == null ? '未记录' : formatUnitsPerCarton(material.unitsPerCarton), required: orderDetailRequiredQuantity(material), received: orderDetailReceivedQuantity(material), remaining: orderDetailRemainingQuantity(material), progress: orderDetailProgress(material), note: orderDetailPaperWeights(material.id) }))">
+          <CartonOrderDetailContent :order="orderDetailRecord ?? undefined" :fields="[{ label: '客户', value: orderDetailRow.customer }, { label: '订单类型', value: '正单' }, { label: '订单单号', value: orderDetailRow.id }, { label: '客户 PO', value: customerPoForOrder(orderDetailRow.id) || '未填写' }, { label: '产品名称', value: orderDetailRecord?.product_name || '未记录' }, { label: '产品订单数量', value: orderDetailRow.orderQuantity == null ? '未记录' : formatNumber(orderDetailRow.orderQuantity) }, { label: '状态', value: orderDetailRow.status }, { label: '下单日期', value: formatMonthDay(orderDetailRow.orderDate) }, { label: '客户要求交期', value: formatMonthDay(orderDetailRow.customerDueDate) || '未记录' }, { label: '计划交期', value: formatMonthDay(orderDetailRow.dueDate) }, { label: '备注', value: orderDetailRow.note || '—' }]" :rows="orderDetailRow.materials.map(material => ({ id: material.id, label: material.packagingType, quality: material.paperQuality, specification: material.specification, unit: material.unit, rule: orderDetailSourceLine(material)?.quantity_rule?.mode === 'PER_CARTON' ? quantityRuleLabel(orderDetailSourceLine(material)!) : material.unitsPerCarton == null ? '未记录' : formatUnitsPerCarton(material.unitsPerCarton), required: orderDetailRequiredQuantity(material), received: orderDetailReceivedQuantity(material), remaining: orderDetailRemainingQuantity(material), progress: orderDetailProgress(material), note: orderDetailPaperWeights(material.id), processNote: orderDetailSourceLine(material)?.process_note }))">
 <template #status>
 
           <p v-if="orderDetailRecord && (orderDetailRecord.net_weight_kg != null || orderDetailRecord.gross_weight_kg != null)" class="px-5 py-2 text-xs text-slate-600">历史整单每箱净重：{{ orderDetailRecord.net_weight_kg ?? '未记录' }} kg · 毛重：{{ orderDetailRecord.gross_weight_kg ?? '未记录' }} kg</p>
@@ -10115,7 +10122,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
           </div>
           <CartonMasterOrderAssist v-if="masterLoaded && orderForm.quantityBasis !== 'EXPLICIT'" :records="masterWorkspace.records" :customer="orderForm.customerCode" :item="orderForm.itemNo" :contract="orderForm.contractNo" :product="orderForm.productName" :disabled="editingOrderStructureLocked" :lines="orderForm.materials.map(l => ({ packaging_type: l.packagingType, paper_quality: l.paperQuality, specification: l.specification, dimension_unit: l.dimensionUnit, unit: l.unit, usage_quantity: l.quantityRule?.mode === 'PER_CARTON' ? null : l.unitsPerCarton, quantity_rule: reusableQuantityRule(l.quantityRule), net_weight_kg: l.netWeight == null || l.netWeight === '' ? null : l.netWeight, gross_weight_kg: l.grossWeight == null || l.grossWeight === '' ? null : l.grossWeight }))" @select="applyMaster" />
           <p v-else-if="masterError" class="text-xs text-amber-700">基础资料暂未读到，可稍后刷新；{{ masterError }}</p>
-<CartonOrderPaperSection :disabled="editingOrderStructureLocked" :guidance="editingOrderNo ? '尺寸单位按每条纸品分别保存；更正单位保留规格数字，不做数值换算。' : '优先带出基础资料的规格和单位；本单可逐项选择尺寸单位，规格数字不会自动换算。'" @add="addOrderMaterialLine"><template #help><p class="mt-0.5 text-[10px] text-slate-500">{{ orderForm.quantityBasis === 'EXPLICIT' ? supplierOrderSource ? '逐项填写整张订单的纸品总需求；可补齐其他纸品，每箱个数和产品数量选填。本次送货只关联对应纸品，未送数量仍待收。' : '按历史纸品需求数量登记；每箱个数选填，不用反推产品数量。缺失纸质、规格可先保存，确认锁定前须补齐。' : '默认自动计算，数量可直接修改；手动数量会保留，点击“恢复自动”重新计算。' }}</p></template><CartonOrderPaperEditor v-for="(material, index) in orderForm.materials" :key="material.id" :index="index" v-model:packaging="material.packagingType" v-model:quality="material.paperQuality" v-model:specification="material.specification" v-model:dimension="material.dimensionUnit" v-model:unit="material.unit" :packaging-options="orderPackagingOptions" :quality-options="paperQualitySuggestions" :specification-options="specificationSuggestions" :unit-options="orderUnitOptions" :preferred-unit="newPaperDimensionUnit" dimension-editable allow-millimeters :disabled="editingOrderStructureLocked" @update:packaging="suggestOrderQuantityMode(material, index)" @remove="removeOrderMaterialLine(index)">
+<CartonOrderPaperSection :disabled="editingOrderStructureLocked" :guidance="editingOrderNo ? '尺寸单位按每条纸品分别保存；更正单位保留规格数字，不做数值换算。' : '优先带出基础资料的规格和单位；本单可逐项选择尺寸单位，规格数字不会自动换算。'" @add="addOrderMaterialLine"><template #help><p class="mt-0.5 text-[10px] text-slate-500">{{ orderForm.quantityBasis === 'EXPLICIT' ? supplierOrderSource ? '逐项填写整张订单的纸品总需求；可补齐其他纸品，每箱个数和产品数量选填。本次送货只关联对应纸品，未送数量仍待收。' : '按历史纸品需求数量登记；每箱个数选填，不用反推产品数量。缺失纸质、规格可先保存，确认锁定前须补齐。' : '默认自动计算，数量可直接修改；手动数量会保留，点击“恢复自动”重新计算。' }}</p></template><CartonOrderPaperEditor v-for="(material, index) in orderForm.materials" :key="material.id" :index="index" process-notes :note-source="material" v-model:process-note="material.processNote" v-model:packaging="material.packagingType" v-model:quality="material.paperQuality" v-model:specification="material.specification" v-model:dimension="material.dimensionUnit" v-model:unit="material.unit" :packaging-options="orderPackagingOptions" :quality-options="paperQualitySuggestions" :specification-options="specificationSuggestions" :unit-options="orderUnitOptions" :preferred-unit="newPaperDimensionUnit" dimension-editable allow-millimeters :disabled="editingOrderStructureLocked" @update:packaging="suggestOrderQuantityMode(material, index)" @remove="removeOrderMaterialLine(index)">
                 <template #basis>                  <label v-if="material.quantityRule?.mode !== 'PER_CARTON'" class="min-w-0 space-y-1.5"><span class="block whitespace-nowrap text-[11px] font-bold leading-4 text-slate-500">{{ orderForm.quantityBasis === 'EXPLICIT' ? '装箱数（选填）' : '每箱装产品数 *' }}</span><input v-model.number="material.unitsPerCarton" :aria-label="`每箱个数 ${index + 1}`" type="number" min="0.00000001" step="any" :disabled="editingOrderStructureLocked" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-100"></label>
                   <div v-else class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">配套方式</span><div class="flex h-9 items-center text-xs text-slate-500">按箱配套</div></div>
 </template>

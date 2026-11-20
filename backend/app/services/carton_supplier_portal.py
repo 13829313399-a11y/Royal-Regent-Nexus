@@ -558,7 +558,7 @@ def order_out(db, order, *, internal=False, projection=None):
         required = Decimal(str(item["after_required_quantity"]))
         commitment = commitments.get(line_id) if projection is not None else db.get(SupplierCommitment, line_id)
         accepted = bool(issue and commitment and commitment.issue_id == issue.id and not changed and not disputed)
-        line = {key: item.get(key, "") for key in ("id", "line_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit")}
+        line = {key: item.get(key, "") for key in ("id", "line_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit", "process_note")}
         line_no = _snapshot_line_no(item.get("line_no"), order.order_no)
         line.update(line_no=line_no, child_no=f"{order.order_no}/{line_no:02d}", required_quantity=str(required),
             received_quantity=str(fulfilled.get(line_id, 0)), in_transit_quantity=str(shipped.get(line_id, 0)),
@@ -1026,6 +1026,7 @@ def _document_projection(db, user, factory):
                     "item_no": header.get("item_no") or "", "product_name": header.get("product_name") or "",
                     "order_date": header.get("order_date") or "",
                     "planned_date": snapshot.get("after_due_date") or "",
+                    "note": header.get("note") or "",
                 }],
                 "lines": [{
                     "order_kind": "REGULAR",
@@ -1033,6 +1034,7 @@ def _document_projection(db, user, factory):
                     "packaging_type": line.get("packaging_type", ""),
                     "paper_quality": line.get("paper_quality", ""),
                     "specification": line.get("specification", ""),
+                    "process_note": line.get("process_note", ""),
                     "unit": line.get("unit", ""),
                     "before_quantity": str(line.get("before_required_quantity", "0")),
                     "change_quantity": str(line.get("required_quantity_delta", "0")),
@@ -1227,6 +1229,15 @@ def _excel_text(value):
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
 
 
+def _purchase_remark(order_note, process_note, paper_note=None):
+    parts = []
+    for value in (order_note, process_note, paper_note):
+        note = (value or "").strip()
+        if note and note not in parts:
+            parts.append(note)
+    return "；".join(parts)
+
+
 def _document_entity_type(row):
     if row.get("special_request_id"):
         return "carton_special_version"
@@ -1268,14 +1279,11 @@ def export_documents(db, user, payload: SupplierDocumentExport):
         sheet = workbook.create_sheet(title)
         sheet.append(headers)
         sheet.freeze_panes = "A2"
-        for cell in sheet[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="087F74")
-            cell.alignment = Alignment(wrap_text=True)
         for document in subset:
             orders = {row["order_no"]: row for row in document["orders"]}
             for line in document["lines"]:
                 order = orders.get(line["order_no"], {})
+                remark = ""
                 if kind == "PURCHASE":
                     values = [
                         document["factory_id"], document["document_no"], document["date"],
@@ -1286,6 +1294,7 @@ def export_documents(db, user, payload: SupplierDocumentExport):
                         line["specification"], line["before_quantity"], line["change_quantity"],
                         line["quantity"], line["unit"], line.get("source_document_no", document["document_no"]),
                     ]
+                    remark = _purchase_remark(order.get("note"), line.get("process_note"))
                 else:
                     values = [
                         document["factory_id"], document["document_no"], document["date"],
@@ -1305,6 +1314,14 @@ def export_documents(db, user, payload: SupplierDocumentExport):
                             pass
                     cells.append(_excel_text(value))
                 sheet.append(cells)
+                if remark:
+                    remark_column = len(headers) + 1
+                    sheet.cell(1, remark_column, "备注")
+                    sheet.cell(sheet.max_row, remark_column, _excel_text(remark)).alignment = Alignment(wrap_text=True)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="087F74")
+            cell.alignment = Alignment(wrap_text=True)
         sheet.auto_filter.ref = sheet.dimensions
         for column in sheet.columns:
             letter = column[0].column_letter
@@ -1431,11 +1448,13 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
                 _excel_text(contract_no), _excel_text(item_no), _excel_text(header.get("product_name")),
                 length, width, height, float(change), _excel_text(line.get("paper_quality")),
                 _excel_text(line.get("packaging_type")), supplier_unit, unit_price,
-                promised_date, _excel_text(line.get("note")), _excel_text(delivery_note),
+                promised_date, _excel_text(_purchase_remark(header.get("note"), line.get("process_note"), line.get("note"))),
+                _excel_text(delivery_note),
                 _excel_text(line.get("unit")), None, None, None, _excel_text(issue.document_no),
                 _excel_text(document["document_no"]) if document.get("is_batch") else "", "",
             ])
             sheet.cell(sheet.max_row, 12).number_format = "yyyy-mm-dd"
+            sheet.cell(sheet.max_row, 13).alignment = Alignment(wrap_text=True)
     sheet.auto_filter.ref = sheet.dimensions
     for column in sheet.columns:
         column[0].parent.column_dimensions[column[0].column_letter].width = min(30, max(12, max(len(str(cell.value or "")) for cell in column) + 2))

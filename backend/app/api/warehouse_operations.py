@@ -119,29 +119,32 @@ def act_count(identifier: str, payload: CountAction, db: Session = Depends(get_d
     return setup.act_count(db, actor, identifier, payload)
 
 
-def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search='', unit='', date_order='DESC'):
+def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search='', unit='', date_order='DESC',
+                     *, source=''):
     if not capabilities(actor, 'fabric', factory_id)['read']:
         raise HTTPException(403, '无布料仓月度数量查询权限')
     from app.services.fabric_quantity_monthly import report
-    return report(db, month, direction, channel, party_key, search, unit, date_order,
+    return report(db, month, direction, channel, party_key, search, unit, date_order, source=source,
                   include_purchase_price=can(actor, 'fabric_warehouse:read', factory_id, 'pmc-warehouse'))
 
 
 @router.get('/fabric/monthly')
 def monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
-            search: str = '', unit: str = '', date_order: str = 'DESC',
+            search: str = '', unit: str = '', date_order: str = 'DESC', source: str = '',
             db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     from fastapi.responses import JSONResponse
-    return JSONResponse(quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order),
-                        headers={'Cache-Control': 'no-store'})
+    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order,
+                              source=source)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/fabric/monthly/export')
 def export_monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
-                   search: str = '', unit: str = '', date_order: str = 'DESC',
+                   search: str = '', unit: str = '', date_order: str = 'DESC', source: str = '',
                    version: str = '', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     from app.services.fabric_quantity_monthly import export_xlsx
-    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order)
+    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order,
+                              source=source)
     if version and version != result['version']:
         raise HTTPException(409, '收发记录已变化，请刷新月度汇总后再导出')
     return Response(export_xlsx(result), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

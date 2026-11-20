@@ -99,6 +99,40 @@ def test_receipt_reversal_and_issue_correction_preserve_history(bridge):
     send(p,'receive',decision(p,i,quantity='1'),409)
 
 
+def test_monthly_source_counts_cutting_issues_returns_and_corrections(bridge):
+    p = bridge
+    request = send(p, 'request', request_body(p))
+    url = '/api/warehouse-operations/fabric/monthly'
+    filters = dict(factory_id='huakang-c', month='2026-10', direction='OUT')
+
+    def monthly(**changes):
+        response = p.get(url, params=filters | changes)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert monthly(source='CUTTING')['details'] == []
+    warehouse_post(p, 'ISSUE', batch_id=p.stock_id, quantity='2', counterparty='R01')
+    issued = issue(p, request)
+    signed = send(p, 'receive', decision(p, issued, quantity='2.5'))
+    returned = warehouse_post(p, 'RETURN', original_id=issued['id'], quantity='1', location_id='bin')
+    active = monthly(source='CUTTING')
+    assert active['totals'][0]['net_outbound'] == '3'
+    assert {row['id'] for row in active['details']} == {issued['id'], returned['id']}
+    assert monthly(source='MANUAL')['totals'][0]['net_outbound'] == '2'
+    assert monthly(source='HANDOVER')['details'] == []
+    assert monthly(channel='MANUAL')['totals'][0]['net_outbound'] == '5'
+    assert p.get(url + '/export', params=filters | dict(source='CUTTING', version=active['version'])).status_code == 200
+    assert p.get(url + '/export', params=filters | dict(source='MANUAL', version=active['version'])).status_code == 409
+
+    warehouse_post(p, 'CORRECTION', original_id=returned['id'])
+    send(p, 'void', decision(p, signed))
+    warehouse_post(p, 'CORRECTION', original_id=issued['id'])
+    corrected = monthly(source='CUTTING')
+    assert corrected['totals'][0]['net_outbound'] == '0'
+    assert {row['original_id'] for row in corrected['details'] if row['correction']} == {issued['id'], returned['id']}
+    assert {row['channel_label'] for row in corrected['details']} == {'裁床领料实发'}
+
+
 def test_source_change_blocks_issue_but_preserves_historical_settlement(bridge):
     p=bridge;r=send(p,'request',request_body(p));i=issue(p,r)
     amend(p,cancelled=True)

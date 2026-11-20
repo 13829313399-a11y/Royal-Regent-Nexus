@@ -77,6 +77,7 @@ def _order_report(dated_rows, formal_lines, matched_lines, details, date_from, d
         return CartonInventoryOrderReportRow(
             key=serialized_key(identity),
             order_id=order.id if order else None, order_line_id=identity[2],
+            process_note=formal_lines[identity[2]][0].process_note if identity[2] in formal_lines else "",
             source_request=sources.requests.get(identity), unattributed=is_unattributed(identity),
             order_date=order.order_date if order else "", customer_code=identity[1],
             customer_name=customer_name, contract_no=identity[3], item_no=identity[4],
@@ -229,12 +230,13 @@ def inventory_report(
         document_identity = _document_identity(movement, legacy_return_batches)
         documents[group_key].add(document_identity)
         group.document_count = len(documents[group_key])
-        derived = {"business_date", "occurred_at", "flow_category", "flow_quantity", "source_request", "unattributed"}
+        derived = {"business_date", "occurred_at", "flow_category", "flow_quantity", "source_request", "unattributed", "process_note"}
         key = sources.movement_keys[movement.id]
         details.append(CartonInventoryReportMovement(
             **{field: getattr(movement, field) for field in CartonInventoryReportMovement.model_fields
                if field not in derived},
             business_date=day, occurred_at=timestamp.isoformat(),
+            process_note=formal_lines[movement.order_line_id][0].process_note if movement.order_line_id in formal_lines else "",
             flow_category=category, flow_quantity=flow_quantity,
             source_request=sources.requests.get(key), unattributed=is_unattributed(key),
         ))

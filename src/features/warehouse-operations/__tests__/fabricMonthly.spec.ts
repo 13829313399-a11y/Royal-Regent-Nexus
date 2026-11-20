@@ -27,13 +27,14 @@ beforeEach(() => { vi.resetAllMocks(); search.value = ''; submitted.value = 0; a
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('warehouse unified month reconciliation', () => {
-  it('queries supplier/recipient views with channel and party filters, retaining zero price evidence', async () => {
+  it('queries supplier/recipient views with relevant sources and party filters, retaining zero price evidence', async () => {
     const report = fixture()
     report.details[0]!.purchase_price = { unit_price: '8.5', price_unit: '码', currency: 'CNY' }
     api.monthly.mockResolvedValueOnce(report)
     const router = await open('reconciliation')
-    expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ direction: 'IN', channel: '', party_key: '' }))
+    expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ direction: 'IN', source: '', party_key: '' }))
     expect(wrapper!.text()).toContain('供应商收料对账')
+    expect(wrapper!.find('option[value="CUTTING"]').exists()).toBe(false)
     await wrapper!.findAll('.monthly-modes button')[1]!.trigger('click')
     await wrapper!.get('[aria-label="查看凭证 FB-1"]').trigger('click'); await flushPromises()
     const body = new DOMWrapper(document.body)
@@ -41,14 +42,14 @@ describe('warehouse unified month reconciliation', () => {
     expect(body.get('[role="dialog"]').text()).toContain('8.5 元／码')
     expect(body.get('[role="dialog"] a').attributes('href')).toBe('/modules/pmc-warehouse/material-handover?factory=huakang-c&tab=documents&document=MHD-1')
     await body.findAll('button').find(button => button.text() === '关闭')!.trigger('click')
-    await wrapper!.get('[aria-label="月结登记方式"]').setValue('SCAN'); await flushPromises()
-    expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ direction: 'IN', channel: 'SCAN' }))
+    await wrapper!.get('[aria-label="月结登记来源"]').setValue('HANDOVER'); await flushPromises()
+    expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ direction: 'IN', source: 'HANDOVER' }))
     await wrapper!.get('[aria-label="月结往来方"]').setValue('supplier:A'); await flushPromises()
     expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ party_key: 'supplier:A' }))
     await router.push('/?factory=huakang-c&view=recipients'); await flushPromises()
-    expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ direction: 'OUT', channel: '', party_key: '' }))
+    expect(api.monthly).toHaveBeenLastCalledWith(expect.objectContaining({ direction: 'OUT', source: '', party_key: '' }))
     expect(wrapper!.text()).toContain('领用方发料对账')
-    expect(wrapper!.text()).toContain('裁床接口领料 · 待接入')
+    expect(wrapper!.get('option[value="CUTTING"]').text()).toBe('裁床领料实发')
   })
   it('clears old records immediately and ignores late reports after an account change', async () => {
     await open()
@@ -72,12 +73,14 @@ describe('warehouse unified month reconciliation', () => {
   })
   it('exports the selected filters bound to the displayed snapshot', async () => {
     await open('recipients')
+    await wrapper!.get('[aria-label="月结登记来源"]').setValue('CUTTING'); await flushPromises()
+    await wrapper!.get('[aria-label="月结往来方"]').setValue('recipient:裁床'); await flushPromises()
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:month')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     api.exportMonthly.mockResolvedValue(new Blob(['xlsx']))
     await wrapper!.findAll('button').find(button => button.text() === '导出当前对账表')!.trigger('click'); await flushPromises()
-    expect(api.exportMonthly).toHaveBeenCalledWith(expect.objectContaining({ direction: 'OUT', channel: '', party_key: '' }), 'snapshot')
+    expect(api.exportMonthly).toHaveBeenCalledWith(expect.objectContaining({ direction: 'OUT', source: 'CUTTING', party_key: 'recipient:裁床' }), 'snapshot')
   })
   it('invalidates old exports immediately on header search, cancels debounce on Enter and keeps filters in exports', async () => {
     vi.useFakeTimers()
