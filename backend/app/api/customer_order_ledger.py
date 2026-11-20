@@ -345,6 +345,7 @@ async def import_orders(customer_code: str, request: Request, factory_id: str = 
         files=[(name, content, source_kind) for name, content in files] + [(schedule_file.filename or "schedule.xlsx", schedule_content, "schedule")],
         source_kind=source_kind, actor=ledger.actor_name(current_user), reason=reconciliation_reason.strip() if reconcile_line else reason,
         reconcile_line=reconcile_line, expected_revision=expected_revision,
+        authorize_dispatch=lambda: authorize_locked_dispatch(db, current_user, factory_id),
         controls={"preview_fingerprint": preview_fingerprint, "confirmed_issue_keys": sorted(actual_keys), "manual_overrides": overrides, "reason": reason}))
     result["warehouse_sync"] = await mapping.sync_report(db, current_user, request, resolved, file_name, output, "GENERATED")
     return result
