@@ -71,12 +71,14 @@ function buildBatchFormData(
   scheduleFile: File,
   receivedDate: string,
   factoryId: string,
+  additionalSchedules: File[] = [],
 ) {
   const payload = new FormData()
   payload.append('factory_id', factoryId)
   payload.append('received_date', receivedDate)
   poFiles.forEach((poFile) => payload.append('po_files', poFile))
   payload.append('schedule_file', scheduleFile)
+  additionalSchedules.forEach(file => payload.append('schedule_files', file))
   return payload
 }
 
@@ -354,10 +356,11 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       scheduleFile: File,
       receivedDate: string,
       factoryId: string,
+      additionalSchedules: File[] = [],
     ) {
       const response = await client.post<CustomerOrderImportPreview>(
         `/customer-orders/${customerCode}/preview-batch`,
-        buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId),
+        buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId, additionalSchedules),
         { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 240_000 },
       )
       return response.data
@@ -373,8 +376,9 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       previewFingerprint = '',
       confirmationReason = '',
       manualOverrides: CustomerOrderManualOverride[] = [],
+      additionalSchedules: File[] = [],
     ) {
-      const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
+      const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId, additionalSchedules)
       appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, `/customer-orders/${customerCode}/export-batch`, payload, 300_000,

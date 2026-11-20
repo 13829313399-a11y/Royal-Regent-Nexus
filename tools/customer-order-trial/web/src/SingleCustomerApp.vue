@@ -29,11 +29,11 @@ async function load() {
   try {
     const config = await api.config()
     const code = config.customers[0]?.code
-    if (config.customers.length !== 1 || !((config.factory_id === 'huakang-a' && code === 'zuru') || (config.factory_id === 'huadeng' && code && Object.hasOwn(huadengCustomers, code)))) {
+    if (config.customers.length !== 1 || !((['huakang-a', 'huaxing'].includes(config.factory_id) && code === 'zuru') || (config.factory_id === 'huadeng' && code && Object.hasOwn(huadengCustomers, code)))) {
       throw new Error('启动配置与专客试用包不一致，请使用完整解压后的专用包。')
     }
     factory.value = config.factory_id
-    factoryName.value = config.factory_id === 'huadeng' ? '华登' : '华康A'
+    factoryName.value = config.factory_id === 'huadeng' ? '华登' : config.factory_id === 'huaxing' ? '华兴' : '华康A'
     customer.value = code!
     customerName.value = huadengCustomers[code!] ?? 'ZURU'
     ready.value = true
@@ -49,7 +49,7 @@ onMounted(load)
       <div class="order-topbar__actions"><span class="order-factory-chip">{{ factoryName }}</span><span>本机试用</span></div>
     </header>
     <aside class="order-sidebar">
-      <div class="order-sidebar__heading"><span class="order-sidebar__mark"><CalendarRange /></span><div><h1 class="order-sidebar__title">客户订单中心</h1><p class="order-sidebar__subtitle">客户订单与统一排期</p></div></div>
+      <div class="order-sidebar__heading"><span class="order-sidebar__mark"><CalendarRange /></span><div><h1 class="order-sidebar__title">客户订单中心</h1><p class="order-sidebar__subtitle">{{ customer === "zuru" ? "ZURU原格式新单汇总" : "客户订单与统一排期" }}</p></div></div>
       <button class="order-new-button" @click="section = 'import'"><FileInput />新建导入</button>
       <nav class="order-sidebar__nav" aria-label="客户订单中心页面">
         <button v-for="item in navigation" :key="item.id" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="section = item.id"><component :is="item.icon" /><span>{{ item.label }}</span></button>

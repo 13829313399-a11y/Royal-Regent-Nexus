@@ -94,7 +94,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
         if profile is None:raise HTTPException(400,'当前厂区未开放此客户映射。')
         return profile
 
-    async def sources(customer,submitted,received,uploads,schedule):
+    async def sources(customer,submitted,received,uploads,schedule,schedule_files=()):
         profile=scoped(customer,submitted)
         usable=[file for file in uploads if not contract._is_macos_metadata_upload(file.filename or '')]
         if not 1<=len(usable)<=contract.MAX_BATCH_PO_FILES:raise HTTPException(400,'请选择 1 至 30 份有效 PO 文件。')
@@ -106,11 +106,10 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
             total+=len(content)
             if total>contract.MAX_BATCH_PO_BYTES:raise HTTPException(400,'本批 PO 文件合计超过 80MB 限制。')
             files.append((Path((file.filename or '').replace('\\','/')).name,content))
-        contract._validate_upload(schedule,kind='客户排期',supported=('.xlsx',))
-        content=await schedule.read(contract.MAX_SCHEDULE_BYTES+1)
-        if not content or len(content)>contract.MAX_SCHEDULE_BYTES:raise HTTPException(400,'客户排期为空或超过 35MB 限制。')
+        from app.services.customer_order_zuru_native import read_uploads
+        schedule_name,content=await read_uploads(customer,schedule,schedule_files)
         return dict(customer_code=customer,factory_id=factory_id,received_date=received.isoformat(),po_files=files,
-                    schedule_file_name=Path((schedule.filename or '').replace('\\','/')).name,schedule_content=content)
+                    schedule_file_name=schedule_name,schedule_content=content)
 
     def finalize(preview,received):
         contract._apply_customer_order_confirmation_policy(preview,duplicate_confirmation_authorized=True)
@@ -119,8 +118,8 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
 
     @app.post('/api/orders/preview',dependencies=[Depends(jobs.order_job_request)])
     async def preview(customer_code:str=Form(...),factory_id:str=Form(...),received_date:date=Form(...),
-        po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...)):
-        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file)
+        po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...),schedule_files:list[UploadFile]=File(default=[])):
+        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file,schedule_files)
         operation=contract._create_special_batch_preview if customer_code in {'buzzbee','dickie','caixing'} else contract._create_mapped_customer_preview
         result=await jobs.run_order_job(operation,**args)
         return finalize(result,args['received_date'])
@@ -132,7 +131,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
             'X-Workbook-Password-Required':str(json.loads(row['controls']).get('password_required',False)).lower()})
 
     async def prepare_confirmed(customer_code,factory_id,received_date,po_files,schedule_file,confirmed,
-        skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target=None):
+        skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target=None,schedule_files=()):
         scoped(customer_code,factory_id)
         if not confirmed:raise HTTPException(400,'请先核对预览并明确确认生成。')
         if len(skipped_issue_keys)>2_000_000 or len(manual_overrides)>4_000_000:raise HTTPException(400,'人工核对内容过大。')
@@ -141,7 +140,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
         resolution=keys|{item['issue_key'] for item in overrides}
         contract._ensure_test_duplicate_confirmation_allowed(resolution)
         reason=contract._validated_confirmation_reason(resolution,confirmation_reason)
-        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file)
+        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file,schedule_files)
         operation=contract._export_special_batch_schedule if customer_code in {'buzzbee','dickie','caixing'} else contract._export_mapped_customer_schedule
         reconciliation={'reconciliation_target':reconciliation_target} if reconciliation_target else {}
         output,name,resolved=await jobs.run_order_job(operation,**args,skipped_issue_keys=resolution,manual_overrides=overrides,**reconciliation)
@@ -160,9 +159,9 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
     async def export(customer_code:str=Form(...),factory_id:str=Form(...),received_date:date=Form(...),
         po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...),confirmed:bool=Form(...),
         skipped_issue_keys:str=Form('[]'),manual_overrides:str=Form('[]'),preview_fingerprint:str=Form(...),
-        confirmation_reason:str=Form('')):
+        confirmation_reason:str=Form(''),schedule_files:list[UploadFile]=File(default=[])):
         args,resolved,output,name,controls=await prepare_confirmed(customer_code,factory_id,received_date,
-            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason)
+            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,schedule_files=schedule_files)
         row=history.save(customer_code,name,output,len(resolved.get('rows',[])),controls)
         return output_response(row)
 

@@ -9,8 +9,9 @@ export const customerOrderApi = createCustomerOrderApi({
     const match = /^\/customer-orders\/(casdon|jakks|goliath|simba|spin|zuru)\/(preview|export)-batch$/.exec(url)
     const customer = match?.[1]
     const operation = match?.[2]
-    const factory = customer === 'zuru' ? 'huakang-a' : 'huadeng'
-    if (!operation || !(data instanceof FormData) || data.get('factory_id') !== factory) {
+    const factory = data instanceof FormData ? String(data.get('factory_id') ?? '') : ''
+    const allowedFactory = customer === 'zuru' ? ['huakang-a', 'huaxing'].includes(factory) : factory === 'huadeng'
+    if (!operation || !(data instanceof FormData) || !allowedFactory) {
       throw new Error('本专客试用包仅开放指定厂区和客户。')
     }
     data.set('customer_code', customer!)

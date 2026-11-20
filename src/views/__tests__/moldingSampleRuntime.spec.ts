@@ -45,6 +45,7 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   deleteOrder: vi.fn(),
   exportOrderExcel: vi.fn(),
   exportOrdersExcel: vi.fn(),
+  exportProductionMonth: vi.fn(),
   importOrderExcel: vi.fn(),
   previewOrderExcel: vi.fn(),
   updateStatus: vi.fn(),
@@ -1786,6 +1787,38 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('exports the whole opening month independently of queue search, page and print selection', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing' }
+    const records = Array.from({ length: 12 }, (_, index) =>
+      createMoldingSampleRecord('待生产', `BP-MONTH-${index + 1}`, index + 1))
+    mockedMoldingSampleApi.listProductionTasks.mockResolvedValueOnce(records)
+    mockedMoldingSampleApi.exportProductionMonth
+      .mockRejectedValueOnce(new Error('读取超时，请稍后重试'))
+      .mockResolvedValueOnce(new Blob())
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+    const form = wrapper.get('details form')
+    const field = form.get('input[type="month"]')
+
+    await wrapper.get('[data-testid="production-task-search-input"]').setValue('no-match')
+    await field.setValue('2026-07')
+    expect(form.text()).toContain('12 张啤办单')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(form.get('[role="alert"]').text()).toContain('读取超时')
+    expect(form.get('button').attributes('disabled')).toBeUndefined()
+    await form.trigger('submit')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.exportProductionMonth).toHaveBeenCalledWith('huaxing', '2026-07', expect.any(AbortSignal))
+    expect(form.text()).toContain('该月暂无可导出的啤办单')
+
+    await field.setValue('2026-08')
+    expect(form.get('button').attributes('disabled')).toBeDefined()
+    expect(form.text()).toContain('在该月没有进入生产队列的啤办单')
+    expect(form.text()).not.toContain('该月暂无可导出')
+    wrapper.unmount()
+  })
+
   it('fuzzy searches the production queue across order, mold, client, and material fields', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing' }
@@ -2137,6 +2170,7 @@ describe('molding sample runtime error handling', () => {
             mold_name: sortOrder === 6 ? '最后一套护面罩' : `护面罩 ${sortOrder}`,
             material: 'ABS (PA-757)',
             required_material_kg: 6 + sortOrder,
+            collected_weight_kg: null,
             actual_weight_kg: null,
             notes: sortOrder === 6 ? '第六套模具完整资料。' : `第 ${sortOrder} 套模具资料。`,
           }
@@ -2155,6 +2189,10 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
     expect(wrapper.findAll('[data-testid="production-fillback-item"]')).toHaveLength(6)
+    const usagePanels = wrapper.findAll('[data-testid="production-fillback-usage-panel"]')
+    expect(usagePanels[0]!.text()).toContain('14.50 kg')
+    expect(usagePanels[1]!.text()).toContain('尚未登记')
+    expect(usagePanels[1]!.text()).toContain('预计用料 8.00 kg')
     const actualWeightInputs = wrapper.findAll('[data-testid="production-actual-weight-input"]')
     expect(actualWeightInputs).toHaveLength(6)
     expect(wrapper.findAll('[data-testid="production-fillback-expected-cost-panel"]')).toHaveLength(6)
@@ -2859,6 +2897,7 @@ describe('molding sample runtime error handling', () => {
     })
 
     expect(wrapper.text()).toContain('BP-PROD-READONLY-001')
+    expect(wrapper.text()).not.toContain('按月导出啤办单')
     expect(wrapper.text()).toContain('当前账号没有通知处理权限')
     expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
     expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()

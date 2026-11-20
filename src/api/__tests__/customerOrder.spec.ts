@@ -3,6 +3,22 @@ import { createCustomerOrderApi } from '@/api/customerOrder'
 
 
 describe('customer order api', () => {
+  it('keeps all ZURU references in preview and export multipart requests', async () => {
+    const post = vi.fn().mockResolvedValue({ data: {}, headers: {} })
+    const api = createCustomerOrderApi({ post })
+    const first = new File(['one'], 'one.xlsx')
+    const second = new File(['two'], 'two.xlsx')
+    const po = new File(['po'], 'po.pdf')
+    await api.previewMappedBatch('zuru', [po], first, '2026-11-20', 'huaxing', [second])
+    const preview = post.mock.calls[0]![1] as FormData
+    expect(preview.get('schedule_file')).toBe(first)
+    expect(preview.getAll('schedule_files')).toEqual([second])
+    await api.exportMappedBatch('zuru', [po], first, '2026-11-20', 'out.xlsx', 'huaxing', [], 'fingerprint', '', [], [second])
+    const exported = post.mock.calls[1]![1] as FormData
+    expect(exported.get('schedule_file')).toBe(first)
+    expect(exported.getAll('schedule_files')).toEqual([second])
+  })
+
   it.each(['SUCCESS', 'ERROR'] as const)('reads the server completed warehouse handoff result (%s) from export headers', async (status) => {
     const sync = { status, message: status === 'SUCCESS' ? '最终排期已同步' : '客户对应不唯一', batch_id: 'warehouse-1' }
     const post = vi.fn().mockResolvedValue({ data: new Blob(['schedule']), headers: {
