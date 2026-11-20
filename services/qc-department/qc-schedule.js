@@ -290,7 +290,9 @@
     const count=el('qsCount');
     if(count){
       let visible=0;try{visible=filterRows(model.items,filters()).length;}catch{}
-      count.textContent=model.checked.size?'已选 '+model.checked.size+' 条':model.phase==='pending'?'待接通':`${visible} / ${model.items.length} 条`;
+      const total=model.items.length;
+      const quantity=visible===total ? visible : `${visible} / ${total}`;
+      count.textContent=model.checked.size?'已选 '+model.checked.size+' 条':model.phase==='pending'?'待接通':`${quantity} 条`;
       count.setAttribute('aria-label',model.checked.size?'已选排期数':'当前显示与总排期数');
       count.title=`当前显示 ${visible} / 当前日期范围总计 ${model.items.length} 条`;
     }
