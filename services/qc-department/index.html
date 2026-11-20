@@ -217,18 +217,17 @@
   <div class="page" id="page-inspection-summary"><div class="page-inner" id="qsum-root"></div></div>
   <div class="page" id="page-review">
     <div class="page-inner">
-      <div class="toolbar">
-        <div class="toolbar-left">
-          <div class="review-tabs">
-            <button class="mode-tab active" id="reviewTabPending"  onclick="setReviewTab('pending')">待审核 <span class="review-count" id="reviewCountPending">0</span></button>
-            <button class="mode-tab" id="reviewTabApproved" onclick="setReviewTab('approved')">已审核</button>
+      <div class="qis-review-surface">
+        <div id="qis-review-controls">
+          <div class="report-period-switch qis-review-tabs" role="group" aria-label="审核分类">
+            <span class="report-period-glass" aria-hidden="true"></span>
+            <button type="button" class="active" id="reviewTabPending" aria-pressed="true" onclick="setReviewTab('pending')">待审核 <span class="review-count" id="reviewCountPending">0</span></button>
+            <button type="button" id="reviewTabApproved" aria-pressed="false" onclick="setReviewTab('approved')">已审核</button>
           </div>
+          <button type="button" class="qc-refresh-icon" onclick="renderReviewPage()" aria-label="刷新审核列表"></button>
         </div>
-        <div class="toolbar-right">
-          <button type="button" class="qc-refresh-icon" onclick="renderReviewPage()" aria-label="刷新审核列表" title="刷新审核列表"></button>
-        </div>
+        <div class="table-wrap" id="reviewTableWrap"></div>
       </div>
-      <div id="qis-review-controls"></div><div class="table-wrap" id="reviewTableWrap"></div>
     </div>
   </div>
 
@@ -845,6 +844,7 @@
 <link rel="stylesheet" href="qc-mobile-entry.css"/><script defer src="qc-mobile-entry.js"></script>
 <link rel="stylesheet" href="qc-inspection-print.css"/><script defer src="qc-inspection-print.js"></script>
 <link rel="stylesheet" href="qc-inspection-summary.css">
+<script defer src="qc-photo-shapes.js"></script>
 <script defer src="qc-inspection-summary.js"></script>
 <link rel="stylesheet" href="qc-approved-statistics.css">
 <script defer src="qc-approved-statistics.js"></script>

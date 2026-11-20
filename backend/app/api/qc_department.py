@@ -30,7 +30,7 @@ COMPANIES = {
     "huadeng": "hy-huadeng", "huaxing": "hy-huaxing",
 }
 STATIC_FILES = {
-    "qc-mobile-entry.js", "qc-mobile-entry.css",
+    "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
     "qc-report-workbook.js", "qc-report-workbook.css",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
@@ -548,6 +548,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
+    elif (len(parts)==3 and parts[0]=='entries' or len(parts)==4 and parts[:2]==['review','entries']) and parts[-1]=='photo-annotations':
+        result=await run_in_threadpool(service.save_photo_annotations,factory_id,parts[-2],body,actor,review=len(parts)==4)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:
         method={'save':service.save,'photos':service.add_photo,'remove-photo':service.remove_photo}[parts[3]]
         result=await run_in_threadpool(method,factory_id,parts[2],body,actor,review=True)

@@ -4295,7 +4295,10 @@ function renderReviewPage() {
   }
   ['pending','rejected','approved'].forEach(t => {
     const btn = document.getElementById('reviewTab' + t.charAt(0).toUpperCase() + t.slice(1));
-    if (btn) btn.classList.toggle('active', _reviewTab === t);
+    if (btn) {
+      btn.classList.toggle('active', _reviewTab === t);
+      btn.setAttribute('aria-pressed', String(_reviewTab === t));
+    }
   });
 
   const list = state.records.filter(r => recStatus(r) === _reviewTab && !window.QcWorkflow?.isLinked(r.id)).concat((window.QcWorkflow?.recordItems() || []).filter(r => recStatus(r) === _reviewTab));
