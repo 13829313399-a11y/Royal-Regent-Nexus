@@ -331,7 +331,7 @@
     finish();active='';++sequence;render();return true;
   }
   async function open(kind){
-    if(exporting||!titles[kind]||root.__QC_NEXUS?.factory!=='huaxing')return;
+    if(exporting||!titles[kind]||!root.__QC_NEXUS?.factory)return;
     finish();if(dirty()){root.showToast?.('请先等待保存成功，再切换模板','error');return;}
     const choice=el('qmtChoice');
     choice.querySelector('option[hidden]')?.remove();
@@ -343,7 +343,7 @@
     active=kind;choice.value=kind;await load();
   }
   function init(){
-    if(root.__QC_NEXUS?.factory!=='huaxing'||!el('qmtEntries'))return;
+    if(!root.__QC_NEXUS?.factory||!el('qmtEntries'))return;
     const select=el('qmtCustomer');
     select.hidden=false;
     select.onchange=()=>{

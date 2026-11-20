@@ -9,8 +9,9 @@ function fixture(n=3){return {date:'2026-11-05',dateFrom:'2026-11-02',dateTo:'20
   tables:{detail:Array.from({length:n},(_,i)=>({id:'entry-'+i,customerKey:key,dateSource:'qc_manual',values:[i+1,'2026-11-05','合成客户','001','UK','SKU','产品',100,'10','10','FAIL','有','生产部','机构','问题','负责人一','负责人二','原备注']})),
     group:[{id:key,values:['华兴','合成客户',n,'','','','','']}],internal:[{id:key,values:['合成客户',n,'','','','负责人一 / 负责人二','','']}],footer:[{id:key,values:['华兴','合成客户',n,'','','','','','']}]}};}
 function page(options={}){
-  const dom=new JSDOM(fs.readFileSync(path.join(__dirname,'index.html'),'utf8'),{url:'http://localhost/api/qc-department/huaxing/u-test/',runScripts:'outside-only'}),w=dom.window,d=w.document;
-  w.__QC_NEXUS={factory:options.factory||'huaxing'};d.getElementById('weeklyDate').value='2026-11-05';
+  const factory=options.factory||'huaxing';
+  const dom=new JSDOM(fs.readFileSync(path.join(__dirname,'index.html'),'utf8'),{url:`http://localhost/api/qc-department/${factory}/u-test/`,runScripts:'outside-only'}),w=dom.window,d=w.document;
+  w.__QC_NEXUS={factory};d.getElementById('weeklyDate').value='2026-11-05';
   let data=fixture(options.n);const calls=[];
   const response=(value,status=200)=>({ok:status===200,status,json:async()=>JSON.parse(JSON.stringify(value))});
   w.fetch=async(url,init={})=>{
@@ -153,7 +154,14 @@ test('read failures clear visible table, read-only permission, empty records and
     p.w.fetch=async()=>{throw Error('无法读取');};p.d.getElementById('qwtRefresh').click();await tick();
     assert.equal(p.d.querySelector('#qwtView table'),null);assert.match(p.d.getElementById('qwtView').textContent,/无法读取/);
   }finally{p.dom.window.close();}
-  const q=page({factory:'huadeng'});try{await q.w.QcWeeklyTemplates.open('detail');assert.equal(q.calls.length,0);assert.equal(q.d.getElementById('qwtEntries').hidden,true);}finally{q.dom.window.close();}
+  const q=page({factory:'huadeng'});try{
+    q.data.tables.footer[0].values[0]='华登';
+    await q.w.QcWeeklyTemplates.open('detail');
+    assert.ok(q.calls.some(call => /^api\/weekly-templates\?/.test(call.url)));
+    assert.equal(q.d.getElementById('qwtEntries').hidden,false);
+    assert.match(q.d.querySelector('#qwtView').textContent,/华登/);
+    assert.doesNotMatch(q.d.querySelector('#qwtView').textContent,/华兴/);
+  }finally{q.dom.window.close();}
   const r=page({n:0});try{r.data.tables={detail:[],group:[],internal:[],footer:[]};await r.w.QcWeeklyTemplates.open('detail');assert.match(r.d.getElementById('qwtView').textContent,/没有已审核/);assert.equal(r.d.querySelectorAll('tfoot td').length,9);}finally{r.dom.window.close();}
 });
 

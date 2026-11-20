@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from app.services import qc_weekly_templates as weekly, qc_weekly_excel as excel
 
 def fixture(count=120):
-    data = dict(date='2026-11-05', dateFrom='2026-11-02', dateTo='2026-11-08', customer='',
+    data = dict(factory='huaxing', date='2026-11-05', dateFrom='2026-11-02', dateTo='2026-11-08', customer='',
                 customers=[], fields={}, sourceRevision='a'*64, total=count, scheduleCount=0,
                 templates=deepcopy(weekly.TEMPLATES), tables=dict(detail=[],group=[],internal=[],footer=[]),totals={})
     for n in range(count):

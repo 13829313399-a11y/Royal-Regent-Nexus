@@ -16,6 +16,7 @@ from PIL import Image as PILImage
 
 from app.services import qc_monthly_excel as legacy
 from app.services.qc_monthly_overview_excel import re_number, save_cached
+from app.services.qc_approved_statistics import company_heading
 
 
 def put(cell, value):
@@ -239,7 +240,9 @@ def render(data,kind,factory):
         target=Sheet(book,'问题照片与整改进度',period_label+'  '+data['dateFrom']+' 至 '+data['dateTo'],cache)
         tracking(target,rows,factory,data)
     else:
-        quality(layout('客户质量汇总与签核'),layout('验货明细与退货原因'),data)
+        summary = layout('客户质量汇总与签核')
+        put(summary.sheet['A1'], company_heading(factory))
+        quality(summary,layout('验货明细与退货原因'),data)
     for model in models:book.remove(model)
     for sheet in book:
         # Rows skipped between populated sections serve only as visual separators.

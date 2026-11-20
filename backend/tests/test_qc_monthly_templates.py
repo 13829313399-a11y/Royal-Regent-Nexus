@@ -37,7 +37,7 @@ def test_calendar_population_layout_and_read_only(db):
     assert [len(t['headers']) for t in data['templates']]==[15,18,12,18,7]
     assert data['tables']['summary'][0]['values'][1:]==[1,1,'','']
     assert hashes()==before and not monthly._path().exists()
-    with pytest.raises(HTTPException):monthly.query('huadeng',DAY)
+    assert monthly.query('huadeng',DAY)['total']==0
 
 def test_saved_blanks_returns_conflicts_month_isolation_and_no_record_mutation(db):
     entry=issue(db,1);data=monthly.query('huaxing',DAY);before=hashes()

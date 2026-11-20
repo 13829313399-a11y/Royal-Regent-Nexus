@@ -340,7 +340,7 @@ function reportCenterLandingPage() {
 function syncReportCenterNav(name) {
   const nav = document.getElementById('reportCenterNav');
   if (!nav) return;
-  const visible = window.__QC_NEXUS?.factory === 'huaxing' && REPORT_CENTER_PAGES.includes(name);
+  const visible = !!window.__QC_NEXUS?.factory && REPORT_CENTER_PAGES.includes(name);
   nav.hidden = !visible;
   document.body.classList.toggle('qc-report-center', visible);
   if (!visible) return;
@@ -376,7 +376,7 @@ function mountReportTypeSelect(page, name) {
   const visible = buttons.filter(button => !button.hidden);
   const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
   control.style.setProperty('--report-period-count', String(visible.length || 1));
-  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory === 'huaxing') {
+  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory) {
     if (slot.firstElementChild !== select || select.nextElementSibling !== control) slot.prepend(select, control);
   } else {
     if (control.parentElement !== slot) slot.append(control);

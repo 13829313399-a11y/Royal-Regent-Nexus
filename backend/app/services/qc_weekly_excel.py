@@ -22,6 +22,7 @@ from xlwt.UnicodeUtils import upack2
 from xlutils.filter import XLWTWriter
 from app.core.config import settings
 from app.services import qc_weekly_templates as weekly
+from app.services.qc_approved_statistics import factory_label
 
 MIME = 'application/vnd.ms-excel'
 TTL, MAX_BYTES = 600, 32 * 1024 * 1024
@@ -172,7 +173,7 @@ def render(data, kind):
             block_row(index,3,values,list(range(18)))
             target.write(index,1,values[1],style(3,1,'mm-dd'))
         footer_title=len(rows)+2
-        title(footer_title,128,'华兴客户周验货汇总（'+period+'）',3)
+        title(footer_title,128,f'{factory_label(data["factory"])}客户周验货汇总（{period}）',3)
         labels = [spec['summaryHeaderLabels'].get(header, header) for header in spec['summaryHeaders']]
         block_row(footer_title+3,131,labels,FOOTER_COLUMNS,FOOTER_SPANS)
         summary(footer_title+4,data['tables']['footer'],spec['summaryHeaders'],FOOTER_COLUMNS,FOOTER_SPANS,133,142)

@@ -102,7 +102,7 @@ def test_invalid_or_record_level_mutations_rejected(db, change):
 
 
 def test_other_factory_never_reads_huaxing_data():
-    with pytest.raises(HTTPException) as exc: weekly.query('huadeng', DAY)
+    with pytest.raises(HTTPException) as exc: weekly.query('group', DAY)
     assert exc.value.status_code == 404
 
 

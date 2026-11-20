@@ -1,4 +1,4 @@
-"""Huaxing daily report from the validated current approval snapshot."""
+"""Daily report from the validated current approval snapshot."""
 from copy import deepcopy
 from datetime import date, timedelta
 from calendar import monthrange
@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 
 from app.services import qc_approved_statistics as approved
 from app.services.qc_inspection_summary import dump
+from app.services.qc_approved_statistics import company_heading, factory_label
 from app.services.qc_workbook_xml import Package, tag
 
 
@@ -63,8 +64,7 @@ def period_bounds(day, period='daily'):
 
 
 def report(factory, day, period='daily', customer=''):
-    if factory != 'huaxing':
-        raise HTTPException(404, '当前厂区未配置华兴日报模板')
+    factory_label(factory)
     start, end = period_bounds(day, period)
     if customer and not re.fullmatch('[a-f0-9]{64}', customer):
         raise HTTPException(422, '报告客户筛选不正确')
@@ -84,11 +84,11 @@ def report(factory, day, period='daily', customer=''):
     total = len(rows)
     passed = sum(row['values'][8] == 'PASS' for row in rows)
     failed = sum(row['values'][8] in {'FAIL', 'REJ'} for row in rows)
-    identity = [day, period, start, end, rows]
+    identity = [factory, day, period, start, end, rows]
     if customer:
         identity.append(customer)
     revision = sha256(dump(identity).encode()).hexdigest()
-    return dict(customer=customer, customers=sorted(customers.values(), key=lambda c: c['label']),
+    return dict(factory=factory, customer=customer, customers=sorted(customers.values(), key=lambda c: c['label']),
                 date=day, period=period, dateFrom=start, dateTo=end, headers=HEADERS, rows=rows, revision=revision,
                 total=total, passed=passed, failed=failed, other=total-passed-failed,
                 rate=round(passed/total*100, 1) if total else None,
@@ -107,7 +107,13 @@ def workbook(report_data):
     sheet_rows = package.rows(sheet_name)
     by_number = {int(row.get('r')): row for row in sheet_rows}
     if [package.values(by_number[3]).get(col) for col in range(1, 14)] != HEADERS:
-        raise HTTPException(503, '华兴日报模板表头不匹配')
+        raise HTTPException(503, '日报模板表头不匹配')
+    title_row = by_number[1]
+    heading = title_row.find(f"{tag('c')}[@r='A1']")
+    if heading is None:
+        raise HTTPException(503, '日报模板缺少公司抬头')
+    replacement = package.cell(title_row, 1, company_heading(report_data['factory']), heading.get('s', '0'))
+    title_row.replace(heading, replacement)
     merges = sheet.find(tag('mergeCells'))
     # J4:J5 came from a historical two-row problem description. Daily rows are independent.
     for merge in list(merges):
