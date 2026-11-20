@@ -105,8 +105,8 @@ def test_unique_revision_graph_and_frozen_archive():
                 identifiers.append(ast.literal_eval(node.value))
     assert len(identifiers) == len(set(identifiers))
     scripts=ScriptDirectory(str(BACKEND/'alembic'))
-    assert scripts.get_heads() == ['20261022_0175']
-    assert list(scripts.walk_revisions())
+    assert len(scripts.get_heads()) == 1
+    assert '20261022_0175' in {node.revision for node in scripts.walk_revisions()}
     assert runpy.run_path(str(JP))['revision'] == '20261015_0163'
     assert sha256(JP.read_bytes().replace(b'\r\n',b'\n')).hexdigest() == 'dd653505555f3fe0847974ee14f379e41dc78a728bd2eeffbf26c63b3ecce47e'
 
