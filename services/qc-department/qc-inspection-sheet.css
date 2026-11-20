@@ -492,11 +492,3 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 :is(#page-records,#page-review) .qis-table tr[data-entry]>td.qis-fill-target{
   background:color-mix(in srgb,var(--accent) 10%,var(--bg-card))!important;
 }
-
-.qis-name-history{display:inline-flex;align-items:center;gap:4px;flex:none}
-.qis-name-history[hidden]{display:none}
-.qis-name-history button{
-  min-height:28px;padding:3px 8px;border:1px solid var(--border);border-radius:6px;
-  background:var(--bg-card);color:var(--text-hi);font:inherit;cursor:pointer;
-}
-.qis-name-history button:disabled{opacity:.45;cursor:default}

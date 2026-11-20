@@ -295,7 +295,6 @@
     fieldHistory.undo.push(step);
     if(fieldHistory.undo.length>100)fieldHistory.undo.shift();
     fieldHistory.redo.length=0;
-    updateHistoryButtons();
     return step;
   }
   function bindFieldEditor(input,row){
@@ -325,7 +324,7 @@
       if(handle)handle.hidden=!String(value).trim();
       if(!select&&typingStep&&typingStep===fieldHistory.undo.at(-1)&&typingStep.key===key&&typingStep.changes[0].id===row.id){
         typingStep.changes[0].after=after;
-        if(sameField(typingStep.changes[0].before,after)){fieldHistory.undo.pop();typingStep=null;updateHistoryButtons();}
+        if(sameField(typingStep.changes[0].before,after)){fieldHistory.undo.pop();typingStep=null;}
       }else{
         const step=rememberFields(key,[{id:row.id,before,after}]);
         typingStep=select?null:step;
@@ -359,26 +358,6 @@
       syncControl(input,value);
     }
     if(executionFields[key]?.[1]==='details')render();
-    updateHistoryButtons();
-  }
-  function updateHistoryButtons(){
-    const records=model.view==='records';
-    const toolbar=root.document.querySelector(records?'#page-records .records-actions':'#page-review .toolbar-left');
-    if(!toolbar)return;
-    let group=toolbar.querySelector('.qis-name-history');
-    if(!group){
-      group=root.document.createElement('span');group.className='qis-name-history';
-      group.setAttribute('role','group');group.setAttribute('aria-label','表格编辑历史');
-      for(const [action,label,shortcut] of [['undo','撤销','⌘Z / Ctrl+Z'],['redo','重做','⇧⌘Z / ⌘Y / Ctrl+Y / Ctrl+Shift+Z']]){
-        const button=root.document.createElement('button');
-        button.type='button';button.dataset.nameHistory=action;button.textContent=label;
-        button.title=label+'表格编辑（'+shortcut+'）';button.onclick=()=>applyFieldHistory(action);
-        group.append(button);
-      }
-      if(records){toolbar.setAttribute('aria-label','表格编辑和打印');toolbar.prepend(group);}else toolbar.append(group);
-    }
-    group.hidden=!editable()||(!records&&model.reviewTab!=='pending');
-    for(const button of group.children)button.disabled=!fieldHistory[button.dataset.nameHistory].length||model.loading||!!model.error||model.reviewBusy||model.submitBusy;
   }
   function historyShortcut(event){
     if(event.defaultPrevented||event.isComposing||event.keyCode===229||event.altKey||!(event.metaKey||event.ctrlKey))return null;
@@ -601,7 +580,6 @@
       bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id,true);
     });
     if(reviewing)updateReviewControls(rows);else updateRecordControls();
-    updateHistoryButtons();
     bindRowSelection(host);
     audit()?.bind(host,model.items);
     if(!editing?.entry)return;
