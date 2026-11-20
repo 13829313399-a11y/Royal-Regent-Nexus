@@ -3352,7 +3352,7 @@ body.theme-light #page-sales-schedule .qs-toolbar { background:#f3f4f6; }
 #page-sales-schedule .qs-table :is(th,td)[data-column=customer],#page-sales-schedule .qs-table :is(th,td)[data-column=poNo]{position:sticky;left:0;z-index:2;background:var(--bg-card)}
 #page-sales-schedule .qs-table :is(th,td)[data-column=poNo]{left:var(--qs-customer-width,110px);box-shadow:2px 0 0 var(--border-hi)}
 #page-sales-schedule .qs-table thead th:is([data-column=customer],[data-column=poNo]){z-index:6;background:var(--glass-header,var(--bg-panel))}
-@media(max-width:640px){#page-sales-schedule .qs-table col[data-column=customer]{width:84px!important}#page-sales-schedule .qs-table col[data-column=poNo]{width:108px!important}}
+@media(max-width:640px){#page-sales-schedule .qs-table col[data-column=customer]{width:84px!important}#page-sales-schedule .qs-table col[data-column=poNo]{width:clamp(77px,calc(12.5vw + 5px),90px)!important}}
 #page-sales-schedule .qs-task-feedback { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
 #page-sales-schedule .qs-task-feedback + .qs-task-feedback { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
 #page-sales-schedule .qs-task-feedback small { color:var(--text-dim); }
@@ -3931,7 +3931,7 @@ body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
   }
   body.qc-liquid-glass .page table :is(.qwt-editor,.qmt-editor) { text-align:center; }
   body.qc-liquid-glass .page table .qia-badge { margin-inline:auto; }
-  #page-sales-schedule .qs-table { min-width:1510px; }
+  #page-sales-schedule .qs-table { min-width:1447px; }
   #page-sales-schedule .qs-table col:nth-child(7) { width:132px!important; }
   #page-sales-schedule .qs-table col:nth-child(8) { width:64px!important; }
   #page-sales-schedule .qs-table col:nth-child(9),
@@ -3939,7 +3939,9 @@ body.theme-light #page-sales-schedule .qs-date-meta { color:#68756e; }
   #page-sales-schedule .qs-table col:nth-child(11),
   #page-sales-schedule .qs-table col:nth-child(12) { width:60px!important; }
   #page-sales-schedule .qs-table col:nth-child(13) { width:110px!important; }
-  #page-sales-schedule .qs-table col:nth-child(15) { width:168px!important; }
+  /* Let remarks absorb spare width so the frozen PO column stays compact. */
+  #page-sales-schedule .qs-table col:last-child { width:auto!important; }
+  #page-sales-schedule .qs-table :is(th,td)[data-column=poNo] { padding-inline:2px!important; }
   #page-sales-schedule .qs-table :is(th,td) { padding-inline:7px; }
   #page-defectlib .table-wrap { width:fit-content; max-width:calc(100% - 44px); }
   #page-defectlib .table-wrap table { width:760px!important; min-width:760px; }
