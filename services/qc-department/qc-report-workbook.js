@@ -5,6 +5,7 @@ const byId = id => document.getElementById(id);
 const periods = {
   daily: {date:'dailyDate',customer:'qdrCustomer',templates:{daily:'验货明细'}},
   weekly: {date:'weeklyDate',customer:'qwtCustomer',templates:{detail:'各客户验货明细及汇总',issues:'验货问题与整改跟踪表'}},
+  yearly: {date:'qstats-year',customer:'qstats-client',templates:{'annual-stats':'年度验货统计','annual-issues':'验货问题与整改跟踪表'}},
   monthly: {date:'monthlyMonth',customer:'qmtCustomer',templates:{orders:'订单对账明细',tracking:'问题整改跟踪',quality:'客户质量签核'}}
 };
 const selected = {daily:'daily',weekly:'detail',monthly:'quality'};
@@ -15,7 +16,10 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;
 let reload, opener, exporting=false, receipt=null;
 function params(kind=selected[period]) {
   const cfg=periods[period],date=byId(cfg.date).value;
-  return new URLSearchParams({kind,day:period==='monthly'?date+'-01':date,customer:byId(cfg.customer).value}).toString();
+  const day=period==='yearly'?date+'-01-01':period==='monthly'?date+'-01':date;
+  const query=new URLSearchParams({kind,day,customer:byId(cfg.customer).value});
+  if(kind==='annual-stats')query.set('result',document.querySelector('#qstats-root [data-result][aria-pressed=true]').dataset.result);
+  return query.toString();
 }
 async function api(endpoint,query,options) {
   const response=await fetch('api/'+endpoint+'?'+query,options);
@@ -61,17 +65,24 @@ function mount(periodKey, kind, host, data, refresh){
     button.title='打开完整工作簿';button.setAttribute('aria-label',button.title);button.innerHTML=expandIcon;bar.append(button);
   }
   host.replaceChildren();const scroll=document.createElement('div');scroll.className='skim-scroll';host.append(scroll);
-  const rows=data.rows||data.tables[kind];
-  if(kind==='quality'){
+  button.disabled=false;
+  const rows=data.rows||data.tables?.[kind]||[];
+  if(kind==='annual-stats'){
+    const rates=new Map(data.months.map(m=>[Number(m.month.slice(-2)),m.passRate]));
+    showMonthlyRates(scroll,Array.from({length:12},(_,i)=>{
+      const rate=rates.get(i+1);
+      return {month:(i+1)+'月',label:rate==null?'':rate.toFixed(1)+'%'};
+    }));
+  }else if(kind==='quality'){
     showMonthlyRates(scroll,data.overview.months.map(m=>({month:m.month+'月',label:m.rate===''?'':(m.rate*100).toFixed(1)+'%'})));
   }else{
-    const groups=columns[kind], cols=groups.flatMap(g=>g[1]);
-    const band=periodKey==='monthly'?'<tr class="skim-groups">'+groups.map(([name,items])=>'<th scope="colgroup" colspan="'+items.length+'"><span>'+esc(name)+'</span></th>').join('')+'</tr>':'';
+    const groups=columns[kind==='annual-issues'?'tracking':kind], cols=groups.flatMap(g=>g[1]);
+    const band=['monthly','yearly'].includes(periodKey)?'<tr class="skim-groups">'+groups.map(([name,items])=>'<th scope="colgroup" colspan="'+items.length+'"><span>'+esc(name)+'</span></th>').join('')+'</tr>':'';
     scroll.innerHTML='<table class="skim"><thead>'+band+'<tr>'+cols.map(([label])=>'<th scope="col">'+esc(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([,i])=>'<td>'+esc(r.values[i]===''?'—':r.values[i])+'</td>').join('')+'</tr>').join('')+(!rows.length?'<tr><td colspan="'+cols.length+'">此期间没有记录</td></tr>':'')+'</tbody></table>';
   }
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;
-  if(rows.length)setTimeout(async()=>{
+  if(periodKey!=='yearly'&&rows.length)setTimeout(async()=>{
     const cfg=periods[periodKey];
     for(const key of [kind,...Object.keys(cfg.templates).filter(k=>k!==kind)]){
       if(ticket!==requestId||!host.isConnected||document.hidden||!section.closest('.page.active')||dialog.open)return;
@@ -84,7 +95,7 @@ function mount(periodKey, kind, host, data, refresh){
 document.body.insertAdjacentHTML('beforeend','<dialog id="wb-dialog" aria-label="工作簿预览"><div class="wb-head"><div class="wb-nav"><span class="file-mark" aria-hidden="true">▤</span><div id="wb-templates" role="group" aria-label="报告模板"></div></div><span id="wb-status" role="status"></span><button id="wb-discard" hidden>撤销未保存修改</button><button id="wb-export">导出 Excel</button><button id="wb-close" aria-label="关闭工作簿" title="关闭">×</button></div><div class="wb-formula"><output id="wb-address">A1</output><i>ƒx</i><input id="wb-value" aria-label="单元格内容" readonly></div><div id="wb-grid"></div><div class="wb-foot"><div id="wb-tabs" aria-label="工作表"></div><button id="wb-next" title="跳到下一个可编辑单元格">定位可编辑格 ↗</button></div></dialog>');
 const dialog=byId('wb-dialog'), valueInput=byId('wb-value'), statusText=byId('wb-status');
 const grid=byId('wb-grid').attachShadow({mode:'open'});
-const gridCSS='<style>:host{display:block;background:#f3f4f2;overflow:auto}table{border-spacing:0;table-layout:fixed;background:white;color:#181c19;font:13px/1.3 Calibri,"PingFang SC",sans-serif}td,th{box-sizing:border-box}td{position:relative;overflow-wrap:anywhere;cursor:cell;min-width:16px;white-space:pre-wrap}td.selected{outline:2px solid #287447;outline-offset:-2px}td.writable{cursor:text}td.writable:hover{box-shadow:inset 0 0 0 1px #73947e}td>.cell-editor{position:absolute;z-index:1;inset:0;width:100%;height:100%;box-sizing:border-box;resize:none;border:2px solid #287447;outline:0;background:white;color:#17231c;padding:2px 3px;font:inherit;text-align:inherit}th.row-num,th.col-num{background:#f2f4f1;color:#657369;border:solid #d5dcd5;border-width:0 1px 1px 0;text-align:center;font:11px/1.2 -apple-system,sans-serif}th.row-num{position:sticky;left:0;min-width:36px;z-index:2}thead{position:sticky;top:0;z-index:3}th.col-num{height:24px}td[contenteditable=true]{white-space:pre-wrap;outline:2px solid #287447;outline-offset:-2px}img{max-width:none}</style>';
+const gridCSS='<style>:host{display:block;background:#f3f4f2;overflow:auto}table{border-spacing:0;table-layout:fixed;background:white;color:#181c19;font:13px/1.3 Calibri,"PingFang SC",sans-serif}td,th{box-sizing:border-box}td{position:relative;overflow-wrap:anywhere;cursor:cell;min-width:16px;white-space:pre-wrap}td.selected{outline:2px solid #287447;outline-offset:-2px}td.writable{cursor:text}td.writable:hover{box-shadow:inset 0 0 0 1px #73947e}td>.cell-editor{position:absolute;z-index:1;inset:0;width:100%;height:100%;box-sizing:border-box;resize:none;border:2px solid #287447;outline:0;background:white;color:#17231c;padding:2px 3px;font:inherit;text-align:inherit}th.row-num,th.col-num{background:#f2f4f1;color:#657369;border:solid #d5dcd5;border-width:0 1px 1px 0;text-align:center;font:11px/1.2 -apple-system,sans-serif}th.row-num{position:sticky;left:0;min-width:36px;z-index:2}thead{position:sticky;top:0;z-index:3}th.col-num{height:24px}td[contenteditable=true]{white-space:pre-wrap;outline:2px solid #287447;outline-offset:-2px}img{max-width:none}.wb-photo{padding:0;border:0;background:none;cursor:zoom-in;line-height:0;vertical-align:middle}.wb-photo:focus-visible{outline:2px solid #287447}</style>';
 function openBook(){
   byId('wb-discard').hidden=true;
   byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
@@ -170,6 +181,19 @@ function drawSheet(index){
     td.onkeydown=e=>{
       if(e.target===td&&e.key==='Enter'){e.preventDefault();startEdit(td);}
     };
+  }
+  if(['issues','tracking','annual-issues'].includes(selected[period])){
+    const images=[...table.querySelectorAll('td img')];
+    images.forEach((image,i)=>{
+      const button=document.createElement('button');
+      button.type='button';button.className='wb-photo';button.title='点击放大现场照片';
+      button.setAttribute('aria-label','放大现场照片 '+image.closest('td').dataset.addr);
+      button.onclick=event=>{
+        event.stopPropagation();
+        window.QcInspectionSummary.openWorkbookPhotos(images,i,dialog);
+      };
+      image.replaceWith(button);button.append(image);
+    });
   }
   table.onclick=e=>{
     const td=e.target.closest('td');
@@ -267,10 +291,10 @@ async function closeBook(){
   grid.activeElement?.blur();
   if(exporting||!await flush())return;
   ++bookRequest;dialog.close();bookQuery='';
-  const tab=byId('template-'+period+'-'+selected[period]);
+  const tab=period==='yearly'?byId(selected.yearly==='annual-stats'?'qstats-summary-tab':'qstats-tracking-tab'):byId('template-'+period+'-'+selected[period]);
   if(tab&&tab.getAttribute('aria-selected')!=='true')tab.click();
-  else await reload?.();
-  (byId('page-'+period)?.querySelector('.wb-open')||opener)?.focus();
+  else if(period!=='yearly')await reload?.();
+  (byId('page-'+(period==='yearly'?'analysis':period))?.querySelector('.wb-open')||opener)?.focus();
 }
 window.addEventListener('beforeunload',e=>{if(changes.size){e.preventDefault();e.returnValue='';}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&changes.size)flush();});
@@ -284,14 +308,17 @@ byId('wb-export').onclick=async()=>{
   const link=document.createElement('a');
   try{
     statusText.textContent='正在生成 Excel…';
-    if(kind==='daily'){
-      const response=await fetch('api/daily-report/export?'+new URLSearchParams({date,customer,revision:book.sourceRevision}));
+    if(kind==='daily'||kind==='annual-stats'){
+      const annual=kind==='annual-stats';
+      const filters=annual?{year:date.slice(0,4),result:scope.get('result')}:{date};
+      const endpoint=annual?'approved-statistics/report/excel':'daily-report/export';
+      const response=await fetch('api/'+endpoint+'?'+new URLSearchParams({...filters,customer,revision:book.sourceRevision}));
       if(!response.ok)throw Error('导出失败，请刷新报告后重试');
-      link.href=URL.createObjectURL(await response.blob());link.download='每日验货情况统计表_'+date+'.xlsx';
+      link.href=URL.createObjectURL(await response.blob());link.download=annual?'华兴'+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
       setTimeout(()=>URL.revokeObjectURL(link.href),30000);
     }else{
-      const issue=kind==='issues';
-      const payload={date,customer,sourceRevision:book.sourceRevision,...(issue?{period:'weekly',photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
+      const issue=kind==='issues'||kind==='annual-issues';
+      const payload={date,customer,sourceRevision:book.sourceRevision,...(issue?{period,photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
       const result=await api((issue?'issue-reports':period+'-templates')+'/excel','',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       if(!/^api\/(weekly|monthly)-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
       link.href=result.url;link.download=result.filename;

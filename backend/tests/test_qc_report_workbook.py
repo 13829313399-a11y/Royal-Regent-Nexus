@@ -8,11 +8,11 @@ from test_qc_monthly_templates import issue, db, engine, isolated, ACTOR, DAY
 
 def test_visible_catalog_and_versioned_edit(db):
     issue(db, 1)
-    assert workbooks.KINDS == {'daily','detail','issues','orders','tracking','quality'}
+    assert workbooks.KINDS == {'daily','detail','issues','orders','tracking','quality','annual-stats','annual-issues'}
     for kind in workbooks.KINDS:
         data = workbooks.projection('huaxing', kind, '2026-11-03', '')
         cells = workbooks.writable_cells(kind, data)
-        if kind in ('daily', 'issues'):
+        if kind in ('daily', 'issues', 'annual-stats', 'annual-issues'):
             assert not cells
         elif kind == 'detail':
             assert cells['0:E8']['field'] == 'returns'
@@ -39,7 +39,7 @@ def test_native_preview_and_readonly_cache(db):
             table = html.fromstring(sheet['html'])
             shown.update(f'{i}:{addr}' for addr in table.xpath('.//td/@data-addr'))
             assert not table.xpath('.//script|.//a|.//*[@onclick]')
-            if kind in ('tracking','issues','quality') and i == 0:
+            if kind in ('tracking','issues','quality','annual-issues','annual-stats') and i == 0:
                 assert table.xpath('.//img[starts-with(@src,"data:image/")]')
         assert set(book['cells']) <= shown
         assert not workbooks.preview('huaxing', kind, '2026-11-03', '', False)['cells']

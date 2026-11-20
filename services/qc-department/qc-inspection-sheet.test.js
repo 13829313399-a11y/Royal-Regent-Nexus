@@ -538,8 +538,9 @@ test('inspector name history restores verified identity and redoes a manual IME 
     input.value='陈明';
     input.dispatchEvent(new p.w.Event('compositionend'));
     await p.w.QcInspectionSheet.flush();
-    const undo=p.d.querySelector('#page-records [data-name-history=undo]');
-    undo.click();
+    const toolbar=p.d.querySelector('#page-records .records-actions');
+    assert.doesNotMatch(toolbar.textContent,/撤销|重做/);
+    input.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}));
     await p.w.QcInspectionSheet.flush();
     assert.equal(p.rows[0].inspectionExecution.inspectorId,'qc-test');
     assert.equal(input.value,'测试检验员');
@@ -547,7 +548,8 @@ test('inspector name history restores verified identity and redoes a manual IME 
     await p.w.QcInspectionSheet.flush();
     assert.deepEqual(p.rows[0].inspectionExecution,{inspector:'陈明',inspectorId:''});
     await p.w.QcInspectionSheet.load();
-    assert.ok(undo.disabled);
+    const host=p.d.getElementById('recordsTableWrap');
+    assert.ok(host.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true})));
   }finally{p.dom.window.close();}
 });
 

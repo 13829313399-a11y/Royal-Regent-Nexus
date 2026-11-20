@@ -644,3 +644,40 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     }
   }
 }
+
+/* Annual worksheets share the monthly report's tab strip and reading surface. */
+#qstats-root .annual-report-page {
+  max-width:none;
+  container-type:inline-size;
+  --qc-head:var(--sheet-head); --qc-line:var(--sheet-line);
+  --qc-paper:var(--sheet); --qc-ink:var(--sheet-ink); --qc-dim:var(--sheet-muted);
+  font-family:var(--sheet-font);
+}
+#qstats-root .annual-report-page .template-sheet {margin-top:12px}
+#qstats-summary,#qstats-tracking {min-width:0;padding:14px 18px}
+#qstats-root [role=tabpanel][hidden] {display:none}
+#qstats-summary .qc-metrics {margin:0 0 12px;border:0;border-bottom:1px solid var(--sheet-line);border-radius:0;padding:4px 0 12px}
+#qstats-summary .qc-report-title,#qstats-summary .qc-detail-head {padding:10px 12px}
+#qstats-summary .qc-month-table,#qstats-summary .qc-detail-table {font:13px/1.5 var(--sheet-font)}
+#qstats-summary .qc-month-table :is(th,td) {padding:5px}
+#qstats-summary .qc-report-grid {align-items:stretch}
+#qstats-summary .qc-chart {min-height:195px}
+#qstats-summary .qc-detail {margin-top:14px}
+#qstats-root .annual-report-page .report-export-footer {display:flex;justify-content:flex-end;align-items:center;gap:8px;padding-top:14px}
+#qstats-root .annual-report-page .report-export-footer button {background:#355a46;color:white;border:1px solid #365943;border-radius:7px;padding:6px 12px;font:600 13px var(--sheet-font);cursor:pointer}
+#qstats-root .report-export-footer button:disabled {opacity:.5;cursor:default}
+#qstats-tracking .qwt-heading,#qstats-tracking .qir-controls,#qstats-tracking .qwt-status-line:not(:has([role=status]:not(:empty))) {display:none}
+#qstats-tracking .qwt-status-line {font-size:13px;margin-bottom:8px}
+#qstats-tracking footer.qwt-controls:not([hidden]) {display:flex;justify-content:flex-end;align-items:center;gap:8px}
+#qstats-tracking footer[hidden] {display:none}
+@container (max-width:650px) {
+  #qstats-summary,#qstats-tracking {padding:10px}
+  #qstats-summary .qc-report-grid {grid-template-columns:minmax(0,1fr)}
+  #qstats-summary .qc-chart-panel {border-top:1px solid var(--sheet-line)}
+  #qstats-summary .qc-table-panel {border-right:0}
+}
+
+#qstats-summary .qc-report[hidden] { display:none }
+#qstats-skim .rate-bar { background:#686868 }
+#qstats-tracking [data-table]:has(.skim-scroll) { overflow:visible }
+#qstats-tracking [data-table] .skim { min-width:0 }
