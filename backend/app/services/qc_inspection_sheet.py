@@ -267,12 +267,12 @@ def reversal_notifications(factory, actor, body=None):
 def unpack(conn, row, include_photos=True):
     photos = []
     if include_photos:
-        for photo in conn.execute('''SELECT p.id,p.name,m.annotations FROM photos p
+        for photo in conn.execute('''SELECT p.id,p.name,m.version,m.annotations FROM photos p
                 LEFT JOIN photo_annotations m ON m.photo_id=p.id
                 WHERE p.entry_id=? AND p.removed=0 ORDER BY p.created_at,p.id''',(row['id'],)):
             item = {'id':photo['id'],'name':photo['name']}
             if photo['annotations'] is not None:
-                item['annotations'] = json.loads(photo['annotations'])
+                item.update(annotations=json.loads(photo['annotations']),annotationVersion=photo['version'])
             photos.append(item)
     extension=conn.execute('SELECT * FROM entry_details WHERE entry_id=?',(row['id'],)).fetchone()
     base=json.loads(row['base'])

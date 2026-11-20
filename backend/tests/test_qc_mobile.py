@@ -61,10 +61,21 @@ def test_mobile_scoped_lifecycle_and_real_save_photo_submit(monkeypatch,tmp_path
         again=client.post(endpoint+'/photos',json=payload);assert again.status_code==200
         row=again.json();photo=row['uploadedPhotoId'];assert len(row['photos'])==1
         assert client.get(endpoint+'/photos/'+photo).status_code==200
+        arrow={'type':'arrow','x1':.1,'y1':.2,'x2':.7,'y2':.8}
+        annotation={'photoId':photo,'annotationVersion':0,'annotations':[arrow]}
+        marked=client.post(endpoint+'/photo-annotations',json=annotation)
+        assert marked.status_code==200,marked.text
+        assert marked.json()['photo']['annotationVersion']==1
+        assert client.get(endpoint).json()['photos'][0]['annotations']==[arrow]
+        assert service.photo_info('huaxing',row['id'])['items'][0]['annotations']==[arrow]
+        assert client.post(endpoint+'/photo-annotations',json={**annotation,'annotations':[]}).status_code==409
+        assert client.post(endpoint+'/photo-annotations',json=annotation,headers={'Origin':'http://evil.example'}).status_code==403
+        row=marked.json()['entry']
         removed=client.post(endpoint+'/remove-photo',json={'revision':row['revision'],'photoId':photo});assert removed.status_code==200
         row=removed.json();assert not row['photos']
         submitted=client.post(endpoint+'/submit',json={'revision':row['revision']});assert submitted.status_code==200,submitted.text
         assert submitted.json()['reviewState']=='pending'
+        assert client.post(endpoint+'/photo-annotations',json={**annotation,'annotationVersion':1}).status_code==409
         assert client.post(endpoint+'/save',json={'revision':submitted.json()['revision'],'result':'PASS','remark':'late'}).status_code==409
         # Logout of the issuing desktop revokes the phone's authority too.
         client.post('/api/auth/logout')
@@ -81,6 +92,7 @@ def test_expiry_and_public_assets(monkeypatch,tmp_path):
         module=importlib.import_module('app.api.qc_mobile')
         assert client.get('/api/qc-mobile/app/').status_code==200
         assert client.get('/api/qc-mobile/app/remote.js').status_code==200
+        assert client.get('/api/qc-mobile/app/qc-photo-shapes.js').status_code==200
         assert client.get('/api/qc-mobile/app/../../.isolation/main.sqlite3').status_code==404
         assert client.get('/api/qc-mobile/app/source-manifest.json').status_code==404
         login_as(client,'qc_inspector');ticket=pair(client)

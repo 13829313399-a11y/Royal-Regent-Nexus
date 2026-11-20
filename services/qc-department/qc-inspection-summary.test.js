@@ -48,7 +48,8 @@ function page(){
  let transport;Object.defineProperty(w,'fetch',{configurable:true,get:()=>transport,set:fn=>{transport=async(url,options)=>{const response=await fn(url,options);if(response.ok&&String(url).includes('api/inspection-dossier/records/')){const raw=await response.json();return {...response,json:async()=>raw.qc?raw:{qc:raw,business:{status:'missing'},audit:[],changes:[],sourceEvents:[]}};}return response;};}});
  w.__QC_NEXUS={exportAllowed:true,summaryImportAllowed:false};
  w.fetch=async url=>{calls.push(url);return {ok:true,json:async()=>({items:[{id:'one',customer:'<script>bad</script>',productNo:'00042',scheduleDate:'2026-11-03',inspectionDate:'2026-11-07',inspectionType:'待确认',status:'unverified',result:'PENDING'}],total:1,page:1,pageSize:30,years:['2024','2025','2026'],counts:{历史待核实:1},unknownDates:1})};};
- w.eval(readFileSync(new URL('./qc-inspection-audit.js',import.meta.url),'utf8'));w.eval(script);return {w,dom,calls,d:w.document};
+ w.eval(readFileSync(new URL('./qc-inspection-audit.js',import.meta.url),'utf8'));
+ w.eval(readFileSync(new URL('./qc-photo-shapes.js',import.meta.url),'utf8'));w.eval(script);return {w,dom,calls,d:w.document};
 }
 test('year/month/day cascade resets stale dates and handles leap years',async()=>{
  const p=page();try{await p.w.QcInspectionSummary.load();const set=async(id,value)=>{const e=p.d.getElementById(id);e.value=value;e.dispatchEvent(new p.w.Event('change'));await tick();};

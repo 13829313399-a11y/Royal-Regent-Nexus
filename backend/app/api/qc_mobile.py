@@ -155,7 +155,7 @@ async def logout(request: Request, auth=Depends(phone)):
 @router.api_route("/sheet/{path:path}", methods=["GET", "POST"])
 async def sheet(path: str, request: Request, db: Session = Depends(get_db), auth=Depends(phone)):
     grant, user = auth
-    permitted = (request.method == "GET" and (path in {"entries", "options"} or re.fullmatch(r"entries/[^/]+(?:/photos/[^/]+|/photo-info)?", path))) or (request.method == "POST" and re.fullmatch(r"entries/[^/]+/(save|photos|remove-photo|submit)", path))
+    permitted = (request.method == "GET" and (path in {"entries", "options"} or re.fullmatch(r"entries/[^/]+(?:/photos/[^/]+|/photo-info)?", path))) or (request.method == "POST" and re.fullmatch(r"entries/[^/]+/(save|photos|remove-photo|submit|photo-annotations)", path))
     if not permitted:
         raise HTTPException(404, "移动验货未开放此操作")
     if request.method == "POST":
@@ -177,6 +177,7 @@ async def sheet(path: str, request: Request, db: Session = Depends(get_db), auth
 @router.get("/app/{asset:path}")
 def app_asset(asset: str):
     name = asset or "index.html"
-    if name not in {"index.html", "app.js", "app.css", "icon.svg", "remote.js"}:
+    if name not in {"index.html", "app.js", "app.css", "icon.svg", "remote.js", "qc-photo-shapes.js"}:
         raise HTTPException(404, "资源不存在")
-    return FileResponse(ASSETS / "mobile-inspection" / name, headers={**HEADERS, "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"})
+    target = ASSETS / name if name == "qc-photo-shapes.js" else ASSETS / "mobile-inspection" / name
+    return FileResponse(target, headers={**HEADERS, "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"})

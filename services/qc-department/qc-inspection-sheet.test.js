@@ -68,6 +68,7 @@ test('workbench opens the fitted photo overlay and loads metadata only when clic
   const frames=[];
   p.w.requestAnimationFrame=fn=>frames.push(fn);
   p.w.cancelAnimationFrame=()=>{};
+  p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-photo-shapes.js'),'utf8'));
   p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-summary.js'),'utf8'));
   await p.w.QcInspectionSheet.load();
   assert.equal(p.calls.filter(c=>c.url?.endsWith('/photo-info')).length,0);
@@ -111,6 +112,7 @@ test('photo marks follow the image and persist only after saving',async()=>{
   const frames=[];
   p.w.requestAnimationFrame=fn=>frames.push(fn);
   p.w.cancelAnimationFrame=()=>{};
+  p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-photo-shapes.js'),'utf8'));
   p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-summary.js'),'utf8'));
   await p.w.QcInspectionSheet.load();
   const thumbnail=p.d.querySelector('[data-view-photo="p1"]');

@@ -43,6 +43,7 @@ const composingNotes = new WeakSet();
 let saving = Promise.resolve();
 const queuedSnapshots = new Set();
 let photoUrls = new Map();
+let photoCanClose = null;
 let dialogTrigger;
 let busy = false;
 let openingTask = false;
@@ -163,9 +164,12 @@ function change(row, immediate = false) {
   row._dirtyFields=Object.keys(edit.fields);
   row._pending = true;
   row._syncError = ''; edit.error = '';
-  void persistDraft(row);
+  const persisted = persistDraft(row);
   clearTimeout(edit.timer);
-  if (immediate) return save(row);
+  if (immediate) return persisted.then(ok => {
+    if (ok) void save(row);
+    return ok;
+  });
   refreshEntryStatus(row);
   if (!composing) edit.timer = setTimeout(() => save(row), 450);
 }
@@ -566,14 +570,15 @@ async function openPending() {
 
 function showSheet(title, content) {
   dialogTrigger = document.activeElement;
-  sheet.classList.remove('filter-sheet', 'mobile-filters-sheet');
+  photoCanClose = null;
+  sheet.classList.remove('filter-sheet', 'mobile-filters-sheet', 'photo-markup-sheet');
   $('sheet-title').textContent = title;
   $('sheet-content').innerHTML = content;
   if (!sheet.open) sheet.showModal();
 }
 
 function closeSheet() {
-  if (sheet.open) sheet.close();
+  if (sheet.open && (!photoCanClose || photoCanClose())) sheet.close();
 }
 
 function showFilter(id) {
@@ -693,10 +698,99 @@ function showMobileFilters() {
 }
 
 function showPhoto(photo) {
-  showSheet(photo.name, '<img class="photo-preview" src="' + escapeHtml(photoUrl(photo)) + '" alt="验货照片">');
-  $('sheet-content').querySelector('img').addEventListener('error', () => {
-    $('sheet-content').textContent = '当前浏览器无法预览这个图片格式，请查看照片保存状态。';
-  }, { once: true });
+  const row=current,shapes=window.QcPhotoShapes;
+  const editable=!row.submittedAt&&shapes;
+  const initial=photo.annotations||[];
+  let marks=initial,tool='browse',drawing=null,loaded=false,savingMarks=false;
+  showSheet(photo.name,(editable?`<div class="photo-markup-tools" role="group" aria-label="照片标记">${shapes.toolButtons}</div>`:'')+
+    '<p class="photo-markup-status" role="status" hidden></p><div class="photo-markup-stage"><div class="photo-markup-image"><img class="photo-preview" alt="验货照片"><svg aria-hidden="true"></svg></div></div>'+
+    '<div class="photo-markup-actions"><button type="button" data-close-photo aria-label="关闭照片预览">×</button></div>');
+  sheet.classList.add('photo-markup-sheet');
+  const content=$('sheet-content'),stage=content.querySelector('.photo-markup-stage'),frame=stage.firstElementChild;
+  const image=frame.querySelector('img'),layer=frame.querySelector('svg');
+  const saveButton=content.querySelector('[data-mark-save]'),undo=content.querySelector('[data-mark-undo]');
+  const tools=content.querySelectorAll('[data-mark-tool]');
+  const status=content.querySelector('[role=status]');
+  const dirty=()=>editable&&!shapes.equal(marks,initial);
+  const message=text=>{status.textContent=text;status.hidden=!text;};
+  const paint=()=>shapes?.paint(layer,image.naturalWidth,image.naturalHeight,drawing?[...marks,drawing.mark]:marks);
+  function fitPhoto(){
+    if(!loaded||!stage.clientWidth||!stage.clientHeight)return;
+    const scale=Math.min(1,Math.max(1,stage.clientWidth-32)/image.naturalWidth,Math.max(1,stage.clientHeight-32)/image.naturalHeight);
+    frame.style.width=image.naturalWidth*scale+'px';
+    frame.style.height=image.naturalHeight*scale+'px';
+  }
+  const observer=window.ResizeObserver?new ResizeObserver(fitPhoto):null;
+  observer?.observe(stage);
+  sheet.addEventListener('close',()=>observer?.disconnect(),{once:true});
+  stage.onclick=event=>{if(event.target===stage)closeSheet();};
+  content.querySelector('[data-close-photo]').onclick=closeSheet;
+  function controls(){
+    if(!editable)return;
+    frame.classList.toggle('is-marking',tool!=='browse'&&loaded&&!savingMarks);
+    for(const button of tools){
+      button.disabled=!loaded||savingMarks;
+      button.setAttribute('aria-pressed',String(button.dataset.markTool===tool));
+    }
+    undo.disabled=!loaded||savingMarks||!marks.length;
+    saveButton.disabled=!loaded||savingMarks||!dirty();
+  }
+  photoCanClose=()=>!savingMarks&&(!dirty()||window.confirm('放弃当前未保存的照片标记？'));
+  image.onload=()=>{
+    loaded=true;layer.setAttribute('viewBox',`0 0 ${image.naturalWidth} ${image.naturalHeight}`);
+    fitPhoto();paint();controls();
+  };
+  image.onerror=()=>{loaded=false;frame.hidden=true;message('无法加载照片，请联网后重试。');controls();};
+  image.draggable=false;
+  image.src=photoUrl(photo);
+  controls();
+  if(!editable)return;
+  for(const button of tools)button.onclick=()=>{tool=button.dataset.markTool;controls();};
+  undo.onclick=()=>{marks=marks.slice(0,-1);message('');paint();controls();};
+  const fraction=value=>Math.round(Math.max(0,Math.min(1,value))*1e6)/1e6;
+  const point=(event,bounds)=>[
+    fraction((event.clientX-bounds.left)/bounds.width),fraction((event.clientY-bounds.top)/bounds.height),
+  ];
+  frame.addEventListener('pointerdown',event=>{
+    if(!loaded||savingMarks||tool==='browse'||event.button!==0||drawing)return;
+    if(marks.length>=40){message('每张照片最多 40 笔标记');return;}
+    const bounds=image.getBoundingClientRect();
+    if(!bounds.width||!bounds.height)return;
+    const [x,y]=point(event,bounds);
+    event.preventDefault();
+    drawing={id:event.pointerId,bounds,mark:{type:tool,x1:x,y1:y,x2:x,y2:y}};
+    frame.setPointerCapture?.(event.pointerId);
+  });
+  function move(event){
+    if(!drawing||drawing.id!==event.pointerId)return;
+    const [x,y]=point(event,drawing.bounds);
+    Object.assign(drawing.mark,{x2:x,y2:y});paint();
+  }
+  frame.addEventListener('pointermove',move);
+  for(const name of ['pointerup','pointercancel','lostpointercapture'])frame.addEventListener(name,event=>{
+    if(!drawing||drawing.id!==event.pointerId)return;
+    if(name==='pointerup'){
+      move(event);
+      const {mark,bounds}=drawing;
+      const dx=(mark.x2-mark.x1)*bounds.width,dy=(mark.y2-mark.y1)*bounds.height;
+      if(mark.type==='circle'?Math.abs(dx)>=4&&Math.abs(dy)>=4:Math.hypot(dx,dy)>=4)marks=[...marks,mark];
+    }
+    drawing=null;paint();controls();
+  });
+  saveButton.onclick=async()=>{
+    if(savingMarks||!dirty())return;
+    const target=row.photos.find(item=>item.id===photo.id||item.remoteId&&item.remoteId===photo.remoteId);
+    if(!target||row.submittedAt){message('照片已移除或任务已提交，请核对当前记录。');return;}
+    if(!shapes.equal(target.annotations,initial)&&!shapes.equal(target.annotations,marks)){
+      message('照片标记已更新，请关闭后重新打开核对。');return;
+    }
+    savingMarks=true;message('正在保存到手机…');controls();
+    target.annotations=marks;target._annotationsPending=true;
+    const stored=await change(row,true);
+    savingMarks=false;
+    if(stored){photoCanClose=null;closeSheet();}
+    else{message(state(row).localError);controls();}
+  };
 }
 
 function showInfo() {
@@ -775,7 +869,8 @@ $('pending-back').onclick = () => {
 };
 $('info').onclick = showInfo;
 $('sheet-close').onclick = closeSheet;
-sheet.addEventListener('close', () => dialogTrigger?.focus({ preventScroll: true }));
+sheet.addEventListener('cancel',event=>{if(photoCanClose&&!photoCanClose())event.preventDefault();});
+sheet.addEventListener('close', () => {photoCanClose=null;dialogTrigger?.focus({ preventScroll: true });});
 $('search').addEventListener('input', () => renderList());
 $('clear-search').onclick = () => {
   $('search').value = '';
@@ -953,7 +1048,7 @@ window.addEventListener('beforeunload', event => {
 });
 
 remote.onAck = async (sent, saved, photoMap) => {
-  for(const queued of queuedSnapshots)if(queued.id===sent.id&&queued._v>sent._v)Object.assign(queued,remote.rebaseDraft(queued,sent,saved));
+  for(const queued of queuedSnapshots)if(queued.id===sent.id&&queued._v>sent._v)Object.assign(queued,remote.rebaseDraft(queued,sent,saved,photoMap));
   const row = rows.find(r => r.id === sent.id);
   if (!row) return;
   const edit=state(row);
@@ -962,7 +1057,7 @@ remote.onAck = async (sent, saved, photoMap) => {
     return photo.id !== acknowledged.id || photo.url !== acknowledged.url || photo.name !== acknowledged.name;
   });
   if(edit.version>sent._v){
-    const rebased=remote.rebaseDraft(snapshot(row),sent,saved);
+    const rebased=remote.rebaseDraft(snapshot(row),sent,saved,photoMap);
     Object.assign(row,rebased);
     for(const key of Object.keys(edit.fields))if(!rebased._dirtyFields.includes(key))delete edit.fields[key];
   }
@@ -984,10 +1079,10 @@ remote.onAck = async (sent, saved, photoMap) => {
 };
 
 async function refreshLive() {
-  if (navigator.onLine === false || busy || document.hidden || openingTask || [...writeState.values()].some(s => s.pending || s.version > s.saved) || activeField || current && document.activeElement?.closest('#entry')) return;
+  if (navigator.onLine === false || busy || document.hidden || openingTask || photoCanClose || [...writeState.values()].some(s => s.pending || s.version > s.saved) || activeField || current && document.activeElement?.closest('#entry')) return;
   try {
     const data = await remote.api('/sheet/entries');
-    if (busy || openingTask || activeField || current && document.activeElement?.closest('#entry') || [...writeState.values()].some(s=>s.pending || s.version>s.saved)) return;
+    if (busy || openingTask || photoCanClose || activeField || current && document.activeElement?.closest('#entry') || [...writeState.values()].some(s=>s.pending || s.version>s.saved)) return;
     const latest = data.items.map(remote.convert);
     rows = remote.mergeCache(latest, rows);
     await localWriteRows(rows);
@@ -1009,10 +1104,14 @@ app.addEventListener('click', async event => {
     const conflict=remote.conflicts.get(current.id);
     if(!conflict)return;
     const labels={...fieldLabels,improvement:'改善措施',result:'验货结果',sampleQuantity:'抽查数量',inspector:'检验人员'};
-    showSheet('核对同时修改的内容', conflict.keys.map(k=>'<section class="notice"><strong>'+escapeHtml(labels[k])+'</strong><p>系统：'+escapeHtml(conflict.latest[k]||'空白')+'</p><p>我的填写：'+escapeHtml(current[k]||'空白')+'</p></section>').join('')+'<div class="sheet-actions"><button class="secondary" data-action="conflict-server">这些栏采用系统内容</button><button class="primary" data-action="conflict-mine">这些栏保留我的填写</button></div>');
+    const notes=conflict.keys.map(k=>'<section class="notice"><strong>'+escapeHtml(labels[k])+'</strong><p>系统：'+escapeHtml(conflict.latest[k]||'空白')+'</p><p>我的填写：'+escapeHtml(current[k]||'空白')+'</p></section>');
+    for(const {name,server} of conflict.photos)notes.push('<section class="notice"><strong>'+escapeHtml(name)+'</strong><p>'+(server?'这张照片的标记已被其他设备修改。':'这张照片已从系统移除。')+'</p></section>');
+    const hasRemoved=conflict.photos.some(photo=>!photo.server);
+    showSheet('核对同时修改的内容',notes.join('')+'<div class="sheet-actions"><button class="secondary" data-action="conflict-server">采用系统内容</button><button class="primary" data-action="conflict-mine" '+(hasRemoved?'disabled':'')+'>保留手机内容</button></div>');
   }
   if (['conflict-server','conflict-mine'].includes(action) && current) {
     await remote.resolve(current, action==='conflict-server'?'server':'mine'); closeSheet();
+    renderPhotos(current);
     for(const id of fieldIds)renderFieldPreview(current,id);
     setResult(current.result);$('sample-quantity').value=current.sampleQuantity||'';$('inspector').value=current.inspector||'';
     if(activeField)editor.value=current[activeField]||'';
