@@ -349,6 +349,15 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       )
       return response.data
     },
+    async exportProductionMonth(factoryId: string, month: string, signal: AbortSignal) {
+      const params = new URLSearchParams({ production_factory_id: factoryId, month })
+      const response = await client.get<Blob>(`/injection/production-tasks/monthly-export?${params}`, {
+        responseType: 'blob',
+        timeout: 120_000,
+        signal,
+      })
+      return response.data
+    },
     async getOrder(orderId: string) {
       const response = await client.get<MoldingSampleDetailResponse>(`/injection/${orderId}`)
       return response.data

@@ -163,6 +163,7 @@ Engineering-origin factory and production factory are distinct concepts:
 - Work originating from Huakang C or Huakang D must be dispatched explicitly to a supported production factory before production-side inventory or execution is applied.
 - Requisitions, inventory and movements are scoped to the production factory.
 - Production-task visibility and write capability are controlled independently by permission policy and explicit denies.
+- The production queue exports a full calendar month by business opening date (`order.date`) and executing factory. The workbook reconciles each mold's planned, collected and consumed weights, recipe components, current-price estimates and saved settlement fees. HKD totals require all corresponding saved amounts. Warehouse requisitions and signed issue/reversal movements follow their own executing-factory read scopes. A requisition links to molds through an exact receipt number on the same order; shared and order-only receipts carry no mold-level allocation. Export requires production-task read and factory export access, including export access at each originating factory for dispatched orders. Cost visibility follows the order detail.
 
 Raw-material master records are global and use `factory_id='*'`, with material code as the shared identity. Factory inventory is not global. Engineering and warehouse scopes may maintain the shared master only through the current permission rules.
 
