@@ -507,11 +507,11 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 
 }
 
-/* Compact schedule toolbar: selection, fixed-width filters, primary action. */
+/* Customer schedule filters, list actions and table selection. */
 @media screen {
   #page-sales-schedule .qs-workspace { padding-block: 8px; }
   #page-sales-schedule #qsToolbar {
-    --qs-control-height: 30px;
+    --qs-control-height: 32px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -527,11 +527,16 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
   #page-sales-schedule #qsToolbar + .qs-table-scroll { border-radius: 0 0 7px 7px; }
   #page-sales-schedule #qsToolbar .qs-filters { display: contents; }
-  #page-sales-schedule #qsToolbar .qs-selection { display: flex; align-items: center; gap: 4px; }
+  #page-sales-schedule #qsToolbar .qs-list-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-inline-start: auto;
+  }
   #page-sales-schedule #qsToolbar .qs-search { width: min(100%, var(--qc-search-width)); }
   #page-sales-schedule #qsToolbar .qs-date-filter { width: max-content; max-width: 100%; }
   #page-sales-schedule #qsToolbar .qs-customer { width: 120px; max-width: 100%; }
-  #page-sales-schedule #qsToolbar #qsPush { margin-inline-start: auto; }
+  #page-sales-schedule #qsToolbar :is(.qs-search input,.qs-customer select) { padding-block: 0; }
   #page-sales-schedule #qsToolbar #qsFilterError { flex-basis: 100%; margin: 0; }
   :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) :is(.qs-filter-field input,.qs-filter-field select,.qs-date-toggle,.qs-button,.qs-reset) {
     min-height: var(--qs-control-height);
@@ -543,8 +548,15 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
   #page-sales-schedule #qsToolbar .qs-search svg { top: calc((var(--qs-control-height) - 18px) / 2); }
   #page-sales-schedule #qsToolbar .qs-reset { padding: 0 4px; border: 0; }
-  #page-sales-schedule #qsToolbar .qs-select-all { min-height: var(--qs-control-height); }
-  #page-sales-schedule #qsToolbar #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
+  #page-sales-schedule .qs-table th.qs-select-column { padding: 0 !important; }
+  #page-sales-schedule .qs-select-column .qs-select-all {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    width: 100%;
+  }
+  #page-sales-schedule .qs-select-column #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
   #page-sales-schedule #qsToolbar #qsCount { margin: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
   :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) .qs-button {
     display: inline-flex;

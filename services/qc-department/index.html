@@ -120,24 +120,23 @@
   <div class="page active" id="page-sales-schedule">
     <div class="qs-workspace">
       <div class="qs-toolbar" id="qsToolbar">
-      <div class="qs-selection" role="group" aria-label="客排期选择与刷新">
-        <label class="qs-select-all"><input type="checkbox" id="qsSelectAll" aria-label="全选当前筛选" disabled>全选</label>
-        <span id="qsCount" aria-live="polite" aria-label="当前显示与总排期数">待接通</span>
-        <button type="button" id="qsRefresh" class="qs-button" aria-label="刷新数据" title="刷新数据"></button>
-      </div>
-      <div class="qs-filters" aria-label="客排期筛选">
-        <label class="qs-filter-field qs-search"><span class="qs-sr-only">搜索 PO、客 PO、货号或产品名称</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="qsSearch" placeholder="PO / 货号" title="搜索 PO、客 PO、货号或产品名称"/></label>
-        <div class="qs-date-filter" id="qsDateFilter"></div>
-        <label class="qs-filter-field qs-customer"><span class="qs-sr-only">客户</span><select id="qsCustomer"><option value="">全部客户</option></select></label>
-        <div class="qs-filter-actions"><button type="button" id="qsReset" class="qs-reset" aria-label="重置全部筛选">重置</button></div>
-      </div>
-        <button type="button" id="qsPush" class="qs-button qs-primary" disabled>确认推送验货</button>
-      <p id="qsFilterError" class="qs-error" role="alert"></p>
+        <div class="qs-filters" aria-label="客排期筛选">
+          <div class="qs-date-filter" id="qsDateFilter"></div>
+          <label class="qs-filter-field qs-customer"><span class="qs-sr-only">客户</span><select id="qsCustomer"><option value="">全部客户</option></select></label>
+          <label class="qs-filter-field qs-search"><span class="qs-sr-only">搜索 PO、客 PO、货号或产品名称</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="qsSearch" placeholder="PO / 货号" title="搜索 PO、客 PO、货号或产品名称"/></label>
+          <button type="button" id="qsReset" class="qs-reset" aria-label="重置全部筛选" hidden>重置</button>
+        </div>
+        <div class="qs-list-actions">
+          <span id="qsCount" aria-live="polite" aria-label="当前显示与总排期数">待接通</span>
+          <button type="button" id="qsRefresh" class="qs-button" aria-label="刷新数据" title="刷新数据"></button>
+          <button type="button" id="qsPush" class="qs-button qs-primary" disabled>确认推送验货</button>
+        </div>
+        <p id="qsFilterError" class="qs-error" role="alert"></p>
       </div>
       <div class="qs-table-scroll" tabindex="0" role="region" aria-label="客排期表格，可横向滚动">
         <table class="qs-table"><caption class="qs-sr-only">客户验货排期，业务部维护订单信息，完成情况由验货台只读回显，备注读取业务部原文</caption>
           <colgroup><col style="width:36px"/><col data-column="date" style="width:119px"/><col data-column="customer" style="width:110px"/><col data-column="poNo" style="width:90px"/><col style="width:120px"/><col style="width:135px"/><col style="width:170px"/><col style="width:85px"/><col style="width:70px"/><col style="width:70px"/><col style="width:80px"/><col style="width:80px"/><col style="width:145px"/><col style="width:135px"/><col style="width:235px"/></colgroup>
-          <thead><tr><th scope="col"><span class="qs-sr-only">选择</span></th><th scope="col" data-column="date">排期日期</th><th scope="col" data-column="customer">客户</th><th scope="col" data-column="poNo">PO#</th><th scope="col">出口国</th><th scope="col">货号</th><th scope="col">产品名称</th><th scope="col">数量</th><th scope="col">装箱</th><th scope="col">箱数</th><th scope="col">生产</th><th scope="col">机构</th><th scope="col">客PO#</th><th scope="col">完成情况</th><th scope="col">备注</th></tr></thead>
+          <thead><tr><th scope="col" class="qs-select-column"><span class="qs-sr-only">选择</span><label class="qs-select-all" title="全选当前筛选"><input type="checkbox" id="qsSelectAll" aria-label="全选当前筛选" disabled></label></th><th scope="col" data-column="date">排期日期</th><th scope="col" data-column="customer">客户</th><th scope="col" data-column="poNo">PO#</th><th scope="col">出口国</th><th scope="col">货号</th><th scope="col">产品名称</th><th scope="col">数量</th><th scope="col">装箱</th><th scope="col">箱数</th><th scope="col">生产</th><th scope="col">机构</th><th scope="col">客PO#</th><th scope="col">完成情况</th><th scope="col">备注</th></tr></thead>
           <tbody id="qsRows"><tr><td colspan="15"><div class="qs-empty"><strong>业务部数据尚未接通</strong><p>接通后按此模板显示排期，当前不显示示例订单。</p></div></td></tr></tbody>
         </table>
       </div>
