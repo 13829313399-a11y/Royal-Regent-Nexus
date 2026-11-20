@@ -190,9 +190,9 @@
           node.setAttribute('rx',Math.abs(x2-x1)/2);node.setAttribute('ry',Math.abs(y2-y1)/2);
         }else{
           const angle=Math.atan2(y2-y1,x2-x1);
-          const head=Math.min(stroke*4,Math.hypot(x2-x1,y2-y1)*.45);
+          const head=Math.min(stroke*5.5,Math.hypot(x2-x1,y2-y1)*.5);
           const wing=offset=>`${x2-head*Math.cos(angle+offset)} ${y2-head*Math.sin(angle+offset)}`;
-          node.setAttribute('d',`M${x1} ${y1}L${x2} ${y2}M${wing(.55)}L${x2} ${y2}L${wing(-.55)}`);
+          node.setAttribute('d',`M${x1} ${y1}L${x2} ${y2}M${wing(.65)}L${x2} ${y2}L${wing(-.65)}`);
         }
         node.setAttribute('stroke-width',stroke);
         children.push(node);
