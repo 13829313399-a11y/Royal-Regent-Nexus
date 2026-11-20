@@ -50,7 +50,7 @@
       {
         "path": "backend/app/api/customer_order_ledger.py",
         "symbol": "authorize",
-        "sha256": "bc32a465ec658507870b5d6185bff05c02c0d105fd8631278cf8b13db473fc7f"
+        "sha256": "565ef293ff3137bb2bf652a4660c4772b33e07ff0eff79c472ad9fce28ff8493"
       },
       {
         "path": "backend/app/services/customer_order_ledger.py",
@@ -205,7 +205,7 @@
       {
         "path": "backend/app/services/customer_order_carton_schedule.py",
         "symbol": "async def sync_report",
-        "sha256": "bfa5189df1a7aa172d43cd8a636c140154d0d3b52046481fb58b21caced4e91f"
+        "sha256": "90c42d8b994f581fcdf56fc6b42e1611581f9c7663673c93c96ac3b611ad01c5"
       },
       {
         "path": "backend/app/services/carton_materials.py",
@@ -280,12 +280,12 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue",
         "symbol": "async function confirmAndGenerateSchedule",
-        "sha256": "eb6b4290339b8aa340e264e27e905d7aa909bf34ef16d123bddeed0d6b0dbd38"
+        "sha256": "c15cb37bbd12711abdd3face8f44fdcd5b51619165fc6d6d7aaa97309cacfbed"
       },
       {
         "path": "src/api/customerOrder.ts",
         "symbol": "async exportDickieBatch",
-        "sha256": "754df60d38cd14da1c060e39ada27adfcfe56f3ea7f74f49f0502f32c6172c3b"
+        "sha256": "eadc21db1650279f9bdbaf65c0498624f7d9683a7e870fa75fede9504743b23b"
       },
       {
         "path": "backend/app/services/huaxing_order_legacy/new_order_excel.py",
@@ -341,6 +341,11 @@
         "path": "backend/app/services/customer_order_jakks_unified.py",
         "symbol": "def export_cancellations",
         "sha256": "828df82ed49827003efd9e68ab6d90864998a8838e0537fcc5686f69ca52080b"
+      },
+      {
+        "path": "backend/app/services/customer_order_zuru_native.py",
+        "symbol": "def preview",
+        "sha256": "a9100f1d4897a0ac38a4bf47701745643641d166cf3436f3cef79c618c93b6ee"
       }
     ],
     "knowledge_version": "2026.11.20-jakks-cancellation-original-order",
