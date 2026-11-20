@@ -124,6 +124,8 @@ export interface ShippingOrder {
   cbm: number
   special: string
   status: ShippingOrderStatus
+  contractNo?: string
+  filingNo?: string
   /** 本票货物摘要，用于按货号或货名搜索。 */
   products: ShippingProduct[]
 }

@@ -209,7 +209,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
           <section v-else-if="activePage === 'daily'" aria-label="一键出货">
             <ShippingProductHistoryPanel :factory-id="factoryId" @notify="notify" />
           </section>
-          <section v-else-if="activePage === 'truck'" aria-label="车的排出货表">
+          <section v-else-if="activePage === 'truck'" aria-label="车的出货单">
             <ShippingTruckSheetPanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />
           </section>
           <section v-else-if="activePage === 'supplement'" aria-label="补料单">
@@ -222,7 +222,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
             <ShippingCodeMappingPanel @notify="notify" />
           </section>
           <section v-else-if="activePage === 'orders'" aria-label="出货单管理">
-            <ShippingOrderWorkspace :profile="profile" @notify="notify" @open-so-sheet="setPage('so')" @open-truck-sheet="setPage('truck')" @open-supplement="setPage('supplement')" @open-customs="setPage('customs')" />
+            <ShippingOrderWorkspace :profile="profile" @notify="notify" @open-so-sheet="setPage('so')" @open-truck-sheet="setPage('truck')" @open-supplement="setPage('supplement')" />
           </section>
           <section v-else aria-label="基础资料">
             <ShippingMasterDataPanel :profile="profile" />

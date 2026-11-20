@@ -3,8 +3,15 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
+  deleteGeneratedDoc,
   draftZuruSheet,
   exportZuruSheet,
+  getGeneratedDoc,
+  listGeneratedDocs,
+  openGeneratedDoc,
+  searchScheduleProducts,
+  type GeneratedDoc,
+  type GeneratedDocDetail,
   type ZuruDraft,
   type ZuruLine,
 } from '@/api/shippingMail'
@@ -16,16 +23,35 @@ const emit = defineEmits<{ notify: [message: string] }>()
 const tasks = ref<ShippingScheduleTask[]>([])
 const selectedTaskId = ref('')
 const search = ref('')
+const searchField = ref<'all' | 'contract' | 'filing'>('all')
+const searching = ref(false)
 const draft = ref<ZuruDraft | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
 const message = ref('')
+const exportedDocs = ref<GeneratedDoc[]>([])
+const exportedDetail = ref<GeneratedDocDetail | null>(null)
+const exportedLoading = ref(false)
+const exportedBusy = ref(false)
+const exportPanelOpen = ref(true)
+const selectedExportIds = ref<string[]>([])
+const exportDeleteArmed = ref(false)
 
-const filteredTasks = computed(() => {  const keyword = search.value.trim().toLowerCase()
+const filteredTasks = computed(() => {
+  const keyword = search.value.trim().toLowerCase()
   if (!keyword) return tasks.value
-  return tasks.value.filter((task) => [
-    task.so_number, task.customer, task.port, task.planned_ship_date, task.id,
-  ].some((value) => String(value || '').toLowerCase().includes(keyword)))
+  return tasks.value.filter((task) => {
+    if (searchField.value === 'filing') {
+      return (task.items ?? []).some((item) => String(item.product_code || '').toLowerCase().includes(keyword))
+    }
+    if (searchField.value === 'contract') {
+      return task.so_number.toLowerCase().includes(keyword)
+        || (task.items ?? []).some((item) => String(item.contract_no || '').toLowerCase().includes(keyword))
+    }
+    return [task.so_number, task.customer, task.port, task.planned_ship_date, task.id,
+      ...(task.items ?? []).flatMap((item) => [item.contract_no, item.product_code])]
+      .some((value) => String(value || '').toLowerCase().includes(keyword))
+  })
 })
 
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) ?? null)
@@ -52,6 +78,63 @@ async function loadTasks() {
     tasks.value = await listShippingTasks(props.factoryId)
   } catch (error) {
     message.value = `无法读取工厂排期：${getApiErrorMessage(error)}`
+  }
+}
+
+async function runSearch() {
+  const query = search.value.trim()
+  if (!query) return
+  searching.value = true
+  message.value = ''
+  try {
+    if (searchField.value !== 'contract') {
+      const items = await searchScheduleProducts(props.factoryId, query)
+      if (items.length && draft.value) {
+        const existing = new Set(draft.value.lines.map((line) => `${line.contract}|${line.filingCode}`))
+        let added = 0
+        for (const item of items) {
+          const code = String(item.product_code || '').trim()
+          if (!code) continue
+          const key = `${String(item.contract_no || '')}|${code}`
+          if (existing.has(key)) continue
+          const cartons = Number(item.cartons) || 0
+          const mapped: ZuruLine = {
+            ...blankLine(),
+            contract: String(item.contract_no || ''),
+            filingCode: code,
+            declareCode: code,
+            coefficient: Number(item.coefficient) || (cartons ? (Number(item.quantity) || 0) / cartons : null),
+            quantity: Number(item.quantity) || 0,
+            cartons,
+            grossWeight: Number(item.gross_weight) || 0,
+            netWeight: Number(item.net_weight) || 0,
+            cbm: Number(item.cbm) || 0,
+            country: String(item.country || draft.value.header.destinationCountry || ''),
+            grossPerCarton: cartons && item.gross_weight ? Number(item.gross_weight) / cartons : null,
+            netPerCarton: cartons && item.net_weight ? Number(item.net_weight) / cartons : null,
+            po: String(item.customer_po || ''),
+          }
+          const blankIndex = draft.value.lines.findIndex((line) => !line.filingCode?.trim() && (line.quantity == null || Number(line.quantity) === 0))
+          if (blankIndex >= 0) {
+            const blank = draft.value.lines[blankIndex]!
+            draft.value.lines.splice(blankIndex, 1, { ...mapped, id: blank.id })
+          } else {
+            draft.value.lines.push(mapped)
+          }
+          existing.add(key)
+          added += 1
+        }
+        message.value = added ? `已找到备案号 ${query} 并填入 ${added} 行` : `备案号 ${query} 对应数据已在明细中`
+        return
+      }
+      message.value = `未找到备案号 ${query} 对应的业务排期`
+      return
+    }
+    await loadTasks()
+  } catch (error) {
+    message.value = `搜索失败：${getApiErrorMessage(error)}`
+  } finally {
+    searching.value = false
   }
 }
 
@@ -147,6 +230,7 @@ async function download() {
     link.click()
     URL.revokeObjectURL(url)
     emit('notify', `柜货单 ${draft.value.header.number} 已下载。`)
+    await loadExportedDocs()
   } catch (error) {
     message.value = `导出失败：${getApiErrorMessage(error)}`
   } finally {
@@ -154,7 +238,99 @@ async function download() {
   }
 }
 
-onMounted(loadTasks)
+async function loadExportedDocs() {
+  exportedLoading.value = true
+  try {
+    exportedDocs.value = await listGeneratedDocs(props.factoryId, 'so_zuru')
+  } catch (error) {
+    message.value = `读取已导出HQ柜货单失败：${getApiErrorMessage(error)}`
+  } finally {
+    exportedLoading.value = false
+  }
+}
+
+async function viewExportedDoc(doc: GeneratedDoc) {
+  exportedBusy.value = true
+  try {
+    exportedDetail.value = await getGeneratedDoc(props.factoryId, doc.id)
+  } catch (error) {
+    message.value = `查看失败：${getApiErrorMessage(error)}`
+  } finally {
+    exportedBusy.value = false
+  }
+}
+
+async function openExportedDoc(doc: GeneratedDoc) {
+  exportedBusy.value = true
+  try {
+    const result = await openGeneratedDoc(props.factoryId, doc.id)
+    message.value = result.opened ? `已打开 ${doc.filename}` : `已保存 ${result.path}`
+  } catch (error) {
+    message.value = `打开失败：${getApiErrorMessage(error)}`
+  } finally {
+    exportedBusy.value = false
+  }
+}
+
+async function deleteExportedDoc(doc: GeneratedDoc) {
+  exportedBusy.value = true
+  try {
+    await deleteGeneratedDoc(props.factoryId, doc.id)
+    if (exportedDetail.value?.id === doc.id) exportedDetail.value = null
+    selectedExportIds.value = selectedExportIds.value.filter((id) => id !== doc.id)
+    await loadExportedDocs()
+    message.value = `已删除 ${doc.filename}`
+  } catch (error) {
+    message.value = `删除失败：${getApiErrorMessage(error)}`
+  } finally {
+    exportedBusy.value = false
+  }
+}
+
+function toggleExportDoc(docId: string) {
+  selectedExportIds.value = selectedExportIds.value.includes(docId)
+    ? selectedExportIds.value.filter((id) => id !== docId)
+    : [...selectedExportIds.value, docId]
+  exportDeleteArmed.value = false
+}
+
+const allExportsSelected = computed(
+  () => exportedDocs.value.length > 0 && exportedDocs.value.every((doc) => selectedExportIds.value.includes(doc.id)),
+)
+
+function toggleAllExports(event: Event) {
+  selectedExportIds.value = (event.target as HTMLInputElement).checked
+    ? exportedDocs.value.map((doc) => doc.id)
+    : []
+  exportDeleteArmed.value = false
+}
+
+async function bulkDeleteExports() {
+  if (!selectedExportIds.value.length) return
+  if (!exportDeleteArmed.value) {
+    exportDeleteArmed.value = true
+    window.setTimeout(() => { exportDeleteArmed.value = false }, 5000)
+    return
+  }
+  exportedBusy.value = true
+  try {
+    for (const docId of [...selectedExportIds.value]) {
+      try { await deleteGeneratedDoc(props.factoryId, docId) } catch { /* continue */ }
+    }
+    selectedExportIds.value = []
+    exportDeleteArmed.value = false
+    exportedDetail.value = null
+    await loadExportedDocs()
+    message.value = '已批量删除 HQ 柜货单记录。'
+  } finally {
+    exportedBusy.value = false
+  }
+}
+
+onMounted(() => {
+  void loadTasks()
+  void loadExportedDocs()
+})
 
 watch(() => props.initialDraft, (value) => {
   if (!value) return
@@ -173,23 +349,27 @@ watch(() => props.initialDraft, (value) => {
           <h2 class="text-[16px] font-bold text-emerald-950">柜货单</h2>
           <p class="mt-0.5 text-[11px] text-slate-500">按 ZURU 盐田柜货模板生成；数量 = 箱数 × 装箱数，毛重/净重 = 每箱重量 × 箱数。</p>
         </div>
-        <div class="flex flex-wrap items-center gap-2">
+        <div v-if="!draft" class="flex flex-wrap items-center gap-2">
+          <select v-model="searchField" aria-label="搜索字段" class="h-9 rounded-lg border border-emerald-200 bg-white px-2 text-[12px]">
+            <option value="all">全部</option>
+            <option value="contract">合同号</option>
+            <option value="filing">备案货号</option>
+          </select>
           <input
             v-model="search"
             type="search"
             aria-label="搜索工厂排期"
             placeholder="搜索 SO / 客户 / 港口"
             class="h-9 w-[190px] rounded-lg border border-emerald-200 bg-white px-2.5 text-[12px] text-slate-800 outline-none placeholder:text-slate-400 focus:border-emerald-500"
+            @keyup.enter="runSearch"
           >
+          <button type="button" class="h-9 rounded-lg bg-emerald-700 px-3 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="searching" @click="runSearch">{{ searching ? '搜索中…' : '搜索' }}</button>
           <select v-model="selectedTaskId" aria-label="选择工厂排期" class="h-9 max-w-[320px] rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadDraft">
             <option value="">选择工厂排期</option>
             <option v-for="task in filteredTasks" :key="task.id" :value="task.id">
               {{ task.so_number || task.id }} · {{ task.port || '-' }} · {{ task.planned_ship_date || '-' }}
             </option>
           </select>
-          <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
-            <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出柜货单' }}
-          </button>
         </div>
       </div>
       <p v-if="message" class="mt-2 text-[11px] text-rose-600">{{ message }}</p>
@@ -317,9 +497,97 @@ watch(() => props.initialDraft, (value) => {
               {{ item.product_code || '未命名货号' }} · {{ item.product_name || '' }} · {{ item.quantity ?? 0 }} pcs
             </option>
           </select>
+          <div class="ml-auto flex flex-wrap items-center gap-2">
+            <select v-model="searchField" aria-label="搜索字段" class="h-8 rounded-lg border border-emerald-200 bg-white px-2 text-[11px]">
+              <option value="all">全部</option>
+              <option value="contract">合同号</option>
+              <option value="filing">备案货号</option>
+            </select>
+            <input
+              v-model="search"
+              type="search"
+              aria-label="搜索工厂排期"
+              placeholder="搜索 SO / 客户 / 港口"
+              class="h-8 w-[190px] rounded-lg border border-emerald-200 bg-white px-2.5 text-[11px] text-slate-800 outline-none placeholder:text-slate-400 focus:border-emerald-500"
+              @keyup.enter="runSearch"
+            >
+            <button type="button" class="h-8 rounded-lg bg-emerald-700 px-3 text-[11px] font-semibold text-white disabled:opacity-60" :disabled="searching" @click="runSearch">{{ searching ? '搜索中…' : '搜索' }}</button>
+            <select v-model="selectedTaskId" aria-label="选择工厂排期" class="h-8 max-w-[320px] rounded-lg border border-emerald-200 bg-white px-2 text-[11px]" @change="loadDraft">
+              <option value="">选择工厂排期</option>
+              <option v-for="task in filteredTasks" :key="task.id" :value="task.id">
+                {{ task.so_number || task.id }} · {{ task.port || '-' }} · {{ task.planned_ship_date || '-' }}
+              </option>
+            </select>
+            <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-700 px-3 text-[11px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
+              <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出柜货单' }}
+            </button>
+          </div>
         </div>
       </div>
       </div>
     </template>
+
+    <div class="rounded-xl border border-emerald-100/80 bg-white p-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+          <h3 class="text-[13px] font-bold text-emerald-950">已导出HQ柜出货</h3>
+          <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">{{ exportedDocs.length }}</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="inline-flex items-center gap-1 text-[10px] font-medium text-slate-500">
+            <input type="checkbox" aria-label="全选HQ柜货单" :checked="allExportsSelected" @change="toggleAllExports">
+            全选
+          </label>
+          <button
+            type="button"
+            class="h-7 rounded border px-2 text-[11px] font-semibold disabled:opacity-40"
+            :class="exportDeleteArmed ? 'border-rose-300 bg-rose-50 text-rose-700' : 'border-rose-200 text-rose-600'"
+            :disabled="!selectedExportIds.length || exportedBusy"
+            @click="bulkDeleteExports"
+          >{{ exportDeleteArmed ? `确认删除 ${selectedExportIds.length} 份` : `批量删除${selectedExportIds.length ? ` (${selectedExportIds.length})` : ''}` }}</button>
+          <button type="button" class="h-7 rounded border border-slate-200 px-2 text-[11px] text-slate-600" :disabled="exportedLoading" @click="loadExportedDocs">刷新</button>
+          <button type="button" class="h-7 rounded border border-slate-200 px-2 text-[11px] text-slate-600" :aria-expanded="exportPanelOpen" @click="exportPanelOpen = !exportPanelOpen">{{ exportPanelOpen ? '收起' : '展开' }}</button>
+        </div>
+      </div>
+      <template v-if="exportPanelOpen">
+      <div v-if="exportedDocs.length" class="mt-2 overflow-x-auto">
+        <table class="w-full min-w-[680px] text-left text-[11px]">
+          <thead class="bg-emerald-50 text-emerald-900/70">
+            <tr>
+              <th class="w-8 px-2 py-1.5"></th>
+              <th class="px-2 py-1.5">文件名</th>
+              <th class="px-2 py-1.5">导出时间</th>
+              <th class="px-2 py-1.5 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-emerald-50">
+            <tr v-for="doc in exportedDocs" :key="doc.id" class="hover:bg-emerald-50/50">
+              <td class="px-2 py-1.5"><input type="checkbox" :aria-label="`选择 ${doc.filename}`" :checked="selectedExportIds.includes(doc.id)" @change="toggleExportDoc(doc.id)"></td>
+              <td class="px-2 py-1.5 font-semibold text-emerald-800">{{ doc.filename }}</td>
+              <td class="px-2 py-1.5 tabular-nums text-slate-500">{{ doc.created_at.replace('T', ' ') }}</td>
+              <td class="px-2 py-1.5 text-right">
+                <button type="button" class="mr-2 text-emerald-700 disabled:opacity-40" :disabled="exportedBusy" @click="viewExportedDoc(doc)">查看</button>
+                <button type="button" class="mr-2 text-emerald-700 disabled:opacity-40" :disabled="exportedBusy" @click="openExportedDoc(doc)">打开</button>
+                <button type="button" class="text-rose-600 disabled:opacity-40" :disabled="exportedBusy" @click="deleteExportedDoc(doc)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="mt-2 text-[11px] text-slate-400">暂无导出记录；导出 HQ 柜货单后会出现在这里。</p>
+
+      <div v-if="exportedDetail" class="mt-3 rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 text-[11px]">
+        <div class="grid gap-2 sm:grid-cols-3">
+          <p><span class="text-slate-400">文件：</span>{{ exportedDetail.filename }}</p>
+          <p><span class="text-slate-400">SO：</span>{{ exportedDetail.header.soNo || '—' }}</p>
+          <p><span class="text-slate-400">柜号：</span>{{ exportedDetail.header.number || '—' }}</p>
+          <p><span class="text-slate-400">船名航次：</span>{{ exportedDetail.header.vesselVoyage || '—' }}</p>
+          <p><span class="text-slate-400">明细行数：</span>{{ exportedDetail.lines.length }}</p>
+          <p><span class="text-slate-400">出口国家：</span>{{ exportedDetail.header.destinationCountry || '—' }}</p>
+        </div>
+        <button type="button" class="mt-2 text-[11px] text-slate-500 hover:text-slate-700" @click="exportedDetail = null">关闭查看</button>
+      </div>
+      </template>
+    </div>
   </section>
 </template>

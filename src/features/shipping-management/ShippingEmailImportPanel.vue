@@ -59,7 +59,6 @@ const summary = reactive({
   vesselName: '',
   shipper: '',
   contractNo: '',
-  contractTails: '',
   bookingDate: '',
 })
 
@@ -74,7 +73,6 @@ const summaryFields = [
   { key: 'vesselName', label: '船名' },
   { key: 'shipper', label: '发货商' },
   { key: 'contractNo', label: '合同号' },
-  { key: 'contractTails', label: '合同后四位' },
   { key: 'bookingDate', label: '截止日期' },
 ] as const
 
@@ -236,8 +234,14 @@ function applyFields(preview: ShippingMailPreview) {
   if (!summary.containerSo) summary.containerSo = str('container_so') || str('so_number')
   if (!summary.vesselName) summary.vesselName = str('vessel_name')
   if (!summary.shipper) summary.shipper = str('shipper') || '华兴玩具制品（河源）有限公司'
-  if (!summary.contractNo) summary.contractNo = str('contract_no')
-  if (!summary.contractTails) summary.contractTails = Array.isArray(tails) ? tails.join(' / ') : ''
+  if (!summary.contractNo) {
+    const tailValues = Array.isArray(tails) ? tails.map((tail) => String(tail).trim()).filter(Boolean) : []
+    let combined = str('contract_no')
+    for (const tail of tailValues) {
+      if (tail && !combined.endsWith(tail)) combined += tail
+    }
+    summary.contractNo = combined
+  }
   if (!summary.bookingDate) summary.bookingDate = str('cutoff_date') || str('si_deadline') || str('booking_date')
 }
 
@@ -269,7 +273,7 @@ async function parseSelected() {
 
 const missingBooking = computed(() => previews.value.length > 0 && !summary.bookingNo && !summary.contractNo)
 
-async function ensureConfirmedTask(): Promise<string | null> {
+async function ensureConfirmedTask(modules?: string[]): Promise<string | null> {
   if (confirmedTaskId.value) return confirmedTaskId.value
   createError.value = ''
   if (selectedBatchId.value && selectedBatchItem.value) {
@@ -286,7 +290,7 @@ async function ensureConfirmedTask(): Promise<string | null> {
     }
     confirming.value = true
     try {
-      const confirmed = await confirmShippingMailBatch(selectedBatchId.value, props.factoryId, [item.id])
+      const confirmed = await confirmShippingMailBatch(selectedBatchId.value, props.factoryId, [item.id], {}, modules)
       const taskId = String((confirmed.tasks?.[0] as { id?: string } | undefined)?.id || '')
       confirmedTaskId.value = taskId
       selectedBatchItem.value = { ...item, status: 'confirmed', task_ids: taskId ? [taskId] : [] }
@@ -329,7 +333,7 @@ async function ensureConfirmedTask(): Promise<string | null> {
       shipper: summary.shipper.trim(),
       cutoff_date: summary.bookingDate.trim(),
       terminal: summary.terminal.trim(),
-    })
+    }, modules)
     const taskId = String((confirmed.tasks?.[0] as { id?: string } | undefined)?.id || '')
     confirmedTaskId.value = taskId
     emit('notify', `已创建 ${pending.length} 条 SO 排期（${tableName.value}）。`)
@@ -344,7 +348,7 @@ async function ensureConfirmedTask(): Promise<string | null> {
 }
 
 async function createModule(module: 'so' | 'truck' | 'supplement' | 'customs') {
-  const taskId = await ensureConfirmedTask()
+  const taskId = await ensureConfirmedTask(module === 'customs' ? undefined : [module])
   if (!taskId) return
   if (module !== 'customs') {
     try {
@@ -601,6 +605,7 @@ async function refreshRecords() {
       </div>
       <p class="mt-2 text-[11px]" :class="accountError || account?.last_status === 'error' ? 'text-rose-600' : 'text-emerald-800/70'">
         {{ accountError || accountStatus }}
+        <button v-if="accountError" type="button" class="ml-2 font-semibold underline underline-offset-2" @click="loadAccount">重试</button>
       </p>
       <p class="mt-1 text-[11px] text-slate-500">{{ scheduleLabel }}</p>
     </section>
@@ -676,9 +681,8 @@ async function refreshRecords() {
                 >
                   <option value="">创建…</option>
                   <option value="so">创建SO出货表</option>
-                  <option value="truck">创建车的排出货表</option>
+                  <option value="truck">创建车的出货单</option>
                   <option value="supplement">创建补料单</option>
-                  <option value="customs">创建通关一体化资料</option>
                 </select>
                 <button
                   v-if="record.id && pendingBatchDelete === record.id"
@@ -753,9 +757,8 @@ async function refreshRecords() {
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('so')">创建SO出货表</button>
-          <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('truck')">创建车的排出货表</button>
+          <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('truck')">创建车的出货单</button>
           <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('supplement')">创建补料单</button>
-          <button type="button" class="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100" @click="createModule('customs')">创建通关一体化资料</button>
         </div>
         <button
           type="button"

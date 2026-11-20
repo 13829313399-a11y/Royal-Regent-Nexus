@@ -171,7 +171,7 @@ def task_fields(db, task) -> dict:
 
 
 def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_ids: list[str],
-                  overrides: dict | None = None) -> dict:
+                  overrides: dict | None = None, modules: list[str] | None = None) -> dict:
     authorize(user, factory_id, 'confirm')
     batch = _load_batch(db, batch_id, factory_id)
     if not item_ids:
@@ -255,8 +255,14 @@ def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_id
     db.commit()
     try:
         from app.services.shipping_autogen import generate_for_task
+        module_map = {'so': {'so_dk'}, 'truck': {'truck_buzzbee', 'truck_bulk'}, 'supplement': {'supplement'}}
+        selected: set[str] | None = None
+        if modules:
+            selected = set()
+            for module in modules:
+                selected.update(module_map.get(module, set()))
         for task in tasks:
-            generate_for_task(db, user, factory_id, task.id, replace=True)
+            generate_for_task(db, user, factory_id, task.id, selected, replace=True)
     except Exception:  # noqa: BLE001 - generation must not fail the confirmation
         pass
     return {'batch': _batch_dict(batch), 'tasks': [_task_dict(task) for task in tasks]}

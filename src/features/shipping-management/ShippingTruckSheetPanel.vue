@@ -1,20 +1,26 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   draftTruckSheet,
   exportTruckSheet,
+  searchScheduleProducts,
   type TruckDraft,
   type TruckLine,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
+import ShippingTruckExportHistory from './ShippingTruckExportHistory.vue'
 
-const props = defineProps<{ factoryId: string }>()
+const props = defineProps<{ factoryId: string; initialTaskId?: string }>()
 const emit = defineEmits<{ notify: [message: string]; back: [] }>()
 
 const tasks = ref<ShippingScheduleTask[]>([])
 const selectedTaskId = ref('')
+const search = ref('')
+const searchField = ref<'all' | 'contract' | 'filing'>('all')
+const searching = ref(false)
+const historyVersion = ref(0)
 const draft = ref<TruckDraft | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
@@ -69,6 +75,61 @@ function recalc(line: TruckLine) {
   if (line.netPerCarton != null) line.netWeight = Math.round(line.pieces * line.netPerCarton * 1000) / 1000
 }
 
+async function runSearch() {
+  const query = search.value.trim()
+  if (!query) return
+  searching.value = true
+  message.value = ''
+  try {
+    const items = await searchScheduleProducts(props.factoryId, query)
+    if (!draft.value) {
+      message.value = '请先选择工厂排期'
+      return
+    }
+    let added = 0
+    for (const item of items) {
+      const code = String(item.product_code || '').trim()
+      if (!code) continue
+      const cartons = Number(item.cartons) || 0
+      const mapped: TruckLine = {
+        id: crypto.randomUUID(),
+        department: 'DK',
+        tradingHouse: 'Buzzbee',
+        contract: String(item.contract_no || ''),
+        filingCode: code,
+        declareCode: code,
+        name: String(item.product_name || ''),
+        country: String(item.country || draft.value.lines[0]?.country || ''),
+        category: '',
+        quantity: Number(item.quantity) || 0,
+        coefficient: Number(item.coefficient) || (cartons ? (Number(item.quantity) || 0) / cartons : null),
+        pieces: cartons,
+        grossWeight: Number(item.gross_weight) || 0,
+        netWeight: Number(item.net_weight) || 0,
+        cbm: Number(item.cbm) || 0,
+        cartonMark: '',
+        totalCartons: String(cartons || ''),
+        grossPerCarton: cartons && item.gross_weight ? Number(item.gross_weight) / cartons : null,
+        netPerCarton: cartons && item.net_weight ? Number(item.net_weight) / cartons : null,
+        remark: '',
+      }
+      const blankIndex = draft.value.lines.findIndex((line) => !line.filingCode?.trim() && (line.quantity == null || Number(line.quantity) === 0))
+      if (blankIndex >= 0) {
+        const blank = draft.value.lines[blankIndex]!
+        draft.value.lines.splice(blankIndex, 1, { ...mapped, id: blank.id })
+      } else {
+        draft.value.lines.push(mapped)
+      }
+      added += 1
+    }
+    message.value = added ? `已找到备案号 ${query} 并填入 ${added} 行` : `未找到备案号 ${query} 对应的业务排期`
+  } catch (error) {
+    message.value = `搜索失败：${getApiErrorMessage(error)}`
+  } finally {
+    searching.value = false
+  }
+}
+
 async function download() {
   if (!draft.value) return
   exporting.value = true
@@ -81,6 +142,7 @@ async function download() {
     link.click()
     URL.revokeObjectURL(url)
     emit('notify', `已生成 ${draft.value.header.tableName} 车货表。`)
+    historyVersion.value += 1
   } catch (error) {
     message.value = `导出失败：${getApiErrorMessage(error)}`
   } finally {
@@ -89,19 +151,38 @@ async function download() {
 }
 
 onMounted(loadTasks)
+watch(() => props.initialTaskId, (taskId) => {
+  if (!taskId) return
+  selectedTaskId.value = taskId
+  void loadDraft()
+}, { immediate: true })
 </script>
 
 <template>
-  <section class="space-y-4" aria-label="车的排出货表">
+  <section class="space-y-4" aria-label="车的出货单">
     <div class="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/50 p-4">
       <div class="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h2 class="text-[16px] font-bold text-emerald-950">车的排出货表</h2>
+          <h2 class="text-[16px] font-bold text-emerald-950">车的出货单</h2>
           <p class="mt-0.5 text-[11px] text-slate-500">盐田仓 CFS 客上车（B 线车货）；W 车次手动填写，表格按 CFS + 车次命名。</p>
         </div>
         <button type="button" class="text-[13px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2">
+        <select v-model="searchField" aria-label="搜索字段" class="h-9 rounded-lg border border-emerald-200 bg-white px-2 text-[12px]">
+          <option value="all">全部</option>
+          <option value="contract">合同号</option>
+          <option value="filing">备案货号</option>
+        </select>
+        <input
+          v-model="search"
+          type="search"
+          aria-label="搜索合同号或备案货号"
+          placeholder="搜索合同号 / 备案货号"
+          class="h-9 w-[200px] rounded-lg border border-emerald-200 bg-white px-2.5 text-[12px]"
+          @keyup.enter="runSearch"
+        >
+        <button type="button" class="h-9 rounded-lg bg-emerald-700 px-3 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="searching" @click="runSearch">{{ searching ? '搜索中…' : '搜索' }}</button>
         <select v-model="selectedTaskId" aria-label="选择工厂排期" class="h-9 rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadDraft">
           <option value="">选择工厂排期</option>
           <option v-for="task in tasks" :key="task.id" :value="task.id">
@@ -124,9 +205,6 @@ onMounted(loadTasks)
           </label>
           <label class="text-[11px] text-slate-500">参考号（手动）
             <input v-model="draft.header.reference" placeholder="PXR8V6T2F2ZD" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
-          </label>
-          <label class="text-[11px] text-slate-500">TO（收件人）
-            <input v-model="draft.header.toName" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
           <label class="text-[11px] text-slate-500">车次（手动）
             <input v-model="draft.header.vehicle" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
@@ -219,5 +297,7 @@ onMounted(loadTasks)
         </div>
       </div>
     </template>
+
+    <ShippingTruckExportHistory :factory-id="factoryId" :refresh-key="historyVersion" @notify="emit('notify', $event)" />
   </section>
 </template>

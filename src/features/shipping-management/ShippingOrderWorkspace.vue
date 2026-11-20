@@ -7,7 +7,6 @@ import {
   FileSpreadsheet,
   RefreshCw,
   Search,
-  ShieldCheck,
   Truck,
   X,
 } from '@lucide/vue'
@@ -18,15 +17,14 @@ import type { ShippingFactoryProfile, ShippingOrder, ShippingOrderStatus } from 
 import { shippingOrderStatusMeta } from './contracts'
 
 const props = defineProps<{ profile: ShippingFactoryProfile }>()
-const emit = defineEmits<{ notify: [message: string]; 'open-so-sheet': []; 'open-truck-sheet': []; 'open-supplement': []; 'open-customs': [] }>()
+const emit = defineEmits<{ notify: [message: string]; 'open-so-sheet': []; 'open-truck-sheet': []; 'open-supplement': [] }>()
 
 const PAGE_SIZE = 10
 
 const actionCards = [
-  { id: 'so-export', title: 'SO排出货表', hint: '按 SO 汇总出货明细', icon: FileSpreadsheet },
-  { id: 'vehicle-export', title: '车的排出货表', hint: '按车汇总交仓出货明细', icon: Truck },
+  { id: 'so-export', title: 'SO排出货单', hint: '按 SO 汇总出货明细', icon: FileSpreadsheet },
+  { id: 'vehicle-export', title: '车的出货单', hint: '按车汇总交仓出货明细', icon: Truck },
   { id: 'si-supplement', title: '补料', hint: 'SI 截止前补料与配补料提醒', icon: CalendarClock },
-  { id: 'customs-pack', title: '通关一体化资料', hint: '报关单 / 装箱单 / 发票', icon: ShieldCheck },
 ]
 
 interface OrderFilters {
@@ -54,6 +52,32 @@ const scheduleTaskCount = ref(0)
 const scheduleLoading = ref(false)
 const scheduleError = ref('')
 const scheduleKeyword = ref('')
+
+function scheduleOrderStatus(value: string): ShippingOrderStatus {
+  return (value in shippingOrderStatusMeta ? value : '已创建') as ShippingOrderStatus
+}
+
+const importedOrders = computed<ShippingOrder[]>(() => scheduleRows.value.map((row, index) => ({
+  id: row.so_number || `schedule-${index + 1}`,
+  containerNo: '',
+  so: row.so_number || '',
+  customer: row.customer || '',
+  containerType: row.container_type || '散货',
+  departureDate: row.planned_ship_date || '',
+  siDeadline: row.si_deadline || '',
+  cutoff: row.cutoff_date || '',
+  port: row.port || '',
+  destination: row.destination_country || '',
+  plCount: 1,
+  cbm: Number(row.cbm) || 0,
+  special: row.customer_po || '',
+  status: scheduleOrderStatus(row.status),
+  contractNo: row.contract_no || '',
+  filingNo: row.product_code || '',
+  products: [{ code: row.product_code || '', name: row.product_name || '' }],
+})))
+
+const orderSource = computed<ShippingOrder[]>(() => importedOrders.value.length ? importedOrders.value : props.profile.orders)
 
 /** 一个备案货号对应多个合同号时，接口已拆行；这里标记出来便于人工核对。 */
 const multiContractCodes = computed(() => {
@@ -106,18 +130,20 @@ function scheduleStatusLabel(status: string) {
   return scheduleStatusLabels[status] ?? status
 }
 
-const ports = computed(() => [...new Set(props.profile.orders.map((order) => order.port))])
-const containerTypes = computed(() => [...new Set(props.profile.orders.map((order) => order.containerType))])
+const ports = computed(() => [...new Set(orderSource.value.map((order) => order.port))])
+const containerTypes = computed(() => [...new Set(orderSource.value.map((order) => order.containerType))])
 const statuses = computed(() => Object.keys(shippingOrderStatusMeta) as ShippingOrderStatus[])
 
 /** 所有条件都是即时筛选：下拉、日期、关键字变化后立即重新过滤。 */
 const filteredOrders = computed(() => {
   const keyword = filters.keyword.trim().toLowerCase()
-  return props.profile.orders
+  return orderSource.value
     .filter((order) => {
       if (keyword) {
         const matched = order.products.some((product) =>
           product.code.toLowerCase().includes(keyword) || product.name.toLowerCase().includes(keyword),
+        ) || [order.contractNo, order.filingNo, order.so, order.customer].some((value) =>
+          String(value || '').toLowerCase().includes(keyword),
         )
         if (!matched) return false
       }
@@ -187,10 +213,6 @@ function openAction(action: { id: string; title: string }) {
   }
   if (action.id === 'si-supplement') {
     emit('open-supplement')
-    return
-  }
-  if (action.id === 'customs-pack') {
-    emit('open-customs')
     return
   }
   preview(action.title)
@@ -290,13 +312,13 @@ function statusTone(order: ShippingOrder) {
       <div class="border-b border-slate-100 px-4 py-3 sm:px-5">
         <div class="flex flex-wrap items-center gap-2">
           <label class="relative min-w-[190px] flex-1">
-            <span class="sr-only">搜索货号或货名</span>
+            <span class="sr-only">搜索合同号或备案货号</span>
             <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
             <input
               v-model="filters.keyword"
               type="search"
-              aria-label="搜索货号或货名"
-              placeholder="搜索货号或货名"
+              aria-label="搜索合同号或备案货号"
+              placeholder="搜索合同号 / 备案货号"
               class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-[13px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-3 focus:ring-teal-500/15"
             >
           </label>
@@ -351,7 +373,7 @@ function statusTone(order: ShippingOrder) {
               <td class="px-3 py-2 tabular-nums text-slate-600">{{ order.containerNo || '—' }}</td>
               <td class="px-3 py-2">
                 <button type="button" class="font-semibold tabular-nums text-teal-700 underline-offset-2 hover:underline" :aria-label="`查看 SO ${order.so}`" @click="openDetail(order)">
-                  {{ order.so }}
+                  {{ order.contractNo || order.so }}
                 </button>
               </td>
               <td class="px-3 py-2 tabular-nums text-slate-600">{{ order.products.map((product) => product.code).join(' / ') || '—' }}</td>
@@ -381,7 +403,7 @@ function statusTone(order: ShippingOrder) {
 
       <div v-if="!pagedOrders.length" class="px-5 py-12 text-center" role="status">
         <p class="text-[13px] font-semibold text-slate-800">没有匹配的出货单</p>
-        <p class="mt-1 text-[12px] text-slate-500">调整关键字或筛选条件，或清空筛选查看全部 {{ profile.orders.length }} 票。</p>
+        <p class="mt-1 text-[12px] text-slate-500">调整关键字或筛选条件，或清空筛选查看全部 {{ orderSource.length }} 票。</p>
         <button type="button" class="mt-3 text-[12px] font-semibold text-teal-700 hover:underline" @click="clearFilters">清空筛选</button>
       </div>
 

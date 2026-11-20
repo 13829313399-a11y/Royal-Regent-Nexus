@@ -104,6 +104,11 @@ _CONTRACT = (
     re.compile(r'Contract\s*(?:No\.?|Number|#)\s*[::.#]?\s*([A-Z0-9][A-Z0-9/\-]{2,40})', re.I),
     re.compile(r'合\s*同\s*(?:编)?\s*号\s*[::\s]*([A-Z0-9][A-Z0-9/\- ]{2,60})', re.I),
 )
+_WAREHOUSE = (
+    re.compile(r'入\s*[盐蛇]?\s*港?\s*(\d{1,3})\s*号仓'),
+    re.compile(r'仓库号\s*[::]?\s*(\d{1,3})'),
+    re.compile(r'\b(\d{1,3})\s*号仓'),
+)
 _BOOKING_VESSEL = re.compile(r'([A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){1,3})\s+(\d{2}-[A-Z]{3}-\d{4})')
 _BOOKING_TYPES = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|42|45)\s*(HQ|GP|HC|OT|FR|RF)', re.I)
 _BOOKING_VOYAGE = re.compile(r'Voy\.?\s*No\.?\s*[::]\s*([A-Z0-9]+)', re.I)
@@ -230,6 +235,10 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
     result.fields['port'] = port
     result.trace.append(_trace('SHIP-PORT-001', {'port': port}))
 
+    warehouse_no = _first_group(text, _WAREHOUSE)
+    result.fields['warehouse_no'] = warehouse_no
+    result.trace.append(_trace('SHIP-WH-001', {'warehouse_no': warehouse_no}))
+
     destination = _first_group(text, _DESTINATION)
     result.fields['destination'] = destination
     result.fields['destination_country'] = _country(destination or text)
@@ -313,6 +322,10 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
     result.fields['shipment_mode'] = mode
     result.trace.append(_trace('SHIP-MODE-001', {'shipment_mode': mode}))
     result.fields['parser_version'] = PARSER_VERSION
+    for key in ('port', 'from_port'):
+        value = str(result.fields.get(key) or '').strip()
+        if 'FLAG:' in value.upper() or '码头' in value or re.match(r'^[A-Z]{4}\d', value):
+            result.fields[key] = ''
     return result
 
 

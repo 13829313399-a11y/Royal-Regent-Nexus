@@ -78,7 +78,7 @@ describe('shipping order management workspace', () => {
     expect(wrapper.text()).toContain('立即同步')
     expect(wrapper.text()).toContain('每天 08:00–23:00 每小时自动收件（华兴 / 华登 / 华康A / 华康B / 华康D）')
 
-    for (const label of ['码头', 'FROM', 'TO', '国家', '航次', '订仓号', '柜S/O', '船名', '发货商', '合同号', '合同后四位', '截止日期']) {
+    for (const label of ['码头', 'FROM', 'TO', '国家', '航次', '订仓号', '柜S/O', '船名', '发货商', '合同号', '截止日期']) {
       expect(wrapper.text()).toContain(label)
     }
     expect(wrapper.text()).toContain('Packing List 明细')
@@ -155,15 +155,13 @@ describe('shipping order management workspace', () => {
     expect(wrapper.find('[aria-label="船务指标"]').exists()).toBe(false)
 
     const cards = wrapper.findAll('[aria-label="船务作业"] button')
-    expect(cards).toHaveLength(4)
-    expect(cards[0]!.text()).toContain('SO排出货表')
+    expect(cards).toHaveLength(3)
+    expect(cards[0]!.text()).toContain('SO排出货单')
     expect(cards[0]!.text()).toContain('按 SO 汇总出货明细')
-    expect(cards[1]!.text()).toContain('车的排出货表')
+    expect(cards[1]!.text()).toContain('车的出货单')
     expect(cards[1]!.text()).toContain('按车汇总交仓出货明细')
     expect(cards[2]!.text()).toContain('补料')
     expect(cards[2]!.text()).toContain('SI 截止前补料与配补料提醒')
-    expect(cards[3]!.text()).toContain('通关一体化资料')
-    expect(cards[3]!.text()).toContain('报关单 / 装箱单 / 发票')
 
     wrapper.unmount()
   })
@@ -185,9 +183,9 @@ describe('shipping order management workspace', () => {
 
   it('filters live by keyword, port, container type, status and departure range', async () => {
     const { wrapper } = await mountOrders('huaxing')
-    const input = wrapper.get('input[aria-label="搜索货号或货名"]')
+    const input = wrapper.get('input[aria-label="搜索合同号或备案货号"]')
 
-    expect(input.attributes('placeholder')).toBe('搜索货号或货名')
+    expect(input.attributes('placeholder')).toBe('搜索合同号 / 备案货号')
     expect(wrapper.text()).toContain('共 12 条')
     expect(wrapper.findAll('button').some((button) => button.text().trim() === '搜索')).toBe(false)
 
@@ -281,14 +279,14 @@ describe('shipping order management workspace', () => {
     await rows(wrapper)[0]!.findAll('button').find((button) => button.text() === '柜单')!.trigger('click')
     expect(wrapper.text()).toContain('界面预览：柜单 SHZ8265013尚未接入后端接口')
 
-    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === 'SO排出货表')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === 'SO排出货单')!.trigger('click')
     expect(wrapper.text()).toContain('SO 出货表')
     await wrapper.findAll('button').find((button) => button.text().includes('返回工厂排期单'))!.trigger('click')
     expect(wrapper.text()).toContain('工厂货期排单')
 
-    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === '车的排出货表')!.trigger('click')
-    expect(wrapper.text()).toContain('车的排出货表')
-    expect(wrapper.text()).toContain('盐田仓 CFS')
+    await wrapper.findAll('button').find((button) => button.attributes('aria-label') === '车的出货单')!.trigger('click')
+    expect(wrapper.text()).toContain('车的出货单')
+    expect(wrapper.text()).toContain('盐田散货（W 车）')
 
     wrapper.unmount()
   })

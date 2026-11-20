@@ -1,23 +1,28 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { ChevronDown, Download, FileSpreadsheet, RefreshCw, Trash2 } from '@lucide/vue'
+import { ChevronDown, Download, FileSpreadsheet, Mail, RefreshCw, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   deleteGeneratedDoc,
   getGeneratedDoc,
   listGeneratedDocs,
+  searchScheduleProducts,
+  updateGeneratedDoc,
   type GeneratedDoc,
   type GeneratedDocDetail,
 } from '@/api/shippingMail'
 
-const props = defineProps<{ factoryId: string; module: 'so' | 'truck' | 'supplement'; label?: string }>()
+const props = defineProps<{ factoryId: string; module: 'so' | 'truck' | 'supplement'; label?: string; heading?: string; compact?: boolean }>()
 const emit = defineEmits<{
   'import-cabinet': [payload: { taskId: string; filename: string; header: Record<string, unknown>; lines: Array<Record<string, unknown>> }]
+  'import-truck': [payload: { mode: 'buzzbee' | 'bulk'; taskId: string; filename: string; header: Record<string, unknown>; lines: Array<Record<string, unknown>> }]
 }>()
 
 const docs = ref<GeneratedDoc[]>([])
 const loading = ref(false)
 const message = ref('')
+const lookupWarning = ref('')
+const docIssues = ref<Record<string, boolean>>({})
 const pendingId = ref('')
 const busyId = ref('')
 const selectedDocIds = ref<string[]>([])
@@ -28,6 +33,7 @@ const selectedId = ref('')
 const detail = ref<GeneratedDocDetail | null>(null)
 const showDetail = ref(false)
 const loadingDetail = ref(false)
+const saving = ref(false)
 
 const isSo = computed(() => props.module === 'so')
 const selectedDoc = computed(() => docs.value.find((doc) => doc.id === selectedId.value) ?? null)
@@ -93,12 +99,34 @@ const fields: CabinetField[] = [
   { key: 'containerType', label: '柜型', hint: '邮件自动识别' },
   { key: 'tradeTerm', label: '成交方式', hint: '手动', type: 'select', options: ['FOB', 'EXW', 'CIF'] },
   { key: 'country', label: '出口国家', hint: '邮件自动识别' },
-  { key: 'destination', label: '出港口', hint: '邮件自动识别' },
-  { key: 'bookingNo', label: '订仓号', hint: '邮件自动识别' },
+  { key: 'originPort', label: '出港口', hint: '邮件自动识别', type: 'select', options: ['盐田', '蛇口'] },
+  { key: 'bookingNo', label: '订舱号/SO', hint: '邮件自动识别' },
   { key: 'containerNo', label: '柜号', hint: '邮件自动识别' },
   { key: 'tareWeight', label: '柜重', hint: '手动' },
-  { key: 'shippingClerk', label: '船务', hint: '手动', type: 'select', options: ['农建壮', '小美', 'SO'] },
+  { key: 'brandNote', label: '品牌', hint: '邮件识别/合同带出' },
+  { key: 'shippingClerk', label: '船务', hint: '手动', type: 'select', options: ['农建壮', '小美'] },
 ]
+
+const truckFields: CabinetField[] = [
+  { key: 'shipper', label: '发货商', hint: '源固定' },
+  { key: 'consignee', label: '收货商', hint: '邮件自动识别' },
+  { key: 'contractNo', label: '合同号', hint: '邮件识别·合同带出' },
+  { key: 'bookingNo', label: '订舱号', hint: '邮件自动识别' },
+  { key: 'filingCode', label: '备案货号', hint: '手动' },
+  { key: 'poNo', label: '箱唛（PO）', hint: '邮件识别·合同带出' },
+  { key: 'country', label: '国家', hint: '邮件自动识别' },
+  { key: 'brandName', label: '品牌', hint: '邮件识别/合同带出' },
+  { key: 'vehicle', label: '车头注明（车次）', hint: '手动' },
+  { key: 'arrivalCutoff', label: '到货截止日期', hint: '邮件自动识别' },
+  { key: 'sailingDate', label: '发车日期', hint: '邮件自动识别', type: 'date' },
+  { key: 'transportCompany', label: '运输公司', hint: '邮件自动识别' },
+  { key: 'tradeTerm', label: '成交方式', hint: '邮件自动识别', type: 'select', options: ['FOB', 'EXW', 'CIF'] },
+  { key: 'originPort', label: '出港口', hint: '邮件自动识别' },
+  { key: 'tableName', label: '表格名称', hint: '手动' },
+  { key: 'cutoff', label: '截单日期', hint: '邮件自动识别' },
+]
+
+const displayFields = computed(() => props.module === 'truck' ? truckFields : fields)
 
 const form = reactive<Record<string, string>>({})
 
@@ -106,8 +134,34 @@ function importedKey(id: string) {
   return `shipping-cabinet-imported:${props.factoryId}:${id}`
 }
 
+function markImported(docId: string) {
+  imported.value = { ...imported.value, [docId]: true }
+  window.localStorage.setItem(importedKey(docId), '1')
+}
+
 function isImported(doc: GeneratedDoc | null) {
   return Boolean(doc && imported.value[doc.id])
+}
+
+function displayName(doc: GeneratedDoc) {
+  if (props.module === 'truck' && doc.brand_name?.trim()) return doc.brand_name.trim()
+  return doc.email_name?.trim() || doc.filename
+}
+
+function attachmentLabel(doc: GeneratedDoc) {
+  const suffix = doc.email_name?.trim()
+  return suffix && suffix !== doc.filename ? `${doc.filename} · ${suffix}` : doc.filename
+}
+
+function attachmentIssue(doc: GeneratedDoc) {
+  return Boolean(docIssues.value[doc.id])
+}
+
+function downloadName(doc: GeneratedDoc) {
+  const emailName = doc.email_name?.trim()
+  if (!emailName) return doc.filename
+  const ext = doc.filename.match(/\.[^.]+$/)?.[0] || ''
+  return `${emailName}${ext}`
 }
 
 function downloadUrl(doc: GeneratedDoc) {
@@ -124,27 +178,93 @@ function fillForm(source: GeneratedDocDetail) {
   form.shipper = value(header.shipper) || '华兴玩具制品（河源）有限公司'
   form.consignee = value(header.consignee)
   form.cutoff = value(header.cutoff)
-  form.contractNo = value(header.contractNo) || value(source.lines?.[0]?.contract)
+  const lineContracts = [...new Set((source.lines ?? []).map((line) => value(line.contract).trim()).filter(Boolean))]
+  const values = [...new Set([value(header.contractNo).trim(), ...lineContracts].filter(Boolean))]
+  let combinedContract = ''
+  for (const contract of values) {
+    if (!combinedContract) {
+      combinedContract = contract
+    } else if (combinedContract.includes(contract)) {
+      continue
+    } else if (contract.startsWith(combinedContract)) {
+      combinedContract = contract
+    } else if (/^\d{1,6}$/.test(contract)) {
+      combinedContract += contract
+    } else {
+      combinedContract += ` ${contract}`
+    }
+  }
+  form.contractNo = combinedContract
   form.vesselName = value(header.vessel)
   form.voyageNo = value(header.voyage)
   form.transportCompany = value(header.transportCompany)
   form.containerType = value(header.containerType)
   form.tradeTerm = value(header.tradeTerm) || 'FOB'
   form.country = value(header.destinationCountry)
-  form.destination = value(header.destination) || value(header.to_port)
+  form.originPort = value(header.originPort) || '盐田'
   form.bookingNo = value(header.bookingNo) || value(header.soNo)
   form.containerNo = value(header.containerNo)
   form.tareWeight = value(header.tareWeight)
   form.shippingClerk = value(header.shippingClerk) || value(header.preparer)
+  form.soNo = value(header.soNo)
+  form.poNo = value(header.poNo)
+  form.bookingNo = value(header.bookingNo)
+  form.orderNo = value(header.orderNo)
+  form.productionNo = value(header.productionNo)
+  form.filingCode = value(header.filingCode)
+  form.carrierName = value(header.carrierName)
+  form.sailingDate = value(header.sailingDate) || value(header.sheetDate)
+  form.remark = value(header.remark)
+  form.brandNote = value(header.brandNote)
+  form.brandName = value(header.brandName) || value(header.brandNote)
+  form.warehouseNo = value(header.warehouseNo) || value(header.warehouse_no)
+  form.country = value(header.country) || value(header.destinationCountry)
+  form.arrivalCutoff = value(header.arrivalCutoff) || value(header.cutoff)
+  form.vehicle = value(header.vehicle)
+  form.truckType = value(header.truckType)
+  form.tableName = value(header.tableName)
+  form.carrierName = value(header.transportCompanyName) || value(header.carrierName)
+  form.transportCompany = value(header.transport) || value(header.transportCompany)
+}
+
+async function enrichFromSchedule() {
+  const query = [form.soNo, form.bookingNo, form.contractNo, form.filingCode, form.poNo]
+    .map((item) => String(item || '').trim())
+    .find(Boolean)
+  if (!query) return
+  try {
+    const items = await searchScheduleProducts(props.factoryId, query)
+    const item = items[0]
+    if (!item) return
+    if (!String(form.contractNo || '').trim() && item.contract_no) form.contractNo = String(item.contract_no)
+    if (!String(form.poNo || '').trim() && item.customer_po) form.poNo = String(item.customer_po)
+    if (!String(form.filingCode || '').trim() && item.product_code) form.filingCode = String(item.product_code)
+    if (!String(form.country || '').trim() && item.country) form.country = String(item.country)
+    if (!String(form.brandName || '').trim() && item.brand) form.brandName = String(item.brand)
+    if (!String(form.brandNote || '').trim() && item.brand) form.brandNote = String(item.brand)
+    form.soNo = String(form.soNo || item.so_number || '')
+    if (form.contractNo || form.poNo) lookupWarning.value = ''
+  } catch {
+    // silent enrichment: manual fields remain editable
+  }
 }
 
 async function loadDetail(doc: GeneratedDoc | null) {
   detail.value = null
+  lookupWarning.value = ''
   if (!doc) return
   loadingDetail.value = true
   try {
     detail.value = await getGeneratedDoc(props.factoryId, doc.id)
     fillForm(detail.value)
+    void enrichFromSchedule()
+    if (props.module === 'truck' && !String(form.poNo || '').trim() && String(form.contractNo || '').trim()) {
+      void onContractChange()
+    } else if (!String(form.contractNo || '').trim() && String(form.filingCode || '').trim()) {
+      void onFilingCodeChange()
+    } else if (String(form.contractNo || '').trim() && !String(form.brandNote || '').trim()) {
+      void onContractChange()
+    }
   } catch (error) {
     const text = getApiErrorMessage(error)
     if (text.includes('生成文件不存在')) {
@@ -198,25 +318,266 @@ function buildHeader(): Record<string, unknown> {
     containerType: form.containerType,
     tradeTerm: form.tradeTerm,
     destinationCountry: form.country,
-    destination: form.destination,
+    originPort: form.originPort,
     containerNo: form.containerNo,
     tareWeight: form.tareWeight,
     shippingClerk: form.shippingClerk,
+    soNo: form.soNo || form.bookingNo,
+    poNo: form.poNo,
+    orderNo: form.orderNo,
+    productionNo: form.productionNo,
+    filingCode: form.filingCode,
+    carrierName: form.carrierName,
+    sailingDate: form.sailingDate,
+    remark: form.remark,
+    brandNote: form.brandNote,
+    brandName: form.brandName,
+    country: form.country,
+    arrivalCutoff: form.arrivalCutoff,
+    vehicle: form.vehicle,
+    truckType: form.truckType,
+    tableName: form.tableName,
+    warehouseNo: form.warehouseNo,
+    transportCompanyName: form.carrierName,
     preparer: form.shippingClerk,
   }
 }
 
-function importCabinet() {
+async function validateScheduleImport(contractValue: string, lines: Array<Record<string, unknown>>): Promise<boolean> {
+  const contract = String(contractValue || '').trim()
+  if (!contract) {
+    message.value = '请先填写与厂区总排期一致的合同号再导入'
+    return false
+  }
+  const codes = [...new Set(lines.map((line) => String(line.product_code || line.filingCode || line.declareCode || '').trim()).filter(Boolean))]
+  if (!codes.length) {
+    message.value = '该文件没有备案货号/产品编号，不能从厂区总排期导入'
+    return false
+  }
+  try {
+    const items = await searchScheduleProducts(props.factoryId, contract)
+    const matched = items.filter((item) => String(item.contract_no || '').trim().toLowerCase() === contract.toLowerCase())
+    if (!matched.length) {
+      message.value = `合同号 ${contract} 在厂区总排期不存在，不能导入`
+      return false
+    }
+    const missing = codes.filter((code) => !matched.some((item) => String(item.product_code || '').trim() === code))
+    if (missing.length) {
+      message.value = `产品编号 ${missing.join('、')} 不属于合同号 ${contract}，不能导入`
+      return false
+    }
+    return true
+  } catch (error) {
+    message.value = `校验厂区总排期失败：${getApiErrorMessage(error)}`
+    return false
+  }
+}
+
+async function importCabinet() {
   if (!detail.value) return
+  const lines = detail.value.lines ?? []
+  if (!await validateScheduleImport(form.contractNo || String(detail.value.header?.contractNo || ''), lines as Array<Record<string, unknown>>)) return
   emit('import-cabinet', {
     taskId: detail.value.task_id,
     filename: detail.value.filename,
     header: buildHeader(),
-    lines: detail.value.lines ?? [],
+    lines,
   })
   imported.value = { ...imported.value, [detail.value.id]: true }
   window.localStorage.setItem(importedKey(detail.value.id), '1')
   message.value = `已把 ${detail.value.filename} 的表头与明细导入柜货单。`
+}
+
+async function saveData() {
+  if (!selectedDoc.value || !detail.value) return
+  saving.value = true
+  try {
+    detail.value = await updateGeneratedDoc(props.factoryId, selectedDoc.value.id, buildHeader(), detail.value.lines ?? [])
+    message.value = `已保存 ${selectedDoc.value.filename} 的资料。`
+  } catch (error) {
+    message.value = `保存失败：${getApiErrorMessage(error)}`
+  } finally {
+    saving.value = false
+  }
+}
+
+async function importTruck(mode: 'buzzbee' | 'bulk') {
+  if (!selectedDoc.value || !detail.value) return
+  const lines = detail.value.lines ?? []
+  if (!await validateScheduleImport(form.contractNo || String(detail.value.header?.contractNo || ''), lines as Array<Record<string, unknown>>)) return
+  emit('import-truck', {
+    mode,
+    taskId: detail.value.task_id,
+    filename: detail.value.filename,
+    header: buildHeader(),
+    lines,
+  })
+  markImported(detail.value.id)
+  message.value = `已把 ${detail.value.filename} 导到${mode === 'buzzbee' ? '运输公司派车' : '盐田散货W车'}。`
+}
+
+function onFieldChange(key: string) {
+  if (key === 'filingCode') void onFilingCodeChange()
+  if (key === 'contractNo') void onContractChange()
+}
+
+async function onContractChange() {
+  const contract = String(form.contractNo || '').trim()
+  if (!contract) return
+  lookupWarning.value = ''
+  try {
+    const items = await searchScheduleProducts(props.factoryId, contract)
+    const matched = items.find((item) => String(item.contract_no || '').trim().toLowerCase() === contract.toLowerCase())
+    if (!matched) {
+      if (String(form.filingCode || '').trim()) {
+        await onFilingCodeChange()
+        if (String(form.contractNo || '').trim()) return
+      }
+      lookupWarning.value = `未找到合同号 ${contract} 对应的厂区总排期`
+      if (selectedDoc.value) docIssues.value = { ...docIssues.value, [selectedDoc.value.id]: true }
+      return
+    }
+    if (!String(form.poNo || '').trim()) form.poNo = String(matched.customer_po || '')
+    if (!form.filingCode) form.filingCode = String(matched.product_code || '')
+    if (!String(form.brandNote || '').trim() && matched.brand) form.brandNote = String(matched.brand)
+    if (!String(form.brandName || '').trim() && matched.brand) form.brandName = String(matched.brand)
+    if (selectedDoc.value) {
+      const next = { ...docIssues.value }
+      delete next[selectedDoc.value.id]
+      docIssues.value = next
+    }
+    message.value = `已按合同号 ${contract} 带出 PO（箱唛）和品牌。`
+  } catch (error) {
+    lookupWarning.value = `合同号 ${contract} 识别失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function onFilingCodeChange() {
+  const code = String(form.filingCode || '').trim()
+  if (!code) return
+  try {
+    const items = await searchScheduleProducts(props.factoryId, code)
+    const item = items[0]
+    if (!item) {
+      message.value = `未找到备案货号 ${code} 对应的业务排期`
+      return
+    }
+    form.contractNo = String(item.contract_no || '')
+    if (!String(form.poNo || '').trim()) form.poNo = String(item.customer_po || '')
+    if (!String(form.brandNote || '').trim() && item.brand) form.brandNote = String(item.brand)
+    if (!String(form.brandName || '').trim() && item.brand) form.brandName = String(item.brand)
+    form.soNo = String(item.so_number || form.soNo || '')
+    form.country = String(item.country || form.country || '')
+    message.value = `已按备案货号 ${code} 带出合同号、PO、SO。`
+  } catch (error) {
+    message.value = `识别备案货号失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function importTruckDoc(doc: GeneratedDoc) {
+  try {
+    const data = await getGeneratedDoc(props.factoryId, doc.id)
+    if (!await validateScheduleImport(String(data.header?.contractNo || ''), (data.lines ?? []) as Array<Record<string, unknown>>)) return
+    emit('import-truck', {
+      mode: 'bulk',
+      taskId: data.task_id,
+      filename: data.filename,
+      header: data.header ?? {},
+      lines: data.lines ?? [],
+    })
+    markImported(data.id)
+    message.value = `已把 ${doc.filename} 导入盐田散货W车。`
+  } catch (error) {
+    message.value = `导入失败：${getApiErrorMessage(error)}`
+  }
+}
+
+function exportEmail() {
+  if (!selectedDoc.value || !detail.value) return
+  const subject = form.subject || `${props.module === 'truck' ? 'Truck' : 'Shipment'} Advice ${form.soNo || form.contractNo || ''}`.trim()
+  const lines = detail.value.lines ?? []
+  const summary = lines.map((line) => {
+    const row = line as Record<string, unknown>
+    return `- ${String(row.product_code || row.filingCode || '')} | ${String(row.product_name || row.description || '')} | qty ${String(row.quantity ?? '')} | ctns ${String(row.cartons ?? '')}`
+  }).join('\n')
+  const body = [
+    `合同号: ${form.contractNo || ''}`,
+    `订单号: ${form.orderNo || ''}`,
+    `备案货号: ${form.filingCode || ''}`,
+    `PO（箱唛）: ${form.poNo || ''}`,
+    `SO: ${form.soNo || ''}`,
+    `订舱号: ${form.bookingNo || ''}`,
+    `船名: ${form.vesselName || ''}`,
+    `航次: ${form.voyageNo || ''}`,
+    `运输公司: ${form.transportCompany || ''}`,
+    `截单日期: ${form.sailingDate || form.cutoff || ''}`,
+    `装货港: ${form.originPort || ''}`,
+    `出口国家: ${form.country || ''}`,
+    '',
+    '明细:',
+    summary,
+  ].join('\n')
+  const eml = [
+    `From: ${form.shipper || 'shipping@example.com'}`,
+    `To: ${form.consignee || 'customer@example.com'}`,
+    `Subject: ${subject}`,
+    `Date: ${new Date().toUTCString()}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    '',
+    body,
+  ].join('\r\n')
+  const blob = new Blob([eml], { type: 'message/rfc822' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${selectedDoc.value.filename.replace(/\.[^.]+$/, '')}_邮件资料.eml`
+  link.click()
+  URL.revokeObjectURL(url)
+  message.value = `已导出邮件 ${link.download}`
+}
+
+async function exportEmailDoc(doc: GeneratedDoc) {
+  try {
+    const data = await getGeneratedDoc(props.factoryId, doc.id)
+    const header = data.header ?? {}
+    const lines = data.lines ?? []
+    const value = (key: string) => String(header[key] ?? '').trim()
+    const subject = doc.email_name?.trim() || `Shipment Advice ${value('soNo') || value('contractNo')}`
+    const summary = lines.map((line) => {
+      const row = line as Record<string, unknown>
+      return `- ${String(row.product_code || row.filingCode || '')} | ${String(row.product_name || row.description || '')} | qty ${String(row.quantity ?? '')} | ctns ${String(row.cartons ?? '')}`
+    }).join('\n')
+    const body = [
+      `合同号: ${value('contractNo')}`,
+      `订单号: ${value('orderNo')}`,
+      `备案货号: ${value('filingCode')}`,
+      `PO（箱唛）: ${value('poNo')}`,
+      `SO: ${value('soNo')}`,
+      `订舱号: ${value('bookingNo')}`,
+      `截单日期: ${value('sailingDate') || value('cutoff')}`,
+      `出口国家: ${value('destinationCountry') || value('country')}`,
+      '', '明细:', summary,
+    ].join('\n')
+    const eml = [
+      `From: ${value('shipper') || 'shipping@example.com'}`,
+      `To: ${value('consignee') || 'customer@example.com'}`,
+      `Subject: ${subject}`,
+      `Date: ${new Date().toUTCString()}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      '', body,
+    ].join('\r\n')
+    const url = URL.createObjectURL(new Blob([eml], { type: 'message/rfc822' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${subject}.eml`
+    link.click()
+    URL.revokeObjectURL(url)
+    message.value = `已导出邮件 ${link.download}`
+  } catch (error) {
+    message.value = `导出邮件失败：${getApiErrorMessage(error)}`
+  }
 }
 
 function askDelete(doc: GeneratedDoc) {
@@ -249,7 +610,7 @@ watch(() => props.factoryId, load)
     <header class="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
       <div class="flex items-center gap-2">
         <FileSpreadsheet class="size-4 text-emerald-600" aria-hidden="true" />
-        <h3 class="text-[13px] font-bold text-slate-800">{{ isSo ? '邮件信息资料' : `已自动生成${label ? ` · ${label}` : ''}` }}</h3>
+        <h3 class="text-[13px] font-bold text-slate-800">{{ heading || (isSo ? '邮件信息资料' : `已自动生成${label ? ` · ${label}` : ''}`) }}</h3>
         <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-emerald-700">{{ docs.length }}</span>
       </div>
       <div class="flex items-center gap-2">
@@ -280,13 +641,13 @@ watch(() => props.factoryId, load)
 
     <p v-if="message" class="break-all px-4 py-2 text-[11px]" :class="message.startsWith('已') ? 'text-emerald-700' : 'text-rose-600'">{{ message }}</p>
 
-    <template v-if="isSo && docs.length">
-      <div v-if="docs.length > 1" class="flex flex-wrap gap-2 border-b border-slate-100 px-4 py-2">
-        <div v-for="doc in docs" :key="doc.id" class="inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px]" :class="doc.id === selectedId ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200'">
+    <template v-if="!compact && docs.length">
+      <div v-if="docs.length > 0" class="flex flex-wrap gap-2 border-b border-slate-100 px-4 py-2">
+        <div v-for="doc in docs" :key="doc.id" class="inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px]" :class="doc.id === selectedId ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-400/30' : 'border-slate-200'">
           <input type="checkbox" :aria-label="`选择 ${doc.filename}`" :checked="selectedDocIds.includes(doc.id)" @change="toggleDoc(doc.id)">
           <button type="button" class="inline-flex max-w-full items-center gap-1.5" :class="doc.id === selectedId ? 'text-emerald-800' : 'text-slate-600'" @click="selectDoc(doc)">
-            <span v-if="!isImported(doc)" class="size-1.5 rounded-full bg-rose-500"></span>
-            <span class="truncate">{{ doc.filename }}</span>
+            <span v-if="!isImported(doc) || attachmentIssue(doc)" class="size-1.5 shrink-0 rounded-full bg-rose-500"></span>
+            <span class="truncate">{{ attachmentLabel(doc) }}</span>
           </button>
         </div>
       </div>
@@ -294,15 +655,19 @@ watch(() => props.factoryId, load)
       <div v-if="selectedDoc" class="p-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
-            <input v-if="docs.length === 1" type="checkbox" :aria-label="`选择 ${selectedDoc.filename}`" :checked="selectedDocIds.includes(selectedDoc.id)" @change="toggleDoc(selectedDoc.id)">
+            <input v-if="docs.length === 1" type="checkbox" :aria-label="`选择 ${displayName(selectedDoc)}`" :checked="selectedDocIds.includes(selectedDoc.id)" @change="toggleDoc(selectedDoc.id)">
             <span v-if="!isImported(selectedDoc)" class="size-2 rounded-full bg-rose-500" aria-label="待确认柜货单"></span>
-            {{ selectedDoc.filename }}
+            <span class="truncate" :title="selectedDoc.filename">{{ attachmentLabel(selectedDoc) }}</span>
           </div>
           <span class="text-[10px] text-slate-400 tabular-nums">{{ selectedDoc.created_at.replace('T', ' ') }}</span>
         </div>
 
+        <p v-if="lookupWarning" class="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-semibold text-rose-700" role="alert">
+          {{ lookupWarning }}
+        </p>
+
         <div class="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          <label v-for="field in fields" :key="field.key" class="block">
+          <label v-for="field in displayFields" :key="field.key" class="block">
             <span class="mb-0.5 flex items-center gap-1 text-[9px] font-medium text-slate-400">
               {{ field.label }}
               <span class="rounded bg-slate-100 px-1 py-0.5 text-[8px] text-slate-500">{{ field.hint }}</span>
@@ -320,23 +685,35 @@ watch(() => props.factoryId, load)
               :type="field.type === 'date' ? 'date' : 'text'"
               :placeholder="field.hint === '手动' ? '装柜后补录' : ''"
               class="h-8 w-full rounded-md border border-slate-200 bg-slate-50 px-2 text-[11px] text-slate-800 outline-none placeholder:text-slate-300 focus:border-emerald-400"
+              @change="onFieldChange(field.key)"
             >
           </label>
         </div>
 
         <div class="mt-2 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
           <button
+            v-if="isSo"
             type="button"
             class="inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[10px] font-semibold text-white disabled:opacity-50"
             :class="isImported(selectedDoc) ? 'bg-emerald-600' : 'bg-rose-600'"
             :disabled="busyId === selectedDoc.id || loadingDetail"
             @click="importCabinet"
           >
-            {{ isImported(selectedDoc) ? '已导入柜货单' : '导入柜货单' }}
+            {{ isImported(selectedDoc) ? '已导入柜表' : '导入柜表' }}
           </button>
-          <a :href="downloadUrl(selectedDoc)" :download="selectedDoc.filename" target="_blank" rel="noopener" class="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-200 px-2.5 text-[10px] font-semibold text-emerald-700">
+          <button
+            v-else
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-md bg-emerald-600 px-3 text-[10px] font-semibold text-white disabled:opacity-50"
+            :disabled="loadingDetail"
+            @click="importTruck('bulk')"
+          >导入盐田散货W车</button>
+          <a :href="downloadUrl(selectedDoc)" :download="downloadName(selectedDoc)" target="_blank" rel="noopener" class="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-200 px-2.5 text-[10px] font-semibold text-emerald-700">
             <Download class="size-3" />下载
           </a>
+          <button type="button" class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2.5 text-[10px] font-semibold text-slate-700" :disabled="!detail" @click="exportEmail">
+            <Mail class="size-3" />导出邮件
+          </button>
           <button type="button" class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2.5 text-[10px] font-semibold text-slate-600" @click="showDetail = !showDetail">
             <ChevronDown class="size-3" :class="showDetail ? 'rotate-180' : ''" />打开详情信息
           </button>
@@ -368,14 +745,16 @@ watch(() => props.factoryId, load)
       <div v-if="docs.length" class="divide-y divide-slate-100">
         <div v-for="doc in docs" :key="doc.id" class="flex flex-wrap items-center justify-between gap-2 px-4 py-1.5 text-[11px]">
           <span class="flex min-w-0 items-center gap-2">
-            <input type="checkbox" :aria-label="`选择 ${doc.filename}`" :checked="selectedDocIds.includes(doc.id)" @change="toggleDoc(doc.id)">
-            <span class="truncate font-semibold text-slate-700">{{ doc.filename }}</span>
+            <input type="checkbox" :aria-label="`选择 ${displayName(doc)}`" :checked="selectedDocIds.includes(doc.id)" @change="toggleDoc(doc.id)">
+            <span class="truncate font-semibold text-slate-700" :title="doc.filename">{{ displayName(doc) }}</span>
           </span>
           <span class="text-slate-400 tabular-nums">{{ doc.created_at.replace('T', ' ') }}</span>
           <div class="flex items-center gap-3">
-            <a :href="downloadUrl(doc)" :download="doc.filename" target="_blank" rel="noopener" class="inline-flex items-center gap-1 font-semibold text-emerald-700">
+            <a :href="downloadUrl(doc)" :download="downloadName(doc)" target="_blank" rel="noopener" class="inline-flex items-center gap-1 font-semibold text-emerald-700">
               <Download class="size-3" />下载
             </a>
+            <button v-if="module === 'truck'" type="button" class="inline-flex items-center gap-1 font-semibold text-emerald-700" @click="importTruckDoc(doc)">导入</button>
+            <button v-if="module === 'truck'" type="button" class="inline-flex items-center gap-1 font-semibold text-slate-600" @click="exportEmailDoc(doc)">导出邮件</button>
             <button
               v-if="pendingId === doc.id"
               type="button"

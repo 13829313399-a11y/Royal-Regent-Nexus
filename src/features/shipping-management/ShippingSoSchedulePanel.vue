@@ -33,11 +33,11 @@ function toLine(line: Record<string, unknown>): LoadingLine {
     netPerCarton: line.netPerCarton == null ? null : Number(line.netPerCarton),
     description: text(line.description),
     department: text(line.department) || 'W',
+    cartonMark: text(line.cartonMark),
   }
 }
 
-function importCabinet(payload: { taskId: string; filename: string; header: Record<string, unknown>; lines: Array<Record<string, unknown>> }) {
-  const source = payload.header
+async function importCabinet(payload: { taskId: string; filename: string; header: Record<string, unknown>; lines: Array<Record<string, unknown>> }) {  const source = payload.header
   const header: LoadingHeader = {
     shipper: text(source.shipper) || '华兴玩具制品（河源）有限公司',
     consignee: text(source.consignee),
@@ -61,14 +61,20 @@ function importCabinet(payload: { taskId: string; filename: string; header: Reco
     tareWeight: text(source.tareWeight),
     destinationCountry: text(source.destinationCountry),
     bookingDate: text(source.bookingDate),
+    bookingNo: text(source.bookingNo),
+    tradeTerm: text(source.tradeTerm) || 'FOB',
+    shippingClerk: text(source.shippingClerk),
+    truckHead: text(source.truckHead),
+    cartonMark: text(source.cartonMark),
     photoNote: text(source.photoNote) || '注，要照相',
     department: 'W',
   }
+  const lines = payload.lines.map(toLine)
   cabinetDraft.value = {
     number: text(source.number),
     taskId: payload.taskId,
     header,
-    lines: payload.lines.map(toLine),
+    lines,
     totals: {},
   }
   emit('notify', `已把 ${payload.filename} 的表头与明细导入柜货单，请核对后导出。`)
@@ -83,7 +89,12 @@ function importCabinet(payload: { taskId: string; filename: string; header: Reco
         <div class="flex flex-wrap items-center gap-2">
           <h2 class="text-[14px] font-bold text-emerald-950">SO 出货表</h2>
           <p class="text-[10px] text-slate-500">柜货单模块 · 使用 DK 盐田 W11 柜模板，填色与公式与原表一致</p>
-          <span class="inline-flex h-7 items-center rounded-md bg-emerald-700 px-2.5 text-[11px] font-semibold text-white">柜货单模块</span>
+          <div class="inline-flex rounded-lg border border-emerald-200 bg-white p-0.5">
+            <button
+              type="button"
+              class="h-7 rounded-md bg-emerald-700 px-2.5 text-[11px] font-semibold text-white"
+            >柜表</button>
+          </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <input

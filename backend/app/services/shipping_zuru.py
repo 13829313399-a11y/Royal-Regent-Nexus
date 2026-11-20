@@ -1,11 +1,13 @@
 """ZURU container cargo sheets: draft from a shipping task and .xlsx export."""
 import io
 import json
+import re
 from datetime import date
 from uuid import uuid4
 
 from fastapi import HTTPException
-from openpyxl import Workbook
+from pathlib import Path
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from sqlalchemy import select
@@ -134,6 +136,116 @@ def draft_zuru(db, user: AuthContext, factory_id: str, task_id: str) -> dict:
 def _border():
     thin = Side(style='thin', color='999999')
     return Border(left=thin, right=thin, top=thin, bottom=thin)
+
+
+HQ_TEMPLATE = Path(__file__).resolve().parent.parent / 'templates' / 'zuru_hq_w187.xlsx'
+
+
+def _date_value(value):
+    try:
+        return date.fromisoformat(str(value or '')[:10])
+    except ValueError:
+        return None
+
+
+def render_hq_xlsx(payload: dict) -> bytes:
+    """Render the ZURU W-series HQ workbook from the supplied W187 layout."""
+    header = payload.get('header') or {}
+    lines = payload.get('lines') or []
+    if len(lines) > 9:
+        raise HTTPException(422, 'HQ柜货模板最多支持 9 行明细')
+    if not HQ_TEMPLATE.exists():
+        return render_zuru_xlsx(payload)
+
+    wb = load_workbook(HQ_TEMPLATE)
+    ws = wb['HQ柜货单']
+    for row in range(9, 18):
+        for col in range(1, 21):
+            ws.cell(row=row, column=col).value = None
+    for cell in ('C1', 'C2', 'C3', 'L3', 'L4', 'L5', 'L6', 'A7', 'E7', 'P7',
+                 'D14', 'D15', 'D16', 'D17', 'O20', 'K21'):
+        ws[cell] = None
+
+    to_names = [str(name).strip() for name in (header.get('toNames') or []) if str(name).strip()]
+    if len(to_names) == 1:
+        ws['C1'] = to_names[0]
+    elif len(to_names) >= 2:
+        ws['C1'] = to_names[0]
+        ws['C3'] = to_names[1]
+        if len(to_names) >= 3:
+            ws['C2'] = to_names[1]
+            ws['C3'] = to_names[2]
+    number = str(header.get('number') or '').strip()
+    if number:
+        match = re.match(r'^[Ww]\s*(\d+)$', number)
+        ws['L3'] = f'车头注明   W {match.group(1)}柜' if match else f'车头注明   {number}柜'
+    ws['L4'] = str(header.get('soNo') or '')
+    ws['L5'] = str(header.get('vesselVoyage') or '')
+    ws['L6'] = str(header.get('blNo') or '')
+    sheet_date = _date_value(header.get('sheetDate'))
+    if sheet_date:
+        ws['A7'] = sheet_date
+        ws['A7'].number_format = 'yyyy/m/d'
+    transport = str(header.get('transportCompany') or '')
+    container = str(header.get('containerType') or '40HQ')
+    container_label = re.sub(r'GP|HC', 'HQ', container, flags=re.IGNORECASE)
+    if 'HQ' in container.upper() and "'HQ" not in container_label:
+        container_label = container_label.replace('HQ', "'HQ")
+    ws['E7'] = f"{transport}派{container_label}柜出货如下"
+    ws['P7'] = f"成交方式：{header.get('tradeTerm') or 'FOB'}"
+
+    for index, line in enumerate(lines):
+        row = 9 + index
+        coefficient = line.get('coefficient')
+        cartons = line.get('cartons')
+        gross_per = line.get('grossPerCarton')
+        net_per = line.get('netPerCarton')
+        cbm_per = line.get('cbmPerCarton')
+        ws.cell(row=row, column=1, value=index + 1)
+        ws.cell(row=row, column=2, value=line.get('tradingHouse') or '')
+        ws.cell(row=row, column=3, value=line.get('contract') or '')
+        ws.cell(row=row, column=4, value=line.get('filingCode') or '')
+        ws.cell(row=row, column=5, value=line.get('declareCode') or '')
+        if coefficient and cartons:
+            ws.cell(row=row, column=6, value=f'=G{row}*{coefficient}')
+        else:
+            ws.cell(row=row, column=6, value=line.get('quantity'))
+        ws.cell(row=row, column=7, value=cartons)
+        if gross_per and cartons:
+            ws.cell(row=row, column=9, value=f'=N{row}*G{row}')
+        else:
+            ws.cell(row=row, column=9, value=line.get('grossWeight'))
+        if net_per and cartons:
+            ws.cell(row=row, column=10, value=f'=O{row}*G{row}')
+        else:
+            ws.cell(row=row, column=10, value=line.get('netWeight'))
+        ws.cell(row=row, column=11, value=line.get('cbm'))
+        ws.cell(row=row, column=12, value=line.get('country') or '')
+        ws.cell(row=row, column=13, value=line.get('brand') or '')
+        ws.cell(row=row, column=14, value=gross_per)
+        ws.cell(row=row, column=15, value=net_per)
+        ws.cell(row=row, column=16, value=cbm_per)
+        ws.cell(row=row, column=17, value=line.get('remark') or '')
+        ws.cell(row=row, column=18, value=line.get('po') or '')
+
+    extras = [
+        ('D14', '车牌', header.get('plate')),
+        ('D15', '柜号', header.get('containerNo')),
+        ('D16', '封条号', header.get('sealNo')),
+        ('D17', '柜重', header.get('tareWeight')),
+    ]
+    for cell, label, value in extras:
+        if str(value or '').strip():
+            ws[cell] = f'{label}：{value}'
+    ws['L20'] = '船务：'
+    ws['O20'] = str(header.get('fromName') or '农建壮')
+    if sheet_date:
+        ws['K21'] = sheet_date
+        ws['K21'].number_format = 'yyyy/m/d'
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 def render_zuru_xlsx(payload: dict) -> bytes:

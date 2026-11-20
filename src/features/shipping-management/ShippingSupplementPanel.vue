@@ -5,21 +5,44 @@ import { getApiErrorMessage } from '@/lib/http'
 import {
   draftSupplementSheet,
   exportSupplementSheet,
+  deleteGeneratedDoc,
+  downloadGeneratedDoc,
+  getGeneratedDoc,
+  listGeneratedDocs,
+  openGeneratedDoc,
+  type GeneratedDoc,
   type SupplementDraft,
   type SupplementLine,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
-import ShippingGeneratedDocs from './ShippingGeneratedDocs.vue'
+import type { LoadingSheetDetail } from '@/api/shippingMail'
 
 const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string]; back: [] }>()
 
 const tasks = ref<ShippingScheduleTask[]>([])
+const sheets = ref<GeneratedDoc[]>([])
 const selectedTaskId = ref('')
+const selectedSheetId = ref('')
+const sheetSearch = ref('')
+const generatedDocs = ref<GeneratedDoc[]>([])
+const generatedSearch = ref('')
+const generatedViewed = ref<Record<string, string>>({})
+const generatedDeleteArmed = ref(false)
 const draft = ref<SupplementDraft | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
 const message = ref('')
+
+const filteredSheets = computed(() => {
+  const query = sheetSearch.value.trim().toLowerCase()
+  return query ? sheets.value.filter((doc) => `${doc.filename} ${doc.email_name || ''}`.toLowerCase().includes(query)) : sheets.value
+})
+
+const filteredGenerated = computed(() => {
+  const query = generatedSearch.value.trim().toLowerCase()
+  return query ? generatedDocs.value.filter((doc) => doc.filename.toLowerCase().includes(query)) : generatedDocs.value
+})
 
 const totals = computed(() => {
   const sum = (key: keyof SupplementLine) => (draft.value?.lines ?? [])
@@ -44,8 +67,125 @@ const summary = computed(() => {
 async function loadTasks() {
   try {
     tasks.value = await listShippingTasks(props.factoryId)
+    await loadSheets()
   } catch (error) {
     message.value = `无法读取工厂排期：${getApiErrorMessage(error)}`
+  }
+}
+
+async function loadSheets() {
+  try {
+    const rows = (await listGeneratedDocs(props.factoryId, 'so')).filter((doc) => doc.module === 'so_dk')
+    sheets.value = [...rows].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+  } catch (error) {
+    message.value = `读取已导出柜货单失败：${getApiErrorMessage(error)}`
+  }
+}
+
+function generatedKey(id: string) {
+  return `supplement-generated-viewed:${props.factoryId}:${id}`
+}
+
+function isGeneratedUnread(doc: GeneratedDoc) {
+  return generatedViewed.value[doc.id] !== doc.created_at
+}
+
+function markGeneratedViewed(doc: GeneratedDoc) {
+  window.localStorage.setItem(generatedKey(doc.id), doc.created_at)
+  generatedViewed.value = { ...generatedViewed.value, [doc.id]: doc.created_at }
+}
+
+async function loadGeneratedDocs() {
+  try {
+    generatedDocs.value = await listGeneratedDocs(props.factoryId, 'supplement')
+    const cutoff = Date.now() - 30 * 60 * 1000
+    for (const doc of generatedDocs.value) {
+      if (!window.localStorage.getItem(generatedKey(doc.id)) && Date.parse(doc.created_at || '') < cutoff) {
+        window.localStorage.setItem(generatedKey(doc.id), doc.created_at)
+      }
+    }
+    generatedViewed.value = Object.fromEntries(generatedDocs.value.map((doc) => [doc.id, window.localStorage.getItem(generatedKey(doc.id)) || '']))
+  } catch {
+    generatedDocs.value = []
+  }
+}
+
+async function removeAllGenerated() {
+  if (!generatedDocs.value.length) return
+  if (!generatedDeleteArmed.value) {
+    generatedDeleteArmed.value = true
+    window.setTimeout(() => { generatedDeleteArmed.value = false }, 5000)
+    return
+  }
+  for (const doc of [...generatedDocs.value]) {
+    try { await deleteGeneratedDoc(props.factoryId, doc.id) } catch { /* continue */ }
+  }
+  generatedDeleteArmed.value = false
+  await loadGeneratedDocs()
+}
+
+async function downloadGenerated(doc: GeneratedDoc) {
+  try {
+    const blob = await downloadGeneratedDoc(props.factoryId, doc.id)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = doc.filename
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    message.value = `下载失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function openGenerated(doc: GeneratedDoc) {
+  markGeneratedViewed(doc)
+  try {
+    await openGeneratedDoc(props.factoryId, doc.id)
+  } catch (error) {
+    message.value = `打开失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function removeGenerated(doc: GeneratedDoc) {
+  try {
+    await deleteGeneratedDoc(props.factoryId, doc.id)
+    await loadGeneratedDocs()
+  } catch (error) {
+    message.value = `删除失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function loadSheet() {
+  const id = selectedSheetId.value
+  if (!id) return
+  loading.value = true
+  try {
+    const data = await getGeneratedDoc(props.factoryId, id)
+    const header = data.header ?? {}
+    const text = (value: unknown) => String(value ?? '')
+    const detail = {
+      id: data.id,
+      number: text(header.number),
+      sheetDate: text(header.sheetDate),
+      filename: data.filename,
+      filingCodes: [],
+      variant: 'dk',
+      task_id: data.task_id,
+      soNo: text(header.soNo),
+      contractNo: text(header.contractNo),
+      transportCompany: text(header.transportCompany),
+      originPort: text(header.originPort),
+      createdAt: data.created_at || '',
+      totals: {},
+      header: data.header,
+      lines: data.lines,
+    } as unknown as LoadingSheetDetail
+    await importCabinet(detail)
+  } catch (error) {
+    message.value = `导入已导出柜货单失败：${getApiErrorMessage(error)}`
+  } finally {
+    loading.value = false
   }
 }
 
@@ -57,6 +197,54 @@ async function loadDraft() {
     draft.value = await draftSupplementSheet(props.factoryId, selectedTaskId.value)
   } catch (error) {
     message.value = `生成补料单失败：${getApiErrorMessage(error)}`
+  } finally {
+    loading.value = false
+  }
+}
+
+async function importCabinet(detail: LoadingSheetDetail) {
+  if (!detail.task_id) {
+    message.value = '该柜货单没有关联船务排期，无法导入'
+    return
+  }
+  loading.value = true
+  message.value = ''
+  try {
+    const base = await draftSupplementSheet(props.factoryId, detail.task_id)
+    selectedTaskId.value = detail.task_id
+    base.header.to = detail.header.consignee || base.header.to
+    base.header.vessel = detail.header.vessel || base.header.vessel
+    base.header.portOfLoading = detail.header.originPort || base.header.portOfLoading
+    base.header.portOfDischarge = detail.header.destinationCountry || base.header.portOfDischarge
+    base.header.etd = detail.sheetDate || base.header.etd
+    base.header.date = detail.sheetDate || base.header.date
+    base.lines = detail.lines.map((line) => ({
+      id: crypto.randomUUID(),
+      mixNo: '',
+      containerNo: detail.header.containerNo || '',
+      sealNo: detail.header.sealNo || '',
+      size: detail.header.containerType || '',
+      itemNo: line.filingCode || line.declareCode || '',
+      description: line.description || '',
+      salesConf: line.contract || '',
+      po: line.cartonMark || '',
+      ctns: line.cartons ?? null,
+      pallet: '',
+      qty: line.quantity ?? null,
+      booking: detail.header.soNo || '',
+      deliveryDate: detail.sheetDate || '',
+      cbmPerCarton: line.cbm && line.cartons ? Number(line.cbm) / Number(line.cartons) : null,
+      cbm: line.cbm ?? null,
+      gwPerCarton: line.grossWeight && line.cartons ? Number(line.grossWeight) / Number(line.cartons) : null,
+      gw: line.grossWeight ?? null,
+      pack: line.coefficient != null ? String(line.coefficient) : '',
+      tare: 0,
+      vgm: line.grossWeight ?? null,
+    }))
+    draft.value = base
+    emit('notify', `已从柜货单 ${detail.filename} 导入补料单。`)
+  } catch (error) {
+    message.value = `导入柜货单失败：${getApiErrorMessage(error)}`
   } finally {
     loading.value = false
   }
@@ -90,9 +278,11 @@ async function download() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `${draft.value.header.to || 'PLAYMATE'}补料单.xlsx`
+    const codes = [...new Set((draft.value.lines ?? []).map((line) => String(line.itemNo || '').trim()).filter(Boolean))]
+    link.download = `${codes.join('_') || '补料单'}.xlsx`
     link.click()
     URL.revokeObjectURL(url)
+    await loadGeneratedDocs()
     emit('notify', '补料单已生成并下载。')
   } catch (error) {
     message.value = `导出失败：${getApiErrorMessage(error)}`
@@ -101,25 +291,27 @@ async function download() {
   }
 }
 
-onMounted(loadTasks)
+onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
 </script>
 
 <template>
   <section class="space-y-4" aria-label="补料单">
-    <ShippingGeneratedDocs :factory-id="factoryId" module="supplement" label="补料单" />
     <div class="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/50 p-4">
       <div class="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 class="text-[16px] font-bold text-emerald-950">补料单 / SHIPMENT ADVICE</h2>
           <p class="mt-0.5 text-[11px] text-slate-500">按船务排期生成补料单；船名、港口、ETD、箱数等来自邮件/排期，合计自动汇总。</p>
         </div>
-        <button type="button" class="text-[13px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
+        <div class="flex items-center gap-3">
+          <button type="button" class="text-[13px] font-semibold text-emerald-800 hover:underline" @click="emit('back')">← 返回工厂排期单</button>
+        </div>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2">
-        <select v-model="selectedTaskId" aria-label="选择工厂排期" class="h-9 rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadDraft">
-          <option value="">选择工厂排期</option>
-          <option v-for="task in tasks" :key="task.id" :value="task.id">
-            {{ task.so_number || task.id }} · {{ task.port || '-' }} · {{ task.planned_ship_date || '-' }}
+        <input v-model="sheetSearch" type="search" placeholder="搜索柜货单" class="h-9 w-36 rounded-lg border border-emerald-200 px-2 text-[11px]">
+        <select v-model="selectedSheetId" aria-label="选择已导出柜货单" class="h-9 min-w-[280px] rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadSheet">
+          <option value="">选择已导出柜货单</option>
+          <option v-for="sheet in filteredSheets" :key="sheet.id" :value="sheet.id">
+            {{ sheet.email_name || sheet.filename }} · {{ String(sheet.created_at || '').replace('T', ' ').slice(0, 16) }}
           </option>
         </select>
         <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
@@ -133,46 +325,46 @@ onMounted(loadTasks)
     <template v-if="draft">
       <div class="rounded-xl border border-emerald-100/80 bg-white p-4">
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label class="text-[11px] text-slate-500">To
+          <label class="text-[11px] text-slate-500">To / 收件人
             <input v-model="draft.header.to" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">From
+          <label class="text-[11px] text-slate-500">From / 发件人
             <input v-model="draft.header.from" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Subject
+          <label class="text-[11px] text-slate-500">Subject / 主题
             <input v-model="draft.header.subject" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">REF#
+          <label class="text-[11px] text-slate-500">REF# / 参考号
             <input v-model="draft.header.ref" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Date
+          <label class="text-[11px] text-slate-500">Date / 日期
             <input v-model="draft.header.date" type="date" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Customer / Market
+          <label class="text-[11px] text-slate-500">Customer / Market（客户 / 市场）
             <input v-model="draft.header.customerMarket" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Name of Vessel
+          <label class="text-[11px] text-slate-500">Name of Vessel / 船名
             <input v-model="draft.header.vessel" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Port of Loading
+          <label class="text-[11px] text-slate-500">Port of Loading / 装货港
             <input v-model="draft.header.portOfLoading" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Port of Discharge
+          <label class="text-[11px] text-slate-500">Port of Discharge / 卸货港
             <input v-model="draft.header.portOfDischarge" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">E.T.D.
+          <label class="text-[11px] text-slate-500">E.T.D. / 预计开船日
             <input v-model="draft.header.etd" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Invoice No./Date
+          <label class="text-[11px] text-slate-500">Invoice No./Date / 发票号及日期
             <input v-model="draft.header.invoice" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Country of Origin
+          <label class="text-[11px] text-slate-500">Country of Origin / 原产国
             <input v-model="draft.header.origin" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Place of receipt
+          <label class="text-[11px] text-slate-500">Place of receipt / 收货地
             <input v-model="draft.header.receipt" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
-          <label class="text-[11px] text-slate-500">Total no. of cartons
+          <label class="text-[11px] text-slate-500">Total no. of cartons / 总箱数
             <input :value="totals.ctns" readonly class="mt-1 h-9 w-full rounded-lg border border-emerald-100 bg-slate-50 px-2 text-[12px]">
           </label>
         </div>
@@ -182,13 +374,25 @@ onMounted(loadTasks)
         <table class="w-full min-w-[1700px] text-left text-[11px]">
           <thead class="bg-emerald-50 text-emerald-900/70">
             <tr>
-              <th class="px-2 py-2">No.</th><th class="px-2 py-2">Mix#</th><th class="px-2 py-2">Container#</th>
-              <th class="px-2 py-2">Seal#</th><th class="px-2 py-2">Size</th><th class="px-2 py-2">Item#</th>
-              <th class="px-2 py-2">Description</th><th class="px-2 py-2">Sales Conf#</th><th class="px-2 py-2">P.O. No.#</th>
-              <th class="px-2 py-2">Ctns</th><th class="px-2 py-2">pallet</th><th class="px-2 py-2">Qty (Pcs)</th>
-              <th class="px-2 py-2">Booking#</th><th class="px-2 py-2">Delivery Date</th><th class="px-2 py-2">cbm</th>
-              <th class="px-2 py-2">G.W (kgs)</th><th class="px-2 py-2">pack (pcs)</th>
-              <th class="px-2 py-2">Tare (kgs)</th><th class="px-2 py-2">VGM (kgs)</th><th></th>
+              <th class="px-2 py-2">No.<span class="block text-[9px] font-normal text-emerald-700/60">序号</span></th>
+              <th class="px-2 py-2">Mix#<span class="block text-[9px] font-normal text-emerald-700/60">混装号</span></th>
+              <th class="px-2 py-2">Container#<span class="block text-[9px] font-normal text-emerald-700/60">柜号</span></th>
+              <th class="px-2 py-2">Seal#<span class="block text-[9px] font-normal text-emerald-700/60">封条号</span></th>
+              <th class="px-2 py-2">Size<span class="block text-[9px] font-normal text-emerald-700/60">柜型</span></th>
+              <th class="px-2 py-2">Item#<span class="block text-[9px] font-normal text-emerald-700/60">货号</span></th>
+              <th class="px-2 py-2">Description<span class="block text-[9px] font-normal text-emerald-700/60">品名</span></th>
+              <th class="px-2 py-2">Sales Conf#<span class="block text-[9px] font-normal text-emerald-700/60">销售合同号</span></th>
+              <th class="px-2 py-2">P.O. No.#<span class="block text-[9px] font-normal text-emerald-700/60">订单号</span></th>
+              <th class="px-2 py-2">Ctns<span class="block text-[9px] font-normal text-emerald-700/60">箱数</span></th>
+              <th class="px-2 py-2">pallet<span class="block text-[9px] font-normal text-emerald-700/60">卡板数</span></th>
+              <th class="px-2 py-2">Qty (Pcs)<span class="block text-[9px] font-normal text-emerald-700/60">数量</span></th>
+              <th class="px-2 py-2">Booking#<span class="block text-[9px] font-normal text-emerald-700/60">订舱号</span></th>
+              <th class="px-2 py-2">Delivery Date<span class="block text-[9px] font-normal text-emerald-700/60">交货日期</span></th>
+              <th class="px-2 py-2">cbm<span class="block text-[9px] font-normal text-emerald-700/60">体积</span></th>
+              <th class="px-2 py-2">G.W (kgs)<span class="block text-[9px] font-normal text-emerald-700/60">毛重</span></th>
+              <th class="px-2 py-2">pack (pcs)<span class="block text-[9px] font-normal text-emerald-700/60">每箱数量</span></th>
+              <th class="px-2 py-2">Tare (kgs)<span class="block text-[9px] font-normal text-emerald-700/60">柜重</span></th>
+              <th class="px-2 py-2">VGM (kgs)<span class="block text-[9px] font-normal text-emerald-700/60">总重</span></th>
             </tr>
           </thead>
           <tbody class="divide-y divide-emerald-50">
@@ -239,7 +443,9 @@ onMounted(loadTasks)
       </div>
 
       <div v-if="summary.length" class="rounded-xl border border-emerald-100/80 bg-white p-4">
-        <h3 class="text-[13px] font-bold text-slate-800">Item 汇总</h3>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h3 class="text-[13px] font-bold text-slate-800">补料表</h3>
+        </div>
         <table class="mt-2 w-full max-w-2xl text-left text-[11px]">
           <thead class="bg-slate-50 text-slate-500">
             <tr><th class="px-2 py-1.5">Item#</th><th class="px-2 py-1.5 text-right">Pcs</th><th class="px-2 py-1.5 text-right">Ctns</th><th class="px-2 py-1.5">Sales Conf#</th></tr>
@@ -254,6 +460,31 @@ onMounted(loadTasks)
           </tbody>
         </table>
       </div>
+
     </template>
+      <div v-if="generatedDocs.length" class="rounded-xl border border-emerald-100/80 bg-white p-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h3 class="text-[13px] font-bold text-slate-800">已生成补料单</h3>
+          <div class="flex flex-wrap items-center gap-2">
+            <input v-model="generatedSearch" type="search" placeholder="搜索补料单文件名" class="h-8 w-48 rounded-lg border border-emerald-200 px-2 text-[11px]">
+            <button type="button" class="rounded-lg border px-2 py-1 text-[11px] font-semibold" :class="generatedDeleteArmed ? 'border-rose-300 bg-rose-50 text-rose-700' : 'border-rose-200 text-rose-600'" @click="removeAllGenerated">{{ generatedDeleteArmed ? '确认一键删除' : '一键删除' }}</button>
+            <button type="button" class="text-[11px] text-emerald-700" @click="loadGeneratedDocs">刷新</button>
+          </div>
+        </div>
+        <div class="mt-2 divide-y divide-slate-100">
+          <div v-for="doc in filteredGenerated" :key="doc.id" class="flex flex-wrap items-center justify-between gap-2 py-1.5 text-[11px]">
+            <span class="flex min-w-0 flex-1 items-center gap-1.5">
+              <span v-if="isGeneratedUnread(doc)" class="size-1.5 shrink-0 rounded-full bg-rose-500"></span>
+              <span class="truncate font-semibold text-emerald-700">{{ doc.filename }}</span>
+            </span>
+            <span class="tabular-nums text-slate-400">{{ String(doc.created_at || '').replace('T', ' ').slice(0, 16) }}</span>
+            <span class="flex gap-3">
+              <button type="button" class="text-emerald-700 hover:underline" @click="downloadGenerated(doc)">下载</button>
+              <button type="button" class="text-emerald-700 hover:underline" @click="openGenerated(doc)">打开</button>
+              <button type="button" class="text-rose-600 hover:underline" @click="removeGenerated(doc)">删除</button>
+            </span>
+          </div>
+        </div>
+      </div>
   </section>
 </template>

@@ -27,7 +27,7 @@ def _create_engine():
 
         sqlite_engine = create_engine(
             database_url,
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": 30},
             future=True,
         )
 
@@ -35,6 +35,8 @@ def _create_engine():
         def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
             cursor = dbapi_connection.cursor()
             try:
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=30000")
                 cursor.execute("PRAGMA foreign_keys=ON")
             finally:
                 cursor.close()

@@ -48,6 +48,11 @@ def _items(line: OrderLedgerLine, data: dict) -> dict:
         'consignee': _text(data.get('consignee') or data.get('receiver') or data.get('consignee_name')),
         'transport_company': _text(data.get('transport_company') or data.get('transportCompany')
                                    or data.get('transport') or data.get('运输公司') or data.get('运输')),
+        'brand': _text(data.get('brand') or data.get('brand_name') or data.get('brandName') or data.get('品牌')),
+        'vehicle': _text(data.get('vehicle') or data.get('truck_no') or data.get('truckNo') or data.get('车次')),
+        'truck_type': _text(data.get('truck_type') or data.get('truckType') or data.get('车型')),
+        'cfs': _text(data.get('cfs') or data.get('CFS') or data.get('warehouse') or data.get('CFS/仓库')),
+        'plate': _text(data.get('plate') or data.get('车牌')),
         'unit': _text(data.get('unit')),
         'source_line_id': line.id,
     }

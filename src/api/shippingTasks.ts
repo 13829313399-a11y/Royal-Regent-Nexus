@@ -39,6 +39,7 @@ export async function listShippingTasks(
 ) {
   const { data } = await http.get<{ tasks: ShippingScheduleTask[] }>('/shipping/tasks', {
     params: { factory_id: factoryId, q: params.q || '', status: params.status || '' },
+    timeout: 60000,
   })
   return data.tasks
 }

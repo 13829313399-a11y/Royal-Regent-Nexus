@@ -98,15 +98,65 @@ export async function getShippingMailBatch(factoryId: string, batchId: string) {
   return data
 }
 
+export interface LoadingSheetRecord {
+  id: string
+  number: string
+  sheetDate: string
+  filename: string
+  filingCodes?: string[]
+  variant?: string
+  task_id?: string
+  soNo: string
+  contractNo: string
+  transportCompany: string
+  originPort: string
+  createdAt: string
+  totals: Record<string, number>
+}
+
+export interface LoadingSheetDetail extends LoadingSheetRecord {
+  header: LoadingHeader
+  lines: LoadingLine[]
+}
+
+export async function listLoadingSheets(factoryId: string, variant?: 'dk' | 'hq') {
+  const { data } = await http.get<{ sheets: LoadingSheetRecord[] }>('/shipping/loading-sheets', {
+    params: { factory_id: factoryId, variant: variant || '' },
+  })
+  return data.sheets
+}
+
+export async function getLoadingSheet(factoryId: string, sheetId: string) {
+  const { data } = await http.get<LoadingSheetDetail>(`/shipping/loading-sheets/${sheetId}`, {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
+export async function openLoadingSheet(factoryId: string, sheetId: string) {
+  const { data } = await http.post<{ path: string; filename: string }>(`/shipping/loading-sheets/${sheetId}/open`, null, {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
+export async function deleteLoadingSheet(factoryId: string, sheetId: string) {
+  const { data } = await http.delete<{ deleted: boolean }>(`/shipping/loading-sheets/${sheetId}`, {
+    params: { factory_id: factoryId },
+  })
+  return data
+}
+
 export async function confirmShippingMailBatch(
   batchId: string,
   factoryId: string,
   itemIds: string[],
   fields: Record<string, string> = {},
+  modules?: string[],
 ) {
   const { data } = await http.post<ShippingMailConfirmResult>(
     `/shipping/mail/batches/${batchId}/confirm`,
-    { factory_id: factoryId, item_ids: itemIds, fields },
+    { factory_id: factoryId, item_ids: itemIds, fields, ...(modules?.length ? { modules } : {}) },
     { timeout: 120_000 },
   )
   return data
@@ -209,6 +259,7 @@ export interface LoadingLine {
   netPerCarton: number | null
   description: string
   department: string
+  cartonMark?: string
 }
 
 export interface LoadingHeader {
@@ -234,6 +285,11 @@ export interface LoadingHeader {
   tareWeight: string
   destinationCountry: string
   bookingDate: string
+  bookingNo?: string
+  tradeTerm?: string
+  shippingClerk?: string
+  truckHead?: string
+  cartonMark?: string
   photoNote: string
   department: string
 }
@@ -244,6 +300,31 @@ export interface LoadingDraft {
   lines: LoadingLine[]
   totals: Record<string, number>
   taskId: string
+}
+
+export interface ProductSearchItem {
+  product_code: string
+  product_name?: string
+  quantity?: number | null
+  cartons?: number | null
+  coefficient?: number | null
+  gross_weight?: number | null
+  net_weight?: number | null
+  cbm?: number | null
+  contract_no?: string
+  customer_po?: string
+  country?: string
+  consignee?: string
+  so_number?: string
+  brand?: string
+  source?: string
+}
+
+export async function searchScheduleProducts(factoryId: string, q: string) {
+  const { data } = await http.get<{ items: ProductSearchItem[] }>('/shipping/loading-sheets/product-search', {
+    params: { factory_id: factoryId, q },
+  })
+  return data.items
 }
 
 export async function lookupScheduleLines(factoryId: string, q: string) {
@@ -261,12 +342,13 @@ export async function draftLoadingSheet(factoryId: string, taskId: string): Prom
   return data
 }
 
-export async function exportLoadingSheet(factoryId: string, draft: LoadingDraft): Promise<Blob> {
+export async function exportLoadingSheet(factoryId: string, draft: LoadingDraft, variant: 'dk' | 'hq' = 'dk'): Promise<Blob> {
   const { data } = await http.post('/shipping/loading-sheets/export', {
     factory_id: factoryId,
     taskId: draft.taskId,
     header: draft.header,
     lines: draft.lines,
+    variant,
   }, { responseType: 'blob', timeout: 120_000 })
   return data as Blob
 }
@@ -448,6 +530,7 @@ export interface BulkTruckLine {
   filingCode: string
   declareCode: string
   coefficient: number | null
+  name?: string
   quantity: number | null
   cartons: number | null
   boards: string
@@ -476,6 +559,23 @@ export interface BulkTruckHeader {
   tableName: string
   cutoff: string
   originPort: string
+  brandName?: string
+  contractNo?: string
+  poNo?: string
+  orderNo?: string
+  filingCode?: string
+  bookingNo?: string
+  transportCompanyName?: string
+  remark?: string
+  shipper?: string
+  consignee?: string
+  country?: string
+  arrivalCutoff?: string
+  tradingHouse?: string
+  plate?: string
+  warehouseNo?: string
+  consolidator?: string
+  truckCount?: string | number
 }
 
 export interface BulkTruckDraft {
@@ -618,6 +718,8 @@ export interface GeneratedDoc {
   id: string
   module: string
   filename: string
+  email_name?: string
+  brand_name?: string
   task_id: string
   created_at: string
 }

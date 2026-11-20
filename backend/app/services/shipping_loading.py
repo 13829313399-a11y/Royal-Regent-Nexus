@@ -19,7 +19,9 @@ from app.models.shipping_mail import (
     ShippingMailItem,
     ShippingTask,
 )
+from app.models.customer_order_ledger import OrderLedgerLine
 from app.services.auth import AuthContext
+from app.services import file_open, shipping_exports
 from app.services.shipping_mail_service import authorize, task_fields
 
 SHIPPER = '华兴玩具制品（河源）有限公司'
@@ -135,6 +137,7 @@ def _line_from_item(item: dict, fields: dict) -> dict:
         'netPerCarton': _round(net_per_carton),
         'description': str(item.get('product_name') or ''),
         'department': DEPARTMENT,
+        'cartonMark': str(item.get('customer_po') or item.get('po') or ''),
     }
 
 
@@ -222,10 +225,12 @@ def _header(task: ShippingTask, fields: dict, number: str) -> dict:
     po_no = ''
     contract_no = ''
     filing_code = ''
+    brand_note = str(fields.get('brand') or fields.get('brand_name') or '')
     for item in items if isinstance(items, list) else []:
         po_no = po_no or str((item or {}).get('customer_po') or '').strip()
         contract_no = contract_no or str((item or {}).get('contract_no') or '').strip()
         filing_code = filing_code or str((item or {}).get('product_code') or '').strip()
+        brand_note = brand_note or str((item or {}).get('brand') or '').strip()
     return {
         'shipper': SHIPPER,
         'consignee': _consignee(task, fields),
@@ -240,7 +245,7 @@ def _header(task: ShippingTask, fields: dict, number: str) -> dict:
         'cutoff': task.cutoff_date or str(fields.get('cutoff_date') or ''),
         'sheetDate': (_email_date(fields.get('received_at')) or today.isoformat()),
         'preparer': PREPARERS[0],
-        'brandNote': '',
+        'brandNote': brand_note,
         'originPort': _port_label(str(task.port or fields.get('from_port') or '')),
         'transportCompany': task_transport(task, fields),
         'number': number,
@@ -251,6 +256,11 @@ def _header(task: ShippingTask, fields: dict, number: str) -> dict:
         'destinationCountry': task.destination_country or str(fields.get('destination_country') or ''),
         'destination': str(fields.get('destination') or fields.get('to_port') or ''),
         'bookingDate': str(fields.get('booking_date') or ''),
+        'bookingNo': str(fields.get('booking_no') or fields.get('so_number') or ''),
+        'tradeTerm': str(fields.get('trade_term') or 'FOB'),
+        'shippingClerk': str(fields.get('shipping_clerk') or PREPARERS[0]),
+        'truckHead': str(fields.get('truck_head') or ''),
+        'cartonMark': str(fields.get('carton_mark') or ''),
         'blNo': str(fields.get('bl_no') or ''),
         'photoNote': '注，要照相',
         'department': DEPARTMENT,
@@ -343,7 +353,6 @@ def _render_template(payload: dict) -> bytes:
     """Fill the original DK W11 workbook so borders, fills and print settings stay identical."""
     header = payload.get('header') or {}
     lines = payload.get('lines') or []
-    totals = compute_totals(lines)
     book_in = xlrd.open_workbook(str(DK_TEMPLATE), formatting_info=True)
     for fmt in book_in.format_map.values():
         if fmt.format_str is None:
@@ -351,20 +360,27 @@ def _render_template(payload: dict) -> bytes:
     book = copy(book_in)
     sheet = book.get_sheet(0)
     sheet.name = sheet_title(header)[:31]
-    sheet.portrait = True
+    book._Workbook__worksheets = [sheet]
+    book._Workbook__worksheet_idx_from_name = {sheet.name: 0}
+    book._Workbook__active_sheet = 0
+    sheet.portrait = False
     sheet.paper_size_code = 9
-    sheet.print_scaling = 78
+    sheet.print_scaling = 100
     sheet.fit_num_pages = 1
     sheet.fit_width_to_pages = 1
     sheet.fit_height_to_pages = 1
+    sheet.print_centered_horz = 1
+    sheet.print_centered_vert = 1
     sheet.print_grid = False
-    sheet.left_margin = 0.24
+    sheet.left_margin = 0.16
     sheet.right_margin = 0.16
-    sheet.top_margin = 0.53
-    sheet.bottom_margin = 0.51
+    sheet.top_margin = 0.3
+    sheet.bottom_margin = 0.3
     sheet.row(6).height = 800
-    for col, width in ((11, 2200), (12, 2200), (13, 3600), (14, 1400)):
-        sheet.col(col).width = width
+    for row_index in range(0, 4):
+        sheet.row(row_index).height = 760
+    sheet.row(4).height = 600
+    sheet.row(5).height = 620
     source = book_in.sheet_by_index(0)
     cache: dict[int, xlwt.XFStyle] = {}
 
@@ -391,6 +407,10 @@ def _render_template(payload: dict) -> bytes:
     write(3, 0, 'CC:')
     write(3, 1, 'Carmen')
     write(3, 11, f'提单号：{header.get("blNo") or ""}')
+    transport = header.get('transportCompany') or '成隆达'
+    if not str(transport).endswith('运输'):
+        transport = f'{transport}运输'
+    write(3, 4, f'{transport.rstrip("，, ")}，出{header.get("originPort") or "盐田"}')
     try:
         day = date.fromisoformat(str(header.get('sheetDate') or '')[:10])
         date_style = _style_from_template(book_in, source.cell_xf_index(4, 1))
@@ -398,21 +418,35 @@ def _render_template(payload: dict) -> bytes:
         write(4, 1, datetime(day.year, day.month, day.day), style=date_style)
     except ValueError:
         write(4, 1, header.get('sheetDate') or '')
-    transport = header.get('transportCompany') or '成隆达'
-    if not str(transport).endswith('运输'):
-        transport = f'{transport}运输'
-    port = header.get('originPort') or '盐田'
-    write(4, 5, f'{transport}出{port}')
     write(4, 11, header.get('number') or '')
     write(4, 12, '柜')
     write(5, 1, header.get('destinationCountry') or '')
-    write(5, 5, f'     柜型:{header.get("containerType") or "40HQ"}', style_col=5)
+    write(5, 3, f'柜型:{header.get("containerType") or "40HQ"}')
+    write(5, 5, f'成交方式：{header.get("tradeTerm") or "FOB"}')
     write(5, 11, '         载柜号:')
+
+    def header_align_style(row: int, col: int) -> xlwt.XFStyle:
+        style = _style_from_template(book_in, source.cell_xf_index(row, col))
+        style.alignment.horz = xlwt.Alignment.HORZ_LEFT
+        style.alignment.vert = xlwt.Alignment.VERT_CENTER
+        style.alignment.wrap = 1
+        return style
+
+    for row, text in (
+        (0, f'柜S/O:{header.get("soNo") or ""}'),
+        (1, f'船名:{header.get("vessel") or ""}'),
+        (2, f'航次:{header.get("voyage") or ""}'),
+        (3, f'提单号：{header.get("blNo") or ""}'),
+        (4, header.get('number') or ''),
+        (5, '         载柜号:'),
+    ):
+        write(row, 11, text, style=header_align_style(row, 11))
+    write(4, 12, '柜', style=header_align_style(4, 12))
 
     for index in range(5):
         row = 7 + index
         if index >= len(lines):
-            for col in range(15):
+            for col in range(16):
                 write(row, col, '')
             continue
         line = lines[index]
@@ -421,40 +455,39 @@ def _render_template(payload: dict) -> bytes:
         coefficient = line.get('coefficient')
         if coefficient in (None, 0) and quantity and cartons:
             coefficient = _number(quantity) / _number(cartons) if _number(cartons) else None
-        values = [line.get('tradingCompany') or 'DK', line.get('contract') or '', line.get('filingCode') or '',
-                  line.get('declareCode') or '', coefficient, quantity, None, None, None, line.get('cbm'),
-                  line.get('category') or '塑胶', line.get('grossPerCarton'), line.get('netPerCarton'),
-                  line.get('description') or '', line.get('department') or DEPARTMENT]
+        values = [index + 1, line.get('tradingCompany') or 'DK', line.get('contract') or '',
+                  line.get('filingCode') or '', line.get('declareCode') or '', quantity, cartons,
+                  None, None, line.get('cbm'), line.get('category') or '塑胶',
+                  line.get('grossPerCarton'), line.get('netPerCarton'),
+                  line.get('description') or '', line.get('cartonMark') or header.get('cartonMark') or '',
+                  line.get('department') or DEPARTMENT]
         for col, value in enumerate(values):
             write(row, col, value)
-        excel_row = row + 1
-        if coefficient:
-            write(row, 6, xlwt.Formula(f'F{excel_row}/E{excel_row}'))
-        else:
-            write(row, 6, cartons)
-        if line.get('grossPerCarton') not in (None, ''):
-            write(row, 7, xlwt.Formula(f'L{excel_row}*G{excel_row}'))
+        if coefficient and cartons:
+            write(row, 5, round(float(coefficient) * float(cartons), 3))
+        if line.get('grossPerCarton') not in (None, '') and cartons:
+            write(row, 7, round(float(line.get('grossPerCarton')) * float(cartons), 3))
         else:
             write(row, 7, line.get('grossWeight'))
-        if line.get('netPerCarton') not in (None, ''):
-            write(row, 8, xlwt.Formula(f'M{excel_row}*G{excel_row}'))
+        if line.get('netPerCarton') not in (None, '') and cartons:
+            write(row, 8, round(float(line.get('netPerCarton')) * float(cartons), 3))
         else:
             write(row, 8, line.get('netWeight'))
 
-    write(20, 3, '     合计')
-    for col, letter in ((5, 'F'), (6, 'G'), (7, 'H'), (8, 'I'), (9, 'J')):
-        write(20, col, xlwt.Formula(f'SUM({letter}8:{letter}12)'), style_row=20, style_col=col)
-
     write(15, 6, f'车牌:{header.get("plate") or ""}')
-    write(16, 3, header.get('photoNote') or '注，要照相')
+    write(16, 4, header.get('photoNote') or '注:要照相')
     write(16, 6, f'柜号：{header.get("containerNo") or ""}')
     write(17, 6, f'封条号：{header.get("sealNo") or ""}')
-    write(18, 6, f'空柜重量:{header.get("tareWeight") or ""}')
-    write(17, 11, f'注:{header.get("brandNote") or ""}')
-    write(22, 0, f' 截数期 {_display_cutoff(header.get("cutoff") or "")}')
-    write(22, 8, f'      日期   {_format_date(header.get("sheetDate") or "")}')
-    write(23, 0, ' 制表人:')
-    write(23, 1, header.get('preparer') or PREPARERS[0])
+    write(17, 11, f'品牌:{header.get("brandNote") or ""}')
+    tare = str(header.get('tareWeight') or '')
+    write(18, 6, f'空柜重量:{tare}{"KGS" if tare and not tare.upper().endswith("KGS") else ""}')
+    write(19, 4, '     合计')
+    totals = compute_totals(lines)
+    for col, key in ((5, 'quantity'), (6, 'cartons'), (7, 'grossWeight'), (8, 'netWeight'), (9, 'cbm')):
+        write(19, col, totals.get(key) or 0, style_row=19, style_col=col)
+    write(20, 0, f' 截数期: {_display_cutoff(header.get("cutoff") or "")}')
+    write(20, 8, f'      日期  : {_format_date(header.get("sheetDate") or "")}')
+    write(20, 12, f'制表人: {header.get("preparer") or PREPARERS[0]}')
 
     buffer = io.BytesIO()
     book.save(buffer)
@@ -611,7 +644,7 @@ def schedule_lines(db, user: AuthContext, factory_id: str, query: str) -> dict:
     authorize(user, factory_id, 'read')
     keyword = (query or '').strip().lower()
     if not keyword:
-        raise HTTPException(422, '请输入合同号或 SO')
+        raise HTTPException(422, '请输入合同号、SO 或备案货号')
     tasks = db.scalars(select(ShippingTask).where(ShippingTask.factory_id == factory_id)).all()
     rows = []
     seen = set()
@@ -624,7 +657,7 @@ def schedule_lines(db, user: AuthContext, factory_id: str, query: str) -> dict:
         for item in items if isinstance(items, list) else []:
             contract = str((item or {}).get('contract_no') or '')
             product = str((item or {}).get('product_code') or '')
-            haystack = f'{contract} {so_number}'.lower()
+            haystack = f'{contract} {so_number} {product}'.lower()
             if keyword not in haystack:
                 continue
             key = (contract, product, so_number)
@@ -635,10 +668,173 @@ def schedule_lines(db, user: AuthContext, factory_id: str, query: str) -> dict:
     return {'lines': rows[:200]}
 
 
+def search_products(db, user: AuthContext, factory_id: str, query: str) -> dict:
+    authorize(user, factory_id, 'read')
+    needle = (query or '').strip().lower()
+    if not needle:
+        return {'items': []}
+    tokens = [token for token in re.split(r'[\s/,，]+', needle) if token]
+    rows: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(item: dict, so_number: str = '', customer: str = '', source: str = 'schedule') -> None:
+        code = str(item.get('product_code') or '').strip()
+        contract = str(item.get('contract_no') or '').strip()
+        if not code:
+            return
+        haystack = f'{code} {contract} {item.get("customer_po") or ""} {so_number} {item.get("booking_no") or ""}'.lower()
+        if not all(token in haystack for token in tokens):
+            return
+        key = (contract, code, so_number)
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append({**item, 'so_number': so_number, 'customer': customer, 'source': source})
+
+    tasks = db.scalars(select(ShippingTask).where(ShippingTask.factory_id == factory_id)).all()
+    for task in tasks:
+        try:
+            items = json.loads(task.items_json or '[]')
+        except (TypeError, ValueError):
+            items = []
+        for item in items if isinstance(items, list) else []:
+            add(item or {}, str(task.so_number or ''), str(task.customer or ''), 'schedule')
+
+    ledger = db.scalars(select(OrderLedgerLine).where(
+        OrderLedgerLine.factory_id == factory_id,
+        OrderLedgerLine.status == 'active',
+    )).all()
+    for line in ledger:
+        data = line.data if isinstance(line.data, dict) else {}
+        contract = str(data.get('contract_no') or '')
+        key = (contract, line.product_no or '', line.reference_no or '')
+        if key in seen:
+            continue
+        add({
+            'product_code': line.product_no,
+            'product_name': data.get('product_name_zh') or data.get('product_name') or '',
+            'quantity': float(line.quantity or 0),
+            'cartons': data.get('carton_count'),
+            'coefficient': data.get('coefficient'),
+            'gross_weight': data.get('gross_weight'),
+            'net_weight': data.get('net_weight'),
+            'cbm': data.get('cbm'),
+            'contract_no': contract,
+            'customer_po': data.get('po_no'),
+            'country': data.get('country'),
+            'consignee': data.get('consignee'),
+            'brand': data.get('brand') or data.get('brand_name') or data.get('brandName') or '',
+        }, str(line.reference_no or ''), str(line.customer_name or ''), 'order')
+    return {'items': rows[:200]}
+
+
+def _sheet_codes(header: dict, lines: list) -> list[str]:
+    codes: list[str] = []
+    for line in lines if isinstance(lines, list) else []:
+        code = str((line or {}).get('filingCode') or (line or {}).get('declareCode') or '').strip()
+        if code and code not in codes:
+            codes.append(code)
+    header_code = str(header.get('filingCode') or '').strip()
+    if not codes and header_code:
+        codes.append(header_code)
+    return codes
+
+
+def sheet_code_filename(header: dict, lines: list) -> str:
+    codes = _sheet_codes(header, lines)
+    base = '_'.join(codes) if codes else 'SO出货表'
+    number = str(header.get('number') or '').strip()
+    return f'{base}_{number}.xls' if number else f'{base}.xls'
+
+
+def _number_or_none(value):
+    try:
+        return float(value) if value not in (None, '') else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _hq_payload(header: dict, lines: list) -> dict:
+    hq_lines = []
+    for line in lines if isinstance(lines, list) else []:
+        cartons = _number_or_none((line or {}).get('cartons'))
+        cbm = _number_or_none((line or {}).get('cbm'))
+        hq_lines.append({
+            'id': str((line or {}).get('id') or uuid4().hex),
+            'tradingHouse': str(header.get('tradingCompany') or (line or {}).get('tradingCompany') or ''),
+            'contract': str((line or {}).get('contract') or ''),
+            'filingCode': str((line or {}).get('filingCode') or ''),
+            'declareCode': str((line or {}).get('declareCode') or ''),
+            'brand': str((line or {}).get('brand') or header.get('brandNote') or ''),
+            'coefficient': _number_or_none((line or {}).get('coefficient')),
+            'quantity': _number_or_none((line or {}).get('quantity')),
+            'cartons': cartons,
+            'grossWeight': _number_or_none((line or {}).get('grossWeight')),
+            'netWeight': _number_or_none((line or {}).get('netWeight')),
+            'cbm': cbm,
+            'cbmPerCarton': round(cbm / cartons, 6) if cbm and cartons else None,
+            'country': str(header.get('destinationCountry') or ''),
+            'grossPerCarton': _number_or_none((line or {}).get('grossPerCarton')),
+            'netPerCarton': _number_or_none((line or {}).get('netPerCarton')),
+            'remark': str((line or {}).get('description') or ''),
+            'po': str((line or {}).get('po') or ''),
+        })
+    vessel_voyage = ' '.join(part for part in (str(header.get('vessel') or '').strip(), str(header.get('voyage') or '').strip()) if part)
+    to_names = header.get('toNames')
+    if not isinstance(to_names, list) or not to_names:
+        to_names = ['苏迪', '罗梓良']
+    return {
+        'header': {
+            'toNames': [str(name) for name in to_names if str(name).strip()],
+            'fromName': str(header.get('shippingClerk') or '农建壮'),
+            'sheetDate': str(header.get('sheetDate') or _today().isoformat()),
+            'cutoff': str(header.get('cutoff') or ''),
+            'number': str(header.get('truckHead') or header.get('number') or ''),
+            'soNo': str(header.get('soNo') or ''),
+            'poNo': '',
+            'vesselVoyage': vessel_voyage,
+            'blNo': '',
+            'transportCompany': str(header.get('transportCompany') or ''),
+            'containerType': str(header.get('containerType') or ''),
+            'tradeTerm': str(header.get('tradeTerm') or 'FOB'),
+            'plate': str(header.get('plate') or ''),
+            'containerNo': str(header.get('containerNo') or ''),
+            'sealNo': str(header.get('sealNo') or ''),
+            'tareWeight': str(header.get('tareWeight') or ''),
+            'originPort': str(header.get('originPort') or '盐田'),
+            'destinationCountry': str(header.get('destinationCountry') or ''),
+        },
+        'lines': hq_lines,
+    }
+
+
+def _sheet_variant(header: dict) -> str:
+    return 'hq' if str(header.get('_variant') or '').lower() == 'hq' else 'dk'
+
+
+def _sheet_filename(header: dict, lines: list) -> str:
+    if _sheet_variant(header) == 'hq':
+        codes = _sheet_codes(header, lines)
+        base = '_'.join(codes) if codes else f"HQ柜出货_{header.get('soNo') or header.get('number') or '未命名'}"
+        return f'{base}.xlsx'
+    return sheet_code_filename(header, lines)
+
+
 def export_sheet(db, user: AuthContext, factory_id: str, payload: dict) -> tuple[str, bytes]:
     authorize(user, factory_id, 'import')
     header = payload.get('header') or {}
     lines = payload.get('lines') or []
+    task_id = str(payload.get('taskId') or '')
+    if task_id:
+        task = db.scalar(select(ShippingTask).where(
+            ShippingTask.id == task_id, ShippingTask.factory_id == factory_id,
+        ))
+        if task is not None:
+            email_day = _email_date(task_fields(db, task).get('received_at'))
+            if email_day:
+                header['sheetDate'] = email_day
+    variant = 'hq' if str(payload.get('variant') or 'dk').lower() == 'hq' else 'dk'
+    header['_variant'] = variant
     number = str(header.get('number') or '').strip() or next_number(db, factory_id)
     header['number'] = number
     totals = compute_totals(lines)
@@ -652,11 +848,22 @@ def export_sheet(db, user: AuthContext, factory_id: str, payload: dict) -> tuple
     )
     db.add(sheet)
     db.commit()
-    filename = sheet_filename(header)
-    return filename, render_xls({'header': header, 'lines': lines})
+    filename = _sheet_filename(header, lines)
+    if variant == 'hq':
+        from app.services import shipping_zuru
+        content = shipping_zuru.render_hq_xlsx(_hq_payload(header, lines))
+        module = 'so_zuru'
+    else:
+        content = render_xls({'header': header, 'lines': lines})
+        module = 'so_dk'
+    try:
+        shipping_exports.save_import_file(module, filename, content)
+    except Exception:  # noqa: BLE001 - drop-folder copy is best effort
+        pass
+    return filename, content
 
 
-def list_sheets(db, user: AuthContext, factory_id: str, limit: int = 50) -> list[dict]:
+def list_sheets(db, user: AuthContext, factory_id: str, limit: int = 50, variant: str | None = None) -> list[dict]:
     authorize(user, factory_id, 'read')
     rows = db.scalars(
         select(ShippingLoadingSheet)
@@ -664,7 +871,76 @@ def list_sheets(db, user: AuthContext, factory_id: str, limit: int = 50) -> list
         .order_by(ShippingLoadingSheet.created_at.desc())
         .limit(limit)
     ).all()
-    return [{
+    result = []
+    for row in rows:
+        header = json.loads(row.header_json or '{}')
+        current = _sheet_variant(header)
+        if variant and current != variant:
+            continue
+        lines = json.loads(row.lines_json or '[]')
+        result.append({
+            'id': row.id, 'number': row.number, 'sheetDate': row.sheet_date,
+            'filename': _sheet_filename(header, lines),
+            'filingCodes': _sheet_codes(header, lines),
+            'variant': current,
+            'task_id': row.task_id,
+            'soNo': header.get('soNo') or '',
+            'contractNo': header.get('contractNo') or '',
+            'transportCompany': header.get('transportCompany') or '',
+            'originPort': header.get('originPort') or '',
+            'createdAt': row.created_at, 'totals': json.loads(row.totals_json or '{}'),
+        })
+    return result
+
+
+def _load_sheet(db, user: AuthContext, factory_id: str, sheet_id: str):
+    authorize(user, factory_id, 'read')
+    row = db.get(ShippingLoadingSheet, sheet_id)
+    if row is None or row.factory_id != factory_id:
+        raise HTTPException(404, '柜货单不存在')
+    header = json.loads(row.header_json or '{}')
+    lines = json.loads(row.lines_json or '[]')
+    return row, header, lines
+
+
+def get_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
+    row, header, lines = _load_sheet(db, user, factory_id, sheet_id)
+    return {
         'id': row.id, 'number': row.number, 'sheetDate': row.sheet_date,
-        'createdAt': row.created_at, 'totals': json.loads(row.totals_json or '{}'),
-    } for row in rows]
+        'filename': _sheet_filename(header, lines), 'createdAt': row.created_at,
+        'filingCodes': _sheet_codes(header, lines), 'variant': _sheet_variant(header),
+        'task_id': row.task_id,
+        'header': header, 'lines': lines, 'totals': json.loads(row.totals_json or '{}'),
+    }
+
+
+def open_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
+    row, header, lines = _load_sheet(db, user, factory_id, sheet_id)
+    filename = _sheet_filename(header, lines)
+    if _sheet_variant(header) == 'hq':
+        from app.services import shipping_zuru
+        content = shipping_zuru.render_hq_xlsx(_hq_payload(header, lines))
+    else:
+        content = render_xls({'header': header, 'lines': lines})
+    path = file_open.open_bytes(filename, content)
+    return {'path': path, 'filename': filename}
+
+
+def delete_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
+    authorize(user, factory_id, 'write')
+    row = db.get(ShippingLoadingSheet, sheet_id)
+    if row is None or row.factory_id != factory_id:
+        raise HTTPException(404, '柜货单不存在')
+    header = json.loads(row.header_json or '{}')
+    lines = json.loads(row.lines_json or '[]')
+    filenames = {_sheet_filename(header, lines), sheet_filename(header)}
+    db.delete(row)
+    db.commit()
+    for name in filenames:
+        if not name:
+            continue
+        try:
+            (shipping_exports.EXPORT_ROOT / 'SO 出货表' / shipping_exports._safe_name(name)).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {'deleted': True}

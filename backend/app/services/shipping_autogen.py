@@ -6,10 +6,41 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.models.shipping_mail import ShippingGeneratedDoc, ShippingTask
+from app.models.shipping_mail import ShippingGeneratedDoc, ShippingMailItem, ShippingTask
 from app.services.auth import AuthContext
+from app.services.shipping_mail_service import task_fields
 from app.services import shipping_bulk_truck, shipping_loading, shipping_supplement, shipping_truck, shipping_zuru
 from app.services import shipping_exports
+
+
+def _enrich_payload(db, row: ShippingGeneratedDoc, payload: dict) -> dict:
+    """Fill legacy generated-doc headers from the linked mail task when fields are missing."""
+    header = dict(payload.get('header') or {})
+    task = db.get(ShippingTask, row.task_id) if row.task_id else None
+    if task is not None:
+        try:
+            fields = task_fields(db, task)
+        except Exception:  # noqa: BLE001 - enrichment is best effort
+            fields = {}
+        if not str(header.get('contractNo') or '').strip() and fields.get('contract_no'):
+            header['contractNo'] = str(fields.get('contract_no'))
+        if not str(header.get('poNo') or '').strip() and fields.get('po_no'):
+            header['poNo'] = str(fields.get('po_no'))
+        if not str(header.get('brandName') or '').strip():
+            header['brandName'] = str(fields.get('brand') or task.customer or '')
+        if not str(header.get('brandNote') or '').strip():
+            header['brandNote'] = header['brandName']
+        if not str(header.get('consignee') or '').strip():
+            header['consignee'] = str(fields.get('consignee') or '')
+        if str(header.get('consignee') or '').strip() and str(header.get('consignee')).strip() == str(task.customer or '').strip():
+            header['consignee'] = ''
+        if not str(header.get('country') or '').strip() and fields.get('destination_country'):
+            header['country'] = str(fields.get('destination_country'))
+    port = str(header.get('originPort') or '').strip()
+    if not port or 'FLAG:' in port.upper() or '码头' in port:
+        header['originPort'] = '盐田'
+    payload = {**payload, 'header': header}
+    return payload
 
 
 def _now() -> str:
@@ -63,11 +94,34 @@ def _render_content(module: str, draft: dict) -> bytes:
         return shipping_zuru.render_zuru_xlsx(draft)
     if module == 'truck_buzzbee':
         return shipping_truck.render_truck_xls(draft)
-    if module == 'truck_bulk':
+    if module == 'truck_bulk' or module == 'truck_export':
         return shipping_bulk_truck.render_bulk_xlsx(draft)
     if module == 'supplement':
         return shipping_supplement.render_supplement_xlsx(draft)
     return b''
+
+
+def record_export(db, user: AuthContext, factory_id: str, task_id: str, module: str,
+                  filename: str, header: dict, lines: list[dict]) -> str:
+    row = db.scalar(select(ShippingGeneratedDoc).where(
+        ShippingGeneratedDoc.factory_id == factory_id,
+        ShippingGeneratedDoc.task_id == task_id,
+        ShippingGeneratedDoc.module == module,
+    ))
+    if row is None:
+        row = ShippingGeneratedDoc(
+            id=f'gen-{uuid4().hex}', factory_id=factory_id, task_id=task_id, module=module,
+            filename=filename, header_json='{}', lines_json='[]',
+            created_at=_now(), created_by=user.id,
+        )
+        db.add(row)
+    row.filename = filename
+    row.header_json = json.dumps(header, ensure_ascii=False)
+    row.lines_json = json.dumps(lines, ensure_ascii=False)
+    row.created_at = _now()
+    row.created_by = user.id
+    db.commit()
+    return row.id
 
 
 def generate_for_task(db, user: AuthContext, factory_id: str, task_id: str,
@@ -115,6 +169,16 @@ def generate_for_task(db, user: AuthContext, factory_id: str, task_id: str,
     return created
 
 
+def _email_name(db, task_id: str) -> str:
+    task = db.get(ShippingTask, task_id) if task_id else None
+    if task is None or not task.mail_item_id:
+        return ''
+    item = db.get(ShippingMailItem, task.mail_item_id)
+    if item is None:
+        return ''
+    return str(item.subject or item.filename or '').strip()
+
+
 def list_docs(db, user: AuthContext, factory_id: str, module_prefix: str = '') -> list[dict]:
     from app.services.shipping_mail_service import authorize
     authorize(user, factory_id, 'read')
@@ -126,10 +190,26 @@ def list_docs(db, user: AuthContext, factory_id: str, module_prefix: str = '') -
     elif module_prefix:
         query = query.where(ShippingGeneratedDoc.module == module_prefix)
     rows = db.scalars(query.order_by(ShippingGeneratedDoc.created_at.desc()).limit(100)).all()
-    return [{
-        'id': row.id, 'module': row.module, 'filename': row.filename,
-        'task_id': row.task_id, 'created_at': row.created_at,
-    } for row in rows]
+    result = []
+    for row in rows:
+        try:
+            header = json.loads(row.header_json or '{}')
+            lines = json.loads(row.lines_json or '[]')
+        except (TypeError, ValueError):
+            header, lines = {}, []
+        brand = str(header.get('brandName') or header.get('brandNote') or header.get('brand') or '')
+        if not brand and isinstance(lines, list):
+            brand = next((str((line or {}).get('brand') or '') for line in lines if (line or {}).get('brand')), '')
+        if not brand and row.task_id:
+            task = db.get(ShippingTask, row.task_id)
+            brand = str(task.customer or '') if task is not None else ''
+        result.append({
+            'id': row.id, 'module': row.module, 'filename': row.filename,
+            'email_name': _email_name(db, row.task_id),
+            'brand_name': brand,
+            'task_id': row.task_id, 'created_at': row.created_at,
+        })
+    return result
 
 
 def get_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
@@ -138,11 +218,16 @@ def get_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
     row = db.get(ShippingGeneratedDoc, doc_id)
     if row is None or row.factory_id != factory_id:
         raise HTTPException(404, '生成文件不存在')
-    return {
-        'id': row.id, 'module': row.module, 'filename': row.filename, 'task_id': row.task_id,
-        'created_at': row.created_at,
+    payload = _enrich_payload(db, row, {
         'header': json.loads(row.header_json or '{}'),
         'lines': json.loads(row.lines_json or '[]'),
+    })
+    return {
+        'id': row.id, 'module': row.module, 'filename': row.filename, 'task_id': row.task_id,
+        'email_name': _email_name(db, row.task_id),
+        'created_at': row.created_at,
+        'header': payload['header'],
+        'lines': payload['lines'],
     }
 
 
@@ -175,13 +260,14 @@ def download(db, user: AuthContext, factory_id: str, doc_id: str) -> tuple[str, 
         'factory_id': factory_id, 'taskId': doc.task_id,
         'header': json.loads(doc.header_json or '{}'), 'lines': json.loads(doc.lines_json or '[]'),
     }
+    payload = _enrich_payload(db, doc, payload)
     if doc.module == 'so_dk':
         content = shipping_loading.render_xls(payload)
     elif doc.module == 'so_zuru':
         content = shipping_zuru.render_zuru_xlsx(payload)
     elif doc.module == 'truck_buzzbee':
         content = shipping_truck.render_truck_xls(payload)
-    elif doc.module == 'truck_bulk':
+    elif doc.module == 'truck_bulk' or doc.module == 'truck_export':
         content = shipping_bulk_truck.render_bulk_xlsx(payload)
     else:
         content = shipping_supplement.render_supplement_xlsx(payload)

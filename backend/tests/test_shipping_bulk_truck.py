@@ -18,7 +18,7 @@ def test_bulk_truck_line_math():
     assert totals['cartons'] == 150
 
 
-def test_bulk_truck_workbook_is_xlsx():
+def test_bulk_truck_workbook_uses_supplied_xls_template():
     header = {
         'toNames': ['苏迪', '罗梓良'], 'fromName': '农建壮', 'sheetDate': '2026-10-31',
         'vehicle': 'W218', 'transport': '建联派', 'truckType': '3T', 'tradeTerm': 'FOB',
@@ -27,5 +27,5 @@ def test_bulk_truck_workbook_is_xlsx():
     line = _line({'product_code': '77794UQ1', 'quantity': 2400, 'cartons': 150,
                   'gross_weight': 861, 'net_weight': 578, 'cbm': 4.77}, '4500218843', '280386965')
     content = render_bulk_xlsx({'header': header, 'lines': [line]})
-    assert content[:2] == b'PK'
+    assert content[:4] == b'\xd0\xcf\x11\xe0'
     assert len(content) > 4000

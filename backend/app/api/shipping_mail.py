@@ -35,6 +35,7 @@ class ConfirmRequest(BaseModel):
     factory_id: str
     item_ids: list[str] = Field(min_length=1)
     fields: dict = Field(default_factory=dict)
+    modules: list[str] | None = None
 
 
 class ManualTaskRequest(BaseModel):
@@ -76,6 +77,7 @@ class LoadingExportRequest(BaseModel):
     taskId: str = ''
     header: dict
     lines: list[dict] = Field(default_factory=list)
+    variant: str = 'dk'
 
 
 class ZuruExportRequest(BaseModel):
@@ -119,7 +121,7 @@ def batch_detail(db: Db, user: User, batch_id: str, factory_id: str = Query(...)
 
 @router.post('/mail/batches/{batch_id}/confirm')
 def confirm_batch(db: Db, user: User, batch_id: str, body: ConfirmRequest):
-    return service.confirm_batch(db, user, batch_id, body.factory_id, body.item_ids, body.fields)
+    return service.confirm_batch(db, user, batch_id, body.factory_id, body.item_ids, body.fields, body.modules)
 
 
 @router.delete('/mail/batches/{batch_id}')
@@ -162,6 +164,11 @@ def loading_draft(db: Db, user: User, body: LoadingDraftRequest):
 @router.get('/loading-sheets/schedule-lines')
 def loading_schedule_lines(db: Db, user: User, factory_id: str = Query(...), q: str = Query(...)):
     return shipping_loading.schedule_lines(db, user, factory_id, q)
+
+
+@router.get('/loading-sheets/product-search')
+def loading_sheet_product_search(db: Db, user: User, factory_id: str = Query(...), q: str = Query(...)):
+    return shipping_loading.search_products(db, user, factory_id, q)
 
 
 @router.post('/loading-sheets/export')
@@ -216,8 +223,16 @@ def supplement_draft(db: Db, user: User, body: LoadingDraftRequest):
 def supplement_export(db: Db, user: User, body: LoadingExportRequest):
     service.authorize(user, body.factory_id, 'read')
     content = shipping_supplement.render_supplement_xlsx(body.model_dump())
-    name = f"{body.header.get('to') or 'PLAYMATE'}补料单.xlsx"
+    codes: list[str] = []
+    for line in body.lines or []:
+        code = str((line or {}).get('itemNo') or '').strip()
+        if code and code not in codes:
+            codes.append(code)
+    name = f"{'_'.join(codes) or body.header.get('to') or 'PLAYMATE'}补料单.xlsx"
+    if codes:
+        name = f"{'_'.join(codes)}.xlsx"
     shipping_exports.save_import_file('supplement', name, content)
+    shipping_autogen.record_export(db, user, body.factory_id, body.taskId, 'supplement', name, body.header, body.lines)
     return Response(
         content=content,
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -233,12 +248,18 @@ def bulk_truck_draft(db: Db, user: User, body: LoadingDraftRequest):
 @router.post('/loading-sheets/bulk-truck/export')
 def bulk_truck_export(db: Db, user: User, body: LoadingExportRequest):
     service.authorize(user, body.factory_id, 'read')
-    name = f"{body.header.get('tableName') or '2026年盐田散货'}.xlsx"
+    codes: list[str] = []
+    for line in body.lines or []:
+        code = str((line or {}).get('filingCode') or '').strip()
+        if code and code not in codes:
+            codes.append(code)
+    name = f"{'_'.join(codes) or body.header.get('tableName') or '2026年盐田散货'}.xls"
     content = shipping_bulk_truck.render_bulk_xlsx(body.model_dump())
     shipping_exports.save_import_file('truck_bulk', name, content)
+    shipping_autogen.record_export(db, user, body.factory_id, body.taskId, 'truck_export', name, body.header, body.lines)
     return Response(
         content=content,
-        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        media_type='application/vnd.ms-excel',
         headers={'Content-Disposition': f"attachment; filename*=UTF-8''{quote(name)}"},
     )
 
@@ -254,6 +275,7 @@ def truck_export(db: Db, user: User, body: LoadingExportRequest):
     name = f"{body.header.get('tableName') or '客上车'}.xls"
     content = shipping_truck.render_truck_xls(body.model_dump())
     shipping_exports.save_import_file('truck_buzzbee', name, content)
+    shipping_autogen.record_export(db, user, body.factory_id, body.taskId, 'truck_export', name, body.header, body.lines)
     return Response(
         content=content,
         media_type='application/vnd.ms-excel',
@@ -272,6 +294,7 @@ def zuru_export(db: Db, user: User, body: ZuruExportRequest):
     filename = shipping_loading.sheet_xlsx_filename(body.header)
     content = shipping_zuru.render_zuru_xlsx(body.model_dump())
     shipping_exports.save_import_file('so_zuru', filename, content)
+    shipping_autogen.record_export(db, user, body.factory_id, body.taskId, 'so_zuru', filename, body.header, body.lines)
     return Response(
         content=content,
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -280,8 +303,23 @@ def zuru_export(db: Db, user: User, body: ZuruExportRequest):
 
 
 @router.get('/loading-sheets')
-def loading_sheets(db: Db, user: User, factory_id: str = Query(...)):
-    return {'sheets': shipping_loading.list_sheets(db, user, factory_id)}
+def loading_sheets(db: Db, user: User, factory_id: str = Query(...), variant: str = Query('')):
+    return {'sheets': shipping_loading.list_sheets(db, user, factory_id, variant=variant or None)}
+
+
+@router.get('/loading-sheets/{sheet_id}')
+def loading_sheet_detail(db: Db, user: User, sheet_id: str, factory_id: str = Query(...)):
+    return shipping_loading.get_sheet(db, user, factory_id, sheet_id)
+
+
+@router.post('/loading-sheets/{sheet_id}/open')
+def loading_sheet_open(db: Db, user: User, sheet_id: str, factory_id: str = Query(...)):
+    return shipping_loading.open_sheet(db, user, factory_id, sheet_id)
+
+
+@router.delete('/loading-sheets/{sheet_id}')
+def loading_sheet_delete(db: Db, user: User, sheet_id: str, factory_id: str = Query(...)):
+    return shipping_loading.delete_sheet(db, user, factory_id, sheet_id)
 
 
 @router.post('/product-history/import')
