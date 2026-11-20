@@ -54,12 +54,14 @@ test('18 business display columns without actual date or completion, inline four
   assert.equal(p.d.querySelector('.qwf-dialog'),null);assert.ok(p.d.getElementById('page-review'));
  }finally{p.dom.window.close();}
 });
-test('workbench opens the shared viewer with photo metadata only when clicked',async()=>{
+test('workbench opens the fitted photo overlay and loads metadata only when clicked',async()=>{
  const p=await page();
  try{
-  p.rows[0].photos=[{id:'p1',name:'手机照片.JPG'}];
-  let opened;
-  p.w.QcInspectionSummary={openPhoto:(...args)=>{opened=args;}};
+  p.rows[0].photos=[{id:'p1',name:'手机照片.JPG'},{id:'p2',name:'现场照片.JPG'}];
+  const frames=[];
+  p.w.requestAnimationFrame=fn=>frames.push(fn);
+  p.w.cancelAnimationFrame=()=>{};
+  p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-summary.js'),'utf8'));
   await p.w.QcInspectionSheet.load();
   assert.equal(p.calls.filter(c=>c.url?.endsWith('/photo-info')).length,0);
   const preview=p.d.querySelector('[data-view-photo="p1"]');
@@ -67,10 +69,32 @@ test('workbench opens the shared viewer with photo metadata only when clicked',a
   assert.match(p.d.querySelector('[data-files]').accept,/image\/avif/);
   await preview.onclick(new p.w.MouseEvent('click',{cancelable:true}));
   assert.equal(p.calls.at(-1).url,'api/inspection-sheet/entries/a/photo-info');
-  assert.equal(opened[0].entryId,'a');
-  assert.deepEqual(opened[1],[{id:'p1',name:'手机照片.JPG',originalAvailable:true}]);
-  assert.equal(opened[2],0);
-  assert.equal(opened[4],preview);
+  const overlay=p.d.querySelector('#qis-photo-viewer[open]');
+  const actions=overlay.querySelector('.qis-photo-viewer-actions');
+  const image=overlay.querySelector('img');
+  const viewport=overlay.querySelector('.qsum-lightbox-viewport');
+  Object.defineProperties(image,{naturalWidth:{value:1200},naturalHeight:{value:1600}});
+  Object.defineProperties(viewport,{clientWidth:{value:400},clientHeight:{value:640}});
+  image.onload();
+  frames.shift()();
+  const scale=Number(image.style.transform.match(/scale\(([^)]+)\)/)?.[1]);
+  assert.equal(scale,(400-32)/1200);
+  assert.ok(image.src.endsWith('/entries/a/photos/p1'));
+  assert.equal(actions.querySelector('[data-photo-plus],[data-photo-minus]'),null);
+  actions.querySelector('[data-photo-next]').click();
+  assert.ok(image.src.endsWith('/entries/a/photos/p2'));
+  actions.querySelector('[data-photo-original]').click();
+  assert.ok(image.src.endsWith('/photos/p2?variant=original-display'));
+  assert.ok(actions.querySelector('[data-photo-download]').href.endsWith('/photos/p2?variant=original'));
+  image.onerror();
+  assert.equal(actions.querySelector('[data-photo-retry]').hidden,false);
+  actions.querySelector('[data-photo-retry]').click();
+  assert.equal(actions.querySelector('[data-photo-retry]').hidden,true);
+  const shade=viewport.querySelector('.qsum-lightbox-canvas');
+  shade.dispatchEvent(new p.w.MouseEvent('pointerdown',{bubbles:true,button:0}));
+  shade.click();
+  assert.equal(overlay.isConnected,false);
+  assert.equal(p.d.activeElement,preview);
  }finally{p.dom.window.close();}
 });
 test('LAN HTTP camera and album attach without randomUUID, retain secure keys on retry, and show feedback beside photos',async()=>{

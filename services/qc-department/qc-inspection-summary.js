@@ -122,14 +122,15 @@
   }
   function photoPreview(row,photos,start,detailDialog=null,trigger=root.document.activeElement){
     const embedded=row===null;
+    const overlay=embedded||!detailDialog;
     if(!photos[start]||(!embedded&&!row.entryId)||(detailDialog&&!detailDialog.isConnected))return;
     if(activePhoto?.el.isConnected){activePhoto.el.focus();return;}
     const body=detailDialog?.querySelector('.qrd-content');
     const position=body&&{top:body.scrollTop,left:body.scrollLeft};
     const el=root.document.createElement('dialog');el.className='qsum-lightbox';el.setAttribute('aria-label','验货照片预览');
     el.innerHTML='<header><strong data-photo-title></strong><button type="button" data-photo-close aria-label="关闭照片预览">关闭</button></header><div class="qsum-lightbox-tools"><button type="button" data-photo-prev aria-label="上一张照片">← 上一张</button><button type="button" data-photo-next aria-label="下一张照片">下一张 →</button><button type="button" data-photo-minus aria-label="缩小照片">−</button><output data-photo-scale aria-live="polite">100%</output><button type="button" data-photo-plus aria-label="放大照片">＋</button><button type="button" data-photo-fit>适应窗口</button><button type="button" data-photo-original>查看原图</button><span data-photo-quality role="status"></span></div><div class="qsum-lightbox-viewport" tabindex="0" aria-label="照片区域，可滚轮缩放、捏合及拖动"><div class="qsum-lightbox-canvas"><img><p data-photo-error hidden role="alert">照片加载失败，请重试。</p></div></div><footer><span data-photo-name></span><button type="button" data-photo-retry hidden>重新加载照片</button></footer>';
-    if(embedded){
-      el.id='wb-photo-viewer';
+    if(overlay){
+      el.id=embedded?'wb-photo-viewer':'qis-photo-viewer';
       el.setAttribute('aria-description','滚轮缩放，拖动照片，点击暗处或按 Esc 关闭。');
     }
     const originalDownload=root.document.createElement('a');
@@ -138,6 +139,17 @@
     originalDownload.textContent='下载原文件';
     originalDownload.hidden=true;
     el.querySelector('footer').append(originalDownload);
+    if(overlay&&!embedded){
+      const actions=root.document.createElement('div');
+      actions.className='qis-photo-viewer-actions';
+      for(const [action,label] of [['prev','‹'],['next','›'],['original'],['download'],['retry'],['close','×']]){
+        const control=el.querySelector('[data-photo-'+action+']');
+        if(label)control.textContent=label;
+        actions.append(control);
+      }
+      actions.querySelector('[data-photo-prev]').hidden=actions.querySelector('[data-photo-next]').hidden=photos.length===1;
+      el.append(actions);
+    }
     root.document.body.append(el);
     let variant='preview',index=start,scale=1,fit=1,x=0,y=0,width=0,height=0,loaded=false,raf=null,closed=false,nativeGesture=null,lastPointer=null;
     const viewport=el.querySelector('.qsum-lightbox-viewport'),img=el.querySelector('img'),error=el.querySelector('[data-photo-error]'),retry=el.querySelector('[data-photo-retry]');
@@ -182,6 +194,7 @@
         originalDownload.hidden=!p.originalAvailable;
         originalDownload.href=path+'?variant=original';
         originalDownload.download=p.name||'验货照片';
+        originalButton.hidden=overlay&&!p.originalAvailable;
         originalButton.disabled=!p.originalAvailable;originalButton.textContent=variant==='preview'?'查看原图':'返回预览图';
       }
       el.querySelector('[data-photo-quality]').textContent=qualityLabel(p);
@@ -228,7 +241,7 @@
     },{passive:false});
     let pressedOnBackground=false;
     viewport.addEventListener('pointerdown',event=>{
-      pressedOnBackground=embedded&&event.target!==img&&!pointers.size&&event.button===0;
+      pressedOnBackground=overlay&&event.target!==img&&!pointers.size&&event.button===0;
       if(pressedOnBackground||!loaded||event.button>0||nativeGesture)return;
       event.preventDefault();viewport.focus({preventScroll:true});pointers.set(event.pointerId,local(event));viewport.setPointerCapture?.(event.pointerId);viewport.classList.add('is-dragging');});
     viewport.addEventListener('pointermove',event=>{
@@ -242,9 +255,9 @@
     const release=event=>{pointers.delete(event.pointerId);if(!pointers.size)viewport.classList.remove('is-dragging');};
     for(const name of ['pointerup','pointercancel','lostpointercapture'])viewport.addEventListener(name,release);
     const closePhoto=()=>{el.close();cleanup();};
-    if(embedded){
+    if(overlay){
       el.addEventListener('click',event=>{
-        if(event.target===el||(pressedOnBackground&&event.target!==img))closePhoto();
+        if(event.target===el||(pressedOnBackground&&event.target!==img&&viewport.contains(event.target)))closePhoto();
       });
       viewport.addEventListener('keydown',event=>{
         if(['+','=','-'].includes(event.key)){

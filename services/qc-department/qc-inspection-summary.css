@@ -565,14 +565,33 @@ body.qc-liquid-glass .qsum-record-detail .qsum-photo-thumb {
   #qsum-root .qsum-table :is(th,td):first-child { min-width:100px; }
 }
 
-/* The workbook already supplies the photo context. Keep only its image in view. */
-#wb-photo-viewer{
+/* Report and table photos open directly over the current page. */
+:is(#wb-photo-viewer,#qis-photo-viewer){
   width:100%;height:var(--qc-visible-height,100dvh);max-height:none;
   inset:var(--qc-visible-top,0px) 0 auto;margin:0;border:0;border-radius:0;
   background:transparent;box-shadow:none;backdrop-filter:none;animation:none;
 }
-#wb-photo-viewer::backdrop{background:rgba(0,0,0,.24)}
-#wb-photo-viewer header,#wb-photo-viewer footer,#wb-photo-viewer .qsum-lightbox-tools{display:none}
-#wb-photo-viewer .qsum-lightbox-viewport{background:transparent;outline:0;cursor:zoom-out}
-#wb-photo-viewer img{pointer-events:auto;cursor:grab}
-#wb-photo-viewer .is-dragging img{cursor:grabbing}
+:is(#wb-photo-viewer,#qis-photo-viewer)::backdrop{background:rgba(0,0,0,.24)}
+:is(#wb-photo-viewer,#qis-photo-viewer) :is(header,footer,.qsum-lightbox-tools){display:none}
+:is(#wb-photo-viewer,#qis-photo-viewer) .qsum-lightbox-viewport{background:transparent;outline:0;cursor:zoom-out}
+:is(#wb-photo-viewer,#qis-photo-viewer) img{pointer-events:auto;cursor:grab}
+:is(#wb-photo-viewer,#qis-photo-viewer) .is-dragging img{cursor:grabbing}
+
+.qis-photo-viewer-actions{
+  display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:4px;
+  align-self:center;flex-shrink:0;max-width:calc(100% - 8px);box-sizing:border-box;
+  margin:0 4px max(4px,env(safe-area-inset-bottom));padding:4px 6px;border-radius:999px;
+  background:var(--bg-panel);color:var(--text-hi);font-size:12px;
+}
+.qis-photo-viewer-actions [hidden]{display:none}
+.qis-photo-viewer-actions :is(button,[data-photo-download]){
+  min-width:34px;min-height:34px;box-sizing:border-box;padding:4px 6px;white-space:nowrap;
+}
+.qis-photo-viewer-actions :is([data-photo-prev],[data-photo-next],[data-photo-close]){font-size:20px;line-height:1}
+#qis-photo-viewer [data-photo-error]:not([hidden]){
+  inset:40% auto auto 50%;transform:translateX(-50%);width:max-content;max-width:calc(100% - 32px);
+  box-sizing:border-box;padding:8px 12px;border-radius:8px;background:var(--bg-panel);
+}
+@media(pointer:coarse){
+  .qis-photo-viewer-actions :is(button,[data-photo-download]){min-width:44px;min-height:44px}
+}
