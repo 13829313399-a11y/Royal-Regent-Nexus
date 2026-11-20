@@ -94,6 +94,9 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 :is(#page-records,#page-review) .qis-table .qis-po-actions>.qis-cell{display:flex;flex-direction:column;gap:3px;overflow:hidden}
 :is(#page-records,#page-review) .qis-po-info{flex:1;min-height:0;overflow:auto;white-space:nowrap;font-family:Arial,sans-serif;line-height:16px}
 :is(#page-records,#page-review) .qis-po-info small{display:block;margin:0;white-space:normal;font-family:var(--font-body,sans-serif)}
+#page-records .qis-table [data-column=poNo]{min-width:0;padding-inline:2px!important}
+#page-records .qis-table [data-column=poNo] .qis-cell{max-width:clamp(72px,12.5vw,85px)}
+#page-records .qis-po-info{white-space:normal;overflow-wrap:anywhere}
 /* Fit the PO, batch and revoke button into an approved row. */
 #page-review .qis-table td.qis-po-actions:has(.qis-row-actions){padding-block:2px!important}
 #page-review .qis-table .qis-po-actions>.qis-cell:has(.qis-row-actions){height:calc(var(--qis-row-height) - 5px);gap:1px}
