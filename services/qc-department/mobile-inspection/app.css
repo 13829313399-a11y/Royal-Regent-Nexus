@@ -462,3 +462,11 @@ dialog::backdrop{background:#101d376e}
 @media(prefers-reduced-motion:reduce){
   #app:not(.web-layout) dialog.mobile-filters-sheet[open],#app:not(.web-layout) .filter-page-forward,#app:not(.web-layout) .filter-page-back{animation:none}
 }
+
+#app.web-layout #tasks .search,
+#app:not(.web-layout) :is(#tasks .search,.mobile-filter-search) {
+  background-color:#f2f3f2;
+  border-color:transparent;
+  border-radius:999px;
+  box-shadow:inset 0 0 0 1px #25302b08;
+}
