@@ -67,10 +67,18 @@ test('source entrance is removed even for meaningful history, while pending and 
 });
 test('two tabs, full fields, server audit hints and read-only confirmed rows',async()=>{
  const p=await page();try{
+  const toolbar=p.d.getElementById('qis-review-controls');
+  const categories=toolbar.querySelector('.qis-review-tabs');
+  const pressed=()=>Array.from(categories.querySelectorAll('button[aria-pressed="true"]'),button=>button.id);
+  assert.deepEqual(pressed(),['reviewTabPending']);
+  assert.equal(toolbar.nextElementSibling.id,'reviewTableWrap');
+  assert.equal(toolbar.querySelector('#qis-review-batch').previousElementSibling.getAttribute('aria-label'),'刷新审核列表');
+  assert.equal(toolbar.querySelector('#qis-review-context,.qis-review-context'),null);
   assert.equal(p.d.getElementById('reviewTabRejected'),null);assert.equal(p.d.querySelectorAll('#reviewTableWrap tbody tr[data-entry]').length,3);
   for(const field of ['submittedAt','confirmedAt','lastChangedAt','lastActor.name','inspectionExecution.analysisReason'])assert.ok(p.d.querySelector('th[data-column="'+field+'"]'));
   assert.match(p.d.querySelector('[data-audit]').title,/后台用户/);assert.match(p.d.querySelector('[data-audit]').title,/2026\/11\/02 01:00/);
   p.rows[0].reviewState='approved';await p.w.QcInspectionSheet.loadReview('approved');assert.equal(p.d.querySelectorAll('#reviewTableWrap tbody tr[data-entry]').length,1);
+  assert.deepEqual(pressed(),['reviewTabApproved']);
   const row=p.d.querySelector('#reviewTableWrap tbody tr[data-entry]');
   assert.equal(row.querySelector('textarea,select,input:not([type=checkbox])'),null);assert.equal(row.querySelector('td[data-column=result] .qis-review-value').textContent,'PASS');assert.ok(p.d.querySelector('[data-revoke]'));
  }finally{p.dom.window.close();}
@@ -546,7 +554,7 @@ test('review name history groups a whole fill, restores distinct names and branc
     key(host,'Z',{metaKey:true,shiftKey:true});
     await p.w.QcInspectionSheet.flush();
     assert.deepEqual(names(),['林青','林青','林青']);
-    assert.doesNotMatch(p.d.querySelector('#page-review .toolbar-left').textContent,/撤销|重做/);
+    assert.doesNotMatch(p.d.getElementById('qis-review-controls').textContent,/撤销|重做/);
     key(host,'z',{ctrlKey:true});
     const input=nodes[1].querySelector('[data-review-field=firstResponsible]');
     for(const value of ['王','王宁']){input.value=value;input.dispatchEvent(new p.w.Event('input',{bubbles:true}));}
