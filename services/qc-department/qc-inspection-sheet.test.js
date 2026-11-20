@@ -88,6 +88,7 @@ test('workbench opens the fitted photo overlay and loads metadata only when clic
   const scale=Number(image.style.transform.match(/scale\(([^)]+)\)/)?.[1]);
   assert.equal(scale,(400-32)/1200);
   assert.ok(image.src.endsWith('/entries/a/photos/p1'));
+  assert.equal(overlay.querySelector('[data-photo-close]'),null);
   assert.equal(actions.querySelector('[data-photo-plus],[data-photo-minus]'),null);
   actions.querySelector('[data-photo-next]').click();
   assert.ok(image.src.endsWith('/entries/a/photos/p2'));
@@ -103,6 +104,17 @@ test('workbench opens the fitted photo overlay and loads metadata only when clic
   shade.click();
   assert.equal(overlay.isConnected,false);
   assert.equal(p.d.activeElement,preview);
+
+  p.w.QcInspectionSummary.openPhoto({entryId:'a'},[{id:'p1',name:'手机照片.JPG'}],0,null,preview);
+  const single=p.d.querySelector('#qis-photo-viewer[open]');
+  const singleActions=single.querySelector('.qis-photo-viewer-actions');
+  assert.equal(singleActions.hidden,true);
+  single.querySelector('img').onerror();
+  assert.equal(singleActions.hidden,false);
+  single.querySelector('[data-photo-retry]').click();
+  assert.equal(singleActions.hidden,true);
+  single.dispatchEvent(new p.w.Event('cancel',{cancelable:true}));
+  assert.equal(single.isConnected,false);
  }finally{p.dom.window.close();}
 });
 test('photo marks follow the image and persist only after saving',async()=>{
@@ -170,7 +182,7 @@ test('photo marks follow the image and persist only after saving',async()=>{
   assert.equal(save.disabled,true);
   overlay.querySelector('[data-photo-next]').click();load();
   assert.equal(layer.children.length,0);
-  overlay.querySelector('[data-photo-close]').click();
+  overlay.click();
   assert.equal(p.d.activeElement,thumbnail);
 
   p.w.__QC_NEXUS.workflow.edit=false;

@@ -703,8 +703,7 @@ function showPhoto(photo) {
   const initial=photo.annotations||[];
   let marks=initial,tool='browse',drawing=null,loaded=false,savingMarks=false;
   showSheet(photo.name,(editable?`<div class="photo-markup-tools" role="group" aria-label="照片标记">${shapes.toolButtons}</div>`:'')+
-    '<p class="photo-markup-status" role="status" hidden></p><div class="photo-markup-stage"><div class="photo-markup-image"><img class="photo-preview" alt="验货照片"><svg aria-hidden="true"></svg></div></div>'+
-    '<div class="photo-markup-actions"><button type="button" data-close-photo aria-label="关闭照片预览">×</button></div>');
+    '<p class="photo-markup-status" role="status" hidden></p><div class="photo-markup-stage"><div class="photo-markup-image"><img class="photo-preview" alt="验货照片"><svg aria-hidden="true"></svg></div></div>');
   sheet.classList.add('photo-markup-sheet');
   const content=$('sheet-content'),stage=content.querySelector('.photo-markup-stage'),frame=stage.firstElementChild;
   const image=frame.querySelector('img'),layer=frame.querySelector('svg');
@@ -723,8 +722,6 @@ function showPhoto(photo) {
   const observer=window.ResizeObserver?new ResizeObserver(fitPhoto):null;
   observer?.observe(stage);
   sheet.addEventListener('close',()=>observer?.disconnect(),{once:true});
-  stage.onclick=event=>{if(event.target===stage)closeSheet();};
-  content.querySelector('[data-close-photo]').onclick=closeSheet;
   function controls(){
     if(!editable)return;
     frame.classList.toggle('is-marking',tool!=='browse'&&loaded&&!savingMarks);
@@ -869,6 +866,10 @@ $('pending-back').onclick = () => {
 };
 $('info').onclick = showInfo;
 $('sheet-close').onclick = closeSheet;
+sheet.addEventListener('click',event=>{
+  if(sheet.classList.contains('photo-markup-sheet')&&
+      (event.target===sheet||event.target=== $('sheet-content')||event.target.matches('.photo-markup-stage')))closeSheet();
+});
 sheet.addEventListener('cancel',event=>{if(photoCanClose&&!photoCanClose())event.preventDefault();});
 sheet.addEventListener('close', () => {photoCanClose=null;dialogTrigger?.focus({ preventScroll: true });});
 $('search').addEventListener('input', () => renderList());

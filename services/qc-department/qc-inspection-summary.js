@@ -250,10 +250,12 @@
     originalDownload.textContent='下载原文件';
     originalDownload.hidden=true;
     el.querySelector('footer').append(originalDownload);
+    let actions;
     if(overlay&&!embedded){
-      const actions=root.document.createElement('div');
+      el.querySelector('[data-photo-close]').remove();
+      actions=root.document.createElement('div');
       actions.className='qis-photo-viewer-actions';
-      for(const [action,label] of [['prev','‹'],['next','›'],['original'],['download'],['retry'],['close','×']]){
+      for(const [action,label] of [['prev','‹'],['next','›'],['original'],['download'],['retry']]){
         const control=el.querySelector('[data-photo-'+action+']');
         if(label)control.textContent=label;
         actions.append(control);
@@ -261,6 +263,7 @@
       actions.querySelector('[data-photo-prev]').hidden=actions.querySelector('[data-photo-next]').hidden=photos.length===1;
       el.append(actions);
     }
+    const updateActions=()=>{if(actions)actions.hidden=[...actions.children].every(control=>control.hidden);};
     root.document.body.append(el);
     let variant='preview',index=start,scale=1,fit=1,x=0,y=0,width=0,height=0,loaded=false,raf=null,closed=false,nativeGesture=null,lastPointer=null;
     const viewport=el.querySelector('.qsum-lightbox-viewport'),img=el.querySelector('img'),error=el.querySelector('[data-photo-error]'),retry=el.querySelector('[data-photo-retry]');
@@ -319,13 +322,14 @@
       el.querySelector('[data-photo-title]').textContent='验货照片 '+(index+1)+' / '+photos.length;
       el.querySelector('[data-photo-name]').textContent=p.name||'验货照片';
       el.querySelector('[data-photo-prev]').disabled=index===0;el.querySelector('[data-photo-next]').disabled=index===photos.length-1;
+      updateActions();
     }
     function zoom(value,px=width/2,py=height/2){
       if(!loaded)return;const next=Math.max(1,Math.min(8,value)),ratio=next/scale;
       x=px-(px-x)*ratio;y=py-(py-y)*ratio;scale=next;paint();
     }
-    img.onload=()=>{if(closed)return;loaded=true;error.hidden=retry.hidden=true;el.querySelector('[data-photo-quality]').textContent=qualityLabel(photos[index]);img.style.width=img.naturalWidth+'px';img.style.height=img.naturalHeight+'px';img.style.visibility='visible';markup?.load();resize();reset();};
-    img.onerror=()=>{if(closed)return;loaded=false;markup?.fail();error.hidden=retry.hidden=false;el.querySelector('[data-photo-quality]').textContent=variant==='preview'?'预览图加载失败':'原图加载失败';};img.draggable=false;
+    img.onload=()=>{if(closed)return;loaded=true;error.hidden=retry.hidden=true;updateActions();el.querySelector('[data-photo-quality]').textContent=qualityLabel(photos[index]);img.style.width=img.naturalWidth+'px';img.style.height=img.naturalHeight+'px';img.style.visibility='visible';markup?.load();resize();reset();};
+    img.onerror=()=>{if(closed)return;loaded=false;markup?.fail();error.hidden=retry.hidden=false;updateActions();el.querySelector('[data-photo-quality]').textContent=variant==='preview'?'预览图加载失败':'原图加载失败';};img.draggable=false;
     viewport.addEventListener('wheel',event=>{
       if(!loaded)return;event.preventDefault();if(nativeGesture||markup?.drawing)return;const rect=viewport.getBoundingClientRect();
       const units=event.deltaMode===1?16:event.deltaMode===2?height:1;
@@ -391,7 +395,7 @@
         }
       });
     }
-    el.querySelector('[data-photo-close]').onclick=closePhoto;
+    el.querySelector('[data-photo-close]')?.addEventListener('click',closePhoto);
     el.addEventListener('cancel',event=>{event.preventDefault();closePhoto();});
     el.querySelector('[data-photo-prev]').onclick=()=>stepPhoto(-1);
     el.querySelector('[data-photo-next]').onclick=()=>stepPhoto(1);

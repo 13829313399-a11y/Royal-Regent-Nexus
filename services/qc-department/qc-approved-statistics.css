@@ -649,3 +649,24 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 #qstats-skim .rate-bar { background:#686868 }
 #qstats-tracking [data-table]:has(.skim-scroll) { overflow:visible }
 #qstats-tracking [data-table] .skim { min-width:0 }
+
+/* Shared search appearance. Each workspace owns the control's dimensions. */
+body.qc-liquid-glass :is(
+  #qsToolbar #qsSearch, #page-records .records-search,
+  #qis-review-controls .qis-review-search, #qsum-root #qsum-search, #page-defectlib #defLibSearch
+) {
+  background-color:color-mix(in srgb,var(--text-hi) 6%,var(--bg-card)) !important;
+  border-color:transparent !important;
+  border-radius:999px;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text-hi) 3%,transparent);
+}
+body.qc-liquid-glass :is(
+  #qsToolbar #qsSearch, #page-records .records-search,
+  #qis-review-controls .qis-review-search, #qsum-root #qsum-search, #page-defectlib #defLibSearch
+):focus-within {
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent);
+}
+body.qc-liquid-glass :is(#page-records .records-search,#qis-review-controls .qis-review-search) input {
+  background-color:transparent !important;
+}
+body.qc-liquid-glass #page-records .records-search svg {color:var(--text-dim)}

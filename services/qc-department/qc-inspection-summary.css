@@ -626,11 +626,11 @@ body.qc-liquid-glass .qsum-record-detail .qsum-photo-thumb {
   margin:0 4px max(4px,env(safe-area-inset-bottom));padding:4px 6px;border-radius:999px;
   background:var(--bg-panel);color:var(--text-hi);font-size:12px;
 }
-.qis-photo-viewer-actions [hidden]{display:none}
+.qis-photo-viewer-actions[hidden],.qis-photo-viewer-actions [hidden]{display:none}
 .qis-photo-viewer-actions :is(button,[data-photo-download]){
   min-width:34px;min-height:34px;box-sizing:border-box;padding:4px 6px;white-space:nowrap;
 }
-.qis-photo-viewer-actions :is([data-photo-prev],[data-photo-next],[data-photo-close]){font-size:20px;line-height:1}
+.qis-photo-viewer-actions :is([data-photo-prev],[data-photo-next]){font-size:20px;line-height:1}
 #qis-photo-viewer [data-photo-error]:not([hidden]){
   inset:40% auto auto 50%;transform:translateX(-50%);width:max-content;max-width:calc(100% - 32px);
   box-sizing:border-box;padding:8px 12px;border-radius:8px;background:var(--bg-panel);

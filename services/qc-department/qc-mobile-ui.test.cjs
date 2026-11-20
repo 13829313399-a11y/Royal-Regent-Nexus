@@ -47,6 +47,9 @@ test('live phone starts from server, switches fields with focus, saves locally a
   Object.defineProperties(image,{naturalWidth:{value:640},naturalHeight:{value:480}});
   image.getBoundingClientRect=()=>({left:10,top:30,width:320,height:240});
   image.onload();
+  assert.equal(q('[data-close-photo]'),null);
+  image.click();
+  assert.equal($('sheet').open,true);
   q('[data-mark-tool=arrow]').click();
   for(const [type,x,y] of [['pointerdown',42,54],['pointermove',170,150],['pointerup',170,150]]){
     const event=new w.MouseEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y});
@@ -60,6 +63,9 @@ test('live phone starts from server, switches fields with focus, saves locally a
   online=true;w.dispatchEvent(new w.Event('online'));await wait(100);
   assert.deepEqual(row.photos[0].annotations,[{type:'arrow',x1:.1,y1:.1,x2:.5,y2:.5}]);
   assert.equal(saved.get(row.id)._pending,false);
+  q('[data-photo]').click();
+  q('.photo-markup-stage').click();
+  assert.equal($('sheet').open,false);
   assert.equal($('save-return').disabled,false);$('save-return').click();await wait(150);
   assert.equal(row.submittedAt,undefined);assert.equal(d.querySelectorAll('#task-list .task').length,1);assert.equal($('tasks').hidden,false);assert.equal($('list-notice').textContent,'');assert.match(q('.task-sync').textContent,/已同步/);
   assert.equal(writes.some(url=>url.endsWith('/submit')),false);assert.equal(saved.get('real-entry').remark,'备注');assert.equal(errors.length,0,errors.join('\n'));
