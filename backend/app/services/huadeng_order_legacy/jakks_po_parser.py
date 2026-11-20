@@ -766,5 +766,5 @@ def parse_po(path: str | Path, *, allow_cancellation: bool = False) -> dict[str,
         order['cancellation_evidence'] = order.get('cancellation_evidence') or '文件名明确标记 CXL'
         for line in order['lines']:
             line.update(document_kind='cancellation', document_type='取消单', cancellation_evidence=order['cancellation_evidence'])
-        order.setdefault('warnings', []).append('取消通知：匹配原订单后标为取消单；未唯一匹配或已走货的记录保留原样，通知另存取消区。')
+        order.setdefault('warnings', []).append('取消通知：在唯一匹配的未走货原订单上标为取消单；未匹配的只提示，不新增订单。')
     return order

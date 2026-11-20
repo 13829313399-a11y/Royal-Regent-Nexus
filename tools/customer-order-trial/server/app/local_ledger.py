@@ -86,7 +86,7 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed,registered):
         resolved['customer_name']=scoped(customer_code,factory_id)['name']
         def perform():
             target=ledger.get_line(db,fixed_factory,reconcile_line_id) if reconcile_line_id else None
-            result=ledger.import_preview(db,preview=resolved,
+            result=ledger.import_preview(db,preview=resolved,authorize_dispatch=lambda: None,
                 files=[(name,content,source_kind) for name,content in args['po_files']]+[(args['schedule_file_name'],args['schedule_content'],'schedule')],
                 source_kind=source_kind,actor=ACTOR,reason=reconciliation_reason.strip() if target else controls['reason'],
                 controls=controls,reconcile_line=target,expected_revision=expected_revision)
