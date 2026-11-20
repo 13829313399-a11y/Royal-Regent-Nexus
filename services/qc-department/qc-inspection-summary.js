@@ -21,8 +21,23 @@
     el.innerHTML=`
       <div class="qsum-workspace">
         <div class="qsum-toolbar">
-          <p id="qsum-totals" hidden>审核记录：<strong id="qsum-review-count"></strong> 条</p>
+          <div class="qsum-filter-bar">
+            <div class="qsum-date-filters" role="group" aria-label="验货日期筛选">
+              <select id="qsum-year" aria-label="汇总年份"></select>
+              <select id="qsum-month" aria-label="汇总月份"></select>
+              <select id="qsum-day" aria-label="汇总日期"></select>
+            </div>
+            <div class="qsum-select">
+              <select id="qsum-type" aria-label="验货类型"><option value="">验货类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
+            </div>
+            <label class="qsum-search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+              <input id="qsum-search" type="search" placeholder="搜索汇总" title="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总">
+            </label>
+            <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
+          </div>
           <div class="qsum-actions">
+            <p id="qsum-totals" hidden>审核记录：<strong id="qsum-review-count"></strong> 条</p>
             <button type="button" class="btn btn-secondary" id="qsum-import">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h4l4 4v14H7v-4M7 9V3h6v5h5M3 13h11m-4-4 4 4-4 4"/></svg>历史导入
             </button>
@@ -30,21 +45,6 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3"/></svg>
             </button>
           </div>
-        </div>
-        <div class="qsum-filter-bar">
-          <label class="qsum-search">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
-            <input id="qsum-search" type="search" placeholder="客户 / 库号 / 订单 / 货号" aria-label="搜索验货汇总">
-          </label>
-          <div class="qsum-date-filters" role="group" aria-label="验货日期筛选">
-            <select id="qsum-year" aria-label="汇总年份"></select>
-            <select id="qsum-month" aria-label="汇总月份"></select>
-            <select id="qsum-day" aria-label="汇总日期"></select>
-          </div>
-          <div class="qsum-select">
-            <select id="qsum-type" aria-label="验货类型"><option value="">验货类型</option><option>客验</option><option>行验</option><option>待确认</option></select>
-          </div>
-          <button type="button" class="btn btn-secondary" id="qsum-reset">重置</button>
         </div>
         <p id="qsum-message" role="status" aria-live="polite"></p>
         <div class="qsum-results">
@@ -64,7 +64,7 @@
     ['year','month','day','type'].forEach(key=>root.document.getElementById('qsum-'+key).addEventListener('change',event=>{
       state.filters[key]=event.target.value;if(key==='year')state.filters.month=state.filters.day='';if(key==='month')state.filters.day='';state.filters.page=1;controls();void load();
     }));
-    root.document.getElementById('qsum-search').addEventListener('input',event=>{state.filters.search=event.target.value;state.filters.page=1;clearTimeout(timer);timer=setTimeout(load,250);});
+    root.document.getElementById('qsum-search').addEventListener('input',event=>{state.filters.search=event.target.value;state.filters.page=1;updateReset();clearTimeout(timer);timer=setTimeout(load,250);});
     root.document.getElementById('qsum-reset').onclick=()=>{Object.assign(state.filters,{year:'',month:'',day:'',search:'',type:'',page:1});root.document.getElementById('qsum-search').value='';controls();void load();};
     root.document.getElementById('qsum-refresh').onclick=load;
     root.document.getElementById('qsum-prev').onclick=()=>{state.filters.page--;void load();};
@@ -75,7 +75,12 @@
     root.document.getElementById('qsum-import').hidden=!root.__QC_NEXUS?.summaryImportAllowed;
     controls();
   }
+  function updateReset(){
+    const {year,month,day,search,type}=state.filters;
+    root.document.getElementById('qsum-reset').hidden=!(year||month||day||search||type);
+  }
   function controls(){
+    updateReset();
     const f=state.filters;
     const options=(id,values,empty,disabled=false)=>{const el=root.document.getElementById('qsum-'+id);el.innerHTML=`<option value="">${empty}</option>`+values.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');el.value=f[id];el.disabled=disabled;};
     options('year',state.data?.years||[],'全部年份');

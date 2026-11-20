@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#f7f9fb">
 <title>移动验货</title>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="app.css?v=15">
+<link rel="stylesheet" href="app.css?v=17">
 <script defer src="remote.js?v=15"></script>
 <script defer src="app.js?v=15"></script>
 </head>
@@ -31,7 +31,6 @@
   </header>
   <section id="tasks" class="screen" aria-label="现场验货任务">
     <header class="search-header">
-      <div class="search"><svg aria-hidden="true"><use href="#i-search"/></svg><label class="sr" for="search">搜索验货任务</label><input type="search" id="search" placeholder="搜索客户、PO 或货号" autocomplete="off"><button id="clear-search" type="button" aria-label="清空搜索" hidden><svg aria-hidden="true"><use href="#i-close"/></svg></button></div>
       <button id="list-filter" type="button" aria-haspopup="dialog" aria-controls="sheet"><svg aria-hidden="true"><use href="#i-filter"/></svg><span>筛选</span></button>
       <div class="filters" id="task-filters">
         <button id="day-filter" class="filter-trigger" type="button" aria-haspopup="dialog" aria-controls="sheet"><span>全部日期</span><svg aria-hidden="true"><use href="#i-down"/></svg></button>
@@ -40,6 +39,7 @@
         <select id="day" aria-label="计划验货日期" hidden><option value="">全部日期</option></select>
         <select id="customer" aria-label="客户" hidden><option value="">全部客户</option></select>
       </div>
+      <div class="search"><svg aria-hidden="true"><use href="#i-search"/></svg><label class="sr" for="search">搜索验货任务</label><input type="search" id="search" placeholder="客户 / PO / 货号" autocomplete="off"><button id="clear-search" type="button" aria-label="清空搜索" hidden><svg aria-hidden="true"><use href="#i-close"/></svg></button></div>
       <div id="list-overview" role="group" aria-label="验货处理状态"><button type="button" data-progress="all" aria-pressed="true">全部 <span id="list-total">—</span></button><button type="button" data-progress="todo" aria-pressed="false">待验 <span id="list-todo">—</span></button><button type="button" data-progress="done" aria-pressed="false">已完成 <span id="list-done">—</span></button></div>
     </header>
     <div id="task-scroll" class="scroll task-scroll">

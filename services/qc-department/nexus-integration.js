@@ -59,45 +59,15 @@
   // The parent owns factory selection. Never mutate __QC_COMPANY or a local
   // storage key here: changing factory must recreate the authorized frame.
   var factoryBridge = null;
-  var factorySwitching = false;
   window.__QC_PAGE_CHANGED = function (page) { factoryBridge?.navigate?.(page); };
   window.__QC_INITIAL_PAGE = function () {
     var page = factoryBridge?.page;
     return page && document.getElementById('page-' + page) ? page : 'sales-schedule';
   };
   window.__QC_CURRENT_PAGE = function () { return typeof currentPage === 'string' ? currentPage : 'sales-schedule'; };
-  window.__QC_RENDER_FACTORY_SELECTOR = function () {
-    if (!window.__QC_NEXUS || !factoryBridge) return;
-    var badge = document.querySelector('#userBadge .user-badge-company');
-    if (!badge) return;
-    var select = document.createElement('select');
-    select.id = 'qcFactorySelect';
-    select.className = 'user-badge-company qc-factory-select';
-    select.setAttribute('aria-label', 'QC 厂区');
-    select.title = '切换厂区，与 Nexus 同步';
-    factoryBridge.options.forEach(function (item) {
-      var option = document.createElement('option');
-      option.value = item.id;
-      option.textContent = item.label;
-      select.appendChild(option);
-    });
-    select.value = factoryBridge.factory;
-    select.disabled = factorySwitching;
-    select.onchange = async function () {
-      var selected = select.value;
-      select.value = factoryBridge.factory;
-      if (factorySwitching || selected === factoryBridge.factory) return;
-      factorySwitching = true; select.disabled = true;
-      try { await factoryBridge.select(selected); }
-      catch (_) { window.showToast?.('厂区切换未完成，请重试', 'error'); }
-      finally { factorySwitching = false; select.disabled = false; select.value = factoryBridge.factory; }
-    };
-    badge.replaceWith(select);
-  };
   window.__QC_SET_FACTORY_BRIDGE = function (bridge) {
     if (!window.__QC_NEXUS || bridge.factory !== window.__QC_NEXUS.factory) return;
     factoryBridge = bridge;
-    window.__QC_RENDER_FACTORY_SELECTOR();
     // Only carry the page name across factories, never filters, selections or data.
     if (window.__QC_WORKBENCH_READY === true && bridge.page && document.getElementById('page-' + bridge.page) && window.showPage
         && window.__QC_CURRENT_PAGE() !== bridge.page) window.showPage(bridge.page);

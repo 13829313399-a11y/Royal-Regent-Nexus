@@ -32,7 +32,7 @@
     const states=review?{pending:stateNames.pending,returned:stateNames.returned,approved:stateNames.approved}:stateNames;
     host.innerHTML='<div class="qwf-heading"><div><h2>'+(review?'主管审核':'验货任务')+'</h2><p>'+(review?'查看完整验货信息、照片和原报告；退回后由 QC 修改并重新提交。':'从客排期确认推送后开始填写。保存草稿不提交，确认完成后锁定并送主管审批。')+'</p></div><button data-refresh>刷新任务</button></div>'+
       '<div class="qwf-filters"><label>状态<select data-filter="state">'+options(states,f.state,'全部状态')+'</select></label><label>验货方式<select data-filter="method">'+options(methodNames,f.method,'行验和客验')+'</select></label>'+
-      '<label>实际检验起日<input type="date" data-filter="from" value="'+esc(f.from)+'"></label><label>实际检验止日<input type="date" data-filter="to" value="'+esc(f.to)+'"></label><label class="qwf-search">搜索<input data-filter="q" value="'+esc(f.q)+'" placeholder="客户 / PO / 货号 / 名称 / 批次"></label>'+
+      '<label>实际检验起日<input type="date" data-filter="from" value="'+esc(f.from)+'"></label><label>实际检验止日<input type="date" data-filter="to" value="'+esc(f.to)+'"></label><label class="qwf-search">搜索<input data-filter="q" value="'+esc(f.q)+'" placeholder="客户 / PO / 货号" title="客户 / PO / 货号 / 名称 / 批次"></label>'+
       '<button data-export="work" '+(!root.__QC_NEXUS?.workflow?.export||!rows.length?'disabled':'')+'>导出当前工作清单＋附件</button><button data-export="formal" '+(!root.__QC_NEXUS?.workflow?.export||!rows.length?'disabled':'')+'>导出当前已审核资料</button></div>'+
       (model.source?'<p class="qwf-notice">当前只显示所选订单的验货记录。<button data-clear-source>显示全部订单</button></p>':'')+
       (model.error?'<p class="qwf-error" role="alert">'+esc(model.error)+'；未确认的最新数据不能用于提交或导出。</p>':'')+
@@ -489,7 +489,7 @@
   root.QcWorkflow={navigationState:()=>({dirty:model.dirty||hasPendingFiles()||Boolean(root.QcInspectionSheet?.navigationState().dirty),busy:model.busy||Boolean(model.opening)||Boolean(root.QcInspectionSheet?.navigationState().busy)}),reviewLegacy,onPage,beforePageChange,preparePush,openSource,openTask,openNew,openRecord,openRow,openLegacy,load,selectedTasks,model,readForm,close,recordItems,recordRow,reviewRow,isLinked,exportOne,saveEntry:()=>busy(async()=>{await uploadPending();await saveDraft();})};
   root.addEventListener('beforeunload',e=>{if(model.dirty||model.busy||model.opening||hasPendingFiles()){e.preventDefault();e.returnValue='';}});
   root.document.addEventListener('DOMContentLoaded',()=>{if(root.__QC_NEXUS?.workflow){
-    for(const name of ['exportReportPDF','exportPDF']){const original=root[name];if(typeof original==='function')root[name]=function(...args){if(!model.loaded||model.loading||model.error){toast('请先成功刷新验货任务，确保报表包含完整的已审核记录',true);return;}return original.apply(this,args);};}
+    for(const name of ['exportReportPDF']){const original=root[name];if(typeof original==='function')root[name]=function(...args){if(!model.loaded||model.loading||model.error){toast('请先成功刷新验货任务，确保报表包含完整的已审核记录',true);return;}return original.apply(this,args);};}
     load();
   }});
 })(window);

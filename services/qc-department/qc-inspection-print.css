@@ -1,0 +1,63 @@
+/* Local to the inspection desk and its print dialog. */
+#page-records .qip-toolbar-action[hidden],#qcInspectionPrint[hidden] { display:none; }
+#page-records #qcInspectionPrint { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:var(--records-control-height); padding:0 10px; border:1px solid var(--border-hi); border-radius:7px; background:var(--bg-card); color:var(--text-main); font:inherit; font-size:13px; font-weight:600; white-space:nowrap; cursor:pointer; box-shadow:0 1px 2px #1a2f4d09; }
+#page-records #qcInspectionPrint svg { width:16px; height:16px; flex:none; }
+#page-records #qcInspectionPrint:hover { background:var(--bg-hover); }
+#page-records #qcInspectionPrint:focus-visible,.qip-dialog :is(button,a,select,input):focus-visible { outline:2px solid var(--accent,#2563eb); outline-offset:2px; }
+.qip-dialog.qia-dialog { width:calc(100vw - 48px); max-width:1240px; max-height:calc(100vh - 48px); padding:0; overflow:hidden; }
+.qip-dialog[open] { display:flex; flex-direction:column; }
+.qip-dialog > header { flex:none; padding:14px 18px; }
+.qip-dialog > .qwf-dialog-body { padding:0; min-height:0; overflow:auto; }
+.qip-dialog [hidden] { display:none !important; }
+.qip-layout { display:grid; grid-template-columns:290px minmax(0,1fr); min-height:420px; }
+.qip-dialog .qip-layout > section { margin-top:0; }
+.qip-selection { display:flex; flex-direction:column; gap:12px; padding:18px; border-right:1px solid var(--border); background:var(--bg-card); }
+.qip-dialog select { box-sizing:border-box; min-height:34px; max-width:100%; color:var(--text-main); background:var(--bg-input); border:1px solid var(--border-hi); border-radius:7px; padding:5px 8px; font:inherit; font-weight:400; }
+.qip-preview-controls,.qip-page-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.qip-preview-controls span { font-size:12px; color:var(--text-dim); }
+.qip-record-tools { display:grid; grid-template-columns:max-content minmax(0,1fr) max-content; align-items:center; gap:8px; padding-bottom:10px; border-bottom:1px solid var(--border); }
+.qip-select-all { display:inline-flex; align-items:center; gap:5px; padding-right:8px; border-right:1px solid var(--border); white-space:nowrap; font-size:13px; cursor:pointer; }
+.qip-dialog .qip-record-tools select { width:100%; min-width:0; max-width:114px; min-height:30px; padding:4px 6px; font-size:12px; }
+.qip-record-tools [data-selection-count] { margin-left:auto; font-size:12px; font-variant-numeric:tabular-nums; color:var(--text-dim); white-space:nowrap; }
+.qip-records { display:grid; align-content:start; gap:7px; max-height:48vh; overflow:auto; padding:2px; }
+.qip-records label { display:flex; align-items:flex-start; gap:9px; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--bg-card); cursor:pointer; }
+.qip-records label:has(input:checked) { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 7%,var(--bg-card)); }
+.qip-dialog .qip-selection input[type="checkbox"] { width:16px; height:16px; min-height:16px; margin:0; padding:0; flex:none; accent-color:var(--accent); }
+.qip-dialog .qip-records input[type="checkbox"] { margin-top:3px; }
+.qip-records span { min-width:0; overflow-wrap:anywhere; }
+.qip-records strong,.qip-records small { display:block; line-height:1.5; }
+.qip-records strong { font-size:13px; font-weight:600; }
+.qip-records small { font-size:12px; color:var(--text-dim); }
+.qip-record-date { margin-top:3px; font-variant-numeric:tabular-nums; }
+.qip-dialog button { cursor:pointer; font:inherit; font-size:13px; }
+.qip-dialog button:disabled { opacity:.45; cursor:default; }
+.qip-preview { min-width:0; padding:16px; background:var(--bg-panel); }
+.qip-empty { min-height:390px; display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--text-dim); text-align:center; }
+.qip-empty strong { color:var(--text-main); font-size:15px; font-weight:600; }
+.qip-empty p { font-size:12px; line-height:1.6; }
+.qip-preview-controls { justify-content:space-between; margin-bottom:12px; }
+.qip-preview-controls strong { font-size:13px; }
+.qip-page-controls { font-size:12px; margin-bottom:10px; }
+.qip-page-controls label { margin-left:auto; }
+.qip-page-controls button { padding:5px 9px; }
+.qip-paper { max-height:49vh; overflow:auto; padding:12px; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; }
+.qip-paper img { display:block; width:100%; max-width:none; margin:0 auto; background:white; box-shadow:0 2px 10px #00000014; }
+.qip-selected { margin-top:10px; font-size:12px; }
+.qip-selected ul { max-height:120px; overflow:auto; padding-left:20px; line-height:1.7; }
+.qip-dialog > .qip-status { flex:none; margin:0; padding:10px 18px; font-size:12px; line-height:1.6; color:var(--text-main); border-top:1px solid var(--border); }
+.qip-dialog > .qip-status:empty { display:none; }
+.qip-dialog > .qip-actions { flex:none; display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:12px 18px; border-top:1px solid var(--border); }
+.qip-output-actions { display:inline-flex; gap:8px; }
+.qip-actions a { color:var(--accent-dim); font-size:12px; }
+.qip-print-frame { position:fixed; left:-12000px; top:0; width:1100px; height:800px; border:0; }
+@media (max-width:800px) {
+  .qip-dialog.qia-dialog { width:calc(100vw - 16px); max-height:calc(100vh - 16px); }
+  .qip-layout { grid-template-columns:1fr; min-height:0; }
+  .qip-selection { border-right:0; border-bottom:1px solid var(--border); padding:12px; gap:8px; }
+  .qip-records { max-height:160px; }
+  .qip-preview { padding:12px; }
+  .qip-empty { min-height:130px; }
+  .qip-dialog > .qip-actions { padding:10px 12px; }
+  .qip-dialog button,.qip-dialog select { min-height:40px; }
+  .qip-paper { max-height:45vh; padding:6px; }
+}
