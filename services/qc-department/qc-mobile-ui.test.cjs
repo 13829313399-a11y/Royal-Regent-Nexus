@@ -10,11 +10,20 @@ test('live phone starts from server, switches fields with focus, saves locally a
  w.URL.createObjectURL=()=> 'blob:preview';w.URL.revokeObjectURL=()=>{};
  w.indexedDB={open(){const request={};queueMicrotask(()=>{request.result={close(){},transaction(name,mode){const tx={objectStore:()=>({getAll(){const r={result:[...saved.values()]};queueMicrotask(()=>r.onsuccess());return r;},get(id){const r={result:saved.get(id)};queueMicrotask(()=>r.onsuccess());return r;},put(row){saved.set(row.id,{...row});}})};if(mode==='readwrite')setTimeout(()=>tx.oncomplete(),0);return tx;}};request.onsuccess();});return request;}};
  let row={id:'real-entry',customer:'隔离客户',poNo:'PO-001',productNo:'SKU-1',productName:'测试产品',dateFrom:'2026-11-17',result:'',inspectionProblem:'',remark:'',improvement:'审核保留内容',inspectionExecution:{sampleQuantity:'',inspectorId:''},revision:0,photos:[{id:'photo-1',name:'照片'}]};
- const writes=[];
+ const writes=[],annotationWrites=[];
+ let pauseAnnotation;
  w.fetch=async(url,options={})=>{let result;
   if(url.endsWith('/context'))result={factory:'huaxing',actor:{id:'qc',name:'验货员'},scope:'one'};
   else if(url.endsWith('/options'))result={inspectors:[{id:'qc',name:'验货员'}]};
-  else if(url.endsWith('/photo-annotations')&&options.body){const body=JSON.parse(options.body);assert.equal(body.photoId,'photo-1');assert.equal(body.annotationVersion,0);writes.push(url);row.revision++;Object.assign(row.photos[0],{annotations:body.annotations,annotationVersion:1});result={entry:row,photo:row.photos[0]};}
+  else if(url.endsWith('/photo-annotations')&&options.body){
+    const body=JSON.parse(options.body);
+    assert.equal(body.photoId,'photo-1');
+    assert.equal(body.annotationVersion,row.photos[0].annotationVersion||0);
+    if(pauseAnnotation){const pause=pauseAnnotation;pauseAnnotation=null;await pause();}
+    writes.push(url);annotationWrites.push(body.annotations);row.revision++;
+    Object.assign(row.photos[0],{annotations:body.annotations,annotationVersion:body.annotationVersion+1});
+    result={entry:row,photo:row.photos[0]};
+  }
   else if(options.body){const body=JSON.parse(options.body);writes.push(url);assert.equal(body.revision,row.revision);if(url.endsWith('/save'))row={...row,...body,inspectionExecution:{...row.inspectionExecution,...body.inspectionExecution}};if(url.endsWith('/submit'))row={...row,submittedAt:'2026-11-17T00:00:00Z',reviewState:'pending'};row.revision++;result=row;}
   else result=url.endsWith('/entries')?{items:row.submittedAt?[]:[row]}:row;
   return {ok:true,json:async()=>JSON.parse(JSON.stringify(result))};};
@@ -42,28 +51,72 @@ test('live phone starts from server, switches fields with focus, saves locally a
   $('inspector').value='手填验货员';$('inspector').dispatchEvent(new w.Event('input'));await wait(600);assert.equal(row.inspectionExecution.inspector,'手填验货员');
   let online=false;
   Object.defineProperty(w.navigator,'onLine',{get:()=>online});
-  q('[data-photo]').click();
-  const image=q('.photo-markup-image img');
-  Object.defineProperties(image,{naturalWidth:{value:640},naturalHeight:{value:480}});
-  image.getBoundingClientRect=()=>({left:10,top:30,width:320,height:240});
-  image.onload();
+  const openPhoto=()=>{
+    q('[data-photo]').click();
+    const image=q('.photo-markup-image img');
+    Object.defineProperties(image,{naturalWidth:{value:640},naturalHeight:{value:480}});
+    image.getBoundingClientRect=()=>({left:10,top:30,width:320,height:240});
+    image.onload();
+    return image;
+  };
+  let image=openPhoto();
+  const draw=(tool,x=170,y=150)=>{
+    q('[data-mark-tool='+tool+']').click();
+    for(const [type,clientX,clientY] of [['pointerdown',42,54],['pointermove',x,y],['pointerup',x,y]]){
+      const event=new w.MouseEvent(type,{bubbles:true,cancelable:true,clientX,clientY});
+      Object.defineProperty(event,'pointerId',{value:1});image.dispatchEvent(event);
+    }
+  };
+  const arrow={type:'arrow',x1:.1,y1:.1,x2:.5,y2:.5};
+  const circle={...arrow,type:'circle'};
   assert.equal(q('[data-close-photo]'),null);
+  assert.equal(q('[data-mark-save]'),null);
+  assert.equal(q('[data-mark-undo]').disabled,true);
+  assert.equal(q('[data-mark-redo]').disabled,true);
   image.click();
   assert.equal($('sheet').open,true);
-  q('[data-mark-tool=arrow]').click();
-  for(const [type,x,y] of [['pointerdown',42,54],['pointermove',170,150],['pointerup',170,150]]){
-    const event=new w.MouseEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y});
-    Object.defineProperty(event,'pointerId',{value:1});image.dispatchEvent(event);
-  }
+  draw('arrow');
   assert.ok(q('.photo-markup-image svg path'));
-  await q('[data-mark-save]').onclick();
+  q('[data-mark-undo]').click();
+  assert.equal(q('.photo-markup-image svg path'),null);
+  assert.equal(q('[data-mark-redo]').disabled,false);
+  q('[data-mark-redo]').click();
+  assert.ok(q('.photo-markup-image svg path'));
+  q('.photo-markup-stage').click();
   assert.equal($('sheet').open,false);
+  await wait();
   assert.equal(saved.get(row.id).photos[0]._annotationsPending,true);
+  assert.deepEqual(Array.from(saved.get(row.id).photos[0].annotations,mark=>({...mark})),[arrow]);
   assert.equal(row.photos[0].annotations,undefined);
+  image=openPhoto();
+  assert.ok(q('.photo-markup-image svg path'));
   online=true;w.dispatchEvent(new w.Event('online'));await wait(100);
-  assert.deepEqual(row.photos[0].annotations,[{type:'arrow',x1:.1,y1:.1,x2:.5,y2:.5}]);
+  assert.deepEqual(row.photos[0].annotations,[arrow]);
   assert.equal(saved.get(row.id)._pending,false);
-  q('[data-photo]').click();
+
+  let resumeWrite;
+  const started=new Promise(resolve=>{
+    pauseAnnotation=()=>new Promise(resume=>{resumeWrite=resume;resolve();});
+  });
+  draw('circle');
+  await started;
+  q('[data-mark-undo]').click();
+  await wait();
+  q('[data-mark-redo]').click();
+  await wait();
+  assert.ok(q('.photo-markup-image svg ellipse'));
+  resumeWrite();
+  await wait(100);
+  assert.deepEqual(annotationWrites.slice(1),[[arrow,circle],[arrow],[arrow,circle]]);
+  assert.equal(saved.get(row.id)._pending,false);
+  assert.equal($('sheet').open,true);
+
+  q('[data-mark-undo]').click();
+  assert.equal(q('[data-mark-redo]').disabled,false);
+  draw('arrow',138,102);
+  assert.equal(q('[data-mark-redo]').disabled,true);
+  await wait(100);
+  assert.deepEqual(row.photos[0].annotations,[arrow,{...arrow,x2:.4,y2:.3}]);
   q('.photo-markup-stage').click();
   assert.equal($('sheet').open,false);
   assert.equal($('save-return').disabled,false);$('save-return').click();await wait(150);

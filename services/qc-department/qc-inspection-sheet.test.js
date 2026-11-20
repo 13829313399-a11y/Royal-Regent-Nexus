@@ -14,7 +14,7 @@ const customerKey=(code,name)=>JSON.stringify([code,name]);
 async function page(){
  const dom=new JSDOM(html,{runScripts:'outside-only',url:'http://localhost/api/qc-department/huaxing/u-test/'}),w=dom.window,calls=[];
  let rows=['a','b','c'].map((id,i)=>({id,sourceKey:'source:'+id,customer:'客户中文',poNo:'0000'+i,productNo:'0001',productName:'同款产品',result:'',remark:'',photos:[],revision:0,dateFrom:'2026-10-29',dateTo:'2026-10-29',updatedAt:'',quantity:10}));
- let fail=false,delay=0,active=0,maxActive=0;
+ let fail=false,delay=0,active=0,maxActive=0,loseAnnotationResponse=false;
  w.requestAnimationFrame=fn=>w.setTimeout(fn,16);w.cancelAnimationFrame=id=>w.clearTimeout(id);
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  w.__QC_NEXUS={exportAllowed:true,workflow:{edit:true}};w.confirm=()=>true;w.showToast=(msg)=>calls.push({toast:msg});
@@ -31,9 +31,14 @@ async function page(){
   if(fail)return {ok:false,status:503,json:async()=>({detail:'网络断开，未保存'})};
   if(url.endsWith('/photo-annotations')){
    const row=rows.find(r=>r.id===url.split('/').at(-2)),photo=row.photos.find(p=>p.id===body.photoId);
+   if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
+   if(JSON.stringify(photo.annotations||[])===JSON.stringify(body.annotations)){
+    return {ok:true,json:async()=>({entry:copy(row),photo:copy(photo)})};
+   }
    assert.equal(body.annotationVersion,photo.annotationVersion||0);
    Object.assign(photo,{annotations:body.annotations,annotationVersion:body.annotationVersion+1});
    row.revision++;
+   if(loseAnnotationResponse){loseAnnotationResponse=false;return {ok:false,status:503,json:async()=>({detail:'未收到保存确认'})};}
    return {ok:true,json:async()=>({entry:copy(row),photo:copy(photo)})};
   }
   if(url.endsWith('/photos')&&body.name==='corrupt.jpg')return {ok:false,status:422,json:async()=>({detail:'图片损坏或格式不支持'})};
@@ -49,7 +54,7 @@ async function page(){
  };
  const schedule={};require('node:vm').runInNewContext(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-schedule.js'),'utf8'),schedule);w.QcSchedule=schedule.QcSchedule;
  w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-audit.js'),'utf8'));w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-photo-paste.js'),'utf8'));w.eval(script);await tick();if(!w.QcInspectionSheet.model.loaded)await w.QcInspectionSheet.load();
- return {dom,w,d:w.document,calls,get rows(){return rows;},set fail(value){fail=value;},set delay(value){delay=value;},get maxActive(){return maxActive;}};
+ return {dom,w,d:w.document,calls,get rows(){return rows;},set fail(value){fail=value;},set delay(value){delay=value;},loseAnnotationResponse(){loseAnnotationResponse=true;},get maxActive(){return maxActive;}};
 }
 test('18 business display columns without actual date or completion, inline four-result controls, reused remarks, real camera/file inputs and no drawer',async()=>{
  const p=await page();try{
@@ -117,7 +122,7 @@ test('workbench opens the fitted photo overlay and loads metadata only when clic
   assert.equal(single.isConnected,false);
  }finally{p.dom.window.close();}
 });
-test('photo marks follow the image and persist only after saving',async()=>{
+test('workbench marks follow the image and autosave drawing, undo and redo without stale acknowledgements',async()=>{
  const p=await page();
  try{
   p.rows[0].photos=[{id:'p1',name:'第一张'},{id:'p2',name:'第二张'}];
@@ -150,12 +155,20 @@ test('photo marks follow the image and persist only after saving',async()=>{
    overlay.querySelector('[data-mark-tool="'+tool+'"]').click();
    pointer('pointerdown',56,164);pointer('pointermove',200,260);pointer(end,200,260);
   };
+  const posts=()=>p.calls.filter(call=>call.url?.endsWith('/photo-annotations')).map(call=>call.body);
+  const undo=overlay.querySelector('[data-mark-undo]'),redo=overlay.querySelector('[data-mark-redo]');
+  assert.equal(overlay.querySelector('[data-mark-save]'),null);
+  assert.equal(undo.disabled,true);assert.equal(redo.disabled,true);
+  p.delay=30;
   draw('arrow','pointerup');
   draw('circle','pointercancel');
   assert.equal(layer.querySelectorAll('path').length,1);
   assert.equal(layer.querySelector('ellipse'),null);
   draw('circle','pointerup');
   assert.ok(layer.querySelector('ellipse'));
+  undo.click();assert.equal(layer.querySelector('ellipse'),null);
+  redo.click();assert.ok(layer.querySelector('ellipse'));
+  assert.equal(posts().length,1);
   const viewport=overlay.querySelector('.qsum-lightbox-viewport');
   const initialTransform=image.style.transform;
   viewport.dispatchEvent(new p.w.WheelEvent('wheel',{deltaY:-80,cancelable:true}));
@@ -163,33 +176,57 @@ test('photo marks follow the image and persist only after saving',async()=>{
   assert.notEqual(image.style.transform,initialTransform);
   assert.equal(layer.style.transform,image.style.transform);
   assert.equal(p.rows[0].photos[0].annotations,undefined);
-  p.w.confirm=()=>false;
-  overlay.querySelector('[data-photo-next]').click();
-  assert.ok(image.src.endsWith('/p1'));
-
-  const save=overlay.querySelector('[data-mark-save]');
-  p.fail=true;
-  await save.onclick();
-  assert.match(overlay.querySelector('[role=status].qis-photo-markup-feedback').textContent,/网络断开/);
-  assert.equal(layer.children.length,2);
-  p.fail=false;
-  await save.onclick();
-  assert.deepEqual(p.rows[0].photos[0].annotations,[
-   {type:'arrow',x1:.1,y1:.1,x2:.5,y2:.5},
-   {type:'circle',x1:.1,y1:.1,x2:.5,y2:.5},
-  ]);
-  assert.equal(p.w.QcInspectionSheet.model.items[0].revision,1);
-  assert.equal(save.disabled,true);
-  overlay.querySelector('[data-photo-next]').click();load();
-  assert.equal(layer.children.length,0);
+  const arrow={type:'arrow',x1:.1,y1:.1,x2:.5,y2:.5},circle={...arrow,type:'circle'};
   overlay.click();
+  assert.equal(overlay.open,true);
+  await new Promise(resolve=>setTimeout(resolve,100));
+  assert.equal(overlay.isConnected,false);
+  assert.deepEqual(posts().map(body=>[body.annotationVersion,body.annotations]),[[0,[arrow]],[1,[arrow,circle]]]);
+  assert.deepEqual(p.rows[0].photos[0].annotations,[arrow,circle]);
+  assert.equal(p.w.QcInspectionSheet.model.items[0].revision,2);
   assert.equal(p.d.activeElement,thumbnail);
 
+  await open();overlay=p.d.querySelector('#qis-photo-viewer');image=load();
+  overlay.querySelector('[data-photo-next]').click();load();
+  assert.equal(overlay.querySelector('.qsum-photo-annotations').children.length,0);
+  overlay.click();
   p.w.__QC_NEXUS.workflow.edit=false;
   await open();overlay=p.d.querySelector('#qis-photo-viewer');image=load();
-  assert.equal(overlay.querySelector('[data-mark-save]'),null);
+  assert.equal(overlay.querySelector('[data-mark-undo], [data-mark-redo]'),null);
   assert.equal(overlay.querySelector('.qsum-photo-annotations').children.length,2);
   assert.ok(image.src.endsWith('/p1'));
+ }finally{p.dom.window.close();}
+});
+test('review replays an unacknowledged undo before autosaving a redo',async()=>{
+ const p=await page();
+ try{
+  const arrow={type:'arrow',x1:.1,y1:.1,x2:.5,y2:.5};
+  Object.assign(p.rows[0],{reviewState:'pending',submittedAt:'2026-10-29T09:00:00Z',photos:[{id:'p1',name:'审核照片',annotations:[arrow],annotationVersion:1}]});
+  p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-schedule.js'),'utf8'));
+  p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-photo-shapes.js'),'utf8'));
+  p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-summary.js'),'utf8'));
+  await p.w.QcInspectionSheet.load('review','pending');
+  const thumb=p.d.querySelector('#page-review [data-view-photo="p1"]');
+  await thumb.onclick(new p.w.MouseEvent('click',{cancelable:true}));
+  const overlay=p.d.querySelector('#qis-photo-viewer'),image=overlay.querySelector('img');
+  Object.defineProperties(image,{naturalWidth:{value:1200},naturalHeight:{value:800}});
+  image.onload();
+  const undo=overlay.querySelector('[data-mark-undo]'),redo=overlay.querySelector('[data-mark-redo]');
+  p.loseAnnotationResponse();undo.click();
+  await tick();
+  const feedback=overlay.querySelector('.qis-photo-markup-feedback');
+  assert.match(feedback.textContent,/未收到保存确认/);
+  assert.equal(feedback.querySelector('[data-mark-retry]').hidden,false);
+  p.w.confirm=()=>false;
+  overlay.click();assert.equal(overlay.open,true);
+  assert.deepEqual(p.rows[0].photos[0].annotations,[]);
+  redo.click();await tick();
+  assert.deepEqual(p.rows[0].photos[0].annotations,[arrow]);
+  assert.equal(feedback.hidden,true);
+  const posts=p.calls.filter(call=>call.url?.endsWith('/photo-annotations'));
+  assert.deepEqual(posts.map(call=>call.url),Array(3).fill('api/inspection-sheet/review/entries/a/photo-annotations'));
+  assert.deepEqual(posts.map(({body})=>[body.annotationVersion,body.annotations]),[[1,[]],[1,[]],[2,[arrow]]]);
+  assert.equal(p.rows[0].photos[0].annotationVersion,3);
  }finally{p.dom.window.close();}
 });
 test('LAN HTTP camera and album attach without randomUUID, retain secure keys on retry, and show feedback beside photos',async()=>{

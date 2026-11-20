@@ -502,14 +502,17 @@
         if(!link.isConnected)return;
         const index=items.findIndex(photo=>photo.id===link.dataset.viewPhoto);
         if(index<0)throw Error('照片已移除，请刷新记录');
+        const view=model.view,annotationPath=entryPath(row.id)+'/photo-annotations';
         const saveAnnotations=canEdit(row)?async body=>{
           const current=byId(row.id);
-          if(!current||!canEdit(current)||model.loading||model.submitBusy||model.reviewBusy)throw Error('当前记录不能编辑，请核对审核状态');
+          if(!current||!canEdit(current)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy)throw Error('当前记录不能编辑，请核对审核状态');
           const d=draft(current);
-          if(d.busy||d.reading||d.submitting||d.dirty||d.queue.length||d.error)throw Error('请先完成本行正在保存的内容，再保存标记');
+          if(d.busy||d.reading||d.dirty||d.queue.length||d.error)await flushRow(row.id);
+          const latest=byId(row.id);
+          if(!latest||!canEdit(latest)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy||d.submitting)throw Error('当前记录不能编辑，请核对审核状态');
           d.busy=true;
           try{
-            const saved=await api(entryPath(row.id)+'/photo-annotations',body);
+            const saved=await api(annotationPath,body);
             accept(row.id,saved.entry,false);
             return saved.photo;
           }finally{d.busy=false;status(row.id);}

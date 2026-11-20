@@ -5,8 +5,8 @@
     <button type="button" data-mark-tool="browse" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 14 10-7 1-3 6z"/></svg>浏览</button>
     <button type="button" data-mark-tool="arrow" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19 19 5M10 5h9v9"/></svg>箭头</button>
     <button type="button" data-mark-tool="circle" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/></svg>圆圈</button>
-    <button type="button" data-mark-undo aria-label="移除最后一笔" title="移除最后一笔"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5-5 5 5 5M4 10h10a5 5 0 0 1 0 10h-2"/></svg></button>
-    <button type="button" data-mark-save>保存标记</button>`;
+    <button type="button" data-mark-undo aria-label="撤销" title="撤销"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5-5 5 5 5M4 10h10a5 5 0 0 1 0 10h-2"/></svg></button>
+    <button type="button" data-mark-redo aria-label="重做" title="重做"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 5 5-5 5m5-5H10a5 5 0 0 0 0 10h2"/></svg></button>`;
   function equal(first=[],second=[]){
     return first.length===second.length&&first.every((mark,index)=>
       mark.type===second[index].type&&coordinates.every(key=>mark[key]===second[index][key]));

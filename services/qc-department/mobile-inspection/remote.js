@@ -34,7 +34,9 @@
       const sentPhoto=sent.photos.find(item=>item.id===photo.id);
       // A write to another field does not acknowledge this photo's local marks.
       if(photo._annotationsPending&&!sentPhoto?._annotationsPending)return {...photo,remoteId};
-      if(photo._annotationsPending&&!window.QcPhotoShapes.equal(photo.annotations,sentPhoto.annotations)){
+      // A newer undo or redo may match an older snapshot while a different edit is still queued.
+      if(photo._annotationsPending&&((photo._annotationEditVersion||0)>(sentPhoto._annotationEditVersion||0)||
+          !window.QcPhotoShapes.equal(photo.annotations,sentPhoto.annotations))){
         return {...photo,remoteId,annotationVersion:acknowledged.annotationVersion};
       }
       return {...photo,remoteId,annotations:acknowledged.annotations,annotationVersion:acknowledged.annotationVersion,_annotationsPending:false};
@@ -42,6 +44,10 @@
     next._dirtyFields=[...dirty];return next;
   }
   function remember(row){baseline.set(row.id,{...row._base||values(row)});}
+  function findPhoto(row,id){
+    const remoteId=photoIds.get(row.id)?.get(id)||id;
+    return row.photos.find(photo=>photo.id===id||photo.remoteId===remoteId);
+  }
   async function prepare(){
     const ticket=/^#pair=([A-Za-z0-9_-]{43})$/.exec(location.hash)?.[1];
     if(ticket){history.replaceState(null,'',location.pathname);await api('/exchange',{ticket});}
@@ -135,6 +141,6 @@
     baseline.set(row.id,{...old,...Object.fromEntries(conflict.keys.map(k=>[k,conflict.latest[k]]))});
     row._base=baseline.get(row.id);conflicts.delete(row.id);
   }
-  const remote={api,prepare,mergeCache,write,resolve,conflicts,convert,remember,values,dirtyFields,rebaseDraft,context:null,options:null};
+  const remote={api,prepare,mergeCache,write,resolve,conflicts,convert,remember,values,dirtyFields,rebaseDraft,findPhoto,context:null,options:null};
   window.QcMobileRemote=remote;
 })();

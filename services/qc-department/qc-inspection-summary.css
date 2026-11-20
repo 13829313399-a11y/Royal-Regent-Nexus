@@ -605,7 +605,7 @@ body.qc-liquid-glass .qsum-record-detail .qsum-photo-thumb {
 .qis-photo-markup-toolbar button svg{
   width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;
 }
-.qis-photo-markup-toolbar [aria-pressed="true"],.qis-photo-markup-toolbar [data-mark-save]:not(:disabled){
+.qis-photo-markup-toolbar [aria-pressed="true"]{
   background:color-mix(in srgb,var(--accent) 16%,transparent);border-color:color-mix(in srgb,var(--accent) 25%,transparent);
 }
 .qis-photo-markup-feedback{

@@ -43,7 +43,6 @@ const composingNotes = new WeakSet();
 let saving = Promise.resolve();
 const queuedSnapshots = new Set();
 let photoUrls = new Map();
-let photoCanClose = null;
 let dialogTrigger;
 let busy = false;
 let openingTask = false;
@@ -570,7 +569,6 @@ async function openPending() {
 
 function showSheet(title, content) {
   dialogTrigger = document.activeElement;
-  photoCanClose = null;
   sheet.classList.remove('filter-sheet', 'mobile-filters-sheet', 'photo-markup-sheet');
   $('sheet-title').textContent = title;
   $('sheet-content').innerHTML = content;
@@ -578,8 +576,10 @@ function showSheet(title, content) {
 }
 
 function closeSheet() {
-  if (sheet.open && (!photoCanClose || photoCanClose())) sheet.close();
+  if (sheet.open) sheet.close();
 }
+
+const photoIsOpen = () => sheet.open && sheet.classList.contains('photo-markup-sheet');
 
 function showFilter(id) {
   const select = $(id);
@@ -700,17 +700,16 @@ function showMobileFilters() {
 function showPhoto(photo) {
   const row=current,shapes=window.QcPhotoShapes;
   const editable=!row.submittedAt&&shapes;
-  const initial=photo.annotations||[];
-  let marks=initial,tool='browse',drawing=null,loaded=false,savingMarks=false;
+  let marks=photo.annotations||[],tool='browse',drawing=null,loaded=false;
+  const redoStack=[];
   showSheet(photo.name,(editable?`<div class="photo-markup-tools" role="group" aria-label="照片标记">${shapes.toolButtons}</div>`:'')+
     '<p class="photo-markup-status" role="status" hidden></p><div class="photo-markup-stage"><div class="photo-markup-image"><img class="photo-preview" alt="验货照片"><svg aria-hidden="true"></svg></div></div>');
   sheet.classList.add('photo-markup-sheet');
   const content=$('sheet-content'),stage=content.querySelector('.photo-markup-stage'),frame=stage.firstElementChild;
   const image=frame.querySelector('img'),layer=frame.querySelector('svg');
-  const saveButton=content.querySelector('[data-mark-save]'),undo=content.querySelector('[data-mark-undo]');
+  const undo=content.querySelector('[data-mark-undo]'),redo=content.querySelector('[data-mark-redo]');
   const tools=content.querySelectorAll('[data-mark-tool]');
   const status=content.querySelector('[role=status]');
-  const dirty=()=>editable&&!shapes.equal(marks,initial);
   const message=text=>{status.textContent=text;status.hidden=!text;};
   const paint=()=>shapes?.paint(layer,image.naturalWidth,image.naturalHeight,drawing?[...marks,drawing.mark]:marks);
   function fitPhoto(){
@@ -724,15 +723,14 @@ function showPhoto(photo) {
   sheet.addEventListener('close',()=>observer?.disconnect(),{once:true});
   function controls(){
     if(!editable)return;
-    frame.classList.toggle('is-marking',tool!=='browse'&&loaded&&!savingMarks);
+    frame.classList.toggle('is-marking',tool!=='browse'&&loaded);
     for(const button of tools){
-      button.disabled=!loaded||savingMarks;
+      button.disabled=!loaded;
       button.setAttribute('aria-pressed',String(button.dataset.markTool===tool));
     }
-    undo.disabled=!loaded||savingMarks||!marks.length;
-    saveButton.disabled=!loaded||savingMarks||!dirty();
+    undo.disabled=!loaded||!marks.length;
+    redo.disabled=!loaded||!redoStack.length;
   }
-  photoCanClose=()=>!savingMarks&&(!dirty()||window.confirm('放弃当前未保存的照片标记？'));
   image.onload=()=>{
     loaded=true;layer.setAttribute('viewBox',`0 0 ${image.naturalWidth} ${image.naturalHeight}`);
     fitPhoto();paint();controls();
@@ -743,13 +741,38 @@ function showPhoto(photo) {
   controls();
   if(!editable)return;
   for(const button of tools)button.onclick=()=>{tool=button.dataset.markTool;controls();};
-  undo.onclick=()=>{marks=marks.slice(0,-1);message('');paint();controls();};
+  function commitMarks(next){
+    const target=remote.findPhoto(row,photo.id);
+    if(!target||row.submittedAt){message('照片已移除或任务已提交，请核对当前记录。');return false;}
+    if(!shapes.equal(target.annotations,marks)){
+      message('照片标记已更新，请关闭后重新打开核对。');return false;
+    }
+    marks=next;
+    const version=state(row).version+1;
+    Object.assign(target,{annotations:marks,_annotationsPending:true,_annotationEditVersion:version});
+    message('');
+    void change(row,true).then(stored=>{
+      if(!stored&&status.isConnected&&sheet.open&&state(row).version===version)message(state(row).localError);
+    });
+    return true;
+  }
+  undo.onclick=()=>{
+    if(drawing||!marks.length)return;
+    const last=marks.at(-1);
+    if(commitMarks(marks.slice(0,-1)))redoStack.push(last);
+    paint();controls();
+  };
+  redo.onclick=()=>{
+    if(drawing||!redoStack.length)return;
+    if(commitMarks([...marks,redoStack.at(-1)]))redoStack.pop();
+    paint();controls();
+  };
   const fraction=value=>Math.round(Math.max(0,Math.min(1,value))*1e6)/1e6;
   const point=(event,bounds)=>[
     fraction((event.clientX-bounds.left)/bounds.width),fraction((event.clientY-bounds.top)/bounds.height),
   ];
   frame.addEventListener('pointerdown',event=>{
-    if(!loaded||savingMarks||tool==='browse'||event.button!==0||drawing)return;
+    if(!loaded||tool==='browse'||event.button!==0||drawing)return;
     if(marks.length>=40){message('每张照片最多 40 笔标记');return;}
     const bounds=image.getBoundingClientRect();
     if(!bounds.width||!bounds.height)return;
@@ -770,24 +793,12 @@ function showPhoto(photo) {
       move(event);
       const {mark,bounds}=drawing;
       const dx=(mark.x2-mark.x1)*bounds.width,dy=(mark.y2-mark.y1)*bounds.height;
-      if(mark.type==='circle'?Math.abs(dx)>=4&&Math.abs(dy)>=4:Math.hypot(dx,dy)>=4)marks=[...marks,mark];
+      if(mark.type==='circle'?Math.abs(dx)>=4&&Math.abs(dy)>=4:Math.hypot(dx,dy)>=4){
+        if(commitMarks([...marks,mark]))redoStack.length=0;
+      }
     }
     drawing=null;paint();controls();
   });
-  saveButton.onclick=async()=>{
-    if(savingMarks||!dirty())return;
-    const target=row.photos.find(item=>item.id===photo.id||item.remoteId&&item.remoteId===photo.remoteId);
-    if(!target||row.submittedAt){message('照片已移除或任务已提交，请核对当前记录。');return;}
-    if(!shapes.equal(target.annotations,initial)&&!shapes.equal(target.annotations,marks)){
-      message('照片标记已更新，请关闭后重新打开核对。');return;
-    }
-    savingMarks=true;message('正在保存到手机…');controls();
-    target.annotations=marks;target._annotationsPending=true;
-    const stored=await change(row,true);
-    savingMarks=false;
-    if(stored){photoCanClose=null;closeSheet();}
-    else{message(state(row).localError);controls();}
-  };
 }
 
 function showInfo() {
@@ -867,11 +878,10 @@ $('pending-back').onclick = () => {
 $('info').onclick = showInfo;
 $('sheet-close').onclick = closeSheet;
 sheet.addEventListener('click',event=>{
-  if(sheet.classList.contains('photo-markup-sheet')&&
+  if(photoIsOpen()&&
       (event.target===sheet||event.target=== $('sheet-content')||event.target.matches('.photo-markup-stage')))closeSheet();
 });
-sheet.addEventListener('cancel',event=>{if(photoCanClose&&!photoCanClose())event.preventDefault();});
-sheet.addEventListener('close', () => {photoCanClose=null;dialogTrigger?.focus({ preventScroll: true });});
+sheet.addEventListener('close', () => {dialogTrigger?.focus({ preventScroll: true });});
 $('search').addEventListener('input', () => renderList());
 $('clear-search').onclick = () => {
   $('search').value = '';
@@ -972,7 +982,7 @@ app.addEventListener('click', event => {
   if (focus) focusField(focus);
   if (openField) focusField(openField, button);
   if (photo && current && !busy) {
-    const selected = current.photos.find(item => item.id === photo);
+    const selected = remote.findPhoto(current,photo);
     if (selected) showPhoto(selected);
   }
   if (removePhoto && current && !current.submittedAt && !busy) {
@@ -1080,10 +1090,10 @@ remote.onAck = async (sent, saved, photoMap) => {
 };
 
 async function refreshLive() {
-  if (navigator.onLine === false || busy || document.hidden || openingTask || photoCanClose || [...writeState.values()].some(s => s.pending || s.version > s.saved) || activeField || current && document.activeElement?.closest('#entry')) return;
+  if (navigator.onLine === false || busy || document.hidden || openingTask || photoIsOpen() || [...writeState.values()].some(s => s.pending || s.version > s.saved) || activeField || current && document.activeElement?.closest('#entry')) return;
   try {
     const data = await remote.api('/sheet/entries');
-    if (busy || openingTask || photoCanClose || activeField || current && document.activeElement?.closest('#entry') || [...writeState.values()].some(s=>s.pending || s.version>s.saved)) return;
+    if (busy || openingTask || photoIsOpen() || activeField || current && document.activeElement?.closest('#entry') || [...writeState.values()].some(s=>s.pending || s.version>s.saved)) return;
     const latest = data.items.map(remote.convert);
     rows = remote.mergeCache(latest, rows);
     await localWriteRows(rows);

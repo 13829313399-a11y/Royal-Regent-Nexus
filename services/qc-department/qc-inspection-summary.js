@@ -122,59 +122,92 @@
   }
   function photoMarkup(dialog,viewport,img,saveAnnotations){
     const doc=dialog.ownerDocument;
+    const shapes=root.QcPhotoShapes,editable=Boolean(saveAnnotations&&shapes);
     const svg=name=>doc.createElementNS('http://www.w3.org/2000/svg',name);
     const layer=svg('svg');
     layer.classList.add('qsum-photo-annotations');
     layer.setAttribute('aria-hidden','true');
     img.after(layer);
-    let photo,marks=[],saved=[],mode='browse',drawing=null,ready=false,saving=false;
-    const isDirty=()=>root.QcPhotoShapes&&!root.QcPhotoShapes.equal(marks,saved);
+    let photo,marks=[],mode='browse',drawing=null,ready=false,saving=false,pendingWrite=null,afterSave=null;
+    const redoStack=[];
+    const isDirty=()=>editable&&!shapes.equal(marks,photo?.annotations);
     const toolbar=doc.createElement('div');
-    let saveButton,undoButton,feedback;
-    if(saveAnnotations&&root.QcPhotoShapes){
+    let undoButton,redoButton,feedback,retryButton;
+    if(editable){
       toolbar.className='qis-photo-markup-toolbar';
       toolbar.setAttribute('role','group');
       toolbar.setAttribute('aria-label','照片标记');
-      toolbar.innerHTML=root.QcPhotoShapes.toolButtons;
-      feedback=doc.createElement('p');
+      toolbar.innerHTML=shapes.toolButtons;
+      feedback=doc.createElement('div');
       feedback.className='qis-photo-markup-feedback';
       feedback.setAttribute('role','status');
       feedback.hidden=true;
+      feedback.innerHTML='<span></span> <button type="button" data-mark-retry hidden>重试</button>';
       viewport.before(toolbar,feedback);
-      saveButton=toolbar.querySelector('[data-mark-save]');
+      retryButton=feedback.querySelector('[data-mark-retry]');
+      retryButton.onclick=saveMarks;
       undoButton=toolbar.querySelector('[data-mark-undo]');
+      redoButton=toolbar.querySelector('[data-mark-redo]');
       for(const button of toolbar.querySelectorAll('[data-mark-tool]')){
         button.onclick=()=>{mode=button.dataset.markTool;controls();};
       }
-      undoButton.onclick=()=>{marks=marks.slice(0,-1);message('');paintMarks();controls();};
-      saveButton.onclick=async()=>{
-        if(saving||!isDirty())return;
-        saving=true;message('');controls();
-        try{
-          const updated=await saveAnnotations({photoId:photo.id,annotationVersion:photo.annotationVersion||0,annotations:marks});
-          Object.assign(photo,updated);
-          marks=saved=updated.annotations;
-          paintMarks();message('标记已保存');
-        }catch(error){message(error.message||'保存失败，请重试');}
-        finally{saving=false;controls();}
+      undoButton.onclick=()=>{
+        if(drawing||!marks.length)return;
+        redoStack.push(marks.at(-1));
+        editMarks(marks.slice(0,-1));
+      };
+      redoButton.onclick=()=>{
+        if(drawing||!redoStack.length)return;
+        editMarks([...marks,redoStack.pop()]);
       };
     }
-    function message(text){
-      if(feedback){feedback.textContent=text;feedback.hidden=!text;}
+    function message(text,retry=false){
+      if(!feedback)return;
+      feedback.firstElementChild.textContent=text;
+      feedback.hidden=!text;
+      retryButton.hidden=!retry;
+    }
+    async function saveMarks(){
+      if(saving||!pendingWrite&&!isDirty())return;
+      saving=true;
+      message('');
+      try{
+        while(pendingWrite||isDirty()){
+          // Retry an unacknowledged snapshot first: the server may have saved it before the connection failed.
+          pendingWrite??={photoId:photo.id,annotationVersion:photo.annotationVersion||0,annotations:marks};
+          const updated=await saveAnnotations(pendingWrite);
+          Object.assign(photo,updated);
+          pendingWrite=null;
+        }
+      }catch(error){
+        const changed=error.status===409;
+        message('照片标记未能自动保存。'+(error.message||'请检查连接后重试。')+
+          (changed?' 请重新打开照片核对系统中的标记。':''),!changed);
+      }finally{
+        saving=false;
+        const action=afterSave;
+        afterSave=null;
+        if(!pendingWrite&&!isDirty())action?.();
+      }
+    }
+    function editMarks(next){
+      marks=next;
+      message('');
+      paintMarks();controls();
+      void saveMarks();
     }
     function controls(){
-      if(!saveButton)return;
-      viewport.classList.toggle('is-marking',mode!=='browse'&&ready&&!saving);
+      if(!editable)return;
+      viewport.classList.toggle('is-marking',mode!=='browse'&&ready);
       for(const button of toolbar.querySelectorAll('[data-mark-tool]')){
         button.setAttribute('aria-pressed',String(mode===button.dataset.markTool));
-        button.disabled=!ready||saving;
+        button.disabled=!ready;
       }
-      undoButton.disabled=!ready||saving||!marks.length;
-      saveButton.disabled=!ready||saving||!isDirty();
-      saveButton.textContent=saving?'保存中…':'保存标记';
+      undoButton.disabled=!ready||!marks.length;
+      redoButton.disabled=!ready||!redoStack.length;
     }
     function paintMarks(){
-      root.QcPhotoShapes?.paint(layer,img.naturalWidth,img.naturalHeight,drawing?[...marks,drawing.mark]:marks);
+      shapes?.paint(layer,img.naturalWidth,img.naturalHeight,drawing?[...marks,drawing.mark]:marks);
     }
     const fraction=(distance,dimension)=>Math.round(Math.max(0,Math.min(1,distance/dimension))*1e6)/1e6;
     const point=(event,bounds)=>[fraction(event.clientX-bounds.left,bounds.width),fraction(event.clientY-bounds.top,bounds.height)];
@@ -184,11 +217,18 @@
     }
     return {
       layer,
-      get pending(){return saving||Boolean(drawing)||isDirty();},
+      get pending(){return saving||Boolean(drawing)||Boolean(pendingWrite)||isDirty();},
       get drawing(){return Boolean(drawing);},
-      canLeave(){return !saving&&(!isDirty()&&!drawing||root.confirm('此照片有未保存的标记。放弃这些修改？'));},
+      leave(action){
+        if(saving){afterSave=action;return;}
+        if((pendingWrite||isDirty())&&!root.confirm('此照片有未同步的标记。放弃这些修改？'))return;
+        cancel();action();
+      },
+      retry(){if(retryButton&&!retryButton.hidden)void saveMarks();},
       show(next){
-        if(photo!==next){photo=next;marks=saved=photo.annotations||[];mode='browse';message('');}
+        if(photo!==next){
+          photo=next;marks=photo.annotations||[];mode='browse';redoStack.length=0;pendingWrite=null;message('');
+        }
         ready=false;layer.style.visibility='hidden';cancel();controls();
       },
       load(){
@@ -200,7 +240,7 @@
       fail(){ready=false;layer.style.visibility='hidden';cancel();controls();},
       cancel,
       start(event){
-        if(!ready||!saveButton||mode==='browse'||saving||event.target!==img||event.button!==0)return false;
+        if(!ready||!editable||mode==='browse'||event.target!==img||event.button!==0)return false;
         if(!drawing&&marks.length<40){
           const bounds=img.getBoundingClientRect();
           if(bounds.width>0&&bounds.height>0){
@@ -223,7 +263,8 @@
           const {mark,bounds}=drawing;
           const dx=(mark.x2-mark.x1)*bounds.width,dy=(mark.y2-mark.y1)*bounds.height;
           if(mark.type==='circle'?Math.abs(dx)>=4&&Math.abs(dy)>=4:Math.hypot(dx,dy)>=4){
-            marks=[...marks,mark];message('');
+            drawing=null;redoStack.length=0;
+            editMarks([...marks,mark]);return true;
           }
         }
         cancel();controls();return true;
@@ -379,11 +420,12 @@
     });
     const release=event=>{if(markup?.finish(event,event.type==='pointerup'))return;pointers.delete(event.pointerId);if(!pointers.size)viewport.classList.remove('is-dragging');};
     for(const name of ['pointerup','pointercancel','lostpointercapture'])viewport.addEventListener(name,release);
-    const closePhoto=()=>{if(markup&&!markup.canLeave())return;el.close();cleanup();};
+    const leavePhoto=action=>markup?markup.leave(action):action();
+    const closePhoto=()=>leavePhoto(()=>{el.close();cleanup();});
     function stepPhoto(change){
       const next=index+change;
-      if(next<0||next>=photos.length||markup&&!markup.canLeave())return;
-      index=next;show();
+      if(next<0||next>=photos.length)return;
+      leavePhoto(()=>{index=next;show();});
     }
     if(overlay){
       el.addEventListener('click',event=>{
@@ -403,8 +445,11 @@
     el.querySelector('[data-photo-fit]').onclick=reset;retry.onclick=()=>show(variant!=='preview');el.querySelector('[data-photo-original]').onclick=()=>show(variant==='preview');
     el.addEventListener('keydown',event=>{if(event.key==='ArrowRight'&&index<photos.length-1){event.preventDefault();stepPhoto(1);}else if(event.key==='ArrowLeft'&&index>0){event.preventDefault();stepPhoto(-1);}});
     const observer=root.ResizeObserver?new root.ResizeObserver(resize):null;observer?.observe(viewport);
+    const retryMarks=()=>markup?.retry();
+    if(saveAnnotations)root.addEventListener('online',retryMarks);
     function cleanup(){
       if(closed)return;closed=true;endNativeGesture();observer?.disconnect();pointers.clear();
+      root.removeEventListener('online',retryMarks);
       if(raf!==null)(root.cancelAnimationFrame?.bind(root)||root.clearTimeout)(raf);
       img.onload=img.onerror=null;img.removeAttribute('src');
       detailDialog?.removeEventListener('close',closePhoto);el.remove();
