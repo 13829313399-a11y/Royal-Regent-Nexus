@@ -39,7 +39,7 @@ def test_customer_query_supplement_scope_and_revoked_exclusion(db,monkeypatch):
     assert reports.query('huaxing','2026-11-03','yearly',key)['tables']['issues'][0]['values'][5]=='0009'
     transition(two,'revoke');assert reports.query('huaxing','2026-11-03','weekly')['total']==1
     assert reports.query('huaxing','2027-01-01','yearly')['total']==0
-    with pytest.raises(HTTPException):reports.query('huadeng','2026-11-03','weekly')
+    assert reports.query('huadeng','2026-11-03','weekly')['total']==0
     with pytest.raises(HTTPException):reports.query('huaxing','2026-11-03','weekly','invented')
 
 

@@ -4,7 +4,7 @@
   const doc=root.document,esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let dialog=null, closeCurrent=null, exportCurrent=null, isBusy=()=>false;
   async function open(period,date,initialCustomer='',options={}){
-    if(root.__QC_NEXUS?.factory!=='huaxing')return;
+    if(!root.__QC_NEXUS?.factory)return;
     closeCurrent?.();
     const trigger=doc.activeElement;
     const inline=!!options.host;

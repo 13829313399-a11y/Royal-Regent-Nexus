@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.services import qc_monthly_design as design
 from app.services import qc_weekly_templates as weekly
 from app.services.qc_inspection_summary import dump, text
+from app.services.qc_approved_statistics import factory_label
 
 HEADERS = ['序号','日期','客户','合同','出口国','货号','产品名称','数量','装箱','箱数','结果','报告','生产部门','验货机构','验货问题','第一责任人','第二责任人','备注']
 CAIXING = [1,2,3,4,5,6,7,8,9,10,14,19,18,20,17]
@@ -125,7 +126,7 @@ def query(factory, day, customer='', include_overview=False, design_id=None):
 
 
 def save(factory, actor, body):
-    weekly._factory(factory)
+    factory_label(factory)
     keys={'date','customerKey','field','value','baseVersion','sourceRevision','requestKey'}
     if not isinstance(body,dict) or not keys<=set(body) or set(body)-keys-{'template','customer'} or body.get('template') not in (None,'overview'): raise HTTPException(422,'月报保存参数不正确')
     if 'customer' in body and (body.get('template')!='overview' or not isinstance(body['customer'],str) or (body['customer'] and not re.fullmatch('[a-f0-9]{64}',body['customer']))):raise HTTPException(422,'月报客户范围不正确')

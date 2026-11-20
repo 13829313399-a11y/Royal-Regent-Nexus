@@ -5,7 +5,7 @@
   const el = name => root.document.getElementById('qstats-' + name);
   const active = () => Boolean(root.__QC_NEXUS && root.document.getElementById('page-analysis')?.classList.contains('active'));
   const percent = n => n == null ? '—' : Number(n).toFixed(1) + '%';
-  const factoryName = () => ({huaxing:'华兴',huadeng:'华登'})[root.__QC_NEXUS?.factory] || root.getCompanyName?.() || '当前厂区';
+  const factoryName = () => root.__QC_NEXUS?.factoryLabel || root.getCompanyName?.() || '当前厂区';
   function rateBand(rate) {
     if (rate == null) return null;
     if (rate >= 90) return {key:'green',label:'绿色 · ≥90%'};
@@ -36,7 +36,7 @@
     }
     el('reset').onclick=()=>{Object.assign(state.filters,{year:'',customer:'',result:'FAIL',page:'1'});void load();};
     el('refresh').onclick=()=>void load();
-    if(root.__QC_NEXUS?.factory==='huaxing'){
+    if(root.__QC_NEXUS?.factory){
       installAnnualSheets();
     }
     el('root').querySelectorAll('[data-result]').forEach(b=>b.onclick=()=>{state.filters.result=b.dataset.result;state.filters.page='1';void load();});

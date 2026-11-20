@@ -7,7 +7,7 @@ const { JSDOM } = require('jsdom');
 test('monthly preview opens the filtered workbook, confirms edits before switching, and handles empty sheets', async () => {
   const dom = new JSDOM('<div id="page-monthly"><input id="monthlyMonth" value="2026-11"><select id="qmtCustomer"><option value="factory-customer">客户</option></select><section class="template-sheet"><div class="sheet-tab-bar"></div><div id="summary"></div></section></div>', { runScripts:'outside-only', url:'http://localhost/qc/' });
   const w = dom.window, doc = w.document, calls = [];
-  w.__QC_NEXUS = { factory:'huaxing', exportAllowed:false };
+  w.__QC_NEXUS = { factory:'huadeng', factoryLabel:'华登', exportAllowed:false };
   w.HTMLDialogElement.prototype.showModal = function(){this.open = true;};
   w.HTMLElement.prototype.scrollTo = () => {};
   w.fetch = async (url, options) => {

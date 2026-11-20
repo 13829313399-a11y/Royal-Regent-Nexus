@@ -1,8 +1,8 @@
-/* Huaxing daily report. The actor-scoped gateway owns the data and workbook. */
+/* QC daily report. The actor-scoped gateway owns the data and workbook. */
 (function (root) {
   'use strict';
   const doc = root.document;
-  const enabled = () => root.__QC_NEXUS?.factory === 'huaxing';
+  const enabled = () => !!root.__QC_NEXUS?.factory;
   const exportAllowed = () => root.__QC_NEXUS?.exportAllowed === true;
   function syncCustomerOptions(select, customers) {
     if (!Array.isArray(customers)) return;
@@ -466,7 +466,7 @@
     const [y,m,d] = input.value.split('-').map(Number);
     const label = field.querySelector('label').textContent;
     let display = y ? y+'年'+(m ? m+'月' : '')+(d ? d+'日' : '') : '选择'+label;
-    if (y && root.__QC_NEXUS?.factory === 'huaxing') {
+    if (y && root.__QC_NEXUS?.factory) {
       if (input.id === 'weeklyDate') display = weekCaption(input.value);
       if (input.id === 'dailyDate') display = m+'月'+d+'日';
       if (input.id === 'monthlyMonth') display = m+'月';
@@ -499,7 +499,7 @@
   root.QcReportDates = {sync, close};
 })(window);
 
-/* Direct Huaxing report views. The template controllers own edits, data and export permissions. */
+/* Direct report views. The template controllers own edits, data and export permissions. */
 (function (root) {
   const doc = root.document;
   const catalog = {
@@ -507,9 +507,10 @@
     monthly: {orders:'订单对账明细', tracking:'问题整改跟踪', quality:'客户质量签核'},
   };
   const remembered = {};
+  const templateKey = period => 'qc.' + root.__QC_NEXUS.factory + '.template.' + period;
   for (const period of Object.keys(catalog)) {
     try {
-      const key = root.localStorage.getItem('qc.huaxing.template.' + period);
+      const key = root.localStorage.getItem(templateKey(period));
       if (Object.hasOwn(catalog[period],key)) remembered[period] = key;
     } catch { /* Selection remains available within this session. */ }
   }
@@ -583,7 +584,7 @@
         panel.setAttribute('aria-labelledby',button.id);
         if (remembered[period] !== key) {
           remembered[period] = key;
-          try { root.localStorage.setItem('qc.huaxing.template.' + period,key); } catch {}
+          try { root.localStorage.setItem(templateKey(period),key); } catch {}
         }
       }
     }

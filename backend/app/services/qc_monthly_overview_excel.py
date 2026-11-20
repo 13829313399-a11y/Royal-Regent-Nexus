@@ -10,8 +10,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.pagebreak import Break
 from fastapi import HTTPException
+from app.services.qc_approved_statistics import company_heading
 
-def render(data):
+def render(data, factory):
     report=data['overview'];book=openpyxl.Workbook();summary=book.active;summary.title='月度汇总';detail=book.create_sheet('验货明细');cache={}
     period=data['dateFrom'][:7];edge=Side(style='thin',color='E3E8EB')
     def write(s,r,c,value='',heading=False):
@@ -36,7 +37,7 @@ def render(data):
         s.sheet_view.showGridLines=False;s.sheet_view.zoomScale=90
         s.page_margins=openpyxl.worksheet.page.PageMargins(left=.25,right=.25,top=.25,bottom=.25,header=0,footer=0)
     for c in range(1,13):summary.column_dimensions[get_column_letter(c)].width=11
-    company=merge(summary,1,3,10,'华兴玩具制品（河源）有限公司');company.border=Border();summary.row_dimensions[1].height=22
+    company=merge(summary,1,3,10,company_heading(factory));company.border=Border();summary.row_dimensions[1].height=22
     title=merge(summary,2,3,10,period+' 客户验货总结');title.font=Font(name='Arial',size=16,bold=True,color='263238');title.border=Border();summary.row_dimensions[2].height=34
     spans=[(1,2),(3,4),(5,5),(6,6),(7,8),(9,10),(11,12)]
     for i,label in enumerate(report['headers']):merge(summary,3,*spans[i],label,True)

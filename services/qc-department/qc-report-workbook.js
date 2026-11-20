@@ -1,6 +1,6 @@
 (function(){
 'use strict';
-if(window.__QC_NEXUS?.factory!=='huaxing')return;
+if(!window.__QC_NEXUS?.factory)return;
 const byId = id => document.getElementById(id);
 const periods = {
   daily: {date:'dailyDate',customer:'qdrCustomer',templates:{daily:'验货明细'}},
@@ -314,7 +314,7 @@ byId('wb-export').onclick=async()=>{
       const endpoint=annual?'approved-statistics/report/excel':'daily-report/export';
       const response=await fetch('api/'+endpoint+'?'+new URLSearchParams({...filters,customer,revision:book.sourceRevision}));
       if(!response.ok)throw Error('导出失败，请刷新报告后重试');
-      link.href=URL.createObjectURL(await response.blob());link.download=annual?'华兴'+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
+      link.href=URL.createObjectURL(await response.blob());link.download=annual?(window.__QC_NEXUS.factoryLabel || window.getCompanyName?.() || '')+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
       setTimeout(()=>URL.revokeObjectURL(link.href),30000);
     }else{
       const issue=kind==='issues'||kind==='annual-issues';

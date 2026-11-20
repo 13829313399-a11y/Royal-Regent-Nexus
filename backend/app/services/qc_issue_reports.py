@@ -4,6 +4,7 @@ from hashlib import sha256
 from fastapi import HTTPException
 from app.services import qc_weekly_templates as weekly, qc_monthly_templates as monthly
 from app.services.qc_inspection_summary import dump
+from app.services.qc_approved_statistics import factory_label
 
 MAX_REPORT_ROWS = 5000
 def bounds(day, period):
@@ -19,7 +20,7 @@ def bounds(day, period):
 
 
 def query(factory, day, period, customer=''):
-    weekly._factory(factory)
+    factory_label(factory)
     start, end = bounds(day, period)
     # query streams a SQLite cursor; its existing 50k rows / 64MB snapshot guard
     # applies before any photos are read. Current lineage/approval rules are shared.
