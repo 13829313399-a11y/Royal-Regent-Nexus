@@ -403,6 +403,20 @@ def get_prices(db: Session) -> list[MoldingSampleMaterialPrice]:
     return list(db.scalars(select(MoldingSampleMaterialPrice).order_by(MoldingSampleMaterialPrice.id)).all())
 
 
+def material_unit_prices(prices: list[MoldingSampleMaterialPrice]) -> dict[str, float]:
+    return {normalize_material_name(price.material): price.unit_price for price in prices if price.unit_price > 0}
+
+
+def price_material_component(
+    total_weight_kg: float | None, ratio_percent: float, unit_price: float | None,
+) -> tuple[float | None, float | None]:
+    if total_weight_kg is None:
+        return None, None
+    weight = round_component_weight(total_weight_kg * ratio_percent / 100)
+    amount = round_money(weight * KG_TO_LB * unit_price) if total_weight_kg > 0 and unit_price is not None else None
+    return weight, amount
+
+
 def resolve_material_price(material: str, prices: list[MoldingSampleMaterialPrice]) -> MoldingSampleMaterialPrice | None:
     price_map = {
         normalize_material_name(price.material): price
@@ -505,15 +519,10 @@ def calculate_material_amount_hkd(
     if material_weight_kg is None or material_weight_kg <= 0:
         return None, []
 
-    price_map = {
-        normalize_material_name(price.material): price
-        for price in prices
-        if price.unit_price > 0
-    }
+    prices_by_name = material_unit_prices(prices)
     components: list[dict[str, Any]] | None = material_components
     if not components:
-        direct_price = price_map.get(normalize_material_name(material))
-        if direct_price is not None:
+        if normalize_material_name(material) in prices_by_name:
             components = [{"material": material.strip(), "ratio_percent": 100.0, "source_type": "virgin"}]
         else:
             components = parse_legacy_material_components(material)
@@ -523,13 +532,13 @@ def calculate_material_amount_hkd(
     component_fees: list[float] = []
     snapshots: list[dict[str, Any]] = []
     for component in components:
-        price = price_map.get(normalize_material_name(str(component["material"])))
-        if price is None:
+        unit_price = prices_by_name.get(normalize_material_name(str(component["material"])))
+        if unit_price is None:
             return None, []
-        component_weight = round_component_weight(
-            material_weight_kg * float(component["ratio_percent"]) / 100
+        component_weight, component_fee = price_material_component(
+            material_weight_kg, float(component["ratio_percent"]), unit_price,
         )
-        component_fee = round_money(component_weight * KG_TO_LB * price.unit_price)
+        assert component_fee is not None
         component_fees.append(component_fee)
         snapshots.append(
             {
@@ -537,7 +546,7 @@ def calculate_material_amount_hkd(
                 "source_type": str(component["source_type"]),
                 "ratio_percent": float(component["ratio_percent"]),
                 "weight_kg": component_weight,
-                "unit_price": float(price.unit_price),
+                "unit_price": unit_price,
                 "amount_hkd": component_fee,
             }
         )
@@ -884,6 +893,8 @@ def list_production_tasks(
     db: Session,
     current_user: AuthContext,
     production_factory_id: str,
+    *,
+    order_month: str | None = None,
 ) -> list[MoldingSampleOrder]:
     capability = molding_factory_capability(production_factory_id)
     if not bool(capability["has_molding_department"]):
@@ -896,7 +907,10 @@ def list_production_tasks(
         PRODUCTION_DEPARTMENTS,
     )
 
-    statement = order_statement().where(
+    base = order_statement() if order_month is None else select(MoldingSampleOrder).options(
+        selectinload(MoldingSampleOrder.items), selectinload(MoldingSampleOrder.audit_logs),
+    )
+    statement = base.where(
         MoldingSampleOrder.status.in_(PRODUCTION_TASK_STATUSES),
         ~MoldingSampleOrder.send_to.in_(("发至湖南", "发至模厂")),
         MoldingSampleOrder.workshop != "模厂",
@@ -908,11 +922,13 @@ def list_production_tasks(
             ),
         ),
     )
-    return list(
-        db.scalars(
-            statement.order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
-        ).all()
-    )
+    if order_month is not None:
+        statement = statement.where(MoldingSampleOrder.date.startswith(f"{order_month}-")).order_by(
+            MoldingSampleOrder.date, MoldingSampleOrder.id,
+        )
+    else:
+        statement = statement.order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
+    return list(db.scalars(statement).all())
 
 
 def normalize_board_status(status: str) -> MoldingSampleBoardStatus | None:
@@ -2492,6 +2508,37 @@ def next_requisition_number(db: Session, date: str) -> str:
             continue
 
     return f"{prefix}{max_sequence + 1:03d}"
+
+
+def monthly_export_warehouse_records(
+    db: Session, current_user: AuthContext, factory_id: str, order_ids: list[str],
+) -> tuple[list[MoldingSampleRequisition] | None, list[MoldingSampleInventoryMovement] | None]:
+    """Load only warehouse records visible for orders in this production export."""
+    if molding_read_access(current_user, factory_id) not in {"local", "cross_operate"} or not has_permission_for_departments(
+        current_user, "molding_sample:warehouse_requisition", factory_id, WAREHOUSE_DEPARTMENTS,
+    ):
+        return None, None
+    requisitions: list[MoldingSampleRequisition] = []
+    movements: list[MoldingSampleInventoryMovement] | None = [] if has_permission_for_departments(
+        current_user, "molding_sample:inventory_issue", factory_id, WAREHOUSE_DEPARTMENTS,
+    ) else None
+    # Keep bound-parameter counts below the limit on older SQLite installations.
+    for start in range(0, len(order_ids), 500):
+        scope = (
+            MoldingSampleRequisition.factory_id == factory_id,
+            MoldingSampleRequisition.order_id.in_(order_ids[start:start + 500]),
+        )
+        requisitions.extend(db.scalars(select(MoldingSampleRequisition).where(*scope).order_by(
+            MoldingSampleRequisition.date, MoldingSampleRequisition.req_number,
+        )))
+        if movements is not None:
+            statement = select(MoldingSampleInventoryMovement).join(
+                MoldingSampleRequisition, MoldingSampleRequisition.id == MoldingSampleInventoryMovement.requisition_id,
+            ).where(*scope, MoldingSampleInventoryMovement.factory_id == factory_id).order_by(
+                MoldingSampleInventoryMovement.id,
+            )
+            movements.extend(db.scalars(statement))
+    return requisitions, movements
 
 
 def list_requisitions(
