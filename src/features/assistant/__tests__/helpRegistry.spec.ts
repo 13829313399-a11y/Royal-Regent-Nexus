@@ -5,7 +5,7 @@ import { guidanceProblem, verifyHelpTarget } from '../helpGuidance'
 import type { HelpArticle } from '../types'
 describe('semantic help targets', () => {
   it('uses mapped route names and never accepts catchall or arbitrary selectors', () => {
-    expect(pageContext('injection-scheduling','huaxing')).toBeNull()
+    expect(pageContext('injection-scheduling','huaxing')?.module_id).toBe('injection-scheduling')
     expect(pageContext('nonexistent','huaxing')).toBeNull()
     expect(pageContext('uv-live','huakang-a')?.module_id).toBe('uv-operations')
   })

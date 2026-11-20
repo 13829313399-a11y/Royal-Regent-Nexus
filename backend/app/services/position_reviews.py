@@ -3,7 +3,7 @@ import json
 from uuid import uuid4
 from sqlalchemy import func, inspect, select
 from app.core.config import settings
-from app.models.auth import AuthPermission, AuthUser, EmployeeProfile
+from app.models.auth import EmployeeProfile
 from app.models.identity import IamOrgDepartment, IamOrgUnit, IamOutbox
 from app.models.position_review import PositionReview, PositionReviewEvent
 from app.services.identity_changes import encoded
@@ -38,6 +38,16 @@ def validate_position(db, value):
     if not org or org.status != "active" or org.kind == "group" or not dept or dept.status != "active":
         fail("INVALID_ORG", "请选择有效组织和部门；集团浏览根不能作为正式岗位", 422)
     return org
+
+
+def validate_declaration(db, declaration):
+    validate_position(db, declaration)
+    if declaration.requested_role_ids or declaration.requested_factory_ids:
+        from app.services.iam_personnel import reference_catalog
+        catalog = reference_catalog(db)
+        if (set(declaration.requested_role_ids) - {p["role_id"] for p in catalog["reference_packages"]}
+                or set(declaration.requested_factory_ids) - {f["id"] for f in catalog["reference_factories"]}):
+            fail("INVALID_REFERENCE", "请选择公开业务职位和有效业务厂区", 422)
 
 
 def official(db, user_id, identity=None):
@@ -108,13 +118,12 @@ def open_review(db, actor):
 def self_profile(db, actor_id):
     require_schema(db)
     actor = self_actor(db, actor_id)
-    from app.services.identity_changes import access_matrix
-    permissions = {p.code: p.name for p in db.scalars(select(AuthPermission))}
-    codes = sorted({key[0] for key in access_matrix(db, actor.id, None)})
+    from app.services.iam_personnel import effective_access, reference_catalog
+    access = effective_access(db, actor.id, include_summary=True)
     row = open_review(db, actor)
     return {"official_position": official(db, actor.id, actor.identity),
             "open_review": review_out(row) if row else None,
-            "effective_permission_summary": [permissions.get(code, code) for code in codes],
+            **access, **reference_catalog(db),
             "can_submit": writes_enabled(), "blocked_reason": None if writes_enabled() else "当前仅可查看，岗位更新暂不可提交"}
 
 
@@ -133,7 +142,7 @@ def create_review_tx(db, actor, target, declaration, *, origin="employee", reaso
     now = stamp()
     row = PositionReview(id=uuid4().hex, user_id=target.id, employment_epoch=target.identity["employment_epoch"],
         origin=origin, initiator_user_id=actor.id, status="pending", revision=1,
-        declared_snapshot_json=encoded(declaration.model_dump()), base_official_snapshot_json=encoded(before),
+        declared_snapshot_json=encoded(declaration.snapshot()), base_official_snapshot_json=encoded(before),
         base_identity_version=target.identity["identity_version"], base_authorization_version=target.authorization_version,
         created_at=now, updated_at=now, last_submitted_at=now)
     db.add(row)
@@ -148,15 +157,16 @@ def submit(db, actor_id, payload):
     lock_mutation(db)
     actor = self_actor(db, actor_id)
     invalidate_obsolete_tx(db, actor.id, actor.id)
-    validate_position(db, payload.declaration)
+    validate_declaration(db, payload.declaration)
     current = open_review(db, actor)
-    declaration = payload.declaration.model_dump()
+    declaration = payload.declaration.snapshot()
     if current:
         if current.status == "pending" and json.loads(current.declared_snapshot_json) == declaration:
             db.commit()
             return {"changed": False, "review": review_out(current), "message": "已有相同的岗位更新，无需重复提交"}
         fail("OPEN_REVIEW_EXISTS", "已有待处理岗位更新，请刷新后编辑原申请")
-    if {k: declaration[k] for k in ("org_unit_id", "department_code", "position")} == official(db, actor.id, actor.identity):
+    if (not payload.declaration.requested_role_ids and not payload.declaration.requested_factory_ids
+            and {k: declaration[k] for k in ("org_unit_id", "department_code", "position")} == official(db, actor.id, actor.identity)):
         db.commit()
         return {"changed": False, "review": None, "message": "岗位与当前确认资料相同，无需提交"}
     row = create_review_tx(db, actor, actor, payload.declaration)
@@ -180,8 +190,8 @@ def mutate_self(db, actor_id, review_id, payload, *, withdraw=False):
     if withdraw:
         kind, row.status = "withdrawn", "withdrawn"
     else:
-        validate_position(db, payload.declaration)
-        declaration = encoded(payload.declaration.model_dump())
+        validate_declaration(db, payload.declaration)
+        declaration = encoded(payload.declaration.snapshot())
         if row.status == "pending" and declaration == row.declared_snapshot_json:
             return {"changed": False, "review": before, "message": "没有新的修改"}
         kind = "resubmitted" if row.status == "returned" else "edited"

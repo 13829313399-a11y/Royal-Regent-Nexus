@@ -7,7 +7,7 @@
 | Codex 默认配置 | `## 2. Active Technical Baseline` | `.codex/config.toml` | 项目配置仅含注释，无自定义角色 |
 | 权限与组织 | `## 5. Authentication, Permissions and Factory Isolation` | `src/config/pageAccessPolicy.ts` | `backend/tests` |
 | 通知与事项工作台 | `### Notification Work Center` | `src/stores/workCenter.ts`、`backend/app/api/work_center.py` | `docs/work-center/IMPLEMENTATION.md`；当前源责任与个人阅读分离 |
-| 注塑排产入口（待重新设计） | `### Injection-Scheduling Center` | `src/views/InjectionSchedulingPlaceholderView.vue` | `backend/tests/test_injection_retirement.py` |
+| 排产 | `### Injection-Scheduling Center` | `backend/app/services` | `backend/tests` |
 | 订单与导入 | `### Customer Order Center` | `backend/app/api` | `backend/tests` |
 | 送印尼物料 | `### Indonesia Material Shipment` | `src/features/indonesia-materials`、`backend/app/api/indonesia_materials.py` | `docs/business/indonesia-materials-implementation.md`；已接入现有 5173 本地业务部入口；本地库已迁移 0160，线上未发布 |
 | UV 打印重建模块 | `### Huakang A UV Printing Management` | `src/features/uv-operations/contracts.ts`、`backend/app/api/uv_operations.py` | `docs/uv-operations/ACCEPTANCE.md`；仅华康A生产部，默认关闭，现场未验收 |

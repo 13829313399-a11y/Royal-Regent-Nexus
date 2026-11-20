@@ -5,11 +5,12 @@ import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { useAuthStore } from '@/stores/auth'
 
-export function usePositionReview(onSaved: (result: ReviewResult) => void) {
+export function usePositionReview(onSaved: (result: ReviewResult) => void, studio = () => false, readOnly = () => false) {
   const auth = useAuthStore()
   const detail = ref<WorkItemDetail>()
   const packages = ref<BuiltinPackage[]>([])
   const draft = ref<ReviewDraft>()
+  const multiple = computed(() => studio() && detail.value?.kind === 'registration')
   const originalDraft = ref('')
   const dirty = computed(() => !!originalDraft.value && !result.value && !!draft.value && JSON.stringify(draft.value) !== originalDraft.value)
   const scope = ref<FactoryScope>({ kind: 'home', factory_ids: [] })
@@ -26,10 +27,12 @@ export function usePositionReview(onSaved: (result: ReviewResult) => void) {
   const locked = computed(() => state.value === 'committing' || state.value === 'uncertain')
   const valid = computed(() => {
     const d = draft.value, source = detail.value
-    return Boolean(d && source?.available_actions.includes('preview') && source.identity_mode !== 'legacy'
+    return Boolean(!readOnly() && d && source?.status === 'pending' && source.available_actions.includes('preview') && source.identity_mode !== 'legacy'
+      && (!multiple.value || source.studio_writes_enabled === true)
+      && !(studio() && source.kind === 'position')
       && d.confirmed_profile.position.trim() && d.confirmed_profile.position.trim().length <= 128
       && d.independent_allow_decisions.length === source.independent_allows.length
-      && (d.decision === 'keep_permissions' || d.package_selection) && !packagesLoading.value)
+      && (d.decision === 'keep_permissions' || (multiple.value ? d.package_selections?.length : d.package_selection)) && !packagesLoading.value)
   })
   const canCommit = computed(() => state.value === 'ready' && preview.value?.allowed_to_commit && (!preview.value.high_risk || risk.value))
   function invalidate() {
@@ -56,11 +59,13 @@ export function usePositionReview(onSaved: (result: ReviewResult) => void) {
       const data = await api.detail(key)
       if (disposed || current !== generation || viewer !== identity.value) return
       detail.value = data
-      scope.value = { kind: 'home', factory_ids: [] }
+      scope.value = { kind: multiple.value ? 'selected' : 'home', factory_ids: [] }
       draft.value = { expected_source_revision: data.source_revision, decision: data.can_keep_permissions ? 'keep_permissions' : 'apply_package',
         confirmed_profile: { org_unit_id: data.declaration.org_unit_id, department_code: data.declaration.department_code, position: data.declaration.position },
+        ...(multiple.value ? {package_selections: []} : {}),
         independent_allow_decisions: [], registration_details_correction: data.registration_details ? { ...data.registration_details } : null }
       state.value = 'editing'
+      if (readOnly() || data.status !== 'pending') return
       await loadPackages()
       if (disposed || current !== generation || viewer !== identity.value) return
       originalDraft.value = JSON.stringify(draft.value)
@@ -69,7 +74,7 @@ export function usePositionReview(onSaved: (result: ReviewResult) => void) {
   }
   async function loadPackages() {
     const data = detail.value, d = draft.value
-    if (!data || !d) return
+    if (readOnly() || !data || data.status !== 'pending' || !d) return
     const current = ++packageGeneration, currentSource = generation, viewer = identity.value
     packagesLoading.value = true; invalidate()
     try {
@@ -81,17 +86,37 @@ export function usePositionReview(onSaved: (result: ReviewResult) => void) {
     } catch (e) { if (current === packageGeneration && currentSource === generation && viewer === identity.value) fail(e) }
     finally { if (current === packageGeneration) { packagesLoading.value = false; schedulePreview() } }
   }
-  function syncSelection() {
-    if (!draft.value) return
+  function candidate() {
     const choice = packages.value.find(p => p.role_id === selectedRole.value && p.assignable)
-    draft.value.package_selection = draft.value.decision === 'apply_package' && choice ? {
+    return draft.value?.decision === 'apply_package' && choice ? {
       role_id: choice.role_id, definition_hash: choice.definition_hash, role_version_id: choice.role_version_id,
       permission_department: choice.department, factory_scope: { ...scope.value, factory_ids: [...scope.value.factory_ids] },
     } : null
   }
+  function syncSelection() {
+    if (!draft.value || multiple.value) return
+    draft.value.package_selection = candidate()
+  }
+  function stagePackage() {
+    const selection = candidate(), selections = draft.value?.package_selections
+    if (!multiple.value || detail.value?.studio_writes_enabled !== true || !selection || !selections || locked.value || packagesLoading.value
+      || scope.value.kind === 'selected' && !scope.value.factory_ids.length
+      || selections.some(item => item.role_id === selection.role_id)) return
+    selections.push(selection)
+    selectedRole.value = ''
+    scope.value = {kind: 'selected', factory_ids: []}
+  }
+  watch(() => draft.value?.confirmed_profile.org_unit_id, (org, previous) => {
+    if (org && previous && org !== previous && multiple.value && draft.value) {
+      draft.value.package_selections = []
+      selectedRole.value = ''
+      scope.value = { kind: 'selected', factory_ids: [] }
+    }
+  }, { flush: 'sync' })
   function schedulePreview() {
     if (locked.value || state.value === 'success') return
     invalidate()
+    if (studio() && !dirty.value) return
     if (valid.value) previewTimer = setTimeout(() => { void makePreview() }, 300)
   }
   async function makePreview() {
@@ -135,7 +160,7 @@ export function usePositionReview(onSaved: (result: ReviewResult) => void) {
     await execute()
   }
   async function decide(reason: string) {
-    if (!detail.value || locked.value || !reason.trim()) return
+    if (readOnly() || !detail.value || detail.value.status !== 'pending' || locked.value || !reason.trim()) return
     pendingOwner = account.value
     pending = { key: detail.value.item_key, kind: 'decision', body: { expected_source_revision: detail.value.source_revision,
       command_id: createRandomUuid(), action: detail.value.kind === 'registration' ? 'reject_registration' : 'return_position', reason: reason.trim() } }
@@ -165,6 +190,6 @@ export function usePositionReview(onSaved: (result: ReviewResult) => void) {
     if (unresolved) error.value = '授权范围已变化，人员资料已清除。请先核查原提交结果。'
   }, { flush: 'sync' })
   onBeforeUnmount(() => { disposed = true; ++generation; ++previewGeneration; ++packageGeneration; clearTimeout(previewTimer); clearTimeout(expiryTimer) })
-  return { detail, packages, draft, scope, selectedRole, preview, state, error, result, risk, locked, dirty, valid, canCommit,
+  return { detail, packages, draft, scope, multiple, stagePackage, selectedRole, preview, state, error, result, risk, locked, dirty, valid, canCommit,
     packagesLoading, select, makePreview, submit, decide, checkReceipt, retry: execute, invalidate }
 }

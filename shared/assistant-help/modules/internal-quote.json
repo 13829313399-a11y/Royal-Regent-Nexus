@@ -64,7 +64,7 @@
       {
         "path": "backend/app/services/assistant/registry.py",
         "symbol": "resolve",
-        "sha256": "c5d6901f07e894d3d8d0041117c3a5660d53056db53f9acb953d1d9b3bfc7f2d"
+        "sha256": "1672ea2f75afceff4edb712d0d9941a75a61d3d4846fb39be98df4eb1e4425a9"
       },
       {
         "path": "src/components/modules/sales/internal-quote/InternalQuoteCollaboration.vue",

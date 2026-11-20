@@ -23,7 +23,7 @@ const result: ReviewResult = { command_id: 'receipt', status: 'committed', item_
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
 let review: ReturnType<typeof usePositionReview>
 const saved = vi.fn()
-function view() { mount(defineComponent({ setup() { review = usePositionReview(saved); return () => null } })) }
+function view(multiple = false) { mount(defineComponent({ setup() { review = usePositionReview(saved, () => multiple); return () => null } })) }
 beforeEach(() => {
   vi.resetAllMocks(); vi.useFakeTimers()
   auth.currentUser.id = 'admin'; auth.authorizationVersion = 1; auth.currentUser.identity.effective_context_key = 'scope-A'
@@ -75,6 +75,34 @@ it('keeps the immutable command and forbids changing people after an unknown out
   api.receipt.mockResolvedValue({ status: 'not_observed', result: null }); await review.checkReceipt()
   expect(review.state.value).toBe('uncertain'); await review.retry()
   expect(api.commit.mock.calls[1]).toEqual(sent); expect(saved).toHaveBeenCalledOnce()
+})
+it('stages each registration package with an explicit scope and omits the singular contract', async () => {
+  view(true)
+  api.detail.mockResolvedValue({ ...detail(), kind: 'registration', item_key:'registration:r', can_keep_permissions:false, studio_writes_enabled:true })
+  const items = ['role-a','role-b'].map(role_id => ({role_id, assignable:true, department:'engineering', definition_hash:'fixed-' + role_id}))
+  api.packages.mockResolvedValue({items})
+  await review.select('registration:r')
+  expect(review.scope.value.factory_ids).toEqual([])
+  expect(review.draft.value?.package_selection).toBeUndefined()
+  review.selectedRole.value = 'role-a'
+  review.stagePackage()
+  expect(review.draft.value?.package_selections).toEqual([])
+  for (const [id, factory] of [['role-a','f1'],['role-b','f2']]) {
+    review.scope.value = {kind:'selected',factory_ids:[factory!]}
+    await flushPromises()
+    review.selectedRole.value = id!
+    review.stagePackage()
+    await flushPromises()
+    expect(review.selectedRole.value).toBe('')
+    expect(review.scope.value.factory_ids).toEqual([])
+  }
+  await vi.advanceTimersByTimeAsync(301)
+  expect(api.preview.mock.lastCall?.[1].package_selection).toBeUndefined()
+  expect(api.preview.mock.lastCall?.[1].package_selections).toEqual([
+    {role_id:'role-a', permission_department:'engineering', definition_hash:'fixed-role-a',factory_scope:{kind:'selected',factory_ids:['f1']}},
+    {role_id:'role-b', permission_department:'engineering', definition_hash:'fixed-role-b',factory_scope:{kind:'selected',factory_ids:['f2']}},
+  ])
+  expect(api.commit).not.toHaveBeenCalled()
 })
 it('recovers a committed receipt without issuing another command', async () => {
   await ready(); api.commit.mockRejectedValueOnce({ response: { status: 503 } }); await review.submit()

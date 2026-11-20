@@ -7,7 +7,7 @@ from test_cutting_jp_migration import base_database, clone, migrate, snapshot, v
 def latest_database(base_database, tmp_path_factory):
     path = clone(base_database, tmp_path_factory.mktemp('latest-head-preflight'))
     migrate(path, '20261102_0189')
-    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261116_inj_retire'):
+    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195'):
         migrate(path, revision)
         before = snapshot(path)
         migrate(path, revision)
@@ -22,6 +22,15 @@ def test_latest_heads_repeat_without_rewriting_existing_rows(latest_database):
     with sqlite3.connect(latest_database) as db:
         assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
+
+
+def test_retired_database_cannot_enter_active_scheduling_lineage(latest_database, tmp_path):
+    path = clone(latest_database, tmp_path)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE alembic_version SET version_num='20261116_inj_retire'")
+    before, versions = snapshot(path), version_snapshot(path)
+    assert 'archived injection retirement' in migrate(path, 'head', success=False).stderr
+    assert (snapshot(path), version_snapshot(path)) == (before, versions)
 
 @pytest.mark.parametrize('damage, message', [
     ('header_index', 'cutting header index is missing'),

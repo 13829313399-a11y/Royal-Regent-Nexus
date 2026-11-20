@@ -3338,14 +3338,17 @@ def has_permission_in_scope(
     permission: str,
     factory_id: str,
     department: str | None = None,
+    *,
+    at: datetime | None = None,
 ) -> bool:
     if user.identity and user.identity.get("identity_mode") == "v2":
-        return can(user, permission, factory_id, department)
+        return can(user, permission, factory_id, department, at=at)
     canonical_result, canonical_source, _, _ = authorization_decision(
         user,
         permission,
         factory_id,
         department,
+        at=at,
     )
     if canonical_result and canonical_source == "superadmin":
         return True
