@@ -65,7 +65,7 @@ HUAXING_CUSTOMER_MAPPINGS: dict[str, HuaxingCustomerMappingSpec] = {
     "zuru": HuaxingCustomerMappingSpec(
         "zuru", "ZURU", (".pdf", ".xlsx"), (".xlsx",),
         "HUAXING_ZURU_PO_V2", "HEYUAN_BUSINESS_UNIFIED_HUAXING_V2",
-        "读取 ZURU 正单 PDF 或已核对的转换 Excel，保留 PO号＋原单Line、完整SKU-SPEC及本行Customer PO；写入统一三表，USD单独保留，不自动换算HKD。",
+        "读取 ZURU 正单 PDF 或已核对的转换 Excel，保留 PO号＋原单Line、完整SKU-SPEC及本行Customer PO；上传多份原周排期作参照，生成可复制的新单汇总，USD单独保留。",
     ),
     "edu": HuaxingCustomerMappingSpec(
         "edu", "EDU", (".pdf", ".xls", ".xlsx", ".xlsm"), (".xls", ".xlsx", ".xlsm"),

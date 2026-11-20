@@ -16,7 +16,7 @@ def _key(value):
 
 
 FIELDS = ('LINE', 'SKU', 'SKU-SPEC', 'NAME', 'OUTER', 'INDIVIDUALBARCODE',
-          'DELIVERYDATE', 'PRICEUSD', 'QTYPCS', 'TOTALUSD', 'TOTALCTNS', 'CUSTOMERPO', 'SHIPTYPE')
+          'DELIVERYDATE', 'PRICEUSD', 'QTYPCS', 'TOTALUSD', 'TOTALCTNS', 'CUSTOMERPO', 'SHIPTYPE', 'INNER')
 LETTERS = {field: chr(65 + i) for i, field in enumerate(FIELDS)}
 
 
@@ -38,6 +38,12 @@ class PdfSourceBook:
                 if any(not t.strip() for t in texts):
                     raise ValueError('PDF 含无原生文字的页面，请提供核对后的 XLSX')
                 fulltext = '\n'.join(texts)
+                # Keep explicitly labelled current-PO notes, excluding contractual
+                # footer/revision history. These are source text, never instructions.
+                note = re.search(r'PRODUCT\s+REQU[A-Z]+\s*(.*?)(?=Order\s+Modifiable\s+Records|Special\s+\d|Confirmed And|\Z)', fulltext, re.I | re.S)
+                self.source_notes = note.group(1).strip() if note else ''
+                contact = re.search(r'^From:\s*([^\n]+)', fulltext, re.M)
+                self.merchandiser = contact.group(1).strip() if contact else ''
                 self.content_identity = sha256(re.sub(r'\s+', '', fulltext).encode()).hexdigest()
                 self.revision_history = _revisions(fulltext)
                 self._rows = self._extract(pdf, texts)
@@ -70,16 +76,16 @@ class PdfSourceBook:
             label = upper + lower
             if upper in {'LINE', 'SKU', 'SKU-SPEC', 'NAME', 'CUSTOMERPO'}:
                 label = upper
-            if upper == 'OUTER' and lower == 'PCS':
-                label = 'OUTER'
+            if upper in {'OUTER', 'INNER'} and lower == 'PCS':
+                label = upper
             if label in FIELDS:
                 if label in columns:
                     raise ValueError('PDF 关键列重复，不能确定归属')
-                cell = table.rows[1].cells[i] if label == 'OUTER' else table.rows[0].cells[i]
+                cell = table.rows[1].cells[i] if label in {'OUTER', 'INNER'} else table.rows[0].cells[i]
                 if cell is None:
                     raise ValueError('PDF 列边界不完整')
                 columns[label] = cell[0], cell[2]
-        required = set(FIELDS) - {'SHIPTYPE', 'INDIVIDUALBARCODE'}
+        required = set(FIELDS) - {'SHIPTYPE', 'INDIVIDUALBARCODE', 'INNER'}
         if not required <= columns.keys():
             raise ValueError('PDF 明细缺少已确认字段：' + ', '.join(sorted(required - columns.keys())))
 

@@ -1293,6 +1293,7 @@ async def preview_mapped_customer_order_batch(
     received_date: str = Form(...),
     po_files: list[UploadFile] = File(...),
     schedule_file: UploadFile = File(...),
+    schedule_files: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1314,11 +1315,8 @@ async def preview_mapped_customer_order_batch(
         po_files,
         supported=spec.po_extensions,
     )
-    schedule_content = await schedule_file.read()
-    if not schedule_content:
-        raise HTTPException(status_code=400, detail="客户排期文件不能为空")
-    if len(schedule_content) > MAX_SCHEDULE_BYTES:
-        raise HTTPException(status_code=400, detail="客户排期文件超过 35MB 限制")
+    from app.services.customer_order_zuru_native import read_uploads
+    schedule_name, schedule_content = await read_uploads(customer_code, schedule_file, schedule_files)
     try:
         preview = await run_order_job(
             _create_mapped_customer_preview,
@@ -1327,7 +1325,7 @@ async def preview_mapped_customer_order_batch(
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
-            schedule_file_name=schedule_file.filename or "",
+            schedule_file_name=schedule_name,
             schedule_content=schedule_content,
         )
         _finalize_preview(
@@ -1362,6 +1360,7 @@ async def export_mapped_customer_order_batch(
     confirmation_reason: str = Form(""),
     po_files: list[UploadFile] = File(...),
     schedule_file: UploadFile = File(...),
+    schedule_files: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1397,11 +1396,8 @@ async def export_mapped_customer_order_batch(
         po_files,
         supported=spec.po_extensions,
     )
-    schedule_content = await schedule_file.read()
-    if not schedule_content:
-        raise HTTPException(status_code=400, detail="客户排期文件不能为空")
-    if len(schedule_content) > MAX_SCHEDULE_BYTES:
-        raise HTTPException(status_code=400, detail="客户排期文件超过 35MB 限制")
+    from app.services.customer_order_zuru_native import read_uploads
+    schedule_name, schedule_content = await read_uploads(customer_code, schedule_file, schedule_files)
     try:
         output, file_name, preview = await run_order_job(
             _export_mapped_customer_schedule,
@@ -1410,7 +1406,7 @@ async def export_mapped_customer_order_batch(
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
-            schedule_file_name=schedule_file.filename or "",
+            schedule_file_name=schedule_name,
             schedule_content=schedule_content,
             skipped_issue_keys=normalized_resolution_keys,
             manual_overrides=normalized_manual_overrides,

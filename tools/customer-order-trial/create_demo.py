@@ -62,8 +62,8 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None, si
     elif single_customer == 'zuru':
         fixture = fixtures('test_customer_order_zuru_unified.py', {'po_book', 'data'})
         customer, files, rows = 'ZURU', [('DEMO_ZURU_PO.xlsx', fixture['data'](fixture['po_book']()))], 2
-        template = fixtures('test_customer_order_unified.py', {'_template_bytes'}, unified=service)
-        content = template['_template_bytes']()
+        template = fixtures('test_zuru_original_summary.py', {'original_book'})
+        content = fixture['data'](template['original_book']())
     elif factory == 'huakang-a':
         fixture = fixtures('test_green_toys_po_integrity.py', {'LINES', 'html_po', 'recovery_template'}, mapping=a_mapping)
         customer = 'Green Toys'
@@ -102,7 +102,7 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None, si
         args = fixture['arguments'](factory, fixture['disney_po']())
         customer = '迪士尼 / Disney'
         files, content, rows = args['po_files'], args['schedule_content'], 1
-    if single_customer:
+    if single_customer and single_customer != 'zuru':
         book = openpyxl.load_workbook(BytesIO(content))
         for sheet in book:
             sheet.freeze_panes = 'H4'
@@ -112,7 +112,7 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None, si
         stream = BytesIO(); book.save(stream); book.close(); content = stream.getvalue()
     for name, data in files:
         (destination / ('DEMO_' + Path(name).name if not name.startswith('DEMO_') else name)).write_bytes(data)
-    (destination / 'DEMO_统一排期.xlsx').write_bytes(content)
+    (destination / ('DEMO_ZURU原排期.xlsx' if single_customer == 'zuru' else 'DEMO_统一排期.xlsx')).write_bytes(content)
     reminder = (
         '会看到“节假日待复核”的日期码提醒；这是提示信息，没有勾选项，本组合成资料无需补录。'
         if factory == 'huadeng' else '本组合成资料无需补录或勾选人工确认项。'
@@ -120,7 +120,7 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None, si
     (destination / '演示操作.txt').write_text(
         '这些文件是自动测试用的合成示例，不是客户真实订单，不能用于生产。\n\n'
         f'1. 在本厂客户中选择 {customer}，台账资料类型保持“正式 PO”。\n'
-        '2. 在“客户原始 PO”上传同目录 DEMO 开头的 PDF、Excel 或 HTML 文件；在“客户现有排期”上传 DEMO_统一排期.xlsx。\n'
+        f'2. 在“客户原始 PO”上传同目录 DEMO 开头的 PDF、Excel 或 HTML 文件；在“客户现有排期”上传 {"DEMO_ZURU原排期.xlsx" if single_customer == "zuru" else "DEMO_统一排期.xlsx"}。\n'
         '3. 来单日期选择 2026-11-09，点击“解析并进入预览”。\n'
         f'4. 应得到 {rows} 条明细。' + ('彩星另显示1条分组行，不计入上述明细数。' if huaxing_customer == 'caixing' else '') + f'{reminder}核对表中货号、数量和交期后继续，不需要填写人工处理原因。\n'
         '5. 点击“确认并保存订单”，再到“订单台账与走货”查看保存的明细。重复保存相同资料不会重复新增。\n'
