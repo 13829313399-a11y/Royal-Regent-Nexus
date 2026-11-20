@@ -127,7 +127,6 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 #reviewTableWrap #qis-review-all { vertical-align:middle; margin:0; }
 #qis-review-controls :is(.qis-review-search,.qs-date-toggle,.qis-review-filterbar select) {
   min-width:0;
-  width:100%;
   min-height:36px;
   padding:0 9px;
   border:1px solid var(--border);
@@ -137,7 +136,7 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
   font:inherit;
   font-size:13px;
 }
-#qis-review-controls :is(.qis-review-search,.qs-date-toggle) {display:flex;align-items:center;gap:8px}
+#qis-review-controls :is(.qis-review-search,.qs-date-toggle) {display:flex;align-items:center;gap:8px;width:100%}
 #qis-review-controls .qis-review-search {max-width:var(--qc-search-width)}
 #qis-review-controls [data-rfilter=result] {width:100px}
 #qis-review-controls [data-reset-review][hidden] {display:none}
