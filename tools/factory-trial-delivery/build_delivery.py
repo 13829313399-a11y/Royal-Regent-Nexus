@@ -385,6 +385,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if single_customer:
                 instructions = instructions.replace(FACTORIES[factory][3], customers)
                 instructions += f'\n本包只开放{name} {customers}，前端直接复用 GitHub 客户订单中心。新包请勿混入其他客户的 data。\n'
+                if single_customer == 'zuru':
+                    instructions = instructions.replace('“生成排期”下载完整排期副本', '“生成排期”下载独立新单汇总')
+                    if 'ZURU使用原排期专用流程' not in instructions:
+                        instructions += '\nZURU使用原排期专用流程：上传PDF/Excel PO及1至10份原周排期，生成独立18列新单汇总和对应原格式复制页。已有订单单独列出提醒；原周排期、MA和库存不修改。复制时选择数据行（不含表头）并粘贴值。\n'
                 if single_customer == 'casdon':
                     instructions += '货号保留原单写法，AW/SS版本不拼接到货号；新单插入各表同货号的有效订单组，原历史不覆盖。旧文件里已有的错误尾码或重复记录不会自动清除，请保留原件核对。\n'
             if factory == 'huadeng':
