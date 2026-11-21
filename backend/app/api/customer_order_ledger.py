@@ -1,11 +1,13 @@
 from typing import Literal
 from copy import deepcopy
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 from pydantic import TypeAdapter, ValidationError
 from urllib.parse import quote
 
+from fastapi.encoders import jsonable_encoder
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -13,9 +15,10 @@ from sqlalchemy.orm import Session
 from app.services.customer_order_jobs import run_order_job, order_job_request
 
 from app.api import customer_order as mapping
+from app.api import indonesia_shipping as shipping
 from app.db import get_db
 from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedgerSource as Source, OrderLedgerDispatch as Dispatch, OrderLedgerShipment as Shipment
-from app.schemas.customer_order_ledger import AmendIn, DispatchIn, ReasonIn, RestoreIn, ShipmentIn, HistorySelection, HistoryOpeningIn, CartonChangeConfirmIn
+from app.schemas.customer_order_ledger import RevisionIn, AmendIn, DispatchIn, ReasonIn, RestoreIn, ShipmentIn, HistorySelection, HistoryOpeningIn, CartonChangeConfirmIn
 from app.services.auth import AuthContext, get_current_user, now_text
 from app.services.business_authz import ensure_permission_for_departments, has_permission_for_departments
 from app.services import customer_order_ledger as ledger
@@ -63,6 +66,8 @@ def capabilities(factory_id: str, recipient: Literal["pmc", "warehouse", "inject
     result = {action: has_permission_for_departments(current_user, "customer_order:" + action, factory_id,
             ledger.RECIPIENTS[recipient] if action.startswith("inbox_") else ("sales-business",))
             for action in ("read", "write", "dispatch", "shipment_confirm", "inbox_read", "inbox_receive")}
+    result['indonesia_schedule_import'] = result['read'] and not current_user.force_password_change and all(
+        shipping.allowed(current_user, factory_id, bit) for bit in ("read", "schedules_read", "schedules_write"))
     result['cutting_dispatch_enabled'] = bool(factory_id == 'huakang-c' and result['dispatch'] and
         settings.cutting_ops_enabled and cutting_orders.schema_ready(db.connection()))
     from app.services.carton_business_changes import capable
@@ -391,6 +396,57 @@ def restore(line_id: str, factory_id: str, body: RestoreIn, db: Session = Depend
         ledger.restore(db, line, body, actor,
             authorize_dispatch=lambda: authorize_locked_dispatch(db, current_user, factory_id))
     return mutate(db, current_user, factory_id, line_id, action, body, "write")
+
+
+class IndonesiaImportIn(RevisionIn):
+    source: Literal["RRI", "RRM"]
+
+
+def optional_schedule_number(value):
+    try:
+        numeric = Decimal(str(value).strip().replace(",", ""))
+    except InvalidOperation:
+        return None
+    return numeric if numeric.is_finite() and abs(numeric) < Decimal("1e18") else None
+
+
+@router.post("/lines/{line_id}/indonesia-schedule")
+async def import_indonesia_order(line_id: str, factory_id: str, body: IndonesiaImportIn, request: Request,
+                                db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    authorize(db, current_user, factory_id)
+    shipping.authorize_resource(current_user, factory_id, "api/schedules", "POST", "schedules_write")
+    shipping.csrf_guard(request)
+    line = ledger.get_line(db, factory_id, line_id)
+    if line.status != "active" or line.revision != body.expected_revision:
+        raise HTTPException(409, "订单已取消或已变更，请刷新订单详情后核对")
+    if not line.quantity or line.quantity <= 0 or not line.data.get("received_date"):
+        raise HTTPException(422, "请先补齐订单数量及接单日期")
+    data = line.data
+    row = dict(ledgerLineId=line.id, ledgerVersion=line.version, source=body.source,
+               customer=line.customer_name, code=line.product_no, orderNo=line.reference_no,
+               orderDate=data["received_date"], qty=line.quantity, importedBy=current_user.display_name,
+               customerPO=data.get("po_no"), productName=data.get("product_name_zh") or data.get("product_name_en"),
+               eta=data.get("requested_ship_date"), country=data.get("country"), cartons=optional_schedule_number(data.get("carton_count")),
+               unitPrice=optional_schedule_number(data.get("unit_price_usd")), inspDate=data.get("planned_inspection_date"),
+               version=data.get("product_version"), notes=data.get("note") or data.get("remark"))
+    payload = dict(customer=line.customer_name, raw_rows=[row])
+    db.rollback()
+    client, response = await shipping.open_upstream(current_user, factory_id, "api/schedules/ledger-import", "POST",
+        body=json.dumps(jsonable_encoder(payload), ensure_ascii=False, allow_nan=False).encode(), headers={"Content-Type": "application/json"})
+    try:
+        raw = await response.aread()
+        if response.status_code != 200:
+            message = "印尼排期服务未能导入订单"
+            if response.status_code in (400, 409, 422):
+                try:
+                    message = json.loads(raw).get("error") or message
+                except (ValueError, AttributeError):
+                    pass
+            raise HTTPException(response.status_code if 400 <= response.status_code < 600 else 502, message)
+        return json.loads(raw)
+    finally:
+        await response.aclose()
+        await client.aclose()
 
 
 @router.post("/lines/{line_id}/dispatch")

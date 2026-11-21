@@ -476,6 +476,24 @@ public partial class MaterialAlertsController(ISqlConnectionFactory factory) : C
             : ReadAdjustments(await c.ExecuteScalarAsync<string?>("SELECT value FROM settings WHERE key=@AdjustmentKey", new { AdjustmentKey }));
         ApplyTrackingAdjustments(items, adjustments, profileMap, today);
 
+        if (!revisionId.HasValue)
+        {
+            var replies = await c.QueryAsync<SupplierReply>("""
+                SELECT i.material_id, i.tomy_po, i.supplier_reply_date
+                FROM po_items i JOIN purchase_orders p ON p.id=i.po_id
+                WHERE i.supplier_reply_date IS NOT NULL AND i.material_id IS NOT NULL
+                  AND p.merged_into_id IS NULL AND COALESCE(p.status,'') <> 'cancelled'
+                  AND COALESCE(i.purchase_qty,i.qty,0) > COALESCE(
+                    (SELECT SUM(r.qty) FROM po_receipts r WHERE r.po_item_id=i.id),0)
+                """);
+            var promised = replies.SelectMany(r => (r.tomy_po ?? "").Split([';', '；'],
+                StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Select(order => (key: (r.material_id, order), date: r.supplier_reply_date.Date)))
+                .GroupBy(x => x.key).ToDictionary(g => g.Key, g => g.Min(x => x.date));
+            foreach (var item in items.Where(i => i.tracking_type == "purchase"))
+                ApplyDeliveryDates(item, ResolveProfile(profileMap, item.product_code, item.lead_category, item.material_name), promised, today);
+        }
+
         var statusOrder = new Dictionary<string, int>
         {
             ["critical"] = 0, ["warning"] = 1, ["normal"] = 2,
@@ -590,6 +608,43 @@ public partial class MaterialAlertsController(ISqlConnectionFactory factory) : C
         var accepted = pending.Min(x => x.accepted);
         // Preserve aggregate capacity scheduling, using only the outstanding workload.
         return (accepted, EstimateDeliveryDate(profile, accepted, pending.Sum(x => x.remaining)));
+    }
+
+    private sealed class SupplierReply
+    {
+        public int material_id { get; set; }
+        public string? tomy_po { get; set; }
+        public DateTime supplier_reply_date { get; set; }
+    }
+
+    private static void ApplyDeliveryDates(AlertItem item, ProfileRow? profile,
+        Dictionary<(int, string), DateTime> promises, DateTime today)
+    {
+        var pending = new List<(DateTime date, bool supplier)>();
+        foreach (var d in item.order_details)
+        {
+            var accepted = DateTime.ParseExact(d.accepted_date, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var estimated = EstimateDeliveryDate(profile, accepted, Math.Max(d.receipt_shortage_exact, d.outbound_shortage_exact));
+            d.estimated_date = estimated?.ToString("yyyy-MM-dd");
+            if (d.receipt_shortage_exact == 0 && d.outbound_shortage_exact == 0) continue;
+            if (estimated.HasValue) pending.Add((estimated.Value, false));
+            if (d.receipt_shortage_exact > 0 && promises.TryGetValue((item.material_id, d.order_no), out var reply))
+            {
+                d.supplier_reply_date = reply.ToString("yyyy-MM-dd");
+                d.reply_delay_days = estimated.HasValue ? (reply - estimated.Value).Days : null;
+                pending.Add((reply, true));
+            }
+        }
+        if (item.status == "covered") return;
+        // Keep the aggregate capacity deadline as well as individual supplier commitments.
+        if (ParseDate(item.due_date ?? "") is DateTime aggregate) pending.Add((aggregate, false));
+        if (pending.Count == 0) return;
+        var supplierLate = pending.Any(x => x.supplier && x.date < today);
+        var estimateLate = pending.Any(x => !x.supplier && x.date < today);
+        var remaining = (pending.Min(x => x.date) - today).Days;
+        item.risk_label = supplierLate ? "供应商逾期" : estimateLate ? "晚于预计" :
+            pending.Any(x => x.supplier && (x.date - today).Days == remaining && remaining <= 7) ? "供应商复期临近" : null;
+        item.status = remaining <= 3 ? "critical" : remaining <= 7 ? "warning" : "normal";
     }
 
     private static DateTime? EstimateDeliveryDate(ProfileRow? profile, DateTime acceptedDate, decimal requiredQty)
@@ -922,6 +977,9 @@ public partial class MaterialAlertsController(ISqlConnectionFactory factory) : C
 
     private sealed class OrderDetail
     {
+        public string? estimated_date { get; set; }
+        public string? supplier_reply_date { get; set; }
+        public int? reply_delay_days { get; set; }
         public decimal source_required_qty { get; set; }
         public decimal source_ordered_qty { get; set; }
         public decimal source_received_qty { get; set; }
@@ -973,6 +1031,7 @@ public partial class MaterialAlertsController(ISqlConnectionFactory factory) : C
 
     private sealed class AlertItem
     {
+        public string? risk_label { get; set; }
         public bool has_adjustments { get; set; }
         public decimal source_required_qty { get; set; }
         public decimal source_ordered_qty { get; set; }

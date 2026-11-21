@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Dapper;
 using IndoShipping.Api.Auditing;
@@ -8,6 +10,10 @@ namespace IndoShipping.Api.Controllers;
 public partial class MaterialAlertsController
 {
     private const string AdjustmentKey = "material_tracking_order_adjustments";
+    // The business identity is a JSON tuple and can exceed audit_logs.entity_id's
+    // legacy 64-character limit. Keep the complete identity in audit details.
+    private static string AdjustmentAuditId(string orderKey) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(orderKey)));
     private static readonly HashSet<string> ManualStatuses = ["未下单", "已下单", "欠采购", "未排产", "已排产", "欠排产",
         "待入库", "部分入库", "已入库", "待出库", "部分出库", "已出库", "部分已送完", "已送完"];
 
@@ -71,11 +77,12 @@ public partial class MaterialAlertsController
         if (string.IsNullOrWhiteSpace(order_key) || order_key.Length > 4000 || page < 1 || page > 1_000_000)
             return BadRequest(new { message = "订单标识或页码无效" });
         using var c = factory.Create();
-        const string filter = "FROM audit_logs WHERE module='material-alerts' AND entity_type='tracking-order' AND entity_id=@order_key AND action IN ('adjust-tracking','reset-adjustment')";
-        var total = await c.ExecuteScalarAsync<long>("SELECT COUNT(*) " + filter, new { order_key });
+        var auditId = AdjustmentAuditId(order_key);
+        const string filter = "FROM audit_logs WHERE module='material-alerts' AND entity_type='tracking-order' AND (entity_id=@order_key OR (entity_id=@auditId AND details->>'order_key'=@order_key)) AND action IN ('adjust-tracking','reset-adjustment')";
+        var total = await c.ExecuteScalarAsync<long>("SELECT COUNT(*) " + filter, new { order_key, auditId });
         var rows = await c.QueryAsync<AdjustmentHistoryRow>(
             "SELECT id, occurred_at, username, action, details::text AS details " + filter +
-            " ORDER BY occurred_at DESC, id DESC LIMIT 20 OFFSET @offset", new { order_key, offset = (page - 1) * 20 });
+            " ORDER BY occurred_at DESC, id DESC LIMIT 20 OFFSET @offset", new { order_key, auditId, offset = (page - 1) * 20 });
         return Ok(new { total, items = rows.Select(r => new { r.id, r.occurred_at, r.username, r.action,
             details = JsonSerializer.Deserialize<JsonElement>(r.details) }) });
     }
@@ -157,8 +164,8 @@ public partial class MaterialAlertsController
         await c.ExecuteAsync("UPDATE settings SET value=@value WHERE key=@AdjustmentKey",
             new { value = JsonSerializer.Serialize(stored), AdjustmentKey }, tx);
         await this.WriteAsync(c, tx, "material-alerts", body.reset ? "reset-adjustment" : "adjust-tracking",
-            "tracking-order", body.order_key, $"{(body.reset ? "恢复自动" : "手动调整")}物料追踪：{detail.order_no}", new {
-                before, after, order_no = detail.order_no, item.product_code, item.material_name,
+            "tracking-order", AdjustmentAuditId(body.order_key), $"{(body.reset ? "恢复自动" : "手动调整")}物料追踪：{detail.order_no}", new {
+                body.order_key, before, after, order_no = detail.order_no, item.product_code, item.material_name,
                 source = new { required_qty = detail.source_required_qty, ordered_qty = detail.source_ordered_qty,
                     received_qty = detail.source_received_qty, outbound_qty = detail.source_outbound_qty, manual_qty = detail.source_manual_qty },
                 previous = new { required_qty = detail.required_qty_exact, detail.ordered_qty, detail.received_qty,
