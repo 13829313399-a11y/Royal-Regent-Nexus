@@ -1,3 +1,4 @@
+import { getStoredSession, hasBits } from '../auth/permissions'
 import { nexusBase } from '../deployment'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
@@ -144,6 +145,7 @@ function applyMaterialChanges(items: PoItem[], changes: MaterialChange[]): PoIte
 }
 
 interface PurchaseItemRow extends PoItem {
+  supplier_reply_date?: string | null
   id: number
   po_id: number
   po_no?: string
@@ -459,6 +461,16 @@ export default function PurchasePage() {
       setItemRows(Array.isArray(detailRows) ? detailRows : [])
       return Array.isArray(detailRows) ? detailRows : []
     } finally { setLoading(false) }
+  }
+
+  async function setSupplierReply(row: PurchaseItemRow, reply: string | null) {
+    try {
+      await api.put(`/purchase/items/${row.id}/supplier-reply`, {
+        po_id: row.po_id, material_id: row.material_id, tomy_po: row.tomy_po, supplier: row.supplier,
+        expected_date: row.supplier_reply_date || null, reply_date: reply,
+      })
+      message.success(reply ? '已保存供应商复期' : '已清除供应商复期')
+    } finally { await load() }
   }
 
   async function loadReceipts(itemId: number, session = receiptSession.current(itemId)) {
@@ -1781,6 +1793,11 @@ export default function PurchasePage() {
                     { title: '来源采购单', dataIndex: 'source_po_no', width: 150, render: v => v || '—' },
                     { title: '原下单日期', dataIndex: 'source_order_date', width: 110, render: v => v ? dayjs(v).format('YYYY-MM-DD') : '—' },
                     { title: '交货日期', width: 110, render: (_v, r) => purchaseLineDeliveryDate(r, po.delivery_date) || '待确认' },
+                    { title: '供应商复期', width: 155, render: (_v, r) =>
+                      <DatePicker size="small" aria-label={`供应商复期 ${r.material_name || r.product_code}`}
+                        disabled={po.status === 'cancelled' || !hasBits(getStoredSession()?.usereditpower, [4])}
+                        value={r.supplier_reply_date ? dayjs(r.supplier_reply_date) : null} placeholder="待供应商回复"
+                        onChange={d => { void setSupplierReply(r, d ? d.format('YYYY-MM-DD') : null).catch(() => {}) }} /> },
                     { title: '物料', dataIndex: 'material_name', width: 220, ellipsis: true },
                     { title: '规格', dataIndex: 'spec', width: 160, ellipsis: true, render: v => v || <Typography.Text type="secondary">—</Typography.Text> },
                     { title: '采购数量', width: 110, align: 'right', render: (_v, r) => Number(r.purchase_qty ?? r.qty ?? 0).toLocaleString() },

@@ -42,6 +42,9 @@ const selected = ref<CustomerOrderLedgerDetail | null>(null)
 const detailLoading = ref(false)
 const detailDialog = ref<HTMLElement | null>(null)
 const actionError = ref('')
+const importedIndonesiaLine = ref('')
+const indonesiaSource = ref<'' | 'RRI' | 'RRM'>('')
+watch(() => selected.value?.line.id, () => { indonesiaSource.value = '' })
 const actionBusy = ref(false)
 const page = ref(1)
 const amend = ref({ quantity: '', requested_ship_date: '', note: '', reason: '' })
@@ -332,6 +335,17 @@ async function runAction(action: () => Promise<unknown>) {
   }
 }
 
+async function importIndonesia() {
+  const source = indonesiaSource.value
+  if (!source || !selected.value || !capabilities.value.indonesia_schedule_import) return
+  const { id, revision } = selected.value.line
+  const factory = props.factoryId
+  await runAction(async () => {
+    await customerOrderLedgerApi.importIndonesia(id, factory, revision, source)
+    if (props.factoryId === factory && selected.value?.line.id === id) importedIndonesiaLine.value = id + ':' + revision
+  })
+}
+
 function submitAmend() {
   if (!selected.value || amend.value.reason.trim().length < 4) {
     actionError.value = '修改数量、交期或备注必须填写至少 4 个字的修改原因。'
@@ -527,6 +541,13 @@ onBeforeUnmount(() => {
           <section><h4>发送记录</h4><p v-if="localOnly" class="ledger__recheck">本机试用：发送只写入这台电脑的部门收件记录，不会通知线上员工或更新正式仓库。</p><p v-if="selected.dispatches.length === 0" class="ledger__muted">尚未发送给接收部门。</p><ul v-else><li v-for="item in selected.dispatches" :key="item.id">{{ recipientLabel(item.recipient) }} · V{{ item.version }} · {{ item.status === 'received' ? '已接收' : '已发送' }} · {{ item.created_at }}<template v-if="item.received_at"> · 接收于 {{ item.received_at }}{{ item.received_by ? `（${item.received_by}）` : '' }}</template></li></ul></section>
           <section v-if="capabilities.write && selected.line.status === 'active'"><h4>修改订单</h4><p v-if="requiresDispatchForEdit && !capabilities.dispatch" class="ledger__muted">该订单已发送；修改或取消需要订单发送权限。</p><div class="ledger__form"><label>数量<input v-model="amend.quantity" type="text"></label><label>客户要求交期<input v-model="amend.requested_ship_date" type="date"></label><label>备注<textarea v-model="amend.note" rows="2" /></label><label>修改原因（必填）<textarea v-model="amend.reason" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy || !canEdit" @click="submitAmend">保存修改</button></div></section>
           <section v-if="capabilities.dispatch && selected.line.status === 'active'"><h4>发送接收部门</h4><p v-if="deliveryDateMissing" class="ledger__recheck" data-testid="pending-delivery-date">客户交期待补，订单已保留。请在修改订单中补齐交期并保存后再发送；仅在输入框填写尚未生效。</p><div class="ledger__checks"><label><input v-model="recipients" type="checkbox" value="pmc"> PMC</label><label><input v-model="recipients" type="checkbox" value="warehouse"> 仓库</label><label><input v-model="recipients" type="checkbox" value="injection"> 啤机部</label><label v-if="capabilities.cutting_dispatch_enabled"><input v-model="recipients" type="checkbox" value="cutting"> 裁床部</label></div><button class="ledger__button" type="button" :disabled="actionBusy || deliveryDateMissing" @click="submitDispatch">发送订单</button></section>
+          <section v-if="!localOnly && capabilities.indonesia_schedule_import && selected.line.status === 'active'">
+            <h4>印尼接单排期</h4>
+            <p class="ledger__muted">确认这条明细属于印尼订单后，将按当前厂区和客户导入。</p>
+            <label>印尼排期来源 <select v-model="indonesiaSource"><option disabled value="">请选择</option><option>RRI</option><option>RRM</option></select></label>
+            <button class="ledger__button" type="button" :disabled="!indonesiaSource || actionBusy || detailLoading" @click="importIndonesia">将此明细作为印尼订单导入</button>
+            <p v-if="importedIndonesiaLine === selected.line.id + ':' + selected.line.revision" role="status">已导入印尼接单排期</p>
+          </section>
           <section v-if="canShip"><h4>凭出货单确认分批走货</h4><div class="ledger__form"><label>走货数量<input v-model="shipment.quantity" type="text"></label><label>走货日期<input v-model="shipment.ship_date" type="date"></label><label>出货单号<input v-model="shipment.document_no" type="text"></label><label>备注<textarea v-model="shipment.note" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy" @click="submitShipment">确认走货</button></div></section>
           <section><h4>走货批次与纠错</h4><p v-if="selected.shipments.length === 0" class="ledger__muted">暂无走货确认。</p><ul class="ledger__shipments"><li v-for="item in selected.shipments" :key="item.id"><span>{{ item.ship_date }} · {{ item.document_no }} · {{ item.quantity }}{{ item.reversed ? ` · 已撤销：${item.reversal_reason}` : '' }}</span><button v-if="canReverseShipment && !item.reversed" class="ledger__link" type="button" :disabled="actionBusy" @click="submitReversal(item.id)">撤销</button></li></ul><label v-if="canReverseShipment && selected.shipments.some((item) => !item.reversed)">纠错原因（撤销必填）<textarea v-model="reversalReason" rows="2" /></label></section>
           <section v-if="capabilities.write && selected.line.status === 'active'"><h4>取消订单</h4><p class="ledger__muted">这是业务取消，不是关闭窗口。取消后该明细不再计入待走货；原订单与走货记录仍会保留。</p><label>取消原因（必填）<textarea v-model="cancelReason" rows="2" maxlength="500" :disabled="actionBusy" /></label><button class="ledger__button ledger__button--danger" type="button" :disabled="actionBusy || detailLoading || !canEdit" @click="prepareStatusChange('cancel')">取消该订单明细</button></section>

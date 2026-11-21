@@ -5,6 +5,7 @@ public static class PurchaseMergeSchema
     public const string SchemaSql = """
         ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS merged_into_id INT NULL;
         ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS merge_revision INT NOT NULL DEFAULT 0;
+        ALTER TABLE po_items ADD COLUMN IF NOT EXISTS supplier_reply_date DATE NULL;
         ALTER TABLE po_items ADD COLUMN IF NOT EXISTS source_po_no TEXT NULL;
         ALTER TABLE po_items ADD COLUMN IF NOT EXISTS source_delivery_date DATE NULL;
         ALTER TABLE po_items ADD COLUMN IF NOT EXISTS delivery_date_override DATE NULL;

@@ -121,6 +121,30 @@ public partial class PurchaseOrdersController(ISqlConnectionFactory factory) : C
         return Ok(rows);
     }
 
+    public record SupplierReplyBody(int po_id, int? material_id, string? tomy_po, string? supplier,
+        DateTime? expected_date, DateTime? reply_date);
+
+    [HttpPut("items/{itemId:int}/supplier-reply")]
+    public async Task<IActionResult> SetSupplierReply(int itemId, [FromBody] SupplierReplyBody body)
+    {
+        using var c = factory.Create();
+        c.Open();
+        using var tx = c.BeginTransaction();
+        var changed = await c.ExecuteAsync("""
+            UPDATE po_items i SET supplier_reply_date=@reply
+            FROM purchase_orders p WHERE i.id=@itemId AND i.po_id=@po_id AND p.id=i.po_id
+            AND p.merged_into_id IS NULL AND COALESCE(p.status,'') <> 'cancelled'
+            AND i.material_id IS NOT DISTINCT FROM @material_id AND COALESCE(i.tomy_po,'')=COALESCE(@tomy_po,'')
+            AND COALESCE(p.supplier,'')=COALESCE(@supplier,'') AND i.supplier_reply_date IS NOT DISTINCT FROM CAST(@expected AS date)
+            """, new { itemId, body.po_id, body.material_id, body.tomy_po, body.supplier,
+                reply = body.reply_date?.Date, expected = body.expected_date?.Date }, tx);
+        if (changed != 1) return Conflict(new { error = "采购明细或复期已变更，请刷新后核对" });
+        await this.WriteAsync(c, tx, "purchase", "supplier-reply", "po_item", itemId, "登记供应商复期",
+            new { body.po_id, body.supplier, body.expected_date, body.reply_date });
+        tx.Commit();
+        return Ok(new { ok = true });
+    }
+
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)
     {
@@ -256,7 +280,7 @@ VALUES (@id, @pc, @mid, @mname, @qty, @price, @cur, @notes,
         try
         {
             var previous = await c.QueryFirstOrDefaultAsync(
-                "SELECT delivery_date FROM purchase_orders WHERE id=@id FOR UPDATE", new { id }, tx);
+                "SELECT delivery_date, supplier FROM purchase_orders WHERE id=@id FOR UPDATE", new { id }, tx);
             DateTime? previousDate = previous == null ? null : (DateTime?)previous.delivery_date;
             var applyDeliveryDate = body.apply_delivery_date_all || previousDate?.Date != body.delivery_date?.Date;
             var oldDeliveryDates = (await c.QueryAsync(@"
@@ -272,6 +296,8 @@ VALUES (@id, @pc, @mid, @mname, @qty, @price, @cur, @notes,
                       status = body.status ?? "draft", order_date = body.order_date,
                       delivery_date = body.delivery_date, notes = body.notes ?? "", body.merge_revision }, tx);
             if (n == 0) { tx.Rollback(); return Conflict(new { error = "采购单不存在或已发生合并，请关闭后重新打开，避免覆盖合并明细" }); }
+            if (((string?)previous?.supplier ?? "") != (body.supplier ?? ""))
+                await c.ExecuteAsync("UPDATE po_items SET supplier_reply_date=NULL WHERE po_id=@id", new { id }, tx);
             // Quantity/date/notes edits of legacy lines retain their original identity.
             // Adding or relinking a line must establish the customer's identity for
             // both the existing order and the proposed contents under the item locks.
@@ -295,7 +321,9 @@ VALUES (@id, @pc, @mid, @mname, @qty, @price, @cur, @notes,
                 {
                     await c.ExecuteAsync(@"
 UPDATE po_items
-SET product_code=@pc, material_id=@mid, material_name=@mname, qty=@qty, price=@price,
+SET supplier_reply_date=CASE WHEN material_id IS NOT DISTINCT FROM @mid AND COALESCE(tomy_po,'')=COALESCE(@tomy_po,'')
+        AND COALESCE(product_code,'')=COALESCE(@pc,'') THEN supplier_reply_date END,
+    product_code=@pc, material_id=@mid, material_name=@mname, qty=@qty, price=@price,
     currency=@cur, notes=@notes, category=@cat, spec=@spec, usage_qty=@usage_qty,
     ordered_qty=@ordered_qty, material_qty=@material_qty, spoilage_qty=@spoilage_qty,
     purchase_qty=@purchase_qty, purchase_unit=@purchase_unit, ship_unit=@ship_unit,
