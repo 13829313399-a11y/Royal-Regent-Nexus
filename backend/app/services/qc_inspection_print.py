@@ -37,6 +37,15 @@ MAX_PAGES = 60
 PDF_RENDER_LOCK = Lock()
 
 
+def export_photo(content):
+    with Image.open(BytesIO(content)) as original:
+        thumb = ImageOps.exif_transpose(original)
+        thumb.thumbnail((480, 480))
+        buffer = BytesIO()
+        thumb.convert('RGB').save(buffer, 'JPEG', quality=85)
+        return buffer.getvalue()
+
+
 def saved_records(factory, entries):
     if not isinstance(entries, list) or not entries or len(entries) > MAX_RECORDS:
         raise HTTPException(422, f'请选择 1 至 {MAX_RECORDS} 条验货记录')
@@ -69,12 +78,7 @@ def saved_records(factory, entries):
                 (record['id'],))
             for photo in pictures:
                 content, _ = journal.photo_assets.read(connection, photo, 'preview')
-                with Image.open(BytesIO(content)) as original:
-                    thumb = ImageOps.exif_transpose(original)
-                    thumb.thumbnail((480, 480))
-                    buffer = BytesIO()
-                    thumb.convert('RGB').save(buffer, 'JPEG', quality=85)
-                data = buffer.getvalue()
+                data = export_photo(content)
                 image_bytes += len(data)
                 if image_bytes > 32 * 1024 * 1024:
                     raise HTTPException(422, '所选照片总量过大，请分批选择记录')
