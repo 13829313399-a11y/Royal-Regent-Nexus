@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Download, Info, Plus, RotateCcw, Search } from '@lucide/vue'
+import { computed, onMounted, ref } from 'vue'
+import { Download, Info, Plus, RefreshCw, RotateCcw, Search } from '@lucide/vue'
+import { getGeneratedDoc, listGeneratedDocs, type GeneratedDoc } from '@/api/shippingMail'
 
+const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string] }>()
-
-const customers = ['全部', 'ZURU', 'MOOSE', 'TIG', 'TOMY', 'CEPIA', 'AZAD', 'ZANZOON', 'JOHN ADAMS'] as const
 
 interface CodeRow {
   code: string
@@ -20,7 +20,7 @@ interface CodeRow {
   tone: 'blue' | 'orange' | 'red'
 }
 
-const rows: CodeRow[] = [
+const seedRows: CodeRow[] = [
   { code: '10201', name: '全能足球6个/箱', perCarton: '6 个', category: '塑胶', note: '-', gross: '4.047', net: '2.496', source: 'X盘', customer: 'ZURU', status: '已同步', tone: 'blue' },
   { code: '10731', name: '公仔系列', perCarton: '默认', category: '塑胶', note: '-', gross: '1.350', net: '1.100', source: 'X盘', customer: 'MOOSE', status: '已同步', tone: 'blue' },
   { code: '10740', name: '工具盒', perCarton: '默认', category: '塑胶', note: '-', gross: '2.470', net: '2.150', source: 'X盘', customer: 'TIG', status: '待同步', tone: 'orange' },
@@ -35,13 +35,15 @@ const rows: CodeRow[] = [
   { code: '11250', name: '雨衣8个/箱', perCarton: '8 个', category: '电子', note: '-', gross: '5.039', net: '3.560', source: 'X盘', customer: 'TOMY', status: '待同步', tone: 'orange' },
 ]
 
+const rows = ref<CodeRow[]>([...seedRows])
 const keyword = ref('')
 const appliedKeyword = ref('')
 const activeCustomer = ref<string>('全部')
+const customers = computed(() => ['全部', ...new Set(rows.value.map((row) => row.customer).filter(Boolean))])
 
 const filteredRows = computed(() => {
   const search = appliedKeyword.value.trim().toLowerCase()
-  return rows.filter((row) => {
+  return rows.value.filter((row) => {
     if (activeCustomer.value !== '全部' && row.customer !== activeCustomer.value) return false
     if (!search) return true
     return row.code.toLowerCase().includes(search) || row.name.toLowerCase().includes(search)
@@ -53,6 +55,54 @@ const statusDot: Record<CodeRow['tone'], string> = {
   orange: 'bg-amber-500',
   red: 'bg-rose-500',
 }
+
+async function loadMappings() {
+  try {
+    const soDocs = await listGeneratedDocs(props.factoryId, 'so')
+    const truckDocs = await listGeneratedDocs(props.factoryId, 'truck_export')
+    const docs: GeneratedDoc[] = [...soDocs.slice(0, 12), ...truckDocs.slice(0, 8)]
+    const next: CodeRow[] = []
+    const seen = new Set<string>()
+    for (const doc of docs) {
+      let detail
+      try { detail = await getGeneratedDoc(props.factoryId, doc.id) } catch { continue }
+      const header = (detail.header ?? {}) as Record<string, unknown>
+      const customer = String(doc.brand_name || header.brandName || header.brandNote || '').trim() || '—'
+      for (const line of detail.lines ?? []) {
+        const row = line as Record<string, unknown>
+        const code = String(row.filingCode || row.product_code || row.declareCode || '').trim()
+        if (!code) continue
+        const cartons = Number(row.cartons) || 0
+        const qty = Number(row.quantity) || 0
+        const coefficient = Number(row.coefficient) || (cartons ? qty / cartons : 0)
+        const perCarton = coefficient ? `${Math.round(coefficient * 100) / 100} 个` : '默认'
+        const key = `${code}|${String(row.description || row.name || '')}|${perCarton}|${customer}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        const gross = Number(row.grossPerCarton) || (cartons ? (Number(row.grossWeight) || 0) / cartons : 0)
+        const net = Number(row.netPerCarton) || (cartons ? (Number(row.netWeight) || 0) / cartons : 0)
+        next.push({
+          code,
+          name: String(row.description || row.name || ''),
+          perCarton,
+          category: String(row.category || '塑胶'),
+          note: String(row.cartonMark || '-'),
+          gross: gross ? gross.toFixed(3) : '-',
+          net: net ? net.toFixed(3) : '-',
+          source: doc.module === 'truck_export' ? '车表' : 'SO',
+          customer,
+          status: '已同步',
+          tone: 'blue',
+        })
+      }
+    }
+    if (next.length) rows.value = next
+  } catch (error) {
+    emit('notify', `货号映射自动导入失败：${String(error)}`)
+  }
+}
+
+onMounted(loadMappings)
 
 function preview(title: string) {
   emit('notify', `界面预览：${title}尚未接入后端接口。`)
@@ -75,7 +125,7 @@ function reset() {
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex min-w-0 items-center gap-2">
           <h2 class="text-[16px] font-bold tracking-[-0.02em] text-emerald-950">货号映射管理</h2>
-          <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-900">9389</span>
+          <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-900">{{ rows.length }}</span>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <label class="relative">
@@ -96,6 +146,13 @@ function reset() {
             @click="applySearch"
           >
             <Search class="size-3.5" aria-hidden="true" />搜索
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-50"
+            @click="loadMappings"
+          >
+            <RefreshCw class="size-3.5" aria-hidden="true" />刷新
           </button>
           <button
             type="button"

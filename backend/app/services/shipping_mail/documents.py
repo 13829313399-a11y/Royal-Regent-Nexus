@@ -1,5 +1,6 @@
 """Extract machine-readable text and rows from shipping attachments."""
 import io
+import threading
 from dataclasses import dataclass
 
 import openpyxl
@@ -17,6 +18,17 @@ class DocumentText:
 
 
 def read_pdf_text(data: bytes) -> DocumentText:
+    """Extract text fast with pypdf, falling back to pdfplumber for layout-heavy PDFs."""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        fast_texts = [((page.extract_text() or '') if hasattr(page, 'extract_text') else '').strip() for page in reader.pages]
+        fast_text = '\n'.join(item for item in fast_texts if item).strip()
+        if len(fast_text) >= SCANNED_TEXT_THRESHOLD:
+            return DocumentText(text=fast_text, pages=len(fast_texts), scanned=False)
+    except Exception:  # noqa: BLE001 - fall back to the layout-aware extractor
+        pass
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         texts = [(page.extract_text() or '').strip() for page in pdf.pages]
     text = '\n'.join(item for item in texts if item).strip()
@@ -24,25 +36,27 @@ def read_pdf_text(data: bytes) -> DocumentText:
 
 
 _OCR_ENGINE = None
+_OCR_LOCK = threading.Lock()
 
 
-def read_pdf_ocr_text(data: bytes, resolution: int = 220) -> DocumentText:
+def read_pdf_ocr_text(data: bytes, resolution: int = 180, max_pages: int = 3) -> DocumentText:
     """OCR a scanned PDF page-by-page with RapidOCR (offline ONNX models)."""
     global _OCR_ENGINE
-    if _OCR_ENGINE is None:
-        from rapidocr import RapidOCR
-
-        _OCR_ENGINE = RapidOCR()
     lines: list[str] = []
     pages = 0
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
-        pages = len(pdf.pages)
-        for page in pdf.pages:
-            image = page.to_image(resolution=resolution).original
-            result = _OCR_ENGINE(image)
-            for text in getattr(result, 'txts', None) or []:
-                if text and str(text).strip():
-                    lines.append(str(text).strip())
+    with _OCR_LOCK:
+        if _OCR_ENGINE is None:
+            from rapidocr import RapidOCR
+
+            _OCR_ENGINE = RapidOCR()
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            pages = len(pdf.pages)
+            for page in pdf.pages[:max_pages]:
+                image = page.to_image(resolution=resolution).original
+                result = _OCR_ENGINE(image)
+                for text in getattr(result, 'txts', None) or []:
+                    if text and str(text).strip():
+                        lines.append(str(text).strip())
     return DocumentText(text='\n'.join(lines).strip(), pages=pages, scanned=False)
 
 

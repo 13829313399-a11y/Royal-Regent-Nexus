@@ -104,6 +104,7 @@ const fields: CabinetField[] = [
   { key: 'containerNo', label: '柜号', hint: '邮件自动识别' },
   { key: 'tareWeight', label: '柜重', hint: '手动' },
   { key: 'brandNote', label: '品牌', hint: '邮件识别/合同带出' },
+  { key: 'poNo', label: 'PO（箱唛）', hint: '邮件识别/合同带出' },
   { key: 'shippingClerk', label: '船务', hint: '手动', type: 'select', options: ['农建壮', '小美'] },
 ]
 
@@ -258,7 +259,7 @@ async function loadDetail(doc: GeneratedDoc | null) {
     detail.value = await getGeneratedDoc(props.factoryId, doc.id)
     fillForm(detail.value)
     void enrichFromSchedule()
-    if (props.module === 'truck' && !String(form.poNo || '').trim() && String(form.contractNo || '').trim()) {
+    if (!String(form.poNo || '').trim() && String(form.contractNo || '').trim()) {
       void onContractChange()
     } else if (!String(form.contractNo || '').trim() && String(form.filingCode || '').trim()) {
       void onFilingCodeChange()

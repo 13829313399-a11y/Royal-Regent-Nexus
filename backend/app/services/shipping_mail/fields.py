@@ -147,7 +147,16 @@ _TERMINAL_CODES = {
     'CCT': '赤湾集装箱码头',
 }
 
-PARSER_VERSION = '2026-11-16.p5'
+_ONE_VESSEL = re.compile(r'Vessel\s+Voy\s*age\s+Di\s*r\s*[::]\s*([A-Z][A-Z .]{2,35}?)\s+(\d{3}[A-Z])', re.I)
+_ONE_LOADING = re.compile(r'P\s*o\s*rt\s+of\s+L\s*oading\s*[::]\s*([^\n]+)', re.I)
+_ONE_DISCHARGE = re.compile(r'P\s*o\s*rt\s+of\s+D\s*is\s*ch\s*ar\s*ge\s*[::]\s*([^\n]+)', re.I)
+_ONE_RATE = re.compile(r'Rate\s+Agreement\s+No\.?\s*[::]\s*([A-Z0-9]+?)(?=Port|\s|$)', re.I)
+_ONE_TERMINAL = re.compile(r'Termin\s*al\s*[::]\s*(YICT|SCT|CCT|NSCT|GOCT)\b', re.I)
+
+_ZIM_CONTAINER = re.compile(r'(\d+)\s*[xX×]\s*(HQ|GP|HC|OT|FR|RF|DRY)[\s-]*(\d{2})', re.I)
+_ZIM_VESSEL = re.compile(r'Vessel\s+Code\s*:\s*([A-Z][A-Z0-9 .-]{2,30}?)\s+(\d{2,3}[A-Z]?)\s*Vessel/Voyage', re.I)
+
+PARSER_VERSION = '2026-11-16.p7'
 
 _COMMON_CONTRACT = (
     re.compile(r'RATE\s+AGREEMENT\s+REFERENCE\s*[::]\s*([A-Z0-9][A-Z0-9\-/]{3,40})', re.I),
@@ -191,6 +200,43 @@ class FieldExtraction:
     warnings: list[str] = field(default_factory=list)
 
 
+def _apply_zim_booking(text: str, result: FieldExtraction) -> None:
+    vessel = _ZIM_VESSEL.search(text)
+    if not vessel:
+        return
+    result.fields['vessel_name'] = _clean(vessel.group(1))
+    result.fields['voyage_no'] = vessel.group(2)
+    if 'YANTIAN' in text.upper():
+        result.fields['terminal'] = '盐田国际码头'
+
+
+def _apply_one_booking(text: str, result: FieldExtraction) -> None:
+    fields = result.fields
+    vessel = _ONE_VESSEL.search(text)
+    if vessel:
+        fields['vessel_name'] = _clean(vessel.group(1))
+        fields['voyage_no'] = vessel.group(2)
+    loading = _ONE_LOADING.search(text)
+    if loading:
+        value = _clean(loading.group(1)).split(',')[0].strip()
+        fields['from_port'] = '盐田' if 'YANTIAN' in value.upper() else value
+        fields['port'] = fields['from_port']
+    discharge = _ONE_DISCHARGE.search(text)
+    if discharge:
+        value = _clean(discharge.group(1)).split(',')[0].strip()
+        fields['to_port'] = value
+        fields['destination'] = value
+        fields['destination_country'] = _country(value) or _country(text)
+    rate = _ONE_RATE.search(text)
+    if rate:
+        fields['contract_no'] = rate.group(1).strip()
+        fields['contract_tails'] = _contract_tails(fields['contract_no'])
+    terminal = _ONE_TERMINAL.search(text)
+    if terminal:
+        code = terminal.group(1).upper()
+        fields['terminal'] = _TERMINAL_CODES.get(code, code)
+
+
 def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
     result = FieldExtraction()
     year = _year_hint(text, received_at)
@@ -208,6 +254,11 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
         if type_container:
             count = type_container.group(1).split('*')[0].strip() if '*' in type_container.group(1) else '1'
             container_type = f'{count}*{type_container.group(2)}{type_container.group(3).upper()}'
+    if not container_type:
+        zim = _ZIM_CONTAINER.search(text)
+        if zim:
+            kind = 'GP' if zim.group(2).upper() == 'DRY' else zim.group(2).upper()
+            container_type = f'{zim.group(1)}*{zim.group(3)}{kind}'
     result.fields['container_type'] = container_type
     result.trace.append(_trace('SHIP-CT-001', {'container_type': container_type}))
 
@@ -318,6 +369,11 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
         except ValueError:
             pass
     result.trace.append(_trace('SHIP-DATE-001', {'planned_ship_date': result.fields['planned_ship_date']}))
+    if re.search(r'Booking\s+Receipt\s+Notice|Vessel\s+Voy\s*age', text, re.I):
+        _apply_one_booking(text, result)
+    if re.search(r'Vessel\s+Code\s*:|Shipping\s+Order\s+No\.', text, re.I):
+        _apply_zim_booking(text, result)
+
     mode = 'warehouse' if re.search(r'交仓|入仓|散货收货站|\bCFS\b', text, re.I) else ('container' if container_type else 'unknown')
     result.fields['shipment_mode'] = mode
     result.trace.append(_trace('SHIP-MODE-001', {'shipment_mode': mode}))

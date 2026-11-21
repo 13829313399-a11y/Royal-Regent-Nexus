@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { Download, Trash2 } from '@lucide/vue'
+import { AlertTriangle, Download, Trash2, X } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   deleteGeneratedDoc,
@@ -19,6 +19,11 @@ const busy = ref(false)
 const message = ref('')
 const selected = ref<string[]>([])
 const viewedDocs = ref<Record<string, string>>({})
+const exceptionDoc = ref<GeneratedDoc | null>(null)
+const exceptionType = ref<'short' | 'damaged' | ''>('')
+const exceptionStep = ref<'exchange' | 'material' | 'carton' | ''>('')
+const exceptionNote = ref('')
+const exceptionStatuses = ref<Record<string, { type: string; step: string; note: string }>>({})
 
 function viewedKey(id: string) {
   return `shipping-truck-export-viewed:${props.factoryId}:${id}`
@@ -37,11 +42,54 @@ function markViewed(doc: GeneratedDoc) {
   viewedDocs.value = { ...viewedDocs.value, [doc.id]: doc.created_at }
 }
 
+function exceptionKey(id: string) {
+  return `shipping-truck-exception:${props.factoryId}:${id}`
+}
+
+function loadExceptionStatuses() {
+  const next: Record<string, { type: string; step: string; note: string }> = {}
+  for (const doc of docs.value) {
+    try {
+      const raw = window.localStorage.getItem(exceptionKey(doc.id))
+      if (raw) next[doc.id] = JSON.parse(raw)
+    } catch {
+      // ignore malformed status
+    }
+  }
+  exceptionStatuses.value = next
+}
+
+function exceptionLabel(doc: GeneratedDoc) {
+  const status = exceptionStatuses.value[doc.id]
+  if (!status) return ''
+  const type = status.type === 'short' ? '少货' : status.type === 'damaged' ? '破损' : '异常'
+  const step = status.step === 'exchange' ? '进行换货' : status.step === 'material' ? '补料' : status.step === 'carton' ? '补纸箱' : ''
+  return step ? `${type} → ${step}` : type
+}
+
+function openException(doc: GeneratedDoc) {
+  exceptionDoc.value = doc
+  const status = exceptionStatuses.value[doc.id]
+  exceptionType.value = (status?.type as 'short' | 'damaged' | undefined) || ''
+  exceptionStep.value = (status?.step as 'exchange' | 'material' | 'carton' | undefined) || ''
+  exceptionNote.value = status?.note || ''
+}
+
+function saveException() {
+  if (!exceptionDoc.value || !exceptionType.value) return
+  const status = { type: exceptionType.value, step: exceptionStep.value, note: exceptionNote.value.trim() }
+  window.localStorage.setItem(exceptionKey(exceptionDoc.value.id), JSON.stringify(status))
+  exceptionStatuses.value = { ...exceptionStatuses.value, [exceptionDoc.value.id]: status }
+  message.value = `已保存 ${exceptionDoc.value.filename} 的异常处理`
+  exceptionDoc.value = null
+}
+
 async function load() {
   loading.value = true
   try {
     docs.value = await listGeneratedDocs(props.factoryId, 'truck_export')
     selected.value = selected.value.filter((id) => docs.value.some((doc) => doc.id === id))
+    loadExceptionStatuses()
     const firstVisit = window.localStorage.getItem(knownKey()) === null
     if (firstVisit) {
       const recentCutoff = Date.now() - 30 * 60 * 1000
@@ -164,15 +212,53 @@ defineExpose({ refresh: load })
           <input type="checkbox" :aria-label="`选择 ${doc.filename}`" :checked="selected.includes(doc.id)" @change="selected.includes(doc.id) ? selected = selected.filter((id) => id !== doc.id) : selected = [...selected, doc.id]">
           <span v-if="isNewDoc(doc)" class="size-2 shrink-0 rounded-full bg-rose-500" :data-doc-id="doc.id" aria-label="新文件"></span>
           <span class="truncate font-semibold text-slate-700">{{ doc.filename }}</span>
+          <span v-if="exceptionLabel(doc)" class="shrink-0 rounded-full bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">{{ exceptionLabel(doc) }}</span>
         </label>
         <span class="tabular-nums text-slate-400">{{ doc.created_at.replace('T', ' ').slice(0, 16) }}</span>
         <div class="flex items-center gap-3">
           <button type="button" class="inline-flex items-center gap-1 text-emerald-700 disabled:opacity-40" :disabled="busy" @click="download(doc)"><Download class="size-3" />下载</button>
           <button type="button" class="text-emerald-700 disabled:opacity-40" :disabled="busy" @click="open(doc)">打开</button>
+          <button type="button" class="inline-flex items-center gap-1 text-amber-700 disabled:opacity-40" :disabled="busy" @click="openException(doc)"><AlertTriangle class="size-3" />异常</button>
           <button type="button" class="inline-flex items-center gap-1 text-rose-600 disabled:opacity-40" :disabled="busy" @click="remove(doc)"><Trash2 class="size-3" />删除</button>
         </div>
       </div>
     </div>
     <p v-else class="px-4 py-3 text-[11px] text-slate-400">暂无生成记录；导出一份车货表后会出现在这里。</p>
+
+    <div v-if="exceptionDoc" class="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-4 pt-16" @click.self="exceptionDoc = null">
+      <section class="w-full max-w-lg rounded-xl border border-amber-200 bg-white shadow-2xl" aria-label="车的异常处理">
+        <header class="flex items-center justify-between border-b border-amber-100 bg-amber-50 px-4 py-2.5">
+          <div>
+            <h3 class="text-[13px] font-bold text-amber-900">车的异常处理</h3>
+            <p class="mt-0.5 truncate text-[10px] text-amber-700">{{ exceptionDoc.filename }}</p>
+          </div>
+          <button type="button" class="text-slate-500" aria-label="关闭" @click="exceptionDoc = null"><X class="size-4" /></button>
+        </header>
+        <div class="space-y-4 p-4">
+          <div>
+            <p class="text-[11px] font-semibold text-slate-600">异常情况</p>
+            <div class="mt-1 flex flex-wrap gap-2">
+              <button type="button" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="exceptionType === 'short' ? 'border-amber-400 bg-amber-50 text-amber-800' : 'border-slate-200 text-slate-600'" @click="exceptionType = 'short'">少货（漏装货）</button>
+              <button type="button" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="exceptionType === 'damaged' ? 'border-amber-400 bg-amber-50 text-amber-800' : 'border-slate-200 text-slate-600'" @click="exceptionType = 'damaged'">纸箱有破损</button>
+            </div>
+          </div>
+          <div>
+            <p class="text-[11px] font-semibold text-slate-600">处理流程</p>
+            <div class="mt-1 flex flex-wrap gap-2">
+              <button type="button" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="exceptionStep === 'exchange' ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-slate-200 text-slate-600'" @click="exceptionStep = 'exchange'">1. 进行换货</button>
+              <button type="button" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="exceptionStep === 'material' ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-slate-200 text-slate-600'" @click="exceptionStep = 'material'">2. 补料</button>
+              <button type="button" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="exceptionStep === 'carton' ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-slate-200 text-slate-600'" @click="exceptionStep = 'carton'">3. 补纸箱</button>
+            </div>
+          </div>
+          <label class="block text-[11px] font-semibold text-slate-600">备注
+            <input v-model="exceptionNote" placeholder="异常数量、补料说明" class="mt-1 h-9 w-full rounded-lg border border-slate-200 px-2 text-[12px]">
+          </label>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-600" @click="exceptionDoc = null">取消</button>
+            <button type="button" class="h-8 rounded-lg bg-amber-600 px-3 text-[11px] font-semibold text-white disabled:opacity-40" :disabled="!exceptionType" @click="saveException">保存异常</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </section>
 </template>

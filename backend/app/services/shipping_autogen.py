@@ -87,6 +87,19 @@ def _filename(module: str, so_number: str, header: dict | None = None) -> str:
     return f'{suffix[0]}_{so_number or "未命名"}{suffix[1]}'
 
 
+def _supplement_code_filename(header: dict, lines: list) -> str:
+    codes: list[str] = []
+    for line in lines if isinstance(lines, list) else []:
+        code = str((line or {}).get('itemNo') or (line or {}).get('filingCode') or '').strip()
+        if code and code not in codes:
+            codes.append(code)
+    if not codes:
+        code = str(header.get('filingCode') or header.get('itemNo') or '').strip()
+        if code:
+            codes.append(code)
+    return f"{'_'.join(codes)}.xlsx" if codes else ''
+
+
 def _render_content(module: str, draft: dict) -> bytes:
     if module == 'so_dk':
         return shipping_loading.render_xls(draft)
@@ -203,8 +216,11 @@ def list_docs(db, user: AuthContext, factory_id: str, module_prefix: str = '') -
         if not brand and row.task_id:
             task = db.get(ShippingTask, row.task_id)
             brand = str(task.customer or '') if task is not None else ''
+        filename = row.filename
+        if row.module == 'supplement':
+            filename = _supplement_code_filename(header, lines) or filename
         result.append({
-            'id': row.id, 'module': row.module, 'filename': row.filename,
+            'id': row.id, 'module': row.module, 'filename': filename,
             'email_name': _email_name(db, row.task_id),
             'brand_name': brand,
             'task_id': row.task_id, 'created_at': row.created_at,
@@ -271,11 +287,14 @@ def download(db, user: AuthContext, factory_id: str, doc_id: str) -> tuple[str, 
         content = shipping_bulk_truck.render_bulk_xlsx(payload)
     else:
         content = shipping_supplement.render_supplement_xlsx(payload)
+    filename = doc.filename
+    if doc.module == 'supplement':
+        filename = _supplement_code_filename(payload['header'], payload['lines']) or filename
     try:
-        shipping_exports.save_import_file(doc.module, doc.filename, content)
+        shipping_exports.save_import_file(doc.module, filename, content)
     except Exception:  # noqa: BLE001 - the drop-folder copy is best effort
         pass
-    return doc.filename, content
+    return filename, content
 
 
 def open_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:

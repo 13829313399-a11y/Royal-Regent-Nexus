@@ -19,6 +19,58 @@ HEADERS = ['No.', 'Mix#', 'Container#', 'Seal#', 'Size', 'Item#', 'Description',
            'P.O. No.#', 'Ctns', 'pallet', 'Qty (Pcs)', 'Booking#', 'Delivery Date', 'cbm',
            'G.W (kgs)', 'pack (pcs)', 'Container Tare Weight (kgs)', 'VGM (kgs)']
 
+ENGLISH_VALUES = {
+    '美国': 'USA', '德国': 'GERMANY', '英国': 'UNITED KINGDOM', '法国': 'FRANCE',
+    '荷兰': 'NETHERLANDS', '加拿大': 'CANADA', '澳大利亚': 'AUSTRALIA',
+    '日本': 'JAPAN', '韩国': 'SOUTH KOREA', '新加坡': 'SINGAPORE',
+    '中国': 'CHINA', '中国台湾': 'TAIWAN', '越南': 'VIETNAM', '泰国': 'THAILAND',
+    '马来西亚': 'MALAYSIA', '印度尼西亚': 'INDONESIA', '菲律宾': 'PHILIPPINES',
+    '墨西哥': 'MEXICO', '巴西': 'BRAZIL', '阿联酋': 'UAE', '沙特阿拉伯': 'SAUDI ARABIA',
+    '盐田': 'YANTIAN', '蛇口': 'SHEKOU', '南沙': 'NANSHA', '黄埔': 'HUANGPU',
+    '赤湾': 'CHIWAN', '上海': 'SHANGHAI', '宁波': 'NINGBO', '青岛': 'QINGDAO', '厦门': 'XIAMEN',
+}
+
+
+
+PRODUCT_ENGLISH = {
+    'Buzzbee 客上车玩具': 'Buzzbee Passenger Car Toys',
+    'Buzzbee 拼装积木': 'Buzzbee Building Blocks',
+    '客上车玩具': 'Passenger Car Toys',
+    '拼装积木': 'Building Blocks',
+    '遥控车': 'RC Car',
+    '玩具枪': 'Toy Gun',
+    '积木': 'Building Blocks',
+    '玩具': 'Toys',
+    '塑胶': 'Plastic',
+    '毛绒': 'Plush',
+    '电子': 'Electronic',
+}
+
+PRODUCT_PHRASES = (
+    ('客上车玩具', 'Passenger Car Toys'), ('拼装积木', 'Building Blocks'),
+    ('遥控车', 'RC Car'), ('玩具枪', 'Toy Gun'), ('积木', 'Building Blocks'),
+    ('玩具', 'Toys'), ('塑胶', 'Plastic'), ('毛绒', 'Plush'),
+)
+
+
+def _english_description(value, fallback='') -> str:
+    text = str(value or '').strip()
+    if not text:
+        return str(fallback or '')
+    if text in PRODUCT_ENGLISH:
+        return PRODUCT_ENGLISH[text]
+    result = text
+    for chinese, english in PRODUCT_PHRASES:
+        result = result.replace(chinese, english)
+    if any('\u4e00' <= char <= '\u9fff' for char in result):
+        return str(fallback or result)
+    return result
+
+
+def _english(value) -> str:
+    text = str(value or '').strip()
+    return ENGLISH_VALUES.get(text, text)
+
 
 def _num(value) -> float | None:
     try:
@@ -112,6 +164,8 @@ def _render_template(payload: dict) -> bytes:
                       ('E15', 'portOfDischarge'), ('E16', 'etd'), ('E17', 'invoice'),
                       ('E19', 'origin'), ('E20', 'receipt')):
         value = header.get(key) or ''
+        if key in ('customerMarket', 'portOfLoading', 'portOfDischarge', 'origin', 'receipt'):
+            value = _english(value)
         sheet[cell] = _as_date(value) if key in ('etd',) else value
     sheet['E18'] = totals['ctns']
 
@@ -128,7 +182,7 @@ def _render_template(payload: dict) -> bytes:
         count += 1
         values = {
             'B': line.get('mixNo'), 'C': line.get('containerNo'), 'E': line.get('sealNo'),
-            'F': line.get('size'), 'G': line.get('itemNo'), 'H': line.get('description'),
+            'F': line.get('size'), 'G': line.get('itemNo'), 'H': _english_description(line.get('description'), line.get('itemNo')),
             'I': line.get('salesConf'), 'J': line.get('po'), 'K': line.get('ctns'),
             'L': line.get('pallet'), 'M': line.get('qty'), 'N': line.get('booking'),
             'O': _as_date(line.get('deliveryDate')), 'P': line.get('cbm'), 'Q': line.get('gw'),
@@ -218,7 +272,10 @@ def render_supplement_xlsx(payload: dict) -> bytes:
     for label, key in rows:
         put(f'A{row}', label, bold=True)
         put(f'D{row}', ':')
-        put(f'E{row}', header.get(key) or '')
+        value = header.get(key) or ''
+        if key in ('customerMarket', 'portOfLoading', 'portOfDischarge', 'origin', 'receipt'):
+            value = _english(value)
+        put(f'E{row}', value)
         row += 1
 
     header_row = 21
@@ -229,7 +286,7 @@ def render_supplement_xlsx(payload: dict) -> bytes:
     row = start
     for seq, line in enumerate(lines, start=1):
         values = [seq, line.get('mixNo'), line.get('containerNo'), line.get('sealNo'), line.get('size'),
-                  line.get('itemNo'), line.get('description'), line.get('salesConf'), line.get('po'),
+                  line.get('itemNo'), _english_description(line.get('description'), line.get('itemNo')), line.get('salesConf'), line.get('po'),
                   line.get('ctns'), line.get('pallet'), line.get('qty'), line.get('booking'),
                   line.get('deliveryDate'), line.get('cbm'), line.get('gw'), line.get('pack'),
                   line.get('tare'), line.get('vgm')]

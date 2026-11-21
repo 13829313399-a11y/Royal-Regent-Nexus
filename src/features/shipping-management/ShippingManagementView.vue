@@ -13,7 +13,6 @@ import {
   RotateCcw,
   Ship,
   Tags,
-  Users,
 } from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { getFactoryScopedRoute } from '@/data/enterpriseMock'
@@ -27,9 +26,11 @@ import ShippingSupplementPanel from './ShippingSupplementPanel.vue'
 import ShippingCustomsPanel from './ShippingCustomsPanel.vue'
 import ShippingProductHistoryPanel from './ShippingProductHistoryPanel.vue'
 import ShippingMasterDataPanel from './ShippingMasterDataPanel.vue'
+import ShippingBillManagementPanel from './ShippingBillManagementPanel.vue'
+import ShippingPalletStatsPanel from './ShippingPalletStatsPanel.vue'
 import { isShippingFactory, SHIPPING_FACTORY_IDS, shippingFactoryProfiles } from './contracts'
 
-type ShippingPage = 'email' | 'orders' | 'so' | 'truck' | 'supplement' | 'customs' | 'codes' | 'master' | 'daily'
+type ShippingPage = 'email' | 'orders' | 'so' | 'truck' | 'supplement' | 'customs' | 'codes' | 'master' | 'daily' | 'bills' | 'pallets'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,9 +42,8 @@ const menu = [
   { id: 'codes', label: '货号映射', icon: Tags, page: 'codes' },
   { id: 'vendor', label: '厂商映射', icon: Building2, page: 'master' },
   { id: 'daily', label: '一键出货', icon: CalendarClock, page: 'daily' },
-  { id: 'pallet', label: '卡板据统计', icon: Package, page: null },
-  { id: 'container', label: '提箱柜核对', icon: ClipboardCheck, page: null },
-  { id: 'users', label: '用户管理', icon: Users, page: null },
+  { id: 'pallet', label: '卡板统计', icon: Package, page: 'pallets' },
+  { id: 'container', label: '找提单/核对', icon: ClipboardCheck, page: 'bills' },
 ] as const
 
 const factoryId = computed(() => appStore.activeProductionFactory.id)
@@ -59,6 +59,8 @@ function normalizePage(value: unknown): ShippingPage {
   if (value === 'codes') return 'codes'
   if (value === 'master') return 'master'
   if (value === 'daily') return 'daily'
+  if (value === 'bills') return 'bills'
+  if (value === 'pallets') return 'pallets'
   return 'email'
 }
 
@@ -71,6 +73,8 @@ const activeMenuId = computed(() => {
   if (activePage.value === 'codes') return 'codes'
   if (activePage.value === 'master') return 'vendor'
   if (activePage.value === 'daily') return 'daily'
+  if (activePage.value === 'bills') return 'container'
+  if (activePage.value === 'pallets') return 'pallet'
   return 'email'
 })
 
@@ -81,12 +85,8 @@ function setPage(page: ShippingPage) {
 
 function onMenu(id: string) {
   const item = menu.find((entry) => entry.id === id)
-  if (!item) return
-  if (item.page) {
-    setPage(item.page)
-    return
-  }
-  notify(`界面预览：${item.label}尚未接入后端接口。`)
+  if (!item || !item.page) return
+  setPage(item.page)
 }
 
 function notify(message: string) {
@@ -218,8 +218,14 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
           <section v-else-if="activePage === 'customs'" aria-label="通关一体化资料">
             <ShippingCustomsPanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />
           </section>
+          <section v-else-if="activePage === 'bills'" aria-label="提单管理">
+            <ShippingBillManagementPanel />
+          </section>
+          <section v-else-if="activePage === 'pallets'" aria-label="卡板统计">
+            <ShippingPalletStatsPanel />
+          </section>
           <section v-else-if="activePage === 'codes'" aria-label="货号映射">
-            <ShippingCodeMappingPanel @notify="notify" />
+            <ShippingCodeMappingPanel :factory-id="factoryId" @notify="notify" />
           </section>
           <section v-else-if="activePage === 'orders'" aria-label="出货单管理">
             <ShippingOrderWorkspace :profile="profile" @notify="notify" @open-so-sheet="setPage('so')" @open-truck-sheet="setPage('truck')" @open-supplement="setPage('supplement')" />

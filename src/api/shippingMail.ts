@@ -276,6 +276,7 @@ export interface LoadingHeader {
   sheetDate: string
   preparer: string
   brandNote: string
+  poNo?: string
   originPort: string
   transportCompany: string
   number: string

@@ -358,7 +358,7 @@ def list_tasks(db, user: AuthContext, factory_id: str, status: str | None = None
             ShippingTask.customer.contains(needle),
             ShippingTask.port.contains(needle),
         ))
-    rows = db.scalars(query.order_by(ShippingTask.planned_ship_date.desc(), ShippingTask.created_at.desc()).limit(200)).all()
+    rows = db.scalars(query.order_by(ShippingTask.planned_ship_date.desc(), ShippingTask.created_at.desc()).limit(2000)).all()
     return [_task_dict(row) for row in rows]
 
 

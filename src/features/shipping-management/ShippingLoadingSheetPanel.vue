@@ -733,6 +733,9 @@ watch(() => props.initialDraft, async (value) => {
           <label class="text-[11px] text-slate-500">品牌
             <input v-model="draft.header.brandNote" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
+          <label class="text-[11px] text-slate-500">PO（箱唛）
+            <input v-model="draft.header.poNo" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+          </label>
         </div>
       </div>
 

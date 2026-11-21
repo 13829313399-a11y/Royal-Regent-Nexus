@@ -1,10 +1,14 @@
 """Turn realistic shipping emails and their attachments into reviewable fields and items."""
+import copy
+import hashlib
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .documents import read_docx_text, read_pdf_ocr_text, read_pdf_text, read_xlsx_rows
 from .email import read_eml
-from .fields import PARSER_VERSION, extract_fields
+from .fields import PARSER_VERSION, _contract_tails, extract_fields
 
 PACKING_SUFFIXES = {'.xlsx', '.xlsm', '.pdf', '.docx'}
 _HEADER_ALIASES = {
@@ -19,6 +23,14 @@ _HEADER_ALIASES = {
 }
 
 
+_CONTRACT_IN_FILENAME = re.compile(r"(?<![A-Z0-9])([A-Z]{2,12}-\d{4,})(?=[-_.]|$)", re.I)
+
+
+def _contract_from_filename(filename: str) -> str:
+    match = _CONTRACT_IN_FILENAME.search(Path(filename).stem)
+    return match.group(1) if match else ''
+
+
 def parse_shipping_email(raw: bytes, filename: str = 'message.eml', *, received_at: str = '') -> dict:
     message = read_eml(raw)
     contact = received_at or message.received_at
@@ -30,8 +42,14 @@ def parse_shipping_email(raw: bytes, filename: str = 'message.eml', *, received_
     items: list[dict] = []
     attachments: list[dict] = []
     booking_fields: dict = {}
-    for attachment in message.attachments:
-        parsed = _parse_attachment(attachment.filename, attachment.data)
+    def parse_one(attachment):
+        return _parse_attachment(attachment.filename, attachment.data)
+
+    workers = min(4, len(message.attachments)) or 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        parsed_attachments = list(pool.map(parse_one, message.attachments))
+
+    for attachment, parsed in zip(message.attachments, parsed_attachments):
         attachments.append(parsed)
         warnings.extend(parsed['warnings'])
         items.extend(parsed['items'])
@@ -84,7 +102,25 @@ def parse_shipping_document(data: bytes, filename: str) -> dict:
     }
 
 
+_ATTACHMENT_CACHE: dict[tuple[str, str], dict] = {}
+_ATTACHMENT_CACHE_LOCK = threading.Lock()
+
+
 def _parse_attachment(filename: str, data: bytes) -> dict:
+    key = (filename, hashlib.sha256(data).hexdigest())
+    with _ATTACHMENT_CACHE_LOCK:
+        cached = _ATTACHMENT_CACHE.get(key)
+    if cached is not None:
+        return copy.deepcopy(cached)
+    result = _parse_attachment_uncached(filename, data)
+    with _ATTACHMENT_CACHE_LOCK:
+        if len(_ATTACHMENT_CACHE) >= 128:
+            _ATTACHMENT_CACHE.clear()
+        _ATTACHMENT_CACHE[key] = result
+    return copy.deepcopy(result)
+
+
+def _parse_attachment_uncached(filename: str, data: bytes) -> dict:
     suffix = Path(filename).suffix.lower()
     empty = {'filename': filename, 'kind': 'unknown', 'status': 'ignored', 'fields': {}, 'items': [], 'warnings': []}
     if suffix not in PACKING_SUFFIXES:
@@ -116,6 +152,11 @@ def _parse_attachment(filename: str, data: bytes) -> dict:
                     'warnings': [f'{filename} 是扫描件，OCR 未识别到文字，需人工录入'],
                 }
         extraction = extract_fields(document.text)
+        if not extraction.fields.get('contract_no'):
+            file_contract = _contract_from_filename(filename)
+            if file_contract:
+                extraction.fields['contract_no'] = file_contract
+                extraction.fields['contract_tails'] = _contract_tails(file_contract)
         return {
             'filename': filename, 'kind': 'booking', 'status': 'parsed',
             'fields': extraction.fields, 'items': [], 'warnings': extraction.warnings,

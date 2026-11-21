@@ -9,6 +9,7 @@ import {
   getShippingMailBatch,
   listShippingMailBatches,
   previewShippingMail,
+  searchScheduleProducts,
   saveShippingMailAccount,
   syncShippingMailAccount,
   testShippingMailAccount,
@@ -59,13 +60,15 @@ const summary = reactive({
   vesselName: '',
   shipper: '',
   contractNo: '',
+  poNo: '',
+  containerType: '',
   bookingDate: '',
 })
 
 const summaryFields = [
   { key: 'terminal', label: '码头' },
-  { key: 'fromPort', label: 'FROM' },
-  { key: 'toPort', label: 'TO' },
+  { key: 'fromPort', label: 'FROM / 起运港' },
+  { key: 'toPort', label: 'TO / 目的港' },
   { key: 'country', label: '国家' },
   { key: 'voyageNo', label: '航次' },
   { key: 'bookingNo', label: '订仓号' },
@@ -73,6 +76,8 @@ const summaryFields = [
   { key: 'vesselName', label: '船名' },
   { key: 'shipper', label: '发货商' },
   { key: 'contractNo', label: '合同号' },
+  { key: 'poNo', label: 'PO（箱唛）' },
+  { key: 'containerType', label: '柜型' },
   { key: 'bookingDate', label: '截止日期' },
 ] as const
 
@@ -221,6 +226,18 @@ function openFilePicker() {
   fileInput.value?.click()
 }
 
+async function fillPoFromSchedule() {
+  if (summary.poNo || !summary.contractNo.trim()) return
+  try {
+    const items = await searchScheduleProducts(props.factoryId, summary.contractNo.trim())
+    const contract = summary.contractNo.trim().toLowerCase()
+    const matched = items.find((item) => String(item.contract_no || '').trim().toLowerCase() === contract && item.customer_po)
+    if (matched?.customer_po && !summary.poNo) summary.poNo = String(matched.customer_po)
+  } catch {
+    // keep PO empty when schedule lookup fails
+  }
+}
+
 function applyFields(preview: ShippingMailPreview) {
   const fields = preview.fields ?? {}
   const str = (key: string) => (typeof fields[key] === 'string' ? (fields[key] as string) : '')
@@ -242,7 +259,14 @@ function applyFields(preview: ShippingMailPreview) {
     }
     summary.contractNo = combined
   }
+  if (!summary.poNo) {
+    const lines = preview.items ?? []
+    const po = str('po_no') || str('customer_po') || String(lines.map((line) => String((line as unknown as Record<string, unknown>).customer_po || '')).find(Boolean) || '')
+    if (po) summary.poNo = po
+  }
+  if (!summary.containerType) summary.containerType = str('container_type')
   if (!summary.bookingDate) summary.bookingDate = str('cutoff_date') || str('si_deadline') || str('booking_date')
+  void fillPoFromSchedule()
 }
 
 async function parseSelected() {
@@ -257,9 +281,8 @@ async function parseSelected() {
   confirmedTaskId.value = ''
   const results: ShippingMailPreview[] = []
   try {
-    for (const file of selectedFiles.value) {
-      results.push(await previewShippingMail(props.factoryId, file))
-    }
+    const parsed = await Promise.all(selectedFiles.value.map((file) => previewShippingMail(props.factoryId, file)))
+    results.push(...parsed)
     previews.value = results
     for (const preview of results) applyFields(preview)
     emit('notify', `解析完成：${results.length} 个文件，${items.value.length} 行货物明细。`)
@@ -324,6 +347,8 @@ async function ensureConfirmedTask(modules?: string[]): Promise<string | null> {
     const confirmed = await confirmShippingMailBatch(created.batch.id, props.factoryId, pending, {
       so_number: summary.bookingNo.trim(),
       contract_no: summary.contractNo.trim(),
+      po_no: summary.poNo.trim(),
+      container_type: summary.containerType.trim(),
       from_port: summary.fromPort.trim(),
       to_port: summary.toPort.trim(),
       destination_country: summary.country.trim(),

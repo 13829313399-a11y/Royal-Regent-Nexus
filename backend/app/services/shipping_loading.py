@@ -153,8 +153,12 @@ def compute_totals(lines: list[dict]) -> dict:
     }
 
 
+def _transport_company_name(value: str) -> str:
+    return str(value or '').strip()
+
+
 def task_transport(task: ShippingTask, fields: dict, default: str = '成隆达') -> str:
-    value = str(fields.get('transport_company') or fields.get('transportCompany') or '').strip()
+    value = _transport_company_name(fields.get('transport_company') or fields.get('transportCompany') or '')
     if value:
         return value
     try:
@@ -162,7 +166,7 @@ def task_transport(task: ShippingTask, fields: dict, default: str = '成隆达')
     except (TypeError, ValueError):
         items = []
     for item in items if isinstance(items, list) else []:
-        value = str((item or {}).get('transport_company') or '').strip()
+        value = _transport_company_name((item or {}).get('transport_company') or '')
         if value:
             return value
     return default
@@ -886,7 +890,7 @@ def list_sheets(db, user: AuthContext, factory_id: str, limit: int = 50, variant
             'task_id': row.task_id,
             'soNo': header.get('soNo') or '',
             'contractNo': header.get('contractNo') or '',
-            'transportCompany': header.get('transportCompany') or '',
+            'transportCompany': _transport_company_name(header.get('transportCompany') or ''),
             'originPort': header.get('originPort') or '',
             'createdAt': row.created_at, 'totals': json.loads(row.totals_json or '{}'),
         })
@@ -905,6 +909,7 @@ def _load_sheet(db, user: AuthContext, factory_id: str, sheet_id: str):
 
 def get_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
     row, header, lines = _load_sheet(db, user, factory_id, sheet_id)
+    header['transportCompany'] = _transport_company_name(header.get('transportCompany') or '')
     return {
         'id': row.id, 'number': row.number, 'sheetDate': row.sheet_date,
         'filename': _sheet_filename(header, lines), 'createdAt': row.created_at,
@@ -916,6 +921,7 @@ def get_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
 
 def open_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
     row, header, lines = _load_sheet(db, user, factory_id, sheet_id)
+    header['transportCompany'] = _transport_company_name(header.get('transportCompany') or '')
     filename = _sheet_filename(header, lines)
     if _sheet_variant(header) == 'hq':
         from app.services import shipping_zuru

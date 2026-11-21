@@ -8,9 +8,12 @@ import {
   deleteGeneratedDoc,
   downloadGeneratedDoc,
   getGeneratedDoc,
+  getLoadingSheet,
   listGeneratedDocs,
+  listLoadingSheets,
   openGeneratedDoc,
   type GeneratedDoc,
+  type LoadingSheetRecord,
   type SupplementDraft,
   type SupplementLine,
 } from '@/api/shippingMail'
@@ -21,7 +24,7 @@ const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string]; back: [] }>()
 
 const tasks = ref<ShippingScheduleTask[]>([])
-const sheets = ref<GeneratedDoc[]>([])
+const sheets = ref<LoadingSheetRecord[]>([])
 const selectedTaskId = ref('')
 const selectedSheetId = ref('')
 const sheetSearch = ref('')
@@ -29,6 +32,7 @@ const generatedDocs = ref<GeneratedDoc[]>([])
 const generatedSearch = ref('')
 const generatedViewed = ref<Record<string, string>>({})
 const generatedDeleteArmed = ref(false)
+const selectedGenerated = ref<string[]>([])
 const draft = ref<SupplementDraft | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
@@ -36,7 +40,7 @@ const message = ref('')
 
 const filteredSheets = computed(() => {
   const query = sheetSearch.value.trim().toLowerCase()
-  return query ? sheets.value.filter((doc) => `${doc.filename} ${doc.email_name || ''}`.toLowerCase().includes(query)) : sheets.value
+  return query ? sheets.value.filter((doc) => [doc.contractNo, ...(doc.filingCodes ?? []), doc.soNo, doc.filename].join(' ').toLowerCase().includes(query)) : sheets.value
 })
 
 const filteredGenerated = computed(() => {
@@ -75,8 +79,8 @@ async function loadTasks() {
 
 async function loadSheets() {
   try {
-    const rows = (await listGeneratedDocs(props.factoryId, 'so')).filter((doc) => doc.module === 'so_dk')
-    sheets.value = [...rows].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    const rows = await listLoadingSheets(props.factoryId, 'dk')
+    sheets.value = [...rows].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
   } catch (error) {
     message.value = `读取已导出柜货单失败：${getApiErrorMessage(error)}`
   }
@@ -105,9 +109,25 @@ async function loadGeneratedDocs() {
       }
     }
     generatedViewed.value = Object.fromEntries(generatedDocs.value.map((doc) => [doc.id, window.localStorage.getItem(generatedKey(doc.id)) || '']))
+    selectedGenerated.value = selectedGenerated.value.filter((id) => generatedDocs.value.some((doc) => doc.id === id))
   } catch {
     generatedDocs.value = []
   }
+}
+
+function toggleGenerated(doc: GeneratedDoc) {
+  selectedGenerated.value = selectedGenerated.value.includes(doc.id)
+    ? selectedGenerated.value.filter((id) => id !== doc.id)
+    : [...selectedGenerated.value, doc.id]
+}
+
+async function removeSelectedGenerated() {
+  if (!selectedGenerated.value.length) return
+  for (const id of [...selectedGenerated.value]) {
+    try { await deleteGeneratedDoc(props.factoryId, id) } catch { /* continue */ }
+  }
+  selectedGenerated.value = []
+  await loadGeneratedDocs()
 }
 
 async function removeAllGenerated() {
@@ -161,26 +181,7 @@ async function loadSheet() {
   if (!id) return
   loading.value = true
   try {
-    const data = await getGeneratedDoc(props.factoryId, id)
-    const header = data.header ?? {}
-    const text = (value: unknown) => String(value ?? '')
-    const detail = {
-      id: data.id,
-      number: text(header.number),
-      sheetDate: text(header.sheetDate),
-      filename: data.filename,
-      filingCodes: [],
-      variant: 'dk',
-      task_id: data.task_id,
-      soNo: text(header.soNo),
-      contractNo: text(header.contractNo),
-      transportCompany: text(header.transportCompany),
-      originPort: text(header.originPort),
-      createdAt: data.created_at || '',
-      totals: {},
-      header: data.header,
-      lines: data.lines,
-    } as unknown as LoadingSheetDetail
+    const detail = await getLoadingSheet(props.factoryId, id)
     await importCabinet(detail)
   } catch (error) {
     message.value = `导入已导出柜货单失败：${getApiErrorMessage(error)}`
@@ -216,8 +217,16 @@ async function importCabinet(detail: LoadingSheetDetail) {
     base.header.vessel = detail.header.vessel || base.header.vessel
     base.header.portOfLoading = detail.header.originPort || base.header.portOfLoading
     base.header.portOfDischarge = detail.header.destinationCountry || base.header.portOfDischarge
+    const exportCountry = String(detail.header.destinationCountry || '').trim()
+    if (exportCountry) base.header.customerMarket = exportCountry
+    base.header.receipt = '中国'
     base.header.etd = detail.sheetDate || base.header.etd
     base.header.date = detail.sheetDate || base.header.date
+    const contracts = [...new Set([
+      String(detail.header.contractNo || '').trim(),
+      ...(detail.lines ?? []).map((line) => String(line.contract || '').trim()),
+    ].filter(Boolean))]
+    if (contracts.length) base.header.invoice = contracts.join(' / ')
     base.lines = detail.lines.map((line) => ({
       id: crypto.randomUUID(),
       mixNo: '',
@@ -307,13 +316,14 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
         </div>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2">
-        <input v-model="sheetSearch" type="search" placeholder="搜索柜货单" class="h-9 w-36 rounded-lg border border-emerald-200 px-2 text-[11px]">
-        <select v-model="selectedSheetId" aria-label="选择已导出柜货单" class="h-9 min-w-[280px] rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadSheet">
-          <option value="">选择已导出柜货单</option>
+        <input v-model="sheetSearch" type="search" placeholder="搜索合同号 / 备案货号" class="h-9 w-36 rounded-lg border border-emerald-200 px-2 text-[11px]">
+        <select v-model="selectedSheetId" aria-label="选择SO出货表柜货单" class="h-9 min-w-[280px] rounded-lg border border-emerald-200 bg-white px-2 text-[12px]" @change="loadSheet">
+          <option value="">选择 SO 出货表生成的柜货单</option>
           <option v-for="sheet in filteredSheets" :key="sheet.id" :value="sheet.id">
-            {{ sheet.email_name || sheet.filename }} · {{ String(sheet.created_at || '').replace('T', ' ').slice(0, 16) }}
+            {{ sheet.filename }} · {{ String(sheet.createdAt || '').replace('T', ' ').slice(0, 16) }}
           </option>
         </select>
+        <button type="button" class="h-9 rounded-lg border border-emerald-200 px-3 text-[11px] font-semibold text-emerald-700" @click="loadSheets">刷新</button>
         <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
           <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出补料单' }}
         </button>
@@ -371,6 +381,11 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
       </div>
 
       <div class="overflow-x-auto rounded-xl border border-emerald-100/80 bg-white">
+        <div class="flex justify-end border-b border-emerald-100 px-3 py-2">
+          <button type="button" class="inline-flex h-9 items-center gap-1 rounded-lg bg-emerald-700 px-3 text-[11px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
+            <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出补料单' }}
+          </button>
+        </div>
         <table class="w-full min-w-[1700px] text-left text-[11px]">
           <thead class="bg-emerald-50 text-emerald-900/70">
             <tr>
@@ -467,6 +482,7 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
           <h3 class="text-[13px] font-bold text-slate-800">已生成补料单</h3>
           <div class="flex flex-wrap items-center gap-2">
             <input v-model="generatedSearch" type="search" placeholder="搜索补料单文件名" class="h-8 w-48 rounded-lg border border-emerald-200 px-2 text-[11px]">
+            <button type="button" class="rounded-lg border border-rose-200 px-2 py-1 text-[11px] font-semibold text-rose-600 disabled:opacity-40" :disabled="!selectedGenerated.length" @click="removeSelectedGenerated">删除选中{{ selectedGenerated.length ? ` (${selectedGenerated.length})` : '' }}</button>
             <button type="button" class="rounded-lg border px-2 py-1 text-[11px] font-semibold" :class="generatedDeleteArmed ? 'border-rose-300 bg-rose-50 text-rose-700' : 'border-rose-200 text-rose-600'" @click="removeAllGenerated">{{ generatedDeleteArmed ? '确认一键删除' : '一键删除' }}</button>
             <button type="button" class="text-[11px] text-emerald-700" @click="loadGeneratedDocs">刷新</button>
           </div>
@@ -474,6 +490,7 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
         <div class="mt-2 divide-y divide-slate-100">
           <div v-for="doc in filteredGenerated" :key="doc.id" class="flex flex-wrap items-center justify-between gap-2 py-1.5 text-[11px]">
             <span class="flex min-w-0 flex-1 items-center gap-1.5">
+              <input type="checkbox" :aria-label="`选择 ${doc.filename}`" :checked="selectedGenerated.includes(doc.id)" @change="toggleGenerated(doc)">
               <span v-if="isGeneratedUnread(doc)" class="size-1.5 shrink-0 rounded-full bg-rose-500"></span>
               <span class="truncate font-semibold text-emerald-700">{{ doc.filename }}</span>
             </span>
