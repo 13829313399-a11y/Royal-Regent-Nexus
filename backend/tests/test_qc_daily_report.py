@@ -22,7 +22,7 @@ EXAMPLES = [
 def isolated_upstream(patch):
     from app.api import qc_department
     install_upstream(patch)
-    patch.setattr(qc_department, 'schedule_example', lambda factory: {'items': []})
+    patch.setattr(qc_department, 'schedule_example', lambda factory, *, missing_ok=False: {'items': []})
 
 
 def seed(client, base, examples=EXAMPLES):

@@ -62,6 +62,54 @@ def _supplements(factory, start):
         raise HTTPException(503,'月报补充数据读取失败，请重试；已保存内容未被覆盖') from exc
 
 
+class RecordSupplements:
+    """Share existing month/entry-scoped supplements across workbook views."""
+
+    def __init__(self, factory):
+        self.factory = factory
+        self.months = {}
+
+    def month(self, day):
+        month = day[:7] + '-01'
+        if month not in self.months:
+            self.months[month] = _supplements(self.factory, month)
+        return self.months[month]
+
+    def cell(self, day, customer, revision, field):
+        saved = self.month(day).get((customer, field), dict(value='', version=0))
+        return dict(**saved, customerKey=customer, field=field, month=day[:7]+'-01',
+                    writeRevision=sha256(dump([day, customer, revision, field]).encode()).hexdigest())
+
+
+def write_receipt(conn, factory, actor_id, body, fingerprint):
+    old = conn.execute('SELECT * FROM writes WHERE factory=? AND actor=? AND request_key=?',
+                       (factory, actor_id, body['requestKey'])).fetchone()
+    if old:
+        if old['fingerprint'] != fingerprint:
+            raise HTTPException(409, '保存请求标识已用于不同内容')
+        return json.loads(old['response'])
+
+
+def write_cell(conn, factory, start, actor_id, body, fingerprint):
+    field = body['field']
+    identity = (factory, start, body['customerKey'], field)
+    old = conn.execute('SELECT * FROM cells WHERE factory=? AND month=? AND customer=? AND field=?', identity).fetchone()
+    current = dict(value=old['value'], version=old['version']) if old else dict(value='', version=0)
+    if current['version'] != body['baseVersion']:
+        raise HTTPException(409, dict(code='cell_conflict', message='此格已被其他操作修改，请选择保留内容', current=current))
+    version = current['version'] + (body['value'] != current['value'])
+    result = dict(customerKey=body['customerKey'], field=field, value=body['value'], version=version)
+    stamp = datetime.now(timezone.utc).isoformat()
+    if body['value'] != current['value']:
+        conn.execute('INSERT INTO cells VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(factory,month,customer,field) DO UPDATE SET value=excluded.value,version=excluded.version,actor=excluded.actor,updated_at=excluded.updated_at',
+                     (*identity, body['value'], version, actor_id, stamp))
+        conn.execute('INSERT INTO changes(factory,month,customer,field,old_value,new_value,version,actor,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                     (*identity, current['value'], body['value'], version, actor_id, stamp))
+    conn.execute('INSERT INTO writes VALUES(?,?,?,?,?,?)',
+                 (factory, actor_id, body['requestKey'], fingerprint, dump(result), stamp))
+    return result
+
+
 def _detail(item, marker, index):
     row = weekly._detail(item, marker, index)
     row['values'].extend([text(item.get('improvement')),text((item.get('inspectionExecution') or {}).get('analysisReason')),''])
@@ -153,10 +201,8 @@ def save(factory, actor, body):
         revision=current_report['sourceRevision']
     actor_id=str(actor['id'])
     with _store() as conn:
-        old=conn.execute('SELECT * FROM writes WHERE factory=? AND actor=? AND request_key=?',(factory,actor_id,body['requestKey'])).fetchone()
-        if old:
-            if old['fingerprint']!=fingerprint: raise HTTPException(409,'保存请求标识已用于不同内容')
-            return json.loads(old['response'])
+        old=write_receipt(conn,factory,actor_id,body,fingerprint)
+        if old:return old
         if revision!=body['sourceRevision']:
             raise HTTPException(409,dict(code='source_changed',message='本月验货记录已变化，请刷新核对；补充草稿仍保留'))
         if body.get('template')=='overview' and field not in current_report['fields'].get(body['customerKey'],{}):raise HTTPException(422,'此格不属于本月可补录范围')
@@ -172,16 +218,4 @@ def save(factory, actor, body):
             record=next(((item,marker) for item,marker in eligible if item['id']==detail[1]),None)
             if not record or field not in _detail(*record,1)['editableFields'].values():
                 raise HTTPException(422,'只能补录本客户的空白月报明细；已有审核原值不能覆盖')
-        identity=(factory,start,body['customerKey'],field)
-        old=conn.execute('SELECT * FROM cells WHERE factory=? AND month=? AND customer=? AND field=?',identity).fetchone()
-        current=dict(value=old['value'],version=old['version']) if old else dict(value='',version=0)
-        if current['version']!=body['baseVersion']:
-            raise HTTPException(409,dict(code='cell_conflict',message='此格已被其他操作修改，请选择保留内容',current=current))
-        version=current['version']+(body['value']!=current['value'])
-        result=dict(customerKey=body['customerKey'],field=field,value=body['value'],version=version)
-        stamp=datetime.now(timezone.utc).isoformat()
-        if body['value']!=current['value']:
-            conn.execute('INSERT INTO cells VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(factory,month,customer,field) DO UPDATE SET value=excluded.value,version=excluded.version,actor=excluded.actor,updated_at=excluded.updated_at',(*identity,body['value'],version,actor_id,stamp))
-            conn.execute('INSERT INTO changes(factory,month,customer,field,old_value,new_value,version,actor,created_at) VALUES(?,?,?,?,?,?,?,?,?)',(*identity,current['value'],body['value'],version,actor_id,stamp))
-        conn.execute('INSERT INTO writes VALUES(?,?,?,?,?,?)',(factory,actor_id,body['requestKey'],fingerprint,dump(result),stamp))
-        return result
+        return write_cell(conn,factory,start,actor_id,body,fingerprint)

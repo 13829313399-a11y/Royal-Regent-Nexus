@@ -38,13 +38,20 @@
         "anchor_id": "qc-inspection.overview",
         "precondition": "已登录 Nexus 并选择具体厂区",
         "completion": "在实际页面核对结果；业务写入需由用户操作"
+      },
+      {
+        "title": "在完整报告中补录",
+        "description": "报告首页保留关键字段。右上角打开完整工作簿；日、周、月、年报里带浅绿提示的空白业务格可以点击填写并自动保存，标题、计算格和审核原值只读。填好后拖右下角只填同列、同类的空白补录格。一次拖拽算一步；Mac 用 ⌘Z 撤销、⇧⌘Z 或 ⌘Y 重做；Windows 用 Ctrl+Z 撤销、Ctrl+Y 或 Ctrl+Shift+Z 重做。撤销和重做不改变审核状态。引擎异常时显示「简洁预览」，补录和 Excel 导出仍可用。",
+        "anchor_id": "qc-inspection.overview",
+        "precondition": "当前工作簿有可补录单元格，且账号具备录入权限",
+        "completion": "核对填充范围及保存反馈后再导出"
       }
     ],
     "source_refs": [
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "8e76f0e783e28dd5b90257f1e3b9ed3c91da2d067199e34cd035a0f6c87d9b3e"
+        "sha256": "04e9a4ba091a00132ec5a6393aa74ceb38c674e14f914e9cb87bd4979734c036"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
@@ -109,7 +116,7 @@
       {
         "path": "backend/app/services/qc_monthly_templates.py",
         "symbol": "def query",
-        "sha256": "123c61a9f27afc20f01bdd69c3c019d3e34f84acd1db80a657bfa1faec6ad35d"
+        "sha256": "ee92c5f666d05a78a17fd5247fb2f63a7d02b0058a9825ab1d70f7ff73b562ad"
       },
       {
         "path": "backend/app/services/qc_monthly_excel.py",
@@ -139,7 +146,7 @@
       {
         "path": "backend/app/services/qc_issue_reports.py",
         "symbol": "def query(",
-        "sha256": "3f8b93211df2f4a8bdff6566f1e1d0134015902d571a6adbc20e3f11764bd87a"
+        "sha256": "4936b56768cfb6ece8d172b27233313906b544297ddc8d79add663708070ae08"
       },
       {
         "path": "backend/app/services/qc_options.py",
@@ -164,16 +171,16 @@
       {
         "path": "backend/app/services/qc_report_workbook.py",
         "symbol": "def preview(",
-        "sha256": "46c9ff974b9249ea0de51ebbef47e90ff68ae56db3b053ef4728c68dc4f0f541"
+        "sha256": "d472ad7437be9c62d36cc57d38fa079306a63644b10b152e1667e49239f3686f"
       },
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "316074982a5d42447b8d1fd5502538c8e915c896c72a183f7c86c69e89f9f3c1"
+        "sha256": "02c33158b5d1917d623761425f5bc17a90f6a2ee89c5d1c39e376b467f74f255"
       }
     ],
-    "knowledge_version": "2026-11-20-qc-optional-schedule-example",
-    "verified_commit": "06ab0568",
+    "knowledge_version": "2026-11-21-qc-report-supplements",
+    "verified_commit": "working-tree:qc-report-supplements based on 186d9f9c",
     "status": "verified"
   }
 ]
