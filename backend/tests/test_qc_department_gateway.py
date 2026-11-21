@@ -14,6 +14,20 @@ def isolated_example_store(monkeypatch, tmp_path):
     monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path / 'main-test-db')
 
 
+@pytest.fixture
+def legacy_schedule_example(tmp_path):
+    assets = tmp_path / 'schedule-assets'
+    fixture = assets / 'fixtures' / 'qc-schedule-example.json'
+    fixture.parent.mkdir(parents=True)
+    row = {
+        'id': 'schedule-example-row-1', 'customer': 'Test customer',
+        'poNo': 'TEST-PO', 'productNo': 'TEST-001',
+        'dateFrom': '2026-11-20', 'dateTo': '2026-11-21',
+    }
+    fixture.write_text(json.dumps({'factory_id': 'huaxing', 'example': True, 'items': [row]}), encoding='utf-8')
+    return assets, row
+
+
 def install_upstream(monkeypatch):
     module = importlib.import_module("app.api.qc_department")
     calls = []
@@ -219,7 +233,7 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
         child.wait(timeout=10)
 
 
-def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatch):
+def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatch, legacy_schedule_example):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
         assert client.get('/api/qc-department/huaxing/api/schedule-example').status_code == 401
@@ -233,7 +247,9 @@ def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatc
         assert 'scheduleExampleWriteAllowed' not in client.get(base+'nexus-context.js').text
         assert calls == []
         gateway = importlib.import_module('app.api.qc_department')
-        assert len(gateway.schedule_example('huaxing')['items']) == 47  # Legacy provenance only.
+        assets, row = legacy_schedule_example
+        monkeypatch.setattr(gateway, 'ASSETS', assets)
+        assert gateway.schedule_example('huaxing')['items'] == [row]
 
 
 def test_removed_schedule_download_is_unavailable(monkeypatch):
@@ -273,11 +289,13 @@ def test_inspection_print_uses_actor_factory_and_export_permission(monkeypatch):
         assert calls == []
 
 
-def test_workbench_template_import_requires_bound_factory_and_write_permissions(monkeypatch):
+def test_workbench_template_import_requires_bound_factory_and_write_permissions(monkeypatch, tmp_path):
     from app.services.qc_inspection_schedule_excel import schedule_workbook
 
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
+        # The private example is not installed in this environment.
+        monkeypatch.setattr(importlib.import_module('app.api.qc_department'), 'ASSETS', tmp_path)
         login_as(client, 'qc_inspector')
         base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
         target = base + 'api/inspection-sheet/intake/'
@@ -296,6 +314,10 @@ def test_workbench_template_import_requires_bound_factory_and_write_permissions(
         assert calls == []
         saved, = client.get(base + 'api/inspection-sheet/entries').json()['items']
         assert saved['productNo'] == '00002' and saved['reviewState'] == ''
+        fixture = tmp_path / 'fixtures' / 'qc-schedule-example.json'
+        fixture.parent.mkdir()
+        fixture.write_text('invalid JSON', encoding='utf-8')
+        assert client.get(base + 'api/inspection-sheet/entries').status_code == 503
         login_as(client, 'engineer')
         assert client.post(target + 'preview', content=book, headers=headers).status_code == 403
 
@@ -403,10 +425,11 @@ def test_historical_return_uses_new_form_with_full_permission_lock_and_attachmen
         assert projected['deliveryNo']=='0005501' and projected['reference'] and projected['result']=='FAIL'
 
 
-def test_inspection_plan_join_is_readonly_scoped_and_requires_verified_origin(monkeypatch):
+def test_inspection_plan_join_is_readonly_scoped_and_requires_verified_origin(monkeypatch, legacy_schedule_example):
     import copy
     module = importlib.import_module("app.api.qc_department")
-    row = module.schedule_example('huaxing')['items'][0]
+    assets, row = legacy_schedule_example
+    monkeypatch.setattr(module, 'ASSETS', assets)
     record = {'id':31, 'client':row['customer'], 'orderNo':row['poNo'], 'productNo':row['productNo'],
               'date':'', 'inspDate':'', 'remark':'来源：测试；'+row['id']+'\n计划日期：2099-01-01'}
     original=copy.deepcopy(record)
