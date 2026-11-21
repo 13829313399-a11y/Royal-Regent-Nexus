@@ -1,5 +1,7 @@
 # Public Document Studio baseline
 
+> **历史归档 · 2026 年 8 月。** 本文记录当时的同步工具。维护现行服务请读[公共文档工具运行说明](../../document-tools/README.md)。
+
 Captured on 2026-08-14 before the first Document Studio implementation batch.
 
 ## Repository state

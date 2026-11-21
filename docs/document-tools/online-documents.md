@@ -48,13 +48,13 @@
 
 历史恢复、回收站和保护管理操作必须在所有编辑窗口关闭且保存成功后执行；请求带状态版本与幂等序号。旧窗口冲突会拒绝，网络结果不明时保留原请求，仅重试同一操作，不允许静默关闭面板后另起请求。
 
-## 部署配置与当前状态
+## 部署配置与历史样本
 
 采用官方 DocumentServer 10.0 固定摘要镜像，未构建非官方精简版本。页面保留 Word/Excel 编辑和公式，关闭 AI、插件、宏与聊天入口。独立服务目录为 `/opt/royal-regent/onlyoffice`，Compose 项目为 `rr-office`，使用无发布端口的内部网络 `rr-office-private`。镜像摘要和资源上限见 `deploy/onlyoffice/compose.yml`，JWT 密钥保存在权限为 0600 的服务器 `.env.onlyoffice`；本地连接配置中保留相同专用密钥，相关目录仅当前 Windows 用户可访问，不得纳入源码或打印。
 
-独立服务已启动并通过健康与合成文档测试；主系统 API/Web、业务数据库和物理打印连接器仍保持原容器及启动时间。原在线文档功能已包含在 PROJECT_MEMORY.md 第 7 节记录的 61b57436 / 0184 生产基线；本次定向共享、连接网关及纸箱迁移尚未因此部署。新增网关的真实员工、DocumentServer 10.0 与生产 Nginx 验收仍待完成。Git 合并不代表生产发布。验证期间的空闲样本约为 637 MiB 文档服务内存，主机可用内存约 4.7 GiB、磁盘余量约 34 GiB；这不是多人并发容量承诺，发布前需重新测量。
+当轮记录显示独立服务已启动并通过健康与合成文档测试。主系统 API/Web、业务数据库和物理打印连接器仍保持原容器及启动时间。原在线文档功能已包含在 [发布历史](../archive/memory/release.md)中 `61b57436` / `0184` 的生产基线；本次定向共享、连接网关及纸箱迁移尚未因此部署。新增网关的真实员工、DocumentServer 10.0 与生产 Nginx 验收仍待完成。Git 合并不代表生产发布。验证期间的空闲样本约为 637 MiB 文档服务内存，主机可用内存约 4.7 GiB、磁盘余量约 34 GiB；这不是多人并发容量承诺，发布前需重新测量。
 
-发布操作须按 `PROJECT_MEMORY.md` 第 7 节执行：
+发布前先核对[已有现网的更新与回退流程](../aliyun-docker-deploy.md)。在线文档另有以下要求。
 
 1. 将本功能从其他未发布变更中单独提取，独立审查并固定经批准的发布版本。基于生产 0175 发布时带 0177→0179→0181→0183，不借本地 0178/0180/0182/0184 合并迁移引入未授权的 0176。
 2. 保留生产环境文件原始字节、既有镜像固定项、激活开关及五个私有挂载；在生产 Compose 和 release pins 后合并 `deploy/onlyoffice/integration.yml`，另行读取 `.env.onlyoffice`。该文件提供 API/Web 的专用网络和 API 的文档服务配置。
@@ -64,9 +64,9 @@
 
 回退应用时保留新表和全部文件，不删除版本、不降级有数据的迁移、不用旧数据库覆盖新业务。未确认保存必须保持故障提示并保留编辑器；恢复流程不能通过清空 editor_key 或删除缓存来假装成功。异常遗留会话需要管理员先核对 DocumentServer 和文件版本，当前没有自助恢复界面。暂未接外部云盘。
 
-## 本地实际系统
+## 当轮本地环境与迁移演练
 
-`D:/rr` 的 `http://127.0.0.1:5173/online-documents?factory=group` 已启用真实 API、登录会话和私有存储。`backend/data/royal_regent_nexus.db` 保留旧纸箱 `20261028_0186` 标签；规范源码现为裁床 0185 → 纸箱 20261030_0186/0187，不能盲目 stamp 或重放迁移，见 `docs/business/carton-migration-identity.md`。早期文档迁移通过 0184；基础文档迁移证据在 `.local-dev/onlyoffice/database-v3/`，管理迁移的完整备份、复制恢复、重复升级及原表/原行比较在 `.local-dev/onlyoffice/database-management/`。文件夹迁移的备份、复制恢复、重复升级及数据比较在 `.local-dev/onlyoffice/database-folders/`；保留 415 张原表的 9474 行原数据，仅新增文件夹和归类两表，完整性和外键检查通过。0183/0184 文件夹名称版本升级在 `.local-dev/onlyoffice/database-convenience/` 保留完整备份和复制演练证据，417 张原表的 9483 行原数据未变，重复升级及完整性/外键核验通过。Alembic 入口识别文档分支及合法并行头，同时保留历史结构校验和未知版本拒绝，不改历史迁移。
+本节记录的 `D:/rr` 与 `http://127.0.0.1:5173/online-documents?factory=group` 当时已启用真实 API、登录会话和私有存储。`backend/data/royal_regent_nexus.db` 保留旧纸箱 `20261028_0186` 标签；规范源码现为裁床 0185 → 纸箱 20261030_0186/0187，不能盲目 stamp 或重放迁移，见 `docs/business/carton-migration-identity.md`。早期文档迁移通过 0184；基础文档迁移证据在 `.local-dev/onlyoffice/database-v3/`，管理迁移的完整备份、复制恢复、重复升级及原表/原行比较在 `.local-dev/onlyoffice/database-management/`。文件夹迁移的备份、复制恢复、重复升级及数据比较在 `.local-dev/onlyoffice/database-folders/`；保留 415 张原表的 9474 行原数据，仅新增文件夹和归类两表，完整性和外键检查通过。0183/0184 文件夹名称版本升级在 `.local-dev/onlyoffice/database-convenience/` 保留完整备份和复制演练证据，417 张原表的 9483 行原数据未变，重复升级及完整性/外键核验通过。Alembic 入口识别文档分支及合法并行头，同时保留历史结构校验和未知版本拒绝，不改历史迁移。
 
 本地 `backend/.env` 启用功能，连接 `http://127.0.0.1:18088`；根 `.env.local` 的 `ONLYOFFICE_DEV_PROXY_TARGET` 和 `ONLYOFFICE_DEV_PUBLIC_HOST` 配置 Vite `/office` HTTP/WebSocket 代理。配置、密钥和主机指纹都留在忽略目录；VITE 客户端变量不包含密钥。
 

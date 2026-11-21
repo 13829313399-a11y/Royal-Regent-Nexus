@@ -1,5 +1,7 @@
 # 曜灵开发前代码核查记录
 
+> 曜灵立项前基线调查。文中“已核实”和空白项所指的是当时的提交。当前配置、迁移与能力由[运行手册](../../assistant/RUNBOOK.md)及[源码和测试索引](../../agent-routing/context-index.md)承接。
+
 **项目：Royal-Regent-Nexus**
 **目录：`D:\RR\royal-regent-nexus`**
 **核查日期：2026-09-29**

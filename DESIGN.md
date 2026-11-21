@@ -83,7 +83,7 @@
 - `src/components/layout/`：应用顶栏、侧栏和页面壳；
 - `src/features/injection-scheduling/styles/`：注塑排产全页工作台的局部 token、控件、布局与动效；
 - `src/components/molding/print/moldingSamplePrint.css`：啤办打印输出；
-- `design-qa.md`：具体功能的视觉验收证据，不替代本规范。
+- [注册审批验收](docs/archive/iam/registration-design-qa.md)和[文档工具验收](docs/archive/document-studio/design-qa.md)记录了各自的视口、状态、交互与已知偏差。
 
 ## 4. 品牌与视觉基础
 
@@ -665,7 +665,7 @@ QC 初始加载采用已确认的“双环回旋”：图形等比放大至 80px
 - 新增业务共享组合应放入 `src/components/common/`；
 - 功能独有 CSS 必须有根命名空间，禁止污染 `:root` 和无前缀全局选择器；
 - 视觉行为发生长期变化时，同步更新本文；
-- 重大视觉调整应像 `design-qa.md` 一样保留同视口截图、交互和无障碍证据。
+- 重大视觉调整应保留同视口截图、交互和无障碍证据。可参照[注册审批记录](docs/archive/iam/registration-design-qa.md)的记录方式。
 
 ## 18. 当前已知设计债务
 
