@@ -2,8 +2,6 @@
 import importlib
 import json
 from contextlib import asynccontextmanager
-from decimal import Decimal
-from pathlib import Path
 import pytest
 from test_assistant_api import env, session, payload
 
@@ -73,38 +71,6 @@ def test_cap_003_errors_have_trace_and_never_retry_paid_step(env, code, status):
     assert client.get("/api/assistant/capabilities").json()["execution_status"]["last_failure"]["code"] == code
     client.cookies.set("rr_session", "bob")
     assert client.get("/api/assistant/capabilities").json()["execution_status"]["last_failure"] is None
-
-
-def test_cap_005_cross_valid_factory_denied_by_real_authorizer(env):
-    _, dbm, _, _ = env
-    from test_work_center_api import actor
-    from app.services.assistant import business
-    from app.services.assistant.errors import AssistantError
-    from app.models.injection_scheduling import Demand
-    from app.services.injection_scheduling import queries
-    from app.schemas.injection_scheduling import Query
-    facts = json.loads((Path(__file__).parent / "fixtures/assistant_v3/facts.json").read_text(encoding="utf-8"))
-    with dbm.SessionLocal() as db:
-        for ident, state, kg, slack in [("A1","READY",100,24),("A2","WAIT_MATERIAL",20.5,-1),("A3","HELD",0,None)]:
-            db.add(Demand(id=ident,factory_id="huakang-a",mold_code="synthetic",dispatch_state=state,
-                          remaining_material_kg=kg,delivery_slack_hours=slack))
-        db.add(Demand(id="B1",factory_id="huakang-b",mold_code="synthetic",remaining_material_kg=9000))
-        db.commit()
-        original = queries.summary(db, Query(factory_id="huakang-a"))
-    user = actor("alice",factory="huakang-a",department="production",permissions=("injection_scheduling:read",))
-    result, _, _ = business.query(user,"get_injection_overview",{"factory_id":"huakang-a"},"synthetic-run")
-    metrics = {key: metric["value"] for key, metric in result["metrics"].items()}
-    assert result["total_count"] == original["total_count"] == facts["injection"]["demand_count"]
-    assert metrics["held_count"] == original["held_count"]
-    assert metrics["forecast_late_count"] == original["late_count"]
-    for key in ("held_count", "wait_material_count", "forecast_late_count", "warehouse_shortage_kg", "actual_delivery_late_count"):
-        assert metrics[key] == facts["injection"][key]
-    remaining = Decimal(metrics["remaining_material_kg"])
-    assert remaining == Decimal(str(original["remaining_material_kg"]))
-    assert remaining == Decimal(facts["injection"]["remaining_material_kg"])
-    with pytest.raises(AssistantError) as denied:
-        business.query(user,"get_injection_overview",{"factory_id":"huakang-b"},"synthetic-run")
-    assert denied.value.status_code == 403 and denied.value.detail["code"] == "business_forbidden"
 
 
 def test_admin_diagnostics_require_existing_global_system_permission(env):

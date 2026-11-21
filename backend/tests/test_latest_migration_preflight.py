@@ -7,7 +7,7 @@ from test_cutting_jp_migration import BACKEND, base_database, clone, migrate, ru
 def latest_database(base_database, tmp_path_factory):
     path = clone(base_database, tmp_path_factory.mktemp('latest-head-preflight'))
     migrate(path, '20261102_0189')
-    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261119_0197'):
+    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261119_0197', '20261121_inj_merge'):
         migrate(path, revision)
         before = snapshot(path)
         migrate(path, revision)
@@ -60,21 +60,48 @@ def test_carton_process_history_upgrades_with_its_original_note(base_database, t
     assert snapshot(damaged) == before and version_snapshot(damaged) == [('20261119_0195',)]
 
     migrate(path, 'head', extra_args=reconcile)
-    assert version_snapshot(path) == [('20261119_0197',)]
+    assert version_snapshot(path) == [('20261121_inj_merge',)]
     after = snapshot(path)
-    assert all(after[name] == data for name, data in current.items())
+    retired_prefixes = ('injection_v3_', 'injection_schedule_', 'injection_scheduling_', 'injection_ops_')
+    assert not any(name.startswith(retired_prefixes) for name in after)
+    retired_permissions = {
+        row[0] for row in current['auth_permissions'][1] if row[1].startswith(
+            ('injection_schedule_center:', 'injection_scheduling:', 'production:injection_scheduling:', 'injection_ops:')
+        )
+    }
+    assert len(retired_permissions) == 4
+    for name, (schema, rows) in current.items():
+        if name.startswith(retired_prefixes):
+            continue
+        if name in {'auth_permissions', 'auth_permission_metadata'}:
+            rows = [row for row in rows if row[0] not in retired_permissions]
+        assert after[name] == (schema, rows), name
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT process_note FROM carton_order_lines WHERE id=?', ('line',)).fetchone() == ('按样分段压线',)
         assert db.execute('SELECT count(*) FROM three_d_printing_telemetry_ticks').fetchone() == (0,)
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
 
 
-def test_retired_database_cannot_enter_active_scheduling_lineage(latest_database, tmp_path):
+def test_published_retirement_upgrades_with_carton_and_3d_intact(base_database, tmp_path):
+    path = clone(base_database, tmp_path)
+    migrate(path, '20261116_inj_retire')
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO three_d_printing_retention_cursors VALUES ('huakang-a','test-printer','now','keep')")
+    migrate(path, 'head')
+    assert version_snapshot(path) == [('20261121_inj_merge',)]
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT event_id FROM three_d_printing_retention_cursors").fetchall() == [('keep',)]
+        assert 'process_note' in {row[1] for row in db.execute("PRAGMA table_info(carton_order_lines)")}
+        assert not db.execute("SELECT name FROM sqlite_master WHERE name='injection_v3_demand'").fetchone()
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_inconsistent_retirement_label_is_rejected_before_writes(latest_database, tmp_path):
     path = clone(latest_database, tmp_path)
     with sqlite3.connect(path) as db:
         db.execute("UPDATE alembic_version SET version_num='20261116_inj_retire'")
     before, versions = snapshot(path), version_snapshot(path)
-    assert 'archived injection retirement' in migrate(path, 'head', success=False).stderr
+    assert 'Unrecognized injection retirement history' in migrate(path, 'head', success=False).stderr
     assert (snapshot(path), version_snapshot(path)) == (before, versions)
 
 @pytest.mark.parametrize('damage, message', [

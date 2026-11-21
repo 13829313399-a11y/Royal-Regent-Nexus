@@ -2,7 +2,7 @@
 
 当前说明已对照源码核对主要字段、状态、权限限制与操作步骤，并更新来源指纹。`verified` 表示该条所述规则已核对，不表示模块所有字段和所有子页面均已登记。
 
-范围包括模块总览及注塑关键字段说明，条目数以注册表校验结果为准。总览步骤定位模块总览锚点，并提示用户在原页面完成业务操作；没有把总览定位写成具体按钮已高亮或业务已办理。未注册字段继续明确提示暂无说明，源码变化会触发构建失败或运行时 needs_review。
+范围包括已注册模块的总览和字段说明，条目数以注册表校验结果为准。总览步骤定位模块总览锚点，并提示用户在原页面完成业务操作；没有把总览定位写成具体按钮已高亮或业务已办理。未注册字段继续明确提示暂无说明，源码变化会触发构建失败或运行时 needs_review。
 
 | 模块 / 条目 | 受众 | 状态 | 已核对范围 | 代码依据 |
 |---|---|---|---|---|
@@ -12,8 +12,6 @@
 | customer-orders / customer-orders.overview | internal | verified | 订单台账维护数量与交期，下发和实际走货另行确认。 | backend/app/services/customer_order_ledger.py :: def amend；backend/app/services/customer_order_ledger.py :: def ship；backend/app/api/customer_order_ledger.py :: authorize |
 | document-tools / document-tools.overview | all | verified | 源文件检查、处理任务、质量复核和结果下载是四个不同环节。 | backend/app/api/document_tools.py :: source_detail；backend/app/services/document_tools/job_service.py :: execution_status；backend/app/schemas/document_tools.py :: Operation =；backend/app/services/document_tools/pdf_geometry.py :: crop |
 | identity-management / identity-management.overview | internal | verified | 整合三主页、浏览零写、四来源待办、历史来源归属、密码本人领取、独立能力、原请求核查与安全重试、管理员直接换岗及多权限包、审核待办通知、人员账号与联系方式、联系人去重、直接停用/恢复及最近成功登录时间（北京时间）。 | backend/app/api/identity.py :: preview_change；backend/app/services/identity_changes.py :: commit_change；backend/app/services/identity_changes.py :: result_out；backend/app/services/position_workbench.py :: commit；backend/app/services/position_reviews.py :: submit |
-| injection-scheduling / injection.remaining_shots | internal | verified | 尚需完成的啤数，顺序啤数和同啤产物有不同口径。 | backend/app/services/injection_scheduling/calculations.py :: quantities；backend/app/services/injection_scheduling/field_registry.py :: FIELDS |
-| injection-scheduling / injection-scheduling.overview | internal | verified | 排产、白夜班报工与基础资料分别维护。 | src/views/InjectionSchedulingView.vue :: switchTab |
 | internal-quote / internal-quote.overview | internal | verified | 不同 module_version 的审核流程不同。 | backend/app/services/internal_quote.py :: _ensure_section_review_workflow |
 | molding-sample / molding-sample.overview | internal | verified | 啤办申请、审核、承接生产、问题与完成记录按实际订单流程衔接。 | backend/app/services/molding_sample.py :: MOLDING_FACTORY_CAPABILITIES；backend/app/services/molding_sample.py :: BOARD_SOURCE_STATUSES；backend/app/schemas/molding_sample.py :: validate_material_components |
 | portal / portal.overview | all | verified | 按当前厂区和部门查找可见模块，再进入对应业务页。 | src/config/pageAccessPolicy.ts :: allowAuthenticatedReadOnlyAccess；src/views/ModuleCenterView.vue :: visibleModules；src/views/ModuleCenterView.vue :: detailPage |

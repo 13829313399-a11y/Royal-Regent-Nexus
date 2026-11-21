@@ -116,21 +116,21 @@ def test_model_tool_batch_keeps_real_orders_after_domain_sql_failure(env, tmp_pa
     from app.services.assistant import business
     client, dbm, _, patch, user = setup(env)
     from test_work_center_api import actor
-    # Grant native injection read; inject a database outage at its actual SELECT.
-    grant = actor("alice", department="production", permissions=("injection_scheduling:read",)).grants[0]
-    user = replace(user, grants=(*user.grants, grant), permissions=user.permissions | {"injection_scheduling:read"})
+    # Grant native printer read; inject a database outage at its actual SELECT.
+    grant = actor("alice", department="production", permissions=("three_d_printing:read",)).grants[0]
+    user = replace(user, grants=(*user.grants, grant), permissions=user.permissions | {"three_d_printing:read"})
     from app.services.assistant import runtime
     from app.services import auth
     patch.setattr(runtime, "authenticate", lambda request: user)
     client.app.dependency_overrides[auth.get_current_user] = lambda: user
     replay = replay_tools(env, tmp_path, [
-        ("get_injection_overview", {"factory_id": "huakang-a"}),
+        ("get_printer_status", {"factory_id": "huakang-a"}),
         ("list_customer_orders", {"factory_id": "huakang-a", "resource_id": "SYN-O-A001"}),
     ])
     statements = []
     def outage(conn, cursor, statement, *args):
         statements.append(statement)
-        if statement.lstrip().upper().startswith("SELECT") and "injection_v3_demand" in statement:
+        if statement.lstrip().upper().startswith("SELECT") and "three_d_printing_printers" in statement:
             raise OperationalError(statement, {}, Exception("PRIVATE-SQL-CREDENTIAL"))
     event.listen(dbm.engine, "before_cursor_execute", outage)
     try:
@@ -146,7 +146,7 @@ def test_model_tool_batch_keeps_real_orders_after_domain_sql_failure(env, tmp_pa
     assert results[0]["diagnostic_code"] == "business_query_failed"
     assert results[1]["rows"][0]["remaining_quantity"] == "400"
     assert "PRIVATE-SQL" not in json.dumps(replay.calls) and "PRIVATE-SQL" not in response.text
-    assert not any(s.lstrip().upper().startswith(("UPDATE INJECTION", "DELETE FROM INJECTION", "INSERT INTO INJECTION")) for s in statements)
+    assert not any(s.lstrip().upper().startswith(("UPDATE THREE_D_PRINTING", "DELETE FROM THREE_D_PRINTING", "INSERT INTO THREE_D_PRINTING")) for s in statements)
 
 
 @pytest.mark.parametrize("code", ["identity_changed", "context_changed", "cancelled", "run_timeout"])
