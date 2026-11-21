@@ -1,10 +1,13 @@
 """Read the two workbench templates and append checked rows to the journal."""
 from collections import defaultdict
+from contextlib import closing
 from datetime import date, datetime
+from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
 import json
 import re
+import sqlite3
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -13,7 +16,7 @@ from openpyxl import load_workbook
 import xlrd
 
 from app.services import qc_inspection_sheet as journal, qc_photo_assets, qc_workflow as wf
-from app.services.qc_inspection_print import HEADERS as LEGACY_HEADERS
+from app.services.qc_inspection_print import HEADERS as LEGACY_HEADERS, export_photo
 from app.services.qc_inspection_schedule_excel import ORDER_FIELDS
 
 MAX_BYTES = 35 * 1024 * 1024
@@ -24,6 +27,8 @@ DESK_HEADERS = ('验货日期', *LEGACY_HEADERS[1:12], '验货结果', '抽查�
 DESK_FIELDS = ('dateFrom', *ORDER_FIELDS, 'result', 'sampleQuantity', 'inspectionProblem', 'remark', 'photos', 'inspector')
 LEGACY_FIELDS = ('dateFrom', *ORDER_FIELDS, 'completion', 'remark')
 MANUAL_FIELDS = {'dateFrom', 'dateTo', *ORDER_FIELDS, 'remark'}
+COMPARE_FIELDS = ('dateFrom', 'dateTo', *ORDER_FIELDS, 'result', 'sampleQuantity', 'inspectionProblem', 'remark', 'inspector')
+NUMERIC_FIELDS = {'quantity', 'unitsPerCarton', 'cartonCount', 'sampleQuantity'}
 CELL_ERROR = object()
 
 
@@ -235,15 +240,108 @@ def parse(content):
     return LEGACY_SHEET if legacy else DESK_SHEET, result
 
 
+def comparable_fields(fields, legacy):
+    keys = (*COMPARE_FIELDS, 'completion') if legacy else COMPARE_FIELDS
+    values = []
+    for key in keys:
+        value = fields.get(key)
+        if key == 'dateTo' and not value:
+            value = fields.get('dateFrom')
+        text = journal.scalar(value).strip().replace('\r\n', '\n').replace('\r', '\n')
+        # Quantities are numeric when possible; IDs and free-text packing stay literal.
+        values.append(Decimal(text) if key in NUMERIC_FIELDS and re.fullmatch(r'[+-]?\d+(?:\.\d+)?', text) else text)
+    return tuple(values)
+
+
+def batch_record(conn, factory, batch):
+    # A partially skipped file may have been saved starting after its first Excel row.
+    prefix = 'desk:' + batch + ':'
+    return conn.execute('SELECT base FROM entries WHERE factory=? AND source_key>=? AND source_key<? LIMIT 1',
+                        (factory, prefix, prefix + '~')).fetchone()
+
+
+def stored_candidates(conn, factory, wanted, legacy):
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(entry_details)')}
+    problem = 'd.inspection_problem' if 'inspection_problem' in columns else 'NULL'
+    execution = 'd.review_execution' if 'review_execution' in columns else 'NULL'
+    join = 'LEFT JOIN entry_details d ON d.entry_id=e.id' if columns else ''
+    sql = f'''SELECT e.id,e.base,e.result,e.remark,{problem} AS problem,{execution} AS execution
+             FROM entries e {join} WHERE e.factory=? AND e.source_key NOT LIKE 'source:%' '''
+    result = defaultdict(list)
+    for row in conn.execute(sql, (factory,)):
+        base = json.loads(row['base'])
+        if base.get('referenceData'):
+            continue
+        execution = {**(base.get('inspectionExecution') or {}), **json.loads(row['execution'] or '{}')}
+        fields = {**base, 'result': row['result'], 'remark': row['remark']}
+        if row['problem'] is not None:
+            fields['inspectionProblem'] = row['problem']
+        for key in ('sampleQuantity', 'inspector'):
+            if execution.get(key) is not None:
+                fields[key] = execution[key]
+        signature = comparable_fields(fields, legacy)
+        if signature in wanted:
+            result[signature].append(row['id'])
+    return result
+
+
+def photos_match(conn, entry_id, expected):
+    photos = list(conn.execute('SELECT id,digest FROM photos WHERE entry_id=? AND removed=0', (entry_id,)))
+    if len(photos) != len(expected):
+        return False
+    if tuple(sorted(photo['digest'] for photo in photos)) == expected:
+        return True
+    # A workbench re-export embeds rendered JPEGs, not the uploaded original.
+    # Compare exact bytes of that known rendition too; never compare by count alone.
+    try:
+        exported = (sha256(export_photo(qc_photo_assets.read(conn, photo, 'preview')[0])).hexdigest()
+                    for photo in conn.execute('SELECT * FROM photos WHERE entry_id=? AND removed=0', (entry_id,)))
+        return tuple(sorted(exported)) == expected
+    except (HTTPException, OSError, ValueError):
+        return False
+
+
+def duplicate_lines(conn, factory, rows, legacy):
+    signatures = [(comparable_fields(row['fields'], legacy),
+                   tuple(sorted(meta['sha256'] for _, meta in row['photos']))) for row in rows]
+    candidates = stored_candidates(conn, factory, {fields for fields, _ in signatures}, legacy) if conn is not None else {}
+    duplicates, seen = set(), set()
+    for row, signature in zip(rows, signatures):
+        fields, photos = signature
+        if signature in seen or any(photos_match(conn, entry_id, photos) for entry_id in candidates.get(fields, ())):
+            duplicates.add(row['line'])
+        seen.add(signature)
+    return duplicates
+
+
+def preview_duplicates(factory, batch, rows, legacy):
+    path = journal.database_path()
+    if not path.is_file():
+        return duplicate_lines(None, factory, rows, legacy)
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute('BEGIN')
+        # Keep preview read-only even when the journal has never been initialized.
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='entries'").fetchone():
+            return duplicate_lines(None, factory, rows, legacy)
+        if batch_record(conn, factory, batch):
+            return {row['line'] for row in rows}
+        return duplicate_lines(conn, factory, rows, legacy)
+
+
 def workbook(factory, actor, content, confirmed_digest=None):
     digest = sha256(content).hexdigest()
     if confirmed_digest is not None and confirmed_digest != digest:
         raise HTTPException(409, '文件已变化，请重新核对预览')
     name, rows = parse(content)
+    batch = 'excel:' + digest
+    legacy = name == LEGACY_SHEET
     if confirmed_digest is None:
-        return {'digest': digest, 'sheet': name, 'rows': [
-            {'line': row['line'], **row['fields'], 'photos': len(row['photos'])} for row in rows]}
-    return append(factory, actor, 'excel:' + digest, digest, rows)
+        duplicates = preview_duplicates(factory, batch, rows, legacy)
+        return {'digest': digest, 'sheet': name, 'count': len(rows) - len(duplicates), 'existing': len(duplicates),
+                'rows': [{'line': row['line'], **row['fields'], 'photos': len(row['photos']),
+                          'duplicate': row['line'] in duplicates} for row in rows]}
+    return append(factory, actor, batch, digest, rows, legacy=legacy)
 
 
 def manual(factory, actor, body):
@@ -257,17 +355,21 @@ def manual(factory, actor, body):
     return append(factory, actor, 'manual:' + key, digest, [{'line': 1, 'fields': fields, 'photos': []}])
 
 
-def append(factory, actor, batch, digest, rows):
+def append(factory, actor, batch, digest, rows, *, legacy=False):
     prefix = 'desk:' + batch + ':'
-    first = prefix + str(rows[0]['line'])
-    action = 'template-import' if batch.startswith('excel:') else 'manual-create'
+    is_excel = batch.startswith('excel:')
+    action = 'template-import' if is_excel else 'manual-create'
     with journal.store(True) as conn:
-        prior = conn.execute('SELECT base FROM entries WHERE factory=? AND source_key=?', (factory, first)).fetchone()
+        prior = batch_record(conn, factory, batch)
         if prior:
             if json.loads(prior['base']).get('creationDigest') != digest:
                 raise HTTPException(409, '本次录入已保存，请重新打开新增窗口')
             return {'count': 0, 'existing': len(rows)}
+        # Validate against current rows inside the same write lock as the append.
+        duplicates = duplicate_lines(conn, factory, rows, legacy) if is_excel else set()
         for row in rows:
+            if row['line'] in duplicates:
+                continue
             fields = row['fields']
             key = prefix + str(row['line'])
             identity = sha256((factory + '\0' + key).encode()).hexdigest()[:32]
@@ -287,4 +389,4 @@ def append(factory, actor, batch, digest, rows):
                 qc_photo_assets.save(conn, photo_id, raw, 'preview-only', details=meta)
             entry = journal.get(conn, factory, identity)
             journal.changed(conn, entry, action, actor)
-    return {'count': len(rows), 'existing': 0}
+    return {'count': len(rows) - len(duplicates), 'existing': len(duplicates)}

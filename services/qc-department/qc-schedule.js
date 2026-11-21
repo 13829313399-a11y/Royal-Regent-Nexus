@@ -351,7 +351,7 @@
     return '<label class="form-group' + (type === 'textarea' ? ' full' : '') + '">' + label + input + '</label>';
   }
   function intakePreview(data) {
-    const columns = [['line','Excel 行'], ...manualFields.filter(([key]) => key !== 'dateTo' && key !== 'remark')];
+    const columns = [['line','Excel 行'], ['duplicate','导入状态'], ...manualFields.filter(([key]) => key !== 'dateTo' && key !== 'remark')];
     for (const field of [['result','验货结果'], ['sampleQuantity','抽查数量'], ['inspectionProblem','验货问题'],
       ['inspector','检验人员'], ['photos','照片'], ['completion','原表完成情况']]) {
       if (data.rows.some(row => row[field[0]])) columns.push(field);
@@ -360,7 +360,8 @@
     return '<div class="qis-intake-scroll" tabindex="0" role="region" aria-label="待导入记录"><table><thead><tr>'
       + columns.map(([,label]) => '<th scope="col">' + escape(label) + '</th>').join('')
       + '</tr></thead><tbody>' + data.rows.map(row => '<tr>' + columns.map(([key]) =>
-        '<td>' + escape(key === 'dateFrom' && row.dateTo !== row.dateFrom ? row.dateFrom + ' 至 ' + row.dateTo : row[key] ?? '') + '</td>'
+        '<td>' + escape(key === 'duplicate' ? (row.duplicate ? '重复，跳过' : '待追加')
+          : key === 'dateFrom' && row.dateTo !== row.dateFrom ? row.dateFrom + ' 至 ' + row.dateTo : row[key] ?? '') + '</td>'
       ).join('') + '</tr>').join('') + '</tbody></table></div>';
   }
   function openNew() {
@@ -422,19 +423,22 @@
       catch (error) { find('[data-error]').textContent = error.message; }
       finally {
         controls.forEach(control => { control.disabled = false; });
-        importButton.disabled = !preview;
+        importButton.disabled = !preview?.count;
         dialog.removeAttribute('aria-busy');
         scheduleBusy = false;
       }
     }
-    async function saved(data) {
+    async function saved(data, isExcel = false) {
       dialog.close();
       await sheet.load();
       if (sheet.model.error) {
         root.showToast?.('保存已确认，列表读取失败，请刷新验货台', 'error');
         return;
       }
-      root.showToast?.(data.count ? '已追加 ' + data.count + ' 条验货记录' : '这批记录已保存，共 ' + data.existing + ' 条', 'success');
+      const message = isExcel && data.existing
+        ? '已追加 ' + data.count + ' 条，跳过重复 ' + data.existing + ' 条'
+        : data.count ? '已追加 ' + data.count + ' 条验货记录' : '这批记录已保存，共 ' + data.existing + ' 条';
+      root.showToast?.(message, 'success');
     }
     dialog.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
       const mode = button.dataset.mode;
@@ -465,9 +469,14 @@
       void run(async () => {
         previewCount.textContent = '正在核对表格…';
         try {
-          preview = await request('preview', file, excelHeaders);
+          const data = await request('preview', file, excelHeaders);
+          if (!Number.isInteger(data.count) || !Number.isInteger(data.existing)
+            || !Array.isArray(data.rows) || data.rows.some(row => typeof row.duplicate !== 'boolean')) {
+            throw Error('当前服务版本尚未启用逐行查重，未导入任何记录。更新服务后请重试。');
+          }
+          preview = data;
           find('[data-preview]').innerHTML = intakePreview(preview);
-          previewCount.textContent = preview.sheet + ' · 待追加 ' + preview.rows.length + ' 条';
+          previewCount.textContent = preview.sheet + ' · 待追加 ' + preview.count + ' 条 · 重复跳过 ' + preview.existing + ' 条';
         } catch (error) {
           previewCount.textContent = '';
           picker.value = '';
@@ -476,8 +485,8 @@
       });
     });
     importButton.addEventListener('click', () => {
-      if (!preview) return;
-      void run(async () => saved(await request('import', picker.files[0], {...excelHeaders, 'X-QC-Preview-Digest':preview.digest})));
+      if (!preview?.count) return;
+      void run(async () => saved(await request('import', picker.files[0], {...excelHeaders, 'X-QC-Preview-Digest':preview.digest}), true));
     });
     find('form').addEventListener('submit', event => {
       event.preventDefault();
