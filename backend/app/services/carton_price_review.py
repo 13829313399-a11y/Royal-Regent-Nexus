@@ -8,6 +8,8 @@ from app.models.carton_price_review import CartonPriceReview
 from app.models.carton_procurement import CartonAuditEvent, CartonReceipt, CartonReceiptLine, CartonInventoryMovement
 from app.services import carton_procurement as core
 
+PRICE_REVIEW_SUPPLIER_MISMATCH = "收料与核价记录的供应商归属不一致，须核实来源"
+
 
 def original_price(source, source_kind):
     snapshot = json.loads(source.snapshot_json)
@@ -222,31 +224,40 @@ def act(db, user, identifier, payload, *, external=False):
     return review_out(db, row, external=external)
 
 
-def apply_sources(db, factory, rows):
+def apply_sources(db, factory, supplier_id, rows):
     """Price agreement changes payables only; stock costs are separate facts."""
-    reviews = reviews_by_line(db, factory)
-    for row in rows:
-        review = reviews.get(row["source_key"].removeprefix("RECEIPT:")) if row["kind"] == "RECEIPT" else None
-        if not review: continue
-        row["price_review"] = {"id": review.id, "status": review.status, "revision": review.revision}
-        row["issues"] = [issue for issue in row["issues"] if issue != "入库单价待核实"]
-        price = review.proposed_unit_price if review.status == "CONFIRMED" else None
-        row["unit_price"] = str(price) if price is not None else None
-        from app.services.carton_supplier_settlement import money
-        row["amount"] = str(money(Decimal(row["quantity"]) * price)) if price is not None else None
-        if price is None: row["issues"].append("送货价格待双方核实，不能完成月结确认")
     from app.services.carton_supplier_manual_evidence import updates
+    from app.services.carton_supplier_settlement import money
+
+    reviews = reviews_by_line(db, factory)
     adopted = updates(db, factory)
+    corrections = applied_corrections(db, factory)
     for row in rows:
-        if row["kind"] == "RECEIPT" and row["source_key"].removeprefix("RECEIPT:") in adopted:
-            row["supplier_price_update"] = adopted[row["source_key"].removeprefix("RECEIPT:")]
-    corrections = applied_corrections(db,factory)
-    for row in rows:
-        correction = corrections.get(row["source_key"].removeprefix("RECEIPT:")) if row["kind"] == "RECEIPT" else None
+        if row["kind"] != "RECEIPT":
+            continue
+        line_id = row["source_key"].removeprefix("RECEIPT:")
+        review = reviews.get(line_id)
+        if review and review.supplier_id != supplier_id:
+            row.update(unit_price=None, amount=None)
+            row["issues"].append(PRICE_REVIEW_SUPPLIER_MISMATCH)
+            continue
+        if review:
+            row["price_review"] = {"id": review.id, "status": review.status, "revision": review.revision}
+            row["issues"] = [issue for issue in row["issues"] if issue != "入库单价待核实"]
+            price = review.proposed_unit_price if review.status == "CONFIRMED" else None
+            row["unit_price"] = str(price) if price is not None else None
+            row["amount"] = str(money(Decimal(row["quantity"]) * price)) if price is not None else None
+            if price is None:
+                row["issues"].append("送货价格待双方核实，不能完成月结确认")
+        if line_id in adopted:
+            row["supplier_price_update"] = adopted[line_id]
+        correction = corrections.get(line_id)
         if correction:
-            from app.services.carton_supplier_settlement import money
-            row.update(unit_price=correction["unit_price"],amount=str(money(Decimal(row["quantity"])*Decimal(correction["unit_price"]))),price_correction=correction)
-            row["issues"] = [issue for issue in row["issues"] if issue not in {"入库单价待核实","送货价格待双方核实，不能完成月结确认"}]
+            row.update(unit_price=correction["unit_price"],
+                       amount=str(money(Decimal(row["quantity"]) * Decimal(correction["unit_price"]))),
+                       price_correction=correction)
+            row["issues"] = [issue for issue in row["issues"]
+                             if issue not in {"入库单价待核实", "送货价格待双方核实，不能完成月结确认"}]
 
 
 def applied_corrections(db,factory):
@@ -258,9 +269,14 @@ def applied_corrections(db,factory):
     return result
 
 
-def apply_vendor(db, factory, receipt_line_id, vendor, effective_quantity):
+def apply_vendor(db, factory, supplier_id, receipt_line_id, vendor, effective_quantity):
     review = db.scalar(select(CartonPriceReview).where(CartonPriceReview.factory_id == factory,
         CartonPriceReview.receipt_line_id == receipt_line_id))
+    if review and review.supplier_id != supplier_id:
+        if vendor is None:
+            return None
+        return dict(vendor, unit_price=None, amount=None, price_difference=None,
+                    price_warning=PRICE_REVIEW_SUPPLIER_MISMATCH)
     correction=applied_corrections(db,factory).get(receipt_line_id)
     if not review and not correction: return vendor
     from app.services.carton_supplier_settlement import money

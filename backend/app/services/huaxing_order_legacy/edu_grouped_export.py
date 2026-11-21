@@ -19,7 +19,7 @@ from openpyxl.styles.colors import COLOR_INDEX
 from openpyxl.utils import get_column_letter, coordinate_to_tuple
 from openpyxl.workbook.properties import CalcProperties
 
-from .edu_schedule import normalize_edu_item
+from .edu_schedule import normalize_edu_item, full_edu_item, cell_edu_item
 
 
 SHEETS = ('ITEM表', '接单表', '正单评审表')
@@ -85,11 +85,14 @@ def _boundary(sheet):
     ref, product, _, _, _ = _columns(sheet)
     markers = []
     for (r, c), cell in list(sheet._cells.items()):
-        if r < 4 or c > 3 or cell.data_type == 'f':
+        if r < 4 or cell.data_type == 'f' or not isinstance(cell.value, str):
             continue
-        if _text(sheet.cell(r, ref).value) or _text(sheet.cell(r, product).value):
+        if any(sheet.cell(r, col).data_type != 'f' and _text(sheet.cell(r, col).value) for col in (ref, product)):
             continue
-        if any(label in _text(cell.value) for label in ('取消单', '已走货', '已完成')):
+        label = re.sub(r'\s+', '', cell.value)
+        historical = c <= 3 and label in {'取消单', '取消订单', '已走货', '已走货订单', '已完成', '已完成订单'}
+        total = sheet.title in SHEETS[1:] and re.fullmatch(r'(?:20\d{2}(?:[-–—/]20\d{2})?年)?(?:接单)?(?:合计|总计|接单)', label)
+        if historical or total:
             markers.append(r)
     return min(markers) if markers else max((r for (r, _), c in sheet._cells.items() if c.value is not None), default=3) + 1
 
@@ -184,15 +187,15 @@ def _slot(sheet, product):
     boundary = _boundary(sheet)
     matches = [r for r in range(4, boundary) if _product(sheet.cell(r, product_col).value) == product]
     green = [r for r in matches if is_reservation_row(sheet, r)]
-    return min(green) if green else max(matches) + 1 if matches else boundary
+    return min(green) if green else max(matches) + 1 if matches else _summary_start(sheet)
 
 
 def _template(sheet, product, start):
     _, product_col, _, _, _ = _columns(sheet)
     ordinary = [r for r in range(4, _boundary(sheet)) if
                 _text(sheet.cell(r, product_col).value) and not is_reservation_row(sheet, r)]
-    same = [r for r in ordinary if _product(sheet.cell(r, product_col).value) == product]
-    choices = same or ordinary
+    neutral = [r for r in ordinary if all(sheet.cell(r, c).fill.patternType is None for c in (product_col-2, product_col-1, product_col))]
+    choices = neutral or ordinary
     return sheet.cell(min(choices, key=lambda r: abs(r - start)) if choices else max(4, start), 1)
 
 
@@ -205,9 +208,42 @@ def _copy_row(sheet, source, destination):
             cell.fill = PatternFill()
 
 
+def _new_row_style(sheet, number):
+    from app.services.customer_order_huaxing_unified import _mark_generated_row
+    _mark_generated_row(sheet, number, blue=True)
+    _, product, _, _, _ = _columns(sheet)
+    cell = sheet.cell(number, product)
+    alignment = copy(cell.alignment)
+    alignment.wrapText = True
+    alignment.shrinkToFit = False
+    cell.alignment = alignment
+    cell.number_format = '@'
+    sheet.row_dimensions[number].height = max(sheet.row_dimensions[number].height or 0, 32)
+
+
+def _summary_start(sheet):
+    boundary = _boundary(sheet)
+    # Blank template formulas do not create an order or justify empty gaps.
+    occupied = [r for r in range(4, boundary) if any(c.value not in (None, '') and c.data_type != 'f' for c in sheet[r])]
+    return max(occupied, default=3) + 1
+
+
+def _summary_totals(sheet):
+    from app.services.customer_order_dickie_layout import _local_sum_ranges
+    boundary = _boundary(sheet)
+    labels = [re.sub(r'\s+', '', str(c.value or '')) for c in sheet[boundary] if c.data_type != 'f']
+    if not any(re.fullmatch(r'20\d{2}(?:[-–—/]20\d{2})?年接单(?:合计)?', label) for label in labels):
+        return []
+    ref, product, _, _, _ = _columns(sheet)
+    last = max((r for r in range(4, boundary) if not is_reservation_row(sheet, r) and all(
+        sheet.cell(r,c).value not in (None, '') and sheet.cell(r,c).data_type != 'f' for c in (ref,product))), default=0)
+    return [cell for cell in sheet[boundary] if (ranges := _local_sum_ranges(cell))
+            and all(end < boundary for _, end in ranges) and any(start <= last <= end for start,end in ranges)]
+
+
 def _identity(contract, po, product):
     from app.services.customer_order_huaxing_unified import edu_order_key
-    return (*edu_order_key(contract, po), _product(product))
+    return (*edu_order_key(contract, po), _text(product).upper())
 
 
 def _deduct(cell, quantity):
@@ -251,21 +287,19 @@ def _prepare(workbook, rows):
         _fail('EDU PO订单表头与已确认格式不一致，请核对后导出')
     item = workbook['ITEM表']
     existing = defaultdict(list)
-    references = defaultdict(list)
     for r in range(4, item.max_row + 1):
         if not item.cell(r, 8).value or is_reservation_row(item, r):
             continue
-        key = _identity(item.cell(r, 4).value, item.cell(r, 6).value, item.cell(r, 8).value)
+        key = _identity(item.cell(r, 4).value, item.cell(r, 6).value, cell_edu_item(item.cell(r, 8)))
         if any(key[:2]):
             existing[key].append(item.cell(r, 11).value)
-        references[(_text(item.cell(r, 5).value), key[-1])].append(key)
     pending, seen, skipped = [], {}, 0
     for source in rows:
         if source.get('_edu_existing_order'):
             skipped += 1
             continue
         row = dict(source)
-        row['product_no'] = normalize_edu_item(row.get('product_no'))
+        row['product_no'] = full_edu_item(row.get('product_no'), row.get('source_product_no'))
         quantity = _number(row.get('quantity'))
         reference = _text(row.get('reference_no'))
         key = _identity(row.get('contract_no'), row.get('po_no'), row.get('product_no'))
@@ -277,13 +311,6 @@ def _prepare(workbook, rows):
                 _fail('EDU 相同客户合同/PO及产品的数量冲突，不能重复扣备料')
             skipped += 1
             continue
-        if references.get((reference, key[-1])):
-            _fail('EDU 内部编号与产品已被另一客户订单占用，请重新预览分配')
-        if 'PO订单' in workbook.sheetnames:
-            po = workbook['PO订单']
-            if any(_text(po.cell(r, 2).value) == reference and _product(po.cell(r, 3).value) == key[-1]
-                   for r in range(2, po.max_row + 1)):
-                _fail('EDU PO订单已存在相同内部编号及货号，但缺少一致正式单，请核对后再导出')
         selected = _text(row.get('edu_reservation_row'))
         candidates = reservation_candidates(workbook, row['product_no'])
         selected_row = None
@@ -305,7 +332,7 @@ def _prepare(workbook, rows):
                 for r in range(4, _boundary(sheet)):
                     if (is_reservation_row(sheet, r) and
                             _text(sheet.cell(r, 4).value) == stock_reference and
-                            _product(sheet.cell(r, 7).value) == key[-1]):
+                            _product(sheet.cell(r, 7).value) == _product(row['product_no'])):
                         cell = sheet.cell(r, 10)
                         if cell.data_type == 'f' and 'ITEM表!' in str(cell.value).replace("'", ''):
                             continue  # Already derives the ITEM reservation; never subtract twice.
@@ -314,7 +341,6 @@ def _prepare(workbook, rows):
                         _deduct(cell, quantity)
                         row['_summary_reservations'].append(cell)
         seen[key] = quantity
-        references[(reference, key[-1])].append(key)
         pending.append(row)
     return pending, skipped
 
@@ -345,6 +371,9 @@ def _append_po(workbook, rows):
                 sheet.cell(r, c).data_type = 's'
         sheet.cell(r, 1).number_format = 'yyyy-mm-dd'
         sheet.cell(r, 7, f'=IF(OR(E{r}="",F{r}=""),"",E{r}*F{r})')
+        for cell in sheet[r][:7]:
+            font = copy(cell.font); font.color = '0000FF'; cell.font = font
+        sheet.cell(r, 3).number_format = '@'
         _source_comment(sheet.cell(r, 3), row)
 
 
@@ -363,13 +392,18 @@ def export_rows(workbook, rows):
     # Keep cell objects as coordinate handles: subsequent insertions move them.
     for name in SHEETS:
         sheet = workbook[name]
-        for product, group in grouped.items():
-            start = _slot(sheet, product)
+        allocations = grouped.items() if name == 'ITEM表' else [(None, rows)]
+        for product, group in allocations:
+            start = _slot(sheet, product) if name == 'ITEM表' else _summary_start(sheet)
             template_cell = _template(sheet, product, start)
+            from app.services.customer_order_dickie_layout import _include_appended_totals
+            totals = _summary_totals(sheet) if name != 'ITEM表' else []
             _insert(workbook, sheet, start, len(group))
+            _include_appended_totals(totals, start, len(group))
             for offset, row in enumerate(group):
                 r = start + offset
                 _copy_row(sheet, template_cell.row, r)
+                _new_row_style(sheet, r)
                 # Keys must be set now so later groups can find their own slots.
                 ref, product_col, _, _, _ = _columns(sheet)
                 sheet.cell(r, ref, row['reference_no'])
@@ -389,6 +423,10 @@ def export_rows(workbook, rows):
                     if r == 3 and _text(cell.value) in {'日期码', '备注', '联系人', 'PDQ'}]]:
             if isinstance(item.cell(item_row, col).value, str):
                 item.cell(item_row, col).data_type = 's'
+        for col in (1, 23, 24, 25, 26):
+            item.cell(item_row, col).number_format = 'yyyy-mm-dd'
+        for col in (4, 5, 6, 7, 8):
+            item.cell(item_row, col).number_format = '@'
         _source_comment(item.cell(item_row, 8), row)
         order_row = row['_cells']['接单表'].row
         for name in SHEETS[1:]:
@@ -398,6 +436,8 @@ def export_rows(workbook, rows):
             for col in range(3, 8):
                 if isinstance(sheet.cell(r, col).value, str):
                     sheet.cell(r, col).data_type = 's'
+            for col in (1, 18, 19):
+                sheet.cell(r, col).number_format = 'yyyy-mm-dd'
             _source_comment(sheet.cell(r, 7), row)
             if name == '接单表':
                 sheet.cell(r, 14).value = unified._excel_value(unified._number(row.get('unit_price_hkd')))

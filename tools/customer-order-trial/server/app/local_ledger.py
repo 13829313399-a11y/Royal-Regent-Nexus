@@ -14,12 +14,11 @@ from app.services import customer_order_ledger as ledger,customer_order_queries 
 from app.services.auth import now_text
 from app.services.customer_order_jobs import order_job_request,run_order_job
 
-from app.catalog import profiles
 
 ACTOR='本机试用操作员 (local-trial)'
 
 
-def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
+def ledger_router(history,fixed_factory,scoped,prepare_confirmed,registered):
     sessions=local_sessions(history.path,new_database=history.new_database)
     router=APIRouter(prefix='/api/customer-order-ledger')
     router.add_event_handler('shutdown',sessions.kw['bind'].dispose)
@@ -74,7 +73,7 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
         confirmed:bool=Form(...),skipped_issue_keys:str=Form('[]'),manual_overrides:str=Form('[]'),
         preview_fingerprint:str=Form(...),confirmation_reason:str=Form(''),source_kind:Literal['formal','supplementary']=Form('formal'),
         reconcile_line_id:str=Form(''),expected_revision:int|None=Form(None),reconciliation_reason:str=Form(''),
-        po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...),db:Session=Depends(database)):
+        po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...),schedule_files:list[UploadFile]=File(default=[]),db:Session=Depends(database)):
         factory(factory_id);scoped(customer_code,factory_id)
         if reconcile_line_id and not 4<=len(reconciliation_reason.strip())<=500:
             raise HTTPException(400,'关联原因需要 4 至 500 个字。')
@@ -83,11 +82,11 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
             'reference_no':target.reference_no,'product_no':target.product_no} if target else None)
         # A single original writer rebuilds authoritative rows, then controls are checked before any database writes.
         args,resolved,output,name,controls=await prepare_confirmed(customer_code,factory_id,received_date,
-            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target)
+            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target,schedule_files=schedule_files)
         resolved['customer_name']=scoped(customer_code,factory_id)['name']
         def perform():
             target=ledger.get_line(db,fixed_factory,reconcile_line_id) if reconcile_line_id else None
-            result=ledger.import_preview(db,preview=resolved,
+            result=ledger.import_preview(db,preview=resolved,authorize_dispatch=lambda: None,
                 files=[(name,content,source_kind) for name,content in args['po_files']]+[(args['schedule_file_name'],args['schedule_content'],'schedule')],
                 source_kind=source_kind,actor=ACTOR,reason=reconciliation_reason.strip() if target else controls['reason'],
                 controls=controls,reconcile_line=target,expected_revision=expected_revision)
@@ -150,7 +149,7 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
     @router.get('/history/customers')
     def history_customers(factory_id:str):
         factory(factory_id)
-        return {'items':[{'code':item['code'],'name':item['name']} for item in profiles(fixed_factory)]}
+        return {'items':[{'code':item['code'],'name':item['name']} for item in registered]}
 
     async def history_parse(db,factory_id,customer_code,upload):
         factory(factory_id);profile=scoped(customer_code,factory_id)
@@ -186,7 +185,7 @@ def ledger_router(history,fixed_factory,scoped,prepare_confirmed):
     @router.get('/schedule/customers')
     def schedule_customers(factory_id:str):
         factory(factory_id)
-        return {'factory_id':fixed_factory,'items':[{'code':item['code'],'name':item['name']} for item in profiles(fixed_factory)]}
+        return {'factory_id':fixed_factory,'items':[{'code':item['code'],'name':item['name']} for item in registered]}
 
     @router.get('/schedule')
     def customer_schedule(factory_id:str,customer_code:str=Query(...,min_length=1,max_length=64),

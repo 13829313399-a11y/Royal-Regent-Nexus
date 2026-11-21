@@ -47,7 +47,7 @@ import type {
   CustomerOrderPreviewRow,
   WarehouseScheduleSyncResult,
 } from '@/types/customerOrder'
-import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView.vue'
+import type { CustomerOrderCenterSection } from '@/types/customerOrder'
 
 type OrderStatus = 'valid' | 'warning' | 'blocked'
 type DeliveryStatus = 'overdue' | 'due-soon' | 'upcoming' | 'planned'
@@ -79,9 +79,9 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poAccept: '.pdf,.xlsx', poExtensions: ['.pdf', '.xlsx'],
       scheduleAccept: '.xlsx', scheduleExtensions: ['.xlsx'],
       poDescription: 'ZURU PDF 正单或已转换并核对的 Excel 正单',
-      templateDescription: '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）',
+      templateDescription: '华兴 ZURU 原格式新单汇总',
       targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
-      ruleDescription: 'PO号＋原单Line作为SO/Reference，SKU-SPEC保留完整货号，Customer PO按本行读取；统一三表追加，USD单独保留，不换算HKD。原周排期仅作映射参考，不导入MA/库存记录。',
+      ruleDescription: 'PO号＋原单Line和完整SKU-SPEC保留身份；多份原周排期作参照，生成可复制的新单汇总，USD单独保留。',
     },
     {
       code: 'buzzbee',
@@ -126,14 +126,14 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       code: 'edu',
       name: 'EDU',
       version: 'V1',
-      poAccept: '.xls,.xlsx,.xlsm',
-      poExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
       scheduleAccept: '.xls,.xlsx,.xlsm',
       scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
-      poDescription: 'EDU Excel PO（支持同 PO 修订版批量导入）',
+      poDescription: 'EDU 文字或扫描 PDF、Excel PO（支持同 PO 修订版批量导入）',
       templateDescription: 'EDU 华兴排期底表',
       targetTemplate: 'HUAXING_EDU_NEW_ORDER_V1',
-      ruleDescription: '每条新明细续编 EDUHX，按货号分组并更新 PO订单；先匹配扣数PO，否则扣同货号最后一条绿色备料行。装箱可补录，重复单保留原号且不重复扣料。',
+      ruleDescription: '完整货号区分订单，ITEM按基础货号归组；接单表和正单评审表新单按导入顺序连续追加、统一蓝字。生产单号可手填，货期周末提前至周五，空白可保留。',
     },
     {
       code: '360',
@@ -233,9 +233,9 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poAccept: '.pdf,.xlsx', poExtensions: ['.pdf', '.xlsx'],
       scheduleAccept: '.xlsx', scheduleExtensions: ['.xlsx'],
       poDescription: 'ZURU PDF 正单或已转换的 Excel 正单',
-      templateDescription: '华康A ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）',
+      templateDescription: '华康A ZURU 原格式新单汇总',
       targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4',
-      ruleDescription: '上传 ZURU 订单与统一排期，预览后直接生成排期副本。',
+      ruleDescription: '上传 ZURU 订单与原有周排期，预览后生成可复制的新单汇总。',
     },
     {
       code: '360',
@@ -425,13 +425,14 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
         profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
       }
       if (profile.code === 'edu') {
-        profile.ruleDescription = 'EDU 每条新明细续编 EDUHX，并同步三张排期与 PO订单。按去尾码货号归组到绿色备料行上方；先匹配扣数PO，否则扣同货号最后一条绿色行，余额允许负数。装箱可补录，重复单保留原号、不再次扣料，历史与走货资料保留。'
+        profile.ruleDescription = 'EDU保留完整货号，ITEM按基础货号归组到绿色备料行上方；接单表和正单评审表按导入顺序连续追加，新单统一蓝字。默认续编EDUHX，也可手填同一生产单号。货期周末提前至周五、验货期提前一周，空白可保留。先匹配扣数PO，否则扣同货号最后一条绿色行，重复单不再次扣料。'
       }
     }
     if (profile.code === 'zuru') {
+      profile.targetTemplate = 'ZURU_ORIGINAL_NEW_ORDER_SUMMARY_V1'
       const factoryName = factoryId === 'huakang-a' ? '华康A' : '华兴'
-      profile.templateDescription = `${factoryName} ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）`
-      profile.ruleDescription = `按 PO号、原单行号和完整货号识别 ZURU 正单，逐行读取客户PO，美元原价单独保留、不换算港币。生成${factoryName}统一排期，保留历史、公式及人工字段；资料差异只作提醒，MA和库存不作为正单导入。`
+      profile.templateDescription = `${factoryName} ZURU 原格式新单汇总（可复制到原排期）`
+      profile.ruleDescription = `支持最多10份ZURU原周排期作参照，按原PO行号及完整货号识别；生成18列新单汇总及原格式复制页。已有订单另列提醒，原排期不修改；MA、库存与生产进度不作为新单。`
     }
   })
 })
@@ -565,6 +566,8 @@ const props = defineProps<{
   factoryName: string
   focusLineId?: string
   initialCustomerCode?: string
+  customerCodes?: readonly string[]
+  localOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -585,6 +588,8 @@ function formatLocalDate(date: Date) {
 const selectedCustomerCode = ref<CustomerOrderCustomerCode | ''>('')
 const poFiles = ref<File[]>([])
 const scheduleFile = ref<File | null>(null)
+const additionalSchedules = ref<File[]>([])
+const isZuru = computed(() => selectedCustomer.value?.code === 'zuru')
 const draggingUpload = ref<'po' | 'schedule' | null>(null)
 const selectedScheduleFile = ref('尚未选择河源业务统一排期')
 const receivedDate = ref(formatLocalDate(new Date()))
@@ -599,12 +604,14 @@ let warehouseSyncController: AbortController | null = null
 let warehouseUpload: { file: File; kind: 'UPLOADED' | 'GENERATED'; customer: string; factory: string } | null = null
 
 function showWarehouseSync(result: WarehouseScheduleSyncResult | null | undefined, kind: 'UPLOADED' | 'GENERATED') {
+  if (props.localOnly || isZuru.value) { warehouseSync.value = { state: 'idle', message: '' }; return }
   warehouseSync.value = result?.status === 'SUCCESS'
     ? { state: 'success', message: `${result.message}。${kind === 'UPLOADED' ? '本次新增 PO 将在生成客户排期后自动更新。' : '仓库可查看最新排期并下单。'}` }
     : { state: 'error', message: `纸箱仓库同步未完成：${result?.message || '服务端未返回同步结果'}。业务解析及排期下载仍可继续。` }
 }
 
 async function retryWarehouseSync() {
+  if (props.localOnly) return
   if (!warehouseUpload || fileOperationBusy.value) return
   const { file, kind, customer, factory } = warehouseUpload
   const sequence = ++warehouseSyncSequence
@@ -740,7 +747,7 @@ let saveRequestSequence = 0
 let reconciliationRequestSequence = 0
 
 const availableCustomers = computed(
-  () => CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? [],
+  () => (CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? []).filter(customer => !props.customerCodes || props.customerCodes.includes(customer.code)),
 )
 const selectedCustomer = computed(
   () => availableCustomers.value.find(
@@ -818,6 +825,7 @@ const resolvedIssueKeys = computed(() => [...new Set([
 const skippedIssueCount = computed(() => resolvedIssueKeys.value.length)
 const confirmationReasonInvalid = computed(() => confirmationReason.value.trim().length > 500)
 const canReconcilePreview = computed(() => Boolean(
+  !previewBatch.value?.rows.some(row => row.document_kind === 'cancellation') &&
   previewBatch.value
   && previewBatch.value.rows.length === 1
   && sourceKind.value === 'formal',
@@ -1235,6 +1243,7 @@ function resetImportBatch() {
   clearPreviewState()
   poFiles.value = []
   scheduleFile.value = null
+  additionalSchedules.value = []
   selectedScheduleFile.value = '尚未选择河源业务统一排期'
 }
 
@@ -1277,6 +1286,7 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
       poFiles.value = []
     } else {
       scheduleFile.value = null
+  additionalSchedules.value = []
       selectedScheduleFile.value = '尚未选择河源业务统一排期'
     }
     const fileName = ignoredMacFiles[0]?.name ?? '所选文件'
@@ -1302,8 +1312,8 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
     notify(`单批最多导入30份PO，当前拖入 ${usableFiles.length} 份。`)
     return
   }
-  if (kind === 'schedule' && usableFiles.length > 1) {
-    notify('客户排期每次只能导入1份，请重新拖入。')
+  if (kind === 'schedule' && usableFiles.length > (isZuru.value ? 10 : 1)) {
+    notify(isZuru.value ? 'ZURU参照排期最多选择10份，合计不超过35MB。' : '客户排期每次只能导入1份，请重新拖入。')
     return
   }
 
@@ -1312,7 +1322,8 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
   } else {
     const file = usableFiles[0]!
     scheduleFile.value = file
-    selectedScheduleFile.value = file.name
+    additionalSchedules.value = usableFiles.slice(1)
+    selectedScheduleFile.value = usableFiles.map(file => file.name).join("；")
   }
   clearPreviewState()
   const ignoredMessage = ignoredMacFiles.length > 0
@@ -1408,13 +1419,14 @@ async function parseSelectedFiles() {
     return
   }
   if (poFiles.value.length === 0 || !scheduleFile.value) {
-    notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和河源业务统一排期。`)
+    notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和${isZuru.value ? "ZURU原有排期（可多选）" : "河源业务统一排期"}。`)
     return
   }
   const requestId = ++parseRequestSequence
   const customerCode = selectedCustomer.value.code
   const requestedPoFiles = [...poFiles.value]
   const requestedScheduleFile = scheduleFile.value
+  const requestedAdditionalSchedules = [...additionalSchedules.value]
   const requestedReceivedDate = receivedDate.value
   const requestedFactoryId = props.factoryId
   parsingFiles.value = true
@@ -1453,6 +1465,7 @@ async function parseSelectedFiles() {
             requestedScheduleFile,
             requestedReceivedDate,
             requestedFactoryId,
+            ...(requestedAdditionalSchedules.length ? [requestedAdditionalSchedules] as const : []),
           )
       : await customerOrderApi.previewBuzzbeeBatch(
           requestedPoFiles,
@@ -1559,6 +1572,7 @@ async function confirmAndGenerateSchedule() {
   const requestedPreview = previewBatch.value
   const requestedPoFiles = [...poFiles.value]
   const requestedScheduleFile = scheduleFile.value
+  const requestedAdditionalSchedules = [...additionalSchedules.value]
   const requestedReceivedDate = receivedDate.value
   const requestedFactoryId = props.factoryId
   const requestedSkippedIssueKeys = [...resolvedIssueKeys.value]
@@ -1604,6 +1618,7 @@ async function confirmAndGenerateSchedule() {
             requestedPreview.preview_fingerprint,
             requestedConfirmationReason,
             requestedManualOverrides,
+            ...(requestedAdditionalSchedules.length ? [requestedAdditionalSchedules] as const : []),
           )
       : await customerOrderApi.exportBuzzbeeBatch(
           requestedPoFiles,
@@ -1732,6 +1747,7 @@ async function confirmAndSaveOrder() {
   payload.append('received_date', receivedDate.value)
   poFiles.value.forEach((file) => payload.append('po_files', file))
   payload.append('schedule_file', scheduleFile.value)
+  additionalSchedules.value.forEach(file => payload.append('schedule_files', file))
   payload.append('confirmed', 'true')
   payload.append('skipped_issue_keys', JSON.stringify(resolvedIssueKeys.value))
   payload.append('manual_overrides', JSON.stringify(manualOverrides.value))
@@ -1751,7 +1767,12 @@ async function confirmAndSaveOrder() {
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
     warehouseUpload = null
     showWarehouseSync(result.warehouse_sync, 'GENERATED')
-    notify(result.reconciled_count > 0
+    if (result.warnings?.length) {
+      saveFailureMessage.value = result.warnings.join('\n')
+    }
+    notify(result.unapplied_count
+      ? `已处理匹配订单；${result.unapplied_count} 条取消未应用，未新增订单。请查看提示。`
+      : result.reconciled_count > 0
       ? '订单已关联并更新原订单，原走货与版本记录已保留。'
       : `订单已保存：新增 ${result.created_count} 条，已存在 ${result.existing_count} 条。${result.advisory_count ? `其中 ${result.advisory_count} 条有资料差异或缺项，已保留提醒。` : ""}`)
     // Keep the source files and preview available for the separate Excel export.
@@ -2059,12 +2080,12 @@ onBeforeUnmount(() => {
               >
                 <span class="upload-card__type">文件 02 · 客户输出模板</span>
                 <div class="upload-card__icon upload-card__icon--green"><Layers3 aria-hidden="true" /></div>
-                <h3>导入客户现有排期</h3>
-                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
-                <strong>{{ selectedScheduleFile }}</strong>
-                <small>解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。</small>
+                <h3>{{ isZuru ? "导入原有ZURU排期（可多选）" : "导入客户现有排期" }}</h3>
+                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${isZuru ? '最多10份原周排期作参照，原文件不会被修改。' : selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
+                <strong>{{ isZuru && !scheduleFile ? "尚未选择ZURU原排期（支持多份）" : selectedScheduleFile }}</strong>
+                <small>{{ isZuru ? '生成新单汇总和原格式复制页；资料缺失可留空，后续在Excel补填。' : localOnly ? '生成新的排期副本；保存的订单保留在本机台账。' : '解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。' }}</small>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
-                <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
+                <input ref="scheduleInput" class="visually-hidden" type="file" :multiple="isZuru" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
               </article>
             </div>
 
@@ -2118,7 +2139,7 @@ onBeforeUnmount(() => {
 
             <article class="panel-card">
               <header class="panel-card__head">
-                <div><h3>本次导入文件</h3><p>核对客户 PO 与对应的统一排期后开始解析。</p></div>
+                <div><h3>本次导入文件</h3><p>{{ isZuru ? "选择PO和一份或多份ZURU原排期后开始解析。" : "核对客户 PO 与对应的统一排期后开始解析。" }}</p></div>
               </header>
               <div class="table-scroll">
                 <table class="import-queue-table">
@@ -2126,7 +2147,7 @@ onBeforeUnmount(() => {
                   <tbody>
                     <tr v-for="item in poImportQueue" :key="item.key"><td><FileSpreadsheet aria-hidden="true" /> {{ item.fileName }}</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>{{ item.inputTemplate }}</td><td><span class="status-chip status-chip--active">已选择</span></td><td>本批</td></tr>
                     <tr v-if="poImportQueue.length === 0"><td><FileSpreadsheet aria-hidden="true" /> 尚未选择 PO 文件</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>解析后识别</td><td><span class="status-chip status-chip--warning">待选择</span></td><td>本批</td></tr>
-                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ selectedScheduleFile }}</td><td>河源统一排期</td><td>{{ selectedCustomerName }} / {{ factoryName }}</td><td>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
+                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ isZuru && !scheduleFile ? "尚未选择ZURU原排期（支持多份）" : selectedScheduleFile }}</td><td>{{ isZuru ? "ZURU原排期参照" : "河源统一排期" }}</td><td>{{ selectedCustomerName }} / {{ factoryName }}</td><td>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -2138,7 +2159,7 @@ onBeforeUnmount(() => {
               <header class="panel-card__head"><div><h3>本次导入检查</h3><p>进入预览前</p></div></header>
               <ul>
                 <li><component :is="selectedCustomer ? CheckCircle2 : CircleAlert" :class="{ warning: !selectedCustomer }" aria-hidden="true" /><div><b>客户{{ selectedCustomer ? '已选择' : '待选择' }}</b><span>{{ selectedCustomerName }} · {{ factoryName }}</span></div></li>
-                <li><component :is="poFiles.length && scheduleFile ? CheckCircle2 : CircleAlert" :class="{ warning: !poFiles.length || !scheduleFile }" aria-hidden="true" /><div><b>批量PO与排期{{ poFiles.length && scheduleFile ? '齐全' : '待选择' }}</b><span>{{ poFiles.length }} 份PO + 1份客户排期</span></div></li>
+                <li><component :is="poFiles.length && scheduleFile ? CheckCircle2 : CircleAlert" :class="{ warning: !poFiles.length || !scheduleFile }" aria-hidden="true" /><div><b>批量PO与排期{{ poFiles.length && scheduleFile ? '齐全' : '待选择' }}</b><span>{{ poFiles.length }} 份PO + {{ scheduleFile ? additionalSchedules.length + 1 : 0 }}份客户排期</span></div></li>
                 <li><component :is="previewBatch ? CheckCircle2 : CircleAlert" :class="{ warning: !previewBatch }" aria-hidden="true" /><div><b>模板{{ previewBatch ? '已识别' : '待解析' }}</b><span>{{ previewBatch?.input_template || selectedCustomer?.poDescription || '先选择客户' }}</span></div></li>
                 <li><CircleAlert aria-hidden="true" class="warning" /><div><b>生成前检查</b><span>{{ preflightConfirmationText }}</span></div></li>
               </ul>
@@ -2155,7 +2176,7 @@ onBeforeUnmount(() => {
               <header><h3>解析进度</h3><strong>{{ parsingFiles ? '处理中' : previewBatch ? '100%' : '0%' }}</strong></header>
               <div class="progress-track" role="progressbar" aria-label="文件解析进度" :aria-valuenow="parsingFiles ? undefined : previewBatch ? 100 : 0" :aria-valuetext="parsingFiles ? '正在解析文件' : previewBatch ? '解析完成' : '待解析'" :aria-busy="parsingFiles"><span :class="{ 'is-processing': parsingFiles, 'is-complete': !parsingFiles && previewBatch }" /></div>
               <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ advisoryIssueCount }} 项提醒（不影响保存和生成）</p>
-              <p v-else>选择一份或多份PO及一份客户排期后开始真实解析</p>
+              <p v-else>{{ isZuru ? "选择PO及1至10份原排期后开始解析" : "选择一份或多份PO及一份客户排期后开始真实解析" }}</p>
             </article>
           </aside>
         </div>
@@ -2335,7 +2356,7 @@ onBeforeUnmount(() => {
           <span><FileCheck2 aria-hidden="true" /></span>
           <div>
             <strong>解析已完成，当前尚未输出排期</strong>
-            <p>请核对下方明细，按提示补录或确认资料；数量、订单身份等冲突须纠正后才能生成排期。</p>
+            <p>下方资料缺失或差异仅作提醒，可直接保存订单或生成排期；不确定的字段可先留空，无需逐项确认或填写原因。</p>
           </div>
           <button
             type="button"
@@ -2487,7 +2508,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">
@@ -2580,11 +2601,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'customer-schedule'" key="customer-schedule" class="order-view" data-testid="order-customer-schedule">
-        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="false" key="schedule" class="order-view" data-testid="order-schedule-static">

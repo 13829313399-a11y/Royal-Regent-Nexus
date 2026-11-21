@@ -8,11 +8,20 @@ import logging
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import threading
 import time
 from uuid import uuid4
 import webbrowser
+
+
+def open_page(root: Path, address: str):
+    browser = root / 'browser' / 'electron.exe'
+    if os.name == 'nt' and browser.is_file():
+        subprocess.Popen([str(browser), str(root / 'desktop'), address], cwd=root)
+    else:
+        webbrowser.open(address)
 
 
 class InstanceLock:
@@ -67,7 +76,7 @@ def reopen_running(data: Path, no_browser: bool) -> bool:
         if isinstance(port, int) and 1 <= port <= 65535 and instance_is_ready(port, value['id']):
             print(f'程序已启动：http://127.0.0.1:{port}/', flush=True)
             if not no_browser:
-                webbrowser.open(f'http://127.0.0.1:{port}/')
+                open_page(data.parent, f'http://127.0.0.1:{port}/')
             return True
     except (OSError, ValueError, KeyError, TypeError):
         pass
@@ -116,6 +125,10 @@ def main() -> int:
         options = dict(data_dir=data, static_dir=root / 'web', host='127.0.0.1', port=port)
         if config['kind'] == 'orders':
             options['factory_id'] = config['factory_id']
+            if 'customer_codes' in config:
+                options['customer_codes'] = config['customer_codes']
+        elif config.get('reference_seed'):
+            options['reference_seed_dir'] = root / 'reference-seed'
         app = create_app(**options)
 
         # Registered before the root StaticFiles mount, so the local reopening
@@ -145,7 +158,7 @@ def main() -> int:
                     return
                 if instance_is_ready(port, instance):
                     if not arguments.no_browser:
-                        webbrowser.open(address)
+                        open_page(root, address)
                     return
                 time.sleep(0.1)
         threading.Thread(target=open_when_ready, daemon=True).start()
@@ -167,19 +180,27 @@ def main() -> int:
         lock.close()
 
 
+def report_startup_error(root: Path, error: Exception):
+    """Persist the original traceback before touching a possibly broken console."""
+    import traceback
+    try:
+        (root / 'data').mkdir(exist_ok=True)
+        with (root / 'data' / 'startup-error.log').open('a', encoding='utf-8') as stream:
+            stream.write('\n--- Startup failure ---\n')
+            traceback.print_exception(type(error), error, error.__traceback__, file=stream)
+    except OSError:
+        pass  # START.cmd also captures interpreter output outside this handler.
+    try:
+        print('Startup failed. See data/startup-error.log and data/startup-console.log.', file=sys.stderr, flush=True)
+    except (OSError, UnicodeError, ValueError):
+        pass
+
+
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
         raise SystemExit(0)
     except Exception as error:
-        import traceback
-        root = Path(__file__).resolve().parent
-        print(f'\n启动未完成：{error}\n请先完整解压文件，再双击 START.cmd。', file=sys.stderr)
-        try:
-            (root / 'data').mkdir(exist_ok=True)
-            with (root / 'data' / 'startup-error.log').open('a', encoding='utf-8') as stream:
-                traceback.print_exc(file=stream)
-        except OSError:
-            pass
+        report_startup_error(Path(__file__).resolve().parent, error)
         raise SystemExit(1)

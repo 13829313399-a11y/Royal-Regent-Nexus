@@ -14,7 +14,10 @@ from app.models.carton_procurement import (
     CartonPurchaseOrderIssue, CartonReceipt, CartonReceiptLine,
 )
 from app.schemas.carton_order_timeline import CartonOrderTimelineEvent as Event, CartonOrderTimelineOut
-from app.services.carton_inventory_report import _inventory_identity, _validate_dates
+from app.services.carton_inventory_report import _validate_dates
+from app.services.carton_inventory_report_sources import (
+    inventory_identity, is_unattributed, movement_sources, serialized_key,
+)
 
 
 ORDER_LABELS = {
@@ -50,7 +53,7 @@ def _time(value):
 
 
 def _key(row):
-    return json.dumps(_inventory_identity(row), ensure_ascii=False, separators=(",", ":"))
+    return serialized_key(inventory_identity(row))
 
 
 def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", date_from: str = "",
@@ -86,6 +89,14 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
     issues = {row.id: row for row in scoped(CartonPurchaseOrderIssue) if row.order_id in orders}
     audits = sorted(scoped(CartonAuditEvent), key=lambda row: row.sequence)
     details = {row.id: _detail(row) for row in audits}
+    relocations = {audit.id: (reference, audit.created_at) for audit in audits
+                   if audit.event_type == "INVENTORY_LOCATION_CHANGED"
+                   and (reference := details[audit.id].get("reference_movement_id")) in movements_by_id}
+    projection = movement_sources(db, factory_id, movements, relocations=relocations)
+
+    def movement_key(row):
+        return serialized_key(projection.movement_keys[row.id])
+
     sequences = {}
     for audit in audits:
         detail = details[audit.id]
@@ -210,8 +221,10 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
                     continue
                 label = {"RECEIPT_DRAFT_CREATED": "保存收料单", "RECEIPT_CONFIRMED": "确认收料（无有效入库）",
                          "RECEIPT_REVERSED": "作废收料单"}[audit.event_type]
+                key = projection.receipt_keys.get(row.id)
                 event = Event(**{**base, "id": f"audit:{audit.id}:{row.id}"}, **identity(linked_order(row), row),
-                              inventory_key=_key(row), event_label=label, document_no=receipt.delivery_note_no,
+                              inventory_key=serialized_key(key) if key else _key(row),
+                              event_label=label, document_no=receipt.delivery_note_no,
                               material_label=f"{row.packaging_type} {row.paper_quality} / {row.specification}",
                               description=f"有效收料 {row.effective_quantity} {row.unit}；本条仅记录收料单状态，不计库存变化。")
                 add(event, audit.sequence)
@@ -221,12 +234,15 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
             if not row:
                 continue
             relocation = audit.event_type == "INVENTORY_LOCATION_CHANGED"
+            key = projection.relocation_keys[audit.id] if relocation else projection.movement_keys[row.id]
             if relocation:
                 change = f"调仓 {detail['quantity']} {detail.get('unit', '')}，总数量不变。" if detail.get('quantity') is not None else "数量不变。"
                 description = f"仓位：{detail.get('from_location') or '未填写'} → {detail.get('to_location') or '未填写'}；{change}"
+                if is_unattributed(key):
+                    description += "同纸品共用库存，调仓归属待核对。"
             else:
                 description = f"核价：{detail.get('unit_price', '—')} {detail.get('currency', '')}/{row.unit}；数量不变。"
-            add(Event(**base, **identity(linked_order(row), row), inventory_key=_key(row),
+            add(Event(**base, **identity(linked_order(row), row), inventory_key=serialized_key(key),
                       event_label="调仓" if relocation else "入库核价", document_no=row.document_no,
                       material_label=f"{row.packaging_type} {row.paper_quality} / {row.specification}",
                       description=description), audit.sequence)
@@ -238,16 +254,24 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
     unsequenced = defaultdict(list)
     for row in dated:
         if not movement_sequence(row):
-            unsequenced[(_key(row), _time(row.occurred_at))].append(row)
+            unsequenced[(movement_key(row), _time(row.occurred_at))].append(row)
     ambiguous = {key for key, group in unsequenced.items() if len(group) > 1}
     balances = defaultdict(Decimal)
+    unresolved = defaultdict(Decimal)
     for row in dated:
-        key = _key(row)
+        projected_key = projection.movement_keys[row.id]
+        key = movement_key(row)
+        for affected_key in projection.unattributed_sources.get(row.id, ()):
+            unresolved[affected_key] += row.quantity
         before = balances[key]
         balances[key] += Decimal(row.quantity)
         label = {"INBOUND": "确认入库", "OUTBOUND": "出库", "ADJUSTMENT": "库存调整", "REVERSAL": "库存冲销"}[row.movement_type]
         if row.source_type == "ORDER_RETURN":
             label = "退单出库"
+        elif row.source_type == "SPECIAL_RETURN":
+            label = "退货出库"
+        elif row.source_type == "SPECIAL_REPLENISHMENT":
+            label = "补单出库"
         elif row.source_type == "STOCKTAKE":
             label = "盘点调整"
         elif row.source_type == "HISTORY_INVENTORY":
@@ -266,11 +290,16 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
         if (key, _time(row.occurred_at)) in ambiguous:
             event.quantity_before = event.quantity_after = None
             event.description = "同秒旧流水缺少操作先后证据，仅展示实际变动数量。"
+        if unresolved[projected_key] or is_unattributed(projected_key):
+            event.quantity_before = event.quantity_after = None
+            event.description = "同纸品有未归单的库存流水，结存归属待核对。"
         add(event, movement_sequence(row))
 
     keyword = search.strip().casefold()
     matched_orders, matched_stock = set(), set()
     if keyword:
+        matched_stock.update(serialized_key(key) for key, source in projection.requests.items()
+                             if keyword in source.request_no.casefold())
         for _, _, _, event in result:
             if keyword in " ".join((event.customer_code, event.customer_name, event.contract_no, event.item_no,
                                      event.product_name, event.document_no, event.material_label)).casefold():

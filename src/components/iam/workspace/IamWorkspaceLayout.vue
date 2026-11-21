@@ -6,7 +6,7 @@ import { ArrowLeft, ShieldCheck } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import IamWorkspaceNavigation from './IamWorkspaceNavigation.vue'
-import { iamPageGroup, identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from './iam-navigation'
+import { iamPageGroup, iamStudioEnabled, identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from './iam-navigation'
 import '@/features/identity-management/workspace/workspace.css'
 import './iam-studio.css'
 import './iam-motion.css'
@@ -22,15 +22,16 @@ watch(
 )
 </script>
 <template>
-  <div class="rrn-iam-studio iamx-workspace notranslate" :class="{ 'iw-shell': consolidatedIamEnabled, 'iw-studio-shell': consolidatedIamEnabled }" translate="no">
+  <div class="rrn-iam-studio iamx-workspace notranslate" :class="{ 'iw-shell': consolidatedIamEnabled, 'iw-studio-shell': consolidatedIamEnabled, 'iam-studio-active': iamStudioEnabled }" translate="no">
     <a class="iamx-skip" href="#iamx-main">跳到主要内容</a>
     <header class="iamx-workspace-header">
       <div class="iamx-brand-row">
         <div class="iamx-brand">
-          <span v-if="consolidatedIamEnabled" class="iw-brand-title"><ShieldCheck :size="26" aria-hidden="true" />权限与组织</span>
+          <span v-if="consolidatedIamEnabled && !iamStudioEnabled" class="iw-brand-title"><ShieldCheck :size="26" aria-hidden="true" />权限与组织</span>
           <RouterLink to="/" class="iamx-back"><ArrowLeft :size="17" />返回工作台</RouterLink
           ><span class="iamx-brand-rule" />
-          <span v-if="positionWorkspace && !consolidatedIamEnabled" class="flex items-center gap-2 font-semibold"><ShieldCheck :size="22" />组织协作 · 权限管理</span>
+          <span v-if="iamStudioEnabled" class="iw-brand-title"><ShieldCheck :size="22" aria-hidden="true" />权限与组织</span>
+          <span v-else-if="positionWorkspace && !consolidatedIamEnabled" class="flex items-center gap-2 font-semibold"><ShieldCheck :size="22" />组织协作 · 权限管理</span>
           <h1 v-else-if="!consolidatedIamEnabled"><ShieldCheck :size="25" />权限与组织</h1>
         </div>
         <div class="iamx-session">
@@ -50,4 +51,20 @@ watch(
 
 <style scoped>
 .iamx-session { display: flex; }
+.rrn-iam-studio.iam-studio-active { grid-template-rows: 60px minmax(0,1fr); }
+.iam-studio-active .iamx-workspace-header { padding-inline: 20px; gap: 22px; background: linear-gradient(105deg, var(--iw-studio-deeper), var(--iw-studio-deep)); }
+.iam-studio-active .iamx-brand { gap: 14px; }
+.iam-studio-active .iamx-brand-rule { display: block; width: 1px; height: 20px; background: #ffffff42; }
+.rrn-iam-studio.iam-studio-active .iamx-brand > .iw-brand-title { gap: 8px; font-size: 17px; }
+.iam-studio-active :deep(.iamx-navigation a) { min-height: 44px; padding-inline: 14px; }
+.iam-studio-active :deep(.iamx-navigation-marker) { top: 2px; bottom: 2px; border-radius: 8px; }
+@media (max-width: 900px) {
+  .rrn-iam-studio.iam-studio-active { grid-template-rows: 98px minmax(0,1fr); }
+  .iam-studio-active .iamx-workspace-header { grid-template-rows: 50px 48px; gap: 0; padding-inline: 10px; }
+  .iam-studio-active .iamx-brand { gap: 8px; }
+  .iam-studio-active :deep(.iamx-navigation a) { padding-inline: 6px; }
+}
+@media (max-height: 600px) {
+  .rrn-iam-studio.iam-studio-active { grid-template-rows: auto minmax(0,1fr); }
+}
 </style>

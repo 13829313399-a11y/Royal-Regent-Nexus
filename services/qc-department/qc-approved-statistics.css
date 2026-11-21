@@ -191,8 +191,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   body.qstats-shell .topbar .theme-switch-label { width:36px; font-size:11px; }
   body.qstats-shell .topbar .theme-switch[aria-checked="true"] .theme-switch-thumb { transform:translateX(40px); }
   body.qstats-shell #userBadge { gap:4px !important; margin-right:0 !important; }
-  body.qstats-shell #userBadge :is(.user-badge-name,.user-badge-role,.user-badge-logout) { font-size:10px; }
-  body.qstats-shell #userBadge .user-badge-logout { padding:3px 5px; }
+  body.qstats-shell #userBadge :is(.user-badge-name,.user-badge-role) { font-size:10px; }
 }
 
 /* Extend the accepted statistics palette to the embedded QC workspace.
@@ -325,12 +324,19 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
 
   body.qstats-shell #page-defectlib > .page-header {
-    padding-top:16px;
+    padding-top:8px;
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:flex-start;
+    align-items:center;
+    gap:6px 10px;
   }
+  body.qstats-shell #page-defectlib > .page-header .btn-primary {margin-inline-start:auto}
 
-  body.qstats-shell #defLibSearch {
-    margin-inline:22px;
-    max-width:min(240px,calc(100% - 44px)) !important;
+  #page-defectlib #defLibSearch {
+    width:min(100%,var(--qc-search-width));
+    min-width:0;
+    margin:0;
   }
 
   body.qstats-shell #page-defectlib .table-wrap > table {
@@ -495,8 +501,7 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
 
   @media (max-width:640px) {
-    body.qstats-shell #page-defectlib > :is(.page-header,.table-wrap),
-    body.qstats-shell #defLibSearch {
+    body.qstats-shell #page-defectlib > :is(.page-header,.table-wrap) {
       margin-inline:12px;
     }
 
@@ -507,39 +512,54 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 
 }
 
-/* Compact schedule toolbar: selection, fixed-width filters, primary action. */
+/* Customer schedule filters, list actions and table selection. */
 @media screen {
+  #page-sales-schedule .qs-workspace { padding-block: 8px; }
   #page-sales-schedule #qsToolbar {
-    --qs-control-height: 36px;
-    display: grid;
-    grid-template-columns: max-content 210px 170px 140px max-content minmax(0,1fr) max-content;
-    grid-template-areas: "selection search date customer reset space push";
+    --qs-control-height: 32px;
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    padding: 12px;
+    gap: 4px 8px;
+    padding: 4px 8px;
+    font-size: 13px;
+  }
+  :is(#page-sales-schedule #qsToolbar, #page-records .records-toolbar) {
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-bottom: 0;
+    border-radius: 7px 7px 0 0;
     background: var(--bg-card);
     box-shadow: none;
     backdrop-filter: none;
-    font-size: 13px;
+  }
+  :is(#page-sales-schedule #qsToolbar + .qs-table-scroll, #page-records #recordsTableWrap) { border-radius: 0 0 7px 7px; }
+  html body.qc-liquid-glass.qstats-shell #page-records > .page-inner { row-gap: 0; }
+  #page-records .records-toolbar { margin-bottom: 0; }
+  #page-records .records-toolbar-inner { padding: 4px 8px; }
+  #page-records #btnAddInspection { height: var(--records-control-height); padding: 0 10px; }
+  #page-records .qis-submit-actions { margin-top: 8px; }
+  #page-records .qis-mobile-tools {
+    padding: 4px 8px;
+    border-inline: 1px solid var(--border);
+    background: var(--bg-card);
+  }
+  html.qc-mobile.qc-short-viewport #page-records:not(.qis-tools-open) .records-toolbar:has(.qip-toolbar-action[hidden]) + .qis-mobile-tools {
+    border-top: 1px solid var(--border);
+    border-radius: 7px 7px 0 0;
   }
   #page-sales-schedule #qsToolbar .qs-filters { display: contents; }
-  #page-sales-schedule #qsToolbar .qs-selection {
-    grid-area: selection;
+  #page-sales-schedule #qsToolbar .qs-list-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding-right: 10px;
-    border-right: 1px solid var(--border);
+    gap: 8px;
+    margin-inline-start: auto;
   }
-  #page-sales-schedule #qsToolbar .qs-search { grid-area: search; width: 210px; max-width: 100%; }
-  #page-sales-schedule #qsToolbar .qs-date-filter { grid-area: date; width: 170px; max-width: 100%; }
-  #page-sales-schedule #qsToolbar .qs-customer { grid-area: customer; width: 140px; max-width: 100%; }
-  #page-sales-schedule #qsToolbar .qs-filter-actions { grid-area: reset; }
-  #page-sales-schedule #qsToolbar #qsPush { grid-area: push; justify-self: end; }
-  #page-sales-schedule #qsToolbar #qsFilterError { grid-column: 1 / -1; margin: 0; }
-  #page-sales-schedule #qsToolbar :is(.qs-filter-field input,.qs-filter-field select,.qs-date-toggle,.qs-button,.qs-reset) {
+  #page-sales-schedule #qsToolbar .qs-search { width: min(100%, var(--qc-search-width)); }
+  #page-sales-schedule #qsToolbar .qs-date-filter { width: max-content; max-width: 100%; }
+  #page-sales-schedule #qsToolbar .qs-customer { width: 120px; max-width: 100%; }
+  #page-sales-schedule #qsToolbar :is(.qs-search input,.qs-customer select) { padding-block: 0; }
+  #page-sales-schedule #qsToolbar #qsFilterError { flex-basis: 100%; margin: 0; }
+  :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) :is(.qs-filter-field input,.qs-filter-field select,.qs-date-toggle,.qs-button,.qs-reset) {
     min-height: var(--qs-control-height);
     height: var(--qs-control-height);
     border-radius: 7px;
@@ -549,10 +569,17 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
   }
   #page-sales-schedule #qsToolbar .qs-search svg { top: calc((var(--qs-control-height) - 18px) / 2); }
   #page-sales-schedule #qsToolbar .qs-reset { padding: 0 4px; border: 0; }
-  #page-sales-schedule #qsToolbar .qs-select-all { min-height: var(--qs-control-height); }
-  #page-sales-schedule #qsToolbar #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
-  #page-sales-schedule #qsToolbar #qsCount { margin: 0; min-width: 76px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  #page-sales-schedule #qsToolbar .qs-button {
+  #page-sales-schedule .qs-table th.qs-select-column { padding: 0 !important; }
+  #page-sales-schedule .qs-select-column .qs-select-all {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    width: 100%;
+  }
+  #page-sales-schedule .qs-select-column #qsSelectAll { width: 15px; height: 15px; min-height: 0; padding: 0; }
+  #page-sales-schedule #qsToolbar #qsCount { margin: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) .qs-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -560,15 +587,13 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     padding: 0 10px;
     white-space: nowrap;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh {
-    width: var(--qs-control-height);
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--text-dim);
-    flex-shrink: 0;
+  :is(#page-sales-schedule #qsToolbar,#page-review,#qmtView,#qwtView,.qir-dialog,#qstats-root) button.qc-refresh-icon {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:var(--qs-control-height,36px); height:var(--qs-control-height,36px);
+    min-width:0; padding:0; flex-shrink:0; border:0; border-radius:6px;
+    background:transparent; box-shadow:none; color:var(--text-dim); cursor:pointer;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh::before {
+  button.qc-refresh-icon::before {
     content: "";
     width: 14px;
     height: 14px;
@@ -582,65 +607,82 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     color: var(--text-dim);
     opacity: 1;
   }
-  #page-sales-schedule #qsToolbar #qsRefresh:hover:not(:disabled) { background: var(--bg-hover); }
-  @container (max-width: 1040px) {
-    #page-sales-schedule #qsToolbar {
-      grid-template-columns: max-content minmax(180px,210px) minmax(120px,170px) minmax(100px,140px) max-content minmax(0,1fr) max-content;
-      gap: 6px;
-      padding: 10px;
-    }
-    #page-sales-schedule #qsToolbar .qs-selection { gap: 6px; padding-right: 8px; }
-    #page-sales-schedule #qsToolbar #qsCount { min-width: 68px; }
-    #page-sales-schedule #qsToolbar :is(.qs-search,.qs-date-filter,.qs-customer) { width: 100%; }
+  :is(#page-sales-schedule #qsToolbar,#page-review,#qmtView,#qwtView,.qir-dialog,#qstats-root) button.qc-refresh-icon:hover:not(:disabled) {
+    background:var(--bg-hover); color:var(--text-hi);
   }
-  @container (max-width: 790px) {
-    #page-sales-schedule #qsToolbar {
-      grid-template-columns: max-content 140px 92px minmax(0,1fr) max-content;
-      grid-template-areas: "selection search search . push" "date customer reset . .";
-    }
-    #page-sales-schedule #qsToolbar .qs-search { width: 210px; }
-    #page-sales-schedule #qsToolbar .qs-date-filter { width: 170px; }
-    #page-sales-schedule #qsToolbar .qs-customer { width: 140px; }
+  button.qc-refresh-icon:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  @media (pointer:coarse) {
+    :is(#page-sales-schedule #qsToolbar,#page-review,#qmtView,#qwtView,.qir-dialog,#qstats-root) button.qc-refresh-icon { width:44px; min-height:44px; }
   }
-  @container (max-width: 600px) {
-    #page-sales-schedule #qsToolbar {
-      grid-template-columns: minmax(0,1fr) minmax(0,1fr);
-      grid-template-areas: "selection selection" "search search" "date customer" "reset push";
-    }
-    #page-sales-schedule #qsToolbar .qs-selection { justify-self: start; border-right: 0; padding-right: 0; }
-    #page-sales-schedule #qsToolbar .qs-filter-actions { justify-self: start; }
+  @media (pointer: fine) and (min-width: 641px) {
+    #page-sales-schedule #qsToolbar #qsRefresh { width: 26px; }
   }
   @media (max-width: 640px), (pointer: coarse) {
     #page-sales-schedule #qsToolbar { --qs-control-height: 44px; }
     #page-sales-schedule #qsToolbar :is(.qs-filter-field input,.qs-filter-field select) { font-size: 16px; }
-    #page-sales-schedule #qsToolbar .qs-select-all { padding-right: 6px; }
+    #page-sales-schedule #qsToolbar #qsRefresh { width: 44px; }
   }
 }
 
 /* Keep both date endpoints readable, including when the sidebar narrows the toolbar. */
 @media screen {
-  #page-sales-schedule #qsToolbar .qs-date-toggle { height: auto; }
-  #page-sales-schedule #qsToolbar:has(.qs-selection) {
-    grid-template-columns: max-content 210px max-content 140px max-content minmax(0,1fr) max-content;
-  }
-  #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-date-filter { width: max-content; max-width: 100%; }
-  @container (max-width: 1040px) {
-    #page-sales-schedule #qsToolbar:has(.qs-selection) {
-      grid-template-columns: max-content minmax(180px,210px) max-content minmax(100px,140px) max-content minmax(0,1fr) max-content;
-    }
-  }
-  @container (max-width: 960px) {
-    #page-sales-schedule #qsToolbar:has(.qs-selection) {
-      grid-template-columns: max-content minmax(100px,140px) minmax(40px,92px) minmax(0,1fr) max-content;
-      grid-template-areas: "selection search search . push" "date customer reset . .";
-    }
-    #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-search { width: 210px; }
-    #page-sales-schedule #qsToolbar:has(.qs-selection) .qs-customer { width: 140px; }
-  }
-  @container (max-width: 600px) {
-    #page-sales-schedule #qsToolbar:has(.qs-selection) {
-      grid-template-columns: minmax(0,1fr) minmax(0,1fr);
-      grid-template-areas: "selection selection" "search search" "date date" "customer customer" "reset push";
-    }
-  }
+  :is(#page-sales-schedule #qsToolbar,#page-review #qis-review-date) .qs-date-toggle { height: auto; }
 }
+
+/* Annual worksheets share the monthly report's tab strip and reading surface. */
+#qstats-root .annual-report-page {
+  max-width:none;
+  container-type:inline-size;
+  --qc-head:var(--sheet-head); --qc-line:var(--sheet-line);
+  --qc-paper:var(--sheet); --qc-ink:var(--sheet-ink); --qc-dim:var(--sheet-muted);
+  font-family:var(--sheet-font);
+}
+#qstats-root .annual-report-page .template-sheet {margin-top:12px}
+#qstats-summary,#qstats-tracking {min-width:0;padding:14px 18px}
+#qstats-root [role=tabpanel][hidden] {display:none}
+#qstats-summary .qc-metrics {margin:0 0 12px;border:0;border-bottom:1px solid var(--sheet-line);border-radius:0;padding:4px 0 12px}
+#qstats-summary .qc-report-title,#qstats-summary .qc-detail-head {padding:10px 12px}
+#qstats-summary .qc-month-table,#qstats-summary .qc-detail-table {font:13px/1.5 var(--sheet-font)}
+#qstats-summary .qc-month-table :is(th,td) {padding:5px}
+#qstats-summary .qc-report-grid {align-items:stretch}
+#qstats-summary .qc-chart {min-height:195px}
+#qstats-summary .qc-detail {margin-top:14px}
+#qstats-root .annual-report-page .report-export-footer {display:flex;justify-content:flex-end;align-items:center;gap:8px;padding-top:14px}
+#qstats-root .annual-report-page .report-export-footer button {background:#355a46;color:white;border:1px solid #365943;border-radius:7px;padding:6px 12px;font:600 13px var(--sheet-font);cursor:pointer}
+#qstats-root .report-export-footer button:disabled {opacity:.5;cursor:default}
+#qstats-tracking .qwt-heading,#qstats-tracking .qir-controls,#qstats-tracking .qwt-status-line:not(:has([role=status]:not(:empty))) {display:none}
+#qstats-tracking .qwt-status-line {font-size:13px;margin-bottom:8px}
+#qstats-tracking footer.qwt-controls:not([hidden]) {display:flex;justify-content:flex-end;align-items:center;gap:8px}
+#qstats-tracking footer[hidden] {display:none}
+@container (max-width:650px) {
+  #qstats-summary,#qstats-tracking {padding:10px}
+  #qstats-summary .qc-report-grid {grid-template-columns:minmax(0,1fr)}
+  #qstats-summary .qc-chart-panel {border-top:1px solid var(--sheet-line)}
+  #qstats-summary .qc-table-panel {border-right:0}
+}
+
+#qstats-summary .qc-report[hidden] { display:none }
+#qstats-skim .rate-bar { background:#686868 }
+#qstats-tracking [data-table]:has(.skim-scroll) { overflow:visible }
+#qstats-tracking [data-table] .skim { min-width:0 }
+
+/* Shared search appearance. Each workspace owns the control's dimensions. */
+body.qc-liquid-glass :is(
+  #qsToolbar #qsSearch, #page-records .records-search,
+  #qis-review-controls .qis-review-search, #qsum-root #qsum-search, #page-defectlib #defLibSearch
+) {
+  background-color:color-mix(in srgb,var(--text-hi) 6%,var(--bg-card)) !important;
+  border-color:transparent !important;
+  border-radius:999px;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text-hi) 3%,transparent);
+}
+body.qc-liquid-glass :is(
+  #qsToolbar #qsSearch, #page-records .records-search,
+  #qis-review-controls .qis-review-search, #qsum-root #qsum-search, #page-defectlib #defLibSearch
+):focus-within {
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent);
+}
+body.qc-liquid-glass :is(#page-records .records-search,#qis-review-controls .qis-review-search) input {
+  background-color:transparent !important;
+}
+body.qc-liquid-glass #page-records .records-search svg {color:var(--text-dim)}

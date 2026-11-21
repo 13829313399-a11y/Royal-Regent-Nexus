@@ -15,7 +15,7 @@ export interface CartonDashboardWorkspace {
   pending_splits: DashboardOrder[]; pending_split_count: number
 }
 export const cartonDashboardApi = {
-  async workspace(factory: string, { signal, ...filters }: { customer: string; search: string; status: string; kind: string; offset: number; limit: number; signal?: AbortSignal }) {
+  async workspace(factory: string, { signal, ...filters }: { customer: string; search: string; responsibility_scope?: 'OWN' | 'ALL'; status: string; kind: string; offset: number; limit: number; signal?: AbortSignal }) {
     return (await http.get<CartonDashboardWorkspace>('/carton-procurement/dashboard/workspace', { params: { factory_id: factory, ...filters }, signal })).data
   },
   async batch(factory: string, id: string) {

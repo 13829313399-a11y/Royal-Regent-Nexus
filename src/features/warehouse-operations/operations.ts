@@ -58,6 +58,9 @@ export function remaining(total: string, used = '0'): string {
   const digits = (difference < 0n ? -difference : difference).toString().padStart(scale + 1, '0')
   return scale ? `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}` : `${sign}${digits}`
 }
+export function hasUnissuedRemainder(row: WarehouseDocument): boolean {
+  return row.kind === 'REQUEST' && !row.reversed && !row.closed && Number(remaining(row.data.quantity, row.issued_quantity)) > 0
+}
 export function documentProgress(row: WarehouseDocument): string {
   if (row.reversed) return '已冲销，原单保留'
   if (row.kind === 'CORRECTION') {

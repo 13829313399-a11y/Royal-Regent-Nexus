@@ -10,12 +10,15 @@ import IamLeaveGuard from '@/components/iam/workspace/IamLeaveGuard.vue'
 import PositionReviewPane from '../PositionReviewPane.vue'
 import PasswordResetPanel from './PasswordResetPanel.vue'
 import IdentityRecords from '../IdentityRecords.vue'
+import { iamStudioEnabled } from '@/components/iam/workspace/iam-navigation'
+import StudioTimeline from '../studio/StudioTimeline.vue'
 import AuditTimeline from '../AuditTimeline.vue'
 import { identityApi, type OrganizationCatalog } from '@/api/identity'
 import { taskLabels, taskStateLabels, taskStatusText, workspaceCapabilities, type WorkspaceTask } from './contracts'
 import '../position-workbench.css'
 import './workspace.css'
 const route = useRoute(), router = useRouter(), auth = useAuthStore()
+const combined = computed(() => iamStudioEnabled && !route.query.source && !route.query.task && !route.query.route_error)
 const caps = computed(() => workspaceCapabilities(p => auth.can(p)))
 const source = computed(() => String(route.query.source || options.value[0]?.id || ''))
 const options = computed(() => [
@@ -42,7 +45,7 @@ async function load() {
   const current = ++generation, actor = viewer.value
   rows.value = []; total.value = null; error.value = ''; loading.value = true
   try {
-    if (!allowed.value || source.value === 'audit') return
+    if (combined.value || !allowed.value || source.value === 'audit') return
     if (from.value && to.value && from.value > to.value) throw new Error('开始时间不能晚于结束时间')
     const data = await iamWorkspaceApi.tasks({ kind: source.value === 'position' ? 'position-registration' : source.value,
       target_user_id: person.value, state: state.value, q: q.value, page: page.value, page_size: 30,
@@ -64,12 +67,14 @@ async function filter(next = 1) {
 }
 async function choose(task: string) { if (person.value) { if (!(await permitLeave())) return; localSelected.value = task } else await router.replace({ query: { ...route.query, task } }); mobileDetail.value = true }
 watch([source, person], () => { localSelected.value = '' })
-watch([source, page, person, viewer], () => { catalog.value = undefined; void load() }, { immediate: true })
+watch([combined, source, page, person, viewer], () => { catalog.value = undefined; void load() }, { immediate: true })
 watch(viewer, () => { q.value = ''; error.value = '' }, { flush: 'sync' })
 onBeforeUnmount(() => { ++generation })
 </script>
 <template>
-  <section class="pw-root iw-root iw-records" :class="{ 'iw-mobile-detail': mobileDetail && selected }">
+  <section class="pw-root iw-root iw-records" :class="{ 'iw-mobile-detail': mobileDetail && selected, 'iam-records-stream': combined }">
+    <StudioTimeline v-if="combined" />
+    <template v-else><RouterLink v-if="iamStudioEnabled" :to="{path:'/system/iam/audit'}">返回审计记录</RouterLink>
     <header class="iw-page-heading"><div><h1>操作记录</h1><p>按来源查询处理结果；数量仅对应当前来源和筛选</p></div></header>
     <nav class="iw-view-switch" aria-label="记录来源"><RouterLink v-for="o in options" :key="o.id" :aria-current="source === o.id ? 'page' : undefined" :to="{ query: { source: o.id, ...(person ? { person } : {}) } }">{{ o.name }}</RouterLink></nav>
     <p v-if="!allowed" class="pw-error" role="alert">当前链接无效或没有此来源的查看权限，请选择获授权的记录来源。</p>
@@ -86,11 +91,12 @@ onBeforeUnmount(() => { ++generation })
       <p v-if="error" class="pw-error" role="alert">{{ error }}<Button variant="outline" @click="load">重试</Button></p><p v-if="partial" class="pw-notice">当前来源读取不完整，统计暂不可用。</p>
       <div class="iw-workspace" :class="{ 'has-detail': mobileDetail && selected }">
         <aside class="iw-list" aria-label="操作记录列表"><header><strong>{{ options.find(o => o.id === source)?.name }}</strong><small>{{ total === null ? '统计暂不可用' : `${total} 条` }}</small></header><div class="iw-list-scroll"><p v-if="loading" role="status" class="pw-empty">正在读取…</p><button v-for="row in rows" :key="row.key" class="iw-row" :aria-pressed="selected === row.key" :disabled="locked" @click="choose(row.key)"><span><strong>{{ row.subject.display_name }}</strong><small>{{ taskLabels[row.kind] }}</small></span><span><strong>{{ row.proposed_position }}</strong><small>{{ taskStatusText(row) }}</small></span><span>{{ formatBusinessDateTime(row.created_at) }}</span></button><p v-if="!loading && !rows.length && !error" class="pw-empty">当前筛选没有记录。</p></div><footer class="iw-pagination"><span>第 {{ page }} 页</span><Button variant="ghost" :disabled="loading || locked || page <= 1" @click="filter(page - 1)">上一页</Button><Button variant="ghost" :disabled="loading || locked || (total !== null ? page * 30 >= total : rows.length < 30)" @click="filter(page + 1)">下一页</Button></footer></aside>
-        <PositionReviewPane v-if="selected.startsWith('position:') || selected.startsWith('registration:')" :item-key="selected" :catalog="catalog" compact @dirty="dirty = $event" @locked="locked = $event" @back="mobileDetail = false" @saved="load" />
+        <PositionReviewPane v-if="selected.startsWith('position:') || selected.startsWith('registration:')" :key="selected" :item-key="selected" :catalog="catalog" readonly :studio="iamStudioEnabled" compact @dirty="dirty = $event" @locked="locked = $event" @back="mobileDetail = false" @saved="load" />
         <PasswordResetPanel v-else-if="selected.startsWith('password-reset:')" :request-id="selected.slice(15)" readonly @back="mobileDetail = false" />
-        <IdentityRecords v-else-if="selected.startsWith('identity-change:')" :request-id="selected.slice(16)" embedded mode="changes" @locked="locked = $event" @dirty="dirty = $event" @back="mobileDetail = false" />
+        <IdentityRecords v-else-if="selected.startsWith('identity-change:')" :request-id="selected.slice(16)" readonly embedded mode="changes" @locked="locked = $event" @dirty="dirty = $event" @back="mobileDetail = false" />
         <div v-else class="pw-empty iw-welcome">选择一条记录查看结果与依据</div>
       </div>
+    </template>
     </template>
     <IamLeaveGuard ref="leaveGuard" :dirty="dirty" :busy="locked" />
   </section>

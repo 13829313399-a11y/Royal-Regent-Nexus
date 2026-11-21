@@ -86,7 +86,7 @@ async def history_parse(db, user, factory, customer, upload):
     authorize(db, user, factory)
     mapping._ensure_customer_factory(customer, factory)
     content = await upload.read(history.MAX_BYTES + 1)
-    workbook = await run_order_job(history.parse_workbook, content, db=db)
+    workbook = await run_order_job(history.parse_workbook, content, recover_edu_items=customer == 'edu', db=db)
     parsed = history.preview(db, content, upload.filename or "", factory, customer, mapping.CUSTOMER_NAMES[customer], workbook=workbook)
     return content, parsed
 
@@ -298,6 +298,7 @@ async def import_orders(customer_code: str, request: Request, factory_id: str = 
     source_kind: Literal["formal", "supplementary"] = Form("formal"),
     reconcile_line_id: str = Form(""), expected_revision: int | None = Form(None), reconciliation_reason: str = Form(""),
     po_files: list[UploadFile] = File(...), schedule_file: UploadFile = File(...),
+    schedule_files: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     authorize(db, current_user, factory_id, "write")
     authorize(db, current_user, factory_id, "read")
@@ -318,11 +319,10 @@ async def import_orders(customer_code: str, request: Request, factory_id: str = 
     extensions = ((".xls", ".xlsx") if customer_code == "buzzbee" else (".pdf",)) if special else mapping._get_mapped_customer_spec(customer_code, factory_id).po_extensions
     mapping._validate_upload(schedule_file, kind="客户排期", supported=(".xlsx",))
     files = await mapping._read_po_uploads(po_files, supported=extensions)
-    schedule_content = await schedule_file.read(mapping.MAX_SCHEDULE_BYTES + 1)
-    if not schedule_content or len(schedule_content) > mapping.MAX_SCHEDULE_BYTES:
-        raise HTTPException(400, "客户排期为空或超过 35MB 限制")
+    from app.services.customer_order_zuru_native import read_uploads
+    schedule_name, schedule_content = await read_uploads(customer_code, schedule_file, schedule_files)
     kwargs = dict(customer_code=customer_code, factory_id=factory_id, received_date=received_date,
-        po_files=files, schedule_file_name=schedule_file.filename or "", schedule_content=schedule_content)
+        po_files=files, schedule_file_name=schedule_name, schedule_content=schedule_content)
     try:
         # Every writer rebuilds the authoritative preview from these exact files.
         # Reuse it instead of parsing the PO and schedule in a second worker.
@@ -347,9 +347,10 @@ async def import_orders(customer_code: str, request: Request, factory_id: str = 
         raise HTTPException(400, str(exc)) from exc
     resolved["customer_name"] = mapping.CUSTOMER_NAMES.get(customer_code, customer_code)
     result = transaction(db, lambda: ledger.import_preview(db, preview=resolved,
-        files=[(name, content, source_kind) for name, content in files] + [(schedule_file.filename or "schedule.xlsx", schedule_content, "schedule")],
+        files=[(name, content, source_kind) for name, content in files] + [(schedule_name, schedule_content, "schedule")],
         source_kind=source_kind, actor=ledger.actor_name(current_user), reason=reconciliation_reason.strip() if reconcile_line else reason,
         reconcile_line=reconcile_line, expected_revision=expected_revision,
+        authorize_dispatch=lambda: authorize_locked_dispatch(db, current_user, factory_id),
         controls={"preview_fingerprint": preview_fingerprint, "confirmed_issue_keys": sorted(actual_keys), "manual_overrides": overrides, "reason": reason}))
     result["warehouse_sync"] = await mapping.sync_report(db, current_user, request, resolved, file_name, output, "GENERATED")
     return result

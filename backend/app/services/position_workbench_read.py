@@ -34,15 +34,18 @@ def allowed_scope(actor, org, department):
                for code in ("system:user_manage", "system:access_manage"))
 
 
-def provisional_registration_users(db):
+def provisional_registration_users(db, user_ids=None):
     # Rejected applicants may resubmit elsewhere while their unconfirmed legacy
     # profile still holds an earlier declaration. It is not a formal assignment.
     formal = select(EmployeeAssignment.id).where(EmployeeAssignment.user_id == AuthUser.id,
         EmployeeAssignment.employment_epoch == EmployeeProfile.employment_epoch,
         EmployeeAssignment.lifecycle_state == "approved",
         or_(EmployeeAssignment.valid_until.is_(None), EmployeeAssignment.valid_until > stamp())).exists()
-    return set(db.scalars(select(AuthUser.id).join(EmployeeProfile).where(AuthUser.status == "pending",
-        EmployeeProfile.identity_mode == "legacy", EmployeeProfile.confirmation_status == "pending", ~formal)))
+    query = select(AuthUser.id).join(EmployeeProfile).where(AuthUser.status == "pending",
+        EmployeeProfile.identity_mode == "legacy", EmployeeProfile.confirmation_status == "pending", ~formal)
+    if user_ids is not None:
+        query = query.where(AuthUser.id.in_(user_ids))
+    return set(db.scalars(query))
 
 
 def ensure_item_scope(db, actor, row, *, permissions=("system:user_manage", "system:access_manage")):
@@ -183,12 +186,27 @@ def queue(db, actor, *, page=1, page_size=30, q="", status="pending", kind="", o
             IamOutbox.status == "retry", IamOutbox.last_error == "POSITION_NO_RECIPIENT").limit(1)))}
 
 
-def permission_tuples(db, keys):
+def permission_tuples(db, keys, *, permissions=None):
     from app.services.identity_catalog import DEPARTMENTS, FACTORIES
-    names = {p.code: p.name for p in db.scalars(select(AuthPermission))}
-    return [{"permission_code": p, "permission_name": names.get(p, p), "factory_id": f,
-        "factory_name": FACTORIES.get(f, "集团管理范围"), "department": d,
-        "department_name": DEPARTMENTS.get(d, "通用范围")} for p, f, d in sorted(keys)]
+    if permissions is None:
+        permissions = {p.code: p for p in db.scalars(select(AuthPermission))}
+    departments = {**DEPARTMENTS, "system": "系统管理", "*": "全部部门（通配）", "": "未指定部门（按厂区核验）"}
+    factories = {**FACTORIES, "*": "集团管理范围", "group-management": "集团总务"}
+    return [{"permission_code": p, "permission_name": permissions[p].name if p in permissions else p, "factory_id": f,
+        "factory_name": factories.get(f, f), "department": d, "department_name": departments.get(d, d)}
+        for p, f, d in sorted(keys)]
+
+
+def permission_diff_risk(db, diffs, permissions=None):
+    from app.services.iam import _permission_risk
+    if diffs["added"]:
+        return True
+    changed = {item["permission_code"] for part in ("removed", "source_changed") for item in diffs[part]}
+    if not changed:
+        return False
+    if permissions is None:
+        permissions = {p.code: p for p in db.scalars(select(AuthPermission).where(AuthPermission.code.in_(changed)))}
+    return any(_permission_risk(db, permissions.get(code)) == "high" for code in sorted(changed))
 
 
 def current_sources(db, user_id):
@@ -202,7 +220,7 @@ def current_sources(db, user_id):
             .where(AuthUserRole.user_id == user_id)):
         if meta and meta.state != "active":
             continue
-        # Preserve future sources in the read summary; only the selected current primary can be replaced.
+        # Keep scheduled sources visible alongside current bindings.
         if meta and meta.valid_until and instant(meta.valid_until) <= now:
             continue
         if meta and meta.assignment_id:
@@ -232,6 +250,7 @@ def current_sources(db, user_id):
 
 
 def detail(db, actor, item_key):
+    from app.services.access_studio import writes_enabled as studio_writes_enabled
     from app.services.iam import _get_revision
     row = load_item(db, actor, item_key)
     identity = resolve_identity_at(db, row.user_id)
@@ -254,6 +273,7 @@ def detail(db, actor, item_key):
         "current_bindings": bindings, "independent_allows": allows, "explicit_denials": denies,
         "registration_details": None if is_position else {"display_name": row.display_name, "phone": row.phone, "email": row.email},
         "can_keep_permissions": is_position and identity["identity_mode"] == "v2" and not blocked,
+        "studio_writes_enabled": reviews.writes_enabled() and studio_writes_enabled(),
         "blocked_reasons": blocked,
         "review_comment": row.review_comment,
         "confirmed_profile": json.loads(row.confirmed_snapshot_json) if is_position else None,

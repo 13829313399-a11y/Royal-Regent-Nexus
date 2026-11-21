@@ -62,17 +62,18 @@ test('report center defaults to weekly and switches reports even while annual da
     assert.deepEqual(Array.from(select.options, option=>option.textContent),['月内报告','年报']);
     for(const key of ['daily','monthly','analysis','monthly','weekly']){
       if(key==='analysis' || select.value==='analysis') {
-        select.value=key==='analysis' ? 'analysis' : 'intra-month';
-        p.w.changeReportType(select);
+        const mode = key==='analysis' ? 'analysis' : 'intra-month';
+        p.w.changeReportType(p.d.querySelector('[data-report-mode="'+mode+'"]'));
       } else p.w.changeReportPeriod(p.d.querySelector('[data-report-page="'+key+'"]'));
       flush();
       assert.equal(select.value,key==='analysis' ? 'analysis' : 'intra-month');
       assert.equal(p.d.getElementById('reportPeriodSwitch').hidden,key==='analysis');
       assert.equal(select.closest('.page.active').id,'page-'+key);
-      if(key==='analysis') assert.equal(p.d.activeElement,select);
+      if(p.d.activeElement.hasAttribute('data-report-mode')) assert.equal(p.d.activeElement.dataset.reportMode,key==='analysis'?'analysis':'intra-month');
       else assert.equal(p.d.activeElement.dataset.reportPage,key);
       assert.equal(p.d.activeElement.disabled,false);
-      if(key!=='analysis') assert.equal(p.d.activeElement.getAttribute('aria-pressed'),'true');
+      assert.equal(p.d.activeElement.getAttribute('aria-pressed'),'true');
+      assert.equal(p.d.querySelector('#reportCenterNav [aria-pressed="true"]').dataset.reportMode,key==='analysis'?'analysis':'intra-month');
       assert(!select.disabled);
     }
     const rendered=[];

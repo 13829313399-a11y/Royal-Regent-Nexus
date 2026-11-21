@@ -138,12 +138,18 @@ class SubmitRequisition(Command):
     lines: Annotated[list[DemandLine], Field(min_length=1, max_length=300)]
 
 
+class EtaPurchaseSource(Strict):
+    id: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    revision: Annotated[int, Field(strict=True, ge=1)]
+
+
 class EtaBatch(Strict):
     row: Annotated[int, Field(strict=True, ge=0, le=299)]
     quantity: Quantity
     expected_date: date
-    supplier: Text
-    purchase_reference: Text
+    supplier: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    purchase_reference: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    purchase_source: EtaPurchaseSource | None = None
 
 
 class ReplyEta(Command):

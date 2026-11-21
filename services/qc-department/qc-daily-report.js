@@ -1,10 +1,19 @@
-/* Huaxing daily report. The actor-scoped gateway owns the data and workbook. */
+/* QC daily report. The actor-scoped gateway owns the data and workbook. */
 (function (root) {
   'use strict';
   const doc = root.document;
-  const enabled = () => root.__QC_NEXUS?.factory === 'huaxing';
+  const enabled = () => !!root.__QC_NEXUS?.factory;
   const exportAllowed = () => root.__QC_NEXUS?.exportAllowed === true;
-  function createReport(period, inputId, label, overviewLabel) {
+  function syncCustomerOptions(select, customers) {
+    if (!Array.isArray(customers)) return;
+    const previous = select.selectedOptions[0];
+    const value = select.value;
+    const options = customers.map(item => new Option(item.label,item.key));
+    if (value && !customers.some(item => item.key === value)) options.push(previous);
+    select.replaceChildren(new Option('全部客户',''),...options);
+    select.value = value;
+  }
+  function createReport(period, inputId, customerId, label, overviewLabel) {
     const area = () => doc.getElementById(period + 'ReportBody');
     const dateInput = () => doc.getElementById(inputId);
     const esc = value => root._esc(value);
@@ -96,8 +105,10 @@
       const host = area();
       host.querySelector('[data-qdr-compact]').hidden = mode !== 'compact';
       host.querySelector('[data-qdr-full]').hidden = mode !== 'full';
-      host.querySelectorAll('[data-qdr-view]').forEach(button =>
-        button.setAttribute('aria-pressed', String(button.dataset.qdrView === mode)));
+      host.querySelectorAll('[data-qdr-view]').forEach(button => {
+        const active = button.dataset.qdrView === mode;
+        button.setAttribute('aria-pressed', String(active));
+      });
     }
 
     function locateDetail(index) {
@@ -114,15 +125,27 @@
     }
 
     function paint(report) {
-      area().innerHTML = '<div class="qdr">' + overview(report, true) +
+      const footer = exportAllowed() ? '<div class="qdr-footer"><button type="button" class="qdr-export" data-qdr-export' +
+        (report.total ? '' : ' disabled') + '>导出 Excel</button><span class="qdr-muted" role="status" data-qdr-export-status></span></div>' : '';
+      if (period === 'daily') {
+        const empty = '<p class="qdr-empty">该日期暂无可列入报表的已审核验货记录</p>';
+        area().innerHTML = '<section class="qdr template-sheet" aria-label="日报验货明细">' +
+          '<div class="daily-sheet-body"><div class="daily-table-scroll" role="region" aria-label="完整验货明细" tabindex="0" data-qdr-full>' +
+          (report.total ? fullTable(report) : empty) + '</div>' +
+          footer + '</div></section>';
+      } else {
+        area().innerHTML = '<div class="qdr">' + overview(report, true) +
         '<section class="qdr-panel qdr-detail" aria-label="验货明细"><div class="qdr-heading"><div><h3>验货明细</h3><small>' +
         report.total + ' 条记录</small></div>' + (report.total ? '<div class="qdr-views" role="group" aria-label="明细视图">' +
         '<button type="button" data-qdr-view="compact">精简</button><button type="button" data-qdr-view="full">完整 13 列</button></div>' : '') + '</div>' +
         (report.total ? '<div data-qdr-compact>' + compactTable(report) + '</div><div class="qdr-scroll" data-qdr-full hidden role="region" aria-label="完整 13 列" tabindex="0">' + fullTable(report, true) + '</div>'
           : '<p class="qdr-empty">该日期暂无可列入报表的已审核验货记录</p>') + '</section>' +
-        (exportAllowed() ? '<div class="qdr-footer"><button type="button" class="qdr-export" data-qdr-export' +
-          (report.total ? '' : ' disabled') + '>导出 Excel</button><span class="qdr-muted" role="status" data-qdr-export-status></span></div>' : '') + '</div>';
-      if (!report.total) return;
+        footer + '</div>';
+      }
+      const button = area().querySelector('[data-qdr-export]');
+      if (button && report.total) button.onclick = () => download(report, button);
+      if(period==='daily')root.QcReportWorkbook?.mount('daily','daily',area().querySelector('[data-qdr-full]'),report,load);
+      if (period === 'daily' || !report.total) return;
       setMode();
       const followToggle = area().querySelector('.qdr-follow-toggle');
       if (followToggle) followToggle.onclick = () => {
@@ -151,16 +174,18 @@
           button.setAttribute('aria-label', button.textContent + '第 ' + (index+1) + ' 条验货详情');
         };
       });
-      const button = area().querySelector('[data-qdr-export]');
-      if (button) button.onclick = () => download(report, button);
     }
 
     async function load() {
       const id = ++sequence;
       const input = dateInput();
+      const customerSelect = doc.getElementById(customerId);
+      customerSelect.hidden = false;
+      if (period === 'daily') customerSelect.onchange = load;
       input.closest('.page').classList.add('qdr-active');
       if (!initialized && !input.value) input.value = period === 'monthly' ? root.todayStr().slice(0,7) : root.todayStr();
       initialized = true;
+      root.QcReportDates?.sync(input);
       const day = selectedDate();
       snapshot = null;
       const rangeLabel = input.closest('.report-toolbar').querySelector('.qdr-period-range');
@@ -169,15 +194,21 @@
       area().innerHTML = '<p class="qdr-message" role="status">' + (day ? '正在读取已审核验货记录…' : '请选择报告日期') + '</p>';
       if (!day) return;
       try {
-        const response = await read(path + '?' + new URLSearchParams({date:day,period}));
+        const params = new URLSearchParams({date:day,period});
+        const customer = customerSelect.value;
+        if (customer) params.set('customer',customer);
+        const response = await read(path + '?' + params);
         const report = await response.json();
         if (id !== sequence || selectedDate() !== day) return;
         if (report.date !== day || report.period !== period) throw Error('返回的报表日期不一致，请重试');
+        if ((report.customer || '') !== customer) throw Error('报告客户与当前筛选不一致，请重试');
+        if (period === 'weekly' && root.QcWeeklyTemplates) root.QcWeeklyTemplates.syncCustomers(report.customers);
+        else syncCustomerOptions(customerSelect,report.customers);
         paint(report);
         let range = input.closest('.report-toolbar').querySelector('.qdr-period-range');
         if (!range) {
           range = doc.createElement('span'); range.className = 'qdr-period-range qdr-muted';
-          input.closest('label').after(range);
+          input.closest('.report-date-field').after(range);
         }
         range.textContent = period === 'daily' ? '' : periodLabel(report);
         snapshot = report;
@@ -196,6 +227,7 @@
       status.textContent = '正在生成…';
       try {
         const params = new URLSearchParams({date:report.date,period,revision:report.revision});
+        if (report.customer) params.set('customer',report.customer);
         const response = await read(path + '/export?' + params);
         const data = await response.blob();
         if (snapshot !== report || selectedDate() !== report.date) return;
@@ -215,12 +247,363 @@
       }
     }
 
-    return {enabled, load};
+    return {enabled, load, syncCustomers: customers => syncCustomerOptions(doc.getElementById(customerId),customers)};
   }
   root.QcPeriodReports = {
-    daily: createReport('daily', 'dailyDate', '验货日报', '当日验货概览'),
-    weekly: createReport('weekly', 'weeklyDate', '验货周报', '本周验货概览'),
-    monthly: createReport('monthly', 'monthlyMonth', '验货月报', '本月验货概览'),
+    daily: createReport('daily', 'dailyDate', 'qdrCustomer', '验货日报', '当日验货概览'),
+    weekly: createReport('weekly', 'weeklyDate', 'qwtCustomer', '验货周报', '本周验货概览'),
+    monthly: createReport('monthly', 'monthlyMonth', 'qmtCustomer', '验货月报', '本月验货概览'),
   };
   root.QcDailyReport = root.QcPeriodReports.daily;
+})(window);
+
+/* Report pickers write through the original control and its existing change handlers. */
+(function (root) {
+  'use strict';
+  const doc = root.document;
+  const pad = value => String(value).padStart(2, '0');
+  const yearText = year => String(year).padStart(4, '0');
+  const monthKey = (year, month) => yearText(year) + '-' + pad(month);
+  const today = () => root.todayStr();
+  const buttons = new WeakMap();
+  let open = null;
+
+  function close(restoreFocus = false) {
+    if (!open) return;
+    const {trigger, panel} = open;
+    open = null;
+    panel.remove();
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.removeAttribute('aria-controls');
+    if (restoreFocus) trigger.focus();
+  }
+
+  function commit(value) {
+    const input = open.input;
+    close(true);
+    if (input.disabled || input.value === value) return;
+    input.value = value;
+    input.dispatchEvent(new root.Event('change', {bubbles:true}));
+    sync(input); // A template with an unsaved edit may have restored the previous value.
+  }
+
+  function place() {
+    if (!open) return;
+    const {panel, trigger} = open;
+    const rect = trigger.getBoundingClientRect();
+    if (!rect.width) { close(); return; }
+    const left = Math.max(8, Math.min(rect.left, root.innerWidth - panel.offsetWidth - 8));
+    const below = root.innerHeight - rect.bottom - 12;
+    const above = rect.top - 12;
+    const up = panel.scrollHeight > below && above > below;
+    panel.style.maxHeight = Math.max(80, up ? above : below) + 'px';
+    panel.style.left = left + 'px';
+    panel.style.top = (up ? Math.max(6, rect.top - panel.offsetHeight - 5) : rect.bottom + 5) + 'px';
+  }
+
+  function makeButton(text, action, label = text) {
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.textContent = text;
+    button.setAttribute('aria-label', label);
+    button.onclick = action;
+    return button;
+  }
+
+  function draw(focusGrid = true) {
+    const {input, panel, kind, view, year, month} = open;
+    const selected = input.value;
+    const prefix = monthKey(year, month);
+    const startYear = year - (year - 1) % 12;
+    panel.replaceChildren();
+    const header = doc.createElement('div');
+    header.className = 'qdr-picker-head';
+    const title = view === 'days' ? year + '年' + month + '月' : view === 'months' ? year + '年' :
+      kind === 'year' ? '选择年份' : startYear + ' — ' + Math.min(9999, startYear + 11);
+    if (kind !== 'year') {
+      const step = view === 'days' ? 1 : view === 'months' ? 12 : 144;
+      const navigate = delta => {
+        const offset = (year - 1) * 12 + month - 1 + delta * step;
+        open.year = Math.floor(offset / 12) + 1;
+        open.month = offset % 12 + 1;
+        draw(false);
+        open.panel.querySelector(delta < 0 ? '.qdr-prev' : '.qdr-next')?.focus();
+      };
+      const unit = view === 'days' ? '个月' : view === 'months' ? '一年' : '一组年份';
+      const prev = makeButton('‹', () => navigate(-1), '上' + unit);
+      const next = makeButton('›', () => navigate(1), '下' + unit);
+      prev.className = 'qdr-prev'; next.className = 'qdr-next';
+      prev.disabled = (year - 1) * 12 + month - 1 < step;
+      next.disabled = (year - 1) * 12 + month - 1 + step >= 9999 * 12;
+      const heading = view === 'years' ? doc.createElement('strong') :
+        makeButton(title, () => { open.view = view === 'days' ? 'months' : 'years'; draw(); });
+      heading.textContent = title;
+      header.append(prev, heading, next);
+      panel.append(header);
+    }
+    const grid = doc.createElement('div');
+    grid.className = 'qdr-picker-grid ' + (view === 'days' ? 'qdr-days' : 'qdr-periods');
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-label', title);
+    function choice(text, label, current, action, isToday = false) {
+      const b = makeButton(text, action, label);
+      b.setAttribute('aria-pressed', String(current));
+      if (isToday) b.setAttribute('aria-current', 'date');
+      grid.append(b);
+    }
+    if (view === 'days') {
+      for (const name of '一二三四五六日') {
+        const weekday = doc.createElement('span');
+        weekday.textContent = name; grid.append(weekday);
+      }
+      const first = new Date(prefix + '-01T00:00:00Z');
+      grid.style.setProperty('--first-column', String((first.getUTCDay() + 6) % 7 + 1));
+      first.setUTCMonth(first.getUTCMonth() + 1, 0);
+      const currentDate = today();
+      for (let day = 1; day <= first.getUTCDate(); day++) {
+        const value = prefix + '-' + pad(day);
+        choice(day, value, selected === value, () => commit(value), currentDate === value);
+      }
+    } else if (view === 'months') {
+      for (let m = 1; m <= 12; m++) {
+        const value = monthKey(year, m);
+        choice(m + '月', year + '年' + m + '月', selected.slice(0,7) === value, () => {
+          if (kind === 'month') commit(value);
+          else { open.month = m; open.view = 'days'; draw(); }
+        });
+      }
+    } else {
+      const years = kind === 'year' ? [...input.options].filter(o=>o.value && !o.disabled).map(o=>o.value) :
+        Array.from({length:Math.min(12, 10000 - startYear)}, (_, i) => yearText(startYear + i));
+      if (kind === 'year') panel.style.setProperty('--qdr-year-columns',String(Math.max(1, Math.min(3, years.length))));
+      for (const y of years) choice(Number(y) + '年', Number(y) + '年', selected.slice(0,4) === y, () => {
+        if (kind === 'year') commit(y);
+        else { open.year = Number(y); open.view = 'months'; draw(); }
+      });
+    }
+    panel.append(grid);
+    const choices = [...grid.querySelectorAll('button')];
+    if (choices.length) {
+      const cursor = grid.querySelector('[aria-pressed="true"]') || grid.querySelector('[aria-current="date"]') || choices[0];
+      choices.forEach(b=>{ b.tabIndex = b === cursor ? 0 : -1; });
+      grid.onkeydown = event => {
+        const i = choices.indexOf(event.target);
+        if (i < 0) return;
+        const columns = view === 'days' ? 7 : 3;
+        const moves = {ArrowLeft:i-1,ArrowRight:i+1,ArrowUp:i-columns,ArrowDown:i+columns,Home:0,End:choices.length-1};
+        if (!Object.hasOwn(moves,event.key)) return;
+        event.preventDefault();
+        const next = choices[Math.max(0,Math.min(choices.length-1,moves[event.key]))];
+        event.target.tabIndex = -1; next.tabIndex = 0; next.focus();
+      };
+      if (focusGrid) cursor.focus({preventScroll:true});
+    }
+    if (kind !== 'year') {
+      const footer = doc.createElement('div');
+      footer.className = 'qdr-picker-footer';
+      footer.append(makeButton('清除', () => commit('')), makeButton(kind === 'month' ? '本月' : '今天',
+        () => commit(kind === 'month' ? today().slice(0,7) : today())));
+      panel.append(footer);
+    }
+    place();
+  }
+
+  function toggle(input, trigger) {
+    if (open?.trigger === trigger) { close(true); return; }
+    close();
+    if (input.disabled) return;
+    const kind = input.tagName === 'SELECT' ? 'year' : input.getAttribute('type') === 'month' ? 'month' : 'day';
+    const [year, month] = (input.value || today()).split('-').map(Number);
+    const panel = doc.createElement('div');
+    panel.className = 'qdr-date-panel';
+    panel.dataset.kind = kind;
+    panel.id = input.id + '-panel';
+    panel.setAttribute('role','dialog');
+    panel.setAttribute('aria-label',trigger.getAttribute('aria-label'));
+    doc.body.append(panel);
+    open = {input, trigger, panel, year, month:month || 1, kind, view:{year:'years',month:'months',day:'days'}[kind]};
+    trigger.setAttribute('aria-controls',panel.id);
+    trigger.setAttribute('aria-expanded','true');
+    draw();
+  }
+
+  // The weekly report always covers Monday through Sunday for the chosen day.
+  function weekCaption(value) {
+    const monday = new Date(value + 'T00:00:00Z');
+    monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
+    const sunday = new Date(monday);
+    sunday.setUTCDate(monday.getUTCDate() + 6);
+    const short = date => (date.getUTCMonth() + 1) + '月' + date.getUTCDate() + '日';
+    if (monday.getUTCMonth() === sunday.getUTCMonth()) {
+      return (monday.getUTCMonth() + 1) + '月' + monday.getUTCDate() + '–' + sunday.getUTCDate() + '日';
+    }
+    return short(monday) + '–' + short(sunday);
+  }
+
+  function sync(input) {
+    const field = input.closest('.report-date-field');
+    if (!field) return;
+    let trigger = buttons.get(input);
+    if (!trigger) {
+      trigger = makeButton('', () => toggle(input,trigger));
+      buttons.set(input,trigger);
+      trigger.className = 'qdr-date-trigger';
+      trigger.setAttribute('aria-haspopup','dialog');
+      trigger.setAttribute('aria-expanded','false');
+      field.append(trigger);
+      field.classList.add('qdr-date-ready');
+      if (input.tagName === 'SELECT') {
+        input.hidden = true;
+        field.querySelector('label').htmlFor = trigger.id = input.id + '-trigger';
+      }
+      input.addEventListener('keydown', event => {
+        if (event.key === 'F4' || (event.altKey && event.key === 'ArrowDown')) {
+          event.preventDefault(); toggle(input,trigger);
+        }
+      });
+      input.addEventListener('change', () => sync(input));
+    }
+    const [y,m,d] = input.value.split('-').map(Number);
+    const label = field.querySelector('label').textContent;
+    let display = y ? y+'年'+(m ? m+'月' : '')+(d ? d+'日' : '') : '选择'+label;
+    if (y && root.__QC_NEXUS?.factory) {
+      if (input.id === 'weeklyDate') display = weekCaption(input.value);
+      if (input.id === 'dailyDate') display = m+'月'+d+'日';
+      if (input.id === 'monthlyMonth') display = m+'月';
+    }
+    trigger.textContent = input.tagName === 'SELECT' ? (input.selectedOptions[0]?.textContent || display) : display;
+    trigger.setAttribute('aria-label', label+'，'+trigger.textContent);
+    trigger.disabled = input.disabled;
+    if (input.disabled && open?.input === input) close();
+  }
+
+  doc.addEventListener('pointerdown', event => {
+    if (open && !open.panel.contains(event.target) && !open.trigger.contains(event.target)) close();
+  });
+  doc.addEventListener('focusin', event => {
+    if (open && !open.panel.contains(event.target) && open.trigger !== event.target) close();
+  });
+  doc.addEventListener('keydown', event => {
+    if (!open) return;
+    if (event.key === 'Escape') { event.preventDefault(); close(true); }
+    if (event.key === 'Tab' && open.panel.contains(event.target)) {
+      const stops = [...open.panel.querySelectorAll('button:not(:disabled)')].filter(b=>b.tabIndex >= 0);
+      if (event.target === (event.shiftKey ? stops[0] : stops.at(-1))) {
+        // Resume the toolbar's tab order when leaving the portaled panel.
+        close(true);
+      }
+    }
+  });
+  root.addEventListener('resize',place);
+  doc.addEventListener('scroll',event=>{if(open && !open.panel.contains(event.target))place();},true);
+  root.QcReportDates = {sync, close};
+})(window);
+
+/* Direct report views. The template controllers own edits, data and export permissions. */
+(function (root) {
+  const doc = root.document;
+  const catalog = {
+    weekly: {detail:'各客户验货明细及汇总', issues:'验货问题与整改跟踪表'},
+    monthly: {orders:'订单对账明细', tracking:'问题整改跟踪', quality:'客户质量签核'},
+  };
+  const remembered = {};
+  const templateKey = period => 'qc.' + root.__QC_NEXUS.factory + '.template.' + period;
+  for (const period of Object.keys(catalog)) {
+    try {
+      const key = root.localStorage.getItem(templateKey(period));
+      if (Object.hasOwn(catalog[period],key)) remembered[period] = key;
+    } catch { /* Selection remains available within this session. */ }
+  }
+  const id = name => doc.getElementById(name);
+  function mountRefresh(period) {
+    const page = id('page-' + period);
+    const toolbar = page.querySelector('.report-toolbar');
+    if (toolbar.querySelector('.report-toolbar-refresh')) return;
+    const content = id({daily:'dailyReportBody', weekly:'qwtView', monthly:'qmtView'}[period]);
+    const refresh = doc.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'qc-refresh-icon report-toolbar-refresh';
+    refresh.title = '刷新数据';
+    refresh.setAttribute('aria-label', refresh.title);
+    toolbar.append(refresh);
+    const source = () => content.querySelector('[data-refresh],#qmtRefresh,#qwtRefresh,#qmtLoadRetry,#qwtLoadRetry');
+    function sync() {
+      refresh.disabled = period === 'daily' ? !!content.querySelector('.qdr-message[role=status]') : !source() || source().disabled;
+    }
+    refresh.onclick = () => period === 'daily' ? root.QcDailyReport.load() : source()?.click();
+    new MutationObserver(sync).observe(content, {childList:true, subtree:true, attributes:true, attributeFilter:['disabled']});
+    sync();
+  }
+  function createTabs(period, panel, choice, controller) {
+    const sheet = doc.createElement('div');
+    sheet.className = 'template-sheet';
+    panel.before(sheet);
+    const bar = doc.createElement('div');
+    bar.className = 'sheet-tab-bar';
+    const nav = doc.createElement('div');
+    nav.className = 'sheet-tabs';
+    nav.setAttribute('role','tablist');
+    nav.setAttribute('aria-label',period === 'weekly' ? '周报模板' : '月报模板');
+    bar.append(nav);
+    sheet.append(bar,panel);
+    panel.setAttribute('role','tabpanel');
+    panel.tabIndex = 0;
+    for (const [key,label] of Object.entries(catalog[period])) {
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.title = Array.from(choice.options).find(option => option.value === key)?.textContent || label;
+      button.id = 'template-' + period + '-' + key;
+      button.dataset.key = key;
+      button.setAttribute('role','tab');
+      button.setAttribute('aria-controls',panel.id);
+      button.onclick = () => {
+        if (choice.value !== key) controller.open(key);
+        // open() accepts or rejects the selection synchronously before loading.
+        updateTabs(period,nav,panel,choice.value);
+      };
+      nav.append(button);
+    }
+    nav.onkeydown = event => {
+      const buttons = Array.from(nav.children);
+      const index = buttons.indexOf(event.target);
+      const next = {ArrowRight:(index+1)%buttons.length, ArrowLeft:(index+buttons.length-1)%buttons.length, Home:0, End:buttons.length-1}[event.key];
+      if (index < 0 || next === undefined) return;
+      event.preventDefault();
+      buttons[next].focus();
+      buttons[next].click();
+    };
+    return nav;
+  }
+  function updateTabs(period,nav,panel,key) {
+    for (const button of nav.children) {
+      const active = button.dataset.key === key;
+      button.setAttribute('aria-selected',String(active));
+      button.tabIndex = active ? 0 : -1;
+      if (active) {
+        panel.setAttribute('aria-labelledby',button.id);
+        if (remembered[period] !== key) {
+          remembered[period] = key;
+          try { root.localStorage.setItem(templateKey(period),key); } catch {}
+        }
+      }
+    }
+  }
+  function enter(period) {
+    const weekly = period === 'weekly';
+    const prefix = weekly ? 'qwt' : 'qmt';
+    const controller = weekly ? root.QcWeeklyTemplates : root.QcMonthlyTemplates;
+    const input = id(weekly ? 'weeklyDate' : 'monthlyMonth');
+    if (!input.value) input.value = weekly ? root.todayStr() : root.todayStr().slice(0,7);
+    root.QcReportDates.sync(input);
+    id('page-' + period).classList.add('qdr-active');
+    mountRefresh(period);
+    const panel = id(prefix+'View'), choice = id(prefix+'Choice');
+    const nav = panel.parentElement.querySelector('.sheet-tabs') || createTabs(period,panel,choice,controller);
+    const key = remembered[period] || (weekly ? 'detail' : 'quality');
+    const loading = choice.value ? undefined : controller.open(key);
+    updateTabs(period,nav,panel,choice.value);
+    return loading;
+  }
+  root.QcReportSheets = {enter,mountRefresh};
 })(window);

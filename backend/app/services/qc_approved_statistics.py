@@ -14,10 +14,21 @@ import sqlite3
 from fastapi import HTTPException
 from app.core.config import settings
 from app.services import qc_inspection_summary as summary
+from app.services.identity_catalog import FACTORIES
 
 MAX_ROWS = 50000
 MAX_CUSTOMERS = 1000
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+
+def factory_label(factory):
+    if factory not in FACTORIES:
+        raise HTTPException(404, '此厂区未配置 QC 报表')
+    return FACTORIES[factory]
+
+
+def company_heading(factory):
+    return '华兴玩具制品（河源）有限公司' if factory == 'huaxing' else factory_label(factory)
 
 
 def _date(value):
@@ -159,6 +170,8 @@ def query(factory, params, *, _records=None, _report_snapshots=None, _dashboard_
             if _records is not None:
                 _records.append(dict(id=item['id'], date=report_date,
                     usesScheduleDate=date_source == 'schedule',
+                    quantity=item.get('quantity'),
+                    agency=str((item.get('inspectionExecution') or {}).get('institution') or item.get('agency') or ''),
                     customerKey=key,
                     customer=customer['name'], customerCode=customer['code'], result=result,
                     poNo=str(item.get('poNo') or ''), productName=str(item.get('productName') or ''),
@@ -241,7 +254,7 @@ def dashboard(factory, params):
     )
 
 
-def report(factory, params):
+def report(factory, params, *, all_detail_rows=False):
     """One validated read snapshot supplies facets, aggregates and paged details.
 
     Result/page affect details only; no client-side page can change the denominator.
@@ -309,12 +322,13 @@ def report(factory, params):
     page_size = 5
     pages = max(1, (len(details) + page_size - 1) // page_size)
     page = min(int(page), pages)
-    return dict(factory=factory, source=source['source'], ready=source['ready'],
+    revision = sha256(summary.dump([factory, year, month, day, customer, result, selected]).encode()).hexdigest()
+    return dict(factory=factory, source=source['source'], ready=source['ready'], revision=revision,
         filters=dict(year=year, month=month, day=day, customer=customer, result=result),
         options=dict(years=years, months=months, days=days, customers=customers),
         totals=_totals(Counter(r['result'] for r in selected)),
         months=[dict(month=k, **_totals(v)) for k, v in sorted(grouped.items())],
-        details=dict(items=details[(page-1)*page_size:page*page_size], total=len(details),
+        details=dict(items=details if all_detail_rows else details[(page-1)*page_size:page*page_size], total=len(details),
             page=page, pageSize=page_size, pages=pages),
         scheduleDateCount=sum(r['usesScheduleDate'] for r in selected),
         missingDate=sum(not r['date'] for r in rows), excluded=source['excluded'], notices=notices)

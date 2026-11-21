@@ -65,10 +65,10 @@ HUAXING_CUSTOMER_MAPPINGS: dict[str, HuaxingCustomerMappingSpec] = {
     "zuru": HuaxingCustomerMappingSpec(
         "zuru", "ZURU", (".pdf", ".xlsx"), (".xlsx",),
         "HUAXING_ZURU_PO_V2", "HEYUAN_BUSINESS_UNIFIED_HUAXING_V2",
-        "读取 ZURU 正单 PDF 或已核对的转换 Excel，保留 PO号＋原单Line、完整SKU-SPEC及本行Customer PO；写入统一三表，USD单独保留，不自动换算HKD。",
+        "读取 ZURU 正单 PDF 或已核对的转换 Excel，保留 PO号＋原单Line、完整SKU-SPEC及本行Customer PO；上传多份原周排期作参照，生成可复制的新单汇总，USD单独保留。",
     ),
     "edu": HuaxingCustomerMappingSpec(
-        "edu", "EDU", (".xls", ".xlsx", ".xlsm"), (".xls", ".xlsx", ".xlsm"),
+        "edu", "EDU", (".pdf", ".xls", ".xlsx", ".xlsm"), (".xls", ".xlsx", ".xlsm"),
         "HUAXING_EDU_ORDER_V1", "HUAXING_EDU_SCHEDULE_APPEND_V2",
         "按 PO 版本去重，自动续编 EDUHX 单号；验货期为走货期前 7 天并避开周末。",
     ),
@@ -251,7 +251,7 @@ def _prepare_edu(
     warnings: list[str] = []
     for file_name, content in po_files:
         try:
-            parsed = edu_po_parser.parse_po_file(content, filename=file_name)
+            parsed = edu_po_parser.parse_edu_po_file(content, filename=file_name)
         except Exception as exc:
             raise HuaxingCustomerOrderError(f"{file_name}：无法读取 EDU PO：{exc}") from exc
         if parsed.get("customer_type") != "EDU":

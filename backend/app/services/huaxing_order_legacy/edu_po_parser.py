@@ -208,6 +208,13 @@ def parse_po_file(source: str | Path | bytes | BinaryIO, filename: str | None = 
     raise ValueError(f"不支持的文件类型：{suffix or '未知'}")
 
 
+def parse_edu_po_file(source, filename):
+    if Path(filename).suffix.lower() == '.pdf':
+        from .edu_pdf import parse_pdf
+        return parse_pdf(source, filename)
+    return parse_po_file(source, filename=filename)
+
+
 def revision_number(filename: str, meta: dict[str, Any] | None = None) -> int:
     values = [filename, str((meta or {}).get("revision") or "")]
     best = 0
@@ -249,6 +256,28 @@ def merge_po_results(results: Iterable[dict[str, Any]]) -> tuple[list[dict[str, 
 def merge_edu_po_results(results: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     """Revision selection is per customer order, not the workbook's first PO."""
     from app.services.customer_order_huaxing_unified import edu_order_key
+    from .edu_schedule import normalize_edu_item
+    results = list(results)
+    # An explicitly identified Excel contract may reconcile a PDF of the same
+    # PO/product/customer. SO labels alone never establish a contract.
+    known = [row for result in results for row in result.get('rows', [])
+             if not row.get('source_pdf') and row.get('contract_no')]
+    for result in results:
+        for row in result.get('rows', []):
+            if not row.get('source_pdf') or row.get('contract_no') or not row.get('customer_po'):
+                continue
+            candidates = [other for other in known if
+                edu_order_key('', other.get('customer_po')) == edu_order_key('', row['customer_po']) and
+                str(other.get('item_no') or '').casefold() == str(row.get('item_no') or '').casefold()]
+            contracts = {other['contract_no'] for other in candidates}
+            customer = str(row.get('customer') or '').strip().casefold()
+            same_customer = bool(customer) and all(str(other.get('customer') or '').strip().casefold() == customer for other in candidates)
+            if len(contracts) == 1 and same_customer:
+                row['contract_no'] = next(iter(contracts))
+                row.setdefault('source_notices', []).append('PDF未列合同，沿用本批同PO、同货号、同客户Excel原单的唯一合同。')
+            elif candidates:
+                row['source_identity_pending'] = True
+                row.setdefault('source_notices', []).append('PDF未列合同，本批同PO、同货号的Excel存在多个合同或客户不一致；保留待补明细，未扣备料。')
     chosen: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     unidentified: list[dict[str, Any]] = []
     report: list[str] = []

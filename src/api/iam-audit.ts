@@ -2,6 +2,9 @@ import { http } from '@/lib/http'
 export interface AuditEventOut {
   id: string
   event_type: string
+  target_id?: string
+  target_type?: string
+  occurred_at?: string
   actor_user_id: string
   actor_name: string
   target_user_id: string

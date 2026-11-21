@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { shouldShowPageNavigation } from '@/config/pageAccessPolicy'
 import { useAuthStore } from '@/stores/auth'
-import { iamNavigation, identityUiEnabled } from './iam-navigation'
+import { iamNavigation, identityUiEnabled, iamStudioEnabled } from './iam-navigation'
 const route = useRoute()
 const auth = useAuthStore()
 const nav = ref<HTMLElement>()
@@ -15,7 +15,10 @@ const items = computed(() =>
       (!i.v2 || identityUiEnabled) && shouldShowPageNavigation(i.permissions, (p) => auth.can(p)),
   ),
 )
-const activePath = computed(() => (route.path.endsWith('/access') ? '/system/users' : route.path))
+const activePath = computed(() => {
+  if (iamStudioEnabled && route.path === '/system/users') return '/system/users?view=' + (route.query.view === 'people' ? 'people' : 'inbox')
+  return route.path.endsWith('/access') ? '/system/users' : route.path
+})
 let observer: ResizeObserver | undefined
 async function measure(reveal = false) {
   await nextTick()

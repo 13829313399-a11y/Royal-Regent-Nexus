@@ -673,11 +673,11 @@ def ensure_carton_master_schema_ready() -> None:
         if "carton_mark_assets" in names and any(c.get("name") == "uq_carton_mark_asset_factory_sha"
                 for c in inspector.get_unique_constraints("carton_mark_assets")):
             missing.append("箱唛独立副本约束迁移")
-        for name, cols in (("carton_orders", ("master_config_id", "master_config_revision", "net_weight_kg", "gross_weight_kg")), ("carton_order_lines", ("net_weight_kg", "gross_weight_kg", "quantity_rule_json")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
+        for name, cols in (("carton_orders", ("master_config_id", "master_config_revision", "net_weight_kg", "gross_weight_kg")), ("carton_order_lines", ("net_weight_kg", "gross_weight_kg", "quantity_rule_json", "process_note")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
             found = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
             missing.extend(f"{name}.{c}" for c in cols if c not in found)
         if missing:
-            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144、纸品重量 20261008_0145 、客户认领/箱唛独立副本 20261008_0146 及纸品数量规则 20261016_0163 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
+            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144、纸品重量 20261008_0145 、客户认领/箱唛独立副本 20261008_0146 、纸品数量规则 20261016_0163 及工艺备注 20261119_0196 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
 def ensure_carton_supplier_settlement_schema_ready() -> None:
@@ -890,7 +890,21 @@ def ensure_collaboration_schema_ready() -> None:
             raise RuntimeError("成员协作需要显式迁移至 20261010_0156；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def require_active_injection_history(revisions) -> None:
+    if "20261116_inj_retire" in revisions:
+        raise RuntimeError(
+            "This database has applied the archived injection retirement. "
+            "Recover the scheduling records and grants from a verified pre-retirement backup "
+            "in isolation before switching releases."
+        )
+
+
 def init_db() -> None:
+    with engine.connect() as connection:
+        if inspect(connection).has_table("alembic_version"):
+            require_active_injection_history(
+                connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalars()
+            )
     from app.models import (
         indonesia_materials,  # noqa: F401
         collaboration,  # noqa: F401

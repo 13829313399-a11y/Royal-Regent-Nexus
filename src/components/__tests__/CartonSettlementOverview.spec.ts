@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 const { workspaceMock } = vi.hoisted(() => ({ workspaceMock: vi.fn() }))
 vi.mock('@/api/cartonSupplierSettlement', () => ({
-  supplierSettlementApi: { monthlyWorkspace: workspaceMock },
+  supplierSettlementApi: { monthlyWorkspace: workspaceMock, supplierMonthlyWorkspace: workspaceMock },
 }))
 
 import Component from '../CartonSettlementOverview.vue'
@@ -22,7 +22,8 @@ function settlement(overrides: Record<string, unknown> = {}) {
     source_fingerprint: 'fingerprint', status: 'OPEN', locked_at: null, locked_by: null, locked_totals: null, stale: false,
     submitted_at: null, submitted_by: null, supplier_confirmed_at: null, supplier_confirmed_by: null,
     disputed_reason: '', unlocked_reason: '', can_submit: false, can_lock: false, read_only: true,
-    totals: { inbound: '1380.00', returns: '0.00', refunds: '0.00', net: '1380.00', documents: 2, receipt_lines: 3, return_lines: 0, refund_lines: 0 },
+    totals: { inbound: '1380.00', returns: '0.00', refunds: '0.00', net: '1380.00', verified_net: '1380.00', pending_price_lines: 0,
+      documents: 2, receipt_lines: 3, return_lines: 0, refund_lines: 0 },
     blockers: [], lines: [line({}), line({ source_key: 'RECEIPT:2', document_no: 'DN-1', quantity: '50', amount: '160.00' }),
       line({ source_key: 'RECEIPT:3', document_no: 'DN-2', customer_name: 'BUZZ', packaging_type: '刀卡', quantity: '200', amount: '900.00' })],
     ...overrides,
@@ -56,6 +57,62 @@ it('leaves unpriced totals pending without converting them into a zero HKD figur
     await flushPromises()
     expect(wrapper.text()).toContain('待核价 人民币')
     expect(reference).toHaveBeenCalledExactlyOnceWith('0.00', 'CNY')
+  } finally { wrapper.unmount() }
+})
+
+it.each([false, true])('separates the formal amount from supplier evidence for supplier=%s', async supplier => {
+  const month = settlement()
+  const totals = { ...month.totals, inbound: null, net: null, verified_net: '8.00', pending_price_lines: 3, receipt_lines: 5 }
+  const alpha = { ...totals, pending_price_lines: 1, receipt_lines: 2 }
+  const beta = { ...totals, verified_net: '0.00', pending_price_lines: 2, receipt_lines: 3 }
+  const pending = { customer_key: 'code:ALPHA', customer_name: '甲客户', quantity: '10', amount: null, unit_price: null,
+    supplier_original_price: { unit_price: '2', reference_amount: '20.00' } }
+  const rows = [
+    line({ ...pending, document_no: 'DN-PROPOSED' }),
+    line({ source_key: 'RECEIPT:2', customer_key: 'code:ALPHA', document_no: 'DN-PRICED', amount: '8.00' }),
+    line({ ...pending, source_key: 'RECEIPT:3', customer_key: 'code:BETA', document_no: 'DN-ZERO',
+      supplier_original_price: { unit_price: '0', reference_amount: '0.00' } }),
+    line({ ...pending, source_key: 'RECEIPT:4', customer_key: 'code:BETA', document_no: 'DN-BLANK',
+      supplier_original_price: { unit_price: null, reference_amount: null } }),
+    line({ ...pending, source_key: 'RECEIPT:5', customer_key: 'code:BETA', document_no: 'DN-FREE', amount: '0.00', unit_price: '0' }),
+  ]
+  workspaceMock.mockResolvedValueOnce(settlement({
+    totals, customers: [{ key: 'code:ALPHA', name: '甲客户', totals: alpha }, { key: 'code:BETA', name: '乙客户', totals: beta }], lines: rows,
+  }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing', supplier, factories: [{ factory_id: 'huaxing' }] } })
+  try {
+    await flushPromises()
+    const detail = wrapper.get('[aria-label="本月对账明细表"]')
+    const findLine = (document: string) => detail.findAll('tbody tr').find(row => row.text().includes(document))!
+    expect(findLine('DN-PROPOSED').get('[data-label="结算金额"] span').text()).toBe('待核价')
+    expect(findLine('DN-PROPOSED').text()).toContain('供应商原价 2.00')
+    expect(findLine('DN-PROPOSED').text()).toContain('原价参考 20.00')
+    expect(findLine('DN-ZERO').get('[data-label="结算金额"] span').text()).toBe('待核价')
+    expect(findLine('DN-ZERO').text()).toContain('供应商原价 0.00')
+    expect(findLine('DN-BLANK').text()).toContain('供应商原价 未提供')
+    expect(findLine('DN-BLANK').text()).not.toContain('原价参考')
+    expect(findLine('DN-FREE').get('[data-label="结算金额"] span').text()).toBe('0.00')
+
+    const wholeMonth = wrapper.get('[aria-label="本厂东康总额"]')
+    expect(wholeMonth.text()).toContain('待核价 人民币')
+    expect(wholeMonth.text()).toContain('已核实净额小计 8.00 · 待核价 3 行')
+    await wrapper.get('[aria-label="本月对账客户"]').setValue('code:ALPHA')
+    const customer = wrapper.get('[aria-label="所选客户小计"]')
+    expect(customer.text()).toContain('应结 待核价')
+    expect(customer.text()).toContain('已核实净额小计 8.00 · 待核价 1 行')
+    expect(wholeMonth.text()).toContain('待核价 3 行')
+
+    workspaceMock.mockResolvedValueOnce(settlement({
+      totals: { ...totals, verified_net: '38.00', pending_price_lines: 2 },
+      customers: [{ key: 'code:ALPHA', name: '甲客户', totals: { ...alpha, inbound: '38.00', net: '38.00', pending_price_lines: 0 } }],
+      lines: [{ ...rows[0], amount: '30.00', unit_price: '3' }, ...rows.slice(1)],
+    }))
+    await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[aria-label="所选客户小计"]').text()).toContain('应结 38.00')
+    const confirmed = wrapper.get('[aria-label="本月对账明细表"] tbody tr')
+    expect(confirmed.get('[data-label="结算金额"] span').text()).toBe('30.00')
+    expect(confirmed.text()).toContain('原价参考 20.00')
   } finally { wrapper.unmount() }
 })
 
@@ -187,10 +244,10 @@ it('shows a read-only month without submit, lock or unlock actions', async () =>
 })
 
 it('lists blocking items as reference only, without submission controls', async () => {
-  workspaceMock.mockResolvedValue(settlement({ blockers: ['1 行送货单缺价，不能计入应付：DN-9 ITEM-9'] }))
+  workspaceMock.mockResolvedValue(settlement({ blockers: ['1 行送货单价待核实：DN-9 ITEM-9'] }))
   const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
   await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
-  expect(wrapper.text()).toContain('1 行送货单缺价')
+  expect(wrapper.text()).toContain('1 行送货单价待核实')
   expect(wrapper.text()).toContain('按单号打开原凭证核对')
   expect(wrapper.findAll('button').map(button => button.text())).not.toContain('提交供应商核对')
   wrapper.unmount()

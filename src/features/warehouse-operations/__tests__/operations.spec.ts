@@ -205,6 +205,11 @@ describe('warehouse actual operations', () => {
     const body=await open('inventory','pending-issues',data)
     expect(wrapper!.text()).toContain('裁床订单 O1')
     expect(wrapper!.text()).toContain('规格颜色原单位一致')
+    await wrapper!.vm.$router.push('/?record=REQ'); await flushPromises()
+    const linkedDetail = body.get('[role="dialog"]')
+    expect(linkedDetail.text()).toContain('领料申请详情')
+    expect(linkedDetail.text()).toContain('待发数量')
+    await linkedDetail.get('[aria-label="关闭业务单据详情"]').trigger('click')
     for (const source of ['CUT-COMPLETE', 'CUT-REVERSED']) {
       const row = wrapper!.findAll('tbody tr').find(entry => entry.text().includes(source))!
       expect(row.findAll('button').map(button => button.text())).toEqual(['详情'])
@@ -223,10 +228,10 @@ describe('warehouse actual operations', () => {
     expect(wrapper!.findAll('button').some(b=>b.text()==='办理出库')).toBe(false)
     expect(wrapper!.findAll('button').some(b=>b.text()==='关闭未发余量')).toBe(false)
   })
-  it('offers only matching batches for a cutting request and clears an incompatible selection when the request changes', async () => {
+  it.each([true, false])('keeps the selected cutting request and takes or offers only matching stock (multiple: %s)', async multiple => {
     const stock: WarehouseOperationsWorkspace['stock'][number] = {
       id: 'blue', item_code: 'FAB1', item_name: '蓝布', unit: '米', process_state: '', material_category: 'FABRIC',
-      location: 'A01', lot: '01', roll_no: '', quantity: '20', available_quantity: '20',
+      location: 'A01', lot: '01', roll_no: 'R1', quantity: '20', available_quantity: '20',
       quality_status: 'PENDING_INSPECTION', source_no: '', source_document: 'receipt',
       received_on: '2026-10-01', counterparty: '供应商', production_no: '',
     }
@@ -248,6 +253,7 @@ describe('warehouse actual operations', () => {
       ...empty(), documents: [request, unmatched],
       stock: [
         stock,
+        ...(multiple ? [{ ...stock, id: 'blue-second-roll', roll_no: 'R2' }] : []),
         { ...stock, id: 'other-code', item_code: 'OTHER' },
         { ...stock, id: 'other-unit', unit: '码' },
         { ...stock, id: 'other-name', item_name: '黑布' },
@@ -258,33 +264,45 @@ describe('warehouse actual operations', () => {
         { ...stock, id: 'unverified', location_verified: false },
       ],
     })
-    const requestRow = wrapper!.findAll('tbody tr').find(row => row.text().includes('CUT-1'))!
-    await requestRow.findAll('button').find(button => button.text() === '办理出库')!.trigger('click')
-    const batch = body.get<HTMLSelectElement>('[aria-label="实际批次"]')
-    const original = body.get<HTMLSelectElement>('[aria-label="关联原单"]')
-    const quantity = body.get<HTMLInputElement>('[aria-label="本次数量"]')
-    const submit = body.get('button[type="submit"]')
-    expect(Array.from(batch.element.options, option => option.value)).toEqual(['', 'blue'])
-    await batch.setValue('blue')
-    await quantity.setValue('2')
-    expect(submit.attributes('disabled')).toBeUndefined()
-
-    await original.setValue('CUT-2')
-    expect(Array.from(batch.element.options, option => option.value)).toEqual([''])
-    expect(quantity.element.value).toBe('')
+    const unmatchedRow = wrapper!.findAll('tbody tr').find(row => row.text().includes('CUT-2'))!
+    await unmatchedRow.findAll('button').find(button => button.text() === '办理出库')!.trigger('click')
     expect(body.text()).toContain('该申请暂无匹配的可出库批次')
-    expect(submit.attributes('disabled')).toBeDefined()
+    expect(body.get('button[type="submit"]').attributes('disabled')).toBeDefined()
     await body.get('form[role="dialog"]').trigger('submit')
     expect(api.post).not.toHaveBeenCalled()
+    await body.get('[role="dialog"] header button').trigger('click')
 
-    await original.setValue('CUT-1')
-    await batch.setValue('blue')
+    const requestRow = wrapper!.findAll('tbody tr').find(row => row.text().includes('CUT-1'))!
+    await requestRow.findAll('button').find(button => button.text() === '办理出库')!.trigger('click')
+    expect(body.find('select[aria-label="关联原单"]').exists()).toBe(false)
+    const original = body.get('[aria-label="已关联领料申请"]')
+    expect(original.text()).toContain('蓝布 · FAB1 · 订单 O1 · 裁床任务 裁剪任务')
+    expect(original.text()).toContain('本单待发 6 米')
+    expect(body.get<HTMLInputElement>('[aria-label="领用方"]').element.value).toBe('裁床组')
+
+    const quantity = body.get<HTMLInputElement>('[aria-label="本次数量"]')
+    expect(quantity.element.value).toBe('')
+    if (multiple) {
+      const batch = body.get<HTMLSelectElement>('[aria-label="实际批次"]')
+      expect(batch.element.value).toBe('')
+      expect(body.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+      expect(Array.from(batch.element.options, option => [option.value, option.text])).toEqual([
+        ['', '请选择实际出库的批次'],
+        ['blue', 'A01 · 缸号 01 · 卷号 R1 · 可发 20 米'],
+        ['blue-second-roll', 'A01 · 缸号 01 · 卷号 R2 · 可发 20 米'],
+      ])
+      await batch.setValue('blue-second-roll')
+    } else {
+      expect(body.find('select[aria-label="实际批次"]').exists()).toBe(false)
+      expect(body.get('[aria-label="出库批次"]').text()).toContain('A01 · 缸号 01 · 卷号 R1 · 可发 20 米')
+    }
+
     await quantity.setValue('2')
     api.post.mockResolvedValue({ id: 'issue' })
     await body.get('form[role="dialog"]').trigger('submit')
     await flushPromises()
     expect(api.post).toHaveBeenCalledWith('fabric', expect.objectContaining({
-      kind: 'ISSUE', original_id: 'CUT-1', batch_id: 'blue', counterparty: '裁床组', quantity: '2',
+      kind: 'ISSUE', original_id: 'CUT-1', batch_id: multiple ? 'blue-second-roll' : 'blue', counterparty: '裁床组', quantity: '2',
     }))
   })
   it.each([true, false])('links receipt details to the original receipt without duplicating reversal (%s)', async correct => {
@@ -475,6 +493,10 @@ describe('warehouse actual operations', () => {
     expect(wrapper!.findAll('button').some(button => button.text().includes('质检'))).toBe(false)
     await wrapper!.findAll('button').find(button => button.text() === '出库')!.trigger('click')
     expect(body.get<HTMLSelectElement>('[aria-label="实际批次"]').element.value).toBe('B1')
+    if (warehouse === 'fabric') {
+      expect(body.get<HTMLSelectElement>('[aria-label="实际批次"]').element.selectedOptions[0]?.text)
+        .toBe('白布 · 00012 · A01 · 缸号 01 · 可发 1 码')
+    }
     expect(body.get('[aria-label="关联原单"]').attributes('required')).toBeUndefined()
     expect(body.get('[aria-label="业务依据"]').attributes('required')).toBeUndefined()
     expect(body.get('[aria-label="来源单号"]').attributes('required')).toBeUndefined()

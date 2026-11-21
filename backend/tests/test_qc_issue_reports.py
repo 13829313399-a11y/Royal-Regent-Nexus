@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from pydantic import SecretStr
 from app.services import qc_issue_reports as reports, qc_monthly_excel as excel, qc_monthly_templates as monthly
 from test_customer_order_ledger import engine, db
-from test_qc_approved_statistics import isolated, transition
+from test_qc_approved_statistics import isolated, transition, approval
 from test_qc_monthly_templates import issue
 from test_qc_workflow import ACTOR
 
@@ -16,10 +16,10 @@ def request(data, **changes):
 
 
 @pytest.mark.parametrize('day,period,expected',[
-    ('2026-11-08','weekly',('2026-11-08','2026-11-14')),
-    ('2026-11-14','weekly',('2026-11-08','2026-11-14')),
-    ('2026-11-15','weekly',('2026-11-15','2026-11-21')),
-    ('2026-01-01','weekly',('2025-12-28','2026-01-03')),
+    ('2026-11-08','weekly',('2026-11-02','2026-11-08')),
+    ('2026-11-14','weekly',('2026-11-09','2026-11-15')),
+    ('2026-11-15','weekly',('2026-11-09','2026-11-15')),
+    ('2026-01-01','weekly',('2025-12-29','2026-01-04')),
     ('2024-02-11','monthly',('2024-02-01','2024-02-29')),
     ('2026-11-13','yearly',('2026-01-01','2026-12-31')),
 ])
@@ -35,12 +35,30 @@ def test_customer_query_supplement_scope_and_revoked_exclusion(db,monkeypatch):
     assert scoped['total']==1 and scoped['tables']['issues'][0]['id']==one['id']
     month=monthly.query('huaxing','2026-11-01');field='detail:'+one['id']+':contractNo'
     monthly.save('huaxing',ACTOR,dict(date='2026-11-01',customerKey=key,field=field,value='0009',baseVersion=0,sourceRevision=month['sourceRevision'],requestKey=uuid4().hex))
-    assert reports.query('huaxing','2026-11-03','weekly',key)['tables']['issues'][0]['values'][2]=='0009'
-    assert reports.query('huaxing','2026-11-03','yearly',key)['tables']['issues'][0]['values'][2]=='0009'
+    assert reports.query('huaxing','2026-11-03','weekly',key)['tables']['issues'][0]['values'][5]=='0009'
+    assert reports.query('huaxing','2026-11-03','yearly',key)['tables']['issues'][0]['values'][5]=='0009'
     transition(two,'revoke');assert reports.query('huaxing','2026-11-03','weekly')['total']==1
     assert reports.query('huaxing','2027-01-01','yearly')['total']==0
-    with pytest.raises(HTTPException):reports.query('huadeng','2026-11-03','weekly')
+    assert reports.query('huadeng','2026-11-03','weekly')['total']==0
     with pytest.raises(HTTPException):reports.query('huaxing','2026-11-03','weekly','invented')
+
+
+def test_tracking_periods_share_monthly_supplements_across_year_boundary(db):
+    failed=approval(db,1,result='FAIL',actual='2025-12-31',planned='2025-12-31')
+    passed=approval(db,2,result='PASS',actual='2026-01-01',planned='2026-01-01')
+    for entry,day,field,value in [(failed,'2025-12-31','correctiveCompletion','待复核'),
+                                  (passed,'2026-01-01','analysisReason','合成原因')]:
+        scope=monthly.query('huaxing',day,design_id='tracking')
+        key=scope['customers'][0]['key']
+        monthly.save('huaxing',ACTOR,dict(date=day,customerKey=key,field=f'detail:{entry["id"]}:{field}',
+                     value=value,baseVersion=0,sourceRevision=scope['sourceRevision'],requestKey=uuid4().hex))
+    week=reports.query('huaxing','2026-01-01','weekly')
+    assert [row['id'] for row in week['tables']['issues']]==[failed['id'],passed['id']]
+    assert week['tables']['issues'][0]['values'][-1]=='待复核'
+    for index,day in enumerate(['2025-12-31','2026-01-01']):
+        values=week['tables']['issues'][index]['values']
+        assert monthly.query('huaxing',day,design_id='tracking')['tables']['tracking'][0]['values']==values
+        assert reports.query('huaxing',day,'yearly')['tables']['issues'][0]['values']==values
 
 
 @pytest.mark.parametrize('period',['weekly','monthly','yearly'])
@@ -50,28 +68,18 @@ def test_actual_excel_preview_original_missing_fallback_and_owner(db,monkeypatch
     data=reports.query('huaxing','2026-11-03',period)
     body=request(data);out=reports.prepare('huaxing','owner',body)
     raw,name=excel.download('owner',out['url'].split('/')[-1]);sheet=openpyxl.load_workbook(BytesIO(raw)).active
-    assert len(sheet._images)==2 and sheet.max_row==3 and sheet['M2'].value=='照片'
-    assert sheet['L2'].value=='照片备注' and out['filename']==name
-    assert sheet['B3'].value=='彩星' and data['title'] in ''.join(str(c.value or '') for c in sheet[1])
-    if period=='weekly':
-        assert str(next(iter(sheet.merged_cells.ranges)))=='A1:M1'
-        assert sheet.freeze_panes=='D3'
-        assert [c.value for c in sheet[2]][:11]==data['headers'][:11]
-        for cell in sheet[2]:
-            assert cell.fill.fgColor.rgb=='00F3F3F3'
-            assert cell.alignment.horizontal==cell.alignment.vertical=='center'
-        for cell in sheet[3]:
-            assert cell.alignment.horizontal==cell.alignment.vertical=='center'
-            assert cell.alignment.wrap_text
-        assert sheet.row_dimensions[3].height>=170
-        for photo in sheet._images:
-            assert photo.anchor._from.col==12
-            assert photo.anchor._from.colOff+photo.anchor.ext.cx<=490*9525
-            assert photo.anchor._from.rowOff+photo.anchor.ext.cy<=sheet.row_dimensions[3].height/0.75*9525
-    elif period=='yearly':
-        assert not sheet.merged_cells.ranges and sheet.freeze_panes=='A3'
-        assert sheet['L3'].alignment.horizontal=='left' and sheet['L3'].alignment.vertical=='top'
-        assert sheet.column_dimensions['M'].width==100
+    assert len(sheet._images)==2 and sheet.max_row==7 and sheet.max_column==19
+    assert sheet['M6'].value=='现场照片' and sheet['N6'].value=='照片备注'
+    assert sheet['B7'].value=='彩星' and sheet['S6'].value=='完成情况'
+    assert sheet['A2'].value==data['title'] and out['filename']==name
+    assert data['dateFrom'] in sheet['A3'].value and data['dateTo'] in sheet['A3'].value
+    assert sheet.freeze_panes=='A7' and [c.value for c in sheet[6]]==data['headers']
+    assert [sheet[c].value for c in ('A5','F5','K5','O5')]==[g[1] for g in data['groups']]
+    assert sheet.tables['IssueLog'].ref=='A6:S7'
+    assert 'S7' in sheet.data_validations.dataValidation[0].sqref
+    for photo in sheet._images:
+        assert photo.anchor._from.col==12
+        assert photo.anchor._from.rowOff+photo.anchor.ext.cy<=sheet.row_dimensions[7].height/0.75*9525
     with pytest.raises(HTTPException):excel.download('other-owner',out['url'].split('/')[-1])
     body['photoQuality']='original'
     with pytest.raises(HTTPException) as err:reports.prepare('huaxing','owner',body)

@@ -496,6 +496,8 @@ TOTAL USD 306.70
     line = parsed["lines"][0]
     assert line == {
         "item_no": "10022J",
+        "source_line_no": "1",
+        "source_line_no_raw": "1.000",
         "product_name": "CHARMING CUPID CUTIE PLUSH 5L 5L",
         "po_description": "CHARMING CUPID CUTIE PLUSH 5L 5L",
         "product_name_source": "PO英文品名",

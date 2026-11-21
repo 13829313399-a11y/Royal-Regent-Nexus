@@ -2,7 +2,11 @@ import { http } from '@/lib/http'
 import type { AccessTuple, OrganizationCatalog } from './identity'
 
 export interface Position { org_unit_id: string; department_code: string; position: string }
-export interface Declaration extends Position { note: string }
+export interface Declaration extends Position {
+  note: string
+  requested_role_ids?: string[]
+  requested_factory_ids?: string[]
+}
 export type ReviewStatus = 'pending' | 'returned' | 'applied' | 'withdrawn' | 'invalidated'
 export interface PositionReview {
   id: string; user_id: string; employment_epoch: number; origin: 'employee' | 'admin'; status: ReviewStatus
@@ -11,6 +15,11 @@ export interface PositionReview {
 }
 export interface SelfPositionProfile {
   official_position: Position | null; open_review: PositionReview | null; effective_permission_summary: string[]
+  current_packages?: (import('./accessStudio').StudioPackage & {description?: string})[]
+  effective_business_factories?: { id: string; name: string }[]
+  effective_permissions_grouped?: import('./accessStudio').EffectiveGroup[]
+  reference_packages?: { role_id: string; name: string; department_code: string; description: string }[]
+  reference_factories?: { id: string; name: string }[]
   can_submit: boolean; blocked_reason: string | null
 }
 export interface WorkItem {
@@ -19,6 +28,7 @@ export interface WorkItem {
   before: Position | null; declaration: Declaration; created_at: string; updated_at: string; available_actions: string[]
 }
 export interface WorkItemDetail extends WorkItem {
+  studio_writes_enabled?: boolean
   review_comment?: string; confirmed_profile?: Position | null; decision?: string; decision_at?: string
   current_official: Position | null; identity_mode: 'legacy' | 'v2' | 'registration_pending'
   identity_version: number; authorization_version: number; primary_assignment_id: string | null
@@ -39,6 +49,7 @@ export interface PackageSelection {
 export interface ReviewDraft {
   expected_source_revision: string; decision: 'apply_package' | 'keep_permissions'; confirmed_profile: Position
   package_selection?: PackageSelection | null
+  package_selections?: PackageSelection[]
   independent_allow_decisions: { override_id: string; decision: 'keep_original_scope' | 'end' }[]
   registration_details_correction?: RegistrationDetails | null
 }
@@ -59,7 +70,7 @@ const item = (key: string) => `${root}/items/${encodeURIComponent(key)}`
 export const positionReviewsApi = {
   profile: async () => (await http.get<SelfPositionProfile>('/auth/me/position-profile')).data,
   catalog: async () => (await http.get<OrganizationCatalog>('/auth/organization-catalog')).data,
-  history: async (page = 1) => (await http.get<{ items: PositionReview[]; total: number }>('/auth/me/position-reviews', { params: { page } })).data,
+  history: async (page = 1, pageSize?: number) => (await http.get<{ items: PositionReview[]; total: number }>('/auth/me/position-reviews', { params: { page, page_size: pageSize } })).data,
   submit: async (declaration: Declaration) => (await http.post<{ changed: boolean; review: PositionReview | null; message: string }>('/auth/me/position-reviews', { declaration })).data,
   edit: async (review: PositionReview, declaration: Declaration) => (await http.patch<{ changed: boolean; review: PositionReview; message: string }>(`/auth/me/position-reviews/${review.id}`, { expected_revision: review.revision, declaration })).data,
   withdraw: async (review: PositionReview) => (await http.post<{ review: PositionReview; message: string }>(`/auth/me/position-reviews/${review.id}/withdraw`, { expected_revision: review.revision })).data,

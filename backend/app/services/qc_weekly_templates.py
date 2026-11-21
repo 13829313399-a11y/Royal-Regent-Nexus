@@ -12,8 +12,11 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.services import qc_approved_statistics as approved, qc_daily_report as daily
 from app.services.qc_inspection_summary import confirmed_date, report_date, dump, text
+from app.services.qc_approved_statistics import factory_label
 
-TEMPLATES = json.loads((Path(__file__).resolve().parents[1] / 'templates/qc-weekly/templates.json').read_text())
+TEMPLATES = json.loads(
+    (Path(__file__).resolve().parents[1] / 'templates/qc-weekly/templates.json').read_text(encoding='utf-8')
+)
 FIELDS = {'returns', 'returnReason', 'hongKongContact', 'weeklyRemark', 'reworkA0D', 'handling'}
 DETAIL_FIELDS = {
     3: 'contractNo', 4: 'country', 5: 'productNo', 6: 'productName',
@@ -35,11 +38,6 @@ CREATE TABLE IF NOT EXISTS changes (
  field TEXT NOT NULL, old_value TEXT NOT NULL, new_value TEXT NOT NULL, version INTEGER NOT NULL,
  actor TEXT NOT NULL, created_at TEXT NOT NULL);
 '''
-
-
-def _factory(factory):
-    if factory != 'huaxing':
-        raise HTTPException(404, '当前厂区未配置华兴周报模板')
 
 
 def _path():
@@ -78,7 +76,7 @@ def _supplements(factory, week):
 
 
 def _source(factory, day, period='weekly'):
-    _factory(factory)
+    factory_label(factory)
     start, end = daily.period_bounds(day, period)
     snapshots = []
     source = approved.query(factory, {'from': start, 'to': end}, _report_snapshots=snapshots)
@@ -142,6 +140,7 @@ def query(factory, day, customer=''):
     if customer and (not isinstance(customer, str) or not re.fullmatch('[a-f0-9]{64}', customer)):
         raise HTTPException(422, '客户筛选不正确')
     start, end, snapshots, revision = _source(factory, day)
+    label = factory_label(factory)
     saved = _supplements(factory, start)
     groups = {}
     for item, marker in snapshots:
@@ -174,14 +173,14 @@ def query(factory, day, customer=''):
                 value = val(field)
                 row['values'][index] = daily._quantity(value) if index == 7 else value
             details.append(row)
-        common = ['华兴', group['name'], count, returns, _rate(returns, count), val('returnReason'), val('hongKongContact')]
+        common = [label, group['name'], count, returns, _rate(returns, count), val('returnReason'), val('hongKongContact')]
         grouped.append(dict(id=key, values=common + [val('weeklyRemark')]))
         footer.append(dict(id=key, values=common + [val('reworkA0D'), val('weeklyRemark')]))
 
     specifications = deepcopy(TEMPLATES)
     tables = dict(detail=details, group=grouped, footer=footer)
     totals = {spec['id']: _totals(spec['headers'], tables[spec['id']]) for spec in specifications if spec['id'] != 'detail'}
-    return dict(date=day, dateFrom=start, dateTo=end, sourceRevision=revision, templates=specifications,
+    return dict(factory=factory, date=day, dateFrom=start, dateTo=end, sourceRevision=revision, templates=specifications,
                 customers=[{k: g[k] for k in ('key', 'name', 'code', 'label')} for g in customers],
                 customer=customer, tables=tables, totals=totals, fields=fields, total=len(details),
                 scheduleCount=sum(r['dateSource'] == 'schedule' for r in details),
@@ -189,7 +188,7 @@ def query(factory, day, customer=''):
 
 
 def save(factory, actor, body):
-    _factory(factory)
+    factory_label(factory)
     keys = {'date', 'customerKey', 'field', 'value', 'baseVersion', 'sourceRevision', 'requestKey'}
     if not isinstance(body, dict) or set(body) != keys:
         raise HTTPException(422, '周报保存参数不正确')

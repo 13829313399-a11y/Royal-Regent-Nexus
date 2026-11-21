@@ -369,6 +369,7 @@ const headerSearchPlaceholder = computed(() => activeTab.value === 'inventory' &
   : activeTab.value === 'carton-marks' ? '搜索合同 / 客户 / 货号 / 文件名...'
   : activeTab.value === 'master-data' ? '搜索客户 / 合同 / 货号 / 纸品 / 仓位...'
   : activeTab.value === 'audit' ? '搜索订单 / 单据 / 原因 / 变更内容...'
+  : activeTab.value === 'inventory-summary' ? '搜索需求号 / 合同 / 货号 / 纸品 / 单据...'
   : activeTab.value === 'weekly-check' && weeklyCheckMode.value === 'HISTORY' ? '搜索文件名 / 客户...'
   : activeTab.value === 'closing' && closingView.value === 'OVERVIEW' ? '搜索对账客户 / 合同 / 货号 / 单据...'
   : activeTab.value === 'closing' && closingView.value === 'RETURNS' ? '搜索退货客户 / 合同 / 货号 / 退货单...'
@@ -441,7 +442,7 @@ const selectedSpecialOrderIds = ref<string[]>([])
 const selectedSpecialCache = ref<SpecialRequest[]>([])
 const specialReceiptId = ref('')
 const specialReceiptOpen = ref(false)
-const specialStockActionTarget = ref<{ id: string; requestNo: string; action: SpecialStockAction } | null>(null)
+const orderStockActionTarget = ref<{ id: string; requestNo: string; action: SpecialStockAction; regularOrder?: boolean } | null>(null)
 const unifiedBatchOpen = ref(false)
 const batchAppendOpen = ref(false), demandImportOpen = ref(false), downloadingDemandTemplate = ref(false)
 const demandImportFile = ref<File | null>(null), demandFileInput = ref<HTMLInputElement>()
@@ -488,6 +489,7 @@ const combinedPurchaseOrderMessage = ref('')
 const combinedPurchaseOrderTone = ref<'progress' | 'success' | 'error'>('progress')
 const orderStatusOptions = [
   { id: 'ALL', label: '全部状态', statuses: [] },
+  { id: 'FOLLOW_UP', label: '待跟进', statuses: ['DRAFT', 'CONFIRMED', 'SUBMITTED', 'PENDING_SUPPLIER', 'SENT', 'QUOTED', 'READY', 'PARTIALLY_RECEIVED'] },
   { id: 'UNLOCKED', label: '未锁定', statuses: ['DRAFT', 'CONFIRMED', 'SUBMITTED'] },
   { id: 'LOCKED', label: '已确认锁定', statuses: ['PENDING_SUPPLIER', 'SENT', 'QUOTED', 'READY'] },
   { id: 'PARTIALLY_RECEIVED', label: '部分收料', statuses: ['PARTIALLY_RECEIVED'] },
@@ -928,6 +930,7 @@ function applyMaster(row: MasterRecord) {
     id: `MASTER-${row.id}-${i}`, packagingType: l.packaging_type, paperQuality: l.paper_quality,
     specification: l.specification, dimensionUnit: l.dimension_unit, unit: l.unit,
     quantityRule: reusableQuantityRule(l.quantity_rule), unitsPerCarton: l.usage_quantity == null ? '' as const : Number(l.usage_quantity), unitPrice: 0, currency: 'CNY', priceSource: 'manual', note: '',
+    processNote: l.process_note,
     netWeight: l.net_weight_kg == null ? '' as const : Number(l.net_weight_kg),
     grossWeight: l.gross_weight_kg == null ? '' as const : Number(l.gross_weight_kg),
   })))
@@ -936,7 +939,6 @@ function applyMaster(row: MasterRecord) {
 function orderFromMaster(row: MasterRecord) { if (prepareOrderFromSource()) { showOrderModal.value = true; applyMaster(row) } }
 const outboundKind = ref('USAGE')
 const inventoryReturnDate = ref('')
-const orderReturnDate = ref('')
 const outboundKinds = [{ id: 'USAGE', label: '正常领用／发货' }, { id: 'RETURN', label: '退供应商' }, { id: 'LOSS', label: '损耗／报损' }, { id: 'LOAN', label: '借出' }, { id: 'OTHER', label: '其他用途' }]
 async function refreshLocations() {
   const factory = selectedFactoryId.value
@@ -1156,6 +1158,15 @@ const customerRecords = ref<CartonCustomerResponse[]>([])
 const correctionOrderNo = ref('')
 const orderRecords = ref<CartonOrderResponse[]>([])
 function openLatePromiseOrders() { collaborationFilter.value = 'LATE_PROMISE'; setActiveTab('orders') }
+function openFollowUpOrders() {
+  unifiedKind.value = 'ALL'
+  orderStatusFilter.value = 'FOLLOW_UP'
+  collaborationFilter.value = 'ALL'
+  orderDueFilter.value = 'ALL'
+  orderDateRange.value = { start: undefined, end: undefined }
+  orderPage.value = 1
+  setActiveTab('orders')
+}
 const openPromiseOrder = (orderNo: string) => { setActiveTab('orders'); openOrderDetails(orderNo) }
 function materialCorrectionEntry(number: string) {
   const order = orderRecords.value.find(row => row.order_no === number)
@@ -1421,7 +1432,7 @@ function openSpecialDetails(row: SpecialRequest, action?: SpecialOrderAction) {
     const target = operation[action]
     if (!apiConnected.value || row.factory_id !== selectedFactoryId.value || row.deleted || row.permissions[target.permission] !== true) return
     specialDialogOpen.value = false
-    specialStockActionTarget.value = { id: row.id, requestNo: row.request_no, action: target.action }
+    orderStockActionTarget.value = { id: row.id, requestNo: row.request_no, action: target.action }
     return
   }
   if (action === 'receive') {
@@ -1441,7 +1452,7 @@ function openSpecialDetails(row: SpecialRequest, action?: SpecialOrderAction) {
   specialCreate.value = false
   specialDetailId.value = row.id
 }
-function specialStockActionChanged() {
+function orderStockActionChanged() {
   inventoryReportRefreshKey.value++
   void refreshAfterSavedAction('订单与库存资料已更新。')
   void loadSupplierReminders()
@@ -1519,7 +1530,7 @@ watch(supplierChangeContext, () => {
   supplierChangeOpen.value = false; supplierChangeShowClosed.value = false; supplierNoticeFilter.value = undefined
   supplierChangeState.value = { loading: true, error: '', counts: { REGULAR: 0, SPECIAL: 0, REPLENISHMENT: 0, PRINT: 0 }, stats: { pending: 0, read: 0, cancellation: 0, disputed: 0, overdue: 0 } }
 }, { flush: 'sync' })
-watch([selectedFactoryId, specialViewerKey, customerViewScope], () => { specialStockActionTarget.value = null }, { flush: 'sync' })
+watch([selectedFactoryId, specialViewerKey, customerViewScope], () => { orderStockActionTarget.value = null }, { flush: 'sync' })
 const priceCorrectionOpen = ref(false), priceCorrectionLineId = ref('')
 const payablesRef = ref<InstanceType<typeof CartonPayables> | null>(null)
 function openPriceCorrection(line?: string) {
@@ -2243,6 +2254,7 @@ const dashboardFilters = computed(() => {
   const isDashboard = activeTab.value === 'dashboard'
   return {
     customer: selectedCustomer.value === '全部客户' ? '' : selectedCustomer.value,
+    responsibility_scope: customerViewScope.value,
     search: globalSearch.value.trim(),
     status: isDashboard || businessAlertStatusFilter.value !== 'ALL' ? 'OPEN' : 'ALL',
     kind: isDashboard ? 'ALL' : businessAlertKindFilter.value,
@@ -4670,7 +4682,7 @@ async function loadLedgerOrders(factoryId: string, generation: number) {
   return [...new Map([...selected, ...purchases].map(row => [row.order_no, row])).values()]
 }
 
-async function loadBackendData(factoryId = selectedFactoryId.value, options: { supersede?: boolean; ordersOnly?: boolean; dashboardOnly?: boolean; forceDashboard?: boolean } = {}) {
+async function loadBackendData(factoryId = selectedFactoryId.value, options: { supersede?: boolean; ordersOnly?: boolean; dashboardOnly?: boolean; forceDashboard?: boolean; readCustomersOnly?: boolean } = {}) {
   if (orderSearchTimer) { clearTimeout(orderSearchTimer); orderSearchTimer = undefined }
   if (dashboardFilterTimer) { clearTimeout(dashboardFilterTimer); dashboardFilterTimer = undefined }
   const dashboardKey = usesDashboardWorkspace.value && !specialOnlyAccess.value ? dashboardReadKey(factoryId) : ''
@@ -4734,11 +4746,12 @@ async function loadBackendData(factoryId = selectedFactoryId.value, options: { s
   const needsCustomers = !ordersOnly && !dashboardOnly && !['audit', 'carton-marks', 'inventory-movements'].includes(tab)
   if (dashboardKey && needsCustomers) dashboardCustomersLoading.value = true
   if (needsCustomers) read('客户资料', () => {
-    const key = JSON.stringify([factoryId, viewer, authorization, authStore.currentUser?.identity?.effective_context_key])
+    const syncCustomers = !dashboardKey && tab !== 'closing' && !options.readCustomersOnly
+    const key = JSON.stringify([factoryId, viewer, authorization, authStore.currentUser?.identity?.effective_context_key, syncCustomers])
     const pending = customerReads.get(key)
     if (pending) return pending
     const request = (async () => {
-      await cartonProcurementApi.synchronizeBusinessCustomers(factoryId)
+      if (syncCustomers) await cartonProcurementApi.synchronizeBusinessCustomers(factoryId)
       return cartonProcurementApi.listCustomers(factoryId)
     })()
     customerReads.set(key, request)
@@ -5012,6 +5025,7 @@ async function createLocalOrder() {
         currency: material.currency,
         price_source: material.priceSource,
         note: material.note,
+        process_note: material.processNote,
       })),
     }
     const createPayload = { ...payload, status: 'CONFIRMED' as const,
@@ -5240,15 +5254,21 @@ async function confirmSubmitSupplierOrder() {
   }
 }
 
+function openOrderStockReturn(orderNo: string) {
+  if (!canReturnOrder(orderNo)) {
+    reportActionFailure('当前订单状态或权限不允许退货，请刷新核对。')
+    return
+  }
+  orderStockActionTarget.value = { id: orderNo, requestNo: orderNo, action: 'RETURN', regularOrder: true }
+}
+
 function openCancelOrder(orderNo: string) {
-  const order = orderRecords.value.find((item) => item.order_no === orderNo)
-  if (!order || !(canCancelUnreceivedOrder(orderNo) || canReturnOrder(orderNo))) {
-    reportActionFailure('当前订单状态或权限不允许取消、整单退货，请刷新核对。')
+  if (!canCancelUnreceivedOrder(orderNo)) {
+    reportActionFailure('当前订单状态或权限不允许取消，请刷新核对。')
     return
   }
   cancelOrderNo.value = orderNo
-  orderReturnDate.value = ''
-  cancelOrderReason.value = canCancelUnreceivedOrder(orderNo) ? '客户取消订单' : ''
+  cancelOrderReason.value = '客户取消订单'
 }
 
 async function confirmCancelOrder() {
@@ -5258,7 +5278,7 @@ async function confirmCancelOrder() {
   const orders = isBulk
     ? selectedOrders.value
     : orderRecords.value.filter((item) => item.order_no === cancelOrderNo.value)
-  if (!orders.every(order => canCancelUnreceivedOrder(order.order_no) || (!isBulk && canReturnOrder(order.order_no)))) {
+  if (!orders.every(order => canCancelUnreceivedOrder(order.order_no))) {
     reportActionFailure('订单状态、客户授权或库存操作权限已变化，请刷新后重试。')
     return
   }
@@ -5270,18 +5290,11 @@ async function confirmCancelOrder() {
     reportActionFailure('取消正式订单必须填写至少 4 个字的原因。')
     return
   }
-  if (!isBulk && canReturnOrder(orders[0].order_no) && (!orderReturnDate.value || orderReturnDate.value > businessTodayIso())) {
-    reportActionFailure('请填写不晚于今天的实际退货交接日期。')
-    return
-  }
   cancellingOrder.value = true
   try {
-    const isInventoryReturn = !isBulk && ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(orders[0].status)
     const cancelledOrders = isBulk
       ? await cartonProcurementApi.bulkCancelOrders(factoryId, orders, cancelOrderReason.value.trim())
-      : [await (isInventoryReturn
-        ? cartonProcurementApi.returnOrder(factoryId, orders[0], cancelOrderReason.value.trim(), orderReturnDate.value)
-        : cartonProcurementApi.cancelOrder(factoryId, orders[0], cancelOrderReason.value.trim()))]
+      : [await cartonProcurementApi.cancelOrder(factoryId, orders[0], cancelOrderReason.value.trim())]
     if (factoryId !== selectedFactoryId.value) return
     cancelledOrders.forEach(order => replaceOrderState(order))
     cancelOrderNo.value = ''
@@ -5291,9 +5304,7 @@ async function confirmCancelOrder() {
     )
     const message = isBulk
       ? `已批量取消 ${cancelledOrders.length} 张尚未发生收发的订单，并保留审计记录。`
-      : isInventoryReturn
-        ? `正式纸箱订单 ${cancelledOrders[0].order_no} 已退单，相关库存已按规则转出并保留审计记录。`
-        : `正式纸箱订单 ${cancelledOrders[0].order_no} 已取消并保留审计记录。`
+      : `正式纸箱订单 ${cancelledOrders[0].order_no} 已取消并保留审计记录。`
     await refreshAfterSavedAction(message, factoryId)
   } catch (error) {
     if (factoryId === selectedFactoryId.value) reportActionFailure(`订单取消失败：${getApiErrorMessage(error)}`)
@@ -6709,6 +6720,7 @@ function applyHistoryItemSuggestion(suggestion: CartonOrderHistorySuggestionResp
     currency: line.currency,
     priceSource: line.price_source,
     note: line.note,
+    processNote: line.process_note,
   })))
   selectedHistoryItemSource.value = suggestion
   historyItemSuggestions.value = []
@@ -7015,6 +7027,7 @@ function copyOrderInformation(orderNo: string) {
     currency: line.currency,
     priceSource: line.price_source,
     note: line.note,
+    processNote: line.process_note,
   })))
   showOrderModal.value = true
 }
@@ -7065,6 +7078,7 @@ function openEditOrderModal(orderNo: string) {
     currency: line.currency,
     priceSource: line.price_source,
     note: line.note,
+    processNote: line.process_note,
   })))
   showOrderModal.value = true
 }
@@ -8293,7 +8307,7 @@ watch(activeTab, (tab, previous) => {
     if (tab !== 'weekly-check') pendingScheduleNavigation.value = null
     if (previous === 'dashboard') splitOrder.value = null
     if (usesDashboardWorkspace.value || ['dashboard', 'business-alerts'].includes(previous)) dashboardData.value = null
-    void loadBackendData(selectedFactoryId.value, { supersede: true })
+    void loadBackendData(selectedFactoryId.value, { supersede: true, readCustomersOnly: previous === 'dashboard' && tab === 'orders' })
   }
 })
 watch([selectedCustomer, () => globalSearch.value.trim(), businessAlertStatusFilter, businessAlertKindFilter], ([customer, search], [previousCustomer, previousSearch]) => {
@@ -8432,7 +8446,7 @@ const cartonNavigationMessage = computed(() => {
     [deleteOrderTarget.value || deleteOrderTargets.value.length, '删除订单确认'], [undoImportTarget.value, '撤销导入确认'],
     [unifiedBatchOpen.value, '订单批量处理'], [batchAppendOpen.value, '批量追加'], [demandImportOpen.value, '订单导入'],
     [specialDialogOpen.value && (specialCreate.value || specialEditorMode.value), '样板／杂单编辑'],
-    [specialReceiptOpen.value, '样板／杂单收料'], [specialStockActionTarget.value, '样板／杂单库存操作'],
+    [specialReceiptOpen.value, '样板／杂单收料'], [orderStockActionTarget.value, '订单库存操作'],
     [submitSupplierOrderNo.value || bulkSubmitSupplierOrderNos.value.length, '发送采购单确认'], [cancelOrderNo.value, '取消订单确认'],
   ]
   const editor = editors.find(([enabled]) => enabled)
@@ -8738,13 +8752,13 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
           </div>
         </section>
         <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <button type="button" aria-label="查看待跟进订单" class="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-teal-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700" @click="setActiveTab('orders')">
+          <button type="button" aria-label="查看待跟进订单" class="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-teal-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700" @click="openFollowUpOrders">
             <div class="flex items-center justify-between text-[11px] font-semibold text-slate-500">
               待跟进订单
               <ClipboardCheck class="size-4 text-teal-600" aria-hidden="true" />
             </div>
             <div class="mt-2 text-3xl font-bold tabular-nums text-slate-950">{{ dashboardActive ? pendingOrderCount : '—' }}</div>
-            <p class="mt-1 text-[11px] text-slate-400">人工录单并确认后才成为正式订单</p>
+            <p class="mt-1 text-[11px] text-slate-400">查看当前客户范围内仍需跟进的订单</p>
           </button>
           <button type="button" aria-label="查看本周核对与提醒" class="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-teal-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700" @click="setActiveTab('weekly-check')">
             <div class="flex items-center justify-between text-[11px] font-semibold text-slate-500">
@@ -8936,7 +8950,8 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
 { key: 'replenish', visible: canReplenishOrder(row.id), disabled: !apiConnected || replenishing, aria: `补单 ${row.id}`, run: () => { openOrderMoreMenu = ''; openReplenishOrder(row.id) } },
 { key: 'append', visible: canAppendOrder(row.id), disabled: !apiConnected, hint: rawOrderStatus(row.id) === 'COMPLETED' ? '追加后恢复为部分到货，新增数量可继续入库' : '追加订单数量', aria: `追加 ${row.id} 订单`, run: () => { openOrderMoreMenu = ''; openAppendOrder(row.id) } },
 { key: 'reduce', visible: canReduceSubmittedOrder(row.id), disabled: !apiConnected || reducingOrder, aria: `减单 ${row.id}`, label: rawOrderStatus(row.id) === 'PARTIALLY_RECEIVED' ? '减少未入库量' : '减单 / 退单', run: () => { openOrderMoreMenu = ''; openReduceOrder(row.id) } },
-{ key: 'cancel', visible: canCancelUnreceivedOrder(row.id) || canReturnOrder(row.id), disabled: !apiConnected || cancellingOrder, aria: canReturnOrder(row.id) ? `整单退货 ${row.id}` : `取消 ${row.id}`, label: canReturnOrder(row.id) ? '整单退货' : '取消订单', run: () => { openOrderMoreMenu = ''; openCancelOrder(row.id) } },
+{ key: 'return-stock', visible: canReturnOrder(row.id), disabled: !apiConnected, aria: `订单退货 ${row.id}`, run: () => { openOrderMoreMenu = ''; openOrderStockReturn(row.id) } },
+{ key: 'cancel', visible: canCancelUnreceivedOrder(row.id), disabled: !apiConnected || cancellingOrder, aria: `取消 ${row.id}`, run: () => { openOrderMoreMenu = ''; openCancelOrder(row.id) } },
 { key: 'delete', visible: canDeleteOrders, disabled: !apiConnected || !canDeleteOrder(row.id) || deletingOrders, hint: orderDeleteHint(row.id), aria: `删除订单 ${row.id}`, run: () => { openDeleteOrder(row.id) } }
 ]" />
                   <button type="button" title="悬停预览完整明细，单击后保持显示" class="col-start-3 row-start-1 inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md border border-slate-200 bg-white text-[10px] font-bold text-slate-600 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700" :aria-label="`查看 ${row.id} 完整订单明细`" @mouseenter="previewOrderDetails(row.id)" @mouseleave="closeOrderDetailsPreview(row.id)" @focus="previewOrderDetails(row.id)" @blur="closeOrderDetailsPreview(row.id)" @click="openOrderDetails(row.id)">明细</button>
@@ -9494,7 +9509,9 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
                   <td data-label="全选筛选结果" class="px-2 py-3"><input v-model="selectedInventoryTargetIds" class="size-5 accent-teal-600" type="checkbox" :value="row.id" :disabled="row.balance <= 0" :aria-label="`选择库存 ${row.itemNo} ${row.specification}`"></td>
                   <td data-label="客户" class="px-2 py-3 font-semibold">{{ row.customer }}<div class="mt-1 text-[10px] font-normal text-teal-700">{{ (row.businessKinds || ['LEGACY']).map(kind => inventoryKindLabels[kind]).join(' / ') }}</div></td>
                   <td data-label="合同号" class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.poNumber">{{ row.poNumber || '—' }}</div><div v-if="customerPoForLine(row.orderLineId || '')" class="mt-1 break-all text-[10px] text-teal-700">客户 PO {{ customerPoForLine(row.orderLineId || '') }}</div></td><td data-label="货号" class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.itemNo">{{ row.itemNo }}</div></td>
-                  <td data-label="纸品类型 / 纸质 / 规格" class="px-2 py-3"><div class="break-words font-semibold">{{ row.packagingType }} · {{ row.paperQuality }}</div><div class="mt-1 break-words text-slate-500">{{ row.specification }}</div></td>
+                  <td data-label="纸品类型 / 纸质 / 规格" class="px-2 py-3"><div class="break-words font-semibold">{{ row.packagingType }} · {{ row.paperQuality }}</div><div class="mt-1 break-words text-slate-500">{{ row.specification }}</div>
+                    <details v-if="inventoryOrderLines.get(row.orderLineId || '')?.process_note" class="mt-1 text-xs"><summary class="cursor-pointer text-teal-700">纸品明细</summary><p class="mt-1 whitespace-pre-wrap break-words">工艺备注 · {{ inventoryOrderLines.get(row.orderLineId || '')?.process_note }}</p></details>
+                  </td>
                   <td data-label="仓位" class="break-words px-2 py-3">{{ row.location }}</td>
                   <td data-label="累计入库" class="px-2 py-3 text-right tabular-nums text-sm whitespace-nowrap">{{ inventoryQuantity(row.money?.inbound_quantity) }} <span class="text-[10px] text-slate-400">{{ row.unit }}</span></td>
                   <td data-label="累计出库" class="px-2 py-3 text-right tabular-nums text-sm whitespace-nowrap">{{ inventoryQuantity(row.money?.outbound_quantity) }} <span class="text-[10px] text-slate-400">{{ row.unit }}</span></td>
@@ -10014,7 +10031,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
     </div>
 
     <CartonOrderDetailDialog v-if="orderDetailRow" data-testid="order-detail-overlay" :pinned="orderDetailPinned" :title="'订单明细 — ' + orderDetailRow.contractNo + ' / ' + orderDetailRow.itemNo" @close="closeOrderDetails">
-          <CartonOrderDetailContent :order="orderDetailRecord ?? undefined" :fields="[{ label: '客户', value: orderDetailRow.customer }, { label: '订单类型', value: '正单' }, { label: '订单单号', value: orderDetailRow.id }, { label: '客户 PO', value: customerPoForOrder(orderDetailRow.id) || '未填写' }, { label: '产品名称', value: orderDetailRecord?.product_name || '未记录' }, { label: '产品订单数量', value: orderDetailRow.orderQuantity == null ? '未记录' : formatNumber(orderDetailRow.orderQuantity) }, { label: '状态', value: orderDetailRow.status }, { label: '下单日期', value: formatMonthDay(orderDetailRow.orderDate) }, { label: '客户要求交期', value: formatMonthDay(orderDetailRow.customerDueDate) || '未记录' }, { label: '计划交期', value: formatMonthDay(orderDetailRow.dueDate) }, { label: '备注', value: orderDetailRow.note || '—' }]" :rows="orderDetailRow.materials.map(material => ({ id: material.id, label: material.packagingType, quality: material.paperQuality, specification: material.specification, unit: material.unit, rule: orderDetailSourceLine(material)?.quantity_rule?.mode === 'PER_CARTON' ? quantityRuleLabel(orderDetailSourceLine(material)!) : material.unitsPerCarton == null ? '未记录' : formatUnitsPerCarton(material.unitsPerCarton), required: orderDetailRequiredQuantity(material), received: orderDetailReceivedQuantity(material), remaining: orderDetailRemainingQuantity(material), progress: orderDetailProgress(material), note: orderDetailPaperWeights(material.id) }))">
+          <CartonOrderDetailContent :order="orderDetailRecord ?? undefined" :fields="[{ label: '客户', value: orderDetailRow.customer }, { label: '订单类型', value: '正单' }, { label: '订单单号', value: orderDetailRow.id }, { label: '客户 PO', value: customerPoForOrder(orderDetailRow.id) || '未填写' }, { label: '产品名称', value: orderDetailRecord?.product_name || '未记录' }, { label: '产品订单数量', value: orderDetailRow.orderQuantity == null ? '未记录' : formatNumber(orderDetailRow.orderQuantity) }, { label: '状态', value: orderDetailRow.status }, { label: '下单日期', value: formatMonthDay(orderDetailRow.orderDate) }, { label: '客户要求交期', value: formatMonthDay(orderDetailRow.customerDueDate) || '未记录' }, { label: '计划交期', value: formatMonthDay(orderDetailRow.dueDate) }, { label: '备注', value: orderDetailRow.note || '—' }]" :rows="orderDetailRow.materials.map(material => ({ id: material.id, label: material.packagingType, quality: material.paperQuality, specification: material.specification, unit: material.unit, rule: orderDetailSourceLine(material)?.quantity_rule?.mode === 'PER_CARTON' ? quantityRuleLabel(orderDetailSourceLine(material)!) : material.unitsPerCarton == null ? '未记录' : formatUnitsPerCarton(material.unitsPerCarton), required: orderDetailRequiredQuantity(material), received: orderDetailReceivedQuantity(material), remaining: orderDetailRemainingQuantity(material), progress: orderDetailProgress(material), note: orderDetailPaperWeights(material.id), processNote: orderDetailSourceLine(material)?.process_note }))">
 <template #status>
 
           <p v-if="orderDetailRecord && (orderDetailRecord.net_weight_kg != null || orderDetailRecord.gross_weight_kg != null)" class="px-5 py-2 text-xs text-slate-600">历史整单每箱净重：{{ orderDetailRecord.net_weight_kg ?? '未记录' }} kg · 毛重：{{ orderDetailRecord.gross_weight_kg ?? '未记录' }} kg</p>
@@ -10105,7 +10122,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
           </div>
           <CartonMasterOrderAssist v-if="masterLoaded && orderForm.quantityBasis !== 'EXPLICIT'" :records="masterWorkspace.records" :customer="orderForm.customerCode" :item="orderForm.itemNo" :contract="orderForm.contractNo" :product="orderForm.productName" :disabled="editingOrderStructureLocked" :lines="orderForm.materials.map(l => ({ packaging_type: l.packagingType, paper_quality: l.paperQuality, specification: l.specification, dimension_unit: l.dimensionUnit, unit: l.unit, usage_quantity: l.quantityRule?.mode === 'PER_CARTON' ? null : l.unitsPerCarton, quantity_rule: reusableQuantityRule(l.quantityRule), net_weight_kg: l.netWeight == null || l.netWeight === '' ? null : l.netWeight, gross_weight_kg: l.grossWeight == null || l.grossWeight === '' ? null : l.grossWeight }))" @select="applyMaster" />
           <p v-else-if="masterError" class="text-xs text-amber-700">基础资料暂未读到，可稍后刷新；{{ masterError }}</p>
-<CartonOrderPaperSection :disabled="editingOrderStructureLocked" :guidance="editingOrderNo ? '尺寸单位按每条纸品分别保存；更正单位保留规格数字，不做数值换算。' : '优先带出基础资料的规格和单位；本单可逐项选择尺寸单位，规格数字不会自动换算。'" @add="addOrderMaterialLine"><template #help><p class="mt-0.5 text-[10px] text-slate-500">{{ orderForm.quantityBasis === 'EXPLICIT' ? supplierOrderSource ? '逐项填写整张订单的纸品总需求；可补齐其他纸品，每箱个数和产品数量选填。本次送货只关联对应纸品，未送数量仍待收。' : '按历史纸品需求数量登记；每箱个数选填，不用反推产品数量。缺失纸质、规格可先保存，确认锁定前须补齐。' : '默认自动计算，数量可直接修改；手动数量会保留，点击“恢复自动”重新计算。' }}</p></template><CartonOrderPaperEditor v-for="(material, index) in orderForm.materials" :key="material.id" :index="index" v-model:packaging="material.packagingType" v-model:quality="material.paperQuality" v-model:specification="material.specification" v-model:dimension="material.dimensionUnit" v-model:unit="material.unit" :packaging-options="orderPackagingOptions" :quality-options="paperQualitySuggestions" :specification-options="specificationSuggestions" :unit-options="orderUnitOptions" :preferred-unit="newPaperDimensionUnit" dimension-editable allow-millimeters :disabled="editingOrderStructureLocked" @update:packaging="suggestOrderQuantityMode(material, index)" @remove="removeOrderMaterialLine(index)">
+<CartonOrderPaperSection :disabled="editingOrderStructureLocked" :guidance="editingOrderNo ? '尺寸单位按每条纸品分别保存；更正单位保留规格数字，不做数值换算。' : '优先带出基础资料的规格和单位；本单可逐项选择尺寸单位，规格数字不会自动换算。'" @add="addOrderMaterialLine"><template #help><p class="mt-0.5 text-[10px] text-slate-500">{{ orderForm.quantityBasis === 'EXPLICIT' ? supplierOrderSource ? '逐项填写整张订单的纸品总需求；可补齐其他纸品，每箱个数和产品数量选填。本次送货只关联对应纸品，未送数量仍待收。' : '按历史纸品需求数量登记；每箱个数选填，不用反推产品数量。缺失纸质、规格可先保存，确认锁定前须补齐。' : '默认自动计算，数量可直接修改；手动数量会保留，点击“恢复自动”重新计算。' }}</p></template><CartonOrderPaperEditor v-for="(material, index) in orderForm.materials" :key="material.id" :index="index" process-notes :note-source="material" v-model:process-note="material.processNote" v-model:packaging="material.packagingType" v-model:quality="material.paperQuality" v-model:specification="material.specification" v-model:dimension="material.dimensionUnit" v-model:unit="material.unit" :packaging-options="orderPackagingOptions" :quality-options="paperQualitySuggestions" :specification-options="specificationSuggestions" :unit-options="orderUnitOptions" :preferred-unit="newPaperDimensionUnit" dimension-editable allow-millimeters :disabled="editingOrderStructureLocked" @update:packaging="suggestOrderQuantityMode(material, index)" @remove="removeOrderMaterialLine(index)">
                 <template #basis>                  <label v-if="material.quantityRule?.mode !== 'PER_CARTON'" class="min-w-0 space-y-1.5"><span class="block whitespace-nowrap text-[11px] font-bold leading-4 text-slate-500">{{ orderForm.quantityBasis === 'EXPLICIT' ? '装箱数（选填）' : '每箱装产品数 *' }}</span><input v-model.number="material.unitsPerCarton" :aria-label="`每箱个数 ${index + 1}`" type="number" min="0.00000001" step="any" :disabled="editingOrderStructureLocked" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-100"></label>
                   <div v-else class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">配套方式</span><div class="flex h-9 items-center text-xs text-slate-500">按箱配套</div></div>
 </template>
@@ -10145,7 +10162,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
       <CartonOrderAdjustmentForm action="date" :order-no="dateAdjustmentOrder.order_no" :busy="dateAdjustmentBusy" customer-date-enabled :customer-date-required="Boolean(dateAdjustmentOrder.customer_due_date)" v-model:customer-date="dateAdjustmentCustomerDue" v-model:due-date="dateAdjustmentDue" :manual-plan="dateAdjustmentManualPlan" :planned-date="dateAdjustmentPlan" :min-date="dateAdjustmentOrder.order_date" v-model:reason="dateAdjustmentReason" guidance="仅修改交期；沿用原订单提前天数，保留原数量和纸品。" :date-help="dateAdjustmentManualPlan ? '历史未记录客户交期时无需猜测补填' : '客户交期减原订单 ' + (dateAdjustmentOrder.safety_lead_days ?? DEFAULT_CARTON_SAFETY_LEAD_DAYS) + ' 个自然日'" :submit-label="dateAdjustmentOrder.status === 'CONFIRMED' ? '保存交期' : '保存并同步供应商'" @submit="confirmDateAdjustment" @close="dateAdjustmentOrder = null" />
     </div>
 
-    <CartonOrderActionDialog v-if="cancelOrderNo" :title="cancelOrderNo === '__BULK__' ? '批量取消 ' + selectedOrders.length + ' 张订单' : canReturnOrder(cancelOrderNo) ? '退单 ' + cancelOrderNo : '取消订单 ' + cancelOrderNo" :description="cancelOrderNo === '__BULK__' ? '仅无收料及在途送货的订单可批量取消，全部校验通过后一次生效。已发布订单会产生停止通知，供应商确认收到后才可删除。' : canReturnOrder(cancelOrderNo) ? '退单用于已发生入库的订单，会将当前可用库存转出并保留原订单。' : '取消后暂停继续执行并保留原订单。已发布订单会产生停止通知，供应商确认收到后才可删除；此回执不代表费用争议已解决。'" :busy="cancellingOrder" danger close-label="关闭取消订单" :reason-label="canReturnOrder(cancelOrderNo) ? '退单原因' : '取消原因'" reason-aria="订单取消退单原因" v-model:reason="cancelOrderReason" :submit-label="cancelOrderNo === '__BULK__' ? '确认批量取消' : canReturnOrder(cancelOrderNo) ? '确认退单' : '确认取消'" @close="cancelOrderNo = ''" @submit="confirmCancelOrder"><label v-if="canReturnOrder(cancelOrderNo)" class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">实际退货交接日期 *</span><input v-model="orderReturnDate" aria-label="整单实际退货日期" type="date" required :max="businessTodayIso()" class="h-10 w-full rounded-lg border border-slate-200 px-3"><span class="block text-xs text-slate-500">供应商月结按此日期归月，库存按本次录入时间记账。</span></label></CartonOrderActionDialog>
+    <CartonOrderActionDialog v-if="cancelOrderNo" :title="cancelOrderNo === '__BULK__' ? '批量取消 ' + selectedOrders.length + ' 张订单' : '取消订单 ' + cancelOrderNo" :description="cancelOrderNo === '__BULK__' ? '仅无收料及在途送货的订单可批量取消，全部校验通过后一次生效。已发布订单会产生停止通知，供应商确认收到后才可删除。' : '取消后暂停继续执行并保留原订单。已发布订单会产生停止通知，供应商确认收到后才可删除；此回执不代表费用争议已解决。'" :busy="cancellingOrder" danger close-label="关闭取消订单" reason-label="取消原因" reason-aria="订单取消退单原因" v-model:reason="cancelOrderReason" :submit-label="cancelOrderNo === '__BULK__' ? '确认批量取消' : '确认取消'" @close="cancelOrderNo = ''" @submit="confirmCancelOrder" />
 
     <CartonPurchaseOrderDialog v-if="purchaseOrderDialogNo" :order-no="purchaseOrderDialogNo" :context="purchaseOrderContextRecord" :loading="loadingPurchaseOrderContext" :generating="issuingPurchaseOrder" :downloading-id="downloadingPurchaseOrderIssueId" :exporting="Boolean(exportingOrderNo)" :can-generate="canIssuePurchaseOrders && responsibleForOrder(purchaseOrderDialogNo)" reference-enabled @close="closePurchaseOrderDialog" @generate="issuePendingPurchaseOrder" @download="downloadPurchaseOrderIssue" @batch="downloadPurchaseOrderBatch" @reference="exportCumulativePurchaseOrderReference" />
 
@@ -10213,7 +10230,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
     <CartonQuickAssetLibrary v-if="scheduleMarks.data.value?.source_policy === 'ASSET_V1'" :factory-id="selectedFactoryId" audience="warehouse" :asset-ids="scheduleMarkPreview.assetIds" read-only />
     <CartonMarkAssetLibrary v-else :key="`${selectedFactoryId}:${selectedWeeklyBatchId}:${scheduleMarkPreview.contract}`" :factory-id="selectedFactoryId" :asset-ids="scheduleMarkPreview.assetIds" read-only />
   </CartonOrderDetailDialog>
-    <CartonSpecialStockActionDialog v-if="specialStockActionTarget" :key="`${selectedFactoryId}:${specialViewerKey}:${customerViewScope}:${specialStockActionTarget.id}:${specialStockActionTarget.action}`" :factory-id="selectedFactoryId" :request-id="specialStockActionTarget.id" :request-no="specialStockActionTarget.requestNo" :action="specialStockActionTarget.action" :viewer-key="specialViewerKey" @close="specialStockActionTarget = null" @changed="specialStockActionChanged" />
+    <CartonSpecialStockActionDialog v-if="orderStockActionTarget" :key="`${selectedFactoryId}:${specialViewerKey}:${customerViewScope}:${orderStockActionTarget.id}:${orderStockActionTarget.action}:${Boolean(orderStockActionTarget.regularOrder)}`" :factory-id="selectedFactoryId" :request-id="orderStockActionTarget.id" :request-no="orderStockActionTarget.requestNo" :action="orderStockActionTarget.action" :regular-order="orderStockActionTarget.regularOrder" :viewer-key="specialViewerKey" @close="orderStockActionTarget = null" @changed="orderStockActionChanged" />
     <CartonOrderReceiptDialog v-model:open="specialReceiptOpen" :factory-id="selectedFactoryId" :request-id="specialReceiptId" :viewer-key="specialViewerKey" :library-enabled="canReadMarks" @saved="loadBackendData(selectedFactoryId, { supersede: true })" @open-delivery="openSpecialDelivery" @open-library="openMarkLibrary" />
     <CartonOrderBatchActionDialog v-model:open="unifiedBatchOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :action="unifiedBatchAction" :entries="unifiedBatchEntries" @saved="unifiedBatchSaved" />
     <CartonScheduleBatchDialog v-model:open="scheduleBatchOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" :selection="scheduleBatchSelection" :default-dimension="newPaperDimensionUnit" @saved="scheduleBatchSaved" @close-auto-focus="restoreScheduleBatchFocus" />

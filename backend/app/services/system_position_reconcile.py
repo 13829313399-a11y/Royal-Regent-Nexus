@@ -98,6 +98,11 @@ def _reconcile_system_position_catalog(
             # definition as unapplied. The exact catalog projection below will
             # repair the state and produce version/audit changes.
             applied_state = {}
+    if applied_state.get("definition_version") == "fixed-v34":
+        raise RuntimeError(
+            "The stored position catalog has already applied the injection retirement. "
+            "Reconcile the pre-retirement role bindings in isolation before startup."
+        )
     raw_role_hashes = applied_state.get("role_hashes", {})
     applied_role_hashes = (
         {

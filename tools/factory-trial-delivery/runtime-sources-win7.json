@@ -1,0 +1,50 @@
+{
+  "python_version": "3.8.10",
+  "target": "Windows 7 SP1 / Windows 10; x86 and x64 using x86 binaries",
+  "native_downloads": [
+    {
+      "name": "python-3.8.10-embed-win32.zip",
+      "source": "https://www.python.org/ftp/python/3.8.10/python-3.8.10-embed-win32.zip",
+      "sha256": "760dc79bcb434ee80b1001a30bb6f798287881851bac6d8137867894d40ef1fc",
+      "bytes": 7348969
+    },
+    {
+      "name": "electron-v22.3.27-win32-ia32.zip",
+      "source": "https://github.com/electron/electron/releases/download/v22.3.27/electron-v22.3.27-win32-ia32.zip",
+      "sha256": "1119ac7112590cb9c10a8c9b0bb5be65c0e11648a4f1311e6b7a5a00e497c2ce",
+      "bytes": 91173960
+    },
+    {
+      "name": "SHASUMS256.txt",
+      "source": "https://github.com/electron/electron/releases/download/v22.3.27/SHASUMS256.txt",
+      "sha256": "b87390c5c41b9db2ab3eed1d83b39f334282f77b1e60ecc2e7e34505fd609419",
+      "bytes": 7668
+    },
+    {
+      "name": "vc_redist.x86.exe",
+      "source": "https://aka.ms/vs/16/release/vc_redist.x86.exe",
+      "sha256": "38c9437e6e9ef1db2671b3f0c879febec08521bd2c23231199f626b69ae1c65e",
+      "bytes": 13889072
+    },
+    {
+      "name": "tesseract-ocr-w32-setup-v5.0.1.20220118.exe",
+      "source": "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w32-setup-v5.0.1.20220118.exe",
+      "sha256": "bd07c6927570b2b1fdb63c602951e48b7d9a24325c14b1d01ed729c4b6f9a416",
+      "bytes": 52369938
+    }
+  ],
+  "ocr_languages": [
+    {
+      "name": "eng.traineddata",
+      "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "bytes": 4113088
+    },
+    {
+      "name": "chi_sim.traineddata",
+      "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/chi_sim.traineddata",
+      "sha256": "a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730",
+      "bytes": 2469156
+    }
+  ]
+}

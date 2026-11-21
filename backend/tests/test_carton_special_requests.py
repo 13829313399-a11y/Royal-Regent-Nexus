@@ -1,9 +1,11 @@
 """Synthetic API coverage for typed special sources and the ordinary stock bridge."""
+from contextlib import closing
 from io import BytesIO
 from uuid import uuid4
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 import pytest
+from fastapi.testclient import TestClient
 from test_molding_sample_api import make_client, login_as
 from test_carton_supplier_portal import setup_portal, supplier_login
 
@@ -47,9 +49,9 @@ def accept(client, row):
     return ok(client.get(SUP + f"/{row['id']}", params={"factory_id": row["factory_id"]}))
 
 
-def created(client, *, accept_order=True):
+def created(client, *, accept_order=True, kind="SAMPLE"):
     login_as(client, "admin")
-    row = ok(client.post(BASE, json=create_body()), 201)
+    row = ok(client.post(BASE, json=create_body(kind)), 201)
     row = ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
     if accept_order:
         accept(client, row)
@@ -249,7 +251,10 @@ def test_free_gift_no_customer_zero_payable_and_rejecting_all_posts_no_stock(mon
             assert len(values) == 1 and Decimal(values[0]["amount"]) == 0 and not values[0]["issues"]
 
 
-def test_material_change_keeps_old_delivery_price_and_allows_original_receipt(monkeypatch):
+@pytest.mark.parametrize("managed", [False, True])
+def test_material_change_keeps_old_delivery_price_and_allows_original_receipt(monkeypatch, managed):
+    for flag in ("CARTON_ASSET_V1_ENABLED", "CARTON_ASSET_V1_WRITES_ENABLED"):
+        monkeypatch.setenv(flag, str(managed).lower())
     with make_client(monkeypatch) as client:
         place = setup(client)
         row = ship(client, created(client), price="2")
@@ -257,8 +262,22 @@ def test_material_change_keeps_old_delivery_price_and_allows_original_receipt(mo
         login_as(client, "admin")
         from pypdf import PdfWriter
         output = BytesIO(); writer = PdfWriter(); writer.add_blank_page(width=100, height=100); writer.write(output)
-        row = ok(client.post(BASE + f"/{row['id']}/attachments", data={**command(row), "role": "CONFIRMED"},
-            files={"file": ("mark.pdf", output.getvalue(), "application/pdf")}), 201)
+        path = BASE + f"/{row['id']}/attachments"
+        body = command(row, role="CONFIRMED")
+        files = {"file": ("mark.pdf", output.getvalue(), "application/pdf")}
+        if managed:
+            detail = ok(client.get(BASE + f"/{row['id']}", params={"factory_id": FACTORY}))
+            assert {"pmc-warehouse", "carton"} <= set(detail["mark_upload_departments"])
+            assert client.post(path, data=body, files=files).status_code == 422
+            body["owner_department"] = "pmc-warehouse"
+        row = ok(client.post(path, data=body, files=files), 201)
+        assert ok(client.post(path, data=body, files=files), 201) == row
+        if managed:
+            from app.db import SessionLocal
+            from app.models.carton_mark import CartonMarkAsset
+            with SessionLocal() as db:
+                assert db.get(CartonMarkAsset, row["mark_assets"][-1]["id"]).owner_department == "pmc-warehouse"
+            assert client.post(path, data={**body, "owner_department": "carton"}, files=files).status_code == 409
         assert (row['status'], row['revision'], row['current_version_id'], row['quote_version_id'], row['promised_date']) == procurement_state
         assert row['attachments'][-1]['role'] == 'DRAFT'
         row, _ = receive(client, row, place)
@@ -345,9 +364,11 @@ def test_gift_cannot_be_repriced_and_same_second_files_stay_independent_evidence
         from pypdf import PdfWriter
         from app.services import carton_procurement as core
         monkeypatch.setattr(core, "now_text", lambda: "2026-10-19T10:00:00+08:00")
+        current = ok(client.get(BASE + f"/{row['id']}", params={"factory_id": FACTORY}))
+        owner = {"owner_department": "pmc-warehouse"} if current.get("mark_upload_departments") else {}
         for width in (100, 200):
             writer = PdfWriter(); writer.add_blank_page(width=width, height=100); output=BytesIO(); writer.write(output)
-            row = ok(client.post(BASE+f"/{row['id']}/attachments", data={**command(row), "role":"CONFIRMED"},
+            row = ok(client.post(BASE+f"/{row['id']}/attachments", data={**command(row), "role":"CONFIRMED", **owner},
                 files={"file":("same.pdf",output.getvalue(),"application/pdf")}),201)
         assert not row['history'][-1]['snapshot']['material_manifest']
         assert (row['revision'], row['current_version_id'], row['quote_version_id']) == procurement_state
@@ -386,6 +407,103 @@ def test_concurrent_identical_receiving_replays_one_stock_and_price_source(monke
         assert [response.status_code for response in results] == [200,200], [response.text for response in results]
         assert results[0].json()==results[1].json()
         assert len(results[0].json()["shipments"][0]["receipts"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["SAMPLE", "WORKSHOP_MISC"])
+def test_concurrent_first_acceptance_keeps_one_promise_and_replays_winner(monkeypatch, kind):
+    from test_molding_sample_api import ensure_test_user
+    from test_carton_supplier_portal import grant_supplier_permissions
+
+    with make_client(monkeypatch) as client, closing(TestClient(client.app)) as peer:
+        setup(client)
+        row = created(client, accept_order=False, kind=kind)
+        supplier_login(client)
+        ensure_test_user("engineer_peer")
+        grant_supplier_permissions("user-engineer-peer", permissions=("carton_supplier:read", "carton_supplier:approve"))
+        login_as(peer, "engineer_peer")
+        sessions = (client, peer)
+        detail = SUP + f"/{row['id']}"
+        for session in sessions:
+            before = ok(session.get(detail, params={"factory_id": FACTORY}))
+            assert before["current_version_id"] == row["current_version_id"]
+            assert before["supplier_confirmation"]["status"] == "PENDING"
+        path = "/api/carton-supplier/changes/respond"
+        base = {"factory_id": FACTORY, "source_kind": "SPECIAL", "source_id": row["current_version_id"],
+                "expected_revision": row["revision"], "action": "ACCEPT"}
+        bodies = [{**base, "request_id": uuid4().hex, "promised_date": day}
+                  for day in ("2026-10-25", "2026-10-28")]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda session, body: session.post(path, json=body), sessions, bodies))
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        winner = next(i for i, response in enumerate(responses) if response.status_code == 200)
+        saved = responses[winner].json()
+        assert "接单回执已变化" in responses[1 - winner].json()["detail"]
+        assert ok(sessions[winner].post(path, json=bodies[winner])) == saved
+        current = ok(sessions[1 - winner].get(detail, params={"factory_id": FACTORY}))
+        assert current["supplier_confirmation"]["promised_date"] == bodies[winner]["promised_date"]
+        assert current["supplier_confirmation"]["acceptance_id"] == saved["acceptance_id"]
+        assert [event["status"] for event in current["supplier_confirmation"]["history"]].count("ACCEPTED") == 1
+        updated = ok(sessions[1 - winner].post(path, json={**base, "request_id": uuid4().hex,
+            "expected_acceptance_id": saved["acceptance_id"], "promised_date": "2026-10-30"}))
+        assert updated["promised_date"] == "2026-10-30"
+        assert ok(sessions[winner].post(path, json=bodies[winner])) == saved
+
+
+def test_promise_update_compares_current_receipt_under_lock_and_replays_before_comparing(monkeypatch):
+    with make_client(monkeypatch) as client:
+        setup(client)
+        row = created(client)
+        supplier_login(client)
+        path = "/api/carton-supplier/changes/respond"
+        detail = SUP + f"/{row['id']}"
+        current = ok(client.get(detail, params={"factory_id": FACTORY}))
+        first_acceptance = current["supplier_confirmation"]["acceptance_id"]
+        base = {"factory_id": FACTORY, "source_kind": "SPECIAL", "source_id": row["current_version_id"],
+            "expected_revision": row["revision"], "action": "ACCEPT", "expected_acceptance_id": first_acceptance}
+        bodies = [{**base, "request_id": uuid4().hex, "promised_date": day}
+                  for day in ("2026-10-25", "2026-10-27")]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda body: client.post(path, json=body), bodies))
+        assert sorted(response.status_code for response in results) == [200, 409], [response.text for response in results]
+        winner = next(index for index, response in enumerate(results) if response.status_code == 200)
+        saved = results[winner].json()
+        assert saved["acceptance_id"] != first_acceptance
+        assert "接单回执已变化" in results[1 - winner].json()["detail"]
+        next_update = {**base, "expected_acceptance_id": saved["acceptance_id"], "request_id": uuid4().hex, "promised_date": "2026-10-29"}
+        next_saved = ok(client.post(path, json=next_update))
+        assert next_saved["expected_revision"] == row["revision"]
+        assert ok(client.post(path, json=bodies[winner])) == saved
+        assert ok(client.get(detail, params={"factory_id": FACTORY}))["supplier_confirmation"]["promised_date"] == "2026-10-29"
+
+        dispute = {key: value for key, value in base.items() if key != "expected_acceptance_id"}
+        ok(client.post(path, json={**dispute, "action": "DISPUTE", "reason": "订单规格仍待核对", "request_id": uuid4().hex}))
+        old_preview = {**next_update, "expected_acceptance_id": next_saved["acceptance_id"], "request_id": uuid4().hex}
+        assert client.post(path, json=old_preview).status_code == 409
+        confirmation = ok(client.get(detail, params={"factory_id": FACTORY}))["supplier_confirmation"]
+        assert confirmation["status"] == "DISPUTED" and not confirmation["acceptance_id"]
+
+
+def test_promise_update_uses_legacy_quote_evidence_for_current_requirement(monkeypatch):
+    with make_client(monkeypatch) as client:
+        from app.services import carton_special_requests as special
+
+        setup(client)
+        pack = special.pack
+
+        def pack_legacy_snapshot(value):
+            return pack({key: item for key, item in value.items() if key != "supplier_document_after_acceptance"})
+
+        monkeypatch.setattr(special, "pack", pack_legacy_snapshot)
+        row = created(client, accept_order=False)
+        row = quote(client, row)
+        confirmation = row["supplier_confirmation"]
+        assert confirmation["status"] == "ACCEPTED" and confirmation["acceptance_id"] == row["quote_version_id"]
+        body = {"factory_id": FACTORY, "source_kind": "SPECIAL", "source_id": row["current_version_id"],
+            "expected_revision": row["revision"], "action": "ACCEPT", "expected_acceptance_id": row["quote_version_id"],
+            "promised_date": "2026-10-28", "request_id": uuid4().hex}
+        result = ok(client.post("/api/carton-supplier/changes/respond", json=body))
+        assert result["acceptance_id"] != confirmation["acceptance_id"]
+        assert result["promised_date"] == "2026-10-28"
 
 
 def test_legacy_manual_reentry_preserves_root_quantity_and_single_successor(monkeypatch):

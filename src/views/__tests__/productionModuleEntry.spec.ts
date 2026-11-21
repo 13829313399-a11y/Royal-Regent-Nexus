@@ -192,7 +192,7 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toMatch(/title="客价转换台"/)
     expect(customerPriceConversionViewSource).toContain("['huaxing', 'huakang-a'].includes(appStore.activeProductionFactory.id)")
     expect(customerPriceConversionViewSource).toContain('data-testid="customer-price-mapping-empty"')
-    expect(customerPriceConversionViewSource).toContain('BuzzBee、迪士尼、Dickie、彩星和银辉仅适用于华兴，360 仅适用于华康 A')
+    expect(customerPriceConversionViewSource).toContain('华兴支持 BuzzBee、迪士尼、Dickie、彩星、银辉及独立的360临时路线；华康 A 保留原360路线。')
     expect(customerPriceConversionViewSource).not.toMatch(/label: '待转换'|label: '待复核'/)
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
     expect(customerPriceConversionViewSource).not.toMatch(/quoteDeskTabs/)

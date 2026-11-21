@@ -16,7 +16,20 @@ class Position(StrictModel):
 
 
 class Declaration(Position):
+    requested_role_ids: list[str] = Field(default_factory=list, max_length=3)
+    requested_factory_ids: list[str] = Field(default_factory=list, max_length=6)
     note: str = Field(default="", max_length=1000)
+
+    @field_validator("requested_role_ids", "requested_factory_ids")
+    @classmethod
+    def distinct_references(cls, values):
+        if len(set(values)) != len(values) or any(not value or len(value) > 64 for value in values):
+            raise ValueError("参考选项无效或重复")
+        return values
+
+    def snapshot(self):
+        return self.model_dump(exclude={key for key in ("requested_role_ids", "requested_factory_ids")
+                                        if not getattr(self, key)})
 
     @field_validator("note", mode="before")
     @classmethod
@@ -66,12 +79,21 @@ class PreviewInput(StrictModel):
     decision: Literal["apply_package", "keep_permissions"]
     confirmed_profile: Position
     package_selection: PackageSelection | None = None
+    package_selections: list[PackageSelection] = Field(default_factory=list, max_length=20)
     independent_allow_decisions: list[ExceptionDecision] = Field(max_length=200)
     registration_details_correction: RegistrationDetails | None = None
 
+    @property
+    def selected_packages(self):
+        return [self.package_selection] if self.package_selection else self.package_selections
+
     @model_validator(mode="after")
     def shape(self):
-        if (self.decision == "apply_package") != (self.package_selection is not None):
+        if self.package_selection and self.package_selections:
+            raise ValueError("请使用一种权限包选择方式")
+        if len({p.role_id for p in self.selected_packages}) != len(self.selected_packages):
+            raise ValueError("权限包重复，请在同一个包中选择厂区")
+        if (self.decision == "apply_package") != bool(self.selected_packages):
             raise ValueError("请选择方案；保留权限时不能同时选择新方案")
         if len({d.override_id for d in self.independent_allow_decisions}) != len(self.independent_allow_decisions):
             raise ValueError("独立授权处置重复")

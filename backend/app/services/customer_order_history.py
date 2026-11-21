@@ -18,6 +18,7 @@ from app.models.customer_order_ledger import OrderLedgerSource as Source, OrderL
 from app.services import customer_order_ledger as ledger
 from app.services.auth import now_text
 from app.services.order_workbook_bounds import worksheet_bounds
+from app.services.huaxing_order_legacy.edu_schedule import full_edu_item
 
 MAX_BYTES = 25 * 1024 * 1024
 MAX_ROWS = 20000
@@ -31,7 +32,7 @@ HEADERS = {
     "外箱贴纸": "customer_label", "箱唛": "carton_mark", "布标规格": "fabric_label", "布标格": "fabric_label",
     "包装": "packaging", "日期码": "date_code", "验货日期": "inspection_date",
     "客要求走货期": "requested_ship_date", "备注": "note", "国家": "country", "条码": "barcode",
-    "印刷要求": "printing_requirement", "联系人": "contact",
+    "印刷要求": "printing_requirement", "联系人": "contact", "mix编号": "caixing_mix_no",
 }
 MARKERS = {
     "取消单": "cancelled", "已走货订单": "shipped", "未走货订单": "unshipped",
@@ -65,7 +66,26 @@ def cell_text(cell, cached):
     return result
 
 
-def parse_workbook(content: bytes) -> tuple[list[dict], list[str]]:
+def _source_item_comments(workbook, sheet):
+    """Read explicit old-export SKU evidence while keeping worksheet rows streamed."""
+    from openpyxl.packaging.relationship import get_dependents, get_rels_path
+    from openpyxl.comments.comment_sheet import CommentSheet
+    from openpyxl.xml.functions import fromstring
+    archive = workbook._archive
+    rels_path = get_rels_path(sheet._worksheet_path)
+    if rels_path not in archive.namelist():
+        return {}
+    comments = {}
+    for relation in get_dependents(archive, rels_path):
+        if relation.Type.endswith('/comments') and relation.TargetMode != 'External':
+            parsed = CommentSheet.from_tree(fromstring(archive.read(relation.Target)))
+            for coordinate, comment in parsed.comments:
+                if comment.text.startswith('原始产品型号：'):
+                    comments[coordinate] = comment.text.split('：',1)[1].strip()
+    return comments
+
+
+def parse_workbook(content: bytes, *, recover_edu_items=False) -> tuple[list[dict], list[str]]:
     if len(content) > MAX_BYTES:
         raise HTTPException(400, "排期文件不能超过 25 MB")
     try:
@@ -88,7 +108,9 @@ def parse_workbook(content: bytes) -> tuple[list[dict], list[str]]:
                 f"{sheet.title} 超过迁入范围限制，请整理后重试", 400)
             if row_count < 4 or not column_count:
                 continue
-            header_cells = next(sheet.iter_rows(min_row=3, max_row=3, max_col=column_count))
+            from .customer_order_jakks_unified import header_row
+            header = header_row(sheet)
+            header_cells = next(sheet.iter_rows(min_row=header, max_row=header, max_col=column_count))
             headers = [text(c.value) for c in header_cells]
             fields = [HEADERS.get(key(h)) for h in headers]
             if not all(f in fields for f in ("product_no", "quantity", "reference_no", "po_no")):
@@ -97,12 +119,20 @@ def parse_workbook(content: bytes) -> tuple[list[dict], list[str]]:
             if any(fields.count(f) > 1 for f in ("product_no", "quantity", "reference_no", "po_no", "contract_no")):
                 raise HTTPException(400, f"{sheet.title} 订单关键表头重复，请先核对")
             counts = Counter(f for f in fields if f)
+            source_items = _source_item_comments(formulas, sheet) if recover_edu_items else {}
             section = "unshipped"
             found_markers = []
-            for r, (cells, caches) in enumerate(zip(sheet.iter_rows(min_row=4, max_row=row_count, max_col=column_count),
-                    values[sheet.title].iter_rows(min_row=4, max_row=row_count, max_col=column_count)), 4):
+            for r, (cells, caches) in enumerate(zip(sheet.iter_rows(min_row=header + 1, max_row=row_count, max_col=column_count),
+                    values[sheet.title].iter_rows(min_row=header + 1, max_row=row_count, max_col=column_count)), header + 1):
                 raw = [cell_text(c, v) for c, v in zip(cells, caches)]
                 data = {f: raw[i] for i, f in enumerate(fields) if f and counts[f] == 1}
+                if data.get('order_type') == '混装组头':
+                    continue
+                if source_items and data.get('product_no') and counts['product_no'] == 1:
+                    product_cell = cells[fields.index('product_no')]
+                    source_item = source_items.get(product_cell.coordinate)
+                    if source_item and full_edu_item(data.get('product_no'), source_item) != data.get('product_no'):
+                        data['source_product_no'] = source_item
                 # Only a banner without order identity changes the section. A remark mentioning cancellation does not.
                 banner = MARKERS.get(key(raw[0])) if raw else None
                 if banner and not any(data.get(f) for f in ("reference_no", "po_no", "product_no")):
@@ -190,7 +220,7 @@ def parse_workbook(content: bytes) -> tuple[list[dict], list[str]]:
 def preview(db, content, filename, factory, customer, customer_name, *, workbook=None):
     if Path(filename).suffix.lower() != ".xlsx" or Path(filename).name.startswith("._"):
         raise HTTPException(400, "请选择真实的 .xlsx 排期文件")
-    rows, warnings = workbook if workbook is not None else parse_workbook(content)
+    rows, warnings = workbook if workbook is not None else parse_workbook(content, recover_edu_items=customer == 'edu')
     identities = defaultdict(list)
     existing = {item.identity_key: item.line_id for item in db.scalars(select(Identity).where(Identity.factory_id == factory, Identity.customer_code == customer))}
     for line in db.scalars(select(Line).where(Line.factory_id == factory, Line.customer_code == customer)):
@@ -201,7 +231,7 @@ def preview(db, content, filename, factory, customer, customer_name, *, workbook
             row["identity"] = identity
             identities[identity].append(row)
             matched = ledger.resolve_existing_line(db, factory, customer, row["data"], identity) if customer == "edu" else None
-            if identity in existing or matched is not None:
+            if (matched is not None if customer == "edu" else identity in existing):
                 row["existing"] = True
                 row["issues"].append("台账已有此订单，不覆盖；若要补齐 PO 请使用关联已有订单")
         except HTTPException as exc:

@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS photos (
  id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), name TEXT NOT NULL,
  content BLOB NOT NULL, digest TEXT NOT NULL, origin TEXT, removed INTEGER NOT NULL DEFAULT 0,
  created_at TEXT NOT NULL, UNIQUE(entry_id,origin));
+CREATE TABLE IF NOT EXISTS photo_annotations (
+ photo_id TEXT PRIMARY KEY REFERENCES photos(id), version INTEGER NOT NULL, annotations TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS changes (
  id INTEGER PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), revision INTEGER NOT NULL,
  action TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL, snapshot TEXT NOT NULL);
@@ -46,9 +48,13 @@ CREATE TABLE IF NOT EXISTS exports (
 '''
 
 
+def database_path():
+    return Path(settings.qc_department_data_dir).resolve() / '_inspection_sheet' / 'inspections.sqlite3'
+
+
 @contextmanager
 def store(write=False, review=False):
-    path = Path(settings.qc_department_data_dir).resolve() / '_inspection_sheet' / 'inspections.sqlite3'
+    path = database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=20)
     conn.row_factory = sqlite3.Row
@@ -259,7 +265,15 @@ def reversal_notifications(factory, actor, body=None):
 
 
 def unpack(conn, row, include_photos=True):
-    photos = [dict(f) for f in conn.execute('SELECT id,name FROM photos WHERE entry_id=? AND removed=0 ORDER BY created_at,id',(row['id'],))] if include_photos else []
+    photos = []
+    if include_photos:
+        for photo in conn.execute('''SELECT p.id,p.name,m.version,m.annotations FROM photos p
+                LEFT JOIN photo_annotations m ON m.photo_id=p.id
+                WHERE p.entry_id=? AND p.removed=0 ORDER BY p.created_at,p.id''',(row['id'],)):
+            item = {'id':photo['id'],'name':photo['name']}
+            if photo['annotations'] is not None:
+                item.update(annotations=json.loads(photo['annotations']),annotationVersion=photo['version'])
+            photos.append(item)
     extension=conn.execute('SELECT * FROM entry_details WHERE entry_id=?',(row['id'],)).fetchone()
     base=json.loads(row['base'])
     base.update(improvement=extension['improvement'] if extension else '',submittedAt=extension['submitted_at'] if extension else '')
@@ -368,7 +382,7 @@ def sync(factory, rows, copy_photos=True):
         # a confirmed task adopts them above, including any previously saved input.
         retained=[]
         for row in conn.execute('SELECT * FROM entries WHERE factory=?',(factory,)):
-            if row['id'] in ids:
+            if row['id'] in ids or row['source_key'].startswith('desk:'):
                 item=unpack(conn,row,copy_photos)
                 if row['id'] in photo_warnings:item['photoWarning']='来源照片暂不可用；刷新可重试，文字仍可保存和导入'
                 retained.append(item)
@@ -419,7 +433,7 @@ def save(factory, entry_id, body, actor, review=False):
             raise HTTPException(422,'此字段请填写单行文字')
     if 'shipDate' in body:wf.day(body['shipDate'])
     if 'shippedQuantity' in body:wf.number(body['shippedQuantity'])
-    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate','sampleQuantity','inspectorId'}):
+    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate','sampleQuantity','inspector','inspectorId'}):
         raise HTTPException(422,'验货台只允许填写实际日期、抽查数量和检验人员')
     execution_patch=clean_review_execution(body['inspectionExecution']) if 'inspectionExecution' in body else {}
     with store(True) as conn:
@@ -431,6 +445,9 @@ def save(factory, entry_id, body, actor, review=False):
             old=before.get('inspectionExecution') or {}
             if id_key in execution_patch:
                 identity=execution_patch[id_key]
+                # An unlinked historical name may match a listed person or institution.
+                if identity=='' and name_key in execution_patch:
+                    continue
                 execution_patch[name_key] = old.get(name_key,'') if identity and identity==old.get(id_key) else qc_options.selection(factory,actor,group,identity)
             elif name_key in execution_patch and execution_patch[name_key] != old.get(name_key):
                 # Legacy text-only clients must not retain another person's stable ID.
@@ -524,13 +541,57 @@ def remove_photo(factory, entry_id, body, actor, review=False):
 def photo_info(factory, entry_id):
     with store() as conn:
         get(conn,factory,entry_id)
-        rows=conn.execute('''SELECT p.id,p.name,a.metadata
+        rows=conn.execute('''SELECT p.id,p.name,a.metadata,m.version,m.annotations
             FROM photos p LEFT JOIN photo_assets a ON a.photo_id=p.id
+            LEFT JOIN photo_annotations m ON m.photo_id=p.id
             WHERE p.entry_id=? AND p.removed=0 ORDER BY p.created_at,p.id''',(entry_id,))
         return {'items': [
-            {'id':r['id'],'name':r['name'],'originalAvailable':bool(r['metadata'] and json.loads(r['metadata']).get('original'))}
+            {'id':r['id'],'name':r['name'],'originalAvailable':bool(r['metadata'] and json.loads(r['metadata']).get('original')),
+             **({'annotationVersion':r['version'],'annotations':json.loads(r['annotations'])} if r['version'] is not None else {})}
             for r in rows
         ]}
+
+
+def save_photo_annotations(factory, entry_id, body, actor, review=False):
+    if (set(body) != {'photoId','annotationVersion','annotations'} or not isinstance(body['photoId'], str)
+            or type(body['annotationVersion']) is not int or body['annotationVersion'] < 0
+            or not isinstance(body['annotations'], list) or len(body['annotations']) > 40):
+        raise HTTPException(422,'照片标记格式不正确，每张最多 40 笔')
+    coordinates = ('x1','y1','x2','y2')
+    shapes = []
+    for shape in body['annotations']:
+        if (not isinstance(shape, dict) or set(shape) != {'type',*coordinates}
+                or shape['type'] not in ('arrow','circle')
+                or any(type(shape[k]) not in (float,int) or not 0 <= shape[k] <= 1 for k in coordinates)):
+            raise HTTPException(422,'照片标记的形状或坐标不正确')
+        mark = {'type':shape['type'], **{k:round(shape[k], 6) for k in coordinates}}
+        same_x, same_y = mark['x1']==mark['x2'], mark['y1']==mark['y2']
+        if (same_x and same_y) or (mark['type']=='circle' and (same_x or same_y)):
+            raise HTTPException(422,'照片标记需要可见的大小')
+        shapes.append(mark)
+    with store(True) as conn:
+        row=get(conn,factory,entry_id)
+        ensure_editable(conn,row,review)
+        photo=conn.execute('''SELECT p.name,m.version,m.annotations FROM photos p
+            LEFT JOIN photo_annotations m ON m.photo_id=p.id
+            WHERE p.id=? AND p.entry_id=? AND p.removed=0''',(body['photoId'],entry_id)).fetchone()
+        if photo is None:
+            raise HTTPException(404,'照片不存在或已删除')
+        version = photo['version'] or 0
+        previous = json.loads(photo['annotations']) if version else []
+        # An identical retry after a lost response must not create a second event.
+        if previous == shapes:
+            entry = unpack(conn,row)
+        else:
+            if body['annotationVersion'] != version:
+                raise HTTPException(409,'照片标记已更新，请重新打开照片核对')
+            version += 1
+            conn.execute('''INSERT INTO photo_annotations(photo_id,version,annotations) VALUES(?,?,?)
+                ON CONFLICT(photo_id) DO UPDATE SET version=excluded.version,annotations=excluded.annotations''',
+                (body['photoId'],version,wf.dump(shapes)))
+            entry = changed(conn,row,'photo-annotations',actor,location='审核中心 · 待审核' if review else '验货台',
+                extra={'photoName':{'after':photo['name']},'photoMarks':{'before':len(previous),'after':len(shapes)}})
+        return {'entry':entry,'photo':{'id':body['photoId'],'annotationVersion':version,'annotations':shapes}}
 
 
 def read_photo_version(factory, entry_id, photo_id, variant='preview'):

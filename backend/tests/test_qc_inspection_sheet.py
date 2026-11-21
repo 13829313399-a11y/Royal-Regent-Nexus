@@ -142,6 +142,41 @@ def test_existing_workflow_and_legacy_snapshots_preserved(db):
     assert old['result']=='COND' and old['historicalResult']=='' and legacy==before
 
 
+def test_http_photo_annotation_write_is_scoped_and_readable_by_other_qc_users(db,monkeypatch):
+    from app.services import auth
+    monkeypatch.setattr(auth,'add_auth_audit',lambda *a,**k:None)
+    async def upstream(*args):return httpx.Response(200,json={'records':[]})
+    monkeypatch.setattr(gateway,'upstream',upstream)
+    row,_=photo(save(seed()[0],'PASS',''))
+    photo_id=row['photos'][0]['id']
+    app=FastAPI();app.include_router(gateway.router);current=[qc_user()]
+    app.dependency_overrides[get_current_user]=lambda:current[0]
+    app.dependency_overrides[get_db]=lambda:db
+    arrow={'type':'arrow','x1':.1,'y1':.2,'x2':.7,'y2':.8}
+    body={'photoId':photo_id,'annotationVersion':0,'annotations':[arrow]}
+    with TestClient(app) as client:
+        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']+'api/inspection-sheet/'
+        relative='entries/'+row['id']
+        assert client.post(base+relative+'/photo-annotations',json=body,headers={'sec-fetch-site':'cross-site'}).status_code==403
+        result=client.post(base+relative+'/photo-annotations',json=body)
+        assert result.status_code==200,result.text
+        pending=sheet.submit('huaxing',row['id'],{'revision':result.json()['entry']['revision']},ACTOR)
+        writer=current[0]
+        read_permissions=frozenset({'qc_inspection:read'})
+        current[0]=replace(writer,id='qc-annotation-reader',permissions=read_permissions,
+            grants=tuple(replace(grant,permissions=read_permissions) for grant in writer.grants))
+        read_base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']+'api/inspection-sheet/'
+        info=client.get(read_base+relative+'/photo-info').json()['items'][0]
+        assert info['annotationVersion']==1 and info['annotations']==[arrow]
+        assert client.post(read_base+'review/'+relative+'/photo-annotations',json={**body,'annotationVersion':1,'annotations':[]}).status_code==403
+        current[0]=writer
+        result=client.post(base+'review/'+relative+'/photo-annotations',json={**body,'annotationVersion':1,'annotations':[]})
+        assert result.status_code==200,result.text
+        assert result.json()['entry']['revision']==pending['revision']+1
+        info=client.get(base+relative+'/photo-info').json()['items'][0]
+        assert info['annotationVersion']==2 and info['annotations']==[]
+
+
 def test_http_actual_save_read_photo_export_permissions_and_source_unchanged(db,monkeypatch):
     from app.services import auth
     monkeypatch.setattr(auth,'add_auth_audit',lambda *a,**k:None)
