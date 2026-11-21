@@ -14,6 +14,8 @@
 
 ### IAM 前端包验收与回退
 
+通用更新脚本会在切换前从仅绑定本机的临时端口检查候选 Nginx 返回的页面。使用维护通知时，脚本保留当前通知的控制权，短暂开放 HTTP 复验，成功后才宣布发布完成。验证失败时重新关闭访问并记录原因。关闭维护通知时，脚本须先实测原 Web 的回退镜像，并核对原 Compose 路径和项目目录；实际部署使用多层配置时，请使用本批次完整的配置链。此模式下站点复验失败只会尝试恢复先前核验过的 Web。
+
 生产前端构建须将 `VITE_IAM_IDENTITY_UI_ENABLED`、`VITE_POSITION_WORKBENCH_ENABLED`、`VITE_IAM_CONSOLIDATED_UI_ENABLED` 和 `VITE_IAM_STUDIO_ENABLED` 全部设为 `true`。在实际生效的 Compose 文件、环境文件和 CI 构建参数中核对这四项。Vite 在编译时选择界面，给已构建容器设置环境变量不能修复错误的包。后端开关按本次业务授权维护。
 
 生产 Dockerfile 使用 BuildKit 只读检查最终静态目录，并把回执与启动检查装入 Nginx 镜像。标准镜像从第一次启动起就会复验成品。服务器若接收独立构建的压缩包，在切换前用宿主 Python 3.9+ 验证待发文件。脚本从 index.html 找到实际入口，核对四个管理菜单、人员和审计的路由导入、权限方案库的展示与查询分支、员工自助的全页模式，再核对相关组件文件。HTTP 模式只访问公开页面和脚本。 [验收工具](../deploy/check_iam_frontend.py)
