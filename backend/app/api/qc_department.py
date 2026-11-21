@@ -72,12 +72,16 @@ def schedule_source(factory_id: str) -> dict:
     }
 
 
-def schedule_example(factory_id: str) -> dict:
+def schedule_example(factory_id: str, *, missing_ok: bool = False) -> dict:
     # User-authorized preview only. Never read/write inspection or Sales databases.
     if factory_id != "huaxing":
         raise HTTPException(404, "当前厂区没有客排期示例")
     try:
         payload = json.loads((ASSETS / "fixtures" / "qc-schedule-example.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if missing_ok:
+            return {"factory_id": factory_id, "example": True, "items": []}
+        raise HTTPException(503, "示例数据暂不可用") from None
     except (OSError, ValueError):
         raise HTTPException(503, "示例数据暂不可用") from None
     if payload.get("factory_id") != factory_id or payload.get("example") is not True:
@@ -484,7 +488,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     async def current_entries(copy_photos=True, view="workbench"):
         response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id])],b'')
         if response.status_code!=200:raise HTTPException(503,'验货基础数据读取失败，请重试')
-        data=response.json();examples=schedule_example(factory_id)['items'] if factory_id=='huaxing' else []
+        data=response.json()
+        examples=schedule_example(factory_id, missing_ok=True)['items'] if factory_id=='huaxing' else []
         source_rows=qc_workflow.sources(db,factory_id)['items']
         tasks=qc_workflow.list_tasks(db,factory_id)['items']
         rows=service.candidates(factory_id,data.get('records',[]),tasks,
