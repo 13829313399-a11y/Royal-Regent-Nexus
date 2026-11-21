@@ -12,6 +12,7 @@ import { nexusBase, nexusFactory, nexusFactoryName } from '../deployment'
 import { confirmNavigation, navigationState } from '../auth/navigationState'
 import { validateExportSession } from '../auth/validateExportSession'
 import './AppLayout.css'
+import { watchMaterialAlerts } from '../utils/materialAlertRefresh'
 
 interface AlertStats {
   pending_critical: number
@@ -55,7 +56,6 @@ export default function AppLayout() {
   // ── 物料提醒桌面通知状态 ──
   const [alertStats, setAlertStats] = useState<AlertStats | null>(null)
   const notifiedRef = useRef<string>('')  // 记录上次已通知的内容摘要，避免重复弹窗
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const canCheckAlerts = auth.canAccess('purchase')
   const embedded = !!nexusBase() && window.parent !== window
@@ -104,12 +104,12 @@ export default function AppLayout() {
 
   // 定时轮询提醒统计
   useEffect(() => {
-    if (!canCheckAlerts) return
+    if (!canCheckAlerts) { setAlertStats(null); return }
 
-    const checkAlerts = async () => {
-      try {
-        const resp = await api.get('/material-alerts/stats')
-        const stats: AlertStats = resp.data
+    return watchMaterialAlerts<AlertStats>(
+      async () => (await api.get('/material-alerts/stats')).data,
+      stats => {
+        if (isNexusSessionLocked()) return
         setAlertStats(stats)
 
         // 决定是否弹出桌面通知
@@ -117,7 +117,7 @@ export default function AppLayout() {
         const warning = stats.pending_warning || 0
         const totalUrgent = critical + warning
 
-        if (totalUrgent === 0) return
+        if (totalUrgent === 0) { notifiedRef.current = ''; return }
         if (!('Notification' in window) || Notification.permission !== 'granted') return
 
         // 生成本次内容摘要，与上次比较避免重复弹窗
@@ -147,21 +147,10 @@ export default function AppLayout() {
           navigate('/material-alerts')
           n.close()
         }
-      } catch (err) {
+      }, err => {
         // 静默失败，不打扰用户
         console.warn('[MaterialAlerts] check failed:', err)
-      }
-    }
-
-    // 首次立即检查
-    checkAlerts()
-
-    // 每 5 分钟检查一次
-    timerRef.current = setInterval(checkAlerts, 5 * 60 * 1000)
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
+      })
   }, [canCheckAlerts, navigate])
 
   function blockReadOnlyAction(e: React.MouseEvent<HTMLDivElement>) {

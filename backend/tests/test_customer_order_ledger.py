@@ -470,6 +470,35 @@ def test_api_permission_and_factory_isolation(client, db):
     assert client.get(f"/api/customer-order-ledger/lines/{line.id}?factory_id=huaxing").status_code == 403
 
 
+def test_indonesia_import_only_for_explicit_selected_mapped_line(client, db, monkeypatch):
+    import json
+    from unittest.mock import AsyncMock
+    incoming = preview()
+    incoming["rows"][0]["received_date"] = "2026-09-15"
+    line = ingest(db, incoming)
+    ingest(db, preview(reference="ordinary"))
+    url = f"/api/customer-order-ledger/lines/{line.id}/indonesia-schedule?factory_id=huaxing"
+    body = {"expected_revision": line.revision, "source": "RRM"}
+    headers = {"X-Nexus-Shipping": "1"}
+    assert client.post(url, json=body, headers=headers).status_code == 403
+    monkeypatch.setattr(api.shipping, "allowed", lambda user, factory, action: factory == "huaxing")
+    upstream = AsyncMock()
+    upstream.status_code = 200
+    upstream.aread.return_value = b'{"ok":true,"id":18}'
+    transport = AsyncMock(return_value=(AsyncMock(), upstream))
+    monkeypatch.setattr(api.shipping, "open_upstream", transport)
+    assert client.post(url, json=body).status_code == 403
+    assert client.post(url, json={**body, "expected_revision": 10}, headers=headers).status_code == 409
+    assert client.post(url.replace("huaxing", "huadeng"), json=body, headers=headers).status_code == 403
+    transport.assert_not_called()
+    assert client.post(url, json=body, headers=headers).json()["id"] == 18
+    rows = json.loads(transport.await_args.kwargs["body"])["raw_rows"]
+    assert len(rows) == 1 and rows[0]["ledgerLineId"] == line.id
+    assert (rows[0]["orderNo"], rows[0]["code"], rows[0]["orderDate"]) == ("000123", "000045", "2026-09-15")
+    assert rows[0]["qty"] == 10000 and rows[0]["source"] == "RRM"
+    assert not rows[0]["unitPrice"]  # An HKD price is never copied into the USD field.
+
+
 def test_api_inbox_receipt_and_server_latest_version(client, db):
     line = ingest(db)
     service.dispatch(db, line, DispatchIn(expected_revision=1, recipients=["pmc"]), "a")

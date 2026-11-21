@@ -4,6 +4,7 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../api/client'
+import { nexusFactory } from '../deployment'
 import { parseScheduleWorkbook } from '../utils/scheduleImport'
 import { purchaseItemCodes } from '../utils/purchaseCustoms'
 import { scheduleLineKey, scheduleManualPlaced, toggleScheduleManual, scheduleAutoPlaced,
@@ -205,6 +206,8 @@ export default function SchedulesPage() {
             <Select allowClear showSearch placeholder="全部客户" style={{ width: 180 }}
               value={customerFilter} options={customerOptions} onChange={setCustomerFilter} />
             <Button onClick={load}>🔄 刷新</Button>
+            {nexusFactory() && <Button href={`/modules/sales-business/po-schedule-intake?factory=${encodeURIComponent(nexusFactory())}`}
+              target="_top">从客户订单中心导入印尼订单</Button>}
             <Button type="primary" onClick={openUpload}>📥 上传新周次</Button>
           </Space>
         }
