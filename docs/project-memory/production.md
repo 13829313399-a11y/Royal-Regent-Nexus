@@ -25,15 +25,11 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 旧版字段和例外可追溯至[裁床主档、报工与结算](../archive/memory/cutting.md)、[裁床 P5 切换、岗位与性能记录](../archive/memory/cutting-p5.md)。
 
 <a id="injection"></a>
-## 四厂注塑排程 V3
+## 四厂注塑排产入口
 
-主线 `/modules/production/injection-scheduling` 调用 `/api/injection-scheduling`。华兴、华登、华康 A/B 共用模具目录，设备、物理资产的位置、订单和报工按厂控制。保留 read、plan、report、master_write 四项权限及原始工作簿字段。
+华兴、华登、华康 A/B 保留生产部卡片和 `/modules/production/injection-scheduling` 路径，按厂显示「待重新设计」。旧排程 API、曜灵查询与注塑排程专属权限已退役。啤办继续使用 `/api/injection`。
 
-生效迁移保留排产表与权限，已发布过的退役 revision 留在 [archived](../../backend/alembic/archived)。四厂试用库、发布回执和主线的版本应分别记录。
-
-[injection-scheduling-v3.md](../business/injection-scheduling-v3.md) · [injection_scheduling.py](../../backend/app/api/injection_scheduling.py) · [test_injection_v3_contract.py](../../backend/tests/test_injection_v3_contract.py)
-
-旧版字段和例外可追溯至[排程 V3 与迁移边界](../archive/memory/injection.md)。
+迁移执行时会删除排产 V3 和更早代际的表及专属授权，并保留其他业务授权和审计历史。部署前核对数据库版本并演练恢复。[退役迁移与恢复](../business/injection-scheduling-retirement.md) · [退役测试](../../backend/tests/test_injection_retirement.py) · [V3 历史记录](../archive/memory/injection.md)
 
 <a id="three-d"></a>
 ## 华康 A 3D 打印

@@ -17,7 +17,7 @@ Royal Regent Nexus 服务集团与河源六个厂区。修改单个模块时，�
 - 原料主档以货号全集团共享。库存、领料、发料、冲销和成本归实际执行厂区。原始货号、PO、单号、前导零和用户上传的原件完整保留，处理另存输出。商业合计取服务端计算和持久化明细，不能从显示文本反算。
 - 已确认、审批或发布的资料保留来源、版本、审批及更正关系。客价从批准数据按客户白名单转换，防止内部价格、配方或批注进入客户文件。分批、退料和月结按实际业务凭据分别记账。
 - 订单中心拥有 PO 原件、标准事实、确认版本、发送和后续走货确认。下游负责 BOM 展开、采购需求、排机、生产反馈与实物收发。金蝶替代需求中的放产、采购、生产、委外及下达之间的关系见[业务背景及样本](docs/archive/memory/platform-history.md)。
-- `/api/injection` 归啤办。四厂 V3 注塑排程使用 `/api/injection-scheduling`。印尼走货明细与送印尼物料也各有独立入口、授权和数据来源。
+- `/api/injection` 归啤办。四厂注塑排产入口保留为待重新设计的页面，旧排程 API 和业务授权已退役。印尼走货明细与送印尼物料也各有独立入口、授权和数据来源。
 
 ## 运行与发布
 
@@ -25,7 +25,7 @@ Royal Regent Nexus 服务集团与河源六个厂区。修改单个模块时，�
 
 本机源码或运行配置变更后，按实际检出的进程身份重启前后端并核对就绪。Windows 启动器会复用健康进程；它管理的服务先执行 `npm run dev:stop`，再执行 `npm run dev:local`，同时检查所管理的文档 worker。纯文档整理按文档范围验证。
 
-按目标提交的 [Alembic 迁移目录](backend/alembic/versions)核对父子图，从 `backend/` 运行 `alembic -c alembic.ini heads` 可读取源码终点。`b178eb67` 的图有 220 个 revision，终点 `20261119_0197` 合并 `20261116_0195` 与 `20261119_0196`。助手 `0188/0189` 是功能迁移，旧库有同号异义时先核对身份与结构、在副本演练。[助手迁移身份](docs/assistant/MIGRATION_IDENTITY.md) · [纸箱迁移身份](docs/business/carton-migration-identity.md)
+按目标提交的 [Alembic 迁移目录](backend/alembic/versions)核对父子图，从 `backend/` 运行 `alembic -c alembic.ini heads` 可读取源码终点。`20261121_inj_merge` 合并原主线 `20261119_0197` 与已发布的注塑退役迁移。执行退役会删除排程数据与专属授权，发布前须在独立副本验证备份及恢复。助手 `0188/0189` 是功能迁移，旧库有同号异义时先核对身份与结构、在副本演练。[助手迁移身份](docs/assistant/MIGRATION_IDENTITY.md) · [纸箱迁移身份](docs/business/carton-migration-identity.md)
 
 生产以服务器运行清单、完整 Compose 组合、批次镜像和回执为依据。发布前准备可恢复的数据库与私有文件备份，保留当前镜像、挂载、设备网络和配置。应用回退要保护开流后的新业务与旧授权。资产、密钥、机器配置留在其受管位置。[现网发布与回退](docs/aliyun-docker-deploy.md) · [各批次历史依据](docs/archive/memory/release.md)
 

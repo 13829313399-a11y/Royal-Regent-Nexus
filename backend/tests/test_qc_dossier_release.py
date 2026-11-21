@@ -50,7 +50,7 @@ def test_release_rejects_old_unknown_main_version_before_writes(tmp_path,monkeyp
     assert not (tmp_path/'qc-before').exists()
 
 
-@pytest.mark.parametrize("revision", ["20261116_0195", "20261116_inj_retire", "20261119_0195", "20261119_0196", "20261119_0197"])
+@pytest.mark.parametrize("revision", ["20261116_0195", "20261116_inj_retire", "20261119_0195", "20261119_0196", "20261119_0197", "20261121_inj_merge"])
 def test_qc_recognizes_existing_compatible_successors(tmp_path, monkeypatch, revision):
     release = module()
     engine = create_engine("sqlite:///" + (tmp_path / "main.db").as_posix())

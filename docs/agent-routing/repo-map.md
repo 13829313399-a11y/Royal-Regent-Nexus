@@ -17,7 +17,7 @@
 先查[根记忆](../../PROJECT_MEMORY.md)的跨模块约束，再按[主题索引](context-index.md)阅读相关专题的完整段落。
 只在长期事实改变时原地更新记忆，不追加任务日志。
 工厂目录和权限边界应读取当前实现；不要把过往的“四厂区”描述当成不变规则。
-/api/injection 属于啤办生产域，注塑排产有独立入口，不要混淆两个域。
+`/api/injection` 属于啤办生产域。四厂注塑排产保留[待重新设计的入口](../business/injection-scheduling-retirement.md)。
 不因配置 Codex 而修改项目运行时模型、千问接入、后端 API 或业务权限。
 
 ## 实际存在的前端脚本
