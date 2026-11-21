@@ -522,6 +522,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
             return Response(content if request.method=='GET' else b'',media_type=mime,headers=headers)
         raise HTTPException(404,'接口不存在')
     if request.method != 'POST':raise HTTPException(405,'不支持此方法')
+    if path in {'intake/preview', 'intake/import', 'intake/manual'}:
+        return await inspection_intake_request(path, request, db, user, factory_id, actor)
     exporting = path in {'print-preview', 'schedule-excel'}
     _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
     if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'不接受跨站写入')
@@ -564,6 +566,37 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
             result=method(factory_id,parts[1],body,actor)
     else:raise HTTPException(404,'接口不存在')
     return JSONResponse(result,headers=NO_CACHE)
+
+
+async def inspection_intake_request(path, request, db, user, factory_id, actor):
+    from app.services import qc_inspection_intake as intake
+
+    for permission in ('order_write', 'result_write'):
+        _ensure_permission(db, user, 'qc_inspection:' + permission, factory_id)
+    if request.headers.get('sec-fetch-site') == 'cross-site':
+        raise HTTPException(403, '不接受跨站写入')
+    manual = path == 'intake/manual'
+    expected_type = 'application/json' if manual else 'application/octet-stream'
+    if request.headers.get('content-type', '').split(';')[0].strip().lower() != expected_type:
+        raise HTTPException(415, '请使用验货台新增窗口上传')
+    limit = 128 * 1024 if manual else intake.MAX_BYTES
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > limit:
+            raise HTTPException(413, '提交内容过大')
+    if manual:
+        try:
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                raise ValueError()
+        except (ValueError, UnicodeError):
+            raise HTTPException(400, '无效 JSON') from None
+        result = await run_in_threadpool(intake.manual, factory_id, actor, body)
+    else:
+        digest = request.headers.get('x-qc-preview-digest', '') if path == 'intake/import' else None
+        result = await run_in_threadpool(intake.workbook, factory_id, actor, bytes(raw), digest)
+    return JSONResponse(result, headers=NO_CACHE)
 
 
 async def workflow_request(path, request, db, user, factory_id):

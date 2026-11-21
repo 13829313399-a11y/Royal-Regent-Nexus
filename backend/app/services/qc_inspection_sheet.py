@@ -382,7 +382,7 @@ def sync(factory, rows, copy_photos=True):
         # a confirmed task adopts them above, including any previously saved input.
         retained=[]
         for row in conn.execute('SELECT * FROM entries WHERE factory=?',(factory,)):
-            if row['id'] in ids:
+            if row['id'] in ids or row['source_key'].startswith('desk:'):
                 item=unpack(conn,row,copy_photos)
                 if row['id'] in photo_warnings:item['photoWarning']='来源照片暂不可用；刷新可重试，文字仍可保存和导入'
                 retained.append(item)

@@ -580,3 +580,15 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 :is(#page-records,#page-review) .qis-table tr[data-entry]>td.qis-fill-target{
   background:color-mix(in srgb,var(--accent) 10%,var(--bg-card))!important;
 }
+#page-records .records-actions { gap: 8px; }
+#btnAddInspection { min-height: var(--records-control-height); white-space: nowrap; }
+.qis-intake { width: min(560px, calc(100vw - 24px)); }
+.qis-intake:has([data-preview] > *, form:not([hidden])) { width: min(960px, calc(100vw - 24px)); }
+.qis-intake [hidden], #btnAddInspection[hidden] { display: none; }
+.qis-intake-file { display: grid; gap: 6px; margin-block: 14px; }
+.qis-intake [data-preview-count]:not(:empty), .qis-intake [data-error]:not(:empty) { margin-block: 10px; }
+.qis-intake-scroll { overflow: auto; max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
+.qis-intake-scroll table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.qis-intake-scroll :is(th, td) { padding: 7px 9px; text-align: start; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.qis-intake-scroll th { position: sticky; top: 0; background: var(--bg-card); }
+.qis-intake-scroll td:last-child { white-space: pre-wrap; min-width: 100px; max-width: 240px; overflow-wrap: anywhere; }

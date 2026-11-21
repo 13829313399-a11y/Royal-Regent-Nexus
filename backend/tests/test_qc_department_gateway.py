@@ -273,6 +273,33 @@ def test_inspection_print_uses_actor_factory_and_export_permission(monkeypatch):
         assert calls == []
 
 
+def test_workbench_template_import_requires_bound_factory_and_write_permissions(monkeypatch):
+    from app.services.qc_inspection_schedule_excel import schedule_workbook
+
+    with make_client(monkeypatch) as client:
+        calls = install_upstream(monkeypatch)
+        login_as(client, 'qc_inspector')
+        base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
+        target = base + 'api/inspection-sheet/intake/'
+        book = schedule_workbook([{'dateFrom': '2026-11-20', 'customer': '测试客户', 'productNo': '00002'}])
+        headers = {'Content-Type': 'application/octet-stream'}
+        calls.clear()
+        assert client.post(target + 'import', content=book, headers=headers).status_code == 409
+        assert client.post(target + 'preview', content=book, headers={**headers, 'Sec-Fetch-Site': 'cross-site'}).status_code == 403
+        assert client.post(target.replace('/huaxing/', '/huakang-a/') + 'preview', content=book, headers=headers).status_code == 403
+        preview = client.post(target + 'preview', content=book, headers=headers)
+        assert preview.status_code == 200 and preview.json()['rows'][0]['productNo'] == '00002'
+        assert client.get(base + 'api/inspection-sheet/entries').json()['items'] == []
+        calls.clear()
+        confirmed = client.post(target + 'import', content=book, headers={**headers, 'X-QC-Preview-Digest': preview.json()['digest']})
+        assert confirmed.status_code == 200 and confirmed.json() == {'count': 1, 'existing': 0}
+        assert calls == []
+        saved, = client.get(base + 'api/inspection-sheet/entries').json()['items']
+        assert saved['productNo'] == '00002' and saved['reviewState'] == ''
+        login_as(client, 'engineer')
+        assert client.post(target + 'preview', content=book, headers=headers).status_code == 403
+
+
 def test_real_sessions_inspector_submit_supervisor_review_complete_workflow(monkeypatch):
     from decimal import Decimal
     import base64
