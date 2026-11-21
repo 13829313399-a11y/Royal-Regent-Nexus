@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
-import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, type RouteLocationNormalized } from 'vue-router'
+import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter, type RouteLocationNormalized } from 'vue-router'
+import { isAxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import { pendingFabricImports } from './pendingFabricRequests'
-import { X, Truck } from '@lucide/vue'
+import { ClipboardList, Truck } from '@lucide/vue'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription, DialogClose } from 'reka-ui'
 import { Button } from '@/components/ui/button'
 import FabricReceiptDialog from './FabricReceiptDialog.vue'
@@ -13,14 +14,16 @@ import { purchaseSearchKey } from './purchaseSearch'
 import FabricChaseDialog from './FabricChaseDialog.vue'
 import FabricPurchaseFilters from './FabricPurchaseFilters.vue'
 import FabricPurchaseGroups from './FabricPurchaseGroups.vue'
+import FabricDetailDialog from './FabricDetailDialog.vue'
 import type { PurchaseFilters, PurchaseMaterialGroup } from '@/api/fabricProcurement'
 import type { FabricReceipt, ReceiveSourcesResult } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
 import { getApiErrorMessage } from '@/lib/http'
 import { fabricProcurementApi as api, type ImportAction, type PurchaseScope, type PurchasePreview, type PurchaseLine, type PurchaseDetail, type PurchaseImport, type PurchaseFacts, type PurchaseView, type TrackingSummary, type WithdrawalPreview } from '@/api/fabricProcurement'
 
-const props = defineProps<{ mode: 'import' | 'pending' | 'orders' | 'returned'; tracking?: string; orderNo?: string }>()
+const props = defineProps<{ mode: 'import' | 'pending' | 'orders' | 'returned'; tracking?: string; orderNo?: string; purchaseId?: string }>()
 const auth = useAuthStore()
+const route = useRoute(), router = useRouter()
 const pendingImport = computed(() => pendingFabricImports.get(auth.currentUser?.id ?? ''))
 const importSaving = computed(() => !!pendingImport.value?.inFlight)
 const canRetryImport = computed(() => !!pendingImport.value && pendingImport.value.actorId === auth.currentUser?.id)
@@ -30,6 +33,16 @@ const previewAction = ref<ImportAction>('ALL'), previewOffset = ref(0), requestI
 const headerSearch = inject(purchaseSearchKey, undefined)
 const search = headerSearch?.search ?? ref(''), lines = ref<PurchaseLine[]>([]), total = ref<number>(), offset = ref(0)
 const history = ref<PurchaseImport[]>([]), detail = ref<PurchaseDetail>(), detailOpen = ref(false)
+const purchaseDetailTrigger = ref<HTMLButtonElement>()
+const linkedPurchase = computed(() => props.mode === 'pending' && props.purchaseId && /^[\w-]{1,64}$/.test(props.purchaseId) ? props.purchaseId : '')
+const linkedDetailError = ref<{ message: string; missing: boolean }>()
+let handledPurchase = ''
+let purchaseListFailed = false
+const detailIdentityReview = computed(() => !!(detail.value?.receipt_identity_review_required || detail.value?.receipt_reconciliation_required))
+const detailNeedsQuantityReview = computed(() => !!detail.value && (
+  detail.value.receipt_quantity_review_required || detail.value.warehouse_outstanding_quantity == null || detail.value.warehouse_outstanding_quantity === ''
+))
+const canReviewStartingQuantity = computed(() => !!detail.value?.can_review && !!detail.value.active && !detailIdentityReview.value)
 const historyOffset = ref(0)
 const pendingView = ref<PurchaseView>('OUTSTANDING'), summary = ref<TrackingSummary>()
 const trackingViews = new Set<PurchaseView>(['OUTSTANDING', 'NOT_ARRIVED', 'PARTIAL', 'ARRIVAL_REVIEW', 'CHANGED', 'OVERDUE', 'DUE_TODAY', 'AWAITING_DATE', 'QUANTITY_REVIEW'])
@@ -38,7 +51,8 @@ const filters = ref(defaultFilters()), options = ref<{ suppliers: string[]; unit
 const chaseSource = ref<PurchaseDetail>()
 const withdrawal = ref<WithdrawalPreview>(), withdrawOpen = ref(false), withdrawReason = ref(''), withdrawConfirmed = ref(false)
 const notice = ref('')
-const canReceive = ref(false), receiptSource = ref<PurchaseDetail>()
+const canReceive = ref(false), canPendingPurchase = ref(false), receiptSource = ref<PurchaseDetail>()
+const savedReceiptId = ref('')
 const selected = ref<PurchaseLine[]>([]), batchSources = ref<PurchaseDetail[]>()
 const layout = ref<'materials' | 'lines'>('materials'), groups = ref<PurchaseMaterialGroup[]>([]), lineTotal = ref(0)
 const activeGroup = ref<PurchaseMaterialGroup>(), groupOffset = ref(0)
@@ -93,7 +107,10 @@ async function load() {
   if (importSaving.value) { deferredLoad = true; return }
   deferredLoad = false
   const ticket = ++sequence
-  busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false
+  let listError = ''
+  purchaseListFailed = false
+  busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
+  const linkedRead = linkedPurchase.value && handledPurchase !== linkedPurchase.value ? loadLinkedDetail(ticket) : undefined
   try {
     if (props.mode === 'import') {
       const records = await api.imports(historyOffset.value)
@@ -102,34 +119,45 @@ async function load() {
       const data = await api.groups(search.value.trim(), offset.value, pendingView.value, filters.value)
       if (ticket === sequence) {
         groups.value = data.groups; total.value = data.total; lineTotal.value = data.line_total
-        summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive
+        summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive; canPendingPurchase.value = !!data.can_receive_pending_purchase
         if (!canReceive.value) selected.value = []
       }
     } else {
       const queryFilters = activeGroup.value ? { ...filters.value, group_key: activeGroup.value.key } : filters.value
       const data = await api.lines(status.value, search.value.trim(), offset.value, props.mode === 'pending' ? pendingView.value : undefined, queryFilters)
       if (ticket === sequence) {
-        lines.value = data.items; total.value = data.total; summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive
+        lines.value = data.items; total.value = data.total; summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive; canPendingPurchase.value = !!data.can_receive_pending_purchase
         if (!canReceive.value) selected.value = []
         else selected.value = selected.value.flatMap(line => { const current = data.items.find(item => item.id === line.id); return current ? eligible(current) ? [current] : [] : [line] })
       }
     }
-  } catch (e) { if (ticket === sequence) error.value = getApiErrorMessage(e) }
-  finally { if (ticket === sequence) busy.value = false }
+  } catch (e) { listError = getApiErrorMessage(e) }
+  finally {
+    await linkedRead
+    if (ticket === sequence) {
+      purchaseListFailed = !!listError
+      if (listError && (!linkedRead || !linkedDetailError.value || linkedDetailError.value.missing)) error.value = listError
+      busy.value = false
+    }
+  }
 }
 watch(importSaving, saving => { if (!saving && deferredLoad) void load() })
+watch(linkedPurchase, () => {
+  handledPurchase = ''; linkedDetailError.value = undefined; detailOpen.value = false; detail.value = undefined
+  void load()
+})
 watch(() => [props.mode, props.tracking, props.orderNo], () => { clearImport(); activeGroup.value = undefined; groupOffset.value = 0; file.value = undefined; search.value = ''; filters.value = { ...defaultFilters(), order_no: props.mode === 'pending' ? (props.orderNo ?? '').slice(0, 128) : '' }; chaseSource.value = undefined; offset.value = 0; pendingView.value = props.mode === 'pending' && trackingViews.has(props.tracking as PurchaseView) ? props.tracking as PurchaseView : 'OUTSTANDING'; withdrawOpen.value = false; withdrawal.value = undefined; receiptSource.value = undefined; batchSources.value = undefined; selected.value = []; notice.value = ''; void load() }, { immediate: true })
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 watch(search, () => {
   clearTimeout(searchTimer)
   if (props.mode === 'import') return
   sequence++; busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined
-  lineTotal.value = 0; summary.value = undefined; canReceive.value = false
+  lineTotal.value = 0; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
   searchTimer = setTimeout(query, 350)
 }, { flush: 'sync' })
 if (headerSearch) watch(headerSearch.submitted, query)
 function refreshPendingWhenIdle() {
-  if (props.mode === 'pending' && !busy.value && !detailOpen.value && !receiptSource.value && !batchSources.value && !chaseSource.value && document.visibilityState === 'visible') void load()
+  if (props.mode === 'pending' && !busy.value && !detailOpen.value && receiptSource.value === undefined && !batchSources.value && !chaseSource.value && document.visibilityState === 'visible') void load()
 }
 const refreshTimer = setInterval(refreshPendingWhenIdle, 60_000)
 window.addEventListener('focus', refreshPendingWhenIdle)
@@ -144,11 +172,12 @@ function beforeUnload(event: BeforeUnloadEvent) { if (pendingImport.value) { eve
 onBeforeRouteLeave(leaveImport); onBeforeRouteUpdate(leaveImport)
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
-watch(() => [auth.currentUser?.id, auth.authorizationVersion], () => {
+watch([() => auth.currentUser?.id, () => auth.authorizationVersion], () => {
   clearTimeout(searchTimer); clearImport(); file.value = undefined
   lines.value = []; groups.value = []; total.value = undefined; summary.value = undefined; options.value = undefined
-  history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false
+  history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false; canPendingPurchase.value = false; savedReceiptId.value = ''
   selected.value = []; receiptSource.value = undefined; batchSources.value = undefined; chaseSource.value = undefined
+  handledPurchase = ''; linkedDetailError.value = undefined
   withdrawal.value = undefined; withdrawOpen.value = false; activeGroup.value = undefined; notice.value = ''
   busy.value = false
   if (!importSaving.value) void load()
@@ -197,12 +226,57 @@ async function saveImport() {
     else if (alive) void load()
   }
 }
-async function showDetail(id: string) {
+async function showDetail(id: string, event: MouseEvent) {
+  const trigger = event.currentTarget
+  purchaseDetailTrigger.value = trigger instanceof HTMLButtonElement ? trigger : undefined
   const ticket = ++sequence
   busy.value = true; error.value = ''; detail.value = undefined; detailOpen.value = false
   try { const data = await api.detail(id); if (ticket === sequence) { detail.value = data; detailOpen.value = true } }
   catch (e) { if (ticket === sequence) { error.value = getApiErrorMessage(e); lines.value = []; total.value = undefined } }
   finally { if (ticket === sequence) busy.value = false }
+}
+async function loadLinkedDetail(ticket: number) {
+  const id = linkedPurchase.value
+  if (!id) return
+  purchaseDetailTrigger.value = undefined
+  try {
+    const data = await api.detail(id)
+    if (ticket !== sequence || linkedPurchase.value !== id) return
+    handledPurchase = id
+    linkedDetailError.value = undefined
+    detail.value = data
+    detailOpen.value = true
+  } catch (failure) {
+    if (ticket !== sequence || linkedPurchase.value !== id) return
+    handledPurchase = id
+    linkedDetailError.value = { message: getApiErrorMessage(failure), missing: isAxiosError(failure) && failure.response?.status === 404 }
+  }
+}
+async function retryLinkedDetail() {
+  if (busy.value || !linkedDetailError.value || linkedDetailError.value.missing) return
+  if (purchaseListFailed) {
+    handledPurchase = ''
+    await load()
+    return
+  }
+  const ticket = ++sequence
+  busy.value = true
+  try { await loadLinkedDetail(ticket) }
+  finally { if (ticket === sequence) busy.value = false }
+}
+async function returnToPurchaseList() {
+  const failure = await router.replace({ path: route.path, query: { ...route.query, purchase_id: undefined }, hash: route.hash })
+  if (!failure) headerSearch?.focus?.()
+}
+function restorePurchaseDetailFocus(event: Event) {
+  if (!alive || chaseSource.value) return
+  if (purchaseDetailTrigger.value?.isConnected) {
+    event.preventDefault()
+    purchaseDetailTrigger.value.focus()
+  } else if (linkedPurchase.value && detail.value?.id === linkedPurchase.value && headerSearch?.focus) {
+    event.preventDefault()
+    headerSearch.focus()
+  }
 }
 async function startReceive(id: string) {
   const ticket = ++sequence
@@ -218,7 +292,9 @@ async function startReceive(id: string) {
 }
 async function receiptSaved(receipt: FabricReceipt) {
   receiptSource.value = undefined
+  savedReceiptId.value = receipt.id
   notice.value = receipt.reversed ? `原请求已保存的入库单 ${receipt.id} 后来已冲销，本次重试没有再次增加库存；请核对当前待收量。` : receipt.stock_posted === false ? `已保存差异单 ${receipt.id}，本次入库 0，全部为差异/退供应商；未增加库存。` : `已保存入库单 ${receipt.id}，本次实收 ${receipt.quantity} ${receipt.unit} 已计入待检库存。`
+  if (receipt.purchase_status === 'PENDING') notice.value += ' 采购待核对，确认后可在入库记录补关联。'
   await load()
 }
 async function startBatchReceive() {
@@ -287,8 +363,11 @@ function clearFilters() { filters.value = defaultFilters(); search.value = ''; a
 function changeLayout(value: 'materials' | 'lines') { layout.value = value; activeGroup.value = undefined; query() }
 function openGroup(group: PurchaseMaterialGroup) { clearTimeout(searchTimer); groupOffset.value = offset.value; activeGroup.value = group; offset.value = 0; void load() }
 function backToGroups() { activeGroup.value = undefined; offset.value = groupOffset.value; void load() }
-function startChase() { if (detail.value) { chaseSource.value = detail.value; detailOpen.value = false } }
-async function chaseSaved() { chaseSource.value = undefined; notice.value = '起始待收量已确认，已扣除本系统实收；库存未改变。'; await load() }
+function startChase() {
+  if (!detail.value || !canReviewStartingQuantity.value) return
+  chaseSource.value = detail.value
+}
+async function chaseSaved() { chaseSource.value = undefined; notice.value = '原欠数量已确认，剩余待收已重新计算。'; await load() }
 function page(delta: number) { offset.value += delta * 50; void load() }
 const importTarget = { path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'import-review' } }
 const importedOrdersTarget = { ...importTarget, query: { ...importTarget.query, source: 'all' } }
@@ -297,10 +376,15 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
 
 <template>
   <div class="fabric-procurement">
-    <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '先按供应商和物料查看待收及复期，进入采购明细后按原单登记实收。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
+    <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '按供应商和物料查看待收与复期，从对应采购明细登记本次实收。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
     <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
-    <p v-if="notice" class="fabric-success" role="status">{{ notice }}</p>
+    <p v-if="notice" class="fabric-success" role="status">{{ notice }} <RouterLink v-if="savedReceiptId && notice.includes(savedReceiptId)" class="underline" :to="{ path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'history', receipt: savedReceiptId } }">查看本次入库</RouterLink></p>
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
+    <div v-if="linkedDetailError" class="fabric-error">
+      <p role="alert">{{ linkedDetailError.missing ? '找不到该厂区的原采购明细，可返回采购列表查找。' : `无法打开原采购明细。${linkedDetailError.message}` }}</p>
+      <Button v-if="linkedDetailError.missing" type="button" variant="outline" @click="returnToPurchaseList">返回采购列表</Button>
+      <Button v-else type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
+    </div>
     <p v-if="pendingImport" class="fabric-message" role="status">导入结果尚未确认，文件和提交内容已锁定。<Button v-if="canRetryImport && !confirmOpen" variant="outline" size="sm" :disabled="busy || importSaving" @click="saveImport">核对原导入结果</Button><span v-if="!canRetryImport">请使用原提交账号核对结果。</span></p>
     <template v-if="mode === 'import'">
       <div class="fabric-import-controls">
@@ -373,7 +457,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
         <tr v-for="line in lines" :key="line.id" :class="{ 'fabric-selected': selected.some(item => item.id === line.id) }">
           <td class="fabric-select-cell"><input v-if="canReceive && eligible(line)" type="checkbox" :aria-label="`选择 ${line.facts.order_no} · ${line.facts.material_code}`" :checked="selected.some(item => item.id === line.id)" :disabled="busy" @change="selectLine(line, ($event.target as HTMLInputElement).checked)" /></td><td data-label="采购单 / 状态">{{ line.facts.order_no }}<small>{{ line.facts.source_category === 'SUPPLEMENT' ? '补数追货' : '正常采购' }}</small><small>{{ line.tracking?.arrival_review ? '采购报到货 · 仓库待核对' : line.warehouse_outstanding_quantity === '0' || line.warehouse_outstanding_quantity === '0.0' ? '已收齐' : line.receipt_count ? '已部分收料' : '待收料' }}</small><strong v-if="line.unreviewed_changes" class="fabric-change-badge">{{ line.unreviewed_changes }} 次变更未读</strong></td>
           <td data-label="供应商 / 复期">{{ line.facts.supplier }}<small>{{ line.promise_date || line.promise_text || '待供应商复期' }}</small><strong v-if="line.tracking?.overdue" class="fabric-overdue">复期已过 {{ line.overdue_days }} 天</strong><strong v-else-if="line.tracking?.due_today" class="fabric-due-today">今天到期</strong><small v-else-if="line.warehouse_outstanding_quantity == null && line.promise_elapsed_days && line.promise_elapsed_days > 0" class="fabric-due-today">复期已过 {{ line.promise_elapsed_days }} 天 · 数量待核对</small></td><td data-label="生产单 / 款号">{{ line.facts.production_no }}<small>{{ line.facts.plan_no || line.facts.style_no }}</small></td><td data-label="物料">{{ line.facts.material_code }}<small>{{ line.facts.material_name }}</small><small v-if="line.material_category">{{ line.material_category === 'FABRIC' ? '布料' : line.material_category === 'ACCESSORY' ? '辅料' : '线' }}</small></td>
-          <td data-label="起始待收">{{ line.starting_chase_quantity ?? '待核对' }}<small>订单总量 {{ line.facts.ordered_quantity }}</small><small v-if="line.prior_received_quantity != null">此前已回 {{ line.prior_received_quantity }}</small></td><td data-label="本系统已入库">{{ line.warehouse_received_quantity ?? '0' }}</td><td data-label="剩余待收"><strong>{{ line.warehouse_outstanding_quantity ?? '待核对' }}</strong><small v-if="line.receipt_quantity_review_required">{{ line.receipt_quantity_conflict ? '数量来源冲突，先核对' : '到货记录不明确 · 可按实物收料' }}</small><strong v-if="line.receipt_reconciliation_required">来源身份已变，须核对</strong></td><td data-label="单位">{{ line.facts.unit }}</td><td><div class="fabric-row-actions"><Button v-if="canReceive && eligible(line)" size="sm" :disabled="busy" @click="startReceive(line.id)">登记入库</Button><Button variant="outline" size="sm" :disabled="busy" @click="showDetail(line.id)">来源 / 核对</Button></div></td>
+          <td data-label="起始待收">{{ line.starting_chase_quantity ?? '待核对' }}<small>订单总量 {{ line.facts.ordered_quantity }}</small><small v-if="line.prior_received_quantity != null">此前已回 {{ line.prior_received_quantity }}</small></td><td data-label="本系统已入库">{{ line.warehouse_received_quantity ?? '0' }}</td><td data-label="剩余待收"><strong>{{ line.warehouse_outstanding_quantity ?? '待核对' }}</strong><small v-if="line.receipt_quantity_review_required">{{ line.receipt_quantity_conflict ? '数量来源冲突，先核对' : '到货记录不明确 · 可按实物收料' }}</small><strong v-if="line.receipt_reconciliation_required">来源身份已变，须核对</strong></td><td data-label="单位">{{ line.facts.unit }}</td><td><div class="fabric-row-actions"><Button v-if="canReceive && eligible(line)" size="sm" :disabled="busy" @click="startReceive(line.id)">登记入库</Button><Button variant="outline" size="sm" :disabled="busy" @click="showDetail(line.id, $event)">采购详情</Button></div></td>
         </tr>
       </tbody></table></div>
       <p v-if="total === 0 && !busy" class="fabric-message" role="status">{{ search ? '没有匹配的采购明细，请调整查询条件。' : mode === 'pending' ? '当前跟进范围没有记录，可切换范围查看或导入最新跟踪表。' : '尚未导入该范围的采购明细。' }}</p>
@@ -388,11 +472,101 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
       <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
       <div class="fabric-dialog-actions"><DialogClose as-child><Button variant="outline" :disabled="busy">保留导入</Button></DialogClose><Button :disabled="busy || !withdrawConfirmed || !withdrawReason.trim()" @click="withdrawImport">确认撤销导入</Button></div>
     </DialogContent></DialogPortal></DialogRoot>
-    <DialogRoot v-model:open="detailOpen"><DialogPortal><DialogOverlay class="warehouse-guide-overlay" /><DialogContent class="warehouse-guide"><header class="warehouse-guide-heading"><div><DialogTitle>采购来源详情</DialogTitle><DialogDescription>原表采购事实与历次保存依据；采购已回数量只供核对。</DialogDescription></div><DialogClose class="warehouse-guide-close" aria-label="关闭采购来源详情"><X :size="20" /></DialogClose></header><div v-if="detail" class="warehouse-guide-body"><div class="fabric-source-chase"><p>起始待收 <strong>{{ detail.starting_chase_quantity ?? '待核对' }}</strong> − 本系统已入库 <strong>{{ detail.warehouse_received_quantity ?? '0' }}</strong> = 剩余待收 <strong>{{ detail.warehouse_outstanding_quantity ?? '待核对' }} {{ detail.facts.unit }}</strong></p><Button v-if="detail.can_review && !detail.receipt_identity_review_required && detail.active" variant="outline" :disabled="busy" @click="startChase">核对起始待收量</Button></div><section v-if="detail.chase_resolution_history?.length" class="fabric-source-evidence"><h3>起始数量核对记录</h3><p v-for="entry in detail.chase_resolution_history" :key="entry.id">第 {{ entry.revision }} 次：起始 {{ entry.starting_quantity }} {{ detail.facts.unit }} · {{ entry.actor_name }} · {{ time(entry.occurred_at) }}<br />{{ entry.evidence }}<br />确认时本系统已入库 {{ entry.cutoff.warehouse_received_at_confirmation }} {{ detail.facts.unit }}，计算仍扣除本系统全部实收。</p></section><dl class="fabric-facts"><template v-for="(label, field) in labels" :key="field"><dt>{{ label }}</dt><dd>{{ factShown(field, detail.facts[field]) }}</dd></template></dl><p v-if="detail.tracking?.arrival_review" class="fabric-success">采购已报到货，仍须核对仓库实收；此处不增加库存。</p><Button v-if="detail.unreviewed_changes && detail.can_review" :disabled="busy" @click="reviewChanges">将变更标记已读（不确认收料）</Button><p v-if="error" class="fabric-error" role="alert">{{ error }}</p><h3>来源与变化记录（最近 100 次）</h3><section v-for="source in detail.evidence" :key="source.id || `${source.occurred_at}-${source.row_number}`" class="fabric-source-evidence"><h4>{{ source.source_name }}<span v-if="source.withdrawal"> · 此次导入已撤销</span></h4><p>{{ source.sheet }} 第 {{ source.row_number }} 行 · {{ source.actor_name }} · {{ time(source.occurred_at) }}</p><template v-if="Object.keys(source.before).length"><p v-for="(label, field) in labels" :key="field"><template v-if="source.before[field] !== source.after[field]">{{ label }}：{{ factShown(field, source.before[field]) }} → {{ factShown(field, source.after[field]) }}</template></p></template><p v-else>首次保存采购来源。</p></section></div></DialogContent></DialogPortal></DialogRoot>
+    <FabricDetailDialog v-if="detail" :open="detailOpen && !chaseSource" title="采购来源详情" :icon="ClipboardList"
+      close-label="关闭采购来源详情" @close="detailOpen = false" @close-auto-focus="restorePurchaseDetailFocus">
+      <section class="fabric-detail-overview" aria-label="待收概览">
+        <div class="fabric-detail-identity">
+          <h3>{{ detail.facts.material_name || '物料名称未填写' }}</h3>
+          <p>{{ [detail.facts.material_code, detail.facts.supplier, detail.facts.order_no].filter(Boolean).join(' · ') || '采购来源未填写' }}</p>
+        </div>
+        <dl class="fabric-detail-metrics">
+          <div>
+            <dt>剩余待收</dt>
+            <dd>
+              <template v-if="!detailIdentityReview && !detailNeedsQuantityReview"><strong>{{ detail.warehouse_outstanding_quantity }}</strong> <small>{{ detail.facts.unit }}</small></template>
+              <span v-else class="purchase-detail-unknown">待核对</span>
+            </dd>
+          </div>
+          <div>
+            <dt>供应商复期</dt>
+            <dd>
+              {{ detail.promise_date || detail.promise_text || '未提供复期' }}
+              <small v-if="detail.tracking?.overdue" class="purchase-detail-overdue">复期已过 {{ detail.overdue_days }} 天</small>
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <div v-if="detail.active === false || detailIdentityReview || detailNeedsQuantityReview" class="purchase-detail-review">
+        <div>
+          <strong>{{ detail.active === false ? '采购来源已撤销' : detailIdentityReview ? '采购来源待核对' : '待收数量需核对' }}</strong>
+          <p v-if="detail.active === false">可展开下方记录查看原表与撤销依据。</p>
+          <p v-else-if="detailIdentityReview">请与采购核对物料、供应商和单位，确认这条明细对应的来源。</p>
+          <p v-else-if="detail.receipt_quantity_conflict">原表数量与已有记录不一致，请与采购确认原欠数量和依据。</p>
+          <p v-else>原表数量依据不完整，暂时算不出还欠多少。</p>
+        </div>
+        <Button v-if="canReviewStartingQuantity" type="button" size="sm" variant="outline" :disabled="busy" @click="startChase">确认原欠数量</Button>
+      </div>
+
+      <p v-if="detail.tracking?.arrival_review" class="purchase-detail-arrival">采购已报到货。请按本次实物核对，在对应采购明细登记入库。</p>
+      <p v-if="error" class="purchase-detail-error" role="alert">{{ error }}</p>
+
+      <details class="fabric-detail-section fabric-detail-disclosure">
+        <summary>待收计算依据</summary>
+        <div class="purchase-detail-section-body">
+          <dl class="fabric-detail-fields purchase-detail-calculation">
+            <div><dt>系统开始登记前的原欠量</dt><dd>{{ detail.starting_chase_quantity || '待核对' }} <small v-if="detail.starting_chase_quantity">{{ detail.facts.unit }}</small></dd></div>
+            <div><dt>本系统已入库</dt><dd>{{ detail.warehouse_received_quantity ?? '0' }} <small>{{ detail.facts.unit }}</small></dd></div>
+          </dl>
+          <p>原欠量扣除本系统已入库量，得到剩余待收。少于 0 时按 0 显示。</p>
+          <Button v-if="canReviewStartingQuantity && !detailNeedsQuantityReview" type="button" size="sm" variant="outline" :disabled="busy" @click="startChase">更正原欠数量</Button>
+        </div>
+      </details>
+
+      <details class="fabric-detail-section fabric-detail-disclosure">
+        <summary>采购原表字段</summary>
+        <dl class="fabric-detail-fields purchase-detail-section-body">
+          <div v-for="(label, field) in labels" :key="field">
+            <dt>{{ label }}</dt><dd>{{ factShown(field, detail.facts[field]) }}</dd>
+          </div>
+        </dl>
+      </details>
+
+      <details v-if="detail.evidence.length || detail.chase_resolution_history?.length || detail.unreviewed_changes" class="fabric-detail-section fabric-detail-disclosure">
+        <summary>
+          <span>来源与变更记录</span>
+          <span v-if="detail.unreviewed_changes" class="purchase-detail-unread">{{ detail.unreviewed_changes }} 次未读</span>
+        </summary>
+        <div class="purchase-detail-section-body">
+          <section v-if="detail.chase_resolution_history?.length">
+            <h3>原欠数量确认记录</h3>
+            <article v-for="entry in detail.chase_resolution_history" :key="entry.id" class="purchase-detail-evidence">
+              <h4>第 {{ entry.revision }} 次 · 原欠 {{ entry.starting_quantity }} {{ detail.facts.unit }}</h4>
+              <p>{{ entry.actor_name }} · {{ time(entry.occurred_at) }} · 确认时本系统已入库 {{ entry.cutoff.warehouse_received_at_confirmation }} {{ detail.facts.unit }}</p>
+              <p class="purchase-detail-evidence-text">{{ entry.evidence }}</p>
+            </article>
+          </section>
+          <section v-if="detail.evidence.length">
+            <h3>原表导入记录（最近 100 次）</h3>
+            <article v-for="source in detail.evidence" :key="source.id || source.occurred_at + '-' + source.row_number" class="purchase-detail-evidence">
+              <h4>{{ source.source_name }}<span v-if="source.withdrawal"> · 此次导入已撤销</span></h4>
+              <p>{{ source.sheet }} 第 {{ source.row_number }} 行 · {{ source.actor_name }} · {{ time(source.occurred_at) }}</p>
+              <template v-if="Object.keys(source.before).length">
+                <template v-for="(label, field) in labels" :key="field">
+                  <p v-if="source.before[field] !== source.after[field]" class="purchase-detail-evidence-text">{{ label }}：{{ factShown(field, source.before[field]) }} → {{ factShown(field, source.after[field]) }}</p>
+                </template>
+              </template>
+              <p v-else>首次保存采购来源。</p>
+            </article>
+          </section>
+          <Button v-if="detail.unreviewed_changes && detail.can_review" type="button" size="sm" variant="outline" :disabled="busy" @click="reviewChanges">将变更标记已读（不确认收料）</Button>
+        </div>
+      </details>
+    </FabricDetailDialog>
   </div>
   <FabricChaseDialog v-if="chaseSource" :source="chaseSource" @close="chaseSource = undefined" @saved="chaseSaved" @stale="message => { chaseSource = undefined; receiptStale(message) }" />
   <FabricBatchReceiptDialog v-if="batchSources" :sources="batchSources" @close="batchSources = undefined" @saved="batchSaved" @stale="receiptStale" />
-  <FabricReceiptDialog v-if="receiptSource" :source="receiptSource" @close="receiptSource = undefined" @saved="receiptSaved" @stale="receiptStale" />
+  <FabricReceiptDialog v-if="receiptSource" :source="receiptSource" :can-pending-purchase="canPendingPurchase" @close="receiptSource = undefined" @saved="receiptSaved" @stale="receiptStale" />
 </template>
 
 <style scoped>
@@ -401,4 +575,34 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
 .fabric-layout-buttons{display:flex;gap:6px}.fabric-layout-buttons button[aria-pressed='true']{color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4}
 .fabric-group-breadcrumb{display:flex;align-items:center;gap:16px}.fabric-group-breadcrumb small,.fabric-group-total small{display:block;color:var(--muted-foreground);font-size:12px;margin-top:3px}
 @media(max-width:760px){.fabric-purchase-layout{padding:12px 16px}.fabric-group-breadcrumb{align-items:flex-start}}
+
+.purchase-detail-overdue { display: block; color: var(--destructive); }
+.purchase-detail-unknown { color: #92400e; }
+.purchase-detail-review, .purchase-detail-arrival {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: 13px;
+}
+.purchase-detail-review > div { flex: 1 1 250px; }
+.purchase-detail-review strong { color: #92400e; }
+.purchase-detail-review p { margin-top: 2px; }
+.purchase-detail-error { color: var(--destructive); }
+.purchase-detail-unread { margin-left: 8px; color: #92400e; font-size: 12px; }
+.purchase-detail-section-body {
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+.purchase-detail-section-body > * + * { margin-top: 10px; }
+.fabric-detail-fields.purchase-detail-section-body > div { margin-top: 0; }
+.purchase-detail-calculation dd { font-weight: 600; }
+.purchase-detail-evidence { padding-top: 10px; margin-top: 10px; border-top: 1px solid var(--border); }
+.purchase-detail-evidence h4 { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.purchase-detail-evidence .purchase-detail-evidence-text { margin-top: 4px; white-space: pre-wrap; color: var(--foreground); }
 </style>

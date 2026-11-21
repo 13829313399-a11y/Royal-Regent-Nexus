@@ -16,6 +16,7 @@ from openpyxl.worksheet.formula import ArrayFormula
 TARGET_TEMPLATE = "HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4"
 
 ITEM_TAILS = {
+    "zuru": (),  # Shared columns plus explicit ZURU summary USD fields only.
     "360": ("条码", "MS Container Type (FCL/LCL)", "Consolidated ID", "Port of Discharge", "备注", "版本"),
     "green-toys": (
         "走货国家", "落货港", "完成状态", "走货方式", "单价US", "货价总金额US$",
@@ -390,9 +391,14 @@ def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
     from app.services.customer_order_unified import (
         SHEETS, _marker_row, _copy_template_row, CustomerOrderUnifiedError,
     )
+    from app.services.customer_order_jakks_unified import header_row
     result = {}
     for name, count in (sheet_counts if sheet_counts is not None else dict.fromkeys(SHEETS, count)).items():
         sheet = workbook[name]
+        first = header_row(sheet) + 1
+        cells_by_row = {}
+        for cell in sheet._cells.values():
+            cells_by_row.setdefault(cell.row, []).append(cell)
         is_total = False
         if top_order_area and count:
             from app.services.customer_order_top_area import boundary
@@ -402,16 +408,16 @@ def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
         else:
             marker = _marker_row(sheet)
         # Any literal value is user-owned, including notes without order keys.
-        occupied = [r for r in range(4, marker) if any(
-            c.value not in (None, "") and c.data_type != "f" for c in sheet[r]
+        occupied = [r for r in range(first, marker) if any(
+            c.value not in (None, "") and c.data_type != "f" for c in cells_by_row.get(r, ())
         )]
-        start = max(occupied, default=3) + 1
-        template_row = next((r for r in range(start - 1, 3, -1) if any(
-            c.data_type == "f" for c in sheet[r]
-        )), max(4, start - 1) if top_order_area else 4)
+        start = max(occupied, default=first - 1) + 1
+        template_row = next((r for r in range(start - 1, first - 1, -1) if any(
+            c.data_type == "f" for c in cells_by_row.get(r, ())
+        )), max(first, start - 1) if top_order_area else first)
         if name != "ITEM表":
             template_row = next((r for r in range(start, marker) if sum(
-                c.data_type == "f" for c in sheet[r]
+                c.data_type == "f" for c in cells_by_row.get(r, ())
             ) >= 8), template_row)
         free = marker - start
         inserted = max(0, count - free)
@@ -429,7 +435,7 @@ def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
                 _copy_template_row(sheet, template_row, row)
             # Some 360 reserved rows have styles but no lookup formulas.
             # Fill only missing formulas, retaining every existing template formula.
-            for source in list(sheet[template_row]):
+            for source in cells_by_row.get(template_row, ()):
                 target = sheet.cell(row, source.column)
                 if target.value is None and source.data_type == "f" and source.column not in manual_columns:
                     target._style = copy(source._style)

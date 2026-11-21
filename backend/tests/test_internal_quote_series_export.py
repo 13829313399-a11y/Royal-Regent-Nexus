@@ -8,7 +8,7 @@ from openpyxl.styles import Font
 from PIL import Image
 
 from test_internal_quote_api import make_client, login, logout, create_payload
-from test_internal_quote_alternatives import fill, fork, create
+from test_internal_quote_alternatives import fill, fork, create, freeze_versions
 
 
 def image_bytes():
@@ -98,7 +98,8 @@ def test_series_issue_is_atomic_reuses_frozen_exports_and_accepts_one_alternativ
         response = client.post(endpoint, json=request_body(selected))
         assert response.status_code == 200, response.text[:1000]
         workbook = load_workbook(BytesIO(response.content))
-        assert [sheet.title for sheet in workbook if sheet.sheet_state == "visible"] == [row["product_name"] for row in quotes]
+        assert [sheet.title for sheet in workbook if sheet.sheet_state == "visible"] == [
+            *[row["product_name"] for row in quotes], "1-采用价目表", "2-采用价目表", "3-采用价目表"]
         workbook.close()
         assert client.get(frozen_url).content == frozen
         assert client.get(f"/api/internal-quotes/{quotes[1]['id']}").json()["final_release_status"] != "issued"
@@ -137,6 +138,7 @@ def test_product_image_in_quote_preserves_issued_version_and_rejects_stale_or_in
         response = upload(url, quote["header_revision"])
         assert response.status_code == 201, response.text
         quote = client.get(f"/api/internal-quotes/{quote['id']}").json()
+        freeze_versions(client, [quote])
         issued = client.post(f"/api/internal-quotes/{quote['id']}/direct-issue", json={"revision": quote["header_revision"]}).json()
         quote = client.get(f"/api/internal-quotes/{quote['id']}").json()
         download = f"/api/internal-quotes/{quote['id']}/exports/{issued['id']}/download"

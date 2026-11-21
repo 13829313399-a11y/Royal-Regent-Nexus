@@ -3,7 +3,7 @@ import type { CartonMarkAssetWorkflow } from '@/api/cartonMark'
 
 export type AssetDepartment = 'sales-business' | 'pmc-warehouse' | 'carton' | 'supplier'
 export type QuickAssetStatus = 'DRAFT' | 'PENDING' | 'READY' | 'HISTORY'
-export type QuickTargetScope = 'ALL' | 'PENDING_SCHEDULE' | 'ORDERS'
+export type QuickTargetScope = 'ALL' | 'PENDING_SCHEDULE' | 'ORDERS' | 'WAREHOUSE'
 export type QuickAssetAudience = 'SUPPLIER' | 'INTERNAL'
 export interface QuickTarget {
   kind: 'REGULAR' | 'SCHEDULE' | 'SAMPLE' | 'MISC'
@@ -19,6 +19,11 @@ export interface QuickTarget {
   ordered?: boolean
   order_no?: string
   ordered_at?: string
+  schedule_po?: string
+  schedule_so?: string
+  schedule_state?: 'PENDING' | 'EXTERNAL' | 'REVIEW'
+  association_selected?: boolean
+  association_locked?: boolean
 }
 export type QuickTargetRef = Pick<QuickTarget, 'kind' | 'id' | 'sheet' | 'row' | 'fingerprint'>
 export interface QuickAsset {

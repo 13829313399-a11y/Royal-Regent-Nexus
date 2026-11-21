@@ -61,7 +61,8 @@ def test_linked_scan_and_unlinked_manual_units_are_distinct_and_not_double_count
     _, headers = issuer(client)
     doc = confirmed(client, headers, workbook(rows=[['01-01-00001', '测试布料', '100', '码', 'LOT-1']]))
     send(client, doc, [linked_part(client, doc, '80')])
-    direct = post(client, payload(client, 'RECEIPT', unit='件', material_category='ACCESSORY', quantity='3'))
+    direct = post(client, payload(client, 'RECEIPT', unit='件', material_category='ACCESSORY',
+                                  location='辅料位', quantity='3', lot=''))
     post(client, payload(client, 'ISSUE', batch_id=direct['id'], quantity='1'))
     result = report(client)
     assert len(result['rows']) == 2

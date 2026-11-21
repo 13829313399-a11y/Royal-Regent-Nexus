@@ -1,18 +1,27 @@
 import hashlib
 import json
+import sqlite3
+import time
 from typing import Literal
 from urllib.parse import quote
 from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
 from app.models.material_handover import HandoverIssuer, HandoverDocument, HandoverSource, HandoverSupplierBinding
-from app.schemas.material_handover import IssuerInput, IssuerRevoke, IssuerRenew, IssuerBind, DocumentSave, DocumentAction, ScanInput, PostingInput
+from app.schemas.material_handover import (
+    IssuerInput, IssuerRevoke, IssuerRenew, IssuerBind, DocumentSave, DocumentAction, ScanInput, PostingInput,
+    ReceiptLinkInput, ReceiptUnlinkInput, ReceiptPurchaseLinkInput, RejectionFollowupInput,
+)
 from app.services import material_handover as service
 from app.services import material_handover_files as files
+from app.services import material_handover_receipts as receipts
+from app.services import material_handover_purchase_review as purchase_review
+from app.services import material_handover_rejections as rejections
 
 router = APIRouter(prefix='/api/material-handover', tags=['material-handover'])
 
@@ -21,8 +30,8 @@ def public_result(result):
     # Keep internal purchase IDs, warehouse batch IDs and staff identities within the warehouse.
     data = result['data']
     lines = [{**line, 'purchase_detail_id': ''} for line in data['lines']]
-    return {**result, 'data': {**data, 'lines': lines},
-        'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id'}}
+    return {**{k: v for k, v in result.items() if k not in {'receipt_observations', 'receipt_rejection', 'prior_receipts', 'revoked_receipt_links'}}, 'data': {**data, 'lines': lines},
+        'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id', 'manual_reference'}}
         for movement in result.get('movements', [])]}
 
 
@@ -74,29 +83,57 @@ def check_print_snapshot(db, access, identifier, snapshot):
         raise HTTPException(409, '单据状态已变化，请刷新后准备原单打印')
 
 
-@router.get('/documents/{identifier}/print')
-async def original_print(request: Request, identifier: str, factory_id: str, expected_revision: int = Query(..., ge=1),
-                         corner: Literal['left', 'right'] = 'right', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    snapshot = print_snapshot(db, staff_access(db, actor, factory_id), identifier, expected_revision)
+def print_database_step(db, operation):
+    for retry in (True, False):
+        try:
+            return operation()
+        except (OperationalError, HTTPException) as error:
+            # The shared factory lock can wrap a SQLite lock error in HTTP 409.
+            cause = error if isinstance(error, OperationalError) else error.__cause__
+            driver_error = cause.orig if isinstance(cause, OperationalError) else None
+            if not isinstance(driver_error, sqlite3.OperationalError):
+                raise
+            code = getattr(driver_error, 'sqlite_errorcode', 0) & 0xff
+            if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
+            db.rollback()
+            if not retry:
+                raise HTTPException(503, '数据库正在处理其他操作，请稍后重试原单加码打印',
+                                    headers={'Retry-After': '1'}) from error
+            time.sleep(0.15)
+
+
+def prepare_original_print(db, identifier, expected_revision, corner, access, fresh_access):
+    snapshot = print_database_step(db, lambda: print_snapshot(db, access(), identifier, expected_revision))
     db.rollback()
-    content = await run_in_threadpool(files.render_original, snapshot['name'], snapshot['content'],
-                                    snapshot['data'], snapshot['extraction'], snapshot['code'], corner)
-    service.inventory.procurement.lock_factory(db)
-    actor = get_current_user(request, db)
-    check_print_snapshot(db, staff_access(db, actor, factory_id), identifier, snapshot)
+    content = files.render_original(snapshot['name'], snapshot['content'], snapshot['data'],
+                                    snapshot['extraction'], snapshot['code'], corner)
+
+    def recheck():
+        service.inventory.procurement.lock_factory(db)
+        check_print_snapshot(db, fresh_access(), identifier, snapshot)
+
+    print_database_step(db, recheck)
     return response_file(content, identifier+'-原单加码.pdf', 'application/pdf')
+
+
+@router.get('/documents/{identifier}/print')
+def original_print(request: Request, identifier: str, factory_id: str, expected_revision: int = Query(..., ge=1),
+                   corner: Literal['left', 'right'] = 'right', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    return prepare_original_print(
+        db, identifier, expected_revision, corner,
+        lambda: staff_access(db, actor, factory_id),
+        lambda: staff_access(db, get_current_user(request, db), factory_id),
+    )
 
 
 @router.get('/external/documents/{identifier}/print')
-async def external_original_print(identifier: str, expected_revision: int = Query(..., ge=1), corner: Literal['left', 'right'] = 'right',
-                                  x_handover_key: str = Header(default=''), db: Session = Depends(get_db)):
-    snapshot = print_snapshot(db, service.external(db, x_handover_key), identifier, expected_revision)
-    db.rollback()
-    content = await run_in_threadpool(files.render_original, snapshot['name'], snapshot['content'],
-                                    snapshot['data'], snapshot['extraction'], snapshot['code'], corner)
-    service.inventory.procurement.lock_factory(db)
-    check_print_snapshot(db, service.external(db, x_handover_key), identifier, snapshot)
-    return response_file(content, identifier+'-原单加码.pdf', 'application/pdf')
+def external_original_print(identifier: str, expected_revision: int = Query(..., ge=1), corner: Literal['left', 'right'] = 'right',
+                            x_handover_key: str = Header(default=''), db: Session = Depends(get_db)):
+    def access():
+        return service.external(db, x_handover_key)
+
+    return prepare_original_print(db, identifier, expected_revision, corner, access, access)
 
 
 def list_documents(db, access, limit, offset, status, search='', kind='ALL', supplier_id=''):
@@ -112,6 +149,7 @@ def list_documents(db, access, limit, offset, status, search='', kind='ALL', sup
     rows = db.execute(query.order_by(HandoverDocument.updated_at.desc(), HandoverDocument.id))
     needle = search.strip().casefold()
     items, total = [], 0
+    delivery_lines = {}
     for row in rows:
         body = json.loads(row.data_json)
         if kind != 'ALL' and body.get('kind') != kind:
@@ -132,7 +170,15 @@ def list_documents(db, access, limit, offset, status, search='', kind='ALL', sup
                 'created_at': row.created_at, 'confirmed_at': row.confirmed_at,
                 'data': {key: value for key, value in body.items() if key != 'lines'},
                 'line_count': len(body.get('lines', []))})
+            if not access.issuer_id and row.status == 'CONFIRMED' and body.get('kind') == 'DELIVERY':
+                delivery_lines[row.id] = body.get('lines', [])
         total += 1
+    statuses = service.receipt_processing_statuses(db, delivery_lines)
+    for item in items:
+        if item['id'] in statuses:
+            item['processing_status'] = statuses[item['id']]
+    if not access.issuer_id:
+        rejections.add_summaries(db, items)
     return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
 
 
@@ -239,12 +285,14 @@ async def upload(request: Request, factory_id: str = Form(...), request_id: UUID
 
 @router.post('/scan')
 def scan(payload: ScanInput, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    return service.scan(db, staff_access(db, actor, payload.factory_id), payload.code)
+    return service.scan(db, staff_access(db, actor, payload.factory_id), payload.code,
+                        with_receipt_observations=True, with_receipt_review=receipts.can_review(actor))
 
 
 @router.get('/documents/{identifier}')
 def detail(identifier: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    return service.output(db, service.document(db, staff_access(db, actor, factory_id), identifier))
+    return service.output(db, service.document(db, staff_access(db, actor, factory_id), identifier),
+                          with_receipt_observations=True, with_receipt_review=receipts.can_review(actor))
 
 
 @router.get('/documents/{identifier}/source')
@@ -284,6 +332,41 @@ def action(request: Request, identifier: str, action: Literal['confirm', 'void']
 def post(request: Request, identifier: str, payload: PostingInput, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     actor, _ = refresh_staff(request, db, payload.factory_id)
     return service.post(db, actor, identifier, payload)
+
+
+@router.post('/documents/{identifier}/rejection-followup')
+def rejection_followup(request: Request, identifier: str, payload: RejectionFollowupInput,
+                       db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return rejections.record_followup(db, actor, identifier, payload)
+
+
+@router.post('/documents/{identifier}/link-receipt')
+def link_receipt(request: Request, identifier: str, payload: ReceiptLinkInput, db: Session = Depends(get_db),
+                 actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return receipts.link_receipt(db, actor, identifier, payload)
+
+
+@router.post('/documents/{identifier}/unlink-receipt')
+def unlink_receipt(request: Request, identifier: str, payload: ReceiptUnlinkInput, db: Session = Depends(get_db),
+                   actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return receipts.unlink_receipt(db, actor, identifier, payload)
+
+
+@router.get('/receipts/{operation_id}/purchase-review')
+def receipt_purchase_review(operation_id: str, factory_id: str, db: Session = Depends(get_db),
+                            actor: AuthContext = Depends(get_current_user)):
+    staff_access(db, actor, factory_id)
+    return purchase_review.purchase_review(db, actor, operation_id)
+
+
+@router.post('/receipts/{operation_id}/purchase-link')
+def receipt_purchase_link(request: Request, operation_id: str, payload: ReceiptPurchaseLinkInput,
+                          db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return purchase_review.link_purchase(db, actor, operation_id, payload)
 
 
 @router.get('/external/context')

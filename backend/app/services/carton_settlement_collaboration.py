@@ -197,7 +197,7 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
             matched.add((vendor["shipment_id"], receipt_line.receipt_id + ":" + vendor["line_id"], vendor["line_id"]))
         if receipt_line:
             from app.services.carton_price_review import apply_vendor
-            vendor = apply_vendor(db, factory, receipt_line.id, vendor, receipt_line.effective_quantity)
+            vendor = apply_vendor(db, factory, supplier, receipt_line.id, vendor, receipt_line.effective_quantity)
         row["supplier_delivery"] = vendor
         enriched.append(row)
         suggested.append({"id": "AUTO-" + row["source_key"], "source_key": row["source_key"], "document_no": row["document_no"],

@@ -9,7 +9,7 @@ vi.mock('vue-router',async importOriginal=>({...await importOriginal<typeof impo
 vi.mock('../api',()=>({cuttingApi:{access:vi.fn()},errorMessage:()=> '系统依据已变化，请重新读取'}))
 vi.mock('../cutoverApi',async importOriginal=>({...await importOriginal<typeof import('../cutoverApi')>(),cutoverApi:{preview:vi.fn()}}))
 const access:Access={enabled:true,schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']}
-const info:CutoverPreview={month:'2026-10',start:'2026-10-01',cutoff:'2026-09-30',scope:'internal',generated_at:'2026-10-16',token:'basis-one',
+const info:CutoverPreview={month:'2026-10',start:'2026-10-01',cutoff:'2026-09-30',scope:'internal',generated_at:'2026-10-15T16:02:03.123456Z',token:'basis-one',
   rows:[{key:'custody:one',category:'现场余料',label:'订单A 蓝布',value:'2.5',unit:'米',sources:['原实发1'],line_id:'order-a',note:'本厂',status:'未核对'}],
   notices:[],external:[],counts:{未核对:1},state:'preparation_only',can_post:false}
 let wrapper:VueWrapper
@@ -21,7 +21,10 @@ async function edit(){await wrapper.get('input[aria-label=现场余料对照值]
 
 describe('P5a read-only cutover preparation',()=>{
   it('sends explicit zero and evidence without adding the system balance',async()=>{
-    await open();await edit();expect(wrapper.text()).toContain('待重新核对')
+    await open()
+    expect(wrapper.get('time').text()).toBe('2026-10-16 00:02:03（北京时间）')
+    expect(wrapper.get('time').attributes('datetime')).toBe(info.generated_at)
+    await edit();expect(wrapper.text()).toContain('待重新核对')
     await click('核对差异')
     expect(cutoverApi.preview).toHaveBeenLastCalledWith('2026-10','internal',{batch:1,batch_size:50,query:'',token:'basis-one',comparisons:[{key:'custody:one',value:'0',unit:'米',evidence:'盘点原表第3行'}],external:[]},expect.any(AbortSignal))
     expect(wrapper.text()).toContain('不保存期初');expect(wrapper.text()).toContain('不增加库存或应付')

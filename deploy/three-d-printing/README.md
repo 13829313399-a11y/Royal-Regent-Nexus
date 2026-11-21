@@ -86,10 +86,12 @@ backend/.venv/Scripts/python.exe deploy/three-d-printing/record_switch.py off --
 | `recovery.py verify` | 只读校验哈希、资产清单和 SQLite 完整性 | 无 |
 | `recovery.py restore` | 恢复到全新目录并校验 | 拒绝覆盖已有目录；不切换应用 |
 | `cutover.py` | 生成单台打印机归属计划 | `--execute`、停写声明、操作者、原因、30分钟内校验通过的备份 |
-| `retention.py` | 统计90天以前的原始遥测体 | `--execute`；每批最多500条；最短保留30天 |
+| `retention.py` | 预览已到 72 小时的完整上报 | `--execute` 单次处理最多 500 条。API 后台按机台持续处理，保留任务标识、异常、统计时钟和重试凭据 |
 | `network/windows-tailscale-plan.ps1` | 为完整 11/16 台清单生成逐机主机路由审核计划 | 不包含执行网络修改的入口 |
 
-原始遥测保留策略只清空过期 `raw_payload_json`。标准化状态、温度、错误、任务、命令、库存、文件和审计证据保留。执行前备份，按容量监控决定后续批次；本次未清理实际数据。
+完整报文按服务端接收时间滚动保留 72 小时。稳定状态下每分钟留一个进度和温度样本，任务、状态和异常变化另存。普通帧到期后仅保留统计用的状态、时间和重试校验值。升级前已保存的事件保留原有结构化字段。长期任务记录保留任务标识、文件名、起止时间和业务数量。
+
+已有大量历史数据的 PostgreSQL 实例可通过 `python -m scripts.compact_three_d_legacy_payloads --state /rr-state/backfill.json` 预览首次清理。显式添加 `--execute` 后按堆页分批处理，使用同一个断点文件可从上次提交处恢复。断点目录应挂载在能反映数据库和 WAL 可用空间的文件系统。API 后台继续处理滚动到期数据。需要恢复高频结构化历史时，可在兼容此数据库版本的 API 上设置 `THREE_D_TELEMETRY_SPARSE_HISTORY=false`。
 
 ## 同批次备份与恢复
 

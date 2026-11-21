@@ -36,7 +36,7 @@ const canCancel = computed(() => !immutableReplacement.value && !props.request.d
 { key: 'append', visible: canAppend, disabled: disabled, run: () => { emit('action', 'append') } },
 { key: 'reduce', visible: canReduce, disabled: disabled, run: () => { emit('action', 'reduce') } },
 { key: 'adjust', visible: canAdjust, disabled: disabled, run: () => { emit('action', 'adjust') } },
-{ key: 'return-stock', visible: !request.deleted && permissions.can_return_stock, disabled: disabled, run: () => { emit('action', 'return-stock') } },
+{ key: 'return-stock', visible: !request.deleted && permissions.can_return_stock, disabled: disabled, aria: `订单退货 ${request.request_no}`, run: () => { emit('action', 'return-stock') } },
 { key: 'undo-replenish', visible: immutableReplacement && !request.deleted && permissions.can_undo_replenish, disabled: disabled, run: () => { emit('action', 'undo-replenish') } },
 { key: 'cancel', visible: canCancel, disabled: disabled, run: () => { emit('action', 'cancel') } },
 { key: 'delete', visible: !immutableReplacement && !request.deleted && permissions.can_delete, disabled: disabled, run: () => { emit('action', 'delete') } }

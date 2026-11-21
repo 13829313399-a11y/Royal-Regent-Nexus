@@ -1,7 +1,7 @@
 """Current public customer entries; historical compatibility routes stay closed."""
 FACTORIES = {'huakang-a': '华康A', 'huakang-d': '华康D', 'huaxing': '华兴', 'huadeng': '华登'}
 CUSTOMERS = {
- 'huakang-a': ('360','green-toys','headstart'),
+ 'huakang-a': ('zuru','360','green-toys','headstart'),
  'huakang-d': ('index','jazwares','maxx','strottman','ubtech','disney','seasons'),
  'huaxing': ('zuru','buzzbee','dickie','caixing','edu','360','yinhui','seasons','maxx','shushupapa','barter','disney'),
  'huadeng': ('goliath','casdon','jakks','simba','spin'),

@@ -31,7 +31,7 @@ describe('multi-alternative export', () => {
     expect(submit.attributes('disabled')).toBeDefined()
     for (const checkbox of wrapper.findAll('input[type=checkbox]')) await checkbox.setValue(true)
     expect(wrapper.text()).toContain('已选 2 个版本')
-    expect(wrapper.text()).toContain('已输出版本沿用原文件')
+    expect(wrapper.text()).toContain('冻结版本沿用原文件')
     await submit.trigger('click'); await flushPromises()
     expect(output).toHaveBeenCalledWith('original', [{ quote_id: 'original', revision: 8 }, { quote_id: 'window', revision: 3 }], 'IQ-TEST-多方案报价.xlsx')
     expect(wrapper.emitted('completed')).toHaveLength(1)

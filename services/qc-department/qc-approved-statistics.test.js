@@ -62,17 +62,18 @@ test('report center defaults to weekly and switches reports even while annual da
     assert.deepEqual(Array.from(select.options, option=>option.textContent),['月内报告','年报']);
     for(const key of ['daily','monthly','analysis','monthly','weekly']){
       if(key==='analysis' || select.value==='analysis') {
-        select.value=key==='analysis' ? 'analysis' : 'intra-month';
-        p.w.changeReportType(select);
+        const mode = key==='analysis' ? 'analysis' : 'intra-month';
+        p.w.changeReportType(p.d.querySelector('[data-report-mode="'+mode+'"]'));
       } else p.w.changeReportPeriod(p.d.querySelector('[data-report-page="'+key+'"]'));
       flush();
       assert.equal(select.value,key==='analysis' ? 'analysis' : 'intra-month');
       assert.equal(p.d.getElementById('reportPeriodSwitch').hidden,key==='analysis');
       assert.equal(select.closest('.page.active').id,'page-'+key);
-      if(key==='analysis') assert.equal(p.d.activeElement,select);
+      if(p.d.activeElement.hasAttribute('data-report-mode')) assert.equal(p.d.activeElement.dataset.reportMode,key==='analysis'?'analysis':'intra-month');
       else assert.equal(p.d.activeElement.dataset.reportPage,key);
       assert.equal(p.d.activeElement.disabled,false);
-      if(key!=='analysis') assert.equal(p.d.activeElement.getAttribute('aria-pressed'),'true');
+      assert.equal(p.d.activeElement.getAttribute('aria-pressed'),'true');
+      assert.equal(p.d.querySelector('#reportCenterNav [aria-pressed="true"]').dataset.reportMode,key==='analysis'?'analysis':'intra-month');
       assert(!select.disabled);
     }
     const rendered=[];
@@ -102,17 +103,22 @@ test('five colors use exact boundaries; null stays blank and true zero stays red
     assert.equal(fill.dataset.band,'empty');assert.equal(fill.textContent,'');assert.equal(p.el('rate').textContent,'—');
   }finally{p.dom.window.close();}
 });
-test('data-only cascading selects update immediately, month table and chart are clickable',async()=>{
+test('annual filters use only year and customer, and monthly chart remains a full-year breakdown',async()=>{
   const p=page();try{
-    await p.w.renderAnalysis();assert.deepEqual(Array.from(p.el('month').options,o=>o.value),['','11']);assert(p.el('day').disabled);
-    p.data.options.days=['3'];p.el('month').value='11';p.el('month').dispatchEvent(new p.w.Event('change'));await tick();
-    assert.match(p.calls.at(-1).url,/month=11/);assert.deepEqual(Array.from(p.el('day').options,o=>o.value),['','3']);assert(!p.el('day').disabled);
-    p.el('day').value='3';p.el('day').dispatchEvent(new p.w.Event('change'));await tick();assert.match(p.calls.at(-1).url,/day=3/);
-    p.el('client').value='a'.repeat(64);p.el('client').dispatchEvent(new p.w.Event('change'));await tick();assert.match(p.calls.at(-1).url,/customer=a+/);
-    p.el('year').value='2025';p.el('year').dispatchEvent(new p.w.Event('change'));await tick();assert.match(p.calls.at(-1).url,/year=2025/);assert.doesNotMatch(p.calls.at(-1).url,/month=|day=/);
-    p.el('reset').click();await tick();assert.doesNotMatch(p.calls.at(-1).url,/year=|customer=/);
-    p.el('month-rows').children[10].querySelector('button').click();await tick();assert.match(p.calls.at(-1).url,/month=11/);
-    p.el('bars').children[10].querySelector('button').click();await tick();assert.doesNotMatch(p.calls.at(-1).url,/month=/);
+    await p.w.renderAnalysis();
+    assert.equal(p.el('month'),null);assert.equal(p.el('day'),null);
+    assert.equal(p.el('month-rows').querySelector('button'),null);
+    assert.equal(p.el('bars').querySelector('button'),null);
+    assert.equal(p.el('month-rows').children.length,12);
+    const requestCount=p.calls.length;
+    p.el('bars').children[10].querySelector('.qc-bar-hit').click();await tick();
+    assert.equal(p.calls.length,requestCount);
+    p.el('client').value='a'.repeat(64);p.el('client').dispatchEvent(new p.w.Event('change'));await tick();
+    assert.match(p.calls.at(-1).url,/customer=a+/);assert.doesNotMatch(p.calls.at(-1).url,/month=|day=/);
+    p.el('year').value='2025';p.el('year').dispatchEvent(new p.w.Event('change'));await tick();
+    assert.match(p.calls.at(-1).url,/year=2025/);assert.doesNotMatch(p.calls.at(-1).url,/month=|day=/);
+    assert.equal(p.el('root').querySelector('.qc-filter > .report-type-slot #reportTypeSelect'),p.d.getElementById('reportTypeSelect'));
+    p.el('reset').click();await tick();assert.doesNotMatch(p.calls.at(-1).url,/year=|customer=|month=|day=/);
   }finally{p.dom.window.close();}
 });
 test('result tabs and pagination request details without altering aggregate values',async()=>{

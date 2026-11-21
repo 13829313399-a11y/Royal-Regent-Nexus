@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -10,6 +11,7 @@ import { newStructuredBom, nodeAttribute, type FinishedProcess } from './bomRule
 import BomApprovalCheck from './BomApprovalCheck.vue'
 import MaterialBomUsage from './MaterialBomUsage.vue'
 import BomMaterialMatching from './BomMaterialMatching.vue'
+import CuttingBomRelease from './CuttingBomRelease.vue'
 import { applyMaterialMatches, type MatchSelection } from './materialMatching'
 import { engineeringApi as api, emptyBom, newNode, type Access, type Bom, type Material, type ImportPreview, type Node } from './api'
 
@@ -29,20 +31,22 @@ const materialForm = ref(blankMaterial()), editingMaterial = ref(false)
 const pending = ref<{ path: string; body: unknown; kind: 'material' | 'bom' } | null>(null)
 const editorEpoch = ref(0)
 const usageMaterial = ref<Material | null>(null)
+const cuttingSource = ref<{ id: string; version: number } | null>(null)
+const cuttingPending = ref(false)
 let generation = 0, historyGeneration = 0, previewGeneration = 0
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
-function invalidateEditor() { usageMaterial.value = null; editorEpoch.value++; previewGeneration++; historyGeneration++; quantities.value = []; history.value = [] }
+function invalidateEditor() { usageMaterial.value = null; cuttingSource.value = null; cuttingPending.value = false; editorEpoch.value++; previewGeneration++; historyGeneration++; quantities.value = []; history.value = [] }
 function statusLabel(value: string) { return ({ ACTIVE: "已审核", APPROVED: "已审核", DRAFT: "待审核", INACTIVE: "已停用" } as Record<string, string>)[value] || value }
 function blankMaterial() { return { id: '', code: '', name: '', group: '01', unit: '', department: '', specification: '', color: '', old_code: '', attribute: '外购', warehouse_category: '', expected_version: 0 } }
 const ready = computed(() => route.query.factory === 'huakang-c' && access.value?.enabled && access.value.schema_ready)
-const locked = computed(() => busy.value || !!pending.value)
+const locked = computed(() => busy.value || !!pending.value || cuttingPending.value)
 const can = (action: string) => ready.value && !!access.value?.permissions.includes(action)
 const filteredMaterials = computed(() => materials.value.filter(m => (!group.value || m.data.engineering?.group.startsWith(group.value)) && (m.code + m.name).includes(q.value)))
 const filteredBoms = computed(() => boms.value.filter(b => (b.data.item_no + b.data.name).includes(q.value)))
 const activeMaterials = computed(() => materials.value.filter(m => m.status === 'ACTIVE' && m.data.engineering?.approval === 'APPROVED'))
 const bomHistory = computed(() => history.value.filter((item): item is Bom => 'nodes' in item.data))
 const processes = computed(() => [...new Set(data.value.nodes.map(n => n.process).filter(Boolean))])
-function clear() { copySource.value = null; usageMaterial.value = null; access.value = null; materials.value = []; boms.value = []; selected.value = null; data.value = emptyBom(); history.value = []; imported.value = null; quantities.value = []; materialForm.value = blankMaterial(); editing.value = false; editingMaterial.value = false; pending.value = null; dirty.value = false; busy.value = false; error.value = ''; notice.value = ''; historyGeneration++; previewGeneration++ }
+function clear() { copySource.value = null; invalidateEditor(); access.value = null; materials.value = []; boms.value = []; selected.value = null; data.value = emptyBom(); imported.value = null; materialForm.value = blankMaterial(); editing.value = false; editingMaterial.value = false; pending.value = null; dirty.value = false; busy.value = false; error.value = ''; notice.value = '' }
 function message(e: unknown) { const x = e as { response?: { status?: number; data?: { detail?: unknown } }; message?: string }; const detail = x.response?.data?.detail; return typeof detail === 'string' ? detail : detail ? '字段格式不完整，请核对必填项和用量。' : x.message || '操作失败，请重试。' }
 function denied(e: unknown) { return [401, 403].includes((e as { response?: { status: number } }).response?.status || 0) }
 function failure(e: unknown) { if (denied(e)) { generation++; clear() }; error.value = message(e) }
@@ -89,14 +93,27 @@ async function retry() {
   } finally { if (token === generation || !pending.value) busy.value = false }
 }
 async function showHistory(id: string) { if (!discard()) return; history.value = []; const token = generation, request = ++historyGeneration; try { const h = await api.history(id); if (token === generation && request === historyGeneration) history.value = h.items } catch (e) { if (token === generation && request === historyGeneration) failure(e) } }
+function openCuttingSource(bom: Bom) {
+  if (!bom.effective_version || !discard()) return
+  invalidateEditor()
+  editing.value = false
+  dirty.value = false
+  cuttingSource.value = { id: bom.id, version: bom.effective_version }
+}
 async function previewUsage() { const token = generation, request = ++previewGeneration; try { const r = await api.preview(body()); if (token === generation && request === previewGeneration) quantities.value = r.items } catch (e) { if (token === generation && request === previewGeneration) failure(e) } }
 async function fileChanged(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (!file || locked.value) return; const token = generation; busy.value = true; imported.value = null; error.value = ''; try { const r = await api.importPreview(file); if (token === generation) imported.value = r } catch (e) { if (token === generation) failure(e) } finally { if (token === generation) busy.value = false } }
 function adoptImport() { if (!imported.value?.can_save || !discard()) return; invalidateEditor(); selected.value = null; copySource.value = null; data.value = clone(imported.value.data); copyFrom.value = ''; copyVersion.value = null; editing.value = true; dirty.value = true; tab.value = 'boms'; process.value = ''; quantities.value = []; reason.value = '历史 BOM 核对' }
-function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || pending.value) { event.preventDefault(); event.returnValue = '' } }
+function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || pending.value || cuttingPending.value) { event.preventDefault(); event.returnValue = '' } }
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeRouteLeave(discard); onBeforeRouteUpdate(discard)
 watch(data, () => { previewGeneration++; quantities.value = [] }, { deep: true, flush: 'sync' })
-watch(() => [route.query.factory, auth.sessionVersion, auth.authorizationVersion], () => { generation++; clear(); void load() }, { immediate: true })
+watch(() => {
+  // Session refreshes on window focus also bump sessionVersion. Only discard
+  // editor input when identity, permissions or factory actually change.
+  void auth.sessionVersion
+  return JSON.stringify([route.query.factory, getAuthenticationGeneration(), auth.currentUser?.id,
+    auth.authorizationVersion, auth.permissions, auth.grants, auth.effectiveAccess])
+}, () => { generation++; clear(); void load() }, { immediate: true })
 onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload', beforeUnload) })
 </script>
 
@@ -131,8 +148,11 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload',
       <SectionPanel v-if="tab === 'boms'" title="工程 BOM 列表" subtitle="草稿修订不会覆盖上一有效版本；不同货号请复制。">
         <div class="flex flex-wrap items-end gap-3"><label>查询<input v-model="q" placeholder="货号或名称" /></label><label>新建成品结构<select v-model="newFinishedProcess" aria-label="新建成品结构" :disabled="!can('bom_write') || locked"><option value="手工">需要手工：手工成品包含车缝部件</option><option value="车缝">无需手工：车缝成品为顶层</option></select></label><Button :disabled="!can('bom_write') || locked" @click="editBom()">新建 BOM</Button></div>
         <p v-if="!filteredBoms.length" class="py-6 text-slate-500">暂无工程 BOM。</p>
-        <div v-else class="overflow-x-auto"><table><thead><tr><th>货号／名称</th><th>最新／有效版本</th><th>操作</th></tr></thead><tbody><tr v-for="b in filteredBoms" :key="b.id"><td>{{ b.data.item_no }}<br>{{ b.data.name }}</td><td>v{{ b.version }} {{ statusLabel(b.status) }} ／ {{ b.effective_version ? `v${b.effective_version}` : '未审核' }}</td><td class="space-x-2"><Button variant="outline" size="sm" :disabled="locked" @click="editBom(b)">查看／维护</Button><Button variant="outline" size="sm" :disabled="!can('bom_write') || locked" @click="editBom(b, true)">复制新货号</Button><Button variant="ghost" size="sm" @click="showHistory(b.id)">历史</Button></td></tr></tbody></table></div>
+        <div v-else class="overflow-x-auto"><table><thead><tr><th>货号／名称</th><th>最新／有效版本</th><th>操作</th></tr></thead><tbody><tr v-for="b in filteredBoms" :key="b.id"><td>{{ b.data.item_no }}<br>{{ b.data.name }}</td><td>v{{ b.version }} {{ statusLabel(b.status) }} ／ {{ b.effective_version ? `v${b.effective_version}` : '未审核' }}</td><td class="space-x-2"><Button variant="outline" size="sm" :disabled="locked" @click="editBom(b)">查看／维护</Button><Button variant="outline" size="sm" :disabled="!can('bom_write') || locked" @click="editBom(b, true)">复制新货号</Button><Button variant="ghost" size="sm" @click="showHistory(b.id)">历史</Button><Button v-if="access?.cutting_publication && b.effective_version" variant="outline" size="sm" :disabled="locked || loading" @click="openCuttingSource(b)">生成裁床执行 BOM</Button></td></tr></tbody></table></div>
       </SectionPanel>
+      <CuttingBomRelease v-if="tab === 'boms' && cuttingSource" :key="`${cuttingSource.id}:${cuttingSource.version}`"
+        :bom-id="cuttingSource.id" :version="cuttingSource.version" @close="cuttingSource = null"
+        @pending="cuttingPending = $event" @denied="failure" />
       <SectionPanel v-if="tab === 'boms' && editing" title="BOM 明细与工序清单">
         <p class="mb-3 text-sm text-slate-600">需要手工时，手工成品包含车缝部件和手工专用辅料；无需手工时，车缝成品直接作为顶层。裁片及车缝辅料放在车缝下，布料放在对应裁片下，避免在手工层重复计料。车缝线和手工线均用码。</p>
         <label>按工序查看<select v-model="process"><option value="">全部工序</option><option v-for="p in processes" :key="p">{{ p }}</option></select></label>

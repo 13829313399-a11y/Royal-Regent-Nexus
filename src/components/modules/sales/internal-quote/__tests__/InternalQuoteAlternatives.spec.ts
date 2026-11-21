@@ -217,11 +217,11 @@ describe('independent quotation alternatives', () => {
     await flushPromises()
     const original = mounted
     wrapper.findComponent(InternalQuoteAlternatives).vm.$emit('archiveState', true); await flushPromises()
-    expect(wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').find(b => b.text() === '输出报价')!.attributes('disabled')).toBeDefined()
     expect(wrapper.findAll('button').some(b => b.text() === '修改报价资料' || b.text() === '本报价专用料价')).toBe(false)
     expect(wrapper.get('#quote-page-actions').text()).toContain('填写说明并确认恢复')
     wrapper.findComponent(InternalQuoteAlternatives).vm.$emit('archiveState', false); await flushPromises()
-    expect(wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.attributes('disabled')).toBeUndefined()
+    expect(wrapper.findAll('button').find(b => b.text() === '输出报价')!.attributes('disabled')).toBeUndefined()
     expect(mounted).toBe(original)
     wrapper.unmount()
   })
@@ -266,7 +266,7 @@ describe('independent quotation alternatives', () => {
     vi.spyOn(store, 'directIssue').mockRejectedValue(new Error('啤机部须完成填写、保存及有效计算'))
     const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', methods: { hasUnsavedChanges: () => false } } } } })
     await flushPromises()
-    await wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '输出报价')!.trigger('click'); await flushPromises()
     expect(wrapper.get('#quote-page-actions [role="alert"]').text()).toContain('啤机部')
     expect(wrapper.text()).not.toContain('放弃本地表单并重新读取')
     wrapper.unmount()
@@ -348,13 +348,13 @@ describe('independent quotation alternatives', () => {
     await wrapper.findAll('button').find(b => b.text() === '比较两版')!.trigger('click'); await flushPromises()
     expect(compare).toHaveBeenCalledWith('q1', 'q2'); expect(wrapper.text()).toContain('报价数量'); wrapper.unmount()
   })
-  it('shows direct issue without review controls and freezes via versioned API', async () => {
+  it('shows editable output without review controls via versioned API', async () => {
     const { pinia, store } = setup()
     const issue = vi.spyOn(store, 'directIssue').mockResolvedValue({ id: 'export1', file_name: '内部.xlsx' })
     const download = vi.spyOn(store, 'downloadExport').mockResolvedValue(undefined)
     const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', methods: { hasUnsavedChanges: () => false } } } } }); await flushPromises()
     expect(wrapper.findAll('button').some(b => b.text() === '提交审核')).toBe(false)
-    await wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '输出报价')!.trigger('click'); await flushPromises()
     expect(issue).toHaveBeenCalledWith('q1', 8); expect(download).toHaveBeenCalledWith('q1', 'export1', '内部.xlsx'); wrapper.unmount()
   })
   it('keeps the synchronization success result mounted while refreshing the family', async () => {
@@ -371,13 +371,13 @@ describe('independent quotation alternatives', () => {
   it('hides direct issue and reference mutation after version is exported', async () => {
     const { pinia, store } = setup(); store.quotes[0]!.status = 'exported'
     const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', methods: { hasUnsavedChanges: () => false } } } } }); await flushPromises()
-    expect(wrapper.findAll('button').some(b => b.text() === '直接输出并保留此版' || b.text() === '同步最新参考表')).toBe(false); wrapper.unmount()
+    expect(wrapper.findAll('button').some(b => b.text() === '输出报价' || b.text() === '同步最新参考表')).toBe(false); wrapper.unmount()
   })
   it('keeps unsaved edits in place and refuses direct output until saved', async () => {
     const { pinia, store } = setup()
     const issue = vi.spyOn(store, 'directIssue')
     const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', methods: { hasUnsavedChanges: () => true } } } } }); await flushPromises()
-    await wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '输出报价')!.trigger('click'); await flushPromises()
     expect(issue).not.toHaveBeenCalled(); expect(wrapper.text()).toContain('先保存当前款'); wrapper.unmount()
   })
 })

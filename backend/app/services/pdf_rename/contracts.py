@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Protocol, Sequence
 
 
@@ -21,6 +21,7 @@ class NormalizedRegion:
     ocr_page_segmentation: int = 6
     ocr_engine: str = "tesseract"
     red_only: bool = False
+    allow_partial_fields: bool = False
 
     def __post_init__(self) -> None:
         if self.page_number < 1:
@@ -46,6 +47,7 @@ class NormalizedRegion:
             "ocr_page_segmentation": self.ocr_page_segmentation,
             "ocr_engine": self.ocr_engine,
             "red_only": self.red_only,
+            "allow_partial_fields": self.allow_partial_fields,
         }
 
 
@@ -109,6 +111,8 @@ class RecognizedRegionValue:
     route: str
     confidence: float | None = None
     text_boxes: tuple[RecognizedTextBox, ...] = ()
+    validation_error: str = ""
+    uncertain_fields: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -118,6 +122,7 @@ class RecognizedRegionValue:
             "normalized_text": self.normalized_text,
             "route": self.route,
             "confidence": self.confidence,
+            "validation_error": self.validation_error,
         }
 
 
@@ -139,6 +144,7 @@ class PdfRenamePlan:
     fields: tuple[RecognizedRegionValue, ...] = ()
     issues: tuple[PdfRenameIssue, ...] = ()
     manual_override: bool = False
+    filename_template: str = ""
 
     @property
     def manual_override_allowed(self) -> bool:
@@ -161,6 +167,7 @@ class PdfRenamePlan:
             "issues": [issue.as_dict() for issue in self.issues],
             "manual_override": self.manual_override,
             "manual_override_allowed": self.manual_override_allowed,
+            "filename_template": self.filename_template,
         }
 
 
@@ -343,12 +350,4 @@ def replace_plan_issues(
     *,
     status: str = "ERROR",
 ) -> PdfRenamePlan:
-    return PdfRenamePlan(
-        source_file_name=plan.source_file_name,
-        target_file_name=plan.target_file_name,
-        interval_name=plan.interval_name,
-        status=status,
-        fields=plan.fields,
-        issues=tuple(issues),
-        manual_override=plan.manual_override,
-    )
+    return replace(plan, status=status, issues=tuple(issues))

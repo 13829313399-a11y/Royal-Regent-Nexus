@@ -33,6 +33,41 @@ async function start() {
 }
 
 describe('output table source editing', () => {
+  it('groups old-formula warnings, preserves real missing-data warnings and links to the current product recovery', async () => {
+    mocks.get.mockResolvedValueOnce({ ...layout(), quote_price_hkd: null, warnings: [
+      ...['工程部', '啤机部'].map(section_name => ({ code: 'formula_outdated', section_name, message: section_name + '：计算公式待更新，当前合计不完整。' })),
+      { code: 'section_incomplete', message: '喷油部：油漆单价待填写，当前合计不完整。' },
+    ] })
+    const wrapper = await start()
+    await wrapper.setProps({ collaborationRoute: '/quote-1/collaboration?factory=huakang-b' })
+    expect(wrapper.findAll('.output-formula-notice')).toHaveLength(1)
+    expect(wrapper.get('.output-formula-notice').text()).toContain('已保存的部门资料仍保留')
+    expect(wrapper.get('.output-formula-notice').text()).toContain('工程部、啤机部')
+    expect(wrapper.text()).not.toContain('计算公式待更新')
+    expect(wrapper.get('.output-error').text()).toContain('油漆单价待填写')
+    expect(wrapper.get('.output-formula-link').attributes('href')).toBe('/quote-1/collaboration?factory=huakang-b&formulaRecovery=1')
+    expect(wrapper.get('.output-total-bar').text()).not.toContain('HKD 1.5000')
+    expect(mocks.save).not.toHaveBeenCalled()
+    expect(mocks.preview).not.toHaveBeenCalled()
+    await wrapper.get('[data-cell="D20"] button').trigger('click')
+    await wrapper.get('input[aria-label="原始单价 RMB"]').setValue('.8')
+    expect(wrapper.find('.output-formula-link').exists()).toBe(false)
+    expect(wrapper.text()).toContain('请先保存表格修改，再前往重算')
+  })
+
+  it('removes formula guidance after a successful refreshed calculation', async () => {
+    mocks.get.mockResolvedValueOnce({ ...layout(), quote_price_hkd: null, warnings: [
+      { code: 'formula_outdated', section_name: '业务部', message: '计算公式待更新' },
+    ] })
+    const wrapper = await start()
+    expect(wrapper.find('.output-formula-notice').exists()).toBe(true)
+    mocks.get.mockResolvedValueOnce(layout())
+    await wrapper.findAll('button').find(button => button.text() === '重新读取')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.output-formula-notice').exists()).toBe(false)
+    expect(wrapper.get('.output-total-bar').text()).toContain('HKD 1.5000')
+  })
+
   it('shows the main quotation while originals load and preserves a newer live price preview', async () => {
     let finish!: (value: OutputLayout) => void
     mocks.get.mockResolvedValueOnce({ ...layout(), source_workbooks_pending: true })

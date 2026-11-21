@@ -56,16 +56,26 @@ class LocalBoundary:
         await self.app(scope,bounded_receive,private_send)
 
 
-def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',port=8765):
+def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',port=8765,customer_codes=None):
     if factory_id not in CUSTOMERS: raise ValueError('本试用版未开放该厂区订单映射。')
+    if customer_codes is not None and (not isinstance(customer_codes,(list,tuple)) or not customer_codes or
+            any(code not in CUSTOMERS[factory_id] for code in customer_codes)):
+        raise ValueError('本试用包客户范围无效。')
     if host!='127.0.0.1' or not isinstance(port,int) or not 1<=port<=65535:raise ValueError('试用版仅支持 127.0.0.1 本地端口。')
     history=History(data_dir,factory_id)
+    if customer_codes is not None:
+        with history.connect() as db:
+            stored={row[0] for row in db.execute('SELECT DISTINCT customer_code FROM exports')}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_ledger_lines'").fetchone():
+                stored.update(row[0] for row in db.execute('SELECT DISTINCT customer_code FROM order_ledger_lines'))
+            if stored-set(customer_codes):
+                raise RuntimeError('数据目录含本试用包范围外的客户，请保留原数据并用完整厂区包打开。')
     jobs.OPERATIONS=OPERATIONS
     jobs.LOCK_PATH=Path(data_dir).resolve()/'.file-worker.lock'
     app=FastAPI(title=FACTORIES[factory_id]+'订单排期本地试用',docs_url=None,redoc_url=None,openapi_url=None)
     app.state.history=history;app.state.factory_id=factory_id
     app.add_middleware(LocalBoundary,authority=f'{host}:{port}')
-    registered=profiles(factory_id)
+    registered=[row for row in profiles(factory_id) if customer_codes is None or row['code'] in customer_codes]
 
     @app.get('/api/health')
     def health():return {'status':'ok','service':'customer-order-trial','factory_id':factory_id,'schema':1}
@@ -73,7 +83,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
     @app.get('/api/config')
     def config():return {'factory_id':factory_id,'factory_name':FACTORIES[factory_id],
         'customers':registered,'duplicate_confirmation_enabled':True,
-        'capabilities':{'history_import':True,'ledger_schedule':True,'workbook_tools':True},
+        'capabilities':{'history_import':True,'ledger_schedule':True,'workbook_tools':any(row['code'] in {'360','casdon'} for row in registered)},
         'scope':'本机订单台账、排期导出、部门收件及走货记录；不连接线上系统，发送仅写入本机部门收件箱。',
         'limits':{'po_files':contract.MAX_BATCH_PO_FILES,'po_bytes':contract.MAX_PO_BYTES,
                   'batch_po_bytes':contract.MAX_BATCH_PO_BYTES,'schedule_bytes':contract.MAX_SCHEDULE_BYTES}}
@@ -84,7 +94,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
         if profile is None:raise HTTPException(400,'当前厂区未开放此客户映射。')
         return profile
 
-    async def sources(customer,submitted,received,uploads,schedule):
+    async def sources(customer,submitted,received,uploads,schedule,schedule_files=()):
         profile=scoped(customer,submitted)
         usable=[file for file in uploads if not contract._is_macos_metadata_upload(file.filename or '')]
         if not 1<=len(usable)<=contract.MAX_BATCH_PO_FILES:raise HTTPException(400,'请选择 1 至 30 份有效 PO 文件。')
@@ -96,11 +106,10 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
             total+=len(content)
             if total>contract.MAX_BATCH_PO_BYTES:raise HTTPException(400,'本批 PO 文件合计超过 80MB 限制。')
             files.append((Path((file.filename or '').replace('\\','/')).name,content))
-        contract._validate_upload(schedule,kind='客户排期',supported=('.xlsx',))
-        content=await schedule.read(contract.MAX_SCHEDULE_BYTES+1)
-        if not content or len(content)>contract.MAX_SCHEDULE_BYTES:raise HTTPException(400,'客户排期为空或超过 35MB 限制。')
+        from app.services.customer_order_zuru_native import read_uploads
+        schedule_name,content=await read_uploads(customer,schedule,schedule_files)
         return dict(customer_code=customer,factory_id=factory_id,received_date=received.isoformat(),po_files=files,
-                    schedule_file_name=Path((schedule.filename or '').replace('\\','/')).name,schedule_content=content)
+                    schedule_file_name=schedule_name,schedule_content=content)
 
     def finalize(preview,received):
         contract._apply_customer_order_confirmation_policy(preview,duplicate_confirmation_authorized=True)
@@ -109,8 +118,8 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
 
     @app.post('/api/orders/preview',dependencies=[Depends(jobs.order_job_request)])
     async def preview(customer_code:str=Form(...),factory_id:str=Form(...),received_date:date=Form(...),
-        po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...)):
-        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file)
+        po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...),schedule_files:list[UploadFile]=File(default=[])):
+        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file,schedule_files)
         operation=contract._create_special_batch_preview if customer_code in {'buzzbee','dickie','caixing'} else contract._create_mapped_customer_preview
         result=await jobs.run_order_job(operation,**args)
         return finalize(result,args['received_date'])
@@ -122,7 +131,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
             'X-Workbook-Password-Required':str(json.loads(row['controls']).get('password_required',False)).lower()})
 
     async def prepare_confirmed(customer_code,factory_id,received_date,po_files,schedule_file,confirmed,
-        skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target=None):
+        skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,reconciliation_target=None,schedule_files=()):
         scoped(customer_code,factory_id)
         if not confirmed:raise HTTPException(400,'请先核对预览并明确确认生成。')
         if len(skipped_issue_keys)>2_000_000 or len(manual_overrides)>4_000_000:raise HTTPException(400,'人工核对内容过大。')
@@ -131,7 +140,7 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
         resolution=keys|{item['issue_key'] for item in overrides}
         contract._ensure_test_duplicate_confirmation_allowed(resolution)
         reason=contract._validated_confirmation_reason(resolution,confirmation_reason)
-        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file)
+        args=await sources(customer_code,factory_id,received_date,po_files,schedule_file,schedule_files)
         operation=contract._export_special_batch_schedule if customer_code in {'buzzbee','dickie','caixing'} else contract._export_mapped_customer_schedule
         reconciliation={'reconciliation_target':reconciliation_target} if reconciliation_target else {}
         output,name,resolved=await jobs.run_order_job(operation,**args,skipped_issue_keys=resolution,manual_overrides=overrides,**reconciliation)
@@ -150,9 +159,9 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
     async def export(customer_code:str=Form(...),factory_id:str=Form(...),received_date:date=Form(...),
         po_files:list[UploadFile]=File(...),schedule_file:UploadFile=File(...),confirmed:bool=Form(...),
         skipped_issue_keys:str=Form('[]'),manual_overrides:str=Form('[]'),preview_fingerprint:str=Form(...),
-        confirmation_reason:str=Form('')):
+        confirmation_reason:str=Form(''),schedule_files:list[UploadFile]=File(default=[])):
         args,resolved,output,name,controls=await prepare_confirmed(customer_code,factory_id,received_date,
-            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason)
+            po_files,schedule_file,confirmed,skipped_issue_keys,manual_overrides,preview_fingerprint,confirmation_reason,schedule_files=schedule_files)
         row=history.save(customer_code,name,output,len(resolved.get('rows',[])),controls)
         return output_response(row)
 
@@ -166,9 +175,9 @@ def create_app(data_dir,static_dir=None,factory_id='huaxing',host='127.0.0.1',po
         return output_response(row)
 
     from app.local_ledger import ledger_router
-    app.include_router(ledger_router(history,factory_id,scoped,prepare_confirmed))
+    app.include_router(ledger_router(history,factory_id,scoped,prepare_confirmed,registered))
     from app.schedule_tools import schedule_tools_router
-    app.include_router(schedule_tools_router(history,factory_id,output_response))
+    app.include_router(schedule_tools_router(history,factory_id,output_response,scoped))
 
     if static_dir is not None:
         directory=Path(static_dir).resolve()

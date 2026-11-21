@@ -66,7 +66,9 @@ def monthly_settlement_workspace(factory_id: str, period: str = Query(pattern=r"
     from app.services import carton_monthly_settlement as monthly
     if not service.supplier_permission(user, "carton_supplier:read", factory_id):
         raise HTTPException(403, "没有本厂供应商月结查看权限")
-    data = monthly.workspace(db, factory_id, period, currency)
+    # Release the authorization connection before opening the reconciliation snapshot.
+    db.close()
+    data = monthly.read_workspace(factory_id, period, currency)
     return {
         "factory_id": data["factory_id"], "supplier_name": data["supplier_name"],
         "period": data["period"], "currency": data["currency"], "read_only": True,

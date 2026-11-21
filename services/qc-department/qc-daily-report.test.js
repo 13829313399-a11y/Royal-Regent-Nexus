@@ -26,28 +26,33 @@ function page() {
   w.eval(fs.readFileSync(path.join(__dirname,'qc-daily-report.js'),'utf8'));
   return {dom,w,d:w.document,calls};
 }
-test('day week and month reuse the same dashboard with scoped details and period exports', async () => {
+test('day opens the single full table while legacy period views retain scoped details and exports', async () => {
   const p = page();
   try {
     for (const kind of ['daily','weekly','monthly']) {
       await p.w.QcPeriodReports[kind].load();
       const body=p.d.getElementById(kind+'ReportBody');
-      assert(body.querySelector('.qdr-overview'));
-      assert(body.querySelector('.qdr-detail'));
+      if (kind === 'daily') {
+        assert.equal(body.querySelector('table').className,'qdr-full-table');
+        assert.equal(body.querySelectorAll('table').length,1);
+        assert.equal(body.querySelector('[data-qdr-view]'),null);
+      } else {
+        assert(body.querySelector('.qdr-overview'));
+        body.querySelector('.qdr-toggle').click();
+        assert.equal(body.querySelector('.qdr-expanded').hidden,false);
+      }
       assert.equal(new URL(p.calls.at(-1),'http://localhost').searchParams.get('period'),kind);
-      body.querySelector('.qdr-toggle').click();
-      assert.equal(body.querySelector('.qdr-expanded').hidden,false);
-      const canvas=p.w.QcPeriodReports[kind].pdfCanvas();
-      assert.match(canvas.textContent, /2026-11-01 至 2026-11-30/);
-      assert.equal(canvas.querySelectorAll('thead th').length,13);
+      assert.equal(body.querySelectorAll('.qdr-full-table thead th').length,13);
+      assert.ok(body.querySelector('[data-qdr-export]'));
+      assert.equal(p.d.querySelector('#page-'+kind+' button[onclick*="PDF"],#page-'+kind+' button[onclick*="print"]'),null);
     }
-    assert.equal(p.d.querySelectorAll('[id="qdr-daily-record-0"]').length,1);
+    assert.equal(p.d.querySelectorAll('[id="qdr-daily-record-0"]').length,0);
     assert.equal(p.d.querySelectorAll('[id="qdr-weekly-record-0"]').length,1);
     assert.equal(new URL(p.calls.at(-1),'http://localhost').searchParams.get('date'),'2026-11-01');
     p.d.getElementById('monthlyMonth').value='';
     await p.w.QcPeriodReports.monthly.load();
     assert.match(p.d.getElementById('monthlyReportBody').textContent,/请选择报告日期/);
-    assert.throws(()=>p.w.QcPeriodReports.monthly.pdfCanvas());
+    assert.equal(p.d.querySelector('#monthlyReportBody [data-qdr-export]'),null);
   } finally {p.dom.window.close();}
 });
 test('late period response cannot overwrite the latest selected date', async () => {
@@ -62,7 +67,7 @@ test('late period response cannot overwrite the latest selected date', async () 
     pending[1](response('2026-10-01'));await second;
     pending[0](response('2026-11-06'));await first;
     assert.equal(p.d.querySelector('#page-weekly .qdr-period-range').textContent,'2026-10-01');
-    assert.equal(p.d.getElementById('btnExportWeekly').disabled,true);
+    assert.equal(p.d.querySelector('#weeklyReportBody [data-qdr-export]').disabled,true);
   } finally {p.dom.window.close();}
 });
 test('follow-ups preview two items, expand reversibly, reset on reload and export all items', async () => {
@@ -76,7 +81,7 @@ test('follow-ups preview two items, expand reversibly, reset on reload and expor
       report.total=count;
       return {ok:true,json:async()=>report};
     };
-    for(const kind of ['daily','weekly','monthly']) {
+    for(const kind of ['weekly','monthly']) {
       const controller=p.w.QcPeriodReports[kind];
       await controller.load();
       const body=p.d.getElementById(kind+'ReportBody');
@@ -98,12 +103,87 @@ test('follow-ups preview two items, expand reversibly, reset on reload and expor
       toggle.click();
       await controller.load();
       assert.equal(body.querySelector('.qdr-follow-toggle').getAttribute('aria-expanded'),'false');
-      const pdf=controller.pdfCanvas();
-      assert.equal(pdf.querySelectorAll('.qdr-issues li').length,5);
-      assert.equal(pdf.querySelector('.qdr-follow-toggle'),null);
     }
-    count=2;await p.w.QcPeriodReports.daily.load();
-    assert.equal(p.d.querySelector('#dailyReportBody .qdr-follow-toggle'),null);
-    assert.equal(p.d.querySelectorAll('#dailyReportBody .qdr-issues li').length,2);
+    count=2;await p.w.QcPeriodReports.weekly.load();
+    assert.equal(p.d.querySelector('#weeklyReportBody .qdr-follow-toggle'),null);
+    assert.equal(p.d.querySelectorAll('#weeklyReportBody .qdr-issues li').length,2);
   } finally {p.dom.window.close();}
+});
+
+test('themed pickers commit one original field change and respect a template veto', async () => {
+  const p = page();
+  try {
+    for (const kind of ['daily','weekly','monthly']) await p.w.QcPeriodReports[kind].load();
+    function triggerFor(input) {
+      const trigger = input.parentElement.querySelector('.qdr-date-trigger');
+      trigger.getBoundingClientRect = () => ({left:16, top:40, bottom:74, width:130});
+      return trigger;
+    }
+    const panel = () => p.d.querySelector('.qdr-date-panel');
+    const choice = label => [...panel().querySelectorAll('button')].find(b=>b.getAttribute('aria-label')===label);
+    const week = p.d.getElementById('weeklyDate'), weekTrigger = triggerFor(week);
+    week.value='2026-11-17';
+    p.w.QcReportDates.sync(week);
+    assert.equal(weekTrigger.textContent,'11月16–22日');
+    let changes = 0;
+    week.addEventListener('change', () => { changes++; });
+    weekTrigger.click();
+    choice('下个月').click();
+    choice('2026-12-02').click();
+    assert.equal(week.value,'2026-12-02');
+    assert.equal(weekTrigger.textContent,'11月30日–12月6日');
+    week.value='2027-01-01';
+    p.w.QcReportDates.sync(week);
+    assert.equal(weekTrigger.textContent,'12月28日–1月3日');
+    assert.equal(changes,1);
+    assert.equal(panel(),null);
+    assert.equal(p.d.activeElement,weekTrigger);
+    const month = p.d.getElementById('monthlyMonth'), monthTrigger = triggerFor(month);
+    const original = month.value;
+    month.addEventListener('change', event => {
+      month.value = original;
+      event.stopImmediatePropagation();
+    }, {capture:true, once:true});
+    monthTrigger.click();
+    choice('2026年').click();
+    choice('2027年').click();
+    choice('2027年4月').click();
+    assert.equal(month.value,original);
+    assert.equal(monthTrigger.textContent,'11月');
+    monthTrigger.click();
+    choice('清除').click();
+    assert.equal(month.value,'');
+    monthTrigger.click();
+    choice('本月').click();
+    assert.equal(month.value,'2026-11');
+    const daily = p.d.getElementById('dailyDate'), dailyTrigger = triggerFor(daily);
+    assert.equal(dailyTrigger.textContent,'11月6日');
+    dailyTrigger.click();
+    p.d.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    assert.equal(panel(),null);
+    assert.equal(daily.value,'2026-11-06');
+  } finally { p.dom.window.close(); }
+});
+
+test('annual picker offers only enabled report years and follows empty or disabled states', () => {
+  const p = page();
+  try {
+    const field = p.d.createElement('div');
+    field.className = 'report-date-field';
+    field.innerHTML = '<label for="test-year">年份</label><select id="test-year"><option value="2024">2024年</option><option disabled value="2023">2023年</option><option value="2020">2020年</option></select>';
+    p.d.body.append(field);
+    const select = field.querySelector('select');
+    p.w.QcReportDates.sync(select);
+    const trigger = field.querySelector('.qdr-date-trigger');
+    trigger.getBoundingClientRect = () => ({left:16, top:40, bottom:74, width:100});
+    trigger.click();
+    const years = [...p.d.querySelectorAll('.qdr-periods button')];
+    assert.deepEqual(years.map(b=>b.textContent),['2024年','2020年']);
+    years[1].click();
+    assert.equal(select.value,'2020');
+    assert.equal(trigger.textContent,'2020年');
+    select.disabled = true;
+    p.w.QcReportDates.sync(select);
+    assert.equal(trigger.disabled,true);
+  } finally { p.dom.window.close(); }
 });

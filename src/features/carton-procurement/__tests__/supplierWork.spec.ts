@@ -6,13 +6,13 @@ import type { SpecialRequest } from '@/api/cartonSpecialRequests'
 
 const special = (patch: Partial<SpecialRequest> = {}): SpecialRequest => ({
   id: 'S1', request_no: 'SP-1', factory_id: 'huaxing', kind: 'SAMPLE', status: 'SENT', revision: 3, current_version_id: 'V3', promised_date: '2026-10-24',
-  required_date: '2026-10-25', lines: [{ quantity: '10', remaining_to_ship: '10', unit: '个' }], shipments: [], ...patch,
+  required_date: '2026-10-25', lines: [{ quantity: '10', remaining_to_ship: '10', unit: '个' }], shipments: [], permissions: { can_ship: true }, ...patch,
 } as SpecialRequest)
 
 describe('supplier work queues', () => {
   it('counts unmatched notes and reversals, while partial dispatch may also leave work to ship', () => {
     const orders = [
-      { status: 'PENDING_SUPPLIER', lines: [{ required_quantity: '100', remaining_to_ship: '40', accepted: true, in_transit_quantity: '60' }] },
+      { issue_id: 'ISSUE', status: 'PENDING_SUPPLIER', lines: [{ required_quantity: '100', remaining_to_ship: '40', accepted: true, in_transit_quantity: '60' }] },
       { status: 'PENDING_SUPPLIER', lines: [{ required_quantity: '100', remaining_to_ship: '100', accepted: false }] },
       { status: 'CANCELLED', lines: [{ required_quantity: '100', remaining_to_ship: '100', accepted: false }] },
     ] as PortalOrder[]

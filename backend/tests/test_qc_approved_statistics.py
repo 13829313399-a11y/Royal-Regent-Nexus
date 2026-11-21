@@ -63,6 +63,29 @@ def test_confirmed_formula_matches_summary_without_writing(db,monkeypatch,result
     assert data['excluded']=={} and hashes()==before
 
 
+def test_dashboard_pages_failure_details_in_the_selected_scope(db):
+    approval(db, 1, 'FAIL', customer='上月客户', actual='2026-10-28')
+    for day in range(1, 8):
+        approval(db, day + 1, 'FAIL', customer=f'样例客户{day}', actual=f'2026-11-{day:02d}')
+    approval(db, 9, 'PENDING', customer='样例客户1', actual='2026-11-08')
+
+    latest = stats.dashboard('huaxing', {})
+    assert latest['month'] == '2026-11' and latest['totals']['total'] == 8
+    assert latest['totals']['FAIL'] == 7
+    assert [row['date'] for row in latest['recentFailures']] == [f'2026-11-{day:02d}' for day in range(7, 1, -1)]
+    assert latest['failurePage'] == 1 and latest['failurePages'] == 2
+    last = stats.dashboard('huaxing', {'month':'2026-11', 'failurePage':'2'})
+    assert [row['date'] for row in last['recentFailures']] == ['2026-11-01']
+    assert last['failureRevision'] == latest['failureRevision']
+    assert last['recentFailures'][0]['productNo'] == 'ITEM-2'
+
+    october = stats.dashboard('huaxing', {'month':'2026-10'})
+    assert october['totals']['total'] == 1
+    assert october['recentFailures'][0]['customer'] == '上月客户'
+    assert stats.dashboard('huaxing', {'month':''})['totals']['total'] == 9
+    assert stats.dashboard('huakang-a', {})['recentFailures'] == []
+
+
 def test_reconfirm_revoke_return_and_same_po_never_count_history(db):
     first=approval(db,1); second=approval(db,2,'FAIL') # Same PO, distinct stable tasks.
     assert stats.query('huaxing',{})['totals']['total']==2
@@ -292,6 +315,17 @@ def test_report_facets_details_and_denominator_share_readonly_snapshot(db):
     assert selected['details']['items'][0]['result']=='PENDING'
     assert selected['details']['items'][0]['poNo']=='SYNTHETIC-PO'
     assert 'approved_snapshot' not in selected['details']['items'][0]
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from app.services.qc_annual_excel import workbook
+    full = stats.report('huaxing', {'year':'2026','result':'ALL'}, all_detail_rows=True)
+    assert full['revision'] == page2['revision']
+    sheet = load_workbook(BytesIO(workbook(full))).active
+    assert sheet['B16'].value == 8 and sheet.max_row == 27
+    assert sheet['G16'].value == pytest.approx(0.666667)
+    assert all(sheet.cell(row, 2).number_format == 'General' for row in range(4, 16))
+    assert [cell.value for cell in sheet['A'][19:]] == [r['customer'] for r in full['details']['items']]
+    assert len(sheet._charts) == 1 and sheet._charts[0].series[0].val.numRef.numCache.ptCount == 12
     assert hashes()==before
 
 

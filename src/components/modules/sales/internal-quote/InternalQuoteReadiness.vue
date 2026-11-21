@@ -9,7 +9,7 @@ const blockers = computed(() => [...(props.readiness?.blockers ?? [])].sort((a, 
 <template>
   <div class="readiness">
     <template v-if="readiness">
-      <strong v-if="readiness.state === 'issued'">已输出 · 保留冻结核价</strong>
+      <strong v-if="readiness.state === 'issued'">已冻结 · 保留当前核价</strong>
       <template v-else>
         <div class="readiness-bar">
           <progress :value="readiness.ready_sections" :max="readiness.required_sections || 1" aria-label="核价就绪部门" />

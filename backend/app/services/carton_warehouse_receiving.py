@@ -2,15 +2,84 @@
 from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select
-from app.models.carton_procurement import CartonOrderLine, CartonOrder, CartonReceipt, CartonPurchaseOrderIssue
+from app.models.carton_procurement import CartonAuditEvent, CartonOrderLine, CartonOrder, CartonPurchaseOrderIssue, CartonReceipt
 from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine
-from app.models.carton_special_requests import UnifiedDelivery, SpecialShipment
+from app.models.carton_special_requests import UnifiedDelivery, SpecialShipment, SpecialShipmentLine
 from app.schemas import carton_special_requests as ss, carton_supplier_portal as ps
 from app.services import carton_special_requests as special, carton_special_manual_receiving as manual
-from app.services.carton_unified_deliveries import child_key, authorize, project
+from app.services import carton_supplier_portal as portal
+from app.services.carton_source_links import MANUAL_PAPERS_ADDED, delivery_children
+from app.services.carton_unified_deliveries import child_key, authorize, descriptors, project
 
 
-def receive(db, user, payload, *, refresh_actor):
+def note_record(db, model, payload, vendor):
+    return db.scalar(select(model).where(model.factory_id == payload.factory_id, model.supplier_id == vendor,
+        model.delivery_note_no == payload.delivery_note_no).limit(1))
+
+
+def formal_shipment(db, user, payload, vendor, digest):
+    shipment = SupplierShipment(id=special.uid('CSS-'), factory_id=payload.factory_id, supplier_id=vendor,
+        delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
+        status='SENT', revision=1, request_id=child_key(payload.request_id, 'FORMAL'), fingerprint=digest,
+        created_by=user.id, created_at=special.core.now_text())
+    db.add(shipment)
+    db.flush()
+    return shipment
+
+
+def link_legacy_receipt(db, user, payload, receipt, digest, papers):
+    """Represent an already posted manual note as the first acceptance, without reposting it."""
+    from app.services import carton_shipment_receiving as receiving, carton_supplier_receipt_link as receipt_link
+    from app.services.carton_replenishment_receipts import receipt_links, legacy_review_lines
+    from app.services.carton_supplier_settlement import receipt_guard
+    replacement_links = receipt_links(db, receipt.factory_id)
+    if (receipt.status != 'POSTED' or receipt.import_batch_id or not papers or
+            any(not paper.order_line_id or paper.received_quantity <= 0 or paper.id in replacement_links for paper in papers) or
+            legacy_review_lines(db, receipt.factory_id, [paper.order_line_id for paper in papers]) or
+            receiving.owner(db, receipt.factory_id, receipt.id)):
+        raise HTTPException(409, '该送货单有历史记录需核实，请在收料历史查看原单后处理')
+    special.core.ensure_receipt_operation(db, user, receipt.factory_id, papers)
+    receipt_guard(db, receipt)
+    creation = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == receipt.factory_id,
+        CartonAuditEvent.entity_id == receipt.id, CartonAuditEvent.event_type == 'RECEIPT_DRAFT_CREATED'))
+    shipment = formal_shipment(db, user, payload, receipt.supplier_id, digest)
+    acceptance, delivered = [], {}
+    for index, paper in enumerate(papers, 1):
+        line = db.get(CartonOrderLine, paper.order_line_id)
+        order = db.get(CartonOrder, line.order_id)
+        issued_ids = set(db.scalars(select(CartonAuditEvent.entity_id).where(
+            CartonAuditEvent.factory_id == receipt.factory_id, CartonAuditEvent.event_type == 'PURCHASE_ORDER_ISSUED',
+            CartonAuditEvent.sequence < (creation.sequence if creation else 0),
+            CartonAuditEvent.entity_id.in_(select(CartonPurchaseOrderIssue.id).where(CartonPurchaseOrderIssue.order_id == order.id)))))
+        issue = next((issue for issue in special.core._purchase_order_issues(db, order.id) if issue.id in issued_ids
+            and any(row.get('id') == line.id for row in special.core._purchase_order_snapshot(issue).get('lines', []))), None)
+        if not issue or order.supplier_id != receipt.supplier_id:
+            raise HTTPException(409, '原收料缺少可核实的采购来源，请在收料历史核对原单')
+        source = SupplierShipmentLine(id=f'{shipment.id}-{index:03d}', factory_id=receipt.factory_id, shipment_id=shipment.id,
+            order_line_id=line.id, issue_id=issue.id, quantity=paper.delivered_quantity,
+            snapshot_json=special.pack(dict(order_no=order.order_no, contract_no=paper.contract_no,
+                customer_po=special.core._purchase_order_snapshot(issue).get('customer_po', order.customer_po),
+                customer_name=paper.customer_name, item_no=paper.item_no, child_no=f'{order.order_no}/{line.line_no:02d}',
+                source_origin='WAREHOUSE_MANUAL', supplier_price_confirmed=False, warehouse_unit_price=str(paper.unit_price),
+                dimension_unit=next(row.get('dimension_unit', '') for row in special.core._purchase_order_snapshot(issue)['lines'] if row.get('id') == line.id),
+                **{key: str(getattr(paper, key)) for key in ('packaging_type', 'paper_quality', 'specification', 'unit', 'unit_price', 'currency')})))
+        db.add(source)
+        delivered[source.id] = str(source.quantity)
+        acceptance.append(dict(shipment_line_id=source.id, **{key: str(getattr(paper, key)) for key in receiving.QUANTITIES}))
+    day = receipt_link.acceptance_day(receipt)
+    shipment.receipt_id = receipt.id
+    shipment.status = 'RECEIVED'
+    shipment.confirmed_by = receipt.confirmed_by
+    shipment.confirmed_at = receipt.confirmed_at
+    shipment.acceptance_json = special.pack(dict(acceptance_date=day, lines=acceptance))
+    special.core._audit(db, user, receipt.factory_id, receipt_link.EVENT, 'supplier_shipment', shipment.id,
+        dict(receipt_id=receipt.id, warehouse_legacy_lines=dict(zip(delivered, [paper.id for paper in papers])), delivery_quantities=delivered,
+            acceptance=dict(acceptance_date=day, lines=acceptance)))
+    db.flush()
+    return shipment
+
+
+def receive(db, user, payload, *, refresh_actor, commit=True):
     try:
         user = special.locked_actor(db, user, payload.factory_id)
         user = refresh_actor()
@@ -35,12 +104,38 @@ def receive(db, user, payload, *, refresh_actor):
             return saved
         from app.services.carton_supplier_evidence_guard import ensure_evidence_open
         ensure_evidence_open(db, payload.factory_id, vendor, payload.delivery_date)
-        for model in (UnifiedDelivery, SupplierShipment, SpecialShipment, CartonReceipt):
-            if db.scalar(select(model.id).where(model.factory_id == payload.factory_id,
-                    model.supplier_id == vendor, model.delivery_note_no == payload.delivery_note_no)):
-                raise HTTPException(409, '原送货单号已登记，请沿原送货单核实，不能重复入库')
+        from app.services.carton_supplier_manual_evidence import DOCUMENT_EVENT
+        group = note_record(db, UnifiedDelivery, payload, vendor)
+        formal, previous_specials, old_receipt_ids = None, [], set()
+        legacy = None
+        if group:
+            if delivery_children(db, group).get('source_origin') != 'WAREHOUSE_MANUAL' or db.scalar(select(CartonAuditEvent.id).where(
+                    CartonAuditEvent.factory_id == payload.factory_id, CartonAuditEvent.entity_id == group.id,
+                    CartonAuditEvent.event_type == DOCUMENT_EVENT)):
+                raise HTTPException(409, '此送货单已有供应商原单，请在供应商送货记录核实并沿原单验收')
+            if group.delivery_date != payload.delivery_date.isoformat():
+                raise HTTPException(409, '此送货单号已登记，送货日期与原单不同，请先核对纸面送货单')
+            formal, previous_specials, _, _, _ = descriptors(db, user, payload.factory_id, group.id)
+            original = project(db, user, payload.factory_id, group.id)
+            if original['status'] != 'RECEIVED' or original['requires_correction']:
+                raise HTTPException(409, '此送货单仍有待收或待更正的纸品，请先处理原单')
+            old_receipt_ids = {value.get('id') or value.get('receipt_id') for value in original['receipts']}
+        else:
+            if note_record(db, SupplierShipment, payload, vendor) or note_record(db, SpecialShipment, payload, vendor):
+                raise HTTPException(409, '此送货单已登记，请在供应商送货记录核实并沿原单验收')
+            legacy = note_record(db, CartonReceipt, payload, vendor)
+            if legacy and legacy.delivery_date != payload.delivery_date.isoformat():
+                raise HTTPException(409, '此送货单号已登记，送货日期与原单不同，请先核对纸面送货单')
+
+        legacy_papers = special.core._receipt_lines(db, legacy.id) if legacy else []
+        previous_formal, _ = portal._shipment_sources(db, formal) if formal else ([], [])
+        recorded_formal = {paper.order_line_id for paper in [*previous_formal, *legacy_papers]}
+        recorded_special = set(db.scalars(select(SpecialShipmentLine.request_line_id).where(
+            SpecialShipmentLine.shipment_id.in_([shipment.id for shipment in previous_specials])))) if previous_specials else set()
+        if (recorded_formal.intersection(line.id for _, line, _ in regular) or
+                recorded_special.intersection(line.line_id for item, _ in specials for line in item.lines)):
+            raise HTTPException(409, '所选纸品已在此送货单登记。请只勾选尚未登记的纸品；数量或仓位录错请在收料历史处理原记录')
         formal_sources, replacement_links = [], {}
-        from app.services import carton_supplier_portal as portal
         for item, line, order in regular:
             if payload.order_revisions.get(order.order_no) != order.revision:
                 raise HTTPException(409, '所选正单已变化，请刷新后核实')
@@ -60,8 +155,8 @@ def receive(db, user, payload, *, refresh_actor):
                 if item.delivered_quantity > Decimal(capacity):
                     raise HTTPException(409, '本次送货数量超过所选补单版本的可送额度，请分清普通采购与补单')
                 replacement_links[line.id] = link
-            else:
-                portal.executable(db, order, issue.id)
+            # Physical receipt uses the locked demand. Supplier dispatch alone
+            # requires the latest change to be issued and agreed.
             from app.services.carton_material_correction import guard_lines
             guard_lines(db, payload.factory_id, [line.id])
             outstanding = portal.outstanding(db, [line.id]).get(line.id, Decimal(0))
@@ -73,8 +168,11 @@ def receive(db, user, payload, *, refresh_actor):
         for item, row in specials:
             if item.expected_revision != row.revision or not special.flags(db, user, row, False)['can_manual_receive']:
                 raise HTTPException(409, '样板或杂单已变化，请核对锁单状态和版本')
-            if manual.pending_deliveries(db, row, {line.line_id for line in item.lines})[0]:
-                raise HTTPException(409, '所选样板或杂单纸品已有待收或冲销待更正送货，请沿原单验收')
+            shipment_ids, delivery_ids = manual.pending_deliveries(db, row, {line.line_id for line in item.lines})
+            if shipment_ids:
+                raise HTTPException(409, dict(code='EXISTING_DELIVERY_PENDING',
+                    message='所选样板或杂单纸品已有待收或冲销待更正送货，请沿原单验收',
+                    shipment_ids=shipment_ids, delivery_ids=delivery_ids))
             papers = {line.id: line for line in special.lines(db, row)}
             totals = special.state_counts(db, row)[3]
             if len({line.line_id for line in item.lines}) != len(item.lines):
@@ -82,17 +180,23 @@ def receive(db, user, payload, *, refresh_actor):
             for line in item.lines:
                 if line.line_id not in papers or line.received_quantity > papers[line.line_id].quantity - totals.get(line.line_id, Decimal(0)):
                     raise HTTPException(409, '样板或杂单纸品来源或剩余数量已变化')
-        formal = None
+        if legacy:
+            formal = link_legacy_receipt(db, user, payload, legacy, digest, legacy_papers)
+            previous_formal, _ = portal._shipment_sources(db, formal)
+            old_receipt_ids.add(legacy.id)
+        new_formal = None
         formal_acceptance = []
         if formal_sources:
-            formal = SupplierShipment(id=special.uid('CSS-'), factory_id=payload.factory_id, supplier_id=vendor,
-                delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
-                status='SENT', revision=1, request_id=child_key(payload.request_id, 'FORMAL'), fingerprint=digest,
-                created_by=user.id, created_at=special.core.now_text())
-            db.add(formal); db.flush()
-            for index, (item, line, order, issue) in enumerate(formal_sources):
+            if len(previous_formal) + len(formal_sources) > 200:
+                raise HTTPException(422, '同一送货单的正单纸品不能超过 200 行，请核对原送货明细')
+            if formal is None:
+                formal = new_formal = formal_shipment(db, user, payload, vendor, digest)
+            formal.status = 'SENT'
+            formal_acceptance.extend(ps.ReceiveLine(shipment_line_id=paper.id, received_quantity=0, unit_price=0)
+                for paper in previous_formal)
+            for index, (item, line, order, issue) in enumerate(formal_sources, len(previous_formal) + 1):
                 replacement = replacement_links.get(line.id)
-                source = SupplierShipmentLine(id=f'{formal.id}-{index+1:03d}', factory_id=payload.factory_id,
+                source = SupplierShipmentLine(id=f'{formal.id}-{index:03d}', factory_id=payload.factory_id,
                     shipment_id=formal.id, order_line_id=line.id, issue_id=issue.id, quantity=item.delivered_quantity,
                     snapshot_json=special.pack(dict(order_no=order.order_no, contract_no=order.contract_no,
                         customer_po=order.customer_po, customer_name=order.customer_name, item_no=order.item_no,
@@ -111,18 +215,30 @@ def receive(db, user, payload, *, refresh_actor):
                     specification=item.specification, replenishment_issue_id=issue.id if replacement else None,
                     location_allocations=item.location_allocations))
         children = []
+        new_special_ids = []
+        special_by_request = {shipment.request_id: shipment for shipment in previous_specials}
         for item, row in specials:
             command = ss.ManualReceive(factory_id=payload.factory_id, request_id=child_key(payload.request_id, row.id),
                 expected_revision=row.revision, delivery_note_no=payload.delivery_note_no,
                 delivery_date=payload.delivery_date, acceptance_date=payload.acceptance_date, lines=item.lines)
-            shipment, acceptance = manual.build_shipment(db, user, row, command)
+            existing = special_by_request.get(row.id)
+            if existing and existing.version_id != row.current_version_id:
+                raise HTTPException(409, '该样板或杂单的采购版本已变化，请核对原送货单及本次到货来源')
+            shipment, acceptance = manual.build_shipment(db, user, row, command, shipment=existing)
+            if existing is None:
+                new_special_ids.append(shipment.id)
             children.append((row.id, row.revision, shipment.id, acceptance))
-        group = UnifiedDelivery(id=special.uid('CUD-'), factory_id=payload.factory_id, supplier_id=vendor,
-            delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
-            children_json=special.pack(dict(formal_id=formal.id if formal else '', special_ids=[value[2] for value in children], source_origin='WAREHOUSE_MANUAL')),
-            request_key=payload.request_id, fingerprint=digest, created_by=user.id, created_at=special.core.now_text())
-        db.add(group); db.flush()
-        if formal:
+        if group is None:
+            group = UnifiedDelivery(id=special.uid('CUD-'), factory_id=payload.factory_id, supplier_id=vendor,
+                delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
+                children_json=special.pack(dict(formal_id=formal.id if formal else '', special_ids=new_special_ids, source_origin='WAREHOUSE_MANUAL')),
+                request_key=payload.request_id, fingerprint=digest, created_by=user.id, created_at=special.core.now_text())
+            db.add(group)
+        elif new_formal or new_special_ids:
+            special.core._audit(db, user, payload.factory_id, MANUAL_PAPERS_ADDED, 'carton_unified_delivery', group.id,
+                dict(formal_id=new_formal.id if new_formal else '', special_ids=new_special_ids))
+        db.flush()
+        if formal_acceptance:
             portal.receive_shipment(db, user, formal.id, ps.ShipmentReceive(factory_id=payload.factory_id,
                 request_id=child_key(payload.request_id, 'FORMAL_RECEIVE'), expected_revision=formal.revision,
                 acceptance_date=payload.acceptance_date, remaining_action='WAIT', new_delivery_confirmation=True,
@@ -135,11 +251,15 @@ def receive(db, user, payload, *, refresh_actor):
             db.flush()
         projected = project(db, user, payload.factory_id, group.id)
         ids = list(dict.fromkeys(value.get('id') or value.get('receipt_id') for value in projected['receipts']))
-        result = dict(delivery_id=group.id, receipts=[special.core.receipt_out(db, db.get(CartonReceipt, identifier)).model_dump(mode='json') for identifier in ids if identifier])
+        result = dict(delivery_id=group.id, receipts=[special.core.receipt_out(db, db.get(CartonReceipt, identifier)).model_dump(mode='json')
+            for identifier in ids if identifier and identifier not in old_receipt_ids])
         event = special.core._audit(db, user, payload.factory_id, 'WAREHOUSE_BATCH_RECEIVED', 'carton_unified_delivery', group.id,
             dict(fingerprint=digest, response=result))
         event.id = special.replay_id(user, payload)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return result
     except Exception:
         db.rollback()

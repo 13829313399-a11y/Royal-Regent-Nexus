@@ -55,7 +55,7 @@
       {
         "path": "src/features/warehouse-operations/navigation.ts",
         "symbol": "WAREHOUSE_FACTORY",
-        "sha256": "5bf1691420c51f4912de47c28733995fc3d73d82ca241277fff98bdc9bda62f3"
+        "sha256": "22aeadb7d208003cb80395a069dfed473bed4ba207eed73543c09ffce3df33ec"
       }
     ],
     "knowledge_version": "2026-11-04-material-trial",

@@ -46,6 +46,7 @@ from app.api.identity import router as identity_router
 from app.api.position_reviews import router as position_reviews_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.indonesia_materials import router as indonesia_materials_router
+from app.api.indonesia_shipping import router as indonesia_shipping_router
 from app.api.module_feedback import router as module_feedback_router
 from app.api.customer_price_settings import router as customer_price_settings_router
 from app.api.internal_quote import (
@@ -70,6 +71,9 @@ from app.api.uv_operations import router as uv_operations_router
 from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
 from app.db import init_db
+from app.services.qc_dossier_events import install as install_qc_dossier_events
+
+install_qc_dossier_events()
 
 request_timing_logger = logging.getLogger("uvicorn.error")
 sweep_logger = logging.getLogger("app.three_d_sweep")
@@ -127,6 +131,10 @@ async def application_lifespan(app: FastAPI):
     import asyncio
 
     init_db()
+    if settings.qc_dossier_enabled:
+        from app.db import engine
+        from app.services.qc_dossier_worker import validate_installed
+        validate_installed(engine)
     from app.services.assistant import files as assistant_files
     await asyncio.to_thread(assistant_files.recover_jobs)
     from app.services.assistant.durable import worker as assistant_run_worker
@@ -142,9 +150,22 @@ async def application_lifespan(app: FastAPI):
     identity_task = asyncio.create_task(identity_worker()) if settings.iam_identity_writes_enabled else None
     from app.services.collaboration.maintenance import worker as collaboration_worker
     collaboration_task = asyncio.create_task(collaboration_worker()) if settings.collaboration_enabled else None
+    from app.services.qc_dossier_worker import worker as dossier_worker
+    dossier_task = asyncio.create_task(dossier_worker()) if settings.qc_dossier_enabled else None
+    from app.services.qc_photo_assets import worker as photo_worker
+    photo_task = asyncio.create_task(photo_worker())
     try:
         yield
     finally:
+        photo_task.cancel()
+        try:await photo_task
+        except asyncio.CancelledError:pass
+        if dossier_task:
+            dossier_task.cancel()
+            try:
+                await dossier_task
+            except asyncio.CancelledError:
+                pass
         await assistant_run_worker.stop()
         await asyncio.to_thread(assistant_files.shutdown)
         if collaboration_task:
@@ -327,6 +348,7 @@ app.include_router(module_feedback_router)
 app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(indonesia_materials_router)
+app.include_router(indonesia_shipping_router)
 app.include_router(iam_router)
 app.include_router(identity_router)
 app.include_router(position_reviews_router)
@@ -338,6 +360,8 @@ app.include_router(mainland_invoice_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(qc_department_router)
+from app.api.qc_mobile import router as qc_mobile_router
+app.include_router(qc_mobile_router)
 app.include_router(system_router)
 app.include_router(work_center_router)
 from app.api.three_d_operations import router as three_d_operations_router

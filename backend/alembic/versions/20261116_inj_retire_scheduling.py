@@ -1,7 +1,7 @@
 """Retire injection scheduling V3 and all earlier table families and its operational permissions.
 
 Revision ID: 20261116_inj_retire
-Revises: 20261107_0193
+Revises: 20261116_0195
 
 Requires a verified full database backup. Shared authorization audit snapshots
 remain system history; account data and unrelated domain records are preserved.
@@ -15,7 +15,7 @@ from alembic import context, op
 from alembic.util import CommandError
 
 revision = "20261116_inj_retire"
-down_revision = "20261107_0193"
+down_revision = "20261116_0195"
 branch_labels = None
 depends_on = None
 

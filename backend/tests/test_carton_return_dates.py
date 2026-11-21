@@ -31,7 +31,7 @@ def setup(client, monkeypatch):
     return row
 
 
-def confirm_collaborative_returns(client, sources):
+def confirm_collaborative_returns(client, sources, *, document_date='2026-10-05', unit_price='3', credit_document_no=None):
     """Finish real supplier receipt/credit evidence before reconciling new returns."""
     from app.db import SessionLocal
     from app.models.auth import AuthUser, AuthUserAuthorizationRevision, EmployeeProfile
@@ -74,9 +74,9 @@ def confirm_collaborative_returns(client, sources):
         row = detail(source['source_key'].removeprefix('RETURN:'), external=True)
         if not row['credit']:
             row = act(row, 'RECEIVE', external=True, quantity=row['remaining_quantity'],
-                receipt_date='2026-10-05', document_no='SIGN-' + row['movement_id'])
-            row = act(row, 'PROPOSE_CREDIT', external=True, unit_price='3',
-                credit_date='2026-10-05', document_no='CREDIT-' + row['movement_id'])
+                receipt_date=document_date, document_no='SIGN-' + row['movement_id'])
+            row = act(row, 'PROPOSE_CREDIT', external=True, unit_price=unit_price,
+                credit_date=document_date, document_no=credit_document_no or 'CREDIT-' + row['movement_id'])
             login_as(client, 'carton_supervisor')
             row = detail(row['movement_id'])
             act(row, 'CONFIRM_CREDIT', target_event_id=row['credit']['id'])
@@ -104,6 +104,88 @@ def save_and_confirm(client, monkeypatch, period):
     result = action(client, saved.json())
     assert result.status_code == 200, result.text
     return result.json()
+
+
+def test_order_stock_return_is_partial_or_full_by_position_and_keeps_the_order(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, 'admin')
+        from app.services import carton_procurement as core
+        monkeypatch.setattr(core, 'business_now', lambda: datetime(2026, 10, 5, 12))
+        row = order(client)
+        paper_id = row['lines'][0]['id']
+        bins = []
+        for code in ('A01', 'A02'):
+            location = client.post(BASE + '/inventory/locations', json={
+                'factory_id': 'huaxing', 'warehouse': '退货测试仓', 'bin_code': code,
+            })
+            assert location.status_code == 201, location.text
+            bins.append(location.json()['id'])
+        received = draft(client, row, 10, acceptance_date='2026-09-20', lines=[{
+            'order_line_id': paper_id, 'delivered_quantity': '10', 'received_quantity': '10', 'unit_price': '2',
+            'location_allocations': [
+                {'location_id': bins[0], 'quantity': '6'}, {'location_id': bins[1], 'quantity': '4'},
+            ],
+        }])
+        assert received.status_code == 201, received.text
+        posted = confirm(client, received.json())
+        assert posted.status_code == 200, posted.text
+        params = {'factory_id': 'huaxing'}
+        purchase = BASE + f"/orders/{row['order_no']}/purchase-order-context"
+        initial_issues = client.get(purchase, params=params).json()['issues']
+        route = BASE + f"/orders/{row['order_no']}/return-stock"
+
+        def preview():
+            response = client.get(route, params=params)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        before = preview()
+        assert {line['location_id']: Decimal(line['safe_quantity']) for line in before['lines']} == {
+            bins[0]: Decimal(6), bins[1]: Decimal(4),
+        }
+        command = dict(**params, request_id=uuid4().hex, expected_revision=before['revision'],
+                       source_fingerprint=before['source_fingerprint'], return_date='2026-09-30',
+                       reason='核实实际退回纸箱',
+                       lines=[dict(order_line_id=paper_id, location_id=bins[0], quantity='2.5')])
+        extra = dict(order_line_id=paper_id, location_id=bins[1], quantity='5')
+        assert client.post(route, json={**command, 'lines': [*command['lines'], extra]}).status_code == 409
+        assert preview() == before
+        partial = client.post(route, json=command)
+        assert partial.status_code == 201, partial.text
+        assert Decimal(partial.json()[0]['quantity']) == Decimal('-2.5')
+        assert partial.json()[0]['return_date'] == '2026-09-30'
+        assert partial.json()[0]['occurred_at'].startswith('2026-10-05')
+        assert client.post(route, json=command).json() == partial.json()
+        assert client.post(route, json={**command, 'request_id': uuid4().hex}).status_code == 409
+
+        remaining = preview()
+        assert {line['location_id']: Decimal(line['safe_quantity']) for line in remaining['lines']} == {
+            bins[0]: Decimal('3.5'), bins[1]: Decimal(4),
+        }
+        full = client.post(route, json={**command, 'request_id': uuid4().hex,
+            'source_fingerprint': remaining['source_fingerprint'],
+            'lines': [dict(order_line_id=line['order_line_id'], location_id=line['location_id'],
+                           quantity=line['safe_quantity']) for line in remaining['lines']]})
+        assert full.status_code == 201, full.text
+        full_document = full.json()[0]['document_no']
+        assert all(item['document_no'] == full_document for item in full.json())
+        assert full_document != partial.json()[0]['document_no']
+        assert client.post(route, json=command).json() == partial.json()
+        report = client.get(BASE + '/inventory/report', params=params)
+        assert report.status_code == 200, report.text
+        paper = next(item for item in report.json()['order_rows'] if item['order_line_id'] == paper_id)
+        assert (paper['document_count'], paper['line_count']) == (3, 4)
+        assert Decimal(paper['outbound_quantity']) == 10
+        assert preview()['lines'] == []
+        refreshed = client.get(BASE + '/orders', params=params).json()['items'][0]
+        assert refreshed['status'] == before['status'] == 'PARTIALLY_RECEIVED'
+        assert refreshed['revision'] == before['revision']
+        assert client.get(purchase, params=params).json()['issues'] == initial_issues
+        assert sum(Decimal(item['quantity']) for item in ledger(client)) == 0
+        login_as(client, 'carton_supervisor')
+        september = [source for source in view(client, '2026-09')['sources'] if source['kind'] == 'RETURN']
+        assert sum(Decimal(source['quantity']) for source in september) == 10
+        assert all(source['kind'] != 'RETURN' for source in view(client, '2026-10')['sources'])
 
 
 def test_all_return_entries_use_actual_month_without_backdating_stock_or_inventing_credit(monkeypatch):

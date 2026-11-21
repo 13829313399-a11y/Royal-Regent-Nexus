@@ -12,6 +12,7 @@ import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGua
 import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
 import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
 import { guardUvNavigation } from '@/features/uv-operations/navigationGuard'
+import { guardShippingNavigation } from '@/features/indonesia-shipping/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
 import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
@@ -26,7 +27,7 @@ import { installRouteMotionNavigation } from '@/features/route-motion/navigation
 import { installCuttingResourceRecovery } from '@/features/cutting-operations/resourceRecovery'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
-import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
+import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled, iamStudioEnabled } from '@/components/iam/workspace/iam-navigation'
 import { legacyIamAccountTarget, consolidatedIamTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
   qcFactoryWorkspace: true,
@@ -44,7 +45,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/modules/pmc-warehouse/material-purchasing', name: 'material-purchasing', component: () => import('@/features/material-planning/MaterialPurchasingView.vue'), meta: { title: '采购制单与审核', requiresAuth: true, permissions: ['material_purchase:read'], strictPermissions: true, enforcePermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
   { path: '/modules/engineering/bom', name: 'engineering-bom', component: () => import('@/features/engineering-bom/EngineeringBomView.vue'), meta: { title: '工程 BOM', requiresAuth: true, permissions: ['engineering_bom:read'], strictPermissions: true, enforcePermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'engineering' } },
   { path: '/online-documents', name: 'online-documents', component: () => import('@/views/OnlineDocumentsView.vue'), meta: { title: '在线文档', fullPage: true, requiresAuth: true } },
-  { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
+  { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', fullPage: iamStudioEnabled, requiresAuth: true } },
   { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
   { path: '/material-handover/prepare', name: 'material-handover-external', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), props: { external: true }, meta: { title: '物料单据制单', fullPage: true, requiresAuth: false } },
   { path: '/messages', name: 'messages', component: () => import('@/views/MessagesView.vue'), meta: { title: '私信', requiresAuth: true } },
@@ -213,6 +214,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/pmc-warehouse/shipping-management',
+    name: 'shipping-management',
+    component: () => import('@/features/shipping-management/ShippingManagementView.vue'),
+    meta: {
+      title: '船务管理',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/sales-business/mainland-invoice',
     redirect: to => ({ name: 'mainland-invoice', query: to.query, hash: to.hash }),
   },
@@ -292,6 +303,10 @@ const routes: RouteRecordRaw[] = [
     redirect: '/modules/sales-business',
   },
   {
+    path: '/modules/sales-business/zuru-intake',
+    redirect: { name: 'customer-order-center', query: { factory: 'huakang-a', customer: 'zuru', section: 'import' } },
+  },
+  {
     path: '/modules/sales-business/po-schedule-intake',
     name: 'customer-order-center',
     component: () => import('@/views/CustomerOrderCenterView.vue'),
@@ -300,6 +315,16 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['customer_order:read'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/modules/sales-business/indonesia-shipping',
+    name: 'indonesia-shipping',
+    component: () => import('@/views/IndonesiaShippingView.vue'),
+    meta: {
+      title: '印尼走货明细', fullPage: true, requiresAuth: true,
+      permissions: ['indonesia_shipping:read'], permissionDepartment: 'sales-business',
       enforcePermissions: true,
     },
   },
@@ -724,7 +749,7 @@ router.beforeEach(async (to, from) => {
   const navigationVersion = ++latestNavigationVersion
   loadingVersions.set(to, navigationVersion)
   if (routeLoadingTimer) window.clearTimeout(routeLoadingTimer)
-  const consolidatedTarget = consolidatedIamTarget(to, consolidatedIamEnabled)
+  const consolidatedTarget = consolidatedIamTarget(to, consolidatedIamEnabled, iamStudioEnabled)
   if (consolidatedTarget) return consolidatedTarget
   if (to.path === '/system/users') {
     const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled, positionWorkbenchEnabled)
@@ -738,6 +763,7 @@ router.beforeEach(async (to, from) => {
   if (!guardCartonNavigation(to, from)) return false
   if (!await guardQuoteNavigation(to, from)) return false
   if (!guardUvNavigation(to, from)) return false
+  if (!await guardShippingNavigation(to, from)) return false
   if (to.name === 'three-d-printing-management' && to.query.factory !== 'huakang-a') {
     return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
   }

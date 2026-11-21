@@ -20,6 +20,10 @@ from app.services import warehouse_locations as locations
 FACTORY = 'huakang-c'
 REVISION = '20261009_0152'
 OUTBOUND = {'ISSUE', 'PROCESS_SEND', 'PACK_SEND'}
+MANUAL_RECEIPT_KIND = 'FABRIC_MANUAL_RECEIPT'
+MANUAL_PURCHASE_LINK_KIND = 'FABRIC_PURCHASE_LINK'
+INTERNAL_RECORDS = {'MASTER_LOCATION', 'COMMAND_ABANDONED', 'FABRIC_ISSUE_GROUP',
+                    MANUAL_RECEIPT_KIND, MANUAL_PURCHASE_LINK_KIND}
 
 
 def ensure_schema(db):
@@ -53,6 +57,16 @@ def documents(db, warehouse):
 def entry_data(row):
     return {'id': row.id, 'kind': row.kind, 'sequence': row.sequence, 'business_date': row.business_date,
             'data': json.loads(row.payload_json), 'actor_name': row.actor_name, 'occurred_at': row.occurred_at}
+
+
+def operation_entries(db, warehouse):
+    from app.services.material_handover_procurement import purchase_attributions
+    links = purchase_attributions(db) if warehouse == 'fabric' else {}
+    for row in documents(db, warehouse):
+        entry = entry_data(row)
+        if row.id in links:
+            entry['data'].setdefault('procurement_receipt', links[row.id])
+        yield entry
 
 
 def initial_stock(db, warehouse):
@@ -160,7 +174,7 @@ def validate_current_master(db, warehouse, body, stock, entries):
                                   'material_name': body.get('item_name', ''), 'unit': body.get('unit', '')}, current)
         if material['material_category'] and material['material_category'] != body.get('material_category'):
             raise HTTPException(422, '物料分类与已确认基础资料不同，请刷新并核对资料')
-    if kind == 'RECEIPT' and not body.get('handover_supplier_id'):
+    if kind == 'RECEIPT' and not (body.get('handover_supplier_id') or body.get('receipt_supplier_id')):
         from app.services.fabric_supplier_identity import receipt_supplier
         receipt_supplier(db, body.get('counterparty', ''))
     identity = stock.get(body.get('batch_id')) or body
@@ -185,7 +199,7 @@ def apply_entry(stock, entries, entry, warehouse):
         from app.services.fabric_receipt_corrections import apply_original_reversal
         apply_original_reversal(stock, entries, entry)
         return
-    if kind in {'MASTER_LOCATION', 'COMMAND_ABANDONED', 'FABRIC_ISSUE_GROUP'}:
+    if kind in INTERNAL_RECORDS:
         entries[identifier] = entry
         return
     if kind == 'LOCATION_BIND':
@@ -374,8 +388,8 @@ def apply_entry(stock, entries, entry, warehouse):
 
 def projection(db, warehouse):
     stock, entries = initial_stock(db, warehouse), {}
-    for row in documents(db, warehouse):
-        apply_entry(stock, entries, entry_data(row), warehouse)
+    for entry in operation_entries(db, warehouse):
+        apply_entry(stock, entries, entry, warehouse)
     return stock, entries
 
 
@@ -454,6 +468,9 @@ def workspace(db, warehouse, *, include_cutting_returns=False):
     rows = list(entries.values())
     original_receipts = []
     if warehouse == 'fabric':
+        for row in rows:
+            if row['kind'] == 'RECEIPT':
+                row['receipt_record_id'] = row['data'].get('manual_receipt_id') or row['id']
         if include_cutting_returns:
             limits = warehouse_return_limits(db, entries, business_now().date())
             for key, limit in limits.items():
@@ -470,6 +487,7 @@ def workspace(db, warehouse, *, include_cutting_returns=False):
             body['request_id'] = ''
             original_receipts.append({'id': batch['id'], 'kind': 'RECEIPT', 'sequence': 0, 'business_date': batch['received_on'],
                 'data': body, 'actor_name': batch['actor_name'], 'occurred_at': batch['occurred_at'], 'read_only': True,
+                'receipt_record_id': batch['receipt_origin']['id'],
                 'reversed': batch['receipt_origin']['id'] in reversed_originals})
     catalog = locations.catalog(db, warehouse)
     by_id = {r['id']: r for r in catalog}
@@ -483,7 +501,7 @@ def workspace(db, warehouse, *, include_cutting_returns=False):
     from app.services.fabric_issue_groups import groups
     return {'revision': max((row['sequence'] for row in rows), default=0), 'stock': list(stock.values()),
             'issue_groups': groups(entries) if warehouse == 'fabric' else [],
-            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in {'MASTER_LOCATION', 'OPENING_IMPORT', 'COMMAND_ABANDONED', 'FABRIC_ISSUE_GROUP'} and not row['kind'].startswith('STOCKTAKE_')], 'original_receipts': original_receipts}
+            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in INTERNAL_RECORDS | {'OPENING_IMPORT'} and not row['kind'].startswith('STOCKTAKE_')], 'original_receipts': original_receipts}
 
 
 def request_body(payload):
@@ -527,9 +545,11 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
             if old.kind == 'COMMAND_ABANDONED':
                 raise HTTPException(409, '原操作已停止，不能再次执行；请核对后使用新请求')
             old_metadata = json.loads(old.payload_json)
-            if old_metadata.get('handover_document_id') or (_metadata or {}).get('handover_document_id'):
-                if not _metadata or any(old_metadata.get(k) != v for k, v in _metadata.items()):
-                    raise HTTPException(409, '该请求属于制单扫码收发，请使用原交接单请求核对')
+            scoped_receipt_keys = ('handover_document_id', 'manual_receipt_id', 'manual_receipt_reversal_id')
+            if any(old_metadata.get(k) or (_metadata or {}).get(k) for k in scoped_receipt_keys):
+                if not _metadata or any(old_metadata.get(k) != _metadata.get(k) for k in scoped_receipt_keys) \
+                        or any(old_metadata.get(k) != v for k, v in _metadata.items()):
+                    raise HTTPException(409, '该请求属于其他入库办理入口，请从原单核对结果')
             if _metadata is None and json.loads(old.payload_json).get('bulk_request_id'):
                 raise HTTPException(409, '该请求属于批量出库，请使用原批量请求核对')
             result = entry_data(old)
@@ -544,6 +564,10 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
             raise HTTPException(409, '收发记录已变化，请刷新并重新核对后保存')
         if payload.business_date > business_now().date():
             raise HTTPException(422, '实际业务日期不能晚于今天')
+        if warehouse == 'fabric' and payload.kind == 'CORRECTION':
+            original = entries.get(payload.original_id, {}).get('data', {})
+            if original.get('manual_receipt_id') and original['manual_receipt_id'] != (_metadata or {}).get('manual_receipt_reversal_id'):
+                raise HTTPException(422, '同次登记的分仓入库须到入库记录一起冲销')
         identifier = ('FB-' if warehouse == 'fabric' else 'SF-') + uuid4().hex[:20]
         now = business_now().isoformat()
         entry = {'id': identifier, 'kind': payload.kind, 'sequence': revision + 1, 'business_date': body['business_date'],

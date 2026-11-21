@@ -24,7 +24,7 @@ def columns(row):
     return {column.name: getattr(row, column.name) for column in row.__table__.columns}
 
 
-def test_package_replacement_preserves_all_four_independent_sources(client):
+def test_old_package_selection_preserves_primary_and_all_four_independent_sources(client):
     uid = employee(client)
     review = submit(client)
     login(client, "admin")
@@ -60,8 +60,13 @@ def test_package_replacement_preserves_all_four_independent_sources(client):
                 lifecycle_policy="independent", employment_epoch=1))
             tracked.append((models.AuthUserPermissionOverride, override_id))
         db.commit()
+        for binding, meta in db.execute(select(models.AuthUserRole, models.AuthRoleBindingMetadata)
+                .join(models.AuthRoleBindingMetadata, models.AuthRoleBindingMetadata.user_role_id == models.AuthUserRole.id)
+                .where(models.AuthUserRole.user_id == uid, models.AuthRoleBindingMetadata.source_type == "assignment")):
+            tracked.extend(((models.AuthUserRole, binding.id), (models.AuthRoleBindingMetadata, binding.id)))
         before = [columns(db.get(model, key)) for model, key in tracked]
     key, body, preview = plan(client, review)
+    assert not preview["permission_diffs"]["removed"]
     assert body["independent_allow_decisions"] == [{"override_id": "closure-allow", "decision": "keep_original_scope"}]
     response, _ = commit(client, key, preview)
     assert response.status_code == 200, response.text

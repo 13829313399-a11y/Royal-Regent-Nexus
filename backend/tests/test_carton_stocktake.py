@@ -10,7 +10,8 @@ from sqlalchemy import select
 from test_carton_inventory_valuation import db, events_for, movement, Movement, Audit
 from app.models.carton_stocktake import CartonStocktake, CartonStocktakeLine
 from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
-from app.schemas.carton_procurement import CartonInventoryMovementCreate, CartonInventoryRelocateRequest
+from app.schemas.carton_procurement import CartonInventoryMovementCreate, CartonInventoryRelocateRequest, CartonInventoryReversalRequest
+from app.services import carton_positions as positions, carton_procurement as ledger
 from app.services.carton_procurement import create_inventory_movement, relocate_inventory, inventory_balances
 from app.services.carton_stocktake import create_stocktake, act_stocktake, stocktake_detail
 from app.services.carton_inventory_valuation import load_valuation
@@ -65,8 +66,15 @@ def action(db, doc, name, actual="98", user=CREATOR, **kwargs):
 
 
 def change(db, qty):
-    return create_inventory_movement(db, CartonInventoryMovementCreate(request_id=uuid4().hex, factory_id="huaxing",
-        reference_movement_id="a", movement_type="ADJUSTMENT", quantity=qty, document_no="CHANGE", reason="盘点期间正常交易"), CREATOR)
+    if D(qty) < 0:
+        return create_inventory_movement(db, CartonInventoryMovementCreate(request_id=uuid4().hex, factory_id="huaxing",
+            reference_movement_id="a", movement_type="OUTBOUND", quantity=-D(qty), document_no="CHANGE", reason="盘点期间正常出库"), CREATOR)
+    stock_position = next(row for row in positions.position_balances(db, "huaxing") if row.item_no == "I")
+    incoming = movement(uuid4().hex, qty, "2", at=ledger.now_text())
+    positions.post(db, incoming, location_id=stock_position.location_id)
+    ledger._audit(db, CREATOR, "huaxing", "INVENTORY_MOVEMENT_CREATED", "carton_inventory_movement", incoming.id, {})
+    db.commit()
+    return incoming
 
 
 @pytest.mark.parametrize("actual", ["98", "100"])
@@ -107,9 +115,59 @@ def test_threshold_cannot_bypass_via_confirm_and_supports_handoff(stockdb, actua
     assert posted["review_assessment"]["supervisor_authorized"]
 
 
-def test_supervisor_creator_can_confirm_own_large_difference(stockdb):
-    result = action(stockdb, create(stockdb), "CONFIRM", actual="0", user=actor("counter", True), posting_confirmed=True)
-    assert result["review_assessment"]["same_actor_confirmation"] is True
+def test_supervisor_creator_requires_another_supervisor_for_large_difference(stockdb):
+    supervisor_creator = actor(CREATOR.id, True)
+    doc = create(stockdb)
+    with pytest.raises(HTTPException, match="另一位"):
+        action(stockdb, doc, "CONFIRM", actual="0", user=supervisor_creator, posting_confirmed=True)
+    stockdb.rollback()
+    assert stocktake_detail(stockdb, "huaxing", doc["id"])["status"] == "DRAFT"
+
+    submitted = action(stockdb, doc, "SUBMIT", actual="0", user=supervisor_creator)
+    for name in ("CONFIRM", "APPROVE"):
+        with pytest.raises(HTTPException, match="另一位"):
+            action(stockdb, submitted, name, user=supervisor_creator, posting_confirmed=True)
+        stockdb.rollback()
+    result = action(stockdb, submitted, "CONFIRM", user=REVIEWER, posting_confirmed=True)
+    assert result["review_assessment"]["same_actor_confirmation"] is False
+    assert result["reviewed_by"] == REVIEWER.id
+
+
+def test_posted_stocktake_can_only_be_corrected_through_a_new_stocktake(stockdb):
+    posted = action(stockdb, create(stockdb), "CONFIRM", actual="98", posting_confirmed=True)
+    original_id = posted["lines"][0]["movement_id"]
+    with pytest.raises(HTTPException, match="重新盘点"):
+        ledger.reverse_inventory_movement(stockdb, original_id,
+            CartonInventoryReversalRequest(factory_id="huaxing", reason="核对后发现原盘点数量有误"), REVIEWER)
+    stockdb.rollback()
+    assert inventory_balances(stockdb, "huaxing")[0].balance == 98
+    corrected = action(stockdb, create(stockdb, [original_id]), "CONFIRM", actual="100", posting_confirmed=True)
+    assert corrected["lines"][0]["difference"] == 2
+    assert inventory_balances(stockdb, "huaxing")[0].balance == 100
+
+
+def test_legacy_adjustment_request_can_be_replayed_and_original_can_be_reversed(stockdb):
+    payload = CartonInventoryMovementCreate(request_id=uuid4().hex, factory_id="huaxing",
+        reference_movement_id="a", movement_type="ADJUSTMENT", quantity="1", document_no="LEGACY-ADJ", reason="历史库存调整")
+    event_id, fingerprint, _ = ledger._inventory_request(stockdb, payload, CREATOR, "single")
+    positions.seed_unallocated(stockdb, "huaxing")
+    stock_position = positions.position_balances(stockdb, "huaxing")[0]
+    historical = movement("legacy-adjustment", "1", "2", movement_type="ADJUSTMENT", at=ledger.now_text())
+    positions.post(stockdb, historical, location_id=stock_position.location_id)
+    event = ledger._audit(stockdb, CREATOR, "huaxing", "INVENTORY_MOVEMENT_CREATED", "carton_inventory_movement", historical.id, {})
+    expected = ledger._movement_out(historical, D("101"))
+    ledger._record_inventory_request(event, event_id, fingerprint, [expected])
+    stockdb.commit()
+
+    assert create_inventory_movement(stockdb, payload, CREATOR) == expected
+    with pytest.raises(HTTPException, match="不同的库存操作"):
+        create_inventory_movement(stockdb, payload.model_copy(update={"quantity": D("2")}), CREATOR)
+    stockdb.rollback()
+    assert inventory_balances(stockdb, "huaxing")[0].balance == 101
+    reversal = ledger.reverse_inventory_movement(stockdb, historical.id,
+        CartonInventoryReversalRequest(factory_id="huaxing", reason="冲销历史调整原单"), CREATOR)
+    assert reversal.reversal_of_movement_id == historical.id
+    assert reversal.balance == 100
 
 
 def test_amount_threshold_sums_absolute_amounts_without_netting(stockdb):
@@ -154,18 +212,21 @@ def test_old_pending_count_creator_confirms_fixed_difference_after_refresh(stock
 def test_direct_confirmation_period_failure_rolls_back_all_lines(stockdb, monkeypatch, actual):
     seed(stockdb, [movement("b", "100", "3", item_no="OTHER", at="2026-09-02T09:00:00+08:00")])
     doc = create(stockdb, ["a", "b"])
+    needs_supervisor = actual == "0"
+    if needs_supervisor:
+        doc = action(stockdb, doc, "SUBMIT", actual=actual)
     checked=[]
     def guard(*args):
         checked.append(args)
         if len(checked) == 2: raise HTTPException(409, "月份已锁账")
     monkeypatch.setattr("app.services.carton_procurement._ensure_period_open", guard)
     with pytest.raises(HTTPException):
-        action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True, user=actor("counter", True))
+        action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True, user=REVIEWER if needs_supervisor else CREATOR)
     stockdb.rollback()
     assert len(checked) == 2
     fresh = stocktake_detail(stockdb, "huaxing", doc["id"])
-    assert fresh["status"] == "DRAFT" and not fresh["submitted_at"]
-    assert all(line["actual_quantity"] is None for line in fresh["lines"])
+    assert fresh["status"] == doc["status"] and fresh["submitted_at"] == doc["submitted_at"]
+    assert [line["actual_quantity"] for line in fresh["lines"]] == [line["actual_quantity"] for line in doc["lines"]]
     assert not list(stockdb.scalars(select(Movement).where(Movement.source_type == "STOCKTAKE")))
 
 

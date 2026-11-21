@@ -3,6 +3,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Download,
+  Eye,
   FileSearch,
   FileUp,
   Files,
@@ -21,7 +22,9 @@ import {
   type PdfRenameManualOverride,
 } from '@/api/pdfRename'
 import { Button } from '@/components/ui/button'
-import { downloadToolBlob, validatePdfFile } from './pdfRenameUtils'
+import { downloadToolBlob, validatePdfFile, type PdfRenameFieldCompletion } from './pdfRenameUtils'
+import PdfRenameCorrectionForm from './PdfRenameCorrectionForm.vue'
+import PdfRenameSourcePreview from './PdfRenameSourcePreview.vue'
 
 const props = defineProps<{
   contextLabel: string
@@ -40,6 +43,16 @@ const dragging = ref(false)
 const ocrConfirmed = ref(false)
 const manualNames = ref<Record<number, string>>({})
 const manualConfirmed = ref<Record<number, boolean>>({})
+const fieldCompletions = ref<Record<number, PdfRenameFieldCompletion>>({})
+const sourcePreviewIndex = ref<number | null>(null)
+const sourcePreviewOpener = ref<HTMLElement | null>(null)
+const sourcePreview = computed(() => {
+  const index = sourcePreviewIndex.value
+  if (index === null) return null
+  const file = files.value[index]
+  const item = preview.value?.items[index]
+  return file && item ? { index, file, item } : null
+})
 const appliedManualSignature = ref('[]')
 const inputRef = ref<HTMLInputElement | null>(null)
 let requestController: AbortController | null = null
@@ -57,12 +70,21 @@ const manualOverrides = computed<PdfRenameManualOverride[]>(() => Object.entries
   .filter(([, name]) => name.trim())
   .map(([index, name]) => ({ source_index: Number(index), target_file_name: name.trim(), confirmed: manualConfirmed.value[Number(index)] === true })))
 const manualUnconfirmed = computed(() => manualOverrides.value.some(item => !item.confirmed))
-const manualDirty = computed(() => JSON.stringify(manualOverrides.value) !== appliedManualSignature.value)
+const incompleteFieldEdits = computed(() => Object.values(fieldCompletions.value).some(form => (
+  Object.values(form.values).some(value => value.trim())
+  && form.fields.some(field => field.validation_error && !form.values[field.key]?.trim())
+)))
+const manualDirty = computed(() => incompleteFieldEdits.value || JSON.stringify(manualOverrides.value) !== appliedManualSignature.value)
 const blockingFiles = computed(() => preview.value?.items.filter(item => item.status === 'ERROR') ?? [])
 const downloadBlockReason = computed(() => {
   if (!preview.value) return ''
-  if (manualUnconfirmed.value) return '请逐份勾选“确认此人工文件名并放行”，再应用人工改名。'
-  if (manualDirty.value) return '人工文件名已修改，请先应用人工改名并重新预览。'
+  if (incompleteFieldEdits.value) return '请补齐标记的未识别字段，其余内容已保留。'
+  if (manualUnconfirmed.value) return Object.keys(fieldCompletions.value).length
+    ? '请逐份勾选确认补充内容及完整文件名，再应用补充。'
+    : '请逐份勾选“确认此人工文件名并放行”，再应用人工改名。'
+  if (manualDirty.value) return Object.keys(fieldCompletions.value).length
+    ? '补充内容已修改，请先应用补充并重新预览。'
+    : '人工文件名已修改，请先应用人工改名并重新预览。'
   if (state.value === 'ERROR') return `${message.value} ${errorAction.value}`
   if (preview.value.summary.error) return `仍有 ${preview.value.summary.error} 份文件存在错误，暂不能下载。`
   if (preview.value.summary.review && !ocrConfirmed.value) return '请先勾选复核确认，再下载 ZIP。'
@@ -74,6 +96,7 @@ const canPreview = computed(() => (
   && files.value.length > 0
   && !isBusy.value
   && !manualUnconfirmed.value
+  && !incompleteFieldEdits.value
 ))
 const canExecute = computed(() => (
   preview.value
@@ -99,10 +122,12 @@ function clearError() {
 }
 
 function invalidatePreview() {
+  sourcePreviewIndex.value = null
   preview.value = null
   ocrConfirmed.value = false
   manualNames.value = {}
   manualConfirmed.value = {}
+  fieldCompletions.value = {}
   appliedManualSignature.value = '[]'
   clearError()
   state.value = files.value.length ? 'IDLE' : 'IDLE'
@@ -183,6 +208,37 @@ function confirmManualName(index: number, confirmed: boolean) {
   ocrConfirmed.value = false
 }
 
+function openSourcePreview(index: number, event: MouseEvent) {
+  if (!files.value[index]) return
+  sourcePreviewOpener.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  sourcePreviewIndex.value = index
+}
+
+function previewFileName(index: number) {
+  const item = preview.value?.items[index]
+  if (!item) return '—'
+  return fieldCompletions.value[index] && (!item.manual_override || manualDirty.value)
+    ? completedFieldName(index, true) : item.target_file_name || '—'
+}
+
+function completedFieldName(index: number, showMissing = false) {
+  const form = fieldCompletions.value[index]
+  if (!form) return ''
+  const values = new Map(form.fields.map(field => [field.key,
+    field.validation_error ? form.values[field.key]?.trim() ?? '' : field.normalized_text]))
+  if (!showMissing && [...values.values()].some(value => !value)) return ''
+  return form.template.replace(/\{([a-z_]+)\}/g, (_, key: string) => (
+    values.get(key) || `【待补充：${form.fields.find(field => field.key === key)?.label ?? key}】`
+  ))
+}
+
+function editMissingField(index: number, key: string, value: string) {
+  const form = fieldCompletions.value[index]
+  if (!form) return
+  form.values[key] = value
+  editManualName(index, completedFieldName(index))
+}
+
 async function createPreview() {
   if (!canPreview.value) return
   requestController?.abort()
@@ -202,6 +258,19 @@ async function createPreview() {
     )
     if (controller.signal.aborted) return
     preview.value = result
+    result.items.forEach((item, index) => {
+      // Keep the values used to assemble a confirmed manual name stable while
+      // the server rechecks the PDF; a later OCR reading must not replace them.
+      if (item.manual_override_allowed !== false && overrides.some(override => override.source_index === index) && fieldCompletions.value[index]) return
+      if (item.filename_template && item.manual_override_allowed !== false && item.fields.some(field => field.validation_error)) {
+        fieldCompletions.value[index] = {
+          template: item.filename_template,
+          fields: item.fields,
+          values: {},
+        }
+      }
+      else delete fieldCompletions.value[index]
+    })
     appliedManualSignature.value = JSON.stringify(overrides)
     state.value = 'PREVIEWED'
   }
@@ -334,39 +403,37 @@ onBeforeUnmount(() => requestController?.abort())
               <thead class="bg-slate-50 text-xs font-semibold text-slate-500"><tr><th class="px-4 py-3">原文件名</th><th class="px-4 py-3">识别结果</th><th class="px-4 py-3">新文件名</th><th class="px-4 py-3">状态</th></tr></thead>
               <tbody class="divide-y divide-slate-100">
                 <tr v-for="(item, index) in preview.items" :key="index" class="align-top">
-                  <td class="max-w-52 px-4 py-3 text-slate-700"><span class="break-all">{{ item.source_file_name }}</span></td>
+                  <td class="max-w-52 px-4 py-3 text-slate-700">
+                    <button type="button" :aria-label="`预览 ${item.source_file_name}`" class="block rounded-md text-left hover:text-teal-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-600" @click="openSourcePreview(index, $event)">
+                      <span class="break-all">{{ item.source_file_name }}</span>
+                      <span class="mt-1 flex items-center gap-1 text-xs font-semibold text-teal-700"><Eye class="size-3.5 shrink-0" aria-hidden="true" />预览并补充</span>
+                    </button>
+                  </td>
                   <td class="max-w-64 px-4 py-3">
                     <dl v-if="item.fields.length" class="space-y-2 text-xs leading-5">
-                      <div v-for="field in item.fields.filter(field => field.key !== 'report_header')" :key="field.key">
+                      <div v-for="field in (fieldCompletions[index]?.fields ?? item.fields).filter(field => field.key !== 'report_header')" :key="field.key">
                         <dt class="font-semibold text-slate-500">{{ field.label }}</dt>
-                        <dd class="break-all font-medium text-slate-900">{{ field.normalized_text || '未识别' }}</dd>
+                        <dd class="break-all font-medium" :class="field.validation_error ? 'text-amber-700' : 'text-slate-900'">{{ field.normalized_text || (field.validation_error ? '待补充' : '未识别') }}</dd>
                       </div>
                     </dl>
                     <p v-else class="break-all font-medium text-slate-900">{{ item.interval_name || '—' }}</p>
                     <details v-if="item.fields.length" class="mt-2 text-xs leading-5">
                       <summary class="cursor-pointer text-teal-700 focus-visible:outline-teal-600">查看识别依据</summary>
-                      <div v-for="field in item.fields" :key="field.key" class="mt-2 rounded-md bg-slate-50 p-2">
+                      <div v-for="field in fieldCompletions[index]?.fields ?? item.fields" :key="field.key" class="mt-2 rounded-md bg-slate-50 p-2">
                         <p class="font-semibold text-slate-600">{{ field.label }} · {{ field.route === 'QWEN' ? '千问识别' : field.route === 'LOCAL_OCR' ? '本地扫描识别' : 'PDF 文字' }}</p>
                         <p class="whitespace-pre-wrap break-all text-slate-500">{{ field.raw_text || '未识别' }}</p>
                       </div>
                     </details>
-                    <p v-for="issue in item.issues" :key="issue.code" class="mt-1 text-xs leading-5" :class="item.status === 'ERROR' ? 'text-rose-700' : 'text-amber-700'">{{ issue.message }}</p>
+                    <p v-for="(issue, issueIndex) in item.issues" :key="`${issue.code}-${issueIndex}`" class="mt-1 text-xs leading-5" :class="item.status === 'ERROR' ? 'text-rose-700' : 'text-amber-700'">{{ issue.message }}</p>
                   </td>
                   <td class="max-w-64 break-all px-4 py-3 text-teal-800">
-                    <p class="font-medium">{{ item.target_file_name || '—' }}</p>
-                    <p v-if="item.manual_override" class="mt-1 text-xs font-semibold text-amber-800">人工改名 · 待最终复核</p>
-                    <details v-if="item.manual_override_allowed !== false" :open="item.status === 'ERROR'" class="mt-3 text-xs leading-5">
-                      <summary class="cursor-pointer font-semibold">{{ item.status === 'ERROR' ? '人工改名并放行' : '修改文件名（可选）' }}</summary>
-                      <label class="mt-2 block text-slate-700">正确文件名
-                        <input :value="manualNames[index] ?? ''" :disabled="isBusy" :aria-label="`人工文件名 ${item.source_file_name}`" class="mt-1 w-full min-w-44 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900" placeholder="请输入核对后的完整文件名.pdf" @input="editManualName(index, ($event.target as HTMLInputElement).value)">
-                      </label>
-                      <p class="mt-1 text-slate-500">可省略 .pdf；清空可撤销人工改名。原识别依据保留。</p>
-                      <label v-if="manualNames[index]?.trim()" class="mt-2 flex items-start gap-2 text-amber-950">
-                        <input type="checkbox" :checked="manualConfirmed[index] === true" :disabled="isBusy" :aria-label="`确认人工改名 ${item.source_file_name}`" class="mt-1 size-4 shrink-0" @change="confirmManualName(index, ($event.target as HTMLInputElement).checked)">
-                        <span>确认此人工文件名并放行</span>
-                      </label>
-                    </details>
-                    <p v-else class="mt-2 text-xs text-rose-700">此异常不能人工放行，请按错误提示处理文件或联系管理员。</p>
+                    <p class="font-medium" aria-live="polite">{{ previewFileName(index) }}</p>
+                    <p v-if="item.manual_override" class="mt-1 text-xs font-semibold text-amber-800">{{ fieldCompletions[index] ? '人工补充' : '人工改名' }} · 待最终复核</p>
+                    <PdfRenameCorrectionForm
+                      :source-file-name="item.source_file_name" :status="item.status" :completion="fieldCompletions[index]"
+                      :manual-name="manualNames[index] ?? ''" :confirmed="manualConfirmed[index] === true" :allowed="item.manual_override_allowed" :busy="isBusy"
+                      @field="(key, value) => editMissingField(index, key, value)" @name="editManualName(index, $event)" @confirm="confirmManualName(index, $event)"
+                    />
                   </td>
                   <td class="px-4 py-3"><span class="rounded-full px-2 py-1 text-xs font-bold" :class="item.status === 'READY' ? 'bg-emerald-50 text-emerald-700' : item.status === 'REVIEW' ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-700'">{{ item.status === 'READY' ? '可执行' : item.status === 'REVIEW' ? '待复核' : '错误' }}</span></td>
                 </tr>
@@ -405,14 +472,38 @@ onBeforeUnmount(() => requestController?.abort())
                 <ul class="mt-2 max-h-48 space-y-2 overflow-y-auto">
                   <li v-for="(item, index) in blockingFiles" :key="index" class="break-all"><strong>{{ item.source_file_name }}</strong><p>{{ item.issues.filter(issue => issue.code !== 'PDF_RENAME_OCR_REVIEW_REQUIRED').map(issue => issue.message).join('；') || '识别或文件名校验失败。' }}</p></li>
                 </ul>
-                <p class="mt-2">勾选复核不会跳过错误。识别异常可在对应行人工改名并确认放行，再应用修改；重名、损坏等问题仍须处理。</p>
+                <p class="mt-2">勾选复核不会跳过错误。请在对应行补充未识别字段或人工改名，确认放行后应用修改；重名、损坏等问题仍须处理。</p>
               </template>
             </div>
             <Button class="w-full" size="lg" :disabled="!canExecute" :aria-describedby="downloadBlockReason ? 'rename-download-blockers' : undefined" @click="executeRename"><LoaderCircle v-if="state === 'EXECUTING'" class="size-4 animate-spin" aria-hidden="true" /><Download v-else class="size-4" aria-hidden="true" />{{ state === 'EXECUTING' ? '正在生成…' : '确认并下载 ZIP' }}</Button>
-            <Button class="w-full" variant="outline" :disabled="!canPreview" @click="createPreview"><RotateCcw class="size-4" aria-hidden="true" />{{ state === 'PREVIEWING' ? '正在识别…' : manualDirty ? '应用人工改名并重新预览' : '重新识别预览' }}</Button>
+            <Button class="w-full" variant="outline" :disabled="!canPreview" @click="createPreview"><RotateCcw class="size-4" aria-hidden="true" />{{ state === 'PREVIEWING' ? '正在识别…' : manualDirty ? (Object.keys(fieldCompletions).length ? '应用补充并重新预览' : '应用人工改名并重新预览') : '重新识别预览' }}</Button>
           </template>
         </div>
       </aside>
     </div>
   </div>
+  <PdfRenameSourcePreview v-if="sourcePreview" :file="sourcePreview.file" :return-focus="sourcePreviewOpener ?? undefined" @close="sourcePreviewIndex = null">
+    <p class="text-sm font-semibold text-slate-950">对照原件补充命名</p>
+    <p class="mt-1 text-xs leading-5 text-slate-500">可放大或翻页查看原 PDF，补填内容会同步到改名预览。</p>
+    <dl class="mt-4 space-y-2 text-xs leading-5">
+      <div v-for="field in (fieldCompletions[sourcePreview.index]?.fields ?? sourcePreview.item.fields).filter(field => field.key !== 'report_header')" :key="field.key">
+        <dt class="font-semibold text-slate-500">{{ field.label }}</dt>
+        <dd class="break-all" :class="field.validation_error ? 'text-amber-700' : 'text-slate-900'">{{ field.normalized_text || '待补充' }}</dd>
+      </div>
+    </dl>
+    <div class="mt-4 rounded-lg bg-slate-50 p-3">
+      <p class="text-xs font-semibold text-slate-500">新文件名</p>
+      <p class="mt-1 break-all text-sm font-medium text-teal-800" aria-live="polite">{{ previewFileName(sourcePreview.index) }}</p>
+    </div>
+    <PdfRenameCorrectionForm
+      :source-file-name="sourcePreview.item.source_file_name" :status="sourcePreview.item.status" :completion="fieldCompletions[sourcePreview.index]"
+      :manual-name="manualNames[sourcePreview.index] ?? ''" :confirmed="manualConfirmed[sourcePreview.index] === true" :allowed="sourcePreview.item.manual_override_allowed" :busy="isBusy" expanded
+      @field="(key, value) => sourcePreview && editMissingField(sourcePreview.index, key, value)"
+      @name="sourcePreview && editManualName(sourcePreview.index, $event)" @confirm="sourcePreview && confirmManualName(sourcePreview.index, $event)"
+    />
+    <p v-for="(issue, index) in sourcePreview.item.issues" :key="`${issue.code}-${index}`" class="mt-2 break-all text-xs leading-5 text-amber-800">{{ issue.message }}</p>
+    <p v-if="state === 'ERROR'" role="alert" class="mt-3 text-xs leading-5 text-rose-700">{{ message }}</p>
+    <Button class="mt-4 w-full" :disabled="!canPreview || !manualDirty" @click="createPreview"><LoaderCircle v-if="state === 'PREVIEWING'" class="size-4 animate-spin" aria-hidden="true" />{{ state === 'PREVIEWING' ? '正在应用…' : '应用修改并重新预览' }}</Button>
+    <p v-if="manualDirty && downloadBlockReason" class="mt-2 text-xs leading-5 text-amber-800">{{ downloadBlockReason }}</p>
+  </PdfRenameSourcePreview>
 </template>

@@ -20,7 +20,15 @@ class CartonInventoryReportRow(BaseModel):
     line_count: int
 
 
+class CartonInventoryReportSource(BaseModel):
+    id: str
+    request_no: str
+    kind: Literal["SAMPLE", "WORKSHOP_MISC", "SUPPLIER_GIFT"]
+    line_id: str
+
+
 class CartonInventoryReportMovement(BaseModel):
+    process_note: str = ""
     id: str
     business_date: str
     occurred_at: str
@@ -42,13 +50,21 @@ class CartonInventoryReportMovement(BaseModel):
     reversal_of_movement_id: str | None
     flow_category: Literal["INBOUND", "OUTBOUND", "ADJUSTMENT"]
     flow_quantity: Decimal
+    source_request: CartonInventoryReportSource | None = None
+    unattributed: bool = False
 
 
 class CartonInventoryOrderReportRow(BaseModel):
+    process_note: str = ""
     current_usage_quantity: Decimal = Decimal(0)
     current_usage_status: str = "NOT_RECEIVED"
     current_usage_label: str = "未入库"
     current_positions: list[dict] = []
+    source_request: CartonInventoryReportSource | None = None
+    unattributed: bool = False
+    opening_unconfirmed: bool = False
+    balance_unconfirmed: bool = False
+    positions_shared: bool = False
     key: str
     order_id: str | None
     order_line_id: str | None

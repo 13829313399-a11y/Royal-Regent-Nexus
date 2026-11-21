@@ -284,7 +284,7 @@ def quote_write(operation):
             "select_alternative", "archive_alternative", "report_alternative",
             "create_engineering_workbook_export", "delete_quote", "restore_quote",
         }:
-            raise HTTPException(409, "已输出版本已冻结，请复制新版本后修改")
+            raise HTTPException(409, "报价已冻结，请由有权限的用户在报价首页解除冻结后修改")
         try:
             return operation(db, quote_id, *args, **kwargs)
         except IntegrityError as error:
@@ -635,7 +635,7 @@ def _invalidate_final_release(
     *,
     reason: str,
 ) -> None:
-    if quote.final_release_status not in {"pending", "approved"} and quote.status not in {
+    if quote.final_release_status not in {"pending", "approved", "output"} and quote.status not in {
         "final_reviewing",
         "fully_approved",
         "exported",
@@ -645,6 +645,10 @@ def _invalidate_final_release(
     quote.final_release_status = "invalidated"
     quote.final_release_invalidated_at = timestamp
     quote.final_release_invalidation_reason = reason
+    if quote.module_version == "v4":
+        alternative = db.get(InternalQuoteAlternative, quote.id)
+        if alternative:
+            alternative.reported_at = ""
     _mark_quote_notifications_handled(
         db,
         quote,
@@ -2732,6 +2736,14 @@ def _list_quote_sections(
     return grouped
 
 
+def _quote_status_condition(item, status):
+    if status == "exported":
+        return or_(item.status == "exported", and_(item.status == "drafting", item.final_release_status == "output"))
+    if status == "drafting":
+        return and_(item.status == "drafting", item.final_release_status != "output")
+    return item.status == status
+
+
 def list_quotes(
     db: Session,
     user: AuthContext,
@@ -2750,7 +2762,7 @@ def list_quotes(
     def matches(item):
         conditions = []
         if status:
-            conditions.append(item.status == status)
+            conditions.append(_quote_status_condition(item, status))
         if keyword:
             normalized = f"%{keyword.strip()}%"
             conditions.append(or_(item.quote_no.like(normalized), item.product_name.like(normalized),
@@ -2782,7 +2794,7 @@ def quote_page_statement(factory_id: str, *, status: str = "", keyword: str = ""
     def matches(item):
         conditions = []
         if status:
-            conditions.append(item.status == status)
+            conditions.append(_quote_status_condition(item, status))
         if customer:
             conditions.append(item.customer == customer)
         if keyword:
@@ -2921,11 +2933,13 @@ def get_quote_dashboard(
     for section in section_rows:
         sections_by_quote[section.quote_id].append(section)
 
-    completed = [quote for quote in quotes if quote.status in _DASHBOARD_COMPLETED_STATUSES]
+    completed = [quote for quote in quotes if quote.status in _DASHBOARD_COMPLETED_STATUSES
+                 or (quote.status != "archived" and quote.final_release_status == "output")]
     canceled = [quote for quote in quotes if quote.status in _DASHBOARD_CANCELED_STATUSES]
     in_progress = [
         quote for quote in quotes
         if quote.status not in _DASHBOARD_COMPLETED_STATUSES | _DASHBOARD_CANCELED_STATUSES
+        and quote.final_release_status != "output"
     ]
     total = len(quotes)
 
@@ -3524,6 +3538,7 @@ def copy_batch_baseline_to_product(
                                  if source_component_names.get(str(c.get("id"))) == c.get("name")}
     timestamp = now_text()
     old_header_revision = target.header_revision
+    _invalidate_final_release(db, target, reason="基准产品资料已替换")
     for field in (
         "customer",
         "qty",
@@ -3749,6 +3764,7 @@ def update_quote_header(
         setattr(quote, field, value)
     if owner_name is not None:
         quote.business_owner_name = owner_name
+    _invalidate_final_release(db, quote, reason="报价头资料已修改")
     quote.header_revision += 1
     quote.updated_at = now_text()
     if started_section and cost_inputs_changed:
@@ -4221,14 +4237,6 @@ def preview_quote_costs(
             # an Engineering draft actually submitted for this preview.
             payload_overrides[section_code] = {"mold_allocation_enabled": False}
 
-    if "molding" in payload_overrides:
-        engineering = by_code.get("engineering")
-        if engineering and engineering.is_required and engineering.status != "not_applicable":
-            payload_overrides["molding"] = _project_molding_parts(
-                payload_overrides.get("engineering", _json_object(engineering.payload_json)),
-                payload_overrides["molding"], factory_id=quote.factory_id,
-            )
-
     reference = _find_reference_set(db, quote)
     if reference is None:
         raise HTTPException(status_code=409, detail="报价缺少冻结参考快照，暂时无法实时试算")
@@ -4237,7 +4245,8 @@ def preview_quote_costs(
     calculation_overrides: dict[str, dict[str, object]] = {}
     if "molding" in payload_overrides and by_code.get("engineering") and by_code["engineering"].is_required:
         payload_overrides["molding"] = prefill_molding_from_engineering(
-            payload_overrides.get("engineering", _json_object(by_code["engineering"].payload_json)), payload_overrides["molding"], factory_id=quote.factory_id)
+            payload_overrides.get("engineering", _json_object(by_code["engineering"].payload_json)),
+            payload_overrides["molding"], factory_id=quote.factory_id, material_prices=snapshot.get("material_prices"))
         draft_by_code["molding"].payload = payload_overrides["molding"]
     elif "engineering" in payload_overrides and by_code.get("molding"):
         if by_code["molding"].dependency_hash != content_hash(_calculation_dependencies(db, quote, "molding", payload_overrides=payload_overrides)):
@@ -4416,6 +4425,7 @@ def _sync_saved_formula_version(db, quote, user, request):
                 or section.dependency_hash != content_hash(_calculation_dependencies(db, quote, section.department))):
             return
     previous = quote.formula_version
+    _invalidate_final_release(db, quote, reason="报价公式版本已更新")
     quote.formula_version = FORMULA_VERSION
     old_revision = quote.header_revision
     quote.header_revision += 1
@@ -4442,7 +4452,10 @@ def _save_section_in_transaction(
     if section.department == "molding":
         engineering = _get_section(db, quote.id, "engineering")
         if engineering.is_required:
-            next_payload = prefill_molding_from_engineering(_json_object(engineering.payload_json), next_payload, factory_id=quote.factory_id)
+            reference = _find_reference_set(db, quote)
+            prices = _json_object(reference.snapshot_json).get("material_prices") if reference else None
+            next_payload = prefill_molding_from_engineering(
+                _json_object(engineering.payload_json), next_payload, factory_id=quote.factory_id, material_prices=prices)
     if section.department == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in next_payload:
         raise HTTPException(status_code=409, detail="电子部包含多份独立报价，请刷新页面后逐份编辑，不能用旧版单份数据覆盖")
     next_payload_json = canonical_json(next_payload)
@@ -4471,6 +4484,7 @@ def _save_section_in_transaction(
     if quote.module_version == "v4":
         # Copy/issue carry the header revision: any saved department edit must
         # invalidate an older page's view of this product before it can freeze it.
+        _invalidate_final_release(db, quote, reason=f"{section.department_name}资料已修改")
         quote.header_revision += 1
     section.status = "draft"
     section.revision += 1
@@ -4579,9 +4593,8 @@ def save_whole_product_sections(
         # Engineering dependency invalidation during this batch is not a race.
         if "engineering" in drafts:
             drafts["engineering"].payload = normalize_engineering_mold_identities(drafts["engineering"].payload, _json_object(by_code["engineering"].payload_json))
-        if "molding" in drafts and by_code.get("engineering") and by_code["engineering"].is_required:
-            engineering_payload = drafts["engineering"].payload if "engineering" in drafts else _json_object(by_code["engineering"].payload_json)
-            drafts["molding"].payload = prefill_molding_from_engineering(engineering_payload, drafts["molding"].payload, factory_id=quote.factory_id)
+        # Engineering is saved first. Project Molding once inside its section
+        # save, with the actual saved Engineering inputs and quote price list.
         for section_code in SECTION_CODE_ORDER:
             draft = drafts.get(section_code)
             if draft is None:

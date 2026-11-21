@@ -42,6 +42,7 @@ import ResultReview from '@/features/document-tools/ResultReview.vue'
 import TaskActions from '@/features/document-tools/TaskActions.vue'
 import {
   normalizeCuts,
+  normalizeGroupSeparators,
   parseGroups,
 } from '@/features/document-tools/coordinates'
 import '@/features/document-tools/workbench.css'
@@ -250,6 +251,13 @@ const hasResult = computed(
     currentJob.value?.execution_status === 'succeeded' &&
     currentJob.value.operation !== 'inspect',
 )
+const splitArchive = computed(() => {
+  const job = currentJob.value
+  if (!job || job.operation !== 'pdf_split' || !hasResult.value) return
+  const pdfs = results.value.filter((file) => file.role === 'result' && file.format === 'pdf')
+  if (pdfs.length < 2 || !pdfs.every(downloadable)) return
+  return { url: documentTools.splitArchiveUrl(job.id), label: `批量下载（${pdfs.length} 个 PDF）` }
+})
 const canRecognizeRegion = computed(
   () =>
     currentSource.value?.detected_type === 'pdf' &&
@@ -595,6 +603,7 @@ async function start() {
     )
     if (operation.value === 'pdf_split') {
       if (['groups', 'extract'].includes(String(payload.split_mode))) {
+        payload.groups = normalizeGroupSeparators(String(payload.groups ?? ''))
         const groups = parseGroups(
           String(payload.groups ?? ''),
           currentSource.value.manifest.pages?.length ?? 0,
@@ -1381,6 +1390,9 @@ onBeforeUnmount(() => {
             compact
           />
           <h3>结果文件</h3>
+          <Button v-if="splitArchive" as="a" variant="outline" size="sm" :href="splitArchive.url" download>
+            {{ splitArchive.label }}
+          </Button>
           <div v-for="artifact in results" :key="artifact.id">
             <a
               v-if="downloadable(artifact)"
@@ -1408,6 +1420,9 @@ onBeforeUnmount(() => {
       </aside>
     </div>
     <div v-if="hasResult && (narrow || focused) && !renameActive && !mergeActive" class="dt-mobile-results">
+      <Button v-if="splitArchive" as="a" variant="outline" size="sm" :href="splitArchive.url" download>
+        {{ splitArchive.label }}
+      </Button>
       <a
         v-for="artifact in results"
         :key="artifact.id"

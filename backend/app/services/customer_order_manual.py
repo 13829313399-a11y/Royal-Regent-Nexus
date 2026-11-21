@@ -8,6 +8,7 @@ from typing import Any, Iterable
 MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
     "po_no": {"label": "P/O#", "input_type": "text"},
     "so_no": {"label": "SO", "input_type": "text"},
+    "reference_no": {"label": "EDU 生产单号", "input_type": "text"},
     "contract_no": {"label": "Contract No.", "input_type": "text"},
     "customer_country": {"label": "客名/国家", "input_type": "text"},
     "customer_name": {"label": "客户名称", "input_type": "text"},
@@ -60,7 +61,7 @@ MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
 }
 
 PREVIEW_VALUE_FIELDS = frozenset({
-    "po_no", "contract_no", "customer_country", "customer_name", "country",
+    "po_no", "reference_no", "contract_no", "customer_country", "customer_name", "country",
     "product_no", "product_name_zh", "product_name_en", "quantity",
     "units_per_carton", "carton_count", "standard", "unit_price_hkd",
     "amount_hkd", "packaging", "line_q", "customer_q", "requested_ship_date", "product_version", "shipping_item", "date_code", "edu_reservation_row",
@@ -167,7 +168,11 @@ def mark_pending_information(row: dict[str, Any]) -> None:
 
 
 def decorate_manual_resolution_policy(preview: dict[str, Any]) -> dict[str, Any]:
-    """Expose a controlled manual-resolution path for non-duplicate blockers."""
+    """Keep business findings visible without requiring a waiver to save/export.
+
+    File validity, authorization and source fingerprints are separate checks.
+    No reminder is automatically recorded as reviewed or corrected.
+    """
     for row in preview.get("rows", []):
         for issue in row.get("issues", []):
             # Warning-only issues also cross the typed preview API boundary.
@@ -184,19 +189,12 @@ def decorate_manual_resolution_policy(preview: dict[str, Any]) -> dict[str, Any]
             issue.setdefault("edit_input_type", "text")
             if issue.get("code") in {"existing_quantity_conflict", "quantity_conflict", "price_amount_conflict", "invalid_quantity"}:
                 issue["requires_source_correction"] = True
-            if issue.get("requires_source_correction"):
-                issue.update(can_skip=False, can_edit=False, skip_label="")
-                continue
-            if (
-                issue.get("severity") != "blocked"
-                or str(issue.get("code") or "") in DUPLICATE_CONFIRMATION_CODES
-            ):
-                continue
             # Caixing parent rows are calculated summaries and have no physical
             # output row of their own. They may be confirmed, but presenting an
             # edit box would falsely imply that the entered value is exported.
             field = "" if row.get("row_role") == "parent" else _manual_field(issue)
-            if field:
+            if (field and not issue.get("requires_source_correction") and not issue.get("can_edit")
+                    and not row.get("_edu_existing_order") and issue.get("code") not in DUPLICATE_CONFIRMATION_CODES):
                 meta = MANUAL_EDITABLE_FIELDS[field]
                 issue.update({
                     "can_edit": True,
@@ -204,9 +202,29 @@ def decorate_manual_resolution_policy(preview: dict[str, Any]) -> dict[str, Any]
                     "edit_label": meta["label"],
                     "edit_input_type": meta["input_type"],
                 })
-            issue["can_skip"] = not (issue.get("required_for_intake") or issue.get("requires_manual_correction"))
-            if not issue.get("skip_label"):
-                issue["skip_label"] = "资料暂缺，已人工核对并确认放行"
+            if issue.get("severity") in {"blocked", "confirmation"}:
+                issue.setdefault("source_severity", issue["severity"])
+                issue["severity"] = "warning"
+            issue["can_skip"] = True  # Accept optional acknowledgements from older clients.
+            issue["skip_label"] = "已查看提醒（可选）"
+            message = str(issue.get("message") or "")
+            for old, new in (
+                ("按修改/补单阻断", "请留意是否为修改/补单；保留本次原始明细"),
+                ("不能作为新单导入", "本次明细另行保留，不覆盖已有订单"),
+                ("当前不能放行", "请留意"),
+                ("仍有阻断项", "资料提醒"),
+                ("必须补齐", "资料待补"),
+                ("不能将无效数值作为暂缺放行。", "原值保留供核对，不影响保存或生成。"),
+            ):
+                message = message.replace(old, new)
+            issue["message"] = message
+        row["status"] = "warning" if row.get("issues") else "valid"
+        row["status_label"] = "有提醒" if row.get("issues") else "可导出"
+    rows = [row for row in preview.get("rows", []) if row.get("row_role") != "parent"]
+    preview.setdefault("summary", {}).update(total=len(rows),
+        valid=sum(row["status"] == "valid" for row in rows),
+        warning=sum(row["status"] == "warning" for row in rows), blocked=0)
+    preview["confirmation_count"] = 0
     return preview
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -268,6 +270,8 @@ def _parse_standard_contract_pdf_rows(text: str, *, supplementary: bool = False)
             block,
             re.I,
         )
+        line_match = re.search(r"\bLine\s*#\s*:\s*(\d+(?:\.\d+)?)", block, re.I)
+        source_line = format(Decimal(line_match.group(1)).normalize(), "f") if line_match else ""
         notes_match = re.search(r"(?m)^\s*NOTES\s*:\s*([^\r\n]+)", block, re.I)
         description = _clean(match.group(2))
         continuation = re.match(r"\s*\n([A-Z0-9][A-Z0-9 /-]*)\s+([\d,.]+)\s+CA\s*(?:\n|$)", block, re.I)
@@ -275,6 +279,8 @@ def _parse_standard_contract_pdf_rows(text: str, *, supplementary: bool = False)
             description += ("" if description.endswith("-") else " ") + _clean(continuation.group(1))
         lines.append({
             "item_no": match.group(1).upper(),
+            "source_line_no": source_line,
+            "source_line_no_raw": line_match.group(1) if line_match else "",
             "product_name": description,
             "po_description": description,
             "product_name_source": "PO英文品名",
@@ -372,6 +378,8 @@ def _parse_pdf_po(path: Path) -> dict[str, Any]:
         "used_ocr": used_ocr,
         "source_format": "pdf",
         "document_kind": "supplementary_contract" if supplementary else "contract",
+        "cancellation_evidence": next((m.group(0).strip() for m in re.finditer(
+            r"(?im)^\s*(?:\d{1,2}/\d{1,2}/\d{4}\s*[-–]?\s*)?(?:ORDER\s+CANCELLED|CANCELLED\s+ORDER|CANCEL\s+ORDER)\s*$", text)), ""),
     }
 
 
@@ -736,9 +744,10 @@ def _parse_xlsx_po(path: Path) -> dict[str, Any]:
         workbook.close()
 
 
-def parse_po(path: str | Path) -> dict[str, Any]:
+def parse_po(path: str | Path, *, allow_cancellation: bool = False) -> dict[str, Any]:
     po_path = Path(path)
-    if re.search(r"(?:^|[-_])CXL(?:[-_]|$)", po_path.stem, re.I):
+    named_cancel = bool(re.search(r"(?:^|[-_])CXL(?=[-_( ]|$)", po_path.stem, re.I))
+    if named_cancel and not allow_cancellation:
         raise ValueError(
             "识别为取消单（文件名含 CXL）；"
             "本文件已拦截，不会生成 Excel 或写入数据库。"
@@ -751,5 +760,11 @@ def parse_po(path: str | Path) -> dict[str, Any]:
     else:
         raise ValueError("Jakks PO 仅支持 PDF、WPS转换后的 XLSX 或 XLSM。")
     if re.search(r"(?:^|[-_])SUP(?:[-_]|$)", po_path.stem, re.I) and order.get("document_kind") != "supplementary_contract":
-        raise ValueError("文件名含 SUP，但正文未识别为 Jakks SUPPLEMENTARY CONTRACT 补充合同，请核对文件。")
+        order.setdefault("warnings", []).append("文件名含 SUP，正文识别为普通合同；按正文处理，请留意文件名与正文的差异。")
+    if allow_cancellation and (named_cancel or order.get('cancellation_evidence')):
+        order['document_kind'] = 'cancellation'
+        order['cancellation_evidence'] = order.get('cancellation_evidence') or '文件名明确标记 CXL'
+        for line in order['lines']:
+            line.update(document_kind='cancellation', document_type='取消单', cancellation_evidence=order['cancellation_evidence'])
+        order.setdefault('warnings', []).append('取消通知：在唯一匹配的未走货原订单上标为取消单；未匹配的只提示，不新增订单。')
     return order

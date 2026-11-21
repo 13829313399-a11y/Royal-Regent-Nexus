@@ -30,6 +30,13 @@ async function chooseFiles(files: File[]) {
   Object.defineProperty(input.element, 'files', { value: files, configurable: true })
   await input.trigger('change'); await flushPromises()
 }
+function applyWarehouseSession() {
+  const session = quickSession(['pmc-warehouse'])
+  session.permissions.push('carton_procurement:read')
+  session.effective_access?.push({ permission_code: 'carton_procurement:read', factory_id: 'huaxing',
+    department: 'pmc-warehouse', effect: 'allow', allowed: true, source_type: 'role_binding', source_ids: ['pmc-warehouse'] })
+  useAuthStore().applySession(session)
+}
 beforeEach(() => {
   setActivePinia(createPinia()); useAuthStore().applySession(quickSession())
   vi.clearAllMocks(); legacy.listAssets.mockResolvedValue([]); api.candidates.mockResolvedValue([]); api.upload.mockResolvedValue(quickAsset())
@@ -81,6 +88,23 @@ describe('one quick-upload modal for all audiences', () => {
     await dialog().get('[aria-label="选择关联订单"] input[type="checkbox"]').setValue(true)
     await dialog().trigger('submit'); await flushPromises()
     expect(api.upload.mock.calls[0]![1]).toMatchObject({ target_scope: 'ORDERS', targets: [expect.objectContaining({ kind: 'REGULAR', id: 'purchase-one' })] })
+  })
+  it('offers pending schedules and created order numbers in the warehouse upload form', async () => {
+    applyWarehouseSession()
+    const pending = quickTarget({ schedule_state: 'PENDING', schedule_po: 'PO-NEW', schedule_so: 'SO-NEW' })
+    const order = quickTarget({ kind: 'REGULAR', id: 'purchase-one', sheet: '', row: 0,
+      order_no: 'CT-ALREADY', contract_no: 'PURCHASE-VISIBLE', fingerprint: 'c'.repeat(64) })
+    api.candidates.mockResolvedValue([pending, order])
+    await open('warehouse'); await typeText()
+    await vi.waitFor(() => expect(dialog().text()).toContain('已建单 · CT-ALREADY'))
+    expect(dialog().text()).toContain('待建单 · QUICK-1234')
+    expect(dialog().text()).toContain('PO PO-NEW · SO SO-NEW')
+    expect(api.candidates).toHaveBeenCalledWith('huaxing', 'pmc-warehouse', '', expect.any(AbortSignal), 'WAREHOUSE')
+    await dialog().get('[aria-label="搜索关联订单"]').setValue('SO-NEW')
+    await dialog().get('[aria-label="选择关联订单"] input[type="checkbox"]').setValue(true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[0]![1]).toMatchObject({ target_scope: 'WAREHOUSE', association: 'MANUAL',
+      targets: [expect.objectContaining({ kind: 'SCHEDULE', id: pending.id })] })
   })
   it.each(['sales', 'warehouse', 'supplier'] as const)('saves one plain text material with PENDING by default (%s)', async audience => {
     const department = audience === 'supplier' ? 'supplier' : audience === 'warehouse' ? 'pmc-warehouse' : 'sales-business'
@@ -543,9 +567,9 @@ describe('shared document library', () => {
     expect(api.associate).not.toHaveBeenCalled()
     expect(dialog().text()).toContain('原关联保留')
   })
-  it('routes legacy association to the protected editor and omits management for readonly or history', async () => {
+  it('routes legacy association to the protected editor and opens its history through details', async () => {
     const legacyRow = quickAsset({ id: 'legacy', owner_department: null, legacy_source: true, can_associate: false, can_manage_original: true })
-    const historic = quickAsset({ id: 'historic', owner_department: null, legacy_source: true, can_associate: false, can_manage_original: true, workflow: { ...legacyRow.workflow, status: 'HISTORY' } })
+    const historic = quickAsset({ id: 'historic', owner_department: null, legacy_source: true, can_associate: false, can_manage_original: true, workflow: { ...legacyRow.workflow, status: 'HISTORY', superseded_by_asset_id: legacyRow.id } })
     api.list.mockResolvedValue({ items: [legacyRow, historic], total: 2 })
     const wrapper = mount(CartonQuickAssetLibrary, { props: { audience: 'warehouse', factoryId: 'huaxing' }, attachTo: document.body, global: { stubs: { CartonMarkAssetLibrary: { template: '<div data-test="legacy-editor" :data-mode="managementMode" :data-initial="initialAssetId" :data-ids="assetIds.join()" />', props: ['managementMode', 'initialAssetId', 'assetIds'] } } } }); wrappers.push(wrapper); await flushPromises()
     await button(wrapper, '关联订单').trigger('click'); await flushPromises()
@@ -553,9 +577,11 @@ describe('shared document library', () => {
     expect(editor.attributes('data-mode')).toBe('association'); expect(editor.attributes('data-initial')).toBe('legacy')
     expect(api.associate).not.toHaveBeenCalled()
     await button(dialog(), '返回资料库').trigger('click'); await flushPromises()
-    await wrapper.get('[data-status-filter="HISTORY"]').trigger('click')
-    expect(button(wrapper, '关联订单')).toBeUndefined()
-    await wrapper.setProps({ readOnly: true }); await wrapper.get('[data-status-filter="ALL"]').trigger('click'); await flushPromises()
+    expect(wrapper.find('[data-quick-asset="historic"]').exists()).toBe(false)
+    await button(wrapper, '资料详情').trigger('click'); await flushPromises()
+    expect(dialog().get('[data-test="legacy-editor"]').attributes('data-ids')).toBe('legacy,historic')
+    await button(dialog(), '返回资料库').trigger('click'); await flushPromises()
+    await wrapper.setProps({ readOnly: true })
     expect(button(wrapper, '关联订单')).toBeUndefined()
   })
   it('passes complete photo group to management without adding related history', async () => {
@@ -614,27 +640,35 @@ describe('shared document library', () => {
     expect(counts()).toEqual(expected)
     expect(wrapper.text()).not.toContain('历史指令资料')
   })
-  it('separates warehouse versions from current document status and restores both when cleared', async () => {
+  it('filters current warehouse documents with four status buttons and clears back to the current list', async () => {
     const items = (['UNCLASSIFIED', 'DRAFT', 'PENDING', 'READY', 'HISTORY'] as const).map(status => quickAsset({
       id: status, workflow: { ...quickAsset().workflow, status },
     }))
     api.list.mockResolvedValue({ items, total: items.length })
     const wrapper = await library('warehouse')
     const assetIds = () => wrapper.findAll('[data-quick-asset]').map(x => x.attributes('data-quick-asset'))
-    const status = wrapper.get<HTMLSelectElement>('[aria-label="当前资料状态"]')
-    expect(wrapper.findAll('[data-status-filter]').map(x => x.attributes('aria-label'))).toEqual(['当前资料 4', '全部版本 5', '历史版本 1'])
-    expect(status.findAll('option').map(option => option.text())).toEqual(['全部状态', '初稿 · 1', '待确认 · 1', '已确认 · 1', '待分类 · 1'])
-    await status.setValue('DRAFT')
-    expect(assetIds()).toEqual(['DRAFT'])
-    expect(wrapper.get('[data-status-filter="CURRENT"]').attributes('aria-pressed')).toBe('true')
-    await wrapper.get('[data-status-filter="HISTORY"]').trigger('click')
-    expect(status.element.disabled).toBe(true)
-    expect(assetIds()).toEqual(['HISTORY'])
-    await wrapper.get('[data-status-filter="ALL"]').trigger('click')
-    expect(assetIds()).toHaveLength(5)
+    const statusGroup = wrapper.get('[aria-label="资料状态筛选"]')
+    const status = (id: string) => statusGroup.get(`[data-status-filter="${id}"]`)
+    const counts = () => statusGroup.findAll('button').map(option => option.attributes('aria-label'))
+    const expected = ['初稿 1', '待确认 1', '已确认 1', '待分类 1']
+    const selected = () => statusGroup.findAll('[aria-pressed="true"]').map(option => option.attributes('data-status-filter'))
+    expect(wrapper.find('[aria-label="资料版本范围"]').exists()).toBe(false)
+    expect(wrapper.find('select[aria-label="资料状态"]').exists()).toBe(false)
+    expect(selected()).toEqual([])
+    expect(assetIds()).toEqual(['DRAFT', 'PENDING', 'READY', 'UNCLASSIFIED'])
+    expect(counts()).toEqual(expected)
+    for (const option of ['DRAFT', 'PENDING', 'READY', 'UNCLASSIFIED']) {
+      await status(option).trigger('click')
+      expect(assetIds()).toEqual([option])
+      expect(selected()).toEqual([option])
+      expect(counts()).toEqual(expected)
+    }
+    await status('UNCLASSIFIED').trigger('click')
+    expect(selected()).toEqual([])
+    expect(assetIds()).toHaveLength(4)
+    await status('DRAFT').trigger('click')
     await button(wrapper, '清除筛选').trigger('click')
-    expect(status.element.disabled).toBe(false)
-    expect(status.element.value).toBe('CURRENT')
+    expect(selected()).toEqual([])
     expect(assetIds()).toHaveLength(4)
   })
   it('combines top search with upload department and restores counts when cleared', async () => {
@@ -745,6 +779,24 @@ describe('shared document library', () => {
     await button(dialog(), '保存').trigger('click'); await flushPromises()
     expect(api.associate.mock.calls[0]![2]).toHaveLength(2)
     expect(api.associate.mock.calls[0]![5]).toBe('PENDING_SCHEDULE')
+  })
+  it('presents a prebound schedule as the selected built purchase and keeps protected links out of edits', async () => {
+    applyWarehouseSession()
+    const built = quickTarget({ kind: 'REGULAR', id: 'built-order', sheet: '', row: 0, order_no: 'CT-BUILT',
+      association_selected: true, fingerprint: 'c'.repeat(64) })
+    const business = quickTarget({ id: 'business-schedule', fingerprint: 'b'.repeat(64),
+      schedule_state: 'EXTERNAL', association_selected: true, association_locked: true })
+    const asset = quickAsset({ owner_department: 'pmc-warehouse', can_associate: true, targets: [quickTarget(), business] })
+    api.list.mockResolvedValue({ items: [asset], total: 1 })
+    api.candidates.mockResolvedValue([built, business])
+    const wrapper = await library('warehouse'); await button(wrapper, '关联订单').trigger('click'); await flushPromises()
+    expect(dialog().text()).toContain('已建单 · CT-BUILT')
+    expect(dialog().text()).toContain('外部已下单')
+    expect(dialog().get<HTMLInputElement>('input[value="' + built.fingerprint + '"]').element.checked).toBe(true)
+    expect(dialog().get<HTMLInputElement>('input[type="checkbox"]:disabled').element.checked).toBe(true)
+    await button(dialog(), '保存').trigger('click'); await flushPromises()
+    expect(api.associate.mock.calls[0]![2]).toEqual([expect.objectContaining({ kind: 'REGULAR', id: 'built-order' })])
+    expect(api.associate.mock.calls[0]![5]).toBe('WAREHOUSE')
   })
   it('requires an authorized supplier scope and ignores late actions after context changes', async () => {
     useAuthStore().applySession(supplierQuickSession())

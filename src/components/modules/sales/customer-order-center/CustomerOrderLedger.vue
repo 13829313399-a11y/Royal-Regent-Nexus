@@ -42,6 +42,9 @@ const selected = ref<CustomerOrderLedgerDetail | null>(null)
 const detailLoading = ref(false)
 const detailDialog = ref<HTMLElement | null>(null)
 const actionError = ref('')
+const importedIndonesiaLine = ref('')
+const indonesiaSource = ref<'' | 'RRI' | 'RRM'>('')
+watch(() => selected.value?.line.id, () => { indonesiaSource.value = '' })
 const actionBusy = ref(false)
 const page = ref(1)
 const amend = ref({ quantity: '', requested_ship_date: '', note: '', reason: '' })
@@ -64,7 +67,7 @@ const requiresDispatchForEdit = computed(() => selected.value?.line.status === '
   && selected.value.line.dispatch_status !== 'unsent')
 const canEdit = computed(() => capabilities.value.write && selected.value?.line.status === 'active'
   && (!requiresDispatchForEdit.value || capabilities.value.dispatch))
-const canRestore = computed(() => capabilities.value.write && selected.value?.line.status === 'cancelled'
+const canRestore = computed(() => capabilities.value.write && selected.value?.line.status === 'cancelled' && selected.value?.line.data.document_kind !== 'cancellation'
   && (selected.value.line.dispatch_status === 'unsent' || capabilities.value.dispatch))
 const canShip = computed(() => capabilities.value.shipment_confirm && selected.value?.line.status === 'active')
 const canReverseShipment = computed(() => capabilities.value.shipment_confirm)
@@ -332,6 +335,17 @@ async function runAction(action: () => Promise<unknown>) {
   }
 }
 
+async function importIndonesia() {
+  const source = indonesiaSource.value
+  if (!source || !selected.value || !capabilities.value.indonesia_schedule_import) return
+  const { id, revision } = selected.value.line
+  const factory = props.factoryId
+  await runAction(async () => {
+    await customerOrderLedgerApi.importIndonesia(id, factory, revision, source)
+    if (props.factoryId === factory && selected.value?.line.id === id) importedIndonesiaLine.value = id + ':' + revision
+  })
+}
+
 function submitAmend() {
   if (!selected.value || amend.value.reason.trim().length < 4) {
     actionError.value = '修改数量、交期或备注必须填写至少 4 个字的修改原因。'
@@ -495,7 +509,7 @@ onBeforeUnmount(() => {
       <table>
         <thead><tr><th>客户</th><th>参考号 / P/O</th><th>产品编号</th><th data-yl-help="customer-orders.quantity">订单数量</th><th>客户要求交期</th><th>已走货</th><th data-yl-help="customer-orders.remaining">未走货</th><th data-yl-help="customer-orders.status">状态</th><th>发送</th><th>版本</th><th></th></tr></thead>
         <tbody>
-          <tr v-for="line in displayLines" :key="line.id"><td>{{ line.customer_name || line.customer_code }}</td><td class="mono">{{ line.reference_no }}</td><td class="mono">{{ line.product_no }}</td><td>{{ line.quantity }}</td><td>{{ stringField(line.data, ['requested_ship_date', 'ship_date']) || '待补' }}</td><td>{{ line.shipped_quantity }}</td><td>{{ line.remaining_quantity }}</td><td>{{ line.status === 'cancelled' ? '已取消' : '有效' }}</td><td>{{ line.dispatch_status === 'unsent' ? '未发送' : line.dispatch_status === 'changed' ? '有变更' : '已发送' }}</td><td>V{{ line.version }}</td><td><button class="ledger__link" type="button" @click="openDetail(line)">详情</button></td></tr>
+          <tr v-for="line in displayLines" :key="line.id"><td>{{ line.customer_name || line.customer_code }}</td><td class="mono">{{ line.reference_no }}</td><td class="mono">{{ line.product_no }}</td><td>{{ line.quantity }}</td><td>{{ stringField(line.data, ['requested_ship_date', 'ship_date']) || '待补' }}</td><td>{{ line.shipped_quantity }}</td><td>{{ line.remaining_quantity }}</td><td>{{ line.data.document_kind === 'cancellation' ? '取消通知已归档' : line.status === 'cancelled' ? '已取消' : line.data.intake_notice ? '有提醒' : '有效' }}</td><td>{{ line.dispatch_status === 'unsent' ? '未发送' : line.dispatch_status === 'changed' ? '有变更' : '已发送' }}</td><td>V{{ line.version }}</td><td><button class="ledger__link" type="button" @click="openDetail(line)">详情</button></td></tr>
           <tr v-if="!loading && displayLines.length === 0"><td colspan="11">当前筛选范围没有订单记录。</td></tr>
         </tbody>
       </table>
@@ -519,6 +533,7 @@ onBeforeUnmount(() => {
           <p v-if="actionError" class="ledger__message">{{ actionError }}</p>
           <button v-if="actionError" type="button" class="ledger__button" :disabled="actionBusy || detailLoading" @click="openDetail({ id: selected.line.id })">刷新订单详情后核对</button>
           <p v-if="typeof selected.line.data.recheck_notice === 'string'" class="ledger__recheck">{{ selected.line.data.recheck_notice }}</p>
+          <p v-if="selected.line.data.intake_notice" class="ledger__recheck" role="status">{{ selected.line.data.intake_notice }}</p>
           <section v-if="historyMigrationFields(selected.line.data).length"><h4>历史排期迁入期初</h4><p class="ledger__muted">历史截止日期包含当日走货。该期初不是新的出货单；截止日期后的实际走货仍须凭出货单确认。</p><dl><template v-for="field in historyMigrationFields(selected.line.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><div v-if="canCorrectHistoryOpening" class="ledger__history-correction"><h5>更正期初走货</h5><p class="ledger__muted">更正会保留原始期初和原因；已发送订单还需要订单发送权限。</p><div class="ledger__form"><label>更正后的期初已走货数量<input v-model="historyOpening.quantity" type="text"></label><label>更正原因（至少 4 个字）<textarea v-model="historyOpening.reason" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy" @click="submitHistoryOpeningCorrection">保存历史期初更正</button></div></div></section>
           <section v-if="historyOriginalFields(selected.line.data).length"><h4>历史排期原始字段</h4><details class="ledger__details"><summary>展开原排期字段{{ historyOriginalLocation(selected.line.data) ? `（${historyOriginalLocation(selected.line.data)}）` : '' }}</summary><dl><template v-for="field in historyOriginalFields(selected.line.data)" :key="field.key"><dt>{{ field.header }}{{ field.column ? `（${field.column}列）` : '' }}</dt><dd>{{ field.value }}</dd></template></dl></details></section>
           <section><h4>原件与客户字段</h4><p v-if="selected.sources.length === 0" class="ledger__muted">暂无关联原件。</p><ul><li v-for="source in selected.sources" :key="source.id"><a :href="customerOrderLedgerSourceUrl(source.id, factoryId)" target="_blank" rel="noopener">{{ source.file_name }}</a> <small>{{ sourceKindLabel(source.kind) }}</small></li></ul><dl v-if="businessFields(selected.line.data).length"><template v-for="field in businessFields(selected.line.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><p v-else class="ledger__muted">暂无可展示的客户字段。</p><details v-if="lineageFields(selected.line.data).length" class="ledger__details"><summary>字段来源说明</summary><dl><template v-for="field in lineageFields(selected.line.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl></details></section>
@@ -526,10 +541,17 @@ onBeforeUnmount(() => {
           <section><h4>发送记录</h4><p v-if="localOnly" class="ledger__recheck">本机试用：发送只写入这台电脑的部门收件记录，不会通知线上员工或更新正式仓库。</p><p v-if="selected.dispatches.length === 0" class="ledger__muted">尚未发送给接收部门。</p><ul v-else><li v-for="item in selected.dispatches" :key="item.id">{{ recipientLabel(item.recipient) }} · V{{ item.version }} · {{ item.status === 'received' ? '已接收' : '已发送' }} · {{ item.created_at }}<template v-if="item.received_at"> · 接收于 {{ item.received_at }}{{ item.received_by ? `（${item.received_by}）` : '' }}</template></li></ul></section>
           <section v-if="capabilities.write && selected.line.status === 'active'"><h4>修改订单</h4><p v-if="requiresDispatchForEdit && !capabilities.dispatch" class="ledger__muted">该订单已发送；修改或取消需要订单发送权限。</p><div class="ledger__form"><label>数量<input v-model="amend.quantity" type="text"></label><label>客户要求交期<input v-model="amend.requested_ship_date" type="date"></label><label>备注<textarea v-model="amend.note" rows="2" /></label><label>修改原因（必填）<textarea v-model="amend.reason" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy || !canEdit" @click="submitAmend">保存修改</button></div></section>
           <section v-if="capabilities.dispatch && selected.line.status === 'active'"><h4>发送接收部门</h4><p v-if="deliveryDateMissing" class="ledger__recheck" data-testid="pending-delivery-date">客户交期待补，订单已保留。请在修改订单中补齐交期并保存后再发送；仅在输入框填写尚未生效。</p><div class="ledger__checks"><label><input v-model="recipients" type="checkbox" value="pmc"> PMC</label><label><input v-model="recipients" type="checkbox" value="warehouse"> 仓库</label><label><input v-model="recipients" type="checkbox" value="injection"> 啤机部</label><label v-if="capabilities.cutting_dispatch_enabled"><input v-model="recipients" type="checkbox" value="cutting"> 裁床部</label></div><button class="ledger__button" type="button" :disabled="actionBusy || deliveryDateMissing" @click="submitDispatch">发送订单</button></section>
+          <section v-if="!localOnly && capabilities.indonesia_schedule_import && selected.line.status === 'active'">
+            <h4>印尼接单排期</h4>
+            <p class="ledger__muted">确认这条明细属于印尼订单后，将按当前厂区和客户导入。</p>
+            <label>印尼排期来源 <select v-model="indonesiaSource"><option disabled value="">请选择</option><option>RRI</option><option>RRM</option></select></label>
+            <button class="ledger__button" type="button" :disabled="!indonesiaSource || actionBusy || detailLoading" @click="importIndonesia">将此明细作为印尼订单导入</button>
+            <p v-if="importedIndonesiaLine === selected.line.id + ':' + selected.line.revision" role="status">已导入印尼接单排期</p>
+          </section>
           <section v-if="canShip"><h4>凭出货单确认分批走货</h4><div class="ledger__form"><label>走货数量<input v-model="shipment.quantity" type="text"></label><label>走货日期<input v-model="shipment.ship_date" type="date"></label><label>出货单号<input v-model="shipment.document_no" type="text"></label><label>备注<textarea v-model="shipment.note" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy" @click="submitShipment">确认走货</button></div></section>
           <section><h4>走货批次与纠错</h4><p v-if="selected.shipments.length === 0" class="ledger__muted">暂无走货确认。</p><ul class="ledger__shipments"><li v-for="item in selected.shipments" :key="item.id"><span>{{ item.ship_date }} · {{ item.document_no }} · {{ item.quantity }}{{ item.reversed ? ` · 已撤销：${item.reversal_reason}` : '' }}</span><button v-if="canReverseShipment && !item.reversed" class="ledger__link" type="button" :disabled="actionBusy" @click="submitReversal(item.id)">撤销</button></li></ul><label v-if="canReverseShipment && selected.shipments.some((item) => !item.reversed)">纠错原因（撤销必填）<textarea v-model="reversalReason" rows="2" /></label></section>
           <section v-if="capabilities.write && selected.line.status === 'active'"><h4>取消订单</h4><p class="ledger__muted">这是业务取消，不是关闭窗口。取消后该明细不再计入待走货；原订单与走货记录仍会保留。</p><label>取消原因（必填）<textarea v-model="cancelReason" rows="2" maxlength="500" :disabled="actionBusy" /></label><button class="ledger__button ledger__button--danger" type="button" :disabled="actionBusy || detailLoading || !canEdit" @click="prepareStatusChange('cancel')">取消该订单明细</button></section>
-          <section v-if="capabilities.write && selected.line.status === 'cancelled'"><h4>恢复已取消订单</h4><p class="ledger__muted">恢复原订单明细并新增版本；保留原编号、数量和实际走货记录，不重新导入。未走货数量按当前订单数量减实际已走货重新计算；原数量未知时仍保留待核对。</p><p v-if="selected.line.dispatch_status !== 'unsent'" class="ledger__muted">已发送订单还需发送权限。恢复会通知原接收部门，不自动恢复生产任务或调整库存。</p><label>恢复原因（必填）<textarea v-model="restoreReason" rows="2" maxlength="500" :disabled="actionBusy" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy || detailLoading || !canRestore" @click="prepareStatusChange('restore')">恢复该订单明细</button></section>
+          <section v-if="capabilities.write && selected.line.status === 'cancelled' && selected.line.data.document_kind !== 'cancellation'"><h4>恢复已取消订单</h4><p class="ledger__muted">恢复原订单明细并新增版本；保留原编号、数量和实际走货记录，不重新导入。未走货数量按当前订单数量减实际已走货重新计算；原数量未知时仍保留待核对。</p><p v-if="selected.line.dispatch_status !== 'unsent'" class="ledger__muted">已发送订单还需发送权限。恢复会通知原接收部门，不自动恢复生产任务或调整库存。</p><label>恢复原因（必填）<textarea v-model="restoreReason" rows="2" maxlength="500" :disabled="actionBusy" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy || detailLoading || !canRestore" @click="prepareStatusChange('restore')">恢复该订单明细</button></section>
           <section v-if="statusConfirmation" role="alertdialog" aria-label="订单状态二次确认" class="ledger__status-confirmation">
             <h4>{{ statusConfirmation === 'restore' ? '确认恢复这条订单？' : '确认取消这条订单？' }}</h4>
             <p>{{ factoryName }} · {{ selected.line.customer_name }} · {{ selected.line.reference_no }} · {{ selected.line.product_no }} · V{{ selected.line.version }}</p>

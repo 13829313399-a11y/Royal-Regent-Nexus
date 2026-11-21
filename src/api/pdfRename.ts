@@ -53,6 +53,7 @@ export interface PdfRenamePreviewField {
   normalized_text: string
   route: 'NATIVE_TEXT' | 'LOCAL_OCR' | 'QWEN'
   confidence: number | null
+  validation_error?: string
 }
 
 export interface PdfRenamePreviewItem {
@@ -64,6 +65,7 @@ export interface PdfRenamePreviewItem {
   issues: Array<{ code: string; message: string }>
   manual_override?: boolean
   manual_override_allowed?: boolean
+  filename_template?: string
 }
 
 export interface PdfRenameManualOverride {

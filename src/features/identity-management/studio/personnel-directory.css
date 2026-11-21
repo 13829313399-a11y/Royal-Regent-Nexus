@@ -1,0 +1,384 @@
+.iam2-people.personnel-directory {
+  grid-template-columns: 226px minmax(0, 1fr);
+  gap: 14px;
+}
+.personnel-directory :is(.iam2-org, .iam2-directory) {
+  border-color: #d9e3e6;
+  box-shadow: 0 2px 6px #133e3708;
+}
+.personnel-directory .personnel-org {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.personnel-org > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 12px 15px;
+  border-bottom: 1px solid var(--border);
+}
+.personnel-org > header h2 {
+  margin: 0;
+  padding: 0;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+}
+.personnel-org .personnel-tree {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 8px;
+  overflow: auto;
+}
+.personnel-org .personnel-tree h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 9px 4px;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.personnel-org .personnel-tree h3 span {
+  font-variant-numeric: tabular-nums;
+}
+.personnel-count {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.personnel-org > header .personnel-tree-toggle {
+  display: none;
+}
+.personnel-org .personnel-tree button {
+  min-height: 33px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  line-height: 1.35;
+  font-size: 13px;
+}
+.personnel-org .personnel-tree button[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--primary);
+  font-weight: 700;
+}
+.personnel-org .personnel-node[aria-expanded] {
+  justify-content: space-between;
+}
+.personnel-org .personnel-node[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+.personnel-org .iam2-departments {
+  margin: 3px 0 3px 14px;
+}
+.personnel-org .personnel-mobile-org {
+  display: none;
+}
+.personnel-directory .personnel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  min-height: 50px;
+  border-bottom: 1px solid var(--border);
+}
+.personnel-directory .personnel-toolbar > :not(.personnel-result) {
+  min-width: 0;
+}
+.personnel-directory .personnel-result {
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.personnel-directory .iam2-table-scroll {
+  min-height: 0;
+}
+.personnel-directory .personnel-table {
+  table-layout: fixed;
+  min-width: 790px;
+}
+.personnel-table .col-person {
+  width: 17%;
+}
+.personnel-table .col-position {
+  width: 18%;
+}
+.personnel-table .col-packages {
+  width: 25%;
+}
+.personnel-table .col-factories {
+  width: 17%;
+}
+.personnel-table .col-status {
+  width: 14%;
+}
+.personnel-table .col-action {
+  width: 9%;
+}
+.personnel-directory .personnel-table th {
+  background: #f4f8fa;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.personnel-directory .personnel-table :is(th, td) {
+  padding: 10px 12px;
+}
+@media (min-width: 768px) {
+  .personnel-directory .personnel-table td {
+    padding-block: 4px;
+  }
+  .personnel-directory .personnel-table tbody tr {
+    height: 60px;
+  }
+}
+.personnel-directory .personnel-table th:last-child,
+.personnel-directory .personnel-table td:last-child {
+  text-align: right;
+}
+.personnel-directory .personnel-table tr {
+  cursor: pointer;
+}
+.personnel-directory .personnel-table tr:hover {
+  background: #f6fbfa;
+}
+.personnel-directory .personnel-table strong {
+  font-weight: 650;
+  color: var(--foreground);
+}
+.personnel-directory .personnel-table small {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.personnel-directory .personnel-table .iam2-name {
+  max-width: 100%;
+  gap: 9px;
+}
+.personnel-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--primary);
+  font-size: 14px;
+  font-weight: 700;
+}
+.personnel-avatar[data-mode='legacy'] {
+  color: #875509;
+  background: #fff2d7;
+}
+.personnel-avatar[data-status='suspended'] {
+  color: #526670;
+  background: #edf2f4;
+}
+.personnel-directory .personnel-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.personnel-chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid #d9e4e8;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.5;
+  color: #526572;
+  background: #f4f8fa;
+  overflow-wrap: anywhere;
+}
+.personnel-chip[data-tone='jade'] {
+  background: #e9f6f2;
+  color: #145f52;
+  border-color: #c4e1d7;
+}
+.personnel-chip[data-tone='success'] {
+  background: #eaf8f1;
+  color: #1a6749;
+  border-color: #c4e6d8;
+}
+.personnel-chip[data-tone='info'] {
+  background: #eef5ff;
+  color: #27558a;
+  border-color: #cddff5;
+}
+.personnel-chip[data-tone='warning'] {
+  background: #fff6e5;
+  color: #85530a;
+  border-color: #efdbaf;
+}
+.personnel-chip[data-tone='danger'] {
+  background: #fff0f0;
+  color: #a42c39;
+  border-color: #efcbd0;
+}
+.personnel-directory .personnel-status {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+}
+.personnel-state {
+  border-radius: 99px;
+  gap: 5px;
+}
+.personnel-state::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.personnel-directory .personnel-task {
+  text-align: left;
+}
+.personnel-directory .personnel-muted {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.personnel-directory .personnel-open {
+  min-height: 31px;
+  padding: 4px 8px;
+  background: var(--accent);
+  border-radius: 7px;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.personnel-directory .personnel-open:hover {
+  background: #d8efe8;
+}
+@media (min-width: 768px) and (max-width: 1100px) {
+  .iam2-people.personnel-directory {
+    grid-template-columns: 170px minmax(0, 1fr);
+    gap: 10px;
+  }
+  .personnel-directory .personnel-table :is(th, td) {
+    padding-inline: 8px;
+  }
+}
+@media (min-width: 768px) and (max-width: 1439px) {
+  .personnel-org > header .personnel-tree-toggle {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    margin-left: auto;
+    border-radius: 6px;
+    color: var(--primary);
+  }
+  .personnel-tree-toggle:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  .iam2-people.personnel-directory.tree-collapsed {
+    grid-template-columns: 46px minmax(0, 1fr);
+  }
+  .tree-collapsed .personnel-org header {
+    justify-content: center;
+    padding-inline: 4px;
+  }
+  .tree-collapsed .personnel-org :is(header > svg, header > h2, .personnel-tree) {
+    display: none;
+  }
+  .tree-collapsed .personnel-org .personnel-tree-toggle {
+    margin: 0;
+  }
+}
+@media (max-width: 767px) {
+  .iam2-people.personnel-directory {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+  .personnel-directory .personnel-org {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    gap: 6px;
+    max-height: none;
+  }
+  .personnel-org > header {
+    border: 0;
+    padding: 2px 0;
+  }
+  .personnel-org > header h2 {
+    width: auto;
+    padding: 0;
+    font-size: 12px;
+  }
+  .personnel-org .personnel-tree {
+    display: none;
+  }
+  .personnel-org .personnel-mobile-org {
+    display: flex;
+    flex: 1 1 150px;
+    gap: 4px;
+  }
+  .personnel-org .personnel-mobile-org select {
+    min-width: 0;
+    width: 0;
+    flex: 1;
+  }
+  .personnel-directory .personnel-toolbar {
+    padding: 8px 10px;
+    gap: 4px;
+  }
+  .personnel-directory .personnel-result {
+    font-size: 12px;
+  }
+  .personnel-directory .personnel-table {
+    min-width: 0;
+  }
+  .personnel-directory .personnel-table colgroup {
+    display: none;
+  }
+  .personnel-directory .personnel-table tr {
+    position: relative;
+    gap: 6px;
+  }
+  .personnel-directory .personnel-table td {
+    padding: 0;
+    grid-template-columns: 73px minmax(0, 1fr);
+    gap: 6px;
+  }
+  .personnel-directory .personnel-table td:first-child {
+    padding-right: 80px;
+  }
+  .personnel-directory .personnel-table td:last-child {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    display: block;
+  }
+  .personnel-directory .personnel-table td:last-child::before {
+    content: none;
+  }
+  .personnel-directory .personnel-open {
+    min-height: 44px;
+  }
+  .personnel-directory .personnel-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+}

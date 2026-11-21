@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item
+from app.services.huaxing_order_legacy.edu_schedule import full_edu_item, parse_date, previous_workday
 from app.services.huaxing_order_legacy.edu_grouped_export import reservation_candidates
 
 
@@ -47,7 +47,7 @@ def prepare_controls(workbook, rows):
                                      'ambiguous_edu_history', 'edu_missing_business_identity'}:
                 issue.update(requires_source_correction=True, can_skip=False, can_edit=False)
         raw = row.get('source_product_no') or row.get('product_no', '')
-        row.setdefault('lineage', {})['product_no'] = f'原单货号 {raw} → 排期货号 {row["product_no"]}；已识别长码末四位不参与货号匹配'
+        row.setdefault('lineage', {})['product_no'] = f'完整货号 {row["product_no"]}；基础货号仅用于归组和备料，原单货号 {raw}'
         repeated = [i for i in row['issues'] if i.get('code') in {'duplicate_existing_order', 'duplicate_batch_order_line'}]
         if repeated:
             for issue in repeated:
@@ -60,6 +60,8 @@ def prepare_controls(workbook, rows):
                 issue.update(can_edit=False, edit_field='', edit_label='')
             _refresh_status(row)
             continue
+        row['issues'].append(_editable(row, 'edu_reference', 'reference_no',
+            f"生产单号：{row.get('reference_no') or '未填'}。可更正或复用；不同合同、PO或完整货号仍独立保留。"))
         candidates = reservation_candidates(workbook, row['product_no'])
         po = edu_order_key('', row.get('po_no'))[1]
         exact = [c for c in candidates if po and edu_order_key('', c['po'])[1] == po]
@@ -89,7 +91,15 @@ def validate_controls(workbook, rows, overrides):
             if any(row_id == row['id'] for row_id, _ in explicit):
                 raise CustomerOrderUnifiedError('EDU 重复单沿用原订单，不能通过重复导入修改字段；请修订已有订单或原排期')
             continue
-        row['product_no'] = normalize_edu_item(row.get('product_no'))
+        row['product_no'] = full_edu_item(row.get('product_no'), row.get('source_product_no'))
+        for field in ('requested_ship_date', 'customer_q', 'line_q'):
+            value = parse_date(row.get(field))
+            if value:
+                row[field] = previous_workday(value, days=0).isoformat()
+        ship = parse_date(row.get('requested_ship_date'))
+        if ship and (row['id'], 'requested_ship_date') in explicit and not any((row['id'], field) in explicit for field in ('customer_q', 'line_q')):
+            row['customer_q'] = previous_workday(ship).isoformat()
+            row['line_q'] = row['customer_q']
         pack = _number(row.get('units_per_carton'))
         if (row['id'], 'units_per_carton') in explicit and (pack is None or pack <= 0):
             raise CustomerOrderUnifiedError('EDU 装箱数必须大于 0')
@@ -98,7 +108,8 @@ def validate_controls(workbook, rows, overrides):
         candidates = reservation_candidates(workbook, row['product_no'])
         selected = str(row.get('edu_reservation_row') or '').strip()
         if selected and (not selected.isdigit() or int(selected) not in {c['row'] for c in candidates}):
-            raise CustomerOrderUnifiedError('EDU 备料行号必须是原 ITEM表中该货号的绿色备料行，请重新核对')
-        if candidates and not selected:
-            raise CustomerOrderUnifiedError('EDU 必须选择当前货号的备料行，不能跳过扣减')
-        row['_edu_skip_reservation'] = not bool(candidates)
+            row['issues'].append(_editable(row, 'edu_reservation_unresolved', 'edu_reservation_row',
+                '备料行与当前货号不匹配，本次只保留订单明细，不扣备料。'))
+            row['edu_reservation_row'] = ''
+            selected = ''
+        row['_edu_skip_reservation'] = not bool(selected)

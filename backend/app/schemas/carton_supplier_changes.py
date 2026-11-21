@@ -2,7 +2,7 @@
 from datetime import date
 from decimal import Decimal
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SupplierChangeResponse(BaseModel):
@@ -16,3 +16,11 @@ class SupplierChangeResponse(BaseModel):
     reason: str = Field(default="", max_length=1000)
     request_id: str = Field(default="", max_length=96, pattern=r"^[A-Za-z0-9_-]*$")
     produced_quantities: dict[str, Decimal] = Field(default_factory=dict, max_length=50)
+    expected_acceptance_id: str | None = Field(default=None, min_length=1, max_length=96,
+        exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def validate_expected_acceptance(self):
+        if self.expected_acceptance_id is not None and (self.source_kind != "SPECIAL" or self.action != "ACCEPT"):
+            raise ValueError("预期接单回执仅适用于样板与杂单承诺交期")
+        return self

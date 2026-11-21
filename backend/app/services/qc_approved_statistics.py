@@ -14,10 +14,21 @@ import sqlite3
 from fastapi import HTTPException
 from app.core.config import settings
 from app.services import qc_inspection_summary as summary
+from app.services.identity_catalog import FACTORIES
 
 MAX_ROWS = 50000
 MAX_CUSTOMERS = 1000
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+
+def factory_label(factory):
+    if factory not in FACTORIES:
+        raise HTTPException(404, '此厂区未配置 QC 报表')
+    return FACTORIES[factory]
+
+
+def company_heading(factory):
+    return '华兴玩具制品（河源）有限公司' if factory == 'huaxing' else factory_label(factory)
 
 
 def _date(value):
@@ -100,7 +111,7 @@ def _valid(row, factory):
     return item, final, result or '(空值)'
 
 
-def query(factory, params, *, _records=None, _report_snapshots=None):
+def query(factory, params, *, _records=None, _report_snapshots=None, _dashboard_failures=None):
     start, end, wanted = _filters(params)
     root = Path(settings.qc_department_data_dir).resolve()
     journal = root / '_inspection_sheet' / 'inspections.sqlite3'
@@ -159,6 +170,8 @@ def query(factory, params, *, _records=None, _report_snapshots=None):
             if _records is not None:
                 _records.append(dict(id=item['id'], date=report_date,
                     usesScheduleDate=date_source == 'schedule',
+                    quantity=item.get('quantity'),
+                    agency=str((item.get('inspectionExecution') or {}).get('institution') or item.get('agency') or ''),
                     customerKey=key,
                     customer=customer['name'], customerCode=customer['code'], result=result,
                     poNo=str(item.get('poNo') or ''), productName=str(item.get('productName') or ''),
@@ -172,6 +185,13 @@ def query(factory, params, *, _records=None, _report_snapshots=None):
                 continue
             if _report_snapshots is not None:
                 _report_snapshots.append((item, date_source))
+            if _dashboard_failures is not None and result == 'FAIL':
+                _dashboard_failures.append(dict(
+                    id=item['id'], revision=item['revision'], date=final, customer=customer['name'],
+                    poNo=str(item.get('poNo') or ''), productNo=str(item.get('productNo') or ''),
+                    productName=str(item.get('productName') or ''),
+                    inspectionProblem=str(item.get('inspectionProblem') or ''), remark=str(item.get('remark') or ''),
+                ))
             counts[result] += 1
             if scoped_date:
                 months[scoped_date[:7]][result] += 1
@@ -198,7 +218,43 @@ def _response(factory, start, end, wanted, counts, months, customers, excluded,
                 customerUnavailable=bool(wanted and wanted not in customers))
 
 
-def report(factory, params):
+def dashboard(factory, params):
+    """Return the selected month's dashboard from the same validated snapshot."""
+    if set(params) - {'month', 'failurePage'}:
+        raise HTTPException(422, '看板筛选参数不正确')
+    month = params.get('month')
+    if month and not _date(month + '-01'):
+        raise HTTPException(422, '月份不正确')
+    page = params.get('failurePage', '1')
+    if not re.fullmatch(r'[1-9][0-9]{0,4}', page):
+        raise HTTPException(422, 'FAIL 明细页码不正确')
+
+    records = []
+    snapshot = query(factory, {}, _dashboard_failures=records)
+    months = {row['month']: row for row in snapshot['months']}
+    if month is None or (month and month not in months):
+        month = max(months, default='')
+    totals = months[month] if month else snapshot['totals']
+    failures = sorted(
+        (row for row in records if not month or row['date'][:7] == month),
+        key=lambda row: (row['date'], row['id']), reverse=True,
+    )
+    revision = sha256(summary.dump([(row['id'], row['revision']) for row in failures]).encode()).hexdigest()
+    page_size = 6
+    pages = max(1, (len(failures) + page_size - 1) // page_size)
+    page = min(int(page), pages)
+    current = failures[(page - 1) * page_size:page * page_size]
+    return dict(
+        factory=factory, source=snapshot['source'], excluded=snapshot['excluded'],
+        month=month, totals=totals, months=snapshot['months'],
+        failurePage=page, failurePages=pages, failureRevision=revision,
+        recentFailures=[{field: row[field] for field in
+                         ('date', 'customer', 'poNo', 'productNo', 'productName', 'inspectionProblem', 'remark')}
+                        for row in current],
+    )
+
+
+def report(factory, params, *, all_detail_rows=False):
     """One validated read snapshot supplies facets, aggregates and paged details.
 
     Result/page affect details only; no client-side page can change the denominator.
@@ -266,12 +322,13 @@ def report(factory, params):
     page_size = 5
     pages = max(1, (len(details) + page_size - 1) // page_size)
     page = min(int(page), pages)
-    return dict(factory=factory, source=source['source'], ready=source['ready'],
+    revision = sha256(summary.dump([factory, year, month, day, customer, result, selected]).encode()).hexdigest()
+    return dict(factory=factory, source=source['source'], ready=source['ready'], revision=revision,
         filters=dict(year=year, month=month, day=day, customer=customer, result=result),
         options=dict(years=years, months=months, days=days, customers=customers),
         totals=_totals(Counter(r['result'] for r in selected)),
         months=[dict(month=k, **_totals(v)) for k, v in sorted(grouped.items())],
-        details=dict(items=details[(page-1)*page_size:page*page_size], total=len(details),
+        details=dict(items=details if all_detail_rows else details[(page-1)*page_size:page*page_size], total=len(details),
             page=page, pageSize=page_size, pages=pages),
         scheduleDateCount=sum(r['usesScheduleDate'] for r in selected),
         missingDate=sum(not r['date'] for r in rows), excluded=source['excluded'], notices=notices)

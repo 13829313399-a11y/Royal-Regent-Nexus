@@ -24,6 +24,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { cartonMarkApi } from '@/api/cartonMark'
 import { cartonSupplierPortalApi } from '@/api/cartonSupplierPortal'
+import { departmentLabel } from '@/features/carton-procurement/quickAssets'
 
 const props = withDefaults(defineProps<{ factoryId: string; viewerKey?: string; supplier?: boolean; supplierReadOnly?: boolean; receiving?: boolean; mode?: 'requests' | 'receiving' | 'detail' | 'marks'; requestId?: string; lineId?: string; previewRequest?: SpecialRequest; requesterName?: string; createNew?: boolean; initialKind?: 'SAMPLE' | 'WORKSHOP_MISC'; initialAction?: SpecialOrderAction; search?: string }>(), { mode: 'requests' })
 const emit = defineEmits<{ changed: []; close: []; 'editor-mode': [mode: '' | 'editor' | 'append' | 'reduce' | 'date']; busy: [value: boolean]; dispatch: []; 'open-delivery': [deliveryNoteNo: string]; 'stock-action': [request: SpecialRequest, action: 'return-stock' | 'replenish' | 'undo-replenish'] }>()
@@ -56,6 +57,14 @@ const form = reactive({ kind: 'SAMPLE' as SpecialSave['kind'], requester_name: '
 const markChoices = ref<MarkOption[]>([]), markAsset = ref<Record<string, string>>({})
 const attachmentLine = ref('')
 const markUploadLine = ref(''), markFiles = ref<Record<string, File | null>>({}), markPickerLine = ref(''), markSearch = ref('')
+type MarkDepartment = NonNullable<SpecialRequest['mark_upload_departments']>[number]
+const markDepartment = ref<MarkDepartment | ''>('')
+const uploadDepartments = computed(() => selected.value?.mark_upload_departments)
+const needsDepartment = computed(() => !!uploadDepartments.value && !uploadDepartments.value.includes(markDepartment.value as MarkDepartment))
+function toggleMarkUpload(lineId: string) {
+  markUploadLine.value = markUploadLine.value === lineId ? '' : lineId
+  markDepartment.value = uploadDepartments.value?.length === 1 ? uploadDepartments.value[0]! : ''
+}
 const previewFile = ref<{ url: string; name: string; image: boolean } | null>(null)
 const filteredMarkChoices = computed(() => markChoices.value.filter(asset => `${asset.file_name} ${asset.contract_number || ''}`.toLowerCase().includes(markSearch.value.trim().toLowerCase())))
 const hasAssociatedMark = (line: SpecialLine) => Boolean(line.mark_attachment_id || line.mark_asset_id || selected.value?.mark_assets?.some(file => !file.line_id || file.line_id === line.id))
@@ -229,10 +238,12 @@ function openReceive(shipment: SpecialShipment) { if (can('can_receive') && !bus
 async function upload(lineId = '') {
   const role: AttachmentRole = lineId ? 'DRAFT' : 'REFERENCE'
   const row = selected.value, file = lineId ? markFiles.value[lineId] : attachmentFile.value; if (!row || !file || busy.value || !can('can_attach')) return
+  if (lineId && needsDepartment.value) return
+  const owner = lineId && markDepartment.value ? { owner_department: markDepartment.value } : {}
   if (lineId && !/\.(pdf|xlsx|png|jpe?g|webp)$/i.test(file.name)) { error.value = '箱唛制作稿请上传 PDF、XLSX 或静态图片；Word、演示文稿请放在备注附件。'; return }
   if (!file.size || file.size > 10 * 1024 * 1024) { error.value = '文件不能为空，且单个文件不能超过 10 MiB。'; return }
-  const signature = JSON.stringify([row.id, 'attach', row.revision, lineId || attachmentLine.value, role, file.name, file.size, file.lastModified]), token = generation; busy.value = true; error.value = ''
-  try { const result = await api.attach(row.id, { factory_id: props.factoryId, request_id: requestKey(signature), expected_revision: row.revision, line_id: lineId || attachmentLine.value }, role, file, props.supplier, controller.signal); if (token === generation) { attempts.delete(signature); initDetail(result); success.value = lineId ? '箱唛已保存并关联本单；文件版本和上传记录已保留。' : '备注附件已上传。'; emit('changed'); await load() } }
+  const signature = JSON.stringify([row.id, 'attach', row.revision, lineId || attachmentLine.value, role, file.name, file.size, file.lastModified, owner]), token = generation; busy.value = true; error.value = ''
+  try { const result = await api.attach(row.id, { factory_id: props.factoryId, request_id: requestKey(signature), expected_revision: row.revision, line_id: lineId || attachmentLine.value, ...owner }, role, file, props.supplier, controller.signal); if (token === generation) { attempts.delete(signature); initDetail(result); success.value = lineId ? '箱唛已保存并关联本单；文件版本和上传记录已保留。' : '备注附件已上传。'; emit('changed'); await load() } }
   catch (cause) { if (token === generation) error.value = getApiErrorMessage(cause) }
   finally { if (token === generation) busy.value = false }
 }
@@ -332,8 +343,11 @@ defineExpose({ refresh })
           <div v-for="line in (lineId ? selected.lines.filter(row => row.id === lineId) : selected.lines)" :key="line.id" :data-mark-line="line.id" class="space-y-3 rounded-xl border border-slate-200 p-4 text-sm">
             <div class="flex flex-wrap items-center justify-between gap-2"><b class="min-w-0 break-words">{{ line.packaging_type }}<span class="ml-2 font-normal text-slate-500">{{ line.item_no || line.specification }}</span></b><span class="rounded-full px-2.5 py-1 text-xs" :class="hasAssociatedMark(line) ? 'bg-slate-100 text-slate-700' : 'bg-slate-50 text-slate-500'">{{ hasAssociatedMark(line) ? '已有资料关联' : '尚未关联资料（选填）' }}</span></div>
             <div v-if="line.mark_attachment_id" class="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 p-3"><span class="min-w-0 flex-1 break-all text-xs">本单已关联资料：{{ selected.attachments.find(file => file.id === line.mark_attachment_id)?.filename || '箱唛资料' }}</span><Button v-if="canPreview(selected.attachments.find(file => file.id === line.mark_attachment_id)?.filename || '')" size="sm" variant="outline" @click="preview(line.mark_attachment_id, selected.attachments.find(file => file.id === line.mark_attachment_id)?.filename || '箱唛资料')">预览</Button><Button size="sm" variant="outline" :disabled="busy" @click="download(line.mark_attachment_id, selected.attachments.find(file => file.id === line.mark_attachment_id)?.filename || '箱唛资料')">下载</Button></div>
-            <div class="flex flex-wrap gap-2"><Button v-if="can('can_attach')" size="sm" variant="outline" :disabled="busy" @click="loadMarkOptions(line.id!)">选择已有箱唛</Button><Button v-if="can('can_attach')" size="sm" variant="outline" :disabled="busy" @click="markUploadLine = markUploadLine === line.id ? '' : line.id!">上传箱唛</Button></div>
-            <form v-if="markUploadLine === line.id && can('can_attach')" class="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3" :aria-label="`${line.id}箱唛上传`" @submit.prevent="upload(line.id)"><label>选择箱唛文件<input type="file" accept=".pdf,.xlsx,.png,.jpg,.jpeg,.webp" :aria-label="`${line.id}箱唛文件`" :disabled="busy" @change="chooseMarkFile(line.id!, $event)"></label><p class="text-xs text-slate-500">支持 PDF、XLSX、JPG、PNG、WebP，单个文件最多 10 MiB。上传后由本次经办人直接关联本单，保留原文件及历史。</p><Button size="sm" :disabled="busy || !markFiles[line.id!]">上传并关联资料</Button></form>
+            <div class="flex flex-wrap gap-2"><Button v-if="can('can_attach')" size="sm" variant="outline" :disabled="busy" @click="loadMarkOptions(line.id!)">选择已有箱唛</Button><Button v-if="can('can_attach') && uploadDepartments?.length !== 0" size="sm" variant="outline" :disabled="busy" @click="toggleMarkUpload(line.id!)">上传箱唛</Button></div>
+            <form v-if="markUploadLine === line.id && can('can_attach')" class="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3" :aria-label="`${line.id}箱唛上传`" @submit.prevent="upload(line.id)">
+              <label v-if="uploadDepartments && uploadDepartments.length > 1">资料归属部门<select v-model="markDepartment" required :disabled="busy"><option value="">请选择本次归属部门</option><option v-for="department in uploadDepartments" :key="department" :value="department">{{ departmentLabel[department] }}</option></select></label>
+              <label>选择箱唛文件<input type="file" accept=".pdf,.xlsx,.png,.jpg,.jpeg,.webp" :aria-label="`${line.id}箱唛文件`" :disabled="busy" @change="chooseMarkFile(line.id!, $event)"></label><p class="text-xs text-slate-500">支持 PDF、XLSX、JPG、PNG、WebP，单个文件最多 10 MiB。上传后由本次经办人直接关联本单，保留原文件及历史。</p><Button size="sm" :disabled="busy || !markFiles[line.id!] || needsDepartment">上传并关联资料</Button>
+            </form>
             <div v-if="markPickerLine === line.id" class="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3"><label>查找资料<input v-model="markSearch" aria-label="查找已有箱唛" placeholder="文件名或合同号"></label><div class="flex flex-wrap items-end gap-2"><label class="min-w-0 flex-1">已有箱唛<select v-model="markAsset[line.id!]" :aria-label="`${line.id}已有箱唛`"><option value="">选择文件及版本</option><option v-for="asset in filteredMarkChoices" :key="asset.id" :value="asset.id">{{ asset.file_name }} · {{ asset.contract_number || '未关联合同' }} · 版本 {{ asset.revision }}</option></select></label><Button size="sm" :disabled="busy || !markAsset[line.id!]" @click="setMark(line)">关联此资料</Button></div><p v-if="!filteredMarkChoices.length" class="text-xs text-slate-500">暂无可选资料，可上传新的箱唛。</p></div>
             <div v-if="pendingDrafts(line.id).length" class="space-y-2 border-t border-slate-100 pt-3"><p class="text-xs font-semibold text-amber-800">已关联文件与历史</p><p v-if="line.mark_attachment_id && line.mark_ready" class="text-xs text-slate-500">原有关联和确认历史继续保留；新增资料仅记录本次关联，不自动视为审核通过。</p><div v-for="file in pendingDrafts(line.id)" :key="file.id" class="flex flex-wrap items-center gap-2"><span class="min-w-0 flex-1 break-all text-xs">{{ file.filename }}</span><Button v-if="canPreview(file.filename)" size="sm" variant="ghost" @click="preview(file.id, file.filename)">预览</Button><Button size="sm" variant="ghost" @click="download(file.id, file.filename)">下载</Button></div></div>
             <details v-if="selected.attachments.some(file => file.line_id === line.id && file.role === 'CONFIRMED' && file.id !== line.mark_attachment_id)" class="text-xs text-slate-500"><summary class="cursor-pointer">历史版本</summary><div v-for="file in selected.attachments.filter(file => file.line_id === line.id && file.role === 'CONFIRMED' && file.id !== line.mark_attachment_id)" :key="file.id" class="mt-2 flex flex-wrap items-center justify-between gap-2"><span class="break-all">{{ file.filename }}</span><Button size="sm" variant="ghost" @click="download(file.id, file.filename)">下载历史稿</Button></div></details>

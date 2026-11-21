@@ -7,7 +7,8 @@ from test_fabric_procurement import BASE, book, row, stored
 from test_fabric_receiving import request, receive
 from decimal import Decimal
 
-from test_material_handover import client, issuer, confirmed, workbook, receipt
+from test_material_handover import client, issuer, confirmed, workbook, posting, receipt
+from test_material_handover import workspace as handover_workspace
 from test_material_handover_procurement import save, source_book, linked_part, send
 from test_fabric_receipt_corrections import original, reverse
 from test_warehouse_operations import payload, post, workspace
@@ -19,6 +20,70 @@ def history(client, **filters):
     response = client.get(PATH, params=dict(factory_id='huakang-c', unified=True, **filters))
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def handover_detail(client, receipt_id, factory=FACTORY):
+    return client.get(f'{PATH}/{receipt_id}/handover-detail', params={'factory_id': factory})
+
+
+def test_handover_detail_uses_exact_post_and_line_and_keeps_batch_corrections(client, monkeypatch):
+    _, headers = issuer(client)
+    document = confirmed(client, headers, workbook(rows=[
+        ['01-01-00001', '测试布料', '100', '码', 'LOT-1'],
+        ['01-01-00001', '测试布料', '100', '码', 'LOT-1'],
+    ]))
+    line, other_line = [item['id'] for item in document['data']['lines']]
+    first = dict(receipt(line, '12'), roll_no='R1', receipt_counts={'counted_quantity': '14', 'damaged_quantity': '1', 'rejected_quantity': '1'})
+    second = dict(receipt(line, '18', 'fabric-A02'), roll_no='R2', receipt_counts={'counted_quantity': '20', 'other_unusable_quantity': '2'})
+    rejected = dict(receipt(line, '0', ''), roll_no='R3', receipt_counts={'counted_quantity': '3', 'rejected_quantity': '3'})
+    parts = [first, rejected, receipt(other_line, '4'), second]
+    body = posting(document, handover_workspace(client)['revision'], parts)
+    body['delivery_quantities'] = {line: '40'}
+    latest, _ = send(client, document, parts, body=body)
+    first_ids = {item['operation_id'] for item in latest['movements'] if item['line_id'] == line}
+    assert len(first_ids) == 2
+    later_parts = [dict(receipt(line, '6'), receipt_counts={'counted_quantity': '7', 'rejected_quantity': '1'}),
+                   receipt(line, '2', 'fabric-A02')]
+    latest, _ = send(client, latest, later_parts)
+    later_ids = {item['operation_id'] for item in latest['movements'] if item['line_id'] == line} - first_ids
+    other_id = next(item['operation_id'] for item in latest['movements'] if item['line_id'] == other_line)
+    before = workspace(client)
+
+    first_detail = handover_detail(client, next(iter(first_ids))).json()
+    assert first_detail['has_posting']
+    assert {batch['id'] for batch in first_detail['batches']} == first_ids
+    assert first_detail['original_quantity'] == first_detail['effective_quantity'] == '30'
+    observation = first_detail['observation']
+    assert observation['complete'] and observation['delivered_quantity'] == '40' and observation['shortage_quantity'] == '3'
+    assert observation['counted_quantity'] == '37' and observation['rejected_quantity'] == '4'
+    assert [part['accepted_quantity'] for part in observation['parts']] == ['12', '0', '18']
+    assert not any('returned_to_supplier' in part for part in observation['parts'])
+    assert handover_detail(client, other_id).json()['observation'] is None
+    partial = handover_detail(client, next(iter(later_ids))).json()
+    assert {batch['id'] for batch in partial['batches']} == later_ids
+    assert partial['original_quantity'] == '8' and not partial['observation']['complete']
+    assert 'counted_quantity' not in partial['observation'] and partial['observation']['shortage_quantity'] is None
+    assert history(client, search=next(iter(first_ids)))['total'] == 1
+    assert history(client, channel='HANDOVER')['total'] == 5
+    assert workspace(client) == before
+
+    first_batch, second_batch = first_detail['batches']
+    correction, _ = reverse(client, first_batch)
+    assert correction.status_code == 200, correction.text
+    updated = handover_detail(client, second_batch['id']).json()
+    assert updated['original_quantity'] == '30' and updated['effective_quantity'] == '18'
+    assert updated['batches'][0]['reversal']['reason'] and updated['batches'][1]['reversal'] is None
+    assert updated['observation'] == observation
+    assert handover_detail(client, first_batch['id']).json() == updated
+    assert history(client, state='REVERSED', channel='HANDOVER')['items'][0]['id'] == first_batch['id']
+
+    manual = post(client, payload(client, 'RECEIPT', source_no='ONLY-MANUAL'))
+    assert handover_detail(client, manual['id']).status_code == 404
+    assert handover_detail(client, second_batch['id'], 'huakang-b').status_code in (403, 422)
+    api = importlib.import_module('app.api.fabric_procurement')
+    real = api.can
+    monkeypatch.setattr(api, 'can', lambda actor, permission, *args: False if permission == 'fabric_operations:read' else real(actor, permission, *args))
+    assert handover_detail(client, second_batch['id']).status_code == 403
 
 
 def test_original_splits_and_operations_share_filter_sort_and_pagination_without_nonreceipts(client):

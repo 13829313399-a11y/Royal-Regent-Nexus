@@ -41,36 +41,12 @@ npm run build
 npm run preview
 ```
 
-## Context Memory
+## 项目文档
 
-Before implementing any requirement, read and maintain `PROJECT_MEMORY.md`.
-
-For agent operating rules, read and maintain `AGENTS.md`.
-
-## Huakang A 3D migration
-
-The Huakang A module now includes a standalone cloud connector, live paginated
-workspace, migration reconciliation, material spools, versioned files, demand
-approvals, advisory scheduling and production traceability. PR-07 through PR-09
-are local development deliverables; deployment and real-printer acceptance are
-deferred. The new operations table requires explicit Alembic upgrade to 0099;
-the business database has not been upgraded in this phase. See the
-[local acceptance report](docs/three-d-pr07-pr09-acceptance.md),
-[backup/cutover/rollback runbook](deploy/three-d-printing/README.md) and
-[3D migration runbook](docs/three-d-printing-deployment.md).
-The legacy JSON snapshot is not the authoritative cutover source.
-
-The development server is configured for:
-
-```txt
-http://localhost:5173/
-```
-
-Current routes:
-
-- `/` - group operations dashboard
-- `/modules` - department module center
-- `/workbench` - business approval workbench
+- 开发前阅读 [AGENTS.md](AGENTS.md) 和 [PROJECT_MEMORY.md](PROJECT_MEMORY.md)。按[业务索引](docs/agent-routing/context-index.md)定位相应合同、代码和测试。
+- 主站、API 与独立文档 worker 的日常入口见上文。生产实例的 Compose 组合、备份、冻结点和回退见[现网发布手册](docs/aliyun-docker-deploy.md)。
+- 华康 A 3D 打印的接入、迁移核对和现场边界见[3D 专题](docs/three-d-printing-deployment.md)和[现场交接](deploy/three-d-printing/README.md)。运行状态以对应批次的设备回执为准。
+- 主站首页 `/` 为集团运营看板，`/modules` 转入部门模块目录，`/workbench` 为审批工作台。其他入口及权限见[实际路由](src/router/index.ts)。历史交接与验收见[归档索引](docs/archive/README.md)。
 
 ## Stack
 

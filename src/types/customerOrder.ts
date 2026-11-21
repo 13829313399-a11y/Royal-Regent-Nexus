@@ -34,6 +34,13 @@ export interface CustomerOrderPreviewRow {
   country: string
   product_no: string
   reference_no?: string
+  confirmation_no?: string
+  source_line_no?: string
+  document_kind?: string
+  cancellation_evidence?: string
+  caixing_mix_no?: string
+  source_unit_price_hkd?: string
+  price_factor?: string
   source_product_no?: string
   shipping_item?: string
   source_order_date?: string
@@ -104,3 +111,4 @@ export interface CustomerOrderImportPreview {
   rows: CustomerOrderPreviewRow[]
   warnings: string[]
 }
+export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback' | 'jp-intake' | 'materials'

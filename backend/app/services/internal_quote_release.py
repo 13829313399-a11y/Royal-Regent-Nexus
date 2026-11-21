@@ -1112,9 +1112,9 @@ def _refresh_handoff(
         export is not None
         and export.status == "current"
         and export.release_stage in {"p4_final_approved", "p4_direct_issued"}
-        and quote.status in FINAL_EXPORT_STAGES
-        and ((export.release_stage == "p4_final_approved" and quote.final_release_status == "approved")
-             or (export.release_stage == "p4_direct_issued" and quote.module_version == "v4" and quote.final_release_status == "issued"))
+        and ((export.release_stage == "p4_final_approved" and quote.status in FINAL_EXPORT_STAGES and quote.final_release_status == "approved")
+             or (export.release_stage == "p4_direct_issued" and quote.module_version == "v4"
+                 and quote.status in {"drafting", "exported"} and quote.final_release_status in {"issued", "output"}))
         and quote.final_release_revision == handoff.release_revision
     )
     if not is_current and handoff.status != "revoked":

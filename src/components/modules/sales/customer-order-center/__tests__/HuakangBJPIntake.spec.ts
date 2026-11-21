@@ -1,9 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import HuakangBJPIntake from '../HuakangBJPIntake.vue'
 
 const api = vi.hoisted(() => ({
-  capabilities: vi.fn(), references: vi.fn(), upload: vi.fn(), clearConfirmed: vi.fn(), preview: vi.fn(), export: vi.fn(), exports: vi.fn(), download: vi.fn(),
+  capabilities: vi.fn(), references: vi.fn(), upload: vi.fn(), clearConfirmed: vi.fn(), preview: vi.fn(), export: vi.fn(), exports: vi.fn(), download: vi.fn(), clipboard: vi.fn(),
 }))
 vi.mock('@/api/huakangBJP', () => ({ huakangBJPApi: api }))
 const row = { id: 'a'.repeat(64), source: 'test.eml', baby_item: '67053', long_code: '67053-000-2B-003-WB0',
@@ -11,6 +11,8 @@ const row = { id: 'a'.repeat(64), source: 'test.eml', baby_item: '67053', long_c
   ship_date: '2026/12/24', cutoff_date: '2026/12/31', price_t: '12.5', factory_price_t: '10', note: '', exists: false }
 const preview = { factory_id: 'huakang-b', fingerprint: 'fingerprint', rows: [row], warnings: [], failed_sources: [], quantity_selections: [] }
 const refs = { schedule: { id: 's', name: 'B排期.xlsx', revision: 1 }, price: { id: 'p', name: 'B货价.xlsx', revision: 1 } }
+const exportRecord = { id: 'saved-export', actor: '跟单', created_at: '2026-11-11', prefix: '0126', first_number: 1234, last_number: 1234, row_count: 1 }
+const exportedText = ['0126-1234', "'00001234", "'=SUM(A1)", ...Array<string>(41).fill('')].join('\t')
 function button(wrapper: ReturnType<typeof mount>, text: string) { return wrapper.findAll('button').find(b => b.text() === text)! }
 async function open() {
   const wrapper = mount(HuakangBJPIntake, { props: { factoryId: 'huakang-b' } })
@@ -25,8 +27,183 @@ beforeEach(() => {
   api.exports.mockResolvedValue({ items: [], total: 0 })
   api.preview.mockResolvedValue(JSON.parse(JSON.stringify(preview)))
 })
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 describe('HuakangBJPIntake', () => {
+  it('copies only persisted export data with its allocated number and exact protected cell text', async () => {
+    api.exports.mockResolvedValue({ items: [exportRecord], total: 1 })
+    api.clipboard.mockResolvedValue({ text: exportedText, row_count: 1, column_count: 44 })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const wrapper = await open()
+    await button(wrapper, '复制全部44列').trigger('click'); await flushPromises()
+    expect(api.clipboard).toHaveBeenCalledWith('huakang-b', 'saved-export', expect.any(AbortSignal))
+    expect(writeText).toHaveBeenCalledWith(exportedText)
+    expect(api.export).not.toHaveBeenCalled()
+    expect(api.preview).not.toHaveBeenCalled()
+    const copied = wrapper.get('[data-testid="jp-copy-result"]')
+    expect(copied.text()).toContain('0126-1234')
+    expect(copied.text()).toContain('已复制，可粘贴到 Excel')
+    expect(copied.get('textarea').attributes('readonly')).toBeDefined()
+    expect((copied.get('textarea').element as HTMLTextAreaElement).value).toBe(exportedText)
+    wrapper.unmount()
+  })
+  it.each(['unsupported', 'denied'])('offers selectable original text when clipboard is %s', async kind => {
+    api.exports.mockResolvedValue({ items: [exportRecord], total: 1 })
+    api.clipboard.mockResolvedValue({ text: exportedText, row_count: 1, column_count: 44 })
+    vi.stubGlobal('navigator', kind === 'unsupported' ? {} : { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+    const wrapper = await open()
+    await button(wrapper, '复制全部44列').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="jp-copy-result"]').text()).toContain('浏览器未完成自动复制')
+    await button(wrapper, '选中全部文本').trigger('click')
+    const text = wrapper.get('textarea[aria-label="已生成的44列数据"]').element as HTMLTextAreaElement
+    expect(text.selectionStart).toBe(0)
+    expect(text.selectionEnd).toBe(exportedText.length)
+    expect(text.value).toBe(exportedText)
+    expect(api.export).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('ends a stalled clipboard permission wait with a manual copy option', async () => {
+    vi.useFakeTimers()
+    api.exports.mockResolvedValue({ items: [exportRecord], total: 1 })
+    api.clipboard.mockResolvedValue({ text: exportedText, row_count: 1, column_count: 44 })
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn(() => new Promise(() => {})) } })
+    const wrapper = await open()
+    await button(wrapper, '复制全部44列').trigger('click'); await flushPromises()
+    expect(button(wrapper, '选中全部文本').attributes('disabled')).toBeDefined()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(button(wrapper, '选中全部文本').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="jp-copy-result"]').text()).toContain('浏览器未完成自动复制')
+    wrapper.unmount()
+  })
+  it('does not expose or copy a late response after changing factory', async () => {
+    api.exports.mockResolvedValue({ items: [exportRecord], total: 1 })
+    let resolve: ((value: { text: string; row_count: number; column_count: number }) => void) | undefined
+    api.clipboard.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const writeText = vi.fn()
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const wrapper = await open()
+    await button(wrapper, '复制全部44列').trigger('click')
+    await wrapper.setProps({ factoryId: 'huakang-a' })
+    expect((api.clipboard.mock.calls[0]![2] as AbortSignal).aborted).toBe(true)
+    resolve?.({ text: exportedText, row_count: 1, column_count: 44 }); await flushPromises()
+    expect(writeText).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="jp-copy-result"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('keeps clipboard permission equivalent to exporting and rejects malformed persisted data', async () => {
+    api.exports.mockResolvedValue({ items: [exportRecord], total: 1 })
+    api.capabilities.mockResolvedValue({ read: true, write: false, export: false, available: true })
+    const readOnly = await open()
+    expect(button(readOnly, '复制全部44列').attributes('disabled')).toBeDefined()
+    await button(readOnly, '复制全部44列').trigger('click')
+    expect(api.clipboard).not.toHaveBeenCalled()
+    readOnly.unmount()
+    api.capabilities.mockResolvedValue({ read: true, write: true, export: true, available: true })
+    api.clipboard.mockResolvedValue({ text: exportedText, row_count: 1, column_count: 43 })
+    const writeText = vi.fn()
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const wrapper = await open()
+    await button(wrapper, '复制全部44列').trigger('click'); await flushPromises()
+    expect(writeText).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="jp-copy-result"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('复制数据不完整')
+    wrapper.unmount()
+  })
+  it('captures copied rich tables, displays only readable text and drops hidden markup after manual editing', async () => {
+    const wrapper = await open()
+    const body = wrapper.get('textarea[aria-label="邮件正文"]')
+    const rich = '<table><tr><th>PO#</th><th>VSK#</th><th>Qty</th></tr><tr><td>0001</td><td>67053</td><td>648</td></tr></table><script>window.unwanted=true</script>'
+    const plain = 'PO#\tVSK#\tQty\n0001\t67053\t648'
+    await body.trigger('paste', { clipboardData: { getData: (type: string) => type === 'text/html' ? rich : plain } })
+    expect((body.element as HTMLTextAreaElement).value).toBe(plain)
+    expect(wrapper.find('script').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已保留原表格格式')
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect((api.preview.mock.calls[0]![0] as FormData).get('html')).toBe(rich)
+    await body.setValue('PO#\tVSK#\tQty\n0002\t67053\t120')
+    expect(wrapper.find('input[aria-label="客PO"]').exists()).toBe(false)
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect((api.preview.mock.calls[1]![0] as FormData).get('html')).toBe('PO#\tVSK#\tQty\n0002\t67053\t120')
+    wrapper.unmount()
+  })
+  it('passes plain tab-separated clipboard content without guessing columns', async () => {
+    const wrapper = await open()
+    const plain = 'PO#\tFty S/D\tVSK#\tQty\r\n0001\t2026/12/24\t67053\t648'
+    await wrapper.get('textarea[aria-label="邮件正文"]').trigger('paste', { clipboardData: { getData: (type: string) => type === 'text/plain' ? plain : '' } })
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect((api.preview.mock.calls[0]![0] as FormData).get('html')).toBe(plain)
+    wrapper.unmount()
+  })
+  it('keeps HTML-only clipboard tables inert while showing readable cell text', async () => {
+    const wrapper = await open()
+    const rich = '<table><tr><td>0001</td><td>67053</td><td>648</td></tr></table><script>unwanted()</script><img src="https://example.invalid/private.png">'
+    const body = wrapper.get('textarea[aria-label="邮件正文"]')
+    await body.trigger('paste', { clipboardData: { getData: (type: string) => type === 'text/html' ? rich : '' } })
+    expect((body.element as HTMLTextAreaElement).value).toBe('0001\t67053\t648\t\n')
+    expect(wrapper.find('img[src="https://example.invalid/private.png"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('unwanted()')
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect((api.preview.mock.calls[0]![0] as FormData).get('html')).toBe(rich)
+    wrapper.unmount()
+  })
+  it('can remove an unrecognized pasted duplicate while recognized rows remain generatable', async () => {
+    api.preview.mockResolvedValueOnce({ ...preview, failed_sources: ['粘贴正文'] }).mockResolvedValueOnce(JSON.parse(JSON.stringify(preview)))
+    const wrapper = await open()
+    const input = wrapper.get('input[aria-label="问单邮件"]')
+    const originalMail = new File(['original'], 'correct.eml')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [originalMail] })
+    await input.trigger('change')
+    await wrapper.get('textarea[aria-label="邮件正文"]').setValue('无法识别的副本')
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="jp-source-summary"]').text()).toContain('1 份邮件文件，另有 1 份粘贴正文')
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeUndefined()
+    await button(wrapper, '移除粘贴正文并重新解析').trigger('click'); await flushPromises()
+    const data = api.preview.mock.calls[1]![0] as FormData
+    expect(data.get('html')).toBe('')
+    expect(data.getAll('files')).toEqual([originalMail])
+    expect(wrapper.text()).not.toContain('这些来源尚未识别')
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeUndefined()
+    expect(api.export).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('removes only the chosen uploaded file and invalidates its preview', async () => {
+    const wrapper = await open()
+    const input = wrapper.get('input[aria-label="问单邮件"]')
+    const files = [new File(['first'], 'first.eml'), new File(['second'], 'second.eml')]
+    Object.defineProperty(input.element, 'files', { configurable: true, value: files })
+    await input.trigger('change')
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    await wrapper.get('button[aria-label="移除 first.eml"]').trigger('click')
+    expect(wrapper.find('input[aria-label="客PO"]').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="已选择邮件"]').text()).not.toContain('first.eml')
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect((api.preview.mock.calls[1]![0] as FormData).getAll('files')).toEqual([files[1]])
+    wrapper.unmount()
+  })
+  it('allows missing references, prices and merchandiser with reminders and no required reason', async () => {
+    api.references.mockResolvedValue({})
+    const wrapper = await open()
+    await wrapper.get('input[aria-label="业务跟单"]').setValue('')
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    await wrapper.get('input[aria-label="客名"]').setValue('New Customer')
+    const reminders = wrapper.get('[data-testid="jp-generation-reminders"]')
+    expect(reminders.text()).toContain('货价HKD')
+    expect(reminders.text()).toContain('未上传排期参照')
+    expect(reminders.text()).toContain('业务跟单未填写')
+    expect(wrapper.find('.jp-confirmation').exists()).toBe(false)
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeUndefined()
+    api.export.mockResolvedValue({ id: 'pending', row_count: 1, numbering_status: 'pending' })
+    api.exports.mockResolvedValue({ items: [{ ...exportRecord, id: 'pending', first_number: 0, last_number: 0, numbering_status: 'pending' }], total: 1 })
+    await button(wrapper, '生成问单 Excel').trigger('click'); await flushPromises()
+    const data = api.export.mock.calls[0]![0] as FormData
+    expect(data.has('confirmed')).toBe(false)
+    expect(data.has('reason')).toBe(false)
+    expect(wrapper.text()).toContain('编号已留空')
+    expect(wrapper.text()).toContain('未编号问单')
+    expect(wrapper.text()).not.toContain('0126-0')
+    wrapper.unmount()
+  })
   it('keeps work controls hidden while permissions load, then shows truthful empty states', async () => {
     let finish: ((value: { read: boolean; write: boolean; export: boolean; available: boolean }) => void) | undefined
     api.capabilities.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
@@ -108,26 +285,22 @@ describe('HuakangBJPIntake', () => {
     expect(wrapper.text()).not.toContain('B货价.xlsx')
     wrapper.unmount()
   })
-  it('shows current references and requires explicit review before export', async () => {
+  it('shows current references and allows generation without review controls', async () => {
     const wrapper = await open()
     expect(api.references).toHaveBeenCalledWith('huakang-b', expect.any(AbortSignal))
-    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
-    expect(button(wrapper, '确认并生成问单 Excel').attributes('disabled')).toBeDefined()
-    await wrapper.findAll('textarea').at(-1)!.setValue('逐项核对正确')
-    await wrapper.findAll('input[type=checkbox]').at(-1)!.setValue(true)
-    expect(button(wrapper, '确认并生成问单 Excel').attributes('disabled')).toBeUndefined()
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeUndefined()
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
   it('keeps edited PO text and sends only explicit field overrides with source fingerprint', async () => {
     const wrapper = await open()
-    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
     await wrapper.get('input[aria-label="客PO"]').setValue('00001234')
-    await wrapper.findAll('textarea').at(-1)!.setValue('客户确认修改')
-    await wrapper.findAll('input[type=checkbox]').at(-1)!.setValue(true)
     let finish: ((v: { id: string; row_count: number }) => void) | undefined
     api.export.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    await button(wrapper, '确认并生成问单 Excel').trigger('click')
-    await button(wrapper, '确认并生成问单 Excel').trigger('click')
+    await button(wrapper, '生成问单 Excel').trigger('click')
+    await button(wrapper, '生成问单 Excel').trigger('click')
     expect(api.export).toHaveBeenCalledTimes(1)
     const data = api.export.mock.calls[0]![0] as FormData
     expect(data.get('factory_id')).toBe('huakang-b')
@@ -137,28 +310,26 @@ describe('HuakangBJPIntake', () => {
     expect(wrapper.text()).toContain('未写入正式订单或下发生产')
     wrapper.unmount()
   })
-  it('does not allow unresolved quantity columns to be exported', async () => {
+  it('keeps quantity choices available without blocking other recognized rows', async () => {
     api.preview.mockResolvedValue({ ...preview, quantity_selections: [{ source_id: 'a'.repeat(64), source: 'test.eml', table_index: 0, columns: [{ index: 1, sample: '25' }, { index: 2, sample: '648' }] }] })
     const wrapper = await open()
-    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
     await wrapper.get('select[aria-label="数量列"]').setValue('2')
     await button(wrapper, '按所选数量列重新解析').trigger('click'); await flushPromises()
     const data = api.preview.mock.calls.at(-1)![0] as FormData
     expect(JSON.parse(String(data.get('quantity_selections')))).toEqual([{ source_id: 'a'.repeat(64), table_index: 0, column_index: 2 }])
-    expect(button(wrapper, '确认并生成问单 Excel').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
-  it('clears stale prices after customer/packing edits and submits explicit price review', async () => {
+  it('clears stale prices after customer/packing edits without claiming review', async () => {
     const wrapper = await open()
-    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
     await wrapper.get('input[aria-label="客名"]').setValue('Amazon US')
     expect((wrapper.get('input[aria-label="货价HKD"]').element as HTMLInputElement).value).toBe('')
     expect(wrapper.text()).toContain('旧价格已清空')
     await wrapper.get('input[aria-label="货价HKD"]').setValue('12.5') // Deliberately reaffirm the same value.
-    await wrapper.findAll('textarea').at(-1)!.setValue('按新客名核对货价')
-    await wrapper.findAll('input[type=checkbox]').at(-1)!.setValue(true)
     api.export.mockResolvedValue({ id: 'test', row_count: 1 })
-    await button(wrapper, '确认并生成问单 Excel').trigger('click'); await flushPromises()
+    await button(wrapper, '生成问单 Excel').trigger('click'); await flushPromises()
     const changes = JSON.parse(String((api.export.mock.calls[0]![0] as FormData).get('overrides')))
     expect(changes).toEqual(expect.arrayContaining([
       { id: row.id, field: 'price_t', value: '12.5' },
@@ -169,33 +340,28 @@ describe('HuakangBJPIntake', () => {
   it('rejects a response belonging to another factory', async () => {
     api.preview.mockResolvedValue({ ...preview, factory_id: 'huakang-a' })
     const wrapper = await open()
-    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('厂区不一致')
     expect(wrapper.find('input[aria-label="客PO"]').exists()).toBe(false)
     wrapper.unmount()
   })
-  it('submits both candidate prices after explicit review even when their values stay unchanged', async () => {
+  it('keeps candidate price reminders without inventing explicit price review', async () => {
     api.preview.mockResolvedValue({ ...preview, rows: [{ ...row, price_confirm: true, price_note: '长货号未匹配，候选价格待确认' }] })
     const wrapper = await open()
-    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('货价待确认')
-    expect(button(wrapper, '确认并生成问单 Excel').attributes('disabled')).toBeDefined()
-    await wrapper.findAll('textarea').at(-1)!.setValue('已按实际长货号确认两价')
-    await wrapper.findAll('input[type=checkbox]').at(-1)!.setValue(true)
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeUndefined()
     api.export.mockResolvedValue({ id: 'reviewed', row_count: 1 })
-    await button(wrapper, '确认并生成问单 Excel').trigger('click'); await flushPromises()
+    await button(wrapper, '生成问单 Excel').trigger('click'); await flushPromises()
     const changes = JSON.parse(String((api.export.mock.calls[0]![0] as FormData).get('overrides')))
-    expect(changes).toEqual([
-      { id: row.id, field: 'price_t', value: '12.5' },
-      { id: row.id, field: 'factory_price_t', value: '10' },
-    ])
+    expect(changes).toEqual([])
     wrapper.unmount()
   })
   it('ignores an obsolete preview and clears protected results when factory changes', async () => {
     let finish: ((v: typeof preview) => void) | undefined
     api.preview.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     const wrapper = await open()
-    await button(wrapper, '解析并核对').trigger('click')
+    await button(wrapper, '解析邮件').trigger('click')
     await wrapper.setProps({ factoryId: 'huakang-a' })
     expect((api.preview.mock.calls[0]![1] as AbortSignal).aborted).toBe(true)
     finish?.(preview); await flushPromises()
@@ -220,10 +386,8 @@ describe('HuakangBJPIntake', () => {
     api.capabilities.mockResolvedValue({ read: true, write: false, export: false, available: true })
     const wrapper = await open()
     expect(wrapper.find('input[aria-label="排期参照"]').exists()).toBe(false)
-    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
-    await wrapper.findAll('textarea').at(-1)!.setValue('逐项核对正确')
-    await wrapper.findAll('input[type=checkbox]').at(-1)!.setValue(true)
-    expect(button(wrapper, '确认并生成问单 Excel').attributes('disabled')).toBeDefined()
+    await button(wrapper, '解析邮件').trigger('click'); await flushPromises()
+    expect(button(wrapper, '生成问单 Excel').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 })

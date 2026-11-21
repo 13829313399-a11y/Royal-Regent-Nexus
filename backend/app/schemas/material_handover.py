@@ -1,7 +1,8 @@
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
+from app.schemas.fabric_receiving import ReceiptCounts
 
 
 class Strict(BaseModel):
@@ -91,6 +92,44 @@ class ScanInput(Strict):
     code: str = Field(min_length=1, max_length=160)
 
 
+class ReceiptLinkInput(Strict):
+    factory_id: Literal['huakang-c']
+    request_id: UUID
+    expected_revision: int = Field(ge=1)
+    line_id: str = Field(min_length=1, max_length=64)
+    receipt_id: str = Field(min_length=1, max_length=64)
+
+
+class ReceiptUnlinkInput(Strict):
+    factory_id: Literal['huakang-c']
+    request_id: UUID
+    expected_revision: int = Field(ge=1)
+    expected_processed: str = Field(pattern=r'^[0-9]{1,12}(?:\.[0-9]{1,6})?$')
+    link_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class RejectionFollowupInput(Strict):
+    factory_id: Literal['huakang-c']
+    request_id: UUID
+    expected_revision: int = Field(ge=1)
+    observation_request_id: UUID
+    line_id: str = Field(min_length=1, max_length=64)
+    status: Literal['PENDING_REDELIVERY', 'RESOLVED']
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ReceiptPurchaseLinkInput(Strict):
+    factory_id: Literal['huakang-c']
+    request_id: UUID
+    expected_revision: int = Field(ge=1)
+    operation_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(min_length=1, max_length=200)
+    purchase_source_id: str = Field(min_length=1, max_length=64)
+    expected_source_revision: int = Field(ge=1)
+    expected_receipt_count: int = Field(ge=0)
+    difference_reason: str = Field(default='', max_length=1000)
+
+
 class PostingLine(Strict):
     line_id: str = Field(min_length=1, max_length=64)
     quantity: str = Field(min_length=1, max_length=32)
@@ -98,10 +137,13 @@ class PostingLine(Strict):
     location_id: str = Field(default='', max_length=64)
     lot: str = Field(default='', max_length=128)
     roll_no: str = Field(default='', max_length=128)
+    roll_no_is_blank: bool = False
     purchase_source_id: str = Field(default='', max_length=64)
     expected_source_revision: int | None = Field(default=None, ge=1)
     expected_receipt_count: int | None = Field(default=None, ge=0)
     difference_reason: str = Field(default='', max_length=1000)
+    procurement_pending_reason: str = Field(default='', max_length=1000)
+    receipt_counts: ReceiptCounts | None = None
 
 
 class PostingInput(Strict):
@@ -112,3 +154,11 @@ class PostingInput(Strict):
     code_version: int = Field(ge=1)
     business_date: date
     lines: list[PostingLine] = Field(min_length=1, max_length=100)
+    delivery_quantities: dict[
+        Annotated[str, Field(min_length=1, max_length=64)],
+        Annotated[str, Field(min_length=1, max_length=32)],
+    ] = Field(default_factory=dict, max_length=100)
+    manual_receipt_reviews: dict[
+        Annotated[str, Field(min_length=1, max_length=64)],
+        Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')],
+    ] = Field(default_factory=dict, max_length=100)

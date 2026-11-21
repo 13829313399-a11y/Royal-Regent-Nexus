@@ -49,9 +49,24 @@ describe('库存盘点工作台', () => {
     mocks.can.mockImplementation((...args: unknown[]) => args[0] === 'carton_procurement:inventory_write')
     mocks.detail.mockResolvedValue({ ...detail('SUBMITTED'), review_assessment: { requires_supervisor: true, triggers: ['仓位数量差异达到门槛'] } })
     const wrapper = await open()
-    expect(wrapper.text()).toContain('本单差异需由具备主管调整权限的账号确认入账')
+    expect(wrapper.text()).toContain('本单差异需由另一位具备主管调整权限的人员确认入账')
     expect(wrapper.findAll('button').some(row => row.text() === '确认差额入账')).toBe(false)
     wrapper.unmount()
+  })
+  it('allows a different supervisor to confirm a large difference', async () => {
+    mocks.detail.mockResolvedValue({ ...detail('SUBMITTED'), review_assessment: { requires_supervisor: true, triggers: ['仓位数量差异达到门槛'] } })
+    const creatorView = await open()
+    expect(creatorView.text()).toContain('本单差异需由另一位具备主管调整权限的人员确认入账')
+    expect(creatorView.findAll('button').some(row => row.text() === '确认差额入账')).toBe(false)
+    creatorView.unmount()
+
+    mocks.user.id = 'supervisor'
+    mocks.act.mockResolvedValue(detail('POSTED'))
+    const reviewerView = await open()
+    await button(reviewerView, '确认差额入账').trigger('click'); await flushPromises()
+    expect(mocks.act).toHaveBeenCalledWith('PD-1', expect.objectContaining({ action: 'CONFIRM' }))
+    expect(reviewerView.emitted('posted')).toHaveLength(1)
+    reviewerView.unmount()
   })
   it('protects changed counts and in-flight saves without locking clean document browsing', async () => {
     const wrapper = await open()

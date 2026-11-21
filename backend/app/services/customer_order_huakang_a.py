@@ -49,6 +49,12 @@ class PreparedBatch:
 
 
 HUAKANG_A_CUSTOMER_MAPPINGS: dict[str, HuakangACustomerMappingSpec] = {
+    "zuru": HuakangACustomerMappingSpec(
+        code="zuru", name="ZURU", po_extensions=(".pdf", ".xlsx"),
+        schedule_extensions=(".xlsx",), input_template="HUAKANG_A_ZURU_PO_V2",
+        target_template="HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4",
+        rule_summary="读取 ZURU PDF 或转换 Excel 正单，以 PO号＋原单行号及完整SKU-SPEC保留身份；上传多份原周排期作参照，生成可复制的新单汇总，USD单独保留。",
+    ),
     "360": HuakangACustomerMappingSpec(
         code="360",
         name="360",

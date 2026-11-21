@@ -92,10 +92,6 @@ function getReportCompanyLabel() {
   return _esc(getCompanyName()) + (window.__QC_REFERENCE_DATA?.count ? ' · 模板参考（非本厂实绩）' : '');
 }
 function getSiteObj(id)   { return QC_SITES.find(s => s.id === id) || QC_SITES[0]; }
-function returnToNexus() {
-  if (window.__QC_CONFIRM_FACTORY_LEAVE && !window.__QC_CONFIRM_FACTORY_LEAVE()) return;
-  window.parent.location.assign('/modules/qc?factory=' + encodeURIComponent(window.__QC_NEXUS.factory));
-}
 
 function _showApp() {
   _initSidebar();
@@ -123,11 +119,8 @@ function _renderUserBadge() {
   const el = document.getElementById('userBadge');
   if (!el || !u) return;
   el.innerHTML =
-    `<span class="user-badge-company">${getSiteObj(getCompanyObj().site).name} · ${getCompanyName()}</span>` +
-    `<span class="user-badge-name">${_esc(u.name || u.username)}</span>` +
-    `<span class="user-badge-role">Nexus 账号</span>` +
-    `<button class="user-badge-logout" onclick="returnToNexus()">返回 Nexus</button>`;
-  window.__QC_RENDER_FACTORY_SELECTOR?.();
+    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span><span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
+    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>Nexus 账号</small></div></details>`;
 }
 
 /* ── 权限应用（按角色显示/隐藏按钮）── */
@@ -143,6 +136,8 @@ function applyPermissions() {
 
   /* 新增验货按钮 */
   const canCreate = can('createRecord');
+  const addInspection = document.getElementById('btnAddInspection');
+  if (addInspection) addInspection.hidden = !window.__QC_NEXUS?.workflow?.manual;
   document.querySelectorAll('.btn-add, [data-perm="createRecord"]').forEach(el => {
     el.style.display = canCreate ? '' : 'none';
   });
@@ -344,6 +339,20 @@ function reportCenterLandingPage() {
   return REPORT_CENTER_PAGES.find(page => canView(page));
 }
 
+function syncReportCenterNav(name) {
+  const nav = document.getElementById('reportCenterNav');
+  if (!nav) return;
+  const visible = !!window.__QC_NEXUS?.factory && REPORT_CENTER_PAGES.includes(name);
+  nav.hidden = !visible;
+  document.body.classList.toggle('qc-report-center', visible);
+  if (!visible) return;
+  for (const button of nav.querySelectorAll('[data-report-mode]')) {
+    const annual = button.dataset.reportMode === 'analysis';
+    button.hidden = button.disabled = annual ? !canView('analysis') : !intraReportLandingPage();
+    button.setAttribute('aria-pressed', String(annual === (name === 'analysis')));
+  }
+}
+
 function mountReportTypeSelect(page, name) {
   const slot = page?.querySelector('[data-report-type-slot]');
   const select = document.getElementById('reportTypeSelect');
@@ -369,8 +378,12 @@ function mountReportTypeSelect(page, name) {
   const visible = buttons.filter(button => !button.hidden);
   const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
   control.style.setProperty('--report-period-count', String(visible.length || 1));
-  if (control.parentElement !== slot) slot.append(control);
-  if (select.parentElement !== slot) slot.append(select);
+  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory) {
+    if (slot.firstElementChild !== select || select.nextElementSibling !== control) slot.prepend(select, control);
+  } else {
+    if (control.parentElement !== slot) slot.append(control);
+    if (select.parentElement !== slot) slot.append(select);
+  }
   control.hidden = name === 'analysis';
   if (name !== 'analysis') lastIntraReportPage = name;
   select.value = name === 'analysis' ? 'analysis' : 'intra-month';
@@ -379,24 +392,21 @@ function mountReportTypeSelect(page, name) {
   if (wasVisible && previousPage !== name && glass.animate &&
       !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
     glass.animate([{transform: previousTransform}, {transform: 'translateX(' + index * 100 + '%)'}],
-      {duration:260, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
+      {duration:300, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
   }
 }
 
 function changeReportPeriod(button) {
   if (button.disabled) return;
-  if (button.dataset.reportPage === currentPage) {
-    if (currentPage === 'weekly') window.QcWeeklyTemplates?.returnToReport();
-    if (currentPage === 'monthly') window.QcMonthlyTemplates?.returnToReport();
-    return;
-  }
+  if (button.dataset.reportPage === currentPage) return;
   showPage(button.dataset.reportPage, true);
 }
 
-function changeReportType(select) {
-  const nextPage = select.value === 'intra-month' ? intraReportLandingPage() : select.value;
-  select.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
-  if (REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, true);
+function changeReportType(control) {
+  const mode = control.dataset.reportMode || control.value;
+  const nextPage = mode === 'intra-month' ? intraReportLandingPage() : mode;
+  if (!control.dataset.reportMode) control.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
+  if (nextPage !== currentPage && REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, control.dataset.reportMode ? 'mode' : true);
 }
 
 function showPage(name, focusReportType = false) {
@@ -414,7 +424,11 @@ function showPage(name, focusReportType = false) {
   // Hide the inspection drawer synchronously; destination rendering can fail
   // or be delayed, and must never control whether it leaks across pages.
   window.QcWorkflow?.beforePageChange(name);
+  if(currentPage!==name)window.QcReportDates?.close();
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
+  if(currentPage==='review'&&name!=='review')window.QcInspectionSheet?.clearReviewDates?.();
+  if (currentPage === 'dashboard' && name !== 'dashboard') closeDashboardFailurePopover();
+  if(currentPage!==name)window.QcIssueReports?.pageChanged();
   currentPage = name;
   window.QcApprovedStatistics?.pageChanged(name);
   window.QcWeeklyTemplates?.pageChanged(name);
@@ -435,6 +449,7 @@ function showPage(name, focusReportType = false) {
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
   if (nav) nav.classList.add('active');
+  syncReportCenterNav(name);
   if (inReportCenter) mountReportTypeSelect(pg, name);
   const titleEl = document.getElementById('pageTitle');
   if (titleEl) titleEl.textContent = inReportCenter ? '报告中心' : (PAGE_TITLES[name] || name);
@@ -464,7 +479,10 @@ function showPage(name, focusReportType = false) {
         if (name === 'import')           _backupStats();
         if (name === 'defectlib')        renderDefectLibPage();
         if (focusReportType && inReportCenter && currentPage === name) {
-          (document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]') || document.getElementById('reportTypeSelect'))?.focus({ preventScroll: true });
+          const activeMode = document.querySelector('#reportCenterNav:not([hidden]) [data-report-mode][aria-pressed="true"]');
+          const period = document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]');
+          const target = activeMode && (focusReportType === 'mode' || name === 'analysis') ? activeMode : period || document.getElementById('reportTypeSelect');
+          target?.focus({ preventScroll: true });
         }
       } catch(e) { console.error('[showPage] render error:', e); }
     });
@@ -516,16 +534,9 @@ function updateTopKpis() {
     const weekR  = data.filter(r => r.date >= ws && r.date <= we);
     const weekF  = weekR.filter(r => isFail(r)).length;
 
-    const byS = groupBy(data, 'supplier');
-    const hiRisk = Object.values(byS).filter(list => {
-      if (list.length < 2) return false;
-      return list.filter(r => isFail(r)).length / list.length >= 0.15;
-    }).length;
-
-    setText('kpiPassRate',  rateT);
-    setText('kpiWeekFail',  weekF);
-    setText('kpiHighRisk',  hiRisk);
-    setText('kpiWeekBatch', weekR.length);
+    setText('kpiPassRate', rateT);
+    setText('kpiWeekFail', weekF);
+    document.getElementById('kpiWeekFail')?.classList.toggle('has-fail', weekF > 0);
 
     /* 审核中心：待审核数量导航角标 */
     const _rb = document.getElementById('reviewNavBadge');
@@ -545,96 +556,288 @@ function setText(id, val) {
 /* ════════════════════════════════════════
    §6  DASHBOARD
 ════════════════════════════════════════ */
-/* 仪表板「数据月份」筛选：
-   null = 未初始化(首次默认选最近有数据的月)，'' = 用户主动选了全部月份，'YYYY-MM' = 指定月 */
-let _dashMonth = null;
+let dashboardSnapshot = null;
+let dashboardMonth = null;
+let dashboardLoading = false;
+const dashboardFailurePageSize = 3;
+let dashboardFailurePage = 1;
+let dashboardFailureBatch = null;
+let dashboardFailureRequest = null;
+let dashboardFailureHideTimer;
+let dashboardFailureAnchor;
+let dashboardFailureFrame = 0;
 
-/* 在概要卡上方注入/刷新月份选择器；选项来自记录中实际出现的月份（倒序） */
-function ensureDashMonthFilter() {
-  const cards = document.getElementById('summaryCards');
-  if (!cards || !cards.parentNode) return;
-  let bar = document.getElementById('dashMonthBar');
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.id = 'dashMonthBar';
-    bar.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;';
-    bar.innerHTML =
-      '<span style="font-size:13px;color:var(--text-dim)">数据月份</span>' +
-      '<select id="dashMonthSel" class="filter-select" style="width:auto;min-width:130px"></select>' +
-      '<span id="dashMonthHint" style="font-size:12px;color:var(--text-muted)"></span>';
-    cards.parentNode.insertBefore(bar, cards);
-    bar.querySelector('#dashMonthSel').addEventListener('change', function () {
-      _dashMonth = this.value;
-      renderDashboard();
+async function fetchDashboardSnapshot(month, failurePage, signal) {
+  const params = new URLSearchParams();
+  if (month !== null) params.set('month', month);
+  if (failurePage) params.set('failurePage', String(failurePage));
+  const url = 'api/approved-statistics/dashboard' + (params.size ? '?' + params : '');
+  const response = await fetch(url, { cache: 'no-store', signal });
+  const snapshot = await response.json();
+  if (!response.ok) {
+    throw new Error(typeof snapshot.detail === 'string' ? snapshot.detail : '验货汇总读取失败');
+  }
+  if (snapshot.factory !== window.__QC_NEXUS?.factory || snapshot.source !== 'current-inline-approved-summary-v1') {
+    throw new Error('统计来源或厂区不一致，请重试');
+  }
+  if (snapshot.excluded.missingProjection || snapshot.excluded.invalidLineage) {
+    throw new Error('已审核记录与汇总未对齐，请核对验货汇总');
+  }
+  return snapshot;
+}
+
+async function renderDashboard(month = dashboardMonth) {
+  if (currentPage !== 'dashboard' || dashboardLoading) return;
+
+  const dashboard = document.getElementById('qcDashboard');
+  const content = document.getElementById('qcDashboardData');
+  const select = document.getElementById('dashMonthSel');
+  const retry = document.getElementById('dashRetry');
+
+  dashboardLoading = true;
+  dashboardMonth = month;
+  closeDashboardFailurePopover();
+  dashboard.setAttribute('aria-busy', 'true');
+  content.hidden = true;
+  select.disabled = true;
+  retry.hidden = true;
+  setText('dashMonthHint', '正在读取验货汇总…');
+  try {
+    const snapshot = await fetchDashboardSnapshot(month);
+    if (currentPage !== 'dashboard') return;
+
+    dashboardSnapshot = snapshot;
+    dashboardMonth = snapshot.month;
+    const months = snapshot.months.map(item => item.month).reverse();
+    select.replaceChildren(new Option('全部月份', ''), ...months.map(month =>
+      new Option(month.slice(0, 4) + '年' + month.slice(5) + '月', month)
+    ));
+    select.value = dashboardMonth;
+    select.disabled = !months.length;
+    content.hidden = false;
+    renderDashboardMonth();
+  } catch (error) {
+    if (currentPage === 'dashboard') {
+      content.hidden = true;
+      select.disabled = true;
+      setText('dashMonthHint', error.message || '验货汇总读取失败');
+      retry.hidden = false;
+    }
+  } finally {
+    dashboardLoading = false;
+    dashboard.setAttribute('aria-busy', 'false');
+  }
+}
+
+function renderDashboardMonth() {
+  const content = document.getElementById('qcDashboardData');
+  if (!dashboardSnapshot || content.hidden) return;
+
+  const { totals, recentFailures } = dashboardSnapshot;
+  const months = dashboardSnapshot.months
+    .filter(item => !dashboardMonth || item.month <= dashboardMonth)
+    .slice(-12);
+  setText('dashMonthHint', totals.total ? '共 ' + totals.total + ' 批已审核验货' : '暂无已审核验货');
+  closeDashboardFailurePopover();
+  renderSummaryCards(totals);
+  renderDashboardFailures(recentFailures);
+  safeInit(() => chartInspectionTrend(months), 'chartInspectionTrend');
+  safeInit(() => chartResultPie(totals), 'chartResultPie');
+}
+
+function renderDashboardFailures(rows) {
+  const panel = document.getElementById('qcDashboardFailures');
+  if (!rows.length) {
+    panel.innerHTML = '<p class="qc-dashboard-empty">所选范围暂无 FAIL 批次</p>';
+    return;
+  }
+  const cell = value => '<td title="' + _esc(value) + '">' + _esc(value || '—') + '</td>';
+  panel.innerHTML = `
+    <div class="qc-dashboard-table-scroll" role="region" aria-label="近期 FAIL 批次明细" tabindex="0">
+      <table class="qc-dashboard-table">
+        <thead><tr>
+          <th scope="col">验货日期</th><th scope="col">客户</th><th scope="col">PO#</th>
+          <th scope="col">产品名称</th><th scope="col">问题 / 备注</th>
+        </tr></thead>
+        <tbody>${rows.map(row => '<tr>' + [row.date, row.customer, row.poNo,
+          row.productName, row.inspectionProblem || row.remark].map(cell).join('') + '</tr>').join('')}</tbody>
+      </table>
+    </div>`;
+}
+
+function cancelDashboardFailureHide() {
+  clearTimeout(dashboardFailureHideTimer);
+}
+
+function scheduleDashboardFailureHide() {
+  cancelDashboardFailureHide();
+  dashboardFailureHideTimer = setTimeout(() => {
+    const panel = document.getElementById('qcDashboardFailPopover');
+    const card = document.getElementById('qcDashboardFailCard');
+    if (!panel.matches(':hover, :focus-within') && !card?.matches(':hover')) {
+      closeDashboardFailurePopover();
+    }
+  }, 140);
+}
+
+function closeDashboardFailurePopover() {
+  cancelDashboardFailureHide();
+  const panel = document.getElementById('qcDashboardFailPopover');
+  if (panel?.matches?.(':popover-open')) panel.hidePopover();
+}
+
+function dashboardFailurePopoverToggled(event) {
+  const open = event.newState === 'open';
+  document.getElementById('qcDashboardFailCard')?.setAttribute('aria-expanded', String(open));
+  if (!open) {
+    cancelDashboardFailureHide();
+    cancelAnimationFrame(dashboardFailureFrame);
+    dashboardFailureFrame = 0;
+    dashboardFailureRequest?.abort();
+    dashboardFailureRequest = null;
+    dashboardFailureBatch = null;
+  }
+}
+
+function dashboardFailurePageCount() {
+  return Math.max(1, Math.ceil(dashboardSnapshot.totals.FAIL / dashboardFailurePageSize));
+}
+
+function renderDashboardFailurePopover(snapshot, page = 1) {
+  const items = document.getElementById('qcDashboardFailItems');
+  const batchSize = dashboardSnapshot.recentFailures.length;
+  const start = (page - 1) * dashboardFailurePageSize - (snapshot.failurePage - 1) * batchSize;
+  const rows = snapshot.recentFailures.slice(start, start + dashboardFailurePageSize);
+  const pages = dashboardFailurePageCount();
+  dashboardFailureBatch = snapshot;
+  dashboardFailurePage = page;
+  items.innerHTML = rows.length ? '<ol>' + rows.map(row => {
+    const product = row.productName || row.productNo || '未填写货品';
+    const info = [row.date || '验货日期未填写', row.productName && row.productNo].filter(Boolean).join(' · ');
+    const issue = row.inspectionProblem ? '问题：' + row.inspectionProblem
+      : row.remark ? '备注：' + row.remark : '问题未填写';
+    return '<li><strong>' + _esc(product) + '</strong><small>' + _esc(info) +
+      '</small><p>' + _esc(issue) + '</p></li>';
+  }).join('') + '</ol>' : '<p class="qc-dashboard-fail-empty">所选范围暂无 FAIL 批次</p>';
+  items.scrollTop = 0;
+  document.getElementById('qcDashboardFailPages').hidden = pages < 2;
+  setText('qcDashboardFailPage', page + ' / ' + pages);
+  updateDashboardFailurePageButtons();
+}
+
+function updateDashboardFailurePageButtons() {
+  document.getElementById('qcDashboardFailPrev').disabled =
+    Boolean(dashboardFailureRequest) || dashboardFailurePage <= 1;
+  document.getElementById('qcDashboardFailNext').disabled =
+    Boolean(dashboardFailureRequest) || dashboardFailurePage >= dashboardFailurePageCount();
+}
+
+function showDashboardFailurePopover(x, y) {
+  cancelDashboardFailureHide();
+  const panel = document.getElementById('qcDashboardFailPopover');
+  if (!dashboardSnapshot || panel.matches(':popover-open')) return;
+  dashboardFailureAnchor = { x, y };
+  document.getElementById('qcDashboardFailStatus').hidden = true;
+  renderDashboardFailurePopover(dashboardSnapshot);
+  panel.showPopover();
+  positionDashboardFailurePopover();
+}
+
+function positionDashboardFailurePopover() {
+  const panel = document.getElementById('qcDashboardFailPopover');
+  const { x, y } = dashboardFailureAnchor;
+  const gap = 8, margin = 8;
+  const { clientWidth, clientHeight } = document.documentElement;
+  const rightSpace = clientWidth - x - gap - margin;
+  const width = Math.min(200, Math.max(152, rightSpace), clientWidth - 2 * margin);
+  panel.style.width = width + 'px';
+  panel.style.left = Math.max(margin, Math.min(x + gap, clientWidth - width - margin)) + 'px';
+  panel.style.top = Math.max(margin, Math.min(y + gap, clientHeight - panel.offsetHeight - margin)) + 'px';
+}
+
+function followDashboardFailurePopover(event) {
+  if (event.pointerType !== 'mouse') return;
+  const panel = document.getElementById('qcDashboardFailPopover');
+  if (!panel.matches(':popover-open') || panel.matches(':focus-within')) return;
+  dashboardFailureAnchor = { x: event.clientX, y: event.clientY };
+  if (!dashboardFailureFrame) {
+    dashboardFailureFrame = requestAnimationFrame(() => {
+      dashboardFailureFrame = 0;
+      if (panel.matches(':popover-open')) positionDashboardFailurePopover();
     });
   }
-  const months = Array.from(new Set(recs().map(r => (r.date || '').slice(0, 7)).filter(Boolean))).sort().reverse();
-  /* 首次进入默认选「最近有数据的月份」；用户主动选过(含全部)后不再覆盖 */
-  if (_dashMonth === null) _dashMonth = months[0] || '';
-  const sel = document.getElementById('dashMonthSel');
-  if (sel) {
-    sel.innerHTML = '<option value="">全部月份</option>' +
-      months.map(m => `<option value="${m}">${m.slice(0,4)}年${m.slice(5,7)}月</option>`).join('');
-    sel.value = _dashMonth;
+}
+
+async function changeDashboardFailurePage(offset) {
+  const page = dashboardFailurePage + offset;
+  if (dashboardFailureRequest || page < 1 || page > dashboardFailurePageCount()) return;
+  document.getElementById('qcDashboardFailItems').focus({ preventScroll: true });
+  const status = document.getElementById('qcDashboardFailStatus');
+  status.hidden = true;
+  const batchSize = dashboardSnapshot.recentFailures.length;
+  const batchPage = Math.floor((page - 1) * dashboardFailurePageSize / batchSize) + 1;
+  const cachedBatch = batchPage === 1 ? dashboardSnapshot : dashboardFailureBatch;
+  if (cachedBatch?.failurePage === batchPage) {
+    renderDashboardFailurePopover(cachedBatch, page);
+    positionDashboardFailurePopover();
+    return;
+  }
+  const request = new AbortController();
+  dashboardFailureRequest = request;
+  updateDashboardFailurePageButtons();
+  try {
+    const snapshot = await fetchDashboardSnapshot(dashboardMonth, batchPage, request.signal);
+    if (request.signal.aborted) return;
+    if (snapshot.month !== dashboardMonth || snapshot.failureRevision !== dashboardSnapshot.failureRevision) {
+      throw new Error('验货汇总已更新，请重新加载看板');
+    }
+    renderDashboardFailurePopover(snapshot, page);
+    positionDashboardFailurePopover();
+  } catch (error) {
+    if (request.signal.aborted) return;
+    status.textContent = error.message || 'FAIL 明细读取失败';
+    status.hidden = false;
+    positionDashboardFailurePopover();
+  } finally {
+    if (dashboardFailureRequest === request) {
+      dashboardFailureRequest = null;
+      updateDashboardFailurePageButtons();
+    }
   }
 }
 
-function renderDashboard() {
-  ensureDashMonthFilter();
-  let data = recs();
-  if (_dashMonth) data = data.filter(r => r.date && r.date.startsWith(_dashMonth));
-  const hint = document.getElementById('dashMonthHint');
-  if (hint) hint.textContent = _dashMonth ? ('· 本月 ' + data.length + ' 条记录') : ('· 全部 ' + data.length + ' 条记录');
-  updateTopKpis();
-  renderSummaryCards(data);
-  renderRiskTable(data);
-  renderRiskMatrix(data);
-  /* 图表统一在 initCharts() 中初始化（接收已按月过滤的 data） */
-  initCharts(data);
-}
-
-function renderSummaryCards(data) {
+function renderSummaryCards(totals) {
   const el = document.getElementById('summaryCards');
-  if (!el) return;
-  const total    = data.length;
-  const failCnt  = data.filter(r => isFail(r)).length;
-  const passCnt  = total - failCnt;
-  const passRate = total ? fmtPct(passCnt / total) : '0.0%';
-  const totalQty = data.reduce((s, r) => s + (r.qty || 0), 0);
-  const ws = weekStart(), we = weekEnd(ws);
-  const weekR = data.filter(r => r.date >= ws && r.date <= we);
-
+  const passRate = totals.passRate === null ? '—' : fmtPct(totals.passRate / 100);
   el.innerHTML = `
-    <div class="summary-card green">
-      <div class="card-icon">✓</div>
-      <div class="card-label">总体通过率</div>
-      <div class="card-value text-green">${passRate}</div>
-      <div class="card-sub">${passCnt} / ${total} 非REJ批次</div>
-    </div>
-    <div class="summary-card red">
-      <div class="card-icon">✕</div>
-      <div class="card-label">总 FAIL 批次</div>
-      <div class="card-value text-red">${failCnt}</div>
-      <div class="card-sub">本周 ${weekR.filter(r=>isFail(r)).length} 批</div>
-    </div>
     <div class="summary-card accent">
-      <div class="card-icon">⬡</div>
-      <div class="card-label">累计验货批次</div>
-      <div class="card-value">${total}</div>
-      <div class="card-sub">本周 ${weekR.length} 批</div>
+      <div class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg></div>
+      <div class="card-label">验货批次</div>
+      <div class="card-value">${totals.total}</div>
     </div>
-    <div class="summary-card blue">
-      <div class="card-icon">◈</div>
-      <div class="card-label">累计来料数量</div>
-      <div class="card-value">${(totalQty/10000).toFixed(1)}<span style="font-size:14px">万</span></div>
-      <div class="card-sub">共 ${totalQty.toLocaleString()} 件</div>
+    <div class="summary-card green">
+      <div class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 22s7-3 7-9V6l-7-3-7 3v7c0 6 7 9 7 9Z"/><path d="m9 12 2 2 4-4"/></svg></div>
+      <div class="card-label">合格率</div>
+      <div class="card-value text-green">${passRate}</div>
+      <div class="card-sub">PASS ÷（PASS + FAIL）</div>
     </div>
-    <div class="summary-card yellow">
-      <div class="card-icon">◉</div>
-      <div class="card-label">活跃供应商</div>
-      <div class="card-value text-yellow">${Object.keys(groupBy(data,'supplier')).length}</div>
-      <div class="card-sub">家参与本期验货</div>
-    </div>`;
+    <button type="button" class="summary-card red" id="qcDashboardFailCard"
+            aria-controls="qcDashboardFailPopover" aria-expanded="false">
+      <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10.3 5a2 2 0 0 1 3.4 0l7.4 12a2 2 0 0 1-1.7 3H4.6a2 2 0 0 1-1.7-3Z"/><path d="M12 9v4m0 3h.01"/></svg></span>
+      <span class="card-label">FAIL 批次</span>
+      <span class="card-value text-red">${totals.FAIL}</span>
+    </button>`;
+  const card = document.getElementById('qcDashboardFailCard');
+  card.addEventListener('pointerenter', event => {
+    if (event.pointerType === 'mouse') showDashboardFailurePopover(event.clientX, event.clientY);
+  });
+  card.addEventListener('pointermove', followDashboardFailurePopover);
+  card.addEventListener('pointerleave', scheduleDashboardFailureHide);
+  card.addEventListener('click', event => {
+    const bounds = card.getBoundingClientRect();
+    showDashboardFailurePopover(event.detail ? event.clientX : bounds.left, event.detail ? event.clientY : bounds.bottom);
+    document.getElementById('qcDashboardFailItems').focus({ preventScroll: true });
+  });
 }
 
 /* ════════════════════════════════════════
@@ -678,18 +881,6 @@ function G(top=30, right=16, bottom=30, left=50) {
   return { top, right, bottom, left, containLabel: true };
 }
 
-/* ─── §7.1  初始化仪表板所有图表 ─── */
-function initCharts(data) {
-  /* 按顺序逐个初始化，catch 独立，互不影响 */
-  safeInit(() => chartDailyTrend(data),     'chartDailyTrend');
-  safeInit(() => chartResultPie(data),      'chartResultPie');
-  safeInit(() => chartSupplierRank(data),   'chartSupplierRank');
-  safeInit(() => chartDefectTop(data),      'chartDefectTop');
-  safeInit(() => chartClientPie(data),      'chartClientPie');
-  safeInit(() => chartWeeklyTrend(data),    'chartWeeklyTrend');
-  /* chartRiskMatrix 用 HTML 渲染，不用 ECharts */
-}
-
 /* 初始化分析页图表 */
 function initAnalysisCharts(data) {
   safeInit(() => chartWeeklySupplier(data), 'chartWeeklySupplier');
@@ -704,430 +895,97 @@ function safeInit(fn, label) {
 
 /* ─── §7.2  具体图表实现 ─── */
 
-/* 1. 每日验货 + PASS率 */
-function chartDailyTrend(data) {
-  const c = makeChart('chartDailyTrend');
+function dashboardChartStyle() {
+  const light = document.body.classList.contains('theme-light');
+  return {
+    ..._cc(),
+    textDim: light ? '#53645d' : '#a6b6ca',
+    trendBar: light ? '#a9d2b8' : '#4f8b73',
+    trendLine: light ? '#216247' : '#8ed8b0',
+    green: light ? '#287650' : '#76d6a7',
+    red: light ? '#b72c43' : '#ff99a4',
+    yellow: light ? '#a66c13' : '#edce85',
+    blue: light ? '#346ca6' : '#78b2ff',
+  };
+}
+
+function chartInspectionTrend(months) {
+  const c = makeChart('chartInspectionTrend');
   if (!c) return;
-  const byDate = groupBy(data, 'date');
-  const dates  = Object.keys(byDate).sort();
-  const totals = dates.map(d => byDate[d].length);
-  const fails  = dates.map(d => byDate[d].filter(r => isFail(r)).length);
-  const rates  = dates.map((d, i) => totals[i] ? +((totals[i]-fails[i])/totals[i]*100).toFixed(1) : 100);
+  const colors = dashboardChartStyle();
+  if (!months.length) {
+    c.setOption({ graphic: [{ type:'text', left:'center', top:'middle',
+      style:{ text:'暂无按月统计的验货记录', fill:colors.textDim, fontSize:12 } }] });
+    return;
+  }
 
   c.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', ...(_cc().tt) },
+    tooltip: { trigger: 'axis', ...colors.tt },
     legend: {
-      data:      ['验货批次','PASS率(%)'],
-      textStyle: { color: _cc().text, fontSize: 11 },
-      top:       6,
-      right:     28,
-      itemGap:   22,
-      itemWidth: 14,
-      itemHeight: 9,
+      data: ['验货批次', '合格率'],
+      textStyle: { color:colors.text, fontSize:11 },
+      top: 6, right: 20, itemGap: 14, itemWidth: 14, itemHeight: 9,
     },
-    grid: G(44, 60, 28, 48),
+    grid: G(42, 20, 16, 18),
     xAxis: {
-      type:'category', data: dates.map(d => d.slice(5)),
-      axisLabel:{ color:_cc().textDim, fontSize:10 },
-      axisLine:{ lineStyle:{ color:_cc().axis } },
+      type:'category', data:months.map(item => item.month),
+      axisLabel:{ color:colors.textDim, fontSize:11, hideOverlap:true },
+      axisLine:{ lineStyle:{ color:colors.axis } },
     },
     yAxis: [
-      { type:'value', name:'批次', nameTextStyle:{color:_cc().textDim,fontSize:10},
-        axisLabel:{ color:_cc().textDim, fontSize:10 },
-        splitLine:{ lineStyle:{ color:_cc().grid, type:'dashed' } } },
-      { type:'value', name:'PASS率', min:0, max:100,
-        nameTextStyle:{color:_cc().textDim,fontSize:10},
-        axisLabel:{ color:_cc().textDim, fontSize:10, formatter:'{value}%' },
+      { type:'value', name:'批次', minInterval:1,
+        nameTextStyle:{ color:colors.textDim, fontSize:11 },
+        axisLabel:{ color:colors.textDim, fontSize:11 },
+        splitLine:{ lineStyle:{ color:colors.grid } } },
+      { type:'value', min:0, max:100,
+        axisLabel:{ color:colors.textDim, fontSize:11, formatter:'{value}%' },
         splitLine:{ show:false } },
     ],
     series: [
-      { name:'验货批次', type:'bar', data:totals,
-        itemStyle:{ color:'#0090bb', borderRadius:[3,3,0,0] },
-        barMaxWidth: 30 },
-      { name:'PASS率(%)', type:'line', yAxisIndex:1, data:rates,
-        smooth:true, symbol:'circle', symbolSize:5,
-        lineStyle:{ color:'#00e596', width:2 },
-        itemStyle:{ color:'#00e596' },
-        areaStyle:{ color:'rgba(0,229,150,0.07)' } },
+      { name:'验货批次', type:'bar', data:months.map(item => item.total),
+        itemStyle:{ color:colors.trendBar, borderRadius:[3,3,0,0] }, barMaxWidth:30 },
+      { name:'合格率', type:'line', yAxisIndex:1, data:months.map(item => item.passRate),
+        tooltip:{ valueFormatter:value => value == null ? '—' : value.toFixed(1) + '%' },
+        symbol:'circle', symbolSize:5,
+        lineStyle:{ color:colors.trendLine, width:2 }, itemStyle:{ color:colors.trendLine } },
     ],
   });
 }
 
-/* 2. 判定结果饼图 */
-function chartResultPie(data) {
+function chartResultPie(totals) {
   const c = makeChart('chartResultPie');
   if (!c) return;
-  const pass = data.filter(r => isPass(r)).length;
-  const fail = data.filter(r => isFail(r)).length;
-  const cond = data.filter(r => r.result === 'COND').length;
-  const hold = data.filter(r => r.result === 'HOLD').length;
+  const colors = dashboardChartStyle();
+  const results = [
+    { value:totals.PASS, name:'PASS', itemStyle:{ color:colors.green } },
+    { value:totals.FAIL, name:'FAIL', itemStyle:{ color:colors.red } },
+    { value:totals.PENDING, name:'PENDING', itemStyle:{ color:colors.yellow } },
+    { value:totals.LG, name:'LG', itemStyle:{ color:colors.blue } },
+    { value:Object.values(totals.other).reduce((sum, count) => sum + count, 0),
+      name:'其他', itemStyle:{ color:colors.textDim } },
+  ].filter(item => item.value > 0);
 
   c.setOption({
     backgroundColor:'transparent',
-    tooltip:{ trigger:'item', ...(_cc().tt),
-      formatter: p => {
-        const label = p.name === 'PASS' ? '纯 PASS 占比' :
-                      p.name === 'REJ'  ? 'REJ 占比'     :
-                      p.name + ' 占比';
-        return `<b>${p.name}：${p.value}批</b><br/>`
-          + `${label}：${p.percent.toFixed(2)}%<br/>`
-          + `<span style="color:#8899aa;font-size:10px">注：总体通过率含非REJ批次，PASS占比仅统计纯PASS</span>`;
-      }
+    tooltip:{ trigger:'item', ...colors.tt, formatter:'{b}：{c} 批（{d}%）' },
+    title:{
+      text:totals.total ? totals.total.toLocaleString() : '—',
+      subtext:totals.total ? '批次' : '暂无判定数据',
+      left:totals.total ? '35%' : 'center', top:'middle', textAlign:'center', itemGap:3,
+      textStyle:{ color:colors.textHi, fontSize:26, fontWeight:650 },
+      subtextStyle:{ color:colors.textDim, fontSize:11 },
     },
-    legend:{ bottom:4, textStyle:{ color:_cc().text, fontSize:10 }, itemWidth:10, itemHeight:10 },
+    legend:{
+      orient:'vertical', right:12, top:'middle', itemGap:10, itemWidth:10, itemHeight:10,
+      textStyle:{ color:colors.text, fontSize:12 },
+      formatter:name => name + '  ' + results.find(item => item.name === name).value.toLocaleString(),
+    },
     series:[{
-      type:'pie', radius:['48%','72%'], center:['50%','44%'],
-      label:{ show:false },
-      emphasis:{ label:{ show:true, fontSize:13, fontWeight:'bold', color:_cc().textHi } },
-      data:[
-        { value:pass, name:'PASS',   itemStyle:{ color:'#00e596' } },
-        { value:fail, name:'REJ',    itemStyle:{ color:'#ff3d5a' } },
-        { value:cond, name:'有条件', itemStyle:{ color:'#f5c842' } },
-        { value:hold, name:'待定',   itemStyle:{ color:'#3b82f6' } },
-      ].filter(d => d.value > 0),
+      type:'pie', radius:['47%','65%'], center:['35%','50%'],
+      label:{ show:false }, data:results,
     }],
   });
-}
-
-/* 3. 供应商批次不良率排名（REJ批次 / 验货批次 × 100%，与供应商管理口径一致）*/
-function chartSupplierRank(data) {
-  const c = makeChart('chartSupplierRank');
-  if (!c) return;
-
-  /* 复用 getSupplierTopRate（batchRate口径，rej>0 才进入排名） */
-  const list = getSupplierTopRate(data, 10);
-
-  if (!list.length) {
-    c.setOption({
-      backgroundColor: 'transparent',
-      graphic: [{ type:'text', left:'center', top:'middle',
-        style:{ text:'暂无供应商不良率数据', fill:_cc().textDim, fontSize:12 } }],
-    });
-    return;
-  }
-
-  /* 横向条图，供应商名称在 Y 轴，不被截断 */
-  const names = list.map(d => d.name).reverse();
-  const bars  = list.map(d => d.batchRate).reverse();
-  const ttList = list.slice().reverse();
-
-  c.setOption({
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis', ...(_cc().tt),
-      formatter: p => {
-        const d = ttList[p[0].dataIndex];
-        const qr = d.qtyRate != null ? d.qtyRate.toFixed(1) + '%' : '—';
-        return `<b>${d.name}</b><br/>` +
-               `验货批次：${d.total}<br/>` +
-               `REJ批次：${d.rej}<br/>` +
-               `批次不良率：<strong>${d.batchRate.toFixed(1)}%</strong><br/>` +
-               `数量不良率：${qr}（参考）`;
-      },
-    },
-    grid: { top: 8, left: 8, right: 44, bottom: 8, containLabel: true },
-    xAxis: {
-      type: 'value',
-      name: '批次不良率',
-      nameTextStyle: { color: _cc().textDim, fontSize: 10 },
-      axisLabel: { color: _cc().textDim, fontSize: 10, formatter: '{value}%' },
-      splitLine: { lineStyle: { color: _cc().grid, type: 'dashed' } },
-    },
-    yAxis: {
-      type: 'category', data: names,
-      axisLabel: { color: _cc().text, fontSize: 10 },
-      axisLine: { lineStyle: { color: _cc().axis } },
-    },
-    series: [{
-      type: 'bar', barMaxWidth: 20,
-      data: bars.map(v => ({
-        value: v,
-        itemStyle: {
-          color: v >= 30 ? '#ff3d5a' : v >= 10 ? '#f5c842' : '#00e596',
-          borderRadius: [0, 3, 3, 0],
-        },
-      })),
-      label: {
-        show: true, position: 'right',
-        color: _cc().text, fontSize: 10,
-        formatter: p => p.value.toFixed(1) + '%',
-      },
-    }],
-  });
-}
-
-/* 4. 不良类型 TOP（横向柱图） */
-function chartDefectTop(data) {
-  const c = makeChart('chartDefectTop');
-  if (!c) return;
-  const dm = {};
-  data.forEach(r => {
-    _splitDefect(r.defect).forEach(d => {
-      dm[d] = (dm[d] || 0) + 1;
-    });
-  });
-
-  const hasData = Object.keys(dm).length > 0;
-  /* 无不良时显示空状态，不用占位数据 */
-  if (!hasData) {
-    c.setOption({
-      backgroundColor: 'transparent',
-      graphic: [{
-        type: 'text', left: 'center', top: 'middle',
-        style: { text: '暂无不良数据', fill: '#3a4858', fontSize: 13 },
-      }],
-    });
-    return;
-  }
-
-  const list = Object.entries(dm).sort((a,b)=>b[1]-a[1]).slice(0,8);
-  const COLS = ['#ff3d5a','#ff6b35','#f5c842','#f5c842','#00c8ff','#3b82f6','#3b82f6','#a855f7'];
-
-  c.setOption({
-    backgroundColor:'transparent',
-    tooltip:{ trigger:'axis', ...(_cc().tt) },
-    grid: G(10, 50, 10, 10),
-    xAxis:{ type:'value',
-      axisLabel:{ color:_cc().textDim, fontSize:10 },
-      splitLine:{ lineStyle:{ color:_cc().grid, type:'dashed' } } },
-    yAxis:{ type:'category', data:list.map(d=>d[0]).reverse(),
-      axisLabel:{ color:_cc().text, fontSize:11 } },
-    series:[{
-      type:'bar', barMaxWidth:18,
-      data: list.map((d,i) => ({
-        value:d[1],
-        itemStyle:{ color:COLS[i]||'#3b82f6', borderRadius:[0,3,3,0] },
-      })).reverse(),
-      label:{ show:true, position:'right', color:_cc().text, fontSize:10,
-        formatter: p => p.value + '次' },
-    }],
-  });
-}
-
-/* 5. 客户占比环形图 */
-function chartClientPie(data) {
-  const c = makeChart('chartClientPie');
-  if (!c) return;
-
-  const byC   = groupBy(data, 'client');
-  const total = data.length || 1;
-  const COLS  = ['#00c8ff','#00e596','#f5c842','#ff6b35','#ff3d5a','#3b82f6','#a855f7','#ec4899'];
-
-  /* 按批次数降序排列 */
-  const sorted = Object.entries(byC)
-    .map(([name, arr]) => ({ name, value: arr.length }))
-    .sort((a, b) => b.value - a.value);
-
-  /* 合并规则：
-     ① 超过 7 个客户 → 保留 TOP 7，其余合入"其他"
-     ② 占比 < 3% 的客户合入"其他"（无论总数多少）
-  */
-  const THRESHOLD = 0.03;
-  const MAX_SLICES = 7;
-
-  const main  = [];
-  let otherVal = 0;
-
-  sorted.forEach((d, i) => {
-    const pct = d.value / total;
-    if (i < MAX_SLICES && pct >= THRESHOLD) {
-      main.push(d);
-    } else {
-      otherVal += d.value;
-    }
-  });
-
-  if (otherVal > 0) {
-    main.push({ name: '其他', value: otherVal });
-  }
-
-  /* 计算每项占比，用于按项控制标签显示 */
-  const totalVal = main.reduce((s, d) => s + d.value, 0) || 1;
-  /* 分配颜色 + 按占比控制标签/引导线 */
-  const SHOW_PCT = 8;   /* >= 8% 才显示外部标签 */
-  const list = main.map((d, i) => {
-    const pct = d.value / totalVal * 100;
-    const showLbl = pct >= SHOW_PCT;
-    return {
-      value:     d.value,
-      name:      d.name,
-      itemStyle: { color: d.name === '其他' ? '#4a5568' : COLS[i % COLS.length] },
-      label:     { show: showLbl },
-      labelLine: { show: showLbl },
-    };
-  });
-
-  c.setOption({
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'item', ...(_cc().tt),
-      confine: true,
-      formatter: p => `${p.name}<br/>批次：${p.value}<br/>占比：${p.percent.toFixed(1)}%`,
-    },
-    legend: {
-      type:       'scroll',
-      orient:     'horizontal',
-      bottom:     2,
-      left:       10,
-      right:      10,
-      itemWidth:  10,
-      itemHeight: 10,
-      itemGap:    10,
-      textStyle:     { color: _cc().text,   fontSize: 11 },
-      pageTextStyle: { color: _cc().textHi, fontSize: 11 },
-      pageIconColor:         _cc().blue || '#00c8ff',
-      pageIconInactiveColor: _cc().pageInactive,
-    },
-    series: [{
-      type:              'pie',
-      radius:            ['42%', '62%'],
-      center:            ['50%', '42%'],
-      avoidLabelOverlap: true,           /* 恢复自动避让，配合按项控制 */
-      minShowLabelAngle: 8,
-      label: {
-        show:       true,
-        position:   'outside',
-        fontSize:   11,
-        fontWeight: 600,
-        lineHeight: 14,
-        color:      _cc().textHi,
-        formatter:  p => `${p.name}\n${p.percent.toFixed(0)}%`,
-      },
-      labelLine: {
-        show:      true,
-        length:    14,
-        length2:   14,
-        smooth:    false,
-        lineStyle: { color: _cc().labelLine, width: 1.2 },
-      },
-      labelLayout:  { hideOverlap: true },  /* 仍存在的重叠标签自动隐藏 */
-      emphasis: {
-        label: {
-          show:      true,
-          fontSize:  12,
-          formatter: p => `${p.name}\n${p.percent.toFixed(1)}%`,
-        },
-      },
-      data: list,
-    }],
-  });
-}
-
-/* 6. 本周批次不良率趋势（折线）
-   Y轴：每周批次不良率 = REJ批次 / 总批次 × 100%（与供应商排名口径一致）
-   某周无验货数据 → null（折线断开，不显示 0%）
-*/
-function chartWeeklyTrend(data) {
-  const c = makeChart('chartWeeklyTrend');
-  if (!c) return;
-  const bw = {};
-  data.forEach(r => {
-    const ws = weekStart(r.date);
-    if (!bw[ws]) bw[ws] = { total: 0, fail: 0 };
-    bw[ws].total++;
-    if (isFail(r)) bw[ws].fail++;
-  });
-  const weeks = Object.keys(bw).sort();
-
-  /* 批次不良率 = REJ批次 / 总批次；某周无记录则 null */
-  const weekData = weeks.map(w => {
-    const d = bw[w];
-    if (!d || d.total === 0) return { rate: null, total: 0, fail: 0 };
-    return {
-      rate:  +(d.fail / d.total * 100).toFixed(1),
-      total: d.total,
-      fail:  d.fail,
-    };
-  });
-
-  c.setOption({
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis', ...(_cc().tt),
-      formatter: p => {
-        const idx = p[0].dataIndex;
-        const d   = weekData[idx];
-        if (!d || d.total === 0) {
-          return `W${idx + 1}（${weeks[idx].slice(5)}）<br/>无验货记录`;
-        }
-        const rateStr = d.rate != null ? d.rate.toFixed(1) + '%' : '—';
-        return `<b>W${idx + 1}（${weeks[idx].slice(5)}）</b><br/>` +
-               `验货批次：${d.total}<br/>` +
-               `REJ批次：${d.fail}<br/>` +
-               `批次不良率：<strong>${rateStr}</strong>`;
-      },
-    },
-    grid: G(24, 14, 28, 48),
-    xAxis: {
-      type: 'category', data: weeks.map((_, i) => `W${i + 1}`),
-      axisLabel: { color: _cc().textDim, fontSize: 10 },
-      axisLine: { lineStyle: { color: _cc().axis } },
-    },
-    yAxis: {
-      type: 'value', name: '批次不良率',
-      nameTextStyle: { color: _cc().textDim, fontSize: 10 },
-      axisLabel: { color: _cc().textDim, fontSize: 10, formatter: '{value}%' },
-      splitLine: { lineStyle: { color: _cc().grid, type: 'dashed' } },
-    },
-    series: [{
-      type: 'line',
-      data: weekData.map(d => d.rate),   /* null = 该周无记录，折线断开 */
-      connectNulls: false,
-      smooth: true, symbol: 'circle', symbolSize: 6,
-      lineStyle: { color: '#f5c842', width: 2 },
-      itemStyle: { color: '#f5c842' },
-      areaStyle: { color: 'rgba(245,200,66,0.08)' },
-      markLine: {
-        data: [{ type: 'average', name: '均值',
-          lineStyle: { color: '#ff3d5a', type: 'dashed', width: 1 } }],
-        label: { color: '#ff3d5a', fontSize: 10 },
-        silent: true,
-      },
-    }],
-  });
-}
-
-/* 7. 风险矩阵（HTML 渲染，不用 ECharts） */
-function renderRiskMatrix(data) {
-  const el = document.getElementById('chartRiskMatrix');
-  if (!el) return;
-
-  const SEVERITY = {
-    '爆口':'high','大小眼':'high','斜眼':'high','大小脚':'high','形状不良':'high',
-    '线头':'medium','咪咪眼':'medium','眼贴歪':'medium','止口偏大':'medium','色差':'medium',
-    '缝线不匀':'medium','轻微色差':'low',
-  };
-
-  const dm = {};
-  data.forEach(r => {
-    _splitDefect(r.defect).forEach(d => {
-      dm[d] = (dm[d] || 0) + 1;
-    });
-  });
-
-  const items = Object.entries(dm).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  const maxCnt = items[0]?.[1] || 1;
-
-  if (!items.length) {
-    el.innerHTML = '<div class="empty-state" style="padding:30px"><div class="empty-icon">✓</div><div class="empty-text">暂无不良记录</div></div>';
-    return;
-  }
-
-  el.className = 'chart-body risk-body';
-  el.innerHTML = '<div class="risk-matrix-wrap">' +
-    items.map(([name, cnt]) => {
-      const lv  = SEVERITY[name] || (cnt>=4?'high':cnt>=2?'medium':'low');
-      const pct = Math.round(cnt / maxCnt * 100);
-      const tag = { high:'高风险', medium:'风险', low:'正常' }[lv];
-      const bc  = { high:'badge-rej', medium:'badge-cond', low:'badge-pass' }[lv];
-      return `<div class="risk-item ${lv}">
-        <span class="risk-name">${name}</span>
-        <div class="risk-bar-wrap"><div class="risk-bar" style="width:${pct}%"></div></div>
-        <span class="risk-count">${cnt}次</span>
-        <span class="badge ${bc}">${tag}</span>
-      </div>`;
-    }).join('') + '</div>';
 }
 
 /* 8. 每周供应商批次不良率趋势（分析页）
@@ -1382,52 +1240,6 @@ function chartDefectHeatmap(data) {
 }
 
 /* ════════════════════════════════════════
-   §8  RISK TABLE
-════════════════════════════════════════ */
-function renderRiskTable(data) {
-  const el = document.getElementById('riskTableWrap');
-  if (!el) return;
-  const failR = data.filter(r=>isFail(r)).sort((a,b)=>String(b.date || '').localeCompare(String(a.date || ''))).slice(0,12);
-  if (!failR.length) {
-    el.innerHTML = '<div class="empty-state" style="padding:40px"><div class="empty-icon">✓</div><div class="empty-text">暂无高风险批次</div></div>';
-    return;
-  }
-  el.innerHTML = `<table style="table-layout:fixed;width:100%">
-    <colgroup>
-      <col style="width:100px"/><col style="width:110px"/><col style="width:100px"/>
-      <col style="width:auto"/><col style="width:90px"/><col style="width:80px"/>
-      <col style="width:80px"/><col style="width:180px"/><col style="width:90px"/>
-    </colgroup>
-    <thead><tr>
-      <th style="text-align:left">日期</th>
-      <th style="text-align:left">供应商</th>
-      <th style="text-align:left">货号</th>
-      <th style="text-align:left">款式</th>
-      <th style="text-align:right">来料数</th>
-      <th style="text-align:right">抽查数</th>
-      <th style="text-align:right">不良率</th>
-      <th style="text-align:left">不良现象</th>
-      <th style="text-align:center">风险等级</th>
-    </tr></thead>
-    <tbody>${failR.map(r => {
-      const rt = parseRate(r.defectRate) ?? 0;
-      const cls = rt>=20 ? 'risk-red' : 'risk-yellow';
-      const lbl = rt>=20 ? '高风险' : '风险';
-      return `<tr${_dateRowAttrs(r)}>
-        <td style="font-family:var(--font-mono);font-size:11px;white-space:nowrap">${_dateDisplay(r.date)}${_dateWarningLabel(r)}</td>
-        <td style="font-weight:500;color:#e8edf5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.supplier}">${r.supplier}</td>
-        <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:11px" title="${r.productNo||''}">${r.productNo||'-'}</td>
-        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.productName||''}">${r.productName||'-'}</td>
-        <td style="text-align:right;font-variant-numeric:tabular-nums">${(r.qty||0).toLocaleString()}</td>
-        <td style="text-align:right;font-variant-numeric:tabular-nums">${r.sampleQty != null ? r.sampleQty : '<span style="color:var(--text-muted)">—</span>'}</td>
-        <td style="text-align:right" class="${cls}">${r.sampleQty != null ? (r.defectRate||'-') : '<span style="color:var(--text-muted)">—</span>'}</td>
-        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${r.defect||''}">${r.defect||'-'}</td>
-        <td style="text-align:center"><span class="badge ${rt>=20?'badge-rej':'badge-cond'}">${lbl}</span></td>
-      </tr>`;
-    }).join('')}</tbody></table>`;
-}
-
-/* ════════════════════════════════════════
    §9  ANALYSIS PAGE
 ════════════════════════════════════════ */
 function renderAnalysis() {
@@ -1544,6 +1356,8 @@ function prepareRecordsDates() {
 }
 function updateRecordsDateLabel() {
   const from = getVal('filterDateFrom'), to = getVal('filterDateTo');
+  const reset=document.querySelector('#page-records .records-reset');
+  if(reset)reset.hidden=!(from||to||getVal('searchInput')||getVal('qisTaskCustomer')||getVal('qisTaskDate')||window.QcInspectionSheet?.model.recordsSort==='date-desc');
   const label = document.getElementById('recordsDateLabel');
   if (!label) return;
   label.textContent = from && to ? (from === to ? from : from + ' 至 ' + to) : from ? from + ' 起' : to ? '截至 ' + to : '不限验货日期';
@@ -1570,8 +1384,7 @@ function clearRecordsDates() {
 }
 function resetRecordsFilters() {
   window.QcInspectionSheet?.resetTaskFilters();
-  ['searchInput','filterResult','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
-  document.getElementById('filterSort').value = window.QcInspectionSheet ? 'date-asc' : 'mod-desc';
+  ['searchInput','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('recordsDateFilter').open = false;
   filterRecords();
 }
@@ -1591,7 +1404,6 @@ function filterRecords() {
   try {
     const data = state.records.filter(r => ['approved','rejected'].includes(recStatus(r)) && !window.QcWorkflow?.isLinked(r.id)).concat(window.QcWorkflow?.recordItems() || []);
     const search = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
-    const resF   = document.getElementById('filterResult')?.value || '';
     const dfrom  = document.getElementById('filterDateFrom')?.value || '';
     const dto    = document.getElementById('filterDateTo')?.value   || '';
 
@@ -1604,24 +1416,15 @@ function filterRecords() {
           .filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(search)) return false;
       }
-      if (resF === 'PASS' && !isPass(r)) return false;
-      if (resF === 'REJ'  && !isFail(r)) return false;
       const plan=inspectionPlanRange(r);
       if ((dfrom || dto) && (!plan || (dfrom && plan.to < dfrom) || (dto && plan.from > dto))) return false;
       return true;
     }).sort((a, b) => {
-      const mode = document.getElementById('filterSort')?.value || 'mod-desc';
-      if (mode === 'date-asc' || mode === 'date-desc') {
-        const pa=inspectionPlanRange(a),pb=inspectionPlanRange(b);
-        if(!pa||!pb)return pa?-1:pb?1:0;
-        const order=pa.from.localeCompare(pb.from)||pa.to.localeCompare(pb.to);
-        return mode==='date-asc'?order:-order;
-      }
       const ka = formatModifiedDate(a.updatedAt) || '';
       const kb = formatModifiedDate(b.updatedAt) || '';
       /* 修改日期相同再按来料日期，保证同一天录入的明细聚在一起且稳定 */
       if (ka === kb) return String(b.date || '').localeCompare(String(a.date || ''));
-      return mode === 'mod-asc' ? ka.localeCompare(kb) : kb.localeCompare(ka);
+      return kb.localeCompare(ka);
     });
 
 
@@ -1633,7 +1436,7 @@ function filterRecords() {
       _updateBatchBtn();
       wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">☰</div>'
         + '<div class="empty-text">暂无记录</div>'
-        + '<div class="empty-sub">点击右上角「+ 新增验货」添加数据</div></div>';
+        + '<div class="empty-sub">点击「新增验货」添加数据</div></div>';
       syncInspectionSelection();
       return;
     }
@@ -3730,14 +3533,12 @@ function renderDefectLibPage() {
   const CATS = ['外观/质量','功能','尺寸/测量','包装','其它'];
   const LVLS = ['CR','MAJ 0.65','MAJ 1.0','MIN 2.5'];
 
+  const query=el.querySelector('#defLibSearch')?.value||'';
   el.innerHTML = `
   <div class="page-header">
     <h2 class="page-title">不良描述库</h2>
+    <input id="defLibSearch" type="search" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"/>
     ${canAdd ? '<button class="btn-primary" onclick="_openDefLibModal()">＋ 新增描述</button>' : ''}
-  </div>
-  <div style="margin:10px 0">
-    <input id="defLibSearch" type="text" placeholder="搜索描述或关键词..." class="form-input"
-           style="max-width:280px" oninput="renderDefectLibPage()"/>
   </div>
   <div class="table-wrap" style="margin-top:8px">
     <table style="table-layout:fixed;width:100%">
@@ -3753,33 +3554,7 @@ function renderDefectLibPage() {
         <th style="text-align:center">状态</th>
         <th style="text-align:center">操作</th>
       </tr></thead>
-      <tbody>
-        ${(() => {
-          const q = (document.getElementById('defLibSearch')?.value||'').toLowerCase();
-          const filtered = q ? lib.filter(d =>
-            d.name.toLowerCase().includes(q) ||
-            (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
-          if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
-          return filtered.map((d,i) => {
-            const realIdx = lib.indexOf(d);
-            const badge = d.enabled
-              ? '<span class="badge badge-pass">启用</span>'
-              : '<span class="badge badge-rej">停用</span>';
-            return `<tr>
-              <td style="font-weight:500">${d.name}</td>
-              <td style="font-size:11px">${d.category||''}</td>
-              <td style="font-size:11px">${d.defaultLevel||''}</td>
-              <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
-              <td style="text-align:center">${badge}</td>
-              <td style="text-align:center">
-                ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
-                ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
-                ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
-              </td>
-            </tr>`;
-          }).join('');
-        })()}
-      </tbody>
+      <tbody></tbody>
     </table>
   </div>
 
@@ -3816,6 +3591,35 @@ function renderDefectLibPage() {
       </div>
     </div>
   </div>`;
+  const search=el.querySelector('#defLibSearch'),body=el.querySelector('tbody');
+  function rowsFor(q){
+    const filtered = q ? lib.filter(d =>
+      d.name.toLowerCase().includes(q) ||
+      (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
+    if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
+    return filtered.map(d => {
+      const realIdx = lib.indexOf(d);
+      const badge = d.enabled
+        ? '<span class="badge badge-pass">启用</span>'
+        : '<span class="badge badge-rej">停用</span>';
+      return `<tr>
+        <td style="font-weight:500">${d.name}</td>
+        <td style="font-size:11px">${d.category||''}</td>
+        <td style="font-size:11px">${d.defaultLevel||''}</td>
+        <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
+        <td style="text-align:center">${badge}</td>
+        <td style="text-align:center">
+          ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
+          ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
+          ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+  search.value=query;
+  const filter=()=>{ body.innerHTML=rowsFor(search.value.toLowerCase()); };
+  search.addEventListener('input',filter);
+  filter();
 }
 
 let _editingDefLibIdx = null;
@@ -4493,7 +4297,10 @@ function renderReviewPage() {
   }
   ['pending','rejected','approved'].forEach(t => {
     const btn = document.getElementById('reviewTab' + t.charAt(0).toUpperCase() + t.slice(1));
-    if (btn) btn.classList.toggle('active', _reviewTab === t);
+    if (btn) {
+      btn.classList.toggle('active', _reviewTab === t);
+      btn.setAttribute('aria-pressed', String(_reviewTab === t));
+    }
   });
 
   const list = state.records.filter(r => recStatus(r) === _reviewTab && !window.QcWorkflow?.isLinked(r.id)).concat((window.QcWorkflow?.recordItems() || []).filter(r => recStatus(r) === _reviewTab));
@@ -4639,10 +4446,14 @@ function buildQcProblemNotes(data) {
 }
 
 function renderDailyReport() {
-  if (window.QcDailyReport?.enabled()) return window.QcDailyReport.load();
+  if (window.QcDailyReport?.enabled()) {
+    window.QcReportSheets.mountRefresh('daily');
+    return window.QcDailyReport.load();
+  }
   const dateEl = document.getElementById('dailyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = todayStr();
+  window.QcReportDates?.sync(dateEl);
   const date = dateEl.value;
   const data = recs().filter(r => r.date === date || r.inspDate === date);
 
@@ -4712,10 +4523,11 @@ function renderDailyReport() {
 }
 
 function renderWeeklyReport() {
-  if (window.QcPeriodReports?.weekly.enabled()) return window.QcPeriodReports.weekly.load();
+  if (window.QcPeriodReports?.weekly.enabled()) return window.QcReportSheets.enter('weekly');
   const dateEl = document.getElementById('weeklyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = weekStart();
+  window.QcReportDates?.sync(dateEl);
   const ws   = dateEl.value;
   const we   = weekEnd(ws);
   const data = recs().filter(r => r.date >= ws && r.date <= we);
@@ -4883,18 +4695,6 @@ function renderSupplierReport() {
 /* ════════════════════════════════════════
    §14  EXPORT
 ════════════════════════════════════════ */
-function exportPDF(type) {
-  if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  /* 日报 / 周报 / 供应商报告：白底 A4 画布，不走浏览器打印 */
-  const page = type || currentPage;
-  if (page === 'daily'           || page === 'daily-report')    { exportReportPDF('daily');    return; }
-  if (page === 'weekly'          || page === 'weekly-report')   { exportReportPDF('weekly');   return; }
-  if (page === 'supplier-report' || page === 'supplier')        { exportReportPDF('supplier'); return; }
-  /* 其他页面保持浏览器打印 */
-  showToast('正在调用打印对话框，可选择"另存为PDF"…', 'info');
-  setTimeout(() => window.print(), 400);
-}
-
 function _qcApiBase() {
   const p = location.pathname.replace(/[^/]*$/, '');
   return p.replace(/\/$/, '');
@@ -4905,11 +4705,9 @@ function _recordsExportQuery() {
   params.set('company', getCompany());   /* 导出当前厂区的数据 */
   params.set('dateBasis', 'inspection-plan');
   const search = getVal('searchInput');
-  const result = getVal('filterResult');
   const from = getVal('filterDateFrom');
   const to = getVal('filterDateTo');
   if (search) params.set('search', search);
-  if (result) params.set('result', result);
   if (from) params.set('dateFrom', from);
   if (to) params.set('dateTo', to);
   const qs = params.toString();
@@ -4933,7 +4731,7 @@ function exportCSV() {
   if (currentPage === 'records') filterRecords();
   if (_downloadServerExport('records.csv', 'CSV')) return;
   try {
-    const hasActiveFilter = ['searchInput', 'filterResult', 'filterDateFrom', 'filterDateTo']
+    const hasActiveFilter = ['searchInput', 'filterDateFrom', 'filterDateTo']
       .some(id => getVal(id));
     if (currentPage !== 'records' && hasActiveFilter) filterRecords();
     const data = currentPage === 'records' || hasActiveFilter ? filteredRecs : recs();
@@ -4966,7 +4764,6 @@ async function exportFactoryExcel() {
     if (typeof XLSX === 'undefined') await window.QcAssets.load('excel');
     const hasActiveFilter = !!(
       getVal('searchInput') ||
-      getVal('filterResult') ||
       getVal('filterDateFrom') ||
       getVal('filterDateTo')
     );
@@ -6386,6 +6183,7 @@ function resizeAllCharts() {
 }
 
 window.addEventListener('resize', () => {
+  if (currentPage === 'dashboard') closeDashboardFailurePopover();
   clearTimeout(window._resizeTimer);
   window._resizeTimer = setTimeout(resizeAllCharts, 150);
 });
@@ -6414,12 +6212,11 @@ function applyTheme(theme) {
   if (label) label.textContent = t === 'dark' ? '深色' : '浅色';
   /* 主题切换后重绘所有已初始化的图表 */
   try {
-    const data = recs();
-    if (data.length) {
-      initCharts(data);
-      if (currentPage === 'analysis' && !window.__QC_NEXUS) initAnalysisCharts(data);
+    if (currentPage === 'dashboard') renderDashboardMonth();
+    if (currentPage === 'analysis') {
+      if (window.__QC_NEXUS) window.QcApprovedStatistics?.redraw();
+      else initAnalysisCharts(recs());
     }
-    if (currentPage === 'analysis' && window.__QC_NEXUS) window.QcApprovedStatistics?.redraw();
   } catch(e) {}
 }
 
@@ -6635,7 +6432,7 @@ function _mrChart(id, option) {
    §19.1  验货月报
 ───────────────────────────────────────*/
 function renderMonthlyReport() {
-  if (window.QcPeriodReports?.monthly.enabled()) return window.QcPeriodReports.monthly.load();
+  if (window.QcPeriodReports?.monthly.enabled()) return window.QcReportSheets.enter('monthly');
   const el = document.getElementById('monthlyMonth');
   if (!el) return;
   /* 初始化默认月份 */
@@ -6643,6 +6440,7 @@ function renderMonthlyReport() {
     const n = new Date();
     el.value = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
   }
+  window.QcReportDates?.sync(el);
   const [year, month] = el.value.split('-').map(Number);
   const data = getMonthRecords(year, month);
   const s    = summarizeRecords(data);
@@ -7224,993 +7022,6 @@ function renderYearlyReport() {
       data:typeShare.map((d,i)=>({
         name:d.name, value:d.value, itemStyle:{ color:COLS2[i%COLS2.length] } })) }],
   });
-}
-
-/* ════════════════════════════════════════
-   §20  验货月报 / 验货年报 PDF 导出
-   依赖：jsPDF 2.x + html2canvas 1.x（与现有日报/周报相同）
-════════════════════════════════════════ */
-
-/* ── PDF专用样式（只在导出容器上生效）── */
-function _ensurePdfStyle() {
-  if (document.getElementById('rpt-pdf-style')) return;
-  const s = document.createElement('style');
-  s.id = 'rpt-pdf-style';
-  s.textContent = `
-.rpt-pdf-canvas {
-  width:1100px; background:#fff; color:#111827;
-  padding:36px 40px; font-family:Arial,"Microsoft YaHei",sans-serif;
-  box-sizing:border-box; position:absolute; left:-9999px; top:0;
-}
-.rpt-pdf-title {
-  font-size:26px; font-weight:800; text-align:center;
-  color:#0f172a; margin-bottom:4px; letter-spacing:1px;
-}
-.rpt-pdf-co {
-  font-size:13px; text-align:center; color:#374151; margin-bottom:2px;
-}
-.rpt-pdf-meta {
-  font-size:11px; text-align:center; color:#6b7280; margin-bottom:18px;
-}
-.rpt-pdf-divider {
-  border:none; border-top:2px solid #0284c7; margin:12px 0;
-}
-.rpt-pdf-sec {
-  font-size:15px; font-weight:700; color:#0284c7;
-  border-left:4px solid #0284c7; padding-left:10px;
-  margin:20px 0 10px;
-  page-break-before: auto; page-break-after: avoid;
-}
-.rpt-pdf-kpi-grid {
-  display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:16px;
-  page-break-inside: avoid;
-}
-.rpt-pdf-kpi {
-  background:#f8fafc; border:1px solid #e5e7eb; border-radius:6px;
-  padding:10px 12px; border-left:4px solid #0284c7;
-}
-.rpt-pdf-kpi.green { border-left-color:#059669; }
-.rpt-pdf-kpi.red   { border-left-color:#e11d48; }
-.rpt-pdf-kpi-label { font-size:10px; color:#6b7280; margin-bottom:3px; }
-.rpt-pdf-kpi-val   { font-size:18px; font-weight:700; color:#111827; }
-.rpt-pdf-kpi-val.g { color:#047857; }
-.rpt-pdf-kpi-val.r { color:#dc2626; }
-.rpt-pdf-kpi-val.b { color:#0284c7; }
-.rpt-pdf-kpi-sub   { font-size:10px; color:#9ca3af; margin-top:2px; }
-.rpt-pdf-chart-grid {
-  display:grid; gap:10px; margin-bottom:14px;
-  page-break-inside: avoid;
-}
-.rpt-pdf-chart-box {
-  background:#f8fafc; border:1px solid #e5e7eb; border-radius:6px; padding:8px;
-  page-break-inside: avoid;
-}
-.rpt-pdf-chart-title {
-  font-size:11px; font-weight:600; color:#374151; margin-bottom:6px;
-}
-.rpt-pdf-chart-box img { width:100%; display:block; border-radius:4px; }
-.rpt-pdf-analysis {
-  display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;
-  page-break-inside: avoid;
-}
-.rpt-pdf-ana-box {
-  background:#f8fafc; border:1px solid #e5e7eb; border-radius:6px; padding:12px;
-  page-break-inside: avoid;
-}
-.rpt-pdf-ana-title {
-  font-size:12px; font-weight:700; color:#0284c7; margin-bottom:6px;
-}
-.rpt-pdf-ana-box ul {
-  margin:0 0 0 16px; font-size:11px; color:#374151; line-height:2;
-}
-.rpt-pdf-table { width:100%; border-collapse:collapse; font-size:11px; margin-bottom:4px; }
-.rpt-pdf-table th {
-  background:#e5e7eb; color:#374151; font-weight:700; padding:6px 8px;
-  border:1px solid #d1d5db; text-align:left; white-space:nowrap;
-}
-.rpt-pdf-table td {
-  padding:5px 8px; border:1px solid #e5e7eb; color:#111827; vertical-align:middle;
-}
-.rpt-pdf-table tbody tr:nth-child(even) td { background:#f9fafb; }
-.rpt-pdf-note { font-size:10px; color:#9ca3af; text-align:right; margin-bottom:8px; }
-`;
-  document.head.appendChild(s);
-}
-
-/* ── 从 ECharts DOM 取图片（标准，供屏幕/PDF通用）── */
-function _getChartImg(id) {
-  try {
-    const el = document.getElementById(id);
-    if (!el || !window.echarts) return '';
-    const inst = echarts.getInstanceByDom(el);
-    if (!inst) return '';
-    return inst.getDataURL({ type:'png', pixelRatio:3, backgroundColor:'#ffffff' });
-  } catch(err) {
-    console.warn('[PDF] chart image failed:', id, err);
-    return '';
-  }
-}
-
-/* ── PDF专用图表图片：临时放大 DOM 元素并更新选项，获得更高质量图片 ── */
-async function _getPdfChartImg(id, pdfW, pdfH, optionOverride) {
-  try {
-    const el = document.getElementById(id);
-    if (!el || !window.echarts) return '';
-    const inst = echarts.getInstanceByDom(el);
-    if (!inst) return '';
-    /* 临时调整尺寸 */
-    const origW = el.style.width, origH = el.style.height;
-    el.style.width  = pdfW + 'px';
-    el.style.height = pdfH + 'px';
-    inst.resize({ width: pdfW, height: pdfH });
-    if (optionOverride) inst.setOption(optionOverride, { notMerge: false });
-    await new Promise(r => setTimeout(r, 60));
-    const url = inst.getDataURL({ type:'png', pixelRatio:2, backgroundColor:'#ffffff' });
-    /* 还原尺寸 */
-    el.style.width  = origW;
-    el.style.height = origH;
-    inst.resize();
-    return url;
-  } catch(err) {
-    console.warn('[PDF] _getPdfChartImg failed:', id, err);
-    return _getChartImg(id);
-  }
-}
-
-/* ── 导出核心：canvas → html2canvas → jsPDF 分页（纵向A4）── */
-/* ────────────────────────────────────────────────────────
-   通用横向 A4 分页导出：接受多个 pageEl 数组，每页单独截图
-   ────────────────────────────────────────────────────────*/
-async function _exportPdfLandscapePages(pageEls, filename) {
-  if (!pageEls || pageEls.length === 0) {
-    console.error('[PDF] _exportPdfLandscapePages: pageEls is empty');
-    throw new Error('PDF页面容器为空，无法导出');
-  }
-  const jspdfClass = window.jspdf ? window.jspdf.jsPDF : jsPDF;
-  const pdf = new jspdfClass({ orientation:'landscape', unit:'mm', format:'a4' });
-  /* A4 横向：297×210mm，留边6mm，内容区 285×198mm */
-  const mg = 6;
-
-  for (let i = 0; i < pageEls.length; i++) {
-    const el = pageEls[i];
-    el.style.background = '#ffffff';
-    const img = await html2canvas(el, {
-      scale:2, useCORS:true, allowTaint:true,
-      backgroundColor:'#ffffff', logging:false,
-      windowWidth:  el.scrollWidth,
-      windowHeight: el.scrollHeight,
-      scrollX:0, scrollY:0,
-    });
-    if (i > 0) pdf.addPage();
-    /* 固定放在 (6,6,285,198)，保持 A4 横向比例，不等比缩放导致变形 */
-    pdf.addImage(img.toDataURL('image/jpeg', 0.94), 'JPEG', mg, mg, 285, 198);
-  }
-  pdf.save(filename);
-}
-
-async function _exportPdfPortrait(container, filename) {
-  const jspdfClass = window.jspdf ? window.jspdf.jsPDF : jsPDF;
-
-  /* 确保容器白底、脱离文档流 */
-  container.style.background = '#ffffff';
-  document.body.appendChild(container);
-  await new Promise(r => setTimeout(r, 120));   /* 等待渲染稳定 */
-
-  const imgCanvas = await html2canvas(container, {
-    scale:          2,
-    useCORS:        true,
-    allowTaint:     true,
-    backgroundColor:'#ffffff',
-    logging:        false,
-    windowWidth:    container.scrollWidth,
-    windowHeight:   container.scrollHeight,
-    scrollX: 0, scrollY: 0, x: 0, y: 0,
-  });
-  document.body.removeChild(container);
-
-  const pdf    = new jspdfClass({ orientation:'portrait', unit:'mm', format:'a4' });
-  const pageW  = pdf.internal.pageSize.getWidth();   /* 210 mm */
-  const pageH  = pdf.internal.pageSize.getHeight();  /* 297 mm */
-  const margin = 6;                                  /* 每页上下各 6mm 留白 */
-  const contentH = pageH - margin * 2;               /* 每页可用高度 */
-
-  const imgW   = imgCanvas.width;
-  const imgH   = imgCanvas.height;
-  const ratio  = pageW / imgW;                       /* mm/px */
-  const pageHpx = contentH / ratio;                 /* 每页可放的 px 高度 */
-
-  /* 辅助：安全截取一片（自动白底填充超出区域）*/
-  function makeSlice(srcCanvas, yPx, hPx) {
-    const sc  = document.createElement('canvas');
-    sc.width  = srcCanvas.width;
-    sc.height = Math.ceil(hPx);
-    const ctx = sc.getContext('2d');
-    ctx.fillStyle = '#ffffff';             /* ← 修复黑条：先填白 */
-    ctx.fillRect(0, 0, sc.width, sc.height);
-    const safeH = Math.min(hPx, srcCanvas.height - yPx);
-    if (safeH > 0) {
-      ctx.drawImage(srcCanvas, 0, yPx, srcCanvas.width, safeH,
-                               0, 0,   sc.width,        safeH);
-    }
-    return sc;
-  }
-
-  if (imgH * ratio <= contentH) {
-    /* 单页：加上边距居中放置 */
-    const sc = makeSlice(imgCanvas, 0, imgH);
-    pdf.addImage(sc.toDataURL('image/jpeg', 0.93), 'JPEG',
-      0, margin, pageW, imgH * ratio);
-  } else {
-    let yOffset = 0;
-    let pageNum = 0;
-    while (yOffset < imgH) {
-      const slicePx = Math.min(pageHpx, imgH - yOffset);
-      const sc = makeSlice(imgCanvas, yOffset, slicePx);
-      if (pageNum > 0) pdf.addPage('a4', 'portrait');
-      /* 每页上方 margin mm 留白，内容高度 = slicePx * ratio */
-      pdf.addImage(sc.toDataURL('image/jpeg', 0.93), 'JPEG',
-        0, margin, pageW, slicePx * ratio);
-      yOffset += slicePx;
-      pageNum++;
-    }
-  }
-
-  pdf.save(filename);
-}
-
-/* ═══════════════════════════════════════
-   §20.1  验货月报 PDF
-═══════════════════════════════════════ */
-
-/* ────────────────────────────────────────────────────────────
-   PDF 专用图表生成器
-   - 创建隐藏临时容器，固定尺寸，独立 ECharts 实例
-   - getDataURL 后立即 dispose，不影响页面图表
-   - 失败时返回空字符串（PDF 仍可生成，显示"暂无数据"）
-───────────────────────────────────────────────────────────── */
-async function _createPdfChartImage(option, width, height) {
-  if (!window.echarts) return '';
-  const div = document.createElement('div');
-  /* 必须 position:fixed 且不能 display:none / visibility:hidden，
-     否则 ECharts 无法获取容器尺寸，图表渲染为空 */
-  div.style.cssText = [
-    'position:fixed',
-    'left:-' + (width + 500) + 'px',
-    'top:0',
-    'width:' + width + 'px',
-    'height:' + height + 'px',
-    'background:#ffffff',
-    'z-index:-9999',
-    'overflow:hidden',
-  ].join(';');
-  document.body.appendChild(div);
-  let chart = null;
-  try {
-    /* 确认容器尺寸已生效 */
-    const actualW = div.offsetWidth  || width;
-    const actualH = div.offsetHeight || height;
-
-    /* 初始化时显式传入尺寸，避免容器尺寸检测失败 */
-    chart = echarts.init(div, null, {
-      renderer: 'canvas',
-      width:  width,
-      height: height,
-    });
-    chart.setOption(option);
-
-    /* 强制 resize，确保 ECharts 以正确尺寸渲染，不依赖容器自动检测 */
-    chart.resize({ width: width, height: height });
-
-    /* 等待渲染帧完成 */
-    await new Promise(r => requestAnimationFrame(r));
-    await new Promise(r => setTimeout(r, 100));
-
-    const url = chart.getDataURL({
-      type:            'png',
-      pixelRatio:      2,
-      backgroundColor: '#ffffff',
-    });
-    return url || '';
-  } catch(err) {
-    console.warn('[PDF chart] error:', err);
-    return '';
-  } finally {
-    if (chart) { try { chart.dispose(); } catch(e){} }
-    try { document.body.removeChild(div); } catch(e){}
-  }
-}
-
-/* PDF 专用颜色主题（白底，与页面深色主题无关） */
-function _pdfChartTheme() {
-  return {
-    bg:      '#ffffff',
-    text:    '#374151',
-    textDim: '#6b7280',
-    axis:    '#d1d5db',
-    grid:    '#e5e7eb',
-    blue:    '#0284c7',
-    pass:    '#059669',
-    red:     '#e11d48',
-    yellow:  '#d97706',
-    tt:      { backgroundColor:'#1e293b', borderColor:'#334155',
-                textStyle:{ color:'#f1f5f9', fontSize:11 } },
-  };
-}
-
-/* ── PDF 专用图表 Option 构建函数 ── */
-
-/* 柱图：每日验货批次趋势 */
-function _pdfOptDailyBatch(days, totals) {
-  const c = _pdfChartTheme();
-  const xInterval = days.length > 20 ? 2 : 1;
-  return {
-    backgroundColor: c.bg,
-    tooltip: { trigger:'axis', ...c.tt },
-    grid: { top:20, left:40, right:20, bottom:30, containLabel:true },
-    xAxis: { type:'category', data:days,
-      axisLabel:{ color:c.textDim, fontSize:10, interval:xInterval },
-      axisLine:{ lineStyle:{ color:c.axis } },
-      axisTick:{ show:false } },
-    yAxis: { type:'value', minInterval:1, min:0,
-      axisLabel:{ color:c.textDim, fontSize:10 },
-      splitLine:{ lineStyle:{ color:c.grid, type:'dashed' } } },
-    series:[{ name:'验货批次', type:'bar', data:totals, barMaxWidth:20,
-      itemStyle:{ color:c.blue, borderRadius:[2,2,0,0] } }],
-  };
-}
-
-/* 折线图：每日 PASS率趋势 */
-function _pdfOptPassRate(days, rates) {
-  const c = _pdfChartTheme();
-  const xInterval = days.length > 20 ? 2 : 1;
-  return {
-    backgroundColor: c.bg,
-    tooltip: { trigger:'axis', ...c.tt },
-    grid: { top:20, left:42, right:20, bottom:30, containLabel:true },
-    xAxis: { type:'category', data:days,
-      axisLabel:{ color:c.textDim, fontSize:10, interval:xInterval },
-      axisLine:{ lineStyle:{ color:c.axis } },
-      axisTick:{ show:false } },
-    yAxis: { type:'value', min:0, max:100,
-      axisLabel:{ color:c.textDim, fontSize:10, formatter:'{value}%' },
-      splitLine:{ lineStyle:{ color:c.grid, type:'dashed' } } },
-    series:[{ name:'PASS率', type:'line', data:rates, smooth:true, symbol:'none',
-      connectNulls:true,
-      lineStyle:{ color:c.pass, width:2.5 },
-      areaStyle:{ color:'rgba(5,150,105,0.06)' } }],
-  };
-}
-
-/* 横向柱图：供应商 TOP10 批次不良率 */
-function _pdfOptSupTop(names, bars) {
-  const c = _pdfChartTheme();
-  return {
-    backgroundColor: c.bg,
-    tooltip: { trigger:'axis', ...c.tt },
-    grid: { top:8, left:8, right:52, bottom:16, containLabel:true },
-    xAxis: { type:'value',
-      axisLabel:{ color:c.textDim, fontSize:10, formatter:'{value}%' },
-      splitLine:{ lineStyle:{ color:c.grid, type:'dashed' } } },
-    yAxis: { type:'category', data:names,
-      axisLabel:{ color:c.text, fontSize:10, width:80, overflow:'truncate' } },
-    series:[{ name:'批次不良率', type:'bar', data:bars, barMaxWidth:16,
-      itemStyle:{ color:c.red, borderRadius:[0,3,3,0] },
-      label:{ show:true, position:'right', color:c.text, fontSize:10,
-        formatter:p=>p.value+'%' } }],
-  };
-}
-
-/* 横向柱图：不良类型 TOP10 */
-function _pdfOptDefTop(names, cnts) {
-  const c = _pdfChartTheme();
-  return {
-    backgroundColor: c.bg,
-    tooltip: { trigger:'axis', ...c.tt },
-    grid: { top:8, left:8, right:40, bottom:16, containLabel:true },
-    xAxis: { type:'value',
-      axisLabel:{ color:c.textDim, fontSize:10 },
-      splitLine:{ lineStyle:{ color:c.grid, type:'dashed' } } },
-    yAxis: { type:'category', data:names,
-      axisLabel:{ color:c.text, fontSize:10, width:80, overflow:'truncate' } },
-    series:[{ name:'次数', type:'bar', data:cnts, barMaxWidth:16,
-      itemStyle:{ color:c.yellow, borderRadius:[0,3,3,0] },
-      label:{ show:true, position:'right', color:c.text, fontSize:10 } }],
-  };
-}
-
-/* 饼图/环形图通用（月报 PASS/REJ，客户占比，成品占比；年报客户，成品） */
-function _pdfOptPie(seriesData, showLabel=true) {
-  const c = _pdfChartTheme();
-  return {
-    backgroundColor: c.bg,
-    tooltip: { trigger:'item', ...c.tt },
-    legend: { bottom:2, type:'scroll',
-      textStyle:{ color:c.text, fontSize:11 },
-      itemWidth:11, itemHeight:8 },
-    series:[{ type:'pie', radius:['48%','68%'], center:['50%','46%'],
-      avoidLabelOverlap:true,
-      label: showLabel
-        ? { show:true, color:c.text, fontSize:11, fontWeight:600,
-            formatter:'{b}\n{d}%' }
-        : { show:false },
-      labelLine:{ length:8, length2:10, lineStyle:{ color:c.textDim } },
-      data: seriesData }],
-  };
-}
-
-/* 双轴折线+柱：年报月度批次/PASS率 */
-function _pdfOptYearTrend(months, mTotals, mRates) {
-  const c = _pdfChartTheme();
-  return {
-    backgroundColor: c.bg,
-    tooltip: { trigger:'axis', ...c.tt },
-    legend: { data:['验货批次','PASS率(%)'], top:4, right:10,
-      textStyle:{ color:c.text, fontSize:11 }, itemWidth:12, itemHeight:8 },
-    grid: { top:36, left:42, right:52, bottom:28, containLabel:true },
-    xAxis: { type:'category', data:months,
-      axisLabel:{ color:c.textDim, fontSize:10 },
-      axisLine:{ lineStyle:{ color:c.axis } }, axisTick:{ show:false } },
-    yAxis:[
-      { type:'value', minInterval:1, min:0,
-        axisLabel:{ color:c.textDim, fontSize:10 },
-        splitLine:{ lineStyle:{ color:c.grid, type:'dashed' } } },
-      { type:'value', min:0, max:100,
-        axisLabel:{ color:c.textDim, fontSize:10, formatter:'{value}%' },
-        splitLine:{ show:false } },
-    ],
-    series:[
-      { name:'验货批次', type:'bar', data:mTotals, barMaxWidth:24,
-        itemStyle:{ color:c.blue, borderRadius:[2,2,0,0] } },
-      { name:'PASS率(%)', type:'line', yAxisIndex:1, data:mRates,
-        smooth:true, symbol:'circle', symbolSize:4, connectNulls:true,
-        lineStyle:{ color:c.pass, width:2.5 }, itemStyle:{ color:c.pass } },
-    ],
-  };
-}
-
-/* 折线：年报月度平均不良率 */
-function _pdfOptYearDefRate(months, mAvgRates) {
-  const c = _pdfChartTheme();
-  return {
-    backgroundColor: c.bg,
-    tooltip: { trigger:'axis', ...c.tt },
-    grid: { top:20, left:42, right:20, bottom:28, containLabel:true },
-    xAxis: { type:'category', data:months,
-      axisLabel:{ color:c.textDim, fontSize:10 },
-      axisLine:{ lineStyle:{ color:c.axis } }, axisTick:{ show:false } },
-    yAxis: { type:'value',
-      axisLabel:{ color:c.textDim, fontSize:10, formatter:'{value}%' },
-      splitLine:{ lineStyle:{ color:c.grid, type:'dashed' } } },
-    series:[{ name:'批次不良率', type:'line', data:mAvgRates,
-      smooth:true, symbol:'circle', symbolSize:4, connectNulls:true,
-      lineStyle:{ color:'#d97706', width:2.5 }, itemStyle:{ color:'#d97706' },
-      areaStyle:{ color:'rgba(217,119,6,0.06)' } }],
-  };
-}
-
-/* ══════════════════════════════════════════════════════════
-   §20.1  验货月报 PDF  （全新实现：独立 ECharts 实例）
-══════════════════════════════════════════════════════════ */
-async function exportMonthlyReportPDF() {
-  if (window.QcPeriodReports?.monthly.enabled()) return exportReportPDF('monthly');
-  if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  const elMonth = document.getElementById('monthlyMonth');
-  if (!elMonth || !elMonth.value) { showToast('请先选择月份', 'error'); return; }
-
-  showToast('正在生成月报 PDF，请稍候…', 'info');
-  if (!await _rptCheckDeps()) return;
-  const [year, month] = elMonth.value.split('-').map(Number);
-  const data      = getMonthRecords(year, month);
-  const s         = summarizeRecords(data);
-  const monthStr  = `${year}年${String(month).padStart(2,'0')}月`;
-  const supTop    = getSupplierTopRate(data);
-  const defTop    = getDefectTopCount(data);
-  const clientShare = getClientShare(data);
-  const typeShare   = getTypeShare(data);
-  const trend       = getMonthlyDailyTrend(data, year, month);
-  const highRiskSups = (() => {
-    const byS = groupBy(data,'supplier');
-    return Object.entries(byS).filter(([,arr])=>{
-      const rejN=arr.filter(r=>isFail(r)).length;
-      const smp=arr.reduce((a,r)=>a+(Number(r.sampleQty)||0),0);
-      const fl=arr.reduce((a,r)=>a+(Number(r.fail)||0),0);
-      return rejN>=2||(smp>0&&fl/smp>=0.05);
-    }).map(([n])=>n);
-  })();
-
-  /* 安全千分位格式化（避免中文locale产生异常逗号分组）*/
-  /* 安全千分位：先去除非数字字符（防止字符串如"119,420"被 Number() 解析成 NaN）*/
-  const fmtN = n => {
-    const raw = typeof n === 'string' ? n.replace(/[^\d.-]/g, '') : n;
-    const x = Math.floor(Math.abs(Number(raw) || 0));
-    return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  };
-
-  /* ── 颜色常量 ── */
-  const PIE_COLS = ['#0284c7','#059669','#d97706','#e11d48','#8b5cf6','#0891b2','#65a30d'];
-
-  /* ── 数据准备（调试日志）── */
-  const days   = trend.map(t => t.date);
-  /* totals: null→0，确保柱图数据全为数字 */
-  const totals = trend.map(t => typeof t.total === 'number' ? t.total : 0);
-  /* rates: null 保留（连接空值），非 null 确保是数字 */
-  const rates  = trend.map(t => t.rate != null ? Number(t.rate) : null);
-
-
-  /* ── 生成 PDF 专用图表图片（全部独立 ECharts 实例）── */
-
-  /* PAGE1 图表 */
-  const imgC1 = await _createPdfChartImage(_pdfOptDailyBatch(days, totals), 880, 300);
-  const imgC2 = await _createPdfChartImage(_pdfOptPassRate(days, rates), 700, 280);
-
-  const supNames = supTop.length ? supTop.map(x=>x.name).reverse() : [];
-  /* batchRate 必须是数字 */
-  const supBars  = supTop.length ? supTop.map(x=>Number(x.batchRate)).reverse() : [];
-  const imgC3 = supTop.length
-    ? await _createPdfChartImage(_pdfOptSupTop(supNames, supBars), 700, 280)
-    : '';
-
-  /* PASS/REJ 饼图：保留两项（即使其中一个为0，也保留，避免全空） */
-  const piePassRejData = [
-    { name:'PASS', value: Number(s.passCnt)||0, itemStyle:{ color:'#059669' } },
-    { name:'REJ',  value: Number(s.failCnt)||0,  itemStyle:{ color:'#e11d48' } },
-  ].filter(d => d.value > 0);
-  const imgC4 = (s.total > 0)
-    ? await _createPdfChartImage(_pdfOptPie(piePassRejData, true), 420, 300)
-    : '';
-
-  /* PAGE2 图表 */
-  const clientPieData = clientShare.slice(0,7).map((d,i)=>({
-    name: String(d.name||'未知'),
-    value: Number(d.value)||0,
-    itemStyle:{ color:PIE_COLS[i%PIE_COLS.length] } }))
-    .filter(d => d.value > 0);
-  const imgC5 = clientPieData.length
-    ? await _createPdfChartImage(_pdfOptPie(clientPieData, false), 430, 300)
-    : '';
-
-  const defNames = defTop.length ? defTop.slice(0,10).map(([d])=>String(d)).reverse() : [];
-  const defCnts  = defTop.length ? defTop.slice(0,10).map(([,n])=>Number(n)||0).reverse() : [];
-  const imgC6 = defTop.length
-    ? await _createPdfChartImage(_pdfOptDefTop(defNames, defCnts), 430, 300)
-    : '';
-
-  const typePieData = typeShare.map((d,i)=>({
-    name: String(d.name||'未知'),
-    value: Number(d.value)||0,
-    itemStyle:{ color:PIE_COLS[i%PIE_COLS.length] } }))
-    .filter(d => d.value > 0);
-  const imgC7 = typePieData.length
-    ? await _createPdfChartImage(_pdfOptPie(typePieData, true), 430, 300)
-    : '';
-
-  /* ── 模板辅助函数 ── */
-  /* valFs：根据数值字符数自动缩小字号，防止在窄列中被截断 */
-  const _valFs = v => String(v).length <= 7 ? '22px' : String(v).length <= 10 ? '19px' : '16px';
-  const kpi = (label,val,sub,cls='') =>
-    `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:10px 12px;border-left:4px solid ${cls==='g'?'#059669':cls==='r'?'#e11d48':'#0284c7'};overflow:visible">
-      <div style="font-size:11px;color:#6b7280;margin-bottom:3px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
-      <div style="font-size:${_valFs(val)};font-weight:700;color:${cls==='g'?'#047857':cls==='r'?'#dc2626':'#0284c7'};white-space:nowrap;letter-spacing:0;font-variant-numeric:tabular-nums">${val}</div>
-      <div style="font-size:10px;color:#9ca3af;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>
-    </div>`;
-
-  /* 普通图表卡片（横向柱/折线） */
-  const ci = (img, title, h='280px') => img
-    ? `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <img src="${img}" style="width:100%;height:auto;max-height:${h};display:block;object-fit:contain"/>
-      </div>`
-    : `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <div style="height:${h};display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">暂无数据</div>
-      </div>`;
-
-  /* 饼图卡片（保持圆形，object-fit:contain，居中） */
-  const pieci = (img, title, h='280px') => img
-    ? `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px;display:flex;flex-direction:column">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <div style="flex:1;display:flex;align-items:center;justify-content:center">
-          <img src="${img}" style="height:${h};width:auto;max-width:100%;object-fit:contain;display:block;margin:0 auto"/>
-        </div>
-      </div>`
-    : `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <div style="height:${h};display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">暂无数据</div>
-      </div>`;
-
-  /* 明细行 */
-  const sorted  = data.slice().sort((a,b)=>String(a.date || '').localeCompare(String(b.date || '')));
-  const show    = sorted.slice(0,50);
-  const hasMore = data.length > 50;
-  const drows   = show.map(r =>
-    `<tr${_dateRowAttrs(r)} style="border-bottom:1px solid #f0f4f8">
-      <td style="padding:5px 8px;white-space:nowrap">${_dateDisplay(r.date)}${_dateWarningLabel(r)}</td>
-      <td style="padding:5px 8px"><b>${r.supplier}</b></td>
-      <td style="padding:5px 8px">${r.client||'-'}</td>
-      <td style="padding:5px 8px">${r.productNo||'-'}</td>
-      <td style="padding:5px 8px;max-width:120px;overflow:hidden;text-overflow:ellipsis">${r.productName||'-'}</td>
-      <td style="padding:5px 8px;text-align:right">${(r.qty||0).toLocaleString()}</td>
-      <td style="padding:5px 8px;text-align:right">${r.sampleQty??'—'}</td>
-      <td style="padding:5px 8px;text-align:right;color:${(r.fail||0)>0?'#dc2626':'#111827'}">${r.fail||0}</td>
-      <td style="padding:5px 8px">${r.sampleQty?r.defectRate||'0.00%':'—'}</td>
-      <td style="padding:5px 8px;color:${isPass(r)?'#047857':'#dc2626'};font-weight:600">${r.result}</td>
-      <td style="padding:5px 8px">${r.qc||'-'}</td>
-    </tr>`).join('');
-
-  _ensurePdfStyle();
-  const hdr = (sub) =>
-    `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;color:#111827;margin-bottom:10px">
-      <div style="font-size:24px;font-weight:800;text-align:center;color:#0f172a;letter-spacing:1px">品&ensp;质&ensp;月&ensp;报</div>
-      <div style="font-size:12px;text-align:center;color:#374151;margin-top:2px">${getReportCompanyLabel()}</div>
-      <div style="font-size:10px;text-align:center;color:#6b7280;margin:2px 0 8px">${sub}　生成时间：${new Date().toLocaleString('zh-CN')}</div>
-      <hr style="border:none;border-top:2px solid #0284c7;margin:0"/>
-    </div>`;
-
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'position:fixed;left:-12000px;top:0;z-index:-1;font-family:Arial,Microsoft YaHei,sans-serif';
-  wrap.innerHTML = `
-  <!-- PAGE 1: 概览 -->
-  <div class="rpt-pdf-page" style="width:1480px;height:1046px;background:#ffffff;color:#111827;padding:28px 36px;box-sizing:border-box;overflow:hidden;font-family:Arial,'Microsoft YaHei',sans-serif">
-    ${hdr('报告期间：'+monthStr)}
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
-      ${kpi('本月验货批次',s.total,'来货 '+fmtN(s.totalQty)+' 件','b')}
-      ${kpi('本月PASS率',s.passRate+'%','PASS '+s.passCnt+' / REJ '+s.failCnt,'g')}
-      ${kpi('本月不良数量',fmtN(s.totalFail),'仅统计已录入不良数量',s.totalFail>0?'r':'g')}
-      ${kpi('高风险供应商',s.highRisk,'活跃 '+s.suppliers+' 家',s.highRisk>0?'r':'g')}
-      ${kpi('来货总数',fmtN(s.totalQty),'件','')}
-      ${kpi('抽查总数',fmtN(s.totalSmp),'件','')}
-      ${kpi('批次不良率',s.total>0?(s.failCnt/s.total*100).toFixed(1)+'%':'—','REJ批次/总批次','')}
-      ${kpi('活跃供应商',s.suppliers,'家','')}
-    </div>
-    <div style="font-size:14px;font-weight:700;color:#0284c7;border-left:4px solid #0284c7;padding-left:8px;margin:8px 0">图表分析（一）</div>
-    <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:8px">
-      ${ci(imgC1,'每日验货批次趋势','290px')}
-      ${pieci(imgC4,'PASS / REJ 分布','260px')}
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      ${ci(imgC2,'每日 PASS率趋势','270px')}
-      ${ci(imgC3,'供应商批次不良率 TOP10','280px')}
-    </div>
-  </div>
-
-  <!-- PAGE 2: 分析 -->
-  <div class="rpt-pdf-page" style="width:1480px;height:1046px;background:#ffffff;color:#111827;padding:28px 36px;box-sizing:border-box;overflow:hidden;font-family:Arial,'Microsoft YaHei',sans-serif">
-    ${hdr('报告期间：'+monthStr+' · 第2页')}
-    <div style="font-size:14px;font-weight:700;color:#0284c7;border-left:4px solid #0284c7;padding-left:8px;margin:0 0 10px">图表分析（二）</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
-      ${pieci(imgC5,'客户占比（按批次）','370px')}
-      ${ci(imgC6,'不良类型 TOP10','380px')}
-      ${pieci(imgC7,'成品/半成品占比','370px')}
-    </div>
-    <div style="font-size:14px;font-weight:700;color:#0284c7;border-left:4px solid #0284c7;padding-left:8px;margin:0 0 10px">重点分析与改善建议</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-      <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:20px">
-        <div style="font-size:13px;font-weight:700;color:#0284c7;margin-bottom:10px">本月重点问题</div>
-        <ul style="margin:0 0 0 18px;font-size:13px;color:#374151;line-height:2.4">
-          ${defTop.slice(0,5).map(([d,n])=>`<li>${d}（${n}次）</li>`).join('')||'<li>本月无明显不良问题</li>'}
-        </ul>
-      </div>
-      <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:20px">
-        <div style="font-size:13px;font-weight:700;color:#0284c7;margin-bottom:10px">本月改善建议</div>
-        <ul style="margin:0 0 0 18px;font-size:13px;color:#374151;line-height:2.4">
-          ${highRiskSups.length?`<li>高风险供应商：${highRiskSups.join('、')}，需重点跟进</li>`:'<li>本月无高风险供应商</li>'}
-          ${s.failCnt>0?`<li>本月REJ ${s.failCnt}批，建议供应商提交改善措施</li>`:'<li>本月全部批次通过检验</li>'}
-          ${defTop[0]?`<li>主要不良「${defTop.slice(0,3).map(([d])=>d).join('、')}」需重点管控</li>`:''}
-        </ul>
-      </div>
-    </div>
-  </div>
-
-  <!-- PAGE 3: 明细 -->
-  <div class="rpt-pdf-page" style="width:1480px;height:1046px;background:#ffffff;color:#111827;padding:28px 36px;box-sizing:border-box;overflow:hidden;font-family:Arial,'Microsoft YaHei',sans-serif">
-    ${hdr(monthStr+' · 本月验货明细'+(hasMore?`（前50条 / 共${data.length}条）`:''))}
-    ${hasMore?`<div style="font-size:10px;color:#9ca3af;text-align:right;margin-bottom:4px">* 完整数据请查看系统验货台页面</div>`:''}
-    <table style="width:100%;border-collapse:collapse;font-size:11.5px">
-      <thead>
-        <tr style="background:#f1f5f9">
-          <th style="padding:9px 8px;border:1px solid #d1d5db;text-align:left;font-weight:700;font-size:11.5px">日期</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">供应商</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">客户</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">货号</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">款式</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">来货数</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">抽查数</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">FAIL</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">不良率</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">判定</th>
-          <th style="padding:9px 8px;border:1px solid #d1d5db;font-weight:700">检验员</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${drows||'<tr><td colspan="11" style="text-align:center;padding:20px;color:#9ca3af;font-size:12px">本月暂无验货记录</td></tr>'}
-      </tbody>
-    </table>
-  </div>`;
-
-  document.body.appendChild(wrap);
-  await new Promise(r=>setTimeout(r,100));
-  const pages = wrap.querySelectorAll('.rpt-pdf-page');
-  try {
-    await _exportPdfLandscapePages(Array.from(pages), `验货月报_${year}-${String(month).padStart(2,'0')}.pdf`);
-    showToast('✓ 月报 PDF 已导出','success');
-  } catch(e) {
-    console.error('[Monthly PDF]',e);
-    alert('月报 PDF 导出失败：' + e.message);
-    showToast('月报 PDF 导出失败','error');
-  } finally {
-    document.body.removeChild(wrap);
-  }
-}
-
-/* ══════════════════════════════════════════════════════════
-   §20.2  验货年报 PDF  （全新实现：独立 ECharts 实例）
-══════════════════════════════════════════════════════════ */
-async function exportYearlyReportPDF() {
-  if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  const elYear = document.getElementById('yearlyYear');
-  if (!elYear || !elYear.value) { showToast('请先选择年份', 'error'); return; }
-
-  showToast('正在生成年报 PDF，请稍候…', 'info');
-  if (!await _rptCheckDeps()) return;
-  const year       = parseInt(elYear.value);
-  const data       = getYearRecords(year);
-  const s          = summarizeRecords(data);
-  const monthTrend = getYearlyMonthlyTrend(data, year);
-  const supTop     = getSupplierTopRate(data);
-  const defTop     = getDefectTopCount(data);
-  const clientShare = getClientShare(data);
-  const typeShare   = getTypeShare(data);
-  const highRiskSups = (() => {
-    const byS = groupBy(data,'supplier');
-    return Object.entries(byS).filter(([,arr])=>{
-      const rejN=arr.filter(r=>isFail(r)).length;
-      const smp=arr.reduce((a,r)=>a+(Number(r.sampleQty)||0),0);
-      const fl=arr.reduce((a,r)=>a+(Number(r.fail)||0),0);
-      return rejN>=2||(smp>0&&fl/smp>=0.05);
-    }).map(([n])=>n);
-  })();
-
-  /* 安全千分位格式化 */
-  /* 安全千分位：先去除非数字字符（防止字符串如"119,420"被 Number() 解析成 NaN）*/
-  const fmtN = n => {
-    const raw = typeof n === 'string' ? n.replace(/[^\d.-]/g, '') : n;
-    const x = Math.floor(Math.abs(Number(raw) || 0));
-    return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  };
-
-  const PIE_COLS = ['#0284c7','#059669','#d97706','#e11d48','#8b5cf6','#0891b2','#65a30d'];
-  const months    = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-  /* 确保数据类型正确 */
-  const mTotals        = monthTrend.map(m => Number(m.total) || 0);
-  const mRates         = monthTrend.map(m => m.passRate != null ? Number(m.passRate) : null);
-  /* 批次口径：REJ批次/总批次，与供应商排名和页面图表一致 */
-  const mBatchDefRates = monthTrend.map(m => m.batchDefectRate != null ? Number(m.batchDefectRate) : null);
-  /* 数量口径：仅供汇总表参考，不用于趋势图 */
-  const mAvgRates      = monthTrend.map(m => m.avgRate != null ? Number(m.avgRate) : null);
-
-
-  /* ── 生成 PDF 专用图表图片 ── */
-  /* PAGE1 */
-  const imgY1 = await _createPdfChartImage(_pdfOptYearTrend(months, mTotals, mRates), 690, 360);
-  const imgY2 = await _createPdfChartImage(_pdfOptYearDefRate(months, mBatchDefRates), 690, 360);
-
-  /* PAGE2 */
-  const supNames = supTop.length ? supTop.map(x=>String(x.name)).reverse() : [];
-  const supBars  = supTop.length ? supTop.map(x=>Number(x.batchRate)).reverse() : [];
-  const imgY3 = supTop.length
-    ? await _createPdfChartImage(_pdfOptSupTop(supNames, supBars), 650, 300)
-    : '';
-
-  const defNames = defTop.length ? defTop.slice(0,10).map(([d])=>String(d)).reverse() : [];
-  const defCnts  = defTop.length ? defTop.slice(0,10).map(([,n])=>Number(n)||0).reverse() : [];
-  const imgY4 = defTop.length
-    ? await _createPdfChartImage(_pdfOptDefTop(defNames, defCnts), 650, 300)
-    : '';
-
-  const clientPieData = clientShare.slice(0,7).map((d,i)=>({
-    name: String(d.name||'未知'),
-    value: Number(d.value)||0,
-    itemStyle:{ color:PIE_COLS[i%PIE_COLS.length] } }))
-    .filter(d => d.value > 0);
-  const imgY5 = clientPieData.length
-    ? await _createPdfChartImage(_pdfOptPie(clientPieData, false), 650, 300)
-    : '';
-
-  const typePieData = typeShare.map((d,i)=>({
-    name: String(d.name||'未知'),
-    value: Number(d.value)||0,
-    itemStyle:{ color:PIE_COLS[i%PIE_COLS.length] } }))
-    .filter(d => d.value > 0);
-  const imgY6 = typePieData.length
-    ? await _createPdfChartImage(_pdfOptPie(typePieData, true), 650, 300)
-    : '';
-
-  /* ── 模板辅助函数 ── */
-  /* valFs：根据数值字符数自动缩小字号，防止在窄列中被截断 */
-  const _valFs = v => String(v).length <= 7 ? '22px' : String(v).length <= 10 ? '19px' : '16px';
-  const kpi = (label,val,sub,cls='') =>
-    `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:10px 12px;border-left:4px solid ${cls==='g'?'#059669':cls==='r'?'#e11d48':'#0284c7'};overflow:visible">
-      <div style="font-size:11px;color:#6b7280;margin-bottom:3px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
-      <div style="font-size:${_valFs(val)};font-weight:700;color:${cls==='g'?'#047857':cls==='r'?'#dc2626':'#0284c7'};white-space:nowrap;letter-spacing:0;font-variant-numeric:tabular-nums">${val}</div>
-      <div style="font-size:10px;color:#9ca3af;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>
-    </div>`;
-
-  const yci = (img, title, h='300px') => img
-    ? `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <img src="${img}" style="width:100%;height:auto;max-height:${h};display:block;object-fit:contain"/>
-      </div>`
-    : `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <div style="height:${h};display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">暂无数据</div>
-      </div>`;
-
-  const ypci = (img, title, h='270px') => img
-    ? `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px;display:flex;flex-direction:column">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <div style="flex:1;display:flex;align-items:center;justify-content:center">
-          <img src="${img}" style="height:${h};width:auto;max-width:100%;object-fit:contain;display:block;margin:0 auto"/>
-        </div>
-      </div>`
-    : `<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:8px 10px">
-        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">${title}</div>
-        <div style="height:${h};display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">暂无数据</div>
-      </div>`;
-
-  /* 年报汇总表行 */
-  const mRows = monthTrend.map(m =>
-    `<tr style="border-bottom:1px solid #f0f4f8">
-      <td style="padding:11px 12px;font-weight:600">${m.month}</td>
-      <td style="padding:11px 12px;text-align:right">${m.total||'-'}</td>
-      <td style="padding:11px 12px;text-align:right;color:#047857">${m.passCnt||0}</td>
-      <td style="padding:11px 12px;text-align:right;color:${m.failCnt?'#dc2626':'#111827'}">${m.failCnt||0}</td>
-      <td style="padding:11px 12px;text-align:right">${m.passRate!=null?m.passRate+'%':'—'}</td>
-      <td style="padding:11px 12px;text-align:right">${m.totalFail||0}</td>
-      <td style="padding:11px 12px;text-align:right">${m.totalQty.toLocaleString()}</td>
-      <td style="padding:11px 12px;text-align:right">${m.avgRate!=null?m.avgRate+'%':'—'}</td>
-    </tr>`).join('');
-  const totalRow =
-    `<tr style="font-weight:700;background:#e5e7eb">
-      <td style="padding:11px 12px">合计</td>
-      <td style="padding:11px 12px;text-align:right">${s.total}</td>
-      <td style="padding:11px 12px;text-align:right;color:#047857">${s.passCnt}</td>
-      <td style="padding:11px 12px;text-align:right;color:${s.failCnt?'#dc2626':'#111827'}">${s.failCnt}</td>
-      <td style="padding:11px 12px;text-align:right">${s.passRate}%</td>
-      <td style="padding:11px 12px;text-align:right">${s.totalFail}</td>
-      <td style="padding:11px 12px;text-align:right">${s.totalQty.toLocaleString()}</td>
-      <td style="padding:11px 12px;text-align:right">${s.avgRate}</td>
-    </tr>`;
-
-  _ensurePdfStyle();
-  const hdr = (sub) =>
-    `<div style="font-family:Arial,'Microsoft YaHei',sans-serif;color:#111827;margin-bottom:10px">
-      <div style="font-size:24px;font-weight:800;text-align:center;color:#0f172a;letter-spacing:1px">品&ensp;质&ensp;年&ensp;报</div>
-      <div style="font-size:12px;text-align:center;color:#374151;margin-top:2px">${getReportCompanyLabel()}</div>
-      <div style="font-size:10px;text-align:center;color:#6b7280;margin:2px 0 8px">${sub}　生成时间：${new Date().toLocaleString('zh-CN')}</div>
-      <hr style="border:none;border-top:2px solid #0284c7;margin:0"/>
-    </div>`;
-
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'position:fixed;left:-12000px;top:0;z-index:-1;font-family:Arial,Microsoft YaHei,sans-serif';
-  wrap.innerHTML = `
-  <!-- PAGE 1: 年度概览与趋势 -->
-  <div class="rpt-pdf-page" style="width:1480px;height:1046px;background:#ffffff;color:#111827;padding:28px 36px;box-sizing:border-box;overflow:hidden;font-family:Arial,'Microsoft YaHei',sans-serif">
-    ${hdr('报告期间：'+year+'年度')}
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
-      ${kpi('年度验货批次',s.total,'来货 '+fmtN(s.totalQty)+' 件','b')}
-      ${kpi('年度PASS率',s.passRate+'%','PASS '+s.passCnt+' / REJ '+s.failCnt,'g')}
-      ${kpi('年度不良数量',fmtN(s.totalFail),'仅统计已录入不良数量',s.totalFail>0?'r':'g')}
-      ${kpi('高风险供应商',s.highRisk,'活跃 '+s.suppliers+' 家',s.highRisk>0?'r':'g')}
-      ${kpi('年度来货总数',fmtN(s.totalQty),'件','')}
-      ${kpi('年度抽查总数',fmtN(s.totalSmp),'件','')}
-      ${kpi('年度批次不良率',s.total>0?(s.failCnt/s.total*100).toFixed(1)+'%':'—','REJ批次/总批次','')}
-      ${kpi('年度活跃供应商',s.suppliers,'家','')}
-    </div>
-    <div style="font-size:14px;font-weight:700;color:#0284c7;border-left:4px solid #0284c7;padding-left:8px;margin:8px 0 10px">年度趋势</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      ${yci(imgY1,'12个月验货批次 / PASS率（完整月份）','460px')}
-      ${yci(imgY2,'12个月批次不良率趋势','460px')}
-    </div>
-  </div>
-
-  <!-- PAGE 2: TOP分析 + 改善建议 -->
-  <div class="rpt-pdf-page" style="width:1480px;height:1046px;background:#ffffff;color:#111827;padding:28px 36px;box-sizing:border-box;overflow:hidden;font-family:Arial,'Microsoft YaHei',sans-serif">
-    ${hdr('报告期间：'+year+'年度 · 第2页')}
-    <div style="font-size:14px;font-weight:700;color:#0284c7;border-left:4px solid #0284c7;padding-left:8px;margin:0 0 8px">年度TOP分析</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-      ${yci(imgY3,'年度供应商批次不良率 TOP10','280px')}
-      ${yci(imgY4,'年度不良类型 TOP10','280px')}
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-      ${ypci(imgY5,'年度客户占比（按批次）','255px')}
-      ${ypci(imgY6,'年度成品/半成品占比','255px')}
-    </div>
-    <div style="font-size:14px;font-weight:700;color:#0284c7;border-left:4px solid #0284c7;padding-left:8px;margin:0 0 10px">年度重点分析与改善建议</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-      <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:16px">
-        <div style="font-size:13px;font-weight:700;color:#0284c7;margin-bottom:10px">年度主要质量问题</div>
-        <ul style="margin:0 0 0 18px;font-size:12px;color:#374151;line-height:2.2">
-          ${defTop.slice(0,5).map(([d,n])=>`<li>${d}（${n}次）</li>`).join('')||'<li>年度无明显不良问题</li>'}
-        </ul>
-      </div>
-      <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:16px">
-        <div style="font-size:13px;font-weight:700;color:#0284c7;margin-bottom:10px">年度改善建议</div>
-        <ul style="margin:0 0 0 18px;font-size:12px;color:#374151;line-height:2.2">
-          ${highRiskSups.length?`<li>高风险供应商：${highRiskSups.join('、')}，建议重点管控</li>`:'<li>年度无高风险供应商</li>'}
-          ${s.failCnt>0?`<li>全年REJ ${s.failCnt}批（${(s.failCnt/s.total*100).toFixed(1)}%），持续改善</li>`:'<li>全年批次全部通过，质量稳定</li>'}
-          ${defTop[0]?`<li>主要不良「${defTop.slice(0,3).map(([d])=>d).join('、')}」需重点攻关</li>`:''}
-          <li>建议持续推进供应商质量提升计划</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-
-  <!-- PAGE 3: 12个月汇总 -->
-  <div class="rpt-pdf-page" style="width:1480px;height:1046px;background:#ffffff;color:#111827;padding:28px 36px;box-sizing:border-box;overflow:hidden;font-family:Arial,'Microsoft YaHei',sans-serif">
-    ${hdr(year+'年度 · 12个月汇总')}
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <thead>
-        <tr style="background:#f1f5f9">
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:left;font-weight:700;font-size:13px">月份</th>
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:right;font-weight:700">验货批次</th>
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:right;font-weight:700">PASS</th>
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:right;font-weight:700">REJ</th>
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:right;font-weight:700">PASS率</th>
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:right;font-weight:700">不良数量</th>
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:right;font-weight:700">来货数</th>
-          <th style="padding:13px 12px;border:1px solid #d1d5db;text-align:right;font-weight:700">数量不良率</th>
-        </tr>
-      </thead>
-      <tbody>${mRows}${totalRow}</tbody>
-    </table>
-    <!-- 年度总结 + 签核栏（减少留白） -->
-    <div style="margin-top:28px;display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:5px;padding:14px 16px">
-        <div style="font-size:13px;font-weight:700;color:#0284c7;margin-bottom:10px">年度质量总结</div>
-        <ul style="margin:0 0 0 18px;font-size:13px;color:#374151;line-height:2.4">
-          <li>全年验货批次：<strong>${s.total}</strong> 批，总体 PASS率：<strong>${s.passRate}%</strong></li>
-          <li>全年来货总量：<strong>${s.totalQty.toLocaleString()}</strong> 件，抽查 <strong>${s.totalSmp.toLocaleString()}</strong> 件</li>
-          ${s.totalFail > 0 ? `<li>全年累计 FAIL 数量：<strong style="color:#dc2626">${s.totalFail}</strong> 件，平均不良率 <strong style="color:#dc2626">${s.avgRate}</strong></li>` : '<li>全年未发现不良，质量表现优异</li>'}
-          ${defTop[0] ? `<li>年度主要不良：「${defTop.slice(0,3).map(([d])=>d).join('、')}」，需持续改善</li>` : ''}
-          <li>建议来年持续推进供应商质量管控体系建设</li>
-        </ul>
-      </div>
-      <div>
-        <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:12px">审批签核</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;font-size:12px;color:#374151">
-          <div style="border:1px solid #d1d5db;border-radius:4px;padding:10px 12px">
-            <div style="font-weight:600;margin-bottom:22px">制表人</div>
-            <div style="border-top:1px solid #9ca3af;padding-top:6px;color:#9ca3af;font-size:11px">签名 / 日期</div>
-          </div>
-          <div style="border:1px solid #d1d5db;border-radius:4px;padding:10px 12px">
-            <div style="font-weight:600;margin-bottom:22px">品质主管审核</div>
-            <div style="border-top:1px solid #9ca3af;padding-top:6px;color:#9ca3af;font-size:11px">签名 / 日期</div>
-          </div>
-          <div style="border:1px solid #d1d5db;border-radius:4px;padding:10px 12px">
-            <div style="font-weight:600;margin-bottom:22px">管理层批准</div>
-            <div style="border-top:1px solid #9ca3af;padding-top:6px;color:#9ca3af;font-size:11px">签名 / 日期</div>
-          </div>
-        </div>
-        <div style="margin-top:14px;font-size:11px;color:#9ca3af;text-align:right">
-          ${getReportCompanyLabel()} · 品质管理部 · ${year}年度
-        </div>
-      </div>
-    </div>
-  </div>`;
-
-  document.body.appendChild(wrap);
-  await new Promise(r=>setTimeout(r,100));
-  const pages = wrap.querySelectorAll('.rpt-pdf-page');
-  try {
-    await _exportPdfLandscapePages(Array.from(pages), `验货年报_${year}.pdf`);
-    showToast('✓ 年报 PDF 已导出','success');
-  } catch(e) {
-    console.error('[Yearly PDF]',e);
-    alert('年报 PDF 导出失败：' + e.message);
-    showToast('年报 PDF 导出失败','error');
-  } finally {
-    document.body.removeChild(wrap);
-  }
 }
 
 /* ════════════════════════════════════════

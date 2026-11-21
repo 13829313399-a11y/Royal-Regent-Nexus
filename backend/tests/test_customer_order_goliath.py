@@ -36,6 +36,7 @@ def template():
         s=w.create_sheet(name)
         for c,v in enumerate(service.ITEM_HEADERS if name==service.ITEM_SHEET else service.ORDER_HEADERS,1):s.cell(3,c,v)
         s.cell(marker,1,'取消单')
+    w[service.ORDER_SHEET]['P1']=7.6
     s=w[service.ITEM_SHEET]
     for c,v in {4:'HIST',5:'HIST',7:'Walmart',8:'935373.002',9:'中文品名',11:500,12:2}.items():s.cell(4,c,v)
     b=BytesIO();w.save(b);return b.getvalue()
@@ -76,14 +77,14 @@ def test_latest_workbook_export_identity_history_and_duplicate_policy():
     assert r['customer_name'].startswith('Pressman')
     assert r['product_name_zh']=='中文品名'
     assert r['units_per_carton']=='2'
-    assert r['unit_price_hkd']=='32.180325'
+    assert r['unit_price_hkd']=='31.55748'
     assert r['date_code']=='RR2176'
     w=openpyxl.load_workbook(BytesIO(output))
     assert w[service.ITEM_SHEET]['L5'].value==2
     assert w[service.ITEM_SHEET]['Y5'].value is None
     assert w[service.ORDER_SHEET]['J4'].value=='=IF(LEN(\'ITEM表\'!K5)=0,"",\'ITEM表\'!K5)'
     assert w[service.ORDER_SHEET]['P4'].value==4.1523
-    assert w[service.ORDER_SHEET]['N4'].value=='=P4*7.75'
+    assert 'P4*$P$1' in w[service.ORDER_SHEET]['N4'].value
     repeated=service.create_unified_customer_preview(**{**args,'schedule_content':output})
     assert any(i['code']=='duplicate_existing_order' for i in repeated['rows'][0]['issues'])
     with pytest.raises(service.CustomerOrderUnifiedError):
@@ -216,7 +217,7 @@ def test_european_export_three_sheets_preserves_history():
     assert item['Z5'].value.date().isoformat()=='2026-01-20'
     assert item['D4'].value=='HIST'
     for name in (service.ORDER_SHEET,service.REVIEW_SHEET):
-        assert book[name]['P4'].value==1.094
+        assert book[name]['P4'].value== (1.094 if name==service.ORDER_SHEET else '=IF(LEN(\'接单表\'!P4)=0,"",\'接单表\'!P4)')
         assert book[name]['C4'].value=='T_10130-PEU25_00642'
         assert book[name]['G4'].value=='934811.024'
     repeated=service.create_unified_customer_preview(**{**args,'schedule_content':output})
@@ -252,7 +253,7 @@ def test_sample_purchase_order_is_not_assumed_regular():
     for row in preview['rows']:
         assert row.get('order_type', '') != '正单'
         if not row.get('order_type'):
-            assert any(issue['code'] == 'order_type_unresolved' and not issue['can_skip']
+            assert any(issue['code'] == 'order_type_unresolved' and issue['severity'] == 'warning'
                        and issue['requires_source_correction']
                        for issue in row['issues'])
 
@@ -266,7 +267,7 @@ def test_unknown_explicit_document_type_requires_source_correction(label):
     row = preview['rows'][0]
     assert not row.get('order_type')
     assert any(issue['code'] == 'order_type_unresolved' and issue['requires_source_correction']
-               and not issue['can_skip'] for issue in row['issues'])
+               and issue['severity'] == 'warning' for issue in row['issues'])
 
 
 @pytest.mark.parametrize('title,expected', [
@@ -284,7 +285,7 @@ def test_purchase_order_title_variants(title, expected):
     assert row.get('order_type', '') == expected
     if not expected:
         assert any(issue['code'] == 'order_type_unresolved' and issue['requires_source_correction']
-                   and not issue['can_skip'] for issue in row['issues'])
+                   and issue['severity'] == 'warning' for issue in row['issues'])
 
 
 def test_goliath_empty_price_keeps_amount_and_does_not_inherit_old_price():
@@ -311,3 +312,19 @@ def test_goliath_empty_price_keeps_amount_and_does_not_inherit_old_price():
     finally:result.close()
     with pytest.raises(ValueError,match='明细金额'):
         parse_po(po(blank_price=True).replace(b'Total USD Excl. VAT 66436.80',b'Total USD Excl. VAT 66430.80'),'conflict.pdf')
+
+
+def test_usd_manual_entry_and_quantity_use_workbook_rate_in_saved_preview():
+    a=dict(factory_id='huadeng',customer_code='goliath',received_date='2026-11-19',
+        po_files=[('missing-price.pdf',po(blank_price=True))],schedule_file_name='schedule.xlsx',schedule_content=template())
+    v=service.create_unified_customer_preview(**a);r=v['rows'][0]
+    out,_,v=service.export_unified_customer_schedule(**a,manual_overrides=[dict(row_id=r['id'],field='unit_price_usd',value='4.1523',issue_key=''),dict(row_id=r['id'],field='quantity',value='100',issue_key='')])
+    assert v['rows'][0]['unit_price_usd']=='4.1523'
+    assert v['rows'][0]['amount_usd']=='415.23'
+    assert v['rows'][0]['unit_price_hkd']=='31.55748'
+    w=openpyxl.load_workbook(BytesIO(out));assert w[service.ORDER_SHEET]['P4'].value==4.1523
+    assert 'P4*$P$1' in w[service.ORDER_SHEET]['N4'].value
+    book=openpyxl.load_workbook(BytesIO(template()));book[service.ORDER_SHEET]['P1']=None;buf=BytesIO();book.save(buf)
+    v=service.create_unified_customer_preview(**(a|dict(schedule_content=buf.getvalue())))
+    issue=next(i for i in v['rows'][0]['issues'] if i['code']=='usd_exchange_rate_missing')
+    assert issue.get('can_edit') is not True

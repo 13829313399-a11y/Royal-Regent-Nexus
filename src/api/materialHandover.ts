@@ -3,6 +3,7 @@ import { http } from '@/lib/http'
 import type { WarehouseOperationsWorkspace } from './warehouseOperations'
 import type { MasterRecord } from './fabricMaster'
 import type { PurchasePriceReference } from './fabricProcurement'
+import type { ReceiptCounts } from './fabricReceiving'
 
 export const HANDOVER_FACTORY = 'huakang-c' as const
 export interface HandoverLine {
@@ -23,9 +24,86 @@ export interface HandoverDocument {
   code_version: number; code: string; data: HandoverData; warnings: string[]; evidence: Record<string, unknown>
   engine: string; raw_text: string; file_name: string; source_sha256: string; confirmed_at: string; created_at: string
   progress: Record<string, { processed: string; remaining: string }>; processing_status: 'PENDING' | 'PARTIAL' | 'COMPLETE'
-  movements: { operation_id: string; line_id: string; quantity: string; business_date: string; reversed: boolean }[]
+  movements: { operation_id: string; line_id: string; quantity: string; business_date: string; reversed: boolean; manual_reference?: string }[]
+  receipt_observations?: HandoverReceiptObservation[]
+  receipt_rejection?: HandoverRejectionSummary
+  prior_receipts?: Record<string, { items: HandoverPriorReceipt[]; review_token: string }>
+  revoked_receipt_links?: { link_id: string; line_id: string; reference: string; quantity: string; business_date: string
+    revoked_at: string; revoked_by: string; reason: string }[]
 }
-export interface HandoverSummary { id: string; status: HandoverDocument['status']; revision: number; data: Omit<HandoverData, 'lines'>; line_count: number; created_at: string }
+export interface HandoverPriorReceipt {
+  id: string
+  reference: string
+  date: string
+  quantity: string
+  production_no: string
+  contract_no: string
+  order_no: string
+  parts: { lot: string; roll_no: string; location: string }[]
+  exact_reference: boolean
+  blocks_posting: boolean
+  can_link: boolean
+  reason: string
+}
+export interface HandoverReceiptLink {
+  factory_id: 'huakang-c'
+  request_id: string
+  expected_revision: number
+  line_id: string
+  receipt_id: string
+}
+export interface HandoverReceiptUnlink {
+  factory_id: 'huakang-c'
+  request_id: string
+  expected_revision: number
+  expected_processed: string
+  link_id: string
+  reason: string
+}
+export type HandoverRejectionStatus = 'PENDING_REDELIVERY' | 'RESOLVED'
+export interface HandoverRejectionSummary {
+  rejected_quantity: string
+  unit: string
+  status: HandoverRejectionStatus | null
+}
+export interface HandoverRejectionFollowup {
+  factory_id: 'huakang-c'
+  request_id: string
+  expected_revision: number
+  observation_request_id: string
+  line_id: string
+  status: HandoverRejectionStatus
+  reason: string
+}
+export interface HandoverReceiptObservation {
+  request_id: string
+  business_date: string
+  actor_name: string
+  lines: {
+    line_id: string
+    item_name: string
+    item_code: string
+    unit: string
+    delivered_quantity?: string
+    shortage_quantity?: string
+    full_rejection?: {
+      rejected_quantity: string
+      followup: { status: HandoverRejectionStatus; reason: string; actor_name: string; recorded_at: string } | null
+    }
+    parts: (ReceiptCounts & {
+      accepted_quantity: string
+      lot: string
+      roll_no: string
+      location?: string
+      operation_id?: string
+    })[]
+  }[]
+}
+export interface HandoverSummary {
+  id: string; status: HandoverDocument['status']; revision: number; data: Omit<HandoverData, 'lines'>; line_count: number; created_at: string
+  processing_status?: HandoverDocument['processing_status']
+  receipt_rejection?: HandoverRejectionSummary
+}
 export interface HandoverListFilters { search: string; status: 'ALL' | HandoverDocument['status']; kind: 'ALL' | HandoverData['kind']; supplier_id: string }
 export interface PendingDelivery extends HandoverSummary { pending_line_count: number; processing_status: 'PENDING' | 'PARTIAL'; first_item_name: string }
 export interface PendingDeliveries { total: number; items: PendingDelivery[]; limit: number; offset: number; stock_totals: { unit: string; quantity: string }[] }
@@ -43,7 +121,52 @@ export interface HandoverPurchaseSources {
   document_revision: number; lines: Record<string, HandoverPurchaseSource[]>
   match_status?: Record<string, HandoverPurchaseMatchStatus>
 }
-export interface HandoverPosting { factory_id: 'huakang-c'; request_id: string; expected_revision: number; expected_inventory_revision: number; code_version: number; business_date: string; lines: { line_id: string; quantity: string; batch_id: string; location_id: string; lot: string; roll_no: string; purchase_source_id?: string; expected_source_revision?: number; expected_receipt_count?: number; difference_reason?: string }[] }
+export interface HandoverPurchaseReview {
+  expected_revision: number
+  operation_ids: string[]
+  quantity: string
+  unit: string
+  reference: string
+  reason: string
+  locations: string[]
+  sources: HandoverPurchaseSource[]
+  match_status: HandoverPurchaseMatchStatus
+}
+export interface HandoverPurchaseLink {
+  factory_id: 'huakang-c'
+  request_id: string
+  expected_revision: number
+  operation_ids: string[]
+  purchase_source_id: string
+  expected_source_revision: number
+  expected_receipt_count: number
+  difference_reason: string
+}
+export interface HandoverPosting {
+  factory_id: 'huakang-c'
+  request_id: string
+  expected_revision: number
+  expected_inventory_revision: number
+  code_version: number
+  business_date: string
+  delivery_quantities?: Record<string, string>
+  manual_receipt_reviews?: Record<string, string>
+  lines: {
+    line_id: string
+    quantity: string
+    batch_id: string
+    location_id: string
+    lot: string
+    roll_no: string
+    purchase_source_id?: string
+    expected_source_revision?: number
+    expected_receipt_count?: number
+    roll_no_is_blank?: boolean
+    difference_reason?: string
+    procurement_pending_reason?: string
+    receipt_counts?: ReceiptCounts
+  }[]
+}
 export interface HandoverSave { request_id: string; expected_revision: number; data: HandoverData }
 export interface HandoverAction { request_id: string; expected_revision: number; acknowledge_warnings: boolean; reason: string; data?: HandoverData }
 export interface HandoverMonthlyRow { document_id: string; line_id: string; source_no: string; document_date: string; supplier_id: string; supplier_name: string; item_code: string; item_name: string; unit: string; declared: string; prior_received: string; month_received: string; month_reversed: string; month_net_received: string; cumulative_received: string; outstanding: string; unit_price: string; price_unit: string; currency: string; price_note: string; notes: string[] }
@@ -74,6 +197,11 @@ export function handoverApi(key = '') {
     async printFile(id: string, expected_revision: number, corner: 'left' | 'right') { return (await client.get<Blob>(base + '/documents/' + encodeURIComponent(id) + '/print', { ...config, params: { ...(external ? {} : { factory_id: HANDOVER_FACTORY }), expected_revision, corner }, responseType: 'blob', timeout: 240_000 })).data },
     async scan(code: string) { return (await http.post<HandoverDocument>('/material-handover/scan', { factory_id: HANDOVER_FACTORY, code })).data },
     async post(id: string, body: HandoverPosting) { return (await http.post<HandoverDocument>('/material-handover/documents/' + encodeURIComponent(id) + '/post', body)).data },
+    async recordRejectionFollowup(id: string, body: HandoverRejectionFollowup) { return (await http.post<HandoverDocument>('/material-handover/documents/' + encodeURIComponent(id) + '/rejection-followup', body)).data },
+    async linkReceipt(id: string, body: HandoverReceiptLink) { return (await http.post<HandoverDocument>('/material-handover/documents/' + encodeURIComponent(id) + '/link-receipt', body)).data },
+    async unlinkReceipt(id: string, body: HandoverReceiptUnlink) { return (await http.post<HandoverDocument>('/material-handover/documents/' + encodeURIComponent(id) + '/unlink-receipt', body)).data },
+    async purchaseReview(id: string) { return (await http.get<HandoverPurchaseReview>('/material-handover/receipts/' + encodeURIComponent(id) + '/purchase-review', { params: { factory_id: HANDOVER_FACTORY } })).data },
+    async linkPurchase(id: string, body: HandoverPurchaseLink) { return (await http.post<{ purchase_order_no: string }>('/material-handover/receipts/' + encodeURIComponent(id) + '/purchase-link', body)).data },
     async issuers() { return (await http.get<HandoverIssuer[]>('/material-handover/issuers', config)).data },
     async createIssuer(body: HandoverLinkInput) { return (await http.post<HandoverIssuer>('/material-handover/issuers', { factory_id: HANDOVER_FACTORY, ...body })).data },
     async linkAction(id: string, action: 'renew' | 'bind' | 'revoke', body: HandoverLinkAction) { return (await http.post<HandoverIssuer>('/material-handover/issuers/' + id + '/' + action, { factory_id: HANDOVER_FACTORY, ...body })).data },

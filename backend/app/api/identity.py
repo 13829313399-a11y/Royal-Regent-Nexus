@@ -1,18 +1,19 @@
 from datetime import datetime
+from typing import Literal
 import logging
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.core.time import serialize_process_local_timestamp
-from app.models.auth import AuthAccessRequest, AuthRoleBindingMetadata, AuthUser, AuthUserPermissionOverride, AuthUserRole, EmployeeProfile
-from app.models.identity import EmployeeAssignment, IamHandoverItem
+from app.models.auth import AuthAccessRequest, AuthUser
+from app.models.identity import IamHandoverItem
 from app.schemas.identity import AccessExplain, BatchCommit, DelegationUpdate, DraftUpdate, HandoverReassign, IdentityChange, IdentityCommit, IdentityDecision
 from app.services.auth import AuthContext, build_auth_context, get_current_user
-from app.services import identity_changes as changes
+from app.services import identity_changes as changes, iam_personnel as personnel
 from app.services.identity_catalog import catalog
-from app.services.identity_policy import ensure_reader, fail, fresh_actor, is_group_manager, readable_scopes
-from app.services.identity_resolver import identity_columns, resolve_identity_at, stamp
+from app.services.identity_policy import ensure_reader, fail, fresh_actor, is_group_manager
+from app.services.identity_resolver import resolve_identity_at, stamp
 
 router = APIRouter(prefix="/api")
 
@@ -28,11 +29,20 @@ def registration_catalog(db: Session = Depends(get_db)):
 
 
 @router.get("/system/organization-catalog")
-def organization_catalog(db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+def organization_catalog(include: Literal["", "personnel_scope"] = "", db: Session = Depends(get_db),
+                         user: AuthContext = Depends(get_current_user)):
     ensure_reader(db, user)
     result = catalog(db)
     result["can_manage_delegations"] = is_group_manager(user)
-    if not is_group_manager(user):
+    if include == "personnel_scope":
+        from app.services.identity_policy import readable_scopes
+        scopes = set(readable_scopes(db, user))
+        result["organizations"] = [{**o, "departments": [d for d in o["departments"] if (o["id"], d["code"]) in scopes]}
+                                   for o in result["organizations"] if o["status"] == "active"]
+        visible = [o for o in result["organizations"] if o["departments"]]
+        parents = {o["parent_id"] for o in visible}
+        result["organizations"] = [o for o in result["organizations"] if o["departments"] or o["id"] in parents]
+    elif not is_group_manager(user):
         from app.services.iam import _manager_scopes
         scopes = _manager_scopes(db, user.id)
         result["organizations"] = [o for o in result["organizations"] if any(f in {"*", o["id"]} for f, _ in scopes)]
@@ -71,46 +81,19 @@ def batch_commit(payload: BatchCommit, db: Session = Depends(get_db), user: Auth
 
 @router.get("/system/people")
 def people(q: str = "", org_unit_id: str = "", status: str = "", page: int = Query(1, ge=1),
-           page_size: int = Query(30, ge=1, le=100), db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-    ensure_reader(db, user)
-    factory, department, title, org = identity_columns(include_org=True)
-    query = select(AuthUser, EmployeeProfile, factory.label("factory"), department.label("department"), title.label("title"), org.label("org")).outerjoin(EmployeeProfile)
-    scopes = readable_scopes(db, user)
-    if is_group_manager(user):
-        scopes.extend([("*", "*"), ("*", "system")])
-    primary_visible = or_(*[(func.coalesce(org, "") == f) & (func.coalesce(department, "") == d) for f, d in scopes])
-    assignment_visible = or_(*[(EmployeeAssignment.org_unit_id == f) & (EmployeeAssignment.department_code == d) for f, d in scopes])
-    has_hidden_assignment = exists(select(EmployeeAssignment.id).where(
-        EmployeeAssignment.user_id == AuthUser.id, EmployeeAssignment.employment_epoch == EmployeeProfile.employment_epoch,
-        EmployeeAssignment.lifecycle_state == "approved", or_(EmployeeAssignment.valid_until.is_(None), EmployeeAssignment.valid_until > stamp()),
-        ~assignment_visible))
-    has_visible_assignment = exists(select(EmployeeAssignment.id).where(
-        EmployeeAssignment.user_id == AuthUser.id, EmployeeAssignment.employment_epoch == EmployeeProfile.employment_epoch,
-        EmployeeAssignment.lifecycle_state == "approved", or_(EmployeeAssignment.valid_until.is_(None), EmployeeAssignment.valid_until > stamp()), assignment_visible))
-    query = query.where(~has_hidden_assignment, or_(primary_visible, has_visible_assignment))
-    if q.strip():
-        query = query.where(or_(AuthUser.display_name.contains(q.strip(), autoescape=True), AuthUser.username.contains(q.strip(), autoescape=True)))
-    if status:
-        query = query.where(EmployeeProfile.employment_status == "left" if status == "left" else AuthUser.status == status)
-    if org_unit_id:
-        query = query.where(org == org_unit_id)
-    from app.services.identity_policy import additional_source_scopes
-    from app.services.auth import can
-    candidates = query.with_only_columns(AuthUser.id).order_by(None)
-    source_scopes = additional_source_scopes(db, candidates)
-    from app.services.iam_management_scopes import complete_scopes
-    hidden = [uid for uid, required in source_scopes.items()
-              if any(not can(user, "system:user_manage", f, d) for f, d in complete_scopes(required))]
-    if hidden:
-        query = query.where(AuthUser.id.not_in(hidden))
-    total = db.scalar(select(func.count()).select_from(query.subquery()))
-    rows = db.execute(query.order_by(AuthUser.display_name, AuthUser.id).offset((page - 1) * page_size).limit(page_size)).all()
-    return {"total": total, "page": page, "page_size": page_size,
-            "items": [{"id": u.id, "display_name": u.display_name, "username": u.username, "status": u.status,
-                       "last_login_at": serialize_process_local_timestamp(u.last_login_at),
-                       "primary_org_unit_id": o or "", "primary_factory_id": f or "", "primary_department": d or "", "position": t or "",
-                       "identity_mode": p.identity_mode if p else "legacy", "employment_status": p.employment_status if p else "unconfirmed",
-                       "identity_version": p.identity_version if p else 0} for u, p, f, d, t, o in rows]}
+           page_size: int = Query(30, ge=1, le=100), include: Literal["", "access_summary"] = "",
+           role_id: str = "", department: str = "", identity_mode: Literal["", "legacy", "v2"] = "",
+           has_packages: Literal["", "yes", "no"] = "", include_org_counts: bool = False, db: Session = Depends(get_db),
+           user: AuthContext = Depends(get_current_user)):
+    return personnel.people(db, user, q=q, org_unit_id=org_unit_id, status=status, page=page, page_size=page_size,
+                            include=include, role_id=role_id, department=department, identity_mode=identity_mode,
+                            has_packages=has_packages, include_org_counts=include_org_counts)
+
+
+@router.get("/system/users/{user_id}/effective-access")
+def effective_access(user_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    ensure_reader(db, user, user_id)
+    return personnel.effective_access(db, user_id)
 
 
 @router.get("/system/users/{user_id}/identity")
@@ -269,5 +252,15 @@ def explain(user_id: str, payload: AccessExplain, db: Session = Depends(get_db),
         fail("USER_NOT_FOUND", "人员不存在", 404)
     context = build_auth_context(db, target, at=payload.at)
     allowed, source_type, source_ids, reason = authorization_decision(context, payload.permission_code, payload.factory_id, payload.department, at=payload.at)
+    order = ["account", "permission", "deny", "superadmin", "allow", "package", "default"]
+    hit = {"account_unavailable": "account", "inactive_permission": "permission",
+           "user_override": "allow" if allowed else "deny", "superadmin": "superadmin",
+           "role_binding": "package", "role_binding_cross_read": "package",
+           "role_binding_cross_operate": "package", "default": "default"}[source_type]
+    labels = ["账号状态", "权限启用状态", "显式禁止", "集团超管", "个人允许", "权限包", "默认拒绝"]
+    steps = [{"key": key, "label": label, "state": "hit" if key == hit else
+              "skipped" if index > order.index(hit) else "passed" if index < 2 else "unmatched"}
+             for index, (key, label) in enumerate(zip(order, labels))]
     return {"allowed": allowed, "source_type": source_type, "source_ids": source_ids, "reason": reason,
+            "steps": steps,
             "identity": context.identity, "limitation": "按当前账号状态、当前在职批次及已保存授权解释指定时点；不提供离职前账号状态或历史业务状态的完整回放"}

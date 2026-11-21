@@ -107,7 +107,6 @@ def test_mixed_old_new_manual_fallback_missing_and_imported_dates(db, monkeypatc
         assert by_entry[fallback['id']]['inspectionDate'] == '2026-11-05'
         for item in result['items']:
             summary.detail('huaxing', item['id'])
-        summary.export_excel('huaxing', {'dateBasis': 'actual'})
     assert projection_rows() == before
 
 

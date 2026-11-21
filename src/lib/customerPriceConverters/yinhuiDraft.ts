@@ -110,7 +110,7 @@ function reviewValues(result: YinhuiConversionResult) {
 
 export function saveYinhuiDraft(draft: YinhuiDraft): string {
   return JSON.stringify({ kind: 'yinhui-import-draft', version: 1, factory: 'huaxing', customer: 'yinhui', sourceFileName: draft.sourceFileName,
-    source: encode(draft.buffer), overrides: draft.overrides, headerMappings: draft.headerMappings || [], bomLanguage: 'source', review: reviewValues(draft.result) })
+    source: encode(draft.buffer), overrides: draft.overrides, headerMappings: draft.headerMappings || [], bomLanguage: 'source', toolLanguage: 'source', review: reviewValues(draft.result) })
 }
 
 export function loadYinhuiDraft(content: string, pricing?: CustomerPricingSettings): YinhuiDraft {
@@ -154,9 +154,9 @@ export function loadYinhuiDraft(content: string, pricing?: CustomerPricingSettin
   if (typeof review.moq === 'number') setYinhuiDraftMoq(draft.result, review.moq)
   for (const key of ['freightFclHkd', 'freightLclHkd', 'freight20FtHkd', 'freight40HqHkd', 'freightLocalHkd', 'domesticPriceRmb'] as const) if (review[key] === null || (typeof review[key] === 'number' && Number.isFinite(review[key]))) data[key] = review[key] as number | null
   for (const group of groups) {
-    // Older drafts saved automatic English translations; use the reparsed BOM source instead.
-    // New drafts explicitly preserve user-reviewed source-language descriptions.
-    if (group !== 'tools' && saved.bomLanguage !== 'source') continue
+    // The BOM and Tool Plan switched to source-language names at different times.
+    // Reparse older automatic translations; preserve reviewed names only under the matching policy.
+    if ((group === 'tools' ? saved.toolLanguage : saved.bomLanguage) !== 'source') continue
     const names = record(review.names)[group]
     if (!Array.isArray(names) || names.length !== (data[group] || []).length) continue
     names.forEach((value, i) => { const name = record(value).description; if (typeof name === 'string' && name.length < 2000) data[group]![i]!.description = name })

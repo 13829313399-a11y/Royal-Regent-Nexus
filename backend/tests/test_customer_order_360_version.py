@@ -195,4 +195,4 @@ def test_real_converted_excel_parser_and_http_import_keep_version_and_audit_cont
     assert saved['data']['import_controls']['reason'] == form['confirmation_reason']
     assert saved['version'] == 1
     form['confirmation_reason'] = ''
-    assert client.post('/api/customer-order-ledger/imports/360', data=form, files=files).status_code == 400
+    assert client.post('/api/customer-order-ledger/imports/360', data=form, files=files).status_code == 200

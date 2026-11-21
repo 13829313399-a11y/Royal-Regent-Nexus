@@ -257,7 +257,9 @@ def _render(db, loaded, preview=None, drafts=(), *, user, include_source_workboo
             field.pop("owner_path")
             field.pop("note_key")
     incomplete = preview.incomplete_sections if preview is not None else _pricing_completeness(quote, sections)
-    warnings = [{"message": f"{item['section_name']}：{item['reason']}，当前合计不完整。"}
+    warnings = [{"message": f"{item['section_name']}：{item['reason']}，当前合计不完整。",
+                 "code": "formula_outdated" if item["reason"] == "计算公式待更新" else "section_incomplete",
+                 "section_code": item["section_code"], "section_name": item["section_name"]}
                 for item in incomplete]
     warnings.extend(warning for section in sections if section.is_required and section.department == "sewing"
                     for warning in _json_object(section.calculation_json).get("warnings", [])

@@ -138,12 +138,18 @@ class SubmitRequisition(Command):
     lines: Annotated[list[DemandLine], Field(min_length=1, max_length=300)]
 
 
+class EtaPurchaseSource(Strict):
+    id: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    revision: Annotated[int, Field(strict=True, ge=1)]
+
+
 class EtaBatch(Strict):
     row: Annotated[int, Field(strict=True, ge=0, le=299)]
     quantity: Quantity
     expected_date: date
-    supplier: Text
-    purchase_reference: Text
+    supplier: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    purchase_reference: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    purchase_source: EtaPurchaseSource | None = None
 
 
 class ReplyEta(Command):
@@ -170,6 +176,8 @@ class ReconcileRequisition(WithdrawRequisition):
 OrderAction = Literal['receive', 'bom', 'requisition', 'eta', 'withdraw', 'reconcile', 'plan', 'plan-publish']
 WorkflowStatus = Literal['awaiting_receipt', 'cancelled_receipt', 'cancelled', 'reconciliation',
                          'awaiting_bom', 'awaiting_submission', 'awaiting_reply', 'partial_reply', 'complete_reply', 'no_purchase']
+WorkflowStatusGroup = Literal['pending_confirmation', 'pending_engineering', 'pending_procurement', 'procurement_ready']
+WorkflowStatusFilter = WorkflowStatus | WorkflowStatusGroup
 
 
 class RecoverOperation(Strict):

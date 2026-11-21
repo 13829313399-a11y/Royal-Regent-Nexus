@@ -1,4 +1,4 @@
-"""Independent alternatives and immutable issued versions of one product."""
+"""Independent alternatives, editable outputs and explicitly frozen versions."""
 from datetime import datetime
 from uuid import uuid4
 
@@ -72,6 +72,7 @@ def list_alternatives(db, quote_id, user):
             "change_note", "issued_at", "reported_at", "archived") } | {
             "archived": bool(row.archived or document_archive(db, item)),
             "version_label": item.version_label, "status": item.status, "created_at": item.created_at,
+            "header_revision": item.header_revision, "final_release_status": item.final_release_status,
             "quote_no": item.quote_no, "product_name": item.product_name, "customer": item.customer,
             "quantity": item.qty,
             "delete_block_reason": deletion_reason(db, item),
@@ -210,7 +211,7 @@ def select_alternative(db, quote_id, payload, user, request=None):
         candidate = _get_quote(db, target.quote_id)
         ensure_not_archived(db, candidate)
         if candidate.status != "exported":
-            raise HTTPException(409, "只能标记已正式输出的版本为客户采用")
+            raise HTTPException(409, "请先在报价首页冻结当前版本，再标记为客户采用")
     before = family.selected_quote_id
     family.selected_quote_id = payload.selected_quote_id
     family.revision += 1
@@ -243,7 +244,7 @@ def report_alternative(db, quote_id, payload, user, request=None):
     quote = _get_quote(db, quote_id)
     _manage(db, quote, user)
     _check_revision(quote.header_revision, payload.revision, "报价版本")
-    if quote.status != "exported":
+    if quote.status != "exported" and quote.final_release_status != "output":
         raise HTTPException(409, "请先正式输出再标记已报客")
     family = _write_family(db, quote)
     entry = db.get(InternalQuoteAlternative, quote.id)
@@ -258,8 +259,11 @@ def report_alternative(db, quote_id, payload, user, request=None):
 
 
 @quote_write
-def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True):
-    from app.services.internal_quote_artifacts import _ensure_export_permission, create_controlled_export
+def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True, freeze=False):
+    from app.services.internal_quote_artifacts import (
+        _ensure_export_permission, create_controlled_export, _export_matches_current_state, _export_out,
+    )
+    from app.models.internal_quote import InternalQuoteExportFile
     quote = _get_quote(db, quote_id)
     _ensure_export_permission(db, quote, user)
     if quote.module_version != "v4":
@@ -267,6 +271,20 @@ def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True)
     # A retry returns the exact already-issued bytes, even after formula/layout upgrades.
     if quote.final_release_status == "issued":
         return create_controlled_export(db, quote_id, user, request, commit=commit)
+    sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)))
+    ensure_molding_projection_current(db, quote, sections)
+    if not freeze and quote.final_release_status == "output":
+        current = db.scalars(select(InternalQuoteExportFile).where(
+            InternalQuoteExportFile.quote_id == quote.id, InternalQuoteExportFile.status == "current",
+            InternalQuoteExportFile.release_stage == "p4_direct_issued"))
+        for record in current:
+            if _export_matches_current_state(record, quote, sections):
+                # A retry is safe only while its entire saved calculation basis is unchanged.
+                if payload.revision not in {quote.header_revision, quote.header_revision - 1}:
+                    _check_revision(quote.header_revision, payload.revision, "报价版本")
+                ensure_quote_formula_current(quote, sections)
+                ensure_current_molding_pricing(db, quote, sections)
+                return _export_out(record)
     _check_revision(quote.header_revision, payload.revision, "报价版本")
     if quote.status not in {"drafting", "rejected", "ready_for_final_review"}:
         raise HTTPException(409, "当前报价不可直接输出")
@@ -274,8 +292,6 @@ def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True)
     entry = db.get(InternalQuoteAlternative, quote.id)
     if entry.archived:
         raise HTTPException(409, "请先恢复已归档方案")
-    sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)))
-    ensure_molding_projection_current(db, quote, sections)
     required = [row for row in sections if row.is_required]
     problems = [row.department_name for row in required if not row.filled_at
         or not _json_object(row.payload_json) or row.calculation_status != "valid"
@@ -291,19 +307,20 @@ def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True)
     summary = _rr2_cost_summary(sections, cost_context, _json_object(reference.snapshot_json), quote.qty, factory_id=quote.factory_id)
     quote.header_revision += 1
     quote.final_release_revision += 1
-    quote.final_release_status = "issued"
-    quote.status = "exported"
+    quote.final_release_status = "issued" if freeze else "output"
+    quote.status = "exported" if freeze else "drafting"
     quote.updated_at = now_text()
     entry.issued_at = quote.updated_at
     family.revision += 1
-    for section in required:
+    for section in required if freeze else []:
         section.status = "sealed"
         section.revision += 1
-        _add_revision(db, quote, section, user, reason="direct_issue")
+        _add_revision(db, quote, section, user, reason="manual_freeze")
     manifest = {"schema_version": "internal-quote-direct-issue-v1", "quote_id": quote.id,
         "issued_by": user.id, "issued_by_name": user.display_name, "issued_at": entry.issued_at,
         "header_revision": quote.header_revision, "formula_version": quote.formula_version,
         "reference_snapshot_id": quote.reference_snapshot_id,
+        "manually_frozen": freeze,
         "cost_context": {key: str(value) for key, value in cost_context.items()},
         "rr2_cost_summary": summary,
         "section_revisions": {row.department: row.revision for row in sections}}
@@ -312,5 +329,5 @@ def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True)
     _add_audit(db, quote, user, "direct_issue", detail=canonical_json({key: manifest[key] for key in (
         "schema_version", "quote_id", "issued_by", "issued_at", "header_revision", "manifest_sha256")}), request=request)
     db.flush()
-    # The exporter commits the issue, immutable workbook and handoff in one transaction.
-    return create_controlled_export(db, quote_id, user, request, commit=commit)
+    # Export bytes remain immutable; only an explicit homepage freeze seals the source.
+    return create_controlled_export(db, quote_id, user, request, commit=commit, prepared_direct_output=True)

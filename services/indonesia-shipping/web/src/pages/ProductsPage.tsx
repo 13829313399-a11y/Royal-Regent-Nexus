@@ -1,0 +1,950 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  AutoComplete, Button, Card, Col, Drawer, Form, Input, InputNumber, Popconfirm,
+  Row, Select, Space, Switch, Table, Tabs, Tag, Typography, App,
+} from 'antd'
+import { api, type Dictionaries, type Material, type Molding, type MoldingPart, type Product, type ProductDetail, type SupplierDict } from '../api/client'
+import { MATERIAL_CATEGORIES, inferMaterialCategory } from '../utils/engineeringImport'
+import { resolveMaterialTranslation } from '../utils/materialTranslate'
+import { mergeImportedMaterials, recommendMaterialChoices, resolveMaterialImport, type ImportChoice } from '../utils/materialImportMerge'
+import { mergeImportedMoldings } from '../utils/moldingImportMerge'
+import { MaterialImportReview } from '../components/MaterialImportReview'
+import SupplierProfileEditor from '../components/SupplierProfileEditor'
+import {
+  HUASHENGYI_FULL_NAME, materialCustomsCompany,
+  supplierCustomsCompany, supplierProfileForName,
+  supplierAutocompleteOptions, filterSupplierOption, supplierDisplayName,
+} from '../utils/supplierProfiles'
+
+interface ProductForm {
+  code: string
+  name?: string
+  customer?: string
+}
+
+const WORKSHOPS = ['兴信A车间', '兴信B车间', '华登']
+
+function translatedMaterialName(nameZh: string, dicts: Dictionaries): string {
+  return resolveMaterialTranslation(nameZh, dicts.translations || [])
+}
+
+import { useNavigationDraft } from '../auth/navigationState'
+export default function ProductsPage() {
+  const { message, modal } = App.useApp()
+  const [rows, setRows] = useState<Product[]>([])
+  const [filter, setFilter] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [editing, setEditing] = useState<Product | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [form] = Form.useForm<ProductForm>()
+  const [moldings, setMoldings] = useState<Molding[]>([])
+  const [materials, setMaterials] = useState<Material[]>([])
+  const originalMaterialsRef = useRef<Material[]>([])
+  const [customers, setCustomers] = useState<string[]>([])
+  const [savingDetail, setSavingDetail] = useState(false)
+  useNavigationDraft(editing !== null || creating, savingDetail)
+  const [activeTab, setActiveTab] = useState<'mold' | 'mat'>('mold')
+  const [dicts, setDicts] = useState<Dictionaries>({ hs: [], suppliers: [], translations: [] })
+  const dictionaryRequestRef = useRef(0)
+  const [drawerFull, setDrawerFull] = useState(false)
+  const [showInactive, setShowInactive] = useState(false)
+  const currentProductCode = Form.useWatch('code', form)
+
+  const loadList = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data } = await api.get<Product[]>('/products', { params: { includeInactive: showInactive } })
+      setRows(Array.isArray(data) ? data : [])
+    } finally { setLoading(false) }
+  }, [showInactive])
+  async function loadCustomers() {
+    try { const { data } = await api.get<string[]>('/customers'); setCustomers(data || []) } catch {}
+  }
+  async function loadDicts() {
+    const request = ++dictionaryRequestRef.current
+    try {
+      const { data } = await api.get<Dictionaries>('/dictionaries')
+      if (request !== dictionaryRequestRef.current) return
+      setDicts({ hs: data.hs || [], suppliers: data.suppliers || [], translations: data.translations || [] })
+    } catch {}
+  }
+  useEffect(() => { loadCustomers(); loadDicts() }, [])
+  useEffect(() => { loadList() }, [loadList])
+
+  function openCreate() {
+    setCreating(true); setEditing(null); setActiveTab('mold')
+    form.resetFields(); setMoldings([]); setMaterials([]); originalMaterialsRef.current = []
+  }
+
+  async function openEdit(p: Product, tab: 'mold' | 'mat' = 'mold') {
+    setEditing(p); setCreating(false); setActiveTab(tab)
+    form.resetFields()
+    setTimeout(() => form.setFieldsValue({ code: p.code, name: p.name, customer: p.customer }), 0)
+    setMoldings([]); setMaterials([])
+    try {
+      const { data } = await api.get<ProductDetail>(`/products/by-code?code=${encodeURIComponent(p.code)}`)
+      setMoldings(Array.isArray(data.moldings) ? data.moldings : [])
+      const loadedMaterials = Array.isArray(data.materials) ? data.materials : []
+      setMaterials(loadedMaterials)
+      originalMaterialsRef.current = loadedMaterials.map(m => ({ ...m }))
+    } catch (e: any) {
+      message.error('加载货号详情失败: ' + (e?.message ?? e))
+    }
+  }
+
+  async function save() {
+    const v = await form.validateFields()
+    const code = v.code?.trim()
+    if (!code) return
+    const originalCode = editing?.code ?? code
+    setSavingDetail(true)
+    try {
+      await api.put(`/products/by-code?code=${encodeURIComponent(originalCode)}`, {
+        code,
+        name: v.name ?? '',
+        customer: v.customer ?? '',
+        moldings,
+      })
+      // Replace materials via bulk PUT. Backend upserts by id; rows removed in UI are soft-removed if referenced, else deleted.
+      const { data: materialSave } = await api.put(`/materials/bulk/by-code?code=${encodeURIComponent(code)}`, {
+        materials: materials.map((m) => ({
+          ...(m.id != null ? { id: m.id } : {}),
+          itemNo: m.item_no ?? '',
+          nameZh: m.name_zh ?? '',
+          nameEn: m.name_en ?? '',
+          spec: m.spec ?? '',
+          category: m.category ?? '',
+          materialCode: m.material_code ?? '',
+          hsCN: m.hs_cn ?? '',
+          hsID: m.hs_id ?? '',
+          supplier: m.supplier || '',
+          customsCompany: materialCustomsCompany(m, dicts.suppliers),
+          unitKg: m.unit_kg ?? 'KGM',
+          grossPerPc: m.gross_per_pc ?? 0,
+          netPerPc: m.net_per_pc ?? 0,
+          length: m.length ?? 0,
+          width: m.width ?? 0,
+          height: m.height ?? 0,
+          qtyPerCarton: m.qty_per_carton ?? 0,
+          weightPerCarton: m.weight_per_carton ?? 0,
+          imageId: m.image_id ?? null,
+          active: m.active !== false,
+          usage_qty: m.usage_qty ?? 1,
+        })),
+      })
+      const originalById = new Map(originalMaterialsRef.current
+        .filter(m => m.id != null)
+        .map(m => [Number(m.id), m]))
+      const supplierSyncEntries = materials
+        .filter(m => String(m.supplier || '').trim() &&
+          (m.id == null || String(originalById.get(Number(m.id))?.supplier || '').trim() !== String(m.supplier).trim()))
+        .map(m => {
+          const previous = m.id != null ? originalById.get(Number(m.id)) : undefined
+          return {
+            supplier: String(m.supplier || '').trim(),
+            previousSupplier: String(previous?.supplier || '').trim(),
+            customs: materialCustomsCompany(m, dicts.suppliers),
+            previousCustoms: previous ? materialCustomsCompany(previous, dicts.suppliers) : '',
+          }
+        })
+      let supplierAdded = 0
+      if (supplierSyncEntries.length) {
+        try {
+          const { data: supplierSync } = await api.post('/dictionaries/suppliers/sync', {
+            entries: supplierSyncEntries,
+            confirmChanges: false,
+          })
+          supplierAdded = Number(supplierSync?.added) || 0
+          const supplierConflicts = Array.isArray(supplierSync?.conflicts) ? supplierSync.conflicts : []
+          if (supplierConflicts.length) {
+            modal.confirm({
+              title: '确认更新供应商汇总',
+              width: 680,
+              okText: '确认并更新汇总',
+              cancelText: '仅保存货号，不改汇总',
+              content: (
+                <div style={{ maxHeight: 320, overflow: 'auto' }}>
+                  <p style={{ color: '#8c8c8c' }}>检测到 {supplierConflicts.length} 个已有供应商的资料变化：</p>
+                  {supplierConflicts.map((x: any, i: number) => (
+                    <div key={`${x.keyword}-${i}`} style={{ marginBottom: 12, padding: 10, background: '#fafafa', borderRadius: 6 }}>
+                      <b>{x.keyword || x.savedFull || `供应商 ${i + 1}`}</b>
+                      <div>全称：{x.savedFull || '(空)'} → <span style={{ color: '#1677ff' }}>{x.enteredFull || '(空)'}</span></div>
+                    </div>
+                  ))}
+                </div>
+              ),
+              onOk: async () => {
+                const { data: confirmed } = await api.post('/dictionaries/suppliers/sync', {
+                  entries: supplierSyncEntries,
+                  confirmChanges: true,
+                })
+                message.success(`已确认更新 ${Number(confirmed?.updated) || 0} 条供应商汇总资料`)
+                loadDicts()
+              },
+            })
+          }
+        } catch {
+          message.warning('货号已保存，但供应商汇总同步失败')
+        }
+      }
+      const conflicts = Array.isArray(materialSave?.translation_conflicts) ? materialSave.translation_conflicts : []
+      const unitLinksUpdated = Number(materialSave?.unit_links_updated) || 0
+      if (conflicts.length) {
+        message.warning(`已保存${unitLinksUpdated ? `，已同步 ${unitLinksUpdated} 行采购走货单位` : ''}；${conflicts.length} 个中文名存在不同英文译法，翻译字典保留原译文，请到字典库确认`)
+      } else if (materialSave?.translation_learned > 0) {
+        message.success(`已保存，并记住 ${materialSave.translation_learned} 个英文译名${unitLinksUpdated ? `，同步 ${unitLinksUpdated} 行采购走货单位` : ''}`)
+      } else if (unitLinksUpdated > 0) {
+        message.success(`已保存，并同步 ${unitLinksUpdated} 行采购走货单位`)
+      } else {
+        message.success(`已保存${supplierAdded ? `，供应商汇总自动新增 ${supplierAdded} 家` : ''}`)
+      }
+      loadDicts()
+      setCreating(false)
+      loadList()
+      // 停留在编辑页；重新拉详情回填物料 id（再次保存按 id upsert，不重复新增）
+      try {
+        const { data } = await api.get<ProductDetail>(`/products/by-code?code=${encodeURIComponent(code)}`)
+        if (Array.isArray(data.materials)) {
+          setMaterials(data.materials)
+          originalMaterialsRef.current = data.materials.map(m => ({ ...m }))
+        }
+        if (Array.isArray(data.moldings)) setMoldings(data.moldings)
+        setEditing(prev => ({ ...(prev ?? {}), code, name: v.name ?? '', customer: v.customer ?? '' }))
+      } catch {}
+    } catch {
+      /* 拦截器已提示 */
+    } finally {
+      setSavingDetail(false)
+    }
+  }
+
+  async function deactivate(code: string) {
+    try { await api.delete(`/products/by-code?code=${encodeURIComponent(code)}`); message.success('已停用'); loadList() } catch {}
+  }
+  async function restore(code: string) {
+    try { await api.post(`/products/by-code/restore?code=${encodeURIComponent(code)}`); message.success('已启用'); loadList() } catch {}
+  }
+  async function hardDel(code: string) {
+    try { await api.delete(`/products/by-code?hard=true&code=${encodeURIComponent(code)}`); message.success('已彻底删除'); loadList() } catch {/* 409 由拦截器提示 */ }
+  }
+
+  const [customerFilter, setCustomerFilter] = useState<string>('')
+  const engFileRef = useRef<HTMLInputElement>(null)
+
+  async function importEngineering(file: File) {
+    try {
+      const { importEngineeringFile } = await import('../utils/engineeringImport')
+      const r = await importEngineeringFile(file, { hsDict: dicts.hs })
+      // 内嵌图片(dataURL) → 上传换 image_id（物料用 image_id；排模件直接把 image 换成 image_id 字符串）
+      const matImg = r.materials.filter((m: any) => m.image && String(m.image).startsWith('data:'))
+      const partImg = r.moldings.flatMap(md => (md.parts ?? [])).filter((p: any) => p.image && String(p.image).startsWith('data:'))
+      if (matImg.length || partImg.length) {
+        const { uploadImageDataUrl } = await import('../utils/imageUpload')
+        await Promise.all([
+          ...matImg.map(async (m: any) => { const id = await uploadImageDataUrl(m.image); if (id) m.image_id = id; delete m.image }),
+          ...partImg.map(async (p: any) => { const id = await uploadImageDataUrl(p.image); p.image = id || undefined }),
+        ])
+        message.info(`已识别并上传图片：物料 ${matImg.length} 张 / 排模件 ${partImg.length} 张`)
+      }
+      const existing = rows.find(p => p.code === r.code)
+      const importedCustomer = r.customer || existing?.customer || customerFilter || ''
+      const p: Product = existing ?? { code: r.code, name: r.name, customer: importedCustomer }
+      setEditing(p); setCreating(!existing); setActiveTab('mat'); setMoldings([]); setMaterials([])
+      form.resetFields()
+      setTimeout(() => form.setFieldsValue({ code: r.code, name: r.name || existing?.name || '', customer: importedCustomer }), 0)
+      // If existing, fetch current detail then merge (replace strategy)
+      if (existing) {
+        try {
+          const { data } = await api.get<ProductDetail>(`/products/by-code?code=${encodeURIComponent(r.code)}`)
+          // 工程资料也按编码、规格和名称识别旧物料；歧义项不直接追加。
+          const existingMats = Array.isArray(data.materials) ? data.materials : []
+          originalMaterialsRef.current = existingMats.map(m => ({ ...m }))
+          const merged = mergeImportedMaterials(existingMats, r.materials, true)
+          setMaterials(merged.rows)
+          message.info(`物料匹配：更新 ${merged.updated} 行，新增 ${merged.added} 行，待核对 ${merged.conflicts.length} 行；已有物料单位保持不变`)
+          if (merged.pending.length) {
+            const reviewRows = merged.rows.slice(0, existingMats.length)
+            const recommended = recommendMaterialChoices(reviewRows, merged.pending)
+            let choices: ImportChoice[] = [...recommended]
+            modal.confirm({
+              title: '核对后，一键确认导入', width: 850,
+              okText: '确认并应用', cancelText: '本次待核对项全部跳过', maskClosable: false,
+              content: <MaterialImportReview rows={reviewRows} pending={merged.pending} recommended={recommended} onChange={next => { choices = next }} />,
+              onOk: () => {
+                try {
+                  const resolved = resolveMaterialImport(merged.rows, merged.pending, choices, existingMats.length)
+                  setMaterials(resolved)
+                  message.success('选择已应用，已有物料单位保持不变，请检查物料后点击保存')
+                } catch (error: any) {
+                  message.error(error.message)
+                  return Promise.reject(error)
+                }
+              },
+            })
+          }
+          // Match the full style/color variant, not just the shared mold number.
+          const existingMoldings = Array.isArray(data.moldings) ? data.moldings : []
+          setMoldings(mergeImportedMoldings(existingMoldings, r.moldings))
+        } catch (error) { throw error }
+      } else {
+        originalMaterialsRef.current = []
+        setMoldings(r.moldings); setMaterials(r.materials)
+      }
+      message.success(`已识别：${r.moldings.length} 个模具 / ${r.materials.length} 个物料 — 检查后点 💾 保存`)
+    } catch (e: any) {
+      console.error('工程资料导入失败', e)
+      message.error('导入失败: ' + (e?.message ?? e))
+    }
+  }
+
+  const customerStats = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const p of rows) {
+      const k = p.customer || '(未分配)'
+      m.set(k, (m.get(k) ?? 0) + 1)
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [rows])
+
+  const filtered = useMemo(() => {
+    return rows
+      .filter(p => {
+        if (customerFilter && (p.customer || '(未分配)') !== customerFilter) return false
+        if (!filter) return true
+        const s = filter.toLowerCase()
+        return ((p.code || '') + (p.name || '') + (p.customer || '')).toLowerCase().includes(s)
+      })
+      .sort((a, b) => (a.customer || '').localeCompare(b.customer || '') || a.code.localeCompare(b.code))
+  }, [rows, filter, customerFilter])
+
+  const isOpen = creating || editing !== null
+
+  return (
+    <div style={{ padding: 16 }}>
+      <Card
+        title={`货号库 — 共 ${rows.length} 个货号`}
+        extra={
+          <Space>
+            <Input.Search allowClear placeholder="搜索 编码/名称/客户" style={{ width: 280 }}
+              onSearch={setFilter} onChange={(e) => !e.target.value && setFilter('')} />
+            <Button type="primary" onClick={openCreate}>➕ 新建货号</Button>
+            <Button onClick={() => engFileRef.current?.click()}>📋 导入工程放产资料</Button>
+            <input ref={engFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) importEngineering(f); e.target.value = '' }} />
+            <Switch checkedChildren="含停用" unCheckedChildren="仅启用" checked={showInactive} onChange={setShowInactive} />
+            <Button onClick={loadList}>🔄 刷新</Button>
+          </Space>
+        }
+        tabList={[
+          { key: '', tab: `全部 (${rows.length})` },
+          ...customerStats.map(([name, count]) => ({ key: name, tab: `${name} (${count})` })),
+        ]}
+        activeTabKey={customerFilter}
+        onTabChange={setCustomerFilter}
+      >
+        <Table
+          rowKey="code"
+          size="small"
+          loading={loading}
+          dataSource={filtered}
+          pagination={{ defaultPageSize: 50, showSizeChanger: true }}
+          columns={[
+            { title: '编码', dataIndex: 'code', width: 160, sorter: (a, b) => a.code.localeCompare(b.code) },
+            {
+              title: '名称', dataIndex: 'name', ellipsis: true,
+              render: (v, r) => <a onClick={() => openEdit(r, 'mat')} title="点击查看该货号的物料子表">{v || <span style={{ color: '#bbb' }}>(无名称)</span>}</a>,
+            },
+            { title: '客户', dataIndex: 'customer', width: 160 },
+            {
+              title: '物料 (active / 全部)', width: 160, align: 'right',
+              render: (_v, r) => (
+                <span><Tag color="green">{r.active_count ?? 0}</Tag>/<Tag>{r.total_count ?? 0}</Tag></span>
+              ),
+            },
+            {
+              title: '操作', width: 200,
+              render: (_v, r) => (
+                <Space>
+                  <a onClick={() => openEdit(r)}>编辑</a>
+                  {r.active === false
+                    ? <a onClick={() => restore(r.code)}>启用</a>
+                    : <Popconfirm title={`停用货号 ${r.code}?（被单据引用也安全，可随时启用）`} onConfirm={() => deactivate(r.code)}><a>停用</a></Popconfirm>}
+                  <Popconfirm title={`彻底删除 ${r.code}? 仅在无任何单据引用时可删`} onConfirm={() => hardDel(r.code)}>
+                    <a style={{ color: '#ff4d4f' }}>彻底删除</a>
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      <Drawer
+        open={isOpen}
+        width={drawerFull ? '100vw' : '40vw'}
+        title={creating ? '新建货号' : `编辑货号 — ${editing?.code}`}
+        onClose={() => { setEditing(null); setCreating(false); setDrawerFull(false) }}
+        destroyOnClose
+        extra={
+          <Space>
+            <Button onClick={() => setDrawerFull(!drawerFull)}>{drawerFull ? '⤢ 退出全屏' : '⤡ 全屏'}</Button>
+            <Button type="primary" loading={savingDetail} onClick={save}>💾 保存</Button>
+          </Space>
+        }
+      >
+        <Form form={form} layout="vertical">
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item name="code" label="编码" rules={[
+                { required: true, message: '必填' },
+                { pattern: /^[^\\?#%]+$/, message: '编码不能包含 \\ ? # %' },
+              ]}>
+                <Input maxLength={64} placeholder="例如 LDH-23001" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="name" label="名称"><Input /></Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item name="customer" label="客户">
+                <AutoComplete
+                  style={{ width: '100%' }}
+                  options={customers.map(c => ({ value: c, label: c }))}
+                  filterOption={(input, opt) => (opt?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+
+        <Tabs
+          activeKey={activeTab}
+          onChange={(k) => setActiveTab(k as 'mold' | 'mat')}
+          items={[
+            {
+              key: 'mold', label: `排模表 (${moldings.length})`,
+              children: <MoldingsEditor value={moldings} onChange={setMoldings} dicts={dicts} />,
+            },
+            {
+              key: 'mat', label: `物料子表 (${materials.length})`,
+              children: <MaterialsEditor
+                rows={materials}
+                onChange={setMaterials}
+                dicts={dicts}
+                onSuppliersChanged={(profile) => {
+                  // 档案保存已成功，先失效旧请求，再同步当前显示与立即保存使用的资料。
+                  dictionaryRequestRef.current++
+                  setDicts(current => {
+                    const matches = (entry: SupplierDict) => profile.id != null
+                      ? entry.id === profile.id
+                      : entry.keyword.trim().toLocaleLowerCase() === profile.keyword.trim().toLocaleLowerCase()
+                    const found = current.suppliers.some(matches)
+                    return {
+                      ...current,
+                      suppliers: found
+                        ? current.suppliers.map(entry => matches(entry) ? { ...entry, ...profile } : entry)
+                        : [...current.suppliers, profile],
+                    }
+                  })
+                  loadDicts()
+                }}
+                productCode={currentProductCode?.trim() || editing?.code}
+              />,
+            },
+          ]}
+        />
+
+        <p style={{ color: '#999', fontSize: 12, marginTop: 16 }}>
+          📌 阶段 2b 待加：模具图片上传、物料直接增删改 + Excel 批量导入、HS / 供应商自动填充按钮。
+        </p>
+      </Drawer>
+    </div>
+  )
+}
+
+// ---------------- Moldings editor (nested) ----------------
+
+function MoldingsEditor({ value, onChange, dicts }: { value: Molding[]; onChange: (v: Molding[]) => void; dicts: Dictionaries }) {
+  const { message } = App.useApp()
+  function patch(i: number, k: keyof Molding, v: any) {
+    onChange(value.map((m, idx) => idx === i ? { ...m, [k]: v } : m))
+  }
+  // 按字典给所有塑胶件补/纠 HS（命中即覆盖，字典为权威）
+  function autoFillHs() {
+    const dict = (dicts.hs || []).filter(d => d.keyword)
+    if (!dict.length) { message.warning('字典里没有 HS 关键字'); return }
+    let filled = 0
+    const next = value.map(m => ({
+      ...m,
+      parts: (m.parts ?? []).map(p => {
+        const hit = dict.find(d => (p.partName || '').includes(d.keyword!))
+        if (!hit) return p
+        const cn = hit.hsCN || p.hsCN, id = hit.hsID || p.hsID
+        if (cn === p.hsCN && id === p.hsID) return p
+        filled++
+        return { ...p, hsCN: cn, hsID: id }
+      }),
+    }))
+    onChange(next)
+    message.success(`塑胶件 HS 自动填充：${filled} 件`)
+  }
+  function addMold() {
+    onChange([...value, { moldId: '', moldName: '', materialName: '', colorName: '', pigmentCode: '', netGramsPerShot: 0, setsPerShot: 1, workshop: '', notes: '', parts: [] }])
+  }
+  function delMold(i: number) {
+    onChange(value.filter((_, idx) => idx !== i))
+  }
+  function patchParts(i: number, parts: MoldingPart[]) {
+    patch(i, 'parts', parts)
+  }
+
+  return (
+    <div>
+      <Space style={{ marginBottom: 12 }}>
+        <Button type="primary" onClick={addMold}>＋ 新增模具</Button>
+        <Button onClick={autoFillHs}>🔍 HS 自动填充</Button>
+        <Typography.Text type="secondary">每个模具下含若干塑胶件或搪胶件 · 字典 HS {dicts.hs.length} 条</Typography.Text>
+      </Space>
+      {value.length === 0 && (
+        <div style={{ textAlign: 'center', color: '#999', padding: 24, border: '1px dashed #ddd', borderRadius: 6 }}>
+          暂无模具 — 点上方"＋ 新增模具"
+        </div>
+      )}
+      {value.map((m, i) => (
+        <Card key={i} size="small"
+          style={{ marginBottom: 12, background: '#fafbfc' }}
+          title={<Space><Tag color="blue">模具 #{i + 1}</Tag>{m.moldName && <span style={{ fontWeight: 600 }}>{m.moldName}</span>}</Space>}
+          extra={
+            <Popconfirm title={`删除模具 #${i + 1}?`} onConfirm={() => delMold(i)}>
+              <Button danger size="small">🗑 删模具</Button>
+            </Popconfirm>
+          }
+        >
+          <Space.Compact style={{ width: '100%', marginBottom: 8, display: 'flex' }}>
+            <Input addonBefore="编号" value={m.moldId} onChange={(e) => patch(i, 'moldId', e.target.value)} style={{ flex: 1 }} />
+            <Input addonBefore="名称" value={m.moldName} onChange={(e) => patch(i, 'moldName', e.target.value)} style={{ flex: 2 }} />
+          </Space.Compact>
+          <Space.Compact style={{ width: '100%', marginBottom: 8, display: 'flex' }}>
+            <Input addonBefore="用料名称" value={m.materialName} placeholder="ABS PA-757 / TPE 50° 本白" onChange={(e) => patch(i, 'materialName', e.target.value)} style={{ flex: 2 }} />
+            <Input addonBefore="颜色" value={m.colorName} onChange={(e) => patch(i, 'colorName', e.target.value)} style={{ flex: 1 }} />
+            <Input addonBefore="色粉号" value={m.pigmentCode} onChange={(e) => patch(i, 'pigmentCode', e.target.value)} style={{ flex: 1 }} />
+          </Space.Compact>
+          <Space style={{ width: '100%', marginBottom: 12 }} size="small">
+            <span>整啤净重(G):</span>
+            <InputNumber value={m.netGramsPerShot} onChange={(v) => patch(i, 'netGramsPerShot', v ?? 0)} step={0.01} min={0} />
+            <span style={{ color: '#c0392b', fontWeight: 600 }}>每啤套数 ⚠:</span>
+            <InputNumber value={m.setsPerShot} onChange={(v) => patch(i, 'setsPerShot', v ?? 1)} step={1} min={1} />
+            <span>车间:</span>
+            <Select value={m.workshop} onChange={(v) => patch(i, 'workshop', v)} style={{ width: 100 }}
+              options={[{ value: '', label: '—' }, ...WORKSHOPS.map(w => ({ value: w, label: w }))]} />
+            <span>备注:</span>
+            <Input value={m.notes} onChange={(e) => patch(i, 'notes', e.target.value)} style={{ width: 180 }} />
+          </Space>
+
+          <PartsTable parts={m.parts ?? []} materialName={m.materialName ?? ''} onChange={(p) => patchParts(i, p)} />
+        </Card>
+      ))}
+    </div>
+  )
+}
+
+function PartsTable({ parts, materialName, onChange }: { parts: MoldingPart[]; materialName: string; onChange: (v: MoldingPart[]) => void }) {
+  const defaultCategory = /搪胶/.test(materialName) ? '搪胶' : '塑胶'
+  function patch(i: number, k: keyof MoldingPart, v: any) {
+    onChange(parts.map((p, idx) => idx === i ? { ...p, [k]: v } : p))
+  }
+  function add() {
+    onChange([...parts, { category: defaultCategory, partCode: '', partName: '', partNameEn: '', usage: 1, ejections: 1, netPerPc: 0, grossPerPc: 0 }])
+  }
+  function del(i: number) { onChange(parts.filter((_, idx) => idx !== i)) }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #d6dbe2', borderRadius: 6, padding: 8 }}>
+      <Space style={{ marginBottom: 8 }}>
+        <Tag color="blue">🧩 零件清单 ({parts.length})</Tag>
+        <Button size="small" onClick={add}>＋ 加零件</Button>
+      </Space>
+      <Table
+        rowKey={(_, i) => String(i)}
+        size="small"
+        pagination={false}
+        dataSource={parts}
+        columns={[
+          { title: '#', width: 40, render: (_v, _r, i) => i + 1 },
+          { title: '图片', width: 70, render: (_v, r, i) => <MaterialImageCell imageId={r.image} onChange={(id) => patch(i, 'image', id)} /> },
+          {
+            title: '类别', width: 80,
+            render: (_v, r, i) => (
+              <Select size="small" value={r.category ?? defaultCategory} style={{ width: '100%' }}
+                onChange={(v) => patch(i, 'category', v)}
+                options={[{ value: '塑胶', label: '塑胶件' }, { value: '搪胶', label: '搪胶件' }]} />
+            ),
+          },
+          { title: '件号', width: 130, render: (_v, r, i) => <Input size="small" value={r.partCode} onChange={(e) => patch(i, 'partCode', e.target.value)} /> },
+          { title: '中文名', render: (_v, r, i) => <Input size="small" value={r.partName} onChange={(e) => patch(i, 'partName', e.target.value)} /> },
+          { title: 'English', render: (_v, r, i) => <Input size="small" value={r.partNameEn} onChange={(e) => patch(i, 'partNameEn', e.target.value)} /> },
+          { title: '中国 HS', width: 110, render: (_v, r, i) => <Input size="small" value={r.hsCN} onChange={(e) => patch(i, 'hsCN', e.target.value)} /> },
+          { title: '印尼 HS', width: 110, render: (_v, r, i) => <Input size="small" value={r.hsID} onChange={(e) => patch(i, 'hsID', e.target.value)} /> },
+          { title: '啤数', width: 70, render: (_v, r, i) => <InputNumber size="small" min={0} value={r.ejections} onChange={(v) => patch(i, 'ejections', v ?? 0)} style={{ width: '100%' }} /> },
+          { title: '用量', width: 70, render: (_v, r, i) => <InputNumber size="small" min={0} value={r.usage} onChange={(v) => patch(i, 'usage', v ?? 0)} style={{ width: '100%' }} /> },
+          { title: '毛重/件', width: 90, render: (_v, r, i) => <InputNumber size="small" step={0.0001} min={0} value={r.grossPerPc} onChange={(v) => patch(i, 'grossPerPc', v ?? 0)} style={{ width: '100%' }} /> },
+          { title: '净重/件', width: 90, render: (_v, r, i) => <InputNumber size="small" step={0.0001} min={0} value={r.netPerPc} onChange={(v) => patch(i, 'netPerPc', v ?? 0)} style={{ width: '100%' }} /> },
+          {
+            title: '', width: 50,
+            render: (_v, _r, i) => (
+              <Popconfirm title="删除该塑胶件?" onConfirm={() => del(i)}>
+                <a style={{ color: '#ff4d4f' }}>×</a>
+              </Popconfirm>
+            ),
+          },
+        ]}
+      />
+    </div>
+  )
+}
+
+// ---------------- Materials editor (phase 2b) ----------------
+
+function MaterialsEditor({ rows, onChange, dicts, productCode, onSuppliersChanged }: {
+  rows: Material[]
+  onChange: (rows: Material[]) => void
+  dicts: Dictionaries
+  productCode?: string
+  onSuppliersChanged: (profile: SupplierDict) => void
+}) {
+  const { message } = App.useApp()
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const supplierOptions = useMemo(() => supplierAutocompleteOptions(dicts.suppliers), [dicts.suppliers])
+
+  function patch(i: number, k: keyof Material, v: any) {
+    onChange(rows.map((m, idx) => idx === i ? { ...m, [k]: v } : m))
+  }
+  function patchChineseName(i: number, nameZh: string) {
+    onChange(rows.map((m, idx) => {
+      if (idx !== i) return m
+      // 已有人工作过的英文名永不覆盖；空白时直接使用精确记忆或内置术语。
+      const nameEn = (m.name_en || '').trim() ? m.name_en : translatedMaterialName(nameZh, dicts)
+      return { ...m, name_zh: nameZh, name_en: nameEn }
+    }))
+  }
+  function patchSupplier(i: number, supplier: string) {
+    const profile = supplierProfileForName(supplier, dicts.suppliers)
+    onChange(rows.map((material, index) => index === i ? {
+      ...material,
+      supplier,
+      customs_company: profile ? supplierCustomsCompany(profile) : '',
+    } : material))
+  }
+  function add() {
+    onChange([
+      ...rows,
+      {
+        product_code: productCode, item_no: '', name_zh: '', name_en: '', spec: '',
+        category: '', supplier: '', hs_cn: '', hs_id: '',
+        gross_per_pc: 0, net_per_pc: 0, qty_per_carton: 0, weight_per_carton: 0,
+        unit_kg: 'KGM', active: true,
+      },
+    ])
+  }
+  function del(i: number) { onChange(rows.filter((_, idx) => idx !== i)) }
+
+  function autoFillHs() {
+    const dict = dicts.hs.filter(d => d.keyword)
+    if (!dict.length) { message.warning('字典里没有 HS 关键字'); return }
+    let filled = 0
+    const next = rows.map((m) => {
+      const name = m.name_zh || ''
+      if (!name) return m
+      const hit = dict.find(d => name.includes(d.keyword))
+      if (!hit) return m
+      // 字典即权威：命中即覆盖（含已填错的，如内置规则给的螺丝 HS）
+      const newCn = hit.hsCN || m.hs_cn
+      const newId = hit.hsID || m.hs_id
+      if (newCn === m.hs_cn && newId === m.hs_id) return m
+      filled++
+      return { ...m, hs_cn: newCn, hs_id: newId }
+    })
+    onChange(next)
+    message.success(`HS 自动填充：${filled} 行`)
+  }
+  function autoFillSupplier() {
+    const dict = dicts.suppliers.filter(d => d.keyword)
+    if (!dict.length) { message.warning('供应商汇总里没有可用公司资料'); return }
+    let filled = 0
+    const next = rows.map((m) => {
+      const sup = (m.supplier || '').trim()
+      if (!sup) return m
+      const hit = dict.find(d => sup.includes(d.keyword) || d.keyword === sup || (d.full && sup.includes(d.full)))
+      const newSup = hit?.full || sup
+      const newCustoms = hit ? supplierCustomsCompany(hit) : m.customs_company
+      if (newSup === m.supplier && newCustoms === m.customs_company) return m
+      filled++
+      return { ...m, supplier: newSup, customs_company: newCustoms }
+    })
+    onChange(next)
+    message.success(`供应商及报关公司已关联：${filled} 行`)
+  }
+
+  function autoFillEnglish() {
+    let filled = 0
+    let unresolved = 0
+    const next = rows.map((m) => {
+      if ((m.name_en || '').trim()) return m
+      const nameZh = (m.name_zh || '').trim()
+      if (!nameZh) return m
+      const nameEn = translatedMaterialName(nameZh, dicts)
+      if (!nameEn) { unresolved++; return m }
+      filled++
+      return { ...m, name_en: nameEn }
+    })
+    onChange(next)
+    if (filled) message.success(`英文名已补齐 ${filled} 行${unresolved ? `，另有 ${unresolved} 行需人工翻译` : ''}`)
+    else if (unresolved) message.warning(`${unresolved} 行未匹配到术语，请人工填写英文名`)
+    else message.info('没有需要补充的英文名')
+  }
+
+  async function importExcel(file: File) {
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      if (!ws) { message.error('Excel 无数据'); return }
+      const arr = XLSX.utils.sheet_to_json<any>(ws, { defval: '' })
+      // Only identifiers use Excel's displayed text; keep raw numeric values for weights and quantities.
+      const displayedRows = XLSX.utils.sheet_to_json<any>(ws, { defval: '', raw: false })
+      const norm = (k: string) => k.replace(/\s+/g, '').toLowerCase()
+      const pick = (row: any, names: string[]) => {
+        for (const n of names) for (const k of Object.keys(row))
+          if (norm(k) === norm(n)) return row[k]
+        return undefined
+      }
+      const imported: Material[] = arr.map((r, rowIndex) => {
+        const number = (names: string[]) => {
+          const value = pick(r, names)
+          if (value == null || String(value).trim() === '') return undefined
+          const result = Number(value)
+          if (!Number.isFinite(result)) throw new Error(`${names[0]}不是有效数值：${value}`)
+          return result
+        }
+        const nameZh = String(pick(r, ['中文名', '名称', 'namezh', 'name_zh']) ?? '')
+        const importedNameEn = String(pick(r, ['英文名', 'nameen', 'name_en']) ?? '')
+        return {
+        product_code: productCode,
+        item_no:        String(pick(r, ['料号', 'itemno', 'item_no']) ?? ''),
+        name_zh:        nameZh,
+        name_en:        importedNameEn,
+        spec:           String(pick(r, ['规格', 'spec']) ?? ''),
+        category:       String(pick(r, ['类别', 'category']) ?? ''),
+        material_code:  String(pick(displayedRows[rowIndex] || r, ['物料编码', '物料编号', 'materialcode', 'material_code']) ?? '').trim(),
+        supplier:       String(pick(r, ['供应商', 'supplier']) ?? ''),
+        customs_company:String(pick(r, ['报关公司', 'customs', 'customscompany', 'customs_company']) ?? ''),
+        hs_cn:          String(pick(r, ['HSCN', '中国HS', 'hs_cn']) ?? ''),
+        hs_id:          String(pick(r, ['HSID', '印尼HS', 'hs_id']) ?? ''),
+        unit_kg:        String(pick(r, ['单位', 'unit', 'unitkg', 'unit_kg']) ?? ''),
+        gross_per_pc:   number(['毛重/件', '毛重', 'grossperpc']),
+        net_per_pc:     number(['净重/件', '净重', 'netperpc']),
+        length:         number(['长', 'length']),
+        width:          number(['宽', 'width']),
+        height:         number(['高', 'height']),
+        qty_per_carton: number(['件/箱', '装箱量', 'qtypercarton']),
+        weight_per_carton: number(['箱重', 'weightpercarton']),
+        active: true,
+        usage_qty: number(['用量', 'usage', 'usageqty', 'usage_qty']),
+      }}).filter(m => m.name_zh || m.item_no || m.material_code)
+        .map(material => ({
+          ...material,
+          supplier: material.supplier,
+          customs_company: materialCustomsCompany(material, dicts.suppliers),
+        }))
+      if (!imported.length) { message.warning('没识别到有效行 (需含 中文名 / 料号 列)'); return }
+      const result = mergeImportedMaterials(rows, imported)
+      onChange(result.rows.map(material => ({
+        ...material,
+        name_en: material.name_en || translatedMaterialName(material.name_zh || '', dicts),
+        category: material.category || inferMaterialCategory(`${material.name_zh || ''} ${material.spec || ''}`),
+      })))
+      message.success(`已更新 ${result.updated} 行，新增 ${result.added} 行；已有物料单位保持不变 — 别忘点 💾 保存`)
+      if (result.conflicts.length) message.warning(`有 ${result.conflicts.length} 行匹配到多个已有物料，已跳过：${result.conflicts.join('、')}`, 10)
+    } catch (e: any) {
+      message.error('导入失败: ' + (e?.message ?? e))
+    }
+  }
+
+  return (
+    <div>
+      <Space style={{ marginBottom: 8 }} wrap>
+        <Button onClick={add}>＋ 新增物料</Button>
+        <Button onClick={() => fileRef.current?.click()}>📥 Excel 导入</Button>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) importExcel(f); e.target.value = '' }} />
+        <Button onClick={autoFillEnglish}>🌐 英文名翻译</Button>
+        <Button onClick={autoFillHs}>🔍 HS 自动填充</Button>
+        <Button onClick={autoFillSupplier}>🏭 供应商扩展</Button>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          字典: HS {dicts.hs.length} 条 / 供应商 {dicts.suppliers.length} 条 / 英文翻译 {dicts.translations.length} 条
+        </Typography.Text>
+      </Space>
+      <Table
+        rowKey={(_, i) => String(i)}
+        size="small"
+        sticky
+        pagination={false}
+        dataSource={rows}
+        rowClassName={(r) => r.active === false ? 'mat-row-inactive' : ''}
+        scroll={{ x: 2760, y: 560 }}
+        columns={[
+          { title: '#', width: 45, align: 'center', fixed: 'left', render: (_v, _r, i) => <span style={{ color: '#999' }}>{i + 1}</span> },
+          {
+            title: '图片', width: 70, fixed: 'left',
+            render: (_v, r, i) => (
+              <MaterialImageCell imageId={r.image_id} onChange={(id) => patch(i, 'image_id', id)} />
+            ),
+          },
+          { title: '料号', width: 100, fixed: 'left', render: (_v, r, i) => <Input size="small" value={r.item_no} onChange={(e) => patch(i, 'item_no', e.target.value)} /> },
+          { title: '中文名', width: 240, fixed: 'left', render: (_v, r, i) => <Input size="small" value={r.name_zh} onChange={(e) => patchChineseName(i, e.target.value)} /> },
+          { title: '英文名', width: 200, render: (_v, r, i) => <Input size="small" value={r.name_en} onChange={(e) => patch(i, 'name_en', e.target.value)} /> },
+          { title: '规格', width: 180, render: (_v, r, i) => <Input size="small" value={r.spec} onChange={(e) => patch(i, 'spec', e.target.value)} /> },
+          { title: '类别', width: 130, render: (_v, r, i) => (
+            <Select size="small" showSearch allowClear placeholder="选类别" style={{ width: '100%' }}
+              value={r.category || undefined}
+              options={MATERIAL_CATEGORIES.map(c => ({ value: c, label: c }))}
+              onChange={(v) => patch(i, 'category', v ?? '')} />
+          ) },
+          { title: '物料编码', width: 130, render: (_v, r, i) => <Input size="small" value={r.material_code} onChange={(e) => patch(i, 'material_code', e.target.value)} /> },
+          { title: '供应商', width: 220, render: (_v, r, i) => <><AutoComplete size="small" allowClear
+            placeholder="选择或输入新供应商" style={{ width: '100%' }}
+            value={supplierDisplayName(r.supplier || '', dicts.suppliers) || undefined}
+            options={supplierOptions}
+            filterOption={filterSupplierOption}
+            onChange={(value) => patchSupplier(i, value || '')} />
+            <SupplierProfileEditor name={r.supplier || ''} onSaved={(profile) => {
+              onChange(rows.map((row, index) => index === i
+                ? { ...row, supplier: profile.keyword?.trim() || profile.full, customs_company: supplierCustomsCompany(profile) } : row))
+              onSuppliersChanged(profile)
+            }} />
+          </> },
+          { title: '报关公司', width: 200, render: (_v, r) => {
+            const profile = supplierProfileForName(r.supplier || '', dicts.suppliers)
+            const selfCompany = profile?.full?.trim() || r.supplier?.trim() || ''
+            const linked = materialCustomsCompany(r, dicts.suppliers)
+            const options = [
+              ...(selfCompany ? [{ value: selfCompany, label: selfCompany }] : []),
+              { value: HUASHENGYI_FULL_NAME, label: HUASHENGYI_FULL_NAME },
+            ]
+            return <Select size="small" disabled placeholder="随供应商汇总自动带入" style={{ width: '100%' }}
+              value={linked || undefined} options={options} popupMatchSelectWidth={false} />
+          } },
+          { title: 'HS (CN)', width: 110, render: (_v, r, i) => <Input size="small" value={r.hs_cn} onChange={(e) => patch(i, 'hs_cn', e.target.value)} /> },
+          { title: 'HS (ID)', width: 110, render: (_v, r, i) => <Input size="small" value={r.hs_id} onChange={(e) => patch(i, 'hs_id', e.target.value)} /> },
+          { title: '用量', width: 80, render: (_v, r, i) => <InputNumber size="small" min={0} step={1} value={r.usage_qty ?? 1} onChange={(x) => patch(i, 'usage_qty', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '单毛重', width: 90, render: (_v, r, i) => <InputNumber size="small" min={0} step={0.0001} value={r.gross_per_pc} onChange={(x) => patch(i, 'gross_per_pc', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '单净重', width: 90, render: (_v, r, i) => <InputNumber size="small" min={0} step={0.0001} value={r.net_per_pc} onChange={(x) => patch(i, 'net_per_pc', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '件/箱', width: 80, render: (_v, r, i) => <InputNumber size="small" min={0} value={r.qty_per_carton} onChange={(x) => patch(i, 'qty_per_carton', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '箱重', width: 90, render: (_v, r, i) => <InputNumber size="small" min={0} step={0.0001} value={r.weight_per_carton} onChange={(x) => patch(i, 'weight_per_carton', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '长', width: 70, render: (_v, r, i) => <InputNumber size="small" min={0} value={r.length} onChange={(x) => patch(i, 'length', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '宽', width: 70, render: (_v, r, i) => <InputNumber size="small" min={0} value={r.width} onChange={(x) => patch(i, 'width', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '高', width: 70, render: (_v, r, i) => <InputNumber size="small" min={0} value={r.height} onChange={(x) => patch(i, 'height', x ?? 0)} style={{ width: '100%' }} /> },
+          { title: '单位', width: 90, render: (_v, r, i) => (
+            <Select size="small" style={{ width: '100%' }} value={r.unit_kg || 'KGM'}
+              options={['PCE', 'KGM', 'MTR', 'SET', 'PAR', 'ROLL', 'TNE'].map(u => ({ value: u, label: u }))}
+              onChange={(v) => patch(i, 'unit_kg', v)} />
+          ) },
+          {
+            title: '状态', width: 80, align: 'center', fixed: 'right',
+            render: (_v, r, i) => (
+              <a onClick={() => patch(i, 'active', !(r.active !== false))}>
+                {r.active === false ? <Tag>停用</Tag> : <Tag color="green">启用</Tag>}
+              </a>
+            ),
+          },
+          {
+            title: '', width: 50, align: 'center', fixed: 'right',
+            render: (_v, _r, i) => (
+              <Popconfirm title="删除该物料?" onConfirm={() => del(i)}>
+                <a style={{ color: '#ff4d4f', fontSize: 16 }}>×</a>
+              </Popconfirm>
+            ),
+          },
+        ]}
+      />
+      <style>{`.mat-row-inactive td { color: #999 !important; background: #fafafa !important; }`}</style>
+    </div>
+  )
+}
+
+
+function MaterialImageCell({ imageId, onChange }: { imageId?: string; onChange: (id?: string) => void }) {
+  const { message } = App.useApp()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+
+  async function handleFile(file: File) {
+    setUploading(true)
+    try {
+      const { uploadImageFile } = await import('../utils/imageUpload')
+      const id = await uploadImageFile(file, { maxDim: 400, quality: 0.75 })
+      onChange(id)
+      message.success('已上传')
+    } catch (e: any) {
+      message.error('上传失败: ' + (e?.message ?? e))
+    } finally {
+      setUploading(false)
+    }
+  }
+  function clear() { onChange(undefined) }
+  // /api/images/{id} 返回 JSON {data_url}，需取出 data_url 当 <img src>（不能直接指到接口）
+  const [src, setSrc] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    if (!imageId) { setSrc(''); return }
+    api.get<{ data_url?: string }>(`/images/${encodeURIComponent(imageId)}`)
+      .then(r => { if (!cancelled) setSrc(r.data?.data_url || '') })
+      .catch(() => { if (!cancelled) setSrc('') })
+    return () => { cancelled = true }
+  }, [imageId])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+      {imageId ? (
+        <img
+          src={src}
+          alt=""
+          style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 4, border: '1px solid #ddd', cursor: 'pointer' }}
+          onClick={() => setPreviewOpen(true)}
+          title="点击预览大图"
+          onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3' }}
+        />
+      ) : (
+        <div onClick={() => inputRef.current?.click()}
+          style={{ width: 40, height: 40, border: '1px dashed #ccc', borderRadius: 4, color: '#bbb',
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 11 }}
+        >+图</div>
+      )}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = '' }}
+      />
+      <div style={{ display: 'flex', gap: 2 }}>
+        <a style={{ fontSize: 11 }} onClick={() => inputRef.current?.click()}>{uploading ? '上传中' : '换'}</a>
+        {imageId && <a style={{ fontSize: 11, color: '#ff4d4f' }} onClick={clear}>×</a>}
+      </div>
+      {imageId && (
+        <Drawer
+          open={previewOpen}
+          title="图片预览"
+          onClose={() => setPreviewOpen(false)}
+          width={520}
+          destroyOnClose
+        >
+          <img src={src} alt="" style={{ width: '100%', objectFit: 'contain' }} />
+        </Drawer>
+      )}
+    </div>
+  )
+}

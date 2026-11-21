@@ -1,0 +1,484 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { App, Button, Card, Input, InputNumber, Popconfirm, Select, Space, Table, Typography } from 'antd'
+import { api } from '../api/client'
+import './QuotesPage.css'
+
+// Legacy quote shape (from old HTML — settings.quotes blob)
+interface Quote {
+  supplier?: string
+  productCode?: string
+  matName?: string
+  spec?: string
+  minQty?: number
+  unitPrice?: number
+  currency?: string
+  quoteDate?: string
+  notes?: string
+}
+
+interface QuoteFilters {
+  supplier?: string
+  productCode?: string
+  matName?: string
+  spec?: string
+  currency?: string
+}
+
+const CURR = [
+  { value: '¥',   label: '¥ 人民币' },
+  { value: 'HK$', label: 'HK$ 港币' },
+  { value: 'US$', label: 'US$ 美金' },
+  { value: 'Rp',  label: 'Rp 印尼盾' },
+]
+
+function legacyProductCode(notes?: string): string {
+  return notes?.match(/(?:^|\/)\s*货号\s*[:：]\s*([^/]+?)\s*$/)?.[1]?.trim() ?? ''
+}
+
+interface FillableCellProps {
+  rowIndex: number
+  field: keyof Quote
+  onFill: (sourceIndex: number, targetIndex: number, field: keyof Quote) => void
+  children: React.ReactNode
+}
+
+// Keep this component outside QuotesPage. Defining it inside the page creates a
+// new component type after every keystroke, which remounts the input and loses focus.
+function FillableCell({ rowIndex, field, onFill, children }: FillableCellProps) {
+  return (
+    <div
+      className="quote-fillable-cell"
+      style={{ position: 'relative', paddingRight: 3 }}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes('application/x-quote-fill')) event.preventDefault()
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        try {
+          const payload = JSON.parse(event.dataTransfer.getData('application/x-quote-fill'))
+          if (payload.field === field) onFill(Number(payload.rowIndex), rowIndex, field)
+        } catch { /* 忽略非报价表拖动 */ }
+      }}
+    >
+      {children}
+      <span
+        className="quote-fill-handle"
+        draggable
+        title="拖动填充相同内容"
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = 'copy'
+          event.dataTransfer.setData('application/x-quote-fill', JSON.stringify({ rowIndex, field }))
+        }}
+        style={{
+          position: 'absolute', right: -2, bottom: -2, width: 9, height: 9,
+          border: '1px solid #1677ff', background: '#fff', cursor: 'crosshair', zIndex: 2,
+        }}
+      />
+    </div>
+  )
+}
+
+import { useNavigationDraft } from '../auth/navigationState'
+import { getSessionGeneration } from '../auth/permissions'
+import { validateExportSession } from '../auth/validateExportSession'
+
+export default function QuotesPage() {
+  const { message } = App.useApp()
+  const [rows, setRows] = useState<Quote[]>([])
+  const [filter, setFilter] = useState('')
+  const [fieldFilters, setFieldFilters] = useState<QuoteFilters>({})
+  const [loading, setLoading] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  useNavigationDraft(dirty)
+  const [selKeys, setSelKeys] = useState<React.Key[]>([])
+  const fileRef = useRef<HTMLInputElement>(null)
+  const blobVersion = useRef<string>('')
+
+  async function load() {
+    setLoading(true)
+    try {
+      const resp = await api.get<Quote[]>('/quotes/blob')
+      blobVersion.current = resp.headers['x-blob-version'] ?? ''
+      setRows(Array.isArray(resp.data)
+        ? resp.data.map((quote) => ({
+            ...quote,
+            productCode: quote.productCode || legacyProductCode(quote.notes),
+          }))
+        : [])
+      setDirty(false)
+    } finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [])
+
+  async function save() {
+    setLoading(true)
+    try {
+      const resp = await api.put('/quotes/blob', rows, { headers: { 'X-Expected-Version': blobVersion.current } })
+      blobVersion.current = resp.headers['x-blob-version'] ?? blobVersion.current
+      message.success('已保存')
+      setDirty(false)
+    } catch (e: any) {
+      if ((e as any)?.response?.status === 409) {
+        message.error('数据已被他人修改，正在刷新…')
+        load()
+        return
+      }
+      message.error('保存失败: ' + (e?.message ?? e))
+    } finally { setLoading(false) }
+  }
+
+  function patch(i: number, k: keyof Quote, v: any) {
+    setRows((r) => r.map((q, idx) => idx === i ? { ...q, [k]: v } : q))
+    setDirty(true)
+  }
+  function add() {
+    setRows((r) => [{ supplier: '', productCode: '', matName: '', spec: '', minQty: 0, unitPrice: 0, currency: '¥' }, ...r])
+    setDirty(true)
+  }
+  function del(i: number) {
+    setRows((r) => r.filter((_, idx) => idx !== i))
+    setDirty(true)
+  }
+  function delSelected() {
+    if (!selKeys.length) return
+    const sel = new Set(selKeys.map(Number))
+    setRows((r) => r.filter((_, idx) => !sel.has(idx)))
+    setSelKeys([])
+    setDirty(true)
+  }
+  function clearAll() {
+    if (!rows.length) return
+    setRows([])
+    setSelKeys([])
+    setDirty(true)
+    message.success('已清空（记得点 💾 保存全部 才会写入后端）')
+  }
+  // 币种归一：把任意写法映射到下拉选项 ¥/HK$/US$/Rp（顺序重要：HK$ 含 $，先判）
+  function inferCurrency(text: any): string {
+    const t = String(text ?? '')
+    if (/HK\$|HKD|港币|港元|港/i.test(t)) return 'HK$'
+    if (/US\$|USD|美元|美金|\$/i.test(t)) return 'US$'
+    if (/Rp|IDR|印尼盾|盾/i.test(t)) return 'Rp'
+    if (/RMB|CNY|￥|¥|人民币|元/i.test(t)) return '¥'
+    return ''
+  }
+
+  function parseTierQty(value: any): number | null {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
+    const text = String(value ?? '').trim().toUpperCase().replace(/[,，\s]/g, '')
+    const match = text.match(/^(\d+(?:\.\d+)?)(K|千)?(?:PCS?|PCE|个)?$/)
+    if (!match) return null
+    const qty = Number(match[1]) * (match[2] ? 1000 : 1)
+    return Number.isFinite(qty) && qty > 0 ? qty : null
+  }
+
+  function parsePrice(value: any): number | null {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null
+    const text = String(value ?? '').trim()
+    if (!text) return null
+    const price = Number(text.replace(/,/g, '').replace(/[^\d.-]/g, ''))
+    return Number.isFinite(price) ? price : null
+  }
+
+  async function importExcel(file: File) {
+    try {
+      const XLSX = await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array' })
+      const today = new Date().toISOString().slice(0, 10)  // 导入当天日期，Excel 未提供日期时使用
+      const imported: Quote[] = []
+      for (const sn of wb.SheetNames) {
+        const ws = wb.Sheets[sn]
+        if (!ws) continue
+        const grid = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, defval: '' })
+        if (!grid.length) continue
+        // 格式化文本网格 + 数字格式(numFmt)网格 —— 用于从单价单元格识别 US$/¥ 等
+        const wGrid = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, defval: '', raw: false })
+        const zGrid: any[][] = []
+        const ref = ws['!ref']
+        if (ref) {
+          const range = XLSX.utils.decode_range(ref)
+          for (let r = range.s.r; r <= range.e.r; r++) {
+            const row: any[] = []
+            for (let c = range.s.c; c <= range.e.c; c++) {
+              const cell = ws[XLSX.utils.encode_cell({ r, c })]
+              row.push(cell ? (cell.z || '') : '')
+            }
+            zGrid.push(row)
+          }
+        }
+        // 表头行：含 名称/物料/品名 且 含 供应商/单价/价格
+        let hdrRow = -1
+        for (let i = 0; i < Math.min(8, grid.length); i++) {
+          const j = (grid[i] || []).map((c: any) => String(c ?? '').replace(/\s+/g, '')).join('|')
+          if ((j.includes('名称') || j.includes('物料') || j.includes('品名')) &&
+              (j.includes('供应商') || j.includes('单价') || j.includes('价格'))) { hdrRow = i; break }
+        }
+        if (hdrRow < 0) hdrRow = 0
+        const hdr = (grid[hdrRow] || []).map((c: any) => String(c ?? '').trim())
+        const findCol = (...kws: string[]) => {
+          for (let i = 0; i < hdr.length; i++) for (const k of kws) if (hdr[i].includes(k)) return i
+          return -1
+        }
+        const cSup = findCol('供应商', '厂家', '卖方', 'Supplier')
+        const cName = findCol('物料名', '物料名称', '名称', '品名', 'Material')
+        const cSpec = findCol('规格', 'Spec')
+        const cMinQty = findCol('起订量', '起订', 'MOQ', '最小')
+        const cPrice = findCol('单价', '价格', 'Price')
+        const cCurr = findCol('币种', '货币', '币别', 'Currency')
+        const cDate = findCol('报价日期', '日期', 'Date')
+        const cNotes = findCol('备注', 'Notes', 'Remark')
+        const cCode = findCol('货号', '款号', 'Code')
+        // 横向阶梯报价：在表头附近寻找 0.5K / 1K / 10K 等数量档位。
+        let tierRow = -1
+        let tierCols: Array<{ col: number; minQty: number }> = []
+        for (let r = hdrRow; r < Math.min(grid.length, hdrRow + 4); r++) {
+          const candidateRow = grid[r] || []
+          const hasMaterialData = r > hdrRow && (
+            (cName >= 0 && String(candidateRow[cName] ?? '').trim())
+            || (cSup >= 0 && String(candidateRow[cSup] ?? '').trim())
+          )
+          if (hasMaterialData) break
+          const found = candidateRow.map((cell: any, col: number) => ({
+            col,
+            minQty: parseTierQty(cell),
+          })).filter((x): x is { col: number; minQty: number } => x.minQty !== null)
+          if (found.length > tierCols.length) { tierRow = r; tierCols = found }
+        }
+        // 至少两个数量表头才视为横向阶梯，避免把普通表头中的数字误判为档位。
+        const hasHorizontalTiers = tierCols.length >= 2
+        // 全表级推断：单价表头 → sheet 名 → 表头及之前任意单元格
+        let inferred = inferCurrency(cPrice >= 0 ? hdr[cPrice] : '') || inferCurrency(sn)
+        for (let r = 0; r <= hdrRow && !inferred; r++)
+          for (const cell of (grid[r] || [])) { inferred = inferCurrency(cell); if (inferred) break }
+        for (let i = Math.max(hdrRow, hasHorizontalTiers ? tierRow : hdrRow) + 1; i < grid.length; i++) {
+          const row = grid[i] || []
+          const matName = cName >= 0 ? String(row[cName] ?? '').trim() : ''
+          if (!matName) continue
+          let sup = cSup >= 0 ? String(row[cSup] ?? '').trim() : ''
+          if (!sup) for (let j = i - 1; j > hdrRow; j--) {
+            const s = cSup >= 0 ? String((grid[j] || [])[cSup] ?? '').trim() : ''
+            if (s) { sup = s; break }
+          }
+          // 行级币种：① 独立列 ② 单价格子的格式化文本/numFmt ③ 全表推断 ④ ¥
+          let cur = cCurr >= 0 ? inferCurrency(row[cCurr]) : ''
+          if (!cur && cPrice >= 0) {
+            cur = inferCurrency((wGrid[i] || [])[cPrice]) || inferCurrency((zGrid[i] || [])[cPrice])
+          }
+          const currency = cur || inferred || '¥'
+          // 单价：原始数字优先，否则从字符串里剥出数字
+          let price = 0
+          const raw = cPrice >= 0 ? row[cPrice] : 0
+          if (typeof raw === 'number') price = raw
+          else if (raw != null && raw !== '') price = Number(String(raw).replace(/[^\d.]/g, '')) || 0
+          const code = cCode >= 0 ? String(row[cCode] ?? '').trim() : ''
+          const noteBase = cNotes >= 0 ? String(row[cNotes] ?? '').trim() : ''
+          const common = {
+            supplier: sup,
+            productCode: code,
+            matName,
+            spec: cSpec >= 0 ? String(row[cSpec] ?? '').trim() : '',
+            quoteDate: (cDate >= 0 ? String(row[cDate] ?? '').trim() : '') || today,
+            notes: noteBase,
+          }
+          if (hasHorizontalTiers) {
+            for (const tier of tierCols) {
+              const rawTierPrice = row[tier.col]
+              const tierPrice = parsePrice(rawTierPrice)
+              if (tierPrice === null || tierPrice <= 0) continue
+              const tierCurrency = inferCurrency((wGrid[i] || [])[tier.col])
+                || inferCurrency((zGrid[i] || [])[tier.col])
+                || inferCurrency(rawTierPrice)
+                || (cCurr >= 0 ? inferCurrency(row[cCurr]) : '')
+                || inferred
+                || '¥'
+              imported.push({
+                ...common,
+                minQty: tier.minQty,
+                unitPrice: tierPrice,
+                currency: tierCurrency,
+              })
+            }
+            continue
+          }
+          imported.push({
+            ...common,
+            minQty: cMinQty >= 0 ? (parseTierQty(row[cMinQty]) ?? 0) : 0,
+            unitPrice: price,
+            currency,
+          })
+        }
+      }
+      const named = imported.filter((q) => q.supplier || q.matName)
+      const valid = named.filter((q) => Number(q.minQty) > 0)
+      const skippedNoMinQty = named.length - valid.length
+      if (!valid.length) { message.warning('没识别到有效报价（需含供应商/物料名，且起订量必须大于 0）'); return }
+      setRows((r) => [...valid, ...r])
+      setDirty(true)
+      message.success(`已导入 ${valid.length} 行${skippedNoMinQty ? `，跳过 ${skippedNoMinQty} 条无起订量记录` : ''} — 别忘点 💾 保存全部`)
+    } catch (e: any) {
+      message.error('导入失败: ' + (e?.message ?? e))
+    }
+  }
+
+  async function exportExcel() {
+    const exportGeneration = getSessionGeneration()
+    const XLSX = await import('xlsx')
+    const data = rows.map((q) => ({
+      供应商: q.supplier ?? '',
+      货号: q.productCode ?? '',
+      物料名: q.matName ?? '',
+      规格: q.spec ?? '',
+      起订量: q.minQty ?? 0,
+      单价: q.unitPrice ?? 0,
+      币种: q.currency ?? '¥',
+      日期: q.quoteDate ?? '',
+      备注: q.notes ?? '',
+    }))
+    const ws = XLSX.utils.json_to_sheet(data)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '报价')
+    if (await validateExportSession(exportGeneration)) XLSX.writeFile(wb, `报价_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
+  const filtered = useMemo(() => rows
+    .map((q, _i) => ({ q, _i }))
+    .filter(({ q }) => {
+      if (fieldFilters.supplier && q.supplier !== fieldFilters.supplier) return false
+      if (fieldFilters.productCode && q.productCode !== fieldFilters.productCode) return false
+      if (fieldFilters.matName && q.matName !== fieldFilters.matName) return false
+      if (fieldFilters.spec && q.spec !== fieldFilters.spec) return false
+      if (fieldFilters.currency && (q.currency || '¥') !== fieldFilters.currency) return false
+      if (!filter) return true
+      const s = filter.trim().toLowerCase()
+      return ((q.supplier || '') + (q.productCode || '') + (q.matName || '') + (q.spec || '') + (q.notes || '')).toLowerCase().includes(s)
+    }), [rows, filter, fieldFilters])
+
+  const filterOptions = useMemo(() => {
+    const optionsFor = (getValue: (quote: Quote) => string | undefined) => Array.from(new Set(
+      rows.map(getValue).map((value) => (value || '').trim()).filter(Boolean),
+    )).sort((a, b) => a.localeCompare(b, 'zh')).map((value) => ({ value, label: value }))
+    return {
+      supplier: optionsFor((q) => q.supplier),
+      productCode: optionsFor((q) => q.productCode),
+      matName: optionsFor((q) => q.matName),
+      spec: optionsFor((q) => q.spec),
+      currency: CURR.filter((option) => rows.some((q) => (q.currency || '¥') === option.value)),
+    }
+  }, [rows])
+
+  const hasActiveFilters = Boolean(filter || Object.values(fieldFilters).some(Boolean))
+  function clearFilters() {
+    setFilter('')
+    setFieldFilters({})
+  }
+
+  function fillVisibleRange(sourceIndex: number, targetIndex: number, field: keyof Quote) {
+    const visibleIndices = filtered.map((row) => row._i)
+    const sourcePosition = visibleIndices.indexOf(sourceIndex)
+    const targetPosition = visibleIndices.indexOf(targetIndex)
+    if (sourcePosition < 0 || targetPosition < 0 || sourcePosition === targetPosition) return
+    const from = Math.min(sourcePosition, targetPosition)
+    const to = Math.max(sourcePosition, targetPosition)
+    const affected = new Set(visibleIndices.slice(from, to + 1))
+    const value = rows[sourceIndex]?.[field]
+    setRows((current) => current.map((quote, index) => affected.has(index) ? { ...quote, [field]: value } : quote))
+    setDirty(true)
+    message.success(`已向${targetPosition > sourcePosition ? '下' : '上'}填充 ${affected.size} 行`)
+  }
+
+  // Tiered-pricing group count
+  const tierGroups = useMemo(() => {
+    const set = new Set<string>()
+    for (const q of rows) set.add(`${q.supplier ?? ''}|${q.productCode ?? ''}|${q.matName ?? ''}|${q.spec ?? ''}`)
+    return set.size
+  }, [rows])
+
+  return (
+    <div style={{ padding: 16 }}>
+      <Card
+        title={
+          <span>
+            供应商报价 — 共 <b>{rows.length}</b> 条 · 阶梯组 <b>{tierGroups}</b>
+            {dirty && <Typography.Text type="warning"> · 未保存</Typography.Text>}
+          </span>
+        }
+        extra={
+          <Space wrap>
+            <Input.Search allowClear value={filter} placeholder="搜索 供应商/货号/物料/规格/备注" style={{ width: 280 }}
+              onSearch={setFilter} onChange={(e) => setFilter(e.target.value)} />
+            <Button onClick={load} disabled={loading}>🔄 重新加载</Button>
+            <Button onClick={add}>➕ 新增</Button>
+            <Popconfirm title={`删除选中的 ${selKeys.length} 条?`} onConfirm={delSelected} disabled={!selKeys.length}>
+              <Button danger disabled={!selKeys.length}>🗑 批量删除 ({selKeys.length})</Button>
+            </Popconfirm>
+            <Popconfirm
+              title={`清空全部 ${rows.length} 条报价？此操作不可撤销`}
+              okText="清空"
+              okButtonProps={{ danger: true }}
+              onConfirm={clearAll}
+              disabled={!rows.length}
+            >
+              <Button danger disabled={!rows.length}>🗑 清空全部</Button>
+            </Popconfirm>
+            <Button onClick={() => fileRef.current?.click()}>📥 导入 Excel</Button>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) importExcel(f); e.target.value = '' }} />
+            <Button onClick={exportExcel} disabled={!rows.length}>📤 导出 Excel</Button>
+            <Button type="primary" onClick={save} loading={loading} disabled={!dirty}>💾 保存全部</Button>
+          </Space>
+        }
+      >
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Typography.Text strong>筛选：</Typography.Text>
+          <Select allowClear showSearch optionFilterProp="label" placeholder="供应商" style={{ width: 220 }}
+            value={fieldFilters.supplier} options={filterOptions.supplier}
+            onChange={(value) => setFieldFilters((current) => ({ ...current, supplier: value }))} />
+          <Select allowClear showSearch optionFilterProp="label" placeholder="货号" style={{ width: 150 }}
+            value={fieldFilters.productCode} options={filterOptions.productCode}
+            onChange={(value) => setFieldFilters((current) => ({ ...current, productCode: value }))} />
+          <Select allowClear showSearch optionFilterProp="label" placeholder="物料名" style={{ width: 180 }}
+            value={fieldFilters.matName} options={filterOptions.matName}
+            onChange={(value) => setFieldFilters((current) => ({ ...current, matName: value }))} />
+          <Select allowClear showSearch optionFilterProp="label" placeholder="规格" style={{ width: 160 }}
+            value={fieldFilters.spec} options={filterOptions.spec}
+            onChange={(value) => setFieldFilters((current) => ({ ...current, spec: value }))} />
+          <Select allowClear placeholder="币种" style={{ width: 130 }}
+            value={fieldFilters.currency} options={filterOptions.currency}
+            onChange={(value) => setFieldFilters((current) => ({ ...current, currency: value }))} />
+          <Button disabled={!hasActiveFilters} onClick={clearFilters}>清除筛选</Button>
+          <Typography.Text type="secondary">显示 {filtered.length} / {rows.length} 条</Typography.Text>
+        </Space>
+        <Table
+          rowKey={(r) => String(r._i)}
+          size="small"
+          loading={loading}
+          dataSource={filtered}
+          rowSelection={{ selectedRowKeys: selKeys, onChange: (k) => setSelKeys(k) }}
+          pagination={{ defaultPageSize: 50, showSizeChanger: true }}
+          scroll={{ x: 1360 }}
+          columns={[
+            { title: '#', width: 50, align: 'center', render: (_v, _r, i) => i + 1 },
+            { title: '供应商', width: 200, render: (_v, r) => <FillableCell rowIndex={r._i} field="supplier" onFill={fillVisibleRange}><Input size="small" value={r.q.supplier} onChange={(e) => patch(r._i, 'supplier', e.target.value)} /></FillableCell> },
+            { title: '货号', width: 140, render: (_v, r) => <FillableCell rowIndex={r._i} field="productCode" onFill={fillVisibleRange}><Input size="small" value={r.q.productCode} placeholder="具体货号/共用" onChange={(e) => patch(r._i, 'productCode', e.target.value)} /></FillableCell> },
+            { title: '物料名', width: 200, render: (_v, r) => <FillableCell rowIndex={r._i} field="matName" onFill={fillVisibleRange}><Input size="small" value={r.q.matName} onChange={(e) => patch(r._i, 'matName', e.target.value)} /></FillableCell> },
+            { title: '规格', width: 160, render: (_v, r) => <FillableCell rowIndex={r._i} field="spec" onFill={fillVisibleRange}><Input size="small" value={r.q.spec} onChange={(e) => patch(r._i, 'spec', e.target.value)} /></FillableCell> },
+            { title: '起订量', width: 100, render: (_v, r) => <FillableCell rowIndex={r._i} field="minQty" onFill={fillVisibleRange}><InputNumber size="small" min={0} value={r.q.minQty} onChange={(v) => patch(r._i, 'minQty', v ?? 0)} style={{ width: '100%' }} /></FillableCell> },
+            { title: '单价', width: 120, render: (_v, r) => <FillableCell rowIndex={r._i} field="unitPrice" onFill={fillVisibleRange}><InputNumber size="small" min={0} step={0.0001} value={r.q.unitPrice} onChange={(v) => patch(r._i, 'unitPrice', v ?? 0)} style={{ width: '100%' }} /></FillableCell> },
+            { title: '币种', width: 110, render: (_v, r) => <FillableCell rowIndex={r._i} field="currency" onFill={fillVisibleRange}><Select size="small" value={r.q.currency || '¥'} options={CURR} onChange={(x) => patch(r._i, 'currency', x)} style={{ width: '100%' }} /></FillableCell> },
+            { title: '日期', width: 120, render: (_v, r) => <FillableCell rowIndex={r._i} field="quoteDate" onFill={fillVisibleRange}><Input size="small" value={r.q.quoteDate} placeholder="YYYY-MM-DD" onChange={(e) => patch(r._i, 'quoteDate', e.target.value)} /></FillableCell> },
+            { title: '备注', width: 160, render: (_v, r) => <FillableCell rowIndex={r._i} field="notes" onFill={fillVisibleRange}><Input size="small" value={r.q.notes} onChange={(e) => patch(r._i, 'notes', e.target.value)} /></FillableCell> },
+            {
+              title: '', width: 50, fixed: 'right',
+              render: (_v, r) => (
+                <Popconfirm title="删除该条?" onConfirm={() => del(r._i)}>
+                  <a style={{ color: '#ff4d4f', fontSize: 16 }}>×</a>
+                </Popconfirm>
+              ),
+            },
+          ]}
+        />
+      </Card>
+    </div>
+  )
+}

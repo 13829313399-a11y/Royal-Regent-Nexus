@@ -1,26 +1,85 @@
 <script setup lang="ts">
 import CartonPaperPicker from './CartonPaperPicker.vue'
 import CartonDimensionInput from './CartonDimensionInput.vue'
-import { X } from '@lucide/vue'
-withDefaults(defineProps<{ index: number; disabled?: boolean; identityLocked?: boolean; removeDisabled?: boolean; packagingOptions?: string[]; qualityOptions?: string[]; specificationOptions?: string[]; unitOptions?: string[]; dimensionEditable?: boolean; allowMillimeters?: boolean; preferredUnit?: 'cm' | 'inch' | 'mm'; itemEnabled?: boolean; itemRequired?: boolean }>(), { packagingOptions: () => [], qualityOptions: () => [], specificationOptions: () => [], unitOptions: () => [] })
+import { ChevronDown, Plus, X } from '@lucide/vue'
+import { nextTick, ref, useId, watch } from 'vue'
+const props = withDefaults(defineProps<{
+  index: number
+  master?: boolean
+  processNotes?: boolean
+  noteSource?: object
+  disabled?: boolean
+  identityLocked?: boolean
+  removeDisabled?: boolean
+  packagingOptions?: string[]
+  qualityOptions?: string[]
+  specificationOptions?: string[]
+  unitOptions?: string[]
+  dimensionEditable?: boolean
+  allowMillimeters?: boolean
+  preferredUnit?: 'cm' | 'inch' | 'mm'
+  itemEnabled?: boolean
+  itemRequired?: boolean
+}>(), { packagingOptions: () => [], qualityOptions: () => [], specificationOptions: () => [], unitOptions: () => [] })
 const packaging = defineModel<string>('packaging', { required: true })
 const quality = defineModel<string>('quality', { required: true })
 const specification = defineModel<string>('specification', { required: true })
 const dimension = defineModel<string>('dimension', { required: true })
 const unit = defineModel<string>('unit', { required: true })
 const item = defineModel<string>('item', { default: '' })
+const processNote = defineModel<string>('processNote')
+const noteId = useId()
+const noteField = ref<HTMLTextAreaElement>()
+const noteOpen = ref(Boolean(processNote.value?.trim()))
+watch(processNote, value => { if (value?.trim()) noteOpen.value = true })
+watch(() => props.noteSource, () => { noteOpen.value = Boolean(processNote.value?.trim()) })
+async function toggleNote() {
+  noteOpen.value = !noteOpen.value
+  if (noteOpen.value) {
+    await nextTick()
+    noteField.value?.focus()
+  }
+}
 const emit = defineEmits<{ remove: [] }>()
 </script>
 <template>
   <div class="carton-paper-editor space-y-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-    <div class="carton-paper-fields grid items-start gap-3">
-      <label class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">纸品类型 *</span><CartonPaperPicker v-model="packaging" :options="packagingOptions" :label="`纸品类型 ${index + 1}`" :disabled="disabled || identityLocked" /></label>
-      <label class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">纸质 *</span><CartonPaperPicker v-model="quality" :options="qualityOptions" :label="`纸质 ${index + 1}`" :disabled="disabled || identityLocked" /></label>
-      <div class="carton-paper-specification min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">规格 *</span><CartonPaperPicker v-model="specification" dimension-paste :options="specificationOptions" :label="`规格 ${index + 1}`" :disabled="disabled || identityLocked" /><label v-if="dimensionEditable" class="block space-y-1 text-xs"><span class="block whitespace-nowrap text-slate-500">尺寸单位</span><select v-model="dimension" :aria-label="`纸品尺寸单位 ${index + 1}`" :disabled="disabled || identityLocked" class="h-9 w-full rounded-lg border bg-white px-2"><option v-if="!dimension" value="">请选择尺寸单位</option><option value="cm">cm</option><option :value="dimension === 'inch' ? 'inch' : 'in'">inch</option><option v-if="allowMillimeters" value="mm">mm</option><option v-if="dimension && !['cm', 'in', 'inch', ...(allowMillimeters ? ['mm'] : [])].includes(dimension)" :value="dimension">{{ dimension }}</option></select></label><CartonDimensionInput v-if="!dimensionEditable || preferredUnit" v-model="dimension" :specification="specification" :label="`纸品尺寸显示 ${index + 1}`" readonly show-reference :preferred-unit="preferredUnit" /></div>
+    <div class="carton-paper-fields grid items-start gap-3" :class="{ 'carton-master-fields': master }">
+      <label class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">纸品类型 *</span><CartonPaperPicker v-model="packaging" :options="packagingOptions" :label="master ? '资料纸品类型' : `纸品类型 ${index + 1}`" :disabled="disabled || identityLocked" /></label>
+      <label class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">纸质<span v-if="!master"> *</span></span><CartonPaperPicker v-model="quality" :options="qualityOptions" :label="master ? '资料纸质' : `纸质 ${index + 1}`" :disabled="disabled || identityLocked" /></label>
+      <div class="carton-paper-specification min-w-0 space-y-1.5">
+        <span class="block text-[11px] font-bold leading-4 text-slate-500">规格<span v-if="!master"> *</span></span>
+        <CartonPaperPicker v-model="specification" dimension-paste :options="specificationOptions"
+          :label="master ? '资料规格' : `规格 ${index + 1}`" :disabled="disabled || identityLocked" />
+        <div v-if="dimensionEditable" class="space-y-1 text-xs">
+          <label :for="noteId + '-unit'" class="block whitespace-nowrap text-slate-500">尺寸单位</label>
+          <div class="flex items-center gap-1.5">
+            <select :id="noteId + '-unit'" v-model="dimension" :aria-label="master ? '资料尺寸单位' : `纸品尺寸单位 ${index + 1}`"
+              :disabled="disabled || identityLocked" class="h-9 min-w-0 flex-1 rounded-lg border bg-white px-2">
+              <option v-if="!dimension" value="">请选择尺寸单位</option>
+              <option value="cm">cm</option>
+              <option :value="dimension === 'inch' || (master && dimension !== 'in') ? 'inch' : 'in'">inch</option>
+              <option v-if="allowMillimeters" value="mm">mm</option>
+              <option v-if="dimension && !['cm', 'in', 'inch', ...(allowMillimeters ? ['mm'] : [])].includes(dimension)" :value="dimension">{{ dimension }}</option>
+            </select>
+            <button v-if="processNotes" type="button" :aria-expanded="noteOpen" :aria-controls="noteId"
+              :aria-label="`纸品 ${index + 1} 工艺备注`" :disabled="disabled || identityLocked" @click="toggleNote"
+              class="inline-flex h-7 shrink-0 items-center gap-0.5 whitespace-nowrap rounded-md border border-teal-200 bg-white px-1.5 text-[11px] font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-40">
+              <ChevronDown v-if="noteOpen" class="size-3 rotate-180" /><Plus v-else class="size-3" />工艺备注
+            </button>
+          </div>
+        </div>
+        <CartonDimensionInput v-if="!dimensionEditable || preferredUnit" v-model="dimension" :specification="specification" :label="`纸品尺寸显示 ${index + 1}`"
+          readonly show-reference :hide-unit-label="dimensionEditable" :preferred-unit="preferredUnit" />
+      </div>
       <slot name="basis"><label v-if="itemEnabled" class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">{{ itemRequired ? '货号 *' : '货号（选填）' }}</span><input v-model="item" :aria-label="`纸品货号 ${index + 1}`" :disabled="disabled || identityLocked" :required="itemRequired" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2"></label></slot>
       <slot name="quantity" />
-      <label class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">单位 *</span><select v-if="unitOptions.length" v-model="unit" :aria-label="`纸品单位 ${index + 1}`" :disabled="disabled || identityLocked" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2"><option v-if="unit && !unitOptions.includes(unit)">{{ unit }}</option><option v-for="value in unitOptions" :key="value">{{ value }}</option></select><input v-else v-model="unit" :aria-label="`纸品单位 ${index + 1}`" :disabled="disabled || identityLocked" required class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2"></label>
+      <label class="min-w-0 space-y-1.5"><span class="block text-[11px] font-bold leading-4 text-slate-500">单位 *</span><select v-if="unitOptions.length" v-model="unit" :aria-label="master ? '资料计量单位' : `纸品单位 ${index + 1}`" :disabled="disabled || identityLocked" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2"><option v-if="unit && !unitOptions.includes(unit)">{{ unit }}</option><option v-for="value in unitOptions" :key="value">{{ value }}</option></select><input v-else v-model="unit" :aria-label="master ? '资料计量单位' : `纸品单位 ${index + 1}`" :disabled="disabled || identityLocked" required class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2"></label>
       <button type="button" :disabled="disabled || removeDisabled || identityLocked" :aria-label="`删除纸品明细 ${index + 1}`" class="mt-[22px] flex size-9 items-center justify-center justify-self-end rounded-lg border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:text-red-600 disabled:opacity-40" @click="emit('remove')"><X class="size-4" /></button>
+    </div>
+    <div v-if="processNotes && noteOpen" :id="noteId" class="space-y-1">
+      <label :for="noteId + '-text'" class="block text-[11px] font-bold text-slate-600">工艺备注</label>
+      <textarea :id="noteId + '-text'" ref="noteField" v-model="processNote" :aria-label="`纸品工艺备注 ${index + 1}`" rows="2" maxlength="2000" :disabled="disabled || identityLocked" placeholder="填写这项纸品的工艺要求" class="block w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs focus:border-teal-500"></textarea>
     </div>
     <slot />
   </div>
@@ -35,6 +94,7 @@ const emit = defineEmits<{ remove: [] }>()
 }
 @container (min-width: 880px) {
   .carton-paper-fields { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1.7fr) minmax(0,1fr) minmax(0,1.1fr) 5rem 2.25rem; }
+  .carton-master-fields { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1.7fr) minmax(0,1fr) 5rem 2.25rem; }
   .carton-paper-specification { grid-column: auto; }
 }
 </style>

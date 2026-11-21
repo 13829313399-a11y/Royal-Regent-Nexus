@@ -252,6 +252,8 @@ export const documentTools = {
     ).data,
   artifactUrl: (id: string, download = false) =>
     `${http.defaults.baseURL}${root}/artifacts/${encodeURIComponent(id)}/${download ? 'download' : 'content'}`,
+  splitArchiveUrl: (jobId: string) =>
+    `${http.defaults.baseURL}${root}/jobs/${encodeURIComponent(jobId)}/split-files.zip`,
 }
 
 export const operationLabels: Record<Operation, string> = {

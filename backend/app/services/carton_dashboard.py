@@ -400,14 +400,15 @@ def weekly_attention(db, context, customer, search):
     return total
 
 
-def workspace(db, factory, *, customer="", search="", status="OPEN", kind="ALL", offset=0, limit=8):
+def workspace(db, factory, user, *, customer="", search="", responsibility_scope="OWN", status="OPEN", kind="ALL", offset=0, limit=8):
+    from app.services.carton_order_queries import follow_up_count
     context, orders, exceptions, alerts = read_alerts(db, factory)
     page = alert_page(alerts, customer=customer, search=search, status=status, kind=kind, offset=offset, limit=limit)
     # An alert preview must not embed the entire split/order document.
     for key in ("items", "reminders"):
         page[key] = [{**a, "order": {k: a["order"].get(k) for k in ORDER_FIELDS} if a["order"] else None} for a in page[key]]
     order_rows = [o for o in orders if (not customer or o["customer_name"] == customer) and text_matches([o[k] for k in ("order_no", "contract_no", "item_no", "customer_name")], search)]
-    pending = sum(o["status"] not in ("COMPLETED", "CANCELLED") for o in order_rows)
+    pending = follow_up_count(db, user, factory, responsibility_scope=responsibility_scope, customer=customer, search=search)
     recent = sorted(order_rows, key=lambda o: (o["order_date"], o["order_no"]), reverse=True)[:3]
     open_exceptions = [e for e in exceptions if e["status"] in ("OPEN", "IN_PROGRESS") and (not customer or e["customer_name"] == customer)
                        and text_matches([e[k] for k in ("exception_no", "customer_name", "category", "title", "description")], search)]
