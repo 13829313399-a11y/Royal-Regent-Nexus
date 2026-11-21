@@ -1,5 +1,7 @@
 # Document Studio activation runbook
 
+> **历史归档 · 2026 年 8 月。** 本文记录当时的同步工具。维护现行服务请读[公共文档工具运行说明](../../document-tools/README.md)。
+
 ## 1. Configure local tools
 
 Enable `DOCUMENT_TOOLS_ENABLED`, set the file/page/temporary-file limits, and configure the optional local translation model plus LibreOffice. Document Studio has no cloud-provider, background worker, task or artifact configuration.

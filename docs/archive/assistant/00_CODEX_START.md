@@ -1,5 +1,7 @@
 # 给 Codex 的开始执行提示词
 
+> 曜灵初建阶段的原始委托，保留当时验收尺度。今天的启用步骤见[运行手册](../../assistant/RUNBOOK.md)，产品与测试分别见[产品规格](../../assistant/01_YAOLING_CODEX_SPEC.md)和[验收场景](../../assistant/03_ACCEPTANCE_CASES.md)。
+
 将本文件和同目录三个文档一起交给 Codex。建议存入项目 `docs/assistant/`，再复制下面提示词。文档是方案，不代表代码已经实现。
 
 ---
