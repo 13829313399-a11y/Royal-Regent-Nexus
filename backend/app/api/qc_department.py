@@ -32,6 +32,11 @@ COMPANIES = {
 }
 STATIC_FILES = {
     "qc-select.js", "qc-select.css",
+    "qc-empty-state.js", "qc-empty-state.css", "qc-empty-motion.js",
+    "empty-art/clerk-reports-middle.png",
+    *(f"empty-art/clerk-{scene}-{pose}.png"
+      for scene in ("schedule", "inspection", "review", "summary", "reports")
+      for pose in ("rest", "action")),
     "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
     "qc-report-workbook.js", "qc-report-workbook.css",
     "qc-daily-report.js", "qc-daily-report.css",

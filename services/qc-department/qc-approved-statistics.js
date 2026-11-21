@@ -110,7 +110,8 @@
     if(!host || host.hidden || !state.data)return;
     const {year,customer}=state.data.filters;
     if(!year){host.textContent='当前范围没有验货问题记录';return;}
-    return root.QcIssueReports?.open('yearly',year+'-01-01',customer,{host,sharedCustomer:true});
+    const inspectionTotal=Object.values(state.data.excluded).some(Boolean)?null:state.data.totals.total;
+    return root.QcIssueReports?.open('yearly',year+'-01-01',customer,{host,sharedCustomer:true,inspectionTotal});
   }
   async function exportSummary(){
     const data=state.data, button=el('export'), status=el('export-status');
@@ -201,7 +202,14 @@
       }
       el('detail-rows').append(row);
     }
-    if(!data.details.items.length){const row=root.document.createElement('tr'),td=cell(row,'当前筛选范围内暂无此类记录');td.colSpan=6;td.className='qstats-empty-row';el('detail-rows').append(row);}
+    if(!data.details.items.length){
+      const detail='当前筛选范围内暂无此类记录';
+      const row=root.document.createElement('tr'),td=cell(row,detail,'qstats-empty-row');
+      td.colSpan=6;
+      const scene=t.total===0&&!Object.values(data.excluded).some(Boolean)&&root.QcEmptyState?.markup('reports',detail);
+      if(scene){td.classList.add('qc-empty-cell');td.innerHTML=scene;}
+      el('detail-rows').append(row);
+    }
     const detail=data.details;
     el('detail-count').textContent='共 '+detail.total+' 条'+(detail.total?' · 显示 '+((detail.page-1)*detail.pageSize+1)+'—'+Math.min(detail.total,detail.page*detail.pageSize)+' 条':'');
     el('page').textContent=detail.page+' / '+detail.pages;el('prev').disabled=detail.page===1;el('next').disabled=detail.page===detail.pages;

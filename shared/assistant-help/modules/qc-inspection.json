@@ -44,7 +44,7 @@
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "9d7de7c60988e2f0df4dba201a8d14b70d9997f35af592e5a8839c9b7ea8669d"
+        "sha256": "44ee0911e014260a313c1f5e2f20ecf2adc9970226b13e2d9a8f15a66ac278a6"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
@@ -64,7 +64,7 @@
       {
         "path": "services/qc-department/qc-inspection-sheet.js",
         "symbol": "function pump",
-        "sha256": "bf664b16060764f47c766e08b8498b19043a4dbbbed2f244ba171f0d881be865"
+        "sha256": "a96d2d0c93712295e071ce4e13c6e970a968f225e116c5bacf03dc38f04ff287"
       },
       {
         "path": "backend/app/services/qc_cumulative.py",
@@ -89,7 +89,7 @@
       {
         "path": "services/qc-department/qc-inspection-summary.js",
         "symbol": "async function load",
-        "sha256": "1d0b46be8c845bf8079a3b3b6ffe9d20710b38b1cb452a8278b290de9333398c"
+        "sha256": "64297edb11102312aee860d48a052fe1b21ba82e89dfb5fa850ab58b51bc4012"
       },
       {
         "path": "backend/app/services/qc_weekly_templates.py",
@@ -149,7 +149,7 @@
       {
         "path": "services/qc-department/qc-issue-reports.js",
         "symbol": "QcIssueReports",
-        "sha256": "aae3f1e4c0f12fe966796c7c19efd3becd884ca66454967af257a7d60b4e196b"
+        "sha256": "b7582f7e323c988c499274db4fae3e4dd48140e7c9e71ba639c84a452a994f4c"
       },
       {
         "path": "backend/app/api/qc_mobile.py",
@@ -169,7 +169,7 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "bbcc0b5426a3f7ba911fc01d71831ef04a516d2034376c50e9a82ca9d0e9472e"
+        "sha256": "316074982a5d42447b8d1fd5502538c8e915c896c72a183f7c86c69e89f9f3c1"
       }
     ],
     "knowledge_version": "2026-11-20-qc-report-factories",

@@ -93,9 +93,17 @@
   async function load(){
     shell();const sequence=++state.sequence;message('正在读取汇总…');
     const totals = root.document.getElementById('qsum-totals');
+    const body = root.document.getElementById('qsum-body');
+    const emptyMessage = '没有符合条件的记录。可调整筛选，或预览历史工作簿。';
+    const previousEmpty = body.querySelector?.('qc-empty-state');
+    if(previousEmpty){
+      previousEmpty.parentElement.classList.remove('qc-empty-cell');
+      previousEmpty.parentElement.textContent=emptyMessage;
+    }
     try{
       const data=await api('records?'+query());if(sequence!==state.sequence)return;state.data=data;state.filters.page=data.page;controls();
-      root.document.getElementById('qsum-body').innerHTML=data.items.length?data.items.map(row=>`<tr><td>${display(row.reportDate ?? row.inspectionDate)}</td><td title="${esc(root.QcInspectionAudit.hint(row))}">${display(row.customer)}${row.entryId?root.QcInspectionAudit.badge(row):''}</td><td>${display(row.stockNo)}</td><td>${display(row.productNo)}</td><td>${display(row.inspectionType)}</td><td><span class="qsum-result ${['PASS','FAIL','REJ'].includes(row.result)?'qsum-'+row.result.toLowerCase():''}">${display(row.result)}</span></td><td><span class="qsum-state">${labels[row.status]||display(row.status)}</span></td><td><button class="btn btn-secondary qsum-detail-link" data-summary-id="${esc(row.id)}" aria-label="查看 ${esc(row.customer)} ${esc(row.productNo)} 详情">查看详情</button></td></tr>`).join(''):'<tr><td colspan="8" class="qsum-empty">没有符合条件的记录。可调整筛选，或预览历史工作簿。</td></tr>';
+      const scene=data.total===0&&!data.items.length&&root.QcEmptyState?.markup('summary',emptyMessage);
+      body.innerHTML=data.items.length?data.items.map(row=>`<tr><td>${display(row.reportDate ?? row.inspectionDate)}</td><td title="${esc(root.QcInspectionAudit.hint(row))}">${display(row.customer)}${row.entryId?root.QcInspectionAudit.badge(row):''}</td><td>${display(row.stockNo)}</td><td>${display(row.productNo)}</td><td>${display(row.inspectionType)}</td><td><span class="qsum-result ${['PASS','FAIL','REJ'].includes(row.result)?'qsum-'+row.result.toLowerCase():''}">${display(row.result)}</span></td><td><span class="qsum-state">${labels[row.status]||display(row.status)}</span></td><td><button class="btn btn-secondary qsum-detail-link" data-summary-id="${esc(row.id)}" aria-label="查看 ${esc(row.customer)} ${esc(row.productNo)} 详情">查看详情</button></td></tr>`).join(''):'<tr><td colspan="8" class="qsum-empty'+(scene?' qc-empty-cell':'')+'">'+(scene||emptyMessage)+'</td></tr>';
       root.QcInspectionAudit.bind(root.document.getElementById('qsum-body'));
       const pages=Math.max(1,Math.ceil(data.total/data.pageSize));
       root.document.getElementById('qsum-count').textContent=`共 ${data.total} 条`;

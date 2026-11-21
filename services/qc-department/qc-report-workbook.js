@@ -50,6 +50,11 @@ const columns={
   orders:[['订单',[['客户',1],['PO 号',3],['产品',6]]],['验货',[['日期',8],['数量',14],['结果',10]]],['跟进',[['备注',20]]]],
   tracking:[['验货问题',[['客户',1],['产品',4],['问题',11]]],['整改跟踪',[['改善措施',15],['责任人',16],['完成情况',18]]]]
 };
+function emptyRow(columnCount, showScene) {
+  const detail='此期间没有记录';
+  const scene=showScene&&window.QcEmptyState?.markup('reports',detail);
+  return '<tr><td colspan="'+columnCount+'"'+(scene?' class="qc-empty-cell"':'')+'>'+(scene||detail)+'</td></tr>';
+}
 function mount(periodKey, kind, host, data, refresh){
   if(!host || !periods[periodKey]?.templates[kind])return false;
   const section=host.closest('.template-sheet');
@@ -75,10 +80,17 @@ function mount(periodKey, kind, host, data, refresh){
     }));
   }else if(kind==='quality'){
     showMonthlyRates(scroll,data.overview.months.map(m=>({month:m.month+'月',label:m.rate===''?'':(m.rate*100).toFixed(1)+'%'})));
+    const headers=data.overview.headers;
+    if(data.total===0&&headers?.length&&window.QcEmptyState){
+      scroll.insertAdjacentHTML('beforeend','<table class="skim" aria-label="客户月度质量汇总"><thead><tr>'+
+        headers.map(label=>'<th scope="col">'+esc(label)+'</th>').join('')+'</tr></thead><tbody>'+
+        emptyRow(headers.length,true)+'</tbody></table>');
+    }
   }else{
     const groups=columns[kind==='annual-issues'?'tracking':kind], cols=groups.flatMap(g=>g[1]);
     const band=['monthly','yearly'].includes(periodKey)?'<tr class="skim-groups">'+groups.map(([name,items])=>'<th scope="colgroup" colspan="'+items.length+'"><span>'+esc(name)+'</span></th>').join('')+'</tr>':'';
-    scroll.innerHTML='<table class="skim"><thead>'+band+'<tr>'+cols.map(([label])=>'<th scope="col">'+esc(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([,i])=>'<td>'+esc(r.values[i]===''?'—':r.values[i])+'</td>').join('')+'</tr>').join('')+(!rows.length?'<tr><td colspan="'+cols.length+'">此期间没有记录</td></tr>':'')+'</tbody></table>';
+    const inspectionTotal=['issues','annual-issues'].includes(kind)?data.inspectionTotal:data.total;
+    scroll.innerHTML='<table class="skim"><thead>'+band+'<tr>'+cols.map(([label])=>'<th scope="col">'+esc(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([,i])=>'<td>'+esc(r.values[i]===''?'—':r.values[i])+'</td>').join('')+'</tr>').join('')+(!rows.length?emptyRow(cols.length,inspectionTotal===0):'')+'</tbody></table>';
   }
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;

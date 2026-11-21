@@ -89,7 +89,9 @@
     try { rows=filterRows(model.items,activeFilters); } catch(e) { error.textContent=e.message;rows=[]; }
     if(!rows.length) {
       const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期':'没有符合筛选条件的排期';
-      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户筛选或搜索排期。':'')+'</p></div></td></tr>';
+      const scene=model.phase==='ready'&&!error.textContent&&root.QcEmptyState?.markup('schedule',message);
+      body.innerHTML=scene?'<tr><td colspan="15" class="qc-empty-cell">'+scene+'</td></tr>':
+        '<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户筛选或搜索排期。':'')+'</p></div></td></tr>';
       updatePush();return;
     }
     body.innerHTML=orderedRows(rows).map(row =>

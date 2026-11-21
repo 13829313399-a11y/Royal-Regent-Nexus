@@ -565,10 +565,13 @@
     const body=reviewing
       ? reviewTableBody(rows,columns,headerCells)
       : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
+    const noTasks='没有符合条件的验货任务。';
+    const empty=!rows.length&&!model.loading;
+    const scene=empty&&model.loaded&&!model.error&&root.QcEmptyState?.markup(reviewing?'review':'inspection',noTasks);
     host.innerHTML=(model.error?'<p role="alert" class="qis-error">读取失败：'+esc(model.error)+'。请重试刷新，当前数据可能不是最新。</p>':'')+
       (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
       ((!reviewing||rows.length)?'<table class="qis-table">'+body+'</table>':'')+
-      (!rows.length&&!model.loading?'<p>没有符合条件的验货任务。</p>':'');
+      (empty?(scene||'<p>'+noTasks+'</p>'):'');
     if(reviewing){
       const all=host.querySelector('#qis-review-all');
       if(all)all.onchange=event=>{
