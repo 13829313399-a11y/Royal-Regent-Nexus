@@ -28,7 +28,6 @@ READ_PERMISSION_CODES = frozenset(
     {
         "indonesia_material:read",
         "uv_ops:read", "uv_ops:cost_read", "uv_ops:payroll_read", "uv_ops:audit_read",
-        "injection_scheduling:read",
         "molding_sample:read",
         "molding_sample:cross_factory_read",
         "molding_sample:cross_factory_cost_read",

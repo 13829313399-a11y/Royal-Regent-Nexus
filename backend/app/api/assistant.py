@@ -397,7 +397,7 @@ def resolve_action(payload: ActionRequest, user=Depends(viewer)):
             name = 'get_spray_operations_snapshot'
         with database.SessionLocal() as db:
             authorize(db, user, name, action["query"].get("factory", "authorized"))
-            keys = {"factory"} if name == 'get_internal_quote_overview' else {"factory", "order"} if name == "list_customer_orders" else {"factory", "demand"} if name == "get_injection_overview" else {"factory", "entry", "view", "module", "q", "due", "unread"} if name == "get_my_work" else {"factory", "tab", "carton_record", "carton_from", "carton_to"} if name == "get_carton_overview" else {"factory", "printer", "tab"}
+            keys = {"factory"} if name == 'get_internal_quote_overview' else {"factory", "order"} if name == "list_customer_orders" else {"factory", "entry", "view", "module", "q", "due", "unread"} if name == "get_my_work" else {"factory", "tab", "carton_record", "carton_from", "carton_to"} if name == "get_carton_overview" else {"factory", "printer", "tab"}
             valid_params = set(action['params']) == {'quoteId'} if name == 'get_internal_quote_overview' else not action['params']
             if name == 'get_uv_operations_snapshot':
                 keys = {'factory', 'uv_task'}
@@ -440,12 +440,6 @@ def resolve_action(payload: ActionRequest, user=Depends(viewer)):
                 factory, ident = action["query"].get("factory"), action["query"].get("order")
                 if not ident or action.get("resource") != dict(module_id="customer-orders", resource_type="order", resource_id=ident) or not orders.exists(db, factory, ident):
                     raise AssistantError("source_unavailable", "原订单已不可用，请重新查询。", 410)
-            if name == "get_injection_overview":
-                from app.models.injection_scheduling import Demand
-                factory, ident = action['query'].get('factory'), action['query'].get('demand')
-                expected = dict(module_id='injection-scheduling', resource_type='demand' if ident else 'overview', resource_id=ident or factory)
-                if action.get('resource') != expected or ident and not db.scalar(select(Demand.id).where(Demand.id == ident, Demand.factory_id == factory)):
-                    raise AssistantError('source_unavailable', '原需求已不可用，请重新查询。', 410)
             if name == "get_printer_status":
                 from app.models.three_d_printing import ThreeDPrintingPrinter
                 factory, ident = action['query'].get('factory'), action['query'].get('printer')

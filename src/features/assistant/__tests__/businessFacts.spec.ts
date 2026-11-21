@@ -7,29 +7,29 @@ import type { Message } from '../types'
 const message = (): Message => ({
   id:'answer',run_id:'owned-run',seq:1,role:'assistant',status:'completed',created_at:1,help_citations:[],context_descriptor:null,
   content_parts:[{type:'text',text:'原始解释保持不变'},
-    {type:'evidence',run_id:'owned-run',sources:[{kind:'business',run_id:'owned-run',source_id:'registered',tool_name:'get_injection_overview',title:'注塑需求'}]},
-    {type:'business_snapshot',result:{contract_version:3,tool_name:'get_injection_overview',run_id:'owned-run',tool_call_id:'call',step_id:'step',status:'partial',
-      source_refs:['registered'],scope:{module_id:'injection-scheduling',label:'华康 A / 已筛选需求'},as_of:'2026-10-26T18:28:10+08:00',observed_at:null,
+    {type:'evidence',run_id:'owned-run',sources:[{kind:'business',run_id:'owned-run',source_id:'registered',tool_name:'get_carton_overview',title:'纸品台账'}]},
+    {type:'business_snapshot',result:{contract_version:3,tool_name:'get_carton_overview',run_id:'owned-run',tool_call_id:'call',step_id:'step',status:'partial',
+      source_refs:['registered'],scope:{module_id:'carton-procurement',label:'华康 A / 已筛选需求'},as_of:'2026-10-26T18:28:10+08:00',observed_at:null,
       retrieved_at:'2026-10-26T18:28:11+08:00',timezone:'Asia/Shanghai',freshness:{state:'fresh'},total_count:3,returned_count:3,truncated:false,
-      metrics:{held_count:{value:2,unit:'需求行',definition_id:'held',status:'known'},wait_material_count:{value:1,unit:'需求行',definition_id:'wait',status:'known'},
-        remaining_material_kg:{value:'120.500000000000000001',unit:'kg',definition_id:'material',status:'known'},
-        remaining_material_unknown_count:{value:0,unit:'需求行',definition_id:'unknown-count',status:'known'},
-        warehouse_shortage_kg:{value:null,unit:'kg',definition_id:'warehouse',status:'unknown'},
-        actual_delivery_late_count:{value:null,unit:'需求行',definition_id:'delivery',status:'unknown'}},
+      metrics:{record_count:{value:2,unit:'需求行',definition_id:'held',status:'known'},pending_count:{value:1,unit:'需求行',definition_id:'wait',status:'known'},
+        remaining_quantity:{value:'120.500000000000000001',unit:'kg',definition_id:'material',status:'known'},
+        received_quantity:{value:0,unit:'需求行',definition_id:'unknown-count',status:'known'},
+        available_quantity:{value:null,unit:'kg',definition_id:'warehouse',status:'unknown'},
+        overdue_count:{value:null,unit:'需求行',definition_id:'delivery',status:'unknown'}},
       definitions:{held:'非 READY，包含待料和其他原因，不等于缺料。',wait:'恰为 WAIT_MATERIAL，只是排产标记。',material:'预计生产用料，不是仓库缺口。',
-        'unknown-count':'用料为空的需求行数。',warehouse:'未读取仓库可用量。',delivery:'未读取实际交货结果。'},unknown_fields:[{field:'warehouse_shortage_kg',reason:'库存来源未接入'}]}}],
+        'unknown-count':'用料为空的需求行数。',warehouse:'未读取仓库可用量。',delivery:'未读取实际交货结果。'},unknown_fields:[{field:'available_quantity',reason:'库存来源未接入'}]}}],
 })
 const raw = (m: Message) => m.content_parts[2]!.result as Record<string, any>
 
-it('renders held and WAIT independently, preserves exact decimals and distinguishes unknown from zero', () => {
+it('renders independent metrics, preserves exact decimals and distinguishes unknown from zero', () => {
   const m=message(), original=JSON.stringify(m)
   const panel=businessFacts(m)[0]!
-  expect(panel.primary.find(x=>x.key==='held_count')).toMatchObject({label:'挂起（含待料）',value:'2'})
-  expect(panel.primary.find(x=>x.key==='wait_material_count')).toMatchObject({label:'待料标记',value:'1'})
-  expect(panel.primary.find(x=>x.key==='remaining_material_kg')?.value).toBe('120.500000000000000001')
-  expect(panel.primary.find(x=>x.key==='warehouse_shortage_kg')?.value).toBe('未知')
-  expect(panel.metrics.find(x=>x.key==='remaining_material_unknown_count')?.value).toBe('0')
-  expect(panel.metrics.find(x=>x.key==='held_count')?.definition).toContain('不等于缺料')
+  expect(panel.primary.find(x=>x.key==='record_count')).toMatchObject({label:'原台账记录数',value:'2'})
+  expect(panel.metrics.find(x=>x.key==='pending_count')).toMatchObject({label:'未结束单据',value:'1'})
+  expect(panel.primary.find(x=>x.key==='remaining_quantity')?.value).toBe('120.500000000000000001')
+  expect(panel.primary.find(x=>x.key==='available_quantity')?.value).toBe('未知')
+  expect(panel.metrics.find(x=>x.key==='received_quantity')?.value).toBe('0')
+  expect(panel.metrics.find(x=>x.key==='record_count')?.definition).toContain('不等于缺料')
   expect(JSON.stringify(m)).toBe(original)
 })
 
@@ -96,7 +96,7 @@ it('escapes source fields, emits the existing source action and preserves the or
 it('rejects malformed metrics rather than coercing null, NaN, unsafe integers or unknowns to zero', () => {
   for(const value of [null,NaN,Infinity,Number.MAX_SAFE_INTEGER+1,'1e6','<b>4</b>']) {
     const m=message(), r=raw(m)
-    r.metrics={held_count:{value,unit:'需求行',definition_id:'held',status:'known'}}
+    r.metrics={record_count:{value,unit:'需求行',definition_id:'held',status:'known'}}
     expect(businessFacts(m)).toEqual([])
   }
 })
@@ -104,7 +104,7 @@ it('rejects malformed metrics rather than coercing null, NaN, unsafe integers or
 it('labels an unknown unit explicitly and uses the existing factory name without altering the original scope or units', () => {
   const m=message(),r=raw(m)
   r.scope.label='huakang-a / 选中需求'
-  r.metrics.warehouse_shortage_kg.unit='未确定'
+  r.metrics.available_quantity.unit='未确定'
   const before=JSON.stringify(r)
   const w=mount(AssistantBusinessFacts,{props:{message:m}})
   expect(w.get('.yl-facts-scope').text()).toBe('华康A / 选中需求')

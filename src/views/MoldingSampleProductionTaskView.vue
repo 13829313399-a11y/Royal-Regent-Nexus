@@ -78,6 +78,7 @@ import type {
 import StatusPill from '@/components/common/StatusPill.vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
+import MoldingSampleMonthlyExport from '@/components/molding/MoldingSampleMonthlyExport.vue'
 import MoldingSampleProductionPrintDocument from '@/components/molding/print/MoldingSampleProductionPrintDocument.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -298,6 +299,13 @@ function canProductionPermission(permission: string, factoryId: string) {
 const canReadSelectedFactory = computed(() =>
   selectedFactoryHasMoldingDepartment.value
   && canProductionPermission('molding_sample:production_read', selectedFactoryId.value),
+)
+
+const canExportSelectedFactory = computed(() =>
+  canReadSelectedFactory.value
+  && canOperateProductionFactory(selectedFactoryId.value)
+  && ['engineering', 'management', 'pmc-warehouse', 'warehouse', 'production', 'molding']
+    .some(department => authStore.can('molding_sample:export', selectedFactoryId.value, department)),
 )
 
 const engineeringOrderRoute = computed(() => {
@@ -1915,6 +1923,14 @@ watchEffect(() => {
               </div>
               <span class="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-bold text-teal-700">{{ taskEntries.length }}</span>
             </div>
+            <MoldingSampleMonthlyExport
+              v-if="canExportSelectedFactory"
+              :key="`${selectedFactoryId}:${authStore.currentUser?.id}:${authStore.authorizationVersion}`"
+              :factory-id="selectedFactoryId"
+              :factory-name="activeFactory.shortName"
+              :records="taskEntries"
+              :queue-state="apiState"
+            />
             <div class="relative mt-3">
               <Search class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
               <input
@@ -2362,7 +2378,10 @@ watchEffect(() => {
                         <div class="rounded-lg bg-slate-50 px-3 py-2.5">
                           <div class="text-[11px] font-medium text-slate-500">领料重量</div>
                           <div class="mt-1 text-[15px] font-bold tabular-nums text-slate-950">
-                            {{ formatWeight(item.collected_weight_kg ?? item.required_material_kg) }}
+                            {{ item.collected_weight_kg == null ? '尚未登记' : formatWeight(item.collected_weight_kg) }}
+                          </div>
+                          <div v-if="item.collected_weight_kg == null && item.required_material_kg != null" class="mt-1 text-[11px] text-slate-500">
+                            预计用料 {{ formatWeight(item.required_material_kg) }}
                           </div>
                         </div>
                         <label class="block rounded-lg bg-slate-50 px-3 py-2.5">

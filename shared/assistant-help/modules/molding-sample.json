@@ -35,27 +35,44 @@
         "anchor_id": "molding-sample.overview",
         "precondition": "已进入本模块且总览区域可见",
         "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "按月导出啤办单",
+        "description": "在承接生产队列展开“按月导出啤办单”，选择开单月份并点击“导出 Excel”。打开“逐模对账”核对预计用料、回填实领、实际耗用及费用，点击模号可查看配比、分项重量与单价。估算按导出时的原料价，已存料费按结算记录。仓库权限允许时还可查看领料单、批次和出库撤回流水。多模共用领料单只列一次。跨厂派单同时核对来源厂导出权限。",
+        "anchor_id": "molding-sample.overview",
+        "precondition": "可查看执行厂生产任务，并有相应厂区的啤办导出权限",
+        "completion": "已下载所选厂区和月份的啤办单工作簿"
       }
     ],
     "source_refs": [
       {
         "path": "backend/app/services/molding_sample.py",
         "symbol": "MOLDING_FACTORY_CAPABILITIES",
-        "sha256": "efcbec6ebc5b7260971fb989a626d55a379db393f7bbec1ee4f89aebeef7611a"
+        "sha256": "fc79200926b4fb031057908adfd30d87f8ead5a360cc43e49acb3a3e03e41f3e"
       },
       {
         "path": "backend/app/services/molding_sample.py",
         "symbol": "BOARD_SOURCE_STATUSES",
-        "sha256": "efcbec6ebc5b7260971fb989a626d55a379db393f7bbec1ee4f89aebeef7611a"
+        "sha256": "fc79200926b4fb031057908adfd30d87f8ead5a360cc43e49acb3a3e03e41f3e"
       },
       {
         "path": "backend/app/schemas/molding_sample.py",
         "symbol": "validate_material_components",
         "sha256": "2e9680bd8ad2ed7472a0b9beab8f9d60277c7e79ba91d22c3df910a798791605"
+      },
+      {
+        "path": "backend/app/api/molding_sample.py",
+        "symbol": "export_production_task_month",
+        "sha256": "f4cf58b852f2d39e6a623be834eda0e48872ec0b7e163b5f2ef2df6e281e7580"
+      },
+      {
+        "path": "backend/app/services/molding_sample_monthly_excel.py",
+        "symbol": "build_production_month_workbook",
+        "sha256": "aabfb18ddfa1fbfecc3205e1bc3a7d2d747854c9dd1fc9af0bf178c3ede726f3"
       }
     ],
-    "knowledge_version": "2026.10.09-v3",
-    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "knowledge_version": "2026.11.19-molding-monthly-export",
+    "verified_commit": "working-tree: production queue monthly export",
     "status": "verified"
   }
 ]

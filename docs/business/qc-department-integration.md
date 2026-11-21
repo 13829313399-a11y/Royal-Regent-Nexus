@@ -49,7 +49,7 @@
 
 ## 本地运行
 
-固定开发目录为 `/Users/chris/Desktop/QC_test/qc-update-20261107`。在该目录配置好私有环境与明确的数据库路径后运行 `npm run dev`；旧启动快捷方式需要先核对实际目标，不能据此认定新开发目录正在运行。统一入口为 `http://127.0.0.1:5173/`，API 为 8000，私有 QC 为 3411。`npm run dev:web` 仅启动前端，供已有后端的开发场景使用。
+Mac 上的固定开发目录为 `/Users/chris/Desktop/QC_test/qc-update-20261107`。使用旧启动快捷方式时，先核对它指向的目录。配置好私有环境和数据库路径后，在仓库根目录运行 `npm run dev` 或 `npm run dev:web` 启动前端（`http://127.0.0.1:5173/`），在另一个终端运行 Uvicorn 启动 API（端口 8000）。需要联调私有 QC 服务（端口 3411）时，按下文配置后端。Windows 的分开启动命令见 [README](../../README.md#scripts)。
 
 `backend/.env` 保留原主系统数据库和文件存储设置，启用 `QC_DEPARTMENT_MANAGED=true`。主 API 的 lifespan 自动启动私有 QC，等待受令牌保护的就绪响应；正常退出、启动异常或父进程消失均回收自己启动的 QC。占用端口时报错，不接管或结束未知服务。直接重启原有 uvicorn 后端也会启动最新 QC，不需要独立运行 QC_department。
 

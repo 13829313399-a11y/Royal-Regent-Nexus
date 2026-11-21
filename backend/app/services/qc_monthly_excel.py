@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.services import qc_monthly_templates as monthly, qc_weekly_excel as shared
 
 TEMPLATE_DIR=Path(__file__).resolve().parents[1]/'templates/qc-monthly'
-ASSETS=json.loads((TEMPLATE_DIR/'templates.json').read_text())
+ASSETS=json.loads((TEMPLATE_DIR/'templates.json').read_text(encoding='utf-8'))
 MAX_BYTES=32*1024*1024
 EXPORT_NAMES = {'caixing':'彩星汇总_月度验货明细', 'all':'全客明细_月度验货',
                 'issues':'问题图文_月度验货', 'customers':'分客明细_月度验货'}

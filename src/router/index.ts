@@ -8,7 +8,6 @@ import {
 import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { canChangeFactory } from '@/lib/factoryChangeGuard'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
-import { guardInjectionNavigation } from '@/features/injection-scheduling/navigationGuard'
 import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGuard'
 import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
 import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
@@ -144,15 +143,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/modules/production/injection-scheduling',
     name: 'injection-scheduling',
-    component: () => import('@/views/InjectionSchedulingView.vue'),
-    meta: {
-      title: '注塑排产中枢',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['injection_scheduling:read'],
-      enforcePermissions: true,
-      strictPermissions: true,
-    },
+    component: () => import('@/views/InjectionSchedulingPlaceholderView.vue'),
+    meta: { title: '注塑排产中枢', requiresAuth: true },
   },
   {
     path: '/modules/production/customer-order-inbox',
@@ -742,7 +734,6 @@ router.beforeEach(async (to, from) => {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }
   if (!await guardSprayNavigation(to, from)) return false
-  if (!guardInjectionNavigation(to, from)) return false
   if (!guardThreeDNavigation(to, from)) return false
   if (!guardCartonNavigation(to, from)) return false
   if (!await guardQuoteNavigation(to, from)) return false
