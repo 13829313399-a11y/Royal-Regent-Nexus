@@ -12,6 +12,37 @@
 
 `f504fb52` 的 IAM 发布可作为回执示例。2026-11-19 UTC 的记录使用 23 份 Compose 文件和两份环境文件，追加版本覆盖以固定 API、文档 worker、QC 和 Web 镜像，当次生产数据库为 `20261116_0195`。服务器批次为 `main-iam-f504fb521972`。下一次发布以届时实际运行组合为准。打印机和办公服务另有自己的网络、卷和运行身份。 [3D 交接与回退](../deploy/three-d-printing/README.md) · [在线文档](document-tools/online-documents.md)
 
+### IAM 前端包验收与回退
+
+生产前端构建须将 `VITE_IAM_IDENTITY_UI_ENABLED`、`VITE_POSITION_WORKBENCH_ENABLED`、`VITE_IAM_CONSOLIDATED_UI_ENABLED` 和 `VITE_IAM_STUDIO_ENABLED` 全部设为 `true`。在实际生效的 Compose 文件、环境文件和 CI 构建参数中核对这四项。Vite 在编译时选择界面，给已构建容器设置环境变量不能修复错误的包。后端开关按本次业务授权维护。
+
+生产 Dockerfile 使用 BuildKit 只读检查最终静态目录，并把回执与启动检查装入 Nginx 镜像。标准镜像从第一次启动起就会复验成品。服务器若接收独立构建的压缩包，在切换前用宿主 Python 3.9+ 验证待发文件。脚本从 index.html 找到实际入口，核对四个管理菜单、人员和审计的路由导入、权限方案库的展示与查询分支、员工自助的全页模式，再核对相关组件文件。HTTP 模式只访问公开页面和脚本。 [验收工具](../deploy/check_iam_frontend.py)
+
+```sh
+# 按实际批次提供 ARCHIVE、WEB_ID 和最终站点 ORIGIN（含 http 或 https）。
+guard=/opt/royal-regent/iam-web-release
+python3 "$guard/check_iam_frontend.py" --archive "$ARCHIVE" --approve-dir "$guard/approved" > iam-candidate.txt
+# 已构建的镜像也可用 --image "$IMAGE" 验收；检查过程中不会启动候选容器。
+# Web 切换后、维护解除前，检查实际安装的六个文件。
+python3 "$guard/check_iam_frontend.py" --container "$WEB_ID" > iam-installed.txt
+cmp iam-candidate.txt iam-installed.txt
+# 恢复访问后，从实际站点检查人员、办理大厅、方案库、审计和员工自助入口。
+python3 "$guard/check_iam_frontend.py" --url "$ORIGIN" > iam-served.txt
+cmp iam-candidate.txt iam-served.txt
+```
+
+将这些命令纳入遇错即停的发布脚本。宿主可用 `install -m 0755 deploy/99-verify-iam-web.sh "$guard/99-verify-iam-web.sh"` 和 `install -m 0644 deploy/check_iam_frontend.py "$guard/check_iam_frontend.py"` 安装门禁。创建该目录并限制为部署账号写入。在实际生效的 Web 服务中保留下列只读挂载及官方 Nginx entrypoint。候选通过审核后，工具按 index.html 的 SHA-256 原子生成一份六文件回执。同一入口摘要重复批准须与先前已签发的全部文件摘要一致。每次容器启动都会按回执校验。 [Nginx 启动检查](../deploy/99-verify-iam-web.sh)
+
+```yaml
+services:
+  web:
+    volumes:
+      - /opt/royal-regent/iam-web-release/99-verify-iam-web.sh:/docker-entrypoint.d/99-verify-iam-web.sh:ro
+      - /opt/royal-regent/iam-web-release/approved:/run/rrn-iam-approved:ro
+```
+
+回退前保存本次已批准镜像、完整 Compose 组合及对应回执。在维护期复验拟回退的既有 Studio 镜像，核对指定镜像与回执后只切换 Web，再执行容器与站点检查。需要恢复历史兼容界面时，先取得该界面变更的明确授权，另行评审对应发布合同。不要通过删除挂载或手填摘要放行旧包。此流程不涉及数据库、授权来源或服务端写开关。
+
 ## 首次安装独立的新实例
 
 以下基础配置用于没有既有数据卷和服务器覆盖配置的新实例。

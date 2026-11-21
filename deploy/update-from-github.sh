@@ -10,6 +10,7 @@ HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-120}"
 MAINTENANCE_NOTICE_ENABLED="${MAINTENANCE_NOTICE_ENABLED:-1}"
 NOTICE_SECONDS="${NOTICE_SECONDS:-300}"
 DEPLOYMENT_NOTICE_DIR="${DEPLOYMENT_NOTICE_DIR:-$APP_DIR/.deployment-notice}"
+IAM_WEB_APPROVAL_DIR="${IAM_WEB_APPROVAL_DIR:-/opt/royal-regent/iam-web-release/approved}"
 export DEPLOYMENT_NOTICE_DIR
 
 compose() {
@@ -269,7 +270,10 @@ git fetch --prune origin
 target_commit="$(git rev-parse "$UPSTREAM")"
 
 if [ "$old_commit" = "$target_commit" ]; then
-  echo "Production is already at $target_commit; verifying QC readiness"
+  echo "Production is already at $target_commit; verifying served IAM workspace and QC readiness"
+  iam_installed="$(python3 deploy/check_iam_frontend.py --container "$web_id")"
+  iam_served="$(python3 deploy/check_iam_frontend.py --url http://127.0.0.1)"
+  [ "$iam_installed" = "$iam_served" ] || fail "Installed and served IAM assets differ"
   compose exec -T api python scripts/qc_dossier_release.py verify
   exit 0
 fi
@@ -314,6 +318,10 @@ git merge --ff-only "$target_commit"
 
 echo "Building API and Web images while the current service remains online"
 compose build api web
+
+web_image="$(compose config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c["services"]["web"].get("image") or (c["name"] + "-web"))')"
+python3 deploy/check_iam_frontend.py --image "$web_image" --approve-dir "$IAM_WEB_APPROVAL_DIR" \
+  > "$backup_dir/iam-web-candidate.txt"
 
 begin_maintenance_notice
 
@@ -390,6 +398,9 @@ until compose exec -T api python scripts/qc_dossier_release.py verify > "$backup
   waited=$((waited + 2))
 done
 compose up -d --no-deps document-tools-worker
+python3 deploy/check_iam_frontend.py --container "$web_id" > "$backup_dir/iam-web-installed.txt"
+cmp -s "$backup_dir/iam-web-candidate.txt" "$backup_dir/iam-web-installed.txt" \
+  || fail "Installed IAM assets differ from the approved candidate"
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1/health > "$backup_dir/health.json"
 if [ -n "$notice_id" ]; then
   # The business route intentionally returns 503 until all checks finish.
@@ -412,6 +423,10 @@ if [ -n "$notice_id" ]; then
   notice_id=""
 fi
 trap - EXIT INT TERM
+
+python3 deploy/check_iam_frontend.py --url http://127.0.0.1 > "$backup_dir/iam-web-served.txt"
+cmp -s "$backup_dir/iam-web-candidate.txt" "$backup_dir/iam-web-served.txt" \
+  || fail "Served IAM assets differ from the approved candidate"
 
 echo "Deployment completed at $target_commit"
 echo "Database container preserved: $db_id"

@@ -7,7 +7,7 @@
 
 账号凭证建立服务端会话。注册、同浏览器重置、岗位申报分别持久化。固定职位由后端目录维护，任职来源、生效时间、employment epoch 与显式拒绝共同决定实际权限。身份交接只转移允许接手的业务对象，历史作者和审计来源保留。集团总经理跨厂业务授权与系统管理员通配权分开。
 
-默认入口在 `/system`。`VITE_IAM_IDENTITY_UI_ENABLED` 默认开，岗位工作台需 `VITE_POSITION_WORKBENCH_ENABLED` 显式开。统一版还需 `VITE_IAM_CONSOLIDATED_UI_ENABLED`，Studio 在统一版之上另需 `VITE_IAM_STUDIO_ENABLED`。查看权限、身份写入和 Studio 写入各受后端控制。Studio 写入还须核对 `IAM_ACCESS_STUDIO_WRITES_ENABLED`、身份写入及授权模式等[服务端条件](../../backend/app/services/access_studio.py)。兼容深链、授权对账、回退及旧截图见[版本资料](../archive/README.md)。
+默认入口在 `/system`。开发与兼容预览按构建开关选择界面。生产 Web 使用 Studio，构建时须同时开启 `VITE_IAM_IDENTITY_UI_ENABLED`、`VITE_POSITION_WORKBENCH_ENABLED`、`VITE_IAM_CONSOLIDATED_UI_ENABLED` 和 `VITE_IAM_STUDIO_ENABLED`。发布及回退按实际路由和组件验收静态包，运行与站点回执应与获准候选一致。[Web 成品验收](../aliyun-docker-deploy.md#iam-前端包验收与回退) 查看权限、身份写入和 Studio 写入各受后端控制。Studio 写入还须核对 `IAM_ACCESS_STUDIO_WRITES_ENABLED`、身份写入及授权模式等[服务端条件](../../backend/app/services/access_studio.py)。兼容深链、授权对账、回退及旧截图见[版本资料](../archive/README.md)。
 
 [iam-navigation.ts](../../src/components/iam/workspace/iam-navigation.ts) · [identity.py](../../backend/app/api/identity.py) · [test_iam_api.py](../../backend/tests/test_iam_api.py)
 
