@@ -1,7 +1,8 @@
-.sheet-tab-bar{justify-content:space-between;align-items:center;gap:8px}
-.wb-open{display:grid;place-items:center;flex:none;width:32px;height:32px;border:0;border-radius:6px;color:var(--sheet-muted);background:transparent;cursor:pointer}
-.wb-open svg{width:20px;height:20px}
+.sheet-tab-bar{gap:8px}
+.sheet-tab-bar > .wb-open{display:grid;place-items:center;align-self:center;flex:none;margin-inline-start:auto;width:36px;height:36px;padding:0;border:0;border-radius:6px;color:var(--sheet-muted);background:transparent;cursor:pointer}
+.wb-open svg{display:block;width:18px;height:18px}
 .wb-open:hover,.wb-open:focus-visible{background:var(--sheet-head);color:var(--sheet-ink)}
+@media(pointer:coarse){.sheet-tab-bar > .wb-open{width:44px;height:44px}}
 .single-name{padding:13px 10px;font-weight:600}
 .skim-scroll{margin:10px 16px 16px;overflow:auto;color:var(--sheet-ink)}
 .report-page .skim{width:100%;border-collapse:collapse;table-layout:auto;font-family:var(--sheet-font);font-variant-numeric:tabular-nums}
@@ -29,6 +30,7 @@ dialog#wb-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:
 #wb-grid{min-height:0;overflow:auto;overscroll-behavior:contain}
 .wb-foot{background:#f8faf7;justify-content:space-between;border:0;border-top:1px solid #d8dfd8;padding:0 10px;gap:5px}
 #wb-tabs{display:flex;overflow:auto}
+#wb-mode{margin-inline-start:auto;color:#52695a;font-size:12px}
 .wb-foot button{border:0;background:transparent;color:#4b6154;white-space:nowrap;padding:10px}
 #wb-tabs button[aria-pressed=true]{font-weight:650;color:#2c6342;background:white;box-shadow:inset 0 -2px #447553}
 #wb-next{font-size:12px!important}

@@ -47,6 +47,8 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 
 网关按 Nexus 会话、操作者、厂区及 QC 权限授权。订单事实归业务部，QC 建检查任务并维护行验、客验、审核和退回。审核锁定、附件证据和重复导入按真实记录与已确认字段处理。日报、周报、月报从相应范围的验货事实汇总。
 
+报告中心的八个日、周、月、年报模板均在完整工作簿中开放有权限的空白业务字段，以浅绿色底色提示，不加角标。填写自动保存，已补录仍可逐格修正；右下角填充手柄只复制到同列同类的空白补录格，一次拖拽可用快捷键撤销或重做。已审核原值、统计合计、公式和来源身份保持只读。日报的两项 Q 货期独立补录；日报、年报统计及周／年问题跟踪按已审核记录的厂区、客户、有效月份和字段复用月报补录的版本及幂等记录，原周报明细保留独立周报库。LibreOffice 正常时预览原样式；缺失、超时或异常时从同一份导出文件读取简洁表格，保留格子、照片、补录和 Excel 导出，图表与排版简化。本机优先通过私有 `DOCUMENT_TOOLS_OFFICE_COMMAND` 指定可执行路径，不依赖启动 shell 的 PATH。[预览服务](../../backend/app/services/qc_report_workbook.py) · [补录及预览测试](../../backend/tests/test_qc_report_workbook.py)
+
 周报模板以[清单](../../backend/app/templates/qc-weekly/templates.json)和[加载服务](../../backend/app/services/qc_weekly_templates.py)核对。验货审核、退回与附件规则见[业务要求](../business/QC验货运营中心业务需求.md)和[运行契约](../business/qc-legacy-runtime-contract.md)。
 
 [qc-department-integration.md](../business/qc-department-integration.md) · [qc_department.py](../../backend/app/api/qc_department.py) · [test_qc_weekly_template_manifest.py](../../backend/tests/test_qc_weekly_template_manifest.py)
