@@ -99,7 +99,6 @@
         </script>
       </div>
       <div id="userBadge" style="display:inline-flex;align-items:center;gap:6px;margin-right:4px"></div>
-      <button class="btn-icon btn-add" onclick="QcSchedule.openNew()" title="新增排期">＋ 新增验货</button>
     </div>
     <div id="reportCenterNav" hidden>
       <div class="report-mode-tabs report-period-switch" role="group" aria-label="报告类型">
@@ -203,7 +202,8 @@
             <label class="records-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="searchInput" aria-label="搜索客户、PO、货号、产品名称或备注" title="搜索客户、PO、货号、产品名称或备注" placeholder="客户 / PO" oninput="filterRecords()" /></label>
             <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
           </div>
-          <div class="records-actions" role="group" aria-label="打印">
+          <div class="records-actions" role="group" aria-label="验货台操作">
+            <button type="button" id="btnAddInspection" class="btn btn-primary" hidden aria-haspopup="dialog" onclick="QcSchedule.openNew()">＋ 新增验货</button>
             <div class="qip-toolbar-action" hidden><button type="button" id="qcInspectionPrint" hidden aria-haspopup="dialog"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8V3h10v5M7 17H4V8h16v9h-3M7 14h10v7H7zM17 11h.01"/></svg><span>打印</span></button></div>
           </div>
         </div>

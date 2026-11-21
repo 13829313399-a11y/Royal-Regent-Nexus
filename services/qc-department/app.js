@@ -136,6 +136,8 @@ function applyPermissions() {
 
   /* 新增验货按钮 */
   const canCreate = can('createRecord');
+  const addInspection = document.getElementById('btnAddInspection');
+  if (addInspection) addInspection.hidden = !window.__QC_NEXUS?.workflow?.manual;
   document.querySelectorAll('.btn-add, [data-perm="createRecord"]').forEach(el => {
     el.style.display = canCreate ? '' : 'none';
   });
@@ -1434,7 +1436,7 @@ function filterRecords() {
       _updateBatchBtn();
       wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">☰</div>'
         + '<div class="empty-text">暂无记录</div>'
-        + '<div class="empty-sub">点击右上角「+ 新增验货」添加数据</div></div>';
+        + '<div class="empty-sub">点击「新增验货」添加数据</div></div>';
       syncInspectionSelection();
       return;
     }
