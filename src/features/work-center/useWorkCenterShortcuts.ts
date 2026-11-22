@@ -1,7 +1,5 @@
-import { onMounted, onUnmounted } from 'vue'
-
 export function useWorkCenterShortcuts(handle: (key: string) => boolean) {
-  function keydown(event: KeyboardEvent) {
+  return (event: KeyboardEvent) => {
     if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
     const target = event.target instanceof Element ? event.target : null
     if (
@@ -24,6 +22,4 @@ export function useWorkCenterShortcuts(handle: (key: string) => boolean) {
       return
     if (handle(event.key.length === 1 ? event.key.toLowerCase() : event.key)) event.preventDefault()
   }
-  onMounted(() => window.addEventListener('keydown', keydown))
-  onUnmounted(() => window.removeEventListener('keydown', keydown))
 }

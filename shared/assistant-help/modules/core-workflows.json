@@ -43,7 +43,7 @@
       {
         "path": "src/views/NotificationCenterView.vue",
         "symbol": "nc-filters",
-        "sha256": "f791fb2ed1435c91082dd234562792eb1163c8d1b22fa7e01178fc78018922cc"
+        "sha256": "7df5e82cf01a7b27c518e1a96bf58bff65de89d81c7edced706a571554829a45"
       },
       {
         "path": "backend/app/services/work_center/service.py",
