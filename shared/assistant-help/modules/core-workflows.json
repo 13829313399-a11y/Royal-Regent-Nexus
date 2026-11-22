@@ -43,12 +43,12 @@
       {
         "path": "src/views/NotificationCenterView.vue",
         "symbol": "nc-filters",
-        "sha256": "653337f07d90a1da62c42c0e4ea627df55674f506f2b06f0a10b19d4d0013ceb"
+        "sha256": "f791fb2ed1435c91082dd234562792eb1163c8d1b22fa7e01178fc78018922cc"
       },
       {
         "path": "backend/app/services/work_center/service.py",
         "symbol": "actionable",
-        "sha256": "1cb4eeb7a13460a2a6347446633395eb3cddabd7822e52e050267a0d6486711d"
+        "sha256": "97f4216074fed28affdbdf213eeef306ad138490b8e1ea91880fe4ca738c6886"
       }
     ],
     "knowledge_version": "2026.10.26-core-workflows-v1",

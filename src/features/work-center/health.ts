@@ -3,9 +3,9 @@ import type { WorkSnapshot, WorkView } from './types'
 const sourceLabels: Record<string, string> = {
   molding: '啤办', internal_quote: '内部报价', account_requests: '账户申请',
   carton_supplier: '供应商送货', identity: '任职知会', business_results: '业务结果通知',
-  legacy_history: '历史记录', integrity: '来源检查', position_reviews: '任职审核',
+  legacy_history: '历史记录', integrity: '来源检查', position_reviews: '岗位核对',
 }
-const sourceLabel = (module: string) => sourceLabels[module] || '其他业务来源'
+export const sourceLabel = (module: string) => sourceLabels[module] || '其他业务来源'
 
 export const verificationCount = (snapshot?: WorkSnapshot | null) => (snapshot?.health.issues ?? [])
   .filter(issue => issue.reason === 'source_inconsistent').reduce((sum, issue) => sum + issue.count, 0)

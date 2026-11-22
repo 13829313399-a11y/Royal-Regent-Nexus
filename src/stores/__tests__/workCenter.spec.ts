@@ -30,6 +30,39 @@ beforeEach(() => {
 afterEach(() => { center.stop(); vi.useRealTimers() })
 
 describe('shared work center', () => {
+  it('reuses the first unfiltered page for the bell and normalizes an untrusted factory query', async () => {
+    center.workspaceOpen = true
+    api.snapshot.mockResolvedValue(snap(Array.from({length:12}, (_,i)=>entry(String(i)))))
+    await center.setQuery({factory_scope:'group'})
+    expect(api.snapshot).toHaveBeenCalledTimes(1)
+    expect(api.snapshot.mock.calls[0]![0].factory_scope).toBe('authorized')
+    expect(center.snapshot?.items).toHaveLength(12)
+    expect(center.bell?.items).toHaveLength(8)
+    await center.setQuery({factory_scope:'huaxing'})
+    expect(api.snapshot).toHaveBeenCalledTimes(3)
+  })
+  it('rejects mixed live-task archives and snoozes only eligible observed versions', async () => {
+    await center.refresh()
+    const task=entry(), info={...entry('notice'),kind:'info' as const,can_act_now:false}
+    await center.batchPatch([task,info],'archive')
+    expect(api.batch).not.toHaveBeenCalled()
+    api.batch.mockResolvedValue({results:[{id:task.id,status:'error',message:'版本已变化'}]})
+    const until='2030-01-01T12:00:00Z'
+    expect(await center.batchPatch([task,info],'snooze',until)).toEqual([task.id])
+    expect(api.batch).toHaveBeenCalledWith([{id:task.id,state_version:0,snoozed_until:until}])
+    expect(center.feedback).toContain('1 项未成功 · 版本已变化')
+    api.batch.mockResolvedValue({results:[{id:info.id,status:'ok'}]})
+    await center.batchPatch([info],'archive')
+    expect(api.batch).toHaveBeenLastCalledWith([{id:info.id,state_version:0,archived:true}])
+  })
+  it('clears cached information when a personal write loses access', async () => {
+    await center.refresh()
+    center.selected=entry();center.information=[entry()]
+    api.patch.mockRejectedValueOnce({response:{status:403}})
+    await center.patch(entry(),{pinned:true,state_version:0})
+    expect(center.bell).toBeNull();expect(center.snapshot).toBeNull();expect(center.selected).toBeNull()
+    expect(center.information).toEqual([]);expect(center.personalBusy).toBe(false)
+  })
   it('is silent at baseline, replaces finished entries and preserves stale data on network failure', async () => {
     await center.refresh(); expect(center.toasts).toEqual([])
     api.snapshot.mockResolvedValue(snap([])); await center.refresh(true)
@@ -65,6 +98,7 @@ describe('shared work center', () => {
   })
   it('uses the workspace snapshot summary with its rows even when the separate bell changes', async () => {
     center.workspaceOpen = true
+    center.query.module = 'position_reviews'
     api.snapshot.mockResolvedValueOnce(snap([])).mockResolvedValueOnce(snap())
     await center.refresh(); expect(center.count).toBe(0); expect(center.snapshot?.query.filtered_total).toBe(0)
   })
@@ -92,9 +126,10 @@ describe('shared work center', () => {
   it('keeps one scheduler for repeated host starts and stops cleanly', async () => {
     vi.useFakeTimers(); Object.defineProperty(document, 'hidden', { configurable: true, value: false })
     center.start(); center.start(); await flushPromises()
-    expect(api.snapshot).toHaveBeenCalledTimes(2)
-    await vi.advanceTimersByTimeAsync(25_000); expect(api.snapshot).toHaveBeenCalledTimes(4)
-    center.stop(); await vi.advanceTimersByTimeAsync(100_000); expect(api.snapshot).toHaveBeenCalledTimes(4)
+    expect(api.snapshot).toHaveBeenCalledTimes(1)
+    expect(api.snapshot.mock.calls[0]![0]).toEqual({view:'todo',limit:8})
+    await vi.advanceTimersByTimeAsync(25_000); expect(api.snapshot).toHaveBeenCalledTimes(2)
+    center.stop(); await vi.advanceTimersByTimeAsync(100_000); expect(api.snapshot).toHaveBeenCalledTimes(2)
   })
   it('preserves initial workspace URL filters when the host starts later, then resets them for another account', async () => {
     center.workspaceOpen = true
