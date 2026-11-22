@@ -93,7 +93,14 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   w.__QC_NEXUS={factory:'huaxing',exportAllowed:true};
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
   w.HTMLDialogElement.prototype.close=function(){this.open=false};
-  w.URL.createObjectURL=()=>{throw Error('Report should not create a browser download')};
+  const objectUrls=[];
+  if(options.userAgent)Object.defineProperty(w.navigator,'userAgent',{value:options.userAgent});
+  w.URL.createObjectURL=blob=>{
+    if(!options.managed)throw Error('Desktop export should not create a browser download');
+    objectUrls.push(blob);
+    return 'blob:http://localhost/report';
+  };
+  w.URL.revokeObjectURL=()=>{};
   d.addEventListener('click',e=>{
     if(!e.target.matches('a[download]')||e.defaultPrevented)return;
     downloads.push({name:e.target.download,href:e.target.getAttribute('href'),inside:!!e.target.closest('#wb-dialog[open]')});
@@ -133,7 +140,7 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   w.QcReportWorkbook.mount(period,kind,d.getElementById('summary'),mountData,()=>{});
   d.querySelector('.wb-open').click();
   await new Promise(setImmediate);
-  return {w,d,calls,downloads,picks,written,body};
+  return {w,d,calls,downloads,picks,written,body,objectUrls};
 }
 
 test('all eight report types obtain and validate the attachment before the system picker', async t=>{
@@ -236,6 +243,32 @@ test('zero-byte or changed files read back after close do not report a successfu
     assert.match(h.d.getElementById('wb-status').textContent,/未能通过保存校验/);
     assert.equal(button.textContent,'选择保存位置');
   }
+});
+
+test('OpenCode Electron exports validated bytes without calling the picker or changing the toolbar',async t=>{
+  const opts={managed:true,userAgent:'Mozilla/5.0 OpenCode/2.3.2 Chrome/152.0.0.0 Electron/44.9.1 Safari/537.36',
+    picker:()=>{throw Error('This host cannot open a writable file handle');}};
+  const h=await exportWorkbook(t,'monthly','quality',opts);
+  const button=h.d.getElementById('wb-export');
+  button.click();await new Promise(setImmediate);
+  assert.deepEqual(h.picks,[]);
+  assert.deepEqual(h.written,[]);
+  assert.deepEqual(h.objectUrls,[h.body]);
+  assert.deepEqual(h.downloads,[{name:'已校验中文.xlsx',href:'blob:http://localhost/report',inside:true}]);
+  assert.equal(button.textContent,'导出 Excel');
+  assert.equal(h.d.querySelector('#wb-download-again,#wb-save-as'),null);
+  const failed=await exportWorkbook(t,'monthly','quality',{...opts,truncated:true});
+  failed.d.getElementById('wb-export').click();await new Promise(setImmediate);
+  assert.deepEqual(failed.picks,[]);
+  assert.deepEqual(failed.downloads,[]);
+  assert.match(failed.d.getElementById('wb-status').textContent,/结构不完整/);
+});
+
+test('other Electron clients still use the existing native picker path',async t=>{
+  const h=await exportWorkbook(t,'monthly','quality',{userAgent:'Mozilla/5.0 Chrome/152.0.0.0 Electron/44.9.1 Safari/537.36'});
+  h.d.getElementById('wb-export').click();await new Promise(setImmediate);
+  assert.equal(h.picks.length,1);
+  assert.equal(h.downloads.length,0);
 });
 
 async function editableWorkbook(t, {readonly=false,record=false}={}) {
