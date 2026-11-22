@@ -40,6 +40,8 @@
 
 通知页与顶部铃铛共用工作台。是否已读属于个人，完成业务待办必须由原模块处理并产生事实。列表、数量、退回链接及处理动作按当前操作者权限取数。
 
+铃铛主操作直达源单据，预览进入工作台。工作台默认展示全部授权责任。厂区与模块分面使用同一快照，跨厂事项可从来源厂或执行厂筛出。顶栏厂区通过显式筛选联动，稍后提醒不减少责任总数。
+
 新来源须明确责任人、可见范围、结束条件和回到原单的入口。
 
 [IMPLEMENTATION.md](../work-center/IMPLEMENTATION.md) · [work_center.py](../../backend/app/api/work_center.py) · [test_work_center_api.py](../../backend/tests/test_work_center_api.py)

@@ -1,87 +1,642 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ListTodo, UserRound, Users, Clock3, Inbox, History, RefreshCw, Search, SlidersHorizontal, CheckCheck, CircleAlert } from '@lucide/vue'
-import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
+import {
+  CheckCircle2,
+  ChevronDown,
+  CircleHelp,
+  Clock3,
+  Inbox,
+  ListTodo,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+} from '@lucide/vue'
+import {
+  Button,
+  Checkbox,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerTitle,
+  Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui'
 import { useWorkCenterStore, defaultWorkQuery } from '@/stores/workCenter'
+import { registerAssistantSelection } from '@/features/assistant/selection'
 import WorkEntryRow from '@/features/work-center/WorkEntryRow.vue'
 import WorkEntryDetail from '@/features/work-center/WorkEntryDetail.vue'
 import WorkCenterHealth from '@/features/work-center/WorkCenterHealth.vue'
-import { workEmptyState, verificationCount } from '@/features/work-center/health'
-import type { WorkView } from '@/features/work-center/types'
-import { formatBusinessDateTime } from '@/lib/dateTime'
-import PageHeader from '@/components/common/PageHeader.vue'
-import Button from '@/components/ui/button/Button.vue'
-import { registerAssistantSelection } from '@/features/assistant/selection'
-const center = useWorkCenterStore(), route = useRoute(), router = useRouter()
-const unregisterSelection = registerAssistantSelection('work-center', () => ({
-  selection_id: center.selected?.id || 'work-center-filters',
-  resources: center.selected ? [{ module_id: 'work-center', resource_type: 'entry', resource_id: center.selected.id }] : [],
-  filters: { factory_id: center.query.factory_scope, view: center.query.view, module: center.query.module, q: center.query.q, due: center.query.due, unread_only: center.query.unread_only },
-}))
-onUnmounted(unregisterSelection)
-const root = ref<HTMLElement>(), compact = ref(false), settingsOpen = ref(false), showSnoozed = ref(false)
-const search = ref(''), announcement = ref('')
-let observer: ResizeObserver | undefined, trigger: HTMLElement | null = null
-function preserveListPosition() {
-  void nextTick(() => { center.workspaceEngaged = !!root.value?.querySelector('.nc-list-panel input:focus') || (root.value?.querySelector('.nc-list-scroll')?.scrollTop ?? 0) > 32 })
-}
-function restoreFocus() { trigger?.focus() }
-const navigation = [
-  { key: 'todo', label: '待办总览', icon: ListTodo, count: 'actionable_total' }, { key: 'assigned', label: '指派给我', icon: UserRound, count: 'assigned_total' },
-  { key: 'team', label: '团队队列', icon: Users, count: 'team_queue_total' }, { key: 'waiting', label: '我在等待', icon: Clock3, count: 'waiting_total' },
-  { key: 'verification', label: '待核对事项', icon: CircleAlert, count: '' },
-  { key: 'info', label: '知会消息', icon: Inbox, count: 'info_unread_total' }, { key: 'history', label: '历史记录', icon: History, count: '' },
-] as const
-const clock = computed(() => Date.parse(center.snapshot?.context.server_time || new Date().toISOString()))
-const snoozed = computed(() => (center.snapshot?.items ?? []).filter(item => item.personal.snoozed_until && Date.parse(item.personal.snoozed_until) > clock.value))
-const items = computed(() => (center.snapshot?.items ?? []).filter(item => !snoozed.value.includes(item)).sort((a, b) => Number(b.personal.pinned) - Number(a.personal.pinned)))
-const empty = computed(() => workEmptyState(center.snapshot, center.query.view))
-const verification = computed(() => verificationCount(center.snapshot))
-const filtered = computed(() => center.query.factory_scope !== 'authorized' || center.query.module || center.query.q || center.query.due !== 'all' || center.query.unread_only)
-function navigateQuery(values: Record<string, string | undefined>) { return router.replace({ query: { ...route.query, cursor: undefined, ...values } }) }
-async function choose(id: string) { trigger = document.activeElement as HTMLElement; await router.replace({ query: { ...route.query, entry: id } }) }
-async function close() { center.selected = null; await router.replace({ query: { ...route.query, entry: undefined } }); await nextTick(); trigger?.focus() }
-async function applyRoute() {
-  if (typeof route.query.entry === 'string' && route.query.entry !== center.selected?.id) {
-    const initiator = document.activeElement
-    if (initiator instanceof HTMLElement && initiator !== document.body && !initiator.closest('.nc-sheet')) trigger = initiator
-  }
-  const view = String(route.query.view || 'todo') as WorkView
-  const value = { ...defaultWorkQuery(), view: navigation.some(item => item.key === view) ? view : 'todo', factory_scope: String(route.query.factory || 'authorized'), module: String(route.query.module || ''), q: String(route.query.q || ''), due: String(route.query.due || 'all'), unread_only: route.query.unread === '1', cursor: route.query.cursor ? String(route.query.cursor) : undefined }
-  search.value = value.q
-  await center.setQuery(value)
-  announcement.value = `当前筛选 ${center.snapshot?.query.filtered_total ?? 0} 项`
-  if (typeof route.query.entry === 'string') await center.selectEntry(route.query.entry)
-}
-watch(() => route.query, applyRoute)
-onMounted(() => { center.workspaceOpen = true; center.panelOpen = false; void applyRoute(); observer = new ResizeObserver(entries => { compact.value = (entries[0]?.contentRect.width ?? 1200) < 880 }); if (root.value) observer.observe(root.value) })
-onUnmounted(() => { observer?.disconnect(); center.workspaceOpen = false; center.workspaceEngaged = false })
-</script>
+import WorkPulseBar from '@/features/work-center/WorkPulseBar.vue'
+import { sourceLabel, workEmptyState, verificationCount } from '@/features/work-center/health'
+import { attentionGroup, canArchive, normalizeFactory } from '@/features/work-center/metadata'
+import { isSnoozed, snoozePresets } from '@/features/work-center/time'
+import { useWorkActions } from '@/features/work-center/useWorkActions'
+import { useWorkCenterShortcuts } from '@/features/work-center/useWorkCenterShortcuts'
+import type { WorkEntry, WorkPreferences, WorkQuery, WorkView } from '@/features/work-center/types'
 
+const center = useWorkCenterStore(),
+  actions = useWorkActions(),
+  router = useRouter(),
+  route = useRoute()
+const root = ref<HTMLElement>(),
+  width = ref(window.innerWidth),
+  search = ref(''),
+  checked = ref<string[]>([])
+const helpOpen = ref(false),
+  showSnoozed = ref(false),
+  loadingEntry = ref(false)
+const orderedViews = [
+  { id: 'todo', label: '待办' },
+  { id: 'waiting', label: '我在等待' },
+  { id: 'info', label: '知会' },
+  { id: 'history', label: '历史' },
+] as const
+const views = new Set<WorkView>(['todo', 'assigned', 'team', 'waiting', 'info', 'history', 'verification'])
+const primary = computed(() =>
+  ['assigned', 'team'].includes(center.query.view) ? 'todo' : center.query.view,
+)
+const snap = computed(() => center.snapshot),
+  time = computed(() => snap.value?.context.server_time)
+const entryId = computed(() => (typeof route.query.entry === 'string' ? route.query.entry : ''))
+const compact = computed(() => width.value < 1024)
+const drawerOpen = computed(
+  () => compact.value && !!entryId.value && (!!center.selected || loadingEntry.value),
+)
+const rows = computed(() => snap.value?.items ?? [])
+const active = computed(() =>
+  rows.value
+    .filter((item) => !isSnoozed(item, time.value))
+    .sort((a, b) => Number(b.personal.pinned) - Number(a.personal.pinned)),
+)
+const deferred = computed(() => rows.value.filter((item) => isSnoozed(item, time.value)))
+const grouping = ref<'priority' | 'module' | 'none'>('priority')
+const groups = computed(() => {
+  const collected = new Map<string, WorkEntry[]>()
+  for (const item of active.value) {
+    const label =
+      grouping.value === 'module'
+        ? item.module
+        : grouping.value === 'priority' && primary.value === 'todo'
+          ? attentionGroup(item)
+          : ''
+    const group = collected.get(label) ?? []
+    group.push(item)
+    collected.set(label, group)
+  }
+  const rank = ['逾期 / 紧急', '指派给我', '团队队列']
+  return [...collected].sort(([a], [b]) => rank.indexOf(a) - rank.indexOf(b))
+})
+const visible = computed(() => [
+  ...groups.value.flatMap(([, items]) => items),
+  ...(showSnoozed.value ? deferred.value : []),
+])
+const selected = computed(() => visible.value.filter((item) => checked.value.includes(item.id)))
+const allChecked = computed(() => !!visible.value.length && selected.value.length === visible.value.length)
+const eligibleArchive = computed(() => !!selected.value.length && selected.value.every(canArchive))
+const filtered = computed(
+  () =>
+    center.query.factory_scope !== 'authorized' ||
+    !!center.query.module ||
+    !!center.query.q ||
+    center.query.due !== 'all' ||
+    center.query.unread_only ||
+    ['team', 'assigned'].includes(center.query.view),
+)
+const verification = computed(() => verificationCount(snap.value))
+const empty = computed(() => workEmptyState(snap.value, center.query.view))
+const unregister = registerAssistantSelection('work-center', () => ({
+  selection_id: center.selected?.id || 'work-center-filters',
+  resources: center.selected
+    ? [{ module_id: 'work-center', resource_type: 'entry', resource_id: center.selected.id }]
+    : [],
+  filters: {
+    factory_id: center.query.factory_scope,
+    view: center.query.view,
+    module: center.query.module,
+    q: center.query.q,
+    due: center.query.due,
+    unread_only: center.query.unread_only,
+  },
+}))
+let trigger: HTMLElement | null = null,
+  lastQuery = '',
+  currentEntry = '',
+  routeSequence = 0,
+  recheckRoute = false
+let debounce: ReturnType<typeof setTimeout> | undefined
+let observer: ResizeObserver | undefined,
+  frame = 0
+function fitFocus() {
+  if (frame) return
+  frame = requestAnimationFrame(() => {
+    frame = 0
+    const panel = root.value?.querySelector<HTMLElement>('.nc-focus')
+    if (panel)
+      panel.style.setProperty('--nc-focus-top', Math.max(88, panel.getBoundingClientRect().top) + 'px')
+  })
+}
+function navigate(values: Record<string, string | undefined>) {
+  return router.replace({ query: { ...route.query, entry: undefined, cursor: undefined, ...values } })
+}
+function clearFilters() {
+  return router.replace({ query: { view: primary.value } })
+}
+function choose(id: string) {
+  trigger =
+    Array.from(root.value?.querySelectorAll<HTMLElement>('[data-work-entry]') ?? []).find(
+      (el) => el.dataset.workEntry === id,
+    ) ?? (document.activeElement as HTMLElement)
+  if (id === entryId.value && !center.selected && !loadingEntry.value) {
+    currentEntry = ''
+    return applyRoute()
+  }
+  return router.replace({ query: { ...route.query, entry: id } })
+}
+function restoreFocus() {
+  void nextTick(() => {
+    if (trigger?.isConnected) trigger.focus({ preventScroll: true })
+    else root.value?.querySelector<HTMLElement>('[data-work-search]')?.focus()
+  })
+}
+async function close() {
+  center.clearSelection()
+  if (entryId.value) await router.replace({ query: { ...route.query, entry: undefined } })
+  restoreFocus()
+}
+async function applyRoute() {
+  if (route.name !== 'notification-center') return
+  const seq = ++routeSequence,
+    raw = route.query
+  const factory = normalizeFactory(raw.factory)
+  if (raw.factory && factory === 'authorized') {
+    await router.replace({ query: { ...raw, factory: undefined } })
+    return
+  }
+  const view = views.has(raw.view as WorkView) ? (raw.view as WorkView) : 'todo'
+  const value: WorkQuery = {
+    ...defaultWorkQuery(),
+    view,
+    factory_scope: factory,
+    module: typeof raw.module === 'string' ? raw.module : '',
+    q: typeof raw.q === 'string' ? raw.q : '',
+    due: ['today', 'overdue', 'none'].includes(String(raw.due)) ? String(raw.due) : 'all',
+    unread_only: raw.unread === '1',
+    cursor: typeof raw.cursor === 'string' ? raw.cursor : undefined,
+  }
+  const key = JSON.stringify(value),
+    id = entryId.value
+  if (lastQuery !== key) {
+    lastQuery = key
+    clearTimeout(debounce)
+    search.value = value.q
+    checked.value = []
+    showSnoozed.value = false
+    center.clearSelection()
+    currentEntry = ''
+    await center.setQuery(value)
+  }
+  if (seq !== routeSequence) return
+  if (!id) {
+    currentEntry = ''
+    loadingEntry.value = false
+    center.clearSelection()
+    return
+  }
+  if (currentEntry !== id && !center.error) {
+    currentEntry = id
+    loadingEntry.value = true
+    await center.selectEntry(id)
+    if (seq === routeSequence) loadingEntry.value = false
+  }
+}
+function resize() {
+  width.value = window.innerWidth
+  fitFocus()
+}
+function engaged() {
+  fitFocus()
+  center.workspaceEngaged =
+    !!root.value?.querySelector('input:focus') ||
+    window.scrollY > 80 ||
+    (document.querySelector('.app-shell-content')?.scrollTop ?? 0) > 80
+}
+function searchFor(value: unknown, immediate = false) {
+  search.value = String(value ?? '')
+  clearTimeout(debounce)
+  if (immediate) void navigate({ q: search.value.trim() || undefined })
+  else debounce = setTimeout(() => void navigate({ q: search.value.trim() || undefined }), 280)
+}
+function tick(entry: WorkEntry) {
+  checked.value = checked.value.includes(entry.id)
+    ? checked.value.filter((id) => id !== entry.id)
+    : [...checked.value, entry.id]
+}
+function checkPage() {
+  checked.value = allChecked.value ? [] : visible.value.map((row) => row.id)
+}
+async function batch(action: 'read' | 'archive' | 'snooze') {
+  const failed = await center.batchPatch(selected.value, action, snoozePresets(time.value)[0]?.until)
+  if (failed) checked.value = failed
+}
+function pin(item: WorkEntry) {
+  void center.patch(item, { state_version: item.personal.state_version, pinned: !item.personal.pinned })
+}
+function read(item: WorkEntry) {
+  void center.patch(item, { observed_content_version: item.content_version })
+}
+function rowBinding(item: WorkEntry) {
+  return {
+    entry: item,
+    selected: center.selected?.id === item.id,
+    selectable: true,
+    checked: checked.value.includes(item.id),
+    busy: center.personalBusy,
+    serverTime: time.value,
+  }
+}
+const rowEvents = { select: choose, open: actions.open, check: tick, pin, read }
+function nextEntry(offset: number) {
+  if (!visible.value.length) return
+  const index = visible.value.findIndex((item) => item.id === entryId.value)
+  const row = visible.value[Math.max(0, Math.min(visible.value.length - 1, index < 0 ? 0 : index + offset))]!
+  void choose(row.id)
+  trigger?.focus({ preventScroll: true })
+  trigger?.scrollIntoView({
+    block: 'nearest',
+    behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth',
+  })
+}
+useWorkCenterShortcuts((key) => {
+  if (key === 'j' || key === 'ArrowDown') nextEntry(1)
+  else if (key === 'k' || key === 'ArrowUp') nextEntry(-1)
+  else if (key === '/') root.value?.querySelector<HTMLInputElement>('[data-work-search]')?.focus()
+  else if (key === '?') helpOpen.value = !helpOpen.value
+  else if (key === 'Escape') {
+    if (checked.value.length) checked.value = []
+    else if (entryId.value) void close()
+    else return false
+  } else {
+    const item = center.selected
+    if (!item) return false
+    if (key === 'Enter') void actions.open(item)
+    else if (key === 'm') read(item)
+    else if (key === 'p') pin(item)
+    else if (key === 's' && item.can_act_now)
+      Array.from(root.value?.querySelectorAll<HTMLButtonElement>('[data-snooze-entry]') ?? [])
+        .find((el) => el.dataset.snoozeEntry === item.id)
+        ?.click()
+    else return false
+  }
+  return true
+})
+watch(() => route.query, applyRoute)
+watch(visible, (items) => {
+  const ids = new Set(items.map((i) => i.id))
+  checked.value = checked.value.filter((id) => ids.has(id))
+})
+watch(
+  () => snap.value?.context.viewer_key,
+  (value, previous) => {
+    if (previous && previous !== value) {
+      checked.value = []
+      currentEntry = ''
+      loadingEntry.value = false
+      helpOpen.value = false
+      recheckRoute = true
+    }
+    if (value && recheckRoute) {
+      recheckRoute = false
+      lastQuery = JSON.stringify(center.query)
+      void applyRoute()
+    }
+  },
+)
+onMounted(() => {
+  center.workspaceOpen = true
+  center.panelOpen = false
+  void applyRoute()
+  observer = new ResizeObserver(fitFocus)
+  root.value?.querySelectorAll('.nc-page-head,.nc-command').forEach((el) => observer?.observe(el))
+  window.addEventListener('resize', resize)
+  window.addEventListener('scroll', engaged, true)
+})
+onUnmounted(() => {
+  routeSequence++
+  clearTimeout(debounce)
+  cancelAnimationFrame(frame)
+  observer?.disconnect()
+  unregister()
+  window.removeEventListener('resize', resize)
+  window.removeEventListener('scroll', engaged, true)
+  center.workspaceOpen = false
+  center.workspaceEngaged = false
+  center.clearSelection()
+})
+</script>
 <template>
-  <div ref="root" class="app-page nc-workspace" data-yl-help="work-center.overview">
-    <PageHeader title="事项工作台" description="与我相关 · 全部授权责任范围">
-      <template #actions><Button variant="outline" :disabled="center.syncing" @click="center.refresh()"><RefreshCw :size="16" :class="{ 'nc-spinning': center.syncing }" />刷新</Button><Button variant="outline" aria-label="声音与提醒设置" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen"><SlidersHorizontal :size="16" />提醒设置</Button></template>
-    </PageHeader>
-    <div class="nc-summary-band" data-yl-help="work-center.summary"><strong>现在有 <b>{{ center.summary?.actionable_total ?? '—' }}</b> 项可处理</strong><span v-if="center.summary?.snoozed_total">其中 {{ center.summary.snoozed_total }} 项已设稍后提醒</span><span class="nc-sync">{{ center.snapshot ? '上次同步 ' + formatBusinessDateTime(center.snapshot.health.as_of) : '正在读取当前责任' }}</span></div>
-    <div v-if="center.error" class="nc-alert" role="alert">{{ center.error }}<button :disabled="center.syncing" @click="center.refresh()">重试同步</button></div>
-    <WorkCenterHealth v-else :snapshot="center.snapshot" :syncing="center.syncing" @retry="center.refresh()" />
-    <div v-if="settingsOpen" class="nc-preferences"><label><input type="checkbox" :checked="center.preferences.sound_enabled" @change="center.savePreferences({ sound_enabled: ($event.target as HTMLInputElement).checked })" />声音提醒</label><label>弹窗范围<select :value="center.preferences.toast_level" @change="center.savePreferences({ toast_level: ($event.target as HTMLSelectElement).value as 'assigned' | 'all_tasks' | 'none' })"><option value="assigned">仅指派给我</option><option value="all_tasks">当前责任（含团队）</option><option value="none">关闭弹窗</option></select></label><p>初次载入和普通知会保持安静；稍后提醒仍保留责任总数。</p></div>
-    <div class="nc-metrics"><span>指派给我 <b>{{ center.summary?.assigned_total ?? '—' }}</b></span><span>团队队列 <b>{{ center.summary?.team_queue_total ?? '—' }}</b></span><span>已逾期 <b>{{ center.summary?.overdue_total ?? '—' }}</b></span><span>未读知会 <b>{{ center.summary?.info_unread_total ?? '—' }}</b></span></div>
-    <div class="nc-layout">
-      <nav class="nc-navigation" aria-label="事项视图"><button v-for="item in navigation" :key="item.key" :class="{ active: center.query.view === item.key }" :aria-current="center.query.view === item.key ? 'page' : undefined" @click="navigateQuery({ view: item.key, entry: undefined })"><component :is="item.icon" :size="17" /><span>{{ item.label }}</span><b v-if="item.key === 'verification'">{{ verification }}</b><b v-else-if="item.count">{{ center.summary?.[item.count] ?? '—' }}</b></button></nav>
-      <section class="nc-list-panel" data-yl-help="work-center.list" aria-label="事项列表" @focusin="preserveListPosition" @focusout="preserveListPosition">
-        <form class="nc-filters" data-yl-help="work-center.filters" @submit.prevent="navigateQuery({ q: search || undefined })"><label class="nc-search"><Search :size="16" /><input v-model="search" aria-label="搜索姓名、账号、单号或关键词" placeholder="搜索姓名 / 账号 / 单号 / 关键词" /><button type="submit">搜索</button></label><div class="nc-filter-row"><select aria-label="厂区筛选" :value="center.query.factory_scope" @change="navigateQuery({ factory: ($event.target as HTMLSelectElement).value })"><option value="authorized">全部授权厂区</option><option v-for="[id, label] in [['huakang-a','华康A'],['huakang-b','华康B'],['huakang-c','华康C'],['huakang-d','华康D'],['huadeng','华登'],['huaxing','华兴']]" :key="id" :value="id">{{ label }}</option></select><select aria-label="业务模块" :value="center.query.module" @change="navigateQuery({ module: ($event.target as HTMLSelectElement).value || undefined })"><option value="">全部模块</option><option value="molding">啤办</option><option value="internal_quote">内部报价</option><option value="carton_supplier">供应商送货</option><option value="account_requests">账户申请</option><option value="identity">任职知会</option></select><select aria-label="期限筛选" :value="center.query.due" @change="navigateQuery({ due: ($event.target as HTMLSelectElement).value })"><option value="all">全部期限</option><option value="overdue">已逾期</option><option value="today">今日到期</option><option value="none">未设期限</option></select><label><input type="checkbox" :checked="center.query.unread_only" @change="navigateQuery({ unread: ($event.target as HTMLInputElement).checked ? '1' : undefined })" />未读</label></div></form>
-        <div class="nc-list-heading"><span>{{ filtered ? '当前筛选' : navigation.find(item => item.key === center.query.view)?.label }} · {{ center.snapshot?.query.filtered_total ?? '—' }} 项</span><button v-if="center.snapshot?.items.length" @click="center.markVisibleRead()"><CheckCheck :size="14" />本页已读</button><button v-if="filtered" @click="router.replace({ query: { view: center.query.view } })">清除筛选</button></div>
-        <button v-if="center.pendingRefresh" class="nc-new-items" @click="center.pendingRefresh = false; center.refresh()">有新事项，点击查看</button>
-        <div class="nc-list-scroll" @scroll.passive="preserveListPosition"><div v-if="center.loading" aria-label="正在加载事项" class="nc-skeletons"><div v-for="i in 4" :key="i" /></div><template v-else><WorkEntryRow v-for="entry in items" :key="entry.id" :entry="entry" :selected="center.selected?.id === entry.id" @select="choose" /><div v-if="!items.length" class="nc-empty"><Inbox :size="30" /><h2>{{ center.error && !center.snapshot ? '当前无法读取事项' : filtered ? '当前筛选没有事项' : snoozed.length ? '当前优先列表为空' : empty.title }}</h2><p>{{ snoozed.length ? `另有 ${snoozed.length} 项稍后提醒` : filtered ? '可清除筛选，查看当前视图的全部事项。' : empty.description }}</p></div><template v-if="snoozed.length"><button class="nc-snoozed-toggle" :aria-expanded="showSnoozed" @click="showSnoozed = !showSnoozed"><Clock3 :size="15" />稍后提醒 {{ snoozed.length }} 项</button><WorkEntryRow v-for="entry in showSnoozed ? snoozed : []" :key="entry.id" :entry="entry" :selected="center.selected?.id === entry.id" @select="choose" /></template></template></div>
-        <footer class="nc-list-footer"><span>责任由当前源业务核验</span><Button v-if="center.query.cursor" variant="ghost" size="sm" @click="navigateQuery({ cursor: undefined })">回到第一页</Button><Button v-if="center.snapshot?.next_cursor" variant="outline" size="sm" @click="router.replace({ query: { ...route.query, cursor: center.snapshot.next_cursor } })">下一页</Button></footer>
-      </section>
-      <aside v-if="!compact" class="nc-detail-panel"><WorkEntryDetail v-if="center.selected" :entry="center.selected" @close="close" /><div v-else class="nc-detail-placeholder"><ListTodo :size="28" /><h2>先预览，再处理</h2><p>{{ center.detailError || '选择一项，查看当前阶段、责任依据与最近经过。' }}</p></div></aside>
+  <div
+    ref="root"
+    class="app-page nc-workspace"
+    data-yl-help="work-center.overview"
+    @focusin="engaged"
+    @focusout="engaged"
+  >
+    <header class="nc-page-head">
+      <div>
+        <h1>事项工作台</h1>
+        <p>
+          与我相关 · {{ center.query.factory_scope === 'authorized' ? '全部授权责任范围' : '按厂区查看' }}
+        </p>
+      </div>
+      <div class="nc-tools">
+        <WorkCenterHealth badge :snapshot="snap" :syncing="center.syncing" />
+        <Popover
+          ><PopoverTrigger as-child
+            ><Button variant="ghost" size="sm" aria-label="声音与提醒设置"
+              ><SlidersHorizontal :size="15" /><span class="nc-head-label">提醒设置</span></Button
+            ></PopoverTrigger
+          ><PopoverContent align="end" aria-label="提醒设置" class="nc-settings"
+            ><h3>提醒设置</h3>
+            <label
+              >声音提醒<Switch
+                aria-label="声音提醒"
+                :model-value="center.preferences.sound_enabled"
+                @update:model-value="(value) => center.savePreferences({ sound_enabled: value })" /></label
+            ><label
+              >弹窗范围<Select
+                :model-value="center.preferences.toast_level"
+                @update:model-value="
+                  (value) => center.savePreferences({ toast_level: value as WorkPreferences['toast_level'] })
+                "
+                ><SelectTrigger aria-label="弹窗范围"><SelectValue /></SelectTrigger
+                ><SelectContent
+                  ><SelectItem value="assigned">仅指派给我</SelectItem
+                  ><SelectItem value="all_tasks">全部待办</SelectItem
+                  ><SelectItem value="none">关闭弹窗</SelectItem></SelectContent
+                ></Select
+              ></label
+            ></PopoverContent
+          ></Popover
+        >
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label="刷新事项"
+          :disabled="center.syncing"
+          @click="center.refresh()"
+          ><RefreshCw :size="15" :class="{ 'nc-spin': center.syncing }" /><span class="nc-head-label"
+            >刷新</span
+          ></Button
+        >
+        <Popover v-model:open="helpOpen"
+          ><PopoverTrigger as-child
+            ><Button aria-label="快捷键" variant="ghost" size="icon-sm"
+              ><CircleHelp :size="16" /></Button></PopoverTrigger
+          ><PopoverContent align="end" aria-label="快捷键"
+            ><h3>快捷键</h3>
+            <dl class="nc-keymap">
+              <template
+                v-for="[keys, title] in [
+                  ['J / K', '下一条 / 上一条'],
+                  ['Enter', '前往办理'],
+                  ['M / P / S', '标读 / 置顶 / 稍后'],
+                  ['/', '搜索'],
+                  ['Esc', '关闭或取消选择'],
+                ]"
+                :key="keys"
+                ><dt>
+                  <kbd>{{ keys }}</kbd>
+                </dt>
+                <dd>{{ title }}</dd></template
+              >
+            </dl></PopoverContent
+          ></Popover
+        >
+      </div>
+    </header>
+    <div v-if="center.error && snap?.health.status !== 'stale'" role="alert" class="nc-alert">
+      <span>{{ center.error }}</span
+      ><Button size="xs" variant="ghost" @click="center.refresh()">重新同步</Button>
     </div>
-    <p class="nc-coverage">已接入：啤办、内部报价、账户申请、供应商送货、任职知会。其他模块尚未纳入本页计数。</p>
-    <span class="sr-only" aria-live="polite">{{ announcement }}</span>
-    <DialogRoot :open="compact && !!center.selected" @update:open="value => { if (!value) void close() }"><DialogPortal><DialogOverlay class="nc-sheet-overlay" /><DialogContent class="nc-sheet" @close-auto-focus.prevent="restoreFocus"><DialogTitle class="sr-only">事项详情</DialogTitle><DialogDescription class="sr-only">查看当前责任，然后前往原业务处理。</DialogDescription><WorkEntryDetail v-if="center.selected" :entry="center.selected" @close="close" /></DialogContent></DialogPortal></DialogRoot>
+    <WorkCenterHealth :snapshot="snap" :syncing="center.syncing" @retry="center.refresh()" />
+    <section class="nc-command glass-chrome" data-yl-help="work-center.summary" aria-label="事项视图与筛选">
+      <div class="nc-command-top">
+        <Tabs :model-value="primary" @update:model-value="(v) => navigate({ view: String(v) })"
+          ><TabsList class="nc-tabs" aria-label="事项视图"
+            ><TabsTrigger v-for="v in orderedViews" :key="v.id" :value="v.id"
+              >{{ v.label
+              }}<span v-if="v.id === 'todo' && snap?.summary.actionable_total" class="nc-tab-count">{{
+                snap.summary.actionable_total
+              }}</span></TabsTrigger
+            ><TabsTrigger v-if="verification" value="verification"
+              >待核对 {{ verification }}</TabsTrigger
+            ></TabsList
+          ></Tabs
+        >
+        <WorkPulseBar
+          :snapshot="snap"
+          :query="center.query"
+          mode="pulse"
+          @change="navigate"
+          @snoozed="showSnoozed = !showSnoozed"
+        />
+      </div>
+      <div data-yl-help="work-center.filters" class="nc-filters">
+        <div class="nc-filter-line">
+          <label class="nc-search"
+            ><Search :size="16" /><Input
+              data-work-search
+              type="search"
+              :model-value="search"
+              aria-label="搜索事项"
+              placeholder="搜索单号、姓名、产品…"
+              @update:model-value="searchFor"
+              @keydown.enter.prevent="searchFor(search, true)"
+            /><kbd>/</kbd></label
+          >
+          <Select
+            :model-value="center.query.due"
+            @update:model-value="(v) => navigate({ due: v === 'all' ? undefined : String(v) })"
+            ><SelectTrigger class="nc-due" aria-label="期限筛选"><SelectValue /></SelectTrigger
+            ><SelectContent
+              ><SelectItem value="all">全部期限</SelectItem><SelectItem value="today">今日到期</SelectItem
+              ><SelectItem value="overdue">已逾期</SelectItem
+              ><SelectItem value="none">无期限</SelectItem></SelectContent
+            ></Select
+          >
+          <label class="nc-unread-filter"
+            ><Checkbox
+              aria-label="仅看未读"
+              :model-value="center.query.unread_only"
+              @update:model-value="(v) => navigate({ unread: v === true ? '1' : undefined })"
+            />仅未读</label
+          >
+        </div>
+        <WorkPulseBar mode="facets" :snapshot="snap" :query="center.query" @change="navigate" />
+      </div>
+    </section>
+    <div class="nc-layout">
+      <section class="surface-l1 nc-list-panel" data-yl-help="work-center.list" aria-label="事项列表">
+        <header class="nc-list-head">
+          <Checkbox
+            aria-label="全选本页"
+            :disabled="!visible.length"
+            :model-value="allChecked ? true : selected.length ? 'indeterminate' : false"
+            @update:model-value="checkPage"
+          />
+          <h2>事项列表</h2>
+          <span v-if="filtered && snap" class="nc-sub">{{ snap.query.filtered_total }} 项匹配</span>
+          <Select v-model="grouping"
+            ><SelectTrigger class="nc-group-select" aria-label="列表分组"><SelectValue /></SelectTrigger
+            ><SelectContent
+              ><SelectItem value="priority">按优先级</SelectItem><SelectItem value="module">按模块</SelectItem
+              ><SelectItem value="none">不分组</SelectItem></SelectContent
+            ></Select
+          >
+        </header>
+        <Button v-if="center.pendingRefresh" size="sm" variant="soft" @click="center.refresh()"
+          >有新事项到达 · 点击刷新</Button
+        >
+        <div v-if="center.loading && !snap" class="nc-skeletons" role="status" aria-label="正在读取事项">
+          <i v-for="n in 4" :key="n" class="skeleton-shimmer" />
+        </div>
+        <template v-else
+          ><section v-for="[name, items] in groups" :key="name">
+            <h3 v-if="name" class="nc-group-heading">
+              {{ grouping === 'module' ? sourceLabel(name) : name }}
+            </h3>
+            <WorkEntryRow
+              v-for="entry in items"
+              :key="entry.id"
+              v-bind="rowBinding(entry)"
+              v-on="rowEvents"
+            />
+          </section>
+          <Collapsible v-if="deferred.length" v-model:open="showSnoozed"
+            ><CollapsibleTrigger as-child
+              ><Button variant="ghost"
+                ><Clock3 :size="15" />稍后提醒 {{ deferred.length
+                }}<ChevronDown :size="14" /></Button></CollapsibleTrigger
+            ><CollapsibleContent
+              ><WorkEntryRow
+                v-for="entry in deferred"
+                :key="entry.id"
+                v-bind="rowBinding(entry)"
+                v-on="rowEvents" /></CollapsibleContent
+          ></Collapsible>
+          <div v-if="!rows.length && !center.error && snap" class="nc-empty">
+            <component :is="filtered ? Search : CheckCircle2" :size="28" />
+            <h3>{{ filtered ? '当前筛选无匹配' : empty.title }}</h3>
+            <p v-if="filtered && primary === 'todo'">全部待办 {{ snap.summary.actionable_total }} 项</p>
+            <Button v-if="filtered" size="sm" variant="soft" @click="clearFilters">清除筛选</Button>
+            <div v-else class="nc-tools">
+              <Button v-if="primary !== 'info'" size="sm" variant="ghost" @click="navigate({ view: 'info' })"
+                ><Inbox :size="14" />查看知会</Button
+              ><Button
+                v-if="primary !== 'history'"
+                size="sm"
+                variant="ghost"
+                @click="navigate({ view: 'history' })"
+                >查看历史</Button
+              >
+            </div>
+          </div>
+        </template>
+        <footer v-if="snap?.next_cursor || center.query.cursor" class="nc-page-controls">
+          <Button
+            v-if="center.query.cursor"
+            size="sm"
+            variant="outline"
+            @click="navigate({ cursor: undefined })"
+            >回到首页</Button
+          ><Button
+            v-if="snap?.next_cursor"
+            size="sm"
+            variant="outline"
+            @click="navigate({ cursor: snap.next_cursor })"
+            >下一页</Button
+          >
+        </footer>
+      </section>
+      <aside v-if="!compact" class="surface-l1 nc-focus">
+        <WorkEntryDetail v-if="center.selected" :entry="center.selected" @close="close" />
+        <div v-else class="nc-empty">
+          <ListTodo :size="28" />
+          <h2>{{ loadingEntry ? '正在读取事项' : center.detailError || '选择事项查看详情' }}</h2>
+        </div>
+      </aside>
+    </div>
+    <Drawer
+      :open="drawerOpen"
+      @update:open="
+        (v) => {
+          if (!v) void close()
+        }
+      "
+      ><DrawerContent
+        :side="width < 640 ? 'bottom' : 'right'"
+        class="nc-detail-sheet"
+        :show-close-button="false"
+        @close-auto-focus.prevent="restoreFocus"
+        ><DrawerTitle class="sr-only">事项预览</DrawerTitle
+        ><DrawerDescription class="sr-only">业务事实、最近经过与办理入口</DrawerDescription
+        ><span v-if="width < 640" class="nc-grip" /><WorkEntryDetail
+          v-if="center.selected"
+          :entry="center.selected"
+          @close="close" /></DrawerContent
+    ></Drawer>
+    <p v-if="compact && center.detailError && !center.selected" role="alert" class="nc-alert">
+      {{ center.detailError }}
+    </p>
+    <Transition name="nc-batch"
+      ><div v-if="selected.length" class="nc-batch glass-float" role="toolbar" aria-label="批量操作">
+        <strong>已选 {{ selected.length }} 项</strong
+        ><Button size="sm" variant="ghost" @click="checked = visible.map((i) => i.id)">全选本页</Button
+        ><Button size="sm" variant="ghost" :disabled="center.personalBusy" @click="batch('read')"
+          >标为已读</Button
+        ><Button
+          size="sm"
+          variant="ghost"
+          :disabled="center.personalBusy || !selected.some((i) => i.can_act_now)"
+          @click="batch('snooze')"
+          >稍后 1 小时</Button
+        ><TooltipProvider
+          ><Tooltip
+            ><TooltipTrigger as-child
+              ><span tabindex="0"
+                ><Button
+                  size="sm"
+                  variant="ghost"
+                  :disabled="center.personalBusy || !eligibleArchive"
+                  @click="batch('archive')"
+                  >归档</Button
+                ></span
+              ></TooltipTrigger
+            ><TooltipContent>{{
+              eligibleArchive ? '归档所选事项' : '活跃待办需在原业务办理完成后才能结案'
+            }}</TooltipContent></Tooltip
+          ></TooltipProvider
+        ><Button size="sm" variant="ghost" @click="checked = []">取消</Button>
+      </div></Transition
+    >
   </div>
 </template>
