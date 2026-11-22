@@ -51,7 +51,7 @@
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "95c8eaf3b93023538b3d2c4d506de4224824fc8b24e8fe172265949b090607cd"
+        "sha256": "0956c8a83dfd3f69123f548aca8a16b37a175a22872d9305c6598855e15f2953"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
@@ -96,7 +96,7 @@
       {
         "path": "services/qc-department/qc-inspection-summary.js",
         "symbol": "async function load",
-        "sha256": "64297edb11102312aee860d48a052fe1b21ba82e89dfb5fa850ab58b51bc4012"
+        "sha256": "92311e018fc3aa62b324ed968240a767b99c8b2cf7bc258e4c2b057d3b17a11a"
       },
       {
         "path": "backend/app/services/qc_weekly_templates.py",
@@ -131,7 +131,7 @@
       {
         "path": "backend/app/services/qc_dossier_read.py",
         "symbol": "def detail",
-        "sha256": "130dce33b6e96710300517eee0daf8b9a579440b5ddae65340de7346e509c639"
+        "sha256": "93a17ad398238d3c19878fc7309e539b12d51325f5d7e3488c68fa6b46c736df"
       },
       {
         "path": "backend/app/services/qc_dossier_worker.py",

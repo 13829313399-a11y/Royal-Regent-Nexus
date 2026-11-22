@@ -517,7 +517,7 @@
   }
   function dossierHistory(events,source=false){
     if(!events?.length)return '<p class="qsum-note">暂无可确认的历史记录。</p>';
-    const actions={save:'修改验货资料',submit:'提交审核',confirm:'确认审核',revoke:'反审核','return-to-inspection':'退回验货台',upload:'添加验货照片','photo-annotations':'保存照片标记','remove-photo':'移除验货照片','source-change':'采集业务资料更新','task-linked':'关联任务资料','approval-linked':'关联审核资料'};
+    const actions={save:'修改验货资料','report-supplement':'保存报告补录',submit:'提交审核',confirm:'确认审核',revoke:'反审核','return-to-inspection':'退回验货台',upload:'添加验货照片','photo-annotations':'保存照片标记','remove-photo':'移除验货照片','source-change':'采集业务资料更新','task-linked':'关联任务资料','approval-linked':'关联审核资料'};
     const ordered=[...events].sort((a,b)=>(Date.parse(b.at)||0)-(Date.parse(a.at)||0)||(Number(b.id)||0)-(Number(a.id)||0));
     return '<div class="qsum-history"><div class="qsum-history-heading" aria-hidden="true"><span>操作 / 人员</span><span>'+(source?'采集时间':'操作时间')+' / 详情</span></div>'+ordered.map(event=>{
       const who=source?'业务原操作人未记录':typeof event.actor==='object'?(event.actor?.name||'操作人未记录'):(event.actor||'操作人未记录');
@@ -537,6 +537,33 @@
   function historySection(title, events, source = false) {
     const caption = events?.length ? '<p class="qrd-meta qrd-history-meta">北京时间 · 最新记录在前</p>' : '';
     return detailPanelSection(title, caption + dossierHistory(events, source));
+  }
+
+  const reportSupplementNotice = '<p class="qsum-note" role="status">部分报告补录暂不可读取。已保存内容未修改，请稍后重新打开详情。</p>';
+  const reportScopeLabel = row => [row.source, row.scope, row.current ? '' : '历史范围'].filter(Boolean).join(' · ');
+  function reportSupplementValues(report) {
+    if (!report?.items?.length && report?.status !== 'unavailable') return '';
+    const groups = new Map();
+    for (const row of report.items || []) {
+      const scope = reportScopeLabel(row);
+      if (!groups.has(scope)) groups.set(scope, []);
+      groups.get(scope).push([row.label, row.value]);
+    }
+    return detailPanelSection('报告补录（本单）',
+      '<p class="qrd-meta">报告中心已保存的补录，不覆盖验货审核原值。</p>' +
+      (report.status === 'unavailable' ? reportSupplementNotice : '') +
+      [...groups].map(([scope, fields]) => dossierGroup(scope, fields)).join(''));
+  }
+
+  function reportSupplementHistory(report) {
+    if (!report?.changes?.length && report?.status !== 'unavailable') return '';
+    const events = (report.changes || []).map(row => ({
+      ...row, action:'report-supplement', location:reportScopeLabel(row),
+      actor: row.actor?.name || (row.actor?.id ? '账号标识：' + row.actor.id : ''),
+      changes:{[row.label]:{before:row.before,after:row.after}},
+    }));
+    return (report.status === 'unavailable' ? reportSupplementNotice : '') +
+      historySection('报告补录修改记录', events);
   }
 
   function detailBadge(label, tone = '') {
@@ -627,11 +654,12 @@
       const extra = arrays + (supplements.length ? dossierGroup('原记录及补充资料', supplements) : '');
       const changes = (data.changes||[]).filter(event => !reviewActions.has(event.action));
       const panels = {
-        qc: inspectionOverview(row,basic,inspection,photographs,extra),
+        qc: inspectionOverview(row,basic,inspection,photographs,extra) + reportSupplementValues(data.reportSupplements),
         business: dossierBusiness(data.business||{status:'missing'}),
         review: historySection('审核记录',data.audit) +
           '<details class="qsum-dossier-more"><summary>审核与归档信息</summary>'+dossierGroup('审核与归档',record)+'</details>',
         changes: historySection('QC 修改记录',changes) +
+          reportSupplementHistory(data.reportSupplements) +
           historySection('业务资料与关联变化',data.sourceEvents,true) + provenance,
       };
       const groups=[['qc','QC验货'],['business','业务资料'],['review','审核记录'],['changes','修改记录']];
