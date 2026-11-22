@@ -94,7 +94,8 @@
   function navigationState(){return {dirty:Boolean(model.detailEditing||root.QcInspectionSummary?.unsavedPhotoMarks)||[...model.drafts.values()].some(d=>d.dirty||d.queue.length||d.error),busy:model.submitBusy||model.reviewBusy||[...model.drafts.values()].some(d=>d.busy||d.reading||d.submitting)};}
   function status(id,skipRecordControls=false){
     const d=model.drafts.get(id),node=root.document.querySelector('[data-save-status="'+id+'"]');
-    if(!node||!d)return;
+    if(!d)return;
+    if(!node){if(!skipRecordControls)updateRowSelection();return;}
     node.textContent=d.error?'保存失败：'+d.error:d.reading?'正在读取照片…':'';
     node.hidden=!node.textContent;
     node.closest('.qis-save-feedback').hidden=node.hidden;
@@ -398,10 +399,10 @@
     const control=key==='reportStatus'?'<select'+attr+'><option value="">未填写</option>'+[...new Set(['有','无',value].filter(v=>v!==undefined&&v!==null&&String(v).trim()))].map(v=>'<option value="'+esc(v)+'" '+(v===value?'selected':'')+'>'+esc(v)+'</option>').join('')+'</select>':type==='multiline'?'<textarea rows="2" maxlength="'+(['otherRemark','customerRequirements'].includes(key)?20000:4000)+'"'+attr+'>'+esc(value)+'</textarea>':'<input size="1" type="'+(type==='number'?'text':type)+'"'+(type==='number'?' inputmode="decimal"':type==='text'?' maxlength="'+(executionFields[key]?255:200)+'"':'')+attr+' value="'+esc(value)+'">';
     return control+(model.view==='review'?'':'<small data-review-status="'+row.id+'" role="status"></small>');
   }
-  function detailEditor(id,key){
+  function detailEditor(id,key,staging){
     const row=byId(id),d=draft(row),writable=canEdit(row),label=executionFields[key][0];
     const columns=key==='defects'?[['desc','不良描述','text'],['qty','数量','number'],['level','等级','level'],['remark','备注','text']]:[['item','测量项目','text'],['standard','标准','text'],['values','实测值','text'],['result','结果','result'],['remark','备注','text']];
-    let values=JSON.parse(JSON.stringify(d.inspectionExecution[key]||[])),busy=false;
+    let values=JSON.parse(staging?staging.current():JSON.stringify(d.inspectionExecution[key]||[])),busy=false;
     const before=fieldValue(row,key);
     const localHistory={undo:[],redo:[]};
     let typingInput=null;
@@ -445,6 +446,11 @@
     el.querySelector('[data-detail-add]').onclick=()=>{if(values.length>=200){el.querySelector('[role=alert]').textContent='明细最多 200 行';return;}checkpoint();values.push(Object.fromEntries(columns.map(([k])=>[k,k==='qty'?'0':''])));draw();el.querySelector('[data-detail-row="'+(values.length-1)+'"]').focus();};
     el.querySelector('[data-detail-save]').onclick=async()=>{
       if([...el.querySelectorAll('[data-detail-key]')].some(input=>!input.reportValidity()))return;
+      if(staging){
+        try{if(staging.change(JSON.stringify(values))!==false)el.close();}
+        catch(error){el.querySelector('[role=alert]').textContent=error.message;}
+        return;
+      }
       busy=true;el.querySelectorAll('button,input,select').forEach(n=>n.disabled=true);el.querySelector('[role=alert]').textContent='';
       try{if(d.conflict)throw Error('版本已更新，请关闭明细后使用本行“核对版本并重试”；输入仍保留。');d.error='';editExecution(id,key,JSON.parse(JSON.stringify(values)));await flushRow(id);const after=fieldValue(row,key);if(!sameField(before,after))rememberFields(key,[{id,before,after}]);el.close();render();}
       catch(error){el.querySelector('[role=alert]').textContent=error.message;}
@@ -525,15 +531,49 @@
       const d=draft(row);d.queue.push({action:'remove-photo',body:{photoId:button.dataset.removePhoto}});pump(row.id);status(row.id);
     });
   }
-  function reviewTableBody(rows,columns,headerCells){
+  function orderedReviewRows(rows){
     const groups=new Map([['行验',[]],['客验',[]],['',[]]]);
     for(const row of rows)groups.get(reviewGroup(row)).push(row);
-    let body='';
-    for(const [name,items] of groups){
-      if(!items.length)continue;
-      body+=items.map((row,index)=>rowHTML(row,columns,name==='客验'&&index===0)).join('');
-    }
+    return [...groups.values()].flat();
+  }
+  function reviewTableBody(rows,columns,headerCells){
+    let customerStart=false;
+    const body=orderedReviewRows(rows).map(row=>{
+      const first=reviewGroup(row)==='客验'&&!customerStart;
+      if(first)customerStart=true;
+      return rowHTML(row,columns,first);
+    }).join('');
     return '<thead><tr>'+headerCells+'</tr></thead><tbody>'+body+'</tbody>';
+  }
+  function displayedColumns(rows,reviewing){
+    const hasCustomerReview=reviewing&&rows.some(row=>reviewGroup(row)==='客验');
+    return model.columns.filter(({key})=>{
+      if(key==='inspectionExecution.institution')return hasCustomerReview;
+      if(['inspectionExecution.defects','inspectionExecution.measurements'].includes(key)){
+        const field=executionKey(key);
+        return rows.some(row=>detailRows(draft(row).inspectionExecution[field],field).length);
+      }
+      return true;
+    });
+  }
+  function pendingSummaryEnabled(){
+    return model.view==='review'&&model.reviewTab==='pending'&&!!root.QcReportWorkbook?.openReview&&!!root.QcPendingReviewWorkbook;
+  }
+  function reviewWorkbook(opener){
+    if(!pendingSummaryEnabled()||model.loading||model.error||navigationState().dirty||navigationState().busy)return;
+    const rows=orderedReviewRows(filtered());
+    if(!rows.length)return;
+    const scope=root.__QC_NEXUS;
+    const source=root.QcPendingReviewWorkbook.create({
+      rows,columns:displayedColumns(rows,true),canEdit,reviewGroup,executionKey,options,api,requestKey,byId,
+      scope:write=>root.__QC_NEXUS===scope&&model.view==='review'&&model.reviewTab==='pending'&&!model.loading&&!model.error&&!model.reviewBusy&&(!write||editable()),
+      accept:(id,row)=>{accept(id,row);model.drafts.delete(id);},
+      busy:()=>Boolean(model.detailEditing||root.QcInspectionSummary?.unsavedPhotoMarks),
+      close:render,value:(row,key)=>key==='date'?dateText(row):key==='reviewState'?'待审核':
+        ['submittedAt','confirmedAt','lastChangedAt'].includes(key)?audit().time(row[key]):key.split('.').reduce((v,k)=>v?.[k],row),
+      detail:(id,key,staging)=>detailEditor(id,key,staging),detailRows,photoAccept,readFile,
+    });
+    root.QcReportWorkbook.openReview(opener,source);
   }
 
   function render(){
@@ -546,15 +586,8 @@
     const reviewing=model.view==='review';
     if(reviewing)updateReviewDateControls();
     const rows=filtered();
-    const hasCustomerReview=reviewing&&rows.some(row=>reviewGroup(row)==='客验');
-    const columns=model.columns.filter(({key})=>{
-      if(key==='inspectionExecution.institution')return hasCustomerReview;
-      if(['inspectionExecution.defects','inspectionExecution.measurements'].includes(key)){
-        const field=executionKey(key);
-        return rows.some(row=>detailRows(draft(row).inspectionExecution[field],field).length);
-      }
-      return true;
-    });
+    const columns=displayedColumns(rows,reviewing),skim=pendingSummaryEnabled();
+    host.classList.toggle('qis-pending-summary-wrap',skim);
     if(!reviewing)updateRecordControls();
     const ascending=model.recordsSort==='date-asc';
     const sortHint=ascending?'点击按验货日期倒序，较晚日期在前':'点击按验货日期正序，较早日期在前';
@@ -563,14 +596,14 @@
       : '<th scope="col" data-column="'+c.key+'">'+(reviewing&&model.reviewTab==='approved'&&c.key==='customer'
         ? '<input id="qis-review-all" type="checkbox" aria-label="全选当前筛选" title="全选当前筛选"> ' : '')+esc(c.label)+'</th>').join('');
     const body=reviewing
-      ? reviewTableBody(rows,columns,headerCells)
+      ? skim?root.QcPendingReviewWorkbook.summary(orderedReviewRows(rows),{dateText,reviewGroup,draft,audit:audit()}):reviewTableBody(rows,columns,headerCells)
       : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
     const noTasks='没有符合条件的验货任务。';
     const empty=!rows.length&&!model.loading;
     const scene=empty&&model.loaded&&!model.error&&root.QcEmptyState?.markup(reviewing?'review':'inspection',noTasks);
     host.innerHTML=(model.error?'<p role="alert" class="qis-error">读取失败：'+esc(model.error)+'。请重试刷新，当前数据可能不是最新。</p>':'')+
       (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
-      ((!reviewing||rows.length)?'<table class="qis-table">'+body+'</table>':'')+
+      ((!reviewing||rows.length)?'<table class="qis-table'+(skim?' qis-pending-summary':'')+'">'+body+'</table>':'')+
       (empty?(scene||'<p>'+noTasks+'</p>'):'');
     if(reviewing){
       const all=host.querySelector('#qis-review-all');
@@ -948,6 +981,19 @@
     const selected=eligible.filter(r=>model.checked.has(r.id));
     const pendingTab=model.reviewTab==='pending',controls=root.document.getElementById('qis-review-controls');
     controls?.classList.toggle('qis-pending-review',pendingTab);
+    if(controls&&root.QcReportWorkbook?.openReview&&root.QcPendingReviewWorkbook){
+      const actions=controls.querySelector('.qis-review-batch-actions');
+      let entry=actions?.querySelector('.qis-open-review-book');
+      if(actions&&!entry){
+        entry=root.document.createElement('div');entry.className='sheet-tab-bar qis-open-review-book';
+        entry.append(root.QcReportWorkbook.trigger('打开完整工作簿',reviewWorkbook));
+        actions.append(entry);
+      }
+      if(entry){
+        entry.hidden=!pendingTab;
+        entry.querySelector('button').disabled=Boolean(model.loading||model.error||!rows.length||navigationState().dirty||navigationState().busy);
+      }
+    }
     const f=model.reviewFilters;
     const reset=controls?.querySelector('[data-reset-review]');
     if(reset){

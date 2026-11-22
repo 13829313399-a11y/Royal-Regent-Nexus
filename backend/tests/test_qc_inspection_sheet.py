@@ -53,6 +53,43 @@ def save(row,result='',remark=''):
     return sheet.save('huaxing',row['id'],{'revision':row['revision'],'result':result,'remark':remark},ACTOR)
 
 
+def test_pending_workbook_save_receipt_is_one_write_and_bound_to_actor_payload_and_revision():
+    row=save(seed()[0],'PASS')
+    row=sheet.submit('huaxing',row['id'],{'revision':row['revision']},ACTOR)
+    payload={'revision':row['revision'],'requestKey':uuid4().hex,'result':'PASS','remark':'',
+             'inspectionFactory':'试用工厂','inspectionExecution':{'analysisReason':'核对样件'}}
+    saved=sheet.save('huaxing',row['id'],payload,ACTOR,review=True)
+    retried=sheet.save('huaxing',row['id'],payload,ACTOR,review=True)
+    assert saved==retried and retried['revision']==row['revision']+1
+    assert retried['inspectionFactory']=='试用工厂' and retried['inspectionExecution']['analysisReason']=='核对样件'
+    log=sheet.audit('huaxing',row['id'])['items']
+    assert len([event for event in log if event['revision']==saved['revision']])==1
+    assert '_saveRequestFingerprint' not in log[0]['changes']
+    for data,actor in (({**payload,'inspectionFactory':'另一工厂'},ACTOR),(payload,{'id':'other','name':'另一个操作者'})):
+        with pytest.raises(HTTPException) as conflict:
+            sheet.save('huaxing',row['id'],data,actor,review=True)
+        assert conflict.value.status_code==409
+    newer=sheet.save('huaxing',row['id'],{**payload,'revision':saved['revision'],'requestKey':uuid4().hex,'remark':'并发编辑'},ACTOR,review=True)
+    with pytest.raises(HTTPException) as stale:
+        sheet.save('huaxing',row['id'],payload,ACTOR,review=True)
+    assert stale.value.status_code==409 and newer['remark']=='并发编辑'
+    with pytest.raises(HTTPException):
+        sheet.save('huaxing',row['id'],payload,ACTOR)
+
+
+def test_pending_workbook_photo_removal_receipt_does_not_remove_twice():
+    row=save(seed()[0],'PASS')
+    row,_=photo(row)
+    row=sheet.submit('huaxing',row['id'],{'revision':row['revision']},ACTOR)
+    body={'revision':row['revision'],'photoId':row['photos'][0]['id'],'requestKey':uuid4().hex}
+    saved=sheet.remove_photo('huaxing',row['id'],body,ACTOR,review=True)
+    assert not saved['photos'] and saved['revision']==row['revision']+1
+    assert sheet.remove_photo('huaxing',row['id'],body,ACTOR,review=True)==saved
+    with pytest.raises(HTTPException) as conflict:
+        sheet.remove_photo('huaxing',row['id'],{**body,'photoId':'other'},ACTOR,review=True)
+    assert conflict.value.status_code==409
+
+
 def test_pushed_schedule_source_note_does_not_prefill_qc_remark():
     order=source('imported')
     order['remark']='原始业务备注'

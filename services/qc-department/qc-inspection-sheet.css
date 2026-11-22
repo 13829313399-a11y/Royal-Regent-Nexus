@@ -491,6 +491,77 @@ body.theme-dark.qc-liquid-glass #page-review .qis-table .qis-review-customer-sta
 
 /* Review: matching widths for short fields and multiline fields; stored values read like other cells. */
 #page-review .qis-wrap{--qis-short-field:100px;--qis-long-field:149px;--qis-short-height:34px;--qis-long-height:51px}
+
+/* Pending review uses the report-center summary rhythm. Approved review and
+   the complete workbook retain their own field order and row controls. */
+#page-review .qis-review-surface>#reviewTableWrap.qis-pending-summary-wrap{
+  --qis-row-height:52px;--qis-preview-inset:7.5cqi;--qis-preview-line:#dce4dc;
+}
+body.theme-dark #page-review .qis-review-surface>#reviewTableWrap.qis-pending-summary-wrap{--qis-preview-line:#435248}
+#page-review .qis-table.qis-pending-summary{
+  width:min(1168px,calc(100% - 2 * var(--qis-preview-inset)));min-width:720px;margin:8px auto 12px;table-layout:fixed;
+}
+#page-review .qis-table.qis-pending-summary :is(th,td)[data-column]{
+  width:auto;min-width:0;max-width:none;text-align:center;vertical-align:middle;
+  border:0!important;border-bottom:1px solid var(--qis-preview-line)!important;background:var(--bg-card)!important;box-shadow:none!important;
+}
+#page-review .qis-table.qis-pending-summary th[data-column]{height:42px;color:var(--text-dim)}
+#page-review .qis-pending-summary [data-column] .qis-cell{width:auto;min-width:0;max-width:none;margin-inline:auto}
+#page-review .qis-pending-summary th[data-column=date]{width:11%}
+#page-review .qis-pending-summary th[data-column=customer]{width:10%}
+#page-review .qis-pending-summary th[data-column=poNo]{width:15%}
+#page-review .qis-pending-summary th[data-column=productNo]{width:17%}
+#page-review .qis-pending-summary th[data-column=result],
+#page-review .qis-pending-summary th[data-column=reportStatus]{width:10%}
+#page-review .qis-pending-summary td small{margin-top:1px;line-height:15px}
+#page-review .qis-pending-summary td[data-column=date] span{font-size:11.5px;letter-spacing:0}
+#page-review .qis-pending-summary .qis-preview-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;line-height:16px}
+#page-review .qis-pending-summary td[data-column=result] span{font-size:14px;font-weight:650;white-space:nowrap}
+#page-review .qis-pending-summary .qis-preview-empty{color:var(--text-dim)}
+#page-review .qis-pending-summary .pending-result-pass{color:#36654a}
+#page-review .qis-pending-summary .pending-result-fail{color:#a33a31}
+#page-review .qis-pending-summary .pending-result-pending{color:#765a26}
+body.theme-dark #page-review .qis-pending-summary td[data-column=result] span{color:var(--text-hi)}
+#page-review .qis-table.qis-pending-summary tr.qis-batch-selected>td[data-column]{background:#e4f1e9!important}
+body.theme-dark #page-review .qis-table.qis-pending-summary tr.qis-batch-selected>td[data-column]{background:#25473c!important}
+#page-review .qis-pending-summary .qis-preview-mobile-date{display:none}
+#qis-review-controls .qis-open-review-book{display:flex;align-items:center;padding:0;border:0;--sheet-muted:#52665a;--sheet-head:#f3f6f2;--sheet-ink:#283c32}
+body.theme-dark #qis-review-controls .qis-open-review-book{--sheet-muted:#c3d0c5;--sheet-head:#303d33;--sheet-ink:#edf3ed}
+#qis-review-controls .qis-open-review-book[hidden]{display:none}
+#qis-review-controls .qis-open-review-book .wb-open svg{width:18px;height:18px}
+#qis-review-controls .qis-open-review-book button:disabled{opacity:.5;cursor:default}
+@container(max-width:970px){
+  #page-review .qis-review-surface>#reviewTableWrap.qis-pending-summary-wrap{--qis-preview-inset:14px}
+  #page-review .qis-pending-summary th[data-column=result]{width:83px}
+}
+@container(max-width:510px){
+  #page-review .qis-review-surface>#reviewTableWrap.qis-pending-summary-wrap{--qis-row-height:66px}
+  #page-review .qis-table.qis-pending-summary{min-width:590px}
+  #page-review .qis-table.qis-pending-summary [data-column=date]{display:none}
+  #page-review .qis-pending-summary th[data-column=customer]{width:48px}
+  #page-review .qis-pending-summary th[data-column=poNo]{width:79px}
+  #page-review .qis-pending-summary th[data-column=productNo]{width:88px}
+  #page-review .qis-pending-summary th[data-column=result],
+  #page-review .qis-pending-summary th[data-column=reportStatus]{width:72px}
+  #page-review .qis-pending-summary .qis-preview-mobile-date{display:block;font-size:10px}
+  #page-review .qis-pending-summary td[data-column=result] span{font-size:11.5px;letter-spacing:0}
+  #page-review .qis-table.qis-pending-summary :is(th,td)[data-column]{padding-inline:4px!important}
+}
+.qis-workbook-photos{
+  position:fixed;inset:0;margin:auto;width:min(680px,calc(100vw - 24px));max-height:calc(100dvh - 24px);
+  overflow:auto;border:1px solid #b8c6bb;border-radius:11px;background:#fff;color:#23382d;padding:16px;
+  box-shadow:0 12px 45px #14231b36;font:14px/1.5 -apple-system,"PingFang SC",sans-serif;
+}
+.qis-workbook-photos::backdrop{background:#1d2b2540}
+.qis-workbook-photos header,.qis-workbook-photo-list{display:flex;flex-wrap:wrap;gap:8px}
+.qis-workbook-photos header{justify-content:space-between;align-items:center}
+.qis-workbook-photos p{margin:5px 0}
+.qis-workbook-photos :is(button,label){display:inline-block;padding:4px 9px;margin:0 4px 4px 0;border:1px solid #d8dfd8;border-radius:6px;background:#fff;color:#344d3e;font:inherit;cursor:pointer}
+.qis-workbook-photos label{position:relative;overflow:hidden}
+.qis-workbook-photos input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.qis-workbook-photo-list figure{width:116px;margin:5px 0}
+.qis-workbook-photo-list img{width:100px;height:82px;object-fit:contain;background:#f3f6f2}
+.qis-workbook-photo-list figcaption{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-size:11px}
 #page-review .qis-table :is([data-column=result],[data-column=firstResponsible],[data-column=secondResponsible],[data-column=reportStatus],[data-column="inspectionExecution.institution"]){
   box-sizing:border-box;width:calc(var(--qis-short-field) + 17px);min-width:calc(var(--qis-short-field) + 17px);max-width:calc(var(--qis-short-field) + 17px);
 }
