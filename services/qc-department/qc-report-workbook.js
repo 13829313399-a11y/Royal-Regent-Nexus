@@ -951,6 +951,17 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
  };
  const pickerHelp='请在桌面 Chrome 或 Edge 中打开验货台后重试。';
  const READY_EXPORT_TTL=120000;
+ // OpenCode's Electron review browser exposes a native picker but rejects
+ // createWritable(), after the picker has already created a zero-byte file.
+ // Use the host's normal download manager here, never its file picker.
+ const managedDownloads=/\bOpenCode\/[\d.]+\b/.test(navigator.userAgent)&&/\bElectron\/[\d.]+\b/.test(navigator.userAgent);
+ function sendToDownloadManager({blob,name}){
+   const url=URL.createObjectURL(blob),link=document.createElement('a');
+   link.href=url;link.download=name;link.hidden=true;
+   dialog.append(link);
+   try{link.click();}
+   finally{link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
+ }
  async function chooseDestination(name,ext){
    if(typeof window.showSaveFilePicker!=='function')return {message:'当前浏览器不能打开系统保存窗口。'+pickerHelp};
    try{
@@ -1039,7 +1050,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
  }
  exportButton.onclick=async()=>{
    if(!window.__QC_NEXUS?.exportAllowed||!book?.sheets.length||!dialog.open||saving||chooseSave||exporting||view.inert)return;
-   if(!reviewSource&&typeof window.showSaveFilePicker!=='function'){
+   if(!reviewSource&&!managedDownloads&&typeof window.showSaveFilePicker!=='function'){
      statusText.textContent='当前浏览器不能打开系统保存窗口，未导出。'+pickerHelp;
      return;
    }
@@ -1059,6 +1070,11 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
        statusText.textContent='正在生成并校验 Excel…';
        const file=await prepareReportExport();
        if(!dialog.open||bookQuery!==query||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
+       if(managedDownloads){
+         sendToDownloadManager(file);
+         statusText.textContent='已发起下载';
+         return;
+       }
        readyExport={...file,query,until:Date.now()+READY_EXPORT_TTL};
        exportButton.textContent='选择保存位置';
        // Chrome may consume transient activation while waiting for a slow export.
