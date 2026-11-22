@@ -168,10 +168,18 @@ def test_save_route_respects_current_session_and_factory_permission(monkeypatch,
         assert saved.status_code==200, saved.text
         assert saved.json()['version']==1
         assert client.get(frame+'api/report-workbook',params=scope).json()['cells']['0:G4']['value']=='2026-11-19'
+        records=client.get(frame+'api/inspection-summary/records').json()['items']
+        assert len(records)==1
+        dossier=client.get(frame+'api/inspection-dossier/records/'+records[0]['id']).json()
+        supplements=dossier['reportSupplements']
+        assert [row['value'] for row in supplements['items']]==['2026-11-19']
+        actor=supplements['changes'][0]['actor']
+        assert actor['id'] and actor['name'] and supplements['changes'][0]['before']==''
         grant_permission_override('qc_inspector','qc_inspection:result_write',effect='deny',factory_id='huaxing',department='qc')
         newframe=client.get(health).json()['frame_url']
         assert not client.get(newframe+'api/report-workbook',params=scope).json()['cells']
         assert client.post(newframe+endpoint,params=scope,json=body).status_code==403
+        assert client.get(newframe+'api/inspection-dossier/records/'+records[0]['id']).status_code==200
 
 
 def test_report_catalog_and_workbook_headings_follow_factory(db):

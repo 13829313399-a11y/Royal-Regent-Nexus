@@ -11,10 +11,12 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import get_db
+from app.models.auth import AuthUser
 from app.services.auth import AuthContext, can, get_current_user
 from app.api.qc_inspection import _ensure_permission
 from app.services import qc_workflow, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
@@ -182,6 +184,17 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         identity = asset_path.removeprefix('api/inspection-dossier/records/')
         result = await run_in_threadpool(dossier_detail, factory_id, identity,
             full_business=can(user, 'customer_order:read', factory_id, 'sales-business'))
+        reports = result['reportSupplements']
+        rows = reports['items'] + reports['changes']
+        actor_ids = sorted({row['actor']['id'] for row in rows if row['actor']['id']})
+        names = {}
+        for i in range(0, len(actor_ids), 200):
+            for actor_id, name in db.execute(select(AuthUser.id, AuthUser.display_name).where(
+                AuthUser.id.in_(actor_ids[i:i+200]))):
+                names[actor_id] = name
+        for row in rows:
+            if name := names.get(row['actor']['id']):
+                row['actor']['name'] = name
         return JSONResponse(result, headers=NO_CACHE)
     if asset_path == "api/schedule-source" and request.method == "GET":
         from app.services import qc_schedule_view
