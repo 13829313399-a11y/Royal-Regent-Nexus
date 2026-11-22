@@ -410,6 +410,8 @@ function changeReportType(control) {
 }
 
 function showPage(name, focusReportType = false) {
+  const workbook=window.QcReportWorkbook?.navigationState?.();
+  if(workbook?.dirty||workbook?.busy){showToast('请先在工作簿中保存或放弃更改，再切换页面','error');return;}
   if(window.QcMonthlyTemplates?.navigationState().dirty){showToast('请先完成月报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcWeeklyTemplates?.navigationState().dirty){showToast('请先完成周报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}

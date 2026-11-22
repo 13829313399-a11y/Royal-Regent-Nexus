@@ -38,7 +38,7 @@ STATIC_FILES = {
       for scene in ("schedule", "inspection", "review", "summary", "reports")
       for pose in ("rest", "action")),
     "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
-    "qc-report-workbook.js", "qc-report-workbook.css",
+    "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",

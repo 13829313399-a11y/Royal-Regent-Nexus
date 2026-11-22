@@ -508,11 +508,15 @@ def test_dossier_background_collection_runs_without_opening_qc_page(monkeypatch)
         while time.monotonic()<deadline:
             with archive.connect() as conn:
                 found=conn.execute('SELECT capture_id FROM source_heads WHERE factory=? AND source_id=?',('huaxing',source_id)).fetchone()
-            if found:break
+            # The archive commit and the main-database acknowledgment are
+            # separate; seeing the capture alone is not the worker's receipt.
+            with database.SessionLocal() as db:
+                events=db.query(model.QcDossierOutbox).all()
+                delivered=bool(events) and all(e.delivered_at for e in events)
+            if found and delivered:break
             time.sleep(.1)
         assert found is not None
-        with database.SessionLocal() as db:
-            events=db.query(model.QcDossierOutbox).all();assert events and all(e.delivered_at for e in events)
+        assert delivered
         # No schedule-source or dossier GET has been made anywhere in this test.
 
 

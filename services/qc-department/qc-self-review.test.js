@@ -1,10 +1,11 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {JSDOM}=require('jsdom');const tick=()=>new Promise(r=>setTimeout(r,10));
-async function page(){
+async function page(withWorkbook=false){
  const dom=new JSDOM(fs.readFileSync(path.join(__dirname,'index.html'),'utf8'),{runScripts:'outside-only',url:'http://localhost/'}),w=dom.window,calls=[];
  w.requestAnimationFrame=fn=>w.setTimeout(fn,0);w.cancelAnimationFrame=id=>w.clearTimeout(id);Object.defineProperty(w.document,'hidden',{value:false});w.document.getElementById('page-review').classList.add('active');
- w.__QC_NEXUS={workflow:{edit:true},exportAllowed:false};w.showToast=()=>{};
+  w.__QC_NEXUS={workflow:{edit:true},exportAllowed:false,...(withWorkbook?{factory:'huaxing',factoryLabel:'华兴'}:{})};w.showToast=()=>{};
+  w.HTMLElement.prototype.scrollTo=function(){};
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  const rows=['a','b','c'].map((id,i)=>({id,customer:'客户'+i,poNo:'PO'+i,productNo:'ITEM'+i,dateFrom:'2026-11-03',dateTo:'2026-11-03',result:'PASS',remark:'原备注',improvement:'原措施',inspectionMethod:'internal',photos:[],revision:1,submittedAt:'2026-11-01T17:00:00Z',reviewState:'pending',flowVersion:2,lastActor:{name:'后台用户'},lastLocation:'验货台',lastChangedAt:'2026-11-01T17:00:00Z'}));
  let failId='',eventId=0;const events=[],seen=new Set();w.fetch=async(url,opts={})=>{
@@ -23,7 +24,8 @@ async function page(){
   }else if(url.endsWith('/audit'))value={items:[]};else throw Error(url);
   return{ok:true,json:async()=>value};
  };
- for(const file of ['qc-schedule.js','qc-photo-paste.js','qc-inspection-audit.js','qc-inspection-sheet.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
+  for(const file of ['qc-schedule.js','qc-photo-paste.js','qc-inspection-audit.js','qc-inspection-sheet.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
+  if(withWorkbook)for(const file of ['qc-report-workbook.js','qc-review-workbook.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
  await tick();await w.QcInspectionSheet.loadReview('pending');return{dom,w,d:w.document,rows,calls,events,set failId(v){failId=v;}};
 }
 function pointer(p,target,type,y){const e=new p.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientY:y});Object.defineProperties(e,{pointerId:{value:1},pointerType:{value:'mouse'}});target.dispatchEvent(e);}
@@ -34,6 +36,52 @@ function dragReview(p,from,to,cancel=false){
  pointer(p,nodes[a].querySelector('td'),'pointerdown',115+a*64);pointer(p,host,'pointermove',115+b*64);pointer(p,host,cancel?'pointercancel':'pointerup',115+b*64);
 }
 function confirmRow(p,id){dragReview(p,id,id);p.d.getElementById('qis-review-batch').click();}
+test('formal pending preview keeps the B columns and uses the shared sheet with live rows and explicit save',async()=>{
+  const p=await page(true);try{
+    const get=id=>p.d.getElementById(id), grid=get('wb-grid').shadowRoot;
+    const opener=p.d.querySelector('#qis-review-controls .wb-open');
+    assert.equal(opener.textContent,'');
+    assert.deepEqual([...p.d.querySelectorAll('#reviewTableWrap thead th')].map(el=>el.textContent),
+      ['计划日期','客户','PO#','货号 / 品名','验货结果','验货问题','报告状态','备注']);
+    opener.click();await tick();
+    const t=(id,key)=>grid.querySelector(`tr[data-review-entry="${id}"] td[data-field="${key}"]`);
+    assert.equal(t('a','poNo').textContent,'PO0');
+    assert.equal(t('a','poNo').classList.contains('writable'),false);
+    assert.equal(t('a','inspectionFactory').classList.contains('writable'),true);
+    assert.equal(t('a','photos').querySelector('button').textContent,'选照片 / 拍照');
+    const target=t('a','inspectionProblem');target.click();
+    const press=key=>grid.activeElement.dispatchEvent(new p.w.KeyboardEvent('keydown',{key,ctrlKey:key==='s',bubbles:true,composed:true,cancelable:true}));
+    press('F2');
+    const input=target.querySelector('textarea');input.value='工作簿实测';input.dispatchEvent(new p.w.Event('input',{bubbles:true}));input.blur();
+    assert.equal(p.calls.filter(c=>c.url.endsWith('/save')).length,0);
+    target.click();press('s');await tick();
+    const [save]=p.calls.filter(c=>c.url.endsWith('/save'));
+    assert.equal(save.url,'api/inspection-sheet/review/entries/a/save');
+    assert.equal(save.body.inspectionProblem,'工作簿实测');assert.match(save.body.requestKey,/^[a-f0-9-]{16,64}$/);
+    assert.equal(p.rows[0].revision,2);assert.ok(!p.w.QcReportWorkbook.navigationState().dirty);
+    get('wb-close').click();await tick();
+    assert.equal(p.d.querySelector('#reviewTableWrap [data-entry=a] [data-column=inspectionProblem]').textContent,'工作簿实测');
+    await p.w.QcInspectionSheet.loadReview('approved');
+    assert.ok(p.d.querySelector('#qis-review-controls .wb-open').closest('div').hidden);
+  }finally{p.dom.window.close();}
+});
+test('formal pending workbook preserves read-only permissions and filters without changing approval state',async()=>{
+  const p=await page(true);try{
+    const input=p.d.querySelector('[data-rfilter=search]');
+    input.value='PO1';input.dispatchEvent(new p.w.Event('input',{bubbles:true}));
+    p.w.__QC_NEXUS.workflow.edit=false;
+    p.d.querySelector('#qis-review-controls .wb-open').click();await tick();
+    const grid=p.d.getElementById('wb-grid').shadowRoot;
+    assert.deepEqual([...grid.querySelectorAll('tr[data-review-entry]')].map(row=>row.dataset.reviewEntry),['b']);
+    assert.equal(grid.querySelector('.writable'),null);
+    assert.equal(p.d.getElementById('wb-export').hidden,true);
+    const td=grid.querySelector('[data-field=inspectionProblem]');td.click();
+    td.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'F2',bubbles:true,composed:true,cancelable:true}));
+    assert.equal(grid.querySelector('.cell-editor'),null);
+    assert.equal(p.calls.some(c=>c.url.endsWith('/save')||c.url.endsWith('/confirm')),false);
+    assert.equal(p.rows[1].reviewState,'pending');
+  }finally{p.dom.window.close();}
+});
 test('review uses the fixed workbench order followed by supplements for every row, retaining frozen actions',async()=>{
  const p=await page();try{
   p.rows[1].inspectionExecution={defects:[{desc:'标签错位',qty:'0'}]};p.rows[2].remark='长备注';await p.w.QcInspectionSheet.loadReview('pending');
