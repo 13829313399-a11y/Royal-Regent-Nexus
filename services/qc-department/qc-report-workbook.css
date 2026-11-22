@@ -16,6 +16,14 @@
 dialog#wb-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:calc(100vw - 32px);max-width:1800px;height:calc(100dvh - 32px);max-height:none;padding:0;background:#fff;color:#23382d;border:1px solid #b8c6bb;border-radius:12px;box-shadow:0 20px 90px #14231b40;font:14px/1.4 -apple-system,"PingFang SC",sans-serif;overflow:hidden}
 #wb-dialog[open]{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto}
 #wb-dialog::backdrop{background:#1d2b254d}
+#wb-save-prompt{position:fixed;inset:0;box-sizing:border-box;width:min(400px,calc(100vw - 32px));margin:auto;padding:21px 22px;border:1px solid #b8c6bb;border-radius:11px;background:white;color:#23382d;box-shadow:0 12px 45px #14231b36;font:14px/1.5 -apple-system,"PingFang SC",sans-serif}
+#wb-save-prompt::backdrop{background:#1d2b2540}
+#wb-save-title{font-size:16px;font-weight:650}
+#wb-save-message{margin:8px 0 19px;color:#52695a}
+.wb-save-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.wb-save-actions button{min-height:34px;padding:5px 12px;border:1px solid #d8dfd8;border-radius:6px;background:#fff;color:#344d3e;font:inherit;cursor:pointer}
+.wb-save-actions button[data-wb-choice=save]{border-color:#31513e;background:#355a46;color:white}
+.wb-save-actions button:focus-visible{outline:2px solid #527f62;outline-offset:2px}
 .wb-head,.wb-formula,.wb-foot{display:flex;align-items:center;gap:12px;border-bottom:1px solid #d8dfd8}
 .wb-head{padding:10px 14px;min-height:48px}
 .wb-head>div{display:flex;align-items:center;gap:9px}.file-mark{color:#37764e;font-size:23px}
@@ -26,8 +34,21 @@ dialog#wb-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:
 .wb-formula{gap:0;height:35px;background:#fafbf9}
 #wb-address{min-width:68px;text-align:center;font-size:12px}
 .wb-formula i{border-inline:1px solid #d8dfd8;padding:0 12px;color:#718077}
-#wb-value{flex:1;min-width:0;height:100%;padding:0 10px;border:none;background:#fff;color:#283c32;font-size:13px;outline-offset:-2px}
+#wb-value{flex:1;box-sizing:border-box;min-width:0;height:100%;padding:7px 10px;border:none;resize:none;overflow:auto;background:#fff;color:#283c32;font:13px/20px -apple-system,"PingFang SC",sans-serif;outline-offset:-2px}
 #wb-grid{min-height:0;overflow:auto;overscroll-behavior:contain}
+.wb-fill-visual{position:absolute;overflow:hidden;pointer-events:none;z-index:4}
+.wb-fill-range{position:absolute;box-sizing:border-box;border:1.5px solid #4b8c66;background:#41845c18;transition:height 120ms cubic-bezier(.2,.8,.2,1)}
+.wb-fill-scroll .wb-fill-range,.wb-fill-done .wb-fill-range{transition:none}
+.wb-fill-done{animation:wb-fill-settle 140ms ease-out both}
+@keyframes wb-fill-settle{from{opacity:1}to{opacity:0}}
+@media(prefers-reduced-motion:reduce){
+  .wb-fill-range{transition:none}
+  .wb-fill-done{animation:none;visibility:hidden}
+}
+@media(min-width:769px){
+  html:not(.qc-mobile) dialog#wb-dialog{width:calc(100vw - 20px);max-width:none;height:calc(100dvh - 20px)}
+  html:not(.qc-mobile) #wb-grid{scrollbar-gutter:stable}
+}
 .wb-foot{background:#f8faf7;justify-content:space-between;border:0;border-top:1px solid #d8dfd8;padding:0 10px;gap:5px}
 #wb-tabs{display:flex;overflow:auto}
 #wb-mode{margin-inline-start:auto;color:#52695a;font-size:12px}
@@ -38,7 +59,6 @@ dialog#wb-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:
 @media(max-width:650px){.skim-scroll{margin:8px}.report-page .skim{min-width:620px}dialog#wb-dialog{width:100vw;height:100dvh;border-radius:0}.wb-head{gap:6px;padding:6px}.sheet-tabs button{font-size:12px}.wb-foot{flex-wrap:wrap}.wb-head strong{font-size:13px}}
 body.qc-report-center .report-page .skim thead tr{position:static;background:var(--sheet)!important}
 
-#wb-discard{border:0;border-radius:5px;background:#f2f4f0;color:#455b4d;padding:5px 9px}
 .rate-chart{margin:0;padding:12px clamp(4px,2vw,28px) 32px;font-family:var(--sheet-font);color:var(--sheet-ink);font-variant-numeric:tabular-nums}
 .rate-chart figcaption{font-size:16px;font-weight:600;margin:0 0 32px}
 .rate-plot{position:relative;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));height:clamp(180px,29vh,280px);margin-left:44px}
