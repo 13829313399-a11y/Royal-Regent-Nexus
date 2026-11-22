@@ -2612,11 +2612,6 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         "molding_sample:production_complete",
         "molding_sample:notification_read",
     }
-    injection_permissions = {
-        "injection_scheduling:read",
-        "injection_scheduling:plan",
-        "injection_scheduling:report",
-    }
     order_inbox_permissions = {"customer_order:inbox_read", "customer_order:inbox_receive"}
     clerk_profile = login_fixed_position_test_user(client, "fixed_molding_clerk")
     clerk_grant = next(
@@ -2625,7 +2620,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         if grant["role_id"] == "position_molding_clerk"
     )
     assert clerk_grant["scope_mode"] == "cross_factory_read"
-    assert set(clerk_grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions
+    assert set(clerk_grant["permissions"]) == task_permissions | order_inbox_permissions
     assert client.get("/api/injection/BP-FIXED-CLERK-FOREIGN").status_code == 200
     foreign_engineering_detail = client.get(
         "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
@@ -2743,9 +2738,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         profile = login_fixed_position_test_user(client, username)
         grant = next(item for item in profile["grants"] if item["role_id"] == role_id)
         assert grant["scope_mode"] == "cross_factory_operate"
-        assert set(grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions | {
-            "injection_scheduling:master_write"
-        }
+        assert set(grant["permissions"]) == task_permissions | order_inbox_permissions
         assert client.get(
             "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
         ).status_code == 200

@@ -20,7 +20,6 @@
 ### 其他业务验收
 
 - [成员协作 R1 实施与验收](../collaboration-r1.md)
-- [注塑排产中枢 V3：实现与使用](injection-scheduling-v3.md)
 - [QC 完整系统集成：审查与发布约束](../business/qc-full-integration-20261105.md)
 - [QC 模块版本、主分支兼容性与 Git 安全同步审计](../business/qc-production-audit-20261104.md)
 - [纸箱模块上线前最终验收报告](../business/纸箱上线前最终验收报告.md)

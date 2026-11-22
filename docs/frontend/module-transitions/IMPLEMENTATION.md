@@ -17,7 +17,7 @@
 | P0 | 核对包内规范、七文件基线、RouterView/fullPage、守卫、目录、原动效、偏好与测试起点 |
 | P1 | 单实例路由树、独立装饰层、最终路由确认驱动、导航 token、取消和错误清理 |
 | P2 | 真实图标/颜色、身份/厂区隔离的来源记录、返回滚动/焦点、失效入口回退 |
-| P3 | 首页、UV、3D、注塑首屏所有权；局部导航不重播；真实目录与原生链接语义 |
+| P3 | 首页、UV、3D 首屏所有权；局部导航不重播；真实目录与原生链接语义 |
 | P4 | 30 个实际目录入口、断点、移动预览、慢网、离开保护、降级、成对性能；修复 320px 溢出和返回滚动竞争 |
 | P5 | 相关回归、最终专项、类型检查、完整构建通过；实施、52 项验收、覆盖矩阵、证据和回退说明 |
 
@@ -46,15 +46,14 @@ Router loading 增加自身代次所有权，旧异步守卫/清理不能结束�
 | `src/components/modules/{ModuleCard,DepartmentTabs}.vue` | 来源记录、图标锚点、单次激活 |
 | `src/components/portal/{HomeAppearanceControl,HomeModulePreview,HomePreviewRegion}.vue`、`styles/home-prism-motion.css` | 偏好文案、预览/焦点、即时按压 |
 | `src/components/common/PageHeader.vue`、`src/views/ModuleDetailView.vue` | 标题锚点 |
-| `src/views/{DashboardView,ModuleCenterView,InjectionSchedulingView}.vue` | 首屏所有权、锚点 |
+| `src/views/{DashboardView,ModuleCenterView}.vue` | 首屏所有权、锚点 |
 | `src/features/uv-operations/{UvWorkspaceShell.vue,components/UvPageFrame.vue}` | UV 首屏消重，保留局部七页 |
 | `src/features/three-d-printing/WorkspaceView.vue` | 3D 首屏消重 |
-| `src/features/injection-scheduling/{components/DemandPool.vue,styles/motion.css}` | 注塑头部/需求池消重 |
 | `src/style.css` | 删除旧 route-page；320px修复 |
 | `src/router/__tests__/authorizationRefresh.spec.ts` | 补既有测试 active Pinia |
 | `src/components/layout/__tests__/enterpriseUiShell.spec.ts`、`src/views/__tests__/productionModuleEntry.spec.ts` | 更新过时结构/样式/提取后目录实现断言 |
 | `tsconfig.test.json` | 新测试类型检查 |
-| `shared/assistant-help/modules/{portal,injection-scheduling,carton-procurement}.json` | 仅四处源码哈希同步，复核帮助内容无须改写 |
+| `shared/assistant-help/modules/{portal,carton-procurement}.json` | 源码哈希同步，复核对应帮助内容 |
 | `DESIGN.md`、`PROJECT_MEMORY.md` | 更新现有规范对应段落 |
 | `.gitignore`、`docs/frontend/module-transitions/*.md` | 本目录 Markdown 窄例外和交付文档 |
 

@@ -19,7 +19,7 @@
 
 阅读本文件、[立项时代码核查](../archive/assistant/02_CODE_AUDIT.md)、`03_ACCEPTANCE_CASES.md`，再按项目 `AGENTS.md` 和最新 `PROJECT_MEMORY.md` 执行。实际代码优先于旧描述。先复核与本功能相关的代码差异，再实现、验证、复审、修复、回归；不能只交付计划或截图。
 
-本轮开发范围是“新助手及必要接入点”。不得顺手重写报价、注塑、通知、身份管理、文档工具；不得为了新助手恢复旧 `/api/ai/*`、`/workbench/ai`、旧 `ai_*` 表和旧后台任务架构。不要创建新的用户权限体系，也不要要求管理员逐个授予“聊天权限”。
+本轮开发范围是“新助手及必要接入点”。不得顺手重写报价、通知、身份管理、文档工具；不得为了新助手恢复旧 `/api/ai/*`、`/workbench/ai`、旧 `ai_*` 表和旧后台任务架构。不要创建新的用户权限体系，也不要要求管理员逐个授予“聊天权限”。
 
 审查时工作区已有 `PROJECT_MEMORY.md` 修改和未跟踪 `test-artifacts/`；这些不是本设计产生的。实施前重新记录工作区状态，保留既有改动。当前请求没有授权提交、推送、切换分支、上线或直接迁移真实业务库。
 
@@ -76,7 +76,7 @@
 | 已核实的代码事实 | 开发含义 |
 |---|---|
 | `src/App.vue` 在 `AppShell` 之外挂载 `WorkCenterHost` | 新助手也应从应用根层挂载，不寄生于某一个侧栏或部门页 |
-| `AppShell.vue` 的 `route.meta.fullPage` 分支直接渲染 `RouterView` | 只往普通布局加抽屉，会漏掉注塑、3D、报价、QC、供应商等全屏页 |
+| `AppShell.vue` 的 `route.meta.fullPage` 分支直接渲染 `RouterView` | 只往普通布局加抽屉，会漏掉 3D、报价、QC、供应商等全屏页 |
 | `src/lib/http.ts` Axios 默认超时 **15000ms**，已有 `dispatchAccessFailure` | 聊天流不能直接照搬普通 Axios 请求；fetch 流也必须接回同一 401/403 处理链 |
 | `auth.applySession()` 每次刷新也会增加 `sessionVersion`；身份同步周期为 45 秒 | 不能把任何 sessionVersion 变化都当成退出登录，否则长回答会被周期性中断 |
 | `pageAccessPolicy.ts` 允许部分已登录只读浏览，但严格路由仍独立校验 | “页面能打开”不能作为真实数据读取授权 |
@@ -168,12 +168,12 @@
   原业务页面                                      曜灵侧舱
 ┌────────────────────────────────┐   ┌────────────────────────────┐
 │ 原来的工具栏、表格、图表       │   │ ◉ 曜灵 · Nexus AI    ─ □ × │  深翡翠舱头
-│                                │   │ 当前：华兴 / 注塑排产       │  可移除上下文
+│                                │   │ 当前：华兴 / 事项工作台       │  可移除上下文
 │ 内容不因打开助手自动重载       │   ├────────────────────────────┤
 │                                │   │ 聊一聊  讲解本页  指给我看 │  滑动胶囊
 │ 用户仍可滚动和操作当前模块     │   ├────────────────────────────┤
 │                                │   │ 你好，我是曜灵。           │
-│       ╭── 欠数 ──╮             │   │ 你可以问任何问题，         │
+│       ╭── 待办 ──╮             │   │ 你可以问任何问题，         │
 │       │  已注册  │← 柔光定位线  │   │ 也可以让我带你看懂这里。   │
 │       ╰──────────╯             │   │                            │
 │                                │   │ [本页怎么用] [解释字段]    │
@@ -194,7 +194,7 @@
 | `side` 侧舱 | 桌面初始 432×640px，宽允许 360–600px、高允许 360–820px，受当前视口及上下边距约束；标题栏可自由移动，右下角可调整宽高；非模态，不锁背景滚动 |
 | `focus` 专注 | 用户主动点击后居中放大，宽 `min(960px, calc(100vw - 48px))`；长文、代码、宽表更舒服；与侧舱使用同一会话和同一请求 |
 
-桌面“固定侧栏”是可选增强：仅在页面主动声明能预留空间、可用业务宽度足够时启用。注塑右侧检查面板、报价侧栏、QC 抽屉已占空间时优先浮层或收起助手，不能直接给 `body` 加永久 `padding-right`。
+桌面“固定侧栏”是可选增强：仅在页面主动声明能预留空间、可用业务宽度足够时启用。报价侧栏、QC 抽屉已占空间时优先浮层或收起助手，不能直接给 `body` 加永久 `padding-right`。
 
 移动端 `<768px` 使用近全屏模态抽屉；默认收起；正确处理安全区、软键盘、100dvh 和输入区定位。`focus` 模态有焦点圈定，`side` 非模态不圈定焦点。Reka UI 可用于真正的模态层，不能把所有状态都当 Dialog。
 
@@ -299,7 +299,6 @@ shared/assistant-help/
   modules/
     portal.json
     work-center.json
-    injection-scheduling.json
     three-d-printing.json
     molding-sample.json
     internal-quote.json
@@ -322,45 +321,15 @@ shared/assistant-help/
 
 ### 6.3 条目契约
 
-```json
-{
-  "id": "injection.remaining_shots",
-  "module_id": "injection-scheduling",
-  "title": "欠数是什么意思",
-  "kind": "field",
-  "audience": "internal",
-  "route_names": ["injection-scheduling"],
-  "factory_ids": ["huaxing", "huadeng", "huakang-a", "huakang-b"],
-  "anchor_id": "injection.remaining_shots",
-  "field_keys": ["remaining_shots", "allocation_mode"],
-  "summary": "尚需完成的啤数，具体口径取决于顺序啤数分配或同啤产物分配。",
-  "variants": [
-    {"when": "SEQUENTIAL_SHOTS", "description": "计划啤数加补数调整，再减期初与已上报啤数，最低按零显示。"},
-    {"when": "CO_OUTPUT_UNITS", "description": "按欠良品件除以有效每啤出件，向上取整；必要参数缺失时不能当零。"}
-  ],
-  "source_refs": [
-    {"path": "backend/app/services/injection_scheduling/calculations.py", "symbol": "quantities"},
-    {"path": "backend/app/services/injection_scheduling/field_registry.py", "symbol": "FIELDS"}
-  ],
-  "knowledge_version": "待实施时生成",
-  "verified_commit": "待实施时记录",
-  "status": "verified"
-}
-```
-
-上例演示已核实的含义；“待实施时生成”必须在交付时替换，不能作为生产知识条目发布。内部源码路径用于开发追溯；面向普通用户显示友好的“注塑字段说明 / 版本”，不暴露无关仓库信息。
+受众、路由、字段、页面锚点和依据由模块的知识条目维护。事项工作台的 `work-center.overview` 包含可定位的步骤、来源与版本。[事项工作台条目](../../shared/assistant-help/modules/work-center.json)
 
 ### 6.4 真实业务示例，必须写准
-
-**注塑欠数**：普通口径和 `CO_OUTPUT_UNITS` 口径分开；缺失值不等于零；同啤产物组的总啤数不是把所有产品啤数机械相加。完整公式见审查附录。
 
 **事项工作台**：已读、稍后提醒、关注等属于个人阅读状态；办理完成属于源业务生命周期。不能教用户“标记已读就完成任务”。`actionable_total` 与 `focus_total` 也不同，后者排除了有效稍后提醒项。
 
 **3D 状态**：`PREPARE/PREPARING/DOWNLOADING/SLICING` 是准备中，`STALE` 是等待状态更新，不能直接断言机器故障。设备刚显示完成，不等于所有生产记账和入库都已完成。
 
 **UV**：当前固定华康 A；`synthetic` 数据不能被讲成真实生产实绩。其他厂区问 UV 可以获得通用知识，但不能生成不存在的该厂 UV 入口。
-
-**全集团与模块厂区**：全项目有六个生产厂区，注塑当前代码只列四个；不能把六厂列表强行扩到每个模块。
 
 **内部报价**：存在不同版本、方案与流程。必须读取当前单据的真实模块版本再给步骤；不能仅看路由标题“汇总与放行”就断言所有报价都需要同一套审批。
 
@@ -376,7 +345,7 @@ interface AssistantHelpTarget {
 }
 ```
 
-模板可使用 `data-yl-help="injection.remaining_shots"` 或类型安全的 composable 注册。`reveal` 必须由业务组件维护，不能执行模型给出的选择器或脚本。
+模板可使用 `data-yl-help="work-center.overview"` 或类型安全的 composable 注册。`reveal` 必须由业务组件维护，不能执行模型给出的选择器或脚本。
 
 流程：点击“指给我看” → 展示轻量选择态 → 悬停/键盘选择已注册区域 → 点击后退出选择态 → 显示该条目的即时说明 → 允许“讲详细点”“举个例子”“带我操作”。
 
@@ -639,24 +608,24 @@ V1 不新增常驻任务平台：由删除请求和活动 run 的收尾路径尝
 ```json
 {
   "client_request_id": "客户端生成且同一发送重试保持不变的 UUID",
-  "text": "这个欠数是什么意思？",
+  "text": "标记已读后，事项办完了吗？",
   "attachment_ids": [],
   "intent": "explain_element",
   "profile_id": "default",
   "thinking": "auto",
   "web_search": "off",
   "page_context": {
-    "module_id": "injection-scheduling",
-    "route_name": "injection-scheduling",
+    "module_id": "work-center",
+    "route_name": "notification-center",
     "factory_id": "huaxing",
-    "help_id": "injection.remaining_shots"
+    "help_id": "work-center.overview"
   }
 }
 ```
 
 页面元数据是请求线索，不是授权凭证。后端不信任 browser 传来的模型名、系统提示词、owner、tool result、permission、任意 URL、任意 DOM 或整段源码。
 
-自由聊天允许 `page_context=null`。未传实际单据参数时，模型应解释一般规则，不说“你这张单欠 1000 啤”。
+自由聊天允许 `page_context=null`。未传实际单据参数时，模型只解释一般规则。
 
 ### 9.5 SSE 事件契约
 
@@ -670,13 +639,13 @@ event: response.phase
 data: {"run_id":"r1","seq":2,"phase":"thinking"}
 
 event: response.delta
-data: {"run_id":"r1","seq":3,"channel":"answer","text":"这里的欠数……"}
+data: {"run_id":"r1","seq":3,"channel":"answer","text":"标记已读会更新个人阅读状态。"}
 
 event: help.citations
-data: {"run_id":"r1","seq":4,"items":[{"id":"injection.remaining_shots","version":"v1"}]}
+data: {"run_id":"r1","seq":4,"items":[{"id":"work-center.overview","version":"v1"}]}
 
 event: ui.actions
-data: {"run_id":"r1","seq":5,"items":[{"type":"highlight","help_id":"injection.remaining_shots","label":"定位这个字段"}]}
+data: {"run_id":"r1","seq":5,"items":[{"type":"highlight","help_id":"work-center.overview","label":"查看事项总览"}]}
 
 event: run.completed
 data: {"run_id":"r1","seq":6,"finish_reason":"stop","usage":null}
@@ -797,7 +766,7 @@ location ^~ /api/assistant/ {
 
 第一步关闭服务端助手开关并终止活动 run，隐藏入口；第二步回退助手前端/服务代码。保留已创建新表和会话，不在紧急回退中破坏用户数据。
 
-不 downgrade 到旧 AI 退役迁移之前。需要删除新助手表时另行备份和明确确认。回退后报价、注塑、文档识别、通知和认证必须继续通过回归。
+不 downgrade 到旧 AI 退役迁移之前。需要删除新助手表时另行备份和明确确认。回退后报价、文档识别、通知和认证必须继续通过回归。
 
 ## 12. 开发阶段：每阶段必须带验收证据
 
@@ -818,7 +787,7 @@ location ^~ /api/assistant/ {
 
 **按证据修改**：package 和 lockfile、新依赖、前端 Docker build flag、后端依赖双清单、模块的非破坏性 reveal API。
 
-**保持业务语义不变**：报价公式、注塑算法、设备控制、源单审批、通知已读/责任状态、现有文档工具的模型和权限、原身份生命周期。
+**保持业务语义不变**：报价公式、设备控制、源单审批、通知已读/责任状态、现有文档工具的模型和权限、原身份生命周期。
 
 `PROJECT_MEMORY.md` 仅在功能真实落地后原位更新相应段落，写清新助手与旧退役系统的区别，不把这份计划预先写成“已上线”。保留该文件原先尚未提交的用户改动。
 
@@ -874,7 +843,7 @@ test_assistant_privacy.py
 - [ ] 深度思考、联网、图片每个显示的能力均与实际 provider 契约对应。
 - [ ] 跨账号、撤权、任职周期、迟到响应、并发两标签页测试通过。
 - [ ] 元素讲解与引导绑定真实字段和入口；未注册目标不胡编。
-- [ ] 注塑两种欠数口径、事项已读/完成、3D 准备/过期状态、UV 厂区范围能解释正确。
+- [ ] 事项已读/完成、3D 准备/过期状态、UV 厂区范围能解释正确。
 - [ ] 自定义帮助新增/代码变化后的校验机制存在，并实际执行。
 - [ ] 视口 320/390/768/1024/1280/1536/1920 验证，无横向页面溢出、无遮挡主操作。
 - [ ] 键盘、中文输入法、减少动效、焦点恢复、软键盘和高倍缩放可用。

@@ -33,7 +33,7 @@
 | API与隔离 | `backend/app/api/assistant.py`、`schemas/assistant.py`、`models/assistant.py`：cookie认证、Origin检查、no-store、稳定错误DTO、本人/epoch归属 |
 | 运行器 | `backend/app/services/assistant/`：独立httpx2 Chat Completions、UTF-8/SSE解析、真实阶段、工具结果、短事务、共享准入/取消/lease、断线关闭上游、未知用量不计零 |
 | 数据生命周期 | `20260929_0131_nexus_assistant.py`、`backend/scripts/cleanup_assistant.py`：显式迁移、pending墓碑、附件归属/解码/规范化、清理重试、可选预算与保留期 |
-| 页面说明 | `shared/assistant-help/modules/*.json`、`schema.json`；构建源码指纹检查；各页面语义锚点；注塑组件主动 reveal 且遵守 dirty/busy 限制 |
+| 页面说明 | `shared/assistant-help/modules/*.json`、`schema.json`；构建源码指纹检查；各页面语义锚点 |
 | 配置/发布边界 | `backend/app/core/config.py`、依赖清单、`nginx.prod.conf`、`docker-compose.prod.yml` 的独立助手附件卷 |
 | 文档与规范 | 当前目录、`DESIGN.md`局部例外、`PROJECT_MEMORY.md`原位新增长期事实；原4处未提交记忆修改完整保留 |
 
@@ -71,8 +71,8 @@
 
 - 宽度：`visual/width-320.png`、`390`、`768`、`1024`、`1280`、`1536`、`1920`。
 - 阅读：`long-answer.png`、`focus-final.png`、`cancelled.png`、`reading-new-content.png`、`mobile-code-table.png`。
-- 共存：`surface-work-center.png`、`surface-injection.png`、`surface-three-d.png`、`surface-internal-quote.png`、`surface-identity.png`、`surface-qc.png`、`qa-supplier.png`。
-- 行为：`injection-reveal.png`、`mobile-guide.png`、`business-modal-priority.png`、`spa-session-preserved.png`、`free-chat-factory-switch.png`、`panel-360.png`、`panel-600.png`。
+- 共存：`surface-work-center.png`、`surface-three-d.png`、`surface-internal-quote.png`、`surface-identity.png`、`surface-qc.png`、`qa-supplier.png`。
+- 行为：`mobile-guide.png`、`business-modal-priority.png`、`spa-session-preserved.png`、`free-chat-factory-switch.png`、`panel-360.png`、`panel-600.png`。
 - 未配置/失败：`unconfigured-fixture.png`、`provider-error-fixture.png`（合成前端HTTP边界；实际后端错误分类另有专项）。
 
 ## 验收边界
