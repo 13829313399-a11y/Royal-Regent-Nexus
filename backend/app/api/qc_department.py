@@ -11,10 +11,12 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import get_db
+from app.models.auth import AuthUser
 from app.services.auth import AuthContext, can, get_current_user
 from app.api.qc_inspection import _ensure_permission
 from app.services import qc_workflow, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
@@ -38,7 +40,7 @@ STATIC_FILES = {
       for scene in ("schedule", "inspection", "review", "summary", "reports")
       for pose in ("rest", "action")),
     "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
-    "qc-report-workbook.js", "qc-report-workbook.css",
+    "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",
@@ -182,6 +184,17 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         identity = asset_path.removeprefix('api/inspection-dossier/records/')
         result = await run_in_threadpool(dossier_detail, factory_id, identity,
             full_business=can(user, 'customer_order:read', factory_id, 'sales-business'))
+        reports = result['reportSupplements']
+        rows = reports['items'] + reports['changes']
+        actor_ids = sorted({row['actor']['id'] for row in rows if row['actor']['id']})
+        names = {}
+        for i in range(0, len(actor_ids), 200):
+            for actor_id, name in db.execute(select(AuthUser.id, AuthUser.display_name).where(
+                AuthUser.id.in_(actor_ids[i:i+200]))):
+                names[actor_id] = name
+        for row in rows:
+            if name := names.get(row['actor']['id']):
+                row['actor']['name'] = name
         return JSONResponse(result, headers=NO_CACHE)
     if asset_path == "api/schedule-source" and request.method == "GET":
         from app.services import qc_schedule_view
@@ -192,17 +205,38 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return JSONResponse(qc_schedule_view.listing(db, factory_id,
             date_from=request.query_params.get('dateFrom', ''),
             date_to=request.query_params.get('dateTo', '')), headers=NO_CACHE)
-    if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
-        from app.services.qc_report_workbook import preview
+    if asset_path in {'api/report-workbook', 'api/report-workbook/save'}:
+        from app.services import qc_report_workbook
         params = request.query_params
         expected = {'kind', 'day', 'customer'}
         if params.get('kind') == 'annual-stats':
             expected.add('result')
         if set(params) != expected or any(len(params.getlist(k)) != 1 for k in params):
             raise HTTPException(422, '工作簿预览参数不正确')
-        result = await run_in_threadpool(preview, factory_id, params['kind'], params['day'], params['customer'],
-                                         can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
-        return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
+        scope = (factory_id, params['kind'], params['day'], params['customer'])
+        if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
+            result = await run_in_threadpool(qc_report_workbook.preview, *scope,
+                can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
+            return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
+        if asset_path != 'api/report-workbook/save' or request.method != 'POST':
+            raise HTTPException(405, '不支持此操作')
+        _ensure_permission(db, user, 'qc_inspection:result_write', factory_id)
+        if request.headers.get('sec-fetch-site') == 'cross-site':
+            raise HTTPException(403, '不接受跨站写入')
+        if request.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
+            raise HTTPException(415, '请使用 JSON 提交')
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 32 * 1024:
+                raise HTTPException(413, '提交内容过大')
+        try:
+            body = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise HTTPException(400, '无效 JSON') from None
+        result = await run_in_threadpool(qc_report_workbook.save_record, scope[0], {'id': user.id}, *scope[1:],
+                                         params.get('result', 'FAIL'), body)
+        return JSONResponse(result, headers=NO_CACHE)
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
         keys = {"date", "revision"} if exporting else {"date"}

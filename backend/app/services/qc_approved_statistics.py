@@ -175,7 +175,10 @@ def query(factory, params, *, _records=None, _report_snapshots=None, _dashboard_
                     customerKey=key,
                     customer=customer['name'], customerCode=customer['code'], result=result,
                     poNo=str(item.get('poNo') or ''), productName=str(item.get('productName') or ''),
-                    inspectionProblem=str(item.get('inspectionProblem') or ''), remark=str(item.get('remark') or '')))
+                    inspectionProblem=str(item.get('inspectionProblem') or ''),
+                    remark=str(item.get('remark') or item.get('otherRemark') or ''),
+                    approvalRevision=item['revision'],
+                    supplementAllowed=not any(item.get(flag) for flag in ('testData','reference','referenceData'))))
             if len(customers) > MAX_CUSTOMERS:
                 raise HTTPException(503, '客户数量超过试点容量，未返回部分统计')
             scoped_date = report_date if _report_snapshots is not None else final
@@ -254,7 +257,7 @@ def dashboard(factory, params):
     )
 
 
-def report(factory, params, *, all_detail_rows=False):
+def report(factory, params, *, all_detail_rows=False, workbook_preview=False):
     """One validated read snapshot supplies facets, aggregates and paged details.
 
     Result/page affect details only; no client-side page can change the denominator.
@@ -323,12 +326,39 @@ def report(factory, params, *, all_detail_rows=False):
     pages = max(1, (len(details) + page_size - 1) // page_size)
     page = min(int(page), pages)
     revision = sha256(summary.dump([factory, year, month, day, customer, result, selected]).encode()).hexdigest()
+    visible = details if all_detail_rows else details[(page-1)*page_size:page*page_size]
     return dict(factory=factory, source=source['source'], ready=source['ready'], revision=revision,
         filters=dict(year=year, month=month, day=day, customer=customer, result=result),
         options=dict(years=years, months=months, days=days, customers=customers),
         totals=_totals(Counter(r['result'] for r in selected)),
         months=[dict(month=k, **_totals(v)) for k, v in sorted(grouped.items())],
-        details=dict(items=details if all_detail_rows else details[(page-1)*page_size:page*page_size], total=len(details),
+                details=dict(items=_supplement_details(factory, visible, workbook_preview), total=len(details),
             page=page, pageSize=page_size, pages=pages),
         scheduleDateCount=sum(r['usesScheduleDate'] for r in selected),
-        missingDate=sum(not r['date'] for r in rows), excluded=source['excluded'], notices=notices)
+                missingDate=sum(not r['date'] for r in rows), excluded=source['excluded'], notices=notices)
+
+
+def _supplement_details(factory, rows, workbook_preview):
+    from app.services.qc_daily_report import _quantity
+    from app.services.qc_monthly_templates import RecordSupplements
+    saved = RecordSupplements(factory)
+    result = []
+    for row in rows:
+        item = {**row}
+        revision = item.pop('approvalRevision')
+        allowed = item.pop('supplementAllowed')
+        cells = {}
+        if allowed and item['date']:
+            for col, name, field in ((2,'productName','productName'), (3,'quantity','quantity'),
+                                     (5,'agency','institution'), (7,'remark','remark')):
+                if str(item[name] if item[name] is not None else '').strip() or (col == 7 and item['inspectionProblem'].strip()):
+                    continue
+                cell = saved.cell(item['date'], item['customerKey'], revision, f'detail:{item["id"]}:{field}')
+                # Keep the original shape of missing quantities (None vs. empty).
+                if cell['value'] or cell['version']:
+                    item[name] = _quantity(cell['value']) if name == 'quantity' else cell['value']
+                cells[col] = cell
+        if workbook_preview:
+            item['supplementCells'] = cells
+        result.append(item)
+    return result

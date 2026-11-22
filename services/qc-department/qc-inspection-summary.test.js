@@ -39,6 +39,27 @@ test('QC remark displays the authoritative snapshot, hides blank values and neve
   }finally{p.dom.window.close();}
  }
 });
+
+test('report values and history are explicitly separate from approval and escape stored text',async()=>{
+ const p=page();try{
+  await p.w.QcInspectionSummary.load();
+  const weekly={label:'合同号',value:'000017',source:'周报明细补录',scope:'周起始 2026-11-02',current:true,actor:{id:'qc-1',name:'报告录入员'}};
+  const monthly={label:'合同号',value:'000018',source:'月度库补录（日 / 月 / 年及图文共用）',scope:'2026-10',current:false,actor:{id:'qc-2'}};
+  const audit={...weekly,id:'week:1',label:'报告备注 / 照片备注',at:'2026-11-02T08:00:00Z',before:'<img src=x onerror=alert(1)>',after:''};
+  p.w.fetch=async()=>({ok:true,json:async()=>({qc:{id:'one',contractNo:'审核合同号',remark:'已审核原备注'},reportSupplements:{
+   status:'unavailable',items:[weekly,monthly],changes:[audit,{...monthly,id:'month:2',at:'2026-10-02T08:00:00Z',before:'',after:'000018'}]
+  }})});
+  p.d.querySelector('[data-summary-id]').click();await tick();
+  const qc=p.d.querySelector('#qsum-panel-qc'),changes=p.d.querySelector('#qsum-panel-changes');
+  assert.match(qc.textContent,/审核合同号.*报告补录（本单）.*不覆盖验货审核原值/s);
+  assert.match(qc.textContent,/周报明细补录.*000017.*历史范围.*000018/s);
+  assert.match(qc.textContent,/部分报告补录暂不可读取/);
+  assert.match(changes.textContent,/报告补录修改记录.*报告录入员.*修改前<img src=x onerror=alert\(1\)>修改后空/s);
+  assert.match(changes.textContent,/账号标识：qc-2/);
+  assert.equal(changes.querySelector('img'),null);
+  assert.doesNotMatch(p.d.querySelector('#qsum-panel-review').textContent,/报告补录/);
+ }finally{p.dom.window.close();}
+});
 const script=readFileSync(new URL('./qc-inspection-summary.js',import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 function page(){

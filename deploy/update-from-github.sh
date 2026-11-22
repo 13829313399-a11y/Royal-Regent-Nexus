@@ -10,6 +10,7 @@ HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-120}"
 MAINTENANCE_NOTICE_ENABLED="${MAINTENANCE_NOTICE_ENABLED:-1}"
 NOTICE_SECONDS="${NOTICE_SECONDS:-300}"
 DEPLOYMENT_NOTICE_DIR="${DEPLOYMENT_NOTICE_DIR:-$APP_DIR/.deployment-notice}"
+IAM_WEB_APPROVAL_DIR="${IAM_WEB_APPROVAL_DIR:-/opt/royal-regent/iam-web-release/approved}"
 export DEPLOYMENT_NOTICE_DIR
 
 compose() {
@@ -220,7 +221,11 @@ begin_maintenance_notice() {
 }
 
 candidate_id=""
+web_probe_id=""
 cleanup_candidate() {
+  if [ -n "$web_probe_id" ]; then
+    docker rm -f "$web_probe_id" >/dev/null || true
+  fi
   if [ -n "$notice_id" ]; then
     if [ "$notice_entered" = "1" ]; then
       notice fail --id "$notice_id" >/dev/null || true
@@ -237,6 +242,37 @@ cleanup_candidate() {
 trap cleanup_candidate EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+verify_iam_receipt() {
+  receipt="$1"
+  expected="$2"
+  shift 2
+  python3 deploy/check_iam_frontend.py "$@" > "$receipt" 2> "$receipt.stderr" || return 1
+  cmp -s "$expected" "$receipt" || { echo "IAM receipt differs from $expected" >> "$receipt.stderr"; return 1; }
+}
+
+restore_previous_web() {
+  # Never replace a Web container belonging to a concurrent deployment.
+  [ "$(compose ps -a -q web)" = "$web_id" ] || return 1
+  docker compose --project-directory "$APP_DIR" --project-name "$prior_project" \
+    --env-file "$ENV_FILE" -f "$backup_dir/compose.snapshot.yml" -f "$backup_dir/iam-web-rollback.yml" \
+    up -d --no-deps --no-build --pull never web || return 1
+  restored_id="$(compose ps -q web)"
+  [ -n "$restored_id" ] || return 1
+  wait_for_healthy "$restored_id" "Restored Web"
+  verify_iam_receipt "$backup_dir/iam-web-restored.txt" "$backup_dir/iam-web-before.txt" --url http://127.0.0.1
+}
+
+verify_live_iam() {
+  if ! verify_iam_receipt "$1" "$backup_dir/iam-web-candidate.txt" "$2" "$3"; then
+    cat "$1.stderr" >&2
+    if [ "$MAINTENANCE_NOTICE_ENABLED" = 0 ]; then
+      restore_previous_web || fail "Could not verify Web-only rollback. Inspect $backup_dir"
+      echo "Restored the verified prior Web; check $backup_dir for the failed candidate." >&2
+    fi
+    fail "Live IAM verification failed. See $1 and $1.stderr"
+  fi
+}
 
 cd "$APP_DIR"
 
@@ -269,12 +305,26 @@ git fetch --prune origin
 target_commit="$(git rev-parse "$UPSTREAM")"
 
 if [ "$old_commit" = "$target_commit" ]; then
-  echo "Production is already at $target_commit; verifying QC readiness"
+  echo "Production is already at $target_commit; verifying served IAM workspace and QC readiness"
+  iam_installed="$(python3 deploy/check_iam_frontend.py --container "$web_id")"
+  iam_served="$(python3 deploy/check_iam_frontend.py --url http://127.0.0.1)"
+  [ "$iam_installed" = "$iam_served" ] || fail "Installed and served IAM assets differ"
   compose exec -T api python scripts/qc_dossier_release.py verify
   exit 0
 fi
 git merge-base --is-ancestor "$old_commit" "$target_commit" \
   || fail "Production HEAD cannot be fast-forwarded to $UPSTREAM"
+
+if [ "$MAINTENANCE_NOTICE_ENABLED" = 0 ]; then
+  # This updater snapshots one Compose file. Do not use that snapshot to
+  # reconstruct a live Web with private networks or mounts from other layers.
+  prior_config_files="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$web_id")"
+  [ "$prior_config_files" = "$(realpath "$COMPOSE_FILE")" ] \
+    || fail "Web uses a different Compose file set; use its recorded release stack"
+  prior_workdir="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$web_id")"
+  [ "$prior_workdir" = "$(realpath "$APP_DIR")" ] \
+    || fail "Web uses another Compose project directory; use its recorded release stack"
+fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 old_short="$(printf '%.7s' "$old_commit")"
@@ -314,6 +364,31 @@ git merge --ff-only "$target_commit"
 
 echo "Building API and Web images while the current service remains online"
 compose build api web
+
+web_image="$(compose config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c["services"]["web"].get("image") or (c["name"] + "-web"))')"
+python3 deploy/check_iam_frontend.py --image "$web_image" --approve-dir "$IAM_WEB_APPROVAL_DIR" \
+  > "$backup_dir/iam-web-candidate.txt"
+
+# Exercise the candidate Nginx routes, including production mounts, on a
+# loopback-only temporary port before changing the service users reach.
+web_probe_id="$(compose run -d --no-deps --pull never -p 127.0.0.1::80 web)"
+wait_for_healthy "$web_probe_id" "Web HTTP candidate"
+probe_address="$(docker port "$web_probe_id" 80/tcp)"
+case "$probe_address" in 127.0.0.1:*) ;; *) fail "Unexpected private Web probe address";; esac
+verify_iam_receipt "$backup_dir/iam-web-probe.txt" "$backup_dir/iam-web-candidate.txt" --url "http://$probe_address" \
+  || fail "Candidate Nginx failed the IAM HTTP check. See $backup_dir/iam-web-probe.txt.stderr"
+docker rm -f "$web_probe_id" >/dev/null
+web_probe_id=""
+
+if [ "$MAINTENANCE_NOTICE_ENABLED" = 0 ]; then
+  # Before a release without a site-wide gate, prove a Web-only fallback.
+  prior_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$web_id")"
+  [ -n "$prior_project" ] || fail "Cannot identify the prior Compose project"
+  printf 'services:\n  web:\n    image: rrnexus-web:rollback-%s\n' "$timestamp" > "$backup_dir/iam-web-rollback.yml"
+  python3 deploy/check_iam_frontend.py --image "rrnexus-web:rollback-$timestamp" > "$backup_dir/iam-web-before.txt"
+  verify_iam_receipt "$backup_dir/iam-web-before-served.txt" "$backup_dir/iam-web-before.txt" --url http://127.0.0.1 \
+    || fail "Web-only rollback cannot reproduce the current verified site; use the maintenance-window workflow"
+fi
 
 begin_maintenance_notice
 
@@ -390,6 +465,7 @@ until compose exec -T api python scripts/qc_dossier_release.py verify > "$backup
   waited=$((waited + 2))
 done
 compose up -d --no-deps document-tools-worker
+verify_live_iam "$backup_dir/iam-web-installed.txt" --container "$web_id"
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1/health > "$backup_dir/health.json"
 if [ -n "$notice_id" ]; then
   # The business route intentionally returns 503 until all checks finish.
@@ -407,6 +483,10 @@ diff -u "$backup_dir/database-state-before.txt" "$backup_dir/database-state-afte
 (cd "$backup_dir" && sha256sum -c database.dump.sha256)
 
 docker image prune -f >/dev/null
+if [ -n "$notice_id" ]; then
+  notice probe --id "$notice_id" >/dev/null
+fi
+verify_live_iam "$backup_dir/iam-web-served.txt" --url http://127.0.0.1
 if [ -n "$notice_id" ]; then
   notice complete --id "$notice_id" >/dev/null
   notice_id=""

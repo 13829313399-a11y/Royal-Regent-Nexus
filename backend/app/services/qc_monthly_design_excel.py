@@ -250,5 +250,12 @@ def render(data,kind,factory):
             if r not in sheet.row_dimensions:
                 sheet.row_dimensions[r].height = 5
         sheet.print_area = sheet.dimensions
+    if kind=='quality':
+        s=book['客户质量汇总与签核']
+        # Prevent a lone signature row on a second A3 page for short summaries.
+        # Never shrink long reports into one unreadable page.
+        printable_height=297*72/25.4-72*(s.page_margins.top+s.page_margins.bottom)
+        height=sum(s.row_dimensions[r].height or s.sheet_format.defaultRowHeight for r in range(1,s.max_row+1))
+        if height<=printable_height*1.15:s.page_setup.fitToHeight=1
     book.active=0
     return save_cached(book,cache)

@@ -2,6 +2,7 @@
 import atexit
 import base64
 import json
+import logging
 import re
 import select
 import subprocess
@@ -12,23 +13,28 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
+from time import monotonic
 
 from fastapi import HTTPException
-from lxml import html
+from lxml import etree, html
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 import xlrd
 
 from app.services import qc_daily_report as daily, qc_weekly_templates as weekly, qc_monthly_templates as monthly
 from app.services import qc_weekly_excel, qc_monthly_excel, qc_issue_reports
+from app.services.qc_inspection_summary import dump
 from app.services.qc_approved_statistics import factory_label
 from app.services.document_tools.office_engine import office_executable
 
 ANNUAL_KINDS = {'annual-stats', 'annual-issues'}
 KINDS = {'daily', 'detail', 'issues', *monthly.design.NAMES, *ANNUAL_KINDS}
+RECORD_KINDS = {'daily', 'issues', *ANNUAL_KINDS}
 _cache = OrderedDict()
 _render_lock = Lock()
 MAX_CACHE_BYTES = 32 * 1024 * 1024
+log = logging.getLogger(__name__)
+_try_native_at = 0
 
 
 # The caller serializes access to Calc. Platforms without the native library
@@ -74,7 +80,7 @@ def resident_render(executable, source):
         try:
             _worker = subprocess.Popen([sys.executable, '-B', str(Path(__file__).with_name('qc_report_calc_worker.py')),
                                         str(library), str(program)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-            if not select.select([_worker.stdout], [], [], 15)[0] or _worker.stdout.readline().strip() != 'ready':
+            if not select.select([_worker.stdout], [], [], 4)[0] or _worker.stdout.readline().strip() != 'ready':
                 stop_worker()
                 return False
         except OSError:
@@ -83,7 +89,7 @@ def resident_render(executable, source):
     try:
         _worker.stdin.write(json.dumps(str(source))+'\n')
         _worker.stdin.flush()
-        if select.select([_worker.stdout], [], [], 45)[0] and _worker.stdout.readline().strip() == 'ok':
+        if select.select([_worker.stdout], [], [], 8)[0] and _worker.stdout.readline().strip() == 'ok':
             return source.with_suffix('.html').is_file()
     except OSError:
         pass
@@ -91,37 +97,48 @@ def resident_render(executable, source):
     return False
 
 
-def projection(factory, kind, day, customer, result='FAIL'):
+def projection(factory, kind, day, customer, result='FAIL', *, write_entry=None):
     if kind in ANNUAL_KINDS:
         factory_label(factory)
         start, _ = qc_issue_reports.bounds(day, 'yearly')
         if kind == 'annual-issues':
-            return qc_issue_reports.query(factory, start, 'yearly', customer)
+            return qc_issue_reports.query(factory, start, 'yearly', customer, workbook_preview=True, write_entry=write_entry)
         from app.services import qc_approved_statistics
         return qc_approved_statistics.report(factory, {'year': start[:4], 'customer': customer,
-                                                       'result': result}, all_detail_rows=True)
+                                                       'result': result}, all_detail_rows=True, workbook_preview=True)
     if kind == 'daily':
-        return daily.report(factory, day, 'daily', customer)
+        return daily.report(factory, day, 'daily', customer, workbook_preview=True)
     if kind == 'detail':
         return weekly.query(factory, day, customer)
     if kind == 'issues':
-        return qc_issue_reports.query(factory, day, 'weekly', customer)
+        return qc_issue_reports.query(factory, day, 'weekly', customer, workbook_preview=True, write_entry=write_entry)
     return monthly.query(factory, day, customer, design_id=kind)
 
 
 def writable_cells(kind, data):
     result = {}
 
-    def bind(sheet, rows, first, positions=None, step=1, fields=None):
+    def bind(sheet, rows, first, positions=None, step=1, fields=None, computed=None):
         for n, row in enumerate(rows):
             customer = row.get('customerKey', row['id'])
             for column, field in (fields or row.get('editableFields', {})).items():
+                if computed and computed(row, column):
+                    continue
                 cell = data['fields'][customer][field]
                 address = f'{sheet}:{get_column_letter(1 + (positions[column] if positions else column))}{first+n*step}'
                 result[address] = dict(customerKey=customer, field=field, value=str(cell['value']),
-                                       version=cell['version'], type='completion' if field.endswith(':completion') else 'text')
+                                        version=cell['version'], type=editor_type(field))
 
-    if kind in ANNUAL_KINDS or kind in ('daily', 'issues'):
+    if kind in RECORD_KINDS:
+        if kind == 'daily':
+            rows, first = data['rows'], 4
+        elif kind == 'annual-stats':
+            rows, first = data['details']['items'], 20
+        else:
+            rows, first = data['tables']['issues'], 7
+        for number, row in enumerate(rows, first):
+            for col, cell in row['supplementCells'].items():
+                result[f'0:{get_column_letter(col+1)}{number}'] = {**cell, 'type': editor_type(cell['field'])}
         return result
     rows = data['tables'][kind]
     if kind == 'detail':
@@ -129,8 +146,14 @@ def writable_cells(kind, data):
         bind(0, data['tables']['footer'], len(rows)+7, qc_weekly_excel.FOOTER_COLUMNS,
              fields={3:'returns', 5:'returnReason', 6:'hongKongContact', 7:'reworkA0D', 8:'weeklyRemark'})
     elif kind == 'quality':
+        from app.services.qc_monthly_overview_excel import re_number
+
+        def computed_boxes(row, column):
+            qty, pack, boxes = row['values'][6:9]
+            return column == 8 and boxes == '' and re_number(qty) and re_number(pack) and float(pack) > 0
+
         overview = data['overview']
-        bind(1, rows, 7)
+        bind(1, rows, 7, computed=computed_boxes)
         bind(0, overview['rows'], 7)
         top = len(overview['rows']) + 10
         bind(0, overview['distribution'], top+1, [6,7,8])
@@ -144,6 +167,55 @@ def writable_cells(kind, data):
             bind(1, caixing, 7)
             bind(1, data['tables']['summary'], len(caixing)+10, step=4)
     return result
+
+
+def editor_type(field):
+    if field.endswith((':completion', ':correctiveCompletion')):
+        return 'completion'
+    if field.endswith((':traderQDate', ':thirdPartyQDate', ':reportDate')):
+        return 'date'
+    if field == 'returns' or field.endswith(':count'):
+        return 'integer'
+    return 'number' if field.endswith(':quantity') else 'text'
+
+
+def save_record(factory, actor, kind, day, customer, result, body):
+    """Authorize the current logical cell, never arbitrary spreadsheet coordinates."""
+    expected = {'customerKey', 'field', 'value', 'baseVersion', 'writeRevision', 'requestKey'}
+    if kind not in RECORD_KINDS or not isinstance(body, dict) or set(body) != expected:
+        raise HTTPException(422, '工作簿保存参数不正确')
+    patterns = {'customerKey':'[a-f0-9]{64}', 'writeRevision':'[a-f0-9]{64}', 'requestKey':'[A-Za-z0-9-]{16,80}'}
+    if (any(not isinstance(body[k], str) or not re.fullmatch(pattern, body[k]) for k,pattern in patterns.items())
+            or type(body['baseVersion']) is not int or body['baseVersion'] < 0
+            or not isinstance(body['value'], str) or len(body['value']) > 4000
+            or re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]', body['value'])):
+        raise HTTPException(422, '补录字段、版本或内容不正确')
+    field = monthly.DETAIL_FIELD.fullmatch(body['field']) if isinstance(body['field'], str) else None
+    if not field:
+        raise HTTPException(422, '模板和计算单元格不可补录')
+    value = body['value']
+    if value:
+        if field[2] in ('traderQDate', 'thirdPartyQDate') and not daily.approved._date(value):
+            raise HTTPException(422, 'Q 货期请填写 YYYY-MM-DD')
+        if field[2] == 'quantity' and not re.fullmatch(r'[0-9]{1,15}(?:\.[0-9]{1,4})?', value):
+            raise HTTPException(422, '数量须为空白或非负数字，最多四位小数')
+        if field[2] == 'correctiveCompletion' and value not in ('整改中', '待复核', '已复核'):
+            raise HTTPException(422, '请选择有效的整改完成情况')
+    fingerprint = sha256(dump([kind, day, customer, result, body]).encode()).hexdigest()
+    actor_id = str(actor['id'])
+    data = projection(factory, kind, day, customer, result, write_entry=field[1])
+    if kind == 'annual-stats' and (data['filters']['year'] != day[:4] or data['filters']['customer'] != customer
+                                   or data['excluded'].get('missingProjection') or data['excluded'].get('invalidLineage')):
+        raise HTTPException(409, '年报来源或筛选范围已变化，请刷新后补录')
+    allowed = next((cell for cell in writable_cells(kind, data).values()
+                    if cell['customerKey'] == body['customerKey'] and cell['field'] == body['field']), None)
+    with monthly._store() as conn:
+        receipt = monthly.write_receipt(conn, factory, actor_id, body, fingerprint)
+        if receipt is not None:
+            return receipt
+        if not allowed or allowed['writeRevision'] != body['writeRevision']:
+            raise HTTPException(409, '此格已锁定或审核来源已变化，请刷新后核对；未覆盖原值')
+        return monthly.write_cell(conn, factory, allowed['month'], actor_id, body, fingerprint)
 
 
 def sheet_html(table, folder, sheet):
@@ -203,6 +275,8 @@ def sheet_html(table, folder, sheet):
 
 
 def render(factory, kind, data):
+    from app.services.qc_report_grid import render_grid
+    global _try_native_at
     if kind == 'annual-stats':
         from app.services.qc_annual_excel import workbook
         content = workbook(data)
@@ -214,18 +288,31 @@ def render(factory, kind, data):
         content = qc_weekly_excel.render(data, kind)
     else:
         content = qc_monthly_excel.render(data, kind, factory)
-    if kind == 'detail':
+    executable = office_executable() if monotonic() >= _try_native_at else None
+    if executable:
+        try:
+            sheets = render_native(executable, content, kind == 'detail')
+            rendered = {f'{i}:{addr}' for i,s in enumerate(sheets)
+                        for addr in re.findall(r'<td\b[^>]*\bdata-addr="([A-Z]+\d+)"',s['html'])}
+            if not set(writable_cells(kind,data)) <= rendered:
+                raise ValueError('Calc omitted editable cells')
+            return sheets, 'calc'
+        except (OSError, ValueError, subprocess.SubprocessError, etree.LxmlError) as exc:
+            _try_native_at = monotonic() + 30
+            log.warning('QC native workbook preview temporarily unavailable (%s); using the grid', type(exc).__name__)
+    return render_grid(content, kind == 'detail'), 'grid'
+
+
+def render_native(executable, content, legacy):
+    if legacy:
         names = xlrd.open_workbook(file_contents=content).sheet_names()
     else:
         book = load_workbook(BytesIO(content), read_only=True)
         names = book.sheetnames
         book.close()
-    executable = office_executable()
-    if not executable:
-        raise HTTPException(503, '工作簿预览引擎不可用')
     with TemporaryDirectory(prefix='qc-report-') as tmp:
         folder = Path(tmp).resolve()
-        source = folder / ('report.xls' if kind == 'detail' else 'report.xlsx')
+        source = folder / ('report.xls' if legacy else 'report.xlsx')
         source.write_bytes(content)
         profile = folder / 'profile'
         font = Path('/System/Library/Fonts/STHeiti Medium.ttc')
@@ -233,16 +320,13 @@ def render(factory, kind, data):
             fonts = profile / 'user/fonts'
             fonts.mkdir(parents=True)
             (fonts / font.name).symlink_to(font)
-        try:
-            if not resident_render(executable, source):
-                subprocess.run([executable,'-env:UserInstallation='+profile.as_uri(),'--headless','--convert-to','html',
-                            '--outdir',str(folder),str(source)], check=True, timeout=60, capture_output=True)
-            doc = html.fromstring((folder/'report.html').read_bytes(), parser=html.HTMLParser(encoding='utf-8'))
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise HTTPException(503, '工作簿预览暂时无法生成，请重试') from exc
+        if not resident_render(executable, source):
+            subprocess.run([executable,'-env:UserInstallation='+profile.as_uri(),'--headless','--convert-to','html',
+                        '--outdir',str(folder),str(source)], check=True, timeout=8, capture_output=True)
+        doc = html.fromstring((folder/'report.html').read_bytes(), parser=html.HTMLParser(encoding='utf-8'))
         tables = doc.xpath('/html/body/table')
         if len(tables) != len(names):
-            raise HTTPException(503, '工作表未完整生成，请重试')
+            raise ValueError('Calc omitted worksheets')
         return [dict(name=name, html=sheet_html(table, folder, i)) for i,(name,table) in enumerate(zip(names,tables))]
 
 
@@ -250,23 +334,31 @@ def preview(factory, kind, day, customer, can_edit, result='FAIL'):
     if kind not in KINDS:
         raise HTTPException(404, '模板不存在')
     data = projection(factory, kind, day, customer, result)
-    cells = writable_cells(kind, data) if can_edit else {}
+    writable = writable_cells(kind, data)
+    if kind == 'annual-stats' and (data['filters']['year'] != day[:4] or data['filters']['customer'] != customer
+                                   or data['excluded'].get('missingProjection') or data['excluded'].get('invalidLineage')):
+        can_edit = False
+    cells = writable if can_edit else {}
     revision = data.get('sourceRevision') or data.get('revision')
     versions = qc_weekly_excel.versions(data) if 'fields' in data else {}
-    key = factory, kind, day, customer, result, revision, sha256(json.dumps(versions, sort_keys=True).encode()).digest()
+    stamps = {k:cell['version'] for k,cell in writable.items()} if kind in RECORD_KINDS else versions
+    key = factory, kind, day, customer, result, revision, sha256(json.dumps(stamps, sort_keys=True).encode()).digest()
     with _render_lock:
-        if key not in _cache:
+        cached = _cache.get(key)
+        if not cached or (cached[2] == 'grid' and cached[3] <= monotonic()):
             if kind in ANNUAL_KINDS:
                 rows = data['totals']['total'] if kind == 'annual-stats' else data['total']
             else:
                 rows = data['rows'] if kind == 'daily' else data['tables'][kind]
-            sheets = render(factory, kind, data) if rows else []
+            sheets, mode = render(factory, kind, data) if rows else ([], 'calc')
             size = sum(len(s['html'].encode()) for s in sheets)
             if size <= MAX_CACHE_BYTES:
-                _cache[key] = (sheets, size)
+                _cache[key] = (sheets, size, mode, monotonic()+15)
+                _cache.move_to_end(key)
                 while len(_cache)>18 or sum(x[1] for x in _cache.values())>MAX_CACHE_BYTES:
                     _cache.popitem(last=False)
         else:
-            sheets = _cache[key][0]
+            sheets, _, mode, _ = cached
             _cache.move_to_end(key)
-    return dict(sheets=sheets, cells=cells, sourceRevision=revision, versions=versions)
+    return dict(sheets=sheets, cells=cells, sourceRevision=revision, versions=versions,
+                previewMode=mode, workbookSourceRevision=data.get('workbookSourceRevision'))
