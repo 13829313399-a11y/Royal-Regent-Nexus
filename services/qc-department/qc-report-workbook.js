@@ -15,7 +15,7 @@ const changes=new Map();
 let bookQuery='',saving=null,editorState=null,formulaCell=null;
 const expandIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/></svg>';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- let reload, opener, exporting=false, receipt=null, reviewSource=null, downloadFile=null;
+ let reload, opener, exporting=false, receipt=null, reviewSource=null;
 function params(kind=selected[period]) {
   if(period==='review')return new URLSearchParams({kind}).toString();
   const cfg=periods[period],date=byId(cfg.date).value;
@@ -115,11 +115,6 @@ function mount(periodKey, kind, host, data, refresh){
 document.body.insertAdjacentHTML('beforeend','<dialog id="wb-dialog" aria-label="工作簿预览"><div class="wb-head"><div class="wb-nav"><span class="file-mark" aria-hidden="true">▤</span><div id="wb-templates" role="group" aria-label="报告模板"></div></div><span id="wb-status" role="status" title="按 Ctrl+S 或 ⌘S 保存"></span><button id="wb-export">导出 Excel</button><button id="wb-close" aria-label="关闭工作簿" title="关闭">×</button></div><div class="wb-formula"><output id="wb-address">A1</output><i>ƒx</i><textarea id="wb-value" rows="1" wrap="off" aria-label="单元格内容" readonly></textarea></div><div id="wb-grid"></div><div class="wb-foot"><div id="wb-tabs" aria-label="工作表"></div><span id="wb-mode" hidden>简洁预览 · 补录和导出照常</span><button id="wb-next" title="跳到下一个可编辑单元格">定位可编辑格 ↗</button></div></dialog><dialog id="wb-save-prompt" aria-labelledby="wb-save-title" aria-describedby="wb-save-message"><strong id="wb-save-title">保存更改？</strong><p id="wb-save-message"></p><div class="wb-save-actions"><button type="button" data-wb-choice="cancel" autofocus>取消</button><button type="button" data-wb-choice="discard">不保存</button><button type="button" data-wb-choice="save">保存</button></div></dialog>');
  const dialog=byId('wb-dialog'), valueInput=byId('wb-value'), statusText=byId('wb-status');
  const exportButton=byId('wb-export');
- const downloadActions=document.createElement('div');
- downloadActions.id='wb-download-actions';downloadActions.hidden=true;
- downloadActions.innerHTML='<a id="wb-download-again">再次下载</a><button id="wb-save-as" type="button">另存为…</button>';
- byId('wb-next').before(downloadActions);
- const downloadAgain=byId('wb-download-again'), saveAs=byId('wb-save-as');
 const savePrompt=byId('wb-save-prompt');
 const view=byId('wb-grid'),grid=view.attachShadow({mode:'open'});
 const fillVisual=document.createElement('div'),fillRanges=new Map();
@@ -193,15 +188,17 @@ function commitInput(){
 let chooseSave=null;
 function settleSaveChoice(action){
   if(!chooseSave)return;
-  const done=chooseSave;chooseSave=null;savePrompt.close();done(action);
+  const {resolve,begin}=chooseSave;chooseSave=null;savePrompt.close();
+  // A native picker only works from the confirmation button's own user gesture.
+  resolve({action,destination:action==='save'?begin?.():undefined});
 }
 savePrompt.addEventListener('click',event=>{
   const button=event.target.closest('[data-wb-choice]');
   if(button&&!button.disabled)settleSaveChoice(button.dataset.wbChoice);
 });
 savePrompt.addEventListener('cancel',event=>{event.preventDefault();settleSaveChoice('cancel');});
-function askSave(reason){
-  if(chooseSave)return Promise.resolve('cancel');
+function askSave(reason,begin){
+  if(chooseSave)return Promise.resolve({action:'cancel'});
   const isExport=reason==='export';
   const discard=savePrompt.querySelector('[data-wb-choice=discard]');
   discard.hidden=isExport||!!receipt;
@@ -210,13 +207,13 @@ function askSave(reason){
     isExport?'工作簿有未保存的更改。保存后再导出，才能包含本次补录。':
     '工作簿已更改。要保存本次修改吗？';
   savePrompt.showModal();savePrompt.querySelector('[data-wb-choice=cancel]').focus();
-  return new Promise(resolve=>{chooseSave=resolve;});
+  return new Promise(resolve=>{chooseSave={resolve,begin};});
 }
 async function allowWorkbookAction(reason){
   if(saving||chooseSave||exporting||reviewSource?.busy?.())return false;
   finishFill(true);commitInput();
   if(!changes.size)return true;
-  const action=await askSave(reason);
+  const {action}=await askSave(reason);
   if(action==='save')return saveBook();
   return action==='discard';
 }
@@ -231,7 +228,6 @@ function linkCells(cells){
   }
 }
  function openBook(){
-   clearDownload();
   byId('wb-mode').hidden=true;
   byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
   book=null;active=null;sheet=0;bookQuery='';
@@ -257,7 +253,6 @@ function linkCells(cells){
   const query=params(kind).toString();
   if(bookQuery===query&&book)return;
    if(!await allowWorkbookAction('switch')||!dialog.open)return;
-   clearDownload();
   const request=++bookRequest;
   const tabs=byId('wb-tabs');
   finishFill(true);
@@ -541,7 +536,6 @@ function finishFormula(commit){
 }
 
  function stage(step,side){
-   clearDownload();
   for(const {cell,[side]:value} of step){
     if(value===cell.value&&!receipt)changes.delete(cell);
     else changes.set(cell,value);
@@ -930,7 +924,6 @@ byId('wb-next').onclick=()=>{
 };
  async function closeBook(){
    if(!await allowWorkbookAction('close')||!dialog.open)return;
-   clearDownload();
   ++bookRequest;changes.clear();receipt=null;internalClipboard=null;pasteTicket++;dialog.close();bookQuery='';
   if(period==='review'){
     const source=reviewSource;reviewSource=null;
@@ -945,16 +938,28 @@ window.addEventListener('beforeunload',e=>{if(dialog.open&&(changes.size||drafti
 document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill(true);internalClipboard=null;}});
  byId('wb-close').onclick=closeBook;
  dialog.addEventListener('cancel',e=>{e.preventDefault();closeBook();});
- function clearDownload(){
-   if(downloadFile)URL.revokeObjectURL(downloadFile.url);
-   downloadFile=null;
-   downloadActions.hidden=true;downloadAgain.removeAttribute('href');downloadAgain.removeAttribute('download');
- }
  const excelTypes={
    xlsx:{mime:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',magic:[0x50,0x4b,3,4]},
    xls:{mime:'application/vnd.ms-excel',magic:[0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]}
  };
- async function readExport(url,fallbackName){
+ const exportTitles={
+   daily:'每日验货情况统计表',detail:'周验货明细及客户汇总表',issues:'周验货问题与整改跟踪表',
+   orders:'月度订单验货与对账明细',tracking:'月度验货问题与整改跟踪表',quality:'客户月度质量汇总与签核表',
+   'annual-stats':'年度验货统计表','annual-issues':'年度验货问题与整改跟踪表'
+ };
+ const pickerHelp='请在桌面 Chrome 或 Edge 中打开验货台后重试。';
+ async function chooseDestination(name,ext){
+   if(typeof window.showSaveFilePicker!=='function')return {message:'当前浏览器不能打开系统保存窗口。'+pickerHelp};
+   try{
+     const handle=await window.showSaveFilePicker({suggestedName:name,startIn:'downloads',
+       types:[{description:'Excel 工作簿',accept:{[excelTypes[ext].mime]:['.'+ext]}}]});
+     return {handle};
+   }catch(error){
+     return {message:error.name==='AbortError'?'未选择保存位置，未导出。若没有弹窗，'+pickerHelp:
+       '当前浏览器没有打开系统保存窗口，未导出。'+pickerHelp};
+   }
+ }
+ async function readExport(url,fallbackName,expectedExt){
    const response=await fetch(url,{cache:'no-store',redirect:'error'});
    if(!response.ok){
      const info=await response.json().catch(()=>({}));
@@ -965,68 +970,54 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
    let name=fallbackName;
    if(encoded)try{name=decodeURIComponent(encoded);}catch{/* Use the supplied fallback name. */}
    const ext=name?.match(/\.(xlsx|xls)$/i)?.[1].toLowerCase();
-   if(!ext||/[\\/\u0000-\u001f\u007f]/.test(name)||!/^attachment(?:;|$)/i.test(disposition)||
+   if(ext!==expectedExt||/[\\/\u0000-\u001f\u007f]/.test(name)||!/^attachment(?:;|$)/i.test(disposition)||
        response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase()!==excelTypes[ext].mime)
      throw Error('服务未返回有效的 Excel 文件，请重新导出');
    const blob=await response.blob(),{magic}=excelTypes[ext];
    const prefix=new Uint8Array(await blob.slice(0,magic.length).arrayBuffer());
    if(!magic.every((byte,i)=>prefix[i]===byte))throw Error('Excel 文件为空或格式不正确，请重新导出');
-   return {blob,name,ext};
+   return blob;
  }
- function offerDownload(file){
-   downloadFile={...file,url:URL.createObjectURL(file.blob)};
-   downloadAgain.href=downloadFile.url;downloadAgain.download=file.name;
-   saveAs.hidden=typeof window.showSaveFilePicker!=='function';
-   downloadActions.hidden=false;
-   // Delegate the default folder to the browser. The page cannot observe
-   // whether its host puts the download in Downloads or an internal file tray.
-   downloadAgain.click();
-   downloadFeedback();
- }
- function downloadFeedback(){
-   statusText.textContent=saveAs.hidden?'Excel 已生成，查看浏览器下载记录；也可再次下载。':
-     'Excel 已生成；如未在下载文件夹看到，请选「另存为…」。';
- }
- downloadAgain.onclick=event=>{
-   if(!downloadFile||!dialog.open||!window.__QC_NEXUS?.exportAllowed||changes.size||drafting()){
-     event.preventDefault();
-     if(drafting()||changes.size)statusText.textContent='请保存更改后重新导出。';
+ exportButton.onclick=async()=>{
+   if(!window.__QC_NEXUS?.exportAllowed||!book?.sheets.length||!dialog.open||saving||chooseSave||exporting||view.inert)return;
+   if(reviewSource){
+     if(!await allowWorkbookAction('export')||!dialog.open||exporting)return;
+     exporting=exportButton.disabled=true;view.inert=true;valueInput.readOnly=true;
+     try{await reviewSource.export();statusText.textContent='已发起下载';}
+     catch(error){statusText.textContent=error.message;}
+     finally{exporting=false;view.inert=false;exportButton.disabled=!book?.sheets.length;}
      return;
    }
-   downloadFeedback();
- };
- saveAs.onclick=async()=>{
-   const file=downloadFile;
-   if(!file||exporting||saving||!dialog.open||!window.__QC_NEXUS?.exportAllowed||changes.size||drafting())return;
-   exporting=true;saveAs.disabled=exportButton.disabled=true;
-   let writer;
+   finishFill(true);commitInput();
+   if(typeof window.showSaveFilePicker!=='function'){
+     statusText.textContent='当前浏览器不能打开系统保存窗口，未导出。'+pickerHelp;
+     return;
+   }
+   const scope=new URLSearchParams(bookQuery),kind=scope.get('kind'),date=scope.get('day'),customer=scope.get('customer');
+   const ext=kind==='detail'?'xls':'xlsx';
+   const suffix=period==='yearly'?date.slice(0,4):period==='monthly'?date.slice(0,7):date;
+   const suggestedName=exportTitles[kind]+'_'+suffix+'.'+ext;
+   const begin=()=>{
+     statusText.textContent='请选择保存位置…';
+     return chooseDestination(suggestedName,ext);
+   };
+   exporting=exportButton.disabled=true;view.inert=true;valueInput.readOnly=true;
    try{
-     // Must be called during this user click, not after generating the workbook.
-     const handle=await window.showSaveFilePicker({suggestedName:file.name,startIn:'downloads',
-       types:[{description:'Excel 工作簿',accept:{[excelTypes[file.ext].mime]:['.'+file.ext]}}]});
-     if(downloadFile!==file||!dialog.open||!window.__QC_NEXUS?.exportAllowed)return;
-     writer=await handle.createWritable();
-     await writer.write(file.blob);
-     await writer.close();
-     statusText.textContent='已保存到所选位置：'+handle.name;
-   }catch(error){
-     if(writer)await writer.abort().catch(()=>{});
-     statusText.textContent=error.name==='AbortError'?'已取消另存为，文件可继续下载。':
-       '无法另存为，请查看浏览器下载记录，或在 Chrome 中打开验货台后重试。';
-   }finally{exporting=false;saveAs.disabled=false;exportButton.disabled=!book?.sheets.length;}
- };
- exportButton.onclick=async()=>{
-   if(!window.__QC_NEXUS?.exportAllowed||!book?.sheets.length||
-       !await allowWorkbookAction('export')||!dialog.open||exporting)return;
-   exporting=true;
-   clearDownload();
-   exportButton.disabled=true;
-   // Keep the generated file tied to the workbook and its saved values.
-   view.inert=true;valueInput.readOnly=true;
-   const scope=new URLSearchParams(bookQuery), kind=scope.get('kind'), date=scope.get('day'), customer=scope.get('customer');
-   try{
+     const needsSave=changes.size>0;
+     let destination;
+     if(needsSave){
+       const choice=await askSave('export',begin);
+       if(choice.action!=='save'){statusText.textContent=sheetHint();return;}
+       destination=await choice.destination;
+     }else destination=await begin();
+     if(!destination.handle){statusText.textContent=destination.message;return;}
+     if(!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限已变化，请重新打开工作簿');
+     if(needsSave){
+       view.inert=exporting=false;
+       if(!await saveBook())return;
+       exporting=exportButton.disabled=true;view.inert=true;
+     }
      statusText.textContent='正在生成 Excel…';
-     if(reviewSource){await reviewSource.export();statusText.textContent='已发起下载';return;}
      let url,name;
      if(kind==='daily'||kind==='annual-stats'){
        const annual=kind==='annual-stats';
@@ -1047,9 +1038,12 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
        if(!/^api\/(weekly|monthly)-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
        url=result.url;name=result.filename;
      }
-     const file=await readExport(url,name);
+     const blob=await readExport(url,name,ext);
      if(!dialog.open||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
-     offerDownload(file);
+     let writer;
+     try{writer=await destination.handle.createWritable();await writer.write(blob);await writer.close();}
+     catch{if(writer)await writer.abort().catch(()=>{});throw Error('未能写入所选位置，请检查权限或选择其他文件夹后重新导出。');}
+     statusText.textContent='已保存到所选位置：'+destination.handle.name;
    }catch(error){statusText.textContent=error.message;}finally{
      exporting=false;view.inert=false;exportButton.disabled=!book?.sheets.length;
    }
