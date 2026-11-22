@@ -87,13 +87,12 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   const dom=new JSDOM('<main><input id="monthlyMonth" value="2026-11"><input id="dailyDate" value="2026-11-22"><input id="weeklyDate" value="2026-11-16"><input id="qstats-year" value="2026"><div id="qstats-root"><button data-result="ALL" aria-pressed="true"></button></div>'+
     ['qmtCustomer','qdrCustomer','qwtCustomer','qstats-client'].map(id=>`<select id="${id}"><option value="">全部</option></select>`).join('')+
     '<section class="template-sheet"><div id="summary"></div></section></main>',{url:'http://localhost/qc/',runScripts:'outside-only'});
-  const w=dom.window,d=w.document,calls=[],downloads=[],revoked=[],buffers=new Map();
+  const w=dom.window,d=w.document,calls=[],downloads=[],picks=[],written=[];
   t.after(()=>w.close());
   w.__QC_NEXUS={factory:'huaxing',exportAllowed:true};
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
   w.HTMLDialogElement.prototype.close=function(){this.open=false};
-  w.URL.createObjectURL=blob=>{const url=`blob:${buffers.size}`;buffers.set(url,blob);return url};
-  w.URL.revokeObjectURL=url=>revoked.push(url);
+  w.URL.createObjectURL=()=>{throw Error('Report should not create a browser download')};
   d.addEventListener('click',e=>{
     if(!e.target.matches('a[download]')||e.defaultPrevented)return;
     downloads.push({name:e.target.download,href:e.target.getAttribute('href'),inside:!!e.target.closest('#wb-dialog[open]')});
@@ -116,16 +115,22 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
       'Content-Disposition':`attachment; filename=temp.${suffix}; filename*=UTF-8''${encodeURIComponent(`已校验中文.${suffix}`)}`});
     return {ok:true,headers,blob:async()=>body};
   };
-  if(options.picker)w.showSaveFilePicker=options.picker;
+  if(!options.noPicker)w.showSaveFilePicker=args=>{
+    picks.push(args);
+    if(options.picker)return options.picker(args);
+    return Promise.resolve({name:'选定的工作簿.'+suffix,createWritable:async()=>({
+      write:async blob=>written.push(blob),close:async()=>written.push('closed'),abort:async()=>written.push('aborted'),
+    })});
+  };
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   const mountData={overview:{months:[]},months:[],tables:{}};
   w.QcReportWorkbook.mount(period,kind,d.getElementById('summary'),mountData,()=>{});
   d.querySelector('.wb-open').click();
   await new Promise(setImmediate);
-  return {w,d,calls,downloads,revoked,buffers,body};
+  return {w,d,calls,downloads,picks,written,body};
 }
 
-test('workbook downloads validate and hand off XLS/XLSX for all report periods', async t=>{
+test('the same export button opens the native picker before any await or fetching every report', async t=>{
   for(const [period,kind,endpoint,separate] of [
     ['daily','daily','api/daily-report/export?',false],
     ['weekly','detail','api/weekly-templates/excel/authorized-token',true],
@@ -137,64 +142,76 @@ test('workbook downloads validate and hand off XLS/XLSX for all report periods',
     ['yearly','annual-issues','api/monthly-templates/excel/authorized-token',true],
   ]){
     await t.test(kind,async sub=>{
-      const h=await exportWorkbook(sub,period,kind),{d,calls,downloads,revoked}=h;
+      const h=await exportWorkbook(sub,period,kind),{d,calls,downloads,picks,written}=h;
       const button=d.getElementById('wb-export');
       button.click();button.click();
+      assert.equal(picks.length,1,'picker is invoked during the click, before export generation');
+      assert.equal(picks[0].startIn,'downloads');
+      assert.match(picks[0].suggestedName,kind==='detail'?/\.xls$/:/\.xlsx$/);
+      assert.equal(calls.filter(x=>x.url.startsWith(endpoint)).length,0);
       await new Promise(setImmediate);
       assert.equal(calls.filter(x=>x.url.startsWith(endpoint)).length,1);
       assert.equal(calls.filter(x=>x.method==='POST').length,Number(separate));
-      assert.deepEqual(downloads,[{name:`已校验中文.${kind==='detail'?'xls':'xlsx'}`,href:'blob:0',inside:true}]);
-      assert.match(d.getElementById('wb-status').textContent,/Excel 已生成.*浏览器下载记录/);
-      assert.equal(d.getElementById('wb-save-as').hidden,true);
-      d.getElementById('wb-download-again').click();
-      assert.equal(downloads.length,2);
-      d.getElementById('wb-close').click();await new Promise(setImmediate);
-      assert.deepEqual(revoked,['blob:0']);
-      assert.equal(d.getElementById('wb-download-actions').hidden,true);
+      assert.deepEqual(written,[h.body,'closed']);
+      assert.match(d.getElementById('wb-status').textContent,/已保存到所选位置：选定的工作簿/);
+      assert.equal(d.querySelector('#wb-download-again,#wb-save-as'),null);
+      assert.equal(downloads.length,0);
     });
   }
 });
 
-test('unsaved edit is saved before exporting; native Save As confirms after writing',async t=>{
-  const writes=[],pickerArgs=[];
-  const h=await exportWorkbook(t,'monthly','quality',{picker:async args=>{
-    pickerArgs.push(args);return {name:'核对后的月报.xlsx',createWritable:async()=>({
-      write:async blob=>writes.push(blob),close:async()=>writes.push('closed'),
-    })};
-  }});
-  const {d,w,calls}=h,grid=d.getElementById('wb-grid').shadowRoot;
+test('dirty export opens the picker on the confirmation click before saving the draft',async t=>{
+  let select;
+  const writes=[];
+  const h=await exportWorkbook(t,'monthly','quality',{picker:()=>new Promise(resolve=>{select=resolve;})});
+  const {d,w,calls,picks}=h,grid=d.getElementById('wb-grid').shadowRoot;
   grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
   grid.querySelector('.cell-editor').value='已核对的补录';
-  d.getElementById('wb-export').click();await new Promise(setImmediate);
+  d.getElementById('wb-export').click();
   assert.ok(d.getElementById('wb-save-prompt').open);
+  assert.equal(picks.length,0);
   assert.equal(calls.some(x=>x.method==='POST'),false);
-  d.querySelector('[data-wb-choice=save]').click();await new Promise(setImmediate);
+  d.querySelector('[data-wb-choice=save]').click();
+  assert.equal(picks.length,1,'the second click is the user gesture');
+  assert.match(picks[0].suggestedName,/客户月度质量汇总与签核表_2026-11\.xlsx/);
+  assert.equal(calls.some(x=>x.method==='POST'),false,'no business write until a destination is picked');
+  select({name:'核对后的月报.xlsx',createWritable:async()=>({
+    write:async blob=>writes.push(blob),close:async()=>writes.push('closed'),
+  })});
+  await new Promise(setImmediate);
   const posts=calls.filter(x=>x.method==='POST');
   assert.match(posts[0].url,/save\?/);assert.equal(posts[0].payload.value,'已核对的补录');
   assert.equal(posts[1].payload.versions.client.overviewRemark,2);
-  assert.match(d.getElementById('wb-status').textContent,/另存为/);
-  d.getElementById('wb-save-as').click();
-  assert.equal(pickerArgs[0].startIn,'downloads');
-  assert.equal(pickerArgs[0].suggestedName,'已校验中文.xlsx');
-  await new Promise(setImmediate);
   assert.deepEqual(writes,[h.body,'closed']);
   assert.equal(d.getElementById('wb-status').textContent,'已保存到所选位置：核对后的月报.xlsx');
-  grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
-  const input=grid.querySelector('.cell-editor');
-  input.value='新更改';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));
-  assert.equal(d.getElementById('wb-download-actions').hidden,true);
-  assert.deepEqual(h.revoked,['blob:0']);
+  assert.equal(w.QcReportWorkbook.navigationState().dirty,false);
 });
 
-test('failed or non-Excel export never reports a generated file',async t=>{
+test('a canceled or blocked native picker leaves the draft unchanged and does not silently download',async t=>{
+  for(const options of [{noPicker:true},{picker:()=>Promise.reject(new DOMException('embedded abort','AbortError'))}]){
+    const {d,w,calls,downloads}=await exportWorkbook(t,'monthly','quality',options);
+    const grid=d.getElementById('wb-grid').shadowRoot;
+    grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
+    grid.querySelector('.cell-editor').value='仍待保存';
+    d.getElementById('wb-export').click();
+    if(!options.noPicker)d.querySelector('[data-wb-choice=save]').click();
+    await new Promise(setImmediate);
+    assert.equal(calls.some(x=>x.method==='POST' || x.url.includes('/excel')),false);
+    assert.equal(downloads.length,0);
+    assert.equal(w.QcReportWorkbook.navigationState().dirty,true);
+    assert.match(d.getElementById('wb-status').textContent,/未导出.*桌面 Chrome 或 Edge/);
+  }
+});
+
+test('failed or non-Excel export never writes or reports success to the chosen file',async t=>{
   for(const [options,message] of [
     [{badMime:true},/有效的 Excel/],[{badMagic:true},/格式不正确/],
     [{failure:true},/已过期/],[{unsafeUrl:'https://example.invalid/excel'},/下载地址无效/],
   ]){
     const h=await exportWorkbook(t,'monthly','quality',options);
     h.d.getElementById('wb-export').click();await new Promise(setImmediate);
+    assert.equal(h.written.length,0);
     assert.equal(h.downloads.length,0);
-    assert.equal(h.d.getElementById('wb-download-actions').hidden,true);
     assert.match(h.d.getElementById('wb-status').textContent,message);
   }
 });
