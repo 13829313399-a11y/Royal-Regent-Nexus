@@ -81,6 +81,124 @@ test('monthly preview opens the filtered workbook, confirms edits before switchi
   } finally {w.close();}
 });
 
+const MIME_XLSX='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const MIME_XLS='application/vnd.ms-excel';
+async function exportWorkbook(t, period='monthly', kind='quality', options={}){
+  const dom=new JSDOM('<main><input id="monthlyMonth" value="2026-11"><input id="dailyDate" value="2026-11-22"><input id="weeklyDate" value="2026-11-16"><input id="qstats-year" value="2026"><div id="qstats-root"><button data-result="ALL" aria-pressed="true"></button></div>'+
+    ['qmtCustomer','qdrCustomer','qwtCustomer','qstats-client'].map(id=>`<select id="${id}"><option value="">全部</option></select>`).join('')+
+    '<section class="template-sheet"><div id="summary"></div></section></main>',{url:'http://localhost/qc/',runScripts:'outside-only'});
+  const w=dom.window,d=w.document,calls=[],downloads=[],revoked=[],buffers=new Map();
+  t.after(()=>w.close());
+  w.__QC_NEXUS={factory:'huaxing',exportAllowed:true};
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
+  w.HTMLDialogElement.prototype.close=function(){this.open=false};
+  w.URL.createObjectURL=blob=>{const url=`blob:${buffers.size}`;buffers.set(url,blob);return url};
+  w.URL.revokeObjectURL=url=>revoked.push(url);
+  d.addEventListener('click',e=>{
+    if(!e.target.matches('a[download]')||e.defaultPrevented)return;
+    downloads.push({name:e.target.download,href:e.target.getAttribute('href'),inside:!!e.target.closest('#wb-dialog[open]')});
+    e.preventDefault();
+  });
+  const data={versions:{client:{overviewRemark:1}},sourceRevision:'src',workbookSourceRevision:'book',
+    cells:{'0:A1':{customerKey:'client',field:'overviewRemark',value:'',version:1}},
+    sheets:[{name:'明细',html:'<table><tbody><tr><td data-addr="A1"></td></tr></tbody></table>'}]};
+  const legacy=kind==='detail',suffix=legacy?'xls':'xlsx';
+  const pathname=`api/${legacy?'weekly':'monthly'}-templates/excel/authorized-token`;
+  const body=new Blob([new Uint8Array(options.badMagic?[1,2,3]:legacy?[0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1,255]:[80,75,3,4,255])]);
+  w.fetch=async(url,init)=>{
+    calls.push({url,method:init?.method||'GET',payload:init?.body?JSON.parse(init.body):undefined});
+    if(init?.method==='HEAD')return {ok:true};
+    if(url.startsWith('api/report-workbook?'))return {ok:true,json:async()=>structuredClone(data)};
+    if(url.includes('-templates/save?'))return {ok:true,json:async()=>({...JSON.parse(init.body),version:2})};
+    if(init?.method==='POST')return {ok:true,json:async()=>({url:options.unsafeUrl||pathname,filename:`备用.${suffix}`})};
+    if(options.failure)return {ok:false,json:async()=>({detail:'导出文件已过期，请重新导出'})};
+    const headers=new Headers({'Content-Type':options.badMime?'text/html':legacy?MIME_XLS:MIME_XLSX,
+      'Content-Disposition':`attachment; filename=temp.${suffix}; filename*=UTF-8''${encodeURIComponent(`已校验中文.${suffix}`)}`});
+    return {ok:true,headers,blob:async()=>body};
+  };
+  if(options.picker)w.showSaveFilePicker=options.picker;
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
+  const mountData={overview:{months:[]},months:[],tables:{}};
+  w.QcReportWorkbook.mount(period,kind,d.getElementById('summary'),mountData,()=>{});
+  d.querySelector('.wb-open').click();
+  await new Promise(setImmediate);
+  return {w,d,calls,downloads,revoked,buffers,body};
+}
+
+test('workbook downloads validate and hand off XLS/XLSX for all report periods', async t=>{
+  for(const [period,kind,endpoint,separate] of [
+    ['daily','daily','api/daily-report/export?',false],
+    ['weekly','detail','api/weekly-templates/excel/authorized-token',true],
+    ['weekly','issues','api/monthly-templates/excel/authorized-token',true],
+    ['monthly','quality','api/monthly-templates/excel/authorized-token',true],
+    ['monthly','orders','api/monthly-templates/excel/authorized-token',true],
+    ['monthly','tracking','api/monthly-templates/excel/authorized-token',true],
+    ['yearly','annual-stats','api/approved-statistics/report/excel?',false],
+    ['yearly','annual-issues','api/monthly-templates/excel/authorized-token',true],
+  ]){
+    await t.test(kind,async sub=>{
+      const h=await exportWorkbook(sub,period,kind),{d,calls,downloads,revoked}=h;
+      const button=d.getElementById('wb-export');
+      button.click();button.click();
+      await new Promise(setImmediate);
+      assert.equal(calls.filter(x=>x.url.startsWith(endpoint)).length,1);
+      assert.equal(calls.filter(x=>x.method==='POST').length,Number(separate));
+      assert.deepEqual(downloads,[{name:`已校验中文.${kind==='detail'?'xls':'xlsx'}`,href:'blob:0',inside:true}]);
+      assert.match(d.getElementById('wb-status').textContent,/Excel 已生成.*浏览器下载记录/);
+      assert.equal(d.getElementById('wb-save-as').hidden,true);
+      d.getElementById('wb-download-again').click();
+      assert.equal(downloads.length,2);
+      d.getElementById('wb-close').click();await new Promise(setImmediate);
+      assert.deepEqual(revoked,['blob:0']);
+      assert.equal(d.getElementById('wb-download-actions').hidden,true);
+    });
+  }
+});
+
+test('unsaved edit is saved before exporting; native Save As confirms after writing',async t=>{
+  const writes=[],pickerArgs=[];
+  const h=await exportWorkbook(t,'monthly','quality',{picker:async args=>{
+    pickerArgs.push(args);return {name:'核对后的月报.xlsx',createWritable:async()=>({
+      write:async blob=>writes.push(blob),close:async()=>writes.push('closed'),
+    })};
+  }});
+  const {d,w,calls}=h,grid=d.getElementById('wb-grid').shadowRoot;
+  grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
+  grid.querySelector('.cell-editor').value='已核对的补录';
+  d.getElementById('wb-export').click();await new Promise(setImmediate);
+  assert.ok(d.getElementById('wb-save-prompt').open);
+  assert.equal(calls.some(x=>x.method==='POST'),false);
+  d.querySelector('[data-wb-choice=save]').click();await new Promise(setImmediate);
+  const posts=calls.filter(x=>x.method==='POST');
+  assert.match(posts[0].url,/save\?/);assert.equal(posts[0].payload.value,'已核对的补录');
+  assert.equal(posts[1].payload.versions.client.overviewRemark,2);
+  assert.match(d.getElementById('wb-status').textContent,/另存为/);
+  d.getElementById('wb-save-as').click();
+  assert.equal(pickerArgs[0].startIn,'downloads');
+  assert.equal(pickerArgs[0].suggestedName,'已校验中文.xlsx');
+  await new Promise(setImmediate);
+  assert.deepEqual(writes,[h.body,'closed']);
+  assert.equal(d.getElementById('wb-status').textContent,'已保存到所选位置：核对后的月报.xlsx');
+  grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
+  const input=grid.querySelector('.cell-editor');
+  input.value='新更改';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter'}));
+  assert.equal(d.getElementById('wb-download-actions').hidden,true);
+  assert.deepEqual(h.revoked,['blob:0']);
+});
+
+test('failed or non-Excel export never reports a generated file',async t=>{
+  for(const [options,message] of [
+    [{badMime:true},/有效的 Excel/],[{badMagic:true},/格式不正确/],
+    [{failure:true},/已过期/],[{unsafeUrl:'https://example.invalid/excel'},/下载地址无效/],
+  ]){
+    const h=await exportWorkbook(t,'monthly','quality',options);
+    h.d.getElementById('wb-export').click();await new Promise(setImmediate);
+    assert.equal(h.downloads.length,0);
+    assert.equal(h.d.getElementById('wb-download-actions').hidden,true);
+    assert.match(h.d.getElementById('wb-status').textContent,message);
+  }
+});
+
 async function editableWorkbook(t, {readonly=false,record=false}={}) {
   const dom=new JSDOM('<main><input id="monthlyMonth" value="2026-11"><select id="qmtCustomer"><option value="">全部</option></select><section class="template-sheet"><div id="summary"></div></section></main>',{runScripts:'outside-only',url:'http://localhost/qc/',pretendToBeVisual:true});
   const w=dom.window,doc=w.document,calls=[];

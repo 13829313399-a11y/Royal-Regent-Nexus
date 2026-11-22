@@ -176,7 +176,7 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "822d19a64f5363e62b02a8b12d7c734f41ab2ea6145c9a84bca65ae0daf4dccb"
+        "sha256": "9d1113e50877a813f6e2002f5bc5e964fe6bea1101d1ed7d2275a206e55519ee"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",

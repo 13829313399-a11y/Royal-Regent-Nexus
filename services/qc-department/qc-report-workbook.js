@@ -15,7 +15,7 @@ const changes=new Map();
 let bookQuery='',saving=null,editorState=null,formulaCell=null;
 const expandIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/></svg>';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let reload, opener, exporting=false, receipt=null, reviewSource=null;
+ let reload, opener, exporting=false, receipt=null, reviewSource=null, downloadFile=null;
 function params(kind=selected[period]) {
   if(period==='review')return new URLSearchParams({kind}).toString();
   const cfg=periods[period],date=byId(cfg.date).value;
@@ -113,7 +113,13 @@ function mount(periodKey, kind, host, data, refresh){
   return true;
 }
 document.body.insertAdjacentHTML('beforeend','<dialog id="wb-dialog" aria-label="工作簿预览"><div class="wb-head"><div class="wb-nav"><span class="file-mark" aria-hidden="true">▤</span><div id="wb-templates" role="group" aria-label="报告模板"></div></div><span id="wb-status" role="status" title="按 Ctrl+S 或 ⌘S 保存"></span><button id="wb-export">导出 Excel</button><button id="wb-close" aria-label="关闭工作簿" title="关闭">×</button></div><div class="wb-formula"><output id="wb-address">A1</output><i>ƒx</i><textarea id="wb-value" rows="1" wrap="off" aria-label="单元格内容" readonly></textarea></div><div id="wb-grid"></div><div class="wb-foot"><div id="wb-tabs" aria-label="工作表"></div><span id="wb-mode" hidden>简洁预览 · 补录和导出照常</span><button id="wb-next" title="跳到下一个可编辑单元格">定位可编辑格 ↗</button></div></dialog><dialog id="wb-save-prompt" aria-labelledby="wb-save-title" aria-describedby="wb-save-message"><strong id="wb-save-title">保存更改？</strong><p id="wb-save-message"></p><div class="wb-save-actions"><button type="button" data-wb-choice="cancel" autofocus>取消</button><button type="button" data-wb-choice="discard">不保存</button><button type="button" data-wb-choice="save">保存</button></div></dialog>');
-const dialog=byId('wb-dialog'), valueInput=byId('wb-value'), statusText=byId('wb-status');
+ const dialog=byId('wb-dialog'), valueInput=byId('wb-value'), statusText=byId('wb-status');
+ const exportButton=byId('wb-export');
+ const downloadActions=document.createElement('div');
+ downloadActions.id='wb-download-actions';downloadActions.hidden=true;
+ downloadActions.innerHTML='<a id="wb-download-again">再次下载</a><button id="wb-save-as" type="button">另存为…</button>';
+ byId('wb-next').before(downloadActions);
+ const downloadAgain=byId('wb-download-again'), saveAs=byId('wb-save-as');
 const savePrompt=byId('wb-save-prompt');
 const view=byId('wb-grid'),grid=view.attachShadow({mode:'open'});
 const fillVisual=document.createElement('div'),fillRanges=new Map();
@@ -224,7 +230,8 @@ function linkCells(cells){
     else linked.set(key,cell);
   }
 }
-function openBook(){
+ function openBook(){
+   clearDownload();
   byId('wb-mode').hidden=true;
   byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
   book=null;active=null;sheet=0;bookQuery='';
@@ -246,10 +253,11 @@ function openBook(){
   switchBook(selected[period]);
 }
 
-async function switchBook(kind){
+ async function switchBook(kind){
   const query=params(kind).toString();
   if(bookQuery===query&&book)return;
-  if(!await allowWorkbookAction('switch')||!dialog.open)return;
+   if(!await allowWorkbookAction('switch')||!dialog.open)return;
+   clearDownload();
   const request=++bookRequest;
   const tabs=byId('wb-tabs');
   finishFill(true);
@@ -532,7 +540,8 @@ function finishFormula(commit){
   syncSelection();if(accepted)statusText.textContent=sheetHint();
 }
 
-function stage(step,side){
+ function stage(step,side){
+   clearDownload();
   for(const {cell,[side]:value} of step){
     if(value===cell.value&&!receipt)changes.delete(cell);
     else changes.set(cell,value);
@@ -919,8 +928,9 @@ byId('wb-next').onclick=()=>{
   const td=targets[(targets.indexOf(active)+1)%targets.length];
   if(td){td.scrollIntoView?.({block:'nearest',inline:'center'});selectCell(td,{focus:true});}
 };
-async function closeBook(){
-  if(!await allowWorkbookAction('close')||!dialog.open)return;
+ async function closeBook(){
+   if(!await allowWorkbookAction('close')||!dialog.open)return;
+   clearDownload();
   ++bookRequest;changes.clear();receipt=null;internalClipboard=null;pasteTicket++;dialog.close();bookQuery='';
   if(period==='review'){
     const source=reviewSource;reviewSource=null;
@@ -933,24 +943,97 @@ async function closeBook(){
 }
 window.addEventListener('beforeunload',e=>{if(dialog.open&&(changes.size||drafting()||saving)){e.preventDefault();e.returnValue='';}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill(true);internalClipboard=null;}});
-byId('wb-close').onclick=closeBook;
-dialog.addEventListener('cancel',e=>{e.preventDefault();closeBook();});
-byId('wb-export').onclick=async()=>{
-  if(!book?.sheets.length||!await allowWorkbookAction('export')||!dialog.open)return;
-  exporting=true;
-  const scope=new URLSearchParams(bookQuery), kind=scope.get('kind'), date=scope.get('day'), customer=scope.get('customer');
-  const link=document.createElement('a');
-  try{
-    statusText.textContent='正在生成 Excel…';
-    if(reviewSource){await reviewSource.export();statusText.textContent='已发起下载';return;}
-    if(kind==='daily'||kind==='annual-stats'){
-      const annual=kind==='annual-stats';
-      const filters=annual?{year:date.slice(0,4),result:scope.get('result')}:{date};
-      const endpoint=annual?'approved-statistics/report/excel':'daily-report/export';
-      const response=await fetch('api/'+endpoint+'?'+new URLSearchParams({...filters,customer,revision:book.sourceRevision}));
-      if(!response.ok)throw Error('导出失败，请刷新报告后重试');
-      link.href=URL.createObjectURL(await response.blob());link.download=annual?(window.__QC_NEXUS.factoryLabel || window.getCompanyName?.() || '')+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
-      setTimeout(()=>URL.revokeObjectURL(link.href),30000);
+ byId('wb-close').onclick=closeBook;
+ dialog.addEventListener('cancel',e=>{e.preventDefault();closeBook();});
+ function clearDownload(){
+   if(downloadFile)URL.revokeObjectURL(downloadFile.url);
+   downloadFile=null;
+   downloadActions.hidden=true;downloadAgain.removeAttribute('href');downloadAgain.removeAttribute('download');
+ }
+ const excelTypes={
+   xlsx:{mime:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',magic:[0x50,0x4b,3,4]},
+   xls:{mime:'application/vnd.ms-excel',magic:[0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]}
+ };
+ async function readExport(url,fallbackName){
+   const response=await fetch(url,{cache:'no-store',redirect:'error'});
+   if(!response.ok){
+     const info=await response.json().catch(()=>({}));
+     throw Error(typeof info.detail==='string'?info.detail:info.detail?.message||'无法下载 Excel，请重试');
+   }
+   const disposition=response.headers.get('Content-Disposition')||'';
+   const encoded=disposition.match(/(?:^|;)\s*filename\*=UTF-8''([^;]+)/i)?.[1];
+   let name=fallbackName;
+   if(encoded)try{name=decodeURIComponent(encoded);}catch{/* Use the supplied fallback name. */}
+   const ext=name?.match(/\.(xlsx|xls)$/i)?.[1].toLowerCase();
+   if(!ext||/[\\/\u0000-\u001f\u007f]/.test(name)||!/^attachment(?:;|$)/i.test(disposition)||
+       response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase()!==excelTypes[ext].mime)
+     throw Error('服务未返回有效的 Excel 文件，请重新导出');
+   const blob=await response.blob(),{magic}=excelTypes[ext];
+   const prefix=new Uint8Array(await blob.slice(0,magic.length).arrayBuffer());
+   if(!magic.every((byte,i)=>prefix[i]===byte))throw Error('Excel 文件为空或格式不正确，请重新导出');
+   return {blob,name,ext};
+ }
+ function offerDownload(file){
+   downloadFile={...file,url:URL.createObjectURL(file.blob)};
+   downloadAgain.href=downloadFile.url;downloadAgain.download=file.name;
+   saveAs.hidden=typeof window.showSaveFilePicker!=='function';
+   downloadActions.hidden=false;
+   // Delegate the default folder to the browser. The page cannot observe
+   // whether its host puts the download in Downloads or an internal file tray.
+   downloadAgain.click();
+   downloadFeedback();
+ }
+ function downloadFeedback(){
+   statusText.textContent=saveAs.hidden?'Excel 已生成，查看浏览器下载记录；也可再次下载。':
+     'Excel 已生成；如未在下载文件夹看到，请选「另存为…」。';
+ }
+ downloadAgain.onclick=event=>{
+   if(!downloadFile||!dialog.open||!window.__QC_NEXUS?.exportAllowed||changes.size||drafting()){
+     event.preventDefault();
+     if(drafting()||changes.size)statusText.textContent='请保存更改后重新导出。';
+     return;
+   }
+   downloadFeedback();
+ };
+ saveAs.onclick=async()=>{
+   const file=downloadFile;
+   if(!file||exporting||saving||!dialog.open||!window.__QC_NEXUS?.exportAllowed||changes.size||drafting())return;
+   exporting=true;saveAs.disabled=exportButton.disabled=true;
+   let writer;
+   try{
+     // Must be called during this user click, not after generating the workbook.
+     const handle=await window.showSaveFilePicker({suggestedName:file.name,startIn:'downloads',
+       types:[{description:'Excel 工作簿',accept:{[excelTypes[file.ext].mime]:['.'+file.ext]}}]});
+     if(downloadFile!==file||!dialog.open||!window.__QC_NEXUS?.exportAllowed)return;
+     writer=await handle.createWritable();
+     await writer.write(file.blob);
+     await writer.close();
+     statusText.textContent='已保存到所选位置：'+handle.name;
+   }catch(error){
+     if(writer)await writer.abort().catch(()=>{});
+     statusText.textContent=error.name==='AbortError'?'已取消另存为，文件可继续下载。':
+       '无法另存为，请查看浏览器下载记录，或在 Chrome 中打开验货台后重试。';
+   }finally{exporting=false;saveAs.disabled=false;exportButton.disabled=!book?.sheets.length;}
+ };
+ exportButton.onclick=async()=>{
+   if(!window.__QC_NEXUS?.exportAllowed||!book?.sheets.length||
+       !await allowWorkbookAction('export')||!dialog.open||exporting)return;
+   exporting=true;
+   clearDownload();
+   exportButton.disabled=true;
+   // Keep the generated file tied to the workbook and its saved values.
+   view.inert=true;valueInput.readOnly=true;
+   const scope=new URLSearchParams(bookQuery), kind=scope.get('kind'), date=scope.get('day'), customer=scope.get('customer');
+   try{
+     statusText.textContent='正在生成 Excel…';
+     if(reviewSource){await reviewSource.export();statusText.textContent='已发起下载';return;}
+     let url,name;
+     if(kind==='daily'||kind==='annual-stats'){
+       const annual=kind==='annual-stats';
+       const filters=annual?{year:date.slice(0,4),result:scope.get('result')}:{date};
+       const endpoint=annual?'approved-statistics/report/excel':'daily-report/export';
+       url='api/'+endpoint+'?'+new URLSearchParams({...filters,customer,revision:book.sourceRevision});
+       name=annual?(window.__QC_NEXUS.factoryLabel || window.getCompanyName?.() || '')+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
     }else{
       const issue=kind==='issues'||kind==='annual-issues';
       let sourceRevision=book.sourceRevision;
@@ -960,13 +1043,17 @@ byId('wb-export').onclick=async()=>{
         sourceRevision=fresh.sourceRevision;
       }
       const payload={date,customer,sourceRevision,...(issue?{period,photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
-      const result=await api((issue?'issue-reports':period+'-templates')+'/excel','',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      if(!/^api\/(weekly|monthly)-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
-      link.href=result.url;link.download=result.filename;
-    }
-    document.body.append(link);link.click();link.remove();statusText.textContent='已发起下载';
-  }catch(error){statusText.textContent=error.message;}finally{exporting=false;}
-};
+       const result=await api((issue?'issue-reports':period+'-templates')+'/excel','',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+       if(!/^api\/(weekly|monthly)-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
+       url=result.url;name=result.filename;
+     }
+     const file=await readExport(url,name);
+     if(!dialog.open||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
+     offerDownload(file);
+   }catch(error){statusText.textContent=error.message;}finally{
+     exporting=false;view.inert=false;exportButton.disabled=!book?.sheets.length;
+   }
+ };
 window.QcReportWorkbook={mount,trigger(label,open){
   const button=document.createElement('button');button.type='button';button.className='wb-open';
   button.title=label;button.setAttribute('aria-label',label);button.innerHTML=expandIcon;button.onclick=()=>open(button);

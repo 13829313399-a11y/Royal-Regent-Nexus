@@ -55,6 +55,10 @@ dialog#wb-dialog{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:
 .wb-foot button{border:0;background:transparent;color:#4b6154;white-space:nowrap;padding:10px}
 #wb-tabs button[aria-pressed=true]{font-weight:650;color:#2c6342;background:white;box-shadow:inset 0 -2px #447553}
 #wb-next{font-size:12px!important}
+#wb-download-actions:not([hidden]){display:flex;align-items:center;gap:8px;margin-inline-start:auto}
+#wb-download-actions a,#wb-save-as{display:inline-flex;align-items:center;color:#355a46;padding:7px 4px;white-space:nowrap;text-decoration:underline;text-underline-offset:3px;font-size:12px!important}
+#wb-save-as[hidden]{display:none}
+#wb-download-actions :focus-visible{outline:2px solid #527f62;outline-offset:1px;border-radius:3px}
 #wb-dialog button:disabled{opacity:.5;cursor:default}
 @media(max-width:650px){.skim-scroll{margin:8px}.report-page .skim{min-width:620px}dialog#wb-dialog{width:100vw;height:100dvh;border-radius:0}.wb-head{gap:6px;padding:6px}.sheet-tabs button{font-size:12px}.wb-foot{flex-wrap:wrap}.wb-head strong{font-size:13px}}
 body.qc-report-center .report-page .skim thead tr{position:static;background:var(--sheet)!important}
