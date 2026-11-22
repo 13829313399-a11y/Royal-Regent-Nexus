@@ -28,7 +28,25 @@ test('unsaved content prompts without clearing drafts; busy uploads and queued w
  busy=false;dirty=false;w.__QC_PENDING_WRITES=1;assert.equal(w.__QC_CONFIRM_FACTORY_LEAVE(),false);
  w.__QC_PENDING_WRITES=0;w.QcSchedule={navigationState:()=>({dirty:true,busy:false})};w.confirm=()=>false;
  assert.equal(w.__QC_CONFIRM_FACTORY_LEAVE(),false);w.QcSchedule={navigationState:()=>({dirty:false,busy:false})};
- assert.equal(w.__QC_CONFIRM_FACTORY_LEAVE(),true);dom.window.close();
+  assert.equal(w.__QC_CONFIRM_FACTORY_LEAVE(),true);dom.window.close();
+});
+
+test('report workbook drafts and pending saves block leaving before ordinary factory prompts',()=>{
+  const {dom,w}=page();
+  try{
+    let dirty=true,busy=false;
+    const messages=[];
+    w.QcReportWorkbook={navigationState:()=>({dirty,busy})};
+    w.alert=message=>messages.push(message);
+    w.confirm=()=>assert.fail('workbook must be resolved using its own close dialog');
+    assert.equal(w.__QC_CONFIRM_FACTORY_LEAVE(),false);
+    dirty=false;busy=true;
+    assert.equal(w.__QC_CONFIRM_FACTORY_LEAVE(),false);
+    busy=false;
+    assert.equal(w.__QC_CONFIRM_FACTORY_LEAVE(),true);
+    assert.equal(messages.length,2);
+    assert.match(messages[0],/工作簿.*保存/);
+  }finally{dom.window.close();}
 });
 
 test('factory page survives app initialization RAF after the iframe load bridge',()=>{

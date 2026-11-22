@@ -4,11 +4,43 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 
+test('fit keeps the existing sheet and proportions, never enlarges it, and floors the zoom', async t => {
+  const dom = new JSDOM('<main><input id="weeklyDate" value="2026-11-16"><select id="qwtCustomer"><option value="">全部</option></select><section class="template-sheet"><div id="summary"></div></section></main>',
+    {runScripts:'outside-only',url:'http://localhost/qc/'});
+  const w = dom.window, d = w.document;
+  t.after(()=>w.close());
+  w.__QC_NEXUS={factory:'huaxing'};
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  w.HTMLElement.prototype.scrollTo=()=>{};
+  let onResize;
+  w.ResizeObserver=class{constructor(callback){onResize=callback;}observe(){}};
+  w.fetch=async()=>({ok:true,json:async()=>({sheets:[{name:'明细',html:'<table><colgroup width="38"><colgroup span="5" width="300"><tbody><tr><td data-addr="A1">内容</td></tr></tbody></table>'}],cells:{}})});
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
+  const view=d.getElementById('wb-grid');
+  let available=1400;
+  Object.defineProperty(view,'clientWidth',{get:()=>available});
+  w.QcReportWorkbook.mount('weekly','detail',d.getElementById('summary'),{},()=>{});
+  d.querySelector('.wb-open').click();
+  await new Promise(setImmediate);
+  const table=view.shadowRoot.querySelector('table');
+  assert.equal(table.style.width,'1538px');
+  assert.equal(table.style.zoom,'0.908');
+  available=1080;onResize();
+  assert.equal(table.style.zoom,'0.8');
+  available=1550;onResize();
+  assert.equal(table.style.zoom,'');
+  available=1100;d.documentElement.classList.add('qc-mobile');onResize();
+  assert.equal(table.style.zoom,'');
+  assert.equal(view.shadowRoot.querySelector('table'),table);
+  assert.equal(table.querySelector('td').textContent,'内容');
+});
+
 test('monthly preview opens the filtered workbook, confirms edits before switching, and handles empty sheets', async () => {
   const dom = new JSDOM('<div id="page-monthly"><input id="monthlyMonth" value="2026-11"><select id="qmtCustomer"><option value="factory-customer">客户</option></select><section class="template-sheet"><div class="sheet-tab-bar"></div><div id="summary"></div></section></div>', { runScripts:'outside-only', url:'http://localhost/qc/' });
   const w = dom.window, doc = w.document, calls = [];
   w.__QC_NEXUS = { factory:'huadeng', factoryLabel:'华登', exportAllowed:false };
   w.HTMLDialogElement.prototype.showModal = function(){this.open = true;};
+  w.HTMLDialogElement.prototype.close = function(){this.open = false;};
   w.HTMLElement.prototype.scrollTo = () => {};
   w.fetch = async (url, options) => {
     const q = new URL(url, 'http://localhost').searchParams;
@@ -28,11 +60,15 @@ test('monthly preview opens the filtered workbook, confirms edits before switchi
     doc.querySelector('.wb-open').click();
     await new Promise(setImmediate);
     const grid = doc.getElementById('wb-grid').shadowRoot;
-    grid.querySelector('td').click();
+    grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true,composed:true}));
     const input = grid.querySelector('textarea');
     input.value = '已核对';
     input.dispatchEvent(new w.Event('input'));
     doc.querySelector('#wb-templates [data-kind=tracking]').click();
+    await new Promise(setImmediate);
+    assert.equal(calls.some(x=>x.body),false);
+    assert.equal(doc.querySelector('#wb-save-prompt').open,true);
+    doc.querySelector('[data-wb-choice=save]').click();
     await new Promise(setImmediate);
     const saved = calls.find(x=>x.body)?.body;
     assert.equal(saved.value,'已核对');
@@ -51,6 +87,7 @@ async function editableWorkbook(t, {readonly=false,record=false}={}) {
   t.after(()=>w.close());
   w.__QC_NEXUS={factory:'huaxing'};
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  w.HTMLDialogElement.prototype.close=function(){this.open=false;};
   w.HTMLElement.prototype.scrollTo=()=>{};
   const fields={
     A1:['detail:r1:remark',''], A2:['detail:r2:remark',''], A3:['detail:r3:remark','已补录'],
@@ -99,7 +136,7 @@ async function editableWorkbook(t, {readonly=false,record=false}={}) {
     return ()=>view.dispatchEvent(pointer(event,destination));
   };
   const edit=(address,value)=>{
-    td(address).click();
+    td(address).dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true,composed:true}));
     const editor=td(address).querySelector('.cell-editor');
     editor.value=value;editor.dispatchEvent(new w.Event('input'));
     return editor;
@@ -108,11 +145,16 @@ async function editableWorkbook(t, {readonly=false,record=false}={}) {
     doc.querySelectorAll('#wb-tabs button')[index].click();
     await new Promise(setImmediate);rect();
   };
-  return {w,doc,grid,td,edit,drag,tab,calls,testKey,failNext:()=>{fail=true;},delayWrites:value=>{delay=value;}};
+  const press=(key,modifiers)=>(grid.activeElement||td('A1')).dispatchEvent(testKey(key,modifiers));
+  const save=async()=>{
+    press('s',{metaKey:true});
+    await new Promise(setImmediate);
+  };
+  return {w,doc,grid,td,edit,drag,tab,calls,testKey,press,save,failNext:()=>{fail=true;},delayWrites:value=>{delay=value;}};
 }
 
 test('fill targets only same-field blank cells; undo and redo replay the whole drag with current versions',async t=>{
-  const {doc,grid,td,edit,drag,tab,calls,testKey}=await editableWorkbook(t);
+  const {doc,grid,td,edit,drag,tab,calls,testKey,save}=await editableWorkbook(t);
   const editor=edit('A1','0012');
   assert.ok(editor.parentElement.querySelector('.wb-fill-handle'),'handle is available while editing');
   const drop=drag(126);
@@ -127,6 +169,7 @@ test('fill targets only same-field blank cells; undo and redo replay the whole d
   assert.equal(td('B2').textContent,'');
   await tab(1);
   assert.equal(td('A1').textContent,'0012','alias on another sheet shows the same value');
+  assert.deepEqual(calls,[]);
   td('A1').focus();
   assert.equal(td('A1').dispatchEvent(testKey('z',{metaKey:true})),false);
   assert.equal(td('A1').textContent,'');
@@ -137,17 +180,68 @@ test('fill targets only same-field blank cells; undo and redo replay the whole d
   td('A2').focus();
   td('A2').dispatchEvent(testKey('y',{ctrlKey:true}));
   await tab(1);
+  await save();
   assert.equal(td('A1').textContent,'0012');
   assert.deepEqual(calls.map(({field,value,baseVersion})=>[field,value,baseVersion]),[
     ['detail:r1:remark','0012',0],['detail:r2:remark','0012',0],['detail:r5:remark','0012',0],
-    ['detail:r2:remark','',1],['detail:r5:remark','',1],
-    ['detail:r2:remark','0012',2],['detail:r5:remark','0012',2],
   ]);
   assert.equal(doc.getElementById('wb-status').textContent,'已保存');
 });
 
-test('cancelled drag never writes; dropdown and formula bar use the same history and fill behavior',async t=>{
-  const {doc,td,edit,drag,tab,calls,testKey}=await editableWorkbook(t);
+function fillVisualGeometry(w, doc, grid){
+  const view=doc.getElementById('wb-grid');
+  Object.defineProperties(view,{clientWidth:{value:350},clientHeight:{value:175}});
+  view.getBoundingClientRect=()=>new w.DOMRect(0,12,350,175);
+  for(const cell of grid.querySelectorAll('[data-addr]'))
+    cell.getBoundingClientRect=()=>new w.DOMRect(32+80*cell.cellIndex,20*(cell.parentElement.rowIndex+1),80,20);
+  return doc.querySelector('.wb-fill-visual');
+}
+
+test('drag stretches a continuous outline and leaves an unmarked gap at protected and populated rows',async t=>{
+  const {w,doc,grid,td,edit,drag,tab,calls,testKey}=await editableWorkbook(t);
+  const visual=fillVisualGeometry(w,doc,grid);
+  edit('A1','同一批');
+  drag(54);
+  const first=visual.firstElementChild;
+  assert.equal(visual.hidden,false);
+  assert.equal(first.style.height,'40px'); // Source + first adjacent target.
+  const view=doc.getElementById('wb-grid');
+  const move=y=>view.dispatchEvent(new w.PointerEvent('pointermove',{pointerId:1,clientY:y}));
+  move(124);
+  assert.equal(visual.firstElementChild,first);
+  assert.deepEqual([...visual.children].map(el=>[el.style.top,el.style.height]),[['8px','40px'],['88px','20px']]);
+  assert.equal(td('A2').textContent,'');
+  assert.equal(td('A5').textContent,'');
+  move(55);
+  assert.deepEqual([...visual.children],[first]);
+  td('A1').dispatchEvent(testKey('Escape',{}));
+  assert.equal(visual.hidden,true);
+  assert.equal(visual.childElementCount,0);
+  assert.equal(grid.querySelectorAll('.wb-fill-target').length,0);
+  await tab(1);
+  assert.deepEqual(calls,[]);
+});
+
+test('release settles the visual without delaying the fill, and reduced motion skips the settle',async t=>{
+  const {w,doc,grid,td,edit,drag,tab,testKey}=await editableWorkbook(t);
+  const visual=fillVisualGeometry(w,doc,grid);
+  edit('A1','同一批');
+  drag(124)();
+  assert.equal(td('A2').textContent,'同一批');
+  assert.equal(td('A5').textContent,'同一批');
+  assert.equal(td('A3').textContent,'已补录');
+  assert.equal(visual.classList.contains('wb-fill-done'),true);
+  td('A1').dispatchEvent(testKey('z',{metaKey:true}));
+  w.matchMedia=()=>({matches:true});
+  drag(124)();
+  assert.equal(td('A2').textContent,'同一批');
+  assert.equal(visual.hidden,true);
+  assert.equal(visual.childElementCount,0);
+  await tab(1);
+});
+
+test('cancelled drag and input never write; dropdown and formula bar form local drafts',async t=>{
+  const {doc,td,edit,drag,tab,calls,testKey,save}=await editableWorkbook(t);
   const select=edit('C1','待复核');
   const cancel=drag(47,'pointercancel');
   assert.ok(td('C2').classList.contains('wb-fill-target'));
@@ -160,38 +254,41 @@ test('cancelled drag never writes; dropdown and formula bar use the same history
   td('A1').focus();
   const bar=doc.getElementById('wb-value');
   bar.focus();bar.value='0';bar.dispatchEvent(new doc.defaultView.Event('input'));
-  assert.ok(td('A1').querySelector('.wb-fill-handle'));
-  bar.dispatchEvent(testKey('z',{ctrlKey:true}));
+  bar.dispatchEvent(testKey('Escape',{}));
   assert.equal(bar.value,'');
-  bar.dispatchEvent(testKey('z',{ctrlKey:true,shiftKey:true}));
-  assert.equal(bar.value,'0');
+  bar.focus();bar.value='0';bar.dispatchEvent(new doc.defaultView.Event('input'));bar.blur();
+  td('A1').focus();
+  assert.ok(td('A1').querySelector('.wb-fill-handle'));
   drag(47)();
   await tab(1);
   assert.equal(td('A1').textContent,'0');
+  assert.deepEqual(calls,[]);
+  await save();
   assert.equal(calls.filter(x=>x.field==='overview:issue:2:completion').length,1);
 });
 
-test('an uncertain save keeps its request key and correctly saves an undo queued before acknowledgement',async t=>{
-  const {doc,td,edit,drag,tab,calls,testKey,failNext,delayWrites}=await editableWorkbook(t);
+test('an uncertain explicit save preserves drafts and retries with the same request key',async t=>{
+  const {doc,td,edit,drag,calls,testKey,failNext,delayWrites,save,press}=await editableWorkbook(t);
   edit('A1','跟进').blur();
   await new Promise(setImmediate);
   drag(126)();
   failNext();
-  await tab(1);
-  assert.equal(doc.getElementById('wb-status').textContent,'暂时断线');
+  await save();
+  assert.match(doc.getElementById('wb-status').textContent,/未保存.*暂时断线/);
   const failed=calls.at(-1);
   let resolve;
   delayWrites(new Promise(done=>{resolve=done;}));
-  await tab(1);
+  await save();
   assert.equal(calls.at(-1).requestKey,failed.requestKey);
-  assert.equal(td('A1').dispatchEvent(testKey('z',{ctrlKey:true})),false);
+  assert.equal(doc.getElementById('wb-grid').inert,true);
   resolve();
   await new Promise(setImmediate);
-  assert.equal(td('A1').textContent,'');
-  assert.deepEqual(calls.slice(1).map(({field,value,baseVersion})=>[field,value,baseVersion]),[
-    ['detail:r2:remark','跟进',0],['detail:r2:remark','跟进',0],
-    ['detail:r2:remark','',1],
-  ]);
+  assert.equal(td('A2').textContent,'跟进');
+  assert.equal(td('A1').dispatchEvent(testKey('z',{ctrlKey:true})),false);
+  assert.equal(td('A2').textContent,'');
+  assert.equal(doc.getElementById('wb-status').textContent,'未保存');
+  await save();
+  assert.ok(calls.some(call=>call.field==='detail:r2:remark'&&call.value===''&&call.baseVersion===1));
 });
 
 test('a read-only preview never shows editable cells or captures edit shortcuts',async t=>{
@@ -215,17 +312,101 @@ test('undo before the first save is silent and works after selecting a protected
   assert.equal(td('A1').textContent,'');
   await tab(1);
   assert.deepEqual(calls,[]);
-  assert.match(doc.getElementById('wb-status').textContent,/可补录/);
+  assert.equal(doc.getElementById('wb-status').textContent,'');
 });
 
-test('backup grid distinguishes blanks from protected cells and uses the same autosave UI',async t=>{
-  const {doc,td,edit,tab,calls}=await editableWorkbook(t,{record:true});
+test('backup grid distinguishes blanks from protected cells and uses the same explicit save',async t=>{
+  const {doc,td,edit,save,calls}=await editableWorkbook(t,{record:true});
   assert.equal(doc.getElementById('wb-mode').hidden,false);
   assert.equal(td('A1').classList.contains('blank'),true);
   assert.equal(td('A4').classList.contains('blank'),false);
   edit('A1','补录').blur();
   assert.equal(td('A1').classList.contains('blank'),false);
   await new Promise(setImmediate);
+  assert.equal(doc.getElementById('wb-status').textContent,'未保存');
+  assert.deepEqual(calls,[]);
+  await save();
   assert.equal(doc.getElementById('wb-status').textContent,'已保存');
   assert.deepEqual(calls.map(({value,writeRevision,baseVersion})=>[value,writeRevision,baseVersion]),[['补录','approval-r1',0]]);
+});
+
+test('Excel selection, range copy/paste, Fill Down, navigation and whole-action undo',async t=>{
+  const {w,doc,td,grid,edit,press,save,calls}=await editableWorkbook(t);
+  const clip={types:['text/plain'],data:'',getData(){return this.data;},setData(_,data){this.data=data;}};
+  const clipboard=type=>{
+    const event=new w.Event(type,{bubbles:true,cancelable:true,composed:true});
+    Object.defineProperty(event,'clipboardData',{value:clip});
+    return (grid.activeElement||td('A1')).dispatchEvent(event);
+  };
+  td('A1').click();
+  assert.equal(grid.querySelector('.cell-editor'),null);
+  press('F2');
+  assert.ok(grid.querySelector('.cell-editor'));
+  press('Escape');
+  assert.equal(grid.querySelector('.cell-editor'),null);
+  edit('A1','001\n箱').blur();
+  td('A1').click();
+  for(let i=0;i<4;i++)press('ArrowDown',{shiftKey:true});
+  assert.equal(grid.querySelectorAll('.wb-range').length,5);
+  assert.equal(clipboard('copy'),false);
+  assert.equal(clip.data,'"001\n箱"\r\n\r\n已补录\r\n审核原值\r\n');
+  press('d',{ctrlKey:true});
+  assert.equal(td('A2').textContent,'001\n箱');
+  assert.equal(td('A3').textContent,'已补录');
+  assert.equal(td('A4').textContent,'审核原值');
+  assert.equal(td('A5').textContent,'001\n箱');
+  press('z',{metaKey:true});
+  assert.equal(td('A2').textContent,'');
+  assert.equal(td('A5').textContent,'');
+  press('y',{ctrlKey:true});
+  assert.equal(td('A5').textContent,'001\n箱');
+  td('A2').click();
+  clip.data='"001\t盒"\t负责人\r\n新备注\t原值\r\n禁止\t禁止';
+  clipboard('paste');
+  assert.equal(td('A2').textContent,'001\t盒');
+  assert.equal(td('B2').textContent,'负责人');
+  assert.equal(td('A3').textContent,'新备注');
+  assert.equal(td('A4').textContent,'审核原值');
+  press('ArrowRight');
+  assert.equal(grid.activeElement,td('B2'));
+  press('Delete');
+  assert.equal(td('B2').textContent,'');
+  assert.deepEqual(calls,[]);
+  await save();
+  assert.ok(calls.some(c=>c.value==='001\t盒'));
+  assert.ok(!calls.some(c=>c.value==='禁止'));
+});
+
+test('close offers save, discard and cancel; tab hiding and focus changes never save',async t=>{
+  const {w,doc,td,edit,tab,calls}=await editableWorkbook(t);
+  const prompt=doc.querySelector('#wb-save-prompt');
+  const dialog=doc.querySelector('#wb-dialog');
+  const wait=()=>new Promise(setImmediate);
+  const close=async()=>{doc.getElementById('wb-close').click();await wait();};
+  edit('A1','草稿');
+  assert.equal(w.QcReportWorkbook.navigationState().dirty,true);
+  await tab(1);
+  await tab(0);
+  assert.equal(td('A1').textContent,'草稿');
+  doc.dispatchEvent(new w.Event('visibilitychange'));
+  assert.deepEqual(calls,[]);
+  await close();
+  assert.equal(prompt.open,true);
+  prompt.querySelector('[data-wb-choice=cancel]').click();
+  await wait();
+  assert.equal(dialog.open,true);
+  assert.equal(td('A1').textContent,'草稿');
+  await close();
+  prompt.querySelector('[data-wb-choice=discard]').click();
+  await wait();
+  assert.equal(dialog.open,false);
+  assert.deepEqual(calls,[]);
+  doc.querySelector('.wb-open').click();
+  await wait();
+  edit('A1','明确保存');
+  await close();
+  prompt.querySelector('[data-wb-choice=save]').click();
+  await wait();
+  assert.equal(dialog.open,false);
+  assert.deepEqual(calls.map(c=>c.value),['明确保存']);
 });
