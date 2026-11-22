@@ -41,6 +41,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui'
 import { useWorkCenterStore, defaultWorkQuery } from '@/stores/workCenter'
+import { useMediaQuery } from '@/composables/useMediaQuery'
 import { registerAssistantSelection } from '@/features/assistant/selection'
 import WorkEntryRow from '@/features/work-center/WorkEntryRow.vue'
 import WorkEntryDetail from '@/features/work-center/WorkEntryDetail.vue'
@@ -58,7 +59,8 @@ const center = useWorkCenterStore(),
   router = useRouter(),
   route = useRoute()
 const root = ref<HTMLElement>(),
-  width = ref(window.innerWidth),
+  compact = useMediaQuery('(width < 1024px)'),
+  mobile = useMediaQuery('(width < 640px)'),
   search = ref(''),
   checked = ref<string[]>([])
 const helpOpen = ref(false),
@@ -77,7 +79,6 @@ const primary = computed(() =>
 const snap = computed(() => center.snapshot),
   time = computed(() => snap.value?.context.server_time)
 const entryId = computed(() => (typeof route.query.entry === 'string' ? route.query.entry : ''))
-const compact = computed(() => width.value < 1024)
 const drawerOpen = computed(
   () => compact.value && !!entryId.value && (!!center.selected || loadingEntry.value),
 )
@@ -140,8 +141,8 @@ const unregister = registerAssistantSelection('work-center', () => ({
 let trigger: HTMLElement | null = null,
   lastQuery = '',
   currentEntry = '',
-  routeSequence = 0,
-  recheckRoute = false
+  detailRequest = 0,
+  selectionRevision = 0
 let debounce: ReturnType<typeof setTimeout> | undefined
 let observer: ResizeObserver | undefined,
   frame = 0
@@ -178,17 +179,27 @@ function restoreFocus() {
   })
 }
 async function close() {
+  const wasDrawerOpen = drawerOpen.value
   center.clearSelection()
   if (entryId.value) await router.replace({ query: { ...route.query, entry: undefined } })
-  restoreFocus()
+  if (!wasDrawerOpen) restoreFocus()
 }
-async function applyRoute() {
+function resetEntry() {
+  detailRequest++
+  currentEntry = ''
+  loadingEntry.value = false
+  center.clearSelection()
+}
+function setChecked(ids: string[]) {
+  selectionRevision++
+  checked.value = ids
+}
+function applyRoute() {
   if (route.name !== 'notification-center') return
-  const seq = ++routeSequence,
-    raw = route.query
+  const raw = route.query
   const factory = normalizeFactory(raw.factory)
   if (raw.factory && factory === 'authorized') {
-    await router.replace({ query: { ...raw, factory: undefined } })
+    void router.replace({ query: { ...raw, factory: undefined } })
     return
   }
   const view = views.has(raw.view as WorkView) ? (raw.view as WorkView) : 'todo'
@@ -208,29 +219,19 @@ async function applyRoute() {
     lastQuery = key
     clearTimeout(debounce)
     search.value = value.q
-    checked.value = []
+    setChecked([])
     showSnoozed.value = false
-    center.clearSelection()
-    currentEntry = ''
-    await center.setQuery(value)
+    resetEntry()
+    void center.setQuery(value)
   }
-  if (seq !== routeSequence) return
-  if (!id) {
-    currentEntry = ''
-    loadingEntry.value = false
-    center.clearSelection()
-    return
-  }
-  if (currentEntry !== id && !center.error) {
-    currentEntry = id
-    loadingEntry.value = true
-    await center.selectEntry(id)
-    if (seq === routeSequence) loadingEntry.value = false
-  }
-}
-function resize() {
-  width.value = window.innerWidth
-  fitFocus()
+  if (currentEntry && currentEntry !== id) resetEntry()
+  if (!id || id === currentEntry || !snap.value || center.syncing || center.error) return
+  const request = ++detailRequest
+  currentEntry = id
+  loadingEntry.value = true
+  void center.selectEntry(id).finally(() => {
+    if (request === detailRequest) loadingEntry.value = false
+  })
 }
 function engaged() {
   fitFocus()
@@ -246,18 +247,24 @@ function searchFor(value: unknown, immediate = false) {
   else debounce = setTimeout(() => void navigate({ q: search.value.trim() || undefined }), 280)
 }
 function tick(entry: WorkEntry) {
-  checked.value = checked.value.includes(entry.id)
+  setChecked(checked.value.includes(entry.id)
     ? checked.value.filter((id) => id !== entry.id)
-    : [...checked.value, entry.id]
+    : [...checked.value, entry.id])
 }
 function checkPage() {
-  checked.value = allChecked.value ? [] : visible.value.map((row) => row.id)
+  setChecked(allChecked.value ? [] : visible.value.map((row) => row.id))
 }
 async function batch(action: 'read' | 'archive' | 'snooze') {
-  const failed = await center.batchPatch(selected.value, action, snoozePresets(time.value)[0]?.until)
-  if (failed) checked.value = failed
+  const revision = selectionRevision
+  const until = action === 'snooze' ? snoozePresets(center.serverNow())[0]?.until : undefined
+  const failed = await center.batchPatch(selected.value, action, until)
+  if (failed && revision === selectionRevision) {
+    const ids = new Set(visible.value.map((item) => item.id))
+    setChecked(failed.filter((id) => ids.has(id)))
+  }
 }
 function pin(item: WorkEntry) {
+  if (center.personalBusy) return
   void center.patch(item, { state_version: item.personal.state_version, pinned: !item.personal.pinned })
 }
 function read(item: WorkEntry) {
@@ -285,13 +292,13 @@ function nextEntry(offset: number) {
     behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth',
   })
 }
-useWorkCenterShortcuts((key) => {
+const onShortcut = useWorkCenterShortcuts((key) => {
   if (key === 'j' || key === 'ArrowDown') nextEntry(1)
   else if (key === 'k' || key === 'ArrowUp') nextEntry(-1)
   else if (key === '/') root.value?.querySelector<HTMLInputElement>('[data-work-search]')?.focus()
   else if (key === '?') helpOpen.value = !helpOpen.value
   else if (key === 'Escape') {
-    if (checked.value.length) checked.value = []
+    if (checked.value.length) setChecked([])
     else if (entryId.value) void close()
     else return false
   } else {
@@ -311,23 +318,18 @@ useWorkCenterShortcuts((key) => {
 watch(() => route.query, applyRoute)
 watch(visible, (items) => {
   const ids = new Set(items.map((i) => i.id))
-  checked.value = checked.value.filter((id) => ids.has(id))
+  if (checked.value.some((id) => !ids.has(id))) checked.value = checked.value.filter((id) => ids.has(id))
 })
 watch(
-  () => snap.value?.context.viewer_key,
-  (value, previous) => {
-    if (previous && previous !== value) {
-      checked.value = []
-      currentEntry = ''
-      loadingEntry.value = false
+  [() => snap.value?.context.viewer_key, () => center.syncing],
+  ([viewer, syncing], [previousViewer]) => {
+    if (previousViewer && previousViewer !== viewer) {
+      setChecked([])
+      resetEntry()
       helpOpen.value = false
-      recheckRoute = true
     }
-    if (value && recheckRoute) {
-      recheckRoute = false
-      lastQuery = JSON.stringify(center.query)
-      void applyRoute()
-    }
+    if (viewer && viewer !== previousViewer) lastQuery = JSON.stringify(center.query)
+    if (viewer && !syncing && !center.error) applyRoute()
   },
 )
 onMounted(() => {
@@ -336,16 +338,16 @@ onMounted(() => {
   void applyRoute()
   observer = new ResizeObserver(fitFocus)
   root.value?.querySelectorAll('.nc-page-head,.nc-command').forEach((el) => observer?.observe(el))
-  window.addEventListener('resize', resize)
+  window.addEventListener('resize', fitFocus)
   window.addEventListener('scroll', engaged, true)
 })
 onUnmounted(() => {
-  routeSequence++
+  detailRequest++
   clearTimeout(debounce)
   cancelAnimationFrame(frame)
   observer?.disconnect()
   unregister()
-  window.removeEventListener('resize', resize)
+  window.removeEventListener('resize', fitFocus)
   window.removeEventListener('scroll', engaged, true)
   center.workspaceOpen = false
   center.workspaceEngaged = false
@@ -357,6 +359,8 @@ onUnmounted(() => {
     ref="root"
     class="app-page nc-workspace"
     data-yl-help="work-center.overview"
+    tabindex="-1"
+    @keydown="onShortcut"
     @focusin="engaged"
     @focusout="engaged"
   >
@@ -593,13 +597,13 @@ onUnmounted(() => {
         }
       "
       ><DrawerContent
-        :side="width < 640 ? 'bottom' : 'right'"
+        :side="mobile ? 'bottom' : 'right'"
         class="nc-detail-sheet"
         :show-close-button="false"
         @close-auto-focus.prevent="restoreFocus"
         ><DrawerTitle class="sr-only">事项预览</DrawerTitle
         ><DrawerDescription class="sr-only">业务事实、最近经过与办理入口</DrawerDescription
-        ><span v-if="width < 640" class="nc-grip" /><WorkEntryDetail
+        ><span v-if="mobile" class="nc-grip" /><WorkEntryDetail
           v-if="center.selected"
           :entry="center.selected"
           @close="close" /></DrawerContent
@@ -610,7 +614,7 @@ onUnmounted(() => {
     <Transition name="nc-batch"
       ><div v-if="selected.length" class="nc-batch glass-float" role="toolbar" aria-label="批量操作">
         <strong>已选 {{ selected.length }} 项</strong
-        ><Button size="sm" variant="ghost" @click="checked = visible.map((i) => i.id)">全选本页</Button
+        ><Button size="sm" variant="ghost" @click="setChecked(visible.map((i) => i.id))">全选本页</Button
         ><Button size="sm" variant="ghost" :disabled="center.personalBusy" @click="batch('read')"
           >标为已读</Button
         ><Button
@@ -635,7 +639,7 @@ onUnmounted(() => {
               eligibleArchive ? '归档所选事项' : '活跃待办需在原业务办理完成后才能结案'
             }}</TooltipContent></Tooltip
           ></TooltipProvider
-        ><Button size="sm" variant="ghost" @click="checked = []">取消</Button>
+        ><Button size="sm" variant="ghost" @click="setChecked([])">取消</Button>
       </div></Transition
     >
   </div>

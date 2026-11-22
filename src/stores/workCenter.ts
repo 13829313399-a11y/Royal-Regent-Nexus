@@ -3,10 +3,12 @@ import { defineStore } from 'pinia'
 import { workCenterApi } from '@/api/workCenter'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
+import { parseBusinessTimestamp } from '@/lib/dateTime'
 import { canArchive, normalizeFactory } from '@/features/work-center/metadata'
 import type { PersonalPatch, WorkEntry, WorkPreferences, WorkQuery, WorkSnapshot } from '@/features/work-center/types'
 
 export const defaultWorkQuery = (): WorkQuery => ({ view: 'todo', factory_scope: 'authorized', module: '', q: '', due: 'all', unread_only: false, limit: 30 })
+const defaultPreferences = (): WorkPreferences => ({ sound_enabled: false, toast_level: 'assigned', version: 0, business_timezone: 'Asia/Shanghai' })
 export const useWorkCenterStore = defineStore('work-center', () => {
   const auth = useAuthStore()
   const snapshot = ref<WorkSnapshot | null>(null)
@@ -17,32 +19,44 @@ export const useWorkCenterStore = defineStore('work-center', () => {
   const workspaceOpen = ref(false), workspaceEngaged = ref(false), panelOpen = ref(false), personalBusy = ref(false)
   const toasts = ref<WorkEntry[]>([]), toastOverflow = ref(0), information = ref<WorkEntry[]>([])
   const panelTab = ref<'todo' | 'info'>('todo'), informationLoading = ref(false), informationError = ref(''), informationLoaded = ref(false)
-  const preferences = ref<WorkPreferences>({ sound_enabled: false, toast_level: 'assigned', version: 0, business_timezone: 'Asia/Shanghai' })
+  const preferences = ref(defaultPreferences())
   let sequence = 0, detailSequence = 0, controller: AbortController | undefined
   let timer: ReturnType<typeof setTimeout> | undefined, running = false, failures = 0, channel: BroadcastChannel | undefined
   let known = new Set<string>(), baseline = false, stopAuthWatch: (() => void) | undefined
   const account = computed(() => `${auth.currentUser?.id ?? ''}:${auth.authorizationVersion}:${auth.authzMode}:${auth.currentUser?.identity?.effective_context_key ?? ''}:${auth.currentUser?.identity?.employment_epoch ?? ''}`)
   let infoSequence = 0, accessGeneration = 0, activeWrites = 0
+  let snapshotReceivedAt = 0
+  let preferencesLoaded = false, preferenceRequest: Promise<void> | undefined
   const feedback = ref('')
   const summary = computed(() => workspaceOpen.value ? snapshot.value?.summary : bell.value?.summary ?? snapshot.value?.summary)
   const count = computed(() => summary.value?.actionable_total ?? 0)
   const stamp = (item: WorkEntry) => `${item.id}@${item.attention_version}`
 
+  function serverNow() {
+    const at = parseBusinessTimestamp(snapshot.value?.context.server_time)
+    return at === null ? undefined : new Date(at + performance.now() - snapshotReceivedAt).toISOString()
+  }
+  function resetPreferences() {
+    preferencesLoaded = false; preferenceRequest = undefined
+    preferences.value = defaultPreferences()
+  }
   function clear() {
     ++accessGeneration; activeWrites = 0; personalBusy.value = false; feedback.value = ''
+    resetPreferences()
     clearTimeout(timer)
     ++sequence; ++detailSequence; controller?.abort(); snapshot.value = bell.value = null; selected.value = null
     ++infoSequence; information.value = []; panelOpen.value = false; toasts.value = []; toastOverflow.value = 0; known = new Set(); baseline = false; pendingRefresh.value = false; error.value = detailError.value = ''
     informationLoading.value = informationLoaded.value = false; informationError.value = ''; panelTab.value = 'todo'
     query.value = defaultWorkQuery(); loading.value = syncing.value = false
     workspaceEngaged.value = false
-    preferences.value = { sound_enabled: false, toast_level: 'assigned', version: 0, business_timezone: 'Asia/Shanghai' }
   }
   function accessDenied(failure: unknown) {
     const status = (failure as { response?: { status?: number } })?.response?.status
     if (status !== 401 && status !== 403) return false
     clear()
     error.value = '当前账号无法查看事项，请重新核验登录和权限。'
+    failures++
+    schedule()
     return true
   }
   function clearSelection() { ++detailSequence; selected.value = null; detailError.value = '' }
@@ -55,10 +69,15 @@ export const useWorkCenterStore = defineStore('work-center', () => {
     if (!running || document.hidden || !navigator.onLine || !auth.currentUser) return
     const boundary = snapshot.value?.context.authz_recheck_at
     const delay = boundary ? Math.max(100, Date.parse(boundary) - Date.now()) : Infinity
+    const pollDelay = Math.min(120_000, 25_000 * 2 ** failures)
     timer = setTimeout(() => {
-      if (delay <= 25_000) { clear(); void auth.refreshSession().then(() => refresh()) }
-      else void refresh(true)
-    }, Math.min(delay, Math.min(120_000, 25_000 * 2 ** failures)))
+      if (delay > pollDelay) { void refresh(true); return }
+      clear()
+      const generation = accessGeneration
+      void auth.refreshSession().then(() => {
+        if (running && generation === accessGeneration) return refresh()
+      })
+    }, Math.min(delay, pollDelay))
   }
   async function claim(items: WorkEntry[], viewer: string): Promise<WorkEntry[]> {
     const operation = () => {
@@ -82,8 +101,9 @@ export const useWorkCenterStore = defineStore('work-center', () => {
       const bellQuery = { view: 'todo' as const, limit: 8 }
       const shared = current.view === 'todo' && current.factory_scope === 'authorized' && !current.module &&
         !current.q && current.due === 'all' && !current.unread_only && !current.cursor && current.limit >= 8
-      const [next, separate] = await Promise.all([
-        workCenterApi.snapshot(workspaceOpen.value ? { ...current, selected_id: selected.value?.id } : bellQuery, controller.signal),
+      const [{ snapshot: next, receivedAt }, separate] = await Promise.all([
+        workCenterApi.snapshot(workspaceOpen.value ? { ...current, selected_id: selected.value?.id } : bellQuery, controller.signal)
+          .then(snapshot => ({ snapshot, receivedAt: performance.now() })),
         workspaceOpen.value && !shared ? workCenterApi.snapshot(bellQuery, controller.signal) : undefined,
       ])
       if (seq !== sequence || identity !== account.value) return
@@ -93,6 +113,7 @@ export const useWorkCenterStore = defineStore('work-center', () => {
       const top = separate ?? { ...next, items: next.items.slice(0, 8), next_cursor: null }
       if (snapshot.value && snapshot.value.context.viewer_key !== next.context.viewer_key) {
         ++accessGeneration; activeWrites = 0; personalBusy.value = false; feedback.value = ''; pendingRefresh.value = false
+        resetPreferences()
         ++detailSequence; ++infoSequence; information.value = []
         informationLoaded.value = informationLoading.value = false; informationError.value = ''
         selected.value = null; toasts.value = []; toastOverflow.value = 0; known.clear(); baseline = false
@@ -102,7 +123,7 @@ export const useWorkCenterStore = defineStore('work-center', () => {
         && (!item.personal.snoozed_until || Date.parse(item.personal.snoozed_until) <= Date.parse(next.context.server_time))
         && (preferences.value.toast_level === 'all_tasks' || (preferences.value.toast_level === 'assigned' && item.viewer_relation === 'assignee')))
       toasts.value = toasts.value.filter(item => ids.has(stamp(item)))
-      if (baseline && background && !workspaceOpen.value && !panelOpen.value && candidates.length) {
+      if (baseline && background && preferencesLoaded && !workspaceOpen.value && !panelOpen.value && candidates.length) {
         const accepted = await claim(candidates, next.context.viewer_key)
         if (seq !== sequence || identity !== account.value) return
         const all = [...toasts.value, ...accepted]
@@ -116,7 +137,14 @@ export const useWorkCenterStore = defineStore('work-center', () => {
         const current = new Map(next.items.map(item => [item.id, item]))
         next.items = (snapshot.value?.items ?? []).flatMap(item => current.has(item.id) ? [current.get(item.id)!] : [])
       }
+      snapshotReceivedAt = receivedAt
       snapshot.value = next; bell.value = top; error.value = ''; failures = 0
+      if (!preferencesLoaded && !preferenceRequest) {
+        const generation = accessGeneration
+        preferenceRequest = loadPreferences().finally(() => {
+          if (generation === accessGeneration) preferenceRequest = undefined
+        })
+      }
       if (!background) pendingRefresh.value = false
       if (next.selected_entry_state && selected.value?.id === next.selected_entry_state.id) {
         if ('state' in next.selected_entry_state) { clearSelection(); detailError.value = '事项已失效或不在当前可见范围' }
@@ -182,8 +210,9 @@ export const useWorkCenterStore = defineStore('work-center', () => {
       const result = await workCenterApi.batch(items)
       if (generation !== accessGeneration || identity !== account.value) return
       const failed = result.results.filter(item => item.status !== 'ok')
-      await refresh(); broadcast()
+      await refresh()
       if (generation !== accessGeneration || identity !== account.value) return
+      broadcast()
       const reasons = [...new Set(failed.map(item => item.message || '事项状态已变化'))]
       feedback.value = failed.length ? `${failed.length} 项未成功 · ${reasons.join('、')}` : `已处理 ${eligible.length} 项`
       return failed.map(item => item.id)
@@ -211,7 +240,10 @@ export const useWorkCenterStore = defineStore('work-center', () => {
     const identity = account.value, generation = accessGeneration
     try {
       const result = await workCenterApi.savePreferences({ ...values, version: preferences.value.version })
-      if (identity === account.value && generation === accessGeneration) preferences.value = result
+      if (identity === account.value && generation === accessGeneration) {
+        preferences.value = result
+        preferencesLoaded = true
+      }
     } catch (failure) { if (identity === account.value && generation === accessGeneration && !accessDenied(failure)) error.value = getApiErrorMessage(failure) }
   }
   async function loadPreferences() {
@@ -219,7 +251,9 @@ export const useWorkCenterStore = defineStore('work-center', () => {
     try {
       const values = await workCenterApi.preferences()
       if (identity !== account.value || generation !== accessGeneration) return
+      if (values.version < preferences.value.version) return
       preferences.value = values
+      preferencesLoaded = true
       // Migrate an explicit browser preference once, not a new default.
       let old: string | null = null
       try { old = localStorage.getItem('rr.notification.sound.enabled') } catch { /* memory-only */ }
@@ -240,12 +274,14 @@ export const useWorkCenterStore = defineStore('work-center', () => {
     window.addEventListener('work-center-invalidated', invalidate)
     stopAuthWatch = watch(account, (_, previous) => {
       clear()
+      failures = 0
       if (previous === undefined && initialQuery) query.value = initialQuery
-      if (auth.currentUser) { void loadPreferences(); void refresh() }
+      if (auth.currentUser) void refresh()
     }, { immediate: true, flush: 'sync' })
   }
   function stop() {
-    running = false; clearTimeout(timer); controller?.abort(); stopAuthWatch?.(); channel?.close()
+    running = false; stopAuthWatch?.(); clear()
+    channel?.close(); channel = undefined
     document.removeEventListener('visibilitychange', wake); window.removeEventListener('online', wake); window.removeEventListener('offline', wake)
     window.removeEventListener('work-center-invalidated', invalidate)
   }
@@ -255,5 +291,5 @@ export const useWorkCenterStore = defineStore('work-center', () => {
     return refresh()
   }
   return { snapshot, bell, selected, query, loading, error, detailError, syncing, pendingRefresh, workspaceOpen, workspaceEngaged, panelOpen,
-    personalBusy, toasts, toastOverflow, information, informationLoading, informationError, informationLoaded, panelTab, loadInformation, preferences, summary, count, clear, clearSelection, accessDenied, refresh, selectEntry, patch, markVisibleRead, batchPatch, feedback, savePreferences, start, stop, setQuery }
+    personalBusy, toasts, toastOverflow, information, informationLoading, informationError, informationLoaded, panelTab, loadInformation, preferences, summary, count, serverNow, clear, clearSelection, accessDenied, refresh, selectEntry, patch, markVisibleRead, batchPatch, feedback, savePreferences, start, stop, setQuery }
 })

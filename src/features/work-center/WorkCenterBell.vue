@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ArrowUpRight, Bell, CheckCheck, RefreshCw, Volume2, VolumeX, X } from '@lucide/vue'
 import {
   Button,
@@ -16,6 +16,7 @@ import {
   TabsTrigger,
 } from '@/components/ui'
 import { useWorkCenterStore } from '@/stores/workCenter'
+import { useMediaQuery } from '@/composables/useMediaQuery'
 import { workEmptyState } from './health'
 import { attentionGroup } from './metadata'
 import { isSnoozed, snoozePresets } from './time'
@@ -27,7 +28,7 @@ import type { WorkEntry } from './types'
 
 const center = useWorkCenterStore(),
   actions = useWorkActions()
-const mobile = ref(false),
+const mobile = useMediaQuery('(width < 640px)'),
   ringing = ref(false)
 const tab = computed(() => center.panelTab)
 const serverTime = computed(() => center.bell?.context.server_time)
@@ -65,14 +66,6 @@ watch(
     )
   },
 )
-function resize() {
-  mobile.value = window.innerWidth < 640
-}
-onMounted(() => {
-  resize()
-  window.addEventListener('resize', resize)
-})
-onUnmounted(() => window.removeEventListener('resize', resize))
 function open(value: boolean) {
   center.panelOpen = value
   if (value) void center.refresh(!!center.bell)
@@ -82,7 +75,7 @@ function changeTab(value: unknown) {
   if (value === 'info') void center.loadInformation()
 }
 async function snooze(entry: WorkEntry) {
-  const until = snoozePresets(serverTime.value)[0]?.until
+  const until = snoozePresets(center.serverNow())[0]?.until
   if (
     until &&
     (await center.patch(entry, { state_version: entry.personal.state_version, snoozed_until: until }))

@@ -6,21 +6,10 @@ import { useAuthStore } from '@/stores/auth'
 import type { AuthMeResponse } from '@/api/auth'
 import type { WorkEntry, WorkSnapshot } from '@/features/work-center/types'
 import { entryRoute } from '@/features/work-center/routes'
+import { entry, snap } from '@/features/work-center/__tests__/fixtures'
 
 const api = vi.hoisted(() => ({ snapshot: vi.fn(), entry: vi.fn(), patch: vi.fn(), batch: vi.fn(), preferences: vi.fn(), savePreferences: vi.fn() }))
 vi.mock('@/api/workCenter', () => ({ workCenterApi: api }))
-const entry = (id = 'first'): WorkEntry => ({ id, kind: 'task', module: 'molding', title: '审核啤办单', summary: '测试', reference_label: id,
-  lifecycle: 'open', viewer_relation: 'assignee', source_factory: { id: 'huakang-c', label: '华康C' }, execution_factory: { id: 'huakang-a', label: '华康A' },
-  department_label: '工程', stage_label: '审核', responsible_label: '本人', why_me: '当前责任人', priority: 'normal', priority_reasons: [], due_at: null,
-  due_source: null, opened_at: '2026-09-28T02:00:00Z', can_act_now: true, unavailable_reason: null, verification_state: 'verified', resolution_reason: null,
-  content_version: 1, attention_version: 1, personal: { read_state: 'unread', snoozed_until: null, archived_at: null, pinned: false, state_version: 0 },
-  actions: [{ key: 'open', label: '审核', mode: 'navigate', enabled: true, disabled_reason: null, target: { route_key: 'molding_production', params: { id }, query: { factory: 'huakang-a' } } }] })
-const snap = (items: WorkEntry[] = [entry()]): WorkSnapshot => ({
-  context: { viewer_key: 'A', scope_key: 'authorized', server_time: '2026-09-28T02:00:00Z', business_timezone: 'Asia/Shanghai', authz_recheck_at: null },
-  summary: { actionable_total: items.length, assigned_total: items.length, team_queue_total: 0, focus_total: items.length, snoozed_total: 0, overdue_total: 0, info_unread_total: 0, waiting_total: 0, verification_required_total: 0 },
-  query: { filtered_total: items.length, cursor: null }, items, next_cursor: null, selected_entry_state: null,
-  health: { status: 'fresh', as_of: '2026-09-28T02:00:00Z', unavailable_sources: [], coverage: [] },
-})
 function account(id: string) { useAuthStore().$patch({ currentUser: { id, identity: { effective_context_key: id, employment_epoch: 1 } } as AuthMeResponse }) }
 let center: ReturnType<typeof useWorkCenterStore>
 beforeEach(() => {
@@ -69,6 +58,86 @@ describe('shared work center', () => {
     expect(center.count).toBe(0); expect(center.snapshot?.items).toEqual([])
     api.snapshot.mockRejectedValue(new Error('offline')); await center.refresh(true)
     expect(center.snapshot?.health.status).toBe('stale'); expect(center.bell?.health.status).toBe('stale'); expect(center.error).toBeTruthy()
+  })
+  it.each([401, 403])('clears denied data and recovers automatically after a %i write', async (status) => {
+    vi.useFakeTimers()
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+    center.start()
+    await flushPromises()
+    api.patch.mockRejectedValueOnce({ response: { status } })
+    await center.patch(entry(), { pinned: true, state_version: 0 })
+    expect(center.bell).toBeNull()
+    api.snapshot.mockRejectedValueOnce({ response: { status } })
+    await vi.advanceTimersByTimeAsync(49_999)
+    expect(api.snapshot).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(center.bell).toBeNull()
+    api.snapshot.mockResolvedValue(snap([entry('restored')]))
+    await vi.advanceTimersByTimeAsync(100_000)
+    expect(center.bell?.items.map(item => item.id)).toEqual(['restored'])
+    expect(center.toasts).toEqual([])
+    expect(center.error).toBe('')
+  })
+  it.each(['batch', 'refresh'])('drops a late %s response when the host stops and restarts', async (phase) => {
+    const channels: { postMessage: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }[] = []
+    vi.stubGlobal('BroadcastChannel', class {
+      postMessage = vi.fn()
+      close = vi.fn()
+      constructor() { channels.push(this) }
+    })
+    try {
+      center.start()
+      await flushPromises()
+      let finish!: () => void
+      const pending = new Promise<void>(resolve => { finish = resolve })
+      api.batch.mockImplementationOnce(async () => {
+        if (phase === 'batch') await pending
+        return { results: [] }
+      })
+      if (phase === 'refresh') api.snapshot.mockImplementationOnce(async () => { await pending; return snap() })
+      const writing = center.markVisibleRead()
+      await flushPromises()
+      center.stop()
+      center.start()
+      await flushPromises()
+      const calls = api.snapshot.mock.calls.length
+      finish()
+      expect(await writing).toBeUndefined()
+      expect(api.snapshot).toHaveBeenCalledTimes(calls)
+      expect(channels[0]!.close).toHaveBeenCalledOnce()
+      for (const channel of channels) expect(channel.postMessage).not.toHaveBeenCalled()
+      expect(center.personalBusy).toBe(false)
+      expect(center.feedback).toBe('')
+    } finally { center.stop(); vi.unstubAllGlobals() }
+  })
+  it('restores saved preferences after denial before allowing new background toasts', async () => {
+    const muted = { sound_enabled: true, toast_level: 'none', version: 4, business_timezone: 'Asia/Shanghai' }
+    api.preferences.mockResolvedValue(muted)
+    center.start()
+    await flushPromises()
+    expect(center.preferences).toEqual(muted)
+    api.patch.mockRejectedValueOnce({ response: { status: 403 } })
+    await center.patch(entry(), { pinned: true, state_version: 0 })
+    expect(center.preferences.sound_enabled).toBe(false)
+    expect(api.preferences).toHaveBeenCalledTimes(1)
+    api.preferences.mockRejectedValueOnce(new Error('offline'))
+    await center.refresh(true)
+    await flushPromises()
+    expect(center.bell).not.toBeNull()
+    let restore!: (value: typeof muted) => void
+    api.preferences.mockImplementationOnce(() => new Promise(done => { restore = done }))
+    api.snapshot.mockResolvedValue(snap([entry('during-recovery')]))
+    await center.refresh(true)
+    api.snapshot.mockResolvedValue(snap([entry('still-recovering')]))
+    await center.refresh(true)
+    expect(api.preferences).toHaveBeenCalledTimes(3)
+    expect(center.toasts).toEqual([])
+    restore(muted)
+    await flushPromises()
+    expect(center.preferences).toEqual(muted)
+    api.snapshot.mockResolvedValue(snap([entry('after-recovery')]))
+    await center.refresh(true)
+    expect(center.toasts).toEqual([])
   })
   it('discards a late list and information response from the prior account', async () => {
     let resolve!: (value: WorkSnapshot) => void
