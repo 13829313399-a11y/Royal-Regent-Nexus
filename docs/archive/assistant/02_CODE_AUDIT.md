@@ -25,7 +25,7 @@
 
 对 `src`、`backend/app`、`backend/tests`、`shared`、`scripts` 内匹配源码扩展名的 **1270 个文件**进行了文件清单建立；对相关前后端运行时代码做 AI/Qwen/assistant 关键词定位。**这不代表逐行读完 1270 个文件。**随后完整读取了下表中的关键文件，并对大型认证服务读取相关连续代码段。
 
-远端 PATH 没有 `rg`，因此改用直接文件读取及原生搜索。一次对错误候选目录 `services/injection_v3` 的搜索没有得到可靠内容，未将其作为“代码不存在”的证据；随后定位实际目录 `services/injection_scheduling` 并读取实现。一个增强摘要脚本调用被工具层拦截，之后使用正常读取工具继续，没有依赖该脚本的结果。
+远端使用直接文件读取及原生搜索核对源码。
 
 未读取实际 `.env` 内容。配置类中的空默认值不能用于断言用户没有配置 Key，目录中存在 `.env` 也不能用于断言连接可用。
 
@@ -56,7 +56,6 @@
 | `src/features/work-center/WorkCenterHost.vue` | 完整 | 全局通知宿主、声音与生命周期 |
 | `src/features/work-center/types.ts` | 完整 | 待办生命周期、个人阅读状态、数据健康度 |
 | `src/features/work-center/routes.ts` | 完整 | 固定 route key、实体 ID、厂区校验 |
-| `src/features/injection-scheduling/types.ts` | 完整 | 四厂范围、字段、状态、业务班次 |
 | `src/features/three-d-printing/printerPresentation.ts` | 完整 | 准备态、过期态与真实显示标签 |
 | `src/features/uv-operations/contracts.ts` | 完整 | 华康 A 固定范围、模拟数据标签、迟到响应隔离 |
 | `backend/app/main.py` | 完整 | 路由注册、应用启动副作用、计时中间件 |
@@ -66,8 +65,6 @@
 | `backend/app/api/document_tools.py` | 完整 | 已登录用户入口、本人文件归属与附件响应 |
 | `backend/app/api/work_center.py` | 完整 | 供应商排除、快照一致性、降级处理 |
 | `backend/app/services/quote_recognition.py` | 完整 | 受限候选识别提示词、Qwen 请求方式与输出校验 |
-| `backend/app/services/injection_scheduling/field_registry.py` | 完整 | 字段名称、是否可编辑、旧表辅助字段说明 |
-| `backend/app/services/injection_scheduling/calculations.py` | 完整 | 欠数、同啤产物、耗料、工时的实际公式 |
 | `backend/app/services/work_center/service.py` | 完整 | 当前责任、已读、稍后、关注、历史重新鉴权 |
 | `backend/app/db.py` | 完整，853 行 | `init_db()`、schema 检查、`create_all` 与播种 |
 | `backend/alembic/versions/20260826_0084_remove_ai_subsystem.py` | 完整 | 旧 AI 退役与不可逆降级约定 |
@@ -89,7 +86,7 @@
 
 ### A02：只改侧边导航会漏掉核心业务页
 
-`AppShell.vue` 在 `fullPage` 时直接渲染路由；注塑、3D、内部报价、QC、权限、供应商等页面使用这条路径。
+`AppShell.vue` 在 `fullPage` 时直接渲染路由；3D、内部报价、QC、权限、供应商等页面使用这条路径。
 
 **实施结论：**从 `App.vue` 并列挂载助手宿主，再由登录及页面状态控制入口。独立 `/image-translation/` 并不经过这个 Vue 根节点，必须明示覆盖边界。
 
@@ -149,58 +146,13 @@ Axios 的普通请求超时为 15000ms。现有 `dispatchAccessFailure` 正是 f
 
 ### A12：业务讲解必须保留“未知”和“部分”
 
-注塑字段有未解释辅助值；UV 有 synthetic；事项快照有 partial；3D 有 STALE。它们不能被简单翻译为“正常”“已完成”或“没有待办”。
+UV 有 synthetic；事项快照有 partial；3D 有 STALE。它们不能被简单翻译为“正常”“已完成”或“没有待办”。
 
 **实施结论：**把这些状态作为知识和测试的正式内容，而不是让模型润色后抹掉区别。
 
 ## 4. 可直接转成帮助条目与测试的数据口径
 
 以下公式来自实际代码；数字示例全部为**构造测试数据**，不是厂区实绩。
-
-### 4.1 注塑：顺序啤数分配
-
-来源：`calculations.py::quantities`。
-
-```text
-已啤数 = 期初啤数 opening_shots + 本期已上报啤数 reported_shots
-有符号欠数 = 计划啤数 planned_shots + 补数调整 adjustment_shots - 已啤数
-显示欠数 remaining_shots = max(0, 有符号欠数)
-超产啤数 overproduced_shots = max(0, -有符号欠数)
-```
-
-计划值缺失时有符号欠数与显示欠数为未知，不自动成为 0。
-
-**测试向量：**计划 1000、期初 100、已上报 200、补数 +50 → 已啤 300、欠数 750、超产 0。计划 100、期初 0、上报 120、补数 0 → 欠数 0、超产 20。
-
-### 4.2 注塑：同啤产物口径
-
-```text
-欠良品件 = max(0, required_units - good_units)
-欠啤数 = ceil(欠良品件 / effective_outputs_per_shot)
-```
-
-required_units 缺失、有效每啤出件缺失或不大于 0 时，不能给出有效欠啤数。组级计算在普通顺序口径求和；同啤产物按实际产品归集所需良品件，再取各产品所需啤数的最大值。
-
-**测试向量：**需求良品 1001、累计良品 201、每啤有效出件 3 → 欠良品 800、欠啤数 267。两种同时产出的产品分别需要 200、150 啤 → 共需 200 啤，而不是 350 啤；复杂产品归集继续按 `remaining_for_group` 的实现验证。
-
-### 4.3 注塑：时间、料重和加工金额
-
-```text
-每小时目标 = target_shots_per_day / target_basis_hours
-纯生产小时 = 欠啤数 / 每小时目标
-剩余料重 kg = 欠啤数 × 每啤净重 g / 1000 × (1 + allowance_rate)
-剩余加工金额 = 欠啤数 × 单价/啤
-```
-
-代码默认 target_basis_hours=24、allowance_rate=0.01，但实际显式配置优先；不要把日目标一律当作白班 12 小时目标。任何相关数值缺失都应保留未知状态。
-
-**测试向量：**欠 750 啤，日目标 600、折算 24 小时，净重 20g、附加系数 0.01、单价 0.1 → 每小时 25 啤、纯生产 30 小时、料重 15.15kg、加工金额 75。纯生产时长不包含所有换模、换色、日历和下游时间。
-
-### 4.4 注塑旧字段和厂区
-
-`field_registry.py` 把 `ratio_raw` 标为“原比例（未解释）”，`legacy_weeknum_delta` 标为“原周序号差（非检修）”，`legacy_lookup_at_raw` 标为“原 AT 查找值（未解释）”。助手不能自行解释成成本倍率、检修周期或确定交期。
-
-当前注塑的 FACTORIES 是华兴、华登、华康 A、华康 B。全项目组织已经包含六个生产厂区，不代表注塑现有模块也支持六厂。
 
 ### 4.5 事项工作台
 

@@ -74,7 +74,6 @@ backend/models/image-translation/
 !/docs/business/mainland-invoice-deployment.md
 !/docs/business/indonesia-materials-implementation.md
 !/docs/business/qc-complete-business-process.md
-!/docs/business/injection-scheduling-v3.md
 !/docs/business/zuru-unified-intake.md
 !/docs/business/huakang-c-cutting-p4a-acceptance.md
 !/docs/business/internal-quote-l6-release-readiness.md
@@ -146,6 +145,7 @@ outputs/opening-inventory-template-20260909/
 !/docs/frontend/WORKFLOWS.md
 !/docs/cutting/customer-po-test-bridge.md
 !/docs/frontend/UI_BRIEF_TEMPLATE.md
+!/docs/frontend/exceptions/*.md
 !/docs/spray-production/*.md
 /.codex/*
 !/.codex/config.toml

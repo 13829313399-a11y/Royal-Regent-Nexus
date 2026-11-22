@@ -22,7 +22,7 @@
 | 520–522 | [裁床 P5 切换、岗位与性能记录](cutting-p5.md) | [生产与质量](../../project-memory/production.md) |
 | 523–548 | [文档工具、在线编辑与图片翻译](shared-tools.md) | [公共工具与印尼业务](../../project-memory/documents-and-shipping.md) |
 | 549–578 | [箱唛模板与印尼发票处理](marks-invoice.md) | [公共工具与印尼业务](../../project-memory/documents-and-shipping.md) |
-| 579–592 | [排程 V3 与迁移边界](injection.md) | [生产与质量](../../project-memory/production.md) |
+| 579–592 | 旧排产实现资料已清理 | [现行入口与数据迁移](../../project-memory/production.md#injection) |
 | 593–610 | [3D 设备观察与历史迁移](three-d.md) | [生产与质量](../../project-memory/production.md) |
 | 611–670 | [QC 单据、验货与审核](qc.md) | [生产与质量](../../project-memory/production.md) |
 | 671–680 | [喷油流程与接入](spray.md) | [生产与质量](../../project-memory/production.md) |

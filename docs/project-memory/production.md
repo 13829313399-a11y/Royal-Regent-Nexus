@@ -29,7 +29,9 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 
 华兴、华登、华康 A/B 保留生产部卡片和 `/modules/production/injection-scheduling` 路径，按厂显示「待重新设计」。旧排程 API、曜灵查询与注塑排程专属权限已退役。啤办继续使用 `/api/injection`。
 
-迁移执行时会删除排产 V3 和更早代际的表及专属授权，并保留其他业务授权和审计历史。部署前核对数据库版本并演练恢复。[退役迁移与恢复](../business/injection-scheduling-retirement.md) · [退役测试](../../backend/tests/test_injection_retirement.py) · [V3 历史记录](../archive/memory/injection.md)
+重建从上述空白入口开始，字段、算法与开账数据按本次重建确认的资料建立。
+
+已发布的退役版本 `20261116_inj_retire` 以 `20261116_0195` 为父版本，在 `20261121_inj_merge` 与 `20261119_0197` 汇合。升级会删除旧排程表和专属授权，并检查其他业务依赖。部署前须停止相关写入，备份数据库与私有文件，在独立副本验证升级、恢复和其他业务数据。遇到同名迁移以 `20261107_0193` 为父版本的早期草稿时，先核对实际库结构与迁移来源。[退役迁移](../../backend/alembic/versions/20261116_inj_retire_scheduling.py) · [退役测试](../../backend/tests/test_injection_retirement.py)
 
 <a id="three-d"></a>
 ## 华康 A 3D 打印

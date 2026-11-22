@@ -2,7 +2,7 @@
 
 原记忆第 757–812 行。涉及版本、机器、发布、岗位和测试的结论以记录发生时为限。现行入口见[账号、门户与工作台](../../project-memory/platform.md)和[项目记忆](../../../PROJECT_MEMORY.md)。[固定版本原文](https://github.com/13829313399-a11y/Royal-Regent-Nexus/blob/b178eb679edd6b48f23f84d6b194d08aa25edf00/PROJECT_MEMORY.md#L757-L812)
 
-现网操作请查[生产发布与恢复](../../aliyun-docker-deploy.md)。此处保留各批次的来历，旧主机指纹仅在固定版本原文中追溯。
+现网操作请查[生产发布与恢复](../../aliyun-docker-deploy.md)。注塑排程的升级与恢复见[四厂入口与退役迁移](../../project-memory/production.md#injection)。此处保留各批次的来历，旧主机指纹仅在固定版本原文中追溯。
 
 ### 7. Deployment and Data Safety Constraints
 
@@ -107,24 +107,9 @@ Production data directories were excluded, and container identities/start times,
   metadata and import it as the rollback image instead of failing before cutover.
 - Migration `20260723_0027` merged per-factory raw-material masters into the global master. Its data transformation is irreversible without a pre-migration backup.
 - Migration `20260723_0028` introduced production-factory dispatch and factory-scoped inventory behavior. Its preflight rejects ambiguous Huakang C/D production history and unscoped inventory; rollback requires a backup.
-- Migration `20260727_0037` removes the rebuilt injection-scheduling tables, permissions, IAM markers and PostgreSQL audit trigger. Its downgrade is intentionally blocked; recovery requires a backup from before removal.
 - Migration `20260727_0038` adds an empty optional standalone hair section and immutable initial revision to every historical internal quote; downgrade is allowed only while those migrated hair sections remain untouched.
-- Migration `20260728_0039` creates the new injection-scheduling backend, permission family and immutable audit contract. Its downgrade refuses to run after an import batch exists; production deployment requires the normal backup and migration preflight.
-- Migration `20260731_0042` irreversibly removes the `injection_scheduling_*` backend, its data and permissions before redesign. Downgrade is blocked; recovery requires a verified pre-removal database backup.
-- Migration `20260731_0043` rebuilds only factory-scoped injection-scheduling machine, mold and versioned rule master data, seeds conservative per-factory defaults and the eight canonical permissions, and refuses downgrade after master data or custom rule revisions exist.
-- Migration `20260731_0044` adds factory-scoped orders, plans, tasks, append-only ShiftReports, immutable plan revisions and published snapshots, audit-event polling and database guards for published-plan immutability and one active running task per machine. Downgrade is refused after any Phase 3 business or audit row exists.
-- Migration `20260731_0045` adds factory-scoped Excel import batches and append-only row issues, request/payload idempotency, source-file/sheet/row lineage on tasks, confirmed-batch and published-lineage immutability guards, and refuses downgrade after any import preview or imported task exists.
 - Migration `20260802_0046` adds the independent password-reset request state machine, reviewer and notification linkage, scope metadata, issuance count and expiry/completion timestamps. Its downgrade refuses to run after any password-reset request exists.
 - Migration `20260819_0079` adds the nullable unique SHA-256 claim hash used by the same-browser password-reset flow. Existing rows remain claim-less legacy requests, and the migration can remove and restore the claim column and unique index without rewriting existing request state.
-- Migration `20260804_0047` irreversibly removes the current injection-scheduling tables, data, permissions, IAM markers and database guard functions. Recovery requires a verified pre-removal database backup.
-- Migration `20260804_0048` rebuilds the injection-scheduling V2 Phase 0 backend after the removal boundary, restores the eight canonical permissions and execution/import guards, adds raw and numeric A-class fields plus normalization/process metadata, and refuses downgrade after V2 business data exists. Application startup refuses to let `create_all` bypass this migration.
-- Migration `20260804_0050` adds factory-scoped auto-schedule runs and assignments, transition rules, machine availability calendars and automatic-plan provenance fields. Applying a preview remains revision- and snapshot-guarded; application startup refuses service when the Phase 3 schema is incomplete.
-- Migration `20260804_0051` adds the Phase 4 requested/actual solver, solver status, fallback reason, scenario group/name/alternative and replay-source metadata to auto-schedule runs. Application startup refuses service when these columns are missing.
-- Migration `20260804_0052` adds Phase 5 ERP/device integration cursors and events, cycle observations and speed models. Its downgrade refuses after any Phase 5 history exists, and application startup refuses service while the Phase 5 schema is incomplete.
-- Migration `20260805_0056` adds factory-bound, versioned injection-scheduling import Profiles and their governance permission. Its downgrade rejects custom, changed, rebound or referenced Profile state.
-- Migration `20260805_0057` adds plan-aware takeover and successor-lineage persistence plus append-only reconciliation/progress evidence. Its downgrade rejects takeover data and prevents a cascading downgrade from partially crossing the protected 0056 boundary.
-- Migration `20260807_0058` adds public planning bindings, recoverable import artifacts and signed-export audit evidence. Its downgrade refuses to discard those artifacts, and SQLite/PostgreSQL guards reject export-audit updates and deletes.
-- Migration `20260809_0059` adds demand-order import state and the company/shared-mold plus factory physical-asset model; it intentionally seeds company membership only and no commercial rates. Migration `20260809_0060` adds conservative rollout policies for all six factories and physical-asset assignment lineage. Compatibility migration `20260810_0061` follows the remote customer-order `0059` plus injection branch and conditionally supplies the customer-order audit columns missing from already-migrated local databases. Local SQLite includes the compatibility migration; its current head is documented in the carton collaboration contract. Production still requires its own verified backup, migration and real-workbook reconciliation.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 - Production Compose injects only the three required `POSTGRES_*` variables into PostgreSQL; the API
   alone receives the complete untracked `.env.production`.
