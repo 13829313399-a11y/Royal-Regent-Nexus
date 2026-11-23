@@ -9,6 +9,8 @@
 
 华康 A 的 360 正式路线与华兴 360 临时路线独立。Dickie、银辉、彩星等映射与源表版本绑定，客户单位换算、取整、放行与受控输出的例外见[分客户资料](../archive/memory/quotes-customers.md)。
 
+银辉旧版报价完整读取“电子报价”“电子TX报价”和“电子RX报价”页，按页内型号与对应组件匹配。客表按需扩行，逐条列出 IC 数量、单价和小计，拆分前后各组件的合计一致。
+
 [internal-quote-collaboration-design.md](../business/internal-quote-collaboration-design.md) · [internal_quote.py](../../backend/app/api/internal_quote.py) · [test_internal_quote_api.py](../../backend/tests/test_internal_quote_api.py)
 
 旧版字段和例外可追溯至[内部协作、公式与受控导出](../archive/memory/quotes.md)、[客价白名单与客户例外](../archive/memory/quotes-customers.md)。

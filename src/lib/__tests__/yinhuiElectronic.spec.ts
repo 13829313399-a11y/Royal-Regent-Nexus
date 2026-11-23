@@ -101,6 +101,17 @@ describe('Yinhui supplier IC source evidence', () => {
     const parsed = readYinhuiSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)
     expect(readYinhuiElectronicSources(parsed.sheets)[0]!.chips[0]!.source).toBe('電子 報價!E93')
   })
+  it('loads separate TX/RX quote tabs in full and matches their ICs to the correct BOM rows', () => {
+    const rows = sheet().rows
+    const tx = { name: '电子TX报价', rows: rows.slice(0, 4) }
+    const rx = { name: '電子（ｒｘ）報價', rows: [...rows.slice(4, 6), ...Array.from({ length: 80 }, () => []), ...rows.slice(6)] }
+    const bytes = createXlsxWorkbook([rx, { ...tx, name: 'USB报价' }, tx])
+    const parsed = readYinhuiSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)
+    const result = splitYinhuiLegacyElectronics(parents(), parsed.sheets, main, '88052')
+    expect(result.map(row => row.source)).toEqual([
+      '明细!D1', '电子TX报价!E3', '明细!D2', '電子（ｒｘ）報價!E83', '電子（ｒｘ）報價!E84',
+    ])
+  })
   describe('RFID controller and TAG card quotations', () => {
     const quote = (product: string, model: string): XlsxParsedSheet => ({
       name: '电子报价', cellFillIds: [], rows: [
