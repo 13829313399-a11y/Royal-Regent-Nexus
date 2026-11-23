@@ -3310,6 +3310,12 @@ def test_molding_clerk_can_save_one_trial_report_per_mold_item(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-TRIAL-REPORT-001"))
 
+    login_as(client, "molding_clerk")
+    assert client.put(
+        "/api/injection/BP-TRIAL-REPORT-001/trial-reports/BP-TRIAL-REPORT-001-001",
+        json={"data": {}},
+    ).status_code == 403
+
     login_as(client, "supervisor")
     approved_response = client.patch(
         "/api/injection/BP-TRIAL-REPORT-001/status",
@@ -3386,6 +3392,37 @@ def test_molding_clerk_can_save_one_trial_report_per_mold_item(client):
     )
     assert missing_item_response.status_code == 404
     assert "模具明细不存在" in missing_item_response.json()["detail"]
+
+
+def test_first_trial_report_after_completion_preserves_legacy_order_dates_and_costs(client):
+    from app.db import SessionLocal
+    from app.models.molding_sample import MoldingSampleItem, MoldingSampleOrder
+
+    order_id = "BP-LEGACY-LATE-REPORT"
+    item_id = f"{order_id}-001"
+    with SessionLocal() as db:
+        order = MoldingSampleOrder(
+            id=order_id, factory_id="huaxing", status="已完成",
+            product_name="历史啤办样件", date="2026-06-01",
+            created_at="2026-06-01 08:00:00", updated_at="2026-06-03 17:00:00",
+        )
+        order.items = [MoldingSampleItem(id=item_id, actual_weight_kg=2.5, actual_amount_hkd=30)]
+        db.add(order)
+        db.commit()
+
+    login_as(client, "molding_clerk")
+    path = f"/api/injection/{order_id}"
+    before = client.get(path).json()
+    response = client.put(f"{path}/trial-reports/{item_id}", json={"data": {"trial_summary": "尺寸复核合格"}})
+    assert response.status_code == 200
+    after = client.get(path).json()
+    assert after["trial_reports"] == [response.json()]
+    assert after["order"] == before["order"]
+    assert after["items"] == before["items"]
+    assert after["notifications"] == before["notifications"]
+    assert [(log["action"], log["from_status"], log["to_status"]) for log in after["audit_logs"]] == [
+        ("填写试模报告", "已完成", "已完成")
+    ]
 
 
 def test_engineer_can_withdraw_pending_order_and_resubmit(client):
@@ -3637,6 +3674,13 @@ def test_external_order_auto_completes_after_supervisor_approval(client):
     assert payload["order"]["completed_date"] == TEST_BUSINESS_DATE
     assert payload["items"][0]["actual_weight_kg"] == 2.46
     assert payload["items"][0]["actual_amount_hkd"] == 29.83
+
+    login_as(client, "molding_clerk")
+    external_report = client.put(
+        "/api/injection/BP-EXT-001/trial-reports/BP-EXT-001-001",
+        json={"data": {"trial_summary": "外发单"}},
+    )
+    assert external_report.status_code == 403
 
 
 def test_production_problem_feedback_is_saved_and_visible_to_engineering(client):
@@ -4606,7 +4650,7 @@ def cross_factory_order_payload(
     return payload
 
 
-def test_huakang_c_order_runs_in_huakang_a_without_leaking_engineering_stage(client):
+def test_huakang_c_order_runs_in_huakang_a_without_leaking_engineering_stage(client, monkeypatch):
     order_id = "BP-HKC-TO-HKA-001"
     login_as(client, "c_engineer")
     create_response = client.post(
@@ -4708,10 +4752,29 @@ def test_huakang_c_order_runs_in_huakang_a_without_leaking_engineering_stage(cli
     assert complete_response.status_code == 200
     assert complete_response.json()["order"]["status"] == "已完成"
 
+    report_path = f"/api/injection/{order_id}/trial-reports/{item['id']}"
+    revised_data = {**trial_response.json()["data"], "trial_summary": "冷却后复测合格"}
+    next_day = TEST_BUSINESS_NOW + timedelta(days=1)
+    monkeypatch.setattr("app.services.molding_sample.business_now", lambda: next_day)
+    revised = client.put(report_path, json={"data": revised_data})
+    assert revised.status_code == 200
+    assert revised.json()["id"] == trial_response.json()["id"]
+    assert revised.json()["created_at"] == trial_response.json()["created_at"]
+    assert revised.json()["updated_at"].startswith(next_day.date().isoformat())
+    after = client.get(f"/api/injection/{order_id}").json()
+    assert after["order"] == complete_response.json()["order"]
+    assert after["items"] == complete_response.json()["items"]
+    assert after["notifications"] == complete_response.json()["notifications"]
+    audit = after["audit_logs"][0]
+    assert (audit["action"], audit["from_status"], audit["to_status"]) == ("更新试模报告", "已完成", "已完成")
+
+    login_as(client, "b_molding_clerk")
+    assert client.put(report_path, json={"data": {}}).status_code == 403
     login_as(client, "c_engineer")
+    assert client.put(report_path, json={"data": {}}).status_code == 403
     origin_detail = client.get(f"/api/injection/{order_id}")
     assert origin_detail.status_code == 200
-    assert origin_detail.json()["trial_reports"][0]["factory_id"] == "huakang-a"
+    assert origin_detail.json()["trial_reports"] == [revised.json()]
     assert origin_detail.json()["problems"][0]["factory_id"] == "huakang-a"
     engineering_notifications = client.get(
         "/api/molding-sample-notifications",

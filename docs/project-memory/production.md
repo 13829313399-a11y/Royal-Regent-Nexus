@@ -9,6 +9,8 @@
 
 月报按业务开单日和执行厂取整月数据，逐模对计划、领用、消耗、配方、估价与已存结算金额。补领、冲销须有原始关联凭据。
 
+内部啤办任务完成后，承接厂有啤机回填权限的人员仍可按模具补填、修改试模报告。工程部查看最新报告，原任务的完工日期和结算记录保留。
+
 [molding-sample-business-flow.md](../business/molding-sample-business-flow.md) · [molding_sample.py](../../backend/app/api/molding_sample.py) · [test_molding_sample_api.py](../../backend/tests/test_molding_sample_api.py)
 
 旧版字段和例外可追溯至[啤办与集团胶料](../archive/memory/molding.md)。
