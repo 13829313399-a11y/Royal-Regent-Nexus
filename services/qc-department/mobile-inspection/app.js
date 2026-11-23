@@ -46,6 +46,8 @@ let photoUrls = new Map();
 let dialogTrigger;
 let busy = false;
 let openingTask = false;
+let liveRefreshInFlight = false;
+let localUpdate = 0;
 const writeState = new Map();
 
 function state(row) {
@@ -155,6 +157,7 @@ function save(row) {
 }
 
 function change(row, immediate = false) {
+  localUpdate++;
   const edit = state(row);
   edit.version++;
   const values=remote.values(row);
@@ -200,13 +203,14 @@ function refreshEntryStatus(row) {
 }
 
 function setOptions(select, entries, defaultLabel) {
+  if (select.options.length === entries.length + 1 && select.options[0].text === defaultLabel &&
+      entries.every(([value, label], i) => select.options[i + 1].value === value && select.options[i + 1].text === label)) return;
   const selected = select.value;
   select.replaceChildren(new Option(defaultLabel, ''), ...entries.map(([value, label]) => new Option(label, value)));
   if (entries.some(([value]) => value === selected)) select.value = selected;
 }
 
 function renderTask(row) {
-  const selected = current === row ? ' aria-current="true"' : '';
   const sync = syncStatus(row);
   const result = resultValues.includes(row.result) ? row.result : '';
   const badge = row.returned && !row.submittedAt ?
@@ -214,7 +218,7 @@ function renderTask(row) {
     '<span class="pill" data-judgment="' + result + '">' + (result || '未判定') + '</span>';
   const label = [row.customer, row.returned && !row.submittedAt ? '退回重新验货' : result || '未判定',
     row.po && 'PO ' + row.po, row.sku && '货号 ' + row.sku, row.product, sync.text].filter(Boolean).join('，');
-  return '<button type="button" class="task" data-task="' + row.id + '" aria-label="' + escapeHtml(label) + '"' + selected + '>' +
+  return '<button type="button" class="task" data-task="' + row.id + '" aria-label="' + escapeHtml(label) + '">' +
     '<span class="task-main"><span class="row-head"><span>' + escapeHtml(row.customer) + '</span>' + badge + '</span>' +
     '<span class="task-ids"><span><small>PO</small><span>' + escapeHtml(row.po || '—') + '</span></span>' +
     '<span><small>货号</small><span>' + escapeHtml(row.sku || '—') + '</span></span></span>' +
@@ -227,7 +231,7 @@ function renderMobileTask(row) {
   const sync = syncStatus(row), result = row.result || '未判定';
   const color = Array.from(row.customer).reduce((hash, char) => (hash * 31 + char.codePointAt(0)) >>> 0, 0) % 4;
   const label = [row.customer, 'PO ' + (row.po || '—'), '货号 ' + (row.sku || '—'), row.product, result, sync.text, row.returned && '退回重新验货'].filter(Boolean).join('，');
-  return '<button type="button" class="task mobile-task" data-customer-color="' + color + '" data-task="' + escapeHtml(row.id) + '" aria-label="' + escapeHtml(label) + '"' + (current === row ? ' aria-current="true"' : '') + '>' +
+  return '<button type="button" class="task mobile-task" data-customer-color="' + color + '" data-task="' + escapeHtml(row.id) + '" aria-label="' + escapeHtml(label) + '">' +
     '<span class="mobile-task-copy"><span class="mobile-customer-row"><strong class="mobile-customer">' + escapeHtml(row.customer) + '</strong><span class="pill" data-judgment="' + escapeHtml(row.result || '') + '">' + escapeHtml(result) + '</span></span>' +
     '<span class="mobile-identifiers"><span><small>PO</small><span>' + escapeHtml(row.po || '—') + '</span></span><span><small>货号</small><span>' + escapeHtml(row.sku || '—') + '</span></span></span>' +
     '<span class="mobile-product-row"><span class="mobile-product">' + icon('product') + '<span>' + escapeHtml(row.product || '—') + '</span></span><span class="task-sync" data-tone="' + sync.kind + '">' + sync.text + '</span></span>' +
@@ -242,6 +246,18 @@ function matchesTaskFilters(row, keyword, day, customer) {
 }
 
 const activeRows = () => rows;
+const listMarkup = new WeakMap();
+
+function updateListMarkup(id, markup) {
+  const host = $(id);
+  if (listMarkup.get(host) !== markup) {
+    const focusedId = host.contains(document.activeElement) ? document.activeElement.dataset.task : '';
+    host.innerHTML = markup;
+    listMarkup.set(host, markup);
+    if (focusedId) [...host.querySelectorAll('[data-task]')].find(button => button.dataset.task === focusedId)?.focus({preventScroll:true});
+  }
+  markCurrentTask(host);
+}
 
 function renderList({ updateOptions = false } = {}) {
   const active = activeRows();
@@ -286,10 +302,10 @@ function renderList({ updateOptions = false } = {}) {
   const filtered = Boolean($('day').value || $('customer').value);
   $('list-filter').classList.toggle('active', filtered);
   $('list-filter').setAttribute('aria-label', '筛选：' + $('day').selectedOptions[0].textContent + '，' + $('customer').selectedOptions[0].textContent);
-  $('task-list').innerHTML = [...groups].map(([day, group]) =>
+  updateListMarkup('task-list', [...groups].map(([day, group]) =>
     '<div class="section-label"><span>' + (day && multipleYears ? day : dateLabel(day)) + '</span>' + (!wideScreen?.matches ? '<span class="date-count">（' + group.length + '条）</span>' : '') + '</div>' +
     '<div class="rows">' + group.map(row => wideScreen?.matches ? renderTask(row) : renderMobileTask(row)).join('') + '</div>').join('') ||
-    '<p class="empty">' + (available.length ? '没有符合条件的验货任务。' : '没有待处理的验货任务。') + '</p>';
+    '<p class="empty">' + (available.length ? '没有符合条件的验货任务。' : '没有待处理的验货任务。') + '</p>');
   const returned = visible.filter(row => row.returned);
   $('return-notice').innerHTML = returned.length && !seenReturned ?
     '<button class="notice warning return-link" type="button" data-return="' + returned[0].id + '">' +
@@ -302,8 +318,8 @@ function renderList({ updateOptions = false } = {}) {
 
 function renderPending() {
   const pending = activeRows().filter(row => row.submittedAt).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
-  $('pending-list').innerHTML = pending.length ? '<div class="rows">' + pending.map(renderTask).join('') + '</div>' :
-    '<p class="empty">还没有提交记录。</p>';
+  updateListMarkup('pending-list', pending.length ? '<div class="rows">' + pending.map(renderTask).join('') + '</div>' :
+    '<p class="empty">还没有提交记录。</p>');
 }
 
 function showPage(name) {
@@ -334,9 +350,9 @@ function positionComposer() {
   }
 }
 
-function markCurrentTask() {
-  for (const button of all('[data-task]')) {
-    if (button.dataset.task === current?.id) button.setAttribute('aria-current', 'true');
+function markCurrentTask(host = document) {
+  for (const button of host.querySelectorAll('[data-task]')) {
+    if (button.dataset.task === current?.id) { if (!button.hasAttribute('aria-current')) button.setAttribute('aria-current', 'true'); }
     else button.removeAttribute('aria-current');
   }
 }
@@ -388,9 +404,9 @@ function setEntryReadOnly(readOnly) {
   for (const button of all('[data-result]')) button.disabled = readOnly;
 }
 
-function renderEntry(row, from) {
+function renderEntry(row, from, keepPhotos = false) {
   if (page === 'tasks') listPosition = taskScroll.scrollTop;
-  if (current && current !== row) releasePhotoUrls();
+  if (current && current !== row && !keepPhotos) releasePhotoUrls();
   entryFrom = from;
   keyboardSession = null;
   current = row;
@@ -421,7 +437,7 @@ function renderEntry(row, from) {
   showPage('entry');
   markCurrentTask();
   syncEditing();
-  renderPhotos(row);
+  if (!keepPhotos) renderPhotos(row);
   refreshEntryStatus(row);
   entryScroll.scrollTop = 0;
 }
@@ -1024,7 +1040,7 @@ async function openTask(row) {
   }
   if (navigator.onLine !== false && !row._pending && state(row).version <= state(row).saved) {
     openingTask=true;
-    try { const latest=remote.convert(await remote.api('/sheet/entries/'+encodeURIComponent(row.id))); Object.assign(row,latest);row._photoBase=row.photos.map(p=>p.id);state(row).values=remote.values(row);remote.remember(row); }
+    try { const latest=remote.convert(await remote.api('/sheet/entries/'+encodeURIComponent(row.id))); Object.assign(row,latest);localUpdate++;row._photoBase=row.photos.map(p=>p.id);state(row).values=remote.values(row);remote.remember(row); }
     catch(error) { $('snapshot-notice').textContent='暂用手机记录：'+error.message+'；填写先保存在手机，联网后再核对同步。'; }
     finally { openingTask=false; }
   }
@@ -1089,24 +1105,48 @@ remote.onAck = async (sent, saved, photoMap) => {
   if(edit.version>sent._v)await localWriteRows([snapshot(row)]);
 };
 
+function canRefreshLive() {
+  return navigator.onLine !== false && !busy && !document.hidden && !openingTask && !sheet.open && !activeField &&
+    !(current && document.activeElement?.closest('#entry')) && ![...writeState.values()].some(s => s.pending || s.version > s.saved);
+}
+
 async function refreshLive() {
-  if (navigator.onLine === false || busy || document.hidden || openingTask || photoIsOpen() || [...writeState.values()].some(s => s.pending || s.version > s.saved) || activeField || current && document.activeElement?.closest('#entry')) return;
+  if (liveRefreshInFlight || !canRefreshLive()) return;
+  const update = localUpdate, original = current, originalPage = page;
+  const stillCurrent = () => update === localUpdate && original === current && originalPage === page && canRefreshLive();
+  liveRefreshInFlight = true;
   try {
     const data = await remote.api('/sheet/entries');
-    if (busy || openingTask || photoIsOpen() || activeField || current && document.activeElement?.closest('#entry') || [...writeState.values()].some(s=>s.pending || s.version>s.saved)) return;
+    if (!stillCurrent()) return;
     const latest = data.items.map(remote.convert);
-    rows = remote.mergeCache(latest, rows);
-    await localWriteRows(rows);
+    const prior = new Map(rows.map(row => [row.id, row]));
+    const next = remote.mergeCache(latest, rows).map(row => {
+      const old = prior.get(row.id);
+      // Local bookkeeping can differ from the wire projection on every poll.
+      if (old === row || old && !old._syncError && Object.keys(row).every(key => key.startsWith('_') || JSON.stringify(row[key]) === JSON.stringify(old[key]))) return old;
+      row._photoBase = row.photos.map(p => p.id);
+      return row;
+    });
+    const changed = next.filter(row => prior.get(row.id) !== row);
+    if (changed.length) await localWriteRows(changed);
+    if (!stillCurrent()) return;
     $('snapshot-notice').textContent = '';
-    rows.forEach(remote.remember);
-    rows.forEach(row=>{if(!row._pending)state(row).values=remote.values(row);});
-    renderList({updateOptions:true});
+    if (!changed.length && next.length === rows.length) return;
+    rows = next;
+    changed.forEach(row => { remote.remember(row); if (!row._pending) state(row).values=remote.values(row); });
     if (current) {
       const replacement = rows.find(r => r.id === current.id);
-      if (replacement) { const top=entryScroll.scrollTop; renderEntry(replacement,entryFrom); entryScroll.scrollTop=top; }
-      else { current=null; showPage('tasks'); }
+      if (!replacement) { current=null; releasePhotoUrls(); showPage('tasks'); }
+      else if (replacement !== current) {
+        const top=entryScroll.scrollTop;
+        const keepPhotos=Boolean(replacement.submittedAt)===Boolean(current.submittedAt) && JSON.stringify(replacement.photos)===JSON.stringify(current.photos);
+        renderEntry(replacement,entryFrom,keepPhotos); entryScroll.scrollTop=top;
+      }
     }
-  } catch (error) { $('snapshot-notice').textContent = '暂未刷新：' + error.message; }
+    renderList({updateOptions:true});
+    if (page==='pending'||page==='entry'&&entryFrom==='pending') renderPending();
+  } catch (error) { if (stillCurrent()) $('snapshot-notice').textContent = '暂未刷新：' + error.message; }
+  finally { liveRefreshInFlight = false; }
 }
 
 app.addEventListener('click', async event => {

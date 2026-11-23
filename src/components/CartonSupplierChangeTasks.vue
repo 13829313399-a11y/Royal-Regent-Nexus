@@ -69,7 +69,7 @@ const labels: Record<string, string> = { READ: '已读，不代表同意', PENDI
 const material = (row: Partial<SupplierChangeLine> | SupplierChangeLine['before_material']) => row ? [row.packaging_type, row.paper_quality, row.specification, row.dimension_unit].filter(Boolean).join(' · ') : ''
 const beforeMaterial = (row: SupplierChangeTask, line: SupplierChangeLine) =>
   material(line.before_material) || (row.source_kind === 'PRINT' ? material(line) : '')
-let generation = 0, readSequence = 0, controller = new AbortController(), timer: ReturnType<typeof setInterval> | undefined
+let generation = 0, readSequence = 0, backgroundRead = false, controller = new AbortController(), timer: ReturnType<typeof setInterval> | undefined
 watch(context, () => {
   readController.abort(); lastReadStarted = 0
   generation++; readSequence++; controller.abort(); controller = new AbortController(); tasks.value = []; error.value = ''; readError.value = ''; success.value = ''; busy.value = false; loading.value = false; requests.clear()
@@ -79,15 +79,15 @@ watch(context, () => {
   for (const name of Object.keys(produced)) delete produced[name]
   void load()
 }, { immediate: true })
-async function load() {
+async function load(background = false) {
   const token = generation, scopes = factories.value, sequence = ++readSequence
   if (!scopes.length || busy.value) return
   readController.abort(); readController = new AbortController()
   const signal = readController.signal
   lastReadStarted = Date.now()
-  loading.value = true
+  if (!background) { loading.value = true; readError.value = ''; error.value = '' }
   const failures: Record<string, string> = {}
-  readError.value = ''; error.value = ''
+  const refreshed = new Map<string, SupplierChangeTask[]>()
   try {
     await Promise.allSettled(scopes.map(async factory => {
       try {
@@ -99,15 +99,23 @@ async function load() {
           if (!(key(row) in reasons)) reasons[key(row)] = ''
           if (!produced[key(row)]) produced[key(row)] = {}
         }
-        tasks.value = [...tasks.value.filter(row => row.factory_id !== factory), ...result.items]
+        if (background) refreshed.set(factory, result.items)
+        else tasks.value = [...tasks.value.filter(row => row.factory_id !== factory), ...result.items]
       } catch (cause) {
         if (token !== generation || sequence !== readSequence || signal.aborted) return
-        tasks.value = tasks.value.filter(row => row.factory_id !== factory)
+        if (!background) tasks.value = tasks.value.filter(row => row.factory_id !== factory)
         failures[factory] = `${factoryName(factory)}：${getApiErrorMessage(cause)}`
       }
-      readError.value = Object.values(failures).join('；'); error.value = readError.value
+      if (!background) { readError.value = Object.values(failures).join('；'); error.value = readError.value }
     }))
     if (token !== generation || sequence !== readSequence) return
+    if (background) {
+      const orderedScopes = [...new Set([...tasks.value.map(row => row.factory_id), ...scopes])]
+      tasks.value = orderedScopes.flatMap(factory => refreshed.get(factory) ?? [])
+      const previousError = readError.value
+      readError.value = Object.values(failures).join('；')
+      if (readError.value || error.value === previousError) error.value = readError.value
+    }
     for (const row of tasks.value) {
       if (!(key(row) in dates)) dates[key(row)] = row.promised_date || row.planned_date
       if (!(key(row) in reasons)) reasons[key(row)] = ''
@@ -144,7 +152,11 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
   } catch (cause) { if (token === generation) fail(`回应结果待核对：${getApiErrorMessage(cause)}`) }
   finally { if (token === generation) busy.value = false }
 }
-function refreshOnFocus() { if (document.visibilityState !== 'hidden' && Date.now() - lastReadStarted >= 45000 && !busy.value && !loading.value) void load() }
+function refreshOnFocus() {
+  if (document.visibilityState === 'hidden' || Date.now() - lastReadStarted < 45000 || busy.value || loading.value || backgroundRead) return
+  backgroundRead = true
+  void load(true).finally(() => { backgroundRead = false })
+}
 function refresh() { page.value = 1; return load() }
 defineExpose({ refresh })
 onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus) })

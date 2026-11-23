@@ -66,6 +66,66 @@ test('18 business display columns without actual date or completion, inline four
   assert.equal(p.d.querySelector('.qwf-dialog'),null);assert.ok(p.d.getElementById('page-review'));
  }finally{p.dom.window.close();}
 });
+test('the desktop timer polls without touching an unchanged table, scroll or controls',async()=>{
+ const p=await page();
+ try{
+  p.d.getElementById('page-records').classList.add('active');Object.defineProperty(p.d,'hidden',{value:false});
+  const sheet=p.w.QcInspectionSheet,host=p.d.getElementById('recordsTableWrap'),table=host.firstElementChild;
+  const row=host.querySelector('[data-entry="a"]');
+  const search=p.d.getElementById('searchInput');search.focus();host.scrollTop=42;host.scrollLeft=80;
+  const changes=[];const mutations=new p.w.MutationObserver(records=>changes.push(...records));mutations.observe(host,{childList:true,subtree:true});
+  let poll;p.w.setInterval=(fn,ms)=>{assert.equal(ms,10000);poll=fn;};
+  p.w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-mobile-entry.js'),'utf8'));
+  const reads=()=>p.calls.filter(c=>c.url?.endsWith('/entries')).length,initial=reads();
+  poll();poll();await tick();
+  assert.equal(reads(),initial+1);
+  assert.equal(sheet.model.loading,false);
+  assert.equal(host.firstElementChild,table);assert.equal(row,host.querySelector('[data-entry="a"]'));
+  assert.equal(host.scrollTop,42);assert.equal(host.scrollLeft,80);assert.equal(p.d.activeElement,search);
+  assert.deepEqual(changes,[]);
+ }finally{p.dom.window.close();}
+});
+test('a background change patches only affected desktop rows, respecting filter and sort',async()=>{
+ const p=await page();try{
+  p.d.getElementById('page-records').classList.add('active');Object.defineProperty(p.d,'hidden',{value:false});
+  const sheet=p.w.QcInspectionSheet,host=p.d.getElementById('recordsTableWrap');
+  const find=id=>host.querySelector('[data-entry="'+id+'"]');
+  host.querySelector('.qis-date-sort').click();p.d.activeElement.blur();
+  choose(p,'qisTaskCustomer',customerKey('','客户中文'));
+  const table=host.querySelector('table'),a=find('a'),b=find('b');
+  host.scrollLeft=50;host.scrollTop=20;
+  Object.assign(p.rows[1],{result:'FAIL',remark:'手机同步',revision:1,dateFrom:'2026-11-03',dateTo:'2026-11-03'});
+  p.rows.splice(2,1);p.rows.push({...p.rows[0],id:'d',customer:'其他客户'});
+  await sheet.refreshRecords();
+  assert.deepEqual(visibleIds(p),['b','a']);
+  assert.equal(host.querySelector('table'),table);assert.equal(find('a'),a);assert.notEqual(find('b'),b);
+  assert.equal(find('b').querySelector('[data-result]').value,'FAIL');assert.equal(find('b').querySelector('[data-remark]').value,'手机同步');
+  assert.equal(p.d.getElementById('qisTaskCustomer').value,customerKey('','客户中文'));
+  assert.equal(host.scrollLeft,50);assert.equal(host.scrollTop,20);
+ }finally{p.dom.window.close();}
+});
+test('slow or failed desktop polls cannot interrupt editing or overwrite a newer manual read',async()=>{
+ const p=await page();try{
+  const doc=p.d,s=p.w.QcInspectionSheet,fetch=p.w.fetch;
+  doc.getElementById('page-records').classList.add('active');Object.defineProperty(doc,'hidden',{value:false});
+  const editor=doc.querySelector('[data-remark="a"]'),response=remark=>({ok:true,json:async()=>({items:copy(p.rows).map(r=>r.id==='a'?{...r,remark}:r),columns})});
+  let finish;
+  const delayPoll=()=>{p.w.fetch=(url,opts)=>url.endsWith('/entries')?new Promise(resolve=>{finish=resolve;}):fetch(url,opts);return s.refreshRecords();};
+  const first=delayPoll();
+  editor.focus();editor.value='现场正在输入';editor.dispatchEvent(new p.w.Event('input'));
+  finish(response('背景旧内容'));await first;
+  assert.equal(doc.activeElement,editor);assert.equal(editor.value,'现场正在输入');
+  p.w.fetch=fetch;editor.blur();await s.flush();
+  const second=delayPoll();p.w.fetch=fetch;p.rows[0].remark='手动读取新内容';
+  await s.load();finish(response('过时响应'));await second;
+  const latest=doc.querySelector('[data-remark="a"]');
+  assert.equal(latest.value,'手动读取新内容');
+  p.w.fetch=(url,opts)=>url.endsWith('/entries')?Promise.resolve({ok:false,status:503,json:async()=>({})}):fetch(url,opts);
+  await s.refreshRecords();
+  assert.equal(doc.querySelector('[data-remark="a"]'),latest);
+  assert.equal(doc.querySelector('#recordsTableWrap [role="alert"]'),null);
+ }finally{p.dom.window.close();}
+});
 test('workbench opens the fitted photo overlay and loads metadata only when clicked',async()=>{
  const p=await page();
  try{

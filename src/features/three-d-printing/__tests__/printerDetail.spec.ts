@@ -62,4 +62,20 @@ describe("printer detail request recovery", () => {
     await vi.advanceTimersByTimeAsync(30000);
     expect(http.get).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps an already loaded history and its empty message during the automatic read", async () => {
+    let finish!: (result: { data: typeof detail }) => void;
+    vi.mocked(http.get).mockResolvedValueOnce({ data: detail })
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    wrapper = mount(PrinterDetail, { attachTo: document.body, props: { id: printer.id, printer, open: true } });
+    await flushPromises();
+    const history = panel().querySelector(".history-panel");
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(http.get).toHaveBeenCalledTimes(2);
+    expect(panel().querySelector(".history-panel")).toBe(history);
+    expect(history?.textContent).toContain("暂时没有状态记录");
+    expect((panel().querySelector(".refresh-button") as HTMLButtonElement).disabled).toBe(false);
+    finish({ data: detail }); await flushPromises();
+    expect(panel().querySelector(".history-panel")).toBe(history);
+  });
 });
