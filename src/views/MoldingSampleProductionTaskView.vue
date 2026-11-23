@@ -143,7 +143,6 @@ const printableTaskRecords = ref<MoldingSampleWorkflowRecord[]>([])
 const printableTaskRouteSnapshots = ref<TaskPrintRouteSnapshot[]>([])
 const taskPrintPreviewVisible = ref(false)
 const trialReportDialogVisible = ref(false)
-const trialReportReadOnly = ref(false)
 const trialReportInitialItemId = ref('')
 const trialReportSaving = ref(false)
 const protectedMaterialPrices = ref<MoldingSampleMaterialPrice[]>([])
@@ -493,11 +492,7 @@ const canPrintSelectedTask = computed(() =>
   && taskPrintActionRecords.value.every(isTaskPrintable),
 )
 const canSaveSelectedTrialReport = computed(() =>
-  Boolean(
-    selectedTask.value
-    && ['待生产', '生产中'].includes(selectedTask.value.order.status)
-    && canFillbackSelectedTaskFactory.value,
-  ),
+  Boolean(selectedTask.value && canFillbackSelectedTaskFactory.value),
 )
 const selectedTrialReports = computed(() => selectedTask.value?.trial_reports ?? [])
 const currentProductionOperatorName = computed(() =>
@@ -1097,31 +1092,23 @@ async function confirmTaskPrint() {
   window.setTimeout(cleanUp, 1000)
 }
 
-function openTrialReportDialog() {
+function openTrialReportDialog(itemId = '') {
   if (!selectedTask.value?.items.length) {
     actionMessage.value = '当前啤办单没有可填写试模报告的模具明细。'
     return
   }
 
-  trialReportReadOnly.value = false
-  trialReportInitialItemId.value = ''
-  trialReportDialogVisible.value = true
-}
-
-function openTrialReportHistory(itemId: string) {
-  if (!selectedTask.value?.trial_reports.some((report) => report.item_id === itemId)) {
+  if (itemId && !selectedTrialReports.value.some((report) => report.item_id === itemId)) {
     actionMessage.value = '当前模具尚未保存试模报告。'
     return
   }
 
-  trialReportReadOnly.value = true
   trialReportInitialItemId.value = itemId
   trialReportDialogVisible.value = true
 }
 
 function closeTrialReportDialog() {
   trialReportDialogVisible.value = false
-  trialReportReadOnly.value = !canSaveSelectedTrialReport.value
   trialReportInitialItemId.value = ''
 }
 
@@ -1140,7 +1127,7 @@ async function saveTrialReport(payload: { itemId: string, data: MoldingSampleTri
     return
   }
   if (!canSaveSelectedTrialReport.value) {
-    actionMessage.value = '仅待生产或生产中的任务可保存试模报告，且需具备啤机部回填权限。'
+    actionMessage.value = '保存试模报告需要承接厂的啤机部回填权限。'
     return
   }
   if (apiState.value !== 'connected') {
@@ -2219,7 +2206,7 @@ watchEffect(() => {
                 type="button"
                 :disabled="!selectedTask.items.length"
                 class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 text-[12px] font-semibold text-teal-800 transition hover:border-teal-300 hover:bg-teal-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                @click="openTrialReportDialog"
+                @click="openTrialReportDialog()"
               >
                 <ClipboardPenLine class="size-3.5" aria-hidden="true" />
                 {{ canSaveSelectedTrialReport ? '试模报告填写 / 打印' : '试模报告查看 / 打印' }}
@@ -2245,7 +2232,7 @@ watchEffect(() => {
                 <ClipboardPenLine class="size-4 text-teal-700" aria-hidden="true" />
                 <div>
                   <h3 class="text-[13px] font-bold text-slate-950">试模报告历史</h3>
-                  <p class="mt-0.5 text-[11px] text-slate-500">已保存的报告自动同步到工程部单据详情，可随时查看和再次打印。</p>
+                  <p class="mt-0.5 text-[11px] text-slate-500">承接厂可在完工后按模具补填或修改报告，最新内容自动同步到工程部单据详情。</p>
                 </div>
               </div>
               <span class="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700">{{ selectedTrialReports.length }} 份</span>
@@ -2267,10 +2254,11 @@ watchEffect(() => {
                 <button
                   type="button"
                   class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-teal-200 bg-white px-2.5 text-[11px] font-semibold text-teal-800 transition hover:bg-teal-50"
-                  @click="openTrialReportHistory(report.item_id)"
+                  @click="openTrialReportDialog(report.item_id)"
                 >
-                  <Printer class="size-3.5" aria-hidden="true" />
-                  查看 / 再次打印
+                  <ClipboardPenLine v-if="canSaveSelectedTrialReport" class="size-3.5" aria-hidden="true" />
+                  <Printer v-else class="size-3.5" aria-hidden="true" />
+                  {{ canSaveSelectedTrialReport ? '修改 / 打印' : '查看 / 再次打印' }}
                 </button>
               </article>
             </div>
@@ -2923,7 +2911,7 @@ watchEffect(() => {
         :operator-name="currentProductionOperatorName"
         :can-save="canSaveSelectedTrialReport"
         :saving="trialReportSaving"
-        :read-only="trialReportReadOnly || !canSaveSelectedTrialReport"
+        :read-only="!canSaveSelectedTrialReport"
         :initial-item-id="trialReportInitialItemId"
         @close="closeTrialReportDialog"
         @save="saveTrialReport"
