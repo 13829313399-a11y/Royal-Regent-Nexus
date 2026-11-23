@@ -11,19 +11,39 @@ const source=[
 ];
 async function boot(wide=false){
  const dom=new JSDOM(fs.readFileSync(folder+'index.html','utf8'),{runScripts:'outside-only',url:'http://phone/api/qc-mobile/app/',pretendToBeVisual:true});
- const w=dom.window,d=w.document;let breakpoint;
+ const w=dom.window,d=w.document;let breakpoint,poll;
+ const live=structuredClone(source);
+ w.setInterval=(fn,ms)=>{assert.equal(ms,15000);poll=fn;};
  w.matchMedia=()=>({matches:wide,addEventListener:(event,fn)=>{breakpoint=fn;}});
  w.HTMLElement.prototype.scrollIntoView=()=>{};w.HTMLElement.prototype.scrollTo=()=>{};
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  w.indexedDB={open(){const r={};queueMicrotask(()=>{r.result={transaction(name,mode){const tx={objectStore:()=>({getAll(){const request={result:[]};queueMicrotask(()=>request.onsuccess());return request;},get(){const request={result:null};queueMicrotask(()=>request.onsuccess());return request;},put(){}})};if(mode==='readwrite')setTimeout(()=>tx.oncomplete?.(),0);return tx;}};r.onsuccess();});return r;}};
  w.fetch=async(url,opts={})=>{
   assert.equal(opts.method,undefined,'list interactions must never mutate records');
-  const data=url.endsWith('/context')?{factory:'huaxing',actor:{id:'qa',name:'验货员'}}:url.endsWith('/options')?{inspectors:[]}:url.endsWith('/entries')?{items:source}:source.find(r=>url.endsWith('/'+r.id));
+   const data=url.endsWith('/context')?{factory:'huaxing',actor:{id:'qa',name:'验货员'}}:url.endsWith('/options')?{inspectors:[]}:url.endsWith('/entries')?{items:live}:live.find(r=>url.endsWith('/'+r.id));
   assert(data,url);return {ok:true,json:async()=>structuredClone(data)};
  };
  w.eval(fs.readFileSync(folder+'remote.js','utf8'));w.eval(fs.readFileSync(folder+'app.js','utf8'));await wait();
- return {w,d,close:()=>w.close(),ids:()=>[...d.querySelectorAll('#task-list [data-task]')].map(e=>e.dataset.task)};
+ return {w,d,live,poll:()=>poll(),close:()=>w.close(),ids:()=>[...d.querySelectorAll('#task-list [data-task]')].map(e=>e.dataset.task)};
 }
+test('mobile polling leaves unchanged list and photo nodes intact and applies new remote content',async()=>{
+ const p=await boot(true);try{
+  const d=p.d,$=id=>d.getElementById(id),row=()=>d.querySelector('[data-task=b]');
+  const button=row(),option=$('day').options[1];button.focus();$('task-scroll').scrollTop=35;
+  p.poll();await wait();
+  assert.equal(row(),button);assert.equal(d.activeElement,button);assert.equal($('day').options[1],option);
+  assert.equal($('task-scroll').scrollTop,35);
+  const remoteRow=p.live.find(item=>item.id==='b');
+  remoteRow.photos=[{id:'p1',name:'现场照片'}];
+  button.click();await wait();button.blur();
+  const photo=$('photo-list').querySelector('img');assert.ok(photo);
+  $('entry-scroll').scrollTop=20;p.poll();await wait();
+  assert.equal($('photo-list').querySelector('img'),photo);
+  Object.assign(remoteRow,{result:'PASS',revision:1});p.poll();await wait();
+  assert.equal(d.querySelector('[data-result=PASS]').getAttribute('aria-pressed'),'true');
+  assert.equal($('photo-list').querySelector('img'),photo);assert.equal($('entry-scroll').scrollTop,20);
+ }finally{p.close();}
+});
 test('mobile groups retain ordering, literal fields, judgments and stable customer colors without invented progress',async()=>{
  const p=await boot();try{
   assert.deepEqual(p.ids(),['a','b','c','d']);

@@ -310,7 +310,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderSchedule.vue",
         "symbol": "workbookToolsEnabled",
-        "sha256": "11773edcea0f3b6aba2f35f067b2660fe70567d96c000318097c44f4c4353f6c"
+        "sha256": "c2ce59550d233a0baea8e2fbfb6f206a79674224141064685bbeffd958969e13"
       },
       {
         "path": "backend/app/services/huaxing_order_legacy/edu_pdf.py",

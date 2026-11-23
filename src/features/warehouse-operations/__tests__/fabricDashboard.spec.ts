@@ -118,6 +118,18 @@ describe('fabric daily dashboard', () => {
     window.dispatchEvent(new Event('focus'))
     expect(api.pendingDeliveries).toHaveBeenCalledTimes(2)
   })
+  it('keeps the panel and manual refresh control stable during a delayed background read', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    api.pendingDeliveries.mockRejectedValueOnce(new Error('稍后重试'))
+    await open()
+    let finish!: (value: unknown) => void
+    api.pendingDeliveries.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(wrapper!.get('.delivery-panel [role="alert"]').text()).toContain('稍后重试')
+    expect(wrapper!.get<HTMLButtonElement>('.dashboard-secondary').element.disabled).toBe(false)
+    finish(delivery()); await flushPromises()
+    expect(wrapper!.get('.delivery-panel').text()).toContain('待入库 8 张')
+  })
   it('keeps loaded counts in place during refresh, but removes them on a failed refresh', async () => {
     await open()
     let fail!: (reason: unknown) => void

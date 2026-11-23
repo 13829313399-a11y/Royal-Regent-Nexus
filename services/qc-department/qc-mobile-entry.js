@@ -29,9 +29,5 @@
   }
   const observer=new MutationObserver(mount);observer.observe(document.getElementById('page-records')||document.body,{childList:true,subtree:true});mount();
   // Refresh server acknowledgements from phones without replacing an active desktop edit.
-  setInterval(()=>{
-    const s=window.QcInspectionSheet;if(document.hidden||!document.getElementById('page-records')?.classList.contains('active')||!s||s.model.loading)return;
-    const state=s.navigationState();if(state.dirty||state.busy||s.model.recordChecked?.size||document.activeElement?.closest('#recordsTableWrap'))return;
-    s.load();
-  },10000);
+  setInterval(()=>void window.QcInspectionSheet?.refreshRecords(),10000);
 })();
