@@ -161,12 +161,12 @@
       {
         "path": "backend/app/api/qc_mobile.py",
         "symbol": "def create_pairing",
-        "sha256": "05dc6b380e32ef4b82335b87bbe9af16c4af42b7684337d2f7d733dff6292853"
+        "sha256": "4684e381a85a820e35e5668e01ca30c4630419bf60513df8540049f6ac5365f1"
       },
       {
         "path": "services/qc-department/mobile-inspection/remote.js",
         "symbol": "function mergeCache",
-        "sha256": "657d20537017239f17c3f36da5591645bb2fe5b839e68b3c2669d132f5b651e0"
+        "sha256": "e37d0417fa906b0106a6768578e982940573402b4a6a8f945c27071e3a95a657"
       },
       {
         "path": "backend/app/services/qc_report_workbook.py",

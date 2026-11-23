@@ -91,6 +91,7 @@ def test_expiry_and_public_assets(monkeypatch,tmp_path):
     with make_client(monkeypatch) as client:
         module=importlib.import_module('app.api.qc_mobile')
         assert client.get('/api/qc-mobile/app/').status_code==200
+        assert client.get('/api/qc-mobile/ready').status_code==404
         assert client.get('/api/qc-mobile/app/remote.js').status_code==200
         assert client.get('/api/qc-mobile/app/qc-photo-shapes.js').status_code==200
         assert client.get('/api/qc-mobile/app/../../.isolation/main.sqlite3').status_code==404
@@ -116,5 +117,124 @@ def test_lan_listener_reuses_managed_private_gateway_without_starting_workers(mo
     from fastapi.testclient import TestClient
     with TestClient(module.app) as client:
         assert client.get('/api/qc-mobile/app/').status_code==200
+        assert client.get('/api/qc-mobile/ready').json()=={'service':'qc-mobile','ready':True}
         assert client.get('/api/auth/me').status_code==404
         assert client.get('/api/qc-department/huaxing/api/health').status_code==404
+        resolve_asset=module.mobile_asset_path
+        monkeypatch.setattr(module,'mobile_asset_path',lambda name: tmp_path/'missing.js' if name=='app.js' else resolve_asset(name))
+        assert client.get('/api/qc-mobile/ready').status_code==503
+
+
+@pytest.mark.parametrize('state', ['old-address', 'no-listener', 'wrong-service', 'ready'])
+def test_lan_pairing_checks_assigned_address_and_dedicated_service(monkeypatch, state):
+    import asyncio
+    import socket
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    import httpx
+    module=importlib.import_module('app.api.qc_mobile')
+    requested=[]
+    class Bound:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def bind(self,address):
+            assert address==('192.168.5.13',0)
+            if state=='old-address': raise OSError('address is not assigned')
+    class Client:
+        def __init__(self,**options):
+            assert options=={'timeout':1.5,'trust_env':False,'follow_redirects':False}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        async def get(self,url):
+            requested.append(url)
+            if state=='no-listener': raise httpx.ConnectError('connection refused')
+            return httpx.Response(200,json=module.MOBILE_READY if state=='ready' else {'ready':True},
+                                  request=httpx.Request('GET',url))
+    monkeypatch.setattr(module,'socket',SimpleNamespace(AF_INET=socket.AF_INET,AF_INET6=socket.AF_INET6,socket=lambda _:Bound()))
+    monkeypatch.setattr(module,'httpx',SimpleNamespace(AsyncClient=Client,HTTPError=httpx.HTTPError))
+    origin=urlsplit('http://192.168.5.13:5298')
+    if state=='ready':
+        asyncio.run(module.check_lan_entry(origin,origin.port))
+    else:
+        with pytest.raises(HTTPException) as failure:
+            asyncio.run(module.check_lan_entry(origin,origin.port))
+        assert failure.value.status_code==503
+        assert ('地址已不在' if state=='old-address' else '手机专用服务未就绪') in failure.value.detail
+    assert requested==([] if state=='old-address' else ['http://192.168.5.13:5298/api/qc-mobile/ready'])
+
+
+def test_pairing_does_not_issue_ticket_for_unavailable_lan_entry(monkeypatch,tmp_path):
+    monkeypatch.setenv('QC_DOSSIER_EMERGENCY_DISABLED','true')
+    monkeypatch.setenv('QC_DEPARTMENT_DATA_DIR',str(tmp_path/'companies'))
+    monkeypatch.setenv('QC_MOBILE_PUBLIC_ORIGIN','http://127.0.0.1:5298')
+    import test_molding_sample_api
+    monkeypatch.setattr(test_molding_sample_api,'TEST_TMP_DIR',tmp_path/'main')
+    with make_client(monkeypatch) as client:
+        login_as(client,'qc_inspector')
+        response=client.post('/api/qc-mobile/pairings',json={'factory':'huaxing'})
+        assert response.status_code==503 and '本机地址' in response.json()['detail']
+        assert not (tmp_path/'companies/_mobile/pairings.sqlite3').exists()
+
+
+def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path):
+    import httpx
+    import test_molding_sample_api
+    monkeypatch.setenv('QC_DOSSIER_EMERGENCY_DISABLED', 'true')
+    monkeypatch.setenv('QC_DEPARTMENT_DATA_DIR', str(tmp_path/'companies'))
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path/'main')
+    with make_client(monkeypatch) as client:
+        mobile=importlib.import_module('app.api.qc_mobile')
+        origin='https://qc.company.example'
+        # Model TLS termination upstream: the application's connection is HTTP
+        # but the browser has the canonical HTTPS Origin and public Host.
+        client.base_url='http://qc.company.example'
+        login_as(client, 'qc_inspector')
+        monkeypatch.setattr(mobile.settings, 'app_env', 'production')
+        monkeypatch.setattr(mobile.settings, 'session_cookie_secure', False)
+        monkeypatch.setattr(mobile.settings, 'qc_mobile_public_origin', origin)
+        ready=False
+
+        async def upstream(method, path, params, content):
+            assert (method, path, params, content)==('GET', 'api/companies', [], b'')
+            return httpx.Response(200 if ready else 403, json={'companies':[{'id':id_} for id_ in mobile.COMPANIES.values()]})
+
+        monkeypatch.setattr(mobile, 'upstream', upstream)
+        health='/api/qc-mobile/health'
+        pairs='/api/qc-mobile/pairings'
+        exchange='/api/qc-mobile/exchange'
+        assert client.get(health).status_code==503
+        assert client.get(health).headers['cache-control']=='no-store'
+        result=client.post(pairs, json={'factory':'huaxing'}, headers={'Origin':origin})
+        assert result.status_code==503 and 'QC 验货服务暂时不可用' in result.json()['detail']
+        assert not (tmp_path/'companies/_mobile/pairings.sqlite3').exists()
+        ready=True
+        assert client.get(health).json()=={'service':'qc-mobile','ready':True}
+        assert client.get(health, headers={'Host':'wrong.company.example','X-Forwarded-Host':'qc.company.example'}).status_code==503
+        assert client.post(pairs, json={'factory':'huaxing'}, headers={'Origin':'https://other.example'}).status_code==403
+        assert client.post(exchange, json={'ticket':''}, headers={'Origin':origin,'Sec-Fetch-Site':'cross-site'}).status_code==403
+        assert client.post(exchange, json={'ticket':''}, headers={'Origin':origin}).status_code==422
+        result=client.post(pairs, json={'factory':'huaxing'}, headers={'Origin':origin})
+        assert result.status_code==200, result.text
+        url=result.json()['url']
+        assert url.startswith(origin+'/api/qc-mobile/app/#pair=')
+        ticket=url.split('#pair=')[1]
+        result=client.post(exchange, json={'ticket':ticket}, headers={'Origin':origin})
+        assert result.status_code==200, result.text
+        assert 'secure' in result.headers['set-cookie'].lower()
+        assert client.post(exchange, json={'ticket':ticket}, headers={'Origin':origin}).status_code==401
+        assert client.get(origin+'/api/qc-mobile/context').json()['factory']=='huaxing'
+
+
+@pytest.mark.parametrize('origin', [
+    '', 'http://qc.company.example', 'https://192.168.10.110',
+    'https://localhost', 'https://macbook.local', 'https://qc.company.example:5298',
+    'https://qc.company.example/api', 'https://qc.company.example#', 'https://qc.company.example:bad',
+])
+def test_production_qr_origin_rejects_unusable_values(monkeypatch, origin):
+    from fastapi import HTTPException
+    mobile=importlib.import_module('app.api.qc_mobile')
+    monkeypatch.setattr(mobile.settings, 'app_env', 'Production')
+    monkeypatch.setattr(mobile.settings, 'qc_mobile_public_origin', origin)
+    with pytest.raises(HTTPException) as error:
+        mobile.configured_origin()
+    assert error.value.status_code==503
