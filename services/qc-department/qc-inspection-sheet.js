@@ -804,6 +804,15 @@
   // Review groups reorder the displayed rows; ranges must follow the actual table order.
   const visibleSelectionRows=host=>[...host.querySelectorAll('[data-entry]')].map(node=>byId(node.dataset.entry)).filter(Boolean);
   let rowDrag=null,rowDragFrame=0,suppressRowClick=false;
+  function rowAtPointer(nodes,y){
+    let low=0,high=nodes.length-1;
+    while(low<high){
+      const middle=(low+high)>>1;
+      if(y<=nodes[middle].getBoundingClientRect().bottom)high=middle;
+      else low=middle+1;
+    }
+    return low;
+  }
   function finishRowDrag(cancel=false){
     if(!rowDrag)return;
     const drag=rowDrag;rowDrag=null;root.cancelAnimationFrame(rowDragFrame);rowDragFrame=0;
@@ -831,50 +840,80 @@
     suppressRowClick=true;setTimeout(()=>{suppressRowClick=false;},0);
     updateRowSelection();
   }
-  function chooseRowRange(rows,start,end){
+  function chooseRowRange(rows,start,end,drag=null){
     const next=new Set(rows.slice(Math.min(start,end),Math.max(start,end)+1).filter(row=>!selectionReason(row)).map(row=>row.id));
-    if(next.size===model[selectionKey()].size&&[...next].every(id=>model[selectionKey()].has(id)))return;
+    const previous=model[selectionKey()];
+    if(next.size===previous.size&&[...next].every(id=>previous.has(id)))return;
+    const previousActive=model.selectedId;
     model[selectionKey()]=next;
     model.selectedId=model[selectionKey()].size===1?[...model[selectionKey()]][0]:'';
-    updateRowSelection();
+    if(!drag){updateRowSelection();return;}
+    // While moving, paint just the rows that changed. Recheck the complete
+    // selection and toolbar once at release, not on each pointer sample.
+    const changed=new Set([...previous].filter(id=>!next.has(id)));
+    for(const id of next)if(!previous.has(id))changed.add(id);
+    changed.add(previousActive);changed.add(model.selectedId);
+    for(const id of changed){
+      const node=drag.byId.get(id);if(!node)continue;
+      node.classList.toggle('qis-batch-selected',next.has(id));
+      node.classList.toggle('qis-selected',id===model.selectedId);
+      node.setAttribute('aria-selected',String(next.has(id)));
+    }
   }
+  function updateRowDrag(index,release=false){
+    const drag=rowDrag;if(!drag)return;
+    index??=rowAtPointer(drag.nodes,drag.y);
+    if(drag.fill){
+      if(!drag.moved){
+        if(drag.y-drag.originY<3)return;
+        drag.moved=true;
+      }
+      if(index===drag.end)return;
+      drag.end=index;
+      const next=new Set(drag.nodes.slice(drag.start+1,index+1).map(node=>node.querySelector('[data-fill-name="'+drag.fill.key+'"]')?.closest('td')).filter(Boolean));
+      for(const cell of drag.targets)if(!next.has(cell))cell.classList.remove('qis-fill-target');
+      for(const cell of next)if(!drag.targets.has(cell))cell.classList.add('qis-fill-target');
+      drag.targets=next;
+    }else if(index!==drag.end||release){
+      drag.end=index;
+      chooseRowRange(drag.rows,drag.start,index,drag);
+    }
+  }
+  function queueRowDragScroll(){
+    if(rowDragFrame||!rowDrag)return;
+    rowDragFrame=root.requestAnimationFrame(()=>{
+      rowDragFrame=0;const drag=rowDrag;if(!drag||drag.fill&&!drag.moved)return;
+      const host=drag.host,box=host.getBoundingClientRect(),head=host.querySelector('thead')?.getBoundingClientRect().height||0;
+      const top=Math.max(box.top+head,0)+32,bottom=Math.min(box.bottom,root.innerHeight)-32;
+      const delta=drag.y<top?-Math.min(24,Math.max(3,(top-drag.y)/2)):drag.y>bottom?Math.min(24,Math.max(3,(drag.y-bottom)/2)):0;
+      if(!delta)return;
+      const before=host.scrollTop;host.scrollTop+=delta;
+      if(host.scrollTop!==before){updateRowDrag();queueRowDragScroll();}
+    });
+  }
+  root.addEventListener('pointermove',event=>{
+    if(rowDrag?.pointer!==event.pointerId)return;
+    rowDrag.y=event.clientY;updateRowDrag();queueRowDragScroll();
+  },true);
+  root.addEventListener('pointerup',event=>{
+    if(rowDrag?.pointer!==event.pointerId)return;
+    rowDrag.y=event.clientY;updateRowDrag(undefined,true);finishRowDrag();
+  },true);
+  root.addEventListener('pointercancel',event=>{if(rowDrag?.pointer===event.pointerId)finishRowDrag(true);},true);
   root.addEventListener('blur',()=>finishRowDrag(true));
   root.addEventListener('pagehide',()=>finishRowDrag(true));
   function bindRowSelection(host){
     if(host._qisDragBound)return;host._qisDragBound=true;
     const interactive=target=>target.closest('input,select,textarea,button,a,label,[contenteditable=true],[role=button]');
     const allowed=()=>(model.view==='records'||model.view==='review'&&model.reviewTab==='pending')&&editable()&&!model.loading&&!model.error&&!model.submitBusy&&!model.reviewBusy&&!root.document.querySelector('dialog[open]');
-    const update=()=>{
-      if(!rowDrag)return;
-      const nodes=rowDrag.nodes;
-      let index=nodes.findIndex(node=>rowDrag.y<=node.getBoundingClientRect().bottom);if(index<0)index=nodes.length-1;
-      if(rowDrag.fill){
-        if(!rowDrag.moved){
-          if(rowDrag.y-rowDrag.originY<3)return;
-          rowDrag.moved=true;
-        }
-        if(index===rowDrag.end)return;
-        rowDrag.end=index;
-        const cells=nodes.slice(rowDrag.start+1,index+1).map(node=>node.querySelector('[data-fill-name="'+rowDrag.fill.key+'"]')?.closest('td')).filter(Boolean);
-        const next=new Set(cells);
-        for(const cell of rowDrag.targets)if(!next.has(cell))cell.classList.remove('qis-fill-target');
-        for(const cell of next)if(!rowDrag.targets.has(cell))cell.classList.add('qis-fill-target');
-        rowDrag.targets=next;
-      }else chooseRowRange(rowDrag.rows,rowDrag.start,index);
-    };
-    const scroll=()=>{
-      if(!rowDrag)return;
-      const box=host.getBoundingClientRect(),head=host.querySelector('thead')?.getBoundingClientRect().height||0;
-      const top=Math.max(box.top+head,0)+28,bottom=Math.min(box.bottom,root.innerHeight)-28;
-      const delta=rowDrag.y<top?-Math.min(16,(top-rowDrag.y)/3):rowDrag.y>bottom?Math.min(16,(rowDrag.y-bottom)/3):0;
-      if(delta&&(!rowDrag.fill||rowDrag.moved))host.scrollTop+=delta;
-      update();rowDragFrame=root.requestAnimationFrame(scroll);
-    };
     host.addEventListener('pointerdown',event=>{
       const handle=event.target.closest('[data-fill-name]');
       if(rowDrag||!allowed()||event.button!==0||(!handle&&(event.pointerType==='touch'||interactive(event.target))))return;
       const node=event.target.closest('[data-entry]');if(!node)return;
-      const rows=visibleSelectionRows(host),start=rows.findIndex(row=>row.id===node.dataset.entry);if(start<0)return;
+      const items=new Map(model.items.map(row=>[row.id,row]));
+      const nodes=[...host.querySelectorAll('[data-entry]')].filter(n=>items.has(n.dataset.entry));
+      const rows=nodes.map(n=>items.get(n.dataset.entry)),start=nodes.indexOf(node);if(start<0)return;
+      const byEntry=new Map(nodes.map(n=>[n.dataset.entry,n]));
       let fill=null;
       if(handle){
         const key=handle.dataset.fillName,snapshot=fieldValue(rows[start],key);
@@ -884,17 +923,12 @@
         model[anchorKey()]=node.dataset.entry;model[cursorKey()]=node.dataset.entry;
       }
       event.preventDefault();host.focus({preventScroll:true});
-      rowDrag={host,pointer:event.pointerId,start,rows,fill,targets:new Set(),nodes:[...host.querySelectorAll('[data-entry]')],originY:event.clientY,y:event.clientY,before:new Set(model[selectionKey()])};
-      host.setPointerCapture?.(event.pointerId);host.classList.add('qis-drag-selecting');update();rowDragFrame=root.requestAnimationFrame(scroll);
+      rowDrag={host,pointer:event.pointerId,start,rows,fill,targets:new Set(),nodes,byId:byEntry,originY:event.clientY,y:event.clientY,before:new Set(model[selectionKey()])};
+      try{host.setPointerCapture?.(event.pointerId);}catch{/* Window handlers still track the release. */}
+      host.classList.add('qis-drag-selecting');updateRowDrag(start);queueRowDragScroll();
     });
-    host.addEventListener('pointermove',event=>{if(rowDrag&&event.pointerId===rowDrag.pointer){rowDrag.y=event.clientY;update();}});
-    host.addEventListener('pointerup',event=>{
-      if(!rowDrag||event.pointerId!==rowDrag.pointer)return;
-      if(rowDrag.fill){rowDrag.y=event.clientY;update();}
-      finishRowDrag();
-    });
-    host.addEventListener('pointercancel',event=>{if(rowDrag?.pointer===event.pointerId)finishRowDrag(true);});
-    host.addEventListener('lostpointercapture',()=>finishRowDrag(true));
+    host.addEventListener('scroll',()=>{if(rowDrag?.host===host)updateRowDrag();});
+    host.addEventListener('lostpointercapture',event=>{if(rowDrag?.pointer===event.pointerId&&event.target===host)finishRowDrag(true);});
     host.addEventListener('click',event=>{
       if(!allowed()||suppressRowClick||interactive(event.target))return;
       const node=event.target.closest('[data-entry]'),row=node&&byId(node.dataset.entry);if(!row)return;

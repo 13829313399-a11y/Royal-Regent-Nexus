@@ -71,7 +71,7 @@
       {
         "path": "services/qc-department/qc-inspection-sheet.js",
         "symbol": "function pump",
-        "sha256": "fa0aaa36d4de0a75f5e8d92bb9681af43b5d6a6be55a951cb77dd43e18049384"
+        "sha256": "a95d3b8bdf5851e934969cea61ee7d66c80336aac51f506f50db90e89c5b0b9a"
       },
       {
         "path": "backend/app/services/qc_cumulative.py",
@@ -176,7 +176,7 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "303c8e69774f7f07c7bd28ea7782516c0aa8f23cd4cec0888f09393da8d06e63"
+        "sha256": "94cecdb9300385328016b1250f0ba6732b740eeb141c68390c84e7f14728319e"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",
