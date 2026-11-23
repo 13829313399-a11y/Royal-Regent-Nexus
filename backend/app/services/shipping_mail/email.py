@@ -1,12 +1,14 @@
 """Read a raw .eml file into headers, body text and attachments."""
 import email
 import hashlib
+import html as html_lib
 import re
 from dataclasses import dataclass, field
 from email import policy
 
 _TAG = re.compile(r'<[^>]+>')
-_BREAK = re.compile(r'<(?:br|/p|/div|/tr)\s*/?>', re.IGNORECASE)
+_BREAK = re.compile(r'<(?:br|/p|/div|/tr|/li)\s*/?>', re.IGNORECASE)
+_CELL = re.compile(r'</(?:td|th)\s*>', re.IGNORECASE)
 _SPACE = re.compile(r'[ \t\u00a0]{2,}')
 
 
@@ -27,11 +29,32 @@ class EmailMessage:
     fingerprint: str = ''
 
 
-def html_to_text(html: str) -> str:
-    text = _BREAK.sub('\n', html or '')
+def html_to_text(raw_html: str) -> str:
+    text = _BREAK.sub('\n', raw_html or '')
+    text = _CELL.sub('  ', text)
     text = _TAG.sub(' ', text)
-    text = text.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+    text = html_lib.unescape(text)
     return '\n'.join(_SPACE.sub(' ', line).strip() for line in text.splitlines())
+
+
+def _decode_text_part(part) -> str:
+    try:
+        content = part.get_content()
+        if isinstance(content, str):
+            return content
+    except (LookupError, UnicodeDecodeError, ValueError, KeyError):
+        pass
+    raw = part.get_payload(decode=True)
+    if not isinstance(raw, (bytes, bytearray)):
+        return str(raw or '')
+    charset = (part.get_content_charset() or '').strip()
+    candidates = [c for c in (charset, 'utf-8', 'gb18030', 'big5', 'latin-1') if c]
+    for enc in candidates:
+        try:
+            return raw.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode('utf-8', errors='replace')
 
 
 def read_eml(raw: bytes) -> EmailMessage:
@@ -43,6 +66,10 @@ def read_eml(raw: bytes) -> EmailMessage:
     attachments: list[EmailAttachment] = []
     for part in message.walk():
         if part.is_multipart():
+            if part.get_content_type() == 'message/rfc822':
+                nested_subj = _header(part.get('Subject'))
+                if nested_subj and nested_subj not in subject:
+                    bodies.append(nested_subj)
             continue
         filename = part.get_filename()
         content_type = part.get_content_type()
@@ -51,11 +78,9 @@ def read_eml(raw: bytes) -> EmailMessage:
             attachments.append(EmailAttachment(_header(filename), content_type, payload))
             continue
         if content_type == 'text/plain':
-            body = part.get_content()
-            bodies.append(body if isinstance(body, str) else str(body))
+            bodies.append(_decode_text_part(part))
         elif content_type == 'text/html':
-            body = part.get_content()
-            bodies.append(html_to_text(body if isinstance(body, str) else str(body)))
+            bodies.append(html_to_text(_decode_text_part(part)))
     return EmailMessage(
         subject=subject,
         sender=sender,

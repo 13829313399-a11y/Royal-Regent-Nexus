@@ -223,9 +223,13 @@ function fillForm(source: GeneratedDocDetail) {
   form.arrivalCutoff = value(header.arrivalCutoff) || value(header.cutoff)
   form.vehicle = value(header.vehicle)
   form.truckType = value(header.truckType)
-  form.tableName = value(header.tableName)
   form.carrierName = value(header.transportCompanyName) || value(header.carrierName)
   form.transportCompany = value(header.transport) || value(header.transportCompany)
+  const cleanTransport = String(form.transportCompany || '').trim().replace(/[，,\s]+$/, '')
+  const carrier = cleanTransport ? (cleanTransport.endsWith('运输') ? cleanTransport : `${cleanTransport}运输`) : ''
+  const port = String(form.originPort || '').trim()
+  const formattedTableName = carrier && port ? `${carrier}，出${port}` : (port ? `出${port}` : carrier)
+  form.tableName = formattedTableName || value(header.tableName)
 }
 
 async function enrichFromSchedule() {
@@ -604,6 +608,16 @@ async function confirmDelete(doc: GeneratedDoc) {
 
 onMounted(load)
 watch(() => props.factoryId, load)
+watch(
+  () => `${form.transportCompany || ''}|${form.originPort || ''}`,
+  (current, previous) => {
+    if (!detail.value || current === previous) return
+    const cleanTransport = String(form.transportCompany || '').trim().replace(/[，,\s]+$/, '')
+    const carrier = cleanTransport ? (cleanTransport.endsWith('运输') ? cleanTransport : `${cleanTransport}运输`) : ''
+    const port = String(form.originPort || '').trim()
+    form.tableName = carrier && port ? `${carrier}，出${port}` : (port ? `出${port}` : carrier)
+  },
+)
 </script>
 
 <template>

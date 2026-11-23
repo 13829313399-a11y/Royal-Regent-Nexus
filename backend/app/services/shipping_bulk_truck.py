@@ -26,6 +26,17 @@ HEADERS = ['序号', '洋行', '合约', '工厂备案货号', '出货申报货�
            'CBM', '出口国家', '每箱毛重', '每箱净重', '每箱体积', '品牌', 'SO', 'PO', '船期', '备注']
 
 
+def format_table_name(transport: str, origin_port: str) -> str:
+    clean_transport = str(transport or '').strip().rstrip('，, ')
+    carrier = (clean_transport if clean_transport.endswith('运输') else f'{clean_transport}运输') if clean_transport else ''
+    clean_port = str(origin_port or '').strip()
+    if carrier and clean_port:
+        return f'{carrier}，出{clean_port}'
+    if clean_port:
+        return f'出{clean_port}'
+    return carrier
+
+
 def _number(value) -> float | None:
     try:
         return float(value) if value not in (None, '') else None
@@ -97,12 +108,13 @@ def draft_bulk(db, user: AuthContext, factory_id: str, task_id: str) -> dict:
     truck_type = str(first_item.get('truck_type') or fields.get('truck_type') or '3T').strip()
     transport = str(first_item.get('transport_company') or fields.get('transport_company') or '建联派').strip()
     brand = str(first_item.get('brand') or fields.get('brand') or task.customer or '').strip()
-    raw_port = str(task.port or fields.get('from_port') or '盐田').strip()
-    origin_port = '蛇口' if '蛇' in raw_port else ('盐田' if '盐' in raw_port else raw_port)
-    port_short = '蛇' if origin_port == '蛇口' else '盐'
+    raw_port = str(task.port or fields.get('from_port') or '').strip()
+    upper_port = raw_port.upper()
+    origin_port = '蛇口' if ('蛇' in raw_port or 'SHEKOU' in upper_port) else ('盐田' if ('盐' in raw_port or 'YANTIAN' in upper_port or 'SHATOU' in upper_port) else raw_port)
+    port_short = '蛇' if origin_port == '蛇口' else ('盐' if origin_port == '盐田' else '')
     warehouse_no = str(first_item.get('warehouse_no') or fields.get('warehouse_no') or '').strip()
     truck_count = str(first_item.get('truck_count') or fields.get('truck_count') or '1').strip() or '1'
-    table_name = ''
+    table_name = format_table_name(transport, origin_port)
     header = {
         'toNames': list(TO_NAMES), 'fromName': FROM_NAME,
         'sheetDate': task.planned_ship_date or date.today().isoformat(),
@@ -155,7 +167,7 @@ def _render_template(payload: dict) -> bytes:
             fmt.format_str = 'General'
     book = copy(book_in)
     sheet = book.get_sheet(0)
-    sheet.name = (header.get('tableName') or '盐田散货')[:31]
+    sheet.name = (header.get('tableName') or format_table_name(header.get('transport') or '', header.get('originPort') or '') or '盐田散货')[:31]
     book._Workbook__worksheets = [sheet]
     book._Workbook__worksheet_idx_from_name = {sheet.name: 0}
     book._Workbook__active_sheet = 0
@@ -195,7 +207,7 @@ def _render_template(payload: dict) -> bytes:
     write(3, 1, str(header.get('cc') or 'PAT'))
     warehouse_no = str(header.get('warehouseNo') or '').strip()
     table_name = str(header.get('tableName') or '').strip()
-    port_short = '蛇' if '蛇' in str(header.get('originPort') or '') else '盐'
+    port_short = '蛇' if '蛇' in str(header.get('originPort') or '') else ('盐' if '盐' in str(header.get('originPort') or '') else '')
     tonnage = ''.join(ch for ch in str(header.get('truckType') or '3T') if ch.isdigit() or ch == '.') or '3'
     count = str(header.get('truckCount') or '1').strip() or '1'
     if warehouse_no:

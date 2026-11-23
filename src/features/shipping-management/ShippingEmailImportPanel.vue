@@ -63,12 +63,11 @@ const summary = reactive({
   poNo: '',
   containerType: '',
   bookingDate: '',
+  brandName: '',
 })
 
 const summaryFields = [
   { key: 'terminal', label: '码头' },
-  { key: 'fromPort', label: 'FROM / 起运港' },
-  { key: 'toPort', label: 'TO / 目的港' },
   { key: 'country', label: '国家' },
   { key: 'voyageNo', label: '航次' },
   { key: 'bookingNo', label: '订仓号' },
@@ -79,6 +78,7 @@ const summaryFields = [
   { key: 'poNo', label: 'PO（箱唛）' },
   { key: 'containerType', label: '柜型' },
   { key: 'bookingDate', label: '截止日期' },
+  { key: 'brandName', label: '品牌名称' },
 ] as const
 
 const demoPackingList: ShippingMailLine[] = [
@@ -264,8 +264,9 @@ function applyFields(preview: ShippingMailPreview) {
     const po = str('po_no') || str('customer_po') || String(lines.map((line) => String((line as unknown as Record<string, unknown>).customer_po || '')).find(Boolean) || '')
     if (po) summary.poNo = po
   }
+  if (!summary.brandName) summary.brandName = str('brand') || str('brand_name')
   if (!summary.containerType) summary.containerType = str('container_type')
-  if (!summary.bookingDate) summary.bookingDate = str('cutoff_date') || str('si_deadline') || str('booking_date')
+  if (!summary.bookingDate) summary.bookingDate = str('cutoff_date') || str('si_deadline') || str('booking_date') || str('planned_ship_date')
   void fillPoFromSchedule()
 }
 
@@ -349,6 +350,7 @@ async function ensureConfirmedTask(modules?: string[]): Promise<string | null> {
       contract_no: summary.contractNo.trim(),
       po_no: summary.poNo.trim(),
       container_type: summary.containerType.trim(),
+      brand: summary.brandName.trim(),
       from_port: summary.fromPort.trim(),
       to_port: summary.toPort.trim(),
       destination_country: summary.country.trim(),
@@ -592,8 +594,9 @@ async function refreshRecords() {
         </button>
         <button
           type="button"
-          class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-100 px-4 text-[12px] font-semibold text-emerald-900 shadow-sm transition hover:bg-emerald-200"
-          @click="previewMessage('AI自动解析')"
+          class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-100 px-4 text-[12px] font-semibold text-emerald-900 shadow-sm transition hover:bg-emerald-200 disabled:opacity-60"
+          :disabled="parsing"
+          @click="parseSelected"
         >
           AI自动解析
         </button>

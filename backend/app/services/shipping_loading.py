@@ -172,12 +172,22 @@ def task_transport(task: ShippingTask, fields: dict, default: str = '成隆达')
     return default
 
 
+def format_table_name(transport: str, origin_port: str) -> str:
+    clean_transport = str(transport or '').strip().rstrip('，, ')
+    carrier = (clean_transport if clean_transport.endswith('运输') else f'{clean_transport}运输') if clean_transport else ''
+    clean_port = str(origin_port or '').strip()
+    if carrier and clean_port:
+        return f'{carrier}，出{clean_port}'
+    if clean_port:
+        return f'出{clean_port}'
+    return carrier
+
+
 def sheet_title(header: dict) -> str:
-    transport = str(header.get('transportCompany') or '成隆达').strip()
-    if not transport.endswith('运输'):
-        transport = f'{transport}运输'
-    port = str(header.get('originPort') or '盐田').strip()
-    return f'{transport}出{port}'
+    explicit = str(header.get('tableName') or '').strip()
+    if explicit:
+        return explicit
+    return format_table_name(str(header.get('transportCompany') or ''), str(header.get('originPort') or ''))
 
 
 def sheet_stem(header: dict) -> str:
@@ -207,7 +217,7 @@ def _consignee(task: ShippingTask, fields: dict) -> str:
         value = str((item or {}).get('consignee') or '').strip()
         if value:
             return value
-    return str(task.customer or '').strip()
+    return ''
 
 
 def _email_date(value: object) -> str:
@@ -235,6 +245,8 @@ def _header(task: ShippingTask, fields: dict, number: str) -> dict:
         contract_no = contract_no or str((item or {}).get('contract_no') or '').strip()
         filing_code = filing_code or str((item or {}).get('product_code') or '').strip()
         brand_note = brand_note or str((item or {}).get('brand') or '').strip()
+    transport_name = task_transport(task, fields)
+    origin_port = _port_label(str(task.port or fields.get('from_port') or ''))
     return {
         'shipper': SHIPPER,
         'consignee': _consignee(task, fields),
@@ -250,8 +262,9 @@ def _header(task: ShippingTask, fields: dict, number: str) -> dict:
         'sheetDate': (_email_date(fields.get('received_at')) or today.isoformat()),
         'preparer': PREPARERS[0],
         'brandNote': brand_note,
-        'originPort': _port_label(str(task.port or fields.get('from_port') or '')),
-        'transportCompany': task_transport(task, fields),
+        'originPort': origin_port,
+        'transportCompany': transport_name,
+        'tableName': format_table_name(transport_name, origin_port),
         'number': number,
         'plate': '',
         'containerNo': '',
@@ -411,10 +424,11 @@ def _render_template(payload: dict) -> bytes:
     write(3, 0, 'CC:')
     write(3, 1, 'Carmen')
     write(3, 11, f'提单号：{header.get("blNo") or ""}')
-    transport = header.get('transportCompany') or '成隆达'
-    if not str(transport).endswith('运输'):
-        transport = f'{transport}运输'
-    write(3, 4, f'{transport.rstrip("，, ")}，出{header.get("originPort") or "盐田"}')
+    table_display = str(header.get('tableName') or '').strip() or format_table_name(
+        str(header.get('transportCompany') or '成隆达'),
+        str(header.get('originPort') or ''),
+    )
+    write(3, 4, table_display)
     try:
         day = date.fromisoformat(str(header.get('sheetDate') or '')[:10])
         date_style = _style_from_template(book_in, source.cell_xf_index(4, 1))
@@ -805,7 +819,7 @@ def _hq_payload(header: dict, lines: list) -> dict:
             'containerNo': str(header.get('containerNo') or ''),
             'sealNo': str(header.get('sealNo') or ''),
             'tareWeight': str(header.get('tareWeight') or ''),
-            'originPort': str(header.get('originPort') or '盐田'),
+            'originPort': str(header.get('originPort') or ''),
             'destinationCountry': str(header.get('destinationCountry') or ''),
         },
         'lines': hq_lines,

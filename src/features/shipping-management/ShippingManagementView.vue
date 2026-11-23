@@ -47,7 +47,8 @@ const menu = [
 ] as const
 
 const factoryId = computed(() => appStore.activeProductionFactory.id)
-const profile = computed(() => (isShippingFactory(factoryId.value) ? shippingFactoryProfiles[factoryId.value] : null))
+const requestedFactoryId = computed(() => appStore.activeFactory.id)
+const profile = computed(() => (isShippingFactory(requestedFactoryId.value) ? shippingFactoryProfiles[requestedFactoryId.value] : null))
 const departmentRoute = computed(() => getFactoryScopedRoute('/modules/pmc-warehouse', factoryId.value))
 
 function normalizePage(value: unknown): ShippingPage {
@@ -156,7 +157,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
             class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-medium text-slate-600"
           >
             <Building2 class="size-4" aria-hidden="true" />
-            当前厂区：{{ appStore.activeProductionFactory.shortName }}
+            当前厂区：{{ appStore.activeFactory.shortName }}
           </span>
           <span class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 text-[11px] font-semibold text-amber-800">
             <AlertTriangle class="size-3.5" aria-hidden="true" />
@@ -240,7 +241,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
         <span class="mx-auto flex size-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
           <Ship class="size-6" aria-hidden="true" />
         </span>
-        <h2 class="mt-4 text-lg font-semibold text-slate-950">{{ appStore.activeProductionFactory.shortName }} 暂未开通船务管理</h2>
+        <h2 class="mt-4 text-lg font-semibold text-slate-950">{{ appStore.activeFactory.shortName }} 暂未开通船务管理</h2>
         <p class="mx-auto mt-2 max-w-xl text-[12px] leading-5 text-slate-500">
           船务管理目前只对华兴、华登、华康 A、华康 B、华康 D 开放；其他厂区不显示入口。
           如需开通，请联系船务与系统管理员。

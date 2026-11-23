@@ -2,15 +2,17 @@
 import copy
 import hashlib
 import re
+from datetime import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .documents import read_docx_text, read_pdf_ocr_text, read_pdf_text, read_xlsx_rows
+from .documents import read_docx_text, read_pdf_ocr_text, read_pdf_tables, read_pdf_text, read_xls_rows, read_xlsx_rows
 from .email import read_eml
 from .fields import PARSER_VERSION, _contract_tails, extract_fields
 
-PACKING_SUFFIXES = {'.xlsx', '.xlsm', '.pdf', '.docx'}
+PACKING_SUFFIXES = {'.xlsx', '.xlsm', '.xls', '.pdf', '.docx'}
+_BRAND_NAMES = ('ZURU', 'BUZZBEE', 'PLAYMATES', 'MOOSE', 'SPIN MASTER', 'HASBRO', 'MATTEL', 'TOMY', 'BUKI', 'DICKIE', 'SIMBA')
 _HEADER_ALIASES = {
     'product_code': ('货号', 'item', 'item no', 'itemno', 'product code', 'sku', '款号', '产品编号'),
     'product_name': ('品名', 'description', '产品名称', '货名', 'name'),
@@ -37,6 +39,12 @@ def parse_shipping_email(raw: bytes, filename: str = 'message.eml', *, received_
     body = f'{message.subject}\n{message.body_text}'
     extraction = extract_fields(body, received_at=contact)
     fields = extraction.fields
+    if not fields.get('brand'):
+        subject_upper = message.subject.upper()
+        for brand in _BRAND_NAMES:
+            if brand in subject_upper:
+                fields['brand'] = brand
+                break
     warnings = list(extraction.warnings)
     trace = list(extraction.trace)
     items: list[dict] = []
@@ -120,15 +128,126 @@ def _parse_attachment(filename: str, data: bytes) -> dict:
     return copy.deepcopy(result)
 
 
+_DELIVERY_ORDER = re.compile(r'Delivery\s+order|送货单号|入仓通知', re.I)
+
+
+def _delivery_date(text: str) -> str:
+    match = re.search(r'Delivery\s+Date\s*[:：]\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})', text, re.I)
+    if not match:
+        return ''
+    try:
+        return datetime.strptime(match.group(1), '%d %B %Y').date().isoformat()
+    except ValueError:
+        try:
+            return datetime.strptime(match.group(1), '%d %b %Y').date().isoformat()
+        except ValueError:
+            return ''
+
+
+def _delivery_order_items(tables: list[list[list]]) -> list[dict]:
+    for table in tables:
+        header_index = None
+        for index, row in enumerate(table):
+            headers = [str(cell or '').strip().lower() for cell in row]
+            if 'item no.' in headers and 'qty' in headers:
+                header_index = index
+                break
+        if header_index is None:
+            continue
+        header = [str(cell or '').strip().lower() for cell in table[header_index]]
+        def column(name: str, fallback: int) -> int:
+            for i, cell in enumerate(header):
+                if cell == name:
+                    return i
+            return fallback
+        col_no = column('no', 0)
+        col_contract = column('s/c number', 1)
+        col_item = column('item no.', 3)
+        col_qty = column('qty', 4)
+        col_ctns = column('ctns', 5)
+        col_cbm = column('cbm', 6)
+        col_po = column('po number', 7)
+        col_material = column('cust. material', 8)
+        col_remark = column('remark', 9)
+        items = []
+        for row in table[header_index + 1:]:
+            if not row or not str(row[col_no] or '').strip():
+                continue
+            item = str(row[col_item] or '').strip() if col_item < len(row) else ''
+            if not item:
+                continue
+            def value(index: int) -> str:
+                return str(row[index] or '').strip() if index < len(row) else ''
+            def number(index: int):
+                try:
+                    return float(value(index)) if value(index) else None
+                except ValueError:
+                    return None
+            items.append({
+                'product_code': item,
+                'product_name': '',
+                'quantity': number(col_qty),
+                'cartons': number(col_ctns),
+                'cbm': number(col_cbm),
+                'contract_no': value(col_contract),
+                'customer_po': value(col_po),
+                'remark': ' '.join(part for part in (value(col_material), value(col_remark)) if part),
+            })
+        if items:
+            return items
+    return []
+
+
+def _parse_delivery_order(filename: str, data: bytes, text: str) -> dict:
+    tables = read_pdf_tables(data)
+    items = _delivery_order_items(tables)
+    customer = ''
+    match = re.search(r'Customer\s+([^\n]+)', text, re.I)
+    if match:
+        customer = re.sub(r'\s+', ' ', match.group(1)).strip()
+    do_no = ''
+    match = re.search(r'Delivery\s+order\s+No\.?\s*[:：]?\s*([A-Z0-9-]+)', text, re.I)
+    if match:
+        do_no = match.group(1).strip()
+    if not do_no:
+        match = re.search(r'送货单号\s*([A-Z0-9-]+)', text)
+        if match:
+            do_no = match.group(1).strip()
+    contract = items[0].get('contract_no') if items else ''
+    delivery_date = _delivery_date(text)
+    fields = {
+        'so_number': do_no,
+        'booking_no': do_no,
+        'contract_no': contract or '',
+        'contract_tails': _contract_tails(contract or ''),
+        'customer': customer,
+        'brand': customer,
+        'planned_ship_date': delivery_date,
+        'ship_date': delivery_date,
+        'shipment_mode': 'warehouse',
+        'cargo_source': 'attachment',
+    }
+    warnings = [] if items else ['未识别到入仓单商品明细，请人工确认表格格式']
+    return {
+        'filename': filename,
+        'kind': 'delivery_order',
+        'status': 'parsed',
+        'fields': fields,
+        'items': items,
+        'warnings': warnings,
+        'text': text,
+    }
+
+
 def _parse_attachment_uncached(filename: str, data: bytes) -> dict:
     suffix = Path(filename).suffix.lower()
     empty = {'filename': filename, 'kind': 'unknown', 'status': 'ignored', 'fields': {}, 'items': [], 'warnings': []}
     if suffix not in PACKING_SUFFIXES:
         empty['warnings'] = [f'未解析附件类型：{filename}']
         return empty
-    if suffix in ('.xlsx', '.xlsm'):
+    if suffix in ('.xlsx', '.xlsm', '.xls'):
         try:
-            rows = read_xlsx_rows(data)
+            rows = read_xls_rows(data) if suffix == '.xls' else read_xlsx_rows(data)
         except Exception as error:  # noqa: BLE001 - 单个附件失败不能中断整封邮件
             return {**empty, 'status': 'failed', 'warnings': [f'Excel 附件读取失败：{filename}（{type(error).__name__}）']}
         items = _packing_items(rows, filename)
@@ -136,6 +255,8 @@ def _parse_attachment_uncached(filename: str, data: bytes) -> dict:
         return {'filename': filename, 'kind': 'packing_list', 'status': 'parsed', 'fields': {}, 'items': items, 'warnings': warnings}
     if suffix == '.pdf':
         document = read_pdf_text(data)
+        if _DELIVERY_ORDER.search(document.text):
+            return _parse_delivery_order(filename, data, document.text)
         if document.scanned:
             try:
                 document = read_pdf_ocr_text(data)

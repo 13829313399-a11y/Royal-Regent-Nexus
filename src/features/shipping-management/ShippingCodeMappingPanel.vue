@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { Download, Info, Plus, RefreshCw, RotateCcw, Search } from '@lucide/vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { Download, Info, Plus, RefreshCw, RotateCcw, Search, Trash2 } from '@lucide/vue'
 import { getGeneratedDoc, listGeneratedDocs, type GeneratedDoc } from '@/api/shippingMail'
 
 const props = defineProps<{ factoryId: string }>()
@@ -16,6 +16,19 @@ interface CodeRow {
   net: string
   source: string
   customer: string
+  date?: string
+  contractNo?: string
+  quantity?: string
+  cartons?: string
+  volume?: string
+  country?: string
+  transport?: string
+  containerMode?: string
+  trip?: string
+  containerType?: string
+  plate?: string
+  containerNo?: string
+  sealNo?: string
   status: string
   tone: 'blue' | 'orange' | 'red'
 }
@@ -39,6 +52,19 @@ const rows = ref<CodeRow[]>([...seedRows])
 const keyword = ref('')
 const appliedKeyword = ref('')
 const activeCustomer = ref<string>('全部')
+const page = ref(1)
+const pageSize = 50
+const selectedKeys = ref<string[]>([])
+function loadDeletedKeys(): string[] {
+  if (typeof window === 'undefined' || !window.localStorage) return []
+  try {
+    return JSON.parse(window.localStorage.getItem('shipping-code-mapping-deleted') || '[]') as string[]
+  } catch {
+    return []
+  }
+}
+
+const deletedKeys = ref<Set<string>>(new Set(loadDeletedKeys()))
 const customers = computed(() => ['全部', ...new Set(rows.value.map((row) => row.customer).filter(Boolean))])
 
 const filteredRows = computed(() => {
@@ -50,53 +76,179 @@ const filteredRows = computed(() => {
   })
 })
 
+const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize)))
+const pagedRows = computed(() => filteredRows.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+
+watch([appliedKeyword, activeCustomer], () => { page.value = 1 })
+
 const statusDot: Record<CodeRow['tone'], string> = {
   blue: 'bg-blue-500',
   orange: 'bg-amber-500',
   red: 'bg-rose-500',
 }
 
+const yearOptions = ['2026', '2025', '2024', '2023', '2022', '2021', '2020']
+const selectedYear = ref('2026')
+const generatedRows = ref<CodeRow[]>([])
+const importedRows = ref<CodeRow[]>([])
+const loadingYear = ref(false)
+const yearCache = new Map<string, CodeRow[]>()
+
+function rowKey(row: CodeRow) {
+  return [row.date, row.contractNo, row.code, row.quantity, row.cartons, row.trip, row.containerNo, row.sealNo].join('|')
+}
+
+function persistDeleted() {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  window.localStorage.setItem('shipping-code-mapping-deleted', JSON.stringify([...deletedKeys.value]))
+}
+
+const allPageSelected = computed(() => pagedRows.value.length > 0 && pagedRows.value.every((row) => selectedKeys.value.includes(rowKey(row))))
+const somePageSelected = computed(() => pagedRows.value.some((row) => selectedKeys.value.includes(rowKey(row))))
+
+function toggleRow(row: CodeRow) {
+  const key = rowKey(row)
+  selectedKeys.value = selectedKeys.value.includes(key) ? selectedKeys.value.filter((item) => item !== key) : [...selectedKeys.value, key]
+}
+
+function togglePage() {
+  const keys = pagedRows.value.map(rowKey)
+  if (allPageSelected.value) {
+    selectedKeys.value = selectedKeys.value.filter((key) => !keys.includes(key))
+  } else {
+    selectedKeys.value = [...new Set([...selectedKeys.value, ...keys])]
+  }
+}
+
+function deleteRows(keys: string[]) {
+  if (!keys.length) return
+  const removing = new Set(keys)
+  deletedKeys.value = new Set([...deletedKeys.value, ...keys])
+  persistDeleted()
+  rows.value = rows.value.filter((row) => !removing.has(rowKey(row)))
+  generatedRows.value = generatedRows.value.filter((row) => !removing.has(rowKey(row)))
+  importedRows.value = importedRows.value.filter((row) => !removing.has(rowKey(row)))
+  selectedKeys.value = selectedKeys.value.filter((key) => !removing.has(key))
+  page.value = Math.min(page.value, pageCount.value)
+  emit('notify', `已删除 ${keys.length} 条货号映射`)
+}
+
+function deleteSelected() {
+  deleteRows(selectedKeys.value)
+}
+
+function mergeRows() {
+  const seen = new Set<string>()
+  const combined = [...generatedRows.value, ...importedRows.value]
+  if (!combined.length) {
+    rows.value = [...seedRows]
+    page.value = 1
+    return
+  }
+  rows.value = combined.filter((row) => {
+    const key = rowKey(row)
+    if (deletedKeys.value.has(key)) return false
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).map((row) => ({ ...row, category: row.category && row.category !== '-' ? row.category : '塑胶' }))
+  page.value = 1
+}
+
+async function loadYear(year: string) {
+  const cached = yearCache.get(year)
+  if (cached) {
+    importedRows.value = cached
+    mergeRows()
+    return
+  }
+  loadingYear.value = true
+  try {
+    const response = await fetch(`/data/code-mappings-${year}.json`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const data = (await response.json()) as CodeRow[]
+    yearCache.set(year, data)
+    importedRows.value = data
+    mergeRows()
+  } catch (error) {
+    importedRows.value = []
+    mergeRows()
+    emit('notify', `读取 ${year} 年出货登记失败：${String(error)}`)
+  } finally {
+    loadingYear.value = false
+  }
+}
+
+async function changeYear() {
+  selectedKeys.value = []
+  await loadYear(selectedYear.value)
+}
+
+async function loadGeneratedRows() {
+  const soDocs = await listGeneratedDocs(props.factoryId, 'so')
+  const truckDocs = await listGeneratedDocs(props.factoryId, 'truck_export')
+  const docs: GeneratedDoc[] = [...soDocs.slice(0, 12), ...truckDocs.slice(0, 8)]
+  const next: CodeRow[] = []
+  const seen = new Set<string>()
+  for (const doc of docs) {
+    let detail
+    try { detail = await getGeneratedDoc(props.factoryId, doc.id) } catch { continue }
+    const header = (detail.header ?? {}) as Record<string, unknown>
+    const customer = String(doc.brand_name || header.brandName || header.brandNote || '').trim() || '—'
+    for (const line of detail.lines ?? []) {
+      const row = line as Record<string, unknown>
+      const code = String(row.filingCode || row.product_code || row.declareCode || '').trim()
+      if (!code) continue
+      const cartons = Number(row.cartons) || 0
+      const qty = Number(row.quantity) || 0
+      const coefficient = Number(row.coefficient) || (cartons ? qty / cartons : 0)
+      const perCarton = coefficient ? `${Math.round(coefficient * 100) / 100} 个` : '默认'
+      const key = `${code}|${String(row.description || row.name || '')}|${perCarton}|${customer}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const gross = Number(row.grossPerCarton) || (cartons ? (Number(row.grossWeight) || 0) / cartons : 0)
+      const net = Number(row.netPerCarton) || (cartons ? (Number(row.netWeight) || 0) / cartons : 0)
+      const headerDate = String(header.sheetDate || header.etd || header.shipDate || '').slice(0, 10)
+      const rowCbm = Number(row.cbm) || 0
+      const transport = String(header.transportCompany || header.transport || '').trim()
+      const trip = String(header.vehicle || header.number || header.truckNo || header.truck_no || '').trim()
+      const containerType = String(header.containerType || '').trim()
+      const truckType = String(header.truckType || '').trim()
+      next.push({
+        code,
+        name: String(row.description || row.name || ''),
+        date: headerDate || doc.created_at.slice(0, 10),
+        contractNo: String(header.contractNo || row.contractNo || row.contract_no || '-'),
+        quantity: qty ? String(qty) : '-',
+        cartons: cartons ? String(cartons) : '-',
+        volume: rowCbm ? rowCbm.toFixed(3) : '-',
+        country: String(header.destinationCountry || header.country || row.country || '-'),
+        transport: transport || '-',
+        containerMode: containerType ? '柜' : (trip || truckType ? 'T车' : '-'),
+        trip: trip || '-',
+        containerType: containerType || truckType || '-',
+        plate: String(header.plate || '-'),
+        containerNo: String(header.containerNo || '-'),
+        sealNo: String(header.sealNo || '-'),
+        perCarton,
+        category: String(row.category || '塑胶'),
+        note: String(row.cartonMark || '-'),
+        gross: gross ? gross.toFixed(3) : '-',
+        net: net ? net.toFixed(3) : '-',
+        source: doc.module === 'truck_export' ? '车表' : 'SO',
+        customer,
+        status: '已同步',
+        tone: 'blue',
+      })
+    }
+  }
+  generatedRows.value = next
+  mergeRows()
+}
+
 async function loadMappings() {
   try {
-    const soDocs = await listGeneratedDocs(props.factoryId, 'so')
-    const truckDocs = await listGeneratedDocs(props.factoryId, 'truck_export')
-    const docs: GeneratedDoc[] = [...soDocs.slice(0, 12), ...truckDocs.slice(0, 8)]
-    const next: CodeRow[] = []
-    const seen = new Set<string>()
-    for (const doc of docs) {
-      let detail
-      try { detail = await getGeneratedDoc(props.factoryId, doc.id) } catch { continue }
-      const header = (detail.header ?? {}) as Record<string, unknown>
-      const customer = String(doc.brand_name || header.brandName || header.brandNote || '').trim() || '—'
-      for (const line of detail.lines ?? []) {
-        const row = line as Record<string, unknown>
-        const code = String(row.filingCode || row.product_code || row.declareCode || '').trim()
-        if (!code) continue
-        const cartons = Number(row.cartons) || 0
-        const qty = Number(row.quantity) || 0
-        const coefficient = Number(row.coefficient) || (cartons ? qty / cartons : 0)
-        const perCarton = coefficient ? `${Math.round(coefficient * 100) / 100} 个` : '默认'
-        const key = `${code}|${String(row.description || row.name || '')}|${perCarton}|${customer}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        const gross = Number(row.grossPerCarton) || (cartons ? (Number(row.grossWeight) || 0) / cartons : 0)
-        const net = Number(row.netPerCarton) || (cartons ? (Number(row.netWeight) || 0) / cartons : 0)
-        next.push({
-          code,
-          name: String(row.description || row.name || ''),
-          perCarton,
-          category: String(row.category || '塑胶'),
-          note: String(row.cartonMark || '-'),
-          gross: gross ? gross.toFixed(3) : '-',
-          net: net ? net.toFixed(3) : '-',
-          source: doc.module === 'truck_export' ? '车表' : 'SO',
-          customer,
-          status: '已同步',
-          tone: 'blue',
-        })
-      }
-    }
-    if (next.length) rows.value = next
+    await Promise.all([loadGeneratedRows(), loadYear(selectedYear.value)])
   } catch (error) {
     emit('notify', `货号映射自动导入失败：${String(error)}`)
   }
@@ -110,12 +262,15 @@ function preview(title: string) {
 
 function applySearch() {
   appliedKeyword.value = keyword.value
+  page.value = 1
 }
 
 function reset() {
   keyword.value = ''
   appliedKeyword.value = ''
   activeCustomer.value = '全部'
+  selectedKeys.value = []
+  page.value = 1
 }
 </script>
 
@@ -163,6 +318,14 @@ function reset() {
           </button>
           <button
             type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 text-[12px] font-semibold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="!selectedKeys.length"
+            @click="deleteSelected"
+          >
+            <Trash2 class="size-3.5" aria-hidden="true" />删除选中{{ selectedKeys.length ? `（${selectedKeys.length}）` : '' }}
+          </button>
+          <button
+            type="button"
             class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-50"
             @click="preview('导出')"
           >
@@ -178,7 +341,13 @@ function reset() {
         </div>
       </div>
 
-      <div class="mt-3 flex flex-wrap items-center gap-1.5">
+      <div class="mt-3 flex flex-wrap items-center gap-3">
+        <label class="flex items-center gap-1.5 text-[11px] text-slate-500">年份
+          <select v-model="selectedYear" class="h-7 rounded-lg border border-emerald-200 bg-white px-2 text-[11px] font-medium text-emerald-900" :disabled="loadingYear" @change="changeYear">
+            <option v-for="year in yearOptions" :key="year" :value="year">{{ year }}</option>
+          </select>
+        </label>
+        <span v-if="loadingYear" class="text-[11px] text-emerald-700">读取中…</span>
         <span class="text-[11px] text-slate-500">客户筛选：</span>
         <button
           v-for="customer in customers"
@@ -186,7 +355,7 @@ function reset() {
           type="button"
           class="rounded-full px-2.5 py-1 text-[11px] font-medium transition"
           :class="activeCustomer === customer ? 'bg-emerald-900 text-white' : 'border border-emerald-100 bg-white text-slate-600 hover:border-emerald-200 hover:text-emerald-900'"
-          @click="activeCustomer = customer"
+          @click="activeCustomer = customer; page = 1"
         >
           {{ customer }}
         </button>
@@ -199,35 +368,67 @@ function reset() {
     </p>
 
     <div class="overflow-x-auto rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/40">
-      <table class="w-full min-w-[1040px] border-collapse text-left text-[12px]">
+      <table class="w-full min-w-[2100px] border-collapse text-left text-[12px]">
         <thead class="bg-emerald-50/80 text-[11px] font-semibold text-emerald-900/70">
           <tr>
+            <th scope="col" class="w-10 px-2 py-2 text-center">
+              <input type="checkbox" aria-label="全选当前页" :checked="allPageSelected" :indeterminate="somePageSelected && !allPageSelected" @change="togglePage">
+            </th>
+            <th scope="col" class="px-3 py-2">日期</th>
+            <th scope="col" class="px-3 py-2">合同号</th>
             <th scope="col" class="px-3 py-2">货号</th>
             <th scope="col" class="px-3 py-2">货名</th>
+            <th scope="col" class="px-3 py-2 text-right">数量</th>
+            <th scope="col" class="px-3 py-2 text-right">箱数</th>
             <th scope="col" class="px-3 py-2 text-right">每箱个数</th>
             <th scope="col" class="px-3 py-2">玩具类别</th>
             <th scope="col" class="px-3 py-2">备注（柜单）</th>
             <th scope="col" class="px-3 py-2 text-right">每箱毛重（kg）</th>
             <th scope="col" class="px-3 py-2 text-right">每箱净重（kg）</th>
+            <th scope="col" class="px-3 py-2 text-right">体积</th>
             <th scope="col" class="px-3 py-2">来源</th>
+            <th scope="col" class="px-3 py-2">国家</th>
             <th scope="col" class="px-3 py-2">客户</th>
+            <th scope="col" class="px-3 py-2">运输公司</th>
+            <th scope="col" class="px-3 py-2">柜型/T车</th>
+            <th scope="col" class="px-3 py-2">车次</th>
+            <th scope="col" class="px-3 py-2">柜型</th>
+            <th scope="col" class="px-3 py-2">车牌号</th>
+            <th scope="col" class="px-3 py-2">柜号</th>
+            <th scope="col" class="px-3 py-2">封条号</th>
             <th scope="col" class="px-3 py-2">状态</th>
             <th scope="col" class="px-3 py-2 text-right">操作</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-emerald-50/80">
-          <tr v-for="row in filteredRows" :key="`${row.code}-${row.customer}-${row.perCarton}`" class="bg-white/70 hover:bg-emerald-50/50">
+          <tr v-for="row in pagedRows" :key="rowKey(row)" class="bg-white/70 hover:bg-emerald-50/50" :class="selectedKeys.includes(rowKey(row)) ? 'bg-emerald-50/70' : ''">
+            <td class="px-2 py-2 text-center">
+              <input type="checkbox" :aria-label="`选择 ${row.code}`" :checked="selectedKeys.includes(rowKey(row))" @change="toggleRow(row)">
+            </td>
+            <td class="px-3 py-2 tabular-nums text-slate-600">{{ row.date || '-' }}</td>
+            <td class="px-3 py-2 tabular-nums text-slate-700">{{ row.contractNo || '-' }}</td>
             <td class="px-3 py-2 font-semibold tabular-nums text-emerald-800">{{ row.code }}</td>
             <td class="px-3 py-2 text-slate-800">{{ row.name }}</td>
+            <td class="px-3 py-2 text-right tabular-nums text-slate-600">{{ row.quantity || '-' }}</td>
+            <td class="px-3 py-2 text-right tabular-nums text-slate-600">{{ row.cartons || '-' }}</td>
             <td class="px-3 py-2 text-right tabular-nums text-slate-600">{{ row.perCarton }}</td>
             <td class="px-3 py-2 text-slate-600">{{ row.category }}</td>
             <td class="px-3 py-2 text-slate-400">{{ row.note }}</td>
             <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.gross }}</td>
             <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.net }}</td>
+            <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.volume || '-' }}</td>
             <td class="px-3 py-2">
               <span class="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">{{ row.source }}</span>
             </td>
+            <td class="px-3 py-2 text-slate-700">{{ row.country || '-' }}</td>
             <td class="px-3 py-2 text-slate-700">{{ row.customer }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.transport || '-' }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.containerMode || '-' }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.trip || '-' }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.containerType || '-' }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.plate || '-' }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.containerNo || '-' }}</td>
+            <td class="px-3 py-2 text-slate-600">{{ row.sealNo || '-' }}</td>
             <td class="px-3 py-2">
               <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-600">
                 <span class="size-1.5 rounded-full" :class="statusDot[row.tone]" aria-hidden="true" />
@@ -237,12 +438,19 @@ function reset() {
             <td class="px-3 py-2 text-right">
               <div class="inline-flex items-center gap-2">
                 <button type="button" class="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900" @click="preview(`编辑货号映射 ${row.code}`)">编辑</button>
-                <button type="button" class="text-[11px] font-semibold text-rose-500 hover:text-rose-700" @click="preview(`删除货号映射 ${row.code}`)">删除</button>
+                <button type="button" class="text-[11px] font-semibold text-rose-500 hover:text-rose-700" @click="deleteRows([rowKey(row)])">删除</button>
               </div>
             </td>
           </tr>
         </tbody>
       </table>
+      <div v-if="filteredRows.length" class="flex flex-wrap items-center justify-between gap-2 border-t border-emerald-100 px-3 py-2 text-[11px] text-slate-600">
+        <span>共 {{ filteredRows.length }} 条，第 {{ page }} / {{ pageCount }} 页</span>
+        <div class="flex items-center gap-2">
+          <button type="button" class="rounded border border-emerald-200 px-2 py-1 font-semibold text-emerald-800 disabled:opacity-40" :disabled="page <= 1" @click="page = Math.max(1, page - 1)">上一页</button>
+          <button type="button" class="rounded border border-emerald-200 px-2 py-1 font-semibold text-emerald-800 disabled:opacity-40" :disabled="page >= pageCount" @click="page = Math.min(pageCount, page + 1)">下一页</button>
+        </div>
+      </div>
       <p v-if="!filteredRows.length" class="px-4 py-10 text-center text-[12px] text-slate-500">没有匹配的货号映射</p>
     </div>
   </section>

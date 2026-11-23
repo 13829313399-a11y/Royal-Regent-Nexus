@@ -80,9 +80,11 @@ function applyInitialHeader() {
   if (text(source.orderNo)) draft.value.header.orderNo = text(source.orderNo)
   if (text(source.filingCode)) draft.value.header.filingCode = text(source.filingCode)
   if (text(source.bookingNo)) draft.value.header.bookingNo = text(source.bookingNo)
-  const carrier = text(source.transportCompanyName) || text(source.transportCompany)
-  if (carrier) draft.value.header.transportCompanyName = carrier
-  if (text(source.transportCompany)) draft.value.header.transport = text(source.transportCompany)
+  const carrier = text(source.transport) || text(source.transportCompanyName) || text(source.transportCompany)
+  if (carrier) {
+    draft.value.header.transportCompanyName = carrier
+    draft.value.header.transport = carrier
+  }
   if (text(source.shippingClerk) || text(source.preparer)) draft.value.header.fromName = text(source.shippingClerk) || text(source.preparer)
   if (text(source.tradeTerm)) draft.value.header.tradeTerm = text(source.tradeTerm)
   if (text(source.cutoff)) draft.value.header.arrivalCutoff = text(source.cutoff)
@@ -90,6 +92,7 @@ function applyInitialHeader() {
   if (sail) draft.value.header.sheetDate = sail.slice(0, 10)
   if (text(source.sailingDate)) draft.value.header.cutoff = text(source.sailingDate)
   if (text(source.remark)) draft.value.header.remark = text(source.remark)
+  syncTableName()
 }
 
 watch(() => props.initialHeader, applyInitialHeader)
@@ -182,29 +185,19 @@ async function runSearch() {
   }
 }
 
+function formatTableName(transportRaw: unknown, originPortRaw: unknown) {
+  const transport = String(transportRaw ?? '').trim().replace(/[，,\s]+$/, '')
+  const carrier = transport ? (transport.endsWith('运输') ? transport : `${transport}运输`) : ''
+  const port = String(originPortRaw ?? '').trim()
+  if (carrier && port) return `${carrier}，出${port}`
+  if (port) return `出${port}`
+  return carrier
+}
+
 function syncTableName() {
   if (!draft.value) return
   const header = draft.value.header
-  const port = String(header.originPort || '').trim()
-  const short = port.includes('蛇') ? '蛇' : '盐'
-  const warehouse = String(header.warehouseNo || '').trim()
-  const truckType = String(header.truckType || '').trim()
-  const vehicleNo = String(header.vehicle || '').trim()
-  if (vehicleNo) {
-    header.tableName = `${short}客上车${vehicleNo}车`
-    return
-  }
-  if (truckType === '客上车') {
-    const vehicle = String(header.vehicle || '').trim()
-    header.tableName = vehicle ? `${short}客上车${vehicle}车` : `${short}客上车`
-    return
-  }
-  if (truckType.toUpperCase() === 'W') {
-    header.tableName = `${short}客上车W车`
-    return
-  }
-  const vehicle = String(header.vehicle || '').trim()
-  if (vehicle) header.tableName = `${short}客上车${vehicle}车`
+  header.tableName = formatTableName(header.transport || header.transportCompanyName, header.originPort)
 }
 
 function recalc(line: BulkTruckLine) {
@@ -251,7 +244,7 @@ async function download() {
 onMounted(loadTasks)
 watch(
   () => draft.value
-    ? `${draft.value.header.originPort}|${draft.value.header.warehouseNo}|${draft.value.header.truckType}|${draft.value.header.vehicle}`
+    ? `${draft.value.header.transport || ''}|${draft.value.header.originPort || ''}`
     : '',
   (value, previous) => {
     if (value && value !== previous) syncTableName()
@@ -326,7 +319,7 @@ watch(() => props.initialTaskId, (taskId) => {
             <input v-model="draft.header.sheetDate" type="date" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
           <label class="text-[11px] text-slate-500">运输公司
-            <input v-model="draft.header.transport" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+            <input v-model="draft.header.transport" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @input="syncTableName">
           </label>
           <label class="text-[11px] text-slate-500">派车公司
             <input v-model="draft.header.consolidator" type="text" placeholder="自己填" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
@@ -338,7 +331,7 @@ watch(() => props.initialTaskId, (taskId) => {
             </select>
           </label>
           <label class="text-[11px] text-slate-500">出港口
-            <input v-model="draft.header.originPort" list="truck-port-options" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @input="syncTableName">
+            <input v-model="draft.header.originPort" list="truck-port-options" placeholder="从邮件识别，可改盐田/蛇口" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @input="syncTableName">
             <datalist id="truck-port-options">
               <option value="盐田" />
               <option value="蛇口" />
@@ -378,7 +371,7 @@ watch(() => props.initialTaskId, (taskId) => {
             <input v-model="draft.header.remark" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
           <label class="text-[11px] text-slate-500">表格名称
-            <input v-model="draft.header.tableName" placeholder="自己填写" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+            <input v-model="draft.header.tableName" placeholder="例如：成隆达运输，出盐田" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
         </div>
       </div>

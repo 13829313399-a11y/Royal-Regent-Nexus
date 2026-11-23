@@ -27,6 +27,7 @@ const selectedTaskId = ref('')
 const search = ref('')
 const searching = ref(false)
 const draft = ref<LoadingDraft | null>(null)
+const tableNameEdited = ref(false)
 const loading = ref(false)
 const exporting = ref(false)
 const recognizing = ref(false)
@@ -240,17 +241,23 @@ async function loadDraft() {
   }
   loading.value = true
   message.value = ''
+  tableNameEdited.value = false
   try {
     const previousHeader = draft.value
       ? JSON.parse(JSON.stringify(draft.value.header)) as LoadingHeader
       : null
     const scheduled = await draftLoadingSheet(props.factoryId, selectedTaskId.value)
+    const recognizedTableName = String(scheduled.header.tableName || '').trim()
     if (previousHeader) {
       scheduled.header = previousHeader
     } else {
       scheduled.header = blankCabinetHeader(scheduled.header)
     }
+    if (!tableNameEdited.value) {
+      scheduled.header.tableName = recognizedTableName || scheduled.header.tableName
+    }
     draft.value = scheduled
+    ensureTableName()
     if (!draft.value.header.shippingClerk) draft.value.header.shippingClerk = draft.value.header.preparer || '农建壮'
     if (!draft.value.header.tradeTerm) draft.value.header.tradeTerm = 'FOB'
     if (draft.value.lines.length === 0) addLine()
@@ -269,6 +276,25 @@ function addLine() {
     filingCode: '', declareCode: '', coefficient: null, quantity: null, cartons: null, grossWeight: null, netWeight: null,
     cbm: null, category: '塑胶', grossPerCarton: null, netPerCarton: null, description: '', department: 'W',
   })
+}
+
+function ensureTableName() {
+  if (!draft.value) return
+  if (!String(draft.value.header.tableName || '').trim()) syncTableName()
+}
+
+function formatTableName(transportRaw: unknown, originPortRaw: unknown) {
+  const transport = String(transportRaw ?? '').trim().replace(/[，,\s]+$/, '')
+  const carrier = transport ? (transport.endsWith('运输') ? transport : `${transport}运输`) : ''
+  const port = String(originPortRaw ?? '').trim()
+  if (carrier && port) return `${carrier}，出${port}`
+  if (port) return `出${port}`
+  return carrier
+}
+
+function syncTableName() {
+  if (!draft.value) return
+  draft.value.header.tableName = formatTableName(draft.value.header.transportCompany, draft.value.header.originPort)
 }
 
 function syncLineContracts() {
@@ -329,11 +355,10 @@ async function download() {
       const codes = [...new Set(draft.value.lines.map((line) => String(line.filingCode || '').trim()).filter(Boolean))]
       link.download = `${codes.length ? codes.join('_') : 'HQ柜出货'}.xlsx`
     } else {
-      const transport = String(draft.value.header.transportCompany || '成隆达')
-      const carrier = transport.endsWith('运输') ? transport : `${transport}运输`
-      const port = draft.value.header.originPort || '盐田'
       const so = String(draft.value.header.soNo || '')
-      link.download = `${carrier}出${port}${so ? `_${so}` : ''}.xls`
+      const title = String(draft.value.header.tableName || '').trim()
+        || formatTableName(draft.value.header.transportCompany, draft.value.header.originPort)
+      link.download = `${title}${so ? `_${so}` : ''}.xls`
     }
     link.click()
     URL.revokeObjectURL(url)
@@ -522,7 +547,7 @@ function blankCabinetHeader(scheduled: LoadingHeader): LoadingHeader {
     voyage: '',
     containerType: '',
     cutoff: '',
-    originPort: '盐田',
+    originPort: '',
     destinationCountry: '',
     transportCompany: '',
     consignee: '',
@@ -578,6 +603,7 @@ function mergeScheduleLines(imported: LoadingLine[], scheduled: LoadingLine[], c
 watch(() => props.initialDraft, async (value) => {
   if (!value) return
   draft.value = JSON.parse(JSON.stringify(value)) as LoadingDraft
+  ensureTableName()
   if (!draft.value.header.shippingClerk) draft.value.header.shippingClerk = draft.value.header.preparer || '农建壮'
   if (!draft.value.header.tradeTerm) draft.value.header.tradeTerm = 'FOB'
   if (!selectedTaskId.value) selectedTaskId.value = value.taskId
@@ -606,6 +632,7 @@ watch(() => props.initialDraft, async (value) => {
       }
       const contract = (draft.value.header.contractNo || '').trim()
       draft.value.lines = mergeScheduleLines(draft.value.lines, scheduled.lines, contract)
+      ensureTableName()
       if (rebooked) {
         message.value = '已按产品编号匹配新排期，合同号 / SO / 订舱号 / 截单日已更新为新排期。'
       }
@@ -615,6 +642,7 @@ watch(() => props.initialDraft, async (value) => {
     }
   }
   syncLineContracts()
+  ensureTableName()
   if (!draft.value.lines.length) addLine()
 }, { immediate: true })
 </script>
@@ -680,7 +708,7 @@ watch(() => props.initialDraft, async (value) => {
             <input v-model="draft.header.voyage" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
           <label class="text-[11px] text-slate-500">运输公司
-            <input v-model="draft.header.transportCompany" placeholder="成隆达" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+            <input v-model="draft.header.transportCompany" placeholder="成隆达" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @input="syncTableName">
           </label>
           <label class="text-[11px] text-slate-500">柜型
             <input v-model="draft.header.containerType" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
@@ -696,7 +724,7 @@ watch(() => props.initialDraft, async (value) => {
             <input v-model="draft.header.destinationCountry" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
           <label class="text-[11px] text-slate-500">出港口
-            <select v-model="draft.header.originPort" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+            <select v-model="draft.header.originPort" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @change="syncTableName">
               <option value="盐田">盐田</option>
               <option value="蛇口">蛇口</option>
             </select>
@@ -735,6 +763,9 @@ watch(() => props.initialDraft, async (value) => {
           </label>
           <label class="text-[11px] text-slate-500">PO（箱唛）
             <input v-model="draft.header.poNo" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+          </label>
+          <label class="text-[11px] text-slate-500">表格名称
+            <input v-model="draft.header.tableName" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @input="tableNameEdited = true">
           </label>
         </div>
       </div>

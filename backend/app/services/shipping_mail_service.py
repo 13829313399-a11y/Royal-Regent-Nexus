@@ -223,8 +223,11 @@ def confirm_batch(db, user: AuthContext, batch_id: str, factory_id: str, item_id
                     ShippingTask.source == 'schedule',
                     ShippingTask.so_number == so_number,
                 ).order_by(ShippingTask.planned_ship_date.desc(), ShippingTask.created_at.desc()))
+            if schedule_task is None:
+                schedule_task = _match_schedule_task(db, factory_id, _loads(item.items_json))
             if schedule_task is not None:
                 schedule_task.mail_item_id = item.id
+                _merge_task_items(schedule_task, _loads(item.items_json))
                 for key, value in (
                     ('container_type', fields.get('container_type')),
                     ('port', fields.get('from_port')),
@@ -455,6 +458,44 @@ def _validate_trips(items: list[dict], trips: list[dict]) -> list[str]:
     except ShippingRuleError as error:
         raise HTTPException(422, str(error)) from None
     return []
+
+
+def _match_schedule_task(db, factory_id: str, items: list[dict]):
+    """Find an internal schedule task with the same contract + item/PO, for DO/booking merge."""
+    contracts = {str(item.get('contract_no') or '').strip() for item in items if item.get('contract_no')}
+    codes = {str(item.get('product_code') or '').strip() for item in items if item.get('product_code')}
+    pos = {str(item.get('customer_po') or '').strip() for item in items if item.get('customer_po')}
+    if not codes or not (contracts or pos):
+        return None
+    for source in ('schedule', 'mail'):
+        candidates = db.scalars(select(ShippingTask).where(
+            ShippingTask.factory_id == factory_id,
+            ShippingTask.source == source,
+        )).all()
+        for task in candidates:
+            for row in _loads(task.items_json):
+                code = str((row or {}).get('product_code') or '').strip()
+                contract = str((row or {}).get('contract_no') or '').strip()
+                po = str((row or {}).get('customer_po') or '').strip()
+                if code in codes and (contract in contracts or po in pos):
+                    return task
+    return None
+
+
+def _merge_task_items(task, incoming: list[dict]) -> None:
+    current = [row for row in _loads(task.items_json) if isinstance(row, dict)]
+    for item in incoming:
+        contract = str(item.get('contract_no') or '').strip()
+        code = str(item.get('product_code') or '').strip()
+        match = next((row for row in current if str(row.get('contract_no') or '').strip() == contract
+                      and str(row.get('product_code') or '').strip() == code), None)
+        if match is None:
+            current.append(item)
+            continue
+        for key, value in item.items():
+            if value not in (None, '') and match.get(key) in (None, ''):
+                match[key] = value
+    task.items_json = _dump(current)
 
 
 def _new_task(*, factory_id: str, fields: dict, items: list, source: str, planned: date,

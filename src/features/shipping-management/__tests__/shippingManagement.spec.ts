@@ -67,7 +67,7 @@ describe('shipping order management workspace', () => {
     expect(wrapper.text()).toContain('保存并连接')
     expect(wrapper.text()).toContain('解析记录（0）')
     expect(wrapper.text()).toContain('查看员 admin')
-    for (const item of ['邮件导入', '工厂排期单', '货号映射', '厂商映射', '一键出货', '卡板据统计', '提箱柜核对', '用户管理']) {
+    for (const item of ['邮件导入', '工厂排期单', '货号映射', '厂商映射', '一键出货', '卡板统计', '找提单/核对']) {
       expect(wrapper.text()).toContain(item)
     }
 
@@ -78,9 +78,11 @@ describe('shipping order management workspace', () => {
     expect(wrapper.text()).toContain('立即同步')
     expect(wrapper.text()).toContain('每天 08:00–23:00 每小时自动收件（华兴 / 华登 / 华康A / 华康B / 华康D）')
 
-    for (const label of ['码头', 'FROM', 'TO', '国家', '航次', '订仓号', '柜S/O', '船名', '发货商', '合同号', '截止日期']) {
+    for (const label of ['码头', '国家', '航次', '订仓号', '柜S/O', '船名', '发货商', '合同号', '截止日期']) {
       expect(wrapper.text()).toContain(label)
     }
+    expect(wrapper.find('input[aria-label="FROM / 起运港"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="TO / 目的港"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('Packing List 明细')
     expect(wrapper.text()).toContain('确认创建出货单')
     await wrapper.findAll('button').find((button) => button.text().includes('确认创建出货单'))!.trigger('click')
@@ -98,7 +100,7 @@ describe('shipping order management workspace', () => {
 
     await openMenu(wrapper, '货号映射')
     expect(wrapper.text()).toContain('货号映射管理')
-    expect(wrapper.text()).toContain('9389')
+    expect(wrapper.text()).toContain('12')
 
     await openMenu(wrapper, '厂商映射')
     expect(wrapper.text()).toContain('客户与柜号序列')
@@ -118,7 +120,7 @@ describe('shipping order management workspace', () => {
     await openMenu(wrapper, '货号映射')
 
     expect(wrapper.text()).toContain('货号映射管理')
-    expect(wrapper.text()).toContain('9389')
+    expect(wrapper.text()).toContain('12')
     expect(wrapper.text()).toContain('全能足球6个/箱')
     expect(rows(wrapper)).toHaveLength(12)
     for (const column of ['每箱毛重（kg）', '每箱净重（kg）', '玩具类别', '来源', '客户', '状态']) {

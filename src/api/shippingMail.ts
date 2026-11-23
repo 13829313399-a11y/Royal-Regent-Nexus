@@ -279,6 +279,7 @@ export interface LoadingHeader {
   poNo?: string
   originPort: string
   transportCompany: string
+  tableName?: string
   number: string
   plate: string
   containerNo: string

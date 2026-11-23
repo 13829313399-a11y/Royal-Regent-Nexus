@@ -281,3 +281,122 @@ MAERSK SALTORO
     assert fields['destination_country'] == '美国'
     assert fields['si_deadline'] == '2026-10-26T20:30'
     assert fields['cutoff_date'] == '2026-10-27T17:00'
+
+
+def test_cma_cgm_email_cover_page_does_not_override_p2_p3_pol_pod_and_country():
+    padding = ('Terms and conditions notice line for CMA CGM cover page.\n' * 85)
+    text = f"""From: no-reply.bkgdesk@cma-cgm.com
+To: idun.zheng@fms-logistics.com
+Subject: Booking Confirmation SHZ8356199
+
+{padding}
+BOOKING CONFIRMATION
+Booking Reference: SHZ8356199
+Service Contract: YFRMS0000003
+Vessel: CMA CGM TANYA
+Voyage: 0R10UW1MA
+2*40HQ
+Terminal: YICT
+POL = CNYTN (YANTIAN)
+POD = DEHAM (HAMBURG)
+SI Cut Off: 2026-07-17 07:00
+CY Cut Off: 2026-07-17 16:00
+"""
+    fields = extract_fields(text, received_at='2026-07-10').fields
+    assert fields['so_number'] == 'SHZ8356199'
+    assert '@' not in fields['from_port']
+    assert '@' not in fields['to_port']
+    assert '@' not in fields['destination']
+    assert fields['from_port'] == '盐田'
+    assert fields['port'] == '盐田'
+    assert 'DEHAM' in fields['to_port'] and 'HAMBURG' in fields['to_port']
+    assert fields['destination_country'] == '德国'
+
+
+def test_cma_cgm_port_of_loading_and_discharge_with_email_headers():
+    text = """From: no-reply.bkgdesk@cma-cgm.com
+To: idun.zheng@fms-logistics.com
+CMA CGM
+Booking No.: SHZ8356199
+Port of Loading:
+CNYTN (YANTIAN)
+Port of Discharge:
+DEHAM (HAMBURG)
+CY Cut Off: 2026-07-17 16:00
+"""
+    fields = extract_fields(text, received_at='2026-07-10').fields
+    assert fields['from_port'] == '盐田'
+    assert fields['to_port'] == 'DEHAM (HAMBURG)'
+    assert fields['destination_country'] == '德国'
+
+
+def test_chinese_so_fullwidth_colons_no_vessel_slash_or_shipper_contract():
+    text = """订舱确认书
+S/O No.：HLCUSZX26070901
+Contract No.:
+Shipper
+服务合同号/运价协议号：SC-2026-9988
+船名/航次：
+EVER GIVEN / 088E
+装货港：盐田 YICT
+卸货港：HAMBURG 汉堡
+客户PO：PO-88210
+1*40HQ
+截补料时间：2026-07-08 12:00
+截关时间：2026-07-09 17:00
+"""
+    fields = extract_fields(text, received_at='2026-07-01').fields
+    assert fields['so_number'] == 'HLCUSZX26070901'
+    assert fields['booking_no'] == 'HLCUSZX26070901'
+    assert fields['contract_no'] == 'SC-2026-9988'
+    assert fields['vessel_name'] == 'EVER GIVEN'
+    assert fields['voyage_no'] == '088E'
+    assert fields['po_no'] == 'PO-88210'
+    assert fields['from_port'] == '盐田'
+    assert fields['destination_country'] == '德国'
+    assert fields['container_type'] == '1*40HQ'
+    assert fields['si_deadline'] == '2026-07-08T12:00'
+    assert fields['cutoff_date'] == '2026-07-09T17:00'
+
+
+def test_gbk_chinese_email_and_legacy_xls_attachment_are_parsed():
+    xlwt = pytest.importorskip('xlwt')
+    book = xlwt.Workbook(encoding='utf-8')
+    sheet = book.add_sheet('Packing')
+    for col, title in enumerate(['货号', '品名', '数量', '箱数', 'CBM']):
+        sheet.write(0, col, title)
+    for col, val in enumerate(['SKU-901', '积木套装', 600, 50, 2.5]):
+        sheet.write(1, col, val)
+    buf = io.BytesIO()
+    book.save(buf)
+
+    msg = EmailMessage()
+    msg['Subject'] = '订舱通知 S/O：OOLU26071188'
+    msg['From'] = 'ops@forwarder.example'
+    msg['To'] = 'shipping@huaxing.example'
+    msg['Date'] = 'Thu, 02 Jul 2026 10:00:00 +0800'
+    body_gbk = (
+        '订仓号：OOLU26071188\n'
+        '合同号：CT-2026-0711\n'
+        '船名/航次：OOCL HONG KONG / 112E\n'
+        '装货港：盐田\n'
+        '目的港：HAMBURG\n'
+        '1*40HQ\n'
+        '截补料时间：2026-07-09 12:00\n'
+        '截关时间：2026-07-10 17:00\n'
+    ).encode('gb18030')
+    msg.set_content(body_gbk, maintype='text', subtype='plain', params={'charset': 'gb2312'})
+    msg.add_attachment(buf.getvalue(), maintype='application', subtype='vnd.ms-excel', filename='packing.xls')
+
+    result = parse_shipping_email(bytes(msg), 'gbk-so.eml')
+    fields = result['fields']
+    assert fields['so_number'] == 'OOLU26071188'
+    assert fields['contract_no'] == 'CT-2026-0711'
+    assert fields['vessel_name'] == 'OOCL HONG KONG'
+    assert fields['voyage_no'] == '112E'
+    assert fields['destination_country'] == '德国'
+    assert len(result['items']) == 1
+    assert result['items'][0]['product_code'] == 'SKU-901'
+    assert result['items'][0]['cartons'] == 50.0
+
+

@@ -25,7 +25,9 @@ def read_pdf_text(data: bytes) -> DocumentText:
         reader = PdfReader(io.BytesIO(data))
         fast_texts = [((page.extract_text() or '') if hasattr(page, 'extract_text') else '').strip() for page in reader.pages]
         fast_text = '\n'.join(item for item in fast_texts if item).strip()
-        if len(fast_text) >= SCANNED_TEXT_THRESHOLD:
+        lines = [line.strip() for line in fast_text.splitlines() if line.strip()]
+        short_ratio = (sum(1 for line in lines if len(line) <= 2) / len(lines)) if lines else 1
+        if len(fast_text) >= SCANNED_TEXT_THRESHOLD and short_ratio < 0.15:
             return DocumentText(text=fast_text, pages=len(fast_texts), scanned=False)
     except Exception:  # noqa: BLE001 - fall back to the layout-aware extractor
         pass
@@ -60,6 +62,14 @@ def read_pdf_ocr_text(data: bytes, resolution: int = 180, max_pages: int = 3) ->
     return DocumentText(text='\n'.join(lines).strip(), pages=pages, scanned=False)
 
 
+def read_pdf_tables(data: bytes) -> list[list[list]]:
+    tables: list[list[list]] = []
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for page in pdf.pages:
+            tables.extend(page.extract_tables() or [])
+    return tables
+
+
 def read_xlsx_rows(data: bytes) -> list[list]:
     workbook = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     try:
@@ -67,6 +77,14 @@ def read_xlsx_rows(data: bytes) -> list[list]:
         return [list(row) for row in sheet.iter_rows(values_only=True)]
     finally:
         workbook.close()
+
+
+def read_xls_rows(data: bytes) -> list[list]:
+    import xlrd
+
+    workbook = xlrd.open_workbook(file_contents=data)
+    sheet = workbook.sheet_by_index(0)
+    return [[sheet.cell_value(row, col) for col in range(sheet.ncols)] for row in range(sheet.nrows)]
 
 
 def read_docx_text(data: bytes) -> str:
