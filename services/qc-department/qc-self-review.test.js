@@ -74,12 +74,56 @@ test('formal pending workbook preserves read-only permissions and filters withou
     const grid=p.d.getElementById('wb-grid').shadowRoot;
     assert.deepEqual([...grid.querySelectorAll('tr[data-review-entry]')].map(row=>row.dataset.reviewEntry),['b']);
     assert.equal(grid.querySelector('.writable'),null);
+    assert.equal(p.d.getElementById('wb-next').disabled,true);
     assert.equal(p.d.getElementById('wb-export').hidden,true);
     const td=grid.querySelector('[data-field=inspectionProblem]');td.click();
     td.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'F2',bubbles:true,composed:true,cancelable:true}));
     assert.equal(grid.querySelector('.cell-editor'),null);
     assert.equal(p.calls.some(c=>c.url.endsWith('/save')||c.url.endsWith('/confirm')),false);
     assert.equal(p.rows[1].reviewState,'pending');
+  }finally{p.dom.window.close();}
+});
+test('pending workbook pins the three identity columns and jumps to a writable field in the active row',async()=>{
+  const p=await page(true);try{
+    p.d.querySelector('#qis-review-controls .wb-open').click();await tick();
+    const grid=p.d.getElementById('wb-grid').shadowRoot, locate=p.d.getElementById('wb-next');
+    const row=id=>grid.querySelector(`tr[data-review-entry="${id}"]`);
+    const td=(id,field)=>row(id).querySelector(`[data-field="${field}"]`);
+    assert.deepEqual([...row('b').querySelectorAll('td[data-review-pin]')].map(el=>el.dataset.field),['date','customer','poNo']);
+    assert.equal(grid.querySelector('thead [data-addr=C2]').textContent,'poNo');
+    assert.equal(locate.disabled,false);
+    assert.equal(p.d.querySelector('.wb-head select'),null);
+    row('b').querySelector('[data-review-row]').click();
+    assert.equal(grid.activeElement,td('b','date'));
+    assert.equal(grid.querySelector('[data-review-active]'),row('b'));
+    assert.equal(row('b').querySelector('button').getAttribute('aria-pressed'),'true');
+    locate.click();
+    assert.equal(grid.activeElement,td('b','result'));
+    td('b','remark').click();
+    locate.click();
+    assert.equal(grid.activeElement,td('b','photos').querySelector('.wb-review-action'));
+    assert.equal(p.d.querySelector('dialog.qis-workbook-photos'),null);
+    td('b','secondResponsible').click();
+    locate.click();
+    assert.equal(grid.activeElement,td('b','inspectionFactory'));
+    assert.equal(p.d.getElementById('wb-address').textContent,td('b','inspectionFactory').dataset.addr);
+    assert.equal(grid.querySelector('thead .wb-review-column').textContent,'验货工厂');
+    assert.equal(p.w.QcReportWorkbook.navigationState().dirty,false);
+    row('c').querySelector('[data-review-row]').click();
+    assert.equal(grid.activeElement,td('c','inspectionFactory'));
+    assert.equal(grid.querySelector('[data-review-active]'),row('c'));
+    assert.equal(row('b').hasAttribute('data-review-active'),false);
+    const press=(key,ctrlKey=false)=>grid.activeElement.dispatchEvent(new p.w.KeyboardEvent('keydown',{key,ctrlKey,bubbles:true,composed:true,cancelable:true}));
+    press('F2');
+    const editor=td('c','inspectionFactory').querySelector('.cell-editor');assert.equal(grid.activeElement,editor);
+    editor.value='隔离测试厂';
+    editor.dispatchEvent(new p.w.Event('input',{bubbles:true}));press('Enter');
+    assert.equal(p.calls.filter(c=>c.url.endsWith('/save')).length,0);
+    press('s',true);await tick();
+    const [save]=p.calls.filter(c=>c.url.endsWith('/save'));
+    assert.equal(save.url,'api/inspection-sheet/review/entries/c/save');
+    assert.equal(save.body.inspectionFactory,'隔离测试厂');
+    assert.equal(locate.disabled,false);
   }finally{p.dom.window.close();}
 });
 test('review uses the fixed workbench order followed by supplements for every row, retaining frozen actions',async()=>{
