@@ -61,6 +61,8 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 
 审核中心待审核首屏采用居中的八字段预览；右上角图标打开报告工作簿编辑器。完整列名、顺序、条件列和批次对应关系来自现有待审核表，不从报告补录字段推断。文字、明细和照片列表先在当前标签页暂存，再按显式保存走原待审核记录接口；保存编号绑定操作者、内容和版本，同编号重试不重复写入，不覆盖较新的记录。照片标注仍调用原独立保存接口。审核确认仍独立、按原权限和原选中记录处理；已审核页面及其只读和反审核规则不变。
 
+本地移动验货使用显式配置的私有 Wi-Fi 地址和独立受限监听；仅重启桌面 API 不会启动手机服务。签发局域网 HTTP 二维码前核对地址仍属于本机、手机监听及页面资源就绪。正式环境使用电脑和手机共用的固定 HTTPS 域名，发码前核对域名、手机资源和 QC 服务；反向代理保留正式 Host，不依赖任意转发头判断来源。发码自检不能证明厂区手机网络可达，上线须从实际使用网络探测并用真机扫码。[移动入口](../../backend/app/api/qc_mobile.py) · [局域网监听](../../backend/app/qc_mobile_app.py) · [生产验收](../aliyun-docker-deploy.md#移动验货上线验收)
+
 周报模板以[清单](../../backend/app/templates/qc-weekly/templates.json)和[加载服务](../../backend/app/services/qc_weekly_templates.py)核对。验货审核、退回与附件规则见[业务要求](../business/QC验货运营中心业务需求.md)和[运行契约](../business/qc-legacy-runtime-contract.md)。
 
 [qc-department-integration.md](../business/qc-department-integration.md) · [qc_department.py](../../backend/app/api/qc_department.py) · [test_qc_weekly_template_manifest.py](../../backend/tests/test_qc_weekly_template_manifest.py)
