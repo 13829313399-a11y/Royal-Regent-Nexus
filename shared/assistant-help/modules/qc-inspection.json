@@ -176,12 +176,12 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "32677818a03bd4b6d191b444015b78db32e1812c4bb500ec784388d426c81019"
+        "sha256": "303c8e69774f7f07c7bd28ea7782516c0aa8f23cd4cec0888f09393da8d06e63"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",
         "symbol": "QcPendingReviewWorkbook",
-        "sha256": "cdf4d804bdfe924871d4f87f61cbea5248500e56f087a350557579e430e0c1e4"
+        "sha256": "056bfe3f9974b495eea5e51028d1e6f23747299daa08da7fd78ddb2e04c3bfad"
       }
     ],
     "knowledge_version": "2026-11-22-qc-report-workbook-editing",
