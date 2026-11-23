@@ -20,6 +20,8 @@
 
 华康 B 的 JP 问单与正式排期分开。模板和客户映射按厂使用，华康 C 的裁床测试桥有独立边界。首批真实切换、特殊交退货、印尼排期及仓库自动回传待业务确认。[订单路线图](../business/customer-order-center-erp-roadmap.md)
 
+Windows 独立订单试用包固定厂区及客户，业务记录仅在本包 `data` 中。Win7 SP1/Win10 x86 运行环境另提供 `OPEN.vbs`（随包 pythonw，无控制台）与 `START.cmd` 两个入口；前者关闭程序窗口时退出本机服务。两者共用数据与实例锁，重复打开先验证后端实例；浏览器缓存按后端实例隔离，后端退出回收其自有浏览器。宿主机测试和 PE 静态检查不能替代 Windows 原生验收。[交付工具及验证](../../tools/factory-trial-delivery/README.md)
+
 [customer-order-center-business-process.md](../business/customer-order-center-business-process.md) · [customer_order_ledger.py](../../backend/app/api/customer_order_ledger.py) · [test_customer_order_ledger.py](../../backend/tests/test_customer_order_ledger.py)
 
 旧版字段和例外可追溯至[订单映射、台账与发运](../archive/memory/orders.md)。

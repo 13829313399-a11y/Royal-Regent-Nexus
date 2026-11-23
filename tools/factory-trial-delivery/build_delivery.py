@@ -369,6 +369,9 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if legacy_windows:
                 instructions = instructions.replace('Windows 10/11 64位电脑。', 'Windows 7 SP1、Windows 10，32位和64位电脑。')
                 instructions = instructions.replace('页面会在默认浏览器打开', '页面会在随包浏览器打开')
+                shutil.copyfile(TOOL / 'windowed_start.py', package / 'windowed_start.py')
+                (package / 'OPEN.vbs').write_bytes((TOOL / 'start-windowed.vbs').read_text(encoding='ascii').replace('\n', '\r\n').encode('ascii'))
+                instructions += '\n备用启动：双击 OPEN.vbs，通过随包 pythonw 打开程序，不使用控制台输出。关闭程序窗口后，本机服务正常退出，数据保留。重复点击会聚焦同一窗口。若电脑禁用脚本，使用 START.cmd。两个入口使用同一个 data，不要重复复制业务数据。\n'
                 instructions += '\n本包使用32位运行环境，可在32位和64位Windows运行，无需选择版本。\nWindows 7需已安装SP1及微软通用C运行库更新（KB2999226）。如提示缺少api-ms-win-crt或VCRUNTIME DLL，请运行随包support/VC_redist.x86.exe安装微软官方运行库，再重新启动；即使64位电脑也用本包的x86安装文件。系统缺少SP1时需先由电脑维护人员更新。\n随包浏览器仅打开本机试用页面。程序启动失败时会自动打开STARTUP-ERROR.txt，报告汇总了完整启动日志，请复制内容反馈。\n'
                 copy_tree(TOOL / 'desktop', package / 'desktop')
                 extract(cache / 'electron-v22.3.27-win32-ia32.zip', package / 'browser')

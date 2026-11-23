@@ -145,6 +145,9 @@ def verify(output, python):
             assert b'>>"%TRIAL_ROOT%data\\startup-console.log" 2>&1' in (package / 'START.cmd').read_bytes()
             if legacy:
                 assert (package / 'browser/electron.exe').read_bytes()[:2] == b'MZ'
+                assert (package / 'runtime/pythonw.exe').read_bytes()[:2] == b'MZ'
+                assert (package / 'windowed_start.py').is_file()
+                assert b'pythonw.exe' in (package / 'OPEN.vbs').read_bytes()
             instructions = '演示操作说明.txt' if config['kind'] == 'jp' else '演示操作.txt'
             assert (package / '演示资料' / instructions).is_file()
             first = serve(package, python, config)
