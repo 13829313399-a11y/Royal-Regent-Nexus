@@ -3,7 +3,8 @@
   'use strict';
   if(!root.__QC_NEXUS)return;
   const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:''}};
-  let notificationGeneration=0;
+  let notificationGeneration=0,recordsRefreshInFlight=false,localUpdate=0;
+  const sameData=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
   const editable=()=>Boolean(root.__QC_NEXUS.workflow?.edit);
@@ -110,7 +111,7 @@
     const index=model.items.findIndex(r=>r.id===id);
     if(index>=0&&model.items[index].revision>saved.revision)return;
     if(index>=0&&model.items[index].photoWarning&&!('photoWarning' in saved))saved={...saved,photoWarning:model.items[index].photoWarning};
-    if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;}
+    if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;localUpdate++;}
     const entryNode=root.document.querySelector('[data-entry="'+id+'"]');if(entryNode&&model.view==='review'){
       const hint=audit().hint(saved);entryNode.querySelectorAll('[data-audit]').forEach(button=>{button.title=hint;button.setAttribute('aria-label',hint+'；查看修改历史');});
       for(const key of ['customer','poNo']){const cell=entryNode.querySelector('[data-column="'+key+'"]');if(cell)cell.title=(saved[key]||'')+'\n'+hint;}
@@ -207,9 +208,48 @@
     }
     model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
-    try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
+    try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=resultChoices(data);refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
     catch(error){model.error=error.message;}
     finally{model.loading=false;render();if(!model.error&&(view==='records'||model.reviewTab==='pending'))void reviewNotifications(view,noticeGeneration);const next=model.nextLoad;model.nextLoad=null;if(next&&(next.view!==model.view||next.tab!==model.reviewTab))await load(next.view,next.tab);}
+  }
+  const resultChoices=data=>(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));
+  function recordsIdle(){
+    const doc=root.document;
+    if(doc.hidden||model.view!=='records'||model.loading||rowDrag||model.recordChecked.size||
+      !doc.getElementById('page-records')?.classList.contains('active')||
+      doc.activeElement?.closest('#recordsTableWrap')||doc.querySelector('dialog[open]'))return false;
+    const state=navigationState();
+    return !state.dirty&&!state.busy;
+  }
+  async function refreshRecords(){
+    if(recordsRefreshInFlight||!recordsIdle())return;
+    const generation=notificationGeneration,update=localUpdate,items=model.items;
+    recordsRefreshInFlight=true;
+    try{
+      const [nextOptions,data]=await Promise.all([api('options'),api('entries')]);
+      // A foreground load, save or new interaction wins over an older poll.
+      if(generation!==notificationGeneration||update!==localUpdate||items!==model.items||!recordsIdle())return;
+      const oldRows=new Map(items.map(row=>[row.id,row])),changed=new Set();
+      const nextItems=data.items.map(row=>{
+        const old=oldRows.get(row.id);oldRows.delete(row.id);
+        if(old&&sameData(old,row))return old;
+        changed.add(row.id);return row;
+      });
+      for(const id of oldRows.keys())changed.add(id);
+      const results=resultChoices(data),columns=displayColumns(data.columns);
+      const rebuild=!model.loaded||!!model.error||!sameData(options,nextOptions)||!sameData(results,model.results)||!sameData(columns,model.columns);
+      if(rebuild||changed.size){
+        options=nextOptions;model.items=nextItems;model.results=results;model.columns=columns;model.loaded=true;model.error='';
+        if(!byId(model.selectedId))model.selectedId='';
+        for(const id of changed)model.drafts.delete(id);
+        // Keep undo/redo for untouched rows, but never replay a step against a newer row.
+        for(const key of ['undo','redo'])fieldHistory[key]=fieldHistory[key].filter(step=>!step.changes.some(change=>changed.has(change.id)));
+        if(rebuild)refreshResultFilters();
+        render(rebuild?undefined:changed);
+      }
+      if(!root.document.querySelector('#qis-central-notifications .qis-reversal-notice'))await reviewNotifications('records',generation,true);
+    }catch{/* Leave the last good view in place; manual refresh still reports read failures. */}
+    finally{recordsRefreshInFlight=false;}
   }
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
@@ -576,7 +616,26 @@
     root.QcReportWorkbook.openReview(opener,source);
   }
 
-  function render(){
+  function patchRecordRows(host,rows,columns,changed){
+    const tbody=host.querySelector('table.qis-table tbody');
+    if(!tbody||Boolean(tbody.rows.length)!==Boolean(rows.length))return null;
+    const visible=new Set(rows.map(row=>row.id)),existing=new Map(),added=new Map();
+    for(const node of [...tbody.rows]){
+      const id=node.dataset.entry;
+      if(changed.has(id)||!visible.has(id))node.remove();
+      else existing.set(id,node);
+    }
+    const template=root.document.createElement('template');
+    let cursor=tbody.firstElementChild;
+    for(const row of rows){
+      let node=existing.get(row.id);
+      if(!node){template.innerHTML=rowHTML(row,columns);node=template.content.firstElementChild;added.set(row.id,node);}
+      if(node===cursor)cursor=cursor.nextElementSibling;
+      else tbody.insertBefore(node,cursor);
+    }
+    return added;
+  }
+  function render(changed){
     finishRowDrag(true);
     const host=root.document.getElementById(model.view==='review'?'reviewTableWrap':'recordsTableWrap');if(!host)return;
     host.classList.add('qis-wrap');updateTaskFilters();root.updateRecordsDateLabel?.();
@@ -595,16 +654,19 @@
       ? '<th scope="col" data-column="date" aria-sort="'+(ascending?'ascending':'descending')+'"><button type="button" class="qis-date-sort" title="'+sortHint+'" aria-label="'+sortHint+'">验货日期 <span aria-hidden="true">'+(ascending?'↑':'↓')+'</span></button></th>'
       : '<th scope="col" data-column="'+c.key+'">'+(reviewing&&model.reviewTab==='approved'&&c.key==='customer'
         ? '<input id="qis-review-all" type="checkbox" aria-label="全选当前筛选" title="全选当前筛选"> ' : '')+esc(c.label)+'</th>').join('');
-    const body=reviewing
-      ? skim?root.QcPendingReviewWorkbook.summary(orderedReviewRows(rows),{dateText,reviewGroup,draft,audit:audit()}):reviewTableBody(rows,columns,headerCells)
-      : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
-    const noTasks='没有符合条件的验货任务。';
-    const empty=!rows.length&&!model.loading;
-    const scene=empty&&model.loaded&&!model.error&&root.QcEmptyState?.markup(reviewing?'review':'inspection',noTasks);
-    host.innerHTML=(model.error?'<p role="alert" class="qis-error">读取失败：'+esc(model.error)+'。请重试刷新，当前数据可能不是最新。</p>':'')+
-      (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
-      ((!reviewing||rows.length)?'<table class="qis-table'+(skim?' qis-pending-summary':'')+'">'+body+'</table>':'')+
-      (empty?(scene||'<p>'+noTasks+'</p>'):'');
+    const patched=!reviewing&&changed?patchRecordRows(host,rows,columns,changed):null;
+    if(!patched){
+      const body=reviewing
+        ? skim?root.QcPendingReviewWorkbook.summary(orderedReviewRows(rows),{dateText,reviewGroup,draft,audit:audit()}):reviewTableBody(rows,columns,headerCells)
+        : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
+      const noTasks='没有符合条件的验货任务。';
+      const empty=!rows.length&&!model.loading;
+      const scene=empty&&model.loaded&&!model.error&&root.QcEmptyState?.markup(reviewing?'review':'inspection',noTasks);
+      host.innerHTML=(model.error?'<p role="alert" class="qis-error">读取失败：'+esc(model.error)+'。请重试刷新，当前数据可能不是最新。</p>':'')+
+        (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
+        ((!reviewing||rows.length)?'<table class="qis-table'+(skim?' qis-pending-summary':'')+'">'+body+'</table>':'')+
+        (empty?(scene||'<p>'+noTasks+'</p>'):'');
+    }
     if(reviewing){
       const all=host.querySelector('#qis-review-all');
       if(all)all.onchange=event=>{
@@ -622,7 +684,9 @@
     host.scrollTop=scrollTop;host.scrollLeft=scrollLeft;freezeColumns(host);
     if(!host._qisObserved&&root.ResizeObserver){host._qisObserved=true;new root.ResizeObserver(()=>freezeColumns(host)).observe(host);}
     rows.forEach(row=>{
-      const d=draft(row),node=host.querySelector('[data-entry="'+row.id+'"]');
+      const node=patched?patched.get(row.id):host.querySelector('[data-entry="'+row.id+'"]');
+      if(!node)return;
+      const d=draft(row);
       node.onclick=()=>{if(!suppressRowClick&&!rowDrag)selectRow(row.id);};node.addEventListener('focusin',()=>selectRow(row.id));
       node.querySelectorAll('[data-result],[data-remark],[data-problem],[data-improvement],[data-review-field],[data-execution-field],[data-person-field]').forEach(input=>{
         if(canEdit(row)&&!input.disabled)bindFieldEditor(input,row);
@@ -1045,7 +1109,7 @@
       finally{model.reviewBusy=false;button.disabled=false;el.querySelector('[data-close]').disabled=false;updateReviewControls(filtered());}
     };
   }
-  async function reviewNotifications(view,generation){
+  async function reviewNotifications(view,generation,background=false){
     const workbench=view==='records';
     const path=(workbench?'entries':'review')+'/notifications';
     const label=workbench?'退回提醒':'反审核提醒';
@@ -1060,7 +1124,7 @@
       root.requestAnimationFrame(()=>root.requestAnimationFrame(()=>{
         if(panel.isConnected&&active()&&!root.document.hidden)void api(path+'/shown',{eventIds:data.items.map(e=>e.eventId)}).catch(()=>{panel.querySelector('strong').textContent=label+'已显示，读取状态未保存；刷新后可能再次提醒';});
       }));
-    }catch(error){if(active())root.showToast?.(label+'读取失败：'+error.message+'；刷新可重试','error');}
+    }catch(error){if(!background&&active())root.showToast?.(label+'读取失败：'+error.message+'；刷新可重试','error');}
   }
   async function focus(key){
     if(!root.document.getElementById('page-records')?.classList.contains('active'))root.showPage?.('records');
@@ -1076,7 +1140,7 @@
     resetReviewFilters();
     selectRow(id);render();const node=root.document.querySelector('[data-entry="'+id+'"]');node?.scrollIntoView?.({block:'center'});node?.focus();
   }
-  root.QcInspectionSheet={model,load,focusReview,clearReviewDates,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
+  root.QcInspectionSheet={model,load,refreshRecords,focusReview,clearReviewDates,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
   root.addEventListener('beforeunload',event=>{if(navigationState().dirty||navigationState().busy){event.preventDefault();event.returnValue='';}});
   root.document.addEventListener('DOMContentLoaded',()=>{
     if(root.__QC_INITIAL_PAGE?.()==='review')load('review');else load();

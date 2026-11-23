@@ -13,6 +13,8 @@ const sheet = $('sheet');
 const editor = $('editor');
 const composer = $('composer');
 const wideScreen = window.matchMedia?.('(min-width: 840px) and (hover: hover) and (pointer: fine)');
+const iOS = /iP(?:hone|ad|od)/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -37,7 +39,8 @@ let activeField = '';
 let composing = false;
 let editorTrigger;
 let unoccludedHeight = 0;
-let viewportWidth = 0;
+let viewportGeometry = null;
+let viewportHeightStyle, viewportTopStyle;
 const editorSelections = new Map();
 const composingNotes = new WeakSet();
 let saving = Promise.resolve();
@@ -46,6 +49,9 @@ let photoUrls = new Map();
 let dialogTrigger;
 let busy = false;
 let openingTask = false;
+let liveRefreshInFlight = false;
+let localUpdate = 0;
+let photoFeedbackMarkup = '';
 const writeState = new Map();
 
 function state(row) {
@@ -155,6 +161,7 @@ function save(row) {
 }
 
 function change(row, immediate = false) {
+  localUpdate++;
   const edit = state(row);
   edit.version++;
   const values=remote.values(row);
@@ -173,6 +180,14 @@ function change(row, immediate = false) {
   if (!composing) edit.timer = setTimeout(() => save(row), 450);
 }
 
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function setDisabled(node, disabled) {
+  if (node.disabled !== disabled) node.disabled = disabled;
+}
+
 function refreshEntryStatus(row) {
   if (page === 'tasks') renderList();
   if (current !== row) return;
@@ -181,32 +196,38 @@ function refreshEntryStatus(row) {
   const pendingWrite = edit.pending || edit.version > edit.saved;
   const mobile = !wideScreen?.matches;
   const sync = syncStatus(row);
-  status.dataset.tone = sync.kind;
-  status.textContent = row.submittedAt ? '待审核' : edit.localError ? '手机保存失败' :
+  if (status.dataset.tone !== sync.kind) status.dataset.tone = sync.kind;
+  setText(status, row.submittedAt ? '待审核' : edit.localError ? '手机保存失败' :
     edit.photoError ? '照片待处理' : edit.localSaved < edit.version ? '正在存到手机…' : edit.error ? '已存手机 · 同步失败' :
-      pendingWrite || row._pending ? '已存手机 · 待同步' : '已同步到系统';
-  $('save-return').disabled = busy || Boolean(edit.photoError);
-  $('save-return').textContent = busy ? '保存中…' : '保存';
-  $('camera').disabled = busy;
-  $('album').disabled = busy;
-  $('photo-count').textContent = row.photos.length ? row.photos.length + ' 张' : mobile ? '未添加' : '';
+      pendingWrite || row._pending ? '已存手机 · 待同步' : '已同步到系统');
+  setDisabled($('save-return'), busy || Boolean(edit.photoError));
+  setText($('save-return'), busy ? '保存中…' : '保存');
+  setDisabled($('camera'), busy);
+  setDisabled($('album'), busy);
+  setText($('photo-count'), row.photos.length ? row.photos.length + ' 张' : mobile ? '未添加' : '');
   const message = edit.localError || edit.error || edit.photoError;
-  $('editor-feedback').hidden = !message;
-  $('editor-feedback').textContent = message;
-  $('photo-feedback').innerHTML = message ?
+  const feedback = $('editor-feedback');
+  if (feedback.hidden !== !message) feedback.hidden = !message;
+  setText(feedback, message);
+  const markup = message ?
     '<p class="notice error">' + escapeHtml(message) +
       (remote.conflicts.has(row.id) ? '<button data-action="resolve-conflict" type="button">核对冲突</button>' : edit.error || edit.localError ? '<button data-action="retry-save" type="button">重试保存</button>' :
         '<button data-action="clear-photo-error" type="button">关闭</button>') + '</p>' : '';
+  if (photoFeedbackMarkup !== markup) {
+    photoFeedbackMarkup = markup;
+    $('photo-feedback').innerHTML = markup;
+  }
 }
 
 function setOptions(select, entries, defaultLabel) {
+  if (select.options.length === entries.length + 1 && select.options[0].text === defaultLabel &&
+      entries.every(([value, label], i) => select.options[i + 1].value === value && select.options[i + 1].text === label)) return;
   const selected = select.value;
   select.replaceChildren(new Option(defaultLabel, ''), ...entries.map(([value, label]) => new Option(label, value)));
   if (entries.some(([value]) => value === selected)) select.value = selected;
 }
 
 function renderTask(row) {
-  const selected = current === row ? ' aria-current="true"' : '';
   const sync = syncStatus(row);
   const result = resultValues.includes(row.result) ? row.result : '';
   const badge = row.returned && !row.submittedAt ?
@@ -214,7 +235,7 @@ function renderTask(row) {
     '<span class="pill" data-judgment="' + result + '">' + (result || '未判定') + '</span>';
   const label = [row.customer, row.returned && !row.submittedAt ? '退回重新验货' : result || '未判定',
     row.po && 'PO ' + row.po, row.sku && '货号 ' + row.sku, row.product, sync.text].filter(Boolean).join('，');
-  return '<button type="button" class="task" data-task="' + row.id + '" aria-label="' + escapeHtml(label) + '"' + selected + '>' +
+  return '<button type="button" class="task" data-task="' + row.id + '" aria-label="' + escapeHtml(label) + '">' +
     '<span class="task-main"><span class="row-head"><span>' + escapeHtml(row.customer) + '</span>' + badge + '</span>' +
     '<span class="task-ids"><span><small>PO</small><span>' + escapeHtml(row.po || '—') + '</span></span>' +
     '<span><small>货号</small><span>' + escapeHtml(row.sku || '—') + '</span></span></span>' +
@@ -227,7 +248,7 @@ function renderMobileTask(row) {
   const sync = syncStatus(row), result = row.result || '未判定';
   const color = Array.from(row.customer).reduce((hash, char) => (hash * 31 + char.codePointAt(0)) >>> 0, 0) % 4;
   const label = [row.customer, 'PO ' + (row.po || '—'), '货号 ' + (row.sku || '—'), row.product, result, sync.text, row.returned && '退回重新验货'].filter(Boolean).join('，');
-  return '<button type="button" class="task mobile-task" data-customer-color="' + color + '" data-task="' + escapeHtml(row.id) + '" aria-label="' + escapeHtml(label) + '"' + (current === row ? ' aria-current="true"' : '') + '>' +
+  return '<button type="button" class="task mobile-task" data-customer-color="' + color + '" data-task="' + escapeHtml(row.id) + '" aria-label="' + escapeHtml(label) + '">' +
     '<span class="mobile-task-copy"><span class="mobile-customer-row"><strong class="mobile-customer">' + escapeHtml(row.customer) + '</strong><span class="pill" data-judgment="' + escapeHtml(row.result || '') + '">' + escapeHtml(result) + '</span></span>' +
     '<span class="mobile-identifiers"><span><small>PO</small><span>' + escapeHtml(row.po || '—') + '</span></span><span><small>货号</small><span>' + escapeHtml(row.sku || '—') + '</span></span></span>' +
     '<span class="mobile-product-row"><span class="mobile-product">' + icon('product') + '<span>' + escapeHtml(row.product || '—') + '</span></span><span class="task-sync" data-tone="' + sync.kind + '">' + sync.text + '</span></span>' +
@@ -242,6 +263,18 @@ function matchesTaskFilters(row, keyword, day, customer) {
 }
 
 const activeRows = () => rows;
+const listMarkup = new WeakMap();
+
+function updateListMarkup(id, markup) {
+  const host = $(id);
+  if (listMarkup.get(host) !== markup) {
+    const focusedId = host.contains(document.activeElement) ? document.activeElement.dataset.task : '';
+    host.innerHTML = markup;
+    listMarkup.set(host, markup);
+    if (focusedId) [...host.querySelectorAll('[data-task]')].find(button => button.dataset.task === focusedId)?.focus({preventScroll:true});
+  }
+  markCurrentTask(host);
+}
 
 function renderList({ updateOptions = false } = {}) {
   const active = activeRows();
@@ -286,10 +319,10 @@ function renderList({ updateOptions = false } = {}) {
   const filtered = Boolean($('day').value || $('customer').value);
   $('list-filter').classList.toggle('active', filtered);
   $('list-filter').setAttribute('aria-label', '筛选：' + $('day').selectedOptions[0].textContent + '，' + $('customer').selectedOptions[0].textContent);
-  $('task-list').innerHTML = [...groups].map(([day, group]) =>
+  updateListMarkup('task-list', [...groups].map(([day, group]) =>
     '<div class="section-label"><span>' + (day && multipleYears ? day : dateLabel(day)) + '</span>' + (!wideScreen?.matches ? '<span class="date-count">（' + group.length + '条）</span>' : '') + '</div>' +
     '<div class="rows">' + group.map(row => wideScreen?.matches ? renderTask(row) : renderMobileTask(row)).join('') + '</div>').join('') ||
-    '<p class="empty">' + (available.length ? '没有符合条件的验货任务。' : '没有待处理的验货任务。') + '</p>';
+    '<p class="empty">' + (available.length ? '没有符合条件的验货任务。' : '没有待处理的验货任务。') + '</p>');
   const returned = visible.filter(row => row.returned);
   $('return-notice').innerHTML = returned.length && !seenReturned ?
     '<button class="notice warning return-link" type="button" data-return="' + returned[0].id + '">' +
@@ -302,8 +335,8 @@ function renderList({ updateOptions = false } = {}) {
 
 function renderPending() {
   const pending = activeRows().filter(row => row.submittedAt).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
-  $('pending-list').innerHTML = pending.length ? '<div class="rows">' + pending.map(renderTask).join('') + '</div>' :
-    '<p class="empty">还没有提交记录。</p>';
+  updateListMarkup('pending-list', pending.length ? '<div class="rows">' + pending.map(renderTask).join('') + '</div>' :
+    '<p class="empty">还没有提交记录。</p>');
 }
 
 function showPage(name) {
@@ -311,10 +344,21 @@ function showPage(name) {
   renderLayout();
 }
 
+const nativeEntry = () => iOS && !wideScreen?.matches && page === 'entry';
+const entryPosition = () => nativeEntry() ? window.scrollY : entryScroll.scrollTop;
+function setEntryPosition(top) {
+  if (nativeEntry()) window.scrollTo(0, top);
+  else entryScroll.scrollTop = top;
+}
+
 function renderLayout() {
   const wide = Boolean(wideScreen?.matches);
+  const native = nativeEntry();
+  const wasNative = document.documentElement.classList.contains('qc-native-entry');
   const list = page === 'entry' ? entryFrom : page;
   app.classList.toggle('web-layout', wide);
+  app.classList.toggle('entry-open', page === 'entry');
+  document.documentElement.classList.toggle('qc-native-entry', native);
   $('tasks').hidden = wide ? list !== 'tasks' : page !== 'tasks';
   $('pending').hidden = wide ? list !== 'pending' : page !== 'pending';
   $('entry').hidden = page !== 'entry';
@@ -322,6 +366,9 @@ function renderLayout() {
   $('photo-actions').hidden = Boolean(current?.submittedAt);
   if (current) refreshEntryStatus(current);
   positionComposer();
+  if (viewportGeometry && wasNative !== native) paintViewport(viewportGeometry);
+  // These are explicit screen changes, not focus/keyboard events.
+  if (wasNative && !native && window.scrollY) window.scrollTo(0, 0);
 }
 
 function positionComposer() {
@@ -334,9 +381,9 @@ function positionComposer() {
   }
 }
 
-function markCurrentTask() {
-  for (const button of all('[data-task]')) {
-    if (button.dataset.task === current?.id) button.setAttribute('aria-current', 'true');
+function markCurrentTask(host = document) {
+  for (const button of host.querySelectorAll('[data-task]')) {
+    if (button.dataset.task === current?.id) { if (!button.hasAttribute('aria-current')) button.setAttribute('aria-current', 'true'); }
     else button.removeAttribute('aria-current');
   }
 }
@@ -388,13 +435,15 @@ function setEntryReadOnly(readOnly) {
   for (const button of all('[data-result]')) button.disabled = readOnly;
 }
 
-function renderEntry(row, from) {
+function renderEntry(row, from, keepPhotos = false) {
   if (page === 'tasks') listPosition = taskScroll.scrollTop;
-  if (current && current !== row) releasePhotoUrls();
+  if (current && current !== row && !keepPhotos) releasePhotoUrls();
   entryFrom = from;
   keyboardSession = null;
+  cancelFieldReveal();
   current = row;
   const readonly = Boolean(row.submittedAt);
+  $('entry').classList.toggle('entry-readonly', readonly);
   $('entry-title').textContent = readonly ? '待审核详情' : '验货';
   $('back').lastChild.textContent = readonly ? '待审核' : '验货台';
   $('who').textContent = row.customer;
@@ -421,9 +470,9 @@ function renderEntry(row, from) {
   showPage('entry');
   markCurrentTask();
   syncEditing();
-  renderPhotos(row);
+  if (!keepPhotos) renderPhotos(row);
   refreshEntryStatus(row);
-  entryScroll.scrollTop = 0;
+  setEntryPosition(0);
 }
 
 function syncEditing() {
@@ -440,15 +489,24 @@ function syncEditing() {
 // Some Android keyboards dismiss without blurring the field. Keep the initial
 // visible height across field switches so recovery can be detected on resize.
 let keyboardSession = null;
+let pendingViewport = null, viewportFrame = null;
+let revealField = null, revealTimer = null, revealFrame = null;
+const keyboardShrink = 90;
+
+function phoneEntryField(target = document.activeElement) {
+  return !wideScreen?.matches && page === 'entry' && target && !target.readOnly && !target.disabled &&
+    entryScroll.contains(target) && target.matches('[data-note], #inspector, #sample-quantity') ? target : null;
+}
+
 function updateSaveDock() {
-  $('dock').hidden = Boolean(current?.submittedAt || (!wideScreen?.matches && keyboardSession));
+  const hidden = Boolean(current?.submittedAt || (!wideScreen?.matches && keyboardSession));
+  if ($('dock').hidden !== hidden) $('dock').hidden = hidden;
 }
 
 function beginPhoneInput() {
   if (wideScreen?.matches || !current || current.submittedAt) return;
   if (!keyboardSession) {
-    const viewport = window.visualViewport;
-    keyboardSession = {height: viewport?.height ?? window.innerHeight, reduced: false};
+    keyboardSession = {height: Math.max(unoccludedHeight, readViewport().height), reduced: false};
   }
   updateSaveDock();
 }
@@ -456,55 +514,95 @@ function beginPhoneInput() {
 function reconcileKeyboard(height, blurred = false) {
   if (!keyboardSession) return;
   const reduction = keyboardSession.height - height;
-  if (reduction > 90) keyboardSession.reduced = true;
-  const recovered = keyboardSession.rotatedWhileOpen ? reduction < -90 : keyboardSession.reduced && reduction < 60;
+  if (reduction > keyboardShrink) keyboardSession.reduced = true;
+  const recovered = keyboardSession.rotatedWhileOpen ? reduction < -keyboardShrink : keyboardSession.reduced && reduction < 60;
   if (recovered || (blurred && !keyboardSession.reduced && !keyboardSession.rotatedWhileOpen)) {
     keyboardSession = null;
     updateSaveDock();
+    cancelFieldReveal();
   }
 }
 
-let revealOnFocus = false;
-function syncViewport() {
+function readViewport() {
   const viewport = window.visualViewport;
-  const height = Math.round(viewport?.height ?? window.innerHeight);
-  const width = Math.round(viewport?.width ?? window.innerWidth);
-  const previousHeight = parseInt(app.style.getPropertyValue('--viewport-height'), 10);
-  const rotated = viewportWidth && viewportWidth !== width;
+  return {
+    height: Math.round(viewport?.height ?? window.innerHeight),
+    width: Math.round(viewport?.width ?? window.innerWidth),
+    top: Math.round(viewport?.pageTop ?? viewport?.offsetTop ?? 0),
+    offsetTop: Math.round(viewport?.offsetTop ?? 0),
+  };
+}
+
+function paintViewport(geometry) {
+  const native = nativeEntry(), photo = photoIsOpen();
+  // The iPhone form uses normal document flow. The keyboard never resizes,
+  // translates, or script-scrolls the entry. Keep bounds for the photo dialog.
+  const height = native && !photo ? null : geometry.height;
+  const top = native ? (photo ? geometry.offsetTop : null) : geometry.top;
+  if (viewportHeightStyle !== height) {
+    viewportHeightStyle = height;
+    if (height === null) app.style.removeProperty('--viewport-height');
+    else app.style.setProperty('--viewport-height', height + 'px');
+  }
+  if (viewportTopStyle !== top) {
+    viewportTopStyle = top;
+    if (top === null) app.style.removeProperty('--viewport-top');
+    else app.style.setProperty('--viewport-top', top + 'px');
+  }
+}
+
+function syncViewport(next = readViewport()) {
+  const previous = viewportGeometry;
+  const {height, width, top} = next;
+  const rotated = previous && previous.width !== width;
+  const input = phoneEntryField();
   if (rotated && keyboardSession) {
     // Rotation changes the baseline. If an input is still active, use a
     // subsequent height gain to detect dismissal in the new orientation.
-    if (entryScroll.contains(document.activeElement)) {
-      keyboardSession = {height, rotatedWhileOpen: keyboardSession.reduced, reduced: false};
+    if (input) {
+      keyboardSession = {height, rotatedWhileOpen: keyboardSession.reduced || keyboardSession.rotatedWhileOpen, reduced: false};
     } else keyboardSession = null;
     updateSaveDock();
   }
-  if (viewportWidth !== width) {
-    viewportWidth = width;
-    unoccludedHeight = height;
-  }
-  if (document.activeElement !== editor) unoccludedHeight = Math.max(height, unoccludedHeight);
-  app.style.setProperty('--viewport-height', height + 'px');
-  app.style.setProperty('--viewport-top', Math.round(viewport?.pageTop ?? viewport?.offsetTop ?? 0) + 'px');
-  app.classList.toggle('short-view', height < 320);
-  app.classList.toggle('keyboard-visible', height < unoccludedHeight - 100);
-  const focusedInput = document.activeElement?.matches('[data-note], #inspector, #sample-quantity');
-  if (!rotated && !keyboardSession && focusedInput && !wideScreen?.matches && previousHeight - height > 90) {
+  if (!previous || rotated) unoccludedHeight = height;
+  viewportGeometry = next;
+  paintViewport(next);
+  app.classList.toggle('short-view', !nativeEntry() && height < 320);
+  if (!rotated && !keyboardSession && input && unoccludedHeight - height > keyboardShrink) {
     // Tapping a still-focused field can reopen the keyboard without a focus event.
-    keyboardSession = {height: previousHeight, reduced: true};
+    keyboardSession = {height: unoccludedHeight, reduced: true};
     updateSaveDock();
   }
   reconcileKeyboard(height);
-  // Check the current focus after opening; closing the keyboard should not reposition the form.
-  if (height < previousHeight || (revealOnFocus && height === previousHeight)) revealFocusedField();
-  revealOnFocus = false;
+  if (!keyboardSession && document.activeElement !== editor) unoccludedHeight = Math.max(height, unoccludedHeight);
+  app.classList.toggle('keyboard-visible', !nativeEntry() && height < unoccludedHeight - 100);
+  // Let native focus scrolling finish. Never read layout in the shell's
+  // resize frame, or reposition the form while the keyboard is closing.
+  if (!nativeEntry() && input && keyboardSession && (height < previous?.height || revealField && (height !== previous?.height || top !== previous?.top || rotated))) {
+    scheduleFieldReveal(input);
+  }
 }
 
-function revealFocusedField() {
-  const input = document.activeElement;
-  if (wideScreen?.matches || page !== 'entry' || !entryScroll.contains(input) ||
-      !input.matches('[data-note], #inspector, #sample-quantity')) return;
+function cancelFieldReveal() {
+  clearTimeout(revealTimer);
+  if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+  revealTimer = revealFrame = revealField = null;
+}
 
+function scheduleFieldReveal(input = phoneEntryField()) {
+  if (!input || nativeEntry()) return;
+  cancelFieldReveal();
+  revealField = input;
+  revealTimer = setTimeout(() => {
+    revealTimer = null;
+    revealFrame = requestAnimationFrame(() => {
+      revealField = revealFrame = null;
+      if (phoneEntryField() === input) revealFocusedField(input);
+    });
+  }, 70);
+}
+
+function revealFocusedField(input) {
   const area = entryScroll.getBoundingClientRect();
   if (!area.height) return;
   const label = input.closest('label').getBoundingClientRect();
@@ -634,21 +732,24 @@ function showMobileFilters() {
   sheet.classList.add('mobile-filters-sheet');
   const content = $('sheet-content');
   const viewport = window.visualViewport;
+  let filterResizeFrame = null, shownHeight, shownBottom;
   const fitViewport = () => {
-    sheet.style.setProperty('--filter-visible-height', (viewport?.height ?? window.innerHeight) + 'px');
-    sheet.style.setProperty('--filter-bottom', Math.max(0, window.innerHeight - (viewport?.height ?? window.innerHeight) - (viewport?.offsetTop ?? 0)) + 'px');
+    const height = Math.round(viewport?.height ?? window.innerHeight);
+    const bottom = Math.max(0, Math.round(window.innerHeight - height - (viewport?.offsetTop ?? 0)));
+    if (height !== shownHeight) sheet.style.setProperty('--filter-visible-height', height + 'px');
+    if (bottom !== shownBottom) sheet.style.setProperty('--filter-bottom', bottom + 'px');
+    shownHeight = height;shownBottom = bottom;
   };
-  let filterResizeTimer;
   const scheduleFit = () => {
-    clearTimeout(filterResizeTimer);
-    filterResizeTimer = setTimeout(fitViewport, 100);
+    if (filterResizeFrame !== null) return;
+    filterResizeFrame = requestAnimationFrame(() => { filterResizeFrame = null;fitViewport(); });
   };
   fitViewport();
   viewport?.addEventListener('resize', scheduleFit);
   viewport?.addEventListener('scroll', scheduleFit);
   window.addEventListener('resize', scheduleFit);
   sheet.addEventListener('close', () => {
-    clearTimeout(filterResizeTimer);
+    if (filterResizeFrame !== null) cancelAnimationFrame(filterResizeFrame);
     viewport?.removeEventListener('resize', scheduleFit);
     viewport?.removeEventListener('scroll', scheduleFit);
     window.removeEventListener('resize', scheduleFit);
@@ -705,6 +806,7 @@ function showPhoto(photo) {
   showSheet(photo.name,(editable?`<div class="photo-markup-tools" role="group" aria-label="照片标记">${shapes.toolButtons}</div>`:'')+
     '<p class="photo-markup-status" role="status" hidden></p><div class="photo-markup-stage"><div class="photo-markup-image"><img class="photo-preview" alt="验货照片"><svg aria-hidden="true"></svg></div></div>');
   sheet.classList.add('photo-markup-sheet');
+  paintViewport(readViewport());
   const content=$('sheet-content'),stage=content.querySelector('.photo-markup-stage'),frame=stage.firstElementChild;
   const image=frame.querySelector('img'),layer=frame.querySelector('svg');
   const undo=content.querySelector('[data-mark-undo]'),redo=content.querySelector('[data-mark-redo]');
@@ -881,7 +983,7 @@ sheet.addEventListener('click',event=>{
   if(photoIsOpen()&&
       (event.target===sheet||event.target=== $('sheet-content')||event.target.matches('.photo-markup-stage')))closeSheet();
 });
-sheet.addEventListener('close', () => {dialogTrigger?.focus({ preventScroll: true });});
+sheet.addEventListener('close', () => {paintViewport(readViewport());dialogTrigger?.focus({ preventScroll: true });});
 $('search').addEventListener('input', () => renderList());
 $('clear-search').onclick = () => {
   $('search').value = '';
@@ -896,12 +998,6 @@ all('[data-progress]').forEach(button => button.onclick = () => {
 });
 for (const id of ['day', 'customer']) $(id + '-filter').onclick = () => showFilter(id);
 $('day').onchange = $('customer').onchange = () => renderList();
-// Field switches can happen while the keyboard stays open, without a viewport resize.
-function scheduleFieldReveal() {
-  revealOnFocus = true;
-  scheduleViewportUpdate();
-}
-
 for (const field of [...all('[data-note]'), $('sample-quantity'), $('inspector')]) {
   const key = field.dataset.note || (field.id === 'inspector' ? 'inspector' : 'sampleQuantity');
   function captureInput(event) {
@@ -926,7 +1022,8 @@ for (const field of [...all('[data-note]'), $('sample-quantity'), $('inspector')
     if (document.activeElement === field) beginPhoneInput();
   });
   field.addEventListener('blur', event => {
-    reconcileKeyboard(window.visualViewport?.height ?? window.innerHeight, true);
+    cancelFieldReveal();
+    if (!phoneEntryField(event.relatedTarget)) reconcileKeyboard(readViewport().height, true);
     commitInput(event);
     if (current && !current.submittedAt) void save(current);
   });
@@ -1024,7 +1121,7 @@ async function openTask(row) {
   }
   if (navigator.onLine !== false && !row._pending && state(row).version <= state(row).saved) {
     openingTask=true;
-    try { const latest=remote.convert(await remote.api('/sheet/entries/'+encodeURIComponent(row.id))); Object.assign(row,latest);row._photoBase=row.photos.map(p=>p.id);state(row).values=remote.values(row);remote.remember(row); }
+    try { const latest=remote.convert(await remote.api('/sheet/entries/'+encodeURIComponent(row.id))); Object.assign(row,latest);localUpdate++;row._photoBase=row.photos.map(p=>p.id);state(row).values=remote.values(row);remote.remember(row); }
     catch(error) { $('snapshot-notice').textContent='暂用手机记录：'+error.message+'；填写先保存在手机，联网后再核对同步。'; }
     finally { openingTask=false; }
   }
@@ -1041,15 +1138,18 @@ wideScreen?.addEventListener('change', () => {
   if (wasEditing && wideScreen?.matches) editor.focus({ preventScroll: true });
   else if (!wideScreen?.matches && activeField) clearEditing(false);
 });
-let viewportTimer;
 function scheduleViewportUpdate() {
-  // Remember even a brief keyboard resize before the debounced layout pass.
-  const viewport = window.visualViewport;
-  if (keyboardSession && Math.round(viewport?.width ?? window.innerWidth) === viewportWidth &&
-      keyboardSession.height - (viewport?.height ?? window.innerHeight) > 90) keyboardSession.reduced = true;
-  // Native focus scrolling runs throughout the keyboard animation; fit the shell once it settles.
-  clearTimeout(viewportTimer);
-  viewportTimer = setTimeout(syncViewport, 100);
+  // A quick open/close can deliver both samples in one frame.
+  pendingViewport = readViewport();
+  if (keyboardSession && pendingViewport.width === viewportGeometry?.width &&
+      keyboardSession.height - pendingViewport.height > keyboardShrink) keyboardSession.reduced = true;
+  if (viewportFrame !== null) return;
+  viewportFrame = requestAnimationFrame(() => {
+    viewportFrame = null;
+    const next = pendingViewport;
+    pendingViewport = null;
+    syncViewport(next);
+  });
 }
 window.addEventListener('resize', scheduleViewportUpdate);
 window.visualViewport?.addEventListener('resize', scheduleViewportUpdate);
@@ -1089,24 +1189,48 @@ remote.onAck = async (sent, saved, photoMap) => {
   if(edit.version>sent._v)await localWriteRows([snapshot(row)]);
 };
 
+function canRefreshLive() {
+  return navigator.onLine !== false && !busy && !document.hidden && !openingTask && !sheet.open && !activeField && !keyboardSession &&
+    !(current && document.activeElement?.closest('#entry')) && ![...writeState.values()].some(s => s.pending || s.version > s.saved);
+}
+
 async function refreshLive() {
-  if (navigator.onLine === false || busy || document.hidden || openingTask || photoIsOpen() || [...writeState.values()].some(s => s.pending || s.version > s.saved) || activeField || current && document.activeElement?.closest('#entry')) return;
+  if (liveRefreshInFlight || !canRefreshLive()) return;
+  const update = localUpdate, original = current, originalPage = page;
+  const stillCurrent = () => update === localUpdate && original === current && originalPage === page && canRefreshLive();
+  liveRefreshInFlight = true;
   try {
     const data = await remote.api('/sheet/entries');
-    if (busy || openingTask || photoIsOpen() || activeField || current && document.activeElement?.closest('#entry') || [...writeState.values()].some(s=>s.pending || s.version>s.saved)) return;
+    if (!stillCurrent()) return;
     const latest = data.items.map(remote.convert);
-    rows = remote.mergeCache(latest, rows);
-    await localWriteRows(rows);
+    const prior = new Map(rows.map(row => [row.id, row]));
+    const next = remote.mergeCache(latest, rows).map(row => {
+      const old = prior.get(row.id);
+      // Local bookkeeping can differ from the wire projection on every poll.
+      if (old === row || old && !old._syncError && Object.keys(row).every(key => key.startsWith('_') || JSON.stringify(row[key]) === JSON.stringify(old[key]))) return old;
+      row._photoBase = row.photos.map(p => p.id);
+      return row;
+    });
+    const changed = next.filter(row => prior.get(row.id) !== row);
+    if (changed.length) await localWriteRows(changed);
+    if (!stillCurrent()) return;
     $('snapshot-notice').textContent = '';
-    rows.forEach(remote.remember);
-    rows.forEach(row=>{if(!row._pending)state(row).values=remote.values(row);});
-    renderList({updateOptions:true});
+    if (!changed.length && next.length === rows.length) return;
+    rows = next;
+    changed.forEach(row => { remote.remember(row); if (!row._pending) state(row).values=remote.values(row); });
     if (current) {
       const replacement = rows.find(r => r.id === current.id);
-      if (replacement) { const top=entryScroll.scrollTop; renderEntry(replacement,entryFrom); entryScroll.scrollTop=top; }
-      else { current=null; showPage('tasks'); }
+      if (!replacement) { current=null; releasePhotoUrls(); showPage('tasks'); }
+      else if (replacement !== current) {
+        const top=entryPosition();
+        const keepPhotos=Boolean(replacement.submittedAt)===Boolean(current.submittedAt) && JSON.stringify(replacement.photos)===JSON.stringify(current.photos);
+        renderEntry(replacement,entryFrom,keepPhotos);setEntryPosition(top);
+      }
     }
-  } catch (error) { $('snapshot-notice').textContent = '暂未刷新：' + error.message; }
+    renderList({updateOptions:true});
+    if (page==='pending'||page==='entry'&&entryFrom==='pending') renderPending();
+  } catch (error) { if (stillCurrent()) $('snapshot-notice').textContent = '暂未刷新：' + error.message; }
+  finally { liveRefreshInFlight = false; }
 }
 
 app.addEventListener('click', async event => {
