@@ -274,6 +274,8 @@ dialog::backdrop{background:#101d376e}
   --line:#e9edf2;--line-strong:#b3cbe6;--bg:#f5f7fa;--panel:#f5f7fa;--header:#ffffffc9;
   --hover:#edf4fc;--soft:#edf4fc;--green:#47715c;--mint:#edf6ef;--red:#a05461;--rose:#fbf0f2;
   --glass:#ffffffc9;--glass-edge:#fffffff0;
+  /* Follow native viewport panning without relaying out the form for Y-only changes. */
+  top:0;transform:translate(-50%,var(--viewport-top,0px));
   isolation:isolate;background:#f7f9fb;
 }
 #app:not(.web-layout)::before,#app:not(.web-layout)::after{
@@ -283,7 +285,7 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout)::before{background:radial-gradient(ellipse at 5% 14%,#dcebf7b3,transparent 48%),radial-gradient(ellipse at 95% 46%,#e8ebf69c,transparent 50%),radial-gradient(ellipse at 15% 86%,#def0e99c,transparent 46%)}
 #app:not(.web-layout)::after{background:radial-gradient(ellipse at 85% 9%,#e7f3f4b3,transparent 48%),radial-gradient(ellipse at 80% 94%,#f2eef88c,transparent 46%);animation-duration:39s;animation-direction:alternate-reverse}
 @keyframes qc-pearl-flow{from{transform:translate(-10px,-14px) rotate(-4deg) scale(1)}to{transform:translate(26px,32px) rotate(7deg) scale(1.09)}}
-#app:not(.web-layout):is(.editing,:has(input:focus,textarea:focus))::before,#app:not(.web-layout):is(.editing,:has(input:focus,textarea:focus))::after{animation-play-state:paused}
+#app:not(.web-layout):is(.entry-open,.editing,:has(input:focus,textarea:focus))::before,#app:not(.web-layout):is(.entry-open,.editing,:has(input:focus,textarea:focus))::after{animation-play-state:paused}
 #app:not(.web-layout) :is(.search-header,.entry-header,.navbar,.dock,.composer){background:var(--glass);backdrop-filter:blur(22px) saturate(105%);-webkit-backdrop-filter:blur(22px) saturate(105%)}
 #app:not(.web-layout) .search-header{border-bottom:1px solid #ffffffd9;background:#ffffffb3}
 #app:not(.web-layout) .search{background:#f5f8fbbf;border:1px solid #ffffffed;border-radius:14px;box-shadow:inset 0 1px 2px #263f5805,0 1px 0 #dce5ee4d}
@@ -310,7 +312,11 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) .navbar{min-height:54px;background:transparent;border:0;backdrop-filter:none;-webkit-backdrop-filter:none}
 #app:not(.web-layout) .navbar h1{font-size:16px;font-weight:600}
 #app:not(.web-layout) #back{font-size:14px;font-weight:500}
-#app:not(.web-layout) .identity{padding:4px 18px 0;background:transparent;border:0}
+#app:not(.web-layout) .identity{
+  padding:4px 18px 0;background:transparent;border:0;
+  /* Leave room for the field on very short viewports without toggling the header. */
+  max-height:max(0px,calc(var(--viewport-height,100dvh) - 176px));overflow:hidden
+}
 #app:not(.web-layout) .who{font-size:20px;color:var(--ink);font-weight:600;line-height:1.3}
 #app:not(.web-layout) .id-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px}
 #app:not(.web-layout) .id-row strong,#app:not(.web-layout) .id-row span{font-size:13px;font-weight:500;color:var(--ink);line-height:1.45}
@@ -318,6 +324,9 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) #info{display:none}
 #app:not(.web-layout) .entry-scroll{padding:12px 12px max(12px,env(safe-area-inset-bottom))}
 #app:not(.web-layout) .group{padding:0 14px;margin-bottom:10px}
+/* Entry cards resize with the keyboard. Use a stable surface instead of
+   recompositing a large live blur behind the fields on every frame. */
+#app:not(.web-layout) #entry .group{background:#ffffffed;backdrop-filter:none;-webkit-backdrop-filter:none}
 #app:not(.web-layout) #result-heading{padding-top:14px;margin-bottom:10px}
 #app:not(.web-layout) .field-title h2{font-size:14px;font-weight:600}
 #app:not(.web-layout) .results{gap:5px}
@@ -336,6 +345,35 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) #photo-actions{gap:8px;margin-top:10px}
 #app:not(.web-layout) #photo-actions .file-pick{min-height:46px;background:#f0f5fb;border:0;border-radius:10px;color:#466d9b;font-size:14px;font-weight:500}
 #app:not(.web-layout) .dock{padding:10px 16px max(14px,env(safe-area-inset-bottom));border-top:1px solid var(--line);border-radius:0}
+/* Keep the save area out of flow: showing it during dismissal must not
+   change the scroller's dimensions or clamp its current position. */
+#app:not(.web-layout) #entry{position:relative;--phone-dock-height:calc(55px + max(14px,env(safe-area-inset-bottom)))}
+#app:not(.web-layout) #entry .dock{position:absolute;inset:auto 0 0;z-index:2}
+#app:not(.web-layout) #entry:not(.entry-readonly) .entry-scroll{
+  padding-bottom:calc(max(12px,env(safe-area-inset-bottom)) + var(--phone-dock-height));
+}
+/* iPhone trial: a single native document scroller, never a resized nested
+   scrollport inside a translated/clipped app shell. */
+html.qc-native-entry,html.qc-native-entry body{
+  height:auto;min-height:100%;overflow:visible
+}
+html.qc-native-entry #app:not(.web-layout){
+  position:relative;inset:auto;margin-inline:auto;transform:none;
+  height:auto;min-height:100dvh;overflow:visible
+}
+html.qc-native-entry #app:not(.web-layout)::before,html.qc-native-entry #app:not(.web-layout)::after{
+  inset:0;transform:none;animation:none
+}
+html.qc-native-entry #app #entry{height:auto;min-height:100dvh}
+html.qc-native-entry #app #entry .identity{max-height:none}
+html.qc-native-entry #app:not(.web-layout) #entry .entry-scroll{
+  flex:1 0 auto;overflow:visible;padding-bottom:max(12px,env(safe-area-inset-bottom))
+}
+html.qc-native-entry #app #entry .dock{position:sticky;inset:auto 0 0}
+html.qc-native-entry #app #entry:not(.entry-readonly) .dock[hidden]{
+  /* Leave its space unchanged while the native keyboard is visible. */
+  display:grid!important;visibility:hidden;pointer-events:none
+}
 #app:not(.web-layout) .dock .save-state{font-size:12px;font-weight:400;white-space:normal}
 #app:not(.web-layout) .dock .save-state::before{content:none}
 #app:not(.web-layout) #save-return{min-height:44px;font-size:14px}
@@ -361,7 +399,6 @@ dialog::backdrop{background:#101d376e}
 }
 #app:not(.web-layout) .phone-notes label {padding-inline:8px}
 #app:not(.web-layout) .inline-field {padding-inline:8px}
-#app.keyboard-visible.short-view:not(.web-layout) .entry-header .identity {display:none}
 .phone-notes textarea::placeholder {color:var(--muted)}
 #app:not(.web-layout) :is(.entry-header,.navbar,.dock,.search-header) {
   backdrop-filter:none; -webkit-backdrop-filter:none; background:#f8fafc;

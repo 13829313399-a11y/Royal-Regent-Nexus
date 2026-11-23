@@ -114,23 +114,26 @@
     }
     function build(){
       const letters=columns.map((_,i)=>letter(i)),span=Math.min(14,columns.length);
-      const numeric=row=>`<th scope="row" class="row-num">${row}</th>`;
+      const pin=i=>i<4?` data-review-pin="${i}"`:'';
+      const numeric=(row,entry)=>`<th scope="row" class="row-num"${pin(0)}>${entry
+        ?`<button type="button" class="wb-review-row-button" data-review-row tabindex="-1" aria-pressed="false" aria-label="选择第 ${row} 行：${esc(entry.customer)} · ${esc(entry.poNo)}">${row}</button>`
+        :row}</th>`;
       const title=`${esc(root.__QC_NEXUS.factoryLabel||'')} · 待审核验货明细`;
-      const headings=columns.map((col,i)=>`<td data-addr="${letters[i]}2" align="center" height="41" bgcolor="#f3f3f3" style="${border}"><strong>${esc(col.label)}</strong></td>`).join('');
+      const headings=columns.map((col,i)=>`<td data-addr="${letters[i]}2"${pin(i+1)} align="center" height="41" bgcolor="#f3f3f3" style="${border}"><strong>${esc(col.label)}</strong></td>`).join('');
       const body=context.rows.map((row,r)=>{
         const values=columns.map((col,j)=>{
           const addr=letters[j]+(r+3),raw=value(row,col),editable=makeCell(row,col,raw);
           if(editable)cells['0:'+addr]=editable;
           const display=col.key==='photos'?(JSON.parse(raw).length?JSON.parse(raw).length+' 张':''):
             detailNames[context.executionKey(col.key)]?(JSON.parse(raw).length?JSON.parse(raw).length+' 条':''):raw;
-          return `<td data-addr="${addr}" data-field="${esc(col.key)}" data-field-label="${esc(col.label)}" aria-label="${addr} ${esc(col.label)}：${esc(display||'空白')}" align="center" height="41" valign="middle" bgcolor="#ffffff" style="${border}"><font color="#222222">${esc(display)}</font></td>`;
+          return `<td data-addr="${addr}"${pin(j+1)} data-field="${esc(col.key)}" data-field-label="${esc(col.label)}" aria-label="${addr} ${esc(col.label)}：${esc(display||'空白')}"${j<3?` title="${esc(display)}"`:''} align="center" height="41" valign="middle" bgcolor="#ffffff" style="${border}"><font color="#222222">${esc(display)}</font></td>`;
         }).join('');
-        return `<tr data-review-entry="${esc(row.id)}">${numeric(r+3)}${values}</tr>`;
+        return `<tr data-review-entry="${esc(row.id)}">${numeric(r+3,row)}${values}</tr>`;
       }).join('');
       const cols=[38,...columns.map(col=>widths[col.key]||100)].map(w=>`<colgroup width="${w}"></colgroup>`).join('');
-      const alpha=`<thead><tr><th class="col-num"></th>${letters.map(x=>`<th class="col-num">${x}</th>`).join('')}</tr></thead>`;
+      const alpha=`<tr><th class="col-num"${pin(0)}></th>${letters.map((x,i)=>`<th class="col-num"${pin(i+1)}>${x}</th>`).join('')}</tr>`;
       const top=`<tr>${numeric(1)}<td data-addr="A1" align="center" height="37" bgcolor="#ffffff" colspan="${span}"><strong>${title}</strong></td>${letters.slice(span).map(x=>`<td data-addr="${x}1"></td>`).join('')}</tr>`;
-      return {previewMode:'native',cells,sheets:[{name:'待审核验货明细',html:`<table cellspacing="0" border="0">${cols}${alpha}<tbody>${top}<tr>${numeric(2)}${headings}</tr>${body}</tbody></table>`}]};
+      return {previewMode:'native',cells,sheets:[{name:'待审核验货明细',html:`<table class="wb-review-table" aria-label="${title}" cellspacing="0" border="0">${cols}<thead>${alpha}${top}<tr>${numeric(2)}${headings}</tr></thead><tbody>${body}</tbody></table>`}]};
     }
     const book=build();
     function assertRow(id,write){

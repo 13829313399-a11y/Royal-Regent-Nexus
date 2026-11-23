@@ -3206,6 +3206,26 @@ describe('supplier independent factory reads', () => {
       expect(w.findAll('[data-testid="supplier-regular-order-row"]')).toHaveLength(0)
     } finally { w.unmount() }
   })
+  it('keeps order rows and counts stable while a focus refresh is pending', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    api.workspace.mockResolvedValue(fixture())
+    unifiedApi.list.mockResolvedValue({ items: [], total: 0 })
+    const w = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      const row = w.get('[data-testid="supplier-regular-order-row"]').element
+      const stats = w.get('[aria-label="供应商工作统计"]').text()
+      let finish!: (data: PortalWorkspace) => void
+      api.workspace.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      vi.setSystemTime(Date.now() + 46000)
+      window.dispatchEvent(new Event('focus')); await flushPromises()
+      expect(w.get('[data-testid="supplier-regular-order-row"]').element).toBe(row)
+      expect(w.get('[aria-label="供应商工作统计"]').text()).toBe(stats)
+      expect(w.text()).not.toContain('正在读取送货单')
+      finish(fixture()); await flushPromises()
+      expect(w.get('[data-testid="supplier-regular-order-row"]').element).toBe(row)
+    } finally { w.unmount(); visibility.mockRestore(); vi.useRealTimers() }
+  })
   it('throttles focus refresh, skips hidden pages, and still refreshes special-only factories', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
