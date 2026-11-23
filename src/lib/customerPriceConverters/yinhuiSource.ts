@@ -4,6 +4,7 @@ const text = (value: unknown) => String(value ?? '').trim()
 export const yinhuiSheetKey = (value: string) => value.normalize('NFKC').toLowerCase()
   .replace(/[\s\u200b-\u200d\ufeff+_.()\-]/g, '').replace(/細/g, '细').replace(/內/g, '内').replace(/報/g, '报').replace(/價/g, '价')
 export const yinhuiHeaderKey = (value: unknown) => text(value).normalize('NFKC').toLowerCase().replace(/[\s\u200b-\u200d\ufeff().:：]/g, '')
+export const isYinhuiElectronicSheet = (name: string) => /^[电電]子(?:tx|rx)?报价/.test(yinhuiSheetKey(name))
 
 export function yinhuiMainHeader(rows: XlsxCellValue[][]) {
   return rows.findIndex(row => /^(?:名称|名稱|物料名称|物料名稱|零件名称|零件名稱|description|name)$/.test(yinhuiHeaderKey(row?.[2]))
@@ -59,7 +60,7 @@ export function readYinhuiSource(buffer: ArrayBuffer) {
   // corrections, formula references, drawings, saved drafts and AI evidence must use actual names.
   const preview = parseXlsxWorkbook(buffer, { valuesOnly: true, maxRows: 80 })
   const names = preview.sheets.filter(sheet => mainName(sheet) || mainStructure(sheet) || isYinhuiToolPlanSheet(sheet)
-    || /^(?:电子|電子)报价/.test(yinhuiSheetKey(sheet.name))
+    || isYinhuiElectronicSheet(sheet.name)
     || ['模具报价', 'bom'].includes(yinhuiSheetKey(sheet.name)) || ['结构化数据', '审批与版本'].includes(sheet.name)).map(sheet => sheet.name)
   return parseXlsxWorkbook(buffer, { sheetNames: names, valuesOnly: true, includeFormulas: true })
 }
