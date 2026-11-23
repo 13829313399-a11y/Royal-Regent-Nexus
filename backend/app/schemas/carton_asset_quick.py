@@ -1,6 +1,8 @@
 from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict
 
+TargetScope = Literal['ALL', 'PENDING_SCHEDULE', 'ORDERS', 'WAREHOUSE']
+
 
 class Target(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -20,7 +22,7 @@ class Upload(BaseModel):
     text: str = Field(default='',max_length=20000)
     contract_number: str | None = Field(default=None,max_length=128)
     association: Literal['AUTO','MANUAL','NONE'] = 'AUTO'
-    target_scope: Literal['ALL','PENDING_SCHEDULE','ORDERS'] = 'ALL'
+    target_scope: TargetScope = 'ALL'
     target: Target | None = None
     targets: list[Target] = Field(default_factory=list, max_length=100)
     shared_factory_ids: list[str] = Field(default_factory=list, max_length=20)
@@ -33,7 +35,7 @@ class Upload(BaseModel):
 class Associate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     revision: int = Field(ge=1)
-    target_scope: Literal['ALL','PENDING_SCHEDULE','ORDERS'] = 'ALL'
+    target_scope: TargetScope = 'ALL'
     request_id: str = Field(min_length=8,max_length=96,pattern=r'^[A-Za-z0-9_-]+$')
     target: Target | None = None
     targets: list[Target] = Field(default_factory=list, max_length=100)

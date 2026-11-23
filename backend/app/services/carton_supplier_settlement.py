@@ -204,7 +204,7 @@ def sources(db, factory, supplier, period, currency):
                 special_request_no=vendor["request_no"], special_request_id=vendor["request_id"],
                 delivery_id=group_ids.get(vendor["shipment_id"], "SPECIAL:" + vendor["shipment_id"]))
     from app.services.carton_price_review import apply_sources
-    apply_sources(db, factory, result)
+    apply_sources(db, factory, supplier, result)
     result.sort(key=lambda row: (row["acceptance_date"] or "", row["document_no"], row["source_key"]))
     # Navigation metadata must not invalidate a previously reconciled month.
     fingerprint_sources = [{key: value for key, value in row.items() if key != "delivery_id"} for row in result]

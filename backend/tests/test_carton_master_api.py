@@ -32,6 +32,50 @@ def create(client, **changes):
     return response.json()
 
 
+def test_process_note_stays_with_the_paper_through_formal_history_and_stock(monkeypatch):
+    with make_client(monkeypatch) as client:
+        prepare(client)
+        lines = _order_payload()["lines"]
+        lines[1].update(packaging_type="压线卡", specification="24.375*6", note="本次单独送货")
+        original = _submit_order(client, create(client, lines=lines))
+        config = next(row for row in read(client)["records"] if row["kind"] == "CONFIG")
+        def card(record):
+            return next(p for p in record["data"]["lines"] if p["packaging_type"] == "压线卡")
+        assert not card(config).get("process_note")
+
+        note = "沿长方向依次压线 6.25 + 6 + 6.5 + 5.625"
+        lines[1]["process_note"] = note
+        pending = create(client, lines=lines, customer_po="PO-SECOND", note="整单说明")
+        assert not card(next(row for row in read(client)["records"] if row["kind"] == "CONFIG")).get("process_note")
+        issued = _submit_order(client, pending)
+        configs = [r for r in read(client)["records"] if r["kind"] == "CONFIG"]
+        assert [r["id"] for r in configs] == [config["id"]]
+        config = configs[0]
+        assert card(config)["process_note"] == note
+        assert issued["note"] == "整单说明" and issued["lines"][1]["note"] == "本次单独送货"
+        assert {p["process_note"] for p in issued["lines"]} == {"", note}
+        assert original["lines"][1]["process_note"] == ""
+
+        legacy = deepcopy(config["data"])
+        next(p for p in legacy["lines"] if p["packaging_type"] == "压线卡").pop("process_note")
+        legacy["lines"].append({**legacy["lines"][0], "packaging_type": "内箱"})
+        result = client.patch(BASE + "/master-data/" + config["id"], json=payload(config, data=legacy))
+        assert result.status_code == 200, result.text
+        assert card(result.json())["process_note"] == note
+        updated = result.json()
+        changed = deepcopy(config["data"])
+        next(p for p in changed["lines"] if p["packaging_type"] == "压线卡")["process_note"] = ""
+        result = client.patch(BASE + "/master-data/" + config["id"], json=payload(updated, data=changed))
+        assert result.status_code == 200, result.text
+        _submit_order(client, create(client, lines=lines, customer_po="PO-THIRD"))
+        assert card(next(r for r in read(client)["records"] if r["kind"] == "CONFIG"))["process_note"] == ""
+        report = client.get(BASE + "/inventory/report", params={"factory_id": "huaxing"})
+        assert report.status_code == 200, report.text
+        by_line = {r["order_line_id"]: r["process_note"] for r in report.json()["order_rows"]}
+        assert by_line[issued["lines"][1]["id"]] == note
+        assert by_line[original["lines"][1]["id"]] == ""
+
+
 def read(client):
     response = client.get(BASE + "/master-data", params={"factory_id": "huaxing"})
     assert response.status_code == 200, response.text

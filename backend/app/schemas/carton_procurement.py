@@ -178,7 +178,13 @@ class CartonOrderLineCreate(CartonPackingWeights):
     unit_price: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
     currency: str = Field(default="CNY", min_length=3, max_length=8)
     price_source: str = Field(default="manual", max_length=128)
+    process_note: str | None = Field(default=None, max_length=2000)
     note: str = Field(default="", max_length=2000)
+
+    @field_validator("process_note")
+    @classmethod
+    def trim_process_note(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
 
     @field_validator(
         "packaging_type",
@@ -369,6 +375,32 @@ class CartonOrderReturnRequest(CartonOrderCancelRequest):
     @classmethod
     def valid_return_date(cls, value):
         return _validate_iso_date(value) if value else None
+
+
+class CartonOrderStockReturnLine(BaseModel):
+    order_line_id: str = Field(min_length=1, max_length=96)
+    location_id: str = Field(min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+
+
+class CartonOrderStockReturnRequest(CartonOrderReturnRequest):
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
+    return_date: str
+    source_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    lines: list[CartonOrderStockReturnLine] = Field(min_length=1, max_length=100)
+
+    @field_validator("return_date")
+    @classmethod
+    def valid_return_date(cls, value: str) -> str:
+        return _validate_iso_date(value)
+
+    @model_validator(mode="after")
+    def validate_return_lines(self):
+        if len(self.reason) < 4:
+            raise ValueError("退货原因至少填写四字")
+        if len({(line.order_line_id, line.location_id) for line in self.lines}) != len(self.lines):
+            raise ValueError("同一纸品仓位只能退货一次")
+        return self
 
 
 class CartonOrderSubmitRequest(BaseModel):
@@ -568,6 +600,7 @@ class CartonOrderLineOut(CartonPackingWeights):
     unit_price: Decimal
     currency: str
     price_source: str
+    process_note: str = ""
     note: str
 
 
@@ -583,6 +616,7 @@ class CartonOrderHistoryLineOut(CartonPackingWeights):
     unit_price: Decimal
     currency: str
     price_source: str
+    process_note: str = ""
     note: str
 
 
@@ -926,6 +960,7 @@ class CartonReceiptLineOut(BaseModel):
     unordered_receipt: bool = False
     dimension_unit: str | None = None
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
+    pending_cost_movement_id: str | None = None
     replenishment_issue_id: str | None = None
     child_request_id: str | None = None
     parent_request_id: str | None = None
@@ -962,6 +997,7 @@ class CartonReceiptLineOut(BaseModel):
 class CartonReceiptOut(BaseModel):
     source_requests: list[dict[str, str]] = Field(default_factory=list)
     delivery_id: str | None = None
+    original_delivery_note_no: str | None = None
     business_kinds: list[str] = Field(default_factory=list)
     special_request_id: str | None = None
     special_shipment_id: str | None = None
@@ -1002,12 +1038,12 @@ class CartonReceiptConfirmRequest(BaseModel):
 
 
 class CartonReceiptReverseRequest(CartonReceiptConfirmRequest):
-    reason: str = Field(min_length=4, max_length=2000)
+    reason: str = Field(default="", max_length=2000)
 
     @field_validator("reason", mode="before")
     @classmethod
-    def trim_reason(cls, value: str) -> str:
-        return value.strip()
+    def trim_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class CartonInventoryRelocateRequest(BaseModel):
@@ -1065,6 +1101,7 @@ class CartonInventoryMovementCreate(BaseModel):
 
 
 class CartonInventoryBulkItem(BaseModel):
+    movement_type: Literal["OUTBOUND"] = Field(default="OUTBOUND", exclude=True)
     workshop_id: str = Field(default="", max_length=96)
     location_id: str = ""
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -1091,6 +1128,7 @@ class CartonInventoryBulkItem(BaseModel):
 
 
 class CartonInventoryBulkCreate(BaseModel):
+    movement_type: Literal["OUTBOUND"] = Field(default="OUTBOUND", exclude=True)
     return_date: str | None = None
     workshop_id: str = Field(default="", max_length=96)
     issue_kind: Literal["USAGE", "RETURN", "LOSS", "LOAN", "OTHER", "UNKNOWN"] = "UNKNOWN"

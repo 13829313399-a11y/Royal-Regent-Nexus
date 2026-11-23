@@ -244,12 +244,14 @@ def _dedupe_revision_orders(
         )
     for po_number, entries in grouped.items():
         entries.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-        result.append(entries[0][3])
-        if len(entries) > 1:
-            report.append(
-                f"PO {po_number}：保留 {entries[0][2]}，去掉 "
-                + "、".join(item[2] for item in entries[1:])
-            )
+        latest = [entry for entry in entries if entry[0] == entries[0][0]]
+        result.extend(entry[3] for entry in latest)
+        if len(latest) > 1:
+            report.append(f'PO {po_number}：同修订版的多份资料均保留，不按识别完整度挑选数量。')
+        if len(entries) > len(latest):
+            kept_names = '、'.join(str(entry[2]) for entry in latest)
+            older_names = '、'.join(str(entry[2]) for entry in entries if entry not in latest)
+            report.append(f'PO {po_number}：依据明确修订号保留 {kept_names}，忽略 {older_names}。')
     return result, report
 
 
@@ -571,12 +573,13 @@ def _dedupe_text(value: Any) -> str:
 
 def _jakks_line_identity(line: dict[str, Any], *, business: bool = False) -> tuple[str, ...]:
     fields = (
-        "contract_no", "customer_po", "confirmation_no", "item_no", "quantity", "unit", "ship_date",
+        "contract_no", "customer_po", "confirmation_no", "source_line_no", "document_kind", "item_no", "quantity", "unit", "ship_date",
     ) if business else (
-        "contract_no", "customer_po", "confirmation_no", "item_no", "quantity", "unit", "ship_date",
+        "contract_no", "customer_po", "confirmation_no", "source_line_no", "document_kind", "item_no", "quantity", "unit", "ship_date",
         "unit_price_usd", "total_usd", "outer_pack", "cartons", "special_note", "po_description",
     )
-    return tuple(_dedupe_text(line.get(field)) for field in fields)
+    return tuple(('cancellation' if line.get(field) == 'cancellation' else '') if field == 'document_kind'
+                 else _dedupe_text(line.get(field)) for field in fields)
 
 
 def _prepare_jakks(
@@ -609,7 +612,7 @@ def _prepare_jakks(
         seen_exact: set[tuple[str, ...]] = set()
         seen_business: dict[tuple[str, ...], dict[str, Any]] = {}
         duplicate_count = 0
-        for order in parsed_orders:
+        for order in sorted(parsed_orders, key=lambda o: o.get('document_kind') == 'supplementary_contract'):
             warnings.extend(f"{order.get('filename')}：{item}" for item in order.get("warnings") or [])
             for raw_line in order.get("lines") or []:
                 line = dict(raw_line)
@@ -678,11 +681,29 @@ def _simba_identity(row: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _simba_signature(row: dict[str, Any]) -> tuple[str, ...]:
+    from decimal import Decimal, InvalidOperation
+    numeric = {'quantity', 'unit_price_hkd', 'total_hkd', 'unit_price_usd', 'total_usd',
+               'inner_pack', 'outer_pack', 'cbf'}
+    def value(field):
+        text = re.sub(r'\s+', ' ', _text(row.get(field))).strip().casefold()
+        if field in numeric and text:
+            try:
+                number = Decimal(text.replace(',', ''))
+                if number.is_finite():
+                    return format(number.normalize(), 'f')
+            except InvalidOperation:
+                pass
+        return text  # Punctuation in prices, labels and descriptions is evidence.
     return tuple(
-        _simba_normalize(row.get(field_name))
+        value(field_name)
         for field_name in (
             "contract_no", "customer_po", "item_no", "product_name", "quantity", "unit",
             "po_ship_date", "master_contract_no", "po_contract_no",
+            "unit_price_hkd", "total_hkd", "unit_price_usd", "total_usd", "currency",
+            "inner_pack", "outer_pack", "english_name", "customer", "contact",
+            "inspection_date", "shipping_mark", "customer_label", "brand",
+            "certificate", "ship_country", "shipping_info", "special_remark",
+            "material_order_no", "barcode_item_no", "cbf",
         )
     )
 
@@ -892,7 +913,8 @@ def _record_fields(customer_code: str, record: dict[str, Any]) -> dict[str, Any]
     if customer_code in {"casdon", "spin"}:
         return record
     if customer_code == "jakks":
-        unit_usd = float(record.get("unit_price_usd") or 0)
+        source_price = record.get("unit_price_usd")
+        unit_usd = float(source_price) if source_price not in (None, "") else None
         quantity = float(record.get("quantity") or 0)
         return {
             "po_no": record.get("customer_po"),
@@ -906,8 +928,8 @@ def _record_fields(customer_code: str, record: dict[str, Any]) -> dict[str, Any]
             "units_per_carton": record.get("outer_pack"),
             "carton_count": record.get("cartons"),
             "standard": _joined(record.get("unit"), record.get("confirmation_no")),
-            "unit_price_hkd": round(unit_usd * 7.75, 6) if unit_usd else "",
-            "amount_hkd": round(quantity * unit_usd * 7.75, 2) if unit_usd else "",
+            "unit_price_hkd": round(unit_usd * 7.75, 6) if unit_usd is not None else "",
+            "amount_hkd": round(quantity * unit_usd * 7.75, 2) if unit_usd is not None else "",
             "packaging": record.get("special_note"),
             "line_q": record.get("inspection_date"),
             "customer_q": "",

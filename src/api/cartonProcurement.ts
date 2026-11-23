@@ -64,6 +64,7 @@ export interface CartonOrderLineResponse {
   unit_price: string
   currency: string
   price_source: string
+  process_note?: string
   note: string
 }
 
@@ -267,6 +268,7 @@ export interface CartonOrderCreateRequest {
     unit_price?: number
     currency?: string
     price_source?: string
+    process_note?: string
     note?: string
   }>
 }
@@ -314,6 +316,7 @@ export interface CartonOrderHistorySuggestionResponse {
     unit_price: string
     currency: string
     price_source: string
+    process_note?: string
     note: string
   }>
 }
@@ -651,6 +654,7 @@ export interface CartonImportPreviewRow {
 export interface CartonReceiptResponse {
   source_requests?: CartonSourceRequest[]
   delivery_id?: string | null
+  original_delivery_note_no?: string | null
   business_kinds?: string[]
   special_request_id?: string
   id: string
@@ -682,6 +686,7 @@ export interface CartonReceiptResponse {
     document_no?: string | null
     responsibility?: 'OWN' | 'SUPPLIER' | null
     settlement_unit_price?: string | null
+    pending_cost_movement_id?: string | null
     order_line_id: string | null
     customer_code: string
     customer_name: string
@@ -1464,6 +1469,7 @@ export const cartonProcurementApi = {
 export interface CartonReceiptSummary {
   source_requests?: CartonSourceRequest[]
   delivery_id?: string | null
+  original_delivery_note_no?: string | null
   business_kinds?: string[]
   id: string; receipt_no: string; delivery_note_no: string; delivery_date: string; acceptance_date: string | null
   status: CartonReceiptResponse['status']; confirmed_at: string | null; operator: string; line_count: number; customers: string; contracts: string
@@ -1480,5 +1486,5 @@ export interface CartonHistoryOrderPreview {
     lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;
       net_weight_kg?: string | null; gross_weight_kg?: string | null;
       quantity_rule?: PaperQuantityRule | null;
-      usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; note: string }> }>
+      usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; process_note?: string; note: string }> }>
 }

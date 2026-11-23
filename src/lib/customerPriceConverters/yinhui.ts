@@ -5,7 +5,7 @@ export { selectYinhuiMainSheet } from './yinhuiSource'
 import { parseP4InternalQuoteArtifact, type P4InternalQuoteArtifact, type P4SectionCode } from './p4Artifact'
 import { extractYinhuiProductImage, type YinhuiProductImage } from './yinhuiTemplate'
 import { isYinhuiIc, splitYinhuiElectronicRow, splitYinhuiLegacyElectronics, yinhuiIcCost } from './yinhuiElectronic'
-import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS, yinhuiProfileForModel, type YinhuiProfileId } from './yinhuiProfiles'
+import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, YINHUI_MAX_ELECTRONIC_ROWS, YINHUI_MAX_MECHANICAL_ROWS, YINHUI_MAX_PACKAGING_ROWS, yinhuiProfileForModel, type YinhuiProfileId } from './yinhuiProfiles'
 
 export const YINHUI_CUSTOMER_QUOTE_TEMPLATE_URL = '/templates/yinhui-customer-quote-template.bin'
 export { YINHUI_MATERIAL_PRICES_HKD_KG } from './yinhuiProfiles'
@@ -243,8 +243,7 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
   // Only the first packaging detail row has the customer's three dimension input cells.
   const colorBox = data.packagingRows.findIndex((r) => /彩盒|color box/i.test(r.description))
   if (colorBox > 0) data.packagingRows.unshift(data.packagingRows.splice(colorBox, 1)[0]!)
-  const extended = data.templateId === '88753'
-  const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, YINHUI_MAX_MECHANICAL_ROWS], ['电子', data.electronic.length, extended ? 18 : 10], ['包装材料', data.packagingRows.length, YINHUI_MAX_PACKAGING_ROWS]]
+  const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, YINHUI_MAX_MECHANICAL_ROWS], ['电子', data.electronic.length, YINHUI_MAX_ELECTRONIC_ROWS], ['包装材料', data.packagingRows.length, YINHUI_MAX_PACKAGING_ROWS]]
   for (const [name, count, max] of limits) if (count > max) {
     const message = `银辉${name}有 ${count} 行，超过当前模板 ${max} 行容量，请先扩展映射，不能截断明细`
     if (!data.importIssues) throw new Error(message)

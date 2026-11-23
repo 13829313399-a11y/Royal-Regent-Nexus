@@ -1,0 +1,72 @@
+.iw-records.iw-root.pw-root.iam-records-stream { overflow: auto; display: block; padding: 16px 20px 24px; }
+.iam-audit-stream {
+  --audit-line: #dbe6e9;
+  --audit-ink: #10232c;
+  --audit-muted: #566e7a;
+  --audit-primary: #006559;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 1120px;
+  min-width: 0;
+  margin: 0 auto;
+  color: var(--audit-ink);
+}
+.iam-audit-stream .iam-audit-heading, .iam-audit-stream .iam-audit-record > header {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px;
+}
+.iam-audit-stream .iam-audit-heading { padding: 0 0 3px; }
+.iam-audit-stream .iam-audit-heading :is(h1, h3) { margin: 0; font-size: 18px; line-height: 26px; font-weight: 700; }
+.iam-audit-stream .iam-audit-heading p { margin: 2px 0 0; font-size: 12.5px; color: var(--audit-muted); }
+.iam-audit-stream .iam-audit-heading nav, .iam-audit-stream .iam-audit-record-title, .iam-audit-stream .iam-audit-meta, .iam-audit-stream .iam-audit-chips, .iam-audit-stream .iam-audit-controls, .iam-audit-stream .iam-audit-controls > div { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.iam-audit-stream .iam-audit-heading button, .iam-audit-stream .iam-audit-controls button, .iam-audit-stream .iam-audit-controls select {
+  min-height: 30px; border: 1px solid var(--audit-line); border-radius: 7px; padding: 4px 9px; background: white; font-size: 12px; line-height: 19px; color: #405964;
+}
+.iam-audit-stream .iam-audit-heading button { border-radius: 99px; }
+.iam-audit-stream .iam-audit-heading button[aria-pressed="true"] { background: #e3f4f0; color: #004c42; border-color: #8fc9bd; font-weight: 700; }
+.iam-audit-stream .iam-audit-heading button:hover { border-color: var(--audit-primary); }
+.iam-audit-stream .iam-audit-record, .iam-audit-stream .iam-audit-notice {
+  display: flex; min-width: 0; flex-direction: column; gap: 9px; padding: 14px 18px; border: 1px solid var(--audit-line); border-radius: 12px; background: white; box-shadow: 0 1px 2px #0a23280a; overflow-wrap: anywhere;
+}
+.iam-audit-stream .iam-audit-record-title { gap: 8px; min-width: 0; font-size: 14px; }
+.iam-audit-stream .iam-audit-subtle, .iam-audit-stream .iam-audit-meta, .iam-audit-stream .iam-audit-context, .iam-audit-stream .iam-audit-record footer, .iam-audit-stream .iam-audit-controls { color: var(--audit-muted); font-size: 12px; }
+.iam-audit-stream .iam-audit-meta { font-variant-numeric: tabular-nums; }
+.iam-audit-stream .iam-audit-meta span::before { content: '·'; margin-right: 6px; }
+.iam-audit-stream .iam-audit-kind, .iam-audit-stream .iam-audit-chips span { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 99px; font-size: 11.5px; line-height: 18px; font-weight: 650; background: #edf2f4; color: #425a65; }
+.iam-audit-stream .iam-audit-kind[data-kind="registration"] { background: #eaf3ff; color: #1c5998; }
+.iam-audit-stream .iam-audit-kind[data-kind="position"] { background: #e3f4f0; color: #005348; }
+.iam-audit-stream .iam-audit-kind[data-kind="password-reset"] { background: #fff2db; color: #89520b; }
+.iam-audit-stream .iam-audit-kind[data-kind="identity-change"] { background: #f2eefc; color: #62469a; }
+.iam-audit-stream .iam-audit-diff { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr); align-items: center; gap: 10px; padding: 10px 12px; background: #f7fafb; border-radius: 9px; }
+.iam-audit-stream .iam-audit-diff small { display: block; color: var(--audit-muted); font-size: 11px; line-height: 17px; }
+.iam-audit-stream .iam-audit-diff p { font-size: 12.5px; line-height: 19px; max-height: 5.8em; overflow: auto; }
+.iam-audit-stream .iam-audit-diff > div:last-child p { font-weight: 600; }
+.iam-audit-stream .iam-audit-diff svg { color: var(--audit-primary); }
+.iam-audit-stream .iam-audit-chips .iam-audit-added { background: #e4f5ed; color: #096349; }
+.iam-audit-stream .iam-audit-chips .iam-audit-removed { background: #fdecef; color: #ad1f2c; }
+.iam-audit-stream .iam-audit-record footer { display: flex; gap: 4px 12px; flex-wrap: wrap; align-items: baseline; justify-content: space-between; }
+.iam-audit-stream .iam-audit-record code { font-family: ui-monospace, Consolas, monospace; color: #4d626b; font-size: 11px; }
+.iam-audit-stream .iam-audit-record :is(a, summary), .iam-audit-stream .iam-audit-notice button { color: var(--audit-primary); text-decoration: underline; text-underline-offset: 2px; }
+.iam-audit-stream .iam-audit-record details[open] { width: 100%; }
+.iam-audit-stream .iam-audit-record details div { margin-top: 6px; }
+.iam-audit-stream .iam-audit-record pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+.iam-audit-stream .iam-audit-controls { justify-content: space-between; }
+.iam-audit-stream .iam-audit-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.iam-audit-stream .iam-audit-notice { align-items: center; padding: 24px 12px; color: var(--audit-muted); font-size: 13px; }
+.iam-audit-stream .iam-audit-notice[role="alert"] { color: #9d2835; background: #fff6f6; }
+.iam-audit-embedded .iam-audit-heading { align-items: flex-start; flex-direction: column; }
+@media (max-width: 700px) {
+  .iw-records.iw-root.pw-root.iam-records-stream { padding: 12px 10px 20px; }
+  .iam-audit-stream .iam-audit-record { padding: 12px; }
+  .iam-audit-stream .iam-audit-heading nav { gap: 5px; }
+  .iam-audit-stream .iam-audit-heading button, .iam-audit-stream .iam-audit-controls button, .iam-audit-stream .iam-audit-controls select { min-height: 38px; }
+  .iam-audit-stream .iam-audit-meta { width: 100%; }
+  .iam-audit-stream .iam-audit-diff { grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr); gap: 6px; padding: 8px; }
+}
+
+.audit-snapshot-fields { margin: 4px 0; overflow-wrap: anywhere; }
+.audit-snapshot-fields dt { color: var(--muted-foreground); font-size: 12px; }
+.audit-snapshot-fields dd { margin: 0 0 4px; }
+.audit-snapshot-list ul { padding-inline-start: 1.25rem; }
+.audit-snapshot-list summary { cursor: pointer; }

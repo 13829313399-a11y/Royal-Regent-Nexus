@@ -49,8 +49,11 @@ def uploads(book=None):
     return [('po_files', p['po_files'][0]), ('schedule_file', (p['schedule_file_name'], p['schedule_content']))]
 
 
-def test_real_worker_http_preview_export_audit_and_stale_source(client):
-    fields = dict(factory_id='huaxing', received_date='2026-10-29')
+@pytest.mark.parametrize('factory', ['huaxing', 'huakang-a'])
+def test_real_worker_http_preview_export_audit_and_stale_source(client, factory):
+    auth = importlib.import_module('app.services.auth')
+    client.test_app.dependency_overrides[auth.get_current_user] = lambda: actor(factory=factory)
+    fields = dict(factory_id=factory, received_date='2026-10-29')
     files = uploads()
     response = client.post('/api/customer-orders/zuru/preview-batch', data=fields, files=files)
     assert response.status_code == 200, response.text
@@ -103,16 +106,17 @@ def test_zuru_ledger_import_is_idempotent_preserves_identity_and_rejects_conflic
     assert save(p)['existing_count'] == 2
     changed = deepcopy(p)
     changed['rows'][0]['quantity'] = '104'
-    with pytest.raises(HTTPException) as error:
-        save(changed)
-    assert error.value.status_code == 409
+    result = save(changed)
+    assert result["created_count"] == 1 and result["advisory_count"] == 1
+    assert result["items"][0]["id"] != first["items"][0]["id"]
+    assert save(changed)["created_count"] == 0
 
 
 @pytest.mark.parametrize('route', ['preview', 'export'])
-def test_huakang_a_cannot_use_zuru_unified_entry(client, route):
+def test_unregistered_factory_cannot_use_zuru_unified_entry(client, route):
     auth = importlib.import_module('app.services.auth')
-    client.test_app.dependency_overrides[auth.get_current_user] = lambda: actor(factory='huakang-a')
+    client.test_app.dependency_overrides[auth.get_current_user] = lambda: actor(factory='huakang-d')
     response = client.post(f'/api/customer-orders/zuru/{route}-batch',
-        data=dict(factory_id='huakang-a', received_date='2026-11-04', confirmed='true'), files=uploads())
+        data=dict(factory_id='huakang-d', received_date='2026-11-04', confirmed='true'), files=uploads())
     assert response.status_code == 400, response.text
     assert '华兴' in response.text

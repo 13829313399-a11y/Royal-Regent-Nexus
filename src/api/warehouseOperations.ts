@@ -30,7 +30,7 @@ export interface WarehouseBatch {
 export interface WarehouseDocument {
   id: string; kind: WarehouseOperationKind; sequence: number; business_date: string; data: WarehouseDocumentInput
   actor_name: string; occurred_at: string; reversed?: boolean; batch_snapshot?: WarehouseBatch
-  read_only?: boolean
+  read_only?: boolean; receipt_record_id?: string
   closed?: boolean; close_reason?: string; cutting_received_quantity?: string
   issued_quantity?: string; returned_quantity?: string; received_quantity?: string; consumed_quantity?: string
   cutting_return_limit?: CuttingReturnLimit
@@ -44,7 +44,8 @@ export interface WarehouseOperationsWorkspace {
   permissions: Record<'read' | 'operate' | 'quality' | 'correct', boolean> & { master?: boolean }
 }
 export type FabricMonthlyView = 'monthly' | 'reconciliation' | 'recipients'
-export interface FabricMonthlyQuery { month: string; direction: '' | 'IN' | 'OUT'; channel: '' | 'MANUAL' | 'SCAN'; party_key: string; search?: string; unit?: string; date_order?: 'ASC' | 'DESC' }
+export type FabricMonthlySource = 'MANUAL' | 'HANDOVER' | 'CUTTING'
+export interface FabricMonthlyQuery { month: string; direction: '' | 'IN' | 'OUT'; channel?: '' | 'MANUAL' | 'SCAN'; source?: '' | FabricMonthlySource; party_key: string; search?: string; unit?: string; date_order?: 'ASC' | 'DESC' }
 export interface FabricMonthlyQuantities {
   received: string; receipt_reversed: string; net_received: string; issued: string; issue_reversed: string
   returned: string; net_issued: string; net_outbound: string; stock_change: string

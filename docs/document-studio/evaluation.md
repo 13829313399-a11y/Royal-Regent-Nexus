@@ -1,5 +1,7 @@
 # Document Studio evaluation contract
 
+这些质量指标源自早期同步版本，可用于评估现行转换结果。现行任务与独立 worker 的启动、诊断和验收见[公共文档工具](../document-tools/README.md)。
+
 Store only deidentified or approved synthetic fixtures in the repository. Keep business documents in the governed external evaluation environment.
 
 | Capability | Required measures |

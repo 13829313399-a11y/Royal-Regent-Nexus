@@ -1,5 +1,6 @@
 """Append a user-maintained extension without moving existing workbook cells."""
 from copy import copy
+from .customer_order_jakks_unified import header_row
 import re
 
 from openpyxl.utils import get_column_letter
@@ -11,9 +12,10 @@ SHEETS = ("ITEM表", "接单表", "正单评审表")
 
 def manual_value_columns(sheet):
     """Existing manual status/provenance must not become a new order's value."""
+    header = header_row(sheet)
     common_end = 19 if sheet.title in ('接单表', '正单评审表') else 28
     return {c.column for c in sheet._cells.values()
-            if c.row == 3 and c.column > common_end and c.data_type != 'f'
+            if c.row == header and c.column > common_end and c.data_type != 'f'
             and re.sub(r'\s+', '', str(c.value or '')) in {'纸箱', '紙箱', '拆单来源', '拆單來源'}}
 
 
@@ -47,8 +49,9 @@ def ensure_manual_columns(workbook, *, factory_id, customer_code, label, aliases
         if name not in workbook:
             raise CustomerOrderUnifiedError(f"{customer_label} {label}栏：缺少 {name}")
         sheet = workbook[name]
+        header = header_row(sheet)
         found = sorted(c.column for c in sheet._cells.values()
-                       if c.row == 3 and c.data_type != "f"
+                       if c.row == header and c.data_type != "f"
                        and re.sub(r"\s+", "", str(c.value or "")) in aliases)
         if found:
             report["columns"][name] = [get_column_letter(c) for c in found]
@@ -70,11 +73,12 @@ def ensure_manual_columns(workbook, *, factory_id, customer_code, label, aliases
         report["columns"][name] = [get_column_letter(right + 1)]
 
     for sheet, column in plans:
+        header = header_row(sheet)
         common_end = 19 if sheet.title in ('接单表', '正单评审表') else 28
-        source = max((c for c in sheet._cells.values() if c.row == 3 and c.column < column
+        source = max((c for c in sheet._cells.values() if c.row == header and c.column < column
                       and c.value not in (None, "")), key=lambda c: c.column,
-                     default=sheet.cell(3, common_end))
-        header = sheet.cell(3, column, label)
+                     default=sheet.cell(header_row(sheet), common_end))
+        header = sheet.cell(header_row(sheet), column, label)
         header._style = copy(source._style)
         alignment = copy(header.alignment)
         alignment.wrap_text = True

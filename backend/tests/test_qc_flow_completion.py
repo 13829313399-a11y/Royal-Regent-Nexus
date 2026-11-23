@@ -37,7 +37,7 @@ def test_submit_full_snapshot_photos_time_lock_and_read_recovery(db):
  saved=sheet.submit('huaxing',item['id'],{'revision':item['revision']},ACTOR)
  assert saved['submittedAt'] and saved['improvement']=='改善包装\n复核标签'
  assert sheet.submit('huaxing',item['id'],{'revision':item['revision']},ACTOR)['submittedAt']==saved['submittedAt']
- refreshed=entries(db)[0];assert refreshed['revision']==saved['revision'] and refreshed['completion']=='待审核'
+ refreshed=entries(db)[0];assert refreshed['revision']==saved['revision'] and refreshed['completion']=='未完成' and refreshed['reviewState']=='pending'
  assert summary.listing('huaxing',{})['total']==0
  saved=sheet.review_batch('huaxing','confirm',dict(entries=[dict(id=saved['id'],revision=saved['revision'])],requestKey=uuid4().hex),ACTOR)['results'][0]['item']
  result=summary.listing('huaxing',{});assert result['total']==1

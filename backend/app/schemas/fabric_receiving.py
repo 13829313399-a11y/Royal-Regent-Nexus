@@ -32,23 +32,34 @@ class ReceiptPriceInput(BaseModel):
         return value.strip()
 
 
-class ReceiveSourceRequest(ReceiptPriceInput):
+class ReceiptInput(ReceiptPriceInput):
     model_config = ConfigDict(extra="forbid")
     delivery_quantity: str = Field(default='', max_length=32)
     factory_id: Literal["huakang-c"]
     request_id: UUID
-    expected_source_revision: int = Field(ge=1)
-    expected_receipt_count: int = Field(ge=0)
     receipt_date: date
     accounting_month: str | None = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     delivery_reference: str = Field(min_length=1, max_length=128)
     delivery_note_date: date | None = None
     material_category: Literal["FABRIC", "ACCESSORY", "THREAD"]
-    prior_received_quantity: str | None = Field(default=None, min_length=1, max_length=32)
-    difference_reason: str = Field(default="", max_length=1000)
     note: str = Field(default="", max_length=2000)
     batches: list[ReceiptBatchInput] = Field(min_length=1, max_length=200)
     confirmed: bool = False
+
+
+class ReceiveSourceRequest(ReceiptInput):
+    expected_source_revision: int = Field(ge=1)
+    expected_receipt_count: int = Field(ge=0)
+    prior_received_quantity: str | None = Field(default=None, min_length=1, max_length=32)
+    difference_reason: str = Field(default="", max_length=1000)
+
+
+class ReceiveManualRequest(ReceiptInput):
+    material_id: str = Field(min_length=1, max_length=64)
+    material_revision: int = Field(ge=1)
+    supplier_id: str = Field(min_length=1, max_length=64)
+    supplier_revision: int = Field(ge=1)
+    procurement_pending_reason: str = Field(default='', max_length=1000)
 
 
 class ReverseReceiptRequest(BaseModel):

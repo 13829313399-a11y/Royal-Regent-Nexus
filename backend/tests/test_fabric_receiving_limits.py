@@ -189,6 +189,32 @@ def single(data):
         **{key: value for key, value in data['items'][0].items() if key != 'source_line_id'})
 
 
+@pytest.mark.parametrize(('duplicate_reference', 'batch'), [(' dn-batch ', False), ('ＤＮ－ＢＡＴＣＨ', True)])
+def test_equivalent_delivery_reference_cannot_post_purchase_receipt_twice(v2_receiving, duplicate_reference, batch):
+    from app.schemas.fabric_receiving import ReceiveSourcesRequest
+    from app.services import fabric_procurement as source
+
+    engine, actor, line, receiving, data = v2_receiving
+    duplicate = copy.deepcopy(data)
+    duplicate.update(request_id=str(uuid4()), delivery_reference=duplicate_reference)
+    duplicate['items'][0]['expected_receipt_count'] = 1
+
+    with Session(engine) as db:
+        posted = receiving.receive(db, actor, line['id'], single(data))
+        with pytest.raises(HTTPException) as caught:
+            if batch:
+                receiving.receive_many(db, actor, ReceiveSourcesRequest(**duplicate))
+            else:
+                receiving.receive(db, actor, line['id'], single(duplicate))
+        assert caught.value.status_code == 409 and '已入库' in caught.value.detail
+        db.rollback()
+        assert receiving.list_receipts(db)['total'] == 1
+        assert receiving.list_stock(db)['total'] == 1
+        assert source.list_lines(db, search='V2')['items'][0]['warehouse_outstanding_quantity'] == '40'
+        assert receiving.receive(db, actor, line['id'], single(data)) == posted
+        assert posted['delivery_reference'] == 'DN-BATCH'
+
+
 def test_split_total_cannot_exceed_delivery_even_with_difference_reason(warehouse):
     engine, actor, lines, receiving = warehouse
     data = body(lines)

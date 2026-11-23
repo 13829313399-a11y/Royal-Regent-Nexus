@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'royal_regent_nexus.db'}"
     session_cookie_secure: bool = False
+    qc_mobile_public_origin: str = ""
     seed_default_accounts: bool = True
     seed_admin_password: str = ""
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     iam_identity_writes_enabled: bool = False
     iam_identity_scheduling_enabled: bool = False
     iam_position_workbench_enabled: bool = False
+    iam_access_studio_writes_enabled: bool = False
     three_d_asset_dir: str = str(BACKEND_DIR / "data" / "three-d-printing-assets")
     three_d_edge_agent_token: str = ""
     three_d_network_health_token: str = ""
@@ -66,6 +68,7 @@ class Settings(BaseSettings):
     three_d_connector_enabled: bool = False
     three_d_connector_token: str = ""
     three_d_connector_control_enabled: bool = False
+    three_d_telemetry_sparse_history: bool = True
     three_d_connector_verified_machines: list[int] = []
     three_d_command_ttl_seconds: int = 120
     three_d_command_poll_interval_seconds: int = 3

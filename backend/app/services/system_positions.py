@@ -27,14 +27,13 @@ from app.services.permission_codes import (
     CARTON_PROCUREMENT_PERMISSION_CODES,
     CARTON_SPECIAL_REQUEST_PERMISSION_CODES,
     CARTON_SUPPLIER_PERMISSION_CODES,
-    INJECTION_SCHEDULING_PERMISSION_CODES,
     INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     QC_INSPECTION_PERMISSION_CODES,
     SYSTEM_MANAGEMENT_PERMISSION_CODES,
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v33"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v34"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -131,7 +130,6 @@ class SystemPositionDefinition:
 
 
 _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
-    *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:cross_factory_read",
     "molding_sample:cross_factory_cost_read",
@@ -323,7 +321,6 @@ SALES_BUSINESS_PERMISSION_CODES = (
 PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
-    *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:export",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
@@ -346,7 +343,6 @@ PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
 PRODUCTION_CLERK_PERMISSION_CODES = (
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
-    *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     "molding_sample:export",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
@@ -376,7 +372,6 @@ PAINTING_SUPERVISOR_PERMISSION_CODES = (
 MOLDING_CLERK_PERMISSION_CODES = (
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
-    *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:production_start",
@@ -385,10 +380,7 @@ MOLDING_CLERK_PERMISSION_CODES = (
     "molding_sample:notification_read",
 )
 
-MOLDING_SUPERVISOR_PERMISSION_CODES = (
-    *MOLDING_CLERK_PERMISSION_CODES,
-    "injection_scheduling:master_write",
-)
+MOLDING_SUPERVISOR_PERMISSION_CODES = MOLDING_CLERK_PERMISSION_CODES
 
 WAREHOUSE_PERMISSION_CODES = (
     *CARTON_ASSET_PERMISSION_CODES,
@@ -445,6 +437,9 @@ CARTON_EXTERNAL_PERMISSION_CODES = (
     "carton_mark:read",
 )
 
+
+PRODUCTION_QUOTE_SCOPE = "全厂只读查看啤办生产任务；参与本厂报价协同"
+MOLDING_SUPERVISOR_DESCRIPTION = "跨厂只读查看工程啤办；跨厂操作生产任务"
 
 SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
     SystemPositionDefinition(
@@ -523,7 +518,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=400,
-        description="全厂只读查看啤办生产任务；参与本厂报价协同，维护本厂注塑排产、报工与主数据",
+        description=PRODUCTION_QUOTE_SCOPE,
         permission_codes=PRODUCTION_MANAGER_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -532,7 +527,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=410,
-        description="全厂只读查看啤办生产任务；参与本厂报价协同，维护本厂注塑排产、报工与主数据",
+        description=PRODUCTION_QUOTE_SCOPE,
         permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -541,7 +536,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=420,
-        description="全厂只读查看啤办生产任务；参与本厂报价协同，维护本厂注塑计划与报工",
+        description=PRODUCTION_QUOTE_SCOPE,
         permission_codes=PRODUCTION_CLERK_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -604,7 +599,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=460,
-        description="跨厂只读查看工程啤办；跨厂操作生产任务、注塑排产、报工与主数据，暂与啤机主管一致",
+        description=MOLDING_SUPERVISOR_DESCRIPTION + "，暂与啤机主管一致",
         scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=MOLDING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -614,7 +609,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=470,
-        description="跨厂只读查看工程啤办；跨厂操作生产任务、注塑排产、报工与主数据",
+        description=MOLDING_SUPERVISOR_DESCRIPTION,
         scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=MOLDING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -624,7 +619,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=480,
-        description="跨厂只读查看工程啤办、生产任务与注塑排产；仅操作本厂任务、注塑计划与报工，通知仅限本厂",
+        description="跨厂只读查看工程啤办与生产任务；仅操作本厂任务，通知仅限本厂",
         scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=MOLDING_CLERK_PERMISSION_CODES,
     ),

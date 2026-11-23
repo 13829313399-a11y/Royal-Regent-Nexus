@@ -19,14 +19,46 @@
 - 现有前端构建、测试、Figma 等技能按实际任务选用。有明确设计稿时读取该参考；从零创建独立应用时才考虑完整应用搭建流程。
 - 同一个阶段采用一套连贯流程；已有技能完成的检查可以共用证据，不重复整轮工作。浏览器验收统一使用现有 Chrome DevTools MCP，不安装额外插件或依赖。
 - Chrome DevTools MCP 负责页面打开、DOM、交互、截图、控制台、网络和视口检查，替代通用前端技能中的 Browser/IAB 优先及 Playwright 自动回退规则。Playwright CLI Skill 保留为用户明确点名时的备用方式；已有自动化测试脚本保持原用途，不替代真实页面验收。
-- Chrome DevTools MCP 连接失败或缺少所需能力时，记录具体错误及未验证项，继续可独立完成的工作；不自动启动 Playwright 或另一套浏览器。当前用户明确指定工具时遵循当前请求。
+- Chrome DevTools MCP 连接失败时，先按[多会话的测试浏览器](#多会话的测试浏览器)核对入口和具体报错。仍无法连接或缺少所需能力时，记录未验证项并继续可独立完成的工作。切换浏览器工具按用户的明确要求执行。
 - 主应用与 `shinobu-web` 等子项目分别核对自己的依赖、脚本和入口，不把 React、Vue 或某组件库的要求套到整个仓库。
 
 ## 设计依据与变更边界
 
-读取任务涉及的 DESIGN.md 章节、真实组件和模块样式，保留已记录的局部例外。普通业务页优先可读性和操作效率；品牌展示、打印或专用工作台按各自约定处理。不强制每页添加装饰性视觉特色，不复制模板中的默认动效时长覆盖项目规则。
+读取任务涉及的 DESIGN.md 章节、真实组件和模块样式，保留第 15 节登记的局部例外。新页面和实质重构遵循 DESIGN.md 的空间层级、呼吸感布局、物理动效、微交互与原语优先原则，在保证业务可读性与操作效率的前提下追求精致质感；专用工作台与打印按各自约定处理，不复制外部模板的默认动效时长覆盖项目 token。
 
 简报中记录真实字段、主要操作、状态及验收动作。参考图与权限、厂区隔离、API 合同或工作流冲突时，保留业务要求并解释视觉偏差；缺少会影响正确性的业务决策时再澄清。已获授权的常规实现选择无需重复确认。
+
+## 多会话的测试浏览器
+
+需要同时点验、又想下次沿用登录时，给每个同时操作的测试会话分配一个具名的 Chrome DevTools MCP 服务和一个固定的 Chrome 资料目录。比如纸箱仓管用 `chrome_devtools_carton`，布料仓管用 `chrome_devtools_fabric`。同一时间还要用东康账号操作，就另分一个供应商目录。下次同一岗位继续选原来的服务，登录有效期内可以接着用。日常使用的 Chrome 可以照常开着。
+
+### 一次设置，以后复用
+
+1. 在运行 Codex 的电脑打开用户级 `~/.codex/config.toml`（Windows 通常在 `%USERPROFILE%\.codex\config.toml`）。找到现有的本地启动项，如 `[mcp_servers.chrome_devtools]`。复制这段配置，分别命名为 `[mcp_servers.chrome_devtools_carton]` 和 `[mcp_servers.chrome_devtools_fabric]`。已有同名条目就编辑该条目。保留原入口，同时沿用原来的程序、启动参数、超时和工具权限。原服务若有单独的环境或权限子表，副本的子表也使用对应的新服务名。机器上的安装路径和浏览器资料留在本机。
+2. 在每个副本的 `args` 数组末尾加上**一个不同的** `--userDataDir=绝对路径` 字符串。下面这段 PowerShell 只打印两个可直接放进 TOML 数组的字符串，按顺序分别给纸箱和布料使用。连同双引号复制，用逗号与原数组元素隔开。
+
+   ```powershell
+   'carton-warehouse', 'fabric-warehouse' | ForEach-Object {
+       $profilePath = Join-Path $env:USERPROFILE "RR-QA\Chrome\$_"
+       ConvertTo-Json -InputObject "--userDataDir=$profilePath" -Compress
+   }
+   ```
+
+   这种做法适用于由 MCP 启动 Chrome 的本地服务。如果副本已经配置 `--userDataDir`，替换旧值即可。固定目录模式与 `--isolated` 临时模式二选一。原配置若通过 `--browserUrl`、`--wsEndpoint` 或 `--autoConnect` 接入已运行的浏览器，资料目录由启动那个 Chrome 的进程决定。团队包里的 `--workspace` 只指定工具可访问的文件目录。
+3. 在 Codex 中重新连接 MCP，或开启能加载这份配置的新会话。确认工具列表中出现相应服务名。纸箱会话可以直接说「用 `chrome_devtools_carton` 点验纸箱仓管」，布料会话选 `chrome_devtools_fabric`。两边同时保持连接，各用自己的 `list_pages` 取页面，再对返回的页面调用同一服务的 `take_snapshot`。两边都能读到快照，才说明两条连接可同时使用。随后在各自页面打开测试网址，核对岗位账号和厂区。空白页的快照只证明调试连接可用。
+
+偶尔并行、用完即可丢弃登录的任务，可以给本地 MCP 启动参数加 `--isolated`，每个独立启动的实例会获得自己的临时目录。关闭后临时目录会清理。上面这些选项在 MCP **启动时**生效，给 `list_pages` 加参数或反复点击同一个旧入口都不会换目录。
+
+### 连接失败时怎么看
+
+| 实际看到的提示 | 当前会话怎么处理 |
+| --- | --- |
+| `already running`，报错路径仍以 `chrome-devtools-mcp/chrome-profile` 结尾 | 当前调用仍用了默认目录。核对实际选用的服务名、它的 `args` 和报错路径，再重新连接已配置的入口。Windows 的路径分隔符显示为反斜杠。 |
+| `already running`，路径已经是自己的测试目录 | 确认哪个会话正在用这个入口。可以等该执行者释放它，也可以给并行任务另分一个目录和入口。保留别人的窗口和锁文件。 |
+| 换了目录后出现 `Target closed` | 浏览器在读取标签页前断开了。检查这个服务实际启动的 Chrome、退出信息和本机启动日志，并在运行该服务的环境复测。可以在该服务的参数中临时指定 `--logFile=<本机可写的诊断日志路径>`。交接时记下服务名、报错及尚未点验的页面。 |
+| 能读到快照，但打开项目后停在登录页或看不到目标菜单 | 调试连接已通。接下来查测试网址、账号登录、岗位权限和厂区，沿用项目原有授权。 |
+
+配置参考见 [Chrome DevTools MCP 启动选项](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/configuration.md) 和 [Codex MCP 用户配置](https://developers.openai.com/codex/mcp)。
 
 ## 浏览器验收与结束条件
 

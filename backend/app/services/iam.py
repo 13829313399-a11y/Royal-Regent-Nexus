@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -124,7 +124,6 @@ MODULE_NAMES = {
     "cutting_ops": "裁床基础资料（华康 C）",
     "module_feedback": "模块反馈（开发处理）",
     "uv_ops": "UV 打印管理（华康 A）",
-    "injection_scheduling": "注塑排产中枢",
     "molding_sample": "啤办管理",
     "carton_mark": "箱唛管理",
     "customer_price": "客户报价",
@@ -740,14 +739,32 @@ def create_access_request(
     return _access_request_out(db, access_request)
 
 
-def list_roles(db: Session, current_user: AuthContext) -> list[RoleSummaryOut]:
+def _catalog_summaries(db, actor, roles, include_member_counts):
+    from app.services.iam_personnel import scoped_counts
+    role_ids = [r.id for r in roles]
+    metadata = {r.role_id: r for r in db.scalars(select(AuthRoleMetadata).where(AuthRoleMetadata.role_id.in_(role_ids)))}
+    permission_counts = dict(db.execute(select(AuthRolePermission.role_id, func.count(func.distinct(AuthPermission.id)))
+                             .join(AuthPermission).where(AuthRolePermission.role_id.in_(role_ids))
+                             .group_by(AuthRolePermission.role_id)).all())
+    scoped = scoped_counts(db, actor, role_ids)
+    binding_counts = scoped[0] if scoped else {}
+    summaries = [_role_summary(role, metadata.get(role.id), binding_counts.get(role.id, 0), permission_counts.get(role.id, 0))
+                 for role in roles]
+    if include_member_counts and scoped is not None:
+        for item in summaries:
+            item.scoped_binding_count = binding_counts.get(item.id, 0)
+            item.scoped_member_count = scoped[1].get(item.id, 0)
+    return summaries
+
+
+def list_roles(db: Session, current_user: AuthContext, *, include_member_counts=False) -> list[RoleSummaryOut]:
     _ensure_iam_manager(db, current_user)
     _ensure_permission_catalog_reader(db, current_user)
     roles = list(db.scalars(select(AuthRole).order_by(AuthRole.code)).all())
-    return [_role_summary(db, role) for role in roles]
+    return _catalog_summaries(db, current_user, roles, include_member_counts)
 
 
-def list_system_positions(db: Session, current_user: AuthContext) -> list[RoleSummaryOut]:
+def list_system_positions(db: Session, current_user: AuthContext, *, include_member_counts=False) -> list[RoleSummaryOut]:
     _ensure_iam_manager(db, current_user)
     _ensure_permission_catalog_reader(db, current_user)
     roles_by_id = {
@@ -758,19 +775,17 @@ def list_system_positions(db: Session, current_user: AuthContext) -> list[RoleSu
             )
         ).all()
     }
-    return [
-        _role_summary(db, roles_by_id[item.role_id])
-        for item in SYSTEM_POSITION_DEFINITIONS
-        if item.role_id in roles_by_id
-    ]
+    roles = [roles_by_id[item.role_id] for item in SYSTEM_POSITION_DEFINITIONS if item.role_id in roles_by_id]
+    return _catalog_summaries(db, current_user, roles, include_member_counts)
 
 
-def get_role_access(db: Session, current_user: AuthContext, role_id: str) -> RoleAccessOut:
+def get_role_access(db: Session, current_user: AuthContext, role_id: str, *, include_member_counts=False) -> RoleAccessOut:
     _ensure_iam_manager(db, current_user)
     _ensure_permission_catalog_reader(db, current_user)
     role = _load_role(db, role_id)
-    summary = _role_summary(db, role)
-    return RoleAccessOut(**summary.model_dump(), permission_codes=_role_permission_codes(db, role.id))
+    codes = _role_permission_codes(db, role.id)
+    summary, = _catalog_summaries(db, current_user, [role], include_member_counts)
+    return RoleAccessOut(**summary.model_dump(), permission_codes=codes)
 
 
 def preview_role_access(
@@ -1935,12 +1950,16 @@ def _operation_from_request_item(item: AuthAccessRequestItem) -> dict[str, Any]:
 
 
 def _audit_event_out(db: Session, event: AuthAuthorizationEvent) -> AuditEventOut:
+    from app.core.time import serialize_process_local_timestamp
     permission = db.get(AuthPermission, event.permission_id) if event.permission_id else None
     actor = db.get(AuthUser, event.actor_user_id) if event.actor_user_id else None
     target = db.get(AuthUser, event.target_user_id) if event.target_user_id else None
     return AuditEventOut(
         id=event.id,
         event_type=event.event_type,
+        target_id=event.target_id,
+        target_type=event.target_type,
+        occurred_at=serialize_process_local_timestamp(event.created_at),
         actor_user_id=event.actor_user_id,
         actor_name=actor.display_name if actor else event.actor_user_id,
         target_user_id=event.target_user_id,
@@ -2289,8 +2308,7 @@ def _role_permission_codes(db: Session, role_id: str) -> list[str]:
     )
 
 
-def _role_summary(db: Session, role: AuthRole) -> RoleSummaryOut:
-    metadata = _get_role_metadata(db, role.id)
+def _role_summary(role: AuthRole, metadata: AuthRoleMetadata | None, binding_count: int, permission_count: int) -> RoleSummaryOut:
     scope_policy = role_scope_policy(role.code)
     system_position = get_system_position(role.id)
     return RoleSummaryOut(
@@ -2300,8 +2318,8 @@ def _role_summary(db: Session, role: AuthRole) -> RoleSummaryOut:
         description=role.description,
         version=metadata.version if metadata else 1,
         is_protected=bool(metadata.protected) if metadata else role.code == "admin",
-        binding_count=_active_role_binding_count(db, role.id),
-        permission_count=len(_role_permission_codes(db, role.id)),
+        binding_count=binding_count,
+        permission_count=permission_count,
         scope_mode=_role_scope_mode(metadata, system_position is not None),
         applicable_departments=list(scope_policy.departments),
         requires_global_factory=scope_policy.requires_global_factory,

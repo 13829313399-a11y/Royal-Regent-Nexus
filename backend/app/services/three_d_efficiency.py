@@ -10,15 +10,16 @@ from sqlalchemy.dialects.postgresql import JSONB
 from app.core.time import business_now, parse_business_timestamp
 from app.models import three_d_printing as m
 from app.services.three_d_fleet import machine_numbers, numbering_start
+from app.services.three_d_telemetry_storage import statistical_frames
 
 
 def _postgres_event_counters(db, begin, now, values):
     """Aggregate validated connector frames in PostgreSQL, not in API memory."""
-    model = m.ThreeDPrintingPrinterStateEvent
+    model = statistical_frames()
     timestamp = cast(model.observed_at, DateTime(timezone=True))
     temperatures = cast(model.temperatures_json, JSONB)
     frames = select(
-        model.machine_no, model.observed_at, model.state, model.error_code,
+        model.machine_no, model.observed_at, model.received_at, model.id, model.state, model.error_code,
         func.extract("epoch", timestamp).label("seconds"),
         case((
             (cast(temperatures["nozzle"].astext, Float) > 320)
@@ -29,9 +30,9 @@ def _postgres_event_counters(db, begin, now, values):
         model.observed_at >= begin.astimezone(timezone.utc).isoformat(),
         timestamp <= now,
     ).subquery()
-    # Connector timestamps are normalized UTC strings. Keeping their original
-    # ordering lets PostgreSQL read the covering index without sorting frames.
-    window = {"partition_by": frames.c.machine_no, "order_by": frames.c.observed_at}
+    # Reception time and event id break equal device timestamps consistently
+    # when a stable frame moves from the event table to the timing table.
+    window = {"partition_by": frames.c.machine_no, "order_by": (frames.c.observed_at, frames.c.received_at, frames.c.id)}
     intervals = select(
         frames,
         (frames.c.seconds - func.lag(frames.c.seconds).over(**window)).label("elapsed"),
@@ -82,7 +83,7 @@ def counters(db, days):
     previous = {}
     # Set streaming BEFORE execute: Result.yield_per() alone still lets psycopg
     # buffer the entire result. Raw device payloads are large and not needed here.
-    event_model = m.ThreeDPrintingPrinterStateEvent
+    event_model = statistical_frames()
     from app.services.three_d_telemetry_rollups import counters as rollup_counters
 
     summaries = rollup_counters(db, begin, now)
@@ -110,7 +111,7 @@ def counters(db, days):
                 event_model.factory_id == "huakang-a",
                 event_model.observed_at >= begin.astimezone(timezone.utc).isoformat(),
             )
-            .order_by(event_model.machine_no, event_model.observed_at)
+            .order_by(event_model.machine_no, event_model.observed_at, event_model.received_at, event_model.id)
             .execution_options(yield_per=500)
         )
     for event in events:

@@ -1,0 +1,148 @@
+.iam-catalog {
+  --catalog-line: #dbe6e9;
+  --catalog-ink: #10242d;
+  --catalog-muted: #58717b;
+  --catalog-soft: #f7fafb;
+  --catalog-accent: #006559;
+  color: var(--catalog-ink);
+}
+.iam-catalog .iamx-role-layout {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 14px;
+  padding: 14px 20px;
+}
+.iam-catalog .iam-directory-panel, .iam-catalog .iam-role-detail {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+  border: 1px solid var(--catalog-line);
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 1px 2px #0a23280a;
+}
+.iam-catalog .iam-directory-panel > div:first-child { padding: 12px 14px; border-color: var(--catalog-line); }
+.iam-catalog .iam-directory-panel h2 { font-size: 14px; line-height: 21px; font-weight: 700; }
+.iam-catalog .iam-catalog-total { border-radius: 20px; color: #005348; background: #e3f4f0; padding: 2px 8px; font-size: 11px; }
+.iam-catalog .iam-directory-scroll { padding: 7px 8px; }
+.iam-catalog .iam-directory-scroll section { margin: 0; padding: 0; border: 0; }
+.iam-catalog .iam-directory-scroll h3 { font-size: 11px; line-height: 18px; padding: 9px 8px 4px; letter-spacing: .03em; color: var(--catalog-muted); }
+.iam-catalog .iam-directory-scroll button { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin: 0; padding: 7px 9px; border: 0; box-shadow: none; border-radius: 8px; }
+.iam-catalog .iam-directory-scroll button[aria-pressed="true"] { background: #e3f4f0; color: #00453d; }
+.iam-catalog .iam-role-directory-title { display: grid; min-width: 0; }
+.iam-catalog .iam-role-directory-title strong { font-size: 13px; }
+.iam-catalog .iam-role-directory-title small { font-size: 11px; line-height: 16px; color: var(--catalog-muted); }
+.iam-catalog .iam-role-directory-counts { display: flex; gap: 4px; flex-shrink: 0; }
+.iam-catalog .iam-role-directory-counts span { padding: 1px 6px; border-radius: 12px; background: #f0f4f5; color: #45606a; font-size: 11px; font-variant-numeric: tabular-nums; }
+.iam-catalog .iam-role-directory-counts span + span { color: #005345; background: #e3f4f0; }
+.iam-catalog button[aria-pressed="true"] .iam-role-directory-counts span:first-child { color: white; background: var(--catalog-accent); }
+.iam-catalog .iamx-role-content { min-height: 0; display: flex; flex-direction: column; }
+.iam-catalog .iamx-role-content > label { display: none; }
+.iam-catalog .iam-role-detail { flex: 1; }
+.iam-catalog .iam-role-banner { display: flex; gap: 9px 16px; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--catalog-line); background: linear-gradient(106deg, #f4faf8, white 70%); }
+.iam-catalog .iam-role-intro { flex: 1 1 320px; min-width: 0; }
+.iam-catalog .iam-role-title, .iam-catalog .iam-role-actions, .iam-catalog .iam-member-filters, .iam-catalog .iam-member-pagination { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.iam-catalog .iam-role-title h2 { font-size: 18px; line-height: 25px; font-weight: 700; }
+.iam-catalog .iam-role-intro p, .iam-catalog .iam-role-boundary { margin: 4px 0 0; font-size: 12px; color: var(--catalog-muted); }
+.iam-catalog .iam-role-boundary { width: 100%; margin: 0; }
+.iam-catalog .iam-catalog-badge { display: inline-flex; width: fit-content; max-width: 100%; align-items: center; border-radius: 99px; padding: 2px 8px; color: #415863; background: #edf2f4; font-size: 11.5px; font-weight: 600; line-height: 18px; overflow-wrap: anywhere; }
+.iam-catalog .tone-green { color: #096349; background: #e4f5ed; }
+.iam-catalog .tone-blue { color: #1c5998; background: #eaf3ff; }
+.iam-catalog .tone-red { color: #ad1f2c; background: #fdecef; }
+.iam-catalog .tone-amber { color: #89520b; background: #fff2db; }
+.iam-catalog .iam-version, .iam-catalog code { font-family: ui-monospace, Consolas, monospace; }
+.iam-catalog .iam-role-actions select, .iam-catalog .iam-capability-filters select, .iam-catalog .iam-member-filters input[type="search"] { width: auto; max-width: 100%; min-height: 34px; border-radius: 7px; border: 1px solid #c2d4d9; padding: 4px 8px; font-size: 12px; }
+.iam-catalog .iam-role-actions select { width: 145px; }
+.iam-catalog .iam-role-definition, .iam-catalog .iam-member-filters button, .iam-catalog .iam-member-pagination button, .iam-catalog .iam-compare-banner button { border: 1px solid #c2d4d9; border-radius: 7px; padding: 5px 10px; color: var(--catalog-ink); background: white; font-size: 12px; min-height: 34px; }
+.iam-catalog .iam-role-definition { color: white; background: var(--catalog-accent); border-color: var(--catalog-accent); font-weight: 600; }
+.iam-catalog .iam-role-coverage { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 16px; background: #f9fcfd; border-bottom: 1px solid var(--catalog-line); }
+.iam-catalog .iam-role-coverage button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--catalog-line); border-radius: 99px; white-space: nowrap; background: white; font-size: 12px; }
+.iam-catalog .iam-role-coverage button.full { border-color: #a6dbd0; background: #edf9f6; color: #00453d; }
+.iam-catalog .iam-role-coverage button.uncovered { color: #5e737d; }
+.iam-catalog .iam-role-coverage button:hover { border-color: var(--catalog-accent); }
+.iam-catalog .iam-role-coverage button[aria-pressed="true"] { background: var(--catalog-accent); color: white; border-color: var(--catalog-accent); }
+.iam-catalog .iam-role-coverage b, .iam-catalog .iam-role-title { font-variant-numeric: tabular-nums; }
+.iam-catalog .iam-role-tabs { display: flex; gap: 5px; padding: 0 12px; border-bottom: 1px solid var(--catalog-line); }
+.iam-catalog .iam-role-tabs button { border-bottom: 2px solid transparent; padding: 9px 8px 7px; font-size: 13px; color: var(--catalog-muted); }
+.iam-catalog .iam-role-tabs button[aria-pressed="true"] { border-color: var(--catalog-accent); color: var(--catalog-accent); font-weight: 700; }
+.iam-catalog .iam-capability-filters, .iam-catalog .iam-member-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px 0; }
+.iam-catalog .iam-capability-filters .iamx-search-control { max-width: 250px; flex: 1 1 170px; }
+.iam-catalog .iamx-search-control > input:not([type='checkbox']):not([type='radio']) { min-height: 33px; padding-top: 4px; padding-bottom: 4px; font-size: 12px; }
+.iam-catalog .iam-risk-filter, .iam-catalog .iam-member-filters label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.iam-catalog .iam-capability-filters > button { color: var(--catalog-accent); text-decoration: underline; font-size: 12px; }
+.iam-catalog .iam-capability-scroll, .iam-catalog .iam-role-compare, .iam-catalog .iam-role-members { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 16px; }
+.iam-catalog .iam-capability-grid, .iam-catalog .iam-comparison-columns > section { border: 1px solid var(--catalog-line); border-radius: 10px; overflow: hidden; }
+.iam-catalog .iam-capability-heading, .iam-catalog .iam-compare-banner { display: flex; flex-wrap: wrap; gap: 5px 12px; justify-content: space-between; align-items: center; background: #f4f8fa; border-bottom: 1px solid var(--catalog-line); padding: 9px 14px; font-size: 12px; }
+.iam-catalog .iam-capability-row + .iam-capability-row { border-top: 1px solid #eff4f6; }
+.iam-catalog .iam-capability-row summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(62px, 13%) 78px 66px; align-items: center; gap: 5px 10px; padding: 8px 14px; font-size: 12.5px; cursor: pointer; }
+.iam-catalog .iam-capability-row summary::-webkit-details-marker { display: none; }
+.iam-catalog .iam-capability-row summary:hover, .iam-catalog .iam-capability-row[open] { background: #f7fafb; }
+.iam-catalog .iam-capability-row summary .iam-catalog-badge:nth-child(4) { justify-self: end; }
+.iam-catalog .iam-capability-row summary:focus-visible { outline-offset: -2px; }
+.iam-catalog .iam-capability-name code { font-size: 11.5px; color: var(--catalog-muted); overflow-wrap: anywhere; }
+.iam-catalog .iam-capability-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.iam-catalog .iam-capability-name svg { align-self: center; flex-shrink: 0; color: var(--catalog-muted); }
+.iam-catalog .iam-capability-row[open] .iam-capability-name svg { transform: rotate(180deg); }
+.iam-catalog .iam-capability-status { grid-column: 1 / -1; color: var(--catalog-muted); font-size: 11px; }
+.iam-catalog .iam-capability-more { padding: 0 14px 10px; color: #435b68; font-size: 12px; }
+.iam-catalog .iam-catalog-notice { padding: 24px 12px; color: var(--catalog-muted); text-align: center; font-size: 13px; }
+.iam-catalog .iam-catalog-notice[role="alert"] { color: #ac2935; }
+.iam-catalog .iam-role-compare { display: flex; flex-direction: column; gap: 12px; }
+.iam-catalog .iam-compare-banner { border: 1px solid #c9dffb; border-radius: 10px; color: #244e7a; background: #eef6ff; }
+.iam-catalog .iam-comparison-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.iam-catalog .iam-comparison-columns h3 { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 9px 12px; background: #edf2f4; font-size: 13px; line-height: 19px; }
+.iam-catalog .iam-compare-left h3 { color: #096349; background: #e4f5ed; }
+.iam-catalog .iam-compare-right h3 { color: #62469a; background: #f2eefc; }
+.iam-catalog .iam-compare-group { padding: 8px 12px; }
+.iam-catalog .iam-compare-group + .iam-compare-group { border-top: 1px solid var(--catalog-line); }
+.iam-catalog .iam-compare-group h4 { font-size: 11px; font-weight: 600; color: var(--catalog-muted); }
+.iam-catalog .iam-compare-group li { padding: 3px 0; font-size: 12px; }
+.iam-catalog .iam-member-filters { padding: 0 0 12px; }
+.iam-catalog .iam-member-filters > span, .iam-catalog .iam-member-pagination { font-size: 12px; color: var(--catalog-muted); }
+.iam-catalog .iam-members-scroll { max-width: 100%; overflow: auto; border: 1px solid var(--catalog-line); border-radius: 8px; }
+.iam-catalog .iam-members-scroll table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 12px; text-align: left; }
+.iam-catalog .iam-members-scroll :is(th, td) { padding: 9px 10px; border-bottom: 1px solid var(--catalog-line); vertical-align: middle; }
+.iam-catalog .iam-members-scroll th { background: var(--catalog-soft); color: var(--catalog-muted); }
+.iam-catalog .iam-members-scroll small { display: block; font-size: 11px; line-height: 18px; }
+.iam-catalog .iam-members-scroll a { color: var(--catalog-accent); text-decoration: underline; }
+.iam-catalog .iam-member-pagination { justify-content: flex-end; padding: 12px 0 0; }
+@media (min-width: 761px) {
+  .iw-shell .iamx-role-page.iam-catalog { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .iam-catalog > .iamx-role-layout { flex: 1 1 0; height: 100%; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+  .iam-catalog .iamx-role-layout > .iam-directory-panel { display: flex; align-self: stretch; }
+  .iam-catalog .iamx-role-layout > .iamx-role-content { align-self: stretch; overflow: hidden; }
+  .iam-catalog .iam-directory-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+  .iam-catalog .iam-role-detail > :is(.iam-role-banner, .iam-role-tabs, .iam-capability-filters) { flex-shrink: 0; }
+  .iam-catalog .iam-role-coverage { flex-shrink: 0; max-height: 25dvh; overflow-y: auto; }
+}
+@media (min-width: 761px) and (max-width: 1099px) {
+  .iam-catalog .iamx-role-layout { grid-template-columns: 235px minmax(0, 1fr); padding: 12px; gap: 10px; }
+}
+@media (max-width: 760px) {
+  .iam-catalog .iamx-role-layout { height: auto; grid-template-columns: minmax(0, 1fr); padding: 10px; gap: 0; }
+  .iam-catalog .iam-directory-panel { display: none; }
+  .iam-catalog .iamx-role-content > label { display: grid; gap: 4px; margin-bottom: 8px; font-size: 12px; }
+  .iam-catalog .iam-role-detail { overflow: visible; }
+  .iam-catalog .iam-role-banner, .iam-catalog .iam-role-coverage, .iam-catalog .iam-capability-filters, .iam-catalog .iam-capability-scroll, .iam-catalog .iam-role-compare, .iam-catalog .iam-role-members { padding-inline: 10px; }
+  .iam-catalog .iam-role-actions { width: 100%; }
+  .iam-catalog .iam-role-coverage { max-height: 140px; overflow: auto; }
+  .iam-catalog .iam-role-coverage button { min-height: 34px; }
+  .iam-catalog .iam-role-tabs button, .iam-catalog .iam-role-actions :is(button, select) { min-height: 40px; }
+  .iam-catalog .iam-capability-filters .iamx-search-control { max-width: none; }
+  .iam-catalog .iam-capability-row summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding: 8px 10px; }
+  .iam-catalog .iam-capability-name { grid-column: 1 / -1; }
+  .iam-catalog .iam-comparison-columns { grid-template-columns: minmax(0, 1fr); }
+}
+@media (min-width: 761px) and (max-height: 600px) {
+  .iw-shell .iamx-role-page.iam-catalog { height: calc(100dvh - 60px); min-height: 380px; }
+}
+@media (min-width: 761px) and (max-width: 900px) and (max-height: 600px) {
+  .iw-shell .iamx-role-page.iam-catalog { height: calc(100dvh - 98px); }
+}

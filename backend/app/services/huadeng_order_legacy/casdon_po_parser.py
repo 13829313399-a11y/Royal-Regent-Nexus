@@ -118,6 +118,8 @@ class CasdonLine:
     total_usd: float = 0.0
     commodity_code: str = ""
     is_charge: bool = False
+    price_identified: bool = True
+    amount_identified: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -490,12 +492,17 @@ class CasdonPOParser:
             if not unit:
                 _, unit = _parse_qty_unit(qty_text, row[max(actual_commodity_col, 1):16])
 
-            price = _num(row[price_col - 1].value) if price_col else 0.0
-            net = _num(row[net_col - 1].value) if net_col else 0.0
-            if price <= 0:
+            price_text = _clean_excel_text(row[price_col - 1].value) if price_col else ''
+            net_text = _clean_excel_text(row[net_col - 1].value) if net_col else ''
+            price_identified = bool(re.fullmatch(r'[\d,]+(?:\.\d+)?', price_text))
+            amount_identified = bool(re.fullmatch(r'[\d,]+(?:\.\d+)?', net_text))
+            price = _num(price_text)
+            net = _num(net_text)
+            if not price_col and not net_col:
                 price, fallback_net = _last_two_numbers(row[7:20])
-                net = net or fallback_net
-            if net <= 0 and price_col:
+                net = fallback_net
+                price_identified, amount_identified = price > 0, net > 0
+            if not amount_identified and not net_col and price_col:
                 trailing = [
                     _num(cell.value)
                     for cell in row[price_col:20]
@@ -503,9 +510,11 @@ class CasdonPOParser:
                 ]
                 if trailing:
                     net = trailing[-1]
-            if net <= 0 and qty > 0 and price > 0:
+                    amount_identified = True
+            if not amount_identified and qty > 0 and price_identified:
                 net = round(qty * price, 2)
-            if qty <= 0 or (price <= 0 and net <= 0):
+                amount_identified = True
+            if qty <= 0:
                 continue
 
             if is_charge_item:
@@ -518,6 +527,7 @@ class CasdonPOParser:
                     unit_price=price,
                     total_usd=net,
                     is_charge=True,
+                    price_identified=price_identified, amount_identified=amount_identified,
                 ))
                 continue
 
@@ -533,6 +543,7 @@ class CasdonPOParser:
                 unit=unit,
                 unit_price=price,
                 total_usd=net,
+                price_identified=price_identified, amount_identified=amount_identified,
             ))
         return lines
 

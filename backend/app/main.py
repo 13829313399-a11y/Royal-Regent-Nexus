@@ -48,7 +48,6 @@ from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.indonesia_materials import router as indonesia_materials_router
 from app.api.indonesia_shipping import router as indonesia_shipping_router
 from app.api.shipping_mail import router as shipping_mail_router
-from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.module_feedback import router as module_feedback_router
 from app.api.customer_price_settings import router as customer_price_settings_router
 from app.api.internal_quote import (
@@ -368,7 +367,6 @@ app.include_router(indonesia_invoice_router)
 app.include_router(indonesia_materials_router)
 app.include_router(indonesia_shipping_router)
 app.include_router(shipping_mail_router)
-app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
 app.include_router(identity_router)
 app.include_router(position_reviews_router)
@@ -380,6 +378,8 @@ app.include_router(mainland_invoice_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(qc_department_router)
+from app.api.qc_mobile import router as qc_mobile_router
+app.include_router(qc_mobile_router)
 app.include_router(system_router)
 app.include_router(work_center_router)
 from app.api.three_d_operations import router as three_d_operations_router

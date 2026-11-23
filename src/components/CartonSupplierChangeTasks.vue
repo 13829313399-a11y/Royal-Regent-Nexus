@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CartonPaperProcessNote from './CartonPaperProcessNote.vue'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createSupplierReadQueue, supplierReadQueueKey } from '@/features/carton-procurement/supplierReadQueue'
 import { cartonSupplierChangesApi as api, type SupplierChangeAction, type SupplierChangeTask, type SupplierChangeLine, type SupplierChangeFilter, type SupplierChangePendingState } from '@/api/cartonSupplierChanges'
@@ -8,7 +9,7 @@ import { cartonPrintSplitsApi, type PrintFile } from '@/api/cartonPrintSplits'
 import { factoryContexts } from '@/data/enterpriseMock'
 
 const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; viewerKey?: string; internal?: boolean; readOnly?: boolean; sourceId?: string; sourceKinds?: SupplierChangeTask['source_kind'][]; embedded?: boolean; showClosed?: boolean; taskFilter?: SupplierChangeFilter }>(), { factoryId: '', internal: false, embedded: false, showClosed: undefined })
-const emit = defineEmits<{ changed: []; 'pending-state': [state: SupplierChangePendingState]; 'update:showClosed': [value: boolean] }>()
+const emit = defineEmits<{ changed: [task: SupplierChangeTask, action: SupplierChangeAction]; 'pending-state': [state: SupplierChangePendingState]; 'update:showClosed': [value: boolean] }>()
 const tasks = ref<SupplierChangeTask[]>([]), loading = ref(false), busy = ref(false), error = ref(''), success = ref('')
 const localShowClosed = ref(false)
 const showClosed = computed({ get: () => props.showClosed ?? localShowClosed.value, set: value => { localShowClosed.value = value; emit('update:showClosed', value) } })
@@ -68,7 +69,7 @@ const labels: Record<string, string> = { READ: '已读，不代表同意', PENDI
 const material = (row: Partial<SupplierChangeLine> | SupplierChangeLine['before_material']) => row ? [row.packaging_type, row.paper_quality, row.specification, row.dimension_unit].filter(Boolean).join(' · ') : ''
 const beforeMaterial = (row: SupplierChangeTask, line: SupplierChangeLine) =>
   material(line.before_material) || (row.source_kind === 'PRINT' ? material(line) : '')
-let generation = 0, readSequence = 0, controller = new AbortController(), timer: ReturnType<typeof setInterval> | undefined
+let generation = 0, readSequence = 0, backgroundRead = false, controller = new AbortController(), timer: ReturnType<typeof setInterval> | undefined
 watch(context, () => {
   readController.abort(); lastReadStarted = 0
   generation++; readSequence++; controller.abort(); controller = new AbortController(); tasks.value = []; error.value = ''; readError.value = ''; success.value = ''; busy.value = false; loading.value = false; requests.clear()
@@ -78,15 +79,15 @@ watch(context, () => {
   for (const name of Object.keys(produced)) delete produced[name]
   void load()
 }, { immediate: true })
-async function load() {
+async function load(background = false) {
   const token = generation, scopes = factories.value, sequence = ++readSequence
   if (!scopes.length || busy.value) return
   readController.abort(); readController = new AbortController()
   const signal = readController.signal
   lastReadStarted = Date.now()
-  loading.value = true
+  if (!background) { loading.value = true; readError.value = ''; error.value = '' }
   const failures: Record<string, string> = {}
-  readError.value = ''; error.value = ''
+  const refreshed = new Map<string, SupplierChangeTask[]>()
   try {
     await Promise.allSettled(scopes.map(async factory => {
       try {
@@ -98,15 +99,23 @@ async function load() {
           if (!(key(row) in reasons)) reasons[key(row)] = ''
           if (!produced[key(row)]) produced[key(row)] = {}
         }
-        tasks.value = [...tasks.value.filter(row => row.factory_id !== factory), ...result.items]
+        if (background) refreshed.set(factory, result.items)
+        else tasks.value = [...tasks.value.filter(row => row.factory_id !== factory), ...result.items]
       } catch (cause) {
         if (token !== generation || sequence !== readSequence || signal.aborted) return
-        tasks.value = tasks.value.filter(row => row.factory_id !== factory)
+        if (!background) tasks.value = tasks.value.filter(row => row.factory_id !== factory)
         failures[factory] = `${factoryName(factory)}：${getApiErrorMessage(cause)}`
       }
-      readError.value = Object.values(failures).join('；'); error.value = readError.value
+      if (!background) { readError.value = Object.values(failures).join('；'); error.value = readError.value }
     }))
     if (token !== generation || sequence !== readSequence) return
+    if (background) {
+      const orderedScopes = [...new Set([...tasks.value.map(row => row.factory_id), ...scopes])]
+      tasks.value = orderedScopes.flatMap(factory => refreshed.get(factory) ?? [])
+      const previousError = readError.value
+      readError.value = Object.values(failures).join('；')
+      if (readError.value || error.value === previousError) error.value = readError.value
+    }
     for (const row of tasks.value) {
       if (!(key(row) in dates)) dates[key(row)] = row.promised_date || row.planned_date
       if (!(key(row) in reasons)) reasons[key(row)] = ''
@@ -130,7 +139,7 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
   if (!requests.has(signature)) requests.set(signature, createRandomUuid())
   readSequence++; loading.value = false; busy.value = true; error.value = ''; success.value = ''; responseError.value = null
   try {
-    await api.respond({ ...body, request_id: requests.get(signature)! }, controller.signal)
+    const saved = await api.respond({ ...body, request_id: requests.get(signature)! }, controller.signal)
     if (token !== generation) return
     requests.delete(signature)
     success.value = action === 'READ' ? '已记录查看，待办仍须明确回应。' : action === 'ACK_CANCEL' ? '已确认收到停止通知；费用及赔偿仍须另行协商。' : action === 'DISPUTE' ? '异议已保留，此版本暂停执行。' : '已确认本版本全部纸品及承诺交期。'
@@ -139,11 +148,15 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
     await nextTick()
     if (token !== generation) return
     if (focused && !focused.isConnected && document.activeElement === document.body) refreshButton.value?.focus()
-    emit('changed')
+    emit('changed', saved, action)
   } catch (cause) { if (token === generation) fail(`回应结果待核对：${getApiErrorMessage(cause)}`) }
   finally { if (token === generation) busy.value = false }
 }
-function refreshOnFocus() { if (document.visibilityState !== 'hidden' && Date.now() - lastReadStarted >= 45000 && !busy.value && !loading.value) void load() }
+function refreshOnFocus() {
+  if (document.visibilityState === 'hidden' || Date.now() - lastReadStarted < 45000 || busy.value || loading.value || backgroundRead) return
+  backgroundRead = true
+  void load(true).finally(() => { backgroundRead = false })
+}
 function refresh() { page.value = 1; return load() }
 defineExpose({ refresh })
 onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus) })
@@ -200,7 +213,9 @@ onBeforeUnmount(() => { generation++; controller.abort(); readController.abort()
               <h4 class="font-semibold text-slate-900">纸品 {{ index + 1 }}</h4>
               <div class="mt-2 grid gap-2 sm:grid-cols-2">
                 <div class="min-w-0 rounded-md bg-slate-50 p-2"><p class="font-semibold text-slate-600">上次发布</p><p v-if="line.before_material?.item_no">货号 {{ line.before_material.item_no }}</p><p>{{ beforeMaterial(row, line) || '—' }}</p><p class="tabular-nums">数量 {{ line.before_quantity }} {{ line.before_material?.unit || line.unit }}</p></div>
-                <div class="min-w-0 rounded-md bg-teal-50/60 p-2"><p class="font-semibold text-teal-800">本次发布</p><p v-if="line.removed">本次移除此纸品</p><template v-else><p v-if="line.item_no">货号 {{ line.item_no }}</p><p>{{ material(line) || '—' }}</p><p class="tabular-nums">数量 <b>{{ line.quantity }} {{ line.unit }}</b></p><p v-if="row.source_kind === 'REPLENISHMENT'" class="text-teal-800">当前承诺交期 {{ line.promised_date || '待供应商确认' }}</p></template></div>
+                <div class="min-w-0 rounded-md bg-teal-50/60 p-2"><p class="font-semibold text-teal-800">本次发布</p><p v-if="line.removed">本次移除此纸品</p><template v-else><p v-if="line.item_no">货号 {{ line.item_no }}</p><p>{{ material(line) || '—' }}</p>
+                  <CartonPaperProcessNote v-if="row.source_kind === 'REGULAR' || row.source_kind === 'REPLENISHMENT'" :note="line.process_note" />
+                  <p class="tabular-nums">数量 <b>{{ line.quantity }} {{ line.unit }}</b></p><p v-if="row.source_kind === 'REPLENISHMENT'" class="text-teal-800">当前承诺交期 {{ line.promised_date || '待供应商确认' }}</p></template></div>
               </div>
             </div>
           </section>

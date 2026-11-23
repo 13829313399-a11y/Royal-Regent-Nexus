@@ -123,10 +123,12 @@ def grouped_slots(workbook, rows):
 
 def money_columns(workbook):
     from .customer_order_360_manual_column import ensure_manual_columns
+    from .customer_order_huadeng_headers import FIELDS
+    aliases = {label: {key(v) for v in values} for label, values in FIELDS}
     sheet = workbook['ITEM表']
     result = []
     for label in MONEY:
-        found = [c.column for c in sheet._cells.values() if c.row == 3 and key(c.value) == key(label)]
+        found = [c.column for c in sheet._cells.values() if c.row == 3 and key(c.value) in aliases[label]]
         if len(found) > 1 or any(c <= 28 for c in found):
             error(f'金额表头 {label} 重复或覆盖公共字段，请先核对')
         if found:
@@ -147,6 +149,9 @@ def money_columns(workbook):
 
 
 def prepare_money(workbook):
+    from .customer_order_360_manual_column import ensure_manual_columns
+    ensure_manual_columns(workbook, factory_id='huadeng', customer_code='casdon',
+        label='备注', aliases={'备注'}, scopes=(('huadeng', 'casdon'),), sheets=('ITEM表',))
     columns = money_columns(workbook)
     fixed = 0
     for name in SHEETS[1:]:

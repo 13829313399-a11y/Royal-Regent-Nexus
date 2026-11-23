@@ -70,7 +70,7 @@ const searchNotice = computed(() => evidence.value?.search.execution === 'unconf
 const contextLabel = computed(() => {
   const context = props.message.context_descriptor
   if (!context) return ''
-  const names: Record<string,string> = { portal:'系统门户','work-center':'事项工作台','injection-scheduling':'注塑排产','three-d-printing':'3D 打印','internal-quote':'内部报价','identity-management':'人员与权限','carton-supplier':'供应商协同','molding-sample':'工模手板','customer-orders':'客户订单','carton-procurement':'纸箱采购','carton-mark':'纸箱唛头','qc-inspection':'QC 验货','document-tools':'文档工具','uv-operations':'UV 生产','spray-production':'喷油生产' }
+  const names: Record<string,string> = { portal:'系统门户','work-center':'事项工作台','three-d-printing':'3D 打印','internal-quote':'内部报价','identity-management':'人员与权限','carton-supplier':'供应商协同','molding-sample':'工模手板','customer-orders':'客户订单','carton-procurement':'纸箱采购','carton-mark':'纸箱唛头','qc-inspection':'QC 验货','document-tools':'文档工具','uv-operations':'UV 生产','spray-production':'喷油生产' }
   const snapshot = props.message.content_parts.find(p => p.type === 'business_snapshot')?.result as { scope?: { label?: string } } | undefined
   return snapshot?.scope?.label ? `${names[context.module_id] || '业务查询'} · ${snapshot.scope.label}`
     : `页面：${names[context.module_id] || '页面说明'} · ${factoryContexts.find(f => f.id === context.factory_id)?.name || '通用说明'}`

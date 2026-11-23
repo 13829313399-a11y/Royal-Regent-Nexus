@@ -16,12 +16,22 @@ export interface ReceiptLineEvidence extends Omit<ReceiptBatchInput, 'quantity'>
   other_unusable_quantity: string; accepted_quantity: string; returned_to_supplier: string
   shortage_quantity: string; shortage_scope: 'RECEIPT'; disposition: 'RETURNED_TO_SUPPLIER' | 'ACCEPTED'
 }
-export interface ReceiveRequest extends ReceiptPriceInput {
+export interface ReceiptInput extends ReceiptPriceInput {
   delivery_quantity?: string
-  factory_id: 'huakang-c'; request_id: string; expected_source_revision: number; expected_receipt_count: number
+  factory_id: 'huakang-c'; request_id: string
   receipt_date: string; delivery_reference: string; delivery_note_date: string | null
-  material_category: MaterialCategory; difference_reason: string; note: string
+  material_category: MaterialCategory; note: string
   batches: ReceiptBatchInput[]; confirmed: boolean
+}
+export interface ReceiveRequest extends ReceiptInput {
+  expected_source_revision: number; expected_receipt_count: number; difference_reason: string
+}
+export interface ReceiveManualRequest extends ReceiptInput {
+  material_id: string; material_revision: number; supplier_id: string; supplier_revision: number; procurement_pending_reason: string
+}
+export interface FabricReceiptReversal { id: string; date: string; reason: string; actor_name: string }
+export interface FabricReceiptBatch extends ReceiptBatchInput {
+  id: string; quality_status: 'PENDING_INSPECTION'; reversal?: FabricReceiptReversal | null
 }
 export interface FabricReceipt {
   receipt_lines?: ReceiptLineEvidence[]; delivered_quantity?: string; counted_quantity?: string; accepted_quantity?: string
@@ -29,15 +39,28 @@ export interface FabricReceipt {
   delivery_quantity?: string
   history_key?: string; receipt_origin?: 'PROCUREMENT' | 'HANDOVER' | 'MANUAL'; operation_id?: string
   handover_document_id?: string; source_version?: string
-  reversed?: boolean; reversal?: { id: string; date: string; reason: string; actor_name: string } | null
+  purchase_status?: '' | 'PENDING' | 'LINKED'; procurement_pending_reason?: string
+  reversed?: boolean; reversal?: FabricReceiptReversal | null
   unit_price?: string; price_unit?: string; currency?: string; amount?: string; price_basis?: string
   purchase_price?: PurchasePriceReference | null
   id: string; source_line_id: string; source_revision: number; facts: PurchaseFacts; quantity: string; unit: string
   prior_received_quantity: string | null; receipt_date: string; accounting_month: string; delivery_reference: string
   material_category: MaterialCategory; difference_reason: string; note: string; actor_name: string; occurred_at: string; stock_posted: boolean
-  batches: (ReceiptBatchInput & { id: string; quality_status: 'PENDING_INSPECTION' })[]
+  batches: FabricReceiptBatch[]
 }
-export interface FabricReceiptReversalPreview { receipt_id: string; expected_revision: number; quantity: string; unit: string; delivery_reference: string; can_reverse: boolean; blocked_reason: string }
+export interface HandoverReceiptDetail {
+  has_posting: boolean
+  original_quantity: string
+  effective_quantity: string
+  batches: FabricReceiptBatch[]
+  observation: (Partial<ReceiptCounts> & {
+    complete: boolean
+    delivered_quantity: string | null
+    shortage_quantity: string | null
+    parts: (ReceiptCounts & { location: string; dye_lot: string; roll_no: string; accepted_quantity: string })[]
+  }) | null
+}
+export interface FabricReceiptReversalPreview { receipt_id: string; expected_revision: number; quantity: string; unit: string; delivery_reference: string; can_reverse: boolean; blocked_reason: string; locations?: string[]; affects_purchase?: boolean; affects_delivery?: boolean }
 export interface FabricReceiptReversalRequest { factory_id: 'huakang-c'; request_id: string; expected_revision: number; business_date: string; reason: string; confirmed: boolean }
 export interface ReceiveSourcesRequest {
   factory_id: 'huakang-c'; request_id: string; receipt_date: string; delivery_reference: string
@@ -52,7 +75,8 @@ export interface FabricStockBatch {
   actor_name: string; occurred_at: string
 }
 export interface ReceiptFilters {
-  channel?: '' | 'PROCUREMENT' | 'HANDOVER' | 'MANUAL'
+  channel?: '' | 'MANUAL_ENTRY' | 'HANDOVER'
+  purchase_status?: '' | 'PENDING'
   supplier?: string; category?: '' | MaterialCategory; receipt_from?: string; receipt_to?: string
   state?: '' | 'ACTIVE' | 'REVERSED'; sort?: 'RECEIPT_DESC' | 'RECEIPT_ASC' | 'RECORDED_DESC' | 'SUPPLIER'
 }
@@ -64,9 +88,17 @@ export const fabricReceivingApi = {
   async receive(id: string, payload: ReceiveRequest) {
     return (await http.post<FabricReceipt>(`/fabric-warehouse/procurement/lines/${encodeURIComponent(id)}/receive`, payload)).data
   },
+  async receiveManual(payload: ReceiveManualRequest) {
+    return (await http.post<FabricReceipt>('/fabric-warehouse/procurement/receipts/manual', payload)).data
+  },
   async receipts(search = '', offset = 0, filters: ReceiptFilters = {}) {
-    return (await http.get<{ total: number; items: FabricReceipt[]; can_reverse?: boolean; operations_included?: boolean; options?: { suppliers: string[] } }>('/fabric-warehouse/procurement/receipts', {
+    return (await http.get<{ total: number; items: FabricReceipt[]; can_reverse?: boolean; can_link_purchase?: boolean; operations_included?: boolean; options?: { suppliers: string[] } }>('/fabric-warehouse/procurement/receipts', {
       params: { factory_id: 'huakang-c', unified: true, search, offset, ...filters, receipt_from: filters.receipt_from || undefined, receipt_to: filters.receipt_to || undefined },
+    })).data
+  },
+  async handoverDetail(id: string, signal?: AbortSignal) {
+    return (await http.get<HandoverReceiptDetail>(`/fabric-warehouse/procurement/receipts/${encodeURIComponent(id)}/handover-detail`, {
+      params: { factory_id: 'huakang-c' }, signal,
     })).data
   },
   async reversalPreview(id: string) { return (await http.get<FabricReceiptReversalPreview>(`/fabric-warehouse/procurement/receipts/${encodeURIComponent(id)}/reversal-preview`, { params: { factory_id: 'huakang-c' } })).data },

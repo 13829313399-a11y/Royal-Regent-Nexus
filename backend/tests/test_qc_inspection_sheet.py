@@ -53,6 +53,57 @@ def save(row,result='',remark=''):
     return sheet.save('huaxing',row['id'],{'revision':row['revision'],'result':result,'remark':remark},ACTOR)
 
 
+def test_pending_workbook_save_receipt_is_one_write_and_bound_to_actor_payload_and_revision():
+    row=save(seed()[0],'PASS')
+    row=sheet.submit('huaxing',row['id'],{'revision':row['revision']},ACTOR)
+    payload={'revision':row['revision'],'requestKey':uuid4().hex,'result':'PASS','remark':'',
+             'inspectionFactory':'试用工厂','inspectionExecution':{'analysisReason':'核对样件'}}
+    saved=sheet.save('huaxing',row['id'],payload,ACTOR,review=True)
+    retried=sheet.save('huaxing',row['id'],payload,ACTOR,review=True)
+    assert saved==retried and retried['revision']==row['revision']+1
+    assert retried['inspectionFactory']=='试用工厂' and retried['inspectionExecution']['analysisReason']=='核对样件'
+    log=sheet.audit('huaxing',row['id'])['items']
+    assert len([event for event in log if event['revision']==saved['revision']])==1
+    assert '_saveRequestFingerprint' not in log[0]['changes']
+    for data,actor in (({**payload,'inspectionFactory':'另一工厂'},ACTOR),(payload,{'id':'other','name':'另一个操作者'})):
+        with pytest.raises(HTTPException) as conflict:
+            sheet.save('huaxing',row['id'],data,actor,review=True)
+        assert conflict.value.status_code==409
+    newer=sheet.save('huaxing',row['id'],{**payload,'revision':saved['revision'],'requestKey':uuid4().hex,'remark':'并发编辑'},ACTOR,review=True)
+    with pytest.raises(HTTPException) as stale:
+        sheet.save('huaxing',row['id'],payload,ACTOR,review=True)
+    assert stale.value.status_code==409 and newer['remark']=='并发编辑'
+    with pytest.raises(HTTPException):
+        sheet.save('huaxing',row['id'],payload,ACTOR)
+
+
+def test_pending_workbook_photo_removal_receipt_does_not_remove_twice():
+    row=save(seed()[0],'PASS')
+    row,_=photo(row)
+    row=sheet.submit('huaxing',row['id'],{'revision':row['revision']},ACTOR)
+    body={'revision':row['revision'],'photoId':row['photos'][0]['id'],'requestKey':uuid4().hex}
+    saved=sheet.remove_photo('huaxing',row['id'],body,ACTOR,review=True)
+    assert not saved['photos'] and saved['revision']==row['revision']+1
+    assert sheet.remove_photo('huaxing',row['id'],body,ACTOR,review=True)==saved
+    with pytest.raises(HTTPException) as conflict:
+        sheet.remove_photo('huaxing',row['id'],{**body,'photoId':'other'},ACTOR,review=True)
+    assert conflict.value.status_code==409
+
+
+def test_pushed_schedule_source_note_does_not_prefill_qc_remark():
+    order=source('imported')
+    order['remark']='原始业务备注'
+    order['sourceRemark']='原始业务备注\n原表完成情况：PASS'
+    row,=sheet.sync('huaxing',pushed_candidates([order]))['items']
+    assert row['remark']==''
+    assert row['sourceNote']==order['sourceRemark']
+    assert row['sourceRecord']['remark']==order['remark']
+    save(row,'PASS','验货员手填备注')
+    refreshed,=sheet.sync('huaxing',pushed_candidates([{**order,'sourceRemark':'业务更新备注'}]))['items']
+    assert refreshed['remark']=='验货员手填备注'
+    assert refreshed['sourceNote']=='业务更新备注'
+
+
 def photo(row,color='red',key=None,fmt='PNG'):
     output=BytesIO();Image.new('RGB',(160,90),color).save(output,format=fmt)
     body={'revision':row['revision'],'name':'现场照片.'+fmt.lower(),'content':base64.b64encode(output.getvalue()).decode(),'requestKey':key or uuid4().hex}
@@ -128,6 +179,41 @@ def test_existing_workflow_and_legacy_snapshots_preserved(db):
     assert old['result']=='COND' and old['historicalResult']=='' and legacy==before
 
 
+def test_http_photo_annotation_write_is_scoped_and_readable_by_other_qc_users(db,monkeypatch):
+    from app.services import auth
+    monkeypatch.setattr(auth,'add_auth_audit',lambda *a,**k:None)
+    async def upstream(*args):return httpx.Response(200,json={'records':[]})
+    monkeypatch.setattr(gateway,'upstream',upstream)
+    row,_=photo(save(seed()[0],'PASS',''))
+    photo_id=row['photos'][0]['id']
+    app=FastAPI();app.include_router(gateway.router);current=[qc_user()]
+    app.dependency_overrides[get_current_user]=lambda:current[0]
+    app.dependency_overrides[get_db]=lambda:db
+    arrow={'type':'arrow','x1':.1,'y1':.2,'x2':.7,'y2':.8}
+    body={'photoId':photo_id,'annotationVersion':0,'annotations':[arrow]}
+    with TestClient(app) as client:
+        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']+'api/inspection-sheet/'
+        relative='entries/'+row['id']
+        assert client.post(base+relative+'/photo-annotations',json=body,headers={'sec-fetch-site':'cross-site'}).status_code==403
+        result=client.post(base+relative+'/photo-annotations',json=body)
+        assert result.status_code==200,result.text
+        pending=sheet.submit('huaxing',row['id'],{'revision':result.json()['entry']['revision']},ACTOR)
+        writer=current[0]
+        read_permissions=frozenset({'qc_inspection:read'})
+        current[0]=replace(writer,id='qc-annotation-reader',permissions=read_permissions,
+            grants=tuple(replace(grant,permissions=read_permissions) for grant in writer.grants))
+        read_base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']+'api/inspection-sheet/'
+        info=client.get(read_base+relative+'/photo-info').json()['items'][0]
+        assert info['annotationVersion']==1 and info['annotations']==[arrow]
+        assert client.post(read_base+'review/'+relative+'/photo-annotations',json={**body,'annotationVersion':1,'annotations':[]}).status_code==403
+        current[0]=writer
+        result=client.post(base+'review/'+relative+'/photo-annotations',json={**body,'annotationVersion':1,'annotations':[]})
+        assert result.status_code==200,result.text
+        assert result.json()['entry']['revision']==pending['revision']+1
+        info=client.get(base+relative+'/photo-info').json()['items'][0]
+        assert info['annotationVersion']==2 and info['annotations']==[]
+
+
 def test_http_actual_save_read_photo_export_permissions_and_source_unchanged(db,monkeypatch):
     from app.services import auth
     monkeypatch.setattr(auth,'add_auth_audit',lambda *a,**k:None)
@@ -194,3 +280,41 @@ def test_pending_migrates_old_check_without_losing_photos_changes_or_ids():
     assert saved['result']==saved['cumulativeResult']=='PENDING'
     assert len(saved['photos'])==1
     with sheet.store() as conn:assert sheet.get(conn,'huaxing',a['id'])['result']=='PENDING'
+
+
+@pytest.mark.parametrize('result,completion', [('PASS','已完成'),('FAIL','未完成'),('PENDING','未完成'),('LG','未完成'),('','未完成')])
+def test_completion_uses_result_without_changing_review_membership_or_source(result,completion):
+    row=seed()[0]
+    updated=save(row,result=result)
+    assert updated['completion']==completion
+    assert updated['reviewState']==row['reviewState'] and updated['submittedAt']==row['submittedAt']
+    assert updated['sourceRecord']==row['sourceRecord']
+    assert 'completion' not in {key for key,_ in sheet.COLUMNS}
+    if result:
+        submitted=sheet.submit('huaxing',row['id'],{'revision':updated['revision']},ACTOR)
+        assert submitted['completion']==completion and submitted['reviewState']=='pending'
+        response=sheet.review_batch('huaxing','confirm',{'entries':[{'id':row['id'],'revision':submitted['revision']}],'requestKey':uuid4().hex},ACTOR)
+        assert response['succeeded']==1
+        approved=response['results'][0]['item']
+        assert approved['completion']==completion and approved['reviewState']=='approved'
+        response=sheet.review_batch('huaxing','revoke',{'entries':[{'id':row['id'],'revision':approved['revision']}],'requestKey':uuid4().hex},ACTOR)
+        pending=response['results'][0]['item']
+        assert pending['completion']==completion and pending['reviewState']=='pending'
+        returned=sheet.return_to_inspection('huaxing',row['id'],{'revision':pending['revision'],'requestKey':uuid4().hex,'reason':'测试退回'},ACTOR)['item']
+        assert returned['completion']==completion and returned['reviewState']=='returned_to_inspection'
+
+
+def test_hidden_completion_preserves_source_base_and_revision_on_resync():
+    original=source('completion-history')
+    original['completion']='旧业务完成描述'
+    candidates=pushed_candidates([original])
+    before=sheet.sync('huaxing',candidates)['items'][0]
+    with sheet.store() as conn:
+        captured=conn.execute('SELECT base FROM entries WHERE id=?',(before['id'],)).fetchone()[0]
+    assert sheet.base_fields(original)['completion']=='旧业务完成描述'
+    after=sheet.sync('huaxing',pushed_candidates([original]))['items'][0]
+    assert after['revision']==before['revision']
+    assert after['completion']=='未完成'
+    assert after['sourceRecord']['completion']=='旧业务完成描述'
+    with sheet.store() as conn:
+        assert conn.execute('SELECT base FROM entries WHERE id=?',(before['id'],)).fetchone()[0]==captured

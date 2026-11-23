@@ -114,10 +114,15 @@ defineExpose({ permitLeave, requestClose })
         @close-auto-focus="closed"
       >
         <header class="iamx-dialog-header">
+          <slot name="identity" />
           <div>
-            <DialogTitle ref="titleElement" tabindex="-1">{{ title }}</DialogTitle
-            ><DialogDescription>{{ description }}</DialogDescription>
+            <div class="iamx-dialog-title">
+              <DialogTitle ref="titleElement" tabindex="-1">{{ title }}</DialogTitle>
+              <slot name="status" />
+            </div>
+            <DialogDescription>{{ description }}</DialogDescription>
           </div>
+          <slot name="actions" />
           <Button variant="ghost" :aria-label="`关闭${title}`" @click="requestClose"
             ><X :size="21"
           /></Button>

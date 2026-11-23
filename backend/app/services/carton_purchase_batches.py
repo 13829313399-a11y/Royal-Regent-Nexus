@@ -3,12 +3,23 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.carton_procurement import CartonPurchaseOrderIssue
+
+
+def document_line_changes(lines, previous_lines):
+    quantities = {line["id"]: Decimal(str(line["after_required_quantity"])) for line in previous_lines}
+    result = []
+    for line in lines:
+        before = quantities.get(line["id"], Decimal(0))
+        after = Decimal(str(line["after_required_quantity"]))
+        result.append(dict(line, before_required_quantity=str(before), required_quantity_delta=str(after - before)))
+    return result
 
 
 def new_purchase_batch(orders, timestamp):

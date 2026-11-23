@@ -7,6 +7,7 @@ export interface CustomerOrderLedgerHttpClient {
 }
 
 export interface CustomerOrderLedgerCapabilities {
+  indonesia_schedule_import?: boolean
   cutting_dispatch_enabled?: boolean
   read: boolean
   write: boolean
@@ -85,6 +86,10 @@ export function createCustomerOrderLedgerApi(client: CustomerOrderLedgerHttpClie
     async detail(id: string, factoryId: string) {
       return (await client.get<CustomerOrderLedgerDetail>(`${base}/lines/${encodeURIComponent(id)}?${query({ factory_id: factoryId })}`)).data
     },
+    async importIndonesia(id: string, factoryId: string, revision: number, source: 'RRI' | 'RRM') {
+      return (await client.post<{ id: number }>(`${base}/lines/${encodeURIComponent(id)}/indonesia-schedule?${query({ factory_id: factoryId })}`,
+        { expected_revision: revision, source }, { headers: { 'X-Nexus-Shipping': '1' } })).data
+    },
     async amend(id: string, factoryId: string, payload: { expected_revision: number; quantity: string; requested_ship_date: string; note: string; reason: string }) {
       return (await client.post<CustomerOrderLedgerLine>(`${base}/lines/${encodeURIComponent(id)}/amend?${query({ factory_id: factoryId })}`, payload)).data
     },
@@ -104,7 +109,7 @@ export function createCustomerOrderLedgerApi(client: CustomerOrderLedgerHttpClie
       return (await client.post<CustomerOrderLedgerLine>(`${base}/shipments/${encodeURIComponent(id)}/reverse?${query({ factory_id: factoryId })}`, payload)).data
     },
     async importConfirmed(customerCode: string, payload: FormData) {
-      return (await client.post<{ items: CustomerOrderLedgerLine[]; created_count: number; existing_count: number; reconciled_count: number; warehouse_sync?: WarehouseScheduleSyncResult }>(
+      return (await client.post<{ items: CustomerOrderLedgerLine[]; created_count: number; existing_count: number; reconciled_count: number; advisory_count?: number; warnings?: string[]; unapplied_count?: number; warehouse_sync?: WarehouseScheduleSyncResult }>(
         `${base}/imports/${encodeURIComponent(customerCode)}`,
         payload,
         // Leave room for the bounded worker to stop and return its final save/sync result.

@@ -19,16 +19,35 @@ ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ARG VITE_COLLABORATION_ENABLED=true
 ENV VITE_COLLABORATION_ENABLED=${VITE_COLLABORATION_ENABLED}
 
-RUN npm run build
+ARG VITE_IAM_IDENTITY_UI_ENABLED=true
+ARG VITE_POSITION_WORKBENCH_ENABLED=true
+ARG VITE_IAM_CONSOLIDATED_UI_ENABLED=true
+ARG VITE_IAM_STUDIO_ENABLED=true
+ENV VITE_IAM_IDENTITY_UI_ENABLED=${VITE_IAM_IDENTITY_UI_ENABLED} \
+    VITE_POSITION_WORKBENCH_ENABLED=${VITE_POSITION_WORKBENCH_ENABLED} \
+    VITE_IAM_CONSOLIDATED_UI_ENABLED=${VITE_IAM_CONSOLIDATED_UI_ENABLED} \
+    VITE_IAM_STUDIO_ENABLED=${VITE_IAM_STUDIO_ENABLED}
+
+RUN for flag in VITE_IAM_IDENTITY_UI_ENABLED VITE_POSITION_WORKBENCH_ENABLED VITE_IAM_CONSOLIDATED_UI_ENABLED VITE_IAM_STUDIO_ENABLED; do \
+      [ "$(printenv "$flag")" = true ] || { echo "Production IAM requires $flag=true" >&2; exit 1; }; \
+    done && npm run build
+
+FROM python:3.13-slim-bookworm AS iam-verified
+COPY deploy/check_iam_frontend.py /check_iam_frontend.py
+RUN --mount=type=bind,from=build,source=/app/dist,target=/dist \
+    python /check_iam_frontend.py --dist /dist --approve-dir /approved
 
 FROM nginx:alpine AS runtime
 
 COPY nginx.prod.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=iam-verified /approved/ /run/rrn-iam-approved/
+COPY deploy/99-verify-iam-web.sh /docker-entrypoint.d/99-verify-iam-web.sh
 
 # Vite preserves public-file modes; a restrictive checkout umask must not
 # prevent the unprivileged Nginx worker from reading static assets.
-RUN find /usr/share/nginx/html -type d -exec chmod 755 {} + \
+RUN chmod 755 /docker-entrypoint.d/99-verify-iam-web.sh \
+    && find /usr/share/nginx/html -type d -exec chmod 755 {} + \
     && find /usr/share/nginx/html -type f -exec chmod 644 {} +
 
 EXPOSE 80

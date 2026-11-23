@@ -79,6 +79,23 @@ def test_batch_accept_is_atomic_per_factory_and_shipping_needs_acceptance(monkey
 def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
     with make_client(monkeypatch) as client:
         setup_portal(client)
+        order = client.get(BASE + "/workspace", params={"factory_id": "huaxing"}).json()["orders"][0]
+        selection = {"factory_id": "huaxing", "kind": "PURCHASE", "id": order["issue_id"]}
+        export = {"documents": [selection], "acknowledge_unaccepted": True}
+        assert client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json() == []
+        for path in ("/documents/export.xlsx", "/documents/order-import.xlsx"):
+            assert client.post(BASE + path, json=export).status_code == 404
+
+        lines = [{
+            "order_line_id": line["id"], "issue_id": order["issue_id"],
+            "expected_revision": line["commitment_revision"], "promised_date": "2026-09-25",
+        } for line in order["lines"]]
+        for index, line in enumerate(lines):
+            accepted = client.put(BASE + "/commitments/batch", json={"factory_id": "huaxing", "lines": [line]})
+            assert accepted.status_code == 200, accepted.text
+            if index < len(lines) - 1:
+                assert client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json() == []
+                assert client.post(BASE + "/documents/order-import.xlsx", json=export).status_code == 404
         docs = client.get(BASE + "/documents", params={"factory_id": "huaxing"})
         assert docs.status_code == 200, docs.text
         purchase = next(row for row in docs.json() if row["kind"] == "PURCHASE")
@@ -102,12 +119,6 @@ def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
         assert client.get(BASE + "/documents", params={"factory_id": "huadeng"}).status_code in (403, 422)
         assert client.get(BASE + "/activity", params={"factory_id": "huadeng"}).status_code in (403, 422)
 
-        order = client.get(BASE + "/workspace", params={"factory_id": "huaxing"}).json()["orders"][0]
-        lines = [{
-            "order_line_id": line["id"], "issue_id": order["issue_id"],
-            "expected_revision": line["commitment_revision"], "promised_date": "2026-09-25",
-        } for line in order["lines"]]
-        assert client.put(BASE + "/commitments/batch", json={"factory_id": "huaxing", "lines": lines}).status_code == 200
         sent = client.post(BASE + "/shipments", json={
             "factory_id": "huaxing", "request_id": str(uuid4()),
             "delivery_note_no": "DN-DOCS", "delivery_date": "2026-09-25",
@@ -151,7 +162,7 @@ def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
         activity = client.get(BASE + "/activity", params={"factory_id": "huaxing"})
         assert activity.status_code == 200
         actions = {row["action"] for row in activity.json()}
-        assert {"采购单已生成", "纸品已确认接单", "供应商已确认发货"}.issubset(actions)
+        assert {"待接单版本已发送", "纸品已确认接单", "供应商已确认发货"}.issubset(actions)
         assert "detail_json" not in activity.text and "unit_price" not in activity.text
         assert client.post(BASE + "/documents/export.xlsx", json={"documents": [
             *selected, {"factory_id": "huadeng", "kind": "PURCHASE", "id": purchase["id"]},
@@ -167,12 +178,19 @@ def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
 
 def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monkeypatch):
     assert _supplier_import_dimensions("18*12.5*17.25", "PO") == [18.0, 12.5, 17.25]
+    order = _order_payload()
+    note = "沿长方向压线 6.25 + 6 + 6.5 + 5.625"
+    order["note"] = "按签样生产"
+    order["lines"][1].update(packaging_type="压线卡", specification="24.375*6", process_note=note, note="旧纸品说明")
+    monkeypatch.setattr("test_carton_procurement_api._order_payload", lambda: order)
     with make_client(monkeypatch) as client:
         setup_portal(client)
         accept_all(client)
         purchase = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                         if row["kind"] == "PURCHASE")
         selection = {"factory_id": "huaxing", "kind": "PURCHASE", "id": purchase["id"]}
+        assert purchase["order_import_export_count"] == 0
+        assert purchase["order_import_last_export_at"] is None
         exported = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
         assert exported.status_code == 200, exported.text
         book = load_workbook(BytesIO(exported.content), read_only=True, data_only=True)
@@ -186,11 +204,29 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert rows[1][6] == float(purchase["lines"][0]["change_quantity"])
         assert rows[1][9] == "inch"
         assert rows[1][11].date().isoformat() == purchase["orders"][0]["planned_date"]
-        assert rows[2][5] is None  # flat paper has only two dimensions
+        assert rows[2][3:6] == (24.375, 6, None)
+        assert rows[1][12] == "按签样生产"
+        assert rows[2][12] == f"按签样生产；{note}；旧纸品说明"
+        assert rows[1][13] is None and rows[2][13] is None
+        assert purchase["lines"][1]["process_note"] == note
         book.close()
         counted = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                        if row["id"] == purchase["id"])
         assert counted["export_count"] == 1
+        assert counted["order_import_export_count"] == 1
+        assert counted["order_import_last_export_at"]
+        download = client.post(BASE + "/documents/export.xlsx", json={"documents": [selection]})
+        assert download.status_code == 200, download.text
+        book = load_workbook(BytesIO(download.content), read_only=True)
+        regular_rows = list(book["采购单"].values)
+        assert regular_rows[0][-1] == "备注" and "工艺备注" not in regular_rows[0]
+        assert [row[-1] for row in regular_rows[1:]] == ["按签样生产", f"按签样生产；{note}"]
+        book.close()
+        after_download = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
+                              if row["id"] == purchase["id"])
+        assert after_download["export_count"] == 2
+        assert after_download["order_import_export_count"] == 1
+        assert after_download["order_import_last_export_at"] == counted["order_import_last_export_at"]
         from app.db import SessionLocal
         from app.models.carton_procurement import CartonPurchaseOrderIssue
         with SessionLocal() as db:
@@ -198,15 +234,23 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
             snapshot = json.loads(issue.snapshot_json)
             snapshot["lines"][0]["specification"] = "18*12.5*17.25"
             snapshot["lines"][0]["dimension_unit"] = ""
+            snapshot["order"].pop("note")
+            snapshot["lines"][1].pop("process_note")
             issue.snapshot_json = json.dumps(snapshot, ensure_ascii=False)
             db.commit()
         cm_export = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
         assert cm_export.status_code == 200, cm_export.text
         cm_book = load_workbook(BytesIO(cm_export.content), read_only=True, data_only=True)
-        cm_row = list(cm_book.active.values)[1]
+        _, cm_row, legacy_paper = list(cm_book.active.values)
         assert cm_row[3:6] == (18, 12.5, 17.25)
         assert cm_row[9] == "cm"
+        assert cm_row[12] is None and legacy_paper[12] == "旧纸品说明"
         cm_book.close()
+        plain = client.post(BASE + "/documents/export.xlsx", json={"documents": [selection]})
+        assert plain.status_code == 200, plain.text
+        book = load_workbook(BytesIO(plain.content), read_only=True)
+        assert "备注" not in next(book["采购单"].values)
+        book.close()
         rejected = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [
             {**selection, "id": "forged-id"},
         ]})
@@ -226,7 +270,8 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert "无法拆成" in malformed.json()["detail"]
         counted = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                        if row["id"] == purchase["id"])
-        assert counted["export_count"] == 2
+        assert counted["export_count"] == 4
+        assert counted["order_import_export_count"] == 2
 
 
 @pytest.mark.parametrize("responsibility", ["OWN", "SUPPLIER"])
@@ -238,13 +283,21 @@ def test_supplier_order_import_exports_replenishment_delta_with_settlement_note(
         issue = created.json()["issue"]
         setup_portal(client)
         documents = client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
+        assert all(row["id"] != issue["id"] for row in documents)
+        selection = {"factory_id": "huaxing", "kind": "PURCHASE", "id": issue["id"]}
+        blocked = client.post(BASE + "/documents/order-import.xlsx", json={
+            "documents": [selection], "acknowledge_unaccepted": True})
+        assert blocked.status_code == 404
+        accepted = client.put(BASE + "/commitments/batch", json={"factory_id": "huaxing", "lines": [{
+            "order_line_id": order["lines"][0]["id"], "issue_id": issue["id"],
+            "expected_revision": 0, "promised_date": "2026-09-25",
+        }]})
+        assert accepted.status_code == 200, accepted.text
+        documents = client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
         purchase = next(row for row in documents if row["id"] == issue["id"])
         assert purchase["replenishment"] is True
         assert purchase["export_count"] == 0
-        selection = {"factory_id": "huaxing", "kind": "PURCHASE", "id": issue["id"]}
-        blocked = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
-        assert blocked.status_code == 409 and "补单待确认接单" in blocked.text
-        response = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection], "acknowledge_unaccepted": True})
+        response = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
         assert response.status_code == 200, response.text
         book = load_workbook(BytesIO(response.content), read_only=True, data_only=True)
         rows = list(book.active.values)

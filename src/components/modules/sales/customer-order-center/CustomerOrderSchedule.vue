@@ -175,28 +175,30 @@ function initialiseColumns(columns: CustomerOrderScheduleColumn[]) {
   visibleColumnKeys.value = columns.slice(0, 4).map((column) => column.key)
 }
 
-async function loadSchedule(resetColumns = false, keepDetail = false) {
+let dayRefreshInFlight = false
+async function loadSchedule(resetColumns = false, keepDetail = false, background = false) {
   if (!applied.value?.customerCode) return
   const token = ++scheduleRequestSequence
   const factoryId = props.factoryId
   const filters = { ...applied.value }
-  loading.value = true
-  message.value = ''
-  schedule.value = null
+  if (!background) { loading.value = true; message.value = ''; schedule.value = null }
   if (!keepDetail) selectedLineId.value = ''
   try {
     const response = await customerOrderScheduleApi.get(factoryId, scheduleOptions(filters))
     if (token !== scheduleRequestSequence || factoryId !== props.factoryId) return
     if (response.factory_id !== factoryId || response.customer_code !== filters.customerCode
       || Object.values(response.sections).some((group) => group.items.some((line) => line.factory_id !== factoryId || line.customer_code !== filters.customerCode))) {
+      schedule.value = null
       message.value = '返回数据与当前厂区或客户不一致，未显示该结果。'
       return
     }
     if (factoryId === 'huakang-a' && filters.customerCode === '360'
       && (!response.inspection_grouping || !response.sections.inspection_pending || !response.sections.completed)) {
+      schedule.value = null
       message.value = '未取得 360 验货日期归类结果，请刷新后重试。'
       return
     }
+    message.value = ''
     schedule.value = response
     pages.value = {
       unshipped: response.sections.unshipped.page,
@@ -282,8 +284,10 @@ function shanghaiToday() {
 }
 
 function refreshAcrossDate() {
-  if (document.visibilityState !== 'visible' || loading.value || !inspectionGrouping.value) return
-  if (inspectionGrouping.value.as_of_date !== shanghaiToday()) refreshSchedule()
+  if (document.visibilityState !== 'visible' || loading.value || dayRefreshInFlight || !inspectionGrouping.value ||
+    inspectionGrouping.value.as_of_date === shanghaiToday()) return
+  dayRefreshInFlight = true
+  void loadSchedule(false, true, true).finally(() => { dayRefreshInFlight = false })
 }
 
 function resetOrganizer(clearInput = true) {

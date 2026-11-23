@@ -30,6 +30,8 @@ def edu_preview(*, product=RAW, factory="huaxing", contract="C001", po="PO-0001"
     result.update(customer_code="edu", customer_name="EDU")
     result["rows"][0].update(product_no=product, contract_no=contract, po_no=po,
                              units_per_carton="16", carton_count="625")
+    if product == BASE:
+        result["rows"][0]["source_product_no"] = RAW
     return result
 
 
@@ -85,7 +87,7 @@ def test_old_full_product_reimport_reuses_line_versions_and_shipments(db, with_a
     assert db.get(Identity, ("huaxing", "edu", canonical)).line_id == line.id
     again = deepcopy(incoming)
     again["rows"][0].update(product_no="f12-bl172-c0030001", source_product_no="F12-BL172-C0030001")
-    assert save(db, again)["items"][0]["id"] == line.id
+    assert save(db, again)["items"][0]["id"] != line.id
     assert line.data == before and line.version == 1
 
 
@@ -114,10 +116,45 @@ def test_changed_previously_recorded_source_date_still_requires_reconciliation(d
     line = seed_legacy(db, prior)
     incoming = edu_preview(product=BASE)
     incoming["rows"][0]["source_order_date"] = "2026-10-10"
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
-    assert error.value.status_code == 409 and "source_order_date" in error.value.detail
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
     assert line.version == 1
+
+
+def test_first_source_ship_date_metadata_does_not_duplicate_old_line(db):
+    line = seed_legacy(db)
+    incoming = edu_preview()
+    incoming['rows'][0]['source_ship_date'] = incoming['rows'][0]['requested_ship_date']
+    assert save(db, incoming)['items'][0]['id'] == line.id
+    assert line.version == 1
+
+
+def test_conflicting_full_sources_in_old_short_line_remain_separate(db):
+    prior = edu_preview(product=BASE)
+    line = seed_legacy(db, prior)
+    line.data = {**line.data, 'source_product_no': BASE+'0001'}
+    line.version += 1
+    service.record_version(db,line,'旧来源冲突','legacy');db.commit()
+    before = deepcopy(line.data)
+    for product in (RAW,BASE+'0001'):
+        incoming = edu_preview(product=product)
+        result = save(db,incoming)
+        assert result['created_count'] == 1 and result['advisory_count'] == 1
+        assert result['items'][0]['id'] != line.id
+        assert save(db,incoming)['items'][0]['id'] == result['items'][0]['id']
+    assert line.data == before and line.version == 2
+
+
+def test_wrong_full_alias_is_not_reused_or_reassigned(db):
+    line = seed_legacy(db)
+    incoming = edu_preview(product=BASE+'0001')
+    identity = service.identity_for(incoming['rows'][0],'edu')
+    db.add(Identity(factory_id='huaxing',customer_code='edu',identity_key=identity,line_id=line.id));db.commit()
+    result = save(db,incoming)
+    assert result['advisory_count'] == 1 and result['items'][0]['id'] != line.id
+    assert db.get(Identity,('huaxing','edu',identity)).line_id == line.id
+    assert save(db,incoming)['items'][0]['id'] == result['items'][0]['id']
 
 
 def test_same_normalized_product_never_links_across_factories(db):
@@ -137,14 +174,16 @@ def test_multiple_legacy_candidates_block_even_when_one_has_canonical_alias(db, 
     first = seed_legacy(db)
     second = seed_legacy(db, edu_preview(product="F12-BL172-C0030001"))
     incoming = edu_preview(product=BASE)
+    incoming["rows"][0].pop("source_product_no")
     if canonical_alias:
         db.add(Identity(factory_id="huaxing", customer_code="edu",
             identity_key=service.identity_for(incoming["rows"][0], "edu"), line_id=first.id))
         db.commit()
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
-    assert error.value.status_code == 409 and "多条历史订单" in error.value.detail
-    assert db.scalar(select(func.count()).select_from(Line)) == 2
+    result = save(db, incoming)
+    assert result["items"][0]["id"] not in {first.id, second.id}
+    assert "未关联" in result["items"][0]["data"]["intake_notice"]
+    assert save(db, incoming)["items"][0]["id"] == result["items"][0]["id"]
+    assert db.scalar(select(func.count()).select_from(Line)) == 3
     assert first.version == second.version == 1
 
 
@@ -157,12 +196,13 @@ def test_compatibility_does_not_hide_real_quantity_date_pack_or_product_changes(
     incoming = edu_preview(product=BASE)
     incoming["rows"][0].update(change)
     before = deepcopy(line.data)
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
-    assert error.value.status_code == 409
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
     assert line.data == before and line.version == 1
-    assert db.get(Identity, ("huaxing", "edu", service.identity_for(incoming["rows"][0], "edu"))) is None
+    original_alias = db.get(Identity, ("huaxing", "edu", service.identity_for(incoming["rows"][0], "edu")))
+    assert original_alias is None or original_alias.line_id == line.id
 
 
 @pytest.mark.parametrize("with_alias", [False, True])
@@ -185,11 +225,11 @@ def test_formal_reconciliation_preserves_old_alias_shipments_and_immutable_versi
     assert save(db, incoming)["items"][0]["id"] == line.id
     old_short = edu_preview(product=BASE)
     assert service.resolve_existing_line(db, "huaxing", "edu", old_short["rows"][0]).id == line.id
-    with pytest.raises(HTTPException) as error:
-        save(db, old_short)
-    assert error.value.status_code == 409
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
-    assert db.scalar(select(func.count()).select_from(Version)) == 2
+    variant = save(db, old_short)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
+    assert db.scalar(select(func.count()).select_from(Version)) == 3
     assert db.scalar(select(func.count()).select_from(Shipment)) == 1
 
 
@@ -204,10 +244,10 @@ def test_earlier_formal_reconciliation_is_resolved_through_legacy_version_alias(
     db.commit()
     old_short = edu_preview(product=BASE)
     assert service.resolve_existing_line(db, "huaxing", "edu", old_short["rows"][0]).id == line.id
-    with pytest.raises(HTTPException) as error:
-        save(db, old_short)
-    assert error.value.status_code == 409
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
+    variant = save(db, old_short)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
 
 
 def test_formal_reconciliation_cannot_take_another_legacy_identity(db):
@@ -222,7 +262,7 @@ def test_formal_reconciliation_cannot_take_another_legacy_identity(db):
 
 
 def test_reconcile_canonical_old_row_without_alias_adds_identity_only_once(db):
-    line = seed_legacy(db, edu_preview(product=BASE), with_alias=False)
+    line = seed_legacy(db, edu_preview(product=RAW), with_alias=False)
     result = save(db, edu_preview(product=BASE, qty="9000"), reconcile_line=line,
                   expected_revision=line.revision)
     assert result["items"][0]["id"] == line.id and line.version == 2
@@ -281,13 +321,24 @@ def test_history_short_product_cannot_bypass_existing_raw_ledger(db):
     line = seed_legacy(db)
     content = history_workbook()
     parsed = history_preview(db, content)
-    assert parsed["summary"]["existing"] == 1
-    assert any("台账已有" in issue for issue in parsed["rows"][0]["issues"])
+    assert parsed["summary"]["blocked"] == 1
+    assert any("短货号" in issue for issue in parsed["rows"][0]["issues"])
     with pytest.raises(HTTPException) as error:
         history_confirm(db, parsed, content)
-    assert error.value.status_code == 409
+    assert error.value.status_code == 400
     assert db.scalar(select(func.count()).select_from(Line)) == 1
     assert line.shipped_quantity == 0 and line.version == 1
+
+
+def test_history_short_item_with_explicit_comment_resolves_full_line(db):
+    from openpyxl.comments import Comment
+    line=seed_legacy(db)
+    book=openpyxl.load_workbook(BytesIO(history_workbook()))
+    book['ITEM表']['D4'].comment=Comment('原始产品型号：'+RAW,'source')
+    content=BytesIO();book.save(content)
+    parsed=history_preview(db,content.getvalue())
+    assert parsed['summary']['existing']==1 and parsed['summary']['blocked']==0
+    assert parsed['rows'][0]['data']['source_product_no']==RAW
 
 
 def test_history_confirmation_rechecks_a_legacy_order_created_after_preview(db):
@@ -315,14 +366,14 @@ def test_history_same_file_old_raw_retry_reuses_opening_and_adds_alias(db):
     assert line.data == before and line.identity_key == old_key and line.product_no == RAW
     assert line.shipped_quantity == 3000 and line.version == 1
     canonical = service.identity_for(reparsed["rows"][0]["data"], "edu")
-    assert canonical != old_key
+    assert canonical == old_key
     assert db.get(Identity, ("huaxing", "edu", canonical)).line_id == line.id
     assert db.scalar(select(func.count()).select_from(Version)) == 1
     assert db.scalar(select(func.count()).select_from(Shipment)) == 0
     replacement = history_workbook(BASE)
     with pytest.raises(HTTPException) as error:
         history_confirm(db, history_preview(db, replacement), replacement)
-    assert error.value.status_code == 409  # A changed file cannot replace the original opening.
+    assert error.value.status_code == 400  # Missing full-code evidence cannot replace the original opening.
 
 
 def test_history_ambiguous_legacy_candidates_block_both_preview_and_stale_confirm(db):

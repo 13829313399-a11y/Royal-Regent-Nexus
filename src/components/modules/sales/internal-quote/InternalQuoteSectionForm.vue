@@ -22,7 +22,7 @@ import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/
 import type { QuotePricingMetadata, SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 import { calculateCustomerSuppliedFeeHkd, type CustomerSuppliedMaterialRow } from '@/lib/internalQuoteSectionPayload'
 
-const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; factoryId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; canEditMaterialPrices?: boolean; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
+const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; factoryId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; materialSources?: Map<string, string[]>; canEditMaterialPrices?: boolean; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
 const model = defineModel<Record<string, unknown>>({ required: true })
 const emit = defineEmits<{
   'block-progress': [blocks: InternalQuoteFormBlock[]]
@@ -288,7 +288,15 @@ function materialOptions(row: MoldingMaterialSelection) {
 function selectedMaterialReference(row: MoldingMaterialSelection) {
   return selectedMoldingMaterial(row, moldingMaterialReferences.value)
 }
+function rememberMaterialChoice(row: MoldingMaterialSelection & Pick<InjectionRow, 'engineering_source_key' | 'engineering_sync_disabled' | 'material_choice_for'>) {
+  if (row.engineering_source_key && !row.engineering_sync_disabled) {
+    // A department-only editor can lack the Engineering payload. The server
+    // binds that first explicit choice to the source in the save transaction.
+    row.material_choice_for = props.materialSources?.get(row.engineering_source_key) ?? row.material_choice_for ?? []
+  }
+}
 function selectMaterial(row: MoldingMaterialSelection) {
+  rememberMaterialChoice(row)
   const candidates = row.material ? materialOptions(row) : []
   if (!candidates.some((item) => normalizedReferenceToken(item.grade) === normalizedReferenceToken(row.grade))) row.grade = candidates.length === 1 ? candidates[0].grade : ''
 }
@@ -298,6 +306,7 @@ function materialReferenceValue(item: MoldingMaterialReference) {
 function selectMaterialGrade(row: MoldingMaterialSelection, value: string) {
   const selected = moldingMaterialReferences.value.find((item) => materialReferenceValue(item) === value)
   if (!selected) return
+  rememberMaterialChoice(row)
   row.material = selected.material
   row.grade = selected.grade
 }
@@ -724,6 +733,7 @@ function copyInjection(source: InjectionRow) {
     line_id: `injection-${createRandomUuid()}`,
     engineering_source_key: '',
     engineering_mold_id: '',
+    material_choice_for: undefined,
     engineering_part_id: '', labor_job_id: '', cost_scope: 'whole_mold',
     engineering_parts: [],
     engineering_source_missing: false,
@@ -735,6 +745,7 @@ function copyInjection(source: InjectionRow) {
 function detachInjection(row: InjectionRow) {
   // Retain source identity to suppress a replacement row for this same mold.
   row.engineering_synced_fields = []
+  delete row.material_choice_for
   row.engineering_parts = []
   row.engineering_source_missing = false
   row.engineering_sync_disabled = true

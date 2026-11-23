@@ -112,7 +112,7 @@ html.qc-mobile textarea {
 
 /* ════════ 窄屏手机进一步精简：html.qc-narrow ════════ */
 html.qc-narrow .cards-row { grid-template-columns: 1fr; }
-/* 顶栏太窄：隐藏不常用的 PDF / 主题按钮，保留 ☰/标题/KPI/账号/新增 */
+/* 顶栏太窄：隐藏主题和辅助按钮，保留 ☰/标题/KPI/账号/新增 */
 html.qc-narrow .topbar-right .theme-switch,
 html.qc-narrow .topbar-right .btn-icon:not(.btn-add) { display: none; }
 html.qc-narrow .topbar-title { font-size: 13px; }

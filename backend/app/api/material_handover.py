@@ -13,9 +13,15 @@ from starlette.concurrency import run_in_threadpool
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
 from app.models.material_handover import HandoverIssuer, HandoverDocument, HandoverSource, HandoverSupplierBinding
-from app.schemas.material_handover import IssuerInput, IssuerRevoke, IssuerRenew, IssuerBind, DocumentSave, DocumentAction, ScanInput, PostingInput
+from app.schemas.material_handover import (
+    IssuerInput, IssuerRevoke, IssuerRenew, IssuerBind, DocumentSave, DocumentAction, ScanInput, PostingInput,
+    ReceiptLinkInput, ReceiptUnlinkInput, ReceiptPurchaseLinkInput, RejectionFollowupInput,
+)
 from app.services import material_handover as service
 from app.services import material_handover_files as files
+from app.services import material_handover_receipts as receipts
+from app.services import material_handover_purchase_review as purchase_review
+from app.services import material_handover_rejections as rejections
 
 router = APIRouter(prefix='/api/material-handover', tags=['material-handover'])
 
@@ -24,8 +30,8 @@ def public_result(result):
     # Keep internal purchase IDs, warehouse batch IDs and staff identities within the warehouse.
     data = result['data']
     lines = [{**line, 'purchase_detail_id': ''} for line in data['lines']]
-    return {**{k: v for k, v in result.items() if k != 'receipt_observations'}, 'data': {**data, 'lines': lines},
-        'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id'}}
+    return {**{k: v for k, v in result.items() if k not in {'receipt_observations', 'receipt_rejection', 'prior_receipts', 'revoked_receipt_links'}}, 'data': {**data, 'lines': lines},
+        'movements': [{k: v for k, v in movement.items() if k not in {'actor_name', 'batch_id', 'manual_reference'}}
         for movement in result.get('movements', [])]}
 
 
@@ -171,6 +177,8 @@ def list_documents(db, access, limit, offset, status, search='', kind='ALL', sup
     for item in items:
         if item['id'] in statuses:
             item['processing_status'] = statuses[item['id']]
+    if not access.issuer_id:
+        rejections.add_summaries(db, items)
     return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
 
 
@@ -277,12 +285,14 @@ async def upload(request: Request, factory_id: str = Form(...), request_id: UUID
 
 @router.post('/scan')
 def scan(payload: ScanInput, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    return service.scan(db, staff_access(db, actor, payload.factory_id), payload.code, with_receipt_observations=True)
+    return service.scan(db, staff_access(db, actor, payload.factory_id), payload.code,
+                        with_receipt_observations=True, with_receipt_review=receipts.can_review(actor))
 
 
 @router.get('/documents/{identifier}')
 def detail(identifier: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    return service.output(db, service.document(db, staff_access(db, actor, factory_id), identifier), with_receipt_observations=True)
+    return service.output(db, service.document(db, staff_access(db, actor, factory_id), identifier),
+                          with_receipt_observations=True, with_receipt_review=receipts.can_review(actor))
 
 
 @router.get('/documents/{identifier}/source')
@@ -322,6 +332,41 @@ def action(request: Request, identifier: str, action: Literal['confirm', 'void']
 def post(request: Request, identifier: str, payload: PostingInput, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     actor, _ = refresh_staff(request, db, payload.factory_id)
     return service.post(db, actor, identifier, payload)
+
+
+@router.post('/documents/{identifier}/rejection-followup')
+def rejection_followup(request: Request, identifier: str, payload: RejectionFollowupInput,
+                       db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return rejections.record_followup(db, actor, identifier, payload)
+
+
+@router.post('/documents/{identifier}/link-receipt')
+def link_receipt(request: Request, identifier: str, payload: ReceiptLinkInput, db: Session = Depends(get_db),
+                 actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return receipts.link_receipt(db, actor, identifier, payload)
+
+
+@router.post('/documents/{identifier}/unlink-receipt')
+def unlink_receipt(request: Request, identifier: str, payload: ReceiptUnlinkInput, db: Session = Depends(get_db),
+                   actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return receipts.unlink_receipt(db, actor, identifier, payload)
+
+
+@router.get('/receipts/{operation_id}/purchase-review')
+def receipt_purchase_review(operation_id: str, factory_id: str, db: Session = Depends(get_db),
+                            actor: AuthContext = Depends(get_current_user)):
+    staff_access(db, actor, factory_id)
+    return purchase_review.purchase_review(db, actor, operation_id)
+
+
+@router.post('/receipts/{operation_id}/purchase-link')
+def receipt_purchase_link(request: Request, operation_id: str, payload: ReceiptPurchaseLinkInput,
+                          db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    actor, _ = refresh_staff(request, db, payload.factory_id)
+    return purchase_review.link_purchase(db, actor, operation_id, payload)
 
 
 @router.get('/external/context')

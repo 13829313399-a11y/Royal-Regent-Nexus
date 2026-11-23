@@ -263,12 +263,12 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user, 
     if action in ("APPROVE", "CONFIRM"):
         if doc.status != "SUBMITTED":
             _fail("只能复核已提交的盘点单")
-        if action == "APPROVE" and user.id in (doc.created_by, doc.submitted_by):
-            _fail("盘点创建人或提交人不能复核自己的盘点单，请由另一位主管复核", 403)
         valuation = load_valuation(db, doc.factory_id)
         posting_at = ledger.now_text()
         references = {row.id: row for row in rows}
         assessment = review_policy.assess(lines, references, valuation, review_policy.policy(db, doc.factory_id))
+        if (action == "APPROVE" or assessment["requires_supervisor"]) and user.id in (doc.created_by, doc.submitted_by):
+            _fail("请提交另一位具备主管调整权限的人员复核，创建人或提交人不能自行入账", 403)
         if assessment["requires_supervisor"]:
             review_policy.require(user, "carton_procurement:order_adjust", doc.factory_id)
         assessment["same_actor_confirmation"] = user.id == doc.created_by

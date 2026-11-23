@@ -66,6 +66,7 @@ def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
     lock_transaction(db, 'cutting-master', c.FACTORY)
     from app.services.cutting_materials import receipt_reader
     receipt_entries = receipt_reader(db)
+    statuses = orders.workflow_filter_statuses(status)
     stats = dict(total=0, scheduled=0, unscheduled=0, partial=0, review=0)
     rows = []
     for dispatch, order, revision in sources(db, q):
@@ -73,7 +74,7 @@ def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
             continue
         data = revision.data if revision else {}
         needs = order is None or order.dispatch_id != dispatch.id
-        if status and orders.workflow_status(data, dispatch.snapshot.get('status'), needs) != status:
+        if statuses and orders.workflow_status(data, dispatch.snapshot.get('status'), needs) not in statuses:
             continue
         summary = plans.summary(db, data, needs, receipt_entries=receipt_entries)
         if plan_status and plan_status not in summary['states']:

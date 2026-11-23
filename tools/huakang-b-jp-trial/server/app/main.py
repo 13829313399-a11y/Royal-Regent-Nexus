@@ -57,10 +57,17 @@ class LocalBoundary:
         await self.app(scope, bounded_receive, private_send)
 
 
-def create_app(data_dir, static_dir=None, host="127.0.0.1", port=8765):
+def create_app(data_dir, static_dir=None, host="127.0.0.1", port=8765, reference_seed_dir=None):
     if host != "127.0.0.1" or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("单机试用版仅支持 127.0.0.1 本地端口。")
     database = Database(data_dir)
+    if reference_seed_dir is not None:
+        try:
+            from app.reference_seed import initialize_references
+            initialize_references(database, reference_seed_dir)
+        except BaseException:
+            database.close()
+            raise
 
     @asynccontextmanager
     async def lifespan(app):

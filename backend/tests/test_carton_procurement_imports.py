@@ -64,10 +64,12 @@ def test_dongkang_delivery_sheet_maps_business_keys_and_requires_correct_factory
     assert rows[0]["destination_factory_id"] == "huakang-b"
     assert rows[0]["specification"] == "18*12.5*17.25cm"
     order = SimpleNamespace(id="O-1", order_no="O-1", contract_no="C-1", item_no="I-1", customer_po="",
+                            factory_id="huakang-b", product_order_quantity=None,
                             customer_code="D", customer_name="D", status="PENDING_SUPPLIER")
     line = SimpleNamespace(id="L-1", order_id="O-1", packaging_type="普通箱", paper_quality="A=B",
                            specification="18*12.5*17.25", dimension_unit="cm", required_quantity=100, unit="个", unit_price=2, currency="CNY")
     chinese_order = SimpleNamespace(id="O-2", order_no="O-2", contract_no="C-1", item_no="超人斗篷", customer_po="",
+                                    factory_id="huakang-b", product_order_quantity=None,
                                     customer_code="D", customer_name="D", status="PENDING_SUPPLIER")
     chinese_line = SimpleNamespace(id="L-2", order_id="O-2", packaging_type="普通箱", paper_quality="A=B",
                                    specification="18*12.5*17.25", dimension_unit="cm", required_quantity=7, unit="个", unit_price=2, currency="CNY")

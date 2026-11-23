@@ -1,0 +1,2594 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Royal Regent Nexus · 权限与组织 IAM 2.0 交互原型</title>
+<style>
+  :root {
+    --bg: #f2f7f8;
+    --surface: #ffffff;
+    --surface-subtle: #f7fafb;
+    --surface-hover: #edf6f4;
+    --ink: #0f1f28;
+    --ink-2: #3b4f5a;
+    --muted: #647883;
+    --border: #dbe6e9;
+    --border-strong: #c2d4d9;
+
+    --jade-deep: #053e39;
+    --jade-mid: #08554e;
+    --primary: #006559;
+    --primary-hover: #005349;
+    --primary-soft: #e3f4f0;
+    --primary-ink: #00453d;
+
+    --emerald: #0f7a58;
+    --emerald-bg: #e5f6ef;
+    --amber: #9b5c0f;
+    --amber-bg: #fff5e3;
+    --amber-border: #f2d5a0;
+    --red: #c4212e;
+    --red-bg: #fef0f1;
+    --red-border: #f5c2c7;
+    --blue: #1c5da6;
+    --blue-bg: #eaf3ff;
+    --violet: #62469a;
+    --violet-bg: #f2eefc;
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --shadow-sm: 0 1px 2px rgba(10, 35, 40, .04);
+    --shadow-md: 0 8px 24px rgba(10, 35, 40, .08);
+    --shadow-drawer: -12px 0 40px rgba(8, 30, 34, .16);
+    --ease: cubic-bezier(.16, 1, .3, 1);
+    --font: "Microsoft YaHei", "PingFang SC", "Segoe UI", -apple-system, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: var(--font); font-size: 13.5px; line-height: 1.5;
+    color: var(--ink); background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; border: none; background: none; }
+  button:disabled { cursor: not-allowed; opacity: .5; }
+  .num { font-variant-numeric: tabular-nums; }
+  .mono { font-family: var(--mono); font-size: 12px; }
+
+  /* ── Top Shell ── */
+  .app-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .topbar {
+    height: 60px; flex-shrink: 0;
+    background: linear-gradient(108deg, var(--jade-deep), var(--jade-mid));
+    color: #fff; padding: 0 20px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    border-bottom: 1px solid rgba(255,255,255,.1);
+    box-shadow: 0 2px 10px rgba(5, 46, 42, .16);
+    z-index: 30;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: rgba(255,255,255,.78); font-size: 12.5px; padding: 6px 10px;
+    border-radius: 8px; transition: background 140ms, color 140ms;
+  }
+  .back-link:hover { background: rgba(255,255,255,.1); color: #fff; }
+  .brand-divider { width: 1px; height: 22px; background: rgba(255,255,255,.18); }
+  .brand-title {
+    display: flex; align-items: center; gap: 9px;
+    font-size: 16.5px; font-weight: 700; letter-spacing: .01em; white-space: nowrap;
+  }
+  .brand-badge {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+    padding: 2px 7px; border-radius: 99px;
+    background: rgba(122, 240, 224, .18); color: #b7fff5;
+    border: 1px solid rgba(153, 255, 240, .28);
+  }
+  .main-nav { display: flex; align-items: center; gap: 4px; height: 100%; }
+  .nav-tab {
+    position: relative; height: 40px; padding: 0 15px; border-radius: 9px;
+    color: rgba(230, 248, 245, .82); font-size: 13.5px; font-weight: 500;
+    display: inline-flex; align-items: center; gap: 7px;
+    transition: background 150ms, color 150ms;
+  }
+  .nav-tab:hover { background: rgba(255,255,255,.09); color: #fff; }
+  .nav-tab.active {
+    color: #fff; font-weight: 600;
+    background: rgba(82, 212, 197, .22);
+    box-shadow: inset 0 0 0 1px rgba(173, 255, 243, .26);
+  }
+  .nav-pill {
+    min-width: 20px; height: 18px; padding: 0 6px; border-radius: 99px;
+    font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
+    background: #f5b942; color: #3d2400;
+  }
+  .topbar-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .perspective-switch {
+    display: inline-flex; padding: 3px; border-radius: 9px;
+    background: rgba(0,0,0,.24); border: 1px solid rgba(255,255,255,.14);
+  }
+  .perspective-switch button {
+    padding: 5px 11px; border-radius: 6px; font-size: 12px; color: rgba(255,255,255,.78);
+    transition: all 140ms;
+  }
+  .perspective-switch button.active {
+    background: #fff; color: var(--jade-deep); font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,.18);
+  }
+  .user-chip {
+    display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 5px;
+    border-radius: 99px; background: rgba(255,255,255,.1); font-size: 12.5px;
+  }
+  .user-chip .avatar-sm {
+    width: 26px; height: 26px; border-radius: 50%; background: #8be5d8; color: var(--jade-deep);
+    font-weight: 700; font-size: 12px; display: grid; place-items: center;
+  }
+
+  /* ── Main Viewport ── */
+  .main-stage { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .view-container {
+    flex: 1; min-height: 0; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 14px; overflow: hidden;
+  }
+  .view-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px; }
+
+  /* ── Buttons & Inputs ── */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 34px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    transition: all 140ms var(--ease); white-space: nowrap;
+  }
+  .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 7px; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+  .btn-outline { background: #fff; color: var(--ink-2); border: 1px solid var(--border-strong); }
+  .btn-outline:hover:not(:disabled) { background: var(--surface-subtle); border-color: var(--primary); color: var(--primary); }
+  .btn-soft { background: var(--primary-soft); color: var(--primary-ink); }
+  .btn-soft:hover:not(:disabled) { background: #d0ece6; }
+  .btn-danger-outline { background: #fff; color: var(--red); border: 1px solid var(--red-border); }
+  .btn-danger-outline:hover:not(:disabled) { background: var(--red-bg); }
+  .btn-danger { background: var(--red); color: #fff; }
+  .btn-danger:hover:not(:disabled) { background: #a81824; }
+  .btn-ghost { color: var(--muted); }
+  .btn-ghost:hover:not(:disabled) { background: var(--surface-subtle); color: var(--ink); }
+
+  .input, .select, .textarea {
+    height: 34px; padding: 0 10px; border-radius: 8px;
+    border: 1px solid var(--border-strong); background: #fff;
+    font-size: 13px; color: var(--ink); outline: none;
+    transition: border-color 140ms, box-shadow 140ms;
+  }
+  .textarea { height: auto; padding: 8px 10px; resize: vertical; }
+  .input:focus, .select:focus, .textarea:focus {
+    border-color: var(--primary); box-shadow: 0 0 0 3px rgba(0, 101, 89, .14);
+  }
+  .search-box {
+    position: relative; display: flex; align-items: center;
+  }
+  .search-box svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+  .search-box .input { padding-left: 32px; width: 100%; }
+
+  /* ── Badges / Pills ── */
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 22px; padding: 0 8px; border-radius: 6px;
+    font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  }
+  .pill-dot::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  }
+  .pill-emerald { background: var(--emerald-bg); color: var(--emerald); }
+  .pill-amber { background: var(--amber-bg); color: var(--amber); }
+  .pill-red { background: var(--red-bg); color: var(--red); }
+  .pill-blue { background: var(--blue-bg); color: var(--blue); }
+  .pill-violet { background: var(--violet-bg); color: var(--violet); }
+  .pill-slate { background: #eef3f5; color: #516570; }
+  .pill-primary { background: var(--primary-soft); color: var(--primary-ink); }
+
+  .pkg-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    background: #eef7f5; color: #0c544b; border: 1px solid #cde5df;
+  }
+  .pkg-chip.secondary { background: #f3effc; color: #583c91; border-color: #dfd5f6; }
+  .pkg-chip.warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .pkg-chip.outdated::after {
+    content: "可升级"; font-size: 10px; padding: 0 4px; border-radius: 4px;
+    background: var(--blue); color: #fff; margin-left: 2px;
+  }
+  .factory-chip {
+    display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 5px;
+    font-size: 11.5px; background: #f1f5f7; color: var(--ink-2); border: 1px solid #e1eaed;
+  }
+  .factory-chip.all { background: #e8f3ff; color: var(--blue); border-color: #c8dffa; font-weight: 600; }
+
+  /* ── VIEW 1: INBOX (办理大厅) ── */
+  .track-bar {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; flex-shrink: 0;
+  }
+  .track-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+    text-align: left; transition: all 160ms var(--ease); box-shadow: var(--shadow-sm);
+    position: relative; overflow: hidden;
+  }
+  .track-card::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--track-color, var(--primary));
+  }
+  .track-card:hover { transform: translateY(-1px); border-color: var(--border-strong); box-shadow: var(--shadow-md); }
+  .track-card.active {
+    background: var(--track-soft, var(--primary-soft));
+    border-color: var(--track-color, var(--primary));
+    box-shadow: 0 0 0 1px var(--track-color, var(--primary));
+  }
+  .track-meta { display: flex; flex-direction: column; gap: 2px; }
+  .track-title { font-size: 13.5px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 6px; }
+  .track-sub { font-size: 11.5px; color: var(--muted); }
+  .track-count {
+    font-size: 26px; font-weight: 700; color: var(--track-color, var(--primary));
+    line-height: 1; padding-left: 12px;
+  }
+
+  .inbox-grid {
+    flex: 1; min-height: 0; display: grid; grid-template-columns: 330px minmax(0, 1fr);
+    gap: 14px; overflow: hidden;
+  }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    display: flex; flex-direction: column; min-height: 0; overflow: hidden; box-shadow: var(--shadow-sm);
+  }
+  .panel-header {
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    background: var(--surface); flex-shrink: 0;
+  }
+  .panel-title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .queue-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .queue-item {
+    width: 100%; text-align: left; padding: 11px 12px; border-radius: 10px;
+    border: 1px solid transparent; background: #fff;
+    display: flex; flex-direction: column; gap: 6px;
+    transition: all 140ms;
+  }
+  .queue-item:hover { background: var(--surface-subtle); border-color: var(--border); }
+  .queue-item.active {
+    background: var(--primary-soft); border-color: #9ed4ca;
+    box-shadow: inset 3px 0 0 var(--primary);
+  }
+  .queue-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .queue-name { font-weight: 700; font-size: 13.5px; color: var(--ink); display: flex; align-items: center; gap: 7px; }
+  .queue-change { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
+  .queue-foot { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--muted); }
+
+  /* Dual-engine review workspace */
+  .review-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .review-top-banner {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #fafdfe, #fff);
+    display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-shrink: 0;
+  }
+  .review-dual {
+    flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, .85fr);
+    overflow: hidden;
+  }
+  .review-left { overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; border-right: 1px solid var(--border); }
+  .review-right { overflow-y: auto; padding: 16px; background: #f8fbfc; display: flex; flex-direction: column; gap: 12px; }
+  .review-footer {
+    padding: 12px 18px; border-top: 1px solid var(--border); background: #fff;
+    display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-shrink: 0;
+  }
+
+  .compare-strip {
+    display: grid; grid-template-columns: 1fr 28px 1fr; align-items: center; gap: 10px;
+    padding: 12px; border-radius: 11px; background: var(--surface-subtle); border: 1px solid var(--border);
+  }
+  .compare-box { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .compare-box.after { border-color: #9ad5ca; background: #f3fbf9; }
+  .compare-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .compare-main { font-size: 14px; font-weight: 700; color: var(--ink); }
+  .compare-sub { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+
+  .info-grid-4 {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+    padding: 12px; border-radius: 10px; background: #f5f9ff; border: 1px solid #d4e5fb;
+  }
+  .info-cell label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .info-cell strong { font-size: 13px; color: var(--ink); }
+
+  .section-label {
+    font-size: 12.5px; font-weight: 700; color: var(--ink);
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .factory-selector { display: flex; flex-wrap: wrap; gap: 7px; }
+  .factory-toggle {
+    padding: 5px 11px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
+    border: 1px solid var(--border-strong); background: #fff; color: var(--ink-2);
+    transition: all 130ms;
+  }
+  .factory-toggle:hover { border-color: var(--primary); color: var(--primary); }
+  .factory-toggle.selected {
+    background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600;
+  }
+
+  .pkg-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .pkg-option {
+    text-align: left; padding: 11px 12px; border-radius: 10px;
+    border: 1.5px solid var(--border); background: #fff;
+    display: flex; flex-direction: column; gap: 5px; transition: all 140ms;
+  }
+  .pkg-option:hover { border-color: #8cc9be; background: #fafefd; }
+  .pkg-option.selected {
+    border-color: var(--primary); background: #edf9f6;
+    box-shadow: 0 0 0 2px rgba(0, 101, 89, .12);
+  }
+  .pkg-option-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .pkg-option-name { font-weight: 700; font-size: 13px; color: var(--ink); }
+  .pkg-option-desc { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+  .pkg-option-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+
+  /* Live Diff Radar */
+  .diff-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .diff-kpi {
+    background: #fff; border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .diff-kpi strong { font-size: 20px; line-height: 1.1; }
+  .diff-kpi span { font-size: 11px; color: var(--muted); }
+  .diff-kpi.add { border-color: #b7e4d3; background: #f2fbf7; }
+  .diff-kpi.add strong { color: var(--emerald); }
+  .diff-kpi.rem { border-color: var(--red-border); background: #fff7f7; }
+  .diff-kpi.rem strong { color: var(--red); }
+
+  .diff-group { background: #fff; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .diff-group-head {
+    padding: 8px 11px; font-size: 12px; font-weight: 700; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .diff-group-head.add { background: #effaf5; color: var(--emerald); }
+  .diff-group-head.rem { background: #fff3f4; color: var(--red); }
+  .diff-group-head.deny { background: #fff0f0; color: #9c1622; }
+  .diff-list { list-style: none; margin: 0; padding: 6px 10px; display: flex; flex-direction: column; gap: 5px; max-height: 190px; overflow-y: auto; }
+  .diff-list li {
+    font-size: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 4px 0; border-bottom: 1px dashed #edf2f4;
+  }
+  .diff-list li:last-child { border-bottom: none; }
+
+  /* ── VIEW 2: PEOPLE DIRECTORY (人员与权限) ── */
+  .people-layout {
+    flex: 1; min-height: 0; display: grid; grid-template-columns: 226px minmax(0, 1fr); gap: 14px; overflow: hidden;
+  }
+  .org-tree { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 3px; }
+  .org-group-label {
+    font-size: 11px; font-weight: 700; color: var(--muted); padding: 10px 10px 4px;
+    letter-spacing: .04em;
+  }
+  .org-node {
+    width: 100%; display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--ink-2);
+    transition: all 130ms;
+  }
+  .org-node:hover { background: var(--surface-subtle); color: var(--ink); }
+  .org-node.active { background: var(--primary-soft); color: var(--primary-ink); font-weight: 700; }
+  .org-node .count {
+    font-size: 11.5px; padding: 1px 7px; border-radius: 99px;
+    background: #edf2f4; color: var(--muted);
+  }
+  .org-node.active .count { background: var(--primary); color: #fff; }
+
+  .toolbar {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #fff; flex-shrink: 0;
+  }
+  .table-wrap { flex: 1; overflow: auto; }
+  table.data-table { width: 100%; border-collapse: collapse; min-width: 880px; }
+  table.data-table th {
+    position: sticky; top: 0; z-index: 2;
+    background: #f4f8fa; color: var(--muted); font-size: 11.5px; font-weight: 700;
+    text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border);
+  }
+  table.data-table td {
+    padding: 11px 14px; border-bottom: 1px solid #eef3f5; vertical-align: middle;
+  }
+  table.data-table tbody tr { transition: background 120ms; cursor: pointer; }
+  table.data-table tbody tr:hover { background: #f6fbfa; }
+  .person-cell { display: flex; align-items: center; gap: 10px; }
+  .avatar {
+    width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+    background: var(--primary-soft); color: var(--primary-ink);
+    font-weight: 700; font-size: 14px; display: grid; place-items: center;
+  }
+  .avatar.legacy { background: var(--amber-bg); color: var(--amber); }
+  .avatar.suspended { background: #eef2f4; color: #6c7d87; }
+  .chip-wrap { display: flex; flex-wrap: wrap; gap: 5px; }
+
+  /* ── 68% WIDE PERSON STUDIO DRAWER ── */
+  .drawer-backdrop {
+    position: fixed; inset: 0; background: rgba(12, 30, 36, .38); backdrop-filter: blur(2px);
+    z-index: 50; display: flex; justify-content: flex-end;
+    opacity: 0; pointer-events: none; transition: opacity 200ms;
+  }
+  .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    width: min(1060px, 76vw); max-width: 100vw; height: 100%; background: #fff;
+    box-shadow: var(--shadow-drawer); display: flex; flex-direction: column;
+    transform: translateX(28px); transition: transform 240ms var(--ease);
+  }
+  .drawer-backdrop.open .drawer { transform: translateX(0); }
+  .drawer-header {
+    padding: 16px 22px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    background: linear-gradient(180deg, #f8fcfb, #fff); flex-shrink: 0;
+  }
+  .drawer-tabs {
+    padding: 0 22px; border-bottom: 1px solid var(--border); background: #fff;
+    display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+  }
+  .drawer-tab {
+    padding: 11px 14px; font-size: 13px; font-weight: 600; color: var(--muted);
+    border-bottom: 2px solid transparent; transition: all 140ms;
+  }
+  .drawer-tab:hover { color: var(--ink); }
+  .drawer-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .drawer-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+
+  .pkg-slot-card {
+    border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px; background: #fff;
+    display: flex; flex-direction: column; gap: 9px;
+  }
+  .pkg-slot-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .legacy-banner {
+    padding: 12px 14px; border-radius: 10px; background: var(--amber-bg); border: 1px solid var(--amber-border);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .decision-chain {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px;
+  }
+  .chain-step {
+    padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: #fff; color: var(--muted);
+  }
+  .chain-step.pass { background: var(--emerald-bg); color: var(--emerald); border-color: #b5e4d2; }
+  .chain-step.hit-allow { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .chain-step.hit-deny { background: var(--red); color: #fff; border-color: var(--red); }
+
+  /* ── VIEW 3: ROLE CATALOG (权限方案库) ── */
+  .roles-layout {
+    flex: 1; min-height: 0; display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 14px; overflow: hidden;
+  }
+  .heat-strip {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 16px;
+    border-bottom: 1px solid var(--border); background: #f9fcfd;
+  }
+  .heat-chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border-radius: 99px; font-size: 12px; border: 1px solid var(--border); background: #fff;
+    transition: all 130ms;
+  }
+  .heat-chip:hover { border-color: var(--primary); }
+  .heat-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .heat-chip.full { border-color: #a6dbd0; background: #edf9f6; color: var(--primary-ink); }
+  .heat-chip.active.full { background: var(--primary); color: #fff; }
+  .heat-chip.zero { opacity: .65; }
+
+  .perm-module-card {
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; margin-bottom: 10px;
+  }
+  .perm-module-head {
+    padding: 9px 14px; background: #f5f9fa; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-size: 13px;
+  }
+  .perm-row {
+    padding: 8px 14px; border-bottom: 1px solid #f0f5f7;
+    display: grid; grid-template-columns: minmax(0, 1.5fr) 90px 130px 90px; align-items: center; gap: 10px; font-size: 12.5px;
+  }
+  .perm-row:last-child { border-bottom: none; }
+
+  /* ── VIEW 4: AUDIT TIMELINE ── */
+  .timeline-list { display: flex; flex-direction: column; gap: 10px; max-width: 1120px; margin: 0 auto; }
+  .audit-card {
+    background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px;
+    display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow-sm);
+  }
+  .audit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .audit-diff-row {
+    display: grid; grid-template-columns: 1fr 24px 1fr; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 9px; background: var(--surface-subtle);
+  }
+
+  /* ── VIEW 5: EMPLOYEE SELF-SERVICE (员工自助端) ── */
+  .self-wrap { max-width: 1020px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .hero-self {
+    background: linear-gradient(115deg, #064741, #0c695f); color: #fff;
+    border-radius: 16px; padding: 20px 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  }
+  .stepper-track {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px;
+  }
+  .step-node {
+    padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: #f8fbfc;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .step-node.done { background: var(--emerald-bg); border-color: #b4e4d1; }
+  .step-node.current { background: #fff8ea; border-color: #efc97d; box-shadow: 0 0 0 2px rgba(239,201,125,.25); }
+  .module-grid-self { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .module-card-self {
+    background: #fff; border: 1px solid var(--border); border-radius: 11px; padding: 14px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  /* ── Modal & Toast ── */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(12, 30, 36, .42); z-index: 80;
+    display: none; place-items: center; padding: 20px;
+  }
+  .modal-backdrop.open { display: grid; }
+  .modal {
+    width: min(640px, 100%); max-height: 88vh; background: #fff; border-radius: 16px;
+    box-shadow: var(--shadow-md); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .modal-body { padding: 18px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+  .modal-foot { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+
+  .toast-host {
+    position: fixed; top: 72px; right: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px;
+  }
+  .toast {
+    background: #0d2a2e; color: #fff; padding: 11px 16px; border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.22); font-size: 13px; display: flex; align-items: center; gap: 9px;
+    animation: toastIn 220ms var(--ease);
+  }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .dropdown-wrap { position: relative; }
+  .dropdown-menu {
+    position: absolute; right: 0; top: 38px; min-width: 170px; background: #fff;
+    border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: var(--shadow-md);
+    padding: 5px; z-index: 40; display: none; flex-direction: column; gap: 2px;
+  }
+  .dropdown-menu.open { display: flex; }
+  .dropdown-menu button {
+    width: 100%; text-align: left; padding: 8px 10px; border-radius: 7px; font-size: 12.5px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .dropdown-menu button:hover { background: var(--surface-subtle); }
+  .dropdown-menu button.danger { color: var(--red); }
+  .dropdown-menu button.danger:hover { background: var(--red-bg); }
+
+  .empty-state {
+    flex: 1; display: grid; place-items: center; text-align: center; padding: 40px; color: var(--muted);
+  }
+
+  @media (max-width: 1120px) {
+    .track-bar { grid-template-columns: repeat(2, 1fr); }
+    .inbox-grid { grid-template-columns: 280px 1fr; }
+    .review-dual { grid-template-columns: 1fr; overflow-y: auto; }
+    .review-left { border-right: none; border-bottom: 1px solid var(--border); overflow: visible; }
+    .review-right { overflow: visible; }
+    .people-layout { grid-template-columns: 1fr; }
+    .org-sidebar-panel { display: none; }
+    .drawer { width: 96vw; }
+    .module-grid-self { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- ── TOP NAVIGATION BAR ── -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="back-link" onclick="showToast('演示提示：返回 Royal Regent Nexus 业务工作台')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        工作台
+      </button>
+      <span class="brand-divider"></span>
+      <div class="brand-title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#85f0e2" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        权限与组织
+        <span class="brand-badge">IAM 2.0 原型</span>
+      </div>
+      <nav class="main-nav" id="adminNav">
+        <button class="nav-tab active" data-tab="inbox" onclick="switchAdminTab('inbox')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M2 13h6l2 3h4l2-3h6"/></svg>
+          办理大厅
+          <span class="nav-pill num" id="navInboxCount">6</span>
+        </button>
+        <button class="nav-tab" data-tab="people" onclick="switchAdminTab('people')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          人员与权限
+        </button>
+        <button class="nav-tab" data-tab="roles" onclick="switchAdminTab('roles')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          权限方案库
+        </button>
+        <button class="nav-tab" data-tab="audit" onclick="switchAdminTab('audit')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+          审计记录
+        </button>
+      </nav>
+    </div>
+
+    <div class="topbar-right">
+      <div class="perspective-switch" title="演示切换：查看管理员端或员工自助端体验">
+        <button class="active" id="modeAdminBtn" onclick="switchMode('admin')">管理员工作台</button>
+        <button id="modeSelfBtn" onclick="switchMode('self')">员工自助端</button>
+      </div>
+      <div class="user-chip" id="topUserChip">
+        <span class="avatar-sm">管</span>
+        <span>集团管理员</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── MAIN STAGE ── -->
+  <main class="main-stage" id="mainStage"></main>
+</div>
+
+<!-- ── 68% WIDE PERSON STUDIO DRAWER ── -->
+<div class="drawer-backdrop" id="personDrawerBackdrop" onclick="if(event.target===this) closePersonDrawer()">
+  <aside class="drawer" id="personDrawer"></aside>
+</div>
+
+<!-- ── MODAL HOST ── -->
+<div class="modal-backdrop" id="modalBackdrop" onclick="if(event.target===this) closeModal()">
+  <div class="modal" id="modalContent"></div>
+</div>
+
+<!-- ── TOAST HOST ── -->
+<div class="toast-host" id="toastHost"></div>
+
+<script>
+/* ============================================================================
+   REALISTIC MOCK DATASET (ALIGNED WITH ROYAL REGENT NEXUS IAM DOMAIN)
+   ============================================================================ */
+const FACTORIES = [
+  { id: 'huadeng', name: '华登' },
+  { id: 'huaxing', name: '华兴' },
+  { id: 'huakang-a', name: '华康A' },
+  { id: 'huakang-b', name: '华康B' },
+  { id: 'huakang-c', name: '华康C' },
+  { id: 'huakang-d', name: '华康D' },
+];
+const ORGS = [
+  ...FACTORIES.map(f => ({ ...f, kind: 'factory' })),
+  { id: 'group-management', name: '集团总务', kind: 'functional_unit' },
+];
+const DEPT_NAMES = {
+  'management': '总务', 'sales-business': '业务部', 'engineering': '工程部',
+  'production': '生产部', 'molding': '啤机部', 'warehouse': '仓管部',
+  'pmc-warehouse': 'PMC仓库', 'qc': 'QC部', 'carton': '纸箱部', 'three-d-printing': '3D打印部'
+};
+const orgName = id => ORGS.find(o => o.id === id)?.name || id;
+const deptName = c => DEPT_NAMES[c] || c;
+
+const PERM_CATALOG = [
+  { code: 'internal_quote:read', name: '查看内部报价', mod: 'internal_quote', modName: '内部报价', kind: 'read', risk: 'low' },
+  { code: 'internal_quote:create', name: '新建与编辑内部报价', mod: 'internal_quote', modName: '内部报价', kind: 'operate', risk: 'medium' },
+  { code: 'internal_quote:approve', name: '审核内部报价', mod: 'internal_quote', modName: '内部报价', kind: 'operate', risk: 'high' },
+  { code: 'internal_quote:self_approve', name: '内部报价本人自审（例外）', mod: 'internal_quote', modName: '内部报价', kind: 'operate', risk: 'high' },
+  { code: 'customer_order:read', name: '查看客户订单', mod: 'customer_order', modName: '客户订单', kind: 'read', risk: 'low' },
+  { code: 'customer_order:manage', name: '维护客户订单与排期', mod: 'customer_order', modName: '客户订单', kind: 'operate', risk: 'high' },
+  { code: 'customer_price:read', name: '查看客户核价', mod: 'customer_price', modName: '客户核价', kind: 'read', risk: 'medium' },
+  { code: 'carton_mark:read', name: '查看箱唛资料', mod: 'carton_mark', modName: '箱唛管理', kind: 'read', risk: 'low' },
+  { code: 'carton_mark:customer_manage', name: '维护箱唛客户', mod: 'carton_mark', modName: '箱唛管理', kind: 'operate', risk: 'high' },
+  { code: 'carton_procurement:manage', name: '纸箱采购下单与对账', mod: 'carton_procurement', modName: '纸箱采购', kind: 'operate', risk: 'high' },
+  { code: 'engineering_bom:read', name: '查看工程 BOM 清单', mod: 'engineering_bom', modName: '工程BOM', kind: 'read', risk: 'low' },
+  { code: 'engineering_bom:edit', name: '编制与修订工程 BOM', mod: 'engineering_bom', modName: '工程BOM', kind: 'operate', risk: 'medium' },
+  { code: 'engineering_bom:approve', name: '审核发布工程 BOM', mod: 'engineering_bom', modName: '工程BOM', kind: 'operate', risk: 'high' },
+  { code: 'molding_sample:read', name: '查看啤办工程单', mod: 'molding_sample', modName: '啤办管理', kind: 'read', risk: 'low' },
+  { code: 'molding_sample:operate', name: '排产与录入试模记录', mod: 'molding_sample', modName: '啤办管理', kind: 'operate', risk: 'medium' },
+  { code: 'fabric_warehouse:operate', name: '布料仓入出库作业', mod: 'fabric_warehouse', modName: '布料仓库', kind: 'operate', risk: 'medium' },
+  { code: 'qc_inspection:inspect', name: '执行 QC 验货录入', mod: 'qc_inspection', modName: 'QC检验', kind: 'operate', risk: 'medium' },
+  { code: 'qc_inspection:approve', name: '审核签发 QC 报告', mod: 'qc_inspection', modName: 'QC检验', kind: 'operate', risk: 'high' },
+  { code: 'system:user_manage', name: '人员档案与账号管理', mod: 'system', modName: '系统管理', kind: 'operate', risk: 'high' },
+  { code: 'system:access_manage', name: '权限配置与授权办理', mod: 'system', modName: '系统管理', kind: 'operate', risk: 'high' },
+];
+const permInfo = code => PERM_CATALOG.find(p => p.code === code) || { code, name: code, mod: 'other', modName: '其他', kind: 'operate', risk: 'low' };
+
+const ROLES = [
+  {
+    id: 'position_general_manager', name: '总经理', dept: 'management', scopeMode: 'cross_factory_operate',
+    scopeText: '跨厂操作', version: 'fixed-v34', totalPerms: 85,
+    desc: '跨厂执行核心业务审批与统筹操作，不包含任何 system:* 系统管理权限。',
+    perms: ['internal_quote:read','internal_quote:create','internal_quote:approve','customer_order:read','customer_order:manage','customer_price:read','carton_mark:read','carton_mark:customer_manage','carton_procurement:manage','molding_sample:read','molding_sample:operate','fabric_warehouse:operate'],
+    moduleStats: [
+      { modName: '内部报价', has: 33, total: 33 }, { modName: '啤办管理', has: 20, total: 20 },
+      { modName: '纸箱采购', has: 10, total: 11 }, { modName: '客户订单', has: 9, total: 9 },
+      { modName: '箱唛管理', has: 6, total: 6 }, { modName: '客户核价', has: 4, total: 6 },
+      { modName: '布料仓库', has: 3, total: 3 }, { modName: '系统管理', has: 0, total: 8 }
+    ]
+  },
+  {
+    id: 'position_sales_manager', name: '业务部·经理', dept: 'sales-business', scopeMode: 'cross_factory_read',
+    scopeText: '跨厂查看 · 本厂操作', version: 'fixed-v34', totalPerms: 34,
+    desc: '负责报价审核、客户订单管理与跨厂业务进度查阅。',
+    perms: ['internal_quote:read','internal_quote:create','internal_quote:approve','customer_order:read','customer_order:manage','customer_price:read','carton_mark:read','molding_sample:read'],
+    moduleStats: [
+      { modName: '内部报价', has: 16, total: 33 }, { modName: '客户订单', has: 8, total: 9 },
+      { modName: '客户核价', has: 5, total: 6 }, { modName: '箱唛管理', has: 3, total: 6 },
+      { modName: '啤办管理', has: 2, total: 20 }, { modName: '系统管理', has: 0, total: 8 }
+    ]
+  },
+  {
+    id: 'position_sales_supervisor', name: '业务部·主管', dept: 'sales-business', scopeMode: 'cross_factory_read',
+    scopeText: '跨厂查看 · 本厂操作', version: 'fixed-v34', totalPerms: 34,
+    desc: '跟进组内报价初审、客户订单排期及箱唛资料核对。',
+    perms: ['internal_quote:read','internal_quote:create','internal_quote:approve','customer_order:read','customer_order:manage','customer_price:read','carton_mark:read'],
+    moduleStats: [
+      { modName: '内部报价', has: 15, total: 33 }, { modName: '客户订单', has: 8, total: 9 },
+      { modName: '客户核价', has: 5, total: 6 }, { modName: '箱唛管理', has: 4, total: 6 },
+      { modName: '啤办管理', has: 2, total: 20 }
+    ]
+  },
+  {
+    id: 'position_sales_business', name: '业务部·业务', dept: 'sales-business', scopeMode: 'cross_factory_read',
+    scopeText: '跨厂查看 · 本厂操作', version: 'fixed-v34', totalPerms: 25,
+    desc: '日常录入内部报价、查询客户订单与跨厂查看跟单进度。',
+    perms: ['internal_quote:read','internal_quote:create','customer_order:read','carton_mark:read'],
+    moduleStats: [
+      { modName: '内部报价', has: 12, total: 33 }, { modName: '客户订单', has: 6, total: 9 },
+      { modName: '箱唛管理', has: 4, total: 6 }, { modName: '啤办管理', has: 3, total: 20 }
+    ]
+  },
+  {
+    id: 'position_engineering_supervisor', name: '工程部·主管', dept: 'engineering', scopeMode: 'cross_factory_read',
+    scopeText: '跨厂查看 · 本厂操作', version: 'fixed-v34', totalPerms: 19,
+    desc: '编制与审核发布工程 BOM、查看啤办工程单与试模结果。',
+    perms: ['engineering_bom:read','engineering_bom:edit','engineering_bom:approve','molding_sample:read','internal_quote:read'],
+    moduleStats: [
+      { modName: '工程BOM', has: 6, total: 6 }, { modName: '啤办管理', has: 8, total: 20 },
+      { modName: '内部报价', has: 5, total: 33 }
+    ]
+  },
+  {
+    id: 'position_engineering_engineer', name: '工程部·工程师', dept: 'engineering', scopeMode: 'cross_factory_read',
+    scopeText: '跨厂查看 · 本厂操作', version: 'fixed-v34', totalPerms: 14,
+    desc: '编制工程 BOM 与评估工艺参数，支持跨厂查看历史工程资料。',
+    perms: ['engineering_bom:read','engineering_bom:edit','molding_sample:read'],
+    moduleStats: [
+      { modName: '工程BOM', has: 5, total: 6 }, { modName: '啤办管理', has: 6, total: 20 },
+      { modName: '内部报价', has: 3, total: 33 }
+    ]
+  },
+  {
+    id: 'position_molding_clerk', name: '啤机部·啤机文员', dept: 'molding', scopeMode: 'cross_factory_read',
+    scopeText: '跨厂查看 · 本厂操作', version: 'fixed-v34', totalPerms: 8,
+    desc: '录入本厂啤办试模与生产进度，跨厂只读参考模具状态。',
+    perms: ['molding_sample:read','molding_sample:operate'],
+    moduleStats: [{ modName: '啤办管理', has: 8, total: 20 }]
+  },
+  {
+    id: 'position_warehouse_manager', name: '仓库·经理', dept: 'warehouse', scopeMode: 'cross_factory_operate',
+    scopeText: '跨厂操作', version: 'fixed-v34', totalPerms: 29,
+    desc: '跨厂管理 PMC 仓库、布料入出库与箱唛原文件归档。',
+    perms: ['fabric_warehouse:operate','carton_mark:read','customer_order:read','carton_procurement:manage'],
+    moduleStats: [
+      { modName: '布料仓库', has: 3, total: 3 }, { modName: '箱唛管理', has: 5, total: 6 },
+      { modName: '纸箱采购', has: 8, total: 11 }, { modName: '客户订单', has: 5, total: 9 }
+    ]
+  },
+  {
+    id: 'position_qc_manager', name: 'QC部·经理', dept: 'qc', scopeMode: 'own_factory',
+    scopeText: '本厂操作', version: 'fixed-v34', totalPerms: 16,
+    desc: '管理本厂 QC 验货排期、审核签发检验报告与品质年报。',
+    perms: ['qc_inspection:inspect','qc_inspection:approve','customer_order:read'],
+    moduleStats: [
+      { modName: 'QC检验', has: 13, total: 13 }, { modName: '客户订单', has: 3, total: 9 }
+    ]
+  },
+];
+const roleById = id => ROLES.find(r => r.id === id);
+
+let PEOPLE = [
+  {
+    id: 'u-lin', name: '林晓梅', username: 'linxiaomei', phone: '138-2910-4412', email: 'linxm@rr-group.com',
+    orgId: 'huadeng', dept: 'sales-business', position: '业务', status: 'active', mode: 'v2', lastLogin: '今天 09:42',
+    packages: [
+      { id: 'b1', roleId: 'position_sales_business', dept: 'sales-business', factories: ['huadeng'], primary: true, version: 'fixed-v34', outdated: false }
+    ],
+    secondaries: [],
+    overrides: [
+      { id: 'ov1', code: 'internal_quote:self_approve', effect: 'allow', factoryId: 'huadeng', dept: 'sales-business', active: true }
+    ],
+    openTaskKey: 'position:pr-201',
+    history: [
+      { time: '2026-11-18 16:20', actor: '林晓梅', title: '提交岗位与权限变更申请', detail: '申请晋升为「业务主管」，参考期望包：业务部·主管（华登、华兴）' },
+      { time: '2026-08-14 10:05', actor: '系统管理员', title: '授予独立个人例外', detail: '华登·业务部 增加「内部报价本人自审」' }
+    ]
+  },
+  {
+    id: 'u-chen', name: '陈伟', username: 'kk1', phone: '136-8021-9930', email: 'chenwei@rr-group.com',
+    orgId: 'huakang-a', dept: 'molding', position: '啤机文员', status: 'active', mode: 'legacy', lastLogin: '昨天 17:15',
+    packages: [
+      { id: 'b2', roleId: 'position_molding_clerk', dept: 'molding', factories: ['huakang-a'], primary: true, version: 'legacy', outdated: true }
+    ],
+    secondaries: [],
+    overrides: [
+      { id: 'ov2', code: 'carton_mark:customer_manage', effect: 'deny', factoryId: 'huakang-a', dept: 'molding', active: true }
+    ],
+    openTaskKey: null,
+    history: [
+      { time: '2026-03-01 09:00', actor: '历史同步', title: '导入历史角色绑定', detail: '尚未完成 V2 正式任职归类确认（可在配包抽屉内一步核实并更新）' }
+    ]
+  },
+  {
+    id: 'u-zhang', name: '张敏', username: 'zhangmin', phone: '139-2214-7701', email: 'zhangmin@rr-group.com',
+    orgId: 'huaxing', dept: 'warehouse', position: '仓库经理', status: 'active', mode: 'v2', lastLogin: '今天 08:55',
+    packages: [
+      { id: 'b3', roleId: 'position_warehouse_manager', dept: 'warehouse', factories: ['huadeng','huaxing','huakang-a','huakang-b','huakang-c','huakang-d'], primary: true, version: 'fixed-v32', outdated: true }
+    ],
+    secondaries: [
+      { id: 'sec1', orgId: 'huadeng', dept: 'qc', title: '临时品质协管', type: 'temporary', until: '2026-12-31', roleId: 'position_qc_manager' }
+    ],
+    overrides: [],
+    openTaskKey: 'identity-change:ic-401',
+    history: [
+      { time: '2026-11-19 08:30', actor: '华兴人事管理员', title: '发起跨厂包版本升级复核', detail: '仓库经理包 fixed-v32 → fixed-v34，超出厂级转授范围已自动提交集团复核' }
+    ]
+  },
+  {
+    id: 'u-wang', name: '王建国', username: 'wangjg', phone: '135-0018-3291', email: 'wangjg@rr-group.com',
+    orgId: 'group-management', dept: 'management', position: '总经理', status: 'active', mode: 'v2', lastLogin: '今天 10:12',
+    packages: [
+      { id: 'b4', roleId: 'position_general_manager', dept: 'management', factories: ['huadeng','huaxing','huakang-a','huakang-b','huakang-c','huakang-d'], primary: true, version: 'fixed-v34', outdated: false }
+    ],
+    secondaries: [],
+    overrides: [],
+    openTaskKey: null,
+    history: [
+      { time: '2026-10-02 14:10', actor: '集团超级管理员', title: '确认集团总务总经理任职', detail: '绑定总经理内置包（覆盖全6个生产厂区，0项系统管理权）' }
+    ]
+  },
+  {
+    id: 'u-li', name: '李浩然', username: 'kk', phone: '137-5541-8820', email: 'lihr@rr-group.com',
+    orgId: 'huadeng', dept: 'engineering', position: '工程师', status: 'active', mode: 'v2', lastLogin: '3天前',
+    packages: [
+      { id: 'b5', roleId: 'position_engineering_engineer', dept: 'engineering', factories: ['huadeng'], primary: true, version: 'fixed-v34', outdated: false }
+    ],
+    secondaries: [],
+    overrides: [],
+    openTaskKey: 'position:pr-202',
+    history: [
+      { time: '2026-11-18 11:08', actor: '李浩然', title: '提交岗位变更申请', detail: '申请调岗至华兴·工程部主管' }
+    ]
+  },
+  {
+    id: 'u-xia', name: '夏静', username: 'xia', phone: '138-6620-1102', email: 'xiajing@rr-group.com',
+    orgId: 'huakang-b', dept: 'qc', position: 'QC检验员', status: 'suspended', mode: 'v2', lastLogin: '2026-10-29 18:02',
+    packages: [],
+    secondaries: [],
+    overrides: [],
+    openTaskKey: null,
+    history: [
+      { time: '2026-11-01 09:30', actor: '系统管理员', title: '停用账号', detail: '长期休假暂停用登录，保留资料与历史记录' }
+    ]
+  },
+];
+
+let TASKS = [
+  {
+    key: 'registration:reg-101', kind: 'registration', state: 'actionable', createdAt: '10 分钟前',
+    personName: '周子豪', username: 'zhouzihao', phone: '138-9102-3318', email: 'zhouzh@rr-group.com',
+    orgId: 'huaxing', dept: 'engineering', currentPos: '未开通（新员工）', proposedPos: '结构工程师',
+    currentRoleIds: [], recommendedRoleIds: ['position_engineering_engineer'],
+    selectedRoleIds: ['position_engineering_engineer'], selectedFactories: ['huaxing'],
+    note: '本周入职华兴工程部，负责新款公仔 BOM 编制与试模跟进。',
+    decisionMode: 'apply_package'
+  },
+  {
+    key: 'registration:reg-102', kind: 'registration', state: 'actionable', createdAt: '1 小时前',
+    personName: '吴思琪', username: 'wusiqi', phone: '139-4401-2093', email: 'wusq@rr-group.com',
+    orgId: 'huadeng', dept: 'sales-business', currentPos: '未开通（新员工）', proposedPos: '外贸业务员',
+    currentRoleIds: [], recommendedRoleIds: ['position_sales_business'],
+    selectedRoleIds: ['position_sales_business'], selectedFactories: ['huadeng'],
+    note: '新入职华登业务一组，需录入内部报价并查询客户订单。',
+    decisionMode: 'apply_package'
+  },
+  {
+    key: 'position:pr-201', kind: 'position', state: 'actionable', createdAt: '昨天 16:20',
+    userId: 'u-lin', personName: '林晓梅', username: 'linxiaomei',
+    orgId: 'huadeng', dept: 'sales-business',
+    beforeOrgId: 'huadeng', beforeDept: 'sales-business', currentPos: '业务', proposedPos: '业务主管',
+    currentRoleIds: ['position_sales_business'], currentFactories: ['huadeng'],
+    employeeRequestedRoles: ['position_sales_supervisor'], employeeRequestedFactories: ['huadeng', 'huaxing'],
+    selectedRoleIds: ['position_sales_supervisor'], selectedFactories: ['huadeng', 'huaxing'],
+    note: '已接手业务二组，需要审核组员报价并跨厂跟进华兴排期。',
+    decisionMode: 'apply_package'
+  },
+  {
+    key: 'position:pr-202', kind: 'position', state: 'actionable', createdAt: '昨天 11:08',
+    userId: 'u-li', personName: '李浩然', username: 'kk',
+    orgId: 'huaxing', dept: 'engineering',
+    beforeOrgId: 'huadeng', beforeDept: 'engineering', currentPos: '工程师', proposedPos: '工程主管',
+    currentRoleIds: ['position_engineering_engineer'], currentFactories: ['huadeng'],
+    employeeRequestedRoles: ['position_engineering_supervisor'], employeeRequestedFactories: ['huaxing'],
+    selectedRoleIds: ['position_engineering_supervisor'], selectedFactories: ['huaxing'],
+    note: '公司安排平调至华兴工程部担任主管，负责 BOM 审核发布。',
+    decisionMode: 'apply_package'
+  },
+  {
+    key: 'password-reset:pwd-301', kind: 'password-reset', state: 'actionable', createdAt: '35 分钟前',
+    personName: '黄志强', username: 'huangzq', phone: '137-2810-6612',
+    orgId: 'huakang-a', dept: 'production', currentPos: '生产主管', proposedPos: '申请原浏览器重置密码',
+    claimStatus: '原浏览器凭证有效（剩余 47h 25m）', note: '更换新电脑忘记原登录密码，已电话联系人事确认。'
+  },
+  {
+    key: 'identity-change:ic-401', kind: 'identity-change', state: 'actionable', createdAt: '今天 08:30',
+    userId: 'u-zhang', personName: '张敏', username: 'zhangmin',
+    orgId: 'huaxing', dept: 'warehouse', currentPos: '仓库经理（fixed-v32）', proposedPos: '升级仓库经理至 fixed-v34（全6厂）',
+    requester: '华兴厂区人事管理员', reason: '同步最新纸箱采购对账与箱唛原文件权限，涉及跨厂范围需集团超管复核。',
+    addedPerms: ['carton_procurement:manage'], removedPerms: []
+  }
+];
+
+let AUDIT_LOGS = [
+  {
+    id: 'aud-1', type: 'position', time: '2026-11-19 09:15', actor: '集团管理员', target: '王建国（wangjg）',
+    summary: '核验并确认集团总务主职与权限包', commandId: 'cmd-8f31a2',
+    before: '历史未分类绑定 · 华登', after: '集团总务 · 总经理（fixed-v34 · 全6厂）',
+    added: ['carton_mark:customer_manage', 'carton_procurement:manage'], removed: []
+  },
+  {
+    id: 'aud-2', type: 'registration', time: '2026-11-18 17:40', actor: '华登厂区管理员', target: '郑嘉敏（zhengjm）',
+    summary: '新员工注册审核通过并开通账号', commandId: 'cmd-7c19e0',
+    before: '待审注册账号（无登录权）', after: '在用账号 · 华登·QC部 · QC检验员（fixed-v34）',
+    added: ['qc_inspection:inspect', 'customer_order:read'], removed: []
+  },
+  {
+    id: 'aud-3', type: 'access', time: '2026-11-18 14:05', actor: '集团管理员', target: '夏静（xia）',
+    summary: '停用账号并立即撤销 2 个活跃会话', commandId: 'cmd-6b04d1',
+    before: '状态：在用（可登录）', after: '状态：已停用（会话已撤销，保留档案）',
+    added: [], removed: ['登录会话权限']
+  },
+  {
+    id: 'aud-4', type: 'password', time: '2026-11-17 16:22', actor: '华兴厂区管理员', target: '赵明（zhaoming）',
+    summary: '核验身份通过，开放 4 小时原浏览器自主改密窗口', commandId: 'pwd-92a1',
+    before: '找回申请：待核验', after: '找回申请：本人已完成改密，旧会话全部失效',
+    added: [], removed: []
+  }
+];
+
+/* ============================================================================
+   APP STATE
+   ============================================================================ */
+const state = {
+  mode: 'admin',           // 'admin' | 'self'
+  adminTab: 'inbox',       // 'inbox' | 'people' | 'roles' | 'audit'
+  inboxTrack: 'all',       // 'all' | 'registration' | 'position' | 'password-reset' | 'identity-change'
+  selectedTaskKey: 'registration:reg-101',
+  reviewRiskChecked: false,
+  reviewRejectOpen: false,
+  reviewRejectReason: '',
+  reviewEditProfile: false,
+  pwdVerified: false,
+
+  // People directory
+  selectedOrg: 'all',
+  peopleSearch: '',
+  peopleRoleFilter: '',
+  peopleModeFilter: '',
+
+  // Drawer
+  drawerPersonId: null,
+  drawerTab: 'packages',   // 'packages' | 'effective' | 'timeline'
+  drawerDraft: null,
+  drawerPickerOpen: false,
+  drawerRiskChecked: false,
+  drawerLifeMenuOpen: false,
+  explainPerm: 'internal_quote:approve',
+  explainFactory: 'huadeng',
+
+  // Roles catalog
+  selectedRoleId: 'position_general_manager',
+  roleTab: 'permissions',  // 'permissions' | 'members'
+  roleSearch: '',
+  roleModFilter: 'all',
+  roleRiskOnly: false,
+  compareRoleId: '',
+
+  // Audit
+  auditType: 'all',
+
+  // Self service (acting as 林晓梅)
+  selfReviewStatus: 'pending', // 'pending' | 'returned' | 'applied'
+  selfReturnComment: ''
+};
+
+/* ============================================================================
+   UTILITIES & DIFF ENGINE
+   ============================================================================ */
+function computePermSet(roleIds, factories) {
+  const map = new Map();
+  (roleIds || []).forEach(rid => {
+    const r = roleById(rid);
+    if (!r) return;
+    r.perms.forEach(code => {
+      const fList = (factories && factories.length) ? factories : ['huadeng'];
+      if (!map.has(code)) map.set(code, new Set());
+      fList.forEach(f => map.get(code).add(f));
+    });
+  });
+  return map;
+}
+
+function diffPermissions(beforeRoleIds, beforeFactories, afterRoleIds, afterFactories) {
+  const before = computePermSet(beforeRoleIds, beforeFactories);
+  const after = computePermSet(afterRoleIds, afterFactories);
+  const added = [], removed = [], retained = [];
+  after.forEach((fSet, code) => {
+    if (!before.has(code)) {
+      added.push({ code, factories: [...fSet] });
+    } else {
+      const bf = before.get(code);
+      const extraF = [...fSet].filter(f => !bf.has(f));
+      if (extraF.length) added.push({ code, factories: extraF, scopeExpand: true });
+      else retained.push({ code, factories: [...fSet] });
+    }
+  });
+  before.forEach((fSet, code) => {
+    if (!after.has(code)) removed.push({ code, factories: [...fSet] });
+  });
+  const highRisk = added.length > 0 || added.some(x => permInfo(x.code).risk === 'high');
+  return { added, removed, retained, highRisk };
+}
+
+function showToast(msg) {
+  const host = document.getElementById('toastHost');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6ee7c8" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg><span>${msg}</span>`;
+  host.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 220ms'; setTimeout(() => el.remove(), 220); }, 3200);
+}
+
+function openModal(html) {
+  document.getElementById('modalContent').innerHTML = html;
+  document.getElementById('modalBackdrop').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modalBackdrop').classList.remove('open');
+}
+
+/* ============================================================================
+   TOP NAVIGATION & MODE SWITCH
+   ============================================================================ */
+function switchMode(mode) {
+  state.mode = mode;
+  document.getElementById('modeAdminBtn').classList.toggle('active', mode === 'admin');
+  document.getElementById('modeSelfBtn').classList.toggle('active', mode === 'self');
+  document.getElementById('adminNav').style.display = mode === 'admin' ? 'flex' : 'none';
+  document.getElementById('topUserChip').innerHTML = mode === 'admin'
+    ? `<span class="avatar-sm">管</span><span>集团管理员</span>`
+    : `<span class="avatar-sm" style="background:#fde68a;color:#613600">林</span><span>林晓梅 · 业务</span>`;
+  render();
+}
+
+function switchAdminTab(tab) {
+  state.adminTab = tab;
+  document.querySelectorAll('.nav-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  render();
+}
+
+function updateInboxBadges() {
+  const el = document.getElementById('navInboxCount');
+  if (el) {
+    el.textContent = TASKS.length;
+    el.style.display = TASKS.length ? 'inline-flex' : 'none';
+  }
+}
+
+/* ============================================================================
+   MAIN RENDER ROUTER
+   ============================================================================ */
+function render() {
+  updateInboxBadges();
+  const stage = document.getElementById('mainStage');
+  if (state.mode === 'self') {
+    stage.innerHTML = renderSelfService();
+    return;
+  }
+  if (state.adminTab === 'inbox') stage.innerHTML = renderInbox();
+  else if (state.adminTab === 'people') stage.innerHTML = renderPeople();
+  else if (state.adminTab === 'roles') stage.innerHTML = renderRoles();
+  else stage.innerHTML = renderAudit();
+}
+
+/* ============================================================================
+   VIEW 1: INBOX (办理大厅 - 四赛道 + 左右双擎同屏审办)
+   ============================================================================ */
+function renderInbox() {
+  const counts = {
+    registration: TASKS.filter(t => t.kind === 'registration').length,
+    position: TASKS.filter(t => t.kind === 'position').length,
+    'password-reset': TASKS.filter(t => t.kind === 'password-reset').length,
+    'identity-change': TASKS.filter(t => t.kind === 'identity-change').length,
+  };
+  const filtered = state.inboxTrack === 'all' ? TASKS : TASKS.filter(t => t.kind === state.inboxTrack);
+  if (filtered.length && !filtered.some(t => t.key === state.selectedTaskKey)) {
+    state.selectedTaskKey = filtered[0].key;
+  }
+  const activeTask = filtered.find(t => t.key === state.selectedTaskKey) || null;
+
+  const trackMeta = [
+    { key: 'registration', title: '新员工注册待开通', sub: '核验资料 · 赋内置包 · 开通登录', color: '#1c5da6', soft: '#eef5ff', count: counts.registration },
+    { key: 'position', title: '员工改岗 / 改权申请', sub: '对照现状与申请 · 审批生效', color: '#006559', soft: '#e8f6f3', count: counts.position },
+    { key: 'password-reset', title: '密码找回核验', sub: '核实身份 · 开放 4h 原浏览器改密', color: '#b46910', soft: '#fff7e6', count: counts['password-reset'] },
+    { key: 'identity-change', title: '跨厂 / 高危变更复核', sub: '超出厂级转授上限 · 集团审批', color: '#62469a', soft: '#f4f0fc', count: counts['identity-change'] },
+  ];
+
+  const kindLabel = k => ({ registration: '注册开通', position: '员工改权', 'password-reset': '密码找回', 'identity-change': '高危复核' }[k]);
+  const kindPillClass = k => ({ registration: 'pill-blue', position: 'pill-primary', 'password-reset': 'pill-amber', 'identity-change': 'pill-violet' }[k]);
+
+  return `
+    <div class="view-container">
+      <!-- 4 Track Funnel Cards -->
+      <section class="track-bar">
+        ${trackMeta.map(tr => `
+          <button class="track-card ${state.inboxTrack === tr.key ? 'active' : ''}"
+            style="--track-color:${tr.color};--track-soft:${tr.soft}"
+            onclick="toggleInboxTrack('${tr.key}')">
+            <div class="track-meta">
+              <span class="track-title">${tr.title}</span>
+              <span class="track-sub">${tr.sub}</span>
+            </div>
+            <span class="track-count num">${tr.count}</span>
+          </button>
+        `).join('')}
+      </section>
+
+      <!-- Master-Detail Split -->
+      <div class="inbox-grid">
+        <section class="panel">
+          <div class="panel-header">
+            <span class="panel-title">
+              待办队列
+              <span class="pill pill-amber num">${filtered.length} 条可处理</span>
+            </span>
+            ${state.inboxTrack !== 'all' ? `<button class="btn btn-sm btn-ghost" onclick="toggleInboxTrack('all')">显示全部</button>` : ''}
+          </div>
+          <div class="queue-list">
+            ${filtered.length ? filtered.map(t => `
+              <button class="queue-item ${t.key === state.selectedTaskKey ? 'active' : ''}" onclick="selectTask('${t.key}')">
+                <div class="queue-row-top">
+                  <span class="queue-name">${t.personName} <span style="font-weight:400;color:var(--muted);font-size:12px">@${t.username}</span></span>
+                  <span class="pill ${kindPillClass(t.kind)}">${kindLabel(t.kind)}</span>
+                </div>
+                <div class="queue-change">${t.kind === 'registration' ? `申请加入 ${orgName(t.orgId)} · ${deptName(t.dept)} · ${t.proposedPos}` : t.kind === 'position' ? `${t.currentPos} → <b>${t.proposedPos}</b>` : t.proposedPos}</div>
+                <div class="queue-foot">
+                  <span>${orgName(t.orgId)} · ${deptName(t.dept)}</span>
+                  <span class="num">${t.createdAt}</span>
+                </div>
+              </button>
+            `).join('') : `<div class="empty-state"><div><div style="font-size:15px;font-weight:700;color:var(--ink);margin-bottom:4px">当前赛道已全部办结</div><div style="font-size:12.5px">没有积压的待处理事项</div></div></div>`}
+          </div>
+        </section>
+
+        <section class="panel">
+          ${activeTask ? renderTaskReviewPane(activeTask) : `<div class="empty-state">请选择左侧一条待办事项开始办理</div>`}
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function renderTaskReviewPane(t) {
+  if (t.kind === 'password-reset') {
+    return `
+      <div class="review-shell">
+        <div class="review-top-banner">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <h2 style="margin:0;font-size:17px">${t.personName}</h2>
+              <span class="pill pill-amber">密码找回核验</span>
+            </div>
+            <div style="font-size:12.5px;color:var(--muted);margin-top:2px">账号 @${t.username} · ${orgName(t.orgId)} · ${deptName(t.dept)} · ${t.currentPos}</div>
+          </div>
+          <span class="pill pill-emerald pill-dot">${t.claimStatus}</span>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px">
+          <div class="info-grid-4" style="background:#fffaf0;border-color:var(--amber-border)">
+            <div class="info-cell"><label>登录账号</label><strong>${t.username}</strong></div>
+            <div class="info-cell"><label>登记手机</label><strong class="num">${t.phone}</strong></div>
+            <div class="info-cell"><label>归属组织</label><strong>${orgName(t.orgId)} · ${deptName(t.dept)}</strong></div>
+            <div class="info-cell"><label>提交时间</label><strong>${t.createdAt}</strong></div>
+          </div>
+          <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:#fff">
+            <div class="section-label" style="margin-bottom:8px">申请人说明</div>
+            <p style="margin:0;color:var(--ink-2)">${t.note}</p>
+          </div>
+          <div style="padding:14px;border-radius:10px;border:1px solid #c5e3dc;background:#f4fbf9">
+            <div class="section-label" style="margin-bottom:8px">安全边界与核验确认</div>
+            <p style="margin:0 0 10px;font-size:12.5px;color:var(--ink-2)">批准后将向申请人原浏览器开放 <b>4 小时</b>自主设新密码窗口；<b>批准动作本身不改原密码、不撤销现有会话</b>，直到本人完成改密才原子撤销所有旧会话。</p>
+            <label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer">
+              <input type="checkbox" ${state.pwdVerified ? 'checked' : ''} onchange="state.pwdVerified=this.checked;render()" />
+              我已通过电话/当面核实申请人确为 ${t.personName} 本人
+            </label>
+          </div>
+        </div>
+        <div class="review-footer">
+          <span style="font-size:12.5px;color:var(--muted)">原浏览器凭证采用 SHA-256 摘要校验，不派发临时明文密码</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-danger-outline" onclick="completeTask('${t.key}','已拒绝密码找回申请')">拒绝申请</button>
+            <button class="btn btn-primary" ${state.pwdVerified ? '' : 'disabled'} onclick="completeTask('${t.key}','已批准密码找回，开放 4 小时原浏览器改密窗口')">批准并开放改密窗口</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (t.kind === 'identity-change') {
+    return `
+      <div class="review-shell">
+        <div class="review-top-banner">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <h2 style="margin:0;font-size:17px">${t.personName}</h2>
+              <span class="pill pill-violet">跨厂 / 高危变更待复核</span>
+            </div>
+            <div style="font-size:12.5px;color:var(--muted);margin-top:2px">发起人：${t.requester} · 提交于 ${t.createdAt}</div>
+          </div>
+          <button class="btn btn-sm btn-outline" onclick="openPersonDrawer('${t.userId}')">查看人员360°档案</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px">
+          <div class="compare-strip">
+            <div class="compare-box">
+              <div class="compare-label">变更前（Before）</div>
+              <div class="compare-main">仓库经理 · fixed-v32</div>
+              <div class="compare-sub">覆盖：全 6 个生产厂区</div>
+            </div>
+            <div style="text-align:center;color:var(--primary);font-weight:700">→</div>
+            <div class="compare-box after">
+              <div class="compare-label">申请变更（After）</div>
+              <div class="compare-main">仓库经理 · fixed-v34（升级包版本）</div>
+              <div class="compare-sub">覆盖：全 6 个生产厂区 · 新增 1 项高风险权限</div>
+            </div>
+          </div>
+          <div style="padding:14px;border-radius:10px;border:1px solid var(--border)">
+            <div class="section-label" style="margin-bottom:6px">变更原因与越权说明</div>
+            <div style="font-size:13px;color:var(--ink-2)">${t.reason}</div>
+          </div>
+          <div class="diff-group">
+            <div class="diff-group-head add"><span>+ 升级后净新增权限（全6厂）</span><span>1 项</span></div>
+            <ul class="diff-list">
+              <li><span><b>纸箱采购下单与对账</b> <span class="mono" style="color:var(--muted)">carton_procurement:manage</span></span><span class="pill pill-red">高风险</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="review-footer">
+          <span style="font-size:12.5px;color:var(--muted)">批准后将持有写锁并按幂等键原子生效，旧版本历史快照保留可追溯</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-danger-outline" onclick="completeTask('${t.key}','已驳回该跨厂变更复核单')">驳回变更</button>
+            <button class="btn btn-primary" onclick="approveIdentityUpgrade('${t.key}')">批准并立即生效</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Registration & Employee Position/Permission Change (Dual-Engine Live Studio)
+  const isReg = t.kind === 'registration';
+  const beforeRoles = isReg ? [] : t.currentRoleIds;
+  const beforeFacs = isReg ? [] : t.currentFactories;
+  const effectiveRoles = t.decisionMode === 'keep_permissions' ? beforeRoles : t.selectedRoleIds;
+  const effectiveFacs = t.decisionMode === 'keep_permissions' ? beforeFacs : t.selectedFactories;
+  const diff = diffPermissions(beforeRoles, beforeFacs, effectiveRoles, effectiveFacs);
+  const canSubmit = (t.decisionMode === 'keep_permissions' || (t.selectedRoleIds.length > 0 && t.selectedFactories.length > 0))
+                    && (!diff.highRisk || state.reviewRiskChecked);
+
+  // Recommend department-matched roles first
+  const sortedRoles = [...ROLES].sort((a, b) => (b.dept === t.dept ? 1 : 0) - (a.dept === t.dept ? 1 : 0));
+
+  return `
+    <div class="review-shell">
+      <div class="review-top-banner">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span class="avatar" style="${isReg ? 'background:#e8f2ff;color:#1c5da6' : ''}">${t.personName.slice(0,1)}</span>
+          <div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <h2 style="margin:0;font-size:16.5px">${t.personName}</h2>
+              <span class="pill ${isReg ? 'pill-blue' : 'pill-primary'}">${isReg ? '新员工注册开通' : '员工岗位与权限申请'}</span>
+              <span style="font-size:12px;color:var(--muted)">@${t.username}</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px">提交于 ${t.createdAt} · 组织：${orgName(t.orgId)} · ${deptName(t.dept)}</div>
+          </div>
+        </div>
+        ${t.userId ? `<button class="btn btn-sm btn-outline" onclick="openPersonDrawer('${t.userId}')">打开此人完整档案</button>` : ''}
+      </div>
+
+      <div class="review-dual">
+        <!-- LEFT ENGINE: Verify + Assemble Packages -->
+        <div class="review-left">
+          ${isReg ? `
+            <div class="info-grid-4">
+              <div class="info-cell"><label>注册账号</label><strong>${t.username}</strong></div>
+              <div class="info-cell"><label>申请姓名</label><strong>${t.personName}</strong></div>
+              <div class="info-cell"><label>手机号码</label><strong class="num">${t.phone}</strong></div>
+              <div class="info-cell"><label>企业邮箱</label><strong>${t.email}</strong></div>
+            </div>
+          ` : `
+            <div class="compare-strip">
+              <div class="compare-box">
+                <div class="compare-label">当前正式岗位（Before）</div>
+                <div class="compare-main">${t.currentPos}</div>
+                <div class="compare-sub">${orgName(t.beforeOrgId)} · ${deptName(t.beforeDept)}</div>
+                <div class="chip-wrap" style="margin-top:6px">
+                  ${t.currentRoleIds.map(id => `<span class="pkg-chip">${roleById(id)?.name}</span>`).join('')}
+                </div>
+              </div>
+              <div style="text-align:center;color:var(--primary);font-weight:700">→</div>
+              <div class="compare-box after">
+                <div class="compare-label">员工本次申报（After）</div>
+                <div class="compare-main">${t.proposedPos}</div>
+                <div class="compare-sub">${orgName(t.orgId)} · ${deptName(t.dept)}</div>
+                ${t.employeeRequestedRoles?.length ? `
+                  <div style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                    <span class="pill pill-amber">员工参考期望</span>
+                    ${t.employeeRequestedRoles.map(id => `<span class="pkg-chip">${roleById(id)?.name}</span>`).join('')}
+                    <button class="btn btn-sm btn-soft" style="height:22px;padding:0 8px;font-size:11px" onclick="adoptEmployeeSuggestion('${t.key}')">一键采纳</button>
+                  </div>
+                ` : ''}
+              </div>
+            </div>
+          `}
+
+          ${t.note ? `<div style="font-size:12.5px;color:var(--ink-2);padding:9px 12px;border-radius:8px;background:var(--surface-subtle);border-left:3px solid var(--primary)"><b>申报备注：</b>${t.note}</div>` : ''}
+
+          ${!isReg ? `
+            <div style="display:flex;gap:8px">
+              <button class="factory-toggle ${t.decisionMode === 'apply_package' ? 'selected' : ''}" onclick="setTaskDecisionMode('${t.key}','apply_package')">调整并分配权限包</button>
+              <button class="factory-toggle ${t.decisionMode === 'keep_permissions' ? 'selected' : ''}" onclick="setTaskDecisionMode('${t.key}','keep_permissions')">仅确认岗位名，严格保留原权限</button>
+            </div>
+          ` : ''}
+
+          ${t.decisionMode !== 'keep_permissions' ? `
+            <div>
+              <div class="section-label" style="margin-bottom:8px">
+                <span>1. 业务作用厂区（多选胶囊）</span>
+                <button class="btn btn-sm btn-ghost" onclick="selectAllTaskFactories('${t.key}')">全选 6 厂</button>
+              </div>
+              <div class="factory-selector">
+                ${FACTORIES.map(f => `
+                  <button class="factory-toggle ${t.selectedFactories.includes(f.id) ? 'selected' : ''}"
+                    onclick="toggleTaskFactory('${t.key}','${f.id}')">${f.name}</button>
+                `).join('')}
+              </div>
+            </div>
+
+            <div>
+              <div class="section-label" style="margin-bottom:8px">
+                <span>2. 选择内置权限包（可单选或叠加多包，已将本部门匹配项置顶）</span>
+                <span style="font-size:11.5px;color:var(--muted)">已选 ${t.selectedRoleIds.length} 个</span>
+              </div>
+              <div class="pkg-grid">
+                ${sortedRoles.map(r => {
+                  const sel = t.selectedRoleIds.includes(r.id);
+                  const matched = r.dept === t.dept;
+                  return `
+                    <button class="pkg-option ${sel ? 'selected' : ''}" onclick="toggleTaskRole('${t.key}','${r.id}')">
+                      <div class="pkg-option-top">
+                        <span class="pkg-option-name">${r.name}</span>
+                        <span class="pill ${sel ? 'pill-emerald' : 'pill-slate'} num">${r.totalPerms} 项</span>
+                      </div>
+                      <div class="pkg-option-desc">${r.desc}</div>
+                      <div class="pkg-option-meta">
+                        ${matched ? `<span class="pill pill-primary">推荐匹配</span>` : ''}
+                        <span class="pill pill-slate">${r.scopeText}</span>
+                        <span class="mono" style="color:var(--muted);font-size:11px">${r.version}</span>
+                      </div>
+                    </button>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          ` : `
+            <div style="padding:14px;border-radius:10px;background:#f4fbf9;border:1px solid #c2e3dc;font-size:13px;color:var(--ink-2)">
+              已选择<b>「仅确认岗位名称，保留原权限」</b>：提交时后端将校验变更前后「权限码 × 厂区 × 部门」集合 100% 零差异，原有固定版本与独立例外全部保持不变。
+            </div>
+          `}
+        </div>
+
+        <!-- RIGHT ENGINE: Live Diff Radar -->
+        <div class="review-right">
+          <div class="section-label">
+            <span style="display:flex;align-items:center;gap:6px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              实时权限影响雷达（Live Diff）
+            </span>
+            <span class="pill pill-emerald pill-dot">预览有效 4:58</span>
+          </div>
+          ${renderLiveDiffPanel(diff, [])}
+        </div>
+      </div>
+
+      <!-- Sticky Decision Footer -->
+      <div class="review-footer">
+        <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
+          ${diff.highRisk ? `
+            <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:var(--amber);background:var(--amber-bg);padding:6px 11px;border-radius:8px;border:1px solid var(--amber-border);cursor:pointer">
+              <input type="checkbox" ${state.reviewRiskChecked ? 'checked' : ''} onchange="state.reviewRiskChecked=this.checked;render()" />
+              我已核对本次新增的 ${diff.added.length} 项权限及覆盖厂区范围
+            </label>
+          ` : `<span class="pill pill-emerald pill-dot">无新增权限，安全就绪</span>`}
+        </div>
+        ${state.reviewRejectOpen ? `
+          <div style="display:flex;align-items:center;gap:8px">
+            <input class="input" style="width:240px" placeholder="请输入${isReg ? '拒绝' : '退回'}原因（必填）" value="${state.reviewRejectReason}" oninput="state.reviewRejectReason=this.value" />
+            <button class="btn btn-danger" onclick="submitTaskReject('${t.key}')">确认${isReg ? '拒绝' : '退回'}</button>
+            <button class="btn btn-ghost" onclick="state.reviewRejectOpen=false;render()">取消</button>
+          </div>
+        ` : `
+          <div style="display:flex;align-items:center;gap:8px">
+            <button class="btn btn-danger-outline" onclick="state.reviewRejectOpen=true;state.reviewRejectReason='';render()">${isReg ? '拒绝注册' : '退回补充'}</button>
+            <button class="btn btn-primary" ${canSubmit ? '' : 'disabled'} onclick="submitTaskApprove('${t.key}')">
+              ${isReg ? '通过并开通分配权限' : t.decisionMode === 'keep_permissions' ? '确认岗位并保留原权限' : '确认通过并生效'}
+            </button>
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function renderLiveDiffPanel(diff, explicitDenies) {
+  return `
+    <div class="diff-kpis">
+      <div class="diff-kpi add"><strong class="num">+${diff.added.length}</strong><span>净新增权限</span></div>
+      <div class="diff-kpi rem"><strong class="num">-${diff.removed.length}</strong><span>将收回权限</span></div>
+      <div class="diff-kpi"><strong class="num">${diff.retained.length}</strong><span>保持不变</span></div>
+    </div>
+
+    <div class="diff-group">
+      <div class="diff-group-head add"><span>+ 新增权限明细</span><span class="num">${diff.added.length} 项</span></div>
+      ${diff.added.length ? `<ul class="diff-list">
+        ${diff.added.map(item => {
+          const info = permInfo(item.code);
+          return `<li>
+            <span><b>${info.name}</b> ${item.scopeExpand ? '<span class="pill pill-blue" style="height:18px;font-size:10px">扩厂</span>' : ''}</span>
+            <span style="display:flex;align-items:center;gap:5px">
+              ${info.risk === 'high' ? '<span class="pill pill-red" style="height:18px;font-size:10px">高风险</span>' : ''}
+              <span style="color:var(--muted);font-size:11px">${item.factories.map(orgName).join('、')}</span>
+            </span>
+          </li>`;
+        }).join('')}
+      </ul>` : `<div style="padding:12px;font-size:12px;color:var(--muted)">本次操作不新增权限</div>`}
+    </div>
+
+    ${diff.removed.length ? `
+      <div class="diff-group">
+        <div class="diff-group-head rem"><span>- 将停止的权限</span><span class="num">${diff.removed.length} 项</span></div>
+        <ul class="diff-list">
+          ${diff.removed.map(item => `<li><span>${permInfo(item.code).name}</span><span style="color:var(--muted);font-size:11px">${item.factories.map(orgName).join('、')}</span></li>`).join('')}
+        </ul>
+      </div>
+    ` : ''}
+
+    ${explicitDenies.length ? `
+      <div class="diff-group">
+        <div class="diff-group-head deny"><span>⛔ 仍生效的显式禁止（不可绕过）</span><span>${explicitDenies.length}</span></div>
+        <ul class="diff-list">
+          ${explicitDenies.map(d => `<li><span>${permInfo(d.code).name}</span><span style="color:var(--red);font-size:11px">${orgName(d.factoryId)}</span></li>`).join('')}
+        </ul>
+      </div>
+    ` : ''}
+
+    <div style="font-size:11.5px;color:var(--muted);padding:8px 10px;border-radius:8px;background:#fff;border:1px solid var(--border)">
+      <b>无草稿污染预览：</b>在数据库嵌套事务中实时演算，未点击确认前绝不产生脏草稿单，且自动校验自我提权与最后一位管理员保护。
+    </div>
+  `;
+}
+
+/* ============================================================================
+   VIEW 2: PEOPLE DIRECTORY (人员全景宽表 + 左侧组织树)
+   ============================================================================ */
+function renderPeople() {
+  const list = PEOPLE.filter(p => {
+    if (state.selectedOrg !== 'all' && p.orgId !== state.selectedOrg) return false;
+    if (state.peopleSearch.trim()) {
+      const q = state.peopleSearch.trim().toLowerCase();
+      if (![p.name, p.username, p.phone, p.position].some(v => v.toLowerCase().includes(q))) return false;
+    }
+    if (state.peopleRoleFilter && !p.packages.some(b => b.roleId === state.peopleRoleFilter)) return false;
+    if (state.peopleModeFilter === 'legacy' && p.mode !== 'legacy') return false;
+    if (state.peopleModeFilter === 'nopkg' && p.packages.length > 0) return false;
+    if (state.peopleModeFilter === 'pending' && !p.openTaskKey) return false;
+    return true;
+  });
+
+  const statusPill = s => s === 'active'
+    ? `<span class="pill pill-emerald pill-dot">在用</span>`
+    : `<span class="pill pill-slate pill-dot">已停用</span>`;
+
+  return `
+    <div class="view-container">
+      <div class="people-layout">
+        <!-- Left Org Tree -->
+        <aside class="panel org-sidebar-panel">
+          <div class="panel-header"><span class="panel-title">组织架构</span></div>
+          <div class="org-tree">
+            <button class="org-node ${state.selectedOrg === 'all' ? 'active' : ''}" onclick="state.selectedOrg='all';render()">
+              <span>全部可见人员</span><span class="count num">${PEOPLE.length}</span>
+            </button>
+            <div class="org-group-label">生产厂区（6）</div>
+            ${FACTORIES.map(f => {
+              const c = PEOPLE.filter(p => p.orgId === f.id).length;
+              return `<button class="org-node ${state.selectedOrg === f.id ? 'active' : ''}" onclick="state.selectedOrg='${f.id}';render()">
+                <span>${f.name}</span><span class="count num">${c}</span>
+              </button>`;
+            }).join('')}
+            <div class="org-group-label">集团职能</div>
+            <button class="org-node ${state.selectedOrg === 'group-management' ? 'active' : ''}" onclick="state.selectedOrg='group-management';render()">
+              <span>集团总务</span><span class="count num">${PEOPLE.filter(p => p.orgId === 'group-management').length}</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- Right High-Density Directory Table -->
+        <section class="panel">
+          <div class="toolbar">
+            <div class="search-box" style="flex:1;min-width:200px;max-width:300px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input class="input" placeholder="搜索姓名、账号、手机或岗位…" value="${state.peopleSearch}" oninput="state.peopleSearch=this.value;render()" />
+            </div>
+            <select class="select" onchange="state.peopleRoleFilter=this.value;render()">
+              <option value="">按权限包筛选（全部）</option>
+              ${ROLES.map(r => `<option value="${r.id}" ${state.peopleRoleFilter===r.id?'selected':''}>${r.name}</option>`).join('')}
+            </select>
+            <select class="select" onchange="state.peopleModeFilter=this.value;render()">
+              <option value="" ${state.peopleModeFilter===''?'selected':''}>全部人员特征</option>
+              <option value="legacy" ${state.peopleModeFilter==='legacy'?'selected':''}>仅看：历史来源待核实</option>
+              <option value="nopkg" ${state.peopleModeFilter==='nopkg'?'selected':''}>仅看：未配置权限包</option>
+              <option value="pending" ${state.peopleModeFilter==='pending'?'selected':''}>仅看：有待办申请</option>
+            </select>
+            <span style="margin-left:auto;font-size:12.5px;color:var(--muted)" class="num">共 ${list.length} 人 · 点击行或「配置权限」直接装配</span>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:21%">人员 / 账号</th>
+                  <th style="width:18%">正式主职与归属</th>
+                  <th style="width:26%">当前生效权限包（一眼看清）</th>
+                  <th style="width:14%">业务覆盖厂区</th>
+                  <th style="width:12%">状态 / 待办</th>
+                  <th style="width:9%;text-align:right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${list.map(p => {
+                  const allFacs = [...new Set(p.packages.flatMap(b => b.factories))];
+                  return `
+                    <tr onclick="openPersonDrawer('${p.id}')">
+                      <td>
+                        <div class="person-cell">
+                          <span class="avatar ${p.mode==='legacy'?'legacy':p.status==='suspended'?'suspended':''}">${p.name.slice(0,1)}</span>
+                          <div>
+                            <div style="font-weight:700;color:var(--ink)">${p.name}</div>
+                            <div style="font-size:11.5px;color:var(--muted)">@${p.username} · <span class="num">${p.phone}</span></div>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <div style="font-weight:600">${p.position}</div>
+                        <div style="font-size:12px;color:var(--muted)">${orgName(p.orgId)} · ${deptName(p.dept)}</div>
+                        ${p.secondaries.length ? `<span class="pill pill-violet" style="margin-top:3px;height:19px;font-size:10.5px">+${p.secondaries.length} 兼任</span>` : ''}
+                      </td>
+                      <td>
+                        <div class="chip-wrap">
+                          ${p.packages.length ? p.packages.map(b => `
+                            <span class="pkg-chip ${b.outdated ? 'outdated' : ''}">${roleById(b.roleId)?.name}</span>
+                          `).join('') : `<span class="pkg-chip warn">未配置权限包</span>`}
+                          ${p.mode === 'legacy' ? `<span class="pill pill-amber">历史待核实</span>` : ''}
+                          ${p.overrides.some(o => o.effect==='allow') ? `<span class="pill pill-blue">+${p.overrides.filter(o=>o.effect==='allow').length} 例外</span>` : ''}
+                          ${p.overrides.some(o => o.effect==='deny') ? `<span class="pill pill-red">⛔ ${p.overrides.filter(o=>o.effect==='deny').length} 禁止</span>` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <div class="chip-wrap">
+                          ${allFacs.length >= 6
+                            ? `<span class="factory-chip all">全部 6 厂</span>`
+                            : allFacs.length ? allFacs.map(f => `<span class="factory-chip">${orgName(f)}</span>`).join('') : `<span style="color:var(--muted);font-size:12px">—</span>`}
+                        </div>
+                      </td>
+                      <td>
+                        <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">
+                          ${statusPill(p.status)}
+                          ${p.openTaskKey ? `<button class="pill pill-amber" style="cursor:pointer;border:1px solid var(--amber-border)" onclick="event.stopPropagation();jumpToTask('${p.openTaskKey}')">有待审申请 →</button>` : `<span style="font-size:11px;color:var(--muted)">登录：${p.lastLogin}</span>`}
+                        </div>
+                      </td>
+                      <td style="text-align:right">
+                        <button class="btn btn-sm btn-soft" onclick="event.stopPropagation();openPersonDrawer('${p.id}')">配置权限</button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================================================================
+   68% WIDE PERSON STUDIO DRAWER (人员全景与实时配包抽屉)
+   ============================================================================ */
+function openPersonDrawer(personId, initialTab = 'packages') {
+  const p = PEOPLE.find(x => x.id === personId);
+  if (!p) return;
+  state.drawerPersonId = personId;
+  state.drawerTab = initialTab;
+  state.drawerPickerOpen = false;
+  state.drawerRiskChecked = false;
+  state.drawerLifeMenuOpen = false;
+  state.explainFactory = p.orgId === 'group-management' ? 'huadeng' : p.orgId;
+  // Clone draft
+  state.drawerDraft = {
+    orgId: p.orgId,
+    dept: p.dept,
+    position: p.position,
+    legacyConfirmed: p.mode === 'v2',
+    legacyDisposition: 'assignment',
+    packages: JSON.parse(JSON.stringify(p.packages)),
+    secondaries: JSON.parse(JSON.stringify(p.secondaries)),
+    overrides: JSON.parse(JSON.stringify(p.overrides)),
+    reason: ''
+  };
+  renderPersonDrawer();
+  document.getElementById('personDrawerBackdrop').classList.add('open');
+}
+
+function closePersonDrawer() {
+  document.getElementById('personDrawerBackdrop').classList.remove('open');
+  state.drawerPersonId = null;
+}
+
+function renderPersonDrawer() {
+  const p = PEOPLE.find(x => x.id === state.drawerPersonId);
+  if (!p || !state.drawerDraft) return;
+  const d = state.drawerDraft;
+
+  let bodyHtml = '';
+  if (state.drawerTab === 'packages') bodyHtml = renderDrawerPackagesTab(p, d);
+  else if (state.drawerTab === 'effective') bodyHtml = renderDrawerEffectiveTab(p);
+  else bodyHtml = renderDrawerTimelineTab(p);
+
+  document.getElementById('personDrawer').innerHTML = `
+    <header class="drawer-header">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span class="avatar ${p.mode==='legacy'?'legacy':''}" style="width:42px;height:42px;font-size:17px">${p.name.slice(0,1)}</span>
+        <div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <h2 style="margin:0;font-size:18px">${p.name}</h2>
+            <span class="pill ${p.status==='active'?'pill-emerald':'pill-slate'} pill-dot">${p.status==='active'?'在用':'已停用'}</span>
+            <span class="pill ${p.mode==='v2'?'pill-primary':'pill-amber'}">${p.mode==='v2'?'V2 正式任职':'历史来源待核实'}</span>
+          </div>
+          <div style="font-size:12.5px;color:var(--muted);margin-top:2px">@${p.username} · ${orgName(p.orgId)} · ${deptName(p.dept)} · ${p.position} · 最近登录 ${p.lastLogin}</div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="dropdown-wrap">
+          <button class="btn btn-sm btn-outline" onclick="state.drawerLifeMenuOpen=!state.drawerLifeMenuOpen;renderPersonDrawer()">
+            账号生命周期 ▾
+          </button>
+          <div class="dropdown-menu ${state.drawerLifeMenuOpen ? 'open' : ''}">
+            <button onclick="togglePersonStatus('${p.id}')">${p.status==='active'?'停用账号（立即失效会话）':'恢复账号（允许登录）'}</button>
+            <button onclick="showToast('已模拟打开：冻结账号确认弹窗（保留任职历史）');state.drawerLifeMenuOpen=false;renderPersonDrawer()">冻结账号</button>
+            <button class="danger" onclick="showToast('已模拟打开：办理离职与工作交接核对弹窗');state.drawerLifeMenuOpen=false;renderPersonDrawer()">办理离职与交接…</button>
+          </div>
+        </div>
+        <button class="btn btn-sm btn-ghost" style="font-size:18px;width:32px" onclick="closePersonDrawer()" aria-label="关闭">✕</button>
+      </div>
+    </header>
+
+    <nav class="drawer-tabs">
+      <button class="drawer-tab ${state.drawerTab==='packages'?'active':''}" onclick="state.drawerTab='packages';renderPersonDrawer()">① 权限包直改装配台</button>
+      <button class="drawer-tab ${state.drawerTab==='effective'?'active':''}" onclick="state.drawerTab='effective';renderPersonDrawer()">② 有效权限透视与验算</button>
+      <button class="drawer-tab ${state.drawerTab==='timeline'?'active':''}" onclick="state.drawerTab='timeline';renderPersonDrawer()">③ 档案与变更时间线</button>
+    </nav>
+
+    <div class="drawer-body">${bodyHtml}</div>
+  `;
+}
+
+function renderDrawerPackagesTab(p, d) {
+  const beforeRoleIds = p.packages.map(b => b.roleId);
+  const beforeFacs = [...new Set(p.packages.flatMap(b => b.factories))];
+  const afterRoleIds = d.packages.map(b => b.roleId);
+  const afterFacs = [...new Set(d.packages.flatMap(b => b.factories))];
+  const diff = diffPermissions(beforeRoleIds, beforeFacs, afterRoleIds, afterFacs);
+  const changed = JSON.stringify(p.packages) !== JSON.stringify(d.packages)
+               || p.position !== d.position || p.orgId !== d.orgId || p.dept !== d.dept
+               || (p.mode === 'legacy' && d.legacyConfirmed);
+  const denies = d.overrides.filter(o => o.effect === 'deny' && o.active);
+  const canCommit = changed && (p.mode === 'v2' || d.legacyConfirmed) && (!diff.highRisk || state.drawerRiskChecked);
+
+  return `
+    <div style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden">
+      <div class="review-dual" style="flex:1">
+        <!-- Left Assembler -->
+        <div class="review-left">
+          ${p.mode === 'legacy' ? `
+            <div class="legacy-banner">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <strong style="color:var(--amber);font-size:13px">一步核实历史授权来源（无需分两次提交）</strong>
+                <span class="pill pill-amber">Legacy → V2</span>
+              </div>
+              <div style="font-size:12px;color:#73480f">系统已预判此人原有角色「${roleById(p.packages[0]?.roleId)?.name}」归属于当前主职。确认归类后，可直接同屏调整权限包并原子生效：</div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <select class="select" style="height:30px;font-size:12px" onchange="state.drawerDraft.legacyDisposition=this.value">
+                  <option value="assignment" selected>原有绑定归属：本次主职</option>
+                  <option value="individual_exception">原有绑定归属：独立个人能力</option>
+                  <option value="system_administration">原有绑定归属：独立系统管理</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:var(--amber);cursor:pointer">
+                  <input type="checkbox" ${d.legacyConfirmed ? 'checked' : ''} onchange="state.drawerDraft.legacyConfirmed=this.checked;renderPersonDrawer()" />
+                  核实无误，本次一并转正为 V2 任职
+                </label>
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Inline Official Primary Position -->
+          <div style="padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface-subtle)">
+            <div class="section-label" style="margin-bottom:8px">正式主职信息</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:8px">
+              <div>
+                <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:3px">所属组织</label>
+                <select class="select" style="width:100%" onchange="state.drawerDraft.orgId=this.value;renderPersonDrawer()">
+                  ${ORGS.map(o => `<option value="${o.id}" ${d.orgId===o.id?'selected':''}>${o.name}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:3px">正式部门</label>
+                <select class="select" style="width:100%" onchange="state.drawerDraft.dept=this.value;renderPersonDrawer()">
+                  ${Object.entries(DEPT_NAMES).map(([k,v]) => `<option value="${k}" ${d.dept===k?'selected':''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:3px">正式职位名称</label>
+                <input class="input" style="width:100%" value="${d.position}" oninput="state.drawerDraft.position=this.value" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Assembled Packages -->
+          <div>
+            <div class="section-label" style="margin-bottom:8px">
+              <span>主职已装配权限包（${d.packages.length} / 20）</span>
+              <button class="btn btn-sm btn-primary" onclick="state.drawerPickerOpen=!state.drawerPickerOpen;renderPersonDrawer()">
+                ${state.drawerPickerOpen ? '收起权限包库' : '+ 添加权限包'}
+              </button>
+            </div>
+
+            ${state.drawerPickerOpen ? `
+              <div style="padding:10px;border-radius:10px;border:1.5px solid var(--primary);background:#f3fbf9;margin-bottom:10px">
+                <div style="font-size:12px;font-weight:700;color:var(--primary-ink);margin-bottom:8px">点击即可添加到当前员工的主职装配槽：</div>
+                <div class="pkg-grid">
+                  ${ROLES.filter(r => !d.packages.some(b => b.roleId === r.id)).map(r => `
+                    <button class="pkg-option" style="padding:8px 10px" onclick="addDrawerPackage('${r.id}')">
+                      <div class="pkg-option-top"><span class="pkg-option-name" style="font-size:12.5px">${r.name}</span><span class="pill pill-primary num">${r.totalPerms} 项</span></div>
+                      <div class="pkg-option-desc">${r.scopeText} · ${r.version}</div>
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+
+            <div style="display:flex;flex-direction:column;gap:9px">
+              ${d.packages.length ? d.packages.map((b, idx) => {
+                const role = roleById(b.roleId);
+                return `
+                  <div class="pkg-slot-card">
+                    <div class="pkg-slot-head">
+                      <div>
+                        <div style="display:flex;align-items:center;gap:7px">
+                          <strong style="font-size:14px">${role?.name}</strong>
+                          <span class="pill pill-slate mono">${b.version}</span>
+                          ${b.outdated ? `<button class="btn btn-sm" style="height:22px;padding:0 8px;font-size:11px;background:var(--blue-bg);color:var(--blue)" onclick="upgradeDrawerPkg(${idx})">一键升级至 fixed-v34</button>` : ''}
+                        </div>
+                        <div style="font-size:12px;color:var(--muted);margin-top:2px">${role?.desc}</div>
+                      </div>
+                      <button class="btn btn-sm btn-danger-outline" onclick="removeDrawerPackage(${idx})">移除</button>
+                    </div>
+                    <div>
+                      <div style="font-size:11.5px;color:var(--muted);margin-bottom:5px;display:flex;justify-content:space-between">
+                        <span>作用厂区上限（点击开关）：</span>
+                        <button style="color:var(--primary);font-size:11.5px;font-weight:600" onclick="toggleAllDrawerPkgFactories(${idx})">全选 / 仅本厂</button>
+                      </div>
+                      <div class="factory-selector">
+                        ${FACTORIES.map(f => `
+                          <button class="factory-toggle ${b.factories.includes(f.id) ? 'selected' : ''}"
+                            style="padding:3px 9px;font-size:12px"
+                            onclick="toggleDrawerPkgFactory(${idx},'${f.id}')">${f.name}</button>
+                        `).join('')}
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }).join('') : `<div style="padding:18px;text-align:center;border:1px dashed var(--border-strong);border-radius:10px;color:var(--muted);font-size:12.5px">当前未绑定任何主职权限包，员工无业务操作权限。请点击上方「+ 添加权限包」。</div>`}
+            </div>
+          </div>
+
+          <!-- Secondary Assignments -->
+          <div style="padding:12px;border-radius:10px;border:1px solid var(--border);background:#fff">
+            <div class="section-label" style="margin-bottom:8px">
+              <span>兼任 / 临时支援（${d.secondaries.length}）</span>
+              <button class="btn btn-sm btn-outline" onclick="addDemoSecondary()">+ 添加兼任</button>
+            </div>
+            ${d.secondaries.length ? d.secondaries.map((s, i) => `
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#f7f4fd;border:1px solid #e1d6f8;margin-bottom:6px">
+                <div>
+                  <span class="pill pill-violet" style="margin-right:6px">兼任</span>
+                  <b>${orgName(s.orgId)} · ${deptName(s.dept)} · ${s.title}</b>
+                  <span style="font-size:12px;color:var(--muted);margin-left:6px">包：${roleById(s.roleId)?.name} · 至 ${s.until}</span>
+                </div>
+                <button class="btn btn-sm btn-ghost" style="color:var(--red)" onclick="state.drawerDraft.secondaries.splice(${i},1);renderPersonDrawer()">结束</button>
+              </div>
+            `).join('') : `<div style="font-size:12px;color:var(--muted)">暂无兼任或临时代理任职</div>`}
+          </div>
+
+          <!-- Individual Overrides & Explicit Denials -->
+          <div style="padding:12px;border-radius:10px;border:1px solid var(--border);background:#fff">
+            <div class="section-label" style="margin-bottom:8px">
+              <span>个人例外与显式禁止（同屏管理，无需切旧页）</span>
+              <button class="btn btn-sm btn-outline" onclick="toggleDemoSelfApprove()">+ 切换报价自示例外</button>
+            </div>
+            ${d.overrides.length ? d.overrides.map((o, i) => `
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:${o.effect==='deny'?'#fff4f5':'#f2f8ff'};border:1px solid ${o.effect==='deny'?'var(--red-border)':'#cfe3fc'};margin-bottom:6px">
+                <div>
+                  <span class="pill ${o.effect==='deny'?'pill-red':'pill-blue'}" style="margin-right:6px">${o.effect==='deny'?'⛔ 显式禁止':'独立允许'}</span>
+                  <b>${permInfo(o.code).name}</b>
+                  <span style="font-size:12px;color:var(--muted);margin-left:6px">${orgName(o.factoryId)} · ${deptName(o.dept)}</span>
+                </div>
+                <button class="btn btn-sm btn-outline" onclick="state.drawerDraft.overrides[${i}].active=!state.drawerDraft.overrides[${i}].active;renderPersonDrawer()">
+                  ${o.active ? '保留中（点此终止）' : '已标记终止（撤销）'}
+                </button>
+              </div>
+            `).join('') : `<div style="font-size:12px;color:var(--muted)">当前无个人例外或显式禁止规则</div>`}
+          </div>
+        </div>
+
+        <!-- Right Live Diff Radar -->
+        <div class="review-right">
+          <div class="section-label">
+            <span>本次配置实时影响（Live Diff）</span>
+            <span class="pill ${changed ? 'pill-amber' : 'pill-slate'}">${changed ? '有未保存变更' : '与当前一致'}</span>
+          </div>
+          ${renderLiveDiffPanel(diff, denies)}
+        </div>
+      </div>
+
+      <footer class="review-footer">
+        <div style="display:flex;align-items:center;gap:10px;flex:1">
+          ${diff.highRisk && changed ? `
+            <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--amber);background:var(--amber-bg);padding:6px 10px;border-radius:8px;border:1px solid var(--amber-border);cursor:pointer">
+              <input type="checkbox" ${state.drawerRiskChecked ? 'checked' : ''} onchange="state.drawerRiskChecked=this.checked;renderPersonDrawer()" />
+              我已核对本次新增的 ${diff.added.length} 项权限及覆盖厂区
+            </label>
+          ` : `<span style="font-size:12.5px;color:var(--muted)">${changed ? '预览已通过校验，点击右侧原子提交' : '修改任意权限包、厂区或岗位后将自动演算影响'}</span>`}
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline" onclick="closePersonDrawer()">取消</button>
+          <button class="btn btn-primary" ${canCommit ? '' : 'disabled'} onclick="commitDrawerChanges()">保存并立即生效</button>
+        </div>
+      </footer>
+    </div>
+  `;
+}
+
+function renderDrawerEffectiveTab(p) {
+  // Calculate permission explanation chain
+  const denied = p.overrides.find(o => o.effect === 'deny' && o.active && o.code === state.explainPerm && o.factoryId === state.explainFactory);
+  const allowedOv = p.overrides.find(o => o.effect === 'allow' && o.active && o.code === state.explainPerm && o.factoryId === state.explainFactory);
+  const matchedPkg = p.packages.find(b => b.factories.includes(state.explainFactory) && roleById(b.roleId)?.perms.includes(state.explainPerm));
+
+  let verdict = { allow: false, text: '默认拒绝：当前生效的权限包与例外均未覆盖此厂区动作' };
+  if (p.status !== 'active') verdict = { allow: false, text: '拒绝：账号已停用，所有业务动作在第一步即拦截' };
+  else if (denied) verdict = { allow: false, text: `显式禁止拦截：存在明确禁止规则（优先级高于所有角色与超管）` };
+  else if (allowedOv) verdict = { allow: true, text: `允许：命中个人独立允许例外（${orgName(allowedOv.factoryId)}）` };
+  else if (matchedPkg) verdict = { allow: true, text: `允许：来自已绑定权限包「${roleById(matchedPkg.roleId)?.name}」（版本 ${matchedPkg.version}）` };
+
+  // Group current permissions by module
+  const byMod = new Map();
+  p.packages.forEach(b => {
+    const r = roleById(b.roleId);
+    r?.perms.forEach(code => {
+      const info = permInfo(code);
+      if (!byMod.has(info.modName)) byMod.set(info.modName, []);
+      if (!byMod.get(info.modName).some(x => x.code === code)) {
+        byMod.get(info.modName).push({ ...info, source: r.name, factories: b.factories });
+      }
+    });
+  });
+
+  return `
+    <div style="flex:1;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:16px">
+      <!-- Permission Explain Calculator -->
+      <div style="padding:14px 16px;border-radius:12px;border:1.5px solid #bfe0d9;background:#f3fbf9">
+        <div class="section-label" style="margin-bottom:10px">
+          <span>权限验算器（回答：此刻此人在某厂区能否执行某操作？）</span>
+          <span class="pill ${verdict.allow ? 'pill-emerald' : 'pill-red'}">${verdict.allow ? '判定：允许执行' : '判定：拒绝执行'}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:10px">
+          <select class="select" onchange="state.explainPerm=this.value;renderPersonDrawer()">
+            ${PERM_CATALOG.map(pm => `<option value="${pm.code}" ${state.explainPerm===pm.code?'selected':''}>${pm.modName} · ${pm.name} (${pm.code})</option>`).join('')}
+          </select>
+          <select class="select" onchange="state.explainFactory=this.value;renderPersonDrawer()">
+            ${FACTORIES.map(f => `<option value="${f.id}" ${state.explainFactory===f.id?'selected':''}>目标厂区：${f.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="decision-chain">
+          <span class="chain-step ${p.status==='active'?'pass':'hit-deny'}">1. 账号可用 ${p.status==='active'?'✓':'✕'}</span>
+          <span>→</span>
+          <span class="chain-step ${denied?'hit-deny':'pass'}">2. 显式禁止 ${denied?'⛔ 命中拦截':'无'}</span>
+          <span>→</span>
+          <span class="chain-step">3. 集团超管</span>
+          <span>→</span>
+          <span class="chain-step ${!denied && allowedOv?'hit-allow':''}">4. 个人允许 ${!denied && allowedOv?'✓ 命中':''}</span>
+          <span>→</span>
+          <span class="chain-step ${!denied && !allowedOv && matchedPkg?'hit-allow':''}">5. 权限包命中 ${!denied && !allowedOv && matchedPkg?'✓ 命中':''}</span>
+        </div>
+        <div style="margin-top:9px;font-size:12.5px;font-weight:600;color:${verdict.allow?'var(--emerald)':'var(--red)'}">${verdict.text}</div>
+      </div>
+
+      <!-- Effective Permissions Grouped by Module -->
+      <div>
+        <div class="section-label" style="margin-bottom:10px">当前全部有效权限（按业务模块归类，标注授权来源）</div>
+        ${byMod.size ? [...byMod.entries()].map(([modName, items]) => `
+          <div class="perm-module-card">
+            <div class="perm-module-head"><span>${modName}</span><span class="pill pill-primary num">${items.length} 项有效</span></div>
+            ${items.map(it => `
+              <div class="perm-row" style="grid-template-columns:1.4fr 75px 1.2fr 1fr">
+                <div><b>${it.name}</b> <span class="mono" style="color:var(--muted)">${it.code}</span></div>
+                <span class="pill ${it.kind==='read'?'pill-slate':'pill-blue'}">${it.kind==='read'?'查看':'操作'}</span>
+                <span class="pkg-chip" style="justify-self:start">${it.source}</span>
+                <span style="font-size:12px;color:var(--muted);text-align:right">${it.factories.length>=6?'全6厂':it.factories.map(orgName).join('、')}</span>
+              </div>
+            `).join('')}
+          </div>
+        `).join('') : `<div class="empty-state">此员工当前无生效业务权限</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderDrawerTimelineTab(p) {
+  return `
+    <div style="flex:1;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:16px">
+      <div class="info-grid-4" style="background:var(--surface-subtle);border-color:var(--border)">
+        <div class="info-cell"><label>登录账号</label><strong>${p.username}</strong></div>
+        <div class="info-cell"><label>手机号码</label><strong class="num">${p.phone}</strong></div>
+        <div class="info-cell"><label>企业邮箱</label><strong>${p.email}</strong></div>
+        <div class="info-cell"><label>最近成功登录</label><strong>${p.lastLogin}</strong></div>
+      </div>
+      <div>
+        <div class="section-label" style="margin-bottom:10px">此人任职与授权变更记录</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${p.history.map(h => `
+            <div style="padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:#fff">
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <strong>${h.title}</strong>
+                <span style="font-size:12px;color:var(--muted)" class="num">${h.time} · ${h.actor}</span>
+              </div>
+              <div style="font-size:12.5px;color:var(--ink-2)">${h.detail}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================================================================
+   VIEW 3: ROLE CATALOG (权限方案库 - 模块热力条 + 反向查人 + 双方案对比)
+   ============================================================================ */
+function renderRoles() {
+  const activeRole = roleById(state.selectedRoleId) || ROLES[0];
+  const members = PEOPLE.filter(p => p.packages.some(b => b.roleId === activeRole.id));
+  const compareRole = state.compareRoleId ? roleById(state.compareRoleId) : null;
+
+  const filteredRoles = ROLES.filter(r => !state.roleSearch.trim() || `${r.name}${deptName(r.dept)}${r.desc}`.includes(state.roleSearch.trim()));
+  const byDept = new Map();
+  filteredRoles.forEach(r => {
+    const d = deptName(r.dept);
+    if (!byDept.has(d)) byDept.set(d, []);
+    byDept.get(d).push(r);
+  });
+
+  // Permissions list for active role
+  const perms = PERM_CATALOG.filter(pm => {
+    if (!activeRole.perms.includes(pm.code)) return false;
+    if (state.roleModFilter !== 'all' && pm.modName !== state.roleModFilter) return false;
+    if (state.roleRiskOnly && pm.risk !== 'high') return false;
+    return true;
+  });
+
+  return `
+    <div class="view-container">
+      <div class="roles-layout">
+        <!-- Left Role List -->
+        <aside class="panel">
+          <div class="panel-header" style="flex-direction:column;align-items:stretch;gap:8px">
+            <div class="panel-title">内置权限方案 <span class="pill pill-primary num">32 个标准包</span></div>
+            <div class="search-box">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input class="input" placeholder="搜索部门或职位包…" value="${state.roleSearch}" oninput="state.roleSearch=this.value;render()" />
+            </div>
+          </div>
+          <div class="org-tree">
+            ${[...byDept.entries()].map(([dn, list]) => `
+              <div class="org-group-label">${dn}</div>
+              ${list.map(r => {
+                const mCount = PEOPLE.filter(p => p.packages.some(b => b.roleId === r.id)).length;
+                return `
+                  <button class="org-node ${r.id === activeRole.id ? 'active' : ''}" onclick="state.selectedRoleId='${r.id}';state.roleModFilter='all';render()">
+                    <span style="text-align:left">
+                      <div>${r.name}</div>
+                      <div style="font-size:11px;opacity:.75">${r.scopeText}</div>
+                    </span>
+                    <span style="display:flex;gap:4px;align-items:center">
+                      <span class="count num" title="包含权限数">${r.totalPerms}权</span>
+                      <span class="count num" style="background:${mCount?'#dcf2ec':'#f0f3f5'};color:${mCount?'var(--primary-ink)':'var(--muted)'}" title="已绑定人数">${mCount}人</span>
+                    </span>
+                  </button>
+                `;
+              }).join('')}
+            `).join('')}
+          </div>
+        </aside>
+
+        <!-- Right Role Detail / Compare -->
+        <section class="panel">
+          <div class="review-top-banner">
+            <div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <h2 style="margin:0;font-size:17.5px">${activeRole.name}</h2>
+                <span class="pill pill-blue">${activeRole.scopeText}</span>
+                <span class="pill pill-slate mono">${activeRole.version}</span>
+                <span class="pill pill-primary num">${activeRole.totalPerms} / 249 权限</span>
+              </div>
+              <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${activeRole.desc}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <select class="select" onchange="state.compareRoleId=this.value;render()">
+                <option value="">对比另一方案…</option>
+                ${ROLES.filter(r => r.id !== activeRole.id).map(r => `<option value="${r.id}" ${state.compareRoleId===r.id?'selected':''}>对比：${r.name}</option>`).join('')}
+              </select>
+              <button class="btn btn-primary" onclick="openQuickGrantModal('${activeRole.id}')">按此包授予员工</button>
+            </div>
+          </div>
+
+          ${compareRole ? renderRoleCompareView(activeRole, compareRole) : `
+            <!-- Module Coverage Heat Strip -->
+            <div class="heat-strip">
+              <button class="heat-chip ${state.roleModFilter==='all'?'active':''}" onclick="state.roleModFilter='all';render()">全部模块</button>
+              ${activeRole.moduleStats.map(m => `
+                <button class="heat-chip ${m.has===m.total && m.total>0?'full':''} ${m.has===0?'zero':''} ${state.roleModFilter===m.modName?'active':''}"
+                  onclick="state.roleModFilter='${m.modName}';render()">
+                  <span>${m.modName}</span>
+                  <strong class="num">${m.has}/${m.total}</strong>
+                </button>
+              `).join('')}
+            </div>
+
+            <!-- Tabs: Permissions vs Bound Members -->
+            <div class="drawer-tabs" style="justify-content:space-between">
+              <div style="display:flex;gap:6px">
+                <button class="drawer-tab ${state.roleTab==='permissions'?'active':''}" onclick="state.roleTab='permissions';render()">能力清单（代表项）</button>
+                <button class="drawer-tab ${state.roleTab==='members'?'active':''}" onclick="state.roleTab='members';render()">已绑定人员（反向查人 · ${members.length} 人）</button>
+              </div>
+              ${state.roleTab==='permissions' ? `
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);cursor:pointer">
+                  <input type="checkbox" ${state.roleRiskOnly?'checked':''} onchange="state.roleRiskOnly=this.checked;render()" /> 仅看高风险权限
+                </label>
+              ` : ''}
+            </div>
+
+            <div style="flex:1;overflow-y:auto;padding:16px">
+              ${state.roleTab === 'permissions' ? `
+                <div class="perm-module-card">
+                  <div class="perm-module-head"><span>权限名称与代码</span><span>读写类型 / 风险级别</span></div>
+                  ${perms.length ? perms.map(pm => `
+                    <div class="perm-row">
+                      <div><b>${pm.name}</b> <span class="mono" style="color:var(--muted)">${pm.code}</span></div>
+                      <span class="pill pill-slate">${pm.modName}</span>
+                      <span class="pill ${pm.kind==='read'?'pill-slate':'pill-blue'}">${pm.kind==='read'?'查看只读':'业务操作'}</span>
+                      <span class="pill ${pm.risk==='high'?'pill-red':pm.risk==='medium'?'pill-amber':'pill-emerald'}" style="justify-self:end">${pm.risk==='high'?'高风险':pm.risk==='medium'?'中风险':'常规'}</span>
+                    </div>
+                  `).join('') : `<div style="padding:24px;text-align:center;color:var(--muted)">该筛选条件下无匹配权限项</div>`}
+                </div>
+              ` : `
+                ${members.length ? `
+                  <table class="data-table" style="min-width:600px">
+                    <thead><tr><th>员工</th><th>归属组织 / 岗位</th><th>绑定版本</th><th>业务厂区上限</th><th style="text-align:right">操作</th></tr></thead>
+                    <tbody>
+                      ${members.map(p => {
+                        const b = p.packages.find(x => x.roleId === activeRole.id);
+                        return `
+                          <tr onclick="switchAdminTab('people');openPersonDrawer('${p.id}')">
+                            <td><b>${p.name}</b> <span style="color:var(--muted);font-size:12px">@${p.username}</span></td>
+                            <td>${orgName(p.orgId)} · ${deptName(p.dept)} · ${p.position}</td>
+                            <td><span class="pill ${b.outdated?'pill-amber':'pill-emerald'} mono">${b.version}${b.outdated?' · 可升级':''}</span></td>
+                            <td>${b.factories.length>=6?'<span class="factory-chip all">全部 6 厂</span>':b.factories.map(f=>`<span class="factory-chip">${orgName(f)}</span>`).join(' ')}</td>
+                            <td style="text-align:right"><button class="btn btn-sm btn-soft">调整此人权限</button></td>
+                          </tr>
+                        `;
+                      }).join('')}
+                    </tbody>
+                  </table>
+                ` : `<div class="empty-state">当前可见范围内尚无员工绑定「${activeRole.name}」</div>`}
+              `}
+            </div>
+          `}
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function renderRoleCompareView(roleA, roleB) {
+  const onlyA = roleA.perms.filter(c => !roleB.perms.includes(c));
+  const onlyB = roleB.perms.filter(c => !roleA.perms.includes(c));
+  const both = roleA.perms.filter(c => roleB.perms.includes(c));
+  return `
+    <div style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-radius:10px;background:#eef6ff;border:1px solid #c9dffb">
+        <div style="font-size:13px"><b>方案对比模式：</b>${roleA.name}（${roleA.totalPerms}项） vs ${roleB.name}（${roleB.totalPerms}项）</div>
+        <button class="btn btn-sm btn-outline" onclick="state.compareRoleId='';render()">退出对比</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+        <div class="diff-group">
+          <div class="diff-group-head add"><span>仅「${roleA.name}」拥有</span><span class="num">${onlyA.length}</span></div>
+          <ul class="diff-list">${onlyA.length ? onlyA.map(c => `<li><span>${permInfo(c).name}</span></li>`).join('') : '<li style="color:var(--muted)">无独有项</li>'}</ul>
+        </div>
+        <div class="diff-group">
+          <div class="diff-group-head" style="background:#f3f7f9;color:var(--ink)"><span>两方案共同拥有</span><span class="num">${both.length}</span></div>
+          <ul class="diff-list">${both.map(c => `<li><span>${permInfo(c).name}</span></li>`).join('')}</ul>
+        </div>
+        <div class="diff-group">
+          <div class="diff-group-head" style="background:var(--violet-bg);color:var(--violet)"><span>仅「${roleB.name}」拥有</span><span class="num">${onlyB.length}</span></div>
+          <ul class="diff-list">${onlyB.length ? onlyB.map(c => `<li><span>${permInfo(c).name}</span></li>`).join('') : '<li style="color:var(--muted)">无独有项</li>'}</ul>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================================================================
+   VIEW 4: UNIFIED AUDIT TIMELINE (审计记录)
+   ============================================================================ */
+function renderAudit() {
+  const rows = state.auditType === 'all' ? AUDIT_LOGS : AUDIT_LOGS.filter(a => a.type === state.auditType);
+  const pills = [
+    ['all', '全部记录'], ['registration', '注册开通'], ['position', '岗位与权限'], ['access', '账号状态'], ['password', '密码找回']
+  ];
+  return `
+    <div class="view-scroll">
+      <div class="timeline-list">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0;font-size:18px">审计与操作记录</h2>
+            <div style="font-size:12.5px;color:var(--muted)">统一呈现办理结果与权限前后 Diff，不再分散在 5 个重叠页签</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            ${pills.map(([k, lbl]) => `
+              <button class="factory-toggle ${state.auditType===k?'selected':''}" onclick="state.auditType='${k}';render()">${lbl}</button>
+            `).join('')}
+          </div>
+        </div>
+        ${rows.map(a => `
+          <article class="audit-card">
+            <div class="audit-head">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span class="pill ${a.type==='registration'?'pill-blue':a.type==='position'?'pill-primary':a.type==='password'?'pill-amber':'pill-slate'}">${pills.find(x=>x[0]===a.type)?.[1]}</span>
+                <strong>${a.summary}</strong>
+                <span style="color:var(--muted);font-size:12.5px">对象：${a.target}</span>
+              </div>
+              <span style="font-size:12px;color:var(--muted)" class="num">${a.time} · 操作者：${a.actor} · 回执 <span class="mono">${a.commandId}</span></span>
+            </div>
+            <div class="audit-diff-row">
+              <div><div style="font-size:11px;color:var(--muted)">变更前</div><div style="font-size:12.5px">${a.before}</div></div>
+              <div style="text-align:center;color:var(--primary);font-weight:700">→</div>
+              <div><div style="font-size:11px;color:var(--muted)">变更后</div><div style="font-size:12.5px;font-weight:600">${a.after}</div></div>
+            </div>
+            ${a.added.length || a.removed.length ? `
+              <div class="chip-wrap">
+                ${a.added.map(c => `<span class="pill pill-emerald">+ ${permInfo(c).name}</span>`).join('')}
+                ${a.removed.map(c => `<span class="pill pill-red">- ${permInfo(c).name}</span>`).join('')}
+              </div>
+            ` : ''}
+          </article>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+/* ============================================================================
+   VIEW 5: EMPLOYEE SELF-SERVICE (/account/position)
+   ============================================================================ */
+function renderSelfService() {
+  const me = PEOPLE.find(p => p.id === 'u-lin');
+  const openTask = TASKS.find(t => t.userId === 'u-lin');
+  const stepState = openTask ? 'pending' : state.selfReviewStatus;
+
+  // Group effective permissions
+  const mods = new Map();
+  me.packages.forEach(b => {
+    roleById(b.roleId)?.perms.forEach(code => {
+      const info = permInfo(code);
+      if (!mods.has(info.modName)) mods.set(info.modName, []);
+      mods.get(info.modName).push(info);
+    });
+  });
+
+  return `
+    <div class="view-scroll">
+      <div class="self-wrap">
+        <!-- Hero Identity Card -->
+        <section class="hero-self">
+          <div>
+            <div style="font-size:12px;opacity:.8;margin-bottom:4px">我的正式岗位与生效权限包（员工视角 · /account/position）</div>
+            <h1 style="margin:0;font-size:24px">${me.name} · ${me.position}</h1>
+            <div style="font-size:13px;opacity:.9;margin-top:4px">${orgName(me.orgId)} · ${deptName(me.dept)} · 账号 @${me.username}</div>
+            <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+              ${me.packages.map(b => `<span class="pill" style="background:rgba(255,255,255,.16);color:#fff;border:1px solid rgba(255,255,255,.26)">权限包：${roleById(b.roleId)?.name}</span>`).join('')}
+              <span class="pill" style="background:rgba(255,255,255,.16);color:#fff">生效厂区：${[...new Set(me.packages.flatMap(b=>b.factories))].map(orgName).join('、')}</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+            <button class="btn" style="background:#fff;color:var(--jade-deep)" onclick="openSelfApplyModal()">
+              ${openTask ? '修改待审申请' : '+ 申请调整岗位 / 权限'}
+            </button>
+            <span style="font-size:11.5px;opacity:.78">提交申请不会立即改变权限，须经管理员审核通过</span>
+          </div>
+        </section>
+
+        <!-- 4-Step Visual Progress Tracker -->
+        <section class="panel" style="padding:16px 18px">
+          <div class="section-label">
+            <span>我的岗位 / 权限变更进度</span>
+            ${openTask ? `<span class="pill pill-amber pill-dot">等待管理员核验与配包</span>` : stepState === 'returned' ? `<span class="pill pill-red">已退回，请补充重提</span>` : `<span class="pill pill-emerald">当前已生效</span>`}
+          </div>
+          <div class="stepper-track">
+            <div class="step-node done"><strong>1. 提交申请</strong><span style="font-size:11.5px;color:var(--muted)">已登记岗位与参考包</span></div>
+            <div class="step-node ${openTask?'current':'done'}"><strong>2. 管理员核验</strong><span style="font-size:11.5px;color:var(--muted)">对照现状与权限影响</span></div>
+            <div class="step-node ${stepState==='returned'?'current':''}"><strong>3. 退回补充（如有）</strong><span style="font-size:11.5px;color:var(--muted)">${state.selfReturnComment || '无退回记录'}</span></div>
+            <div class="step-node ${!openTask && stepState==='applied'?'done':''}"><strong>4. 正式生效</strong><span style="font-size:11.5px;color:var(--muted)">${!openTask && stepState==='applied'?'新权限已启用':'等待审核通过'}</span></div>
+          </div>
+          ${openTask ? `
+            <div style="margin-top:12px;padding:11px 13px;border-radius:9px;background:#fffaf0;border:1px solid var(--amber-border);display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="font-size:12.5px">
+                <b>正在审批的申请：</b>变更为「${orgName(openTask.orgId)} · ${deptName(openTask.dept)} · ${openTask.proposedPos}」，参考期望包：${openTask.employeeRequestedRoles.map(id=>roleById(id)?.name).join('、')}
+              </div>
+              <button class="btn btn-sm btn-outline" onclick="switchMode('admin');switchAdminTab('inbox');selectTask('${openTask.key}')">切回管理员端审批此单 →</button>
+            </div>
+          ` : ''}
+        </section>
+
+        <!-- Grouped Effective Permissions Map -->
+        <section>
+          <div class="section-label" style="margin-bottom:10px">我当前可用的业务能力图谱（按模块归类，清晰区分查看与操作）</div>
+          <div class="module-grid-self">
+            ${[...mods.entries()].map(([mName, items]) => `
+              <div class="module-card-self">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <strong style="font-size:14px">${mName}</strong>
+                  <span class="pill pill-primary num">${items.length} 项</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  ${items.map(it => `
+                    <div style="display:flex;justify-content:space-between;font-size:12.5px;padding-top:5px;border-top:1px dashed #eef3f5">
+                      <span>${it.name}</span>
+                      <span class="pill ${it.kind==='read'?'pill-slate':'pill-emerald'}" style="height:19px;font-size:10.5px">${it.kind==='read'?'仅查看':'可操作'}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================================================================
+   INTERACTIVE HANDLERS
+   ============================================================================ */
+function toggleInboxTrack(key) {
+  state.inboxTrack = state.inboxTrack === key ? 'all' : key;
+  state.reviewRiskChecked = false;
+  state.reviewRejectOpen = false;
+  render();
+}
+function selectTask(key) {
+  state.selectedTaskKey = key;
+  state.reviewRiskChecked = false;
+  state.reviewRejectOpen = false;
+  state.pwdVerified = false;
+  render();
+}
+function jumpToTask(key) {
+  state.inboxTrack = 'all';
+  state.selectedTaskKey = key;
+  switchAdminTab('inbox');
+}
+function setTaskDecisionMode(key, mode) {
+  const t = TASKS.find(x => x.key === key);
+  if (t) { t.decisionMode = mode; state.reviewRiskChecked = false; render(); }
+}
+function toggleTaskFactory(key, fid) {
+  const t = TASKS.find(x => x.key === key);
+  if (!t) return;
+  t.selectedFactories = t.selectedFactories.includes(fid) ? t.selectedFactories.filter(x => x !== fid) : [...t.selectedFactories, fid];
+  state.reviewRiskChecked = false;
+  render();
+}
+function selectAllTaskFactories(key) {
+  const t = TASKS.find(x => x.key === key);
+  if (t) { t.selectedFactories = FACTORIES.map(f => f.id); state.reviewRiskChecked = false; render(); }
+}
+function toggleTaskRole(key, rid) {
+  const t = TASKS.find(x => x.key === key);
+  if (!t) return;
+  t.selectedRoleIds = t.selectedRoleIds.includes(rid) ? t.selectedRoleIds.filter(x => x !== rid) : [...t.selectedRoleIds, rid];
+  state.reviewRiskChecked = false;
+  render();
+}
+function adoptEmployeeSuggestion(key) {
+  const t = TASKS.find(x => x.key === key);
+  if (!t) return;
+  t.decisionMode = 'apply_package';
+  t.selectedRoleIds = [...t.employeeRequestedRoles];
+  t.selectedFactories = [...t.employeeRequestedFactories];
+  state.reviewRiskChecked = false;
+  showToast('已一键采纳员工参考期望包与厂区，请核对右侧 Live Diff');
+  render();
+}
+function submitTaskApprove(key) {
+  const t = TASKS.find(x => x.key === key);
+  if (!t) return;
+  if (t.kind === 'registration') {
+    PEOPLE.unshift({
+      id: 'u-new-' + Date.now(), name: t.personName, username: t.username, phone: t.phone, email: t.email,
+      orgId: t.orgId, dept: t.dept, position: t.proposedPos, status: 'active', mode: 'v2', lastLogin: '从未登录',
+      packages: t.selectedRoleIds.map((rid, i) => ({ id: 'bn-' + i, roleId: rid, dept: t.dept, factories: [...t.selectedFactories], primary: true, version: 'fixed-v34', outdated: false })),
+      secondaries: [], overrides: [], openTaskKey: null,
+      history: [{ time: '刚刚', actor: '集团管理员', title: '新员工注册审核通过并开通', detail: `分配权限包：${t.selectedRoleIds.map(id=>roleById(id)?.name).join('、')}` }]
+    });
+    AUDIT_LOGS.unshift({
+      id: 'aud-' + Date.now(), type: 'registration', time: '刚刚', actor: '集团管理员', target: `${t.personName}（${t.username}）`,
+      summary: '新员工注册审核通过并开通分配权限包', commandId: 'cmd-' + Math.random().toString(16).slice(2,8),
+      before: '待审注册账号', after: `在用账号 · ${orgName(t.orgId)} · ${t.proposedPos}（${t.selectedRoleIds.map(id=>roleById(id)?.name).join('、')}）`,
+      added: t.selectedRoleIds.flatMap(id => roleById(id)?.perms.slice(0,2) || []), removed: []
+    });
+  } else if (t.kind === 'position' && t.userId) {
+    const p = PEOPLE.find(x => x.id === t.userId);
+    if (p) {
+      p.orgId = t.orgId; p.dept = t.dept; p.position = t.proposedPos; p.openTaskKey = null;
+      if (t.decisionMode !== 'keep_permissions') {
+        p.packages = t.selectedRoleIds.map((rid, i) => ({ id: 'bp-' + i, roleId: rid, dept: t.dept, factories: [...t.selectedFactories], primary: true, version: 'fixed-v34', outdated: false }));
+      }
+      p.history.unshift({ time: '刚刚', actor: '集团管理员', title: '审批通过岗位与权限调整', detail: `正式岗位：${t.proposedPos}；权限包：${p.packages.map(b=>roleById(b.roleId)?.name).join('、')}` });
+      if (p.id === 'u-lin') state.selfReviewStatus = 'applied';
+    }
+    AUDIT_LOGS.unshift({
+      id: 'aud-' + Date.now(), type: 'position', time: '刚刚', actor: '集团管理员', target: `${t.personName}（${t.username}）`,
+      summary: '员工改岗与权限变更审批通过', commandId: 'cmd-' + Math.random().toString(16).slice(2,8),
+      before: `${t.currentPos}`, after: `${t.proposedPos} · ${t.selectedRoleIds.map(id=>roleById(id)?.name).join('、')}`,
+      added: ['internal_quote:approve'], removed: []
+    });
+  }
+  TASKS = TASKS.filter(x => x.key !== key);
+  state.reviewRiskChecked = false;
+  showToast(`已办结「${t.personName}」，权限已生效并自动切换下一条待办`);
+  render();
+}
+function submitTaskReject(key) {
+  if (!state.reviewRejectReason.trim()) { showToast('请先填写拒绝或退回原因'); return; }
+  const t = TASKS.find(x => x.key === key);
+  if (t?.userId === 'u-lin') { state.selfReviewStatus = 'returned'; state.selfReturnComment = state.reviewRejectReason.trim(); }
+  TASKS = TASKS.filter(x => x.key !== key);
+  state.reviewRejectOpen = false;
+  showToast(`已${t?.kind==='registration'?'拒绝注册':'退回员工补充'}：${t?.personName}`);
+  render();
+}
+function approveIdentityUpgrade(key) {
+  const p = PEOPLE.find(x => x.id === 'u-zhang');
+  if (p) { p.packages[0].version = 'fixed-v34'; p.packages[0].outdated = false; p.openTaskKey = null; }
+  completeTask(key, '已批准跨厂版本升级，张敏权限包已更新至 fixed-v34');
+}
+function completeTask(key, msg) {
+  TASKS = TASKS.filter(x => x.key !== key);
+  state.pwdVerified = false;
+  showToast(msg);
+  render();
+}
+
+// Drawer mutations
+function addDrawerPackage(rid) {
+  const d = state.drawerDraft;
+  const defaultFac = d.orgId === 'group-management' ? ['huadeng', 'huaxing'] : [d.orgId];
+  d.packages.push({ id: 'new-' + Date.now(), roleId: rid, dept: roleById(rid)?.dept || d.dept, factories: defaultFac, primary: true, version: 'fixed-v34', outdated: false });
+  state.drawerPickerOpen = false;
+  state.drawerRiskChecked = false;
+  renderPersonDrawer();
+}
+function removeDrawerPackage(idx) {
+  state.drawerDraft.packages.splice(idx, 1);
+  state.drawerRiskChecked = false;
+  renderPersonDrawer();
+}
+function upgradeDrawerPkg(idx) {
+  state.drawerDraft.packages[idx].version = 'fixed-v34';
+  state.drawerDraft.packages[idx].outdated = false;
+  showToast('已标记升级至最新固定版本 fixed-v34，右侧已更新 Live Diff');
+  renderPersonDrawer();
+}
+function toggleDrawerPkgFactory(idx, fid) {
+  const b = state.drawerDraft.packages[idx];
+  b.factories = b.factories.includes(fid) ? b.factories.filter(x => x !== fid) : [...b.factories, fid];
+  state.drawerRiskChecked = false;
+  renderPersonDrawer();
+}
+function toggleAllDrawerPkgFactories(idx) {
+  const b = state.drawerDraft.packages[idx];
+  const home = state.drawerDraft.orgId === 'group-management' ? ['huadeng'] : [state.drawerDraft.orgId];
+  b.factories = b.factories.length >= 6 ? home : FACTORIES.map(f => f.id);
+  state.drawerRiskChecked = false;
+  renderPersonDrawer();
+}
+function addDemoSecondary() {
+  state.drawerDraft.secondaries.push({
+    id: 'sec-' + Date.now(), orgId: 'huaxing', dept: 'qc', title: '跨厂品质支援', type: 'temporary', until: '2026-12-31', roleId: 'position_qc_manager'
+  });
+  renderPersonDrawer();
+}
+function toggleDemoSelfApprove() {
+  const ovs = state.drawerDraft.overrides;
+  const idx = ovs.findIndex(o => o.code === 'internal_quote:self_approve');
+  if (idx >= 0) ovs.splice(idx, 1);
+  else ovs.push({ id: 'ov-' + Date.now(), code: 'internal_quote:self_approve', effect: 'allow', factoryId: state.drawerDraft.orgId==='group-management'?'huadeng':state.drawerDraft.orgId, dept: 'sales-business', active: true });
+  renderPersonDrawer();
+}
+function commitDrawerChanges() {
+  const p = PEOPLE.find(x => x.id === state.drawerPersonId);
+  const d = state.drawerDraft;
+  if (!p || !d) return;
+  const wasLegacy = p.mode === 'legacy';
+  p.orgId = d.orgId; p.dept = d.dept; p.position = d.position;
+  p.packages = JSON.parse(JSON.stringify(d.packages));
+  p.secondaries = JSON.parse(JSON.stringify(d.secondaries));
+  p.overrides = d.overrides.filter(o => o.active);
+  if (wasLegacy && d.legacyConfirmed) p.mode = 'v2';
+  p.history.unshift({
+    time: '刚刚', actor: '集团管理员',
+    title: wasLegacy ? '一步核实历史来源并更新权限包' : '直改台更新职位与权限包',
+    detail: `主职：${orgName(p.orgId)}·${p.position}；生效包：${p.packages.map(b=>roleById(b.roleId)?.name).join('、') || '无'}`
+  });
+  AUDIT_LOGS.unshift({
+    id: 'aud-' + Date.now(), type: 'position', time: '刚刚', actor: '集团管理员', target: `${p.name}（${p.username}）`,
+    summary: wasLegacy ? 'Legacy 账号一步转正并应用权限包' : '管理员直改人员权限包配置',
+    commandId: 'cmd-' + Math.random().toString(16).slice(2,8),
+    before: '原有效配置快照', after: `${orgName(p.orgId)}·${p.position} · ${p.packages.map(b=>roleById(b.roleId)?.name).join('、') || '清空'}`,
+    added: [], removed: []
+  });
+  closePersonDrawer();
+  showToast(`已原子保存「${p.name}」的权限配置并刷新宽表`);
+  render();
+}
+function togglePersonStatus(pid) {
+  const p = PEOPLE.find(x => x.id === pid);
+  if (!p) return;
+  p.status = p.status === 'active' ? 'suspended' : 'active';
+  state.drawerLifeMenuOpen = false;
+  showToast(p.status === 'suspended' ? `已停用「${p.name}」，所有活跃登录会话立即失效` : `已恢复「${p.name}」，可重新登录`);
+  renderPersonDrawer();
+  render();
+}
+
+// Quick grant modal from Role Catalog
+function openQuickGrantModal(roleId) {
+  const role = roleById(roleId);
+  openModal(`
+    <div class="modal-head">
+      <strong style="font-size:16px">将「${role.name}」授予员工</strong>
+      <button class="btn btn-sm btn-ghost" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12.5px;color:var(--muted)">选择一位员工，系统将自动打开其 68% 宽实时权限装配抽屉并预加载此权限包（仍须核对 Live Diff 后确认生效）。</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${PEOPLE.map(p => `
+          <button class="queue-item" style="border:1px solid var(--border);flex-direction:row;align-items:center;justify-content:space-between"
+            onclick="closeModal();switchAdminTab('people');openPersonDrawer('${p.id}');if(!state.drawerDraft.packages.some(b=>b.roleId==='${roleId}')) addDrawerPackage('${roleId}')">
+            <span><b>${p.name}</b> <span style="color:var(--muted);font-size:12px">@${p.username} · ${orgName(p.orgId)} · ${p.position}</span></span>
+            <span class="btn btn-sm btn-soft">选中并预装此包 →</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `);
+}
+
+// Self-service apply modal
+function openSelfApplyModal() {
+  openModal(`
+    <div class="modal-head">
+      <strong style="font-size:16px">申请调整岗位 / 权限</strong>
+      <button class="btn btn-sm btn-ghost" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">申报岗位名称 *</label>
+          <input id="selfPosInput" class="input" style="width:100%" value="业务主管" />
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">所在组织</label>
+          <select id="selfOrgInput" class="select" style="width:100%">
+            ${FACTORIES.map(f => `<option value="${f.id}" ${f.id==='huadeng'?'selected':''}>${f.name}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">期望参考权限包（选填，仅供管理员审核参考，不直接生效）</label>
+        <select id="selfRoleInput" class="select" style="width:100%">
+          ${ROLES.filter(r => r.dept==='sales-business' || r.dept==='engineering').map(r => `<option value="${r.id}" ${r.id==='position_sales_supervisor'?'selected':''}>${r.name} — ${r.desc}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">变更原因说明</label>
+        <textarea id="selfNoteInput" class="textarea" rows="3" style="width:100%">负责新业务小组跟单与内部报价审核，申请升级主管权限包。</textarea>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-outline" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="submitSelfApply()">提交给管理员审核</button>
+    </div>
+  `);
+}
+
+function submitSelfApply() {
+  const pos = document.getElementById('selfPosInput').value.trim() || '业务主管';
+  const orgId = document.getElementById('selfOrgInput').value;
+  const roleId = document.getElementById('selfRoleInput').value;
+  const note = document.getElementById('selfNoteInput').value.trim();
+  const existing = TASKS.find(t => t.userId === 'u-lin');
+  if (existing) {
+    existing.proposedPos = pos; existing.orgId = orgId; existing.employeeRequestedRoles = [roleId]; existing.note = note;
+  } else {
+    const newKey = 'position:pr-' + Date.now();
+    TASKS.unshift({
+      key: newKey, kind: 'position', state: 'actionable', createdAt: '刚刚',
+      userId: 'u-lin', personName: '林晓梅', username: 'linxiaomei',
+      orgId, dept: 'sales-business', beforeOrgId: 'huadeng', beforeDept: 'sales-business',
+      currentPos: '业务', proposedPos: pos, currentRoleIds: ['position_sales_business'], currentFactories: ['huadeng'],
+      employeeRequestedRoles: [roleId], employeeRequestedFactories: [orgId],
+      selectedRoleIds: [roleId], selectedFactories: [orgId], note, decisionMode: 'apply_package'
+    });
+    PEOPLE.find(p => p.id === 'u-lin').openTaskKey = newKey;
+  }
+  state.selfReviewStatus = 'pending';
+  closeModal();
+  showToast('已提交申请！可点击进度卡片右侧按钮切回管理员端体验审批流');
+  render();
+}
+
+// Initial render
+render();
+</script>
+</body>
+</html>

@@ -14,6 +14,20 @@ def isolated_example_store(monkeypatch, tmp_path):
     monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path / 'main-test-db')
 
 
+@pytest.fixture
+def legacy_schedule_example(tmp_path):
+    assets = tmp_path / 'schedule-assets'
+    fixture = assets / 'fixtures' / 'qc-schedule-example.json'
+    fixture.parent.mkdir(parents=True)
+    row = {
+        'id': 'schedule-example-row-1', 'customer': 'Test customer',
+        'poNo': 'TEST-PO', 'productNo': 'TEST-001',
+        'dateFrom': '2026-11-20', 'dateTo': '2026-11-21',
+    }
+    fixture.write_text(json.dumps({'factory_id': 'huaxing', 'example': True, 'items': [row]}), encoding='utf-8')
+    return assets, row
+
+
 def install_upstream(monkeypatch):
     module = importlib.import_module("app.api.qc_department")
     calls = []
@@ -219,7 +233,7 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
         child.wait(timeout=10)
 
 
-def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatch):
+def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatch, legacy_schedule_example):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
         assert client.get('/api/qc-department/huaxing/api/schedule-example').status_code == 401
@@ -233,96 +247,79 @@ def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatc
         assert 'scheduleExampleWriteAllowed' not in client.get(base+'nexus-context.js').text
         assert calls == []
         gateway = importlib.import_module('app.api.qc_department')
-        assert len(gateway.schedule_example('huaxing')['items']) == 47  # Legacy provenance only.
+        assets, row = legacy_schedule_example
+        monkeypatch.setattr(gateway, 'ASSETS', assets)
+        assert gateway.schedule_example('huaxing')['items'] == [row]
 
 
-def workbook_bytes():
-    import io
-    import zipfile
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, 'w') as archive:
-        archive.writestr('[Content_Types].xml', '<Types/>')
-        archive.writestr('xl/workbook.xml', '<workbook/>')
-    return out.getvalue()
-
-
-def test_schedule_http_download_scoping_and_exact_bytes(monkeypatch):
-    from pydantic import SecretStr
-    from urllib.parse import quote
+def test_removed_schedule_download_is_unavailable(monkeypatch):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
-        module = importlib.import_module('app.api.qc_department')
-        helper = importlib.import_module('app.services.qc_schedule_downloads')
-        monkeypatch.setattr(module.settings, 'qc_department_gateway_token', SecretStr('test-download-secret'))
         login_as(client, 'qc_inspector')
         base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
         calls.clear()
-        content = workbook_bytes()
-        result = client.post(base+'api/schedule-export?mode=example',content=content,headers={'Content-Type':helper.MIME})
-        assert result.status_code == 200, result.text
-        url = base + result.json()['url']
-        downloaded = client.get(url)
-        assert downloaded.status_code == 200
-        assert downloaded.content == content
-        assert downloaded.headers['content-type'] == helper.MIME
-        assert downloaded.headers['cache-control'] == 'no-store'
-        assert quote('QC客排期_示例数据.xlsx') in downloaded.headers['content-disposition']
-        head = client.head(url)
-        assert head.status_code == 200 and head.content == b''
-        assert int(head.headers['content-length']) == len(content)
-        assert client.get(url[:-1]+('0' if url[-1]!='0' else '1')).status_code == 404
-        assert client.get(url.replace('/huaxing/','/huakang-a/')).status_code == 403
-        assert not list(helper.folder().parent.rglob('qc.db'))
+        assert client.post(base + 'api/schedule-export', content=b'workbook').status_code == 404
+        assert client.get(base + 'api/schedule-export/old-ticket').status_code == 404
+        assert client.head(base + 'api/schedule-export/old-ticket').status_code == 404
         assert calls == []
-        login_as(client,'qc_supervisor')
-        assert client.get(url).status_code == 409
 
 
-def test_schedule_http_download_validation_and_expiry(monkeypatch):
-    from pydantic import SecretStr
+def test_inspection_print_uses_actor_factory_and_export_permission(monkeypatch):
     with make_client(monkeypatch) as client:
-        install_upstream(monkeypatch)
-        helper = importlib.import_module('app.services.qc_schedule_downloads')
-        monkeypatch.setattr(helper.settings,'qc_department_gateway_token',SecretStr('test-download-secret'))
-        login_as(client,'qc_inspector')
+        calls = install_upstream(monkeypatch)
+        service = importlib.import_module('app.services.qc_inspection_print')
+        render_calls = []
+        def preview(factory, body):
+            render_calls.append((factory, body))
+            return {'count': 1}
+
+        monkeypatch.setattr(service, 'preview', preview)
+        login_as(client, 'qc_inspector')
+        health = '/api/qc-department/huaxing/api/health'
+        base = client.get(health).json()['frame_url']
+        target = base + 'api/inspection-sheet/print-preview'
+        body = {'template': '各客验货排期', 'entries': [{'id': 'a' * 32, 'revision': 0}]}
+        calls.clear()
+        response = client.post(target, json=body)
+        assert response.status_code == 200 and response.json() == {'count': 1}
+        assert response.headers['cache-control'] == 'no-store'
+        assert client.post(target, json=body, headers={'Sec-Fetch-Site': 'cross-site'}).status_code == 403
+        assert client.post(target.replace('/huaxing/', '/huakang-a/'), json=body).status_code == 403
+        assert render_calls == [('huaxing', body)]
+        assert calls == []
+
+
+def test_workbench_template_import_requires_bound_factory_and_write_permissions(monkeypatch, tmp_path):
+    from app.services.qc_inspection_schedule_excel import schedule_workbook
+
+    with make_client(monkeypatch) as client:
+        calls = install_upstream(monkeypatch)
+        # The private example is not installed in this environment.
+        monkeypatch.setattr(importlib.import_module('app.api.qc_department'), 'ASSETS', tmp_path)
+        login_as(client, 'qc_inspector')
         base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        endpoint = base+'api/schedule-export?mode=example'
-        headers = {'Content-Type':helper.MIME}
-        content=workbook_bytes()
-        assert client.post(endpoint,content=content).status_code == 415
-        assert client.post(endpoint,content=content,headers={**headers,'Sec-Fetch-Site':'cross-site'}).status_code == 403
-        assert client.post(endpoint,content=b'invalid',headers=headers).status_code == 422
-        assert client.post(base+'api/schedule-export?mode=other',content=content,headers=headers).status_code == 422
-        monkeypatch.setattr(helper,'MAX_BYTES',len(content)-1)
-        assert client.post(endpoint,content=content,headers=headers).status_code == 413
-        monkeypatch.setattr(helper,'MAX_BYTES',8*1024*1024)
-        ticket=client.post(endpoint,content=content,headers=headers).json()
-        token=ticket['url'].rsplit('/',1)[1]
-        owner=base.split('/')[3]+':'+base.split('/')[4][2:]
-        assert helper.download(token,owner)[0]==content
-        with pytest.raises(Exception) as denied:
-            helper.download(token,'another-actor')
-        assert denied.value.status_code==404
-        monkeypatch.setattr(helper,'time',type('Clock',(),{'time':staticmethod(lambda:int(token.split('.')[1])+1)})())
-        assert client.get(base+ticket['url']).status_code==410
-
-
-def test_schedule_http_download_rechecks_export_permission(monkeypatch):
-    from pydantic import SecretStr
-    monkeypatch.setenv('AUTHZ_MODE','enforce')
-    with make_client(monkeypatch) as client:
-        install_upstream(monkeypatch)
-        helper=importlib.import_module('app.services.qc_schedule_downloads')
-        monkeypatch.setattr(helper.settings,'qc_department_gateway_token',SecretStr('test-download-secret'))
-        login_as(client,'qc_inspector')
-        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        headers={'Content-Type':helper.MIME}
-        result=client.post(base+'api/schedule-export?mode=template',content=workbook_bytes(),headers=headers)
-        assert result.status_code==200
-        grant_permission_override('qc_inspector','qc_inspection:report_export',effect='deny',factory_id='huaxing',department='qc')
-        newbase=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        assert client.get(newbase+result.json()['url']).status_code==403
-        assert client.post(newbase+'api/schedule-export?mode=template',content=workbook_bytes(),headers=headers).status_code==403
+        target = base + 'api/inspection-sheet/intake/'
+        book = schedule_workbook([{'dateFrom': '2026-11-20', 'customer': '测试客户', 'productNo': '00002'}])
+        headers = {'Content-Type': 'application/octet-stream'}
+        calls.clear()
+        assert client.post(target + 'import', content=book, headers=headers).status_code == 409
+        assert client.post(target + 'preview', content=book, headers={**headers, 'Sec-Fetch-Site': 'cross-site'}).status_code == 403
+        assert client.post(target.replace('/huaxing/', '/huakang-a/') + 'preview', content=book, headers=headers).status_code == 403
+        preview = client.post(target + 'preview', content=book, headers=headers)
+        assert preview.status_code == 200 and preview.json()['rows'][0]['productNo'] == '00002'
+        assert client.get(base + 'api/inspection-sheet/entries').json()['items'] == []
+        calls.clear()
+        confirmed = client.post(target + 'import', content=book, headers={**headers, 'X-QC-Preview-Digest': preview.json()['digest']})
+        assert confirmed.status_code == 200 and confirmed.json() == {'count': 1, 'existing': 0}
+        assert calls == []
+        saved, = client.get(base + 'api/inspection-sheet/entries').json()['items']
+        assert saved['productNo'] == '00002' and saved['reviewState'] == ''
+        fixture = tmp_path / 'fixtures' / 'qc-schedule-example.json'
+        fixture.parent.mkdir()
+        fixture.write_text('invalid JSON', encoding='utf-8')
+        assert client.get(base + 'api/inspection-sheet/entries').status_code == 503
+        login_as(client, 'engineer')
+        assert client.post(target + 'preview', content=book, headers=headers).status_code == 403
 
 
 def test_real_sessions_inspector_submit_supervisor_review_complete_workflow(monkeypatch):
@@ -428,10 +425,11 @@ def test_historical_return_uses_new_form_with_full_permission_lock_and_attachmen
         assert projected['deliveryNo']=='0005501' and projected['reference'] and projected['result']=='FAIL'
 
 
-def test_inspection_plan_join_is_readonly_scoped_and_requires_verified_origin(monkeypatch):
+def test_inspection_plan_join_is_readonly_scoped_and_requires_verified_origin(monkeypatch, legacy_schedule_example):
     import copy
     module = importlib.import_module("app.api.qc_department")
-    row = module.schedule_example('huaxing')['items'][0]
+    assets, row = legacy_schedule_example
+    monkeypatch.setattr(module, 'ASSETS', assets)
     record = {'id':31, 'client':row['customer'], 'orderNo':row['poNo'], 'productNo':row['productNo'],
               'date':'', 'inspDate':'', 'remark':'来源：测试；'+row['id']+'\n计划日期：2099-01-01'}
     original=copy.deepcopy(record)
@@ -510,11 +508,15 @@ def test_dossier_background_collection_runs_without_opening_qc_page(monkeypatch)
         while time.monotonic()<deadline:
             with archive.connect() as conn:
                 found=conn.execute('SELECT capture_id FROM source_heads WHERE factory=? AND source_id=?',('huaxing',source_id)).fetchone()
-            if found:break
+            # The archive commit and the main-database acknowledgment are
+            # separate; seeing the capture alone is not the worker's receipt.
+            with database.SessionLocal() as db:
+                events=db.query(model.QcDossierOutbox).all()
+                delivered=bool(events) and all(e.delivered_at for e in events)
+            if found and delivered:break
             time.sleep(.1)
         assert found is not None
-        with database.SessionLocal() as db:
-            events=db.query(model.QcDossierOutbox).all();assert events and all(e.delivered_at for e in events)
+        assert delivered
         # No schedule-source or dossier GET has been made anywhere in this test.
 
 

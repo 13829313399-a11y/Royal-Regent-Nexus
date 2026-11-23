@@ -8,12 +8,15 @@ export interface WorkspaceTask {
   subject: { user_id: string; display_name: string; username: string }
   org_unit_id: string; department: string; current_position: string; proposed_position: string
   raw_status: string; state: TaskState; created_at: string
+  record_actor_id?: string; record_reason?: string; record_before?: string; record_after?: string
+  record_decision_at?: string; record_completed_at?: string; record_receipt_id?: string
   available_actions: string[]; blocked_reasons: string[]
 }
 export interface SourceCoverage {
   kind: TaskKind; readable: boolean; state: 'ready' | 'not_authorized' | 'unavailable' | 'disabled'; message?: string
 }
 export interface WorkspaceTaskPage {
+  bucket_counts?: Record<TaskKind, number | null>
   items: WorkspaceTask[]; page: number; page_size: number; visible_total: number | null
   actionable_total: number | null; count_scope: 'current_normalized_filter'
   coverage: SourceCoverage[]; partial: boolean; server_now: string

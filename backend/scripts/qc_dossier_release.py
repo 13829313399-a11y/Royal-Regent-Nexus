@@ -23,14 +23,16 @@ from app.services import qc_dossier as archive
 from app.services.qc_dossier_worker import validate_installed
 
 PARENT = '20261107_0193'
-REVISION = '20261110_0194'
+OUTBOX_REVISION = '20261110_0194'
+REVISION = '20261121_inj_merge'
+QC_READY_REVISIONS = (OUTBOX_REVISION, '20261116_0195', '20261116_inj_retire', '20261119_0195', '20261119_0196', '20261119_0197', REVISION)
 
 
 def version():
     with engine.connect() as conn:
         values = list(conn.execute(text('SELECT version_num FROM alembic_version')).scalars())
-    if len(values) != 1 or values[0] not in (PARENT, REVISION):
-        raise RuntimeError('Main database must be verified at 0193 or 0194; refusing unrelated historical migrations')
+    if len(values) != 1 or values[0] not in (PARENT, *QC_READY_REVISIONS):
+        raise RuntimeError('Main database must be at a verified QC-compatible revision; refusing unrelated migrations')
     return values[0]
 
 
@@ -45,8 +47,8 @@ def file_hash(path):
 def inventory(root):
     result = {}
     for path in sorted(root.rglob('*')):
-        if path.is_symlink():
-            raise RuntimeError('QC backup contains a symlink; explicit review required')
+        if path.is_symlink() or (os.name == 'nt' and path.is_junction()):
+            raise RuntimeError('QC backup contains a symlink or directory junction; explicit review required')
         if path.is_file():
             result[str(path.relative_to(root))] = file_hash(path)
     return result
@@ -122,7 +124,7 @@ def prepare(backup, source=None):
             raise RuntimeError('QC backup changed during capture; stop writers and retry')
         integrity(snapshot)
     integrity(root)
-    if before == PARENT:
+    if before != REVISION:
         subprocess.run([sys.executable, '-m', 'alembic', '-c', str(BACKEND/'alembic.ini'), 'upgrade', REVISION], cwd=BACKEND, check=True)
     if version() != REVISION:
         raise RuntimeError('Main migration did not reach required version')
@@ -174,7 +176,7 @@ def start():
         marker = Path(archive.settings.qc_department_data_dir)/'.qc-dossier-ready.json'
         if not marker.is_file() or json.loads(marker.read_text()).get('revision') != REVISION:
             raise RuntimeError('QC release preparation missing; run the versioned deployment flow before startup')
-        if version()!=REVISION:
+        if version() != REVISION:
             raise RuntimeError('QC main migration is not ready')
         validate_installed(engine)
     else:

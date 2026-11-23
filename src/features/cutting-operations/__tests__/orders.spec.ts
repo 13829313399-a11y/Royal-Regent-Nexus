@@ -2,6 +2,7 @@ vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createRouter, createMemoryHistory, RouterView, type Router } from 'vue-router'
+import { createPinia } from 'pinia'
 import { cuttingOperationsRoutes } from '../routes'
 import { cuttingApi, type MasterRecord } from '../api'
 import { ordersApi, type CuttingOrder } from '../ordersApi'
@@ -10,7 +11,7 @@ vi.mock('../materialsApi',()=>({materialApi:{read:vi.fn(),catalog:vi.fn(),post:v
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span />' } }))
 vi.mock('../api', async original => ({ ...await original<typeof import('../api')>(), cuttingApi: { access: vi.fn(), list: vi.fn(), versions: vi.fn() } }))
-vi.mock('../ordersApi', () => ({ ordersApi: { list: vi.fn(), read: vi.fn(), command: vi.fn(), history: vi.fn(), recover: vi.fn() } }))
+vi.mock('../ordersApi', () => ({ ordersApi: { list: vi.fn(), read: vi.fn(), command: vi.fn(), history: vi.fn(), recover: vi.fn(), purchaseCandidates: vi.fn(), purchaseProgress: vi.fn() } }))
 const path = '/modules/production/cutting/planning?factory=huakang-c'
 const row: CuttingOrder = { line_id: 'line-1', dispatch_id: 'dispatch-1', source_version: 1, needs_receipt: true, received_at: '', current: null,
   snapshot: { customer_name: '合成洋行', reference_no: 'ORDER-001', product_no: 'P001', quantity: '100', status: 'active' } }
@@ -25,13 +26,13 @@ function button(text: string) {
   if (!b) throw new Error(`Missing button: ${text}`)
   return b
 }
-async function open(record = row, permissions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile'], attach = false) {
-  vi.mocked(cuttingApi.access).mockResolvedValue({ enabled: true, schema_ready: true, orders_schema_ready: true, permissions })
+async function open(record = row, permissions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile'], attach = false, canLinkPurchase = false) {
+  vi.mocked(cuttingApi.access).mockResolvedValue({ enabled: true, schema_ready: true, orders_schema_ready: true, permissions, can_link_purchase: canLinkPurchase, can_read_purchase: canLinkPurchase })
   vi.mocked(ordersApi.list).mockResolvedValue(page([record]))
   vi.mocked(ordersApi.read).mockResolvedValue(record)
   router = createRouter({ history: createMemoryHistory(), routes: [...cuttingOperationsRoutes, { path: '/modules/production', component: { template: '<div>生产部</div>' } }] })
   await router.push(path); await router.isReady()
-  wrapper = mount(RouterView, { global: { plugins: [router] }, ...(attach ? { attachTo: document.body } : {}) }); await flushPromises()
+  wrapper = mount(RouterView, { global: { plugins: [router, createPinia()] }, ...(attach ? { attachTo: document.body } : {}) }); await flushPromises()
   await button('查看').trigger('click')
 }
 async function receiptForm() {
@@ -84,11 +85,11 @@ describe('cutting order workflow and save protection', () => {
     vi.mocked(ordersApi.list).mockResolvedValue({data:[row],total:51,page:1,page_size:50})
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
     await wrapper.get('input[maxlength="80"]').setValue('NEW')
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('pending_confirmation')
     await button('下一页').trigger('click');await flushPromises()
     expect(ordersApi.list).toHaveBeenLastCalledWith(2,'','','')
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','awaiting_receipt','')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','pending_confirmation','')
   })
 
   it.each([false, true])('opens material operations only in the materials workspace (request permission: %s)', async permitted => {
@@ -249,20 +250,25 @@ describe('cutting order workflow and save protection', () => {
   it('applies the reply status filter server-side and labels passed estimates without claiming receipt', async () => {
     await open({ ...received, workflow_status: 'partial_reply', expected_date_passed: true })
     expect(wrapper.text()).toContain('预计日期已过，实收待核实')
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('partial_reply')
+    const filter = wrapper.get('[aria-label="办理状态筛选"]')
+    expect(filter.findAll('option').map(option => option.text())).toEqual([
+      '全部状态', '待确认', '待工程处理', '待采购处理', '物料已齐／无需采购', '已取消',
+    ])
+    expect(wrapper.find('.order-ledger-table tbody').text()).toContain('采购部分回复')
+    await filter.setValue('pending_procurement')
     await wrapper.get('form.order-toolbar').trigger('submit'); await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'partial_reply', '')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'pending_procurement', '')
   })
   it('refreshes filtered rows and totals after a save changes the workflow status', async () => {
     await open()
-    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('pending_confirmation')
     await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
     await button('查看').trigger('click')
     await receiptForm()
     vi.mocked(ordersApi.command).mockResolvedValue(received)
     vi.mocked(ordersApi.list).mockResolvedValue(page([]))
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
-    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'awaiting_receipt', '')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1, '', 'pending_confirmation', '')
     expect(wrapper.text()).not.toContain('ORDER-001')
     expect(wrapper.text()).toContain('共 0 条')
   })
@@ -305,11 +311,66 @@ describe('engineering requisitions and procurement form operations', () => {
     const inputs = wrapper.findAll('.eta-row input')
     await inputs[0]!.setValue('3.5'); await inputs[1]!.setValue('2026-10-18'); await inputs[2]!.setValue('供应商A'); await inputs[3]!.setValue('PO001')
     await button('增加交期批次').trigger('click')
-    await wrapper.findAll('.eta-row button')[1]!.trigger('click')
+    await wrapper.findAll('.eta-row')[1]!.findAll('button').find(b => b.text() === '移除此批次')!.trigger('click')
     await wrapper.get('form.order-form textarea').setValue('供应商确认首批日期')
     vi.mocked(ordersApi.command).mockResolvedValue(submittedRow)
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
     expect(ordersApi.command).toHaveBeenCalledWith('line-1', 'eta', expect.objectContaining({ requisition_version: 3, batches: [{ row: 0, quantity: '3.5', expected_date: '2026-10-18', supplier: '供应商A', purchase_reference: 'PO001' }] }))
+  })
+  it('links only a selected purchase source and clears it when the batch identity changes', async () => {
+    await open(submittedRow, undefined, false, true)
+    await button('采购回复分批交期').trigger('click')
+    await button('增加交期批次').trigger('click')
+    const inputs = wrapper.findAll('.eta-row input')
+    await inputs[0]!.setValue('3.5')
+    await inputs[1]!.setValue('2026-10-18')
+    await inputs[2]!.setValue('供应商A')
+    await inputs[3]!.setValue('PO001')
+    vi.mocked(ordersApi.purchaseCandidates).mockResolvedValue({items: [
+      {id: 'source-a', revision: 5, detail_no: 'PA001', production_no: 'P1', quantity: '5', unit: '米'},
+      {id: 'source-b', revision: 7, detail_no: 'PA002', production_no: 'P2', quantity: '6', unit: '米'},
+    ]})
+    await button('查找采购明细').trigger('click')
+    await flushPromises()
+    expect(ordersApi.purchaseCandidates).toHaveBeenCalledWith('line-1', 0, 'PO001', '供应商A')
+    const picker = () => wrapper.get('select[name="batches[0].purchase_source"]')
+    expect(picker().element).toHaveProperty('value', '')
+    await picker().setValue('source-a')
+    await inputs[3]!.setValue('PO002')
+    expect(wrapper.text()).not.toContain('source-a')
+    expect(wrapper.text()).toContain('匹配条件已改变')
+    await button('查找采购明细').trigger('click')
+    await flushPromises()
+    await picker().setValue('source-b')
+    await wrapper.get('form.order-form textarea').setValue('采购明细核对')
+    vi.mocked(ordersApi.command).mockResolvedValue(submittedRow)
+    await wrapper.get('form.order-form').trigger('submit')
+    await flushPromises()
+    expect(ordersApi.command).toHaveBeenCalledWith('line-1', 'eta', expect.objectContaining({
+      batches: [expect.objectContaining({purchase_reference: 'PO002', purchase_source: {id: 'source-b', revision: 7}})],
+    }))
+  })
+  it('warns before removing an existing association and respects cancelled confirmation', async () => {
+    const linked = structuredClone(submittedRow)
+    linked.current!.data.batches = [{row: 0, quantity: '3.5', expected_date: '2026-10-18', supplier: '供应商A',
+      purchase_reference: 'PO001', purchase_source: {id: 'source-a', revision: 5, detail_no: 'DETAIL-001'} }]
+    await open(linked)
+    await button('采购回复分批交期').trigger('click')
+    expect(wrapper.text()).toContain('采购明细 DETAIL-001')
+    expect(wrapper.findAll('a').some(link => link.text() === '打开布料仓原明细')).toBe(false)
+    await button('移除关联').trigger('click')
+    await wrapper.get('form.order-form textarea').setValue('本次测试验证解除提示')
+    expect(wrapper.text()).toContain('本次保存会解除 1 条原采购明细关联')
+    await wrapper.get('form.order-form').trigger('submit')
+    expect(ordersApi.command).not.toHaveBeenCalled()
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('解除 1 条原采购明细关联'))
+    vi.mocked(window.confirm).mockReturnValue(true)
+    vi.mocked(ordersApi.command).mockResolvedValue(submittedRow)
+    await wrapper.get('form.order-form').trigger('submit')
+    await flushPromises()
+    expect(ordersApi.command).toHaveBeenCalledWith('line-1', 'eta', expect.objectContaining({
+      batches: [{row: 0, quantity: '3.5', expected_date: '2026-10-18', supplier: '供应商A', purchase_reference: 'PO001'}],
+    }))
   })
   it('preserves batch edits after a server over-allocation rejection', async () => {
     await open(submittedRow); await button('采购回复分批交期').trigger('click'); await button('增加交期批次').trigger('click')

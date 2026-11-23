@@ -20,7 +20,7 @@ spec.loader.exec_module(launcher)
 
 
 def package(tmp_path, fail=False):
-    root = tmp_path / "中文 空格 试用包"
+    root = tmp_path / "中文 空格 (试用) & ! 包"
     backend = root / "backend/app"
     backend.mkdir(parents=True)
     (backend / "__init__.py").write_text("")
@@ -53,14 +53,15 @@ def create_app(data_dir, static_dir, host, port):
 def start(root):
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
     return subprocess.Popen([sys.executable, str(root / "launch.py"), "--no-browser"],
-        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", **options)
+        cwd=root.parent, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", **options)
 
 
 def ready(root, process):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            pytest.fail("Launcher stopped before readiness: " + process.stdout.read())
+            output = process.stdout.read() if process.stdout else (root / 'data/startup-console.log').read_text(encoding='utf-8', errors='replace')
+            pytest.fail("Launcher stopped before readiness: " + output)
         try:
             value = json.loads((root / "data/running.json").read_text())
             if launcher.instance_is_ready(value["port"], value["id"]):
@@ -150,3 +151,127 @@ def test_failed_server_start_has_nonzero_exit_and_no_running_marker(tmp_path):
         assert not (root / "data/running.json").exists()
     finally:
         stop(process)
+
+
+def test_original_error_is_logged_when_console_write_also_fails(tmp_path):
+    root = package(tmp_path)
+    (root / 'trial.json').write_text('{"kind":"invalid"}', encoding='utf-8')
+    code = '''
+import runpy, sys
+class BrokenConsole:
+    def write(self, value): raise OSError(22, 'console write failed')
+    def flush(self): pass
+sys.stderr = BrokenConsole()
+sys.argv = [sys.argv[1], '--no-browser']
+runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+    result = subprocess.run([sys.executable, '-c', code, str(root / 'launch.py')],
+        capture_output=True, timeout=10)
+    assert result.returncode == 1
+    error = (root / 'data/startup-error.log').read_text(encoding='utf-8')
+    assert 'RuntimeError: 试用包类型不正确' in error
+    assert 'Traceback (most recent call last)' in error
+
+
+def test_ascii_console_does_not_hide_original_startup_error(tmp_path):
+    root = package(tmp_path)
+    (root / 'trial.json').write_text('{"kind":"invalid"}', encoding='utf-8')
+    result = subprocess.run([sys.executable, str(root / 'launch.py'), '--no-browser'],
+        env={**os.environ, 'PYTHONIOENCODING':'ascii:strict'}, capture_output=True, timeout=10)
+    assert result.returncode == 1
+    assert b'Startup failed' in result.stderr
+    assert 'RuntimeError: 试用包类型不正确' in (root / 'data/startup-error.log').read_text(encoding='utf-8')
+
+
+def test_redirected_utf8_startup_keeps_service_and_diagnostics_available(tmp_path):
+    root = package(tmp_path)
+    (root / 'data').mkdir()
+    path = root / 'data/startup-console.log'
+    with path.open('ab') as output:
+        options = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {}
+        process = subprocess.Popen([sys.executable, '-X', 'utf8', str(root / 'launch.py'), '--no-browser'],
+            cwd=root.parent, env={**os.environ, 'PYTHONIOENCODING':'utf-8:backslashreplace', 'PYTHONUNBUFFERED':'1'},
+            stdout=output, stderr=subprocess.STDOUT, **options)
+        try:
+            ready(root, process)
+            assert '合成启动测试' in path.read_text(encoding='utf-8')
+        finally:
+            stop(process)
+    assert process.returncode in (0, 130, -signal.SIGINT)
+    assert not (root / 'data/running.json').exists()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Host lifecycle probe uses POSIX signals, not Windows acceptance')
+@pytest.mark.parametrize('scenario', ['close', 'crash', 'server-stop', 'no-streams'])
+def test_windowed_lifecycle_preserves_data_and_reaps_owned_browser(tmp_path, scenario):
+    root = package(tmp_path)
+    shutil.copyfile(LAUNCH.with_name('windowed_start.py'), root / 'windowed_start.py')
+    # Real server and child processes; replace only the platform-specific browser.
+    (root / 'fake_browser.py').write_text('''
+from pathlib import Path
+import os, sys, time
+data = Path(__file__).parent / 'data'
+(data / 'browser.pid').write_text(str(os.getpid()))
+while not (data / 'browser.close').exists(): time.sleep(0.05)
+raise SystemExit(int((data / 'browser.close').read_text()))
+''')
+    (root / 'run_test.py').write_text('''
+from pathlib import Path
+import subprocess, sys
+import launch
+root = Path(__file__).parent
+def browser(root, address, instance, require_bundled=False):
+    (root / 'data/browser.instance').write_text(instance)
+    return subprocess.Popen([sys.executable, str(root / 'fake_browser.py')])
+launch.open_page = browser
+if sys.argv[-1] == 'no-streams':
+    import windowed_start
+    sys.stdin = sys.stdout = sys.stderr = None
+    raise SystemExit(windowed_start.main())
+sys.argv = ['launch.py', '--exit-with-browser']
+raise SystemExit(launch.main())
+''')
+    process = subprocess.Popen([sys.executable, str(root / 'run_test.py'), scenario],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+    try:
+        identity = ready(root, process)
+        (root / 'data/preserve.txt').write_text('business data')
+        deadline = time.monotonic() + 5
+        while not (root / 'data/browser.pid').exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        pid = int((root / 'data/browser.pid').read_text())
+        assert (root / 'data/browser.instance').read_text() == identity['id']
+        if scenario == 'server-stop':
+            process.send_signal(signal.SIGINT)
+        else:
+            (root / 'data/browser.close').write_text('7' if scenario == 'crash' else '0')
+        process.wait(12)
+        if scenario != 'server-stop':
+            assert process.returncode == (1 if scenario == 'crash' else 0)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        assert not (root / 'data/running.json').exists()
+        assert (root / 'data/preserve.txt').read_text() == 'business data'
+        if scenario == 'crash':
+            assert '退出码 7' in (root / 'data/startup-error.log').read_text(encoding='utf-8')
+        else:
+            assert not (root / 'data/startup-error.log').exists()
+        lock = launcher.InstanceLock(root / 'data/.trial.lock')
+        lock.close()
+    finally:
+        stop(process)
+
+
+def test_reopen_uses_verified_instance_and_rejects_stale_identity(tmp_path, monkeypatch):
+    data = tmp_path / 'data'
+    data.mkdir()
+    instance = 'a' * 32
+    (data / 'running.json').write_text(json.dumps({'port': 12345, 'id': instance}))
+    calls = []
+    monkeypatch.setattr(launcher, 'open_page', lambda *args: calls.append(args))
+    monkeypatch.setattr(launcher, 'instance_is_ready', lambda port, token: token == instance)
+    assert launcher.reopen_running(data, False)
+    assert calls == [(tmp_path, 'http://127.0.0.1:12345/', instance)]
+    (data / 'running.json').write_text(json.dumps({'port': 12345, 'id': 'b' * 32}))
+    assert not launcher.reopen_running(data, False)
+    assert len(calls) == 1

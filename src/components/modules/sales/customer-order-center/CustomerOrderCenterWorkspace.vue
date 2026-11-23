@@ -47,7 +47,7 @@ import type {
   CustomerOrderPreviewRow,
   WarehouseScheduleSyncResult,
 } from '@/types/customerOrder'
-import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView.vue'
+import type { CustomerOrderCenterSection } from '@/types/customerOrder'
 
 type OrderStatus = 'valid' | 'warning' | 'blocked'
 type DeliveryStatus = 'overdue' | 'due-soon' | 'upcoming' | 'planned'
@@ -79,9 +79,9 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poAccept: '.pdf,.xlsx', poExtensions: ['.pdf', '.xlsx'],
       scheduleAccept: '.xlsx', scheduleExtensions: ['.xlsx'],
       poDescription: 'ZURU PDF 正单或已转换并核对的 Excel 正单',
-      templateDescription: '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）',
+      templateDescription: '华兴 ZURU 原格式新单汇总',
       targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
-      ruleDescription: 'PO号＋原单Line作为SO/Reference，SKU-SPEC保留完整货号，Customer PO按本行读取；统一三表追加，USD单独保留，不换算HKD。原周排期仅作映射参考，不导入MA/库存记录。',
+      ruleDescription: 'PO号＋原单Line和完整SKU-SPEC保留身份；多份原周排期作参照，生成可复制的新单汇总，USD单独保留。',
     },
     {
       code: 'buzzbee',
@@ -126,14 +126,14 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       code: 'edu',
       name: 'EDU',
       version: 'V1',
-      poAccept: '.xls,.xlsx,.xlsm',
-      poExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
       scheduleAccept: '.xls,.xlsx,.xlsm',
       scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
-      poDescription: 'EDU Excel PO（支持同 PO 修订版批量导入）',
+      poDescription: 'EDU 文字或扫描 PDF、Excel PO（支持同 PO 修订版批量导入）',
       templateDescription: 'EDU 华兴排期底表',
       targetTemplate: 'HUAXING_EDU_NEW_ORDER_V1',
-      ruleDescription: '每条新明细续编 EDUHX，按货号分组并更新 PO订单；先匹配扣数PO，否则扣同货号最后一条绿色备料行。装箱可补录，重复单保留原号且不重复扣料。',
+      ruleDescription: '完整货号区分订单，ITEM按基础货号归组；接单表和正单评审表新单按导入顺序连续追加、统一蓝字。生产单号可手填，货期周末提前至周五，空白可保留。',
     },
     {
       code: '360',
@@ -228,6 +228,15 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
     },
   ],
   'huakang-a': [
+    {
+      code: 'zuru', name: 'ZURU', version: 'V2',
+      poAccept: '.pdf,.xlsx', poExtensions: ['.pdf', '.xlsx'],
+      scheduleAccept: '.xlsx', scheduleExtensions: ['.xlsx'],
+      poDescription: 'ZURU PDF 正单或已转换的 Excel 正单',
+      templateDescription: '华康A ZURU 原格式新单汇总',
+      targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4',
+      ruleDescription: '上传 ZURU 订单与原有周排期，预览后生成可复制的新单汇总。',
+    },
     {
       code: '360',
       name: '360',
@@ -412,16 +421,18 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
       profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
       profile.templateDescription = `华兴 ${profile.name} 最新统一排期（含 ITEM 分类页）`
       profile.ruleDescription = '按主要公共字段匹配最新排期，BuzzBee 和迪奇按产品对应 ITEM 分类页。各表在自己的取消单前追加，接单表、正单评审表关联实际明细页和行；合同、SO、客户 PO 分别映射，保留历史订单、公式和人工字段。'
-      if (profile.code === 'zuru') {
-        profile.templateDescription = '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）'
-        profile.ruleDescription = '按 PO号、原单行号和完整货号识别 ZURU 正单，逐行读取客户PO，美元原价单独保留、不换算港币。核对后写入华兴统一排期，保留历史订单、公式及人工字段；原周排期的MA和库存记录不作为正单导入。'
-      }
       if (profile.code === 'buzzbee') {
         profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
       }
       if (profile.code === 'edu') {
-        profile.ruleDescription = 'EDU 每条新明细续编 EDUHX，并同步三张排期与 PO订单。按去尾码货号归组到绿色备料行上方；先匹配扣数PO，否则扣同货号最后一条绿色行，余额允许负数。装箱可补录，重复单保留原号、不再次扣料，历史与走货资料保留。'
+        profile.ruleDescription = 'EDU保留完整货号，ITEM按基础货号归组到绿色备料行上方；接单表和正单评审表按导入顺序连续追加，新单统一蓝字。默认续编EDUHX，也可手填同一生产单号。货期周末提前至周五、验货期提前一周，空白可保留。先匹配扣数PO，否则扣同货号最后一条绿色行，重复单不再次扣料。'
       }
+    }
+    if (profile.code === 'zuru') {
+      profile.targetTemplate = 'ZURU_ORIGINAL_NEW_ORDER_SUMMARY_V1'
+      const factoryName = factoryId === 'huakang-a' ? '华康A' : '华兴'
+      profile.templateDescription = `${factoryName} ZURU 原格式新单汇总（可复制到原排期）`
+      profile.ruleDescription = `支持最多10份ZURU原周排期作参照，按原PO行号及完整货号识别；生成18列新单汇总及原格式复制页。已有订单另列提醒，原排期不修改；MA、库存与生产进度不作为新单。`
     }
   })
 })
@@ -554,6 +565,9 @@ const props = defineProps<{
   factoryId: string
   factoryName: string
   focusLineId?: string
+  initialCustomerCode?: string
+  customerCodes?: readonly string[]
+  localOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -574,6 +588,8 @@ function formatLocalDate(date: Date) {
 const selectedCustomerCode = ref<CustomerOrderCustomerCode | ''>('')
 const poFiles = ref<File[]>([])
 const scheduleFile = ref<File | null>(null)
+const additionalSchedules = ref<File[]>([])
+const isZuru = computed(() => selectedCustomer.value?.code === 'zuru')
 const draggingUpload = ref<'po' | 'schedule' | null>(null)
 const selectedScheduleFile = ref('尚未选择河源业务统一排期')
 const receivedDate = ref(formatLocalDate(new Date()))
@@ -588,12 +604,14 @@ let warehouseSyncController: AbortController | null = null
 let warehouseUpload: { file: File; kind: 'UPLOADED' | 'GENERATED'; customer: string; factory: string } | null = null
 
 function showWarehouseSync(result: WarehouseScheduleSyncResult | null | undefined, kind: 'UPLOADED' | 'GENERATED') {
+  if (props.localOnly || isZuru.value) { warehouseSync.value = { state: 'idle', message: '' }; return }
   warehouseSync.value = result?.status === 'SUCCESS'
     ? { state: 'success', message: `${result.message}。${kind === 'UPLOADED' ? '本次新增 PO 将在生成客户排期后自动更新。' : '仓库可查看最新排期并下单。'}` }
     : { state: 'error', message: `纸箱仓库同步未完成：${result?.message || '服务端未返回同步结果'}。业务解析及排期下载仍可继续。` }
 }
 
 async function retryWarehouseSync() {
+  if (props.localOnly) return
   if (!warehouseUpload || fileOperationBusy.value) return
   const { file, kind, customer, factory } = warehouseUpload
   const sequence = ++warehouseSyncSequence
@@ -729,7 +747,7 @@ let saveRequestSequence = 0
 let reconciliationRequestSequence = 0
 
 const availableCustomers = computed(
-  () => CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? [],
+  () => (CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? []).filter(customer => !props.customerCodes || props.customerCodes.includes(customer.code)),
 )
 const selectedCustomer = computed(
   () => availableCustomers.value.find(
@@ -739,13 +757,7 @@ const selectedCustomer = computed(
 const selectedCustomerName = computed(
   () => selectedCustomer.value?.name ?? '尚未选择客户',
 )
-const preflightConfirmationText = computed(
-  () => previewBatch.value?.duplicate_confirmation_enabled
-    ? previewBatch.value?.duplicate_confirmation_authorized
-      ? '当前环境已启用测试阶段重复订单确认；请在预览中逐项确认并填写原因后导出'
-      : '当前环境已启用重复订单确认，但当前账号没有确认权限'
-    : '重复订单是否允许确认以当前环境策略和预览结果为准',
-)
+const preflightConfirmationText = '所有客户的资料缺项、重复及差异只作提醒，可直接保存或生成；缺失值保持空白。'
 
 const orderRows = ref<OrderRow[]>([])
 
@@ -783,45 +795,14 @@ const activeOrderRows = computed(() => (
             ? String(quantity / pack) : ''
         }
         if (issues.length === 0) return row
-        const remainingBlockers = issues.filter(
-          (issue) => issue.severity === 'blocked'
-            && !isConfirmationIssue(issue)
-            && !isIssueResolved(issue),
-        )
-        const unresolvedConfirmations = issues.filter(
-          (issue) => isConfirmationIssue(issue)
-            && !isIssueResolved(issue),
-        )
-        const skippedIssues = issues.filter(
-          (issue) => issue.can_skip && skippedIssueKeys.value.includes(issue.skip_key),
-        )
         const overriddenIssues = issues.filter(isIssueManuallyOverridden)
-        if (remainingBlockers.length > 0) {
-          return row
+        return {
+          ...row,
+          status: 'warning' as const,
+          statusLabel: overriddenIssues.length ? '已补录 · 有提醒' : '有提醒',
+          issue: [row.issue, ...overriddenIssues.map(issue => `人工补录${issue.edit_label || issue.field}`)].filter(Boolean).join('；'),
         }
-        if (unresolvedConfirmations.length > 0) {
-          return { ...row, status: 'warning' as const, statusLabel: '待确认' }
-        }
-        if (issues.some((issue) => issue.severity === 'warning') || skippedIssues.length > 0 || overriddenIssues.length > 0) {
-          const confirmedDuplicates = skippedIssues.filter(isTestDuplicateIssue)
-          const skippedDataIssues = skippedIssues.filter((issue) => !isTestDuplicateIssue(issue))
-          return {
-            ...row,
-            status: 'warning' as const,
-            statusLabel: overriddenIssues.length > 0
-              ? '已人工补录'
-              : confirmedDuplicates.length > 0 && skippedDataIssues.length === 0
-                ? '已确认通过'
-                : skippedIssues.length > 0 ? '已确认放行' : '警告',
-            issue: [
-              row.issue,
-              ...overriddenIssues.map((issue) => `人工补录${issue.edit_label || issue.field}`),
-              ...confirmedDuplicates.map((issue) => `确认通过：${issue.skip_label}`),
-              ...skippedDataIssues.map((issue) => `人工跳过：${issue.skip_label}`),
-            ].filter(Boolean).join('；'),
-          }
-        }
-        return { ...row, status: 'valid' as const, statusLabel: '有效' }
+
       })
 ))
 
@@ -842,10 +823,9 @@ const resolvedIssueKeys = computed(() => [...new Set([
   ...manualOverrides.value.map((item) => item.issue_key),
 ])])
 const skippedIssueCount = computed(() => resolvedIssueKeys.value.length)
-const confirmationReasonMissing = computed(() => (
-  skippedIssueCount.value > 0 && confirmationReason.value.trim().length < 4
-))
+const confirmationReasonInvalid = computed(() => confirmationReason.value.trim().length > 500)
 const canReconcilePreview = computed(() => Boolean(
+  !previewBatch.value?.rows.some(row => row.document_kind === 'cancellation') &&
   previewBatch.value
   && previewBatch.value.rows.length === 1
   && sourceKind.value === 'formal',
@@ -858,13 +838,6 @@ const selectedReconciliationLine = computed(() => reconciliationCandidates.value
 const quantityReconciliationId = computed(() => quantityReconciliationRowId(
   previewBatch.value, sourceKind.value, reconciliation.value, selectedReconciliationLine.value, manualOverrides.value,
 ))
-const saveBlockedCount = computed(() => activeOrderRows.value.filter(row => {
-  if (row.status !== 'blocked') return false
-  const remaining = (row.issues ?? []).filter(issue => issue.severity === 'blocked'
-    && !isConfirmationIssue(issue) && !isIssueResolved(issue))
-  return !(row.id === quantityReconciliationId.value && remaining.length > 0
-    && remaining.every(issue => issue.code === 'existing_quantity_conflict'))
-}).length)
 const selectedPoFile = computed(() => {
   if (poFiles.value.length === 0) return '尚未选择 PO 文件'
   if (poFiles.value.length === 1) return poFiles.value[0]!.name
@@ -925,13 +898,8 @@ const orderSummary = computed(() => ({
   blocked: activeOrderRows.value.filter((row) => row.status === 'blocked').length,
 }))
 
-const unconfirmedDuplicateIssueCount = computed(() => (
-  (previewBatch.value?.rows ?? []).flatMap((row) => row.issues)
-    .filter((issue) => isConfirmationIssue(issue)
-      && issue.can_skip
-      && isTestDuplicateIssue(issue)
-      && !isIssueResolved(issue))
-    .length
+const advisoryIssueCount = computed(() => (
+  (previewBatch.value?.rows ?? []).flatMap(row => row.issues).length
 ))
 const advisoryDuplicateCount = computed(() => (
   (previewBatch.value?.rows ?? []).filter(row => row.issues.some(issue => issue.code === 'duplicate_order_warning')).length
@@ -946,14 +914,7 @@ function previewPoPriceOverride(row: CustomerOrderPreviewRow) {
 const blockingIssueDetails = computed(() => {
   const seen = new Set<string>()
   return (previewBatch.value?.rows ?? []).flatMap((row) => row.issues
-    .filter((issue) => (
-      issue.severity === 'blocked'
-      && !isConfirmationIssue(issue)
-      && !isIssueResolved(issue)
-    ) || (
-      isConfirmationIssue(issue)
-      && !isIssueResolved(issue)
-    ))
+    .filter(issue => !isIssueResolved(issue))
     .flatMap((issue) => {
       const key = [row.source_po_file_name, issue.code, issue.field, issue.message].join('|')
       if (seen.has(key)) return []
@@ -964,7 +925,7 @@ const blockingIssueDetails = computed(() => {
 
 const blockingResolutionItems = computed(() => (
   (previewBatch.value?.rows ?? []).flatMap((row) => row.issues
-    .filter((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue) || issue.can_edit)
+    .filter(issue => !isIssueResolved(issue) || issue.can_edit)
     .map((issue) => ({ row, issue })))
 ))
 const pendingInformationItems = computed(() => (previewBatch.value?.rows ?? [])
@@ -1282,6 +1243,7 @@ function resetImportBatch() {
   clearPreviewState()
   poFiles.value = []
   scheduleFile.value = null
+  additionalSchedules.value = []
   selectedScheduleFile.value = '尚未选择河源业务统一排期'
 }
 
@@ -1324,6 +1286,7 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
       poFiles.value = []
     } else {
       scheduleFile.value = null
+  additionalSchedules.value = []
       selectedScheduleFile.value = '尚未选择河源业务统一排期'
     }
     const fileName = ignoredMacFiles[0]?.name ?? '所选文件'
@@ -1349,8 +1312,8 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
     notify(`单批最多导入30份PO，当前拖入 ${usableFiles.length} 份。`)
     return
   }
-  if (kind === 'schedule' && usableFiles.length > 1) {
-    notify('客户排期每次只能导入1份，请重新拖入。')
+  if (kind === 'schedule' && usableFiles.length > (isZuru.value ? 10 : 1)) {
+    notify(isZuru.value ? 'ZURU参照排期最多选择10份，合计不超过35MB。' : '客户排期每次只能导入1份，请重新拖入。')
     return
   }
 
@@ -1359,7 +1322,8 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
   } else {
     const file = usableFiles[0]!
     scheduleFile.value = file
-    selectedScheduleFile.value = file.name
+    additionalSchedules.value = usableFiles.slice(1)
+    selectedScheduleFile.value = usableFiles.map(file => file.name).join("；")
   }
   clearPreviewState()
   const ignoredMessage = ignoredMacFiles.length > 0
@@ -1455,13 +1419,14 @@ async function parseSelectedFiles() {
     return
   }
   if (poFiles.value.length === 0 || !scheduleFile.value) {
-    notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和河源业务统一排期。`)
+    notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和${isZuru.value ? "ZURU原有排期（可多选）" : "河源业务统一排期"}。`)
     return
   }
   const requestId = ++parseRequestSequence
   const customerCode = selectedCustomer.value.code
   const requestedPoFiles = [...poFiles.value]
   const requestedScheduleFile = scheduleFile.value
+  const requestedAdditionalSchedules = [...additionalSchedules.value]
   const requestedReceivedDate = receivedDate.value
   const requestedFactoryId = props.factoryId
   parsingFiles.value = true
@@ -1500,6 +1465,7 @@ async function parseSelectedFiles() {
             requestedScheduleFile,
             requestedReceivedDate,
             requestedFactoryId,
+            ...(requestedAdditionalSchedules.length ? [requestedAdditionalSchedules] as const : []),
           )
       : await customerOrderApi.previewBuzzbeeBatch(
           requestedPoFiles,
@@ -1517,7 +1483,7 @@ async function parseSelectedFiles() {
     manualOverrideValues.value = {}
     warehouseUpload = { file: requestedScheduleFile, kind: 'UPLOADED', customer: customerCode, factory: requestedFactoryId }
     showWarehouseSync(preview.warehouse_sync, 'UPLOADED')
-    notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，待确认 ${preview.confirmation_count ?? 0} 条，警告 ${preview.summary.warning} 条，阻断 ${preview.summary.blocked} 条。`)
+    notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，有提醒 ${preview.summary.warning} 条，可直接保存或生成。`)
     navigate('preview')
   } catch (error) {
     if (requestId !== parseRequestSequence) return
@@ -1584,47 +1550,29 @@ function updateManualOverride(issue: CustomerOrderIssue, event: Event) {
 
 function resolveBlockedRow() {
   if (blockingResolutionItems.value.length === 0) {
-    notify('当前批次没有需要人工处理的阻断项。')
+    notify('当前批次没有资料提醒。')
     return
   }
   blockingResolutionOpen.value = true
 }
 
 function finishBlockingResolution() {
-  if (blockingIssueDetails.value.length > 0) {
-    notify(`仍有 ${blockingIssueDetails.value.length} 类阻断未处理，请按各项提示核对或纠正资料。`)
-    return
-  }
-  if (confirmationReasonMissing.value) {
-    notify('请填写至少 4 个字的人工处理原因。')
-    return
-  }
   blockingResolutionOpen.value = false
   notify('人工处理结果已保留，可以生成客户排期。')
 }
 
 async function confirmAndGenerateSchedule() {
   if (fileOperationBusy.value) return
-  if (unconfirmedDuplicateIssueCount.value > 0) {
-    notify(`仍有 ${unconfirmedDuplicateIssueCount.value} 项重复订单待确认，请在“确认/阻断处理”列勾选后再生成。`)
-    return
-  }
-  if (orderSummary.value.blocked > 0) {
-    notify('仍有未处理的阻断项；请按各项提示核对或纠正资料。')
-    return
-  }
   if (!previewBatch.value || poFiles.value.length === 0 || !scheduleFile.value) {
     notify('请先从“PO 与客户排期导入”完成真实解析。')
     return
   }
-  if (confirmationReasonMissing.value) {
-    notify('本批存在人工确认或跳过项，请填写至少 4 个字的确认原因。')
-    return
-  }
+
   const requestId = ++exportRequestSequence
   const requestedPreview = previewBatch.value
   const requestedPoFiles = [...poFiles.value]
   const requestedScheduleFile = scheduleFile.value
+  const requestedAdditionalSchedules = [...additionalSchedules.value]
   const requestedReceivedDate = receivedDate.value
   const requestedFactoryId = props.factoryId
   const requestedSkippedIssueKeys = [...resolvedIssueKeys.value]
@@ -1670,6 +1618,7 @@ async function confirmAndGenerateSchedule() {
             requestedPreview.preview_fingerprint,
             requestedConfirmationReason,
             requestedManualOverrides,
+            ...(requestedAdditionalSchedules.length ? [requestedAdditionalSchedules] as const : []),
           )
       : await customerOrderApi.exportBuzzbeeBatch(
           requestedPoFiles,
@@ -1781,18 +1730,11 @@ function selectReconciliationLine() {
 
 async function confirmAndSaveOrder() {
   if (fileOperationBusy.value) return
-  if (unconfirmedDuplicateIssueCount.value > 0 || saveBlockedCount.value > 0) {
-    notify('请先完成所有重复订单确认和阻断项处理。')
-    return
-  }
   if (!previewBatch.value || poFiles.value.length === 0 || !scheduleFile.value) {
     notify('请先从“PO 与客户排期导入”完成真实解析。')
     return
   }
-  if (confirmationReasonMissing.value) {
-    notify('本批存在人工确认或跳过项，请填写至少 4 个字的确认原因。')
-    return
-  }
+
   if (reconciliation.value.enabled && (!reconciliation.value.lineId || reconciliation.value.expectedRevision < 1 || reconciliation.value.reason.trim().length < 4)) {
     notify('关联已有订单时，请选择订单并填写至少 4 个字的核对原因。')
     return
@@ -1805,6 +1747,7 @@ async function confirmAndSaveOrder() {
   payload.append('received_date', receivedDate.value)
   poFiles.value.forEach((file) => payload.append('po_files', file))
   payload.append('schedule_file', scheduleFile.value)
+  additionalSchedules.value.forEach(file => payload.append('schedule_files', file))
   payload.append('confirmed', 'true')
   payload.append('skipped_issue_keys', JSON.stringify(resolvedIssueKeys.value))
   payload.append('manual_overrides', JSON.stringify(manualOverrides.value))
@@ -1824,9 +1767,14 @@ async function confirmAndSaveOrder() {
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
     warehouseUpload = null
     showWarehouseSync(result.warehouse_sync, 'GENERATED')
-    notify(result.reconciled_count > 0
+    if (result.warnings?.length) {
+      saveFailureMessage.value = result.warnings.join('\n')
+    }
+    notify(result.unapplied_count
+      ? `已处理匹配订单；${result.unapplied_count} 条取消未应用，未新增订单。请查看提示。`
+      : result.reconciled_count > 0
       ? '订单已关联并更新原订单，原走货与版本记录已保留。'
-      : `订单已确认并保存：新增 ${result.created_count} 条，已存在 ${result.existing_count} 条。`)
+      : `订单已保存：新增 ${result.created_count} 条，已存在 ${result.existing_count} 条。${result.advisory_count ? `其中 ${result.advisory_count} 条有资料差异或缺项，已保留提醒。` : ""}`)
     // Keep the source files and preview available for the separate Excel export.
   } catch (error) {
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
@@ -1888,6 +1836,11 @@ watch(
     acknowledgedExceptionIds.value = []
   },
 )
+
+watch(() => [props.factoryId, props.initialCustomerCode], () => {
+  const customer = availableCustomers.value.find(item => item.code === props.initialCustomerCode)
+  if (customer) selectCustomer(customer.code)
+}, { immediate: true })
 
 watch(sourceKind, (kind) => {
   if (kind === 'formal' || !reconciliation.value.enabled) return
@@ -1951,7 +1904,7 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric-card metric-card--error">
             <span class="metric-card__icon metric-card__icon--red"><AlertTriangle aria-hidden="true" /></span>
-            <div><p>阻断项</p><strong>{{ orderSummary.blocked }}</strong><small>当前厂区数据校验</small></div>
+            <div><p>资料提醒</p><strong>{{ advisoryIssueCount }}</strong><small>当前厂区数据校验</small></div>
           </article>
         </div>
 
@@ -2127,12 +2080,12 @@ onBeforeUnmount(() => {
               >
                 <span class="upload-card__type">文件 02 · 客户输出模板</span>
                 <div class="upload-card__icon upload-card__icon--green"><Layers3 aria-hidden="true" /></div>
-                <h3>导入客户现有排期</h3>
-                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
-                <strong>{{ selectedScheduleFile }}</strong>
-                <small>解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。</small>
+                <h3>{{ isZuru ? "导入原有ZURU排期（可多选）" : "导入客户现有排期" }}</h3>
+                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${isZuru ? '最多10份原周排期作参照，原文件不会被修改。' : selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
+                <strong>{{ isZuru && !scheduleFile ? "尚未选择ZURU原排期（支持多份）" : selectedScheduleFile }}</strong>
+                <small>{{ isZuru ? '生成新单汇总和原格式复制页；资料缺失可留空，后续在Excel补填。' : localOnly ? '生成新的排期副本；保存的订单保留在本机台账。' : '解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。' }}</small>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
-                <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
+                <input ref="scheduleInput" class="visually-hidden" type="file" :multiple="isZuru" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
               </article>
             </div>
 
@@ -2163,7 +2116,7 @@ onBeforeUnmount(() => {
             >
               <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
               <div class="persistent-parse-alert__content">
-                <h3>{{ parseFailureMessage ? '解析未完成' : exportFailureMessage ? '排期生成未完成' : `发现 ${blockingIssueDetails.length} 项待确认/阻断` }}</h3>
+                <h3>{{ parseFailureMessage ? '解析未完成' : exportFailureMessage ? '排期生成未完成' : `发现 ${blockingIssueDetails.length} 项资料提醒` }}</h3>
                 <p v-if="parseFailureMessage">{{ parseFailureMessage }}</p>
                 <p v-else-if="exportFailureMessage">{{ exportFailureMessage }}</p>
                 <ul v-else>
@@ -2186,7 +2139,7 @@ onBeforeUnmount(() => {
 
             <article class="panel-card">
               <header class="panel-card__head">
-                <div><h3>本次导入文件</h3><p>核对客户 PO 与对应的统一排期后开始解析。</p></div>
+                <div><h3>本次导入文件</h3><p>{{ isZuru ? "选择PO和一份或多份ZURU原排期后开始解析。" : "核对客户 PO 与对应的统一排期后开始解析。" }}</p></div>
               </header>
               <div class="table-scroll">
                 <table class="import-queue-table">
@@ -2194,7 +2147,7 @@ onBeforeUnmount(() => {
                   <tbody>
                     <tr v-for="item in poImportQueue" :key="item.key"><td><FileSpreadsheet aria-hidden="true" /> {{ item.fileName }}</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>{{ item.inputTemplate }}</td><td><span class="status-chip status-chip--active">已选择</span></td><td>本批</td></tr>
                     <tr v-if="poImportQueue.length === 0"><td><FileSpreadsheet aria-hidden="true" /> 尚未选择 PO 文件</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>解析后识别</td><td><span class="status-chip status-chip--warning">待选择</span></td><td>本批</td></tr>
-                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ selectedScheduleFile }}</td><td>河源统一排期</td><td>{{ selectedCustomerName }} / {{ factoryName }}</td><td>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
+                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ isZuru && !scheduleFile ? "尚未选择ZURU原排期（支持多份）" : selectedScheduleFile }}</td><td>{{ isZuru ? "ZURU原排期参照" : "河源统一排期" }}</td><td>{{ selectedCustomerName }} / {{ factoryName }}</td><td>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -2206,7 +2159,7 @@ onBeforeUnmount(() => {
               <header class="panel-card__head"><div><h3>本次导入检查</h3><p>进入预览前</p></div></header>
               <ul>
                 <li><component :is="selectedCustomer ? CheckCircle2 : CircleAlert" :class="{ warning: !selectedCustomer }" aria-hidden="true" /><div><b>客户{{ selectedCustomer ? '已选择' : '待选择' }}</b><span>{{ selectedCustomerName }} · {{ factoryName }}</span></div></li>
-                <li><component :is="poFiles.length && scheduleFile ? CheckCircle2 : CircleAlert" :class="{ warning: !poFiles.length || !scheduleFile }" aria-hidden="true" /><div><b>批量PO与排期{{ poFiles.length && scheduleFile ? '齐全' : '待选择' }}</b><span>{{ poFiles.length }} 份PO + 1份客户排期</span></div></li>
+                <li><component :is="poFiles.length && scheduleFile ? CheckCircle2 : CircleAlert" :class="{ warning: !poFiles.length || !scheduleFile }" aria-hidden="true" /><div><b>批量PO与排期{{ poFiles.length && scheduleFile ? '齐全' : '待选择' }}</b><span>{{ poFiles.length }} 份PO + {{ scheduleFile ? additionalSchedules.length + 1 : 0 }}份客户排期</span></div></li>
                 <li><component :is="previewBatch ? CheckCircle2 : CircleAlert" :class="{ warning: !previewBatch }" aria-hidden="true" /><div><b>模板{{ previewBatch ? '已识别' : '待解析' }}</b><span>{{ previewBatch?.input_template || selectedCustomer?.poDescription || '先选择客户' }}</span></div></li>
                 <li><CircleAlert aria-hidden="true" class="warning" /><div><b>生成前检查</b><span>{{ preflightConfirmationText }}</span></div></li>
               </ul>
@@ -2222,8 +2175,8 @@ onBeforeUnmount(() => {
             <article class="panel-card load-card">
               <header><h3>解析进度</h3><strong>{{ parsingFiles ? '处理中' : previewBatch ? '100%' : '0%' }}</strong></header>
               <div class="progress-track" role="progressbar" aria-label="文件解析进度" :aria-valuenow="parsingFiles ? undefined : previewBatch ? 100 : 0" :aria-valuetext="parsingFiles ? '正在解析文件' : previewBatch ? '解析完成' : '待解析'" :aria-busy="parsingFiles"><span :class="{ 'is-processing': parsingFiles, 'is-complete': !parsingFiles && previewBatch }" /></div>
-              <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ unconfirmedDuplicateIssueCount }} 项待确认 · {{ orderSummary.blocked }} 项阻断</p>
-              <p v-else>选择一份或多份PO及一份客户排期后开始真实解析</p>
+              <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ advisoryIssueCount }} 项提醒（不影响保存和生成）</p>
+              <p v-else>{{ isZuru ? "选择PO及1至10份原排期后开始解析" : "选择一份或多份PO及一份客户排期后开始真实解析" }}</p>
             </article>
           </aside>
         </div>
@@ -2238,10 +2191,10 @@ onBeforeUnmount(() => {
           </div>
           <div class="view-heading__actions">
             <button v-if="blockingResolutionItems.length" type="button" class="button button--ghost" data-testid="open-field-resolution" @click="resolveBlockedRow">
-              {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : blockingResolutionItems.some(({ issue }) => issue.severity === 'warning' && issue.can_edit) ? '更正日期/补录字段' : '查看已处理阻断项' }}
+              查看提醒 / 补录字段
             </button>
-            <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || saveBlockedCount > 0 || confirmationReasonMissing || fileOperationBusy" @click="confirmAndSaveOrder">{{ fileOperationLabel || '确认并保存订单' }}</button>
-            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ fileOperationLabel || (unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期') }}</button>
+            <button type="button" class="button button--secondary" :disabled="!previewBatch || fileOperationBusy" @click="confirmAndSaveOrder">{{ fileOperationLabel || '确认并保存订单' }}</button>
+            <button type="button" class="button button--primary" :disabled="!previewBatch || fileOperationBusy" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ fileOperationLabel || '生成客户排期' }}</button>
           </div>
         </header>
 
@@ -2275,20 +2228,20 @@ onBeforeUnmount(() => {
             type="button"
             class="button button--secondary"
             data-testid="retry-schedule-export"
-            :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy"
+            :disabled="!previewBatch || fileOperationBusy"
             @click="confirmAndGenerateSchedule"
           >{{ fileOperationLabel || '重试生成排期' }}</button>
         </article>
 
         <article
           v-if="blockingIssueDetails.length"
-          class="persistent-parse-alert persistent-parse-alert--preview"
+          class="panel-card pending-information-card"
           data-testid="preview-blocker-alert"
-          role="alert"
+          role="status"
         >
           <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
           <div class="persistent-parse-alert__content">
-            <h3>当前批次有 {{ blockingIssueDetails.length }} 项待人工处理，处理完成后可生成排期</h3>
+            <h3>当前批次有 {{ blockingIssueDetails.length }} 项提醒，可直接保存或生成排期</h3>
             <ul>
               <li v-for="item in blockingIssueDetails" :key="item.key">
                 <b>{{ item.fileName }}</b>
@@ -2305,7 +2258,7 @@ onBeforeUnmount(() => {
 
         <article v-if="pendingInformationItems.length" class="panel-card pending-information-card" data-testid="pending-information" role="status">
           <h3>资料待补：{{ pendingInformationItems.length }} 项</h3>
-          <p>这些缺失信息可先留空，保存订单或生成排期不要求逐项确认。其他阻断或重复确认仍须处理；缺交期的订单需补齐并保存后再发送。</p>
+          <p>这些缺失信息可先留空，保存订单或生成排期不要求逐项确认。无需填写确认原因；缺交期的订单需补齐并保存后再发送。</p>
           <ul><li v-for="({ row, issue }, index) in pendingInformationItems.slice(0, 8)" :key="`${row.id}-${issue.code}-${index}`">{{ row.po_no || row.contract_no || row.id }} · {{ row.product_no }}：{{ issue.message }}</li></ul>
           <p v-if="pendingInformationItems.length > 8">其余 {{ pendingInformationItems.length - 8 }} 项见下方各行提醒。</p>
         </article>
@@ -2342,18 +2295,18 @@ onBeforeUnmount(() => {
           data-testid="confirmation-reason-card"
         >
           <div>
-            <strong>人工确认原因</strong>
+            <strong>补充说明（选填）</strong>
             <p>本批已处理 {{ skippedIssueCount }} 项，其中 {{ manualOverrides.length }} 项使用人工补录值。补录内容、原因、操作者和文件哈希会一起写入审计记录。</p>
           </div>
           <label>
-            <span>确认原因（必填，4–500 字）</span>
+            <span>补充说明（选填，最多 500 字）</span>
             <textarea
               v-model="confirmationReason"
               maxlength="500"
               rows="2"
               placeholder="例如：测试阶段验证客户映射，已核对订单号、货号和数量一致"
             />
-            <small :class="{ invalid: confirmationReasonMissing }">{{ confirmationReason.trim().length }} / 500</small>
+            <small :class="{ invalid: confirmationReasonInvalid }">{{ confirmationReason.trim().length }} / 500</small>
           </label>
         </article>
 
@@ -2381,7 +2334,7 @@ onBeforeUnmount(() => {
               <button type="button" class="button button--ghost" :disabled="reconciliationLoading || reconciliationPage <= 1" @click="goToReconciliationPage(reconciliationPage - 1)">上一页</button>
               <button type="button" class="button button--ghost" :disabled="reconciliationLoading || reconciliationPage >= reconciliationPageCount" @click="goToReconciliationPage(reconciliationPage + 1)">下一页</button>
             </div>
-            <p v-if="quantityReconciliationId" class="reconciliation-card__scope">此数量变更将通过“确认并保存订单”修订所选原订单；单独生成排期仍须处理原冲突。</p>
+            <p v-if="quantityReconciliationId" class="reconciliation-card__scope">此数量变更将通过“确认并保存订单”修订所选原订单；单独生成排期会保留本次明细和提醒。</p>
             <p v-if="selectedReconciliationLine" class="reconciliation-card__selected">将关联：{{ selectedReconciliationLine.reference_no }} / {{ selectedReconciliationLine.product_no }} / 数量 {{ selectedReconciliationLine.quantity }} / 当前修订 {{ selectedReconciliationLine.revision }}</p>
             <label>正式 PO 核对原因（4–500 字）<textarea v-model="reconciliation.reason" maxlength="500" rows="2" placeholder="例如：正式 PO 补齐合同号，已核对货号、数量和交期" /></label>
           </div>
@@ -2403,21 +2356,21 @@ onBeforeUnmount(() => {
           <span><FileCheck2 aria-hidden="true" /></span>
           <div>
             <strong>解析已完成，当前尚未输出排期</strong>
-            <p>请核对下方明细，按提示补录或确认资料；数量、订单身份等冲突须纠正后才能生成排期。</p>
+            <p>下方资料缺失或差异仅作提醒，可直接保存订单或生成排期；不确定的字段可先留空，无需逐项确认或填写原因。</p>
           </div>
           <button
             type="button"
             class="button button--primary"
-            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || fileOperationBusy"
+            :disabled="fileOperationBusy"
             @click="confirmAndGenerateSchedule"
           >
             <Download aria-hidden="true" />
-            {{ fileOperationLabel || (unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : '生成并下载客户排期') }}
+            {{ fileOperationLabel || '生成并下载客户排期' }}
           </button>
           <button
             type="button"
             class="button button--secondary"
-            :disabled="unconfirmedDuplicateIssueCount > 0 || saveBlockedCount > 0 || confirmationReasonMissing || fileOperationBusy"
+            :disabled="fileOperationBusy"
             @click="confirmAndSaveOrder"
           >{{ fileOperationLabel || '确认并保存订单' }}</button>
         </article>
@@ -2426,7 +2379,7 @@ onBeforeUnmount(() => {
           <article><span>总行数</span><strong>{{ orderSummary.total }}</strong><small>订单明细</small></article>
           <article class="valid"><span>有效项</span><strong>{{ orderSummary.valid }}</strong><small>可直接写入</small></article>
           <article class="warning"><span>警告/待确认</span><strong>{{ orderSummary.warning }}</strong><small>不形成阻断</small></article>
-          <article class="blocked"><span>待人工处理</span><strong>{{ orderSummary.blocked }}</strong><small>按提示核对或纠正</small></article>
+          <article class="warning"><span>资料提醒</span><strong>{{ advisoryIssueCount }}</strong><small>不影响保存和生成</small></article>
         </div>
 
         <div class="preview-layout">
@@ -2555,7 +2508,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">
@@ -2648,11 +2601,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'customer-schedule'" key="customer-schedule" class="order-view" data-testid="order-customer-schedule">
-        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" :local-only="localOnly" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="false" key="schedule" class="order-view" data-testid="order-schedule-static">
@@ -2850,9 +2803,9 @@ onBeforeUnmount(() => {
           <div class="blocker-resolution-dialog__body">
             <div class="blocker-resolution-progress">
               <span :class="{ done: blockingIssueDetails.length === 0 }">
-                {{ blockingIssueDetails.length === 0 ? '全部处理完成' : `仍有 ${blockingIssueDetails.length} 类问题待处理` }}
+                {{ blockingIssueDetails.length === 0 ? '全部处理完成' : `有 ${blockingIssueDetails.length} 类资料提醒（不影响生成）` }}
               </span>
-              <small>可批量确认允许放行的项目；必须补录的业务字段仍需逐行填写</small>
+              <small>补录和说明均为可选；保留原始资料及提醒，可直接返回预览保存或生成。</small>
               <button
                 v-if="bulkSkippableIssueKeys.length"
                 type="button"
@@ -2882,7 +2835,7 @@ onBeforeUnmount(() => {
                 <p class="blocker-resolution-item__message">{{ item.issue.message }}</p>
 
                 <label v-if="item.issue.can_edit" class="manual-override-field manual-override-field--dialog">
-                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>{{ item.issue.pending_information ? '可暂留空；补填后核对并写入新排期，不修改客户原件' : item.issue.edit_field === 'shipping_item' ? '不填写则保留当前映射；填写后写入新排期' : item.issue.severity === 'warning' ? '不填写则使用PO原值；填写后写入新排期' : '填写正确内容后，本项立即解除阻断并写入新排期' }}</small></span>
+                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>{{ item.issue.pending_information ? '可暂留空；补填后核对并写入新排期，不修改客户原件' : item.issue.edit_field === 'shipping_item' ? '不填写则保留当前映射；填写后写入新排期' : item.issue.severity === 'warning' ? '不填写则使用PO原值；填写后写入新排期' : '可选补录，填写后写入新排期' }}</small></span>
                   <textarea
                     v-if="item.issue.edit_field === 'product_version' || item.issue.edit_input_type === 'textarea'"
                     :value="manualOverrideValues[item.issue.skip_key] ?? item.row.product_version ?? ''"
@@ -2910,19 +2863,19 @@ onBeforeUnmount(() => {
                   >
                   <span><b>{{ isTestDuplicateIssue(item.issue) ? '确认重复订单' : '确认缺失并放行' }}</b>{{ item.issue.skip_label }}</span>
                 </label>
-                <p v-if="!item.issue.can_edit && !item.issue.can_skip" class="required-issue"><b>当前不能放行</b>{{ item.issue.message }}</p>
+                <p v-if="!item.issue.can_edit && !item.issue.can_skip" class="required-issue"><b>资料提醒</b>{{ item.issue.message }}</p>
               </article>
             </div>
 
             <label v-if="skippedIssueCount > 0" class="blocker-resolution-reason">
-              <span>人工处理原因（必填，4–500 字）</span>
+              <span>补充说明（选填，最多 500 字）</span>
               <textarea
                 v-model="confirmationReason"
                 maxlength="500"
                 rows="3"
                 placeholder="例如：客户 PDF 无法修改，已与客户核对装箱数量并人工补录"
               />
-              <small :class="{ invalid: confirmationReasonMissing }">{{ confirmationReason.trim().length }} / 500</small>
+              <small :class="{ invalid: confirmationReasonInvalid }">{{ confirmationReason.trim().length }} / 500</small>
             </label>
           </div>
 
@@ -2931,10 +2884,10 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="button button--primary"
-              :disabled="blockingIssueDetails.length > 0 || confirmationReasonMissing"
+              :disabled="confirmationReasonInvalid"
               @click="finishBlockingResolution"
             >
-              {{ blockingIssueDetails.length > 0 ? '请先处理全部阻断' : confirmationReasonMissing ? '请填写处理原因' : '完成处理并返回预览' }}
+              返回预览（可直接生成）
             </button>
           </footer>
         </section>
@@ -6456,10 +6409,10 @@ tbody tr:hover td {
 .blocker-resolution-list > article {
   display: grid;
   gap: 10px;
-  border: 1px solid #ffb4ab;
-  border-left: 4px solid #ba1a1a;
+  border: 1px solid #e7d6ad;
+  border-left: 4px solid #9a6a16;
   border-radius: 8px;
-  background: #fffafa;
+  background: #fffbef;
   padding: 13px;
 }
 
@@ -6494,9 +6447,9 @@ tbody tr:hover td {
 .blocker-resolution-item__heading em {
   flex: 0 0 auto;
   border-radius: 999px;
-  background: #ffdad6;
+  background: #fff1cc;
   padding: 4px 7px;
-  color: #93000a;
+  color: #745316;
   font-size: 8px;
   font-style: normal;
   font-weight: 900;
@@ -6509,7 +6462,7 @@ tbody tr:hover td {
 
 .blocker-resolution-item__message {
   margin: 0;
-  color: #93000a;
+  color: #745316;
   font-size: 10px;
   font-weight: 700;
 }

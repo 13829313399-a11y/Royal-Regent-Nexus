@@ -14,7 +14,10 @@ const empty = (): WarehouseOperationsWorkspace => ({ revision: 3, locations: ['A
 async function open(section = 'inventory', view = 'pending-issues', data = empty(), warehouse: WarehouseDomain = 'fabric') {
   data.stock = data.stock.map(row => ({ location_id: row.location, location_verified: true, location_status: 'ACTIVE', ...row }))
   api.workspace.mockResolvedValue(data)
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Workspace, props: { warehouse, section, view } }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/', component: Workspace, props: { warehouse, section, view } },
+    { path: '/modules/pmc-warehouse/fabric-warehouse/receipts', component: { template: '<div />' } },
+  ] })
   await router.push('/'); await router.isReady()
   wrapper = mount(Workspace, { props: { warehouse, section, view }, global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
@@ -82,7 +85,7 @@ describe('warehouse actual operations', () => {
     await body.get('[role="dialog"]').findAll('button').find(button => button.text() === '打印发料单')!.trigger('click')
     expect(body.get('[role="dialog"] [role="alert"]').text()).toContain('浏览器拦截了打印窗口')
     expect(wrapper!.find('.warehouse-operations-live > [role="alert"]').exists()).toBe(false)
-    await body.get('[role="dialog"]').findAll('button').find(button => button.text() === '关闭详情')!.trigger('click')
+    await body.get('[aria-label="关闭业务单据详情"]').trigger('click')
     await wrapper!.findAll('tbody button').filter(button => button.text() === '详情')[1]!.trigger('click')
     expect(body.get('[role="dialog"]').text()).toContain('ISSUE-ONE')
     expect(body.find('[role="dialog"] [role="alert"]').exists()).toBe(false)
@@ -192,11 +195,28 @@ describe('warehouse actual operations', () => {
     const input={quantity:'6.5',unit:'米',source_no:'CUT-1',item_code:'FAB1',item_name:'蓝布',counterparty:'本厂',allocations:[],
       cutting_request:{line_id:'line',order_no:'O1',task_name:'裁剪任务',resource_name:'本厂',bom_version:2,plan_version:8,mapping_basis:'规格颜色原单位一致',
         cutting_material:{code:'M1',name:'蓝布',specification:'规格A',color:'蓝'},warehouse_material:{code:'FAB1',name:'蓝布',revision:3,spec:'规格A',color:'蓝',unit:'米',category:'FABRIC'}}} as WarehouseDocumentInput
-    data.documents=[{id:'REQ',kind:'REQUEST',sequence:1,business_date:'2026-10-01',actor_name:'文员',occurred_at:'',data:input,issued_quantity:'2'}]
+    const partial: WarehouseDocument = { id: 'REQ', kind: 'REQUEST', sequence: 1, business_date: '2026-10-01',
+      actor_name: '文员', occurred_at: '', data: input, issued_quantity: '2' }
+    data.documents = [
+      partial,
+      { ...partial, id: 'COMPLETE', issued_quantity: '6.50', data: { ...input, source_no: 'CUT-COMPLETE' } },
+      { ...partial, id: 'REVERSED', reversed: true, data: { ...input, source_no: 'CUT-REVERSED' } },
+    ]
     const body=await open('inventory','pending-issues',data)
     expect(wrapper!.text()).toContain('裁床订单 O1')
     expect(wrapper!.text()).toContain('规格颜色原单位一致')
+    await wrapper!.vm.$router.push('/?record=REQ'); await flushPromises()
+    const linkedDetail = body.get('[role="dialog"]')
+    expect(linkedDetail.text()).toContain('领料申请详情')
+    expect(linkedDetail.text()).toContain('待发数量')
+    await linkedDetail.get('[aria-label="关闭业务单据详情"]').trigger('click')
+    for (const source of ['CUT-COMPLETE', 'CUT-REVERSED']) {
+      const row = wrapper!.findAll('tbody tr').find(entry => entry.text().includes(source))!
+      expect(row.findAll('button').map(button => button.text())).toEqual(['详情'])
+    }
     await wrapper!.findAll('button').find(b=>b.text()==='关闭未发余量')!.trigger('click')
+    const original = body.get<HTMLSelectElement>('[aria-label="关联原单"]')
+    expect(Array.from(original.element.options, option => option.value)).toEqual(['', 'REQ'])
     expect(body.find('[aria-label="本次数量"]').exists()).toBe(false)
     expect(body.get('[aria-label="业务依据"]').attributes('required')).toBeDefined()
     await body.get('[aria-label="业务依据"]').setValue('计划改版，关闭尚未发出的余量')
@@ -206,23 +226,107 @@ describe('warehouse actual operations', () => {
     data.documents[0]!.closed=true
     await wrapper!.findAll('button').find(b=>b.text()==='刷新')!.trigger('click');await flushPromises()
     expect(wrapper!.findAll('button').some(b=>b.text()==='办理出库')).toBe(false)
+    expect(wrapper!.findAll('button').some(b=>b.text()==='关闭未发余量')).toBe(false)
   })
-  it.each([true, false])('opens an exact receipt link read-only and gates correction permission (%s)', async correct => {
+  it.each([true, false])('keeps the selected cutting request and takes or offers only matching stock (multiple: %s)', async multiple => {
+    const stock: WarehouseOperationsWorkspace['stock'][number] = {
+      id: 'blue', item_code: 'FAB1', item_name: '蓝布', unit: '米', process_state: '', material_category: 'FABRIC',
+      location: 'A01', lot: '01', roll_no: 'R1', quantity: '20', available_quantity: '20',
+      quality_status: 'PENDING_INSPECTION', source_no: '', source_document: 'receipt',
+      received_on: '2026-10-01', counterparty: '供应商', production_no: '',
+    }
+    const request: WarehouseDocument = {
+      id: 'CUT-1', kind: 'REQUEST', sequence: 1, business_date: '2026-10-01', actor_name: '文员', occurred_at: '',
+      data: {
+        item_code: 'FAB1', item_name: '蓝布', unit: '米', process_state: '', material_category: 'FABRIC',
+        quantity: '6', counterparty: '裁床组', source_no: 'CUT-1',
+        cutting_request: {
+          line_id: 'line', order_no: 'O1', task_name: '裁剪任务', resource_name: '裁床组',
+          bom_version: 2, plan_version: 8, mapping_basis: '规格颜色原单位一致',
+          cutting_material: { code: 'M1', name: '蓝布', specification: '规格A', color: '蓝' },
+          warehouse_material: { code: 'FAB1', name: '蓝布', revision: 3, spec: '规格A', color: '蓝', unit: '米', category: 'FABRIC' },
+        },
+      } as WarehouseDocumentInput,
+    }
+    const unmatched = { ...request, id: 'CUT-2', data: { ...request.data, source_no: 'CUT-2', item_code: 'FAB2', item_name: '绿布' } }
+    const body = await open('inventory', 'pending-issues', {
+      ...empty(), documents: [request, unmatched],
+      stock: [
+        stock,
+        ...(multiple ? [{ ...stock, id: 'blue-second-roll', roll_no: 'R2' }] : []),
+        { ...stock, id: 'other-code', item_code: 'OTHER' },
+        { ...stock, id: 'other-unit', unit: '码' },
+        { ...stock, id: 'other-name', item_name: '黑布' },
+        { ...stock, id: 'other-category', material_category: 'ACCESSORY' },
+        { ...stock, id: 'other-state', process_state: '已加工' },
+        { ...stock, id: 'hold', quality_status: 'HOLD' },
+        { ...stock, id: 'empty', quantity: '0', available_quantity: '0' },
+        { ...stock, id: 'unverified', location_verified: false },
+      ],
+    })
+    const unmatchedRow = wrapper!.findAll('tbody tr').find(row => row.text().includes('CUT-2'))!
+    await unmatchedRow.findAll('button').find(button => button.text() === '办理出库')!.trigger('click')
+    expect(body.text()).toContain('该申请暂无匹配的可出库批次')
+    expect(body.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await body.get('form[role="dialog"]').trigger('submit')
+    expect(api.post).not.toHaveBeenCalled()
+    await body.get('[role="dialog"] header button').trigger('click')
+
+    const requestRow = wrapper!.findAll('tbody tr').find(row => row.text().includes('CUT-1'))!
+    await requestRow.findAll('button').find(button => button.text() === '办理出库')!.trigger('click')
+    expect(body.find('select[aria-label="关联原单"]').exists()).toBe(false)
+    const original = body.get('[aria-label="已关联领料申请"]')
+    expect(original.text()).toContain('蓝布 · FAB1 · 订单 O1 · 裁床任务 裁剪任务')
+    expect(original.text()).toContain('本单待发 6 米')
+    expect(body.get<HTMLInputElement>('[aria-label="领用方"]').element.value).toBe('裁床组')
+
+    const quantity = body.get<HTMLInputElement>('[aria-label="本次数量"]')
+    expect(quantity.element.value).toBe('')
+    if (multiple) {
+      const batch = body.get<HTMLSelectElement>('[aria-label="实际批次"]')
+      expect(batch.element.value).toBe('')
+      expect(body.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+      expect(Array.from(batch.element.options, option => [option.value, option.text])).toEqual([
+        ['', '请选择实际出库的批次'],
+        ['blue', 'A01 · 缸号 01 · 卷号 R1 · 可发 20 米'],
+        ['blue-second-roll', 'A01 · 缸号 01 · 卷号 R2 · 可发 20 米'],
+      ])
+      await batch.setValue('blue-second-roll')
+    } else {
+      expect(body.find('select[aria-label="实际批次"]').exists()).toBe(false)
+      expect(body.get('[aria-label="出库批次"]').text()).toContain('A01 · 缸号 01 · 卷号 R1 · 可发 20 米')
+    }
+
+    await quantity.setValue('2')
+    api.post.mockResolvedValue({ id: 'issue' })
+    await body.get('form[role="dialog"]').trigger('submit')
+    await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('fabric', expect.objectContaining({
+      kind: 'ISSUE', original_id: 'CUT-1', batch_id: multiple ? 'blue-second-roll' : 'blue', counterparty: '裁床组', quantity: '2',
+    }))
+  })
+  it.each([true, false])('links receipt details to the original receipt without duplicating reversal (%s)', async correct => {
     const receipt = { id: 'OP-1', kind: 'RECEIPT', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '',
-      data: { quantity: '10', unit: '码', item_name: '白布', source_no: 'DN-1', allocations: [] } } as WarehouseDocument
-    const data = { ...empty(), documents: [receipt] }
+      receipt_record_id: 'FM-1', data: { quantity: '10', unit: '码', item_name: '白布', source_no: 'DN-1', allocations: [] } } as WarehouseDocument
+    const issue = { ...receipt, id: 'ISSUE-1', receipt_record_id: undefined, kind: 'ISSUE', data: { ...receipt.data, source_no: 'ISSUE-DN' } } as WarehouseDocument
+    const data = { ...empty(), documents: [receipt, issue] }
     data.permissions.correct = correct
     const body = await open('inventory', 'movements', data)
+    const rows = wrapper!.findAll('tbody tr')
+    expect(rows.find(row => row.text().includes('DN-1'))!.text()).not.toContain('冲销')
+    const issueRow = rows.find(row => row.text().includes('ISSUE-DN'))!
+    expect(issueRow.text()).toContain('退料')
+    const issueCorrection = issueRow.findAll('button').find(button => button.text() === '冲销')
+    expect(issueCorrection!.attributes('disabled') === undefined).toBe(correct)
     await wrapper!.vm.$router.push('/?record=OP-1'); await flushPromises()
-    expect(body.get('[role="dialog"]').text()).toContain('DN-1')
-    const action = body.findAll('button').find(button => button.text() === '冲销本笔入库')
-    expect(!!action).toBe(correct)
+    const dialog = body.get('[role="dialog"]')
+    expect(dialog.get('h2').text()).toBe('入库详情')
+    expect(dialog.get('[aria-label="业务概览"]').text()).toContain('本笔入库10 码')
+    expect(dialog.text()).toContain('DN-1')
+    expect(dialog.text()).not.toContain('冲销本笔入库')
+    expect(dialog.get('a').text()).toBe('查看入库单详情')
+    expect(dialog.get('a').attributes('href')).toContain('view=history&receipt=FM-1')
     expect(api.post).not.toHaveBeenCalled()
-    if (action) {
-      await action.trigger('click'); await flushPromises()
-      expect(body.get('[role="dialog"]').text()).toContain('冲销')
-      expect(api.post).not.toHaveBeenCalled()
-    }
   })
   it('opens the exact issue and blocks a dated cutting return while the balance is unknown or zero', async () => {
     const row = { id: 'CUT-ISSUE', kind: 'ISSUE', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '',
@@ -232,8 +336,11 @@ describe('warehouse actual operations', () => {
     const body = await open('inventory', 'movements', { ...empty(), documents: [row] })
     expect(wrapper!.get('tbody').text()).toContain('2026-10-11 可退 0 米')
     await wrapper!.vm.$router.push('/?record=CUT-ISSUE'); await flushPromises()
-    expect(body.get('[aria-label="业务单据详情"]').text()).toContain('CUT-ISSUE')
-    await body.findAll('button').find(button => button.text() === '关闭详情')!.trigger('click')
+    const issueDetail = body.get('[role="dialog"]')
+    expect(issueDetail.get('h2').text()).toBe('出库详情')
+    expect(issueDetail.get('details').attributes('open')).toBeUndefined()
+    expect(issueDetail.get('details').text()).toContain('CUT-ISSUE')
+    await issueDetail.get('[aria-label="关闭业务单据详情"]').trigger('click')
     await wrapper!.findAll('button').find(button => button.text() === '退料')!.trigger('click'); await flushPromises()
     const dialog = body.get('[aria-label="登记退料"]')
     expect(dialog.text()).toContain('没有可退余料')
@@ -322,9 +429,10 @@ describe('warehouse actual operations', () => {
     expect(api.post.mock.calls[0]![1]).toMatchObject({ kind: 'CORRECTION', original_id: row.id, confirmed: true, reason: '数量录错' })
     expect(wrapper!.text()).toContain('库存与关联进度已恢复')
   })
-  it('explains overview intake and request actions without posting stock', async () => {
+  it('keeps the overview request action and omits the old fabric receipt entry', async () => {
     await open('overview', 'pending')
-    expect(wrapper!.text()).toContain('登记实收')
+    expect(wrapper!.text()).toContain('登记领料申请')
+    expect(wrapper!.text()).not.toContain('登记实收')
     expect(wrapper!.text()).toContain('只建立申请')
     expect(api.post).not.toHaveBeenCalled()
   })
@@ -385,6 +493,10 @@ describe('warehouse actual operations', () => {
     expect(wrapper!.findAll('button').some(button => button.text().includes('质检'))).toBe(false)
     await wrapper!.findAll('button').find(button => button.text() === '出库')!.trigger('click')
     expect(body.get<HTMLSelectElement>('[aria-label="实际批次"]').element.value).toBe('B1')
+    if (warehouse === 'fabric') {
+      expect(body.get<HTMLSelectElement>('[aria-label="实际批次"]').element.selectedOptions[0]?.text)
+        .toBe('白布 · 00012 · A01 · 缸号 01 · 可发 1 码')
+    }
     expect(body.get('[aria-label="关联原单"]').attributes('required')).toBeUndefined()
     expect(body.get('[aria-label="业务依据"]').attributes('required')).toBeUndefined()
     expect(body.get('[aria-label="来源单号"]').attributes('required')).toBeUndefined()
@@ -458,21 +570,19 @@ describe('warehouse actual operations', () => {
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
     expect(api.post.mock.calls[1]![1]).toEqual(first)
   })
-  it('retries frozen receiving content even after the current location category changes', async () => {
-    api.post.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ id: 'receipt' })
+  it('retries frozen return content even after the destination location category changes', async () => {
+    api.post.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ id: 'returned' })
     const state = empty()
-    const body = await open('overview', 'pending', state)
-    await wrapper!.findAll('button').find(button => button.text() === '登记实收')!.trigger('click')
-    await body.get('[aria-label="来源单号"]').setValue('DN-ZONE')
-    await body.get('[aria-label="物料产品编码"]').setValue('M1')
-    await body.get('[aria-label="名称规格"]').setValue('布料')
-    await body.get('[aria-label="原单位"]').setValue('码')
-    await body.get('[aria-label="往来单位"]').setValue('供应商')
+    state.documents = [{ id: 'ISS-1', kind: 'ISSUE', sequence: 3, business_date: '2026-09-01', actor_name: '仓管', occurred_at: '',
+      data: { material_category: 'FABRIC', quantity: '2', unit: '码', item_code: 'M1', item_name: '布料', counterparty: '车间', source_no: 'OUT-1', allocations: [] },
+    } as WarehouseDocument]
+    const body = await open('inventory', 'movements', state)
+    await wrapper!.findAll('tbody button').find(button => button.text() === '退料')!.trigger('click')
     await body.get('[aria-label="本次数量"]').setValue('1')
     await body.get('[aria-label="目标仓位"]').setValue('一仓／A01')
-    await body.get('[aria-label="缸号批号"]').setValue('LOT')
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
     const first = JSON.parse(JSON.stringify(api.post.mock.calls[0]![1]))
+    expect(first).toMatchObject({ kind: 'RETURN', original_id: 'ISS-1', location_id: 'A01', quantity: '1' })
     state.locations![0]!.category = 'THREAD'
     await wrapper!.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()

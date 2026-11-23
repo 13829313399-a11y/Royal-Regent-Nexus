@@ -518,24 +518,20 @@ def merge_po_results(results: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     if not releases:
         return []
 
-    selected: dict[str, dict[str, Any]] = {}
+    selected: dict[str, list[dict[str, Any]]] = {}
     for release in releases:
-        # 当前 360 Release 样本每份只有一个明细行；同一 RL 的修订版可能会改货号。
-        # 因此按 RL 选最高修订，不能把旧货号与新货号误当成两张新单。
-        key = str(release.get("production_no") or "").upper()
+        key = str(release.get('production_no') or '').upper()
         current = selected.get(key)
-        candidate_rank = (
-            int(release.get("release_revision") or 0),
-            _completeness(release),
-        )
-        current_rank = (
-            int(current.get("release_revision") or 0),
-            _completeness(current),
-        ) if current else (-1, -1)
-        if current is None or candidate_rank > current_rank:
-            selected[key] = dict(release)
-
-    unique = list(selected.values())
+        revision = int(release.get('release_revision') or 0)
+        current_revision = int(current[0].get('release_revision') or 0) if current else -1
+        if current is None or revision > current_revision:
+            selected[key] = [dict(release)]
+        elif revision == current_revision:
+            # Completeness is not evidence that a conflicting quantity is older.
+            facts = lambda row: {k: v for k, v in row.items() if k not in {'filename', 'source_file', '_source_po_file_name'}}
+            if not any(facts(old) == facts(release) for old in current):
+                current.append(dict(release))
+    unique = [release for group in selected.values() for release in group]
     for release in unique:
         matches = [
             row

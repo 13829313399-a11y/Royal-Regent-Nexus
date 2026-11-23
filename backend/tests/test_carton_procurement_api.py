@@ -1953,11 +1953,11 @@ def test_manual_movement_reversal_and_locked_month(monkeypatch):
                 "request_id": uuid4().hex,
                 "factory_id": "huaxing",
                 "order_line_id": order_line_id,
-                "movement_type": "ADJUSTMENT",
+                "movement_type": "OUTBOUND",
                 "quantity": "1",
                 "location": "纸箱仓 A-03",
-                "document_no": "ADJ-260805-002",
-                "reason": "盘点调整",
+                "document_no": "OUT-260805-002",
+                "reason": "仓库发料",
             },
         )
         assert blocked.status_code == 409
@@ -2776,7 +2776,7 @@ def test_month_end_closings_are_separated_by_inventory_currency(monkeypatch):
         assert Decimal(by_currency["CNY"]["ending_amount"]) == Decimal("15.0000")
 
 
-def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(monkeypatch):
+def test_standalone_history_inventory_supports_outbound_and_reversal_but_requires_stocktake_for_adjustment(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "warehouse_keeper")
         _freeze_carton_time(monkeypatch)
@@ -2842,20 +2842,32 @@ def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(
         assert after_outbound["latest_movement_at"].startswith("2026-08-05")
         assert after_outbound["latest_inbound_at"] == balance["latest_inbound_at"]
 
-        negative = client.post(
-            "/api/carton-procurement/inventory/movements",
-            json={
-                "request_id": uuid4().hex,
-                "factory_id": "huaxing",
-                "reference_movement_id": outbound.json()["id"],
-                "movement_type": "ADJUSTMENT",
-                "quantity": "-61",
-                "document_no": "ADJ-HISTORY-001",
-                "reason": "错误盘亏",
-            },
-        )
-        assert negative.status_code == 409
-        assert "不能小于 0" in negative.json()["detail"]
+        for change in ("-1", "1"):
+            adjustment = client.post(
+                "/api/carton-procurement/inventory/movements",
+                json={
+                    "request_id": uuid4().hex,
+                    "factory_id": "huaxing",
+                    "reference_movement_id": outbound.json()["id"],
+                    "movement_type": "ADJUSTMENT",
+                    "quantity": change,
+                    "document_no": "ADJ-HISTORY-001",
+                    "reason": "盘点差异",
+                },
+            )
+            assert adjustment.status_code == 409
+            assert "库存盘点" in adjustment.json()["detail"]
+        bulk_payload = {
+            "request_id": uuid4().hex, "factory_id": "huaxing", "document_no": "ADJ-HISTORY-002",
+            "items": [{"reference_movement_id": outbound.json()["id"], "quantity": "1"}],
+        }
+        for payload in (
+            {**bulk_payload, "movement_type": "ADJUSTMENT"},
+            {**bulk_payload, "items": [{**bulk_payload["items"][0], "movement_type": "ADJUSTMENT"}]},
+        ):
+            bulk_adjustment = client.post("/api/carton-procurement/inventory/movements/bulk", json=payload)
+            assert bulk_adjustment.status_code == 422
+        assert client.get("/api/carton-procurement/inventory/balances", params={"factory_id": "huaxing"}).json()[0] == after_outbound
 
         reversed_movement = client.post(
             f"/api/carton-procurement/inventory/movements/{outbound.json()['id']}/reverse",
@@ -2944,25 +2956,35 @@ def test_receipt_history_can_be_searched_after_confirmation(monkeypatch):
         assert balance["latest_inbound_at"] == FIXED_NOW.isoformat()
         import app.services.carton_procurement as service
 
-        for index, movement_type in enumerate(("OUTBOUND", "ADJUSTMENT")):
-            monkeypatch.setattr(service, "business_now", lambda: FIXED_NOW.replace(day=6, second=index))
-            movement = client.post(
-                "/api/carton-procurement/inventory/movements",
-                json={
-                    "request_id": uuid4().hex,
-                    "factory_id": "huaxing",
-                    "order_line_id": balance["order_line_id"],
-                    "movement_type": movement_type,
-                    "quantity": "1",
-                    "document_no": f"DATE-CHECK-{movement_type}",
-                    "reason": "核对入库时间不受后续作业影响",
-                },
-            )
-            assert movement.status_code == 201, movement.text
-            balances = client.get(
-                "/api/carton-procurement/inventory/balances",
-                params={"factory_id": "huaxing"},
-            ).json()
-            changed = next(row for row in balances if row["latest_movement_id"] == movement.json()["id"])
-            assert changed["latest_movement_at"].startswith("2026-08-06")
-            assert changed["latest_inbound_at"] == balance["latest_inbound_at"]
+        monkeypatch.setattr(service, "business_now", lambda: FIXED_NOW.replace(day=6))
+        outbound = client.post(
+            "/api/carton-procurement/inventory/movements",
+            json={
+                "request_id": uuid4().hex,
+                "factory_id": "huaxing",
+                "order_line_id": balance["order_line_id"],
+                "movement_type": "OUTBOUND",
+                "quantity": "1",
+                "document_no": "DATE-CHECK-OUTBOUND",
+                "reason": "核对入库时间不受出库影响",
+            },
+        )
+        assert outbound.status_code == 201, outbound.text
+        stocktake = client.post("/api/carton-procurement/stocktakes",
+            json={"factory_id": "huaxing", "reference_movement_ids": [outbound.json()["id"]]})
+        assert stocktake.status_code == 201, stocktake.text
+        doc = stocktake.json()
+        line = doc["lines"][0]
+        monkeypatch.setattr(service, "business_now", lambda: FIXED_NOW.replace(day=6, second=1))
+        posted = client.post(f"/api/carton-procurement/stocktakes/{doc['id']}/actions", json={
+            "factory_id": "huaxing", "expected_revision": doc["revision"], "action": "CONFIRM",
+            "posting_confirmed": True, "cutoff_acknowledged": True, "ledger_token": doc["ledger_token"],
+            "lines": [{"id": line["id"], "actual_quantity": str(Decimal(line["current_quantity"]) - Decimal("0.1")),
+                       "reason": "核对入库时间不受盘点差异影响"}],
+        })
+        assert posted.status_code == 200, posted.text
+        movement_id = posted.json()["lines"][0]["movement_id"]
+        balances = client.get("/api/carton-procurement/inventory/balances", params={"factory_id": "huaxing"}).json()
+        changed = next(row for row in balances if row["latest_movement_id"] == movement_id)
+        assert changed["latest_movement_at"].startswith("2026-08-06")
+        assert changed["latest_inbound_at"] == balance["latest_inbound_at"]

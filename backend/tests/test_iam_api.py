@@ -1,5 +1,6 @@
 import importlib
 import sys
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ def make_client(monkeypatch):
     TEST_TMP_DIR.mkdir(exist_ok=True)
     database_url = f"sqlite:///{TEST_TMP_DIR / f'iam_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("SEED_DEFAULT_ACCOUNTS", "true")
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
     monkeypatch.setenv("AUTHZ_MODE", "enforce")
     monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "true")
@@ -496,7 +498,10 @@ def test_user_override_preview_commit_is_atomic_and_token_is_one_time(monkeypatc
 
         events = client.get(f"/api/iam/audit-events?target_user_id={engineer_id}")
         assert events.status_code == 200
-        assert events.json()[0]["event_type"] == "permission_override_set"
+        recorded = events.json()[0]
+        assert recorded["event_type"] == "permission_override_set"
+        assert recorded["target_type"] == "permission_override" and recorded["target_id"]
+        assert datetime.fromisoformat(recorded["occurred_at"]).utcoffset() is not None
 
 
 def test_scoped_manager_cross_scope_change_requires_direct_superadmin_action(monkeypatch):
@@ -784,14 +789,14 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert all(item["is_editable"] is False for item in positions)
         assert all(item["source"] == "code" for item in positions)
         assert all(item["scope_mode_locked"] is True for item in positions)
-        assert all(item["definition_version"] == "fixed-v33" for item in positions)
+        assert all(item["definition_version"] == "fixed-v34" for item in positions)
         assert all(len(item["definition_hash"]) == 64 for item in positions)
 
         general_manager = next(
             item for item in positions if item["id"] == "position_general_manager"
         )
         assert general_manager["scope_mode"] == "cross_factory_operate"
-        assert general_manager["permission_count"] == 89
+        assert general_manager["permission_count"] == 85
 
         detail = client.get(
             "/api/iam/roles/position_general_manager/access"
@@ -801,9 +806,9 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert detail.json()["source"] == "code"
         assert detail.json()["scope_mode_locked"] is True
         assert detail.json()["definition_hash"] == general_manager["definition_hash"]
-        assert len(detail.json()["permission_codes"]) == 89
+        assert len(detail.json()["permission_codes"]) == 85
         assert not any(
-            code.startswith("system:") for code in detail.json()["permission_codes"]
+            code.startswith(("system:", "injection_scheduling:", "injection_ops:")) for code in detail.json()["permission_codes"]
         )
 
 

@@ -16,7 +16,7 @@ export interface YinhuiIcSource {
 }
 export interface YinhuiElectronicSource {
   model: string
-  role: 'TX' | 'RX' | ''
+  role: 'TX' | 'RX' | 'RFID' | 'TAG' | ''
   source: string
   chips: YinhuiIcSource[]
 }
@@ -43,19 +43,38 @@ function sourceFx(main: XlsxParsedSheet) {
 
 const roleOf = (value: string) => text(value).toUpperCase().match(/(?:^|[^A-Z0-9])(TX|RX)(?=$|[^A-Z0-9])/)?.[1] || ''
 
+function rfidComponent(value: string): 'RFID' | 'TAG' | '' {
+  const name = text(value).replace(/\s+/g, '')
+    .replace(/(?:[*×x]\d+(?:\.\d+)?(?:pcs?|件|只|[个個])?|\(\d+(?:pcs?)\))$/i, '')
+    .replace(/^(?:电子|電子)\((.+)\)$/, '$1')
+  if (/^RFID指令(?:控制)?器$/i.test(name)) return 'RFID'
+  // An earlier import copy added this marker to the card label before the quantity.
+  if (/^(?:TAG)?(?:卡牌|小?卡片)(?:\([单單][个個]\)|〔导入分组RX〕)?$/i.test(name)) return 'TAG'
+  return ''
+}
+
 export function splitYinhuiLegacyElectronics(rows: YinhuiCostRow[], sheets: XlsxParsedSheet[], main: XlsxParsedSheet, model: string): YinhuiCostRow[] {
   const groups = readYinhuiElectronicSources(sheets)
   if (!groups.length) return rows
   const replacements = new Map<YinhuiCostRow, YinhuiCostRow[]>()
   const matchedParents = new Set<YinhuiCostRow>()
+  const parents = rows.filter(row => !row.isBattery && !isYinhuiIc(row.description))
   let fx: number | undefined
   for (const group of groups) {
-    if (group.model !== model) throw new Error(`银辉 ${group.source}：电子报价型号 ${group.model || '缺失'} 与当前 ${model} 不一致，无法拆分 IC`)
-    const candidates = rows.filter(row => !row.isBattery && !isYinhuiIc(row.description)
-      && (group.role ? roleOf(row.description) === group.role : !roleOf(row.description)))
-    if (candidates.length !== 1 || matchedParents.has(candidates[0]!))
+    // Only a positively identified card quotation can use the base model's -TAG variant.
+    const tagVariant = group.role === 'TAG' && /-TAG$/i.test(group.model) && group.model.slice(0, -4) === model
+    if (group.model !== model && !tagVariant) throw new Error(`银辉 ${group.source}：电子报价型号 ${group.model || '缺失'} 与当前 ${model} 不一致，无法拆分 IC`)
+    const namedComponent = group.role === 'RFID' || group.role === 'TAG'
+    const componentOf = namedComponent ? rfidComponent : roleOf
+    const candidates = parents.filter(row => componentOf(row.description) === group.role)
+    // A standalone full-SKU quotation could already match its single unlabelled BOM assembly.
+    if (namedComponent && !candidates.length && groups.length === 1 && parents.length === 1 && group.model === model) {
+      const only = parents[0]!
+      if (!rfidComponent(only.description) && !roleOf(only.description)) candidates.push(only)
+    }
+    const parent = candidates.length === 1 ? candidates[0] : undefined
+    if (!parent || matchedParents.has(parent) || (!group.role && rfidComponent(parent.description)))
       throw new Error(`银辉 ${group.source}：IC 无法唯一对应 ${group.role || '电子'} 报价，不能按顺序或跨组扣价`)
-    const parent = candidates[0]!
     matchedParents.add(parent)
     // Keep an unpriced group intact until its total is supplied; splitting priced
     // ICs out of an unknown total would manufacture a remainder.
@@ -100,25 +119,30 @@ export function readYinhuiElectronicSources(sheets: XlsxParsedSheet[]): YinhuiEl
   const groups: YinhuiElectronicSource[] = []
   for (const sheet of sheets.filter(s => isYinhuiElectronicSheet(s.name))) {
     let identity = ''
+    let productRole: ReturnType<typeof rfidComponent> = ''
     let group: YinhuiElectronicSource | undefined
     let columns: { kind: number; description: number; quantity: number; unit: number; amount: number; currency: 'RMB' | 'HKD' } | undefined
     for (const [index, row] of sheet.rows.entries()) {
       if (!row) continue
       const title = row.map(text).join(' ')
-      const model = title.match(/产品编号|產品編號|产品型号|產品型號/)
+      const keys = row.map(yinhuiHeaderKey)
+      const kind = keys.findIndex(v => /^(?:零件|物料)名[称稱]$/.test(v))
+      const description = keys.findIndex(v => /^(?:规格|規格|specification)$/.test(v))
+      const quantity = keys.findIndex(v => /^(?:用量|数量|數量|qty)$/.test(v))
+      const columnHeader = kind >= 0 && description >= 0 && quantity >= 0
+      // Notes beside the column headings are never supplier model fields.
+      const model = !columnHeader && title.match(/产品编号|產品編號|产品型号|產品型號/)
       if (model) {
         // Read the whole identifier field before separating the model and role.
         // Chinese descriptors must not truncate "88578-红外 TX" to "88578-",
         // and a TX/RX in another title field must not select the parent group.
         identity = title.slice(model.index! + model[0].length).replace(/^\s*[:：#]?\s*/, '')
           .split(/\s*(?:客户|客戶|报价日期|報價日期|产品名称|產品名稱|日期)\s*[:：]/, 1)[0]!.trim()
+        const name = title.match(/(?:产品名称|產品名稱)\s*:\s*(.*?)(?=\s*(?:产品编号|產品編號|产品型号|產品型號|客户|客戶|报价日期|報價日期|日期)\s*:|$)/)
+        productRole = rfidComponent(name?.[1] || '')
         group = undefined; columns = undefined
       }
-      const keys = row.map(yinhuiHeaderKey)
-      const kind = keys.findIndex(v => /^(?:零件|物料)名[称稱]$/.test(v))
-      const description = keys.findIndex(v => /^(?:规格|規格|specification)$/.test(v))
-      const quantity = keys.findIndex(v => /^(?:用量|数量|數量|qty)$/.test(v))
-      if (kind >= 0 && description >= 0 && quantity >= 0) {
+      if (columnHeader) {
         const unit = keys.findIndex(v => /^(?:单价|單價)(?:rmb|hkd)$/.test(v))
         const amount = keys.findIndex(v => /^(?:合计|合計|金额|金額)(?:rmb|hkd)$/.test(v))
         const currency = unit >= 0 && keys[unit]!.endsWith('hkd') ? 'HKD' : 'RMB'
@@ -129,7 +153,7 @@ export function readYinhuiElectronicSources(sheets: XlsxParsedSheet[]): YinhuiEl
           // Only the observed infrared descriptor is separable from a model.
           // Preserve real alphanumeric suffixes and leave unknown text unmatched.
           const match = identity.match(/^([A-Z0-9][\w-]*?)(?:[-_\s]+(?:红外|紅外))?[-_\s]+(TX|RX)$/i)
-          group = { model: match?.[1] || identity, role: (match?.[2]?.toUpperCase() || '') as YinhuiElectronicSource['role'], source: `${sheet.name}!${index + 1}`, chips: [] }
+          group = { model: match?.[1] || identity, role: match ? match[2]!.toUpperCase() as 'TX' | 'RX' : productRole, source: `${sheet.name}!${index + 1}`, chips: [] }
           groups.push(group)
           columns = { kind, description, quantity, unit, amount, currency }
         }

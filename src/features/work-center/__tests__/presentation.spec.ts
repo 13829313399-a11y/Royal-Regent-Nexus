@@ -7,6 +7,8 @@ import WorkCenterHealth from '../WorkCenterHealth.vue'
 import { workHealth, workEmptyState, verificationCount } from '../health'
 import { entryRoute } from '../routes'
 import type { WorkEntry, WorkSnapshot } from '../types'
+import { aging, customSnooze, snoozePresets } from '../time'
+import { workflow } from '../metadata'
 
 vi.mock('@/api/workCenter', () => ({ workCenterApi: { events: vi.fn().mockResolvedValue({ items: [], next_cursor: null }) } }))
 const entry: WorkEntry = {
@@ -39,6 +41,24 @@ it('opens advanced approval in the current workspace and legacy fallback', () =>
 })
 beforeEach(() => setActivePinia(createPinia()))
 
+describe('time and workflow presentation', () => {
+  it('uses Shanghai dates and the snapshot clock through midnight and the afternoon cutoff', () => {
+    expect(aging(entry,'2026-10-02T01:30:00Z')).toMatchObject({text:'已等待 3 天',tone:'aging'})
+    expect(aging({...entry,due_at:'2026-09-29T00:30:00Z'},'2026-09-29T01:30:00Z').text).toBe('已逾期 1 小时')
+    expect(snoozePresets('2026-09-29T05:29:00Z')[1]?.until).toBe('2026-09-29T06:00:00.000Z')
+    expect(snoozePresets('2026-09-29T05:30:00Z')[1]?.until).toBe('2026-09-29T09:30:00.000Z')
+    expect(snoozePresets('2026-09-29T10:00:00Z')[1]?.disabled).toBe(true)
+    expect(snoozePresets('2026-09-29T16:10:00Z')[2]?.until).toBe('2026-10-01T01:00:00.000Z')
+    expect(customSnooze('2026-09-30T11:30','2026-09-29T16:10:00Z')).toBe('2026-09-30T03:30:00.000Z')
+    expect(customSnooze('2026-02-31T11:30','2026-01-01T00:00:00Z')).toBeNull()
+  })
+  it('only draws known, current business stages and uses an exception label for production problems', () => {
+    expect(workflow({...entry, module:'molding',stage_code:'problem:p1'})).toMatchObject({current:3,warning:'待处理问题'})
+    expect(workflow({...entry,module:'position_reviews',stage_code:'position_review'})?.current).toBe(1)
+    for (const v of [{kind:'info' as const},{stage_code:'unknown'},{lifecycle:'resolved' as const}]) expect(workflow({...entry,...v})).toBeNull()
+  })
+})
+
 describe('readable account request previews', () => {
   it('keeps legacy registration usable with the new entry disabled and position reviews reachable after rollback', () => {
     expect(entryRoute(entry, false)).toEqual({ name: 'system-registration', query: { tab: 'pending', request_id: 'registration-opaque-id' } })
@@ -53,7 +73,9 @@ describe('readable account request previews', () => {
     expect(wrapper.text()).toContain('工程技术员')
     expect(wrapper.text()).toContain('2026-09-29 09:30 提交')
     expect(wrapper.text()).not.toContain('registration-opaque-id')
-    await wrapper.trigger('click')
+    expect(wrapper.get('.nc-row-heading strong').text()).toBe('张三（zhangsan）')
+    expect(wrapper.text()).not.toContain('请核对申请组织')
+    await wrapper.get('[data-work-entry]').trigger('click')
     expect(wrapper.emitted('select')).toEqual([[entry.id]])
   })
   it('puts readable request details before responsibility explanation and formats business time', async () => {
@@ -62,7 +84,8 @@ describe('readable account request previews', () => {
     const text = wrapper.text()
     expect(text).toContain('13800000000')
     expect(text).toContain('2026-09-29 09:30')
-    expect(text.indexOf('申请详情')).toBeLessThan(text.indexOf('为什么需要我'))
+    expect(text).toContain('申请详情')
+    expect(text).not.toContain('为什么需要我')
     expect(text).not.toContain('registration-opaque-id')
   })
   it.each(['*', 'group-management', 'group'])('opens global account requests from organization %s', factory => {
@@ -84,9 +107,9 @@ describe('source health explanations', () => {
     const data = snapshot()
     expect(workHealth(data)?.warning).toBe(false)
     const wrapper = mount(WorkCenterHealth, { props: { snapshot: data } })
-    expect(wrapper.attributes('role')).toBe('status')
-    expect(wrapper.text()).toContain('当前待办已同步 · 2 条历史提醒待核对')
-    expect(wrapper.text()).toContain('内部报价：2 条历史提醒未找到原单据')
+    expect(wrapper.text()).toBe('')
+    expect(workHealth(data)?.title).toContain('2 条历史提醒待核对')
+    expect(workHealth(data)?.details).toContain('内部报价：2 条历史提醒未找到原单据')
     expect(wrapper.find('button').exists()).toBe(false)
   })
   it('names unavailable sources, keeps the real warning and retries', async () => {
@@ -95,7 +118,7 @@ describe('source health explanations', () => {
     const wrapper = mount(WorkCenterHealth, { props: { snapshot: data } })
     expect(wrapper.attributes('role')).toBe('alert')
     expect(wrapper.text()).toContain('供应商送货暂时无法同步')
-    expect(wrapper.text()).toContain('当前计数可能不完整')
+    expect(workHealth(data)?.description).toContain('当前计数可能不完整')
     await wrapper.get('button').trigger('click')
     expect(wrapper.emitted('retry')).toHaveLength(1)
     await wrapper.setProps({ syncing: true })
@@ -121,8 +144,8 @@ describe('source health explanations', () => {
     expect(verificationCount(data)).toBe(1)
     expect(workHealth(data)).toMatchObject({ warning: true, retryable: false, verificationCount: 1 })
     const wrapper = mount(WorkCenterHealth, { props: { snapshot: data }, global: { stubs: { RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' } } } })
-    expect(wrapper.text()).toContain('同步已完成')
-    expect(wrapper.text()).toContain('查看待核对事项')
+    expect(wrapper.text()).toContain('1 项业务状态需要核对')
+    expect(wrapper.text()).toContain('查看待核对')
     expect(wrapper.findComponent({ name: 'RouterLink' }).props('to')).toEqual({ name: 'notification-center', query: { view: 'verification' } })
     expect(wrapper.find('button').exists()).toBe(false)
     expect(workEmptyState(data, 'todo').title).toBe('暂无可直接处理的待办')

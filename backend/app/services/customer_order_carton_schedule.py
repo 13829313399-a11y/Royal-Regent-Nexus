@@ -112,6 +112,8 @@ async def synchronize(db, user, factory, customer_code, customer_name, filename,
 
 async def sync_report(db, user, request, preview, filename, content, source_kind):
     """Await the handoff before success; a failed handoff never hides the export."""
+    if preview.get('target_template') == 'ZURU_ORIGINAL_NEW_ORDER_SUMMARY_V1':
+        return None  # Reference books and copy-ready new rows are not a warehouse schedule.
     from app.api.customer_order import CUSTOMER_NAMES
     from app.services.auth import get_current_user
     try:

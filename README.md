@@ -4,7 +4,19 @@ Vue 3 + Vite + TypeScript enterprise management shell wired with Tailwind CSS v4
 
 ## Scripts
 
-Windows 本地同时启动前端、API 和文档处理 worker：
+日常开发在仓库根目录打开两个终端。第一个终端启动 Vite 前端，默认地址为 `http://127.0.0.1:5173/`。`npm run dev:web` 也可单独启动同一前端。
+
+```sh
+npm run dev
+```
+
+在第二个终端单独启动后端 API。Windows PowerShell 命令如下。
+
+```powershell
+backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+需要同时管理前端、API 和文档处理 worker 时，Windows 可使用以下命令。
 
 ```sh
 npm run dev:local
@@ -20,44 +32,21 @@ npm run dev:stop
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Python 'C:\path to venv\Scripts\python.exe'
 ```
 
-`scripts/start-latest-main-dev.ps1` 保留其最新 main、工作区和端口检查，检查通过后也调用同一启动入口。日常开发允许工作区有未提交修改，使用 `npm run dev:local`；仅需单独运行前端时仍可使用以下命令：
+`scripts/start-latest-main-dev.ps1` 保留其最新 main、工作区和端口检查，检查通过后也调用同一启动入口。`npm run dev:local` 允许工作区有未提交修改。
+
+构建和预览前端使用以下命令。
 
 ```sh
-npm run dev
 npm run build
 npm run preview
 ```
 
-## Context Memory
+## 项目文档
 
-Before implementing any requirement, read and maintain `PROJECT_MEMORY.md`.
-
-For agent operating rules, read and maintain `AGENTS.md`.
-
-## Huakang A 3D migration
-
-The Huakang A module now includes a standalone cloud connector, live paginated
-workspace, migration reconciliation, material spools, versioned files, demand
-approvals, advisory scheduling and production traceability. PR-07 through PR-09
-are local development deliverables; deployment and real-printer acceptance are
-deferred. The new operations table requires explicit Alembic upgrade to 0099;
-the business database has not been upgraded in this phase. See the
-[local acceptance report](docs/three-d-pr07-pr09-acceptance.md),
-[backup/cutover/rollback runbook](deploy/three-d-printing/README.md) and
-[3D migration runbook](docs/three-d-printing-deployment.md).
-The legacy JSON snapshot is not the authoritative cutover source.
-
-The development server is configured for:
-
-```txt
-http://localhost:5173/
-```
-
-Current routes:
-
-- `/` - group operations dashboard
-- `/modules` - department module center
-- `/workbench` - business approval workbench
+- 开发前阅读 [AGENTS.md](AGENTS.md) 和 [PROJECT_MEMORY.md](PROJECT_MEMORY.md)。按[业务索引](docs/agent-routing/context-index.md)定位相应合同、代码和测试。
+- 主站、API 与独立文档 worker 的日常入口见上文。生产实例的 Compose 组合、备份、冻结点和回退见[现网发布手册](docs/aliyun-docker-deploy.md)。
+- 华康 A 3D 打印的接入、迁移核对和现场边界见[3D 专题](docs/three-d-printing-deployment.md)和[现场交接](deploy/three-d-printing/README.md)。运行状态以对应批次的设备回执为准。
+- 主站首页 `/` 为集团运营看板，`/modules` 转入部门模块目录，`/workbench` 为审批工作台。其他入口及权限见[实际路由](src/router/index.ts)。历史交接与验收见[归档索引](docs/archive/README.md)。
 
 ## Stack
 
@@ -71,6 +60,3 @@ Current routes:
 - Axios
 - reka-ui
 - Lucide icons
-
-backend:
-backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000

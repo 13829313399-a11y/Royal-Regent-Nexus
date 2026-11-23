@@ -103,6 +103,78 @@ def test_mixed_note_rolls_back_all_sources_when_last_bin_is_invalid(monkeypatch)
                 assert db.scalar(select(func.count()).select_from(model)) == 0, model
 
 
+def test_manual_note_continues_distinct_papers_and_keeps_one_original(monkeypatch):
+    with make_client(monkeypatch) as client:
+        place = setup(client)
+        payload, sample, misc = batch(client, place)
+        endpoint = '/api/carton-unified-deliveries/warehouse-receive'
+        orders = '/api/carton-procurement/orders'
+        order = ok(client.get(orders, params={'factory_id': FACTORY}))['items'][0]
+        # Warehouse can receive against locked demand while a newer purchase change is pending.
+        order = ok(client.post(f"{orders}/{order['order_no']}/append", json={
+            'factory_id': FACTORY, 'expected_revision': order['revision'], 'additional_quantity': '120',
+            'issue_to_supplier': False}))
+        first_payload = dict(payload, formal_lines=[], special_requests=[payload['special_requests'][0]])
+        first = ok(client.post(endpoint, json=first_payload))
+        continued = dict(payload, request_id=uuid4().hex, special_requests=[payload['special_requests'][1]],
+            order_revisions={order['order_no']: order['revision']})
+        second = ok(client.post(endpoint, json=continued))
+        assert second['delivery_id'] == first['delivery_id'] and len(second['receipts']) == 2
+        assert ok(client.post(endpoint, json=continued)) == second
+        current = ok(client.get(orders, params={'factory_id': FACTORY}))['items'][0]
+        third = dict(payload, request_id=uuid4().hex, special_requests=[],
+            order_revisions={current['order_no']: current['revision']},
+            formal_lines=[dict(payload['formal_lines'][0], order_line_id=current['lines'][1]['id'])])
+        assert client.post(endpoint, json=dict(third, delivery_date='2026-10-19')).status_code == 409
+        result = ok(client.post(endpoint, json=third))
+        assert result['delivery_id'] == first['delivery_id'] and len(result['receipts']) == 1
+        assert result['receipts'][0]['original_delivery_note_no'] == payload['delivery_note_no']
+        duplicate = client.post(endpoint, json=dict(third, request_id=uuid4().hex))
+        assert duplicate.status_code == 409 and '所选纸品已在此送货单登记' in duplicate.json()['detail']
+        group = ok(client.get('/api/carton-unified-deliveries/' + first['delivery_id'], params={'factory_id': FACTORY}))
+        assert group['status'] == 'RECEIVED' and len(group['lines']) == 4 and len(group['receipts']) == 4
+        assert {entry['id'] for entry in group['special']} == {sample['id'], misc['id']}
+
+
+def test_legacy_manual_note_continues_without_reposting_first_paper(monkeypatch):
+    with make_client(monkeypatch) as client:
+        place = setup(client)
+        payload, _, _ = batch(client, place)
+        order_url = '/api/carton-procurement/orders'
+        order = ok(client.get(order_url, params={'factory_id': FACTORY}))['items'][0]
+        original = ok(client.post('/api/carton-procurement/receipts', json={
+            **{key: payload[key] for key in ('factory_id', 'delivery_note_no', 'delivery_date', 'acceptance_date')},
+            'supplier_id': order['supplier_id'], 'post_immediately': True, 'request_id': uuid4().hex,
+            'lines': payload['formal_lines']}), 201)
+        order = ok(client.get(order_url, params={'factory_id': FACTORY}))['items'][0]
+        payload['order_revisions'][order['order_no']] = order['revision']
+        payload['formal_lines'][0]['order_line_id'] = order['lines'][1]['id']
+        payload['special_requests'] = []
+        result = ok(client.post('/api/carton-unified-deliveries/warehouse-receive', json=payload))
+        assert len(result['receipts']) == 1
+        receipt = result['receipts'][0]
+        assert receipt['id'] != original['id'] and receipt['original_delivery_note_no'] == original['delivery_note_no']
+        group = ok(client.get('/api/carton-unified-deliveries/' + result['delivery_id'], params={'factory_id': FACTORY}))
+        assert group['status'] == 'RECEIVED'
+        assert {batch['receipt_id'] for batch in group['receipts']} == {original['id'], receipt['id']}
+        from test_carton_supplier_manual_evidence import import_note, workbook_for
+        from test_carton_supplier_portal import supplier_login
+        from app.db import SessionLocal
+        from app.models.carton_procurement import CartonInventoryMovement
+        from app.models.carton_price_review import CartonPriceReview
+        supplier_login(client)
+        original_file = workbook_for(group)
+        preview = import_note(client, original_file, confirm=False)
+        assert preview['receipt_link_ready'], (preview['issues'], preview.get('rows'))
+        ok(import_note(client, original_file))
+        with SessionLocal() as db:
+            movements = list(db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.movement_type == 'INBOUND')))
+            assert {row.source_id: row.quantity for row in movements} == {original['id']: Decimal(10), receipt['id']: Decimal(10)}
+            reviews = list(db.scalars(select(CartonPriceReview)))
+            assert {row.receipt_line_id for row in reviews} == {original['lines'][0]['id'], receipt['lines'][0]['id']}
+            assert all(row.status == 'CONFIRMED' and row.proposed_unit_price == 3 for row in reviews)
+
+
 def test_concurrent_retry_and_explicit_warehouse_zero_remain_one_unconfirmed_proposal(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     with make_client(monkeypatch) as client:
@@ -113,6 +185,8 @@ def test_concurrent_retry_and_explicit_warehouse_zero_remain_one_unconfirmed_pro
         with ThreadPoolExecutor(max_workers=2) as workers:
             results = list(workers.map(lambda _: client.post(path, json=payload), range(2)))
         assert ok(results[0]) == ok(results[1])
+        formal_receipt = next(row for row in ok(results[0])['receipts'] if not row['special_request_id'])
+        assert formal_receipt['lines'][0]['zero_price_kind'] == 'PENDING'
         from app.db import SessionLocal
         from app.models.carton_price_review import CartonPriceReview
         from app.models.carton_special_requests import UnifiedDelivery

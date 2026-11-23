@@ -11,7 +11,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.functions import FunctionElement
 
 from app.models.auth import AuthAccessRequest, AuthPasswordResetRequest, AuthRegistrationRequest, SystemNotification
-from app.models.carton_procurement import CartonAuditEvent, CartonReceipt
+from app.models.carton_procurement import CartonAuditEvent, CartonReceipt, CartonSupplier
 from app.models.carton_supplier_portal import SupplierShipment
 from app.models.internal_quote import InternalQuote, InternalQuoteAlternative, InternalQuoteAuditLog, InternalQuoteSection
 from app.models.molding_sample import MoldingSampleAuditLog, MoldingSampleOrder, MoldingSampleProblem, MoldingSampleNotification
@@ -107,13 +107,13 @@ def molding_queries(user):
         yield projection(module="molding", entity_id=o.id, stage=stage, cycle=cycle,
                          factory=o.factory_id, execution=production, department="production" if is_production else departments[0],
                          watcher=func.coalesce(opener, ""), title=title, reference=case((o.order_number != "", o.order_number), else_=o.id),
-                         summary=o.product_name, opened=o.created_at, can_act=act, visible=visible,
+                         summary=o.product_name + " " + func.coalesce(o.client_name, ""), opened=o.created_at, can_act=act, visible=visible,
                          verified=production != "" if is_production else True,
                          lifecycle="in_progress" if is_production and stage == "production_fill" else "open").where(o.status == status)
     p = MoldingSampleProblem
     yield projection(module="molding", entity_id=o.id, stage=key("problem", p.id), cycle=p.responsibility_revision,
                      factory=o.factory_id, execution=production, department="production", title="处理生产问题",
-                     reference=o.order_number, summary="生产问题仍开放，请在原单据核实处理。", opened=p.created_at,
+                     reference=o.order_number, summary=o.product_name + " " + func.coalesce(o.client_name, ""), opened=p.created_at,
                      visible=visible, can_act=scoped(user, o.factory_id, "molding_sample:edit_draft", ("engineering", "management"), local_molding=True)
                      ).select_from(p).join(o, p.order_id == o.id).where(p.status == "待处理")
 
@@ -126,7 +126,7 @@ def quote_queries(user):
         q.factory_id.in_([f for f in ALLOWED_FACTORY_IDS if _is_sales_quote_reviewer(user, f) and can(user, "internal_quote:sales_review", f, "sales-business")]),
         and_(q.created_by == user.id, q.factory_id.in_([f for f in ALLOWED_FACTORY_IDS if _is_sales_quote_reviewer(user, f) and can(user, "internal_quote:self_review", f, "sales-business")]))))
     base = dict(module="internal_quote", entity_id=q.id, factory=q.factory_id, watcher=q.created_by,
-                reference=q.quote_no, summary=q.product_name, opened=q.created_at, due=q.target_date, visible=visible)
+                reference=q.quote_no, summary=q.product_name + " " + func.coalesce(q.customer, ""), opened=q.created_at, due=q.target_date, visible=visible)
     sibling = aliased(InternalQuote)
     same_batch = and_(sibling.factory_id == q.factory_id, or_(and_(q.batch_id != "", sibling.batch_id == q.batch_id), and_(q.batch_id == "", sibling.id == q.id)))
     from app.services.internal_quote_calculator import FORMULA_VERSION
@@ -148,7 +148,7 @@ def quote_queries(user):
     sales_submitter = select(s.submitted_by_id).where(s.quote_id == q.id, s.department == "sales").correlate(q).scalar_subquery()
     followup = func.coalesce(func.nullif(sales_submitter, ""), q.created_by)
     # Batch root represents the one atomic review, never one task per product.
-    yield projection(**{**base, "summary": literal("本批共 ") + cast(q.batch_size, String) + " 款产品；请核对整批内容后审核。"}, stage="whole_review", cycle=q.final_submission_revision,
+    yield projection(**base, stage="whole_review", cycle=q.final_submission_revision,
                      assignee=q.business_owner_id, title="审核这批报价", department="sales-business", can_act=and_(reviewer, batch_reviewable), verified=batch_reviewable
                      ).where(active, q.module_version == "v3", q.batch_position == 1,
                              q.status == "final_reviewing", q.final_release_status == "pending")
@@ -182,6 +182,8 @@ def quote_queries(user):
 
 def shipment_queries(user):
     s, r, a = SupplierShipment, CartonReceipt, CartonAuditEvent
+    supplier_name = select(CartonSupplier.supplier_name).where(
+        CartonSupplier.id == s.supplier_id, CartonSupplier.factory_id == s.factory_id).correlate(s).scalar_subquery()
     act = and_(*(scoped(user, s.factory_id, permission, ("pmc-warehouse", "carton")) for permission in (
         "carton_procurement:read", "carton_procurement:receipt_write", "carton_procurement:inventory_write")))
     reversed_receipt = exists(select(r.id).where(r.id == s.receipt_id, r.status == "REVERSED"))
@@ -191,7 +193,7 @@ def shipment_queries(user):
     yield projection(module="carton_supplier", entity_id=s.id, stage=case((reversed_receipt, "receipt_correction"), else_="receipt"),
                      cycle=key(s.revision, reversal), factory=s.factory_id, execution=s.factory_id, department="pmc-warehouse",
                      title=case((reversed_receipt, "更正送货验收"), else_="核实这张送货单"), reference=s.delivery_note_no,
-                     summary="核对实到、破损与拒收数量后，使用原收料流程确认。", opened=s.created_at,
+                     summary=func.coalesce(supplier_name, ""), opened=s.created_at,
                      can_act=act, visible=act).where(or_(s.status == "SENT", and_(s.status == "RECEIVED", reversed_receipt)))
 
 
@@ -283,7 +285,7 @@ def position_queries(db, user):
     active = and_(AuthUser.status == "active", r.employment_epoch == EmployeeProfile.employment_epoch,
                   EmployeeProfile.employment_status != "left")
     yield (projection(module="position_reviews", entity_id=r.id, stage="position_review", title="核对岗位与权限",
-        reference=AuthUser.display_name, summary="员工岗位资料已更新；确认前原权限保持不变。", opened=r.created_at,
+        reference=AuthUser.display_name, summary=PayloadValue(r.declared_snapshot_json, literal("position")), opened=r.created_at,
         factory=org, department=dept, version=r.revision, visible=visible, can_act=and_(active, literal(writes_enabled())))
         .select_from(r).join(AuthUser, AuthUser.id == r.user_id).join(EmployeeProfile, EmployeeProfile.user_id == r.user_id).where(r.status == "pending"))
     yield (projection(module="position_reviews", entity_id=r.id, stage="position_result", cycle=r.revision,

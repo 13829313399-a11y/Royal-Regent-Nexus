@@ -114,7 +114,7 @@ def test_partial_receipts_freeze_history_and_allow_same_note_on_another_source(m
         body = request(first, batches=[{"quantity": "0.1", "location": "B1", "dye_lot": "001"}])
         assert receive(client, first, body).status_code == 200
         # A note spanning two materials is valid; uniqueness is source + note.
-        assert receive(client, other, request(other, prior_received_quantity="0")).status_code == 200
+        assert receive(client, other, request(other, prior_received_quantity="0", delivery_reference="dn-001")).status_code == 200
         current = stored(client, search="CGDD001")["items"][0]
         assert current["warehouse_received_quantity"] == "0.1" and current["warehouse_outstanding_quantity"] == "99.9"
         assert stored(client, view="PARTIAL", search="CGDD001")["total"] == 1

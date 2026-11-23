@@ -1,4 +1,5 @@
 from typing import Annotated, Literal
+from datetime import UTC, datetime
 from hashlib import sha256
 from fastapi import APIRouter, Depends, Query, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -54,6 +55,7 @@ def ready(db):
 
 @router.get('/access')
 def access(db: Db, user: User, factory_id: str = ''):
+    from app.services.cutting_purchase_links import source_access
     c.authorize(user, factory_id)
     enabled = settings.cutting_ops_enabled
     migrated = c.schema_ready(db.connection()) if enabled else False
@@ -63,6 +65,8 @@ def access(db: Db, user: User, factory_id: str = ''):
                 periods_schema_ready=period_guards.schema_ready(db.connection()) if enabled else False,
                 settlements_schema_ready=settlement.schema_ready(db.connection()) if enabled else False,
                 payments_schema_ready=payments.schema_ready(db.connection()) if enabled else False,
+                can_link_purchase=enabled and c.allowed(user, 'eta_write') and source_access(user),
+                can_read_purchase=enabled and source_access(user),
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
 
@@ -145,7 +149,7 @@ def workspace_masters(db: Db, user: User, factory_id: str = ''):
 
 @router.get('/workspace/planning')
 def workspace_planning(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
-                       status: s.WorkflowStatus | None = None, bucket: Literal['', 'scheduled', 'unscheduled'] = '',
+                       status: s.WorkflowStatusFilter | None = None, bucket: Literal['', 'scheduled', 'unscheduled'] = '',
                        page: int = Query(1, ge=1),
                        plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
     c.authorize(user, factory_id)
@@ -481,13 +485,24 @@ def schedule_import_recover(body:schedule_import.Recover,db:Db,user:User):
 
 @router.get('/orders')
 def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1), q: str = Query('', max_length=80),
-               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None,
+               status: s.WorkflowStatusFilter | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None,
                changes_only: bool = False):
     c.authorize(user, factory_id)
     orders_ready(db)
     result = orders.list_orders(db, page, q, status, plan_status, changes_only=changes_only)
     orders.include_note_comparisons(db, ((row['line_id'], row['current']) for row in result['data']))
+    include_order_purchase_numbers(db, result['data'])
     return result
+
+
+def include_order_purchase_numbers(db, rows):
+    from app.services.cutting_purchase_links import include_detail_numbers
+    data_items = []
+    for row in rows:
+        data_items.append((row.get('current') or {}).get('data'))
+        pending = row.get('pending_purchase') or {}
+        data_items.extend((pending, pending.get('prior_purchase_reply')))
+    include_detail_numbers(db, data_items)
 
 
 @router.get('/orders/{line_id}/versions')
@@ -498,8 +513,9 @@ def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page:
     c.require(order is not None and order.factory_id == c.FACTORY, '裁床订单不存在', 404)
     numbers = db.scalars(select(CuttingOrderRevision.version).where(CuttingOrderRevision.line_id == line_id)
         .order_by(CuttingOrderRevision.version.desc()).offset((page-1)*50).limit(50))
-    revisions = [orders.revision(db, order, v) for v in numbers]
+    revisions = [orders.display_revision(orders.revision(db, order, v)) for v in numbers]
     orders.include_note_comparisons(db, ((line_id, row) for row in revisions))
+    include_order_purchase_numbers(db, [{'current': row} for row in revisions])
     return dict(data=revisions, total=order.version, page=page, page_size=50)
 
 
@@ -511,7 +527,38 @@ def read_order(line_id: str, db: Db, user: User, factory_id: str = ''):
     c.require(dispatch is not None, '华康C裁床来源订单不存在', 404)
     result = orders.view(db, dispatch)
     orders.include_note_comparisons(db, [(line_id, result['current'])])
+    include_order_purchase_numbers(db, [result])
     return result
+
+
+def current_purchase_data(db, line_id):
+    orders_ready(db)
+    dispatch = orders.latest(db, line_id)
+    order = db.get(CuttingOrder, line_id)
+    c.require(dispatch is not None and order is not None and order.factory_id == c.FACTORY, '裁床订单不存在', 404)
+    c.require(dispatch.id == order.dispatch_id and dispatch.snapshot.get('status') == 'active',
+              '订单已变更或取消，请核对当前来源版本', 409)
+    return orders.revision(db, order)['data']
+
+
+@router.get('/orders/{line_id}/purchase-candidates')
+def order_purchase_candidates(line_id: str, db: Db, user: User, row: int = Query(ge=0, le=299),
+                              reference: str = Query(min_length=1, max_length=128),
+                              supplier: str = Query(min_length=1, max_length=255), factory_id: str = ''):
+    from app.services.cutting_purchase_links import candidates, require_source_access
+    c.authorize(user, factory_id, 'eta_write')
+    require_source_access(user)
+    return candidates(db, current_purchase_data(db, line_id), row, reference.strip(), supplier.strip())
+
+
+@router.get('/orders/{line_id}/purchase-progress')
+def order_purchase_progress(line_id: str, db: Db, user: User, factory_id: str = ''):
+    from app.services.cutting_purchase_links import progress
+    c.authorize(user, factory_id)
+    data = current_purchase_data(db, line_id)
+    c.require(not data.get('purchase_reconciliation_required'), '原需求待采购核对，请先处理版本变更', 409)
+    return JSONResponse({**progress(db, line_id, data), 'read_at': datetime.now(UTC).isoformat()},
+                        headers={'Cache-Control': 'no-store'})
 
 
 def order_command(db, user, line_id, body, action, handler):

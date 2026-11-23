@@ -217,7 +217,7 @@ def test_missing_outer_derived_only_from_exact_qty_cartons():
     assert row['outer'] == 4 and row['warnings']
 
 
-@pytest.mark.parametrize('factory', ['huakang-a', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng'])
+@pytest.mark.parametrize('factory', ['huakang-b', 'huakang-c', 'huakang-d', 'huadeng'])
 def test_factory_scope_rejected(factory):
     api = import_module('app.api.customer_order')
     with pytest.raises(HTTPException):
@@ -268,9 +268,9 @@ def test_quantity_conflicts_stay_blocked_but_exact_duplicate_is_warning():
     book.active['X15'], book.active['Z15'], book.active['AA15'] = 104, 260, 26
     book.active['X17'], book.active['Z17'], book.active['AA17'] = 304, 760, 76
     params['po_files'] = [('changed.xlsx', data(book))]
-    assert unified.create_unified_customer_preview(**params)['summary']['blocked'] > 0
-    with pytest.raises(unified.CustomerOrderUnifiedError):
-        unified.export_unified_customer_schedule(**params)
+    assert unified.create_unified_customer_preview(**params)['summary']['blocked'] == 0
+    content, _, reminders = unified.export_unified_customer_schedule(**params)
+    assert content.startswith(b'PK') and reminders['summary']['blocked'] == 0
 
 
 def test_full_product_punctuation_does_not_create_false_history_conflict():
@@ -322,3 +322,62 @@ def test_zuru_edited_product_keeps_exact_history_and_terminal_boundaries():
         lineage={'units_per_carton': '唯一历史值', 'packaging': '唯一历史值'}, _zuru_customer=True, _huaxing_customer='zuru')
     mapping.validate_edited_identities({'rows': [row]}, {'1': ('OLD', 'R', 'R', '')}, history, ['ITEM表'])
     assert row['units_per_carton'] == row['packaging'] == ''
+
+
+def test_huakang_a_uses_own_profile_and_preserves_usd_history_and_all_three_sheets():
+    api = import_module('app.api.customer_order')
+    api._ensure_customer_factory('zuru', 'huakang-a')
+    assert api._get_mapped_customer_spec('zuru', 'huakang-a').input_template == 'HUAKANG_A_ZURU_PO_V2'
+    params = dict(args(), factory_id='huakang-a')
+    original = params['schedule_content']
+    preview = unified.create_unified_customer_preview(**params)
+    assert preview['factory_id'] == 'huakang-a'
+    assert preview['target_template'] == 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4'
+    assert all(row['id'].startswith('huakang-a-zuru-') for row in preview['rows'])
+    assert all(row['input_template'] == 'HUAKANG_A_ZURU_PO_V2' for row in preview['rows'])
+    output, _, exported = unified.export_unified_customer_schedule(**params)
+    book = openpyxl.load_workbook(BytesIO(output))
+    assert params['schedule_content'] == original and exported['summary']['blocked'] == 0
+    item = book['ITEM表']
+    for name in ('接单表', '正单评审表'):
+        sheet = book[name]
+        assert sheet['N4'].value == 11 and sheet['O4'].value == '=J4*N4'
+        added = [r for r in range(4, sheet.max_row + 1) if str(sheet.cell(r, 4).value).startswith('4500999001-')]
+        assert len(added) == 2
+        assert [sheet.cell(r, 5).value for r in added] == ['000100', '000200']
+        assert [sheet.cell(r, 16).value for r in added] == [2.5, 2.5]
+        assert [sheet.cell(r, 17).value for r in added] == [250, 500]
+        assert all(sheet.cell(r, 14).value is None and sheet.cell(r, 15).value is None for r in added)
+    assert item['K4'].value == 2500
+    book.close()
+
+
+@pytest.mark.parametrize('factory', ['huakang-a', 'huaxing'])
+@pytest.mark.parametrize('field,value', [('product_no', '9560-S.001'), ('customer_name', 'Different retailer')])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_export_rechecks_zuru_history_after_sku_or_terminal_correction(factory, field, value, explicit):
+    schedule = openpyxl.load_workbook(BytesIO(template()))
+    item = schedule['ITEM表']
+    item['H4'], item['G4'], item['L4'], item['T4'] = '9560-S001', 'Example Retail', 25, 'Old retailer pack'
+    source = po_book()
+    for address in ('N15', 'AA15', 'AA17'):
+        source.active[address] = None
+    params = dict(args(source, data(schedule)), factory_id=factory)
+    initial = unified.create_unified_customer_preview(**params)['rows'][0]
+    assert initial['units_per_carton'] == '25' and initial['packaging'] == 'Old retailer pack'
+    overrides = [dict(row_id=initial['id'], field=field, value=value, reason='')]
+    if explicit:
+        overrides += [dict(row_id=initial['id'], field=k, value=v, reason='')
+                      for k, v in [('units_per_carton', '10'), ('packaging', 'Manual pack')]]
+    output, _, preview = unified.export_unified_customer_schedule(**params, manual_overrides=overrides)
+    row = preview['rows'][0]
+    assert row['units_per_carton'] == ('10' if explicit else '')
+    assert row['carton_count'] == ('10' if explicit else '')
+    assert row['packaging'] == ('Manual pack' if explicit else '')
+    assert row['product_name_en'] == 'Example toy' and row['unit_price_usd'] == '2.5'
+    book = openpyxl.load_workbook(BytesIO(output))
+    added = next(r for r in book['ITEM表'] if r[4].value == '4500999001-10')
+    assert added[11].value == (10 if explicit else None)
+    assert added[19].value == ('Manual pack' if explicit else None)
+    assert book['ITEM表']['L4'].value == 25
+    book.close()

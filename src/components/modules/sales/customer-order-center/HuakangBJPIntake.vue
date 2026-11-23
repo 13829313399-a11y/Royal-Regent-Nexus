@@ -174,7 +174,7 @@ async function upload(kind: JPReferenceKind) {
   try {
     const refs = await api.upload(kind, body, controller.signal)
     if (token !== epoch) return
-    references.value = refs; notice.value = '参照验证成功，已保存新版本；旧版本与历史导出仍保留。'
+    references.value = refs; notice.value = '参照验证成功，已保存并自动复用；下次录入无需再上传，仅在表格更新时替换。旧版本与历史导出仍保留。'
   } catch (cause) { if (token === epoch) handleError(cause) }
   finally { if (token === epoch) busy.value = false }
 }
@@ -349,7 +349,7 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
     <template v-if="!loading && !loadFailed && caps.read && caps.available && factoryId === 'huakang-b'">
       <p v-if="busy" class="jp-processing" role="status">正在处理，请稍候。完成后可继续核对或下载。</p>
 
-      <SectionPanel title="01 · 当前参照" subtitle="使用当前版本查重和核价；更新后保留旧版本与历史导出。" class="jp-panel">
+      <SectionPanel title="01 · 当前参照" subtitle="已保存的排期和货价会自动复用，无需每次上传；仅在表格有更新时替换。" class="jp-panel">
         <template #action><StatusPill v-if="!caps.write" label="参照只读" tone="slate" /></template>
         <div class="jp-reference-grid">
           <article v-for="entry in referenceKinds" :key="entry.kind" class="jp-reference surface-subtle">
@@ -360,9 +360,10 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
                 :tone="references[entry.kind] ? 'teal' : entry.kind === 'confirmed' ? 'slate' : 'amber'" compact />
             </div>
             <p class="jp-reference__file" :title="references[entry.kind]?.name">{{ references[entry.kind]?.name ?? '尚未上传' }}</p>
+            <p v-if="references[entry.kind]" class="jp-muted">已保存，录入时自动使用。<template v-if="references[entry.kind]?.updated_at"> 更新于 {{ references[entry.kind]?.updated_at }}</template></p>
             <template v-if="caps.write">
               <label class="jp-field">
-                <span class="jp-muted">选择新的 XLSX 文件</span>
+                <span class="jp-muted">{{ references[entry.kind] ? '表格有更新时，选择新的 XLSX 文件' : '首次添加参照（可选）' }}</span>
                 <input class="jp-file-input" type="file" accept=".xlsx" :aria-label="entry.label"
                   :disabled="busy || loading" @change="fileChanged($event, entry.kind)">
               </label>
@@ -427,7 +428,7 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
         </div>
       </SectionPanel>
 
-      <SectionPanel title="03 · 明细与提醒" subtitle="可直接生成问单 Excel；缺项与待核对事项只作提醒。" class="jp-panel">
+      <SectionPanel title="03 · 明细与提醒" subtitle="可直接生成问单 Excel；缺项与待核对事项只作提醒，合同列统一填 TBA。" class="jp-panel">
         <template #action><StatusPill :label="preview ? `${preview.rows.length} 条明细` : '等待解析'" :tone="preview ? 'teal' : 'slate'" /></template>
         <template v-if="preview">
           <div class="jp-review-summary" aria-label="明细核对概况">

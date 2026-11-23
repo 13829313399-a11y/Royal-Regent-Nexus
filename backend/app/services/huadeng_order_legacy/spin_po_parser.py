@@ -83,6 +83,8 @@ class SpinLine:
     material_group: str = ""
     price_per: float = 0.0
     price_per_qty: float = 1.0
+    price_identified: bool = False
+    price_basis_identified: bool = False
     currency: str = "USD"
     ship_date: str = ""
     net_value_pdf: float = 0.0
@@ -224,6 +226,7 @@ class SpinPOParser:
             if sales:
                 line.sales_material = sales.group(1)
                 line.price_per = _num(sales.group(2))
+                line.price_identified = True
                 line.currency = sales.group(3).upper()
                 line.ship_date = normalize_date(sales.group(4))
                 line.net_value_pdf = _num(sales.group(5))
@@ -233,6 +236,7 @@ class SpinPOParser:
             if group:
                 line.material_group = group.group(1)
                 line.price_per_qty = _num(group.group(2)) or 1.0
+                line.price_basis_identified = _num(group.group(2)) > 0
                 continue
 
             order = self.SALES_ORDER_RE.search(raw)

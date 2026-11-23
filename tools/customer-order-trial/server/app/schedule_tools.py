@@ -11,7 +11,7 @@ from app.services.customer_order_360_workbook import organize_workbook
 from app.services.customer_order_casdon import _casdon_preview,_casdon_export,fingerprint as source_fingerprint,VERSION
 
 
-def schedule_tools_router(history,fixed_factory,output_response):
+def schedule_tools_router(history,fixed_factory,output_response,scoped):
     router=APIRouter(prefix='/api/customer-order-ledger/schedule',dependencies=[Depends(order_job_request)])
     async def upload(factory_id,expected,file):
         if factory_id!=fixed_factory:raise HTTPException(403,'本试用包不能切换厂区。')
@@ -23,6 +23,7 @@ def schedule_tools_router(history,fixed_factory,output_response):
 
     @router.post('/organize-360')
     async def organize(factory_id:str,schedule_file:UploadFile=File(...)):
+        scoped('360',factory_id)
         name,content=await upload(factory_id,'huakang-a',schedule_file)
         output,output_name,report,source_hash=await run_order_job(organize_workbook,name,content)
         as_of=report['as_of_date']
@@ -39,12 +40,14 @@ def schedule_tools_router(history,fixed_factory,output_response):
 
     @router.post('/casdon/preview')
     async def casdon_preview(factory_id:str,schedule_file:UploadFile=File(...)):
+        scoped('casdon',factory_id)
         name,content=await upload(factory_id,'huadeng',schedule_file)
         return await run_order_job(_casdon_preview,name,content)
 
     @router.post('/casdon/export')
     async def casdon_export(factory_id:str,schedule_file:UploadFile=File(...),fingerprint:str=Form(...,max_length=64),
         action:str=Form(...,max_length=16),selections:str=Form('[]',max_length=5000),reason:str=Form('',max_length=500),confirmed:bool=Form(False)):
+        scoped('casdon',factory_id)
         name,content=await upload(factory_id,'huadeng',schedule_file)
         if action not in {'prepare','ship','restore'}:raise HTTPException(400,'不支持的整理操作。')
         if action!='prepare' and (not confirmed or len(reason.strip())<4):raise HTTPException(400,'请确认所选订单并填写至少4字的整理原因。')

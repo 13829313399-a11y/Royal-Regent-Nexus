@@ -101,8 +101,8 @@ def test_edu_number_reads_reference_after_cancel_and_reuses_matching_order(monke
 def test_unknown_lane_cannot_be_exported_by_confirming_an_unresolved_issue():
     from importlib import import_module
     wb = template()
-    with pytest.raises(import_module('app.services.customer_order_unified').CustomerOrderUnifiedError, match='分类页'):
-        mapping.export_rows(wb, [dict(item_sheet_name='', product_no='UNKNOWN', _huaxing_customer='buzzbee')])
+    mapping.export_rows(wb, [dict(item_sheet_name='', product_no='UNKNOWN', _huaxing_customer='buzzbee')])
+    assert wb['ITEM待补资料']['H4'].value == 'UNKNOWN'
 
 
 def test_broken_reserved_review_price_uses_exact_new_order_row_only():
@@ -141,8 +141,8 @@ def test_manual_product_change_reselects_lane_and_cannot_reuse_duplicate_confirm
     mapping.validate_edited_identities({'rows': [row]}, original, history, mapping.BUZZBEE_SHEETS)
     assert row['item_sheet_name'] == 'ITEM表-水枪'
     row['reference_no'] = 'EXISTING'
-    with pytest.raises(import_module('app.services.customer_order_unified').CustomerOrderUnifiedError, match='原重复确认不适用'):
-        mapping.validate_edited_identities({'rows': [row]}, original, history, mapping.BUZZBEE_SHEETS)
+    mapping.validate_edited_identities({'rows': [row]}, original, history, mapping.BUZZBEE_SHEETS)
+    assert any(i['code'] == 'edited_identity_overlap' for i in row['issues'])
 
 
 def test_buzzbee_other_customer_variant_is_not_automatic_product_mapping():
@@ -193,10 +193,10 @@ def test_missing_reference_manual_contract_fallback_is_checked_before_export(mon
     wb=template('maxx')
     wb['ITEM表']['E4'],wb['ITEM表']['H4'],wb['ITEM表']['K4']='EXISTING','12345',12
     monkeypatch.setattr(current, '_create_customer_rows', lambda *a: ([dict(id='1',product_no='12345',quantity='12',issues=[])], [], 'TEST'))
-    with pytest.raises(current.CustomerOrderUnifiedError, match='原重复确认不适用'):
-        current.export_unified_customer_schedule(factory_id='huaxing',customer_code='maxx',received_date='2026-09-08',
-            po_files=[('po.pdf',b'po')],schedule_file_name='new.xlsx',schedule_content=data(wb),
-            manual_overrides=[dict(row_id='1',field='contract_no',value='EXISTING',reason='人工更正')])
+    output, _, result = current.export_unified_customer_schedule(factory_id='huaxing',customer_code='maxx',received_date='2026-09-08',
+        po_files=[('po.pdf',b'po')],schedule_file_name='new.xlsx',schedule_content=data(wb),
+        manual_overrides=[dict(row_id='1',field='contract_no',value='EXISTING',reason='人工更正')])
+    assert output.startswith(b'PK') and result['summary']['blocked'] == 0
 
 
 @pytest.mark.parametrize('name', ['ITEM表-水枪', 'Iteam表-水枪', '接单表'])

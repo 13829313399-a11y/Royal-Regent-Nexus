@@ -51,15 +51,14 @@ def test_old_di_or_unknown_type_reimport_requires_revision_on_original_id(db, ol
     incoming = typed_payload("正单", source_lineage=True)
     assert service.resolve_existing_line(db, "huakang-a", "360", incoming["rows"][0]).id == line.id
 
-    with pytest.raises(HTTPException) as error:
-        save(db, incoming)
+    variant = save(db, incoming)
+    assert variant["created_count"] == 1 and variant["advisory_count"] == 1
+    assert variant["items"][0]["id"] != line.id
 
-    assert error.value.status_code == 409
-    assert "order_type" in error.value.detail and "关联正式 PO" in error.value.detail
     assert line.data == before and line.version == line.revision == 1
     assert original_version.data == original_version_data
-    assert db.scalar(select(func.count()).select_from(Line)) == 1
-    assert db.scalar(select(func.count()).select_from(Version)) == 1
+    assert db.scalar(select(func.count()).select_from(Line)) == 2
+    assert db.scalar(select(func.count()).select_from(Version)) == 2
 
 
 @pytest.mark.parametrize("old_type", ["DI Order", "", None])

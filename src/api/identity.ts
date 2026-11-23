@@ -46,7 +46,13 @@ export interface PersonIdentity extends IdentityContext {
   overrides: UserPermissionOverride[]
   handover: HandoverSummary
 }
+export interface OrgDepartmentCount {
+  org_unit_id: string
+  department: string
+  count: number
+}
 export interface Person {
+  access_summary?: import('./accessStudio').PersonAccessSummary
   id: string
   display_name: string
   username: string
@@ -69,6 +75,7 @@ export interface Organization {
   departments: { code: string; name: string }[]
 }
 export interface OrganizationCatalog {
+  studio_writes_enabled?: boolean
   can_manage_delegations?: boolean
   organizations: Organization[]
   writes_enabled: boolean
@@ -138,6 +145,7 @@ export interface ChangeRecord {
   effective_at: string
   created_at: string
   payload: ChangePayload
+  result?: Record<string, unknown>
 }
 export interface AccessTuple {
   permission_code: string
@@ -198,8 +206,9 @@ export const stateLabels: Record<string, string> = {
 export const identityApi = {
   change: async (id: string) => (await http.get<ChangeRecord>(`/iam/identity-changes/${id}`)).data,
   catalog: async () => (await http.get<OrganizationCatalog>('/system/organization-catalog')).data,
+  personnelCatalog: async () => (await http.get<OrganizationCatalog>('/system/organization-catalog', { params: { include: 'personnel_scope' } })).data,
   people: async (params: Record<string, string | number>) =>
-    (await http.get<{ total: number; items: Person[] }>('/system/people', { params })).data,
+    (await http.get<{ total: number; items: Person[]; org_counts?: OrgDepartmentCount[] }>('/system/people', { params })).data,
   person: async (id: string) =>
     (await http.get<PersonIdentity>(`/system/users/${id}/identity`)).data,
   draft: async (payload: ChangePayload, existing?: ChangeRecord) =>

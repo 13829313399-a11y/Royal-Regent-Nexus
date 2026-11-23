@@ -39,6 +39,27 @@ test('QC remark displays the authoritative snapshot, hides blank values and neve
   }finally{p.dom.window.close();}
  }
 });
+
+test('report values and history are explicitly separate from approval and escape stored text',async()=>{
+ const p=page();try{
+  await p.w.QcInspectionSummary.load();
+  const weekly={label:'合同号',value:'000017',source:'周报明细补录',scope:'周起始 2026-11-02',current:true,actor:{id:'qc-1',name:'报告录入员'}};
+  const monthly={label:'合同号',value:'000018',source:'月度库补录（日 / 月 / 年及图文共用）',scope:'2026-10',current:false,actor:{id:'qc-2'}};
+  const audit={...weekly,id:'week:1',label:'报告备注 / 照片备注',at:'2026-11-02T08:00:00Z',before:'<img src=x onerror=alert(1)>',after:''};
+  p.w.fetch=async()=>({ok:true,json:async()=>({qc:{id:'one',contractNo:'审核合同号',remark:'已审核原备注'},reportSupplements:{
+   status:'unavailable',items:[weekly,monthly],changes:[audit,{...monthly,id:'month:2',at:'2026-10-02T08:00:00Z',before:'',after:'000018'}]
+  }})});
+  p.d.querySelector('[data-summary-id]').click();await tick();
+  const qc=p.d.querySelector('#qsum-panel-qc'),changes=p.d.querySelector('#qsum-panel-changes');
+  assert.match(qc.textContent,/审核合同号.*报告补录（本单）.*不覆盖验货审核原值/s);
+  assert.match(qc.textContent,/周报明细补录.*000017.*历史范围.*000018/s);
+  assert.match(qc.textContent,/部分报告补录暂不可读取/);
+  assert.match(changes.textContent,/报告补录修改记录.*报告录入员.*修改前<img src=x onerror=alert\(1\)>修改后空/s);
+  assert.match(changes.textContent,/账号标识：qc-2/);
+  assert.equal(changes.querySelector('img'),null);
+  assert.doesNotMatch(p.d.querySelector('#qsum-panel-review').textContent,/报告补录/);
+ }finally{p.dom.window.close();}
+});
 const script=readFileSync(new URL('./qc-inspection-summary.js',import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 function page(){
@@ -48,7 +69,8 @@ function page(){
  let transport;Object.defineProperty(w,'fetch',{configurable:true,get:()=>transport,set:fn=>{transport=async(url,options)=>{const response=await fn(url,options);if(response.ok&&String(url).includes('api/inspection-dossier/records/')){const raw=await response.json();return {...response,json:async()=>raw.qc?raw:{qc:raw,business:{status:'missing'},audit:[],changes:[],sourceEvents:[]}};}return response;};}});
  w.__QC_NEXUS={exportAllowed:true,summaryImportAllowed:false};
  w.fetch=async url=>{calls.push(url);return {ok:true,json:async()=>({items:[{id:'one',customer:'<script>bad</script>',productNo:'00042',scheduleDate:'2026-11-03',inspectionDate:'2026-11-07',inspectionType:'待确认',status:'unverified',result:'PENDING'}],total:1,page:1,pageSize:30,years:['2024','2025','2026'],counts:{历史待核实:1},unknownDates:1})};};
- w.eval(readFileSync(new URL('./qc-inspection-audit.js',import.meta.url),'utf8'));w.eval(script);return {w,dom,calls,d:w.document};
+ w.eval(readFileSync(new URL('./qc-inspection-audit.js',import.meta.url),'utf8'));
+ w.eval(readFileSync(new URL('./qc-photo-shapes.js',import.meta.url),'utf8'));w.eval(script);return {w,dom,calls,d:w.document};
 }
 test('year/month/day cascade resets stale dates and handles leap years',async()=>{
  const p=page();try{await p.w.QcInspectionSummary.load();const set=async(id,value)=>{const e=p.d.getElementById(id);e.value=value;e.dispatchEvent(new p.w.Event('change'));await tick();};
@@ -89,7 +111,7 @@ test('dossier restores requested QC report fields while preserving photos and co
   p.d.querySelector('[data-summary-id]').click();await tick();const names=[...p.d.querySelectorAll('dialog dt')].map(e=>e.textContent);
   assert.equal(names.includes('来源文件'),false);
   for(const restored of ['报告状态','责任人','报告暂缺说明','结论说明'])assert.ok(names.includes(restored));
-  for(const retained of ['第一责任人','第二责任人','QC备注','改进措施','提交时间（北京时间）','确认时间（北京时间）','来源','记录标识'])assert.ok(names.includes(retained));
+  for(const retained of ['第一责任人','第二责任人','QC备注','改善措施','提交时间（北京时间）','确认时间（北京时间）','来源','记录标识'])assert.ok(names.includes(retained));
   assert.equal(p.d.querySelectorAll('dialog img').length,2);assert.match(p.d.querySelector('dialog').textContent,/2026\/11\/02 01:25/);
  }finally{p.dom.window.close();}
 });
@@ -337,7 +359,7 @@ test('product identity precedes QC and photos; original is only requested explic
   assert.equal(fields['数量'],'168');
   assert.equal(fields['实际数量'],'160');
   assert.equal(fields['验货问题'],'模拟检查：未发现异常。');
-  assert.equal(fields['改进措施'],'核对清单');
+  assert.equal(fields['改善措施'],'核对清单');
   assert.equal(fields['不合格项'],undefined);
   p.d.querySelector('[data-photo]').click();const box=p.d.querySelector('.qsum-lightbox'),img=box.querySelector('img');assert.ok(!img.src.includes('original'));
   box.querySelector('[data-photo-original]').click();assert.ok(img.src.endsWith('?variant=original-display'));img.onerror();assert.match(box.textContent,/原图加载失败/);

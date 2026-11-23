@@ -2,7 +2,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Component from '../CartonSpecialStockActionDialog.vue'
-import { cartonSpecialStockActionsApi as api, type SpecialStockAction, type SpecialStockPreview, type SpecialStockResult } from '@/api/cartonSpecialStockActions'
+import { cartonOrderStockReturnApi as regularApi, cartonSpecialStockActionsApi as api, type SpecialStockAction, type SpecialStockPreview, type SpecialStockResult } from '@/api/cartonSpecialStockActions'
 
 const auth = reactive({ currentUser: { id: 'warehouse' }, authorizationVersion: 1, permitted: true })
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({
@@ -10,13 +10,16 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({
   can: () => auth.permitted,
 }) }))
 vi.mock('@/lib/http', () => ({ http: {}, getApiErrorMessage: (error: Error) => error.message }))
-vi.mock('@/api/cartonSpecialStockActions', () => ({ cartonSpecialStockActionsApi: { preview: vi.fn(), submit: vi.fn(), undo: vi.fn() } }))
+vi.mock('@/api/cartonSpecialStockActions', () => ({
+  cartonSpecialStockActionsApi: { preview: vi.fn(), submit: vi.fn(), undo: vi.fn() },
+  cartonOrderStockReturnApi: { preview: vi.fn(), submit: vi.fn() },
+}))
 const source = { id: 'SP1', request_no: 'SP-001', revision: 5, status: 'COMPLETED' }
 const preview = (): SpecialStockPreview => ({ source_request: source, source_fingerprint: 'stock-basis-1', can_return: true, can_replenish: true, blockers: [], replacement: null,
   lines: [{ receipt_line_id: 'RL1', movement_id: 'IM1', location_id: 'BIN1', location_label: '一仓A', receipt_no: 'RC1', request_line_id: 'SL1', item_no: 'BOX', packaging_type: '外箱', paper_quality: 'A33', specification: '20*10*5', dimension_unit: 'cm', unit: '个', currency: 'CNY', received_quantity: '10', safe_quantity: '8', inventory_unit_price: '2', inventory_amount: '20', blockers: [] }] })
 const response = (action: SpecialStockAction = 'RETURN'): SpecialStockResult => ({ action, source_request: { ...source, revision: 6 }, movement_ids: ['OUT1'], replenishment_request: action === 'REPLENISH' ? { id: 'B1', request_no: 'SP-001-B01', revision: 1, status: 'SENT' } : null })
-function open(action: SpecialStockAction = 'RETURN') {
-  return mount(Component, { props: { factoryId: 'huaxing', requestId: 'SP1', requestNo: 'SP-001', action, viewerKey: 'viewer' }, global: { stubs: {
+function open(action: SpecialStockAction = 'RETURN', regularOrder = false) {
+  return mount(Component, { props: { factoryId: 'huaxing', requestId: regularOrder ? 'CT-001' : 'SP1', requestNo: regularOrder ? 'CT-001' : 'SP-001', action, regularOrder, viewerKey: 'viewer' }, global: { stubs: {
     DialogRoot: { template: '<div><slot /></div>' }, DialogOverlay: true, DialogContent: { template: '<section role="dialog"><slot /></section>' },
     DialogTitle: { template: '<h2><slot /></h2>' }, DialogDescription: { template: '<p><slot /></p>' },
   } } })
@@ -32,14 +35,47 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-describe('样板杂单库存动作', () => {
+describe('订单库存动作', () => {
   it('opens read-only and submits exact source/bin, quantity and basis only after confirmation', async () => {
     const w = open(); await flushPromises()
     expect(api.submit).not.toHaveBeenCalled(); expect(api.undo).not.toHaveBeenCalled()
+    expect(w.get('h2').text()).toBe('订单退货')
     expect(w.text()).toContain('原需求和已收记录保留')
+    expect(w.get<HTMLInputElement>('[aria-label="RC1 外箱 一仓A 本次数量"]').element.value).toBe('8')
     await fill(w); await w.get('form').trigger('submit'); await flushPromises()
     expect(api.submit).toHaveBeenCalledWith('SP1', expect.objectContaining({ factory_id: 'huaxing', expected_revision: 5, source_fingerprint: 'stock-basis-1', action: 'RETURN', reason: '核实实际退回', return_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), lines: [{ receipt_line_id: 'RL1', movement_id: 'IM1', location_id: 'BIN1', quantity: '3' }] }), expect.any(AbortSignal))
     expect(w.emitted('changed')).toHaveLength(1); expect(w.text()).toContain('退货签收与退款'); expect(localStorage.length).toBe(0); w.unmount()
+  })
+  it('prefills the regular order positions and submits only the actual positive return quantities', async () => {
+    const { receipt_no, receipt_line_id, movement_id, ...paper } = preview().lines[0]!
+    vi.mocked(regularApi.preview).mockResolvedValue({
+      ...preview(), can_replenish: false, replacement: null,
+      source_request: { ...source, id: 'CT-001', request_no: 'CT-001' },
+      lines: [
+        { ...paper, order_line_id: 'P1', safe_quantity: '8.1250' },
+        { ...paper, order_line_id: 'P1', location_id: 'BIN2', location_label: '一仓B', safe_quantity: '5' },
+        { ...paper, order_line_id: 'P2', packaging_type: '内箱', safe_quantity: '2', blockers: ['待核实供应商'] },
+      ],
+    })
+    vi.mocked(regularApi.submit).mockResolvedValue({ action: 'RETURN', replenishment_request: null })
+    const w = open('RETURN', true); await flushPromises()
+    const first = w.get<HTMLInputElement>('[aria-label="CT-001 外箱 一仓A 本次数量"]')
+    const second = w.get<HTMLInputElement>('[aria-label="CT-001 外箱 一仓B 本次数量"]')
+    const blocked = w.get<HTMLInputElement>('[aria-label="CT-001 内箱 一仓A 本次数量"]')
+    expect(first.element.value).toBe('8.1250')
+    expect(second.element.value).toBe('5')
+    expect(blocked.element.value).toBe('')
+    expect(blocked.element.disabled).toBe(true)
+    await first.setValue('3.25')
+    await second.setValue('0')
+    await w.get('[aria-label="办理原因"]').setValue('核实实际退回')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(regularApi.submit).toHaveBeenCalledWith('CT-001', expect.objectContaining({
+      action: 'RETURN', lines: [{ order_line_id: 'P1', location_id: 'BIN1', quantity: '3.25' }],
+    }), expect.any(AbortSignal))
+    expect(api.submit).not.toHaveBeenCalled()
+    expect(w.emitted('changed')).toHaveLength(1)
+    w.unmount()
   })
   it.each(['9', '-1', '1e2', '0.00001'])('rejects invalid or excessive quantity %s without writing', async qty => {
     const w = open(); await flushPromises(); await fill(w, qty); await w.get('form').trigger('submit'); await flushPromises()
@@ -73,7 +109,8 @@ describe('样板杂单库存动作', () => {
     vi.mocked(api.submit).mockRejectedValueOnce(Object.assign(new Error('库存数量已变化'), { response: { status: 409 } }))
     const w = open(); await flushPromises(); await fill(w); await w.get('form').trigger('submit'); await flushPromises()
     expect(localStorage.length).toBe(0); expect(w.text()).toContain('重新核对可办理数量')
-    await button(w, '重新核对来源').trigger('click'); await flushPromises(); await fill(w)
+    await button(w, '重新核对来源').trigger('click'); await flushPromises()
+    expect(w.get<HTMLInputElement>('[aria-label="RC1 外箱 一仓A 本次数量"]').element.value).toBe('3')
     vi.mocked(api.submit).mockRejectedValueOnce(Object.assign(new Error('提交标识已用于其他内容'), { response: { status: 409 } }))
     await w.get('form').trigger('submit'); await flushPromises(); expect(localStorage.length).toBe(1); expect(w.text()).toContain('核对原结果 / 重试'); w.unmount()
   })
