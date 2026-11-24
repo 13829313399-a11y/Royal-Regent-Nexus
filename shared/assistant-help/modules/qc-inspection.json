@@ -161,7 +161,7 @@
       {
         "path": "backend/app/api/qc_mobile.py",
         "symbol": "def create_pairing",
-        "sha256": "4684e381a85a820e35e5668e01ca30c4630419bf60513df8540049f6ac5365f1"
+        "sha256": "351c79a36309ab78325dfd47690d6d487625a88abbfb93796f170a6811c7519d"
       },
       {
         "path": "services/qc-department/mobile-inspection/remote.js",
