@@ -66,7 +66,10 @@ describe('installUnauthorizedSessionHandler', () => {
     force_password_change: false,
   }
 
-  it('clears the auth session and redirects the current page to login on 401', async () => {
+  it.each([
+    '/modules/molding-sample?factory=huaxing',
+    '/modules/pmc-warehouse/fabric-warehouse/receipts?factory=huakang-c&view=pending&purchase_id=source-1',
+  ])('clears the auth session and preserves the full original target on 401 (%s)', async (fullPath) => {
     const { installUnauthorizedSessionHandler } = await import('../sessionExpiryHandler')
     const pinia = createPinia()
     const authStore = useAuthStore(pinia)
@@ -74,7 +77,7 @@ describe('installUnauthorizedSessionHandler', () => {
       currentRoute: {
         value: {
           name: 'molding-sample',
-          fullPath: '/modules/molding-sample?factory=huaxing',
+          fullPath,
           meta: { requiresAuth: true },
         },
       },
@@ -90,7 +93,7 @@ describe('installUnauthorizedSessionHandler', () => {
     expect(authStore.currentUser).toBeNull()
     expect(router.replace).toHaveBeenCalledWith({
       name: 'login',
-      query: { redirect: '/modules/molding-sample?factory=huaxing' },
+      query: { redirect: fullPath },
     })
   })
 
