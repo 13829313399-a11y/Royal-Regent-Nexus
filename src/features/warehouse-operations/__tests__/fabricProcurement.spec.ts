@@ -53,6 +53,69 @@ async function openLinkedPurchase() {
 }
 
 describe('real fabric procurement workspace', () => {
+  it.each([
+    [{ isAxiosError: true, code: 'ERR_NETWORK' }, '读取失败'],
+    [{ isAxiosError: true, code: 'ECONNABORTED' }, '读取失败'],
+    [{ isAxiosError: true, response: { status: 403 } }, '无读取权限'],
+  ])('ends the list loading summary on failure and recovers on original-detail retry (%s)', async (failure, label) => {
+    let rejectList!: (error: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectList = reject }))
+    api.detail.mockRejectedValueOnce(failure).mockResolvedValueOnce(linkedDetail)
+    await openLinkedPurchase()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取中…')
+    rejectList(failure); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe(label)
+    expect(wrapper!.text()).not.toContain('正在读取…')
+    let finishList!: (value: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise(resolve => { finishList = resolve }))
+    await button('重试原采购明细').trigger('click'); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取中…')
+    finishList({ total: 2, line_total: 3, groups: [] }); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('2 个物料组 · 3 条采购明细')
+    expect(api.detail.mock.calls).toEqual([['source-1'], ['source-1']])
+  })
+
+  it('keeps a successful zero list distinct from a failed or forbidden linked detail', async () => {
+    api.detail.mockRejectedValue({ isAxiosError: true, response: { status: 403 } })
+    await openLinkedPurchase()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('0 个物料组 · 0 条采购明细')
+    expect(wrapper!.get('.fabric-group-total').text()).not.toContain('无读取权限')
+  })
+
+  it('ends the list summary independently while the linked detail is still pending', async () => {
+    let finishDetail!: (value: PurchaseDetail) => void
+    api.detail.mockImplementationOnce(() => new Promise(resolve => { finishDetail = resolve }))
+    api.groups.mockRejectedValueOnce({ isAxiosError: true, code: 'ERR_NETWORK' })
+    await openLinkedPurchase()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取失败')
+    finishDetail(linkedDetail); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取失败')
+  })
+
+  it('replaces valid counts with the actual background-read failure state', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    api.detail.mockRejectedValue({ isAxiosError: true, response: { status: 404 } })
+    api.groups.mockResolvedValueOnce({ total: 2, line_total: 3, groups: [] })
+    await openLinkedPurchase()
+    let rejectRead!: (error: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRead = reject }))
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('2 个物料组 · 3 条采购明细')
+    rejectRead({ isAxiosError: true, response: { status: 403 } }); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('无读取权限')
+  })
+
+  it('does not let an obsolete list failure replace the current successful summary', async () => {
+    let rejectOld!: (error: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject }))
+    api.detail.mockResolvedValue(linkedDetail)
+    const router = await openLinkedPurchase()
+    await router.push('/receipts?factory=huakang-c&view=pending'); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('0 个物料组 · 0 条采购明细')
+    rejectOld({ isAxiosError: true, response: { status: 403 } }); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('0 个物料组 · 0 条采购明细')
+  })
+
   it('keeps the current pending rows and paging while an automatic refresh is outstanding', async () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
     const line = { ...linkedDetail, facts: { ...linkedDetail.facts, order_no: 'PO-AUTO' } }

@@ -11,7 +11,6 @@ export default defineConfig(context => {
     throw new Error('Use a loopback API connected to an independent acceptance database copy.')
   }
   const directory = resolve('.tmp/fabric-purchase-detail-browser')
-  const flag = resolve(directory, 'delay-detail.flag')
   return {
     ...config,
     cacheDir: resolve(directory, 'vite-cache'),
@@ -21,9 +20,11 @@ export default defineConfig(context => {
       configureServer(server) {
         server.middlewares.use((request, response, next) => {
           const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-          if (request.method !== 'GET' ||
-              !/^\/api\/fabric-warehouse\/procurement\/lines\/[\w-]{1,64}$/.test(url.pathname) ||
+          const detail = /^\/api\/fabric-warehouse\/procurement\/lines\/[\w-]{1,64}$/.test(url.pathname)
+          const list = url.pathname === '/api/fabric-warehouse/procurement/lines'
+          if (request.method !== 'GET' || (!detail && !list) ||
               url.searchParams.get('factory_id') !== 'huakang-c') return next()
+          const flag = resolve(directory, detail ? 'delay-detail.flag' : 'delay-list.flag')
           let delay: number
           try { delay = Number(readFileSync(flag, 'utf8').trim()) }
           catch (error) {
