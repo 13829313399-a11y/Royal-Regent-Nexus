@@ -20,14 +20,9 @@ def test_online_document_connections_and_dynamic_files_cannot_use_static_proxy()
     assert '(EIO|transport)' in static_block
 
 
-def test_indonesia_master_upload_budget_is_scoped_to_preview_only():
+def test_retired_indonesia_materials_has_no_dedicated_proxy():
     config = (REPOSITORY_ROOT / 'nginx.prod.conf').read_text(encoding='utf-8')
-    start = config.index('location = /api/indonesia-materials/master-imports/preview {')
-    block = config[start:config.index('\n  }', start)]
-    assert 'client_max_body_size 205m;' in block
-    assert 'proxy_send_timeout 270s;' in block
-    assert 'proxy_read_timeout 270s;' in block
-    assert 'proxy_read_timeout 30s;' in config[config.index('location /api/'):]
+    assert '/api/indonesia-materials' not in config
 
 
 def test_huakang_b_jp_file_routes_have_scoped_budget_without_relaxing_other_reads():

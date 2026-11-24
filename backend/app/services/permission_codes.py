@@ -23,6 +23,7 @@ INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES = frozenset({
 INDONESIA_MATERIAL_PERMISSION_CODES = tuple('indonesia_material:' + action for action in (
     'read', 'write', 'receipt_confirm', 'export',
 ))
+RETIRED_PERMISSION_CODES = INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES.union(INDONESIA_MATERIAL_PERMISSION_CODES)
 
 UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
     "read", "master_write", "plan_write", "production_write", "quality_write",

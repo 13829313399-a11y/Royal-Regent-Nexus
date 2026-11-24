@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { App, Button, Card, Input, InputNumber, Popconfirm, Select, Space, Table, Typography } from 'antd'
 import { api } from '../api/client'
 import './QuotesPage.css'
+import { ImportTemplateDownload } from '../components/ImportTemplateDownload'
 
 // Legacy quote shape (from old HTML — settings.quotes blob)
 interface Quote {
@@ -422,6 +423,7 @@ export default function QuotesPage() {
               <Button danger disabled={!rows.length}>🗑 清空全部</Button>
             </Popconfirm>
             <Button onClick={() => fileRef.current?.click()}>📥 导入 Excel</Button>
+            <ImportTemplateDownload kind="quotes" />
             <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) importExcel(f); e.target.value = '' }} />
             <Button onClick={exportExcel} disabled={!rows.length}>📤 导出 Excel</Button>

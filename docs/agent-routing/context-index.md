@@ -48,7 +48,7 @@
 | [公共文档工具与在线文档](../project-memory/documents-and-shipping.md#shared-tools) | [README.md](../document-tools/README.md) | [document_tools.py](../../backend/app/api/document_tools.py) | [test_document_tools_jobs.py](../../backend/tests/test_document_tools_jobs.py) |
 | [箱唛与印尼发票核对](../project-memory/documents-and-shipping.md#marks-invoice) | [carton_mark.py](../../backend/app/api/carton_mark.py) | [indonesia_invoice.py](../../backend/app/api/indonesia_invoice.py) | [test_carton_mark_api.py](../../backend/tests/test_carton_mark_api.py) |
 | [印尼走货明细](../project-memory/documents-and-shipping.md#shipping) | [indonesia-shipping.md](../indonesia-shipping.md) | [indonesia_shipping.py](../../backend/app/api/indonesia_shipping.py) | [test_indonesia_shipping.py](../../backend/tests/test_indonesia_shipping.py) |
-| [送印尼物料](../project-memory/documents-and-shipping.md#materials-id) | [indonesia-materials-implementation.md](../business/indonesia-materials-implementation.md) | [indonesia_materials.py](../../backend/app/api/indonesia_materials.py) | [test_indonesia_materials.py](../../backend/tests/test_indonesia_materials.py) |
+| [送印尼物料（已下线）](../project-memory/documents-and-shipping.md#materials-id) | [历史实现](../business/indonesia-materials-implementation.md) | [历史接口实现](../../backend/app/api/indonesia_materials.py) | [test_indonesia_materials.py](../../backend/tests/test_indonesia_materials.py) |
 
 ## 发布、配置与历史
 

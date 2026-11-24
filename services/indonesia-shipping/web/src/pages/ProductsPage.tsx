@@ -9,6 +9,7 @@ import { resolveMaterialTranslation } from '../utils/materialTranslate'
 import { mergeImportedMaterials, recommendMaterialChoices, resolveMaterialImport, type ImportChoice } from '../utils/materialImportMerge'
 import { mergeImportedMoldings } from '../utils/moldingImportMerge'
 import { MaterialImportReview } from '../components/MaterialImportReview'
+import { ImportTemplateDownload } from '../components/ImportTemplateDownload'
 import SupplierProfileEditor from '../components/SupplierProfileEditor'
 import {
   HUASHENGYI_FULL_NAME, materialCustomsCompany,
@@ -324,11 +325,12 @@ export default function ProductsPage() {
       <Card
         title={`货号库 — 共 ${rows.length} 个货号`}
         extra={
-          <Space>
+          <Space wrap>
             <Input.Search allowClear placeholder="搜索 编码/名称/客户" style={{ width: 280 }}
               onSearch={setFilter} onChange={(e) => !e.target.value && setFilter('')} />
             <Button type="primary" onClick={openCreate}>➕ 新建货号</Button>
             <Button onClick={() => engFileRef.current?.click()}>📋 导入工程放产资料</Button>
+            <ImportTemplateDownload kind="engineering" />
             <input ref={engFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) importEngineering(f); e.target.value = '' }} />
             <Switch checkedChildren="含停用" unCheckedChildren="仅启用" checked={showInactive} onChange={setShowInactive} />

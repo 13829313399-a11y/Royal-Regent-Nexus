@@ -1,6 +1,6 @@
 # 印尼走货明细 UI 简报
 
-新入口 `/modules/sales-business/indonesia-shipping` 服务业务部/印尼小组，明确选择六个实际厂区之一。主要工作是延续 RR-Portal 的客户/货号/物料/采购/生产/排期/出库/走货及报关流程。现有“送印尼物料”保持独立；业务数据和原字段语义不做转换。
+入口 `/modules/sales-business/indonesia-shipping` 服务业务部/印尼小组，明确选择六个实际厂区之一。主要工作是延续 RR-Portal 的客户/货号/物料/采购/生产/排期/出库/走货及报关流程。已下线的“送印尼物料”历史资料保存在原库，原字段语义和数据保持独立。
 
 遵循 DESIGN.md 第 2、3、8、10、15、17 节。外层复用 Nexus 的 Button、SectionPanel、Lucide Ship、字体、背景/边框/文本 token；只添加紧凑身份与导航条：返回业务部、模块名、当前厂区、当前账号、厂区选择与重新连接。主体以 iframe 保留上游 React/Ant Design 的原始布局、密度、筛选、弹窗、编辑器和导出动作，其 CSS 不进入全局。该样式隔离是保留完整原前端的明确局部例外。
 
