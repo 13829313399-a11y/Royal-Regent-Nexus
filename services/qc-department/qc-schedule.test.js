@@ -171,7 +171,15 @@ test('intake preview marks duplicates, disables all-duplicate imports, and repor
   w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
   d.getElementById('page-records').classList.add('active');
   w.QcSchedule.openNew();
-  const file=new w.File(['QA'],'intake.xlsx'), picker=d.querySelector('.qis-intake input[type=file]');
+   const file=new w.File(['QA'],'intake.xlsx'), picker=d.querySelector('.qis-intake input[type=file]');
+   const filename=d.getElementById('qc-intake-filename');
+   assert.equal(filename.textContent,'未选择文件');
+   let pickerOpens=0;
+   picker.addEventListener('click',()=>pickerOpens++);
+   const pickButton=d.querySelector('[data-pick-file]');
+   assert.equal(pickButton.textContent,'选择文件');
+   pickButton.click();
+   assert.equal(pickerOpens,1);
   Object.defineProperty(picker,'files',{value:[file]});
   const select=async (count, duplicates)=>{
    preview={sheet:'客户验货排期',digest:'example-digest',count,existing:2-count,rows:duplicates.map((duplicate,i)=>({
@@ -184,8 +192,10 @@ test('intake preview marks duplicates, disables all-duplicate imports, and repor
   preview={sheet:'客户验货排期',digest:'old-version',rows:[{line:7}]};
   picker.dispatchEvent(new w.Event('change')); await tick();
   assert.equal(button.disabled,true);
-  assert.match(d.querySelector('[data-error]').textContent,/尚未启用逐行查重/);
-  await select(0,[true,true]);
+   assert.match(d.querySelector('[data-error]').textContent,/尚未启用逐行查重/);
+   assert.equal(filename.textContent,'未选择文件');
+   await select(0,[true,true]);
+   assert.equal(filename.textContent,file.name);
   assert.equal(button.disabled,true);
   assert.match(d.querySelector('[data-preview-count]').textContent,/待追加 0 条 · 重复跳过 2 条/);
   button.click();
