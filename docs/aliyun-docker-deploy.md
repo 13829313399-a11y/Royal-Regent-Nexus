@@ -119,6 +119,8 @@ curl -f http://127.0.0.1/health
 
 ### 移动验货上线验收
 
+[2026-11-24 公司交接：仅 QC 候选的构建、基线核对、切换与现场验收](../deploy/qc-mobile-20261124/README.md)。
+
 启用时，在受管 `.env.production` 中设置 `QC_MOBILE_PUBLIC_ORIGIN` 为验货台和员工手机共用的固定 HTTPS 地址（443，不含路径）。可以使用域名；只有固定公网 IPv4 时也可配置 `https://<固定公网IPv4>`，证书须受员工手机信任并在 `iPAddress` SAN 中包含该 IP。确认 443 入口在客户端不发送域名 SNI 时也会提供正确的证书链，并实测证书自动续期和加载。不能使用局域网地址或 5298。
 
 生产由已存在的 Web 代理把 `/api/qc-mobile/` 原样转发到正式 API，不另启局域网监听。外层 HTTPS 入口须保留正式 `Host`，原样转发 `Origin`、`Cookie` 和 `Set-Cookie`，不能缓存该前缀、覆盖错误状态或把路径回退到主站 `index.html`。外层负责证书自动续期和 HTTP 到 HTTPS 的跳转。保持受管的单正式 API 和 QC 持久卷；在设计验证共享状态前，不给手机入口挂接各自使用独立配对库的 API 副本。
