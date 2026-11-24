@@ -235,7 +235,7 @@
       {
         "path": "backend/app/services/customer_order_buzzbee.py",
         "symbol": "def packaging_references",
-        "sha256": "eacf777766fe7a7be58f3fcffd72adeb16955244ed0b98fa363c66353d3f2e42"
+        "sha256": "555cd7a7fea2cf6ecd6d96b1278af262c450fd8e953962ac362190475811e21b"
       },
       {
         "path": "backend/app/services/customer_order_buzzbee_color_box.py",
@@ -255,7 +255,7 @@
       {
         "path": "backend/app/services/huakang_b_jp/parser.py",
         "symbol": "def parse_order_email",
-        "sha256": "f023df7c9d57aac1d1f33fb2c30fe90a3bc4a280d59069c0966b88bc36f6d8df"
+        "sha256": "73ef4791c0b0bc1d5e42fc5bb51c37662093f5eaee977117cec888b8ee6fdead"
       },
       {
         "path": "src/features/carton-procurement/quickUploadQueue.ts",
@@ -280,7 +280,7 @@
       {
         "path": "src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue",
         "symbol": "async function confirmAndGenerateSchedule",
-        "sha256": "c15cb37bbd12711abdd3face8f44fdcd5b51619165fc6d6d7aaa97309cacfbed"
+        "sha256": "9bf017be15765bbef3b8dad017932338211f123a50eaf04abb29050eed2cac00"
       },
       {
         "path": "src/api/customerOrder.ts",
@@ -345,7 +345,7 @@
       {
         "path": "backend/app/services/customer_order_zuru_native.py",
         "symbol": "def preview",
-        "sha256": "a9100f1d4897a0ac38a4bf47701745643641d166cf3436f3cef79c618c93b6ee"
+        "sha256": "0482795bd07b3ad97c77ed1de60d45a43f3d9ec752c24664cc3669e956926c56"
       }
     ],
     "knowledge_version": "2026.11.20-indonesia-order-intake",

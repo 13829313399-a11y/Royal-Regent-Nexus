@@ -18,6 +18,8 @@
 <a id="cutting"></a>
 ## 华康 C 裁床
 
+从裁床打开布料仓原采购明细时，重试焦点意图限定原明细与原账号。连续 403 及授权刷新重建按钮后，未主动移焦时恢复重试按钮；聚焦或点击其他位置、按 Tab、切换账号／明细及卸载时取消恢复。相同列表与明细权限错误只显示一次。会话过期后的登录返回地址保留厂区、视图与原明细编号，撤权清除旧业务数据。
+
 按本厂订单来源、BOM 执行版本和已发布任务领料。`POST /api/cutting-operations/orders/{line_id}/materials/{action}` 接受 request、receive、void、close、reuse，所属路由、授权和幂等身份见源码。仓库分批实发后裁床签收，工资、月结、委外对账和付款另有锁定与纠错流程。
 
 P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang-c-cutting-independent-acceptance.md)和后续各期实录。正式切换仍依赖真实订单、岗位和凭单的闭环记录。

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter, type RouteLocationNormalized } from 'vue-router'
 import { isAxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth'
@@ -36,6 +36,8 @@ const history = ref<PurchaseImport[]>([]), detail = ref<PurchaseDetail>(), detai
 const purchaseDetailTrigger = ref<HTMLButtonElement>()
 const linkedPurchase = computed(() => props.mode === 'pending' && props.purchaseId && /^[\w-]{1,64}$/.test(props.purchaseId) ? props.purchaseId : '')
 const linkedDetailError = ref<{ message: string; missing: boolean }>()
+const linkedRetryButton = ref<{ $el: HTMLButtonElement }>()
+let retryFocusTarget: { source: string; actor: string | undefined } | undefined
 let handledPurchase = ''
 let purchaseListFailed = false
 const detailIdentityReview = computed(() => !!(detail.value?.receipt_identity_review_required || detail.value?.receipt_reconciliation_required))
@@ -150,6 +152,7 @@ async function load(background = false) {
 }
 watch(importSaving, saving => { if (!saving && deferredLoad) void load() })
 watch(linkedPurchase, () => {
+  clearRetryFocus()
   handledPurchase = ''; linkedDetailError.value = undefined; detailOpen.value = false; detail.value = undefined
   void load()
 })
@@ -171,7 +174,7 @@ function refreshPendingWhenIdle() {
 const refreshTimer = setInterval(refreshPendingWhenIdle, 60_000)
 window.addEventListener('focus', refreshPendingWhenIdle)
 document.addEventListener('visibilitychange', refreshPendingWhenIdle)
-onBeforeUnmount(() => { alive = false; sequence++; clearInterval(refreshTimer); clearTimeout(searchTimer); window.removeEventListener('focus', refreshPendingWhenIdle); document.removeEventListener('visibilitychange', refreshPendingWhenIdle) })
+onBeforeUnmount(() => { alive = false; sequence++; clearRetryFocus(); clearInterval(refreshTimer); clearTimeout(searchTimer); window.removeEventListener('focus', refreshPendingWhenIdle); document.removeEventListener('visibilitychange', refreshPendingWhenIdle) })
 function leaveImport(to: RouteLocationNormalized) {
   if (!pendingImport.value || to.name === 'login' || to.name === 'forbidden') return true
   error.value = '导入结果尚未确认，请先使用原请求核对结果，再切换页面。'
@@ -182,6 +185,7 @@ onBeforeRouteLeave(leaveImport); onBeforeRouteUpdate(leaveImport)
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 watch([() => auth.currentUser?.id, () => auth.authorizationVersion], () => {
+  if (retryFocusTarget?.actor !== auth.currentUser?.id) clearRetryFocus()
   clearTimeout(searchTimer); clearImport(); file.value = undefined
   lines.value = []; groups.value = []; total.value = undefined; summary.value = undefined; options.value = undefined
   history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false; canPendingPurchase.value = false; savedReceiptId.value = ''
@@ -261,8 +265,39 @@ async function loadLinkedDetail(ticket: number) {
     linkedDetailError.value = { message: getApiErrorMessage(failure), missing: isAxiosError(failure) && failure.response?.status === 404 }
   }
 }
+function clearRetryFocus() {
+  retryFocusTarget = undefined
+  document.removeEventListener('focusin', retryFocusMoved)
+  document.removeEventListener('pointerdown', clearRetryFocus)
+  document.removeEventListener('keydown', retryFocusKey)
+}
+function retryFocusMoved(event: FocusEvent) {
+  if (event.target !== linkedRetryButton.value?.$el && event.target !== document.body) clearRetryFocus()
+}
+function retryFocusKey(event: KeyboardEvent) {
+  if (event.key === 'Tab') clearRetryFocus()
+}
+watch([busy, linkedDetailError], async () => {
+  const target = retryFocusTarget
+  if (!target || busy.value || !linkedDetailError.value) return
+  await nextTick()
+  if (retryFocusTarget !== target) return
+  const restore = alive && !busy.value && linkedPurchase.value === target.source
+    && auth.currentUser?.id === target.actor && !linkedDetailError.value?.missing
+    && (document.activeElement === document.body || document.activeElement === linkedRetryButton.value?.$el)
+  clearRetryFocus()
+  if (restore) linkedRetryButton.value?.$el.focus()
+}, { flush: 'post' })
+function captureRetryFocus() {
+  clearRetryFocus()
+  retryFocusTarget = { source: linkedPurchase.value, actor: auth.currentUser?.id }
+  document.addEventListener('focusin', retryFocusMoved)
+  document.addEventListener('pointerdown', clearRetryFocus)
+  document.addEventListener('keydown', retryFocusKey)
+}
 async function retryLinkedDetail() {
   if (busy.value || !linkedDetailError.value || linkedDetailError.value.missing) return
+  captureRetryFocus()
   if (purchaseListFailed) {
     handledPurchase = ''
     await load()
@@ -386,13 +421,13 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
 <template>
   <div class="fabric-procurement">
     <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '按供应商和物料查看待收与复期，从对应采购明细登记本次实收。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
-    <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
+    <p v-if="error && error !== linkedDetailError?.message" class="fabric-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="fabric-success" role="status">{{ notice }} <RouterLink v-if="savedReceiptId && notice.includes(savedReceiptId)" class="underline" :to="{ path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'history', receipt: savedReceiptId } }">查看本次入库</RouterLink></p>
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
     <div v-if="linkedDetailError" class="fabric-error">
       <p role="alert">{{ linkedDetailError.missing ? '找不到该厂区的原采购明细，可返回采购列表查找。' : `无法打开原采购明细。${linkedDetailError.message}` }}</p>
       <Button v-if="linkedDetailError.missing" type="button" variant="outline" @click="returnToPurchaseList">返回采购列表</Button>
-      <Button v-else type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
+      <Button v-else ref="linkedRetryButton" type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
     </div>
     <p v-if="pendingImport" class="fabric-message" role="status">导入结果尚未确认，文件和提交内容已锁定。<Button v-if="canRetryImport && !confirmOpen" variant="outline" size="sm" :disabled="busy || importSaving" @click="saveImport">核对原导入结果</Button><span v-if="!canRetryImport">请使用原提交账号核对结果。</span></p>
     <template v-if="mode === 'import'">

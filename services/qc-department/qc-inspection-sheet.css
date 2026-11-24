@@ -653,10 +653,70 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 }
 #page-records .records-actions { gap: 8px; }
 #btnAddInspection { min-height: var(--records-control-height); white-space: nowrap; }
-.qis-intake { width: min(560px, calc(100vw - 24px)); }
+.qis-intake {
+  --intake-pad: clamp(16px, 4vw, 22px);
+  --intake-surface: #fff; --intake-paper: #f6f8fc; --intake-edge: #d9e1ec;
+  --intake-ink: #1b2028; --intake-muted: #626e7d; --intake-link: #385c88;
+  --intake-glint: rgb(255 255 255 / 85%);
+  width: min(480px, calc(100vw - 24px));
+}
+.theme-dark .qis-intake {
+  --intake-surface: var(--bg-panel); --intake-paper: var(--bg-card); --intake-edge: var(--border-hi);
+  --intake-ink: var(--text-hi); --intake-muted: var(--text-main); --intake-link: #b5cdec;
+  --intake-glint: rgb(255 255 255 / 15%);
+}
+body.qc-liquid-glass .qwf-dialog.qis-intake {
+  border: 1px solid var(--intake-edge); border-radius: 16px;
+  background: var(--intake-surface); color: var(--intake-ink);
+  box-shadow: inset 0 1px 1px var(--intake-glint), 0 10px 30px rgb(55 73 99 / 12%);
+}
+@supports ((backdrop-filter: blur(20px)) or (-webkit-backdrop-filter: blur(20px))) {
+  body.qc-liquid-glass .qwf-dialog.qis-intake:not(:has([data-preview] > *, form:not([hidden]))) {
+    background: linear-gradient(145deg, color-mix(in srgb,var(--intake-surface) 95%,transparent),
+      color-mix(in srgb,var(--intake-surface) 76%,transparent) 43%,
+      color-mix(in srgb,var(--intake-surface) 56%,transparent) 82%,
+      color-mix(in srgb,var(--intake-surface) 80%,transparent)), transparent;
+    -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  body.qc-liquid-glass .qwf-dialog.qis-intake:not(:has([data-preview] > *, form:not([hidden]))) {
+    background: var(--intake-surface); -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  body.qc-liquid-glass .qwf-dialog.qis-intake::backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
 .qis-intake:has([data-preview] > *, form:not([hidden])) { width: min(960px, calc(100vw - 24px)); }
 .qis-intake [hidden], #btnAddInspection[hidden] { display: none; }
-.qis-intake-file { display: grid; gap: 6px; margin-block: 14px; }
+body.qc-liquid-glass .qis-intake > header {
+  padding: 12px var(--intake-pad) 9px; justify-content: flex-start; gap: 4px;
+  background: transparent; color: var(--intake-ink); border: 0;
+}
+.qis-intake > header h2 { margin: 0 auto 0 0; font-size: 21px; line-height: 1.25; font-weight: 600; }
+body.qc-liquid-glass .qis-intake header button {
+  min-height: 32px; border: 0; border-radius: 7px; padding: 0 6px;
+  background: transparent; box-shadow: none; font-size: 14px; color: var(--intake-link);
+}
+body.qc-liquid-glass .qis-intake header button:hover:not(:disabled) { background: var(--intake-paper); }
+.qis-intake-divider { height: 15px; width: 1px; background: var(--intake-edge); }
+body.qc-liquid-glass .qis-intake header .qis-intake-close { width: 32px; margin-right: -6px; display: grid; place-items: center; color: var(--intake-muted); }
+@media (any-pointer: coarse) {
+  body.qc-liquid-glass .qis-intake header button { min-width: 44px; min-height: 44px; }
+}
+.qis-intake .qwf-dialog-body { padding: 3px var(--intake-pad) 18px; }
+body.qc-liquid-glass .qis-intake button.qis-intake-picker {
+  display: grid; grid-template-columns: 28px minmax(0,1fr) 16px; gap: 12px; align-items: center;
+  width: 100%; min-height: 64px; padding: 8px 14px; text-align: left;
+  border: 1px solid var(--intake-edge); border-radius: 10px; background: var(--intake-paper);
+  color: var(--intake-muted); box-shadow: inset 0 1px 0 var(--intake-glint);
+}
+body.qc-liquid-glass .qis-intake button.qis-intake-picker:hover:not(:disabled) { border-color: var(--intake-link); background: var(--intake-paper); }
+body.qc-liquid-glass .qis-intake button.qis-intake-picker:focus-visible { outline: 2px solid var(--intake-link); outline-offset: 1px; }
+.qis-intake-doc { width: 28px; height: 34px; color: var(--intake-link); }
+.qis-intake-copy { display: grid; gap: 2px; min-width: 0; font-size: 13px; }
+.qis-intake-copy strong { font-size: 16px; color: var(--intake-ink); font-weight: 600; overflow-wrap: anywhere; }
+.qis-intake-templates { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 10px; margin: 11px 0 0; font-size: 13px; color: var(--intake-muted); }
+.qis-intake-templates i { margin-inline: 4px; font-style: normal; }
+.qis-intake :is([data-preview-count],[data-error]):empty { margin: 0; padding: 0; }
 .qis-intake [data-preview-count]:not(:empty), .qis-intake [data-error]:not(:empty) { margin-block: 10px; }
 .qis-intake-scroll { overflow: auto; max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
 .qis-intake-scroll table { border-collapse: separate; border-spacing: 0; width: 100%; }
