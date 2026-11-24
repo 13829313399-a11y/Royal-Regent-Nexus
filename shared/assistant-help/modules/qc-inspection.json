@@ -51,7 +51,7 @@
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "0956c8a83dfd3f69123f548aca8a16b37a175a22872d9305c6598855e15f2953"
+        "sha256": "3821a441c20099058788fb96f3f73b39b11dea6224886ec19fe572495d9b58c1"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
