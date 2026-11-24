@@ -56,7 +56,7 @@
       {
         "path": "src/views/QcOperationsCenterView.vue",
         "symbol": "frameUrl",
-        "sha256": "fb36be7539ab69a66c5884c66bab78cc668359c3daee005eb8a679575d4c5fef"
+        "sha256": "883adc6e704f7edb165456b6bab191abdc56b4e227c75b78d1495688b133d253"
       },
       {
         "path": "backend/app/services/qc_workflow.py",

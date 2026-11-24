@@ -64,6 +64,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
     :data-pinned="pinned ? 'true' : undefined"
     :data-navigable="isNavigable ? 'true' : 'false'"
     :data-route-entry-id="module.id"
+    :data-rr-motion-source="isNavigable ? 'surface' : undefined"
     :data-portal-tone="module.statusTone"
     :style="{ '--portal-card-index': index }"
     :class="[
@@ -86,7 +87,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
       class="absolute inset-y-5 left-0 w-0.5 rounded-r-full bg-teal-600"
       aria-hidden="true"
     />
-    <div class="mb-5 flex items-start gap-4">
+    <div data-rr-motion-source="identity" class="mb-5 flex items-start gap-4">
       <span
         data-route-entry-icon
         class="portal-module-card__icon flex size-10 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ring-white/70 transition-transform duration-200 group-hover:scale-105"

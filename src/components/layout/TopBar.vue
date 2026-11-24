@@ -93,7 +93,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
 </script>
 
 <template>
-  <header ref="topbarRef" class="topbar-surface sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+  <header ref="topbarRef" data-rr-motion-topbar class="topbar-surface sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
     <div class="flex min-h-16 items-center gap-2.5 px-3 sm:min-h-[72px] sm:gap-3 sm:px-4 2xl:gap-5 2xl:px-6">
       <button
         ref="navigationTriggerRef"
