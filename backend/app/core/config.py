@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'royal_regent_nexus.db'}"
     session_cookie_secure: bool = False
     qc_mobile_public_origin: str = ""
+    qc_mobile_require_https: bool = False
     seed_default_accounts: bool = True
     seed_admin_password: str = ""
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"

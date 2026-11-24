@@ -123,6 +123,8 @@ curl -f http://127.0.0.1/health
 
 生产由已存在的 Web 代理把 `/api/qc-mobile/` 原样转发到正式 API，不另启局域网监听。外层 HTTPS 入口须保留正式 `Host`，原样转发 `Origin`、`Cookie` 和 `Set-Cookie`，不能缓存该前缀、覆盖错误状态或把路径回退到主站 `index.html`。外层负责证书自动续期和 HTTP 到 HTTPS 的跳转。保持受管的单正式 API 和 QC 持久卷；在设计验证共享状态前，不给手机入口挂接各自使用独立配对库的 API 副本。
 
+历史实例若尚未全站切换 `APP_ENV=production`，在正式 API 上设置 `QC_MOBILE_REQUIRE_HTTPS=true` 可单独启用移动验货的正式来源检查、服务就绪检查和 Secure Cookie，桌面验货台须从配置的 HTTPS 地址打开。全局生产模式下不能用该开关关闭这些保护。
+
 上线或变更域名、证书、代理和发布镜像时，将以下检查纳入启用移动验货的门禁。维护态主动封闭业务接口；在既有短时探测窗口内执行检查，失败则恢复维护状态，修好后再开放。
 
 ```bash
