@@ -84,6 +84,7 @@ def main():
     # Nested OCR and converters must stay in this owned process group so all
     # descendants die when a browser disconnects or the supervisor is stopped.
     os.environ["RR_CUSTOMER_ORDER_JOB_WORKER"] = "1"
+    os.environ["RR_CUSTOMER_ORDER_JOB_DEADLINE"] = str(deadline)
     tempfile.tempdir = str(source.parent)
     for key in ("TMPDIR", "TEMP", "TMP"):
         os.environ[key] = str(source.parent)
