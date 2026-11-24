@@ -10,7 +10,7 @@ from test_molding_sample_api import make_client, login_as
 from test_carton_procurement_api import _create_order, _order_payload
 from test_carton_supplier_portal import BASE, setup_portal, accept_all
 from test_carton_replenishment_api import setup as setup_replenishment, body as replenishment_body, replenish
-from app.services.carton_supplier_portal import SUPPLIER_ORDER_IMPORT_HEADERS, _supplier_import_dimensions
+from app.services.carton_supplier_portal import SUPPLIER_ORDER_IMPORT_HEADERS, _dongkang_remark, _supplier_import_dimensions
 
 
 def test_supplier_evidence_prevents_reassignment_after_attachment(monkeypatch):
@@ -176,6 +176,18 @@ def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
         assert counted[delivery["id"]] == 2
 
 
+def test_dongkang_remark_omits_delivery_bookkeeping_but_preserves_instructions():
+    purchase = "CT-261109-E20F52-P00"
+    header = "补录供应商送货单 2026100127 的正式需求；来源行 CSS-899acd2ca40541908844753caabef7f1-U007。本次送货数量不代表整张订单需求。"
+    paper = "送货单 2026100127 本次已送 692.0000 个；总需求另行核对"
+    assert _dongkang_remark(purchase, header, "", paper, "") == purchase
+    assert _dongkang_remark(purchase, header + "按样生产", "压三道线", paper + "；加防潮袋", "") == (
+        purchase + "；按样生产；压三道线；加防潮袋")
+    assert _dongkang_remark(purchase, "先打样；" + header + "；确认后生产", "", None, "") == (
+        purchase + "；先打样；确认后生产")
+    assert _dongkang_remark(purchase, "分两批交货", "分两批交货", "送货单 请盖章", "") == purchase + "；分两批交货；送货单 请盖章"
+
+
 def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monkeypatch):
     assert _supplier_import_dimensions("18*12.5*17.25", "PO") == [18.0, 12.5, 17.25]
     order = _order_payload()
@@ -197,6 +209,7 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert book.sheetnames == ["006 (2)"]
         rows = list(book.active.values)
         assert list(rows[0]) == SUPPLIER_ORDER_IMPORT_HEADERS
+        assert len(rows[0]) == 21 and rows[0][18:21] == ("备注1", "备注2", "备注3")
         assert len(rows) == 3
         assert all(row[0] == purchase["orders"][0]["contract_no"] for row in rows[1:])
         assert all(row[1] == purchase["orders"][0]["item_no"] for row in rows[1:])
@@ -205,9 +218,10 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert rows[1][9] == "inch"
         assert rows[1][11].date().isoformat() == purchase["orders"][0]["planned_date"]
         assert rows[2][3:6] == (24.375, 6, None)
-        assert rows[1][12] == "按签样生产"
-        assert rows[2][12] == f"按签样生产；{note}；旧纸品说明"
-        assert rows[1][13] is None and rows[2][13] is None
+        source_no = purchase["document_no"]
+        assert rows[1][18] == f"{source_no}；按签样生产"
+        assert rows[2][18] == f"{source_no}；按签样生产；{note}；旧纸品说明"
+        assert all(row[12:14] == (None, None) and row[19:21] == (None, None) for row in rows[1:])
         assert purchase["lines"][1]["process_note"] == note
         book.close()
         counted = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
@@ -244,12 +258,26 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         _, cm_row, legacy_paper = list(cm_book.active.values)
         assert cm_row[3:6] == (18, 12.5, 17.25)
         assert cm_row[9] == "cm"
-        assert cm_row[12] is None and legacy_paper[12] == "旧纸品说明"
+        assert cm_row[18] == source_no and legacy_paper[18] == f"{source_no}；旧纸品说明"
         cm_book.close()
         plain = client.post(BASE + "/documents/export.xlsx", json={"documents": [selection]})
         assert plain.status_code == 200, plain.text
         book = load_workbook(BytesIO(plain.content), read_only=True)
         assert "备注" not in next(book["采购单"].values)
+        book.close()
+        with SessionLocal() as db:
+            issue = db.get(CartonPurchaseOrderIssue, purchase["id"])
+            snapshot = json.loads(issue.snapshot_json)
+            snapshot["order"]["note"] = "补录供应商送货单 2026100127 的正式需求；来源行 CSS-test-U007。本次送货数量不代表整张订单需求。"
+            snapshot["lines"][0]["note"] = "送货单 2026100127 本次已送 692.0000 个；总需求另行核对"
+            issue.snapshot_json = json.dumps(snapshot, ensure_ascii=False)
+            db.commit()
+        backfill = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
+        assert backfill.status_code == 200, backfill.text
+        book = load_workbook(BytesIO(backfill.content), read_only=True)
+        _, backfill_row, other_paper = book.active.values
+        assert backfill_row[12:14] == (None, None) and backfill_row[18] == source_no
+        assert other_paper[18] == f"{source_no}；旧纸品说明"
         book.close()
         rejected = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [
             {**selection, "id": "forged-id"},
@@ -270,8 +298,8 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
         assert "无法拆成" in malformed.json()["detail"]
         counted = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                        if row["id"] == purchase["id"])
-        assert counted["export_count"] == 4
-        assert counted["order_import_export_count"] == 2
+        assert counted["export_count"] == 5
+        assert counted["order_import_export_count"] == 3
 
 
 @pytest.mark.parametrize("responsibility", ["OWN", "SUPPLIER"])
@@ -306,13 +334,15 @@ def test_supplier_order_import_exports_replenishment_delta_with_settlement_note(
         exported = rows[1]
         assert exported[0:2] == (purchase["orders"][0]["contract_no"], purchase["orders"][0]["item_no"])
         assert exported[6] == 2  # B01 delta, not the original cumulative demand.
-        assert exported[18] == issue["document_no"]
-        assert f"补单 {issue['document_no']}" in exported[13]
+        assert exported[18].startswith(issue["document_no"] + "；")
+        assert exported[18].count(issue["document_no"]) == 1
+        assert "送货单注明补单号" in exported[18] and "交期待确认" not in exported[18]
+        assert exported[12:14] == (None, None)
         if responsibility == "SUPPLIER":
             assert exported[10] == 0
-            assert "供应商责任，免费换补" in exported[13]
+            assert "供应商免费换补" in exported[18]
         else:
             assert exported[10] > 0
-            assert "我方责任，按实收结算" in exported[13]
+            assert "我方按实收结算" in exported[18]
         refreshed = client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
         assert next(row for row in refreshed if row["id"] == issue["id"])["export_count"] == 1
