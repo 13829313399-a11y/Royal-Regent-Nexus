@@ -63,6 +63,7 @@ from app.services.identity_catalog import DEPARTMENTS as IDENTITY_DEPARTMENTS
 from app.services.permission_codes import (
     WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     APPLICATION_PERMISSION_CODES,
+    RETIRED_PERMISSION_CODES,
     CUTTING_OPS_PERMISSION_CODES,
     ENGINEERING_BOM_PERMISSION_CODES,
     MATERIAL_PLAN_PERMISSION_CODES,
@@ -2966,7 +2967,8 @@ def build_auth_context(db: Session, user: AuthUser, *, at: datetime | None = Non
     active_permission_codes = frozenset(
         permission.code
         for permission in all_permissions
-        if permission_status_by_id.get(permission.id, "active") == "active"
+        if permission.code not in RETIRED_PERMISSION_CODES
+        and permission_status_by_id.get(permission.id, "active") == "active"
     )
 
     all_user_roles = read_inputs.user_roles[user.id] if read_inputs is not None else list(

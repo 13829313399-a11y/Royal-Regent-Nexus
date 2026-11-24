@@ -50,7 +50,7 @@
       {
         "path": "src/composables/useVisibleModules.ts",
         "symbol": "detailPage",
-        "sha256": "2166e0836d096f77fc949d6017f2a06212d8e923712cfae0d06c555ca5757f4a"
+        "sha256": "fc0ac923c9e02382e525c229a1bca0c158dc20eb8bf19521393e5a108e7c0c05"
       },
       {
         "path": "src/features/warehouse-operations/navigation.ts",

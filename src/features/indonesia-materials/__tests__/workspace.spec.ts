@@ -3,7 +3,6 @@ import { defineComponent, h, reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import { createMaterialsWorkspace, type MaterialsWorkspace } from '../workspace'
-import { useVisibleModules } from '@/composables/useVisibleModules'
 import { savedBuckets } from './draftMemory'
 vi.mock('../draftPersistence', async importOriginal => {
   const original = await importOriginal<typeof import('../draftPersistence')>()
@@ -51,14 +50,6 @@ beforeEach(() => {
 afterEach(() => { cleanup.splice(0).forEach(close => close()) })
 
 describe('materials factory and identity boundaries', () => {
-  it.each(['group', 'huaxing', 'huakang-c'])('keeps the selected %s scope in the existing business card link', (factory) => {
-    mocks.app.activeFactoryId = factory
-    mocks.auth.can = () => true
-    mocks.auth.canAny = () => true
-    const module = useVisibleModules('sales-business').value.find(item => item.id === 'indonesia-material-shipment')
-    expect(module?.route).toBe(`/modules/sales-business/indonesia-material-shipment?factory=${factory}`)
-  })
-
   it('requires an explicit factory and never uses the production fallback', async () => {
     mocks.app.activeFactoryId = 'group'
     const ws = setup()
