@@ -62,18 +62,24 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
         recorded_party = body.get('counterparty', '')
         supplier_id = (body.get('handover_supplier_id') or body.get('receipt_supplier_id', '')) if supplier else ''
         matched = aliases.get(recorded_party, set())
-        if supplier and not supplier_id and len(matched) == 1:
+        processor_id = source_body.get('processor_id') if source_body.get('subcontract_stage') in {'SEND', 'RECEIVE'} else None
+        if supplier and not processor_id and not supplier_id and len(matched) == 1:
             supplier_id = next(iter(matched))
             basis = '单据名称唯一匹配（仅内部汇总）'
         else:
             basis = '供应商基础资料编号' if supplier_id else '原单往来名称'
         identity = ('supplier:' + supplier_id if supplier_id else 'supplier-name:' + recorded_party) if supplier else 'recipient:' + recorded_party
+        if processor_id:
+            identity = ('processor-in:' if supplier else 'processor-out:') + processor_id
+            basis = '委外加工厂编号'
         document_id = source_body.get('handover_document_id', '')
         method = 'SCAN' if document_id else 'MANUAL'
         registration_source = 'HANDOVER' if document_id else 'MANUAL'
         if kind in ('ISSUE', 'RETURN') and source_body.get('source_system') == CUTTING_SOURCE:
             registration_source = 'CUTTING'
         label = '采购实收' if body.get('source_system') == 'PROCUREMENT_RECEIVING' else SOURCES[registration_source]
+        if source_body.get('subcontract_order_id'):
+            label = '委外' + ('回仓' if supplier else '发料')
         prices = body.get('handover_line_snapshot', {})
         events.append(dict(id=identifier, date=when, direction='IN' if supplier else 'OUT', kind=kind,
             correction=sign < 0, original_id=original_id, channel=method, channel_label=label,

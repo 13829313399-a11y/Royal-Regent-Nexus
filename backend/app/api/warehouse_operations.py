@@ -12,6 +12,8 @@ from app.services import warehouse_operations as service
 from app.schemas.fabric_inventory_setup import CountCreate, CountAction
 from app.services import fabric_inventory_setup as setup
 from app.services import fabric_legacy_stock
+from app.services import fabric_subcontract
+from app.schemas import fabric_subcontract as subcontract_forms
 
 router = APIRouter(prefix='/api/warehouse-operations', tags=['warehouse-operations'])
 Warehouse = Literal['fabric', 'semi']
@@ -65,6 +67,45 @@ def setup_access(actor, factory_id, action='read'):
     if not permissions['read'] or not permissions[action]:
         raise HTTPException(403, '无布料仓本项权限；期初和盘点入账需要库存更正权限')
     return permissions
+
+
+def processor_access(actor, factory_id):
+    return all(can(actor, 'fabric_warehouse:' + action, factory_id, 'pmc-warehouse') for action in ('read', 'import'))
+
+
+@router.get('/fabric/subcontract')
+def subcontract_workspace(factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    perms = setup_access(actor, factory_id)
+    return {**fabric_subcontract.workspace(db), 'can_operate': perms['operate'], 'can_correct': perms['correct'],
+            'can_manage': processor_access(actor, factory_id)}
+
+
+@router.post('/fabric/subcontract/processors')
+def subcontract_processor(payload: subcontract_forms.Processor, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    service.procurement.require_factory(payload.factory_id)
+    if not processor_access(actor, payload.factory_id):
+        raise HTTPException(403, '无布料仓加工厂资料维护权限')
+    return fabric_subcontract.execute(db, actor, payload)
+
+
+@router.get('/fabric/subcontract/processors')
+def subcontract_processor_catalog(factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    service.procurement.require_factory(factory_id)
+    if not can(actor, 'fabric_warehouse:read', factory_id, 'pmc-warehouse'):
+        raise HTTPException(403, '无布料仓基础资料查询权限')
+    return {**fabric_subcontract.processor_catalog(db), 'can_manage': processor_access(actor, factory_id)}
+
+
+@router.post('/fabric/subcontract/orders')
+def subcontract_order(payload: subcontract_forms.Order, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, payload.factory_id, 'operate')
+    return fabric_subcontract.execute(db, actor, payload)
+
+
+@router.post('/fabric/subcontract/orders/{order_id}/actions')
+def subcontract_action(order_id: str, payload: subcontract_forms.Action, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, payload.factory_id, 'correct' if payload.kind == 'VOID' else 'operate')
+    return fabric_subcontract.execute(db, actor, payload, order_id)
 
 
 @router.post('/fabric/legacy-stock/preview')
