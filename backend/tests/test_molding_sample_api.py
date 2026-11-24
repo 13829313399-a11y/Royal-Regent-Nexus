@@ -687,6 +687,121 @@ def test_unauthenticated_access_to_molding_sample_api_is_rejected(client):
     assert response.status_code == 401
 
 
+def test_monthly_production_export_uses_opening_month_and_all_authorized_queue_rows(enforce_client):
+    from openpyxl import load_workbook
+    from app.db import SessionLocal
+    from app.models.molding_sample import (
+        MoldingSampleInventoryMovement, MoldingSampleItem, MoldingSampleOrder, MoldingSampleRequisition,
+    )
+
+    url = "/api/injection/production-tasks/monthly-export"
+    params = {"production_factory_id": "huakang-a", "month": "2024-02"}
+    assert enforce_client.get(url, params=params).status_code == 401
+    login_as(enforce_client, "admin")
+
+    def order(order_id, date, origin="huakang-a", executor="huakang-a", status="待生产", **fields):
+        return MoldingSampleOrder(
+            id=order_id, date=date, factory_id=origin, production_factory_id=executor, status=status,
+            product_name="月报样件", created_at="2025-01-01", **fields,
+        )
+
+    with SessionLocal() as db:
+        first = order("BP-FIRST", "2024-02-01", executor=None)
+        first.items = [
+            MoldingSampleItem(id="i2", sort_order=2, mold_id="0002", actual_weight_kg=0, receipt_no="LL-SHARED"),
+            MoldingSampleItem(id="i1", sort_order=1, mold_id="0001", receipt_no="LL-SHARED",
+                              material="PP AV161", required_material_kg=2, notes="=1+1", quote_target_daily_qty=3000),
+        ]
+        db.add_all([
+            first, order("BP-LAST", "2024-02-29", origin="huakang-c", status="已完成"),
+            *(order(f"BP-{day:02}", f"2024-02-{day:02}", status="生产中") for day in range(2, 12)),
+            order("BP-BEFORE", "2024-01-31"), order("BP-AFTER", "2024-03-01"),
+            order("BP-PENDING", "2024-02-20", status="待审核"),
+            order("BP-EXTERNAL", "2024-02-20", send_to="发至模厂"),
+            order("BP-OTHER", "2024-02-20", origin="huakang-c", executor="huakang-b"),
+        ])
+        db.flush()
+
+        def requisition(number, order_id="BP-FIRST", factory_id="huakang-a"):
+            return MoldingSampleRequisition(id=number, req_number=number, order_id=order_id, factory_id=factory_id,
+                                            date="2024-03-06", material="PP AV161", requested_weight_kg=5)
+
+        db.add_all([
+            requisition("LL-SHARED"), requisition("LL-ORDER"), requisition("LL-AFTER", "BP-AFTER"),
+            requisition("LL-FOREIGN", factory_id="huakang-b"), requisition("LL-SECRET-JAN", "BP-BEFORE"),
+        ])
+        db.flush()
+        for kind, quantity, req, factory in (
+            ("出库扣减", -5, "LL-SHARED", "huakang-a"), ("撤回出库", 5, "LL-SHARED", "huakang-a"),
+            ("跨厂不可见", -9, "LL-SHARED", "huakang-b"), ("无关单不可见", -2, "LL-AFTER", "huakang-a"),
+        ):
+            db.add(MoldingSampleInventoryMovement(factory_id=factory, batch_id="batch", batch_no="批次001",
+                requisition_id=req, req_number=req, material="PP AV161", movement_type=kind, quantity_kg=quantity,
+                before_weight_kg=10, after_weight_kg=10 + quantity, actor_name="仓员", created_at="2024-03-07"))
+        db.commit()
+
+    response = enforce_client.get(url, params=params)
+    assert response.status_code == 200
+    assert "2024-02.xlsx" in response.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(response.content))
+    assert workbook.sheetnames == ["单据汇总", "逐模对账", "配料明细", "领料记录", "出库流水", "模具明细"]
+    assert workbook.active.title == "逐模对账"
+    summary, details = workbook["单据汇总"], workbook["模具明细"]
+    assert "共 12 张" in summary["A2"].value
+    expected_ids = ["BP-FIRST", *(f"BP-{day:02}" for day in range(2, 12)), "BP-LAST"]
+    assert [row[0] for row in summary.iter_rows(min_row=4, values_only=True)] == expected_ids
+    assert summary["B15"].value.date().isoformat() == "2024-02-29"
+    assert (summary["C15"].value, summary["H15"].value, summary["I15"].value) == ("已回传", "华康C", "华康A")
+    assert summary["I4"].value == "华康A" and summary["G4"].value == 2
+    assert [row[0] for row in details.iter_rows(min_row=4, values_only=True)] == ["BP-FIRST", "BP-FIRST"]
+    by_header = {cell.value: cell.column_letter for cell in details[3]}
+    mold_code = details[f"{by_header['模具编号']}4"]
+    assert (mold_code.value, mold_code.data_type, mold_code.number_format) == ("0001", "s", "@")
+    assert details[f"{by_header['报价目标（啤/日）']}4"].value == 3000
+    assert details[f"{by_header['实际用料（kg）']}4"].value is None
+    assert details[f"{by_header['实际用料（kg）']}5"].value == 0
+    note = details[f"{by_header['备注']}4"]
+    assert (note.value, note.data_type) == ("=1+1", "s")
+    assert details.freeze_panes == summary.freeze_panes == "B4"
+    assert summary.auto_filter.ref.endswith("15") and details.auto_filter.ref.endswith("5")
+    def rows(sheet_name):
+        sheet = workbook[sheet_name]
+        keys = [cell.value for cell in sheet[3]]
+        return [dict(zip(keys, row)) for row in sheet.iter_rows(min_row=4, values_only=True)]
+
+    by_receipt = {row["仓库领料单号"]: row for row in rows("领料记录")}
+    assert set(by_receipt) == {"LL-SHARED", "LL-ORDER"}
+    shared = by_receipt["LL-SHARED"]
+    assert (shared["模具归属"], shared["关联模号"], shared["申请重量（kg）"], shared["流水净出库（kg）"]) == (
+        "多模共用，未分摊", "0001、0002", 5, 0,
+    )
+    assert by_receipt["LL-ORDER"]["模具归属"] == "仅关联到啤办单"
+    assert by_receipt["LL-ORDER"]["流水净出库（kg）"] is None
+    assert all(r["领料匹配情况"] == "多模共用，未分摊" and r["本模申请（kg）"] is None
+               and r["本模净出库（kg）"] is None for r in rows("逐模对账"))
+    assert [(r["业务动作"], r["库存变动（kg）"]) for r in rows("出库流水")] == [("出库扣减", -5), ("撤回出库", 5)]
+    assert workbook["逐模对账"]["K4"].hyperlink.location == "'领料记录'!A5"
+    assert workbook["逐模对账"]["C4"].hyperlink.location == "'配料明细'!A4"
+    assert rows("逐模对账")[0]["预计料费（HKD）"] is not None
+    assert enforce_client.get(url, params={**params, "month": "2024-04"}).status_code == 204
+    assert enforce_client.get(url, params={**params, "month": "2024-13"}).status_code == 422
+    assert enforce_client.get(url, params={**params, "production_factory_id": "huakang-c"}).status_code == 400
+
+    create_fixed_position_test_user("monthly_reader", "position_qa_clerk", "qa", "huakang-a")
+    login_fixed_position_test_user(enforce_client, "monthly_reader")
+    assert enforce_client.get(url, params=params).status_code == 403
+
+    create_fixed_position_test_user("monthly_clerk", "position_production_clerk", "production", "huakang-a")
+    login_fixed_position_test_user(enforce_client, "monthly_clerk")
+    january = enforce_client.get(url, params={**params, "month": "2024-01"})
+    assert january.status_code == 200
+    clerk_book = load_workbook(BytesIO(january.content))
+    assert "领料记录" not in clerk_book.sheetnames and "出库流水" not in clerk_book.sheetnames
+    denied = enforce_client.get(url, params=params)
+    assert denied.status_code == 403 and "来源厂" in denied.json()["detail"]
+    assert enforce_client.get(url, params={**params, "production_factory_id": "huakang-b"}).status_code == 403
+
+
 def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeypatch):
     TEST_TMP_DIR.mkdir(exist_ok=True)
     database_path = TEST_TMP_DIR / f"legacy_molding_sample_{uuid4().hex}.db"
@@ -2497,11 +2612,6 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         "molding_sample:production_complete",
         "molding_sample:notification_read",
     }
-    injection_permissions = {
-        "injection_scheduling:read",
-        "injection_scheduling:plan",
-        "injection_scheduling:report",
-    }
     order_inbox_permissions = {"customer_order:inbox_read", "customer_order:inbox_receive"}
     clerk_profile = login_fixed_position_test_user(client, "fixed_molding_clerk")
     clerk_grant = next(
@@ -2510,7 +2620,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         if grant["role_id"] == "position_molding_clerk"
     )
     assert clerk_grant["scope_mode"] == "cross_factory_read"
-    assert set(clerk_grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions
+    assert set(clerk_grant["permissions"]) == task_permissions | order_inbox_permissions
     assert client.get("/api/injection/BP-FIXED-CLERK-FOREIGN").status_code == 200
     foreign_engineering_detail = client.get(
         "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
@@ -2628,9 +2738,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         profile = login_fixed_position_test_user(client, username)
         grant = next(item for item in profile["grants"] if item["role_id"] == role_id)
         assert grant["scope_mode"] == "cross_factory_operate"
-        assert set(grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions | {
-            "injection_scheduling:master_write"
-        }
+        assert set(grant["permissions"]) == task_permissions | order_inbox_permissions
         assert client.get(
             "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
         ).status_code == 200
@@ -3202,6 +3310,12 @@ def test_molding_clerk_can_save_one_trial_report_per_mold_item(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-TRIAL-REPORT-001"))
 
+    login_as(client, "molding_clerk")
+    assert client.put(
+        "/api/injection/BP-TRIAL-REPORT-001/trial-reports/BP-TRIAL-REPORT-001-001",
+        json={"data": {}},
+    ).status_code == 403
+
     login_as(client, "supervisor")
     approved_response = client.patch(
         "/api/injection/BP-TRIAL-REPORT-001/status",
@@ -3278,6 +3392,37 @@ def test_molding_clerk_can_save_one_trial_report_per_mold_item(client):
     )
     assert missing_item_response.status_code == 404
     assert "模具明细不存在" in missing_item_response.json()["detail"]
+
+
+def test_first_trial_report_after_completion_preserves_legacy_order_dates_and_costs(client):
+    from app.db import SessionLocal
+    from app.models.molding_sample import MoldingSampleItem, MoldingSampleOrder
+
+    order_id = "BP-LEGACY-LATE-REPORT"
+    item_id = f"{order_id}-001"
+    with SessionLocal() as db:
+        order = MoldingSampleOrder(
+            id=order_id, factory_id="huaxing", status="已完成",
+            product_name="历史啤办样件", date="2026-06-01",
+            created_at="2026-06-01 08:00:00", updated_at="2026-06-03 17:00:00",
+        )
+        order.items = [MoldingSampleItem(id=item_id, actual_weight_kg=2.5, actual_amount_hkd=30)]
+        db.add(order)
+        db.commit()
+
+    login_as(client, "molding_clerk")
+    path = f"/api/injection/{order_id}"
+    before = client.get(path).json()
+    response = client.put(f"{path}/trial-reports/{item_id}", json={"data": {"trial_summary": "尺寸复核合格"}})
+    assert response.status_code == 200
+    after = client.get(path).json()
+    assert after["trial_reports"] == [response.json()]
+    assert after["order"] == before["order"]
+    assert after["items"] == before["items"]
+    assert after["notifications"] == before["notifications"]
+    assert [(log["action"], log["from_status"], log["to_status"]) for log in after["audit_logs"]] == [
+        ("填写试模报告", "已完成", "已完成")
+    ]
 
 
 def test_engineer_can_withdraw_pending_order_and_resubmit(client):
@@ -3529,6 +3674,13 @@ def test_external_order_auto_completes_after_supervisor_approval(client):
     assert payload["order"]["completed_date"] == TEST_BUSINESS_DATE
     assert payload["items"][0]["actual_weight_kg"] == 2.46
     assert payload["items"][0]["actual_amount_hkd"] == 29.83
+
+    login_as(client, "molding_clerk")
+    external_report = client.put(
+        "/api/injection/BP-EXT-001/trial-reports/BP-EXT-001-001",
+        json={"data": {"trial_summary": "外发单"}},
+    )
+    assert external_report.status_code == 403
 
 
 def test_production_problem_feedback_is_saved_and_visible_to_engineering(client):
@@ -4498,7 +4650,7 @@ def cross_factory_order_payload(
     return payload
 
 
-def test_huakang_c_order_runs_in_huakang_a_without_leaking_engineering_stage(client):
+def test_huakang_c_order_runs_in_huakang_a_without_leaking_engineering_stage(client, monkeypatch):
     order_id = "BP-HKC-TO-HKA-001"
     login_as(client, "c_engineer")
     create_response = client.post(
@@ -4600,10 +4752,29 @@ def test_huakang_c_order_runs_in_huakang_a_without_leaking_engineering_stage(cli
     assert complete_response.status_code == 200
     assert complete_response.json()["order"]["status"] == "已完成"
 
+    report_path = f"/api/injection/{order_id}/trial-reports/{item['id']}"
+    revised_data = {**trial_response.json()["data"], "trial_summary": "冷却后复测合格"}
+    next_day = TEST_BUSINESS_NOW + timedelta(days=1)
+    monkeypatch.setattr("app.services.molding_sample.business_now", lambda: next_day)
+    revised = client.put(report_path, json={"data": revised_data})
+    assert revised.status_code == 200
+    assert revised.json()["id"] == trial_response.json()["id"]
+    assert revised.json()["created_at"] == trial_response.json()["created_at"]
+    assert revised.json()["updated_at"].startswith(next_day.date().isoformat())
+    after = client.get(f"/api/injection/{order_id}").json()
+    assert after["order"] == complete_response.json()["order"]
+    assert after["items"] == complete_response.json()["items"]
+    assert after["notifications"] == complete_response.json()["notifications"]
+    audit = after["audit_logs"][0]
+    assert (audit["action"], audit["from_status"], audit["to_status"]) == ("更新试模报告", "已完成", "已完成")
+
+    login_as(client, "b_molding_clerk")
+    assert client.put(report_path, json={"data": {}}).status_code == 403
     login_as(client, "c_engineer")
+    assert client.put(report_path, json={"data": {}}).status_code == 403
     origin_detail = client.get(f"/api/injection/{order_id}")
     assert origin_detail.status_code == 200
-    assert origin_detail.json()["trial_reports"][0]["factory_id"] == "huakang-a"
+    assert origin_detail.json()["trial_reports"] == [revised.json()]
     assert origin_detail.json()["problems"][0]["factory_id"] == "huakang-a"
     engineering_notifications = client.get(
         "/api/molding-sample-notifications",

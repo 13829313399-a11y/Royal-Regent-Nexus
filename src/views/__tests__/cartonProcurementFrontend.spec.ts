@@ -5614,7 +5614,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe('cm')
       await form.get('[aria-label="纸品尺寸单位 1"]').setValue('in')
       expect(form.get<HTMLInputElement>('[aria-label="规格 1"]').element.value).toBe('11.875*9*12.625')
-      expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
+      expect(form.element.querySelector('[aria-label="纸品尺寸显示 1"]')?.textContent || '').not.toMatch(/^inch(?:\s|$)/)
       expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe('in')
       expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 2"]').element.value).toBe('mm')
       await form.get('[aria-label="订单修改原因"]').setValue('核对原资料，规格实际单位为inch')
@@ -8870,7 +8870,7 @@ it('prefers master paper units and allows per-order overrides without changing m
   cartonApiMock.listOrdersPage.mockResolvedValue({ items: [], total: 0, statistics: { pending: 0, overdue: 0, today: 0, dueSoon: 0 } })
   const master = { id: 'DIMENSIONS', kind: 'CONFIG' as const, code: 'DIM-ITEM', customer_code: '',
     status: 'ACTIVE' as const, revision: 1, preferred: false, maintained: true, updated_at: '', sources: [],
-    data: { product_name: '产品', lines: [{ packaging_type: '普通箱', paper_quality: 'A33', specification: '25.4*50.8', dimension_unit: 'cm', unit: '个', usage_quantity: '4' }] } }
+    data: { product_name: '产品', lines: [{ packaging_type: '普通箱', paper_quality: 'A33', specification: '25.4*50.8', dimension_unit: 'cm', unit: '个', usage_quantity: '4', process_note: '沿长方向压线' }] } }
   const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), records: [master] })
   const wrapper = mountView('orders')
   try {
@@ -8879,10 +8879,11 @@ it('prefers master paper units and allows per-order overrides without changing m
     await openNewRegularOrder(wrapper); await flushPromises()
     const form = wrapper.get('[data-testid="order-form-overlay"] form')
     expect(form.find('[aria-label="订单尺寸显示"]').exists()).toBe(false)
-    expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
+    expect(form.find('[aria-label="纸品尺寸显示 1"]').exists()).toBe(false)
     await wrapper.get('input[aria-label="货号"]').setValue('DIM-ITEM')
     await wrapper.get('[aria-label="带出基础资料 DIM-ITEM DIMENSIONS"]').trigger('click')
-    expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('cm')
+    expect(form.get('[aria-label="纸品 1 工艺备注"]').attributes('aria-expanded')).toBe('true')
+    expect(form.get<HTMLTextAreaElement>('[aria-label="纸品工艺备注 1"]').element.value).toBe('沿长方向压线')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('10 × 20 inch（换算参考）')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').get('span').attributes('title')).toBe('10 × 20 inch（换算参考）')
     expect(form.get<HTMLInputElement>('[aria-label="规格 1"]').element.value).toBe('25.4*50.8')
@@ -8895,22 +8896,25 @@ it('prefers master paper units and allows per-order overrides without changing m
     await wrapper.get('[aria-label="订单备注"]').setValue('保留合同来源')
     expect(form.find('[aria-label="纸品尺寸显示 2"]').exists()).toBe(false)
     await findButton(wrapper, '新增纸品明细').trigger('click')
-    expect(form.find('[aria-label="配卡备注"]').exists()).toBe(false)
-    expect(form.get('[aria-label="纸品尺寸显示 2"]').text()).toBe('inch')
+    expect(form.find('[aria-label="纸品工艺备注 2"]').exists()).toBe(false)
+    await form.get('[aria-label="纸品 2 工艺备注"]').trigger('click')
+    await form.get('[aria-label="纸品工艺备注 2"]').setValue('沿短边对折')
+    expect(form.find('[aria-label="纸品尺寸显示 2"]').exists()).toBe(false)
     await form.get<HTMLInputElement>('[aria-label="规格 2"]').setValue('10*20')
-    expect(form.get('[aria-label="纸品尺寸显示 2"]').text()).toBe('inch')
+    expect(form.find('[aria-label="纸品尺寸显示 2"]').exists()).toBe(false)
     expect(form.get<HTMLInputElement>('[aria-label="规格 2"]').element.value).toBe('10*20')
     await wrapper.get('[aria-label="关闭新建订单"]').trigger('click'); await flushPromises()
     const draft = readOrderDraft(window.localStorage, context)!
     expect(draft.form.materials.map(line => [line.packagingType, line.dimensionUnit])).toEqual([['普通箱', 'mm'], ['', 'inch']])
     expect(draft.form.note).toBe('保留合同来源')
+    expect(draft.form.materials.map(line => line.processNote)).toEqual(['沿长方向压线', '沿短边对折'])
     draft.form.materials[0]!.dimensionUnit = ''
     draft.form.materials[0]!.specification = ''
     writeOrderDraft(window.localStorage, context, draft)
     await openNewRegularOrder(wrapper); await flushPromises()
     await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click'); await flushPromises()
     expect(wrapper.find('[aria-label="订单尺寸显示"]').exists()).toBe(false)
-    expect(wrapper.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe('inch')
     expect(wrapper.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toBe('保留合同来源')
   } finally {
     wrapper.unmount(); get.mockRestore()

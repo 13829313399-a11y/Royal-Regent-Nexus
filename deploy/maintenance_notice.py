@@ -80,6 +80,13 @@ def publish(folder, action, *, notice_id="", seconds=300, message="", now=None):
                 state.update(phase="maintenance", message=message or (
                     "更新尚未完成，服务仍在维护中，请保留当前页面并等待恢复。" if action == "fail" else
                     "系统正在更新，暂时无法操作。请保留当前页面，恢复后会提示您。"))
+            elif action == "probe":
+                if phase != "maintenance":
+                    raise ValueError("Only maintenance can probe the public site")
+                # Continue owning the notice while the deployed HTTP routes are
+                # checked. fail with the same ID can still close the gate.
+                flag_path.unlink(missing_ok=True)
+                return state
             elif action in {"complete", "cancel"}:
                 if phase not in {"scheduled", "maintenance"}:
                     raise ValueError("This deployment is already closed")
@@ -103,7 +110,7 @@ def publish(folder, action, *, notice_id="", seconds=300, message="", now=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["start", "maintenance", "complete", "cancel", "fail"])
+    parser.add_argument("action", choices=["start", "maintenance", "probe", "complete", "cancel", "fail"])
     parser.add_argument("--notice-dir", default=".deployment-notice")
     parser.add_argument("--id", default="")
     parser.add_argument("--seconds", type=int, default=300)

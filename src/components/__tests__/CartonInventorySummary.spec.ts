@@ -23,6 +23,27 @@ function open() {
 }
 beforeEach(() => { vi.clearAllMocks(); api.get.mockResolvedValue(data()); identity.mockImplementation(async (key: string) => `INVENTORY:${key}`) })
 describe('库存汇总工作台', () => {
+  it('only shows the selected paper instructions in details, including when two papers share an order', async () => {
+    const report = data()
+    report.order_rows[1]!.process_note = '沿长方向压线'
+    api.get.mockResolvedValue(report)
+    const wrapper = mount(CartonInventorySummary, {
+      props: { factoryId: 'huaxing', customers: [customer], search: '', refreshKey: 0, connected: true },
+      global: { stubs: { CartonOrderTimeline: true } },
+    })
+    try {
+      await flushPromises()
+      const table = wrapper.get('[aria-label="收发汇总表"]')
+      expect(table.text()).not.toContain('沿长方向压线')
+      const buttons = table.findAll('tbody button')
+      await buttons[1]!.trigger('click')
+      expect(wrapper.get('[role="dialog"]').text()).toContain('沿长方向压线')
+      await wrapper.get('[aria-label="关闭订单流水"]').trigger('click')
+      await buttons[0]!.trigger('click')
+      expect(wrapper.get('[role="dialog"]').text()).not.toContain('沿长方向压线')
+    } finally { wrapper.unmount() }
+  })
+
   it('keeps the latest selected paper when identity reads resolve out of order', async () => {
     let finishFirst!: (id: string) => void
     identity.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))

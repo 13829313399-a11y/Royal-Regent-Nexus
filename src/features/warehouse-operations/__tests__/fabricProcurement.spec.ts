@@ -53,6 +53,24 @@ async function openLinkedPurchase() {
 }
 
 describe('real fabric procurement workspace', () => {
+  it('keeps the current pending rows and paging while an automatic refresh is outstanding', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const line = { ...linkedDetail, facts: { ...linkedDetail.facts, order_no: 'PO-AUTO' } }
+    api.lines.mockResolvedValue({ total: 1, items: [line] })
+    const view = await open('pending')
+    let finish!: (value: unknown) => void
+    api.lines.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const tbody = view.get('tbody')
+    const originalRow = tbody.get('tr').element
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(view.text()).not.toContain('正在查询采购资料')
+    expect(view.text()).toContain('共 1 条')
+    expect(tbody.get('tr').element).toBe(originalRow)
+    finish({ total: 1, items: [{ ...line, warehouse_outstanding_quantity: '2' }] }); await flushPromises()
+    expect(tbody.get('tr').element).toBe(originalRow)
+    expect(tbody.get('[data-label="剩余待收"]').text()).toContain('2')
+  })
+
   it('returns focus to purchase search when a deep-linked detail closes', async () => {
     api.detail.mockResolvedValueOnce(linkedDetail)
     await openLinkedPurchase()

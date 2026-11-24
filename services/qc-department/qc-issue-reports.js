@@ -4,7 +4,7 @@
   const doc=root.document,esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let dialog=null, closeCurrent=null, exportCurrent=null, isBusy=()=>false;
   async function open(period,date,initialCustomer='',options={}){
-    if(root.__QC_NEXUS?.factory!=='huaxing')return;
+    if(!root.__QC_NEXUS?.factory)return;
     closeCurrent?.();
     const trigger=doc.activeElement;
     const inline=!!options.host;
@@ -47,6 +47,11 @@
       if(!data)return;
       q('h2').textContent=data.title;q('[data-period]').textContent=data.dateFrom+' 至 '+data.dateTo+(period==='weekly'?'（周一至周日）':'')+' · '+data.total+' 条已审核记录';
       const rows=data.tables.issues.slice(page*30,(page+1)*30);
+      q('[data-page]').textContent=data.total+' 条 · '+(page+1)+' / '+Math.max(1,Math.ceil(data.total/30));
+      q('[data-prev]').disabled=page===0;q('[data-next]').disabled=(page+1)*30>=data.total;
+      q('footer').hidden=data.total<=30;
+      q('[data-export]').disabled=busy||!data.canExport||!data.total;
+      if(inline&&period==='yearly'&&root.QcReportWorkbook?.mount('yearly','annual-issues',q('[data-table]'),{rows,inspectionTotal:options.inspectionTotal},load))return;
       const {headers,widths,groups}=data;
       const band=groups.map(([count,label])=>'<th scope="colgroup" colspan="'+count+'"><span>'+esc(label)+'</span></th>').join('');
       const photos=r=>'<div class="qir-photos qmt-photos">'+r.photos.map(p=>'<button class="qir-photo qmt-photo" data-src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" aria-label="查看'+esc(p.name)+'"><img loading="lazy" src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" alt="'+esc(p.name)+'"></button>').join('')+'</div>';
@@ -57,10 +62,6 @@
         modal.querySelector('button').onclick=()=>modal.close();modal.onclose=()=>{modal.remove();if(photoDialog===modal)photoDialog=null;};doc.body.append(modal);modal.showModal();
       });
       el.querySelectorAll('.qir-photos img').forEach(img=>img.onerror=()=>{img.alt='照片加载失败，点击重试查看';});
-      q('[data-page]').textContent=data.total+' 条 · '+(page+1)+' / '+Math.max(1,Math.ceil(data.total/30));
-      q('[data-prev]').disabled=page===0;q('[data-next]').disabled=(page+1)*30>=data.total;
-      q('footer').hidden=data.total<=30;
-      q('[data-export]').disabled=busy||!data.canExport||!data.total;
     }
     async function load(first=false){
       if(busy)return;const token=++generation;data=null;q('[data-export]').disabled=true;status.textContent='正在读取…';status.className='';q('[data-table]').innerHTML='';q('[data-page]').textContent='';q('[data-prev]').disabled=true;q('[data-next]').disabled=true;
@@ -71,7 +72,21 @@
         if(first && !options.sharedCustomer){customers=result.customers||[];q('[data-customer]').innerHTML='<option value="">全部客户</option>'+customers.map(c=>'<option value="'+esc(c.key)+'">'+esc(c.label)+'</option>').join('');
           if(initialCustomer){if(!customers.some(c=>c.key===initialCustomer)){const option=doc.createElement('option');option.value=initialCustomer;option.textContent='当前客户（本期无记录）';q('[data-customer]').append(option);}q('[data-customer]').value=initialCustomer;initialCustomer='';return load();}}
         data=result;page=0;draw();
-        if(inline&&period==='weekly'&&root.QcReportWorkbook?.mount('weekly','issues',q('[data-table]'),data,()=>load()))q('footer').hidden=true;
+        if(inline&&period==='weekly'){
+          const mount=inspectionTotal=>root.QcReportWorkbook?.mount('weekly','issues',q('[data-table]'),{...result,inspectionTotal},()=>load());
+          if(mount()){
+            q('footer').hidden=true;
+            if(result.total===0&&root.QcEmptyState){
+              // Keep the problem report available while checking for other inspections in this scope.
+              const customer=result.customer||'';
+              const scope=new URLSearchParams({date:result.date,period,customer});
+              void request('api/daily-report?'+scope).then(inspection=>{
+                if(token===generation&&el.isConnected&&inspection.total===0&&inspection.date===result.date&&
+                   inspection.period===period&&(inspection.customer||'')===customer)mount(0);
+              }).catch(()=>{});
+            }
+          }
+        }
         status.textContent=data.total?'':'当前范围没有验货问题记录';
       }catch(e){if(el.isConnected&&token===generation){status.textContent=e.name==='AbortError'?'请求已取消或超时，请重试':e.message;status.className='qir-error';}}
     }

@@ -38,7 +38,8 @@ def operation_record(entry, reversal):
     facts['contract_no'] = facts.get('contract_no') or body.get('handover_contract_no', '')
     line = body.get('handover_line_snapshot') or {}
     return dict(id=entry['id'], history_key='OPERATION:' + entry['id'], operation_id=entry['id'],
-        receipt_origin='HANDOVER' if body.get('handover_document_id') else 'MANUAL',
+        receipt_origin='SUBCONTRACT' if body.get('subcontract_order_id') else 'HANDOVER' if body.get('handover_document_id') else 'MANUAL',
+        subcontract_order_id=body.get('subcontract_order_id', ''),
         handover_document_id=body.get('handover_document_id', ''),
         purchase_status=purchase_status, procurement_pending_reason=pending_reason,
         source_line_id=purchase.get('source_line_id') or body.get('source_line', ''),

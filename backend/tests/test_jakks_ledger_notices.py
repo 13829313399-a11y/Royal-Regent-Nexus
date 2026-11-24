@@ -13,19 +13,53 @@ def payload():
     return v
 
 
-def test_cancel_notice_is_separate_not_reconcilable_or_restorable(db):
+def test_cancel_amends_original_and_replays_do_not_create_or_revive(db):
     v=payload();original=ingest(db,v);cancel=deepcopy(v);cancel['rows'][0].update(document_kind='cancellation',order_type='取消单')
     notice=ingest(db,cancel)
-    assert notice.id != original.id and notice.status=='cancelled' and original.status=='active'
-    assert ingest(db,cancel).id==notice.id
+    assert notice.id == original.id and original.status=='cancelled'
+    assert notice.data.get('document_kind') != 'cancellation'
+    assert ingest(db,cancel).id==notice.id and original.version==2
+    assert ingest(db,v).id==original.id and original.status=='cancelled' and original.version==2
     assert s.line_out(db,notice)['remaining_quantity']=='0'
-    with pytest.raises(HTTPException) as e:
-        s.import_preview(db,preview=cancel,files=[],source_kind='formal',actor='a',reason='测试关联行为',controls={},reconcile_line=original,expected_revision=original.revision)
-    assert '不能' in str(e.value.detail)
-    with pytest.raises(HTTPException) as e:
-        s.restore(db,notice,RestoreIn(expected_revision=notice.revision,reason='测试恢复行为',confirmed=True,notify_recipients=False),'a')
-    assert '归档凭证' in str(e.value.detail)
-    assert original.version==1 and notice.status=='cancelled'
+    s.restore(db,original,RestoreIn(expected_revision=original.revision,reason='测试恢复行为',confirmed=True,notify_recipients=False),'a')
+    assert original.status=='active'
+    assert ingest(db,cancel).id==original.id and original.status=='active'
+    assert original.version==3
+    assert original.data.get("order_type") != "取消单"
+
+
+def test_unmatched_cancel_keeps_evidence_without_creating_a_line(db):
+    v=payload();v['rows'][0].update(document_kind='cancellation',order_type='取消单')
+    result=s.import_preview(db,preview=v,files=[('CXL.pdf',b'cancel','formal')],source_kind='formal',actor='a',reason='',controls={})
+    assert result['items']==[] and result['created_count']==0 and result['unapplied_count']==1
+    from sqlalchemy import select,func
+    assert db.scalar(select(func.count()).select_from(s.Line))==0
+    assert db.scalar(select(func.count()).select_from(s.Source))==1
+
+
+def test_cancel_bare_so_does_not_duplicate_or_change_quantity(db):
+    v=payload();old=deepcopy(v);old['rows'][0]['reference_no']='66973'
+    original=ingest(db,old);cancel=deepcopy(v);cancel['rows'][0].update(document_kind='cancellation',order_type='取消单')
+    line=ingest(db,cancel)
+    assert line.id==original.id and line.reference_no=='66973' and line.status=='cancelled'
+    assert ingest(db,v).id==line.id
+
+
+def test_sent_cancel_requires_permission_and_retains_dispatch_history(db):
+    from app.schemas.customer_order_ledger import DispatchIn
+    v=payload();original=ingest(db,v)
+    s.publish(db,original,['pmc'],'a','原发送')
+    db.commit()
+    cancel=deepcopy(v);cancel['rows'][0].update(document_kind='cancellation',order_type='取消单')
+    def denied(): raise HTTPException(403,'no dispatch')
+    with pytest.raises(HTTPException):
+        s.import_preview(db,preview=cancel,files=[],source_kind='formal',actor='a',reason='',controls={},authorize_dispatch=denied)
+    db.rollback()
+    assert original.status=='active'
+    result=s.import_preview(db,preview=cancel,files=[],source_kind='formal',actor='a',reason='',controls={},authorize_dispatch=lambda:None)
+    assert result['items'][0]['status']=='cancelled'
+    from sqlalchemy import select,func
+    assert db.scalar(select(func.count()).select_from(s.Dispatch))==2
 
 
 def test_new_source_metadata_does_not_duplicate_proven_suffixed_order(db):

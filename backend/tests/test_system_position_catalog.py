@@ -910,6 +910,25 @@ def test_reconcile_upgrades_legacy_production_task_position_matrix_without_losin
             )
 
 
+def test_reconcile_preserves_nonretired_grants_after_catalog_upgrade(monkeypatch):
+    with make_client(monkeypatch):
+        database = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        reconcile = importlib.import_module("app.services.system_position_reconcile")
+        with database.SessionLocal() as db:
+            catalog = db.get(models.AuthIamState, reconcile.SYSTEM_POSITION_CATALOG_STATE_KEY)
+            payload = json.loads(catalog.value_json)
+            payload["definition_version"] = "fixed-v33"
+            catalog.value_json = json.dumps(payload)
+            db.commit()
+            before = list(db.scalars(select(models.AuthRolePermission.id).order_by(models.AuthRolePermission.id)))
+            reconcile.reconcile_system_position_catalog(db)
+            result = reconcile.reconcile_system_position_catalog(db)
+            assert not result.changed_role_ids and not result.changed_user_ids
+            assert list(db.scalars(select(models.AuthRolePermission.id).order_by(models.AuthRolePermission.id))) == before
+            assert json.loads(catalog.value_json)["definition_version"] == "fixed-v34"
+
+
 def test_reconcile_metadata_repair_advances_the_virtual_version(monkeypatch):
     with make_client(monkeypatch):
         db_module = importlib.import_module("app.db")

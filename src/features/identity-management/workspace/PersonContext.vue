@@ -19,8 +19,8 @@ import DelegationEditor from '../DelegationEditor.vue'
 import { departmentName, lastLoginLabel } from '../positionLabels'
 import { workspaceCapabilities, type PersonPanel } from './contracts'
 const AccessPanel = defineAsyncComponent(() => import('@/views/UserAccessManagementView.vue'))
-const props = defineProps<{ personId: string; panel: PersonPanel; catalog?: OrganizationCatalog }>()
-const emit = defineEmits<{ panel: [PersonPanel]; task: [string, boolean]; back: []; saved: []; locked: [boolean] }>()
+const props = defineProps<{ personId: string; panel: PersonPanel; catalog?: OrganizationCatalog; accountIntent?: 'active' | 'suspended' }>()
+const emit = defineEmits<{ panel: [PersonPanel]; task: [string, boolean]; back: []; saved: []; locked: [boolean]; intentRead: [] }>()
 const auth = useAuthStore(), person = ref<PersonIdentity>(), loading = ref(false), error = ref(''), notice = ref('')
 const caps = computed(() => workspaceCapabilities(p => auth.can(p)))
 const viewer = computed(() => `${auth.currentUser?.id}:${auth.authorizationVersion}:${auth.currentUser?.identity?.employment_epoch}:${auth.currentUser?.identity?.effective_context_key}`)
@@ -123,6 +123,11 @@ function openStatusDialog() {
   desiredStatus.value = person.value!.status === 'active' ? 'suspended' : 'active'
   statusError.value = ''; statusDialogOpen.value = true
 }
+watch([person, () => props.accountIntent], ([target, intended]) => {
+  if (!target || !intended || props.panel !== 'account') return
+  emit('intentRead')
+  if (target.status !== intended && canChangeStatus.value) openStatusDialog()
+}, { flush: 'post' })
 async function changeStatus(retry = false) {
   if (busy.value || !caps.value.people) return
   if (retry ? !statusUncertain.value || !pendingStatus || pendingStatus.owner !== account.value || pendingStatus.id !== props.personId

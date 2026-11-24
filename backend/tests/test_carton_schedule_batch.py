@@ -318,6 +318,32 @@ def test_explicit_null_clears_master_weights_while_omission_inherits(monkeypatch
         assert client.post(URL, json=body).json() == response.json()
 
 
+@pytest.mark.parametrize('provided, expected', [
+    ({}, '沿长方向压三道线'), ({'process_note': ''}, ''), ({'process_note': '改压两道线'}, '改压两道线'),
+])
+def test_process_note_with_different_schedule_packing_counts(monkeypatch, provided, expected):
+    import json
+
+    with make_client(monkeypatch) as client:
+        _, body = setup(client, monkeypatch, second_packing=12)
+        from app.db import SessionLocal
+        from app.models.carton_master import CartonMasterRecord
+
+        config_line = {**body['lines'][0], 'usage_quantity': '6', 'process_note': '沿长方向压三道线'}
+        with SessionLocal() as db:
+            db.add(CartonMasterRecord(id='PACK', factory_id='huaxing', kind='CONFIG', identity='pack',
+                                      code='57520', status='ACTIVE', revision=1,
+                                      data_json=json.dumps({'lines': [config_line]})))
+            db.commit()
+        body.update(master_config_id='PACK', master_config_revision=1)
+        body['lines'][0].update(provided)
+        response = client.post(URL, json=body)
+        assert response.status_code == 201, response.text
+        lines = [order['lines'][0] for order in response.json()]
+        assert [Decimal(line['usage_quantity']) for line in lines] == [6, 12]
+        assert [line['process_note'] for line in lines] == [expected, expected]
+
+
 def test_invalid_overrides_and_rules_reject_whole_batch(monkeypatch):
     with make_client(monkeypatch) as client:
         _, base = setup(client, monkeypatch)
@@ -355,7 +381,12 @@ def test_legacy_request_fingerprint_and_null_override_semantics():
         lines=[_order_payload()["lines"][0]])
     model = ScheduleBatchCreate.model_validate(original)
     old_keys = {"factory_id", "request_id", "sources", "planned_due_date", "lines", "master_config_id", "master_config_revision"}
-    assert request_content(model) == model.model_dump(mode="json", include=old_keys)
+    legacy_body = model.model_dump(mode="json", include=old_keys)
+    del legacy_body["lines"][0]["process_note"]
+    assert request_content(model) == legacy_body
+    cleared = deepcopy(original)
+    cleared["lines"][0]["process_note"] = ""
+    assert request_content(ScheduleBatchCreate.model_validate(cleared)) != legacy_body
     omitted = {**original, "order_overrides": [override(original, 0, [{"line_no": 1}])]}
     explicit = {**original, "order_overrides": [override(original, 0, [{"line_no": 1, "net_weight_kg": None}])]}
     assert request_content(ScheduleBatchCreate.model_validate(omitted)) != request_content(ScheduleBatchCreate.model_validate(explicit))

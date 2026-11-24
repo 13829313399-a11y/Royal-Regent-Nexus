@@ -271,7 +271,7 @@
     finish();if(active==='issues')root.QcIssueReports?.pageChanged();active='';++sequence;render();return true;
   }
   async function open(kind){
-    if(exporting||issueBusy()||!titles[kind]||root.__QC_NEXUS?.factory!=='huaxing')return;
+    if(exporting||issueBusy()||!titles[kind]||!root.__QC_NEXUS?.factory)return;
     finish();if(dirty()){root.showToast?.('请先等待保存成功，再切换模板','error');return;}
     if(active==='issues')root.QcIssueReports?.pageChanged();
     active=kind;el('qwtChoice').value=kind;
@@ -288,7 +288,7 @@
     root.QcPeriodReports.weekly.syncCustomers([...available.values()]);
   }
   function init(){
-    if(root.__QC_NEXUS?.factory!=='huaxing'||!el('qwtEntries'))return;
+    if(!root.__QC_NEXUS?.factory||!el('qwtEntries'))return;
     const select=el('qwtCustomer');
     select.hidden=false;
     select.onchange=()=>{

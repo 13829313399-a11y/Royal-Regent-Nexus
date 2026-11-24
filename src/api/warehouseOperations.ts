@@ -44,7 +44,8 @@ export interface WarehouseOperationsWorkspace {
   permissions: Record<'read' | 'operate' | 'quality' | 'correct', boolean> & { master?: boolean }
 }
 export type FabricMonthlyView = 'monthly' | 'reconciliation' | 'recipients'
-export interface FabricMonthlyQuery { month: string; direction: '' | 'IN' | 'OUT'; channel: '' | 'MANUAL' | 'SCAN'; party_key: string; search?: string; unit?: string; date_order?: 'ASC' | 'DESC' }
+export type FabricMonthlySource = 'MANUAL' | 'HANDOVER' | 'CUTTING'
+export interface FabricMonthlyQuery { month: string; direction: '' | 'IN' | 'OUT'; channel?: '' | 'MANUAL' | 'SCAN'; source?: '' | FabricMonthlySource; party_key: string; search?: string; unit?: string; date_order?: 'ASC' | 'DESC' }
 export interface FabricMonthlyQuantities {
   received: string; receipt_reversed: string; net_received: string; issued: string; issue_reversed: string
   returned: string; net_issued: string; net_outbound: string; stock_change: string

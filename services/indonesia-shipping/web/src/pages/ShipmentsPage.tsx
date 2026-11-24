@@ -36,6 +36,7 @@ import { applyShipmentImport } from '../utils/shipmentImportApply'
 import { MATERIAL_CATEGORIES } from '../utils/engineeringImport'
 import { HUASHENGYI_FULL_NAME } from '../utils/supplierProfiles'
 import { publicAsset } from '../deployment'
+import { ImportTemplateDownload } from '../components/ImportTemplateDownload'
 import './ShipmentsPage.css'
 import {
   formatShipmentPackingLines, isPaperRope, parseShipmentPacking,
@@ -1423,6 +1424,7 @@ export default function ShipmentsPage() {
               <Button danger disabled={!selKeys.length}>🗑 批量删除 ({selKeys.length})</Button>
             </Popconfirm>
             <Button type="primary" onClick={openCreate}>➕ 新建走货</Button>
+            <ImportTemplateDownload kind="shipments" />
             <Button onClick={load}>🔄 刷新</Button>
           </Space>
         }
@@ -1565,6 +1567,7 @@ export default function ShipmentsPage() {
               <Button size="small" onClick={openTools}>从工具库选择</Button>
               <Button size="small" onClick={() => { loadLatestSchedule(); setSchedPickerOpen(true) }}>🔗 从排期勾选</Button>
               <Button size="small" onClick={addItem}>➕ 加一行</Button>
+              <ImportTemplateDownload kind="shipments" size="small" />
               <ShipmentImport existing={items} materials={matMap} onImport={(imported: ShipmentImportItem[], targets: number[]) => {
                 try {
                   if (sheetWritePending.current || editorLoadState.current !== 'ready') {

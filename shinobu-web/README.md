@@ -29,7 +29,9 @@
 
 ### 手动安装
 
-1. 前往 [Releases](../../releases) 下载当前版本对应浏览器的压缩包：Chromium 使用 `ShinobuTranslator-chromium-v*.zip`，Firefox 使用 `ShinobuTranslator-firefox-v*.zip`
+RR 内置网页版的安装与构建见[集成说明](README_FOR_RR.md#如需单独运行或修改此副本)。以下步骤适用于浏览器扩展。
+
+1. 从原扩展发行仓库的 Releases 页下载当前版本对应浏览器的压缩包。Chromium 使用 `ShinobuTranslator-chromium-v*.zip`，Firefox 使用 `ShinobuTranslator-firefox-v*.zip`
 2. 解压到本地文件夹
 3. Chrome / Edge：打开扩展管理页，启用「开发者模式」，选择「加载已解压的扩展程序」
 4. Firefox Desktop 140+：打开 `about:debugging#/runtime/this-firefox`，选择「临时载入附加组件」，再选择解压目录中的 `manifest.json`

@@ -18,7 +18,20 @@ const department = ref(props.defaultDepartment || '')
 const at = ref('')
 const busy = ref(false)
 const error = ref('')
-const result = ref<{ allowed: boolean; reason: string; source_ids: string[]; limitation: string }>()
+type StepState = 'hit' | 'skipped' | 'passed' | 'unmatched'
+const states: Record<StepState, string> = {
+  hit: '命中，决定结果',
+  skipped: '后续未执行',
+  passed: '通过',
+  unmatched: '未命中',
+}
+const result = ref<{
+  allowed: boolean
+  reason: string
+  source_ids: string[]
+  limitation: string
+  steps?: { key: string; label: string; state: StepState }[]
+}>()
 const departments = computed(
   () => props.catalog.organizations.find((o) => o.id === factory.value)?.departments ?? [],
 )
@@ -64,7 +77,9 @@ async function explain() {
         factory_id: factory.value,
         department: department.value,
         ...(at.value
-          ? { at: `${at.value.length === 16 ? at.value + ':00' : at.value}+08:00` }
+          ? {
+              at: `${at.value.length === 16 ? at.value + ':00' : at.value}+08:00`,
+            }
           : {}),
       })
     ).data
@@ -104,7 +119,9 @@ async function explain() {
           >作用部门<select v-model="department" required>
             <option value="">请选择作用部门</option>
             <option value="*">全部部门</option>
-            <option v-for="d in departments" :key="d.code" :value="d.code">{{ d.name }}</option>
+            <option v-for="d in departments" :key="d.code" :value="d.code">
+              {{ d.name }}
+            </option>
           </select></label
         >
       </div>
@@ -112,9 +129,14 @@ async function explain() {
       ><Button type="submit" variant="outline" :disabled="busy || !code">核对授权</Button>
       <p v-if="error" role="alert" class="iam-error">{{ error }}</p>
       <div v-if="result" role="status">
-        <strong
-          >{{ result.allowed ? '此授权检查允许' : '此授权检查拒绝' }} · {{ result.reason }}</strong
-        >
+        <strong>{{ result.allowed ? '此授权检查允许' : '此授权检查拒绝' }} · {{ result.reason }}</strong>
+        <ol v-if="result.steps?.length" aria-label="服务端判定顺序">
+          <li v-for="step in result.steps" :key="step.key">
+            {{ step.label }} · <strong v-if="step.state === 'hit'">{{ states.hit }}</strong
+            ><span v-else>{{ states[step.state] }}</span>
+          </li>
+        </ol>
+        <p v-if="result.source_ids.length">命中来源 · {{ result.source_ids.join('、') }}</p>
         <p>具体业务仍需满足单据状态、人员资格和模块规则。</p>
         <small>{{ result.limitation }}</small>
       </div>

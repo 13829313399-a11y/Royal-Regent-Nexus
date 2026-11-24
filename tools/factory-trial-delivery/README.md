@@ -45,6 +45,10 @@ Windows 条件依赖（例如 colorama）已显式锁定，不能只依赖构建
 
 ## 验证与发布
 
+`--legacy-windows` 客户专包采用锁定的 Python 3.8.10 x86 与 Electron 22 x86，目标是 Windows 7 SP1 / Windows 10 的 32 位及 64 位环境。此模式包含 `OPEN.vbs` 备用入口：用 `pythonw.exe` 启动，先建立日志文件流再导入应用，避开控制台编码及输出故障；关闭程序窗口后退出本机服务。电脑禁用 Windows Script Host 时仍可用 `START.cmd`。两者共用本包 `data`，不要同时复制或混合其他客户数据。
+
+重复打开会校验已有本机后端实例并聚焦原窗口。浏览器缓存位于 `data/browser/<实例ID>`，每次新后端使用独立缓存，避免遗留窗口拦截重启；业务数据库不在缓存目录。后端退出仅回收本次启动的浏览器。启动诊断留在 `data/startup-console.log`、`data/startup-error.log` 和 `data/startup.log`。这些实现仍需 Windows 原生验证，不能仅凭宿主机测试承诺所有 Win7 电脑都能运行。
+
 ```sh
 python tools/factory-trial-delivery/check_backends.py
 npm --prefix tools/huakang-b-jp-trial/web test

@@ -92,6 +92,7 @@ def test_source_registration_survives_legacy_handled_and_snooze(monkeypatch):
         assert summary["actionable_total"] == 1
         assert summary["snoozed_total"] == 1
         assert summary["focus_total"] == 0
+        assert sum(summary[key] for key in ("overdue_active_total", "assigned_focus_total", "team_focus_total", "snoozed_total")) == 1
         assert client.patch(url, json={"state_version": 1, "archived": True}).status_code == 409
         assert client.patch(url, json={"lifecycle": "resolved"}).status_code == 422
         with dbm.SessionLocal() as db:
@@ -120,6 +121,7 @@ def test_personal_versions_epoch_permission_and_batch(monkeypatch):
             assert svc.detail(db, a, item["id"])["personal"]["read_state"] == "read"
             assert svc.detail(db, b, item["id"])["personal"]["read_state"] == "unread"
             assert svc.snapshot(db, actor(uid))["summary"]["actionable_total"] == 0
+            assert svc.snapshot(db, actor(uid))["facets"] == {"factories": [], "modules": []}
             with pytest.raises(Exception) as error: svc.detail(db, actor(uid), item["id"])
             assert error.value.status_code == 404
             svc.patch_state(db, a, item["id"], schema.UserStatePatch(observed_content_version=0)); db.commit()
@@ -157,9 +159,19 @@ def test_molding_dispatch_and_cycle_withdrawal(monkeypatch):
         b = actor(factory="huakang-b", department="production", permissions=permissions)
         with dbm.SessionLocal() as db:
             order = models.MoldingSampleOrder(id="C-to-A", factory_id="huakang-c", production_factory_id="huakang-a",
-                product_name="跨厂测试", date="2026-09-01", status="待生产", created_at="2026-09-01 12:00:00")
+                product_name="跨厂测试", client_name="测试客户", date="2026-09-01", status="待生产", created_at="2026-09-01 12:00:00")
             db.add(order); db.commit()
-            old = svc.snapshot(db, a)["items"][0]
+            initial = svc.snapshot(db, a)
+            old = initial["items"][0]
+            assert old["stage_code"] == "production_start"
+            assert {"label": "产品名称", "value": "跨厂测试"} in old["details"]
+            assert svc.snapshot(db, a, q="测试客户")["query"]["filtered_total"] == 1
+            assert svc.snapshot(db, b, q="测试客户")["query"]["filtered_total"] == 0
+            assert {f["id"] for f in initial["facets"]["factories"]} == {"huakang-c", "huakang-a"}
+            for facet in initial["facets"]["factories"]:
+                filtered = svc.snapshot(db, a, factory_scope=facet["id"], module="molding", q="跨厂测试", limit=1)
+                assert filtered["query"]["filtered_total"] == facet["count"] == 1
+            assert svc.snapshot(db, b)["facets"]["factories"] == []
             assert old["source_factory"]["id"] == "huakang-c"
             assert old["execution_factory"]["id"] == "huakang-a"
             assert svc.snapshot(db, b)["summary"]["actionable_total"] == 0
@@ -213,6 +225,10 @@ def test_quote_batch_reviewer_version_and_v2_nonroot(monkeypatch):
             assert data["health"]["issues"] == [{"module": "internal_quote", "reason": "source_inconsistent", "count": 1}]
             verification = svc.snapshot(db, reviewer, view="verification")
             assert verification["query"]["filtered_total"] == 1
+            assert verification["facets"]["modules"] == [{"id": "internal_quote", "label": "内部报价", "count": 1}]
+            factory = verification["facets"]["factories"][0]
+            assert svc.snapshot(db, reviewer, view="verification", factory_scope=factory["id"])["query"]["filtered_total"] == factory["count"]
+            assert svc.snapshot(db, reviewer, view="verification", q="not-present")["facets"] == {"factories": [], "modules": []}
             item = verification["items"][0]
             assert item["reference_label"] == "v3-1" and not item["can_act_now"]
             assert item["verification_state"] == "unverified"
@@ -451,3 +467,63 @@ def test_password_preview_has_contact_and_reason_but_no_secrets(monkeypatch):
         assert detail.json()["details"] == item["details"]
         for value in ("never-return-this-claim", "claim_token_hash", "secret-ip", "secret-agent"):
             assert value not in response.text and value not in detail.text
+
+
+def test_position_facts_keep_personal_decision_and_priority(monkeypatch):
+    with make_client(monkeypatch, IAM_POSITION_WORKBENCH_ENABLED="true", IAM_IDENTITY_WRITES_ENABLED="true",
+                     AUTHZ_WRITES_ENABLED="true", AUTHZ_MODE="enforce") as client:
+        login(client)
+        dbm, svc = services()
+        auth = importlib.import_module("app.models.auth")
+        position = importlib.import_module("app.models.position_review").PositionReview
+        with dbm.SessionLocal() as db:
+            uid = applicant(db, auth, "qa-position")
+            db.get(auth.AuthUser, uid).status = "active"
+            profile = db.get(auth.EmployeeProfile, uid)
+            db.add(position(id="p", user_id=uid, initiator_user_id=uid, origin="employee",
+                employment_epoch=profile.employment_epoch, created_at="2025-01-01 09:00:00",
+                updated_at="2025-01-01 09:00:00", last_submitted_at="2025-01-01 09:00:00",
+                declared_snapshot_json=json.dumps({"org_unit_id": "huakang-a", "department_code": "engineering", "position": "工程主管"}),
+                base_official_snapshot_json=json.dumps({"position": "工程员"})))
+            db.commit()
+        snap = client.get("/api/work-center/snapshot", params={"module": "position_reviews", "q": "工程主管"}).json()
+        pending, = snap["items"]
+        assert pending["summary"] == "申报岗位：工程主管（原：工程员）"
+        assert pending["priority"] == "high" and "等待超过 3 天" in pending["priority_reasons"]
+        assert {"label": "发起方式", "value": "员工自报"} in pending["details"]
+        assert snap["facets"]["modules"] == [{"id": "position_reviews", "label": "岗位核对", "count": 1}]
+        with dbm.SessionLocal() as db:
+            review = db.get(position, "p")
+            review.status, review.review_comment, review.revision = "returned", "请补充任职日期", 2
+            db.commit()
+            result, = svc.snapshot(db, actor(uid), view="info")["items"]
+            assert result["summary"] == "请补充任职日期" and result["priority"] == "normal"
+            assert {"label": "核对意见", "value": "请补充任职日期"} in result["details"]
+            assert not svc.snapshot(db, actor("another-person"), view="info")["items"]
+
+
+def test_shipment_facts_and_supplier_search_are_factory_scoped(monkeypatch):
+    with make_client(monkeypatch):
+        dbm, svc = services()
+        supplier = importlib.import_module("app.models.carton_procurement").CartonSupplier
+        portal = importlib.import_module("app.models.carton_supplier_portal")
+        date = "2026-09-20"
+        with dbm.SessionLocal() as db:
+            for factory, name in (("huakang-a", "甲方纸业"), ("huakang-b", "乙方纸业")):
+                db.add(supplier(id=factory, supplier_code=factory, factory_id=factory, supplier_name=name,
+                                created_at=date, updated_at=date))
+                db.flush()
+                db.add(portal.SupplierShipment(id=factory, factory_id=factory, supplier_id=factory, delivery_note_no=factory,
+                    delivery_date=date, request_id=factory, fingerprint="test", created_by="warehouse", created_at=date))
+                db.flush()
+                db.add(portal.SupplierShipmentUnmatchedLine(id=factory, shipment_id=factory, factory_id=factory,
+                    source_sheet="送货", source_row=1, quantity=3, snapshot_json="{}"))
+            db.commit()
+            reader = actor(department="pmc-warehouse", permissions=("carton_procurement:read",
+                           "carton_procurement:receipt_write", "carton_procurement:inventory_write"))
+            snap = svc.snapshot(db, reader, q="甲方纸业")
+            item, = snap["items"]
+            assert "甲方纸业" in item["summary"] and "含 1 项无单明细" in item["summary"]
+            assert {"label": "明细项数", "value": "1"} in item["details"]
+            assert snap["facets"]["factories"][0]["count"] == 1
+            assert svc.snapshot(db, reader, q="乙方纸业")["facets"] == {"factories": [], "modules": []}

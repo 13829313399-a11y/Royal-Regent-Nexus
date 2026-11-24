@@ -160,7 +160,8 @@ def test_unlinked_delivery_is_visible_and_opening_count_events_are_not_receipts(
     opened = apply(client, content, preview(client, content).json())
     assert opened.status_code == 200, opened.text
     draft = count(client, [result['items'][0]['id']])
-    assert act(client, draft, actual='3')[0].status_code == 200
+    posted, _ = act(client, draft, actual='3', business_date=draft['business_date'])
+    assert posted.status_code == 200, posted.text
     assert history(client)['total'] == 1
     assert history(client)['items'][0]['quantity'] == '4'
 
@@ -191,9 +192,10 @@ def test_history_filters_dates_status_and_stable_sorting_before_pagination(clien
         for key, supplier, *_ in specifications]))
     sources = {item['facts']['order_no']: item for item in stored(client)['items']}
     receipts = {}
+    locations = {'FABRIC': 'A01', 'THREAD': '线位', 'ACCESSORY': '辅料位'}
     for key, supplier, category, day, _ in specifications:
         response = receive(client, sources[key], request(sources[key], receipt_date=day, delivery_reference='DN-' + key,
-            material_category=category, batches=[{'quantity': '1', 'location': 'A01', 'dye_lot': '001' if category == 'FABRIC' else ''}]))
+            material_category=category, batches=[{'quantity': '1', 'location': locations[category], 'dye_lot': '001' if category == 'FABRIC' else ''}]))
         assert response.status_code == 200, response.text
         receipts[key] = response.json()
     database = importlib.import_module('app.db')

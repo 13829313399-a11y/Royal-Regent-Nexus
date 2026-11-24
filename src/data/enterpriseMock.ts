@@ -1179,9 +1179,9 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
   'sales-business': {
     departmentId: 'sales-business',
     heroTitle: '业务模块中心',
-    heroSubtitle: '把内部成本报价、客户报价转换、送印尼物料和 PO 入排期连成统一入口',
+    heroSubtitle: '把内部成本报价、客户报价转换、印尼走货明细和客户订单连成统一入口',
     panelTitle: '业务部模块',
-    panelSubtitle: '优先承接内部报价协作、客价转换、送印尼物料和 PO 入排期',
+    panelSubtitle: '内部报价协作、客价转换、印尼走货明细和客户订单',
     modules: [
       {
         id: 'material-planning', title: '需求试算草稿', owner: '华康 C · 业务部',
@@ -1253,27 +1253,6 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
           { label: '资料与采购', summary: '客户、货号、物料、供应商、字典与采购订单' },
           { label: '生产与物流', summary: '生产单、排期、物料追踪、出库与走货明细' },
           { label: '报关与导出', summary: '沿用原工作区的 Excel 导入、核对、合并、发票与报关模板' },
-        ],
-      },
-      {
-        id: 'indonesia-material-shipment',
-        title: '送印尼物料',
-        owner: '业务部 / 船务',
-        summary: '按合同与交付批次计算物料需求、倒排回料，按数量分配并输出原版出货明细',
-        status: '开发验证',
-        statusTone: 'amber',
-        stats: '合同齐料 · 数量绑定 · 原版明细',
-        icon: Ship,
-        route: '/modules/sales-business/indonesia-material-shipment',
-        statusMetrics: [],
-        todos: ['维护货号用量及日产能', '导入统一排期并分配物料', '船务确认河源回料后核对出货'],
-        children: [
-          { label: '合同看板', summary: '分批跟进每种物料的需求、回料、缺口与齐料' },
-          { label: '统一排期导入', summary: '沿用现有 ITEM 排期，预览后选择有效合同' },
-          { label: '需求与分配', summary: '自动计算需求、业务调整与未发物料改绑' },
-          { label: '河源回料', summary: '来料仓提供承诺交期，船务确认数量后入库' },
-          { label: '出货明细', summary: '一次一个客户和接收方，导出原版明细页' },
-          { label: '基础资料', summary: '维护用量、产能、单位、计费、周期及图片' },
         ],
       },
       {

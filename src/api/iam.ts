@@ -181,6 +181,8 @@ export interface RoleSummary {
   description: string
   version: number
   is_protected: boolean
+  scoped_member_count?: number | null
+  scoped_binding_count?: number | null
   binding_count: number
   permission_count: number
   scope_mode: RoleScopeMode
@@ -302,8 +304,8 @@ export function createIamApi(client: IamHttpClient = http) {
       )
       return response.data
     },
-    async listRoles() {
-      const response = await client.get<RoleSummary[]>('/iam/roles')
+    async listRoles(includeCounts = false) {
+      const response = await client.get<RoleSummary[]>(includeCounts ? '/iam/roles?include_member_counts=true' : '/iam/roles')
       return response.data
     },
     async listSystemPositions() {

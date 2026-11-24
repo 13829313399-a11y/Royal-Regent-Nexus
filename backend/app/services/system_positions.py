@@ -364,7 +364,7 @@ PAINTING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 # 啤机职位可跨厂只读查看正式工程啤办看板与明细，并操作
-# 啤办生产任务。范围模式负责区分文员的“跨厂查看 / 本厂操作”
+# 啤办生产任务和注塑排产。范围模式负责区分文员的“跨厂查看 / 本厂操作”
 # 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
 MOLDING_CLERK_PERMISSION_CODES = (
     "customer_order:inbox_read",

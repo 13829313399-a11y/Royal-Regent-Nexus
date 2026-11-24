@@ -53,8 +53,8 @@ const status = computed(() => props.record.reversed ? '已冲销' : isLocation.v
       <dl v-if="isLocation ? batch?.quantity : entry.quantity" class="fabric-detail-metrics">
         <div><dt>{{ quantityLabel }}</dt><dd><strong>{{ isLocation ? batch?.quantity : entry.quantity }}</strong> <small>{{ unit }}</small></dd></div>
         <template v-if="isRequest">
-          <div><dt>已发数量</dt><dd>{{ record.issued_quantity ?? '0' }} {{ unit }}</dd></div>
-          <div v-if="!record.closed"><dt>待发数量</dt><dd>{{ remaining(entry.quantity, record.issued_quantity) }} {{ unit }}</dd></div>
+          <div><dt>已发数量</dt><dd><strong>{{ record.issued_quantity ?? '0' }}</strong> <small>{{ unit }}</small></dd></div>
+          <div v-if="!record.closed"><dt>待发数量</dt><dd><strong>{{ remaining(entry.quantity, record.issued_quantity) }}</strong> <small>{{ unit }}</small></dd></div>
         </template>
       </dl>
     </section>

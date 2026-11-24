@@ -12,6 +12,8 @@ from app.services import warehouse_operations as service
 from app.schemas.fabric_inventory_setup import CountCreate, CountAction
 from app.services import fabric_inventory_setup as setup
 from app.services import fabric_legacy_stock
+from app.services import fabric_subcontract
+from app.schemas import fabric_subcontract as subcontract_forms
 
 router = APIRouter(prefix='/api/warehouse-operations', tags=['warehouse-operations'])
 Warehouse = Literal['fabric', 'semi']
@@ -67,6 +69,45 @@ def setup_access(actor, factory_id, action='read'):
     return permissions
 
 
+def processor_access(actor, factory_id):
+    return all(can(actor, 'fabric_warehouse:' + action, factory_id, 'pmc-warehouse') for action in ('read', 'import'))
+
+
+@router.get('/fabric/subcontract')
+def subcontract_workspace(factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    perms = setup_access(actor, factory_id)
+    return {**fabric_subcontract.workspace(db), 'can_operate': perms['operate'], 'can_correct': perms['correct'],
+            'can_manage': processor_access(actor, factory_id)}
+
+
+@router.post('/fabric/subcontract/processors')
+def subcontract_processor(payload: subcontract_forms.Processor, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    service.procurement.require_factory(payload.factory_id)
+    if not processor_access(actor, payload.factory_id):
+        raise HTTPException(403, '无布料仓加工厂资料维护权限')
+    return fabric_subcontract.execute(db, actor, payload)
+
+
+@router.get('/fabric/subcontract/processors')
+def subcontract_processor_catalog(factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    service.procurement.require_factory(factory_id)
+    if not can(actor, 'fabric_warehouse:read', factory_id, 'pmc-warehouse'):
+        raise HTTPException(403, '无布料仓基础资料查询权限')
+    return {**fabric_subcontract.processor_catalog(db), 'can_manage': processor_access(actor, factory_id)}
+
+
+@router.post('/fabric/subcontract/orders')
+def subcontract_order(payload: subcontract_forms.Order, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, payload.factory_id, 'operate')
+    return fabric_subcontract.execute(db, actor, payload)
+
+
+@router.post('/fabric/subcontract/orders/{order_id}/actions')
+def subcontract_action(order_id: str, payload: subcontract_forms.Action, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, payload.factory_id, 'correct' if payload.kind == 'VOID' else 'operate')
+    return fabric_subcontract.execute(db, actor, payload, order_id)
+
+
 @router.post('/fabric/legacy-stock/preview')
 def legacy_stock_preview(factory_id: str = Form(...), file: UploadFile = File(...),
                          db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
@@ -119,29 +160,32 @@ def act_count(identifier: str, payload: CountAction, db: Session = Depends(get_d
     return setup.act_count(db, actor, identifier, payload)
 
 
-def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search='', unit='', date_order='DESC'):
+def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search='', unit='', date_order='DESC',
+                     *, source=''):
     if not capabilities(actor, 'fabric', factory_id)['read']:
         raise HTTPException(403, '无布料仓月度数量查询权限')
     from app.services.fabric_quantity_monthly import report
-    return report(db, month, direction, channel, party_key, search, unit, date_order,
+    return report(db, month, direction, channel, party_key, search, unit, date_order, source=source,
                   include_purchase_price=can(actor, 'fabric_warehouse:read', factory_id, 'pmc-warehouse'))
 
 
 @router.get('/fabric/monthly')
 def monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
-            search: str = '', unit: str = '', date_order: str = 'DESC',
+            search: str = '', unit: str = '', date_order: str = 'DESC', source: str = '',
             db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     from fastapi.responses import JSONResponse
-    return JSONResponse(quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order),
-                        headers={'Cache-Control': 'no-store'})
+    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order,
+                              source=source)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/fabric/monthly/export')
 def export_monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
-                   search: str = '', unit: str = '', date_order: str = 'DESC',
+                   search: str = '', unit: str = '', date_order: str = 'DESC', source: str = '',
                    version: str = '', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     from app.services.fabric_quantity_monthly import export_xlsx
-    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order)
+    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order,
+                              source=source)
     if version and version != result['version']:
         raise HTTPException(409, '收发记录已变化，请刷新月度汇总后再导出')
     return Response(export_xlsx(result), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

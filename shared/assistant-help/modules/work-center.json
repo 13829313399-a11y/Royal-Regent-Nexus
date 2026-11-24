@@ -2,7 +2,7 @@
   {
     "id": "work-center.overview",
     "module_id": "work-center",
-    "title": "待办、已读与当前聚焦",
+    "title": "事项工作台与待办铃铛",
     "kind": "overview",
     "audience": "internal",
     "route_names": [
@@ -11,26 +11,26 @@
     "factory_ids": [],
     "anchor_id": "work-center.overview",
     "field_keys": [],
-    "summary": "阅读状态与业务办理状态是两件事。",
-    "content": "可处理责任是 task、can_act=true，且业务状态为 open 或 in_progress。标记已读不会完成审批、生产或收货。有效稍后提醒还需时间未到且关注版本一致；当前聚焦排除这些有效稍后项，所以 focus_total 与 actionable_total 可不同。筛选后的 filtered_total 与总览可能范围不同。health=partial 需要区分来源同步失败、历史提醒缺少原单据和当前业务状态待核对。同步失败才提供重试；历史提醒不计入待办；当前业务异常可通过“待核对事项”定位源单据，不能把整个通知列表误报为无法同步。旧版报价需由原业务责任人核对公式、重算并重新提交，通知中心不修改审批状态。\n岗位更新的管理员待办只在完整管理范围内显示，点击后在人员与权限工作台核对；员工结果知会指向“我的岗位与权限”。已读、归档和稍后提醒不批准岗位或改变权限。通知暂未投递不会回滚已经确认的身份与权限；业务办理回执和源请求是结果依据。\n整合权限界面启用时，账号和岗位待办跳转到“人员与权限”的按类型办理面板；仅查看不创建新的调整单。旧书签由兼容路由保留原目标。\n待审核的职位与权限调整也进入管理员待办，点击打开对应申请；审批完成、拒绝或取消后结束该待办。标记通知已读不会结束审核。注册和密码找回待办按完整人员与原申请范围筛选。",
+    "summary": "使用顶部铃铛办理待办，在工作台按厂区、模块筛选并整理个人提醒。",
+    "content": "铃铛中点击条目或“去办理”可打开有权访问的业务单据。“在工作台预览”可先查看事项事实、业务阶段和经过。工作台有待办、我在等待、知会、历史四个视图。遇到源业务状态异常时，另有“待核对”入口。\n总览覆盖全部授权责任。厂区与模块计数按当前其他筛选条件计算，跨厂单可以在来源厂和执行厂找到。标记已读确认看过当前版本，稍后提醒会暂时移出当前聚焦，仍计入待办。可在知会或已结束事项上归档。审批、收货和任职变更都在原业务页面办理。\n健康徽章提供最近同步时间与来源说明。历史提醒缺少原单据时可在说明中查看，业务状态异常可打开待核对，来源同步失败时可重试。岗位和账户待办只对相应管理范围可见，员工结果知会指向本人的岗位与权限。",
     "steps": [
       {
         "title": "区分总览范围",
-        "description": "总览统计本人全部授权责任；不会随列表筛选缩小。",
+        "description": "脉冲条显示逾期、指派给我、团队队列和已设稍后的责任分布，可点选查看。",
         "anchor_id": "work-center.summary",
         "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
         "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
       },
       {
         "title": "设置列表筛选",
-        "description": "选择厂区、模块和期限，当前筛选计数只对应这个列表。",
+        "description": "输入单号、姓名、产品或关键词，搭配厂区、模块、期限和仅未读筛选。需要跟随顶栏厂区时点击定位。",
         "anchor_id": "work-center.filters",
         "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
         "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
       },
       {
         "title": "查看并选择事项",
-        "description": "选择后可把记录标识带入曜灵，只读查询会重新校验；已读不会完成业务。",
+        "description": "打开一项查看详情或前往源单据，也可勾选多项批量标读或设置稍后提醒。",
         "anchor_id": "work-center.list",
         "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
         "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
@@ -40,17 +40,17 @@
       {
         "path": "backend/app/services/work_center/service.py",
         "symbol": "flags",
-        "sha256": "1cb4eeb7a13460a2a6347446633395eb3cddabd7822e52e050267a0d6486711d"
+        "sha256": "97f4216074fed28affdbdf213eeef306ad138490b8e1ea91880fe4ca738c6886"
       },
       {
         "path": "src/views/NotificationCenterView.vue",
         "symbol": "nc-filters",
-        "sha256": "653337f07d90a1da62c42c0e4ea627df55674f506f2b06f0a10b19d4d0013ceb"
+        "sha256": "7df5e82cf01a7b27c518e1a96bf58bff65de89d81c7edced706a571554829a45"
       },
       {
         "path": "backend/app/services/work_center/registry.py",
         "symbol": "def position_queries",
-        "sha256": "cf79344352eed5846207f7b39c91a19b93e54494b517696d6b518f9868b348fc"
+        "sha256": "792d897a3ebfadc26a879562729a41219d0c04a16cf75bf311524eaa98e58409"
       },
       {
         "path": "src/features/work-center/routes.ts",
@@ -58,8 +58,8 @@
         "sha256": "7dad8e19f96d495f6f79a214bb9a7f1b5e1a8114941de738f8525451a0422e68"
       }
     ],
-    "knowledge_version": "2026.10.23-work-center-verification",
-    "verified_commit": "working-tree:work-center-verification",
+    "knowledge_version": "2026.11.22-work-center-redesign",
+    "verified_commit": "working-tree:work-center-redesign",
     "status": "verified"
   }
 ]

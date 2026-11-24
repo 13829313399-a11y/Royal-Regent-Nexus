@@ -23,6 +23,7 @@ from app.schemas.iam import (
     UserAccessPreviewRequest,
     UserSearchOut,
 )
+from app.services import iam_personnel as personnel
 from app.services.auth import AuthContext, get_current_user
 from app.services.iam import (
     approve_access_request,
@@ -108,10 +109,11 @@ def user_access_commit(
 
 @router.get("/system-positions", response_model=list[RoleSummaryOut])
 def system_positions(
+    include_member_counts: bool = False,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return list_system_positions(db, current_user)
+    return list_system_positions(db, current_user, include_member_counts=include_member_counts)
 
 
 @router.post(
@@ -143,19 +145,29 @@ def user_system_position_commit(
 
 @router.get("/roles", response_model=list[RoleSummaryOut])
 def roles(
+    include_member_counts: bool = False,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return list_roles(db, current_user)
+    return list_roles(db, current_user, include_member_counts=include_member_counts)
+
+
+@router.get("/roles/{role_id}/members")
+def role_members(role_id: str, q: str = Query("", max_length=128), org_unit_id: str = Query("", max_length=64),
+                 only_outdated: bool = False, page: int = Query(1, ge=1), page_size: int = Query(30, ge=1, le=100),
+                 db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return personnel.role_members(db, current_user, role_id, q=q, org_unit_id=org_unit_id,
+                                  only_outdated=only_outdated, page=page, page_size=page_size)
 
 
 @router.get("/roles/{role_id}/access", response_model=RoleAccessOut)
 def role_access(
     role_id: str,
+    include_member_counts: bool = False,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return get_role_access(db, current_user, role_id)
+    return get_role_access(db, current_user, role_id, include_member_counts=include_member_counts)
 
 
 @router.post("/roles/{role_id}/access/preview", response_model=RoleAccessPreviewResponse)

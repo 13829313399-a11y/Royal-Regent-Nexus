@@ -3,6 +3,7 @@
 """排期参照：从导出的排货报表建立索引，用于查重、客名→国家带出、新货号预警。"""
 import os
 import sys
+import re
 from collections import Counter, defaultdict
 
 from .workbooks import reference_workbook
@@ -106,6 +107,7 @@ class ScheduleRef:
                         '装箱数': str(row[COL_装箱数] or '').strip(),
                     }
                     self.item_detail[customs or item] = detail
+                    self.item_detail[item] = detail
             # 国家带出：该客名历史国家高度集中（≥80%）才带出，像 JPEU 这种多国/常留空的不带
             self.country_by_customer = {}
             for c, cnt in country_votes.items():
@@ -122,30 +124,44 @@ class ScheduleRef:
             self.uploaded_at = uploaded_at
             self.row_count = n
 
-    def check_row(self, customer, customer_po, baby_item, qty):
+    def check_row(self, customer, customer_po, baby_item, qty, long_code=''):
         """返回 (exists, known_item, country_suggest, version_suggest)。"""
         baby_item = str(baby_item or '').strip()
         customer_po = str(customer_po or '').strip()
         customer = str(customer or '').strip()
-        known = baby_item in self.known_items if baby_item else False
+        detail = self.get_item_detail(baby_item, long_code)
+        matched_item = detail.get('货号', baby_item) if detail else baby_item
+        items = {baby_item, matched_item} - {''}
+        known = bool(items & self.known_items)
         exists = False
         if customer_po:
             # 有客PO 的行只用 客PO+货号 判重，不用兜底（防止误伤同货号同数量的新单）
-            exists = (customer_po, baby_item) in self.po_item_keys
+            exists = any((customer_po, item) in self.po_item_keys for item in items)
         else:
             try:
                 q = int(float(qty)) if qty not in (None, '') else 0
             except (ValueError, TypeError):
                 q = 0
-            if customer and (customer, baby_item, q) in self.cust_item_qty_keys:
+            if customer and any((customer, item, q) in self.cust_item_qty_keys for item in items):
                 exists = True
         suggest = self.country_by_customer.get(customer, '')
-        version = self.version_by_item.get(baby_item, '')
+        version = self.version_by_item.get(matched_item, '')
         return exists, known, suggest, version
 
-    def get_item_detail(self, baby_item):
+    def get_item_detail(self, baby_item, long_code=''):
         """报关货号 → {货号, 子货号, 产品名称, 装箱数}，没有返回 None。"""
-        return self.item_detail.get(str(baby_item or '').strip())
+        baby = str(baby_item or '').strip()
+        # JP long code segment 3 identifies the schedule item suffix, e.g.
+        # 77780-000-2A-006-PTQ -> 77780-2A. It is NOT the AC packaging version.
+        parts = str(long_code or '').strip().split('-')
+        if len(parts) == 5 and parts[0] == baby and re.fullmatch(r'[A-Za-z0-9]{1,2}', parts[2]):
+            exact = self.item_detail.get(baby + '-' + parts[2])
+            if exact:
+                return exact
+            detail = self.item_detail.get(baby)
+            if detail and str(detail.get('货号') or '').strip() not in {baby, baby + '-' + parts[2]}:
+                return None
+        return self.item_detail.get(baby)
 
     def info(self):
         from datetime import date

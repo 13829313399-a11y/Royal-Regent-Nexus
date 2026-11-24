@@ -536,19 +536,28 @@ def _paper_weight_key(line):
 
 
 def _merge_paper_weights(lines, sources, *, preserve_positions=False):
-    """Only an unambiguous matching paper may supply omitted weights."""
+    """Inherit omitted paper settings from an explicitly selected source or saved order."""
     from app.schemas.carton_procurement import CartonOrderLineCreate
     grouped = {}
+    same_paper = {}
     for source in sources:
-        grouped.setdefault(_paper_weight_key(source), []).append(source)
+        key = _paper_weight_key(source)
+        grouped.setdefault(key, []).append(source)
+        same_paper.setdefault(key[:-1], []).append(source)
     merged = []
     for index, line in enumerate(lines, 1):
-        matches = grouped.get(_paper_weight_key(line), [])
+        key = _paper_weight_key(line)
+        matches = grouped.get(key, [])
         # Order edits already identify persisted line slots by position. Keep
         # their snapshots even when two papers share the same material key.
-        if preserve_positions and index <= len(sources) and _paper_weight_key(sources[index - 1]) == _paper_weight_key(line):
+        if preserve_positions and index <= len(sources) and _paper_weight_key(sources[index - 1]) == key:
             matches = [sources[index - 1]]
         defaults = {}
+        # A schedule can override products per carton without changing the physical paper.
+        note_matches = matches or same_paper.get(key[:-1], [])
+        if line.process_note is None and len(note_matches) == 1:
+            source = note_matches[0]
+            defaults["process_note"] = (source.get("process_note") if isinstance(source, dict) else source.process_note) or ""
         if len(matches) == 1:
             source = matches[0]
             for field in ("net_weight_kg", "gross_weight_kg", "quantity_rule"):
@@ -677,6 +686,7 @@ def create_order(
                 currency=normalize_currency(line.currency),
                 price_source=line.price_source,
                 note=line.note,
+                process_note=line.process_note or "",
             )
         )
     _audit(
@@ -759,6 +769,9 @@ def create_order_response(db: Session, payload: CartonOrderCreate, user: AuthCon
         return value
 
     body = canonical(payload.model_dump(exclude={"request_id"}))
+    for line in body["lines"]:
+        if line["process_note"] is None:
+            del line["process_note"]
     body["customer_code"] = payload.customer_code.strip().upper()
     fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"),
                                             ensure_ascii=False).encode()).hexdigest()
@@ -885,6 +898,7 @@ def _purchase_order_pending_change(
                 "currency": line.currency,
                 "price_source": line.price_source,
                 "note": line.note,
+                "process_note": line.process_note,
                 "before_required_quantity": str(before_required),
                 "after_required_quantity": str(after_required),
                 "required_quantity_delta": str(quantity(after_required - before_required)),
@@ -1394,6 +1408,7 @@ def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
         normalize_currency(str(line.currency)),
         str(line.price_source),
         str(line.note),
+        line.process_note or "",
         rule_json(line) or "",
         str(line.net_weight_kg.normalize()) if line.net_weight_kg is not None else "",
         str(line.gross_weight_kg.normalize()) if line.gross_weight_kg is not None else "",
@@ -1565,6 +1580,7 @@ def update_order(
             normalize_currency(line.currency),
             line.price_source,
             line.note,
+            line.process_note or "",
             rule_json(line) or "",
             str(line.net_weight_kg.normalize()) if line.net_weight_kg is not None else "",
             str(line.gross_weight_kg.normalize()) if line.gross_weight_kg is not None else "",
@@ -1680,6 +1696,7 @@ def update_order(
             line.currency = normalize_currency(input_line.currency)
             line.price_source = input_line.price_source
             line.note = input_line.note
+            line.process_note = input_line.process_note or ""
             if index > len(existing_lines):
                 db.add(line)
         for line in existing_lines[len(payload.lines):]:
@@ -2657,6 +2674,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
                 currency=line.currency,
                 price_source=line.price_source,
                 note=line.note,
+                process_note=line.process_note or "",
             )
             for line in lines
         ],
@@ -2905,6 +2923,7 @@ def search_order_history_items(
                         currency=line.currency,
                         price_source=line.price_source,
                         note=line.note,
+                        process_note=line.process_note,
                     )
                     for line in lines_by_order[order.id]
                 ],

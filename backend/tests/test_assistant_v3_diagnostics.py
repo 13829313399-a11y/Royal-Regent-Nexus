@@ -2,7 +2,6 @@
 import importlib
 import json
 from contextlib import asynccontextmanager
-from pathlib import Path
 import pytest
 from test_assistant_api import env, session, payload
 

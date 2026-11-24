@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.customer_order_ai import reviewed as ai_reviewed
+
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import date
@@ -1283,6 +1285,7 @@ def _green_summary_recovery(workbook, rows, history):
         return {}
 
 
+@ai_reviewed
 def create_unified_customer_preview(
     *,
     customer_code: str,
@@ -1293,6 +1296,14 @@ def create_unified_customer_preview(
     schedule_content: bytes,
 ) -> dict[str, Any]:
     _validate_po_batch(po_files)
+    if customer_code == 'zuru':
+        from . import customer_order_zuru_native as native
+        try:
+            if native.uses_original(schedule_file_name, schedule_content):
+                return native.preview(factory_id=factory_id, received_date=received_date, po_files=po_files,
+                    schedule_file_name=schedule_file_name, schedule_content=schedule_content)
+        except Exception as exc:
+            raise CustomerOrderUnifiedError(str(exc)) from exc
     ensure_unified_schedule(schedule_file_name, schedule_content, factory_id=factory_id, customer_code=customer_code)
     if not _factory_allowed(customer_code, factory_id):
         raise CustomerOrderUnifiedError(
@@ -1383,16 +1394,18 @@ def create_unified_customer_preview(
                 prepare_shipping_item(row, history, shipping_map)
         elif regional.enabled(factory_id, customer_code):
             regional.enrich(row, history, factory_id, customer_code)
-            if (factory_id, customer_code) == ('huadeng', 'jakks'):
-                from .customer_order_jakks_unified import describe_history
-                describe_history(row, history)
         if customer_code == 'ubtech':
             from app.services.customer_order_ubtech import finish_row
             finish_row(row)
     if factory_id == 'huadeng' and customer_code in {'jakks', 'goliath', 'casdon', 'spin', 'simba'}:
         from .customer_order_huadeng_usd import apply_preview
-        book = _load_workbook(schedule_content, read_only=True)
-        try: apply_preview(book, detail_rows)
+        book = _load_workbook(schedule_content, read_only=customer_code != 'jakks')
+        try:
+            apply_preview(book, detail_rows)
+            if customer_code == 'jakks':
+                from .customer_order_jakks_unified import describe_history
+                for row in detail_rows:
+                    describe_history(row, history, book)
         finally: book.close()
     for row in rows:
         mark_pending_information(row)
@@ -1421,7 +1434,9 @@ def create_unified_customer_preview(
     file_names = [name for name, _ in po_files]
     hashes = [sha256(content).hexdigest() for _, content in po_files]
     safe_stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(schedule_file_name).stem).strip(" ._")
-    output_file_name = f"{safe_stem or '河源业务统一排期'}_{customer_name}新单.xlsx"
+    cancel_only = (factory_id == 'huadeng' and customer_code == 'jakks' and detail_rows
+        and all(row.get('document_kind') == 'cancellation' for row in detail_rows))
+    output_file_name = f"{safe_stem or '河源业务统一排期'}_{customer_name}{'取消更新' if cancel_only else '新单'}.xlsx"
     warnings = list(dict.fromkeys([
         "所有客户统一写入《河源业务统一排期》的 ITEM表、接单表和正单评审表。",
         "ITEM表 A:AB 为可自动写入范围；PO及可靠映射没有的可选字段保持空白。",
@@ -1457,8 +1472,14 @@ def create_unified_customer_preview(
                 'EDU默认续编EDUHX，可手动更正；重复单保留原编号，不再次写入或扣备料。货期遇周末提前到周五，验货期提前一周，空白日期保持空白。',
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
+    if cancel_only:
+        warnings[:3] = [
+            '取消 PO 只修改唯一匹配的未走货原订单，不新增订单或数量。',
+            '原单编号、货号、数量、价格、货期与人工资料保留；匹配不唯一时只提示。',
+            '下载的是更新后的排期副本，上传的原文件保持不变。',
+        ]
     preview = {
-        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-huadeng-source-price-v1' if factory_id == 'huadeng' else '') + ('-casdon-original-sku-v1' if (factory_id, customer_code) == ('huadeng', 'casdon') else '') + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else '-caixing-mix-price-v1' if factory_id == 'huaxing' and customer_code == 'caixing' else '-jakks-source-line-cancel-v2' if factory_id == 'huadeng' and customer_code == 'jakks' else ''),
+        "preview_schema_version": PREVIEW_SCHEMA_VERSION + ('-huadeng-source-price-v1' if factory_id == 'huadeng' else '') + ('-casdon-original-sku-v1' if (factory_id, customer_code) == ('huadeng', 'casdon') else '') + ('-yinhui-layout-v1' if factory_id == 'huaxing' and customer_code == 'yinhui' else '-edu-full-item-v2' if factory_id == 'huaxing' and customer_code == 'edu' else '-caixing-mix-price-v1' if factory_id == 'huaxing' and customer_code == 'caixing' else '-jakks-cancel-original-v3' if factory_id == 'huadeng' and customer_code == 'jakks' else ''),
         "customer_code": customer_code,
         "factory_id": factory_id,
         "po_file_name": file_names[0] if len(file_names) == 1 else f"{len(file_names)}个文件",
@@ -1757,6 +1778,16 @@ def export_unified_customer_schedule(
     manual_overrides: list[dict[str, str]] | None = None,
     reconciliation_target: dict[str, str] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
+    if customer_code == 'zuru':
+        from . import customer_order_zuru_native as native
+        try:
+            _validate_po_batch(po_files)
+            if native.uses_original(schedule_file_name, schedule_content):
+                return native.export(factory_id=factory_id, received_date=received_date, po_files=po_files,
+                    schedule_file_name=schedule_file_name, schedule_content=schedule_content,
+                    manual_overrides=manual_overrides, skipped_issue_keys=skipped_issue_keys)
+        except Exception as exc:
+            raise CustomerOrderUnifiedError(str(exc)) from exc
     preview = create_unified_customer_preview(
         customer_code=customer_code,
         factory_id=factory_id,

@@ -22,7 +22,7 @@
 | R01 注册一次确认与授权 | `position_workbench.py`、`position_workbench_plan.py`、`system.py`/`identity_registration.py` 的 flush-only 内核；单事务回执、账号、主职和 outbox | 注册正常/异常回滚集成测试 |
 | R02 员工声明不改权 | `MyPositionPanel.vue`、`AccountMenu.vue`、`position_reviews.py`、严格 schema、`PositionReview`/事件与 0160 迁移 | 自助声明/越权字段/IDOR/修改/退回/撤回测试，employee-390.jpg |
 | R03 管理员同屏 | `PositionWorkbench.vue`、`PositionReviewPane.vue`，待分配/全部人员/内置权限/历史，移动主从切换 | 六种视口、真实审批和 legacy-success.jpg |
-| R04 真实固定方案 | 使用当前 fixed-v33 32 角色目录、定义 hash 与 pinned `IamRoleVersion`，方案带可授范围 | 目录变化冲突、旧版本保持；final-admin-package.jpg |
+| R04 真实固定方案 | 使用当前 fixed-v34 32 角色目录、定义 hash 与 pinned `IamRoleVersion`，方案带可授范围 | 目录变化冲突、旧版本保持；final-admin-package.jpg |
 | R05 保留或替换主职 | `position_workbench_plan.py` 仅替换当前 assignment 来源；保留沿用原固定版本/ceiling | 主职 id 保持、实际权限差异、旧角色不隐式升级 |
 | R06 自动预览和风险 | 服务 SAVEPOINT 实际执行后回滚计算 tuple 差异；`usePositionReview.ts` 防抖/失效/过期/明确勾选 | 自动预览组件测试与 final-admin-risk-390.jpg |
 | R07 独立来源 | 逐项 independent_allow 决策；保留 deny、系统、供应商及其他任职来源 | 四类独立来源同场景逐列/有效授权保持、future allow/deny、缺少处置 422 |

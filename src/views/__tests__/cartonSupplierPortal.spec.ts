@@ -1279,6 +1279,76 @@ describe('supplier batches and document desk', () => {
     wrapper.unmount()
   })
 
+  it.each([undefined, '', ' \n\t '])('only shows filled paper process notes in detail, single and batch acceptance (blank value %j)', async blank => {
+    const data = fixture()
+    const papers = data.orders[0]!.lines
+    for (const paper of papers) paper.accepted = false
+    const note = '沿长边压线\n第二段向内折'
+    papers[0]!.process_note = blank
+    papers[1]!.process_note = note
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(CartonSupplierView, options)
+    try {
+      await flushPromises()
+      await wrapper.get('[aria-label="查看订单 ORDER-A 明细"]').trigger('click')
+      const detailRows = wrapper.get('[aria-label="纸品明细"]').findAll('tbody tr')
+      expect(detailRows[0]!.text()).not.toContain('工艺备注')
+      expect(detailRows[1]!.text()).toContain(note)
+      await wrapper.get('[aria-label="关闭供应商订单明细"]').trigger('click')
+
+      await wrapper.get('[aria-label="确认订单 ORDER-A 接单"]').trigger('click')
+      const dialog = wrapper.get('[role="dialog"]')
+      const singleRows = dialog.findAll('input[type="date"]').map(input => input.element.closest('label')!.parentElement!)
+      expect(singleRows[0]!.textContent).not.toContain('工艺备注')
+      expect(singleRows[1]!.textContent).toContain(note)
+      await dialog.get('[aria-label="关闭接单窗口"]').trigger('click')
+
+      await wrapper.get('[aria-label="选择订单 ORDER-A"]').setValue(true)
+      await wrapper.findAll('button').find(button => button.text() === '批量确认接单')!.trigger('click')
+      const batchRows = wrapper.get('[role="dialog"]').findAll('input[type="date"]').map(input => input.element.closest('label')!.parentElement!)
+      expect(batchRows[0]!.textContent).not.toContain('工艺备注')
+      expect(batchRows[1]!.textContent).toContain(note)
+      expect(api.accept).not.toHaveBeenCalled()
+      expect(api.acceptBatch).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
+  it('enables batch acceptance only while every selected order still has a pending paper', async () => {
+    const data = fixture()
+    const pending = data.orders[0]!
+    const accepted = { ...structuredClone(pending), id: 'DONE', order_no: 'DONE' }
+    accepted.lines.forEach(line => { line.id = 'DONE-' + line.id })
+    data.orders.push(accepted)
+    pending.lines[0]!.accepted = false
+    api.workspace.mockImplementation(async () => structuredClone(data))
+    api.accept.mockImplementation(async () => {
+      pending.lines[0]!.accepted = true
+      return structuredClone(pending)
+    })
+    const wrapper = mount(CartonSupplierView, options)
+    const bulkButton = () => wrapper.findAll('button').find(button => button.text() === '批量确认接单')!
+    try {
+      await flushPromises()
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      await wrapper.get('[aria-label="选择订单 DONE"]').setValue(true)
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      await wrapper.get('[aria-label="选择订单 ORDER-A"]').setValue(true)
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      await wrapper.get('[aria-label="选择订单 DONE"]').setValue(false)
+      expect(bulkButton().attributes('disabled')).toBeUndefined()
+
+      await wrapper.get('[aria-label="确认订单 ORDER-A 接单"]').trigger('click')
+      await wrapper.get('[role="dialog"]').findAll('button').find(button => button.text() === '确认接单')!.trigger('click')
+      await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="选择订单 ORDER-A"]').element.checked).toBe(true)
+      expect(bulkButton().attributes('disabled')).toBeDefined()
+      expect(wrapper.get('[aria-label="更新订单 ORDER-A 承诺交期"]').attributes('disabled')).toBeUndefined()
+      expect(api.accept).toHaveBeenCalledTimes(1)
+      expect(api.acceptBatch).not.toHaveBeenCalled()
+      expect(api.exportOrderImport).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
   it('reports the completed factory if a later factory rejects a batch', async () => {
     const first = fixture()
     first.orders[0]!.lines.forEach(line => { line.accepted = false; line.commitment_revision = 0 })
@@ -1364,6 +1434,36 @@ describe('supplier batches and document desk', () => {
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('将所选订单加入发货')
     wrapper.unmount()
+  })
+
+  it('finds an accepted purchase by its receipt paper number even if another factory cannot load', async () => {
+    const order = fixture().orders[0]!
+    const purchase = { id: 'BATCH', kind: 'PURCHASE', factory_id: 'huaxing', document_no: 'CG-1',
+      created_at: '2026-09-21', orders: [order], lines: order.lines,
+      source_documents: [{ id: order.issue_id, document_no: order.document_no, order_no: order.order_no }] }
+    api.memberships.mockResolvedValue(['huaxing', 'huakang-a'].map(factory_id => ({ factory_id, supplier_name: '河源东康' })))
+    api.documents.mockImplementation(async factory => {
+      if (factory === 'huakang-a') throw new Error('读取超时')
+      return [purchase, { ...purchase, kind: 'DELIVERY', document_no: 'DN-1' }]
+    })
+    routeState.query.purchase_order = order.document_no
+    const wrapper = mount(CartonSupplierView, options)
+    try {
+      await flushPromises()
+      const search = wrapper.get<HTMLInputElement>('input[aria-label="顶部搜索"]')
+      expect(search.element.value).toBe(order.document_no)
+      expect(wrapper.get('[aria-label="单据厂区筛选"]').element).toHaveProperty('value', 'huaxing')
+      expect(wrapper.find('[aria-label="选择单据 CG-1"]').exists()).toBe(true)
+      expect(wrapper.find('[aria-label="选择单据 DN-1"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('读取超时')
+      await search.setValue(order.lines[0]!.child_no)
+      expect(wrapper.find('[aria-label="选择单据 CG-1"]').exists()).toBe(true)
+      await search.setValue('ORDER-A/99')
+      expect(wrapper.find('[aria-label="选择单据 CG-1"]').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+      delete routeState.query.purchase_order
+    }
   })
 
   it('filters, inspects and exports selected purchase and delivery documents', async () => {
@@ -1667,6 +1767,8 @@ describe('supplier batches and document desk', () => {
       expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
 
       await wrapper.get('button[aria-label="确认订单 ORDER-B 接单"]').trigger('click')
+      let finishRefresh!: (result: PortalWorkspace) => void
+      api.workspace.mockImplementationOnce(() => new Promise<PortalWorkspace>(resolve => { finishRefresh = resolve }))
       await confirmPaper()
       const offer = wrapper.get('[role="dialog"]').text()
       expect(offer).toContain('接单完成，导出东康模板？')
@@ -1674,6 +1776,9 @@ describe('supplier batches and document desk', () => {
       expect(offer).toContain('1 张采购单 · 2 张订单')
       expect(api.exportOrderImport).not.toHaveBeenCalled()
       await dialogButton('稍后导出').trigger('click')
+      expect(wrapper.text()).toContain('查找采购单 ORDER-B-P00')
+      finishRefresh(structuredClone(data))
+      await flushPromises()
 
       await wrapper.get('button[aria-label="更新订单 ORDER-B 承诺交期"]').trigger('click')
       await dialogButton('保存承诺交期').trigger('click')
@@ -3100,6 +3205,26 @@ describe('supplier independent factory reads', () => {
       expect(w.text()).toContain('返回厂区与请求不一致')
       expect(w.findAll('[data-testid="supplier-regular-order-row"]')).toHaveLength(0)
     } finally { w.unmount() }
+  })
+  it('keeps order rows and counts stable while a focus refresh is pending', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    api.workspace.mockResolvedValue(fixture())
+    unifiedApi.list.mockResolvedValue({ items: [], total: 0 })
+    const w = mount(CartonSupplierView, options); await flushPromises()
+    try {
+      const row = w.get('[data-testid="supplier-regular-order-row"]').element
+      const stats = w.get('[aria-label="供应商工作统计"]').text()
+      let finish!: (data: PortalWorkspace) => void
+      api.workspace.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      vi.setSystemTime(Date.now() + 46000)
+      window.dispatchEvent(new Event('focus')); await flushPromises()
+      expect(w.get('[data-testid="supplier-regular-order-row"]').element).toBe(row)
+      expect(w.get('[aria-label="供应商工作统计"]').text()).toBe(stats)
+      expect(w.text()).not.toContain('正在读取送货单')
+      finish(fixture()); await flushPromises()
+      expect(w.get('[data-testid="supplier-regular-order-row"]').element).toBe(row)
+    } finally { w.unmount(); visibility.mockRestore(); vi.useRealTimers() }
   })
   it('throttles focus refresh, skips hidden pages, and still refreshes special-only factories', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })

@@ -1,4 +1,5 @@
 import type { WarehouseDocument, WarehouseDomain, WarehouseOperationKind, WarehouseQuality } from '@/api/warehouseOperations'
+import type { Batch, SubOrder } from '@/api/fabricSubcontract'
 
 export const operationLabels: Record<WarehouseOperationKind, string> = {
   CUTTING_REQUEST_REUSE: '确认领料申请续用', REQUEST_CLOSE: '关闭申请余量', CUTTING_RECEIPT: '裁床物料签收', CUTTING_RECEIPT_VOID: '撤销裁床签收',
@@ -57,6 +58,20 @@ export function remaining(total: string, used = '0'): string {
   const sign = difference < 0n ? '-' : ''
   const digits = (difference < 0n ? -difference : difference).toString().padStart(scale + 1, '0')
   return scale ? `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}` : `${sign}${digits}`
+}
+
+export function sendableSubcontractInputs(inputs: SubOrder['inputs'], stock: Batch[]) {
+  const currentStock = new Map(stock.map(batch => [batch.id, batch]))
+  return inputs.flatMap(input => {
+    const batch = currentStock.get(input.id)
+    const plannedRemainder = remaining(input.planned, input.sent)
+    if (!batch?.available || Number(batch.available) <= 0 || Number(plannedRemainder) <= 0) return []
+    const max = remaining(plannedRemainder, batch.available).startsWith('-') ? plannedRemainder : batch.available
+    return [{ batch, max }]
+  })
+}
+export function hasUnissuedRemainder(row: WarehouseDocument): boolean {
+  return row.kind === 'REQUEST' && !row.reversed && !row.closed && Number(remaining(row.data.quantity, row.issued_quantity)) > 0
 }
 export function documentProgress(row: WarehouseDocument): string {
   if (row.reversed) return '已冲销，原单保留'

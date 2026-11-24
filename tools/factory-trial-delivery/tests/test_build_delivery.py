@@ -175,6 +175,9 @@ import demo
         assert b'"%TRIAL_ROOT%runtime\\python.exe" -X utf8 "%TRIAL_ROOT%launch.py"' in start
         assert b'DisableDelayedExpansion\r\n' in start
         assert b'STARTUP-ERROR.txt' in start and b'\n' not in start.replace(b'\r\n', b'')
+        assert b'chcp ' not in start
+        assert b'PYTHONIOENCODING=utf-8:backslashreplace' in start
+        assert b'>>"%TRIAL_ROOT%data\\startup-console.log" 2>&1' in start
     assert sha256(zipped_path.read_bytes()).hexdigest() == result[0]["sha256"]
     assert not list(output.glob("*.part"))
     assert not list(output.glob("*华康C*"))

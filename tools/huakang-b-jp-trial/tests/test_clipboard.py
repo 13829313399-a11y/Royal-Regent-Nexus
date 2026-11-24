@@ -19,7 +19,8 @@ def test_copy_exact_export_survives_restart_without_allocating_numbers(tmp_path)
         assert first.status_code == 200, first.text
         result = first.json(); row, = list(csv.reader(StringIO(result['text'], newline=''), delimiter='\t'))
         assert result['column_count'] == 44 and result['row_count'] == 1 and len(row) == 44
-        assert row[0].endswith('-21615') and row[2] == "'0117978388"
+        assert row[0].endswith('-21615') and row[2] == "0117978388"
+        assert 'x:str' in result['html']
         assert row[12] == '648' and row[20] == '12.5' and row[-3:] == ['', '', '']
         assert client.get(route + '/clipboard', params=SCOPE).json() == result
         assert client.get(route + '/clipboard', params={'factory_id': 'huaxing'}).status_code == 400

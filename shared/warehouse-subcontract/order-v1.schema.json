@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "华康 C 仓库委外开单",
+  "description": "布料仓和半成品仓共用的委外开单计划。实发、加工方签收和接收方实收分别由后续业务单据记录。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "factory_id",
+    "order_id",
+    "initiating_warehouse",
+    "process",
+    "processor_id",
+    "receiving_target",
+    "inputs",
+    "outputs"
+  ],
+  "properties": {
+    "kind": {
+      "const": "SUBCONTRACT_ORDER"
+    },
+    "factory_id": {
+      "const": "huakang-c"
+    },
+    "order_id": {
+      "$ref": "#/$defs/id",
+      "description": "仓库委外单的稳定标识。补录来源时沿用，下一轮加工独立开单时使用新标识。"
+    },
+    "previous_order_id": {
+      "$ref": "#/$defs/id",
+      "description": "可选的前序委外单标识。来货接收沿用原委外单，另有新一轮加工时可在新单上引用前单。"
+    },
+    "initiating_warehouse": {
+      "enum": [
+        "fabric",
+        "semi"
+      ],
+      "description": "发起开单的仓库。fabric 为布料仓，semi 为半成品仓。"
+    },
+    "process": {
+      "$ref": "#/$defs/text",
+      "type": "string",
+      "maxLength": 64,
+      "description": "委外加工工序的名称或编码。"
+    },
+    "processor_id": {
+      "$ref": "#/$defs/id",
+      "description": "委外加工方的稳定标识。"
+    },
+    "receiving_target": {
+      "type": "object",
+      "description": "加工产物的第一收货方。布料仓开单时取华康 C 布料仓的基础资料 ID，回仓后的领用方另记在发料单上。半成品仓按本仓工序填写。",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "warehouse",
+            "workshop"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "inputs": {
+      "$ref": "#/$defs/planned_lines",
+      "description": "计划投入明细，以稳定投入行标识为键。"
+    },
+    "outputs": {
+      "$ref": "#/$defs/planned_lines",
+      "description": "计划产物明细，以稳定产物行标识为键。"
+    },
+    "source": {
+      "type": "object",
+      "description": "有纸质、手工或电子依据时填写。后续关联电子上游时保留已记录的手工依据和原单、原投入及产物行标识。",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "manual_reference": {
+          "$ref": "#/$defs/text",
+          "type": "string",
+          "maxLength": 128,
+          "description": "手工录入的指令依据或纸质单据引用。"
+        },
+        "upstream": {
+          "type": "object",
+          "description": "电子上游依据，支持记录整单或指定明细。自动关联前需核实来源明细标识及版本。",
+          "additionalProperties": false,
+          "required": [
+            "system",
+            "document_id"
+          ],
+          "properties": {
+            "system": {
+              "$ref": "#/$defs/text",
+              "type": "string",
+              "maxLength": 64,
+              "description": "电子来源系统的标识。"
+            },
+            "document_id": {
+              "$ref": "#/$defs/text",
+              "type": "string",
+              "maxLength": 128,
+              "description": "电子来源单据的稳定标识。"
+            },
+            "line_id": {
+              "$ref": "#/$defs/text",
+              "type": "string",
+              "maxLength": 128,
+              "description": "来源明细的稳定标识，按整单关联时省略。"
+            },
+            "version": {
+              "$ref": "#/$defs/text",
+              "type": "string",
+              "maxLength": 128,
+              "description": "来源单据或明细的版本，用于核实关联时的上游依据。"
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "initiating_warehouse": { "const": "fabric" }
+        }
+      },
+      "then": {
+        "properties": {
+          "receiving_target": {
+            "type": "object",
+            "properties": {
+              "kind": { "const": "warehouse" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
+    },
+    "id": {
+      "$ref": "#/$defs/text",
+      "type": "string",
+      "maxLength": 64
+    },
+    "planned_lines": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item_code",
+          "unit",
+          "planned_quantity"
+        ],
+        "properties": {
+          "item_code": {
+            "$ref": "#/$defs/text",
+            "type": "string",
+            "maxLength": 128
+          },
+          "unit": {
+            "$ref": "#/$defs/text",
+            "type": "string",
+            "maxLength": 32,
+            "description": "该投入或产物的原单位。"
+          },
+          "planned_quantity": {
+            "type": "string",
+            "maxLength": 19,
+            "pattern": "^(?:[1-9][0-9]{0,11}(?:\\.[0-9]{1,6})?|0\\.(?=[0-9]{0,5}[1-9])[0-9]{1,6})$",
+            "description": "原单位的计划数量，使用普通十进制字符串，须大于零、小于一万亿，最多六位小数。"
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "kind": "SUBCONTRACT_ORDER",
+      "factory_id": "huakang-c",
+      "order_id": "SUB-F-001",
+      "initiating_warehouse": "fabric",
+      "process": "捆条",
+      "processor_id": "PROCESSOR-001",
+      "receiving_target": {
+        "kind": "warehouse",
+        "id": "FABRIC-01"
+      },
+      "inputs": {
+        "IN-001": {
+          "item_code": "FAB-001",
+          "unit": "码",
+          "planned_quantity": "30.5"
+        }
+      },
+      "outputs": {
+        "OUT-001": {
+          "item_code": "BIND-001",
+          "unit": "条",
+          "planned_quantity": "120"
+        }
+      }
+    },
+    {
+      "kind": "SUBCONTRACT_ORDER",
+      "factory_id": "huakang-c",
+      "order_id": "SUB-S-001",
+      "previous_order_id": "SUB-S-000",
+      "initiating_warehouse": "semi",
+      "process": "后道手工",
+      "processor_id": "PROCESSOR-002",
+      "receiving_target": {
+        "kind": "workshop",
+        "id": "WORKSHOP-01"
+      },
+      "inputs": {
+        "IN-001": {
+          "item_code": "SEWN-001",
+          "unit": "件",
+          "planned_quantity": "80"
+        },
+        "IN-002": {
+          "item_code": "BIND-001",
+          "unit": "条",
+          "planned_quantity": "120"
+        }
+      },
+      "outputs": {
+        "OUT-001": {
+          "item_code": "TRIMMED-001",
+          "unit": "件",
+          "planned_quantity": "80"
+        }
+      },
+      "source": {
+        "upstream": {
+          "system": "production",
+          "document_id": "PROD-001",
+          "line_id": "PROD-LINE-001",
+          "version": "2"
+        }
+      }
+    }
+  ]
+}

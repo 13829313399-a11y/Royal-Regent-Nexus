@@ -92,10 +92,6 @@ function getReportCompanyLabel() {
   return _esc(getCompanyName()) + (window.__QC_REFERENCE_DATA?.count ? ' · 模板参考（非本厂实绩）' : '');
 }
 function getSiteObj(id)   { return QC_SITES.find(s => s.id === id) || QC_SITES[0]; }
-function returnToNexus() {
-  if (window.__QC_CONFIRM_FACTORY_LEAVE && !window.__QC_CONFIRM_FACTORY_LEAVE()) return;
-  window.parent.location.assign('/modules/qc?factory=' + encodeURIComponent(window.__QC_NEXUS.factory));
-}
 
 function _showApp() {
   _initSidebar();
@@ -123,11 +119,8 @@ function _renderUserBadge() {
   const el = document.getElementById('userBadge');
   if (!el || !u) return;
   el.innerHTML =
-    `<span class="user-badge-company">${getSiteObj(getCompanyObj().site).name} · ${getCompanyName()}</span>` +
-    `<span class="user-badge-name">${_esc(u.name || u.username)}</span>` +
-    `<span class="user-badge-role">Nexus 账号</span>` +
-    `<button class="user-badge-logout" onclick="returnToNexus()">返回 Nexus</button>`;
-  window.__QC_RENDER_FACTORY_SELECTOR?.();
+    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span><span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
+    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>Nexus 账号</small></div></details>`;
 }
 
 /* ── 权限应用（按角色显示/隐藏按钮）── */
@@ -143,6 +136,8 @@ function applyPermissions() {
 
   /* 新增验货按钮 */
   const canCreate = can('createRecord');
+  const addInspection = document.getElementById('btnAddInspection');
+  if (addInspection) addInspection.hidden = !window.__QC_NEXUS?.workflow?.manual;
   document.querySelectorAll('.btn-add, [data-perm="createRecord"]').forEach(el => {
     el.style.display = canCreate ? '' : 'none';
   });
@@ -347,7 +342,7 @@ function reportCenterLandingPage() {
 function syncReportCenterNav(name) {
   const nav = document.getElementById('reportCenterNav');
   if (!nav) return;
-  const visible = window.__QC_NEXUS?.factory === 'huaxing' && REPORT_CENTER_PAGES.includes(name);
+  const visible = !!window.__QC_NEXUS?.factory && REPORT_CENTER_PAGES.includes(name);
   nav.hidden = !visible;
   document.body.classList.toggle('qc-report-center', visible);
   if (!visible) return;
@@ -383,7 +378,7 @@ function mountReportTypeSelect(page, name) {
   const visible = buttons.filter(button => !button.hidden);
   const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
   control.style.setProperty('--report-period-count', String(visible.length || 1));
-  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory === 'huaxing') {
+  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory) {
     if (slot.firstElementChild !== select || select.nextElementSibling !== control) slot.prepend(select, control);
   } else {
     if (control.parentElement !== slot) slot.append(control);
@@ -415,6 +410,8 @@ function changeReportType(control) {
 }
 
 function showPage(name, focusReportType = false) {
+  const workbook=window.QcReportWorkbook?.navigationState?.();
+  if(workbook?.dirty||workbook?.busy){showToast('请先在工作簿中保存或放弃更改，再切换页面','error');return;}
   if(window.QcMonthlyTemplates?.navigationState().dirty){showToast('请先完成月报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcWeeklyTemplates?.navigationState().dirty){showToast('请先完成周报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
@@ -450,8 +447,6 @@ function showPage(name, focusReportType = false) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg  = document.getElementById('page-' + name);
   const inReportCenter = REPORT_CENTER_PAGES.includes(name);
-  const pagePdf = document.getElementById('qcPagePdf');
-  if (pagePdf) pagePdf.hidden = inReportCenter || name === 'yearly';
   const navPage = inReportCenter ? 'report-center' : name;
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
@@ -541,16 +536,9 @@ function updateTopKpis() {
     const weekR  = data.filter(r => r.date >= ws && r.date <= we);
     const weekF  = weekR.filter(r => isFail(r)).length;
 
-    const byS = groupBy(data, 'supplier');
-    const hiRisk = Object.values(byS).filter(list => {
-      if (list.length < 2) return false;
-      return list.filter(r => isFail(r)).length / list.length >= 0.15;
-    }).length;
-
-    setText('kpiPassRate',  rateT);
-    setText('kpiWeekFail',  weekF);
-    setText('kpiHighRisk',  hiRisk);
-    setText('kpiWeekBatch', weekR.length);
+    setText('kpiPassRate', rateT);
+    setText('kpiWeekFail', weekF);
+    document.getElementById('kpiWeekFail')?.classList.toggle('has-fail', weekF > 0);
 
     /* 审核中心：待审核数量导航角标 */
     const _rb = document.getElementById('reviewNavBadge');
@@ -1370,6 +1358,8 @@ function prepareRecordsDates() {
 }
 function updateRecordsDateLabel() {
   const from = getVal('filterDateFrom'), to = getVal('filterDateTo');
+  const reset=document.querySelector('#page-records .records-reset');
+  if(reset)reset.hidden=!(from||to||getVal('searchInput')||getVal('qisTaskCustomer')||getVal('qisTaskDate')||window.QcInspectionSheet?.model.recordsSort==='date-desc');
   const label = document.getElementById('recordsDateLabel');
   if (!label) return;
   label.textContent = from && to ? (from === to ? from : from + ' 至 ' + to) : from ? from + ' 起' : to ? '截至 ' + to : '不限验货日期';
@@ -1448,7 +1438,7 @@ function filterRecords() {
       _updateBatchBtn();
       wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">☰</div>'
         + '<div class="empty-text">暂无记录</div>'
-        + '<div class="empty-sub">点击右上角「+ 新增验货」添加数据</div></div>';
+        + '<div class="empty-sub">点击「新增验货」添加数据</div></div>';
       syncInspectionSelection();
       return;
     }
@@ -3545,14 +3535,12 @@ function renderDefectLibPage() {
   const CATS = ['外观/质量','功能','尺寸/测量','包装','其它'];
   const LVLS = ['CR','MAJ 0.65','MAJ 1.0','MIN 2.5'];
 
+  const query=el.querySelector('#defLibSearch')?.value||'';
   el.innerHTML = `
   <div class="page-header">
     <h2 class="page-title">不良描述库</h2>
+    <input id="defLibSearch" type="search" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"/>
     ${canAdd ? '<button class="btn-primary" onclick="_openDefLibModal()">＋ 新增描述</button>' : ''}
-  </div>
-  <div style="margin:10px 0">
-    <input id="defLibSearch" type="text" placeholder="搜索描述或关键词..." class="form-input"
-           style="max-width:280px" oninput="renderDefectLibPage()"/>
   </div>
   <div class="table-wrap" style="margin-top:8px">
     <table style="table-layout:fixed;width:100%">
@@ -3568,33 +3556,7 @@ function renderDefectLibPage() {
         <th style="text-align:center">状态</th>
         <th style="text-align:center">操作</th>
       </tr></thead>
-      <tbody>
-        ${(() => {
-          const q = (document.getElementById('defLibSearch')?.value||'').toLowerCase();
-          const filtered = q ? lib.filter(d =>
-            d.name.toLowerCase().includes(q) ||
-            (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
-          if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
-          return filtered.map((d,i) => {
-            const realIdx = lib.indexOf(d);
-            const badge = d.enabled
-              ? '<span class="badge badge-pass">启用</span>'
-              : '<span class="badge badge-rej">停用</span>';
-            return `<tr>
-              <td style="font-weight:500">${d.name}</td>
-              <td style="font-size:11px">${d.category||''}</td>
-              <td style="font-size:11px">${d.defaultLevel||''}</td>
-              <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
-              <td style="text-align:center">${badge}</td>
-              <td style="text-align:center">
-                ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
-                ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
-                ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
-              </td>
-            </tr>`;
-          }).join('');
-        })()}
-      </tbody>
+      <tbody></tbody>
     </table>
   </div>
 
@@ -3631,6 +3593,35 @@ function renderDefectLibPage() {
       </div>
     </div>
   </div>`;
+  const search=el.querySelector('#defLibSearch'),body=el.querySelector('tbody');
+  function rowsFor(q){
+    const filtered = q ? lib.filter(d =>
+      d.name.toLowerCase().includes(q) ||
+      (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
+    if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
+    return filtered.map(d => {
+      const realIdx = lib.indexOf(d);
+      const badge = d.enabled
+        ? '<span class="badge badge-pass">启用</span>'
+        : '<span class="badge badge-rej">停用</span>';
+      return `<tr>
+        <td style="font-weight:500">${d.name}</td>
+        <td style="font-size:11px">${d.category||''}</td>
+        <td style="font-size:11px">${d.defaultLevel||''}</td>
+        <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
+        <td style="text-align:center">${badge}</td>
+        <td style="text-align:center">
+          ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
+          ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
+          ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+  search.value=query;
+  const filter=()=>{ body.innerHTML=rowsFor(search.value.toLowerCase()); };
+  search.addEventListener('input',filter);
+  filter();
 }
 
 let _editingDefLibIdx = null;
@@ -4308,7 +4299,10 @@ function renderReviewPage() {
   }
   ['pending','rejected','approved'].forEach(t => {
     const btn = document.getElementById('reviewTab' + t.charAt(0).toUpperCase() + t.slice(1));
-    if (btn) btn.classList.toggle('active', _reviewTab === t);
+    if (btn) {
+      btn.classList.toggle('active', _reviewTab === t);
+      btn.setAttribute('aria-pressed', String(_reviewTab === t));
+    }
   });
 
   const list = state.records.filter(r => recStatus(r) === _reviewTab && !window.QcWorkflow?.isLinked(r.id)).concat((window.QcWorkflow?.recordItems() || []).filter(r => recStatus(r) === _reviewTab));
@@ -4703,17 +4697,6 @@ function renderSupplierReport() {
 /* ════════════════════════════════════════
    §14  EXPORT
 ════════════════════════════════════════ */
-function exportPDF(type) {
-  if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  /* 报告中心只保留 Excel；供应商报告保留独立 PDF。 */
-  const page = type || currentPage;
-  if (REPORT_CENTER_PAGES.includes(page) || page === 'yearly') return;
-  if (page === 'supplier-report' || page === 'supplier')        { exportReportPDF('supplier'); return; }
-  /* 其他页面保持浏览器打印 */
-  showToast('正在调用打印对话框，可选择"另存为PDF"…', 'info');
-  setTimeout(() => window.print(), 400);
-}
-
 function _qcApiBase() {
   const p = location.pathname.replace(/[^/]*$/, '');
   return p.replace(/\/$/, '');

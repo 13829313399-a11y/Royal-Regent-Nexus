@@ -85,7 +85,10 @@ def test_real_isolated_export_keeps_customer_mapping_and_workbook_formulas():
     output, name, preview = asyncio.run(jobs.run_order_job(_export_mapped_customer_schedule, **kwargs))
     assert preview['rows'][0]['reference_no'] == 'T_10130-PHK26_00694'
     workbook = openpyxl.load_workbook(BytesIO(output))
-    assert workbook['接单表']['N4'].value == '=P4*7.75'
+    # The supplied schedule owns the exchange rate; USD is the source amount.
+    assert workbook['接单表']['P1'].value == 7.6
+    assert workbook['接单表']['P4'].value == 4.1523
+    assert workbook['接单表']['N4'].value == '=IF(OR(LEN(P4)=0,NOT(ISNUMBER($P$1)),$P$1<=0),"",P4*$P$1)'
     assert workbook['ITEM表']['L5'].value == 2
 
 

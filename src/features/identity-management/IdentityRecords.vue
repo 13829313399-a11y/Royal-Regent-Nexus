@@ -25,10 +25,12 @@ import IdentityShell from './IdentityShell.vue'
 import { useAuthStore } from '@/stores/auth'
 import { iamWorkspaceApi } from '@/api/iamWorkspace'
 import AccessImpact from './AccessImpact.vue'
+import AuditSnapshot from './studio/AuditSnapshot.vue'
+import { iamStudioEnabled } from '@/components/iam/workspace/iam-navigation'
 import AuditTimeline from './AuditTimeline.vue'
 import IdentityChangeContent from './IdentityChangeContent.vue'
-const props = defineProps<{ embedded?: boolean; requestId?: string; mode?: 'changes' | 'audit'; catalog?: OrganizationCatalog }>()
-const emit = defineEmits<{ locked: [boolean]; dirty: [boolean]; back: [] }>()
+const props = defineProps<{ embedded?: boolean; readonly?: boolean; requestId?: string; mode?: 'changes' | 'audit'; catalog?: OrganizationCatalog }>()
+const emit = defineEmits<{ locked: [boolean]; dirty: [boolean]; back: []; saved: [string] }>()
 const auth = useAuthStore()
 const viewer = computed(() => `${auth.currentUser?.id}:${auth.authorizationVersion}:${auth.currentUser?.identity?.employment_epoch}:${auth.currentUser?.identity?.effective_context_key}`)
 const account = computed(() => `${auth.currentUser?.id}:${auth.currentUser?.identity?.employment_epoch}`)
@@ -157,6 +159,7 @@ async function loadHandover(row: ChangeRecord, generation: number) {
     if (generation !== selectionGeneration || reading !== handoverGeneration) return
     items.value = result.items
     coverage.value = result.coverage
+    if (props.readonly) return
     const people = await Promise.all(
       result.items
         .filter((i) => i.status === 'pending')
@@ -183,7 +186,7 @@ async function select(row: ChangeRecord) {
 }
 async function previewSelected() {
   const row = selected.value
-  if (!row || busy.value || uncertain.value) return
+  if (props.readonly || !row || busy.value || uncertain.value) return
   const generation = selectionGeneration
   busy.value = true
   detailError.value = ''
@@ -204,7 +207,7 @@ async function previewSelected() {
 }
 async function mutate(operation: (row: ChangeRecord) => Promise<ChangeRecord>, retry = false) {
   const row = retry ? pendingRead?.row : selected.value
-  if (!row || busy.value || (retry ? !uncertain.value || pendingRead?.owner !== account.value : uncertain.value)) return
+  if (props.readonly || !row || busy.value || (retry ? !uncertain.value || pendingRead?.owner !== account.value : uncertain.value)) return
   if (!retry) pendingRead = { id: row.id, revision: row.revision, state: row.state, owner: account.value, row: JSON.parse(JSON.stringify(row)), operation }
   const generation = selectionGeneration
   busy.value = true
@@ -223,6 +226,7 @@ async function mutate(operation: (row: ChangeRecord) => Promise<ChangeRecord>, r
     pendingRead = undefined
     await load()
     if (generation === selectionGeneration) await loadHandover(result, generation)
+    if (generation === selectionGeneration) emit('saved', notice.value)
   } catch (e) {
     if (generation === selectionGeneration) {
       const code = (e as { response?: { status?: number } }).response?.status
@@ -293,7 +297,7 @@ async function verifyResult() {
 }
 async function refreshHandover() {
   const row = selected.value
-  if (!row || busy.value) return
+  if (props.readonly || !row || busy.value) return
   const generation = selectionGeneration
   busy.value = true
   detailError.value = ''
@@ -313,7 +317,7 @@ async function refreshHandover() {
 async function reassign(item: HandoverItem) {
   const row = selected.value
   const successor = successors.value[item.id]
-  if (!row || !successor || itemBusy.value[item.id]) return
+  if (props.readonly || !row || !successor || itemBusy.value[item.id]) return
   const generation = selectionGeneration
   itemBusy.value[item.id] = true
   detailError.value = ''
@@ -456,6 +460,10 @@ onBeforeUnmount(() => {
               class="iamx-link-button"
               >查看人员与任职</RouterLink
             >
+            <RouterLink v-if="readonly && ['draft', 'pending_approval'].includes(selected.state)" class="iamx-link-button"
+              :to="{ path: '/system/users', query: { view: iamStudioEnabled ? 'inbox' : 'todo', task: 'identity-change:' + selected.id } }">
+              在办理大厅核对本单
+            </RouterLink>
             <p v-if="selected.effective_at" class="iamx-muted">
               生效：{{ formatBusinessDateTime(selected.effective_at) }}（北京时间）
             </p>
@@ -474,7 +482,7 @@ onBeforeUnmount(() => {
             <TabsContent value="content"
               ><IdentityChangeContent :record="selected" :catalog="catalog" />
               <div
-                v-if="['draft', 'pending_approval', 'scheduled'].includes(selected.state)"
+                v-if="!readonly && ['draft', 'pending_approval', 'scheduled'].includes(selected.state)"
                 class="iamx-form"
               >
                 <label>撤回 / 驳回原因<textarea v-model="reason" rows="2" /></label>
@@ -496,7 +504,7 @@ onBeforeUnmount(() => {
             >
             <TabsContent value="impact"
               ><div
-                v-if="['draft', 'pending_approval'].includes(selected.state)"
+                v-if="!readonly && ['draft', 'pending_approval'].includes(selected.state)"
                 class="iamx-assignment"
               >
                 <Button :disabled="busy || uncertain" @click="previewSelected"
@@ -513,6 +521,8 @@ onBeforeUnmount(() => {
                   }}</Button></template
                 >
               </div>
+              <AuditSnapshot v-else-if="selected.result?.permission_diffs" :value="selected.result.permission_diffs" field="permission_diffs" />
+              <p v-else-if="readonly" class="iamx-empty">此办理单尚无已记录的权限差异。</p>
               <p v-else class="iamx-empty">
                 此变更已离开待提交阶段，请在授权与人员记录中查看历史事实。
               </p></TabsContent
@@ -520,11 +530,11 @@ onBeforeUnmount(() => {
             <TabsContent value="handover"
               ><p v-if="detailLoading" role="status">正在读取交接范围…</p>
               <p v-if="selected.handover_refresh_pending" role="status" class="iamx-notice">
-                任职已按服务器时间生效。交接清单仍待后台重新评估，可点击下方按钮刷新。
+                任职已按服务器时间生效。交接清单仍待后台重新评估，{{ readonly ? '' : '可点击下方按钮刷新。' }}
               </p>
               <div class="iamx-assignment">
                 <Button
-                  v-if="['applied', 'scheduled'].includes(selected.state)"
+                  v-if="!readonly && ['applied', 'scheduled'].includes(selected.state)"
                   variant="outline"
                   :disabled="busy"
                   @click="refreshHandover"
@@ -551,7 +561,7 @@ onBeforeUnmount(() => {
                   {{ item.factory_id }} ·
                   <IamStatusBadge :presentation="handoverStatusPresentation(item.status)" />
                 </p>
-                <div v-if="item.status === 'pending'" class="iamx-form">
+                <div v-if="!readonly && item.status === 'pending'" class="iamx-form">
                   <label
                     >接管人<select v-model="successors[item.id]" :disabled="itemBusy[item.id]">
                       <option value="">请选择</option>

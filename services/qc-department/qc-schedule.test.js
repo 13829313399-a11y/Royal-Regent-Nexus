@@ -152,7 +152,63 @@ for(const payload of [{factory_id:'hy-other',contract_version:'1',status:'mappin
  const dom=await page(async()=>({ok:true,json:async()=>payload}));try{const d=dom.window.document;assert.match(d.getElementById('qsRows').textContent,/读取失败/);assert.doesNotMatch(d.getElementById('qsRows').textContent,/消防车/);}finally{dom.window.close();}
 });
 test('network errors are visible and never presented as an empty connected schedule',async()=>{
- const dom=await page(async()=>{throw new Error('offline')});try{assert.match(dom.window.document.getElementById('qsRows').textContent,/读取失败/);}finally{dom.window.close();}
+  const dom=await page(async()=>{throw new Error('offline')});try{assert.match(dom.window.document.getElementById('qsRows').textContent,/读取失败/);}finally{dom.window.close();}
+});
+test('intake preview marks duplicates, disables all-duplicate imports, and reports mixed confirmations',async()=>{
+ const calls=[], toasts=[];
+ let preview, reloads=0;
+ const dom=await page(async (url,init)=>{
+  if(url.endsWith('/preview'))return {ok:true,json:async()=>preview};
+  if(url.endsWith('/import')){calls.push(init);return {ok:true,json:async()=>({count:1,existing:1})};}
+  return response(url);
+ });
+ try{
+  const w=dom.window,d=w.document;
+  w.__QC_NEXUS.workflow={manual:true};
+  w.QcInspectionSheet={model:{items:[]},navigationState:()=>({}),load:async()=>{reloads++;}};
+  w.showToast=(message)=>toasts.push(message);
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
+  d.getElementById('page-records').classList.add('active');
+  w.QcSchedule.openNew();
+   const file=new w.File(['QA'],'intake.xlsx'), picker=d.querySelector('.qis-intake input[type=file]');
+   const filename=d.getElementById('qc-intake-filename');
+   assert.equal(filename.textContent,'未选择文件');
+   let pickerOpens=0;
+   picker.addEventListener('click',()=>pickerOpens++);
+   const pickButton=d.querySelector('[data-pick-file]');
+   assert.equal(pickButton.textContent,'选择文件');
+   pickButton.click();
+   assert.equal(pickerOpens,1);
+  Object.defineProperty(picker,'files',{value:[file]});
+  const select=async (count, duplicates)=>{
+   preview={sheet:'客户验货排期',digest:'example-digest',count,existing:2-count,rows:duplicates.map((duplicate,i)=>({
+    line:i+7, dateFrom:'2026-11-20',dateTo:'2026-11-20',customer:'测试',productNo:'0001',duplicate
+   }))};
+   picker.dispatchEvent(new w.Event('change'));
+   await tick();
+  };
+  const button=d.querySelector('[data-import]');
+  preview={sheet:'客户验货排期',digest:'old-version',rows:[{line:7}]};
+  picker.dispatchEvent(new w.Event('change')); await tick();
+  assert.equal(button.disabled,true);
+   assert.match(d.querySelector('[data-error]').textContent,/尚未启用逐行查重/);
+   assert.equal(filename.textContent,'未选择文件');
+   await select(0,[true,true]);
+   assert.equal(filename.textContent,file.name);
+  assert.equal(button.disabled,true);
+  assert.match(d.querySelector('[data-preview-count]').textContent,/待追加 0 条 · 重复跳过 2 条/);
+  button.click();
+  assert.equal(calls.length,0);
+  await select(1,[true,false]);
+  assert.deepEqual([...d.querySelectorAll('[data-preview] tbody tr')].map(r=>r.cells[1].textContent),['重复，跳过','待追加']);
+  assert.equal(button.disabled,false);
+  button.click(); await tick();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].headers['X-QC-Preview-Digest'],'example-digest');
+  assert.equal(reloads,1);
+  assert.deepEqual(toasts,['已追加 1 条，跳过重复 1 条']);
+ }finally{dom.window.close();}
 });
 test('customer whitespace is consistent between dynamic choices and filtering',()=>{
  const sample=[{...rows[0],customer:' Dickie '}];assert.equal(api.choices(sample,'customer')[0],'Dickie');assert.equal(api.filterRows(sample,{...base,customer:'Dickie'}).length,1);

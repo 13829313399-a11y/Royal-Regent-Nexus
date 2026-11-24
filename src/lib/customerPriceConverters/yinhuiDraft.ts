@@ -1,6 +1,6 @@
 import type { CustomerPricingSettings } from './pricingSettings'
 import { convertYinhuiInternalQuote, parseYinhuiMoq, type YinhuiConversionResult, type YinhuiSourceOverride } from './yinhui'
-import { readYinhuiSource, isYinhuiToolPlanSheet, yinhuiToolIdentityColumns } from './yinhuiSource'
+import { readYinhuiSource, isYinhuiToolPlanSheet, yinhuiSheetKey, yinhuiToolIdentityColumns } from './yinhuiSource'
 
 export interface YinhuiToolCandidate { source: string; moldNo: string; partNo: string; description: string }
 export interface YinhuiHeaderMapping { sheet: string; row: number; moldCell: string; descriptionCell: string }
@@ -158,8 +158,14 @@ export function loadYinhuiDraft(content: string, pricing?: CustomerPricingSettin
     // Reparse older automatic translations; preserve reviewed names only under the matching policy.
     if ((group === 'tools' ? saved.toolLanguage : saved.bomLanguage) !== 'source') continue
     const names = record(review.names)[group]
-    if (!Array.isArray(names) || names.length !== (data[group] || []).length) continue
-    names.forEach((value, i) => { const name = record(value).description; if (typeof name === 'string' && name.length < 2000) data[group]![i]!.description = name })
+    if (!Array.isArray(names)) continue
+    let rows = data[group] || []
+    if (group === 'electronic' && names.length !== rows.length) {
+      // Older drafts saved reviewed names before ICs from these tabs were imported.
+      rows = data.electronic.filter(row => !/^[电電]子(?:tx|rx)报价/.test(yinhuiSheetKey(row.source)))
+    }
+    if (names.length !== rows.length) continue
+    names.forEach((value, i) => { const name = record(value).description; if (typeof name === 'string' && name.length < 2000) rows[i]!.description = name })
   }
   if (Array.isArray(review.tools) && review.tools.length === data.tools.length) review.tools.forEach((value, i) => {
     const entry = record(value)

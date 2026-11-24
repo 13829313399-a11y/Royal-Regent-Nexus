@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Dapper;
 using IndoShipping.Api.Features.Bootstrap;
@@ -145,7 +146,19 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;",
     }
 
     [HttpPost]
-    public async Task<IActionResult> Create([FromBody] CreateBody body)
+    public Task<IActionResult> Create([FromBody] CreateBody body) => SaveSchedule(body, false);
+
+    [HttpPost("ledger-import")]
+    public Task<IActionResult> ImportLedgerLine([FromBody] CreateBody body)
+    {
+        if (User.FindFirst("nexus_bridge")?.Value != "1") return Task.FromResult<IActionResult>(Forbid());
+        var today = DateTime.Today;
+        body.week_label = $"{ISOWeek.GetYear(today):0000}-W{ISOWeek.GetWeekOfYear(today):00}";
+        body.upload_date = today;
+        return SaveSchedule(body, true);
+    }
+
+    private async Task<IActionResult> SaveSchedule(CreateBody body, bool fromLedger)
     {
         if (string.IsNullOrWhiteSpace(body.week_label) || body.week_label.Trim().Length > 64)
             return BadRequest(new { error = "请填写有效周次标签（最多 64 字）" });
@@ -201,6 +214,49 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;",
         // Freeze the current read-only identities before a backfill can change history order.
         // Store metadata separately so existing material-completion hashes remain valid.
         var oldSnapshots = await LoadSnapshots(c, tx);
+        if (fromLedger)
+        {
+            if (importedRows.Count != 1) return BadRequest(new { error = "请选择一条订单明细" });
+            var incoming = importedRows[0];
+            var lineId = ScheduleLineHistory.Field(incoming, "ledgerLineId");
+            if (lineId.Length == 0 || incoming["ledgerVersion"]?.GetValue<int>() is not int version || version < 1)
+                return BadRequest(new { error = "订单来源或版本无效" });
+            var latest = oldSnapshots.Where(s => s.Customer.Equals(customer, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(ScheduleLineHistory.Period).ThenBy(s => s.Id).LastOrDefault();
+            if (latest != null)
+            {
+                var currentRows = ScheduleLineHistory.Parse(latest.Raw);
+                var index = currentRows.FindIndex(r => ScheduleLineHistory.Field(r, "ledgerLineId") == lineId);
+                if (index >= 0)
+                {
+                    var previous = currentRows[index];
+                    var previousVersion = previous["ledgerVersion"]?.GetValue<int>() ?? 0;
+                    if (ScheduleLineHistory.Field(previous, "source") != ScheduleLineHistory.Field(incoming, "source"))
+                        return Conflict(new { error = "这条订单已按另一印尼来源导入，请核对原排期" });
+                    if (previousVersion > version) return Conflict(new { error = "该订单已有更新版本" });
+                    if (previousVersion == version) return Ok(new { ok = true, id = latest.Id });
+                    if (ScheduleLineHistory.Field(previous, "orderNo") != ScheduleLineHistory.Field(incoming, "orderNo") ||
+                        ScheduleLineHistory.Field(previous, "code") != ScheduleLineHistory.Field(incoming, "code"))
+                        return Conflict(new { error = "订单参考号或货号已变更，请先核对原排期记录" });
+                    currentRows[index] = incoming;
+                }
+                else
+                {
+                    if (currentRows.Any(r => ScheduleLineHistory.Field(r, "ledgerLineId").Length == 0 &&
+                        ScheduleLineHistory.LegacyKey(r) == ScheduleLineHistory.LegacyKey(incoming)))
+                        return Conflict(new { error = "当前排期已有相同订单号及货号的手工明细，请先核对" });
+                    currentRows.Add(incoming);
+                }
+                customer = latest.Customer;
+                var weekStart = ISOWeek.ToDateTime(ISOWeek.GetYear(DateTime.Today), ISOWeek.GetWeekOfYear(DateTime.Today), DayOfWeek.Monday);
+                if (ScheduleLineHistory.Period(latest) >= weekStart)
+                {
+                    body.week_label = latest.Label;
+                    body.upload_date = latest.Uploaded;
+                }
+                importedRows = currentRows;
+            }
+        }
         var oldLedger = await LoadLedger(c, tx);
         var oldHistory = ScheduleLineHistory.Build(oldSnapshots, oldLedger);
         var ledger = ScheduleLineHistory.Freeze(oldHistory, oldLedger);
@@ -214,7 +270,7 @@ ON CONFLICT (customer, week_label) DO UPDATE SET
     raw_rows = EXCLUDED.raw_rows,
     diff_from_prev = EXCLUDED.diff_from_prev
 RETURNING id;",
-            new { customer, wl = body.week_label.Trim(), ud = body.upload_date, rr = rawRowsStr, df = "{}" }, tx);
+            new { customer, wl = body.week_label!.Trim(), ud = body.upload_date, rr = rawRowsStr, df = "{}" }, tx);
         var snapshots = await LoadSnapshots(c, tx);
         var current = snapshots.Single(x => x.Id == id);
         var oldPeriod = oldHistory.FirstOrDefault(x => x.Snapshot.Id == id);

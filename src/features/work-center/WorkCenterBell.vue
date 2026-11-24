@@ -1,45 +1,208 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
-import { Bell, ArrowUpRight, X, RefreshCw } from '@lucide/vue'
-import { PopoverRoot, PopoverTrigger, PopoverPortal, PopoverContent, PopoverClose, DialogRoot, DialogTrigger, DialogPortal, DialogOverlay, DialogContent, DialogClose, DialogTitle, DialogDescription } from 'reka-ui'
+import { computed, ref, watch } from 'vue'
+import { ArrowUpRight, Bell, CheckCheck, RefreshCw, Volume2, VolumeX, X } from '@lucide/vue'
+import {
+  Button,
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerTitle,
+  DrawerTrigger,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui'
 import { useWorkCenterStore } from '@/stores/workCenter'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import { workEmptyState } from './health'
+import { attentionGroup } from './metadata'
+import { isSnoozed, snoozePresets } from './time'
+import { useWorkActions } from './useWorkActions'
 import WorkEntryRow from './WorkEntryRow.vue'
 import WorkCenterHealth from './WorkCenterHealth.vue'
-import { workEmptyState } from './health'
-import { useRouter } from 'vue-router'
-const center = useWorkCenterStore(), router = useRouter()
-const tab = computed(() => center.panelTab), mobile = ref(false)
-const entries = computed(() => tab.value === 'todo' ? center.bell?.items ?? [] : center.information)
-const listLoading = computed(() => tab.value === 'info' ? center.informationLoading && !center.informationLoaded : center.loading)
-const busy = computed(() => center.syncing || center.informationLoading)
-const empty = computed(() => workEmptyState(center.bell, tab.value))
-function resize() { mobile.value = window.innerWidth < 640 }
-onMounted(() => { resize(); window.addEventListener('resize', resize) })
-onUnmounted(() => window.removeEventListener('resize', resize))
-const label = computed(() => `待办与消息，${center.count} 项可处理，${center.summary?.info_unread_total ?? 0} 条未读知会`)
-async function open(value: boolean) { center.panelOpen = value; if (value) await center.refresh() }
-async function changeTab(value: 'todo' | 'info') { center.panelTab = value; if (value === 'info') await center.loadInformation() }
-function select(id: string) { center.panelOpen = false; void router.push({ name: 'notification-center', query: { entry: id, view: tab.value } }) }
-</script>
+import WorkIconButton from './WorkIconButton.vue'
+import type { WorkEntry } from './types'
 
+const center = useWorkCenterStore(),
+  actions = useWorkActions()
+const mobile = useMediaQuery('(width < 640px)'),
+  ringing = ref(false)
+const tab = computed(() => center.panelTab)
+const serverTime = computed(() => center.bell?.context.server_time)
+const entries = computed(() =>
+  tab.value === 'info'
+    ? center.information
+    : (center.bell?.items ?? []).filter((e) => !isSnoozed(e, serverTime.value)),
+)
+const groups = computed(() =>
+  tab.value === 'info'
+    ? [{ name: '', items: entries.value }]
+    : ['逾期 / 紧急', '指派给我', '团队队列']
+        .map((name) => ({ name, items: entries.value.filter((e) => attentionGroup(e) === name) }))
+        .filter((g) => g.items.length),
+)
+const loading = computed(() =>
+  tab.value === 'info'
+    ? center.informationLoading && !center.informationLoaded
+    : !center.bell && center.loading,
+)
+const empty = computed(() => workEmptyState(center.bell, tab.value))
+watch(
+  () => center.bell,
+  (next, previous) => {
+    if (
+      !next ||
+      !previous ||
+      next.context.viewer_key !== previous.context.viewer_key ||
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+    )
+      return
+    const known = new Set(previous.items.map((row) => row.id + '@' + row.attention_version))
+    ringing.value = next.items.some(
+      (row) => row.personal.read_state === 'unread' && !known.has(row.id + '@' + row.attention_version),
+    )
+  },
+)
+function open(value: boolean) {
+  center.panelOpen = value
+  if (value) void center.refresh(!!center.bell)
+}
+function changeTab(value: unknown) {
+  center.panelTab = value === 'info' ? 'info' : 'todo'
+  if (value === 'info') void center.loadInformation()
+}
+async function snooze(entry: WorkEntry) {
+  const until = snoozePresets(center.serverNow())[0]?.until
+  if (
+    until &&
+    (await center.patch(entry, { state_version: entry.personal.state_version, snoozed_until: until }))
+  )
+    center.feedback = '已移至稍后提醒'
+}
+</script>
 <template>
-  <component :is="mobile ? DialogRoot : PopoverRoot" :open="center.panelOpen" @update:open="open">
-    <component :is="mobile ? DialogTrigger : PopoverTrigger" class="nc-bell" :aria-label="label"><Bell :size="21" /><span v-if="center.count" class="nc-count">{{ center.count > 99 ? '99+' : center.count }}</span><span v-else-if="center.summary?.info_unread_total" class="nc-info-dot" /></component>
-    <component :is="mobile ? DialogPortal : PopoverPortal"><DialogOverlay v-if="mobile" class="nc-sheet-overlay" /><component :is="mobile ? DialogContent : PopoverContent" class="nc-popover" :class="{ 'nc-bell-sheet': mobile }" :side-offset="12" align="end">
-      <DialogDescription v-if="mobile" class="sr-only">当前可处理事项与知会消息，打开事项工作台查看全部。</DialogDescription>
-      <header><div><component :is="mobile ? DialogTitle : 'h2'">待办与消息</component><p>{{ center.count }} 项可处理<span v-if="center.summary?.overdue_total"> · {{ center.summary.overdue_total }} 项逾期</span></p></div><component :is="mobile ? DialogClose : PopoverClose" class="nc-icon-button" aria-label="关闭通知面板"><X :size="18" /></component></header>
-      <nav aria-label="通知类别"><button :class="{ active: tab === 'todo' }" @click="changeTab('todo')">待办 {{ center.count }}</button><button :class="{ active: tab === 'info' }" @click="changeTab('info')">知会 {{ center.summary?.info_unread_total ?? 0 }}</button></nav>
-      <div v-if="center.error" class="nc-alert" role="alert"><span>{{ center.error }}</span><button :disabled="busy" @click="center.refresh()">重试同步</button></div>
-      <WorkCenterHealth v-else :snapshot="center.bell" :syncing="busy" @retry="center.refresh()" @navigate="center.panelOpen = false" />
-      <div class="nc-bell-list" :aria-busy="listLoading">
-        <p v-if="listLoading" class="nc-bell-empty" role="status">{{ tab === 'info' ? '正在读取知会消息…' : '正在核验当前责任…' }}</p>
-        <template v-else>
-          <div v-if="tab === 'info' && center.informationError" class="nc-alert" role="alert"><span>{{ center.informationLoaded ? '未能更新知会，当前显示上次结果。' : '知会消息读取失败。' }}{{ center.informationError }}</span><button :disabled="busy" @click="center.refresh()">重试</button></div>
-          <WorkEntryRow v-for="entry in entries" :key="entry.id" :entry="entry" compact @select="select" />
-          <div v-if="!entries.length && !center.error && !(tab === 'info' && center.informationError)" class="nc-bell-empty"><strong>{{ empty.title }}</strong><p>{{ empty.description }}</p></div>
-        </template>
+  <component :is="mobile ? Drawer : Popover" :open="center.panelOpen" @update:open="open">
+    <component :is="mobile ? DrawerTrigger : PopoverTrigger" as-child
+      ><Button
+        class="nc-bell glass-chrome"
+        variant="ghost"
+        size="icon"
+        :aria-label="
+          '待办与消息，' +
+          center.count +
+          ' 项可处理，' +
+          (center.summary?.info_unread_total ?? 0) +
+          ' 条未读知会'
+        "
+        ><Bell :class="{ 'nc-ring': ringing }" @animationend="ringing = false" :size="20" /><span
+          v-if="center.count"
+          class="nc-count"
+          >{{ center.count > 99 ? '99+' : center.count }}</span
+        ><i v-else-if="center.summary?.info_unread_total" class="nc-info-dot" /></Button
+    ></component>
+    <component
+      :is="mobile ? DrawerContent : PopoverContent"
+      class="nc-popover"
+      :class="{ 'nc-bell-sheet': mobile }"
+      v-bind="mobile ? { side: 'bottom', showCloseButton: false } : { align: 'end', sideOffset: 12 }"
+      aria-label="待办与消息"
+    >
+      <span v-if="mobile" class="nc-grip" /><DrawerDescription v-if="mobile" class="sr-only"
+        >查看待办或知会，打开源单据。</DrawerDescription
+      >
+      <header class="nc-bell-head">
+        <component :is="mobile ? DrawerTitle : 'h2'">待办与消息</component>
+        <div class="nc-tools">
+          <WorkCenterHealth badge :snapshot="center.bell" :syncing="center.syncing" /><WorkIconButton
+            :icon="RefreshCw"
+            label="刷新事项"
+            :disabled="center.syncing"
+            @activate="center.refresh()"
+          /><WorkIconButton :icon="X" label="关闭通知面板" @activate="open(false)" />
+        </div>
+      </header>
+      <Tabs :model-value="tab" @update:model-value="changeTab"
+        ><TabsList aria-label="通知类别"
+          ><TabsTrigger value="todo"
+            >待办<span v-if="center.count"> {{ center.count }}</span></TabsTrigger
+          ><TabsTrigger value="info"
+            >知会<span v-if="center.summary?.info_unread_total">
+              {{ center.summary.info_unread_total }}</span
+            ></TabsTrigger
+          ></TabsList
+        ></Tabs
+      >
+      <WorkCenterHealth
+        :snapshot="center.bell"
+        :syncing="center.syncing"
+        @retry="center.refresh()"
+        @navigate="open(false)"
+      />
+      <div
+        v-if="
+          (center.error && center.bell?.health.status !== 'stale') ||
+          (tab === 'info' && center.informationError)
+        "
+        role="alert"
+        class="nc-alert"
+      >
+        <span>{{ tab === 'info' && center.informationError ? center.informationError : center.error }}</span
+        ><Button
+          size="xs"
+          variant="ghost"
+          @click="tab === 'info' && center.informationError ? center.loadInformation() : center.refresh()"
+          >重试</Button
+        >
       </div>
-      <footer><RouterLink :to="{ name: 'notification-center', query: { view: tab } }" @click="center.panelOpen = false">打开事项工作台<ArrowUpRight :size="16" /></RouterLink><button class="nc-icon-button" :disabled="busy" :aria-label="busy ? '正在刷新事项' : '刷新事项'" @click="center.refresh()"><RefreshCw :size="16" :class="{ 'nc-spinning': busy }" /></button></footer>
-    </component></component>
+      <div class="nc-bell-list" :aria-busy="loading">
+        <div v-if="loading" class="nc-skeletons" role="status" aria-label="加载事项">
+          <i v-for="n in 3" :key="n" class="skeleton-shimmer" />
+        </div>
+        <template v-else
+          ><section v-for="group in groups" :key="group.name">
+            <h3 v-if="group.name" class="nc-group-heading">{{ group.name }}</h3>
+            <WorkEntryRow
+              v-for="entry in group.items"
+              :key="entry.id"
+              :entry="entry"
+              compact
+              :busy="center.personalBusy"
+              :server-time="serverTime"
+              @open="actions.open"
+              @preview="actions.preview"
+              @snooze-hour="snooze"
+              @read="center.patch(entry, { observed_content_version: entry.content_version })"
+            />
+          </section>
+          <p
+            v-if="!entries.length && !center.error && !(tab === 'info' && center.informationError)"
+            class="nc-empty-small"
+          >
+            {{ tab === 'todo' && center.bell?.summary.snoozed_total ? '待办已设稍后提醒' : empty.title }}
+          </p></template
+        >
+      </div>
+      <footer class="nc-bell-footer">
+        <WorkIconButton
+          :icon="center.preferences.sound_enabled ? Volume2 : VolumeX"
+          :label="center.preferences.sound_enabled ? '静音' : '开启声音提醒'"
+          :pressed="center.preferences.sound_enabled"
+          @activate="center.savePreferences({ sound_enabled: !center.preferences.sound_enabled })"
+        /><Button
+          v-if="tab === 'info' && entries.some((e) => e.personal.read_state === 'unread')"
+          size="sm"
+          variant="ghost"
+          :disabled="center.personalBusy"
+          @click="center.markVisibleRead(entries.filter((e) => e.personal.read_state === 'unread'))"
+          ><CheckCheck :size="15" />本页已读</Button
+        ><Button as-child variant="link" class="ml-auto"
+          ><RouterLink :to="{ name: 'notification-center', query: { view: tab } }" @click="open(false)"
+            >打开事项工作台<ArrowUpRight :size="15" /></RouterLink
+        ></Button>
+      </footer>
+    </component>
   </component>
 </template>

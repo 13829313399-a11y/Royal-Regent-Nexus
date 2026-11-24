@@ -313,3 +313,68 @@ def test_output_layout_omits_unsynchronized_molding_cost_and_never_persists_on_r
         assert client.post(root + '/output-layout/preview', json=body).status_code == 409
         assert client.put(root + '/output-layout', json=body).status_code == 409
         assert stored_molding(quote_id) == before
+
+
+def test_incomplete_justplay_carton_can_open_output_layout_without_enabling_export(monkeypatch):
+    from test_internal_quote_api import create_payload
+
+    with make_client(monkeypatch) as client:
+        login(client, "incomplete-justplay", "admin", "*", "*")
+        payload = create_payload(suffix="INCOMPLETE-JUSTPLAY")
+        payload.update(
+            workflow_mode="direct_output", factory_id="huakang-b",
+            workshop_code="huakang-b-workshop", customer="JustPlay", pricing_components=["主体"],
+        )
+        created = client.post("/api/internal-quotes", json=payload)
+        assert created.status_code == 201, created.text
+        quote = fill(client, created.json())
+        root = f"/api/internal-quotes/{quote['id']}"
+
+        def save_sales(payload):
+            current = next(section for section in client.get(root).json()["sections"] if section["department"] == "sales")
+            response = client.put(root + "/sections/sales", json={"payload": payload, "revision": current["revision"]})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        baseline = next(section["payload"] for section in quote["sections"] if section["department"] == "sales")
+        baseline = {**baseline, "pricing_components": [{"id": "component-01", "name": "主体", "markup_x": 1.2}]}
+        cases = [
+            ({"pdq_size_in": {"length": 5}, "pdq_size_unit": "in"}, "PDQ宽度"),
+            ({"color_box_size_in": {"length": 6}}, "彩盒宽度"),
+            ({"product_size_in": {"length": 6}, "justplay_carton": {"dimension_source": "product"}}, "产品宽度"),
+            ({"justplay_carton": {"dimension_source": "color_box", "width_count": 1.5}}, "宽度方向个数"),
+        ]
+        for patch, expected_warning in cases:
+            draft = {**baseline, **patch}
+            sales = save_sales(draft)
+            assert sales["calculation_status"] == "blocked"
+            assert sales["payload"] == draft
+            before = client.get(root).json()
+            for include_source in ("false", "true"):
+                response = client.get(root + "/output-layout", params={"include_source_workbooks": include_source})
+                assert response.status_code == 200, response.text
+                layout = response.json()
+                assert layout["sheets"][0]["name"] == "报价明细"
+                assert layout["quote_price_hkd"] is None
+                assert any(w.get("section_code") == "sales" and expected_warning in w["message"] for w in layout["warnings"])
+                carton_price_rows = [
+                    (row, label["column"] + 1)
+                    for row in layout["sheets"][0]["rows"]
+                    for label in row["cells"] if label["text"] == "箱价："
+                ]
+                assert len(carton_price_rows) == 1
+                row, price_column = carton_price_rows[0]
+                assert not any(cell["text"] for cell in row["cells"] if cell["column"] == price_column)
+            assert client.get(root).json() == before
+            denied = client.post(root + "/direct-issue", json={"revision": before["header_revision"]})
+            assert denied.status_code == 409, denied.text
+            assert client.get(root + "/exports").json() == []
+
+        assert save_sales(baseline)["calculation_status"] == "valid"
+        response = client.get(root + "/output-layout")
+        assert response.status_code == 200, response.text
+        assert response.json()["quote_price_hkd"] is not None
+        header = client.get(root).json()
+        export = client.post(root + "/direct-issue", json={"revision": header["header_revision"]})
+        assert export.status_code == 200, export.text
+        assert client.get(root + f"/exports/{export.json()['id']}/download").content.startswith(b"PK")

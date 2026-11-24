@@ -4,6 +4,7 @@ import { http } from '@/lib/http'
 export interface SupplierChangeLine {
   id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; unit: string
   item_no?: string
+  process_note?: string
   removed?: boolean
   quantity: string; before_quantity: string
   promised_date?: string

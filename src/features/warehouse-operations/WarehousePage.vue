@@ -17,6 +17,7 @@ import FabricMonthlyWorkspace from './FabricMonthlyWorkspace.vue'
 import FabricOrderSummary from './FabricOrderSummary.vue'
 import FabricInventorySetup from './FabricInventorySetup.vue'
 import FabricActivityLog from './FabricActivityLog.vue'
+import FabricSubcontractWorkspace from './FabricSubcontractWorkspace.vue'
 import WarehouseOperationsWorkspace from './WarehouseOperationsWorkspace.vue'
 import { operationsView } from './operations'
 import WarehouseDocumentPreview from '@/features/warehouse-foundation/WarehouseDocumentPreview.vue'
@@ -39,7 +40,7 @@ const currentView = computed(() => {
 watch(() => currentView.value.id, id => emit('viewChange', warehousePath(props.warehouse, props.section.path), id), { immediate: true })
 function selectView(view: WarehouseView) {
   if (currentView.value.id === view.id && !route.query.source && !route.query.receipt && !route.query.purchase_id) return
-  return router.push({ path: route.path, query: { ...route.query, view: view.id, source: undefined, receipt: undefined, purchase_id: undefined, ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}) } })
+  return router.push({ path: route.path, query: { ...route.query, view: view.id, source: undefined, receipt: undefined, purchase_id: undefined, subcontract_id: undefined, ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}) } })
 }
 async function selectMobileView(event: Event) {
   const select = event.target as HTMLSelectElement
@@ -54,7 +55,7 @@ const fabricInventory = computed(() => inventoryPage.value && !semi.value)
 const fabricActivity = computed(() => !semi.value && props.section.path === 'activity')
 const fabricExceptions = computed(() => !semi.value && props.section.path === 'exceptions')
 const navigationViews = computed(() => fabricInventory.value
-  ? ['stock', 'order-summary', 'movements', 'pending-issues', 'opening', 'stocktake'].map(id => {
+  ? ['stock', 'subcontract', 'order-summary', 'movements', 'pending-issues', 'opening', 'stocktake'].map(id => {
     const view = props.section.views.find(item => item.id === id)!
     return id === 'movements' ? { ...view, title: '收发记录' } : view
   }) : props.section.views)
@@ -141,7 +142,7 @@ const dateLabel = computed(() => {
       <div><p class="warehouse-eyebrow">华康 C / {{ warehouse.title }}</p><h1>{{ section.title }}</h1><p>{{ section.description }}</p></div>
       <StatusPill :label="monthlyView ? '数量对账已接入' : masterMode || semiLocations ? '基础资料已启用' : sourcePlaceholder ? '入口预留 · 待接入' : liveOperations ? '收发与交接' : procurementMode || receivingMode ? '采购来源与实际入库已接入' : '待建设'" :tone="monthlyView || liveOperations || procurementMode || receivingMode || masterMode || semiLocations ? 'teal' : 'amber'" />
     </header>
-    <div v-if="!fabricClosing && !fabricReceipts && !masterMode && !semiLocations && !liveOperations && !monthlyView && !['order-summary', 'opening', 'stocktake'].includes(currentView.id)" class="warehouse-notice" role="note"><Info :size="18" aria-hidden="true" /><p>{{ semi ? '加工任务、实收、加工发回和包装交接可在对应栏目登记。当前栏目尚待建设。' : '采购实收、出库、退料和调仓分别留痕。数量汇总、期初库存与盘点已开放；计价和正式月结确认尚待建设。' }}</p></div>
+    <div v-if="!fabricClosing && !fabricReceipts && !masterMode && !semiLocations && !liveOperations && !monthlyView && !['subcontract', 'order-summary', 'opening', 'stocktake'].includes(currentView.id)" class="warehouse-notice" role="note"><Info :size="18" aria-hidden="true" /><p>{{ semi ? '加工任务、实收、加工发回和包装交接可在对应栏目登记。当前栏目尚待建设。' : '采购实收、出库、退料和调仓分别留痕。数量汇总、期初库存与盘点已开放；计价和正式月结确认尚待建设。' }}</p></div>
 
     <details v-if="previewActions.length && !fabricReceipts && !inventoryPage" class="fabric-receiving-help"><summary><FileText :size="17" />查看单据字段样式</summary><div class="fabric-receiving-help-content"><p>样式预览只用于查看字段；实际登记请使用下方业务操作。</p><Button v-for="action in previewActions" :key="action.kind" variant="outline" size="sm" @click="previewKind = action.kind">{{ action.label }}</Button></div></details>
 
@@ -177,7 +178,9 @@ const dateLabel = computed(() => {
       <details v-if="masterMode" class="fabric-receiving-help"><summary><Info :size="15" />资料说明</summary><div class="fabric-receiving-help-content"><strong>基础资料已启用 · 先满足仓库收发</strong><p>仓库与仓位由仓库日常维护。工程、采购模块接入前，物料、计量单位和供应商资料先在这里补齐；当前供应商资料不包含客户或内部领料部门。</p><p>物料先确认编码、名称、分类和库存单位；规格、颜色、材质按已确认资料补充。供应商固定编号用于送货识别、专用入口和收料对账。单位换算只保存有依据的资料，不自动换算收发数量。</p><p>后续衔接工程和采购资料时，应沿用已有编号及对应关系，避免重复建档。资料可修改、停用，导入候选须人工确认后启用；历史单据保留当时资料。</p></div></details>
       </div>
       <div :class="{ 'fabric-receipts-content': fabricReceipts, 'fabric-master-content': masterMode, 'fabric-inventory-content': fabricInventory || fabricExceptions || fabricClosing }">
-      <FabricActivityLog v-if="fabricActivity" />
+      <FabricSubcontractWorkspace v-if="fabricInventory && currentView.id === 'subcontract'" mode="orders" />
+      <FabricSubcontractWorkspace v-else-if="masterMode && currentView.id === 'processors'" mode="processors" />
+      <FabricActivityLog v-else-if="fabricActivity" />
       <FabricInventorySetup v-else-if="fabricInventory && (currentView.id === 'opening' || currentView.id === 'stocktake')" :key="currentView.id" :mode="currentView.id" />
       <FabricOrderSummary v-else-if="!semi && section.path === 'inventory' && currentView.id === 'order-summary'" />
       <WarehouseOperationsWorkspace v-else-if="liveOperations" :warehouse="semi ? 'semi' : 'fabric'" :section="section.path" :view="currentView.id" :title="currentView.title" :description="currentView.description" />

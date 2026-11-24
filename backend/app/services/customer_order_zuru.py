@@ -221,7 +221,8 @@ def parse_po(name, content):
             if len(barcode_columns) > 1:
                 warnings.append('转换表条码表头重复，条码留空，请复核原件')
             lines.append(dict(line=line, spec=spec, sku=sku, qty=qty, outer=outer, boxes=boxes,
-                name=text(get('NAME')), delivery=_date(get('DELIVERYDATE') or shipment, book.epoch),
+                inner=numeric(get('INNER'), '内箱装箱数', integer=True, optional=True),
+                name=text(get('NAME')), delivery=_date(get('DELIVERYDATE') or shipment, book.epoch) if text(get('DELIVERYDATE') or shipment) else '',
                 price=price, amount=amount, customer_po=' '.join(text(get('CUSTOMERPO')).split()), barcode=barcode,
                 warnings=warnings, source_rows=source_rows))
         total_qty = numeric(total.get(columns['QTYPCS']), 'PO总数量', integer=True, positive=True)
@@ -234,6 +235,7 @@ def parse_po(name, content):
                 raise ValueError(f'明细{label}与总计不一致')
         return dict(po=po, po_date=po_date, customer=labelled({'CUSTOMERNAME'}),
             country=labelled({'DESTINATIONCOUNTRY'}), lines=lines, sheet=sheet,
+            source_notes=getattr(book, 'source_notes', ''), merchandiser=getattr(book, 'merchandiser', ''),
             source_digest=sha256(content).hexdigest(),
             content_identity=getattr(book, 'content_identity', sha256(content).hexdigest()),
             revision_history=getattr(book, 'revision_history', None),
@@ -288,6 +290,8 @@ def create_rows(po_files, received_date, history, *, factory_id='huaxing'):
             source = f"{filename} · {parsed['sheet']} · {location} · Line {line['line']}"
             row = dict(id=f'{factory_id}-zuru-{len(rows) + 1}', row_role='detail',
                 _zuru_customer=True, received_date=received_date, order_type='正单',
+                source_order_date=parsed['po_date'], inner_pack=line.get('inner'),
+                source_notes=parsed.get('source_notes', ''), merchandiser=parsed.get('merchandiser', ''),
                 production_no='', contract_no=parsed['po'], reference_no=f"{parsed['po']}-{line['line']}",
                 po_no=line['customer_po'], customer_name=parsed['customer'] or 'ZURU', country=parsed['country'],
                 product_no=line['spec'], product_name_en=line['name'], product_name_zh='',

@@ -1,0 +1,78 @@
+.fabric-subcontract { color: var(--foreground); min-width: 0; padding: clamp(.75rem, 2vw, 1.5rem); }
+.fabric-subcontract :is(h2,h3,p,ul,ol) { margin: 0; }
+.fabric-subcontract h2 { font-size: 1.25rem; font-weight: 650; }
+.fabric-subcontract h3 { font-size: 1rem; font-weight: 650; }
+.fabric-subcontract .sub-head, .fabric-subcontract .sub-line, .fabric-subcontract .sub-actions,
+.fabric-subcontract .sub-checks { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; }
+.fabric-subcontract .sub-head { justify-content: space-between; margin-bottom: 1rem; }
+.fabric-subcontract .sub-head p, .fabric-subcontract .sub-note, .fabric-subcontract small { color: var(--muted-foreground); font-size: .82rem; }
+.fabric-subcontract small { display: block; }
+.fabric-subcontract .sub-card, .fabric-subcontract .sub-table, .fabric-subcontract .sub-empty {
+  border: 1px solid var(--border); border-radius: .75rem; background: var(--card); margin: .8rem 0; }
+.fabric-subcontract .sub-card,.fabric-subcontract .sub-empty { padding: clamp(.8rem, 1.8vw, 1.25rem); }
+.fabric-subcontract fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
+.fabric-subcontract .sub-grid, .fabric-subcontract .sub-quantities { display: grid; gap: .85rem; grid-template-columns: repeat(auto-fit,minmax(min(100%, 12rem),1fr)); }
+.fabric-subcontract label { display: grid; gap: .3rem; min-width: 0; font-size: .875rem; }
+.fabric-subcontract :is(input:not([type=checkbox]):not([type=radio]), select) { min-width: 0; max-width: 100%; width: 100%; min-height: 2.5rem; padding: .4rem .6rem; border: 1px solid var(--border); border-radius: .4rem; color: var(--foreground); background: var(--background); }
+.fabric-subcontract input[readonly] { background: var(--muted); }
+.fabric-subcontract :is(input,select,button):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.fabric-subcontract fieldset > h3, .fabric-subcontract .sub-note, .fabric-subcontract footer { margin-top: 1rem; }
+.fabric-subcontract .sub-line { margin: .6rem 0; align-items: end; }
+.fabric-subcontract .sub-line label:first-child { flex: 2 1 17rem; }
+.fabric-subcontract .sub-line label:nth-child(2) { flex: 1 1 8rem; }
+.fabric-subcontract .sub-checks { margin-top: .6rem; }
+.fabric-subcontract .sub-checks label { display: flex; align-items: center; padding: .35rem; }
+.fabric-subcontract .sub-extra-actions { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: .5rem; }
+.fabric-subcontract .sub-receipt-options { margin-top: 1rem; }
+.fabric-subcontract .sub-receipt-options legend { font-size: .875rem; font-weight: 600; }
+.fabric-subcontract .sub-receipt-options .sub-checks { margin-top: .2rem; }
+.fabric-subcontract .sub-receipt-fields { margin-top: .75rem; }
+.fabric-subcontract .sub-counted-qty { max-width: 18rem; margin-top: .5rem; }
+.fabric-subcontract .sub-action footer { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.fabric-subcontract .sub-table { overflow-x: auto; }
+.fabric-subcontract table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+.fabric-subcontract :is(th,td) { text-align: left; padding: .7rem .8rem; border-bottom: 1px solid var(--border); }
+.fabric-subcontract th { background: var(--muted); white-space: nowrap; }
+.sub-orders-table .sub-due { white-space: nowrap; }
+.sub-orders-table .sub-due span { display: none; }
+.sub-orders-table .sub-progress-cell { width: 27%; min-width: 15rem; }
+.sub-progress { display: grid; gap: .35rem; font-variant-numeric: tabular-nums; }
+.sub-progress + .sub-progress { margin-top: .7rem; }
+.sub-progress-heading, .sub-progress-amounts { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: .65rem; }
+.sub-progress-heading { justify-content: space-between; }
+.sub-progress-heading strong { font-weight: 600; }
+.sub-progress-heading span, .sub-progress-amounts { font-size: .78rem; color: var(--muted-foreground); }
+.sub-progress-amounts span { white-space: nowrap; }
+.sub-progress .sub-progress-track { background: var(--border); }
+.sub-progress .sub-progress-pending { background: linear-gradient(to right, var(--color-amber-400) var(--delivered), var(--border) var(--delivered)); }
+.sub-progress-amounts .sub-pending-count { color: var(--color-amber-800); }
+.dark .sub-progress-amounts .sub-pending-count { color: var(--color-amber-300); }
+.fabric-subcontract .sub-product { border-top: 1px solid var(--border); margin-top: .65rem; padding-top: .65rem; }
+.fabric-subcontract .sub-quantities { grid-template-columns: repeat(auto-fit,minmax(min(100%,7rem),1fr)); margin-top: .55rem; font-variant-numeric: tabular-nums; }
+.fabric-subcontract .sub-quantities b { display: block; overflow-wrap: anywhere; }
+.fabric-subcontract .sub-history { list-style: none; padding: 0; }
+.fabric-subcontract .sub-history li { border-top: 1px solid var(--border); margin-top: .65rem; padding-top: .65rem; overflow-wrap: anywhere; }
+.fabric-subcontract .sub-history button { margin-top: .4rem; }
+.fabric-subcontract .sub-success,.fabric-subcontract .sub-error { padding: .65rem 0; }
+.fabric-subcontract .sub-error { color: var(--destructive); }
+@media (max-width: 640px) {
+  .fabric-subcontract .sub-grid { grid-template-columns: 1fr; }
+  .fabric-subcontract .sub-actions { gap: .4rem; }
+  .fabric-subcontract .sub-table table { min-width: 36rem; }
+  .fabric-subcontract .sub-line label { flex-basis: 100%; }
+}
+@media (max-width: 700px) {
+  .fabric-subcontract .sub-orders-table table { display: block; min-width: 0; }
+  .sub-orders-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .sub-orders-table tbody { display: block; }
+  .sub-orders-table tbody tr { display: grid; grid-template: "order open" auto "factory due" auto "product product" auto "progress progress" auto / minmax(0, 1fr) auto; gap: .35rem .5rem; padding: .85rem; }
+  .sub-orders-table tbody tr + tr { border-top: 1px solid var(--border); }
+  .fabric-subcontract .sub-orders-table td { padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+  .sub-orders-table td:first-child { grid-area: order; }
+  .sub-orders-table td:nth-child(2) { grid-area: factory; }
+  .sub-orders-table td:nth-child(3) { grid-area: product; color: var(--muted-foreground); }
+  .sub-orders-table .sub-due { grid-area: due; align-self: center; text-align: right; font-size: .78rem; }
+  .sub-orders-table .sub-due span { display: inline; }
+  .fabric-subcontract .sub-orders-table .sub-progress-cell { grid-area: progress; width: auto; margin-top: .35rem; }
+  .sub-orders-table td:last-child { grid-area: open; text-align: right; }
+}

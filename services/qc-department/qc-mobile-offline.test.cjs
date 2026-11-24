@@ -7,10 +7,14 @@ const copy=value=>value==null||typeof value!=='object'?value:
  Array.isArray(value)?value.map(copy):Object.fromEntries(Object.entries(value).map(([k,v])=>[k,copy(v)]));
 function storage(){return {rows:new Map(),context:null,fail:false};}
 function server(){return {row:{id:'a',customer:'隔离客户',poNo:'PO-001',productNo:'SKU-1',productName:'产品',dateFrom:'2026-11-17',result:'',inspectionProblem:'',remark:'',improvement:'',inspectionExecution:{},revision:0,photos:[]},calls:[],receipts:new Map(),fail:false,hold:null};}
-async function page(store,api,online=true,visualViewport=false){
+async function page(store,api,online=true,visualViewport=false,iphone=false){
  const errors=[],vc=new VirtualConsole();vc.on('jsdomError',e=>errors.push(e.message));
  const dom=new JSDOM(fs.readFileSync(folder+'index.html','utf8'),{runScripts:'outside-only',url:'http://mobile/api/qc-mobile/app/',pretendToBeVisual:true,virtualConsole:vc});
- const w=dom.window,d=w.document,$=id=>d.getElementById(id),q=s=>d.querySelector(s);
+  const w=dom.window,d=w.document,$=id=>d.getElementById(id),q=s=>d.querySelector(s);
+  if(iphone){
+    Object.defineProperty(w.navigator,'userAgent',{value:'Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) Mobile/15E148 Safari/604.1'});
+    w.scrollTo=()=>{};
+  }
  if(visualViewport)w.visualViewport=Object.assign(new w.EventTarget(),{width:w.innerWidth,height:w.innerHeight,offsetTop:0});
  Object.defineProperty(w.navigator,'onLine',{configurable:true,get:()=>online});
  w.HTMLElement.prototype.scrollIntoView=()=>{};w.HTMLElement.prototype.scrollTo=()=>{};
@@ -168,6 +172,65 @@ test('keyboard reveals the active label and field, leaving visible fields and di
   } finally { p.close(); }
 });
 
+test('continuous phone keyboard resize follows paint frames and only settles the field scroll once', async () => {
+  const p = await page(storage(), server(), true, true);
+  try {
+    await p.open();
+    const viewport = p.w.visualViewport, app = p.$('app'), area = p.$('entry-scroll');
+    const note = p.q('[data-note="remark"]'), full = viewport.height;
+    const frames = new Map();let nextFrame = 0, reads = 0, styleWrites = 0;
+    const paint = () => {
+      const queued = [...frames.values()];
+      frames.clear();
+      queued.forEach(fn => fn(p.w.performance.now()));
+    };
+    p.w.requestAnimationFrame = fn => {frames.set(++nextFrame,fn);return nextFrame;};
+    p.w.cancelAnimationFrame = id => frames.delete(id);
+    const set = app.style.setProperty.bind(app.style);
+    app.style.setProperty = (...args) => {styleWrites++;set(...args);};
+    const rect = (top, bottom) => ({top, bottom, height:bottom-top});
+    area.getBoundingClientRect = () => {reads++;return rect(100,viewport.height);};
+    note.closest('label').getBoundingClientRect = () => rect(480-area.scrollTop,550-area.scrollTop);
+    const sample = (height, offset) => {
+      Object.assign(viewport,{height,offsetTop:offset});
+      viewport.dispatchEvent(new p.w.Event('resize'));
+      viewport.dispatchEvent(new p.w.Event('scroll'));
+      p.w.dispatchEvent(new p.w.Event('resize'));
+    };
+    note.focus();
+    assert.equal(p.$('dock').hidden,true);
+    sample(full-30,2);sample(full-100,7);sample(440,10);
+    assert.equal(frames.size,1);
+    paint();
+    assert.equal(app.style.getPropertyValue('--viewport-height'),'440px');
+    assert.equal(app.style.getPropertyValue('--viewport-top'),'10px');
+    assert.equal(styleWrites,2);
+    sample(440,10);paint();
+    assert.equal(styleWrites,2,'duplicate visual/window events must not mutate geometry');
+    sample(310,0);paint();
+    assert.equal(app.style.getPropertyValue('--viewport-height'),'310px');
+    assert.equal(p.$('dock').hidden,true);
+    sample(335,0);paint();
+    assert.equal(p.$('dock').hidden,true,'small height changes do not dismiss the keyboard');
+    assert.equal(reads,0,'do not measure or scroll in the resize frame');
+    await wait(95);paint();
+    assert.equal(reads,1);
+    assert.equal(area.scrollTop,223);
+    assert.equal(p.d.activeElement,note);
+    note.blur();
+    sample(460,0);paint();
+    assert.equal(app.style.getPropertyValue('--viewport-height'),'460px');
+    assert.equal(p.$('dock').hidden,true);
+    sample(full,0);paint();
+    assert.equal(app.style.getPropertyValue('--viewport-height'),full+'px');
+    assert.equal(p.$('dock').hidden,false);
+    assert.equal(app.classList.contains('keyboard-compact-entry'),false,'no compact-header toggle on dismissal');
+    await wait(95);paint();
+    assert.equal(reads,1,'dismissal must not force a second scroll');
+    assert.equal(area.scrollTop,223);
+  } finally { p.close(); }
+});
+
 for (const visualViewport of [true, false]) {
   const scenario = visualViewport ? 'visual viewport with blur before dismissal' : 'window resize with focus retained';
   test('save dock stays out of the keyboard area: ' + scenario, async () => {
@@ -214,3 +277,34 @@ for (const visualViewport of [true, false]) {
     } finally { p.close(); }
   });
 }
+
+test('iPhone entry leaves the keyboard pan to Safari and returns to the normal list layout',async()=>{
+  const db=storage(),api=server(),p=await page(db,api,true,true,true);
+  try{
+    const app=p.$('app'),viewport=p.w.visualViewport,full=viewport.height,dock=p.$('dock');
+    const sample=(height,pageTop)=>{
+      Object.assign(viewport,{height,pageTop,offsetTop:Math.min(pageTop,20)});
+      viewport.dispatchEvent(new p.w.Event('resize'));viewport.dispatchEvent(new p.w.Event('scroll'));
+    };
+    const native=()=>p.d.documentElement.classList.contains('qc-native-entry');
+    const assertNativeGeometry=()=>{
+      assert.equal(app.style.getPropertyValue('--viewport-height'),'');
+      assert.equal(app.style.getPropertyValue('--viewport-top'),'');
+    };
+    assert.equal(native(),false);await p.open();assert.equal(native(),true);assertNativeGeometry();
+    const field=p.q('[data-note="remark"]'),scroll=p.$('entry-scroll');
+    let scriptedScrolls=0;
+    p.w.scrollTo=()=>{scriptedScrolls++;};
+    scroll.getBoundingClientRect=()=>{throw Error('iPhone browser owns focused-field scrolling');};
+    p.edit('remark','iPhone 测试备注');
+    sample(full-290,140);await wait(100);assertNativeGeometry();
+    assert.equal(p.d.activeElement,field);assert.equal(dock.hidden,true);
+    field.blur();
+    sample(full-100,324);await wait(100);assertNativeGeometry();
+    sample(full,0);await wait(100);assertNativeGeometry();
+    assert.equal(dock.hidden,false);assert.equal(scriptedScrolls,0);
+    assert.equal(api.row.remark,'iPhone 测试备注');assert.deepEqual(p.errors,[]);
+    await p.finish();assert.equal(native(),false);assert.equal(p.$('tasks').hidden,false);
+    assert.equal(app.style.getPropertyValue('--viewport-height'),full+'px');
+  }finally{p.close();}
+});

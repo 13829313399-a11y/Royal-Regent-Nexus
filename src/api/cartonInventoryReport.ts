@@ -21,6 +21,7 @@ export interface InventoryReportRow {
   line_count: number
 }
 export interface InventoryReportMovement {
+  process_note?: string
   id: string
   occurred_at: string
   customer_code: string
@@ -44,6 +45,7 @@ export interface InventoryReportMovement {
   unattributed?: boolean
 }
 export interface InventoryOrderReportRow extends Omit<InventoryReportRow, 'business_date'> {
+  process_note?: string
   key: string
   order_id: string | null
   order_line_id: string | null
