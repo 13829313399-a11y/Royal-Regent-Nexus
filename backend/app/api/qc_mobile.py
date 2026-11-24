@@ -38,7 +38,7 @@ DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 
 
 def production():
-    return settings.app_env.strip().lower() in {"production", "prod"}
+    return settings.qc_mobile_require_https or settings.app_env.strip().lower() in {"production", "prod"}
 
 
 def configured_origin():

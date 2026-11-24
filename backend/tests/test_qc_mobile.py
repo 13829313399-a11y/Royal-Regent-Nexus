@@ -176,8 +176,12 @@ def test_pairing_does_not_issue_ticket_for_unavailable_lan_entry(monkeypatch,tmp
         assert not (tmp_path/'companies/_mobile/pairings.sqlite3').exists()
 
 
-@pytest.mark.parametrize('entry_host', ['qc.company.example', '1.1.1.1'])
-def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path, entry_host):
+@pytest.mark.parametrize(('entry_host', 'app_env', 'mobile_tls'), [
+    ('qc.company.example', 'production', False),
+    ('1.1.1.1', 'production', False),
+    ('1.1.1.1', 'development', True),
+])
+def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path, entry_host, app_env, mobile_tls):
     import httpx
     import test_molding_sample_api
     monkeypatch.setenv('QC_DOSSIER_EMERGENCY_DISABLED', 'true')
@@ -190,7 +194,8 @@ def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path, entry_host):
         # but the browser has the canonical HTTPS Origin and public Host.
         client.base_url=f'http://{entry_host}'
         login_as(client, 'qc_inspector')
-        monkeypatch.setattr(mobile.settings, 'app_env', 'production')
+        monkeypatch.setattr(mobile.settings, 'app_env', app_env)
+        monkeypatch.setattr(mobile.settings, 'qc_mobile_require_https', mobile_tls)
         monkeypatch.setattr(mobile.settings, 'session_cookie_secure', False)
         monkeypatch.setattr(mobile.settings, 'qc_mobile_public_origin', origin)
         ready=False
