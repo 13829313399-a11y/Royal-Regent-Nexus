@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../api/client'
+import { currentProductionFactory, productionFactories } from '../deployment'
 import { scheduleActualProduction, type ScheduleStatusRow } from '../utils/scheduleLineStatus'
 
 interface MpoItem {
@@ -49,7 +50,7 @@ interface SchedRow extends ScheduleStatusRow {
 interface Mpo {
   no?: string
   customer?: string
-  category?: '塑胶' | '搪胶' | string
+  category?: string
   workshop?: string
   status?: string
   orderDate?: string
@@ -67,8 +68,8 @@ const STATUS = [
   { value: 'sent',     label: '已发出', color: 'processing' as const },
   { value: 'received', label: '已收货', color: 'success' as const },
 ]
-const CATEGORIES = ['塑胶', '搪胶']
-const WORKSHOPS  = ['兴信A车间', '兴信B车间', '华登']
+const CATEGORIES = ['塑胶', '搪胶', '车缝']
+const factoryOptions = productionFactories.map(value => ({ value, label: value }))
 const CURR = [
   { value: 'HK$', label: 'HK$ 港币' },
   { value: '¥',   label: '¥ 人民币' },
@@ -100,7 +101,9 @@ export default function MoldingPosPage() {
   const [filter, setFilter] = useState('')
   const [customerFilter, setCustomerFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [listReady, setListReady] = useState(false)
+  const loadRequest = useRef(0)
   const [dirty, setDirty] = useState(false)
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   useNavigationDraft(dirty || editingIdx !== null)
@@ -112,6 +115,7 @@ export default function MoldingPosPage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerFilter, setPickerFilter] = useState('')
   const [pickerSel, setPickerSel] = useState<React.Key[]>([])
+  const [fallbackFactory, setFallbackFactory] = useState(currentProductionFactory)
   const [hidePlaced, setHidePlaced] = useState(true)
   const blobVersion = useRef<string>('')
   const placedOrderNos = useMemo(() => {
@@ -126,9 +130,12 @@ export default function MoldingPosPage() {
   }, [rows])
 
   async function load() {
+    const request = ++loadRequest.current
     setLoading(true)
+    setListReady(false)
     try {
       const resp = await api.get<Mpo[]>('/molding-pos/blob')
+      if (request !== loadRequest.current) return
       blobVersion.current = resp.headers['x-blob-version'] ?? ''
       const loaded = Array.isArray(resp.data) ? resp.data : []
       const needsNormalization = loaded.some(m =>
@@ -140,8 +147,9 @@ export default function MoldingPosPage() {
         items: (m.items ?? []).map(it => missingUnitPrice(it) ? { ...it, unitPrice: undefined } : it),
       })))
       setDirty(needsNormalization)
+      setListReady(true)
       if (needsNormalization) message.info('已补全生产交期并标记缺失单价，请点击“保存全部”完成数据升级')
-    } finally { setLoading(false) }
+    } finally { if (request === loadRequest.current) setLoading(false) }
   }
   async function loadCustomers() {
     try { const { data } = await api.get<string[]>('/customers'); setCustomers(data || []) } catch {}
@@ -163,6 +171,7 @@ export default function MoldingPosPage() {
 
     const historicalPrices = new Map<string, number>()
     for (const mpo of rows) {
+      if (mpo.category === '车缝') continue // 排模加工的参考价不取车缝工价。
       for (const item of (mpo.items ?? [])) {
         if (missingUnitPrice(item)) continue
         for (const key of priceKeys(item)) {
@@ -178,8 +187,7 @@ export default function MoldingPosPage() {
       return undefined
     }
 
-    // groups: key = `${category}||${workshop}` → { category, workshop, items: [] }
-    type Group = { category: string; workshop: string; items: MpoItem[] }
+    type Group = { customer: string; category: string; workshop: string; items: MpoItem[] }
     const groups = new Map<string, Group>()
 
     // Fetch all involved products in parallel (with moldings)
@@ -199,9 +207,11 @@ export default function MoldingPosPage() {
       for (const md of moldings) {
         const firstPart = md.parts?.[0]
         const cat = firstPart?.category || (/搪胶/.test(md.materialName || '') ? '搪胶' : '塑胶')
-        const ws  = md.workshop || (cat === '搪胶' ? '华登' : '兴信A车间')
-        const gk = `${cat}||${ws}`
-        if (!groups.has(gk)) groups.set(gk, { category: cat, workshop: ws, items: [] })
+        const ws = productionFactories.includes(md.workshop) ? md.workshop : fallbackFactory
+        if (!ws) { message.warning('请为未配置厂区的排模选择生产厂区'); return }
+        const customer = sched.customer || 'TOMY'
+        const gk = JSON.stringify([customer, cat, ws])
+        if (!groups.has(gk)) groups.set(gk, { customer, category: cat, workshop: ws, items: [] })
         const g = groups.get(gk)!
         const parts = (md.parts && md.parts.length) ? md.parts : [{ partCode: '', partName: md.moldName, usage: 1, ejections: 1, netPerPc: 0 }]
         const colorDisplay = md.colorCode ? `${md.colorName ?? ''}/${md.colorCode}` : (md.colorName ?? '')
@@ -288,31 +298,26 @@ export default function MoldingPosPage() {
 
     // 生成单号
     // 搪胶: YYYYMMDD + 2 位序号
-    // 塑胶: YYYYMMDD + 3 位序号 + 车间后缀 (/A, /B, 华登无后缀)
+    // 其他类别沿用三位流水号，各厂区共用本工作区当日的序列。
     const orderDate = dayjs().format('YYYY-MM-DD')
     const dateStr = orderDate.replace(/-/g, '')
     const existingNos = (rows ?? []).map(r => r.no ?? '')
-    function dailySeq(suffix: string, padN: number): number {
-      const re = new RegExp(`^${dateStr}(\\d{${padN}})${suffix ? suffix.replace(/\//g, '\\/') : ''}$`)
+    function dailySeq(padN: number): number {
+      const re = new RegExp(`^${dateStr}(\\d{${padN}})$`)
       let max = 0
       for (const n of existingNos) { const m = n.match(re); if (m) max = Math.max(max, parseInt(m[1], 10)) }
-      return max + 1
+      let next = max + 1
+      while (existingNos.includes(dateStr + String(next).padStart(padN, '0'))) next++
+      return next
     }
     const newMpos: Mpo[] = []
     for (const g of groups.values()) {
-      let no: string
-      if (g.category === '搪胶') {
-        const seq = dailySeq('', 2)
-        no = dateStr + String(seq).padStart(2, '0')
-      } else {
-        const suffix = g.workshop === '兴信A车间' ? '/A' : g.workshop === '兴信B车间' ? '/B' : ''
-        const seq = dailySeq(suffix, 3)
-        no = dateStr + String(seq).padStart(3, '0') + suffix
-      }
+      const digits = g.category === '搪胶' ? 2 : 3
+      const no = dateStr + String(dailySeq(digits)).padStart(digits, '0')
       existingNos.push(no)
       newMpos.push({
         no,
-        customer: picked[0]?.customer || 'TOMY',
+        customer: g.customer,
         category: g.category,
         workshop: g.workshop,
         status: 'draft',
@@ -354,7 +359,7 @@ export default function MoldingPosPage() {
   }
 
   function openCreate() {
-    const next: Mpo = { no: '', customer: customerFilter, category: '塑胶', workshop: '兴信A车间', status: 'draft', currency: 'HK$', items: [] }
+    const next: Mpo = { no: '', customer: customerFilter, category: '塑胶', workshop: currentProductionFactory(), status: 'draft', currency: 'HK$', items: [] }
     setRows(rs => [next, ...rs])
     setDirty(true)
     openEdit(0, next)
@@ -408,7 +413,7 @@ export default function MoldingPosPage() {
       if (statusFilter && (m.status || 'draft') !== statusFilter) return false
       if (!filter) return true
       const s = filter.toLowerCase()
-      return ((m.no || '') + (m.customer || '') + (m.notes || '')).toLowerCase().includes(s)
+      return [m.no, m.customer, m.category, m.workshop, m.notes].some(value => value?.toLowerCase().includes(s))
     }), [rows, filter, customerFilter, statusFilter])
 
   const statsByStatus = useMemo(() => {
@@ -425,13 +430,13 @@ export default function MoldingPosPage() {
       <Card
         title={
           <span>
-            啤货/搪胶生产单 — 共 <b>{rows.length}</b> 张
+            生产单 — 共 <b>{rows.length}</b> 张
             {dirty && <span style={{ color: '#fa8c16' }}> · 未保存</span>}
           </span>
         }
         extra={
           <Space wrap>
-            <Input.Search allowClear placeholder="搜索 单号/客户/备注" style={{ width: 240 }}
+            <Input.Search allowClear placeholder="搜索单号、客户、类别、厂区或备注" style={{ width: 270 }}
               onSearch={setFilter} onChange={(e) => !e.target.value && setFilter('')} />
             <Select
               value={statusFilter} onChange={setStatusFilter}
@@ -440,9 +445,9 @@ export default function MoldingPosPage() {
                 ...STATUS.map(s => ({ value: s.value, label: `${s.label} (${statsByStatus.get(s.value) ?? 0})` }))]}
             />
             <Button onClick={load} disabled={loading}>🔄 重新加载</Button>
-            <Button type="primary" onClick={() => setPickerOpen(true)}>🔗 从排期生成生产单</Button>
-            <Button onClick={openCreate}>➕ 手动新增</Button>
-            <Button type="primary" onClick={saveAll} loading={loading} disabled={!dirty}>💾 保存全部</Button>
+            <Button type="primary" disabled={loading || !listReady} onClick={() => setPickerOpen(true)}>🔗 从排期生成生产单</Button>
+            <Button disabled={loading || !listReady} onClick={openCreate}>➕ 手动新增</Button>
+            <Button type="primary" onClick={saveAll} loading={loading} disabled={!dirty || !listReady}>💾 保存全部</Button>
           </Space>
         }
         tabList={[
@@ -457,6 +462,7 @@ export default function MoldingPosPage() {
           size="small"
           loading={loading}
           dataSource={filtered}
+          scroll={{ x: 1320 }}
           pagination={{ defaultPageSize: 50, showSizeChanger: true }}
           columns={[
             { title: '单号', dataIndex: ['m', 'no'], width: 180 },
@@ -465,7 +471,7 @@ export default function MoldingPosPage() {
               title: '类别', dataIndex: ['m', 'category'], width: 80,
               render: (v) => <Tag color={v === '搪胶' ? 'orange' : 'blue'}>{v || '塑胶'}</Tag>,
             },
-            { title: '车间', dataIndex: ['m', 'workshop'], width: 110 },
+            { title: '生产厂区', dataIndex: ['m', 'workshop'], width: 110 },
             {
               title: '状态', dataIndex: ['m', 'status'], width: 100,
               render: (v) => {
@@ -492,17 +498,17 @@ export default function MoldingPosPage() {
               },
             },
             {
-              title: '操作', width: 180,
+              title: '操作', width: 180, fixed: 'right',
               render: (_v, r) => (
-                <Space>
-                  <a onClick={() => openEdit(r.sourceIndex, r.m)}>编辑</a>
-                  <a onClick={async () => {
+                <Space size={4}>
+                  <Button type="link" size="small" disabled={loading || !listReady} onClick={() => openEdit(r.sourceIndex, r.m)}>编辑</Button>
+                  <Button type="link" size="small" onClick={async () => {
                     const { exportMpo } = await import('../utils/moldingPoExport')
                     await exportMpo(r.m as any)
                     message.success(`已导出 ${r.m.no}`)
-                  }}>📤 导出</a>
+                  }}>📤 导出</Button>
                   <Popconfirm title={`删除 ${r.m.no}?`} onConfirm={() => delMpo(r.sourceIndex)}>
-                    <a style={{ color: '#ff4d4f' }}>删除</a>
+                    <Button type="link" danger size="small" disabled={loading || !listReady}>删除</Button>
                   </Popconfirm>
                 </Space>
               ),
@@ -546,8 +552,8 @@ export default function MoldingPosPage() {
               </Form.Item>
             </Col>
             <Col span={4}>
-              <Form.Item name="workshop" label="车间">
-                <Select options={WORKSHOPS.map(w => ({ value: w, label: w }))} />
+              <Form.Item name="workshop" label="生产厂区">
+                <Select placeholder="选择厂区" options={factoryOptions} />
               </Form.Item>
             </Col>
             <Col span={4}>
@@ -626,6 +632,8 @@ export default function MoldingPosPage() {
         placedOrderNos={placedOrderNos}
         hidePlaced={hidePlaced}
         setHidePlaced={setHidePlaced}
+        fallbackFactory={fallbackFactory}
+        setFallbackFactory={setFallbackFactory}
         onGenerate={generateFromPicked}
       />
     </div>
@@ -643,6 +651,8 @@ function SchedPickerModal(props: {
   placedOrderNos: Set<string>
   hidePlaced: boolean
   setHidePlaced: (v: boolean) => void
+  fallbackFactory: string
+  setFallbackFactory: (factory: string) => void
   onGenerate: () => void
 }) {
   const filtered = props.schedRows
@@ -668,13 +678,14 @@ function SchedPickerModal(props: {
           onSearch={props.setFilter} onChange={(e) => !e.target.value && props.setFilter('')} />
         <Checkbox checked={props.hidePlaced} onChange={(e) => props.setHidePlaced(e.target.checked)}>隐藏已下单</Checkbox>
         <Popconfirm
-          title={`按 (类别+车间) 聚合生成生产单 — 已勾 ${props.selected.length} 行`}
+          title={`按客户、类别和生产厂区生成生产单 — 已选 ${props.selected.length} 行`}
           onConfirm={props.onGenerate}
           disabled={!props.selected.length}
         >
-          <Button type="primary" disabled={!props.selected.length}>🏭 按车间聚合生成</Button>
+          <Button type="primary" disabled={!props.selected.length}>🏭 生成生产单</Button>
         </Popconfirm>
-        <span style={{ color: '#999', fontSize: 12 }}>规则：搪胶/华登 1 单；塑胶/兴信A车间 1 单 (/A)；塑胶/兴信B车间 1 单 (/B)</span>
+        <label>排模厂区缺失或为旧车间时使用 <Select aria-label="默认生产厂区" value={props.fallbackFactory || undefined}
+          options={factoryOptions} onChange={props.setFallbackFactory} placeholder="选择厂区" style={{ width: 110 }} /></label>
       </Space>
       <Table
         rowKey={(r: any) => String(r._i)}

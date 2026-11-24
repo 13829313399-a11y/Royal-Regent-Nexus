@@ -5,6 +5,7 @@ using IndoShipping.Api.Features.Bootstrap;
 using IndoShipping.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Xunit;
 
@@ -12,6 +13,29 @@ namespace IndoShipping.Api.Tests;
 
 public class MaterialCompletionIntegrationTests
 {
+    [Fact]
+    public async Task Sewing_orders_do_not_fulfil_plastic_demand_for_the_same_product_and_mold()
+    {
+        await using var f = await Fixture.Create(); if (f is null) return;
+        await f.Db.ExecuteAsync("ALTER TABLE settings ADD COLUMN updated_at timestamptz");
+        await using var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(f.Db).Options);
+        var orders = new MoldingPosController(db) {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+        using var draft = JsonDocument.Parse("""
+            [{"workshop":"华康C","category":"车缝","items":[{"code":"A","moldId":"M1","qty":30}]},
+             {"workshop":"华兴","category":"塑胶","items":[{"code":"A","moldId":"M1","qty":3}]}]
+            """);
+        orders.Request.Headers["X-Expected-Version"] = "0";
+        Assert.IsType<OkObjectResult>(await orders.PutBlob(draft.RootElement));
+        var saved = Assert.IsType<ContentResult>(await orders.GetBlob());
+        using var reloaded = JsonDocument.Parse(saved.Content!);
+        Assert.Equal("车缝", reloaded.RootElement[0].GetProperty("category").GetString());
+        Assert.Equal("华康C", reloaded.RootElement[0].GetProperty("workshop").GetString());
+        var item = (await f.Read()).EnumerateArray().Single(x => x.GetProperty("tracking_type").GetString() == "plastic");
+        Assert.Equal(3, item.GetProperty("ordered_qty").GetDecimal());
+    }
+
     [Fact]
     public async Task Supplier_reply_and_estimated_deadline_share_one_material_alert_until_completion()
     {
