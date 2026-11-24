@@ -1,12 +1,14 @@
 // 生产单 Excel 导出（搪胶采购单 / 塑胶啤货生产表）
 // 忠实移植自旧 HTML mpoExportTangjiao + mpoExportSujiao —— 含完整合并/行高/样式（xlsx-js-style）。
 import * as XLSX from 'xlsx-js-style'
+import { productionFactories } from '../deployment'
 
 export interface MpoExportItem {
   code?: string
   moldId?: string
   moldName?: string
   partName?: string
+  partCode?: string
   colorName?: string
   colorCode?: string
   colorDisplay?: string
@@ -17,6 +19,8 @@ export interface MpoExportItem {
   ejections?: number
   qty?: number
   unitPrice?: number
+  currency?: string
+  deliveryDate?: string
   notes?: string
 }
 
@@ -31,6 +35,7 @@ export interface MpoExportData {
   vendorContact?: string
   buyerContact?: string
   buyerPhone?: string
+  notes?: string
   items?: MpoExportItem[]
 }
 
@@ -46,13 +51,14 @@ export async function exportTangjiao(mpo: MpoExportData) {
   const curr = (mpo.currency || 'HK$').replace('$', '')
   const today = new Date().toISOString().slice(0, 10)
   const delivery = mpo.deliveryDate || today
+  const factory = productionFactories.includes(mpo.workshop || '') ? mpo.workshop : undefined
   const rows: any[][] = []
-  rows.push(['东莞兴信塑胶制品有限公司', ...PAD(NCOL - 1)])
-  rows.push(['广东省东莞市清溪镇上元管理区兴信塑胶制品有限公司银坑北环路59号B栋2楼', ...PAD(NCOL - 1)])
-  rows.push(['TEL:0769-87362376    FAX:0769-87362377', ...PAD(NCOL - 1)])
+  rows.push([factory ?? '东莞兴信塑胶制品有限公司', ...PAD(NCOL - 1)])
+  rows.push([factory ? '' : '广东省东莞市清溪镇上元管理区兴信塑胶制品有限公司银坑北环路59号B栋2楼', ...PAD(NCOL - 1)])
+  rows.push([factory ? '' : 'TEL:0769-87362376    FAX:0769-87362377', ...PAD(NCOL - 1)])
   rows.push(['搪胶采购单', ...PAD(NCOL - 1)])
   rows.push(PAD(NCOL))
-  rows.push(['', '厂  商：', '搪胶部', '', '', '', '', '', '订单编号：', mpo.no ?? '', ''])
+  rows.push(['', factory ? '生产厂区：' : '厂  商：', factory ?? '搪胶部', '', '', '', '', '', '订单编号：', mpo.no ?? '', ''])
   rows.push(['', '联 络 人：', mpo.vendorContact ?? '', '', '', '', '', '', '联 络 人：', mpo.buyerContact ?? '', ''])
   rows.push(['', '联系电话：', '', '', '', '', '', '', '联系电话：', mpo.buyerPhone ?? '', ''])
   rows.push(['', 'Fax：', '', '', '', '', '', '', 'Fax：', '', ''])
@@ -77,7 +83,7 @@ export async function exportTangjiao(mpo: MpoExportData) {
   const dataEnd = rows.length - 1
   rows.push(['', '', '', '', '', '', '', '', '合计金额', { f: `SUM(J${dataStart + 1}:J${dataEnd + 1})` }, ''])
   const sumRow = rows.length - 1
-  rows.push([`1.${delivery}前交货、货送   D栋3楼  处，收货人：${mpo.buyerContact ?? ''}`, ...PAD(NCOL - 1)])
+  rows.push([`1.${delivery}前交货，收货人：${mpo.buyerContact ?? ''}${factory ? '' : '，货送 D栋3楼'}`, ...PAD(NCOL - 1)])
   rows.push(['2.单价已含 13 %增值税，月结 90 天；附送免费1% 备品', ...PAD(NCOL - 1)])
   rows.push(['3、货物及部件质量符合国外现行最新标准', ...PAD(NCOL - 1)])
   rows.push(['注意事项：', ...PAD(NCOL - 1)])
@@ -151,11 +157,12 @@ export async function exportSujiao(mpo: MpoExportData) {
   const exportGeneration = getSessionGeneration()
   const NCOL = 14
   const rows: any[][] = []
-  rows.push(['东莞兴信塑胶制品有限公司', ...PAD(NCOL - 1)])
+  const factory = productionFactories.includes(mpo.workshop || '') ? mpo.workshop : undefined
+  rows.push([factory ?? '东莞兴信塑胶制品有限公司', ...PAD(NCOL - 1)])
   rows.push(['啤机部生产啤货表', ...PAD(NCOL - 1)])
-  rows.push(['供应商：', mpo.workshop ?? '', ...PAD(NCOL - 4), '生产单号：', mpo.no ?? ''])
-  rows.push(['地址：', '中国广东省东莞市清溪镇上元银坑路1号', ...PAD(NCOL - 2)])
-  rows.push(['电话：', '0769-87388020', '传真：', '0769-87302082', '公司名称：', mpo.customer ?? '', ...PAD(2), '交货地点：', 'B车间C栋四楼', ...PAD(NCOL - 12), '交货日期：', mpo.deliveryDate ?? mpo.orderDate ?? ''])
+  rows.push([factory ? '生产厂区：' : '供应商：', mpo.workshop ?? '', ...PAD(NCOL - 4), '生产单号：', mpo.no ?? ''])
+  rows.push(['地址：', factory ? '' : '中国广东省东莞市清溪镇上元银坑路1号', ...PAD(NCOL - 2)])
+  rows.push(['电话：', factory ? '' : '0769-87388020', '传真：', factory ? '' : '0769-87302082', '公司名称：', mpo.customer ?? '', ...PAD(2), '交货地点：', factory ? '' : 'B车间C栋四楼', ...PAD(NCOL - 12), '交货日期：', mpo.deliveryDate ?? mpo.orderDate ?? ''])
   rows.push(PAD(NCOL))
   rows.push(['货号', '模具编号', '模具名称', '总套数', '啤数', '颜色', '色粉号', '用料名称', '整啤净重(G)', '总净重(KG)', '加工单价(HK)', '加工金额(HK)', '交货日期', '备注'])
   const hdrRow = 6
@@ -247,7 +254,51 @@ export async function exportSujiao(mpo: MpoExportData) {
   if (await validateExportSession(exportGeneration)) XLSX.writeFile(wb, `${mpo.no ?? '塑胶单'}_啤货生产表.xlsx`)
 }
 
+async function exportSewing(mpo: MpoExportData) {
+  const generation = getSessionGeneration()
+  const rows: any[][] = [
+    ['车缝生产单'],
+    ['生产厂区', mpo.workshop ?? '', '单号', mpo.no ?? '', '客户', mpo.customer ?? ''],
+    ['下单日期', mpo.orderDate ?? '', '交货日期', mpo.deliveryDate ?? '', '备注', mpo.notes ?? ''],
+    ['货号', '件号', '名称', '用料', '颜色', '数量', '币种', '单价', '金额', '交货日期', '备注'],
+  ]
+  const totals = new Map<string, { amount: number; missingPrice: boolean }>()
+  for (const item of mpo.items ?? []) {
+    const n = rows.length + 1
+    const currency = item.currency || mpo.currency || 'HK$'
+    const qty = item.qty ?? 0
+    const price = item.unitPrice && item.unitPrice > 0 ? item.unitPrice : null
+    const amount = qty * (price ?? 0)
+    const total = totals.get(currency) ?? { amount: 0, missingPrice: false }
+    totals.set(currency, { amount: total.amount + amount, missingPrice: total.missingPrice || price === null })
+    rows.push([item.code ?? '', item.partCode ?? '', item.partName ?? '', item.materialName ?? '',
+      item.colorDisplay || item.colorName || '', qty, currency, price ?? '',
+      { t: price === null ? 'str' : 'n', v: price === null ? '' : amount, f: `IF(ISNUMBER(H${n}),F${n}*H${n},"")` },
+      item.deliveryDate || mpo.deliveryDate || '', item.notes ?? ''])
+  }
+  const lastItem = rows.length
+  for (const [currency, total] of totals) {
+    const n = rows.length + 1
+    rows.push(['合计', '', '', '', '', '', currency, '', {
+      t: total.missingPrice ? 'str' : 'n', v: total.missingPrice ? '待录价' : total.amount,
+      f: `IF(COUNTIFS(G5:G${lastItem},G${n},H5:H${lastItem},"")>0,"待录价",SUMIF(G5:G${lastItem},G${n},I5:I${lastItem}))`,
+    }])
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows)
+  ws['!merges'] = [XLSX.utils.decode_range('A1:K1')]
+  ws['!cols'] = [15, 15, 25, 22, 15, 10, 10, 12, 16, 16, 27].map(wch => ({ wch }))
+  ws['!rows'] = [{ hpt: 32 }, { hpt: 22 }, { hpt: 22 }, { hpt: 24 }]
+  ws.A1.s = { font: { bold: true, sz: 18 }, alignment: { horizontal: 'center' } }
+  rows[3].forEach((_, col) => {
+    ws[XLSX.utils.encode_cell({ r: 3, c: col })].s = { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: 'E8F0F8' } } }
+  })
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '车缝生产单')
+  if (await validateExportSession(generation)) XLSX.writeFile(wb, `${mpo.no ? mpo.no + '_' : ''}车缝生产单.xlsx`)
+}
+
 export async function exportMpo(mpo: MpoExportData) {
+  if (mpo.category === '车缝') return exportSewing(mpo)
   if (mpo.category === '搪胶') return exportTangjiao(mpo)
   return exportSujiao(mpo)
 }

@@ -172,7 +172,7 @@ const canQueryCurrentWork = computed(() => {
   const moduleId = scope.value.page?.module_id || ''
   const modules = store.capabilities?.business_modules
   return modules ? modules.some(item => item.module_id === moduleId && item.tools.length > 0 && ['implemented_unverified', 'connected'].includes(item.coverage_state))
-    : ['work-center', 'injection-scheduling', 'three-d-printing'].includes(moduleId)
+    : ['work-center', 'three-d-printing'].includes(moduleId)
 })
 const connectionLabel = computed(() => store.capabilities?.schema_status !== 'ready' ? '数据准备待完成' : !canChat.value ? '模型连接待配置' : store.capabilities?.connection_status === 'verified' ? '模型能力有历史验证记录' : '模型能力待验证')
 const guide = computed(() => locating.value ? undefined : selectedArticle.value?.steps[guideIndex.value])

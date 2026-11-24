@@ -31,7 +31,12 @@ from app.models.internal_quote import (
     InternalQuoteSection,
 )
 from app.schemas.internal_quote import SECTION_CODE_ORDER
-from app.services.internal_quote_calculator import resolve_justplay_carton_basis, resolve_justplay_packaging_inputs, resolve_sales_cartons
+from app.services.internal_quote_calculator import (
+    CalculationInputError,
+    resolve_justplay_carton_basis,
+    resolve_justplay_packaging_inputs,
+    resolve_sales_cartons,
+)
 
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
@@ -617,10 +622,11 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
     Saved calculations can predate source-price metadata. Pair the complete
     source sequence with calculated rows, never match duplicate item names alone.
     """
-    payload = _section_payload(section)
     code = getattr(section, "department", "")
     if section is None or getattr(section, "calculation_status", "valid") != "valid" or getattr(section, "is_required", True) is False:
         return []
+    # Purchased materials use their saved inputs and do not depend on carton geometry.
+    payload = _json_object(section.payload_json) if code == "sales" else _section_payload(section)
     kind, field = {
         "engineering": ("material", "materials"),
         "sales": ("packaging_material", "packaging_materials"),
@@ -1865,6 +1871,8 @@ def _build_summary_sheet(
     rr2_cost_summary: dict[str, Any],
     cost_context: dict[str, Any],
     attachments: list[InternalQuoteAttachment] | None = None,
+    *,
+    allow_incomplete: bool = False,
 ) -> None:
     """Render the current internal-quote template with dynamic detail anchors."""
 
@@ -1873,7 +1881,16 @@ def _build_summary_sheet(
     sheet.sheet_view.showGridLines = True
     by_code = {section.department: section for section in sections}
     sales_section = by_code.get("sales")
-    sales_payload = _section_payload(sales_section)
+    carton_inputs_incomplete = False
+    try:
+        sales_payload = _section_payload(sales_section)
+    except CalculationInputError:
+        if not allow_incomplete:
+            raise
+        # The draft keeps its inputs and calculation warning. The workbook
+        # preview must not use stored outer dimensions in place of derived ones.
+        sales_payload = {**_json_object(sales_section.payload_json), "cartons": []}
+        carton_inputs_incomplete = True
     shipping = _dict_value(rr2_cost_summary.get("shipping_pricing", {}))
     t1 = _rr2_values(rr2_cost_summary, "t1")
     t2 = _rr2_values(rr2_cost_summary, "t2")
@@ -2160,7 +2177,9 @@ def _build_summary_sheet(
         detail_rows.append((tax_tag, category, description, formula))
 
     sales_owns_materials = bool(sales_payload.get("packaging_materials")) or (
-        sales_payload.get("pricing_mode") == "component" and bool(sales_payload.get("cartons")))
+        sales_payload.get("pricing_mode") == "component"
+        and (carton_inputs_incomplete or bool(sales_payload.get("cartons")))
+    )
     purchase_entries = _purchase_pricing_entries(_list_of_dicts(shipping.get("pricing_entries", [])), sections)
     allocated_purchases = {(entry.get("section"), entry["source_line_index"]): entry
                            for entry in purchase_entries if "source_line_index" in entry}
@@ -2392,10 +2411,13 @@ def _build_summary_sheet(
         ]
     )
     pdq_offset = None
-    if justplay_basis and justplay_basis["source"] == "pdq":
+    pdq_dimensions = _dict_value(sales_payload.get("pdq_size_in"))
+    if (justplay_basis and justplay_basis["source"] == "pdq") or (
+        carton_inputs_incomplete and any(_float_value(pdq_dimensions.get(axis)) for axis in ("length", "width", "height"))
+    ):
         pdq_offset = len(packaging_rows)
         dimension_row_offsets.add(pdq_offset)
-        packaging_rows.append([f"PDQ 尺寸 ({pdq_unit})", *_dimensions_for_unit(sales_payload.get("pdq_size_in"), pdq_unit)])
+        packaging_rows.append([f"PDQ 尺寸 ({pdq_unit})", *_dimensions_for_unit(pdq_dimensions, pdq_unit)])
     product_offset = len(packaging_rows)
     dimension_row_offsets.add(product_offset)
     packaging_rows.append(
@@ -2527,6 +2549,10 @@ def _build_summary_sheet(
             {"groups": ["sales:" + "/".join(map(str, path)) for path in adopted], "kind": "source"})
     if paperboard_detail_offset is not None:
         sheet.cell(detail_start_row + paperboard_detail_offset, 4).value = f"={paperboard_reference}"
+
+    if carton_inputs_incomplete:
+        for offset in (cuft_offset, cbm_offset, paperboard_offset, *carton_price_offsets, total_offset):
+            packaging_rows[offset][1] = ""
 
     for offset, values in enumerate(packaging_rows):
         row_index = packaging_start_row + offset
@@ -3554,6 +3580,7 @@ def _build_summary_sheet(
             sections,
             rr2_cost_summary,
             attachments,
+            sales_payload=sales_payload,
             side_start_column=side_start_column,
             side_end_column=side_end_column,
             outer_right_column=outer_right_column,
@@ -3629,6 +3656,7 @@ def _replace_with_component_summary_sheet(
     rr2_cost_summary: dict[str, Any],
     attachments: list[InternalQuoteAttachment] | None,
     *,
+    sales_payload: dict[str, Any],
     side_start_column: int,
     side_end_column: int,
     outer_right_column: int,
@@ -3652,7 +3680,6 @@ def _replace_with_component_summary_sheet(
     global_entries = _purchase_pricing_entries(_list_of_dicts(global_pricing.get("entries", [])), sections)
     customer_supplied_entries = _list_of_dicts(_dict_value(shipping.get("customer_supplied_pricing", {})).get("entries", []))
     by_code = {section.department: section for section in sections}
-    sales_payload = _section_payload(by_code.get("sales"))
     cartons = _list_of_dicts(sales_payload.get("cartons", []))
     source_summary_start = next(
         (
@@ -4187,7 +4214,7 @@ def _replace_with_component_summary_sheet(
     quote_price_end_column = max(quote_price_columns)
 
     packaging_title_row = current_row
-    packaging_inputs = resolve_justplay_packaging_inputs(_section_payload(by_code.get("sales")))
+    packaging_inputs = resolve_justplay_packaging_inputs(sales_payload) if cartons else None
     _template_cell(target, packaging_title_row, 3, "包装明细", fill="FFFF00", bold=True, color=TEMPLATE_BLUE, wrap_text=False)
     _template_cell(target, packaging_title_row, 4, "出厂价", fill="FFFF00", bold=True, color=TEMPLATE_BLUE, wrap_text=False)
     for column, route in enumerate(route_rows, start=5):
@@ -4283,6 +4310,7 @@ def _replace_with_component_summary_sheet(
             )
         elif (
             str(entry.get("kind") or "") == "justplay_fixed_packaging"
+            and packaging_inputs is not None
             and target_outer_carton_row is not None
             and target_packing_qty_row is not None
         ):
@@ -5623,6 +5651,7 @@ def build_internal_quote_workbook_model(
         rr2_cost_summary or {},
         cost_context or {},
         attachments or [],
+        allow_incomplete=allow_incomplete,
     )
     by_code = {section.department: section for section in sections}
     _build_painting_image_sheet(workbook, by_code.get("painting"), attachments)

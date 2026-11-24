@@ -213,10 +213,15 @@ describe('CustomerOrderSchedule', () => {
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
     const wrapper = await mount360()
     expect(api.get).toHaveBeenCalledTimes(1)
-    api.get.mockResolvedValue(inspectionResult('2026-10-17'))
+    let finish!: (value: ReturnType<typeof inspectionResult>) => void
+    api.get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const existing = wrapper.get('[data-section="completed"]').element
     await vi.advanceTimersByTimeAsync(30_000)
     await flushPromises()
     expect(api.get).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-section="completed"]').element).toBe(existing)
+    expect(wrapper.get('[data-testid="inspection-rule"]').text()).toContain('2026-10-16')
+    finish(inspectionResult('2026-10-17')); await flushPromises()
     expect(wrapper.get('[data-testid="inspection-rule"]').text()).toContain('2026-10-17')
     visibility.mockReturnValue('hidden')
     vi.setSystemTime(new Date('2026-10-17T16:00:00Z'))

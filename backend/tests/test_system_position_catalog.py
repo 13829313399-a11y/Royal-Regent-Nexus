@@ -41,7 +41,7 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v33"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v34"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
@@ -239,9 +239,6 @@ def test_fixed_system_position_definition_contract():
     expected_task_permissions = {
         "customer_order:inbox_read",
         "customer_order:inbox_receive",
-        "injection_scheduling:read",
-        "injection_scheduling:plan",
-        "injection_scheduling:report",
         "molding_sample:read",
         "molding_sample:production_read",
         "molding_sample:production_start",
@@ -253,9 +250,7 @@ def test_fixed_system_position_definition_contract():
     assert molding_supervisor.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
     assert molding_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
     assert set(molding_clerk.permission_codes) == expected_task_permissions
-    assert set(molding_supervisor.permission_codes) == expected_task_permissions | {
-        "injection_scheduling:master_write"
-    }
+    assert set(molding_supervisor.permission_codes) == expected_task_permissions
     assert molding_manager.permission_codes == molding_supervisor.permission_codes
 
     production_supervisor = positions.get_system_position(
@@ -291,7 +286,7 @@ def test_fixed_system_position_definition_contract():
         for definition in positions.SYSTEM_POSITION_DEFINITIONS
         for permission in definition.permission_codes
         if permission.startswith("injection_scheduling:")
-    } == set(permission_codes.INJECTION_SCHEDULING_PERMISSION_CODES)
+    } == set()
     assert all(
         "molding_sample:raw_material_write"
         in positions.get_system_position(role_id).permission_codes
@@ -915,7 +910,7 @@ def test_reconcile_upgrades_legacy_production_task_position_matrix_without_losin
             )
 
 
-def test_reconcile_refuses_a_catalog_that_applied_retirement(monkeypatch):
+def test_reconcile_preserves_nonretired_grants_after_catalog_upgrade(monkeypatch):
     with make_client(monkeypatch):
         database = importlib.import_module("app.db")
         models = importlib.import_module("app.models.auth")
@@ -923,14 +918,15 @@ def test_reconcile_refuses_a_catalog_that_applied_retirement(monkeypatch):
         with database.SessionLocal() as db:
             catalog = db.get(models.AuthIamState, reconcile.SYSTEM_POSITION_CATALOG_STATE_KEY)
             payload = json.loads(catalog.value_json)
-            payload["definition_version"] = "fixed-v34"
+            payload["definition_version"] = "fixed-v33"
             catalog.value_json = json.dumps(payload)
             db.commit()
             before = list(db.scalars(select(models.AuthRolePermission.id).order_by(models.AuthRolePermission.id)))
-            with pytest.raises(RuntimeError, match="already applied the injection retirement"):
-                reconcile.reconcile_system_position_catalog(db)
+            reconcile.reconcile_system_position_catalog(db)
+            result = reconcile.reconcile_system_position_catalog(db)
+            assert not result.changed_role_ids and not result.changed_user_ids
             assert list(db.scalars(select(models.AuthRolePermission.id).order_by(models.AuthRolePermission.id))) == before
-            assert json.loads(catalog.value_json) == payload
+            assert json.loads(catalog.value_json)["definition_version"] == "fixed-v34"
 
 
 def test_reconcile_metadata_repair_advances_the_virtual_version(monkeypatch):

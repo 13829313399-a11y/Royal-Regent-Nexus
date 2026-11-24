@@ -8,7 +8,6 @@ import {
 import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { canChangeFactory } from '@/lib/factoryChangeGuard'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
-import { guardInjectionNavigation } from '@/features/injection-scheduling/navigationGuard'
 import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGuard'
 import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
 import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
@@ -145,15 +144,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/modules/production/injection-scheduling',
     name: 'injection-scheduling',
-    component: () => import('@/views/InjectionSchedulingView.vue'),
-    meta: {
-      title: '注塑排产中枢',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['injection_scheduling:read'],
-      enforcePermissions: true,
-      strictPermissions: true,
-    },
+    component: () => import('@/views/InjectionSchedulingPlaceholderView.vue'),
+    meta: { title: '注塑排产中枢', requiresAuth: true },
   },
   {
     path: '/modules/production/customer-order-inbox',
@@ -338,16 +330,13 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/modules/sales-business/indonesia-material-shipment',
-    name: 'indonesia-material-shipment',
-    component: () => import('@/views/IndonesiaMaterialsView.vue'),
-    meta: {
-      title: '送印尼物料',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['indonesia_material:read'],
-      permissionDepartments: ['sales-business', 'pmc-warehouse'],
-      enforcePermissions: true,
-    },
+    redirect: ({ query }) => ({
+      path: '/modules/sales-business',
+      query: typeof query.factory === 'string' && isFactoryContextId(query.factory)
+        ? { factory: query.factory }
+        : {},
+      hash: '',
+    }),
   },
   {
     path: '/modules/pmc-warehouse/carton-mark-check',
@@ -767,7 +756,6 @@ router.beforeEach(async (to, from) => {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }
   if (!await guardSprayNavigation(to, from)) return false
-  if (!guardInjectionNavigation(to, from)) return false
   if (!guardThreeDNavigation(to, from)) return false
   if (!guardCartonNavigation(to, from)) return false
   if (!await guardQuoteNavigation(to, from)) return false
@@ -777,11 +765,6 @@ router.beforeEach(async (to, from) => {
     return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
   }
   if (navigationVersion !== latestNavigationVersion) return false
-  // A same-route query change does not run component leave guards. Ask before
-  // the global guard updates the factory store and destroys scoped drafts.
-  if (from.name === 'indonesia-material-shipment' && to.name === from.name
-      && typeof to.query.factory === 'string' && isFactoryContextId(to.query.factory) && to.query.factory !== useAppStore().activeFactoryId
-      && !canChangeFactory()) return false
   // QC's same-origin frame owns drafts. Check before the global factory context
   // changes, including query-only navigation and leaving the full-page host.
   if (from.meta.qcFactoryWorkspace && to.fullPath !== from.fullPath

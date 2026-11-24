@@ -11,15 +11,18 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import get_db
+from app.models.auth import AuthUser
 from app.services.auth import AuthContext, can, get_current_user
 from app.api.qc_inspection import _ensure_permission
 from app.services import qc_workflow, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
 from starlette.concurrency import run_in_threadpool
 from app.services import qc_weekly_excel, qc_monthly_templates, qc_monthly_excel
+from app.services.qc_approved_statistics import factory_label
 from urllib.parse import quote
 
 router = APIRouter(prefix="/api/qc-department", tags=["qc-department"])
@@ -29,9 +32,18 @@ COMPANIES = {
     "huakang-c": "hy-huakang-c", "huakang-d": "hy-huakang-d",
     "huadeng": "hy-huadeng", "huaxing": "hy-huaxing",
 }
+EMPTY_ART_FILES = {
+    "empty-art/clerk-reports-middle.webp",
+    *(f"empty-art/clerk-{scene}-{pose}.webp"
+      for scene in ("schedule", "inspection", "review", "summary", "reports")
+      for pose in ("rest", "action")),
+}
 STATIC_FILES = {
-    "qc-mobile-entry.js", "qc-mobile-entry.css",
-    "qc-report-workbook.js", "qc-report-workbook.css",
+    *EMPTY_ART_FILES,
+    "qc-select.js", "qc-select.css",
+    "qc-empty-state.js", "qc-empty-state.css", "qc-empty-motion.js",
+    "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
+    "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",
@@ -65,12 +77,16 @@ def schedule_source(factory_id: str) -> dict:
     }
 
 
-def schedule_example(factory_id: str) -> dict:
+def schedule_example(factory_id: str, *, missing_ok: bool = False) -> dict:
     # User-authorized preview only. Never read/write inspection or Sales databases.
     if factory_id != "huaxing":
         raise HTTPException(404, "当前厂区没有客排期示例")
     try:
         payload = json.loads((ASSETS / "fixtures" / "qc-schedule-example.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if missing_ok:
+            return {"factory_id": factory_id, "example": True, "items": []}
+        raise HTTPException(503, "示例数据暂不可用") from None
     except (OSError, ValueError):
         raise HTTPException(503, "示例数据暂不可用") from None
     if payload.get("factory_id") != factory_id or payload.get("example") is not True:
@@ -120,7 +136,7 @@ def ui_context(user: AuthContext, factory_id: str) -> dict:
         perms[key].update(e=int(manage), a=int(manage), m=int(manage))
     perms["review"]["a"] = int(allowed("review"))
     perms["import"] = dict(v=int(write and manage), e=0, a=0, m=int(write and manage))
-    return {"factory": factory_id, "company": COMPANIES[factory_id], "exportAllowed": export, "summaryImportAllowed": allowed("result_write") and manage and export,
+    return {"factory": factory_id, "company": COMPANIES[factory_id], "factoryLabel": factory_label(factory_id), "exportAllowed": export, "summaryImportAllowed": allowed("result_write") and manage and export,
             "weeklyTemplatesEditAllowed": allowed("result_write"),
             "workflow": {"create": allowed("schedule_write") and allowed("order_write"), "edit": allowed("result_write"),
                          "review": allowed("review"), "export": export, "manual": write},
@@ -171,6 +187,17 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         identity = asset_path.removeprefix('api/inspection-dossier/records/')
         result = await run_in_threadpool(dossier_detail, factory_id, identity,
             full_business=can(user, 'customer_order:read', factory_id, 'sales-business'))
+        reports = result['reportSupplements']
+        rows = reports['items'] + reports['changes']
+        actor_ids = sorted({row['actor']['id'] for row in rows if row['actor']['id']})
+        names = {}
+        for i in range(0, len(actor_ids), 200):
+            for actor_id, name in db.execute(select(AuthUser.id, AuthUser.display_name).where(
+                AuthUser.id.in_(actor_ids[i:i+200]))):
+                names[actor_id] = name
+        for row in rows:
+            if name := names.get(row['actor']['id']):
+                row['actor']['name'] = name
         return JSONResponse(result, headers=NO_CACHE)
     if asset_path == "api/schedule-source" and request.method == "GET":
         from app.services import qc_schedule_view
@@ -181,17 +208,38 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return JSONResponse(qc_schedule_view.listing(db, factory_id,
             date_from=request.query_params.get('dateFrom', ''),
             date_to=request.query_params.get('dateTo', '')), headers=NO_CACHE)
-    if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
-        from app.services.qc_report_workbook import preview
+    if asset_path in {'api/report-workbook', 'api/report-workbook/save'}:
+        from app.services import qc_report_workbook
         params = request.query_params
         expected = {'kind', 'day', 'customer'}
         if params.get('kind') == 'annual-stats':
             expected.add('result')
         if set(params) != expected or any(len(params.getlist(k)) != 1 for k in params):
             raise HTTPException(422, '工作簿预览参数不正确')
-        result = await run_in_threadpool(preview, factory_id, params['kind'], params['day'], params['customer'],
-                                         can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
-        return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
+        scope = (factory_id, params['kind'], params['day'], params['customer'])
+        if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
+            result = await run_in_threadpool(qc_report_workbook.preview, *scope,
+                can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
+            return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
+        if asset_path != 'api/report-workbook/save' or request.method != 'POST':
+            raise HTTPException(405, '不支持此操作')
+        _ensure_permission(db, user, 'qc_inspection:result_write', factory_id)
+        if request.headers.get('sec-fetch-site') == 'cross-site':
+            raise HTTPException(403, '不接受跨站写入')
+        if request.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
+            raise HTTPException(415, '请使用 JSON 提交')
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 32 * 1024:
+                raise HTTPException(413, '提交内容过大')
+        try:
+            body = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise HTTPException(400, '无效 JSON') from None
+        result = await run_in_threadpool(qc_report_workbook.save_record, scope[0], {'id': user.id}, *scope[1:],
+                                         params.get('result', 'FAIL'), body)
+        return JSONResponse(result, headers=NO_CACHE)
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
         keys = {"date", "revision"} if exporting else {"date"}
@@ -222,8 +270,6 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     if asset_path == "api/approved-statistics/report/excel":
         if request.method != "GET":
             raise HTTPException(405, "年报只支持下载")
-        if factory_id != "huaxing":
-            raise HTTPException(404, "该厂区未配置此模板")
         _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
         args = dict(request.query_params)
         if (set(args) != {"year", "customer", "result", "revision"} or not args["year"]
@@ -235,7 +281,7 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             raise HTTPException(409, "年报数据已变化或为空，请刷新后导出")
         from app.services.qc_annual_excel import workbook
         content = await run_in_threadpool(workbook, report)
-        name = quote(f"华兴{args['year']}年验货统计表.xlsx", safe="")
+        name = quote(f"{factory_label(factory_id)}{report['filters']['year']}年验货统计表.xlsx", safe="")
         return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
             "Content-Disposition": "attachment; filename=QC-annual.xlsx; filename*=UTF-8''" + name})
     stats_handlers = {
@@ -267,7 +313,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         if (request.method not in {"GET", "HEAD"} or not target.is_relative_to(ASSETS.resolve())
                 or (asset_path not in STATIC_FILES and not vendor) or not target.is_file()):
             raise HTTPException(404, "资源不存在")
-        return FileResponse(target, headers={**NO_CACHE, "X-Frame-Options": "SAMEORIGIN"})
+        headers = {**NO_CACHE, "X-Frame-Options": "SAMEORIGIN"}
+        if asset_path in EMPTY_ART_FILES:
+            headers["Cache-Control"] = "private, max-age=86400"
+        return FileResponse(target, headers=headers)
     if request.method == "POST":
         permission = WRITE_PERMISSIONS.get(asset_path)
         if not permission:
@@ -479,7 +528,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     async def current_entries(copy_photos=True, view="workbench"):
         response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id])],b'')
         if response.status_code!=200:raise HTTPException(503,'验货基础数据读取失败，请重试')
-        data=response.json();examples=schedule_example(factory_id)['items'] if factory_id=='huaxing' else []
+        data=response.json()
+        examples=schedule_example(factory_id, missing_ok=True)['items'] if factory_id=='huaxing' else []
         source_rows=qc_workflow.sources(db,factory_id)['items']
         tasks=qc_workflow.list_tasks(db,factory_id)['items']
         rows=service.candidates(factory_id,data.get('records',[]),tasks,
@@ -522,6 +572,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
             return Response(content if request.method=='GET' else b'',media_type=mime,headers=headers)
         raise HTTPException(404,'接口不存在')
     if request.method != 'POST':raise HTTPException(405,'不支持此方法')
+    if path in {'intake/preview', 'intake/import', 'intake/manual'}:
+        return await inspection_intake_request(path, request, db, user, factory_id, actor)
     exporting = path in {'print-preview', 'schedule-excel'}
     _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
     if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'不接受跨站写入')
@@ -548,6 +600,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
+    elif (len(parts)==3 and parts[0]=='entries' or len(parts)==4 and parts[:2]==['review','entries']) and parts[-1]=='photo-annotations':
+        result=await run_in_threadpool(service.save_photo_annotations,factory_id,parts[-2],body,actor,review=len(parts)==4)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:
         method={'save':service.save,'photos':service.add_photo,'remove-photo':service.remove_photo}[parts[3]]
         result=await run_in_threadpool(method,factory_id,parts[2],body,actor,review=True)
@@ -562,6 +616,37 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
             result=method(factory_id,parts[1],body,actor)
     else:raise HTTPException(404,'接口不存在')
     return JSONResponse(result,headers=NO_CACHE)
+
+
+async def inspection_intake_request(path, request, db, user, factory_id, actor):
+    from app.services import qc_inspection_intake as intake
+
+    for permission in ('order_write', 'result_write'):
+        _ensure_permission(db, user, 'qc_inspection:' + permission, factory_id)
+    if request.headers.get('sec-fetch-site') == 'cross-site':
+        raise HTTPException(403, '不接受跨站写入')
+    manual = path == 'intake/manual'
+    expected_type = 'application/json' if manual else 'application/octet-stream'
+    if request.headers.get('content-type', '').split(';')[0].strip().lower() != expected_type:
+        raise HTTPException(415, '请使用验货台新增窗口上传')
+    limit = 128 * 1024 if manual else intake.MAX_BYTES
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > limit:
+            raise HTTPException(413, '提交内容过大')
+    if manual:
+        try:
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                raise ValueError()
+        except (ValueError, UnicodeError):
+            raise HTTPException(400, '无效 JSON') from None
+        result = await run_in_threadpool(intake.manual, factory_id, actor, body)
+    else:
+        digest = request.headers.get('x-qc-preview-digest', '') if path == 'intake/import' else None
+        result = await run_in_threadpool(intake.workbook, factory_id, actor, bytes(raw), digest)
+    return JSONResponse(result, headers=NO_CACHE)
 
 
 async def workflow_request(path, request, db, user, factory_id):

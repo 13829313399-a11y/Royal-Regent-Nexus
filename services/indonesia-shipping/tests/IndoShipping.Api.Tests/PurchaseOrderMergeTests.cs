@@ -15,6 +15,19 @@ namespace IndoShipping.Api.Tests;
 
 public sealed class PurchaseOrderMergeTests
 {
+    [Fact]
+    public async Task Supplier_reply_edits_require_the_current_line_and_previous_date()
+    {
+        await using var f = await Fixture.Create(); if (f is null) return;
+        var day = new DateTime(2026, 11, 25);
+        var body = new PurchaseOrdersController.SupplierReplyBody(1, 11, "TOMY1", "Supplier", null, day);
+        Assert.IsType<OkObjectResult>(await f.Controller.SetSupplierReply(1, body));
+        Assert.IsType<ConflictObjectResult>(await f.Controller.SetSupplierReply(1, body with { reply_date = day.AddDays(1) }));
+        Assert.Equal(day, await f.Db.ExecuteScalarAsync<DateTime>("SELECT supplier_reply_date FROM po_items WHERE id=1"));
+        Assert.IsType<OkObjectResult>(await f.Controller.SetSupplierReply(1, body with { expected_date = day, reply_date = null }));
+        Assert.Null(await f.Db.ExecuteScalarAsync<DateTime?>("SELECT supplier_reply_date FROM po_items WHERE id=1"));
+    }
+
     [Theory]
     [InlineData("IRRMHS001", "HD_GLOBAL")]
     [InlineData("IRRIHS001", "HD_INDUSTRY")]

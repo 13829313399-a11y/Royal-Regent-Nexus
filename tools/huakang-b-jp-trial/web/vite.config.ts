@@ -21,6 +21,7 @@ const reused = [
   'src/components/ui/button/Button.vue',
   'src/components/ui/button/index.ts',
   'src/lib/utils.ts',
+  'src/lib/spreadsheetClipboard.ts',
   'src/style.css',
 ]
 
@@ -47,5 +48,5 @@ export default defineConfig({
     },
   }],
   resolve: { alias: aliases },
-  build: { outDir: path.resolve(webRoot, '../build/web'), emptyOutDir: true, sourcemap: false },
+  build: { outDir: path.resolve(webRoot, '../build/web'), emptyOutDir: true, sourcemap: false, target: 'chrome108', cssTarget: 'chrome108', cssMinify: 'lightningcss' },
 })

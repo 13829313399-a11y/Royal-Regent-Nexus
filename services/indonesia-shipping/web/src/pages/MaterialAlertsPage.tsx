@@ -10,6 +10,7 @@ import {
 import dayjs from 'dayjs'
 import { api } from '../api/client'
 import { getStoredSession, hasBits } from '../auth/permissions'
+import { refreshMaterialAlerts } from '../utils/materialAlertRefresh'
 
 interface TrackingAdjustment {
   required_delta?: number | null
@@ -38,6 +39,7 @@ interface TrackingOrder {
   received_qty: number; outbound_qty: number; status: string
   source_required_qty: number; source_ordered_qty: number; source_received_qty: number
   source_outbound_qty: number; source_manual_qty: number
+  estimated_date?: string; supplier_reply_date?: string; reply_delay_days?: number
   adjustment_version: number; adjustment?: TrackingAdjustment | null
 }
 
@@ -74,6 +76,7 @@ interface AlertItem {
   manual_completed?: boolean
   workflow_status: string
   days_remaining?: number
+  risk_label?: string
   tracking_type: 'purchase' | 'plastic' | 'vinyl'
   detail?: string
   capacity_per_day?: number
@@ -221,6 +224,7 @@ export default function MaterialAlertsPage() {
       setOrderDetailItem(current => current ? alertsResp.data.items.find(item => item.key === current.key) || null : null)
       setProfiles(Array.isArray(profilesResp.data) ? profilesResp.data : [])
       setRevisions(Array.isArray(historyResp.data) ? historyResp.data : [])
+      refreshMaterialAlerts()
     } finally { if (sequence === loadSequence.current) setLoading(false) }
   }
 
@@ -451,7 +455,7 @@ export default function MaterialAlertsPage() {
   const columns: any[] = [
     {
       title: '风险', dataIndex: 'status', width: 112, fixed: 'left',
-      render: (v: AlertItem['status']) => <Tag color={statusMeta[v].color}>{statusMeta[v].text}</Tag>,
+      render: (v: AlertItem['status'], row: AlertItem) => <Tag color={statusMeta[v].color}>{row.risk_label || statusMeta[v].text}</Tag>,
     },
     {
       title: '货号 / 物料', width: 260, fixed: 'left',
@@ -521,12 +525,12 @@ export default function MaterialAlertsPage() {
         : v ? <b>{v} 天</b> : <Tag>待设置</Tag>,
     },
     {
-      title: '最早应交日', dataIndex: 'due_date', width: 120,
+      title: '最早预计应交日', dataIndex: 'due_date', width: 120,
       render: (v: string | undefined, r: AlertItem) => v ? (
         <Space direction="vertical" size={0}>
           <Typography.Text strong={r.status === 'critical'} type={r.status === 'critical' ? 'danger' : undefined}>{v}</Typography.Text>
           <Typography.Text type={r.days_remaining != null && r.days_remaining < 0 ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
-            {r.days_remaining == null ? '' : r.days_remaining < 0 ? `已逾期 ${Math.abs(r.days_remaining)} 天` : `剩余 ${r.days_remaining} 天`}
+            {r.days_remaining == null ? '' : r.days_remaining < 0 ? `超出预计 ${Math.abs(r.days_remaining)} 天` : `剩余 ${r.days_remaining} 天`}
           </Typography.Text>
         </Space>
       ) : '-',
@@ -623,7 +627,7 @@ export default function MaterialAlertsPage() {
                   ]}
                 />
                 <Tag color="blue">{revisionId ? '历史排期' : '最新排期'}：{data.schedule_label || '暂无'}</Tag>
-                <Typography.Text type="secondary">预警日期仅统计未交完订单：最早接单日 + 货号物料交货周期</Typography.Text>
+                <Typography.Text type="secondary">预计应交日按接单日和物料周期计算；供应商复期按采购明细跟进，每项物料只计一次提醒。</Typography.Text>
                 <Tag color="green">完成 = 入出库达标或手动确认送完</Tag>
                 <Tag color="purple">日产能生产天数不计周日</Tag>
             </Space>
@@ -716,7 +720,12 @@ export default function MaterialAlertsPage() {
               <span>{row.customer} · {row.product_code}</span>
               <Typography.Text type="secondary">来源排期：{row.schedule_label}</Typography.Text>
             </Space> },
-            { title: '接单日期', dataIndex: 'accepted_date', width: 150 },
+            { title: '接单 / 交货安排', width: 190, render: (_v, row) => <Space direction="vertical" size={0}>
+              <span>接单 {row.accepted_date}</span>
+              {row.estimated_date && <span>预计 {row.estimated_date}</span>}
+              {row.supplier_reply_date && <span>供应商复期 {row.supplier_reply_date}
+                {row.reply_delay_days != null && row.reply_delay_days > 0 && `（晚 ${row.reply_delay_days} 天）`}</span>}
+            </Space> },
             { title: '需求数量', dataIndex: 'required_qty', width: 130, align: 'right', render: v => numberFmt.format(v) },
             { title: '分配入库', dataIndex: 'received_qty', width: 130, align: 'right', render: v => numberFmt.format(v) },
             { title: '分配出库', dataIndex: 'outbound_qty', width: 130, align: 'right', render: v => numberFmt.format(v) },

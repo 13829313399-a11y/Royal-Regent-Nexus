@@ -81,7 +81,7 @@ from app.services.permission_scope_policy import (
     role_scope_policy,
     scope_is_applicable,
 )
-from app.services.permission_codes import CARTON_SUPPLIER_PERMISSION_CODES, CARTON_SUPPLIER_MATERIAL_PERMISSIONS, INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES
+from app.services.permission_codes import CARTON_SUPPLIER_PERMISSION_CODES, CARTON_SUPPLIER_MATERIAL_PERMISSIONS, RETIRED_PERMISSION_CODES
 from app.services.system_positions import (
     SPECIAL_SYSTEM_ROLE_CODES,
     SYSTEM_POSITION_DEFINITIONS,
@@ -124,7 +124,6 @@ MODULE_NAMES = {
     "cutting_ops": "裁床基础资料（华康 C）",
     "module_feedback": "模块反馈（开发处理）",
     "uv_ops": "UV 打印管理（华康 A）",
-    "injection_scheduling": "注塑排产中枢",
     "molding_sample": "啤办管理",
     "carton_mark": "箱唛管理",
     "customer_price": "客户报价",
@@ -1225,7 +1224,7 @@ def _permission_out(permission: AuthPermission, metadata: AuthPermissionMetadata
             if metadata and metadata.scope_type == "factory_department"
             else (metadata.scope_type if metadata else "department")
         ),
-        status="inactive" if permission.code in INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES else metadata.status if metadata else "active",
+        status="inactive" if permission.code in RETIRED_PERMISSION_CODES else metadata.status if metadata else "active",
         sort_order=metadata.sort_order if metadata else 0,
         applicable_departments=list(scope_policy.departments),
         requires_global_factory=scope_policy.requires_global_factory,
@@ -2472,7 +2471,7 @@ def _permissions_by_code(db: Session, codes: list[str]) -> dict[str, AuthPermiss
 
 
 def _permission_status(db: Session, permission: AuthPermission) -> str:
-    if permission.code in INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES:
+    if permission.code in RETIRED_PERMISSION_CODES:
         return "inactive"
     metadata = db.get(AuthPermissionMetadata, permission.id)
     return metadata.status if metadata else "active"

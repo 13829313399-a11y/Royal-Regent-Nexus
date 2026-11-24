@@ -19,7 +19,7 @@ const purchases = ref<Awaited<ReturnType<typeof fabricProcurementApi.lines>>>()
 const deliveries = ref<PendingDeliveries>()
 const pendingRequests = ref<WarehouseDocument[]>()
 const purchaseError = ref(''), deliveryError = ref(''), requestError = ref(''), loading = ref(false), updatedAt = ref('')
-let generation = 0
+let generation = 0, backgroundRead = false
 const base = `${WAREHOUSE_HOME}/fabric-warehouse`
 const warehouseLink = (section: string, view: string, extra: Record<string, string> = {}) => ({ path: `${base}/${section}`, query: { factory: WAREHOUSE_FACTORY, view, ...extra } })
 const chaseLink = (tracking = 'OUTSTANDING', orderNo = '') => warehouseLink('receipts', 'pending', { tracking, ...(orderNo ? { order_no: orderNo } : {}) })
@@ -63,12 +63,12 @@ function chaseReason(line: PurchaseLine) {
   if (line.tracking?.awaiting_date) return '待确认复期'
   return line.promise_date ? `复期 ${line.promise_date}` : '待跟进'
 }
-async function load(reset = false) {
+async function load(reset = false, background = false) {
   const ticket = ++generation
   if (reset) { purchases.value = undefined; deliveries.value = undefined; pendingRequests.value = undefined; updatedAt.value = '' }
-  purchaseError.value = ''; deliveryError.value = ''; requestError.value = ''
+  if (!background) { purchaseError.value = ''; deliveryError.value = ''; requestError.value = '' }
   if (route.query.factory !== WAREHOUSE_FACTORY) { loading.value = false; return }
-  loading.value = true
+  if (!background) loading.value = true
   const results = await Promise.allSettled([
     fabricProcurementApi.lines('PENDING', '', 0, 'OUTSTANDING', { sort: 'OVERDUE' }),
     handoverApi().pendingDeliveries(0, 3),
@@ -76,18 +76,23 @@ async function load(reset = false) {
   ])
   if (ticket !== generation) return
   const [purchaseResult, deliveryResult, requestResult] = results
-  if (purchaseResult.status === 'fulfilled') purchases.value = purchaseResult.value
+  if (purchaseResult.status === 'fulfilled') { purchases.value = purchaseResult.value; purchaseError.value = '' }
   else { purchases.value = undefined; purchaseError.value = getApiErrorMessage(purchaseResult.reason) }
-  if (deliveryResult.status === 'fulfilled') deliveries.value = deliveryResult.value
+  if (deliveryResult.status === 'fulfilled') { deliveries.value = deliveryResult.value; deliveryError.value = '' }
   else { deliveries.value = undefined; deliveryError.value = getApiErrorMessage(deliveryResult.reason) }
   if (requestResult.status === 'fulfilled') {
+    requestError.value = ''
     pendingRequests.value = requestResult.value.documents.filter(hasUnissuedRemainder)
       .sort((a, b) => b.business_date.localeCompare(a.business_date) || b.sequence - a.sequence)
   } else { pendingRequests.value = undefined; requestError.value = getApiErrorMessage(requestResult.reason) }
   updatedAt.value = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit' }).format(new Date())
   loading.value = false
 }
-function refreshWhenVisible() { if (!loading.value && document.visibilityState === 'visible') void load() }
+function refreshWhenVisible() {
+  if (loading.value || backgroundRead || document.visibilityState !== 'visible') return
+  backgroundRead = true
+  void load(false, true).finally(() => { backgroundRead = false })
+}
 watch(() => [route.query.factory, auth.currentUser?.id, auth.authorizationVersion], () => load(true), { immediate: true })
 const timer = setInterval(refreshWhenVisible, 60_000)
 window.addEventListener('focus', refreshWhenVisible)

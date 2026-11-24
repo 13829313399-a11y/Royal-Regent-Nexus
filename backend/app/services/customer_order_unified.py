@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.customer_order_ai import reviewed as ai_reviewed
+
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import date
@@ -1283,6 +1285,7 @@ def _green_summary_recovery(workbook, rows, history):
         return {}
 
 
+@ai_reviewed
 def create_unified_customer_preview(
     *,
     customer_code: str,
@@ -1293,6 +1296,14 @@ def create_unified_customer_preview(
     schedule_content: bytes,
 ) -> dict[str, Any]:
     _validate_po_batch(po_files)
+    if customer_code == 'zuru':
+        from . import customer_order_zuru_native as native
+        try:
+            if native.uses_original(schedule_file_name, schedule_content):
+                return native.preview(factory_id=factory_id, received_date=received_date, po_files=po_files,
+                    schedule_file_name=schedule_file_name, schedule_content=schedule_content)
+        except Exception as exc:
+            raise CustomerOrderUnifiedError(str(exc)) from exc
     ensure_unified_schedule(schedule_file_name, schedule_content, factory_id=factory_id, customer_code=customer_code)
     if not _factory_allowed(customer_code, factory_id):
         raise CustomerOrderUnifiedError(
@@ -1767,6 +1778,16 @@ def export_unified_customer_schedule(
     manual_overrides: list[dict[str, str]] | None = None,
     reconciliation_target: dict[str, str] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
+    if customer_code == 'zuru':
+        from . import customer_order_zuru_native as native
+        try:
+            _validate_po_batch(po_files)
+            if native.uses_original(schedule_file_name, schedule_content):
+                return native.export(factory_id=factory_id, received_date=received_date, po_files=po_files,
+                    schedule_file_name=schedule_file_name, schedule_content=schedule_content,
+                    manual_overrides=manual_overrides, skipped_issue_keys=skipped_issue_keys)
+        except Exception as exc:
+            raise CustomerOrderUnifiedError(str(exc)) from exc
     preview = create_unified_customer_preview(
         customer_code=customer_code,
         factory_id=factory_id,

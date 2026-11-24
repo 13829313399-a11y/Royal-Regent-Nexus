@@ -24,7 +24,7 @@
 | 首包前停止调用快照恢复会替换正在使用的增量缓冲 | lookup 只找 run ID，保留本地消息；并修复切回活动会话时重复显示 | `identityLifecycle.spec.ts` |
 | 手机收起面板会连同引导隐藏；背景 inert 时无法列出目标 | 面板显示与引导显示分开，列语义 ID，定位时重新验证可见性；失败停止引导 | `mobile-guide.png`、browser acceptance、anchor tests |
 | 窄屏按下入口时通用按钮 transform 覆盖其定位 | 入口排除按下位移 | 七尺寸截图和真实 click 回归 |
-| fullPage 注塑用 URL 厂区，助手却取全局厂区 | 跟随页面厂区契约；3D/UV 固定华康 A | factory context unit case、`surface-injection.png` |
+| 业务页面和助手的厂区来源不一致 | 跟随页面厂区契约；3D/UV 固定华康 A | factory context unit case |
 | 历史按随机 ID 排序 | 按最近更新时间及 ID 做游标分页 | 新会话/改名/分页 API与浏览器验收 |
 | 私有 JSON 接口没有统一禁缓存标记 | 所有 `/api/assistant/` 响应 private,no-store | API headers 专项 |
 | 空预算/保留期缺乏明确定义，附件缺少生产持久卷 | 空值 None；共享预算计数跨删除保留；有界清理；API 独立 assistant-assets 卷 | budget/retention 专项、Compose静态结构验证 |

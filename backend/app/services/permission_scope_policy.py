@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-from app.services.permission_codes import INJECTION_SCHEDULING_PERMISSION_CODES
 from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS
 
 
@@ -300,7 +299,7 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
     if permission_code.startswith('indonesia_material:'):
         action = permission_code.partition(':')[2]
         departments = ('sales-business', 'pmc-warehouse') if action in {'read', 'receipt_confirm'} else ('sales-business',)
-        return ScopePolicy(departments, guidance='送印尼物料按河源厂区授权；业务维护与确认出货，船务数量确认需单独授权，不自动授予跨厂操作')
+        return ScopePolicy(departments, guidance='送印尼物料已下线，原授权仅供历史审计')
     if permission_code.startswith("cutting_ops:"):
         action = permission_code.partition(":")[2]
         departments = ("engineering",) if action in {"bom_write", "bom_publish", "requisition_submit"} else ("production",)
@@ -323,14 +322,6 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
         return ScopePolicy(("system",), guidance="开发反馈专用权限，仅按明确授权的厂区和系统部门生效；普通业务职位不继承")
     if permission_code.startswith("uv_ops:"):
         return ScopePolicy(("production",), guidance="仅华康 A 生产部；新 UV 权限需单独授权，不沿用退役模块权限")
-    if permission_code in INJECTION_SCHEDULING_PERMISSION_CODES:
-        return ScopePolicy(
-            (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-            guidance=(
-                "在生产/啤机或管理范围生效；业务限定华兴、华登、华康A/B。"
-                "共享模具维护影响四厂资料，不扩大其他厂订单或设备的操作范围。"
-            ),
-        )
     return MOLDING_PERMISSION_SCOPE_POLICIES.get(
         permission_code,
         QC_INSPECTION_PERMISSION_SCOPE_POLICIES.get(

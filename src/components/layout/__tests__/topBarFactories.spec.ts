@@ -46,14 +46,13 @@ describe('TopBar factory switcher', () => {
     expect(productionFactoryContextIds).toContain('huakang-d')
   })
 
-  it('offers a compact factory selector inside the Indonesia material workspace', async () => {
+  it('offers a compact factory selector on the Sales module portal', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
-    routeState.path = '/modules/sales-business/indonesia-material-shipment'
-    routeState.name = 'indonesia-material-shipment'
+    routeState.path = '/modules/sales-business'
     const store = useAppStore()
     store.setActiveFactory('group')
-    const wrapper = shallowMount(TopBar, { global: { plugins: [pinia] } })
+    const wrapper = shallowMount(TopBar, { props: { homeScope: 'department' }, global: { plugins: [pinia] } })
     try {
       const select = wrapper.get('select[aria-label="当前厂区"]')
       expect(select.findAll('option')).toHaveLength(factoryContexts.length)

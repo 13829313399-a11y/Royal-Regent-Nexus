@@ -27,7 +27,7 @@
       {
         "path": "src/views/CartonSupplierView.vue",
         "symbol": "shipmentStatus",
-        "sha256": "fb1caad070688c99985626c6cc7a5e3013541df6bbd8963a022d012bff89d44b"
+        "sha256": "1c54bdcf2238e71afa8ad8727258fb3414688b01e7eb8168612d0a5cb785b418"
       },
       {
         "path": "src/components/CartonSupplierMarkPdf.vue",
@@ -97,7 +97,7 @@
       {
         "path": "src/components/CartonSupplierChangeTasks.vue",
         "symbol": "async function respond(",
-        "sha256": "766f7cae0e8e669c868c076323fd53437265346548fd3b15afe10c6720996c01"
+        "sha256": "340929b9b1606370a392f823c3847e978e0fd63f6672717abfcb4b45f7cfce92"
       },
       {
         "path": "backend/app/services/carton_replenishment_supplier.py",

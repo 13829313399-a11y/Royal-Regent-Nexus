@@ -231,7 +231,7 @@ def readme(factory: str, release: str, green_toys_only: bool = False):
 - 备份请先退出程序，再复制整个解压文件夹。更新时将同厂区旧包的 data 复制到新包后再启动；不要混用不同厂区的数据。
 - 演示资料仅用于测试。开始真实资料试用时请保留一份未使用的新解压包。
 - 上传的是原件副本，下载会生成新 Excel，不会覆盖原文件。
-- 反馈问题时请注明厂区、客户、按钮、提示原文，并附可授权核对的原件；启动异常可附 data/startup-error.log。
+- 反馈问题时请注明厂区、客户、按钮、提示原文，并附可授权核对的原件；启动异常会自动打开 STARTUP-ERROR.txt，请把报告里的文字反馈；完整日志同时保留在 data。
 
 验证说明
 已验证本地API、业务规则、构建和回归；交付前没有在Windows实机或金山桌面应用中验收。
@@ -263,7 +263,7 @@ def readme(factory: str, release: str, green_toys_only: bool = False):
 本包不代替正式生产系统；本地发送、签收、走货记录需负责人核对流程后再决定正式上线方式。
 '''
     if factory == 'huakang-a' and not green_toys_only:
-        common += '\nZURU已接入与其他客户相同的统一导入流程：选择ZURU，上传PDF/Excel PO及三表统一排期，预览后生成。演示资料内有合成示例及统一模板。原周排期的MA、库存不自动迁入。\n'
+        common += '\nZURU使用原排期专用流程：上传PDF/Excel PO及1至10份原周排期，生成独立18列新单汇总和对应原格式复制页。已有订单单独列出提醒；原周排期、MA和库存不修改。复制时选择数据行（不含表头）并粘贴值。\n'
     return common
 
 
@@ -290,9 +290,9 @@ def package_reference_seed(package: Path, schedule: Path, price: Path):
 def build(cache: Path, output: Path, selected, release_date: str | None = None,
         jp_schedule: Path | None = None, jp_price: Path | None = None, green_toys_only: bool = False, huaxing_customer: str | None = None,
         legacy_windows: bool = False, single_customer: str | None = None):
-    if single_customer and (selected != [SINGLE_CUSTOMERS.get(single_customer, ('', ''))[0]] or green_toys_only or huaxing_customer):
+    if single_customer and ((selected not in [['huakang-a'], ['huaxing']] if single_customer == 'zuru' else selected != [SINGLE_CUSTOMERS.get(single_customer, ('', ''))[0]]) or green_toys_only or huaxing_customer):
         raise ValueError('专客包必须选择对应厂区及唯一客户')
-    if legacy_windows and not (single_customer or huaxing_customer or (green_toys_only and selected == ['huakang-a'])):
+    if legacy_windows and not (single_customer or huaxing_customer or selected == ['huakang-b'] or (green_toys_only and selected == ['huakang-a'])):
         raise ValueError('Windows 7兼容构建需选择已验证的专客模式。')
     if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie'}):
         raise ValueError('华兴专客包需指定华兴及一个支持客户')
@@ -315,11 +315,15 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             zip_name, folder, name, customers = FACTORIES[factory]
             if green_toys_only:
                 zip_name, folder, customers = '01_华康A_GreenToys_订单入排期', 'HuakangA_GreenToys_Trial', 'Green Toys'
-            if legacy_windows:
+            if legacy_windows and green_toys_only:
                 zip_name, folder = '华康A_GreenToys_Win7_Win10_32及64位', 'GT_Trial'
+            if legacy_windows and factory == 'huakang-b':
+                zip_name, folder = '华康B_JP问单_Win7_Win10_32及64位', 'HuakangB_JP_Trial'
             if single_customer:
                 customers = SINGLE_CUSTOMERS[single_customer][1]
                 folder = f'{customers}_Trial'
+                if single_customer == 'zuru':
+                    folder = ('HuakangA' if factory == 'huakang-a' else 'Huaxing') + '_ZURU_Trial'
                 zip_name = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
                 customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
@@ -331,9 +335,6 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             package = staging / folder
             package.mkdir()
             subprocess.run([sys.executable, '-B', str(source / 'prepare_backend.py'), str(package / 'backend')], check=True)
-            if legacy_windows:
-                from legacy_python import prepare
-                prepare(package / 'backend')
             has_seed = kind == 'jp' and seeded
             if has_seed:
                 stats = package_reference_seed(package, jp_schedule, jp_price)
@@ -346,6 +347,11 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                     'schedule.xlsx为排期，price.xlsx为货价；原始文件名及校验见manifest.json。\n'
                     '本包包含指定的业务参照，请交给相应华康B试用人员。\n'
                     f'校验记录数：排期{stats["schedule"]["rows"]}，货价{stats["price"]["rows"]}。\n', encoding='utf-8-sig')
+            # Validate references with the build host before adding Python 3.8
+            # backports, which are installed only in the Windows runtime.
+            if legacy_windows:
+                from legacy_python import prepare
+                prepare(package / 'backend')
             web = source / 'build' / ('web-single-customer' if single_customer else 'web-huaxing-recent' if huaxing_customer else 'web-green-toys' if green_toys_only else 'web-huadeng' if factory == 'huadeng' else 'web')
             if not (web / 'index.html').is_file():
                 raise RuntimeError(f'Missing built frontend: {web}')
@@ -367,7 +373,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if legacy_windows:
                 instructions = instructions.replace('Windows 10/11 64位电脑。', 'Windows 7 SP1、Windows 10，32位和64位电脑。')
                 instructions = instructions.replace('页面会在默认浏览器打开', '页面会在随包浏览器打开')
-                instructions += '\n本包使用32位运行环境，可在32位和64位Windows运行，无需选择版本。\nWindows 7需已安装SP1及微软通用C运行库更新（KB2999226）。如提示缺少api-ms-win-crt或VCRUNTIME DLL，请运行随包support/VC_redist.x86.exe安装微软官方运行库，再重新启动；即使64位电脑也用本包的x86安装文件。系统缺少SP1时需先由电脑维护人员更新。\n随包浏览器仅打开本机试用页面。程序启动失败时请附STARTUP-ERROR.txt及data/startup-error.log。\n'
+                shutil.copyfile(TOOL / 'windowed_start.py', package / 'windowed_start.py')
+                (package / 'OPEN.vbs').write_bytes((TOOL / 'start-windowed.vbs').read_text(encoding='ascii').replace('\n', '\r\n').encode('ascii'))
+                instructions += '\n备用启动：双击 OPEN.vbs，通过随包 pythonw 打开程序，不使用控制台输出。关闭程序窗口后，本机服务正常退出，数据保留。重复点击会聚焦同一窗口。若电脑禁用脚本，使用 START.cmd。两个入口使用同一个 data，不要重复复制业务数据。\n'
+                instructions += '\n本包使用32位运行环境，可在32位和64位Windows运行，无需选择版本。\nWindows 7需已安装SP1及微软通用C运行库更新（KB2999226）。如提示缺少api-ms-win-crt或VCRUNTIME DLL，请运行随包support/VC_redist.x86.exe安装微软官方运行库，再重新启动；即使64位电脑也用本包的x86安装文件。系统缺少SP1时需先由电脑维护人员更新。\n随包浏览器仅打开本机试用页面。程序启动失败时会自动打开STARTUP-ERROR.txt，报告汇总了完整启动日志，请复制内容反馈。\n'
                 copy_tree(TOOL / 'desktop', package / 'desktop')
                 extract(cache / 'electron-v22.3.27-win32-ia32.zip', package / 'browser')
                 (package / 'support').mkdir()
@@ -383,6 +392,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if single_customer:
                 instructions = instructions.replace(FACTORIES[factory][3], customers)
                 instructions += f'\n本包只开放{name} {customers}，前端直接复用 GitHub 客户订单中心。新包请勿混入其他客户的 data。\n'
+                if single_customer == 'zuru':
+                    instructions = instructions.replace('“生成排期”下载完整排期副本', '“生成排期”下载独立新单汇总')
+                    if 'ZURU使用原排期专用流程' not in instructions:
+                        instructions += '\nZURU使用原排期专用流程：上传PDF/Excel PO及1至10份原周排期，生成独立18列新单汇总和对应原格式复制页。已有订单单独列出提醒；原周排期、MA和库存不修改。复制时选择数据行（不含表头）并粘贴值。\n'
                 if single_customer == 'casdon':
                     instructions += '货号保留原单写法，AW/SS版本不拼接到货号；新单插入各表同货号的有效订单组，原历史不覆盖。旧文件里已有的错误尾码或重复记录不会自动清除，请保留原件核对。\n'
             if factory == 'huadeng':
@@ -460,8 +473,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             filename, _, name, customers = FACTORIES[factory]
             if green_toys_only:
                 filename, customers = '01_华康A_GreenToys_订单入排期', 'Green Toys'
-            if legacy_windows:
+            if legacy_windows and green_toys_only:
                 filename = '华康A_GreenToys_Win7_Win10_32及64位'
+            if legacy_windows and factory == 'huakang-b':
+                filename = '华康B_JP问单_Win7_Win10_32及64位'
             if single_customer:
                 customers = SINGLE_CUSTOMERS[single_customer][1]
                 filename = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')

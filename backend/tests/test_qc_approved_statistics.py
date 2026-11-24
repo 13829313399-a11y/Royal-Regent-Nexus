@@ -236,7 +236,7 @@ def test_real_gateway_statistics_and_self_review_permissions(monkeypatch,tmp_pat
     with make_client(monkeypatch) as client:
         from app.api import qc_department
         install_upstream(monkeypatch)
-        monkeypatch.setattr(qc_department, 'schedule_example', lambda factory: {'items': []})
+        monkeypatch.setattr(qc_department, 'schedule_example', lambda factory, *, missing_ok=False: {'items': []})
         assert client.get('/api/qc-department/huaxing/api/approved-statistics').status_code==401
         login_as(client,'qc_inspector')
         base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']

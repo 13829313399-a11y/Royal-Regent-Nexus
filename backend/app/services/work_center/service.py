@@ -16,6 +16,13 @@ from app.core.time import parse_business_timestamp, BUSINESS_TIME_ZONE
 from app.models.auth import EmployeeProfile
 from app.models.work_center import WorkCenterEntry as Entry, WorkCenterEvent, WorkCenterUserState as State, WorkCenterPreferences
 from app.services.work_center.registry import COVERAGE, current_query, scoped
+from app.models.carton_procurement import CartonSupplier
+from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine, SupplierShipmentUnmatchedLine
+from app.models.molding_sample import MoldingSampleOrder
+from app.models.position_review import PositionReview
+
+MODULE_LABELS = {"molding": "啤办", "internal_quote": "内部报价", "account_requests": "账户申请",
+                 "carton_supplier": "供应商送货", "identity": "任职知会", "position_reviews": "岗位核对"}
 
 
 class Epoch(FunctionElement):
@@ -159,6 +166,10 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
     clock = now()
     rows, viewer_key = authorized_rows(db, user)
     c, f = rows.c, flags(rows, user, clock)
+    not_overdue = or_(c.due_epoch.is_(None), c.due_epoch >= clock.timestamp())
+    f.update(overdue_active_total=and_(f["focus_total"], f["overdue_total"]),
+             assigned_focus_total=and_(f["focus_total"], not_overdue, f["assigned_total"]),
+             team_focus_total=and_(f["focus_total"], not_overdue, f["team_queue_total"]))
     summary_query = select(*(func.coalesce(func.sum(case((condition, 1), else_=0)), 0).label(name) for name, condition in f.items()),
         func.coalesce(func.sum(case((c.verified.is_(False), 1), else_=0)), 0).label("verification_required_total")).select_from(rows)
     summary = dict(db.execute(summary_query).mappings().one())
@@ -175,10 +186,6 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
                   "history": or_(c.lifecycle.in_(("resolved", "cancelled", "superseded")), c.archived_at.is_not(None)),
                   "verification": and_(c.kind == "task", c.verified.is_(False))}
     query = select(rows).where(conditions[view])
-    if factory_scope != "authorized":
-        query = query.where(or_(c.factory == factory_scope, c.execution == factory_scope))
-    if module:
-        query = query.where(c.module == module)
     if q.strip():
         term = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         query = query.where(or_(c.reference.ilike(f"%{term}%", escape="\\"), c.title.ilike(f"%{term}%", escape="\\"), c.summary.ilike(f"%{term}%", escape="\\"),
@@ -189,7 +196,26 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
     if due == "none": query = query.where(c.due_epoch.is_(None))
     if due == "overdue": query = query.where(c.due_epoch < clock.timestamp())
     if due == "today": query = query.where(c.due_epoch >= today, c.due_epoch < today + 86400)
-    total = db.scalar(select(func.count()).select_from(query.subquery()))
+    # Count facets before keyset pagination. Each visible row counts once per
+    # matching factory, including when source and execution are the same.
+    from app.services.molding_sample import FACTORY_LABELS
+    def factory_matches(factory):
+        return or_(c.factory == factory, c.execution == factory)
+
+    factory_filter = factory_matches(factory_scope) if factory_scope != "authorized" else literal(True)
+    module_filter = c.module == module if module else literal(True)
+    factory_counts = {factory: and_(factory_matches(factory), module_filter) for factory in sorted(ALLOWED_FACTORY_IDS)}
+    module_counts = {key: and_(c.module == key, factory_filter) for key in MODULE_LABELS}
+    counts = db.execute(query.with_only_columns(
+        func.count(case((and_(factory_filter, module_filter), 1))).label("total"),
+        *(func.count(case((condition, 1))).label(key) for key, condition in (factory_counts | module_counts).items()),
+        maintain_column_froms=True)).mappings().one()
+    facets = {"factories": [{"id": key, "label": FACTORY_LABELS.get(key, key), "count": counts[key]}
+                            for key in factory_counts if counts[key]],
+              "modules": [{"id": key, "label": MODULE_LABELS[key], "count": counts[key]}
+                          for key in module_counts if counts[key]]}
+    total = counts["total"]
+    query = query.where(factory_filter, module_filter)
     # Stable keyset; neither creation IDs nor browser clocks are event cursors.
     ordering = [case((f["snoozed_total"], 1), else_=0), case((c.due_epoch < clock.timestamp(), 0), (and_(c.due_epoch >= today, c.due_epoch < today + 86400), 1), else_=2),
                 func.coalesce(c.due_epoch, 253402300799.0), c.opened_epoch, c.id]
@@ -210,7 +236,7 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
         selected = presented[-1]
     return {"context": {"viewer_key": viewer_key, "scope_key": factory_scope, "server_time": stamp(clock),
                         "business_timezone": "Asia/Shanghai", "authz_recheck_at": authorization_boundary(user, clock)},
-            "summary": summary, "query": {"filtered_total": total, "cursor": cursor},
+            "summary": summary, "facets": facets, "query": {"filtered_total": total, "cursor": cursor},
             "items": presented[:len(page[:limit])], "next_cursor": next_cursor,
             "selected_entry_state": selected, "health": {"status": "partial" if summary["verification_required_total"] or db.info.get("work_center_unavailable") else "fresh", "as_of": stamp(clock), "unavailable_sources": sorted(db.info.get("work_center_unavailable", [])), "issues": issues, "coverage": COVERAGE}}
 
@@ -222,6 +248,18 @@ def dto(row, user, clock):
     assigned = row["assignee"] == user.id
     relation = "assignee" if active and assigned else "candidate" if active else "recipient" if row["kind"] == "info" else "watcher"
     stage = row["stage"]
+    reasons = []
+    due = row["due_epoch"]
+    today = clock.astimezone(BUSINESS_TIME_ZONE).date()
+    if active and due is not None and due < clock.timestamp():
+        reasons.append("已到业务期限")
+    elif active:
+        if due is not None and datetime.fromtimestamp(due, BUSINESS_TIME_ZONE).date() == today:
+            reasons.append("今日到期")
+        if stage.startswith("problem:"):
+            reasons.append("生产待处理问题")
+        if row["opened_epoch"] and clock.timestamp() - row["opened_epoch"] >= 72 * 3600:
+            reasons.append("等待超过 3 天")
     route = {"molding": "molding_production" if stage.startswith("production") else "molding_engineering",
              "internal_quote": "quote", "account_requests": "account_requests", "carton_supplier": "shipment",
              "identity": "identity_approval" if stage == "identity_approval" else "identity",
@@ -234,9 +272,9 @@ def dto(row, user, clock):
             "reference_label": row["reference"], "lifecycle": row["lifecycle"], "viewer_relation": relation,
             "source_factory": factory(row["factory"]), "execution_factory": factory(row["execution"]),
             "department_label": SECTION_NAMES.get(row["department"], {"production": "啤机部", "pmc-warehouse": "PMC仓库", "sales-business": "业务部", "management": "管理部", "system": "系统管理", "*": "全部部门", "three-d-printing": "3D打印部"}.get(row["department"], row["department"])),
-            "stage_label": row["title"], "responsible_label": "指派给我" if assigned else "团队队列" if active else "流程跟进",
+            "stage_code": stage, "stage_label": row["title"], "responsible_label": "指派给我" if assigned else "团队队列" if active else "流程跟进",
             "why_me": "你是本批次指定审核人" if assigned and row["module"] == "internal_quote" else "你具备当前责任范围的办理权限" if active else "与你相关的流程信息",
-            "priority": "normal", "priority_reasons": ["已到业务期限"] if row["due_epoch"] and row["due_epoch"] < clock.timestamp() else [],
+            "priority": "urgent" if "已到业务期限" in reasons else "high" if reasons else "normal", "priority_reasons": reasons,
             "due_at": stamp(datetime.fromtimestamp(row["due_epoch"], timezone.utc)) if row["due_epoch"] else None,
             "due_source": "business" if row["due_epoch"] else None, "opened_at": stamp(row["opened"]),
             "can_act_now": active, "unavailable_reason": "当前业务版本或状态需要核对，请查看源单据。" if not row["verified"] else None if active or row["kind"] == "info" else row["resolution_reason"] or "当前阶段等待其他责任人处理",
@@ -246,6 +284,97 @@ def dto(row, user, clock):
             "actions": [{"key": "open", "label": "刷新账户信息" if route == "identity" else row["title"] if active else "查看源单据",
                          "mode": "refresh_identity" if route == "identity" else "navigate", "enabled": True, "disabled_reason": None,
                          "target": {"route_key": route, "params": {"id": row["cycle"] if route == "identity_approval" else row["entity_id"]}, "query": {"factory": row["execution"] if route == "molding_production" else row["factory"], "stage": stage, "cycle": row["cycle"]}}}]}
+
+
+def details(*fields):
+    return [{"label": label, "value": str(value)} for label, value in fields if value is not None and value != ""]
+
+
+def quote_facts(quote):
+    batch = quote.batch_size and quote.batch_size > 1
+    parts = [f"本批共 {quote.batch_size} 款" if batch else quote.product_name]
+    if quote.customer:
+        parts.append(f"客户 {quote.customer}")
+    parts.append(f"含 {quote.product_name} 等" if batch else f"数量 {quote.qty}")
+    return {"summary": " · ".join(filter(None, parts)), "details": details(
+        ("产品名称", quote.product_name), ("客户", quote.customer), ("数量", quote.qty),
+        ("批次规模", quote.batch_size if batch else None), ("目标日期", quote.target_date), ("发起人", quote.created_by_name))}
+
+
+def position_facts(review):
+    from app.services.iam import DEPARTMENT_NAMES
+    def snapshot(raw):
+        try:
+            value = json.loads(raw or "null")
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    declared = snapshot(review.declared_snapshot_json)
+    original = snapshot(review.base_official_snapshot_json)
+    position, previous = declared.get("position"), original.get("position")
+    department = DEPARTMENT_NAMES.get(declared.get("department_code"))
+    summary = f"申报岗位：{position}" if position else ""
+    if previous and previous != position:
+        summary += f"（原：{previous}）"
+    elif department:
+        summary = " · ".join(filter(None, [summary, department]))
+    fields = details(("申报岗位", position), ("原任职岗位", previous or "未记录"),
+                     ("发起方式", {"employee": "员工自报", "admin": "管理员发起"}.get(review.origin)))
+    if review.last_submitted_at:
+        fields.append({"label": "最近提交时间", "value": review.last_submitted_at, "format": "datetime"})
+    return {"summary": summary, "details": fields}
+
+
+def molding_facts(order):
+    parts = [order.product_name]
+    if order.client_name:
+        parts.append(f"客户 {order.client_name}")
+    rejected = order.reject_reason if order.status == "已驳回" else None
+    if rejected:
+        parts.append(f"驳回：{rejected}")
+    return {"summary": " · ".join(filter(None, parts)), "details": details(
+        ("产品名称", order.product_name), ("客户", order.client_name), ("负责工程", order.eng_name),
+        ("所属车间", order.workshop), ("当前状态", order.status), ("驳回说明", rejected))}
+
+
+def shipment_facts(db, ids):
+    shipment = SupplierShipment
+    # Restrict each aggregate to page IDs and join on the factory as well as
+    # the shipment key. Matched lines and unmatched lines are disjoint.
+    def line_counts(model):
+        return (select(model.shipment_id, model.factory_id, func.count().label("n"))
+                .where(model.shipment_id.in_(ids)).group_by(model.shipment_id, model.factory_id).subquery())
+
+    matched, unmatched = line_counts(SupplierShipmentLine), line_counts(SupplierShipmentUnmatchedLine)
+    query = (select(shipment.id, shipment.delivery_note_no, shipment.delivery_date, CartonSupplier.supplier_name,
+                    func.coalesce(matched.c.n, 0), func.coalesce(unmatched.c.n, 0))
+             .outerjoin(CartonSupplier, and_(CartonSupplier.id == shipment.supplier_id, CartonSupplier.factory_id == shipment.factory_id))
+             .outerjoin(matched, and_(matched.c.shipment_id == shipment.id, matched.c.factory_id == shipment.factory_id))
+             .outerjoin(unmatched, and_(unmatched.c.shipment_id == shipment.id, unmatched.c.factory_id == shipment.factory_id))
+             .where(shipment.id.in_(ids)))
+    for entity_id, note, delivery, supplier, regular, extra in db.execute(query):
+        count = regular + extra
+        summary = " · ".join(filter(None, (supplier, f"{count} 项明细", f"交期 {delivery}" if delivery else None,
+                                             f"含 {extra} 项无单明细" if extra else None)))
+        yield ("carton_supplier", entity_id), {"summary": summary, "details": details(
+            ("供应商", supplier), ("送货单号", note), ("送货日期", delivery), ("明细项数", count))}
+
+
+def page_facts(db, rows):
+    ids = {}
+    for row in rows:
+        if row["kind"] != "diagnostic":
+            ids.setdefault(row["module"], set()).add(row["entity_id"])
+    result = {}
+    for module, model, formatter in (("molding", MoldingSampleOrder, molding_facts),
+                                     ("position_reviews", PositionReview, position_facts)):
+        if module in ids:
+            result.update(((module, record.id), formatter(record))
+                          for record in db.scalars(select(model).where(model.id.in_(ids[module]))))
+    if "carton_supplier" in ids:
+        result.update(shipment_facts(db, ids["carton_supplier"]))
+    return result
 
 
 def present_entries(db, rows, user, clock):
@@ -259,7 +388,7 @@ def present_entries(db, rows, user, clock):
     from app.services.internal_quote_calculator import FORMULA_VERSION
     # Only enrich already-authorized rows on this page; never expose orphan
     # notices or broaden scope while explaining a source verification warning.
-    quote_ids = {row["entity_id"] for row in rows if row["module"] == "internal_quote" and not row["verified"]}
+    quote_ids = {row["entity_id"] for row in rows if row["module"] == "internal_quote" and row["kind"] != "diagnostic"}
     quotes = {quote.id: quote for quote in db.scalars(select(InternalQuote).where(InternalQuote.id.in_(quote_ids)))} if quote_ids else {}
     sources = {}
     for model, stages in ((AuthRegistrationRequest, {"registration"}),
@@ -269,11 +398,20 @@ def present_entries(db, rows, user, clock):
             for request in db.scalars(select(model).where(model.id.in_(ids))):
                 for stage in stages:
                     sources[(stage, request.id)] = request
+    facts = page_facts(db, rows)
     result = []
     for row in rows:
         item = dto(row, user, clock)
         quote = quotes.get(row["entity_id"]) if row["module"] == "internal_quote" else None
         if quote is not None:
+            item.update(quote_facts(quote))
+        source = facts.get((row["module"], row["entity_id"]))
+        if source:
+            item.update(source)
+        if row["module"] == "position_reviews" and row["stage"] == "position_result" and row["summary"]:
+            item["summary"] = row["summary"]
+            item["details"] = [*item.get("details", []), {"label": "核对意见", "value": row["summary"]}]
+        if quote is not None and not row["verified"]:
             if quote.formula_version != FORMULA_VERSION:
                 item["unavailable_reason"] = "报价使用旧版计算公式，请由原业务责任人在源单据中核对并按当前公式重算、重新提交。"
                 item["details"] = [{"label": "单据公式版本", "value": quote.formula_version or "未记录"},
@@ -287,11 +425,10 @@ def present_entries(db, rows, user, clock):
             fields = [("申请人", name or username), ("登录账号", username)]
             if isinstance(request, AuthRegistrationRequest):
                 fields += [("申请岗位", request.position or "未填写"), ("联系电话", request.phone or "未填写"), ("联系邮箱", request.email or "未填写")]
-                item["summary"] = f"申请岗位：{request.position or '未填写'}；请核对申请组织与任职资料。"
+                item["summary"] = f"申请岗位：{request.position}" if request.position else "未填写申请岗位"
             else:
                 fields += [("联系方式", request.contact or "未填写"), ("申请说明", request.note or "未填写")]
-                if row["stage"] == "password_reset":
-                    item["summary"] = request.note or "申请人未填写说明；请先核实本人身份，再审批密码重置。"
+                item["summary"] = request.note or "未填写申请说明"
             item["details"] = [{"label": label, "value": value} for label, value in fields]
             submitted = stamp(request.submitted_at)
             item["details"].append({"label": "申请时间", "value": submitted or "未记录", "format": "datetime" if submitted else "text"})

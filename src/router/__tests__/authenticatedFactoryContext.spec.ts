@@ -117,23 +117,11 @@ describe('authenticated factory context with real navigation guards', () => {
     expect(useAppStore().activeFactoryId).toBe('huadeng')
   })
 
-  it('checks material drafts before a same-route factory query change can mutate the store', async () => {
+  it.each(['huadeng', 'group'])('returns retired material links to Sales in the %s context', async (factory) => {
     useAuthStore().applySession({ ...user('huaxing'), permissions: ['indonesia_material:read'] })
-    const path = '/modules/sales-business/indonesia-material-shipment'
-    await router.replace(path + '?factory=huaxing')
-    expect(router.currentRoute.value.name).toBe('indonesia-material-shipment')
-    const guard = vi.fn().mockReturnValue(false)
-    const unregister = registerFactoryChangeGuard(guard)
-    try {
-      await router.push(path + '?factory=huadeng')
-      expect(guard).toHaveBeenCalledTimes(1)
-      expect(useAppStore().activeFactoryId).toBe('huaxing')
-      expect(router.currentRoute.value.query.factory).toBe('huaxing')
-      guard.mockReturnValue(true)
-      await router.push(path + '?factory=huadeng')
-      expect(useAppStore().activeFactoryId).toBe('huadeng')
-      expect(router.currentRoute.value.query.factory).toBe('huadeng')
-    } finally { unregister() }
+    await router.replace(`/modules/sales-business/indonesia-material-shipment?factory=${factory}&view=detail#im-main`)
+    expect(router.currentRoute.value.fullPath).toBe(`/modules/sales-business?factory=${factory}`)
+    expect(useAppStore().activeFactoryId).toBe(factory)
   })
 
   it('QC factory navigation asks the frame guard before shared context changes', async () => {

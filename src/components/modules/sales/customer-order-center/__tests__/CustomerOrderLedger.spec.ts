@@ -6,7 +6,7 @@ import CustomerOrderHistoryImport from '../CustomerOrderHistoryImport.vue'
 vi.mock('@/components/CartonMaterialsSourceButton.vue', () => ({ default: { template: '<span>订单资料</span>' } }))
 
 const api = vi.hoisted(() => ({
-  capabilities: vi.fn(), list: vi.fn(), detail: vi.fn(), amend: vi.fn(), cancel: vi.fn(), restore: vi.fn(), dispatch: vi.fn(), confirmShipment: vi.fn(), reverseShipment: vi.fn(),
+  capabilities: vi.fn(), list: vi.fn(), detail: vi.fn(), importIndonesia: vi.fn(), amend: vi.fn(), cancel: vi.fn(), restore: vi.fn(), dispatch: vi.fn(), confirmShipment: vi.fn(), reverseShipment: vi.fn(),
 }))
 const historyApi = vi.hoisted(() => ({ customers: vi.fn(), preview: vi.fn(), confirm: vi.fn(), correctOpening: vi.fn() }))
 vi.mock('@/api/customerOrderLedger', () => ({ customerOrderLedgerApi: api, customerOrderLedgerSourceUrl: vi.fn(() => '/api/customer-order-ledger/sources/source-1?factory_id=huaxing') }))
@@ -25,6 +25,25 @@ function mountLedger() {
 
 describe('CustomerOrderLedger', () => {
   beforeEach(() => { vi.clearAllMocks() })
+  it('imports only the selected order after choosing its Indonesia source', async () => {
+    api.capabilities.mockResolvedValue({ read: true, indonesia_schedule_import: true })
+    api.list.mockResolvedValue({ items: [line], total: 1, customers: [] })
+    api.detail.mockResolvedValue({ line, versions: [], dispatches: [], shipments: [], sources: [] })
+    api.importIndonesia.mockResolvedValue({ id: 12 })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴' } })
+    await flushPromises()
+    await wrapper.get('button.ledger__link').trigger('click')
+    await flushPromises()
+    const panel = wrapper.findAll('section').find(section => section.find('h4').exists() && section.find('h4').text() === '印尼接单排期')!
+    expect(panel.get('button').attributes('disabled')).toBeDefined()
+    await panel.get('select').setValue('RRM')
+    await panel.get('button').trigger('click')
+    await flushPromises()
+    expect(api.importIndonesia).toHaveBeenCalledWith(line.id, 'huaxing', line.revision, 'RRM')
+    expect(wrapper.text()).toContain('已导入印尼接单排期')
+    wrapper.unmount()
+  })
+
   it('shows an undated saved order and allows dispatch only after the amended date is saved', async () => {
     api.capabilities.mockResolvedValue({ read: true, write: true, dispatch: true })
     const undated = { ...line, data: { requested_ship_date: '' } }

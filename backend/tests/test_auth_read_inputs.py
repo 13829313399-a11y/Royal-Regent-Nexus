@@ -11,6 +11,7 @@ from app.models.auth import (AuthUser, EmployeeProfile, AuthRole, AuthPermission
     AuthUserRole, AuthRoleBindingMetadata, AuthUserPermissionOverride)
 from app.models.identity import EmployeeAssignment, IamOrgUnit, IamOrgDepartment, IamRoleVersion
 from app.services.auth import build_auth_context, has_permission_in_scope
+from app.services.permission_codes import INDONESIA_MATERIAL_PERMISSION_CODES
 from app.services.auth_read_inputs import AuthReadInputs
 from app.services.identity_resolver import stamp
 
@@ -27,6 +28,9 @@ def test_batch_auth_contexts_match_legacy_v2_denies_frozen_roles_and_time_bounda
     with Session(engine) as db:
         db.add_all([AuthPermission(id=read, code=read, name='读取'), AuthRole(id='reader', name='读取角色', code='reader'),
             AuthRolePermission(id='reader-read', role_id='reader', permission_id=read)])
+        for code in INDONESIA_MATERIAL_PERMISSION_CODES:
+            db.add(AuthPermission(id=code, code=code, name=code))
+            db.add(AuthRolePermission(id=f'reader-{code}', role_id='reader', permission_id=code))
         definition = dict(role_id='reader', role_code='reader', role_name='读取角色', permissions=[read],
             read_permissions=[read], scope_mode='own_factory', unrestricted_department=False)
         db.add(IamRoleVersion(id='frozen', role_id='reader', definition_hash='synthetic', definition_json=json.dumps(definition), created_at=stamp(now)))
@@ -70,6 +74,9 @@ def test_batch_auth_contexts_match_legacy_v2_denies_frozen_roles_and_time_bounda
             assert actual == expected
             assert batch_queries < original_queries / 2, (original_queries, batch_queries)
             assert has_permission_in_scope(actual['active'], read, 'huaxing', 'pmc-warehouse')
+            for code in INDONESIA_MATERIAL_PERMISSION_CODES:
+                assert code not in actual['legacy'].permissions
+                assert not has_permission_in_scope(actual['legacy'], code, 'huaxing', 'pmc-warehouse')
             assert not has_permission_in_scope(actual['deny'], read, 'huaxing', 'pmc-warehouse')
             for case in ['future', 'expired', 'old_epoch', 'left', 'inactive_department', 'suspended']:
                 assert not has_permission_in_scope(actual[case], read, 'huaxing', 'pmc-warehouse'), case

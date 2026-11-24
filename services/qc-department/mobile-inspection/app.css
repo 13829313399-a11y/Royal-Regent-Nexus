@@ -31,8 +31,9 @@ svg{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:
 .filter-trigger.active{color:var(--primary);font-weight:600}
 .filter-divider{width:1px;height:14px;background:var(--line);flex:none}
 .filter-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-height:min(42dvh,320px);overflow:auto;padding:3px;overscroll-behavior:contain}
-.filter-option{min-height:44px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--white);overflow-wrap:anywhere}
-.filter-option[aria-pressed=true]{background:var(--soft);border-color:var(--primary);color:var(--primary);font-weight:600}
+.filter-option{min-height:44px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow-wrap:anywhere}
+.filter-option:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.filter-option[aria-pressed=true]{background:var(--soft);border-color:var(--line-strong);color:var(--accent-deep);font-weight:600}
 .filter-apply{width:100%;min-height:48px;margin-top:18px}
 .filter-reset{width:100%;min-height:44px;border:0;background:none;color:var(--muted);margin-top:4px}
 dialog.filter-sheet::before{content:"";display:block;width:34px;height:4px;border-radius:3px;background:var(--line);margin:0 auto 8px}
@@ -162,6 +163,37 @@ dialog::backdrop{background:#101d376e}
 .facts dt{color:var(--muted);font-size:12px}
 .facts dd{font-weight:650;overflow-wrap:anywhere}
 .photo-preview{display:block;max-width:100%;max-height:60dvh;margin:auto;border-radius:9px;object-fit:contain}
+#app dialog.photo-markup-sheet[open]{
+  display:flex;position:fixed;inset:var(--viewport-top,0px) 0 auto;
+  width:100%;height:var(--viewport-height,100dvh);max-width:none;max-height:none;
+  margin:0;padding:0 0 env(safe-area-inset-bottom);border:0;border-radius:0;background:transparent;box-shadow:none;overflow:hidden;
+}
+#app dialog.photo-markup-sheet[open]::backdrop{background:rgba(0,0,0,.24);-webkit-backdrop-filter:none;backdrop-filter:none}
+.photo-markup-sheet>.sheet-head{display:none}
+.photo-markup-sheet>#sheet-content{display:flex;flex:1;min-width:0;min-height:0;flex-direction:column}
+.photo-markup-tools{
+  display:flex;align-items:center;justify-content:center;align-self:center;flex-wrap:wrap;flex-shrink:0;gap:4px;
+  max-width:calc(100% - 16px);margin:max(10px,env(safe-area-inset-top)) 8px 0;padding:4px;
+  border:1px solid color-mix(in srgb,var(--ink) 15%,transparent);border-radius:16px;
+  background:var(--panel);color:var(--ink);font-size:13px;
+  box-shadow:inset 0 1px 0 #ffffff60,0 5px 20px #091a232b;
+}
+@supports (backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px)){
+  .photo-markup-tools{background:color-mix(in srgb,var(--panel) 76%,transparent);-webkit-backdrop-filter:blur(20px) saturate(155%);backdrop-filter:blur(20px) saturate(155%)}
+}
+.photo-markup-tools button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:44px;min-height:44px;padding:4px 8px;border:1px solid transparent;border-radius:11px;background:transparent;white-space:nowrap}
+.photo-markup-tools button svg{width:16px;height:16px;stroke-width:1.7}
+.photo-markup-tools [aria-pressed=true]{background:color-mix(in srgb,var(--accent) 16%,transparent);border-color:color-mix(in srgb,var(--accent) 25%,transparent)}
+.photo-markup-status{align-self:center;flex-shrink:0;max-width:calc(100% - 16px);margin:5px 8px 0;padding:4px 9px;border-radius:8px;background:var(--panel);color:var(--ink);font-size:12px;text-align:center}
+.photo-markup-stage{display:grid;flex:1;min-width:0;min-height:0;place-items:center;overflow:hidden}
+.photo-markup-image{position:relative;max-width:100%;max-height:100%;overflow:hidden}
+.photo-markup-image .photo-preview{width:100%;height:100%;max-height:none;border-radius:0}
+.photo-markup-image.is-marking{touch-action:none;cursor:crosshair;user-select:none}
+.photo-markup-image>svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;fill:none;stroke:#f83b38;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 1px #280706)}
+@media(max-width:360px){
+  .photo-markup-tools{gap:1px;font-size:12px}
+  .photo-markup-tools button{gap:3px;padding-inline:4px}
+}
 .web-header,#web-idle{display:none}
 @media(min-width:620px){#app{border-inline:1px solid var(--line);box-shadow:0 0 38px #18345915}}
 
@@ -242,6 +274,8 @@ dialog::backdrop{background:#101d376e}
   --line:#e9edf2;--line-strong:#b3cbe6;--bg:#f5f7fa;--panel:#f5f7fa;--header:#ffffffc9;
   --hover:#edf4fc;--soft:#edf4fc;--green:#47715c;--mint:#edf6ef;--red:#a05461;--rose:#fbf0f2;
   --glass:#ffffffc9;--glass-edge:#fffffff0;
+  /* Follow native viewport panning without relaying out the form for Y-only changes. */
+  top:0;transform:translate(-50%,var(--viewport-top,0px));
   isolation:isolate;background:#f7f9fb;
 }
 #app:not(.web-layout)::before,#app:not(.web-layout)::after{
@@ -251,7 +285,7 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout)::before{background:radial-gradient(ellipse at 5% 14%,#dcebf7b3,transparent 48%),radial-gradient(ellipse at 95% 46%,#e8ebf69c,transparent 50%),radial-gradient(ellipse at 15% 86%,#def0e99c,transparent 46%)}
 #app:not(.web-layout)::after{background:radial-gradient(ellipse at 85% 9%,#e7f3f4b3,transparent 48%),radial-gradient(ellipse at 80% 94%,#f2eef88c,transparent 46%);animation-duration:39s;animation-direction:alternate-reverse}
 @keyframes qc-pearl-flow{from{transform:translate(-10px,-14px) rotate(-4deg) scale(1)}to{transform:translate(26px,32px) rotate(7deg) scale(1.09)}}
-#app:not(.web-layout):is(.editing,:has(input:focus,textarea:focus))::before,#app:not(.web-layout):is(.editing,:has(input:focus,textarea:focus))::after{animation-play-state:paused}
+#app:not(.web-layout):is(.entry-open,.editing,:has(input:focus,textarea:focus))::before,#app:not(.web-layout):is(.entry-open,.editing,:has(input:focus,textarea:focus))::after{animation-play-state:paused}
 #app:not(.web-layout) :is(.search-header,.entry-header,.navbar,.dock,.composer){background:var(--glass);backdrop-filter:blur(22px) saturate(105%);-webkit-backdrop-filter:blur(22px) saturate(105%)}
 #app:not(.web-layout) .search-header{border-bottom:1px solid #ffffffd9;background:#ffffffb3}
 #app:not(.web-layout) .search{background:#f5f8fbbf;border:1px solid #ffffffed;border-radius:14px;box-shadow:inset 0 1px 2px #263f5805,0 1px 0 #dce5ee4d}
@@ -278,7 +312,11 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) .navbar{min-height:54px;background:transparent;border:0;backdrop-filter:none;-webkit-backdrop-filter:none}
 #app:not(.web-layout) .navbar h1{font-size:16px;font-weight:600}
 #app:not(.web-layout) #back{font-size:14px;font-weight:500}
-#app:not(.web-layout) .identity{padding:4px 18px 0;background:transparent;border:0}
+#app:not(.web-layout) .identity{
+  padding:4px 18px 0;background:transparent;border:0;
+  /* Leave room for the field on very short viewports without toggling the header. */
+  max-height:max(0px,calc(var(--viewport-height,100dvh) - 176px));overflow:hidden
+}
 #app:not(.web-layout) .who{font-size:20px;color:var(--ink);font-weight:600;line-height:1.3}
 #app:not(.web-layout) .id-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px}
 #app:not(.web-layout) .id-row strong,#app:not(.web-layout) .id-row span{font-size:13px;font-weight:500;color:var(--ink);line-height:1.45}
@@ -286,6 +324,9 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) #info{display:none}
 #app:not(.web-layout) .entry-scroll{padding:12px 12px max(12px,env(safe-area-inset-bottom))}
 #app:not(.web-layout) .group{padding:0 14px;margin-bottom:10px}
+/* Entry cards resize with the keyboard. Use a stable surface instead of
+   recompositing a large live blur behind the fields on every frame. */
+#app:not(.web-layout) #entry .group{background:#ffffffed;backdrop-filter:none;-webkit-backdrop-filter:none}
 #app:not(.web-layout) #result-heading{padding-top:14px;margin-bottom:10px}
 #app:not(.web-layout) .field-title h2{font-size:14px;font-weight:600}
 #app:not(.web-layout) .results{gap:5px}
@@ -304,6 +345,35 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) #photo-actions{gap:8px;margin-top:10px}
 #app:not(.web-layout) #photo-actions .file-pick{min-height:46px;background:#f0f5fb;border:0;border-radius:10px;color:#466d9b;font-size:14px;font-weight:500}
 #app:not(.web-layout) .dock{padding:10px 16px max(14px,env(safe-area-inset-bottom));border-top:1px solid var(--line);border-radius:0}
+/* Keep the save area out of flow: showing it during dismissal must not
+   change the scroller's dimensions or clamp its current position. */
+#app:not(.web-layout) #entry{position:relative;--phone-dock-height:calc(55px + max(14px,env(safe-area-inset-bottom)))}
+#app:not(.web-layout) #entry .dock{position:absolute;inset:auto 0 0;z-index:2}
+#app:not(.web-layout) #entry:not(.entry-readonly) .entry-scroll{
+  padding-bottom:calc(max(12px,env(safe-area-inset-bottom)) + var(--phone-dock-height));
+}
+/* iPhone trial: a single native document scroller, never a resized nested
+   scrollport inside a translated/clipped app shell. */
+html.qc-native-entry,html.qc-native-entry body{
+  height:auto;min-height:100%;overflow:visible
+}
+html.qc-native-entry #app:not(.web-layout){
+  position:relative;inset:auto;margin-inline:auto;transform:none;
+  height:auto;min-height:100dvh;overflow:visible
+}
+html.qc-native-entry #app:not(.web-layout)::before,html.qc-native-entry #app:not(.web-layout)::after{
+  inset:0;transform:none;animation:none
+}
+html.qc-native-entry #app #entry{height:auto;min-height:100dvh}
+html.qc-native-entry #app #entry .identity{max-height:none}
+html.qc-native-entry #app:not(.web-layout) #entry .entry-scroll{
+  flex:1 0 auto;overflow:visible;padding-bottom:max(12px,env(safe-area-inset-bottom))
+}
+html.qc-native-entry #app #entry .dock{position:sticky;inset:auto 0 0}
+html.qc-native-entry #app #entry:not(.entry-readonly) .dock[hidden]{
+  /* Leave its space unchanged while the native keyboard is visible. */
+  display:grid!important;visibility:hidden;pointer-events:none
+}
 #app:not(.web-layout) .dock .save-state{font-size:12px;font-weight:400;white-space:normal}
 #app:not(.web-layout) .dock .save-state::before{content:none}
 #app:not(.web-layout) #save-return{min-height:44px;font-size:14px}
@@ -329,7 +399,6 @@ dialog::backdrop{background:#101d376e}
 }
 #app:not(.web-layout) .phone-notes label {padding-inline:8px}
 #app:not(.web-layout) .inline-field {padding-inline:8px}
-#app.keyboard-visible.short-view:not(.web-layout) .entry-header .identity {display:none}
 .phone-notes textarea::placeholder {color:var(--muted)}
 #app:not(.web-layout) :is(.entry-header,.navbar,.dock,.search-header) {
   backdrop-filter:none; -webkit-backdrop-filter:none; background:#f8fafc;
@@ -452,6 +521,7 @@ dialog::backdrop{background:#101d376e}
 #app:not(.web-layout) .mobile-filter-options button+button::before{content:"";position:absolute;left:14px;right:14px;top:0;height:1px;background:#e5e5ea}
 #app:not(.web-layout) .mobile-filter-options button>span{min-width:0;overflow-wrap:anywhere}
 #app:not(.web-layout) .mobile-filter-options button>svg{width:19px;height:19px;color:#007aff;stroke-width:2}
+#app:not(.web-layout) .mobile-filter-options button[aria-pressed=true]{background:#f2f7ff;color:var(--accent-deep)}
 #app:not(.web-layout) .mobile-filter-setting:active,#app:not(.web-layout) .mobile-filter-options button:active{background:#f0f0f4}
 #app:not(.web-layout) #filter-customer-empty{margin:16px 0;text-align:center;color:#86868b;font-size:14px}
 #app:not(.web-layout) .filter-page-forward{animation:qc-filter-forward 180ms ease-out}
@@ -461,4 +531,12 @@ dialog::backdrop{background:#101d376e}
 @keyframes qc-filter-back{from{transform:translateX(-14px);opacity:.5}to{transform:translateX(0);opacity:1}}
 @media(prefers-reduced-motion:reduce){
   #app:not(.web-layout) dialog.mobile-filters-sheet[open],#app:not(.web-layout) .filter-page-forward,#app:not(.web-layout) .filter-page-back{animation:none}
+}
+
+#app.web-layout #tasks .search,
+#app:not(.web-layout) :is(#tasks .search,.mobile-filter-search) {
+  background-color:#f2f3f2;
+  border-color:transparent;
+  border-radius:999px;
+  box-shadow:inset 0 0 0 1px #25302b08;
 }

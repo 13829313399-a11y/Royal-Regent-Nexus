@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Col, Form, Image, Input, InputNumber, Modal, Row, Select, Space, Switch, Table, Tag, Upload, message } from 'antd'
 import { api, type Material, type Dictionaries, type HsDict } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { ImportTemplateDownload } from '../components/ImportTemplateDownload'
 import { importIndonesiaMaterialFile } from '../utils/indonesiaMaterialImport'
 import { mergeToolMaterial, planToolImport, toolKinds, type ToolImportRow } from '../utils/toolMaterialImport'
 import { fileToDataUrl } from '../utils/imageUpload'
@@ -154,11 +155,12 @@ export default function ToolMaterialsPage() {
     void save(materials).catch(() => {})
   }
   const changePlan = (index: number, change: Partial<ToolImportRow>) => setPlans(ps => ps!.map((p, i) => i === index ? { ...p, ...change } : p))
-  return <Card title="工具及非生产物料" extra={<Space>
+  return <Card title="工具及非生产物料" extra={<Space wrap>
     <Button disabled={!editable || busy || loading} onClick={() => { void matchHs().catch(() => {}) }}>HS 自动匹配</Button>
     <Upload accept=".xlsx" showUploadList={false} beforeUpload={readFile} disabled={!editable || busy}>
       <Button disabled={!editable} loading={busy}>Excel 导入</Button>
     </Upload>
+    <ImportTemplateDownload kind="tools" />
     <Button type="primary" disabled={!editable} onClick={() => edit({})}>新增物料</Button>
   </Space>}>
     <Alert type="info" showIcon message="独立工具资料库，保存资料、采购单价及币种；走货可直接选用并导出资料，无需关联采购、入库或出库。关联货号仅作参考。" style={{ marginBottom: 16 }} />

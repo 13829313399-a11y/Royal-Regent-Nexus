@@ -72,7 +72,7 @@ def test_collision_partway_through_ddl_rolls_back_both_tables(retired):
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_scheduling_v3_remains_available_without_enabling_draft_ops(tmp_path, enabled):
+def test_retired_profiles_cannot_restore_tables_grants_routes_or_assistant(tmp_path, enabled):
     path = tmp_path / "profile.db"
     environment = dict(os.environ, DATABASE_URL="sqlite:///" + path.as_posix(),
                        INJECTION_SCHEDULING_V3_ENABLED=str(enabled), INJECTION_OPS_ENABLED=str(enabled),
@@ -87,24 +87,18 @@ from app.services.permission_codes import APPLICATION_PERMISSION_CODES
 from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS
 
 paths = app.openapi()['paths']
-assert '/api/injection-scheduling/demands/query' in paths
+assert not any(path.startswith(('/api/injection-scheduling/', '/api/injection-ops/')) for path in paths)
 assert '/api/injection' in paths
-assert not any(path.startswith('/api/injection-ops/') for path in paths)
-assert registry.resolve('injection-scheduling', 'demand') == 'get_injection_overview'
-assert 'get_injection_overview' in business.NAMES
-grants = {code for role in SYSTEM_POSITION_DEFINITIONS for code in role.permission_codes}
-assert 'injection_scheduling:read' in APPLICATION_PERMISSION_CODES
-assert 'injection_scheduling:read' in grants
-assert not any(code.startswith('injection_ops:') for code in {*APPLICATION_PERMISSION_CODES, *grants})
+assert 'injection-scheduling' not in registry.BY_MODULE
+assert 'get_injection_overview' not in business.NAMES
+prefixes = ('injection_scheduling:', 'injection_ops:')
+assert not any(code.startswith(prefixes) for code in APPLICATION_PERMISSION_CODES)
+assert not any(code.startswith(prefixes) for role in SYSTEM_POSITION_DEFINITIONS for code in role.permission_codes)
 db.init_db()
 db.init_db()
-tables = set(inspect(db.engine).get_table_names())
-assert {'injection_v3_demand', 'injection_v3_machine', 'injection_v3_shift_report'} <= tables
-assert not any(name.startswith('injection_ops_') for name in tables)
+assert not any(t.startswith(('injection_v3_', 'injection_ops_')) for t in inspect(db.engine).get_table_names())
 with db.engine.connect() as conn:
-    stored = set(conn.scalars(text('SELECT code FROM auth_permissions')))
-    assert 'injection_scheduling:read' in stored
-    assert not any(code.startswith('injection_ops:') for code in stored)
+    assert not any(code.startswith(prefixes) for code in conn.scalars(text('SELECT code FROM auth_permissions')))
 """
     subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
                    env=environment, check=True, timeout=90)

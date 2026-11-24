@@ -522,15 +522,31 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
     align-items: center;
     gap: 4px 8px;
     padding: 4px 8px;
+    font-size: 13px;
+  }
+  :is(#page-sales-schedule #qsToolbar, #page-records .records-toolbar) {
     border: 1px solid var(--border);
     border-bottom: 0;
     border-radius: 7px 7px 0 0;
     background: var(--bg-card);
     box-shadow: none;
     backdrop-filter: none;
-    font-size: 13px;
   }
-  #page-sales-schedule #qsToolbar + .qs-table-scroll { border-radius: 0 0 7px 7px; }
+  :is(#page-sales-schedule #qsToolbar + .qs-table-scroll, #page-records #recordsTableWrap) { border-radius: 0 0 7px 7px; }
+  html body.qc-liquid-glass.qstats-shell #page-records > .page-inner { row-gap: 0; }
+  #page-records .records-toolbar { margin-bottom: 0; }
+  #page-records .records-toolbar-inner { padding: 4px 8px; }
+  #page-records #btnAddInspection { height: var(--records-control-height); padding: 0 10px; }
+  #page-records .qis-submit-actions { margin-top: 8px; }
+  #page-records .qis-mobile-tools {
+    padding: 4px 8px;
+    border-inline: 1px solid var(--border);
+    background: var(--bg-card);
+  }
+  html.qc-mobile.qc-short-viewport #page-records:not(.qis-tools-open) .records-toolbar:has(.qip-toolbar-action[hidden]) + .qis-mobile-tools {
+    border-top: 1px solid var(--border);
+    border-radius: 7px 7px 0 0;
+  }
   #page-sales-schedule #qsToolbar .qs-filters { display: contents; }
   #page-sales-schedule #qsToolbar .qs-list-actions {
     display: flex;
@@ -649,3 +665,24 @@ body.qstats-shell .topbar :is(.btn-icon,.menu-toggle,#userBadge button) { box-sh
 #qstats-skim .rate-bar { background:#686868 }
 #qstats-tracking [data-table]:has(.skim-scroll) { overflow:visible }
 #qstats-tracking [data-table] .skim { min-width:0 }
+
+/* Shared search appearance. Each workspace owns the control's dimensions. */
+body.qc-liquid-glass :is(
+  #qsToolbar #qsSearch, #page-records .records-search,
+  #qis-review-controls .qis-review-search, #qsum-root #qsum-search, #page-defectlib #defLibSearch
+) {
+  background-color:color-mix(in srgb,var(--text-hi) 6%,var(--bg-card)) !important;
+  border-color:transparent !important;
+  border-radius:999px;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text-hi) 3%,transparent);
+}
+body.qc-liquid-glass :is(
+  #qsToolbar #qsSearch, #page-records .records-search,
+  #qis-review-controls .qis-review-search, #qsum-root #qsum-search, #page-defectlib #defLibSearch
+):focus-within {
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent);
+}
+body.qc-liquid-glass :is(#page-records .records-search,#qis-review-controls .qis-review-search) input {
+  background-color:transparent !important;
+}
+body.qc-liquid-glass #page-records .records-search svg {color:var(--text-dim)}

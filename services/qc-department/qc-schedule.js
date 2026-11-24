@@ -88,8 +88,10 @@
     el('qsReset').hidden=!Object.values(activeFilters).some(Boolean);
     try { rows=filterRows(model.items,activeFilters); } catch(e) { error.textContent=e.message;rows=[]; }
     if(!rows.length) {
-      const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期，可点击“新增验货”添加排期':'没有符合筛选条件的排期';
-      body.innerHTML='<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户筛选或搜索排期。':'')+'</p></div></td></tr>';
+      const message=model.phase==='loading'?'正在读取排期接口…':model.phase==='error'?'排期接口读取失败，请点击“刷新数据”重试。':model.phase==='pending'?'业务部数据尚未接通':error.textContent?'请调整日期范围':model.phase==='ready'&&!model.items.length?'暂无排期':'没有符合筛选条件的排期';
+      const scene=model.phase==='ready'&&!error.textContent&&root.QcEmptyState?.markup('schedule',message);
+      body.innerHTML=scene?'<tr><td colspan="15" class="qc-empty-cell">'+scene+'</td></tr>':
+        '<tr><td colspan="15"><div class="qs-empty"><strong>'+escape(message)+'</strong><p>'+ (model.phase==='pending'?'接通后可按日期、客户筛选或搜索排期。':'')+'</p></div></td></tr>';
       updatePush();return;
     }
     body.innerHTML=orderedRows(rows).map(row =>
@@ -329,25 +331,201 @@
   }
 
   async function afterPush(successIds){const failed=[...model.checked].filter(id=>!successIds.includes(id));if(!failed.length){await resetFilters();return;}await refresh();model.checked=new Set(failed);renderTable();updatePush();}
-  let scheduleDialog=null, scheduleBusy=false;
-  function openNew(){
-    if(!root.__QC_NEXUS?.workflow?.create)return;
-    if(scheduleDialog?.open)return;
-    const dialog=root.document.createElement('dialog');scheduleDialog=dialog;dialog.className='qwf-dialog qwf-native';dialog.setAttribute('aria-label','新增验货排期');
-    const fields=[['dateFrom','日期','date'],['dateTo','结束日期（可空）','date'],['customer','客户','text'],['poNo','PO','text'],['country','出口国','text'],['productNo','货号','text'],['productName','产品名称','text'],['quantity','数量','number'],['unitsPerCarton','装箱','text'],['cartonCount','箱数','number'],['production','生产','text'],['agency','机构','select'],['customerPo','客 PO','text'],['remark','备注','textarea']];
-    const customerOptions=choices(model.items,'customer');
-    dialog.innerHTML='<header><h2>新增验货排期</h2></header><form class="qwf-dialog-body"><div class="qwf-form form-grid">'+fields.map(([k,label,type])=>'<label class="form-group'+(type==='textarea'?' full':'')+'">'+label+(type==='textarea'?'<textarea name="'+k+'" maxlength="20000"></textarea>':type==='select'?'<select name="agency"><option value="">请选择</option><option>行验</option><option>客验</option></select>':'<input name="'+k+'" type="'+type+'" '+(type==='number'?'min="0" step="any"':'maxlength="300"')+(k==='customer'?' list="qc-schedule-customers"':'')+'>')+'</label>').join('')+'</div><datalist id="qc-schedule-customers">'+customerOptions.map(c=>'<option value="'+escape(c)+'">').join('')+'</datalist><p>完成情况：未推送（由后续验货进度更新）</p><p role="alert" data-error></p><footer><button class="btn btn-primary" type="submit">保存排期</button><button type="button" data-close>取消</button></footer></form>';
-    let pending=null;
-    dialog.querySelector('[data-close]').onclick=()=>{if(!scheduleBusy){dialog.close();dialog.remove();}};
-    dialog.addEventListener('cancel',e=>{if(scheduleBusy)e.preventDefault();});
-    dialog.querySelector('form').onsubmit=async e=>{e.preventDefault();if(scheduleBusy)return;
-      const row=Object.fromEntries(new FormData(e.target));const signature=JSON.stringify(row);
-      if(!pending||pending.signature!==signature)pending={signature,requestKey:root.crypto.randomUUID()};
-      scheduleBusy=true;dialog.querySelectorAll('button').forEach(b=>b.disabled=true);
-      try{const response=await root.fetch('api/workflow/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requestKey:pending.requestKey,row})});const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:'保存失败');dialog.close();dialog.remove();scheduleBusy=false;await root.showPage('sales-schedule');await resetFilters();root.showToast?.('排期已保存，尚未推送','success');}
-      catch(error){dialog.querySelector('[data-error]').textContent=error.message+'；输入已保留，可以重试。';}
-      finally{scheduleBusy=false;dialog.querySelectorAll('button').forEach(b=>b.disabled=false);}
-    };root.document.body.append(dialog);dialog.showModal();dialog.querySelector('input').focus();
+  let scheduleDialog = null, scheduleBusy = false;
+  const manualFields = [
+    ['dateFrom', '验货日期', 'date', true], ['dateTo', '结束日期', 'date'],
+    ['customer', '客户', 'text', true], ['poNo', 'PO#', 'text'],
+    ['country', '出口国', 'text'], ['productNo', '货号', 'text', true],
+    ['productName', '产品名称', 'text'], ['quantity', '数量', 'number', true],
+    ['unitsPerCarton', '装箱', 'text'], ['cartonCount', '箱数', 'number'],
+    ['production', '生产', 'text'], ['agency', '机构', 'select', true],
+    ['customerPo', '客PO#', 'text'], ['remark', '备注', 'textarea'],
+  ];
+  function manualInput([key, label, type, required]) {
+    const attributes = 'name="' + key + '"' + (required ? ' required' : '');
+    let input;
+    if (type === 'select') input = '<select ' + attributes + '><option value="">请选择</option><option>行验</option><option>客验</option></select>';
+    else if (type === 'textarea') input = '<textarea ' + attributes + ' maxlength="20000"></textarea>';
+    else input = '<input ' + attributes + ' type="' + type + '" ' + (type === 'number' ? 'min="0" step="any"' : 'maxlength="300"')
+      + (key === 'customer' ? ' list="qc-intake-customers"' : '') + '>';
+    return '<label class="form-group' + (type === 'textarea' ? ' full' : '') + '">' + label + input + '</label>';
+  }
+  function intakePreview(data) {
+    const columns = [['line','Excel 行'], ['duplicate','导入状态'], ...manualFields.filter(([key]) => key !== 'dateTo' && key !== 'remark')];
+    for (const field of [['result','验货结果'], ['sampleQuantity','抽查数量'], ['inspectionProblem','验货问题'],
+      ['inspector','检验人员'], ['photos','照片'], ['completion','原表完成情况']]) {
+      if (data.rows.some(row => row[field[0]])) columns.push(field);
+    }
+    columns.push(['remark','备注']);
+    return '<div class="qis-intake-scroll" tabindex="0" role="region" aria-label="待导入记录"><table><thead><tr>'
+      + columns.map(([,label]) => '<th scope="col">' + escape(label) + '</th>').join('')
+      + '</tr></thead><tbody>' + data.rows.map(row => '<tr>' + columns.map(([key]) =>
+        '<td>' + escape(key === 'duplicate' ? (row.duplicate ? '重复，跳过' : '待追加')
+          : key === 'dateFrom' && row.dateTo !== row.dateFrom ? row.dateFrom + ' 至 ' + row.dateTo : row[key] ?? '') + '</td>'
+      ).join('') + '</tr>').join('') + '</tbody></table></div>';
+  }
+  function openNew() {
+    const sheet = root.QcInspectionSheet;
+    if (!root.__QC_NEXUS?.workflow?.manual || !el('page-records')?.classList.contains('active') || scheduleDialog?.open) return;
+    const state = sheet.navigationState();
+    if (state.dirty || state.busy || sheet.model.loading) {
+      root.showToast?.('请先完成验货台当前操作', 'error');
+      return;
+    }
+    const trigger = el('btnAddInspection');
+    const dialog = root.document.createElement('dialog');
+    scheduleDialog = dialog;
+    dialog.className = 'qwf-dialog qwf-native qis-intake';
+    dialog.setAttribute('aria-labelledby', 'qc-intake-title');
+    const customerOptions = choices([...model.items, ...sheet.model.items], 'customer');
+    dialog.innerHTML = `
+      <header><h2 id="qc-intake-title">新增验货</h2>
+        <button type="button" class="qis-intake-mode" data-switch-mode>手动录入</button>
+        <span class="qis-intake-divider" aria-hidden="true"></span>
+        <button type="button" class="qis-intake-close" data-close aria-label="关闭新增验货">
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="m4 4 10 10m0-10L4 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </header>
+      <div class="qwf-dialog-body">
+        <div data-panel="excel">
+          <input type="file" accept=".xls,.xlsx" hidden>
+          <button type="button" class="qis-intake-picker" data-pick-file autofocus
+              aria-label="选择 Excel 文件" aria-describedby="qc-intake-hint">
+            <svg class="qis-intake-doc" viewBox="0 0 38 46" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+              <path d="M6.5 1h17l10 10v28a3 3 0 0 1-3 3h-24a3 3 0 0 1-3-3V4a3 3 0 0 1 3-3Z" fill="var(--intake-paper)"/>
+              <path d="M23.5 1v10h10"/><rect x="9.5" y="18" width="18" height="14" rx="1.4"/><path d="M9.5 24h18m-11.5-6v14"/>
+            </svg>
+            <span class="qis-intake-copy"><strong id="qc-intake-filename">选择 Excel 文件</strong>
+              <span id="qc-intake-hint">.xls / .xlsx　·　每次最多 500 条</span>
+            </span>
+            <svg width="16" height="20" viewBox="0 0 16 20" aria-hidden="true"><path d="m5 4 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <p class="qis-intake-templates"><span>适用模板</span><span>客户验货排期 <i aria-hidden="true">/</i> 各客验货排期 (2)</span></p>
+          <p role="status" data-preview-count></p>
+          <div data-preview></div>
+        </div>
+        <form id="qc-intake-manual" data-panel="manual" hidden>
+          <div class="qwf-form form-grid">${manualFields.map(manualInput).join('')}</div>
+          <datalist id="qc-intake-customers">${customerOptions.map(c => '<option value="' + escape(c) + '"></option>').join('')}</datalist>
+        </form>
+        <p class="qis-error" role="alert" data-error></p>
+      </div>
+      <footer hidden>
+        <button type="button" class="btn btn-primary" data-import disabled>确认追加</button>
+        <button type="submit" class="btn btn-primary" form="qc-intake-manual" data-save hidden>保存到验货台</button>
+      </footer>`;
+    const find = selector => dialog.querySelector(selector);
+    const picker = find('input[type=file]');
+    const filename = find('#qc-intake-filename');
+    const emptyFilename = filename.textContent;
+    const pickButton = find('[data-pick-file]');
+    function showFilename(file) {
+      filename.textContent = file ? file.name : emptyFilename;
+      pickButton.setAttribute('aria-label', file ? '更换文件：' + file.name : emptyFilename);
+    }
+    function clearFile() { picker.value = ''; showFilename(null); }
+    pickButton.addEventListener('click', () => picker.click());
+    const importButton = find('[data-import]');
+    const previewCount = find('[data-preview-count]');
+    let preview = null, pending = null;
+    const manual = find('[data-panel="manual"]');
+    const modeButton = find('[data-switch-mode]');
+    function updateActions() {
+      importButton.hidden = !manual.hidden || !preview;
+      importButton.disabled = !preview?.count;
+      find('[data-save]').hidden = manual.hidden;
+      find('footer').hidden = manual.hidden && !preview;
+    }
+    async function request(path, content, headers) {
+      const response = await root.fetch('api/inspection-sheet/intake/' + path, {method:'POST', body:content, headers});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : '请求失败（HTTP ' + response.status + '）');
+      return data;
+    }
+    async function run(operation) {
+      if (scheduleBusy) return;
+      scheduleBusy = true;
+      find('[data-error]').textContent = '';
+      const controls = dialog.querySelectorAll('button,input,select,textarea');
+      controls.forEach(control => { control.disabled = true; });
+      dialog.setAttribute('aria-busy', 'true');
+      try { await operation(); }
+      catch (error) { find('[data-error]').textContent = error.message; }
+      finally {
+        controls.forEach(control => { control.disabled = false; });
+        updateActions();
+        dialog.removeAttribute('aria-busy');
+        scheduleBusy = false;
+      }
+    }
+    async function saved(data, isExcel = false) {
+      dialog.close();
+      await sheet.load();
+      if (sheet.model.error) {
+        root.showToast?.('保存已确认，列表读取失败，请刷新验货台', 'error');
+        return;
+      }
+      const message = isExcel && data.existing
+        ? '已追加 ' + data.count + ' 条，跳过重复 ' + data.existing + ' 条'
+        : data.count ? '已追加 ' + data.count + ' 条验货记录' : '这批记录已保存，共 ' + data.existing + ' 条';
+      root.showToast?.(message, 'success');
+    }
+    modeButton.addEventListener('click', () => {
+      manual.hidden = !manual.hidden;
+      find('[data-panel="excel"]').hidden = !manual.hidden;
+      modeButton.textContent = manual.hidden ? '手动录入' : '模板导入';
+      updateActions();
+      find('[data-error]').textContent = '';
+    });
+    const excelHeaders = {'Content-Type':'application/octet-stream'};
+    picker.addEventListener('change', () => {
+      preview = null;
+      updateActions();
+      find('[data-preview]').replaceChildren();
+      previewCount.textContent = '';
+      find('[data-error]').textContent = '';
+      const file = picker.files[0];
+      showFilename(file);
+      if (!file) return;
+      if (!/\.xlsx?$/i.test(file.name) || file.size > 35 * 1024 * 1024) {
+        find('[data-error]').textContent = '请选择 35 MB 以内的 .xls 或 .xlsx 文件';
+        clearFile();
+        return;
+      }
+      void run(async () => {
+        previewCount.textContent = '正在核对表格…';
+        try {
+          const data = await request('preview', file, excelHeaders);
+          if (!Number.isInteger(data.count) || !Number.isInteger(data.existing)
+            || !Array.isArray(data.rows) || data.rows.some(row => typeof row.duplicate !== 'boolean')) {
+            throw Error('当前服务版本尚未启用逐行查重，未导入任何记录。更新服务后请重试。');
+          }
+          preview = data;
+          find('[data-preview]').innerHTML = intakePreview(preview);
+          previewCount.textContent = preview.sheet + ' · 待追加 ' + preview.count + ' 条 · 重复跳过 ' + preview.existing + ' 条';
+        } catch (error) {
+          previewCount.textContent = '';
+          clearFile();
+          throw error;
+        }
+      });
+    });
+    importButton.addEventListener('click', () => {
+      if (!preview?.count) return;
+      void run(async () => saved(await request('import', picker.files[0], {...excelHeaders, 'X-QC-Preview-Digest':preview.digest}), true));
+    });
+    find('form').addEventListener('submit', event => {
+      event.preventDefault();
+      const row = Object.fromEntries(new FormData(event.currentTarget));
+      const signature = JSON.stringify(row);
+      if (pending?.signature !== signature) pending = {signature, key:root.crypto.randomUUID()};
+      void run(async () => saved(await request('manual', JSON.stringify({requestKey:pending.key,row}), {'Content-Type':'application/json'})));
+    });
+    find('[data-close]').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('cancel', event => { if (scheduleBusy) event.preventDefault(); });
+    dialog.addEventListener('close', () => { dialog.remove(); scheduleDialog = null; trigger?.focus(); });
+    root.document.body.append(dialog);
+    dialog.showModal();
   }
   function navigationState() {
     return {busy:scheduleBusy,dirty:Boolean(scheduleDialog?.open)};

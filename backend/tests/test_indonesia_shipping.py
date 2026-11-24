@@ -232,13 +232,25 @@ def test_database_maintenance_is_retired_even_with_historical_grants(client, mon
     assert "indonesia_shipping:database_manage" not in APPLICATION_PERMISSION_CODES
 
 
-@pytest.mark.parametrize("action", ["users_manage", "database_manage"])
-def test_retired_permission_is_inactive_even_with_historical_active_metadata(action):
+@pytest.mark.parametrize("code", ["indonesia_shipping:users_manage", "indonesia_shipping:database_manage",
+    "indonesia_material:read", "indonesia_material:write", "indonesia_material:receipt_confirm", "indonesia_material:export"])
+def test_retired_permission_is_inactive_even_with_historical_active_metadata(code):
     from app.models.auth import AuthPermission, AuthPermissionMetadata
     from app.services import iam
-    permission = AuthPermission(id="old-admin", code=f"indonesia_shipping:{action}", name="旧管理功能", description="历史授权")
-    metadata = AuthPermissionMetadata(permission_id=permission.id, module_code="indonesia_shipping", action=action,
+    module, action = code.split(":")
+    permission = AuthPermission(id="old-admin", code=code, name="旧功能", description="历史授权")
+    metadata = AuthPermissionMetadata(permission_id=permission.id, module_code=module, action=action,
         risk_level="high", access_kind="write", scope_type="department", status="active", sort_order=0)
     assert iam._permission_out(permission, metadata).status == "inactive"
     assert iam._permission_out(permission, None).status == "inactive"
     assert iam._permission_status(None, permission) == "inactive"
+
+
+def test_live_router_retires_materials_without_removing_shipping():
+    from app.main import app
+
+    # No startup lifespan or business DB access is needed to test routing.
+    test = TestClient(app)
+    assert test.get('/api/indonesia-materials/workspace?factory_id=huaxing').status_code == 404
+    assert test.post('/api/indonesia-materials/commands', json={}).status_code == 404
+    assert test.get('/api/indonesia-shipping/huaxing/status').status_code == 401

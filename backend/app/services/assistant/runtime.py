@@ -527,8 +527,6 @@ async def events(request, user, payload, admitted):
                 if not selections:
                     filter_keys = {"view", "module", "q", "due", "unread_only", "limit", "cursor"} if name == "get_my_work" else {"view", "q", "customer_code", "date_from", "date_to", "limit", "cursor"} if name == "list_customer_orders" else set()
                     query_args = {"factory_id": factory, **{k: v for k, v in filters.items() if k in filter_keys}}
-                    if name == "get_injection_overview":
-                        query_args.update(business.injection.context_arguments(filters))
                     if name == business.cartons.NAME:
                         keys = set(business.cartons.Arguments.model_fields) - {'factory_id', 'resource_id'}
                         query_args.update({k: v for k, v in filters.items() if k in keys})
