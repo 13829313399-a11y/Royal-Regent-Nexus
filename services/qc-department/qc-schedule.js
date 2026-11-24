@@ -387,7 +387,14 @@
         </div>
         <div data-panel="excel">
           <p>支持验货台导出的「客户验货排期」和旧版「各客验货排期 (2)」。每次最多 500 条。</p>
-          <label class="qis-intake-file">选择 Excel 文件<input type="file" accept=".xls,.xlsx"></label>
+          <div class="qis-intake-file" role="group" aria-labelledby="qc-intake-file-label">
+            <span id="qc-intake-file-label">选择 Excel 文件</span>
+            <div class="qis-intake-picker">
+              <input type="file" accept=".xls,.xlsx" hidden>
+              <button type="button" class="btn" data-pick-file aria-describedby="qc-intake-filename">选择文件</button>
+              <span id="qc-intake-filename" role="status">未选择文件</span>
+            </div>
+          </div>
           <p role="status" data-preview-count></p>
           <div data-preview></div>
         </div>
@@ -403,6 +410,13 @@
       </footer>`;
     const find = selector => dialog.querySelector(selector);
     const picker = find('input[type=file]');
+    const filename = find('#qc-intake-filename');
+    const emptyFilename = filename.textContent;
+    function clearFile() {
+      picker.value = '';
+      filename.textContent = emptyFilename;
+    }
+    find('[data-pick-file]').addEventListener('click', () => picker.click());
     const importButton = find('[data-import]');
     const previewCount = find('[data-preview-count]');
     let preview = null, pending = null;
@@ -460,10 +474,11 @@
       previewCount.textContent = '';
       find('[data-error]').textContent = '';
       const file = picker.files[0];
+      filename.textContent = file ? file.name : emptyFilename;
       if (!file) return;
       if (!/\.xlsx?$/i.test(file.name) || file.size > 35 * 1024 * 1024) {
         find('[data-error]').textContent = '请选择 35 MB 以内的 .xls 或 .xlsx 文件';
-        picker.value = '';
+        clearFile();
         return;
       }
       void run(async () => {
@@ -479,7 +494,7 @@
           previewCount.textContent = preview.sheet + ' · 待追加 ' + preview.count + ' 条 · 重复跳过 ' + preview.existing + ' 条';
         } catch (error) {
           previewCount.textContent = '';
-          picker.value = '';
+          clearFile();
           throw error;
         }
       });

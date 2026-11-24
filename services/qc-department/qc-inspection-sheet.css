@@ -657,6 +657,9 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 .qis-intake:has([data-preview] > *, form:not([hidden])) { width: min(960px, calc(100vw - 24px)); }
 .qis-intake [hidden], #btnAddInspection[hidden] { display: none; }
 .qis-intake-file { display: grid; gap: 6px; margin-block: 14px; }
+.qis-intake-picker { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.qis-intake-picker button { flex: none; }
+#qc-intake-filename { min-width: 0; overflow-wrap: anywhere; }
 .qis-intake [data-preview-count]:not(:empty), .qis-intake [data-error]:not(:empty) { margin-block: 10px; }
 .qis-intake-scroll { overflow: auto; max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
 .qis-intake-scroll table { border-collapse: separate; border-spacing: 0; width: 100%; }
