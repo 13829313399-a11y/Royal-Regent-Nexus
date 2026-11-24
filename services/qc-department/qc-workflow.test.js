@@ -93,7 +93,7 @@ test('failed photo upload blocks submission and keeps selection',async()=>{
  const p=await page({items:[task()],failUpload:true});try{
   await p.w.QcWorkflow.openTask('task-1','records');const input=p.d.querySelector('[data-files]');
   Object.defineProperty(input,'files',{value:[new p.w.File(['image'],'未上传.png',{type:'image/png'})]});input.dispatchEvent(new p.w.Event('change',{bubbles:true}));
-  p.d.querySelector('[data-submit]').click();await tick();assert.match(p.d.querySelector('[data-error]').textContent,/照片上传失败/);assert.equal(input.files.length,1);
+  p.d.querySelector('[data-submit]').click();await settled(p);assert.match(p.d.querySelector('[data-error]').textContent,/照片上传失败/);assert.equal(input.files.length,1);
   assert.equal(p.calls.filter(c=>c.url.endsWith('/submit')).length,0);assert.equal(p.w.QcWorkflow.model.dirty,true);
  }finally{p.dom.window.close();}
 });
