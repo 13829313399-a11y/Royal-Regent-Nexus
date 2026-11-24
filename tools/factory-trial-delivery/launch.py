@@ -16,10 +16,13 @@ from uuid import uuid4
 import webbrowser
 
 
-def open_page(root: Path, address: str):
+def open_page(root: Path, address: str, instance: str, require_bundled=False):
     browser = root / 'browser' / 'electron.exe'
     if os.name == 'nt' and browser.is_file():
-        subprocess.Popen([str(browser), str(root / 'desktop'), address], cwd=root)
+        return subprocess.Popen([str(browser), str(root / 'desktop'), address,
+            '--trial-instance=' + instance], cwd=root)
+    elif require_bundled:
+        raise RuntimeError('随包浏览器缺失，请重新解压完整试用包。')
     else:
         webbrowser.open(address)
 
@@ -76,7 +79,7 @@ def reopen_running(data: Path, no_browser: bool) -> bool:
         if isinstance(port, int) and 1 <= port <= 65535 and instance_is_ready(port, value['id']):
             print(f'程序已启动：http://127.0.0.1:{port}/', flush=True)
             if not no_browser:
-                open_page(data.parent, f'http://127.0.0.1:{port}/')
+                open_page(data.parent, f'http://127.0.0.1:{port}/', value['id'])
             return True
     except (OSError, ValueError, KeyError, TypeError):
         pass
@@ -87,7 +90,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--no-browser', action='store_true')
     parser.add_argument('--port', type=int, default=0)
+    parser.add_argument('--exit-with-browser', action='store_true')
     arguments = parser.parse_args()
+    if arguments.exit_with_browser and arguments.no_browser:
+        raise RuntimeError('窗口启动模式不能同时禁用浏览器。')
     root = Path(__file__).resolve().parent
     config = json.loads((root / 'trial.json').read_text(encoding='utf-8'))
     if config['kind'] not in {'jp', 'orders'}:
@@ -106,6 +112,11 @@ def main() -> int:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server = None
     log = None
+    browser_errors = []
+    stopping = threading.Event()
+    browser_lock = threading.Lock()
+    owned_browser = []
+    browser_thread = None
     try:
         # Keep the selected socket open; another process cannot claim it between
         # port selection and Uvicorn startup.
@@ -153,20 +164,60 @@ def main() -> int:
         print('请保持这个窗口打开。结束试用请按 Ctrl+C；数据会保留。', flush=True)
 
         def open_when_ready():
-            for _ in range(100):
-                if server.should_exit:
-                    return
-                if instance_is_ready(port, instance):
-                    if not arguments.no_browser:
-                        open_page(root, address)
-                    return
-                time.sleep(0.1)
-        threading.Thread(target=open_when_ready, daemon=True).start()
+            try:
+                deadline = time.monotonic() + 60
+                while time.monotonic() < deadline:
+                    if stopping.is_set() or server.should_exit:
+                        return
+                    if instance_is_ready(port, instance):
+                        if not arguments.no_browser:
+                            # Serialize creation with cleanup: no browser may be
+                            # spawned after the backend's finally has completed.
+                            with browser_lock:
+                                if stopping.is_set() or server.should_exit:
+                                    return
+                                browser = open_page(root, address, instance,
+                                    require_bundled=arguments.exit_with_browser)
+                                if browser is not None:
+                                    owned_browser.append(browser)
+                            if arguments.exit_with_browser:
+                                while browser.poll() is None:
+                                    if stopping.wait(0.1):
+                                        return
+                                if stopping.is_set() or server.should_exit:
+                                    return
+                                status = browser.returncode
+                                if status:
+                                    raise RuntimeError(f'浏览器启动或运行失败，退出码 {status}。')
+                                server.should_exit = True
+                        return
+                    stopping.wait(0.1)
+                raise RuntimeError('本机服务未能就绪，请查看 data/startup.log。')
+            except Exception as error:
+                report_startup_error(root, error)
+                browser_errors.append(str(error))
+                server.should_exit = True
+        browser_thread = threading.Thread(target=open_when_ready, daemon=True)
+        browser_thread.start()
         server.run(sockets=[listener])
-        return 0 if server.started else 1
+        return 0 if server.started and not browser_errors else 1
     finally:
+        stopping.set()
         if server is not None:
             server.should_exit = True
+        with browser_lock:
+            for browser in owned_browser:
+                if browser.poll() is None:
+                    try:
+                        browser.terminate()
+                        browser.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        browser.kill()
+                        browser.wait(timeout=3)
+                    except OSError:
+                        pass  # It may already have exited between poll/terminate.
+        if browser_thread is not None:
+            browser_thread.join(timeout=2)
         listener.close()
         try:
             current = json.loads((data / 'running.json').read_text(encoding='utf-8'))
@@ -180,19 +231,27 @@ def main() -> int:
         lock.close()
 
 
+def report_startup_error(root: Path, error: Exception):
+    """Persist the original traceback before touching a possibly broken console."""
+    import traceback
+    try:
+        (root / 'data').mkdir(exist_ok=True)
+        with (root / 'data' / 'startup-error.log').open('a', encoding='utf-8') as stream:
+            stream.write('\n--- Startup failure ---\n')
+            traceback.print_exception(type(error), error, error.__traceback__, file=stream)
+    except OSError:
+        pass  # START.cmd also captures interpreter output outside this handler.
+    try:
+        print('Startup failed. See data/startup-error.log and data/startup-console.log.', file=sys.stderr, flush=True)
+    except (OSError, UnicodeError, ValueError):
+        pass
+
+
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
         raise SystemExit(0)
     except Exception as error:
-        import traceback
-        root = Path(__file__).resolve().parent
-        print(f'\n启动未完成：{error}\n请先完整解压文件，再双击 START.cmd。', file=sys.stderr)
-        try:
-            (root / 'data').mkdir(exist_ok=True)
-            with (root / 'data' / 'startup-error.log').open('a', encoding='utf-8') as stream:
-                traceback.print_exc(file=stream)
-        except OSError:
-            pass
+        report_startup_error(Path(__file__).resolve().parent, error)
         raise SystemExit(1)

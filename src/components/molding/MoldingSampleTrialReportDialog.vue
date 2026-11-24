@@ -78,9 +78,14 @@ function syncSelectedItem(itemId?: string) {
 }
 
 watch(
-  () => [props.visible, props.items, props.reports, props.initialItemId] as const,
-  ([visible]) => { if (visible) syncSelectedItem(props.initialItemId) },
-  { immediate: true, deep: true },
+  [() => props.visible, () => props.initialItemId, () => selectedItem.value?.id || props.items[0]?.id, savedReport],
+  ([visible, initialItemId], previous) => {
+    if (visible) {
+      const opening = !previous?.[0] || previous[1] !== initialItemId
+      syncSelectedItem(opening ? initialItemId : selectedItemId.value)
+    }
+  },
+  { immediate: true },
 )
 
 function closeDialog() { previewVisible.value = false; reportZoom.value = 1; emit('close') }

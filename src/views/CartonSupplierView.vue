@@ -72,10 +72,9 @@ const specialSelection = ref<{ factoryId: string; id: string; create: boolean } 
 const specialKinds: Record<string, string> = { SAMPLE: '样板单', WORKSHOP_MISC: '车间杂单', SUPPLIER_GIFT: '供应商赠送' }
 const serviceFactories = computed(() => [...new Map([...memberships.value, ...specialMemberships.value].map(row => [row.factory_id, row])).values()])
 let specialGeneration = 0
-async function loadSpecialRequests() {
+async function loadSpecialRequests(background = false) {
   const token = ++specialGeneration, context = importContext.value
-  specialLoading.value = true
-  specialError.value = ''
+  if (!background) { specialLoading.value = true; specialError.value = '' }
   const scopes = specialMemberships.value.map(row => row.factory_id)
   const signal = auxiliaryController.signal
   const results = await Promise.allSettled(scopes.map(factory => readQueue.run(() => cartonSpecialRequestsApi.list(factory, true), signal)))
@@ -148,9 +147,9 @@ const deliveryError = ref('')
 const deliveryLoading = ref(false)
 const deliveryCountsUnknown = computed(() => discovering.value || deliveryLoading.value || Boolean(deliveryError.value || membershipReadError.value || specialMembershipReadError.value))
 let deliveryGeneration = 0
-async function loadUnifiedDeliveries() {
+async function loadUnifiedDeliveries(background = false) {
   const token = ++deliveryGeneration, context = importContext.value
-  deliveryLoading.value = true
+  if (!background) deliveryLoading.value = true
   const scopes = serviceFactories.value.map(item => item.factory_id)
   const signal = auxiliaryController.signal
   const results = await Promise.allSettled(scopes.map(scope => readQueue.run(() => cartonUnifiedDeliveriesApi.list(scope, true), signal)))
@@ -169,11 +168,11 @@ const orderMarks = ref<Record<string, FactoryMarkState>>({})
 let orderMarksController = new AbortController()
 let orderMarksGeneration = 0
 const markOrderKey = (id: string, issueId: string) => JSON.stringify([id, issueId])
-function clearOrderMarks() {
+function clearOrderMarks(reset = true) {
   orderMarksGeneration++
   orderMarksController.abort()
   orderMarksController = new AbortController()
-  orderMarks.value = {}
+  if (reset) orderMarks.value = {}
 }
 function updateOrderMarks(factoryId: string, assets: SupplierMarkAsset[]) {
   if (!memberships.value.some(member => member.factory_id === factoryId)) return
@@ -187,11 +186,11 @@ function updateOrderMarks(factoryId: string, assets: SupplierMarkAsset[]) {
   }
   orderMarks.value[factoryId] = { loading: false, error: '', counts }
 }
-async function loadOrderMarks(scopes: string[]) {
-  clearOrderMarks()
+async function loadOrderMarks(scopes: string[], background = false) {
+  clearOrderMarks(!background)
   const token = orderMarksGeneration
   const signal = orderMarksController.signal
-  orderMarks.value = Object.fromEntries(scopes.map(scope => [scope, { loading: true, error: '', counts: {} }]))
+  if (!background) orderMarks.value = Object.fromEntries(scopes.map(scope => [scope, { loading: true, error: '', counts: {} }]))
   await Promise.all(scopes.map(async scope => {
     try {
       const assets = await readQueue.run(() => api.markAssets(scope, signal), signal)
@@ -672,18 +671,20 @@ watch([() => route.query.purchase_order, () => route.query.factory], ([number, f
   documentKind.value = 'PURCHASE'
   void openTab('documents')
 }, { immediate: true })
-async function loadActivity() {
+async function loadActivity(background = false) {
   if (!memberships.value.length || !auth.can('carton_supplier:read', '*', '*')) return
+  if (background && (extraLoadingState.activity || activityTimer)) return
   if (activityTimer) { clearTimeout(activityTimer); activityTimer = undefined }
   const token = ++extraGeneration.activity
-  extraLoadingState.activity = true; activityReadError.value = ''; activity.value = []
+  if (!background) { extraLoadingState.activity = true; activityReadError.value = ''; activity.value = [] }
   try {
     const result = await api.activityPage({ factory_id: activityFactory.value, search: activitySearch.value.trim(), event_type: activityEvent.value, date_from: activityFrom.value, date_to: activityTo.value, sort: activitySort.value, limit: 50, offset: (activityPage.value - 1) * 50 })
     if (token !== extraGeneration.activity) return
-    activity.value = result.items; activityTotal.value = result.total; extraLoaded.activity = true
+    activity.value = result.items; activityTotal.value = result.total; extraLoaded.activity = true; activityReadError.value = ''
   } catch (cause) {
     if (token === extraGeneration.activity) {
       activityReadError.value = getApiErrorMessage(cause)
+      activity.value = []
       activityTotal.value = 0
     }
   }
@@ -1349,12 +1350,11 @@ async function openTab(tab: typeof activeTab.value) {
   activeTab.value = tab
   if (tab === 'documents' || tab === 'activity') await loadExtra(tab)
 }
-async function loadExtra(tab: 'documents' | 'activity') {
-  if (tab === 'activity') { await loadActivity(); return }
+async function loadExtra(tab: 'documents' | 'activity', background = false) {
+  if (tab === 'activity') { await loadActivity(background); return }
   if (extraLoadingState[tab] || extraLoaded[tab] || !memberships.value.length) return
   const token = ++extraGeneration[tab]
-  extraLoadingState[tab] = true
-  documentReadError.value = ''
+  if (!background) { extraLoadingState[tab] = true; documentReadError.value = '' }
   try {
     const scopes = memberships.value.map(item => item.factory_id)
     const results = await Promise.allSettled(scopes.map(scope => api.documents(scope)))
@@ -1523,7 +1523,7 @@ function orderPromiseDifferences(order: SupplierOrder) {
   return order.lines.filter(line => line.accepted && Number(line.required_quantity) > 0)
     .flatMap(line => { const text = promiseDifference(order.planned_date, line.promised_date); return text ? [`${line.packaging_type}：${text}`] : [] })
 }
-async function load(quiet = false, includeSpecial = true, onlyFactory = '') {
+async function load(quiet = false, includeSpecial = true, onlyFactory = '', background = false) {
   workspaceController.abort(); workspaceController = new AbortController()
   const signal = workspaceController.signal
   const token = ++generation
@@ -1533,13 +1533,13 @@ async function load(quiet = false, includeSpecial = true, onlyFactory = '') {
     auxiliaryController.abort(); auxiliaryController = new AbortController()
     const auxiliaryToken = ++auxiliaryGeneration
     auxiliaryLoading = true
-    return Promise.allSettled([...(includeSpecial ? [loadSpecialRequests()] : []), loadUnifiedDeliveries(), loadOrderMarks(scopes)])
+    return Promise.allSettled([...(includeSpecial ? [loadSpecialRequests(background)] : []), loadUnifiedDeliveries(background), loadOrderMarks(scopes, background)])
       .finally(() => { if (auxiliaryToken === auxiliaryGeneration) auxiliaryLoading = false })
   }
   if (!scopes.length) { if (!onlyFactory) await loadAuxiliary(); return }
-  loading.value = true
+  if (!background) loading.value = true
   if (!quiet) error.value = ''
-  for (const scope of scopes) workspaceStates.value[scope] = { loading: true, error: '' }
+  if (!background) for (const scope of scopes) workspaceStates.value[scope] = { loading: true, error: '' }
   const workspaces = new Map(memberships.value.map(member => [member.factory_id, {
     factory_id: member.factory_id, supplier_name: workspace.value?.supplier_name || member.supplier_name,
     orders: (workspace.value?.orders || []).filter(row => row.factory_id === member.factory_id),
@@ -1573,7 +1573,7 @@ async function load(quiet = false, includeSpecial = true, onlyFactory = '') {
         workspaces.delete(scope)
         workspaceStates.value[scope] = { loading: false, error: getApiErrorMessage(reason) }
       }
-      publish()
+      if (!background) publish()
     }))
     // Queue the primary ledger first; auxiliary readers share the same two slots.
     if (!onlyFactory) {
@@ -1581,6 +1581,7 @@ async function load(quiet = false, includeSpecial = true, onlyFactory = '') {
     }
     await requests
     if (token !== generation) return
+    if (background) publish()
     const data = workspace.value!
     if (priorVersion !== JSON.stringify(data.orders)) { extraLoaded.documents = false; extraLoaded.activity = false }
     const orderIds = new Set(data.orders.map(order => order.id))
@@ -1595,7 +1596,7 @@ async function load(quiet = false, includeSpecial = true, onlyFactory = '') {
       }
       if (!dirtyDates.has(line.id)) dates[line.id] = line.promised_date || order.planned_date
     }
-    if (quiet && (activeTab.value === 'documents' || activeTab.value === 'activity')) await loadExtra(activeTab.value)
+    if (quiet && (activeTab.value === 'documents' || activeTab.value === 'activity')) await loadExtra(activeTab.value, background)
     if (workspaceReadError.value && !quiet) failure(new Error(workspaceReadError.value))
     return workspaceReadError.value
   } catch (reason) {
@@ -1652,9 +1653,13 @@ async function refresh() {
   } catch (reason) { if (context === importContext.value) failure(reason) } finally { if (context === importContext.value) discovering.value = false }
 }
 let automaticRefresh: ReturnType<typeof setInterval> | undefined
+let backgroundRead = false
 function refreshOnFocus() {
   if (document.visibilityState === 'hidden' || Date.now() - lastReadStarted < 45000) return
-  if (!busy.value && !loading.value && !auxiliaryLoading && !specialLoading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
+  if (!backgroundRead && !busy.value && !loading.value && !auxiliaryLoading && !specialLoading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) {
+    backgroundRead = true
+    void load(true, true, '', true).finally(() => { backgroundRead = false })
+  }
 }
 onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
 onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
@@ -2023,7 +2028,7 @@ async function download(id: string, factoryId: string, filename: string) {
             <CartonShipmentFilters v-model="shipmentFilters" :rows="unifiedShipmentRows" hide-search @clear="factoryFilter = ''"><label>厂区<select v-model="factoryFilter" aria-label="供应商发货厂区筛选" class="h-9 max-w-full rounded-lg border px-2 text-xs"><option value="">全部厂区</option><option v-for="item in serviceFactories" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }} · {{ item.supplier_name }}</option></select></label></CartonShipmentFilters>
             <p v-if="deliveryLoading" role="status" class="px-4 pt-3 text-xs text-slate-500">正在读取送货单…</p>
             <p v-else-if="deliveryError" role="alert" class="m-4 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-              送货单读取失败：{{ deliveryError }}<button type="button" class="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold" @click="loadUnifiedDeliveries">重新读取送货单</button>
+               送货单读取失败：{{ deliveryError }}<button type="button" class="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold" @click="loadUnifiedDeliveries()">重新读取送货单</button>
             </p>
             <p v-if="!deliveryLoading && (!deliveryError || matchingUnifiedShipments.length)" class="px-4 pt-3 text-xs text-slate-500">{{ deliveryError ? '已读取范围显示' : '显示' }} {{ matchingUnifiedShipments.length }} 张送货单</p>
             <div class="space-y-3 p-4"><div v-for="shipment in matchingUnifiedShipments" :key="`${shipment.factory_id}:${shipment.id}`"><p class="mb-1 text-xs font-semibold text-teal-800">送往{{ factoryDisplayName(shipment.factory_id) }}</p><CartonUnifiedDeliveryNotes :group="shipment.group" supplier collapsible :viewer-key="importContext" /></div><p v-if="!deliveryLoading && !matchingUnifiedShipments.length && !deliveryError" class="py-8 text-center text-sm text-slate-500">暂无符合条件的发货单</p></div>
@@ -2094,7 +2099,7 @@ async function download(id: string, factoryId: string, filename: string) {
 
 <template #actions><button type="button" class="h-9 rounded-lg border px-3" @click="clearActivityFilters">清除筛选</button>
 <button type="button" class="h-9 rounded-lg border px-3" @click="activitySort = 'DESC'">恢复默认排序</button>
-<button type="button" class="h-9 rounded-lg border px-3" :disabled="extraLoadingState.activity" @click="loadActivity">刷新</button></template>
+ <button type="button" class="h-9 rounded-lg border px-3" :disabled="extraLoadingState.activity" @click="loadActivity()">刷新</button></template>
 <template #footer><span aria-live="polite">{{ extraLoadingState.activity ? '读取中…' : activityReadError ? '日志数量暂不可用' : `共 ${activityTotal} 条` }}</span></template>
 </CartonFilterBar><p v-if="activityReadError" role="alert" class="m-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">操作日志读取失败：{{ activityReadError }}</p><div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[700px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 text-slate-600"><tr><th class="p-3">时间</th><th class="p-3">厂区</th><th class="p-3">操作</th><th class="p-3">单据 / 订单</th><th class="p-3">操作人</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredActivity" :key="row.id"><td data-label="时间" class="p-3">{{ row.created_at }}</td><td data-label="厂区" class="p-3">{{ factoryDisplayName(row.factory_id) }}</td><td data-label="操作" class="p-3 font-semibold">{{ row.action }}</td><td data-label="单据 / 订单" class="p-3">{{ row.reference_no }}</td><td data-label="操作人" class="p-3">{{ row.actor_name }}</td></tr><tr v-if="!filteredActivity.length && !extraLoadingState.activity && !activityReadError"><td colspan="5" class="p-10 text-center text-slate-500">暂无相关操作记录</td></tr></tbody></table></div><div class="flex items-center justify-end gap-3 border-t p-3 text-xs"><button type="button" :disabled="extraLoadingState.activity || Boolean(activityReadError) || activityPage <= 1" class="rounded-lg border px-3 py-2 disabled:opacity-40" @click="activityPage--">上一页</button><span v-if="!activityReadError && !extraLoadingState.activity">第 {{ activityPage }} / {{ Math.max(1, Math.ceil(activityTotal / 50)) }} 页</span><button type="button" :disabled="extraLoadingState.activity || Boolean(activityReadError) || activityPage * 50 >= activityTotal" class="rounded-lg border px-3 py-2 disabled:opacity-40" @click="activityPage++">下一页</button></div></section>
         </template>

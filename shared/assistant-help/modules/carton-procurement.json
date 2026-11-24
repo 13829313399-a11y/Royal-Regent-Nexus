@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "22396589f9c0b37779ace2bf7ac8ca0dc0898d2262f4efa585ae344749e27f0e"
+        "sha256": "a6c0f320f47fbb797667ba8aaffccbe6e7ea78d8753c6f26dc6119aae3d25a95"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -200,7 +200,7 @@
       {
         "path": "src/components/CartonSupplierChangeTasks.vue",
         "symbol": "async function respond(",
-        "sha256": "766f7cae0e8e669c868c076323fd53437265346548fd3b15afe10c6720996c01"
+        "sha256": "340929b9b1606370a392f823c3847e978e0fd63f6672717abfcb4b45f7cfce92"
       },
       {
         "path": "backend/app/services/carton_replenishment_supplier.py",

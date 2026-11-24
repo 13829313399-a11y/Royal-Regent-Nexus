@@ -1,13 +1,15 @@
 # 给 rr 工作区的项目读取说明
 
-这里是 ShinobuTranslator 本地网页版的源码快照，复制自 D:\mimo\shinobu-web。
+> RR 内集成从本页和[文档工具说明](../docs/document-tools/README.md)进入。子工程 `CLAUDE.md`、`CONTEXT.md` 中的个人插件路径与 Trellis 流程属于上游开发环境。RR 日常开发遵循[仓库约定](../AGENTS.md)。
+
+这里是 ShinobuTranslator 本地网页版的源码快照。
 用途：作为 Royal Regent Nexus 公共工具栏“图片 / PDF 翻译”的独立前端子项目，同时保留独立运行方式。
-这是独立副本，不会自动与原项目同步。原项目仍保留在原路径，本地页面仍使用 http://127.0.0.1:8774/。
+这是独立副本，不会自动与原项目同步。源快照记录的原项目路径为 `D:\mimo\shinobu-web`，当时独立试用地址为 `http://127.0.0.1:8774/`。上游说明中的 Releases 指原扩展发布仓库。
 
 ## 从哪里开始读
 
 1. README_FOR_RR.md：本说明与最新改动。
-2. CLAUDE.md：原项目开发约定。与 rr/AGENTS.md 一起阅读，用户当前指令优先。
+2. [CLAUDE.md](CLAUDE.md) 记录上游约定。RR 集成开发使用[根规则](../AGENTS.md)。
 3. apps/web/src/App.tsx：React 网页入口、图片队列、预览、补翻和 PDF 导出按钮。
 4. apps/web/src/features/export/resultsPdf.ts：按队列顺序汇总结果为 PDF，保留比例，读取保存的历史结果和补翻合并图。
 5. apps/web/src/features/history/HistoryView.tsx：历史批次及 PDF 导出入口。

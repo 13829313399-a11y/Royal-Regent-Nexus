@@ -331,7 +331,7 @@ def render(data,kind,factory='huaxing'):
             content=designed_render(data,kind,factory)
         elif kind=='overview':
             from app.services.qc_monthly_overview_excel import render as overview_render
-            content=overview_render(data)
+            content=overview_render(data,factory)
         else:content=_xlsx(data,factory) if kind=='issues' else _xls(data,kind)
         if len(content)>MAX_BYTES:raise HTTPException(422,'Excel 文件过大，请按客户筛选后导出')
         return content

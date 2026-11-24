@@ -3,10 +3,6 @@ import type { Message } from './types'
 // Presentation only. Values, units, definitions and clocks come from the same
 // authorized V3 tool result; this module never aggregates rows or queries data.
 const presentations: Record<string, {module: string; primary: string[]; labels: Record<string, string>}> = {
-  get_injection_overview: {module:'injection-scheduling', primary:['demand_count','held_count','wait_material_count','remaining_material_kg','warehouse_shortage_kg','actual_delivery_late_count'], labels:{
-    demand_count:'需求行数', held_count:'挂起（含待料）', wait_material_count:'待料标记', remaining_material_kg:'预计剩余生产用料',
-    known_remaining_material_kg:'用料已知小计', remaining_material_unknown_count:'用料未知需求', forecast_late_count:'预计排期超期风险',
-    forecast_unknown_count:'排期预测未知', warehouse_shortage_kg:'仓库实际短缺', actual_delivery_late_count:'实际交货延期'}},
   get_printer_status: {module:'three-d-printing', primary:['printer_count','stale_count','unknown_current_state_count','reported_running_count','physically_stopped_count','task_queue_count'], labels:{
     printer_count:'机台数', current_telemetry_count:'当前有效遥测', stale_count:'观测过期机台', unknown_current_state_count:'当前状态未知',
     reported_running_count:'有效遥测报告运行', physically_stopped_count:'物理停机', task_queue_count:'任务队列'}},

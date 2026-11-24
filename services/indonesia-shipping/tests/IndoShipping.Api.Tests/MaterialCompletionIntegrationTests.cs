@@ -12,6 +12,32 @@ namespace IndoShipping.Api.Tests;
 
 public class MaterialCompletionIntegrationTests
 {
+    [Fact]
+    public async Task Supplier_reply_and_estimated_deadline_share_one_material_alert_until_completion()
+    {
+        await using var f = await Fixture.Create(); if (f is null) return;
+        var today = DateTime.Today;
+        await f.AddLeadProfiles();
+        await f.Upload("test", JsonSerializer.Serialize(new[] {
+            new { code = "A", orderNo = "PO1", qty = 10, orderDate = today.AddDays(-16).ToString("yyyy-MM-dd") }
+        }), today);
+        await f.Db.ExecuteAsync("""
+            INSERT INTO purchase_orders VALUES(7,NULL,'sent');
+            INSERT INTO po_items VALUES(9,1,20,20,7,'PO1',@reply)
+            """, new { reply = today.AddDays(4) });
+        var item = Purchase(await f.Read());
+        Assert.Equal("晚于预计", item.GetProperty("risk_label").GetString());
+        Assert.Equal(5, item.GetProperty("order_details")[0].GetProperty("reply_delay_days").GetInt32());
+        await f.Db.ExecuteAsync("UPDATE po_items SET supplier_reply_date=@late", new { late = today.AddDays(-1) });
+        item = Purchase(await f.Read());
+        Assert.Equal("供应商逾期", item.GetProperty("risk_label").GetString());
+        Assert.Single((await f.Read()).EnumerateArray().Where(x => x.GetProperty("tracking_type").GetString() == "purchase"));
+        await f.Db.ExecuteAsync("INSERT INTO po_receipts VALUES(9,20); INSERT INTO outbound VALUES(9,20)");
+        item = Purchase(await f.Read());
+        Assert.Equal("covered", item.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, item.GetProperty("risk_label").ValueKind);
+    }
+
     [Theory]
     [InlineData("text")]
     [InlineData("json")]
@@ -265,6 +291,55 @@ public class MaterialCompletionIntegrationTests
         await f.Db.ExecuteAsync("INSERT INTO po_items VALUES(1,1,5,5); INSERT INTO po_receipts VALUES(1,5)");
         Assert.IsType<ConflictObjectResult>(await f.Alerts.SaveAdjustment(body));
         Assert.Equal(0, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM audit_logs"));
+    }
+
+    [Fact]
+    public async Task Long_unicode_order_identity_can_complete_reset_and_retrieve_its_full_audit_history()
+    {
+        await using var f = await Fixture.Create(); if (f is null) return;
+        await f.Db.ExecuteAsync("DELETE FROM material_tracking_history; DELETE FROM schedules");
+        await f.Upload("中文订单验收", JsonSerializer.Serialize(new[] {
+            new { code = "A", customer = "河源测试客户名称包含中文", orderNo = "QA-OVERDUE-LONG-ORDER-20261111", qty = 100 }
+        }));
+        var body = await f.Adjustment(Purchase(await f.Read()));
+        Assert.True(body.order_key.Length > 64);
+        body.status = "已送完";
+        Assert.IsType<OkObjectResult>(await f.Alerts.SaveAdjustment(body));
+        Assert.Equal("covered", Purchase(await f.Read()).GetProperty("status").GetString());
+        var auditId = await f.Db.ExecuteScalarAsync<string>("SELECT entity_id FROM audit_logs ORDER BY id DESC LIMIT 1");
+        Assert.Matches("^[0-9A-F]{64}$", auditId!);
+        Assert.Equal(body.order_key, await f.Db.ExecuteScalarAsync<string>("SELECT details->>'order_key' FROM audit_logs ORDER BY id DESC LIMIT 1"));
+        var reset = await f.Adjustment(Purchase(await f.Read())); reset.reset = true;
+        Assert.IsType<OkObjectResult>(await f.Alerts.SaveAdjustment(reset));
+        Assert.NotEqual("covered", Purchase(await f.Read()).GetProperty("status").GetString());
+        var history = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await f.Alerts.AdjustmentHistory(body.order_key)).Value);
+        Assert.Equal(2, history.GetProperty("total").GetInt32());
+        Assert.Equal("reset-adjustment", history.GetProperty("items")[0].GetProperty("action").GetString());
+        Assert.All(history.GetProperty("items").EnumerateArray(), row =>
+            Assert.Equal(body.order_key, row.GetProperty("details").GetProperty("order_key").GetString()));
+        var other = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await f.Alerts.AdjustmentHistory(body.order_key.Replace("20261111", "20261112"))).Value);
+        Assert.Equal(0, other.GetProperty("total").GetInt32());
+        Assert.Equal(0, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM po_receipts"));
+        Assert.Equal(0, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM outbound"));
+    }
+
+    [Fact]
+    public async Task Adjustment_history_combines_legacy_raw_identity_and_new_digest_without_mixing_other_orders()
+    {
+        await using var f = await Fixture.Create(); if (f is null) return;
+        var body = await f.Adjustment(Purchase(await f.Read()));
+        Assert.True(body.order_key.Length <= 64);
+        await f.Db.ExecuteAsync("""
+            INSERT INTO audit_logs(module,action,entity_type,entity_id,details)
+            VALUES('material-alerts','adjust-tracking','tracking-order',@key,'{"legacy":true}'::jsonb),
+                  ('material-alerts','adjust-tracking','tracking-order','different-order','{}'::jsonb)
+            """, new { key = body.order_key });
+        body.status = "已送完";
+        Assert.IsType<OkObjectResult>(await f.Alerts.SaveAdjustment(body));
+        var history = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await f.Alerts.AdjustmentHistory(body.order_key)).Value);
+        Assert.Equal(2, history.GetProperty("total").GetInt32());
+        Assert.True(history.GetProperty("items")[1].GetProperty("details").GetProperty("legacy").GetBoolean());
+        Assert.Equal(body.order_key, history.GetProperty("items")[0].GetProperty("details").GetProperty("order_key").GetString());
     }
 
     [Fact]
@@ -817,13 +892,14 @@ public class MaterialCompletionIntegrationTests
                     CREATE TABLE settings(key text PRIMARY KEY, value text);
                     CREATE TABLE audit_logs(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, occurred_at timestamptz DEFAULT now(),
                         user_id int, username text, module text, action text, entity_type text,
-                        entity_id text, summary text, details jsonb, ip_address text);
+                        entity_id varchar(64), summary text, details jsonb, ip_address text);
                     CREATE TABLE material_lead_profiles(product_code text, product_name text, category text,
                         component_name text, lead_days int, capacity_per_day numeric, active boolean);
                     CREATE TABLE materials(id int, product_code text, item_no text, name_zh text, category text,
                         supplier text, usage_qty numeric, active boolean, sort_order int);
                     CREATE TABLE products(code text, name text, moldings jsonb, active boolean);
-                    CREATE TABLE po_items(id int, material_id int, purchase_qty numeric, qty numeric);
+                    CREATE TABLE purchase_orders(id int, merged_into_id int, status text);
+                    CREATE TABLE po_items(id int, material_id int, purchase_qty numeric, qty numeric, po_id int, tomy_po text, supplier_reply_date date);
                     CREATE TABLE po_receipts(po_item_id int, qty numeric);
                     CREATE TABLE outbound(po_item_id int, qty numeric);
                     INSERT INTO schedules(week_label,upload_date,raw_rows) VALUES('10-01','2026-10-01',

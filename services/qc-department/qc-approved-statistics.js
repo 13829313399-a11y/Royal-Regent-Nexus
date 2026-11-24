@@ -5,7 +5,7 @@
   const el = name => root.document.getElementById('qstats-' + name);
   const active = () => Boolean(root.__QC_NEXUS && root.document.getElementById('page-analysis')?.classList.contains('active'));
   const percent = n => n == null ? '—' : Number(n).toFixed(1) + '%';
-  const factoryName = () => ({huaxing:'华兴',huadeng:'华登'})[root.__QC_NEXUS?.factory] || root.getCompanyName?.() || '当前厂区';
+  const factoryName = () => root.__QC_NEXUS?.factoryLabel || root.getCompanyName?.() || '当前厂区';
   function rateBand(rate) {
     if (rate == null) return null;
     if (rate >= 90) return {key:'green',label:'绿色 · ≥90%'};
@@ -36,7 +36,7 @@
     }
     el('reset').onclick=()=>{Object.assign(state.filters,{year:'',customer:'',result:'FAIL',page:'1'});void load();};
     el('refresh').onclick=()=>void load();
-    if(root.__QC_NEXUS?.factory==='huaxing'){
+    if(root.__QC_NEXUS?.factory){
       installAnnualSheets();
     }
     el('root').querySelectorAll('[data-result]').forEach(b=>b.onclick=()=>{state.filters.result=b.dataset.result;state.filters.page='1';void load();});
@@ -110,7 +110,8 @@
     if(!host || host.hidden || !state.data)return;
     const {year,customer}=state.data.filters;
     if(!year){host.textContent='当前范围没有验货问题记录';return;}
-    return root.QcIssueReports?.open('yearly',year+'-01-01',customer,{host,sharedCustomer:true});
+    const inspectionTotal=Object.values(state.data.excluded).some(Boolean)?null:state.data.totals.total;
+    return root.QcIssueReports?.open('yearly',year+'-01-01',customer,{host,sharedCustomer:true,inspectionTotal});
   }
   async function exportSummary(){
     const data=state.data, button=el('export'), status=el('export-status');
@@ -201,7 +202,14 @@
       }
       el('detail-rows').append(row);
     }
-    if(!data.details.items.length){const row=root.document.createElement('tr'),td=cell(row,'当前筛选范围内暂无此类记录');td.colSpan=6;td.className='qstats-empty-row';el('detail-rows').append(row);}
+    if(!data.details.items.length){
+      const detail='当前筛选范围内暂无此类记录';
+      const row=root.document.createElement('tr'),td=cell(row,detail,'qstats-empty-row');
+      td.colSpan=6;
+      const scene=t.total===0&&!Object.values(data.excluded).some(Boolean)&&root.QcEmptyState?.markup('reports',detail);
+      if(scene){td.classList.add('qc-empty-cell');td.innerHTML=scene;}
+      el('detail-rows').append(row);
+    }
     const detail=data.details;
     el('detail-count').textContent='共 '+detail.total+' 条'+(detail.total?' · 显示 '+((detail.page-1)*detail.pageSize+1)+'—'+Math.min(detail.total,detail.page*detail.pageSize)+' 条':'');
     el('page').textContent=detail.page+' / '+detail.pages;el('prev').disabled=detail.page===1;el('next').disabled=detail.page===detail.pages;

@@ -1,0 +1,17 @@
+<script setup lang="ts">
+import type { HTMLAttributes } from 'vue'
+import { cn } from '@/lib/utils'
+
+const props = defineProps<{
+  class?: HTMLAttributes['class']
+}>()
+</script>
+
+<template>
+  <div
+    data-slot="card-footer"
+    :class="cn('flex items-center gap-2 px-5 pb-5 sm:px-6 sm:pb-6', props.class)"
+  >
+    <slot />
+  </div>
+</template>

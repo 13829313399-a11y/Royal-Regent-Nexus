@@ -1,10 +1,11 @@
 import type { XlsxParsedSheet } from './xlsxLite'
-import { yinhuiHeaderKey, yinhuiSheetKey } from './yinhuiSource'
+import { isYinhuiElectronicSheet, yinhuiHeaderKey } from './yinhuiSource'
 import type { YinhuiCostRow } from './yinhui'
+
+export { isYinhuiElectronicSheet }
 
 const text = (value: unknown) => String(value ?? '').normalize('NFKC').trim()
 export const isYinhuiIc = (value: unknown) => /^IC(?:$|[^A-Z0-9])/i.test(text(value))
-export const isYinhuiElectronicSheet = (name: string) => /^(?:电子|電子)报价/.test(yinhuiSheetKey(name))
 
 export interface YinhuiIcSource {
   description: string

@@ -99,7 +99,6 @@
         </script>
       </div>
       <div id="userBadge" style="display:inline-flex;align-items:center;gap:6px;margin-right:4px"></div>
-      <button class="btn-icon btn-add" onclick="QcSchedule.openNew()" title="新增排期">＋ 新增验货</button>
     </div>
     <div id="reportCenterNav" hidden>
       <div class="report-mode-tabs report-period-switch" role="group" aria-label="报告类型">
@@ -203,7 +202,8 @@
             <label class="records-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="searchInput" aria-label="搜索客户、PO、货号、产品名称或备注" title="搜索客户、PO、货号、产品名称或备注" placeholder="客户 / PO" oninput="filterRecords()" /></label>
             <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
           </div>
-          <div class="records-actions" role="group" aria-label="打印">
+          <div class="records-actions" role="group" aria-label="验货台操作">
+            <button type="button" id="btnAddInspection" class="btn btn-primary" hidden aria-haspopup="dialog" onclick="QcSchedule.openNew()">＋ 新增验货</button>
             <div class="qip-toolbar-action" hidden><button type="button" id="qcInspectionPrint" hidden aria-haspopup="dialog"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8V3h10v5M7 17H4V8h16v9h-3M7 14h10v7H7zM17 11h.01"/></svg><span>打印</span></button></div>
           </div>
         </div>
@@ -217,18 +217,17 @@
   <div class="page" id="page-inspection-summary"><div class="page-inner" id="qsum-root"></div></div>
   <div class="page" id="page-review">
     <div class="page-inner">
-      <div class="toolbar">
-        <div class="toolbar-left">
-          <div class="review-tabs">
-            <button class="mode-tab active" id="reviewTabPending"  onclick="setReviewTab('pending')">待审核 <span class="review-count" id="reviewCountPending">0</span></button>
-            <button class="mode-tab" id="reviewTabApproved" onclick="setReviewTab('approved')">已审核</button>
+      <div class="qis-review-surface">
+        <div id="qis-review-controls">
+          <div class="report-period-switch qis-review-tabs" role="group" aria-label="审核分类">
+            <span class="report-period-glass" aria-hidden="true"></span>
+            <button type="button" class="active" id="reviewTabPending" aria-pressed="true" onclick="setReviewTab('pending')">待审核 <span class="review-count" id="reviewCountPending">0</span></button>
+            <button type="button" id="reviewTabApproved" aria-pressed="false" onclick="setReviewTab('approved')">已审核</button>
           </div>
+          <button type="button" class="qc-refresh-icon" onclick="renderReviewPage()" aria-label="刷新审核列表"></button>
         </div>
-        <div class="toolbar-right">
-          <button type="button" class="qc-refresh-icon" onclick="renderReviewPage()" aria-label="刷新审核列表" title="刷新审核列表"></button>
-        </div>
+        <div class="table-wrap" id="reviewTableWrap"></div>
       </div>
-      <div id="qis-review-controls"></div><div class="table-wrap" id="reviewTableWrap"></div>
     </div>
   </div>
 
@@ -835,6 +834,8 @@
 <div class="toast" id="toast"></div>
 
 <script defer src="nexus-integration.js"></script>
+<link rel="stylesheet" href="qc-empty-state.css">
+<script defer src="qc-empty-state.js"></script>
 <script defer src="qc-schedule.js"></script>
 <script defer src="report_export.js"></script>
 <script defer src="app.js?v=20260702-heatmap"></script>
@@ -845,18 +846,22 @@
 <link rel="stylesheet" href="qc-mobile-entry.css"/><script defer src="qc-mobile-entry.js"></script>
 <link rel="stylesheet" href="qc-inspection-print.css"/><script defer src="qc-inspection-print.js"></script>
 <link rel="stylesheet" href="qc-inspection-summary.css">
+<script defer src="qc-photo-shapes.js"></script>
 <script defer src="qc-inspection-summary.js"></script>
 <link rel="stylesheet" href="qc-approved-statistics.css">
 <script defer src="qc-approved-statistics.js"></script>
 <link rel="stylesheet" href="qc-daily-report.css">
 <link rel="stylesheet" href="qc-report-workbook.css">
 <script defer src="qc-report-workbook.js"></script>
+<script defer src="qc-review-workbook.js"></script>
 <script defer src="qc-daily-report.js"></script>
 <link rel="stylesheet" href="qc-weekly-templates.css">
 <script defer src="qc-weekly-templates.js"></script>
 <link rel="stylesheet" href="qc-issue-reports.css">
 <script defer src="qc-issue-reports.js"></script>
 <link rel="stylesheet" href="qc-monthly-templates.css">
+<link rel="stylesheet" href="qc-select.css">
+<script type="module" src="qc-select.js"></script>
 <script defer src="qc-monthly-templates.js"></script>
 <script defer src="mobile.js"></script><!-- 移动端侧栏抽屉交互 -->
 <script>

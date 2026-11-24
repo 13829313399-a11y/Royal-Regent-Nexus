@@ -68,6 +68,9 @@ function selectFactory(factoryId: FactoryContextId) {
   if (factoryId === appStore.activeFactoryId || !canChangeFactory()) return
   appStore.setActiveFactory(factoryId)
 
+  // The work center owns its explicit responsibility filter independently of the shell.
+  if (route.name === 'notification-center') return
+
   if (!route.path.startsWith('/modules') && route.query.factory === undefined) {
     return
   }

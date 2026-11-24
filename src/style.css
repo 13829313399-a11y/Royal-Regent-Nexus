@@ -214,6 +214,186 @@
       transform: translateX(100%);
     }
   }
+
+  /* Spatial surface materials & spring overlay motion (DESIGN.md sections 7 & 11). */
+  .surface-l1 {
+    background-color: var(--card);
+    border: 1px solid var(--glass-stroke-subtle);
+    box-shadow: var(--elevation-1);
+  }
+
+  .glass-chrome {
+    background-color: var(--glass-surface-chrome);
+    -webkit-backdrop-filter: blur(var(--glass-blur-md)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-md)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-stroke);
+    box-shadow: var(--glass-highlight), var(--elevation-2);
+  }
+
+  .glass-float {
+    background-color: var(--glass-surface-float);
+    -webkit-backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-stroke);
+    box-shadow: var(--glass-highlight), var(--elevation-3);
+  }
+
+  .ui-overlay[data-state='open'] {
+    animation: ui-fade-in var(--motion-duration-base) var(--motion-ease-standard) both;
+  }
+
+  .ui-overlay[data-state='closed'] {
+    animation: ui-fade-out var(--motion-duration-fast) var(--motion-ease-standard) both;
+  }
+
+  .ui-spring-pop[data-state='open'] {
+    animation: ui-pop-in var(--motion-duration-spring) var(--motion-ease-spring-snappy) both;
+  }
+
+  .ui-spring-pop[data-state='closed'] {
+    animation: ui-pop-out var(--motion-duration-fast) var(--motion-ease-standard) both;
+  }
+
+  .ui-drawer-right[data-state='open'] {
+    animation: ui-slide-in-right var(--motion-duration-slow) var(--motion-ease-spring-smooth) both;
+  }
+
+  .ui-drawer-right[data-state='closed'] {
+    animation: ui-slide-out-right var(--motion-duration-base) var(--motion-ease-standard) both;
+  }
+
+  .ui-drawer-left[data-state='open'] {
+    animation: ui-slide-in-left var(--motion-duration-slow) var(--motion-ease-spring-smooth) both;
+  }
+
+  .ui-drawer-left[data-state='closed'] {
+    animation: ui-slide-out-left var(--motion-duration-base) var(--motion-ease-standard) both;
+  }
+
+  .ui-drawer-bottom[data-state='open'] {
+    animation: ui-slide-in-bottom var(--motion-duration-slow) var(--motion-ease-spring-smooth) both;
+  }
+
+  .ui-drawer-bottom[data-state='closed'] {
+    animation: ui-slide-out-bottom var(--motion-duration-base) var(--motion-ease-standard) both;
+  }
+
+  .ui-collapsible-content[data-state='open'] {
+    animation: ui-reveal-down var(--motion-duration-base) var(--motion-ease-spring-smooth) both;
+  }
+
+  .ui-collapsible-content[data-state='closed'] {
+    animation: ui-fade-out var(--motion-duration-fast) var(--motion-ease-standard) both;
+  }
+
+  @keyframes ui-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes ui-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+
+  @keyframes ui-pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes ui-pop-out {
+    from {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: translateY(4px) scale(0.96);
+    }
+  }
+
+  @keyframes ui-slide-in-right {
+    from {
+      opacity: 0;
+      transform: translate3d(100%, 0, 0);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes ui-slide-out-right {
+    from {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+    to {
+      opacity: 0;
+      transform: translate3d(100%, 0, 0);
+    }
+  }
+
+  @keyframes ui-slide-in-left {
+    from {
+      opacity: 0;
+      transform: translate3d(-100%, 0, 0);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes ui-slide-out-left {
+    from {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+    to {
+      opacity: 0;
+      transform: translate3d(-100%, 0, 0);
+    }
+  }
+
+  @keyframes ui-slide-in-bottom {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 100%, 0);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes ui-slide-out-bottom {
+    from {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+    to {
+      opacity: 0;
+      transform: translate3d(0, 100%, 0);
+    }
+  }
+
+  @keyframes ui-reveal-down {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
 
 /* Scoped component CSS can reference these tokens without a matching utility. */
@@ -255,6 +435,18 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  /* Spatial and motion utilities (DESIGN.md sections 7 and 11). */
+  --shadow-elevation-1: var(--elevation-1);
+  --shadow-elevation-2: var(--elevation-2);
+  --shadow-elevation-3: var(--elevation-3);
+  --blur-glass-sm: var(--glass-blur-sm);
+  --blur-glass-md: var(--glass-blur-md);
+  --blur-glass-lg: var(--glass-blur-lg);
+  --ease-standard: var(--motion-ease-standard);
+  --ease-emphasized: var(--motion-ease-emphasized);
+  --ease-spring-smooth: var(--motion-ease-spring-smooth);
+  --ease-spring-snappy: var(--motion-ease-spring-snappy);
+  --ease-spring-bouncy: var(--motion-ease-spring-bouncy);
 }
 
 :root {
@@ -290,6 +482,57 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* Spatial design tokens (DESIGN.md sections 5, 7 and 11). Additive only. */
+:root {
+  /* Ambient glow: large, low-opacity color fields behind content. */
+  --ambient-glow-primary: oklch(0.78 0.09 182 / 22%);
+  --ambient-glow-secondary: oklch(0.8 0.06 240 / 16%);
+
+  /* Glass materials: use only on chrome and floating layers. */
+  --glass-blur-sm: 12px;
+  --glass-blur-md: 20px;
+  --glass-blur-lg: 32px;
+  --glass-saturate: 180%;
+  --glass-surface-thin: oklch(1 0 0 / 56%);
+  --glass-surface-chrome: oklch(0.99 0.004 210 / 72%);
+  --glass-surface-float: oklch(1 0 0 / 82%);
+  --glass-solid-fallback: oklch(0.99 0.004 210);
+  --glass-stroke: oklch(1 0 0 / 55%);
+  --glass-stroke-subtle: oklch(0.21 0.025 240 / 8%);
+  --glass-highlight: inset 0 1px 0 oklch(1 0 0 / 70%);
+
+  /* Elevation: L1 content, L2 chrome, L3 floating. */
+  --elevation-1: 0 1px 2px oklch(0.2 0.025 240 / 4%), 0 4px 12px -6px oklch(0.2 0.04 210 / 10%);
+  --elevation-2: 0 2px 6px oklch(0.2 0.025 240 / 5%), 0 16px 32px -16px oklch(0.2 0.04 210 / 18%);
+  --elevation-3: 0 8px 16px oklch(0.2 0.025 240 / 6%), 0 32px 64px -24px oklch(0.2 0.04 210 / 28%);
+
+  /* Motion: spring curves are normalized step responses for CSS linear(). */
+  --motion-duration-instant: 100ms;
+  --motion-duration-fast: 160ms;
+  --motion-duration-base: 240ms;
+  --motion-duration-slow: 360ms;
+  --motion-duration-spring: 480ms;
+  --motion-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-spring-smooth: linear(0, 0.041, 0.135, 0.25, 0.366, 0.475, 0.572, 0.655, 0.725, 0.782, 0.829, 0.866, 0.896, 0.919, 0.938, 0.952, 0.963, 0.972, 0.979, 0.984, 0.988, 0.991, 0.993, 0.995, 1);
+  --motion-ease-spring-snappy: linear(0, 0.04, 0.137, 0.262, 0.396, 0.525, 0.643, 0.743, 0.826, 0.891, 0.941, 0.976, 1.001, 1.016, 1.024, 1.028, 1.028, 1.026, 1.023, 1.019, 1.015, 1.012, 1.009, 1.006, 1);
+  --motion-ease-spring-bouncy: linear(0, 0.064, 0.216, 0.404, 0.594, 0.761, 0.894, 0.99, 1.052, 1.084, 1.095, 1.09, 1.076, 1.059, 1.04, 1.024, 1.011, 1.002, 0.996, 0.992, 0.991, 0.991, 0.993, 0.994, 1);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-blur-sm: 0px;
+    --glass-blur-md: 0px;
+    --glass-blur-lg: 0px;
+    --glass-saturate: 100%;
+    --glass-surface-thin: var(--glass-solid-fallback);
+    --glass-surface-chrome: var(--glass-solid-fallback);
+    --glass-surface-float: var(--glass-solid-fallback);
+    --ambient-glow-primary: transparent;
+    --ambient-glow-secondary: transparent;
+  }
 }
 
 @media (min-width: 1024px) {

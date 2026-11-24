@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 
 from app.services.qc_daily_report import _quantity
 from app.services.qc_monthly_excel import TEMPLATE_DIR
+from app.services.qc_approved_statistics import factory_label
 
 
 def workbook(report):
@@ -49,7 +50,7 @@ def workbook(report):
         sheet.merge_cells(start_row=row, start_column=start, end_row=row, end_column=end)
         put(row, start, value, cell_style)
 
-    strip(1, 1, 12, f'华兴 {year} 年度验货统计表', 'title')
+    strip(1, 1, 12, f'{factory_label(report["factory"])} {year} 年度验货统计表', 'title')
     strip(2, 1, 12, f'年视图  {year}-01-01 至 {year}-12-31　　{label}', 'period')
     strip(3, 8, 12, '月度合格率　　PASS ÷（PASS + FAIL）', 'header')
     sheet.row_dimensions[1].height = 26

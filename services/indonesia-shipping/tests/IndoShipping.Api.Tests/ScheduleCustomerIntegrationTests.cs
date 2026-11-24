@@ -83,6 +83,25 @@ public class ScheduleCustomerIntegrationTests
                 raw_rows = JsonSerializer.Deserialize<JsonElement>("""[{"customer":"Spin Master","code":"97282"}]""")
             }));
 
+            controller.ControllerContext = new ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext {
+                User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+                    [new System.Security.Claims.Claim("nexus_bridge", "1")], "test"))
+            }};
+            Task<IActionResult> Import(int version, int quantity) => controller.ImportLedgerLine(new() {
+                customer = "Spin Master", raw_rows = JsonSerializer.SerializeToElement(new[] {
+                    new { customer = "Spin Master", code = fullCode, orderNo = "ID-PO", source = "RRM",
+                        ledgerLineId = "explicit-selection", ledgerVersion = version, qty = quantity }
+                })
+            });
+            var importedId = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await Import(1, 5)).Value).GetProperty("id").GetInt32();
+            var retriedId = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await Import(1, 5)).Value).GetProperty("id").GetInt32();
+            Assert.Equal(importedId, retriedId);
+            Assert.IsType<OkObjectResult>(await Import(2, 9));
+            Assert.IsType<ConflictObjectResult>(await Import(1, 5));
+            var currentRows = JsonSerializer.Deserialize<JsonElement>((await View(importedId)).GetProperty("raw_rows").GetString()!);
+            Assert.Equal(2, currentRows.GetArrayLength());
+            Assert.Equal(9, currentRows.EnumerateArray().Single(r => r.GetProperty("orderNo").GetString() == "ID-PO").GetProperty("qty").GetInt32());
+
             var products = new ProductsController(factory);
             Assert.IsType<OkObjectResult>(await products.UpsertByCode(fullCode,
                 new(fullCode, "10寸阿奇", "", "", "Spin Master", new object[0])));

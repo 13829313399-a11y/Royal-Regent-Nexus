@@ -136,6 +136,8 @@ function applyPermissions() {
 
   /* 新增验货按钮 */
   const canCreate = can('createRecord');
+  const addInspection = document.getElementById('btnAddInspection');
+  if (addInspection) addInspection.hidden = !window.__QC_NEXUS?.workflow?.manual;
   document.querySelectorAll('.btn-add, [data-perm="createRecord"]').forEach(el => {
     el.style.display = canCreate ? '' : 'none';
   });
@@ -340,7 +342,7 @@ function reportCenterLandingPage() {
 function syncReportCenterNav(name) {
   const nav = document.getElementById('reportCenterNav');
   if (!nav) return;
-  const visible = window.__QC_NEXUS?.factory === 'huaxing' && REPORT_CENTER_PAGES.includes(name);
+  const visible = !!window.__QC_NEXUS?.factory && REPORT_CENTER_PAGES.includes(name);
   nav.hidden = !visible;
   document.body.classList.toggle('qc-report-center', visible);
   if (!visible) return;
@@ -376,7 +378,7 @@ function mountReportTypeSelect(page, name) {
   const visible = buttons.filter(button => !button.hidden);
   const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
   control.style.setProperty('--report-period-count', String(visible.length || 1));
-  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory === 'huaxing') {
+  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory) {
     if (slot.firstElementChild !== select || select.nextElementSibling !== control) slot.prepend(select, control);
   } else {
     if (control.parentElement !== slot) slot.append(control);
@@ -408,6 +410,8 @@ function changeReportType(control) {
 }
 
 function showPage(name, focusReportType = false) {
+  const workbook=window.QcReportWorkbook?.navigationState?.();
+  if(workbook?.dirty||workbook?.busy){showToast('请先在工作簿中保存或放弃更改，再切换页面','error');return;}
   if(window.QcMonthlyTemplates?.navigationState().dirty){showToast('请先完成月报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcWeeklyTemplates?.navigationState().dirty){showToast('请先完成周报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
@@ -1434,7 +1438,7 @@ function filterRecords() {
       _updateBatchBtn();
       wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">☰</div>'
         + '<div class="empty-text">暂无记录</div>'
-        + '<div class="empty-sub">点击右上角「+ 新增验货」添加数据</div></div>';
+        + '<div class="empty-sub">点击「新增验货」添加数据</div></div>';
       syncInspectionSelection();
       return;
     }
@@ -4295,7 +4299,10 @@ function renderReviewPage() {
   }
   ['pending','rejected','approved'].forEach(t => {
     const btn = document.getElementById('reviewTab' + t.charAt(0).toUpperCase() + t.slice(1));
-    if (btn) btn.classList.toggle('active', _reviewTab === t);
+    if (btn) {
+      btn.classList.toggle('active', _reviewTab === t);
+      btn.setAttribute('aria-pressed', String(_reviewTab === t));
+    }
   });
 
   const list = state.records.filter(r => recStatus(r) === _reviewTab && !window.QcWorkflow?.isLinked(r.id)).concat((window.QcWorkflow?.recordItems() || []).filter(r => recStatus(r) === _reviewTab));

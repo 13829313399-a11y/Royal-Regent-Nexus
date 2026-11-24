@@ -1,0 +1,107 @@
+/* Shared native picker skin for the Nexus QC host and the embedded workbench. */
+body.qc-liquid-glass, .qc-department-host {
+  --qc-picker-surface: var(--bg-card, #fff);
+  --qc-picker-ink: var(--text-hi, #20272e);
+  --qc-picker-line: color-mix(in srgb, var(--qc-picker-ink) 16%, transparent);
+  --qc-picker-tint: #1769d2;
+  --qc-picker-check: var(--qc-picker-tint);
+  --qc-picker-shadow: 0 2px 5px #16243112, 0 10px 28px #16243126;
+}
+body.qc-liquid-glass:not(.theme-light) { --qc-picker-check: #8ec2ff; }
+
+@supports (appearance: base-select) and selector(select::picker(select)) {
+  html body select[data-qc-picker] {
+    appearance: base-select !important;
+    width: var(--qc-select-width) !important;
+    height: var(--qc-select-height) !important;
+    align-items: center;
+    gap: 5px;
+  }
+  select[data-qc-picker]::picker(select) {
+    appearance: base-select !important;
+    box-sizing: border-box;
+    min-width: min(anchor-size(width, 8rem), calc(100vw - 16px));
+    max-width: min(30rem, calc(100vw - 16px));
+    max-height: min(24rem, calc(100dvh - 16px));
+    padding: 4px;
+    margin-block: 4px;
+    border: 1px solid var(--qc-picker-line);
+    border-radius: 12px;
+    background: var(--qc-picker-surface);
+    color: var(--qc-picker-ink);
+    box-shadow: var(--qc-picker-shadow);
+    overscroll-behavior: contain;
+  }
+  @supports (backdrop-filter: blur(12px)) {
+    select[data-qc-picker]::picker(select) {
+      background: color-mix(in srgb, var(--qc-picker-surface) 92%, transparent);
+      backdrop-filter: blur(18px) saturate(130%);
+    }
+  }
+  select[data-qc-picker]::picker-icon {
+    content: "";
+    flex: none;
+    width: 9px;
+    height: 12px;
+    margin-inline-start: auto;
+    background: currentColor;
+    opacity: .78;
+    clip-path: polygon(0 31%, 50% 0, 100% 31%, 88% 42%, 50% 18%, 12% 42%,
+      0 31%, 0 69%, 12% 58%, 50% 82%, 88% 58%, 100% 69%, 50% 100%, 0 69%);
+  }
+  html body select[data-qc-picker] option {
+    position: relative;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+    min-height: 30px;
+    padding: 4px 10px 4px 26px;
+    border-radius: 7px;
+    background: transparent !important;
+    color: var(--qc-picker-ink) !important;
+    text-align: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  select[data-qc-picker] option::checkmark {
+    position: absolute;
+    inset-inline-start: 8px;
+    color: var(--qc-picker-check);
+    font-weight: 700;
+  }
+  html body select[data-qc-picker] option:checked {
+    background: color-mix(in srgb, var(--qc-picker-tint) 13%, transparent) !important;
+  }
+  html body select[data-qc-picker] option:not(:disabled):is(:hover, :focus-visible) {
+    background: var(--qc-picker-tint) !important;
+    color: #fff !important;
+  }
+  select[data-qc-picker] option:is(:hover, :focus-visible)::checkmark { color: inherit; }
+  select[data-qc-picker] option:disabled { opacity: .5; }
+  select[data-qc-picker] option:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
+  #page-review select[data-qc-picker][data-review-field=reportStatus] option {
+    justify-content: center;
+    min-height: 34px;
+    padding-inline: 26px;
+    text-align: center;
+  }
+  @media (pointer: coarse) {
+    html body select[data-qc-picker] option,
+    #page-review select[data-qc-picker][data-review-field=reportStatus] option { min-height: 44px; }
+  }
+}
+
+/* Keep the geometry and controls of the calendar and identity panels. */
+body.qc-liquid-glass :is(#page-sales-schedule, #page-review) .qs-date-panel,
+body.qc-liquid-glass :is(.qdr-date-panel, #qcTopbar .qc-account-panel) {
+  background: var(--qc-picker-surface);
+  border-color: var(--qc-picker-line);
+  box-shadow: var(--qc-picker-shadow);
+}
+@supports (backdrop-filter: blur(12px)) {
+  body.qc-liquid-glass :is(#page-sales-schedule, #page-review) .qs-date-panel,
+  body.qc-liquid-glass :is(.qdr-date-panel, #qcTopbar .qc-account-panel) {
+    background: color-mix(in srgb, var(--qc-picker-surface) 92%, transparent);
+    backdrop-filter: blur(18px) saturate(130%);
+  }
+}

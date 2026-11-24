@@ -142,8 +142,12 @@ def verify(output, python):
             pth = (package / ('runtime/python38._pth' if legacy else 'runtime/python312._pth')).read_text()
             assert 'Lib/site-packages' in pth and '../backend' in pth and 'import site' in pth
             assert b'"%TRIAL_ROOT%runtime\\python.exe" -X utf8 "%TRIAL_ROOT%launch.py"' in (package / 'START.cmd').read_bytes()
+            assert b'>>"%TRIAL_ROOT%data\\startup-console.log" 2>&1' in (package / 'START.cmd').read_bytes()
             if legacy:
                 assert (package / 'browser/electron.exe').read_bytes()[:2] == b'MZ'
+                assert (package / 'runtime/pythonw.exe').read_bytes()[:2] == b'MZ'
+                assert (package / 'windowed_start.py').is_file()
+                assert b'pythonw.exe' in (package / 'OPEN.vbs').read_bytes()
             instructions = '演示操作说明.txt' if config['kind'] == 'jp' else '演示操作.txt'
             assert (package / '演示资料' / instructions).is_file()
             first = serve(package, python, config)

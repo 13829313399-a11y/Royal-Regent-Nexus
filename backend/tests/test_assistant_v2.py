@@ -293,23 +293,15 @@ def test_readonly_business_adapter_real_scope_and_fixture_math(env, monkeypatch)
     from app.models import auth as auth_models
     from app.services.assistant import business
     from app.models.auth import AuthRegistrationRequest
-    from app.models.injection_scheduling import Demand
     from app.services.work_center import service as work
-    from app.services.injection_scheduling import queries
-    from app.schemas.injection_scheduling import Query
     from app.services.assistant.errors import AssistantError
     client, dbm, _, _ = env
     user=actor('alice',permissions=('system:user_manage',))
     with dbm.SessionLocal() as db:
         applicant_id = applicant(db, auth_models, "assistant-synthetic-applicant")
         db.add(AuthRegistrationRequest(id="a-request",user_id=applicant_id,username="applicant",factory_id="huakang-a",department="engineering",submitted_at="2026-01-01 00:00:00"))
-        # These fixture rows are calculations, never real business records.
-        case=fixture("business-contracts")["cases"][1]
-        for row in case["seed_rows"]:
-            db.add(Demand(mold_code="synthetic",**{k:v for k,v in row.items() if k != "forecast_unknown"}))
         db.commit()
         native=work.snapshot(db,user,factory_scope="huakang-a")
-        native_injection=queries.summary(db,Query(factory_id="huaxing"))
     result, source, actions=business.query(user,"get_my_work",{"factory_id":"huakang-a"},"r")
     _, later, _=business.query(user,"get_my_work",{"factory_id":"huakang-a","q":"not-matching"},"r")
     assert source["source_id"] != later["source_id"] and not later["resources"]
@@ -322,15 +314,6 @@ def test_readonly_business_adapter_real_scope_and_fixture_math(env, monkeypatch)
         business.query(user,"get_my_work",{"factory_id":"huaxing","resource_id":native["items"][0]["id"]},"r")
     with dbm.SessionLocal() as db:
         assert not business.visible(db,actor('alice'),source)
-    user=actor('alice',factory="huaxing",department="production",permissions=("injection_scheduling:read",))
-    result, _, _=business.query(user,"get_injection_overview",{"factory_id":"huaxing"},"r")
-    assert result["total_count"] == native_injection["total_count"]
-    summary={k: v["value"] for k, v in result["metrics"].items()}
-    assert summary["wait_material_count"]==2 and summary["held_count"]==4
-    assert summary["remaining_material_kg"] is None and summary["known_remaining_material_kg"]=="19" and summary["warehouse_shortage_kg"] is None
-    assert summary["remaining_material_unknown_count"]==1 and summary["forecast_unknown_count"]==2
-    with pytest.raises(Exception): business.query(user,"get_injection_overview",{"factory_id":"huakang-c"},"r")
-    with pytest.raises(Exception): business.query(actor('alice'),"get_injection_overview",{"factory_id":"huaxing"},"r")
 
 
 def test_v2_downgrade_refuses_private_rows(env):
@@ -456,7 +439,6 @@ def test_read_visibility_validation_does_not_hold_writer_lock(env, monkeypatch, 
 
 
 @pytest.mark.parametrize('name,factory,permission',[
-    ('get_injection_overview','huaxing','injection_scheduling:read'),
     ('get_printer_status','huakang-a','three_d_printing:read'),
 ])
 def test_revoked_business_artifact_save_cannot_nest_audit_writes(env, monkeypatch, name, factory, permission):

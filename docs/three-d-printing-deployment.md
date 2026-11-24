@@ -1,6 +1,12 @@
 # 华康A（河源）3D 打印迁移与云端直连
 
-## 当前边界与目标
+## 现行入口与验收范围
+
+华康 A 生产部从 `/modules/production/three-d-printing?factory=huakang-a` 进入。设备接入和历史数据切换分别按本页的核对、备份与恢复步骤办理。2026-11-10 的河源现场回执记录了当时 18/18 台设备在观察窗口内实际回传。新的在线数量、长时间无人值守和暂停/恢复能力需按当次设备、固件及授权另行核实。 [连接器](../services/three-d-printer-connector/README.md) · [现场交接与回退](../deploy/three-d-printing/README.md)
+
+## 最初迁移批次的边界与目标
+
+以下 PR-00～PR-09 原文记录当时的本地交付与切换条件，其中 0098/0099 是这些批次的数据库版本。当前源码末端从 [Alembic 版本目录](../backend/alembic/versions/) 核对。
 
 本模块固定归属 `huakang-a`，物理站点为 `heyuan`。现有页面、API、业务表及 Edge Agent 保留；目标是云端独立 Connector 经站点 VPN 访问打印机私网 MQTT/TLS，现场网关仅负责三层路由，浏览器只访问 RR-Nexus HTTPS。
 

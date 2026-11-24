@@ -4,6 +4,8 @@
 
 ## 运行方式
 
+API 在 `POST /api/tools/jobs` 受理任务后返回 HTTP 202，独立 `document-tools-worker` 领取并执行。API 和 worker 共用数据库和文档资产卷。Windows 可从仓库根目录执行 `npm run dev:local`，以 `npm run dev:status` 查看 worker 心跳。生产更新使用[现网发布手册](../aliyun-docker-deploy.md)。转换质量指标见[评估契约](../document-studio/evaluation.md)。 [任务接口](../../backend/app/api/document_tools.py) · [服务组合](../../docker-compose.prod.yml)
+
 ### Word / PDF / Excel 翻译
 
 `word_translate`、`pdf_translate`、`excel_translate` 复用上传、独立 worker、个人任务、撤回与结果下载。支持 `translation_direction=zh_to_en|en_to_zh` 和 `translation_engine=offline|online`。Word 输出 DOCX；旧 DOC/XLS 先经 LibreOffice 转为 DOCX/XLSX。Excel 按所选 `sheets` 翻译文字并保留公式、数字、合并格和原始包结构；空选择表示包含隐藏表在内的全部工作表。Word 翻译正文、表格、页眉页脚等文字，Office 图片中的文字不翻译。Word/Excel 不支持按预览页选取翻译范围。

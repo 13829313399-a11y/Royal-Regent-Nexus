@@ -76,7 +76,7 @@ function selectPage(checked: boolean) {
   if (combined.length > 50) { error.value = '一次最多选择 50 项物料，请取消部分选择后再勾选当前页。'; return }
   selected.value = combined
 }
-let sequence = 0, alive = true, deferredLoad = false
+let sequence = 0, alive = true, deferredLoad = false, backgroundRead = false
 const status = computed<Exclude<PurchaseScope, 'TRACKING'>>(() => props.mode === 'pending' ? 'PENDING' : props.mode === 'returned' ? 'RETURNED' : 'ALL')
 const ready = computed(() => preview.value ? preview.value.counts.new + preview.value.counts.updated + preview.value.counts.unchanged : 0)
 const actionNames = { NEW: '新增', UPDATE: '更新', UNCHANGED: '内容相同', BLOCKED: '待核对' }
@@ -103,13 +103,18 @@ function chooseFile(event: Event) {
   clearImport(); file.value = (event.target as HTMLInputElement).files?.[0]
 }
 watch(scope, clearImport)
-async function load() {
+function clearPurchaseList() {
+  lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
+}
+async function load(background = false) {
   if (importSaving.value) { deferredLoad = true; return }
   deferredLoad = false
   const ticket = ++sequence
   let listError = ''
-  purchaseListFailed = false
-  busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
+  if (!background) {
+    purchaseListFailed = false
+    busy.value = true; error.value = ''; clearPurchaseList(); detail.value = undefined; detailOpen.value = false
+  }
   const linkedRead = linkedPurchase.value && handledPurchase !== linkedPurchase.value ? loadLinkedDetail(ticket) : undefined
   try {
     if (props.mode === 'import') {
@@ -136,8 +141,10 @@ async function load() {
     await linkedRead
     if (ticket === sequence) {
       purchaseListFailed = !!listError
+      if (background && listError) clearPurchaseList()
       if (listError && (!linkedRead || !linkedDetailError.value || linkedDetailError.value.missing)) error.value = listError
-      busy.value = false
+      else if (background) error.value = ''
+      if (!background) busy.value = false
     }
   }
 }
@@ -157,7 +164,9 @@ watch(search, () => {
 }, { flush: 'sync' })
 if (headerSearch) watch(headerSearch.submitted, query)
 function refreshPendingWhenIdle() {
-  if (props.mode === 'pending' && !busy.value && !detailOpen.value && receiptSource.value === undefined && !batchSources.value && !chaseSource.value && document.visibilityState === 'visible') void load()
+  if (props.mode !== 'pending' || backgroundRead || busy.value || detailOpen.value || receiptSource.value !== undefined || batchSources.value || chaseSource.value || document.visibilityState !== 'visible') return
+  backgroundRead = true
+  void load(true).finally(() => { backgroundRead = false })
 }
 const refreshTimer = setInterval(refreshPendingWhenIdle, 60_000)
 window.addEventListener('focus', refreshPendingWhenIdle)

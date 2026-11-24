@@ -1,0 +1,11 @@
+# 目录与规划中卡片（`b178eb67` 记忆摘录）
+
+原记忆第 751–756 行。涉及版本、机器、发布、岗位和测试的结论以记录发生时为限。现行入口见[账号、门户与工作台](../../project-memory/platform.md)和[项目记忆](../../../PROJECT_MEMORY.md)。[固定版本原文](https://github.com/13829313399-a11y/Royal-Regent-Nexus/blob/b178eb679edd6b48f23f84d6b194d08aa25edf00/PROJECT_MEMORY.md#L751-L756)
+
+### Module Catalog and Placeholders
+
+Several cards and dashboards in the module catalog remain planning, design or demonstration surfaces. Their labels, counts and sample rows are not proof of backend implementation. Each module must be classified from its registered route, API client, backend router, model and tests before changes are planned. The PMC / warehouse catalog no longer includes `订单事实收件箱` or the `入库与月结` placeholder, and the production catalog no longer includes `啤机部订单收件箱`. This removes their cards, search results and previews in every factory; existing order-inbox routes, APIs, permissions and records remain available.
+
+The PMC / warehouse catalog carries a `船务管理` entry (`shipping-management`) limited to 华兴, 华登, 华康A, 华康B and 华康D by `factoryIds`; 华康C never shows it, and the group context follows the existing Huaxing fallback. The card opens `/modules/pmc-warehouse/shipping-management?factory=<id>`, a `fullPage` workspace with three tabs (走柜任务 / 交仓分车 / 基础资料), an in-page factory selector for the five eligible factories, and a quick-action strip for `SO排出货表`, `补料`, `舱单` and `通关一体化资料` (task-scoped by SO). The 已完成 KPI and each task detail expose document progress for the same three shipping documents (SO 排出货表 / 补料 / 舱单), so completion is read as document-level status rather than a single flag.
+
+It is an explicitly labelled front-end preview (`框架预览`, `界面预览 · 示例数据`): tasks, 35 CBM truck split, readiness hints and master data come from factory-scoped sample data in `src/features/shipping-management/contracts.ts`, with no backend shipping API, permission code or database write. Unsupported factories opening the route directly get an "暂未开通船务管理" state instead of a cross-factory fallback. The UI follows the business document `船务模块-业务逻辑流程.md` for the four time gates (SI < 截关 < 装船/交仓), five task states, container types and truck tiers; wiring it to a real shipping service is a separate backend task.

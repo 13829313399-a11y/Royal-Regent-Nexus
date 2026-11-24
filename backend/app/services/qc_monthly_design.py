@@ -22,9 +22,9 @@ def project(row, columns, extra):
             'editableFields':{j:row['editableFields'][i] for j,i in enumerate(columns) if i in row['editableFields']}}
 
 
-def tracking_row(row):
+def tracking_row(row, *, include=False):
     values = row['values']
-    if values[10] != 'FAIL' and not any(str(values[i]).strip() for i in (14,18,19)):
+    if not include and values[10] != 'FAIL' and not any(str(values[i]).strip() for i in (14,18,19)):
         return None
     columns = [1,2,'po',5,6,3,12,7,8,9,10,14,'photo',17,19,18,15,16,23]
     return project(row, columns, {'po':row['poNo'], 'photo':''})

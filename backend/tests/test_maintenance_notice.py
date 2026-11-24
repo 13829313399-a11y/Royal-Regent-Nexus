@@ -53,6 +53,28 @@ def test_cancel_before_cutover_and_old_operator_cannot_close_new_notice(tmp_path
         notice.publish(tmp_path, "start", now=NOW)
 
 
+def test_http_probe_retains_notice_ownership_until_complete_or_failure(tmp_path):
+    state = notice.publish(tmp_path, "start", now=NOW)
+    key = state["id"]
+    after = NOW + timedelta(minutes=5)
+    notice.publish(tmp_path, "maintenance", notice_id=key, now=after)
+    with pytest.raises(ValueError, match="ID changed"):
+        notice.publish(tmp_path, "probe", notice_id="other", now=after)
+    assert (tmp_path / "active").exists()
+    notice.publish(tmp_path, "probe", notice_id=key, now=after)
+    assert not (tmp_path / "active").exists()
+    assert read(tmp_path)["phase"] == "maintenance"
+    with pytest.raises(ValueError, match="existing"):
+        notice.publish(tmp_path, "start", now=after)
+    notice.publish(tmp_path, "fail", notice_id=key, now=after)
+    assert (tmp_path / "active").read_text() == key
+    notice.publish(tmp_path, "probe", notice_id=key, now=after)
+    notice.publish(tmp_path, "complete", notice_id=key, now=after)
+    assert read(tmp_path)["phase"] == "completed"
+    with pytest.raises(ValueError, match="Only maintenance"):
+        notice.publish(tmp_path, "probe", notice_id=key, now=after)
+
+
 def test_concurrent_deployments_cannot_overwrite_each_other(tmp_path):
     barrier = Barrier(2)
     def start():

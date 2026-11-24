@@ -1,4 +1,4 @@
-"""Huaxing daily report from the validated current approval snapshot."""
+"""Daily report from the validated current approval snapshot."""
 from copy import deepcopy
 from datetime import date, timedelta
 from calendar import monthrange
@@ -13,13 +13,17 @@ from fastapi import HTTPException
 from openpyxl.utils import get_column_letter
 
 from app.services import qc_approved_statistics as approved
-from app.services.qc_inspection_summary import dump
+from app.services.qc_inspection_summary import confirmed_date, dump, report_date
+from app.services.qc_approved_statistics import company_heading, factory_label
 from app.services.qc_workbook_xml import Package, tag
 
 
 TEMPLATE = Path(__file__).resolve().parents[1] / 'templates/qc-daily/每日验货情况统计表.xlsx'
 HEADERS = ['贸易商  （洋行）', '合同号', '出口国（客户）', '货号', '產品名称', 'PO数量',
            '洋行Q货期', '第三方客Q货期', '验货结果', '验货问题', '第一责任人', '第二责任人', '备注']
+SUPPLEMENT_COLUMNS = {1:'contractNo', 2:'country', 3:'productNo', 4:'productName', 5:'quantity',
+                      6:'traderQDate', 7:'thirdPartyQDate', 9:'inspectionProblem',
+                      10:'firstResponsible', 11:'secondResponsible', 12:'remark'}
 
 
 def _text(value):
@@ -62,9 +66,8 @@ def period_bounds(day, period='daily'):
     return start.isoformat(), end.isoformat()
 
 
-def report(factory, day, period='daily', customer=''):
-    if factory != 'huaxing':
-        raise HTTPException(404, '当前厂区未配置华兴日报模板')
+def report(factory, day, period='daily', customer='', *, workbook_preview=False):
+    factory_label(factory)
     start, end = period_bounds(day, period)
     if customer and not re.fullmatch('[a-f0-9]{64}', customer):
         raise HTTPException(422, '报告客户筛选不正确')
@@ -72,7 +75,9 @@ def report(factory, day, period='daily', customer=''):
     source = approved.query(factory, {'from': start, 'to': end}, _report_snapshots=snapshots)
     if source['excluded'].get('missingProjection') or source['excluded'].get('invalidLineage'):
         raise HTTPException(503, '已审核记录与汇总未对齐，请核对后再生成日报')
-    rows, customers = [], {}
+    from app.services.qc_monthly_templates import RecordSupplements
+    saved = RecordSupplements(factory)
+    rows, source_rows, customers = [], [], {}
     for item, date_source in snapshots:
         if item.get('reference') or item.get('referenceData') or item.get('testData'):
             continue
@@ -80,15 +85,28 @@ def report(factory, day, period='daily', customer=''):
         customers[key] = info
         if customer and key != customer:
             continue
-        rows.append(_report_row(item, date_source))
+        base = _report_row(item, date_source)
+        source_rows.append(base)
+        row = {**base, 'values': list(base['values'])}
+        cells = {}
+        date_key, _ = report_date(item, confirmed_date(item))
+        for index, field in SUPPLEMENT_COLUMNS.items():
+            if str(base['values'][index]).strip():
+                continue
+            cell = saved.cell(date_key, key, item['revision'], f'detail:{item["id"]}:{field}')
+            row['values'][index] = _quantity(cell['value']) if index == 5 else cell['value']
+            cells[index] = cell
+        if workbook_preview:
+            row['supplementCells'] = cells
+        rows.append(row)
     total = len(rows)
     passed = sum(row['values'][8] == 'PASS' for row in rows)
     failed = sum(row['values'][8] in {'FAIL', 'REJ'} for row in rows)
-    identity = [day, period, start, end, rows]
+    identity = [factory, day, period, start, end, source_rows]
     if customer:
         identity.append(customer)
     revision = sha256(dump(identity).encode()).hexdigest()
-    return dict(customer=customer, customers=sorted(customers.values(), key=lambda c: c['label']),
+    return dict(factory=factory, customer=customer, customers=sorted(customers.values(), key=lambda c: c['label']),
                 date=day, period=period, dateFrom=start, dateTo=end, headers=HEADERS, rows=rows, revision=revision,
                 total=total, passed=passed, failed=failed, other=total-passed-failed,
                 rate=round(passed/total*100, 1) if total else None,
@@ -107,7 +125,13 @@ def workbook(report_data):
     sheet_rows = package.rows(sheet_name)
     by_number = {int(row.get('r')): row for row in sheet_rows}
     if [package.values(by_number[3]).get(col) for col in range(1, 14)] != HEADERS:
-        raise HTTPException(503, '华兴日报模板表头不匹配')
+        raise HTTPException(503, '日报模板表头不匹配')
+    title_row = by_number[1]
+    heading = title_row.find(f"{tag('c')}[@r='A1']")
+    if heading is None:
+        raise HTTPException(503, '日报模板缺少公司抬头')
+    replacement = package.cell(title_row, 1, company_heading(report_data['factory']), heading.get('s', '0'))
+    title_row.replace(heading, replacement)
     merges = sheet.find(tag('mergeCells'))
     # J4:J5 came from a historical two-row problem description. Daily rows are independent.
     for merge in list(merges):
