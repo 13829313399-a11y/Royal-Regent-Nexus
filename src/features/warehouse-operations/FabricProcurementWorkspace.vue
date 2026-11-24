@@ -14,7 +14,7 @@ import { purchaseSearchKey } from './purchaseSearch'
 import FabricChaseDialog from './FabricChaseDialog.vue'
 import FabricPurchaseFilters from './FabricPurchaseFilters.vue'
 import FabricPurchaseGroups from './FabricPurchaseGroups.vue'
-import FabricDetailDialog from './FabricDetailDialog.vue'
+import WarehouseDetailDialog from '@/features/warehouse-foundation/WarehouseDetailDialog.vue'
 import type { PurchaseFilters, PurchaseMaterialGroup } from '@/api/fabricProcurement'
 import type { FabricReceipt, ReceiveSourcesResult } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
@@ -522,7 +522,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
       <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
       <div class="fabric-dialog-actions"><DialogClose as-child><Button variant="outline" :disabled="busy">保留导入</Button></DialogClose><Button :disabled="busy || !withdrawConfirmed || !withdrawReason.trim()" @click="withdrawImport">确认撤销导入</Button></div>
     </DialogContent></DialogPortal></DialogRoot>
-    <FabricDetailDialog v-if="detail" :open="detailOpen && !chaseSource" title="采购来源详情" :icon="ClipboardList"
+    <WarehouseDetailDialog v-if="detail" :open="detailOpen && !chaseSource" title="采购来源详情" :icon="ClipboardList"
       close-label="关闭采购来源详情" @close="detailOpen = false" @close-auto-focus="restorePurchaseDetailFocus">
       <section class="fabric-detail-overview" aria-label="待收概览">
         <div class="fabric-detail-identity">
@@ -612,7 +612,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
           <Button v-if="detail.unreviewed_changes && detail.can_review" type="button" size="sm" variant="outline" :disabled="busy" @click="reviewChanges">将变更标记已读（不确认收料）</Button>
         </div>
       </details>
-    </FabricDetailDialog>
+    </WarehouseDetailDialog>
   </div>
   <FabricChaseDialog v-if="chaseSource" :source="chaseSource" @close="chaseSource = undefined" @saved="chaseSaved" @stale="message => { chaseSource = undefined; receiptStale(message) }" />
   <FabricBatchReceiptDialog v-if="batchSources" :sources="batchSources" @close="batchSources = undefined" @saved="batchSaved" @stale="receiptStale" />

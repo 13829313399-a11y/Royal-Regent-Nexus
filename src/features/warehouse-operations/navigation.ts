@@ -20,9 +20,7 @@ export interface WarehouseWorkspace {
   id: string
   title: string
   summary: string
-  flow: string[]
   sections: WarehouseSection[]
-  pending: { title: string; description: string; section: string; view: string }[]
 }
 const view = (id: string, title: string, description: string, columns: string, actions = ''): WarehouseView => ({
   id, title, description, columns: columns.split('｜'), actions: actions ? actions.split('｜') : [],
@@ -61,13 +59,6 @@ function sharedSections(semi: boolean): WarehouseSection[] {
 export const WAREHOUSES: WarehouseWorkspace[] = [
   {
     id: 'fabric-warehouse', title: '布料仓', summary: '布料与辅料的收货、领用、批次库存和月结。',
-    flow: ['采购订单导入', '待收料核对', '实际入库', '出库与调仓', '库存与月结'],
-    pending: [
-      { title: '待收料', description: '核对采购到货与供应商送货，按实物办理收料。', section: 'receipts', view: 'pending' },
-      { title: '待发料', description: '查看领料申请，核对批次与实际发出数量。', section: 'inventory', view: 'pending-issues' },
-      { title: '单据更正', description: '追溯录错单据的冲销记录与原因。', section: 'exceptions', view: 'differences' },
-      { title: '待确认物料', description: '核对采购来源自动归集的物料，补齐分类后启用。', section: 'master', view: 'items' },
-    ],
     sections: [
       section('overview', '工作看板', '集中查看待收、待发、缺料和待处理事项。', [
         view('pending', '仓库待办', '采购到货、领料需求与异常处理将在这里集中展示。', '事项｜来源单据｜往来单位｜要求日期｜办理状态'),
@@ -92,24 +83,18 @@ export const WAREHOUSES: WarehouseWorkspace[] = [
   },
   {
     id: 'semi-finished-warehouse', title: '半成品仓', summary: '加工回货、二次加工、在外跟进与包装交接。',
-    flow: ['外发 / 车间回货', '实际入库', '二次加工发出', '加工回收入仓', '移交包装'],
-    pending: [
-      { title: '待回货', description: '核对外发厂、车间及手工回货，逐批收货。', section: 'receipts', view: 'pending' },
-      { title: '加工在外', description: '跟进发给谁、做什么，以及各批次回货情况。', section: 'inventory', view: 'processing' },
-      { title: '包装交接', description: '分别核对半成品实发与包装车间实收。', section: 'inventory', view: 'packaging' },
-      { title: '收发差异', description: '查看短收、返工和交接差异的处理进展。', section: 'exceptions', view: 'differences' },
-    ],
     sections: [
-      section('overview', '工作看板', '集中查看待回货、待发加工、待交包装和异常事项。', [
-        view('pending', '仓库待办', '外发厂、车间和手工工位的交接事项将在这里集中展示。', '事项｜生产单号｜产品 / 款式｜加工方｜要求日期｜办理状态'),
+      section('overview', '工作看板', '查看待收货、加工在外、包装待签收和实收超计划。', [
+        view('pending', '今日待办', '从待办打开对应的放产明细或交接原单。', '事项｜生产单号｜产品 / 部位｜待办数量｜交期｜原单'),
       ]),
-      section('orders', '订单管理', '跟进加工任务、少量外购和委外单，仓库办理相关收发。', [
+      section('orders', '订单管理', '按放产明细跟进仓库实收、加工在外与包装接收。', [
+        view('progress', '订单进度', '按生产单、部位和布标核对实收、在库、加工在外与包装签收。', '生产单号｜产品 / 部位｜布标日期码｜放产明细｜计划 / 实收｜仓内结余｜加工在外｜包装交接'),
         view('tasks', '加工交接任务', '接收外发、车间和手工的任务及交期，跟踪分批交接。', '加工任务号｜生产单号｜合同号｜产品 / 款式｜加工方｜工序｜计划数量｜已回数量｜单位｜交期'),
         view('purchases', '外购配件', '少量外购配件关联采购单后收货；下单与审批责任待确认。', '采购单号｜供应商｜配件编码｜名称规格｜订货量｜已收量｜单位｜单价｜交期', '导入外购单'),
         view('outsourcing', '委外加工', '原料发出和产物回货分别记录数量与单位；加工厂、价格和审批由已确认的责任方维护。', '委外单号｜生产单号｜加工厂｜原料｜加工产物｜计划产物数量｜产物单位｜已发原料量｜原料单位｜已回产物量｜交期', '导入委外单'),
       ]),
       section('receipts', '收料入库', '接收外发厂、内部车间和手工回货，逐批核数。', [
-        view('pending', '待收货', '查看加工任务与已回进度，登记实际收货；导入和上游对接待接入。', '来源单号｜来源明细｜送货单号｜加工方 / 供应商｜产品 / 款式｜加工状态｜送货量｜单位｜预计回货', '人工登记'),
+        view('pending', '待收货', '核对已有放产明细的计划、累计实收和待收量，按实际到货分批登记。', '生产单号｜产品 / 部位｜布标｜放产明细｜计划 / 实收｜待收量', '登记实收'),
         view('import-review', '导入核对', '核对生产单、加工任务、产品和加工状态；同一回货保留唯一来源，不重复入库。', '导入批次｜文件名｜工作表 / 行号｜来源单据｜来源明细｜产品 / 加工状态匹配｜数量｜单位｜重复检查｜校验问题｜核对状态', '导入送货单'),
         view('history', '入库记录', '实收和质量状态分别记录；整单详情查看来源、批次和分仓，加工完成不等于已验收。', '入库单号｜收货日期｜来源单位｜来源单据｜生产单号｜产品 / 款式｜加工状态｜批次｜实收量｜单位｜仓位｜质量状态｜单据详情', '登记收货'),
         view('processing-returns', '加工回收', '本次回收关联此前发出的加工任务，支持分批回货；回收数量使用本次产品与加工状态的单位。', '回收单号｜原加工发出单｜加工任务｜加工方｜产品 / 款式｜回收加工状态｜批次｜实收量｜单位｜质量状态', '登记加工回收'),

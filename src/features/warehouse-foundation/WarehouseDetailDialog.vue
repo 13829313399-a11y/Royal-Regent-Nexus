@@ -3,7 +3,7 @@ import { ref, type Component } from 'vue'
 import { DialogClose, DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 import { X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
-import './fabric-detail.css'
+import './warehouse-detail.css'
 
 withDefaults(defineProps<{
   open?: boolean
@@ -15,13 +15,21 @@ withDefaults(defineProps<{
 }>(), { open: true })
 const emit = defineEmits<{ close: []; closeAutoFocus: [event: Event] }>()
 const closeButton = ref<{ $el: HTMLElement }>()
+let returnFocus: HTMLElement | undefined
 
 function focusClose(event: Event) {
+  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
   if (!closeButton.value?.$el) return
   event.preventDefault()
   closeButton.value.$el.focus()
 }
 
+function restoreFocus(event: Event) {
+  emit('closeAutoFocus', event)
+  if (event.defaultPrevented || !returnFocus?.isConnected) return
+  event.preventDefault()
+  returnFocus.focus()
+}
 </script>
 
 <template>
@@ -29,7 +37,7 @@ function focusClose(event: Event) {
     <DialogPortal>
       <DialogOverlay class="fabric-detail-overlay" />
       <DialogContent class="fabric-detail-dialog" :class="{ 'fabric-detail-dialog-wide': wide }" aria-modal="true"
-        v-bind="description ? {} : { 'aria-describedby': undefined }" @open-auto-focus="focusClose" @close-auto-focus="emit('closeAutoFocus', $event)">
+        v-bind="description ? {} : { 'aria-describedby': undefined }" @open-auto-focus="focusClose" @close-auto-focus="restoreFocus">
         <header class="fabric-detail-header">
           <span class="fabric-detail-icon"><component :is="icon" :size="20" aria-hidden="true" /></span>
           <div class="fabric-detail-heading">

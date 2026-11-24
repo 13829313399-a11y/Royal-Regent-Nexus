@@ -5,11 +5,11 @@ import { ArrowLeftRight, ArrowUpRight } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import type { FabricIssueGroup, WarehouseDocument } from '@/api/warehouseOperations'
 import { formatBusinessDateTime } from '@/lib/dateTime'
-import FabricDetailDialog from './FabricDetailDialog.vue'
+import WarehouseDetailDialog from '@/features/warehouse-foundation/WarehouseDetailDialog.vue'
 import { documentProgress, fabricOperationLabel, operationLabels, remaining } from './operations'
 
 const props = defineProps<{ record: WarehouseDocument; issueGroup?: FabricIssueGroup; printError?: string }>()
-const emit = defineEmits<{ close: []; print: [] }>()
+const emit = defineEmits<{ close: []; print: []; closeAutoFocus: [event: Event] }>()
 
 const entry = computed(() => props.record.data)
 const batch = computed(() => props.record.batch_snapshot)
@@ -40,8 +40,8 @@ const status = computed(() => props.record.reversed ? '已冲销' : isLocation.v
 </script>
 
 <template>
-  <FabricDetailDialog :title="`${fabricOperationLabel(kind).replace(/^登记/, '')}详情`" :description="`业务日期 ${record.business_date}`"
-    :icon="ArrowLeftRight" close-label="关闭业务单据详情" @close="emit('close')">
+  <WarehouseDetailDialog :title="`${fabricOperationLabel(kind).replace(/^登记/, '')}详情`" :description="`业务日期 ${record.business_date}`"
+    :icon="ArrowLeftRight" close-label="关闭业务单据详情" @close="emit('close')" @close-auto-focus="emit('closeAutoFocus', $event)">
     <template v-if="status" #status>
       <span class="fabric-detail-badge" :data-tone="record.reversed ? 'warning' : 'posted'">{{ status }}</span>
     </template>
@@ -110,13 +110,14 @@ const status = computed(() => props.record.reversed ? '已冲销' : isLocation.v
         <div v-if="issueGroup" class="wide"><dt>关联领料单</dt><dd class="fabric-detail-code">{{ issueGroup.request_ids.join('、') }}</dd></div>
       </dl>
     </details>
-    <template v-if="kind === 'ISSUE' || kind === 'RECEIPT'" #actions>
+    <template v-if="kind === 'ISSUE' || kind === 'RECEIPT' || $slots.actions" #actions>
       <Button v-if="kind === 'ISSUE'" type="button" variant="outline" @click="emit('print')">打印发料单</Button>
-      <Button v-else as-child variant="outline">
+      <Button v-else-if="kind === 'RECEIPT'" as-child variant="outline">
         <RouterLink :to="{ path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'history', receipt: record.receipt_record_id || record.id } }">
           查看入库单详情<ArrowUpRight :size="15" aria-hidden="true" />
         </RouterLink>
       </Button>
+      <slot name="actions" />
     </template>
-  </FabricDetailDialog>
+  </WarehouseDetailDialog>
 </template>
