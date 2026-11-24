@@ -379,22 +379,28 @@
     dialog.setAttribute('aria-labelledby', 'qc-intake-title');
     const customerOptions = choices([...model.items, ...sheet.model.items], 'customer');
     dialog.innerHTML = `
-      <header><h2 id="qc-intake-title">新增验货</h2><button type="button" class="btn" data-close aria-label="关闭新增验货">关闭</button></header>
+      <header><h2 id="qc-intake-title">新增验货</h2>
+        <button type="button" class="qis-intake-mode" data-switch-mode>手动录入</button>
+        <span class="qis-intake-divider" aria-hidden="true"></span>
+        <button type="button" class="qis-intake-close" data-close aria-label="关闭新增验货">
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="m4 4 10 10m0-10L4 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </header>
       <div class="qwf-dialog-body">
-        <div class="modal-mode-tabs" role="group" aria-label="新增方式">
-          <button type="button" class="active" aria-pressed="true" data-mode="excel" autofocus>模板导入</button>
-          <button type="button" aria-pressed="false" data-mode="manual">手动录入</button>
-        </div>
         <div data-panel="excel">
-          <p>支持验货台导出的「客户验货排期」和旧版「各客验货排期 (2)」。每次最多 500 条。</p>
-          <div class="qis-intake-file" role="group" aria-labelledby="qc-intake-file-label">
-            <span id="qc-intake-file-label">选择 Excel 文件</span>
-            <div class="qis-intake-picker">
-              <input type="file" accept=".xls,.xlsx" hidden>
-              <button type="button" class="btn" data-pick-file aria-describedby="qc-intake-filename">选择文件</button>
-              <span id="qc-intake-filename" role="status">未选择文件</span>
-            </div>
-          </div>
+          <input type="file" accept=".xls,.xlsx" hidden>
+          <button type="button" class="qis-intake-picker" data-pick-file autofocus
+              aria-label="选择 Excel 文件" aria-describedby="qc-intake-hint">
+            <svg class="qis-intake-doc" viewBox="0 0 38 46" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+              <path d="M6.5 1h17l10 10v28a3 3 0 0 1-3 3h-24a3 3 0 0 1-3-3V4a3 3 0 0 1 3-3Z" fill="var(--intake-paper)"/>
+              <path d="M23.5 1v10h10"/><rect x="9.5" y="18" width="18" height="14" rx="1.4"/><path d="M9.5 24h18m-11.5-6v14"/>
+            </svg>
+            <span class="qis-intake-copy"><strong id="qc-intake-filename">选择 Excel 文件</strong>
+              <span id="qc-intake-hint">.xls / .xlsx　·　每次最多 500 条</span>
+            </span>
+            <svg width="16" height="20" viewBox="0 0 16 20" aria-hidden="true"><path d="m5 4 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <p class="qis-intake-templates"><span>适用模板</span><span>客户验货排期 <i aria-hidden="true">/</i> 各客验货排期 (2)</span></p>
           <p role="status" data-preview-count></p>
           <div data-preview></div>
         </div>
@@ -404,7 +410,7 @@
         </form>
         <p class="qis-error" role="alert" data-error></p>
       </div>
-      <footer>
+      <footer hidden>
         <button type="button" class="btn btn-primary" data-import disabled>确认追加</button>
         <button type="submit" class="btn btn-primary" form="qc-intake-manual" data-save hidden>保存到验货台</button>
       </footer>`;
@@ -412,14 +418,24 @@
     const picker = find('input[type=file]');
     const filename = find('#qc-intake-filename');
     const emptyFilename = filename.textContent;
-    function clearFile() {
-      picker.value = '';
-      filename.textContent = emptyFilename;
+    const pickButton = find('[data-pick-file]');
+    function showFilename(file) {
+      filename.textContent = file ? file.name : emptyFilename;
+      pickButton.setAttribute('aria-label', file ? '更换文件：' + file.name : emptyFilename);
     }
-    find('[data-pick-file]').addEventListener('click', () => picker.click());
+    function clearFile() { picker.value = ''; showFilename(null); }
+    pickButton.addEventListener('click', () => picker.click());
     const importButton = find('[data-import]');
     const previewCount = find('[data-preview-count]');
     let preview = null, pending = null;
+    const manual = find('[data-panel="manual"]');
+    const modeButton = find('[data-switch-mode]');
+    function updateActions() {
+      importButton.hidden = !manual.hidden || !preview;
+      importButton.disabled = !preview?.count;
+      find('[data-save]').hidden = manual.hidden;
+      find('footer').hidden = manual.hidden && !preview;
+    }
     async function request(path, content, headers) {
       const response = await root.fetch('api/inspection-sheet/intake/' + path, {method:'POST', body:content, headers});
       const data = await response.json().catch(() => ({}));
@@ -437,7 +453,7 @@
       catch (error) { find('[data-error]').textContent = error.message; }
       finally {
         controls.forEach(control => { control.disabled = false; });
-        importButton.disabled = !preview?.count;
+        updateActions();
         dialog.removeAttribute('aria-busy');
         scheduleBusy = false;
       }
@@ -454,27 +470,22 @@
         : data.count ? '已追加 ' + data.count + ' 条验货记录' : '这批记录已保存，共 ' + data.existing + ' 条';
       root.showToast?.(message, 'success');
     }
-    dialog.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
-      const mode = button.dataset.mode;
-      dialog.querySelectorAll('[data-mode]').forEach(tab => {
-        const active = tab === button;
-        tab.classList.toggle('active', active);
-        tab.setAttribute('aria-pressed', String(active));
-      });
-      dialog.querySelectorAll('[data-panel]').forEach(panel => { panel.hidden = panel.dataset.panel !== mode; });
-      importButton.hidden = mode !== 'excel';
-      find('[data-save]').hidden = mode !== 'manual';
+    modeButton.addEventListener('click', () => {
+      manual.hidden = !manual.hidden;
+      find('[data-panel="excel"]').hidden = !manual.hidden;
+      modeButton.textContent = manual.hidden ? '手动录入' : '模板导入';
+      updateActions();
       find('[data-error]').textContent = '';
-    }));
+    });
     const excelHeaders = {'Content-Type':'application/octet-stream'};
     picker.addEventListener('change', () => {
       preview = null;
-      importButton.disabled = true;
+      updateActions();
       find('[data-preview]').replaceChildren();
       previewCount.textContent = '';
       find('[data-error]').textContent = '';
       const file = picker.files[0];
-      filename.textContent = file ? file.name : emptyFilename;
+      showFilename(file);
       if (!file) return;
       if (!/\.xlsx?$/i.test(file.name) || file.size > 35 * 1024 * 1024) {
         find('[data-error]').textContent = '请选择 35 MB 以内的 .xls 或 .xlsx 文件';
