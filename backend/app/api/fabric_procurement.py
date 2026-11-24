@@ -123,7 +123,7 @@ def receipt_history(factory_id: str, search: str = Query("", max_length=128), of
                     supplier: str = Query("", max_length=256), category: Literal["", "FABRIC", "ACCESSORY", "THREAD"] = "",
                     receipt_from: date | None = None, receipt_to: date | None = None, state: Literal["", "ACTIVE", "REVERSED"] = "",
                     sort: Literal["RECEIPT_DESC", "RECEIPT_ASC", "RECORDED_DESC", "SUPPLIER"] = "RECEIPT_DESC",
-                    unified: bool = False, channel: Literal['', 'PROCUREMENT', 'HANDOVER', 'MANUAL', 'MANUAL_ENTRY'] = '',
+                    unified: bool = False, channel: Literal['', 'PROCUREMENT', 'HANDOVER', 'MANUAL', 'MANUAL_ENTRY', 'SUBCONTRACT'] = '',
                     purchase_status: Literal['', 'PENDING'] = '',
                     db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     authorize(db, actor, factory_id, "read")

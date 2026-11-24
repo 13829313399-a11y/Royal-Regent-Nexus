@@ -23,6 +23,7 @@ OUTBOUND = {'ISSUE', 'PROCESS_SEND', 'PACK_SEND'}
 MANUAL_RECEIPT_KIND = 'FABRIC_MANUAL_RECEIPT'
 MANUAL_PURCHASE_LINK_KIND = 'FABRIC_PURCHASE_LINK'
 INTERNAL_RECORDS = {'MASTER_LOCATION', 'COMMAND_ABANDONED', 'FABRIC_ISSUE_GROUP',
+                    'SUB_PROCESSOR', 'SUB_ORDER', 'SUB_ACTION',
                     MANUAL_RECEIPT_KIND, MANUAL_PURCHASE_LINK_KIND}
 
 
@@ -174,7 +175,7 @@ def validate_current_master(db, warehouse, body, stock, entries):
                                   'material_name': body.get('item_name', ''), 'unit': body.get('unit', '')}, current)
         if material['material_category'] and material['material_category'] != body.get('material_category'):
             raise HTTPException(422, '物料分类与已确认基础资料不同，请刷新并核对资料')
-    if kind == 'RECEIPT' and not (body.get('handover_supplier_id') or body.get('receipt_supplier_id')):
+    if kind == 'RECEIPT' and not (body.get('handover_supplier_id') or body.get('receipt_supplier_id') or body.get('subcontract_order_id')):
         from app.services.fabric_supplier_identity import receipt_supplier
         receipt_supplier(db, body.get('counterparty', ''))
     identity = stock.get(body.get('batch_id')) or body
@@ -526,6 +527,8 @@ def validate_correction_date(body, entries):
 
 def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=None):
     ensure_schema(db)
+    if payload.source_system == 'FABRIC_SUBCONTRACT' and not (_metadata or {}).get('subcontract_order_id'):
+        raise HTTPException(422, '请从原布料仓委外单办理')
     if warehouse == 'fabric' and payload.kind == 'CORRECTION' and payload.original_id.startswith('FR-'):
         from app.services.auth import can
         if not can(actor, 'fabric_warehouse:read', FACTORY, 'pmc-warehouse'):
@@ -566,6 +569,8 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
             raise HTTPException(422, '实际业务日期不能晚于今天')
         if warehouse == 'fabric' and payload.kind == 'CORRECTION':
             original = entries.get(payload.original_id, {}).get('data', {})
+            if original.get('subcontract_order_id') and original['subcontract_order_id'] != (_metadata or {}).get('subcontract_order_id'):
+                raise HTTPException(422, '请从原布料仓委外单更正关联流水')
             if original.get('manual_receipt_id') and original['manual_receipt_id'] != (_metadata or {}).get('manual_receipt_reversal_id'):
                 raise HTTPException(422, '同次登记的分仓入库须到入库记录一起冲销')
         identifier = ('FB-' if warehouse == 'fabric' else 'SF-') + uuid4().hex[:20]
@@ -577,7 +582,7 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
         from app.services.cutting_materials import guard_post
         guard_post(db, warehouse, body, _metadata, stock, entries)
         validate_correction_date(body, entries)
-        if warehouse == 'fabric' and payload.kind == 'RECEIPT' and not (_metadata or {}).get('handover_document_id'):
+        if warehouse == 'fabric' and payload.kind == 'RECEIPT' and not (body.get('handover_document_id') or body.get('subcontract_order_id')):
             from app.services.material_handover_procurement import guard_manual_delivery
             guard_manual_delivery(db, body['source_no'], body['item_code'], body['unit'], body['counterparty'],
                 operation=body, entries=entries)
@@ -612,6 +617,8 @@ def recover(db, actor, warehouse, payload):
     signature = digest([warehouse, actor.id, body])
     try:
         from app.services.cutting_materials import before_warehouse_lock, INTERNAL_KINDS, SOURCE
+        if payload.source_system == 'FABRIC_SUBCONTRACT':
+            raise HTTPException(422, '请从原布料仓委外单核对')
         if payload.kind in INTERNAL_KINDS or payload.source_system == SOURCE:
             raise HTTPException(422, '裁床专用操作请从裁床界面核对')
         before_warehouse_lock(db, warehouse, payload)
