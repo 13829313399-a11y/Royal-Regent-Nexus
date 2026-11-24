@@ -101,3 +101,18 @@ test('dirty local draft survives reload and detects a later server edit',async()
   await assert.rejects(h.r.write(rows,h.persist),/核对冲突/);assert.equal(h.persisted._pending,true);
  }finally{h.dom.window.close();}
 });
+
+test('proxy outages and authorization errors retain their status instead of opening cached tasks',async()=>{
+ const dom=new JSDOM('',{runScripts:'outside-only',url:'https://qc.company.example/api/qc-mobile/app/'}),w=dom.window;
+ try {
+  w.localStorage.setItem('qc-mobile-main-v1-context',JSON.stringify({context:{factory:'huaxing',actor:{id:'qc'}},options:{}}));
+  w.eval(code);
+  for(const [status,message] of [[503,/暂时不可用/],[403,/重新扫码/],[200,/暂时不可用/]]){
+   w.fetch=async()=>({ok:status===200,status,json:async()=>{throw new w.SyntaxError('<html>');}});
+   await assert.rejects(w.QcMobileRemote.prepare(),error=>error.status===status&&message.test(error.message));
+  }
+  w.fetch=async()=>{throw new w.TypeError('Failed to fetch');};
+  assert.equal(await w.QcMobileRemote.prepare(),null);
+  assert.equal(w.QcMobileRemote.offline,true);
+ }finally{dom.window.close();}
+});

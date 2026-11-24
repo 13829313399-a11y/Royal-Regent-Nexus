@@ -200,7 +200,7 @@
       {
         "path": "src/components/CartonSupplierChangeTasks.vue",
         "symbol": "async function respond(",
-        "sha256": "766f7cae0e8e669c868c076323fd53437265346548fd3b15afe10c6720996c01"
+        "sha256": "340929b9b1606370a392f823c3847e978e0fd63f6672717abfcb4b45f7cfce92"
       },
       {
         "path": "backend/app/services/carton_replenishment_supplier.py",

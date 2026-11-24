@@ -37,7 +37,7 @@ export interface FabricReceipt {
   receipt_lines?: ReceiptLineEvidence[]; delivered_quantity?: string; counted_quantity?: string; accepted_quantity?: string
   damaged_quantity?: string; rejected_quantity?: string; other_unusable_quantity?: string; shortage_quantity?: string; returned_to_supplier?: string
   delivery_quantity?: string
-  history_key?: string; receipt_origin?: 'PROCUREMENT' | 'HANDOVER' | 'MANUAL'; operation_id?: string
+  history_key?: string; receipt_origin?: 'PROCUREMENT' | 'HANDOVER' | 'MANUAL' | 'SUBCONTRACT'; subcontract_order_id?: string; operation_id?: string
   handover_document_id?: string; source_version?: string
   purchase_status?: '' | 'PENDING' | 'LINKED'; procurement_pending_reason?: string
   reversed?: boolean; reversal?: FabricReceiptReversal | null
@@ -75,7 +75,7 @@ export interface FabricStockBatch {
   actor_name: string; occurred_at: string
 }
 export interface ReceiptFilters {
-  channel?: '' | 'MANUAL_ENTRY' | 'HANDOVER'
+  channel?: '' | 'MANUAL_ENTRY' | 'HANDOVER' | 'SUBCONTRACT'
   purchase_status?: '' | 'PENDING'
   supplier?: string; category?: '' | MaterialCategory; receipt_from?: string; receipt_to?: string
   state?: '' | 'ACTIVE' | 'REVERSED'; sort?: 'RECEIPT_DESC' | 'RECEIPT_ASC' | 'RECORDED_DESC' | 'SUPPLIER'

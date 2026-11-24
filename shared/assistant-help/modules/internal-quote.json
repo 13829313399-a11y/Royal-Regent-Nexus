@@ -49,7 +49,7 @@
       {
         "path": "backend/app/services/internal_quote_excel.py",
         "symbol": "_merge_molding_labor_jobs",
-        "sha256": "2a6c555c514ca29d4076b231e41af1c8ac5c496d5fe0bd394670c3fc4e8c7f92"
+        "sha256": "1d94b425cc3064fc764e2955d596a5198b21fbe76309f7da76b1387a06700902"
       },
       {
         "path": "backend/app/services/internal_quote_metrics.py",

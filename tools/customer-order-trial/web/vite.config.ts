@@ -19,6 +19,9 @@ const reused = ['src/components/common/PageHeader.vue', 'src/components/common/S
   'src/api/customerOrderSchedule.ts', 'src/api/casdonWorkbook.ts',
   'src/api/customerOrderLedger.ts', 'src/api/customerOrderHistory.ts', 'src/composables/useDialogFocus.ts']
 const greenToysReused = ['src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue',
+  'src/components/modules/sales/customer-order-center/CustomerOrderAIReview.vue',
+  'src/components/ui/collapsible/index.ts', 'src/components/ui/collapsible/Collapsible.vue',
+  'src/components/ui/collapsible/CollapsibleContent.vue', 'src/components/ui/collapsible/CollapsibleTrigger.vue',
   'src/api/customerOrder.ts', 'src/features/cutting-operations/poTestBridge.ts', 'src/styles/customer-order-center-shell.css']
 function localSources(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {

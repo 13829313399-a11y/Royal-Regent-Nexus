@@ -292,7 +292,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
         legacy_windows: bool = False, single_customer: str | None = None):
     if single_customer and ((selected not in [['huakang-a'], ['huaxing']] if single_customer == 'zuru' else selected != [SINGLE_CUSTOMERS.get(single_customer, ('', ''))[0]]) or green_toys_only or huaxing_customer):
         raise ValueError('专客包必须选择对应厂区及唯一客户')
-    if legacy_windows and not (single_customer or huaxing_customer or (green_toys_only and selected == ['huakang-a'])):
+    if legacy_windows and not (single_customer or huaxing_customer or selected == ['huakang-b'] or (green_toys_only and selected == ['huakang-a'])):
         raise ValueError('Windows 7兼容构建需选择已验证的专客模式。')
     if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie'}):
         raise ValueError('华兴专客包需指定华兴及一个支持客户')
@@ -315,8 +315,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             zip_name, folder, name, customers = FACTORIES[factory]
             if green_toys_only:
                 zip_name, folder, customers = '01_华康A_GreenToys_订单入排期', 'HuakangA_GreenToys_Trial', 'Green Toys'
-            if legacy_windows:
+            if legacy_windows and green_toys_only:
                 zip_name, folder = '华康A_GreenToys_Win7_Win10_32及64位', 'GT_Trial'
+            if legacy_windows and factory == 'huakang-b':
+                zip_name, folder = '华康B_JP问单_Win7_Win10_32及64位', 'HuakangB_JP_Trial'
             if single_customer:
                 customers = SINGLE_CUSTOMERS[single_customer][1]
                 folder = f'{customers}_Trial'
@@ -333,9 +335,6 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             package = staging / folder
             package.mkdir()
             subprocess.run([sys.executable, '-B', str(source / 'prepare_backend.py'), str(package / 'backend')], check=True)
-            if legacy_windows:
-                from legacy_python import prepare
-                prepare(package / 'backend')
             has_seed = kind == 'jp' and seeded
             if has_seed:
                 stats = package_reference_seed(package, jp_schedule, jp_price)
@@ -348,6 +347,11 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                     'schedule.xlsx为排期，price.xlsx为货价；原始文件名及校验见manifest.json。\n'
                     '本包包含指定的业务参照，请交给相应华康B试用人员。\n'
                     f'校验记录数：排期{stats["schedule"]["rows"]}，货价{stats["price"]["rows"]}。\n', encoding='utf-8-sig')
+            # Validate references with the build host before adding Python 3.8
+            # backports, which are installed only in the Windows runtime.
+            if legacy_windows:
+                from legacy_python import prepare
+                prepare(package / 'backend')
             web = source / 'build' / ('web-single-customer' if single_customer else 'web-huaxing-recent' if huaxing_customer else 'web-green-toys' if green_toys_only else 'web-huadeng' if factory == 'huadeng' else 'web')
             if not (web / 'index.html').is_file():
                 raise RuntimeError(f'Missing built frontend: {web}')
@@ -469,8 +473,10 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             filename, _, name, customers = FACTORIES[factory]
             if green_toys_only:
                 filename, customers = '01_华康A_GreenToys_订单入排期', 'Green Toys'
-            if legacy_windows:
+            if legacy_windows and green_toys_only:
                 filename = '华康A_GreenToys_Win7_Win10_32及64位'
+            if legacy_windows and factory == 'huakang-b':
+                filename = '华康B_JP问单_Win7_Win10_32及64位'
             if single_customer:
                 customers = SINGLE_CUSTOMERS[single_customer][1]
                 filename = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')

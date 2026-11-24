@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { writeSpreadsheetClipboard } from '@/lib/spreadsheetClipboard'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { CircleAlert, ClipboardList, Copy, Download, FileInput, FileSpreadsheet, Inbox, LockKeyhole } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -245,14 +246,15 @@ async function copyExport(id: string) {
     clipboardMessage.value = `已读取 ${label} 的 ${result.row_count} 行已生成数据，每行 44 列，不含表头；不会重新分配编号。`
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-      await Promise.race([
-        navigator.clipboard.writeText(result.text),
+      const format = await Promise.race([
+        writeSpreadsheetClipboard(result),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('clipboard timeout')), 10_000) }),
       ])
-      if (token === epoch) clipboardMessage.value += ' 已复制，可粘贴到 Excel。'
+      if (token === epoch) clipboardMessage.value += format === 'rich'
+        ? ' 已按表格格式复制，编号不会额外添加单引号。'
+        : ' 已复制纯文本；请先将客PO、货号等目标列设为文本，保留前导零，或下载Excel后复制。'
     } catch {
-      if (token === epoch) clipboardMessage.value += ' 浏览器未完成自动复制，请点击“选中全部文本”后手动复制。'
+      if (token === epoch) clipboardMessage.value += ' 浏览器未完成自动复制，请点击“选中全部文本”后手动复制；目标编号列请先设为文本，或下载Excel后复制。'
     } finally { if (timer !== undefined) clearTimeout(timer) }
   } catch (cause) { if (token === epoch) handleError(cause) }
   finally { if (token === epoch) busy.value = false }

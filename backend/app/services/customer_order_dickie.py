@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.customer_order_ai import reviewed as ai_reviewed
+
 import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -1283,6 +1285,7 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
     ).hexdigest()
 
 
+@ai_reviewed
 def create_dickie_batch_preview(
     *,
     factory_id: str,

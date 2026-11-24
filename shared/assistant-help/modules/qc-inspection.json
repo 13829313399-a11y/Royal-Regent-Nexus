@@ -51,7 +51,7 @@
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "0956c8a83dfd3f69123f548aca8a16b37a175a22872d9305c6598855e15f2953"
+        "sha256": "3821a441c20099058788fb96f3f73b39b11dea6224886ec19fe572495d9b58c1"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
@@ -71,7 +71,7 @@
       {
         "path": "services/qc-department/qc-inspection-sheet.js",
         "symbol": "function pump",
-        "sha256": "79c663b69580e340f2947fb66efd106412c5be2ef42c19523bbf7f8026103500"
+        "sha256": "a95d3b8bdf5851e934969cea61ee7d66c80336aac51f506f50db90e89c5b0b9a"
       },
       {
         "path": "backend/app/services/qc_cumulative.py",
@@ -161,12 +161,12 @@
       {
         "path": "backend/app/api/qc_mobile.py",
         "symbol": "def create_pairing",
-        "sha256": "05dc6b380e32ef4b82335b87bbe9af16c4af42b7684337d2f7d733dff6292853"
+        "sha256": "4684e381a85a820e35e5668e01ca30c4630419bf60513df8540049f6ac5365f1"
       },
       {
         "path": "services/qc-department/mobile-inspection/remote.js",
         "symbol": "function mergeCache",
-        "sha256": "657d20537017239f17c3f36da5591645bb2fe5b839e68b3c2669d132f5b651e0"
+        "sha256": "e37d0417fa906b0106a6768578e982940573402b4a6a8f945c27071e3a95a657"
       },
       {
         "path": "backend/app/services/qc_report_workbook.py",
@@ -176,12 +176,12 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "32677818a03bd4b6d191b444015b78db32e1812c4bb500ec784388d426c81019"
+        "sha256": "94cecdb9300385328016b1250f0ba6732b740eeb141c68390c84e7f14728319e"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",
         "symbol": "QcPendingReviewWorkbook",
-        "sha256": "cdf4d804bdfe924871d4f87f61cbea5248500e56f087a350557579e430e0c1e4"
+        "sha256": "056bfe3f9974b495eea5e51028d1e6f23747299daa08da7fd78ddb2e04c3bfad"
       }
     ],
     "knowledge_version": "2026-11-22-qc-report-workbook-editing",

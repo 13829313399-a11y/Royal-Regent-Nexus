@@ -70,6 +70,7 @@ class CustomerOrderLineOut(BaseModel):
     source_po_file_name: str
     lineage: dict[str, str]
     issues: list[CustomerOrderIssueOut]
+    ai_candidates: list[dict] = []
 
     @field_validator('unit_price_usd', 'amount_usd', mode='before')
     @classmethod
@@ -86,6 +87,7 @@ class CustomerOrderImportSummaryOut(BaseModel):
 
 
 class CustomerOrderImportPreviewOut(BaseModel):
+    ai_recognition: dict | None = None
     warehouse_sync: dict | None = None
     preview_schema_version: str
     customer_code: str

@@ -32,13 +32,16 @@ COMPANIES = {
     "huakang-c": "hy-huakang-c", "huakang-d": "hy-huakang-d",
     "huadeng": "hy-huadeng", "huaxing": "hy-huaxing",
 }
-STATIC_FILES = {
-    "qc-select.js", "qc-select.css",
-    "qc-empty-state.js", "qc-empty-state.css", "qc-empty-motion.js",
-    "empty-art/clerk-reports-middle.png",
-    *(f"empty-art/clerk-{scene}-{pose}.png"
+EMPTY_ART_FILES = {
+    "empty-art/clerk-reports-middle.webp",
+    *(f"empty-art/clerk-{scene}-{pose}.webp"
       for scene in ("schedule", "inspection", "review", "summary", "reports")
       for pose in ("rest", "action")),
+}
+STATIC_FILES = {
+    *EMPTY_ART_FILES,
+    "qc-select.js", "qc-select.css",
+    "qc-empty-state.js", "qc-empty-state.css", "qc-empty-motion.js",
     "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
     "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
     "qc-daily-report.js", "qc-daily-report.css",
@@ -310,7 +313,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         if (request.method not in {"GET", "HEAD"} or not target.is_relative_to(ASSETS.resolve())
                 or (asset_path not in STATIC_FILES and not vendor) or not target.is_file()):
             raise HTTPException(404, "资源不存在")
-        return FileResponse(target, headers={**NO_CACHE, "X-Frame-Options": "SAMEORIGIN"})
+        headers = {**NO_CACHE, "X-Frame-Options": "SAMEORIGIN"}
+        if asset_path in EMPTY_ART_FILES:
+            headers["Cache-Control"] = "private, max-age=86400"
+        return FileResponse(target, headers=headers)
     if request.method == "POST":
         permission = WRITE_PERMISSIONS.get(asset_path)
         if not permission:

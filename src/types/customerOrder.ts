@@ -21,6 +21,7 @@ export interface CustomerOrderManualOverride {
 }
 
 export interface CustomerOrderPreviewRow {
+  ai_candidates?: { field: string; value: string; source: string; quote: string; text_verified: boolean; message?: string }[]
   id: string
   status: 'valid' | 'warning' | 'blocked'
   status_label: string
@@ -84,6 +85,16 @@ export interface WarehouseScheduleSyncResult {
 }
 
 export interface CustomerOrderImportPreview {
+  ai_recognition?: {
+    state: 'complete' | 'partial' | 'unavailable'
+    files: number
+    completed: number
+    snapshot_digest: string
+    models: string[]
+    documents: { file: string; state: string; message: string; notes: string[] }[]
+    unmatched: { file: string; document_kind: string; fields: Record<string, string>; evidence: Record<string, { source: string; quote: string; text_verified: boolean }> }[]
+    matched: { file: string; document_kind: string; fields: Record<string, string>; evidence: Record<string, { source: string; quote: string; text_verified: boolean }> }[]
+  } | null
   warehouse_sync?: WarehouseScheduleSyncResult | null
   preview_schema_version: string
   customer_code: string

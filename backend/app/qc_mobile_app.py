@@ -2,9 +2,10 @@
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import SecretStr
-from app.api.qc_mobile import router
+from app.api.qc_mobile import HEADERS, MOBILE_ASSETS, MOBILE_READY, mobile_asset_path, router
 from app.core.config import settings
 
 
@@ -28,3 +29,10 @@ async def lifespan(app):
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.include_router(router)
+
+
+@app.get("/api/qc-mobile/ready")
+def ready():
+    if not all(mobile_asset_path(name).is_file() for name in MOBILE_ASSETS):
+        raise HTTPException(503, "移动验货页面资源不完整")
+    return JSONResponse(MOBILE_READY, headers=HEADERS)

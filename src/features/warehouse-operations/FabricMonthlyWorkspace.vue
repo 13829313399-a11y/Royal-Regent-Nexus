@@ -92,7 +92,7 @@ onBeforeUnmount(() => { generation++; clearTimeout(searchTimer) })
         <option value="HANDOVER">单据交接 / 扫码</option>
         <option v-if="direction !== 'IN'" value="CUTTING">裁床领料实发</option>
       </select></label>
-      <label>{{ direction === 'IN' ? '供应商' : direction === 'OUT' ? '领用方' : '往来方' }}<select v-model="party" aria-label="月结往来方"><option value="">全部{{ direction === 'IN' ? '供应商' : direction === 'OUT' ? '领用方' : '往来方' }}</option><option v-for="item in parties" :key="item.key" :value="item.key">{{ !direction ? (item.direction === 'IN' ? '供应商 · ' : '领用方 · ') : '' }}{{ item.name || '原单未填写' }}</option></select></label>
+      <label>{{ direction === 'IN' ? '供应商' : direction === 'OUT' ? '领用方' : '往来方' }}<select v-model="party" aria-label="月结往来方"><option value="">全部{{ direction === 'IN' ? '供应商' : direction === 'OUT' ? '领用方' : '往来方' }}</option><option v-for="item in parties" :key="item.key" :value="item.key">{{ item.key.startsWith('processor-') ? '加工厂 · ' : !direction ? (item.direction === 'IN' ? '供应商 · ' : '领用方 · ') : '' }}{{ item.name || '原单未填写' }}</option></select></label>
       <label>原单位<select v-model="unit" aria-label="月结原单位"><option value="">全部单位</option><option v-for="value in units" :key="value">{{ value }}</option></select></label>
       <label>明细排序<select v-model="dateOrder" aria-label="月结明细排序"><option value="DESC">业务日期 · 最新在前</option><option value="ASC">业务日期 · 最早在前</option></select></label>
       <Button variant="ghost" :disabled="!hasFilters" @click="reset">重置筛选</Button>

@@ -9,6 +9,8 @@
 
 月报按业务开单日和执行厂取整月数据，逐模对计划、领用、消耗、配方、估价与已存结算金额。补领、冲销须有原始关联凭据。
 
+内部啤办任务完成后，承接厂有啤机回填权限的人员仍可按模具补填、修改试模报告。工程部查看最新报告，原任务的完工日期和结算记录保留。
+
 [molding-sample-business-flow.md](../business/molding-sample-business-flow.md) · [molding_sample.py](../../backend/app/api/molding_sample.py) · [test_molding_sample_api.py](../../backend/tests/test_molding_sample_api.py)
 
 旧版字段和例外可追溯至[啤办与集团胶料](../archive/memory/molding.md)。
@@ -58,6 +60,8 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 已保存的单笔报告补录按可验证的厂区与验货单 ID 只读呈现在验货汇总「QC验货 → 报告补录（本单）」；修改记录列出作者、时间与前后值，含清空。新旧报告周期、周报库与共用月度库明确区分，不覆盖已审核原值。汇总计数、整表备注、签核与未关联单笔的手工报表行不自动分摊。[完整资料及补录边界](../business/qc-complete-records.md#ui-和报告兼容)
 
 审核中心待审核首屏采用居中的八字段预览；右上角图标打开报告工作簿编辑器。完整列名、顺序、条件列和批次对应关系来自现有待审核表，不从报告补录字段推断。文字、明细和照片列表先在当前标签页暂存，再按显式保存走原待审核记录接口；保存编号绑定操作者、内容和版本，同编号重试不重复写入，不覆盖较新的记录。照片标注仍调用原独立保存接口。审核确认仍独立、按原权限和原选中记录处理；已审核页面及其只读和反审核规则不变。
+
+本地移动验货使用显式配置的私有 Wi-Fi 地址和独立受限监听；仅重启桌面 API 不会启动手机服务。签发局域网 HTTP 二维码前核对地址仍属于本机、手机监听及页面资源就绪。正式环境使用电脑和手机共用的固定 HTTPS 域名，发码前核对域名、手机资源和 QC 服务；反向代理保留正式 Host，不依赖任意转发头判断来源。发码自检不能证明厂区手机网络可达，上线须从实际使用网络探测并用真机扫码。[移动入口](../../backend/app/api/qc_mobile.py) · [局域网监听](../../backend/app/qc_mobile_app.py) · [生产验收](../aliyun-docker-deploy.md#移动验货上线验收)
 
 周报模板以[清单](../../backend/app/templates/qc-weekly/templates.json)和[加载服务](../../backend/app/services/qc_weekly_templates.py)核对。验货审核、退回与附件规则见[业务要求](../business/QC验货运营中心业务需求.md)和[运行契约](../business/qc-legacy-runtime-contract.md)。
 

@@ -3,7 +3,8 @@
   'use strict';
   if(!root.__QC_NEXUS)return;
   const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:''}};
-  let notificationGeneration=0;
+  let notificationGeneration=0,recordsRefreshInFlight=false,localUpdate=0;
+  const sameData=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
   const editable=()=>Boolean(root.__QC_NEXUS.workflow?.edit);
@@ -110,7 +111,7 @@
     const index=model.items.findIndex(r=>r.id===id);
     if(index>=0&&model.items[index].revision>saved.revision)return;
     if(index>=0&&model.items[index].photoWarning&&!('photoWarning' in saved))saved={...saved,photoWarning:model.items[index].photoWarning};
-    if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;}
+    if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;localUpdate++;}
     const entryNode=root.document.querySelector('[data-entry="'+id+'"]');if(entryNode&&model.view==='review'){
       const hint=audit().hint(saved);entryNode.querySelectorAll('[data-audit]').forEach(button=>{button.title=hint;button.setAttribute('aria-label',hint+'；查看修改历史');});
       for(const key of ['customer','poNo']){const cell=entryNode.querySelector('[data-column="'+key+'"]');if(cell)cell.title=(saved[key]||'')+'\n'+hint;}
@@ -207,9 +208,48 @@
     }
     model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
-    try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
+    try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=resultChoices(data);refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
     catch(error){model.error=error.message;}
     finally{model.loading=false;render();if(!model.error&&(view==='records'||model.reviewTab==='pending'))void reviewNotifications(view,noticeGeneration);const next=model.nextLoad;model.nextLoad=null;if(next&&(next.view!==model.view||next.tab!==model.reviewTab))await load(next.view,next.tab);}
+  }
+  const resultChoices=data=>(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));
+  function recordsIdle(){
+    const doc=root.document;
+    if(doc.hidden||model.view!=='records'||model.loading||rowDrag||model.recordChecked.size||
+      !doc.getElementById('page-records')?.classList.contains('active')||
+      doc.activeElement?.closest('#recordsTableWrap')||doc.querySelector('dialog[open]'))return false;
+    const state=navigationState();
+    return !state.dirty&&!state.busy;
+  }
+  async function refreshRecords(){
+    if(recordsRefreshInFlight||!recordsIdle())return;
+    const generation=notificationGeneration,update=localUpdate,items=model.items;
+    recordsRefreshInFlight=true;
+    try{
+      const [nextOptions,data]=await Promise.all([api('options'),api('entries')]);
+      // A foreground load, save or new interaction wins over an older poll.
+      if(generation!==notificationGeneration||update!==localUpdate||items!==model.items||!recordsIdle())return;
+      const oldRows=new Map(items.map(row=>[row.id,row])),changed=new Set();
+      const nextItems=data.items.map(row=>{
+        const old=oldRows.get(row.id);oldRows.delete(row.id);
+        if(old&&sameData(old,row))return old;
+        changed.add(row.id);return row;
+      });
+      for(const id of oldRows.keys())changed.add(id);
+      const results=resultChoices(data),columns=displayColumns(data.columns);
+      const rebuild=!model.loaded||!!model.error||!sameData(options,nextOptions)||!sameData(results,model.results)||!sameData(columns,model.columns);
+      if(rebuild||changed.size){
+        options=nextOptions;model.items=nextItems;model.results=results;model.columns=columns;model.loaded=true;model.error='';
+        if(!byId(model.selectedId))model.selectedId='';
+        for(const id of changed)model.drafts.delete(id);
+        // Keep undo/redo for untouched rows, but never replay a step against a newer row.
+        for(const key of ['undo','redo'])fieldHistory[key]=fieldHistory[key].filter(step=>!step.changes.some(change=>changed.has(change.id)));
+        if(rebuild)refreshResultFilters();
+        render(rebuild?undefined:changed);
+      }
+      if(!root.document.querySelector('#qis-central-notifications .qis-reversal-notice'))await reviewNotifications('records',generation,true);
+    }catch{/* Leave the last good view in place; manual refresh still reports read failures. */}
+    finally{recordsRefreshInFlight=false;}
   }
   function filtered(){
     const value=id=>root.document.getElementById(id)?.value||'';
@@ -576,7 +616,26 @@
     root.QcReportWorkbook.openReview(opener,source);
   }
 
-  function render(){
+  function patchRecordRows(host,rows,columns,changed){
+    const tbody=host.querySelector('table.qis-table tbody');
+    if(!tbody||Boolean(tbody.rows.length)!==Boolean(rows.length))return null;
+    const visible=new Set(rows.map(row=>row.id)),existing=new Map(),added=new Map();
+    for(const node of [...tbody.rows]){
+      const id=node.dataset.entry;
+      if(changed.has(id)||!visible.has(id))node.remove();
+      else existing.set(id,node);
+    }
+    const template=root.document.createElement('template');
+    let cursor=tbody.firstElementChild;
+    for(const row of rows){
+      let node=existing.get(row.id);
+      if(!node){template.innerHTML=rowHTML(row,columns);node=template.content.firstElementChild;added.set(row.id,node);}
+      if(node===cursor)cursor=cursor.nextElementSibling;
+      else tbody.insertBefore(node,cursor);
+    }
+    return added;
+  }
+  function render(changed){
     finishRowDrag(true);
     const host=root.document.getElementById(model.view==='review'?'reviewTableWrap':'recordsTableWrap');if(!host)return;
     host.classList.add('qis-wrap');updateTaskFilters();root.updateRecordsDateLabel?.();
@@ -595,16 +654,19 @@
       ? '<th scope="col" data-column="date" aria-sort="'+(ascending?'ascending':'descending')+'"><button type="button" class="qis-date-sort" title="'+sortHint+'" aria-label="'+sortHint+'">验货日期 <span aria-hidden="true">'+(ascending?'↑':'↓')+'</span></button></th>'
       : '<th scope="col" data-column="'+c.key+'">'+(reviewing&&model.reviewTab==='approved'&&c.key==='customer'
         ? '<input id="qis-review-all" type="checkbox" aria-label="全选当前筛选" title="全选当前筛选"> ' : '')+esc(c.label)+'</th>').join('');
-    const body=reviewing
-      ? skim?root.QcPendingReviewWorkbook.summary(orderedReviewRows(rows),{dateText,reviewGroup,draft,audit:audit()}):reviewTableBody(rows,columns,headerCells)
-      : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
-    const noTasks='没有符合条件的验货任务。';
-    const empty=!rows.length&&!model.loading;
-    const scene=empty&&model.loaded&&!model.error&&root.QcEmptyState?.markup(reviewing?'review':'inspection',noTasks);
-    host.innerHTML=(model.error?'<p role="alert" class="qis-error">读取失败：'+esc(model.error)+'。请重试刷新，当前数据可能不是最新。</p>':'')+
-      (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
-      ((!reviewing||rows.length)?'<table class="qis-table'+(skim?' qis-pending-summary':'')+'">'+body+'</table>':'')+
-      (empty?(scene||'<p>'+noTasks+'</p>'):'');
+    const patched=!reviewing&&changed?patchRecordRows(host,rows,columns,changed):null;
+    if(!patched){
+      const body=reviewing
+        ? skim?root.QcPendingReviewWorkbook.summary(orderedReviewRows(rows),{dateText,reviewGroup,draft,audit:audit()}):reviewTableBody(rows,columns,headerCells)
+        : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
+      const noTasks='没有符合条件的验货任务。';
+      const empty=!rows.length&&!model.loading;
+      const scene=empty&&model.loaded&&!model.error&&root.QcEmptyState?.markup(reviewing?'review':'inspection',noTasks);
+      host.innerHTML=(model.error?'<p role="alert" class="qis-error">读取失败：'+esc(model.error)+'。请重试刷新，当前数据可能不是最新。</p>':'')+
+        (model.loading?'<p role="status">正在读取验货任务…</p>':'')+
+        ((!reviewing||rows.length)?'<table class="qis-table'+(skim?' qis-pending-summary':'')+'">'+body+'</table>':'')+
+        (empty?(scene||'<p>'+noTasks+'</p>'):'');
+    }
     if(reviewing){
       const all=host.querySelector('#qis-review-all');
       if(all)all.onchange=event=>{
@@ -622,7 +684,9 @@
     host.scrollTop=scrollTop;host.scrollLeft=scrollLeft;freezeColumns(host);
     if(!host._qisObserved&&root.ResizeObserver){host._qisObserved=true;new root.ResizeObserver(()=>freezeColumns(host)).observe(host);}
     rows.forEach(row=>{
-      const d=draft(row),node=host.querySelector('[data-entry="'+row.id+'"]');
+      const node=patched?patched.get(row.id):host.querySelector('[data-entry="'+row.id+'"]');
+      if(!node)return;
+      const d=draft(row);
       node.onclick=()=>{if(!suppressRowClick&&!rowDrag)selectRow(row.id);};node.addEventListener('focusin',()=>selectRow(row.id));
       node.querySelectorAll('[data-result],[data-remark],[data-problem],[data-improvement],[data-review-field],[data-execution-field],[data-person-field]').forEach(input=>{
         if(canEdit(row)&&!input.disabled)bindFieldEditor(input,row);
@@ -740,6 +804,15 @@
   // Review groups reorder the displayed rows; ranges must follow the actual table order.
   const visibleSelectionRows=host=>[...host.querySelectorAll('[data-entry]')].map(node=>byId(node.dataset.entry)).filter(Boolean);
   let rowDrag=null,rowDragFrame=0,suppressRowClick=false;
+  function rowAtPointer(nodes,y){
+    let low=0,high=nodes.length-1;
+    while(low<high){
+      const middle=(low+high)>>1;
+      if(y<=nodes[middle].getBoundingClientRect().bottom)high=middle;
+      else low=middle+1;
+    }
+    return low;
+  }
   function finishRowDrag(cancel=false){
     if(!rowDrag)return;
     const drag=rowDrag;rowDrag=null;root.cancelAnimationFrame(rowDragFrame);rowDragFrame=0;
@@ -767,50 +840,80 @@
     suppressRowClick=true;setTimeout(()=>{suppressRowClick=false;},0);
     updateRowSelection();
   }
-  function chooseRowRange(rows,start,end){
+  function chooseRowRange(rows,start,end,drag=null){
     const next=new Set(rows.slice(Math.min(start,end),Math.max(start,end)+1).filter(row=>!selectionReason(row)).map(row=>row.id));
-    if(next.size===model[selectionKey()].size&&[...next].every(id=>model[selectionKey()].has(id)))return;
+    const previous=model[selectionKey()];
+    if(next.size===previous.size&&[...next].every(id=>previous.has(id)))return;
+    const previousActive=model.selectedId;
     model[selectionKey()]=next;
     model.selectedId=model[selectionKey()].size===1?[...model[selectionKey()]][0]:'';
-    updateRowSelection();
+    if(!drag){updateRowSelection();return;}
+    // While moving, paint just the rows that changed. Recheck the complete
+    // selection and toolbar once at release, not on each pointer sample.
+    const changed=new Set([...previous].filter(id=>!next.has(id)));
+    for(const id of next)if(!previous.has(id))changed.add(id);
+    changed.add(previousActive);changed.add(model.selectedId);
+    for(const id of changed){
+      const node=drag.byId.get(id);if(!node)continue;
+      node.classList.toggle('qis-batch-selected',next.has(id));
+      node.classList.toggle('qis-selected',id===model.selectedId);
+      node.setAttribute('aria-selected',String(next.has(id)));
+    }
   }
+  function updateRowDrag(index,release=false){
+    const drag=rowDrag;if(!drag)return;
+    index??=rowAtPointer(drag.nodes,drag.y);
+    if(drag.fill){
+      if(!drag.moved){
+        if(drag.y-drag.originY<3)return;
+        drag.moved=true;
+      }
+      if(index===drag.end)return;
+      drag.end=index;
+      const next=new Set(drag.nodes.slice(drag.start+1,index+1).map(node=>node.querySelector('[data-fill-name="'+drag.fill.key+'"]')?.closest('td')).filter(Boolean));
+      for(const cell of drag.targets)if(!next.has(cell))cell.classList.remove('qis-fill-target');
+      for(const cell of next)if(!drag.targets.has(cell))cell.classList.add('qis-fill-target');
+      drag.targets=next;
+    }else if(index!==drag.end||release){
+      drag.end=index;
+      chooseRowRange(drag.rows,drag.start,index,drag);
+    }
+  }
+  function queueRowDragScroll(){
+    if(rowDragFrame||!rowDrag)return;
+    rowDragFrame=root.requestAnimationFrame(()=>{
+      rowDragFrame=0;const drag=rowDrag;if(!drag||drag.fill&&!drag.moved)return;
+      const host=drag.host,box=host.getBoundingClientRect(),head=host.querySelector('thead')?.getBoundingClientRect().height||0;
+      const top=Math.max(box.top+head,0)+32,bottom=Math.min(box.bottom,root.innerHeight)-32;
+      const delta=drag.y<top?-Math.min(24,Math.max(3,(top-drag.y)/2)):drag.y>bottom?Math.min(24,Math.max(3,(drag.y-bottom)/2)):0;
+      if(!delta)return;
+      const before=host.scrollTop;host.scrollTop+=delta;
+      if(host.scrollTop!==before){updateRowDrag();queueRowDragScroll();}
+    });
+  }
+  root.addEventListener('pointermove',event=>{
+    if(rowDrag?.pointer!==event.pointerId)return;
+    rowDrag.y=event.clientY;updateRowDrag();queueRowDragScroll();
+  },true);
+  root.addEventListener('pointerup',event=>{
+    if(rowDrag?.pointer!==event.pointerId)return;
+    rowDrag.y=event.clientY;updateRowDrag(undefined,true);finishRowDrag();
+  },true);
+  root.addEventListener('pointercancel',event=>{if(rowDrag?.pointer===event.pointerId)finishRowDrag(true);},true);
   root.addEventListener('blur',()=>finishRowDrag(true));
   root.addEventListener('pagehide',()=>finishRowDrag(true));
   function bindRowSelection(host){
     if(host._qisDragBound)return;host._qisDragBound=true;
     const interactive=target=>target.closest('input,select,textarea,button,a,label,[contenteditable=true],[role=button]');
     const allowed=()=>(model.view==='records'||model.view==='review'&&model.reviewTab==='pending')&&editable()&&!model.loading&&!model.error&&!model.submitBusy&&!model.reviewBusy&&!root.document.querySelector('dialog[open]');
-    const update=()=>{
-      if(!rowDrag)return;
-      const nodes=rowDrag.nodes;
-      let index=nodes.findIndex(node=>rowDrag.y<=node.getBoundingClientRect().bottom);if(index<0)index=nodes.length-1;
-      if(rowDrag.fill){
-        if(!rowDrag.moved){
-          if(rowDrag.y-rowDrag.originY<3)return;
-          rowDrag.moved=true;
-        }
-        if(index===rowDrag.end)return;
-        rowDrag.end=index;
-        const cells=nodes.slice(rowDrag.start+1,index+1).map(node=>node.querySelector('[data-fill-name="'+rowDrag.fill.key+'"]')?.closest('td')).filter(Boolean);
-        const next=new Set(cells);
-        for(const cell of rowDrag.targets)if(!next.has(cell))cell.classList.remove('qis-fill-target');
-        for(const cell of next)if(!rowDrag.targets.has(cell))cell.classList.add('qis-fill-target');
-        rowDrag.targets=next;
-      }else chooseRowRange(rowDrag.rows,rowDrag.start,index);
-    };
-    const scroll=()=>{
-      if(!rowDrag)return;
-      const box=host.getBoundingClientRect(),head=host.querySelector('thead')?.getBoundingClientRect().height||0;
-      const top=Math.max(box.top+head,0)+28,bottom=Math.min(box.bottom,root.innerHeight)-28;
-      const delta=rowDrag.y<top?-Math.min(16,(top-rowDrag.y)/3):rowDrag.y>bottom?Math.min(16,(rowDrag.y-bottom)/3):0;
-      if(delta&&(!rowDrag.fill||rowDrag.moved))host.scrollTop+=delta;
-      update();rowDragFrame=root.requestAnimationFrame(scroll);
-    };
     host.addEventListener('pointerdown',event=>{
       const handle=event.target.closest('[data-fill-name]');
       if(rowDrag||!allowed()||event.button!==0||(!handle&&(event.pointerType==='touch'||interactive(event.target))))return;
       const node=event.target.closest('[data-entry]');if(!node)return;
-      const rows=visibleSelectionRows(host),start=rows.findIndex(row=>row.id===node.dataset.entry);if(start<0)return;
+      const items=new Map(model.items.map(row=>[row.id,row]));
+      const nodes=[...host.querySelectorAll('[data-entry]')].filter(n=>items.has(n.dataset.entry));
+      const rows=nodes.map(n=>items.get(n.dataset.entry)),start=nodes.indexOf(node);if(start<0)return;
+      const byEntry=new Map(nodes.map(n=>[n.dataset.entry,n]));
       let fill=null;
       if(handle){
         const key=handle.dataset.fillName,snapshot=fieldValue(rows[start],key);
@@ -820,17 +923,12 @@
         model[anchorKey()]=node.dataset.entry;model[cursorKey()]=node.dataset.entry;
       }
       event.preventDefault();host.focus({preventScroll:true});
-      rowDrag={host,pointer:event.pointerId,start,rows,fill,targets:new Set(),nodes:[...host.querySelectorAll('[data-entry]')],originY:event.clientY,y:event.clientY,before:new Set(model[selectionKey()])};
-      host.setPointerCapture?.(event.pointerId);host.classList.add('qis-drag-selecting');update();rowDragFrame=root.requestAnimationFrame(scroll);
+      rowDrag={host,pointer:event.pointerId,start,rows,fill,targets:new Set(),nodes,byId:byEntry,originY:event.clientY,y:event.clientY,before:new Set(model[selectionKey()])};
+      try{host.setPointerCapture?.(event.pointerId);}catch{/* Window handlers still track the release. */}
+      host.classList.add('qis-drag-selecting');updateRowDrag(start);queueRowDragScroll();
     });
-    host.addEventListener('pointermove',event=>{if(rowDrag&&event.pointerId===rowDrag.pointer){rowDrag.y=event.clientY;update();}});
-    host.addEventListener('pointerup',event=>{
-      if(!rowDrag||event.pointerId!==rowDrag.pointer)return;
-      if(rowDrag.fill){rowDrag.y=event.clientY;update();}
-      finishRowDrag();
-    });
-    host.addEventListener('pointercancel',event=>{if(rowDrag?.pointer===event.pointerId)finishRowDrag(true);});
-    host.addEventListener('lostpointercapture',()=>finishRowDrag(true));
+    host.addEventListener('scroll',()=>{if(rowDrag?.host===host)updateRowDrag();});
+    host.addEventListener('lostpointercapture',event=>{if(rowDrag?.pointer===event.pointerId&&event.target===host)finishRowDrag(true);});
     host.addEventListener('click',event=>{
       if(!allowed()||suppressRowClick||interactive(event.target))return;
       const node=event.target.closest('[data-entry]'),row=node&&byId(node.dataset.entry);if(!row)return;
@@ -1045,7 +1143,7 @@
       finally{model.reviewBusy=false;button.disabled=false;el.querySelector('[data-close]').disabled=false;updateReviewControls(filtered());}
     };
   }
-  async function reviewNotifications(view,generation){
+  async function reviewNotifications(view,generation,background=false){
     const workbench=view==='records';
     const path=(workbench?'entries':'review')+'/notifications';
     const label=workbench?'退回提醒':'反审核提醒';
@@ -1060,7 +1158,7 @@
       root.requestAnimationFrame(()=>root.requestAnimationFrame(()=>{
         if(panel.isConnected&&active()&&!root.document.hidden)void api(path+'/shown',{eventIds:data.items.map(e=>e.eventId)}).catch(()=>{panel.querySelector('strong').textContent=label+'已显示，读取状态未保存；刷新后可能再次提醒';});
       }));
-    }catch(error){if(active())root.showToast?.(label+'读取失败：'+error.message+'；刷新可重试','error');}
+    }catch(error){if(!background&&active())root.showToast?.(label+'读取失败：'+error.message+'；刷新可重试','error');}
   }
   async function focus(key){
     if(!root.document.getElementById('page-records')?.classList.contains('active'))root.showPage?.('records');
@@ -1076,7 +1174,7 @@
     resetReviewFilters();
     selectRow(id);render();const node=root.document.querySelector('[data-entry="'+id+'"]');node?.scrollIntoView?.({block:'center'});node?.focus();
   }
-  root.QcInspectionSheet={model,load,focusReview,clearReviewDates,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
+  root.QcInspectionSheet={model,load,refreshRecords,focusReview,clearReviewDates,loadReview:(tab)=>load('review',tab),render,filtered,resetTaskFilters,edit,pump,retry,flush,navigationState,offerConflictRecovery,focus,upload};
   root.addEventListener('beforeunload',event=>{if(navigationState().dirty||navigationState().busy){event.preventDefault();event.returnValue='';}});
   root.document.addEventListener('DOMContentLoaded',()=>{
     if(root.__QC_INITIAL_PAGE?.()==='review')load('review');else load();

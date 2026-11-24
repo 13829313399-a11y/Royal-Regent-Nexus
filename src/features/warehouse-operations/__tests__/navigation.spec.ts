@@ -198,6 +198,10 @@ describe('warehouse framework navigation', () => {
           expect(wrapper!.find('fieldset[disabled]').exists()).toBe(false)
           continue
         }
+        if (wrapper!.find('.fabric-subcontract').exists()) {
+          expect(wrapper!.get('.fabric-subcontract').attributes('aria-label')).toBe(view.id === 'processors' ? '加工厂资料' : '布料仓委外加工')
+          continue
+        }
         if (wrapper!.find('.fabric-activity-log').exists()) {
           expect(wrapper!.get('.activity-heading h2').text()).toBe('操作日志')
           expect(wrapper!.text()).toContain('暂无操作日志')
@@ -354,12 +358,12 @@ describe('warehouse framework navigation', () => {
     expect(filterIds.every(Boolean)).toBe(true)
     expect(new Set(filterIds).size).toBe(filters.length)
     expect(filters.map(field => field.attributes('name'))).toEqual(['inventory_q', 'record_kind', 'record_state', 'record_sort', 'warehouse_view'])
-    expect(wrapper!.findAll('.warehouse-tabs button').map(button => button.text())).toEqual(['库存台账', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
+    expect(wrapper!.findAll('.warehouse-tabs button').map(button => button.text())).toEqual(['库存台账', '委外加工', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
     expect(wrapper!.get('.warehouse-tabs button[aria-pressed=true]').text()).toBe('收发记录')
     expect(wrapper!.find('.fabric-inventory-record-tabs').exists()).toBe(false)
     expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('TRANSFER')
     expect(wrapper!.get('.warehouse-table-heading h2').text()).toBe('收发记录')
-    expect(wrapper!.findAll('[aria-label="选择业务分区"] option').map(option => option.text())).toEqual(['库存台账', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
+    expect(wrapper!.findAll('[aria-label="选择业务分区"] option').map(option => option.text())).toEqual(['库存台账', '委外加工', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
     expect(wrapper!.find('[aria-label="查找仓库收发"]').exists()).toBe(false)
     await wrapper!.get('.fabric-header-search input').setValue('布料')
     await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=stock`); await flushPromises()

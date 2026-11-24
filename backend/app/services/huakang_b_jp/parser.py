@@ -486,7 +486,11 @@ def extract_reply_info(reply_text, ref_date):
 def pick_country(text):
     if not text:
         return ''
-    t = text.lower().strip()
+    t = text.lower().strip().replace('_', ' ')
+    # Mail subject market codes are explicit; Walmart by itself is not a country.
+    for code, country in (('wmus', '美国'), ('wmca', '加拿大')):
+        if re.search(r'(?<![a-z0-9])' + code + r'(?![a-z0-9])', t):
+            return country
     if t in COUNTRY_MAP:
         return COUNTRY_MAP[t]
     for k, v in COUNTRY_MAP.items():
@@ -1081,7 +1085,7 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
     last_po, last_cust = '', ''
     for row in table[1:]:
         raw_item = cell(row, col_item)
-        if vsk_columns and not raw_item and any(re.fullmatch(r'(?i)(?:grand\s+)?total(?:\s*\(pcs\))?', str(v).strip()) for v in row):
+        if not raw_item and any(re.fullmatch(r'(?i)(?:grand\s+)?total(?:\s*\(pcs\))?\s*[:：]?', str(v).strip()) for v in row):
             continue
         baby, long_code = clean_item_code(raw_item)
         if not baby:

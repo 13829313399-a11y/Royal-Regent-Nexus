@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.customer_order_ai import reviewed as ai_reviewed
+
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import date
@@ -1283,6 +1285,7 @@ def _green_summary_recovery(workbook, rows, history):
         return {}
 
 
+@ai_reviewed
 def create_unified_customer_preview(
     *,
     customer_code: str,

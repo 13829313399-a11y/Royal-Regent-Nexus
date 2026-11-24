@@ -114,6 +114,7 @@ function mount(periodKey, kind, host, data, refresh){
 }
 document.body.insertAdjacentHTML('beforeend','<dialog id="wb-dialog" aria-label="工作簿预览"><div class="wb-head"><div class="wb-nav"><span class="file-mark" aria-hidden="true">▤</span><div id="wb-templates" role="group" aria-label="报告模板"></div></div><span id="wb-status" role="status" title="按 Ctrl+S 或 ⌘S 保存"></span><button id="wb-export">导出 Excel</button><button id="wb-close" aria-label="关闭工作簿" title="关闭">×</button></div><div class="wb-formula"><output id="wb-address">A1</output><i>ƒx</i><textarea id="wb-value" rows="1" wrap="off" aria-label="单元格内容" readonly></textarea></div><div id="wb-grid"></div><div class="wb-foot"><div id="wb-tabs" aria-label="工作表"></div><span id="wb-mode" hidden>简洁预览 · 补录和导出照常</span><button id="wb-next" title="跳到下一个可编辑单元格">定位可编辑格 ↗</button></div></dialog><dialog id="wb-save-prompt" aria-labelledby="wb-save-title" aria-describedby="wb-save-message"><strong id="wb-save-title">保存更改？</strong><p id="wb-save-message"></p><div class="wb-save-actions"><button type="button" data-wb-choice="cancel" autofocus>取消</button><button type="button" data-wb-choice="discard">不保存</button><button type="button" data-wb-choice="save">保存</button></div></dialog>');
  const dialog=byId('wb-dialog'), valueInput=byId('wb-value'), statusText=byId('wb-status');
+ let reviewRow=null,reviewColumn=null;
  const exportButton=byId('wb-export');
  let readyExport=null;
  function clearReadyExport(){
@@ -128,8 +129,23 @@ dialog.append(fillVisual);
 let fillSettle;
 function fitSheet(table=grid.querySelector('table')){
   if(!dialog.open||!table)return;
-  const naturalWidth=parseFloat(table.style.width);
   const available=view.clientWidth;
+  if(table.classList.contains('wb-review-table')){
+    const cols=[...table.querySelectorAll('colgroup')];
+    const compact=available>0&&available<360?[24,43,50,53]:
+      available>=360&&available<430?[26,51,61,75]:available>=430&&available<720?[30,74,82,100]:null;
+    let width=0;
+    cols.forEach((col,i)=>{
+      const size=compact?.[i]??Number(col.getAttribute('width'));
+      if(i<4){
+        col.style.width=size+'px';
+        table.style.setProperty('--wb-review-pin-'+i,width+'px');
+      }
+      width+=size;
+    });
+    table.style.width=width+'px';
+  }
+  const naturalWidth=parseFloat(table.style.width);
   const desktop=window.innerWidth>768&&!document.documentElement.classList.contains('qc-mobile');
   // Scale the original grid proportionally, never the app or any of its controls.
   // Wider sheets still scroll rather than forcing the text below the readability floor.
@@ -156,8 +172,8 @@ td.writable.blank:not(.selected){box-shadow:inset 0 0 0 100vmax #c9ead899}
 td.writable:hover{box-shadow:inset 0 0 0 1px #73947e}
 .cell-value{display:contents}
 td>.cell-editor{position:absolute;z-index:1;inset:0;width:100%;height:100%;box-sizing:border-box;resize:none;border:2px solid #287447;outline:0;background:white;color:#17231c;padding:2px 3px;font:inherit;text-align:inherit}
-.wb-fill-handle{position:absolute;z-index:2;right:0;bottom:0;width:14px;height:14px;cursor:crosshair;touch-action:none}
-.wb-fill-handle::after{content:"";position:absolute;right:1px;bottom:1px;width:7px;height:7px;background:#287447;border:1px solid white}
+.wb-fill-handle{position:absolute;z-index:2;right:0;bottom:0;width:25px;height:24px;cursor:crosshair;touch-action:none}
+.wb-fill-handle::after{content:"";position:absolute;right:1px;bottom:1px;width:9px;height:9px;background:#287447;border:1px solid white}
 th.row-num,th.col-num{background:#f2f4f1;color:#657369;border:solid #d5dcd5;border-width:0 1px 1px 0;text-align:center;font:11px/1.2 -apple-system,sans-serif}
 th.row-num{position:sticky;left:0;min-width:36px;z-index:2}
 thead{position:sticky;top:0;z-index:3}
@@ -167,6 +183,19 @@ th.col-num{height:24px}
 img{max-width:none}
 .wb-photo{padding:0;border:0;background:none;cursor:zoom-in;line-height:0;vertical-align:middle}
 .wb-photo:focus-visible{outline:2px solid #287447}
+.wb-review-table thead{z-index:5}
+.wb-review-table [data-review-pin]{position:sticky;left:var(--wb-pin);z-index:4;overflow-wrap:anywhere}
+.wb-review-table [data-review-pin="0"]{--wb-pin:var(--wb-review-pin-0);min-width:0}
+.wb-review-table [data-review-pin="1"]{--wb-pin:var(--wb-review-pin-1)}
+.wb-review-table [data-review-pin="2"]{--wb-pin:var(--wb-review-pin-2)}
+.wb-review-table [data-review-pin="3"]{--wb-pin:var(--wb-review-pin-3);box-shadow:1px 0 #a2b5a8}
+.wb-review-table [data-review-active]>td{background:#eff8f2}
+.wb-review-table [data-review-active]>td[data-review-pin]{background:#e4f2e8}
+.wb-review-table [data-review-active]>th,.wb-review-table .wb-review-column{color:#205738;background:#d9ecdf}
+.wb-review-table .wb-review-row-button{width:100%;min-height:34px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.wb-review-table .wb-review-row-button:is(:hover,:focus-visible){outline:2px solid #287447;outline-offset:-2px}
+.wb-review-table .wb-review-row-button[aria-pressed="true"]{font-weight:700;border-inline-start:3px solid #287447}
+.wb-review-table .wb-review-action:focus-visible{outline:2px solid #287447;outline-offset:1px}
 </style>`;
 const grip=document.createElement('span');
 grip.className='wb-fill-handle';grip.title='向下拖动填充同列空白格';grip.setAttribute('aria-hidden','true');
@@ -235,6 +264,8 @@ function linkCells(cells){
   byId('wb-mode').hidden=true;
   byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
   book=null;active=null;sheet=0;bookQuery='';
+  reviewRow=reviewColumn=null;
+  byId('wb-next').title=reviewSource?'定位本行下一个可填写字段':'跳到下一个可编辑单元格';
   grid.innerHTML='';byId('wb-tabs').replaceChildren();
   valueInput.value='';byId('wb-address').textContent='A1';
   const templates=byId('wb-templates');
@@ -288,7 +319,7 @@ function linkCells(cells){
       if(active&&book)selectCell(active,{focus:true});
       byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
       byId('wb-export').disabled=!book?.sheets.length;
-      byId('wb-next').disabled=!grid.querySelector('.writable');
+       if(!reviewSource)byId('wb-next').disabled=!grid.querySelector('.writable');
     }
   }
 }
@@ -340,7 +371,57 @@ function paintRange(){
     }
   }
 }
-function selectCell(td,{extend=false,focus=false,scroll=false}={}){
+ function reviewTargets(row){
+   return [...(row?.querySelectorAll('[data-field]')||[])].filter(td=>{
+     const cell=mappedCell(td);
+     return cell&&!cell.readonly;
+   });
+ }
+ function setReviewNavigationDisabled(disabled){
+   if(reviewSource)byId('wb-next').disabled=disabled||!reviewTargets(reviewRow).length;
+ }
+ function markReviewRow(row,selected){
+   if(!row)return;
+   row.toggleAttribute('data-review-active',selected);
+   const button=row.querySelector('[data-review-row]');
+   button.setAttribute('aria-pressed',String(selected));
+   button.tabIndex=selected?0:-1;
+ }
+ function syncReviewFocus(td){
+   if(!reviewSource)return;
+   const row=td.closest('tr[data-review-entry]');
+   if(row!==reviewRow){
+     markReviewRow(reviewRow,false);
+     reviewRow=row;
+     markReviewRow(row,true);
+   }
+   setReviewNavigationDisabled(view.inert);
+   const heading=at(2,coords.get(td).c,false);
+   if(reviewColumn!==heading){
+     reviewColumn?.classList.remove('wb-review-column');
+     reviewColumn=heading;reviewColumn?.classList.add('wb-review-column');
+   }
+ }
+ function revealCell(td,alignAfterPins=false){
+   if(!td.closest('.wb-review-table')){td.scrollIntoView?.({block:'nearest',inline:'nearest'});return;}
+   // Scrolled cells must clear the opaque frozen pane, not just the viewport edge.
+   const viewport=view.getBoundingClientRect(), rect=td.getBoundingClientRect();
+   if(view.clientWidth<1||view.clientHeight<1)return;
+   const table=td.closest('table');
+   if(!td.hasAttribute('data-review-pin')){
+     const left=Math.max(viewport.left,table.querySelector('thead [data-review-pin="3"]')?.getBoundingClientRect().right??viewport.left)+3;
+     const right=viewport.left+view.clientWidth-3;
+     if(alignAfterPins||rect.left<left||rect.width>right-left)view.scrollLeft+=rect.left-left;
+     else if(rect.right>right)view.scrollLeft+=rect.right-right;
+   }
+   if(td.closest('tbody')){
+     const top=Math.max(viewport.top,table.tHead.getBoundingClientRect().bottom);
+     const bottom=viewport.top+view.clientHeight;
+     if(rect.top<top||rect.height>bottom-top)view.scrollTop+=rect.top-top;
+     else if(rect.bottom>bottom)view.scrollTop+=rect.bottom-bottom;
+   }
+ }
+ function selectCell(td,{extend=false,focus=false,scroll=false,alignAfterPins=false}={}){
   if(!td)return;
   if(!extend||!anchor)anchor=td;
   edge=td;
@@ -355,7 +436,8 @@ function selectCell(td,{extend=false,focus=false,scroll=false}={}){
   valueInput.title=cell?'单元格内容，可编辑':'模板或计算单元格，只读';
   valueInput.readOnly=!cell||Boolean(cell.choices)||view.inert;
   paintRange();syncSelection();
-  if(scroll)td.scrollIntoView?.({block:'nearest',inline:'nearest'});
+  syncReviewFocus(active);
+   if(scroll)revealCell(td,alignAfterPins);
   if(focus){focusing=true;active.focus({preventScroll:true});focusing=false;}
 }
 function indexSheet(table){
@@ -396,6 +478,7 @@ function editorMove(dr,dc){
 function drawSheet(index){
   finishFill(true);
   sheet=index;active=anchor=edge=copyRange=null;selectionDrag=null;clearRange();visibleCells=new Map();
+  reviewRow=reviewColumn=null;
   grid.innerHTML=gridCSS+book.sheets[index].html;
   const table=grid.querySelector('table');
   const cols=[...table.querySelectorAll('colgroup')];
@@ -454,6 +537,13 @@ function drawSheet(index){
     }
   };
   table.onclick=e=>{
+    if(e.target.closest('[data-review-row]')){
+      if(view.inert)return;
+      commitInput();
+      const row=e.target.closest('[data-review-entry]');
+      const next=reviewTargets(row).find(td=>td.dataset.field===active?.dataset.field)||row.querySelector('td[data-review-pin="1"]');
+      selectCell(next,{focus:true,scroll:true});return;
+    }
     const td=e.target.closest('td[data-addr]');
     if(!td||swept||e.target.closest('.cell-editor,.wb-fill-handle,.wb-photo,.wb-review-action'))return;
     commitInput();selectCell(td,{extend:e.shiftKey,focus:true});
@@ -472,7 +562,7 @@ function drawSheet(index){
     };return b;
   }));
   byId('wb-next').disabled=!table.querySelector('.writable');
-  view.scrollTo(0,0);selectCell(sheetCells[0]);
+  view.scrollTo(0,0);selectCell(table.querySelector('tr[data-review-entry] td[data-review-pin="1"]')||sheetCells[0]);
 }
 function setText(td,value){
   if(td.wbReviewRender){td.wbReviewRender(value);return;}
@@ -575,7 +665,8 @@ function clearFillVisual(){
 function paintFillVisual(positions,scrolling){
   if(!positions.length){clearFillVisual();return;}
   const viewport=view.getBoundingClientRect(),outer=dialog.getBoundingClientRect();
-  const gutter=grid.querySelector('.row-num')?.getBoundingClientRect().width||0;
+  const pinned=grid.querySelector('thead [data-review-pin="3"]')?.getBoundingClientRect();
+  const gutter=pinned?Math.max(0,pinned.right-viewport.left):(grid.querySelector('.row-num')?.getBoundingClientRect().width||0);
   const heading=grid.querySelector('thead')?.getBoundingClientRect().height||0;
   const x=viewport.left+gutter,y=viewport.top+heading;
   const width=view.clientWidth-gutter,height=view.clientHeight-heading;
@@ -622,38 +713,45 @@ grip.onpointerdown=event=>{
   clearFillVisual();
   source.focus({preventScroll:true});
   drag={pointer:event.pointerId,source:cell,origin:source,value,candidates,targets:[],originY:event.clientY,y:event.clientY};
-  view.classList.add('wb-filling');view.setPointerCapture?.(event.pointerId);
-  const scroll=()=>{
-    if(!drag)return;
+  view.classList.add('wb-filling');
+  try{view.setPointerCapture?.(event.pointerId);}catch{/* Window handlers still track the release. */}
+ };
+ function queueFillScroll(){
+   if(dragFrame||!drag?.moved)return;
+   dragFrame=requestAnimationFrame(()=>{
+    dragFrame=0;
+    if(!drag?.moved)return;
     const {top,bottom}=view.getBoundingClientRect();
     const header=grid.querySelector('thead')?.getBoundingClientRect().height||0;
-    if(drag.moved){
-      const delta=drag.y>bottom-28?Math.min(16,(drag.y-bottom+28)/3):
-        drag.y<top+header+28?-Math.min(16,(top+header+28-drag.y)/3):0;
-      if(delta)view.scrollTop+=delta;
-    }
-    dragFrame=requestAnimationFrame(scroll);
-  };
-  dragFrame=requestAnimationFrame(scroll);
-};
+    const delta=drag.y>bottom-32?Math.min(24,Math.max(3,(drag.y-bottom+32)/2)):
+      drag.y<top+header+32?-Math.min(24,Math.max(3,(top+header+32-drag.y)/2)):0;
+    if(!delta)return;
+    const before=view.scrollTop;view.scrollTop+=delta;
+    if(view.scrollTop!==before){previewFill(true);queueFillScroll();}
+   });
+ }
 function previewFill(scrolling=false){
   if(!drag.moved&&drag.y-drag.originY<3)return;
   drag.moved=true;
-  const targets=[],positions=[];
-  for(const td of drag.candidates){
-    const r=td.getBoundingClientRect();
-    if(drag.y<r.top)break;
-    targets.push(td);positions.push([td,r]);
+  let low=0,high=drag.candidates.length;
+  while(low<high){
+    const middle=(low+high)>>1;
+    if(drag.y<drag.candidates[middle].getBoundingClientRect().top)high=middle;
+    else low=middle+1;
   }
+  const scrolled=view.scrollTop!==drag.top||view.scrollLeft!==drag.left;
+  if(low===drag.targets.length&&!scrolled)return;
+  drag.top=view.scrollTop;drag.left=view.scrollLeft;
+  const targets=drag.candidates.slice(0,low);
   for(let i=targets.length;i<drag.targets.length;i++)drag.targets[i].classList.remove('wb-fill-target');
   for(let i=drag.targets.length;i<targets.length;i++)targets[i].classList.add('wb-fill-target');
   drag.targets=targets;
-  paintFillVisual(positions,scrolling);
+  paintFillVisual(targets.map(td=>[td,td.getBoundingClientRect()]),scrolling);
 }
 function finishFill(cancel){
   if(!drag){if(cancel)clearFillVisual();return;}
   const {pointer,source,value,targets}=drag;drag=null;
-  cancelAnimationFrame(dragFrame);view.classList.remove('wb-filling');
+   cancelAnimationFrame(dragFrame);dragFrame=0;view.classList.remove('wb-filling');
   if(view.hasPointerCapture?.(pointer))view.releasePointerCapture(pointer);
   for(const td of targets)td.classList.remove('wb-fill-target');
   if(cancel){clearFillVisual();return;}
@@ -664,12 +762,17 @@ function finishFill(cancel){
     fillVisual.classList.add('wb-fill-done');fillSettle=setTimeout(clearFillVisual,160);
   }else clearFillVisual();
 }
-view.onpointermove=view.onpointerup=event=>{
-  if(drag?.pointer!==event.pointerId)return;
-  drag.y=event.clientY;previewFill();
-  if(event.type==='pointerup')finishFill(false);
-};
-view.onpointercancel=view.onlostpointercapture=event=>{if(drag?.pointer===event.pointerId)finishFill(true);};
+ function updateFillPointer(event){
+   if(drag?.pointer!==event.pointerId)return;
+   drag.y=event.clientY;previewFill();
+   if(event.type==='pointerup')finishFill(false);
+   else queueFillScroll();
+ }
+ window.addEventListener('pointermove',updateFillPointer,true);
+ window.addEventListener('pointerup',updateFillPointer,true);
+ const cancelFillPointer=event=>{if(drag?.pointer===event.pointerId)finishFill(true);};
+ window.addEventListener('pointercancel',cancelFillPointer,true);
+ view.onlostpointercapture=event=>{if(event.target===view)cancelFillPointer(event);};
 view.addEventListener('scroll',()=>{if(drag?.moved)previewFill(true);});
 window.addEventListener('pointerup',()=>{selectionDrag=null;});
 window.addEventListener('pointercancel',()=>{selectionDrag=null;swept=false;});
@@ -694,7 +797,7 @@ function shortcutFill(){
   editCells(edits);
 }
 const inEditor=e=>e.composedPath().some(node=>node===valueInput||node?.classList?.contains('cell-editor'));
-const gridEvent=e=>e.composedPath().includes(view);
+ const gridEvent=e=>{const nodes=e.composedPath();return nodes.includes(view)&&!nodes.some(node=>node?.matches?.('[data-review-row],.wb-review-action'));};
 const quoteClipboard=s=>/[\t\r\n"]/.test(s)?'"'+s.replaceAll('"','""')+'"':s;
 function readClipboard(text){
   const rows=[];let row=[],field='',q=false;
@@ -855,13 +958,14 @@ dialog.addEventListener('keydown',event=>{
   }
 });
 
-function saveBook(){
+ function saveBook(){
   if(saving)return saving;
   if(!book||view.inert||exporting||drag||reviewSource?.busy?.())return Promise.resolve(false);
   commitInput();
   if(!changes.size)return Promise.resolve(true);
-  const tabs=byId('wb-tabs');
-  view.inert=tabs.inert=true;
+   const tabs=byId('wb-tabs');
+   view.inert=tabs.inert=true;
+   setReviewNavigationDisabled(true);
   valueInput.readOnly=true;
   byId('wb-export').disabled=byId('wb-close').disabled=true;
   statusText.textContent='正在保存…';
@@ -895,8 +999,9 @@ function saveBook(){
     statusText.textContent='已保存';
     return true;
   })().finally(()=>{
-    saving=null;
-    view.inert=tabs.inert=false;
+     saving=null;
+     view.inert=tabs.inert=false;
+     setReviewNavigationDisabled(false);
     byId('wb-close').disabled=false;
     byId('wb-export').disabled=!book?.sheets.length;
     reviewSource?.refreshAudit?.(grid);
@@ -923,11 +1028,17 @@ valueInput.onkeydown=e=>{
     editorMove(e.key==='Enter'?step:0,e.key==='Tab'?step:0);
   }
 };
-byId('wb-next').onclick=()=>{
-  const targets=[...grid.querySelectorAll('.writable')];
-  const td=targets[(targets.indexOf(active)+1)%targets.length];
-  if(td){td.scrollIntoView?.({block:'nearest',inline:'center'});selectCell(td,{focus:true});}
-};
+ byId('wb-next').onclick=()=>{
+   if(view.inert||saving||chooseSave||exporting)return;
+   commitInput();
+   const targets=reviewSource?reviewTargets(reviewRow):[...grid.querySelectorAll('.writable')];
+   const td=targets[(targets.indexOf(active)+1)%targets.length];
+   if(td){
+     if(!reviewSource)td.scrollIntoView?.({block:'nearest',inline:'center'});
+     selectCell(td,{focus:true,scroll:!!reviewSource,alignAfterPins:!!reviewSource&&active?.hasAttribute('data-review-pin')});
+     if(reviewSource)td.querySelector('.wb-review-action')?.focus({preventScroll:true});
+   }
+ };
  async function closeBook(){
    if(!await allowWorkbookAction('close')||!dialog.open)return;
    clearReadyExport();
@@ -1062,7 +1173,8 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
      if(!await allowWorkbookAction('export')||!dialog.open||exporting||view.inert)return;
    }
    const query=bookQuery;
-   exporting=exportButton.disabled=true;view.inert=true;valueInput.readOnly=true;
+    exporting=exportButton.disabled=true;view.inert=true;valueInput.readOnly=true;
+    setReviewNavigationDisabled(true);
    try{
      if(!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限已变化，请重新打开工作簿');
      if(reviewSource){await reviewSource.export();statusText.textContent='已发起下载';return;}
@@ -1091,6 +1203,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
      statusText.textContent='Excel 已保存并校验：'+handle.name;
    }catch(error){statusText.textContent=error.message;}finally{
      exporting=false;view.inert=false;exportButton.disabled=!book?.sheets.length;
+     setReviewNavigationDisabled(false);
    }
  };
 window.QcReportWorkbook={mount,trigger(label,open){

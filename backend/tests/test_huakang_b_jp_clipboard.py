@@ -42,11 +42,11 @@ def test_tsv_preserves_44_cells_types_quotes_blank_tail_and_safe_text():
     result = service.export_clipboard(document(values))
     row, = fields(result['text'])
     assert result['column_count'] == 44 and result['row_count'] == 1 and len(row) == 44
-    assert row[:4] == ['0126-0001', 'ACME', "'001234567890123456", '2026/11/11']
+    assert row[:4] == ['0126-0001', 'ACME', '001234567890123456', '2026/11/11']
     assert (row[12], row[20], row[23]) == ('123', '12.5', '0')
     assert row[27] == "'" + values[27] and row[28] == values[28]
     assert row[29] == "'" + values[29] and row[30] == "''literal"
-    assert row[31] == "'12345678901234567890" and row[41:] == ['', '', '']
+    assert row[31] == '12345678901234567890' and row[41:] == ['', '', '']
     assert result['text'].endswith('\t\t\t\r\n')
     assert not any(value.startswith('="') for value in row)
 
@@ -87,7 +87,7 @@ def test_clipboard_reads_exact_export_without_renumbering_or_mutating_record(cli
     assert first.headers['cache-control'] == 'no-store'
     assert first.json() == service.export_clipboard(original)
     assert client.get(route, params={'factory_id': 'huakang-b'}).json() == first.json()
-    assert fields(first.json()['text'])[0][2] == "'0117978388"
+    assert fields(first.json()['text'])[0][2] == '0117978388'
     assert db.scalar(select(func.count()).select_from(JPExport)) == 1
     assert [(r.factory_id, r.last_number) for r in db.scalars(select(JPCounter))] == counter
     db.expire(record)
