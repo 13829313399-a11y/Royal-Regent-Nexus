@@ -653,13 +653,66 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 }
 #page-records .records-actions { gap: 8px; }
 #btnAddInspection { min-height: var(--records-control-height); white-space: nowrap; }
-.qis-intake { width: min(560px, calc(100vw - 24px)); }
+.qis-intake {
+  --intake-pad: clamp(16px, 4vw, 36px);
+  --intake-surface: #fff; --intake-paper: #f6f8fc; --intake-edge: #d9e1ec;
+  --intake-ink: #1b2028; --intake-muted: #626e7d; --intake-link: #385c88;
+  --intake-glint: rgb(255 255 255 / 85%);
+  width: min(680px, calc(100vw - 24px));
+}
+.theme-dark .qis-intake {
+  --intake-surface: var(--bg-panel); --intake-paper: var(--bg-card); --intake-edge: var(--border-hi);
+  --intake-ink: var(--text-hi); --intake-muted: var(--text-main); --intake-link: #b5cdec;
+  --intake-glint: rgb(255 255 255 / 15%);
+}
+body.qc-liquid-glass .qwf-dialog.qis-intake {
+  border: 1px solid var(--intake-edge); border-radius: 21px;
+  background: var(--intake-surface); color: var(--intake-ink);
+  box-shadow: inset 0 1px 1px var(--intake-glint), 0 10px 30px rgb(55 73 99 / 12%);
+}
+@supports ((backdrop-filter: blur(20px)) or (-webkit-backdrop-filter: blur(20px))) {
+  body.qc-liquid-glass .qwf-dialog.qis-intake:not(:has([data-preview] > *, form:not([hidden]))) {
+    background: linear-gradient(145deg, color-mix(in srgb,var(--intake-surface) 95%,transparent),
+      color-mix(in srgb,var(--intake-surface) 76%,transparent) 43%,
+      color-mix(in srgb,var(--intake-surface) 56%,transparent) 82%,
+      color-mix(in srgb,var(--intake-surface) 80%,transparent)), transparent;
+    -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  body.qc-liquid-glass .qwf-dialog.qis-intake:not(:has([data-preview] > *, form:not([hidden]))) {
+    background: var(--intake-surface); -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  body.qc-liquid-glass .qwf-dialog.qis-intake::backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
 .qis-intake:has([data-preview] > *, form:not([hidden])) { width: min(960px, calc(100vw - 24px)); }
 .qis-intake [hidden], #btnAddInspection[hidden] { display: none; }
-.qis-intake-file { display: grid; gap: 6px; margin-block: 14px; }
-.qis-intake-picker { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
-.qis-intake-picker button { flex: none; }
-#qc-intake-filename { min-width: 0; overflow-wrap: anywhere; }
+body.qc-liquid-glass .qis-intake > header {
+  padding: 22px var(--intake-pad) 18px; justify-content: flex-start; gap: 6px;
+  background: transparent; color: var(--intake-ink); border: 0;
+}
+.qis-intake > header h2 { margin: 0 auto 0 0; font-size: clamp(22px,3vw,28px); line-height: 1.25; font-weight: 600; }
+body.qc-liquid-glass .qis-intake header button {
+  min-height: 44px; border: 0; border-radius: 8px; padding: 0 8px;
+  background: transparent; box-shadow: none; font-size: 16px; color: var(--intake-link);
+}
+body.qc-liquid-glass .qis-intake header button:hover:not(:disabled) { background: var(--intake-paper); }
+.qis-intake-divider { height: 19px; width: 1px; background: var(--intake-edge); }
+body.qc-liquid-glass .qis-intake header .qis-intake-close { width: 44px; margin-right: -10px; display: grid; place-items: center; color: var(--intake-muted); }
+.qis-intake .qwf-dialog-body { padding: 4px var(--intake-pad) 30px; }
+body.qc-liquid-glass .qis-intake button.qis-intake-picker {
+  display: grid; grid-template-columns: 38px minmax(0,1fr) 16px; gap: 16px; align-items: center;
+  width: 100%; min-height: 90px; padding: 14px clamp(12px,3vw,21px); text-align: left;
+  border: 1px solid var(--intake-edge); border-radius: 12px; background: var(--intake-paper);
+  color: var(--intake-muted); box-shadow: inset 0 1px 0 var(--intake-glint);
+}
+body.qc-liquid-glass .qis-intake button.qis-intake-picker:hover:not(:disabled) { border-color: var(--intake-link); background: var(--intake-paper); }
+.qis-intake-doc { width: 38px; height: 46px; color: var(--intake-link); }
+.qis-intake-copy { display: grid; gap: 3px; min-width: 0; font-size: 15px; }
+.qis-intake-copy strong { font-size: 20px; color: var(--intake-ink); font-weight: 600; overflow-wrap: anywhere; }
+.qis-intake-templates { display: grid; grid-template-columns: 76px 1fr; margin: 16px 0 0; font-size: 15px; color: var(--intake-muted); }
+.qis-intake-templates i { margin-inline: 4px; font-style: normal; }
+.qis-intake :is([data-preview-count],[data-error]):empty { margin: 0; padding: 0; }
 .qis-intake [data-preview-count]:not(:empty), .qis-intake [data-error]:not(:empty) { margin-block: 10px; }
 .qis-intake-scroll { overflow: auto; max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
 .qis-intake-scroll table { border-collapse: separate; border-spacing: 0; width: 100%; }
