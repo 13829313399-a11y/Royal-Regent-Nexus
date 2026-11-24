@@ -78,7 +78,7 @@ describe('UI primitives suite', () => {
     expect(Tooltip).toBeDefined()
   })
 
-  it('renders Card variants with L1 surface material and interactive elevation', () => {
+  it('renders Card variants, slots and consumer styling hooks independently of their appearance', () => {
     const wrapper = mount({
       components: { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter },
       template: `
@@ -91,15 +91,24 @@ describe('UI primitives suite', () => {
             <CardContent>正文</CardContent>
             <CardFooter>操作</CardFooter>
           </Card>
-          <Card variant="interactive" data-testid="interactive-card">可点击卡片</Card>
+          <Card variant="interactive" data-testid="interactive-card" class="consumer-card-hook">可点击卡片</Card>
           <Card variant="subtle" data-testid="subtle-card">内嵌浅卡</Card>
         </div>
       `,
     })
 
-    expect(wrapper.get('[data-testid="default-card"]').classes()).toContain('surface-l1')
-    expect(wrapper.get('[data-testid="interactive-card"]').classes()).toContain('hover:shadow-elevation-2')
+    const defaultCard = wrapper.get('[data-testid="default-card"]')
+    expect(defaultCard.attributes('data-variant')).toBe('default')
+    expect(defaultCard.get('[data-slot="card-title"]').text()).toBe('审批概览')
+    expect(defaultCard.get('[data-slot="card-description"]').text()).toBe('仅展示当前厂区数据')
+    expect(defaultCard.get('[data-slot="card-content"]').text()).toBe('正文')
+    expect(defaultCard.get('[data-slot="card-footer"]').text()).toBe('操作')
+    const interactiveCard = wrapper.get('[data-testid="interactive-card"]')
+    expect(interactiveCard.attributes('data-variant')).toBe('interactive')
+    expect(interactiveCard.classes()).toContain('consumer-card-hook')
+    expect(interactiveCard.text()).toBe('可点击卡片')
     expect(wrapper.get('[data-testid="subtle-card"]').attributes('data-variant')).toBe('subtle')
+    wrapper.unmount()
   })
 
   it('supports v-model and required label states for Input, Textarea and Label', async () => {
@@ -160,7 +169,7 @@ describe('UI primitives suite', () => {
     expect(wrapper.vm.checked).toBe(true)
   })
 
-  it('renders Tabs with L2 glass chrome list, spring indicator and tab switching', async () => {
+  it('renders an accessible tablist, selection indicator and switches the active panel', async () => {
     const wrapper = mount({
       components: { Tabs, TabsList, TabsTrigger, TabsContent },
       template: `
@@ -177,16 +186,22 @@ describe('UI primitives suite', () => {
 
     await nextTick()
     await nextTick()
-    expect(wrapper.get('[data-slot="tabs-list"]').classes()).toContain('glass-chrome')
-    expect(wrapper.find('[data-slot="tabs-indicator"]').exists()).toBe(true)
+    expect(wrapper.get('[data-slot="tabs-list"]').attributes('role')).toBe('tablist')
+    expect(wrapper.get('[data-slot="tabs-indicator"]').attributes('aria-hidden')).toBe('true')
     expect(wrapper.text()).toContain('概览内容')
 
     const triggers = wrapper.findAll('[data-slot="tabs-trigger"]')
+    expect(triggers[0]!.attributes('aria-selected')).toBe('true')
+    expect(triggers[1]!.attributes('aria-selected')).toBe('false')
     await triggers[1]!.trigger('mousedown')
     await triggers[1]!.trigger('click')
     await nextTick()
-    expect(triggers[1]!.attributes('data-state')).toBe('active')
+    expect(triggers[1]!.attributes('aria-selected')).toBe('true')
+    expect(triggers[0]!.attributes('aria-selected')).toBe('false')
     expect(wrapper.text()).toContain('记录内容')
+    const panel = wrapper.get('[role="tabpanel"][data-state="active"]')
+    expect(panel.attributes('id')).toBe(triggers[1]!.attributes('aria-controls'))
+    wrapper.unmount()
   })
 
   it('toggles Collapsible content on trigger click', async () => {
@@ -206,7 +221,7 @@ describe('UI primitives suite', () => {
     expect(wrapper.text()).toContain('隐藏的追溯信息')
   })
 
-  it('renders Select trigger and L3 glass dropdown content when open', async () => {
+  it('renders an expanded Select with accessible options and selected factory', async () => {
     const wrapper = mount(
       {
         components: { Select, SelectTrigger, SelectValue, SelectContent, SelectItem },
@@ -228,12 +243,18 @@ describe('UI primitives suite', () => {
     await nextTick()
     const content = document.body.querySelector('[data-slot="select-content"]')
     expect(content).not.toBeNull()
-    expect(content?.classList.contains('glass-float')).toBe(true)
-    expect(document.body.textContent).toContain('华康 A')
+    const trigger = wrapper.get('[data-slot="select-trigger"]')
+    expect(trigger.attributes('role')).toBe('combobox')
+    expect(trigger.attributes('aria-expanded')).toBe('true')
+    expect(content?.getAttribute('role')).toBe('listbox')
+    const options = Array.from(content!.querySelectorAll('[role="option"]'))
+    expect(options.map((option) => option.textContent?.trim())).toEqual(['华康 A', '华登'])
+    expect(options[0]?.getAttribute('aria-selected')).toBe('true')
+    expect(options[1]?.getAttribute('aria-selected')).toBe('false')
     wrapper.unmount()
   })
 
-  it('renders Dialog with L3 glass surface, aria title and close button', async () => {
+  it('renders Dialog with an accessible title, description and working close button', async () => {
     const open = ref(true)
     const wrapper = mount(
       {
@@ -258,7 +279,12 @@ describe('UI primitives suite', () => {
     const dialog = document.body.querySelector('[data-slot="dialog-content"]')
     expect(dialog).not.toBeNull()
     expect(dialog?.getAttribute('role')).toBe('dialog')
-    expect(dialog?.classList.contains('glass-float')).toBe(true)
+    const titleId = dialog?.getAttribute('aria-labelledby')
+    const descriptionId = dialog?.getAttribute('aria-describedby')
+    expect(titleId).toBeTruthy()
+    expect(descriptionId).toBeTruthy()
+    expect(document.getElementById(titleId!)?.textContent).toContain('确认撤回单据')
+    expect(document.getElementById(descriptionId!)?.textContent).toContain('撤回后将保留审计记录。')
 
     const closeBtn = document.body.querySelector('[data-slot="dialog-close-button"]') as HTMLButtonElement | null
     expect(closeBtn?.getAttribute('aria-label')).toBe('关闭')
@@ -268,12 +294,14 @@ describe('UI primitives suite', () => {
     wrapper.unmount()
   })
 
-  it('renders Drawer with L3 glass surface and directional slide classes', async () => {
+  it('renders the requested Drawer side and closes through an accessible control', async () => {
+    const open = ref(true)
     const wrapper = mount(
       {
         components: { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerDescription, DrawerFooter },
+        setup: () => ({ open }),
         template: `
-          <Drawer :open="true">
+          <Drawer v-model:open="open">
             <DrawerContent side="bottom">
               <DrawerHeader>
                 <DrawerTitle>批次详情</DrawerTitle>
@@ -291,12 +319,19 @@ describe('UI primitives suite', () => {
     const drawer = document.body.querySelector('[data-slot="drawer-content"]')
     expect(drawer).not.toBeNull()
     expect(drawer?.getAttribute('data-side')).toBe('bottom')
-    expect(drawer?.classList.contains('glass-float')).toBe(true)
-    expect(drawer?.classList.contains('ui-drawer-bottom')).toBe(true)
+    expect(drawer?.getAttribute('role')).toBe('dialog')
+    const titleId = drawer?.getAttribute('aria-labelledby')
+    expect(titleId).toBeTruthy()
+    expect(document.getElementById(titleId!)?.textContent).toContain('批次详情')
+    const close = drawer!.querySelector<HTMLButtonElement>('[data-slot="drawer-close-button"]')
+    expect(close?.getAttribute('aria-label')).toBe('关闭')
+    close!.click()
+    await nextTick()
+    expect(open.value).toBe(false)
     wrapper.unmount()
   })
 
-  it('renders Popover, DropdownMenu (with destructive item) and Tooltip with L3 glass surfaces', async () => {
+  it('renders Popover, DropdownMenu and Tooltip content and preserves destructive action semantics', async () => {
     const wrapper = mount(
       {
         components: {
@@ -341,10 +376,15 @@ describe('UI primitives suite', () => {
     )
 
     await nextTick()
-    expect(document.body.querySelector('[data-slot="popover-content"]')?.classList.contains('glass-float')).toBe(true)
-    expect(document.body.querySelector('[data-slot="dropdown-menu-content"]')?.classList.contains('glass-float')).toBe(true)
-    expect(document.body.querySelector('[data-slot="dropdown-menu-item"]')?.getAttribute('data-variant')).toBe('destructive')
-    expect(document.body.querySelector('[data-slot="tooltip-content"]')?.classList.contains('glass-float')).toBe(true)
+    const popover = document.body.querySelector('[data-slot="popover-content"]')
+    expect(popover?.textContent).toContain('筛选面板')
+    const menu = document.body.querySelector('[data-slot="dropdown-menu-content"]')
+    expect(menu?.getAttribute('role')).toBe('menu')
+    const action = menu?.querySelector('[data-slot="dropdown-menu-item"]')
+    expect(action?.getAttribute('role')).toBe('menuitem')
+    expect(action?.getAttribute('data-variant')).toBe('destructive')
+    expect(action?.textContent).toContain('删除单据')
+    expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toContain('查看完整编号')
     wrapper.unmount()
   })
 })
