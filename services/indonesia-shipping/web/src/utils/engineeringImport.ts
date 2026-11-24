@@ -334,7 +334,7 @@ function usageAt(cell: { t: string; v?: unknown } | undefined, fallback: number,
   catch (error) { throw new Error(`${sheet} 第 ${row} 行：${(error as Error).message}`, { cause: error }) }
 }
 
-export async function importEngineeringFile(file: File, opts?: { hsDict?: HsDictEntry[] }): Promise<EngineeringImportResult> {
+export async function importEngineeringFile(file: File, opts?: { hsDict?: HsDictEntry[]; productionFactory?: string }): Promise<EngineeringImportResult> {
   const hsDict = opts?.hsDict
   // SheetJS 在浏览器中读取大型 OLE2 工作簿时，默认会把每个字节展开成普通 JS 数组。
   // 100MB 以上的工程资料会因此触发 `Invalid array length`。提供 Buffer 实现并直接以
@@ -508,7 +508,7 @@ export async function importEngineeringFile(file: File, opts?: { hsDict?: HsDict
           colorCode, colorName, pigmentCode,
           netGramsPerShot: netG,
           setsPerShot: 1,
-          workshop: prefix === '搪胶件' ? '华登' : '兴信A车间',
+          workshop: opts?.productionFactory || '',
           parts: [], notes: '',
         }
         if (!place || /中国|China|CN/i.test(place)) moldings.push(entry)
