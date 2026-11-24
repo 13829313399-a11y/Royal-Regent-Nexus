@@ -22,6 +22,10 @@
 
 华康 B 的 JP 问单与正式排期分开。模板和客户映射按厂使用，华康 C 的裁床测试桥有独立边界。首批真实切换、特殊交退货、印尼排期及仓库自动回传待业务确认。[订单路线图](../business/customer-order-center-erp-roadmap.md)
 
+JP 问单品名优先取当前邮件，空白才使用匹配排期的品名；长码第三段可精确关联带后缀货号（如 77780-000-2A-006-PTQ 对应 77780-2A），包装版本仍取明确邮件或唯一历史，不把 2A/PTQ 猜成版本或子货号。复制44列提供 HTML 文本单元格及 TSV，普通编号不增加单引号；纯文本粘贴需目标编号列为文本以保留前导零。
+
+订单 Qwen 接口默认关闭。统一预览、旧版 BuzzBee/Dickie/彩星及 ZURU 原周排期支持对当前已支持的 Excel/PDF PO 提取并展示原文候选；不改业务值、不产生确认/补录授权键、不改变输入指纹。原生解析失败补救、客户格式白名单扩展及 JP 邮件 AI 路线尚未接入；未取得可用密钥前不能声称真实精度提升。可选识别在有总时限的子进程执行，厂区/客户隔离快照复用，密钥不进试用包或 Git。配置与验证见[千问订单接入记录](../verification/order-qwen-20261124.md)。
+
 Windows 独立订单试用包固定厂区及客户，业务记录仅在本包 `data` 中。Win7 SP1/Win10 x86 运行环境另提供 `OPEN.vbs`（随包 pythonw，无控制台）与 `START.cmd` 两个入口；前者关闭程序窗口时退出本机服务。两者共用数据与实例锁，重复打开先验证后端实例；浏览器缓存按后端实例隔离，后端退出回收其自有浏览器。宿主机测试和 PE 静态检查不能替代 Windows 原生验收。[交付工具及验证](../../tools/factory-trial-delivery/README.md)
 
 [customer-order-center-business-process.md](../business/customer-order-center-business-process.md) · [customer_order_ledger.py](../../backend/app/api/customer_order_ledger.py) · [test_customer_order_ledger.py](../../backend/tests/test_customer_order_ledger.py)
