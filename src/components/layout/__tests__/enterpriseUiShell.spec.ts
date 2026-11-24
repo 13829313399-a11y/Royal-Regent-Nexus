@@ -160,7 +160,8 @@ describe('enterprise UI shell contract', () => {
   )
 
   it('keeps the approval table overflow inside its own grid column', () => {
-    expect(approvalWorkbenchSource).toContain('class="min-w-0 space-y-6"')
+    // Protect the shrinkable grid column, not its vertical spacing.
+    expect(approvalWorkbenchSource).toMatch(/class="[^"]*\bmin-w-0\b[^"]*"/)
     expect(approvalTableSource).toContain('class="overflow-x-auto"')
     expect(approvalTableSource).toContain(':aria-pressed="row.id === selectedId"')
   })

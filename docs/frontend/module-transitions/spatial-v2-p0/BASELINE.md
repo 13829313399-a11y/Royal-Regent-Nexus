@@ -52,7 +52,7 @@ npm run typecheck:app
 npm run typecheck:test
 ```
 
-2026-10-22 的记录包含 52 项、按当时证据层级通过 43 项、9 项有缺口，目录矩阵当时为 30 个出现位置、7 个厂区、217 条控制或过滤记录。本轮覆盖以上实测路径。非管理员真实撤权与跨厂拒绝、有数据的拖排/冻结列/iframe、慢守卫期间操作、进入中过早弹层、NVDA、200% 真实缩放、真机与全站性能仍有待专门验收。[历史实现](../IMPLEMENTATION.md) · [历史验收](../ACCEPTANCE.md) · [历史矩阵](../COVERAGE.md)
+2026-10-22 的记录包含 52 项、按当时证据层级通过 43 项、9 项有缺口，目录矩阵当时为 30 个出现位置、7 个厂区、217 条控制或过滤记录。本轮覆盖以上实测路径。非管理员真实撤权与跨厂拒绝、有数据的拖排/冻结列/iframe、慢守卫期间操作、进入中过早弹层、NVDA、200% 真实缩放、真机与全站性能仍有待专门验收。[历史实现](../../../archive/completed/frontend/module-transitions/IMPLEMENTATION.md) · [历史验收](../../../archive/completed/frontend/module-transitions/ACCEPTANCE.md) · [历史矩阵](../COVERAGE.md)
 
 ## 性能基线
 
