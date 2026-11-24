@@ -4,6 +4,7 @@ import {
   Row, Select, Space, Switch, Table, Tabs, Tag, Typography, App,
 } from 'antd'
 import { api, type Dictionaries, type Material, type Molding, type MoldingPart, type Product, type ProductDetail, type SupplierDict } from '../api/client'
+import { currentProductionFactory, productionFactories } from '../deployment'
 import { MATERIAL_CATEGORIES, inferMaterialCategory } from '../utils/engineeringImport'
 import { resolveMaterialTranslation } from '../utils/materialTranslate'
 import { mergeImportedMaterials, recommendMaterialChoices, resolveMaterialImport, type ImportChoice } from '../utils/materialImportMerge'
@@ -22,8 +23,6 @@ interface ProductForm {
   name?: string
   customer?: string
 }
-
-const WORKSHOPS = ['兴信A车间', '兴信B车间', '华登']
 
 function translatedMaterialName(nameZh: string, dicts: Dictionaries): string {
   return resolveMaterialTranslation(nameZh, dicts.translations || [])
@@ -235,7 +234,7 @@ export default function ProductsPage() {
   async function importEngineering(file: File) {
     try {
       const { importEngineeringFile } = await import('../utils/engineeringImport')
-      const r = await importEngineeringFile(file, { hsDict: dicts.hs })
+      const r = await importEngineeringFile(file, { hsDict: dicts.hs, productionFactory: currentProductionFactory() })
       // 内嵌图片(dataURL) → 上传换 image_id（物料用 image_id；排模件直接把 image 换成 image_id 字符串）
       const matImg = r.materials.filter((m: any) => m.image && String(m.image).startsWith('data:'))
       const partImg = r.moldings.flatMap(md => (md.parts ?? [])).filter((p: any) => p.image && String(p.image).startsWith('data:'))
@@ -491,7 +490,7 @@ function MoldingsEditor({ value, onChange, dicts }: { value: Molding[]; onChange
     message.success(`塑胶件 HS 自动填充：${filled} 件`)
   }
   function addMold() {
-    onChange([...value, { moldId: '', moldName: '', materialName: '', colorName: '', pigmentCode: '', netGramsPerShot: 0, setsPerShot: 1, workshop: '', notes: '', parts: [] }])
+    onChange([...value, { moldId: '', moldName: '', materialName: '', colorName: '', pigmentCode: '', netGramsPerShot: 0, setsPerShot: 1, workshop: currentProductionFactory(), notes: '', parts: [] }])
   }
   function delMold(i: number) {
     onChange(value.filter((_, idx) => idx !== i))
@@ -536,9 +535,9 @@ function MoldingsEditor({ value, onChange, dicts }: { value: Molding[]; onChange
             <InputNumber value={m.netGramsPerShot} onChange={(v) => patch(i, 'netGramsPerShot', v ?? 0)} step={0.01} min={0} />
             <span style={{ color: '#c0392b', fontWeight: 600 }}>每啤套数 ⚠:</span>
             <InputNumber value={m.setsPerShot} onChange={(v) => patch(i, 'setsPerShot', v ?? 1)} step={1} min={1} />
-            <span>车间:</span>
+            <span>生产厂区:</span>
             <Select value={m.workshop} onChange={(v) => patch(i, 'workshop', v)} style={{ width: 100 }}
-              options={[{ value: '', label: '—' }, ...WORKSHOPS.map(w => ({ value: w, label: w }))]} />
+              options={[{ value: '', label: '—' }, ...productionFactories.map(w => ({ value: w, label: w }))]} />
             <span>备注:</span>
             <Input value={m.notes} onChange={(e) => patch(i, 'notes', e.target.value)} style={{ width: 180 }} />
           </Space>

@@ -24,6 +24,16 @@ export function nexusBusinessUrl(): string {
   return '/modules/sales-business' + (factory ? `?factory=${encodeURIComponent(factory)}` : '')
 }
 
+const factoryNames: Record<string, string> = {
+  'huakang-a': '华康A', 'huakang-b': '华康B', 'huakang-c': '华康C', 'huakang-d': '华康D',
+  huadeng: '华登', huaxing: '华兴',
+}
+export const productionFactories = Object.values(factoryNames)
+
+export function currentProductionFactory(): string {
+  return factoryNames[nexusFactory()] || ''
+}
+
 export function nexusFactoryName(): string {
-  return ({ 'huakang-a': '华康A', 'huakang-b': '华康B', 'huakang-c': '华康C', 'huakang-d': '华康D', huadeng: '华登', huaxing: '华兴' } as Record<string, string>)[nexusFactory()] || '未选择厂区'
+  return currentProductionFactory() || '未选择厂区'
 }
