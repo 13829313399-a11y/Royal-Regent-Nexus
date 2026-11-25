@@ -742,7 +742,6 @@ P1a 可进行入口、导航及厂区隔离验收；P1b 已实现基础资料及
 - [项目开发规则](../../AGENTS.md)
 - [项目记忆](../../PROJECT_MEMORY.md)：现有订单中心、布料仓库发现阶段及喷油模块边界。
 - [统一设计规范](../../DESIGN.md)
-- [喷油界面合同](../spray-production/UI_SPEC.md)
 - [喷油数量与金额口径](../spray-production/FORMULA_CATALOG.md)
 - [喷油设计决策与待确认规则](../spray-production/DECISIONS.md)
 - [喷油现有实施状态](../archive/completed/spray-production/IMPLEMENTATION_STATUS.md)

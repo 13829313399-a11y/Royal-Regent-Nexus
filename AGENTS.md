@@ -10,8 +10,8 @@
 
 - 保持任务范围。认证授权、数据库结构、Excel 导入迁移、排产计算、审批状态和跨厂区/部门隔离需要计划、定向测试、独立复核与完成验证。
 - 使用当前包实际提供的命令。根项目常用 `npm run build`、`npm run test:unit -- <测试路径>`、`npm run typecheck:test`。后端用项目 Python 环境运行相关测试。仅改规则或文档时验证配置、事实和链接。 [仓库入口与验证](docs/agent-routing/repo-map.md)
-- 前端先查 [DESIGN.md](DESIGN.md)、目标路由、临近组件和样式。遵循[前端工作流](docs/frontend/WORKFLOWS.md)，复用现有 token、组件和模块例外，保留字段含义、权限、厂区和状态流转。新模块和重大重构先写 [UI 简报](docs/frontend/UI_BRIEF_TEMPLATE.md)。企业页面设计和重大布局调整使用[企业页面设计技能](.agents/skills/enterprise-ui-art-director/SKILL.md)。主站 Vue 与独立子工程各自按所属包执行。
-- 外观或交互变化用 [visual-qa-loop](.agents/skills/visual-qa-loop/SKILL.md) 和 Chrome DevTools MCP 打开真实路由，验证相关状态、视口、焦点与响应式表现。沿用同一页面上下文，按当前工具定义操作，发现问题后修复，并复查同一路由及相关操作。截图只写允许的目录。DevTools 不可用时记录故障及未验证项。Playwright CLI 仅在用户明确指定时使用。既有自动测试继续按项目要求运行；前端测试按 WORKFLOWS.md 的“前端测试合同”保护业务与交互行为，不把普通视觉参数固化为永久断言。
+- 前端先查 [DESIGN.md](DESIGN.md)、目标路由、临近组件和样式。遵循[前端工作流](docs/frontend/WORKFLOWS.md)，复用现有 token、组件和模块例外，保留字段含义、权限、厂区和状态流转。新模块和重大重构先写 [UI 简报](docs/frontend/UI_BRIEF_TEMPLATE.md)。企业页面设计和重大布局调整使用[企业页面设计技能](.agents/skills/enterprise-ui-art-director/SKILL.md)。复用交互原语但不强制页面骨架；按 DESIGN.md 自主设计场景、构图、局部组件与动效，视觉默认值可按业务调整。主站 Vue 与独立子工程各自按所属包执行。
+- 外观或交互变化用 [visual-qa-loop](.agents/skills/visual-qa-loop/SKILL.md) 和 Chrome DevTools MCP 打开真实路由，验证相关状态、视口、焦点与响应式表现。沿用同一页面上下文，按当前工具定义操作，发现问题后修复，并复查同一路由及相关操作。截图只写允许的目录。DevTools 不可用时记录故障及未验证项。Playwright CLI 仅在用户明确指定时使用。既有自动测试继续按项目要求运行；前端测试按 WORKFLOWS.md 的“前端测试合同”保护业务与交互行为，不把普通视觉参数固化为永久断言。新模块及重大 UI 重构除技术 QA 外，必须按 DESIGN.md §17.2 完成独立设计评审；视觉简陋、模板化或不达设计目标为返工项，即使测试通过也不得宣称完整交付。修复并复评；必要评审受阻则明确未验证。
 - 汇报改动文件、实现、实际执行的验证命令与结果，以及仍待核实之处。UI 改动另列路由、状态、视口及截图位置。代码测试、浏览器观察和现场/生产验收分别说明。
 
 ## Git 与发布
