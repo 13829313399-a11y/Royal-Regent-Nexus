@@ -29,6 +29,14 @@
 
 `/modules/sales-business/indonesia-shipping` 嵌入 RR-Portal，按厂解析目标服务与数据。客户、货柜、出货和海关单证留在所属厂区。导出的日期、Excel 定义名称与打印范围跟随所选业务数据。
 
+排期筛选和上传的客户选项取自本厂区客户管理的启用名单。仅有排期权限时，可按已有排期中的客户筛选。历史周次可从「全部客户」查看；Excel 中明确填写的客名用于本次排期，不会自动加入客户管理。
+
+生产单的「生产厂区」记录承接生产的华康 A/B/C/D、华登或华兴，单据仍存放在开单工作区。手动新单默认当前厂区；排期按客户、类别与生产厂区分单，优先使用排模表配置，缺失或旧车间使用生成时选定的默认厂区。已存单据保留原车间和单号。车缝可手动开单，以件数和单价导出独立生产单，不计入塑胶或搪胶的已排生产量。
+
+待保存的供应商复期按采购行防重复提交，刷新结束后才解除等待状态。并发修改冲突需要重新读取并核对。
+
+四份空白导入模板随工作区提供。货号库下载产品转移工程表，工具及非生产物料下载物料表，供应商报价下载标准价和阶梯价共用的工作簿，走货明细下载走货资料表。报价的两种格式按需择一填写。清除历史业务内容时须按工作表和单元格保留原公式、跨表联动及数组范围。公式中的历史报价和批次数值改取「公式输入」页的空白输入格。工程喷油资料从本工作簿的排模表取数。走货原件「销售合同」的 E52、F52、I52、I53 已失去对发票的引用，须取得完好原件才能确定目标。
+
 本地 sidecar 的端口与数据库版本见历史记录。核实当前服务时查实际目标环境。
 
 [indonesia-shipping.md](../indonesia-shipping.md) · [indonesia_shipping.py](../../backend/app/api/indonesia_shipping.py) · [test_indonesia_shipping.py](../../backend/tests/test_indonesia_shipping.py)
@@ -36,11 +44,9 @@
 旧版字段和例外可追溯至[印尼走货明细与本机试用](../archive/memory/shipping.md)。
 
 <a id="materials-id"></a>
-## 送印尼物料
+## 送印尼物料（已下线）
 
-`/modules/sales-business/indonesia-material-shipment` 管理合同计划、需求、收发及基础资料，收货方为 RRI/RRM。六厂的业务单分别保存，七组基础选项跨厂共享。每厂物料库内两收货方共用料号。
-
-客户导出限定一个客户和一个收货方，保留原始工作簿与 57 栏明细。
+原 `/modules/sales-business/indonesia-material-shipment` 链接回到业务部并保留有效厂区。旧 `/api/indonesia-materials` 未注册，四项 `indonesia_material:*` 权限只保留历史审计用途。原表、文件、命令审计、迁移记录和浏览器草稿继续保留；历史资料仍在原库。
 
 [indonesia-materials-implementation.md](../business/indonesia-materials-implementation.md) · [indonesia_materials.py](../../backend/app/api/indonesia_materials.py) · [test_indonesia_materials.py](../../backend/tests/test_indonesia_materials.py)
 

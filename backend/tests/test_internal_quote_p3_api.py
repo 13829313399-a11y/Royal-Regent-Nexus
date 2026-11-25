@@ -473,9 +473,9 @@ def test_assembly_workshop_preview_and_confirm_maps_regions_and_recalculates(mon
         assert section["revision"] == 2
         assert section["calculation_status"] == "valid"
         assert section["calculation"]["totals"] == {
-            "assembly_hkd": "0.2600",
-            "packaging_hkd": "0.3467",
-            "total_hkd": "0.6067",
+            "assembly_hkd": "0.2850",
+            "packaging_hkd": "0.3800",
+            "total_hkd": "0.6650",
         }
         assert section["calculation"]["group_summaries"][0]["total_persons"] == "3.0000"
         assert section["calculation"]["group_summaries"][1]["total_persons"] == "4.0000"

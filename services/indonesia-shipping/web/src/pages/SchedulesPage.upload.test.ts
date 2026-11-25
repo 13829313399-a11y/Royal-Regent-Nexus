@@ -3,14 +3,18 @@ import ts from 'typescript'
 import dayjs from 'dayjs'
 import * as XLSX from 'xlsx'
 import { describe, expect, it, vi } from 'vitest'
-import { parseScheduleWorkbook } from '../utils/scheduleImport'
+import { parseScheduleWorkbook, scheduleCustomer } from '../utils/scheduleImport'
 
 const source = readFileSync(new URL('./SchedulesPage.tsx', import.meta.url), 'utf8')
 const tree = ts.createSourceFile('SchedulesPage.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 const names = ['resetUploadContext', 'openUpload', 'closeUpload', 'changeUploadCustomer', 'changeUploadWeekLabel', 'parseFile', 'upload']
 const functions: ts.FunctionDeclaration[] = []
+const selectionState: string[] = []
 let customerChange: ts.Expression | undefined, cancel: ts.Expression | undefined
 function collect(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && ['customerNames', 'customerOptions', 'activeFilter', 'visibleRows'].includes(node.name.getText(tree))) {
+    selectionState.push(`const ${node.getText(tree)}`)
+  }
   if (ts.isFunctionDeclaration(node) && node.name && names.includes(node.name.text)) functions.push(node)
   if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
     const attributes = node.attributes.properties.filter(ts.isJsxAttribute)
@@ -26,9 +30,9 @@ function collect(node: ts.Node) {
 }
 collect(tree)
 if (!customerChange || !cancel) throw new Error('Actual upload/customer controls must be present')
-const code = ts.transpileModule(functions.map(node => node.getText(tree)).join('\n')
+const code = ts.transpileModule([...selectionState, ...functions.map(node => node.getText(tree))].join('\n')
   .replace("const XLSX = await import('xlsx')", 'const XLSX = importedXLSX')
-  + `\nreturn { ${functions.map(node => node.name!.text).join(', ')}, changeCustomer: ${customerChange.getText(tree)}, cancel: ${cancel.getText(tree)} };`, {
+  + `\nreturn { customerOptions, visibleRows, ${functions.map(node => node.name!.text).join(', ')}, changeCustomer: ${customerChange.getText(tree)}, cancel: ${cancel.getText(tree)} };`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
 
@@ -44,7 +48,7 @@ function delayedFile() {
   const promise = new Promise<ArrayBuffer>((yes, no) => { resolve = yes; reject = no })
   return { file: { arrayBuffer: () => promise } as File, resolve, reject }
 }
-function fixture() {
+function fixture(customers = ['TOMY', 'Spin Master'], rows: { customer: string }[] = [], customerFilter = '', canReadCustomers = true) {
   const state = { rows: [] as unknown[], customer: '', week: 'W1', open: true, session: 1, parsing: false, uploading: false }
   const uploadDraftRef = { current: { session: 1, request: 0, open: true, phase: 'idle', rows: state.rows, customer: '', weekLabel: 'W1' } }
   const message = { error: vi.fn(), warning: vi.fn(), success: vi.fn() }
@@ -53,7 +57,7 @@ function fixture() {
   const render = () => {
     const bindings = {
       uploadDraftRef, uploadSessionId: state.session, uploadCustomer: state.customer, uploadRows: state.rows,
-      weekLabel: state.week, customerFilter: '', importedXLSX: XLSX, parseScheduleWorkbook, dayjs, message, api, load,
+      weekLabel: state.week, customers, rows, customerFilter, canReadCustomers, scheduleCustomer, importedXLSX: XLSX, parseScheduleWorkbook, dayjs, message, api, load,
       suggestWeekLabel: () => 'SUGGESTED',
       setUploadRows: (rows: unknown[]) => { state.rows = rows }, setUploadCustomer: (customer: string) => { state.customer = customer },
       setWeekLabel: (week: string) => { state.week = week }, setShowUpload: (open: boolean) => { state.open = open },
@@ -66,6 +70,41 @@ function fixture() {
 }
 
 describe('schedule upload request and customer context', () => {
+  it('uses the active factory catalogue even with no schedules, while retaining historical weeks in the table', () => {
+    const history = [{ customer: 'Former customer' }]
+    expect(fixture(['Buzzbee']).render().customerOptions).toEqual([{ label: 'Buzzbee', value: 'Buzzbee' }])
+    const page = fixture([], history, 'Former customer').render()
+    expect(page.customerOptions).toEqual([])
+    expect(page.visibleRows).toEqual(history)
+    expect(fixture([], history, '', false).render().customerOptions).toEqual([{ label: 'Former customer', value: 'Former customer' }])
+  })
+
+  it('asks for a customer on an unnamed workbook when TOMY is absent, then saves under the selected customer', async () => {
+    const f = fixture(['Buzzbee'])
+    const file = { arrayBuffer: async () => bytes('') } as File
+    await f.render().parseFile(file)
+    expect(f.message.error).toHaveBeenCalledWith(expect.stringContaining('请先选择客户'))
+    await f.render().upload()
+    expect(f.api.post).not.toHaveBeenCalled()
+    f.render().changeCustomer('Buzzbee')
+    await f.render().parseFile(file)
+    await f.render().upload()
+    expect(f.api.post).toHaveBeenCalledWith('/schedules', expect.objectContaining({
+      customer: 'Buzzbee', raw_rows: [expect.objectContaining({ customer: 'Buzzbee' })],
+    }))
+  })
+
+  it('keeps an explicit workbook customer out of the catalogue options, and recognises legacy TOMY sheets when configured', async () => {
+    const f = fixture(['Buzzbee'])
+    await f.render().parseFile({ arrayBuffer: async () => bytes('Spreadsheet customer') } as File)
+    expect(f.state.customer).toBe('Spreadsheet customer')
+    expect(f.render().customerOptions).toEqual([{ label: 'Buzzbee', value: 'Buzzbee' }])
+
+    const legacy = fixture(['TOMY'])
+    await legacy.render().parseFile({ arrayBuffer: async () => bytes('') } as File)
+    expect(legacy.state.customer).toBe('TOMY')
+  })
+
   it('does not let a pending file restore the previous customer after the real customer-change event', async () => {
     const f = fixture(), old = delayedFile()
     const pending = f.render().parseFile(old.file)

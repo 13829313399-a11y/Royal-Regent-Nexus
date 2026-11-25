@@ -6,8 +6,19 @@
     const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),20000);
     try{
       const response=await fetch(prefix+path,{cache:'no-store',credentials:'same-origin',signal:abort.signal,...(data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})});
-      const json=await response.json();if(!response.ok){const e=Error(typeof json.detail==='string'?json.detail:'请求失败');e.status=response.status;throw e;}return json;
-    }catch(e){if(e.name==='AbortError')throw Error('连接超时，输入已保留，请重试');throw e;}finally{clearTimeout(timer);}
+      const json=await response.json().catch(()=>null);
+      if(!response.ok||!json){
+        const message=typeof json?.detail==='string'?json.detail:
+          response.status===401||response.status===403?'请从验货台重新扫码':
+          '移动验货服务暂时不可用，请稍后重试';
+        const error=Error(message);error.status=response.status;throw error;
+      }
+      return json;
+    }catch(e){
+      if(e.name==='AbortError')throw Error('连接超时，输入已保留，请重试');
+      if(e.name==='TypeError')throw Error('无法连接移动验货服务，请检查网络后重试');
+      throw e;
+    }finally{clearTimeout(timer);}
   };
   function convert(r){
     const row={id:r.id,customer:r.customer||'',po:r.poNo||'',sku:r.productNo||'',product:r.productName||'',customerPo:r.customerPo||'',start:r.dateFrom||'',dateTo:r.dateTo||'',batch:r.batch||'',quantity:String(r.quantity??''),cartons:String(r.cartonCount??''),packing:String(r.unitsPerCarton??''),result:r.result||'',problem:r.inspectionProblem||'',improvement:r.improvement||'',remark:r.remark||'',sampleQuantity:String(r.inspectionExecution?.sampleQuantity??''),inspectorId:r.inspectionExecution?.inspectorId||'',inspector:r.inspectionExecution?.inspector||'',submittedAt:r.reviewState==='returned_to_inspection'?'':r.submittedAt||'',returned:r.lastReturn?.reason||r.returnReason||'',revision:r.revision,photos:(r.photos||[]).map(p=>({id:p.id,remoteId:p.id,name:p.name,annotations:p.annotations||[],annotationVersion:p.annotationVersion||0,url:prefix+'/sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)}))};

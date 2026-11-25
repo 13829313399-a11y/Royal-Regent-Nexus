@@ -118,9 +118,11 @@ function _renderUserBadge() {
   const u = _liveUser();
   const el = document.getElementById('userBadge');
   if (!el || !u) return;
+  const hasDelete = Boolean(window.__QC_NEXUS?.deleteAllowed);
+  const pill = hasDelete ? '<span class="qc-delete-role-pill" title="该账号拥有 QC 数据删除权限">含删除权</span>' : '';
   el.innerHTML =
-    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span><span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
-    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>Nexus 账号</small></div></details>`;
+    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span>${pill}<span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
+    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>${hasDelete ? 'QC 数据删除管理员' : 'Nexus 账号'}</small></div></details>`;
 }
 
 /* ── 权限应用（按角色显示/隐藏按钮）── */
@@ -142,10 +144,13 @@ function applyPermissions() {
     el.style.display = canCreate ? '' : 'none';
   });
 
-  /* 批量删除区 */
+  /* 批量删除区及破坏性数据清理卡 */
   const canDel = can('deleteRecord');
   const batchDelWrap = document.getElementById('batchDelWrap');
   if (batchDelWrap) batchDelWrap.style.display = canDel ? '' : 'none';
+  document.querySelectorAll('#page-import .backup-card.red, #page-import .backup-card.yellow').forEach(el => {
+    el.style.display = canDel ? '' : 'none';
+  });
 
   /* 新增记录按钮（records 页）*/
   const addRecordBtn = document.getElementById('btnAddRecord');
@@ -447,6 +452,9 @@ function showPage(name, focusReportType = false) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg  = document.getElementById('page-' + name);
   const inReportCenter = REPORT_CENTER_PAGES.includes(name);
+  window.QcEmptyState?.prepare?.(inReportCenter ? 'reports' : {
+    'sales-schedule':'schedule', records:'inspection', review:'review', 'inspection-summary':'summary',
+  }[name]);
   const navPage = inReportCenter ? 'report-center' : name;
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
@@ -1794,6 +1802,7 @@ function renderPartners(type) {
   if (!wrap) return;
   const label  = { supplier:'供应商名单', customer:'客户名单', processType:'加工类型名单' }[type] || type;
   const manage = canManagePartners();
+  const canDel = can('deleteRecord');
   const names  = managedNames(type);
   wrap.innerHTML = `<div style="flex:1;min-width:280px;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-card)">
     <div style="font-weight:600;margin-bottom:8px">${label} <span style="font-size:11px;color:var(--text-dim)">（${names.length} 个）</span></div>
@@ -1803,7 +1812,7 @@ function renderPartners(type) {
       <button class="btn-primary btn-sm" onclick="addPartner('${type}')">＋ 添加</button>
     </div>` : ''}
     <div style="max-height:480px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start">
-      ${names.length ? names.map(n => `<span class="badge badge-hold" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px">${_esc(n)}${manage ? `<button data-name="${_esc(n)}" onclick="delPartner('${type}', this.dataset.name)" style="border:none;background:none;color:var(--red);cursor:pointer;padding:0;font-size:12px;line-height:1" title="从名单删除">✕</button>` : ''}</span>`).join('') : '<span style="color:var(--text-muted);font-size:12px">暂无，请在上方添加</span>'}
+      ${names.length ? names.map(n => `<span class="badge badge-hold" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px">${_esc(n)}${canDel ? `<button data-name="${_esc(n)}" onclick="delPartner('${type}', this.dataset.name)" style="border:none;background:none;color:var(--red);cursor:pointer;padding:0;font-size:12px;line-height:1" title="从名单删除">✕</button>` : ''}</span>`).join('') : '<span style="color:var(--text-muted);font-size:12px">暂无，请在上方添加</span>'}
     </div>
   </div>`;
   renderPartnerCards(type);
@@ -1867,11 +1876,19 @@ function addPartner(type) {
   showToast(label + '「' + name + '」已添加 ✓', 'success');
 }
 
-function delPartner(type, name) {
-  if (!canManagePartners()) { showToast('当前账号无权限执行此操作', 'error'); return; }
+async function delPartner(type, name) {
+  if (!can('deleteRecord')) { showToast('当前账号无删除权限', 'error'); return; }
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   if (!confirm('确认从名单删除' + label + '「' + name + '」？\n（不影响已有的验货记录；若历史记录里用过该名称，下拉候选中仍可能出现）')) return;
-  _savePartners(_loadPartners().filter(p => !(p.type === type && p.name === name)));
+  const nextList = _loadPartners().filter(p => !(p.type === type && p.name === name));
+  if (window.__QC_BACKEND_OK === true && typeof window.__QC_SAVE_PARTNERS === 'function') {
+    const res = await window.__QC_SAVE_PARTNERS(nextList);
+    if (!res.ok) { showToast(res.detail || '删除失败，当前账号可能无删除权限', 'error'); return; }
+    _partners = nextList;
+    try { (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.partners, JSON.stringify(_partners)); } catch(e) {}
+  } else {
+    _savePartners(nextList);
+  }
   renderPartners(type);
   renderSupplierDatalist();
   renderCustomerDatalist();
@@ -3542,11 +3559,12 @@ function renderDefectLibPage() {
     <input id="defLibSearch" type="search" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"/>
     ${canAdd ? '<button class="btn-primary" onclick="_openDefLibModal()">＋ 新增描述</button>' : ''}
   </div>
+  ${canDel ? '<div class="qc-deflib-delete-hint">已被历史验货引用的词条受保护无法删除，请改用「停用」以保留历史追溯。</div>' : ''}
   <div class="table-wrap" style="margin-top:8px">
     <table style="table-layout:fixed;width:100%">
       <colgroup>
         <col style="width:110px"/><col style="width:90px"/><col style="width:100px"/>
-        <col style="width:auto"/><col style="width:70px"/><col style="width:170px"/>
+        <col style="width:auto"/><col style="width:70px"/><col style="width:210px"/>
       </colgroup>
       <thead><tr>
         <th style="text-align:left">描述名称</th>
@@ -3613,7 +3631,7 @@ function renderDefectLibPage() {
         <td style="text-align:center">
           ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
           ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
-          ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
+          ${canDel ? `<button class="action-btn del qc-del-sep" onclick="_deleteDefLibItem(${realIdx})">删除描述</button>` : ''}
         </td>
       </tr>`;
     }).join('');
@@ -3694,16 +3712,22 @@ function _toggleDefLibItem(idx) {
   showToast(lib[idx].enabled ? '✓ 已启用' : '已停用', lib[idx].enabled?'success':'info');
 }
 
-function _deleteDefLibItem(idx) {
-  if (!can('deleteRecord')) { showToast('当前账号无权限执行此操作','error'); return; }
+async function _deleteDefLibItem(idx) {
+  if (!can('deleteRecord')) { showToast('当前账号无删除权限','error'); return; }
   const lib = _getDefectLib() || [];
   if (!lib[idx]) return;
-  if (!confirm(`确认删除「${lib[idx].name}」？`)) return;
-  lib.splice(idx, 1);
-  _saveDefectLib(lib);
+  if (!confirm(`确认删除不良描述「${lib[idx].name}」？\n若该词条已被历史验货引用，系统将拦截并提示改用「停用」。`)) return;
+  const nextLib = lib.filter((_, i) => i !== idx);
+  if (window.__QC_BACKEND_OK === true && typeof window.__QC_SAVE_DEFECTS === 'function') {
+    const res = await window.__QC_SAVE_DEFECTS(nextLib);
+    if (!res.ok) { showToast(res.detail || '删除失败，如已被历史引用请改用「停用」', 'error'); return; }
+    (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(_DEFECT_LIB_KEY, JSON.stringify(nextLib));
+  } else {
+    _saveDefectLib(nextLib);
+  }
   renderDefectLibPage();
   refreshDefectDescDatalist();
-  showToast('✓ 已删除', 'success');
+  showToast('✓ 已删除描述', 'success');
 }
 
 /* ════════════════════════════════════════
@@ -5095,6 +5119,7 @@ function _backupValidate(parsed) {
    ③ 清空所有数据
 ════════════════ */
 function backupClearAll() {
+  if (typeof can === 'function' && !can('deleteRecord')) { showToast('当前账号无删除权限', 'error'); return; }
   _backupConfirm({
     icon:         '⊗',
     title:        '清空当前数据',

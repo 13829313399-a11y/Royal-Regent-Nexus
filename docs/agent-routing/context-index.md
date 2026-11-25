@@ -38,6 +38,7 @@
 | [四厂注塑排产入口](../project-memory/production.md#injection) | [数据退役迁移](../../backend/alembic/versions/20261116_inj_retire_scheduling.py) | [占位页面](../../src/views/InjectionSchedulingPlaceholderView.vue) | [退役边界测试](../../backend/tests/test_injection_retirement.py) |
 | [华康 A 3D 打印](../project-memory/production.md#three-d) | [three-d-printing-deployment.md](../three-d-printing-deployment.md) | [three_d_printing.py](../../backend/app/api/three_d_printing.py) | [test_three_d_printing_api.py](../../backend/tests/test_three_d_printing_api.py) |
 | [QC 验货与审核](../project-memory/production.md#qc) | [qc-department-integration.md](../business/qc-department-integration.md) | [qc_department.py](../../backend/app/api/qc_department.py) | [test_qc_weekly_template_manifest.py](../../backend/tests/test_qc_weekly_template_manifest.py) |
+| [QC 移动验货](../project-memory/production.md#qc) | [正式 HTTPS 与上线验收](../aliyun-docker-deploy.md#移动验货上线验收) | [qc_mobile.py](../../backend/app/api/qc_mobile.py) | [配对与代理](../../backend/tests/test_qc_mobile.py) · [上线探测](../../backend/tests/test_qc_mobile_release_check.py) |
 | [喷油生产](../project-memory/production.md#spray) | [API 契约](../spray-production/API_CONTRACT.md) | [spray_operations.py](../../backend/app/api/spray_operations.py) | [test_spray_ops.py](../../backend/tests/test_spray_ops.py) |
 | [华康 A UV 打印](../project-memory/production.md#uv) | [API 契约](../uv-operations/API_CONTRACT.md) | [uv_operations.py](../../backend/app/api/uv_operations.py) | [test_uv_ops.py](../../backend/tests/test_uv_ops.py) |
 
@@ -48,7 +49,7 @@
 | [公共文档工具与在线文档](../project-memory/documents-and-shipping.md#shared-tools) | [README.md](../document-tools/README.md) | [document_tools.py](../../backend/app/api/document_tools.py) | [test_document_tools_jobs.py](../../backend/tests/test_document_tools_jobs.py) |
 | [箱唛与印尼发票核对](../project-memory/documents-and-shipping.md#marks-invoice) | [carton_mark.py](../../backend/app/api/carton_mark.py) | [indonesia_invoice.py](../../backend/app/api/indonesia_invoice.py) | [test_carton_mark_api.py](../../backend/tests/test_carton_mark_api.py) |
 | [印尼走货明细](../project-memory/documents-and-shipping.md#shipping) | [indonesia-shipping.md](../indonesia-shipping.md) | [indonesia_shipping.py](../../backend/app/api/indonesia_shipping.py) | [test_indonesia_shipping.py](../../backend/tests/test_indonesia_shipping.py) |
-| [送印尼物料](../project-memory/documents-and-shipping.md#materials-id) | [indonesia-materials-implementation.md](../business/indonesia-materials-implementation.md) | [indonesia_materials.py](../../backend/app/api/indonesia_materials.py) | [test_indonesia_materials.py](../../backend/tests/test_indonesia_materials.py) |
+| [送印尼物料（已下线）](../project-memory/documents-and-shipping.md#materials-id) | [历史实现](../business/indonesia-materials-implementation.md) | [历史接口实现](../../backend/app/api/indonesia_materials.py) | [test_indonesia_materials.py](../../backend/tests/test_indonesia_materials.py) |
 
 ## 发布、配置与历史
 

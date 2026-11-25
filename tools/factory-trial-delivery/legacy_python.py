@@ -114,12 +114,16 @@ def prepare(backend: Path):
     manifest_path = backend / 'source-manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     hashes = {item['path']: item for item in records}
-    for entry in manifest['files']:
+    entries = manifest.get('files', []) + manifest.get('unchanged_business_sources', []) + manifest.get('standalone_adapters', [])
+    if not entries:
+        raise ValueError('Missing source provenance for legacy adaptation')
+    for entry in entries:
         if entry['target'] in hashes:
             record = hashes[entry['target']]
-            if entry['target_sha256'] != record['source_sha256']:
+            original_hash = entry.get('target_sha256', entry['sha256'])
+            if original_hash != record['source_sha256']:
                 raise ValueError('Source changed before legacy adaptation: ' + entry['target'])
-            entry['before_legacy_sha256'] = entry['target_sha256']
+            entry['before_legacy_sha256'] = original_hash
             entry['target_sha256'] = record['sha256']
             entry['legacy_adapter'] = 'Python 3.8 annotations and standard-library backports'
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

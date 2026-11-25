@@ -68,6 +68,7 @@ backend/models/image-translation/
 !/docs/three-d-pr06-acceptance.md
 !/docs/three-d-pr07-pr09-acceptance.md
 !/deploy/three-d-printing/README.md
+!/deploy/qc-mobile-20261124/README.md
 !/docs/document-tools/*.md
 !/docs/document-studio/evaluation.md
 !/docs/business/internal-quote-collaboration-design.md
@@ -195,3 +196,6 @@ outputs/opening-inventory-template-20260909/
 # Private task workspaces; version the lifecycle skill, not individual tasks.
 /.task-work/
 !/.agents/skills/task-closeout/SKILL.md
+
+# 外部项目只读参考副本（如东莞船务代码）：仅供借鉴，不进 Git、不进镜像、不参与构建。
+/refs/

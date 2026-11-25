@@ -123,7 +123,10 @@ def test_confirmed_batch_is_one_supplier_document_with_atomic_initial_snapshots(
                           for order in drafts for paper in order["lines"]}
         assert {(row[4], row[11]): row[-1] for row in rows[1:]} == expected_notes
         order_numbers = {source["document_no"]: source["order_no"] for source in merged["source_documents"]}
-        assert {(order_numbers[row[18]], row[8]): row[12] for row in imported[1:]} == expected_notes
+        for row in imported[1:]:
+            source_no, _, remark = row[18].partition("；")
+            assert remark == (expected_notes[order_numbers[source_no], row[8]] or "")
+            assert row[12:14] == (None, None)
         assert all(row[19] == batch["document_no"] for row in imported[1:])
         assert sum(row[6] for row in imported[1:]) == sum(float(line["change_quantity"]) for line in merged["lines"])
         assert next(row for row in supplier_documents(client) if row["id"] == batch["id"])["export_count"] == 2

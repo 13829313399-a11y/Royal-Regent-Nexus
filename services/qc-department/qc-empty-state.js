@@ -22,6 +22,25 @@
       '</strong>' + description + '</qc-empty-state>';
   }
 
+  function loadFrame(scene, pose) {
+    const image = new Image();
+    image.className = 'qc-empty-frame ' + pose;
+    image.alt = '';
+    image.decoding = 'async';
+    image.src = new URL('empty-art/clerk-' + scene + '-' + pose + '.webp', script);
+    return image;
+  }
+
+  // Overlap just the destination's first pose with its data query. The view
+  // still decides whether it has a successful empty result before mounting.
+  const firstPoses = new Map();
+  function prepare(scene) {
+    if (!Object.hasOwn(titles, scene) || firstPoses.has(scene) || navigator.connection?.saveData) return;
+    const image = loadFrame(scene, 'rest');
+    firstPoses.set(scene, image);
+    image.addEventListener('error', () => firstPoses.delete(scene), {once:true});
+  }
+
   class QcEmptyState extends HTMLElement {
     connectedCallback() {
       const scene = this.getAttribute('scene');
@@ -29,6 +48,9 @@
       const art = document.createElement('div');
       art.className = 'qc-empty-art';
       art.setAttribute('aria-hidden', 'true');
+      const rest = loadFrame(scene, 'rest');
+      rest.addEventListener('error', () => art.remove(), {once:true});
+      art.append(rest);
       this.prepend(art);
       const tableViewport = this.closest('table')?.parentElement;
       if (tableViewport && this.parentElement.classList.contains('qc-empty-cell')) {
@@ -42,7 +64,7 @@
         this.observer.disconnect();
         const playback = new AbortController();
         this.playback = playback;
-        this.show(scene, art, playback.signal);
+        this.show(scene, art, rest, playback.signal);
       });
       this.observer.observe(this);
     }
@@ -54,36 +76,22 @@
       this.querySelector('.qc-empty-art')?.remove();
     }
 
-    async show(scene, art, signal) {
-      const loadFrame = pose => {
-        const image = new Image();
-        image.className = 'qc-empty-frame ' + pose;
-        image.alt = '';
-        image.src = new URL('empty-art/clerk-' + scene + '-' + pose + '.png', script);
-        return image;
-      };
-      const rest = loadFrame('rest');
+    async show(scene, art, rest, signal) {
+      if (reducedMotion.matches || signal.aborted) return;
       try {
-        await rest.decode();
-        if (signal.aborted) return;
-        art.append(rest);
-        if (reducedMotion.matches) return;
-
         const poses = scene === 'reports' ? ['action', 'middle'] : ['action'];
-        const frames = poses.map(loadFrame);
-        await Promise.all(frames.map(image => image.decode()));
+        const frames = poses.map(pose => loadFrame(scene, pose));
+        motionModule ||= import(new URL('qc-empty-motion.js', script)).catch(() => null);
+        await Promise.all([rest.decode(), ...frames.map(image => image.decode())]);
         if (signal.aborted || reducedMotion.matches) return;
         art.append(...frames);
         if (frames.length === 2) art.classList.add('has-middle');
 
-        motionModule ||= import(new URL('qc-empty-motion.js', script));
-        const module = await motionModule.catch(() => null);
-        if (signal.aborted || reducedMotion.matches) return;
         const canvas = document.createElement('canvas');
         art.append(canvas);
-        const renderer = module?.createClerkMotion(canvas, [rest, ...frames], scene);
-        let frameId;
+        let frameId, renderer, finished=false;
         const finish = () => {
+          finished=true;
           cancelAnimationFrame(frameId);
           art.classList.remove('is-warping');
           canvas.remove();
@@ -101,6 +109,10 @@
         reducedMotion.addEventListener('change', stopOnReducedMotion);
         art.addEventListener('animationend', finish, {once:true});
         art.classList.add('is-playing');
+        // The CSS pose transition can start even on a cold module request.
+        const module = await motionModule;
+        if (finished || signal.aborted || reducedMotion.matches) return;
+        renderer = module?.createClerkMotion(canvas, [rest, ...frames], scene);
         if (!renderer) return;
         const animation = art.getAnimations()[0];
         const draw = () => {
@@ -110,12 +122,11 @@
         };
         frameId = requestAnimationFrame(draw);
       } catch {
-        // A missing illustration leaves the existing empty message readable.
-        if (!art.contains(rest)) art.remove();
+        // The rest pose remains visible if an animation frame cannot be decoded.
       }
     }
   }
 
-  window.QcEmptyState = {markup};
+  window.QcEmptyState = {markup, prepare};
   customElements.define('qc-empty-state', QcEmptyState);
 })();

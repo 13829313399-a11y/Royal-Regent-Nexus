@@ -24,7 +24,10 @@ def main():
     if os.name != "nt":
         import resource
         memory_limit = int(sys.argv[5]) * 1024**3 if len(sys.argv) > 5 else 1024**3
-        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
+        # Match the order worker: Darwin rejects Linux address-space limits.
+        # Production Linux retains its cap; every platform retains the watchdog.
+        if sys.platform.startswith("linux"):
+            resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
         resource.setrlimit(resource.RLIMIT_CPU, (max(1, math.ceil(remaining)), max(2, math.ceil(remaining) + 1)))
     from fastapi import HTTPException
     from app.workers.customer_order_job import job_slot

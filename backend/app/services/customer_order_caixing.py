@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.customer_order_ai import reviewed as ai_reviewed
+
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -1425,6 +1427,7 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
     ).hexdigest()
 
 
+@ai_reviewed
 def create_caixing_batch_preview(
     *,
     factory_id: str,

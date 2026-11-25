@@ -15,6 +15,7 @@ from app.services.internal_quote_tax import deduction_excluded
 
 
 FORMULA_VERSION = "rr2-2026-v16"
+DEFAULT_ASSEMBLY_LABOR_BASE_HKD = 285
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -306,7 +307,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
     "assembly": {
         "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "total_persons": "integer>0 when processes is empty", "processes": [{"name": "text", "persons": "integer>=0", "remark": "text"}]}],
-        "labor_base_hkd": "default 260; adjustable",
+        "labor_base_hkd": f"default {DEFAULT_ASSEMBLY_LABOR_BASE_HKD}; adjustable",
         "standard_work_hours": "default 11; adjustable reference value",
         "formula": "labor HKD/PCS = labor base HKD/person * total persons * teams / production quantity",
         "legacy_fields": "process-level teams and production_qty remain readable",
@@ -523,7 +524,7 @@ def build_reference_snapshot(
         "injection_loss_rate_percent": "3",
         "blow_profit_multiplier": "1.05",
         "electronic_profit_rate_percent": "10",
-        "assembly_labor_base_hkd": "260",
+        "assembly_labor_base_hkd": str(DEFAULT_ASSEMBLY_LABOR_BASE_HKD) if for_new_quote else "260",
         "assembly_standard_work_hours": "11",
         "tax_rates": DEFAULT_TAX_RATES,
         "freight": {
@@ -1805,7 +1806,7 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
     labor_base = decimal_value(
         payload.get("labor_base_hkd"),
         "装配人工基数",
-        str(snapshot.get("assembly_labor_base_hkd", "260")),
+        str(snapshot.get("assembly_labor_base_hkd", DEFAULT_ASSEMBLY_LABOR_BASE_HKD)),
     )
     standard_work_hours = positive_value(
         payload.get("standard_work_hours"),

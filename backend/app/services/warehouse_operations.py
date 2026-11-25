@@ -23,6 +23,7 @@ OUTBOUND = {'ISSUE', 'PROCESS_SEND', 'PACK_SEND'}
 MANUAL_RECEIPT_KIND = 'FABRIC_MANUAL_RECEIPT'
 MANUAL_PURCHASE_LINK_KIND = 'FABRIC_PURCHASE_LINK'
 INTERNAL_RECORDS = {'MASTER_LOCATION', 'COMMAND_ABANDONED', 'FABRIC_ISSUE_GROUP',
+                    'SUB_PROCESSOR', 'SUB_ORDER', 'SUB_ACTION',
                     MANUAL_RECEIPT_KIND, MANUAL_PURCHASE_LINK_KIND}
 
 
@@ -35,7 +36,8 @@ def ensure_schema(db):
 def required(body, *fields):
     labels = {'source_no': '来源单号或手工凭证号', 'source_line': '来源明细编号', 'item_code': '物料 / 产品编码',
               'item_name': '物料 / 产品名称', 'unit': '单位', 'location': '仓位', 'counterparty': '往来单位 / 领用方',
-              'reason': '依据或原因', 'process_state': '加工状态', 'lot': '缸号', 'responsible_person': '确认人', 'purpose': '用途 / 工序'}
+              'reason': '依据或原因', 'process_state': '加工状态', 'lot': '缸号', 'responsible_person': '确认人', 'purpose': '用途 / 工序',
+              'production_no': '生产单号', 'part': '部位'}
     for field in fields:
         if not str(body.get(field) or '').strip():
             raise HTTPException(422, f'请填写{labels.get(field, field)}')
@@ -129,6 +131,8 @@ def new_batch(stock, entry, data, quantity_value, base=None, quality='PENDING_IN
     row.setdefault('original_batch_id', entry['id'])
     if not base and data.get('procurement_receipt'):
         row['procurement_receipt'] = copy.deepcopy(data['procurement_receipt'])
+    if not base and data.get('release_id'):
+        row['release_id'] = data['release_id']
     stock[entry['id']] = row
 
 
@@ -139,6 +143,22 @@ def same_item(batch, data):
 def describe_item(data, batch):
     for key in ('item_code', 'item_name', 'unit', 'process_state', 'material_category', 'lot', 'roll_no'):
         data[key] = batch.get(key, '')
+    if batch.get('release_id'):
+        data.update(release_id=batch['release_id'], production_no=batch['production_no'])
+
+
+def apply_semi_release_identity(data, entries, entry):
+    release = original_for(entries, data['release_id'], {'SEMI_RELEASE'})
+    if entry['business_date'] < release['business_date']:
+        raise HTTPException(422, '业务日期不能早于放产日期')
+    fields = ('production_no',)
+    if entry['kind'] == 'RECEIPT':
+        fields += ('item_code', 'item_name', 'unit', 'process_state')
+    for field in fields:
+        value = release['data'][field]
+        if data.get(field) and data[field] != value:
+            raise HTTPException(422, '生产单、产品、单位或加工状态与所选放产明细不符')
+        data[field] = value
 
 
 def validate_current_master(db, warehouse, body, stock, entries):
@@ -174,7 +194,7 @@ def validate_current_master(db, warehouse, body, stock, entries):
                                   'material_name': body.get('item_name', ''), 'unit': body.get('unit', '')}, current)
         if material['material_category'] and material['material_category'] != body.get('material_category'):
             raise HTTPException(422, '物料分类与已确认基础资料不同，请刷新并核对资料')
-    if kind == 'RECEIPT' and not (body.get('handover_supplier_id') or body.get('receipt_supplier_id')):
+    if kind == 'RECEIPT' and not (body.get('handover_supplier_id') or body.get('receipt_supplier_id') or body.get('subcontract_order_id')):
         from app.services.fabric_supplier_identity import receipt_supplier
         receipt_supplier(db, body.get('counterparty', ''))
     identity = stock.get(body.get('batch_id')) or body
@@ -219,8 +239,14 @@ def apply_entry(stock, entries, entry, warehouse):
         batch = batch_for(stock, data['batch_id'])
         if entry['business_date'] < batch.get('last_business_date', batch['received_on']):
             raise HTTPException(409, '业务日期早于该批次最近一次操作，请核对实际日期及补录依据')
-    if kind in {'RECEIPT', 'REQUEST', 'TASK'}:
-        required(data, 'source_no', 'item_code', 'item_name', 'unit', 'counterparty', 'source_line')
+    if kind in {'RECEIPT', 'REQUEST', 'TASK', 'SEMI_RELEASE'}:
+        if kind == 'SEMI_RELEASE':
+            required(data, 'production_no', 'part')
+        else:
+            required(data, 'counterparty')
+        if kind in {'RECEIPT', 'TASK'} and data.get('release_id'):
+            apply_semi_release_identity(data, entries, entry)
+        required(data, 'source_no', 'item_code', 'item_name', 'unit', 'source_line')
         if warehouse == 'semi':
             required(data, 'process_state')
         for old in entries.values():
@@ -239,7 +265,7 @@ def apply_entry(stock, entries, entry, warehouse):
                 raise HTTPException(422, '布料仓不建立半成品加工任务')
             required(data, 'purpose')
             entry.update(received_quantity='0')
-        else:
+        elif kind == 'REQUEST':
             entry.update(issued_quantity='0')
     elif kind == 'QUALITY':
         batch = batch_for(stock, data['batch_id'])
@@ -290,6 +316,8 @@ def apply_entry(stock, entries, entry, warehouse):
                 raise HTTPException(422, '加工发出日期不能早于任务日期')
             if data['counterparty'] != task['data']['counterparty']:
                 raise HTTPException(422, '加工方与任务不符')
+            if task['data'].get('release_id') != batch.get('release_id'):
+                raise HTTPException(422, '批次与加工任务所关联的放产明细不一致')
             entry.update(consumed_quantity='0', returned_quantity='0')
         if kind == 'PACK_SEND':
             if warehouse != 'semi':
@@ -339,14 +367,33 @@ def apply_entry(stock, entries, entry, warehouse):
             original['returned_quantity'] = text(decimal(original['returned_quantity']) + q)
             task['received_quantity'] = text(decimal(task['received_quantity']) + q)
             output = {**task['data'], 'location_id': data.get('location_id', ''), 'location_snapshot': data.get('location_snapshot', {}), 'location': data['location'], 'lot': output_lot, 'roll_no': output_roll, 'source_no': data['source_no']}
+            if data.get('release_id'):
+                output.update(release_id=data['release_id'], production_no=data['production_no'])
             new_batch(stock, entry, output, q)
             describe_item(data, stock[identifier])
             data['consumed_unit'] = original['batch_snapshot']['unit']
     elif kind == 'CORRECTION':
         required(data, 'reason')
-        target = original_for(entries, data['original_id'], {'RECEIPT', 'ISSUE', 'RETURN', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND'})
+        target = original_for(entries, data['original_id'], {'RECEIPT', 'ISSUE', 'RETURN', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND', 'SEMI_RELEASE', 'TASK'})
         if entry['business_date'] < target['business_date']:
             raise HTTPException(422, '更正日期不能早于原业务日期')
+        if target['kind'] in {'SEMI_RELEASE', 'TASK'}:
+            if target['kind'] == 'SEMI_RELEASE' and any(
+                later['data'].get('release_id') == target['id'] and later['kind'] != 'CORRECTION' and not later.get('reversed')
+                for later in entries.values()
+            ):
+                raise HTTPException(409, '放产明细已有有效收货或加工记录，请先核对关联单据')
+            if target['kind'] == 'TASK' and (not target['data'].get('release_id') or any(
+                later['kind'] == 'PROCESS_SEND' and later['data'].get('task_id') == target['id'] and not later.get('reversed')
+                for later in entries.values()
+            )):
+                raise HTTPException(409, '仅可冲销已关联放产且无有效发出记录的加工任务')
+            for key in ('item_code', 'item_name', 'unit', 'process_state', 'quantity', 'production_no', 'part', 'label_code'):
+                data[key] = target['data'].get(key, '')
+            data.update(release_id=target['data'].get('release_id') or target['id'], reversed_kind=target['kind'])
+            target['reversed'] = True
+            entries[identifier] = entry
+            return
         affected = {target['id'], target['data'].get('batch_id')}
         for later in entries.values():
             if later['kind'] in {'CUTTING_RECEIPT', 'RETURN'} and later.get('reversed'):
@@ -460,7 +507,7 @@ def warehouse_return_limits(db, entries, day, issue_id=None):
     return result
 
 
-def workspace(db, warehouse, *, include_cutting_returns=False):
+def workspace(db, warehouse, *, include_cutting_returns=False, include_order_progress=False):
     ensure_schema(db)
     if warehouse == 'fabric' and include_cutting_returns:
         lock_cutting_returns(db)
@@ -499,15 +546,19 @@ def workspace(db, warehouse, *, include_cutting_returns=False):
         batch['location_label'] = place['label'] if place else batch['location']
         batch['available_quantity'] = '0' if not place or batch['quality_status'] in {'REJECTED', 'HOLD'} else batch['quantity']
     from app.services.fabric_issue_groups import groups
-    return {'revision': max((row['sequence'] for row in rows), default=0), 'stock': list(stock.values()),
+    result = {'revision': max((row['sequence'] for row in rows), default=0), 'stock': list(stock.values()),
             'issue_groups': groups(entries) if warehouse == 'fabric' else [],
             'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in INTERNAL_RECORDS | {'OPENING_IMPORT'} and not row['kind'].startswith('STOCKTAKE_')], 'original_receipts': original_receipts}
+    if warehouse == 'semi' and include_order_progress:
+        from app.services.semi_order_progress import order_progress
+        result['order_progress'] = order_progress(stock, entries)
+    return result
 
 
 def request_body(payload):
     body = payload.model_dump(mode='json')
-    # Preserve hashes for exact retries saved before stable location fields existed.
-    for key in ('location_id', 'confirmed'):
+    # Omit additive default fields to preserve the identity of older requests.
+    for key in ('location_id', 'confirmed', 'release_id', 'part', 'label_code'):
         if not body.get(key):
             body.pop(key, None)
     return body
@@ -526,6 +577,14 @@ def validate_correction_date(body, entries):
 
 def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=None):
     ensure_schema(db)
+    if warehouse != 'semi' and (payload.kind == 'SEMI_RELEASE' or payload.release_id or payload.part or payload.label_code):
+        raise HTTPException(422, '放产明细登记和关联仅适用于半成品仓')
+    if payload.release_id and payload.kind not in {'RECEIPT', 'TASK'}:
+        raise HTTPException(422, '请从已关联的批次或原单办理加工和包装交接')
+    if (payload.part or payload.label_code) and payload.kind != 'SEMI_RELEASE':
+        raise HTTPException(422, '部位和布标在放产明细登记')
+    if payload.source_system == 'FABRIC_SUBCONTRACT' and not (_metadata or {}).get('subcontract_order_id'):
+        raise HTTPException(422, '请从原布料仓委外单办理')
     if warehouse == 'fabric' and payload.kind == 'CORRECTION' and payload.original_id.startswith('FR-'):
         from app.services.auth import can
         if not can(actor, 'fabric_warehouse:read', FACTORY, 'pmc-warehouse'):
@@ -566,6 +625,8 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
             raise HTTPException(422, '实际业务日期不能晚于今天')
         if warehouse == 'fabric' and payload.kind == 'CORRECTION':
             original = entries.get(payload.original_id, {}).get('data', {})
+            if original.get('subcontract_order_id') and original['subcontract_order_id'] != (_metadata or {}).get('subcontract_order_id'):
+                raise HTTPException(422, '请从原布料仓委外单更正关联流水')
             if original.get('manual_receipt_id') and original['manual_receipt_id'] != (_metadata or {}).get('manual_receipt_reversal_id'):
                 raise HTTPException(422, '同次登记的分仓入库须到入库记录一起冲销')
         identifier = ('FB-' if warehouse == 'fabric' else 'SF-') + uuid4().hex[:20]
@@ -577,7 +638,7 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
         from app.services.cutting_materials import guard_post
         guard_post(db, warehouse, body, _metadata, stock, entries)
         validate_correction_date(body, entries)
-        if warehouse == 'fabric' and payload.kind == 'RECEIPT' and not (_metadata or {}).get('handover_document_id'):
+        if warehouse == 'fabric' and payload.kind == 'RECEIPT' and not (body.get('handover_document_id') or body.get('subcontract_order_id')):
             from app.services.material_handover_procurement import guard_manual_delivery
             guard_manual_delivery(db, body['source_no'], body['item_code'], body['unit'], body['counterparty'],
                 operation=body, entries=entries)
@@ -612,6 +673,8 @@ def recover(db, actor, warehouse, payload):
     signature = digest([warehouse, actor.id, body])
     try:
         from app.services.cutting_materials import before_warehouse_lock, INTERNAL_KINDS, SOURCE
+        if payload.source_system == 'FABRIC_SUBCONTRACT':
+            raise HTTPException(422, '请从原布料仓委外单核对')
         if payload.kind in INTERNAL_KINDS or payload.source_system == SOURCE:
             raise HTTPException(422, '裁床专用操作请从裁床界面核对')
         before_warehouse_lock(db, warehouse, payload)

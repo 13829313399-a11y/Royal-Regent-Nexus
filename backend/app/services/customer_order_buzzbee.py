@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.customer_order_ai import reviewed as ai_reviewed
+
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -1612,6 +1614,7 @@ def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
         row["status_label"] = "阻断"
 
 
+@ai_reviewed
 def create_buzzbee_batch_preview(
     *,
     factory_id: str,
@@ -1701,6 +1704,7 @@ def create_buzzbee_batch_preview(
     }
 
 
+@ai_reviewed
 def create_buzzbee_preview(
     *,
     factory_id: str,

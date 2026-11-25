@@ -16,7 +16,7 @@ import FabricReceiptPurchaseDialog from './FabricReceiptPurchaseDialog.vue'
 const props = defineProps<{ mode: 'receipts' | 'stock' | 'movements' }>()
 const auth = useAuthStore()
 const operationsIncluded = ref<boolean>()
-const originLabel = (record: FabricReceipt) => record.receipt_origin === 'HANDOVER' ? '送货单 / 扫码入库' : '手动入库'
+const originLabel = (record: FabricReceipt) => record.receipt_origin === 'SUBCONTRACT' ? '委外回仓' : record.receipt_origin === 'HANDOVER' ? '送货单 / 扫码入库' : '手动入库'
 const route = useRoute()
 const headerSearch = inject(purchaseSearchKey, undefined)
 const search = headerSearch?.search ?? ref(''), appliedSearch = ref(''), offset = ref(0), total = ref<number>(), busy = ref(false), error = ref('')
@@ -32,7 +32,7 @@ const canReset = computed(() => hasFilters.value || !!search.value || filters.va
 const receipts = ref<FabricReceipt[]>([]), stock = ref<FabricStockBatch[]>([]), selected = ref<FabricReceipt>()
 const canReverse = ref(false), reversing = ref<FabricReceipt>(), notice = ref('')
 function canReverseReceipt(record: FabricReceipt) {
-  return canReverse.value && record.stock_posted && !record.reversed
+  return canReverse.value && !record.subcontract_order_id && record.stock_posted && !record.reversed
 }
 const canLinkPurchase = ref(false), reviewingPurchase = ref<FabricReceipt>()
 const title = computed(() => props.mode === 'receipts' ? '实际入库记录' : props.mode === 'stock' ? '原始入库批次' : '实际入库流水')
@@ -108,6 +108,7 @@ onBeforeUnmount(() => { sequence++; clearTimeout(searchTimer) })
             <span>登记来源</span>
             <select v-model="filters.channel" aria-label="入库登记来源筛选" @change="query">
               <option value="">全部来源</option>
+              <option value="SUBCONTRACT">委外回仓</option>
               <option value="MANUAL_ENTRY">手动入库（含采购单）</option>
               <option value="HANDOVER" :disabled="operationsIncluded === false">送货单 / 扫码入库</option>
             </select>

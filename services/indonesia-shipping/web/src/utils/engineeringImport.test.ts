@@ -142,12 +142,12 @@ describe('engineering material import', () => {
       ])
       XLSX.utils.book_append_sheet(workbook, sheet, '排模表')
       const bytes = XLSX.write(workbook, { type: 'array', bookType }) as ArrayBuffer
-      const result = await importEngineeringFile({ arrayBuffer: async () => bytes } as File)
+      const result = await importEngineeringFile({ arrayBuffer: async () => bytes } as File, { productionFactory: '华康C' })
       expect(result.moldings.map(m => m.parts?.[0].category)).toEqual(['搪胶', '塑胶', '塑胶', '搪胶'])
       expect(result.moldings[0].parts?.[0]).toMatchObject({ partName: '搪胶件-狐狸公仔脸A1', partNameEn: expect.stringContaining('Vinyl parts') })
-      expect(result.moldings[0].workshop).toBe('华登')
+      expect(result.moldings[0].workshop).toBe('华康C')
       expect(result.moldings[1].parts?.[0].partName).toBe('塑胶件-狐狸左右手A1')
-      expect(result.moldings[1].workshop).toBe('兴信A车间')
+      expect(result.moldings[1].workshop).toBe('华康C')
     }
   })
   it('reads only explicit machine merged cells with an offset worksheet range', async () => {

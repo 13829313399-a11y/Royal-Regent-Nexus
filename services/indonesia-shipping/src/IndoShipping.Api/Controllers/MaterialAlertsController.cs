@@ -849,6 +849,8 @@ public partial class MaterialAlertsController(ISqlConnectionFactory factory) : C
             foreach (var po in doc.RootElement.EnumerateArray())
             {
                 var category = NormalizeCategory(Text(po, "category"));
+                // Sewing orders can reference the same product or part as a mold order.
+                if (category == "车缝") continue;
                 if (category != "搪胶") category = "塑胶";
                 if (!po.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array) continue;
                 foreach (var item in items.EnumerateArray())

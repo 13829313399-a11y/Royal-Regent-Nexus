@@ -111,6 +111,16 @@ describe('Silverlit temporary independent mapping', () => {
     expect(result.quoteData.importIssues?.some(issue => /IC.*汇率|汇率/.test(issue.message))).toBe(true)
     expect(() => createYinhuiCustomerQuoteWorkbook(result, template)).toThrow(/汇率/)
   })
+  it('restores reviewed assembly and battery names from drafts that omitted role-specific IC tabs', () => {
+    const sheets = parseXlsxWorkbook(icLegacy()).sheets
+    sheets.find(sheet => sheet.name === '电子报价')!.name = '电子TX报价'
+    sheets[0]!.rows.splice(38, 0, [null, '电池', 'Battery (1PC)', 1, null, null, 1.05])
+    const draft = createYinhuiDraft(buffer(createXlsxWorkbook(sheets)), '银辉00012.xlsx')
+    const saved = JSON.parse(saveYinhuiDraft(draft))
+    saved.review.names.electronic = [{ description: 'Reviewed TX' }, { description: 'Reviewed battery' }]
+    expect(loadYinhuiDraft(JSON.stringify(saved)).result.quoteData.electronic.map(row => row.description))
+      .toEqual(['Reviewed TX', 'IC,OTP,BURN,PMS152', 'Reviewed battery'])
+  })
   function icP4() {
     const artifact = p4()
     const tx = [{ kind: 'electronic_component', item: 'IC', specification: 'IC,OTP,TX', quantity: 2,

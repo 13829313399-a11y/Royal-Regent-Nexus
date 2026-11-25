@@ -6,6 +6,7 @@ from hashlib import sha256
 import importlib.util
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -24,8 +25,9 @@ spec = importlib.util.spec_from_file_location("jp_trial_builder", PACKAGE / "pre
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 STAGE = tempfile.TemporaryDirectory(prefix="jp-trial-test-backend-")
-MANIFEST = builder.prepare(STAGE.name)
-sys.path.insert(0, STAGE.name)
+PREPARED = os.environ.get('JP_TRIAL_TEST_BACKEND')
+MANIFEST = json.loads((Path(PREPARED) / 'source-manifest.json').read_text()) if PREPARED else builder.prepare(STAGE.name)
+sys.path.insert(0, PREPARED or STAGE.name)
 
 from app.main import create_app
 from app.db import TABLES
@@ -99,7 +101,7 @@ def exported(client, raw, data, preview, **changes):
 
 def test_unchanged_source_manifest_and_only_six_tables(tmp_path):
     for source in MANIFEST["unchanged_business_sources"]:
-        assert sha256((Path(STAGE.name) / source["target"]).read_bytes()).hexdigest() == source["sha256"]
+        assert sha256((Path(PREPARED or STAGE.name) / source["target"]).read_bytes()).hexdigest() == source.get("target_sha256", source["sha256"])
     with client_for(tmp_path) as client:
         assert client.get("/api/health").json()["service"] == "huakang-b-jp-trial"
         assert client.get(BASE + "/capabilities", params=SCOPE).json()["available"]
@@ -331,7 +333,7 @@ def test_running_worker_is_reaped_when_caller_cancels_or_disconnects(tmp_path, m
                 return disconnected.is_set()
 
         dependency = jobs.order_job_request(Request())
-        await anext(dependency)
+        await dependency.__anext__()
         try:
             task = asyncio.create_task(jobs.run_order_job(intake._jp_validate_reference,
                 "schedule", workbook("schedule")))
