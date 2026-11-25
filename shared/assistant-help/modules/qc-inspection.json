@@ -71,7 +71,7 @@
       {
         "path": "services/qc-department/qc-inspection-sheet.js",
         "symbol": "function pump",
-        "sha256": "0eb0cd42704a5b08316e7d97cc93a6e001ca2e11b421e6e83f0e7355b3cf4b30"
+        "sha256": "75daf35c8c18116cd155a0701d16f4a7d74d4b5651dded7d05b1582f9aa11b9a"
       },
       {
         "path": "backend/app/services/qc_cumulative.py",
@@ -106,7 +106,7 @@
       {
         "path": "services/qc-department/qc-weekly-templates.js",
         "symbol": "async function flush",
-        "sha256": "5cec19382e91e1ff5232a02b40f35b56eaffda0f700628fa353948d9ec96b263"
+        "sha256": "a331090bf665a978a7b9f6b59a3e562a7c94c57808d7901344b2e331997442ab"
       },
       {
         "path": "backend/app/services/qc_weekly_excel.py",
