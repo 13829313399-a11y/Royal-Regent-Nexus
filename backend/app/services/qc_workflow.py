@@ -380,7 +380,7 @@ def test_entry_allowed(factory, record):
         return False
     path = Path(settings.qc_department_data_dir).resolve() / '_workflow' / 'test-entry-allowlist.json'
     try:
-        grants = json.loads(path.read_text())
+        grants = json.loads(path.read_text(encoding='utf-8'))
         expected = grants.get(factory, {}).get(str(record['id']))
         return bool(expected) and expected == sha256(dump(record).encode()).hexdigest()
     except (OSError, ValueError, TypeError, KeyError, AttributeError):

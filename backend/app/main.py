@@ -46,6 +46,7 @@ from app.api.identity import router as identity_router
 from app.api.position_reviews import router as position_reviews_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.indonesia_shipping import router as indonesia_shipping_router
+from app.api.shipping_mail import router as shipping_mail_router
 from app.api.module_feedback import router as module_feedback_router
 from app.api.customer_price_settings import router as customer_price_settings_router
 from app.api.internal_quote import (
@@ -153,12 +154,28 @@ async def application_lifespan(app: FastAPI):
     dossier_task = asyncio.create_task(dossier_worker()) if settings.qc_dossier_enabled else None
     from app.services.qc_photo_assets import worker as photo_worker
     photo_task = asyncio.create_task(photo_worker())
+    from app.services.shipping_mail import imap_worker as shipping_mail_worker
+    shipping_mail_task = asyncio.create_task(shipping_mail_worker.worker()) if settings.shipping_mail_imap_enabled else None
+    from app.services import shipping_schedule_import as shipping_schedule_bridge
+    shipping_schedule_task = asyncio.create_task(shipping_schedule_bridge.worker()) if settings.shipping_schedule_import_enabled else None
     try:
         yield
     finally:
         photo_task.cancel()
         try:await photo_task
         except asyncio.CancelledError:pass
+        if shipping_schedule_task:
+            shipping_schedule_task.cancel()
+            try:
+                await shipping_schedule_task
+            except asyncio.CancelledError:
+                pass
+        if shipping_mail_task:
+            shipping_mail_task.cancel()
+            try:
+                await shipping_mail_task
+            except asyncio.CancelledError:
+                pass
         if dossier_task:
             dossier_task.cancel()
             try:
@@ -347,6 +364,7 @@ app.include_router(module_feedback_router)
 app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(indonesia_shipping_router)
+app.include_router(shipping_mail_router)
 app.include_router(iam_router)
 app.include_router(identity_router)
 app.include_router(position_reviews_router)

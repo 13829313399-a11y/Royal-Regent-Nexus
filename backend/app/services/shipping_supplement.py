@@ -1,0 +1,320 @@
+"""补料单 / Shipping Advice sheets."""
+import io
+import json
+from datetime import date
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import HTTPException
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.utils import get_column_letter
+from sqlalchemy import select
+
+from app.models.shipping_mail import ShippingMailItem, ShippingTask
+from app.services.auth import AuthContext
+from app.services.shipping_mail_service import authorize, task_fields
+
+HEADERS = ['No.', 'Mix#', 'Container#', 'Seal#', 'Size', 'Item#', 'Description', 'Sales Conf.#',
+           'P.O. No.#', 'Ctns', 'pallet', 'Qty (Pcs)', 'Booking#', 'Delivery Date', 'cbm',
+           'G.W (kgs)', 'pack (pcs)', 'Container Tare Weight (kgs)', 'VGM (kgs)']
+
+ENGLISH_VALUES = {
+    '美国': 'USA', '德国': 'GERMANY', '英国': 'UNITED KINGDOM', '法国': 'FRANCE',
+    '荷兰': 'NETHERLANDS', '加拿大': 'CANADA', '澳大利亚': 'AUSTRALIA',
+    '日本': 'JAPAN', '韩国': 'SOUTH KOREA', '新加坡': 'SINGAPORE',
+    '中国': 'CHINA', '中国台湾': 'TAIWAN', '越南': 'VIETNAM', '泰国': 'THAILAND',
+    '马来西亚': 'MALAYSIA', '印度尼西亚': 'INDONESIA', '菲律宾': 'PHILIPPINES',
+    '墨西哥': 'MEXICO', '巴西': 'BRAZIL', '阿联酋': 'UAE', '沙特阿拉伯': 'SAUDI ARABIA',
+    '盐田': 'YANTIAN', '蛇口': 'SHEKOU', '南沙': 'NANSHA', '黄埔': 'HUANGPU',
+    '赤湾': 'CHIWAN', '上海': 'SHANGHAI', '宁波': 'NINGBO', '青岛': 'QINGDAO', '厦门': 'XIAMEN',
+}
+
+
+
+PRODUCT_ENGLISH = {
+    'Buzzbee 客上车玩具': 'Buzzbee Passenger Car Toys',
+    'Buzzbee 拼装积木': 'Buzzbee Building Blocks',
+    '客上车玩具': 'Passenger Car Toys',
+    '拼装积木': 'Building Blocks',
+    '遥控车': 'RC Car',
+    '玩具枪': 'Toy Gun',
+    '积木': 'Building Blocks',
+    '玩具': 'Toys',
+    '塑胶': 'Plastic',
+    '毛绒': 'Plush',
+    '电子': 'Electronic',
+}
+
+PRODUCT_PHRASES = (
+    ('客上车玩具', 'Passenger Car Toys'), ('拼装积木', 'Building Blocks'),
+    ('遥控车', 'RC Car'), ('玩具枪', 'Toy Gun'), ('积木', 'Building Blocks'),
+    ('玩具', 'Toys'), ('塑胶', 'Plastic'), ('毛绒', 'Plush'),
+)
+
+
+def _english_description(value, fallback='') -> str:
+    text = str(value or '').strip()
+    if not text:
+        return str(fallback or '')
+    if text in PRODUCT_ENGLISH:
+        return PRODUCT_ENGLISH[text]
+    result = text
+    for chinese, english in PRODUCT_PHRASES:
+        result = result.replace(chinese, english)
+    if any('\u4e00' <= char <= '\u9fff' for char in result):
+        return str(fallback or result)
+    return result
+
+
+def _english(value) -> str:
+    text = str(value or '').strip()
+    return ENGLISH_VALUES.get(text, text)
+
+
+def _num(value) -> float | None:
+    try:
+        return float(value) if value not in (None, '') else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _round(value: float | None) -> float | None:
+    return round(value, 3) if value is not None else None
+
+
+def _line(item: dict, fields: dict, task: ShippingTask) -> dict:
+    ctns = _num(item.get('cartons'))
+    qty = _num(item.get('quantity'))
+    cbm_per = item.get('cbm') / ctns if item.get('cbm') and ctns else None
+    gw_per = item.get('gross_weight') / ctns if item.get('gross_weight') and ctns else None
+    return {
+        'id': uuid4().hex, 'mixNo': '',
+        'containerNo': str(fields.get('container_no') or ''),
+        'sealNo': str(fields.get('seal_no') or ''),
+        'size': (task.container_type or fields.get('container_type') or '').replace('1*', ''),
+        'itemNo': str(item.get('product_code') or ''), 'description': str(item.get('product_name') or ''),
+        'salesConf': str(fields.get('contract_no') or item.get('contract_no') or ''), 'po': str(item.get('customer_po') or ''),
+        'ctns': _round(ctns), 'pallet': '', 'qty': _round(qty),
+        'booking': task.so_number or '',
+        'deliveryDate': task.planned_ship_date or '',
+        'cbmPerCarton': _round(cbm_per), 'cbm': _round(ctns * cbm_per) if ctns and cbm_per else None,
+        'gwPerCarton': _round(gw_per), 'gw': _round(ctns * gw_per) if ctns and gw_per else None,
+        'pack': _round(qty / ctns) if qty and ctns else '', 'tare': None, 'vgm': None,
+    }
+
+
+def compute_totals(lines: list[dict]) -> dict:
+    def total(key: str) -> float:
+        return round(sum(_num(line.get(key)) or 0 for line in lines), 3)
+    totals = {key: total(key) for key in ('ctns', 'pallet', 'qty', 'cbm', 'gw', 'tare')}
+    totals['vgm'] = round(totals['gw'] + totals['tare'], 3)
+    return totals
+
+
+def draft_supplement(db, user: AuthContext, factory_id: str, task_id: str) -> dict:
+    authorize(user, factory_id, 'read')
+    task = db.scalar(select(ShippingTask).where(ShippingTask.id == task_id, ShippingTask.factory_id == factory_id))
+    if task is None:
+        raise HTTPException(404, '船务排期不存在')
+    fields = task_fields(db, task)
+
+    lines = [_line(item, fields, task) for item in json.loads(task.items_json or '[]')]
+    if not lines:
+        lines = [{
+            'id': uuid4().hex, 'mixNo': '', 'containerNo': '', 'sealNo': '', 'size': (task.container_type or '').replace('1*', ''),
+            'itemNo': '', 'description': '', 'salesConf': '', 'po': '', 'ctns': None, 'pallet': '',
+            'qty': None, 'booking': task.so_number or '', 'deliveryDate': task.planned_ship_date or '',
+            'cbmPerCarton': None, 'cbm': None, 'gwPerCarton': None, 'gw': None, 'pack': '',
+            'tare': None, 'vgm': None,
+        }]
+    header = {
+        'to': 'PLAYMATE', 'from': 'ROYAL REGENT', 'subject': 'SHIPMENT ADVICE', 'ref': '',
+        'date': date.today().isoformat(), 'customerMarket': str(task.customer or fields.get('customer') or ''),
+        'vessel': ' '.join(part for part in (str(fields.get('vessel_name') or ''), str(fields.get('voyage_no') or '')) if part),
+        'portOfLoading': str(fields.get('from_port') or task.port or ''),
+        'portOfDischarge': str(task.destination_country or fields.get('destination_country') or ''),
+        'etd': task.planned_ship_date or '',
+        'invoice': '', 'origin': 'CHINA', 'receipt': '',
+    }
+    return {'taskId': task.id, 'header': header, 'lines': lines, 'totals': compute_totals(lines)}
+
+
+def _as_date(value):
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return value or ''
+
+
+def _render_template(payload: dict) -> bytes:
+    template = Path(__file__).resolve().parent.parent / 'templates' / 'playmates_supplement.xlsx'
+    header = payload.get('header') or {}
+    lines = payload.get('lines') or []
+    totals = compute_totals(lines)
+    book = load_workbook(template)
+    sheet = book.worksheets[0]
+
+    sheet['C3'] = header.get('to') or 'PLAYMATE'
+    sheet['C4'] = header.get('from') or 'ROYAL REGENT'
+    sheet['C5'] = header.get('subject') or 'SHIPMENT ADVICE'
+    sheet['C6'] = header.get('ref') or ''
+    sheet['C7'] = _as_date(header.get('date'))
+    for cell, key in (('E12', 'customerMarket'), ('E13', 'vessel'), ('E14', 'portOfLoading'),
+                      ('E15', 'portOfDischarge'), ('E16', 'etd'), ('E17', 'invoice'),
+                      ('E19', 'origin'), ('E20', 'receipt')):
+        value = header.get(key) or ''
+        if key in ('customerMarket', 'portOfLoading', 'portOfDischarge', 'origin', 'receipt'):
+            value = _english(value)
+        sheet[cell] = _as_date(value) if key in ('etd',) else value
+    sheet['E18'] = totals['ctns']
+
+    for merged in list(sheet.merged_cells.ranges):
+        if 24 <= merged.min_row and merged.max_row <= 29:
+            sheet.unmerge_cells(str(merged))
+    for row in range(24, 30):
+        for column in range(1, 21):
+            sheet.cell(row=row, column=column).value = None
+
+    count = 0
+    for index, line in enumerate(lines[:6]):
+        row = 24 + index
+        count += 1
+        values = {
+            'B': line.get('mixNo'), 'C': line.get('containerNo'), 'E': line.get('sealNo'),
+            'F': line.get('size'), 'G': line.get('itemNo'), 'H': _english_description(line.get('description'), line.get('itemNo')),
+            'I': line.get('salesConf'), 'J': line.get('po'), 'K': line.get('ctns'),
+            'L': line.get('pallet'), 'M': line.get('qty'), 'N': line.get('booking'),
+            'O': _as_date(line.get('deliveryDate')), 'P': line.get('cbm'), 'Q': line.get('gw'),
+            'R': line.get('pack'), 'S': line.get('tare'), 'T': line.get('vgm'),
+        }
+        for column, value in values.items():
+            if value is not None:
+                sheet[f'{column}{row}'] = value
+    if count > 1:
+        for column in ('C', 'E', 'F', 'N', 'S', 'T'):
+            sheet.merge_cells(f'{column}24:{column}{23 + count}')
+
+    for column, value in (('K', totals['ctns']), ('L', totals['pallet']), ('M', totals['qty']),
+                          ('P', totals['cbm']), ('Q', totals['gw']), ('S', totals['tare']),
+                          ('T', totals['vgm'])):
+        sheet[f'{column}30'] = value
+
+    for row in range(36, 40):
+        for column in range(1, 7):
+            sheet.cell(row=row, column=column).value = None
+    summary: dict[str, dict] = {}
+    for line in lines:
+        key = str(line.get('itemNo') or '')
+        entry = summary.setdefault(key, {'pcs': 0, 'ctns': 0, 'salesConf': line.get('salesConf') or ''})
+        entry['pcs'] += _num(line.get('qty')) or 0
+        entry['ctns'] += _num(line.get('ctns')) or 0
+    row = 36
+    for item_no, entry in summary.items():
+        sheet[f'A{row}'] = item_no
+        sheet[f'C{row}'] = entry['pcs']
+        sheet[f'E{row}'] = round(entry['ctns'], 3)
+        sheet[f'F{row}'] = entry['salesConf']
+        row += 1
+    sheet['C40'] = round(sum(entry['pcs'] for entry in summary.values()), 3)
+    sheet['E40'] = round(sum(entry['ctns'] for entry in summary.values()), 3)
+
+    stream = io.BytesIO()
+    book.save(stream)
+    return stream.getvalue()
+
+
+def render_supplement_xlsx(payload: dict) -> bytes:
+    template = Path(__file__).resolve().parent.parent / 'templates' / 'playmates_supplement.xlsx'
+    if template.is_file():
+        return _render_template(payload)
+    return _render_generated(payload)
+    header = payload.get('header') or {}
+    lines = payload.get('lines') or []
+    totals = compute_totals(lines)
+    book = Workbook()
+    sheet = book.active
+    sheet.title = '补料单'
+    widths = [5, 7, 14, 14, 7, 10, 42, 14, 12, 8, 7, 9, 15, 11, 7, 10, 7, 12, 10]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    thin = Side(style='thin', color='999999')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def put(cell, value, bold=False, bordered=False):
+        target = sheet[cell]
+        target.value = value
+        target.font = Font(bold=bold)
+        if bordered:
+            target.border = border
+        target.alignment = Alignment(vertical='center', wrap_text=True)
+
+    put('C2', '更正补料', bold=True)
+    put('A3', 'To', bold=True)
+    put('C3', header.get('to') or 'PLAYMATE')
+    put('A4', 'From', bold=True)
+    put('C4', header.get('from') or 'ROYAL REGENT')
+    put('A5', 'Subject', bold=True)
+    put('C5', header.get('subject') or 'SHIPMENT ADVICE')
+    put('A6', 'REF#', bold=True)
+    put('C6', header.get('ref') or '')
+    put('A7', 'Date', bold=True)
+    put('C7', header.get('date') or '')
+    put('A10', 'Please be advised of following shipment details :')
+
+    rows = [
+        ('Customer/ Market', 'customerMarket'), ('Name of Vessel', 'vessel'),
+        ('Port of Loading', 'portOfLoading'), ('Port of Discharge', 'portOfDischarge'),
+        ('E.T.D.', 'etd'), ('Invoice Number/Date', 'invoice'),
+        ('Country of Origin', 'origin'), ('Place of receipt', 'receipt'),
+    ]
+    row = 12
+    for label, key in rows:
+        put(f'A{row}', label, bold=True)
+        put(f'D{row}', ':')
+        value = header.get(key) or ''
+        if key in ('customerMarket', 'portOfLoading', 'portOfDischarge', 'origin', 'receipt'):
+            value = _english(value)
+        put(f'E{row}', value)
+        row += 1
+
+    header_row = 21
+    for index, text in enumerate(HEADERS, start=1):
+        put(f'{get_column_letter(index)}{header_row}', text, bold=True, bordered=True)
+
+    start = header_row + 1
+    row = start
+    for seq, line in enumerate(lines, start=1):
+        values = [seq, line.get('mixNo'), line.get('containerNo'), line.get('sealNo'), line.get('size'),
+                  line.get('itemNo'), _english_description(line.get('description'), line.get('itemNo')), line.get('salesConf'), line.get('po'),
+                  line.get('ctns'), line.get('pallet'), line.get('qty'), line.get('booking'),
+                  line.get('deliveryDate'), line.get('cbm'), line.get('gw'), line.get('pack'),
+                  line.get('tare'), line.get('vgm')]
+        for index, value in enumerate(values, start=1):
+            put(f'{get_column_letter(index)}{row}', value if value is not None else '', bordered=True)
+        row += 1
+
+    for column, key in (('J', 'ctns'), ('K', 'pallet'), ('L', 'qty'), ('O', 'cbm'), ('P', 'gw'),
+                        ('R', 'tare'), ('S', 'vgm')):
+        put(f'{column}{row}', totals[key], bold=True, bordered=True)
+
+    summary_row = row + 4
+    for index, text in enumerate(['Item#', 'Mix NO', 'Pcs', 'Ctns', 'Sales Conf#'], start=1):
+        put(f'{get_column_letter(index)}{summary_row}', text, bold=True, bordered=True)
+    summary: dict[str, dict] = {}
+    for line in lines:
+        key = line.get('itemNo') or ''
+        entry = summary.setdefault(key, {'pcs': 0, 'ctns': 0, 'salesConf': line.get('salesConf') or ''})
+        entry['pcs'] += _num(line.get('qty')) or 0
+        entry['ctns'] += _num(line.get('ctns')) or 0
+    summary_row += 1
+    for item_no, entry in summary.items():
+        put(f'A{summary_row}', item_no, bordered=True)
+        put(f'C{summary_row}', entry['pcs'], bordered=True)
+        put(f'D{summary_row}', round(entry['ctns'], 3), bordered=True)
+        put(f'E{summary_row}', entry['salesConf'], bordered=True)
+        summary_row += 1
+
+    stream = io.BytesIO()
+    book.save(stream)
+    return stream.getvalue()

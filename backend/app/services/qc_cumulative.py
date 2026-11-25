@@ -40,7 +40,7 @@ def template(factory):
     if not re.fullmatch('[a-z0-9-]+',factory):raise HTTPException(422,'厂区无效')
     folder=TEMPLATES/factory
     try:
-        manifest=json.loads((folder/'manifest.json').read_text());content=(folder/'initial.xlsx').read_bytes()
+        manifest=json.loads((folder/'manifest.json').read_text(encoding='utf-8'));content=(folder/'initial.xlsx').read_bytes()
     except (OSError,ValueError):raise HTTPException(503,'当前厂区尚未配置已验证的累计模板') from None
     if manifest.get('factory')!=factory or not manifest.get('validated') or sha256(content).hexdigest()!=manifest.get('sha256'):
         raise HTTPException(503,'累计模板校验未通过，原版本未修改')
