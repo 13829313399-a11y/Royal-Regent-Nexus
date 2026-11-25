@@ -230,7 +230,7 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
             login_as(client, "admin")
             admin_base = client.get("/api/qc-department/huaxing/api/health").json()["frame_url"]
             cleared = client.post(admin_base + "api/reference-data/clear", json={})
-            assert cleared.status_code == 200 and cleared.json()["deleted"] == 0
+            assert cleared.status_code == 403
             assert len(client.get(admin_base + "api/bootstrap").json()["records"]) == 1
             other = client.get("/api/qc-department/huakang-a/api/health").json()["frame_url"]
             assert client.get(other + "api/bootstrap").json()["records"] == []

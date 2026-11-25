@@ -627,7 +627,8 @@ html.qc-mobile body.qc-liquid-glass :is(#page-records,#page-review) .qis-photo-e
 
 /* Workbench drag selection: business columns and frozen offsets stay unchanged. */
 #page-records .qis-submit-actions{display:flex;justify-content:flex-end;align-items:center;gap:12px;flex:0 0 auto;position:sticky;bottom:0;z-index:5;padding:0;border:0;background:none;box-shadow:none}
-#page-records .qis-submit-actions.qis-has-delete{justify-content:space-between;padding-top:8px}
+#page-records .qis-submit-actions.qis-has-delete{padding-top:8px}
+#page-records #qis-record-delete{margin-right:auto;flex:0 0 auto}
 #page-records #qis-record-batch,.qia-dialog .qis-submit-batch{padding:8px 13px;border:1px solid var(--accent);border-radius:7px;background:var(--accent);color:#fff;font:inherit;white-space:nowrap;cursor:pointer;min-height:36px}
 #page-records #qis-record-batch:disabled{background:var(--bg-hover);border-color:var(--border);color:var(--text-dim);cursor:not-allowed}
 .qis-delete-btn{padding:7px 13px;border:1px solid #f0b6b6;border-radius:7px;background:#fff5f5;color:#b42318;font:inherit;font-weight:600;white-space:nowrap;cursor:pointer;min-height:36px}

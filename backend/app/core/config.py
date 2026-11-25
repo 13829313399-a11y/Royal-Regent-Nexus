@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     qc_mobile_require_https: bool = False
     seed_default_accounts: bool = True
     seed_admin_password: str = ""
+    qc_record_admin_bootstrap_secret: SecretStr = SecretStr("")
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
     authz_writes_enabled: bool = False
     iam_identity_writes_enabled: bool = False

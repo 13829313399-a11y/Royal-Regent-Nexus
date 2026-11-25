@@ -345,13 +345,25 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         body.extend(chunk)
         if len(body) > 32 * 1024 * 1024:
             raise HTTPException(413, "提交内容超过 32 MB")
-    if asset_path in {"api/records", "api/records/replace"} and request.method == "POST":
+    legacy_write = request.method == "POST" and asset_path in WRITE_PERMISSIONS and asset_path != "api/ai/ocr-extract"
+    removed_keys = []
+    if legacy_write:
         try:
             payload = json.loads(body)
             if not isinstance(payload, dict):
                 raise ValueError()
         except (ValueError, TypeError):
             raise HTTPException(400, "无效 JSON")
+    if asset_path in {"api/records", "api/records/replace"} and request.method == "POST":
+        if payload.get("deletedIds"):
+            _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+            _ensure_permission(db, user, "qc_inspection:customer_manage", factory_id)
+        if not isinstance(payload.get("deletedIds", []), list) or any(
+            type(val) is not int or not 0 < val <= 9007199254740991 for val in payload.get("deletedIds", [])
+        ):
+            raise HTTPException(422, "删除编号必须为正整数")
+        if not isinstance(payload.get("records", [] if asset_path == "api/records" else None), list):
+            raise HTTPException(422, "缺少有效的记录列表")
         if payload.get('records'):
             existing_response = await upstream('GET','api/bootstrap',[('company',company)],b'')
             if existing_response.status_code != 200: raise HTTPException(503,'无法核对历史记录锁定状态')
@@ -372,18 +384,13 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             raise HTTPException(409, "记录已进入验货修订流程，不能通过历史同步删除")
         if links:
             payload['records'] = [r for r in payload.get('records', []) if r.get('id') not in links]
-            body = bytearray(json.dumps(payload).encode())
-        body = bytearray(json.dumps(payload).encode())
-        if payload.get("deletedIds"):
-            _ensure_permission(db, user, "qc_inspection:customer_manage", factory_id)
-            _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
     if asset_path in {"api/defects", "api/partners"} and request.method == "POST":
-        try:
-            payload = json.loads(body)
-            if not isinstance(payload, dict):
-                raise ValueError()
-        except (ValueError, TypeError):
-            raise HTTPException(400, "无效 JSON")
+        key = "defectLib" if asset_path == "api/defects" else "partners"
+        if not isinstance(payload.get(key), list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip()
+            for item in payload[key]
+        ):
+            raise HTTPException(422, "请提交完整有效的名单")
         existing_response = await upstream("GET", "api/bootstrap", [("company", company)], b"")
         if existing_response.status_code != 200:
             raise HTTPException(503, "无法核对现有配置，请重试")
@@ -395,6 +402,7 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             removed_names = old_names - new_names
             if removed_names:
                 _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+                removed_keys = [[name] for name in removed_names]
                 referenced = await run_in_threadpool(qc_inspection_sheet.referenced_defect_names, factory_id)
                 for rec in existing_data.get("records") or []:
                     if not isinstance(rec, dict):
@@ -420,12 +428,19 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             new_pairs = {(str(p.get("type") or "").strip(), str(p.get("name") or "").strip()) for p in payload["partners"] if isinstance(p, dict) and str(p.get("name") or "").strip()}
             if old_pairs - new_pairs:
                 _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+                removed_keys = [list(pair) for pair in old_pairs - new_pairs]
     if asset_path == 'api/records/delete' and request.method == 'POST':
-        try: deleting=json.loads(body).get('ids',[])
-        except (ValueError,AttributeError): raise HTTPException(400,'无效 JSON')
+        deleting = payload.get('ids', [])
+        if not isinstance(deleting, list) or any(type(i) is not int or not 0 < i <= 9007199254740991 for i in deleting):
+            raise HTTPException(422, '删除编号必须为正整数')
         if set(deleting) & set(qc_workflow.legacy_links(factory_id)): raise HTTPException(409,'修订中的历史记录不能删除')
     if asset_path == 'api/records/replace' and request.method == 'POST' and qc_workflow.legacy_links(factory_id):
         raise HTTPException(409, '已有历史记录进入验货修订流程，不能批量清除或替换历史库')
+    if legacy_write:
+        payload["_qc"] = {"actor": user.id, "removed": removed_keys}
+        if asset_path in {"api/records/delete", "api/records/replace", "api/reference-data/clear"} or payload.get("deletedIds"):
+            payload["_qc"]["protectedIds"] = await run_in_threadpool(qc_inspection_sheet.submitted_legacy_ids, factory_id)
+        body = json.dumps(payload).encode()
     params = [(k, v) for k, v in request.query_params.multi_items() if k != "company"]
     params.append(("company", company))
     export_records = qc_workflow.ledger_records(db, factory_id) if asset_path.startswith('api/export/') else []
@@ -658,22 +673,15 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         for item in result['results']:
             if not item.get('ok'):
                 continue
-            if item.get('workflowId'):
-                await run_in_threadpool(
-                    qc_workflow.archive_deleted_task,
-                    factory_id, item['workflowId'], actor, body.get('reason', ''),
-                )
             if isinstance(item.get('legacyId'), int):
                 legacy_ids.append(item['legacyId'])
         if legacy_ids:
-            try:
-                await upstream(
-                    'POST', 'api/records/delete',
-                    [('company', COMPANIES[factory_id])],
-                    json.dumps({'ids': legacy_ids}).encode(),
-                )
-            except HTTPException:
-                pass
+            cleanup = await upstream(
+                'POST', 'api/records/delete', [('company', COMPANIES[factory_id])],
+                json.dumps({'ids': legacy_ids, '_qc': {'actor': user.id, 'sheetReceipt': True}}).encode(),
+            )
+            if not cleanup.is_success:
+                raise HTTPException(503, '历史库归档尚未确认，请重试同一删除请求')
     elif (len(parts)==3 and parts[0]=='entries' or len(parts)==4 and parts[:2]==['review','entries']) and parts[-1]=='photo-annotations':
         result=await run_in_threadpool(service.save_photo_annotations,factory_id,parts[-2],body,actor,review=len(parts)==4)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:
