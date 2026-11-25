@@ -16,7 +16,7 @@
 
 ## 连接状态
 
-GitHub `docs/assistant/LOCAL_ACTIVATION.md` / `MODEL_CONNECTION.md` 记录以前使用北京业务空间 `qwen3.7-plus`；密钥在另一台Windows的 `D:/RR/royal-regent-nexus/backend/.env`，并不在GitHub。本机未找到可用密钥。未发起真实千问请求，未给出真实识别准确率，也未部署服务器。
+截至 2026-11-24，GitHub `docs/assistant/LOCAL_ACTIVATION.md` / `MODEL_CONNECTION.md` 记录以前使用北京业务空间 `qwen3.7-plus`；密钥在另一台Windows的 `D:/RR/royal-regent-nexus/backend/.env`，并不在GitHub。当时本机未找到可用密钥，尚未发起真实千问请求。2026-11-25 经用户授权已创建仅允许 Qwen3-VL-Plus 的订单测试密钥，完成限额内真实测试，结果见[后续记录](order-qwen-live-20261125.md)。尚未部署服务器，不能把接口连通或来源校验通过当作业务准确率。
 
 管理员在后端私有环境配置已有 `ASSISTANT_QWEN_API_KEY`、`ASSISTANT_QWEN_BASE_URL`、`ASSISTANT_MODEL` 后，可配置：
 
