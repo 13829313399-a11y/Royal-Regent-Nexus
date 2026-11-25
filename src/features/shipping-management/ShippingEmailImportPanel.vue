@@ -155,6 +155,9 @@ async function saveAndConnect() {
   accountBusy.value = true
   accountError.value = ''
   try {
+    if (!mailPassword.value.trim() && !account.value?.has_password) {
+      throw new Error('请填写网易邮箱授权码')
+    }
     const [host, portText] = mailServer.value.trim().split(':')
     const port = Number(portText) || 993
     account.value = await saveShippingMailAccount({
@@ -622,10 +625,13 @@ async function refreshRecords() {
           <input v-model="mailAddress" type="email" placeholder="shipping@example.com" class="h-9 min-w-0 flex-1 rounded-lg border border-emerald-100 bg-white px-3 text-[12px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/15">
         </label>
         <label class="flex items-center gap-3">
-          <span class="w-20 shrink-0 text-right text-[12px] text-slate-600">密码</span>
-          <input v-model="mailPassword" type="password" :placeholder="account?.has_password ? '已保存，留空不修改' : '••••••••'" class="h-9 min-w-0 flex-1 rounded-lg border border-emerald-100 bg-white px-3 text-[12px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/15">
+          <span class="w-20 shrink-0 text-right text-[12px] text-slate-600">授权码 / 密码</span>
+          <input v-model="mailPassword" type="password" :placeholder="account?.has_password ? '已保存，留空不修改' : '网易邮箱请填授权码'" class="h-9 min-w-0 flex-1 rounded-lg border border-emerald-100 bg-white px-3 text-[12px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/15">
         </label>
       </div>
+      <p class="mt-2 text-[11px] text-amber-700">
+        网易 163/126 邮箱请填写弹窗上方那串授权码（通常 16 位）；「使用设备」名称最多 10 个字符，不是授权码。
+      </p>
       <div class="mt-4 flex flex-wrap items-center gap-2">
         <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-[12px] font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-60" :disabled="accountBusy" @click="saveAndConnect">
           {{ accountBusy ? '连接中…' : '保存并连接' }}

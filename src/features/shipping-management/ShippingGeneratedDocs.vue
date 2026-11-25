@@ -447,17 +447,24 @@ async function saveData() {
 async function importTruck(mode: 'buzzbee' | 'bulk') {
   if (!selectedDoc.value || !detail.value) return
   const lines = detail.value.lines ?? []
-  const resolvedLines = await resolveValidatedScheduleLines(
+  let resolvedLines = await resolveValidatedScheduleLines(
     form.contractNo || String(detail.value.header?.contractNo || ''),
     lines as Array<Record<string, unknown>>,
     form.filingCode,
   )
-  if (!resolvedLines) return
+  const contractSet = new Set(lines.map((line) => String((line as Record<string, unknown>).contract_no || (line as Record<string, unknown>).contract || '').trim()).filter(Boolean))
+  if (!resolvedLines) {
+    if (contractSet.size <= 1) return
+    resolvedLines = lines as Array<Record<string, unknown>>
+    message.value = ''
+  }
+  const header = buildHeader()
+  if (contractSet.size > 1) header.contractNo = [...contractSet][0]
   emit('import-truck', {
     mode,
     taskId: detail.value.task_id,
     filename: detail.value.filename,
-    header: buildHeader(),
+    header,
     lines: resolvedLines,
   })
   markImported(detail.value.id)

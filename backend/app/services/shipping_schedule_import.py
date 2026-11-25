@@ -58,6 +58,57 @@ def _items(line: OrderLedgerLine, data: dict) -> dict:
     }
 
 
+_LAST_PURGE: dict[tuple[str, int, int], bool] = {}
+
+
+def purge_previous_month(db, factory_id: str) -> dict:
+    """Delete schedule items whose requested ship date is in the previous calendar month."""
+    today = date.today()
+    current_start = date(today.year, today.month, 1)
+    previous_start = date(current_start.year - 1, 12, 1) if current_start.month == 1 else date(current_start.year, current_start.month - 1, 1)
+    previous_end = current_start
+    removed = deleted_tasks = 0
+    tasks = db.scalars(select(ShippingTask).where(
+        ShippingTask.factory_id == factory_id,
+        ShippingTask.source == SOURCE,
+    )).all()
+    for task in tasks:
+        items = json.loads(task.items_json or '[]')
+        kept = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            raw = str(item.get('requested_ship_date') or item.get('ship_date') or task.planned_ship_date or '')[:10]
+            try:
+                item_day = date.fromisoformat(raw)
+            except ValueError:
+                kept.append(item)
+                continue
+            if previous_start <= item_day < previous_end:
+                removed += 1
+                continue
+            kept.append(item)
+        if len(kept) != len(items):
+            if kept:
+                task.items_json = json.dumps(kept, ensure_ascii=False)
+                task.updated_at = datetime.now().isoformat(timespec='seconds')
+            else:
+                db.delete(task)
+                deleted_tasks += 1
+    if removed or deleted_tasks:
+        db.commit()
+    return {'removed_items': removed, 'deleted_tasks': deleted_tasks, 'month': previous_start.strftime('%Y-%m')}
+
+
+def maybe_purge_previous_month(db, factory_id: str) -> None:
+    today = date.today()
+    key = (factory_id, today.year, today.month)
+    if _LAST_PURGE.get(key):
+        return
+    _LAST_PURGE[key] = True
+    purge_previous_month(db, factory_id)
+
+
 def import_factory_schedule(db, factory_id: str, *, window_days: int = 120, include_history: bool = False) -> dict:
     """Upsert shipping tasks from 厂区总排期 lines (daily window or historical backfill)."""
     today = date.today()
