@@ -23,6 +23,7 @@ INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES = frozenset({
 INDONESIA_MATERIAL_PERMISSION_CODES = tuple('indonesia_material:' + action for action in (
     'read', 'write', 'receipt_confirm', 'export',
 ))
+RETIRED_PERMISSION_CODES = INDONESIA_SHIPPING_RETIRED_PERMISSION_CODES.union(INDONESIA_MATERIAL_PERMISSION_CODES)
 
 # 船务管理：读取、导入邮件/附件、确认建任务、人工录入与状态推进。
 SHIPPING_MANAGEMENT_PERMISSION_CODES = tuple('shipping:' + action for action in (

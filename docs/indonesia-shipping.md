@@ -2,7 +2,7 @@
 
 ## 交付范围与来源
 
-新模块入口：业务部 → **印尼走货明细**，路由 `/modules/sales-business/indonesia-shipping?factory=huaxing`。它与现有“送印尼物料”独立，不替换原模块、数据或流程。
+业务部 → **印尼走货明细**，路由 `/modules/sales-business/indonesia-shipping?factory=huaxing`。原“送印尼物料”已下线，历史数据在原库保留，两套业务数据继续独立存放。
 
 完整源码位于 `services/indonesia-shipping/`，来自 `charlesskl/RR-Portal` 的 `apps/印尼小组/印尼走货明细`，固定提交 `d2f5db84551690f9103dcb91f4b5d7480c4709c0`。`UPSTREAM.json` 保存每个上游文件的 SHA-256；`NEXUS_PATCHES.json` 列出接入修改后的校验值。运行 `python scripts/verify-indonesia-source.py` 检查原始文件完整性及明确记录的适配文件。原文 README 的 SQL Server 描述已过时：当前实际实现是 **.NET 8 / EF Core + Dapper / PostgreSQL，React + TypeScript + Vite + Ant Design**。
 

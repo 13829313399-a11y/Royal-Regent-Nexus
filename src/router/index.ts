@@ -330,16 +330,13 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/modules/sales-business/indonesia-material-shipment',
-    name: 'indonesia-material-shipment',
-    component: () => import('@/views/IndonesiaMaterialsView.vue'),
-    meta: {
-      title: '送印尼物料',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['indonesia_material:read'],
-      permissionDepartments: ['sales-business', 'pmc-warehouse'],
-      enforcePermissions: true,
-    },
+    redirect: ({ query }) => ({
+      path: '/modules/sales-business',
+      query: typeof query.factory === 'string' && isFactoryContextId(query.factory)
+        ? { factory: query.factory }
+        : {},
+      hash: '',
+    }),
   },
   {
     path: '/modules/pmc-warehouse/carton-mark-check',
@@ -768,11 +765,6 @@ router.beforeEach(async (to, from) => {
     return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
   }
   if (navigationVersion !== latestNavigationVersion) return false
-  // A same-route query change does not run component leave guards. Ask before
-  // the global guard updates the factory store and destroys scoped drafts.
-  if (from.name === 'indonesia-material-shipment' && to.name === from.name
-      && typeof to.query.factory === 'string' && isFactoryContextId(to.query.factory) && to.query.factory !== useAppStore().activeFactoryId
-      && !canChangeFactory()) return false
   // QC's same-origin frame owns drafts. Check before the global factory context
   // changes, including query-only navigation and leaving the full-page host.
   if (from.meta.qcFactoryWorkspace && to.fullPath !== from.fullPath

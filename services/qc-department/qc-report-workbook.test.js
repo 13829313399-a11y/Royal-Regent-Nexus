@@ -378,6 +378,22 @@ test('fill targets only same-field blank cells; undo and redo replay the whole d
   assert.equal(doc.getElementById('wb-status').textContent,'已保存');
 });
 
+test('quick fill commits the final pointer position outside the grid without requiring pointer capture',async t=>{
+  const {w,doc,grid,td,edit,calls}=await editableWorkbook(t);
+  const view=doc.getElementById('wb-grid');
+  view.setPointerCapture=()=>{throw new w.DOMException('capture lost','NotFoundError');};
+  edit('A1','快拖');
+  const pointer=(target,type,clientY)=>target.dispatchEvent(new w.PointerEvent(type,{pointerId:1,button:0,clientY,bubbles:true,composed:true}));
+  pointer(grid.querySelector('.wb-fill-handle'),'pointerdown',36);
+  pointer(doc.body,'pointerup',126);
+  assert.equal(td('A2').textContent,'快拖');
+  assert.equal(td('A5').textContent,'快拖');
+  assert.equal(td('A3').textContent,'已补录');
+  assert.equal(td('A4').textContent,'审核原值');
+  assert.equal(view.classList.contains('wb-filling'),false);
+  assert.deepEqual(calls,[]);
+});
+
 function fillVisualGeometry(w, doc, grid){
   const view=doc.getElementById('wb-grid');
   Object.defineProperties(view,{clientWidth:{value:350},clientHeight:{value:175}});

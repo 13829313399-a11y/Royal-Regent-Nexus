@@ -1,4 +1,6 @@
 """ZURU original weekly references → copy-ready new orders; never edit a source book."""
+
+from app.services.customer_order_ai import reviewed as ai_reviewed
 from copy import copy
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -242,6 +244,7 @@ def resolve(rows, layouts, history, edited=()):
         row['status_label'] = '有提醒' if row['issues'] else '可生成'
 
 
+@ai_reviewed
 def preview(*, factory_id, received_date, po_files, schedule_file_name, schedule_content, **kwargs):
     from .customer_order_zuru import create_rows
     from .customer_order_manual import decorate_manual_resolution_policy

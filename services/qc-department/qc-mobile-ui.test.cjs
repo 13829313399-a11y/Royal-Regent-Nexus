@@ -135,6 +135,10 @@ test('desktop entry is immediately left of unified submit and cannot mutate reco
   pointer('pointerdown',200,200);pointer('click',200,200);assert(dialog.isConnected,'QR click must keep it open');
   pointer('pointerdown',20,20);pointer('click',20,20);assert.equal(d.querySelector('dialog'),null);assert.equal(d.activeElement,entry);
   expired=true;entry.click();await wait();dialog=d.querySelector('dialog');assert.equal(dialog.querySelector('img').hidden,true);assert.equal(dialog.querySelector('[data-refresh]').hidden,false);assert.match(dialog.textContent,/已过期/);
-  expired=false;dialog.querySelector('[data-refresh]').click();await wait();assert.equal(dialog.querySelector('img').hidden,false);assert.equal(dialog.querySelector('.qc-mobile-pair-state').hidden,true);
+   expired=false;
+   const healthyFetch=w.fetch;
+   w.fetch=async()=>({ok:false,status:503,json:async()=>{throw new w.SyntaxError('<html>');}});
+   dialog.querySelector('[data-refresh]').click();await wait();assert.equal(dialog.querySelector('img').hidden,true);assert.match(dialog.textContent,/移动验货服务暂时不可用/);
+   w.fetch=healthyFetch;dialog.querySelector('[data-refresh]').click();await wait();assert.equal(dialog.querySelector('img').hidden,false);assert.equal(dialog.querySelector('.qc-mobile-pair-state').hidden,true);
  }finally{dom.window.close();}
 });

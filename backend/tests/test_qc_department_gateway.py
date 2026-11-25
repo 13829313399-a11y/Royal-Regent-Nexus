@@ -60,6 +60,12 @@ def test_session_factory_boundary_and_no_local_accounts(monkeypatch):
         assert asset.status_code == 200
         assert "root.renderSalesSchedule=refresh" in asset.text
         assert asset.headers["cache-control"] == "no-store"
+        for path in ("empty-art/clerk-inspection-rest.webp", "empty-art/clerk-reports-middle.webp"):
+            frame = client.get(base + path)
+            assert frame.status_code == 200 and frame.headers["content-type"] == "image/webp"
+            assert frame.content[8:12] == b"WEBP"
+            assert frame.headers["cache-control"] == "private, max-age=86400"
+        assert client.get(base + "empty-art/unknown.webp").status_code == 404
         assert client.post(base + "qc-schedule.js").status_code == 404
         data = client.get(base + "api/bootstrap").json()
         assert "users" not in data

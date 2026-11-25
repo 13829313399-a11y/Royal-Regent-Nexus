@@ -1,6 +1,7 @@
 """Read immutable JP exports as bounded, spreadsheet-safe 44-column TSV."""
 from contextlib import contextmanager
 import csv
+from html import escape
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
@@ -11,7 +12,6 @@ import openpyxl
 from .intake import COLUMNS, MAX_FILE, MAX_ROWS, archive
 
 COLUMN_COUNT = 44
-NUMERIC_TEXT = re.compile(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?')
 
 
 @contextmanager
@@ -26,7 +26,7 @@ def _export_workbook(content):
             workbook.close()
 
 
-def _cell_text(cell):
+def _cell_text(cell, protect_formula=True):
     if cell.data_type in {'f', 'e'}:
         raise ValueError('已生成问单含公式或错误单元格，不能直接复制，请联系提供者核对。')
     value = cell.value
@@ -50,11 +50,11 @@ def _cell_text(cell):
         return format(number, 'f')
     if not isinstance(value, str):
         raise ValueError('已生成问单含不支持的单元格类型，不能复制。')
-    # Preserve text identifiers (including leading zeros/long digits) as text.
-    # Never construct ="..." formulas. Formula-looking email text is escaped
-    # even when whitespace precedes its trigger; tabs/newlines are CSV-quoted.
+    # Numeric identifiers stay literal: Kintable otherwise stores the protective
+    # apostrophe as business data. HTML clipboard cells carry text formatting.
+    # Plain-text fallback still escapes formula-looking email content.
     stripped = value.lstrip()
-    if stripped.startswith(('=', '+', '-', '@', "'")) or NUMERIC_TEXT.fullmatch(value.strip()):
+    if protect_formula and stripped.startswith(('=', '+', '-', '@', "'")):
         return "'" + value
     return value
 
@@ -81,6 +81,7 @@ def export_clipboard(content: bytes) -> dict:
             output = StringIO(newline='')
             writer = csv.writer(output, delimiter='\t', lineterminator='\r\n')
             count = 0
+            html_rows = []
             for index, row in enumerate(sheet.iter_rows(min_row=2), start=1):
                 if index > MAX_ROWS or len(row) > COLUMN_COUNT:
                     raise ValueError('已生成问单超出44列或250行复制范围。')
@@ -91,10 +92,22 @@ def export_clipboard(content: bytes) -> dict:
                 if not any(values):
                     raise ValueError('已生成问单含空白明细行，不能复制。')
                 writer.writerow(values)
+                html_cells = []
+                for cell in row:
+                    value = _cell_text(cell, protect_formula=False)
+                    # Formula-like text stays inert even in consumers that ignore
+                    # Office text-format metadata; ordinary identifiers need no prefix.
+                    if isinstance(cell.value, str) and cell.value.lstrip().startswith(('=', '+', '-', '@')):
+                        value = "'" + value
+                    style = ' style="mso-number-format:\\@;white-space:pre-wrap" x:str' if isinstance(cell.value, str) else ''
+                    html_cells.append('<td' + style + '>' + escape(value).replace('\n', '<br>') + '</td>')
+                html_cells.extend(['<td></td>'] * (COLUMN_COUNT - len(row)))
+                html_rows.append('<tr>' + ''.join(html_cells) + '</tr>')
                 count += 1
             if not count:
                 raise ValueError('已生成问单没有可复制的明细。')
-            return {'text': output.getvalue(), 'row_count': count, 'column_count': COLUMN_COUNT}
+            html = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><body><table>' + ''.join(html_rows) + '</table></body></html>'
+            return {'text': output.getvalue(), 'html': html, 'row_count': count, 'column_count': COLUMN_COUNT}
     except ValueError:
         raise
     except Exception as exc:

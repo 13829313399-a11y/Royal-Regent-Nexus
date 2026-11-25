@@ -39,6 +39,7 @@ import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
 import type { FeedbackContext } from '@/api/moduleFeedback'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
 import CustomerOrderSchedule from './CustomerOrderSchedule.vue'
+import CustomerOrderAIReview from './CustomerOrderAIReview.vue'
 import { getApiErrorMessage } from '@/lib/http'
 import type {
   CustomerOrderImportPreview,
@@ -2250,6 +2251,8 @@ onBeforeUnmount(() => {
             </ul>
           </div>
         </article>
+
+        <CustomerOrderAIReview v-if="previewBatch?.ai_recognition" :preview="previewBatch" />
 
         <article v-if="advisoryDuplicateCount" class="parse-error-card" data-testid="duplicate-advisory" role="status">
           <CircleAlert aria-hidden="true" />

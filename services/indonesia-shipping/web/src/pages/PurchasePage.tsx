@@ -443,7 +443,10 @@ export default function PurchasePage() {
     Number(editingReceipt?.qty ?? 0),
   )
   const [bulkReceiptPo, setBulkReceiptPo] = useState<PoSummary | null>(null)
-  useNavigationDraft(editing !== null || creating || receiptItem !== null || editingReceipt !== null || bulkReceiptPo !== null, receiptEditSaving)
+  const supplierReplyPending = useRef(new Set<number>())
+  const [supplierReplySavingIds, setSupplierReplySavingIds] = useState<Set<number>>(new Set())
+  useNavigationDraft(editing !== null || creating || receiptItem !== null || editingReceipt !== null || bulkReceiptPo !== null,
+    receiptEditSaving || supplierReplySavingIds.size > 0)
   const [bulkReceiptQty, setBulkReceiptQty] = useState<Record<number, number>>({})
   const [bulkReceiptSpareQty, setBulkReceiptSpareQty] = useState<Record<number, number>>({})
   const [bulkReceiptDate, setBulkReceiptDate] = useState(dayjs())
@@ -464,13 +467,22 @@ export default function PurchasePage() {
   }
 
   async function setSupplierReply(row: PurchaseItemRow, reply: string | null) {
+    if (supplierReplyPending.current.has(row.id) || reply === (row.supplier_reply_date || null)) return
+    supplierReplyPending.current.add(row.id)
+    setSupplierReplySavingIds(new Set(supplierReplyPending.current))
     try {
       await api.put(`/purchase/items/${row.id}/supplier-reply`, {
         po_id: row.po_id, material_id: row.material_id, tomy_po: row.tomy_po, supplier: row.supplier,
         expected_date: row.supplier_reply_date || null, reply_date: reply,
       })
       message.success(reply ? '已保存供应商复期' : '已清除供应商复期')
-    } finally { await load() }
+    } finally {
+      try { await load() }
+      finally {
+        supplierReplyPending.current.delete(row.id)
+        setSupplierReplySavingIds(new Set(supplierReplyPending.current))
+      }
+    }
   }
 
   async function loadReceipts(itemId: number, session = receiptSession.current(itemId)) {
@@ -1795,7 +1807,7 @@ export default function PurchasePage() {
                     { title: '交货日期', width: 110, render: (_v, r) => purchaseLineDeliveryDate(r, po.delivery_date) || '待确认' },
                     { title: '供应商复期', width: 155, render: (_v, r) =>
                       <DatePicker size="small" aria-label={`供应商复期 ${r.material_name || r.product_code}`}
-                        disabled={po.status === 'cancelled' || !hasBits(getStoredSession()?.usereditpower, [4])}
+                        disabled={supplierReplySavingIds.has(r.id) || po.status === 'cancelled' || !hasBits(getStoredSession()?.usereditpower, [4])}
                         value={r.supplier_reply_date ? dayjs(r.supplier_reply_date) : null} placeholder="待供应商回复"
                         onChange={d => { void setSupplierReply(r, d ? d.format('YYYY-MM-DD') : null).catch(() => {}) }} /> },
                     { title: '物料', dataIndex: 'material_name', width: 220, ellipsis: true },

@@ -36,6 +36,19 @@ function dragReview(p,from,to,cancel=false){
  pointer(p,nodes[a].querySelector('td'),'pointerdown',115+a*64);pointer(p,host,'pointermove',115+b*64);pointer(p,host,cancel?'pointercancel':'pointerup',115+b*64);
 }
 function confirmRow(p,id){dragReview(p,id,id);p.d.getElementById('qis-review-batch').click();}
+test('pending preview updates the released range after a quick drag ending outside the table',async()=>{
+  const p=await page(true);try{
+    p.rows[1].result='';await p.w.QcInspectionSheet.loadReview('pending');
+    const host=p.d.getElementById('reviewTableWrap'),nodes=[...host.querySelectorAll('[data-entry]')];
+    nodes.forEach((node,i)=>node.getBoundingClientRect=()=>({bottom:164+i*64}));
+    pointer(p,nodes[0].querySelector('[data-column=poNo] strong'),'pointerdown',118);
+    pointer(p,host,'pointermove',193);
+    pointer(p,p.d.body,'pointerup',260);
+    assert.deepEqual([...p.w.QcInspectionSheet.model.checked],['a','c']);
+    assert.equal(p.d.getElementById('qis-review-batch').textContent,'审核确认（2）');
+    assert.equal(p.calls.some(c=>c.url.endsWith('/confirm')),false);
+  }finally{p.dom.window.close();}
+});
 test('formal pending preview keeps the B columns and uses the shared sheet with live rows and explicit save',async()=>{
   const p=await page(true);try{
     const get=id=>p.d.getElementById(id), grid=get('wb-grid').shadowRoot;

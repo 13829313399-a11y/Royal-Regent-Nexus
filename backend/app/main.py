@@ -45,7 +45,6 @@ from app.api.iam import router as iam_router
 from app.api.identity import router as identity_router
 from app.api.position_reviews import router as position_reviews_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
-from app.api.indonesia_materials import router as indonesia_materials_router
 from app.api.indonesia_shipping import router as indonesia_shipping_router
 from app.api.shipping_mail import router as shipping_mail_router
 from app.api.module_feedback import router as module_feedback_router
@@ -364,7 +363,6 @@ app.include_router(customer_price_artifact_router)
 app.include_router(module_feedback_router)
 app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
-app.include_router(indonesia_materials_router)
 app.include_router(indonesia_shipping_router)
 app.include_router(shipping_mail_router)
 app.include_router(iam_router)

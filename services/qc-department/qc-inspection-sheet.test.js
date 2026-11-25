@@ -539,6 +539,20 @@ function dragRecords(p,from,to,cancel=false){const host=p.d.getElementById('reco
 const selectRecord=(p,id)=>{const ids=[...p.w.QcInspectionSheet.model.recordChecked,id],ordered=visibleIds(p).filter(x=>ids.includes(x));dragRecords(p,ordered[0],ordered.at(-1));};
 const openBatch=p=>{p.d.getElementById('qis-record-batch').click();return p.d.querySelector('dialog');};
 const ready=async(p,ids=['a','b'])=>{for(const id of ids)p.w.QcInspectionSheet.edit(id,'result',id==='b'?'FAIL':'PASS',true);await p.w.QcInspectionSheet.flush();};
+test('fast workbench drag uses the release row even when capture fails and no move event arrives',async()=>{
+  const p=await page();try{
+    await ready(p,['a','c']);
+    const host=p.d.getElementById('recordsTableWrap'),nodes=[...host.querySelectorAll('[data-entry]')];
+    nodes.forEach((node,i)=>node.getBoundingClientRect=()=>({bottom:164+i*64}));
+    host.setPointerCapture=()=>{throw new p.w.DOMException('capture lost','NotFoundError');};
+    pointer(p,nodes[0].querySelector('td'),'pointerdown',118);
+    pointer(p,p.d.body,'pointerup',260);
+    assert.deepEqual([...p.w.QcInspectionSheet.model.recordChecked],['a','c']);
+    assert.equal(p.d.getElementById('qis-record-batch').textContent,'提交审核（2）');
+    assert.equal(host.classList.contains('qis-drag-selecting'),false);
+    assert.equal(p.calls.some(c=>c.url?.endsWith('/submit')),false);
+  }finally{p.dom.window.close();}
+});
 test('batch selection rejects incomplete and unsaved rows without posting; sorting preserves selection and filters clear it',async()=>{
  const p=await page();try{
   assert.equal(p.d.querySelector('[data-record-check]'),null);assert.equal(p.d.getElementById('qis-record-batch').disabled,true);assert.equal(p.d.querySelector('[data-submit]'),null);

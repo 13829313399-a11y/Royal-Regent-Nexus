@@ -102,6 +102,8 @@ def serialize_order_timing(order) -> MoldingSampleOrderOut:
     parsed_audits = [
         (parsed, audit)
         for audit in order.audit_logs
+        # Edits to an already completed order are not workflow date evidence.
+        if (audit.from_status, audit.to_status) != ("已完成", "已完成")
         if (parsed := parse_business_timestamp(audit.created_at)) is not None
     ]
     updates: dict[str, str] = {}

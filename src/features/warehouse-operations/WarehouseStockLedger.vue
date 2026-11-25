@@ -6,7 +6,7 @@ import { Search, ArrowUpRight, MoveHorizontal, Package } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import type { WarehouseBatch, WarehouseDomain } from '@/api/warehouseOperations'
 import { sumQuantities } from './operations'
-import FabricDetailDialog from './FabricDetailDialog.vue'
+import WarehouseDetailDialog from '@/features/warehouse-foundation/WarehouseDetailDialog.vue'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import type { DateRange } from 'reka-ui'
 import { inventorySearchKey, exceptionSearchKey } from './inventorySearch'
@@ -119,7 +119,7 @@ const receiptsPath = computed(() => `/modules/pmc-warehouse/${props.warehouse ==
     <div v-if="!filtered.length" class="stock-empty" role="status"><Package :size="28" /><strong>{{ rows.length ? '没有符合筛选条件的库存' : restrictedOnly ? '暂无受限库存' : '还没有实际入库记录' }}</strong><p>{{ rows.length ? fabric ? '重置筛选，或选择“全部库存”查看已清零批次。' : '清空筛选或取消“只看有库存”后重试。' : restrictedOnly ? '当前没有历史暂停或不合格批次。' : '实际收料保存后，物料和仓位会显示在这里。' }}</p><Button v-if="fabric && hasFilters" variant="outline" size="sm" @click="resetFilters">重置筛选</Button></div>
     <footer class="stock-footer"><span>共 {{ filtered.length }} 个批次<span v-if="filtered.length"> · 显示 {{ page * 30 + 1 }}–{{ Math.min((page + 1) * 30, filtered.length) }}</span></span><div><Button size="sm" variant="outline" :disabled="page === 0" @click="page--">上一页</Button><span>{{ page + 1 }} / {{ pages }}</span><Button size="sm" variant="outline" :disabled="page + 1 >= pages" @click="page++">下一页</Button></div></footer>
     <p class="stock-footnote">数量来自已登记收发、期初库存及盘点差异；尚未导入的历史实物不计入。质检由 QC 模块负责。</p>
-    <FabricDetailDialog v-if="fabric && selected" title="库存批次详情" :icon="Package" close-label="关闭库存批次详情" @close="selected = undefined">
+    <WarehouseDetailDialog v-if="fabric && selected" title="库存批次详情" :icon="Package" close-label="关闭库存批次详情" @close="selected = undefined">
       <template #status>
         <span v-if="restricted(selected)" class="fabric-detail-badge" data-tone="warning">{{ selected.quality_status === 'HOLD' ? '暂停发料' : '不合格' }}</span>
         <span v-else-if="!selected.location_verified && Number(selected.quantity) > 0" class="fabric-detail-badge" data-tone="warning">仓位待核实</span>
@@ -160,7 +160,7 @@ const receiptsPath = computed(() => `/modules/pmc-warehouse/${props.warehouse ==
           <Button v-if="!restrictedOnly" :disabled="!canIssue(selected)" @click="start('ISSUE', selected)">办理出库</Button>
         </template>
       </template>
-    </FabricDetailDialog>
+    </WarehouseDetailDialog>
     <Teleport to="body"><div v-if="!fabric && selected" class="stock-detail-overlay" @click.self="selected = undefined"><FocusScope as-child loop trapped><section class="stock-detail" role="dialog" aria-modal="true" aria-label="库存批次详情" @keydown.esc.prevent="selected = undefined">
       <header><div><h2>{{ selected.item_name }}</h2><p>{{ selected.item_code }}</p></div><Button variant="outline" @click="selected = undefined">关闭详情</Button></header>
       <dl><template v-if="warehouse === 'fabric' && (selected.style_no || selected.customer_name || selected.material_detail)"><div><dt>货号</dt><dd>{{ selected.style_no || '未记录' }}</dd></div><div><dt>客户名称</dt><dd>{{ selected.customer_name || '未记录' }}</dd></div><div><dt>物料明细</dt><dd>{{ selected.material_detail || '未记录' }}</dd></div></template><div><dt>当前库存</dt><dd>{{ selected.quantity }} {{ selected.unit }}</dd></div><div><dt>仓位</dt><dd>{{ selected.location_label || selected.location }}</dd></div><div><dt>缸号 / 批号</dt><dd>{{ selected.lot || '—' }}</dd></div><div><dt>卷号</dt><dd>{{ selected.roll_no || '—' }}</dd></div><div v-if="warehouse === 'semi'"><dt>加工状态</dt><dd>{{ selected.process_state }}</dd></div><div><dt>入账日期</dt><dd>{{ selected.received_on }}</dd></div><div><dt>来源单位</dt><dd>{{ selected.counterparty || '—' }}</dd></div><div><dt>送货依据</dt><dd>{{ selected.source_no || '未另填凭证' }}</dd></div><div><dt>生产 / 放产单</dt><dd>{{ selected.production_no || '—' }}</dd></div><div class="full"><dt>完整批次编号</dt><dd>{{ selected.id }}</dd></div><div class="full"><dt>来源记录编号</dt><dd>{{ selected.source_document }}</dd></div></dl>

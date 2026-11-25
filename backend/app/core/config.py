@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'royal_regent_nexus.db'}"
     session_cookie_secure: bool = False
     qc_mobile_public_origin: str = ""
+    qc_mobile_require_https: bool = False
     seed_default_accounts: bool = True
     seed_admin_password: str = ""
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
@@ -162,6 +163,13 @@ class Settings(BaseSettings):
     document_tools_translation_base_url: str = ""
     document_tools_translation_protocol: Literal["inherit", "dashscope", "openai", "mimo"] = "inherit"
     document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
+    customer_order_ai_enabled: bool = False
+    customer_order_ai_connection: Literal["document_tools", "assistant"] = "document_tools"
+    customer_order_ai_model: str = ""
+    customer_order_ai_cache_dir: str = str(BACKEND_DIR / "data" / "order-ai-snapshots")
+    customer_order_ai_timeout_seconds: int = Field(default=25, ge=5, le=60)
+    customer_order_ai_batch_seconds: int = Field(default=75, ge=5, le=120)
+    customer_order_ai_revision: str = "1"
     image_translation_model_dir: str = str(BACKEND_DIR / "models" / "image-translation")
     image_translation_runner: str = str(BACKEND_DIR.parent / "shinobu-web" / "server" / "dist" / "runner.mjs")
     image_translation_node: str = "node"

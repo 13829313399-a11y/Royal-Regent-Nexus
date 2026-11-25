@@ -38,7 +38,7 @@ export function scheduleDate(value: unknown, date1904 = false): string {
 }
 
 /** Only master schedule sheets; ITEM/shipped/cancelled copies are not additional orders. */
-export function parseScheduleWorkbook(wb: any, utils: any, selectedCustomer = '') {
+export function parseScheduleWorkbook(wb: any, utils: any, selectedCustomer = '', defaultCustomer = 'TOMY') {
   const sheetNames: string[] = wb.SheetNames.filter((name: string) => /总排期$/.test(name.trim()))
   if (!sheetNames.length) throw new Error('未找到总排期工作表（支持 KIK总排期、RRM总排期、接单总排期）')
   const rows: ImportedScheduleRow[] = []
@@ -82,7 +82,8 @@ export function parseScheduleWorkbook(wb: any, utils: any, selectedCustomer = ''
       if (!code || /^(总计|合计|小计|total)$/i.test(code)) continue
       // Footnotes in the item-number column are not orders; keep genuine zero-quantity cancellations.
       if (!text('qty') && !text('orderNo') && !text('productName')) continue
-      const customer = scheduleCustomer(text('customer') || selectedCustomer || 'TOMY')
+      const customer = scheduleCustomer(text('customer') || selectedCustomer || defaultCustomer)
+      if (!customer) throw new Error(`${name} 第 ${index + 1} 行没有客名，请先选择客户再选文件`)
       if (selectedCustomer && customer !== scheduleCustomer(selectedCustomer))
         throw new Error(`${name} 第 ${index + 1} 行客户为 ${customer}，与选择的客户不一致`)
       const numeric = (field: 'qty' | 'cartons' | 'unitPrice') => {

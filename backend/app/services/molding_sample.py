@@ -2912,8 +2912,8 @@ def upsert_trial_report(
         order,
         "molding_sample:production_fillback",
     )
-    if order.status not in {"待生产", "生产中"}:
-        raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以填写试模报告")
+    if not is_production_task_order(order):
+        raise HTTPException(status_code=403, detail="只有已进入内部生产队列的啤办单可以填写试模报告")
     acquire_production_transition_guard(
         db,
         order,
@@ -2953,7 +2953,9 @@ def upsert_trial_report(
         report.updated_at = timestamp
         audit_action = "更新试模报告"
 
-    order.updated_at = now_text()
+    # Older completed orders use updated_at as their completion date fallback.
+    if order.status != "已完成":
+        order.updated_at = now_text()
     append_audit(
         db,
         order,

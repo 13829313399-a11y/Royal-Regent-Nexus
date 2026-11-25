@@ -172,8 +172,8 @@ td.writable.blank:not(.selected){box-shadow:inset 0 0 0 100vmax #c9ead899}
 td.writable:hover{box-shadow:inset 0 0 0 1px #73947e}
 .cell-value{display:contents}
 td>.cell-editor{position:absolute;z-index:1;inset:0;width:100%;height:100%;box-sizing:border-box;resize:none;border:2px solid #287447;outline:0;background:white;color:#17231c;padding:2px 3px;font:inherit;text-align:inherit}
-.wb-fill-handle{position:absolute;z-index:2;right:0;bottom:0;width:14px;height:14px;cursor:crosshair;touch-action:none}
-.wb-fill-handle::after{content:"";position:absolute;right:1px;bottom:1px;width:7px;height:7px;background:#287447;border:1px solid white}
+.wb-fill-handle{position:absolute;z-index:2;right:0;bottom:0;width:25px;height:24px;cursor:crosshair;touch-action:none}
+.wb-fill-handle::after{content:"";position:absolute;right:1px;bottom:1px;width:9px;height:9px;background:#287447;border:1px solid white}
 th.row-num,th.col-num{background:#f2f4f1;color:#657369;border:solid #d5dcd5;border-width:0 1px 1px 0;text-align:center;font:11px/1.2 -apple-system,sans-serif}
 th.row-num{position:sticky;left:0;min-width:36px;z-index:2}
 thead{position:sticky;top:0;z-index:3}
@@ -665,7 +665,8 @@ function clearFillVisual(){
 function paintFillVisual(positions,scrolling){
   if(!positions.length){clearFillVisual();return;}
   const viewport=view.getBoundingClientRect(),outer=dialog.getBoundingClientRect();
-  const gutter=grid.querySelector('.row-num')?.getBoundingClientRect().width||0;
+  const pinned=grid.querySelector('thead [data-review-pin="3"]')?.getBoundingClientRect();
+  const gutter=pinned?Math.max(0,pinned.right-viewport.left):(grid.querySelector('.row-num')?.getBoundingClientRect().width||0);
   const heading=grid.querySelector('thead')?.getBoundingClientRect().height||0;
   const x=viewport.left+gutter,y=viewport.top+heading;
   const width=view.clientWidth-gutter,height=view.clientHeight-heading;
@@ -712,38 +713,45 @@ grip.onpointerdown=event=>{
   clearFillVisual();
   source.focus({preventScroll:true});
   drag={pointer:event.pointerId,source:cell,origin:source,value,candidates,targets:[],originY:event.clientY,y:event.clientY};
-  view.classList.add('wb-filling');view.setPointerCapture?.(event.pointerId);
-  const scroll=()=>{
-    if(!drag)return;
+  view.classList.add('wb-filling');
+  try{view.setPointerCapture?.(event.pointerId);}catch{/* Window handlers still track the release. */}
+ };
+ function queueFillScroll(){
+   if(dragFrame||!drag?.moved)return;
+   dragFrame=requestAnimationFrame(()=>{
+    dragFrame=0;
+    if(!drag?.moved)return;
     const {top,bottom}=view.getBoundingClientRect();
     const header=grid.querySelector('thead')?.getBoundingClientRect().height||0;
-    if(drag.moved){
-      const delta=drag.y>bottom-28?Math.min(16,(drag.y-bottom+28)/3):
-        drag.y<top+header+28?-Math.min(16,(top+header+28-drag.y)/3):0;
-      if(delta)view.scrollTop+=delta;
-    }
-    dragFrame=requestAnimationFrame(scroll);
-  };
-  dragFrame=requestAnimationFrame(scroll);
-};
+    const delta=drag.y>bottom-32?Math.min(24,Math.max(3,(drag.y-bottom+32)/2)):
+      drag.y<top+header+32?-Math.min(24,Math.max(3,(top+header+32-drag.y)/2)):0;
+    if(!delta)return;
+    const before=view.scrollTop;view.scrollTop+=delta;
+    if(view.scrollTop!==before){previewFill(true);queueFillScroll();}
+   });
+ }
 function previewFill(scrolling=false){
   if(!drag.moved&&drag.y-drag.originY<3)return;
   drag.moved=true;
-  const targets=[],positions=[];
-  for(const td of drag.candidates){
-    const r=td.getBoundingClientRect();
-    if(drag.y<r.top)break;
-    targets.push(td);positions.push([td,r]);
+  let low=0,high=drag.candidates.length;
+  while(low<high){
+    const middle=(low+high)>>1;
+    if(drag.y<drag.candidates[middle].getBoundingClientRect().top)high=middle;
+    else low=middle+1;
   }
+  const scrolled=view.scrollTop!==drag.top||view.scrollLeft!==drag.left;
+  if(low===drag.targets.length&&!scrolled)return;
+  drag.top=view.scrollTop;drag.left=view.scrollLeft;
+  const targets=drag.candidates.slice(0,low);
   for(let i=targets.length;i<drag.targets.length;i++)drag.targets[i].classList.remove('wb-fill-target');
   for(let i=drag.targets.length;i<targets.length;i++)targets[i].classList.add('wb-fill-target');
   drag.targets=targets;
-  paintFillVisual(positions,scrolling);
+  paintFillVisual(targets.map(td=>[td,td.getBoundingClientRect()]),scrolling);
 }
 function finishFill(cancel){
   if(!drag){if(cancel)clearFillVisual();return;}
   const {pointer,source,value,targets}=drag;drag=null;
-  cancelAnimationFrame(dragFrame);view.classList.remove('wb-filling');
+   cancelAnimationFrame(dragFrame);dragFrame=0;view.classList.remove('wb-filling');
   if(view.hasPointerCapture?.(pointer))view.releasePointerCapture(pointer);
   for(const td of targets)td.classList.remove('wb-fill-target');
   if(cancel){clearFillVisual();return;}
@@ -754,12 +762,17 @@ function finishFill(cancel){
     fillVisual.classList.add('wb-fill-done');fillSettle=setTimeout(clearFillVisual,160);
   }else clearFillVisual();
 }
-view.onpointermove=view.onpointerup=event=>{
-  if(drag?.pointer!==event.pointerId)return;
-  drag.y=event.clientY;previewFill();
-  if(event.type==='pointerup')finishFill(false);
-};
-view.onpointercancel=view.onlostpointercapture=event=>{if(drag?.pointer===event.pointerId)finishFill(true);};
+ function updateFillPointer(event){
+   if(drag?.pointer!==event.pointerId)return;
+   drag.y=event.clientY;previewFill();
+   if(event.type==='pointerup')finishFill(false);
+   else queueFillScroll();
+ }
+ window.addEventListener('pointermove',updateFillPointer,true);
+ window.addEventListener('pointerup',updateFillPointer,true);
+ const cancelFillPointer=event=>{if(drag?.pointer===event.pointerId)finishFill(true);};
+ window.addEventListener('pointercancel',cancelFillPointer,true);
+ view.onlostpointercapture=event=>{if(event.target===view)cancelFillPointer(event);};
 view.addEventListener('scroll',()=>{if(drag?.moved)previewFill(true);});
 window.addEventListener('pointerup',()=>{selectionDrag=null;});
 window.addEventListener('pointercancel',()=>{selectionDrag=null;swept=false;});

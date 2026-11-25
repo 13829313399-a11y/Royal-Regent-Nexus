@@ -68,6 +68,7 @@ backend/models/image-translation/
 !/docs/three-d-pr06-acceptance.md
 !/docs/three-d-pr07-pr09-acceptance.md
 !/deploy/three-d-printing/README.md
+!/deploy/qc-mobile-20261124/README.md
 !/docs/document-tools/*.md
 !/docs/document-studio/evaluation.md
 !/docs/business/internal-quote-collaboration-design.md

@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "a6c0f320f47fbb797667ba8aaffccbe6e7ea78d8753c6f26dc6119aae3d25a95"
+        "sha256": "1b6ccd2b060ecde7bd0473c74048fe72d5412a4d51dfe94eb6a2ac585853bf69"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -85,7 +85,7 @@
       {
         "path": "backend/app/services/carton_supplier_portal.py",
         "symbol": "link_shipment_line",
-        "sha256": "9add06bec383a726c3ddfc488bad3e67feff1fdcbb8fee66600f40d6c0187cb1"
+        "sha256": "2ab3bc524f97f17307ac57e3109830feda89f02096ace507b1f2cfd309cacd2d"
       },
       {
         "path": "backend/app/services/carton_contract_merge.py",
