@@ -7,7 +7,8 @@ from test_cutting_jp_migration import BACKEND, base_database, clone, migrate, ru
 def latest_database(base_database, tmp_path_factory):
     path = clone(base_database, tmp_path_factory.mktemp('latest-head-preflight'))
     migrate(path, '20261102_0189')
-    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261119_0197', '20261121_inj_merge'):
+    for revision in ('20261104_0190', '20261104_0191', '20261104_0192', '20261107_0193', '20261110_0194', '20261116_0195', '20261119_0197', '20261121_inj_merge',
+                     '20261123_shipping_merge', '20261124_0202', '20261124_0203'):
         migrate(path, revision)
         before = snapshot(path)
         migrate(path, revision)
@@ -60,7 +61,7 @@ def test_carton_process_history_upgrades_with_its_original_note(base_database, t
     assert snapshot(damaged) == before and version_snapshot(damaged) == [('20261119_0195',)]
 
     migrate(path, 'head', extra_args=reconcile)
-    assert version_snapshot(path) == [('20261121_inj_merge',)]
+    assert version_snapshot(path) == [('20261124_0203',)]
     after = snapshot(path)
     retired_prefixes = ('injection_v3_', 'injection_schedule_', 'injection_scheduling_', 'injection_ops_')
     assert not any(name.startswith(retired_prefixes) for name in after)
@@ -88,7 +89,7 @@ def test_published_retirement_upgrades_with_carton_and_3d_intact(base_database, 
     with sqlite3.connect(path) as db:
         db.execute("INSERT INTO three_d_printing_retention_cursors VALUES ('huakang-a','test-printer','now','keep')")
     migrate(path, 'head')
-    assert version_snapshot(path) == [('20261121_inj_merge',)]
+    assert version_snapshot(path) == [('20261124_0203',)]
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT event_id FROM three_d_printing_retention_cursors").fetchall() == [('keep',)]
         assert 'process_note' in {row[1] for row in db.execute("PRAGMA table_info(carton_order_lines)")}
