@@ -62,11 +62,34 @@ def _identify(conn) -> None:
         pass
 
 
+def _login(conn, host: str, username: str, password: str) -> None:
+    """Log in; NetEase requires an IMAP ID handshake and an authorization code."""
+    username = username.strip()
+    password = password.replace(' ', '').strip()
+    is_netease = any(token in host.lower() for token in ('163.com', '126.com', 'yeah.net', 'qiye.163.com'))
+    if is_netease:
+        _identify(conn)
+    try:
+        conn.login(username, password)
+    except imaplib.IMAP4.error as error:
+        if not is_netease:
+            raise
+        # Some NetEase tenants require ID before accepting LOGIN.
+        _identify(conn)
+        try:
+            conn.login(username, password)
+        except imaplib.IMAP4.error:
+            raise ImapError(
+                '邮箱登录失败：请确认已开启 IMAP/SMTP，并使用网易邮箱生成的授权码，'
+                '不要使用网页登录密码。'
+            ) from error
+    _identify(conn)
+
+
 def test_connection(host: str, port: int, username: str, password: str, use_ssl: bool, folder: str) -> None:
     conn = _connect(host, port, use_ssl)
     try:
-        conn.login(username, password)
-        _identify(conn)
+        _login(conn, host, username, password)
         status, _ = conn.select(folder or 'INBOX', readonly=True)
         if status != 'OK':
             raise ImapError(f'无法打开邮箱文件夹 {folder or "INBOX"}')
@@ -95,8 +118,7 @@ def fetch_recent(
     conn = _connect(host, port, use_ssl)
     messages: list[tuple[str, str, bytes]] = []
     try:
-        conn.login(username, password)
-        _identify(conn)
+        _login(conn, host, username, password)
         status, _ = conn.select(folder or 'INBOX', readonly=True)
         if status != 'OK':
             raise ImapError(f'无法打开邮箱文件夹 {folder or "INBOX"}')
