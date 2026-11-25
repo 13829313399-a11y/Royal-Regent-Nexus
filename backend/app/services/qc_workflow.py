@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS deleted_tasks (
  method TEXT NOT NULL, batch TEXT NOT NULL, payload TEXT NOT NULL,
  events_json TEXT NOT NULL, deleted_at TEXT NOT NULL,
  deleted_by TEXT NOT NULL, reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS deleted_task_files AS SELECT * FROM files WHERE 0;
 '''
 
 
@@ -729,27 +730,21 @@ def create_schedule(factory, body, actor):
         return item
 
 
-def archive_deleted_task(factory, task_id, actor, reason=''):
-    """Archive and remove a workflow task when its QC inspection entry is deleted.
-
-    Sales order rows remain untouched; removing the active task lets the customer
-    schedule fall back cleanly and allows re-pushing later if needed.
-    """
+def archive_deleted_task(conn, factory, task_id, actor, reason):
+    """Use the sheet's attached workflow database and per-entry savepoint."""
     if not task_id:
         return False
-    with store(True) as conn:
-        row = conn.execute('SELECT * FROM tasks WHERE id=? AND factory=?', (task_id, factory)).fetchone()
-        if row is None:
-            return False
-        events = [dict(r) for r in conn.execute('SELECT * FROM events WHERE task_id=? ORDER BY id', (task_id,))]
-        conn.execute(
-            'INSERT OR IGNORE INTO deleted_tasks VALUES(?,?,?,?,?,?,?,?,?,?)',
-            (
-                row['id'], row['factory'], row['source_id'], row['method'], row['batch'],
-                row['payload'], dump(events), now(), dump(actor), text(reason, 2000),
-            ),
-        )
-        conn.execute('DELETE FROM files WHERE task_id=?', (task_id,))
-        conn.execute('DELETE FROM events WHERE task_id=?', (task_id,))
-        conn.execute('DELETE FROM tasks WHERE id=? AND factory=?', (task_id, factory))
-        return True
+    row = conn.execute('SELECT * FROM qflow.tasks WHERE id=? AND factory=?', (task_id, factory)).fetchone()
+    if row is None:
+        return False
+    events = [dict(r) for r in conn.execute('SELECT * FROM qflow.events WHERE task_id=? ORDER BY id', (task_id,))]
+    conn.execute(
+        'INSERT INTO qflow.deleted_tasks VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (row['id'], row['factory'], row['source_id'], row['method'], row['batch'],
+         row['payload'], dump(events), now(), dump(actor), reason),
+    )
+    conn.execute('INSERT INTO qflow.deleted_task_files SELECT * FROM qflow.files WHERE task_id=?', (task_id,))
+    conn.execute('DELETE FROM qflow.files WHERE task_id=?', (task_id,))
+    conn.execute('DELETE FROM qflow.events WHERE task_id=?', (task_id,))
+    conn.execute('DELETE FROM qflow.tasks WHERE id=? AND factory=?', (task_id, factory))
+    return True

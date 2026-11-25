@@ -377,6 +377,11 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS record_tombstones (
     id INTEGER PRIMARY KEY, deletedAt TEXT
   );
+  CREATE TABLE IF NOT EXISTS qc_delete_history (
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, item_key TEXT NOT NULL,
+    actor TEXT NOT NULL, deleted_at TEXT NOT NULL, snapshot TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS qc_delete_history_key ON qc_delete_history(kind,item_key);
 `;
 
 const toNum = (v) => (v === '' || v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
@@ -445,7 +450,14 @@ function upsertRecords(db, records, transaction = true) {
 }
 
 /* ── 按 id 删除（写墓碑，防止旧标签页推送复活）── */
-function deleteRecords(db, ids, transaction = true) {
+function rejectWrite(status, message) {
+  throw Object.assign(new Error(message), {qcStatus:status});
+}
+function archiveRemoval(db, kind, key, row, actor, now) {
+  db.prepare('INSERT INTO qc_delete_history(kind,item_key,actor,deleted_at,snapshot) VALUES(?,?,?,?,?)')
+    .run(kind, key, actor, now, JSON.stringify(row));
+}
+function deleteRecords(db, ids, transaction = true, ctx = {}) {
   const now = new Date().toISOString();
   const del = db.prepare('DELETE FROM records WHERE id = ?');
   const tomb = db.prepare('INSERT OR REPLACE INTO record_tombstones(id, deletedAt) VALUES(?, ?)');
@@ -455,6 +467,12 @@ function deleteRecords(db, ids, transaction = true) {
     for (const id of ids) {
       const n = Number(id) || 0;
       if (!n) continue;
+      const row = db.prepare('SELECT * FROM records WHERE id=?').get(n);
+      if (row) {
+        if (!ctx.sheetReceipt && (['approved','pending'].includes(row.status) || ctx.protectedIds?.includes(n)))
+          rejectWrite(409, '已提交记录请在审核中心处理，已审核请先反审核');
+        archiveRemoval(db, 'record', String(n), rowToRecord(row), ctx.actor || '', now);
+      }
       del.run(n); tomb.run(n, now); count++;
     }
     if (transaction) db.exec('COMMIT');
@@ -462,10 +480,10 @@ function deleteRecords(db, ids, transaction = true) {
   return count;
 }
 
-function mergeRecordChanges(db, records, ids) {
+function mergeRecordChanges(db, records, ids, ctx) {
   db.exec('BEGIN');
   try {
-    const deleted = deleteRecords(db, ids, false);
+    const deleted = deleteRecords(db, ids, false, ctx);
     const result = upsertRecords(db, records, false);
     db.exec('COMMIT');
     return { ...result, deleted };
@@ -473,15 +491,14 @@ function mergeRecordChanges(db, records, ids) {
 }
 
 /* ── 全量替换（事务）：仅用于「清空数据 / 恢复示例 / 替换模式导入」等显式整库操作 ── */
-function replaceRecords(db, records) {
+function replaceRecords(db, records, ctx) {
   const ph = RECORD_COLS.map(() => '?').join(',');
   const ins = db.prepare(`INSERT INTO records(${RECORD_COLS.join(',')}) VALUES(${ph})`);
   db.exec('BEGIN');
   try {
     // Keep tombstones for records omitted by a clear/import, so an old tab
     // cannot undo the explicit replacement on its next ordinary save.
-    db.prepare('INSERT OR REPLACE INTO record_tombstones(id,deletedAt) SELECT id,? FROM records').run(new Date().toISOString());
-    db.prepare('DELETE FROM records').run();
+    deleteRecords(db, db.prepare('SELECT id FROM records').all().map(r => r.id), false, ctx);
     const clearTomb = db.prepare('DELETE FROM record_tombstones WHERE id=?');
     for (const r of records) { ins.run(...recordValues(r)); clearTomb.run(toNum(r.id)); }
     db.exec('COMMIT');
@@ -489,20 +506,48 @@ function replaceRecords(db, records) {
 }
 
 /* 供应商&客户名单（全量替换） */
-function replacePartners(db, list) {
+function checkCatalogRemoval(db, table, list, ctx) {
+  const partner = table === 'partners';
+  const key = row => JSON.stringify((partner ? [row.type, row.name] : [row.name]).map(v => String(v || '').trim()));
+  const existing = db.prepare(`SELECT * FROM ${table}`).all();
+  const newKeys = new Set(list.map(key));
+  const oldKeys = new Set(existing.map(key));
+  const allowed = new Set((ctx?.removed || []).map(parts => JSON.stringify(parts)));
+  for (const next of newKeys) {
+    if (!oldKeys.has(next) && db.prepare('SELECT 1 FROM qc_delete_history WHERE kind=? AND item_key=?').get(table, next))
+      rejectWrite(409, '此项目已删除，请刷新名单后重试');
+  }
+  for (const row of existing) {
+    const k = key(row);
+    if (newKeys.has(k)) continue;
+    if (!ctx?.actor || !allowed.has(k)) rejectWrite(409, '名单已变更，请刷新后核对');
+    if (!partner) {
+      const name = String(row.name || '').trim();
+      const referenced = record => String(record.defect || '').split(/[，,;；、/\n]+/).some(v => v.trim() === name)
+        || (record.defects || []).some(item => String(item?.desc || '').trim() === name);
+      if (db.prepare('SELECT defect, defects FROM records').all().some(r => referenced(rowToRecord(r))) ||
+          db.prepare("SELECT snapshot FROM qc_delete_history WHERE kind='record'").all().some(r => referenced(JSON.parse(r.snapshot))))
+        rejectWrite(409, '不良描述已被历史验货记录引用，请改用停用');
+    }
+    archiveRemoval(db, table, k, row, ctx.actor, new Date().toISOString());
+  }
+}
+function replacePartners(db, list, ctx) {
   const ins = db.prepare('INSERT INTO partners(name,type,createdAt) VALUES(?,?,?)');
   db.exec('BEGIN');
   try {
+    checkCatalogRemoval(db, 'partners', list, ctx);
     db.prepare('DELETE FROM partners').run();
     for (const p of list) ins.run(p.name ?? null, p.type ?? null, p.createdAt ?? null);
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
-function replaceDefects(db, lib) {
+function replaceDefects(db, lib, ctx) {
   const ins = db.prepare('INSERT INTO defect_library(name,category,defaultLevel,keywords,enabled,createdAt) VALUES(?,?,?,?,?,?)');
   db.exec('BEGIN');
   try {
+    checkCatalogRemoval(db, 'defect_library', lib, ctx);
     db.prepare('DELETE FROM defect_library').run();
     for (const d of lib) ins.run(d.name ?? null, d.category ?? null, d.defaultLevel ?? null, JSON.stringify(d.keywords || []), d.enabled ? 1 : 0, d.createdAt ?? null);
     db.exec('COMMIT');
@@ -516,11 +561,13 @@ function seedIfEmpty(db, { includeRecords = true } = {}) {
   try { seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')); }
   catch (e) { console.warn('[seed] 读取 seed.json 失败，跳过灌种子：', e.message); }
 
-  if (includeRecords && db.prepare('SELECT COUNT(*) c FROM records').get().c === 0 && seed.records?.length) {
+  if (includeRecords && db.prepare('SELECT COUNT(*) c FROM records').get().c === 0 && seed.records?.length &&
+      !db.prepare('SELECT 1 FROM record_tombstones LIMIT 1').get()) {
     replaceRecords(db, seed.records);
     console.log('[seed] 灌入验货记录', seed.records.length, '条');
   }
-  if (db.prepare('SELECT COUNT(*) c FROM defect_library').get().c === 0 && seed.defectLib?.length) {
+  if (db.prepare('SELECT COUNT(*) c FROM defect_library').get().c === 0 && seed.defectLib?.length &&
+      !db.prepare("SELECT 1 FROM qc_delete_history WHERE kind='defect_library' LIMIT 1").get()) {
     replaceDefects(db, seed.defectLib);
     console.log('[seed] 灌入不良描述库', seed.defectLib.length, '条');
   }
@@ -851,34 +898,37 @@ const server = http.createServer(async (req, res) => {
       return sendDownload(req, res, 'application/vnd.ms-excel; charset=utf-8', `${companyName(companyId)}${referenceData(db).count ? "_模板参考_非本厂实绩" : ""}品质检验明细统计表${span}.xls`, body);
     }
     if (p === '/api/reference-data/clear' && req.method === 'POST') {
-      await readBody(req);
-      return sendJson(res, 200, { ok: true, ...clearReferenceData(db, deleteRecords) });
+      const body = await readBody(req);
+      return sendJson(res, 200, { ok: true, ...clearReferenceData(db, (d, ids, tx) => deleteRecords(d, ids, tx, body._qc)) });
     }
     if (p === '/api/records' && req.method === 'POST') {
       const body = await readBody(req);
       const r = mergeRecordChanges(db, Array.isArray(body.records) ? body.records : [],
-        Array.isArray(body.deletedIds) ? body.deletedIds : []);
+        Array.isArray(body.deletedIds) ? body.deletedIds : [], body._qc);
       return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM records').get().c,
         ...r });
     }
     if (p === '/api/records/delete' && req.method === 'POST') {
       const body = await readBody(req);
-      const n = deleteRecords(db, Array.isArray(body.ids) ? body.ids : []);
+      const n = deleteRecords(db, Array.isArray(body.ids) ? body.ids : [], true, body._qc);
       return sendJson(res, 200, { ok: true, deleted: n });
     }
     if (p === '/api/records/replace' && req.method === 'POST') {
       const body = await readBody(req);
-      replaceRecords(db, Array.isArray(body.records) ? body.records : []);
+      if (!Array.isArray(body.records)) return sendJson(res, 422, {detail:'缺少记录列表'});
+      replaceRecords(db, body.records, body._qc);
       return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM records').get().c });
     }
     if (p === '/api/partners' && req.method === 'POST') {
       const body = await readBody(req);
-      replacePartners(db, Array.isArray(body.partners) ? body.partners : []);
+      if (!Array.isArray(body.partners)) return sendJson(res, 422, {detail:'缺少名单'});
+      replacePartners(db, body.partners, body._qc);
       return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM partners').get().c });
     }
     if (p === '/api/defects' && req.method === 'POST') {
       const body = await readBody(req);
-      replaceDefects(db, Array.isArray(body.defectLib) ? body.defectLib : []);
+      if (!Array.isArray(body.defectLib)) return sendJson(res, 422, {detail:'缺少不良描述列表'});
+      replaceDefects(db, body.defectLib, body._qc);
       return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM defect_library').get().c });
     }
     /* ── AI（阿里百炼，全局共用，不分厂区）── */
@@ -902,6 +952,7 @@ const server = http.createServer(async (req, res) => {
     }
     return sendJson(res, 404, { ok: false, error: 'unknown api route' });
   } catch (e) {
+    if (e.qcStatus) return sendJson(res, e.qcStatus, {detail:e.message});
     console.error('[api error]', p, e);
     return sendJson(res, 500, { ok: false, error: String(e && e.message || e) });
   }
