@@ -32,6 +32,7 @@ from app.models.internal_quote import (
 )
 from app.schemas.internal_quote import SECTION_CODE_ORDER
 from app.services.internal_quote_calculator import (
+    DEFAULT_ASSEMBLY_LABOR_BASE_HKD,
     CalculationInputError,
     resolve_justplay_carton_basis,
     resolve_justplay_packaging_inputs,
@@ -1982,7 +1983,7 @@ def _build_summary_sheet(
     )
     sheet["M4"] = _float_value(
         current_labor_base,
-        _float_value(reference_snapshot.get("assembly_labor_base_hkd"), 260),
+        _float_value(reference_snapshot.get("assembly_labor_base_hkd"), DEFAULT_ASSEMBLY_LABOR_BASE_HKD),
     )
     sheet["M4"].number_format = "#,##0"
     top_tax_rows = (

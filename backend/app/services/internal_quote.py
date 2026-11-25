@@ -765,7 +765,7 @@ def _create_reference_set(
         # Refreshing price tables must not reset this quote's commercial terms.
         # Explicit FX edits and copies supply their own complete frozen snapshot.
         previous_snapshot = _json_object(previous_reference.snapshot_json)
-        for key in ("fx", "misc_ratio", "settlement"):
+        for key in ("fx", "misc_ratio", "settlement", "assembly_labor_base_hkd"):
             if key in previous_snapshot:
                 snapshot_data[key] = previous_snapshot[key]
             else:

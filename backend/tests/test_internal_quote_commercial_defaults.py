@@ -27,10 +27,11 @@ def reference(client, quote):
     return response.json()["snapshot"]
 
 
-def assert_terms(snapshot, fx, misc, settlement):
+def assert_terms(snapshot, fx, misc, settlement, labor_base):
     assert snapshot["fx"]["rmb_hkd"] == fx
     assert snapshot["misc_ratio"] == misc
     assert snapshot["settlement"] == settlement
+    assert snapshot["assembly_labor_base_hkd"] == labor_base
 
 
 def save_sales(client, quote):
@@ -58,7 +59,7 @@ def test_all_factories_and_customers_create_with_new_frozen_terms(monkeypatch):
         for index, (factory, customer) in enumerate(cases):
             quote = create(client, f"DEFAULT-{index}", factory, customer)
             snapshot = reference(client, quote)
-            assert_terms(snapshot, "0.84", "0.03", "0.97")
+            assert_terms(snapshot, "0.84", "0.03", "0.97", "285")
             assert snapshot["fx"]["hkd_usd"] == "7.8"
             assert snapshot["fx"]["rmb_usd"] == "7.75"
             sales = save_sales(client, quote)
@@ -71,21 +72,23 @@ def test_all_factories_and_customers_create_with_new_frozen_terms(monkeypatch):
             pricing = summary["rr2_cost_summary"]["shipping_pricing"]
             assert float(pricing["misc_ratio"]) == .03
             assert float(pricing["settlement"]) == .97
-            assert_terms(reference(client, quote), "0.84", "0.03", "0.97")
+            assert_terms(reference(client, quote), "0.84", "0.03", "0.97", "285")
 
 
-def test_new_defaults_reach_excel_export(monkeypatch):
+@pytest.mark.parametrize("labor_override,expected_labor", [({}, 285), ({"labor_base_hkd": 310}, 310)])
+def test_new_defaults_reach_excel_export(monkeypatch, labor_override, expected_labor):
     with make_client(monkeypatch) as client:
         login(client, "default-export", "admin", "*", "*")
         quote = create(client, "DEFAULT-EXCEL")
         save_sales(client, quote)
         assembly = next(s for s in quote["sections"] if s["department"] == "assembly")
         filled = client.put(f"/api/internal-quotes/{quote['id']}/sections/assembly", json={
-            "revision": assembly["revision"], "payload": {"labor_base_hkd": 310,
+            "revision": assembly["revision"], "payload": {**labor_override,
             "groups": [{"name": "装配", "category": "assembly", "processes": [
                 {"name": "组装", "persons": 1, "teams": 1, "production_qty": 5000}]}]},
             "reason": "完成装配核价"})
         assert filled.status_code == 200, filled.text
+        assert float(filled.json()["calculation"]["totals"]["assembly_hkd"]) == pytest.approx(expected_labor / 5000)
         quote = client.get(f"/api/internal-quotes/{quote['id']}").json()
         issued = client.post(f"/api/internal-quotes/{quote['id']}/direct-issue",
                              json={"revision": quote["header_revision"]})
@@ -97,6 +100,7 @@ def test_new_defaults_reach_excel_export(monkeypatch):
         try:
             sheet = workbook["报价明细"]
             assert sheet["L4"].value == .84
+            assert sheet["M4"].value == expected_labor
             assert sheet["Q6"].value == .03
             assert any(cell.value == "=1-$Q$6" for row in sheet for cell in row)
         finally:
@@ -110,13 +114,13 @@ def test_existing_custom_and_new_terms_survive_copy_and_price_sync(monkeypatch):
         models = importlib.import_module("app.models.internal_quote")
         calculator = importlib.import_module("app.services.internal_quote_calculator")
         with db_module.SessionLocal() as db:
-            assert_terms(calculator.build_reference_snapshot(db), "0.85", "0.02", "0.98")
-        for index, terms in enumerate((("0.85", "0.02", "0.98"), ("0.87", "0.035", "0.965"), ("0.84", "0.03", "0.97"))):
+            assert_terms(calculator.build_reference_snapshot(db), "0.85", "0.02", "0.98", "260")
+        for index, terms in enumerate((("0.85", "0.02", "0.98", "260"), ("0.87", "0.035", "0.965", "310"), ("0.84", "0.03", "0.97", "285"))):
             quote = create(client, f"PRESERVE-{index}")
             with db_module.SessionLocal() as db:
                 row = db.get(models.InternalQuoteReferenceSet, quote["reference_snapshot_id"])
                 snapshot = json.loads(row.snapshot_json)
-                snapshot["fx"]["rmb_hkd"], snapshot["misc_ratio"], snapshot["settlement"] = terms
+                snapshot["fx"]["rmb_hkd"], snapshot["misc_ratio"], snapshot["settlement"], snapshot["assembly_labor_base_hkd"] = terms
                 # Prove price refresh still replaces price tables, not the terms.
                 snapshot["material_prices"]["ABS|750SW"] = "123.456"
                 row.snapshot_json = json.dumps(snapshot)
