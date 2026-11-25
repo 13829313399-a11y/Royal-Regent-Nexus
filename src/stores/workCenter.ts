@@ -151,6 +151,7 @@ export const useWorkCenterStore = defineStore('work-center', () => {
         else selected.value = next.selected_entry_state
       }
       if (panelOpen.value && panelTab.value === 'info') await loadInformation()
+      return seq === sequence && identity === account.value
     } catch (failure) {
       if (seq !== sequence || identity !== account.value) return
       const status = (failure as { response?: { status?: number } }).response?.status

@@ -220,7 +220,12 @@
     }
     model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
-    try{options=await api('options');const data=await api(view==='review'?'review/entries':'entries');model.items=data.items;model.results=resultChoices(data);refreshResultFilters();model.columns=displayColumns(data.columns);if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));model.drafts.clear();model.loaded=true;}
+    try{
+      const [nextOptions,data]=await Promise.all([api('options'),api(view==='review'?'review/entries':'entries')]);
+      options=nextOptions;model.items=data.items;model.results=resultChoices(data);refreshResultFilters();model.columns=displayColumns(data.columns);
+      if(view==='review')model.columns.push(...reviewColumns.map(([key,label])=>({key,label})));
+      model.drafts.clear();model.loaded=true;
+    }
     catch(error){model.error=error.message;}
     finally{model.loading=false;render();if(!model.error&&(view==='records'||model.reviewTab==='pending'))void reviewNotifications(view,noticeGeneration);const next=model.nextLoad;model.nextLoad=null;if(next&&(next.view!==model.view||next.tab!==model.reviewTab))await load(next.view,next.tab);}
   }

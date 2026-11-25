@@ -34,6 +34,18 @@ test('future-dated old tabs cannot resurrect a deleted record', t => {
   const result = core.upsertRecords(db, [record(1, { updatedAt: '2099-01-01T00:00:00Z' })]);
   assert.equal(result.skippedTomb, 1); assert.equal(all(db).length, 0);
 });
+test('mixed clear rolls back its audit and tombstones when a record is approved', t => {
+  const db = database(t);
+  core.upsertRecords(db, [record(1), record(2, {status:'approved'})]);
+  assert.throws(() => core.replaceRecords(db, [], {actor:'fixture'}), /反审核/);
+  assert.deepEqual(all(db).map(r => r.id), [1,2]);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM qc_delete_history').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM record_tombstones').get().n, 0);
+  core.deleteRecords(db, [1], true, {actor:'fixture'});
+  const audit = db.prepare('SELECT actor,snapshot FROM qc_delete_history').get();
+  assert.equal(audit.actor, 'fixture');
+  assert.equal(JSON.parse(audit.snapshot).productNo, 'item-1');
+});
 test('clear and replacement preserve tombstones against an old full-array save', t => {
   const db = database(t); core.upsertRecords(db, [record(1), record(2)]); core.replaceRecords(db, []);
   core.upsertRecords(db, [record(1), record(2)]); assert.equal(all(db).length, 0);

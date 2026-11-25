@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { Component } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PortalMotif from '@/components/portal/PortalMotif.vue'
 import type { PortalMotifKind } from '@/components/portal/portalPresentation'
@@ -11,6 +12,7 @@ import type { PortalMotifKind } from '@/components/portal/portalPresentation'
  */
 withDefaults(defineProps<{
   title: string
+  motionIcon?: Component
   description?: string
   eyebrow?: string
   motif: PortalMotifKind
@@ -35,6 +37,7 @@ withDefaults(defineProps<{
       class="portal-hero__header page-header"
       :eyebrow="eyebrow"
       :title="title"
+      :motion-icon="motionIcon"
       :description="description"
     >
       <template #actions>

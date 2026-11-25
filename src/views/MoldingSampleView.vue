@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vSpatialGlyph } from '@/features/route-motion/spatialAnchors'
 import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import {
@@ -3842,11 +3843,11 @@ onUnmounted(() => {
           <span class="sm:hidden">工程部</span>
         </RouterLink>
 
-        <div class="flex min-w-0 items-center gap-2.5">
-          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-slate-800 to-teal-700 text-white shadow-[0_6px_18px_-12px_rgba(13,148,136,0.9)]">
+        <div data-rr-motion-target="surface" class="flex min-w-0 items-center gap-2.5">
+          <span v-spatial-glyph="Beaker" data-rr-motion-target="icon" aria-hidden="true" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-slate-800 to-teal-700 text-white shadow-[0_6px_18px_-12px_rgba(13,148,136,0.9)] [--rr-motion-icon-fill:var(--color-teal-800)]">
             <Beaker class="size-5" aria-hidden="true" />
           </span>
-          <div class="min-w-0">
+          <div data-rr-motion-label class="min-w-0">
             <div class="truncate text-[15px] font-bold leading-tight">啤办单管理</div>
             <div class="truncate text-[11px] text-slate-400">Molding Sample · 试模 / 试色 / 啤办</div>
           </div>

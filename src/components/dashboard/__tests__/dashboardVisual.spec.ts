@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import DashboardView from '@/views/DashboardView.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import MetricCard from '@/components/dashboard/MetricCard.vue'
-import { crossFactoryItems, overviewMetrics } from '@/data/enterpriseMock'
+import { crossFactoryItems, moduleHealth, overviewMetrics } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
 const dashboardCss = readFileSync(
@@ -39,7 +39,6 @@ describe('dashboard jade visual layer', () => {
     const root = wrapper.get('.dashboard-page')
     expect(root.attributes('data-dashboard-ui')).toBe('jade-v2')
     expect(root.classes()).toContain('app-page')
-    expect(root.classes()).toContain('space-y-6')
     // 旧的全局级联入场由首页专属规则接管，不与新动画叠加。
     expect(wrapper.find('.reveal-grid').exists()).toBe(false)
     expect(wrapper.get('.dashboard-metrics').exists()).toBe(true)
@@ -60,17 +59,18 @@ describe('dashboard jade visual layer', () => {
     wrapper.unmount()
   })
 
-  it('renders one deep-jade hero carrier with decoration kept inside it', () => {
+  it('keeps the hero decoration scoped and the heading accessible without locking its palette', () => {
     const { wrapper } = mountDashboard()
     const hero = wrapper.get('.dashboard-hero')
-    // 装饰不作为 .space-y-6 的直接兄弟节点插入。
+    // 装饰不作为独立布局区块插入。
     expect(hero.find('.dashboard-hero__art').exists()).toBe(true)
     expect(hero.find('.dashboard-hero__art').attributes('aria-hidden')).toBe('true')
-    expect(hero.find('.dashboard-hero__breath').exists()).toBe(true)
-    expect(hero.getComponent(PageHeader).exists()).toBe(true)
-    expect(dashboardCss).toContain('--dash-hero-start: #073f38')
-    expect(dashboardCss).toContain('--dash-hero-end: #0e5c51')
-    expect(dashboardCss).toContain('--dash-champagne: #c5ac7b')
+    expect(hero.get('.dashboard-hero__breath').attributes('aria-hidden')).toBe('true')
+    expect(hero.get('h1').text()).toContain('运营总览')
+    for (const token of ['--dash-hero-start', '--dash-hero-end', '--dash-champagne']) {
+      expect(dashboardCss).toMatch(new RegExp(token + '\\s*:\\s*[^;]+;'))
+      expect(dashboardCss).toContain('var(' + token + ')')
+    }
     wrapper.unmount()
   })
 
@@ -176,32 +176,49 @@ describe('dashboard factory context behaviour', () => {
     // 最后一条不画连接线，其余条目各自承载随内容增长的连接线。
     expect(items.at(-1)!.find('[data-timeline-rail]').exists()).toBe(true)
     expect(dashboardCss).toContain('.dashboard-timeline-item:not(:last-child) .dashboard-timeline-item__rail::after')
-    expect(dashboardCss).toMatch(/top: 16px;\s*bottom: 0;/)
-    // 原来的固定 h-12 连接线（48px）已被内容高度驱动取代。
-    expect(dashboardCss).not.toMatch(/height: 48px/)
-    expect(dashboardCss).not.toMatch(/\bh-12\b/)
+    for (const [index, item] of items.entries()) {
+      expect(item.get('[data-timeline-rail]').attributes('aria-hidden')).toBe('true')
+      expect(item.get('h3').text()).toBe(crossFactoryItems[index]!.title)
+      expect(item.text()).toContain(crossFactoryItems[index]!.meta)
+    }
+    // The connector stretches with its own item; assert the geometry contract, not a pixel offset.
+    const connector = dashboardCss.match(/\.dashboard-timeline-item:not\(:last-child\) \.dashboard-timeline-item__rail::after\s*\{([^}]+)\}/)?.[1]
+    expect(connector).toBeTruthy()
+    expect(connector).toMatch(/position:\s*absolute\s*;/)
+    expect(connector).toMatch(/top:\s*[^;]+;/)
+    expect(connector).toMatch(/bottom:\s*[^;]+;/)
+    expect(connector).not.toMatch(/(?:^|;)\s*height\s*:/)
   })
 
-  it('keeps the five module rows and shows fixed-width tabular values', () => {
+  it('keeps every sample module value and accessible progress without fixed column widths', () => {
     const { wrapper } = mountDashboard()
     const rows = wrapper.findAll('.dashboard-module-row')
-    expect(rows).toHaveLength(5)
-    expect(rows[0]!.get('.dashboard-module-row__value').text()).toBe('86')
-    expect(dashboardCss).toContain('grid-template-columns: 84px minmax(0, 1fr) 44px;')
-    // 模块健康度是示例健康度值，不冒充实测开发完成度。
-    expect(rows[0]!.attributes('aria-label')).toContain('示例健康度')
+    expect(rows).toHaveLength(moduleHealth.length)
+    rows.forEach((row, index) => {
+      const sample = moduleHealth[index]!
+      expect(row.get('.dashboard-module-row__name').text()).toBe(sample.name)
+      expect(row.get('.dashboard-module-row__value').text()).toBe(String(sample.value))
+      expect(row.attributes('aria-label')).toContain('示例健康度')
+      expect(row.attributes('aria-label')).toContain(String(sample.value))
+      const meter = row.get('[role="progressbar"]')
+      expect(meter.attributes('aria-valuemin')).toBe('0')
+      expect(meter.attributes('aria-valuemax')).toBe('100')
+      expect(meter.attributes('aria-valuenow')).toBe(String(sample.value))
+    })
     wrapper.unmount()
   })
 })
 
 describe('dashboard motion and style isolation', () => {
   it('enters in one short sequence without reusing the global reveal delays', () => {
-    expect(dashboardCss).toContain('animation-delay: calc(var(--metric-index, 0) * 38ms)')
-    expect(dashboardCss).toContain('animation: dashboard-metric-in 320ms')
-    expect(dashboardCss).toContain('animation: dashboard-panel-in 260ms')
-    expect(dashboardCss).toContain('animation: dashboard-hero-breath 3.6s')
-    // 页头光感只播放一次，不进入永久循环。
-    expect(dashboardCss).toMatch(/animation: dashboard-hero-breath 3\.6s[^;]*1 both;/)
+    // Keep the single, finite entrance and index-based choreography; allow timing/token changes.
+    expect(dashboardCss).toMatch(/animation-delay:\s*calc\([^;]*var\(--metric-index[^;]*;/)
+    for (const name of ['dashboard-metric-in', 'dashboard-panel-in', 'dashboard-hero-breath']) {
+      const animation = dashboardCss.match(new RegExp('animation:\\s*' + name + '\\b([^;]+);'))?.[1]
+      expect(animation).toBeTruthy()
+      expect(animation).not.toMatch(/\binfinite\b/)
+    }
+    expect(dashboardCss).toMatch(/animation:\s*dashboard-hero-breath\b[^;]*\b1\s+both\s*;/)
   })
 
   it('scopes every selector and every token to the dashboard root', () => {

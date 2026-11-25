@@ -452,6 +452,9 @@ function showPage(name, focusReportType = false) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg  = document.getElementById('page-' + name);
   const inReportCenter = REPORT_CENTER_PAGES.includes(name);
+  window.QcEmptyState?.prepare?.(inReportCenter ? 'reports' : {
+    'sales-schedule':'schedule', records:'inspection', review:'review', 'inspection-summary':'summary',
+  }[name]);
   const navPage = inReportCenter ? 'report-center' : name;
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
@@ -1878,7 +1881,8 @@ async function delPartner(type, name) {
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   if (!confirm('确认从名单删除' + label + '「' + name + '」？\n（不影响已有的验货记录；若历史记录里用过该名称，下拉候选中仍可能出现）')) return;
   const nextList = _loadPartners().filter(p => !(p.type === type && p.name === name));
-  if (window.__QC_BACKEND_OK === true && typeof window.__QC_SAVE_PARTNERS === 'function') {
+  if (window.__QC_NEXUS) {
+    if (typeof window.__QC_SAVE_PARTNERS !== 'function') { showToast('尚未连接服务器，请刷新后重试', 'error'); return; }
     const res = await window.__QC_SAVE_PARTNERS(nextList);
     if (!res.ok) { showToast(res.detail || '删除失败，当前账号可能无删除权限', 'error'); return; }
     _partners = nextList;
@@ -3561,7 +3565,7 @@ function renderDefectLibPage() {
     <table style="table-layout:fixed;width:100%">
       <colgroup>
         <col style="width:110px"/><col style="width:90px"/><col style="width:100px"/>
-        <col style="width:auto"/><col style="width:70px"/><col style="width:210px"/>
+        <col style="width:auto"/><col style="width:70px"/><col style="width:${canDel ? 210 : 170}px"/>
       </colgroup>
       <thead><tr>
         <th style="text-align:left">描述名称</th>
@@ -3715,7 +3719,8 @@ async function _deleteDefLibItem(idx) {
   if (!lib[idx]) return;
   if (!confirm(`确认删除不良描述「${lib[idx].name}」？\n若该词条已被历史验货引用，系统将拦截并提示改用「停用」。`)) return;
   const nextLib = lib.filter((_, i) => i !== idx);
-  if (window.__QC_BACKEND_OK === true && typeof window.__QC_SAVE_DEFECTS === 'function') {
+  if (window.__QC_NEXUS) {
+    if (typeof window.__QC_SAVE_DEFECTS !== 'function') { showToast('尚未连接服务器，请刷新后重试', 'error'); return; }
     const res = await window.__QC_SAVE_DEFECTS(nextLib);
     if (!res.ok) { showToast(res.detail || '删除失败，如已被历史引用请改用「停用」', 'error'); return; }
     (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(_DEFECT_LIB_KEY, JSON.stringify(nextLib));

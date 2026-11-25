@@ -230,7 +230,12 @@ describe('shared component defaults stay unchanged', () => {
     expect(wrapper.find('.portal-matrix').exists()).toBe(false)
     expect(wrapper.find('.portal-section').exists()).toBe(false)
     expect(wrapper.find('.portal-matrix__note').exists()).toBe(false)
-    expect(wrapper.get('.grid').classes()).toContain('grid-cols-[1fr_repeat(3,56px)]')
+    const matrix = wrapper.get('.grid')
+    for (const label of ['角色', '查看', '编辑', '审批']) expect(matrix.text()).toContain(label)
+    const rows = departmentModuleRegistry.accounting.permissionRows
+    for (const row of rows) expect(matrix.text()).toContain(row.role)
+    expect(matrix.findAll('svg')).toHaveLength(rows.reduce((count, row) =>
+      count + Number(row.view) + Number(row.edit) + Number(row.approve), 0))
     wrapper.unmount()
   })
 

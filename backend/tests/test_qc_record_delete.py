@@ -18,6 +18,7 @@ ALL_FACTORIES = ("huakang-a", "huakang-b", "huakang-c", "huakang-d", "huadeng", 
 
 @pytest.fixture(autouse=True)
 def isolated_store(monkeypatch, tmp_path):
+    monkeypatch.setenv("QC_RECORD_ADMIN_BOOTSTRAP_SECRET", "QcFixtureOnly-2026")
     monkeypatch.setenv("QC_DEPARTMENT_DATA_DIR", str(tmp_path / "qc-companies"))
     monkeypatch.setenv("QC_DOSSIER_ENABLED", "false")
     import test_molding_sample_api
@@ -83,7 +84,7 @@ def make_history_xlsx(year=2025, count=3):
 
 
 def login_qc_test(client):
-    res = client.post("/api/auth/login", json={"username": "QC_test", "password": "ok"})
+    res = client.post("/api/auth/login", json={"username": "QC_test", "password": "QcFixtureOnly-2026"})
     assert res.status_code == 200, res.text
     return res.json()
 
@@ -128,7 +129,8 @@ def test_qc_test_seeded_without_default_accounts_across_all_six_factories(monkey
     monkeypatch.setenv("AUTHZ_MODE", authz_mode)
     from test_auth_api import make_client as make_auth_client
 
-    with make_auth_client(monkeypatch, SEED_DEFAULT_ACCOUNTS="false", AUTHZ_MODE=authz_mode) as client:
+    with make_auth_client(monkeypatch, SEED_DEFAULT_ACCOUNTS="false", AUTHZ_MODE=authz_mode,
+                          IAM_IDENTITY_WRITES_ENABLED=str(authz_mode == "enforce").lower()) as client:
         install_stateful_upstream(monkeypatch)
         profile = login_qc_test(client)
         assert profile["username"] == "QC_test"
@@ -150,6 +152,46 @@ def test_qc_test_seeded_without_default_accounts_across_all_six_factories(monkey
             assert ctx["user"]["perms"]["import"]["m"] == 1
 
 
+def test_upgrade_repairs_missing_binding_and_revokes_old_admin_frame(monkeypatch):
+    from test_auth_api import make_client as make_auth_client
+    with make_auth_client(monkeypatch, AUTHZ_MODE="enforce", IAM_IDENTITY_WRITES_ENABLED="true") as client:
+        from app import db as database
+        from app.models import auth as models
+        from app.services import auth
+        install_stateful_upstream(monkeypatch)
+        login_as(client, "admin")
+        old_url = frame_base(client)
+        qc_id = auth.QC_RECORD_ADMIN_USER_ID
+        binding_id = f"{qc_id}:qc_record_admin:huaxing:qc"
+        with database.SessionLocal() as db:
+            old_revision = db.get(models.AuthUserAuthorizationRevision, "user-admin").revision
+            db.delete(db.get(models.AuthRoleBindingMetadata, binding_id))
+            db.delete(db.get(models.AuthUserRole, binding_id))
+            db.get(models.EmployeeProfile, qc_id).identity_mode = "v2"
+            db.add(models.AuthRolePermission(id="admin:perm-qc_inspection-record_delete",
+                role_id="admin", permission_id="perm-qc_inspection-record_delete"))
+            db.commit()
+        monkeypatch.setattr(auth.settings, "seed_default_accounts", False)
+        database.init_db()
+        assert client.get(old_url + "nexus-context.js").status_code == 409
+        assert read_ui_context(client, frame_base(client))["deleteAllowed"] is False
+        login_qc_test(client)
+        for factory in ALL_FACTORIES:
+            assert read_ui_context(client, frame_base(client, factory))["deleteAllowed"] is True
+        with database.SessionLocal() as db:
+            assert db.get(models.AuthUserAuthorizationRevision, "user-admin").revision == old_revision + 1
+            qc = db.get(models.AuthUser, qc_id)
+            qc.status = "suspended"
+            qc.password_salt, qc.password_hash = auth.make_password_hash("changed-in-IAM")
+            saved_hash = qc.password_hash
+            db.commit()
+        database.init_db()
+        with database.SessionLocal() as db:
+            assert db.get(models.AuthUserAuthorizationRevision, "user-admin").revision == old_revision + 1
+            qc = db.get(models.AuthUser, qc_id)
+            assert qc.password_hash == saved_hash and qc.status == "suspended"
+
+
 def test_ordinary_qc_accounts_have_no_delete_permission_and_get_403(monkeypatch):
     with make_client(monkeypatch) as client:
         install_stateful_upstream(
@@ -158,7 +200,7 @@ def test_ordinary_qc_accounts_have_no_delete_permission_and_get_403(monkeypatch)
             defect_lib=[{"name": "刮花", "category": "外观/质量", "defaultLevel": "MAJ 1.0", "keywords": [], "enabled": True}],
             partners=[{"type": "supplier", "name": "天一"}],
         )
-        for account in ("qc_inspector", "qc_supervisor"):
+        for account in ("qc_inspector", "qc_supervisor", "admin"):
             login_as(client, account)
             base = frame_base(client, "huaxing")
             ctx = read_ui_context(client, base)
@@ -184,6 +226,8 @@ def test_ordinary_qc_accounts_have_no_delete_permission_and_get_403(monkeypatch)
             assert client.post(base + "api/records/replace", json={"records": []}).status_code == 403
             assert client.post(base + "api/reference-data/clear", json={}).status_code == 403
             assert client.post(base + "api/records", json={"records": [], "deletedIds": [10]}).status_code == 403
+            assert client.post(base + "api/defects", json={"defectLib": []}).status_code == 403
+            assert client.post(base + "api/partners", json={"partners": []}).status_code == 403
 
             if account == "qc_supervisor":
                 # Supervisor can edit/toggle/add defects and add partners, but CANNOT delete them.
@@ -206,6 +250,29 @@ def test_ordinary_qc_accounts_have_no_delete_permission_and_get_403(monkeypatch)
                     base + "api/partners",
                     json={"partners": [{"type": "supplier", "name": "天一"}]},
                 ).status_code == 403
+
+
+@pytest.mark.parametrize("mode", ["legacy", "shadow", "enforce"])
+def test_delete_is_not_delegable_even_with_grants_and_overrides(monkeypatch, mode):
+    with make_client(monkeypatch) as client:
+        from dataclasses import replace
+        from app import db as database
+        from app.models.auth import AuthUser
+        from app.services import auth
+        monkeypatch.setattr(auth.settings, "authz_mode", mode)
+        with database.SessionLocal() as db:
+            qc = auth.build_auth_context(db, db.get(AuthUser, auth.QC_RECORD_ADMIN_USER_ID))
+            admin = auth.build_auth_context(db, db.get(AuthUser, "user-admin"))
+        code = auth.QC_RECORD_DELETE
+        override = auth.AuthOverrideContext(id="test", permission_code=code, factory_id="*",
+                                            department="*", effect="allow", valid_from="", valid_until="", source_type="test")
+        for other in (replace(qc, id="another-account"), replace(qc, username="other-name"),
+                      replace(admin, grants=admin.grants + qc.grants, overrides=(override,)),
+                      replace(qc, grants=admin.grants, overrides=(override,))):
+            assert not auth.can(other, code, "huaxing", "qc")
+            assert not auth.has_permission_in_scope(other, code, "huaxing", "qc")
+        assert not auth.can(qc, code, "*", "qc")
+        assert not auth.can(qc, code, "huaxing", "sales")
 
 
 def test_workbench_delete_covers_blank_draft_workflow_and_legacy_without_touching_sales_order(monkeypatch):

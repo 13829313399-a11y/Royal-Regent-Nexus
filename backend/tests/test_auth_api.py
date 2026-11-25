@@ -98,6 +98,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
         assert me["display_name"] == "系统管理员"
         assert "系统管理员" in me["roles"]
         assert "system:user_manage" in me["permissions"]
+        assert "qc_inspection:record_delete" not in me["permissions"]
         assert "*" in me["factory_scopes"]
         assert me["authorization_version"] == 1
         assert me["profile"]["confirmation_status"] == "needs_review"
@@ -417,7 +418,7 @@ def test_only_admin_default_account_is_seeded_and_trial_accounts_are_retired(mon
         auth_models = importlib.import_module("app.models.auth")
         with db_module.SessionLocal() as db:
             active_users = db.query(auth_models.AuthUser).filter(auth_models.AuthUser.status == "active").all()
-            assert {user.username for user in active_users} == {"admin", "QC_test"}
+            assert {user.username for user in active_users} == {"admin"}
 
 
 def test_default_trial_login_self_heals_missing_seeded_user(monkeypatch):

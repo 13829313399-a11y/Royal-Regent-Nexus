@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import { useControlFeedback } from '@/features/route-motion/useControlFeedback'
+import { useLocalMotion } from '@/features/route-motion/useLocalMotion'
 import { BookOpen, X } from '@lucide/vue'
 import {
   DialogClose, DialogContent, DialogDescription, DialogOverlay, DialogPortal,
@@ -6,17 +9,29 @@ import {
 } from 'reka-ui'
 import { Button } from '@/components/ui/button'
 
-defineProps<{
+const props = defineProps<{
+  spatial?: boolean
   title: string
   description: string
   steps: { title: string; description: string }[]
   tips: { title: string; description: string }[]
 }>()
+const mode = useLocalMotion()
+const feedback = useControlFeedback(mode)
+const edge = ref<'left' | 'right'>('left')
+let trigger: HTMLElement | null = null
+function rememberTrigger(event: MouseEvent) {
+  trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (props.spatial && trigger) {
+    const box = trigger.getBoundingClientRect()
+    edge.value = box.left + box.width / 2 > innerWidth / 2 ? 'right' : 'left'
+  }
+}
 </script>
 
 <template>
   <DialogRoot>
-    <DialogTrigger as-child>
+    <DialogTrigger as-child @click.capture="rememberTrigger">
       <slot name="trigger">
         <Button type="button" variant="outline" size="sm">
           <BookOpen class="size-4" aria-hidden="true" />
@@ -25,8 +40,8 @@ defineProps<{
       </slot>
     </DialogTrigger>
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-[100] bg-slate-950/40" />
-      <DialogContent class="fixed left-1/2 top-1/2 z-[101] flex max-h-[85dvh] w-[calc(100%-1.5rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-900 shadow-xl">
+      <DialogOverlay :data-rr-local-backdrop="spatial ? mode : undefined" class="fixed inset-0 z-[100] bg-slate-950/40" />
+      <DialogContent @close-auto-focus="spatial && feedback.restore(trigger, edge)" :data-rr-local-panel="spatial ? mode : undefined" :data-rr-edge="edge" class="fixed left-1/2 top-1/2 z-[101] flex max-h-[85dvh] w-[calc(100%-1.5rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-900 shadow-xl">
         <header class="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
           <div>
             <DialogTitle class="text-lg font-bold">{{ title }} · 使用教程</DialogTitle>

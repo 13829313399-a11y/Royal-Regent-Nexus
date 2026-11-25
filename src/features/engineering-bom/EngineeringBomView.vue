@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
+import { PackageCheck } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -119,7 +120,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload',
 
 <template>
   <main class="engineering-space space-y-5">
-    <PageHeader title="工程 BOM" eyebrow="华康 C · 工程部" description="维护物料、工程用量和工序依据，保存每次审核版本。">
+    <PageHeader :motion-icon="PackageCheck" title="工程 BOM" eyebrow="华康 C · 工程部" description="维护物料、工程用量和工序依据，保存每次审核版本。">
       <template #actions><Button variant="outline" :disabled="loading || locked || dirty" @click="load">刷新资料</Button></template>
     </PageHeader>
     <p v-if="route.query.factory !== 'huakang-c'" role="status">请在华康 C 工程部打开本工作区。</p>

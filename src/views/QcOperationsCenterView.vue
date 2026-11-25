@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { ClipboardCheck } from '@lucide/vue'
+import { vSpatialGlyph } from '@/features/route-motion/spatialAnchors'
 import { Button } from '@/components/ui/button'
 import { factoryContexts, isFactoryContextId, productionFactoryContextIds, type FactoryContextId } from '@/data/enterpriseMock'
 import { http, getApiErrorMessage } from '@/lib/http'
@@ -324,10 +326,13 @@ watch(frame, scheduleViewport, { flush: 'post' })
 </script>
 
 <template>
-  <main ref="host" class="qc-department-host" :style="viewportStyle">
+  <main ref="host" data-rr-motion-frame-host class="qc-department-host" :style="viewportStyle">
     <header class="qc-host-header flex flex-wrap items-center justify-between gap-2 border-b bg-white px-4 py-2 text-slate-900">
       <RouterLink :to="{ path: '/modules/qc', query: { factory: contextId } }" class="text-sm font-semibold text-teal-700">返回 QC 模块中心</RouterLink>
-      <h1 class="text-sm font-semibold">{{ factoryName }} · QC 验货工作台</h1>
+      <h1 class="rr-workspace-heading text-sm font-semibold" data-rr-motion-target="surface" data-route-motion-anchor>
+        <span v-spatial-glyph="ClipboardCheck" class="rr-workspace-heading__icon" data-rr-motion-target="icon" aria-hidden="true"><ClipboardCheck :size="16" /></span>
+        <span data-rr-motion-label>{{ factoryName }} · QC 验货工作台</span>
+      </h1>
       <div class="flex flex-wrap items-center gap-2">
         <label class="qc-host-factory">Nexus 厂区
           <select aria-label="Nexus 厂区" :value="contextId" :disabled="switching" @change="onSelect">

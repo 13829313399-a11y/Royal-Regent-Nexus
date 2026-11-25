@@ -6,7 +6,7 @@
 
 Chrome155、本地管理员、1440×900为主；原始与解析厂区分别记录在表中。30个目录“出现位置”已逐一通过真实可见控件进入并检查最终URL/标题及装饰清理：华康A26项，华康C4项。同一业务模块出现在不同部门时分别计数，不代表30个独立业务系统。
 
-此表入口为部门首页 ModuleCard；桌面/移动 HomeModulePreview、SidebarNav、DepartmentTabs的代表交互见 [ACCEPTANCE.md](./ACCEPTANCE.md)。普通与fullPage统一首屏所有者为共享宿主：丰富模式可有来源图标+主体淡入，缺锚点只淡入，简约只淡入，关闭/减少动态静默。UV、3D 在此入口抑制本地首屏reveal，局部导航仍归业务模块。
+此表入口为部门首页 ModuleCard；桌面/移动 HomeModulePreview、SidebarNav、DepartmentTabs的代表交互见 [ACCEPTANCE.md](../../archive/completed/frontend/module-transitions/ACCEPTANCE.md)。普通与fullPage统一首屏所有者为共享宿主：丰富模式可有来源图标+主体淡入，缺锚点只淡入，简约只淡入，关闭/减少动态静默。UV、3D 在此入口抑制本地首屏reveal，局部导航仍归业务模块。
 
 | 序号 | sourceHome | catalogEntry | raw/resolved factory | 实际最终URL | routeName / motionIdentity | surfaceKind | 浏览器结论 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
