@@ -130,12 +130,15 @@ watch(activeDepartmentId, () => {
       :class="['portal-tab', { 'portal-tab--current': department.id === activeDepartmentId }]"
       class="min-w-24"
       :data-department-id="department.id"
+      data-rr-motion-source="surface"
       :data-route-entry-id="`department:${department.id}`"
       :data-portal-current="department.id === activeDepartmentId ? 'true' : 'false'"
       :aria-current="department.id === activeDepartmentId ? 'page' : undefined"
       @click="selectDepartment(department.id as ModuleDepartmentId, $event)"
     >
-      <component :is="homePrismPresentation[department.id as ModuleDepartmentId].icon" v-if="homeExperience" :size="18" aria-hidden="true" />
+      <span v-if="homeExperience" data-route-entry-icon aria-hidden="true" class="inline-flex shrink-0">
+        <component :is="homePrismPresentation[department.id as ModuleDepartmentId].icon" :size="18" aria-hidden="true" />
+      </span>
       {{ department.name }}
     </Button>
   </div>

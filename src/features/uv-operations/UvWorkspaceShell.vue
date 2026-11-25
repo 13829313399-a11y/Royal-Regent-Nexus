@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, CircleHelp, Menu, RefreshCw, WifiOff, X } from '@lucide/vue'
+import { ArrowLeft, CircleHelp, Menu, Printer, RefreshCw, WifiOff, X } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import { UV_BASE, displayTime } from './contracts'
 import { provideUvWorkspace } from './workspace'
@@ -37,7 +37,7 @@ onBeforeUnmount(()=>{menuVersion++;menu.value?.close()})
 </script>
 <template>
   <div class="uv-workspace" :data-uv-motion="motion.attribute.value" data-yl-help="uv-operations.overview">
-    <header class="uv-topbar"><RouterLink class="uv-brand" :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><UvBrandLogo/><strong>Royal Regent Nexus</strong></RouterLink><span class="uv-topbar-divider"/><span class="uv-factory">华康 A <span>/ 生产部</span></span><h1 data-route-motion-anchor>UV打印管理</h1><div class="uv-topbar-end"><span v-if="w.meta.value?.data_mode==='synthetic'" class="uv-badge synthetic">合成验收 · 非现场数据</span><span class="uv-avatar">{{auth.currentUser?.display_name?.slice(0,1)??'用'}}</span><span class="uv-user-name">{{auth.currentUser?.display_name}}</span></div></header>
+<header class="uv-topbar"><RouterLink class="uv-brand" :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><UvBrandLogo/><strong>Royal Regent Nexus</strong></RouterLink><span class="uv-topbar-divider"/><span class="uv-factory">华康 A <span>/ 生产部</span></span><div data-rr-motion-target="surface" class="uv-route-heading"><span data-rr-motion-target="icon" aria-hidden="true" class="uv-route-heading__icon"><Printer :size="19" /></span><h1 data-route-motion-anchor>UV打印管理</h1></div><div class="uv-topbar-end"><span v-if="w.meta.value?.data_mode==='synthetic'" class="uv-badge synthetic">合成验收 · 非现场数据</span><span class="uv-avatar">{{auth.currentUser?.display_name?.slice(0,1)??'用'}}</span><span class="uv-user-name">{{auth.currentUser?.display_name}}</span></div></header>
     <aside class="uv-nav"><nav ref="nav" class="uv-indicator-host" aria-label="UV 工作区导航"><span class="uv-active-plate" :style="indicator.style" aria-hidden="true"/><RouterLink v-for="item in navigation" :key="item.path" :aria-label="item.title" :title="item.title" :to="{path:UV_BASE+'/'+item.path,query:{factory:'huakang-a'}}" :class="{active:active===item.path}"><component :is="item.icon" :size="20" aria-hidden="true"/><span>{{item.title}}</span></RouterLink></nav><div class="uv-nav-bottom"><RouterLink :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><ArrowLeft :size="18" aria-hidden="true"/>返回生产部</RouterLink><div class="uv-nav-hint"><CircleHelp :size="16" aria-hidden="true"/><span>现场采集只读<br>产量以确认核数为准</span></div></div></aside>
     <main class="uv-main" :class="{'has-passport':w.selectedTaskId.value}" tabindex="-1" data-uv-focus-fallback>
       <p v-if="assistantContext.sourceError.value" class="uv-error" role="alert">{{assistantContext.sourceError.value}} <button class="uv-link" @click="assistantContext.removeSource">关闭此来源</button></p>

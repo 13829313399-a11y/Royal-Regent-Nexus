@@ -1,6 +1,9 @@
 import { shallowRef, type Component } from 'vue'
 import type { Router, RouteLocationNormalized, NavigationFailure } from 'vue-router'
 import { classifyNavigation, factoryQueryChanged, routeVisualIdentity, type MotionKind } from './classifyNavigation'
+import type { AnchorSnapshot } from './spatialAnchors'
+import type { MotionViewport } from './spatialGeometry'
+import { resolveMotionDestination } from './useModuleEntryMotion'
 
 export interface EntryOrigin {
   icon: Component
@@ -15,6 +18,8 @@ export interface EntryOrigin {
   scroll: [number, number, number, number]
   expectedId: string
   expectedPath: string
+  resolvedPath?: string
+  spatial?: { anchors: AnchorSnapshot; view: MotionViewport; captured: number; revision: number; compact?: boolean }
   context: string
 }
 export interface MotionCommit {
@@ -24,18 +29,25 @@ export interface MotionCommit {
   kind: MotionKind
   origin: EntryOrigin | null
   context: string
+  traversalDelta?: number
+  silentRedirect?: boolean
 }
 
 export function createRouteMotionNavigation(router: Router) {
   let sequence = 0
   let queued: { token: number; origin: EntryOrigin } | null = null
   const attempts = new WeakMap<RouteLocationNormalized, number>()
+  const traversals = new WeakMap<RouteLocationNormalized, number>()
+  let nativeTraversal: { from: string; to: string; delta: number } | null = null
+  const removeTraversal = router.options.history.listen((to, from, info) => {
+    nativeTraversal = { from, to, delta: info.delta }
+  })
   const listeners = new Set<(commit: MotionCommit | null) => void>()
   let context = () => ''
   let enabled = () => false
   const entry = shallowRef<MotionCommit | null>(null)
   const emit = (value: MotionCommit | null) => { for (const listener of listeners) listener(value) }
-  function cancelVisuals() { sequence++; queued = null; emit(null) }
+  function cancelVisuals() { sequence++; queued = null; nativeTraversal = null; emit(null) }
   function invalidate() { cancelVisuals(); entry.value = null }
   function recordIntent(origin: EntryOrigin) {
     cancelVisuals()
@@ -45,10 +57,16 @@ export function createRouteMotionNavigation(router: Router) {
   function matches(to: RouteLocationNormalized, origin: EntryOrigin) {
     return to.fullPath === origin.expectedPath || to.redirectedFrom?.fullPath === origin.expectedPath
   }
-  const removeBefore = router.beforeEach(to => {
+  const removeBefore = router.beforeEach((to, from) => {
+    if (nativeTraversal?.to === to.fullPath && nativeTraversal.from === from.fullPath) {
+      traversals.set(to, nativeTraversal.delta)
+    }
+    nativeTraversal = null
     if (queued && matches(to, queued.origin) && queued.origin.context === context()) {
       attempts.set(to, queued.token)
-      emit(null)
+      // V2's recordIntent already cancelled the previous generation. Let the new
+      // source press paint while guards run. A successful commit still replaces it.
+      if (!queued.origin.resolvedPath) emit(null)
     } else {
       queued = null
       attempts.set(to, ++sequence)
@@ -66,10 +84,16 @@ export function createRouteMotionNavigation(router: Router) {
     queued = null
     if (failure) { emit(null); return }
     const kind = classifyNavigation(to, from)
+    // Route-record aliases/redirects have a known canonical destination. A guard
+    // sending the user elsewhere (including forbidden → dashboard) has no success flight.
+    const requested = to.redirectedFrom
+    const silentRedirect = !!requested && (!routeVisualIdentity(requested).eligible
+      || resolveMotionDestination(router, requested.fullPath).fullPath !== to.fullPath)
     if (factoryQueryChanged(to, from) || !routeVisualIdentity(to).eligible) entry.value = null
     const commit: MotionCommit = {
-      token, to, from, kind, context: context(),
-      origin: origin?.expectedId === routeVisualIdentity(to).id && origin.context === context() ? origin : null,
+      token, to, from, kind, context: context(), traversalDelta: traversals.get(to), silentRedirect,
+      origin: !silentRedirect && origin?.expectedId === routeVisualIdentity(to).id && origin.context === context()
+        && (!origin.resolvedPath || (origin.homePath === from.fullPath && origin.resolvedPath === to.fullPath)) ? origin : null,
     }
     // Persist the initial ownership through delayed API rendering. A same-family
     // query refresh does not turn a late first page into another entrance.
@@ -87,7 +111,7 @@ export function createRouteMotionNavigation(router: Router) {
       context = readContext; enabled = readEnabled; listeners.add(listener)
       return () => { listeners.delete(listener); context = () => ''; enabled = () => false; invalidate() }
     },
-    dispose() { invalidate(); removeBefore(); removeAfter(); removeError(); listeners.clear() },
+    dispose() { invalidate(); removeTraversal(); removeBefore(); removeAfter(); removeError(); listeners.clear() },
   }
 }
 export type RouteMotionNavigation = ReturnType<typeof createRouteMotionNavigation>
