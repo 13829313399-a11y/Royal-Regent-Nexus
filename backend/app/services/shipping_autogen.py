@@ -1,6 +1,7 @@
 """Auto-generate SO / truck / supplement sheets when an email task is confirmed."""
 import json
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -87,17 +88,27 @@ def _filename(module: str, so_number: str, header: dict | None = None) -> str:
     return f'{suffix[0]}_{so_number or "未命名"}{suffix[1]}'
 
 
-def _supplement_code_filename(header: dict, lines: list) -> str:
-    codes: list[str] = []
-    for line in lines if isinstance(lines, list) else []:
-        code = str((line or {}).get('itemNo') or (line or {}).get('filingCode') or '').strip()
-        if code and code not in codes:
-            codes.append(code)
-    if not codes:
-        code = str(header.get('filingCode') or header.get('itemNo') or '').strip()
-        if code:
-            codes.append(code)
-    return f"{'_'.join(codes)}.xlsx" if codes else ''
+def filing_code_filename(
+    header: dict, lines: list, ext: str = '.xlsx', *,
+    db=None, factory_id: str = '', task_id: str = '', index: dict | None = None,
+) -> str:
+    """Build a filename solely from resolved unique filing/product codes."""
+    codes = shipping_loading.resolve_filing_codes(
+        db, factory_id, header or {}, lines or [], task_id=task_id, index=index,
+    )
+    return f"{'_'.join(codes)}{ext}" if codes else ''
+
+
+def _resolved_doc_filename(
+    module: str, raw_filename: str, header: dict, lines: list, *,
+    db=None, factory_id: str = '', task_id: str = '', index: dict | None = None,
+) -> str:
+    ext = Path(raw_filename or '').suffix or (
+        '.xls' if module in {'so_dk', 'truck_buzzbee', 'truck_export'} else '.xlsx'
+    )
+    return filing_code_filename(
+        header, lines, ext, db=db, factory_id=factory_id, task_id=task_id, index=index,
+    ) or raw_filename
 
 
 def _render_content(module: str, draft: dict) -> bytes:
@@ -157,7 +168,12 @@ def generate_for_task(db, user: AuthContext, factory_id: str, task_id: str,
             draft = _draft(db, user, factory_id, task_id, module)
         except Exception:  # noqa: BLE001 - one template must not block the others
             continue
-        filename = _filename(module, task.so_number, draft.get('header') or {})
+        header = draft.get('header') or {}
+        lines = draft.get('lines') or []
+        filename = _resolved_doc_filename(
+            module, _filename(module, task.so_number, header), header, lines,
+            db=db, factory_id=factory_id, task_id=task_id,
+        )
         if existing is not None:
             existing.filename = filename
             existing.header_json = json.dumps(draft.get('header') or {}, ensure_ascii=False)
@@ -203,6 +219,7 @@ def list_docs(db, user: AuthContext, factory_id: str, module_prefix: str = '') -
     elif module_prefix:
         query = query.where(ShippingGeneratedDoc.module == module_prefix)
     rows = db.scalars(query.order_by(ShippingGeneratedDoc.created_at.desc()).limit(100)).all()
+    index = shipping_loading.build_filing_code_index(db, factory_id)
     result = []
     for row in rows:
         try:
@@ -214,11 +231,12 @@ def list_docs(db, user: AuthContext, factory_id: str, module_prefix: str = '') -
         if not brand and isinstance(lines, list):
             brand = next((str((line or {}).get('brand') or '') for line in lines if (line or {}).get('brand')), '')
         if not brand and row.task_id:
-            task = db.get(ShippingTask, row.task_id)
+            task = index['task_by_id'].get(row.task_id) or db.get(ShippingTask, row.task_id)
             brand = str(task.customer or '') if task is not None else ''
-        filename = row.filename
-        if row.module == 'supplement':
-            filename = _supplement_code_filename(header, lines) or filename
+        filename = _resolved_doc_filename(
+            row.module, row.filename, header, lines,
+            db=db, factory_id=factory_id, task_id=row.task_id, index=index,
+        )
         result.append({
             'id': row.id, 'module': row.module, 'filename': filename,
             'email_name': _email_name(db, row.task_id),
@@ -238,8 +256,12 @@ def get_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
         'header': json.loads(row.header_json or '{}'),
         'lines': json.loads(row.lines_json or '[]'),
     })
+    filename = _resolved_doc_filename(
+        row.module, row.filename, payload['header'], payload['lines'],
+        db=db, factory_id=factory_id, task_id=row.task_id,
+    )
     return {
-        'id': row.id, 'module': row.module, 'filename': row.filename, 'task_id': row.task_id,
+        'id': row.id, 'module': row.module, 'filename': filename, 'task_id': row.task_id,
         'email_name': _email_name(db, row.task_id),
         'created_at': row.created_at,
         'header': payload['header'],
@@ -255,15 +277,17 @@ def update_doc(db, user: AuthContext, factory_id: str, doc_id: str, header: dict
         raise HTTPException(404, '生成文件不存在')
     row.header_json = json.dumps(header or {}, ensure_ascii=False)
     row.lines_json = json.dumps(lines or [], ensure_ascii=False)
-    if row.module == 'so_dk':
-        row.filename = shipping_loading.sheet_filename(header or {})
-    elif row.module == 'so_zuru':
-        row.filename = shipping_loading.sheet_xlsx_filename(header or {})
+    row.filename = _resolved_doc_filename(
+        row.module, row.filename, header or {}, lines or [],
+        db=db, factory_id=factory_id, task_id=row.task_id,
+    )
     db.commit()
     return get_doc(db, user, factory_id, doc_id)
 
 
-def download(db, user: AuthContext, factory_id: str, doc_id: str) -> tuple[str, bytes]:
+def download_with_path(
+    db, user: AuthContext, factory_id: str, doc_id: str, *, archive: bool = True,
+) -> tuple[str, bytes, str]:
     from app.services.shipping_mail_service import authorize
     authorize(user, factory_id, 'read')
     doc = db.scalar(select(ShippingGeneratedDoc).where(
@@ -287,21 +311,29 @@ def download(db, user: AuthContext, factory_id: str, doc_id: str) -> tuple[str, 
         content = shipping_bulk_truck.render_bulk_xlsx(payload)
     else:
         content = shipping_supplement.render_supplement_xlsx(payload)
-    filename = doc.filename
-    if doc.module == 'supplement':
-        filename = _supplement_code_filename(payload['header'], payload['lines']) or filename
-    try:
-        shipping_exports.save_import_file(doc.module, filename, content)
-    except Exception:  # noqa: BLE001 - the drop-folder copy is best effort
-        pass
+    filename = _resolved_doc_filename(
+        doc.module, doc.filename, payload['header'], payload['lines'],
+        db=db, factory_id=factory_id, task_id=doc.task_id,
+    )
+    saved_path = ''
+    if archive:
+        try:
+            saved_path = shipping_exports.save_import_file(doc.module, filename, content)
+        except Exception:  # noqa: BLE001 - the drop-folder copy is best effort
+            saved_path = ''
+    return filename, content, saved_path
+
+
+def download(db, user: AuthContext, factory_id: str, doc_id: str, *, archive: bool = True) -> tuple[str, bytes]:
+    filename, content, _ = download_with_path(db, user, factory_id, doc_id, archive=archive)
     return filename, content
 
 
 def open_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
-    from app.services.file_open import open_bytes
-    filename, content = download(db, user, factory_id, doc_id)
+    from app.services.file_open import open_bytes, workbook_preview
+    filename, content = download(db, user, factory_id, doc_id, archive=False)
     path = open_bytes(filename, content)
-    return {'opened': True, 'path': path}
+    return {'opened': True, 'path': path, 'filename': filename, 'sheets': workbook_preview(filename, content)}
 
 
 def delete_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:

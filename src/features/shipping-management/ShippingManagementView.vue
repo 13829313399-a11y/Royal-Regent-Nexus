@@ -223,7 +223,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
             <ShippingBillManagementPanel />
           </section>
           <section v-else-if="activePage === 'pallets'" aria-label="卡板统计">
-            <ShippingPalletStatsPanel />
+            <ShippingPalletStatsPanel :factory-id="factoryId" @notify="notify" />
           </section>
           <section v-else-if="activePage === 'codes'" aria-label="货号映射">
             <ShippingCodeMappingPanel :factory-id="factoryId" @notify="notify" />

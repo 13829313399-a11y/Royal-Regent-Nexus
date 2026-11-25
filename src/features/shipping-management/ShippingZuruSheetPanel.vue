@@ -16,6 +16,7 @@ import {
   type ZuruLine,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
+import { filingCodeFilename } from './contracts'
 
 const props = defineProps<{ factoryId: string; initialDraft?: ZuruDraft | null }>()
 const emit = defineEmits<{ notify: [message: string] }>()
@@ -226,7 +227,7 @@ async function download() {
     const carrier = transport.endsWith('运输') ? transport : `${transport}运输`
     const port = draft.value.header.originPort || '盐田'
     const so = String(draft.value.header.soNo || '')
-    link.download = `${carrier}出${port}${so ? `_${so}` : ''}.xlsx`
+    link.download = filingCodeFilename(draft.value.lines, '.xlsx', `${carrier}出${port}${so ? `_${so}` : ''}`)
     link.click()
     URL.revokeObjectURL(url)
     emit('notify', `柜货单 ${draft.value.header.number} 已下载。`)

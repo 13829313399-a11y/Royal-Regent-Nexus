@@ -96,7 +96,7 @@ describe('shipping order management workspace', () => {
 
     await openMenu(wrapper, '工厂排期单')
     expect(wrapper.text()).toContain('工厂货期排单')
-    expect(rows(wrapper)).toHaveLength(10)
+    expect(rows(wrapper)).toHaveLength(12)
 
     await openMenu(wrapper, '货号映射')
     expect(wrapper.text()).toContain('货号映射管理')
@@ -121,16 +121,16 @@ describe('shipping order management workspace', () => {
 
     expect(wrapper.text()).toContain('货号映射管理')
     expect(wrapper.text()).toContain('12')
-    expect(wrapper.text()).toContain('全能足球6个/箱')
+    expect(wrapper.text()).toContain('10201')
     expect(rows(wrapper)).toHaveLength(12)
     for (const column of ['每箱毛重（kg）', '每箱净重（kg）', '玩具类别', '来源', '客户', '状态']) {
       expect(wrapper.text()).toContain(column)
     }
 
-    await wrapper.get('input[aria-label="搜索货号或货名"]').setValue('10201')
+    await wrapper.get('input[aria-label="搜索合同号或货号"]').setValue('10201')
     await wrapper.findAll('button').find((button) => button.text().trim() === '搜索')!.trigger('click')
     expect(rows(wrapper)).toHaveLength(1)
-    expect(rows(wrapper)[0]!.text()).toContain('全能足球')
+    expect(rows(wrapper)[0]!.text()).toContain('10201')
 
     await wrapper.findAll('button').find((button) => button.text().trim() === '重置')!.trigger('click')
     expect(rows(wrapper)).toHaveLength(12)
@@ -150,7 +150,7 @@ describe('shipping order management workspace', () => {
     expect(wrapper.text()).toContain('船务管理')
     expect(wrapper.text()).toContain('工厂货期排单')
     expect(wrapper.text()).toContain('共 12 条')
-    expect(rows(wrapper)).toHaveLength(10)
+    expect(rows(wrapper)).toHaveLength(12)
     expect(rows(wrapper)[0]!.text()).toContain('1001')
     expect(rows(wrapper)[0]!.text()).toContain('SHZ8265013')
     expect(rows(wrapper)[0]!.text()).toContain('美国 · 洛杉矶')
@@ -229,23 +229,13 @@ describe('shipping order management workspace', () => {
     wrapper.unmount()
   })
 
-  it('paginates through the order list without row selection', async () => {
+  it('shows the full order list page without row selection', async () => {
     const { wrapper } = await mountOrders('huaxing')
-    const next = () => wrapper.get('button[aria-label="下一页"]')
-    const previous = () => wrapper.get('button[aria-label="上一页"]')
 
-    expect(wrapper.text()).toContain('第 1 / 2 页')
+    expect(wrapper.text()).toContain('第 1 / 1 页')
+    expect(rows(wrapper)).toHaveLength(12)
     expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0)
-
-    await next().trigger('click')
-    expect(rows(wrapper)).toHaveLength(2)
-    expect(rows(wrapper)[0]!.text()).toContain('1011')
-    expect(rows(wrapper)[1]!.text()).toContain('1005')
-    expect(wrapper.text()).toContain('第 2 / 2 页')
-
-    await previous().trigger('click')
-    expect(rows(wrapper)).toHaveLength(10)
-    expect(wrapper.text()).toContain('第 1 / 2 页')
+    expect(wrapper.get('button[aria-label="下一页"]').attributes('disabled')).toBeDefined()
 
     wrapper.unmount()
   })

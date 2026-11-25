@@ -150,8 +150,7 @@ function displayName(doc: GeneratedDoc) {
 }
 
 function attachmentLabel(doc: GeneratedDoc) {
-  const suffix = doc.email_name?.trim()
-  return suffix && suffix !== doc.filename ? `${doc.filename} · ${suffix}` : doc.filename
+  return doc.email_name?.trim() || doc.filename
 }
 
 function attachmentIssue(doc: GeneratedDoc) {
@@ -159,10 +158,11 @@ function attachmentIssue(doc: GeneratedDoc) {
 }
 
 function downloadName(doc: GeneratedDoc) {
-  const emailName = doc.email_name?.trim()
-  if (!emailName) return doc.filename
   const ext = doc.filename.match(/\.[^.]+$/)?.[0] || ''
-  return `${emailName}${ext}`
+  if (doc.id === selectedId.value && form.filingCode?.trim()) {
+    return `${form.filingCode.trim()}${ext}`
+  }
+  return doc.filename
 }
 
 function downloadUrl(doc: GeneratedDoc) {
@@ -348,45 +348,83 @@ function buildHeader(): Record<string, unknown> {
   }
 }
 
-async function validateScheduleImport(contractValue: string, lines: Array<Record<string, unknown>>): Promise<boolean> {
+async function resolveValidatedScheduleLines(
+  contractValue: string,
+  lines: Array<Record<string, unknown>>,
+  fallbackCode?: string,
+): Promise<Array<Record<string, unknown>> | null> {
   const contract = String(contractValue || '').trim()
   if (!contract) {
     message.value = '请先填写与厂区总排期一致的合同号再导入'
-    return false
+    return null
   }
-  const codes = [...new Set(lines.map((line) => String(line.product_code || line.filingCode || line.declareCode || '').trim()).filter(Boolean))]
-  if (!codes.length) {
-    message.value = '该文件没有备案货号/产品编号，不能从厂区总排期导入'
-    return false
-  }
+  const lineCodes = [...new Set(lines.map((line) => String(line.product_code || line.filingCode || line.declareCode || '').trim()).filter(Boolean))]
+  const fallback = String(fallbackCode || '').trim()
+  const codes = lineCodes.length ? lineCodes : (fallback ? [fallback] : [])
   try {
     const items = await searchScheduleProducts(props.factoryId, contract)
     const matched = items.filter((item) => String(item.contract_no || '').trim().toLowerCase() === contract.toLowerCase())
     if (!matched.length) {
       message.value = `合同号 ${contract} 在厂区总排期不存在，不能导入`
-      return false
+      return null
     }
-    const missing = codes.filter((code) => !matched.some((item) => String(item.product_code || '').trim() === code))
-    if (missing.length) {
-      message.value = `产品编号 ${missing.join('、')} 不属于合同号 ${contract}，不能导入`
-      return false
+    if (codes.length) {
+      const missing = codes.filter((code) => !matched.some((item) => String(item.product_code || '').trim() === code))
+      if (missing.length) {
+        message.value = `产品编号 ${missing.join('、')} 不属于合同号 ${contract}，不能导入`
+        return null
+      }
+      if (lineCodes.length) return lines
     }
-    return true
+    const scheduleItems = codes.length
+      ? matched.filter((item) => codes.includes(String(item.product_code || '').trim()))
+      : matched.filter((item) => String(item.product_code || '').trim())
+    if (!scheduleItems.length) {
+      message.value = '该文件没有备案货号/产品编号，不能从厂区总排期导入'
+      return null
+    }
+    if (!form.filingCode && scheduleItems[0]?.product_code) {
+      form.filingCode = String(scheduleItems[0].product_code)
+    }
+    return scheduleItems.map((item) => ({
+      contract: item.contract_no || contract,
+      filingCode: item.product_code,
+      declareCode: item.product_code,
+      product_code: item.product_code,
+      description: item.product_name || '',
+      name: item.product_name || '',
+      quantity: item.quantity ?? null,
+      cartons: item.cartons ?? null,
+      coefficient: item.coefficient ?? null,
+      grossWeight: item.gross_weight ?? null,
+      netWeight: item.net_weight ?? null,
+      cbm: item.cbm ?? null,
+      country: item.country || form.country || '',
+      brand: item.brand || form.brandName || form.brandNote || '',
+      so: item.so_number || form.bookingNo || form.soNo || '',
+      po: item.customer_po || form.poNo || '',
+      cartonMark: item.customer_po || form.poNo || '',
+    }))
   } catch (error) {
     message.value = `校验厂区总排期失败：${getApiErrorMessage(error)}`
-    return false
+    return null
   }
 }
 
 async function importCabinet() {
   if (!detail.value) return
   const lines = detail.value.lines ?? []
-  if (!await validateScheduleImport(form.contractNo || String(detail.value.header?.contractNo || ''), lines as Array<Record<string, unknown>>)) return
+  const resolvedLines = await resolveValidatedScheduleLines(
+    form.contractNo || String(detail.value.header?.contractNo || ''),
+    lines as Array<Record<string, unknown>>,
+    form.filingCode,
+  )
+  if (!resolvedLines) return
   emit('import-cabinet', {
     taskId: detail.value.task_id,
     filename: detail.value.filename,
     header: buildHeader(),
-    lines,
+    lines: resolvedLines,
   })
   imported.value = { ...imported.value, [detail.value.id]: true }
   window.localStorage.setItem(importedKey(detail.value.id), '1')
@@ -409,13 +447,18 @@ async function saveData() {
 async function importTruck(mode: 'buzzbee' | 'bulk') {
   if (!selectedDoc.value || !detail.value) return
   const lines = detail.value.lines ?? []
-  if (!await validateScheduleImport(form.contractNo || String(detail.value.header?.contractNo || ''), lines as Array<Record<string, unknown>>)) return
+  const resolvedLines = await resolveValidatedScheduleLines(
+    form.contractNo || String(detail.value.header?.contractNo || ''),
+    lines as Array<Record<string, unknown>>,
+    form.filingCode,
+  )
+  if (!resolvedLines) return
   emit('import-truck', {
     mode,
     taskId: detail.value.task_id,
     filename: detail.value.filename,
     header: buildHeader(),
-    lines,
+    lines: resolvedLines,
   })
   markImported(detail.value.id)
   message.value = `已把 ${detail.value.filename} 导到${mode === 'buzzbee' ? '运输公司派车' : '盐田散货W车'}。`
@@ -482,13 +525,18 @@ async function onFilingCodeChange() {
 async function importTruckDoc(doc: GeneratedDoc) {
   try {
     const data = await getGeneratedDoc(props.factoryId, doc.id)
-    if (!await validateScheduleImport(String(data.header?.contractNo || ''), (data.lines ?? []) as Array<Record<string, unknown>>)) return
+    const resolvedLines = await resolveValidatedScheduleLines(
+      String(data.header?.contractNo || ''),
+      (data.lines ?? []) as Array<Record<string, unknown>>,
+      String(data.header?.filingCode || ''),
+    )
+    if (!resolvedLines) return
     emit('import-truck', {
       mode: 'bulk',
       taskId: data.task_id,
       filename: data.filename,
       header: data.header ?? {},
-      lines: data.lines ?? [],
+      lines: resolvedLines,
     })
     markImported(data.id)
     message.value = `已把 ${doc.filename} 导入盐田散货W车。`
@@ -659,10 +707,10 @@ watch(
     <template v-if="!compact && docs.length">
       <div v-if="docs.length > 0" class="flex flex-wrap gap-2 border-b border-slate-100 px-4 py-2">
         <div v-for="doc in docs" :key="doc.id" class="inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px]" :class="doc.id === selectedId ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-400/30' : 'border-slate-200'">
-          <input type="checkbox" :aria-label="`选择 ${doc.filename}`" :checked="selectedDocIds.includes(doc.id)" @change="toggleDoc(doc.id)">
+          <input type="checkbox" :aria-label="`选择 ${attachmentLabel(doc)}`" :checked="selectedDocIds.includes(doc.id)" @change="toggleDoc(doc.id)">
           <button type="button" class="inline-flex max-w-full items-center gap-1.5" :class="doc.id === selectedId ? 'text-emerald-800' : 'text-slate-600'" @click="selectDoc(doc)">
             <span v-if="!isImported(doc) || attachmentIssue(doc)" class="size-1.5 shrink-0 rounded-full bg-rose-500"></span>
-            <span class="truncate">{{ attachmentLabel(doc) }}</span>
+            <span class="truncate" :title="doc.filename">{{ attachmentLabel(doc) }}</span>
           </button>
         </div>
       </div>

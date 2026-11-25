@@ -87,7 +87,7 @@ def _port_label(from_port: str) -> str:
 
 
 def _container_label(value: str) -> str:
-    match = re.search(r'(\d{2})\s*[xX*]?\s*(HQ|GP|HC|OT|FR|RF)', value or '', re.I)
+    match = re.search(r'(\d{2})\s*[xX*]?\s*(HQ|GP|HC|ST|OT|FR|RF)', value or '', re.I)
     if match:
         return f'{match.group(1)}{match.group(2).upper()}'
     return '40HQ'
@@ -137,6 +137,7 @@ def _line_from_item(item: dict, fields: dict) -> dict:
         'netPerCarton': _round(net_per_carton),
         'description': str(item.get('product_name') or ''),
         'department': DEPARTMENT,
+        'pallet': None,
         'cartonMark': str(item.get('customer_po') or item.get('po') or ''),
     }
 
@@ -718,6 +719,8 @@ def search_products(db, user: AuthContext, factory_id: str, query: str) -> dict:
         for item in items if isinstance(items, list) else []:
             add(item or {}, str(task.so_number or ''), str(task.customer or ''), 'schedule')
 
+    if rows:
+        return {'items': rows[:200]}
     ledger = db.scalars(select(OrderLedgerLine).where(
         OrderLedgerLine.factory_id == factory_id,
         OrderLedgerLine.status == 'active',
@@ -749,20 +752,139 @@ def search_products(db, user: AuthContext, factory_id: str, query: str) -> dict:
 def _sheet_codes(header: dict, lines: list) -> list[str]:
     codes: list[str] = []
     for line in lines if isinstance(lines, list) else []:
-        code = str((line or {}).get('filingCode') or (line or {}).get('declareCode') or '').strip()
+        code = str(
+            (line or {}).get('filingCode')
+            or (line or {}).get('declareCode')
+            or (line or {}).get('itemNo')
+            or (line or {}).get('product_code')
+            or ''
+        ).strip()
         if code and code not in codes:
             codes.append(code)
-    header_code = str(header.get('filingCode') or '').strip()
+    header_code = str(header.get('filingCode') or header.get('itemNo') or '').strip()
     if not codes and header_code:
         codes.append(header_code)
     return codes
 
 
+def _safe_json_list(raw: str | None) -> list:
+    try:
+        parsed = json.loads(raw or '[]')
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _norm_set(values: list) -> set[str]:
+    return {str(v).strip().lower() for v in values if str(v or '').strip()}
+
+
+def build_filing_code_index(db, factory_id: str) -> dict:
+    """Preload ShippingTask items and active OrderLedgerLine entries for filing-code resolution."""
+    task_by_id: dict[str, ShippingTask] = {}
+    entries: list[tuple[str, str, str, str]] = []
+    tasks = db.scalars(select(ShippingTask).where(ShippingTask.factory_id == factory_id)).all()
+    for task in tasks:
+        task_by_id[task.id] = task
+        for item in _safe_json_list(task.items_json):
+            if not isinstance(item, dict):
+                continue
+            prod = str(item.get('product_code') or item.get('filingCode') or '').strip()
+            if prod:
+                entries.append((
+                    str(task.so_number or ''),
+                    str(item.get('contract_no') or ''),
+                    str(item.get('customer_po') or ''),
+                    prod,
+                ))
+    ledger_rows = db.scalars(select(OrderLedgerLine).where(
+        OrderLedgerLine.factory_id == factory_id,
+        OrderLedgerLine.status == 'active',
+    )).all()
+    for line in ledger_rows:
+        raw_data = line.data
+        if isinstance(raw_data, str):
+            try:
+                raw_data = json.loads(raw_data)
+            except (TypeError, ValueError):
+                raw_data = {}
+        data = raw_data if isinstance(raw_data, dict) else {}
+        prod = str(line.product_no or '').strip()
+        if prod:
+            entries.append((
+                str(line.reference_no or ''),
+                str(data.get('contract_no') or ''),
+                str(data.get('po_no') or ''),
+                prod,
+            ))
+    return {'task_by_id': task_by_id, 'entries': entries}
+
+
+def resolve_filing_codes(
+    db, factory_id: str, header: dict, lines: list, *,
+    task_id: str = '', index: dict | None = None,
+) -> list[str]:
+    """Resolve filing codes from header/lines first, falling back to linked tasks and active order ledger."""
+    codes = _sheet_codes(header, lines)
+    if codes:
+        return codes
+    if db is None or not factory_id:
+        return []
+    idx = index if index is not None else build_filing_code_index(db, factory_id)
+    task_so = ''
+    if task_id and task_id in idx['task_by_id']:
+        task = idx['task_by_id'][task_id]
+        task_so = str(task.so_number or '').strip()
+        task_codes: list[str] = []
+        for item in _safe_json_list(task.items_json):
+            if not isinstance(item, dict):
+                continue
+            prod = str(item.get('product_code') or item.get('filingCode') or '').strip()
+            if prod and prod not in task_codes:
+                task_codes.append(prod)
+        if task_codes:
+            return task_codes
+
+    line_list = lines if isinstance(lines, list) else []
+    so_candidates = _norm_set([
+        header.get('soNo'), header.get('bookingNo'), task_so,
+        *[(line or {}).get('so') for line in line_list],
+        *[(line or {}).get('booking') for line in line_list],
+    ])
+    contract_candidates = _norm_set([
+        header.get('contractNo'),
+        *[(line or {}).get('contract') for line in line_list],
+        *[(line or {}).get('salesConf') for line in line_list],
+    ])
+    po_candidates = _norm_set([
+        header.get('poNo'), header.get('cartonMark'),
+        *[(line or {}).get('po') for line in line_list],
+        *[(line or {}).get('cartonMark') for line in line_list],
+    ])
+
+    matched: list[str] = []
+    for ref, contract, po, prod in idx['entries']:
+        r = ref.strip().lower()
+        c = contract.strip().lower()
+        p = po.strip().lower()
+        if (r and r in so_candidates) or (c and c in contract_candidates) or (p and p in po_candidates):
+            if prod not in matched:
+                matched.append(prod)
+    if matched:
+        return matched
+
+    for ref, _contract, _po, prod in idx['entries']:
+        r = ref.strip().lower()
+        if len(r) >= 6 and any(r in candidate for candidate in so_candidates):
+            if prod not in matched:
+                matched.append(prod)
+    return matched
+
+
 def sheet_code_filename(header: dict, lines: list) -> str:
     codes = _sheet_codes(header, lines)
     base = '_'.join(codes) if codes else 'SO出货表'
-    number = str(header.get('number') or '').strip()
-    return f'{base}_{number}.xls' if number else f'{base}.xls'
+    return f'{base}.xls'
 
 
 def _number_or_none(value):
@@ -830,12 +952,16 @@ def _sheet_variant(header: dict) -> str:
     return 'hq' if str(header.get('_variant') or '').lower() == 'hq' else 'dk'
 
 
-def _sheet_filename(header: dict, lines: list) -> str:
+def _sheet_filename(
+    header: dict, lines: list, *,
+    db=None, factory_id: str = '', task_id: str = '', index: dict | None = None,
+) -> str:
+    codes = resolve_filing_codes(db, factory_id, header, lines, task_id=task_id, index=index)
     if _sheet_variant(header) == 'hq':
-        codes = _sheet_codes(header, lines)
         base = '_'.join(codes) if codes else f"HQ柜出货_{header.get('soNo') or header.get('number') or '未命名'}"
         return f'{base}.xlsx'
-    return sheet_code_filename(header, lines)
+    base = '_'.join(codes) if codes else 'SO出货表'
+    return f'{base}.xls'
 
 
 def export_sheet(db, user: AuthContext, factory_id: str, payload: dict) -> tuple[str, bytes]:
@@ -866,7 +992,7 @@ def export_sheet(db, user: AuthContext, factory_id: str, payload: dict) -> tuple
     )
     db.add(sheet)
     db.commit()
-    filename = _sheet_filename(header, lines)
+    filename = _sheet_filename(header, lines, db=db, factory_id=factory_id, task_id=task_id)
     if variant == 'hq':
         from app.services import shipping_zuru
         content = shipping_zuru.render_hq_xlsx(_hq_payload(header, lines))
@@ -889,6 +1015,7 @@ def list_sheets(db, user: AuthContext, factory_id: str, limit: int = 50, variant
         .order_by(ShippingLoadingSheet.created_at.desc())
         .limit(limit)
     ).all()
+    index = build_filing_code_index(db, factory_id)
     result = []
     for row in rows:
         header = json.loads(row.header_json or '{}')
@@ -896,10 +1023,11 @@ def list_sheets(db, user: AuthContext, factory_id: str, limit: int = 50, variant
         if variant and current != variant:
             continue
         lines = json.loads(row.lines_json or '[]')
+        codes = resolve_filing_codes(db, factory_id, header, lines, task_id=row.task_id, index=index)
         result.append({
             'id': row.id, 'number': row.number, 'sheetDate': row.sheet_date,
-            'filename': _sheet_filename(header, lines),
-            'filingCodes': _sheet_codes(header, lines),
+            'filename': _sheet_filename(header, lines, db=db, factory_id=factory_id, task_id=row.task_id, index=index),
+            'filingCodes': codes,
             'variant': current,
             'task_id': row.task_id,
             'soNo': header.get('soNo') or '',
@@ -924,26 +1052,40 @@ def _load_sheet(db, user: AuthContext, factory_id: str, sheet_id: str):
 def get_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
     row, header, lines = _load_sheet(db, user, factory_id, sheet_id)
     header['transportCompany'] = _transport_company_name(header.get('transportCompany') or '')
+    codes = resolve_filing_codes(db, factory_id, header, lines, task_id=row.task_id)
     return {
         'id': row.id, 'number': row.number, 'sheetDate': row.sheet_date,
-        'filename': _sheet_filename(header, lines), 'createdAt': row.created_at,
-        'filingCodes': _sheet_codes(header, lines), 'variant': _sheet_variant(header),
+        'filename': _sheet_filename(header, lines, db=db, factory_id=factory_id, task_id=row.task_id), 'createdAt': row.created_at,
+        'filingCodes': codes, 'variant': _sheet_variant(header),
         'task_id': row.task_id,
         'header': header, 'lines': lines, 'totals': json.loads(row.totals_json or '{}'),
     }
 
 
-def open_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
+def _render_sheet_bytes(db, user: AuthContext, factory_id: str, sheet_id: str) -> tuple[str, bytes, str]:
     row, header, lines = _load_sheet(db, user, factory_id, sheet_id)
     header['transportCompany'] = _transport_company_name(header.get('transportCompany') or '')
-    filename = _sheet_filename(header, lines)
-    if _sheet_variant(header) == 'hq':
+    filename = _sheet_filename(header, lines, db=db, factory_id=factory_id, task_id=row.task_id)
+    variant = _sheet_variant(header)
+    if variant == 'hq':
         from app.services import shipping_zuru
         content = shipping_zuru.render_hq_xlsx(_hq_payload(header, lines))
     else:
         content = render_xls({'header': header, 'lines': lines})
+    return filename, content, variant
+
+
+def download_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> tuple[str, bytes, str]:
+    filename, content, variant = _render_sheet_bytes(db, user, factory_id, sheet_id)
+    module = 'so_zuru' if variant == 'hq' else 'so_dk'
+    saved_path = shipping_exports.save_import_file(module, filename, content)
+    return filename, content, saved_path
+
+
+def open_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
+    filename, content, _variant = _render_sheet_bytes(db, user, factory_id, sheet_id)
     path = file_open.open_bytes(filename, content)
-    return {'path': path, 'filename': filename}
+    return {'opened': True, 'path': path, 'filename': filename, 'sheets': file_open.workbook_preview(filename, content)}
 
 
 def delete_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
@@ -956,11 +1098,15 @@ def delete_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
     filenames = {_sheet_filename(header, lines), sheet_filename(header)}
     db.delete(row)
     db.commit()
+    so_dir = shipping_exports.EXPORT_ROOT / 'SO 出货表'
     for name in filenames:
         if not name:
             continue
+        safe = shipping_exports._safe_name(name)
         try:
-            (shipping_exports.EXPORT_ROOT / 'SO 出货表' / shipping_exports._safe_name(name)).unlink(missing_ok=True)
+            (so_dir / safe).unlink(missing_ok=True)
+            for monthly_match in so_dir.glob(f'*年*月/*_{safe}'):
+                monthly_match.unlink(missing_ok=True)
         except OSError:
             pass
     return {'deleted': True}

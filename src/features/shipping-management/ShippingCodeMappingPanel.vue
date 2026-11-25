@@ -29,6 +29,9 @@ interface CodeRow {
   plate?: string
   containerNo?: string
   sealNo?: string
+  port?: string
+  mode?: string
+  po?: string
   status: string
   tone: 'blue' | 'orange' | 'red'
 }
@@ -72,7 +75,17 @@ const filteredRows = computed(() => {
   return rows.value.filter((row) => {
     if (activeCustomer.value !== '全部' && row.customer !== activeCustomer.value) return false
     if (!search) return true
-    return row.code.toLowerCase().includes(search) || row.name.toLowerCase().includes(search)
+    return [
+      row.code,
+      row.name,
+      row.contractNo,
+      row.transport,
+      row.plate,
+      row.trip,
+      row.containerType,
+      row.containerNo,
+      row.sealNo,
+    ].some((field) => String(field || '').toLowerCase().includes(search))
   })
 })
 
@@ -93,6 +106,15 @@ const generatedRows = ref<CodeRow[]>([])
 const importedRows = ref<CodeRow[]>([])
 const loadingYear = ref(false)
 const yearCache = new Map<string, CodeRow[]>()
+
+function modeLabel(row: CodeRow) {
+  const mode = String(row.mode || row.containerMode || '-').trim()
+  const customer = String(row.customer || '').trim()
+  if (customer && customer !== '-' && mode.startsWith(customer)) {
+    return mode.slice(customer.length).replace(/^出/, '').trim() || '-'
+  }
+  return mode || '-'
+}
 
 function rowKey(row: CodeRow) {
   return [row.date, row.contractNo, row.code, row.quantity, row.cartons, row.trip, row.containerNo, row.sealNo].join('|')
@@ -164,7 +186,7 @@ async function loadYear(year: string) {
   }
   loadingYear.value = true
   try {
-    const response = await fetch(`/data/code-mappings-${year}.json`)
+    const response = await fetch(`/data/code-mappings-${year}.json?v=20261124`, { cache: 'no-store' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = (await response.json()) as CodeRow[]
     yearCache.set(year, data)
@@ -211,9 +233,11 @@ async function loadGeneratedRows() {
       const headerDate = String(header.sheetDate || header.etd || header.shipDate || '').slice(0, 10)
       const rowCbm = Number(row.cbm) || 0
       const transport = String(header.transportCompany || header.transport || '').trim()
-      const trip = String(header.vehicle || header.number || header.truckNo || header.truck_no || '').trim()
-      const containerType = String(header.containerType || '').trim()
-      const truckType = String(header.truckType || '').trim()
+      const trip = String(header.truckHead || header.vehicle || header.number || header.truckNo || header.truck_no || '').trim()
+      const containerType = String(header.containerType || header.truckType || '').trim()
+      const plate = String(header.plate || row.plate || '').trim()
+      const containerNo = String(header.containerNo || row.containerNo || '').trim()
+      const sealNo = String(header.sealNo || row.sealNo || '').trim()
       next.push({
         code,
         name: String(row.description || row.name || ''),
@@ -224,12 +248,15 @@ async function loadGeneratedRows() {
         volume: rowCbm ? rowCbm.toFixed(3) : '-',
         country: String(header.destinationCountry || header.country || row.country || '-'),
         transport: transport || '-',
-        containerMode: containerType ? '柜' : (trip || truckType ? 'T车' : '-'),
+        containerMode: containerType ? '柜' : (trip ? 'T车' : '-'),
         trip: trip || '-',
-        containerType: containerType || truckType || '-',
-        plate: String(header.plate || '-'),
-        containerNo: String(header.containerNo || '-'),
-        sealNo: String(header.sealNo || '-'),
+        containerType: containerType || '-',
+        plate: plate || '-',
+        containerNo: containerNo || '-',
+        sealNo: sealNo || '-',
+        port: String(header.originPort || '-'),
+        mode: String(header.truckType || header.containerType || '-'),
+        po: String(row.customer_po || header.poNo || '-'),
         perCarton,
         category: String(row.category || '塑胶'),
         note: String(row.cartonMark || '-'),
@@ -284,14 +311,14 @@ function reset() {
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <label class="relative">
-            <span class="sr-only">搜索货号或货名</span>
+            <span class="sr-only">搜索货号、柜号或车牌</span>
             <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-emerald-700/50" aria-hidden="true" />
             <input
               v-model="keyword"
               type="search"
-              aria-label="搜索货号或货名"
-              placeholder="搜索货号或货名"
-              class="h-8 w-[200px] rounded-lg border border-emerald-100 bg-white pl-8 pr-2.5 text-[12px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/15"
+              aria-label="搜索合同号或货号"
+              placeholder="搜索货号 / 柜号 / 车牌"
+              class="h-8 w-[220px] rounded-lg border border-emerald-100 bg-white pl-8 pr-2.5 text-[12px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/15"
               @keydown.enter="applySearch"
             >
           </label>
@@ -367,83 +394,83 @@ function reset() {
       多规格匹配规则：货号相同、货名相同、每箱个数不同 → 视为独立记录，分行展示，导出时各自对应正确重量。
     </p>
 
-    <div class="overflow-x-auto rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/40">
-      <table class="w-full min-w-[2100px] border-collapse text-left text-[12px]">
-        <thead class="bg-emerald-50/80 text-[11px] font-semibold text-emerald-900/70">
-          <tr>
-            <th scope="col" class="w-10 px-2 py-2 text-center">
-              <input type="checkbox" aria-label="全选当前页" :checked="allPageSelected" :indeterminate="somePageSelected && !allPageSelected" @change="togglePage">
-            </th>
-            <th scope="col" class="px-3 py-2">日期</th>
-            <th scope="col" class="px-3 py-2">合同号</th>
-            <th scope="col" class="px-3 py-2">货号</th>
-            <th scope="col" class="px-3 py-2">货名</th>
-            <th scope="col" class="px-3 py-2 text-right">数量</th>
-            <th scope="col" class="px-3 py-2 text-right">箱数</th>
-            <th scope="col" class="px-3 py-2 text-right">每箱个数</th>
-            <th scope="col" class="px-3 py-2">玩具类别</th>
-            <th scope="col" class="px-3 py-2">备注（柜单）</th>
-            <th scope="col" class="px-3 py-2 text-right">每箱毛重（kg）</th>
-            <th scope="col" class="px-3 py-2 text-right">每箱净重（kg）</th>
-            <th scope="col" class="px-3 py-2 text-right">体积</th>
-            <th scope="col" class="px-3 py-2">来源</th>
-            <th scope="col" class="px-3 py-2">国家</th>
-            <th scope="col" class="px-3 py-2">客户</th>
-            <th scope="col" class="px-3 py-2">运输公司</th>
-            <th scope="col" class="px-3 py-2">柜型/T车</th>
-            <th scope="col" class="px-3 py-2">车次</th>
-            <th scope="col" class="px-3 py-2">柜型</th>
-            <th scope="col" class="px-3 py-2">车牌号</th>
-            <th scope="col" class="px-3 py-2">柜号</th>
-            <th scope="col" class="px-3 py-2">封条号</th>
-            <th scope="col" class="px-3 py-2">状态</th>
-            <th scope="col" class="px-3 py-2 text-right">操作</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-emerald-50/80">
-          <tr v-for="row in pagedRows" :key="rowKey(row)" class="bg-white/70 hover:bg-emerald-50/50" :class="selectedKeys.includes(rowKey(row)) ? 'bg-emerald-50/70' : ''">
-            <td class="px-2 py-2 text-center">
-              <input type="checkbox" :aria-label="`选择 ${row.code}`" :checked="selectedKeys.includes(rowKey(row))" @change="toggleRow(row)">
-            </td>
-            <td class="px-3 py-2 tabular-nums text-slate-600">{{ row.date || '-' }}</td>
-            <td class="px-3 py-2 tabular-nums text-slate-700">{{ row.contractNo || '-' }}</td>
-            <td class="px-3 py-2 font-semibold tabular-nums text-emerald-800">{{ row.code }}</td>
-            <td class="px-3 py-2 text-slate-800">{{ row.name }}</td>
-            <td class="px-3 py-2 text-right tabular-nums text-slate-600">{{ row.quantity || '-' }}</td>
-            <td class="px-3 py-2 text-right tabular-nums text-slate-600">{{ row.cartons || '-' }}</td>
-            <td class="px-3 py-2 text-right tabular-nums text-slate-600">{{ row.perCarton }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.category }}</td>
-            <td class="px-3 py-2 text-slate-400">{{ row.note }}</td>
-            <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.gross }}</td>
-            <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.net }}</td>
-            <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ row.volume || '-' }}</td>
-            <td class="px-3 py-2">
-              <span class="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">{{ row.source }}</span>
-            </td>
-            <td class="px-3 py-2 text-slate-700">{{ row.country || '-' }}</td>
-            <td class="px-3 py-2 text-slate-700">{{ row.customer }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.transport || '-' }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.containerMode || '-' }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.trip || '-' }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.containerType || '-' }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.plate || '-' }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.containerNo || '-' }}</td>
-            <td class="px-3 py-2 text-slate-600">{{ row.sealNo || '-' }}</td>
-            <td class="px-3 py-2">
-              <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-600">
-                <span class="size-1.5 rounded-full" :class="statusDot[row.tone]" aria-hidden="true" />
-                {{ row.status }}
-              </span>
-            </td>
-            <td class="px-3 py-2 text-right">
-              <div class="inline-flex items-center gap-2">
-                <button type="button" class="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900" @click="preview(`编辑货号映射 ${row.code}`)">编辑</button>
-                <button type="button" class="text-[11px] font-semibold text-rose-500 hover:text-rose-700" @click="deleteRows([rowKey(row)])">删除</button>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="overflow-hidden rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/40">
+      <div class="max-h-[68vh] overflow-auto">
+        <table class="w-full min-w-[1360px] border-collapse text-left text-[11px]">
+          <thead class="sticky top-0 z-10 bg-emerald-50/95 text-[11px] font-semibold text-emerald-900/75 backdrop-blur-sm">
+            <tr>
+              <th scope="col" class="w-9 px-2 py-2 text-center">
+                <input type="checkbox" aria-label="全选当前页" :checked="allPageSelected" :indeterminate="somePageSelected && !allPageSelected" @change="togglePage">
+              </th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">日期</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">合同号</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">货号</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">柜型/T车</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2 text-right">数量</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2 text-right">箱数</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2 text-right">每箱个数</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">玩具类别</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2 text-right">每箱毛重（kg）</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2 text-right">每箱净重（kg）</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2 text-right">体积</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">来源</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">国家</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">客户</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">运输公司</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">车牌号</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">车次</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">柜型</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">柜号</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">封条号</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">港口</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2">状态</th>
+              <th scope="col" class="whitespace-nowrap px-2 py-2 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-emerald-50/80">
+            <tr v-for="row in pagedRows" :key="rowKey(row)" class="bg-white/70 hover:bg-emerald-50/50" :class="selectedKeys.includes(rowKey(row)) ? 'bg-emerald-50/70' : ''">
+              <td class="px-2 py-2 text-center">
+                <input type="checkbox" :aria-label="`选择 ${row.code}`" :checked="selectedKeys.includes(rowKey(row))" @change="toggleRow(row)">
+              </td>
+              <td class="whitespace-nowrap px-2 py-2 tabular-nums text-slate-600">{{ row.date || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 tabular-nums text-slate-700">{{ row.contractNo || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 font-semibold tabular-nums text-emerald-800">{{ row.code }}</td>
+              <td class="max-w-[180px] truncate px-2 py-2 text-slate-600" :title="row.mode">{{ modeLabel(row) }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-600">{{ row.quantity || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-600">{{ row.cartons || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-600">{{ row.perCarton }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-slate-600">{{ row.category }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-700">{{ row.gross }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-700">{{ row.net }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-700">{{ row.volume || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2">
+                <span class="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">{{ row.source }}</span>
+              </td>
+              <td class="whitespace-nowrap px-2 py-2 text-slate-700">{{ row.country || '-' }}</td>
+              <td class="max-w-[140px] truncate px-2 py-2 text-slate-700" :title="row.customer">{{ row.customer }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-slate-600">{{ row.transport || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 tabular-nums text-slate-600">{{ row.plate || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-slate-600">{{ row.trip || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-slate-600">{{ row.containerType || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 tabular-nums text-slate-600">{{ row.containerNo || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 tabular-nums text-slate-600">{{ row.sealNo || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2 text-slate-600">{{ row.port || '-' }}</td>
+              <td class="whitespace-nowrap px-2 py-2">
+                <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-600">
+                  <span class="size-1.5 rounded-full" :class="statusDot[row.tone]" aria-hidden="true" />
+                  {{ row.status }}
+                </span>
+              </td>
+              <td class="whitespace-nowrap px-2 py-2 text-right">
+                <div class="inline-flex items-center gap-2">
+                  <button type="button" class="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900" @click="preview(`编辑货号映射 ${row.code}`)">编辑</button>
+                  <button type="button" class="text-[11px] font-semibold text-rose-500 hover:text-rose-700" @click="deleteRows([rowKey(row)])">删除</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div v-if="filteredRows.length" class="flex flex-wrap items-center justify-between gap-2 border-t border-emerald-100 px-3 py-2 text-[11px] text-slate-600">
         <span>共 {{ filteredRows.length }} 条，第 {{ page }} / {{ pageCount }} 页</span>
         <div class="flex items-center gap-2">

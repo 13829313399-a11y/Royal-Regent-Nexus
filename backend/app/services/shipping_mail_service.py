@@ -1,5 +1,6 @@
 """Shipping mail import and task creation: factory-scoped, server-computed, no silent guesses."""
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -40,26 +41,129 @@ def authorize(user: AuthContext, factory_id: str, action: str = 'read') -> None:
         raise HTTPException(403, '没有该厂区船务管理的相应操作权限')
 
 
-def preview(factory_id: str, filename: str, raw: bytes, user: AuthContext) -> dict:
+def _enrich_product_names(db, factory_id: str, items: list[dict]) -> None:
+    wanted = {str(item.get('product_code') or '').strip() for item in items if not item.get('product_name')}
+    wanted.discard('')
+    if not wanted:
+        return
+    lookup: dict[str, dict] = {}
+    tasks = db.scalars(select(ShippingTask).where(
+        ShippingTask.factory_id == factory_id,
+        ShippingTask.source == 'schedule',
+    )).all()
+    for task in tasks:
+        for item in _loads(task.items_json):
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get('product_code') or '').strip()
+            if code in wanted and item.get('product_name'):
+                lookup.setdefault(code, item)
+    for item in items:
+        if item.get('product_name'):
+            continue
+        match = lookup.get(str(item.get('product_code') or '').strip())
+        if not match:
+            continue
+        for field in ('product_name', 'country', 'standard', 'brand'):
+            if not item.get(field) and match.get(field):
+                item[field] = match[field]
+
+
+def _contract_key(value) -> str:
+    return re.sub(r'/\d+$', '', str(value or '').strip()).lower()
+
+
+def lookup_contract_items(db, factory_id: str, contract: str) -> tuple[list[dict], str]:
+    """1) factory schedule first; 2) customer order ledger fallback."""
+    key = _contract_key(contract)
+    if not key:
+        return [], ''
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    tasks = db.scalars(select(ShippingTask).where(
+        ShippingTask.factory_id == factory_id,
+        ShippingTask.source == 'schedule',
+    )).all()
+    for task in tasks:
+        for item in _loads(task.items_json):
+            if not isinstance(item, dict):
+                continue
+            if _contract_key(item.get('contract_no')) != key:
+                continue
+            code = str(item.get('product_code') or '').strip()
+            if (key, code) in seen:
+                continue
+            seen.add((key, code))
+            items.append(item)
+    if items:
+        return items, 'factory_schedule'
+    from app.models.customer_order_ledger import OrderLedgerLine
+    lines = db.scalars(select(OrderLedgerLine).where(
+        OrderLedgerLine.factory_id == factory_id,
+        OrderLedgerLine.status == 'active',
+    )).all()
+    for line in lines:
+        data = line.data if isinstance(line.data, dict) else {}
+        if _contract_key(data.get('contract_no')) != key:
+            continue
+        code = str(line.product_no or '').strip()
+        if (key, code) in seen:
+            continue
+        seen.add((key, code))
+        items.append({
+            'product_code': code,
+            'product_name': data.get('product_name_zh') or data.get('product_name') or '',
+            'quantity': line.quantity,
+            'cartons': data.get('carton_count'),
+            'coefficient': data.get('coefficient') or data.get('pack_qty'),
+            'gross_weight': data.get('gross_weight'),
+            'net_weight': data.get('net_weight'),
+            'cbm': data.get('cbm'),
+            'contract_no': data.get('contract_no') or line.reference_no,
+            'customer_po': data.get('po_no'),
+            'country': data.get('country'),
+            'brand': data.get('brand') or data.get('brand_name') or '',
+            'consignee': data.get('consignee'),
+        })
+    return items, ('customer_order_ledger' if items else '')
+
+
+def preview(factory_id: str, filename: str, raw: bytes, user: AuthContext, db=None) -> dict:
     """Parse one uploaded file without persisting anything."""
     authorize(user, factory_id, 'import')
     filename = _decoded_filename(filename)
     if _is_email_message(raw, filename):
-        return parse_shipping_email(raw, filename)
-    result = parse_shipping_document(raw, filename)
-    return {
-        'filename': filename,
-        'subject': '',
-        'sender': '',
-        'received_at': '',
-        'fields': result['fields'],
-        'items': result['items'],
-        'attachments': [result],
-        'warnings': result['warnings'],
-        'rule_trace': [],
-        'parser_version': result['parser_version'],
-        'status': result['status'],
-    }
+        parsed = parse_shipping_email(raw, filename)
+    else:
+        result = parse_shipping_document(raw, filename)
+        parsed = {
+            'filename': filename,
+            'subject': '',
+            'sender': '',
+            'received_at': '',
+            'fields': result['fields'],
+            'items': result['items'],
+            'attachments': [result],
+            'warnings': result['warnings'],
+            'rule_trace': [],
+            'parser_version': result['parser_version'],
+            'status': result['status'],
+        }
+    if db is not None and not parsed.get('items'):
+        contract = str((parsed.get('fields') or {}).get('contract_no') or '').strip()
+        if contract:
+            found, source = lookup_contract_items(db, factory_id, contract)
+            if found:
+                parsed['items'] = found
+                parsed.setdefault('warnings', []).append(
+                    f'已按合同号 {contract} 从'
+                    + ('工厂排期' if source == 'factory_schedule' else '厂区总排期')
+                    + f'带出 {len(found)} 行货物明细'
+                )
+                parsed['cargo_source'] = source
+    if db is not None and parsed.get('items'):
+        _enrich_product_names(db, factory_id, parsed['items'])
+    return parsed
 
 
 def create_batch(db, user: AuthContext, factory_id: str, files: list[tuple[str, bytes]]) -> dict:
@@ -96,6 +200,24 @@ def create_batch_internal(
             if duplicate:
                 seen += 1
                 continue
+        if not _loads(item.items_json):
+            fields = _loads(item.fields_json)
+            contract = str((fields or {}).get('contract_no') or '').strip()
+            if contract:
+                found, source = lookup_contract_items(db, factory_id, contract)
+                if found:
+                    item.items_json = _dump(found)
+                    warnings = _loads(item.warnings_json)
+                    warnings.append(
+                        f'已按合同号 {contract} 从'
+                        + ('工厂排期' if source == 'factory_schedule' else '厂区总排期')
+                        + f'带出 {len(found)} 行货物明细'
+                    )
+                    item.warnings_json = _dump(warnings)
+        item_list = _loads(item.items_json)
+        if item_list:
+            _enrich_product_names(db, factory_id, item_list)
+            item.items_json = _dump(item_list)
         db.add(item)
         items.append(item)
         if item.filename.lower().endswith('.eml') or _is_email_message(raw, item.filename):
@@ -315,6 +437,13 @@ def _schedule_row(task: ShippingTask, item: dict) -> dict:
         'quantity': item.get('quantity'),
         'cartons': item.get('cartons'),
         'cbm': item.get('cbm'),
+        'order_date': str(item.get('order_date') or ''),
+        'inspection_date': str(item.get('inspection_date') or ''),
+        'requested_ship_date': str(item.get('requested_ship_date') or task.planned_ship_date or ''),
+        'sales_order_no': str(item.get('sales_order_no') or task.so_number or ''),
+        'packing': item.get('coefficient'),
+        'standard': str(item.get('standard') or item.get('country') or task.destination_country or ''),
+        'remark': str(item.get('remark') or ''),
     }
 
 
@@ -487,6 +616,15 @@ def _merge_task_items(task, incoming: list[dict]) -> None:
     for item in incoming:
         contract = str(item.get('contract_no') or '').strip()
         code = str(item.get('product_code') or '').strip()
+        po = str(item.get('customer_po') or '').strip()
+        if not contract:
+            same_code = next((row for row in current
+                              if str(row.get('product_code') or '').strip() == code
+                              and str(row.get('customer_po') or '').strip() == po
+                              and str(row.get('contract_no') or '').strip()), None)
+            if same_code:
+                contract = str(same_code.get('contract_no') or '').strip()
+                item['contract_no'] = contract
         match = next((row for row in current if str(row.get('contract_no') or '').strip() == contract
                       and str(row.get('product_code') or '').strip() == code), None)
         if match is None:

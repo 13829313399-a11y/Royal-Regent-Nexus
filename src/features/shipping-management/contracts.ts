@@ -126,6 +126,15 @@ export interface ShippingOrder {
   status: ShippingOrderStatus
   contractNo?: string
   filingNo?: string
+  orderDate?: string
+  inspectionDate?: string
+  requestedShipDate?: string
+  salesOrderNo?: string
+  packing?: number | null
+  quantity?: number | null
+  standard?: string
+  remark?: string
+  poNo?: string
   /** 本票货物摘要，用于按货号或货名搜索。 */
   products: ShippingProduct[]
 }
@@ -1011,4 +1020,22 @@ export function isUrgentCutoff(task: ShipmentTask, now = new Date()) {
   if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'waiting') return false
   const hours = hoursUntil(task.cutoff, now)
   return hours !== null && hours <= 48
+}
+
+/** 按明细备案号拼接导出文件名（无备案号时回退默认名称）。 */
+export function filingCodeFilename(
+  lines: Array<{ filingCode?: string; declareCode?: string; itemNo?: string }> | undefined,
+  ext: '.xls' | '.xlsx',
+  fallback: string,
+  headerCode?: string,
+) {
+  const codes = [...new Set(
+    (lines ?? [])
+      .map((line) => String(line.filingCode || line.declareCode || line.itemNo || '').trim())
+      .filter(Boolean),
+  )]
+  if (!codes.length && headerCode?.trim()) {
+    codes.push(headerCode.trim())
+  }
+  return `${codes.length ? codes.join('_') : fallback}${ext}`
 }

@@ -4,6 +4,7 @@ import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   deleteLoadingSheet,
+  downloadLoadingSheet,
   draftLoadingSheet,
   exportLoadingSheet,
   getLoadingSheet,
@@ -16,18 +17,28 @@ import {
   type LoadingLine,
   type LoadingSheetDetail,
   type LoadingSheetRecord,
+  type WorkbookPreviewSheet,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
+import { filingCodeFilename } from './contracts'
+import ShippingWorkbookPreviewModal from './ShippingWorkbookPreviewModal.vue'
 
 const props = defineProps<{ factoryId: string; initialDraft?: LoadingDraft | null; searchQuery?: string; variant?: 'dk' | 'hq' }>()
-const emit = defineEmits<{ notify: [message: string] }>()
+const emit = defineEmits<{ notify: [message: string]; back: [] }>()
 
 const tasks = ref<ShippingScheduleTask[]>([])
 const selectedTaskId = ref('')
+const LAST_TASK_KEY = `shipping-so-last-task:${props.factoryId}`
+
+function saveLastTask(id: string) {
+  if (typeof window === 'undefined' || !window.localStorage || !id) return
+  window.localStorage.setItem(LAST_TASK_KEY, id)
+}
 const search = ref('')
 const searching = ref(false)
 const draft = ref<LoadingDraft | null>(null)
 const tableNameEdited = ref(false)
+const loadedTaskId = ref('')
 const loading = ref(false)
 const exporting = ref(false)
 const recognizing = ref(false)
@@ -42,6 +53,7 @@ const sheetBusy = ref(false)
 const sheetDeleteArmed = ref(false)
 const sheetPanelOpen = ref(true)
 const sheetSearch = ref('')
+const previewState = ref<{ sheet: LoadingSheetRecord; filename: string; path: string; sheets: WorkbookPreviewSheet[] } | null>(null)
 
 const preparers = ['农建壮', '小美']
 const isHq = computed(() => props.variant === 'hq')
@@ -71,6 +83,7 @@ const totals = computed(() => {
     grossWeight: sum('grossWeight'),
     netWeight: sum('netWeight'),
     cbm: sum('cbm'),
+    pallet: Math.round(sum('pallet') * 1000) / 1000,
   }
 })
 
@@ -129,6 +142,9 @@ async function runSearch() {
       existing.add(key)
       added += 1
     }
+    if (!draft.value.header.poNo && matched[0]?.customer_po) {
+      draft.value.header.poNo = String(matched[0].customer_po)
+    }
     if (added) {
       message.value = `已匹对 ${query}，填入 ${added} 行`
       await loadTasks()
@@ -181,6 +197,7 @@ function lineFromSchedule(item: Record<string, unknown>): LoadingLine {
     netPerCarton: cartons && Number(item.net_weight) ? Number(item.net_weight) / cartons : null,
     description: String(item.product_name || ''),
     department: 'W',
+    pallet: null,
     cartonMark: String(item.customer_po || ''),
   }
 }
@@ -214,6 +231,9 @@ async function recognizeContract() {
     if (!draft.value.header.soNo && items[0].so_number) {
       draft.value.header.soNo = String(items[0].so_number)
     }
+    if (!draft.value.header.poNo && items[0].customer_po) {
+      draft.value.header.poNo = String(items[0].customer_po)
+    }
     if (selectedTaskId.value) {
       try {
         const scheduled = await draftLoadingSheet(props.factoryId, selectedTaskId.value)
@@ -243,20 +263,20 @@ async function loadDraft() {
   message.value = ''
   tableNameEdited.value = false
   try {
-    const previousHeader = draft.value
-      ? JSON.parse(JSON.stringify(draft.value.header)) as LoadingHeader
+    const sameTask = Boolean(draft.value && loadedTaskId.value === selectedTaskId.value)
+    const previousHeader = sameTask
+      ? JSON.parse(JSON.stringify(draft.value!.header)) as LoadingHeader
       : null
     const scheduled = await draftLoadingSheet(props.factoryId, selectedTaskId.value)
     const recognizedTableName = String(scheduled.header.tableName || '').trim()
     if (previousHeader) {
       scheduled.header = previousHeader
-    } else {
-      scheduled.header = blankCabinetHeader(scheduled.header)
     }
     if (!tableNameEdited.value) {
       scheduled.header.tableName = recognizedTableName || scheduled.header.tableName
     }
     draft.value = scheduled
+    loadedTaskId.value = selectedTaskId.value
     ensureTableName()
     if (!draft.value.header.shippingClerk) draft.value.header.shippingClerk = draft.value.header.preparer || '农建壮'
     if (!draft.value.header.tradeTerm) draft.value.header.tradeTerm = 'FOB'
@@ -274,7 +294,7 @@ function addLine() {
     id: crypto.randomUUID(), tradingCompany: 'DK',
     contract: draft.value.header.contractNo?.trim() || draft.value.lines[0]?.contract || '',
     filingCode: '', declareCode: '', coefficient: null, quantity: null, cartons: null, grossWeight: null, netWeight: null,
-    cbm: null, category: '塑胶', grossPerCarton: null, netPerCarton: null, description: '', department: 'W',
+    cbm: null, category: '塑胶', grossPerCarton: null, netPerCarton: null, description: '', department: 'W', pallet: null,
   })
 }
 
@@ -351,15 +371,16 @@ async function download() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    if (props.variant === 'hq') {
-      const codes = [...new Set(draft.value.lines.map((line) => String(line.filingCode || '').trim()).filter(Boolean))]
-      link.download = `${codes.length ? codes.join('_') : 'HQ柜出货'}.xlsx`
-    } else {
-      const so = String(draft.value.header.soNo || '')
-      const title = String(draft.value.header.tableName || '').trim()
-        || formatTableName(draft.value.header.transportCompany, draft.value.header.originPort)
-      link.download = `${title}${so ? `_${so}` : ''}.xls`
-    }
+    const so = String(draft.value.header.soNo || '')
+    const title = String(draft.value.header.tableName || '').trim()
+      || formatTableName(draft.value.header.transportCompany, draft.value.header.originPort)
+    const fallback = props.variant === 'hq' ? 'HQ柜出货' : `${title}${so ? `_${so}` : ''}`
+    link.download = filingCodeFilename(
+      draft.value.lines,
+      props.variant === 'hq' ? '.xlsx' : '.xls',
+      fallback,
+      draft.value.header.filingCode,
+    )
     link.click()
     URL.revokeObjectURL(url)
     emit('notify', `${isHq.value ? 'HQ柜出货' : '柜单'} ${draft.value.number} 已生成并下载。`)
@@ -448,12 +469,38 @@ async function viewSheet(sheet: LoadingSheetRecord) {
   }
 }
 
+async function downloadSheet(sheet: LoadingSheetRecord) {
+  markSheetViewed(sheet)
+  sheetBusy.value = true
+  sheetMessage.value = ''
+  try {
+    const blob = await downloadLoadingSheet(props.factoryId, sheet.id)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = sheet.filename || `${sheet.number}.xls`
+    link.click()
+    URL.revokeObjectURL(url)
+    sheetMessage.value = `已下载 ${link.download}，并按月存入 D:\\导入文件\\SO 出货表`
+  } catch (error) {
+    sheetMessage.value = `下载失败：${getApiErrorMessage(error)}`
+  } finally {
+    sheetBusy.value = false
+  }
+}
+
 async function openSheet(sheet: LoadingSheetRecord) {
   markSheetViewed(sheet)
   sheetBusy.value = true
   sheetMessage.value = ''
   try {
-    await openLoadingSheet(props.factoryId, sheet.id)
+    const result = await openLoadingSheet(props.factoryId, sheet.id)
+    previewState.value = {
+      sheet,
+      filename: result.filename || sheet.filename,
+      path: result.path,
+      sheets: result.sheets ?? [],
+    }
     sheetMessage.value = `已打开 ${sheet.filename}`
   } catch (error) {
     sheetMessage.value = `打开失败：${getApiErrorMessage(error)}`
@@ -531,9 +578,20 @@ async function openSelectedSheet() {
   if (sheet) await openSheet(sheet)
 }
 
-onMounted(() => {
-  void loadTasks()
+watch(selectedTaskId, (id) => saveLastTask(id))
+
+onMounted(async () => {
+  await loadTasks()
   void loadSheets()
+  if (!props.initialDraft && !selectedTaskId.value) {
+    const last = typeof window !== 'undefined' && window.localStorage
+      ? window.localStorage.getItem(LAST_TASK_KEY)
+      : ''
+    if (last) {
+      selectedTaskId.value = last
+      await loadDraft()
+    }
+  }
 })
 
 function blankCabinetHeader(scheduled: LoadingHeader): LoadingHeader {
@@ -615,7 +673,10 @@ watch(() => props.initialDraft, async (value) => {
       const scheduled = await draftLoadingSheet(props.factoryId, scheduleTaskId)
       const importedSo = (draft.value.header.soNo || '').trim()
       const scheduledSo = (scheduled.header.soNo || '').trim()
-      const rebooked = Boolean(importedSo && scheduledSo && importedSo !== scheduledSo)
+      const importedContractKey = String(draft.value.header.contractNo || '').replace(/\/\d+$/, '').trim().toLowerCase()
+      const scheduledContractKey = String(scheduled.header.contractNo || '').replace(/\/\d+$/, '').trim().toLowerCase()
+      const contractMatches = !importedContractKey || !scheduledContractKey || importedContractKey === scheduledContractKey
+      const rebooked = Boolean(importedSo && scheduledSo && importedSo !== scheduledSo && contractMatches)
       const target = draft.value.header as unknown as Record<string, string>
       const source = scheduled.header as unknown as Record<string, string>
       if (rebooked) {
@@ -632,9 +693,23 @@ watch(() => props.initialDraft, async (value) => {
       }
       const contract = (draft.value.header.contractNo || '').trim()
       draft.value.lines = mergeScheduleLines(draft.value.lines, scheduled.lines, contract)
+      if (contract) {
+        for (const line of draft.value.lines) line.contract = contract
+      }
+      if (!draft.value.header.poNo) {
+        draft.value.header.poNo = String(
+          scheduled.header.poNo
+          || scheduled.header.cartonMark
+          || draft.value.header.cartonMark
+          || draft.value.lines.find((line) => line.cartonMark)?.cartonMark
+          || '',
+        ).trim()
+      }
       ensureTableName()
       if (rebooked) {
         message.value = '已按产品编号匹配新排期，合同号 / SO / 订舱号 / 截单日已更新为新排期。'
+      } else if (!contractMatches) {
+        message.value = '邮件合同号与匹配排期合同号不一致，已保留邮件合同号，未覆盖。'
       }
       return
     } catch {
@@ -643,6 +718,13 @@ watch(() => props.initialDraft, async (value) => {
   }
   syncLineContracts()
   ensureTableName()
+  if (!draft.value.header.poNo) {
+    draft.value.header.poNo = String(
+      draft.value.header.cartonMark
+      || draft.value.lines.find((line) => line.cartonMark)?.cartonMark
+      || '',
+    ).trim()
+  }
   if (!draft.value.lines.length) addLine()
 }, { immediate: true })
 </script>
@@ -786,6 +868,7 @@ watch(() => props.initialDraft, async (value) => {
             {{ scheduleOptionLabel(task) }}
           </option>
         </select>
+        <button type="button" class="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-800 transition hover:bg-emerald-50" @click="emit('back')">← 返回工厂排期</button>
         <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-60" :disabled="!draft || exporting" @click="download">
           <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出柜货单' }}
         </button>
@@ -794,14 +877,14 @@ watch(() => props.initialDraft, async (value) => {
       <p v-if="allContracts.length" class="px-1 text-[11px] font-medium text-emerald-800">合同号：{{ allContracts.join(' / ') }}</p>
 
       <div class="overflow-x-auto rounded-xl border border-emerald-100/80 bg-white">
-        <table class="w-full min-w-[1180px] text-left text-[11px]">
+        <table class="w-full min-w-[1260px] text-left text-[11px]">
           <thead class="bg-emerald-50 text-emerald-900/70">
             <tr>
               <th class="px-2 py-2">洋行</th><th class="px-2 py-2">合同号</th><th class="px-2 py-2">备案货号</th>
               <th class="px-2 py-2">走货申报货号</th><th class="px-2 py-2">出箱数</th><th class="px-2 py-2">数量</th><th class="px-2 py-2">件数</th>
               <th class="px-2 py-2">毛重</th><th class="px-2 py-2">净重</th><th class="px-2 py-2">体积CBM</th>
               <th class="px-2 py-2">玩具类别</th><th class="px-2 py-2">KG/箱（毛重）</th><th class="px-2 py-2">KG/箱（净重）</th>
-              <th class="px-2 py-2">产品名称</th><th class="px-2 py-2">箱唛</th><th class="px-2 py-2">部门</th><th class="px-2 py-2"></th>
+              <th class="px-2 py-2">产品名称</th><th class="px-2 py-2">箱唛</th><th class="px-2 py-2">部门</th><th class="px-2 py-2" title="仅用于页面记录与卡板统计，不写入导出的柜货单表格">卡板数量</th><th class="px-2 py-2"></th>
             </tr>
           </thead>
           <tbody class="divide-y divide-emerald-50">
@@ -822,6 +905,7 @@ watch(() => props.initialDraft, async (value) => {
               <td class="px-2 py-1"><input v-model="line.description" class="h-7 w-40 rounded border border-emerald-100 px-1"></td>
               <td class="px-2 py-1"><input v-model="line.cartonMark" class="h-7 w-24 rounded border border-emerald-100 px-1"></td>
               <td class="px-2 py-1"><input v-model="line.department" class="h-7 w-10 rounded border border-emerald-100 px-1"></td>
+              <td class="px-2 py-1"><input v-model.number="line.pallet" type="number" min="0" step="0.5" placeholder="0" aria-label="卡板数量" title="仅用于页面记录与卡板统计，不写入导出的柜货单表格" class="h-7 w-16 rounded border border-emerald-100 px-1 text-right tabular-nums"></td>
               <td class="px-2 py-1 text-center">
                 <button type="button" class="text-rose-500 hover:text-rose-700" aria-label="删除明细" @click="removeLine(index)"><Trash2 class="size-3.5" /></button>
               </td>
@@ -834,7 +918,9 @@ watch(() => props.initialDraft, async (value) => {
               <td class="px-2 py-2 text-right">{{ totals.grossWeight.toFixed(2) }}</td>
               <td class="px-2 py-2 text-right">{{ totals.netWeight.toFixed(2) }}</td>
               <td class="px-2 py-2 text-right">{{ totals.cbm.toFixed(2) }}</td>
-              <td colspan="7"></td>
+              <td colspan="6"></td>
+              <td class="px-2 py-2 text-right tabular-nums">{{ totals.pallet }}</td>
+              <td></td>
             </tr>
           </tbody>
         </table>
@@ -905,7 +991,8 @@ watch(() => props.initialDraft, async (value) => {
               <td class="px-2 py-1.5 tabular-nums">{{ sheetDateTime(sheet.sheetDate, sheet.createdAt) }}</td>
               <td class="px-2 py-1.5">{{ sheet.soNo || '—' }}</td>
               <td class="px-2 py-1.5">{{ sheet.contractNo || '—' }}</td>
-              <td class="px-2 py-1.5 text-right">
+              <td class="px-2 py-1.5 text-right whitespace-nowrap">
+                <button type="button" class="mr-2 text-emerald-700" @click="downloadSheet(sheet)">下载</button>
                 <button type="button" class="mr-2 text-emerald-700" @click="viewSheet(sheet)">查看</button>
                 <button type="button" class="text-emerald-700" @click="openSheet(sheet)">打开</button>
               </td>
@@ -926,10 +1013,21 @@ watch(() => props.initialDraft, async (value) => {
           <p><span class="text-slate-400">明细行数：</span>{{ sheetDetail.lines.length }}</p>
           <p><span class="text-slate-400">数量：</span>{{ sheetDetail.totals.quantity ?? 0 }}</p>
           <p><span class="text-slate-400">CBM：</span>{{ sheetDetail.totals.cbm ?? 0 }}</p>
+          <p><span class="text-slate-400">卡板数量：</span>{{ sheetDetail.lines.reduce((acc, item) => acc + (Number(item.pallet) || 0), 0) }}</p>
         </div>
         <button type="button" class="mt-2 text-[11px] text-slate-500 hover:text-slate-700" @click="sheetDetail = null">关闭查看</button>
       </div>
       </template>
     </div>
+
+    <ShippingWorkbookPreviewModal
+      v-if="previewState"
+      :filename="previewState.filename"
+      :path="previewState.path"
+      :sheets="previewState.sheets"
+      can-download
+      @close="previewState = null"
+      @download="downloadSheet(previewState.sheet)"
+    />
   </section>
 </template>

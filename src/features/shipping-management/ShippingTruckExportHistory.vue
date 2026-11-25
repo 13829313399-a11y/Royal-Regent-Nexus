@@ -8,7 +8,9 @@ import {
   listGeneratedDocs,
   openGeneratedDoc,
   type GeneratedDoc,
+  type WorkbookPreviewSheet,
 } from '@/api/shippingMail'
+import ShippingWorkbookPreviewModal from './ShippingWorkbookPreviewModal.vue'
 
 const props = defineProps<{ factoryId: string; refreshKey?: number }>()
 const emit = defineEmits<{ notify: [message: string] }>()
@@ -24,6 +26,7 @@ const exceptionType = ref<'short' | 'damaged' | ''>('')
 const exceptionStep = ref<'exchange' | 'material' | 'carton' | ''>('')
 const exceptionNote = ref('')
 const exceptionStatuses = ref<Record<string, { type: string; step: string; note: string }>>({})
+const previewState = ref<{ doc: GeneratedDoc; path: string; sheets: WorkbookPreviewSheet[] } | null>(null)
 
 function viewedKey(id: string) {
   return `shipping-truck-export-viewed:${props.factoryId}:${id}`
@@ -131,7 +134,7 @@ async function download(doc: GeneratedDoc) {
     link.download = doc.filename
     link.click()
     URL.revokeObjectURL(url)
-    emit('notify', `已下载 ${doc.filename}`)
+    emit('notify', `已下载 ${doc.filename}，并按月存入 D:\\导入文件\\车的排出货表`)
   } catch (error) {
     message.value = getApiErrorMessage(error)
   } finally {
@@ -142,8 +145,10 @@ async function download(doc: GeneratedDoc) {
 async function open(doc: GeneratedDoc) {
   markViewed(doc)
   busy.value = true
+  message.value = ''
   try {
     const result = await openGeneratedDoc(props.factoryId, doc.id)
+    previewState.value = { doc, path: result.path, sheets: result.sheets ?? [] }
     emit('notify', result.opened ? `已打开 ${doc.filename}` : `已保存 ${result.path}`)
   } catch (error) {
     message.value = getApiErrorMessage(error)
@@ -260,5 +265,15 @@ defineExpose({ refresh: load })
         </div>
       </section>
     </div>
+
+    <ShippingWorkbookPreviewModal
+      v-if="previewState"
+      :filename="previewState.doc.filename"
+      :path="previewState.path"
+      :sheets="previewState.sheets"
+      can-download
+      @close="previewState = null"
+      @download="download(previewState.doc)"
+    />
   </section>
 </template>

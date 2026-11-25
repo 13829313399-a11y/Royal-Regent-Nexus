@@ -52,8 +52,10 @@ async function importCabinet(payload: { taskId: string; filename: string; header
     sheetDate: text(source.sheetDate) || new Date().toISOString().slice(0, 10),
     preparer: text(source.preparer) || '农建壮',
     brandNote: text(source.brandNote),
+    poNo: text(source.poNo) || text(source.cartonMark),
     originPort: text(source.originPort) || '盐田',
     transportCompany: text(source.transportCompany) || '成隆达',
+    tableName: text(source.tableName),
     number: text(source.number),
     plate: text(source.plate),
     containerNo: text(source.containerNo),
@@ -65,11 +67,16 @@ async function importCabinet(payload: { taskId: string; filename: string; header
     tradeTerm: text(source.tradeTerm) || 'FOB',
     shippingClerk: text(source.shippingClerk),
     truckHead: text(source.truckHead),
-    cartonMark: text(source.cartonMark),
+    cartonMark: text(source.cartonMark) || text(source.poNo),
     photoNote: text(source.photoNote) || '注，要照相',
     department: 'W',
   }
-  const lines = payload.lines.map(toLine)
+  const contract = text(source.contractNo)
+  const lines = payload.lines.map((line) => {
+    const mapped = toLine(line)
+    if (contract) mapped.contract = contract
+    return mapped
+  })
   cabinetDraft.value = {
     number: text(source.number),
     taskId: payload.taskId,
@@ -109,6 +116,6 @@ async function importCabinet(payload: { taskId: string; filename: string; header
       </div>
     </div>
 
-    <ShippingLoadingSheetPanel :factory-id="factoryId" :initial-draft="cabinetDraft" :search-query="cabinetSearch" @notify="emit('notify', $event)" />
+    <ShippingLoadingSheetPanel :factory-id="factoryId" :initial-draft="cabinetDraft" :search-query="cabinetSearch" @notify="emit('notify', $event)" @back="emit('back')" />
   </section>
 </template>

@@ -133,11 +133,53 @@ export async function getLoadingSheet(factoryId: string, sheetId: string) {
   return data
 }
 
+export interface WorkbookPreviewBorder {
+  t?: string
+  r?: string
+  b?: string
+  l?: string
+}
+
+export interface WorkbookPreviewCell {
+  v: string
+  rs?: number
+  cs?: number
+  skip?: boolean
+  bg?: string
+  color?: string
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  fontSize?: number
+  fontFamily?: string
+  align?: 'left' | 'center' | 'right'
+  valign?: 'top' | 'middle' | 'bottom'
+  wrap?: boolean
+  border?: WorkbookPreviewBorder
+}
+
+export interface WorkbookPreviewSheet {
+  name: string
+  rows: string[][]
+  colWidths?: number[]
+  rowHeights?: Array<number | null>
+  cells?: WorkbookPreviewCell[][]
+}
+
 export async function openLoadingSheet(factoryId: string, sheetId: string) {
-  const { data } = await http.post<{ path: string; filename: string }>(`/shipping/loading-sheets/${sheetId}/open`, null, {
+  const { data } = await http.post<{ opened?: boolean; path: string; filename: string; sheets?: WorkbookPreviewSheet[] }>(`/shipping/loading-sheets/${sheetId}/open`, null, {
     params: { factory_id: factoryId },
   })
   return data
+}
+
+export async function downloadLoadingSheet(factoryId: string, sheetId: string) {
+  const { data } = await http.get(`/shipping/loading-sheets/${sheetId}/download`, {
+    params: { factory_id: factoryId },
+    responseType: 'blob',
+    timeout: 120_000,
+  })
+  return data as Blob
 }
 
 export async function deleteLoadingSheet(factoryId: string, sheetId: string) {
@@ -259,6 +301,7 @@ export interface LoadingLine {
   netPerCarton: number | null
   description: string
   department: string
+  pallet?: number | null
   cartonMark?: string
 }
 
@@ -319,6 +362,7 @@ export interface ProductSearchItem {
   consignee?: string
   so_number?: string
   brand?: string
+  customer?: string
   source?: string
 }
 
@@ -716,6 +760,25 @@ export async function importFactorySchedule(factoryId: string, history = false) 
   return data
 }
 
+export interface ScheduleFileImportResult {
+  filename: string
+  rows: number
+  groups: number
+  created: number
+  updated: number
+}
+
+export async function importFactoryScheduleFile(factoryId: string, file: File): Promise<ScheduleFileImportResult> {
+  const form = new FormData()
+  form.append('factory_id', factoryId)
+  form.append('file', file)
+  const { data } = await http.post<ScheduleFileImportResult>('/shipping/schedule-import/file', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120_000,
+  })
+  return data
+}
+
 export interface GeneratedDoc {
   id: string
   module: string
@@ -769,7 +832,7 @@ export async function downloadGeneratedDoc(factoryId: string, docId: string) {
 }
 
 export async function openGeneratedDoc(factoryId: string, docId: string) {
-  const { data } = await http.post<{ opened: boolean; path: string }>(
+  const { data } = await http.post<{ opened: boolean; path: string; filename?: string; sheets?: WorkbookPreviewSheet[] }>(
     `/shipping/generated-docs/${docId}/open`, null, { params: { factory_id: factoryId } },
   )
   return data
@@ -837,6 +900,13 @@ export interface ShippingScheduleRow {
   quantity: number | null
   cartons: number | null
   cbm: number | null
+  order_date: string
+  inspection_date: string
+  requested_ship_date: string
+  sales_order_no: string
+  packing: number | null
+  standard: string
+  remark: string
 }
 
 /** 工厂排期单明细：一个备案货号可能对应多个合同号，接口已按 合同 × 货号 拆行。 */
@@ -845,5 +915,167 @@ export async function listScheduleRows(factoryId: string) {
     '/shipping/schedule/rows',
     { params: { factory_id: factoryId } },
   )
+  return data
+}
+
+export interface PalletStatsSummary {
+  totalPallets: number
+  totalContainers: number
+  estimatedCost: number
+  recordCount: number
+  customerCount: number
+}
+
+export interface PalletStatsGroup {
+  key: string
+  factoryId: string
+  factoryName: string
+  customer: string
+  spec: string
+  unitPrice: number
+  containerCount: number
+  totalPallets: number
+  estimatedCost: number
+  recordCount: number
+}
+
+export type PalletRecordType = 'manual' | 'loading_sheet' | 'generated_doc'
+
+export interface PalletStatsDetail {
+  id: string
+  factoryId: string
+  originFactoryId?: string
+  factoryName: string
+  date: string
+  customer: string
+  containerNo: string
+  containerType: string
+  soNo: string
+  contractNo: string
+  filingCodes: string[]
+  spec: string
+  cartons: number
+  pallets: number
+  unitPrice: number
+  estimatedCost: number
+  source: string
+  isContainer: boolean
+  recordType: PalletRecordType
+  editable: boolean
+  remark: string
+}
+
+export interface PalletStatsResponse {
+  year: string
+  month: string
+  factoryId: string
+  customer: string
+  q: string
+  availableFactories: Array<{ id: string; name: string }>
+  availableCustomers: string[]
+  availableYears: string[]
+  availableMonths: string[]
+  excludedCount: number
+  summary: PalletStatsSummary
+  groups: PalletStatsGroup[]
+  details: PalletStatsDetail[]
+}
+
+export interface ManualPalletRecordPayload {
+  factory_id: string
+  ship_date: string
+  customer: string
+  container_no?: string
+  container_type?: string
+  so_no?: string
+  contract_no?: string
+  filing_codes?: string
+  spec?: string
+  cartons?: number
+  pallets: number
+  unit_price?: number | null
+  is_container?: boolean
+  remark?: string
+  record_type?: PalletRecordType
+  origin_factory_id?: string
+}
+
+export interface PalletBatchDeleteItem {
+  id: string
+  factoryId: string
+  originFactoryId?: string
+  recordType: PalletRecordType
+}
+
+export interface PalletGroupUpdatePayload {
+  items: PalletBatchDeleteItem[]
+  factory_id: string
+  customer: string
+  spec: string
+  container_count: number
+  total_pallets: number
+  unit_price: number
+  estimated_cost?: number | null
+  cost_overridden?: boolean
+}
+
+export interface PalletBatchDeleteResult {
+  deletedManualCount: number
+  excludedSyncCount: number
+  totalRemoved: number
+}
+
+export async function fetchShippingPalletStats(params: {
+  factory_id?: string
+  year?: string
+  month?: string
+  customer?: string
+  unit_price?: number
+  q?: string
+}): Promise<PalletStatsResponse> {
+  const { data } = await http.get<PalletStatsResponse>('/shipping/pallet-stats', { params })
+  return data
+}
+
+export async function exportShippingPalletStats(params: {
+  factory_id?: string
+  year?: string
+  month?: string
+  customer?: string
+  unit_price?: number
+  q?: string
+}): Promise<Blob> {
+  const { data } = await http.get('/shipping/pallet-stats/export', {
+    params,
+    responseType: 'blob',
+    timeout: 120_000,
+  })
+  return data as Blob
+}
+
+export async function createShippingPalletRecord(payload: ManualPalletRecordPayload) {
+  const { data } = await http.post('/shipping/pallet-stats/records', payload)
+  return data
+}
+
+export async function updateShippingPalletRecord(recordId: string, payload: ManualPalletRecordPayload) {
+  const { data } = await http.put(`/shipping/pallet-stats/records/${encodeURIComponent(recordId)}`, payload)
+  return data
+}
+
+export async function updateShippingPalletGroup(payload: PalletGroupUpdatePayload) {
+  const { data } = await http.put<{ updatedCount: number }>('/shipping/pallet-stats/groups', payload)
+  return data
+}
+
+export async function batchDeleteShippingPalletRecords(items: PalletBatchDeleteItem[]): Promise<PalletBatchDeleteResult> {
+  const { data } = await http.post<PalletBatchDeleteResult>('/shipping/pallet-stats/records/batch-delete', { items })
+  return data
+}
+
+export async function restoreExcludedShippingPalletRecords(factoryId: string = 'all'): Promise<{ restoredCount: number }> {
+  const { data } = await http.post<{ restoredCount: number }>('/shipping/pallet-stats/restore-excluded', {
+    factory_id: factoryId,
+  })
   return data
 }

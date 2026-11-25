@@ -400,3 +400,31 @@ def test_gbk_chinese_email_and_legacy_xls_attachment_are_parsed():
     assert result['items'][0]['cartons'] == 50.0
 
 
+def test_zim_and_cma_preserve_email_container_type_codes():
+    zim_text = """Shipping Order No.:
+FLEXPORT INTERNATIONAL (SHANGHAI)Client / Forwarder:
+Vessel Code:COLORADO  18EVessel/Voyage:
+Final Destination: CINCINNATI (OH)
+Port of Loading : YANTIAN (GD)
+FLXFLXCB-1718961Other Reference 2:
+Booking details:
+1 X HC40
+VGM Closing Date: 20/07/2026 06:00
+ZIMUSHH32234677/A1 (HC40)"""
+    zim_fields = extract_fields(zim_text, received_at='2026-07-10').fields
+    assert zim_fields['container_type'] == '1*40HC'
+    assert zim_fields['po_no'] == 'FLXFLXCB-1718961'
+    assert zim_fields['brand'] == 'FLEXPORT INTERNATIONAL (SHANGHAI)'
+
+    cma_text = """Booking Confirmation
+Shipping Order No.: SHZ8356199
+Contract No(SQ/SC): YFRMS0000003
+Port Of Loading: CNYTN (YANTIAN)
+Port Of Discharge: DEHAM (HAMBURG)
+2 x 40'HC
+1 x 40'ST
+SI Cut-Off Date/Time: 16-Jul-2026 16:00"""
+    cma_fields = extract_fields(cma_text, received_at='2026-07-10').fields
+    assert cma_fields['container_type'] == '2*40HC, 1*40ST'
+
+

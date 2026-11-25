@@ -124,8 +124,8 @@ _SO_PATTERNS = (
     re.compile(r'\bSO\s*(?:No\.?|Number|#|:|：)\s*(?!SO\b)([A-Z0-9][A-Z0-9-]{4,})', re.I),
     re.compile(r'(?:订\s*[舱仓]\s*(?:编|单|号)?\s*号|提\s*单\s*号|落\s*货\s*纸\s*号|关\s*单\s*号|送\s*货\s*单\s*号)\s*[:：\s]*([A-Z0-9][A-Z0-9-]{4,})', re.I),
 )
-_CONTAINER = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|42|45)\s*(HQ|GP|HC|OT|FR|RF)', re.I)
-_TYPE_CONTAINER = re.compile(r'Type\s*[:：]\s*((?:\d+\s*[*xX×]\s*)?(20|40|42|45)\s*(HQ|GP|HC|OT|FR|RF))', re.I)
+_CONTAINER = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|42|45)\s*(HQ|GP|HC|ST|OT|FR|RF)', re.I)
+_TYPE_CONTAINER = re.compile(r'Type\s*[:：]\s*((?:\d+\s*[*xX×]\s*)?(20|40|42|45)\s*(HQ|GP|HC|ST|OT|FR|RF))', re.I)
 _VESSEL = (
     re.compile(r'(?:Ocean|Mother|Main|1st|Feeder)?\s*Vessel\s*(?:Name)?\s*[:：]\s*([^\n]{2,60})', re.I),
     re.compile(r'船\s*名\s*[:：]\s*([^\n]{2,60})'),
@@ -139,9 +139,13 @@ _BRAND = (
     re.compile(r'Brand(?:\s+Name)?\s*[:：]\s*([^\n]{2,40})', re.I),
     re.compile(r'品\s*牌(?:名称)?\s*[:：\s]*([^\n]{2,40})'),
 )
+_KNOWN_BRAND_RE = re.compile(
+    r'\b(ZURU|BUZZBEE|PLAYMATES|MOOSE|SPIN\s+MASTER|HASBRO|MATTEL|TOMY|BUKI|DICKIE|SIMBA|ROSS)\b',
+    re.I,
+)
 _CUSTOMER = (
     re.compile(r'Customer\s*[:：]\s*([^\n]{2,60})', re.I),
-    re.compile(r'客户(?:名称)?\s*[:：\s]*([^\n]{2,40})'),
+    re.compile(r'客户(?:名称)?\s*[:：]\s*([^\n]{2,40})'),
 )
 _TRANSPORT = (
     re.compile(r'运输公司\s*[:：]\s*([^\n]{2,50})'),
@@ -165,7 +169,7 @@ _WAREHOUSE = (
     re.compile(r'\b(\d{1,3})\s*号仓'),
 )
 _BOOKING_VESSEL = re.compile(r'([A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){1,3})\s+(\d{2}-[A-Z]{3}-\d{4})')
-_BOOKING_TYPES = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|42|45)\s*(HQ|GP|HC|OT|FR|RF)', re.I)
+_BOOKING_TYPES = re.compile(r'(\d+)\s*[*xX×]\s*(20|40|42|45)\s*\'?\s*(HQ|GP|HC|ST|OT|FR|RF)', re.I)
 _BOOKING_VOYAGE = re.compile(r'Voy\.?\s*No\.?\s*[:：]\s*([A-Z0-9]+)', re.I)
 _MAERSK_CONTRACT = re.compile(r'Service\s+Contract\s*[:：]?\s*[\s\S]{0,200}?\b(\d{8,})\b', re.I)
 _MAERSK_VESSEL = re.compile(r'\bMVS\s+([A-Z][A-Z ]{3,40}?)\s+(\d{3}[A-Z])\b')
@@ -216,7 +220,7 @@ _ONE_TERMINAL = re.compile(r'Termin\s*al\s*[:：]\s*(YICT|SCT|CCT|NSCT|GOCT)\b',
 
 _HMM_VESSEL = re.compile(r'1st\s+Vessel/Voyage\s*[:：]\s*([A-Z][A-Z0-9 .-]{2,35}?)\s+(\d{3,4}[A-Z]?)(?=\s*\(|\s|$)', re.I)
 _AMENDMENT_VESSEL = re.compile(r'Vessel\s*/\s*Voyage\s*[:：]\s*([A-Z][A-Z0-9 .-]{2,35}?)\s*/?\s*([A-Z0-9]{2,12}\d[A-Z0-9]{0,6})\b', re.I)
-_ZIM_CONTAINER = re.compile(r'(\d+)\s*[xX×]\s*(HQ|GP|HC|OT|FR|RF|DRY)[\s-]*(\d{2})', re.I)
+_ZIM_CONTAINER = re.compile(r'(\d+)\s*[xX×]\s*(HQ|GP|HC|ST|OT|FR|RF|DRY)[\s\'-]*(\d{2})', re.I)
 _ZIM_VESSEL = re.compile(r'Vessel\s+Code\s*[:：]\s*([A-Z][A-Z0-9 .-]{2,30}?)\s+(\d{2,3}[A-Z]?)\s*Vessel/Voyage', re.I)
 
 PARSER_VERSION = '2026-11-23.p8'
@@ -257,8 +261,8 @@ _COMMON_VESSEL = (
     re.compile(r'Vessel\s+Voyage(?:\s+Dir)?\s*[:：]\s*([^\n]+)', re.I),
 )
 _COMMON_CONTAINER = (
-    re.compile(r'(\d+)\s*[xX×]\s*(\d{2})\s*\'?\s*(HIGH\s+CUBE|HI-?\s*CUBE|HC|HQ|DRY\s+VAN|DRY|GP)', re.I),
-    re.compile(r'(\d+)\s*[xX×]\s*HC\s*(\d{2})', re.I),
+    re.compile(r'(\d+)\s*[xX×]\s*(\d{2})\s*\'?\s*(HIGH\s+CUBE|HI-?\s*CUBE|HC|HQ|DRY\s+VAN|DRY|GP|ST|OT|FR|RF)', re.I),
+    re.compile(r'(\d+)\s*[xX×]\s*(HC|HQ|GP|ST|OT|FR|RF)\s*[\'-]?\s*(\d{2})', re.I),
     re.compile(r'(\d{2})\s*\'\s*(HIGH\s+CUBE|HI-?\s*CUBE|DRY\s+VAN|DRY)', re.I),
     re.compile(r'Equipment\s+Size\s*[:：]\s*(4H)', re.I),
 )
@@ -272,13 +276,23 @@ class FieldExtraction:
 
 
 def _apply_zim_booking(text: str, result: FieldExtraction) -> None:
+    fields = result.fields
     vessel = _ZIM_VESSEL.search(text)
-    if not vessel:
-        return
-    result.fields['vessel_name'] = _clean(vessel.group(1))
-    result.fields['voyage_no'] = vessel.group(2)
+    if vessel:
+        fields['vessel_name'] = _clean(vessel.group(1))
+        fields['voyage_no'] = vessel.group(2)
     if 'YANTIAN' in text.upper():
-        result.fields['terminal'] = '盐田国际码头'
+        fields['terminal'] = '盐田国际码头'
+    if not fields.get('po_no'):
+        other_ref = re.search(r'^\s*([A-Z0-9][A-Z0-9\-/]{3,40})\s*Other\s+Reference\s*2\s*:', text, re.I | re.M)
+        if other_ref:
+            fields['po_no'] = other_ref.group(1).strip()
+    if not fields.get('customer'):
+        fwd = re.search(r'^\s*([^\n]{3,60}?)\s*Client\s*/\s*Forwarder\s*:', text, re.I | re.M)
+        if fwd:
+            fields['customer'] = _clean(fwd.group(1))
+            if not fields.get('brand'):
+                fields['brand'] = fields['customer']
 
 
 def _apply_hmm_booking(text: str, result: FieldExtraction) -> None:
@@ -289,6 +303,68 @@ def _apply_hmm_booking(text: str, result: FieldExtraction) -> None:
     if 'YANTIAN' in text.upper():
         result.fields['terminal'] = '盐田国际码头'
         result.fields['from_port'] = '盐田'
+
+
+def _apply_msc_booking(text: str, result: FieldExtraction) -> None:
+    fields = result.fields
+    bkg = re.search(r'^\s*(\d{3}[A-Z]{2}\d{8,}[A-Z0-9]*)\s*$', text, re.M)
+    if bkg:
+        fields['booking_no'] = bkg.group(1)
+        fields['so_number'] = bkg.group(1)
+        fields['container_so'] = bkg.group(1)
+
+    vsl = re.search(r'^\s*([A-Z][A-Z0-9 .-]{2,35}?)\s*/\s*([A-Z0-9]{2,12}\d[A-Z0-9]{0,6})\s*$', text, re.M)
+    if vsl and (_is_invalid_vessel(fields.get('vessel_name', '')) or not fields.get('voyage_no')):
+        cand = _clean(vsl.group(1))
+        if not _is_invalid_vessel(cand):
+            fields['vessel_name'] = cand
+            fields['voyage_no'] = vsl.group(2)
+
+    if not fields.get('contract_no') or _is_invalid_identifier(fields.get('contract_no', '')):
+        sc = re.search(r'\b(\d{5,}-\d{4,}-[A-Z0-9]{2,})\b', text)
+        if sc:
+            fields['contract_no'] = sc.group(1)
+            fields['contract_tails'] = _contract_tails(sc.group(1))
+
+    if not fields.get('po_no') and re.search(r'Shipment\s+ID|Ref\.:', text, re.I):
+        ref = re.search(r'^\s*(\d{8,12})\s*$', text, re.M)
+        if ref:
+            fields['po_no'] = ref.group(1)
+
+    if 'YANTIAN' in text.upper() or 'YICT' in text.upper():
+        fields['port'] = '盐田'
+        fields['from_port'] = '盐田'
+        fields['terminal'] = '盐田国际码头'
+        fields['table_name'] = '盐田国际码头SO排期表'
+
+    dest = re.search(r'^\s*([A-Z][A-Z .\'-]+;[A-Z][A-Z .\'-]+)\s*$', text, re.M)
+    if dest:
+        fields['destination'] = dest.group(1)
+        fields['to_port'] = dest.group(1)
+        fields['destination_country'] = _country(dest.group(1)) or fields.get('destination_country', '')
+
+    cnt_tbl = re.search(r"40'\s*DRY\s*VAN\s+40'\s*HIGH\s*CUBE\s*\n\s*(\d+)\s+(\d+)", text, re.I)
+    if cnt_tbl:
+        fields['container_type'] = f'{cnt_tbl.group(1)}*40GP, {cnt_tbl.group(2)}*40HQ'
+
+    if not fields.get('customer') or fields.get('customer') in ('服务部', '客服'):
+        for line in text.splitlines():
+            cand = line.strip()
+            if (
+                cand
+                and 'MEDITERRANEAN SHIPPING' not in cand.upper()
+                and re.fullmatch(r"[A-Z0-9][A-Z0-9 &.,'-]{3,50}(?:LTD|LIMITED|INC|GMBH|LLC|CORP|A/S)", cand)
+            ):
+                fields['customer'] = cand
+                if not fields.get('brand'):
+                    fields['brand'] = cand
+                break
+
+    etd = re.search(r'(\d{2}-[A-Za-z]{3}-20\d{2})', text)
+    if etd and not fields.get('planned_ship_date'):
+        parsed = parse_schedule_date(etd.group(1), 2026)
+        if parsed:
+            fields['planned_ship_date'] = parsed.isoformat()
 
 
 def _apply_one_booking(text: str, result: FieldExtraction) -> None:
@@ -382,8 +458,16 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
     }))
 
     brand = _first_group(text, _BRAND)
-    result.fields['brand'] = brand
     customer = _first_group(text, _CUSTOMER)
+    if customer:
+        customer = re.split(r'\s+Commodity\s+Description\s*[:：]', customer, maxsplit=1, flags=re.I)[0].strip()
+    if not brand:
+        brand_match = _KNOWN_BRAND_RE.search(text)
+        if brand_match:
+            brand = brand_match.group(1).upper()
+    if not brand and customer:
+        brand = customer
+    result.fields['brand'] = brand
     result.fields['customer'] = customer
     result.trace.append(_trace('SHIP-CUST-001', {'customer': customer}))
 
@@ -474,6 +558,8 @@ def extract_fields(text: str, *, received_at: str = '') -> FieldExtraction:
         _apply_zim_booking(text, result)
     if re.search(r'1st\s+Vessel/Voyage|Booking\s+Notice', text, re.I):
         _apply_hmm_booking(text, result)
+    if re.search(r'MEDITERRANEAN\s+SHIPPING\s+COMPANY|\bMSC\b', text, re.I):
+        _apply_msc_booking(text, result)
 
     mode = 'warehouse' if re.search(r'交仓|入仓|散货收货站|\bCFS\b', text, re.I) else ('container' if container_type else 'unknown')
     result.fields['shipment_mode'] = mode
@@ -616,20 +702,33 @@ def _apply_common_labels(text: str, result: FieldExtraction) -> None:
         if voyage and not fields.get('voyage_no'):
             fields['voyage_no'] = voyage
 
-    candidates: list[tuple[str, str, str]] = []
+    explicit_candidates: list[tuple[str, str, str]] = []
     for match in _COMMON_CONTAINER[0].finditer(text):
-        candidates.append((match.group(1), match.group(2), match.group(3)))
+        explicit_candidates.append((match.group(1), match.group(2), match.group(3)))
     for match in _COMMON_CONTAINER[1].finditer(text):
-        candidates.append((match.group(1), match.group(2), 'HC'))
+        explicit_candidates.append((match.group(1), match.group(3), match.group(2)))
+    fallback_candidates: list[tuple[str, str, str]] = []
     for match in _COMMON_CONTAINER[2].finditer(text):
-        candidates.append(('1', match.group(1), match.group(2)))
+        fallback_candidates.append(('1', match.group(1), match.group(2)))
     if _COMMON_CONTAINER[3].search(text):
-        candidates.append(('1', '40', 'HC'))
+        fallback_candidates.append(('1', '40', 'HQ'))
+
+    candidates = explicit_candidates or (fallback_candidates if not fields.get('container_type') else [])
     if candidates and ',' not in str(fields.get('container_type') or ''):
-        chosen = next((item for item in candidates if 'HIGH' in item[2].upper() or item[2].upper() in ('HC', 'HQ')), candidates[0])
-        count, size, kind = chosen
-        normalized = 'HQ' if 'HIGH' in kind.upper() or 'HI-' in kind.upper() or kind.upper() in ('HC', 'HQ') else ('GP' if 'DRY' in kind.upper() else kind.upper())
-        fields['container_type'] = f'{count}*{size}{normalized}'
+        formatted: list[str] = []
+        for count, size, kind in candidates:
+            upper_kind = kind.upper()
+            if 'HIGH' in upper_kind or 'HI-' in upper_kind:
+                normalized = 'HQ'
+            elif 'DRY' in upper_kind:
+                normalized = 'GP'
+            else:
+                normalized = upper_kind
+            entry = f'{count}*{size}{normalized}'
+            if entry not in formatted:
+                formatted.append(entry)
+        if formatted:
+            fields['container_type'] = ', '.join(formatted)
 
     result.trace.append(_trace('SHIP-LABELS-001', {
         'contract_no': fields.get('contract_no'), 'from_port': fields.get('from_port'),
@@ -767,9 +866,17 @@ def _normalize_origin_port(value: str) -> str:
     return cleaned
 
 
+_INVALID_PORT_LABELS = {
+    '卸货港', '装货港', '目的地', '第一中转港', '收货地', '发货人', '收货人',
+    '船名/航次', '柜型/数量', '订舱号', '提单号', '码头', '起运港', '目的港',
+}
+
+
 def _is_invalid_port(value: str) -> bool:
     text = (value or '').strip()
     if not text:
+        return True
+    if text in _INVALID_PORT_LABELS or any(lbl in text for lbl in ('卸货港', '装货港', '目的地', '第一中转港', '收货地', '755 25180000')):
         return True
     if '@' in text or _EMAIL_ADDRESS.search(text):
         return True
@@ -849,6 +956,8 @@ def _is_invalid_vessel(value: str) -> bool:
     upper = text.upper()
     if upper in _INVALID_ID_WORDS or any(tok in upper for tok in ('CNYTN', 'YANTIAN', 'DEHAM', 'HAMBURG', 'CLOSING', 'CUT OFF', 'CUT-OFF', 'SHIPPER', 'CONSIGNEE', 'BOOKING')):
         return True
+    if any(lbl in text for lbl in ('柜型', '数量', '发货人', '收货地', '装货港', '卸货港', '订舱号')):
+        return True
     if re.fullmatch(r'[\s/:：\-_航次船名名称编号]+', text):
         return True
     return False
@@ -858,6 +967,7 @@ def _first_id_group(text: str, patterns) -> str:
     for pattern in patterns:
         for match in pattern.finditer(text):
             candidate = re.sub(r'\s+', ' ', match.group(1)).strip(' .:-/,;')
+            candidate = re.sub(r'(?<=\d)Page$', '', candidate, flags=re.I)
             if candidate and not _is_invalid_identifier(candidate):
                 return candidate
     return ''

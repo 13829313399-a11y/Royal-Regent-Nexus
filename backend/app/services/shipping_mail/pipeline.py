@@ -215,6 +215,11 @@ def _parse_delivery_order(filename: str, data: bytes, text: str) -> dict:
             do_no = match.group(1).strip()
     contract = items[0].get('contract_no') if items else ''
     delivery_date = _delivery_date(text)
+    warehouse = ''
+    warehouse_match = re.search(r'Factory\s+Name\s*[：:]\s*([^\n]+)', text, re.I)
+    if warehouse_match:
+        warehouse = re.sub(r'\s+', ' ', warehouse_match.group(1)).strip()
+    container_type = '散货' if re.search(r'本仓自行做柜|入仓', text) else ''
     fields = {
         'so_number': do_no,
         'booking_no': do_no,
@@ -226,6 +231,10 @@ def _parse_delivery_order(filename: str, data: bytes, text: str) -> dict:
         'ship_date': delivery_date,
         'shipment_mode': 'warehouse',
         'cargo_source': 'attachment',
+        'terminal': warehouse,
+        'to_port': '东莞' if warehouse or '东莞' in text else '',
+        'destination_country': '中国' if ('东莞' in text or '中国' in text) else '',
+        'container_type': container_type,
     }
     warnings = [] if items else ['未识别到入仓单商品明细，请人工确认表格格式']
     return {

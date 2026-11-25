@@ -10,13 +10,20 @@ import {
   type BulkTruckLine,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
+import { filingCodeFilename } from './contracts'
 import ShippingTruckExportHistory from './ShippingTruckExportHistory.vue'
 
-const props = defineProps<{ factoryId: string; initialTaskId?: string; initialHeader?: Record<string, unknown> | null }>()
+const props = defineProps<{
+  factoryId: string
+  initialTaskId?: string
+  initialHeader?: Record<string, unknown> | null
+  initialLines?: Array<Record<string, unknown>> | null
+}>()
 const emit = defineEmits<{ notify: [message: string]; back: [] }>()
 
 const tasks = ref<ShippingScheduleTask[]>([])
 const selectedTaskId = ref('')
+const LAST_TASK_KEY = `shipping-truck-last-task:${props.factoryId}`
 const search = ref('')
 const searchField = ref<'all' | 'contract' | 'filing'>('all')
 const searching = ref(false)
@@ -50,7 +57,9 @@ async function loadDraft() {
   try {
     draft.value = await draftBulkTruckSheet(props.factoryId, selectedTaskId.value)
     applyInitialHeader()
+    await applyImportedOrScheduleLines()
     dedupeLines()
+    applyHeaderBrandToLines()
     syncTableName()
   } catch (error) {
     message.value = `生成失败：${getApiErrorMessage(error)}`
@@ -61,6 +70,7 @@ async function loadDraft() {
 
 function applyInitialHeader() {
   if (!draft.value || !props.initialHeader) return
+  if (props.initialTaskId && selectedTaskId.value !== props.initialTaskId) return
   const source = props.initialHeader
   const text = (value: unknown) => String(value ?? '').trim()
   const brand = text(source.brandName) || text(source.brandNote) || text(source.brand)
@@ -79,7 +89,7 @@ function applyInitialHeader() {
   if (text(source.poNo)) draft.value.header.poNo = text(source.poNo)
   if (text(source.orderNo)) draft.value.header.orderNo = text(source.orderNo)
   if (text(source.filingCode)) draft.value.header.filingCode = text(source.filingCode)
-  if (text(source.bookingNo)) draft.value.header.bookingNo = text(source.bookingNo)
+  if (text(source.bookingNo) || text(source.soNo)) draft.value.header.bookingNo = text(source.bookingNo) || text(source.soNo)
   const carrier = text(source.transport) || text(source.transportCompanyName) || text(source.transportCompany)
   if (carrier) {
     draft.value.header.transportCompanyName = carrier
@@ -95,7 +105,106 @@ function applyInitialHeader() {
   syncTableName()
 }
 
-watch(() => props.initialHeader, applyInitialHeader)
+function isBlankBulkLine(line: BulkTruckLine) {
+  return !String(line.contract || '').trim()
+    && !String(line.filingCode || '').trim()
+    && (line.quantity == null || Number(line.quantity) === 0)
+    && (line.cartons == null || Number(line.cartons) === 0)
+}
+
+function lineFromSeed(row: Record<string, unknown>): BulkTruckLine {
+  const header = draft.value!.header
+  const cartons = row.cartons == null ? null : Number(row.cartons)
+  const quantity = row.quantity == null ? null : Number(row.quantity)
+  const grossWeight = row.grossWeight == null ? (row.gross_weight == null ? null : Number(row.gross_weight)) : Number(row.grossWeight)
+  const netWeight = row.netWeight == null ? (row.net_weight == null ? null : Number(row.net_weight)) : Number(row.netWeight)
+  const cbm = row.cbm == null ? null : Number(row.cbm)
+  const code = String(row.filingCode || row.declareCode || row.product_code || '').trim()
+  return {
+    id: crypto.randomUUID(),
+    tradingHouse: String(row.tradingHouse || header.tradingHouse || header.brandName || 'ZURU').trim(),
+    contract: String(row.contract || row.contract_no || header.contractNo || '').trim(),
+    filingCode: code,
+    declareCode: String(row.declareCode || code).trim(),
+    coefficient: row.coefficient != null ? Number(row.coefficient) : (cartons && quantity ? Math.round((quantity / cartons) * 1000) / 1000 : null),
+    name: String(row.name || row.description || row.product_name || '').trim(),
+    quantity,
+    cartons,
+    boards: String(row.boards || ''),
+    grossWeight,
+    netWeight,
+    cbm,
+    country: String(row.country || header.country || '').trim(),
+    grossPerCarton: cartons && grossWeight ? Math.round((grossWeight / cartons) * 1000) / 1000 : null,
+    netPerCarton: cartons && netWeight ? Math.round((netWeight / cartons) * 1000) / 1000 : null,
+    cbmPerCarton: cartons && cbm ? Math.round(((cbm * 35.4) / cartons) * 1000) / 1000 : null,
+    brand: String(row.brand || header.brandName || '').trim(),
+    so: String(row.so || row.so_number || header.bookingNo || '').trim(),
+    po: String(row.po || row.cartonMark || row.customer_po || header.poNo || '').trim(),
+    shippingNote: String(row.shippingNote || ''),
+    remark: String(row.remark || ''),
+  }
+}
+
+function mergeBulkLines(incoming: BulkTruckLine[]) {
+  if (!draft.value || !incoming.length) return
+  const existing = new Set(
+    draft.value.lines
+      .filter((line) => !isBlankBulkLine(line))
+      .map((line) => `${String(line.contract || '').trim()}|${String(line.filingCode || '').trim()}`),
+  )
+  for (const mapped of incoming) {
+    if (!mapped.contract && !mapped.filingCode) continue
+    const key = `${mapped.contract}|${mapped.filingCode}`
+    if (existing.has(key)) continue
+    existing.add(key)
+    const blankIndex = draft.value.lines.findIndex(isBlankBulkLine)
+    if (blankIndex >= 0) {
+      const blank = draft.value.lines[blankIndex]!
+      draft.value.lines.splice(blankIndex, 1, { ...mapped, id: blank.id })
+    } else {
+      draft.value.lines.push(mapped)
+    }
+  }
+}
+
+async function applyImportedOrScheduleLines() {
+  if (!draft.value) return
+  const seed = (props.initialLines ?? [])
+    .map(lineFromSeed)
+    .filter((line) => line.contract || line.filingCode)
+  if (seed.length) {
+    mergeBulkLines(seed)
+  }
+  const hasRealLines = draft.value.lines.some((line) => String(line.contract || '').trim() && String(line.filingCode || '').trim())
+  if (hasRealLines) return
+
+  const contract = String(draft.value.header.contractNo || '').trim()
+  const filingCode = String(draft.value.header.filingCode || '').trim()
+  const query = contract || filingCode
+  if (!query) return
+  try {
+    const items = await searchScheduleProducts(props.factoryId, query)
+    const matched = items.filter((item) => {
+      if (contract) return String(item.contract_no || '').trim().toLowerCase() === contract.toLowerCase()
+      return String(item.product_code || '').trim().toLowerCase() === filingCode.toLowerCase()
+    })
+    const mapped = matched
+      .filter((item) => String(item.product_code || '').trim())
+      .map((item) => lineFromSeed(item as unknown as Record<string, unknown>))
+    if (mapped.length) mergeBulkLines(mapped)
+  } catch {
+    // keep draft lines editable when schedule search fails
+  }
+}
+
+watch(() => [props.initialHeader, props.initialLines] as const, async () => {
+  applyInitialHeader()
+  await applyImportedOrScheduleLines()
+  dedupeLines()
+  applyHeaderBrandToLines()
+  syncTableName()
+})
 
 function dedupeLines() {
   if (!draft.value) return 0
@@ -135,7 +244,7 @@ async function runSearch() {
       const cartons = Number(item.cartons) || 0
       const mapped: BulkTruckLine = {
         id: crypto.randomUUID(),
-        tradingHouse: draft.value.header.tradingHouse || 'DK',
+        tradingHouse: draft.value.header.tradingHouse || String(item.customer || '') || 'ZURU',
         contract: String(item.contract_no || ''),
         filingCode: code,
         declareCode: code,
@@ -147,13 +256,13 @@ async function runSearch() {
         grossWeight: Number(item.gross_weight) || 0,
         netWeight: Number(item.net_weight) || 0,
         cbm: Number(item.cbm) || 0,
-        country: String(item.country || ''),
+        country: String(item.country || draft.value.header.country || ''),
         grossPerCarton: cartons && item.gross_weight ? Number(item.gross_weight) / cartons : null,
         netPerCarton: cartons && item.net_weight ? Number(item.net_weight) / cartons : null,
         cbmPerCarton: cartons && item.cbm ? Number(item.cbm) / cartons : null,
-        brand: '',
-        so: String(item.so_number || ''),
-        po: String(item.customer_po || ''),
+        brand: String(item.brand || draft.value.header.brandName || ''),
+        so: String(item.so_number || draft.value.header.bookingNo || ''),
+        po: String(item.customer_po || draft.value.header.poNo || ''),
         shippingNote: '',
         remark: '',
       }
@@ -194,6 +303,16 @@ function formatTableName(transportRaw: unknown, originPortRaw: unknown) {
   return carrier
 }
 
+function applyHeaderBrandToLines() {
+  if (!draft.value) return
+  const header = draft.value.header
+  const brand = String(header.brandName || '').trim()
+  if (!brand) return
+  for (const line of draft.value.lines) {
+    if (!String(line.brand || '').trim()) line.brand = brand
+  }
+}
+
 function syncTableName() {
   if (!draft.value) return
   const header = draft.value.header
@@ -228,8 +347,12 @@ async function download() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    const codes = [...new Set((draft.value.lines ?? []).map((line) => String(line.filingCode || '').trim()).filter(Boolean))]
-    link.download = `${codes.join('_') || draft.value.header.tableName || '2026年盐田散货'}.xls`
+    link.download = filingCodeFilename(
+      draft.value.lines,
+      '.xls',
+      draft.value.header.tableName || '2026年盐田散货',
+      draft.value.header.filingCode,
+    )
     link.click()
     URL.revokeObjectURL(url)
     emit('notify', `已生成 ${draft.value.header.tableName}。`)
@@ -241,7 +364,23 @@ async function download() {
   }
 }
 
-onMounted(loadTasks)
+onMounted(async () => {
+  await loadTasks()
+  if (!props.initialTaskId && !selectedTaskId.value) {
+    const last = typeof window !== 'undefined' && window.localStorage
+      ? window.localStorage.getItem(LAST_TASK_KEY)
+      : ''
+    if (last) {
+      selectedTaskId.value = last
+      await loadDraft()
+    }
+  }
+})
+watch(selectedTaskId, (id) => {
+  if (typeof window !== 'undefined' && window.localStorage && id) {
+    window.localStorage.setItem(LAST_TASK_KEY, id)
+  }
+})
 watch(
   () => draft.value
     ? `${draft.value.header.transport || ''}|${draft.value.header.originPort || ''}`
@@ -250,6 +389,8 @@ watch(
     if (value && value !== previous) syncTableName()
   },
 )
+watch(() => draft.value?.header.brandName, () => applyHeaderBrandToLines())
+
 watch(() => props.initialTaskId, (taskId) => {
   if (!taskId) return
   selectedTaskId.value = taskId
@@ -289,13 +430,13 @@ watch(() => props.initialTaskId, (taskId) => {
             <input v-model="draft.header.consignee" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
           <label class="text-[11px] text-slate-500">合同号
-            <input v-model="draft.header.contractNo" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+            <input v-model="draft.header.contractNo" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @change="void applyImportedOrScheduleLines()">
           </label>
           <label class="text-[11px] text-slate-500">订舱号/SO
             <input v-model="draft.header.bookingNo" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
           </label>
           <label class="text-[11px] text-slate-500">备案货号
-            <input v-model="draft.header.filingCode" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
+            <input v-model="draft.header.filingCode" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @change="void applyImportedOrScheduleLines()">
           </label>
           <label class="text-[11px] text-slate-500">箱唛（PO）
             <input v-model="draft.header.poNo" type="text" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">
@@ -396,6 +537,7 @@ watch(() => props.initialTaskId, (taskId) => {
             {{ task.so_number || task.id }} · {{ task.port || '-' }} · {{ task.planned_ship_date || '-' }}
           </option>
         </select>
+        <button type="button" class="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-800" @click="emit('back')">← 返回工厂排期</button>
         <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
           <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出发货表' }}
         </button>
@@ -416,29 +558,27 @@ watch(() => props.initialTaskId, (taskId) => {
           <tbody class="divide-y divide-emerald-50">
             <tr v-for="(line, index) in draft.lines" :key="line.id">
               <td class="px-1 py-1 text-center">{{ index + 1 }}</td>
-              <td class="px-1 py-1"><input v-model="line.tradingHouse" class="h-7 w-14 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.contract" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.filingCode" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.declareCode" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.name" class="h-7 w-36 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model.number="line.quantity" type="number" class="h-7 w-20 rounded border border-emerald-100 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cartons" type="number" class="h-7 w-16 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
+              <td class="px-1 py-1"><input v-model="line.tradingHouse" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.contract" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.filingCode" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.declareCode" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.name" readonly class="h-7 w-36 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model.number="line.quantity" type="number" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cartons" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
               <td class="px-1 py-1"><input v-model="line.boards" class="h-7 w-12 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model.number="line.grossWeight" type="number" class="h-7 w-16 rounded border border-emerald-100 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.netWeight" type="number" class="h-7 w-16 rounded border border-emerald-100 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cbm" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model="line.country" class="h-7 w-20 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model.number="line.grossPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
-              <td class="px-1 py-1"><input v-model.number="line.netPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cbmPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
-              <td class="px-1 py-1"><input v-model="line.brand" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.so" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.po" class="h-7 w-20 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model.number="line.grossWeight" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.netWeight" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cbm" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model="line.country" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model.number="line.grossPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.netPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cbmPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model="line.brand" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.so" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.po" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.shippingNote" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.remark" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1 text-center">
-                <button type="button" class="text-rose-500" aria-label="删除明细" @click="draft.lines.splice(index, 1)"><Trash2 class="size-3.5" /></button>
-              </td>
+              <td class="px-1 py-1 text-center text-slate-400">—</td>
             </tr>
             <tr class="bg-emerald-50/60 font-semibold text-emerald-950">
               <td class="px-2 py-2" colspan="6">合计</td>
@@ -452,11 +592,6 @@ watch(() => props.initialTaskId, (taskId) => {
             </tr>
           </tbody>
         </table>
-        <div class="p-3">
-          <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 px-3 text-[12px] font-semibold text-emerald-800" @click="addLine">
-            <Plus class="size-3.5" />添加明细
-          </button>
-        </div>
       </div>
     </template>
 

@@ -10,6 +10,7 @@ import {
   type TruckLine,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
+import { filingCodeFilename } from './contracts'
 import ShippingTruckExportHistory from './ShippingTruckExportHistory.vue'
 
 const props = defineProps<{ factoryId: string; initialTaskId?: string }>()
@@ -138,7 +139,7 @@ async function download() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `${draft.value.header.tableName || '客上车'}.xls`
+    link.download = filingCodeFilename(draft.value.lines, '.xls', draft.value.header.tableName || '客上车')
     link.click()
     URL.revokeObjectURL(url)
     emit('notify', `已生成 ${draft.value.header.tableName} 车货表。`)

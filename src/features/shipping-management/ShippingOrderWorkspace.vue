@@ -12,14 +12,14 @@ import {
 } from '@lucide/vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import { getApiErrorMessage } from '@/lib/http'
-import { importFactorySchedule, listScheduleRows, type ShippingScheduleRow } from '@/api/shippingMail'
+import { importFactorySchedule, importFactoryScheduleFile, listScheduleRows, type ShippingScheduleRow } from '@/api/shippingMail'
 import type { ShippingFactoryProfile, ShippingOrder, ShippingOrderStatus } from './contracts'
 import { shippingOrderStatusMeta } from './contracts'
 
 const props = defineProps<{ profile: ShippingFactoryProfile }>()
 const emit = defineEmits<{ notify: [message: string]; 'open-so-sheet': []; 'open-truck-sheet': []; 'open-supplement': [] }>()
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 200
 
 const actionCards = [
   { id: 'so-export', title: 'SO排出货单', hint: '按 SO 汇总出货明细', icon: FileSpreadsheet },
@@ -74,6 +74,15 @@ const importedOrders = computed<ShippingOrder[]>(() => scheduleRows.value.map((r
   status: scheduleOrderStatus(row.status),
   contractNo: row.contract_no || '',
   filingNo: row.product_code || '',
+  orderDate: row.order_date || '',
+  inspectionDate: row.inspection_date || '',
+  requestedShipDate: row.requested_ship_date || '',
+  salesOrderNo: row.sales_order_no || row.so_number || '',
+  packing: row.packing,
+  quantity: row.quantity,
+  standard: row.standard || row.destination_country || '',
+  remark: row.remark || '',
+  poNo: String(row.customer_po || '').replace(/\/10$/, ''),
   products: [{ code: row.product_code || '', name: row.product_name || '' }],
 })))
 
@@ -154,7 +163,19 @@ const filteredOrders = computed(() => {
       if (filters.to && (!order.departureDate || order.departureDate > filters.to)) return false
       return true
     })
-    .sort((a, b) => (b.departureDate || '').localeCompare(a.departureDate || ''))
+    .sort((a, b) => {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const distance = (value?: string) => {
+        if (!value) return Number.POSITIVE_INFINITY
+        const day = new Date(`${value.slice(0, 10)}T00:00:00`)
+        return Number.isNaN(day.getTime()) ? Number.POSITIVE_INFINITY : Math.abs(day.getTime() - today.getTime())
+      }
+      const left = distance(a.requestedShipDate)
+      const right = distance(b.requestedShipDate)
+      if (left !== right) return left - right
+      return (a.requestedShipDate || '').localeCompare(b.requestedShipDate || '')
+    })
 })
 
 const total = computed(() => filteredOrders.value.length)
@@ -181,6 +202,7 @@ function refresh() {
 }
 
 const importing = ref(false)
+const scheduleFileInput = ref<HTMLInputElement | null>(null)
 
 async function importSchedule(history = false) {
   importing.value = true
@@ -193,6 +215,24 @@ async function importSchedule(history = false) {
     await loadScheduleRows()
   } catch (error) {
     emit('notify', `厂区总排期导入失败：${getApiErrorMessage(error)}`)
+  } finally {
+    importing.value = false
+  }
+}
+
+async function importScheduleFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  importing.value = true
+  try {
+    const result = await importFactoryScheduleFile(props.profile.factoryId, file)
+    refreshNote.value = `${file.name} 已导入 · ${result.groups} 组 / ${result.rows} 行`
+    emit('notify', `排期表导入完成：新增 ${result.created} 组、更新 ${result.updated} 组。`)
+    await loadScheduleRows()
+  } catch (error) {
+    emit('notify', `排期表导入失败：${getApiErrorMessage(error)}`)
   } finally {
     importing.value = false
   }
@@ -240,6 +280,14 @@ function shortDate(value: string) {
   return value ? value.slice(5).replace('-', '/') : ''
 }
 
+function displayContract(value?: string) {
+  return String(value || '').replace(/\/10$/, '')
+}
+
+function fullDate(value: string) {
+  return value ? value.slice(0, 10).replace(/-/g, '/') : ''
+}
+
 function shortDateTime(value: string) {
   return value ? value.slice(5, 16).replace('-', '/') : '—'
 }
@@ -275,7 +323,7 @@ function statusTone(order: ShippingOrder) {
         <div class="min-w-0">
           <h2 class="text-[17px] font-semibold tracking-[-0.02em] text-slate-950">工厂货期排单</h2>
           <p class="mt-1 text-[11px] text-slate-500">
-            按开航日期倒序 · 状态默认「已创建」 · 每页 {{ PAGE_SIZE }} 条
+            按客要求走货期距今天由近到远 · 状态默认「已创建」 · 每页 {{ PAGE_SIZE }} 条
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -291,6 +339,15 @@ function statusTone(order: ShippingOrder) {
           >
             <RefreshCw class="size-3.5" :class="importing ? 'animate-spin' : ''" aria-hidden="true" />{{ importing ? '导入中…' : '从厂区总排期导入' }}
           </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2.5 text-[12px] font-semibold text-teal-800 transition hover:bg-teal-100 disabled:opacity-60"
+            :disabled="importing"
+            @click="scheduleFileInput?.click()"
+          >
+            <FileSpreadsheet class="size-3.5" aria-hidden="true" />导入表格
+          </button>
+          <input ref="scheduleFileInput" type="file" accept=".xlsx,.xls" class="hidden" @change="importScheduleFile">
           <button
             type="button"
             class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 text-[12px] font-semibold text-amber-800 transition hover:bg-amber-100 disabled:opacity-60"
@@ -346,19 +403,21 @@ function statusTone(order: ShippingOrder) {
         <table class="w-full min-w-[1500px] border-collapse text-left text-[12px]">
           <thead class="bg-slate-50 text-[11px] font-semibold text-slate-500">
             <tr>
+              <th scope="col" class="px-3 py-2">客出单日期</th>
               <th scope="col" class="px-3 py-2">ID</th>
-              <th scope="col" class="px-3 py-2">柜号</th>
               <th scope="col" class="px-3 py-2">合同号</th>
+              <th scope="col" class="px-3 py-2">箱唛 / PO</th>
               <th scope="col" class="px-3 py-2">备案号</th>
-              <th scope="col" class="px-3 py-2">柜型</th>
-              <th scope="col" class="px-3 py-2">出场时间</th>
-              <th scope="col" class="px-3 py-2">截止时间</th>
-              <th scope="col" class="px-3 py-2" title="截关 / 截数期">截重期</th>
-              <th scope="col" class="px-3 py-2">港口</th>
-              <th scope="col" class="px-3 py-2">收货地</th>
+              <th scope="col" class="px-3 py-2">销售订单号</th>
+              <th scope="col" class="px-3 py-2">验货日期</th>
+              <th scope="col" class="px-3 py-2">客要求走货期</th>
+              <th scope="col" class="px-3 py-2">国家标准</th>
               <th scope="col" class="px-3 py-2">客户</th>
+              <th scope="col" class="px-3 py-2">产品中文名称</th>
+              <th scope="col" class="px-3 py-2 text-right">数量</th>
+              <th scope="col" class="px-3 py-2 text-right">装箱</th>
               <th scope="col" class="px-3 py-2 text-right">CBM</th>
-              <th scope="col" class="px-3 py-2">特殊要求</th>
+              <th scope="col" class="px-3 py-2">备注</th>
               <th scope="col" class="px-3 py-2 text-right">状态</th>
               <th scope="col" class="sticky right-0 z-20 w-[160px] border-l border-slate-100 bg-slate-50 px-3 py-2 text-right shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)]">操作</th>
             </tr>
@@ -369,23 +428,25 @@ function statusTone(order: ShippingOrder) {
               :key="order.id"
               class="bg-white hover:bg-slate-50/60"
             >
+              <td class="px-3 py-2 tabular-nums text-slate-600">{{ order.orderDate ? fullDate(order.orderDate) : '—' }}</td>
               <td class="px-3 py-2 font-semibold tabular-nums text-slate-800">{{ order.id }}</td>
-              <td class="px-3 py-2 tabular-nums text-slate-600">{{ order.containerNo || '—' }}</td>
               <td class="px-3 py-2">
                 <button type="button" class="font-semibold tabular-nums text-teal-700 underline-offset-2 hover:underline" :aria-label="`查看 SO ${order.so}`" @click="openDetail(order)">
-                  {{ order.contractNo || order.so }}
+                  {{ displayContract(order.contractNo) || order.so }}
                 </button>
               </td>
+              <td class="px-3 py-2 tabular-nums text-slate-600">{{ order.poNo || '—' }}</td>
               <td class="px-3 py-2 tabular-nums text-slate-600">{{ order.products.map((product) => product.code).join(' / ') || '—' }}</td>
-              <td class="px-3 py-2 text-slate-700">{{ order.containerType }}</td>
-              <td class="px-3 py-2 tabular-nums text-slate-700" :title="order.departureDate || '待排'">{{ order.departureDate ? shortDate(order.departureDate) : '待排' }}</td>
-              <td class="px-3 py-2 tabular-nums text-slate-600">{{ shortDateTime(order.siDeadline) }}</td>
-              <td class="px-3 py-2 tabular-nums text-slate-600">{{ shortDateTime(order.cutoff) }}</td>
-              <td class="px-3 py-2 text-slate-700">{{ order.port }}</td>
-              <td class="px-3 py-2 text-slate-700">{{ order.destination }}</td>
-              <td class="px-3 py-2 text-slate-700">{{ order.customer }}</td>
-              <td class="px-3 py-2 text-right tabular-nums text-slate-800">{{ order.cbm.toFixed(1) }}</td>
-              <td class="max-w-[190px] truncate px-3 py-2 text-slate-500" :title="order.special">{{ order.special || '—' }}</td>
+              <td class="px-3 py-2 tabular-nums text-slate-700">{{ order.salesOrderNo || order.so || '—' }}</td>
+              <td class="px-3 py-2 tabular-nums text-slate-700">{{ order.inspectionDate ? fullDate(order.inspectionDate) : '—' }}</td>
+              <td class="px-3 py-2 tabular-nums text-slate-700">{{ order.requestedShipDate ? fullDate(order.requestedShipDate) : '—' }}</td>
+              <td class="px-3 py-2 text-slate-700">{{ order.standard || order.destination || '—' }}</td>
+              <td class="px-3 py-2 text-slate-700">{{ order.customer || '—' }}</td>
+              <td class="max-w-[160px] truncate px-3 py-2 text-slate-700" :title="order.products[0]?.name">{{ order.products[0]?.name || '—' }}</td>
+              <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ order.quantity ?? '—' }}</td>
+              <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ order.packing ?? '—' }}</td>
+              <td class="px-3 py-2 text-right tabular-nums text-slate-800">{{ order.cbm.toFixed(2) }}</td>
+              <td class="max-w-[190px] truncate px-3 py-2 text-slate-500" :title="order.remark">{{ order.remark || '—' }}</td>
               <td class="whitespace-nowrap px-3 py-2"><StatusPill :label="order.status" :tone="statusTone(order)" compact /></td>
               <td
                 class="sticky right-0 z-10 border-l border-slate-100 bg-white px-3 py-2 shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)]"
@@ -485,7 +546,7 @@ function statusTone(order: ShippingOrder) {
             </div>
             <div class="surface-subtle rounded-lg px-3 py-2">
               <p class="text-[10.5px] font-semibold text-slate-500">PL票数 / CBM</p>
-              <p class="mt-0.5 text-[13px] font-semibold tabular-nums text-slate-900">{{ detail.plCount }} 票 · {{ detail.cbm.toFixed(1) }} CBM</p>
+              <p class="mt-0.5 text-[13px] font-semibold tabular-nums text-slate-900">{{ detail.plCount }} 票 · {{ detail.cbm.toFixed(2) }} CBM</p>
             </div>
             <div class="surface-subtle rounded-lg px-3 py-2 sm:col-span-2">
               <p class="text-[10.5px] font-semibold text-slate-500">特殊要求</p>

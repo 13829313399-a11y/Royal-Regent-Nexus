@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
@@ -16,9 +16,12 @@ import {
   type LoadingSheetRecord,
   type SupplementDraft,
   type SupplementLine,
+  type WorkbookPreviewSheet,
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
 import type { LoadingSheetDetail } from '@/api/shippingMail'
+import { filingCodeFilename } from './contracts'
+import ShippingWorkbookPreviewModal from './ShippingWorkbookPreviewModal.vue'
 
 const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string]; back: [] }>()
@@ -26,6 +29,7 @@ const emit = defineEmits<{ notify: [message: string]; back: [] }>()
 const tasks = ref<ShippingScheduleTask[]>([])
 const sheets = ref<LoadingSheetRecord[]>([])
 const selectedTaskId = ref('')
+const LAST_TASK_KEY = `shipping-supplement-last-task:${props.factoryId}`
 const selectedSheetId = ref('')
 const sheetSearch = ref('')
 const generatedDocs = ref<GeneratedDoc[]>([])
@@ -37,6 +41,7 @@ const draft = ref<SupplementDraft | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
 const message = ref('')
+const previewState = ref<{ doc: GeneratedDoc; filename: string; path: string; sheets: WorkbookPreviewSheet[] } | null>(null)
 
 const filteredSheets = computed(() => {
   const query = sheetSearch.value.trim().toLowerCase()
@@ -153,6 +158,7 @@ async function downloadGenerated(doc: GeneratedDoc) {
     link.download = doc.filename
     link.click()
     URL.revokeObjectURL(url)
+    emit('notify', `已下载 ${doc.filename}，并按月存入 D:\\导入文件\\补料单`)
   } catch (error) {
     message.value = `下载失败：${getApiErrorMessage(error)}`
   }
@@ -160,8 +166,16 @@ async function downloadGenerated(doc: GeneratedDoc) {
 
 async function openGenerated(doc: GeneratedDoc) {
   markGeneratedViewed(doc)
+  message.value = ''
   try {
-    await openGeneratedDoc(props.factoryId, doc.id)
+    const result = await openGeneratedDoc(props.factoryId, doc.id)
+    previewState.value = {
+      doc,
+      filename: result.filename || doc.filename,
+      path: result.path,
+      sheets: result.sheets ?? [],
+    }
+    emit('notify', result.opened ? `已打开 ${doc.filename}` : `已保存 ${result.path}`)
   } catch (error) {
     message.value = `打开失败：${getApiErrorMessage(error)}`
   }
@@ -287,12 +301,11 @@ async function download() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    const codes = [...new Set((draft.value.lines ?? []).map((line) => String(line.itemNo || '').trim()).filter(Boolean))]
-    link.download = `${codes.join('_') || '补料单'}.xlsx`
+    link.download = filingCodeFilename(draft.value.lines, '.xlsx', '补料单')
     link.click()
     URL.revokeObjectURL(url)
     await loadGeneratedDocs()
-    emit('notify', '补料单已生成并下载。')
+    emit('notify', '补料单已生成并下载，并按月存入 D:\\导入文件\\补料单。')
   } catch (error) {
     message.value = `导出失败：${getApiErrorMessage(error)}`
   } finally {
@@ -300,7 +313,24 @@ async function download() {
   }
 }
 
-onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
+onMounted(async () => {
+  await loadTasks()
+  await loadGeneratedDocs()
+  if (!selectedTaskId.value) {
+    const last = typeof window !== 'undefined' && window.localStorage
+      ? window.localStorage.getItem(LAST_TASK_KEY)
+      : ''
+    if (last) {
+      selectedTaskId.value = last
+      await loadDraft()
+    }
+  }
+})
+watch(selectedTaskId, (id) => {
+  if (typeof window !== 'undefined' && window.localStorage && id) {
+    window.localStorage.setItem(LAST_TASK_KEY, id)
+  }
+})
 </script>
 
 <template>
@@ -324,6 +354,7 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
           </option>
         </select>
         <button type="button" class="h-9 rounded-lg border border-emerald-200 px-3 text-[11px] font-semibold text-emerald-700" @click="loadSheets">刷新</button>
+        <button type="button" class="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-800" @click="emit('back')">← 返回工厂排期</button>
         <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
           <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出补料单' }}
         </button>
@@ -381,7 +412,8 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
       </div>
 
       <div class="overflow-x-auto rounded-xl border border-emerald-100/80 bg-white">
-        <div class="flex justify-end border-b border-emerald-100 px-3 py-2">
+        <div class="flex justify-end gap-2 border-b border-emerald-100 px-3 py-2">
+          <button type="button" class="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-[11px] font-semibold text-emerald-800" @click="emit('back')">← 返回工厂排期</button>
           <button type="button" class="inline-flex h-9 items-center gap-1 rounded-lg bg-emerald-700 px-3 text-[11px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
             <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出补料单' }}
           </button>
@@ -463,7 +495,12 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
         </div>
         <table class="mt-2 w-full max-w-2xl text-left text-[11px]">
           <thead class="bg-slate-50 text-slate-500">
-            <tr><th class="px-2 py-1.5">Item#</th><th class="px-2 py-1.5 text-right">Pcs</th><th class="px-2 py-1.5 text-right">Ctns</th><th class="px-2 py-1.5">Sales Conf#</th></tr>
+            <tr>
+              <th class="px-2 py-1.5">Item#<span class="block text-[9px] font-normal text-slate-400">货号</span></th>
+              <th class="px-2 py-1.5 text-right">Pcs<span class="block text-[9px] font-normal text-slate-400">数量</span></th>
+              <th class="px-2 py-1.5 text-right">Ctns<span class="block text-[9px] font-normal text-slate-400">箱数</span></th>
+              <th class="px-2 py-1.5">Sales Conf#<span class="block text-[9px] font-normal text-slate-400">销售合同号</span></th>
+            </tr>
           </thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-for="entry in summary" :key="`${entry.itemNo}-${entry.salesConf}`">
@@ -503,5 +540,15 @@ onMounted(async () => { await loadTasks(); await loadGeneratedDocs() })
           </div>
         </div>
       </div>
+
+    <ShippingWorkbookPreviewModal
+      v-if="previewState"
+      :filename="previewState.filename"
+      :path="previewState.path"
+      :sheets="previewState.sheets"
+      can-download
+      @close="previewState = null"
+      @download="downloadGenerated(previewState.doc)"
+    />
   </section>
 </template>

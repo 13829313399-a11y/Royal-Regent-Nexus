@@ -1,5 +1,5 @@
 """Shipping mail batches, parsed mail items and the shipping tasks they create."""
-from sqlalchemy import Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import Float, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -161,3 +161,66 @@ class ShippingGeneratedDoc(Base):
     lines_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String(40))
     created_by: Mapped[str] = mapped_column(String(64), default='')
+
+
+class ShippingPalletRecord(Base):
+    """Manual pallet usage records retained across years per factory."""
+    __tablename__ = 'shipping_pallet_records'
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    ship_date: Mapped[str] = mapped_column(String(10), index=True)
+    customer: Mapped[str] = mapped_column(String(120), index=True)
+    container_no: Mapped[str] = mapped_column(String(120), default='')
+    container_type: Mapped[str] = mapped_column(String(40), default='40HQ')
+    so_no: Mapped[str] = mapped_column(String(80), default='')
+    contract_no: Mapped[str] = mapped_column(String(120), default='')
+    filing_codes: Mapped[str] = mapped_column(String(300), default='')
+    spec: Mapped[str] = mapped_column(String(120), default='标准木卡板 (1200×1000)')
+    cartons: Mapped[float] = mapped_column(Float, default=0.0)
+    pallets: Mapped[float] = mapped_column(Float, default=0.0)
+    unit_price: Mapped[float] = mapped_column(Float, default=65.0)
+    is_container: Mapped[int] = mapped_column(Integer, default=1)
+    remark: Mapped[str] = mapped_column(String(300), default='')
+    created_by: Mapped[str] = mapped_column(String(64), default='')
+    created_at: Mapped[str] = mapped_column(String(40), default='')
+    updated_at: Mapped[str] = mapped_column(String(40), default='')
+
+
+class ShippingPalletExclusion(Base):
+    """Exclusions for synced loading sheets / generated docs removed from pallet stats."""
+    __tablename__ = 'shipping_pallet_exclusions'
+    __table_args__ = (UniqueConstraint('factory_id', 'source_kind', 'source_id', name='uq_shipping_pallet_exclusion'),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_kind: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[str] = mapped_column(String(64), index=True)
+    excluded_by: Mapped[str] = mapped_column(String(64), default='')
+    excluded_at: Mapped[str] = mapped_column(String(40), default='')
+
+
+class ShippingPalletOverride(Base):
+    """Persistent overrides for pallet summary groups and synced detail rows."""
+    __tablename__ = 'shipping_pallet_overrides'
+    __table_args__ = (UniqueConstraint('factory_id', 'source_kind', 'source_id', name='uq_shipping_pallet_override'),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_kind: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_factory_id: Mapped[str] = mapped_column(String(64), default='', index=True)
+    ship_date: Mapped[str] = mapped_column(String(10), default='')
+    customer: Mapped[str] = mapped_column(String(120), default='')
+    container_no: Mapped[str] = mapped_column(String(120), default='')
+    container_type: Mapped[str] = mapped_column(String(40), default='')
+    so_no: Mapped[str] = mapped_column(String(80), default='')
+    contract_no: Mapped[str] = mapped_column(String(120), default='')
+    filing_codes: Mapped[str] = mapped_column(String(300), default='')
+    spec: Mapped[str] = mapped_column(String(120), default='')
+    cartons: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    pallets: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    unit_price: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    estimated_cost_override: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    container_count_override: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    is_container: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    remark: Mapped[str] = mapped_column(String(300), default='')
+    updated_by: Mapped[str] = mapped_column(String(64), default='')
+    updated_at: Mapped[str] = mapped_column(String(40), default='')
