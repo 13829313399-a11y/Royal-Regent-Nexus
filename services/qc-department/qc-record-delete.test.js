@@ -103,6 +103,7 @@ async function createSheetEnv({ deleteAllowed }) {
   w.eval(fs.readFileSync(path.join(sourceRoot, 'services/qc-department/qc-inspection-audit.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(sourceRoot, 'services/qc-department/qc-photo-paste.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(sourceRoot, 'services/qc-department/qc-review-workbook.js'), 'utf8'));
+  w.eval(fs.readFileSync(path.join(sourceRoot, 'services/qc-department/qc-mobile-entry.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(sourceRoot, 'services/qc-department/qc-inspection-sheet.js'), 'utf8'));
   await tick();
   if (!w.QcInspectionSheet.model.loaded) await w.QcInspectionSheet.load('records');
@@ -137,6 +138,13 @@ test('QC_test can delete blank drafts in workbench, pending items in review, and
     const delBtn = env.d.getElementById('qis-record-delete');
     const submitBtn = env.d.getElementById('qis-record-batch');
     assert.ok(delBtn && delBtn.disabled);
+    assert.deepEqual([...submitBtn.parentNode.children].map(el => el.id),
+      ['qis-record-delete', 'qc-mobile-entry', 'qis-record-batch']);
+    const style = env.d.createElement('style');
+    style.textContent = fs.readFileSync(path.join(sourceRoot, 'services/qc-department/qc-inspection-sheet.css'), 'utf8');
+    env.d.head.append(style);
+    assert.equal(env.w.getComputedStyle(delBtn).marginRight, 'auto');
+    assert.equal(env.w.getComputedStyle(submitBtn.parentNode).justifyContent, 'flex-end');
 
     // Check a BLANK draft row -> enables delete button while submit stays disabled!
     const blankCheck = env.d.querySelector('[data-delete-check="wb-blank"]');
