@@ -37,6 +37,18 @@ class IamReleaseTests(unittest.TestCase):
         hashes = guard.verify(files.__getitem__)
         self.assertEqual(hashes, {name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
 
+    def test_split_menu_must_be_imported_by_the_selected_system_layout(self):
+        files = build_files()
+        menu, routes = files["assets/index-test.js"].split(b";const routes=", 1)
+        layout_route = b"{path:`/system`,component:()=>import(`./IamWorkspaceLayout-abc.js`),meta:{fullPage:!0}},"
+        files["assets/index-test.js"] = b"const routes=[" + layout_route + routes[1:]
+        files["assets/IamWorkspaceLayout-abc.js"] = b'import{menu as m}from"./iam-navigation-abc.js";export{m};'
+        files["assets/iam-navigation-abc.js"] = menu + b";export{menu};"
+        self.assertEqual(set(guard.verify(files.__getitem__)), set(files))
+        files["assets/IamWorkspaceLayout-abc.js"] = b'const decoy="./iam-navigation-abc.js"; export{decoy};'
+        with self.assertRaisesRegex(ValueError, "missing studio navigation import"):
+            guard.verify(files.__getitem__)
+
     def test_legacy_route_cannot_be_hidden_by_preloads_or_compatibility_routes(self):
         files = build_files()
         main = files["assets/index-test.js"].replace(b"./PositionWorkbench-sample", b"./PeopleCenter-legacy")
