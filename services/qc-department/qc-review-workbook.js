@@ -15,15 +15,19 @@
   const clone=value=>JSON.parse(JSON.stringify(value));
   const conflict=message=>Object.assign(Error(message),{status:409});
   const cell=(key,contents,cls='')=>`<td data-column="${key}"><div class="qis-cell${cls}">${contents}</div></td>`;
-  function summary(rows,{dateText,reviewGroup,draft,audit}){
-    return `<thead><tr>${summaryFields.map(([key,label])=>`<th scope="col" data-column="${key}">${label}</th>`).join('')}</tr></thead><tbody>`+
+  function summary(rows,{dateText,reviewGroup,draft,audit,deleteSelect=null}){
+    const delHead=deleteSelect?`<th scope="col" data-column="deleteSelect" class="qis-delete-col"><input id="qis-pending-delete-all" type="checkbox" aria-label="全选待删除记录" title="全选待删除记录"${deleteSelect.allChecked?' checked':''}></th>`:'';
+    return `<thead><tr>${delHead}${summaryFields.map(([key,label])=>`<th scope="col" data-column="${key}">${label}</th>`).join('')}</tr></thead><tbody>`+
       rows.map(row=>{
         const d=draft(row),group=reviewGroup(row),planned=dateText(row),hint=`${planned}${group?' · '+group:''}`;
+        const delChecked=Boolean(deleteSelect?.checked?.has(row.id));
+        const delCell=deleteSelect?`<td data-column="deleteSelect" class="qis-delete-col"><div class="qis-cell"><input type="checkbox" data-delete-check="${esc(row.id)}" aria-label="勾选删除 ${esc(row.customer+' '+row.poNo)}"${delChecked?' checked':''}></div></td>`:'';
         const preview=(key,defaultLabel='—')=>{
           const value=text(d[key]), shown=value.trim();
           return cell(key,`<span title="${esc(shown?value:'暂无内容')}" class="${shown?'qis-preview-text':'qis-preview-empty'}${key==='result'?statusClass(value):''}">${esc(shown?value:defaultLabel)}</span>`);
         };
-        return `<tr tabindex="0" data-entry="${esc(row.id)}" aria-selected="false">`+
+        return `<tr tabindex="0" data-entry="${esc(row.id)}" aria-selected="false"${delChecked?' class="qis-delete-selected"':''}>`+
+          delCell+
           cell('date',`<span>${esc(planned)}</span>${group?`<small>${esc(group)}</small>`:''}`)+
           cell('customer',audit.reversalBadge(row)+esc(row.customer)+audit.badge(row))+
           cell('poNo',`<strong>${esc(row.poNo)}</strong><small class="qis-preview-mobile-date" title="${esc(hint)}">${esc(hint)}</small>`)+

@@ -241,6 +241,7 @@ DEFAULT_ROLES = [
     ("sales_customer_supervisor", "车间业务主管", "统筹车间客户报价转换、复核和报客价输出"),
     ("factory_permission_admin", "厂区权限管理员", "在授权厂区内管理普通用户权限"),
     ("department_permission_admin", "部门权限管理员", "在授权部门内管理普通用户权限"),
+    ("qc_record_admin", "QC 数据删除管理员", "覆盖六厂区 QC 验货管理与独立数据删除权限，不延伸至业务订单或其他部门"),
     ("admin", "系统管理员", "系统配置和权限管理"),
 ] + [
     (item.role_id, item.name, item.description)
@@ -401,8 +402,28 @@ ROLE_PERMISSIONS = {
         "molding_sample:notification_read",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
     },
+    "qc_record_admin": {
+        "qc_inspection:read",
+        "qc_inspection:schedule_write",
+        "qc_inspection:order_write",
+        "qc_inspection:result_write",
+        "qc_inspection:review",
+        "qc_inspection:problem_write",
+        "qc_inspection:report_export",
+        "qc_inspection:customer_manage",
+        "qc_inspection:record_delete",
+        "qc_inspection:audit_read",
+        "qc_inspection:factory_summary",
+    },
     "admin": set(APPLICATION_PERMISSIONS),
 }
+
+QC_RECORD_ADMIN_ROLE_ID = "qc_record_admin"
+QC_RECORD_ADMIN_USER_ID = "user-qc-test"
+QC_RECORD_ADMIN_USERNAME = "QC_test"
+QC_RECORD_ADMIN_DISPLAY_NAME = "QC 数据管理员"
+QC_RECORD_ADMIN_INITIAL_PASSWORD = "ok"
+QC_RECORD_ADMIN_SEED_MARKER = "seed_qc_record_admin_account_v1"
 
 for system_position in SYSTEM_POSITION_DEFINITIONS:
     ROLE_PERMISSIONS[system_position.role_id] = set(system_position.permission_codes)
@@ -1923,6 +1944,97 @@ def ensure_authz_startup_safety(db: Session) -> None:
         )
 
 
+def seed_qc_record_admin_account_once(db: Session, now: str) -> None:
+    """Provision the dedicated 6-factory QC record-delete management account once.
+
+    Runs independently of SEED_DEFAULT_ACCOUNTS so production deployments obtain
+    the authorized QC_test account automatically, while preserving any later
+    password, status, or binding changes managed through IAM.
+    """
+    if db.get(AuthIamState, QC_RECORD_ADMIN_SEED_MARKER) is not None:
+        return
+
+    permissions_by_code = {
+        permission.code: permission
+        for permission in db.scalars(select(AuthPermission)).all()
+    }
+    for role_id, codes in (
+        (QC_RECORD_ADMIN_ROLE_ID, ROLE_PERMISSIONS[QC_RECORD_ADMIN_ROLE_ID]),
+        ("admin", {"qc_inspection:record_delete"}),
+    ):
+        if db.get(AuthRole, role_id) is None:
+            continue
+        for code in codes:
+            permission = permissions_by_code.get(code)
+            if permission is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is None:
+                db.add(
+                    AuthRolePermission(
+                        id=role_permission_id,
+                        role_id=role_id,
+                        permission_id=permission.id,
+                    )
+                )
+
+    user = db.scalar(
+        select(AuthUser).where(AuthUser.username == QC_RECORD_ADMIN_USERNAME)
+    ) or db.get(AuthUser, QC_RECORD_ADMIN_USER_ID)
+    created_user = False
+    if user is None:
+        salt, password_hash = make_password_hash(QC_RECORD_ADMIN_INITIAL_PASSWORD)
+        user = AuthUser(
+            id=QC_RECORD_ADMIN_USER_ID,
+            username=QC_RECORD_ADMIN_USERNAME,
+            display_name=QC_RECORD_ADMIN_DISPLAY_NAME,
+            password_salt=salt,
+            password_hash=password_hash,
+            status="active",
+            force_password_change=0,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(user)
+        db.flush()
+        created_user = True
+
+    bound_factories: list[str] = []
+    for factory_id in sorted(ALLOWED_FACTORY_IDS):
+        user_role_id = f"{user.id}:{QC_RECORD_ADMIN_ROLE_ID}:{factory_id}:qc"
+        if db.get(AuthUserRole, user_role_id) is None:
+            db.add(
+                AuthUserRole(
+                    id=user_role_id,
+                    user_id=user.id,
+                    role_id=QC_RECORD_ADMIN_ROLE_ID,
+                    factory_id=factory_id,
+                    department="qc",
+                )
+            )
+            bound_factories.append(factory_id)
+
+    db.add(
+        AuthIamState(
+            key=QC_RECORD_ADMIN_SEED_MARKER,
+            value_json=json.dumps(
+                {
+                    "completed_at": now,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "created_user": created_user,
+                    "factories": sorted(ALLOWED_FACTORY_IDS),
+                    "bound_factories": bound_factories,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    db.flush()
+
+
 def seed_auth_defaults(db: Session) -> None:
     now = now_text()
     created_role_ids: set[str] = set()
@@ -2002,6 +2114,7 @@ def seed_auth_defaults(db: Session) -> None:
                 )
 
     db.flush()
+    seed_qc_record_admin_account_once(db, now)
     seed_iam_sidecars(db, now)
     seed_raw_material_write_default_grant_once(db, now)
     seed_carton_master_default_grants_once(db, now)

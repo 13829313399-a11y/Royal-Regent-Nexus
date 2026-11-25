@@ -41,7 +41,7 @@
 - 所有嵌入资源和 API 都经过 Nexus 的 `rr_session` 和 QC 厂区权限校验。嵌入 URL 绑定当前用户和授权版本，旧账号页面不能利用新账号 Cookie 提交。
 - 明确映射六个 Nexus 厂区至 QC 的 `hy-*` 子公司库；集团和未知厂区不会回落到东莞或华兴。
 - Node 服务仅信任共享网关令牌，生产没有宿主机端口。浏览器不能调用独立登录、SSO 或账号管理 API，也拿不到原账号密码摘要。
-- 新任务审批使用独立 `qc_inspection:review`，仅内置 QC 主管/经理拥有，检验员没有。旧 QC 整条记录同步同时要求 `qc_inspection:order_write`、`qc_inspection:result_write`。这是完整记录同步尚未拆成订单/结果接口前的保守边界。删除/覆盖再要求 `customer_manage`；客户/不良库维护使用 `customer_manage`；导出使用 `report_export`。
+- 新任务审批使用独立 `qc_inspection:review`，仅内置 QC 主管/经理拥有，检验员没有。旧 QC 整条记录同步同时要求 `qc_inspection:order_write`、`qc_inspection:result_write`。这是完整记录同步尚未拆成订单/结果接口前的保守边界。数据删除与历史批次撤回统一收口到独立权限 `qc_inspection:record_delete`（系统内置 `qc_record_admin` 角色及默认六厂区账号 `QC_test`、`admin` 持有，普通 QC 岗位不含该权限）；删除操作保留后端审计快照且不触碰业务部 `客排期` 订单，已审核记录需先反审核退回待审核后才可删除，已被历史记录引用的不良描述仅允许停用。客户/不良库日常新增编辑使用 `customer_manage`；导出使用 `report_export`。
 - 浏览器缓存按用户/厂区隔离在 sessionStorage。初始化失败不会回退示例记录；保存失败会阻断后续写入，提示重载核对。
 - 云端 OCR 密钥不随源目录复制；没有配置时保留原本的本地 OCR 路径。
 

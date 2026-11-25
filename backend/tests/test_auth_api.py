@@ -417,7 +417,7 @@ def test_only_admin_default_account_is_seeded_and_trial_accounts_are_retired(mon
         auth_models = importlib.import_module("app.models.auth")
         with db_module.SessionLocal() as db:
             active_users = db.query(auth_models.AuthUser).filter(auth_models.AuthUser.status == "active").all()
-            assert [user.username for user in active_users] == ["admin"]
+            assert {user.username for user in active_users} == {"admin", "QC_test"}
 
 
 def test_default_trial_login_self_heals_missing_seeded_user(monkeypatch):

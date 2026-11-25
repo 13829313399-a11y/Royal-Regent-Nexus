@@ -160,7 +160,7 @@ def test_http_read_import_permissions_and_removed_export(db,monkeypatch):
         response=client.post(base+'api/inspection-summary/history/preview',json=payload);assert response.status_code==200,response.text
         batch=response.json()['id'];assert client.post(base+'api/inspection-summary/history/'+batch+'/commit',json={}).status_code==200
         assert client.get(base+'api/inspection-summary/history').status_code==404
-        assert client.post(base+'api/inspection-summary/history/'+batch+'/rollback',json={}).status_code==404
+        assert client.post(base+'api/inspection-summary/history/'+batch+'/rollback',json={}).status_code==403
         assert client.get(base+'api/inspection-summary/records').json()['total']==3
         assert client.head(base+'api/inspection-summary/export').status_code==405
         assert client.get(base+'api/inspection-summary/export').status_code==404
