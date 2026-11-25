@@ -83,6 +83,32 @@ test('monthly preview opens the filtered workbook, confirms edits before switchi
 });
 
 const MIME_XLSX='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+test('switch shares a pending adjacent preview and ignores a late response after switching back',async t=>{
+  const h=await exportWorkbook(t,'weekly','detail');
+  const {w,d}=h, requests=[];
+  // jsdom's default hidden document suppresses speculative loads during setup.
+  Object.defineProperty(d,'hidden',{value:false});
+  w.fetch=(url,options)=>new Promise(resolve=>{
+    const kind=new URL(url,'http://localhost').searchParams.get('kind');
+    requests.push({kind,signal:options.signal,finish:()=>resolve({ok:true,json:async()=>({
+      cells:{},sheets:[{name:kind,html:`<table><tr><td data-addr="A1">${kind}</td></tr></table>`}]
+    })})});
+  });
+  const click=kind=>d.querySelector(`#wb-templates [data-kind="${kind}"]`).click();
+  const tick=()=>new Promise(setImmediate);
+  click('issues');await tick();
+  requests[0].finish();await tick();
+  assert.deepEqual(requests.map(r=>r.kind),['issues','detail']);
+  click('detail');await tick();
+  assert.equal(requests.length,2);
+  assert.equal(d.getElementById('wb-grid').getAttribute('aria-busy'),'true');
+  click('issues');await tick();
+  assert.equal(requests[1].signal.aborted,true);
+  requests[1].finish();await tick();
+  assert.equal(d.querySelector('#wb-templates [aria-pressed=true]').dataset.kind,'issues');
+  assert.equal(d.getElementById('wb-grid').shadowRoot.querySelector('td').textContent,'issues');
+  assert.equal(d.getElementById('wb-grid').inert,false);
+});
 const MIME_XLS='application/vnd.ms-excel';
 async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   const dom=new JSDOM('<main><input id="monthlyMonth" value="2026-11"><input id="dailyDate" value="2026-11-22"><input id="weeklyDate" value="2026-11-16"><input id="qstats-year" value="2026"><div id="qstats-root"><button data-result="ALL" aria-pressed="true"></button></div>'+
@@ -91,6 +117,7 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   const w=dom.window,d=w.document,calls=[],downloads=[],picks=[],written=[];
   t.after(()=>w.close());
   w.__QC_NEXUS={factory:'huaxing',exportAllowed:true};
+  w.HTMLElement.prototype.scrollTo=()=>{};
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
   w.HTMLDialogElement.prototype.close=function(){this.open=false};
   const objectUrls=[];
@@ -204,19 +231,27 @@ test('confirmation saves the draft first; slow generation requests a new click o
   assert.equal(w.QcReportWorkbook.navigationState().dirty,false);
 });
 
-test('unsupported or canceled picker never silently writes a file',async t=>{
-  for(const options of [{noPicker:true},{picker:()=>Promise.reject(new DOMException('embedded abort','AbortError'))}]){
-    const {d,w,calls,downloads}=await exportWorkbook(t,'monthly','quality',options);
+test('HTTP and restricted pickers download the same validated file once after saving; cancellation never downloads',async t=>{
+  for(const [options,canceled] of [[{noPicker:true},false],
+    [{picker:()=>Promise.reject(new DOMException('blocked','SecurityError'))},false],
+    [{picker:()=>Promise.reject(new DOMException('canceled','AbortError'))},true]]){
+    const {d,w,calls,downloads,objectUrls,body}=await exportWorkbook(t,'monthly','quality',{...options,managed:true});
+    Object.defineProperty(w.crypto,'randomUUID',{value:undefined});
     const grid=d.getElementById('wb-grid').shadowRoot;
     grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
     grid.querySelector('.cell-editor').value='仍待保存';
     d.getElementById('wb-export').click();
-    if(!options.noPicker)d.querySelector('[data-wb-choice=save]').click();
+    assert.equal(d.querySelector('#wb-save-prompt').open,true);
+    d.querySelector('[data-wb-choice=save]').click();
     await new Promise(setImmediate);
-    assert.equal(calls.some(x=>x.method==='POST' || x.url.includes('/excel')),!options.noPicker);
-    assert.equal(downloads.length,0);
-    assert.equal(w.QcReportWorkbook.navigationState().dirty,!!options.noPicker);
-    assert.match(d.getElementById('wb-status').textContent,/未导出.*桌面 Chrome 或 Edge/);
+    const posts=calls.filter(x=>x.method==='POST');
+    assert.equal(posts.length,2);
+    assert.match(posts[0].payload.requestKey,/^[\da-f]{32}$/);
+    assert.equal(posts[1].payload.versions.client.overviewRemark,2);
+    assert.equal(w.QcReportWorkbook.navigationState().dirty,false);
+    assert.deepEqual(objectUrls,canceled?[]:[body]);
+    assert.deepEqual(downloads.map(x=>x.name),canceled?[]:['已校验中文.xlsx']);
+    assert.match(d.getElementById('wb-status').textContent,canceled?/已取消/:/已发起下载/);
   }
 });
 

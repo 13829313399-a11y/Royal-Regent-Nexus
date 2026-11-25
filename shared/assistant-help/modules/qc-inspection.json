@@ -44,7 +44,7 @@
         "description": "报告首页右上角可打开完整工作簿。单击选格，双击或按 F2 编辑；浅绿空格可补录，标题、计算格和审核原值只读。Shift 加方向键扩选，Windows 用 Ctrl+C / Ctrl+V、Mac 用 ⌘C / ⌘V 复制粘贴选区内容。Ctrl+D 或拖右下角只填同列、同类空白补录格；一次粘贴或填充可整体撤销、重做。填写只暂存在当前标签页，Windows 用 Ctrl+S、Mac 用 ⌘S 主动保存；有草稿时关闭可选保存、不保存或取消。引擎异常时显示「简洁预览」，补录和 Excel 导出仍可用。",
         "anchor_id": "qc-inspection.overview",
         "precondition": "当前工作簿有可补录单元格，且账号具备录入权限",
-        "completion": "核对填充范围及保存反馈后再导出"
+        "completion": "导出前确认保存补录。没有系统保存窗口时，浏览器直接下载已校验的 Excel，可在下载记录中查看。"
       }
     ],
     "source_refs": [
@@ -176,7 +176,7 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "94cecdb9300385328016b1250f0ba6732b740eeb141c68390c84e7f14728319e"
+        "sha256": "96ce958dc39186ad592314d19b0a22498342aea1428d9608b58ab14dd3251954"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",
