@@ -37,6 +37,18 @@ w.realShowPage=w.showPage;w.showToast=()=>{};w.confirm=()=>true;w.prompt=()=> 'é
  };
  w.eval(fs.readFileSync(path.join(__dirname,'qc-photo-paste.js'),'utf8'));w.eval(schedule);w.eval(script);await tick();await w.QcWorkflow.load();return {dom,w,d:w.document,calls,get rows(){return rows;}};
 }
+test('dedicated reports do not reload workflow data; legacy reports still do',async()=>{
+ const p=await page();try{
+   const period={enabled:()=>true};
+   p.w.QcPeriodReports={weekly:period,monthly:period};p.w.QcApprovedStatistics={};
+   p.calls.length=0;
+   for(const name of ['weekly','monthly','analysis'])await p.w.QcWorkflow.onPage(name);
+   assert.deepEqual(p.calls,[]);
+   delete p.w.QcPeriodReports;
+   await p.w.QcWorkflow.onPage('weekly');
+   assert.deepEqual(p.calls.map(x=>x.url).sort(),['api/workflow/projections','api/workflow/tasks']);
+ }finally{p.dom.window.close();}
+});
 test('formal schedule selection directly pushes only checked sources without a confirmation dialog',async()=>{
  const p=await page();try{
   await p.w.renderSalesSchedule();const input=p.d.querySelector('[data-pick]');assert.ok(input);input.click();
