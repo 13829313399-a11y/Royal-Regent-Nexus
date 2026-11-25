@@ -137,7 +137,7 @@ function lineFromSeed(row: Record<string, unknown>): BulkTruckLine {
     country: String(row.country || header.country || '').trim(),
     grossPerCarton: cartons && grossWeight ? Math.round((grossWeight / cartons) * 1000) / 1000 : null,
     netPerCarton: cartons && netWeight ? Math.round((netWeight / cartons) * 1000) / 1000 : null,
-    cbmPerCarton: cartons && cbm ? Math.round(((cbm * 35.4) / cartons) * 1000) / 1000 : null,
+    cbmPerCarton: cartons && cbm ? Math.round((cbm / cartons) * 1000) / 1000 : null,
     brand: String(row.brand || header.brandName || '').trim(),
     so: String(row.so || row.so_number || header.bookingNo || '').trim(),
     po: String(row.po || row.cartonMark || row.customer_po || header.poNo || '').trim(),
@@ -326,7 +326,6 @@ function recalc(line: BulkTruckLine) {
   if (Number.isFinite(coefficient) && coefficient > 0) line.quantity = Math.round(cartons * coefficient * 1000) / 1000
   if (line.grossPerCarton != null) line.grossWeight = Math.round(cartons * line.grossPerCarton * 1000) / 1000
   if (line.netPerCarton != null) line.netWeight = Math.round(cartons * line.netPerCarton * 1000) / 1000
-  if (line.cbmPerCarton != null) line.cbm = Math.round((cartons * line.cbmPerCarton / 35.4) * 1000) / 1000
 }
 
 function addLine() {
@@ -552,7 +551,7 @@ watch(() => props.initialTaskId, (taskId) => {
               <th class="px-2 py-2">箱数</th><th class="px-2 py-2">板数</th><th class="px-2 py-2">毛重</th><th class="px-2 py-2">净重</th>
               <th class="px-2 py-2">CBM</th><th class="px-2 py-2">出口国家</th><th class="px-2 py-2">每箱毛重</th>
               <th class="px-2 py-2">每箱净重</th><th class="px-2 py-2">每箱体积</th><th class="px-2 py-2">品牌</th>
-              <th class="px-2 py-2">SO</th><th class="px-2 py-2">PO</th><th class="px-2 py-2">船期</th><th class="px-2 py-2">备注</th><th></th>
+              <th class="px-2 py-2">SO/订舱号</th><th class="px-2 py-2">PO/箱唛</th><th class="px-2 py-2">船期</th><th class="px-2 py-2">备注</th><th></th>
             </tr>
           </thead>
           <tbody class="divide-y divide-emerald-50">
@@ -563,16 +562,16 @@ watch(() => props.initialTaskId, (taskId) => {
               <td class="px-1 py-1"><input v-model="line.filingCode" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.declareCode" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.name" readonly class="h-7 w-36 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model.number="line.quantity" type="number" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cartons" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.quantity" type="number" class="h-7 w-20 rounded border border-emerald-100 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cartons" type="number" class="h-7 w-16 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
               <td class="px-1 py-1"><input v-model="line.boards" class="h-7 w-12 rounded border border-emerald-100 px-1"></td>
               <td class="px-1 py-1"><input v-model.number="line.grossWeight" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
               <td class="px-1 py-1"><input v-model.number="line.netWeight" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cbm" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cbm" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right"></td>
               <td class="px-1 py-1"><input v-model="line.country" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model.number="line.grossPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.netPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cbmPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.grossPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
+              <td class="px-1 py-1"><input v-model.number="line.netPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cbmPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
               <td class="px-1 py-1"><input v-model="line.brand" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.so" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.po" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1"></td>
