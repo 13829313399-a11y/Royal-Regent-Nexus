@@ -3622,7 +3622,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const actionGroup = firstOrder.get('[aria-label="CT-260805-006 操作"]').get('div')
     expect(actionGroup.classes()).toContain('justify-start')
     expect(actionGroup.classes()).toContain('gap-1')
-    expect(detailButton.classes()).toContain('rounded-md')
+    expect((detailButton.element as HTMLButtonElement).disabled).toBe(false)
     expect(detailButton.classes()).toContain('col-start-3')
     expect(firstOrder.find('[aria-label="CT-260805-006 展开纸品明细"]').exists()).toBe(false)
     await detailButton.trigger('mouseenter')

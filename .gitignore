@@ -186,5 +186,16 @@ outputs/opening-inventory-template-20260909/
 # Preserve the pinned Indonesia solution as source.
 !/services/indonesia-shipping/IndoShipping.sln
 
+# Local generated QA captures and probes; keep out of Git and normal search.
+/output/
+/test-artifacts/
+/.playwright-cli/
+
+!/docs/archive/completed/**/*.md
+
+# Private task workspaces; version the lifecycle skill, not individual tasks.
+/.task-work/
+!/.agents/skills/task-closeout/SKILL.md
+
 # 外部项目只读参考副本（如东莞船务代码）：仅供借鉴，不进 Git、不进镜像、不参与构建。
 /refs/

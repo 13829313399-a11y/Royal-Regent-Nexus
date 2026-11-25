@@ -252,12 +252,12 @@ onBeforeUnmount(() => { ++generation; window.removeEventListener('beforeunload',
 <template>
   <section class="pw-root iw-root iw-permission-page" :class="{ 'iam2-workbench': iamStudioEnabled, 'iam2-inbox': inbox, 'iw-mobile-detail': mobileDetail && (selected || personId) }" data-yl-help="identity-management.overview">
     <header v-if="iamStudioEnabled" class="iw-page-heading iam2-heading">
-      <div class="iw-heading-copy"><h1>{{ view === 'people' ? '人员全景' : '办理大厅' }}</h1><p>{{ view === 'people' ? '按组织查看人员、任职与有效权限' : '查看待办事项，核验申请资料与权限影响。' }}</p></div>
+      <div class="iw-heading-copy"><h1 data-route-motion-anchor>{{ view === 'people' ? '人员全景' : '办理大厅' }}</h1><p>{{ view === 'people' ? '按组织查看人员、任职与有效权限' : '查看待办事项，核验申请资料与权限影响。' }}</p></div>
       <Button v-if="inbox" variant="outline" type="button" :disabled="locked" aria-controls="iam-inbox-filters" :aria-expanded="inboxFiltersOpen" @click="inboxFiltersOpen = !inboxFiltersOpen"><SlidersHorizontal :size="15" />{{ filtersActive ? '筛选中' : '筛选事项' }}</Button>
     </header>
     <header v-else class="iw-page-heading">
       <div class="iw-heading-copy">
-        <h1>人员与权限</h1>
+        <h1 data-route-motion-anchor>人员与权限</h1>
         <p>按管理范围办理，岗位与实际权限放在同一屏</p>
       </div>
       <nav class="iw-view-switch" aria-label="人员与权限视图">

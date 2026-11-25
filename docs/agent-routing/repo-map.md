@@ -30,11 +30,12 @@ npm run typecheck:test
 ```
 
 根 `build` 先校验助手帮助注册与 Tailwind 源，再执行 Vue 类型检查与 Vite 构建，随后构建图片翻译及大陆发票。完整命令以根 [package.json](../../package.json) 为准。
-test:unit 实际为 vitest run；可按当前 Vitest 配置选择确实存在的相关测试。
+test:unit 实际为 vitest run；主站收集 src/**/*.spec.ts（含迁移后的 *.contract.spec.ts），按当前 Vitest 配置选择相关测试。旧一次性 Node assert 脚本不再混放于 src；归档脚本不计作通过。
 typecheck:app 为 vue-tsc --noEmit -p tsconfig.app.json，仅检查应用类型，不替代完整构建。
 typecheck:test 检查测试 TypeScript 项目，不替代应用构建。
 该基线 package.json 没有 lint、test 或通用 typecheck 脚本；不要直接调用 npm run lint / npm test / npm run typecheck。
 以后依赖或脚本发生变化，以本地 package.json 为准。
+复杂任务的本地工作区、门禁和归档见[任务生命周期](task-lifecycle.md)；工具测试为 npm run test:task-lifecycle，不属于 Vitest 业务测试。
 
 ## 后端检查
 

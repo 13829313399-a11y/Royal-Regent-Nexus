@@ -86,7 +86,7 @@ OCR 使用 qwen3.5-ocr，布局候选使用 qwen3-vl-plus。当前实测空间 O
 
 ## 验证与生产部署
 
-真实样本与指标见 [PDF 验证](pdf-accuracy.md)、[Office 验证](office-accuracy.md)、[前端验证](frontend-qa.md) 和 [整体验证](validation.md)。测试失败与复杂文档限制必须独立报告，不能用样本通过率推断未知业务文件的准确率。
+真实样本与指标见 [PDF 验证](pdf-accuracy.md)、[Office 验证](office-accuracy.md)、[前端验证](../archive/completed/document-tools/frontend-qa.md) 和 [整体验证](validation.md)。测试失败与复杂文档限制必须独立报告，不能用样本通过率推断未知业务文件的准确率。
 
 生产 compose 为 API 与独立 `document-tools-worker` 配置同一 `document-assets` 命名卷及同一后端镜像。新镜像包含 LibreOffice、CJK 字体与 python3-uno；worker 使用自己的心跳健康检查。部署前先备份数据库和共享卷，演练迁移，构建镜像，再启动 API/worker/web；检查worker心跳后实际上传自建 Word 和扫描 PDF、下载并复开结果。仅 `/health` 200 不算转换验收。这里提供部署步骤，当前开发任务没有执行生产发布。
 

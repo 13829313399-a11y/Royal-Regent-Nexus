@@ -23,6 +23,7 @@ import {
   Table2,
   X,
 } from '@lucide/vue'
+import { vSpatialGlyph } from '@/features/route-motion/spatialAnchors'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   factoryContexts,
@@ -1832,8 +1833,9 @@ watchEffect(() => {
         <div class="relative flex flex-wrap items-start justify-between gap-4">
           <div class="min-w-0">
             <p class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">MOLDING SAMPLE PRODUCTION TASK</p>
-            <h1 class="mt-1 text-2xl font-bold tracking-tight text-[#17385e]">
-              {{ selectedFactoryHasMoldingDepartment ? '啤机部生产任务单' : '啤办跨厂生产跟踪' }}
+            <h1 class="rr-workspace-heading mt-1 text-2xl font-bold tracking-tight text-[#17385e]" data-route-motion-anchor data-rr-motion-target="surface">
+              <span v-spatial-glyph="ClipboardPenLine" data-rr-motion-target="icon" class="rr-workspace-heading__icon" aria-hidden="true"><ClipboardPenLine :size="18" /></span>
+              <span data-rr-motion-label>{{ selectedFactoryHasMoldingDepartment ? '啤机部生产任务单' : '啤办跨厂生产跟踪' }}</span>
             </h1>
             <p class="mt-1 max-w-4xl text-sm text-slate-600">
               {{ selectedFactoryHasMoldingDepartment

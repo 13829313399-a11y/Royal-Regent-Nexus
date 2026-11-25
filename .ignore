@@ -1,0 +1,6 @@
+# Default ripgrep context: exclude archived and generated material; explicit history lookup may use --no-ignore.
+/docs/archive/
+/output/
+/test-artifacts/
+/.playwright-cli/
+/.task-work/

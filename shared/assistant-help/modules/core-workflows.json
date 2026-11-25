@@ -43,7 +43,7 @@
       {
         "path": "src/views/NotificationCenterView.vue",
         "symbol": "nc-filters",
-        "sha256": "7df5e82cf01a7b27c518e1a96bf58bff65de89d81c7edced706a571554829a45"
+        "sha256": "e25e4952feed443801a754c1b0779fc5d434d98684f1125fcfac70eb40ea4b5d"
       },
       {
         "path": "backend/app/services/work_center/service.py",
@@ -74,7 +74,7 @@
       "progress_percent"
     ],
     "summary": "先检查同步，再读取设备状态；遥测完成不能代替生产、核对或入库记录。",
-    "content": "设备卡先判断 connected：未连接显示离线；已连接但 status_stale 显示等待状态更新。二者都不能证明现场已经停机。新鲜遥测中的 RUNNING 表示打印中，PAUSE 表示暂停；PREPARE / PREPARING / DOWNLOADING / SLICING 表示准备中，FINISH 只表示设备报告打印完成。\n\n打印百分比、剩余分钟、层数和温度属于设备遥测。离线或陈旧时，卡片隐藏旧进度与温度，避免把历史数值当作当前事实；空缺、未知和陈旧都不是 0。\n\n排查：先看同步状态并手动刷新一次，再在“机器状态”页核对设备卡。持续离线或待更新，应检查原采集连接和观察时间；不能仅凭页面判定机器故障。设备完成后的业务产量、对账和库存必须另查对应记录。引导不发送打印、暂停、取消或其它设备指令。",
+    "content": "设备标记为状态陈旧（status_stale），同时仍连接或状态为 STALE 时，卡片显示“等待状态更新”。其余未连接设备显示“离线”。二者都不能证明现场已经停机。新鲜遥测中的 RUNNING 表示打印中，PAUSE 表示暂停；PREPARE / PREPARING / DOWNLOADING / SLICING 表示准备中，FINISH 只表示设备报告打印完成。\n\n打印百分比、剩余分钟、层数和温度属于设备遥测。离线或陈旧时，卡片隐藏旧进度与温度，避免把历史数值当作当前事实；空缺、未知和陈旧都不是 0。\n\n排查：先看同步状态并手动刷新一次，再在“机器状态”页核对设备卡。持续离线或待更新，应检查原采集连接和观察时间；不能仅凭页面判定机器故障。设备完成后的业务产量、对账和库存必须另查对应记录。引导不发送打印、暂停、取消或其它设备指令。",
     "steps": [
       {
         "title": "核对同步",
@@ -102,7 +102,7 @@
       {
         "path": "src/features/three-d-printing/WorkspaceView.vue",
         "symbol": "legacy-sync",
-        "sha256": "d2c4711765d4ff9814fa91515b8446ecfbbec33d4d406f1d0eb081b7a186b7ed"
+        "sha256": "5c93041481f8c78c04625ba47a1db758c6a8dd6e52be345270a99715a9920d24"
       },
       {
         "path": "src/features/three-d-printing/components/LegacyPrinterGrid.vue",

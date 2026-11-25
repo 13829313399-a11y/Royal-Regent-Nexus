@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, provide, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { House, Printer, RefreshCw } from "@lucide/vue";
 import AccountMenu from "@/components/layout/AccountMenu.vue";
+import { vSpatialGlyph } from '@/features/route-motion/spatialAnchors';
 import { useRouteEntryOwned } from '@/features/route-motion/useModuleEntryMotion';
 import { useWorkspace } from "./composables/useWorkspace";
 import { useTdpNavIndicator } from "./composables/useTdpNavIndicator";
@@ -108,9 +109,9 @@ function releaseViewHeight() {
   <div translate="no" class="three-d-workspace legacy-workspace tdp-theme" :class="{ 'tdp-first-reveal': firstReveal }">
     <a class="tdp-skip-link" href="#tdp-main">跳到主要内容</a>
     <aside class="legacy-sidebar">
-      <div class="legacy-brand" data-yl-help="three-d-printing.overview" :class="{ 'tdp-reveal-once': firstReveal }">
-        <span class="tdp-brand-icon" data-route-motion-anchor aria-hidden="true"><Printer :size="18" /></span>
-        <span>3D打印管理<small>部门生产管理系统 · 华康A</small></span>
+      <div class="legacy-brand" data-rr-motion-chrome data-rr-motion-target="surface" data-yl-help="three-d-printing.overview" :class="{ 'tdp-reveal-once': firstReveal }">
+        <span class="tdp-brand-icon" v-spatial-glyph="Printer" data-rr-motion-target="icon" data-route-motion-anchor aria-hidden="true"><Printer :size="18" /></span>
+        <span><span data-rr-motion-label>3D打印管理</span><small>部门生产管理系统 · 华康A</small></span>
       </div>
       <div class="legacy-sidebar-scroll">
         <nav ref="nav" data-yl-help="three-d-printing.navigation" aria-label="3D打印管理菜单" :class="{ 'tdp-reveal-once': firstReveal }"
@@ -175,7 +176,7 @@ function releaseViewHeight() {
       </footer>
     </aside>
     <main id="tdp-main" class="legacy-main" tabindex="-1">
-      <h1 :class="{ 'tdp-reveal-once': firstReveal }">{{ title }}</h1>
+      <h1 data-route-motion-anchor :class="{ 'tdp-reveal-once': firstReveal }">{{ title }}</h1>
       <div v-if="assistantPrinter" class="tdp-assistant-selection" role="status">
         <span>曜灵查询范围：{{ assistantPrinter.machine_no }} 号机 · {{ assistantPrinter.name }}</span>
         <button type="button" @click="openPrinter(assistantPrinter.id)">查看机台</button>
