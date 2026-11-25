@@ -2,6 +2,7 @@
 'use strict';
 if(!window.__QC_NEXUS?.factory)return;
 const byId = id => document.getElementById(id);
+const requestKey=()=>crypto.randomUUID?.()||Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
 const periods = {
   review: {templates:{pending:'待审核验货明细'}},
   daily: {date:'dailyDate',customer:'qdrCustomer',templates:{daily:'验货明细'}},
@@ -24,12 +25,35 @@ function params(kind=selected[period]) {
   if(kind==='annual-stats')query.set('result',document.querySelector('#qstats-root [data-result][aria-pressed=true]').dataset.result);
   return query.toString();
 }
+// One short-lived preview per iframe. Share the in-flight GET as well as its result;
+// never persist report rows or reuse a snapshot across a save or dialog close.
+let previewSlot=null;
+function dropPreview(){
+  previewSlot?.controller.abort();
+  previewSlot=null;
+}
+function loadPreview(query,background=false){
+  if(previewSlot?.query===query&&previewSlot.until>Date.now())return previewSlot.promise;
+  dropPreview();
+  const controller=new AbortController(),slot={query,controller,until:Infinity};
+  previewSlot=slot;
+  slot.promise=fetchJson('report-workbook',query,{signal:controller.signal,priority:background?'low':'auto'})
+    .then(result=>{slot.until=Date.now()+30000;return result;})
+    .catch(error=>{if(previewSlot===slot)previewSlot=null;throw error;});
+  return slot.promise;
+}
+function canWarm(){
+  return !document.hidden&&!navigator.connection?.saveData;
+}
 async function api(endpoint,query,options) {
   if(period==='review'){
     if(endpoint==='report-workbook'&&!options)return reviewSource.book;
     if(endpoint==='report-workbook/save'&&options?.method==='POST')return reviewSource.save(JSON.parse(options.body));
     throw Error('不支持此待审核工作簿操作。');
   }
+  return fetchJson(endpoint,query,options);
+}
+async function fetchJson(endpoint,query,options){
   const response=await fetch('api/'+endpoint+'?'+query,options);
   if (!response.ok) {
     const info=await response.json().catch(()=>({}));
@@ -102,13 +126,12 @@ function mount(periodKey, kind, host, data, refresh){
   }
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;
-  if(periodKey!=='yearly'&&rows.length)setTimeout(async()=>{
+  if(!dialog.open)dropPreview();
+  if(periodKey!=='yearly'&&rows.length)setTimeout(()=>{
     const cfg=periods[periodKey];
-    for(const key of [kind,...Object.keys(cfg.templates).filter(k=>k!==kind)]){
-      if(ticket!==requestId||!host.isConnected||document.hidden||!section.closest('.page.active')||dialog.open)return;
-      const query=new URLSearchParams({kind:key,day:data.date,customer:byId(cfg.customer).value});
-      try{await fetch('api/report-workbook?'+query,{method:'HEAD',priority:'low'});}catch{return;}
-    }
+    if(ticket!==requestId||!host.isConnected||!canWarm()||!section.closest('.page.active')||dialog.open)return;
+    const query=new URLSearchParams({kind,day:data.date,customer:byId(cfg.customer).value});
+    loadPreview(query.toString(),true).catch(()=>{});
   },100);
   return true;
 }
@@ -284,21 +307,26 @@ function linkCells(cells){
   switchBook(selected[period]);
 }
 
- async function switchBook(kind){
+async function switchBook(kind){
   const query=params(kind).toString();
-  if(bookQuery===query&&book)return;
-   if(!await allowWorkbookAction('switch')||!dialog.open)return;
-   clearReadyExport();
+  if(bookQuery===query&&book&&!view.inert)return;
+  if(!await allowWorkbookAction('switch')||!dialog.open)return;
+  clearReadyExport();
   const request=++bookRequest;
   const tabs=byId('wb-tabs');
   finishFill(true);
   view.inert=tabs.inert=true;
   valueInput.readOnly=true;
   byId('wb-export').disabled=byId('wb-next').disabled=true;
+  view.setAttribute('aria-busy','true');
   try{
+    if(bookQuery===query&&book){
+      dropPreview();statusText.textContent=sheetHint();return;
+    }
     statusText.textContent='正在打开'+periods[period].templates[kind]+'…';
-    const result=await api('report-workbook',query);
+    const result=await (reviewSource?api('report-workbook',query):loadPreview(query));
     if(request!==bookRequest||!dialog.open)return;
+    previewSlot=null;
     changes.clear();receipt=null;
     book=result;bookQuery=query;selected[period]=kind;
     byId('wb-mode').hidden=book.previewMode!=='grid';
@@ -310,11 +338,17 @@ function linkCells(cells){
       tab.setAttribute('aria-pressed',String(tab.dataset.kind===kind));
     }
     statusText.textContent=sheetHint();
+    const keys=Object.keys(periods[period].templates);
+    if(keys.length>1&&canWarm()){
+      const next=keys[(keys.indexOf(kind)+1)%keys.length];
+      loadPreview(params(next),true).catch(()=>{});
+    }
   }catch(error){
     if(request!==bookRequest||!dialog.open)return;
     statusText.textContent=error.message;
   }finally{
     if(request===bookRequest&&dialog.open){
+      view.removeAttribute('aria-busy');
       view.inert=tabs.inert=false;
       if(active&&book)selectCell(active,{focus:true});
       byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
@@ -963,6 +997,7 @@ dialog.addEventListener('keydown',event=>{
   if(!book||view.inert||exporting||drag||reviewSource?.busy?.())return Promise.resolve(false);
   commitInput();
   if(!changes.size)return Promise.resolve(true);
+  dropPreview();
    const tabs=byId('wb-tabs');
    view.inert=tabs.inert=true;
    setReviewNavigationDisabled(true);
@@ -977,8 +1012,8 @@ dialog.addEventListener('keydown',event=>{
       try{
         const scope=new URLSearchParams(bookQuery);
         const base={customerKey:cell.customerKey,field:cell.field,value,baseVersion:cell.version};
-        if(!receipt)receipt=cell.writeRevision?{...base,writeRevision:cell.writeRevision,requestKey:reviewSource?.requestKey()??crypto.randomUUID()}:{
-          ...base,date:scope.get('day'),sourceRevision:book.sourceRevision,requestKey:crypto.randomUUID(),
+        if(!receipt)receipt=cell.writeRevision?{...base,writeRevision:cell.writeRevision,requestKey:reviewSource?.requestKey()??requestKey()}:{
+          ...base,date:scope.get('day'),sourceRevision:book.sourceRevision,requestKey:requestKey(),
           ...(scope.get('kind')==='quality'?{template:'overview',customer:scope.get('customer')}:{})};
         const sent=receipt;
         const result=await api(cell.writeRevision?'report-workbook/save':period+'-templates/save',
@@ -1042,6 +1077,7 @@ valueInput.onkeydown=e=>{
  async function closeBook(){
    if(!await allowWorkbookAction('close')||!dialog.open)return;
    clearReadyExport();
+   dropPreview();
   ++bookRequest;changes.clear();receipt=null;internalClipboard=null;pasteTicket++;dialog.close();bookQuery='';
   if(period==='review'){
     const source=reviewSource;reviewSource=null;
@@ -1060,7 +1096,6 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
    xlsx:{mime:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',magic:[0x50,0x4b,3,4]},
    xls:{mime:'application/vnd.ms-excel',magic:[0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]}
  };
- const pickerHelp='请在桌面 Chrome 或 Edge 中打开验货台后重试。';
  const READY_EXPORT_TTL=120000;
  // OpenCode's Electron review browser exposes a native picker but rejects
  // createWritable(), after the picker has already created a zero-byte file.
@@ -1074,14 +1109,12 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
    finally{link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
  }
  async function chooseDestination(name,ext){
-   if(typeof window.showSaveFilePicker!=='function')return {message:'当前浏览器不能打开系统保存窗口。'+pickerHelp};
    try{
      const handle=await window.showSaveFilePicker({suggestedName:name,startIn:'downloads',
        types:[{description:'Excel 工作簿',accept:{[excelTypes[ext].mime]:['.'+ext]}}]});
      return {handle};
    }catch(error){
-     return {message:error.name==='AbortError'?'未选择保存位置，未导出。若没有弹窗，'+pickerHelp:
-       '当前浏览器没有打开系统保存窗口，未导出。'+pickerHelp};
+     return {canceled:error.name==='AbortError'};
    }
  }
  async function readExport(url,fallbackName,expectedExt){
@@ -1161,10 +1194,6 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
  }
  exportButton.onclick=async()=>{
    if(!window.__QC_NEXUS?.exportAllowed||!book?.sheets.length||!dialog.open||saving||chooseSave||exporting||view.inert)return;
-   if(!reviewSource&&!managedDownloads&&typeof window.showSaveFilePicker!=='function'){
-     statusText.textContent='当前浏览器不能打开系统保存窗口，未导出。'+pickerHelp;
-     return;
-   }
    finishFill(true);commitInput();
    // A prepared file is saved from this click rather than after an await.
    const prepared=readyExport&&readyExport.query===bookQuery&&readyExport.until>Date.now()&&!changes.size;
@@ -1182,9 +1211,9 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
        statusText.textContent='正在生成并校验 Excel…';
        const file=await prepareReportExport();
        if(!dialog.open||bookQuery!==query||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
-       if(managedDownloads){
+       if(managedDownloads||typeof window.showSaveFilePicker!=='function'){
          sendToDownloadManager(file);
-         statusText.textContent='已发起下载';
+         statusText.textContent='已发起下载：'+file.name;
          return;
        }
        readyExport={...file,query,until:Date.now()+READY_EXPORT_TTL};
@@ -1194,9 +1223,15 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
        if(!navigator.userActivation?.isActive){statusText.textContent='Excel 已校验，点击「选择保存位置」。';return;}
      }
      statusText.textContent='请选择保存位置…';
-     const {handle,message}=await chooseDestination(readyExport.name,readyExport.ext);
-     if(!handle){statusText.textContent=message;return;}
+     const {handle,canceled}=await chooseDestination(readyExport.name,readyExport.ext);
+     if(canceled){statusText.textContent='已取消，未下载文件。';return;}
      if(!dialog.open||bookQuery!==query||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
+     if(!handle){
+       sendToDownloadManager(readyExport);
+       statusText.textContent='已发起下载：'+readyExport.name;
+       clearReadyExport();
+       return;
+     }
      statusText.textContent='正在写入并校验，完成前请勿打开文件…';
      await writeVerifiedExcel(handle,readyExport.blob);
      clearReadyExport();
@@ -1211,7 +1246,8 @@ window.QcReportWorkbook={mount,trigger(label,open){
   button.title=label;button.setAttribute('aria-label',label);button.innerHTML=expandIcon;button.onclick=()=>open(button);
   return button;
 },openReview(button,source){
-  if(dialog.open||saving||chooseSave||exporting)return false;
+   if(dialog.open||saving||chooseSave||exporting)return false;
+   dropPreview();
   period='review';opener=button;reviewSource=source;
   openBook();return true;
 },navigationState:()=>({dirty:dialog.open&&(changes.size>0||drafting()),busy:!!saving||exporting||!!reviewSource?.busy?.()})};
