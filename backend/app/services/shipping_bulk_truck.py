@@ -1,6 +1,7 @@
 """2026 盐田散货 W-series truck sheets (xlsx)."""
 import io
 import json
+import re
 import xlrd
 import xlwt
 from datetime import date, datetime
@@ -44,6 +45,10 @@ def _number(value) -> float | None:
         return None
 
 
+def _po_text(value) -> str:
+    return re.sub(r'^PO[-\s]*', '', str(value or '').strip(), flags=re.I)
+
+
 def _round(value: float | None) -> float | None:
     return round(value, 3) if value is not None else None
 
@@ -54,8 +59,8 @@ def _line(item: dict, contract: str, so_number: str) -> dict:
     coefficient = quantity / cartons if quantity and cartons else None
     gross_per = _number(item.get('gross_weight')) / cartons if item.get('gross_weight') and cartons else None
     net_per = _number(item.get('net_weight')) / cartons if item.get('net_weight') and cartons else None
-    cbm_per = _number(item.get('cbm')) * 35.4 / cartons if item.get('cbm') and cartons else None
-    cbm = cbm_per * cartons / 35.4 if cbm_per and cartons else _number(item.get('cbm'))
+    cbm = _number(item.get('cbm'))
+    cbm_per = cbm / cartons if cbm and cartons else None
     return {
         'id': uuid4().hex, 'tradingHouse': 'ZURU', 'contract': str(item.get('contract_no') or contract),
         'filingCode': str(item.get('product_code') or ''), 'declareCode': str(item.get('product_code') or ''),
@@ -67,7 +72,7 @@ def _line(item: dict, contract: str, so_number: str) -> dict:
         'netWeight': _round(net_per * cartons) if net_per and cartons else _round(item.get('net_weight')),
         'cbm': _round(cbm), 'country': '', 'grossPerCarton': _round(gross_per),
         'netPerCarton': _round(net_per), 'cbmPerCarton': _round(cbm_per), 'brand': str(item.get('brand') or ''),
-        'so': so_number, 'po': str(item.get('customer_po') or ''), 'shippingNote': str(item.get('shipping_note') or ''), 'remark': str(item.get('remark') or ''),
+        'so': so_number, 'po': _po_text(item.get('customer_po')), 'shippingNote': str(item.get('shipping_note') or ''), 'remark': str(item.get('remark') or ''),
     }
 
 
