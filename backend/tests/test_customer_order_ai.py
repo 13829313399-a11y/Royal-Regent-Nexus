@@ -115,6 +115,38 @@ def test_image_quote_is_not_independently_verified():
     assert not validated['lines'][0]['evidence']['quantity']['text_verified']
 
 
+def test_compact_native_citations_preserve_validation_and_output_contract():
+    response = answer()
+    original = deepcopy(response)
+    response['lines'][0]['evidence'] = {
+        key: proof['source'] for key, proof in response['lines'][0]['evidence'].items()
+    }
+    document = collect('po.xlsx', po_bytes())
+    assert ai.validate(response, document) == ai.validate(original, document)
+    response['lines'][0]['fields']['quantity'] = '3'
+    with pytest.raises(ValueError, match='原文不一致'):
+        ai.validate(response, document)
+
+
+@pytest.mark.parametrize('source', ['P1', 'S1!Z99'])
+def test_compact_citation_cannot_claim_image_or_missing_cell(source):
+    response = answer()
+    response['lines'][0]['evidence']['quantity'] = source
+    document = collect('po.xlsx', po_bytes())
+    document['images'] = [{'id': 'P1', 'png': b'image'}]
+    with pytest.raises(ValueError, match='来源无效'):
+        ai.validate(response, document)
+
+
+def test_native_quote_must_contain_claimed_value_not_neighboring_amount():
+    response = answer()
+    response['lines'][0]['evidence']['quantity'] = {'source': 'P1L1', 'quote': 'Amount 900'}
+    document = collect('po.xlsx', po_bytes())
+    document['evidence']['P1L1'] = 'Quantity 300 Amount 900'
+    with pytest.raises(ValueError, match='原文不一致'):
+        ai.validate(response, document)
+
+
 @pytest.mark.parametrize('protocol', ['openai', 'dashscope'])
 def test_qwen_wire_protocol_and_no_private_key_in_result(monkeypatch, tmp_path, protocol):
     settings = config(tmp_path)

@@ -217,12 +217,13 @@ def return_limit(factory_id: str, issue_id: str, day: date,
 
 
 @router.get('/{warehouse}')
-def workspace(warehouse: Warehouse, factory_id: str, include_cutting_returns: bool = False,
+def workspace(warehouse: Warehouse, factory_id: str, include_cutting_returns: bool = False, include_order_progress: bool = False,
               db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     permissions = capabilities(actor, warehouse, factory_id)
     if not permissions['read']:
         raise HTTPException(403, '无当前仓库收发查询权限')
-    return {**service.workspace(db, warehouse, include_cutting_returns=include_cutting_returns), 'permissions': permissions}
+    return {**service.workspace(db, warehouse, include_cutting_returns=include_cutting_returns,
+                                include_order_progress=include_order_progress), 'permissions': permissions}
 
 
 @router.post('/{warehouse}/documents')

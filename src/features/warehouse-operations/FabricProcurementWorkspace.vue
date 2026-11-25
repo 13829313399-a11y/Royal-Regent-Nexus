@@ -14,7 +14,7 @@ import { purchaseSearchKey } from './purchaseSearch'
 import FabricChaseDialog from './FabricChaseDialog.vue'
 import FabricPurchaseFilters from './FabricPurchaseFilters.vue'
 import FabricPurchaseGroups from './FabricPurchaseGroups.vue'
-import FabricDetailDialog from './FabricDetailDialog.vue'
+import WarehouseDetailDialog from '@/features/warehouse-foundation/WarehouseDetailDialog.vue'
 import type { PurchaseFilters, PurchaseMaterialGroup } from '@/api/fabricProcurement'
 import type { FabricReceipt, ReceiveSourcesResult } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
@@ -39,7 +39,9 @@ const linkedDetailError = ref<{ message: string; missing: boolean }>()
 const linkedRetryButton = ref<{ $el: HTMLButtonElement }>()
 let retryFocusTarget: { source: string; actor: string | undefined } | undefined
 let handledPurchase = ''
-let purchaseListFailed = false
+type ListReadState = 'loading' | 'ready' | 'failed' | 'forbidden'
+const listReadState = ref<ListReadState>('loading')
+const listReadLabels = { loading: '读取中…', ready: '', failed: '读取失败', forbidden: '无读取权限' }
 const detailIdentityReview = computed(() => !!(detail.value?.receipt_identity_review_required || detail.value?.receipt_reconciliation_required))
 const detailNeedsQuantityReview = computed(() => !!detail.value && (
   detail.value.receipt_quantity_review_required || detail.value.warehouse_outstanding_quantity == null || detail.value.warehouse_outstanding_quantity === ''
@@ -113,8 +115,9 @@ async function load(background = false) {
   deferredLoad = false
   const ticket = ++sequence
   let listError = ''
+  let outcome: ListReadState = 'ready'
   if (!background) {
-    purchaseListFailed = false
+    listReadState.value = 'loading'
     busy.value = true; error.value = ''; clearPurchaseList(); detail.value = undefined; detailOpen.value = false
   }
   const linkedRead = linkedPurchase.value && handledPurchase !== linkedPurchase.value ? loadLinkedDetail(ticket) : undefined
@@ -138,11 +141,14 @@ async function load(background = false) {
         else selected.value = selected.value.flatMap(line => { const current = data.items.find(item => item.id === line.id); return current ? eligible(current) ? [current] : [] : [line] })
       }
     }
-  } catch (e) { listError = getApiErrorMessage(e) }
+  } catch (e) {
+    listError = getApiErrorMessage(e)
+    outcome = isAxiosError(e) && e.response?.status === 403 ? 'forbidden' : 'failed'
+  }
   finally {
+    if (ticket === sequence) listReadState.value = outcome
     await linkedRead
     if (ticket === sequence) {
-      purchaseListFailed = !!listError
       if (background && listError) clearPurchaseList()
       if (listError && (!linkedRead || !linkedDetailError.value || linkedDetailError.value.missing)) error.value = listError
       else if (background) error.value = ''
@@ -161,7 +167,7 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined
 watch(search, () => {
   clearTimeout(searchTimer)
   if (props.mode === 'import') return
-  sequence++; busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined
+  sequence++; listReadState.value = 'loading'; busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined
   lineTotal.value = 0; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
   searchTimer = setTimeout(query, 350)
 }, { flush: 'sync' })
@@ -298,7 +304,7 @@ function captureRetryFocus() {
 async function retryLinkedDetail() {
   if (busy.value || !linkedDetailError.value || linkedDetailError.value.missing) return
   captureRetryFocus()
-  if (purchaseListFailed) {
+  if (listReadState.value === 'failed' || listReadState.value === 'forbidden') {
     handledPurchase = ''
     await load()
     return
@@ -487,7 +493,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
       </div>
       <div v-if="mode === 'pending' || canReceive || selected.length" class="fabric-selection-toolbar">
         <CartonSelectionSummary v-if="(!grouped && canReceive) || selected.length" :rows="selectedRows" :visible-ids="visibleIds" unit="项" @clear="selected = []" @remove="removeSelected" />
-        <span v-else-if="grouped" class="fabric-group-total">{{ total === undefined ? '正在读取…' : `${total} 个物料组 · ${lineTotal} 条采购明细` }}<small>上方提醒按采购明细条数统计</small></span>
+        <span v-else-if="grouped" class="fabric-group-total" role="status">{{ listReadState === 'ready' ? `${total ?? 0} 个物料组 · ${lineTotal} 条采购明细` : listReadLabels[listReadState] }}<small v-if="listReadState === 'ready'">上方提醒按采购明细条数统计</small></span>
         <div class="fabric-receiving-actions">
           <template v-if="mode === 'pending'">
             <Button as-child variant="outline" size="sm"><RouterLink to="/modules/pmc-warehouse/material-handover?factory=huakang-c&tab=documents">送货单入库</RouterLink></Button>
@@ -516,7 +522,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
       <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
       <div class="fabric-dialog-actions"><DialogClose as-child><Button variant="outline" :disabled="busy">保留导入</Button></DialogClose><Button :disabled="busy || !withdrawConfirmed || !withdrawReason.trim()" @click="withdrawImport">确认撤销导入</Button></div>
     </DialogContent></DialogPortal></DialogRoot>
-    <FabricDetailDialog v-if="detail" :open="detailOpen && !chaseSource" title="采购来源详情" :icon="ClipboardList"
+    <WarehouseDetailDialog v-if="detail" :open="detailOpen && !chaseSource" title="采购来源详情" :icon="ClipboardList"
       close-label="关闭采购来源详情" @close="detailOpen = false" @close-auto-focus="restorePurchaseDetailFocus">
       <section class="fabric-detail-overview" aria-label="待收概览">
         <div class="fabric-detail-identity">
@@ -606,7 +612,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
           <Button v-if="detail.unreviewed_changes && detail.can_review" type="button" size="sm" variant="outline" :disabled="busy" @click="reviewChanges">将变更标记已读（不确认收料）</Button>
         </div>
       </details>
-    </FabricDetailDialog>
+    </WarehouseDetailDialog>
   </div>
   <FabricChaseDialog v-if="chaseSource" :source="chaseSource" @close="chaseSource = undefined" @saved="chaseSaved" @stale="message => { chaseSource = undefined; receiptStale(message) }" />
   <FabricBatchReceiptDialog v-if="batchSources" :sources="batchSources" @close="batchSources = undefined" @saved="batchSaved" @stale="receiptStale" />

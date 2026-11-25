@@ -1,0 +1,42 @@
+{
+  "source": "545aa59d1e6a41d35916f82bed00bf1b1b90944a",
+  "referenceBase": "d9d8b54a3a70521481d292e1a10f5181b88af44d",
+  "baseImageID": "sha256:96d458b0fc69e2bbfbd9759765e8b9fa7da2a5b741bae0e91878a96ebfcb4d0c",
+  "files": {
+    "backend/app/api/qc_mobile.py": {
+      "expectedCurrent": "05dc6b380e32ef4b82335b87bbe9af16c4af42b7684337d2f7d733dff6292853",
+      "candidate": "0f264b9d09d43461552c44e2b735eaf3f16e15309be6c4c52c72372a8b9a0887"
+    },
+    "backend/app/core/config.py": {
+      "expectedCurrent": "3042c8ef4b6477dc9b7d31e66fe8a72d29d2de8fc47fc7ac45f5d0c623bf2c17",
+      "candidate": "c642fc771a2f03c4887f661da988ee1be552d9dcee0cc2e921ec49f16fad6e1e"
+    },
+    "services/qc-department/qc-mobile-entry.js": {
+      "expectedCurrent": "3805872eb042fd923ae23a5efe7121d661c0c8f5815e7dc657aa8431c5451281",
+      "candidate": "c980bc3d025e5bae80cd66096726a212b3533d031c0d790dc833dcc867c82620"
+    },
+    "services/qc-department/mobile-inspection/index.html": {
+      "expectedCurrent": "977fafe6fe130939c86d7c0dbd8bf5ec8fb333eaad73d82ab580d6dfece98d38",
+      "candidate": "c6e356d1325a936c1d81dc54241f948268f356e16716a9535983c1de2747051d"
+    },
+    "services/qc-department/mobile-inspection/remote.js": {
+      "expectedCurrent": "657d20537017239f17c3f36da5591645bb2fe5b839e68b3c2669d132f5b651e0",
+      "candidate": "e37d0417fa906b0106a6768578e982940573402b4a6a8f945c27071e3a95a657"
+    },
+    "services/qc-department/mobile-inspection/app.js": {
+      "expectedCurrent": "0963cda41cec9898d1718981a4f18be7ffa94b83c892b7292a71a5f4f9243a4c",
+      "candidate": "963eadb678978e28c39d4be75676ec1b54a4b9aa04b95c4553acc1c87cd6624b"
+    },
+    "services/qc-department/mobile-inspection/app.css": {
+      "expectedCurrent": "7da8a0aa68b42412dca69a5a583341ecafb56e4478ab221469f17b20d23e0f60",
+      "candidate": "e00a0334007026fc8a25ca42129e71ef9d514649c8fe51e80b08c73e738c6821"
+    }
+  },
+  "unchanged": {
+    "backend/app/api/qc_department.py": "8e76f0e783e28dd5b90257f1e3b9ed3c91da2d067199e34cd035a0f6c87d9b3e",
+    "backend/app/services/qc_inspection_sheet.py": "1345faf071b95442dbbbda2b526896a4f91cfbea08163c0001bc04ff478b21fe",
+    "backend/app/services/auth.py": "9d56f793010058cab30308e9d73b80112a5f9fa30c5ba75dbe894ffe5509d70b",
+    "services/qc-department/mobile-inspection/icon.svg": "0c694bc100028dc643f6f9f9953d869f1b8ba83c435171eac541cc851d545d34",
+    "services/qc-department/qc-photo-shapes.js": "1b029e584309274adca902dd6a8f8ed29ae1ce1c8a6ba5783cab6e4c24fcbefd"
+  }
+}

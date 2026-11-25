@@ -38,7 +38,7 @@ DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 
 
 def production():
-    return settings.app_env.strip().lower() in {"production", "prod"}
+    return settings.qc_mobile_require_https or settings.app_env.strip().lower() in {"production", "prod"}
 
 
 def configured_origin():
@@ -53,10 +53,15 @@ def configured_origin():
         raise HTTPException(503, "移动验货访问地址尚未配置或不正确")
     if production():
         host = parsed.hostname
-        if (parsed.scheme != "https" or port not in (None, 443) or len(host) > 253
-                or not re.fullmatch(rf"(?:{DNS_LABEL}\.)+{DNS_LABEL}", host)
-                or host.rsplit(".", 1)[1].isdigit() or host.endswith((".local", ".localhost"))):
-            raise HTTPException(503, "正式移动验货需要配置公司 HTTPS 域名，请联系管理员")
+        try:
+            address = ip_address(host)
+        except ValueError:
+            valid_host = (len(host) <= 253 and re.fullmatch(rf"(?:{DNS_LABEL}\.)+{DNS_LABEL}", host)
+                          and not host.rsplit(".", 1)[1].isdigit() and not host.endswith((".local", ".localhost")))
+        else:
+            valid_host = address.version == 4 and address.is_global and not address.is_multicast and not address.is_reserved
+        if parsed.scheme != "https" or port not in (None, 443) or not valid_host:
+            raise HTTPException(503, "正式移动验货需要配置 HTTPS 域名或固定公网 IPv4，请联系管理员")
         origin = f"https://{host}"
     return origin, parsed
 
@@ -66,7 +71,7 @@ def production_request_origin(request):
     # The outer gateway terminates TLS. Match its preserved Host to the
     # configured authority, without trusting client-supplied forwarding headers.
     if request.headers.get("host", "").lower() not in {parsed.hostname, f"{parsed.hostname}:443"}:
-        raise HTTPException(503, "请从公司正式 HTTPS 域名打开验货台并重新扫码")
+        raise HTTPException(503, "请从公司正式 HTTPS 地址打开验货台并重新扫码")
     return origin
 
 

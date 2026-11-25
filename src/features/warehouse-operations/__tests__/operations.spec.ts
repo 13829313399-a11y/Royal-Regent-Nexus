@@ -36,6 +36,85 @@ async function fillRequest(body: DOMWrapper<Element>) {
   await body.get('[aria-label="本次数量"]').setValue('0.3')
 }
 describe('warehouse actual operations', () => {
+  const semiRelease = {
+    id: 'REL-1', kind: 'SEMI_RELEASE', sequence: 1, business_date: '2026-11-01', actor_name: '仓管', occurred_at: '',
+    data: { item_code: 'TEST-01', item_name: '测试车衣', process_state: '车缝完成', production_no: 'JP-TEST',
+      part: '头', label_code: '2606HK', source_no: 'PLAN-1', source_line: '2', unit: '件', quantity: '100', allocations: [] },
+  } as WarehouseDocument
+  const semiProgress = { release_id: semiRelease.id, received: '80', pending_receipt: '20', extra_received: '0', stock: [],
+    processing: [], packaging: [], document_ids: [] }
+
+  it('applies the shared date range to semi handoff records without posting', async () => {
+    const first = { ...semiRelease, id: 'PACK-1', kind: 'PACK_SEND', business_date: '2026-10-31', data: { ...semiRelease.data, source_no: '交接原单一' } } as WarehouseDocument
+    const second = { ...first, id: 'PACK-2', business_date: '2026-11-01', data: { ...first.data, source_no: '交接原单二' } }
+    await open('inventory', 'packaging', { ...empty(), documents: [first, second] }, 'semi')
+    const calendar = wrapper!.getComponent(DateRangeFilter)
+    calendar.vm.$emit('update:modelValue', { start: parseDate('2026-11-01'), end: parseDate('2026-11-01') })
+    await flushPromises()
+    expect(wrapper!.get('tbody').text()).toContain('交接原单二')
+    expect(wrapper!.get('tbody').text()).not.toContain('交接原单一')
+    calendar.vm.$emit('update:modelValue', { start: undefined, end: undefined })
+    await flushPromises()
+    expect(wrapper!.get('tbody').findAll('tr')).toHaveLength(2)
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('opens linked semi receipt with the correct release line and separate physical evidence', async () => {
+    api.post.mockResolvedValueOnce({ id: 'RECEIPT-1' })
+    const body = await open('orders', 'progress', { ...empty(), documents: [semiRelease], order_progress: [semiProgress] }, 'semi')
+    expect(api.workspace).toHaveBeenCalledWith('semi', false, true)
+    await wrapper!.get('[aria-label="查找订单进度"]').setValue('JP-TEST 2606HK')
+    expect(wrapper!.get('tbody').text()).toContain('待收 20 件')
+    await wrapper!.get('[aria-label="实收进度筛选"]').setValue('extra')
+    expect(wrapper!.get('[role="status"]').text()).toContain('暂无符合条件的记录')
+    await wrapper!.get('[aria-label="实收进度筛选"]').setValue('pending')
+    await wrapper!.findAll('button').find(button => button.text() === '查看进度')!.trigger('click')
+    await flushPromises()
+    const trace = body.get('[role="dialog"]')
+    expect(trace.text()).toContain('PLAN-1 / 2')
+    await trace.findAll('button').find(button => button.text() === '登记实收')!.trigger('click')
+    await flushPromises()
+    const form = body.get('form[role="dialog"]')
+    expect(form.get('[aria-label="已关联放产明细"]').text()).toContain('JP-TEST · 头 · 2606HK')
+    expect(form.find('[aria-label="物料产品编码"]').exists()).toBe(false)
+    await form.get('[aria-label="来源单号"]').setValue('DEL-1')
+    await form.get('[aria-label="往来单位"]').setValue('车间甲')
+    await form.get('[aria-label="目标仓位"]').setValue('一仓／A02')
+    await form.get('[aria-label="本次数量"]').setValue('20')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('semi', expect.objectContaining({ kind: 'RECEIPT', release_id: 'REL-1',
+      production_no: 'JP-TEST', item_code: 'TEST-01', unit: '件', quantity: '20', source_no: 'DEL-1', location_id: 'A02' }))
+    expect(body.get('[role="dialog"]').text()).toContain('订单进度 · JP-TEST')
+  })
+
+  it('shows release evidence to read-only staff and pins a processing return to its send for operators', async () => {
+    const send = {
+      ...semiRelease, id: 'SEND-1', kind: 'PROCESS_SEND', consumed_quantity: '4', returned_quantity: '2',
+      data: { ...semiRelease.data, release_id: semiRelease.id, source_no: 'PROCESS-42', quantity: '10' },
+      batch_snapshot: { unit: '件' },
+    } as WarehouseDocument
+    const view = { ...empty(), documents: [send, semiRelease], order_progress: [{ ...semiProgress, document_ids: [send.id] }] }
+    view.permissions.operate = false
+    const body = await open('orders', 'progress', view, 'semi')
+    const openTrace = () => wrapper!.findAll('button').find(button => button.text() === '查看进度')!.trigger('click')
+    expect(wrapper!.findAll('button').some(button => button.text() === '登记放产明细')).toBe(false)
+    await openTrace()
+    const trace = body.get('[role="dialog"]')
+    expect(trace.text()).toContain('PROCESS-42')
+    expect(trace.findAll('button').some(button => button.text() === '登记回货')).toBe(false)
+    await trace.get('[aria-label="关闭订单进度"]').trigger('click')
+    api.workspace.mockResolvedValue({ ...view, permissions: { ...view.permissions, operate: true } })
+    await wrapper!.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
+    await flushPromises()
+    await openTrace()
+    await body.get('[role="dialog"]').findAll('button').find(button => button.text() === '登记回货')!.trigger('click')
+    const original = body.get<HTMLSelectElement>('form [aria-label="关联原单"]')
+    expect(original.element.value).toBe(send.id)
+    expect(original.element.disabled).toBe(true)
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
   it.each([false, true])('prints fabric issues without posting, refreshing or closing details (reversed: %s)', async reversed => {
     const issue = { id: 'ISSUE-PRINT', kind: 'ISSUE', sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '', reversed,
       data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
