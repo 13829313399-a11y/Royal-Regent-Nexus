@@ -311,7 +311,7 @@ def test_legacy_sync_cannot_change_inspector(db,monkeypatch,endpoint):
     from app.services import auth
     monkeypatch.setattr(auth,'add_auth_audit',lambda *a,**k:None)
     user=qc_user(True)
-    codes=user.permissions|{'qc_inspection:customer_manage'}
+    codes=user.permissions|{'qc_inspection:customer_manage','qc_inspection:record_delete'}
     user=replace(user,permissions=codes,grants=(replace(user.grants[0],permissions=codes),))
     calls=[]
     async def upstream(method,path,params,body):
