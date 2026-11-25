@@ -167,6 +167,7 @@ QC_INSPECTION_PERMISSION_CODES = (
     "qc_inspection:report_rename_preview",
     "qc_inspection:report_rename_execute",
     "qc_inspection:customer_manage",
+    "qc_inspection:record_delete",
     "qc_inspection:audit_read",
     "qc_inspection:factory_summary",
     "qc_inspection:group_summary",

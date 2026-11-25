@@ -145,6 +145,34 @@
     if (!Array.isArray(l)) { try { l = JSON.parse(sessionStorage.getItem(KEY.defectLib) || '[]'); } catch (e) { l = []; } }
     return post(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: l });
   }
+  function postStrict(url, body) {
+    if (window.__QC_BACKEND_OK !== true) return Promise.resolve({ ok: true, status: 200, detail: '' });
+    try {
+      return trackWrite(fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          var detail = typeof data?.detail === 'string' ? data.detail : '';
+          window.__QC_LAST_SYNC = { url: url, ok: r.ok, status: r.status, detail: detail, time: new Date().toISOString() };
+          return { ok: r.ok, status: r.status, detail: detail };
+        });
+      }).catch(function (err) {
+        var msg = err && err.message || '网络异常';
+        window.__QC_LAST_SYNC = { url: url, ok: false, error: msg, time: new Date().toISOString() };
+        return { ok: false, status: 0, detail: '网络异常，请稍后重试' };
+      }));
+    } catch (e) {
+      return Promise.resolve({ ok: false, status: 0, detail: '提交异常，请稍后重试' });
+    }
+  }
+  window.__QC_SAVE_DEFECTS = function (lib) {
+    return postStrict(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: Array.isArray(lib) ? lib : [] });
+  };
+  window.__QC_SAVE_PARTNERS = function (list) {
+    return postStrict(API_BASE + '/api/partners?company=' + COMPANY, { partners: Array.isArray(list) ? list : [] });
+  };
 
   /* ── 劫持 app.js 的三个写入函数（此时 app.js 已解析，函数已挂到 window）── */
   function patchWriters() {

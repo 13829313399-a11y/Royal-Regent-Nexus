@@ -110,7 +110,8 @@ def migrate_review(conn):
     fields={'flow_version':"INTEGER NOT NULL DEFAULT 0",'review_state':"TEXT NOT NULL DEFAULT ''",
         'inspection_problem':"TEXT DEFAULT NULL",'review_execution':"TEXT DEFAULT NULL",'confirmed_at':"TEXT NOT NULL DEFAULT ''",
         'confirmed_by':"TEXT NOT NULL DEFAULT ''",'approved_snapshot':"TEXT NOT NULL DEFAULT ''",
-        'last_actor':"TEXT NOT NULL DEFAULT '{}'",'last_location':"TEXT NOT NULL DEFAULT ''",'last_changed_at':"TEXT NOT NULL DEFAULT ''"}
+        'last_actor':"TEXT NOT NULL DEFAULT '{}'",'last_location':"TEXT NOT NULL DEFAULT ''",'last_changed_at':"TEXT NOT NULL DEFAULT ''",
+        'deleted_at':"TEXT NOT NULL DEFAULT ''",'deleted_by':"TEXT NOT NULL DEFAULT ''",'delete_reason':"TEXT NOT NULL DEFAULT ''"}
     fields.update({column: 'TEXT DEFAULT NULL' for column, _ in REVIEW_FIELDS.values()})
     present={r['name'] for r in conn.execute('PRAGMA table_info(entry_details)')}
     for key,ddl in fields.items():
@@ -207,10 +208,14 @@ def candidates(factory, records, tasks, sources, examples=(), references=()):
     return result
 
 
-def get(conn, factory, entry_id):
+def get(conn, factory, entry_id, *, include_deleted=False):
     row = conn.execute('SELECT * FROM entries WHERE id=? AND factory=?',(entry_id,factory)).fetchone()
     if row is None:
         raise HTTPException(404,'验货任务不存在')
+    if not include_deleted:
+        deleted = conn.execute("SELECT 1 FROM entry_details WHERE entry_id=? AND deleted_at<>''", (entry_id,)).fetchone()
+        if deleted:
+            raise HTTPException(404,'验货任务不存在或已删除')
     return row
 
 
@@ -233,7 +238,7 @@ def review_notifications(factory, actor, body=None, *, action):
             SELECT c.* FROM changes c
             JOIN entries e ON e.id=c.entry_id
             JOIN entry_details d ON d.entry_id=e.id
-            WHERE e.factory=? AND c.action=? AND d.review_state=?
+            WHERE e.factory=? AND c.action=? AND d.review_state=? AND d.deleted_at=''
               AND (c.action='revoke' OR c.id=(
                   SELECT max(previous.id) FROM changes previous
                   WHERE previous.entry_id=c.entry_id AND previous.action=c.action))
@@ -318,6 +323,7 @@ def unpack(conn, row, include_photos=True):
 def sync(factory, rows, copy_photos=True):
     ids = [];photo_warnings=set()
     with store(True) as conn:
+        deleted_ids={r[0] for r in conn.execute("SELECT e.id FROM entries e JOIN entry_details d ON d.entry_id=e.id WHERE e.factory=? AND d.deleted_at<>''",(factory,))}
         source_counts={}
         for _,base,_,_,_ in rows:
             if base.get('sourceId'):source_counts[base['sourceId']]=source_counts.get(base['sourceId'],0)+1
@@ -329,14 +335,17 @@ def sync(factory, rows, copy_photos=True):
             if not previous and base.get('workflowId'):
                 linked=list(conn.execute("SELECT * FROM entries WHERE factory=? AND json_extract(base,'$.workflowId')=?",(factory,base['workflowId'])))
                 source=conn.execute('SELECT * FROM entries WHERE factory=? AND source_key=?',(factory,'source:'+str(base.get('sourceId','')))).fetchone()
-                if not linked and source:
+                if not linked and source and source['id'] not in deleted_ids:
                     if source_counts.get(base.get('sourceId'))==1:linked=[source]
                     else:base['lineageConflict']='原排期已拆为多个批次，无法自动归属先前填写的验货记录'
                 if len(linked)==1:
                     previous=linked[0]
-                    conn.execute('UPDATE entries SET source_key=? WHERE id=?',(key,previous['id']))
+                    if previous['id'] not in deleted_ids:
+                        conn.execute('UPDATE entries SET source_key=? WHERE id=?',(key,previous['id']))
                 elif len(linked)>1:base['lineageConflict']='同一流程关联了多个验货记录，需要核对'
             if previous:entry_id=previous['id']
+            if entry_id in deleted_ids:
+                continue  # Tombstoned deletions never resurrect during source refresh.
             ids.append(entry_id)
             if previous and conn.execute("SELECT 1 FROM entry_details WHERE entry_id=? AND submitted_at<>''",(entry_id,)).fetchone():
                 continue  # Submitted fields/photos are frozen; source status refresh must not bump revision.
@@ -382,6 +391,8 @@ def sync(factory, rows, copy_photos=True):
         # a confirmed task adopts them above, including any previously saved input.
         retained=[]
         for row in conn.execute('SELECT * FROM entries WHERE factory=?',(factory,)):
+            if row['id'] in deleted_ids:
+                continue
             if row['id'] in ids or row['source_key'].startswith('desk:'):
                 item=unpack(conn,row,copy_photos)
                 if row['id'] in photo_warnings:item['photoWarning']='来源照片暂不可用；刷新可重试，文字仍可保存和导入'
@@ -668,7 +679,7 @@ def ensure_editable(conn, row, review=False):
 def workbench_items(items):
     """Submission state, independent of cumulative workbook merge/undo state."""
     return [r for r in items if r.get('reviewState')=='returned_to_inspection' or (not r.get('submittedAt') and not r.get('legacyCompleted')
-            and r.get('reviewState') not in {'pending', 'approved'})]
+            and r.get('reviewState') not in {'pending', 'approved', 'deleted'})]
 
 
 def submit(factory, entry_id, body, actor):
@@ -779,3 +790,136 @@ def return_to_inspection(factory, entry_id, body, actor, sources=None):
         conn.execute('UPDATE qsum.records SET active=0,updated_at=? WHERE id=? AND factory=?',(wf.now(),identity,factory))
         event=conn.execute('SELECT id FROM changes WHERE entry_id=? AND request_key=?',(entry_id,body['requestKey'])).fetchone()
         return {'item':item,'eventId':event['id'],'replayed':False}
+
+
+def delete_batch(factory, scope, body, actor):
+    """Soft-delete workbench or pending-review inspection entries with full audit trail."""
+    if (scope not in {'workbench', 'pending'} or set(body) - {'entries', 'requestKey', 'reason'}
+            or not isinstance(body.get('entries'), list) or not 1 <= len(body['entries']) <= 500
+            or not re.fullmatch(r'[a-f0-9-]{16,64}', str(body.get('requestKey', '')))):
+        raise HTTPException(422, '删除范围或请求编号不正确')
+    entries = body['entries']
+    reason = body.get('reason', '')
+    if (any(not isinstance(x, dict) or set(x) != {'id', 'revision'} or not isinstance(x['id'], str)
+            or type(x['revision']) is not int for x in entries)
+            or len({x['id'] for x in entries}) != len(entries)):
+        raise HTTPException(422, '删除记录重复或版本不正确')
+    if not isinstance(reason, str) or len(reason) > 2000 or any(ord(c) < 32 and c not in '\n\r\t' for c in reason):
+        raise HTTPException(422, '删除说明最多2000字且不能包含非法控制字符')
+    reason = reason.strip()
+    location = '验货台' if scope == 'workbench' else '审核中心 · 待审核'
+    results = []
+    with store(True, review=True) as conn:
+        for wanted in entries:
+            conn.execute('SAVEPOINT delete_item')
+            try:
+                row = get(conn, factory, wanted['id'], include_deleted=True)
+                receipt = conn.execute(
+                    'SELECT * FROM changes WHERE entry_id=? AND request_key=?',
+                    (row['id'], body['requestKey']),
+                ).fetchone()
+                if receipt:
+                    previous = json.loads(receipt['diff'])
+                    if (json.loads(receipt['actor']).get('id') != actor.get('id')
+                            or receipt['action'] != 'delete'
+                            or previous.get('reason', '') != reason
+                            or previous.get('expectedRevision') != wanted['revision']
+                            or previous.get('scope') != scope):
+                        raise HTTPException(409, '同一请求编号不能用于不同操作')
+                    snap = json.loads(receipt['snapshot'])
+                    results.append({
+                        'id': row['id'], 'ok': True, 'replayed': True,
+                        'workflowId': snap.get('workflowId') or '',
+                        'legacyId': snap.get('legacyId'),
+                        'customer': snap.get('customer', ''),
+                        'poNo': snap.get('poNo', ''),
+                        'productNo': snap.get('productNo', ''),
+                    })
+                    conn.execute('RELEASE delete_item')
+                    continue
+                if conn.execute("SELECT 1 FROM entry_details WHERE entry_id=? AND deleted_at<>''", (row['id'],)).fetchone():
+                    raise HTTPException(404, '验货任务不存在或已删除')
+                before = unpack(conn, row)
+                revision(row, wanted)
+                if scope == 'workbench':
+                    if not workbench_items([before]):
+                        if before['reviewState'] == 'approved' or before['legacyCompleted']:
+                            raise HTTPException(409, '已审核记录请先在审核中心反审核退回待审核，再执行删除')
+                        raise HTTPException(409, '该记录已进入审核中心，请在审核中心处理')
+                else:
+                    if before['reviewState'] == 'approved' or before['legacyCompleted']:
+                        raise HTTPException(409, '已审核记录请先执行反审核退回待审核，再执行删除')
+                    if before['reviewState'] != 'pending':
+                        raise HTTPException(409, '记录状态已变化，不再属于待审核队列，请刷新后重试')
+                stamp = wf.now()
+                conn.execute('INSERT OR IGNORE INTO entry_details(entry_id) VALUES(?)', (row['id'],))
+                conn.execute(
+                    """UPDATE entry_details
+                       SET flow_version=2, review_state='deleted', deleted_at=?, deleted_by=?, delete_reason=?,
+                           last_actor=?, last_location=?, last_changed_at=?
+                       WHERE entry_id=?""",
+                    (stamp, actor['name'], reason, wf.dump(actor), location, stamp, row['id']),
+                )
+                new_revision = row['revision'] + 1
+                conn.execute('UPDATE entries SET revision=?, edited=1, updated_at=? WHERE id=?', (new_revision, stamp, row['id']))
+                diff = {
+                    'reason': reason,
+                    'expectedRevision': wanted['revision'],
+                    'previousReviewState': before['reviewState'],
+                    'scope': scope,
+                }
+                conn.execute(
+                    'INSERT INTO changes(entry_id,revision,action,actor,created_at,snapshot,location,diff,request_key) VALUES(?,?,?,?,?,?,?,?,?)',
+                    (row['id'], new_revision, 'delete', wf.dump(actor), stamp, wf.dump(before), location, wf.dump(diff), body['requestKey']),
+                )
+                identity = sha256((factory + '\0entry:' + row['id']).encode()).hexdigest()[:32]
+                conn.execute(
+                    'INSERT INTO qsum.changes(record_id,created_at,payload) SELECT id,?,payload FROM qsum.records WHERE id=? AND factory=? AND active=1',
+                    (stamp, identity, factory),
+                )
+                conn.execute(
+                    "UPDATE qsum.records SET active=0, status='withdrawn', updated_at=? WHERE id=? AND factory=? AND active=1",
+                    (stamp, identity, factory),
+                )
+                results.append({
+                    'id': row['id'], 'ok': True, 'replayed': False,
+                    'workflowId': before.get('workflowId') or '',
+                    'legacyId': before.get('legacyId'),
+                    'customer': before.get('customer', ''),
+                    'poNo': before.get('poNo', ''),
+                    'productNo': before.get('productNo', ''),
+                })
+                conn.execute('RELEASE delete_item')
+            except HTTPException as error:
+                conn.execute('ROLLBACK TO delete_item')
+                conn.execute('RELEASE delete_item')
+                results.append({'id': wanted['id'], 'ok': False, 'status': error.status_code, 'message': error.detail})
+    return {'results': results, 'succeeded': sum(r['ok'] for r in results), 'failed': sum(not r['ok'] for r in results)}
+
+
+def referenced_defect_names(factory):
+    """Collect defect description names referenced by active (non-deleted) inspection entries."""
+    if not database_path().is_file():
+        return set()
+    names = set()
+    with store() as conn:
+        rows = conn.execute(
+            """SELECT e.base, d.review_execution
+               FROM entries e
+               LEFT JOIN entry_details d ON d.entry_id=e.id
+               WHERE e.factory=? AND coalesce(d.deleted_at,'')=''""",
+            (factory,),
+        ).fetchall()
+    for row in rows:
+        for raw_exec in (
+            (json.loads(row['base'] or '{}').get('inspectionExecution') or {}),
+            (json.loads(row['review_execution']) if row['review_execution'] else {}),
+        ):
+            if not isinstance(raw_exec, dict):
+                continue
+            for item in raw_exec.get('defects') or []:
+                if isinstance(item, dict):
+                    desc = str(item.get('desc') or '').strip()
+                    if desc:
+                        names.add(desc)
+    return names

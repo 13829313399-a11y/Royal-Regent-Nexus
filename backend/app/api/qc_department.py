@@ -127,19 +127,21 @@ def ui_context(user: AuthContext, factory_id: str) -> dict:
     allowed = lambda p: can(user, "qc_inspection:" + p, factory_id, "qc")
     write = allowed("result_write") and allowed("order_write")
     manage, export = allowed("customer_manage"), allowed("report_export")
+    record_delete = allowed("record_delete")
     menus = ["dashboard", "sales-schedule", "records", "review", "inspection-summary", "analysis", "suppliers",
              "daily", "weekly", "monthly", "yearly", "supplier-report", "defectlib", "import"]
     perms = {key: {"v": 1, "e": 0, "a": 0, "m": 0} for key in menus}
     for key in ("records", "review"):
-        perms[key].update(e=int(write), a=int(write), m=int(write and manage))
+        perms[key].update(e=int(write), a=int(write), m=int(record_delete))
     for key in ("suppliers", "defectlib"):
         perms[key].update(e=int(manage), a=int(manage), m=int(manage))
     perms["review"]["a"] = int(allowed("review"))
-    perms["import"] = dict(v=int(write and manage), e=0, a=0, m=int(write and manage))
+    perms["import"] = dict(v=int(write and manage), e=0, a=0, m=int(record_delete))
     return {"factory": factory_id, "company": COMPANIES[factory_id], "factoryLabel": factory_label(factory_id), "exportAllowed": export, "summaryImportAllowed": allowed("result_write") and manage and export,
             "weeklyTemplatesEditAllowed": allowed("result_write"),
+            "deleteAllowed": record_delete,
             "workflow": {"create": allowed("schedule_write") and allowed("order_write"), "edit": allowed("result_write"),
-                         "review": allowed("review"), "export": export, "manual": write},
+                         "review": allowed("review"), "export": export, "manual": write, "delete": record_delete},
             "inspector": {"id": user.id, "name": user.display_name or user.username},
             "user": {"username": "nexus:" + user.id, "name": user.display_name or user.username,
                      "role": "viewer", "enabled": True, "perms": perms}}
@@ -333,6 +335,7 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             _ensure_permission(db, user, "qc_inspection:order_write", factory_id)
         if asset_path in {"api/records/delete", "api/records/replace", "api/reference-data/clear"}:
             _ensure_permission(db, user, "qc_inspection:customer_manage", factory_id)
+            _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
     elif request.method not in {"GET", "HEAD"} or asset_path not in READ_ENDPOINTS:
         raise HTTPException(404, "接口不存在")
     if asset_path.startswith("api/export/"):
@@ -373,6 +376,50 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         body = bytearray(json.dumps(payload).encode())
         if payload.get("deletedIds"):
             _ensure_permission(db, user, "qc_inspection:customer_manage", factory_id)
+            _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+    if asset_path in {"api/defects", "api/partners"} and request.method == "POST":
+        try:
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise HTTPException(400, "无效 JSON")
+        existing_response = await upstream("GET", "api/bootstrap", [("company", company)], b"")
+        if existing_response.status_code != 200:
+            raise HTTPException(503, "无法核对现有配置，请重试")
+        existing_data = existing_response.json()
+        if asset_path == "api/defects" and isinstance(payload.get("defectLib"), list):
+            existing_defects = existing_data.get("defectLib") or []
+            old_names = {str(d.get("name") or "").strip() for d in existing_defects if isinstance(d, dict) and str(d.get("name") or "").strip()}
+            new_names = {str(d.get("name") or "").strip() for d in payload["defectLib"] if isinstance(d, dict) and str(d.get("name") or "").strip()}
+            removed_names = old_names - new_names
+            if removed_names:
+                _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+                referenced = await run_in_threadpool(qc_inspection_sheet.referenced_defect_names, factory_id)
+                for rec in existing_data.get("records") or []:
+                    if not isinstance(rec, dict):
+                        continue
+                    for item in rec.get("defects") or []:
+                        if isinstance(item, dict):
+                            desc = str(item.get("desc") or "").strip()
+                            if desc:
+                                referenced.add(desc)
+                    raw_defect = str(rec.get("defect") or "").strip()
+                    if raw_defect:
+                        referenced.add(raw_defect)
+                        for token in re.split(r"[，,;；、/\n]+", raw_defect):
+                            cleaned = token.strip()
+                            if cleaned:
+                                referenced.add(cleaned)
+                blocked = sorted(removed_names & referenced)
+                if blocked:
+                    raise HTTPException(409, f"不良描述「{'、'.join(blocked[:3])}」已被历史验货记录引用，无法删除；请改用「停用」以保留历史追溯")
+        if asset_path == "api/partners" and isinstance(payload.get("partners"), list):
+            existing_partners = existing_data.get("partners") or []
+            old_pairs = {(str(p.get("type") or "").strip(), str(p.get("name") or "").strip()) for p in existing_partners if isinstance(p, dict) and str(p.get("name") or "").strip()}
+            new_pairs = {(str(p.get("type") or "").strip(), str(p.get("name") or "").strip()) for p in payload["partners"] if isinstance(p, dict) and str(p.get("name") or "").strip()}
+            if old_pairs - new_pairs:
+                _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
     if asset_path == 'api/records/delete' and request.method == 'POST':
         try: deleting=json.loads(body).get('ids',[])
         except (ValueError,AttributeError): raise HTTPException(400,'无效 JSON')
@@ -575,7 +622,11 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     if path in {'intake/preview', 'intake/import', 'intake/manual'}:
         return await inspection_intake_request(path, request, db, user, factory_id, actor)
     exporting = path in {'print-preview', 'schedule-excel'}
-    _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
+    deleting = path in {'entries/delete', 'review/delete'}
+    if deleting:
+        _ensure_permission(db, user, 'qc_inspection:record_delete', factory_id)
+    else:
+        _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
     if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'不接受跨站写入')
     if request.headers.get('content-type','').split(';')[0].lower()!='application/json':raise HTTPException(415,'请使用 JSON 提交')
     raw=bytearray()
@@ -600,6 +651,29 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
+    elif path in {'entries/delete','review/delete'}:
+        scope = 'workbench' if path == 'entries/delete' else 'pending'
+        result = await run_in_threadpool(service.delete_batch, factory_id, scope, body, actor)
+        legacy_ids = []
+        for item in result['results']:
+            if not item.get('ok'):
+                continue
+            if item.get('workflowId'):
+                await run_in_threadpool(
+                    qc_workflow.archive_deleted_task,
+                    factory_id, item['workflowId'], actor, body.get('reason', ''),
+                )
+            if isinstance(item.get('legacyId'), int):
+                legacy_ids.append(item['legacyId'])
+        if legacy_ids:
+            try:
+                await upstream(
+                    'POST', 'api/records/delete',
+                    [('company', COMPANIES[factory_id])],
+                    json.dumps({'ids': legacy_ids}).encode(),
+                )
+            except HTTPException:
+                pass
     elif (len(parts)==3 and parts[0]=='entries' or len(parts)==4 and parts[:2]==['review','entries']) and parts[-1]=='photo-annotations':
         result=await run_in_threadpool(service.save_photo_annotations,factory_id,parts[-2],body,actor,review=len(parts)==4)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:
@@ -759,9 +833,13 @@ async def inspection_summary_request(path, request, db, user, factory_id):
     service = qc_inspection_summary
     parts = path.split('/')
     actor = str(user.id)
+    actor_obj = {'id': user.id, 'name': user.display_name or user.username}
     if request.method == 'GET':
         if path == 'records':
             result = await run_in_threadpool(service.listing, factory_id, dict(request.query_params))
+        elif path == 'history/batches':
+            _ensure_permission(db, user, 'qc_inspection:record_delete', factory_id)
+            result = await run_in_threadpool(service.list_history_batches, factory_id)
         elif len(parts) == 2 and parts[0] == 'records':
             result = await run_in_threadpool(service.detail, factory_id, parts[1])
         elif len(parts) == 2 and parts[0] == 'history':
@@ -771,8 +849,13 @@ async def inspection_summary_request(path, request, db, user, factory_id):
         return JSONResponse(result, headers=NO_CACHE)
     if request.method != 'POST':
         raise HTTPException(405, '不支持的操作')
-    for permission in ('result_write', 'customer_manage', 'report_export'):
-        _ensure_permission(db, user, 'qc_inspection:' + permission, factory_id)
+    deleting_record = len(parts) == 3 and parts[0] == 'records' and parts[2] == 'delete'
+    rolling_back = len(parts) == 3 and parts[0] == 'history' and parts[2] == 'rollback'
+    if deleting_record or rolling_back:
+        _ensure_permission(db, user, 'qc_inspection:record_delete', factory_id)
+    else:
+        for permission in ('result_write', 'customer_manage', 'report_export'):
+            _ensure_permission(db, user, 'qc_inspection:' + permission, factory_id)
     if request.headers.get('sec-fetch-site') == 'cross-site':
         raise HTTPException(403, '不接受跨站写入')
     if request.headers.get('content-type', '').split(';')[0].lower() != 'application/json':
@@ -780,7 +863,7 @@ async def inspection_summary_request(path, request, db, user, factory_id):
     raw = bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)
-        if len(raw) > (44 * 1024 * 1024 if path == 'history/preview' else 4096):
+        if len(raw) > (44 * 1024 * 1024 if path == 'history/preview' else 16384):
             raise HTTPException(413, '提交内容过大')
     try:
         body = json.loads(raw)
@@ -791,6 +874,10 @@ async def inspection_summary_request(path, request, db, user, factory_id):
         result = await run_in_threadpool(service.preview, factory_id, actor, body)
     elif len(parts) == 3 and parts[0] == 'history' and parts[2] == 'commit' and not body:
         result = await run_in_threadpool(service.commit_history, factory_id, actor, parts[1])
+    elif deleting_record:
+        result = await run_in_threadpool(service.delete_history_record, factory_id, parts[1], body, actor_obj)
+    elif rolling_back:
+        result = await run_in_threadpool(service.rollback_history_batch, factory_id, parts[1], body, actor_obj)
     else:
         raise HTTPException(404, '接口不存在')
     return JSONResponse(result, headers=NO_CACHE)
