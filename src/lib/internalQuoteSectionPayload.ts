@@ -1870,8 +1870,11 @@ function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<st
     }
   }
   if (code === 'assembly') {
+    const referenceLaborBase = numberValue(referenceSnapshot?.assembly_labor_base_hkd ?? undefined, 285)
     return {
-      labor_base_hkd: numberValue(source.labor_base_hkd, 260),
+      labor_base_hkd: source.labor_base_hkd == null || source.labor_base_hkd === ''
+        ? referenceLaborBase
+        : numberValue(source.labor_base_hkd, referenceLaborBase),
       standard_work_hours: numberValue(source.standard_work_hours, 11),
       groups: rows(source.groups).map((group) => {
         const processes = rows(group.processes)

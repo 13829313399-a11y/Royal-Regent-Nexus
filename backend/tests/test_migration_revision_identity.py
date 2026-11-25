@@ -19,7 +19,10 @@ def test_unique_revisions_and_jp_follows_both_cutting_and_carton_branches():
     config = Config(str(backend / 'alembic.ini'))
     config.set_main_option('script_location', str(backend / 'alembic'))
     graph = ScriptDirectory.from_config(config)
-    assert graph.get_heads() == ['20261121_inj_merge']
+    assert graph.get_heads() == ['20261124_0203']
+    assert graph.get_revision('20261124_0203').down_revision == '20261124_0202'
+    assert graph.get_revision('20261124_0202').down_revision == '20261123_shipping_merge'
+    assert set(graph.get_revision('20261123_shipping_merge').down_revision) == {'20261121_inj_merge', '20261114_0201'}
     assert set(graph.get_revision('20261121_inj_merge').down_revision) == {'20261119_0197', '20261116_inj_retire'}
     assert graph.get_revision('20261116_inj_retire').down_revision == '20261116_0195'
     assert set(graph.get_revision('20261119_0197').down_revision) == {'20261116_0195', '20261119_0196'}
@@ -52,6 +55,15 @@ def test_unique_revisions_and_jp_follows_both_cutting_and_carton_branches():
 def test_newer_revision_numbers_are_not_reused():
     backend=Path(__file__).resolve().parents[1]
     config=Config(str(backend/'alembic.ini'));config.set_main_option('script_location',str(backend/'alembic'))
-    numbers=[node.revision.rsplit('_',1)[1] for node in ScriptDirectory.from_config(config).walk_revisions()
-             if node.revision.rsplit('_',1)[-1].isdigit() and int(node.revision.rsplit('_',1)[1])>=177]
-    assert len(numbers)==len(set(numbers)), 'Post-0176 numeric migration suffixes must be unique'
+    numbers = {}
+    for node in ScriptDirectory.from_config(config).walk_revisions():
+        suffix = node.revision.rsplit('_', 1)[-1]
+        if suffix.isdigit() and int(suffix) >= 177:
+            numbers.setdefault(suffix, set()).add(node.revision)
+    # Shipping and the main line published these full revision IDs independently.
+    # Preserve both histories and reject any additional number reuse.
+    assert {key: ids for key, ids in numbers.items() if len(ids) > 1} == {
+        '0195': {'20261113_0195', '20261116_0195'},
+        '0196': {'20261113_0196', '20261119_0196'},
+        '0197': {'20261114_0197', '20261119_0197'},
+    }

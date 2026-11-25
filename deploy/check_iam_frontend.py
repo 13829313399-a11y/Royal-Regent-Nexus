@@ -55,7 +55,7 @@ class EntryParser(HTMLParser):
         return self.modules[0][1:]
 
 
-def route_chunk(main, path):
+def route_chunk(main, path, expected):
     # Anchor the import to this route's selected component. The preload dependency
     # table and the advanced compatibility route can contain *both* page names.
     pattern = (r"\bpath\s*:\s*" + literal(path)
@@ -67,7 +67,6 @@ def route_chunk(main, path):
     if len(matches) != 1:
         raise ValueError(f"{path} has no unique compiled lazy route")
     filename, meta = matches[0]
-    expected, _ = ROUTES[path]
     if not re.fullmatch(re.escape(expected) + r"-[\w-]+\.js", filename):
         raise ValueError(f"{path} loads {filename}, expected {expected}")
     if not re.search(r"\bfullPage\s*:\s*" + ENABLED + r"\s*(?:,|$)", meta):
@@ -86,13 +85,24 @@ def verify(read):
     entry = EntryParser().entry(asset("index.html"))
     main = asset(entry).decode("utf-8")
     errors = []
+    # Vite can move the menu out of the entry into the system layout's static imports.
+    navigation = main
+    if "IamWorkspaceLayout-" in main and not re.search(r"\bto\s*:\s*" + literal("/system/users?view=inbox"), main):
+        layout = asset(route_chunk(main, "/system", "IamWorkspaceLayout")).decode("utf-8")
+        menu_imports = re.findall(
+            r"\bimport\s*\{[^{};]+\}\s*from\s*" + QUOTES + r"\./(iam-navigation-[\w-]+\.js)" + QUOTES,
+            layout,
+        )
+        if len(menu_imports) != 1:
+            raise ValueError("missing studio navigation import from the system layout")
+        navigation = asset("assets/" + menu_imports[0]).decode("utf-8")
     for path, label in NAVIGATION.items():
         nav = r"\bto\s*:\s*" + literal(path) + r"\s*,\s*label\s*:\s*" + literal(label)
-        if not re.search(nav, main):
+        if not re.search(nav, navigation):
             errors.append(f"missing studio navigation: {path} ({label})")
     for path, (component, label) in ROUTES.items():
         try:
-            chunk = asset(route_chunk(main, path)).decode("utf-8")
+            chunk = asset(route_chunk(main, path, component)).decode("utf-8")
             if chunk.lstrip().startswith("<") or not re.search(r"\bexport\s*(?:\{|default\b)", chunk) or label not in chunk:
                 raise ValueError(f"{path} did not load the expected {component} module")
             if path == "/system/iam/roles":

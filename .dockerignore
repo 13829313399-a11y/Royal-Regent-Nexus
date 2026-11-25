@@ -48,3 +48,6 @@ pnpm-debug.log*
 .local-dev
 services/qc-department/server/data
 services/qc-department/server/ai-config.json
+
+# 外部项目只读参考副本，不进入镜像构建上下文
+refs
