@@ -146,7 +146,7 @@
     return post(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: l });
   }
   function postStrict(url, body) {
-    if (window.__QC_BACKEND_OK !== true) return Promise.resolve({ ok: true, status: 200, detail: '' });
+    if (window.__QC_BACKEND_OK !== true) return Promise.resolve({ ok: false, status: 0, detail: '尚未连接服务器，请刷新后重试' });
     try {
       return trackWrite(fetch(url, {
         method: 'POST',
@@ -168,10 +168,10 @@
     }
   }
   window.__QC_SAVE_DEFECTS = function (lib) {
-    return postStrict(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: Array.isArray(lib) ? lib : [] });
+    return postStrict(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: lib });
   };
   window.__QC_SAVE_PARTNERS = function (list) {
-    return postStrict(API_BASE + '/api/partners?company=' + COMPANY, { partners: Array.isArray(list) ? list : [] });
+    return postStrict(API_BASE + '/api/partners?company=' + COMPANY, { partners: list });
   };
 
   /* ── 劫持 app.js 的三个写入函数（此时 app.js 已解析，函数已挂到 window）── */

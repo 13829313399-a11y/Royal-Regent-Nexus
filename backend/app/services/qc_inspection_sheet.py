@@ -53,7 +53,7 @@ def database_path():
 
 
 @contextmanager
-def store(write=False, review=False):
+def store(write=False, review=False, *, archive_workflow=False):
     path = database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=20)
@@ -71,6 +71,11 @@ def store(write=False, review=False):
             with summary.store():pass
             target=Path(settings.qc_department_data_dir).resolve() / '_summary' / 'summaries.sqlite3'
             conn.execute('ATTACH DATABASE ? AS qsum',(str(target),))
+        if archive_workflow:
+            with wf.store():
+                pass
+            target = Path(settings.qc_department_data_dir).resolve() / '_workflow' / 'workflow.sqlite3'
+            conn.execute('ATTACH DATABASE ? AS qflow', (str(target),))
         conn.execute('BEGIN IMMEDIATE' if write else 'BEGIN')
         yield conn
         conn.commit()
@@ -809,7 +814,7 @@ def delete_batch(factory, scope, body, actor):
     reason = reason.strip()
     location = '验货台' if scope == 'workbench' else '审核中心 · 待审核'
     results = []
-    with store(True, review=True) as conn:
+    with store(True, review=True, archive_workflow=True) as conn:
         for wanted in entries:
             conn.execute('SAVEPOINT delete_item')
             try:
@@ -827,6 +832,7 @@ def delete_batch(factory, scope, body, actor):
                             or previous.get('scope') != scope):
                         raise HTTPException(409, '同一请求编号不能用于不同操作')
                     snap = json.loads(receipt['snapshot'])
+                    wf.archive_deleted_task(conn, factory, snap.get('workflowId'), actor, reason)
                     results.append({
                         'id': row['id'], 'ok': True, 'replayed': True,
                         'workflowId': snap.get('workflowId') or '',
@@ -852,6 +858,7 @@ def delete_batch(factory, scope, body, actor):
                     if before['reviewState'] != 'pending':
                         raise HTTPException(409, '记录状态已变化，不再属于待审核队列，请刷新后重试')
                 stamp = wf.now()
+                wf.archive_deleted_task(conn, factory, before.get('workflowId'), actor, reason)
                 conn.execute('INSERT OR IGNORE INTO entry_details(entry_id) VALUES(?)', (row['id'],))
                 conn.execute(
                     """UPDATE entry_details
@@ -897,8 +904,21 @@ def delete_batch(factory, scope, body, actor):
     return {'results': results, 'succeeded': sum(r['ok'] for r in results), 'failed': sum(not r['ok'] for r in results)}
 
 
+def submitted_legacy_ids(factory):
+    """Direct legacy clears must not bypass a submission owned by the sheet."""
+    if not database_path().is_file():
+        return []
+    with store() as conn:
+        return [row[0] for row in conn.execute(
+            """SELECT DISTINCT json_extract(e.base,'$.legacyId')
+               FROM entries e JOIN entry_details d ON d.entry_id=e.id
+               WHERE e.factory=? AND json_type(e.base,'$.legacyId')='integer'
+                 AND (d.submitted_at<>'' OR d.review_state IN ('pending','approved'))""", (factory,),
+        )]
+
+
 def referenced_defect_names(factory):
-    """Collect defect description names referenced by active (non-deleted) inspection entries."""
+    """Archived inspection entries still reference their historical defect descriptions."""
     if not database_path().is_file():
         return set()
     names = set()
@@ -907,9 +927,16 @@ def referenced_defect_names(factory):
             """SELECT e.base, d.review_execution
                FROM entries e
                LEFT JOIN entry_details d ON d.entry_id=e.id
-               WHERE e.factory=? AND coalesce(d.deleted_at,'')=''""",
+               WHERE e.factory=?""",
             (factory,),
         ).fetchall()
+        names.update(row[0] for row in conn.execute(
+            """SELECT DISTINCT trim(json_extract(defect.value,'$.desc')) FROM changes c
+               JOIN entries e ON c.entry_id=e.id,
+               json_each(c.snapshot,'$.inspectionExecution.defects') defect
+               WHERE e.factory=? AND defect.type='object' AND json_type(defect.value,'$.desc')='text'""",
+            (factory,),
+        ))
     for row in rows:
         for raw_exec in (
             (json.loads(row['base'] or '{}').get('inspectionExecution') or {}),
