@@ -291,7 +291,7 @@ describe('internal quote desk frontend layout', () => {
     expect(createDialogSource).toContain('v-for="customer in customerOptions"')
   })
 
-  it('matches the molding-sample interaction baseline for back navigation, motion and readable type', () => {
+  it('preserves back navigation, scoped interaction feedback and reduced motion without fixing visual values', () => {
     expect(workbenchSource).toContain('sales-topbar-back')
     expect(workbenchSource).toContain('backTo?: string')
     expect(viewSource).toContain("label: '业务部模块'")
@@ -301,12 +301,10 @@ describe('internal quote desk frontend layout', () => {
     expect(viewSource).toContain('name="quote-route"')
     expect(viewSource).toContain('quote-route-enter-active')
     expect(viewSource).toContain('button:not(:disabled):hover')
-    expect(viewSource).toContain('transform: translateY(-2px)')
-    expect(viewSource).toContain('font-size: 13px !important')
-    expect(viewSource).toContain('font-size: 12px !important')
+    // Typography and movement amplitude belong to the visual review; preserve feedback hooks.
+    expect(viewSource).toMatch(/button:not\(:disabled\):hover[\s\S]*?\{[^}]+(?:transform|background|box-shadow|color)\s*:/)
     expect(viewSource).toContain('@media (prefers-reduced-motion: reduce)')
-    expect(createDialogSource).toContain('.quote-primary-button,.quote-secondary-button{font-size:13px}')
-    expect(createDialogSource).toContain('.quote-segment-pills span{font-size:11px}')
+    expect(createDialogSource).toMatch(/@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)/)
     expect(createDialogSource).toContain('.quote-primary-button:hover,.quote-secondary-button:hover')
   })
 

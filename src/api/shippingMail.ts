@@ -592,6 +592,7 @@ export interface BulkTruckLine {
   po: string
   shippingNote: string
   remark: string
+  manual?: boolean
 }
 
 export interface BulkTruckHeader {
@@ -757,6 +758,47 @@ export async function importFactorySchedule(factoryId: string, history = false) 
     lines: number
     history?: boolean
   }>('/shipping/schedule-import', null, { params: { factory_id: factoryId, history }, timeout: 120_000 })
+  return data
+}
+
+export interface CodeMappingImportRow {
+  date: string
+  contractNo: string
+  code: string
+  name: string
+  quantity: string
+  cartons: string
+  perCarton: string
+  category: string
+  note: string
+  gross: string
+  net: string
+  volume: string
+  source: string
+  country: string
+  customer: string
+  transport: string
+  containerMode: string
+  trip: string
+  containerType: string
+  plate: string
+  containerNo: string
+  sealNo: string
+  port: string
+  mode: string
+  po: string
+  status: string
+  tone: 'blue' | 'orange' | 'red'
+}
+
+export async function importCodeMappingFile(factoryId: string, file: File): Promise<{ filename: string; rows: CodeMappingImportRow[]; count: number }> {
+  const form = new FormData()
+  form.append('factory_id', factoryId)
+  form.append('file', file)
+  const { data } = await http.post<{ filename: string; rows: CodeMappingImportRow[]; count: number }>('/shipping/code-mappings/import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120_000,
+  })
   return data
 }
 

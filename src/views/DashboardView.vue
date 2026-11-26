@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CalendarDays, Download } from '@lucide/vue'
+import { CalendarDays, Download, LayoutDashboard } from '@lucide/vue'
 import {
   overviewMetrics,
 } from '@/data/enterpriseMock'
@@ -49,6 +49,7 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
         class="dashboard-hero__header"
         eyebrow="Group Operations"
         :title="heroTitle"
+        :motion-icon="LayoutDashboard"
         description="6 个厂区 · 7 个部门 · 统一模块入口与跨厂区事项"
       >
         <template #actions>

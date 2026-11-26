@@ -1,39 +1,38 @@
 ---
 name: visual-qa-loop
-description: Verify Royal Regent Nexus frontend appearance and interactions with Chrome DevTools MCP after UI changes or an explicit visual QA request. Compare references, inspect relevant states and recheck evidenced defects. Skip backend-only, documentation and workflow-configuration changes.
+description: Verify Royal Regent Nexus frontend appearance and interactions with Chrome DevTools MCP; for new modules and substantial redesigns, require a separate independent design review and rework of material visual defects. Skip backend-only, documentation and workflow configuration.
 ---
 
 # Visual QA Loop
 
-Verify the actual rendered page against the requested outcome and the relevant [DESIGN.md](../../../DESIGN.md) baseline. Follow repository [AGENTS.md](../../../AGENTS.md); a review-only request does not authorize implementation.
+Follow [AGENTS.md](../../../AGENTS.md), [DESIGN.md](../../../DESIGN.md) §17, and the relevant [frontend workflow](../../../docs/frontend/WORKFLOWS.md). A review-only request does not authorize code changes.
 
-## Prepare the correct environment
+## 1. Establish the actual test environment
 
-- Read the affected package's dev and test scripts and the task's route, account/factory context and acceptance criteria. Reuse an appropriate running local server after confirming its source and port; if UI implementation includes local preview, use the existing loopback-bound dev command when needed. Honor requests that limit work to analysis or configuration.
-- Use Chrome DevTools MCP and its current tool schemas. It replaces Browser/IAB-first and automatic Playwright fallback routing for this workflow. Use the Playwright CLI Skill only on an explicit user request; existing automated tests retain their purpose. Do not install another plugin, MCP or package merely to follow this skill. If DevTools or the target environment is unavailable, report the specific limitation and what remains unverified; continue independent work without silently switching browser tools.
-- For repeated QA already covered by another active workflow, reuse its current-route evidence and inspect only the remaining gaps.
+- Read affected package scripts, route, acceptance criteria, account/factory context and design brief/reference. Reuse an appropriate local server after confirming source and port; use the existing loopback-bound dev command when authorized and necessary.
+- Use Chrome DevTools MCP and its current schemas. It replaces Browser/IAB-first and automatic Playwright fallback routing. Playwright CLI Skill is only used on explicit user request; existing automatic tests retain their purpose. Do not install another plugin/MCP/package merely for this workflow.
+- On tool/environment failure, follow WORKFLOWS.md, state specific limitations and unverified items; continue independent work without silently switching tools. Reuse equivalent current-route evidence.
 
-## Chrome DevTools MCP operations
+## 2. Technical QA (DESIGN.md §17.1)
 
-- Use `list_pages` to check the connection and identify the relevant page. Reuse it or call `new_page` for the exact URL, then retain the returned `pageId` throughout the flow; use `navigate_page` for navigation or reload.
-- Read `take_snapshot` before targeting element UIDs. Exercise relevant actions with `click`, `fill_form` or `press_key`, then refresh the snapshot after navigation or state changes and verify the result. Use `evaluate_script` for read-only page identity, layout, focus or viewport checks.
-- Inspect `list_console_messages` and `list_network_requests`; read individual messages/requests when needed to distinguish expected responses from failures. Do not claim a clean console while unexplained errors remain.
-- Set viewports and reduced-motion preferences with `emulate`, including all settings still needed in each call. Record actual `innerWidth` and `innerHeight` rather than assuming window dimensions are content dimensions.
-- Capture `take_screenshot` evidence. Save only to a permitted evidence path; if the MCP rejects `filePath`, omit it to return the screenshot inline and state that the requested file was not saved. Do not expand permissions or use a different browser to bypass the path restriction.
+- `list_pages` identifies the relevant page; reuse or `new_page` for the exact URL, retain returned pageId, use `navigate_page` to navigate/reload. Read `take_snapshot` before targeting UIDs; exercise `click`, `fill_form`, `press_key` as relevant; refresh snapshot after transitions. `evaluate_script` may inspect identity, geometry, focus and viewport read-only.
+- Inspect `list_console_messages` and `list_network_requests`; inspect individual messages/requests as needed, distinguishing expected from unexplained failures. DOM alone does not prove visual quality.
+- Select viewports from DESIGN.md §17 and page contract: new/major ordinary pages cover required breakpoint matrix plus actual desktop such as 1366×768 or 1440×900, add 1920×1080 when useful; fixed-width workspaces verify minimum and fallback; small fixes target relevant widths. Record actual innerWidth/innerHeight; when using emulate include continuing settings and reduced-motion preferences.
+- Exercise changed interactions and a main journey, covering relevant loading/empty/error/permission/read-only/long-text states available in authorized test conditions. Verify keyboard/focus, contrast, scrolling, overlays and reduced motion/transparency as relevant. Mark unavailable states unverified.
+- Capture `take_screenshot` evidence. Save only to permitted paths; if denied omit filePath for inline evidence and report unsaved. Do not widen permissions or change tools to bypass restrictions.
 
-## Inspect, correct and recheck
+## 3. Independent design review (DESIGN.md §17.2)
 
-1. Open the exact route. Confirm the expected source/environment, successful rendering, appropriate account/factory context, and any relevant console or request errors. Inspect the DOM before treating an apparently blank area as missing content.
-2. Select viewports from DESIGN.md section 17 and the page's support contract. For new or substantially redesigned ordinary pages, cover the required breakpoint matrix and representative desktop sizes such as 1366×768 or 1440×900; add 1920×1080 for wide layouts. Fixed-width workspaces use their declared minimum width and small-screen fallback. For a narrow fix, target the affected viewport plus the relevant breakpoint. Supplemental mobile/tablet examples never replace the project's required matrix. Record what was actually checked.
-3. Exercise the changed interaction and a relevant main journey: navigation, filtering, table overflow, drawer/modal behavior, keyboard focus or another affected operation. Inspect loading, empty, error, permission and long-text states when available in authorized local test conditions; mark inaccessible states as unverified.
-4. Review hierarchy, spacing, text wrapping, data alignment, density, scrolling, overlays, icon consistency, contrast and reduced-motion behavior as relevant. Compare supplied references by region and record intentional deviations required by real product constraints.
-5. Record evidenced defects with priority, route/state/viewport and screenshot or DOM evidence. If fixing is in scope, repair the relevant defect, reload and inspect the affected behavior again. Continue while material defects remain; stop when the acceptance criteria are met or a concrete blocker prevents further verification. Do not invent defects or make changes to satisfy a fixed number of rounds.
+- Mandatory for new modules and substantial UI redesigns, separate from technical QA. Explicit design review requests follow the same visual rubric without requiring implementation. Review the real rendered page and main interaction against the brief/reference; a screenshot plus relevant actual interaction observation is evidence, not just code or DOM.
+- The reviewer must not have implemented the change; use an available independent agent/session or user review. Supply route, tested state/viewport, screenshots, brief/reference and relevant source/diff when needed. Do not present implementer self-assessment as independent. If unavailable, mark design review UNVERIFIED.
+- Assess composition and distinctiveness, visual craft/brand, density and efficiency, meaningful business visualization, interaction craft and overall product completion. Use DESIGN.md's rubric. Distinguish functional bugs from design findings. No pass merely because it runs, matches tokens or has no overflow. No arbitrary score or decoration count.
+- Record each applicable dimension PASS / REWORK / UNVERIFIED, with actual visual/interaction evidence, specific region, reason and improvement direction (or justified N/A). A plain, mechanical template, weak hierarchy or visibly unfinished UI that misses the brief is a material design defect.
+- If REWORK and implementation is authorized, redesign affected layout, hierarchy, components or interactions; do not mask structural issues with decoration. Reload, recheck same route/state/viewport and repeat independent review of affected findings. Reuse unchanged evidence. Continue until required checks pass or a concrete blocker prevents completion; do not impose fixed rounds. Technical pass + design REWORK/UNVERIFIED is not complete.
 
-## Verification boundaries
+## 4. Evidence and boundaries
 
-- Preserve real user records and production data; do not create QA states by altering them. Use an existing authorized test environment for mutating journeys.
-- Use the repository's existing local evidence location, keep screenshots and temporary QA data outside source commits unless explicitly requested, and do not delete historical evidence as part of a visual check.
-- Build/type checks and unit tests establish different facts from browser observation. A rendered page does not establish production rollout, database correctness or physical-device acceptance.
-- Report changed files, checked routes/states/viewports, actual screenshot paths or inline-only evidence, executed checks and remaining limitations. If no browser ran, state that visual QA is unverified.
+- Preserve real user records/production data. Use authorized test fixtures for mutating journeys. Keep QA artifacts in existing permitted local locations outside source commits unless explicitly requested; preserve historical evidence.
+- Report changed files, actual commands/results, routes/states/viewports, screenshot paths or inline evidence, technical QA status, design review status, reviewer, findings and recheck result. Build/type/unit, browser, design and production/device acceptance establish different facts.
+- If no browser ran, report browser QA unverified. If no independent reviewer, report design review unverified. Do not claim full completion when required gates are unresolved.
 
-Defect record: `Priority | Route / state / viewport | Evidence | Problem | Fix or recommendation | Recheck result`.
+Defect record: `Type (technical/design) | Priority | Route/state/viewport | Evidence | Problem | Fix | Recheck`.

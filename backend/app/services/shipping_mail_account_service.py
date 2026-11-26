@@ -76,6 +76,10 @@ def save_account(db, user: AuthContext, payload: dict) -> dict:
         raise HTTPException(422, '请填写邮件服务器和邮箱地址')
     password = str(payload.get('password') or '')
     account = get_account(db, factory_id)
+    if account is not None and username != account.username and not password:
+        raise HTTPException(422, '更换邮箱地址后必须重新填写新邮箱的授权码')
+    if account is not None and not password and not account.password_enc:
+        raise HTTPException(422, '请填写网易邮箱授权码')
     if account is None:
         if not password:
             raise HTTPException(422, '首次配置需要填写邮箱密码')
@@ -108,6 +112,11 @@ def test_account(db, user: AuthContext, factory_id: str, password: str = '') -> 
         test_connection(account.host, account.port, account.username, secret, account.use_ssl, account.folder)
         return {'ok': True, 'message': '邮箱连接成功'}
     except ImapError as error:
+        account.password_enc = ''
+        account.last_status = 'error'
+        account.last_error = str(error)
+        account.updated_at = _now()
+        db.commit()
         raise HTTPException(400, str(error)) from error
 
 

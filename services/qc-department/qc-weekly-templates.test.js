@@ -92,9 +92,12 @@ test('reselecting the weekly period keeps its template and leaving the period ca
     assert.equal(p.d.getElementById('qwtView').hidden,false);
     assert.equal(p.d.getElementById('weeklyReportBody').hidden,true);
     p.w.QcWeeklyTemplates.pageChanged('daily');
-    let resolve;p.w.fetch=()=>new Promise(r=>resolve=r);
-    const loading=p.w.QcWeeklyTemplates.open('detail');p.w.QcWeeklyTemplates.pageChanged('daily');
-    resolve(p.response({hongKongContacts:[]}));await tick();resolve(p.response(p.data));await loading;
+    const pending=[];p.w.fetch=url=>new Promise(resolve=>pending.push({url,resolve}));
+    const loading=p.w.QcWeeklyTemplates.open('detail');
+    assert.equal(pending.length,2,'start the report without waiting for contact options');
+    p.w.QcWeeklyTemplates.pageChanged('daily');
+    for(const {url,resolve} of pending)resolve(p.response(url.includes('inspection-sheet/options')?{hongKongContacts:[]}:p.data));
+    await loading;
     assert.equal(p.d.getElementById('qwtView').hidden,true);
     p.w.fetch=async()=>{throw Error('读取失败');};await p.w.QcWeeklyTemplates.open('detail');
     assert.equal(p.d.getElementById('qwtBack'),null);p.w.changeReportPeriod(week);

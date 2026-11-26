@@ -83,7 +83,7 @@ describe('shipping order management workspace', () => {
     }
     expect(wrapper.find('input[aria-label="FROM / 起运港"]').exists()).toBe(false)
     expect(wrapper.find('input[aria-label="TO / 目的港"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Packing List 明细')
+    expect(wrapper.text()).not.toContain('Packing List 明细')
     expect(wrapper.text()).toContain('确认创建出货单')
     await wrapper.findAll('button').find((button) => button.text().includes('确认创建出货单'))!.trigger('click')
     expect(wrapper.text()).toContain('请先上传并解析邮件或附件，再创建单据。')

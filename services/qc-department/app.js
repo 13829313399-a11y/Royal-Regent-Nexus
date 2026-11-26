@@ -452,6 +452,9 @@ function showPage(name, focusReportType = false) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg  = document.getElementById('page-' + name);
   const inReportCenter = REPORT_CENTER_PAGES.includes(name);
+  window.QcEmptyState?.prepare?.(inReportCenter ? 'reports' : {
+    'sales-schedule':'schedule', records:'inspection', review:'review', 'inspection-summary':'summary',
+  }[name]);
   const navPage = inReportCenter ? 'report-center' : name;
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
@@ -1853,7 +1856,33 @@ function setPartnerTab(tab) {
   });
 }
 
-function addPartner(type) {
+const _catalogCacheFailures = new Set();
+
+async function _saveNexusCatalog(save, list, storageKey, fallbackMessage) {
+  if (_catalogCacheFailures.has(storageKey)) {
+    showToast('请刷新后再继续保存名单', 'error');
+    return false;
+  }
+  if (typeof save !== 'function') {
+    showToast('尚未连接服务器，请刷新后重试', 'error');
+    return false;
+  }
+  const res = await save(list);
+  if (!res.ok) {
+    showToast(res.detail || fallbackMessage, 'error');
+    return false;
+  }
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(list));
+  } catch (error) {
+    _catalogCacheFailures.add(storageKey);
+    showToast('名单已保存，请刷新后继续操作', 'error');
+    return false;
+  }
+  return true;
+}
+
+async function addPartner(type) {
   if (!canManagePartners()) { showToast('当前账号无权限执行此操作', 'error'); return; }
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   const inp   = document.getElementById('partnerInput_' + type);
@@ -1863,8 +1892,13 @@ function addPartner(type) {
   if (known.includes(name)) { showToast(label + '「' + name + '」已在名单中', 'info'); return; }
   const list = _loadPartners().slice();
   list.push({ name, type, createdAt: nowIso() });
-  _savePartners(list);
-  if (inp) inp.value = '';
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_PARTNERS, list, STORAGE_KEYS.partners, '保存失败，请刷新后重试')) return;
+    _partners = list;
+  } else {
+    _savePartners(list);
+  }
+  if (inp?.value.trim() === name) inp.value = '';
   renderPartners(type);
   renderSupplierDatalist();
   renderCustomerDatalist();
@@ -1878,11 +1912,9 @@ async function delPartner(type, name) {
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   if (!confirm('确认从名单删除' + label + '「' + name + '」？\n（不影响已有的验货记录；若历史记录里用过该名称，下拉候选中仍可能出现）')) return;
   const nextList = _loadPartners().filter(p => !(p.type === type && p.name === name));
-  if (window.__QC_BACKEND_OK === true && typeof window.__QC_SAVE_PARTNERS === 'function') {
-    const res = await window.__QC_SAVE_PARTNERS(nextList);
-    if (!res.ok) { showToast(res.detail || '删除失败，当前账号可能无删除权限', 'error'); return; }
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_PARTNERS, nextList, STORAGE_KEYS.partners, '删除失败，当前账号可能无删除权限')) return;
     _partners = nextList;
-    try { (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.partners, JSON.stringify(_partners)); } catch(e) {}
   } else {
     _savePartners(nextList);
   }
@@ -2963,7 +2995,7 @@ function _saveDefectLib(lib) {
 
 /* 首次启动初始化 */
 function initDefectLib() {
-  if (!_getDefectLib()) _saveDefectLib(_DEFAULT_DEFECT_LIB);
+  if (!window.__QC_NEXUS && !_getDefectLib()) _saveDefectLib(_DEFAULT_DEFECT_LIB);
 }
 
 /* 获取启用的条目 */
@@ -3027,11 +3059,22 @@ function _checkUnknownDefects(validDefects) {
 ${unknown.map(u=>`「${u}」`).join('、')}
 是否将其加入内容库？`;
   if (confirm(msg)) {
-    unknown.forEach(u => {
-      const row = validDefects.find(d=>d.desc===u);
-      addToDefectLib(u, row?.category, row?.level);
-    });
-    showToast('✓ 新描述已加入内容库', 'success');
+    if (window.__QC_NEXUS) {
+      const nextLib = [...lib];
+      for (const name of new Set(unknown)) {
+        const row = validDefects.find(d => d.desc === name);
+        nextLib.push({ name, category: row?.category || '外观/质量', defaultLevel: row?.level || 'MIN 2.5',
+                       keywords: [], enabled: true, createdAt: new Date().toISOString().slice(0,10) });
+      }
+      void _saveNexusCatalog(window.__QC_SAVE_DEFECTS, nextLib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')
+        .then(saved => { if (saved) showToast('✓ 新描述已加入内容库', 'success'); });
+    } else {
+      unknown.forEach(u => {
+        const row = validDefects.find(d=>d.desc===u);
+        addToDefectLib(u, row?.category, row?.level);
+      });
+      showToast('✓ 新描述已加入内容库', 'success');
+    }
   }
   return true; /* 无论用户选择与否，都允许保存 */
 }
@@ -3561,7 +3604,7 @@ function renderDefectLibPage() {
     <table style="table-layout:fixed;width:100%">
       <colgroup>
         <col style="width:110px"/><col style="width:90px"/><col style="width:100px"/>
-        <col style="width:auto"/><col style="width:70px"/><col style="width:210px"/>
+        <col style="width:auto"/><col style="width:70px"/><col style="width:${canDel ? 210 : 170}px"/>
       </colgroup>
       <thead><tr>
         <th style="text-align:left">描述名称</th>
@@ -3640,10 +3683,24 @@ function renderDefectLibPage() {
 }
 
 let _editingDefLibIdx = null;
+let _editingDefLibItem = null;
+let _defLibEditGeneration = 0;
+let _defLibListNeedsRefresh = false;
+
+function _refreshSavedDefectLib() {
+  if (document.getElementById('defLibModal')?.style.display === 'flex') {
+    _defLibListNeedsRefresh = true;
+  } else {
+    renderDefectLibPage();
+  }
+  refreshDefectDescDatalist();
+}
 
 function _openDefLibModal(idx) {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
+  _defLibEditGeneration++;
   _editingDefLibIdx = idx ?? null;
+  _editingDefLibItem = null;
   const modal = document.getElementById('defLibModal');
   if (!modal) return;
   modal.style.display = 'flex';
@@ -3654,6 +3711,7 @@ function _openDefLibModal(idx) {
   if (idx !== undefined && idx !== null) {
     const d = lib[idx];
     if (!d) return;
+    _editingDefLibItem = d;
     if (titleEl) titleEl.textContent = `编辑：${d.name}`;
     document.getElementById('dlName').value    = d.name;
     document.getElementById('dlCat').value     = d.category || '外观/质量';
@@ -3669,12 +3727,18 @@ function _openDefLibModal(idx) {
 }
 
 function _closeDefLibModal() {
+  _defLibEditGeneration++;
   const modal = document.getElementById('defLibModal');
   if (modal) modal.style.display = 'none';
   _editingDefLibIdx = null;
+  _editingDefLibItem = null;
+  if (_defLibListNeedsRefresh) {
+    _defLibListNeedsRefresh = false;
+    renderDefectLibPage();
+  }
 }
 
-function _saveDefLibItem() {
+async function _saveDefLibItem() {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
   const errEl = document.getElementById('defLibModalErr');
   const show  = msg => { if(errEl){errEl.textContent=msg;errEl.style.display='';} };
@@ -3685,27 +3749,50 @@ function _saveDefLibItem() {
   if (!name) { show('请输入描述名称'); return; }
 
   const lib = _getDefectLib() || [];
-  if (_editingDefLibIdx !== null) {
-    lib[_editingDefLibIdx] = { ...lib[_editingDefLibIdx], name, category, defaultLevel:level, keywords:kw };
+  let editIndex = _editingDefLibIdx;
+  if (editIndex !== null) {
+    const original = JSON.stringify(_editingDefLibItem);
+    if (window.__QC_NEXUS && JSON.stringify(lib[editIndex]) !== original) {
+      const matches = lib.flatMap((entry, i) => JSON.stringify(entry) === original ? [i] : []);
+      if (matches.length !== 1) { showToast('名单已更新，请刷新后重试', 'error'); return; }
+      editIndex = matches[0];
+    }
+    lib[editIndex] = { ...lib[editIndex], name, category, defaultLevel:level, keywords:kw };
   } else {
     if (lib.find(d=>d.name===name)) { show('描述名称已存在'); return; }
     lib.push({ name, category, defaultLevel:level, keywords:kw, enabled:true, createdAt:new Date().toISOString().slice(0,10) });
   }
-  _saveDefectLib(lib);
-  _closeDefLibModal();
+  if (window.__QC_NEXUS) {
+    const generation = _defLibEditGeneration;
+    const fields = ['dlName', 'dlCat', 'dlLvl', 'dlKeywords'].map(id => document.getElementById(id));
+    const inputs = fields.map(field => field?.value);
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, lib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')) return;
+    if (generation === _defLibEditGeneration) {
+      if (editIndex !== null) {
+        _editingDefLibIdx = editIndex;
+        _editingDefLibItem = lib[editIndex];
+      }
+      if (fields.every((field, i) => field?.value === inputs[i])) _closeDefLibModal();
+    }
+  } else {
+    _saveDefectLib(lib);
+    _closeDefLibModal();
+  }
   showToast('✓ 已保存', 'success');
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
+  _refreshSavedDefectLib();
 }
 
-function _toggleDefLibItem(idx) {
+async function _toggleDefLibItem(idx) {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
   const lib = _getDefectLib() || [];
   if (!lib[idx]) return;
   lib[idx].enabled = !lib[idx].enabled;
-  _saveDefectLib(lib);
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, lib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')) return;
+  } else {
+    _saveDefectLib(lib);
+  }
+  _refreshSavedDefectLib();
   showToast(lib[idx].enabled ? '✓ 已启用' : '已停用', lib[idx].enabled?'success':'info');
 }
 
@@ -3715,15 +3802,12 @@ async function _deleteDefLibItem(idx) {
   if (!lib[idx]) return;
   if (!confirm(`确认删除不良描述「${lib[idx].name}」？\n若该词条已被历史验货引用，系统将拦截并提示改用「停用」。`)) return;
   const nextLib = lib.filter((_, i) => i !== idx);
-  if (window.__QC_BACKEND_OK === true && typeof window.__QC_SAVE_DEFECTS === 'function') {
-    const res = await window.__QC_SAVE_DEFECTS(nextLib);
-    if (!res.ok) { showToast(res.detail || '删除失败，如已被历史引用请改用「停用」', 'error'); return; }
-    (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(_DEFECT_LIB_KEY, JSON.stringify(nextLib));
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, nextLib, _DEFECT_LIB_KEY, '删除失败，如已被历史引用请改用「停用」')) return;
   } else {
     _saveDefectLib(nextLib);
   }
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
+  _refreshSavedDefectLib();
   showToast('✓ 已删除描述', 'success');
 }
 

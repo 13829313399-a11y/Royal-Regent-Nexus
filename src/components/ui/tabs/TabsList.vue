@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { HomeMotion } from '@/composables/useHomeAppearance'
 import type { TabsListProps } from 'reka-ui'
 import type { ComponentPublicInstance, HTMLAttributes } from 'vue'
 import { computed, nextTick, onMounted, ref } from 'vue'
@@ -6,14 +7,16 @@ import { TabsIndicator, TabsList } from 'reka-ui'
 import { cn } from '@/lib/utils'
 
 interface Props extends TabsListProps {
+  motion?: HomeMotion
   class?: HTMLAttributes['class']
 }
 
 const props = defineProps<Props>()
+const engaged = ref(false)
 const indicatorRef = ref<(ComponentPublicInstance & { updateIndicatorStyle?: () => void }) | null>(null)
 
 const delegatedProps = computed(() => {
-  const { class: _class, ...delegated } = props
+  const { class: _class, motion: _motion, ...delegated } = props
   return delegated
 })
 
@@ -27,6 +30,10 @@ onMounted(() => {
 <template>
   <TabsList
     data-slot="tabs-list"
+    :data-rr-local-tabs="motion"
+    :data-rr-engaged="motion && engaged || undefined"
+    @pointerdown.capture="engaged = true"
+    @keydown.capture="engaged = true"
     v-bind="delegatedProps"
     :class="
       cn(

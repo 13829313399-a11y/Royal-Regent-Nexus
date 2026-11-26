@@ -16,12 +16,13 @@ const mobileCss = fs.readFileSync(path.join(__dirname, 'mobile.css'), 'utf8');
 function loadFunction(source, name, context = {}) {
   const start = source.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `${name} should exist`);
+  const declarationStart = source.slice(start - 6, start) === 'async ' ? start - 6 : start;
   const bodyStart = source.indexOf('{', start);
   let depth = 0;
   for (let index = bodyStart; index < source.length; index += 1) {
     if (source[index] === '{') depth += 1;
     if (source[index] === '}') depth -= 1;
-    if (depth === 0) return vm.runInNewContext(`(${source.slice(start, index + 1)})`, context);
+    if (depth === 0) return vm.runInNewContext(`(${source.slice(declarationStart, index + 1)})`, context);
   }
   throw new Error(`Could not parse ${name}`);
 }
@@ -217,7 +218,7 @@ test('IQC report renders the PO label and value', () => {
   assert.match(canvas.innerHTML, /PO-IQC-001/);
 });
 
-test('basic record entry does not grant defect-library management', () => {
+test('basic record entry does not grant defect-library management', async () => {
   const checkedActions = [];
   const context = {
     can: action => { checkedActions.push(action); return false; },
@@ -228,7 +229,7 @@ test('basic record entry does not grant defect-library management', () => {
 
   for (const name of ['_openDefLibModal', '_saveDefLibItem', '_toggleDefLibItem']) {
     const fn = loadFunction(appSource, name, context);
-    assert.doesNotThrow(() => fn(0));
+    await fn(0);
   }
 
   assert.deepEqual(checkedActions, ['manageDefectLib', 'manageDefectLib', 'manageDefectLib']);

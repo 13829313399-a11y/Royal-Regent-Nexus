@@ -137,7 +137,7 @@ function lineFromSeed(row: Record<string, unknown>): BulkTruckLine {
     country: String(row.country || header.country || '').trim(),
     grossPerCarton: cartons && grossWeight ? Math.round((grossWeight / cartons) * 1000) / 1000 : null,
     netPerCarton: cartons && netWeight ? Math.round((netWeight / cartons) * 1000) / 1000 : null,
-    cbmPerCarton: cartons && cbm ? Math.round(((cbm * 35.4) / cartons) * 1000) / 1000 : null,
+    cbmPerCarton: cartons && cbm ? Math.round((cbm / cartons) * 1000) / 1000 : null,
     brand: String(row.brand || header.brandName || '').trim(),
     so: String(row.so || row.so_number || header.bookingNo || '').trim(),
     po: String(row.po || row.cartonMark || row.customer_po || header.poNo || '').trim(),
@@ -326,7 +326,6 @@ function recalc(line: BulkTruckLine) {
   if (Number.isFinite(coefficient) && coefficient > 0) line.quantity = Math.round(cartons * coefficient * 1000) / 1000
   if (line.grossPerCarton != null) line.grossWeight = Math.round(cartons * line.grossPerCarton * 1000) / 1000
   if (line.netPerCarton != null) line.netWeight = Math.round(cartons * line.netPerCarton * 1000) / 1000
-  if (line.cbmPerCarton != null) line.cbm = Math.round((cartons * line.cbmPerCarton / 35.4) * 1000) / 1000
 }
 
 function addLine() {
@@ -335,8 +334,13 @@ function addLine() {
     id: crypto.randomUUID(), tradingHouse: 'ZURU', contract: '', filingCode: '', declareCode: '',
     coefficient: null, quantity: null, cartons: null, boards: '', grossWeight: null, netWeight: null,
     cbm: null, country: draft.value.lines[0]?.country ?? '', grossPerCarton: null, netPerCarton: null,
-    cbmPerCarton: null, brand: '', so: '', po: '', shippingNote: '', remark: '',
+    cbmPerCarton: null, brand: '', so: '', po: '', shippingNote: '', remark: '', manual: true,
   })
+}
+
+function removeLine(index: number) {
+  if (!draft.value) return
+  draft.value.lines.splice(index, 1)
 }
 
 async function download() {
@@ -552,36 +556,43 @@ watch(() => props.initialTaskId, (taskId) => {
               <th class="px-2 py-2">箱数</th><th class="px-2 py-2">板数</th><th class="px-2 py-2">毛重</th><th class="px-2 py-2">净重</th>
               <th class="px-2 py-2">CBM</th><th class="px-2 py-2">出口国家</th><th class="px-2 py-2">每箱毛重</th>
               <th class="px-2 py-2">每箱净重</th><th class="px-2 py-2">每箱体积</th><th class="px-2 py-2">品牌</th>
-              <th class="px-2 py-2">SO</th><th class="px-2 py-2">PO</th><th class="px-2 py-2">船期</th><th class="px-2 py-2">备注</th><th></th>
+              <th class="px-2 py-2">SO/订舱号</th><th class="px-2 py-2">PO/箱唛</th><th class="px-2 py-2">船期</th><th class="px-2 py-2">备注</th><th></th>
             </tr>
           </thead>
           <tbody class="divide-y divide-emerald-50">
             <tr v-for="(line, index) in draft.lines" :key="line.id">
               <td class="px-1 py-1 text-center">{{ index + 1 }}</td>
-              <td class="px-1 py-1"><input v-model="line.tradingHouse" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.contract" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.filingCode" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.declareCode" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.name" readonly class="h-7 w-36 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model.number="line.quantity" type="number" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cartons" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model="line.tradingHouse" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-14 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.contract" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.filingCode" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.declareCode" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.name" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-36 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model.number="line.quantity" type="number" class="h-7 w-20 rounded border border-emerald-100 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cartons" type="number" class="h-7 w-16 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
               <td class="px-1 py-1"><input v-model="line.boards" class="h-7 w-12 rounded border border-emerald-100 px-1"></td>
               <td class="px-1 py-1"><input v-model.number="line.grossWeight" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
               <td class="px-1 py-1"><input v-model.number="line.netWeight" type="number" readonly class="h-7 w-16 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cbm" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model="line.country" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model.number="line.grossPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.netPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model.number="line.cbmPerCarton" type="number" readonly class="h-7 w-14 rounded border border-emerald-100 bg-slate-50 px-1 text-right"></td>
-              <td class="px-1 py-1"><input v-model="line.brand" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.so" readonly class="h-7 w-28 rounded border border-emerald-100 bg-slate-50 px-1"></td>
-              <td class="px-1 py-1"><input v-model="line.po" readonly class="h-7 w-20 rounded border border-emerald-100 bg-slate-50 px-1"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cbm" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right"></td>
+              <td class="px-1 py-1"><input v-model="line.country" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-20 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model.number="line.grossPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
+              <td class="px-1 py-1"><input v-model.number="line.netPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
+              <td class="px-1 py-1"><input v-model.number="line.cbmPerCarton" type="number" class="h-7 w-14 rounded border border-emerald-100 px-1 text-right" @input="recalc(line)"></td>
+              <td class="px-1 py-1"><input v-model="line.brand" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.so" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
+              <td class="px-1 py-1"><input v-model="line.po" :readonly="!line.manual" :class="line.manual ? 'bg-white' : 'bg-slate-50'" class="h-7 w-20 rounded border border-emerald-100 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.shippingNote" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
               <td class="px-1 py-1"><input v-model="line.remark" class="h-7 w-28 rounded border border-emerald-100 px-1"></td>
-              <td class="px-1 py-1 text-center text-slate-400">—</td>
+              <td class="px-1 py-1 text-center"><button type="button" class="inline-flex size-6 items-center justify-center rounded text-rose-500 hover:bg-rose-50" aria-label="删除明细" @click="removeLine(index)"><Trash2 class="size-3.5" /></button></td>
             </tr>
             <tr class="bg-emerald-50/60 font-semibold text-emerald-950">
-              <td class="px-2 py-2" colspan="6">合计</td>
+              <td class="px-2 py-2" colspan="6">
+                <div class="flex flex-col items-start gap-2">
+                  <span>合计</span>
+                  <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-3 text-[12px] font-semibold text-emerald-800 hover:bg-emerald-50" @click="addLine">
+                    <Plus class="size-3.5" />添加明细
+                  </button>
+                </div>
+              </td>
               <td class="px-2 py-2 text-right">{{ totals.quantity }}</td>
               <td class="px-2 py-2 text-right">{{ totals.cartons }}</td>
               <td class="px-2 py-2"></td>

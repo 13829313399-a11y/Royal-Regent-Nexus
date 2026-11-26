@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
+  X,
 } from '@lucide/vue'
 import {
   Button,
@@ -20,6 +21,7 @@ import {
   CollapsibleTrigger,
   Drawer,
   DrawerContent,
+  DrawerClose,
   DrawerDescription,
   DrawerTitle,
   Input,
@@ -42,6 +44,12 @@ import {
 } from '@/components/ui'
 import { useWorkCenterStore, defaultWorkQuery } from '@/stores/workCenter'
 import { useMediaQuery } from '@/composables/useMediaQuery'
+import { useControlFeedback } from '@/features/route-motion/useControlFeedback'
+import { useLocalMotion } from '@/features/route-motion/useLocalMotion'
+import { useDetailMotion } from '@/features/route-motion/useDetailMotion'
+import { useAuthStore } from '@/stores/auth'
+import { useAppStore } from '@/stores/app'
+import { moduleMeta } from '@/features/work-center/metadata'
 import { registerAssistantSelection } from '@/features/assistant/selection'
 import WorkEntryRow from '@/features/work-center/WorkEntryRow.vue'
 import WorkEntryDetail from '@/features/work-center/WorkEntryDetail.vue'
@@ -63,6 +71,17 @@ const root = ref<HTMLElement>(),
   mobile = useMediaQuery('(width < 640px)'),
   search = ref(''),
   checked = ref<string[]>([])
+const localMotion = useLocalMotion(), auth = useAuthStore(), app = useAppStore()
+const feedback = useControlFeedback(localMotion)
+const handoff = useDetailMotion(localMotion, () => JSON.stringify([center.snapshot?.context.viewer_key,
+  auth.currentUser?.id, auth.authorizationVersion, app.activeFactoryId, compact.value]))
+const refreshIcon = ref<HTMLElement>()
+async function refreshItems() {
+  const viewer = center.snapshot?.context.viewer_key
+  if (await center.refresh() && viewer && center.snapshot?.context.viewer_key === viewer) {
+    feedback.confirm(refreshIcon.value?.querySelector('svg') ?? null)
+  }
+}
 const helpOpen = ref(false),
   showSnoozed = ref(false),
   loadingEntry = ref(false)
@@ -161,7 +180,12 @@ function navigate(values: Record<string, string | undefined>) {
 function clearFilters() {
   return router.replace({ query: { view: primary.value } })
 }
-function choose(id: string) {
+function choose(id: string, source?: HTMLElement) {
+  if (id === entryId.value && (center.selected?.id === id || loadingEntry.value)) return
+  const row = rows.value.find(item => item.id === id)
+  const glyph = source?.querySelector<HTMLElement>('.nc-module-icon')
+  if (row && !compact.value && source?.dataset.workEntry === id && glyph) handoff.select(id, glyph, moduleMeta(row.module).icon)
+  else handoff.clear()
   trigger =
     Array.from(root.value?.querySelectorAll<HTMLElement>('[data-work-entry]') ?? []).find(
       (el) => el.dataset.workEntry === id,
@@ -180,6 +204,7 @@ function restoreFocus() {
 }
 async function close() {
   const wasDrawerOpen = drawerOpen.value
+  if (center.selected && !compact.value) handoff.depart(center.selected.id, root.value?.querySelector<HTMLElement>('[data-rr-detail-target]') ?? null)
   center.clearSelection()
   if (entryId.value) await router.replace({ query: { ...route.query, entry: undefined } })
   if (!wasDrawerOpen) restoreFocus()
@@ -315,6 +340,10 @@ const onShortcut = useWorkCenterShortcuts((key) => {
   }
   return true
 })
+watch(() => center.selected?.id, (id, previous) => {
+  if (previous && previous !== id) handoff.invalidate(previous)
+  if (id && !compact.value) handoff.arrive(id, root.value?.querySelector<HTMLElement>('[data-rr-detail-target]') ?? null)
+}, { flush: 'post' })
 watch(() => route.query, applyRoute)
 watch(visible, (items) => {
   const ids = new Set(items.map((i) => i.id))
@@ -405,9 +434,10 @@ onUnmounted(() => {
           size="sm"
           variant="ghost"
           aria-label="刷新事项"
+          :motion="localMotion"
           :disabled="center.syncing"
-          @click="center.refresh()"
-          ><RefreshCw :size="15" :class="{ 'nc-spin': center.syncing }" /><span class="nc-head-label"
+          @click="refreshItems"
+          ><span ref="refreshIcon" data-rr-feedback-icon aria-hidden="true"><RefreshCw :size="15" :class="{ 'nc-spin': center.syncing }" /></span><span class="nc-head-label"
             >刷新</span
           ></Button
         >
@@ -445,7 +475,7 @@ onUnmounted(() => {
     <section class="nc-command glass-chrome" data-yl-help="work-center.summary" aria-label="事项视图与筛选">
       <div class="nc-command-top">
         <Tabs :model-value="primary" @update:model-value="(v) => navigate({ view: String(v) })"
-          ><TabsList class="nc-tabs" aria-label="事项视图"
+          ><TabsList :motion="localMotion" class="nc-tabs" aria-label="事项视图"
             ><TabsTrigger v-for="v in orderedViews" :key="v.id" :value="v.id"
               >{{ v.label
               }}<span v-if="v.id === 'todo' && snap?.summary.actionable_total" class="nc-tab-count">{{
@@ -582,7 +612,7 @@ onUnmounted(() => {
         </footer>
       </section>
       <aside v-if="!compact" class="surface-l1 nc-focus">
-        <WorkEntryDetail v-if="center.selected" :entry="center.selected" @close="close" />
+        <WorkEntryDetail v-if="center.selected" :spatial="!!localMotion" :entry="center.selected" @close="close" />
         <div v-else class="nc-empty">
           <ListTodo :size="28" />
           <h2>{{ loadingEntry ? '正在读取事项' : center.detailError || '选择事项查看详情' }}</h2>
@@ -597,16 +627,22 @@ onUnmounted(() => {
         }
       "
       ><DrawerContent
+        :motion="localMotion"
         :side="mobile ? 'bottom' : 'right'"
         class="nc-detail-sheet"
         :show-close-button="false"
-        @close-auto-focus.prevent="restoreFocus"
-        ><DrawerTitle class="sr-only">事项预览</DrawerTitle
-        ><DrawerDescription class="sr-only">业务事实、最近经过与办理入口</DrawerDescription
-        ><span v-if="mobile" class="nc-grip" /><WorkEntryDetail
-          v-if="center.selected"
-          :entry="center.selected"
-          @close="close" /></DrawerContent
+        @close-auto-focus.prevent="restoreFocus(); feedback.restore(trigger, mobile ? 'bottom' : 'right')"
+        >
+        <span v-if="mobile" class="nc-grip" />
+        <header v-if="localMotion" class="nc-sheet-heading">
+          <DrawerTitle>事项预览</DrawerTitle>
+          <DrawerClose as-child><Button variant="ghost" size="icon-sm" aria-label="关闭预览"><X :size="17" aria-hidden="true" /></Button></DrawerClose>
+        </header>
+        <DrawerTitle v-else class="sr-only">事项预览</DrawerTitle>
+        <DrawerDescription class="sr-only">业务事实、最近经过与办理入口</DrawerDescription>
+        <WorkEntryDetail v-if="center.selected" :sheet="!!localMotion" :entry="center.selected" @close="close" />
+        <p v-else-if="localMotion" class="nc-sheet-loading" role="status">正在读取事项…</p>
+      </DrawerContent
     ></Drawer>
     <p v-if="compact && center.detailError && !center.selected" role="alert" class="nc-alert">
       {{ center.detailError }}

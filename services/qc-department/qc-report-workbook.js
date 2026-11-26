@@ -2,6 +2,7 @@
 'use strict';
 if(!window.__QC_NEXUS?.factory)return;
 const byId = id => document.getElementById(id);
+const requestKey=()=>crypto.randomUUID?.()||Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
 const periods = {
   review: {templates:{pending:'待审核验货明细'}},
   daily: {date:'dailyDate',customer:'qdrCustomer',templates:{daily:'验货明细'}},
@@ -16,13 +17,63 @@ let bookQuery='',saving=null,editorState=null,formulaCell=null;
 const expandIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/></svg>';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  let reload, opener, exporting=false, receipt=null, reviewSource=null;
-function params(kind=selected[period]) {
-  if(period==='review')return new URLSearchParams({kind}).toString();
-  const cfg=periods[period],date=byId(cfg.date).value;
-  const day=period==='yearly'?date+'-01-01':period==='monthly'?date+'-01':date;
+function params(kind=selected[period],periodKey=period) {
+  if(periodKey==='review')return new URLSearchParams({kind}).toString();
+  const cfg=periods[periodKey],date=byId(cfg.date).value;
+  const day=periodKey==='yearly'?date+'-01-01':periodKey==='monthly'?date+'-01':date;
   const query=new URLSearchParams({kind,day,customer:byId(cfg.customer).value});
   if(kind==='annual-stats')query.set('result',document.querySelector('#qstats-root [data-result][aria-pressed=true]').dataset.result);
   return query.toString();
+}
+// Reuse recently visited templates within this iframe. Keep only one request
+// in flight and bound the retained sheets (photo-heavy reports can be large).
+const previews=new Map(), maxPreviewChars=8*1024*1024;
+let previewSlot=null;
+function cancelPreview(){
+  previewSlot?.controller.abort();
+  previewSlot=null;
+}
+function dropPreview(){
+  cancelPreview();previews.clear();
+}
+function loadPreview(query,background=false){
+  const cached=previews.get(query);
+  if(cached?.until>Date.now()){
+    previews.delete(query);previews.set(query,cached);
+    return Promise.resolve(cached.result);
+  }
+  if(previewSlot?.query===query&&previewSlot.until>Date.now())return previewSlot.promise;
+  cancelPreview();
+  const controller=new AbortController(),slot={query,controller,until:Infinity};
+  previewSlot=slot;
+  slot.promise=fetchJson('report-workbook',query,{signal:controller.signal,priority:background?'low':'auto'})
+    .then(result=>{
+      if(previewSlot!==slot)return result;
+      slot.until=Date.now()+30000;
+      const chars=result.sheets.reduce((n,s)=>n+s.html.length,0);
+      previews.delete(query);
+      if(chars<=maxPreviewChars){
+        previews.set(query,{result,chars,until:slot.until});
+        let total=0;
+        for(const entry of previews.values())total+=entry.chars;
+        while(previews.size>3||total>maxPreviewChars){
+          const oldest=previews.keys().next().value;
+          total-=previews.get(oldest).chars;previews.delete(oldest);
+        }
+      }
+      return result;
+    })
+    .catch(error=>{if(previewSlot===slot)previewSlot=null;throw error;});
+  return slot.promise;
+}
+function canWarm(){
+  return !document.hidden&&!navigator.connection?.saveData;
+}
+function warmAdjacent(kind,periodKey){
+  const keys=Object.keys(periods[periodKey].templates);
+  if(keys.length<2||!canWarm())return;
+  const next=kind==='quality'?'tracking':keys[(keys.indexOf(kind)+1)%keys.length];
+  loadPreview(params(next,periodKey),true).catch(()=>{});
 }
 async function api(endpoint,query,options) {
   if(period==='review'){
@@ -30,6 +81,9 @@ async function api(endpoint,query,options) {
     if(endpoint==='report-workbook/save'&&options?.method==='POST')return reviewSource.save(JSON.parse(options.body));
     throw Error('不支持此待审核工作簿操作。');
   }
+  return fetchJson(endpoint,query,options);
+}
+async function fetchJson(endpoint,query,options){
   const response=await fetch('api/'+endpoint+'?'+query,options);
   if (!response.ok) {
     const info=await response.json().catch(()=>({}));
@@ -102,13 +156,18 @@ function mount(periodKey, kind, host, data, refresh){
   }
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;
-  if(periodKey!=='yearly'&&rows.length)setTimeout(async()=>{
-    const cfg=periods[periodKey];
-    for(const key of [kind,...Object.keys(cfg.templates).filter(k=>k!==kind)]){
-      if(ticket!==requestId||!host.isConnected||document.hidden||!section.closest('.page.active')||dialog.open)return;
-      const query=new URLSearchParams({kind:key,day:data.date,customer:byId(cfg.customer).value});
-      try{await fetch('api/report-workbook?'+query,{method:'HEAD',priority:'low'});}catch{return;}
-    }
+  if(!dialog.open)dropPreview();
+  if(rows.length||data.total>0||data.totals?.total>0)setTimeout(async()=>{
+    const current=()=>ticket===requestId&&host.isConnected&&canWarm()&&section.closest('.page.active')&&!dialog.open;
+    if(!current())return;
+    if(!byId(periods[periodKey].date)?.value)return;
+    const query=params(kind,periodKey);
+    try{
+      await loadPreview(query,true);
+      // Do not displace a large, uncached first sheet or start another render
+      // if the user has since opened the dialog or changed the report scope.
+      if(current()&&previews.has(query)&&params(kind,periodKey)===query)warmAdjacent(kind,periodKey);
+    }catch{/* Optional prefetch; foreground navigation handles errors. */}
   },100);
   return true;
 }
@@ -284,20 +343,24 @@ function linkCells(cells){
   switchBook(selected[period]);
 }
 
- async function switchBook(kind){
+async function switchBook(kind){
   const query=params(kind).toString();
-  if(bookQuery===query&&book)return;
-   if(!await allowWorkbookAction('switch')||!dialog.open)return;
-   clearReadyExport();
+  if(bookQuery===query&&book&&!view.inert)return;
+  if(!await allowWorkbookAction('switch')||!dialog.open)return;
+  clearReadyExport();
   const request=++bookRequest;
   const tabs=byId('wb-tabs');
   finishFill(true);
   view.inert=tabs.inert=true;
   valueInput.readOnly=true;
   byId('wb-export').disabled=byId('wb-next').disabled=true;
+  view.setAttribute('aria-busy','true');
   try{
+    if(bookQuery===query&&book){
+      cancelPreview();statusText.textContent=sheetHint();return;
+    }
     statusText.textContent='正在打开'+periods[period].templates[kind]+'…';
-    const result=await api('report-workbook',query);
+    const result=await (reviewSource?api('report-workbook',query):loadPreview(query));
     if(request!==bookRequest||!dialog.open)return;
     changes.clear();receipt=null;
     book=result;bookQuery=query;selected[period]=kind;
@@ -310,11 +373,13 @@ function linkCells(cells){
       tab.setAttribute('aria-pressed',String(tab.dataset.kind===kind));
     }
     statusText.textContent=sheetHint();
+    warmAdjacent(kind,period);
   }catch(error){
     if(request!==bookRequest||!dialog.open)return;
     statusText.textContent=error.message;
   }finally{
     if(request===bookRequest&&dialog.open){
+      view.removeAttribute('aria-busy');
       view.inert=tabs.inert=false;
       if(active&&book)selectCell(active,{focus:true});
       byId('wb-export').hidden=window.__QC_NEXUS?.exportAllowed!==true;
@@ -479,15 +544,15 @@ function drawSheet(index){
   finishFill(true);
   sheet=index;active=anchor=edge=copyRange=null;selectionDrag=null;clearRange();visibleCells=new Map();
   reviewRow=reviewColumn=null;
-  grid.innerHTML=gridCSS+book.sheets[index].html;
-  const table=grid.querySelector('table');
+  const fragment=document.createElement('template');
+  fragment.innerHTML=gridCSS+book.sheets[index].html;
+  const table=fragment.content.querySelector('table');
   const cols=[...table.querySelectorAll('colgroup')];
   table.style.width=cols.reduce((sum,c)=>sum+(Number(c.getAttribute('width'))||64)*(Number(c.span)||1),0)+'px';
   fitSheet(table);
   indexSheet(table);
   for(const td of sheetCells){
     td.tabIndex=-1;
-    td.onfocus=()=>{if(!focusing&&(active!==td||!anchor))selectCell(td);};
     const special=mappedCell(td);
     if(special?.special&&reviewSource){
       td.wbReviewRender=reviewSource.special(td,special,{
@@ -498,8 +563,8 @@ function drawSheet(index){
       visibleCells.set(special,[td]);
       continue;
     }
-    const cell=cellAt(td);
-    if(!cell)continue;
+    const cell=special;
+    if(!cell||cell.special)continue;
     td.classList.add('writable');
     const content=document.createElement('span');content.className='cell-value';
     content.append(...td.childNodes);td.append(content);
@@ -522,6 +587,10 @@ function drawSheet(index){
       image.replaceWith(button);button.append(image);
     });
   }
+  table.addEventListener('focusin',e=>{
+    const td=e.target;
+    if(!focusing&&td.matches('td[data-addr]')&&(active!==td||!anchor))selectCell(td);
+  });
   table.onpointerdown=e=>{
     const td=e.target.closest('td[data-addr]');
     if(e.button!==0||e.pointerType==='touch'||!td||e.target.closest('.cell-editor,.wb-fill-handle,.wb-photo,.wb-review-action'))return;
@@ -553,6 +622,7 @@ function drawSheet(index){
     const td=e.target.closest('td[data-addr]');
     if(td&&cellAt(td)&&!e.target.closest('.cell-editor,.wb-fill-handle,.wb-photo,.wb-review-action'))startEdit(td);
   };
+  grid.replaceChildren(fragment.content);
   const tabs=byId('wb-tabs');
   tabs.replaceChildren(...book.sheets.map((s,i)=>{
     const b=document.createElement('button');b.textContent=s.name;b.setAttribute('aria-pressed',String(i===index));
@@ -963,6 +1033,7 @@ dialog.addEventListener('keydown',event=>{
   if(!book||view.inert||exporting||drag||reviewSource?.busy?.())return Promise.resolve(false);
   commitInput();
   if(!changes.size)return Promise.resolve(true);
+  dropPreview();
    const tabs=byId('wb-tabs');
    view.inert=tabs.inert=true;
    setReviewNavigationDisabled(true);
@@ -977,8 +1048,8 @@ dialog.addEventListener('keydown',event=>{
       try{
         const scope=new URLSearchParams(bookQuery);
         const base={customerKey:cell.customerKey,field:cell.field,value,baseVersion:cell.version};
-        if(!receipt)receipt=cell.writeRevision?{...base,writeRevision:cell.writeRevision,requestKey:reviewSource?.requestKey()??crypto.randomUUID()}:{
-          ...base,date:scope.get('day'),sourceRevision:book.sourceRevision,requestKey:crypto.randomUUID(),
+        if(!receipt)receipt=cell.writeRevision?{...base,writeRevision:cell.writeRevision,requestKey:reviewSource?.requestKey()??requestKey()}:{
+          ...base,date:scope.get('day'),sourceRevision:book.sourceRevision,requestKey:requestKey(),
           ...(scope.get('kind')==='quality'?{template:'overview',customer:scope.get('customer')}:{})};
         const sent=receipt;
         const result=await api(cell.writeRevision?'report-workbook/save':period+'-templates/save',
@@ -1042,6 +1113,7 @@ valueInput.onkeydown=e=>{
  async function closeBook(){
    if(!await allowWorkbookAction('close')||!dialog.open)return;
    clearReadyExport();
+   dropPreview();
   ++bookRequest;changes.clear();receipt=null;internalClipboard=null;pasteTicket++;dialog.close();bookQuery='';
   if(period==='review'){
     const source=reviewSource;reviewSource=null;
@@ -1060,7 +1132,6 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
    xlsx:{mime:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',magic:[0x50,0x4b,3,4]},
    xls:{mime:'application/vnd.ms-excel',magic:[0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]}
  };
- const pickerHelp='请在桌面 Chrome 或 Edge 中打开验货台后重试。';
  const READY_EXPORT_TTL=120000;
  // OpenCode's Electron review browser exposes a native picker but rejects
  // createWritable(), after the picker has already created a zero-byte file.
@@ -1074,14 +1145,12 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
    finally{link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
  }
  async function chooseDestination(name,ext){
-   if(typeof window.showSaveFilePicker!=='function')return {message:'当前浏览器不能打开系统保存窗口。'+pickerHelp};
    try{
      const handle=await window.showSaveFilePicker({suggestedName:name,startIn:'downloads',
        types:[{description:'Excel 工作簿',accept:{[excelTypes[ext].mime]:['.'+ext]}}]});
      return {handle};
    }catch(error){
-     return {message:error.name==='AbortError'?'未选择保存位置，未导出。若没有弹窗，'+pickerHelp:
-       '当前浏览器没有打开系统保存窗口，未导出。'+pickerHelp};
+     return {canceled:error.name==='AbortError'};
    }
  }
  async function readExport(url,fallbackName,expectedExt){
@@ -1161,10 +1230,6 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
  }
  exportButton.onclick=async()=>{
    if(!window.__QC_NEXUS?.exportAllowed||!book?.sheets.length||!dialog.open||saving||chooseSave||exporting||view.inert)return;
-   if(!reviewSource&&!managedDownloads&&typeof window.showSaveFilePicker!=='function'){
-     statusText.textContent='当前浏览器不能打开系统保存窗口，未导出。'+pickerHelp;
-     return;
-   }
    finishFill(true);commitInput();
    // A prepared file is saved from this click rather than after an await.
    const prepared=readyExport&&readyExport.query===bookQuery&&readyExport.until>Date.now()&&!changes.size;
@@ -1182,9 +1247,9 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
        statusText.textContent='正在生成并校验 Excel…';
        const file=await prepareReportExport();
        if(!dialog.open||bookQuery!==query||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
-       if(managedDownloads){
+       if(managedDownloads||typeof window.showSaveFilePicker!=='function'){
          sendToDownloadManager(file);
-         statusText.textContent='已发起下载';
+         statusText.textContent='已发起下载：'+file.name;
          return;
        }
        readyExport={...file,query,until:Date.now()+READY_EXPORT_TTL};
@@ -1194,9 +1259,15 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
        if(!navigator.userActivation?.isActive){statusText.textContent='Excel 已校验，点击「选择保存位置」。';return;}
      }
      statusText.textContent='请选择保存位置…';
-     const {handle,message}=await chooseDestination(readyExport.name,readyExport.ext);
-     if(!handle){statusText.textContent=message;return;}
+     const {handle,canceled}=await chooseDestination(readyExport.name,readyExport.ext);
+     if(canceled){statusText.textContent='已取消，未下载文件。';return;}
      if(!dialog.open||bookQuery!==query||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
+     if(!handle){
+       sendToDownloadManager(readyExport);
+       statusText.textContent='已发起下载：'+readyExport.name;
+       clearReadyExport();
+       return;
+     }
      statusText.textContent='正在写入并校验，完成前请勿打开文件…';
      await writeVerifiedExcel(handle,readyExport.blob);
      clearReadyExport();
@@ -1211,7 +1282,8 @@ window.QcReportWorkbook={mount,trigger(label,open){
   button.title=label;button.setAttribute('aria-label',label);button.innerHTML=expandIcon;button.onclick=()=>open(button);
   return button;
 },openReview(button,source){
-  if(dialog.open||saving||chooseSave||exporting)return false;
+   if(dialog.open||saving||chooseSave||exporting)return false;
+   dropPreview();
   period='review';opener=button;reviewSource=source;
   openBook();return true;
 },navigationState:()=>({dirty:dialog.open&&(changes.size>0||drafting()),busy:!!saving||exporting||!!reviewSource?.busy?.()})};

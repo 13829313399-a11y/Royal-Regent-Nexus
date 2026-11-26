@@ -1,6 +1,6 @@
 # 曜灵配置、启用与回退
 
-曜灵使用独立的 `/api/assistant` 接口、服务端配置和私有附件目录。所选实例的 `capabilities` 响应提供是否启用、数据库准备情况和模型能力。历史模型连通和本地试用记录分别见[连接验证](MODEL_CONNECTION.md)和[本地接入](LOCAL_ACTIVATION.md)。
+曜灵使用独立的 `/api/assistant` 接口、服务端配置和私有附件目录。所选实例的 `capabilities` 响应提供是否启用、数据库准备情况和模型能力。历史模型连通和本地试用记录分别见[连接验证](../archive/completed/assistant/MODEL_CONNECTION.md)和[本地接入](../archive/completed/assistant/LOCAL_ACTIVATION.md)。
 
 ## 配置语义
 
@@ -51,4 +51,4 @@ backend/.venv/Scripts/python.exe backend/scripts/cleanup_assistant.py --database
 
 受权限和厂区限制的业务读取与帮助来源由注册表和当前能力响应确定。独立图片翻译子应用不挂载助手。持久运行、恢复订阅、使用统计和反馈按对应 schema 与开关启用，相关验收需分别记录普通问答、业务读取、跨身份拒绝以及取消/恢复。 [业务帮助覆盖](HELP_COVERAGE.md) · [持久运行](DURABLE_RUNS.md) · [运维与反馈](OPERATIONS.md) · [版本回退](ROLLBACK.md)
 
-本地真实模型连接、历史浏览器样本和移动端/系统字号等待验范围见[当轮验收矩阵](ACCEPTANCE.md)。对新实例记录模型、地域、运行版本与实测组合。依赖安装、容器构建、设备验证和真实业务验收各自以该轮记录为准。
+本地真实模型连接、历史浏览器样本和移动端/系统字号等待验范围见[当轮验收矩阵](../archive/completed/assistant/ACCEPTANCE.md)。对新实例记录模型、地域、运行版本与实测组合。依赖安装、容器构建、设备验证和真实业务验收各自以该轮记录为准。

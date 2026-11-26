@@ -230,8 +230,11 @@
     view.innerHTML='<p class="qwt-message" role="status">正在读取已审核验货记录…</p>';
     try{
       // Read all customer supplements to recover drafts even when a filter was previously selected.
-      contactOptions=(await request('api/inspection-sheet/options')).hongKongContacts||[];
-      const fresh=await request('api/weekly-templates?date='+encodeURIComponent(date));if(token!==sequence)return;
+      const [options,fresh]=await Promise.all([
+        request('api/inspection-sheet/options'),request('api/weekly-templates?date='+encodeURIComponent(date))
+      ]);
+      if(token!==sequence)return;
+      contactOptions=options.hongKongContacts||[];
       syncCustomers(fresh.customers);
       data=normalizeFields(fresh);
       exportMessage='';

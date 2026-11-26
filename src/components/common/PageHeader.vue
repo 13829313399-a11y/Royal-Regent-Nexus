@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import type { Component } from 'vue'
+import { vSpatialGlyph } from '@/features/route-motion/spatialAnchors'
 withDefaults(defineProps<{
   title: string
   description?: string
   eyebrow?: string
+  motionIcon?: Component
 }>(), {
   description: '',
   eyebrow: '',
@@ -18,7 +21,13 @@ withDefaults(defineProps<{
           {{ eyebrow }}
         </span>
       </div>
-      <h1 data-route-motion-anchor class="text-[clamp(1.65rem,2.4vw,2.25rem)] font-semibold tracking-[-0.035em] text-slate-950">
+      <div v-if="motionIcon" data-rr-motion-target="surface" class="rr-portal-heading">
+        <span v-spatial-glyph="motionIcon" data-rr-motion-target="icon" aria-hidden="true" class="rr-portal-heading__icon">
+          <component :is="motionIcon" :size="22" />
+        </span>
+        <h1 data-route-motion-anchor class="min-w-0 text-[clamp(1.65rem,2.4vw,2.25rem)] font-semibold tracking-[-0.035em] text-slate-950">{{ title }}</h1>
+      </div>
+      <h1 v-else data-route-motion-anchor class="text-[clamp(1.65rem,2.4vw,2.25rem)] font-semibold tracking-[-0.035em] text-slate-950">
         {{ title }}
       </h1>
       <p v-if="description" class="mt-2 max-w-3xl text-sm leading-6 text-slate-600">

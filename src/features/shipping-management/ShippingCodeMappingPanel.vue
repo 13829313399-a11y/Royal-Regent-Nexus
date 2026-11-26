@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Download, Info, Plus, RefreshCw, RotateCcw, Search, Trash2 } from '@lucide/vue'
-import { getGeneratedDoc, listGeneratedDocs, type GeneratedDoc } from '@/api/shippingMail'
+import { Download, Info, Plus, RefreshCw, RotateCcw, Search, Trash2, Upload } from '@lucide/vue'
+import { getGeneratedDoc, importCodeMappingFile, listGeneratedDocs, type GeneratedDoc } from '@/api/shippingMail'
 
 const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string] }>()
@@ -68,6 +68,29 @@ function loadDeletedKeys(): string[] {
 }
 
 const deletedKeys = ref<Set<string>>(new Set(loadDeletedKeys()))
+const fileInput = ref<HTMLInputElement | null>(null)
+const importingFile = ref(false)
+const CUSTOM_KEY = `shipping-code-mapping-imported:${props.factoryId}`
+
+function loadCustomRows(): CodeRow[] {
+  if (typeof window === 'undefined' || !window.localStorage) return []
+  try {
+    return JSON.parse(window.localStorage.getItem(CUSTOM_KEY) || '[]') as CodeRow[]
+  } catch {
+    return []
+  }
+}
+
+const customRows = ref<CodeRow[]>(loadCustomRows())
+
+function persistCustomRows() {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    window.localStorage.setItem(CUSTOM_KEY, JSON.stringify(customRows.value))
+  } catch {
+    // ignore quota errors
+  }
+}
 const customers = computed(() => ['全部', ...new Set(rows.value.map((row) => row.customer).filter(Boolean))])
 
 const filteredRows = computed(() => {
@@ -150,6 +173,8 @@ function deleteRows(keys: string[]) {
   rows.value = rows.value.filter((row) => !removing.has(rowKey(row)))
   generatedRows.value = generatedRows.value.filter((row) => !removing.has(rowKey(row)))
   importedRows.value = importedRows.value.filter((row) => !removing.has(rowKey(row)))
+  customRows.value = customRows.value.filter((row) => !removing.has(rowKey(row)))
+  persistCustomRows()
   selectedKeys.value = selectedKeys.value.filter((key) => !removing.has(key))
   page.value = Math.min(page.value, pageCount.value)
   emit('notify', `已删除 ${keys.length} 条货号映射`)
@@ -161,7 +186,7 @@ function deleteSelected() {
 
 function mergeRows() {
   const seen = new Set<string>()
-  const combined = [...generatedRows.value, ...importedRows.value]
+  const combined = [...generatedRows.value, ...importedRows.value, ...customRows.value]
   if (!combined.length) {
     rows.value = [...seedRows]
     page.value = 1
@@ -175,6 +200,26 @@ function mergeRows() {
     return true
   }).map((row) => ({ ...row, category: row.category && row.category !== '-' ? row.category : '塑胶' }))
   page.value = 1
+}
+
+async function importMappingFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  importingFile.value = true
+  try {
+    const result = await importCodeMappingFile(props.factoryId, file)
+    const imported = result.rows as CodeRow[]
+    customRows.value = [...imported, ...customRows.value]
+    persistCustomRows()
+    mergeRows()
+    emit('notify', `${file.name} 已识别导入 ${result.count} 条货号映射。`)
+  } catch (error) {
+    emit('notify', `文件识别失败：${String(error)}`)
+  } finally {
+    importingFile.value = false
+  }
 }
 
 async function loadYear(year: string) {
@@ -336,6 +381,15 @@ function reset() {
           >
             <RefreshCw class="size-3.5" aria-hidden="true" />刷新
           </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-50 disabled:opacity-60"
+            :disabled="importingFile"
+            @click="fileInput?.click()"
+          >
+            <Upload class="size-3.5" aria-hidden="true" />{{ importingFile ? '识别中…' : '导入文件' }}
+          </button>
+          <input ref="fileInput" type="file" accept=".xlsx,.xls" class="hidden" @change="importMappingFile">
           <button
             type="button"
             class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-50"

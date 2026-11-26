@@ -19,7 +19,7 @@ const props = defineProps<{
   busy?: boolean
 }>()
 defineEmits<{
-  select: [id: string]
+  select: [id: string, trigger?: HTMLElement]
   open: [entry: WorkEntry]
   preview: [entry: WorkEntry]
   check: [entry: WorkEntry]
@@ -48,7 +48,7 @@ const summary = computed(() => entrySummary(props.entry))
       class="nc-row-main"
       :data-work-entry="entry.id"
       :aria-pressed="compact ? undefined : !!selected"
-      @click="compact ? $emit('open', entry) : $emit('select', entry.id)"
+      @click="compact ? $emit('open', entry) : $emit('select', entry.id, $event.currentTarget as HTMLElement)"
     >
       <span class="nc-module-icon" :class="meta.color"><component :is="meta.icon" :size="17" /></span>
       <span class="nc-row-body">

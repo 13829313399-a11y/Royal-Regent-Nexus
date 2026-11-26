@@ -57,7 +57,7 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 
 工作簿补录只在当前标签页暂存，Ctrl+S／⌘S 或主动确认保存后才提交；不因切工作表或隐藏页面触发自动保存。关闭或切换模板可保存、放弃这次更改或取消；带未保存内容导出时先确认保存。保存失败保留草稿并沿用现有版本和幂等机制。该规则不改变验货台的自动保存。日报的两项 Q 货期独立补录；日报、年报统计及周／年问题跟踪按已审核记录的厂区、客户、有效月份和字段复用月报补录的版本及幂等记录，原周报明细保留独立周报库。LibreOffice 正常时预览原样式；缺失、超时或异常时从同一份导出文件读取简洁表格，保留格子、照片、补录和 Excel 导出，图表与排版简化。本机优先通过私有 `DOCUMENT_TOOLS_OFFICE_COMMAND` 指定可执行路径，不依赖启动 shell 的 PATH。[预览服务](../../backend/app/services/qc_report_workbook.py) · [补录及预览测试](../../backend/tests/test_qc_report_workbook.py)
 
-报告中心的完整工作簿先生成并校验完整 Excel，再打开系统保存窗口；写入后逐字节回读校验才提示已保存。有草稿时先确认保存；生成较慢时原工具栏按钮改为「选择保存位置」，不另加下载入口。OpenCode 的 Electron 内置浏览器会拒绝系统窗口已选文件的写入，改由该宿主的下载管理器接收已校验的附件，避免在系统目录留下 0 字节占位文件；普通浏览器保留原生保存，不支持时提示改用桌面 Chrome／Edge。短版月度质量汇总的打印将签核栏和汇总保留在同页；长表正常分页，工作表内容和布局不变。
+报告中心的完整工作簿先生成并校验完整 Excel。有草稿时先确认保存。支持系统保存窗口时，生成较慢则原工具栏按钮改为「选择保存位置」，写入后逐字节回读校验才提示已保存。HTTP、没有保存窗口或窗口受限的浏览器，以及不支持可靠写入的 OpenCode Electron 宿主，直接将同一份已校验附件交给浏览器下载并提示「已发起下载」。主动取消选位置不另行下载。短版月度质量汇总的打印将签核栏和汇总保留在同页；长表正常分页，工作表内容和布局不变。
 
 已保存的单笔报告补录按可验证的厂区与验货单 ID 只读呈现在验货汇总「QC验货 → 报告补录（本单）」；修改记录列出作者、时间与前后值，含清空。新旧报告周期、周报库与共用月度库明确区分，不覆盖已审核原值。汇总计数、整表备注、签核与未关联单笔的手工报表行不自动分摊。[完整资料及补录边界](../business/qc-complete-records.md#ui-和报告兼容)
 
@@ -67,7 +67,7 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 
 周报模板以[清单](../../backend/app/templates/qc-weekly/templates.json)和[加载服务](../../backend/app/services/qc_weekly_templates.py)核对。验货审核、退回与附件规则见[业务要求](../business/QC验货运营中心业务需求.md)和[运行契约](../business/qc-legacy-runtime-contract.md)。
 
-QC 记录删除与历史导入批次撤回统一受独立权限 `qc_inspection:record_delete` 管控（由内置六厂区 `qc_record_admin` 角色 / `QC_test` 账号及系统管理员持有，普通 QC 岗位不含该权限且界面保持无删除入口）。验货台与审核中心待审核支持带审计快照的软删除且不修改业务部客排期订单；已审核与审核同步汇总记录须先反审核退回待审核后再删除；已被历史记录引用的不良描述受保护仅允许停用。
+QC 记录删除与历史导入批次撤回统一受独立权限 `qc_inspection:record_delete` 管控（仅限专用账号 `QC_test` 的六厂区 `qc_record_admin` 明确绑定，系统管理员与普通 QC 岗位不含该权限且界面保持无删除入口）。验货台与审核中心待审核支持带审计快照的软删除且不修改业务部客排期订单；已审核与审核同步汇总记录须先反审核退回待审核后再删除；已被历史记录引用的不良描述受保护仅允许停用。
 
 [qc-department-integration.md](../business/qc-department-integration.md) · [qc_department.py](../../backend/app/api/qc_department.py) · [test_qc_weekly_template_manifest.py](../../backend/tests/test_qc_weekly_template_manifest.py)
 

@@ -20,7 +20,7 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import HomePrismArtwork from '@/components/portal/HomePrismArtwork.vue'
 import HomeAppearanceControl from '@/components/portal/HomeAppearanceControl.vue'
 import HomePreviewRegion from '@/components/portal/HomePreviewRegion.vue'
-import { homePaletteStyle } from '@/components/portal/homePrismPresentation'
+import { homePaletteStyle, homePrismPresentation } from '@/components/portal/homePrismPresentation'
 import { useHomeAppearance, homeSearchKey } from '@/composables/useHomeAppearance'
 import { useVisibleModules } from '@/composables/useVisibleModules'
 import { useHomePresentation, canPreviewModule } from '@/composables/useHomePresentation'
@@ -110,7 +110,7 @@ watch(currentDepartmentId, (departmentId) => {
   <div ref="containerRef" class="rrn-home-container">
   <CuttingAcceptanceNotice v-if="cuttingAcceptanceEntry" />
   <div data-yl-help="portal.overview" class="rrn-portal rrn-home app-page space-y-6" data-portal-ui="jade-v3" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-route-entry-owned="routeEntryOwned || undefined" :data-home-density="density" :data-department="currentDepartmentId" :style="portalRootStyle">
-    <PortalHero eyebrow="Department Workspace" :title="title" :description="departmentEntry.heroSubtitle" :motif="departmentPresentation.motif" pending-note="新增系统模块暂未接入">
+    <PortalHero eyebrow="Department Workspace" :title="title" :motion-icon="homePrismPresentation[currentDepartmentId].icon" :description="departmentEntry.heroSubtitle" :motif="departmentPresentation.motif" pending-note="新增系统模块暂未接入">
       <template #artwork><HomePrismArtwork :identity="currentDepartmentId" /></template>
       <template #actions><HomeAppearanceControl /><Button type="button" size="lg" disabled><Plus class="size-4" aria-hidden="true" />新增系统模块</Button></template>
     </PortalHero>
@@ -128,7 +128,7 @@ watch(currentDepartmentId, (departmentId) => {
           <div class="home-segmented" role="group" aria-label="显示密度"><button type="button" :aria-pressed="density === 'comfortable'" @click="density = 'comfortable'">舒适</button><button type="button" :aria-pressed="density === 'compact'" @click="density = 'compact'">紧凑</button></div>
           <p class="home-search-count" role="status" aria-live="polite">{{ query ? `找到 ${filteredModules.length} 个入口` : `${visibleModules.length} 个可见模块 · 当前厂区目录` }}</p>
         </div>
-        <TransitionGroup name="home-filter" tag="div" class="portal-module-grid" data-yl-help="portal.modules" :data-module-count="filteredModules.length" :css="effectiveMotion !== 'off'">
+        <TransitionGroup :key="currentDepartmentId" name="home-filter" tag="div" class="portal-module-grid" data-yl-help="portal.modules" :data-module-count="filteredModules.length" :css="effectiveMotion !== 'off'">
           <div v-for="(module, index) in filteredModules" :key="`${scope}:${module.id}`" class="home-grid-item">
             <div class="home-card-reveal" :data-reveal="revealing && !query" :style="{ '--home-index': index }">
               <ModuleCard :module="module" :index="index" :active="featuredModule?.id === module.id" :pinned="pinnedId === module.id" :previewable="canPreviewModule(module)" :search-query="query" @preview="openPreview(module.id, $event)" @peek="!narrow && preview(module.id)" @cancel-peek="cancelPreview" @focus-preview="!narrow && preview(module.id, true)" />

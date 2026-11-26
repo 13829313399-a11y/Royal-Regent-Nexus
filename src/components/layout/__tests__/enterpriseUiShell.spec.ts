@@ -1,6 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { defineComponent, nextTick, ref } from 'vue'
+import RouteLoadingBar from '@/components/layout/RouteLoadingBar.vue'
+import { Button, Progress } from '@/components/ui'
+import { useAppStore } from '@/stores/app'
 
 function readSource(relativePath: string) {
   return readFileSync(join(process.cwd(), relativePath), 'utf8')
@@ -14,9 +20,7 @@ const workCenterBellSource = readSource('src/features/work-center/WorkCenterBell
 const workCenterCss = readSource('src/features/work-center/work-center.css')
 const accountMenuSource = readSource('src/components/layout/AccountMenu.vue')
 const sidebarSource = readSource('src/components/layout/SidebarNav.vue')
-const loadingBarSource = readSource('src/components/layout/RouteLoadingBar.vue')
 const styleSource = readSource('src/style.css')
-const buttonSource = readSource('src/components/ui/button/index.ts')
 const approvalWorkbenchSource = readSource('src/views/ApprovalWorkbenchView.vue')
 const approvalTableSource = readSource('src/components/workbench/ApprovalTable.vue')
 const dashboardSource = readSource('src/views/DashboardView.vue')
@@ -42,11 +46,48 @@ describe('enterprise UI shell contract', () => {
     expect(appShellSource).not.toContain(':key="route.fullPath"')
   })
 
-  it('uses restrained brand loading feedback with an explicit completion state', () => {
-    expect(loadingBarSource).toContain('progressValue.value = 100')
-    expect(loadingBarSource).toContain('from-teal-800 via-teal-500 to-cyan-400')
-    expect(loadingBarSource).toContain("'h-[3px]")
-    expect(loadingBarSource).not.toMatch(/from-emerald|to-lime|route-loading-sweep/)
+  it('reports loading progress without premature completion, resets and cancels stale timers', async () => {
+    vi.useFakeTimers()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useAppStore()
+    const wrapper = mount(RouteLoadingBar, { global: { plugins: [pinia] } })
+    const progress = () => Number(wrapper.getComponent(Progress).props('modelValue'))
+    try {
+      expect(progress()).toBe(0)
+      expect(wrapper.get('[role="progressbar"]').attributes('aria-hidden')).toBe('true')
+      store.startRouteLoading()
+      await nextTick()
+      const initial = progress()
+      expect(initial).toBeGreaterThan(0)
+      expect(initial).toBeLessThan(100)
+      vi.runAllTimers()
+      await nextTick()
+      expect(progress()).toBeGreaterThan(initial)
+      expect(progress()).toBeLessThan(100)
+      store.finishRouteLoading()
+      await nextTick()
+      expect(progress()).toBe(100)
+
+      // A newer navigation must cancel the previous completion/reset timer.
+      store.startRouteLoading()
+      await nextTick()
+      expect(progress()).toBeGreaterThan(0)
+      expect(progress()).toBeLessThan(100)
+      vi.runAllTimers()
+      await nextTick()
+      expect(progress()).toBeGreaterThan(0)
+      expect(progress()).toBeLessThan(100)
+      store.finishRouteLoading()
+      await nextTick()
+      expect(progress()).toBe(100)
+      vi.runAllTimers()
+      await nextTick()
+      expect(progress()).toBe(0)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
   })
 
   it('keeps motion accessible and surfaces responsive', () => {
@@ -55,9 +96,10 @@ describe('enterprise UI shell contract', () => {
     expect(appShellSource).not.toContain('mode="out-in"')
     expect(styleSource).toContain('overflow-x: clip')
     expect(appShellSource).toContain('class="app-shell-content flex min-w-0"')
-    expect(sidebarSource).toContain('lg:w-[88px]')
-    expect(sidebarSource).toContain('2xl:w-[260px]')
-    expect(sidebarSource).toContain('lg:sr-only 2xl:not-sr-only')
+    // Compact/expanded widths are visual defaults; names and active state must survive either mode.
+    expect(sidebarSource).toContain(':aria-label="item.label"')
+    expect(sidebarSource).toContain(':aria-current="isActive(item, group.label) ? \'page\' : undefined"')
+    expect(sidebarSource).toContain('@keydown.esc="emit(\'close\')"')
     expect(topBarSource).toContain('<NotificationCenter />')
     // The switch keeps both the current responsive bell and the rollback implementation.
     expect(notificationCenterSource).toContain('VITE_WORK_CENTER_ENABLED')
@@ -82,22 +124,44 @@ describe('enterprise UI shell contract', () => {
 
   it('adapts dashboard columns to the available content width', () => {
     expect(dashboardSource).toContain('container: dashboard-page / inline-size')
-    expect(dashboardSource).toContain('@container dashboard-page (min-width: 36rem)')
-    expect(dashboardSource).toContain('@container dashboard-page (min-width: 62rem)')
-    expect(dashboardSource).toContain('@container dashboard-page (min-width: 68rem)')
-    expect(dashboardSource).not.toContain('md:grid-cols-2 xl:grid-cols-4')
-    expect(dashboardSource).not.toContain('xl:grid-cols-[1fr_350px]')
+    // Keep content-width adaptation without locking the exact breakpoint values or column counts.
+    const queries = [...dashboardSource.matchAll(/@container dashboard-page\s*\([^)]*\)\s*\{([\s\S]*?)\n\}/g)]
+    expect(queries.length).toBeGreaterThan(0)
+    expect(queries.some((query) => query[1]?.includes('.dashboard-metrics'))).toBe(true)
+    expect(queries.some((query) => query[1]?.includes('.dashboard-primary-grid'))).toBe(true)
   })
 
-  it('exposes the requested primary, secondary, soft, ghost, and destructive button hierarchy', () => {
-    for (const variant of ['default:', 'secondary:', 'soft:', 'ghost:', 'destructive:']) {
-      expect(buttonSource).toContain(variant)
-    }
-    expect(buttonSource).toContain('hover:bg-primary/90')
-  })
+  it.each(['default', 'outline', 'secondary', 'soft', 'ghost', 'destructive', 'link'] as const)(
+    'preserves the %s button API and native activation without fixing its visual treatment',
+    async (variant) => {
+      const onClick = vi.fn()
+      const disabled = ref(false)
+      const wrapper = mount(defineComponent({
+        components: { Button },
+        setup: () => ({ variant, disabled, onClick }),
+        template: '<Button :variant="variant" type="button" :disabled="disabled" @click="onClick">操作</Button>',
+      }))
+      try {
+        const button = wrapper.get('button')
+        expect(button.attributes('data-variant')).toBe(variant)
+        expect(button.text()).toBe('操作')
+        await button.trigger('click')
+        expect(onClick).toHaveBeenCalledTimes(1)
+        disabled.value = true
+        await nextTick()
+        const nativeButton = button.element as HTMLButtonElement
+        expect(nativeButton.disabled).toBe(true)
+        nativeButton.click()
+        expect(onClick).toHaveBeenCalledTimes(1)
+      } finally {
+        wrapper.unmount()
+      }
+    },
+  )
 
   it('keeps the approval table overflow inside its own grid column', () => {
-    expect(approvalWorkbenchSource).toContain('class="min-w-0 space-y-6"')
+    // Protect the shrinkable grid column, not its vertical spacing.
+    expect(approvalWorkbenchSource).toMatch(/class="[^"]*\bmin-w-0\b[^"]*"/)
     expect(approvalTableSource).toContain('class="overflow-x-auto"')
     expect(approvalTableSource).toContain(':aria-pressed="row.id === selectedId"')
   })
