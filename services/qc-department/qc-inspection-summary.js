@@ -285,7 +285,7 @@
     };
   }
 
-  function photoPreview(row,photos,start,detailDialog=null,trigger=root.document.activeElement,saveAnnotations=null){
+  function photoPreview(row,photos,start,detailDialog=null,trigger=root.document.activeElement,saveAnnotations=null,refreshPhotos=null){
     const embedded=row===null;
     const overlay=embedded||!detailDialog;
     if(!photos[start]||(!embedded&&!row.entryId)||(detailDialog&&!detailDialog.isConnected))return;
@@ -305,16 +305,19 @@
     originalDownload.hidden=true;
     el.querySelector('footer').append(originalDownload);
     let actions;
-    if(overlay&&!embedded){
-      el.querySelector('[data-photo-close]').remove();
+    if(overlay){
       actions=root.document.createElement('div');
       actions.className='qis-photo-viewer-actions';
-      for(const [action,label] of [['prev','‹'],['next','›'],['original'],['download'],['retry']]){
-        const control=el.querySelector('[data-photo-'+action+']');
-        if(label)control.textContent=label;
-        actions.append(control);
+      if(embedded)actions.append(el.querySelector('[data-photo-retry]'));
+      else{
+        el.querySelector('[data-photo-close]').remove();
+        for(const [action,label] of [['prev','‹'],['next','›'],['original'],['download'],['retry']]){
+          const control=el.querySelector('[data-photo-'+action+']');
+          if(label)control.textContent=label;
+          actions.append(control);
+        }
+        actions.querySelector('[data-photo-prev]').hidden=actions.querySelector('[data-photo-next]').hidden=photos.length===1;
       }
-      actions.querySelector('[data-photo-prev]').hidden=actions.querySelector('[data-photo-next]').hidden=photos.length===1;
       el.append(actions);
     }
     const updateActions=()=>{if(actions)actions.hidden=[...actions.children].every(control=>control.hidden);};
@@ -352,7 +355,7 @@
       if(variant==='preview')return photo.originalAvailable?'预览图':'预览图 · 原图不可用';
       return loaded?'原始高清图':'正在加载原图…';
     }
-    function show(original=false){
+    function show(original=false,forceReload=false){
       variant=original===true?'original-display':'preview';
       if(closed)return;
       endNativeGesture();loaded=false;pointers.clear();lastPointer=null;scale=1;width=height=0;img.style.visibility='hidden';error.hidden=retry.hidden=true;
@@ -362,9 +365,11 @@
       const originalButton=el.querySelector('[data-photo-original]');
       originalButton.hidden=embedded;
       if(embedded){
+        if(forceReload)img.removeAttribute('src');
         img.src=p.src;
       }else{
         const path='api/inspection-sheet/entries/'+encodeURIComponent(row.entryId)+'/photos/'+encodeURIComponent(p.id);
+        if(forceReload)img.removeAttribute('src');
         img.src=path+(variant==='preview'?'':'?variant='+variant);
         originalDownload.hidden=!p.originalAvailable;
         originalDownload.href=path+'?variant=original';
@@ -455,7 +460,21 @@
     el.querySelector('[data-photo-prev]').onclick=()=>stepPhoto(-1);
     el.querySelector('[data-photo-next]').onclick=()=>stepPhoto(1);
     el.querySelector('[data-photo-minus]').onclick=()=>zoom(scale-.25);el.querySelector('[data-photo-plus]').onclick=()=>zoom(scale+.25);
-    el.querySelector('[data-photo-fit]').onclick=reset;retry.onclick=()=>show(variant!=='preview');el.querySelector('[data-photo-original]').onclick=()=>show(variant==='preview');
+    let retrying=false;
+    async function retryPhoto(){
+      if(closed||retrying)return;
+      const requestedIndex=index;
+      if(embedded&&typeof refreshPhotos==='function'){
+        retrying=true;retry.disabled=true;
+        try{await refreshPhotos(photos,requestedIndex);}
+        catch{/* Keep the retry button available if refreshing the preview fails. */}
+        finally{retrying=false;if(!closed)retry.disabled=false;}
+        if(closed||index!==requestedIndex)return;
+      }
+      show(variant!=='preview',true);
+      if(embedded)viewport.focus({preventScroll:true});
+    }
+    el.querySelector('[data-photo-fit]').onclick=reset;retry.onclick=()=>{void retryPhoto();};el.querySelector('[data-photo-original]').onclick=()=>show(variant==='preview');
     el.addEventListener('keydown',event=>{if(event.key==='ArrowRight'&&index<photos.length-1){event.preventDefault();stepPhoto(1);}else if(event.key==='ArrowLeft'&&index>0){event.preventDefault();stepPhoto(-1);}});
     const observer=root.ResizeObserver?new root.ResizeObserver(resize):null;observer?.observe(viewport);
     const retryMarks=()=>markup?.retry();
@@ -804,9 +823,9 @@
       message('历史预览完成，请核对后确认导入。');
     }catch(error){message(error.message,true);}finally{state.busy=false;}
   }
-  function openWorkbookPhotos(images,start,workbook){
-    const photos=images.map(image=>({src:image.currentSrc||image.src,name:'现场照片 · '+image.closest('td').dataset.addr}));
-    photoPreview(null,photos,start,workbook,images[start].closest('button'));
+  function openWorkbookPhotos(images,start,workbook,refreshPhotos=null){
+    const photos=images.map(image=>({src:image.getAttribute('src')||image.currentSrc||image.src,name:'现场照片 · '+image.closest('td').dataset.addr}));
+    photoPreview(null,photos,start,workbook,images[start].closest('button'),null,refreshPhotos);
   }
   root.QcInspectionSummary={load,openPhoto:photoPreview,openWorkbookPhotos,get busy(){return state.busy;},get unsavedPhotoMarks(){return Boolean(activePhoto?.markup?.pending);}};
 })(window);

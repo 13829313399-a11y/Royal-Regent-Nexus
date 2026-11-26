@@ -31,6 +31,26 @@ beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(window, 'confirm').mockReturnV
 afterEach(() => { wrapper?.unmount() })
 
 describe('engineering BOM editor', () => {
+  it('loads conversion evidence and sends exact decimal text through material save', async () => {
+    const m: Material = { id: 'glue', code: '03-01-00001', name: '合成胶水', status: 'ACTIVE', version: 2,
+      data: { unit: '千克', engineering: { group: '03-01', department: '工程', attribute: '外购', approval: 'APPROVED',
+        purchase_conversion: { base_unit: '千克', purchase_unit: '支', base_quantity: '0.02', reference: '包装档案' } } } }
+    await start([], [m])
+    await button('物料档案').trigger('click')
+    await button('维护').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[name="conversion_rate"]').element.value).toBe('0.02')
+    expect(wrapper.get<HTMLInputElement>('[name="conversion_reference"]').element.value).toBe('包装档案')
+    const save = vi.spyOn(api, 'post').mockResolvedValue(m)
+    await wrapper.get('[name="conversion_rate"]').setValue('0.020000000001')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(save.mock.calls[0]![1]).toMatchObject({ expected_version: 2, purchase_conversion: {
+      purchase_unit: '支', base_quantity: '0.020000000001', reference: '包装档案' } })
+    await button('维护').trigger('click')
+    await wrapper.get('[name="conversion_enabled"]').setValue(false)
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(save.mock.calls[1]![1]).toMatchObject({ purchase_conversion: null })
+  })
+
   it('keeps the effective-version cutting form through a same-session refresh and clears it after an access change', async () => {
     const bom = { ...fixture(), version: 3, effective_version: 2 }
     const choices = vi.spyOn(api, 'cuttingChoices').mockResolvedValue({

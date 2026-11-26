@@ -161,7 +161,19 @@ def test_deferred_previews_use_approved_revision_and_export_keeps_photos(db, mon
     for factory, rev in [('huadeng', entry['revision']), ('huaxing', entry['revision'] - 1)]:
         with pytest.raises(HTTPException, match='409'):
             qc_monthly_excel.approved_photo(factory, entry['id'], rev, ids[0])
-    transition(entry, 'revoke')
+    revoked = transition(entry, 'revoke')
+    with pytest.raises(HTTPException, match='409'):
+        qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], ids[0])
+    reapproved = transition(revoked, 'confirm')
+    assert reapproved['revision'] > entry['revision']
+    refreshed = workbooks.preview('huaxing', 'tracking', DAY, '', True)
+    refreshed_images = html.fromstring(refreshed['sheets'][0]['html']).xpath('.//td[@data-addr="M7"]//img')
+    assert len(refreshed_images) == 3
+    refreshed_params = parse_qs(urlsplit(refreshed_images[0].get('src')).query)
+    assert refreshed_params['entry'] == [entry['id']]
+    assert refreshed_params['revision'] == [str(reapproved['revision'])]
+    content, mime = qc_monthly_excel.approved_photo('huaxing', entry['id'], reapproved['revision'], refreshed_params['photo'][0])
+    assert content and mime.startswith('image/')
     with pytest.raises(HTTPException, match='409'):
         qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], ids[0])
 
