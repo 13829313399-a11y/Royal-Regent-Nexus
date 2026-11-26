@@ -1,58 +1,30 @@
 ---
 name: enterprise-ui-art-director
-description: Design new or substantially redesigned enterprise screens in Royal Regent Nexus with Apple VisionOS spatial hierarchy, minimalist breathing room, spring physics motion, expressive micro-interactions, and primitive-first assembly. Use for new modules, substantial redesigns, and explicit UI design reviews; skip routine bug fixes, minor styling corrections, backend-only work, and workflow configuration.
+description: Design or substantially redesign Royal Regent Nexus enterprise screens with high visual craft, task-driven composition, scenario-aware density, distinctive visual identity, and purposeful motion. Use for new modules, substantial redesigns, and explicit design reviews; skip routine fixes, backend-only tasks, and rule configuration.
 ---
 
 # Enterprise UI Art Director
 
-Deliver modern, tactile, Apple VisionOS–inspired enterprise screens for Royal Regent Nexus without sacrificing operational clarity or business contracts. Reject legacy ERP aesthetics (gray bordered table walls, cramped forms, heavy fieldsets, stiff transitions).
+Create a refined, complete product experience, not a generic admin template. Follow [DESIGN.md](../../../DESIGN.md) as the single source for hard rules, flexible defaults and creative freedom. High visual quality is a delivery requirement; functional correctness alone is insufficient.
 
-## 1. Establish the Baseline
+## 1. Discover the product and design opportunity
 
-- Follow [AGENTS.md](../../../AGENTS.md) and load only relevant project-memory facts.
-- Read [DESIGN.md](../../../DESIGN.md) (especially sections 2, 5–11, 16, 17), `src/style.css`, shared components in `src/components/ui/` and `src/components/common/`, and the target route's neighboring code. Only read a module file under [docs/frontend/exceptions/](../../../docs/frontend/exceptions/README.md) when working inside that module's scope.
-- Inspect the nearest `package.json` before assuming framework conventions; do not add animation, component, or font dependencies.
-- Identify the single primary user task, real fields, data density, permissions, factory isolation, and viewport contract. Reference visuals guide craft; they never alter API contracts, permissions, or factory boundaries.
+- Follow [AGENTS.md](../../../AGENTS.md). Load relevant project-memory facts, target route, real fields, workflow, permissions, factory context and neighboring code. Inspect the nearest package.json, src/style.css, shared components and scoped exceptions; do not import unrelated restrictions.
+- Identify the primary jobs, high-frequency operations, information hierarchy, actual data and viewport contract. Select one or a combination of DESIGN.md §2.1 scenarios and §8 density / §11 motion levels.
+- For a new module or major redesign, use [UI_BRIEF_TEMPLATE.md](../../../docs/frontend/UI_BRIEF_TEMPLATE.md). Establish visual references: user-supplied material first, existing strong project screens or Design Lab if implemented, otherwise a task-specific sketch or runnable local prototype. Label conceptual references and fixture data; no production data mutation.
+- Explore meaningfully different compositions (e.g. dense split workspace vs timeline-first, dashboard vs device-first). Choose by task efficiency, distinctiveness and coherence; document the chosen direction and one rejected alternative concisely. Do not automatically copy adjacent screens or the default PageHeader/Card/SectionPanel composition.
 
-## 2. Art Direction & Spatial Craft
+## 2. Translate the concept into real UI
 
-Apply these concrete rules to every new page or substantial redesign:
+- Preserve reliable shared interaction primitives, keyboard/focus semantics and public contracts. Create module-specific visualizations, device panels, workflows, and compositions freely in the module scope. Expand shared variants only when justified by reuse and impact assessment.
+- Apply the brand and state semantics, but adapt palette, typography, spacing, materials, layout, SVG and motion to the chosen scenario. Use semantic tokens or named, scoped visual variables; no blind dependency additions. Follow DESIGN.md §3 for dependency decisions.
+- Design the entire experience: real content hierarchy, empty/loading/error/read-only/permission states, long text, dense data, keyboard and narrow screen behavior. Useful visualizations and delightful interactions should clarify real tasks, not serve as decorative quotas.
+- Craft purposeful feedback and continuity; distinguish high-frequency work from immersive presentation. Respect reduced motion/transparency and measured performance.
+- Review the rendered composition before considering implementation complete. If a screen is only an ordinary header, default cards, and a table without a task-driven design rationale, reconsider layout and hierarchy rather than adding decorative effects.
 
-1. **Four-Layer Spatial Hierarchy (DESIGN.md §7)**
-   - **L0 Canvas**: `--background` with at most two restrained ambient glow pools (`--ambient-glow-primary` / `--ambient-glow-secondary`) behind content, never reducing text contrast.
-   - **L1 Content**: Solid `bg-card`, 1px `--glass-stroke-subtle`, `shadow-elevation-1`, `rounded-2xl` panels / `rounded-xl` inner cards. **Keep tables, long lists, and form bodies solid—never apply `backdrop-filter` to scrolling rows or inputs.**
-   - **L2 Chrome** (top bar, sidebar, floating toolbars, sticky headers, segmented controls): `--glass-surface-chrome`, `backdrop-blur-glass-md`, `saturate(var(--glass-saturate))`, 1px `--glass-stroke`, `--glass-highlight`, `shadow-elevation-2`.
-   - **L3 Floating** (Dialog, Drawer, Popover, menus, Toast, command palette): `--glass-surface-float`, `backdrop-blur-glass-lg`, 1px `--glass-stroke`, `--glass-highlight`, `shadow-elevation-3`, `rounded-2xl`–`rounded-3xl`.
-   - Never stack more than two blurred layers in the same viewport; always ensure glass sits over perceptible content or ambient glow and meets WCAG AA contrast.
+## 3. Verify and hand off
 
-2. **Minimalist Breathing Room & Typographic Tension (DESIGN.md §6, §8)**
-   - Give every screen **one primary visual focal point** and **one primary action** (`Button` default variant).
-   - Build hierarchy through scale, weight (`400`/`500`/`600` only), tight display tracking (`-0.02em`), `tabular-nums` for all numeric/code columns, and generous spacing (`40–64px` between major sections, `24–32px` desktop card padding, `≥40px` data row height).
-   - Separate groups by whitespace and typography instead of nested borders or divider lines. Limit card nesting to **2 levels max**.
-   - Keep secondary metadata, raw enums, revision hashes, and technical caveats out of the main canvas—place them in drawers, tooltips, or progressive disclosure.
-
-3. **Physics-Driven Motion & Tactile Micro-Interactions (DESIGN.md §11)**
-   - Use project motion tokens (`--motion-duration-*`, `ease-spring-smooth`, `ease-spring-snappy`, `ease-spring-bouncy`, `ease-standard`). Reject linear and default `ease` curves for spatial transitions.
-   - Animate **only `transform` and `opacity`** (use FLIP or `TransitionGroup` for layout shifts; never `transition: all`). Keep animations interruptible and spatially continuous (overlays scale `0.96 → 1` from trigger origin and return along the same path).
-   - Craft responsive feedback on every interactive element (≤100ms perceived start): button press `scale(0.97)`, interactive card lift `≤2px` + `shadow-elevation-2`, spring-gliding tab/segmented indicator, smooth input focus ring, subtle check-mark/copy confirmation, and shimmer skeletons matching final geometry.
-   - Honor `prefers-reduced-motion` and `prefers-reduced-transparency` cleanly; never replay entry choreography on background refresh or fabricate counting animations for unverified business metrics.
-
-4. **Primitive-First Assembly (DESIGN.md §9)**
-   - Assemble strictly in order: `src/components/ui/` → `src/components/common/` → `reka-ui` primitives → generate missing primitives into `src/components/ui/` via `npx shadcn-vue add <component>` and style with project tokens → module-local components only as last resort.
-   - **Never hand-roll native `<select>`, nested `<details>`, raw `<dialog>` backdrops, `title` tooltips, or custom unstyled checkboxes/tabs** for business interactions (except documented §15 module exceptions or print views).
-   - Never hardcode hex colors, ad-hoc box-shadows, or magic-number durations when semantic/spatial/motion tokens apply.
-
-## 3. Workflow, Design Review & Anti-Patterns
-
-- **Brief first**: For a new module or substantial redesign, fill the relevant sections of [UI_BRIEF_TEMPLATE.md](../../../docs/frontend/UI_BRIEF_TEMPLATE.md), specifying L0–L3 allocation, primary focus, reused primitives, all states (default, loading, empty, error, permission-restricted, read-only, success), and key micro-interactions. For a review-only request, report findings without modifying code.
-- **Anti-pattern check (reject before handoff)**:
-  - Gray-on-gray bordered table walls, heavy `<fieldset>` frames, double borders, or >2 levels of nested cards.
-  - Engineering disclaimers or defensive notices dominating the primary workspace.
-  - Multiple competing primary buttons, red used for non-destructive emphasis, rainbow gradients, neon glows, or Emoji icons.
-  - Glass blur on table rows/form inputs, abrupt pop-in overlays without exit motion, or fabricated placeholder KPIs.
-
-## 4. Visual Verification & Handoff
-
-- After authorized implementation, inspect the real rendered route with Chrome DevTools MCP via [visual-qa-loop](../visual-qa-loop/SKILL.md). Do not switch automatically to Playwright CLI. When another active skill already performs equivalent DevTools checks, share evidence instead of duplicating work.
-- Verify both technical QA (DESIGN.md §17.1) and aesthetic QA (DESIGN.md §17.2), including `prefers-reduced-motion` and `prefers-reduced-transparency`.
-- Report design decisions, L0–L3 surface plan, reused/added primitives and tokens, affected states, intentional reference deviations, and actual browser evidence or verification gaps. Do not substitute an aesthetic score for defect evidence or claim visual review proves business acceptance.
+- Run [visual-qa-loop](../visual-qa-loop/SKILL.md) and follow DESIGN.md §17.1 for technical QA. Share current evidence instead of duplicating checks.
+- For new modules and major redesigns, obtain the independent design review in DESIGN.md §17.2. A reviewer who did not implement the change examines the actual rendered page, the brief and the relevant reference. Review-only tasks report findings without code changes.
+- A REWORK decision is a delivery blocker even when builds and functional tests pass. Rework the evidenced regions, recapture matching screenshots, rerun affected tests and interactions, and obtain re-review. If independent review or browser evidence is unavailable, record UNVERIFIED; never substitute self-review or an aesthetic score.
+- Report the selected scene/density/motion, composition rationale, actual evidence, design review findings and unresolved items. Do not equate visual approval with business or production acceptance.

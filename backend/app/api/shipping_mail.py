@@ -19,6 +19,7 @@ from app.services import shipping_supplement
 from app.services import shipping_customs
 from app.services import shipping_schedule_import
 from app.services import shipping_schedule_file
+from app.services import shipping_code_mapping
 from app.services import shipping_autogen
 from app.services import shipping_pallets
 from app.services import shipping_product_history
@@ -440,6 +441,18 @@ def schedule_import(db: Db, user: User, factory_id: str = Query(...), history: b
     return shipping_schedule_import.import_factory_schedule(db, factory_id, include_history=history)
 
 
+@router.post('/code-mappings/import')
+async def code_mapping_import(
+    user: User,
+    factory_id: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+):
+    service.authorize(user, factory_id, 'write')
+    raw = await file.read()
+    rows = shipping_code_mapping.parse_code_mapping_workbook(raw, file.filename or 'mapping.xlsx')
+    return {'filename': file.filename or 'mapping.xlsx', 'rows': rows, 'count': len(rows)}
+
+
 @router.post('/schedule-import/file')
 async def schedule_file_import(
     db: Db, user: User,
@@ -454,6 +467,8 @@ async def schedule_file_import(
 
 @router.get('/schedule/rows')
 def schedule_rows(db: Db, user: User, factory_id: str = Query(...)):
+    service.authorize(user, factory_id, 'read')
+    shipping_schedule_import.maybe_purge_previous_month(db, factory_id)
     return service.schedule_rows(db, user, factory_id)
 
 

@@ -76,6 +76,8 @@ def save_account(db, user: AuthContext, payload: dict) -> dict:
         raise HTTPException(422, '请填写邮件服务器和邮箱地址')
     password = str(payload.get('password') or '')
     account = get_account(db, factory_id)
+    if account is not None and not password and not account.password_enc:
+        raise HTTPException(422, '请填写网易邮箱授权码')
     if account is None:
         if not password:
             raise HTTPException(422, '首次配置需要填写邮箱密码')
