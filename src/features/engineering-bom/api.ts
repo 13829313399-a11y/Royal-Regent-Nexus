@@ -1,6 +1,7 @@
 import { http } from '@/lib/http'
 import type { BomData as CuttingBomData, EngineeringBomSource, MasterRecord } from '@/features/cutting-operations/api'
-export interface Material { actor_id?: string; occurred_at?: string; reason?: string; id: string; code: string; name: string; version: number; status: string; data: { unit: string; spec?: string; color?: string; old_code?: string; category?: string; engineering?: { group: string; department: string; attribute: string; approval: string } } }
+export interface PurchaseConversion { base_unit: string; purchase_unit: string; base_quantity: string; reference: string }
+export interface Material { actor_id?: string; occurred_at?: string; reason?: string; id: string; code: string; name: string; version: number; status: string; data: { unit: string; spec?: string; color?: string; old_code?: string; category?: string; engineering?: { group: string; department: string; attribute: string; approval: string; purchase_conversion?: PurchaseConversion } } }
 export interface Node { key: string; parent: string; material_id: string; material_version: number; source_code: string; source_name: string; unit: string; numerator: string; denominator: string; process: string; exempt_loss: boolean; note: string; source: Record<string, string>; review_required: boolean; review_note: string }
 export interface BomData { item_no: string; name: string; specification: string; source_reference: string; source_sha256?: string; nodes: Node[] }
 export interface Bom { id: string; version: number; effective_version: number | null; status: string; data: BomData; materials: Record<string, Material>; actor_id?: string; occurred_at?: string; reason?: string }

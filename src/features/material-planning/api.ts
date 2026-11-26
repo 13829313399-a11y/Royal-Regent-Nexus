@@ -8,9 +8,13 @@ export interface OrderBasis extends OrderReference { factory_id: string; version
 export interface TrialInput { title: string; bom_id: string; bom_version: number; quantity: string; loss_percent: string; loss_exemptions: Record<string, boolean>; material_attributes: Record<string, MaterialAttribute>; reference: string; order?: OrderReference | null }
 export interface Amount { value: string; numerator: string; denominator: string; approximate: boolean }
 export interface Usage { material_id: string; material_version: number; code: string; name: string; unit: string; attribute: string; base: Amount; loss: Amount; gross: Amount }
+export type PurchaseEquivalent = {
+  status: 'READY'; purchase_unit: string; base_unit: string; base_quantity: Amount; reference: string
+  exact_quantity: Amount; rounded_quantity: string; surplus: Amount
+} | { status: 'MISSING' | 'INVALID' | 'UNIT_MISMATCH' | 'NOT_APPLICABLE' | 'OUT_OF_RANGE' }
 export interface TrialResult {
   lines: Array<Usage & { key: string; parent: string; process: string; exempt_loss: boolean; engineering_exempt_loss: boolean; engineering_attribute?: string }>
-  totals: Array<Usage & { processes: string[]; keys: string[] }>
+  totals: Array<Usage & { processes: string[]; keys: string[]; purchase_conversion?: PurchaseEquivalent }>
   finished_quantity: Amount; finished_unit: string; supply_status: string; net_purchase_quantity: null; pending: string[]; algorithm: string
   order_basis?: OrderBasis | null
   release_gate?: { can_release: false; blockers: string[] }

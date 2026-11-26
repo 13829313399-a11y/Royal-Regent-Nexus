@@ -78,6 +78,75 @@ def exact(amount):
     return Fraction(int(amount['numerator']), int(amount['denominator']))
 
 
+@pytest.mark.parametrize('quantity,rounded,surplus', [('2000', '2', '0'), ('2001', '3', '0.01998'), ('20000', '20', '0'), ('60000', '60', '0')])
+def test_purchase_equivalent_exact_grouped_rounding(client, quantity, rounded, surplus):
+    frozen = deepcopy(client.published)
+    nodes = frozen['data']['nodes']
+    # Two occurrences of one material must be summed before rounding.
+    nodes[1].update(numerator='0.00001', denominator='1', unit='千克')
+    nodes[2].update(parent='root', numerator='0.00001', denominator='1', unit='千克')
+    m = next(iter(frozen['materials'].values()))
+    m['data']['unit'] = '千克'
+    m['data']['engineering']['purchase_conversion'] = dict(base_unit='千克', purchase_unit='支', base_quantity='0.02', reference='已核实包装规格')
+    before = deepcopy(frozen)
+    result = service.calculate(frozen, payload(client, quantity=quantity, loss_percent='0')['data'])
+    converted = result['totals'][0]['purchase_conversion']
+    assert converted['rounded_quantity'] == rounded and exact(converted['surplus']) == Fraction(surplus)
+    assert exact(converted['exact_quantity']) == Fraction(quantity) / 1000
+    assert exact(result['totals'][0]['gross']) == Fraction(quantity) / 50000
+    assert result['net_purchase_quantity'] is None and frozen == before
+    loss = service.calculate(frozen, payload(client, quantity='2000', loss_percent='5')['data'])['totals'][0]['purchase_conversion']
+    assert loss['rounded_quantity'] == '3' and exact(loss['exact_quantity']) == Fraction('2.1')
+
+
+def test_purchase_reference_uses_pinned_versions_and_keeps_saved_history(client):
+    client.engineering_auth['user'] = engineer()
+    m = next(iter(client.published['materials'].values()))
+    changed = post(client, '/materials', command(id=m['id'], code=m['code'], group='01-01', name=m['name'], unit='码', department='工程',
+        expected_version=m['version'], purchase_conversion=dict(purchase_unit='卷', base_quantity='700', reference='合成档案')))
+    approved = post(client, f"/materials/{m['id']}/approve", command(expected_version=changed['version']))
+    client.engineering_auth['user'] = sales()
+    old = request(client, '/drafts', payload(client))
+    assert old['result']['totals'][0]['purchase_conversion']['status'] == 'MISSING'
+    client.engineering_auth['user'] = engineer()
+    revised = deepcopy(client.bom_payload)
+    for n in revised['data']['nodes']:
+        n['material_version'] = approved['version']
+    post(client, f"/boms/{client.published['id']}", revised | {'operation_id': uuid4().hex, 'expected_version': 2})
+    post(client, f"/boms/{client.published['id']}/approve", command(expected_version=3))
+    client.engineering_auth['user'] = sales()
+    body = payload(client, bom_version=4)
+    saved = request(client, '/drafts', body)
+    ref = saved['result']['totals'][0]['purchase_conversion']
+    assert ref['rounded_quantity'] == '1' and exact(ref['exact_quantity']) == Fraction('0.18')
+    assert saved['result']['release_gate']['can_release'] is False
+    assert request(client, '/drafts', body) == saved
+    assert client.get(BASE + f"/drafts/{old['id']}/history?factory_id=huakang-c").json()['items'] == [old]
+
+
+@pytest.mark.parametrize('conversion,status', [
+    (None, 'MISSING'),
+    ({'base_unit': '千克', 'purchase_unit': '支', 'base_quantity': '0.02', 'reference': '档案'}, 'UNIT_MISMATCH'),
+    ({'base_unit': '码', 'purchase_unit': '卷', 'base_quantity': '0', 'reference': '档案'}, 'INVALID'),
+])
+def test_purchase_reference_missing_or_inconsistent_evidence(client, conversion, status):
+    frozen = deepcopy(client.published)
+    next(iter(frozen['materials'].values()))['data']['engineering']['purchase_conversion'] = conversion
+    result = service.calculate(frozen, payload(client)['data'])
+    assert result['totals'][0]['purchase_conversion'] == {'status': status}
+
+
+def test_large_purchase_equivalent_does_not_block_valid_gross_demand(client):
+    frozen = deepcopy(client.published)
+    frozen['data']['nodes'] = frozen['data']['nodes'][:2]
+    frozen['data']['nodes'][1]['numerator'] = '100000000'
+    m = next(iter(frozen['materials'].values()))
+    m['data']['engineering']['purchase_conversion'] = dict(base_unit='码', purchase_unit='卷', base_quantity='0.000000000001', reference='合成边界')
+    result = service.calculate(frozen, payload(client, quantity='100000000', loss_percent='0')['data'])
+    assert exact(result['totals'][0]['gross']) == 10 ** 16
+    assert result['totals'][0]['purchase_conversion'] == {'status': 'OUT_OF_RANGE'}
+
+
 @pytest.mark.parametrize('engineering_material_attribute', ['客供'], indirect=True)
 def test_customer_supply_always_includes_loss_and_rejects_new_exemptions(client):
     for percent in ('0', '5'):

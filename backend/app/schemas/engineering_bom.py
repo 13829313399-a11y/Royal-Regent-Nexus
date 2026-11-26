@@ -1,6 +1,6 @@
 from decimal import Decimal
 from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 Qty = Annotated[Decimal, Field(ge=0, le=100000000, max_digits=24, decimal_places=12, allow_inf_nan=False)]
@@ -17,6 +17,12 @@ class Command(Strict):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class PurchaseConversion(Strict):
+    purchase_unit: Text
+    base_quantity: Annotated[Decimal, Field(gt=0, le=100000000, max_digits=24, decimal_places=12, allow_inf_nan=False)]
+    reference: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
 class Material(Command):
     id: str = ''
     code: str = Field(default='', max_length=128)
@@ -29,6 +35,14 @@ class Material(Command):
     old_code: str = Field(default='', max_length=128)
     attribute: Literal['外购', '自制', '委外', '客供'] = '外购'
     warehouse_category: Literal['', 'FABRIC', 'ACCESSORY', 'THREAD'] = ''
+    purchase_conversion: PurchaseConversion | None = None
+
+    @model_validator(mode='after')
+    def same_unit_conversion(self):
+        conversion = self.purchase_conversion
+        if conversion and conversion.purchase_unit == self.unit and conversion.base_quantity != 1:
+            raise ValueError('采购单位与基本单位相同时，换算率必须为 1')
+        return self
 
 
 class Node(Strict):
