@@ -592,6 +592,7 @@ export interface BulkTruckLine {
   po: string
   shippingNote: string
   remark: string
+  manual?: boolean
 }
 
 export interface BulkTruckHeader {
