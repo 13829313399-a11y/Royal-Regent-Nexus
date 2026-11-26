@@ -96,7 +96,7 @@
       {
         "path": "services/qc-department/qc-inspection-summary.js",
         "symbol": "async function load",
-        "sha256": "c75d2bc7b4d925ea5d35737310fd6ca83db78b8ae942beca824ebdea8dd7c833"
+        "sha256": "aca1fa2e745b8488d82b71012d6bb1928c3e88505badcca96e3a4845f0cda1b9"
       },
       {
         "path": "backend/app/services/qc_weekly_templates.py",
@@ -176,7 +176,7 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "18023bb2dafc37d8cfa1b1cbebc85a218483672b36d0bcd6fc159c7f1ab22e4e"
+        "sha256": "3a3633ad1d322608d212803bf06b779fab55302b2c0803c8f04376d17701cd6b"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",
