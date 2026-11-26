@@ -220,6 +220,17 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     }:
         from app.services.qc_report_workbook import warm_on_report_visit
         warm_on_report_visit()
+    if asset_path == 'api/report-workbook/photo':
+        if request.method not in {'GET', 'HEAD'}:
+            raise HTTPException(405, '报表照片仅供读取')
+        params = request.query_params
+        if (set(params) != {'entry', 'revision', 'photo'} or any(len(params.getlist(k)) != 1 for k in params)
+                or not re.fullmatch(r'[0-9]{1,18}', params['revision'])):
+            raise HTTPException(422, '报表照片参数不正确')
+        content, mime = await run_in_threadpool(qc_monthly_excel.approved_photo, factory_id,
+            params['entry'], int(params['revision']), params['photo'])
+        return Response(content if request.method == 'GET' else b'', media_type=mime,
+                        headers={**NO_CACHE, 'Content-Length': str(len(content))})
     if asset_path in {'api/report-workbook', 'api/report-workbook/save'}:
         from app.services import qc_report_workbook
         params = request.query_params

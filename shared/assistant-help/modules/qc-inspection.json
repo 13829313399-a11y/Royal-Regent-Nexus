@@ -51,7 +51,7 @@
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "42dba1ddc26d23f2bdddafd776aad6399865b7da256e52c5968505f55a7f2db6"
+        "sha256": "f6bf4ec982e1a85c9231e533d5243978783c9c58476d37f86e5a6af1606056d7"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
@@ -121,7 +121,7 @@
       {
         "path": "backend/app/services/qc_monthly_excel.py",
         "symbol": "def render",
-        "sha256": "c4b237e467e4a7ba4cab91030126ac797839720c9f51ab5cb7e8684aeafbec49"
+        "sha256": "f770d9e3bb42ade09db97233ed4ff6487e6530ccf4fb151dcddb3737ebbf1026"
       },
       {
         "path": "services/qc-department/qc-monthly-templates.js",
@@ -171,7 +171,7 @@
       {
         "path": "backend/app/services/qc_report_workbook.py",
         "symbol": "def preview(",
-        "sha256": "29fee58d45cd139b097e24e09dc858d16fb01d4b9a9e94ebb1f9f4346b83c6f9"
+        "sha256": "616c7c240395f3dccddb18376e7d1a556c02ffc677a7abdd5bcc56b9ebc6368d"
       },
       {
         "path": "services/qc-department/qc-report-workbook.js",

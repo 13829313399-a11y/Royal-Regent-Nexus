@@ -15,6 +15,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock, Thread
 from time import monotonic
+from urllib.parse import urlencode
 
 from fastapi import HTTPException
 from starlette.responses import JSONResponse, Response
@@ -308,9 +309,33 @@ def sheet_html(table, folder, sheet):
     return html.tostring(table, encoding='unicode')
 
 
+def attach_preview_photos(sheet, rows):
+    table = html.fromstring(sheet['html'])
+    cells = {td.get('data-addr'): td for td in table.xpath('.//td[@data-addr]')}
+    for r, row in enumerate(rows, 7):
+        photos = row['photos']
+        if not photos:
+            continue
+        cell = cells.get(f'M{r}')
+        if cell is None:
+            raise ValueError('Workbook omitted a report photo cell')
+        columns, width, height = qc_monthly_excel._photo_slots(len(photos), monthly.design.TRACKING_WIDTHS[12],
+                                                              min(530, len(photos)*84))
+        gallery = etree.SubElement(cell, 'span', style=f'display:grid;grid-template-columns:repeat({columns},minmax(0,1fr));justify-items:center')
+        for photo in photos:
+            query = urlencode({'entry': row['id'], 'revision': row['revision'], 'photo': photo['id']})
+            etree.SubElement(gallery, 'img', src='api/report-workbook/photo?' + query, loading='lazy',
+                             decoding='async', width=str(max(1,int(width))), height=str(max(1,int(height))),
+                             style='object-fit:contain;max-width:100%', alt='现场照片')
+    sheet['html'] = html.tostring(table, encoding='unicode')
+
+
 def render(factory, kind, data):
     from app.services.qc_report_grid import render_grid
     global _try_native_at
+    photo_kind = kind in {'tracking', 'issues', 'annual-issues'}
+    if photo_kind:
+        data = dict(data, deferPreviewPhotos=True)
     if kind == 'annual-stats':
         from app.services.qc_annual_excel import workbook
         content = workbook(data)
@@ -323,6 +348,7 @@ def render(factory, kind, data):
     else:
         content = qc_monthly_excel.render(data, kind, factory)
     executable = office_executable() if monotonic() >= _try_native_at else None
+    sheets = None
     if executable:
         try:
             sheets = render_native(executable, content, kind == 'detail')
@@ -330,11 +356,19 @@ def render(factory, kind, data):
                         for addr in re.findall(r'<td\b[^>]*\bdata-addr="([A-Z]+\d+)"',s['html'])}
             if not set(writable_cells(kind,data)) <= rendered:
                 raise ValueError('Calc omitted editable cells')
-            return sheets, 'calc'
+            if photo_kind and any(row['photos'] and f'0:M{r}' not in rendered for r, row in
+                                  enumerate(data['tables']['tracking' if kind == 'tracking' else 'issues'], 7)):
+                raise ValueError('Calc omitted a report photo cell')
         except (OSError, ValueError, subprocess.SubprocessError, etree.LxmlError) as exc:
             _try_native_at = monotonic() + 30
             log.warning('QC native workbook preview temporarily unavailable (%s); using the grid', type(exc).__name__)
-    return render_grid(content, kind == 'detail'), 'grid'
+            sheets = None
+    mode = 'calc' if sheets is not None else 'grid'
+    if sheets is None:
+        sheets = render_grid(content, kind == 'detail')
+    if photo_kind:
+        attach_preview_photos(sheets[0], data['tables']['tracking' if kind == 'tracking' else 'issues'])
+    return sheets, mode
 
 
 def render_native(executable, content, legacy):
