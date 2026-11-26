@@ -72,11 +72,13 @@ async function importCabinet(payload: { taskId: string; filename: string; header
     department: 'W',
   }
   const contract = text(source.contractNo)
+  const distinctContracts = new Set(payload.lines.map((line) => text(line.contract_no || line.contract)).filter(Boolean))
   const lines = payload.lines.map((line) => {
     const mapped = toLine(line)
-    if (contract) mapped.contract = contract
+    if (contract && distinctContracts.size <= 1) mapped.contract = contract
     return mapped
   })
+  if (!header.contractNo && distinctContracts.size > 0) header.contractNo = [...distinctContracts][0]
   cabinetDraft.value = {
     number: text(source.number),
     taskId: payload.taskId,

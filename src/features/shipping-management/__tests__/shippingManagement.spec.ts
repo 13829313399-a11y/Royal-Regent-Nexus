@@ -76,7 +76,7 @@ describe('shipping order management workspace', () => {
     expect(wrapper.text()).toContain('SHZ8265013 出货通知')
 
     expect(wrapper.text()).toContain('立即同步')
-    expect(wrapper.text()).toContain('每天 08:00–23:00 每小时自动收件（华兴 / 华登 / 华康A / 华康B / 华康D）')
+    expect(wrapper.text()).not.toContain('每天 08:00–23:00 每小时自动收件')
 
     for (const label of ['码头', '国家', '航次', '订仓号', '柜S/O', '船名', '发货商', '合同号', '截止日期']) {
       expect(wrapper.text()).toContain(label)

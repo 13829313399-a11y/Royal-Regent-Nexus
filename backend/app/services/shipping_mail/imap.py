@@ -3,6 +3,8 @@ import base64
 import hashlib
 import imaplib
 from datetime import date, timedelta
+from email import message_from_bytes
+from email.header import decode_header, make_header
 
 from app.core.config import settings
 
@@ -60,6 +62,17 @@ def _identify(conn) -> None:
         conn._untagged_response('OK', [None], 'ID')
     except Exception:  # noqa: BLE001 - servers without ID support ignore it
         pass
+
+
+def _message_label(uid: str, raw: bytes) -> str:
+    try:
+        message = message_from_bytes(raw)
+        subject = str(make_header(decode_header(str(message.get('Subject') or '')))).strip()
+    except Exception:  # noqa: BLE001
+        subject = ''
+    if not subject:
+        return f'mail-{uid}.eml'
+    return f"{subject[:120]}.eml"
 
 
 def _login(conn, host: str, username: str, password: str) -> None:
@@ -136,7 +149,7 @@ def fetch_recent(
                 continue
             raw = parts[0][1] if isinstance(parts[0], tuple) else b''
             if raw:
-                messages.append((uid, f'mail-{uid}.eml', raw))
+                messages.append((uid, _message_label(uid, raw), raw))
         return messages[-limit:]
     except imaplib.IMAP4.error as error:
         raise ImapError(f'收取邮件失败：{error}') from error

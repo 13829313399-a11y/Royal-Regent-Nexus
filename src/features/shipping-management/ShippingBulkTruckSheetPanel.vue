@@ -11,6 +11,7 @@ import {
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
 import { filingCodeFilename } from './contracts'
+import { productNameForCode } from './productName'
 import ShippingTruckExportHistory from './ShippingTruckExportHistory.vue'
 
 const props = defineProps<{
@@ -59,12 +60,38 @@ async function loadDraft() {
     applyInitialHeader()
     await applyImportedOrScheduleLines()
     dedupeLines()
+    await fillMissingNames()
     applyHeaderBrandToLines()
     syncTableName()
   } catch (error) {
     message.value = `生成失败：${getApiErrorMessage(error)}`
   } finally {
     loading.value = false
+  }
+}
+
+async function fillMissingNames() {
+  if (!draft.value) return
+  const blank = draft.value.lines.filter((line) => !String(line.name || '').trim() && String(line.filingCode || '').trim())
+  if (!blank.length) return
+  const names = new Map<string, string>()
+  for (const line of blank) {
+    const code = String(line.filingCode || '').trim()
+    const contract = String(line.contract || '').trim()
+    try {
+      const items = await searchScheduleProducts(props.factoryId, code)
+      const candidates = items.filter((item) => item.product_name && (String(item.product_code || '').replace(/\s+/g, '') === code.replace(/\s+/g, '') || String(item.product_name).includes(code)))
+      const hit = candidates.find((item) => contract && String(item.contract_no || '').trim() === contract) || candidates[0]
+      if (hit?.product_name) names.set(`${contract}|${code}`, String(hit.product_name))
+    } catch {
+      // keep names blank when schedule lookup fails
+    }
+  }
+  for (const line of draft.value.lines) {
+    const code = String(line.filingCode || '').trim()
+    const contract = String(line.contract || '').trim()
+    const name = names.get(`${contract}|${code}`) || names.get(`|${code}`)
+    line.name = productNameForCode(line.name || name, code)
   }
 }
 
@@ -202,6 +229,7 @@ watch(() => [props.initialHeader, props.initialLines] as const, async () => {
   applyInitialHeader()
   await applyImportedOrScheduleLines()
   dedupeLines()
+  await fillMissingNames()
   applyHeaderBrandToLines()
   syncTableName()
 })

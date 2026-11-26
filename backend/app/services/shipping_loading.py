@@ -701,8 +701,9 @@ def search_products(db, user: AuthContext, factory_id: str, query: str) -> dict:
         contract = str(item.get('contract_no') or '').strip()
         if not code:
             return
-        haystack = f'{code} {contract} {item.get("customer_po") or ""} {so_number} {item.get("booking_no") or ""}'.lower()
-        if not all(token in haystack for token in tokens):
+        haystack = f'{code} {contract} {item.get("customer_po") or ""} {so_number} {item.get("booking_no") or ""} {item.get("product_name") or ""} {item.get("description") or ""}'.lower()
+        compact = re.sub(r'\s+', '', haystack)
+        if not all(token in haystack or re.sub(r'\s+', '', token) in compact for token in tokens):
             return
         key = (contract, code, so_number)
         if key in seen:

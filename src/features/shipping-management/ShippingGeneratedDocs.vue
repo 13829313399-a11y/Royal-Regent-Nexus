@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ChevronDown, Download, FileSpreadsheet, Mail, RefreshCw, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
+import { productNameForCode } from './productName'
 import {
   deleteGeneratedDoc,
   getGeneratedDoc,
@@ -180,22 +181,7 @@ function fillForm(source: GeneratedDocDetail) {
   form.consignee = value(header.consignee)
   form.cutoff = value(header.cutoff)
   const lineContracts = [...new Set((source.lines ?? []).map((line) => value(line.contract).trim()).filter(Boolean))]
-  const values = [...new Set([value(header.contractNo).trim(), ...lineContracts].filter(Boolean))]
-  let combinedContract = ''
-  for (const contract of values) {
-    if (!combinedContract) {
-      combinedContract = contract
-    } else if (combinedContract.includes(contract)) {
-      continue
-    } else if (contract.startsWith(combinedContract)) {
-      combinedContract = contract
-    } else if (/^\d{1,6}$/.test(contract)) {
-      combinedContract += contract
-    } else {
-      combinedContract += ` ${contract}`
-    }
-  }
-  form.contractNo = combinedContract
+  form.contractNo = value(header.contractNo).trim() || lineContracts[0] || ''
   form.vesselName = value(header.vessel)
   form.voyageNo = value(header.voyage)
   form.transportCompany = value(header.transportCompany)
@@ -368,13 +354,45 @@ async function resolveValidatedScheduleLines(
       message.value = `合同号 ${contract} 在厂区总排期不存在，不能导入`
       return null
     }
+    const nameByCode = new Map<string, string>()
+    const contractByCode = new Map<string, string>()
+    for (const item of matched) {
+      const code = String(item.product_code || '').trim()
+      if (code && item.product_name && !nameByCode.has(code)) nameByCode.set(code, String(item.product_name))
+    }
     if (codes.length) {
       const missing = codes.filter((code) => !matched.some((item) => String(item.product_code || '').trim() === code))
       if (missing.length) {
-        message.value = `产品编号 ${missing.join('、')} 不属于合同号 ${contract}，不能导入`
-        return null
+        const unresolved: string[] = []
+        for (const code of missing) {
+          const found = await searchScheduleProducts(props.factoryId, code)
+          const hit = found.find((item) => (String(item.product_code || '').replace(/\s+/g, '') === code.replace(/\s+/g, '') || String(item.product_name || '').includes(code)) && String(item.contract_no || '').trim())
+          if (hit) {
+            contractByCode.set(code, String(hit.contract_no || '').trim())
+            if (hit.product_name && !nameByCode.has(code)) nameByCode.set(code, String(hit.product_name))
+          } else {
+            unresolved.push(code)
+          }
+        }
+        if (unresolved.length) {
+          message.value = `产品编号 ${unresolved.join('、')} 在厂区总排期不存在，不能导入`
+          return null
+        }
       }
-      if (lineCodes.length) return lines
+      if (lineCodes.length) {
+        return lines.map((line) => {
+          const code = String(line.product_code || line.filingCode || line.declareCode || '').trim()
+          const lineContract = String(line.contract || line.contract_no || '').trim()
+          const productName = String(line.description || line.name || line.product_name || nameByCode.get(code) || '').trim()
+          return {
+            ...line,
+            contract: lineContract || contractByCode.get(code) || contract,
+            product_name: productName,
+            name: productName,
+            description: productName,
+          }
+        })
+      }
     }
     const scheduleItems = codes.length
       ? matched.filter((item) => codes.includes(String(item.product_code || '').trim()))
@@ -411,19 +429,47 @@ async function resolveValidatedScheduleLines(
   }
 }
 
+async function fillProductNames(lines: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
+  const names = new Map<string, string>()
+  for (const line of lines) {
+    const code = String(line.product_code || line.filingCode || line.declareCode || '').trim()
+    const contract = String(line.contract || line.contract_no || '').trim()
+    if (!code) continue
+    const found = await searchScheduleProducts(props.factoryId, code)
+    const candidates = found.filter((item) => item.product_name && (String(item.product_code || '').replace(/\s+/g, '') === code.replace(/\s+/g, '') || String(item.product_name).includes(code)))
+    const hit = candidates.find((item) => contract && String(item.contract_no || '').trim() === contract) || candidates[0]
+    if (hit?.product_name) names.set(`${contract}|${code}`, String(hit.product_name))
+  }
+  return lines.map((line) => {
+    const code = String(line.product_code || line.filingCode || line.declareCode || '').trim()
+    const contract = String(line.contract || line.contract_no || '').trim()
+    const productName = productNameForCode(line.description || line.name || line.product_name || names.get(`${contract}|${code}`) || '', code)
+    return { ...line, product_name: productName, name: productName, description: productName }
+  })
+}
+
 async function importCabinet() {
   if (!detail.value) return
   const lines = detail.value.lines ?? []
-  const resolvedLines = await resolveValidatedScheduleLines(
-    form.contractNo || String(detail.value.header?.contractNo || ''),
-    lines as Array<Record<string, unknown>>,
-    form.filingCode,
-  )
-  if (!resolvedLines) return
+  const contractSet = new Set(lines.map((line) => String((line as Record<string, unknown>).contract_no || (line as Record<string, unknown>).contract || '').trim()).filter(Boolean))
+  let resolvedLines: Array<Record<string, unknown>> | null = null
+  if (contractSet.size <= 1) {
+    resolvedLines = await resolveValidatedScheduleLines(
+      form.contractNo || String(detail.value.header?.contractNo || ''),
+      lines as Array<Record<string, unknown>>,
+      form.filingCode,
+    )
+    if (!resolvedLines) return
+  } else {
+    resolvedLines = await fillProductNames(lines as Array<Record<string, unknown>>)
+    message.value = ''
+  }
+  const header = buildHeader()
+  if (contractSet.size > 1) header.contractNo = [...contractSet][0]
   emit('import-cabinet', {
     taskId: detail.value.task_id,
     filename: detail.value.filename,
-    header: buildHeader(),
+    header,
     lines: resolvedLines,
   })
   imported.value = { ...imported.value, [detail.value.id]: true }
@@ -447,15 +493,17 @@ async function saveData() {
 async function importTruck(mode: 'buzzbee' | 'bulk') {
   if (!selectedDoc.value || !detail.value) return
   const lines = detail.value.lines ?? []
-  let resolvedLines = await resolveValidatedScheduleLines(
-    form.contractNo || String(detail.value.header?.contractNo || ''),
-    lines as Array<Record<string, unknown>>,
-    form.filingCode,
-  )
   const contractSet = new Set(lines.map((line) => String((line as Record<string, unknown>).contract_no || (line as Record<string, unknown>).contract || '').trim()).filter(Boolean))
-  if (!resolvedLines) {
-    if (contractSet.size <= 1) return
-    resolvedLines = lines as Array<Record<string, unknown>>
+  let resolvedLines: Array<Record<string, unknown>> | null = null
+  if (contractSet.size <= 1) {
+    resolvedLines = await resolveValidatedScheduleLines(
+      form.contractNo || String(detail.value.header?.contractNo || ''),
+      lines as Array<Record<string, unknown>>,
+      form.filingCode,
+    )
+    if (!resolvedLines) return
+  } else {
+    resolvedLines = await fillProductNames(lines as Array<Record<string, unknown>>)
     message.value = ''
   }
   const header = buildHeader()

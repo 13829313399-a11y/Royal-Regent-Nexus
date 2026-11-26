@@ -37,6 +37,8 @@ export interface ShippingMailBatch {
   id: string
   file_name?: string
   filename?: string
+  subject?: string
+  sender?: string
   status: string
   total_count: number
   parsed_count: number
@@ -269,10 +271,17 @@ export async function testShippingMailAccount(factoryId: string, password = '') 
   return data
 }
 
-export async function syncShippingMailAccount(factoryId: string) {
-  const { data } = await http.post<{ run: ShippingMailSyncRun }>('/shipping/mail/account/sync', null, {
-    params: { factory_id: factoryId },
-    timeout: 120_000,
+export async function syncShippingMailAccount(
+  factoryId: string,
+  options: { sinceDays?: number; limit?: number; includeSynced?: boolean } = {},
+) {
+  const { data } = await http.post<{ run: ShippingMailSyncRun }>('/shipping/mail/account/sync', {
+    factory_id: factoryId,
+    since_days: options.sinceDays ?? 8,
+    limit: options.limit ?? 50,
+    include_synced: options.includeSynced ?? false,
+  }, {
+    timeout: 300_000,
   })
   return data.run
 }
