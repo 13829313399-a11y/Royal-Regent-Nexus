@@ -84,7 +84,7 @@ test('monthly preview opens the filtered workbook, confirms edits before switchi
 
 const MIME_XLSX='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 test('switch shares a pending adjacent preview and ignores a late response after switching back',async t=>{
-  const h=await exportWorkbook(t,'weekly','detail');
+  const h=await exportWorkbook(t,'monthly','quality');
   const {w,d}=h, requests=[];
   // jsdom's default hidden document suppresses speculative loads during setup.
   Object.defineProperty(d,'hidden',{value:false});
@@ -96,18 +96,39 @@ test('switch shares a pending adjacent preview and ignores a late response after
   });
   const click=kind=>d.querySelector(`#wb-templates [data-kind="${kind}"]`).click();
   const tick=()=>new Promise(setImmediate);
-  click('issues');await tick();
+  click('orders');await tick();
   requests[0].finish();await tick();
-  assert.deepEqual(requests.map(r=>r.kind),['issues','detail']);
-  click('detail');await tick();
+  assert.deepEqual(requests.map(r=>r.kind),['orders','tracking']);
+  click('tracking');await tick();
   assert.equal(requests.length,2);
   assert.equal(d.getElementById('wb-grid').getAttribute('aria-busy'),'true');
-  click('issues');await tick();
+  click('orders');await tick();
   assert.equal(requests[1].signal.aborted,true);
   requests[1].finish();await tick();
-  assert.equal(d.querySelector('#wb-templates [aria-pressed=true]').dataset.kind,'issues');
-  assert.equal(d.getElementById('wb-grid').shadowRoot.querySelector('td').textContent,'issues');
+  assert.equal(d.querySelector('#wb-templates [aria-pressed=true]').dataset.kind,'orders');
+  assert.equal(d.getElementById('wb-grid').shadowRoot.querySelector('td').textContent,'orders');
   assert.equal(d.getElementById('wb-grid').inert,false);
+});
+test('template round trips reuse previews until expiry, save or dialog close',async t=>{
+  const {w,d,calls}=await exportWorkbook(t);
+  const click=async selector=>{d.querySelector(selector).click();await new Promise(setImmediate);};
+  const select=kind=>click(`#wb-templates [data-kind="${kind}"]`);
+  const reads=()=>calls.filter(c=>c.url.startsWith('api/report-workbook?')).length;
+  for(const kind of ['orders','tracking','quality','orders','tracking'])await select(kind);
+  assert.equal(reads(),3);
+  const now=w.Date.now();
+  w.Date.now=()=>now+31000;
+  await select('quality');
+  assert.equal(reads(),4);
+  await select('orders');
+  const grid=d.getElementById('wb-grid').shadowRoot;
+  grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
+  grid.querySelector('textarea').value='已修改';
+  await select('quality');
+  await click('[data-wb-choice=save]');
+  assert.equal(reads(),6,'save invalidates the recently read quality preview');
+  await click('#wb-close');await click('.wb-open');
+  assert.equal(reads(),7,'reopening requires a fresh read');
 });
 const MIME_XLS='application/vnd.ms-excel';
 async function exportWorkbook(t, period='monthly', kind='quality', options={}){
