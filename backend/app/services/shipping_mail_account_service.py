@@ -74,6 +74,8 @@ def save_account(db, user: AuthContext, payload: dict) -> dict:
     username = str(payload.get('username') or '').strip()
     if not host or not username:
         raise HTTPException(422, '请填写邮件服务器和邮箱地址')
+    if '@' not in username or ':' in username or username.lower() == host.lower():
+        raise HTTPException(422, '邮箱地址应填写完整邮箱，例如 xiaomei89@163.com，不能填写服务器地址')
     password = str(payload.get('password') or '')
     account = get_account(db, factory_id)
     if account is not None and username != account.username and not password:
@@ -96,7 +98,7 @@ def save_account(db, user: AuthContext, payload: dict) -> dict:
     account.username = username
     account.use_ssl = bool(payload.get('use_ssl', True))
     account.folder = str(payload.get('folder') or 'INBOX').strip() or 'INBOX'
-    account.enabled = bool(payload.get('enabled', True))
+    account.enabled = bool(payload.get('enabled', False))
     account.updated_at = _now()
     db.commit()
     return account_payload(account)
@@ -120,7 +122,7 @@ def test_account(db, user: AuthContext, factory_id: str, password: str = '') -> 
         raise HTTPException(400, str(error)) from error
 
 
-def sync_account(db, factory_id: str, *, trigger: str = 'manual', user: AuthContext | None = None) -> dict:
+def sync_account(db, factory_id: str, *, trigger: str = 'manual', user: AuthContext | None = None, since_days: int = 8, limit: int = 50, include_synced: bool = False) -> dict:
     account = get_account(db, factory_id)
     if account is None:
         raise HTTPException(404, '该厂区尚未配置邮箱')
@@ -138,7 +140,9 @@ def sync_account(db, factory_id: str, *, trigger: str = 'manual', user: AuthCont
         password = decrypt_password(account.password_enc)
         messages = fetch_recent(
             account.host, account.port, account.username, password, account.use_ssl, account.folder,
-            last_uid=account.last_uid,
+            since_days=max(1, min(int(since_days), 3650)),
+            limit=max(1, min(int(limit), 500)),
+            last_uid='' if include_synced else account.last_uid,
         )
         run.fetched = len(messages)
         if messages:

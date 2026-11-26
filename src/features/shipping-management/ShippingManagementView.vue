@@ -97,11 +97,14 @@ function notify(message: string) {
 }
 
 /** 船务工作区自带的厂区切换：与全局厂区选择共用 app store，不跨厂合并数据。 */
-function switchFactory(event: Event) {
-  const value = (event.target as HTMLSelectElement).value
+function switchFactoryById(value: string) {
   if (!isShippingFactory(value) || value === factoryId.value) return
   appStore.setActiveFactory(value)
   void router.replace({ query: { ...route.query, factory: value } })
+}
+
+function switchFactory(event: Event) {
+  switchFactoryById((event.target as HTMLSelectElement).value)
 }
 
 watch(() => route.query.tab, (tab) => {
@@ -202,7 +205,7 @@ onBeforeUnmount(() => clearTimeout(feedbackTimer))
 
         <div class="min-w-0 flex-1">
           <section v-if="activePage === 'email'" aria-label="邮件导入">
-            <ShippingEmailImportPanel :factory-id="factoryId" @notify="notify" @open-module="setPage" />
+            <ShippingEmailImportPanel :factory-id="factoryId" @notify="notify" @open-module="setPage" @select-factory="switchFactoryById" />
           </section>
           <section v-else-if="activePage === 'so'" aria-label="SO出货表">
             <ShippingSoSchedulePanel :factory-id="factoryId" @notify="notify" @back="setPage('orders')" />

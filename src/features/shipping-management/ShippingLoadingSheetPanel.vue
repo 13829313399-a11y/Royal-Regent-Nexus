@@ -21,6 +21,7 @@ import {
 } from '@/api/shippingMail'
 import { listShippingTasks, type ShippingScheduleTask } from '@/api/shippingTasks'
 import { filingCodeFilename } from './contracts'
+import { productNameForCode } from './productName'
 import ShippingWorkbookPreviewModal from './ShippingWorkbookPreviewModal.vue'
 
 const props = defineProps<{ factoryId: string; initialDraft?: LoadingDraft | null; searchQuery?: string; variant?: 'dk' | 'hq' }>()
@@ -658,6 +659,31 @@ function mergeScheduleLines(imported: LoadingLine[], scheduled: LoadingLine[], c
   return merged
 }
 
+async function fillMissingDescriptions() {
+  if (!draft.value) return
+  const blank = draft.value.lines.filter((line) => !String(line.description || '').trim() && String(line.filingCode || line.declareCode || '').trim())
+  if (!blank.length) return
+  const names = new Map<string, string>()
+  for (const line of blank) {
+    const code = String(line.filingCode || line.declareCode || '').trim()
+    const contract = String(line.contract || '').trim()
+    try {
+      const items = await searchScheduleProducts(props.factoryId, code)
+      const candidates = items.filter((item) => item.product_name && (String(item.product_code || '').replace(/\s+/g, '') === code.replace(/\s+/g, '') || String(item.product_name).includes(code)))
+      const hit = candidates.find((item) => contract && String(item.contract_no || '').trim() === contract) || candidates[0]
+      if (hit?.product_name) names.set(`${contract}|${code}`, String(hit.product_name))
+    } catch {
+      // keep descriptions blank when schedule lookup fails
+    }
+  }
+  for (const line of draft.value.lines) {
+    const code = String(line.filingCode || line.declareCode || '').trim()
+    const contract = String(line.contract || '').trim()
+    const name = names.get(`${contract}|${code}`) || names.get(`|${code}`)
+    line.description = productNameForCode(line.description || name, code)
+  }
+}
+
 watch(() => props.initialDraft, async (value) => {
   if (!value) return
   draft.value = JSON.parse(JSON.stringify(value)) as LoadingDraft
@@ -667,8 +693,10 @@ watch(() => props.initialDraft, async (value) => {
   if (!selectedTaskId.value) selectedTaskId.value = value.taskId
   message.value = ''
   const importedContract = (draft.value.header.contractNo || '').trim()
+  const importedContracts = new Set(draft.value.lines.map((line) => String(line.contract || '').trim()).filter(Boolean))
+  const multiContract = importedContracts.size > 1
   const scheduleTaskId = selectedTaskId.value || value.taskId
-  if (scheduleTaskId) {
+  if (scheduleTaskId && !multiContract) {
     try {
       const scheduled = await draftLoadingSheet(props.factoryId, scheduleTaskId)
       const importedSo = (draft.value.header.soNo || '').trim()
@@ -693,7 +721,7 @@ watch(() => props.initialDraft, async (value) => {
       }
       const contract = (draft.value.header.contractNo || '').trim()
       draft.value.lines = mergeScheduleLines(draft.value.lines, scheduled.lines, contract)
-      if (contract) {
+      if (contract && !multiContract) {
         for (const line of draft.value.lines) line.contract = contract
       }
       if (!draft.value.header.poNo) {
@@ -711,11 +739,13 @@ watch(() => props.initialDraft, async (value) => {
       } else if (!contractMatches) {
         message.value = '邮件合同号与匹配排期合同号不一致，已保留邮件合同号，未覆盖。'
       }
+      await fillMissingDescriptions()
       return
     } catch {
       // fall back to the imported document's own lines
     }
   }
+  await fillMissingDescriptions()
   syncLineContracts()
   ensureTableName()
   if (!draft.value.header.poNo) {

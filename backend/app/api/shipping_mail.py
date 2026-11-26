@@ -54,6 +54,13 @@ class StatusRequest(BaseModel):
     status: str
 
 
+class MailSyncRequest(BaseModel):
+    factory_id: str
+    since_days: int = 8
+    limit: int = 50
+    include_synced: bool = False
+
+
 class MailAccountRequest(BaseModel):
     factory_id: str
     host: str
@@ -149,9 +156,12 @@ def test_mail_account(db: Db, user: User, body: MailTestRequest):
 
 
 @router.post('/mail/account/sync')
-def sync_mail_account(db: Db, user: User, factory_id: str = Query(...)):
-    service.authorize(user, factory_id, 'import')
-    return {'run': accounts.sync_account(db, factory_id, trigger='manual')}
+def sync_mail_account(db: Db, user: User, body: MailSyncRequest):
+    service.authorize(user, body.factory_id, 'import')
+    return {'run': accounts.sync_account(
+        db, body.factory_id, trigger='manual',
+        since_days=body.since_days, limit=body.limit, include_synced=body.include_synced,
+    )}
 
 
 @router.get('/mail/account/runs')

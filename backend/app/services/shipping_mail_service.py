@@ -244,7 +244,15 @@ def list_batches(db, user: AuthContext, factory_id: str) -> list[dict]:
         .order_by(ShippingMailBatch.created_at.desc())
         .limit(50)
     ).all()
-    return [_batch_dict(row) for row in rows]
+    labels: dict[str, tuple[str, str]] = {}
+    if rows:
+        for item in db.scalars(
+            select(ShippingMailItem)
+            .where(ShippingMailItem.batch_id.in_([row.id for row in rows]))
+            .order_by(ShippingMailItem.created_at)
+        ).all():
+            labels.setdefault(item.batch_id, (item.subject, item.sender))
+    return [_batch_dict(row, *labels.get(row.id, ('', ''))) for row in rows]
 
 
 def delete_batch(db, user: AuthContext, batch_id: str, factory_id: str) -> dict:
@@ -666,10 +674,11 @@ def _load_batch(db, batch_id: str, factory_id: str) -> ShippingMailBatch:
     return batch
 
 
-def _batch_dict(batch: ShippingMailBatch) -> dict:
+def _batch_dict(batch: ShippingMailBatch, subject: str = '', sender: str = '') -> dict:
     return {
         'id': batch.id, 'factory_id': batch.factory_id, 'source': batch.source,
-        'filename': batch.filename, 'status': batch.status, 'total_count': batch.total_count,
+        'filename': batch.filename, 'subject': subject, 'sender': sender,
+        'status': batch.status, 'total_count': batch.total_count,
         'parsed_count': batch.parsed_count, 'failed_count': batch.failed_count,
         'parser_version': batch.parser_version, 'created_at': batch.created_at,
     }

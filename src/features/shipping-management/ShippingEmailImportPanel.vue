@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ChevronDown, CloudUpload, RefreshCw, Trash2, UserRound } from '@lucide/vue'
 import {
   confirmShippingMailBatch,  createShippingMailBatch,
@@ -19,9 +19,10 @@ import {
   type ShippingMailPreview,
 } from '@/api/shippingMail'
 import { getApiErrorMessage } from '@/lib/http'
+import { SHIPPING_FACTORY_IDS, shippingFactoryProfiles } from './contracts'
 
 const props = defineProps<{ factoryId: string }>()
-const emit = defineEmits<{ notify: [message: string]; 'open-module': [page: 'so' | 'truck' | 'supplement' | 'customs'] }>()
+const emit = defineEmits<{ notify: [message: string]; 'open-module': [page: 'so' | 'truck' | 'supplement' | 'customs']; 'select-factory': [factoryId: string] }>()
 
 const selectedFiles = ref<File[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -111,7 +112,7 @@ const recordRows = computed(() => {
   if (!batches.value.length) return demoRecords
   return batches.value.map((batch) => ({
     id: batch.id,
-    subject: batch.filename ?? batch.file_name ?? batch.id,
+    subject: batch.subject || batch.filename || batch.file_name || batch.id,
     from: `解析 ${batch.parsed_count}/${batch.total_count} 条`,
     time: batch.created_at,
     status: batch.status === 'confirmed' ? '已确认' : batch.status === 'failed' ? '解析失败' : '待确认',
@@ -129,12 +130,8 @@ function previewMessage(title: string) {
   emit('notify', `界面预览：${title}尚未接入后端接口。`)
 }
 
-const scheduleLabel = computed(() => {
-  return '每天 08:00–23:00 每小时自动收件（华兴 / 华登 / 华康A / 华康B / 华康D）；24:00 后停止'
-})
-
 const accountStatus = computed(() => {
-  if (!account.value?.configured) return '尚未配置邮箱，保存并连接后开始每周自动收件。'
+  if (!account.value?.configured) return '尚未配置邮箱，保存并连接后可同步邮件。'
   if (account.value.last_status === 'error') return `上次同步失败：${account.value.last_error}`
   if (account.value.last_sync_at) return `上次同步：${account.value.last_sync_at.replace('T', ' ')}`
   return '邮箱已配置，等待首次同步。'
@@ -155,6 +152,9 @@ async function saveAndConnect() {
   accountBusy.value = true
   accountError.value = ''
   try {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mailAddress.value.trim()) || mailAddress.value.trim() === mailServer.value.trim()) {
+      throw new Error('邮箱地址应填写完整邮箱，例如 xiaomei89@163.com，不能填写服务器地址')
+    }
     if (!mailPassword.value.trim() && !account.value?.has_password) {
       throw new Error('请填写网易邮箱授权码')
     }
@@ -171,11 +171,11 @@ async function saveAndConnect() {
       password: mailPassword.value,
       use_ssl: true,
       folder: 'INBOX',
-      enabled: true,
+      enabled: false,
     })
     mailPassword.value = ''
     const tested = await testShippingMailAccount(props.factoryId)
-    emit('notify', tested.message || '邮箱连接成功，已启用每周自动收件。')
+    emit('notify', tested.message || '邮箱连接成功。')
   } catch (error) {
     accountError.value = getApiErrorMessage(error)
     await loadAccount()
@@ -200,6 +200,7 @@ async function syncNow() {
 }
 
 onMounted(loadAccount)
+watch(() => props.factoryId, () => { void loadAccount() })
 
 function onFileChange(event: Event) {
   const files = [...((event.target as HTMLInputElement).files ?? [])]
@@ -618,7 +619,15 @@ async function refreshRecords() {
     </section>
 
     <section class="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/50 p-4" aria-label="从邮箱直接导入">
-      <h3 class="text-[13px] font-bold text-emerald-950">从邮箱直接导入</h3>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-[13px] font-bold text-emerald-950">从邮箱直接导入</h3>
+        <label class="flex items-center gap-1.5 text-[11px] text-slate-500">
+          厂区
+          <select :value="props.factoryId" class="h-7 rounded-lg border border-emerald-200 bg-white px-2 text-[11px] font-semibold text-emerald-900" @change="emit('select-factory', ($event.target as HTMLSelectElement).value)">
+            <option v-for="id in SHIPPING_FACTORY_IDS" :key="id" :value="id">{{ shippingFactoryProfiles[id].label }}</option>
+          </select>
+        </label>
+      </div>
       <div class="mt-3 max-w-2xl space-y-2.5">
         <label class="flex items-center gap-3">
           <span class="w-20 shrink-0 text-right text-[12px] text-slate-600">邮件服务器</span>
@@ -640,7 +649,7 @@ async function refreshRecords() {
         <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-[12px] font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-60" :disabled="accountBusy" @click="saveAndConnect">
           {{ accountBusy ? '连接中…' : '保存并连接' }}
         </button>
-        <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-100 disabled:opacity-60" :disabled="syncing || !account?.configured" @click="syncNow">
+        <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-100 disabled:opacity-60" :disabled="syncing || !account?.configured || !account?.has_password" @click="syncNow">
           <RefreshCw class="size-3.5" aria-hidden="true" />{{ syncing ? '同步中…' : '立即同步' }}
         </button>
       </div>
@@ -648,7 +657,6 @@ async function refreshRecords() {
         {{ accountError || accountStatus }}
         <button v-if="accountError" type="button" class="ml-2 font-semibold underline underline-offset-2" @click="loadAccount">重试</button>
       </p>
-      <p class="mt-1 text-[11px] text-slate-500">{{ scheduleLabel }}</p>
     </section>
 
     <section class="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-white to-emerald-50/50" aria-label="解析记录">
