@@ -330,10 +330,31 @@ def download(db, user: AuthContext, factory_id: str, doc_id: str, *, archive: bo
 
 
 def open_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
-    from app.services.file_open import open_bytes, workbook_preview
+    from app.services import file_open, shipping_exports
+    filename, content, _ = download_with_path(db, user, factory_id, doc_id, archive=False)
+    folder = shipping_exports.EXPORT_ROOT / shipping_exports.FOLDERS.get(
+        db.scalar(select(ShippingGeneratedDoc).where(ShippingGeneratedDoc.id == doc_id)).module,
+        '',
+    )
+    target = shipping_exports.build_so_target(folder, filename)
+    if not target.exists():
+        safe = shipping_exports._safe_name(filename)
+        target = next((item for item in folder.glob(f'*年*月/{safe}') if item.exists()), target)
+    if target.exists():
+        path = file_open.open_path(str(target))
+    else:
+        saved = shipping_exports.save_import_file(
+            db.scalar(select(ShippingGeneratedDoc).where(ShippingGeneratedDoc.id == doc_id)).module,
+            filename, content,
+        )
+        path = file_open.open_path(saved) if saved and Path(saved).exists() else file_open.open_bytes(filename, content)
+    return {'opened': True, 'path': path, 'filename': filename, 'sheets': file_open.workbook_preview(filename, content)}
+
+
+def preview_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
+    from app.services.file_open import workbook_preview
     filename, content = download(db, user, factory_id, doc_id, archive=False)
-    path = open_bytes(filename, content)
-    return {'opened': True, 'path': path, 'filename': filename, 'sheets': workbook_preview(filename, content)}
+    return {'opened': False, 'path': '', 'filename': filename, 'sheets': workbook_preview(filename, content)}
 
 
 def delete_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:

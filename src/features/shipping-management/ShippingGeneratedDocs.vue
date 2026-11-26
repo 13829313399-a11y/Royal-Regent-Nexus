@@ -495,13 +495,18 @@ async function importTruck(mode: 'buzzbee' | 'bulk') {
   const lines = detail.value.lines ?? []
   const contractSet = new Set(lines.map((line) => String((line as Record<string, unknown>).contract_no || (line as Record<string, unknown>).contract || '').trim()).filter(Boolean))
   let resolvedLines: Array<Record<string, unknown>> | null = null
+  const warehouseDoc = String(detail.value.header?.shipment_mode || '').toLowerCase() === 'warehouse'
   if (contractSet.size <= 1) {
     resolvedLines = await resolveValidatedScheduleLines(
       form.contractNo || String(detail.value.header?.contractNo || ''),
       lines as Array<Record<string, unknown>>,
       form.filingCode,
     )
-    if (!resolvedLines) return
+    if (!resolvedLines) {
+      if (!warehouseDoc) return
+      resolvedLines = await fillProductNames(lines as Array<Record<string, unknown>>)
+      message.value = ''
+    }
   } else {
     resolvedLines = await fillProductNames(lines as Array<Record<string, unknown>>)
     message.value = ''

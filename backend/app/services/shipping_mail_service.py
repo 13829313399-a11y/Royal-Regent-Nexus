@@ -715,8 +715,16 @@ def _now() -> str:
     return datetime.now().isoformat(timespec='seconds')
 
 
+def _json_default(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
 def _dump(value) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False, default=_json_default)
 
 
 def _loads(text: str):

@@ -351,6 +351,11 @@ def loading_sheet_open(db: Db, user: User, sheet_id: str, factory_id: str = Quer
     return shipping_loading.open_sheet(db, user, factory_id, sheet_id)
 
 
+@router.post('/loading-sheets/{sheet_id}/preview')
+def loading_sheet_preview(db: Db, user: User, sheet_id: str, factory_id: str = Query(...)):
+    return shipping_loading.preview_sheet(db, user, factory_id, sheet_id)
+
+
 @router.delete('/loading-sheets/{sheet_id}')
 def loading_sheet_delete(db: Db, user: User, sheet_id: str, factory_id: str = Query(...)):
     return shipping_loading.delete_sheet(db, user, factory_id, sheet_id)
@@ -416,6 +421,11 @@ def generated_doc_delete(db: Db, user: User, doc_id: str, factory_id: str = Quer
 @router.post('/generated-docs/{doc_id}/open')
 def generated_doc_open(db: Db, user: User, doc_id: str, factory_id: str = Query(...)):
     return shipping_autogen.open_doc(db, user, factory_id, doc_id)
+
+
+@router.post('/generated-docs/{doc_id}/preview')
+def generated_doc_preview(db: Db, user: User, doc_id: str, factory_id: str = Query(...)):
+    return shipping_autogen.preview_doc(db, user, factory_id, doc_id)
 
 
 @router.get('/generated-docs/{doc_id}')

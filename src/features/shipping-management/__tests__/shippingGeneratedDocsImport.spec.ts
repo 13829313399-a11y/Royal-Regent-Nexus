@@ -303,7 +303,7 @@ describe('ShippingGeneratedDocs schedule import fallback', () => {
     expect(rowInputs).toContain('CARGO SERVICES')
   })
 
-  it('opens in-page workbook preview modal when clicking 打开 on exported truck sheet', async () => {
+  it('opens exported truck sheet locally when clicking 打开', async () => {
     vi.stubGlobal('localStorage', {
       getItem: vi.fn().mockReturnValue(null),
       setItem: vi.fn(),
@@ -343,11 +343,8 @@ describe('ShippingGeneratedDocs schedule import fallback', () => {
     await openBtn!.trigger('click')
     await flushPromises()
 
-    const dialog = wrapper.find('[role="dialog"][aria-label="表格预览"]')
-    expect(dialog.exists()).toBe(true)
-    expect(dialog.text()).toContain('KW-9508290536.xls')
-    expect(dialog.text()).toContain('EWB26101')
-    expect(dialog.text()).toContain('1200')
+    expect(openGeneratedDocMock).toHaveBeenCalledWith('huaxing', 'gen-truck-1')
+    expect(wrapper.find('[role="dialog"][aria-label="表格预览"]').exists()).toBe(false)
   })
 
   it('renders 下载 button before 查看 and 打开 in 已导出柜货单 and downloads the sheet', async () => {
@@ -426,7 +423,7 @@ describe('ShippingGeneratedDocs schedule import fallback', () => {
     expect(downloadLink.attributes('download')).toBe('GDSM-HKGM002686.xlsx')
   })
 
-  it('opens workbook preview modal when clicking 打开 in 已生成补料单', async () => {
+  it('opens 已生成补料单 locally when clicking 打开', async () => {
     vi.stubGlobal('localStorage', {
       getItem: vi.fn().mockReturnValue(null),
       setItem: vi.fn(),
@@ -468,11 +465,7 @@ describe('ShippingGeneratedDocs schedule import fallback', () => {
     await flushPromises()
 
     expect(openGeneratedDocMock).toHaveBeenCalledWith('huaxing', 'supp-1')
-    const dialog = wrapper.find('[role="dialog"][aria-label="表格预览"]')
-    expect(dialog.exists()).toBe(true)
-    expect(dialog.text()).toContain('TRICYCLE-6501802.xlsx')
-    expect(dialog.text()).toContain('TRICYCLE-6501802')
-    expect(dialog.text()).toContain('HAMN00411A')
+    expect(wrapper.find('[role="dialog"][aria-label="表格预览"]').exists()).toBe(false)
   })
 
   it('renders merged cells, fill color, borders, and bold font from styled cells payload', async () => {

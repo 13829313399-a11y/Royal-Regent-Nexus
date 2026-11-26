@@ -169,13 +169,7 @@ async function openGenerated(doc: GeneratedDoc) {
   message.value = ''
   try {
     const result = await openGeneratedDoc(props.factoryId, doc.id)
-    previewState.value = {
-      doc,
-      filename: result.filename || doc.filename,
-      path: result.path,
-      sheets: result.sheets ?? [],
-    }
-    emit('notify', result.opened ? `已打开 ${doc.filename}` : `已保存 ${result.path}`)
+    emit('notify', result.opened ? `已在 WPS 打开 ${doc.filename}` : `已保存 ${result.path}`)
   } catch (error) {
     message.value = `打开失败：${getApiErrorMessage(error)}`
   }

@@ -176,7 +176,7 @@ def _render_template(payload: dict) -> bytes:
     book._Workbook__worksheets = [sheet]
     book._Workbook__worksheet_idx_from_name = {sheet.name: 0}
     book._Workbook__active_sheet = 0
-    sheet.portrait = True
+    sheet.portrait = False
     sheet.paper_size_code = 9
     sheet.fit_num_pages = 1
     sheet.fit_width_to_pages = 1

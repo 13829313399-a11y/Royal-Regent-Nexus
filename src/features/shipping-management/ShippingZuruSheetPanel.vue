@@ -265,7 +265,7 @@ async function openExportedDoc(doc: GeneratedDoc) {
   exportedBusy.value = true
   try {
     const result = await openGeneratedDoc(props.factoryId, doc.id)
-    message.value = result.opened ? `已打开 ${doc.filename}` : `已保存 ${result.path}`
+    message.value = result.opened ? `已在 WPS 打开 ${doc.filename}` : `已保存 ${result.path}`
   } catch (error) {
     message.value = `打开失败：${getApiErrorMessage(error)}`
   } finally {

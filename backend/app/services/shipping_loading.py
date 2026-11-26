@@ -442,7 +442,7 @@ def _render_template(payload: dict) -> bytes:
     write(5, 1, header.get('destinationCountry') or '')
     write(5, 3, f'柜型:{header.get("containerType") or "40HQ"}')
     write(5, 5, f'成交方式：{header.get("tradeTerm") or "FOB"}')
-    write(5, 11, '         载柜号:')
+    write(5, 11, '载柜号:')
 
     def header_align_style(row: int, col: int) -> xlwt.XFStyle:
         style = _style_from_template(book_in, source.cell_xf_index(row, col))
@@ -457,7 +457,7 @@ def _render_template(payload: dict) -> bytes:
         (2, f'航次:{header.get("voyage") or ""}'),
         (3, f'提单号：{header.get("blNo") or ""}'),
         (4, header.get('number') or ''),
-        (5, '         载柜号:'),
+        (5, '载柜号:'),
     ):
         write(row, 11, text, style=header_align_style(row, 11))
     write(4, 12, '柜', style=header_align_style(4, 12))
@@ -1084,9 +1084,28 @@ def download_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> tup
 
 
 def open_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
-    filename, content, _variant = _render_sheet_bytes(db, user, factory_id, sheet_id)
-    path = file_open.open_bytes(filename, content)
+    filename, content, variant = _render_sheet_bytes(db, user, factory_id, sheet_id)
+    module = 'so_zuru' if variant == 'hq' else 'so_dk'
+    export_root = shipping_exports.EXPORT_ROOT / 'SO 出货表'
+    target = shipping_exports.build_so_target(export_root, filename)
+    if not target.exists():
+        safe = shipping_exports._safe_name(filename)
+        target = next((item for item in export_root.glob(f'*年*月/{safe}') if item.exists()), target)
+    if target.exists():
+        path = file_open.open_path(str(target))
+    else:
+        path = shipping_exports.save_import_file(module, filename, content) or file_open.open_bytes(filename, content)
+        if path and not Path(path).exists():
+            path = file_open.open_bytes(filename, content)
+        else:
+            file_open.open_path(path)
     return {'opened': True, 'path': path, 'filename': filename, 'sheets': file_open.workbook_preview(filename, content)}
+
+
+def preview_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
+    filename, content, _variant = _render_sheet_bytes(db, user, factory_id, sheet_id)
+    from app.services import file_open
+    return {'opened': False, 'path': '', 'filename': filename, 'sheets': file_open.workbook_preview(filename, content)}
 
 
 def delete_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:

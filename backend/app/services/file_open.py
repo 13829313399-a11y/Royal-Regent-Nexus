@@ -10,6 +10,20 @@ from pathlib import Path
 from uuid import uuid4
 
 
+def open_path(path: str) -> str:
+    target = str(path)
+    try:
+        if sys.platform.startswith('win'):
+            os.startfile(target)  # type: ignore[attr-defined]
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', target])
+        else:
+            subprocess.Popen(['xdg-open', target])
+    except OSError:
+        pass
+    return target
+
+
 def open_bytes(filename: str, content: bytes) -> str:
     safe_name = Path(filename or 'document').name
     stem, suffix = os.path.splitext(safe_name)
