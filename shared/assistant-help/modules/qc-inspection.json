@@ -51,7 +51,7 @@
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "8c65036690d9ebbdb3a1bc3bd72d38188f7efad29ac4c367027e29963560c1d5"
+        "sha256": "94758f9776ef77d817a9b573db7913a1d26751ac20dc1493957c5fcb2f0a4e2d"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
@@ -171,12 +171,12 @@
       {
         "path": "backend/app/services/qc_report_workbook.py",
         "symbol": "def preview(",
-        "sha256": "d472ad7437be9c62d36cc57d38fa079306a63644b10b152e1667e49239f3686f"
+        "sha256": "29fee58d45cd139b097e24e09dc858d16fb01d4b9a9e94ebb1f9f4346b83c6f9"
       },
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "96ce958dc39186ad592314d19b0a22498342aea1428d9608b58ab14dd3251954"
+        "sha256": "18023bb2dafc37d8cfa1b1cbebc85a218483672b36d0bcd6fc159c7f1ab22e4e"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",

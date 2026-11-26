@@ -17,33 +17,63 @@ let bookQuery='',saving=null,editorState=null,formulaCell=null;
 const expandIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/></svg>';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  let reload, opener, exporting=false, receipt=null, reviewSource=null;
-function params(kind=selected[period]) {
-  if(period==='review')return new URLSearchParams({kind}).toString();
-  const cfg=periods[period],date=byId(cfg.date).value;
-  const day=period==='yearly'?date+'-01-01':period==='monthly'?date+'-01':date;
+function params(kind=selected[period],periodKey=period) {
+  if(periodKey==='review')return new URLSearchParams({kind}).toString();
+  const cfg=periods[periodKey],date=byId(cfg.date).value;
+  const day=periodKey==='yearly'?date+'-01-01':periodKey==='monthly'?date+'-01':date;
   const query=new URLSearchParams({kind,day,customer:byId(cfg.customer).value});
   if(kind==='annual-stats')query.set('result',document.querySelector('#qstats-root [data-result][aria-pressed=true]').dataset.result);
   return query.toString();
 }
-// One short-lived preview per iframe. Share the in-flight GET as well as its result;
-// never persist report rows or reuse a snapshot across a save or dialog close.
+// Reuse recently visited templates within this iframe. Keep only one request
+// in flight and bound the retained sheets (photo-heavy reports can be large).
+const previews=new Map(), maxPreviewChars=8*1024*1024;
 let previewSlot=null;
-function dropPreview(){
+function cancelPreview(){
   previewSlot?.controller.abort();
   previewSlot=null;
 }
+function dropPreview(){
+  cancelPreview();previews.clear();
+}
 function loadPreview(query,background=false){
+  const cached=previews.get(query);
+  if(cached?.until>Date.now()){
+    previews.delete(query);previews.set(query,cached);
+    return Promise.resolve(cached.result);
+  }
   if(previewSlot?.query===query&&previewSlot.until>Date.now())return previewSlot.promise;
-  dropPreview();
+  cancelPreview();
   const controller=new AbortController(),slot={query,controller,until:Infinity};
   previewSlot=slot;
   slot.promise=fetchJson('report-workbook',query,{signal:controller.signal,priority:background?'low':'auto'})
-    .then(result=>{slot.until=Date.now()+30000;return result;})
+    .then(result=>{
+      if(previewSlot!==slot)return result;
+      slot.until=Date.now()+30000;
+      const chars=result.sheets.reduce((n,s)=>n+s.html.length,0);
+      previews.delete(query);
+      if(chars<=maxPreviewChars){
+        previews.set(query,{result,chars,until:slot.until});
+        let total=0;
+        for(const entry of previews.values())total+=entry.chars;
+        while(previews.size>3||total>maxPreviewChars){
+          const oldest=previews.keys().next().value;
+          total-=previews.get(oldest).chars;previews.delete(oldest);
+        }
+      }
+      return result;
+    })
     .catch(error=>{if(previewSlot===slot)previewSlot=null;throw error;});
   return slot.promise;
 }
 function canWarm(){
   return !document.hidden&&!navigator.connection?.saveData;
+}
+function warmAdjacent(kind,periodKey){
+  const keys=Object.keys(periods[periodKey].templates);
+  if(keys.length<2||!canWarm())return;
+  const next=kind==='quality'?'tracking':keys[(keys.indexOf(kind)+1)%keys.length];
+  loadPreview(params(next,periodKey),true).catch(()=>{});
 }
 async function api(endpoint,query,options) {
   if(period==='review'){
@@ -127,11 +157,17 @@ function mount(periodKey, kind, host, data, refresh){
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;
   if(!dialog.open)dropPreview();
-  if(periodKey!=='yearly'&&rows.length)setTimeout(()=>{
-    const cfg=periods[periodKey];
-    if(ticket!==requestId||!host.isConnected||!canWarm()||!section.closest('.page.active')||dialog.open)return;
-    const query=new URLSearchParams({kind,day:data.date,customer:byId(cfg.customer).value});
-    loadPreview(query.toString(),true).catch(()=>{});
+  if(rows.length||data.total>0||data.totals?.total>0)setTimeout(async()=>{
+    const current=()=>ticket===requestId&&host.isConnected&&canWarm()&&section.closest('.page.active')&&!dialog.open;
+    if(!current())return;
+    if(!byId(periods[periodKey].date)?.value)return;
+    const query=params(kind,periodKey);
+    try{
+      await loadPreview(query,true);
+      // Do not displace a large, uncached first sheet or start another render
+      // if the user has since opened the dialog or changed the report scope.
+      if(current()&&previews.has(query)&&params(kind,periodKey)===query)warmAdjacent(kind,periodKey);
+    }catch{/* Optional prefetch; foreground navigation handles errors. */}
   },100);
   return true;
 }
@@ -321,12 +357,11 @@ async function switchBook(kind){
   view.setAttribute('aria-busy','true');
   try{
     if(bookQuery===query&&book){
-      dropPreview();statusText.textContent=sheetHint();return;
+      cancelPreview();statusText.textContent=sheetHint();return;
     }
     statusText.textContent='正在打开'+periods[period].templates[kind]+'…';
     const result=await (reviewSource?api('report-workbook',query):loadPreview(query));
     if(request!==bookRequest||!dialog.open)return;
-    previewSlot=null;
     changes.clear();receipt=null;
     book=result;bookQuery=query;selected[period]=kind;
     byId('wb-mode').hidden=book.previewMode!=='grid';
@@ -338,11 +373,7 @@ async function switchBook(kind){
       tab.setAttribute('aria-pressed',String(tab.dataset.kind===kind));
     }
     statusText.textContent=sheetHint();
-    const keys=Object.keys(periods[period].templates);
-    if(keys.length>1&&canWarm()){
-      const next=keys[(keys.indexOf(kind)+1)%keys.length];
-      loadPreview(params(next),true).catch(()=>{});
-    }
+    warmAdjacent(kind,period);
   }catch(error){
     if(request!==bookRequest||!dialog.open)return;
     statusText.textContent=error.message;
@@ -513,15 +544,15 @@ function drawSheet(index){
   finishFill(true);
   sheet=index;active=anchor=edge=copyRange=null;selectionDrag=null;clearRange();visibleCells=new Map();
   reviewRow=reviewColumn=null;
-  grid.innerHTML=gridCSS+book.sheets[index].html;
-  const table=grid.querySelector('table');
+  const fragment=document.createElement('template');
+  fragment.innerHTML=gridCSS+book.sheets[index].html;
+  const table=fragment.content.querySelector('table');
   const cols=[...table.querySelectorAll('colgroup')];
   table.style.width=cols.reduce((sum,c)=>sum+(Number(c.getAttribute('width'))||64)*(Number(c.span)||1),0)+'px';
   fitSheet(table);
   indexSheet(table);
   for(const td of sheetCells){
     td.tabIndex=-1;
-    td.onfocus=()=>{if(!focusing&&(active!==td||!anchor))selectCell(td);};
     const special=mappedCell(td);
     if(special?.special&&reviewSource){
       td.wbReviewRender=reviewSource.special(td,special,{
@@ -532,8 +563,8 @@ function drawSheet(index){
       visibleCells.set(special,[td]);
       continue;
     }
-    const cell=cellAt(td);
-    if(!cell)continue;
+    const cell=special;
+    if(!cell||cell.special)continue;
     td.classList.add('writable');
     const content=document.createElement('span');content.className='cell-value';
     content.append(...td.childNodes);td.append(content);
@@ -556,6 +587,10 @@ function drawSheet(index){
       image.replaceWith(button);button.append(image);
     });
   }
+  table.addEventListener('focusin',e=>{
+    const td=e.target;
+    if(!focusing&&td.matches('td[data-addr]')&&(active!==td||!anchor))selectCell(td);
+  });
   table.onpointerdown=e=>{
     const td=e.target.closest('td[data-addr]');
     if(e.button!==0||e.pointerType==='touch'||!td||e.target.closest('.cell-editor,.wb-fill-handle,.wb-photo,.wb-review-action'))return;
@@ -587,6 +622,7 @@ function drawSheet(index){
     const td=e.target.closest('td[data-addr]');
     if(td&&cellAt(td)&&!e.target.closest('.cell-editor,.wb-fill-handle,.wb-photo,.wb-review-action'))startEdit(td);
   };
+  grid.replaceChildren(fragment.content);
   const tabs=byId('wb-tabs');
   tabs.replaceChildren(...book.sheets.map((s,i)=>{
     const b=document.createElement('button');b.textContent=s.name;b.setAttribute('aria-pressed',String(i===index));
