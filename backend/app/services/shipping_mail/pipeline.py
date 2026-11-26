@@ -248,6 +248,114 @@ def _parse_delivery_order(filename: str, data: bytes, text: str) -> dict:
     }
 
 
+_TRUCK_REQUISITION = re.compile(r'TRUCK\s+REQUISITION|carrier\s+s/?o', re.I)
+
+
+def _truck_requisition_items(tables: list[list[list]]) -> list[dict]:
+    for table in tables:
+        header_index = None
+        for index, row in enumerate(table):
+            headers = [str(cell or '').strip().lower() for cell in row]
+            if 'vendor' in headers and 'ctns' in headers and 'pcs' in headers:
+                header_index = index
+                break
+        if header_index is None:
+            continue
+        header = [str(cell or '').strip().lower() for cell in table[header_index]]
+
+        def column(name: str, fallback: int) -> int:
+            for i, cell in enumerate(header):
+                if cell == name:
+                    return i
+            return fallback
+        col_contract = column('sales order number', 0)
+        col_item = column('item no.', 3)
+        col_vendor = column('vendor', 5)
+        col_ctns = column('ctns', 6)
+        col_pcs = column('pcs', 7)
+        col_cbm = column('cbm', 8)
+        col_kgs = column('kgs', 10)
+        items = []
+        for row in table[header_index + 1:]:
+            if not row or str(row[0] or '').strip().lower() == 'total:':
+                continue
+            vendor = str(row[col_vendor] or '').strip() if col_vendor < len(row) else ''
+            if not vendor:
+                continue
+            def value(index: int) -> str:
+                return str(row[index] or '').strip() if index < len(row) else ''
+            def number(index: int):
+                text = value(index).split('\n')[0].strip().replace(',', '')
+                try:
+                    return float(text) if text else None
+                except ValueError:
+                    return None
+            cbm = number(col_cbm)
+            if cbm is None and col_cbm + 1 < len(row):
+                cbm = number(col_cbm + 1)
+            items.append({
+                'product_code': value(col_item),
+                'product_name': vendor,
+                'quantity': number(col_pcs),
+                'cartons': number(col_ctns),
+                'cbm': cbm,
+                'gross_weight': number(col_kgs),
+                'contract_no': value(col_contract),
+                'customer_po': '',
+                'remark': '',
+            })
+        if items:
+            return items
+    return []
+
+
+def _parse_truck_requisition(filename: str, data: bytes, text: str) -> dict:
+    tables = read_pdf_tables(data)
+    items = _truck_requisition_items(tables)
+    booking = ''
+    match = re.search(r'\b(JTT\d{6,})\b', text, re.I)
+    if match:
+        booking = match.group(1).upper()
+    if not booking:
+        match = re.search(r'Booking\s+No\.?\s*[:：]?\s*([A-Z0-9-]{6,})', text, re.I)
+        if match:
+            booking = match.group(1)
+    ship_date = ''
+    match = re.search(r'(20\d{2})[/-](\d{1,2})[/-](\d{1,2})', text)
+    if match:
+        ship_date = f'{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}'
+    container = ''
+    match = re.search(r'\b(20GP|40GP|40HQ|45HQ|20HQ|40NOR)\b', text, re.I)
+    if match:
+        container = match.group(1).upper()
+    fields = {
+        'so_number': booking,
+        'booking_no': booking,
+        'contract_no': '',
+        'contract_tails': [],
+        'planned_ship_date': ship_date,
+        'ship_date': ship_date,
+        'shipment_mode': 'truck',
+        'cargo_source': 'attachment',
+        'container_type': container or '散货',
+    }
+    warnings = []
+    if not booking:
+        warnings.append('未识别到 Booking No./订舱号，需人工确认')
+    if not items:
+        warnings.append('未识别到车辆 requisition 明细，请人工确认表格格式')
+    warnings.append('该车辆 requisition 无合同号和货号，创建排期前需补充合同号')
+    return {
+        'filename': filename,
+        'kind': 'truck_requisition',
+        'status': 'parsed',
+        'fields': fields,
+        'items': items,
+        'warnings': warnings,
+        'text': text,
+    }
+
+
 def _parse_attachment_uncached(filename: str, data: bytes) -> dict:
     suffix = Path(filename).suffix.lower()
     empty = {'filename': filename, 'kind': 'unknown', 'status': 'ignored', 'fields': {}, 'items': [], 'warnings': []}
@@ -264,6 +372,8 @@ def _parse_attachment_uncached(filename: str, data: bytes) -> dict:
         return {'filename': filename, 'kind': 'packing_list', 'status': 'parsed', 'fields': {}, 'items': items, 'warnings': warnings}
     if suffix == '.pdf':
         document = read_pdf_text(data)
+        if _TRUCK_REQUISITION.search(document.text):
+            return _parse_truck_requisition(filename, data, document.text)
         if _DELIVERY_ORDER.search(document.text):
             return _parse_delivery_order(filename, data, document.text)
         if document.scanned:
