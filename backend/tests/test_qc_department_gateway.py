@@ -84,6 +84,32 @@ def test_session_factory_boundary_and_no_local_accounts(monkeypatch):
         assert len(calls) == before
 
 
+def test_report_photo_scoped_read_only_preview(monkeypatch):
+    with make_client(monkeypatch) as client:
+        install_upstream(monkeypatch)
+        route = 'api/report-workbook/photo?entry=test&revision=2&photo=image'
+        assert client.get('/api/qc-department/huaxing/' + route).status_code == 401
+        login_as(client, 'qc_inspector')
+        base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
+        service = importlib.import_module('app.services.qc_monthly_excel')
+        calls = []
+        def approved(*args):
+            calls.append(args)
+            return b'preview', 'image/jpeg'
+        monkeypatch.setattr(service, 'approved_photo', approved)
+        response = client.get(base + route)
+        assert response.content == b'preview' and response.headers['content-type'] == 'image/jpeg'
+        assert response.headers['cache-control'] == 'no-store'
+        head = client.head(base + route)
+        assert head.content == b'' and head.headers['content-length'] == response.headers['content-length']
+        assert client.get(base.replace('/huaxing/', '/huadeng/') + route).status_code == 403
+        assert client.get('/api/qc-department/huaxing/' + route).status_code == 409
+        assert client.get(base + route + '&variant=original').status_code == 422
+        assert client.get(base + route + '&revision=3').status_code == 422
+        assert client.post(base + route).status_code == 405
+        assert calls == [('huaxing', 'test', 2, 'image')] * 2
+
+
 def test_schedule_reads_formal_source_without_importing_or_using_examples(monkeypatch):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)

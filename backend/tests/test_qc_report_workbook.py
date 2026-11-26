@@ -102,8 +102,11 @@ def test_native_preview_and_readonly_cache(db):
             table = html.fromstring(sheet['html'])
             shown.update(f'{i}:{addr}' for addr in table.xpath('.//td/@data-addr'))
             assert not table.xpath('.//script|.//a|.//*[@onclick]')
-            if kind in ('tracking','issues','quality','annual-issues','annual-stats') and i == 0:
+            if kind in ('quality','annual-stats') and i == 0:
                 assert table.xpath('.//img[starts-with(@src,"data:image/")]')
+            if kind in ('tracking','issues','annual-issues'):
+                assert table.xpath('.//td[@data-addr="M7"]//img[@loading="lazy"][starts-with(@src,"api/report-workbook/photo?")]')
+                assert 'data:image/' not in sheet['html']
         assert set(book['cells']) <= shown
         assert not workbooks.preview('huaxing', kind, '2026-11-03', '', False)['cells']
 
@@ -127,13 +130,40 @@ def test_engine_missing_and_timeout_use_same_editable_grid(db, monkeypatch):
             table=html.fromstring(sheet['html'])
             shown.update(f'{i}:{c}' for c in table.xpath('.//td/@data-addr'))
             if kind in ('tracking','issues','annual-issues'):
-                assert table.xpath('.//img[starts-with(@src,"data:image/")]')
+                assert table.xpath('.//td[@data-addr="M7"]//img[@loading="lazy"][starts-with(@src,"api/report-workbook/photo?")]')
+                assert 'data:image/' not in sheet['html']
         assert set(book['cells'])<=shown
         assert not workbooks.preview('huaxing',kind,'2026-11-03','',False)['cells']
     assert len(attempts)==1  # The failed engine does not block every template.
     monkeypatch.setattr(workbooks,'_try_native_at',0)
     monkeypatch.setattr(workbooks,'office_executable',lambda:None)
     assert workbooks.preview('huaxing','daily','2026-11-03','',True)['previewMode']=='grid'
+
+
+def test_deferred_previews_use_approved_revision_and_export_keeps_photos(db, monkeypatch):
+    from urllib.parse import urlsplit, parse_qs
+    entry = issue(db, 1, photos=3)
+    data = workbooks.projection('huaxing', 'tracking', DAY, '')
+    with monkeypatch.context() as patch:
+        patch.setattr(qc_monthly_excel, '_photo', lambda *a: pytest.fail('read image bytes before opening table'))
+        sheets, _ = workbooks.render('huaxing', 'tracking', data)
+    images = html.fromstring(sheets[0]['html']).xpath('.//td[@data-addr="M7"]//img')
+    ids = []
+    for image in images:
+        params = parse_qs(urlsplit(image.get('src')).query)
+        photo = params['photo'][0]
+        ids.append(photo)
+        assert params['entry'] == [entry['id']] and params['revision'] == [str(entry['revision'])]
+        content, mime = qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], photo)
+        assert content and mime.startswith('image/')
+    assert ids == [p['id'] for p in data['tables']['tracking'][0]['photos']]
+    assert len(load_workbook(BytesIO(qc_monthly_excel.render(data,'tracking'))).active._images) == 3
+    for factory, rev in [('huadeng', entry['revision']), ('huaxing', entry['revision'] - 1)]:
+        with pytest.raises(HTTPException, match='409'):
+            qc_monthly_excel.approved_photo(factory, entry['id'], rev, ids[0])
+    transition(entry, 'revoke')
+    with pytest.raises(HTTPException, match='409'):
+        qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], ids[0])
 
 
 def save_request(cell, value, **changes):
