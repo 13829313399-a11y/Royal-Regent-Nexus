@@ -882,6 +882,20 @@ export async function downloadGeneratedDoc(factoryId: string, docId: string) {
   return data as Blob
 }
 
+export async function previewGeneratedDoc(factoryId: string, docId: string) {
+  const { data } = await http.post<{ opened: boolean; path: string; filename?: string; sheets?: WorkbookPreviewSheet[] }>(
+    `/shipping/generated-docs/${docId}/preview`, null, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
+export async function previewLoadingSheet(factoryId: string, sheetId: string) {
+  const { data } = await http.post<{ opened: boolean; path: string; filename?: string; sheets?: WorkbookPreviewSheet[] }>(
+    `/shipping/loading-sheets/${sheetId}/preview`, null, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
 export async function openGeneratedDoc(factoryId: string, docId: string) {
   const { data } = await http.post<{ opened: boolean; path: string; filename?: string; sheets?: WorkbookPreviewSheet[] }>(
     `/shipping/generated-docs/${docId}/open`, null, { params: { factory_id: factoryId } },

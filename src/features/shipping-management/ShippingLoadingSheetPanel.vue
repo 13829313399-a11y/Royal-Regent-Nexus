@@ -496,13 +496,7 @@ async function openSheet(sheet: LoadingSheetRecord) {
   sheetMessage.value = ''
   try {
     const result = await openLoadingSheet(props.factoryId, sheet.id)
-    previewState.value = {
-      sheet,
-      filename: result.filename || sheet.filename,
-      path: result.path,
-      sheets: result.sheets ?? [],
-    }
-    sheetMessage.value = `已打开 ${sheet.filename}`
+    sheetMessage.value = result.opened ? `已在 WPS 打开 ${sheet.filename}` : `已保存 ${result.path}`
   } catch (error) {
     sheetMessage.value = `打开失败：${getApiErrorMessage(error)}`
   } finally {

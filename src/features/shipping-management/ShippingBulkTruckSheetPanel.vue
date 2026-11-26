@@ -57,7 +57,7 @@ async function loadDraft() {
   message.value = ''
   try {
     draft.value = await draftBulkTruckSheet(props.factoryId, selectedTaskId.value)
-    applyInitialHeader()
+    applyInitialHeader(true)
     await applyImportedOrScheduleLines()
     dedupeLines()
     await fillMissingNames()
@@ -95,9 +95,9 @@ async function fillMissingNames() {
   }
 }
 
-function applyInitialHeader() {
+function applyInitialHeader(force = false) {
   if (!draft.value || !props.initialHeader) return
-  if (props.initialTaskId && selectedTaskId.value !== props.initialTaskId) return
+  if (!force && props.initialTaskId && selectedTaskId.value !== props.initialTaskId) return
   const source = props.initialHeader
   const text = (value: unknown) => String(value ?? '').trim()
   const brand = text(source.brandName) || text(source.brandNote) || text(source.brand)
@@ -504,11 +504,12 @@ watch(() => props.initialTaskId, (taskId) => {
             </select>
           </label>
           <label class="text-[11px] text-slate-500">出港口
-            <input v-model="draft.header.originPort" list="truck-port-options" placeholder="从邮件识别，可改盐田/蛇口" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]" @input="syncTableName">
-            <datalist id="truck-port-options">
-              <option value="盐田" />
-              <option value="蛇口" />
-            </datalist>
+            <select v-model="draft.header.originPort" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 bg-white px-2 text-[12px]" @change="syncTableName">
+              <option value="">请选择</option>
+              <option v-if="draft.header.originPort && !['盐田', '蛇口'].includes(draft.header.originPort)" :value="draft.header.originPort">{{ draft.header.originPort }}</option>
+              <option value="盐田">盐田</option>
+              <option value="蛇口">蛇口</option>
+            </select>
           </label>
           <label class="text-[11px] text-slate-500">截单日期
             <input v-model="draft.header.cutoff" class="mt-1 h-9 w-full rounded-lg border border-emerald-100 px-2 text-[12px]">

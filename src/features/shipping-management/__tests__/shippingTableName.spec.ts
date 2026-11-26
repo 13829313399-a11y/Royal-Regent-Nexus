@@ -78,17 +78,17 @@ describe('ShippingBulkTruckSheetPanel tableName formatting', () => {
 
     const tableNameInput = findInputByLabel('表格名称')
     const transportInput = findInputByLabel('运输公司')
-    const portInput = findInputByLabel('出港口')
+    const portSelect = wrapper.findAll('label').find((item) => item.text().trim().startsWith('出港口'))!.get('select')
 
     expect((tableNameInput.element as HTMLInputElement).value).toBe('成隆达运输，出盐田')
 
     await transportInput.setValue('建联派运输')
     expect((tableNameInput.element as HTMLInputElement).value).toBe('建联派运输，出盐田')
 
-    await portInput.setValue('蛇口')
+    await portSelect.setValue('蛇口')
     expect((tableNameInput.element as HTMLInputElement).value).toBe('建联派运输，出蛇口')
 
-    await portInput.setValue('')
+    await portSelect.setValue('')
     expect((tableNameInput.element as HTMLInputElement).value).toBe('建联派运输')
 
     wrapper.unmount()
