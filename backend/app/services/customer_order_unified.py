@@ -156,6 +156,8 @@ def _load_workbook(content: bytes, *, read_only: bool = False):
             content, _ = _decrypt_schedule(content)
         if len(content) > MAX_SCHEDULE_BYTES:
             raise ValueError("解密后的排期超过 35MB 限制")
+        from .order_workbook_compat import normalize_table_ranges
+        content, _ = normalize_table_ranges(content)
         return openpyxl.load_workbook(BytesIO(content), data_only=False, read_only=read_only)
     except Exception as exc:
         raise CustomerOrderUnifiedError(f"无法读取河源业务统一排期：{exc}") from exc
