@@ -210,6 +210,12 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return JSONResponse(qc_schedule_view.listing(db, factory_id,
             date_from=request.query_params.get('dateFrom', ''),
             date_to=request.query_params.get('dateTo', '')), headers=NO_CACHE)
+    if request.method == 'GET' and asset_path in {
+        'api/daily-report', 'api/weekly-templates', 'api/monthly-templates',
+        'api/issue-reports', 'api/approved-statistics/report',
+    }:
+        from app.services.qc_report_workbook import warm_on_report_visit
+        warm_on_report_visit()
     if asset_path in {'api/report-workbook', 'api/report-workbook/save'}:
         from app.services import qc_report_workbook
         params = request.query_params
@@ -222,7 +228,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
             result = await run_in_threadpool(qc_report_workbook.preview, *scope,
                 can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
-            return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
+            if request.method == 'HEAD':
+                return Response(status_code=204, headers=NO_CACHE)
+            return await run_in_threadpool(qc_report_workbook.preview_response, result,
+                                           request.headers.get('accept-encoding', ''), NO_CACHE)
         if asset_path != 'api/report-workbook/save' or request.method != 'POST':
             raise HTTPException(405, '不支持此操作')
         _ensure_permission(db, user, 'qc_inspection:result_write', factory_id)

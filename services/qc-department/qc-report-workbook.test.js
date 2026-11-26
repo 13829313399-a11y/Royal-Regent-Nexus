@@ -131,6 +131,30 @@ test('template round trips reuse previews until expiry, save or dialog close',as
   assert.equal(reads(),7,'reopening requires a fresh read');
 });
 const MIME_XLS='application/vnd.ms-excel';
+test('annual summary warms only its filtered workbook and adjacent tracking preview; opening both reuses the reads',async t=>{
+  const {w,d,calls}=await exportWorkbook(t,'yearly','annual-stats');
+  const tick=()=>new Promise(setImmediate);
+  d.getElementById('wb-close').click();await tick();
+  calls.length=0;
+  d.querySelector('main').className='page active';
+  d.getElementById('qstats-client').innerHTML='<option value="client-07">客户</option>';
+  Object.defineProperty(d,'hidden',{value:false});
+  let warm;
+  const timeout=w.setTimeout;
+  w.setTimeout=(fn,ms,...args)=>ms===100?(warm=fn,1):timeout(fn,ms,...args);
+  w.QcReportWorkbook.mount('yearly','annual-stats',d.getElementById('summary'),{months:[],totals:{total:12}},()=>{});
+  await warm();await tick();
+  const reads=()=>calls.map(c=>new URL(c.url,'http://localhost').searchParams);
+  assert.deepEqual(reads().map(q=>q.get('kind')),['annual-stats','annual-issues']);
+  assert.ok(reads().every(q=>q.get('customer')==='client-07'&&q.get('day')==='2026-01-01'));
+  assert.equal(reads()[0].get('result'),'ALL');
+  assert.equal(reads()[1].has('result'),false);
+  d.querySelector('.wb-open').click();await tick();
+  d.querySelector('#wb-templates [data-kind="annual-issues"]').click();await tick();
+  assert.equal(reads().length,2);
+  assert.equal(d.querySelector('#wb-templates [aria-pressed="true"]').dataset.kind,'annual-issues');
+});
+
 async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   const dom=new JSDOM('<main><input id="monthlyMonth" value="2026-11"><input id="dailyDate" value="2026-11-22"><input id="weeklyDate" value="2026-11-16"><input id="qstats-year" value="2026"><div id="qstats-root"><button data-result="ALL" aria-pressed="true"></button></div>'+
     ['qmtCustomer','qdrCustomer','qwtCustomer','qstats-client'].map(id=>`<select id="${id}"><option value="">全部</option></select>`).join('')+

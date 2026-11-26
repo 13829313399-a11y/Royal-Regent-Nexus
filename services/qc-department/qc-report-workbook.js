@@ -17,10 +17,10 @@ let bookQuery='',saving=null,editorState=null,formulaCell=null;
 const expandIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/></svg>';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  let reload, opener, exporting=false, receipt=null, reviewSource=null;
-function params(kind=selected[period]) {
-  if(period==='review')return new URLSearchParams({kind}).toString();
-  const cfg=periods[period],date=byId(cfg.date).value;
-  const day=period==='yearly'?date+'-01-01':period==='monthly'?date+'-01':date;
+function params(kind=selected[period],periodKey=period) {
+  if(periodKey==='review')return new URLSearchParams({kind}).toString();
+  const cfg=periods[periodKey],date=byId(cfg.date).value;
+  const day=periodKey==='yearly'?date+'-01-01':periodKey==='monthly'?date+'-01':date;
   const query=new URLSearchParams({kind,day,customer:byId(cfg.customer).value});
   if(kind==='annual-stats')query.set('result',document.querySelector('#qstats-root [data-result][aria-pressed=true]').dataset.result);
   return query.toString();
@@ -68,6 +68,12 @@ function loadPreview(query,background=false){
 }
 function canWarm(){
   return !document.hidden&&!navigator.connection?.saveData;
+}
+function warmAdjacent(kind,periodKey){
+  const keys=Object.keys(periods[periodKey].templates);
+  if(keys.length<2||!canWarm())return;
+  const next=kind==='quality'?'tracking':keys[(keys.indexOf(kind)+1)%keys.length];
+  loadPreview(params(next,periodKey),true).catch(()=>{});
 }
 async function api(endpoint,query,options) {
   if(period==='review'){
@@ -151,11 +157,17 @@ function mount(periodKey, kind, host, data, refresh){
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;
   if(!dialog.open)dropPreview();
-  if(periodKey!=='yearly'&&rows.length)setTimeout(()=>{
-    const cfg=periods[periodKey];
-    if(ticket!==requestId||!host.isConnected||!canWarm()||!section.closest('.page.active')||dialog.open)return;
-    const query=new URLSearchParams({kind,day:data.date,customer:byId(cfg.customer).value});
-    loadPreview(query.toString(),true).catch(()=>{});
+  if(rows.length||data.total>0||data.totals?.total>0)setTimeout(async()=>{
+    const current=()=>ticket===requestId&&host.isConnected&&canWarm()&&section.closest('.page.active')&&!dialog.open;
+    if(!current())return;
+    if(!byId(periods[periodKey].date)?.value)return;
+    const query=params(kind,periodKey);
+    try{
+      await loadPreview(query,true);
+      // Do not displace a large, uncached first sheet or start another render
+      // if the user has since opened the dialog or changed the report scope.
+      if(current()&&previews.has(query)&&params(kind,periodKey)===query)warmAdjacent(kind,periodKey);
+    }catch{/* Optional prefetch; foreground navigation handles errors. */}
   },100);
   return true;
 }
@@ -361,11 +373,7 @@ async function switchBook(kind){
       tab.setAttribute('aria-pressed',String(tab.dataset.kind===kind));
     }
     statusText.textContent=sheetHint();
-    const keys=Object.keys(periods[period].templates);
-    if(keys.length>1&&canWarm()){
-      const next=keys[(keys.indexOf(kind)+1)%keys.length];
-      loadPreview(params(next),true).catch(()=>{});
-    }
+    warmAdjacent(kind,period);
   }catch(error){
     if(request!==bookRequest||!dialog.open)return;
     statusText.textContent=error.message;

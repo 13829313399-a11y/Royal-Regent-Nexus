@@ -15,6 +15,56 @@ from test_qc_approved_statistics import approval, transition, hashes
 from test_qc_monthly_templates import issue, db, engine, isolated, ACTOR, DAY
 
 
+def test_preview_wire_encoding_preserves_workbook_and_cache_headers():
+    import gzip
+    import json
+    payload = {'sheets': [{'html': '<td>验货问题</td>' * 500}], 'cells': {'0:A1': {'version': 2}}}
+    for accepted, compressed in [('br, gzip', True), ('gzip;q=0.2', True), ('gzip;q=0', False), ('', False)]:
+        response = workbooks.preview_response(payload, accepted, {'Cache-Control':'no-store'})
+        assert ('content-encoding' in response.headers) == compressed
+        assert response.headers['vary'] == 'Accept-Encoding' and response.headers['cache-control'] == 'no-store'
+        assert int(response.headers['content-length']) == len(response.body)
+        assert json.loads(gzip.decompress(response.body) if compressed else response.body) == payload
+
+
+def test_idle_visit_starts_one_engine_and_does_not_block_summary(monkeypatch):
+    from threading import Event, Lock
+    started, release = Event(), Event()
+    calls = []
+    def start(exe):
+        calls.append(exe)
+        started.set()
+        assert release.wait(3)
+    lock = Lock()
+    monkeypatch.setattr(workbooks, '_render_lock', lock)
+    monkeypatch.setattr(workbooks, '_warm_attempted', False)
+    monkeypatch.setattr(workbooks, 'office_executable', lambda:'calc')
+    monkeypatch.setattr(workbooks, 'start_worker', start)
+    try:
+        workbooks.warm_on_report_visit()
+        assert started.wait(2)
+        workbooks.warm_on_report_visit()
+    finally:
+        release.set()
+    assert lock.acquire(timeout=2)
+    lock.release()
+    assert calls == ['calc']
+
+
+def test_hot_preview_does_not_queue_behind_an_unrelated_conversion(db):
+    from concurrent.futures import ThreadPoolExecutor
+    issue(db, 1)
+    first = workbooks.preview('huaxing', 'quality', DAY, '', True)
+    assert first['sheets'] and first['cells']
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        # A separate template is using Calc. A viewer can read the finished
+        # preview immediately, with the current request's read-only cell map.
+        with workbooks._render_lock:
+            future = pool.submit(workbooks.preview, 'huaxing', 'quality', DAY, '', False)
+            result = future.result(timeout=2)
+        assert result['sheets'] == first['sheets'] and not result['cells']
+
+
 def test_visible_catalog_and_versioned_edit(db):
     issue(db, 1)
     assert workbooks.KINDS == {'daily','detail','issues','orders','tracking','quality','annual-stats','annual-issues'}
