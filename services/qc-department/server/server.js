@@ -382,12 +382,16 @@ const SCHEMA_SQL = `
     actor TEXT NOT NULL, deleted_at TEXT NOT NULL, snapshot TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS qc_delete_history_key ON qc_delete_history(kind,item_key);
+  CREATE TABLE IF NOT EXISTS qc_catalog_meta (
+    kind TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0
+  );
 `;
 
 const toNum = (v) => (v === '' || v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
 const j     = (v) => JSON.stringify(Array.isArray(v) ? v : (v ? [v] : []));
 
-function recordValues(r) {
+function recordValues(r, defaultUpdatedAt = new Date().toISOString()) {
   return [
     toNum(r.id), r.date ?? null, r.inspDate ?? null, r.supplier ?? null, r.client ?? null, r.processType ?? null,
     r.productNo ?? null, r.productName ?? null, r.deliveryNo ?? null, r.orderNo ?? null,
@@ -395,7 +399,7 @@ function recordValues(r) {
     r.defectRate ?? null, r.result ?? null, r.result2 ?? null, r.defect ?? null,
     j(r.defects), j(r.measurements),
     r.qc ?? null, r.confirmBy ?? null, r.remark ?? null, toNum(r.orderQty),
-    r.updatedAt || new Date().toISOString(),
+    r.updatedAt || defaultUpdatedAt,
     r.status ?? null, r.reviewBy ?? null, r.reviewAt ?? null,
     r.rejectReason ?? null, r.rejectBy ?? null, r.rejectAt ?? null,
     r.aqlLevel ?? null,
@@ -457,6 +461,17 @@ function archiveRemoval(db, kind, key, row, actor, now) {
   db.prepare('INSERT INTO qc_delete_history(kind,item_key,actor,deleted_at,snapshot) VALUES(?,?,?,?,?)')
     .run(kind, key, actor, now, JSON.stringify(row));
 }
+function normalizedLegacyStatus(status) {
+  return String(status ?? '').trim() || 'approved';
+}
+function recordIsProtected(row, ctx) {
+  return !ctx?.sheetReceipt && (ctx?.protectedIds?.includes(row.id) ||
+    (!ctx?.referenceClear && ['approved', 'pending'].includes(normalizedLegacyStatus(row.status))));
+}
+function rejectProtectedRecord(row, ctx) {
+  if (recordIsProtected(row, ctx))
+    rejectWrite(409, '已提交记录请在审核中心处理，已审核请先反审核');
+}
 function deleteRecords(db, ids, transaction = true, ctx = {}) {
   const now = new Date().toISOString();
   const del = db.prepare('DELETE FROM records WHERE id = ?');
@@ -469,8 +484,7 @@ function deleteRecords(db, ids, transaction = true, ctx = {}) {
       if (!n) continue;
       const row = db.prepare('SELECT * FROM records WHERE id=?').get(n);
       if (row) {
-        if (!ctx.sheetReceipt && (['approved','pending'].includes(row.status) || ctx.protectedIds?.includes(n)))
-          rejectWrite(409, '已提交记录请在审核中心处理，已审核请先反审核');
+        rejectProtectedRecord(row, ctx);
         archiveRemoval(db, 'record', String(n), rowToRecord(row), ctx.actor || '', now);
       }
       del.run(n); tomb.run(n, now); count++;
@@ -494,28 +508,65 @@ function mergeRecordChanges(db, records, ids, ctx) {
 function replaceRecords(db, records, ctx) {
   const ph = RECORD_COLS.map(() => '?').join(',');
   const ins = db.prepare(`INSERT INTO records(${RECORD_COLS.join(',')}) VALUES(${ph})`);
-  db.exec('BEGIN');
+  const del = db.prepare('DELETE FROM records WHERE id=?');
+  const clearTomb = db.prepare('DELETE FROM record_tombstones WHERE id=?');
+  const asText = db.prepare('SELECT CAST(? AS TEXT) AS value');
+  db.exec('BEGIN IMMEDIATE');
   try {
+    const existingById = new Map(db.prepare('SELECT * FROM records').all().map(row => [row.id, row]));
+    const incomingById = new Map(records.map(record => [toNum(record.id), record]));
+    if (incomingById.size !== records.length) rejectWrite(409, '替换记录编号重复');
     // Keep tombstones for records omitted by a clear/import, so an old tab
     // cannot undo the explicit replacement on its next ordinary save.
-    deleteRecords(db, db.prepare('SELECT id FROM records').all().map(r => r.id), false, ctx);
-    const clearTomb = db.prepare('DELETE FROM record_tombstones WHERE id=?');
-    for (const r of records) { ins.run(...recordValues(r)); clearTomb.run(toNum(r.id)); }
+    const removedIds = [...existingById.keys()].filter(id => !incomingById.has(id));
+    deleteRecords(db, removedIds, false, ctx);
+    for (const [id, record] of incomingById) {
+      const previous = existingById.get(id);
+      if (previous) {
+        const storedValues = recordValues(rowToRecord(previous), previous.updatedAt);
+        const incomingValues = recordValues(record, previous.updatedAt);
+        const unchanged = storedValues.every((stored, i) => {
+          const incoming = incomingValues[i];
+          return stored === incoming || (typeof stored === 'string' && typeof incoming === 'number' &&
+            stored === asText.get(incoming).value);
+        });
+        if (unchanged) continue;
+        rejectProtectedRecord(previous, ctx);
+        del.run(id);
+      }
+      ins.run(...recordValues(record));
+      clearTomb.run(id);
+    }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
 /* 供应商&客户名单（全量替换） */
+function getCatalogRevision(db, table) {
+  return db.prepare('SELECT revision FROM qc_catalog_meta WHERE kind=?').get(table)?.revision ?? 0;
+}
+function bumpCatalogRevision(db, table) {
+  return db.prepare(`INSERT INTO qc_catalog_meta(kind, revision) VALUES (?, 1)
+    ON CONFLICT(kind) DO UPDATE SET revision=revision+1 RETURNING revision`).get(table).revision;
+}
 function checkCatalogRemoval(db, table, list, ctx) {
+  const versioned = ctx?.baseRevision !== undefined;
+  if (versioned && (!Number.isSafeInteger(ctx.baseRevision) || ctx.baseRevision < 0))
+    rejectWrite(422, '名单版本必须为非负整数');
+  if (versioned && ctx.baseRevision !== getCatalogRevision(db, table))
+    rejectWrite(409, '名单已在其他窗口更新，请刷新后重试');
   const partner = table === 'partners';
   const key = row => JSON.stringify((partner ? [row.type, row.name] : [row.name]).map(v => String(v || '').trim()));
   const existing = db.prepare(`SELECT * FROM ${table}`).all();
   const newKeys = new Set(list.map(key));
-  const oldKeys = new Set(existing.map(key));
   const allowed = new Set((ctx?.removed || []).map(parts => JSON.stringify(parts)));
-  for (const next of newKeys) {
-    if (!oldKeys.has(next) && db.prepare('SELECT 1 FROM qc_delete_history WHERE kind=? AND item_key=?').get(table, next))
-      rejectWrite(409, '此项目已删除，请刷新名单后重试');
+  if (!versioned) {
+    const oldKeys = new Set(existing.map(key));
+    const wasDeleted = db.prepare('SELECT 1 FROM qc_delete_history WHERE kind=? AND item_key=?');
+    for (const next of newKeys) {
+      if (!oldKeys.has(next) && wasDeleted.get(table, next))
+        rejectWrite(409, '此项目已删除，请刷新名单后重试');
+    }
   }
   for (const row of existing) {
     const k = key(row);
@@ -534,23 +585,27 @@ function checkCatalogRemoval(db, table, list, ctx) {
 }
 function replacePartners(db, list, ctx) {
   const ins = db.prepare('INSERT INTO partners(name,type,createdAt) VALUES(?,?,?)');
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     checkCatalogRemoval(db, 'partners', list, ctx);
     db.prepare('DELETE FROM partners').run();
     for (const p of list) ins.run(p.name ?? null, p.type ?? null, p.createdAt ?? null);
+    const revision = ctx?.actor ? bumpCatalogRevision(db, 'partners') : getCatalogRevision(db, 'partners');
     db.exec('COMMIT');
+    return revision;
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
 function replaceDefects(db, lib, ctx) {
   const ins = db.prepare('INSERT INTO defect_library(name,category,defaultLevel,keywords,enabled,createdAt) VALUES(?,?,?,?,?,?)');
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     checkCatalogRemoval(db, 'defect_library', lib, ctx);
     db.prepare('DELETE FROM defect_library').run();
     for (const d of lib) ins.run(d.name ?? null, d.category ?? null, d.defaultLevel ?? null, JSON.stringify(d.keywords || []), d.enabled ? 1 : 0, d.createdAt ?? null);
+    const revision = ctx?.actor ? bumpCatalogRevision(db, 'defect_library') : getCatalogRevision(db, 'defect_library');
     db.exec('COMMIT');
+    return revision;
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
@@ -657,7 +712,8 @@ function getBootstrap(db) {
   }));
   const partners = db.prepare('SELECT * FROM partners ORDER BY id').all()
     .map(p => ({ name: p.name, type: p.type, createdAt: p.createdAt }));
-  return { records, nextId, defectLib, partners, referenceData: referenceData(db) };
+  return { records, nextId, defectLib, partners, referenceData: referenceData(db),
+    catalogVersions: { partners: getCatalogRevision(db, 'partners'), defectLib: getCatalogRevision(db, 'defect_library') } };
 }
 
 /* ════════ HTTP 工具 ════════ */
@@ -899,7 +955,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/reference-data/clear' && req.method === 'POST') {
       const body = await readBody(req);
-      return sendJson(res, 200, { ok: true, ...clearReferenceData(db, (d, ids, tx) => deleteRecords(d, ids, tx, body._qc)) });
+      return sendJson(res, 200, { ok: true, ...clearReferenceData(db,
+        (d, ids, tx, extra) => deleteRecords(d, ids, tx, { ...body._qc, ...extra })) });
     }
     if (p === '/api/records' && req.method === 'POST') {
       const body = await readBody(req);
@@ -922,14 +979,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/partners' && req.method === 'POST') {
       const body = await readBody(req);
       if (!Array.isArray(body.partners)) return sendJson(res, 422, {detail:'缺少名单'});
-      replacePartners(db, body.partners, body._qc);
-      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM partners').get().c });
+      const revision = replacePartners(db, body.partners, body._qc);
+      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM partners').get().c, revision });
     }
     if (p === '/api/defects' && req.method === 'POST') {
       const body = await readBody(req);
       if (!Array.isArray(body.defectLib)) return sendJson(res, 422, {detail:'缺少不良描述列表'});
-      replaceDefects(db, body.defectLib, body._qc);
-      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM defect_library').get().c });
+      const revision = replaceDefects(db, body.defectLib, body._qc);
+      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM defect_library').get().c, revision });
     }
     /* ── AI（阿里百炼，全局共用，不分厂区）── */
     if (p === '/api/ai/status' && req.method === 'GET') {

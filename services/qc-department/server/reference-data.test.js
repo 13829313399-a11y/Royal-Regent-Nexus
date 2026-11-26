@@ -13,7 +13,7 @@ function row(id, productNo = 'reference') { return { id, productNo, updatedAt: '
 test('reference import preserves source, avoids live/tombstoned IDs and is idempotent', t => {
   const src = database(t), target = database(t);
   core.upsertRecords(src, [row(1), row(2)]);
-  core.upsertRecords(target, [row(1, 'live')]); core.deleteRecords(target, [2]);
+  core.upsertRecords(target, [row(1, 'live'), { ...row(2), status: 'rejected' }]); core.deleteRecords(target, [2]);
   const original = JSON.stringify(src.prepare('SELECT * FROM records').all());
   assert.equal(importReferenceData(src, target, 'dg-xingxin', 'batch').imported, 2);
   assert.equal(importReferenceData(src, target, 'dg-xingxin', 'batch').imported, 0);
@@ -38,11 +38,19 @@ test('clear removes only unchanged references and tombstones block stale resurre
 test('clear rolls back record deletions and provenance on failure', t => {
   const src = database(t), target = database(t);
   core.upsertRecords(src, [row(1)]); importReferenceData(src, target, 'dg-xingxin', 'batch');
-  assert.throws(() => clearReferenceData(target, (db, ids) => {
-    core.deleteRecords(db, ids, false); throw new Error('forced failure');
+  assert.throws(() => clearReferenceData(target, (db, ids, transaction, ctx) => {
+    core.deleteRecords(db, ids, transaction, ctx); throw new Error('forced failure');
   }), /forced failure/);
   assert.equal(referenceData(target).count, 1);
   assert.equal(target.prepare('SELECT COUNT(*) c FROM record_tombstones').get().c, 0);
+});
+test('reference clear keeps protection for an unchanged record submitted through the sheet', t => {
+  const src = database(t), target = database(t);
+  core.upsertRecords(src, [row(1)]);
+  importReferenceData(src, target, 'dg-xingxin', 'batch');
+  assert.throws(() => clearReferenceData(target, (db, ids, tx, ctx) =>
+    core.deleteRecords(db, ids, tx, { protectedIds: [1], ...ctx })), { qcStatus: 409 });
+  assert.deepEqual(referenceData(target).ids, [1]);
 });
 test('a company without references is untouched and schemas must match', t => {
   const src = database(t), target = database(t);
