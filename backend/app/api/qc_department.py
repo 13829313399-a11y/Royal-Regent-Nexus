@@ -160,6 +160,10 @@ async def upstream(method: str, path: str, params: list, body: bytes) -> httpx.R
         raise HTTPException(503, "QC 服务暂时不可用，请稍后重试") from exc
 
 
+def _legacy_status(record: dict) -> str:
+    return str(record.get("status") or "").strip() or "approved"
+
+
 @router.api_route("/{factory_id}/{asset_path:path}", methods=["GET", "HEAD", "POST"])
 async def gateway(factory_id: str, asset_path: str, request: Request,
                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
@@ -384,9 +388,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
                 if prev and r.get('qc', '') != prev.get('qc', ''):
                     raise HTTPException(409, '检验员由登录账号绑定，不能手动修改')
                 if not prev: r['qc'] = user.display_name or user.username
-                if prev and r.get('status','approved') != prev.get('status','approved'):
+                if prev and _legacy_status(r) != _legacy_status(prev):
                     raise HTTPException(409,'请通过审核中心或验货表单变更状态')
-                if prev and prev.get('status','approved') in {'pending','approved'} and r != prev:
+                if (asset_path == 'api/records' and prev
+                        and _legacy_status(prev) in {'pending','approved'} and r != prev):
                     raise HTTPException(409,'已提交记录锁定，请由主管退回后修改')
         links = qc_workflow.legacy_links(factory_id)
         if set(payload.get("deletedIds", [])) & set(links):
@@ -395,6 +400,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             payload['records'] = [r for r in payload.get('records', []) if r.get('id') not in links]
     if asset_path in {"api/defects", "api/partners"} and request.method == "POST":
         key = "defectLib" if asset_path == "api/defects" else "partners"
+        if "baseRevision" in payload and not (
+            type(payload["baseRevision"]) is int and 0 <= payload["baseRevision"] <= 9007199254740991
+        ):
+            raise HTTPException(422, "名单版本必须为非负整数")
         if not isinstance(payload.get(key), list) or any(
             not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip()
             for item in payload[key]
@@ -404,6 +413,9 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         if existing_response.status_code != 200:
             raise HTTPException(503, "无法核对现有配置，请重试")
         existing_data = existing_response.json()
+        current_revision = (existing_data.get("catalogVersions") or {}).get(key)
+        if "baseRevision" in payload and current_revision is not None and payload["baseRevision"] != current_revision:
+            raise HTTPException(409, "名单已在其他窗口更新，请刷新后重试")
         if asset_path == "api/defects" and isinstance(payload.get("defectLib"), list):
             existing_defects = existing_data.get("defectLib") or []
             old_names = {str(d.get("name") or "").strip() for d in existing_defects if isinstance(d, dict) and str(d.get("name") or "").strip()}
@@ -447,6 +459,8 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         raise HTTPException(409, '已有历史记录进入验货修订流程，不能批量清除或替换历史库')
     if legacy_write:
         payload["_qc"] = {"actor": user.id, "removed": removed_keys}
+        if asset_path in {"api/defects", "api/partners"} and "baseRevision" in payload:
+            payload["_qc"]["baseRevision"] = payload["baseRevision"]
         if asset_path in {"api/records/delete", "api/records/replace", "api/reference-data/clear"} or payload.get("deletedIds"):
             payload["_qc"]["protectedIds"] = await run_in_threadpool(qc_inspection_sheet.submitted_legacy_ids, factory_id)
         body = json.dumps(payload).encode()
@@ -807,10 +821,11 @@ async def workflow_request(path, request, db, user, factory_id):
         if response.status_code != 200: raise HTTPException(503, '历史记录读取失败')
         record = next((r for r in response.json().get('records',[]) if type(body['recordId']) is int and r['id']==body['recordId']), None)
         if not record: raise HTTPException(404,'历史记录不存在')
-        if record.get('updatedAt','') != body['updatedAt']: raise HTTPException(409,'记录已变化，请刷新核对')
+        if (record.get('updatedAt') or '') != body['updatedAt']: raise HTTPException(409,'记录已变化，请刷新核对')
         action=body['action'];reason=qc_workflow.text(body['reason']);stamp=qc_workflow.now()
-        if action=='approve' and record.get('status','approved')!='pending': raise HTTPException(409,'只有已提交的记录可审批')
-        if action=='return' and (not reason or record.get('status','approved') not in {'pending','approved'}): raise HTTPException(409,'请检查记录状态并填写退回原因')
+        status = _legacy_status(record)
+        if action=='approve' and status!='pending': raise HTTPException(409,'只有已提交的记录可审批')
+        if action=='return' and (not reason or status not in {'pending','approved'}): raise HTTPException(409,'请检查记录状态并填写退回原因')
         record.update(status='approved' if action=='approve' else 'rejected',updatedAt=stamp,
             reviewBy=actor['name'] if action=='approve' else '',reviewAt=stamp if action=='approve' else '',
             rejectReason=reason if action=='return' else '',rejectBy=actor['name'] if action=='return' else '',rejectAt=stamp if action=='return' else '')
