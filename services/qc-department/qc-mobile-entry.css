@@ -1,0 +1,13 @@
+#page-records .qis-submit-actions{gap:8px}
+#page-records #qc-mobile-entry{min-height:36px;padding:8px 13px;border:1px solid var(--border-hi);border-radius:7px;background:var(--bg-card);color:var(--accent);font:inherit;white-space:nowrap;cursor:pointer}
+#page-records #qc-mobile-entry:hover{background:var(--bg-hover)}
+/* Explicit auto margins override the QC universal margin reset. */
+dialog.qc-mobile-pair{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:min(288px,calc(100vw - 40px),calc(100dvh - 40px));height:auto;aspect-ratio:1;max-width:none;max-height:none;padding:0;border:0;border-radius:12px;background:#fff;color:#334155;overflow:hidden;box-shadow:0 16px 60px #0003;outline:none}
+dialog.qc-mobile-pair::backdrop{background:rgb(10 18 30 / .48);backdrop-filter:none}
+.qc-mobile-pair [hidden]{display:none!important}
+.qc-mobile-pair img{display:block;width:100%;height:100%;object-fit:contain}
+.qc-mobile-pair-state{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:14px;padding:24px;text-align:center}
+.qc-mobile-pair-state p{font-size:14px;margin:0;line-height:1.6;overflow-wrap:anywhere}
+.qc-mobile-pair-state button{min-height:40px;padding:6px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#2563eb;font:inherit;cursor:pointer}
+.qc-mobile-pair-state button:focus-visible{outline:2px solid #2563eb;outline-offset:3px}
+@media(max-width:640px){#page-records #qc-mobile-entry{min-height:44px}}

@@ -7,8 +7,8 @@ from warehouse_location_fixtures import make_client
 BASE = '/api/warehouse-operations'
 
 
-def workspace(client, warehouse='fabric'):
-    response = client.get(f'{BASE}/{warehouse}', params={'factory_id': 'huakang-c'})
+def workspace(client, warehouse='fabric', **options):
+    response = client.get(f'{BASE}/{warehouse}', params={'factory_id': 'huakang-c', **options})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -103,6 +103,87 @@ def test_semi_processing_separate_units_rounds_packaging_and_rework(monkeypatch)
         post(client, payload(client, 'PACK_RECEIVE', 'semi', original_id=package['id'], quantity='1', responsible_person='包装李师傅'), 'semi', 409)
         post(client, payload(client, 'CORRECTION', 'semi', original_id=package['id']), 'semi', 409)
         assert workspace(client)['documents'] == []
+
+
+def test_semi_order_progress_tracks_split_returns_and_packaging_by_release(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, 'admin')
+
+        def submit(kind, status=200, **values):
+            return post(client, payload(client, kind, 'semi', **values), 'semi', status)
+
+        def progress(release):
+            view = workspace(client, 'semi', include_order_progress=True)
+            return next(row for row in view['order_progress'] if row['release_id'] == release['id'])
+
+        identity = dict(production_no='JP-TEST', item_code='TEST-01', item_name='测试车衣', unit='件', process_state='车缝完成')
+        release = submit('SEMI_RELEASE', **identity, source_no='REL-01', part='头', label_code='2606HK', quantity='9.999999')
+        other = submit('SEMI_RELEASE', **identity, source_no='REL-01', source_line='2', part='身体', label_code='2607HK', quantity='20')
+        assert workspace(client, 'semi')['stock'] == []
+        assert progress(release)['pending_receipt'] == '9.999999'
+        assert progress(other)['pending_receipt'] == '20'
+
+        submit('RECEIPT', 422, **{**identity, 'unit': '对'}, release_id=release['id'])
+        standalone = submit('RECEIPT', **identity, quantity='1')
+        request = payload(client, 'RECEIPT', 'semi', release_id=release['id'], item_code='', item_name='',
+                          unit='', process_state='', quantity='10.000004')
+        receipt = post(client, request, 'semi')
+        assert post(client, request, 'semi') == receipt
+        assert receipt['data']['production_no'] == 'JP-TEST'
+        assert progress(release)['extra_received'] == '0.000005'
+        assert progress(release)['document_ids'] == [receipt['id']]
+
+        task = submit('TASK', release_id=release['id'], item_code='TEST-02', item_name='测试冲棉件', unit='对',
+                      process_state='冲棉完成', quantity='4')
+        standalone_task = submit('TASK', process_state='冲棉完成', quantity='4')
+        submit('PROCESS_SEND', 422, batch_id=receipt['id'], task_id=standalone_task['id'], quantity='1')
+        submit('PROCESS_SEND', 422, batch_id=standalone['id'], task_id=task['id'], quantity='1')
+        send = submit('PROCESS_SEND', batch_id=receipt['id'], task_id=task['id'], quantity='10')
+        submit('CORRECTION', 409, original_id=task['id'])
+        first = submit('PROCESS_RETURN', original_id=send['id'], quantity='2.5', consumed_quantity='4.000001')
+        second = submit('PROCESS_RETURN', original_id=send['id'], quantity='1.5', consumed_quantity='3')
+        moved = submit('TRANSFER', batch_id=second['id'], location='A02', quantity='1.5')
+        pack = submit('PACK_SEND', batch_id=first['id'], quantity='2.5', counterparty='包装组')
+        pack_receipt = submit('PACK_RECEIVE', original_id=pack['id'], quantity='1.0', responsible_person='包装测试员')
+        returned = submit('RETURN', original_id=pack['id'], quantity='0.5')
+        post(client, payload(client, 'CORRECTION', 'semi', original_id=release['id']), 'semi', 409)
+
+        row = progress(release)
+        assert row['received'] == '10.000004' and row['pending_receipt'] == '0'
+        assert [(item['unit'], item['quantity']) for item in row['stock']] == [('件', '0.000004'), ('对', '2.0')]
+        assert [(item['unit'], item['quantity']) for item in row['processing']] == [('件', '2.999999')]
+        assert [(item['unit'], item['sent'], item['received'], item['returned'], item['pending']) for item in row['packaging']] == [
+            ('对', '2.5', '1.0', '0.5', '1.0')]
+        assert row['document_ids'] == [record['id'] for record in (returned, pack_receipt, pack, moved, second, first, send, task, receipt)]
+        assert progress(other)['received'] == '0'
+        assert 'order_progress' not in workspace(client, include_order_progress=True)
+
+
+def test_semi_release_source_identity_and_adjustment_do_not_post_stock(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, 'admin')
+        source = dict(source_no='SP-1', production_no='P-1', process_state='车缝完成', part='头', quantity='12', unit='件')
+        post(client, payload(client, 'SEMI_RELEASE', **source), status=422)
+        release = post(client, payload(client, 'SEMI_RELEASE', 'semi', **source), 'semi')
+        post(client, payload(client, 'SEMI_RELEASE', 'semi', **source, source_version='2'), 'semi', 409)
+        post(client, payload(client, 'PACK_SEND', 'semi', release_id=release['id']), 'semi', 422)
+        receipt = post(client, payload(client, 'RECEIPT', 'semi', release_id=release['id'], unit='', quantity='5'), 'semi')
+        post(client, payload(client, 'CORRECTION', 'semi', original_id=receipt['id']), 'semi')
+        view = workspace(client, 'semi', include_order_progress=True)
+        row = view['order_progress'][0]
+        assert row['received'] == '0' and row['pending_receipt'] == '12' and row['stock'] == []
+        assert row['document_ids'][-1] == receipt['id']
+
+        task = post(client, payload(client, 'TASK', 'semi', release_id=release['id'], process_state='冲棉完成'), 'semi')
+        post(client, payload(client, 'CORRECTION', 'semi', original_id=release['id']), 'semi', 409)
+        post(client, payload(client, 'CORRECTION', 'semi', original_id=task['id']), 'semi')
+
+        correction = post(client, payload(client, 'CORRECTION', 'semi', original_id=release['id']), 'semi')
+        assert correction['data']['reversed_kind'] == 'SEMI_RELEASE'
+        assert workspace(client, 'semi', include_order_progress=True)['order_progress'] == []
+        replacement = post(client, payload(client, 'SEMI_RELEASE', 'semi', **{**source, 'quantity': '14'}), 'semi')
+        assert replacement['data']['replaces_id'] == release['id']
+        assert all(row['quantity'] == '0' for row in workspace(client, 'semi')['stock'])
 
 
 def test_reversal_keeps_original_and_blocks_dependencies_and_stale_requests(monkeypatch):

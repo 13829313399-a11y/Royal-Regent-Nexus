@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:green-toys": "vue-tsc --noEmit -p tsconfig.json && vite build --config vite.config.ts --mode green-toys",
     "build": "vue-tsc --noEmit -p tsconfig.json && vite build --config vite.config.ts",
     "test": "cd ../../.. && vitest run --config tools/customer-order-trial/web/vitest.config.ts",
     "typecheck:test": "vue-tsc --noEmit -p tsconfig.test.json"

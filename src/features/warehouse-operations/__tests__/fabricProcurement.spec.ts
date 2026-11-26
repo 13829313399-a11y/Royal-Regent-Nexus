@@ -1,9 +1,10 @@
 import { pendingFabricImports, pendingFabricMasterSaves } from '../pendingFabricRequests'
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import Workspace from '../FabricProcurementWorkspace.vue'
+import { purchaseSearchKey } from '../purchaseSearch'
 import type { PurchaseDetail, PurchasePreview } from '@/api/fabricProcurement'
 
 const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
@@ -31,7 +32,238 @@ async function file() {
 function button(text: string) { return wrapper!.findAll('button').find(b => b.text() === text)! }
 function dialogButton(text: string) { return [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === text)! }
 
+const linkedDetail = {
+  id: 'source-1', revision: 1, active: true, evidence: [], warehouse_outstanding_quantity: '3',
+  facts: { order_no: 'PO-11', supplier: '供货方', material_name: '布料', unit: '米' },
+} as PurchaseDetail
+async function openLinkedPurchase() {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{
+    path: '/receipts', component: Workspace,
+    props: route => ({ mode: 'pending', purchaseId: route.query.purchase_id }),
+  }] })
+  await router.push('/receipts?factory=huakang-c&view=pending&purchase_id=source-1')
+  wrapper = mount({ template: '<input aria-label="查找采购明细"><router-view />' }, {
+    attachTo: document.body,
+    global: { plugins: [router], provide: {
+      [purchaseSearchKey as symbol]: { search: ref(''), submitted: ref(0), focus: () => wrapper!.get('input').element.focus() },
+    } },
+  })
+  await flushPromises()
+  return router
+}
+
 describe('real fabric procurement workspace', () => {
+  it.each([
+    [{ isAxiosError: true, code: 'ERR_NETWORK' }, '读取失败'],
+    [{ isAxiosError: true, code: 'ECONNABORTED' }, '读取失败'],
+    [{ isAxiosError: true, response: { status: 403 } }, '无读取权限'],
+  ])('ends the list loading summary on failure and recovers on original-detail retry (%s)', async (failure, label) => {
+    let rejectList!: (error: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectList = reject }))
+    api.detail.mockRejectedValueOnce(failure).mockResolvedValueOnce(linkedDetail)
+    await openLinkedPurchase()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取中…')
+    rejectList(failure); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe(label)
+    expect(wrapper!.text()).not.toContain('正在读取…')
+    let finishList!: (value: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise(resolve => { finishList = resolve }))
+    await button('重试原采购明细').trigger('click'); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取中…')
+    finishList({ total: 2, line_total: 3, groups: [] }); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('2 个物料组 · 3 条采购明细')
+    expect(api.detail.mock.calls).toEqual([['source-1'], ['source-1']])
+  })
+
+  it('keeps a successful zero list distinct from a failed or forbidden linked detail', async () => {
+    api.detail.mockRejectedValue({ isAxiosError: true, response: { status: 403 } })
+    await openLinkedPurchase()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('0 个物料组 · 0 条采购明细')
+    expect(wrapper!.get('.fabric-group-total').text()).not.toContain('无读取权限')
+  })
+
+  it('ends the list summary independently while the linked detail is still pending', async () => {
+    let finishDetail!: (value: PurchaseDetail) => void
+    api.detail.mockImplementationOnce(() => new Promise(resolve => { finishDetail = resolve }))
+    api.groups.mockRejectedValueOnce({ isAxiosError: true, code: 'ERR_NETWORK' })
+    await openLinkedPurchase()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取失败')
+    finishDetail(linkedDetail); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('读取失败')
+  })
+
+  it('replaces valid counts with the actual background-read failure state', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    api.detail.mockRejectedValue({ isAxiosError: true, response: { status: 404 } })
+    api.groups.mockResolvedValueOnce({ total: 2, line_total: 3, groups: [] })
+    await openLinkedPurchase()
+    let rejectRead!: (error: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRead = reject }))
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('2 个物料组 · 3 条采购明细')
+    rejectRead({ isAxiosError: true, response: { status: 403 } }); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toBe('无读取权限')
+  })
+
+  it('does not let an obsolete list failure replace the current successful summary', async () => {
+    let rejectOld!: (error: unknown) => void
+    api.groups.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject }))
+    api.detail.mockResolvedValue(linkedDetail)
+    const router = await openLinkedPurchase()
+    await router.push('/receipts?factory=huakang-c&view=pending'); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('0 个物料组 · 0 条采购明细')
+    rejectOld({ isAxiosError: true, response: { status: 403 } }); await flushPromises()
+    expect(wrapper!.get('.fabric-group-total').text()).toContain('0 个物料组 · 0 条采购明细')
+  })
+
+  it('keeps the current pending rows and paging while an automatic refresh is outstanding', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const line = { ...linkedDetail, facts: { ...linkedDetail.facts, order_no: 'PO-AUTO' } }
+    api.lines.mockResolvedValue({ total: 1, items: [line] })
+    const view = await open('pending')
+    let finish!: (value: unknown) => void
+    api.lines.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const tbody = view.get('tbody')
+    const originalRow = tbody.get('tr').element
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(view.text()).not.toContain('正在查询采购资料')
+    expect(view.text()).toContain('共 1 条')
+    expect(tbody.get('tr').element).toBe(originalRow)
+    finish({ total: 1, items: [{ ...line, warehouse_outstanding_quantity: '2' }] }); await flushPromises()
+    expect(tbody.get('tr').element).toBe(originalRow)
+    expect(tbody.get('[data-label="剩余待收"]').text()).toContain('2')
+  })
+
+  it('returns focus to purchase search when a deep-linked detail closes', async () => {
+    api.detail.mockResolvedValueOnce(linkedDetail)
+    await openLinkedPurchase()
+    const close = document.querySelector<HTMLButtonElement>('[aria-label="关闭采购来源详情"]')!
+    expect(document.activeElement).toBe(close)
+    close.click()
+    await vi.waitFor(() => {
+      expect(document.querySelector('[role="dialog"]')).toBeNull()
+      expect(document.activeElement).toBe(wrapper!.get('input').element)
+    })
+  })
+
+  it('returns to the purchase list on a missing detail and preserves the factory and view', async () => {
+    api.detail.mockRejectedValueOnce({ isAxiosError: true, response: { status: 404 } })
+    const router = await openLinkedPurchase()
+    expect(wrapper!.get('[role="alert"]').text()).toContain('找不到该厂区的原采购明细')
+    expect(button('重试原采购明细')).toBeUndefined()
+    await button('返回采购列表').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ factory: 'huakang-c', view: 'pending' })
+    expect(api.detail).toHaveBeenCalledExactlyOnceWith('source-1')
+    expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper!.get('input').element)
+  })
+
+  it('retries the same linked detail when the first detail and list reads lose connection', async () => {
+    const offline = { isAxiosError: true, code: 'ERR_NETWORK' }
+    api.groups.mockRejectedValueOnce(offline)
+    api.detail.mockRejectedValueOnce(offline).mockResolvedValueOnce(linkedDetail)
+    await openLinkedPurchase()
+    expect(button('返回采购列表')).toBeUndefined()
+    expect(wrapper!.findAll('[role="alert"]').map(alert => alert.text())).toEqual([expect.stringContaining('无法打开原采购明细')])
+    await button('重试原采购明细').trigger('click')
+    await flushPromises()
+    expect(api.detail.mock.calls).toEqual([['source-1'], ['source-1']])
+    expect(api.groups).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('采购来源详情')
+    expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('keeps the original target after a read timeout and opens it on retry', async () => {
+    api.detail.mockRejectedValueOnce({
+      isAxiosError: true, code: 'ECONNABORTED', config: { method: 'get' },
+    }).mockResolvedValueOnce(linkedDetail)
+    await openLinkedPurchase()
+    expect(wrapper!.get('[role="alert"]').text()).toContain('读取超时')
+    expect(button('返回采购列表')).toBeUndefined()
+    await button('重试原采购明细').trigger('click')
+    await flushPromises()
+    expect(api.detail.mock.calls).toEqual([['source-1'], ['source-1']])
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('PO-11')
+    expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it.each([false, true])('preserves retry focus through consecutive forbidden responses (user moved focus: %s)', async (moved) => {
+    const forbidden = { isAxiosError: true, response: { status: 403 } }
+    api.detail.mockRejectedValue(forbidden)
+    await openLinkedPurchase()
+    const search = wrapper!.get('input').element
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let rejectRead!: (error: unknown) => void
+      api.detail.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRead = reject }))
+      const retry = button('重试原采购明细')
+      retry.element.focus()
+      await retry.trigger('click')
+      expect(retry.attributes('disabled')).toBeDefined()
+      retry.element.blur()
+      if (moved) search.focus()
+      rejectRead(forbidden)
+      await flushPromises()
+      expect(document.activeElement).toBe(moved ? search : button('重试原采购明细').element)
+      window.dispatchEvent(new Event('focus'))
+      await flushPromises()
+      expect(document.activeElement).toBe(moved ? search : button('重试原采购明细').element)
+    }
+  })
+
+  it('restores retry focus after an authorization refresh replaces the button', async () => {
+    const forbidden = { isAxiosError: true, response: { status: 403 } }
+    api.groups.mockRejectedValue(forbidden)
+    api.detail.mockRejectedValue(forbidden)
+    await openLinkedPurchase()
+    let rejectRead!: (error: unknown) => void
+    api.detail.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRead = reject }))
+    const retry = button('重试原采购明细')
+    retry.element.focus()
+    await retry.trigger('click')
+    retry.element.blur()
+    session.authorizationVersion++
+    await flushPromises()
+    rejectRead(forbidden)
+    await flushPromises()
+    expect(document.activeElement).toBe(button('重试原采购明细').element)
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(wrapper!.findAll('[role="alert"]')).toHaveLength(1)
+  })
+
+  it.each(['account', 'source'])('cancels pending retry focus when the %s changes', async (changed) => {
+    const forbidden = { isAxiosError: true, response: { status: 403 } }
+    api.detail.mockRejectedValue(forbidden)
+    const router = await openLinkedPurchase()
+    let rejectRead!: (error: unknown) => void
+    api.detail.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRead = reject }))
+    const retry = button('重试原采购明细')
+    retry.element.focus()
+    await retry.trigger('click')
+    retry.element.blur()
+    if (changed === 'account') session.currentUser = { id: 'other' }
+    else await router.push('/receipts?factory=huakang-c&view=pending&purchase_id=source-2')
+    await flushPromises()
+    rejectRead(forbidden)
+    await flushPromises()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('discards an in-flight detail when authorization changes and the new read is refused', async () => {
+    let finish!: (value: PurchaseDetail) => void
+    api.detail.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      .mockRejectedValue({ isAxiosError: true, response: { status: 403 } })
+    await openLinkedPurchase()
+    session.authorizationVersion++
+    await flushPromises()
+    finish(linkedDetail)
+    await flushPromises()
+    expect(api.detail.mock.calls).toEqual([['source-1'], ['source-1']])
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(wrapper!.text()).not.toContain('PO-11')
+    expect(wrapper!.text()).toContain('当前账号没有此操作的权限')
+  })
+
   async function submitUnknownImport(mounted = false) {
     if (!mounted) await open()
     await file(); api.preview.mockResolvedValue(preview)

@@ -402,17 +402,24 @@ describe('module center factory scope', () => {
       )
 
       const huakangCModules = moduleSnapshots(wrapper)
+      // This session has no grants for the C-only material and procurement workspaces.
+      const restricted = ['material-planning', 'material-purchasing', 'process-material-dates', 'carton-procurement', 'material-handover']
       const expectedHuakangCModules = departmentModuleRegistry[departmentId].modules
         .filter((module) => !module.factoryIds?.length || module.factoryIds.includes('huakang-c'))
-        .filter((module) => departmentId !== 'pmc-warehouse' || !['carton-procurement', 'material-handover'].includes(module.id))
+        .filter((module) => !restricted.includes(module.id))
       expect(huakangCModules).toHaveLength(expectedHuakangCModules.length)
       expect(huakangCModules.map(({ id, title, childLabels }) => ({ id, title, childLabels }))).toEqual(
         expectedHuakangCModules.map((module) => ({
           id: module.id,
-          title: module.title,
-          childLabels: module.children.filter(child => departmentId !== 'pmc-warehouse' || module.id !== 'carton-mark-check' || ['客人 Excel', '印刷 PDF', '内容核对'].includes(child.label)).map((child) => child.label),
+          title: module.id === 'bom-process' ? '工程 BOM' : module.title,
+          childLabels: module.id === 'bom-process' ? ['工程资料'] : module.children.filter(child => departmentId !== 'pmc-warehouse' || module.id !== 'carton-mark-check' || ['客人 Excel', '印刷 PDF', '内容核对'].includes(child.label)).map((child) => child.label),
         })),
       )
+      if (departmentId === 'engineering') {
+        expect(huakangCModules.find(module => module.id === 'bom-process')).toMatchObject({
+          route: undefined, href: undefined, stats: '工程建档 · 审核留存', metrics: [], todos: [],
+        })
+      }
       expectNoForeignFactoryData(wrapper, huakangCModules, 'huakang-c', '华康C')
       if (departmentId === 'pmc-warehouse') {
         const rawMaterialModule = huakangCModules.find((module) => module.id === 'raw-material-management')
@@ -428,7 +435,17 @@ describe('module center factory scope', () => {
       const huakangDModules = moduleSnapshots(wrapper)
       // Huakang C discovery workspaces and the Huakang D-only shipping placeholder
       // are separate from the shared module structure.
-      expect(sharedStructure(huakangDModules.filter(module => module.id !== 'shipping-management'))).toEqual(sharedStructure(huakangCModules.filter(module => !['cutting', 'fabric-warehouse', 'semi-finished-warehouse', 'material-handover'].includes(module.id))))
+      const cSpecific = ['cutting', 'fabric-warehouse', 'semi-finished-warehouse', 'material-handover', 'bom-process']
+      expect(sharedStructure(huakangDModules.filter(module => !['shipping-management', 'bom-process'].includes(module.id))))
+        .toEqual(sharedStructure(huakangCModules.filter(module => !cSpecific.includes(module.id))))
+      if (departmentId === 'engineering') {
+        const generic = departmentModuleRegistry.engineering.modules.find(module => module.id === 'bom-process')!
+        expect(huakangDModules.find(module => module.id === generic.id)).toMatchObject({
+          title: generic.title, route: '/modules/engineering/bom-process?factory=huakang-d',
+          childLabels: generic.children.map(child => child.label),
+          metrics: generic.statusMetrics.map(({ label }) => ({ label, value: '—' })), todos: [],
+        })
+      }
       expectNoForeignFactoryData(wrapper, huakangDModules, 'huakang-d', '华康D')
       if (departmentId === 'pmc-warehouse') {
         const rawMaterialModule = huakangDModules.find((module) => module.id === 'raw-material-management')

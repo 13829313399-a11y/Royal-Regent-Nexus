@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { PendingPurchase } from './ordersApi'
+import CuttingPurchaseSourceReference from './CuttingPurchaseSourceReference.vue'
 
-const props = defineProps<{ purchase: PendingPurchase }>()
+const props = defineProps<{ purchase: PendingPurchase; canOpen?: boolean }>()
 const prior = computed(() => props.purchase.batches.length ? null : props.purchase.prior_purchase_reply)
 const batches = computed(() => prior.value?.batches ?? props.purchase.batches)
 const unit = (row: number) => props.purchase.requisition?.lines.find(line => line.row === row)?.unit ?? ''
@@ -14,6 +15,7 @@ const unit = (row: number) => props.purchase.requisition?.lines.find(line => lin
     <ul v-if="batches.length">
       <li v-for="(batch, index) in batches" :key="index">
         需求行 {{ batch.row + 1 }} · {{ batch.expected_date }} · {{ batch.quantity }} {{ unit(batch.row) }} · {{ batch.supplier }} · {{ batch.purchase_reference }}
+        <CuttingPurchaseSourceReference v-if="batch.purchase_source" :source="batch.purchase_source" :can-open="canOpen" />
       </li>
     </ul>
     <p v-else-if="purchase.has_purchase_evidence">原需求有历史交期记录，当前版本暂未提供批次明细。</p>

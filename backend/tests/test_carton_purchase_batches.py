@@ -50,7 +50,14 @@ def test_confirmed_batch_is_one_supplier_document_with_atomic_initial_snapshots(
         existing = setup_portal(client)
         accept_all(client)
         login_as(client, "admin")
-        drafts = [_create_order(client, submit_supplier=False) for _ in range(2)]
+        drafts = []
+        for order_note in ("随箱附合格证", ""):
+            payload = _order_payload()
+            payload["note"] = order_note
+            payload["lines"][1]["process_note"] = "" if order_note else "沿长边压线"
+            created = client.post(PROCUREMENT + "/orders", json=payload)
+            assert created.status_code == 201, created.text
+            drafts.append(created.json())
         response = submit_batch(client, [existing, *drafts])
         assert response.status_code == 200, response.text
         saved = response.json()
@@ -112,6 +119,14 @@ def test_confirmed_batch_is_one_supplier_document_with_atomic_initial_snapshots(
         assert {row[18] for row in rows[1:]} == {source["document_no"] for source in merged["source_documents"]}
         _, imported = workbook_rows(client.post(BASE + "/documents/order-import.xlsx", json={"documents": selections}))
         assert len(imported) == 5
+        expected_notes = {(order["order_no"], paper["packaging_type"]): order["note"] or paper["process_note"] or None
+                          for order in drafts for paper in order["lines"]}
+        assert {(row[4], row[11]): row[-1] for row in rows[1:]} == expected_notes
+        order_numbers = {source["document_no"]: source["order_no"] for source in merged["source_documents"]}
+        for row in imported[1:]:
+            source_no, _, remark = row[18].partition("；")
+            assert remark == (expected_notes[order_numbers[source_no], row[8]] or "")
+            assert row[12:14] == (None, None)
         assert all(row[19] == batch["document_no"] for row in imported[1:])
         assert sum(row[6] for row in imported[1:]) == sum(float(line["change_quantity"]) for line in merged["lines"])
         assert next(row for row in supplier_documents(client) if row["id"] == batch["id"])["export_count"] == 2

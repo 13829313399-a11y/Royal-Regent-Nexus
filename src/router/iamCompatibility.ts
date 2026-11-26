@@ -8,12 +8,13 @@ const taskPattern = /^(position|registration|password-reset|identity-change):[\p
 export function consolidatedIamTarget(
   to: Pick<RouteLocationNormalized, 'path' | 'query' | 'hash'>,
   enabled: boolean,
+  studio = false,
 ) {
   if (!enabled || !/^\/system\/(users(?:\/|$)|iam\/(?:roles|permissions|requests|audit)$)/.test(to.path)) return
   const input = to.query
   if (input.route_error) return
   const fail = (code: string) => ({ path: '/system/users', query: { route_error: code }, replace: true as const })
-  for (const name of ['task', 'item', 'person', 'request_id', 'panel', 'source', 'view', 'tab'])
+  for (const name of ['task', 'item', 'person', 'request_id', 'panel', 'source', 'view', 'tab', 'role', 'compare', 'type', 'binding'])
     if (Array.isArray(input[name])) return fail('ambiguous')
   const task = single(input.task), item = single(input.item), person = single(input.person), request = single(input.request_id)
   if ((task && !taskPattern.test(task)) || (item && !taskPattern.test(item)) ||
@@ -32,34 +33,42 @@ export function consolidatedIamTarget(
   if (access && person && access[1] !== person) return fail('conflict')
   const query: LocationQueryRaw = {}
   // Search text can include personal information: keep it in component memory, not the URL.
-  for (const key of ['factory', 'org', 'kind', 'state', 'page', 'limit', 'from_at', 'to_at']) {
+  for (const key of ['factory', 'org', 'kind', 'state', 'page', 'limit', 'from_at', 'to_at', ...(studio ? ['department', 'has_packages', 'identity_mode', 'status', 'role_id'] : [])]) {
     const value = single(input[key])
     if (value && value.length <= 160 && !/[<>\r\n]/.test(value)) query[key] = value
   }
   let path = to.path
-  if (path.endsWith('/permissions') || input.tab === 'packages') path = '/system/iam/roles'
+  if (path.endsWith('/permissions') || (input.tab === 'packages' && !(studio && person))) path = '/system/iam/roles'
   else if (path.endsWith('/requests') && !targetTask || input.tab === 'history') {
     path = '/system/iam/audit'
     query.source = input.tab === 'history' ? 'position' : 'identity-change'
   }
   if (path === '/system/iam/roles') {
     if (safeId(single(input.role))) query.role = single(input.role)
+    if (studio && safeId(single(input.compare))) query.compare = single(input.compare)
+    if (studio && ['members', 'permissions'].includes(single(input.tab) || '')) query.tab = single(input.tab)
   } else if (path === '/system/iam/audit') {
     const source = single(input.source) || single(query.source)
     if (source && !['position', 'registration', 'password-reset', 'identity-change', 'audit'].includes(source)) return fail('invalid')
     if (source) query.source = source
+    if (studio && !source && ['all','registration','position','access','password','identity-change'].includes(single(input.type) || '')) query.type = input.type
     if (person) query.person = person
     if (targetTask) query.task = targetTask
   } else {
     path = '/system/users'
     const personId = access?.[1] || person
     const isPeople = !!personId || ['people', 'users'].includes(single(input.tab) || '') || input.view === 'people' || to.path.endsWith('/advanced')
-    query.view = targetTask ? 'todo' : isPeople ? 'people' : 'todo'
+    query.view = !targetTask && isPeople ? 'people' : studio ? 'inbox' : 'todo'
     if (personId) {
       query.person = personId
       const panel = access ? 'exceptions' : to.path.endsWith('/advanced') ? 'advanced' : single(input.panel) || 'profile'
       if (!['profile', 'exceptions', 'account', 'manage', 'advanced'].includes(panel)) return fail('invalid')
       query.panel = panel
+      if (studio && ['packages','effective','timeline'].includes(single(input.tab) || '')) query.tab = input.tab
+      if (studio && panel === 'manage' && query.tab === 'packages' && input.binding) {
+        if (!safeId(single(input.binding))) return fail('invalid')
+        query.binding = input.binding
+      }
     }
     if (targetTask) query.task = targetTask
     if (input.tab === 'password-reset') query.kind = 'password-reset'

@@ -26,6 +26,7 @@
   window.__QC_BACKEND_OK = false;
   window.__QC_LAST_SYNC = null;
   window.__QC_PENDING_WRITES = 0;
+  window.__QC_CATALOG_VERSIONS = { partners: 0, defectLib: 0 };
   function trackWrite(promise) {
     window.__QC_PENDING_WRITES++;
     return promise.finally(function () { window.__QC_PENDING_WRITES--; });
@@ -65,6 +66,10 @@
       }));
       if (Array.isArray(data.defectLib)) sessionStorage.setItem(KEY.defectLib, JSON.stringify(data.defectLib));
       if (Array.isArray(data.partners))  sessionStorage.setItem(KEY.partners,  JSON.stringify(data.partners));
+      window.__QC_CATALOG_VERSIONS = {
+        partners: Number(data.catalogVersions?.partners) || 0,
+        defectLib: Number(data.catalogVersions?.defectLib) || 0,
+      };
 
       window.__QC_BACKEND_OK = true;
       console.log('[QC后端] 预加载成功：公司', COMPANY, '记录', (data.records || []).length,
@@ -138,13 +143,62 @@
   function pushPartners(list) {
     var l = list;
     if (!Array.isArray(l)) { try { l = JSON.parse(sessionStorage.getItem(KEY.partners) || '[]'); } catch (e) { l = []; } }
-    return post(API_BASE + '/api/partners?company=' + COMPANY, { partners: l });
+    return pushCatalog('partners', l);
   }
   function pushDefects(lib) {
     var l = lib;
     if (!Array.isArray(l)) { try { l = JSON.parse(sessionStorage.getItem(KEY.defectLib) || '[]'); } catch (e) { l = []; } }
-    return post(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: l });
+    return pushCatalog('defectLib', l);
   }
+  function pushCatalog(key, list) {
+    return saveCatalog(key, list).then(function (result) {
+      if (!result.ok && window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
+      return result.ok;
+    });
+  }
+  var activeCatalogWrites = new Set();
+  async function saveCatalog(key, list) {
+    if (activeCatalogWrites.has(key)) return { ok: false, status: 0, detail: '名单正在保存，请稍后重试' };
+    activeCatalogWrites.add(key);
+    try {
+      var resource = key === 'partners' ? 'partners' : 'defects';
+      var body = { [key]: list, baseRevision: window.__QC_CATALOG_VERSIONS[key] };
+      var result = await postStrict(API_BASE + '/api/' + resource + '?company=' + COMPANY, body);
+      if (result.ok && Number.isInteger(result.revision) && result.revision >= 0)
+        window.__QC_CATALOG_VERSIONS[key] = result.revision;
+      return result;
+    } finally {
+      activeCatalogWrites.delete(key);
+    }
+  }
+  function postStrict(url, body) {
+    if (window.__QC_BACKEND_OK !== true) return Promise.resolve({ ok: false, status: 0, detail: '尚未连接服务器，请刷新后重试' });
+    try {
+      return trackWrite(fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          var detail = typeof data?.detail === 'string' ? data.detail : '';
+          window.__QC_LAST_SYNC = { url: url, ok: r.ok, status: r.status, detail: detail, time: new Date().toISOString() };
+          return { ok: r.ok, status: r.status, detail: detail, revision: data?.revision };
+        });
+      }).catch(function (err) {
+        var msg = err && err.message || '网络异常';
+        window.__QC_LAST_SYNC = { url: url, ok: false, error: msg, time: new Date().toISOString() };
+        return { ok: false, status: 0, detail: '网络异常，请稍后重试' };
+      }));
+    } catch (e) {
+      return Promise.resolve({ ok: false, status: 0, detail: '提交异常，请稍后重试' });
+    }
+  }
+  window.__QC_SAVE_DEFECTS = function (lib) {
+    return saveCatalog('defectLib', lib);
+  };
+  window.__QC_SAVE_PARTNERS = function (list) {
+    return saveCatalog('partners', list);
+  };
 
   /* ── 劫持 app.js 的三个写入函数（此时 app.js 已解析，函数已挂到 window）── */
   function patchWriters() {

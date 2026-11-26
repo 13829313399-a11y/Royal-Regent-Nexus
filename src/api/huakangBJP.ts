@@ -13,10 +13,11 @@ export interface JPPreview {
   quantity_selections: Array<{ source_id: string; source: string; table_index: number; columns: Array<{ index: number; sample: string }> }>;
 }
 export interface JPExportRecord { id: string; actor: string; created_at: string; prefix: string; first_number: number; last_number: number; row_count: number; numbering_status?: 'allocated' | 'pending' }
-export interface JPClipboardResult { text: string; row_count: number; column_count: 44 }
+export interface JPClipboardResult { text: string; html?: string; row_count: number; column_count: 44 }
 const base = '/huakang-b-jp'
 const scope = (factory: string) => `factory_id=${encodeURIComponent(factory)}`
-const fileConfig = { timeout: 270_000, headers: { 'X-JP-Intake': '1' } }
+// Override the shared client's JSON default; Axios supplies the multipart boundary.
+const fileConfig = { timeout: 270_000, headers: { 'Content-Type': 'multipart/form-data', 'X-JP-Intake': '1' } }
 
 export const huakangBJPApi = {
   async clearConfirmed(data: FormData, signal?: AbortSignal) { return (await http.post<Partial<Record<JPReferenceKind, JPReference>>>(`${base}/references/confirmed/clear`, data, { ...fileConfig, ...(signal ? { signal } : {}) })).data },

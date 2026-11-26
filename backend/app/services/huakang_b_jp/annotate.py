@@ -21,20 +21,19 @@ def annotate(result, schedule_ref, price_table):
         baby = str(o.get('baby_item') or '').strip()
         long_code = str(o.get('long_code') or '').strip()
         case_pack = _case_pack_of(long_code)
-        detail = schedule_ref.get_item_detail(baby) if schedule_ref.loaded else None
+        detail = schedule_ref.get_item_detail(baby, long_code) if schedule_ref.loaded else None
         if detail:
             # 排期表里有这个货号的资料，直接带出；装箱数以本单长货号为准（不同包装版本装箱数不同）
             o['item_t'] = detail.get('货号') or baby
             o['sub_item_t'] = detail.get('子货号') or ''
-            o['product_t'] = detail.get('产品名称') or ''
+            o['product_t'] = str(o.get('description') or '').strip() or detail.get('产品名称') or ''
             carton_raw = case_pack or detail.get('装箱数') or ''
         else:
             # 新货号：按排期表「货号 名称」「货号 后缀」的格式用邮件内容拼
             o['item_t'] = baby
-            suffix = long_code.split('-')[-1] if '-' in long_code else ''
-            o['sub_item_t'] = (baby + ' ' + suffix).strip()
+            o['sub_item_t'] = ''  # PTQ/CWQ are long-code suffixes, not a child-item list.
             desc = str(o.get('description') or '').strip()
-            o['product_t'] = (baby + ' ' + desc).strip()
+            o['product_t'] = desc
             carton_raw = case_pack
         # 装箱数必须是整数：数量除不尽（如 1004/3）产生的小数取整并提示人工核对
         carton_norm, carton_rounded = norm_carton(carton_raw)
@@ -121,7 +120,7 @@ def annotate(result, schedule_ref, price_table):
         if not schedule_ref.loaded:
             continue
         exists, known, suggest, version = schedule_ref.check_row(
-            o.get('customer'), o.get('customer_po'), o.get('baby_item'), o.get('qty'))
+            o.get('customer'), o.get('customer_po'), o.get('baby_item'), o.get('qty'), long_code)
         o['exists'] = exists
         o['known_item'] = known
         o['country_ref'] = suggest

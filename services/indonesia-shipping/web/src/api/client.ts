@@ -3,6 +3,7 @@ import { message } from 'antd'
 import { getSessionGeneration, getStoredSession, saveSession, invalidateNexusSession } from '../auth/permissions'
 import { beginNavigationWrite } from '../auth/navigationState'
 import { apiBase, nexusBase } from '../deployment'
+import { refreshMaterialAlerts } from '../utils/materialAlertRefresh'
 
 export const api = axios.create({ baseURL: apiBase(import.meta.env.BASE_URL) })
 
@@ -27,6 +28,7 @@ api.interceptors.response.use(
     ;(resp.config as any).finishNexusWrite?.()
     if (nexusBase() && resp.config.url !== '/session' && (resp.config as any).nexusGeneration !== getSessionGeneration())
       throw new axios.CanceledError('已忽略旧会话的响应')
+    if (!['get', 'head', 'options'].includes(resp.config.method || 'get')) refreshMaterialAlerts()
     return resp
   },
   (error) => {

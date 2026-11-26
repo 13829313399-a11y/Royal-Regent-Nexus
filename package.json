@@ -17,7 +17,14 @@
     "typecheck:test": "vue-tsc --noEmit -p tsconfig.test.json",
     "check:assistant-help": "node scripts/check-assistant-help.mjs",
     "check:tailwind-sources": "node scripts/check-tailwind-sources.mjs",
-    "dev:web": "vite --host 127.0.0.1 --port 5173 --strictPort"
+    "dev:web": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "task:open": "node scripts/close-task.mjs open",
+    "task:knowledge": "node scripts/close-task.mjs knowledge",
+    "task:seal": "node scripts/close-task.mjs seal",
+    "task:record": "node scripts/close-task.mjs record",
+    "task:close": "node scripts/close-task.mjs close",
+    "task:restore": "node scripts/close-task.mjs restore",
+    "test:task-lifecycle": "node --test scripts/close-task.test.mjs"
   },
   "dependencies": {
     "@lucide/vue": "^1.21.0",

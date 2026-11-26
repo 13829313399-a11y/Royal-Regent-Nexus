@@ -1,64 +1,172 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { ArrowUpRight, Clock3, Pin, Archive, X, CheckCheck } from '@lucide/vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import { Archive, ArrowUpRight, Pin, X } from '@lucide/vue'
+import { Button } from '@/components/ui'
 import { useWorkCenterStore } from '@/stores/workCenter'
-import { useAuthStore } from '@/stores/auth'
 import { workCenterApi } from '@/api/workCenter'
-import { entryRoute } from './routes'
 import { formatBusinessDateTime } from '@/lib/dateTime'
-import Button from '@/components/ui/button/Button.vue'
+import { canArchive, entrySummary, moduleMeta } from './metadata'
+import { entryRoute } from './routes'
+import { useWorkActions } from './useWorkActions'
+import WorkIconButton from './WorkIconButton.vue'
+import WorkSnoozePopover from './WorkSnoozePopover.vue'
+import WorkStageStepper from './WorkStageStepper.vue'
 import type { WorkEntry } from './types'
-const props = defineProps<{ entry: WorkEntry }>()
-defineEmits<{ close: [] }>()
-const center = useWorkCenterStore(), auth = useAuthStore()
-const timeline = ref<{ id: string; occurred_at: string; summary: string }[]>([])
-const timelineCursor = ref<string | null>(null), timelineError = ref(''), customTime = ref('')
-let sequence = 0
-async function loadTimeline(append = false) {
-  const seq = ++sequence, id = props.entry.id
-  try {
-    const result = await workCenterApi.events(id, append ? timelineCursor.value ?? undefined : undefined)
-    if (seq !== sequence || props.entry.id !== id) return
-    timeline.value = append ? [...timeline.value, ...result.items] : result.items; timelineCursor.value = result.next_cursor; timelineError.value = ''
-  } catch { if (seq === sequence) timelineError.value = '经过暂时无法读取' }
-}
-watch(() => props.entry.id, () => { timeline.value = []; void loadTimeline() }, { immediate: true })
-function snooze(until: string | null) { return center.patch(props.entry, { state_version: props.entry.personal.state_version, snoozed_until: until }) }
-function customSnooze() {
-  // datetime-local is explicitly interpreted in the business timezone.
-  if (customTime.value) void snooze(new Date(`${customTime.value}:00+08:00`).toISOString())
-}
-</script>
 
+const props = defineProps<{ entry: WorkEntry; spatial?: boolean; sheet?: boolean }>()
+defineEmits<{ close: [] }>()
+const center = useWorkCenterStore(),
+  actions = useWorkActions()
+const timeline = ref<{ id: string; occurred_at: string; summary: string }[]>([])
+const cursor = ref<string | null>(null),
+  historyError = ref(''),
+  loading = ref(false)
+const viewer = computed(() => center.snapshot?.context.viewer_key)
+let generation = 0
+async function loadHistory(append = false) {
+  const seq = ++generation,
+    identity = viewer.value,
+    id = props.entry.id
+  loading.value = true
+  historyError.value = ''
+  try {
+    const next = await workCenterApi.events(id, append ? (cursor.value ?? undefined) : undefined)
+    if (seq !== generation || viewer.value !== identity || id !== props.entry.id) return
+    timeline.value = append ? [...timeline.value, ...next.items] : next.items
+    cursor.value = next.next_cursor
+  } catch (error) {
+    if (seq === generation && viewer.value === identity && !center.accessDenied(error))
+      historyError.value = '经过暂时无法读取'
+  } finally {
+    if (seq === generation) loading.value = false
+  }
+}
+watch(
+  [() => props.entry.id, viewer],
+  () => {
+    timeline.value = []
+    cursor.value = null
+    void loadHistory()
+  },
+  { immediate: true },
+)
+onUnmounted(() => {
+  generation++
+})
+const summary = computed(() => entrySummary(props.entry))
+const actionable = computed(() => props.entry.actions.find((action) => action.enabled))
+const attribution = computed(() =>
+  [
+    props.entry.source_factory?.label,
+    props.entry.department_label,
+    props.entry.responsible_label,
+    props.entry.viewer_relation === 'assignee' && props.entry.module === 'internal_quote' ? '指定审核人' : '',
+  ]
+    .filter(Boolean)
+    .join(' · '),
+)
+</script>
 <template>
   <section class="nc-detail" aria-label="事项预览">
-    <header class="nc-detail-top"><span>事项预览</span><button type="button" aria-label="关闭预览" class="nc-icon-button" @click="$emit('close')"><X :size="18" /></button></header>
-    <div class="nc-detail-content">
-      <span class="nc-stage">{{ entry.lifecycle === 'superseded' ? '已被取代' : entry.lifecycle === 'resolved' ? '本阶段已完成' : entry.kind === 'info' ? '知会消息' : entry.verification_state === 'unverified' ? '业务状态待核对' : entry.can_act_now ? '当前可处理' : '我在等待' }}</span>
-      <h2>{{ entry.title }}</h2><p class="nc-detail-ref">{{ entry.reference_label }}</p>
-      <p class="nc-summary-text">{{ entry.summary }}</p>
-      <template v-if="entry.details?.length"><h3>{{ entry.module === 'account_requests' ? '申请详情' : '单据详情' }}</h3><dl class="nc-request-details"><div v-for="field in entry.details" :key="field.label"><dt>{{ field.label }}</dt><dd>{{ field.format === 'datetime' ? formatBusinessDateTime(field.value) : field.value }}</dd></div></dl><h3>办理信息</h3></template>
-      <dl><div><dt>来源厂区</dt><dd>{{ entry.source_factory?.label || '个人账户' }}</dd></div><div v-if="entry.execution_factory"><dt>执行厂区</dt><dd>{{ entry.execution_factory.label }}</dd></div><div><dt>责任部门</dt><dd>{{ entry.department_label || '本人' }}</dd></div><div><dt>业务期限</dt><dd>{{ entry.due_at ? formatBusinessDateTime(entry.due_at) : '未设期限' }}</dd></div></dl>
-      <div class="nc-why"><CheckCheck :size="18" /><div><strong>为什么需要我</strong><p>{{ entry.why_me }}</p></div></div>
-      <p v-if="entry.unavailable_reason" class="nc-message">{{ entry.unavailable_reason }}</p>
-      <h3>最近经过</h3>
-      <ol class="nc-timeline"><li v-for="event in timeline" :key="event.id"><p>{{ event.summary }}</p><time>{{ formatBusinessDateTime(event.occurred_at) }}</time></li></ol>
-      <p v-if="!timeline.length" class="nc-muted">{{ timelineError || '当前阶段直接核验自源业务；详细审计请打开原单据。' }}</p>
-      <Button v-if="timelineCursor" variant="ghost" size="sm" @click="loadTimeline(true)">更早经过</Button>
-      <div class="nc-personal-actions">
-        <Button v-if="entry.viewer_relation === 'watcher' && ['open', 'in_progress'].includes(entry.lifecycle || '')" variant="outline" size="sm" :disabled="center.personalBusy" @click="center.patch(entry, { state_version: entry.personal.state_version, following: entry.personal.following === false })">{{ entry.personal.following === false ? '恢复跟进' : '不再跟进' }}</Button>
-        <Button variant="outline" size="sm" :disabled="center.personalBusy" @click="center.patch(entry, { state_version: entry.personal.state_version, pinned: !entry.personal.pinned })"><Pin :size="14" />{{ entry.personal.pinned ? '取消置顶' : '置顶' }}</Button>
-        <Button v-if="entry.can_act_now" variant="outline" size="sm" :disabled="center.personalBusy" @click="snooze(entry.personal.snoozed_until ? null : new Date(Date.parse(center.snapshot?.context.server_time || new Date().toISOString()) + 3600000).toISOString())"><Clock3 :size="14" />{{ entry.personal.snoozed_until ? '取消稍后' : '1 小时后' }}</Button>
-        <Button v-if="entry.kind === 'info' || ['resolved', 'cancelled', 'superseded'].includes(entry.lifecycle || '')" variant="outline" size="sm" :disabled="center.personalBusy" @click="center.patch(entry, { state_version: entry.personal.state_version, archived: !entry.personal.archived_at })"><Archive :size="14" />{{ entry.personal.archived_at ? '取消归档' : '归档' }}</Button>
+    <header class="nc-detail-bar">
+      <span class="nc-module-label"><span v-if="spatial" data-rr-detail-target class="nc-module-icon rr-detail-target" :class="moduleMeta(entry.module).color" aria-hidden="true"><component :is="moduleMeta(entry.module).icon" :size="17" /></span>{{ moduleMeta(entry.module).label }}</span
+      ><span class="nc-tools"
+        ><WorkIconButton
+          :icon="Pin"
+          :label="entry.personal.pinned ? '取消置顶' : '置顶'"
+          :pressed="entry.personal.pinned"
+          :disabled="center.personalBusy"
+          @activate="
+            center.patch(entry, {
+              pinned: !entry.personal.pinned,
+              state_version: entry.personal.state_version,
+            })
+          " /><WorkSnoozePopover
+          v-if="entry.can_act_now"
+          :entry="entry"
+          :server-time="center.snapshot?.context.server_time" /><WorkIconButton
+          v-if="!sheet"
+          :icon="X"
+          label="关闭预览"
+          @activate="$emit('close')"
+      /></span>
+    </header>
+    <div class="nc-detail-body">
+      <WorkStageStepper :entry="entry" />
+      <h2>{{ entry.reference_label || entry.title }}</h2>
+      <p class="nc-sub">{{ attribution }}</p>
+      <p v-if="summary" class="nc-detail-summary">{{ summary }}</p>
+      <div v-if="entry.unavailable_reason" class="nc-alert">{{ entry.unavailable_reason }}</div>
+      <template v-if="entry.details?.length"
+        ><h3>{{ entry.module === 'account_requests' ? '申请详情' : '单据详情' }}</h3>
+        <dl class="nc-facts">
+          <div v-for="field in entry.details" :key="field.label">
+            <dt>{{ field.label }}</dt>
+            <dd>{{ field.format === 'datetime' ? formatBusinessDateTime(field.value) : field.value }}</dd>
+          </div>
+        </dl></template
+      >
+      <p v-if="entry.due_at" class="nc-sub">业务期限 {{ formatBusinessDateTime(entry.due_at) }}</p>
+      <p
+        v-if="entry.execution_factory && entry.source_factory?.id !== entry.execution_factory.id"
+        class="nc-sub"
+      >
+        执行厂区 {{ entry.execution_factory.label }}
+      </p>
+      <template v-if="timeline.length || historyError"
+        ><h3>最近经过</h3>
+        <ol class="nc-timeline">
+          <li v-for="event in timeline" :key="event.id">
+            <span>{{ event.summary }}</span
+            ><time>{{ formatBusinessDateTime(event.occurred_at) }}</time>
+          </li>
+        </ol>
+        <Button
+          v-if="historyError || cursor"
+          variant="ghost"
+          size="sm"
+          :disabled="loading"
+          @click="loadHistory(!!timeline.length)"
+          >{{ historyError || '更早经过' }}</Button
+        ></template
+      >
+      <div class="nc-tools">
+        <Button
+          v-if="entry.viewer_relation === 'watcher' && !canArchive(entry)"
+          size="sm"
+          variant="ghost"
+          :disabled="center.personalBusy"
+          @click="
+            center.patch(entry, {
+              following: entry.personal.following === false,
+              state_version: entry.personal.state_version,
+            })
+          "
+          >{{ entry.personal.following === false ? '恢复跟进' : '不再跟进' }}</Button
+        >
+        <Button
+          v-if="canArchive(entry)"
+          size="sm"
+          variant="ghost"
+          :disabled="center.personalBusy"
+          @click="
+            center.patch(entry, {
+              archived: !entry.personal.archived_at,
+              state_version: entry.personal.state_version,
+            })
+          "
+          ><Archive :size="14" />{{ entry.personal.archived_at ? '取消归档' : '归档' }}</Button
+        >
       </div>
-      <details v-if="entry.can_act_now" class="nc-custom-snooze"><summary>选择提醒时间</summary><label>上海时间<input v-model="customTime" type="datetime-local" /></label><Button variant="outline" size="sm" :disabled="!customTime || center.personalBusy" @click="customSnooze">设置提醒</Button></details>
-      <p class="nc-muted" v-if="entry.can_act_now">稍后提醒只调整个人提示，仍计入当前责任。</p>
-      <p v-if="center.detailError" class="nc-error" role="alert">{{ center.detailError }}</p>
     </div>
     <footer class="nc-detail-footer">
-      <Button v-if="entry.actions[0]?.mode === 'refresh_identity'" class="w-full" @click="auth.refreshSession().then(() => center.refresh())">刷新账户信息</Button>
-      <Button v-else-if="entryRoute(entry)" as-child class="w-full"><RouterLink :to="entryRoute(entry)!">{{ entry.actions[0]?.label }}<ArrowUpRight :size="16" /></RouterLink></Button>
-      <p v-else class="nc-muted">源业务入口暂不可用，请刷新后重试。</p>
+      <Button
+        v-if="actionable && (actionable.mode === 'refresh_identity' || entryRoute(entry))"
+        class="w-full"
+        @click="actions.open(entry)"
+        >{{ actionable.label }}<ArrowUpRight :size="16"
+      /></Button>
+      <p v-else class="nc-sub">源业务入口暂不可用</p>
     </footer>
   </section>
 </template>

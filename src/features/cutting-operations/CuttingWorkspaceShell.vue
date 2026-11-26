@@ -106,7 +106,7 @@ onBeforeUnmount(() => {
       </RouterLink>
       <RouterLink :to="productionRoute" class="cutting-back"><ArrowLeft :size="16" aria-hidden="true" />生产部</RouterLink>
       <span class="cutting-factory"><Building2 :size="17" aria-hidden="true" />华康 C</span>
-      <UsageGuideDialog :title="currentTitle" description="华康 C 裁床部 · 按当前岗位权限办理，原单与更正全程保留。" :steps="cuttingGuideSteps" :tips="cuttingGuideTips">
+      <UsageGuideDialog spatial :title="currentTitle" description="华康 C 裁床部 · 按当前岗位权限办理，原单与更正全程保留。" :steps="cuttingGuideSteps" :tips="cuttingGuideTips">
         <template #trigger><Button variant="outline" class="cutting-help"><BookOpen :size="17" aria-hidden="true" />使用说明</Button></template>
       </UsageGuideDialog>
       <AccountMenu compact />
@@ -119,7 +119,7 @@ onBeforeUnmount(() => {
         <span>{{ workspace.path === 'planning' ? '生产排期' : workspace.short }}</span>
       </RouterLink>
     </nav>
-    <main ref="main" id="cutting-main" class="cutting-main" tabindex="-1">
+    <main ref="main" id="cutting-main" data-rr-motion-focus class="cutting-main" tabindex="-1">
       <div v-if="verifying || authorizationError" class="cutting-page">
         <SectionPanel class="cutting-content-panel" :title="verifying?'正在核验访问权限':denied?'工作区访问受限':'权限核验暂未完成'">
           <div ref="authorizationAlert" :role="authorizationError?'alert':'status'">

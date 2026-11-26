@@ -61,6 +61,20 @@ def normalize_edu_item(value: Any) -> str:
     return match.group(1) if match else text
 
 
+def full_edu_item(value, source=None) -> str:
+    """Display/order identity uses full codes; only grouping drops the tail."""
+    current = normalize_text(value) or ""
+    raw = normalize_text(source) or ""
+    return raw if raw and normalize_edu_item(raw).casefold() == current.casefold() else current
+
+
+def cell_edu_item(cell) -> str:
+    """Recover a proven source tail from old generated cells without guessing."""
+    raw = str(cell.comment.text or "") if cell.comment else ""
+    prefix = "原始产品型号："
+    return full_edu_item(cell.value, raw[len(prefix):].strip() if raw.startswith(prefix) else None)
+
+
 def _edu_case_pack(value: Any) -> float | int | None:
     if isinstance(value, str):
         text = value.strip()
@@ -130,7 +144,7 @@ def add_derived_fields(row: dict[str, Any], today: date | None = None) -> dict[s
     if is_edu:
         if normalize_text(row.get("item_no")):
             row.setdefault("source_item_no", str(row["item_no"]))
-        row["item_no"] = normalize_edu_item(row.get("item_no"))
+        row["item_no"] = full_edu_item(row.get("item_no"), row.get("source_item_no"))
         row.setdefault("source_case_pack", row.get("case_pack"))
     for field in ("order_date", "inspection_date", "ship_date"):
         row[field] = normalize_date(row.get(field))
@@ -146,6 +160,12 @@ def add_derived_fields(row: dict[str, Any], today: date | None = None) -> dict[s
         row["cartons"] = round(float(qty) / float(pack), 2)
     if row.get("amount") is None and qty is not None and row.get("unit_price") is not None:
         row["amount"] = round(float(qty) * float(row["unit_price"]), 2)
+    if is_edu:
+        for field in ("ship_date", "inspection_date"):
+            original = parse_date(row.get(field))
+            if original:
+                row.setdefault("source_" + field, row[field])
+                row[field] = previous_workday(original, days=0).isoformat()
     if not row.get("inspection_date") and row.get("ship_date") and row.get("customer_type") == "EDU":
         ship = parse_date(row["ship_date"])
         if ship:

@@ -17,6 +17,7 @@ from openpyxl import load_workbook
 from test_molding_sample_api import make_client, login_as
 from test_carton_history_wide import workbook as history_book, row as history_row
 from test_carton_opening_preview import workbook as opening_book
+from test_carton_return_dates import confirm_collaborative_returns
 
 BASE = "/api/carton-procurement"
 FACTORY = {"factory_id": "huaxing"}
@@ -170,10 +171,13 @@ def test_complete_order_import_opening_receive_issue_and_two_month_closing(monke
         assert refreshed(order)["status"] == "COMPLETED"
         check("第二批收齐，外箱两次进价形成3.4元平均库存成本", stock, 785)
 
-        def issue(item, paper, quantity, doc, kind="USAGE"):
+        def issue(item, paper, quantity, doc, *, return_date=None):
             balance = next(row for row in get("/inventory/positions") if row["item_no"] == item and row["packaging_type"] == paper and D(row["balance"]) >= quantity)
             data = {"request_id": uuid4().hex, "reference_movement_id": balance["latest_movement_id"], "location_id": balance["location_id"],
-                "movement_type": "OUTBOUND", "quantity": quantity, "document_no": doc, "reason": "上线验收生产领料" if kind == "USAGE" else "上线验收供应商退货", "issue_kind": kind}
+                "movement_type": "OUTBOUND", "quantity": quantity, "document_no": doc,
+                "reason": "上线验收生产领料", "issue_kind": "USAGE"}
+            if return_date is not None:
+                data.update(issue_kind="RETURN", reason="上线验收供应商退货", return_date=return_date)
             result = post("/inventory/movements", data, 201)
             assert post("/inventory/movements", data, 201)["id"] == result["id"]
             stock[(item, paper)] -= quantity
@@ -192,7 +196,7 @@ def test_complete_order_import_opening_receive_issue_and_two_month_closing(monke
         issue("QA-OPEN", "平卡", 20, "QA-OUT-OPEN-CARD")
         check("历史订单正常收料出库，期初库存也可领用", stock, 594)
         day("2026-09-26")
-        issue("QA-NEW", "外箱", 10, "QA-RETURN-SEP", "RETURN")
+        issue("QA-NEW", "外箱", 10, "QA-RETURN-SEP", return_date="2026-09-26")
         check("供应商退货10个，库存扣平均成本34元", stock, 560)
 
         day("2026-09-30")
@@ -204,6 +208,11 @@ def test_complete_order_import_opening_receive_issue_and_two_month_closing(monke
         late = post(f"/orders/{late['order_no']}/submit-supplier", {"expected_revision": late["revision"]})
         work = get("/supplier-settlements/workspace", period="2026-09", currency="CNY")
         assert len(work["sources"]) == 8
+        returned = next(source for source in work["sources"] if source["document_no"] == "QA-RETURN-SEP")
+        assert returned["date_basis"] == "RETURN_ACTUAL" and returned["return_date"] == "2026-09-26"
+        confirm_collaborative_returns(client, [returned], document_date="2026-09-26", unit_price="4", credit_document_no="QA-CREDIT-SEP")
+        login_as(client, "admin")
+        work = get("/supplier-settlements/workspace", period="2026-09", currency="CNY")
         assert not any(row["item_no"] in {"QA-OPEN", "QA-CROSS-MONTH"} for row in work["sources"])
         # Independent supplier bill values: they are not copied from application totals.
         bill_values = {("QA-DN-SEP-1", "外箱"): (60, 3), ("QA-DN-SEP-1", "内箱"): (100, 1), ("QA-DN-SEP-1", "平卡"): (60, .5),
@@ -226,7 +235,8 @@ def test_complete_order_import_opening_receive_issue_and_two_month_closing(monke
                 "same_price_basis": True, "tax_basis": "INCLUSIVE", "lines": lines}
 
         bill = post("/supplier-settlements", supplier_bill(work, bill_values))
-        assert D(bill["result"]["net_amount"]) == 670 and not bill["result"]["issues"], bill
+        assert not bill["result"]["issues"], bill["result"]
+        assert D(bill["result"]["return_amount"]) == 40 and D(bill["result"]["net_amount"]) == 670
         post(f"/supplier-settlements/{bill['id']}/confirm", {"expected_revision": bill["revision"]}, 409)
         closing = post("/closings/generate", {"period": "2026-09"})[0]
         assert D(closing["ending_amount"]) == 560 and not closing["pricing_issues"]
@@ -238,6 +248,7 @@ def test_complete_order_import_opening_receive_issue_and_two_month_closing(monke
         assert bill["status"] == "CONFIRMED"
         for status in ("PENDING", "CONFIRMED", "LOCKED"):
             closing = post(f"/closings/{closing['id']}/status", {"expected_revision": closing["revision"], "status": status})
+        assert closing["status"] == "LOCKED"
         evidence.append({"month": "2026-09", "supplier_expected": "670", "supplier": bill, "inventory_expected": "560", "inventory": closing})
         check("切换10月后完成9月供应商确认和库存锁账", stock, 560)
 
@@ -265,8 +276,10 @@ def test_complete_order_import_opening_receive_issue_and_two_month_closing(monke
         assert [D(quantities["张"][field]) for field in ("opening_quantity", "inbound_quantity", "outbound_quantity", "ending_quantity")] == [100, 0, 10, 90]
         day("2026-11-01")
         october_bill = post(f"/supplier-settlements/{october_bill['id']}/confirm", {"expected_revision": october_bill["revision"]})
+        assert october_bill["status"] == "CONFIRMED" and D(october_bill["result"]["net_amount"]) == 100
         for status in ("PENDING", "CONFIRMED", "LOCKED"):
             october_closing = post(f"/closings/{october_closing['id']}/status", {"expected_revision": october_closing["revision"], "status": status})
+        assert october_closing["status"] == "LOCKED"
         evidence.append({"month": "2026-10", "supplier_expected": "100", "supplier": october_bill, "inventory_expected": "578", "inventory": october_closing})
         check("切换11月后完成10月供应商确认和库存锁账", stock, 578)
         assert get("/exceptions")["total"] == 0

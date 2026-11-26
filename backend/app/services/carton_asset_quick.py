@@ -83,6 +83,8 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
         if body.purpose=='EVIDENCE' and body.sharing_mode=='SUPPLIER':
             raise HTTPException(403,'客户凭据禁止共享给供应商')
         supplier=supplier_for(db,user,factory,department)
+        if body.target_scope == 'WAREHOUSE':
+            access.require_warehouse_targets(user, factory, department=department, supplier=supplier)
         if supplier and body.purpose=='EVIDENCE':raise HTTPException(403,'客户凭据只允许内部上传')
         recognition,content=prepared
         sha=hashlib.sha256(content).hexdigest()
@@ -103,9 +105,19 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
             selected=body.targets or ([body.target] if body.target else [])
             if not selected:raise HTTPException(422,'请选择关联订单')
             if body.targets and body.target:raise HTTPException(422,'不能同时提交两组关联目标')
-            rows=resolve_many(db,user,factory,selected,supplier,scope=body.target_scope)
+            if body.target_scope == 'WAREHOUSE':
+                picker = targets.warehouse_picker(db, user, factory)
+                rows = picker.save(targets.resolve_selected(picker.rows, selected))
+            else:
+                rows=resolve_many(db,user,factory,selected,supplier,scope=body.target_scope)
         elif body.target is not None or body.targets:raise HTTPException(422,'自动匹配或不关联时不可暗带目标')
         elif parent:rows=targets.valid(db,parent)
+        elif body.target_scope == 'WAREHOUSE':
+            rows = []
+            if contract and body.association == 'AUTO':
+                picker = targets.warehouse_picker(db, user, factory, contract=contract)
+                if len(picker.rows) == 1 and picker.rows[0].get('schedule_state') != 'REVIEW':
+                    rows = picker.save(picker.rows)
         else:
             candidates=targets.candidates(db,user,factory,contract,supplier=supplier,scope=body.target_scope) if contract and body.association=='AUTO' else []
             # Multiple items of one exact customer/contract are legitimate links.
@@ -239,19 +251,25 @@ def associate(db,user,factory,identifier,body,refresh_actor=None):
             _lock_receipt_factory(db,factory)
         supplier=access.external_actor(db,user,asset) if factory==asset.factory_id else None
         access.ensure(db,user,asset,write=True,supplier=supplier,view_factory=factory,collaborate=True,collaboration_action='associate')
+        if body.target_scope == 'WAREHOUSE':
+            access.require_warehouse_targets(user, factory, supplier=supplier, asset=asset)
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_ASSOCIATE',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:
             blocker=association_blocker(db,asset,supplier)
             if blocker:raise HTTPException(409,blocker)
             if body.targets and body.target:raise HTTPException(422,'不能同时提交两组关联目标')
-            rows=resolve_many(db,user,factory,body.targets or ([body.target] if body.target else []),supplier,scope=body.target_scope,retain=asset)
+            selected = body.targets or ([body.target] if body.target else [])
+            if body.target_scope == 'WAREHOUSE':
+                picker = targets.warehouse_picker(db, user, factory, asset=asset)
+                rows = picker.save(targets.resolve_selected(picker.rows, selected))
+            else:
+                rows=resolve_many(db,user,factory,selected,supplier,scope=body.target_scope,retain=asset)
             lifecycle.bump(db,asset,body.revision)
             if supplier and collaboration.internal(asset):
                 collaboration.record(db,user,asset,supplier,collaboration.TARGETS,targets=rows)
             else:
                 if body.target_scope=='ORDERS':
-                    # Warehouse edits only purchase targets. Hidden business
-                    # schedule references retain their original identity/state.
+                    # Order-only callers preserve any existing schedule links.
                     rows=[row for row in targets.current(db,asset,factory) if row['kind']=='SCHEDULE']+rows
                 targets.record(db,user,asset,rows,factory)
                 # Audience is an independent user choice. Linking or unlinking
@@ -310,10 +328,10 @@ def classify(db,user,factory,identifier,body,refresh_actor=None):
 
 
 def resolve_many(db,user,factory,selected,supplier,*,scope='ALL',retain=None):
-    rows=[targets.resolve(db,user,factory,target,supplier=supplier,scope=scope,retain=retain) for target in selected]
-    keys=[(row['kind'],row['id'],row['sheet'],row['row']) for row in rows]
-    if len(keys)!=len(set(keys)):raise HTTPException(422,'关联订单不能重复')
-    return rows
+    if not selected:
+        return []
+    choices = targets.candidates(db, user, factory, supplier=supplier, scope=scope, retain=retain)
+    return targets.resolve_selected(choices, selected)
 
 
 def share(db,user,factory,identifier,body,refresh_actor=None):

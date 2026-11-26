@@ -179,6 +179,7 @@ class CartonOrderLine(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=Decimal(0))
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     price_source: Mapped[str] = mapped_column(String(128), default="manual")
+    process_note: Mapped[str] = mapped_column(Text, default="", server_default="")
     note: Mapped[str] = mapped_column(Text, default="")
 
 

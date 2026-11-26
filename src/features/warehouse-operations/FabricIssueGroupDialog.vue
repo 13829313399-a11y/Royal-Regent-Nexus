@@ -5,7 +5,7 @@ import { FocusScope } from 'reka-ui'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
-import { warehouseOperationsApi as api, type FabricIssuePlan, type FabricIssuePlanLine, type WarehouseOperationsWorkspace } from '@/api/warehouseOperations'
+import { warehouseOperationsApi as api, type FabricIssuePlan, type FabricIssuePlanLine, type WarehouseDocument, type WarehouseOperationsWorkspace } from '@/api/warehouseOperations'
 import { pendingGroupCommands, type PendingGroupCommand } from './fabricIssueGroupPending'
 import { warehouseRequestId } from './requestIdentity'
 import { quantityText, receiptQuantity } from './receiptQuantities'
@@ -13,7 +13,7 @@ import { remaining } from './operations'
 
 const emit = defineEmits<{ close: []; saved: [] }>()
 const auth = useAuthStore()
-const data = ref<WarehouseOperationsWorkspace>(), groupId = ref(''), order = ref(''), name = ref(''), selected = ref<string[]>([])
+const data = ref<WarehouseOperationsWorkspace>(), groupId = ref(''), manualOrder = ref(''), name = ref(''), selected = ref<string[]>([])
 const date = ref(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date()))
 const busy = ref(false), error = ref(''), message = ref(''), plan = ref<FabricIssuePlan>(), lines = ref<FabricIssuePlanLine[]>([])
 const acknowledged = ref(false), reason = ref(''), frozen = ref<PendingGroupCommand>(), requestSearch = ref('')
@@ -23,30 +23,51 @@ const group = computed(() => groups.value.find(g => g.group_id === groupId.value
 const canOperate = computed(() => !!data.value?.permissions.read && !!data.value.permissions.operate)
 const owner = computed(() => auth.currentUser?.id ?? '')
 const membership = computed(() => new Map(groups.value.flatMap(g => g.request_ids.map(id => [id, g.group_id] as const))))
-const requests = computed(() => (data.value?.documents ?? []).filter(r => r.kind === 'REQUEST' && !r.reversed
+const requestOrder = ({ data }: WarehouseDocument) => data.cutting_request?.order_no || data.production_no || ''
+const eligibleRequests = computed(() => (data.value?.documents ?? []).filter(r => r.kind === 'REQUEST' && !r.reversed
   && (!membership.value.has(r.id) || membership.value.get(r.id) === groupId.value)
-  && (!r.closed || group.value?.request_ids.includes(r.id))
+  && (group.value?.request_ids.includes(r.id) || (!r.closed && Number(remaining(r.data.quantity, r.issued_quantity)) > 0))))
+const associatedOrder = computed(() => group.value?.order_no || eligibleRequests.value
+  .filter(r => selected.value.includes(r.id)).map(requestOrder).find(Boolean) || '')
+const orderReadOnly = computed(() => !!associatedOrder.value || !selected.value.length)
+const order = computed({
+  get: () => associatedOrder.value || manualOrder.value,
+  set: value => { if (!orderReadOnly.value) manualOrder.value = value },
+})
+const requests = computed(() => eligibleRequests.value.filter(r =>
+  (!associatedOrder.value || !requestOrder(r) || requestOrder(r) === associatedOrder.value)
   && (!requestSearch.value || JSON.stringify(r).toLowerCase().includes(requestSearch.value.toLowerCase()))))
+const canSaveGroup = computed(() => selected.value.length >= 2 && selected.value.length <= 100
+  && !!order.value && !!name.value
+  && selected.value.every(id => eligibleRequests.value.some(r => r.id === id) || group.value?.request_ids.includes(id)))
 const changed = computed(() => !!plan.value || !!order.value || !!name.value || selected.value.length > 0)
 function resetPlan() { plan.value = undefined; lines.value = []; acknowledged.value = false }
 function chooseGroup() {
-  resetPlan(); order.value = group.value?.order_no ?? ''; name.value = group.value?.name ?? ''
+  resetPlan(); manualOrder.value = ''; name.value = group.value?.name ?? ''
   selected.value = [...(group.value?.request_ids ?? [])]; error.value = ''; message.value = ''
 }
 function selectRequest(id: string, checked: boolean) {
   selected.value = checked ? [...selected.value, id] : selected.value.filter(v => v !== id)
+  if (!selected.value.length || associatedOrder.value) manualOrder.value = ''
 }
 watch(date, resetPlan)
 async function load() {
   const ticket = ++generation
   busy.value = true
-  try { const result = await api.workspace('fabric'); if (ticket === generation) data.value = result }
+  try {
+    const result = await api.workspace('fabric')
+    if (ticket === generation) {
+      data.value = result
+      selected.value = selected.value.filter(id =>
+        eligibleRequests.value.some(r => r.id === id) || group.value?.request_ids.includes(id))
+    }
+  }
   catch(e) { if (ticket === generation) { data.value = undefined; error.value = getApiErrorMessage(e) } }
   finally { if (ticket === generation) busy.value = false }
   return ticket === generation
 }
 watch(() => [owner.value, auth.authorizationVersion], () => {
-  generation++; busy.value = false; data.value = undefined; resetPlan(); selected.value = []; groupId.value = ''; order.value = ''; name.value = ''
+  generation++; busy.value = false; data.value = undefined; resetPlan(); selected.value = []; groupId.value = ''; manualOrder.value = ''; name.value = ''
   requestSearch.value = ''; reason.value = ''; error.value = ''; message.value = ''
   frozen.value = pendingGroupCommands.get(owner.value)
   if (owner.value) void load()
@@ -90,8 +111,7 @@ async function command(command: PendingGroupCommand) {
   } finally { if (ticket === generation) busy.value = false }
 }
 async function saveGroup() {
-  if (selected.value.length < 2) { error.value = '请至少关联两张领料单。'; return }
-  if (!data.value) return
+  if (!data.value || !canSaveGroup.value) return
   await command({ kind: 'group', body: { factory_id: 'huakang-c', request_id: warehouseRequestId(), expected_revision: data.value.revision,
     group_id: groupId.value, order_no: order.value, name: name.value, request_ids: [...selected.value] } })
 }
@@ -155,11 +175,13 @@ async function issue() {
       <fieldset :disabled="busy || !!frozen || !canOperate">
         <label>配套组<select v-model="groupId" aria-label="选择配套组" @change="chooseGroup"><option value="">新建配套组</option><option v-for="g in groups" :key="g.group_id" :value="g.group_id">{{ g.order_no }} · {{ g.name }} · {{ g.request_ids.length }} 张领料单</option></select></label>
         <form class="kit-group" @submit.prevent="saveGroup">
-          <div class="kit-fields"><label>订单 / 放产单号<input v-model.trim="order" aria-label="配套订单号" required maxlength="128" :disabled="!!group" /></label><label>配套组名称<input v-model.trim="name" aria-label="配套组名称" required maxlength="128" placeholder="如：衣身与捆条" :disabled="!!group" /></label></div>
-          <p>已有订单编号必须一致；未填编号的领料单由本次明确关联。已关联单据保留，可继续追加。</p>
+          <div class="kit-fields"><label>订单 / 放产单号<input v-model.trim="order" aria-label="配套订单号" aria-describedby="kit-order-help" required maxlength="128" :readonly="orderReadOnly" /></label><label>配套组名称<input v-model.trim="name" aria-label="配套组名称" required maxlength="128" placeholder="如：衣身与捆条" :disabled="!!group" /></label></div>
+          <p id="kit-order-help" role="status">
+            {{ group ? '沿用配套组订单号。' : associatedOrder ? '订单号已从领料单带入。' : selected.length ? '所选领料单未带订单号，请填写订单 / 放产单号。' : '先勾选领料单，系统会带入已有订单号。' }}
+          </p>
           <details :open="!group"><summary>关联领料单 · 已选 {{ selected.length }} 张</summary><input v-model.trim="requestSearch" type="search" aria-label="查找配套领料单" placeholder="查单号、物料、部件或领用方" />
-            <div class="kit-requests"><label v-for="r in requests" :key="r.id" class="kit-check"><input type="checkbox" :checked="selected.includes(r.id)" :disabled="group?.request_ids.includes(r.id)" :aria-label="`关联领料单 ${r.id}`" @change="selectRequest(r.id, ($event.target as HTMLInputElement).checked)" /><span><strong>{{ r.data.source_no }} / {{ r.data.source_line }}</strong> · {{ r.data.counterparty }} · {{ r.data.purpose || '未填部件 / 用途' }}<small>{{ r.data.item_code }} {{ r.data.item_name }} · 待发 {{ remaining(r.data.quantity, r.issued_quantity) }} {{ r.data.unit }} · {{ r.data.production_no || '未填订单号' }}</small></span></label></div>
-          </details><Button type="submit" variant="outline" :disabled="selected.length < 2 || selected.length > 100">{{ group ? '保存追加关联' : '保存配套组' }}</Button>
+            <div class="kit-requests"><label v-for="r in requests" :key="r.id" class="kit-check"><input type="checkbox" :checked="selected.includes(r.id)" :disabled="group?.request_ids.includes(r.id)" :aria-label="`关联领料单 ${r.id}`" @change="selectRequest(r.id, ($event.target as HTMLInputElement).checked)" /><span><strong>{{ r.data.source_no }} / {{ r.data.source_line }}</strong> · {{ r.data.counterparty }} · {{ r.data.purpose || '未填部件 / 用途' }}<small>{{ r.data.item_code }} {{ r.data.item_name }} · 待发 {{ remaining(r.data.quantity, r.issued_quantity) }} {{ r.data.unit }} · {{ requestOrder(r) || '未填订单号' }}</small></span></label><p v-if="!requests.length">暂无符合条件的领料单。</p></div>
+          </details><Button type="submit" variant="outline" :disabled="!canSaveGroup">{{ group ? '保存追加关联' : '保存配套组' }}</Button>
         </form>
         <div v-if="group" class="kit-generate"><label>发料日期<input v-model="date" type="date" aria-label="配套发料日期" /></label><Button @click="generate">生成推荐方案</Button></div>
       </fieldset>
@@ -183,5 +205,6 @@ async function issue() {
 
 <style scoped>
 .kit-submit{padding:16px 24px;border-top:1px solid var(--border)}
+.kit-fields input[readonly]{background:var(--muted)}
 .kit-overlay{position:fixed;inset:0;z-index:90;display:grid;place-items:center;padding:20px;background:#0f172a80}.kit-dialog{width:min(1120px,100%);max-height:94dvh;overflow:auto;background:var(--card);color:var(--foreground);border-radius:12px}header{display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-bottom:1px solid var(--border)}h2{font-size:20px;font-weight:600}h3{font-weight:600}main{padding:24px}fieldset{border:0;padding:0;min-width:0}label{display:flex;flex-direction:column;gap:6px;font-size:13px}input,select,textarea{min-width:0;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);font:inherit}p,small{font-size:12px;color:var(--muted-foreground);line-height:1.7}p{margin:8px 0}small{display:block}.kit-fields{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}.kit-group{padding-bottom:20px;border-bottom:1px solid var(--border)}summary{cursor:pointer;font-size:13px;margin:12px 0}.kit-check{flex-direction:row;align-items:flex-start;gap:10px;margin:12px 0}.kit-check input{margin-top:4px}.kit-requests{max-height:240px;overflow:auto}.kit-generate{display:flex;gap:16px;align-items:end;margin:20px 0}.kit-plan{margin-top:20px}.kit-demand{padding:16px;margin:16px 0;border:1px solid var(--border);border-radius:8px}.kit-demand-title{display:flex;justify-content:space-between;gap:16px;font-size:13px}.kit-line{display:grid;grid-template-columns:minmax(220px,1fr) 140px auto;gap:12px;align-items:end;margin:12px 0}.kit-error{color:#b91c1c}.kit-pending{padding:16px;background:var(--muted)}@media(max-width:700px){.kit-overlay{padding:8px}header,main{padding:16px}.kit-fields,.kit-line{grid-template-columns:1fr}.kit-demand-title{display:block}}
 </style>

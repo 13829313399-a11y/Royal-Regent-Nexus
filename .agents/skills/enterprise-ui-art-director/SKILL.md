@@ -1,28 +1,30 @@
 ---
 name: enterprise-ui-art-director
-description: Design new or substantially redesigned enterprise screens in Royal Regent Nexus, including information hierarchy, layout and UI states. Use for explicit UI design reviews; skip routine bug fixes, minor styling corrections, backend-only work and workflow configuration.
+description: Design or substantially redesign Royal Regent Nexus enterprise screens with high visual craft, task-driven composition, scenario-aware density, distinctive visual identity, and purposeful motion. Use for new modules, substantial redesigns, and explicit design reviews; skip routine fixes, backend-only tasks, and rule configuration.
 ---
 
 # Enterprise UI Art Director
 
-Adapt the requested enterprise page to its real users and business operations while preserving the project's established design system.
+Create a refined, complete product experience, not a generic admin template. Follow [DESIGN.md](../../../DESIGN.md) as the single source for hard rules, flexible defaults and creative freedom. High visual quality is a delivery requirement; functional correctness alone is insufficient.
 
-## Establish the baseline
+## 1. Discover the product and design opportunity
 
-- Follow the repository [AGENTS.md](../../../AGENTS.md) and retrieve only relevant project-memory facts.
-- Read relevant sections of [DESIGN.md](../../../DESIGN.md), the actual route, neighboring pages and affected components. Check global tokens in `src/style.css`, shared components in `src/components/ui/` and `src/components/common/`, and documented feature-specific exceptions.
-- Inspect the nearest package and actual implementation before choosing framework-specific patterns. The main application and a separately built subproject may use different frameworks.
-- Identify the primary user action, real fields, data density, permissions, factory context and supported viewports. Reference images guide appearance; they do not redefine business contracts or authorize extra functionality.
+- Follow [AGENTS.md](../../../AGENTS.md). Load relevant project-memory facts, target route, real fields, workflow, permissions, factory context and neighboring code. Inspect the nearest package.json, src/style.css, shared components and scoped exceptions; do not import unrelated restrictions.
+- Identify the primary jobs, high-frequency operations, information hierarchy, actual data and viewport contract. Select one or a combination of DESIGN.md §2.1 scenarios and §8 density / §11 motion levels.
+- For a new module or major redesign, use [UI_BRIEF_TEMPLATE.md](../../../docs/frontend/UI_BRIEF_TEMPLATE.md). Establish visual references: user-supplied material first, existing strong project screens or Design Lab if implemented, otherwise a task-specific sketch or runnable local prototype. Label conceptual references and fixture data; no production data mutation.
+- Explore meaningfully different compositions (e.g. dense split workspace vs timeline-first, dashboard vs device-first). Choose by task efficiency, distinctiveness and coherence; document the chosen direction and one rejected alternative concisely. Do not automatically copy adjacent screens or the default PageHeader/Card/SectionPanel composition.
 
-## Design and implement within scope
+## 2. Translate the concept into real UI
 
-1. For a new module or substantial redesign, fill the relevant parts of the [UI brief](../../../docs/frontend/UI_BRIEF_TEMPLATE.md). Explain the intended hierarchy and which existing components and tokens will be reused. For a review, provide findings without implementing changes unless requested.
-2. Keep the design direction concise. Explore alternatives only when an unresolved layout choice materially affects usability. A new decorative motif or multiple concepts are optional, not deliverables for every page.
-3. Specify the main operation, must-see information, filters, working surface and secondary details. Preserve useful density without shrinking essential text or hiding actions behind hover-only controls.
-4. Describe relevant default, loading, empty, error, permission-restricted and detail states. Reuse existing state semantics, focus behavior and responsive patterns.
-5. When implementation is authorized, reuse or deliberately extend existing components and tokens. Keep feature-specific effects scoped, preserve documented exceptions and take motion values from the project baseline. Do not change API contracts, permissions or factory isolation to match a mockup.
-6. Use Chrome DevTools MCP to inspect the implemented route through the companion [visual-qa-loop](../visual-qa-loop/SKILL.md). Do not select the Playwright CLI Skill automatically for this phase. When another active skill already performs equivalent DevTools checks, share its evidence instead of repeating the entire workflow.
+- Preserve reliable shared interaction primitives, keyboard/focus semantics and public contracts. Create module-specific visualizations, device panels, workflows, and compositions freely in the module scope. Expand shared variants only when justified by reuse and impact assessment.
+- Apply the brand and state semantics, but adapt palette, typography, spacing, materials, layout, SVG and motion to the chosen scenario. Use semantic tokens or named, scoped visual variables; no blind dependency additions. Follow DESIGN.md §3 for dependency decisions.
+- Design the entire experience: real content hierarchy, empty/loading/error/read-only/permission states, long text, dense data, keyboard and narrow screen behavior. Useful visualizations and delightful interactions should clarify real tasks, not serve as decorative quotas.
+- Craft purposeful feedback and continuity; distinguish high-frequency work from immersive presentation. Respect reduced motion/transparency and measured performance.
+- Review the rendered composition before considering implementation complete. If a screen is only an ordinary header, default cards, and a table without a task-driven design rationale, reconsider layout and hierarchy rather than adding decorative effects.
 
-## Evidence and handoff
+## 3. Verify and hand off
 
-Report the design decision, reused components/tokens, affected states and intentional reference deviations. For implementation, include actual browser findings and evidence, or clearly identify verification that remains unavailable. Use the repository's existing delivery format; do not replace defect evidence with an aesthetic score or claim that design review proves business acceptance.
+- Run [visual-qa-loop](../visual-qa-loop/SKILL.md) and follow DESIGN.md §17.1 for technical QA. Share current evidence instead of duplicating checks.
+- For new modules and major redesigns, obtain the independent design review in DESIGN.md §17.2. A reviewer who did not implement the change examines the actual rendered page, the brief and the relevant reference. Review-only tasks report findings without code changes.
+- A REWORK decision is a delivery blocker even when builds and functional tests pass. Rework the evidenced regions, recapture matching screenshots, rerun affected tests and interactions, and obtain re-review. If independent review or browser evidence is unavailable, record UNVERIFIED; never substitute self-review or an aesthetic score.
+- Report the selected scene/density/motion, composition rationale, actual evidence, design review findings and unresolved items. Do not equate visual approval with business or production acceptance.

@@ -4,6 +4,8 @@
 
 ## 运行方式
 
+API 在 `POST /api/tools/jobs` 受理任务后返回 HTTP 202，独立 `document-tools-worker` 领取并执行。API 和 worker 共用数据库和文档资产卷。Windows 可从仓库根目录执行 `npm run dev:local`，以 `npm run dev:status` 查看 worker 心跳。生产更新使用[现网发布手册](../aliyun-docker-deploy.md)。转换质量指标见[评估契约](../document-studio/evaluation.md)。 [任务接口](../../backend/app/api/document_tools.py) · [服务组合](../../docker-compose.prod.yml)
+
 ### Word / PDF / Excel 翻译
 
 `word_translate`、`pdf_translate`、`excel_translate` 复用上传、独立 worker、个人任务、撤回与结果下载。支持 `translation_direction=zh_to_en|en_to_zh` 和 `translation_engine=offline|online`。Word 输出 DOCX；旧 DOC/XLS 先经 LibreOffice 转为 DOCX/XLSX。Excel 按所选 `sheets` 翻译文字并保留公式、数字、合并格和原始包结构；空选择表示包含隐藏表在内的全部工作表。Word 翻译正文、表格、页眉页脚等文字，Office 图片中的文字不翻译。Word/Excel 不支持按预览页选取翻译范围。
@@ -84,7 +86,7 @@ OCR 使用 qwen3.5-ocr，布局候选使用 qwen3-vl-plus。当前实测空间 O
 
 ## 验证与生产部署
 
-真实样本与指标见 [PDF 验证](pdf-accuracy.md)、[Office 验证](office-accuracy.md)、[前端验证](frontend-qa.md) 和 [整体验证](validation.md)。测试失败与复杂文档限制必须独立报告，不能用样本通过率推断未知业务文件的准确率。
+真实样本与指标见 [PDF 验证](pdf-accuracy.md)、[Office 验证](office-accuracy.md)、[前端验证](../archive/completed/document-tools/frontend-qa.md) 和 [整体验证](validation.md)。测试失败与复杂文档限制必须独立报告，不能用样本通过率推断未知业务文件的准确率。
 
 生产 compose 为 API 与独立 `document-tools-worker` 配置同一 `document-assets` 命名卷及同一后端镜像。新镜像包含 LibreOffice、CJK 字体与 python3-uno；worker 使用自己的心跳健康检查。部署前先备份数据库和共享卷，演练迁移，构建镜像，再启动 API/worker/web；检查worker心跳后实际上传自建 Word 和扫描 PDF、下载并复开结果。仅 `/health` 200 不算转换验收。这里提供部署步骤，当前开发任务没有执行生产发布。
 

@@ -31,7 +31,13 @@ from app.models.internal_quote import (
     InternalQuoteSection,
 )
 from app.schemas.internal_quote import SECTION_CODE_ORDER
-from app.services.internal_quote_calculator import resolve_justplay_carton_basis, resolve_justplay_packaging_inputs, resolve_sales_cartons
+from app.services.internal_quote_calculator import (
+    DEFAULT_ASSEMBLY_LABOR_BASE_HKD,
+    CalculationInputError,
+    resolve_justplay_carton_basis,
+    resolve_justplay_packaging_inputs,
+    resolve_sales_cartons,
+)
 
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
@@ -617,10 +623,11 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
     Saved calculations can predate source-price metadata. Pair the complete
     source sequence with calculated rows, never match duplicate item names alone.
     """
-    payload = _section_payload(section)
     code = getattr(section, "department", "")
     if section is None or getattr(section, "calculation_status", "valid") != "valid" or getattr(section, "is_required", True) is False:
         return []
+    # Purchased materials use their saved inputs and do not depend on carton geometry.
+    payload = _json_object(section.payload_json) if code == "sales" else _section_payload(section)
     kind, field = {
         "engineering": ("material", "materials"),
         "sales": ("packaging_material", "packaging_materials"),
@@ -653,9 +660,13 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
         for source, line in zip(sources, lines)
     )
     result = []
+    next_formula_row = 2
     for index, line in enumerate(lines):
         entry = {**line, "section": code, "label": line.get("item", ""), "source_line_index": index,
                  "amount_hkd": line.get("amount_hkd", line.get("line_hkd", 0))}
+        if code == "engineering" and line.get("resin_processing_formula"):
+            entry["formula_sheet_row"] = next_formula_row
+            next_formula_row += 1
         if paired:
             entry["source_path"] = sources[index]["_output_path"]
         if paired and "quote_groups" not in payload:
@@ -724,9 +735,19 @@ def _purchase_detail_label(entry: dict[str, Any], fallback: str = "") -> str:
     return result
 
 
+def _buzzbee_unit_expression(row, inputs_sheet="", fx_sheet=""):
+    return f"{inputs_sheet}$D${row}/454*{inputs_sheet}$E${row}+{inputs_sheet}$F${row}/{fx_sheet}$L$4"
+
+
 def _pricing_entry_amount(entry: dict[str, Any]) -> object:
     if entry.get("quote_amount_adopted"):
         return _float_value(entry.get("amount_hkd"))
+    if "formula_sheet_row" in entry:
+        row = entry["formula_sheet_row"]
+        ref = "'外购计价'!"
+        formula = f"=({_buzzbee_unit_expression(row, inputs_sheet=ref)})*{ref}$G${row}*{ref}$H${row}"
+        factor = _float_value(entry.get("formula_allocation_factor"), 1.0)
+        return formula if factor == 1 else f"{formula}*{factor:.15g}"
     if entry.get("source_unit_price") not in (None, "") and entry.get("quantity") not in (None, ""):
         price = _float_value(entry["source_unit_price"])
         formula = f"={format(price, '.15g')}"
@@ -1865,6 +1886,8 @@ def _build_summary_sheet(
     rr2_cost_summary: dict[str, Any],
     cost_context: dict[str, Any],
     attachments: list[InternalQuoteAttachment] | None = None,
+    *,
+    allow_incomplete: bool = False,
 ) -> None:
     """Render the current internal-quote template with dynamic detail anchors."""
 
@@ -1873,7 +1896,16 @@ def _build_summary_sheet(
     sheet.sheet_view.showGridLines = True
     by_code = {section.department: section for section in sections}
     sales_section = by_code.get("sales")
-    sales_payload = _section_payload(sales_section)
+    carton_inputs_incomplete = False
+    try:
+        sales_payload = _section_payload(sales_section)
+    except CalculationInputError:
+        if not allow_incomplete:
+            raise
+        # The draft keeps its inputs and calculation warning. The workbook
+        # preview must not use stored outer dimensions in place of derived ones.
+        sales_payload = {**_json_object(sales_section.payload_json), "cartons": []}
+        carton_inputs_incomplete = True
     shipping = _dict_value(rr2_cost_summary.get("shipping_pricing", {}))
     t1 = _rr2_values(rr2_cost_summary, "t1")
     t2 = _rr2_values(rr2_cost_summary, "t2")
@@ -1904,6 +1936,9 @@ def _build_summary_sheet(
     # and exchange values.  The extra R column keeps HKD/USD and selected MOQ
     # visible and auditable without crowding the reference template's C:Q grid.
     materials = _reference_materials(reference_snapshot)[:18]
+    material_prices = reference_snapshot.get("material_prices")
+    material_keys = list(material_prices) if isinstance(material_prices, dict) else []
+    sheet._quote_material_cells = {}
     machines = _reference_machines(reference_snapshot)[:10]
     material_reference_cells: list[tuple[str, float, str]] = []
     machine_reference_cells: list[tuple[str, float, str]] = []
@@ -1946,6 +1981,9 @@ def _build_summary_sheet(
                 machine_reference_cells.append(reference)
             else:
                 material_reference_cells.append(reference)
+                if material_keys:
+                    key = material_keys[start_index + offset - start_column]
+                    sheet._quote_material_cells[key] = sheet.cell(header_row + 1, offset).coordinate
 
     fx = _dict_value(reference_snapshot.get("fx", {}))
     sheet["L3"] = "汇率"
@@ -1965,7 +2003,7 @@ def _build_summary_sheet(
     )
     sheet["M4"] = _float_value(
         current_labor_base,
-        _float_value(reference_snapshot.get("assembly_labor_base_hkd"), 260),
+        _float_value(reference_snapshot.get("assembly_labor_base_hkd"), DEFAULT_ASSEMBLY_LABOR_BASE_HKD),
     )
     sheet["M4"].number_format = "#,##0"
     top_tax_rows = (
@@ -2160,7 +2198,9 @@ def _build_summary_sheet(
         detail_rows.append((tax_tag, category, description, formula))
 
     sales_owns_materials = bool(sales_payload.get("packaging_materials")) or (
-        sales_payload.get("pricing_mode") == "component" and bool(sales_payload.get("cartons")))
+        sales_payload.get("pricing_mode") == "component"
+        and (carton_inputs_incomplete or bool(sales_payload.get("cartons")))
+    )
     purchase_entries = _purchase_pricing_entries(_list_of_dicts(shipping.get("pricing_entries", [])), sections)
     allocated_purchases = {(entry.get("section"), entry["source_line_index"]): entry
                            for entry in purchase_entries if "source_line_index" in entry}
@@ -2392,10 +2432,13 @@ def _build_summary_sheet(
         ]
     )
     pdq_offset = None
-    if justplay_basis and justplay_basis["source"] == "pdq":
+    pdq_dimensions = _dict_value(sales_payload.get("pdq_size_in"))
+    if (justplay_basis and justplay_basis["source"] == "pdq") or (
+        carton_inputs_incomplete and any(_float_value(pdq_dimensions.get(axis)) for axis in ("length", "width", "height"))
+    ):
         pdq_offset = len(packaging_rows)
         dimension_row_offsets.add(pdq_offset)
-        packaging_rows.append([f"PDQ 尺寸 ({pdq_unit})", *_dimensions_for_unit(sales_payload.get("pdq_size_in"), pdq_unit)])
+        packaging_rows.append([f"PDQ 尺寸 ({pdq_unit})", *_dimensions_for_unit(pdq_dimensions, pdq_unit)])
     product_offset = len(packaging_rows)
     dimension_row_offsets.add(product_offset)
     packaging_rows.append(
@@ -2527,6 +2570,10 @@ def _build_summary_sheet(
             {"groups": ["sales:" + "/".join(map(str, path)) for path in adopted], "kind": "source"})
     if paperboard_detail_offset is not None:
         sheet.cell(detail_start_row + paperboard_detail_offset, 4).value = f"={paperboard_reference}"
+
+    if carton_inputs_incomplete:
+        for offset in (cuft_offset, cbm_offset, paperboard_offset, *carton_price_offsets, total_offset):
+            packaging_rows[offset][1] = ""
 
     for offset, values in enumerate(packaging_rows):
         row_index = packaging_start_row + offset
@@ -3554,6 +3601,7 @@ def _build_summary_sheet(
             sections,
             rr2_cost_summary,
             attachments,
+            sales_payload=sales_payload,
             side_start_column=side_start_column,
             side_end_column=side_end_column,
             outer_right_column=outer_right_column,
@@ -3629,6 +3677,7 @@ def _replace_with_component_summary_sheet(
     rr2_cost_summary: dict[str, Any],
     attachments: list[InternalQuoteAttachment] | None,
     *,
+    sales_payload: dict[str, Any],
     side_start_column: int,
     side_end_column: int,
     outer_right_column: int,
@@ -3645,6 +3694,7 @@ def _replace_with_component_summary_sheet(
     source = workbook["报价明细"]
     source.title = "_报价明细计算"
     target = workbook.create_sheet("报价明细", 0)
+    target._quote_material_cells = source._quote_material_cells
     shipping = _dict_value(rr2_cost_summary.get("shipping_pricing", {}))
     pricing_groups = _list_of_dicts(shipping.get("pricing_groups", []))
     pricing_entries = _purchase_pricing_entries(_list_of_dicts(shipping.get("pricing_entries", [])), sections)
@@ -3652,7 +3702,6 @@ def _replace_with_component_summary_sheet(
     global_entries = _purchase_pricing_entries(_list_of_dicts(global_pricing.get("entries", [])), sections)
     customer_supplied_entries = _list_of_dicts(_dict_value(shipping.get("customer_supplied_pricing", {})).get("entries", []))
     by_code = {section.department: section for section in sections}
-    sales_payload = _section_payload(by_code.get("sales"))
     cartons = _list_of_dicts(sales_payload.get("cartons", []))
     source_summary_start = next(
         (
@@ -4187,7 +4236,7 @@ def _replace_with_component_summary_sheet(
     quote_price_end_column = max(quote_price_columns)
 
     packaging_title_row = current_row
-    packaging_inputs = resolve_justplay_packaging_inputs(_section_payload(by_code.get("sales")))
+    packaging_inputs = resolve_justplay_packaging_inputs(sales_payload) if cartons else None
     _template_cell(target, packaging_title_row, 3, "包装明细", fill="FFFF00", bold=True, color=TEMPLATE_BLUE, wrap_text=False)
     _template_cell(target, packaging_title_row, 4, "出厂价", fill="FFFF00", bold=True, color=TEMPLATE_BLUE, wrap_text=False)
     for column, route in enumerate(route_rows, start=5):
@@ -4283,6 +4332,7 @@ def _replace_with_component_summary_sheet(
             )
         elif (
             str(entry.get("kind") or "") == "justplay_fixed_packaging"
+            and packaging_inputs is not None
             and target_outer_carton_row is not None
             and target_packing_qty_row is not None
         ):
@@ -5601,6 +5651,37 @@ def _legacy_attachment_workbook(content: bytes) -> Workbook:
     return target
 
 
+def _append_purchase_formulas(workbook, section, material_cells):
+    lines = [line for line in _purchase_source_lines(section) if line.get("resin_processing_formula")]
+    if not lines:
+        return
+    sheet = workbook.create_sheet("外购计价")
+    summary = workbook["报价明细"]
+    sheet.append(["零件名称", "胶料", "料型", "胶料价 HKD/lb", "单条重量 g", "单条啤工 RMB", "用量", "损耗率", "单价 HKD/条"])
+    for line in lines:
+        inputs = line["resin_processing_formula"]
+        row = line["formula_sheet_row"]
+        key = f"{inputs['material']}|{inputs['grade']}"
+        price_cell = material_cells.get(key)
+        price = f"='采用价目表'!{price_cell}" if price_cell else float(inputs["price_hkd_lb"])
+        header = summary._quote_material_cells.get(key)
+        if header:
+            summary[header] = price
+            price = f"='报价明细'!{header}"
+        for column, label in enumerate((line["item"], inputs["material"], inputs["grade"]), 1):
+            sheet.cell(row, column, _safe_text(label)).data_type = "s"
+        sheet.cell(row, 4, price)
+        for column, value in enumerate((inputs["weight_g"], inputs["labor_rmb"], line["quantity"], line["loss_rate"]), 5):
+            sheet.cell(row, column, _float_value(value))
+        sheet.cell(row, 9, "=" + _buzzbee_unit_expression(row, fx_sheet="'报价明细'!")).number_format = "0.0000"
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor=TEAL)
+    for column, width in zip("ABCDEFGHI", (32, 16, 24, 20, 18, 20, 12, 12, 18)):
+        sheet.column_dimensions[column].width = width
+    sheet.freeze_panes = "A2"
+
+
 def build_internal_quote_workbook_model(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
@@ -5623,6 +5704,7 @@ def build_internal_quote_workbook_model(
         rr2_cost_summary or {},
         cost_context or {},
         attachments or [],
+        allow_incomplete=allow_incomplete,
     )
     by_code = {section.department: section for section in sections}
     _build_painting_image_sheet(workbook, by_code.get("painting"), attachments)
@@ -5654,7 +5736,8 @@ def build_internal_quote_workbook_model(
     from app.services.internal_quote_price_notes import append_price_notes
     append_price_notes(workbook, sections, attachments, quote.region_code, reference_snapshot)
     from app.services.internal_quote_price_basis import append_price_basis
-    append_price_basis(workbook, quote, sections, reference_snapshot or {})
+    material_cells = append_price_basis(workbook, quote, sections, reference_snapshot or {})
+    _append_purchase_formulas(workbook, by_code.get("engineering"), material_cells)
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True

@@ -115,6 +115,8 @@ def required_action(path: str, method: str) -> str:
         raise HTTPException(403, "账号和权限统一由 Nexus 管理，原系统账号功能已停用")
     if resource == "db":
         raise HTTPException(403, "原系统数据库管理已停用，请使用对应业务页面维护资料")
+    if parts[:3] == ["api", "schedules", "ledger-import"]:
+        raise HTTPException(403, "请从客户订单中心选择印尼订单")
     domain = API_DOMAINS.get(resource)
     if domain is None:
         raise HTTPException(403, "接口未注册或不允许独立登录")

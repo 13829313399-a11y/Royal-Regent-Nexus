@@ -18,6 +18,57 @@ beforeEach(() => {
   api.packages.mockResolvedValue({ items: [], catalog_revision: 'fixed' })
 })
 
+it('uses the incremental editor for pending studio positions without creating an old workbench preview', async () => {
+  vi.useFakeTimers()
+  try {
+    api.detail.mockResolvedValue({...detail('r'), can_keep_permissions:true})
+    const wrapper = mount(PositionReviewPane,{props:{itemKey:'position:r',studio:true},global:{stubs:{StudioPerson:{props:['review'],template:'<div>逐项办理 {{ review.item_key }}</div>'}}}})
+    await flushPromises(); await vi.advanceTimersByTimeAsync(350)
+    expect(wrapper.text()).toContain('逐项办理 position:r')
+    expect(wrapper.text()).not.toContain('选择并分配内置方案')
+    expect(api.preview).not.toHaveBeenCalled()
+    wrapper.unmount()
+  } finally { vi.useRealTimers() }
+})
+
+it('shows an uncomputed registration impact until an explicitly staged package has a server preview', async () => {
+  vi.useFakeTimers()
+  try {
+    api.detail.mockResolvedValue({ ...detail('r'), item_key: 'registration:r', kind: 'registration', studio_writes_enabled: true })
+    api.packages.mockResolvedValue({ items: [{
+      role_id: 'engineer', name: '工程岗位包', department: 'd', assignable: true, scope_mode: 'own_factory',
+      capability_summary: [], description: '工程数据', definition_hash: 'hash', role_version_id: 'v1',
+    }] })
+    const tuple = { permission_code: 'engineering:view', permission_name: '查看工程数据', factory_id: 'f', factory_name: '测试厂', department: 'd', department_name: '工程' }
+    api.preview.mockResolvedValue({
+      server_now: '2026-11-19T08:00:00Z', expires_at: '2026-11-19T08:05:00Z', allowed_to_commit: true,
+      permission_diffs: { added: [tuple], removed: [], retained: [], source_changed: [] },
+      explicit_denials: [], high_risk: true, blocked_reasons: [],
+    })
+    const wrapper = mount(PositionReviewPane, { props: { itemKey: 'registration:r', studio: true, catalog: {
+      organizations: [{ id: 'f', kind: 'factory', name: '测试厂', status: 'active', departments: [] }],
+      writes_enabled: true, scheduling_enabled: false, authz_mode: 'v2',
+    } } })
+    await flushPromises()
+    const counts = () => wrapper.findAll('.iam2-impact-totals strong').map(node => node.text())
+    expect(counts()).toEqual(['—', '—', '—', '—'])
+    expect(wrapper.findAll('input:checked')).toHaveLength(0)
+    await wrapper.get('.pw-disclosure input[type="checkbox"]').setValue(true)
+    await flushPromises()
+    await wrapper.get('.pw-package input[type="radio"]').setValue(true)
+    expect(api.preview).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(node => node.text().includes('加入本单'))!.trigger('click')
+    await flushPromises(); await vi.advanceTimersByTimeAsync(350)
+    expect(api.preview).toHaveBeenCalledOnce()
+    expect(counts()).toEqual(['1', '0', '0', '0'])
+    expect(wrapper.get('.iam2-registration-impact').text()).toContain('测试厂 · 工程')
+    const commit = wrapper.findAll('button').find(node => node.text() === '通过并分配权限')!
+    expect(commit.attributes('disabled')).toBeDefined()
+    await wrapper.get('.pw-actionbar .pw-risk input').setValue(true)
+    expect(commit.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  } finally { vi.useRealTimers() }
+})
 it.each(['pending', 'approved', 'rejected'])('shows registration contact details without opening a correction form for %s records', async status => {
   api.detail.mockResolvedValue({ ...detail('registrant'), item_key: 'registration:R', kind: 'registration', status,
     user: { id: 'registrant', display_name: '当前姓名', username: 'registered.account' },
@@ -65,4 +116,23 @@ it('does not steal the current person input focus when an older selection resolv
   expect(document.activeElement).toBe(search)
   expect(search.value).toBe('正在搜索B的方案')
   wrapper.unmount()
+})
+
+it.each([true, false])('opens an audit original as a read-only record with workspace UI %s', async studio => {
+  vi.useFakeTimers()
+  try {
+    api.detail.mockResolvedValue({ ...detail('r'), can_keep_permissions: true })
+    const wrapper = mount(PositionReviewPane, { props: { itemKey: 'position:r', readonly: true, studio },
+      global: { stubs: { RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' } } } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(400)
+    expect(wrapper.getComponent({ name: 'RouterLink' }).props('to')).toEqual({
+      path: '/system/users', query: { view: studio ? 'inbox' : 'todo', task: 'position:r' },
+    })
+    expect(wrapper.find('fieldset').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('退回补充')
+    expect(api.packages).not.toHaveBeenCalled()
+    expect(api.preview).not.toHaveBeenCalled()
+    wrapper.unmount()
+  } finally { vi.useRealTimers() }
 })

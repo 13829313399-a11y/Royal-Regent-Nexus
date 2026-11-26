@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.customer_order_ai import reviewed as ai_reviewed
+
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -43,7 +45,6 @@ from app.services.customer_order_manual import (
 PREVIEW_SCHEMA_VERSION = "customer-order-caixing-preview-v2"
 INPUT_TEMPLATE = "CAIXING_PLAYMATES_PO_PDF_V2"
 TARGET_TEMPLATE = "CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2"
-PRICE_FACTOR = Decimal("0.955")
 
 REVIEW_SHEET = "正单评审表"
 ORDER_SHEET = "接单表"
@@ -114,15 +115,25 @@ class CaixingParsedLine:
     parent_quantity: Decimal | None = None
     parent_units_per_carton: Decimal | None = None
     group_id: str = ""
+    mix_no: str = ""
+    source_remarks: str = ""
     packaging: str = ""
     standard: str = ""
     lineage: dict[str, str] | None = None
 
     @property
-    def unit_price_hkd(self) -> Decimal | None:
-        if self.raw_unit_price_hkd is None:
+    def price_factor(self) -> Decimal | None:
+        try:
+            month = int(self.requested_ship_date.replace('-', '/').split('/')[1])
+        except (ValueError, IndexError):
             return None
-        return self.raw_unit_price_hkd * PRICE_FACTOR
+        return Decimal('0.915') if month in {11, 12, 1, 2, 3} else Decimal('0.955')
+
+    @property
+    def unit_price_hkd(self) -> Decimal | None:
+        if self.raw_unit_price_hkd is None or self.price_factor is None:
+            return None
+        return self.raw_unit_price_hkd * self.price_factor
 
     @property
     def amount_hkd(self) -> Decimal | None:
@@ -244,9 +255,9 @@ def _extract_metadata(text: str) -> dict[str, str]:
         flags=re.IGNORECASE,
     ).strip()
 
-    upper = text.upper()
+    upper = re.sub(r"\s+", " ", text.upper())
     packaging = ""
-    if "US STANDARD ENGLISH PACKAGING" in upper or "US STANDARD PACKAGING" in upper:
+    if any(t in upper for t in ("US STANDARD ENGLISH PACKAGING", "US STANDARD PACKAGING", "US PACKAGING", "PLAYMATES USA PACKAGING")):
         packaging = "美版彩盒"
     elif "EU STANDARD" in upper or "EUROPEAN STANDARD" in upper:
         packaging = "EU盒包装"
@@ -258,7 +269,7 @@ def _extract_metadata(text: str) -> dict[str, str]:
     # 彩星的“国家标准”按 REMARKS 中的包装标准判断。ASTM/EN 玩具
     # 安全合规文字不是此排期字段的分类依据；例如同一份美国包装 PO
     # 同时出现 ASTM AND EN，国家标准仍只填“美国标准”。
-    has_us_standard = "US STANDARD" in upper or "USA STANDARD" in upper
+    has_us_standard = "US STANDARD" in upper or "USA STANDARD" in upper or "US PACKAGING" in upper or "PLAYMATES USA PACKAGING" in upper
     has_eu_standard = "EU STANDARD" in upper or "EUROPEAN STANDARD" in upper
     standard = (
         "美国标准"
@@ -269,6 +280,7 @@ def _extract_metadata(text: str) -> dict[str, str]:
     )
 
     return {
+        "source_remarks": text,
         "source_po_date": source_po_date,
         "contract_no": contract_no,
         "po_no": po_no,
@@ -345,6 +357,8 @@ def _extract_grouped_products(
                 break
             end += 1
         segment = lines[index:end]
+        mix_match = next((re.search(r"^MIX\s*:\s*([A-Z0-9-]+)", ln, re.I) for ln in segment if re.search(r"^MIX\s*:", ln, re.I)), None)
+        mix_no = mix_match.group(1) if mix_match else ""
         delivery_line = next(
             (line for line in segment if DELIVERY_DATE_PATTERN.search(line)),
             "",
@@ -419,6 +433,8 @@ def _extract_grouped_products(
                     parent_quantity=parent_quantity,
                     parent_units_per_carton=parent_units_per_carton,
                     group_id=group_id,
+                    mix_no=mix_no,
+                    source_remarks=metadata.get("source_remarks", ""),
                     packaging=metadata["packaging"],
                     standard=metadata["standard"],
                     lineage={
@@ -434,7 +450,7 @@ def _extract_grouped_products(
                             if assortment
                             else f"{file_name} · 产品编号 E 后装箱数"
                         ),
-                        "unit_price_hkd": f"{file_name} · UNIT PRICE HKD × 0.955",
+                        "unit_price_hkd": f"{file_name} · UNIT PRICE HKD × Delivery Date季节折扣",
                         "amount_hkd": "排期计算 · 数量 × 调整后单价",
                         "requested_ship_date": f"{file_name} · DELIVERY DATE",
                         "packaging": f"{file_name} · PO REMARKS 包装要求",
@@ -567,6 +583,7 @@ def parse_caixing_pdf(file_name: str, content: bytes) -> list[CaixingParsedLine]
                     parent_product_name_en=product["product_name_en"],
                     parent_quantity=product["quantity"],
                     group_id=f"{metadata['po_no'] or file_name}:fallback-{index}",
+                    source_remarks=metadata.get("source_remarks", ""),
                     packaging=metadata["packaging"],
                     standard=metadata["standard"],
                     lineage={
@@ -578,7 +595,7 @@ def parse_caixing_pdf(file_name: str, content: bytes) -> list[CaixingParsedLine]
                         "product_name_en": f"{file_name} · DESCRIPTION",
                         "quantity": f"{file_name} · ORDER QTY.",
                         "units_per_carton": f"{file_name} · 产品编号 E 后装箱数",
-                        "unit_price_hkd": f"{file_name} · UNIT PRICE HKD × 0.955",
+                        "unit_price_hkd": f"{file_name} · UNIT PRICE HKD × Delivery Date季节折扣",
                         "amount_hkd": "排期计算 · 数量 × 调整后单价",
                         "requested_ship_date": f"{file_name} · DELIVERY DATE",
                         "packaging": f"{file_name} · PO REMARKS 包装要求",
@@ -771,9 +788,9 @@ class CaixingSchedule(OoxmlSchedule):
                         f"I{insert_row}/J{insert_row}",
                         cached_cartons,
                     )
-                if raw_price is not None:
+                if raw_price is not None and record.get("unit_price_hkd") is not None:
                     values["AA"] = self._formula(
-                        f"{_decimal_text(raw_price)}*0.955",
+                        f"{_decimal_text(raw_price)}*{_decimal_text(record.get('price_factor') or Decimal(1))}",
                         net_price,
                     )
                     values["AB"] = self._formula(
@@ -856,9 +873,9 @@ class CaixingSchedule(OoxmlSchedule):
                         record["units_per_carton"],
                         inline=False,
                     )
-                if raw_price is not None:
+                if raw_price is not None and record.get("unit_price_hkd") is not None:
                     values["K"] = self._formula(
-                        f"{_decimal_text(raw_price)}*0.955",
+                        f"{_decimal_text(raw_price)}*{_decimal_text(record.get('price_factor') or Decimal(1))}",
                         record["unit_price_hkd"],
                     )
                     values["L"] = self._formula(
@@ -1047,6 +1064,7 @@ def _export_record(
         "packaging": parsed.packaging,
         "standard": parsed.standard,
         "raw_unit_price_hkd": parsed.raw_unit_price_hkd,
+        "price_factor": parsed.price_factor,
         "unit_price_hkd": parsed.unit_price_hkd,
         "amount_hkd": parsed.amount_hkd,
         "order_matrix_column": order_matrix_column,
@@ -1259,7 +1277,7 @@ def _preview_row(
                 "blocked",
                 "missing_unit_price",
                 "unit_price_hkd",
-                "PO 未提供单价，无法计算 0.955 调整后单价及金额",
+                "PO 未提供单价，调整后单价及金额留空",
                 can_skip=True,
                 skip_label="单价及金额留空，稍后由跟客补充",
             )
@@ -1286,7 +1304,7 @@ def _preview_row(
     order_matrix_column, item_matrix_column = schedule.matrix_columns_for(
         parsed.product_no
     )
-    if not order_matrix_column or not item_matrix_column:
+    if (not order_matrix_column or not item_matrix_column) and not getattr(schedule, 'unified', False):
         missing_sheets = "、".join(
             name
             for name, column in (
@@ -1409,6 +1427,7 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
     ).hexdigest()
 
 
+@ai_reviewed
 def create_caixing_batch_preview(
     *,
     factory_id: str,
@@ -1485,7 +1504,7 @@ def create_caixing_batch_preview(
     warnings = [
         "彩星映射按业务步骤同步写入正单评审表、接单表和 ITEM表；不再使用当前活动表固定24列追加逻辑。",
         "来单日期取页面登记的客户确认下单邮件日期；日期码、行Q、客Q、生产车间及上系统状态保留人工维护。",
-        "PO 单价按彩星排期口径乘 0.955，金额按数量乘调整后单价；套装按 ASSORTMENT 拆分并填写两张表右侧产品数量栏。",
+        "PO 单价按 Delivery Date 月份：11月至3月乘0.915，其余月份乘0.955，金额按数量乘调整后单价；套装按 ASSORTMENT 拆分并填写两张表右侧产品数量栏。",
         (
             "已识别原版 Excel 97-2003 .xls 排期；输出保持原文件名、.xls 格式和工作表结构。"
             if prepared_schedule.legacy_xls
@@ -1575,7 +1594,8 @@ def export_caixing_batch_schedule(
         if not isinstance(export_record, dict):
             continue
         net_price = Decimal(coerce_manual_value("unit_price_hkd", override["value"]))
-        export_record["raw_unit_price_hkd"] = net_price / PRICE_FACTOR
+        export_record["price_factor"] = Decimal(1)
+        export_record["raw_unit_price_hkd"] = net_price
         export_record["unit_price_hkd"] = net_price
         quantity = export_record.get("quantity")
         export_record["amount_hkd"] = (

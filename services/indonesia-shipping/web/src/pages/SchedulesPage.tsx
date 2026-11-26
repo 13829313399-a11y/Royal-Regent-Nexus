@@ -4,7 +4,9 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../api/client'
-import { parseScheduleWorkbook } from '../utils/scheduleImport'
+import { useAuth } from '../auth/AuthContext'
+import { nexusFactory } from '../deployment'
+import { parseScheduleWorkbook, scheduleCustomer } from '../utils/scheduleImport'
 import { purchaseItemCodes } from '../utils/purchaseCustoms'
 import { scheduleLineKey, scheduleManualPlaced, toggleScheduleManual, scheduleAutoPlaced,
   scheduleActualProduction, scheduleProductionOverride, schedulePurchasePlaced } from '../utils/scheduleLineStatus'
@@ -60,6 +62,7 @@ interface ScheduleUploadDraft {
 import { useNavigationDraft } from '../auth/navigationState'
 export default function SchedulesPage() {
   const { message } = App.useApp()
+  const canReadCustomers = useAuth().canAccess('customers')
   const [rows, setRows] = useState<ScheduleSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [openId, setOpenId] = useState<number | null>(null)
@@ -78,10 +81,26 @@ export default function SchedulesPage() {
     session: 0, request: 0, open: false, phase: 'idle', rows: [], customer: '', weekLabel: '',
   })
   const [customers, setCustomers] = useState<string[]>([])
-  const customerNames = [...new Set(['TOMY', 'Spin Master', ...customers, ...rows.map(r => r.customer || 'TOMY')])]
+  const catalogueRequest = useRef(0)
+  const customerNames = canReadCustomers ? customers : [...new Set(rows.flatMap(r => r.customer ? [r.customer] : []))]
   const customerOptions = customerNames.map(value => ({ label: value, value }))
-  const visibleRows = customerFilter ? rows.filter(r => (r.customer || 'TOMY') === customerFilter) : rows
+  const selectedUploadName = customerNames.find(name => scheduleCustomer(name) === scheduleCustomer(uploadCustomer))
+  const activeFilter = customerNames.includes(customerFilter ?? '') ? customerFilter : undefined
+  const visibleRows = activeFilter
+    ? rows.filter(row => scheduleCustomer(row.customer || 'TOMY') === scheduleCustomer(activeFilter))
+    : rows
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const loadCustomers = useCallback(async () => {
+    if (!canReadCustomers) return
+    const request = ++catalogueRequest.current
+    try {
+      const { data } = await api.get<string[]>('/customers')
+      if (request !== catalogueRequest.current) return
+      setCustomers(data)
+      setCustomerFilter(previous => previous && data.includes(previous) ? previous : undefined)
+    } catch { if (request === catalogueRequest.current) setCustomers([]) }
+  }, [canReadCustomers])
 
   async function load() {
     setLoading(true)
@@ -91,7 +110,10 @@ export default function SchedulesPage() {
     } finally { setLoading(false) }
   }
   useEffect(() => { load() }, [])
-  useEffect(() => { api.get<string[]>('/customers').then(({ data }) => setCustomers(data || [])).catch(() => {}) }, [])
+  useEffect(() => {
+    loadCustomers()
+    return () => { catalogueRequest.current++ }
+  }, [loadCustomers])
   useEffect(() => () => { uploadDraftRef.current.open = false; uploadDraftRef.current.request++ }, [])
 
   async function openDetail(id: number) {
@@ -111,7 +133,7 @@ export default function SchedulesPage() {
     setParsing(false); setUploading(false)
   }
   function openUpload() {
-    if (uploadDraftRef.current.phase !== 'uploading') resetUploadContext(true, customerFilter || '')
+    if (uploadDraftRef.current.phase !== 'uploading') resetUploadContext(true, activeFilter || '')
   }
   function closeUpload() {
     const draft = uploadDraftRef.current
@@ -143,7 +165,8 @@ export default function SchedulesPage() {
       const bytes = await file.arrayBuffer()
       if (!current()) return
       const wb = XLSX.read(bytes, { type: 'array', cellDates: false })
-      const parsed = parseScheduleWorkbook(wb, XLSX.utils, customer)
+      const tomyCustomer = customerNames.find(name => scheduleCustomer(name) === 'TOMY')
+      const parsed = parseScheduleWorkbook(wb, XLSX.utils, customer, tomyCustomer ?? '')
       if (!current()) return
       draft.phase = 'ready'; draft.rows = parsed.rows; draft.customer = parsed.customer
       setUploadRows(parsed.rows)
@@ -203,8 +226,10 @@ export default function SchedulesPage() {
         extra={
           <Space>
             <Select allowClear showSearch placeholder="全部客户" style={{ width: 180 }}
-              value={customerFilter} options={customerOptions} onChange={setCustomerFilter} />
-            <Button onClick={load}>🔄 刷新</Button>
+              value={activeFilter} options={customerOptions} onChange={setCustomerFilter} />
+            <Button onClick={() => { load(); loadCustomers() }}>🔄 刷新</Button>
+            {nexusFactory() && <Button href={`/modules/sales-business/po-schedule-intake?factory=${encodeURIComponent(nexusFactory())}`}
+              target="_top">从客户订单中心导入印尼订单</Button>}
             <Button type="primary" onClick={openUpload}>📥 上传新周次</Button>
           </Space>
         }
@@ -262,9 +287,11 @@ export default function SchedulesPage() {
         <Space direction="vertical" style={{ width: '100%' }}>
           <Space>
             <span>客户：</span>
-            <Select allowClear showSearch placeholder="从文件识别客户（TOMY 模板默认 TOMY）" style={{ width: 360 }}
-              value={uploadCustomer || undefined} options={customerOptions}
+            <Select allowClear showSearch placeholder="选择客户，或从文件识别客户" style={{ width: 360 }}
+              value={selectedUploadName} options={customerOptions}
               disabled={uploading} onChange={changeUploadCustomer} />
+            {uploadRows.length > 0 && !selectedUploadName &&
+              <Tag>文件客名：{uploadCustomer}</Tag>}
           </Space>
           <Space>
             <span>周次标签：</span>
@@ -276,7 +303,7 @@ export default function SchedulesPage() {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) parseFile(f); e.target.value = '' }} />
           </Space>
           <Typography.Text type="secondary">
-            支持 TOMY 的 KIK/RRM 总排期及 Spin Master 接单总排期；仅覆盖同一客户的同周次，不覆盖其他客户。完整货号不拆分，下单状态不依赖单元格底色。
+            支持 KIK总排期、RRM总排期及接单总排期。表内没有客名时，请先选择客户。上传仅覆盖同一客户的同周次，完整货号不拆分，下单状态不依赖单元格底色。
           </Typography.Text>
           {uploadRows.length > 0 && (
             <Table

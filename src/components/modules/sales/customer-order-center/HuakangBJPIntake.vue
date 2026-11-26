@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { writeSpreadsheetClipboard } from '@/lib/spreadsheetClipboard'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { CircleAlert, ClipboardList, Copy, Download, FileInput, FileSpreadsheet, Inbox, LockKeyhole } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -174,7 +175,7 @@ async function upload(kind: JPReferenceKind) {
   try {
     const refs = await api.upload(kind, body, controller.signal)
     if (token !== epoch) return
-    references.value = refs; notice.value = '参照验证成功，已保存新版本；旧版本与历史导出仍保留。'
+    references.value = refs; notice.value = '参照验证成功，已保存并自动复用；下次录入无需再上传，仅在表格更新时替换。旧版本与历史导出仍保留。'
   } catch (cause) { if (token === epoch) handleError(cause) }
   finally { if (token === epoch) busy.value = false }
 }
@@ -245,14 +246,15 @@ async function copyExport(id: string) {
     clipboardMessage.value = `已读取 ${label} 的 ${result.row_count} 行已生成数据，每行 44 列，不含表头；不会重新分配编号。`
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-      await Promise.race([
-        navigator.clipboard.writeText(result.text),
+      const format = await Promise.race([
+        writeSpreadsheetClipboard(result),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('clipboard timeout')), 10_000) }),
       ])
-      if (token === epoch) clipboardMessage.value += ' 已复制，可粘贴到 Excel。'
+      if (token === epoch) clipboardMessage.value += format === 'rich'
+        ? ' 已按表格格式复制，编号不会额外添加单引号。'
+        : ' 已复制纯文本；请先将客PO、货号等目标列设为文本，保留前导零，或下载Excel后复制。'
     } catch {
-      if (token === epoch) clipboardMessage.value += ' 浏览器未完成自动复制，请点击“选中全部文本”后手动复制。'
+      if (token === epoch) clipboardMessage.value += ' 浏览器未完成自动复制，请点击“选中全部文本”后手动复制；目标编号列请先设为文本，或下载Excel后复制。'
     } finally { if (timer !== undefined) clearTimeout(timer) }
   } catch (cause) { if (token === epoch) handleError(cause) }
   finally { if (token === epoch) busy.value = false }
@@ -349,7 +351,7 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
     <template v-if="!loading && !loadFailed && caps.read && caps.available && factoryId === 'huakang-b'">
       <p v-if="busy" class="jp-processing" role="status">正在处理，请稍候。完成后可继续核对或下载。</p>
 
-      <SectionPanel title="01 · 当前参照" subtitle="使用当前版本查重和核价；更新后保留旧版本与历史导出。" class="jp-panel">
+      <SectionPanel title="01 · 当前参照" subtitle="已保存的排期和货价会自动复用，无需每次上传；仅在表格有更新时替换。" class="jp-panel">
         <template #action><StatusPill v-if="!caps.write" label="参照只读" tone="slate" /></template>
         <div class="jp-reference-grid">
           <article v-for="entry in referenceKinds" :key="entry.kind" class="jp-reference surface-subtle">
@@ -360,9 +362,10 @@ onBeforeUnmount(() => { epoch += 1; controller.abort() })
                 :tone="references[entry.kind] ? 'teal' : entry.kind === 'confirmed' ? 'slate' : 'amber'" compact />
             </div>
             <p class="jp-reference__file" :title="references[entry.kind]?.name">{{ references[entry.kind]?.name ?? '尚未上传' }}</p>
+            <p v-if="references[entry.kind]" class="jp-muted">已保存，录入时自动使用。<template v-if="references[entry.kind]?.updated_at"> 更新于 {{ references[entry.kind]?.updated_at }}</template></p>
             <template v-if="caps.write">
               <label class="jp-field">
-                <span class="jp-muted">选择新的 XLSX 文件</span>
+                <span class="jp-muted">{{ references[entry.kind] ? '表格有更新时，选择新的 XLSX 文件' : '首次添加参照（可选）' }}</span>
                 <input class="jp-file-input" type="file" accept=".xlsx" :aria-label="entry.label"
                   :disabled="busy || loading" @change="fileChanged($event, entry.kind)">
               </label>

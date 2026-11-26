@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
-import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, type RouteLocationNormalized } from 'vue-router'
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter, type RouteLocationNormalized } from 'vue-router'
+import { isAxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import { pendingFabricImports } from './pendingFabricRequests'
 import { ClipboardList, Truck } from '@lucide/vue'
@@ -13,15 +14,16 @@ import { purchaseSearchKey } from './purchaseSearch'
 import FabricChaseDialog from './FabricChaseDialog.vue'
 import FabricPurchaseFilters from './FabricPurchaseFilters.vue'
 import FabricPurchaseGroups from './FabricPurchaseGroups.vue'
-import FabricDetailDialog from './FabricDetailDialog.vue'
+import WarehouseDetailDialog from '@/features/warehouse-foundation/WarehouseDetailDialog.vue'
 import type { PurchaseFilters, PurchaseMaterialGroup } from '@/api/fabricProcurement'
 import type { FabricReceipt, ReceiveSourcesResult } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
 import { getApiErrorMessage } from '@/lib/http'
 import { fabricProcurementApi as api, type ImportAction, type PurchaseScope, type PurchasePreview, type PurchaseLine, type PurchaseDetail, type PurchaseImport, type PurchaseFacts, type PurchaseView, type TrackingSummary, type WithdrawalPreview } from '@/api/fabricProcurement'
 
-const props = defineProps<{ mode: 'import' | 'pending' | 'orders' | 'returned'; tracking?: string; orderNo?: string }>()
+const props = defineProps<{ mode: 'import' | 'pending' | 'orders' | 'returned'; tracking?: string; orderNo?: string; purchaseId?: string }>()
 const auth = useAuthStore()
+const route = useRoute(), router = useRouter()
 const pendingImport = computed(() => pendingFabricImports.get(auth.currentUser?.id ?? ''))
 const importSaving = computed(() => !!pendingImport.value?.inFlight)
 const canRetryImport = computed(() => !!pendingImport.value && pendingImport.value.actorId === auth.currentUser?.id)
@@ -32,6 +34,14 @@ const headerSearch = inject(purchaseSearchKey, undefined)
 const search = headerSearch?.search ?? ref(''), lines = ref<PurchaseLine[]>([]), total = ref<number>(), offset = ref(0)
 const history = ref<PurchaseImport[]>([]), detail = ref<PurchaseDetail>(), detailOpen = ref(false)
 const purchaseDetailTrigger = ref<HTMLButtonElement>()
+const linkedPurchase = computed(() => props.mode === 'pending' && props.purchaseId && /^[\w-]{1,64}$/.test(props.purchaseId) ? props.purchaseId : '')
+const linkedDetailError = ref<{ message: string; missing: boolean }>()
+const linkedRetryButton = ref<{ $el: HTMLButtonElement }>()
+let retryFocusTarget: { source: string; actor: string | undefined } | undefined
+let handledPurchase = ''
+type ListReadState = 'loading' | 'ready' | 'failed' | 'forbidden'
+const listReadState = ref<ListReadState>('loading')
+const listReadLabels = { loading: '读取中…', ready: '', failed: '读取失败', forbidden: '无读取权限' }
 const detailIdentityReview = computed(() => !!(detail.value?.receipt_identity_review_required || detail.value?.receipt_reconciliation_required))
 const detailNeedsQuantityReview = computed(() => !!detail.value && (
   detail.value.receipt_quantity_review_required || detail.value.warehouse_outstanding_quantity == null || detail.value.warehouse_outstanding_quantity === ''
@@ -70,7 +80,7 @@ function selectPage(checked: boolean) {
   if (combined.length > 50) { error.value = '一次最多选择 50 项物料，请取消部分选择后再勾选当前页。'; return }
   selected.value = combined
 }
-let sequence = 0, alive = true, deferredLoad = false
+let sequence = 0, alive = true, deferredLoad = false, backgroundRead = false
 const status = computed<Exclude<PurchaseScope, 'TRACKING'>>(() => props.mode === 'pending' ? 'PENDING' : props.mode === 'returned' ? 'RETURNED' : 'ALL')
 const ready = computed(() => preview.value ? preview.value.counts.new + preview.value.counts.updated + preview.value.counts.unchanged : 0)
 const actionNames = { NEW: '新增', UPDATE: '更新', UNCHANGED: '内容相同', BLOCKED: '待核对' }
@@ -97,11 +107,20 @@ function chooseFile(event: Event) {
   clearImport(); file.value = (event.target as HTMLInputElement).files?.[0]
 }
 watch(scope, clearImport)
-async function load() {
+function clearPurchaseList() {
+  lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
+}
+async function load(background = false) {
   if (importSaving.value) { deferredLoad = true; return }
   deferredLoad = false
   const ticket = ++sequence
-  busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
+  let listError = ''
+  let outcome: ListReadState = 'ready'
+  if (!background) {
+    listReadState.value = 'loading'
+    busy.value = true; error.value = ''; clearPurchaseList(); detail.value = undefined; detailOpen.value = false
+  }
+  const linkedRead = linkedPurchase.value && handledPurchase !== linkedPurchase.value ? loadLinkedDetail(ticket) : undefined
   try {
     if (props.mode === 'import') {
       const records = await api.imports(historyOffset.value)
@@ -122,27 +141,46 @@ async function load() {
         else selected.value = selected.value.flatMap(line => { const current = data.items.find(item => item.id === line.id); return current ? eligible(current) ? [current] : [] : [line] })
       }
     }
-  } catch (e) { if (ticket === sequence) error.value = getApiErrorMessage(e) }
-  finally { if (ticket === sequence) busy.value = false }
+  } catch (e) {
+    listError = getApiErrorMessage(e)
+    outcome = isAxiosError(e) && e.response?.status === 403 ? 'forbidden' : 'failed'
+  }
+  finally {
+    if (ticket === sequence) listReadState.value = outcome
+    await linkedRead
+    if (ticket === sequence) {
+      if (background && listError) clearPurchaseList()
+      if (listError && (!linkedRead || !linkedDetailError.value || linkedDetailError.value.missing)) error.value = listError
+      else if (background) error.value = ''
+      if (!background) busy.value = false
+    }
+  }
 }
 watch(importSaving, saving => { if (!saving && deferredLoad) void load() })
+watch(linkedPurchase, () => {
+  clearRetryFocus()
+  handledPurchase = ''; linkedDetailError.value = undefined; detailOpen.value = false; detail.value = undefined
+  void load()
+})
 watch(() => [props.mode, props.tracking, props.orderNo], () => { clearImport(); activeGroup.value = undefined; groupOffset.value = 0; file.value = undefined; search.value = ''; filters.value = { ...defaultFilters(), order_no: props.mode === 'pending' ? (props.orderNo ?? '').slice(0, 128) : '' }; chaseSource.value = undefined; offset.value = 0; pendingView.value = props.mode === 'pending' && trackingViews.has(props.tracking as PurchaseView) ? props.tracking as PurchaseView : 'OUTSTANDING'; withdrawOpen.value = false; withdrawal.value = undefined; receiptSource.value = undefined; batchSources.value = undefined; selected.value = []; notice.value = ''; void load() }, { immediate: true })
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 watch(search, () => {
   clearTimeout(searchTimer)
   if (props.mode === 'import') return
-  sequence++; busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined
+  sequence++; listReadState.value = 'loading'; busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined
   lineTotal.value = 0; summary.value = undefined; canReceive.value = false; canPendingPurchase.value = false
   searchTimer = setTimeout(query, 350)
 }, { flush: 'sync' })
 if (headerSearch) watch(headerSearch.submitted, query)
 function refreshPendingWhenIdle() {
-  if (props.mode === 'pending' && !busy.value && !detailOpen.value && receiptSource.value === undefined && !batchSources.value && !chaseSource.value && document.visibilityState === 'visible') void load()
+  if (props.mode !== 'pending' || backgroundRead || busy.value || detailOpen.value || receiptSource.value !== undefined || batchSources.value || chaseSource.value || document.visibilityState !== 'visible') return
+  backgroundRead = true
+  void load(true).finally(() => { backgroundRead = false })
 }
 const refreshTimer = setInterval(refreshPendingWhenIdle, 60_000)
 window.addEventListener('focus', refreshPendingWhenIdle)
 document.addEventListener('visibilitychange', refreshPendingWhenIdle)
-onBeforeUnmount(() => { alive = false; sequence++; clearInterval(refreshTimer); clearTimeout(searchTimer); window.removeEventListener('focus', refreshPendingWhenIdle); document.removeEventListener('visibilitychange', refreshPendingWhenIdle) })
+onBeforeUnmount(() => { alive = false; sequence++; clearRetryFocus(); clearInterval(refreshTimer); clearTimeout(searchTimer); window.removeEventListener('focus', refreshPendingWhenIdle); document.removeEventListener('visibilitychange', refreshPendingWhenIdle) })
 function leaveImport(to: RouteLocationNormalized) {
   if (!pendingImport.value || to.name === 'login' || to.name === 'forbidden') return true
   error.value = '导入结果尚未确认，请先使用原请求核对结果，再切换页面。'
@@ -153,10 +191,12 @@ onBeforeRouteLeave(leaveImport); onBeforeRouteUpdate(leaveImport)
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 watch([() => auth.currentUser?.id, () => auth.authorizationVersion], () => {
+  if (retryFocusTarget?.actor !== auth.currentUser?.id) clearRetryFocus()
   clearTimeout(searchTimer); clearImport(); file.value = undefined
   lines.value = []; groups.value = []; total.value = undefined; summary.value = undefined; options.value = undefined
   history.value = []; detail.value = undefined; detailOpen.value = false; canReceive.value = false; canPendingPurchase.value = false; savedReceiptId.value = ''
   selected.value = []; receiptSource.value = undefined; batchSources.value = undefined; chaseSource.value = undefined
+  handledPurchase = ''; linkedDetailError.value = undefined
   withdrawal.value = undefined; withdrawOpen.value = false; activeGroup.value = undefined; notice.value = ''
   busy.value = false
   if (!importSaving.value) void load()
@@ -214,10 +254,78 @@ async function showDetail(id: string, event: MouseEvent) {
   catch (e) { if (ticket === sequence) { error.value = getApiErrorMessage(e); lines.value = []; total.value = undefined } }
   finally { if (ticket === sequence) busy.value = false }
 }
+async function loadLinkedDetail(ticket: number) {
+  const id = linkedPurchase.value
+  if (!id) return
+  purchaseDetailTrigger.value = undefined
+  try {
+    const data = await api.detail(id)
+    if (ticket !== sequence || linkedPurchase.value !== id) return
+    handledPurchase = id
+    linkedDetailError.value = undefined
+    detail.value = data
+    detailOpen.value = true
+  } catch (failure) {
+    if (ticket !== sequence || linkedPurchase.value !== id) return
+    handledPurchase = id
+    linkedDetailError.value = { message: getApiErrorMessage(failure), missing: isAxiosError(failure) && failure.response?.status === 404 }
+  }
+}
+function clearRetryFocus() {
+  retryFocusTarget = undefined
+  document.removeEventListener('focusin', retryFocusMoved)
+  document.removeEventListener('pointerdown', clearRetryFocus)
+  document.removeEventListener('keydown', retryFocusKey)
+}
+function retryFocusMoved(event: FocusEvent) {
+  if (event.target !== linkedRetryButton.value?.$el && event.target !== document.body) clearRetryFocus()
+}
+function retryFocusKey(event: KeyboardEvent) {
+  if (event.key === 'Tab') clearRetryFocus()
+}
+watch([busy, linkedDetailError], async () => {
+  const target = retryFocusTarget
+  if (!target || busy.value || !linkedDetailError.value) return
+  await nextTick()
+  if (retryFocusTarget !== target) return
+  const restore = alive && !busy.value && linkedPurchase.value === target.source
+    && auth.currentUser?.id === target.actor && !linkedDetailError.value?.missing
+    && (document.activeElement === document.body || document.activeElement === linkedRetryButton.value?.$el)
+  clearRetryFocus()
+  if (restore) linkedRetryButton.value?.$el.focus()
+}, { flush: 'post' })
+function captureRetryFocus() {
+  clearRetryFocus()
+  retryFocusTarget = { source: linkedPurchase.value, actor: auth.currentUser?.id }
+  document.addEventListener('focusin', retryFocusMoved)
+  document.addEventListener('pointerdown', clearRetryFocus)
+  document.addEventListener('keydown', retryFocusKey)
+}
+async function retryLinkedDetail() {
+  if (busy.value || !linkedDetailError.value || linkedDetailError.value.missing) return
+  captureRetryFocus()
+  if (listReadState.value === 'failed' || listReadState.value === 'forbidden') {
+    handledPurchase = ''
+    await load()
+    return
+  }
+  const ticket = ++sequence
+  busy.value = true
+  try { await loadLinkedDetail(ticket) }
+  finally { if (ticket === sequence) busy.value = false }
+}
+async function returnToPurchaseList() {
+  const failure = await router.replace({ path: route.path, query: { ...route.query, purchase_id: undefined }, hash: route.hash })
+  if (!failure) headerSearch?.focus?.()
+}
 function restorePurchaseDetailFocus(event: Event) {
-  if (!chaseSource.value && purchaseDetailTrigger.value?.isConnected) {
+  if (!alive || chaseSource.value) return
+  if (purchaseDetailTrigger.value?.isConnected) {
     event.preventDefault()
     purchaseDetailTrigger.value.focus()
+  } else if (linkedPurchase.value && detail.value?.id === linkedPurchase.value && headerSearch?.focus) {
+    event.preventDefault()
+    headerSearch.focus()
   }
 }
 async function startReceive(id: string) {
@@ -319,9 +427,14 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
 <template>
   <div class="fabric-procurement">
     <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '按供应商和物料查看待收与复期，从对应采购明细登记本次实收。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
-    <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
+    <p v-if="error && error !== linkedDetailError?.message" class="fabric-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="fabric-success" role="status">{{ notice }} <RouterLink v-if="savedReceiptId && notice.includes(savedReceiptId)" class="underline" :to="{ path: '/modules/pmc-warehouse/fabric-warehouse/receipts', query: { factory: 'huakang-c', view: 'history', receipt: savedReceiptId } }">查看本次入库</RouterLink></p>
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
+    <div v-if="linkedDetailError" class="fabric-error">
+      <p role="alert">{{ linkedDetailError.missing ? '找不到该厂区的原采购明细，可返回采购列表查找。' : `无法打开原采购明细。${linkedDetailError.message}` }}</p>
+      <Button v-if="linkedDetailError.missing" type="button" variant="outline" @click="returnToPurchaseList">返回采购列表</Button>
+      <Button v-else ref="linkedRetryButton" type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
+    </div>
     <p v-if="pendingImport" class="fabric-message" role="status">导入结果尚未确认，文件和提交内容已锁定。<Button v-if="canRetryImport && !confirmOpen" variant="outline" size="sm" :disabled="busy || importSaving" @click="saveImport">核对原导入结果</Button><span v-if="!canRetryImport">请使用原提交账号核对结果。</span></p>
     <template v-if="mode === 'import'">
       <div class="fabric-import-controls">
@@ -380,7 +493,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
       </div>
       <div v-if="mode === 'pending' || canReceive || selected.length" class="fabric-selection-toolbar">
         <CartonSelectionSummary v-if="(!grouped && canReceive) || selected.length" :rows="selectedRows" :visible-ids="visibleIds" unit="项" @clear="selected = []" @remove="removeSelected" />
-        <span v-else-if="grouped" class="fabric-group-total">{{ total === undefined ? '正在读取…' : `${total} 个物料组 · ${lineTotal} 条采购明细` }}<small>上方提醒按采购明细条数统计</small></span>
+        <span v-else-if="grouped" class="fabric-group-total" role="status">{{ listReadState === 'ready' ? `${total ?? 0} 个物料组 · ${lineTotal} 条采购明细` : listReadLabels[listReadState] }}<small v-if="listReadState === 'ready'">上方提醒按采购明细条数统计</small></span>
         <div class="fabric-receiving-actions">
           <template v-if="mode === 'pending'">
             <Button as-child variant="outline" size="sm"><RouterLink to="/modules/pmc-warehouse/material-handover?factory=huakang-c&tab=documents">送货单入库</RouterLink></Button>
@@ -409,7 +522,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
       <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
       <div class="fabric-dialog-actions"><DialogClose as-child><Button variant="outline" :disabled="busy">保留导入</Button></DialogClose><Button :disabled="busy || !withdrawConfirmed || !withdrawReason.trim()" @click="withdrawImport">确认撤销导入</Button></div>
     </DialogContent></DialogPortal></DialogRoot>
-    <FabricDetailDialog v-if="detail" :open="detailOpen && !chaseSource" title="采购来源详情" :icon="ClipboardList"
+    <WarehouseDetailDialog v-if="detail" :open="detailOpen && !chaseSource" title="采购来源详情" :icon="ClipboardList"
       close-label="关闭采购来源详情" @close="detailOpen = false" @close-auto-focus="restorePurchaseDetailFocus">
       <section class="fabric-detail-overview" aria-label="待收概览">
         <div class="fabric-detail-identity">
@@ -499,7 +612,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
           <Button v-if="detail.unreviewed_changes && detail.can_review" type="button" size="sm" variant="outline" :disabled="busy" @click="reviewChanges">将变更标记已读（不确认收料）</Button>
         </div>
       </details>
-    </FabricDetailDialog>
+    </WarehouseDetailDialog>
   </div>
   <FabricChaseDialog v-if="chaseSource" :source="chaseSource" @close="chaseSource = undefined" @saved="chaseSaved" @stale="message => { chaseSource = undefined; receiptStale(message) }" />
   <FabricBatchReceiptDialog v-if="batchSources" :sources="batchSources" @close="batchSources = undefined" @saved="batchSaved" @stale="receiptStale" />

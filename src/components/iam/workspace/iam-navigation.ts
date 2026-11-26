@@ -4,6 +4,7 @@ export const identityUiEnabled = import.meta.env.VITE_IAM_IDENTITY_UI_ENABLED !=
 // Enable only after additive migration and compatible workers are deployed.
 export const positionWorkbenchEnabled = import.meta.env.VITE_POSITION_WORKBENCH_ENABLED === 'true'
 export const consolidatedIamEnabled = import.meta.env.VITE_IAM_CONSOLIDATED_UI_ENABLED === 'true' && identityUiEnabled && positionWorkbenchEnabled
+export const iamStudioEnabled = consolidatedIamEnabled && import.meta.env.VITE_IAM_STUDIO_ENABLED === 'true'
 const legacyNavigation = [
   { to: '/system/users', label: '人员与权限', icon: UsersRound, permissions: ['system:user_manage'] },
   {
@@ -33,7 +34,12 @@ const legacyNavigation = [
     permissions: ['system:user_manage'],
   },
 ]
-export const iamNavigation = consolidatedIamEnabled ? [
+export const iamNavigation = iamStudioEnabled ? [
+  { to: '/system/users?view=inbox', label: '办理大厅', icon: GitPullRequestArrow, permissions: ['system:user_manage', 'system:access_manage'] },
+  { to: '/system/users?view=people', label: '人员与权限', icon: UsersRound, permissions: ['system:user_manage', 'system:access_manage'] },
+  { to: '/system/iam/roles', label: '权限方案库', icon: ShieldCheck, permissions: ['system:permission_catalog_read'] },
+  { to: '/system/iam/audit', label: '审计记录', icon: History, permissions: ['system:user_manage', 'system:access_manage', 'system:audit_read'] },
+] : consolidatedIamEnabled ? [
   { to: '/system/users', label: '人员与权限', icon: UsersRound, permissions: ['system:user_manage', 'system:access_manage'] },
   { to: '/system/iam/roles', label: '权限方案', icon: ShieldCheck, permissions: ['system:permission_catalog_read'] },
   { to: '/system/iam/audit', label: '操作记录', icon: History, permissions: ['system:user_manage', 'system:access_manage', 'system:audit_read'] },

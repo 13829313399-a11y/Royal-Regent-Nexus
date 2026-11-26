@@ -1,6 +1,7 @@
 """Authenticated detail projection. Only mode=ro connections; no recovery-on-read."""
 from contextlib import closing
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 import json
 import re
@@ -10,8 +11,8 @@ from app.services import qc_dossier as archive
 from app.services.qc_inspection_summary import summary_report_date, business_date
 
 PUBLIC_DATA=set('po_no contract_no country customer_country customer_name product_no shipping_item reference_no source_product_no source_order_date product_name_zh product_name_en product_version date_code production_no order_type customer_release_no customer_label quantity units_per_carton carton_count standard packaging line_q customer_q requested_ship_date received_date label manual carton_mark fabric_label barcode parent_product_no port printing_requirement note remarks recheck_notice production_department inspection_agency planned_inspection_date planned_inspection_date_to inspection_date'.split())
-QC_FIELDS=set('id entryId customer customerCode poNo customerPo stockNo productNo productName country quantity unitsPerCarton cartonCount production agency contractNo shipDate shippedQuantity sourceStatus sourceNote dateFrom dateTo scheduleDate scheduleDateTo actualDate inspectionDate inspectionDateSource reportDate inspectionType result status submissionStatus completion inspectionProblem remark improvement responsible firstResponsible secondResponsible otherRemark customerRequirements inspectionFactory actualQuantity inspector reportStatus submittedAt submittedBy confirmedAt confirmedBy archivedAt sourceLabel sourceSheet sourceRow revision reviewState workflowId sourceId verificationIssues'.split())
-EXECUTION_FIELDS=set('actualDate actualQuantity sampleQuantity inspector institution reportNo reportMissingReason resultExplanation defects measurements result remark'.split())
+QC_FIELDS=set('id entryId customer customerCode poNo customerPo stockNo productNo productName country quantity unitsPerCarton cartonCount production agency contractNo shipDate shippedQuantity sourceStatus sourceNote dateFrom dateTo scheduleDate scheduleDateTo actualDate inspectionDate inspectionDateSource reportDate inspectionType result status submissionStatus completion inspectionProblem remark improvement responsible firstResponsible secondResponsible otherRemark customerRequirements inspectionFactory actualQuantity inspector reportStatus submittedAt submittedBy confirmedAt confirmedBy archivedAt sourceKind sourceLabel sourceFilename historyBatchId sourceSheet sourceRow revision reviewState workflowId sourceId verificationIssues'.split())
+EXECUTION_FIELDS=set('actualDate actualQuantity sampleQuantity inspector institution reportNo reportMissingReason resultExplanation analysisReason defects measurements result remark'.split())
 REVIEW_ACTIONS={'submit','confirm','revoke','return-to-inspection'}
 
 
@@ -52,11 +53,11 @@ def detail(factory, identity, *, full_business=False):
             qc['inspectionExecution']={k:v for k,v in (item.get('inspectionExecution') or {}).items() if k in EXECUTION_FIELDS}
             src=item.get('sourceRecord') or {}
             qc['sourceRecord']={k:src[k] for k in ('id','factory','sourceVersion','sourceRevision','shipDate','contractNo','customerCode','shippedQuantity','sourceStatus','sourceNote') if k in src}
-            qc['photos']=[{k:p[k] for k in ('id','name','caption','mime','size') if k in p} for p in item.get('photos',[]) if isinstance(p,dict)]
+            qc['photos']=[{k:p[k] for k in ('id','name','caption','mime','size','annotations') if k in p} for p in item.get('photos',[]) if isinstance(p,dict)]
             qc['reportDate']=summary_report_date(item,item.get('inspectionDate',''))
             qc['scheduleDate']=business_date(item.get('dateFrom')) or business_date(src.get('dateFrom')) if item.get('entryId') else ''
             qc['scheduleDateTo']=business_date(item.get('dateTo')) or business_date(src.get('dateTo')) or qc['scheduleDate'] if item.get('entryId') else ''
-            output=dict(qc=qc,business=dict(status='not_initialized',frozen=None,latest=None,task=None,collection={'status':'not_initialized' if archive.enabled(factory) else 'disabled'}),audit=[],changes=[],sourceEvents=[],remarkOrigin='unknown',fieldPolicy='sales-authorized' if full_business else 'qc-operational')
+            output=dict(qc=qc,business=dict(status='not_initialized',frozen=None,latest=None,task=None,collection={'status':'not_initialized' if archive.enabled(factory) else 'disabled'}),audit=[],changes=[],sourceEvents=[],reportSupplements=dict(status='not_linked',items=[],changes=[]),remarkOrigin='unknown',fieldPolicy='sales-authorized' if full_business else 'qc-operational')
             if not archive.path().is_file():return output
             # Same read transaction for summary and journal; no store()/sync()/reconcile().
             summary.execute('ATTACH DATABASE ? AS journal',(archive.path().as_uri()+'?mode=ro',))
@@ -65,6 +66,10 @@ def detail(factory, identity, *, full_business=False):
             if entry_id and 'entries' in tables:
                 entry=summary.execute('SELECT * FROM journal.entries WHERE id=? AND factory=?',(entry_id,factory)).fetchone()
                 if entry is None:raise HTTPException(404,'验货记录来源不可验证')
+                source_key='entry:'+entry_id
+                if stored['source_key']==source_key and identity==sha256((factory+'\0'+source_key).encode()).hexdigest()[:32]:
+                    from app.services.qc_report_supplement_read import read
+                    output['reportSupplements']=read(factory,entry_id,item,qc['reportDate'])
             if entry is not None and not qc['scheduleDate']:
                 base=json.loads(entry['base'])
                 qc['scheduleDate']=business_date(base.get('dateFrom'))
@@ -76,7 +81,7 @@ def detail(factory, identity, *, full_business=False):
                 events=summary.execute('SELECT * FROM journal.changes WHERE entry_id=? ORDER BY id DESC',(entry_id,)).fetchall()
                 for event in events:
                     delta=json.loads(event['diff']) if 'diff' in event.keys() else {}
-                    safe_delta={k:v for k,v in delta.items() if k in QC_FIELDS or k in ('reason','expectedRevision','legacyCompleted') or k.startswith('inspectionExecution.') and k.split('.',1)[1] in EXECUTION_FIELDS}
+                    safe_delta={k:v for k,v in delta.items() if k in QC_FIELDS or k in ('reason','expectedRevision','legacyCompleted','photoName','photoMarks') or k.startswith('inspectionExecution.') and k.split('.',1)[1] in EXECUTION_FIELDS}
                     value=dict(id=event['id'],revision=event['revision'],action=event['action'],actor=json.loads(event['actor']),at=event['created_at'],location=event['location'] if 'location' in event.keys() else '',changes=safe_delta)
                     output['changes'].append(value)
                     if event['action'] in REVIEW_ACTIONS:output['audit'].append(value)

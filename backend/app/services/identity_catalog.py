@@ -30,6 +30,7 @@ def seed_identity_catalog(db):
 
 def catalog(db):
     from app.core.config import settings
+    from app.services.access_studio import writes_enabled as studio_writes_enabled
     return {"organizations": [{"id": o.id, "name": o.name, "kind": o.kind, "parent_id": o.parent_id,
                                 "factory_id": o.legacy_factory_id, "status": o.status, "revision": o.revision,
                                 "departments": [{"code": d.department_code, "name": DEPARTMENTS.get(d.department_code, d.department_code),
@@ -37,4 +38,5 @@ def catalog(db):
                                                      IamOrgDepartment.org_unit_id == o.id, IamOrgDepartment.status == "active"))]}
                                for o in db.scalars(select(IamOrgUnit).order_by(IamOrgUnit.id))],
             "writes_enabled": settings.iam_identity_writes_enabled and settings.authz_writes_enabled and settings.authz_mode == "enforce",
+            "studio_writes_enabled": studio_writes_enabled(),
             "scheduling_enabled": settings.iam_identity_scheduling_enabled, "authz_mode": settings.authz_mode}

@@ -11,6 +11,8 @@ from html.parser import HTMLParser
 
 LONG_CODE_RE = re.compile(r'\b(\d{5})-([A-Z0-9]{2,4})-([A-Z0-9]{1,2})-(\d{3})-([A-Z0-9]{2,4})\b', re.I)
 BABY_CODE_RE = re.compile(r'^\d{5}$')
+MONTHLY_QTY_HEADERS = {'qty', 'qty pcs', 'quantity', 'quantity pcs'}
+MONTHLY_REVISED_QTY_HEADERS = {'revised qty', 'revised qty pcs', 'revised quantity', 'revised quantity pcs'}
 
 MONTH_EN = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
             'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
@@ -137,7 +139,7 @@ def _structured_plaintext_html(text):
             names = [norm_header(cell) for cell in row]
             item_header = any(name in {'item', 'item no', 'jp item', 'jp item no', 'no',
                                       'vsk', 'vsk no', 'vsk number', 'baby item no'} for name in names)
-            quantity_header = any(name in {'qty', 'quantity', 'order qty', 'qty pcs', 'quantity pcs'} for name in names)
+            quantity_header = any(name in MONTHLY_QTY_HEADERS | MONTHLY_REVISED_QTY_HEADERS | {'order qty'} for name in names)
             boundary = not any(_has_long_code(cell) for cell in row) and any(_QUOTED_MARK_RE.search(cell) for cell in row)
             if boundary or (current and item_header and quantity_header):
                 groups.append((False, current))
@@ -194,32 +196,31 @@ def _structured_plaintext_html(text):
         start = i
         if lines[i].strip() == '|':
             # Foxmail's text/plain alternative has one pipe-delimited cell per
-            # line and a double pipe between rows. Incomplete/ambiguous rows
-            # are rejected by the rectangular-table check, never regrouped.
-            while i < len(lines) and lines[i].strip() and i not in covered and '\t' not in lines[i]:
-                i += 1
-            block = lines[start:i]
-            if not block or block[-1].strip() != '|':
-                continue
-            chunks, cell = [], []
-            for line in block:
-                if line.strip() == '|':
-                    chunks.append(' '.join(cell).strip())
-                    cell = []
-                else:
-                    cell.append(line.strip())
-            if cell:
-                continue
-            if chunks and not chunks[0]:
-                chunks.pop(0)
-            rows, row = [], []
-            for chunk in chunks:
-                if not chunk:
-                    if row:
+            # line and adjacent pipes between rows. A blank *line* between
+            # pipes is an explicitly empty cell (often a subtotal), not a row
+            # boundary. Keep it so later columns never shift left.
+            rows, row, cell = [], [], []
+            i += 1  # Opening pipe of the first row.
+            while i < len(lines) and i not in covered and '\t' not in lines[i]:
+                line = lines[i].strip()
+                if line == '|':
+                    if cell:
+                        row.append(' '.join(cell).strip())
+                        cell = []
+                    elif row:
                         rows.append(row)
                         row = []
+                elif rows and len(row) == len(rows[0]) and not cell and not line:
+                    # An already closed, complete row followed by a blank
+                    # paragraph ends this block. Keep mail/history text outside.
+                    break
                 else:
-                    row.append(chunk)
+                    cell.append(line)
+                i += 1
+            if cell:
+                # Unclosed cells or narrative text are not repaired by guessing
+                # where the missing delimiter should have been.
+                continue
             if row:
                 rows.append(row)
             accept(start, i, rows)
@@ -486,7 +487,11 @@ def extract_reply_info(reply_text, ref_date):
 def pick_country(text):
     if not text:
         return ''
-    t = text.lower().strip()
+    t = text.lower().strip().replace('_', ' ')
+    # Mail subject market codes are explicit; Walmart by itself is not a country.
+    for code, country in (('wmus', '美国'), ('wmca', '加拿大')):
+        if re.search(r'(?<![a-z0-9])' + code + r'(?![a-z0-9])', t):
+            return country
     if t in COUNTRY_MAP:
         return COUNTRY_MAP[t]
     for k, v in COUNTRY_MAP.items():
@@ -569,14 +574,22 @@ def _vsk_table_columns(table):
     header = [norm_header(value) for value in table[0]]
     aliases = {'item': {'vsk', 'vsk no', 'vsk number'},
                'po': {'po', 'po no', 'customer po'},
-               'sd': {'fty s d', 'fty sd', 'factory ship date'},
-               'qty': {'qty', 'qty pcs', 'quantity', 'quantity pcs'}}
+               'sd': {'fty s d', 'fty sd', 'factory ship date'}}
     columns = {}
     for field, names in aliases.items():
         matches = [index for index, value in enumerate(header) if value in names]
         if len(matches) != 1:
             return None
         columns[field] = matches[0]
+    # A revised per-line quantity supersedes the old quantity. Totals are not
+    # aliases, and duplicate revised columns remain ambiguous rather than
+    # falling back to the old column or choosing the first one.
+    quantities = [i for i, name in enumerate(header) if name in MONTHLY_REVISED_QTY_HEADERS]
+    if not quantities:
+        quantities = [i for i, name in enumerate(header) if name in MONTHLY_QTY_HEADERS]
+    if len(quantities) != 1:
+        return None
+    columns['qty'] = quantities[0]
     if not any(columns['item'] < len(row) and BABY_CODE_RE.fullmatch(row[columns['item']].strip())
                for row in table[1:]):
         return None
@@ -1081,7 +1094,7 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
     last_po, last_cust = '', ''
     for row in table[1:]:
         raw_item = cell(row, col_item)
-        if vsk_columns and not raw_item and any(re.fullmatch(r'(?i)(?:grand\s+)?total(?:\s*\(pcs\))?', str(v).strip()) for v in row):
+        if not raw_item and any(re.fullmatch(r'(?i)(?:grand\s+)?total(?:\s*\(pcs\))?\s*[:：]?', str(v).strip()) for v in row):
             continue
         baby, long_code = clean_item_code(raw_item)
         if not baby:

@@ -1,0 +1,87 @@
+@property --qc-empty-action {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+qc-empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-main, #28352e);
+  white-space: normal;
+  line-height: 1.5;
+}
+qc-empty-state[scene] > strong { font-size: 16px; font-weight: 650; }
+qc-empty-state > p { margin: 0; font-size: 13px; color: var(--text-dim, #526358); }
+qc-empty-state[scene="inspection"] { padding-block: 34px; }
+
+td.qc-empty-cell { padding: 0 !important; }
+.qc-empty-cell > qc-empty-state {
+  position: sticky;
+  inset-inline-start: 0;
+  box-sizing: border-box;
+}
+.qc-empty-art {
+  position: relative;
+  isolation: isolate;
+  width: min(264px, 100%);
+  aspect-ratio: 264 / 234;
+  margin-bottom: 5px;
+  pointer-events: none;
+  --qc-empty-action: 0;
+}
+[scene="review"] .qc-empty-art { width: min(236px, 100%); }
+[scene="summary"] .qc-empty-art, [scene="reports"] .qc-empty-art { width: min(196px, 100%); }
+.qc-empty-art .qc-empty-frame, .qc-empty-art canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+}
+.qc-empty-frame.rest { opacity: calc(1 - var(--qc-empty-action)); }
+.qc-empty-frame.action, .qc-empty-frame.middle { mix-blend-mode: plus-lighter; }
+.qc-empty-frame.action { opacity: var(--qc-empty-action); }
+.qc-empty-art.has-middle .rest { opacity: max(0, calc(1 - 2 * var(--qc-empty-action))); }
+.qc-empty-art.has-middle .action { opacity: max(0, calc(2 * var(--qc-empty-action) - 1)); }
+.qc-empty-frame.middle { opacity: min(calc(2 * var(--qc-empty-action)), calc(2 - 2 * var(--qc-empty-action))); }
+.qc-empty-art canvas, .qc-empty-art.is-warping .qc-empty-frame { visibility: hidden; }
+.qc-empty-art.is-warping canvas { visibility: visible; }
+[scene="schedule"] .is-playing { animation: qc-empty-turn 2.7s cubic-bezier(.35,.05,.30,1) both; }
+[scene="inspection"] .is-playing { animation: qc-empty-write 2.5s cubic-bezier(.35,.05,.30,1) both; }
+[scene="review"] .is-playing { animation: qc-empty-file 2.65s cubic-bezier(.35,.05,.30,1) both; }
+[scene="summary"] .is-playing { animation: qc-empty-scan 2.7s ease-in-out both; }
+[scene="reports"] .is-playing { animation: qc-empty-open 2.55s cubic-bezier(.35,.05,.30,1) both; }
+
+@keyframes qc-empty-turn {
+  0%, 11%, 90%, 100% { --qc-empty-action: 0; }
+  45%, 54% { --qc-empty-action: 1; }
+}
+@keyframes qc-empty-write {
+  0%, 12%, 93%, 100% { --qc-empty-action: 0; }
+  52%, 64% { --qc-empty-action: 1; }
+}
+@keyframes qc-empty-file {
+  0%, 10% { --qc-empty-action: 0; }
+  77%, 100% { --qc-empty-action: 1; }
+}
+@keyframes qc-empty-scan {
+  0%, 14%, 92%, 100% { --qc-empty-action: 0; }
+  50%, 63% { --qc-empty-action: 1; }
+}
+@keyframes qc-empty-open {
+  0%, 13% { --qc-empty-action: 0; }
+  72%, 100% { --qc-empty-action: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qc-empty-art.is-playing { animation: none; }
+  .qc-empty-art .qc-empty-frame.rest { visibility: visible; opacity: 1; }
+  .qc-empty-art .qc-empty-frame:not(.rest), .qc-empty-art canvas { visibility: hidden; }
+}
+@media print {
+  .qc-empty-art { display: none; }
+}

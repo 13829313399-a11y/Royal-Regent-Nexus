@@ -1,4 +1,5 @@
 from io import BytesIO
+from urllib.parse import unquote
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -21,16 +22,16 @@ EXAMPLES = [
 def isolated_upstream(patch):
     from app.api import qc_department
     install_upstream(patch)
-    patch.setattr(qc_department, 'schedule_example', lambda factory: {'items': []})
+    patch.setattr(qc_department, 'schedule_example', lambda factory, *, missing_ok=False: {'items': []})
 
 
-def seed(client, base):
+def seed(client, base, examples=EXAMPLES):
     def post(path, body):
         response = client.post(base + 'api/' + path, json=body)
         assert response.status_code == 200, response.text
         return response.json()
 
-    for i, (customer, product, name, country, qty, result, problem, improvement, owner) in enumerate(EXAMPLES, 1):
+    for i, (customer, product, name, country, qty, result, problem, improvement, owner) in enumerate(examples, 1):
         source = post('workflow/schedules', {'requestKey': uuid4().hex, 'row': dict(
             dateFrom=DAY, dateTo='', customer=customer, poNo=f'DEMO-PO-{i:03}', country=country,
             productNo=product, productName=name, quantity=qty, unitsPerCarton='10',
@@ -74,7 +75,7 @@ def test_report_and_template_download(monkeypatch, tmp_path):
         assert client.get(endpoint, params={'date': '2026-11-06'}).json()['total'] == 0
         assert client.get(endpoint, params={'date': '2026-11-99'}).status_code == 422
         assert client.get(endpoint, params={'date': DAY, 'company': 'hy-huadeng'}).status_code == 403
-        for period, start, end in [('weekly','2026-11-02','2026-11-08'), ('monthly','2026-11-01','2026-11-30')]:
+        for period, start, end in [('daily',DAY,DAY), ('weekly','2026-11-02','2026-11-08'), ('monthly','2026-11-01','2026-11-30')]:
             params = {'date': DAY, 'period': period}
             scoped = client.get(endpoint, params=params)
             assert scoped.status_code == 200, scoped.text
@@ -83,7 +84,20 @@ def test_report_and_template_download(monkeypatch, tmp_path):
             download = client.get(endpoint+'/export', params={**params,'revision':scoped['revision']})
             assert download.status_code == 200, download.text
             assert load_workbook(BytesIO(download.content)).active['D9'].value == scoped['rows'][-1]['values'][3]
-            assert client.get(endpoint+'/export', params={**params,'revision':report['revision']}).status_code == 409
+            if period != 'daily':
+                assert client.get(endpoint+'/export', params={**params,'revision':report['revision']}).status_code == 409
+            key = next(c['key'] for c in scoped['customers'] if c['name'] == '示例洋行 B')
+            params = {'date': DAY, 'period': period, 'customer': key}
+            selected = client.get(endpoint, params=params).json()
+            assert (selected['customer'], selected['total'], selected['passed'], selected['failed']) == (key, 2, 1, 1)
+            assert selected['customers'] == scoped['customers']
+            assert all(r['values'][0] == '示例洋行 B' for r in selected['rows'])
+            assert client.get(endpoint+'/export', params={**params, 'revision': scoped['revision']}).status_code == 409
+            book = client.get(endpoint+'/export', params={**params, 'revision': selected['revision']})
+            assert book.status_code == 200
+            sheet = load_workbook(BytesIO(book.content)).active
+            assert [sheet[f'A{i}'].value for i in (4,5,6)] == ['示例洋行 B','示例洋行 B',None]
+            assert client.get(endpoint, params={**params, 'customer':'invalid'}).status_code == 422
         assert client.get(endpoint, params={'date': DAY, 'period': 'yearly'}).status_code == 422
         assert client.get(endpoint, params=[('date',DAY),('period','weekly'),('period','monthly')]).status_code == 422
         export_url = endpoint + '/export'
@@ -97,9 +111,10 @@ def test_report_and_template_download(monkeypatch, tmp_path):
         assert [cell.value for cell in sheet[3][:13]] == report['headers']
         assert {str(r) for r in sheet.merged_cells.ranges} == {'A1:M1','A2:M2'}
         assert (sheet.max_row, sheet.max_column) == (9, 13)
-        assert sheet.freeze_panes == 'E4'
+        assert sheet.freeze_panes == 'A4'
         assert sheet.sheet_view.topLeftCell == 'A1'
-        assert sheet.sheet_view.pane.topLeftCell == 'E4'
+        assert sheet.sheet_view.pane.xSplit is None
+        assert sheet.sheet_view.zoomScale == 95
         assert sheet.page_setup.orientation == 'landscape'
         assert sheet.page_setup.fitToWidth == 1 and sheet.page_setup.fitToHeight == 0
         assert sheet.print_title_rows == '$1:$3'
@@ -124,7 +139,7 @@ def test_daily_layout_preserves_edge_values_and_empty_report():
     from app.services.qc_daily_report import workbook
     values = ['示例客户', '0000123', 'UK', '=001-ABC', '中文长产品名称 / Long product ' * 5,
               0, '', '', 'PASS', '第一行问题\n第二行问题', '', '', '长备注与问题独立\n' * 8]
-    data = dict(date='2026-11-13', period='daily', rows=[{'values': values}])
+    data = dict(factory='huaxing', date='2026-11-13', period='daily', rows=[{'values': values}])
     sheet = load_workbook(BytesIO(workbook(data))).active
     assert [sheet.cell(4, col).value for col in range(1, 14)] == [None if v == '' else v for v in values]
     assert sheet['B4'].data_type == sheet['D4'].data_type == 's'
@@ -136,3 +151,40 @@ def test_daily_layout_preserves_edge_values_and_empty_report():
     assert (empty.max_row, empty.max_column) == (3, 13)
     assert empty.sheet_view.topLeftCell == 'A1'
     assert '$A$1:$M$3' in str(empty.print_area)
+
+
+def test_report_gateway_uses_authorized_factory_for_annual_download(monkeypatch, tmp_path):
+    import test_molding_sample_api
+    from test_qc_department_gateway import grant_permission_override
+
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path / 'main')
+    monkeypatch.setenv('QC_DEPARTMENT_DATA_DIR', str(tmp_path / 'companies'))
+    monkeypatch.setenv('AUTHZ_MODE', 'enforce')
+    with make_client(monkeypatch) as client:
+        isolated_upstream(monkeypatch)
+        prefix = '/api/qc-department/huadeng/'
+        login_as(client, 'qc_inspector')
+        assert client.get(prefix + 'api/health').status_code == 403
+        login_as(client, 'admin')
+        base = client.get(prefix + 'api/health').json()['frame_url']
+        seed(client, base, EXAMPLES[1:2])
+        stats = base + 'api/approved-statistics/report'
+        filters = dict(year=DAY[:4], customer='', result='ALL')
+        data = client.get(stats, params=filters).json()
+        assert data['factory'] == 'huadeng' and data['totals']['total'] == 1
+        params = {**filters, 'revision': data['revision']}
+        export = client.get(stats + '/excel', params=params)
+        assert export.status_code == 200, export.text if export.status_code != 200 else ''
+        assert '华登2026年验货统计表.xlsx' in unquote(export.headers['content-disposition'])
+        workbook = load_workbook(BytesIO(export.content))
+        assert workbook.active['A1'].value == '华登 2026 年度验货统计表'
+        assert client.get(stats + '/excel', params={**params, 'company': 'hy-huaxing'}).status_code == 403
+        other = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
+        assert client.get(other + 'api/approved-statistics/report/excel', params=params).status_code == 409
+
+        grant_permission_override('qc_inspector', 'qc_inspection:read', factory_id='huadeng', department='qc')
+        grant_permission_override('qc_inspector', 'qc_inspection:report_export', factory_id='huadeng', department='qc', effect='deny')
+        login_as(client, 'qc_inspector')
+        read_base = client.get(prefix + 'api/health').json()['frame_url']
+        assert client.get(read_base + 'api/approved-statistics/report', params=filters).status_code == 200
+        assert client.get(read_base + 'api/approved-statistics/report/excel', params=params).status_code == 403

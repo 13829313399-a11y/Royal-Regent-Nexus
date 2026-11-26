@@ -44,7 +44,7 @@ def prepare(destination, repository=None):
     commit = subprocess.run(["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     manifest = {"source_commit": commit, "unchanged_business_sources": records, "standalone_adapters": adapters,
         "reviewed_host_api_source": {"source": source_api.relative_to(repository).as_posix(), "sha256": API_SOURCE_SHA256},
-        "runtime": "Local SQLite and loopback HTTP; no production accounts, data or network database."}
+        "runtime": "Local SQLite and loopback HTTP; no production accounts or network database. Private initial references require explicit delivery inputs."}
     (destination / "source-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest
 

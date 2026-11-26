@@ -1,5 +1,6 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { routeLocationKey, type RouteLocationNormalizedLoaded } from 'vue-router'
 import IamRoleTemplatesView from '../IamRoleTemplatesView.vue'
 
 enableAutoUnmount(afterEach)
@@ -118,6 +119,7 @@ function deferred<T>() {
 function mountView() {
   return mount(IamRoleTemplatesView, {
     global: {
+      provide: { [routeLocationKey as symbol]: { query: {} } as RouteLocationNormalizedLoaded },
       stubs: {
         teleport: { template: '<div><slot /></div>' },
         IamNavigation: {
@@ -253,7 +255,7 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="role-viewer-panel"] h2').text()).toBe('总经理')
+    expect(wrapper.get('[data-testid="role-viewer-panel"] h2 strong').text()).toBe('总经理')
     const boundary = wrapper.get('[data-testid="general-manager-boundary"]').text()
     expect(boundary).toContain('跨厂操作 · 全业务部门')
     expect(boundary).toContain('不包含账号与权限管理')
@@ -325,10 +327,10 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
 
     managerResponse.resolve(roleAccess(managerRole, []))
     await flushPromises()
-    expect(wrapper.get('[data-testid="role-viewer-panel"] h2').text()).toBe('经理')
+    expect(wrapper.get('[data-testid="role-viewer-panel"] h2 strong').text()).toBe('经理')
 
     engineerResponse.resolve(roleAccess(engineerRole, []))
     await flushPromises()
-    expect(wrapper.get('[data-testid="role-viewer-panel"] h2').text()).toBe('经理')
+    expect(wrapper.get('[data-testid="role-viewer-panel"] h2 strong').text()).toBe('经理')
   })
 })

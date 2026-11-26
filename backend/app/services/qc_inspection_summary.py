@@ -16,6 +16,7 @@ import binascii
 import calendar
 import json
 import logging
+import re
 import sqlite3
 
 from fastapi import HTTPException
@@ -206,7 +207,7 @@ def reconcile(factory):
         seen = set()
         with store(True) as conn:
             for entry_id, (row, binding, version) in candidates.items():
-                if details.get(entry_id,{}).get('flow_version')==2:continue
+                if details.get(entry_id,{}).get('flow_version')==2 or details.get(entry_id,{}).get('deleted_at'):continue
                 task_row = tasks.get(row.get('workflowId'))
                 task = json.loads(task_row['payload']) if task_row else {}
                 event = approvals.get(row.get('workflowId'))
@@ -251,6 +252,12 @@ def reconcile(factory):
                     upsert(conn, factory, 'entry:' + item['entryId'], item)
         with store(True) as conn:
             for saved in details.values():
+                if saved.get('deleted_at'):
+                    identity = sha256((factory + '\0entry:' + saved['entry_id']).encode()).hexdigest()[:32]
+                    stamp = workflow.now()
+                    conn.execute('INSERT INTO changes(record_id,created_at,payload) SELECT id,?,payload FROM records WHERE id=? AND factory=? AND active=1', (stamp, identity, factory))
+                    conn.execute("UPDATE records SET active=0, status='withdrawn', updated_at=? WHERE id=? AND factory=? AND active=1", (stamp, identity, factory))
+                    continue
                 if saved['flow_version']==2:
                     if saved['review_state']=='approved' and saved['approved_snapshot']:
                         item=review_item(json.loads(saved['approved_snapshot']))
@@ -580,3 +587,131 @@ def commit_history(factory, actor, identity):
             upsert(conn, factory, row['sourceKey'], item, batch=identity, fingerprint=row['fingerprint'])
         conn.execute("UPDATE batches SET status='committed',committed_at=? WHERE id=?", (workflow.now(), identity))
         return {'status': 'committed', 'id': identity, 'count': counts['new'], 'duplicate': counts['duplicate'], 'conflict': counts['conflict']}
+
+
+def _validate_delete_request(body):
+    if not isinstance(body, dict) or set(body) - {'requestKey', 'reason'} or not re.fullmatch(r'[a-f0-9-]{16,64}', str(body.get('requestKey', ''))):
+        raise HTTPException(422, '删除请求编号不正确')
+    reason = body.get('reason', '')
+    if not isinstance(reason, str) or len(reason) > 2000 or any(ord(c) < 32 and c not in '\n\r\t' for c in reason):
+        raise HTTPException(422, '删除说明最多2000字且不能包含非法控制字符')
+    return str(body['requestKey']), reason.strip()
+
+
+def list_history_batches(factory):
+    with store() as conn:
+        rows = conn.execute(
+            """SELECT b.id, b.filename, b.status, b.created_at, b.committed_at, b.rolled_back_at, b.preview,
+                      (SELECT count(*) FROM records r WHERE r.factory=b.factory AND r.batch_id=b.id AND r.active=1) AS active_count
+               FROM batches b
+               WHERE b.factory=? AND b.status IN ('committed', 'rolled_back')
+               ORDER BY coalesce(b.committed_at, b.created_at) DESC, b.created_at DESC""",
+            (factory,),
+        ).fetchall()
+    items = []
+    for row in rows:
+        preview_data = json.loads(row['preview']) if row['preview'] else {}
+        items.append({
+            'id': row['id'],
+            'filename': row['filename'],
+            'status': row['status'],
+            'createdAt': row['created_at'] or '',
+            'committedAt': row['committed_at'] or '',
+            'rolledBackAt': row['rolled_back_at'] or '',
+            'totalRows': int(preview_data.get('total') or 0),
+            'activeCount': int(row['active_count'] or 0),
+            'customers': preview_data.get('customers') or [],
+            'years': preview_data.get('years') or {},
+        })
+    return {'items': items}
+
+
+def delete_history_record(factory, identity, body, actor):
+    if not re.fullmatch(r'[a-f0-9]{32}', str(identity)):
+        raise HTTPException(404, '汇总记录不存在')
+    request_key, reason = _validate_delete_request(body)
+    with store(True) as conn:
+        row = conn.execute('SELECT * FROM records WHERE factory=? AND id=?', (factory, identity)).fetchone()
+        if row is None:
+            raise HTTPException(404, '汇总记录不存在')
+        payload = json.loads(row['payload'])
+        if not row['active']:
+            for change in conn.execute('SELECT payload FROM changes WHERE record_id=? ORDER BY id DESC', (identity,)):
+                audit = json.loads(change['payload']).get('_deleteAudit')
+                if isinstance(audit, dict) and audit.get('requestKey') == request_key:
+                    if (audit.get('action') != 'delete-history-record'
+                            or (audit.get('actor') or {}).get('id') != actor.get('id')
+                            or audit.get('reason', '') != reason):
+                        raise HTTPException(409, '同一请求编号不能用于不同操作')
+                    return {
+                        'id': identity, 'status': 'deleted', 'replayed': True,
+                        'historyBatchId': row['batch_id'] or payload.get('historyBatchId') or '',
+                    }
+            raise HTTPException(404, '汇总记录不存在或已删除')
+        if not row['source_key'].startswith('history:') or payload.get('sourceKind') != 'history':
+            raise HTTPException(409, '审核同步记录受一致性保护，请前往「审核中心 → 已审核」先执行反审核，再在待审核中删除')
+        stamp = workflow.now()
+        archived = {
+            **payload,
+            '_deleteAudit': {
+                'action': 'delete-history-record',
+                'actor': actor,
+                'at': stamp,
+                'reason': reason,
+                'requestKey': request_key,
+            },
+        }
+        conn.execute('INSERT INTO changes(record_id,created_at,payload) VALUES(?,?,?)', (identity, stamp, dump(archived)))
+        conn.execute("UPDATE records SET active=0, status='withdrawn', updated_at=? WHERE id=? AND factory=?", (stamp, identity, factory))
+        return {
+            'id': identity, 'status': 'deleted', 'replayed': False,
+            'historyBatchId': row['batch_id'] or payload.get('historyBatchId') or '',
+        }
+
+
+def rollback_history_batch(factory, batch_id, body, actor):
+    if not re.fullmatch(r'[a-f0-9]{32}', str(batch_id)):
+        raise HTTPException(404, '历史导入批次不存在')
+    request_key, reason = _validate_delete_request(body)
+    with store(True) as conn:
+        batch = conn.execute('SELECT * FROM batches WHERE factory=? AND id=?', (factory, batch_id)).fetchone()
+        if batch is None:
+            raise HTTPException(404, '历史导入批次不存在')
+        if batch['status'] == 'preview':
+            raise HTTPException(409, '该历史导入批次尚未确认入库，无需撤回')
+        if batch['status'] == 'rolled_back':
+            return {
+                'id': batch_id, 'status': 'rolled_back', 'rolledBackCount': 0,
+                'replayed': True, 'filename': batch['filename'],
+                'rolledBackAt': batch['rolled_back_at'] or '',
+            }
+        rows = conn.execute(
+            "SELECT id, payload FROM records WHERE factory=? AND batch_id=? AND active=1 AND source_key LIKE 'history:%'",
+            (factory, batch_id),
+        ).fetchall()
+        stamp = workflow.now()
+        for row in rows:
+            archived = {
+                **json.loads(row['payload']),
+                '_deleteAudit': {
+                    'action': 'rollback-history-batch',
+                    'batchId': batch_id,
+                    'actor': actor,
+                    'at': stamp,
+                    'reason': reason,
+                    'requestKey': request_key,
+                },
+            }
+            conn.execute('INSERT INTO changes(record_id,created_at,payload) VALUES(?,?,?)', (row['id'], stamp, dump(archived)))
+        conn.execute(
+            "UPDATE records SET active=0, status='withdrawn', updated_at=? WHERE factory=? AND batch_id=? AND active=1 AND source_key LIKE 'history:%'",
+            (stamp, factory, batch_id),
+        )
+        conn.execute(
+            "UPDATE batches SET status='rolled_back', rolled_back_at=? WHERE id=? AND factory=?",
+            (stamp, batch_id, factory),
+        )
+        return {
+            'id': batch_id, 'status': 'rolled_back', 'rolledBackCount': len(rows),
+            'replayed': False, 'filename': batch['filename'], 'rolledBackAt': stamp,
+        }

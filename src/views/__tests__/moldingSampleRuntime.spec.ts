@@ -45,6 +45,7 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   deleteOrder: vi.fn(),
   exportOrderExcel: vi.fn(),
   exportOrdersExcel: vi.fn(),
+  exportProductionMonth: vi.fn(),
   importOrderExcel: vi.fn(),
   previewOrderExcel: vi.fn(),
   updateStatus: vi.fn(),
@@ -974,6 +975,61 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('lets the executing factory revise a completed mold report and enter a late report for another mold', async () => {
+    const orderId = 'BP-COMPLETED-TRIAL'
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: orderId }
+    const record = createKpiRecord('已完成', orderId, 2.5)
+    const firstMold = record.items[0]!
+    const secondMold = { ...firstMold, id: `${orderId}-ITEM-2`, sort_order: 2, mold_id: 'M-002' }
+    record.items.push(secondMold)
+    const savedReport: MoldingSampleTrialReport = {
+      id: 'REPORT-2', factory_id: 'huaxing', order_id: orderId, item_id: secondMold.id,
+      created_at: '2026-07-15 08:00:00', updated_at: '2026-07-15 08:00:00',
+      created_by: '啤机部', updated_by: '啤机部', data: createTrialReportData('待复测'),
+    }
+    record.trial_reports = [savedReport]
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+    mockedMoldingSampleApi.upsertTrialReport.mockImplementation(async (_, itemId, { data }) => ({
+      ...savedReport, id: itemId === secondMold.id ? savedReport.id : 'REPORT-1', item_id: itemId, data,
+    }))
+    const pendingRevision = createDeferred<MoldingSampleTrialReport>()
+    mockedMoldingSampleApi.upsertTrialReport.mockReturnValueOnce(pendingRevision.promise)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+    await getButtonByText(wrapper, '修改 / 打印').trigger('click')
+    const dialog = wrapper.getComponent(MoldingSampleTrialReportDialog)
+    const summary = '.molding-trial-report-sheet__summary textarea'
+    expect(dialog.get('select').element.value).toBe(secondMold.id)
+    expect(dialog.get<HTMLTextAreaElement>(summary).element.value).toBe('待复测')
+    await dialog.get(summary).setValue('复测合格')
+    await getButtonByText(wrapper, '保存试模报告').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.upsertTrialReport).toHaveBeenCalledWith(orderId, secondMold.id, {
+      data: { ...savedReport.data, trial_summary: '复测合格' },
+    })
+    await dialog.get('select').setValue(firstMold.id)
+    expect(dialog.get<HTMLTextAreaElement>(summary).element.value).toBe('')
+    await dialog.get(summary).setValue('完工后首报')
+    pendingRevision.resolve({ ...savedReport, data: { ...savedReport.data, trial_summary: '复测合格' } })
+    await flushPromises()
+    expect(dialog.get<HTMLTextAreaElement>(summary).element.value).toBe('完工后首报')
+    await getButtonByText(wrapper, '保存试模报告').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.upsertTrialReport).toHaveBeenCalledWith(orderId, firstMold.id, {
+      data: expect.objectContaining({ trial_summary: '完工后首报' }),
+    })
+    expect(dialog.get('select').element.value).toBe(firstMold.id)
+    await dialog.get('[aria-label="关闭试模报告"]').trigger('click')
+    expect(wrapper.get('[data-testid="molding-sample-trial-report-history"]').text()).toContain('2 份')
+    await getButtonByText(wrapper, '试模报告填写 / 打印').trigger('click')
+    await dialog.get('select').setValue(secondMold.id)
+    expect(dialog.get<HTMLTextAreaElement>(summary).element.value).toBe('复测合格')
+    expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('ignores a stale trial-report save after an A-B-A execution-factory switch', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: '' }
@@ -1786,6 +1842,38 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('exports the whole opening month independently of queue search, page and print selection', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing' }
+    const records = Array.from({ length: 12 }, (_, index) =>
+      createMoldingSampleRecord('待生产', `BP-MONTH-${index + 1}`, index + 1))
+    mockedMoldingSampleApi.listProductionTasks.mockResolvedValueOnce(records)
+    mockedMoldingSampleApi.exportProductionMonth
+      .mockRejectedValueOnce(new Error('读取超时，请稍后重试'))
+      .mockResolvedValueOnce(new Blob())
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+    const form = wrapper.get('details form')
+    const field = form.get('input[type="month"]')
+
+    await wrapper.get('[data-testid="production-task-search-input"]').setValue('no-match')
+    await field.setValue('2026-07')
+    expect(form.text()).toContain('12 张啤办单')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(form.get('[role="alert"]').text()).toContain('读取超时')
+    expect(form.get('button').attributes('disabled')).toBeUndefined()
+    await form.trigger('submit')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.exportProductionMonth).toHaveBeenCalledWith('huaxing', '2026-07', expect.any(AbortSignal))
+    expect(form.text()).toContain('该月暂无可导出的啤办单')
+
+    await field.setValue('2026-08')
+    expect(form.get('button').attributes('disabled')).toBeDefined()
+    expect(form.text()).toContain('在该月没有进入生产队列的啤办单')
+    expect(form.text()).not.toContain('该月暂无可导出')
+    wrapper.unmount()
+  })
+
   it('fuzzy searches the production queue across order, mold, client, and material fields', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing' }
@@ -2137,6 +2225,7 @@ describe('molding sample runtime error handling', () => {
             mold_name: sortOrder === 6 ? '最后一套护面罩' : `护面罩 ${sortOrder}`,
             material: 'ABS (PA-757)',
             required_material_kg: 6 + sortOrder,
+            collected_weight_kg: null,
             actual_weight_kg: null,
             notes: sortOrder === 6 ? '第六套模具完整资料。' : `第 ${sortOrder} 套模具资料。`,
           }
@@ -2155,6 +2244,10 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
     expect(wrapper.findAll('[data-testid="production-fillback-item"]')).toHaveLength(6)
+    const usagePanels = wrapper.findAll('[data-testid="production-fillback-usage-panel"]')
+    expect(usagePanels[0]!.text()).toContain('14.50 kg')
+    expect(usagePanels[1]!.text()).toContain('尚未登记')
+    expect(usagePanels[1]!.text()).toContain('预计用料 8.00 kg')
     const actualWeightInputs = wrapper.findAll('[data-testid="production-actual-weight-input"]')
     expect(actualWeightInputs).toHaveLength(6)
     expect(wrapper.findAll('[data-testid="production-fillback-expected-cost-panel"]')).toHaveLength(6)
@@ -2859,6 +2952,7 @@ describe('molding sample runtime error handling', () => {
     })
 
     expect(wrapper.text()).toContain('BP-PROD-READONLY-001')
+    expect(wrapper.text()).not.toContain('按月导出啤办单')
     expect(wrapper.text()).toContain('当前账号没有通知处理权限')
     expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
     expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
@@ -2869,10 +2963,10 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
-  it('lets a production clerk inspect another factory while every task action stays read-only', async () => {
+  it.each(['待生产', '已完成'] as const)('keeps another factory’s %s production task read-only for a production clerk', async (status) => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huadeng', order_id: 'BP-PROD-CLERK-FOREIGN-READONLY' }
-    const record = createKpiRecord('待生产', 'BP-PROD-CLERK-FOREIGN-READONLY', null)
+    const record = createKpiRecord(status, 'BP-PROD-CLERK-FOREIGN-READONLY', status === '已完成' ? 2.5 : null)
     record.order.factory_id = 'huadeng'
     record.order.production_factory_id = 'huadeng'
     record.items[0]!.order_id = record.order.id
@@ -2901,7 +2995,7 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
     expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
     expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
-    expect(getButtonByText(wrapper, '标记完成').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, status === '已完成' ? '已完成回传' : '标记完成').attributes('disabled')).toBeDefined()
 
     await getButtonByText(wrapper, '试模报告查看 / 打印').trigger('click')
     await nextTick()

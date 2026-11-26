@@ -125,11 +125,12 @@ const commandText = (status: string) =>
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
 let activeRequest: AbortController | undefined;
-async function refresh() {
-  if (loading.value || !props.open || disposed) return;
+async function refresh(background = false) {
+  if (!props.open || disposed || (background ? activeRequest : loading.value)) return;
+  activeRequest?.abort();
   const request = new AbortController();
   activeRequest = request;
-  loading.value = true;
+  if (!background || !data.value) loading.value = true;
   try {
     const response = await http.get(
       `/three-d-printing/printers/${encodeURIComponent(props.id)}/timeline`,
@@ -168,7 +169,7 @@ function manualRefresh() {
 function startRefreshing() {
   clearInterval(timer);
   void refresh();
-  timer = setInterval(() => void refresh(), 15000);
+  timer = setInterval(() => void refresh(true), 15000);
 }
 function stopRefreshing() {
   clearInterval(timer);

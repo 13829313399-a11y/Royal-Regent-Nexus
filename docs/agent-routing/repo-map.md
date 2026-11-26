@@ -14,10 +14,10 @@
 
 ## 必须沿用的当前约定
 
-只读相关长期记忆，必要时完整读取命中段落；无需每次把 PROJECT_MEMORY.md 全部载入。
+先查[根记忆](../../PROJECT_MEMORY.md)的跨模块约束，再按[主题索引](context-index.md)阅读相关专题的完整段落。
 只在长期事实改变时原地更新记忆，不追加任务日志。
 工厂目录和权限边界应读取当前实现；不要把过往的“四厂区”描述当成不变规则。
-/api/injection 属于啤办生产域，注塑排产有独立入口，不要混淆两个域。
+`/api/injection` 属于啤办生产域。四厂注塑排产保留[待重新设计的入口](../project-memory/production.md#injection)。
 不因配置 Codex 而修改项目运行时模型、千问接入、后端 API 或业务权限。
 
 ## 实际存在的前端脚本
@@ -29,12 +29,13 @@ npm run typecheck:app
 npm run typecheck:test
 ```
 
-build 实际为 vue-tsc -b && vite build，包含前端类型检查。
-test:unit 实际为 vitest run；可按当前 Vitest 配置选择确实存在的相关测试。
+根 `build` 先校验助手帮助注册与 Tailwind 源，再执行 Vue 类型检查与 Vite 构建，随后构建图片翻译及大陆发票。完整命令以根 [package.json](../../package.json) 为准。
+test:unit 实际为 vitest run；主站收集 src/**/*.spec.ts（含迁移后的 *.contract.spec.ts），按当前 Vitest 配置选择相关测试。旧一次性 Node assert 脚本不再混放于 src；归档脚本不计作通过。
 typecheck:app 为 vue-tsc --noEmit -p tsconfig.app.json，仅检查应用类型，不替代完整构建。
 typecheck:test 检查测试 TypeScript 项目，不替代应用构建。
 该基线 package.json 没有 lint、test 或通用 typecheck 脚本；不要直接调用 npm run lint / npm test / npm run typecheck。
 以后依赖或脚本发生变化，以本地 package.json 为准。
+复杂任务的本地工作区、门禁和归档见[任务生命周期](task-lifecycle.md)；工具测试为 npm run test:task-lifecycle，不属于 Vitest 业务测试。
 
 ## 后端检查
 

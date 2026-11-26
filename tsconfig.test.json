@@ -5,6 +5,7 @@
     "src/env.d.ts",
     "src/components/__tests__/CartonBatchDemand.spec.ts",
     "src/components/layout/__tests__/topBarFactories.spec.ts",
+    "src/components/ui/__tests__/*.spec.ts",
     "src/views/__tests__/toolCenter.spec.ts",
     "src/types/**/*.d.ts",
     "src/lib/__tests__/tailwindSources.spec.ts",
@@ -16,7 +17,8 @@
     "src/features/online-documents/*.spec.ts",
     "src/features/spreadsheet-merge/__tests__/*.spec.ts",
     "src/api/__tests__/spreadsheetMerge.spec.ts",
-    "src/api/__tests__/customerOrderTransport.spec.ts"
+    "src/api/__tests__/customerOrderTransport.spec.ts",
+    "src/**/*.contract.spec.ts"
   ],
   "exclude": [],
   "compilerOptions": {

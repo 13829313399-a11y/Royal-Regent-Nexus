@@ -42,6 +42,7 @@ export default defineConfig(({ mode }) => {
           '**/.tmp/**',
           '**/.tmp-tests/**',
           '**/.local-dev/**',
+          '**/refs/**',
           '**/backend/.pytest-tmp*/**',
           '**/dist/**',
           '**/*.tmpdir/**',
@@ -66,6 +67,18 @@ export default defineConfig(({ mode }) => {
             },
           },
         } : {}),
+        '/api/qc-mobile': {
+          target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000',
+          changeOrigin: false,
+        },
+        '/api': {
+          target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000',
+          changeOrigin: true,
+        },
+      },
+    },
+    preview: {
+      proxy: {
         '/api': {
           target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000',
           changeOrigin: true,

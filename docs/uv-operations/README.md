@@ -1,14 +1,14 @@
 # 华康 A · UV 打印管理
 
-按 [原始开发文档](SOURCE_SPEC.md) 重建的新域，覆盖现场、任务与排程、班次与品质、材料与设备、效益与核算、基础设置及导入导出。`D:/RR/royal-regent-nexus` 本地业务 SQLite 已迁移至 `20261020_0171`（包含 UV 0127），本地 UV 业务开关已开启，设备派发开关保持关闭。设备、代理和业务台账待真实资料配置；预览和测试使用隔离数据库及醒目标识的合成数据。
+按 [原始开发文档](SOURCE_SPEC.md) 重建的新域，覆盖现场、任务与排程、班次与品质、材料与设备、效益与核算、基础设置及导入导出。在记录 `0171` 的那轮本机试用中，`D:/RR/royal-regent-nexus` 的 SQLite 迁移至 `20261020_0171`（包含 UV 0127），当时开启了本机 UV 业务开关，设备派发开关保持关闭。设备、代理和业务台账待真实资料配置；预览和测试使用隔离数据库及醒目标识的合成数据。
 
-[2026-09-29软件与合成数据闭环](SOFTWARE_ACCEPTANCE_20260929.md)已完成；真实设备接入、Windows 服务现场运行、反向代理发布与正式权限配置尚未验收。请以 [逐项验收](ACCEPTANCE.md) 和 [实施状态](IMPLEMENTATION_STATUS.md) 的边界为准，不将此版本视作生产发布。
+[2026-09-29软件与合成数据闭环](../archive/completed/uv-operations/SOFTWARE_ACCEPTANCE_20260929.md)已完成；真实设备接入、Windows 服务现场运行、反向代理发布与正式权限配置尚未验收。请以 [逐项验收](ACCEPTANCE.md) 和 [实施状态](../archive/completed/uv-operations/IMPLEMENTATION_STATUS.md) 的边界为准，不将此版本视作生产发布。
 
 ## 文档索引
 
 - [架构与不变量](ARCHITECTURE.md)、[API 契约](API_CONTRACT.md)、[OpenAPI](openapi.json)、[44 表数据字典](DATA_DICTIONARY.md)
 - [用户操作指南](USER_GUIDE.md)、[运行与恢复](RUNBOOK.md)、[现场资料与接入表](SITE_READINESS.md)
-- [测试与容量证据](TEST_EVIDENCE.md)、[视觉验收](VISUAL_QA.md)、[A01–A39](ACCEPTANCE.md)
+- [测试与容量证据](TEST_EVIDENCE.md)、[视觉验收](../archive/completed/uv-operations/VISUAL_QA.md)、[A01–A39](ACCEPTANCE.md)
 - [Windows 采集代理](../../edge/uv-printing-agent/README.md)
 
 ## 代码与启动边界

@@ -139,7 +139,7 @@ def test_multiple_item_packages_stay_unresolved_and_do_not_fall_back_to_global_o
 
     class History:
         loaded = True
-        def get_item_detail(self, _item):
+        def get_item_detail(self, _item, _long_code=''):
             return {'装箱数': '2'}
         def check_row(self, *_args):
             return False, True, '美国', '12L'
@@ -154,7 +154,7 @@ def test_monthly_missing_commercial_fields_are_optional_in_44_column_output(db):
     files = [('synthetic-monthly.eml', mail(monthly(), 'WM US monthly enquiry'))]
     parsed = preview(db, files)
     assert len(parsed['rows']) == 39 and parsed['failed_sources'] == []
-    assert all(row['sub_item_t'] == row['baby_item'] for row in parsed['rows'])
+    assert all(not row['sub_item_t'] for row in parsed['rows'])
     assert all(not row['carton_t'] and not row['price_t'] for row in parsed['rows'])
     pending = intake.resolve_rows(parsed, [row['id'] for row in parsed['rows']], [])
     assert all(row['generation_reminders'] for row in pending)

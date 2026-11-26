@@ -59,6 +59,9 @@ describe('durable supplier change tasks', () => {
       state = 'visible'; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'))
       await flushPromises()
       expect(api.list).toHaveBeenCalledTimes(2)
+      expect(wrapper.text()).toContain('1 项待确认')
+      expect(wrapper.text()).not.toContain('读取中…')
+      expect(wrapper.emitted('pending-state')!.at(-1)![0]).toMatchObject({ loading: false })
       finish(workspace()); await flushPromises()
       expect(wrapper.get<HTMLTextAreaElement>('[aria-label="SP-1异议说明"]').element.value).toBe('保留未提交的核对内容')
     } finally { visibility.mockRestore() }

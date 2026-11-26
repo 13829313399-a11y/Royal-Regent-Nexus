@@ -101,6 +101,17 @@ describe('customer order center static frontend', () => {
     return wrapper
   }
 
+  it('shows unmatched cancellation reminders without claiming new saved orders', async () => {
+    customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 0,
+      existing_count: 0, reconciled_count: 0, unapplied_count: 1,
+      warnings: ['台账未唯一匹配未走货原订单，取消未应用；未新增订单。'] })
+    const wrapper = await mountDickieExportPreview({ quantityConflict: false, otherBlocker: false })
+    onTestFinished(() => wrapper.unmount())
+    await wrapper.get('[data-testid="order-preview"] > .view-heading .button--secondary').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('台账未唯一匹配未走货原订单')
+  })
+
   it.each([false, true])('saves and exports quantity differences and other reminders without a waiver (%s)', async (otherBlocker) => {
     customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 1, existing_count: 0, reconciled_count: 0, advisory_count: 1 })
     const wrapper = await mountDickieExportPreview({ quantityConflict: true, otherBlocker })
@@ -531,10 +542,17 @@ describe('customer order center static frontend', () => {
     })
     await wrapper.get('[data-testid="customer-choice-zuru"]').trigger('click')
     expect(wrapper.findAll('input[type="file"]').map((input) => input.attributes('accept'))).toEqual(['.pdf,.xlsx', '.xlsx'])
-    expect(wrapper.text()).toContain('华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）')
+    expect(wrapper.text()).toContain('华兴 ZURU 原格式新单汇总')
+    const scheduleInput = wrapper.findAll('input[type="file"]')[1]!
+    expect(scheduleInput.attributes('multiple')).toBeDefined()
+    const schedules = [new File(['one'], '原排期1.xlsx'), new File(['two'], '原排期2.xlsx')]
+    Object.defineProperty(scheduleInput.element, 'files', { configurable: true, value: schedules })
+    await scheduleInput.trigger('change')
+    expect(wrapper.text()).toContain('原排期1.xlsx；原排期2.xlsx')
+
     await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A', initialCustomerCode: 'zuru' })
     expect(wrapper.get('[data-testid=customer-choice-zuru]').attributes('aria-pressed')).toBe('true')
-    expect(wrapper.text()).toContain('华康A ZURU 统一排期')
+    expect(wrapper.text()).toContain('华康A ZURU 原格式新单汇总')
     for (const factoryId of ['huakang-d', 'huadeng']) {
       await wrapper.setProps({ factoryId })
       expect(wrapper.find('[data-testid="customer-choice-zuru"]').exists()).toBe(false)
@@ -908,7 +926,8 @@ describe('customer order center static frontend', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))!.trigger('click')
     await flushPromises()
     expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith(customerCode, [po], schedule, expect.any(String), factoryId)
-    expect(wrapper.get('[data-testid="warehouse-schedule-sync"]').text()).toContain('上传排期已同步')
+    if (customerCode === 'zuru') expect(wrapper.find('[data-testid="warehouse-schedule-sync"]').exists()).toBe(false)
+    else expect(wrapper.get('[data-testid="warehouse-schedule-sync"]').text()).toContain('上传排期已同步')
     expect(customerOrderApiMock.synchronizeWarehouseSchedule).not.toHaveBeenCalled()
     await wrapper.setProps({ activeSection: 'preview' })
     if (customerCode === 'ubtech') {
@@ -925,7 +944,8 @@ describe('customer order center static frontend', () => {
       customerCode, [po], schedule, expect.any(String), 'disney-new.xlsx', factoryId,
       [], `${factoryId}-fingerprint`, '', [],
     )
-    expect(wrapper.get('[data-testid="warehouse-schedule-sync"]').text()).toContain('最终排期已同步')
+    if (customerCode === 'zuru') expect(wrapper.find('[data-testid="warehouse-schedule-sync"]').exists()).toBe(false)
+    else expect(wrapper.get('[data-testid="warehouse-schedule-sync"]').text()).toContain('最终排期已同步')
     expect(customerOrderApiMock.synchronizeWarehouseSchedule).not.toHaveBeenCalled()
     await wrapper.setProps({ activeSection: 'schedule' })
     await flushPromises()
@@ -1004,15 +1024,14 @@ describe('customer order center static frontend', () => {
     expect(viewSource).not.toContain('<span class="order-nexus">Nexus</span>')
   })
 
-  it('uses the Internal Quote Desk readability scale and responsive motion feedback', () => {
-    expect(workspaceSource).toContain('--order-motion-normal: 220ms')
-    expect(workspaceSource).toContain('font-size: 12px !important')
+  it('uses scoped motion tokens and reduced-motion feedback without fixed typography', () => {
+    expect(workspaceSource).toMatch(/--order-motion-normal:\s*[^;]+;/)
+    expect(workspaceSource).toContain('var(--order-motion-normal)')
     expect(workspaceSource).toContain('@keyframes order-rise-in')
     expect(workspaceSource).toContain('@keyframes order-drop-pulse')
     expect(workspaceSource).toContain('@media (prefers-reduced-motion: reduce)')
-    expect(viewSource).toContain('font-size: 18px')
-    expect(viewSource).toContain('font-size: 14px')
-    expect(viewSource).toContain('@keyframes order-main-enter')
+    // Readable type, line wrapping and actual density are checked in browser/design review.
+    expect(read('src/styles/customer-order-center-shell.css')).toContain('@keyframes order-main-enter')
   })
 
   it('renders the reference-inspired dashboard and navigates to the import flow', async () => {
@@ -1108,6 +1127,35 @@ describe('customer order center static frontend', () => {
     expect(scheduleView.text()).toContain('当前筛选范围没有订单记录。')
     expect(scheduleView.text()).not.toContain('0009382481')
     expect(scheduleView.text()).not.toContain('生产未完成')
+  })
+
+  it('accepts an EDU PDF and sends the original with the unified XLSX schedule', async () => {
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      customer_code: 'edu', factory_id: 'huaxing', preview_fingerprint: 'edu-pdf',
+      po_file_count: 1, po_file_names: ['EDU.pdf'], po_file_name: 'EDU.pdf', schedule_file_name: 'EDU.xlsx',
+      input_template: 'EDU', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 }, rows: [], warnings: [],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, { props: {
+      activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴',
+    } })
+    await wrapper.get('[data-testid="customer-choice-edu"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toContain('.pdf')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
+    const pdf = new File(['%PDF-original'], 'EDU.pdf', { type: 'application/pdf' })
+    for (const [index, file] of [pdf, new File(['xlsx'], 'EDU.xlsx')].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find(b => b.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.previewMappedBatch).toHaveBeenCalled()
+    const [customer, files] = customerOrderApiMock.previewMappedBatch.mock.calls[0]!
+    expect(customer).toBe('edu')
+    expect(files[0]).toBe(pdf)
+    expect(wrapper.text()).not.toContain('PO 只支持 .xls')
+    wrapper.unmount()
   })
 
   it('uses the unified xlsx schedule for Caixing', async () => {

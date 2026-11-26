@@ -23,8 +23,10 @@ from app.services import qc_dossier as archive
 from app.services.qc_dossier_worker import validate_installed
 
 PARENT = '20261107_0193'
-REVISION = '20261110_0194'
-QC_READY_REVISIONS = (REVISION, '20261116_0195', '20261116_inj_retire')
+OUTBOX_REVISION = '20261110_0194'
+REVISION = '20261124_0203'
+QC_READY_REVISIONS = (OUTBOX_REVISION, '20261116_0195', '20261116_inj_retire', '20261119_0195', '20261119_0196', '20261119_0197',
+                      '20261121_inj_merge', '20261123_shipping_merge', '20261124_0202', REVISION)
 
 
 def version():
@@ -123,9 +125,9 @@ def prepare(backup, source=None):
             raise RuntimeError('QC backup changed during capture; stop writers and retry')
         integrity(snapshot)
     integrity(root)
-    if before == PARENT:
+    if before != REVISION:
         subprocess.run([sys.executable, '-m', 'alembic', '-c', str(BACKEND/'alembic.ini'), 'upgrade', REVISION], cwd=BACKEND, check=True)
-    if version() not in QC_READY_REVISIONS:
+    if version() != REVISION:
         raise RuntimeError('Main migration did not reach required version')
     archive.migrate()
     validate_installed(engine)
@@ -175,7 +177,7 @@ def start():
         marker = Path(archive.settings.qc_department_data_dir)/'.qc-dossier-ready.json'
         if not marker.is_file() or json.loads(marker.read_text()).get('revision') != REVISION:
             raise RuntimeError('QC release preparation missing; run the versioned deployment flow before startup')
-        if version() not in QC_READY_REVISIONS:
+        if version() != REVISION:
             raise RuntimeError('QC main migration is not ready')
         validate_installed(engine)
     else:

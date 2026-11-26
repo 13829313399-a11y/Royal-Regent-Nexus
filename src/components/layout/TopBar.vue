@@ -68,6 +68,9 @@ function selectFactory(factoryId: FactoryContextId) {
   if (factoryId === appStore.activeFactoryId || !canChangeFactory()) return
   appStore.setActiveFactory(factoryId)
 
+  // The work center owns its explicit responsibility filter independently of the shell.
+  if (route.name === 'notification-center') return
+
   if (!route.path.startsWith('/modules') && route.query.factory === undefined) {
     return
   }
@@ -90,7 +93,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
 </script>
 
 <template>
-  <header ref="topbarRef" class="topbar-surface sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+  <header ref="topbarRef" data-rr-motion-topbar class="topbar-surface sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
     <div class="flex min-h-16 items-center gap-2.5 px-3 sm:min-h-[72px] sm:gap-3 sm:px-4 2xl:gap-5 2xl:px-6">
       <button
         ref="navigationTriggerRef"
@@ -152,7 +155,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         </div>
       </div>
 
-      <label v-if="homeScope || route.name === 'indonesia-material-shipment'" class="home-factory-select"><span class="sr-only">当前厂区</span><select aria-label="当前厂区" :value="appStore.activeFactoryId" @change="selectFactory(($event.target as HTMLSelectElement).value as FactoryContextId)"><option v-for="factory in topBarFactoryContexts" :key="factory.id" :value="factory.id">{{ getTopBarFactoryLabel(factory) }}</option></select></label>
+      <label v-if="homeScope" class="home-factory-select"><span class="sr-only">当前厂区</span><select aria-label="当前厂区" :value="appStore.activeFactoryId" @change="selectFactory(($event.target as HTMLSelectElement).value as FactoryContextId)"><option v-for="factory in topBarFactoryContexts" :key="factory.id" :value="factory.id">{{ getTopBarFactoryLabel(factory) }}</option></select></label>
       <NotificationCenter />
       <MessageEntry />
       <AccountMenu />

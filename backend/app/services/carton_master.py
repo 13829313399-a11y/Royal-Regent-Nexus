@@ -50,7 +50,7 @@ def require_manage(db, user, factory, warehouse=None):
     raise HTTPException(403, "修改基础资料需要本厂纸箱／仓管主管或仓管岗位的资料维护权限")
 
 
-def canonical_lines(lines):
+def canonical_lines(lines, *, with_process_notes=False):
     result = []
     for line in lines:
         get = line.get if isinstance(line, dict) else lambda k, default="": getattr(line, k, default)
@@ -64,9 +64,39 @@ def canonical_lines(lines):
             paper["quantity_rule"] = calculation
             if calculation["mode"] == "PER_CARTON":
                 paper["usage_quantity"] = None
+        # Even an explicitly cleared master note takes precedence over order history.
+        if with_process_notes:
+            note = get("process_note", None)
+            if note or (isinstance(line, dict) and "process_note" in line):
+                paper["process_note"] = (note or "").strip()
         result.append(paper)
-    # Referenced positions belong to this complete configuration.
-    return result if any(p.get("quantity_rule") for p in result) else sorted(result, key=encoded)
+    # Referenced positions belong to this complete configuration. Notes never move papers.
+    if not any(p.get("quantity_rule") for p in result):
+        result.sort(key=lambda paper: encoded({k: v for k, v in paper.items() if k != "process_note"}))
+    return result
+
+
+def inherit_process_notes(lines, source_lines):
+    """Enrich matching paper slots only. Explicitly saved or cleared notes always win."""
+    def key(paper):
+        return encoded(canonical_lines([paper])[0])
+    source_keys = [key(paper) for paper in source_lines]
+    target_keys = [key(paper) for paper in lines]
+    same_slots = source_keys == target_keys
+    changed = False
+    for index, (paper, identity) in enumerate(zip(lines, target_keys)):
+        if "process_note" in paper:
+            continue
+        if same_slots:
+            source = source_lines[index]
+        elif source_keys.count(identity) == 1 and target_keys.count(identity) == 1:
+            source = source_lines[source_keys.index(identity)]
+        else:
+            continue
+        if "process_note" in source:
+            paper["process_note"] = source["process_note"]
+            changed = True
+    return changed
 
 
 def packing_name(data, baseline):
@@ -195,16 +225,17 @@ def sync_history(db, factory):
     # Confirmed supplier orders plus explicitly accepted historical imports; OCR/drafts are excluded.
     imported = set(db.scalars(select(CartonAuditEvent.entity_id).where(CartonAuditEvent.factory_id == factory,
         CartonAuditEvent.event_type.in_(["HISTORY_ORDER_IMPORTED", "ORDER_SUBMITTED_SUPPLIER"]))))
-    orders = [o for o in db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory))
+    orders = [o for o in db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory).order_by(CartonOrder.created_at, CartonOrder.id))
               if o.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"} or o.id in imported]
     lines = {}
     for line in db.scalars(select(CartonOrderLine).where(CartonOrderLine.factory_id == factory).order_by(CartonOrderLine.line_no)):
         lines.setdefault(line.order_id, []).append(line)
     added = 0
     for order in orders:
-        config = configuration({"product_name": order.product_name, "lines": lines.get(order.id, [])})
+        papers = lines.get(order.id, [])
+        config = {"product_name": order.product_name, "lines": canonical_lines(papers, with_process_notes=True)}
         for kind, code, data, identity in (
-            ("CONFIG", order.item_no, config, digest([order.item_no, config])),
+            ("CONFIG", order.item_no, config, digest([order.item_no, configuration(config)])),
             ("CONTRACT", order.contract_no, {"item_nos": [order.item_no]}, digest([order.customer_code, order.contract_no])),
         ):
             if kind == "CONFIG" and (not lines.get(order.id) or any((line.usage_quantity is None and not (paper_rule(line) and paper_rule(line).mode == "PER_CARTON")) or line.required_quantity <= 0 or not line.paper_quality or not line.specification for line in lines[order.id])):
@@ -224,6 +255,12 @@ def sync_history(db, factory):
                     row.data_json = encoded(old); row.revision += 1
             signature = digest([data, order.customer_po]) if order.customer_po else digest(data)
             if (row.id, order.id, signature) not in sources:
+                if kind == "CONFIG" and any(p.get("process_note") for p in data["lines"]):
+                    saved = json.loads(row.data_json)
+                    if configuration(saved) == configuration(data) and inherit_process_notes(saved["lines"], data["lines"]):
+                        row.data_json = encoded(saved)
+                        row.revision += 1
+                        row.updated_at = now_text()
                 evidence = {"order_no": order.order_no, "order_date": order.order_date,
                             "contract_no": order.contract_no, "customer_po": order.customer_po, "item_no": order.item_no, "customer_code": order.customer_code, "configuration": data}
                 db.add(Source(id="CMS-" + uuid4().hex, factory_id=factory, record_id=row.id, order_id=order.id,
@@ -289,7 +326,8 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     if payload.kind == "CONFIG":
         if not data["lines"]:
             raise HTTPException(422, "货号资料至少需要一行纸品")
-        data["lines"] = canonical_lines(data["lines"])
+        data["lines"] = canonical_lines([line.model_dump(mode="json", exclude_unset=True) for line in payload.data.lines],
+                                        with_process_notes=True)
     if payload.kind == "CONTRACT":
         if any(not x.strip() or len(x) > 128 for x in data["item_nos"]):
             raise HTTPException(422, "合同货号不能为空且不能超过 128 字")
@@ -311,6 +349,8 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     if payload.kind == "CONFIG":
         old_data = json.loads(row.data_json) if row else {}
         data["packing_name"] = old_data.get("packing_name", "")
+        if old_data.get("lines"):
+            inherit_process_notes(data["lines"], canonical_lines(old_data["lines"], with_process_notes=True))
         old_semantic = configuration(old_data)
         for existing in db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "CONFIG",
                 Record.code == payload.code)):

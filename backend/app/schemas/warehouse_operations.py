@@ -3,7 +3,7 @@ from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
-Kind = Literal['RECEIPT', 'REQUEST', 'ISSUE', 'RETURN', 'TRANSFER', 'QUALITY', 'CORRECTION', 'TASK', 'PROCESS_SEND', 'PROCESS_RETURN', 'PACK_SEND', 'PACK_RECEIVE', 'LOCATION_BIND', 'CUTTING_RECEIPT', 'CUTTING_RECEIPT_VOID', 'CUTTING_REQUEST_REUSE', 'REQUEST_CLOSE']
+Kind = Literal['RECEIPT', 'REQUEST', 'ISSUE', 'RETURN', 'TRANSFER', 'QUALITY', 'CORRECTION', 'SEMI_RELEASE', 'TASK', 'PROCESS_SEND', 'PROCESS_RETURN', 'PACK_SEND', 'PACK_RECEIVE', 'LOCATION_BIND', 'CUTTING_RECEIPT', 'CUTTING_RECEIPT_VOID', 'CUTTING_REQUEST_REUSE', 'REQUEST_CLOSE']
 
 
 class Allocation(BaseModel):
@@ -37,6 +37,9 @@ class WarehouseDocumentRequest(BaseModel):
     consumed_quantity: str = Field(default='', max_length=32)
     counterparty: str = Field(default='', max_length=255)
     production_no: str = Field(default='', max_length=128)
+    release_id: str = Field(default='', max_length=64)
+    part: str = Field(default='', max_length=128)
+    label_code: str = Field(default='', max_length=128)
     purpose: str = Field(default='', max_length=255)
     due_date: date | None = None
     batch_id: str = Field(default='', max_length=64)

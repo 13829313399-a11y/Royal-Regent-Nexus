@@ -11,10 +11,14 @@ LABELS = {"NOT_RECEIVED": "未入库", "UNUSED": "未领用", "PARTIAL": "部分
 
 def usage_by_key(db, factory):
     rows = list(db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.factory_id == factory)))
+    return usage_for_movements(rows, inventory_key)
+
+
+def usage_for_movements(rows, key_for):
     by_id = {row.id: row for row in rows}
     groups = defaultdict(lambda: {"balance": Decimal(0), "usage": Decimal(0), "other": Decimal(0), "unknown": Decimal(0)})
     for row in rows:
-        data = groups[inventory_key(row)]
+        data = groups[key_for(row)]
         data["balance"] += row.quantity
         original = by_id.get(row.reversal_of_movement_id, row)
         if original.movement_type == "OUTBOUND":

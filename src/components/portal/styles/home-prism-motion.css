@@ -5,6 +5,13 @@
 .rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-module-card:hover .portal-module-card__icon { transform: translateY(-1px) scale(1.05); }
 .rrn-home[data-home-experience='prism-v4'] .portal-module-card__icon::before { transition: transform 200ms var(--home-ease); }
 .rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-module-card:hover .portal-module-card__icon::before { transform: translate(5px, 5px); }
+/* A returning card keeps its geometry until the shared glyph reaches its dock. */
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-module-card[data-navigable='true'][data-rr-motion-docking],
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-module-card[data-rr-motion-docking] .portal-module-card__icon {
+  transform: none;
+  scale: none;
+  transition-property: border-color, box-shadow, color, background-color;
+}
 .rrn-home[data-home-experience='prism-v4'] .portal-tabs__indicator { transition: transform 300ms var(--home-ease), width 300ms var(--home-ease); }
 .rrn-home[data-home-experience='prism-v4'] .portal-tabs__indicator[data-ready='false'] { transition: none; }
 .rrn-home[data-home-experience='prism-v4'] .portal-tabs__indicator[data-moving='false'] { transition: none; }

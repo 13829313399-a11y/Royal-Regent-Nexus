@@ -21,6 +21,7 @@ export interface CustomerOrderManualOverride {
 }
 
 export interface CustomerOrderPreviewRow {
+  ai_candidates?: { field: string; value: string; source: string; quote: string; text_verified: boolean; message?: string }[]
   id: string
   status: 'valid' | 'warning' | 'blocked'
   status_label: string
@@ -34,6 +35,13 @@ export interface CustomerOrderPreviewRow {
   country: string
   product_no: string
   reference_no?: string
+  confirmation_no?: string
+  source_line_no?: string
+  document_kind?: string
+  cancellation_evidence?: string
+  caixing_mix_no?: string
+  source_unit_price_hkd?: string
+  price_factor?: string
   source_product_no?: string
   shipping_item?: string
   source_order_date?: string
@@ -77,6 +85,16 @@ export interface WarehouseScheduleSyncResult {
 }
 
 export interface CustomerOrderImportPreview {
+  ai_recognition?: {
+    state: 'complete' | 'partial' | 'unavailable'
+    files: number
+    completed: number
+    snapshot_digest: string
+    models: string[]
+    documents: { file: string; state: string; message: string; notes: string[] }[]
+    unmatched: { file: string; document_kind: string; fields: Record<string, string>; evidence: Record<string, { source: string; quote: string; text_verified: boolean }> }[]
+    matched: { file: string; document_kind: string; fields: Record<string, string>; evidence: Record<string, { source: string; quote: string; text_verified: boolean }> }[]
+  } | null
   warehouse_sync?: WarehouseScheduleSyncResult | null
   preview_schema_version: string
   customer_code: string
@@ -104,3 +122,4 @@ export interface CustomerOrderImportPreview {
   rows: CustomerOrderPreviewRow[]
   warnings: string[]
 }
+export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback' | 'jp-intake' | 'materials'

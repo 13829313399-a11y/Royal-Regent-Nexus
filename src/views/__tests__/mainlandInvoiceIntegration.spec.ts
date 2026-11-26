@@ -7,7 +7,7 @@ describe('mainland invoice integration boundaries', () => {
     const sales = departmentModuleRegistry['sales-business'].modules
     expect(sales.map(module => module.id)).toEqual([
       'material-planning', 'internal-quote-desk', 'customer-price-conversion',
-      'indonesia-material-shipment', 'po-schedule-intake',
+      'indonesia-shipping', 'po-schedule-intake',
     ])
     const accounting = departmentModuleRegistry.accounting.modules
     expect(accounting.map(module => module.id)).toEqual(['indonesia-invoice-reconciliation', 'mainland-invoice'])

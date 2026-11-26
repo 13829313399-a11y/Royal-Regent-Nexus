@@ -92,10 +92,6 @@ function getReportCompanyLabel() {
   return _esc(getCompanyName()) + (window.__QC_REFERENCE_DATA?.count ? ' · 模板参考（非本厂实绩）' : '');
 }
 function getSiteObj(id)   { return QC_SITES.find(s => s.id === id) || QC_SITES[0]; }
-function returnToNexus() {
-  if (window.__QC_CONFIRM_FACTORY_LEAVE && !window.__QC_CONFIRM_FACTORY_LEAVE()) return;
-  window.parent.location.assign('/modules/qc?factory=' + encodeURIComponent(window.__QC_NEXUS.factory));
-}
 
 function _showApp() {
   _initSidebar();
@@ -122,12 +118,11 @@ function _renderUserBadge() {
   const u = _liveUser();
   const el = document.getElementById('userBadge');
   if (!el || !u) return;
+  const hasDelete = Boolean(window.__QC_NEXUS?.deleteAllowed);
+  const pill = hasDelete ? '<span class="qc-delete-role-pill" title="该账号拥有 QC 数据删除权限">含删除权</span>' : '';
   el.innerHTML =
-    `<span class="user-badge-company">${getSiteObj(getCompanyObj().site).name} · ${getCompanyName()}</span>` +
-    `<span class="user-badge-name">${_esc(u.name || u.username)}</span>` +
-    `<span class="user-badge-role">Nexus 账号</span>` +
-    `<button class="user-badge-logout" onclick="returnToNexus()">返回 Nexus</button>`;
-  window.__QC_RENDER_FACTORY_SELECTOR?.();
+    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span>${pill}<span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
+    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>${hasDelete ? 'QC 数据删除管理员' : 'Nexus 账号'}</small></div></details>`;
 }
 
 /* ── 权限应用（按角色显示/隐藏按钮）── */
@@ -143,14 +138,19 @@ function applyPermissions() {
 
   /* 新增验货按钮 */
   const canCreate = can('createRecord');
+  const addInspection = document.getElementById('btnAddInspection');
+  if (addInspection) addInspection.hidden = !window.__QC_NEXUS?.workflow?.manual;
   document.querySelectorAll('.btn-add, [data-perm="createRecord"]').forEach(el => {
     el.style.display = canCreate ? '' : 'none';
   });
 
-  /* 批量删除区 */
+  /* 批量删除区及破坏性数据清理卡 */
   const canDel = can('deleteRecord');
   const batchDelWrap = document.getElementById('batchDelWrap');
   if (batchDelWrap) batchDelWrap.style.display = canDel ? '' : 'none';
+  document.querySelectorAll('#page-import .backup-card.red, #page-import .backup-card.yellow').forEach(el => {
+    el.style.display = canDel ? '' : 'none';
+  });
 
   /* 新增记录按钮（records 页）*/
   const addRecordBtn = document.getElementById('btnAddRecord');
@@ -344,6 +344,20 @@ function reportCenterLandingPage() {
   return REPORT_CENTER_PAGES.find(page => canView(page));
 }
 
+function syncReportCenterNav(name) {
+  const nav = document.getElementById('reportCenterNav');
+  if (!nav) return;
+  const visible = !!window.__QC_NEXUS?.factory && REPORT_CENTER_PAGES.includes(name);
+  nav.hidden = !visible;
+  document.body.classList.toggle('qc-report-center', visible);
+  if (!visible) return;
+  for (const button of nav.querySelectorAll('[data-report-mode]')) {
+    const annual = button.dataset.reportMode === 'analysis';
+    button.hidden = button.disabled = annual ? !canView('analysis') : !intraReportLandingPage();
+    button.setAttribute('aria-pressed', String(annual === (name === 'analysis')));
+  }
+}
+
 function mountReportTypeSelect(page, name) {
   const slot = page?.querySelector('[data-report-type-slot]');
   const select = document.getElementById('reportTypeSelect');
@@ -369,8 +383,12 @@ function mountReportTypeSelect(page, name) {
   const visible = buttons.filter(button => !button.hidden);
   const index = Math.max(0, visible.findIndex(button => button.dataset.reportPage === name));
   control.style.setProperty('--report-period-count', String(visible.length || 1));
-  if (control.parentElement !== slot) slot.append(control);
-  if (select.parentElement !== slot) slot.append(select);
+  if (['daily', 'weekly', 'monthly'].includes(name) && window.__QC_NEXUS?.factory) {
+    if (slot.firstElementChild !== select || select.nextElementSibling !== control) slot.prepend(select, control);
+  } else {
+    if (control.parentElement !== slot) slot.append(control);
+    if (select.parentElement !== slot) slot.append(select);
+  }
   control.hidden = name === 'analysis';
   if (name !== 'analysis') lastIntraReportPage = name;
   select.value = name === 'analysis' ? 'analysis' : 'intra-month';
@@ -379,27 +397,26 @@ function mountReportTypeSelect(page, name) {
   if (wasVisible && previousPage !== name && glass.animate &&
       !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
     glass.animate([{transform: previousTransform}, {transform: 'translateX(' + index * 100 + '%)'}],
-      {duration:260, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
+      {duration:300, easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
   }
 }
 
 function changeReportPeriod(button) {
   if (button.disabled) return;
-  if (button.dataset.reportPage === currentPage) {
-    if (currentPage === 'weekly') window.QcWeeklyTemplates?.returnToReport();
-    if (currentPage === 'monthly') window.QcMonthlyTemplates?.returnToReport();
-    return;
-  }
+  if (button.dataset.reportPage === currentPage) return;
   showPage(button.dataset.reportPage, true);
 }
 
-function changeReportType(select) {
-  const nextPage = select.value === 'intra-month' ? intraReportLandingPage() : select.value;
-  select.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
-  if (REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, true);
+function changeReportType(control) {
+  const mode = control.dataset.reportMode || control.value;
+  const nextPage = mode === 'intra-month' ? intraReportLandingPage() : mode;
+  if (!control.dataset.reportMode) control.value = currentPage === 'analysis' ? 'analysis' : 'intra-month';
+  if (nextPage !== currentPage && REPORT_CENTER_PAGES.includes(nextPage)) showPage(nextPage, control.dataset.reportMode ? 'mode' : true);
 }
 
 function showPage(name, focusReportType = false) {
+  const workbook=window.QcReportWorkbook?.navigationState?.();
+  if(workbook?.dirty||workbook?.busy){showToast('请先在工作簿中保存或放弃更改，再切换页面','error');return;}
   if(window.QcMonthlyTemplates?.navigationState().dirty){showToast('请先完成月报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcWeeklyTemplates?.navigationState().dirty){showToast('请先完成周报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
@@ -414,7 +431,9 @@ function showPage(name, focusReportType = false) {
   // Hide the inspection drawer synchronously; destination rendering can fail
   // or be delayed, and must never control whether it leaks across pages.
   window.QcWorkflow?.beforePageChange(name);
+  if(currentPage!==name)window.QcReportDates?.close();
   if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
+  if(currentPage==='review'&&name!=='review')window.QcInspectionSheet?.clearReviewDates?.();
   if (currentPage === 'dashboard' && name !== 'dashboard') closeDashboardFailurePopover();
   if(currentPage!==name)window.QcIssueReports?.pageChanged();
   currentPage = name;
@@ -433,12 +452,14 @@ function showPage(name, focusReportType = false) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg  = document.getElementById('page-' + name);
   const inReportCenter = REPORT_CENTER_PAGES.includes(name);
-  const pagePdf = document.getElementById('qcPagePdf');
-  if (pagePdf) pagePdf.hidden = inReportCenter || name === 'yearly';
+  window.QcEmptyState?.prepare?.(inReportCenter ? 'reports' : {
+    'sales-schedule':'schedule', records:'inspection', review:'review', 'inspection-summary':'summary',
+  }[name]);
   const navPage = inReportCenter ? 'report-center' : name;
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
   if (nav) nav.classList.add('active');
+  syncReportCenterNav(name);
   if (inReportCenter) mountReportTypeSelect(pg, name);
   const titleEl = document.getElementById('pageTitle');
   if (titleEl) titleEl.textContent = inReportCenter ? '报告中心' : (PAGE_TITLES[name] || name);
@@ -468,7 +489,10 @@ function showPage(name, focusReportType = false) {
         if (name === 'import')           _backupStats();
         if (name === 'defectlib')        renderDefectLibPage();
         if (focusReportType && inReportCenter && currentPage === name) {
-          (document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]') || document.getElementById('reportTypeSelect'))?.focus({ preventScroll: true });
+          const activeMode = document.querySelector('#reportCenterNav:not([hidden]) [data-report-mode][aria-pressed="true"]');
+          const period = document.querySelector('#reportPeriodSwitch:not([hidden]) [aria-pressed="true"]');
+          const target = activeMode && (focusReportType === 'mode' || name === 'analysis') ? activeMode : period || document.getElementById('reportTypeSelect');
+          target?.focus({ preventScroll: true });
         }
       } catch(e) { console.error('[showPage] render error:', e); }
     });
@@ -520,16 +544,9 @@ function updateTopKpis() {
     const weekR  = data.filter(r => r.date >= ws && r.date <= we);
     const weekF  = weekR.filter(r => isFail(r)).length;
 
-    const byS = groupBy(data, 'supplier');
-    const hiRisk = Object.values(byS).filter(list => {
-      if (list.length < 2) return false;
-      return list.filter(r => isFail(r)).length / list.length >= 0.15;
-    }).length;
-
-    setText('kpiPassRate',  rateT);
-    setText('kpiWeekFail',  weekF);
-    setText('kpiHighRisk',  hiRisk);
-    setText('kpiWeekBatch', weekR.length);
+    setText('kpiPassRate', rateT);
+    setText('kpiWeekFail', weekF);
+    document.getElementById('kpiWeekFail')?.classList.toggle('has-fail', weekF > 0);
 
     /* 审核中心：待审核数量导航角标 */
     const _rb = document.getElementById('reviewNavBadge');
@@ -1349,6 +1366,8 @@ function prepareRecordsDates() {
 }
 function updateRecordsDateLabel() {
   const from = getVal('filterDateFrom'), to = getVal('filterDateTo');
+  const reset=document.querySelector('#page-records .records-reset');
+  if(reset)reset.hidden=!(from||to||getVal('searchInput')||getVal('qisTaskCustomer')||getVal('qisTaskDate')||window.QcInspectionSheet?.model.recordsSort==='date-desc');
   const label = document.getElementById('recordsDateLabel');
   if (!label) return;
   label.textContent = from && to ? (from === to ? from : from + ' 至 ' + to) : from ? from + ' 起' : to ? '截至 ' + to : '不限验货日期';
@@ -1427,7 +1446,7 @@ function filterRecords() {
       _updateBatchBtn();
       wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">☰</div>'
         + '<div class="empty-text">暂无记录</div>'
-        + '<div class="empty-sub">点击右上角「+ 新增验货」添加数据</div></div>';
+        + '<div class="empty-sub">点击「新增验货」添加数据</div></div>';
       syncInspectionSelection();
       return;
     }
@@ -1783,6 +1802,7 @@ function renderPartners(type) {
   if (!wrap) return;
   const label  = { supplier:'供应商名单', customer:'客户名单', processType:'加工类型名单' }[type] || type;
   const manage = canManagePartners();
+  const canDel = can('deleteRecord');
   const names  = managedNames(type);
   wrap.innerHTML = `<div style="flex:1;min-width:280px;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-card)">
     <div style="font-weight:600;margin-bottom:8px">${label} <span style="font-size:11px;color:var(--text-dim)">（${names.length} 个）</span></div>
@@ -1792,7 +1812,7 @@ function renderPartners(type) {
       <button class="btn-primary btn-sm" onclick="addPartner('${type}')">＋ 添加</button>
     </div>` : ''}
     <div style="max-height:480px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start">
-      ${names.length ? names.map(n => `<span class="badge badge-hold" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px">${_esc(n)}${manage ? `<button data-name="${_esc(n)}" onclick="delPartner('${type}', this.dataset.name)" style="border:none;background:none;color:var(--red);cursor:pointer;padding:0;font-size:12px;line-height:1" title="从名单删除">✕</button>` : ''}</span>`).join('') : '<span style="color:var(--text-muted);font-size:12px">暂无，请在上方添加</span>'}
+      ${names.length ? names.map(n => `<span class="badge badge-hold" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px">${_esc(n)}${canDel ? `<button data-name="${_esc(n)}" onclick="delPartner('${type}', this.dataset.name)" style="border:none;background:none;color:var(--red);cursor:pointer;padding:0;font-size:12px;line-height:1" title="从名单删除">✕</button>` : ''}</span>`).join('') : '<span style="color:var(--text-muted);font-size:12px">暂无，请在上方添加</span>'}
     </div>
   </div>`;
   renderPartnerCards(type);
@@ -1836,7 +1856,33 @@ function setPartnerTab(tab) {
   });
 }
 
-function addPartner(type) {
+const _catalogCacheFailures = new Set();
+
+async function _saveNexusCatalog(save, list, storageKey, fallbackMessage) {
+  if (_catalogCacheFailures.has(storageKey)) {
+    showToast('请刷新后再继续保存名单', 'error');
+    return false;
+  }
+  if (typeof save !== 'function') {
+    showToast('尚未连接服务器，请刷新后重试', 'error');
+    return false;
+  }
+  const res = await save(list);
+  if (!res.ok) {
+    showToast(res.detail || fallbackMessage, 'error');
+    return false;
+  }
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(list));
+  } catch (error) {
+    _catalogCacheFailures.add(storageKey);
+    showToast('名单已保存，请刷新后继续操作', 'error');
+    return false;
+  }
+  return true;
+}
+
+async function addPartner(type) {
   if (!canManagePartners()) { showToast('当前账号无权限执行此操作', 'error'); return; }
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   const inp   = document.getElementById('partnerInput_' + type);
@@ -1846,8 +1892,13 @@ function addPartner(type) {
   if (known.includes(name)) { showToast(label + '「' + name + '」已在名单中', 'info'); return; }
   const list = _loadPartners().slice();
   list.push({ name, type, createdAt: nowIso() });
-  _savePartners(list);
-  if (inp) inp.value = '';
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_PARTNERS, list, STORAGE_KEYS.partners, '保存失败，请刷新后重试')) return;
+    _partners = list;
+  } else {
+    _savePartners(list);
+  }
+  if (inp?.value.trim() === name) inp.value = '';
   renderPartners(type);
   renderSupplierDatalist();
   renderCustomerDatalist();
@@ -1856,11 +1907,17 @@ function addPartner(type) {
   showToast(label + '「' + name + '」已添加 ✓', 'success');
 }
 
-function delPartner(type, name) {
-  if (!canManagePartners()) { showToast('当前账号无权限执行此操作', 'error'); return; }
+async function delPartner(type, name) {
+  if (!can('deleteRecord')) { showToast('当前账号无删除权限', 'error'); return; }
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   if (!confirm('确认从名单删除' + label + '「' + name + '」？\n（不影响已有的验货记录；若历史记录里用过该名称，下拉候选中仍可能出现）')) return;
-  _savePartners(_loadPartners().filter(p => !(p.type === type && p.name === name)));
+  const nextList = _loadPartners().filter(p => !(p.type === type && p.name === name));
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_PARTNERS, nextList, STORAGE_KEYS.partners, '删除失败，当前账号可能无删除权限')) return;
+    _partners = nextList;
+  } else {
+    _savePartners(nextList);
+  }
   renderPartners(type);
   renderSupplierDatalist();
   renderCustomerDatalist();
@@ -2938,7 +2995,7 @@ function _saveDefectLib(lib) {
 
 /* 首次启动初始化 */
 function initDefectLib() {
-  if (!_getDefectLib()) _saveDefectLib(_DEFAULT_DEFECT_LIB);
+  if (!window.__QC_NEXUS && !_getDefectLib()) _saveDefectLib(_DEFAULT_DEFECT_LIB);
 }
 
 /* 获取启用的条目 */
@@ -3002,11 +3059,22 @@ function _checkUnknownDefects(validDefects) {
 ${unknown.map(u=>`「${u}」`).join('、')}
 是否将其加入内容库？`;
   if (confirm(msg)) {
-    unknown.forEach(u => {
-      const row = validDefects.find(d=>d.desc===u);
-      addToDefectLib(u, row?.category, row?.level);
-    });
-    showToast('✓ 新描述已加入内容库', 'success');
+    if (window.__QC_NEXUS) {
+      const nextLib = [...lib];
+      for (const name of new Set(unknown)) {
+        const row = validDefects.find(d => d.desc === name);
+        nextLib.push({ name, category: row?.category || '外观/质量', defaultLevel: row?.level || 'MIN 2.5',
+                       keywords: [], enabled: true, createdAt: new Date().toISOString().slice(0,10) });
+      }
+      void _saveNexusCatalog(window.__QC_SAVE_DEFECTS, nextLib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')
+        .then(saved => { if (saved) showToast('✓ 新描述已加入内容库', 'success'); });
+    } else {
+      unknown.forEach(u => {
+        const row = validDefects.find(d=>d.desc===u);
+        addToDefectLib(u, row?.category, row?.level);
+      });
+      showToast('✓ 新描述已加入内容库', 'success');
+    }
   }
   return true; /* 无论用户选择与否，都允许保存 */
 }
@@ -3524,20 +3592,19 @@ function renderDefectLibPage() {
   const CATS = ['外观/质量','功能','尺寸/测量','包装','其它'];
   const LVLS = ['CR','MAJ 0.65','MAJ 1.0','MIN 2.5'];
 
+  const query=el.querySelector('#defLibSearch')?.value||'';
   el.innerHTML = `
   <div class="page-header">
     <h2 class="page-title">不良描述库</h2>
+    <input id="defLibSearch" type="search" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"/>
     ${canAdd ? '<button class="btn-primary" onclick="_openDefLibModal()">＋ 新增描述</button>' : ''}
   </div>
-  <div style="margin:10px 0">
-    <input id="defLibSearch" type="text" placeholder="搜索描述或关键词..." class="form-input"
-           style="max-width:280px" oninput="renderDefectLibPage()"/>
-  </div>
+  ${canDel ? '<div class="qc-deflib-delete-hint">已被历史验货引用的词条受保护无法删除，请改用「停用」以保留历史追溯。</div>' : ''}
   <div class="table-wrap" style="margin-top:8px">
     <table style="table-layout:fixed;width:100%">
       <colgroup>
         <col style="width:110px"/><col style="width:90px"/><col style="width:100px"/>
-        <col style="width:auto"/><col style="width:70px"/><col style="width:170px"/>
+        <col style="width:auto"/><col style="width:70px"/><col style="width:${canDel ? 210 : 170}px"/>
       </colgroup>
       <thead><tr>
         <th style="text-align:left">描述名称</th>
@@ -3547,33 +3614,7 @@ function renderDefectLibPage() {
         <th style="text-align:center">状态</th>
         <th style="text-align:center">操作</th>
       </tr></thead>
-      <tbody>
-        ${(() => {
-          const q = (document.getElementById('defLibSearch')?.value||'').toLowerCase();
-          const filtered = q ? lib.filter(d =>
-            d.name.toLowerCase().includes(q) ||
-            (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
-          if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
-          return filtered.map((d,i) => {
-            const realIdx = lib.indexOf(d);
-            const badge = d.enabled
-              ? '<span class="badge badge-pass">启用</span>'
-              : '<span class="badge badge-rej">停用</span>';
-            return `<tr>
-              <td style="font-weight:500">${d.name}</td>
-              <td style="font-size:11px">${d.category||''}</td>
-              <td style="font-size:11px">${d.defaultLevel||''}</td>
-              <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
-              <td style="text-align:center">${badge}</td>
-              <td style="text-align:center">
-                ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
-                ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
-                ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
-              </td>
-            </tr>`;
-          }).join('');
-        })()}
-      </tbody>
+      <tbody></tbody>
     </table>
   </div>
 
@@ -3610,13 +3651,56 @@ function renderDefectLibPage() {
       </div>
     </div>
   </div>`;
+  const search=el.querySelector('#defLibSearch'),body=el.querySelector('tbody');
+  function rowsFor(q){
+    const filtered = q ? lib.filter(d =>
+      d.name.toLowerCase().includes(q) ||
+      (d.keywords||[]).some(k=>k.toLowerCase().includes(q))) : lib;
+    if (filtered.length===0) return '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">暂无记录</td></tr>';
+    return filtered.map(d => {
+      const realIdx = lib.indexOf(d);
+      const badge = d.enabled
+        ? '<span class="badge badge-pass">启用</span>'
+        : '<span class="badge badge-rej">停用</span>';
+      return `<tr>
+        <td style="font-weight:500">${d.name}</td>
+        <td style="font-size:11px">${d.category||''}</td>
+        <td style="font-size:11px">${d.defaultLevel||''}</td>
+        <td style="font-size:11px;color:var(--text-dim)">${(d.keywords||[]).join('、')||'—'}</td>
+        <td style="text-align:center">${badge}</td>
+        <td style="text-align:center">
+          ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
+          ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
+          ${canDel ? `<button class="action-btn del qc-del-sep" onclick="_deleteDefLibItem(${realIdx})">删除描述</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+  search.value=query;
+  const filter=()=>{ body.innerHTML=rowsFor(search.value.toLowerCase()); };
+  search.addEventListener('input',filter);
+  filter();
 }
 
 let _editingDefLibIdx = null;
+let _editingDefLibItem = null;
+let _defLibEditGeneration = 0;
+let _defLibListNeedsRefresh = false;
+
+function _refreshSavedDefectLib() {
+  if (document.getElementById('defLibModal')?.style.display === 'flex') {
+    _defLibListNeedsRefresh = true;
+  } else {
+    renderDefectLibPage();
+  }
+  refreshDefectDescDatalist();
+}
 
 function _openDefLibModal(idx) {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
+  _defLibEditGeneration++;
   _editingDefLibIdx = idx ?? null;
+  _editingDefLibItem = null;
   const modal = document.getElementById('defLibModal');
   if (!modal) return;
   modal.style.display = 'flex';
@@ -3627,6 +3711,7 @@ function _openDefLibModal(idx) {
   if (idx !== undefined && idx !== null) {
     const d = lib[idx];
     if (!d) return;
+    _editingDefLibItem = d;
     if (titleEl) titleEl.textContent = `编辑：${d.name}`;
     document.getElementById('dlName').value    = d.name;
     document.getElementById('dlCat').value     = d.category || '外观/质量';
@@ -3642,12 +3727,18 @@ function _openDefLibModal(idx) {
 }
 
 function _closeDefLibModal() {
+  _defLibEditGeneration++;
   const modal = document.getElementById('defLibModal');
   if (modal) modal.style.display = 'none';
   _editingDefLibIdx = null;
+  _editingDefLibItem = null;
+  if (_defLibListNeedsRefresh) {
+    _defLibListNeedsRefresh = false;
+    renderDefectLibPage();
+  }
 }
 
-function _saveDefLibItem() {
+async function _saveDefLibItem() {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
   const errEl = document.getElementById('defLibModalErr');
   const show  = msg => { if(errEl){errEl.textContent=msg;errEl.style.display='';} };
@@ -3658,40 +3749,66 @@ function _saveDefLibItem() {
   if (!name) { show('请输入描述名称'); return; }
 
   const lib = _getDefectLib() || [];
-  if (_editingDefLibIdx !== null) {
-    lib[_editingDefLibIdx] = { ...lib[_editingDefLibIdx], name, category, defaultLevel:level, keywords:kw };
+  let editIndex = _editingDefLibIdx;
+  if (editIndex !== null) {
+    const original = JSON.stringify(_editingDefLibItem);
+    if (window.__QC_NEXUS && JSON.stringify(lib[editIndex]) !== original) {
+      const matches = lib.flatMap((entry, i) => JSON.stringify(entry) === original ? [i] : []);
+      if (matches.length !== 1) { showToast('名单已更新，请刷新后重试', 'error'); return; }
+      editIndex = matches[0];
+    }
+    lib[editIndex] = { ...lib[editIndex], name, category, defaultLevel:level, keywords:kw };
   } else {
     if (lib.find(d=>d.name===name)) { show('描述名称已存在'); return; }
     lib.push({ name, category, defaultLevel:level, keywords:kw, enabled:true, createdAt:new Date().toISOString().slice(0,10) });
   }
-  _saveDefectLib(lib);
-  _closeDefLibModal();
+  if (window.__QC_NEXUS) {
+    const generation = _defLibEditGeneration;
+    const fields = ['dlName', 'dlCat', 'dlLvl', 'dlKeywords'].map(id => document.getElementById(id));
+    const inputs = fields.map(field => field?.value);
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, lib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')) return;
+    if (generation === _defLibEditGeneration) {
+      if (editIndex !== null) {
+        _editingDefLibIdx = editIndex;
+        _editingDefLibItem = lib[editIndex];
+      }
+      if (fields.every((field, i) => field?.value === inputs[i])) _closeDefLibModal();
+    }
+  } else {
+    _saveDefectLib(lib);
+    _closeDefLibModal();
+  }
   showToast('✓ 已保存', 'success');
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
+  _refreshSavedDefectLib();
 }
 
-function _toggleDefLibItem(idx) {
+async function _toggleDefLibItem(idx) {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
   const lib = _getDefectLib() || [];
   if (!lib[idx]) return;
   lib[idx].enabled = !lib[idx].enabled;
-  _saveDefectLib(lib);
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, lib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')) return;
+  } else {
+    _saveDefectLib(lib);
+  }
+  _refreshSavedDefectLib();
   showToast(lib[idx].enabled ? '✓ 已启用' : '已停用', lib[idx].enabled?'success':'info');
 }
 
-function _deleteDefLibItem(idx) {
-  if (!can('deleteRecord')) { showToast('当前账号无权限执行此操作','error'); return; }
+async function _deleteDefLibItem(idx) {
+  if (!can('deleteRecord')) { showToast('当前账号无删除权限','error'); return; }
   const lib = _getDefectLib() || [];
   if (!lib[idx]) return;
-  if (!confirm(`确认删除「${lib[idx].name}」？`)) return;
-  lib.splice(idx, 1);
-  _saveDefectLib(lib);
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
-  showToast('✓ 已删除', 'success');
+  if (!confirm(`确认删除不良描述「${lib[idx].name}」？\n若该词条已被历史验货引用，系统将拦截并提示改用「停用」。`)) return;
+  const nextLib = lib.filter((_, i) => i !== idx);
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, nextLib, _DEFECT_LIB_KEY, '删除失败，如已被历史引用请改用「停用」')) return;
+  } else {
+    _saveDefectLib(nextLib);
+  }
+  _refreshSavedDefectLib();
+  showToast('✓ 已删除描述', 'success');
 }
 
 /* ════════════════════════════════════════
@@ -4287,7 +4404,10 @@ function renderReviewPage() {
   }
   ['pending','rejected','approved'].forEach(t => {
     const btn = document.getElementById('reviewTab' + t.charAt(0).toUpperCase() + t.slice(1));
-    if (btn) btn.classList.toggle('active', _reviewTab === t);
+    if (btn) {
+      btn.classList.toggle('active', _reviewTab === t);
+      btn.setAttribute('aria-pressed', String(_reviewTab === t));
+    }
   });
 
   const list = state.records.filter(r => recStatus(r) === _reviewTab && !window.QcWorkflow?.isLinked(r.id)).concat((window.QcWorkflow?.recordItems() || []).filter(r => recStatus(r) === _reviewTab));
@@ -4433,10 +4553,14 @@ function buildQcProblemNotes(data) {
 }
 
 function renderDailyReport() {
-  if (window.QcDailyReport?.enabled()) return window.QcDailyReport.load();
+  if (window.QcDailyReport?.enabled()) {
+    window.QcReportSheets.mountRefresh('daily');
+    return window.QcDailyReport.load();
+  }
   const dateEl = document.getElementById('dailyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = todayStr();
+  window.QcReportDates?.sync(dateEl);
   const date = dateEl.value;
   const data = recs().filter(r => r.date === date || r.inspDate === date);
 
@@ -4506,10 +4630,11 @@ function renderDailyReport() {
 }
 
 function renderWeeklyReport() {
-  if (window.QcPeriodReports?.weekly.enabled()) return window.QcPeriodReports.weekly.load();
+  if (window.QcPeriodReports?.weekly.enabled()) return window.QcReportSheets.enter('weekly');
   const dateEl = document.getElementById('weeklyDate');
   if (!dateEl) return;
   if (!dateEl.value) dateEl.value = weekStart();
+  window.QcReportDates?.sync(dateEl);
   const ws   = dateEl.value;
   const we   = weekEnd(ws);
   const data = recs().filter(r => r.date >= ws && r.date <= we);
@@ -4677,17 +4802,6 @@ function renderSupplierReport() {
 /* ════════════════════════════════════════
    §14  EXPORT
 ════════════════════════════════════════ */
-function exportPDF(type) {
-  if (!can("exportPdf")) { showToast("当前账号没有导出权限", "error"); return; }
-  /* 报告中心只保留 Excel；供应商报告保留独立 PDF。 */
-  const page = type || currentPage;
-  if (REPORT_CENTER_PAGES.includes(page) || page === 'yearly') return;
-  if (page === 'supplier-report' || page === 'supplier')        { exportReportPDF('supplier'); return; }
-  /* 其他页面保持浏览器打印 */
-  showToast('正在调用打印对话框，可选择"另存为PDF"…', 'info');
-  setTimeout(() => window.print(), 400);
-}
-
 function _qcApiBase() {
   const p = location.pathname.replace(/[^/]*$/, '');
   return p.replace(/\/$/, '');
@@ -5086,6 +5200,7 @@ function _backupValidate(parsed) {
    ③ 清空所有数据
 ════════════════ */
 function backupClearAll() {
+  if (typeof can === 'function' && !can('deleteRecord')) { showToast('当前账号无删除权限', 'error'); return; }
   _backupConfirm({
     icon:         '⊗',
     title:        '清空当前数据',
@@ -6425,7 +6540,7 @@ function _mrChart(id, option) {
    §19.1  验货月报
 ───────────────────────────────────────*/
 function renderMonthlyReport() {
-  if (window.QcPeriodReports?.monthly.enabled()) return window.QcPeriodReports.monthly.load();
+  if (window.QcPeriodReports?.monthly.enabled()) return window.QcReportSheets.enter('monthly');
   const el = document.getElementById('monthlyMonth');
   if (!el) return;
   /* 初始化默认月份 */
@@ -6433,6 +6548,7 @@ function renderMonthlyReport() {
     const n = new Date();
     el.value = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
   }
+  window.QcReportDates?.sync(el);
   const [year, month] = el.value.split('-').map(Number);
   const data = getMonthRecords(year, month);
   const s    = summarizeRecords(data);

@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from app.services import qc_weekly_templates as weekly, qc_weekly_excel as excel
 
 def fixture(count=120):
-    data = dict(date='2026-11-05', dateFrom='2026-11-02', dateTo='2026-11-08', customer='',
+    data = dict(factory='huaxing', date='2026-11-05', dateFrom='2026-11-02', dateTo='2026-11-08', customer='',
                 customers=[], fields={}, sourceRevision='a'*64, total=count, scheduleCount=0,
                 templates=deepcopy(weekly.TEMPLATES), tables=dict(detail=[],group=[],internal=[],footer=[]),totals={})
     for n in range(count):
@@ -77,7 +77,10 @@ def test_original_fields_neutral_reading_layout_dynamic_rows_formulas_and_totals
         assert sheet.cell(2,1).ctype==xlrd.XL_CELL_DATE
         assert book.format_map[book.xf_list[sheet.cell_xf_index(2,1)].format_key].format_str=='mm-dd'
         assert book.xf_list[sheet.cell_xf_index(2,17)].border.bottom_line_style
-        assert [sheet.cell_value(count+5,c) for c in excel.FOOTER_COLUMNS]==weekly.TEMPLATES[0]['summaryHeaders']
+        expected = weekly.TEMPLATES[0]['summaryHeaders'].copy()
+        expected[7] = '未退货返工及客人A0D单数'
+        assert [sheet.cell_value(count+5,c) for c in excel.FOOTER_COLUMNS] == expected
+        assert sheet.cell_value(count+6,9) == '返工&A0D原样保留'
     assert not any(cell.ctype==xlrd.XL_CELL_ERROR for row in sheet.get_rows() for cell in row)
 
 
