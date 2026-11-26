@@ -6,6 +6,8 @@ import { buzzBeeTemplateProfiles } from '@/lib/customerPriceConverters/buzzbeeTe
 import { CircleDollarSign, Copy, Eye, Plus, Trash2 } from '@lucide/vue'
 import { computed, ref, watchEffect } from 'vue'
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
+import InternalQuoteBuzzBeePurchaseFormula from './InternalQuoteBuzzBeePurchaseFormula.vue'
+import type { BuzzBeePurchaseFormula } from '@/lib/internalQuoteSectionPayload'
 import { previewEngineeringMoldPartSplit } from '@/lib/internalQuoteSectionPayload'
 import { newMoldSplitPart, prepareMoldSplit, validateMoldSplit, type EngineeringMoldSplitChange } from '@/lib/internalQuoteMoldSplit'
 import { canonicalizeMoldingReferences, moldingMaterialReferences as getMoldingMaterials, moldingMachineReferences as getMoldingMachines, moldingMaterialOptions, selectedMoldingMaterial, selectedMoldingMachine, normalizedReferenceToken, type MoldingMaterialSelection, type MoldingMaterialReference } from '@/lib/internalQuoteMoldingReferences'
@@ -705,6 +707,20 @@ function setDualCurrencyUnitPrice(row: DualCurrencyMaterialRow, currency: UnitPr
 function setEngineeringMaterialUnitPrice(row: EngineeringMaterialRow, currency: UnitPriceSourceCurrency, event: Event) {
   setDualCurrencyUnitPrice(row, currency, event)
 }
+function applyPurchaseFormula(row: EngineeringMaterialRow, formula?: BuzzBeePurchaseFormula) {
+  if (!row.resin_processing_formula && !formula) return
+  if (formula) row.resin_processing_formula = formula
+  const unit = calculateEngineeringMaterialUnitHkd(row, props.rmbHkdRate)
+  row.unit_price_source_currency = 'HKD'
+  if (Number.isFinite(unit)) {
+    row.unit_price_hkd = unit
+    row.unit_price_rmb = calculateEngineeringMaterialUnitRmb(row, props.rmbHkdRate)
+  }
+  if (!formula) delete row.resin_processing_formula
+}
+function purchaseUnitText(value: number) {
+  return Number.isFinite(value) ? fixedDecimal(value, 4) : '待核算'
+}
 function setPackagingMaterialUnitPrice(row: SalesPackagingMaterialRow, currency: UnitPriceSourceCurrency, event: Event) {
   setDualCurrencyUnitPrice(row, currency, event)
 }
@@ -853,7 +869,27 @@ function addBuzzBeeColorBoxTier() {
             <thead><tr><th>#</th><th>零件名称</th><th>规格</th><th>类别</th><th>用量</th><th>原单价 RMB</th><th>原单价 HKD</th><th>损耗率</th><th>计价单价 HKD（自动）</th><th>金额 HKD（自动）</th><th>税点 %</th><th>备注</th><th /></tr></thead>
             <tbody>
               <tr v-for="(row,index) in auxiliaryRows" :key="index">
-                <td>{{ index + 1 }}</td><td><input v-model="row.item" :disabled="disabled" aria-label="辅助材料/外购件零件名称"></td><td><input v-model="row.specification" :disabled="disabled" aria-label="辅助材料/外购件规格"></td><td><select v-model="row.auxiliary_category" :disabled="disabled" aria-label="辅助材料/外购件类别"><option v-for="category in engineeringMaterialCategories" :key="category" :value="category">{{ category }}</option></select></td><td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="辅助材料/外购件用量"></td><td><input :value="calculateEngineeringMaterialUnitRmb(row, props.rmbHkdRate)" :disabled="disabled" type="number" min="0" step="0.001" aria-label="辅助材料/外购件原单价 RMB" @input="setEngineeringMaterialUnitPrice(row, 'RMB', $event)"></td><td><input :value="calculateEngineeringMaterialUnitHkd(row, props.rmbHkdRate)" :disabled="disabled" type="number" min="0" step="0.001" aria-label="辅助材料/外购件原单价 HKD" @input="setEngineeringMaterialUnitPrice(row, 'HKD', $event)"></td><td><input v-model.number="row.loss_rate" :disabled="disabled" type="number" min="0.1" step="0.1" aria-label="辅助材料/外购件损耗率"></td><td class="calculated-cell">{{ calculated(calculateEngineeringMaterialEffectiveUnitHkd(row, props.rmbHkdRate)) }}</td><td class="calculated-cell">{{ calculated(calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate)) }}</td><td><input v-model.number="row.tax_rate_percent" :disabled="disabled" type="number" min="0" max="100" step="0.01" aria-label="辅助材料/外购件税点"></td><td><input v-model="row.remark" :disabled="disabled" aria-label="辅助材料/外购件备注"></td><td><button type="button" class="icon" :disabled="disabled" @click="removeEngineeringMaterial(row)"><Trash2 /></button></td>
+                <td>{{ index + 1 }}</td>
+                <td><input v-model="row.item" :disabled="disabled" aria-label="辅助材料/外购件零件名称"></td>
+                <td><input v-model="row.specification" :disabled="disabled" aria-label="辅助材料/外购件规格"></td>
+                <td><select v-model="row.auxiliary_category" @change="applyPurchaseFormula(row)" :disabled="disabled" aria-label="辅助材料/外购件类别"><option v-for="category in engineeringMaterialCategories" :key="category" :value="category">{{ category }}</option></select></td>
+                <td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="辅助材料/外购件用量"></td>
+                <td>
+                  <output v-if="row.resin_processing_formula" class="fixed-field numeric">{{ purchaseUnitText(calculateEngineeringMaterialUnitRmb(row, rmbHkdRate)) }}</output>
+                  <input v-else :value="calculateEngineeringMaterialUnitRmb(row, rmbHkdRate)" :disabled="disabled" type="number" min="0" step="0.001" aria-label="辅助材料/外购件原单价 RMB" @input="setEngineeringMaterialUnitPrice(row, 'RMB', $event)"></td>
+                <td><div class="purchase-unit">
+                  <output v-if="row.resin_processing_formula" class="fixed-field numeric">{{ purchaseUnitText(calculateEngineeringMaterialUnitHkd(row, rmbHkdRate)) }}</output>
+                  <input v-else :value="calculateEngineeringMaterialUnitHkd(row, rmbHkdRate)" :disabled="disabled" type="number" min="0" step="0.001" aria-label="辅助材料/外购件原单价 HKD" @input="setEngineeringMaterialUnitPrice(row, 'HKD', $event)">
+                  <InternalQuoteBuzzBeePurchaseFormula v-if="factoryId === 'huaxing' && isBuzzBee && row.auxiliary_category === '其他外购' && (!disabled || row.resin_processing_formula)"
+                    :formula="row.resin_processing_formula" :materials="moldingMaterialReferences" :rate="rmbHkdRate" :quantity="row.quantity" :loss-rate="row.loss_rate" :disabled="disabled"
+                    @apply="applyPurchaseFormula(row, $event)" />
+                </div></td>
+                <td><input v-model.number="row.loss_rate" :disabled="disabled" type="number" min="0.1" step="0.1" aria-label="辅助材料/外购件损耗率"></td>
+                <td class="calculated-cell">{{ calculated(calculateEngineeringMaterialEffectiveUnitHkd(row, props.rmbHkdRate)) }}</td>
+                <td class="calculated-cell">{{ calculated(calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate)) }}</td>
+                <td><input v-model.number="row.tax_rate_percent" :disabled="disabled" type="number" min="0" max="100" step="0.01" aria-label="辅助材料/外购件税点"></td>
+                <td><input v-model="row.remark" :disabled="disabled" aria-label="辅助材料/外购件备注"></td>
+                <td><button type="button" class="icon" :disabled="disabled" @click="removeEngineeringMaterial(row)"><Trash2 /></button></td>
               </tr>
               <tr v-if="!auxiliaryRows.length"><td colspan="13" class="empty">当前配件暂无辅助材料/外购件明细</td></tr>
             </tbody>
@@ -1683,6 +1719,8 @@ function addBuzzBeeColorBoxTier() {
 </template>
 
 <style scoped>
+.purchase-unit { display: flex; align-items: center; gap: 4px; }
+.purchase-unit > input, .purchase-unit > output { flex: 1; min-width: 5rem; }
 .injection-parts-detail{display:grid;gap:8px;padding:10px;background:#f0fdfa}.injection-parts-detail>span{color:#475569;font-size:12px}.injection-parts-detail table{min-width:620px;width:100%}.injection-parts-detail table td{background:#fff}.molding-validation{display:grid;gap:6px;padding:10px;background:#fffbeb;color:#92400e}.molding-validation button{text-align:left;border:1px solid #fcd34d;border-radius:6px;padding:6px;background:#fff;color:#92400e}.painting-image-cell{min-width:170px}.painting-row-images{display:flex;flex-wrap:wrap;gap:6px}.painting-row-images>div{display:grid;gap:3px}.painting-row-images img{height:52px;width:64px;object-fit:contain}.painting-row-images button{border:1px solid #99f6e4;border-radius:5px;background:#fff;color:#0f766e}.painting-image-upload{display:block;margin:6px 0;color:#0f766e;font-size:12px}.painting-image-upload input{display:block;max-width:190px;height:auto!important;font-size:11px}
 .justplay-carton-note{margin:10px;color:#0f766e;font-size:12px}.carton-card input[readonly]{background:#f0fdfa;color:#0f766e}
 .justplay-packaging-items{display:grid;gap:12px;padding:12px}.justplay-packaging-items article{border:1px solid #dbe5ea;border-radius:9px;background:#f8fafc;padding:12px}.justplay-packaging-items article>strong{color:#334155;font-size:13px}.justplay-packaging-items .inline-fields{padding:10px 0 0}.justplay-packaging-warning{margin:0 12px 12px;color:#b45309;font-size:12px}

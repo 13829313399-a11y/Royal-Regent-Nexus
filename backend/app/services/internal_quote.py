@@ -82,6 +82,7 @@ from app.services.internal_quote_document import document_products, product_root
 from app.services.internal_quote_calculator import (
     FORMULA_VERSION,
     CalculationInputError,
+    adopt_engineering_formula_prices,
     build_reference_snapshot,
     calculate_section,
     canonical_json,
@@ -925,6 +926,10 @@ def _normalize_mutable_section_payload(db, quote, department, payload):
         raise HTTPException(status_code=400, detail="华登胶件工模规则仅适用于华登厂区")
     if department == "engineering":
         try:
+            if any(isinstance(row, dict) and "resin_processing_formula" in row for row in payload.get("materials", []) or []):
+                reference = _find_reference_set(db, quote)
+                adopt_engineering_formula_prices(payload, _json_object(reference.snapshot_json) if reference else {},
+                                                 {"factory_id": quote.factory_id, "customer": quote.customer})
             for index, mold in enumerate(payload.get("molds", []) or []):
                 if not isinstance(mold, dict):
                     raise CalculationInputError(f"模具第 {index + 1} 行格式无效")
@@ -2250,6 +2255,9 @@ def _calculate_and_apply(
     cost_context = _cost_context(db, quote)
     dependencies = _calculation_dependencies(db, quote, section.department)
     section_payload = _json_object(section.payload_json)
+    if section.department == "engineering":
+        adopt_engineering_formula_prices(section_payload, snapshot, {"factory_id": quote.factory_id, "customer": quote.customer})
+        section.payload_json = canonical_json(section_payload)
     if section.department in {"assembly", "sales"}:
         from app.services.internal_quote_amount_adjustments import mark_stale_adjustments
         mark_stale_adjustments(section.department, section_payload, snapshot)
@@ -2269,6 +2277,7 @@ def _calculate_and_apply(
         reference.id,
         context={
             "factory_id": quote.factory_id,
+            "customer": quote.customer,
             "factory_price_hkd": decimal_text(factory_price_hkd),
             "mold_amortization_usd": decimal_text(cost_context["mold_amortization_usd"]),
             "dependencies": dependencies,
@@ -4274,6 +4283,8 @@ def preview_quote_costs(
         if section_code == "sales" and _sales_owns_packaging_material_cost(draft.payload):
             factory_price_hkd -= current_context["packaging_material_hkd"]
         try:
+            if section_code == "engineering":
+                adopt_engineering_formula_prices(section_payload, snapshot, {"factory_id": quote.factory_id, "customer": quote.customer})
             calculation = calculate_section(
                 section_code,
                 section_payload,
@@ -4281,6 +4292,7 @@ def preview_quote_costs(
                 reference.id,
                 context={
                     "factory_id": quote.factory_id,
+                    "customer": quote.customer,
                     "factory_price_hkd": decimal_text(factory_price_hkd),
                     "mold_amortization_usd": decimal_text(current_context["mold_amortization_usd"]),
                     "dependencies": _calculation_dependencies(
