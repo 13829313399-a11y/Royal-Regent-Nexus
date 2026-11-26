@@ -307,7 +307,7 @@ test('inspection summary hides admin controls for ordinary user and provides his
   }
 });
 
-test('app.js isolates user badge pill, defect delete, partner delete, and destructive import cards behind record_delete', async () => {
+test('app.js isolates user badge pill, defect delete, partner delete, and destructive import cards behind record_delete', async t => {
   const appScript = fs.readFileSync(path.join(sourceRoot, 'services/qc-department/app.js'), 'utf8');
 
   async function mountApp({ deleteAllowed }) {
@@ -404,7 +404,101 @@ test('app.js isolates user badge pill, defect delete, partner delete, and destru
     await adm.w._deleteDefLibItem(1);
     const storedAfter200 = adm.w.eval('_getDefectLib()');
     assert.deepEqual(Array.from(storedAfter200, (x) => x.name), ['缩水']);
+
+    // An earlier deletion completing while another entry is open must not shift the edit target.
+    adm.w.eval("_saveDefectLib([{name:'甲',enabled:true},{name:'乙',enabled:true},{name:'丙',enabled:true}]); renderDefectLibPage();");
+    let finishDelete;
+    adm.w.__QC_SAVE_DEFECTS = () => new Promise(resolve => { finishDelete = resolve; });
+    const deletion = adm.w._deleteDefLibItem(0);
+    adm.w._openDefLibModal(1);
+    finishDelete({ ok: true });
+    await deletion;
+    adm.d.getElementById('dlKeywords').value = '乙的同义词';
+    adm.w.__QC_SAVE_DEFECTS = async () => ({ ok: true });
+    await adm.w._saveDefLibItem();
+    const [edited, untouched] = adm.w.eval('_getDefectLib()');
+    assert.equal(edited.name, '乙');
+    assert.equal(edited.keywords[0], '乙的同义词');
+    assert.equal(untouched.name, '丙');
+    adm.w.eval("_saveDefectLib([{name:'同名',category:'功能',enabled:true},{name:'同名',category:'外观/质量',enabled:true}]); renderDefectLibPage();");
+    adm.w._openDefLibModal(1);
+    adm.d.getElementById('dlKeywords').value = '只修改第二项';
+    await adm.w._saveDefLibItem();
+    const duplicates = adm.w.eval('_getDefectLib()');
+    assert.equal(duplicates[0].keywords, undefined);
+    assert.equal(duplicates[1].keywords[0], '只修改第二项');
   } finally {
     adm.dom.window.close();
   }
+
+  await t.test('catalog conflicts keep inputs and cache, success saves and advances revisions', async () => {
+    const { dom, w, d, toasts } = await mountApp({ deleteAllowed: false });
+    try {
+      const requests = [];
+      let status = 409;
+      const conflict = '名单已在其他窗口更新，请刷新后重试';
+      w.fetch = async (url, options) => {
+        if (options?.method !== 'POST') return { ok: true, json: async () => ({
+          records: [], partners: w.eval('_loadPartners()'), defectLib: w.eval('_getDefectLib()'),
+          catalogVersions: { partners: 2, defectLib: 5 },
+        }) };
+        const body = JSON.parse(options.body);
+        requests.push({ url, body });
+        return { ok: status === 200, status, json: async () =>
+          status === 200 ? { revision: body.baseRevision + 1 } : { detail: conflict } };
+      };
+      w.eval(fs.readFileSync(path.join(sourceRoot, 'services/qc-department/qc-backend.js'), 'utf8'));
+      await w.__QC_BOOTSTRAP;
+      const partnerInput = d.getElementById('partnerInput_supplier');
+      w._openDefLibModal();
+      const nameInput = d.getElementById('dlName');
+      partnerInput.value = '测试供应商';
+      nameInput.value = '测试描述';
+      await w.addPartner('supplier');
+      await w._saveDefLibItem();
+      await w._toggleDefLibItem(0);
+      assert.equal(partnerInput.value, '测试供应商');
+      assert.equal(nameInput.value, '测试描述');
+      assert.equal(d.getElementById('defLibModal').style.display, 'flex');
+      assert.deepEqual(Array.from(w.eval('_loadPartners()'), p => p.name), ['天一']);
+      assert.deepEqual(Array.from(w.eval('_getDefectLib()'), d => d.name), ['缩水', '未用词条']);
+      assert.equal(w.eval('_getDefectLib()[0].enabled'), true);
+      assert.equal(toasts.filter(toast => toast.msg === conflict && toast.type === 'error').length, 3);
+      assert.equal(toasts.some(toast => toast.type === 'success'), false);
+      assert.deepEqual(requests.map(({ body }) => body.baseRevision), [2, 5, 5]);
+
+      status = 200;
+      await w.addPartner('supplier');
+      const save = w._saveDefLibItem();
+      nameInput.value = '后续修改';
+      await save;
+      await w._toggleDefLibItem(0);
+      assert.equal(partnerInput.value, '');
+      assert.equal(nameInput.value, '后续修改');
+      assert.equal(d.getElementById('defLibModal').style.display, 'flex');
+      assert.deepEqual(Array.from(w.eval('_loadPartners()'), p => p.name), ['天一', '测试供应商']);
+      assert.deepEqual(Array.from(w.eval('_getDefectLib()'), d => d.name), ['缩水', '未用词条', '测试描述']);
+      assert.equal(w.eval('_getDefectLib()[0].enabled'), false);
+      assert.equal(w.__QC_CATALOG_VERSIONS.partners, 3);
+      assert.equal(w.__QC_CATALOG_VERSIONS.defectLib, 7);
+      assert.deepEqual(requests.slice(3).map(({ body }) => body.baseRevision), [2, 5, 6]);
+      const storedPartners = JSON.parse(w.sessionStorage.getItem('xingxin_qms_partners'));
+      assert.equal(storedPartners.at(-1).name, '测试供应商');
+
+      const setItem = w.Storage.prototype.setItem;
+      w.Storage.prototype.setItem = function (key, value) {
+        if (key === 'xingxin_qms_defect_library') throw new Error('cache unavailable');
+        return setItem.call(this, key, value);
+      };
+      const callsBeforeCacheFailure = requests.length;
+      await w._toggleDefLibItem(0);
+      await w._toggleDefLibItem(1);
+      assert.equal(requests.length, callsBeforeCacheFailure + 1);
+      assert.equal(w.eval('_getDefectLib()[0].enabled'), false);
+      assert.ok(toasts.some(toast => toast.msg === '名单已保存，请刷新后继续操作'));
+      assert.ok(toasts.some(toast => toast.msg === '请刷新后再继续保存名单'));
+    } finally {
+      dom.window.close();
+    }
+  });
 });

@@ -79,7 +79,8 @@ def source_groups(sections, region_code="", snapshot=None):
 
         if code == "engineering":
             for row, path in rows("materials"):
-                add(row, path, [currency_price(row, row.get("category") == "hardware")], row.get("auxiliary_category") or row.get("category", "物料"))
+                price_fields = [] if "resin_processing_formula" in row else [currency_price(row, row.get("category") == "hardware")]
+                add(row, path, price_fields, row.get("auxiliary_category") or row.get("category", "物料"))
             for row, path in rows("molds"):
                 add(row, path, ["cost_rmb"], "模具")
                 for part, part_path in rows("parts", row, path):

@@ -18,6 +18,7 @@ export interface SalesPricingComponent {
 export const salesPackagingPricingGroupId = 'sales-packaging'
 export const salesPackagingPricingGroupName = '业务部包装'
 export interface EngineeringMaterialRow extends QuotePricingMetadata {
+  resin_processing_formula?: BuzzBeePurchaseFormula
   item: string
   category: EngineeringMaterialCategory
   purpose: string
@@ -997,20 +998,37 @@ export function calculateJustPlayPaperPalletCostHkd(
     ? 19 / cartonsPerPallet / quantity + inputs.paper_pallet_extra_hkd : 0
 }
 
-export function calculateEngineeringMaterialUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+export interface BuzzBeePurchaseFormula {
+  material: string
+  grade: string
+  price_hkd_lb: number
+  weight_g: number
+  labor_rmb: number
+}
+
+type EngineeringPrice = DualCurrencyUnitPrice & Pick<EngineeringMaterialRow, 'resin_processing_formula'>
+
+export function buzzBeePurchaseUnitHkd(formula: BuzzBeePurchaseFormula, rate: number) {
+  if (!(rate > 0 && formula.price_hkd_lb > 0)) return Number.NaN
+  return formula.price_hkd_lb / 454 * formula.weight_g + formula.labor_rmb / rate
+}
+
+export function calculateEngineeringMaterialUnitRmb(row: EngineeringPrice, rmbHkdRate: unknown) {
+  if (row.resin_processing_formula) return calculateEngineeringMaterialUnitHkd(row, rmbHkdRate) * positivePreviewNumber(rmbHkdRate)
   return calculatePackagingMaterialUnitRmb(row, rmbHkdRate)
 }
 
-export function calculateEngineeringMaterialUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+export function calculateEngineeringMaterialUnitHkd(row: EngineeringPrice, rmbHkdRate: unknown) {
+  if (row.resin_processing_formula) return buzzBeePurchaseUnitHkd(row.resin_processing_formula, positivePreviewNumber(rmbHkdRate))
   return calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
 }
 
-export function calculateEngineeringMaterialEffectiveUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
-  return calculatePackagingMaterialEffectiveUnitHkd(row, rmbHkdRate)
+export function calculateEngineeringMaterialEffectiveUnitHkd(row: EngineeringPrice, rmbHkdRate: unknown) {
+  return calculateEngineeringMaterialUnitHkd(row, rmbHkdRate) * calculateMaterialLossRate(row.loss_rate)
 }
 
-export function calculateEngineeringMaterialAmountHkd(row: Pick<EngineeringMaterialRow, 'quantity'> & DualCurrencyUnitPrice, rmbHkdRate: unknown) {
-  return calculatePackagingMaterialAmountHkd(row, rmbHkdRate)
+export function calculateEngineeringMaterialAmountHkd(row: Pick<EngineeringMaterialRow, 'quantity'> & EngineeringPrice, rmbHkdRate: unknown) {
+  return positivePreviewNumber(row.quantity) * calculateEngineeringMaterialEffectiveUnitHkd(row, rmbHkdRate)
 }
 
 export function calculateEngineeringMoldPriceHkd(row: Pick<EngineeringMoldRow, 'cost_rmb'>, rmbHkdRate: unknown) {
@@ -1691,6 +1709,8 @@ function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<st
         ]
     return {
       materials: rows(source.materials).map((row) => {
+        const formula = objectValue(row.resin_processing_formula)
+        const frozenPrices = objectValue(referenceSnapshot?.material_prices)
         const category = ['hardware', 'packaging'].includes(textValue(row.category)) ? textValue(row.category) : 'auxiliary'
         const auxiliaryCategory = category === 'hardware'
           ? '五金'
@@ -1701,6 +1721,12 @@ function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<st
           ...importBatchMetadata(row),
           ...pricingMetadata(row),
           item: textValue(row.item), category, purpose: textValue(row.purpose), specification: textValue(row.specification ?? row.spec),
+          ...(row.resin_processing_formula ? { resin_processing_formula: {
+            material: textValue(formula.material), grade: textValue(formula.grade),
+            price_hkd_lb: numberValue(referenceSnapshot?.material_prices
+              ? frozenPrices[`${formula.material}|${formula.grade}`] : formula.price_hkd_lb),
+            weight_g: numberValue(formula.weight_g), labor_rmb: numberValue(formula.labor_rmb),
+          } } : {}),
           quantity: numberValue(row.quantity ?? row.qty), unit: textValue(row.unit), unit_price_rmb: numberValue(row.unit_price_rmb),
           loss_rate: multiplierValue(row.loss_rate),
           ...(category === 'hardware' ? {} : {

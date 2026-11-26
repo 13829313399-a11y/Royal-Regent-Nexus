@@ -95,6 +95,25 @@ def frame_base(client, factory="huaxing"):
     return res.json()["frame_url"]
 
 
+@pytest.mark.parametrize("status", [None, "", " "])
+def test_blank_legacy_state_is_locked_and_can_be_returned(monkeypatch, status):
+    with make_client(monkeypatch) as client:
+        original = {"id": 10, "status": status, "qc": "原检验员", "updatedAt": None, "remark": "原内容"}
+        state = install_stateful_upstream(monkeypatch, records=[original])
+        login_as(client, "qc_supervisor")
+        base = frame_base(client)
+        modified = {**original, "remark": "不应保存"}
+        assert client.post(base + "api/records", json={"records": [modified]}).status_code == 409
+        assert state["records"] == [original]
+        target = base + "api/workflow/legacy-review"
+        request = {"recordId": 10, "updatedAt": "", "action": "return", "reason": "补充照片"}
+        assert client.post(target, json={**request, "action": "approve"}).status_code == 409
+        result = client.post(target, json=request)
+        assert result.status_code == 200, result.text
+        assert result.json()["status"] == "rejected"
+        assert result.json()["qc"] == "原检验员"
+
+
 def read_ui_context(client, base):
     res = client.get(base + "nexus-context.js")
     assert res.status_code == 200

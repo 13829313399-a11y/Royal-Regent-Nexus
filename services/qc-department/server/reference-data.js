@@ -23,7 +23,7 @@ function clearReferenceData(db, deleteRecords) {
     const refs = references(db);
     const get = db.prepare('SELECT * FROM records WHERE id=?');
     const eligible = refs.filter(r => unchanged(get.get(r.record_id), r));
-    const deleted = deleteRecords(db, eligible.map(r => r.record_id), false);
+    const deleted = deleteRecords(db, eligible.map(r => r.record_id), false, { referenceClear: true });
     if (refs.length) db.exec(`DELETE FROM ${TABLE} WHERE record_id NOT IN (SELECT id FROM records)`);
     const remaining = referenceData(db);
     db.exec('COMMIT');
