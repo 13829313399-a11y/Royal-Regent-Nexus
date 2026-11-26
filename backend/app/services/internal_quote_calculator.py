@@ -268,7 +268,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         },
     },
     "engineering": {
-        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging; hardware is fixed", "specification": "text", "auxiliary_category": "五金(fixed for hardware)|吸塑|胶袋|彩盒/内卡|电池|利宝|电镀|其他外购", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; original hardware source, original auxiliary RMB source or derived", "unit_price_hkd": "decimal>=0; original auxiliary HKD source or derived", "unit_price_source_currency": "RMB|HKD for auxiliary; omitted legacy rows prefer RMB unless only HKD exists", "loss_rate": "decimal>0; multiplier, default 1", "tax_rate_percent": "hardware fixed 13; others decimal>=0; record only", "remark": "text", "legacy_fields": "purpose/unit/material/surface_treatment/supplier/contact remain readable but are not editable or imported", "disney_description": "text", "disney_section": "product|package", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>=0"}],
+        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging; hardware is fixed", "specification": "text", "auxiliary_category": "五金(fixed for hardware)|吸塑|胶袋|彩盒/内卡|电池|利宝|电镀|其他外购", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; original hardware source, original auxiliary RMB source or derived", "unit_price_hkd": "decimal>=0; original auxiliary HKD source or derived", "unit_price_source_currency": "RMB|HKD for auxiliary; omitted legacy rows prefer RMB unless only HKD exists", "loss_rate": "decimal>0; multiplier, default 1", "tax_rate_percent": "hardware fixed 13; others decimal>=0; record only", "remark": "text", "resin_processing_formula": {"scope": "optional; Huaxing BuzzBee auxiliary 其他外购 only", "material": "snapshot resin", "grade": "snapshot grade", "weight_g": "decimal>0 per piece", "labor_rmb": "decimal>=0 per piece", "price_hkd_lb": "derived from quote snapshot"}, "legacy_fields": "purpose/unit/material/surface_treatment/supplier/contact remain readable but are not editable or imported", "disney_description": "text", "disney_section": "product|package", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>=0"}],
         "molds": [{"item": "text", "mold_no": "text", "chinese_name": "text", "mold_base_type": "text", "mold_base_material": "text", "structure": "text", "process": "text", "material": "text", "material_type": "text", "color": "text", "cavity": "text", "quantity": "sets; record only", "net_weight_g": "decimal>=0", "cycle_time_seconds": "decimal>=0", "mold_size": "text", "mold_specification": "text", "image_reference": "section attachment name/reference", "cost_rmb": "whole-mold quote RMB", "remark": "text", "disney_mold_no": "text", "disney_parts": "text", "disney_material": "text", "disney_cavities": "decimal>0", "disney_parts_per_shot": "decimal>0", "disney_tool_cost_usd": "decimal>=0", "dickie_project_name_en": "English text", "dickie_mold_no": "text", "dickie_parts_en": "English text", "dickie_resin": "text", "dickie_mold_size": "text", "dickie_mold_material": "text", "dickie_cavities": "decimal>0", "dickie_parts_per_shot": "decimal>0", "dickie_mold_cost_hkd": "decimal>0", "dickie_remark_en": "English text", "caixing_tool_plan_ref": "text", "caixing_mold_cost_hkd": "decimal>=0", "caixing_customer_mold_cost_hkd": "decimal>0"}],
         "mold_allocation_enabled": "boolean; default true; false preserves inputs but excludes all production mold/prototype/testing allocation",
         "production_mold_costs": [{"item": "text", "cost_rmb": "decimal>=0"}],
@@ -620,7 +620,41 @@ def _finish(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
+def _buzzbee_purchase_price(row, snapshot, context, fx):
+    customer = re.sub(r"[\s_-]+", "", str(context.get("customer", "")).lower())
+    if (context.get("factory_id") != "huaxing" or customer != "buzzbee"
+            or row.get("category") != "auxiliary" or row.get("auxiliary_category") != "其他外购"):
+        raise CalculationInputError("胶料加啤工计价仅适用于华兴 BuzzBee 的其他外购")
+    inputs = row["resin_processing_formula"]
+    if not isinstance(inputs, dict):
+        raise CalculationInputError("其他外购计价公式格式无效")
+    material, grade = (str(inputs.get(key) or "").strip() for key in ("material", "grade"))
+    price = snapshot.get("material_prices", {}).get(f"{material}|{grade}")
+    if price is None or not material or not grade:
+        raise CalculationInputError("请从本报价冻结价目中选择胶料和料型")
+    price = positive_value(price, "胶料每磅港币价")
+    weight = positive_value(inputs.get("weight_g"), "单条重量")
+    if inputs.get("labor_rmb") in (None, ""):
+        raise CalculationInputError("请填写单条啤工人民币")
+    labor = decimal_value(inputs["labor_rmb"], "单条啤工人民币")
+    return price / Decimal(454) * weight + labor / fx, {
+        "material": material, "grade": grade, "price_hkd_lb": str(price),
+        "weight_g": str(weight), "labor_rmb": str(labor),
+    }
+
+
+def adopt_engineering_formula_prices(payload, snapshot, context):
+    """Keep saved unit-price fields in step with the quote's adopted references."""
+    for row in payload.get("materials", []) or []:
+        if not isinstance(row, dict) or "resin_processing_formula" not in row:
+            continue
+        fx = positive_value(snapshot.get("fx", {}).get("rmb_hkd"), "RMB/HKD 汇率")
+        unit, inputs = _buzzbee_purchase_price(row, snapshot, context, fx)
+        row["resin_processing_formula"]["price_hkd_lb"] = float(inputs["price_hkd_lb"])
+        row.update(unit_price_source_currency="HKD", unit_price_hkd=float(unit), unit_price_rmb=float(unit * fx))
+
+
+def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any], context: dict[str, Any]) -> None:
     fx = positive_value(snapshot.get("fx", {}).get("rmb_hkd"), "RMB/HKD 汇率")
     fx_rmb_usd = positive_value(snapshot.get("fx", {}).get("rmb_usd"), "RMB/USD 汇率")
     category_hkd = {"hardware": ZERO, "auxiliary": ZERO, "packaging": ZERO}
@@ -632,7 +666,12 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
         category = str(row.get("category", "auxiliary"))
         if category not in category_hkd:
             raise CalculationInputError(f"工程材料第 {index + 1} 行分类无效")
-        if category == "hardware":
+        formula_inputs = None
+        if "resin_processing_formula" in row:
+            base_unit_price_hkd, formula_inputs = _buzzbee_purchase_price(row, snapshot, context, fx)
+            base_unit_price_rmb = base_unit_price_hkd * fx
+            source_currency = "HKD"
+        elif category == "hardware":
             base_unit_price_rmb = decimal_value(
                 row.get("unit_price_rmb"),
                 f"工程材料第 {index + 1} 行人民币单价",
@@ -676,7 +715,11 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
             "tax_rate_percent": decimal_text(tax_rate),
             "amount_rmb": decimal_text(line_rmb),
             "amount_hkd": decimal_text(line_hkd),
+            **({"resin_processing_formula": formula_inputs} if formula_inputs else {}),
             "formula": (
+                f"({formula_inputs['price_hkd_lb']} ÷ 454 × {formula_inputs['weight_g']} + "
+                f"{formula_inputs['labor_rmb']} ÷ {fx}) × {quantity} × {loss_rate}"
+                if formula_inputs else
                 "用量 × 原单价 HKD × 损耗率；RMB = HKD × 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
                 if source_currency == "HKD"
                 else "用量 × 原单价 RMB × 损耗率 ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
@@ -2712,7 +2755,7 @@ def calculate_section(
             _warning("sales_carton_missing", "业务分段尚未填写纸箱与每箱数量")
         )
     if section_code == "engineering":
-        _engineering(payload, snapshot, result)
+        _engineering(payload, snapshot, result, calculator_context)
     elif section_code == "electronic":
         _electronic(payload, snapshot, result)
     elif section_code == "molding":

@@ -20,9 +20,11 @@ def append_price_basis(workbook, quote, sections, snapshot):
     row(["本报价采用价目表", getattr(quote, "quote_no", ""), getattr(quote, "product_name", ""), getattr(quote, "version_label", "")])
     row(["范围", "本款冻结价目；基础价目更新不自动覆盖本款", "基础价目版本", snapshot.get("pricing_baseline_revision", "未记录")])
     row(["材料", "具体料型", "HKD/lb", "来源"])
+    material_cells = {}
     for key, price in snapshot.get("material_prices", {}).items():
         material, _, grade = key.partition("|")
         row([material, grade, float(price), "本报价价格快照"])
+        material_cells[key] = f"$C${sheet.max_row}"
     row(["机型范围", "机型", "HKD/班", "来源"])
     for machine in snapshot.get("machine_prices", []):
         row([machine.get("range", ""), machine.get("machine", ""), float(machine.get("shift_price_hkd", 0)), "本报价价格快照"])
@@ -48,3 +50,4 @@ def append_price_basis(workbook, quote, sections, snapshot):
     for column, width in widths.items():
         sheet.column_dimensions[column].width = width
     sheet.freeze_panes = "A3"
+    return material_cells
