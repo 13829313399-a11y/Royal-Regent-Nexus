@@ -136,6 +136,8 @@ def tracking(layout,rows,factory,data):
         if not photos:continue
         height=min(530,len(photos)*84)
         s.row_dimensions[r].height=max(68,s.row_dimensions[r].height,height*.75)
+        if data.get('deferPreviewPhotos'):
+            continue
         cols,w,h=legacy._photo_slots(len(photos),width,height)
         for i,photo in enumerate(photos):
             content=legacy._photo(factory,entry,photo,data.get('photoQuality','preview'),
