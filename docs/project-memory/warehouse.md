@@ -37,6 +37,8 @@
 
 工程维护版本、来源、物料匹配与用量依据，业务确认订单需求，采购按批准来源办单。工程版本的审批和向裁床发布是两步。试算、候选匹配或旧表的示例系数不能直接变成正式采购数量。
 
+采购取整按已确认的需求 §6.4 执行，保留精确基本单位需求，完成损耗及有效供给抵扣后换算、汇总，再按采购单位向上取整数。§6.4.1 细化了换算字段、版本依据与示例。工程物料已支持可选采购单位换算，随物料审核版本和 BOM 快照冻结；新业务试算以精确分数汇总并显示含损耗毛需求的折合数量、整单位数量及差额。旧客户端遗漏字段保留原换算，旧回执及历史保持原结果。采购准备单的采购单位和拟订量由采购填写，正式净采购建议仍待供给资料接通。金蝶胶水样本的整千克进位触发配置尚待确认。
+
 恢复或切换须按版本核对原始行和单位。[工程审批检查](../business/huakang-c-engineering-bom-approval-check.md)与[物料计划流程](../business/huakang-c-material-plan-workflow.md)分别说明职责。
 
 [huakang-c-engineering-bom-requirements.md](../business/huakang-c-engineering-bom-requirements.md) · [engineering_bom.py](../../backend/app/api/engineering_bom.py) · [test_engineering_bom.py](../../backend/tests/test_engineering_bom.py)

@@ -199,7 +199,7 @@ describe('material trial workspace', () => {
     expect(wrapper.get<HTMLInputElement>('input[type=checkbox]').element.checked).toBe(true)
     await input('试算数量').setValue('100'); await input('统一损耗率').setValue('5')
     await button('计算用料').trigger('click'); await flushPromises()
-    expect(wrapper.text()).toContain('采购数量：待资料核实，尚未计算')
+    expect(wrapper.text()).toContain('净采购数量：待库存和在途资料核实')
     await wrapper.get('input[type=checkbox]').setValue(false)
     expect(wrapper.text()).not.toContain('本次试算结果')
     await wrapper.get('form').trigger('submit'); await flushPromises()
