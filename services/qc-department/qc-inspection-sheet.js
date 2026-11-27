@@ -2,13 +2,16 @@
 (function(root){
   'use strict';
   if(!root.__QC_NEXUS)return;
-  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),deleteChecked:new Set(),deleteBusy:false,recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:''}};
+  const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),deleteBusy:false,recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:''}};
+  const deletingRows=new Set();
   let notificationGeneration=0,recordsRefreshInFlight=false,localUpdate=0;
+  let reviewGuide, reviewGuideShown=false;
   const sameData=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
   const editable=()=>Boolean(root.__QC_NEXUS.workflow?.edit);
   const canDelete=()=>Boolean(root.__QC_NEXUS.workflow?.delete);
+  const trackReads=()=>Boolean(root.__QC_NEXUS.workflow?.reviewReads);
   const base='api/inspection-sheet/';
   const photoAccept='image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,image/tiff,image/bmp,image/gif,.mpo,.heic,.heif,.tif,.tiff';
   // LAN HTTP pages lack randomUUID; getRandomValues remains available there.
@@ -30,7 +33,7 @@
   const textFields=['remark','improvement','inspectionProblem'];
   const savedFields=d=>{const fields=Object.fromEntries(['result',...textFields.filter(k=>model.view==='review'||k!=='improvement'),...(model.view==='review'?Object.keys(reviewFields):[])].map(k=>[k,d[k]??'']));const keys=[...d.executionDirty].filter(k=>model.view==='review'||['sampleQuantity','inspector','inspectorId'].includes(k));if(keys.length)fields.inspectionExecution=Object.fromEntries(keys.map(k=>[k,JSON.parse(JSON.stringify(d.inspectionExecution[k]))]));return fields;};
   const differs=(d,sent)=>JSON.stringify(savedFields(d))!==JSON.stringify(sent);
-  function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(model.view==='records'?model.recordChecked.has(n.dataset.entry):model.reviewTab==='pending'?model.checked.has(n.dataset.entry):selected));});}
+  function selectRow(id){model.selectedId=id;root.document.querySelectorAll('.qis-table [data-entry]').forEach(n=>{const selected=n.dataset.entry===id;n.classList.toggle('qis-selected',selected);n.setAttribute('aria-selected',String(model.view==='review'&&model.reviewTab==='approved'&&!canDelete()?selected:model[selectionKey()].has(n.dataset.entry)));});}
   function freezeColumns(host){
     const selectCol=host.querySelector('th[data-column=deleteSelect]');
     const selectWidth=selectCol?selectCol.getBoundingClientRect().width:0;
@@ -122,7 +125,14 @@
     const index=model.items.findIndex(r=>r.id===id);
     if(index>=0&&model.items[index].revision>saved.revision)return;
     if(index>=0&&model.items[index].photoWarning&&!('photoWarning' in saved))saved={...saved,photoWarning:model.items[index].photoWarning};
-    if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;localUpdate++;}
+    if(index>=0){
+      const previous=model.items[index];
+      saved={...saved,sourceCancelled:saved.sourceCancelled??previous.sourceCancelled,inspectionMethod:saved.inspectionMethod??previous.inspectionMethod};
+      if(saved.reviewState==='pending'&&saved.reviewRead===undefined&&trackReads()){
+        saved.reviewRead=previous.revision===saved.revision&&previous.reviewRead===true;
+      }
+      model.items[index]=saved;localUpdate++;
+    }
     const entryNode=root.document.querySelector('[data-entry="'+id+'"]');if(entryNode&&model.view==='review'){
       const hint=audit().hint(saved);entryNode.querySelectorAll('[data-audit]').forEach(button=>{button.title=hint;button.setAttribute('aria-label',hint+'；查看修改历史');});
       for(const key of ['customer','poNo']){const cell=entryNode.querySelector('[data-column="'+key+'"]');if(cell)cell.title=(saved[key]||'')+'\n'+hint;}
@@ -133,10 +143,10 @@
   async function pump(id){
     const row=byId(id);if(!row)return;
     const d=draft(row);clearTimeout(d.timer);d.timer=null;
-    if(d.busy||d.error)return;
-    d.busy=true;status(id);let photoJob=null;
+    if(d.busy||d.error||deletingRows.has(id))return;
+    d.busy=true;status(id);let photoJob=null, photoToOpen;
     try{
-      while((d.dirty||d.queue.length)){
+      while(!deletingRows.has(id)&&(d.dirty||d.queue.length)){
         const current=byId(id);
         photoJob=null;
         if(d.dirty){
@@ -150,6 +160,7 @@
           try{
             const saved=await api(entryPath(id)+'/'+job.action,{revision:current.revision,...job.body});
             accept(id,saved);d.queue.shift();
+            if(job.preview&&(job.camera||current.photos.length===0)&&saved.uploadedPhotoId)photoToOpen=saved.uploadedPhotoId;
           }catch(error){
             const latest=byId(id);
             // A mapped text save can commit while this photo request is in flight.
@@ -163,7 +174,15 @@
       d.errorKind=photoJob?'photo':'text';
       d.error=(d.rejectedPhoto?photoJob.body.name+'：':'')+error.message;d.conflict=error.status===409;
     }
-    finally{d.busy=false;d.busyKind=null;status(id);}
+    finally{
+      d.busy=false;d.busyKind=null;status(id);
+      if(photoToOpen&&!d.error&&model.view==='records'&&root.document.getElementById('page-records')?.classList.contains('active')&&
+          !root.document.querySelector('dialog[open]')){
+        const link=[...root.document.querySelectorAll('[data-photo-list="'+id+'"] [data-view-photo]')]
+          .find(node=>node.dataset.viewPhoto===photoToOpen);
+        if(link)void openEntryPhoto(byId(id),link,{automatic:true});
+      }
+    }
   }
   function edit(id,key,value,immediate=false){
     if(model.submitBusy||model.reviewBusy||model.deleteBusy)return;const d=draft(byId(id));if(d[key]===value)return;d[key]=value;d.dirty=true;clearTimeout(d.timer);status(id);
@@ -187,16 +206,23 @@
       d.recovering=true;
       try{
         const data=await api(model.view==='review'?'review/entries':'entries'),latest=data.items.find(r=>r.id===id);
-        if(!latest)throw Error('来源任务不可用；当前输入仍保留');
-        if(!canEdit(latest)){
-          const state=latest.reviewState==='approved'?'已审核':latest.reviewState==='returned_to_inspection'?'已退回验货台':'当前不可编辑';
+        if(!latest||!canEdit(latest)){
+          const state=!latest?'已移出当前列表':latest.reviewState==='approved'?'已审核':latest.reviewState==='returned_to_inspection'?'已退回验货台':'当前不可编辑';
+          const comparison=latest||byId(id);
           const input=savedFields(d),names={...reviewFields,result:'验货结果',...Object.fromEntries(textFields.map(k=>[k,{remark:'备注',improvement:'改进措施',inspectionProblem:'验货问题'}[k]]))};
-          const changes=[...Object.entries(input).filter(([key,value])=>key!=='inspectionExecution'&&String(value??'')!==String(latest[key]??'')).map(([key,value])=>(names[key]||key)+'：'+JSON.stringify(value)),...Object.entries(input.inspectionExecution||{}).filter(([key,value])=>JSON.stringify(value)!==JSON.stringify(latest.inspectionExecution?.[key]??latest[key])).map(([key,value])=>executionFields[key][0]+'：'+JSON.stringify(value))];
-          const message='该记录'+state+'，不能从当前页面直接保存。'+(latest.reviewState==='approved'?'如需修改，请先在“已审核”中反审核。':'请在对应页面继续处理。')+'\n\n本行未保存的输入：\n'+(changes.join('\n')||'文字和数值与服务器一致')+(d.queue.length?'\n另有 '+d.queue.length+' 项未完成的照片操作':'')+'\n\n确定：放弃本行未保存输入并更新状态，恢复页面切换。\n取消：继续保留当前输入，可先复制上述内容。';
+          const changes=[...Object.entries(input).filter(([key,value])=>key!=='inspectionExecution'&&String(value??'')!==String(comparison?.[key]??'')).map(([key,value])=>(names[key]||key)+'：'+JSON.stringify(value)),...Object.entries(input.inspectionExecution||{}).filter(([key,value])=>JSON.stringify(value)!==JSON.stringify(comparison?.inspectionExecution?.[key]??comparison?.[key])).map(([key,value])=>executionFields[key][0]+'：'+JSON.stringify(value))];
+          const message='该记录'+state+'，不能从当前页面直接保存。'+(latest?.reviewState==='approved'?'如需修改，请先在“已审核”中反审核。':'请在对应页面继续处理。')+'\n\n本行未保存的输入：\n'+(changes.join('\n')||'没有未保存的文字或数值差异')+(d.queue.length?'\n另有 '+d.queue.length+' 项未完成的照片操作':'')+'\n\n确定：放弃本行未保存输入并更新状态，恢复页面切换。\n取消：继续保留当前输入。';
           if(!root.confirm(message))return;
           if(model.drafts.get(id)!==d||d.busy||d.reading)return;
-          clearTimeout(d.timer);model.drafts.delete(id);model.checked.delete(id);accept(id,latest);render();
-          root.showToast?.('已同步记录状态；如需修改已审核记录，请先反审核','success');return;
+          clearTimeout(d.timer);model.drafts.delete(id);model[selectionKey()].delete(id);
+          if(latest)accept(id,latest);
+          else{
+            model.items=model.items.filter(row=>row.id!==id);
+            if(model.selectedId===id)model.selectedId='';
+            localUpdate++;
+          }
+          render();
+          root.showToast?.(latest?'已同步记录状态；如需修改已审核记录，请先反审核':'已移除旧行，可继续切换页面','success');return;
         }
         const comparison=[['result','验货结果'],['inspectionProblem','验货问题'],['remark','备注'],['improvement','改进措施'],...Object.entries(reviewFields),...Object.entries(executionFields).map(([k,v])=>['inspectionExecution.'+k,v[0]])].map(([key,label])=>label+'\n服务器：'+JSON.stringify(key.split('.').reduce((v,k)=>v?.[k],latest)??'—')+'\n本行输入：'+JSON.stringify(key.split('.').reduce((v,k)=>v?.[k],d)??'—')).join('\n\n');
         if(!root.confirm(comparison+'\n\n是否以本行保留的输入重试？取消将继续保留本行输入。'))return;
@@ -211,14 +237,18 @@
     if(model.loading){model.nextLoad={view,tab};return;}
     if(navigationState().dirty||navigationState().busy){root.showToast?.('请先完成本行保存或重试；未保存内容仍保留。','error');return;}
     typingStep=null;fieldHistory.undo.length=0;fieldHistory.redo.length=0;
-    if(model.view!==view){root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();model.items=[];model.drafts.clear();model.checked.clear();}
+    if(model.view!==view){
+      root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();
+      model.items=[];model.drafts.clear();model.checked.clear();
+      if(view!=='review')clearReviewGuide();
+    }
     model.recordChecked.clear();
-    model.deleteChecked.clear();
     if(model.reviewTab!==tab){
       model.checked.clear();
       reviewDates?.setRange(model.reviewFilters.from,model.reviewFilters.to);
     }
-    model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
+    model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';
+    if(view==='review'){reviewControls();}
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{
       const [nextOptions,data]=await Promise.all([api('options'),api(view==='review'?'review/entries':'entries')]);
@@ -232,7 +262,7 @@
   const resultChoices=data=>(data.results||model.results).filter(v=>['PASS','FAIL','PENDING','LG'].includes(v));
   function recordsIdle(){
     const doc=root.document;
-    if(doc.hidden||model.view!=='records'||model.loading||rowDrag||model.recordChecked.size||model.deleteChecked.size||model.deleteBusy||
+    if(doc.hidden||model.view!=='records'||model.loading||rowDrag||model.recordChecked.size||model.deleteBusy||
       !doc.getElementById('page-records')?.classList.contains('active')||
       doc.activeElement?.closest('#recordsTableWrap')||doc.querySelector('dialog[open]'))return false;
     const state=navigationState();
@@ -521,15 +551,17 @@
     if(!canEdit(row))return '<span class="qis-review-value">'+esc(value)+'</span>';
     return '<div class="qis-inline-value"'+(hasContent(value)?' data-show-value':'')+'><button type="button" class="qis-review-value" aria-label="'+esc(label+'：'+value+'，点击编辑')+'">'+esc(value)+'</button>'+control+'</div>';
   }
+  function selectionCell(row){
+    return '<td data-column="deleteSelect" class="qis-delete-col"><label class="qis-delete-hit"><input type="checkbox" data-delete-check="'+esc(row.id)+'" aria-label="选择 '+esc(row.customer+' '+row.poNo)+'"></label></td>';
+  }
   function rowHTML(row,columns=model.columns,customerStart=false){
     const d=draft(row),disabled=canEdit(row)&&!model.submitBusy&&!model.deleteBusy?'':'disabled';
     // Fixed-height inner cells keep long text, save feedback and photos within one standard row.
     const mobileKey='<small class="qis-mobile-key" title="'+esc(row.poNo+' · '+row.productNo)+'">'+esc(row.poNo)+' · '+esc(row.productNo)+'</small>';
     const action=model.view==='review'&&model.reviewTab==='approved'?'<button class="qis-row-action" data-revoke="'+row.id+'" '+(editable()?'':'disabled')+'>反审核</button>':'';
-    const delSelected=canDelete()&&model.deleteChecked.has(row.id);
-    return '<tr tabindex="0" aria-selected="'+(row.id===model.selectedId)+'" class="'+(row.id===model.selectedId?'qis-selected ':'')+(delSelected?'qis-delete-selected ':'')+(customerStart?'qis-review-customer-start':'')+'" data-entry="'+row.id+'">'+columns.map(({key})=>{
+    return '<tr tabindex="0" aria-selected="'+(row.id===model.selectedId)+'" class="'+(row.id===model.selectedId?'qis-selected ':'')+(customerStart?'qis-review-customer-start':'')+'" data-entry="'+row.id+'">'+columns.map(({key})=>{
       const cell=(content,attributes='')=>'<td data-column="'+key+'"'+attributes+'><div class="qis-cell">'+content+'</div></td>';
-      if(key==='deleteSelect')return '<td data-column="deleteSelect" class="qis-delete-col"><div class="qis-cell"><input type="checkbox" data-delete-check="'+esc(row.id)+'" aria-label="勾选删除 '+esc(row.customer+' '+row.poNo)+'" '+(delSelected?'checked':'')+(model.deleteBusy?' disabled':'')+'></div></td>';
+      if(key==='deleteSelect')return selectionCell(row);
       if(key==='inspectionExecution.institution'&&reviewGroup(row)!=='客验')return cell('—',' class="qis-not-applicable"');
       if(key==='result'){
         const select='<select data-result="'+row.id+'" aria-label="'+esc(row.poNo+' '+row.productNo)+' 验货结果" '+disabled+'><option value="" '+(!d.result?'selected':'')+'>未填写</option>'+(d.result&&!model.results.includes(d.result)?'<option disabled selected value="'+esc(d.result)+'">历史：'+esc(d.result)+(canEdit(row)?'（需重选）':'')+'</option>':'')+model.results.map(value=>'<option value="'+esc(value)+'" '+(d.result===value?'selected':'')+'>'+esc(value)+'</option>').join('')+ '</select>';
@@ -558,37 +590,44 @@
   }
   const scalar=value=>value==null?'':String(value);
   function bindPhotos(node,row){
-    node.querySelectorAll('[data-view-photo]').forEach(link=>link.onclick=async event=>{
-      const viewer=root.QcInspectionSummary?.openPhoto;
-      if(!viewer||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+    node.querySelectorAll('[data-view-photo]').forEach(link=>link.onclick=event=>{
+      if(!root.QcInspectionSummary?.openPhoto||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
       event.preventDefault();
-      try{
-        const {items}=await api('entries/'+encodeURIComponent(row.id)+'/photo-info');
-        if(!link.isConnected)return;
-        const index=items.findIndex(photo=>photo.id===link.dataset.viewPhoto);
-        if(index<0)throw Error('照片已移除，请刷新记录');
-        const view=model.view,annotationPath=entryPath(row.id)+'/photo-annotations';
-        const saveAnnotations=canEdit(row)?async body=>{
-          const current=byId(row.id);
-          if(!current||!canEdit(current)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy)throw Error('当前记录不能编辑，请核对审核状态');
-          const d=draft(current);
-          if(d.busy||d.reading||d.dirty||d.queue.length||d.error)await flushRow(row.id);
-          const latest=byId(row.id);
-          if(!latest||!canEdit(latest)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy||d.submitting)throw Error('当前记录不能编辑，请核对审核状态');
-          d.busy=true;
-          try{
-            const saved=await api(annotationPath,body);
-            accept(row.id,saved.entry,false);
-            return saved.photo;
-          }finally{d.busy=false;status(row.id);}
-        }:null;
-        viewer({entryId:row.id},items,index,null,link,saveAnnotations);
-      }catch(error){root.showToast?.('打开照片失败：'+error.message,'error');}
+      return openEntryPhoto(row,link);
     });
     node.querySelectorAll('[data-remove-photo]').forEach(button=>button.onclick=()=>{
       if(!root.confirm('删除这张误传照片？'))return;button.disabled=true;
       const d=draft(row);d.queue.push({action:'remove-photo',body:{photoId:button.dataset.removePhoto}});pump(row.id);status(row.id);
     });
+  }
+  async function openEntryPhoto(row,link,{automatic=false}={}){
+    const viewer=root.QcInspectionSummary?.openPhoto;
+    if(!viewer||!row)return;
+    const view=model.view;
+    try{
+      const {items}=await api('entries/'+encodeURIComponent(row.id)+'/photo-info');
+      if(!link.isConnected||model.view!==view)return;
+      if(automatic&&(!root.document.getElementById('page-records')?.classList.contains('active')
+          ||root.document.querySelector('dialog[open]')))return;
+      const index=items.findIndex(photo=>photo.id===link.dataset.viewPhoto);
+      if(index<0)throw Error('照片已移除，请刷新记录');
+      const annotationPath=entryPath(row.id)+'/photo-annotations';
+      const saveAnnotations=canEdit(byId(row.id)??row)?async body=>{
+        const current=byId(row.id);
+        if(!current||!canEdit(current)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy)throw Error('当前记录不能编辑，请核对审核状态');
+        const d=draft(current);
+        if(d.busy||d.reading||d.dirty||d.queue.length||d.error)await flushRow(row.id);
+        const latest=byId(row.id);
+        if(!latest||!canEdit(latest)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy||d.submitting)throw Error('当前记录不能编辑，请核对审核状态');
+        d.busy=true;
+        try{
+          const saved=await api(annotationPath,body);
+          accept(row.id,saved.entry,false);
+          return saved.photo;
+        }finally{d.busy=false;status(row.id);}
+      }:null;
+      viewer({entryId:row.id,offerGuide:view==='records'},items,index,null,link,saveAnnotations);
+    }catch(error){root.showToast?.('打开照片失败：'+error.message,'error');}
   }
   function orderedReviewRows(rows){
     const groups=new Map([['行验',[]],['客验',[]],['',[]]]);
@@ -626,17 +665,32 @@
     if(!pendingSummaryEnabled()||model.loading||model.error||navigationState().dirty||navigationState().busy)return;
     const rows=orderedReviewRows(filtered());
     if(!rows.length)return;
+    const seen=rows.filter(row=>row.reviewState==='pending'&&!row.reviewRead);
+    let readRequest;
     const scope=root.__QC_NEXUS;
     const source=root.QcPendingReviewWorkbook.create({
       rows,columns:displayedColumns(rows,true),canEdit,reviewGroup,executionKey,options,api,requestKey,byId,
       scope:write=>root.__QC_NEXUS===scope&&model.view==='review'&&model.reviewTab==='pending'&&!model.loading&&!model.error&&!model.reviewBusy&&(!write||editable()),
       accept:(id,row)=>{accept(id,row);model.drafts.delete(id);},
       busy:()=>Boolean(model.detailEditing||root.QcInspectionSummary?.unsavedPhotoMarks),
-      close:render,value:(row,key)=>key==='date'?dateText(row):key==='reviewState'?'待审核':
+      close:async()=>{
+        await readRequest;
+        if(model.view==='review'&&model.reviewTab==='pending')render();
+      },value:(row,key)=>key==='date'?dateText(row):key==='reviewState'?'待审核':
         ['submittedAt','confirmedAt','lastChangedAt'].includes(key)?audit().time(row[key]):key.split('.').reduce((v,k)=>v?.[k],row),
       detail:(id,key,staging)=>detailEditor(id,key,staging),detailRows,photoAccept,readFile,
     });
-    root.QcReportWorkbook.openReview(opener,source);
+    if(trackReads()&&seen.length)source.opened=()=>{
+      readRequest??=(async()=>{
+        for(let i=0;i<seen.length;i+=500){
+          const batch=seen.slice(i,i+500);
+          const {read}=await api('review/mark-read',{entryIds:batch.map(row=>row.id),
+            revisions:Object.fromEntries(batch.map(row=>[row.id,row.revision]))});
+          for(const row of model.items)if(row.reviewState==='pending'&&read[row.id]===row.revision)row.reviewRead=true;
+        }
+      })().catch(error=>root.showToast?.('未能保存阅读状态：'+error.message,'error'));
+    };
+    if(root.QcReportWorkbook.openReview(opener,source))reviewGuide?.fade();
   }
 
   function patchRecordRows(host,rows,columns,changed){
@@ -673,17 +727,18 @@
     if(!reviewing)updateRecordControls();
     const ascending=model.recordsSort==='date-asc';
     const sortHint=ascending?'点击按验货日期倒序，较晚日期在前':'点击按验货日期正序，较早日期在前';
+    const selectionHead='<th scope="col" data-column="deleteSelect" class="qis-delete-col"><label class="qis-delete-hit" title="全选当前筛选记录"><input id="'+(reviewing?'qis-pending-delete-all':'qis-record-delete-all')+'" type="checkbox" aria-label="全选当前筛选记录"></label></th>';
     const headerCells=columns.map(c=>c.key==='deleteSelect'
-      ? '<th scope="col" data-column="deleteSelect" class="qis-delete-col"><input id="'+(reviewing?'qis-pending-delete-all':'qis-record-delete-all')+'" type="checkbox" aria-label="全选当前筛选记录用于删除" title="全选当前筛选记录用于删除"></th>'
+      ? selectionHead
       : !reviewing&&c.key==='date'
       ? '<th scope="col" data-column="date" aria-sort="'+(ascending?'ascending':'descending')+'"><button type="button" class="qis-date-sort" title="'+sortHint+'" aria-label="'+sortHint+'">验货日期 <span aria-hidden="true">'+(ascending?'↑':'↓')+'</span></button></th>'
       : '<th scope="col" data-column="'+c.key+'">'+(reviewing&&model.reviewTab==='approved'&&c.key==='customer'
         ? '<input id="qis-review-all" type="checkbox" aria-label="全选当前筛选" title="全选当前筛选"> ' : '')+esc(c.label)+'</th>').join('');
     const patched=!reviewing&&changed?patchRecordRows(host,rows,columns,changed):null;
     if(!patched){
-      const pendingDeleteSelect=reviewing&&skim&&canDelete()?{checked:model.deleteChecked,allChecked:Boolean(rows.length&&rows.every(r=>model.deleteChecked.has(r.id)))}:null;
+      const selection=skim&&canDelete()?{head:selectionHead,cell:selectionCell}:null;
       const body=reviewing
-        ? skim?root.QcPendingReviewWorkbook.summary(orderedReviewRows(rows),{dateText,reviewGroup,draft,audit:audit(),deleteSelect:pendingDeleteSelect}):reviewTableBody(rows,columns,headerCells)
+        ? skim?root.QcPendingReviewWorkbook.summary(orderedReviewRows(rows),{dateText,reviewGroup,draft,audit:audit(),selection}):reviewTableBody(rows,columns,headerCells)
         : '<thead><tr>'+headerCells+'</tr></thead><tbody>'+rows.map(row=>rowHTML(row,columns)).join('')+'</tbody>';
       const noTasks='没有符合条件的验货任务。';
       const empty=!rows.length&&!model.loading;
@@ -693,31 +748,22 @@
         ((!reviewing||rows.length)?'<table class="qis-table'+(skim?' qis-pending-summary':'')+'">'+body+'</table>':'')+
         (empty?(scene||'<p>'+noTasks+'</p>'):'');
     }
-    const delAll=host.querySelector(reviewing?'#qis-pending-delete-all':'#qis-record-delete-all');
-    if(delAll)delAll.onchange=event=>{
+    const all=host.querySelector(reviewing?'#qis-pending-delete-all,#qis-review-all':'#qis-record-delete-all');
+    if(all)all.onchange=event=>{
       if(model.deleteBusy||model.submitBusy||model.reviewBusy)return;
-      model.deleteChecked=new Set(event.target.checked?rows.map(row=>row.id):[]);
-      host.querySelectorAll('[data-delete-check]').forEach(box=>{box.checked=model.deleteChecked.has(box.dataset.deleteCheck);});
-      if(reviewing)updateReviewControls(rows);else updateRecordControls();
+      model[selectionKey()]=new Set(event.target.checked?rows.map(row=>row.id):[]);
+      updateRowSelection();
     };
-    if(reviewing){
-      const all=host.querySelector('#qis-review-all');
-      if(all)all.onchange=event=>{
-        if(model.reviewBusy)return;
-        model.checked=new Set(event.target.checked?rows.map(row=>row.id):[]);
-        render();
-        host.querySelector('#qis-review-all')?.focus({preventScroll:true});
-      };
-      updateReviewControls(rows);
-    }
+    if(reviewing)updateReviewControls(rows);
     const sortButton=host.querySelector('.qis-date-sort');
     if(sortButton)sortButton.onclick=()=>{model.recordsSort=ascending?'date-desc':'date-asc';render();host.querySelector('.qis-date-sort')?.focus({preventScroll:true});};
     if(active?.matches('.qis-date-sort'))sortButton?.focus({preventScroll:true});
     host.tabIndex=0;host.setAttribute('role','region');host.setAttribute('aria-label','验货表格，可横向滚动');
     host.scrollTop=scrollTop;host.scrollLeft=scrollLeft;freezeColumns(host);
     if(!host._qisObserved&&root.ResizeObserver){host._qisObserved=true;new root.ResizeObserver(()=>freezeColumns(host)).observe(host);}
+    const nodes=patched||new Map([...host.querySelectorAll('[data-entry]')].map(node=>[node.dataset.entry,node]));
     rows.forEach(row=>{
-      const node=patched?patched.get(row.id):host.querySelector('[data-entry="'+row.id+'"]');
+      const node=nodes.get(row.id);
       if(!node)return;
       const d=draft(row);
       node.onclick=()=>{if(!suppressRowClick&&!rowDrag)selectRow(row.id);};node.addEventListener('focusin',()=>selectRow(row.id));
@@ -734,12 +780,16 @@
         });
       });
       node.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>detailEditor(row.id,button.dataset.detail));
-      const check=node.querySelector('[data-review-check]');if(check)check.onchange=()=>{check.checked?model.checked.add(row.id):model.checked.delete(row.id);updateReviewControls(filtered());};
-      const delCheck=node.querySelector('[data-delete-check]');if(delCheck){delCheck.onclick=event=>event.stopPropagation();delCheck.onchange=()=>{delCheck.checked?model.deleteChecked.add(row.id):model.deleteChecked.delete(row.id);if(model.view==='review')updateReviewControls(filtered());else updateRecordControls();};}
+      const check=node.querySelector('[data-review-check],[data-delete-check]');
+      if(check)check.onchange=()=>{
+        const selection=model[selectionKey()];
+        if(check.checked)selection.add(row.id);else selection.delete(row.id);
+        updateRowSelection();
+      };
       const revoke=node.querySelector('[data-revoke]');if(revoke)revoke.onclick=()=>reviewAction('revoke',[row.id]);
       node.querySelectorAll('[data-retry],[data-photo-retry]').forEach(button=>button.onclick=()=>retry(row.id));
       node.querySelectorAll('input[type=file]').forEach(control=>control.onchange=()=>upload(row.id,control));
-      bindPhotos(node,row);if(d.dirty||d.busy||d.error||row.revision>0)status(row.id,true);
+      bindPhotos(node,row);if(d.reading||d.dirty||d.busy||d.error||d.queue.length)status(row.id,true);
     });
     if(!reviewing)updateRecordControls();
     bindRowSelection(host);
@@ -755,10 +805,10 @@
   async function upload(id,control){
     const files=[...control.files];if(!files.length)return;
     control.disabled=true;
-    try{await uploadFiles(id,files);}finally{control.value='';control.disabled=false;}
+    try{await uploadFiles(id,files,{camera:control.hasAttribute('data-camera')});}finally{control.value='';control.disabled=false;}
   }
-  async function uploadFiles(id,files){
-    if(model.submitBusy||model.reviewBusy)return;
+  async function uploadFiles(id,files,{camera=false}={}){
+    if(model.submitBusy||model.reviewBusy||model.deleteBusy)return;
     const row=byId(id);if(!row||!canEdit(row)||!files.length)return;
     const d=draft(row);d.reading=(d.reading||0)+1;status(id);
     // Preserve paste/file-selection order and keep navigation guarded through all reads.
@@ -769,7 +819,8 @@
         const oversized=files.find(file=>file.size>10*1024*1024);
         if(oversized)throw Error(oversized.name+' 超过 10 MB，请压缩或重新选择');
         const jobs=[];
-        for(const file of files){const content=await readFile(file);jobs.push({action:'photos',body:{name:file.name,content,requestKey:requestKey()}});}
+        for(const file of files){const content=await readFile(file);jobs.push({action:'photos',
+          preview:model.view==='records'&&files.length===1,camera,body:{name:file.name,content,requestKey:requestKey()}});}
         d.queue.push(...jobs);await pump(id);
       }catch(error){d.fileError=true;d.errorKind='photo';d.error=error.message;status(id);}
     });
@@ -807,6 +858,10 @@
     if(d.reading||d.busy||d.dirty||d.queue.length||d.composing||d.submitting)return '等待内容和照片保存完成';
     return '';
   }
+  function submissionRows(rows){
+    const selected=rows.filter(row=>model.recordChecked.has(row.id));
+    return canDelete()?selected.filter(row=>!recordReadyReason(row)):selected;
+  }
   function recordControls(){
     const table=root.document.getElementById('recordsTableWrap');
     if(!table)return;
@@ -829,31 +884,30 @@
     if(model.view!=='records')return;
     recordControls();
     const key=JSON.stringify(['searchInput','qisTaskDate','qisTaskCustomer'].map(id=>root.document.getElementById(id)?.value||''));
-    if(key!==model.recordFilterKey){model.recordChecked.clear();model.deleteChecked.clear();model.recordAnchor='';model.recordFilterKey=key;}
+    if(key!==model.recordFilterKey){model.recordChecked.clear();model.recordAnchor='';model.recordFilterKey=key;}
     const rows=filtered(),ids=new Set(rows.map(r=>r.id));
     for(const id of model.recordChecked)if(!ids.has(id))model.recordChecked.delete(id);
-    for(const id of model.deleteChecked)if(!ids.has(id))model.deleteChecked.delete(id);
-    const selected=rows.filter(r=>model.recordChecked.has(r.id));
+    const selected=submissionRows(rows);
     const button=root.document.getElementById('qis-record-batch');if(!button)return;
     button.disabled=!selected.length||selected.some(recordReadyReason)||model.loading||!!model.error||model.submitBusy||model.deleteBusy||!editable();
     button.textContent=model.submitBusy?'正在提交…':'提交审核'+(selected.length?'（'+selected.length+'）':'');
     if(canDelete()){
-      const delSelected=rows.filter(r=>model.deleteChecked.has(r.id));
+      const count=model.recordChecked.size;
       const delAll=root.document.getElementById('qis-record-delete-all');
       if(delAll){
-        delAll.checked=Boolean(rows.length&&delSelected.length===rows.length);
-        delAll.indeterminate=delSelected.length>0&&delSelected.length<rows.length;
+        delAll.checked=Boolean(rows.length&&count===rows.length);
+        delAll.indeterminate=count>0&&count<rows.length;
         delAll.disabled=!rows.length||model.loading||!!model.error||model.submitBusy||model.deleteBusy;
       }
       const delBtn=root.document.getElementById('qis-record-delete');
       if(delBtn){
-        delBtn.disabled=!delSelected.length||model.loading||!!model.error||model.submitBusy||model.deleteBusy;
-        delBtn.textContent=model.deleteBusy?'正在删除…':'删除所选记录'+(delSelected.length?'（'+delSelected.length+'）':'');
+        delBtn.disabled=!count||model.loading||!!model.error||model.submitBusy||model.deleteBusy;
+        delBtn.textContent=model.deleteBusy?'正在删除…':'删除所选记录'+(count?'（'+count+'）':'');
       }
     }
     root.document.querySelectorAll('#recordsTableWrap [data-entry]').forEach(node=>{
       const selected=model.recordChecked.has(node.dataset.entry);
-      const delSelected=canDelete()&&model.deleteChecked.has(node.dataset.entry);
+      const delSelected=canDelete()&&selected;
       node.classList.toggle('qis-batch-selected',selected);
       node.classList.toggle('qis-delete-selected',delSelected);
       node.classList.toggle('qis-selected',node.dataset.entry===model.selectedId);
@@ -907,7 +961,7 @@
     updateRowSelection();
   }
   function chooseRowRange(rows,start,end,drag=null){
-    const next=new Set(rows.slice(Math.min(start,end),Math.max(start,end)+1).filter(row=>!selectionReason(row)).map(row=>row.id));
+    const next=new Set(rows.slice(Math.min(start,end),Math.max(start,end)+1).filter(row=>canDelete()||!selectionReason(row)).map(row=>row.id));
     const previous=model[selectionKey()];
     if(next.size===previous.size&&[...next].every(id=>previous.has(id)))return;
     const previousActive=model.selectedId;
@@ -922,6 +976,7 @@
     for(const id of changed){
       const node=drag.byId.get(id);if(!node)continue;
       node.classList.toggle('qis-batch-selected',next.has(id));
+      node.classList.toggle('qis-delete-selected',canDelete()&&next.has(id));
       node.classList.toggle('qis-selected',id===model.selectedId);
       node.setAttribute('aria-selected',String(next.has(id)));
     }
@@ -970,8 +1025,8 @@
   root.addEventListener('pagehide',()=>finishRowDrag(true));
   function bindRowSelection(host){
     if(host._qisDragBound)return;host._qisDragBound=true;
-    const interactive=target=>target.closest('input,select,textarea,button,a,label,[contenteditable=true],[role=button]');
-    const allowed=()=>(model.view==='records'||model.view==='review'&&model.reviewTab==='pending')&&editable()&&!model.loading&&!model.error&&!model.submitBusy&&!model.reviewBusy&&!model.deleteBusy&&!root.document.querySelector('dialog[open]');
+    const interactive=target=>target.closest('input,select,textarea,button,a,label,[data-column=deleteSelect],[contenteditable=true],[role=button]');
+    const allowed=()=>host.id===(model.view==='records'?'recordsTableWrap':'reviewTableWrap')&&(canDelete()||editable()&&(model.view==='records'||model.reviewTab==='pending'))&&!model.loading&&!model.error&&!model.submitBusy&&!model.reviewBusy&&!model.deleteBusy&&!root.document.querySelector('dialog[open]');
     host.addEventListener('pointerdown',event=>{
       const handle=event.target.closest('[data-fill-name]');
       if(rowDrag||!allowed()||event.button!==0||(!handle&&(event.pointerType==='touch'||interactive(event.target))))return;
@@ -998,7 +1053,7 @@
     host.addEventListener('click',event=>{
       if(!allowed()||suppressRowClick||interactive(event.target))return;
       const node=event.target.closest('[data-entry]'),row=node&&byId(node.dataset.entry);if(!row)return;
-      model[selectionKey()]=new Set(!selectionReason(row)?[row.id]:[]);model[anchorKey()]=row.id;model[cursorKey()]=row.id;model.selectedId=row.id;updateRowSelection();
+      model[selectionKey()]=new Set(canDelete()||!selectionReason(row)?[row.id]:[]);model[anchorKey()]=row.id;model[cursorKey()]=row.id;model.selectedId=row.id;updateRowSelection();
     });
     host.addEventListener('keydown',event=>{
       if(!allowed()||interactive(event.target))return;
@@ -1017,85 +1072,152 @@
   }
   function deleteSelectedEntries(scope){
     if(!canDelete()||model.deleteBusy||model.submitBusy||model.reviewBusy||model.loading||model.error)return;
-    if(scope==='workbench'&&model.view!=='records')return;
-    if(scope==='pending'&&(model.view!=='review'||model.reviewTab!=='pending'))return;
-    const selected=filtered().filter(r=>model.deleteChecked.has(r.id));
+    if(scope!==(model.view==='records'?'workbench':model.reviewTab))return;
+    const selected=filtered().filter(r=>model[selectionKey()].has(r.id));
     if(!selected.length)return;
-    const scopeLabel=scope==='workbench'?'验货台':'待审核';
-    const noteText=scope==='workbench'
-      ?'仅删除 QC 验货记录并保留后台审计快照，不会影响业务部「客排期」原始订单；源自客排期的任务将自动恢复为「未推送」，可重新推送。'
-      :'仅删除 QC 待审核记录并保留后台审计快照，不会写入验货汇总与报表，也不会影响业务部「客排期」原始订单。';
-    const el=audit().dialog('确认删除验货记录',
+    const scopeLabel={workbench:'验货台',pending:'待审核',approved:'已审核'}[scope];
+    const endpoint={workbench:'entries/delete',pending:'review/delete',approved:'review/approved/delete'}[scope];
+    const listItem=(row,result)=>'<li>'+esc(row.customer||'未填客户')+' · '+esc(row.poNo||'—')+' · '+esc(row.productNo||'—')+' · '+esc(dateText(row)||'—')+' · 结果：<strong>'+esc(result||'未填写')+'</strong></li>';
+    const el=audit().dialog(scope==='approved'?'确认删除已审核验货记录':'确认删除验货记录',
       '<p>即将删除以下 <strong>'+selected.length+'</strong> 条'+scopeLabel+'记录：</p>'+
-      '<ul class="qis-submit-list qis-delete-list">'+selected.map(r=>'<li>'+esc(r.customer||'未填客户')+' · '+esc(r.poNo||'—')+' · '+esc(r.productNo||'—')+(dateText(r)?' · '+esc(dateText(r)):'')+' · 结果：<strong>'+esc(draft(r).result||'未填写')+'</strong></li>').join('')+'</ul>'+
-      '<p class="qis-delete-safety-note">'+noteText+'</p>'+
+      '<ul class="qis-submit-list qis-delete-list">'+selected.map(r=>listItem(r,draft(r).result)).join('')+'</ul>'+
+      '<p class="qis-delete-safety-note">'+(scope==='approved'?'所选已审核记录将同步撤出「验货汇总」和日、周、月、年报表。':'')+
+      '后台保留删除审计快照，不会影响业务部「客排期」原始订单；本次删除的客排期任务撤回后可重新推送。历史库原件版本无法核验时保留待核对。未保存的本行输入会随记录删除。</p>'+
       '<label class="qis-delete-reason-label">删除原因（选填，将记入后台审计日志）<textarea data-delete-reason rows="2" maxlength="2000" placeholder="例如：重复录入 / 测试数据 / 误推排期"></textarea></label>'+
       '<p data-feedback role="status"></p>'+
       '<div class="qis-submit-dialog-actions"><button type="button" data-cancel>取消</button><button type="button" class="qis-delete-confirm-btn" data-execute>确认删除 '+selected.length+' 条</button></div>');
     const button=el.querySelector('[data-execute]'),feedback=el.querySelector('[data-feedback]'),reasonInput=el.querySelector('[data-delete-reason]');
-    el.querySelector('[data-cancel]').onclick=()=>{if(!model.deleteBusy)el.close();};
+    const cancel=el.querySelector('[data-cancel]'),close=el.querySelector('[data-close]');
+    const original=new Map(selected.map(row=>[row.id,row])),failures=new Map(),conflicts=new Set();
+    let remaining=[...original.keys()],succeeded=0,request=null,revisions=null,reason='';
+    let legacyRetained=0,legacyPending=0,legacyAbsent=0;
+    let refresh=false,finished=false;
+    cancel.onclick=()=>el.close();
     el.addEventListener('cancel',event=>{if(model.deleteBusy)event.preventDefault();});
-    let request=null;
+    el.addEventListener('close',()=>{
+      // Preserve unsaved edits for any row that was not deleted.
+      for(const id of original.keys()){
+        if(!deletingRows.delete(id))continue;
+        const d=model.drafts.get(id);
+        if(d&&!d.error&&(d.dirty||d.queue.length))d.timer=setTimeout(()=>pump(id),650);
+      }
+    });
+    function legacyNotice(){
+      const notes=[];
+      if(legacyRetained)notes.push('历史原件待核对 '+legacyRetained+' 条');
+      if(legacyPending)notes.push('历史库归档待重试 '+legacyPending+' 条');
+      if(legacyAbsent)notes.push('历史库找不到原件 '+legacyAbsent+' 条');
+      return notes.join('，');
+    }
+    function showFailures(){
+      const errors=[...failures].map(([id,message])=>{
+        const row=original.get(id);
+        return '<li>'+esc(row.customer||'—')+' · '+esc(row.poNo||'—')+'：'+esc(message)+'</li>';
+      }).join('');
+      feedback.innerHTML='已删除 '+succeeded+' / '+selected.length+' 条。'+esc(legacyNotice())+(errors?'<ul>'+errors+'</ul>':'');
+    }
     button.onclick=async()=>{
-      if(model.deleteBusy)return;
+      if(model.deleteBusy||finished)return;
+      const previousSucceeded=succeeded;
       model.deleteBusy=true;
-      button.disabled=true;
-      el.querySelector('[data-cancel]').disabled=true;
-      el.querySelector('[data-close]').disabled=true;
-      if(reasonInput)reasonInput.disabled=true;
-      if(scope==='workbench')updateRecordControls();else updateReviewControls(filtered());
+      button.disabled=cancel.disabled=close.disabled=true;
+      updateRowSelection();
       try{
-        if(!request){
-          request={
-            requestKey:requestKey(),
-            entries:selected.map(r=>({id:r.id,revision:byId(r.id).revision})),
-            reason:(reasonInput?.value||'').trim(),
-          };
+        if(refresh){
+          const data=await api(scope==='workbench'?'entries':'review/entries');
+          const latest=new Map(data.items.filter(row=>scope==='workbench'||(scope==='pending'?row.reviewState==='pending':row.reviewState==='approved'||row.legacyCompleted)).map(row=>[row.id,row]));
+          remaining=[...conflicts].filter(id=>latest.has(id));
+          revisions=new Map(remaining.map(id=>[id,latest.get(id).revision]));
+          for(const id of remaining)failures.delete(id);
+          conflicts.clear();
+          refresh=false;
+          el.querySelector('.qis-delete-list').innerHTML=remaining.map(id=>listItem(latest.get(id),latest.get(id).result)).join('');
+          el.querySelector('.qis-delete-list').previousElementSibling.textContent='已刷新 '+remaining.length+' 条记录，请核对当前内容。';
+          showFailures();
+          if(remaining.length)button.textContent='确认删除 '+remaining.length+' 条';
+          else{finished=true;button.hidden=true;cancel.textContent='返回列表';}
+          return;
         }
-        const endpoint=scope==='workbench'?'entries/delete':'review/delete';
-        const result=await api(endpoint,request);
-        const removed=new Set((result.results||[]).filter(r=>r.ok).map(r=>r.id));
-        if(removed.size){
-          model.items=model.items.filter(r=>!removed.has(r.id));
-          for(const id of removed){
-            clearTimeout(model.drafts.get(id)?.timer);
-            model.drafts.delete(id);
-            model.deleteChecked.delete(id);
-            model.recordChecked.delete(id);
-            model.checked.delete(id);
-            if(model.selectedId===id)model.selectedId='';
+        if(!revisions){
+          reason=reasonInput.value.trim();
+          reasonInput.disabled=true;
+          for(const id of remaining){
+            deletingRows.add(id);
+            const d=model.drafts.get(id);
+            if(d){clearTimeout(d.timer);d.timer=null;}
           }
-          localUpdate++;
+          const active=[...original.keys()].map(id=>model.drafts.get(id)).filter(Boolean);
+          while(active.some(d=>d.busy||d.reading||d.recovering))await new Promise(resolve=>setTimeout(resolve,20));
+          revisions=new Map();
+          for(const id of remaining){
+            const row=byId(id);
+            if(row)revisions.set(id,row.revision);
+            else failures.set(id,'记录不在当前列表，请刷新核对。');
+          }
+          remaining=remaining.filter(id=>revisions.has(id));
         }
-        render();
-        if(result.failed){
-          const errors=(result.results||[]).filter(r=>!r.ok).map(r=>{
-            const row=selected.find(x=>x.id===r.id)||{};
-            return '<li>'+esc(row.customer||'—')+' · '+esc(row.poNo||'—')+'：'+esc(r.message)+'</li>';
-          }).join('');
-          feedback.innerHTML='成功删除 '+result.succeeded+' 条，失败 '+result.failed+' 条：<ul>'+errors+'</ul>失败记录保留在列表中，请关闭后刷新核对。';
-          button.hidden=true;
-          el.querySelector('[data-cancel]').textContent='返回列表';
-        }else{
+        while(remaining.length){
+          const batch=remaining.slice(0,200);
+          request??={requestKey:requestKey(),entries:batch.map(id=>({id,revision:revisions.get(id)})),reason};
+          feedback.textContent='正在删除，已处理 '+(succeeded+failures.size)+' / '+selected.length+' 条…';
+          const result=await api(endpoint,request);
+          const removed=new Set();
+          for(const item of result.results){
+            if(item.ok){
+              removed.add(item.id);
+              if(item.legacyArchive==='retained')legacyRetained++;
+              if(item.legacyArchive==='pending')legacyPending++;
+              if(item.legacyArchive==='absent')legacyAbsent++;
+              continue;
+            }
+            failures.set(item.id,item.message);
+            if(item.status===409){
+              conflicts.add(item.id);
+              const d=model.drafts.get(item.id);
+              if(d&&(d.dirty||d.queue.length)){
+                d.conflict=true;
+                d.error='记录已更新，请先核对版本';
+                status(item.id,true);
+              }
+            }
+          }
+          if(removed.size){
+            succeeded+=removed.size;
+            model.items=model.items.filter(r=>!removed.has(r.id));
+            for(const id of removed){
+              model.drafts.delete(id);
+              model[selectionKey()].delete(id);
+              if(model.selectedId===id)model.selectedId='';
+            }
+            localUpdate++;
+          }
+          remaining=remaining.slice(batch.length);
+          request=null;
+        }
+        if(!failures.size){
           el.close();
-          root.showToast?.('已删除 '+result.succeeded+' 条验货记录','success');
+          const notice=legacyNotice();
+          root.showToast?.('已删除 '+succeeded+' 条验货记录'+(notice?'；'+notice:''),notice?'warning':'success');
+        }else{
+          showFailures();
+          refresh=conflicts.size>0;
+          if(refresh)button.textContent='刷新版本';
+          else{finished=true;button.hidden=true;cancel.textContent='返回列表';}
         }
       }catch(error){
-        feedback.textContent=error.message+'；可重试同一请求，系统会核对是否已删除。';
+        feedback.textContent='已确认删除 '+succeeded+' 条。'+error.message+(request?'；可重试同一请求。':'；请重试。');
+        if(request)button.textContent='重试当前批次';
       }finally{
         model.deleteBusy=false;
-        if(el.isConnected){
-          button.disabled=false;
-          el.querySelector('[data-cancel]').disabled=false;
-          el.querySelector('[data-close]').disabled=false;
-        }
-        if(scope==='workbench')updateRecordControls();else updateReviewControls(filtered());
+        button.disabled=finished;
+        cancel.disabled=close.disabled=false;
+        if(succeeded!==previousSucceeded)render();else updateRowSelection();
       }
     };
   }
   function submitSelected(){
     if(model.submitBusy||model.deleteBusy||model.loading||model.error||model.view!=='records'||!editable())return;
-    const selected=filtered().filter(r=>model.recordChecked.has(r.id));
+    const selected=submissionRows(filtered());
     if(!selected.length||selected.some(recordReadyReason))return;
     const el=audit().dialog('确认批量提交审核',
       '<p>提交以下 <strong>'+selected.length+'</strong> 条记录到审核中心：</p><ul class="qis-submit-list">'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' <strong>'+esc(draft(r).result)+'</strong></li>').join('')+'</ul><p>只提交所选记录。未填写结果、未保存完成的记录仍留在验货台。</p><p data-feedback role="status"></p><div class="qis-submit-dialog-actions"><button type="button" data-cancel>返回检查</button><button type="button" class="qis-submit-batch" data-execute>确认提交 '+selected.length+' 条</button></div>');
@@ -1154,7 +1276,6 @@
       const choices=plannedDateChoices(model.items.filter(row=>row.reviewState==='pending'));
       if(updateChoiceList(select,'全部日期',choices)){
         model.checked.clear();
-        model.deleteChecked.clear();
         root.showToast?.('当前任务已变化，筛选已恢复为全部日期','info');
       }
     }
@@ -1165,11 +1286,9 @@
     Object.assign(model.reviewFilters,{from:'',to:''});
     reviewDates?.setRange('','');
     model.checked.clear();
-    model.deleteChecked.clear();
   }
   function resetReviewFilters(){
     model.checked.clear();
-    model.deleteChecked.clear();
     Object.assign(model.reviewFilters,{search:'',result:''});
     if(model.reviewTab==='pending')root.document.getElementById('qisPendingDate').value='';
     else Object.assign(model.reviewFilters,{from:'',to:''});
@@ -1196,7 +1315,7 @@
       </div>`);
     if(refresh)host.querySelector('#qis-review-batch').before(refresh);
     refreshResultFilters();
-    const applyFilters=()=>{finishRowDrag(true);model.checked.clear();model.deleteChecked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
+    const applyFilters=()=>{finishRowDrag(true);clearReviewGuide();model.checked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
     host.querySelector('#qisPendingDate').onchange=applyFilters;
     host.querySelectorAll('[data-rfilter]').forEach(input=>{
       input.oninput=()=>{if(model.reviewBusy||model.deleteBusy){syncReviewFilters();return;}model.reviewFilters[input.dataset.rfilter]=input.value;applyFilters();};
@@ -1208,7 +1327,31 @@
     });
     syncReviewFilters();
     host.querySelector('[data-reset-review]').onclick=()=>{if(model.reviewBusy||model.deleteBusy)return;resetReviewFilters();applyFilters();};
-    host.querySelector('#qis-review-batch').onclick=()=>reviewAction(model.reviewTab==='pending'?'confirm':'revoke',filtered().filter(r=>model.checked.has(r.id)).map(r=>r.id));
+    host.querySelector('#qis-review-batch').onclick=()=>reviewAction(model.reviewTab==='pending'?'confirm':'revoke',filtered().filter(r=>model.checked.has(r.id)&&(model.reviewTab!=='pending'||!selectionReason(r))).map(r=>r.id));
+  }
+  function clearReviewGuide(){
+    reviewGuide?.destroy();
+    reviewGuide=null;
+  }
+  function updateReviewGuide(controls,entry,rows){
+    if(!trackReads()||!entry||entry.hidden){clearReviewGuide();return;}
+    const unread=rows.filter(row=>row.reviewState==='pending'&&row.reviewRead===false);
+    const read=rows.filter(row=>row.reviewState==='pending'&&row.reviewRead===true).length;
+    const opener=entry.querySelector('.wb-open');
+    let badge=opener.querySelector('.qc-guide-badge');
+    if(unread.length&&!badge){
+      badge=root.document.createElement('span');badge.className='qc-guide-badge';badge.setAttribute('aria-hidden','true');
+      opener.append(badge);
+    }
+    if(badge){badge.hidden=!unread.length;badge.textContent=unread.length;}
+    opener.setAttribute('aria-label','打开完整工作簿'+(unread.length?'，'+unread.length+' 条未读':''));
+    if(model.loading||model.error||!unread.length){
+      reviewGuide?.fade();
+      return;
+    }
+    if(reviewGuideShown)return;
+    reviewGuideShown=true;
+    reviewGuide=root.QcGlassGuide?.review(controls,{anchor:opener,unread:unread.length,read});
   }
   function updateReviewControls(rows){
     const pending=model.items.filter(r=>r.reviewState==='pending').length;
@@ -1221,53 +1364,38 @@
       button.classList.toggle('active', pressed);
       button.setAttribute('aria-pressed', String(pressed));
     }
-    const eligible=rows.filter(row=>model.reviewTab!=='pending'||!selectionReason(row)),ids=new Set(eligible.map(r=>r.id));
+    const eligible=rows.filter(row=>model.reviewTab!=='pending'||!selectionReason(row));
+    const ids=new Set((canDelete()?rows:eligible).map(r=>r.id));
     for(const id of model.checked)if(!ids.has(id))model.checked.delete(id);
-    const allIds=new Set(rows.map(r=>r.id));
-    for(const id of model.deleteChecked)if(!allIds.has(id))model.deleteChecked.delete(id);
     const selected=eligible.filter(r=>model.checked.has(r.id));
     const pendingTab=model.reviewTab==='pending',controls=root.document.getElementById('qis-review-controls');
     controls?.classList.toggle('qis-pending-review',pendingTab);
+    controls?.classList.toggle('qis-has-delete',canDelete());
     const actions=controls?.querySelector('.qis-review-batch-actions');
-    let delBtn=null,delDivider=null,delAll=null;
+    let delBtn=null,delAll=null;
     if(canDelete()&&actions){
-      delDivider=actions.querySelector('.qis-action-divider');
       delBtn=actions.querySelector('#qis-review-delete');
       if(!delBtn){
-        delDivider=root.document.createElement('span');
+        const delDivider=root.document.createElement('span');
         delDivider.className='qis-action-divider';
         delDivider.setAttribute('aria-hidden','true');
         delBtn=root.document.createElement('button');
         delBtn.id='qis-review-delete';
         delBtn.type='button';
         delBtn.className='qis-delete-btn';
-        delBtn.onclick=()=>deleteSelectedEntries('pending');
+        delBtn.onclick=()=>deleteSelectedEntries(model.reviewTab);
         const batchBtn=actions.querySelector('#qis-review-batch');
         if(batchBtn)batchBtn.after(delDivider,delBtn);
         else actions.append(delDivider,delBtn);
       }
-      const delSelected=pendingTab?rows.filter(r=>model.deleteChecked.has(r.id)):[];
-      delDivider.hidden=!pendingTab;
-      delBtn.hidden=!pendingTab;
-      delBtn.disabled=!pendingTab||!delSelected.length||model.deleteBusy||model.reviewBusy||model.loading||!!model.error;
-      delBtn.textContent=model.deleteBusy?'正在删除…':'删除所选'+(delSelected.length?'（'+delSelected.length+'）':'');
+      const count=model.checked.size;
+      delBtn.disabled=!count||model.deleteBusy||model.reviewBusy||model.loading||!!model.error;
+      delBtn.textContent=model.deleteBusy?'正在删除…':'删除所选'+(count?'（'+count+'）':'');
       delAll=root.document.getElementById('qis-pending-delete-all');
       if(delAll){
-        delAll.checked=Boolean(pendingTab&&rows.length&&delSelected.length===rows.length);
-        delAll.indeterminate=pendingTab&&delSelected.length>0&&delSelected.length<rows.length;
-        delAll.disabled=!pendingTab||!rows.length||model.deleteBusy||model.reviewBusy||model.loading||!!model.error;
-      }
-      const surface=controls.closest('.qis-review-surface');
-      if(surface){
-        let guide=surface.querySelector('.qis-approved-delete-guide');
-        if(!guide){
-          guide=root.document.createElement('div');
-          guide.className='qis-approved-delete-guide';
-          guide.setAttribute('role','note');
-          guide.textContent='已审核记录已入账验货汇总与报表，不提供直接删除；如需删除，请先点击行内「反审核」或勾选后「反审核所选」退回待审核，再执行删除。';
-          controls.after(guide);
-        }
-        guide.hidden=pendingTab;
+        delAll.checked=Boolean(rows.length&&count===rows.length);
+        delAll.indeterminate=count>0&&count<rows.length;
+        delAll.disabled=!rows.length||model.deleteBusy||model.reviewBusy||model.loading||!!model.error;
       }
     }
     if(controls&&root.QcReportWorkbook?.openReview&&root.QcPendingReviewWorkbook){
@@ -1281,6 +1409,7 @@
         entry.hidden=!pendingTab;
         entry.querySelector('button').disabled=Boolean(model.loading||model.error||!rows.length||navigationState().dirty||navigationState().busy);
       }
+      updateReviewGuide(controls,entry,rows);
     }
     const f=model.reviewFilters;
     const reset=controls?.querySelector('[data-reset-review]');
@@ -1288,7 +1417,7 @@
       const date=pendingTab ? root.document.getElementById('qisPendingDate')?.value : f.from||f.to;
       reset.hidden=!(date||f.search||f.result);
     }
-    const all=root.document.getElementById('qis-review-all');if(all){all.checked=Boolean(eligible.length&&selected.length===eligible.length);all.indeterminate=selected.length>0&&selected.length<eligible.length;all.disabled=!eligible.length||model.reviewBusy||model.deleteBusy||!editable();}
+    const all=root.document.getElementById('qis-review-all');if(all){all.checked=Boolean(eligible.length&&selected.length===eligible.length);all.indeterminate=selected.length>0&&selected.length<eligible.length;all.disabled=!eligible.length||model.reviewBusy||model.deleteBusy||!(editable()||canDelete());}
     const button=root.document.getElementById('qis-review-batch');
     if(button){
       button.disabled=!editable()||!selected.length||model.reviewBusy||model.deleteBusy||model.loading||!!model.error;
@@ -1297,18 +1426,18 @@
     }
     root.document.querySelectorAll('#reviewTableWrap [data-entry]').forEach(node=>{
       const selected=pendingTab&&model.checked.has(node.dataset.entry);
-      const delSelected=pendingTab&&canDelete()&&model.deleteChecked.has(node.dataset.entry);
+      const delSelected=canDelete()&&model.checked.has(node.dataset.entry);
       node.classList.toggle('qis-batch-selected',selected);
       node.classList.toggle('qis-delete-selected',delSelected);
       node.classList.toggle('qis-selected',node.dataset.entry===model.selectedId);
-      node.setAttribute('aria-selected',String(pendingTab?selected:node.dataset.entry===model.selectedId));
-      const box=node.querySelector('[data-delete-check]');
-      if(box){box.checked=delSelected;box.disabled=model.deleteBusy||model.reviewBusy;}
+      node.setAttribute('aria-selected',String(canDelete()?delSelected:pendingTab?selected:node.dataset.entry===model.selectedId));
+      const box=node.querySelector('[data-delete-check],[data-review-check]');
+      if(box){box.checked=model.checked.has(node.dataset.entry);box.disabled=model.deleteBusy||model.reviewBusy;}
     });
     // Freeze edits and filters while saving the selected revisions and confirming them.
     const busy=model.reviewBusy||model.deleteBusy;
     root.document.querySelectorAll('#reviewTableWrap input,#reviewTableWrap select,#reviewTableWrap textarea,#reviewTableWrap button,#qis-review-controls input,#qis-review-controls select,#qis-review-controls button:not(.qis-review-tabs button)').forEach(input=>{
-      if(input===button||input===all||input===delBtn||input===delAll)return;
+      if(input===button||input===all||input===delBtn||input===delAll||input.matches('[data-delete-check],[data-review-check]'))return;
       if(busy){if(!input.disabled){input.dataset.qisBusyDisabled='1';input.disabled=true;}}
       else if(input.dataset.qisBusyDisabled){delete input.dataset.qisBusyDisabled;input.disabled=false;}
     });
@@ -1320,12 +1449,24 @@
     const selected=[...new Set(ids)].filter(id=>visible.has(id)).map(byId).filter(row=>row&&(action==='confirm'?row.reviewState==='pending':row.reviewState==='approved'||row.legacyCompleted));
     if(!selected.length)return;
     const label=action==='confirm'?'审核确认':'反审核';
-    const el=audit().dialog(label, '<p>本次'+label+' <strong>'+selected.length+'</strong> 条，仅处理下列明确选中的记录。</p><ul>'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' · 验货结果：'+esc(draft(r).result||'未填写')+(r.legacyCompleted?'（历史已完成；确认反审核后转入待审核）':'')+'</li>').join('')+'</ul>'+(action==='revoke'?'<label>反审核说明（可留空）<textarea data-reason rows="3" maxlength="20000"></textarea></label>':'<p>确认后记录进入验货汇总，当前内容将保存为审核快照。</p>')+'<p data-feedback role="status"></p><button data-cancel>取消</button> <button data-execute>'+(action==='revoke'?'确认反审核':label)+' '+selected.length+' 条</button>');
+    const unread=action==='confirm'&&trackReads()?selected.filter(row=>row.reviewRead===false).length:0;
+    const warning=unread?'<p class="qc-guide-warning">其中 '+unread+' 条尚未展开查看照片与完整明细</p>':'';
+    const openButton=unread?'<button type="button" data-view-unread>先去展开查看</button> ':'';
+    const el=audit().dialog(label, '<p>本次'+label+' <strong>'+selected.length+'</strong> 条，仅处理下列明确选中的记录。</p><ul>'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' · 验货结果：'+esc(draft(r).result||'未填写')+(r.legacyCompleted?'（历史已完成；确认反审核后转入待审核）':'')+'</li>').join('')+'</ul>'+warning+(action==='revoke'?'<label>反审核说明（可留空）<textarea data-reason rows="3" maxlength="20000"></textarea></label>':'<p>确认后记录进入验货汇总，当前内容将保存为审核快照。</p>')+'<p data-feedback role="status"></p><button data-cancel>取消</button> '+openButton+'<button data-execute>'+(action==='revoke'?'确认反审核':label)+' '+selected.length+' 条</button>');
+    const openUnread=el.querySelector('[data-view-unread]');
+    if(openUnread)openUnread.onclick=()=>{
+      if(model.reviewBusy)return;
+      const opener=root.document.querySelector('.qis-open-review-book .wb-open');
+      if(!opener||opener.disabled)return;
+      el.addEventListener('close',()=>reviewWorkbook(opener),{once:true});el.close();
+    };
     let request=null;el.querySelector('[data-cancel]').onclick=()=>{if(!model.reviewBusy)el.close();};
     const button=el.querySelector('[data-execute]'),feedback=el.querySelector('[data-feedback]');
     el.addEventListener('cancel',event=>{if(model.reviewBusy)event.preventDefault();});
     button.onclick=async()=>{
-      if(model.reviewBusy)return;model.reviewBusy=true;button.disabled=true;el.querySelector('[data-close]').disabled=true;updateReviewControls(filtered());
+      if(model.reviewBusy)return;model.reviewBusy=true;button.disabled=true;
+      if(openUnread)openUnread.disabled=true;
+      el.querySelector('[data-close]').disabled=true;updateReviewControls(filtered());
       try{
         if(!request){for(const row of selected)await flushRow(row.id);request={requestKey:requestKey(),entries:selected.map(r=>({id:r.id,revision:byId(r.id).revision})),reason:el.querySelector('[data-reason]')?.value||''};if(el.querySelector('[data-reason]'))el.querySelector('[data-reason]').disabled=true;}
         const result=await api('review/'+action,request);
@@ -1335,7 +1476,7 @@
         else if(result.failed){feedback.textContent='成功 '+result.succeeded+' 条，失败 '+result.failed+' 条：'+result.results.filter(r=>!r.ok).map(r=>r.message).join('；')+'。失败记录仍保留，请关闭后刷新核对。';button.hidden=true;}
         else{el.close();root.showToast?.(label+'成功 '+result.succeeded+' 条','success');}
       }catch(error){feedback.textContent=error.message+'；可重试同一请求，系统会核对是否已经成功。';}
-      finally{model.reviewBusy=false;button.disabled=false;el.querySelector('[data-close]').disabled=false;updateReviewControls(filtered());}
+      finally{model.reviewBusy=false;button.disabled=false;if(openUnread)openUnread.disabled=false;el.querySelector('[data-close]').disabled=false;updateReviewControls(filtered());}
     };
   }
   async function reviewNotifications(view,generation,background=false){

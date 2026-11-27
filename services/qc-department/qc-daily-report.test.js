@@ -23,6 +23,7 @@ function page() {
       rows:[{values:['客户','001','英国','SKU','积木',20,'','','FAIL','压痕','','',''],improvement:'复验'}],
     })};
   };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-daily-report.js'),'utf8'));
   return {dom,w,d:w.document,calls};
 }

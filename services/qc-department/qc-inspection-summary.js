@@ -133,7 +133,7 @@
       if(img.complete&&!img.naturalWidth)show();
     });
   }
-  function photoMarkup(dialog,viewport,img,saveAnnotations){
+  function photoMarkup(dialog,viewport,img,saveAnnotations,guideAllowed){
     const doc=dialog.ownerDocument;
     const shapes=root.QcPhotoShapes,editable=Boolean(saveAnnotations&&shapes);
     const svg=name=>doc.createElementNS('http://www.w3.org/2000/svg',name);
@@ -145,7 +145,8 @@
     const redoStack=[];
     const isDirty=()=>editable&&!shapes.equal(marks,photo?.annotations);
     const toolbar=doc.createElement('div');
-    let undoButton,redoButton,feedback,retryButton;
+    let undoButton,redoButton,feedback,retryButton,guide;
+    const actor=root.__QC_NEXUS?.inspector?.id;
     if(editable){
       toolbar.className='qis-photo-markup-toolbar';
       toolbar.setAttribute('role','group');
@@ -157,12 +158,18 @@
       feedback.hidden=true;
       feedback.innerHTML='<span></span> <button type="button" data-mark-retry hidden>重试</button>';
       viewport.before(toolbar,feedback);
+      if(guideAllowed)guide=root.QcGlassGuide?.photo(toolbar,{actor});
+      dialog.addEventListener('close',()=>guide?.destroy(),{once:true});
       retryButton=feedback.querySelector('[data-mark-retry]');
       retryButton.onclick=saveMarks;
       undoButton=toolbar.querySelector('[data-mark-undo]');
       redoButton=toolbar.querySelector('[data-mark-redo]');
       for(const button of toolbar.querySelectorAll('[data-mark-tool]')){
-        button.onclick=()=>{mode=button.dataset.markTool;controls();};
+        button.onclick=()=>{
+          mode=button.dataset.markTool;
+          if(mode!=='browse')guide?.fade();
+          controls();
+        };
       }
       undoButton.onclick=()=>{
         if(drawing||!marks.length)return;
@@ -276,6 +283,7 @@
           const {mark,bounds}=drawing;
           const dx=(mark.x2-mark.x1)*bounds.width,dy=(mark.y2-mark.y1)*bounds.height;
           if(mark.type==='circle'?Math.abs(dx)>=4&&Math.abs(dy)>=4:Math.hypot(dx,dy)>=4){
+            if(guideAllowed)root.QcGlassGuide?.completePhoto(actor);
             drawing=null;redoStack.length=0;
             editMarks([...marks,mark]);return true;
           }
@@ -324,7 +332,7 @@
     root.document.body.append(el);
     let variant='preview',index=start,scale=1,fit=1,x=0,y=0,width=0,height=0,loaded=false,raf=null,closed=false,nativeGesture=null,lastPointer=null;
     const viewport=el.querySelector('.qsum-lightbox-viewport'),img=el.querySelector('img'),error=el.querySelector('[data-photo-error]'),retry=el.querySelector('[data-photo-retry]');
-    const markup=embedded?null:photoMarkup(el,viewport,img,saveAnnotations);
+    const markup=embedded?null:photoMarkup(el,viewport,img,saveAnnotations,row.offerGuide);
     const pointers=new Map(),requestFrame=root.requestAnimationFrame?.bind(root)||((fn)=>root.setTimeout(fn,16));
     function bounds(){
       const w=img.naturalWidth*fit*scale,h=img.naturalHeight*fit*scale;
@@ -698,7 +706,7 @@
       const adminZone=canDelete()
         ?(row.sourceKind==='history'
           ?'<div class="qsum-admin-zone qsum-admin-danger"><div class="qsum-admin-info"><strong>数据管理（历史工作簿导入）</strong><span>'+(row.sourceFilename?'来源文件：'+esc(row.sourceFilename):'仅删除此历史导入记录，保留后台变更留痕')+'</span></div><div class="qsum-admin-actions">'+(row.historyBatchId?'<button type="button" class="btn btn-secondary" data-rollback-same-batch>撤回同批次记录</button>':'')+'<button type="button" class="btn qsum-danger-outline" data-delete-history-record>删除这条历史汇总</button></div></div>'
-          :'<div class="qsum-admin-zone qsum-admin-guard"><div class="qsum-admin-info"><strong>一致性保护</strong><span>此记录由审核中心同步入账，为保障汇总与报表口径一致，不提供直接删除。</span></div><div class="qsum-admin-actions"><button type="button" class="btn btn-secondary" data-goto-review-approved>前往审核中心反审核后再删除 →</button></div></div>')
+          :'<div class="qsum-admin-zone qsum-admin-guard"><div class="qsum-admin-info"><strong>删除审核入账记录</strong><span>请在「审核中心 → 已审核」选择要删除的记录。删除后会同步撤出验货汇总和报表。</span></div><div class="qsum-admin-actions"><button type="button" class="btn btn-secondary" data-goto-review-approved>前往已审核 →</button></div></div>')
         :'';
       body.innerHTML='<div class="qrd-toolbar">'+identity+
         '<div class="qsum-dossier-tabs" role="tablist" aria-label="验货资料分类">'+tabs+'</div></div>'+

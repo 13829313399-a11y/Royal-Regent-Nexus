@@ -143,6 +143,7 @@
         footer + '</div>';
       }
       const button = area().querySelector('[data-qdr-export]');
+      root.QcExportColumns.mount(button,'daily');
       if (button && report.total) button.onclick = () => download(report, button);
       if(period==='daily')root.QcReportWorkbook?.mount('daily','daily',area().querySelector('[data-qdr-full]'),report,load);
       if (period === 'daily' || !report.total) return;
@@ -227,6 +228,8 @@
       status.textContent = '正在生成…';
       try {
         const params = new URLSearchParams({date:report.date,period,revision:report.revision});
+        const on=root.QcExportColumns.enabled('daily');
+        params.set('hideEmptyCols',on?'1':'0');
         if (report.customer) params.set('customer',report.customer);
         const response = await read(path + '/export?' + params);
         const data = await response.blob();
@@ -239,7 +242,7 @@
         link.click();
         link.remove();
         root.setTimeout(() => root.URL.revokeObjectURL(url), 30000);
-        status.textContent = '已发起下载';
+        status.textContent = root.QcExportColumns.message(on,root.QcExportColumns.fromHeader(response));
       } catch (error) {
         status.textContent = error.message;
       } finally {

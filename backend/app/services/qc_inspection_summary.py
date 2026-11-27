@@ -649,7 +649,7 @@ def delete_history_record(factory, identity, body, actor):
                     }
             raise HTTPException(404, '汇总记录不存在或已删除')
         if not row['source_key'].startswith('history:') or payload.get('sourceKind') != 'history':
-            raise HTTPException(409, '审核同步记录受一致性保护，请前往「审核中心 → 已审核」先执行反审核，再在待审核中删除')
+            raise HTTPException(409, '此接口仅用于历史导入记录。审核入账记录请在「审核中心 → 已审核」使用「删除所选」。')
         stamp = workflow.now()
         archived = {
             **payload,

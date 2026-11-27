@@ -98,3 +98,7 @@ body.qc-report-center .report-page .skim thead tr{position:static;background:var
     background: currentColor;
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-3'/%3E%3C/svg%3E") center / contain no-repeat;
 }
+.qc-export-option {display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;font:500 12px/1.45 system-ui,sans-serif;cursor:pointer;}
+.qc-export-option input {width:16px;height:16px;margin:0;accent-color:#176478}
+.qc-export-option small {color:#635331}
+.qc-export-option[hidden]{display:none}

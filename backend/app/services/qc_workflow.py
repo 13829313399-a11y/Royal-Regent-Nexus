@@ -1,5 +1,5 @@
 """QC execution tasks. Authoritative Sales rows are read-only; legacy QC stores are untouched."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -395,7 +395,7 @@ def test_entry_allowed(factory, record):
         return False
 
 
-def create_entry(factory, body, actor, legacy=None, reference=False):
+def create_entry(factory, body, actor, legacy=None, reference=False, *, connection=None):
     expected = {'recordId'} if legacy is not None else {'requestKey','method','execution'}
     if set(body) != expected:
         raise HTTPException(422, '新增记录字段不正确')
@@ -417,7 +417,7 @@ def create_entry(factory, body, actor, legacy=None, reference=False):
     source={'id':identity,'kind':'legacy' if legacy is not None else 'manual','sourceRevision':1,'sourceVersion':1,
         'factory':factory,'sourceStatus':'active','customer':r.get('client',''),'poNo':r.get('orderNo',''),
         'customerPo':'','productNo':r.get('productNo',''),'productName':r.get('productName',''),'quantity':execution['actualQuantity']}
-    with store(True) as conn:
+    with (store(True) if connection is None else nullcontext(connection)) as conn:
         found=conn.execute('SELECT * FROM tasks WHERE factory=? AND source_id=?', (factory,identity)).fetchone()
         if found:
             previous=unpack(conn,found)

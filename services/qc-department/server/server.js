@@ -377,6 +377,33 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS record_tombstones (
     id INTEGER PRIMARY KEY, deletedAt TEXT
   );
+  CREATE TABLE IF NOT EXISTS record_versions (
+    record_id INTEGER PRIMARY KEY, version TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS record_generations (
+    record_id INTEGER PRIMARY KEY, generation TEXT NOT NULL, started_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS record_archive_receipts (
+    version TEXT PRIMARY KEY, record_id INTEGER NOT NULL
+  );
+  CREATE TRIGGER IF NOT EXISTS record_version_insert AFTER INSERT ON records BEGIN
+    INSERT OR REPLACE INTO record_versions VALUES (NEW.id, lower(hex(randomblob(16))));
+  END;
+  CREATE TRIGGER IF NOT EXISTS record_version_update AFTER UPDATE ON records BEGIN
+    UPDATE record_versions SET version=lower(hex(randomblob(16))) WHERE record_id=NEW.id;
+  END;
+  CREATE TRIGGER IF NOT EXISTS record_version_delete AFTER DELETE ON records BEGIN
+    DELETE FROM record_versions WHERE record_id=OLD.id;
+  END;
+  INSERT OR IGNORE INTO record_versions SELECT id, lower(hex(randomblob(16))) FROM records;
+  CREATE TRIGGER IF NOT EXISTS record_generation_insert AFTER INSERT ON records BEGIN
+    INSERT OR REPLACE INTO record_generations VALUES (
+      NEW.id, lower(hex(randomblob(16))), strftime('%Y-%m-%dT%H:%M:%f000+00:00','now'));
+  END;
+  CREATE TRIGGER IF NOT EXISTS record_generation_delete AFTER DELETE ON records BEGIN
+    DELETE FROM record_generations WHERE record_id=OLD.id;
+  END;
+  INSERT OR IGNORE INTO record_generations(record_id,generation) SELECT id, lower(hex(randomblob(16))) FROM records;
   CREATE TABLE IF NOT EXISTS qc_delete_history (
     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, item_key TEXT NOT NULL,
     actor TEXT NOT NULL, deleted_at TEXT NOT NULL, snapshot TEXT NOT NULL
@@ -465,7 +492,7 @@ function normalizedLegacyStatus(status) {
   return String(status ?? '').trim() || 'approved';
 }
 function recordIsProtected(row, ctx) {
-  return !ctx?.sheetReceipt && (ctx?.protectedIds?.includes(row.id) ||
+  return !ctx?.matchedSheetVersion && (ctx?.protectedIds?.includes(row.id) ||
     (!ctx?.referenceClear && ['approved', 'pending'].includes(normalizedLegacyStatus(row.status))));
 }
 function rejectProtectedRecord(row, ctx) {
@@ -492,6 +519,44 @@ function deleteRecords(db, ids, transaction = true, ctx = {}) {
     if (transaction) db.exec('COMMIT');
   } catch (e) { if (transaction) db.exec('ROLLBACK'); throw e; }
   return count;
+}
+
+function archiveSheetRecords(db, items) {
+  if (!Array.isArray(items) || items.length > 500 || items.some(item =>
+    !item || !Number.isSafeInteger(item.id) || item.id < 1 ||
+    typeof item.version !== 'string' || !/^[a-f0-9]{32}$/.test(item.version) || typeof item.actor !== 'string'))
+    rejectWrite(422, '历史归档记录或版本不正确');
+  const current = db.prepare('SELECT version FROM record_versions WHERE record_id=?');
+  const receipt = db.prepare('SELECT 1 FROM record_archive_receipts WHERE version=? AND record_id=?');
+  const acknowledge = db.prepare('INSERT INTO record_archive_receipts VALUES (?, ?)');
+  const results = [];
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const item of items) {
+      // A confirmed receipt wins even if its numeric id has since been restored.
+      if (receipt.get(item.version, item.id)) {
+        results.push('archived');
+        continue;
+      }
+      const row = current.get(item.id);
+      if (!row) {
+        results.push('absent');
+        continue;
+      }
+      if (row.version !== item.version) {
+        results.push('retained');
+        continue;
+      }
+      deleteRecords(db, [item.id], false, { actor: item.actor, matchedSheetVersion: true });
+      acknowledge.run(item.version, item.id);
+      results.push('archived');
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return results;
 }
 
 function mergeRecordChanges(db, records, ids, ctx) {
@@ -702,8 +767,20 @@ function getDb(companyId) {
 migrateLegacyDb();
 
 /* ════════ 读取全量（供前端开机预加载）════════ */
-function getBootstrap(db) {
-  const records = db.prepare('SELECT * FROM records ORDER BY id').all().map(rowToRecord);
+function getBootstrap(db, includeVersions = false) {
+  const rows = db.prepare(includeVersions
+    ? `SELECT r.*, v.version AS sheet_version, g.generation AS sheet_generation, g.started_at AS sheet_started_at FROM records r
+       JOIN record_versions v ON v.record_id=r.id JOIN record_generations g ON g.record_id=r.id ORDER BY r.id`
+    : 'SELECT * FROM records ORDER BY id').all();
+  const versions = {};
+  const generations = {};
+  const generationStarts = {};
+  const records = rows.map(({ sheet_version, sheet_generation, sheet_started_at, ...row }) => {
+    if (sheet_version) versions[row.id] = sheet_version;
+    if (sheet_generation) generations[row.id] = sheet_generation;
+    if (sheet_started_at) generationStarts[row.id] = sheet_started_at;
+    return rowToRecord(row);
+  });
   const nextId  = nextRecordId(db);
   const defectLib = db.prepare('SELECT * FROM defect_library ORDER BY id').all().map(d => ({
     name: d.name, category: d.category, defaultLevel: d.defaultLevel,
@@ -713,6 +790,7 @@ function getBootstrap(db) {
   const partners = db.prepare('SELECT * FROM partners ORDER BY id').all()
     .map(p => ({ name: p.name, type: p.type, createdAt: p.createdAt }));
   return { records, nextId, defectLib, partners, referenceData: referenceData(db),
+    ...(includeVersions ? { recordVersions: versions, recordGenerations: generations, recordGenerationStarts: generationStarts } : {}),
     catalogVersions: { partners: getCatalogRevision(db, 'partners'), defectLib: getCatalogRevision(db, 'defect_library') } };
 }
 
@@ -934,7 +1012,7 @@ const server = http.createServer(async (req, res) => {
     const db = getDb(companyId);
 
     if (p === '/api/bootstrap' && req.method === 'GET') {
-      return sendJson(res, 200, Object.assign({ company: companyId }, getBootstrap(db)));
+      return sendJson(res, 200, Object.assign({ company: companyId }, getBootstrap(db, url.searchParams.get('sheetVersions') === '1')));
     }
     if (p === '/api/export/records.csv' && (req.method === 'GET' || req.method === 'HEAD' || req.method === 'POST')) {
       const overlay = req.method === 'POST' ? await readBody(req) : {};
@@ -967,8 +1045,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/records/delete' && req.method === 'POST') {
       const body = await readBody(req);
-      const n = deleteRecords(db, Array.isArray(body.ids) ? body.ids : [], true, body._qc);
+      const { actor, protectedIds } = body._qc ?? {};
+      const n = deleteRecords(db, Array.isArray(body.ids) ? body.ids : [], true, { actor, protectedIds });
       return sendJson(res, 200, { ok: true, deleted: n });
+    }
+    if (p === '/api/records/archive-sheet' && req.method === 'POST') {
+      const body = await readBody(req);
+      return sendJson(res, 200, { ok: true, results: archiveSheetRecords(db, body.items) });
     }
     if (p === '/api/records/replace' && req.method === 'POST') {
       const body = await readBody(req);

@@ -42,6 +42,37 @@ def install_upstream(monkeypatch):
     return calls
 
 
+@pytest.mark.parametrize('mode', ['enforce', 'legacy'])
+def test_mark_read_follows_inspection_self_review_permission_and_validates_input(monkeypatch, mode):
+    monkeypatch.setenv('AUTHZ_MODE', mode)
+    monkeypatch.setenv('QC_DOSSIER_EMERGENCY_DISABLED','true')
+    with make_client(monkeypatch) as client:
+        install_upstream(monkeypatch)
+        login_as(client,'qc_inspector')
+        health='/api/qc-department/huaxing/api/health'
+        path = 'api/inspection-sheet/review/mark-read'
+        frame = client.get(health).json()['frame_url']
+        entry_id = 'a'*32
+        payload = {'entryIds': [entry_id], 'revisions': {entry_id: 1}}
+
+        def reads_allowed():
+            context = client.get(frame + 'nexus-context.js')
+            return json.loads(context.text.removeprefix('window.__QC_NEXUS = ').removesuffix(';'))['workflow']['reviewReads']
+
+        assert reads_allowed() is True
+        assert client.post(frame+path,json={'entryIds':[entry_id]}).status_code==422
+        assert client.post(frame+path,json={'entryIds':['bad'],'revisions':{'bad':1}}).status_code==422
+        response = client.post(frame + path, json=payload)
+        assert response.status_code == 200 and response.json() == {'read': {}}
+        assert client.post(frame.replace('/huaxing/', '/huadeng/') + path, json=payload).status_code == 403
+
+        grant_permission_override('qc_inspector', 'qc_inspection:result_write',
+                                  effect='deny', factory_id='huaxing', department='qc')
+        frame = client.get(health).json()['frame_url']
+        assert reads_allowed() is (mode == 'legacy')
+        assert client.post(frame + path, json=payload).status_code == (200 if mode == 'legacy' else 403)
+
+
 def test_session_factory_boundary_and_no_local_accounts(monkeypatch):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
@@ -318,6 +349,28 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
             login_qc_test(client)
             base = client.get("/api/qc-department/huaxing/api/health").json()["frame_url"]
             assert client.post(base + "api/records/delete", json={"ids": [1]}).status_code == 200
+
+            # Exercise the versioned archive through the real API and Node stores.
+            legacy = {"id": 3, "status": "approved", "result": "PASS", "orderNo": "LEGACY-RECEIPT"}
+            assert client.post(base + "api/records", json={"records": [legacy]}).status_code == 200
+            browser_bootstrap = client.get(base + "api/bootstrap?sheetVersions=1").json()
+            assert not {"recordVersions", "recordGenerations", "recordGenerationStarts"} & browser_bootstrap.keys()
+            assert client.post(base + "api/records/archive-sheet", json={"items": []}).status_code in {403, 404}
+            rows = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+            entry = next(row for row in rows if row.get("legacyId") == 3)
+            request = {"requestKey": secrets.token_hex(16), "entries": [{"id": entry["id"], "revision": entry["revision"]}]}
+            route = base + "api/inspection-sheet/review/approved/delete"
+            deleted = client.post(route, json=request)
+            assert deleted.status_code == 200 and deleted.json()["results"][0]["legacyArchive"] == "archived", deleted.text
+            remaining = client.get(base + "api/bootstrap").json()["records"]
+            assert [row["id"] for row in remaining] == [2]
+            replacement = {**legacy, "orderNo": "REPLACEMENT"}
+            restored = client.post(base + "api/records/replace", json={"records": [*remaining, replacement]})
+            assert restored.status_code == 200, restored.text
+            assert client.post(route, json=request).json()["results"][0]["replayed"] is True
+            assert client.get(base + "api/bootstrap").json()["records"][-1]["orderNo"] == "REPLACEMENT"
+            restored_rows = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+            assert any(row["poNo"] == "REPLACEMENT" and row["id"] != entry["id"] for row in restored_rows)
     finally:
         child.terminate()
         child.wait(timeout=10)
@@ -486,7 +539,11 @@ def test_historical_return_uses_new_form_with_full_permission_lock_and_attachmen
         original={'id':22,'status':'approved','supplier':'名发','client':'ZURU','date':'2026-04-20','inspDate':'2026-04-20','qty':600,'sampleQty':80,'pass':72,'fail':8,'defectRate':'10.00%','result':'REJ','productNo':'15755','productName':'粉色熊','deliveryNo':'0005501','qc':'原检验员','remark':'原备注','defects':[],'measurements':[],'updatedAt':'old'}
         rows=[deepcopy(original)]
         async def fake(method,path,params,body):
-            if path!='api/health': assert params==[('company','hy-huaxing')]
+            if path != 'api/health':
+                expected = [('company', 'hy-huaxing')]
+                if path == 'api/bootstrap' and ('sheetVersions', '1') in params:
+                    expected.append(('sheetVersions', '1'))
+                assert params == expected
             if method=='POST':
                 for r in json.loads(body).get('records',[]):rows[0]=r
             return httpx.Response(200,json={'records':deepcopy(rows),'nextId':23,'referenceData':{'ids':[22],'count':1},'users':[]})

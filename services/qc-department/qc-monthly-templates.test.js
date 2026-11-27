@@ -15,7 +15,8 @@ function page(storage){
  const response=(v,status=200)=>({ok:status===200,status,json:async()=>JSON.parse(JSON.stringify(v))});
  w.fetch=async(url,init)=>{calls.push({url,init});if(!init.body)return response(data);const b=JSON.parse(init.body);data.fields[b.customerKey][b.field]={value:b.value,version:b.baseVersion+1};return response({...b,version:b.baseVersion+1});};
  if(storage)for(const [k,v]of Object.entries(storage))w.localStorage.setItem(k,v);
- w.eval(fs.readFileSync(path.join(__dirname,'qc-monthly-templates.js'),'utf8'));d.dispatchEvent(new w.Event('DOMContentLoaded'));
+ w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-monthly-templates.js'),'utf8'));d.dispatchEvent(new w.Event('DOMContentLoaded'));
  const edit=(f,v)=>{d.querySelector('[data-field="'+f+'"]').click();const e=d.querySelector('.qmt-editor');e.value=v;e.dispatchEvent(new w.Event('input',{bubbles:true}));return e;};
  return {dom,w,d,data,calls,response,edit};
 }
@@ -46,10 +47,11 @@ test('issues export directly downloads previews without another dialog; empty la
  const p=page();try{
   p.w.QcIssueReports={open:()=>assert.fail('must not open an export options dialog')};
   p.w.HTMLAnchorElement.prototype.click=function(){};
-  const fetch=p.w.fetch;p.w.fetch=async(url,init)=>{if(url==='api/monthly-templates/excel'){p.calls.push({url,init});return p.response({url:'api/monthly-templates/excel/test.xlsx',filename:'问题图文_预览版.xlsx'});}return fetch(url,init);};
+  const fetch=p.w.fetch;p.w.fetch=async(url,init)=>{if(url.endsWith('/excel/test.xlsx'))return require('./fixtures/export-attachment.cjs')(p.w,'xlsx');if(url==='api/monthly-templates/excel'){p.calls.push({url,init});return p.response({url:'api/monthly-templates/excel/test.xlsx',filename:'问题图文_预览版.xlsx'});}return fetch(url,init);};
   await p.w.QcMonthlyTemplates.open('issues');p.d.getElementById('qmtExcel').click();await new Promise(r=>setTimeout(r,15));
   const body=JSON.parse(p.calls.find(c=>c.init?.body).init.body);assert.equal(body.template,'issues');assert.equal(body.customer,'');assert.equal(body.photoQuality,undefined);assert.equal(p.d.querySelector('dialog'),null);
-  assert.match(p.d.getElementById('qmtExcelStatus').textContent,/问题图文_预览版/);
+  assert.equal(body.hideEmptyCols,false);
+  assert.equal(p.d.getElementById('qmtExcelStatus').textContent,'Excel 已导出（已按完整列导出）');
   p.data.tables.caixing=[];p.data.tables.summary=[];await p.w.QcMonthlyTemplates.open('caixing');assert.equal(p.d.getElementById('qmtExcel').disabled,true);
  }finally{p.dom.window.close();}
 });
@@ -81,7 +83,7 @@ test('overview keeps total-denominator rates, editable blanks, institutions and 
   assert.equal(JSON.parse(p.calls.find(c=>c.init.body).init.body).template,'overview');
   p.edit('overview:preparer','张三').blur();await p.w.QcMonthlyTemplates.flush();assert.equal(p.d.querySelector('[data-field="overview:preparer"]').textContent,'张三');
   p.d.querySelector('[data-overview-tab="details"]').click();assert.equal(p.d.querySelectorAll('#qmtTables th')[11].textContent,'机构');assert.equal(p.d.querySelectorAll('#qmtTables th').length,13);
-  p.w.HTMLAnchorElement.prototype.click=function(){};p.w.fetch=async(url,init)=>{p.calls.push({url,init});return p.response({url:'api/monthly-templates/excel/test.xlsx',filename:'客户月度验货总结.xlsx'});};
+  p.w.HTMLAnchorElement.prototype.click=function(){};p.w.fetch=async(url,init)=>{if(url.endsWith('/excel/test.xlsx'))return require('./fixtures/export-attachment.cjs')(p.w,'xlsx');p.calls.push({url,init});return p.response({url:'api/monthly-templates/excel/test.xlsx',filename:'客户月度验货总结.xlsx'});};
   p.d.getElementById('qmtExcel').click();await new Promise(r=>setTimeout(r,15));const req=JSON.parse(p.calls.at(-1).init.body);assert.equal(req.template,'overview');assert.equal(req.versions[meta]['overview:preparer'],1);
  }finally{p.dom.window.close();}
 });
