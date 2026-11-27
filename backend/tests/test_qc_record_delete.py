@@ -1,9 +1,11 @@
 """Comprehensive tests for QC_test admin account and QC record deletion boundaries."""
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import importlib
 from io import BytesIO
 import json
+from threading import Event
 from uuid import uuid4
 
 import httpx
@@ -27,8 +29,12 @@ def isolated_store(monkeypatch, tmp_path):
 
 def install_stateful_upstream(monkeypatch, *, records=None, defect_lib=None, partners=None):
     module = importlib.import_module("app.api.qc_department")
+    records = list(records or [])
     state = {
-        "records": list(records or []),
+        "records": records,
+        "versions": {str(row["id"]): uuid4().hex for row in records},
+        "generations": {str(row["id"]): uuid4().hex for row in records},
+        "generation_starts": {},
         "defectLib": list(defect_lib or []),
         "partners": list(partners or []),
         "deleted_calls": [],
@@ -43,17 +49,26 @@ def install_stateful_upstream(monkeypatch, *, records=None, defect_lib=None, par
                 json={
                     "ok": True,
                     "records": list(state["records"]),
+                    "recordVersions": state["versions"],
+                    "recordGenerations": state["generations"],
+                    "recordGenerationStarts": state["generation_starts"],
                     "nextId": max([r["id"] for r in state["records"]], default=0) + 1,
                     "partners": list(state["partners"]),
                     "defectLib": list(state["defectLib"]),
                 },
             )
-        if path == "api/records/delete":
+        if path == "api/records/archive-sheet":
             payload = json.loads(body) if body else {}
-            ids = set(payload.get("ids") or [])
-            state["deleted_calls"].append(sorted(ids))
+            ids = {item["id"] for item in payload["items"] if state["versions"].get(str(item["id"])) == item["version"]}
+            if ids:
+                state["deleted_calls"].append(sorted(ids))
+            outcome = ["archived" if item["id"] in ids else
+                       "retained" if str(item["id"]) in state["versions"] else "absent" for item in payload["items"]]
             state["records"] = [r for r in state["records"] if r.get("id") not in ids]
-            return httpx.Response(200, json={"ok": True, "deleted": len(ids)})
+            for record_id in ids:
+                state["versions"].pop(str(record_id), None)
+                state["generations"].pop(str(record_id), None)
+            return httpx.Response(200, json={"ok": True, "results": outcome})
         if path == "api/defects":
             payload = json.loads(body) if body else {}
             state["defectLib"] = list(payload.get("defectLib") or [])
@@ -238,6 +253,7 @@ def test_ordinary_qc_accounts_have_no_delete_permission_and_get_403(monkeypatch)
             req = {"requestKey": uuid4().hex, "entries": [{"id": "deadbeef" * 4, "revision": 0}], "reason": ""}
             assert client.post(base + "api/inspection-sheet/entries/delete", json=req).status_code == 403
             assert client.post(base + "api/inspection-sheet/review/delete", json=req).status_code == 403
+            assert client.post(base + "api/inspection-sheet/review/approved/delete", json=req).status_code == 403
             assert client.get(base + "api/inspection-summary/history/batches").status_code == 403
             assert client.post(base + f"api/inspection-summary/records/{'a'*32}/delete", json={"requestKey": uuid4().hex}).status_code == 403
             assert client.post(base + f"api/inspection-summary/history/{'b'*32}/rollback", json={"requestKey": uuid4().hex}).status_code == 403
@@ -294,45 +310,52 @@ def test_delete_is_not_delegable_even_with_grants_and_overrides(monkeypatch, mod
         assert not auth.can(qc, code, "huaxing", "sales")
 
 
+def seed_sales_order():
+    from app.db import SessionLocal
+    from app.models.customer_order_ledger import OrderLedgerLine
+
+    with SessionLocal() as db:
+        line = OrderLedgerLine(
+            id="sales-line-delete-test",
+            factory_id="huaxing",
+            customer_code="ZURU",
+            customer_name="ZURU",
+            identity_key="id-sales-line-delete-test",
+            reference_no="PO-SALES-1",
+            product_no="SKU-SALES-1",
+            quantity=500,
+            shipped_quantity=0,
+            status="active",
+            version=1,
+            revision=1,
+            data={
+                "customer_name": "ZURU",
+                "po_no": "PO-SALES-1",
+                "product_no": "SKU-SALES-1",
+                "product_name_zh": "测试玩具",
+                "quantity": 500,
+                "planned_inspection_date": "2026-11-26",
+                "planned_inspection_date_to": "2026-11-26",
+                "inspection_agency": "行验",
+            },
+            created_at="2026-11-25T00:00:00Z",
+            updated_at="2026-11-25T00:00:00Z",
+        )
+        db.add(line)
+        db.commit()
+        return {column.name: getattr(line, column.name) for column in OrderLedgerLine.__table__.columns}
+
+
 def test_workbench_delete_covers_blank_draft_workflow_and_legacy_without_touching_sales_order(monkeypatch):
     with make_client(monkeypatch) as client:
         upstream_state = install_stateful_upstream(
             monkeypatch,
-            records=[{"id": 101, "client": "LEGACY-CUST", "orderNo": "PO-LEG-1", "productNo": "SKU-LEG-1", "qty": 20, "result": ""}],
+            records=[{"id": 101, "client": "LEGACY-CUST", "orderNo": "PO-LEG-1", "productNo": "SKU-LEG-1", "qty": 20, "result": "", "status": "draft"}],
         )
-        # Seed a real Sales OrderLedgerLine to verify 客排期 source safety and fallback to 未推送.
         db_module = importlib.import_module("app.db")
         from app.models.customer_order_ledger import OrderLedgerLine
 
-        with db_module.SessionLocal() as db:
-            line = OrderLedgerLine(
-                id="sales-line-delete-test",
-                factory_id="huaxing",
-                customer_code="ZURU",
-                customer_name="ZURU",
-                identity_key="id-sales-line-delete-test",
-                reference_no="PO-SALES-1",
-                product_no="SKU-SALES-1",
-                quantity=500,
-                shipped_quantity=0,
-                status="active",
-                version=1,
-                revision=1,
-                data={
-                    "customer_name": "ZURU",
-                    "po_no": "PO-SALES-1",
-                    "product_no": "SKU-SALES-1",
-                    "product_name_zh": "测试玩具",
-                    "quantity": 500,
-                    "planned_inspection_date": "2026-11-26",
-                    "planned_inspection_date_to": "2026-11-26",
-                    "inspection_agency": "行验",
-                },
-                created_at="2026-11-25T00:00:00Z",
-                updated_at="2026-11-25T00:00:00Z",
-            )
-            db.add(line)
-            db.commit()
+        seed_sales_order()
 
         login_qc_test(client)
         base = frame_base(client, "huaxing")
@@ -419,20 +442,32 @@ def test_workbench_delete_covers_blank_draft_workflow_and_legacy_without_touchin
         assert any(e["poNo"] == "PO-SALES-1" for e in repushed_entries)
 
 
-def test_review_delete_enforces_revoke_first_and_keeps_summary_and_stats_consistent(monkeypatch):
-    with make_client(monkeypatch) as client:
+@pytest.mark.parametrize("dossier_enabled", [False, True])
+def test_direct_review_delete_preserves_audit_and_withdraws_summary_reports_and_workflow(monkeypatch, dossier_enabled):
+    monkeypatch.setenv("QC_DOSSIER_ENABLED", str(dossier_enabled).lower())
+    test_client = make_client(monkeypatch)
+    from app import db as database
+    from app.models.customer_order_ledger import OrderLedgerLine
+    from app.models.qc_dossier import QcDossierOutbox
+    from app.services import qc_dossier, qc_inspection_sheet as sheet, qc_inspection_summary as summary, qc_workflow as workflow
+
+    if dossier_enabled:
+        database.init_db()
+        QcDossierOutbox.__table__.create(database.engine)
+        qc_dossier.migrate()
+
+    with test_client as client:
         install_stateful_upstream(monkeypatch)
+        sales_before = seed_sales_order()
         login_qc_test(client)
         base = frame_base(client, "huaxing")
 
-        # Create two workbench drafts, save results, submit both to pending review.
-        for po in ("PO-REV-1", "PO-REV-2"):
-            assert client.post(
-                base + "api/inspection-sheet/intake/manual",
-                json=manual_row("ZURU", po, "SKU-" + po),
-            ).status_code == 200
+        push_item = {"sourceId": "sales-line-delete-test", "sourceRevision": 1, "method": "internal",
+                     "batch": "第一批", "plannedDate": "2026-11-26", "plannedQuantity": 500}
+        assert client.post(base + "api/workflow/tasks", json={"requestKey": uuid4().hex, "items": [push_item]}).status_code == 200
+        assert client.post(base + "api/inspection-sheet/intake/manual", json=manual_row("ZURU", "PO-REV-1", "SKU-PENDING")).status_code == 200
         items = {e["poNo"]: e for e in client.get(base + "api/inspection-sheet/entries").json()["items"]}
-        for po in ("PO-REV-1", "PO-REV-2"):
+        for po in ("PO-REV-1", "PO-SALES-1"):
             e = items[po]
             saved = client.post(
                 base + f"api/inspection-sheet/entries/{e['id']}/save",
@@ -449,6 +484,12 @@ def test_review_delete_enforces_revoke_first_and_keeps_summary_and_stats_consist
             json={"requestKey": uuid4().hex, "entries": [{"id": review_items["PO-REV-1"]["id"], "revision": review_items["PO-REV-1"]["revision"]}]},
         ).json()
         assert wb_reject["failed"] == 1 and wb_reject["results"][0]["status"] == 409
+        approved_path = base + "api/inspection-sheet/review/approved/delete"
+        pending = review_items["PO-REV-1"]
+        wrong_tab = client.post(approved_path, json={"requestKey": uuid4().hex, "entries": [
+            {"id": pending["id"], "revision": pending["revision"]},
+        ]}).json()
+        assert wrong_tab["results"][0]["status"] == 409
 
         # Pending delete removes PO-REV-1 cleanly without entering summary.
         del_pending = client.post(
@@ -457,8 +498,8 @@ def test_review_delete_enforces_revoke_first_and_keeps_summary_and_stats_consist
         ).json()
         assert del_pending["succeeded"] == 1
 
-        # Confirm PO-REV-2 to approved (writes into 验货汇总).
-        rev2 = review_items["PO-REV-2"]
+        # Confirm the pushed task (writes into 验货汇总).
+        rev2 = review_items["PO-SALES-1"]
         confirm_res = client.post(
             base + "api/inspection-sheet/review/confirm",
             json={"requestKey": uuid4().hex, "entries": [{"id": rev2["id"], "revision": rev2["revision"]}]},
@@ -466,46 +507,316 @@ def test_review_delete_enforces_revoke_first_and_keeps_summary_and_stats_consist
         assert confirm_res["succeeded"] == 1
         approved_rev2 = confirm_res["results"][0]["item"]
 
-        # Summary now contains PO-REV-2 (sourceKind='review').
+        # Verify all report counts start at one before deletion.
+        def report_totals():
+            daily = [client.get(base + "api/daily-report", params={"date": "2026-11-26", "period": p}) for p in ("daily", "weekly", "monthly")]
+            yearly = client.get(base + "api/approved-statistics/report", params={"year": "2026", "result": "ALL"})
+            assert all(r.status_code == 200 for r in [*daily, yearly])
+            return [r.json()["total"] for r in daily] + [yearly.json()["totals"]["total"]]
+
+        assert report_totals() == [1, 1, 1, 1]
         summary_rows = client.get(base + "api/inspection-summary/records").json()["items"]
-        assert len(summary_rows) == 1 and summary_rows[0]["poNo"] == "PO-REV-2"
+        assert len(summary_rows) == 1 and summary_rows[0]["poNo"] == "PO-SALES-1"
         summary_id = summary_rows[0]["id"]
 
-        # Direct delete on approved record in review center MUST fail with 409.
-        direct_approved = client.post(
+        # The pending route still rejects approved records.
+        wrong_tab = client.post(
             base + "api/inspection-sheet/review/delete",
             json={"requestKey": uuid4().hex, "entries": [{"id": approved_rev2["id"], "revision": approved_rev2["revision"]}]},
         ).json()
-        assert direct_approved["failed"] == 1 and direct_approved["results"][0]["status"] == 409
-        assert "反审核" in direct_approved["results"][0]["message"]
+        assert wrong_tab["failed"] == 1 and wrong_tab["results"][0]["status"] == 409
 
-        # Direct delete on review-synced record in summary MUST fail with 409.
+        # The history-only summary endpoint directs reviewed records to the new action.
         direct_summary = client.post(
             base + f"api/inspection-summary/records/{summary_id}/delete",
             json={"requestKey": uuid4().hex},
         )
         assert direct_summary.status_code == 409
-        assert "反审核" in direct_summary.json()["detail"]
+        assert "已审核" in direct_summary.json()["detail"]
 
-        # Revoke PO-REV-2 back to pending, then delete in pending!
-        revoke_res = client.post(
-            base + "api/inspection-sheet/review/revoke",
-            json={"requestKey": uuid4().hex, "entries": [{"id": approved_rev2["id"], "revision": approved_rev2["revision"]}], "reason": "准备删除"},
-        ).json()
-        assert revoke_res["succeeded"] == 1
-        revoked_rev2 = revoke_res["results"][0]["item"]
+        request = {"requestKey": uuid4().hex, "entries": [{"id": approved_rev2["id"], "revision": approved_rev2["revision"]}], "reason": "清理已审核验收记录"}
+        del_res = client.post(approved_path, json=request)
+        assert del_res.status_code == 200 and del_res.json()["succeeded"] == 1, del_res.text
+        replay = client.post(approved_path, json=request)
+        assert replay.status_code == 200 and replay.json()["results"][0]["replayed"] is True
 
-        del_after_revoke = client.post(
-            base + "api/inspection-sheet/review/delete",
-            json={"requestKey": uuid4().hex, "entries": [{"id": revoked_rev2["id"], "revision": revoked_rev2["revision"]}], "reason": "反审核后删除"},
-        ).json()
-        assert del_after_revoke["succeeded"] == 1
-
-        # Summary stays empty after reconcile, review queue is empty, and statistics endpoint works cleanly.
+        assert client.get(base + "api/inspection-sheet/entries").json()["items"] == []
         assert client.get(base + "api/inspection-summary/records").json()["total"] == 0
         assert client.get(base + "api/inspection-sheet/review/entries").json()["items"] == []
-        stats = client.get(base + "api/approved-statistics/dashboard")
-        assert stats.status_code == 200
+        assert report_totals() == [0, 0, 0, 0]
+        with sheet.store() as conn:
+            event = conn.execute("SELECT * FROM changes WHERE entry_id=? AND action='delete'", (approved_rev2["id"],)).fetchall()
+            assert len(event) == 1 and event[0]["location"] == "审核中心 · 已审核"
+            assert json.loads(event[0]["snapshot"]) == approved_rev2
+            diff = json.loads(event[0]["diff"])
+            assert (diff["scope"], diff["previousReviewState"], diff["wasApproved"]) == ("approved", "approved", True)
+        with summary.store() as conn:
+            record = conn.execute("SELECT * FROM records WHERE id=?", (summary_id,)).fetchone()
+            assert (record["active"], record["status"]) == (0, "withdrawn")
+            previous = conn.execute("SELECT payload FROM changes WHERE record_id=? ORDER BY id DESC", (summary_id,)).fetchone()
+            assert previous["payload"] == record["payload"]
+        with workflow.store() as conn:
+            assert conn.execute("SELECT 1 FROM deleted_tasks WHERE id=?", (approved_rev2["workflowId"],)).fetchone()
+            assert not conn.execute("SELECT 1 FROM tasks WHERE id=?", (approved_rev2["workflowId"],)).fetchone()
+        with database.SessionLocal() as db:
+            order = db.get(OrderLedgerLine, "sales-line-delete-test")
+            assert {col: getattr(order, col) for col in sales_before} == sales_before
+            assert workflow.sources(db, "huaxing")["items"][0]["tasks"] == []
+        repush = client.post(base + "api/workflow/tasks", json={"requestKey": uuid4().hex, "items": [push_item]})
+        assert repush.status_code == 200 and repush.json()["items"][0]["id"] != approved_rev2["workflowId"]
+
+
+@pytest.mark.parametrize("status", ["approved", None, "", " "])
+def test_approved_delete_with_legacy_completed_projection_and_cleanup_resume(monkeypatch, status):
+    with make_client(monkeypatch) as client:
+        legacy = {"id": 201, "client": "LEGACY", "orderNo": "PO-LEG-APPROVED", "result": "PASS", "status": status}
+        state = install_stateful_upstream(monkeypatch, records=[legacy])
+        from app.services import qc_inspection_sheet as sheet, qc_inspection_summary as summary
+
+        # A record mirrored before the fix had flow v2 even if the legacy state was blank.
+        previous = sheet.candidates("huaxing", [legacy], [], [], legacy_versions=state["versions"],
+                                    legacy_generations=state["generations"])
+        previous[0][1]["legacyReviewState"] = status
+        sheet.sync("huaxing", previous)
+        login_qc_test(client)
+        base = frame_base(client)
+        assert client.get(base + "api/inspection-sheet/entries").json()["items"] == []
+        items = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+        row = next(item for item in items if item["poNo"] == legacy["orderNo"])
+        assert row["legacyCompleted"]
+
+        with summary.store(True) as conn:
+            identity = summary.upsert(conn, "huaxing", "entry:" + row["id"], {
+                "entryId": row["id"], "sourceKind": "submission", "result": "PASS", "status": "completed",
+            })
+
+        gateway = importlib.import_module("app.api.qc_department")
+        upstream = gateway.upstream
+
+        async def temporarily_unavailable(method, path, params, data):
+            if path == "api/records/archive-sheet":
+                return httpx.Response(503)
+            return await upstream(method, path, params, data)
+
+        path = base + "api/inspection-sheet/review/approved/delete"
+        req = {"requestKey": uuid4().hex, "entries": [{"id": row["id"], "revision": row["revision"]}]}
+        wrong_view = client.post(base + "api/inspection-sheet/entries/delete", json=req).json()
+        assert wrong_view["results"][0]["status"] == 409
+        monkeypatch.setattr(gateway, "upstream", temporarily_unavailable)
+        partial = client.post(path, json=req)
+        assert partial.status_code == 200 and partial.json()["results"][0]["legacyArchive"] == "pending"
+        assert state["records"] == [legacy]
+        assert client.get(base + "api/inspection-sheet/review/entries").json()["items"] == []
+        with summary.store() as conn:
+            assert tuple(conn.execute("SELECT active,status FROM records WHERE id=?", (identity,)).fetchone()) == (0, "withdrawn")
+            assert conn.execute("SELECT 1 FROM changes WHERE record_id=?", (identity,)).fetchone()
+        monkeypatch.setattr(gateway, "upstream", upstream)
+        # Reloading the list completes the durable cleanup without the original request key.
+        assert client.get(base + "api/inspection-sheet/review/entries").json()["items"] == []
+        assert state["deleted_calls"] == [[201]] and state["records"] == []
+        assert sheet.pending_legacy_deletes("huaxing") == []
+        replacement = {**legacy, "orderNo": "NEW-LEGACY"}
+        state["records"].append(replacement)
+        state["versions"]["201"] = uuid4().hex
+        state["generations"]["201"] = uuid4().hex
+        replayed = client.post(path, json=req).json()["results"][0]
+        assert replayed["replayed"] is True and replayed["legacyArchive"] == "archived"
+        assert state["deleted_calls"] == [[201]] and state["records"] == [replacement]
+        restored = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+        assert len(restored) == 1 and restored[0]["poNo"] == "NEW-LEGACY" and restored[0]["id"] != row["id"]
+
+
+@pytest.mark.parametrize("restoration", ("in-place", "before-submit", "after-approval"))
+def test_tokenless_approved_mirror_withdraws_but_retains_a_newer_legacy_source(monkeypatch, restoration):
+    with make_client(monkeypatch) as client:
+        from app.services import qc_inspection_sheet as sheet
+
+        factory = "huaxing"
+        actor = {"id": "user-qc-test", "name": "QC 数据管理员"}
+        legacy = {"id": 301, "status": "rejected", "result": "PASS", "client": "LEGACY", "orderNo": "TOKENLESS",
+                  "productNo": "SKU-301", "inspDate": "2026-11-26"}
+        old = sheet.sync(factory, sheet.candidates(factory, [legacy], [], []))["items"][0]
+        newer = {**legacy, "result": "FAIL"}
+        if restoration != "in-place":
+            newer.update(status="approved", orderNo="RESTORED")
+        state = install_stateful_upstream(monkeypatch, records=[newer])
+        if restoration == "before-submit":
+            state["generation_starts"]["301"] = sheet.wf.now()
+        submitted = sheet.submit(factory, old["id"], {"revision": old["revision"]}, actor)
+        approved = sheet.review_batch(factory, "confirm", {
+            "entries": [{"id": old["id"], "revision": submitted["revision"]}], "requestKey": uuid4().hex,
+        }, actor)["results"][0]["item"]
+        if restoration == "after-approval":
+            state["generation_starts"]["301"] = sheet.wf.now()
+        login_qc_test(client)
+        base = frame_base(client)
+        rows = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+        original = next(row for row in rows if row["id"] == approved["id"])
+        assert original["result"] == "PASS"
+        assert client.get(base + "api/inspection-summary/records").json()["total"] == 1
+        for period in ("daily", "weekly", "monthly"):
+            report = client.get(base + "api/daily-report", params={"date": "2026-11-26", "period": period})
+            assert report.status_code == 200 and report.json()["total"] == 1, report.text
+        assert client.get(base + "api/approved-statistics/report?year=2026&result=ALL").json()["totals"]["total"] == 1
+        request = {
+            "entries": [{"id": old["id"], "revision": original["revision"]}], "requestKey": uuid4().hex,
+        }
+        route = base + "api/inspection-sheet/review/approved/delete"
+        deleted = client.post(route, json=request).json()["results"][0]
+        assert deleted["ok"] and deleted["legacyArchive"] == "retained"
+        assert client.get(base + "api/inspection-sheet/entries").json()["items"] == []
+        remaining = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+        assert [row["poNo"] for row in remaining] == ([] if restoration == "in-place" else ["RESTORED"])
+        assert client.get(base + "api/inspection-summary/records").json()["total"] == 0
+        for period in ("daily", "weekly", "monthly"):
+            report = client.get(base + "api/daily-report", params={"date": "2026-11-26", "period": period})
+            assert report.status_code == 200 and report.json()["total"] == 0, report.text
+        assert client.get(base + "api/approved-statistics/report?year=2026&result=ALL").json()["totals"]["total"] == 0
+        assert sheet.pending_legacy_deletes(factory) == []
+        assert state["deleted_calls"] == [] and state["records"] == [newer]
+        with sheet.store() as conn:
+            event = conn.execute("SELECT diff,snapshot FROM changes WHERE entry_id=? AND action='delete'", (old["id"],)).fetchone()
+            assert json.loads(event["diff"])["legacyArchive"] == "retained"
+            assert json.loads(event["snapshot"])["result"] == "PASS"
+            # Simulate a pre-upgrade receipt: old deployments never persisted a queue row.
+            conn.execute("DELETE FROM legacy_delete_queue WHERE entry_id=?", (old["id"],))
+        replay = client.post(route, json=request).json()["results"][0]
+        assert replay["replayed"] and replay["legacyArchive"] == "retained"
+        assert state["deleted_calls"] == [] and state["records"] == [newer]
+
+
+@pytest.mark.parametrize("restore_before_first_read", (False, True))
+def test_preupgrade_tombstone_isolates_original_but_restored_generation_is_visible(monkeypatch, restore_before_first_read):
+    with make_client(monkeypatch) as client:
+        from app.services import qc_inspection_sheet as sheet
+
+        actor = {"id": "user-qc-test", "name": "QC 数据管理员"}
+        legacy = {"id": 401, "status": "rejected", "result": "", "client": "OLD", "orderNo": "OLD", "productNo": "OLD"}
+        state = install_stateful_upstream(monkeypatch, records=[legacy])
+        old = sheet.sync("huaxing", sheet.candidates("huaxing", [legacy], [], []))["items"][0]
+        request = {"entries": [{"id": old["id"], "revision": old["revision"]}], "requestKey": uuid4().hex}
+        assert sheet.delete_batch("huaxing", "workbench", request, actor)["succeeded"] == 1
+        with sheet.store(True) as conn:
+            conn.execute("DELETE FROM legacy_delete_queue WHERE entry_id=?", (old["id"],))
+        login_qc_test(client)
+        base = frame_base(client)
+        entries = base + "api/inspection-sheet/entries"
+        if not restore_before_first_read:
+            assert client.get(entries).json()["items"] == []
+        state["records"] = [{**legacy, "orderNo": "RESTORED"}]
+        state["versions"]["401"] = uuid4().hex
+        state["generations"]["401"] = uuid4().hex
+        state["generation_starts"]["401"] = sheet.wf.now()
+        assert client.post(entries + "/delete", json=request).json()["results"][0]["legacyArchive"] == "retained"
+        current = client.get(entries).json()["items"]
+        assert len(current) == 1 and current[0]["poNo"] == "RESTORED" and current[0]["id"] != old["id"]
+        assert state["deleted_calls"] == []
+
+
+def test_withdrawn_linked_legacy_record_does_not_reappear_as_standalone(monkeypatch):
+    with make_client(monkeypatch) as client:
+        from app.services import qc_workflow
+
+        legacy = {"id": 402, "status": "rejected", "result": "PASS", "client": "OLD",
+                  "orderNo": "LINKED", "productNo": "SKU", "inspDate": "2026-11-26"}
+        actor = {"id": "user-qc-test", "name": "QC 数据管理员"}
+        qc_workflow.create_entry("huaxing", {"recordId": 402}, actor, legacy)
+        state = install_stateful_upstream(monkeypatch, records=[legacy])
+        login_qc_test(client)
+        entries = frame_base(client) + "api/inspection-sheet/entries"
+        review = frame_base(client) + "api/inspection-sheet/review"
+        item, = client.get(review + "/entries").json()["items"]
+        assert item["workflowId"] and item["reviewState"] == "pending"
+        deleted = client.post(review + "/delete", json={
+            "entries": [{"id": item["id"], "revision": item["revision"]}], "requestKey": uuid4().hex,
+        }).json()["results"][0]
+        assert deleted["ok"] and deleted["legacyArchive"] == "retained"
+        assert client.get(entries).json()["items"] == []
+        assert client.get(review + "/entries").json()["items"] == []
+        link_route = frame_base(client) + "api/workflow/legacy"
+        blocked = client.post(link_route, json={"recordId": 402})
+        assert blocked.status_code == 409 and "保留待核对" in blocked.json()["detail"]
+        state["records"] = [{**legacy, "orderNo": "REPLACEMENT"}]
+        state["versions"]["402"] = uuid4().hex
+        state["generations"]["402"] = uuid4().hex
+        restored, = client.get(entries).json()["items"]
+        assert restored["poNo"] == "REPLACEMENT" and not restored.get("workflowId")
+        link = client.post(link_route, json={"recordId": 402})
+        assert link.status_code == 200, link.text
+        linked, = client.get(entries).json()["items"]
+        assert linked["poNo"] == "REPLACEMENT" and linked["workflowId"] == link.json()["id"]
+        assert state["deleted_calls"] == []
+
+
+def test_replacement_cannot_be_bound_to_a_legacy_workflow_on_its_first_sheet_read(monkeypatch):
+    with make_client(monkeypatch) as client:
+        from app.services import qc_workflow
+
+        legacy = {"id": 403, "status": "rejected", "result": "PASS", "client": "OLD",
+                  "orderNo": "FIRST-LINK", "productNo": "SKU"}
+        actor = {"id": "user-qc-test", "name": "QC 数据管理员"}
+        task = qc_workflow.create_entry("huaxing", {"recordId": 403}, actor, legacy)
+        newer = {**legacy, "status": "approved", "orderNo": "FIRST-RESTORATION", "result": "FAIL"}
+        state = install_stateful_upstream(monkeypatch, records=[newer])
+        state["generation_starts"]["403"] = qc_workflow.now()
+        login_qc_test(client)
+        review = frame_base(client) + "api/inspection-sheet/review"
+        rows = client.get(review + "/entries").json()["items"]
+        assert {row["poNo"] for row in rows} == {"FIRST-LINK", "FIRST-RESTORATION"}
+        old = next(row for row in rows if row.get("workflowId") == task["id"])
+        deleted = client.post(review + "/delete", json={
+            "entries": [{"id": old["id"], "revision": old["revision"]}], "requestKey": uuid4().hex,
+        }).json()["results"][0]
+        assert deleted["ok"] and deleted["legacyArchive"] == "retained"
+        current, = client.get(review + "/entries").json()["items"]
+        assert current["poNo"] == "FIRST-RESTORATION" and not current.get("workflowId")
+        assert state["deleted_calls"] == [] and state["records"] == [newer]
+
+
+def test_linking_a_visible_legacy_row_invalidates_its_stale_delete(monkeypatch):
+    with make_client(monkeypatch) as client:
+        from app.services import qc_inspection_sheet, qc_workflow
+
+        legacy = {"id": 404, "status": "rejected", "result": "PASS", "client": "OLD",
+                  "orderNo": "LINK-FIRST", "productNo": "SKU"}
+        state = install_stateful_upstream(monkeypatch, records=[legacy])
+        login_qc_test(client)
+        base = frame_base(client)
+        entries = base + "api/inspection-sheet/entries"
+        old, = client.get(entries).json()["items"]
+        candidates_read, release = Event(), Event()
+        sync = qc_inspection_sheet.sync
+
+        def delayed_sync(*args):
+            candidates_read.set()
+            assert release.wait(10)
+            return sync(*args)
+
+        with monkeypatch.context() as delayed:
+            delayed.setattr(qc_inspection_sheet, "sync", delayed_sync)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                in_flight = executor.submit(client.get, entries)
+                try:
+                    assert candidates_read.wait(10)
+                    linked = client.post(base + "api/workflow/legacy", json={"recordId": 404})
+                finally:
+                    release.set()
+                refreshed, = in_flight.result(timeout=10).json()["items"]
+        assert linked.status_code == 200, linked.text
+        stale = client.post(entries + "/delete", json={
+            "entries": [{"id": old["id"], "revision": old["revision"]}], "requestKey": uuid4().hex,
+        }).json()["results"][0]
+        assert stale["status"] == 409 and state["records"] == [legacy]
+        task_id = linked.json()["id"]
+        assert refreshed["id"] == old["id"] and refreshed["workflowId"] == task_id
+        deleted = client.post(entries + "/delete", json={
+            "entries": [{"id": refreshed["id"], "revision": refreshed["revision"]}], "requestKey": uuid4().hex,
+        }).json()["results"][0]
+        assert deleted["ok"] and deleted["legacyArchive"] == "archived"
+        assert state["records"] == [] and state["deleted_calls"] == [[404]]
+        with qc_workflow.store() as conn:
+            assert conn.execute("SELECT 1 FROM deleted_tasks WHERE id=?", (task_id,)).fetchone()
+            assert not conn.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone()
 
 
 def test_summary_history_record_delete_and_batch_rollback(monkeypatch):

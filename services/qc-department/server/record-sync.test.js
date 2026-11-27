@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const { DatabaseSync } = require('node:sqlite');
 const source = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
 const core = vm.runInNewContext(source.slice(source.indexOf('const RECORD_COLS'), source.indexOf('function replacePartners')) +
-  ';({SCHEMA_SQL,upsertRecords,deleteRecords,mergeRecordChanges,replaceRecords,rowToRecord,nextRecordId})');
+  ';({SCHEMA_SQL,upsertRecords,deleteRecords,mergeRecordChanges,replaceRecords,rowToRecord,nextRecordId,archiveSheetRecords})');
 const catalog = vm.runInNewContext(source.slice(source.indexOf('const RECORD_COLS'), source.indexOf('/* 用户表新增字段')) +
   ';({replacePartners,replaceDefects,seedIfEmpty,getCatalogRevision})',
   { fs, SEED_PATH: path.join(__dirname, 'seed.json'), console: { log() {}, warn() {} } });
@@ -55,6 +55,42 @@ test('clear and replacement preserve tombstones against an old full-array save',
   core.replaceRecords(db, [record(2, { productNo: 'explicit-import' })]);
   core.upsertRecords(db, [record(1, { updatedAt: '2099-01-01T00:00:00Z' })]);
   assert.deepEqual(all(db).map(r => r.id), [2]); assert.equal(all(db)[0].productNo, 'explicit-import');
+});
+test('sheet archive repeats safely after an identical record with the same id is restored', t => {
+  const db = database(t);
+  const original = record(42, { status: 'approved' });
+  core.upsertRecords(db, [original]);
+  const { version } = db.prepare('SELECT version FROM record_versions WHERE record_id=42').get();
+  const { generation } = db.prepare('SELECT generation FROM record_generations WHERE record_id=42').get();
+  const receipt = [{ id: 42, version, actor: 'qc-fixture' }];
+  assert.deepEqual([...core.archiveSheetRecords(db, receipt)], ['archived']);
+  assert.deepEqual(all(db), []);
+  core.replaceRecords(db, [original]);
+  assert.notEqual(db.prepare('SELECT generation FROM record_generations WHERE record_id=42').get().generation, generation);
+  assert.deepEqual([...core.archiveSheetRecords(db, receipt)], ['archived']);
+  assert.deepEqual(all(db).map(row => row.id), [42]);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM qc_delete_history').get().n, 1);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM record_tombstones').get().n, 0);
+});
+test('a newer version of a still-present legacy record is retained without an archive receipt', t => {
+  const db = database(t);
+  core.upsertRecords(db, [record(42)]);
+  const { version } = db.prepare('SELECT version FROM record_versions WHERE record_id=42').get();
+  const { generation } = db.prepare('SELECT generation FROM record_generations WHERE record_id=42').get();
+  core.upsertRecords(db, [record(42, { updatedAt: '2026-10-20T01:00:00Z', remark: 'new' })]);
+  assert.equal(db.prepare('SELECT generation FROM record_generations WHERE record_id=42').get().generation, generation);
+  assert.deepEqual([...core.archiveSheetRecords(db, [{ id: 42, version, actor: 'qc-fixture' }])], ['retained']);
+  assert.equal(all(db)[0].remark, 'new');
+  assert.equal(db.prepare('SELECT count(*) AS n FROM record_archive_receipts').get().n, 0);
+});
+test('a missing legacy version never creates a verified receipt', t => {
+  const db = database(t);
+  core.upsertRecords(db, [record(42)]);
+  const { version } = db.prepare('SELECT version FROM record_versions WHERE record_id=42').get();
+  core.upsertRecords(db, [record(42, { updatedAt: '2026-10-20T01:00:00Z', remark: 'new' })]);
+  core.deleteRecords(db, [42], true, { matchedSheetVersion: true });
+  assert.deepEqual([...core.archiveSheetRecords(db, [{ id: 42, version, actor: 'qc-fixture' }])], ['absent']);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM record_archive_receipts').get().n, 0);
 });
 test('bootstrap high-water id stays above deleted ids so new records can be saved', t => {
   const db = database(t); core.upsertRecords(db, [record(500)]); core.deleteRecords(db, [500]);

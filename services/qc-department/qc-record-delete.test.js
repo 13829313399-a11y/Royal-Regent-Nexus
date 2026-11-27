@@ -25,7 +25,7 @@ const columns = [
 const tick = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
 const copy = (v) => JSON.parse(JSON.stringify(v));
 
-async function createSheetEnv({ deleteAllowed }) {
+async function createSheetEnv({ deleteAllowed, extraRows = 0, waitForSave, deleteFailure } = {}) {
   const dom = new JSDOM(html, {
     runScripts: 'outside-only',
     url: 'http://localhost/api/qc-department/huaxing/u-test/',
@@ -60,6 +60,9 @@ async function createSheetEnv({ deleteAllowed }) {
       dateFrom: '2026-11-26', dateTo: '2026-11-26', updatedAt: '',
     },
   ];
+  entries.push(...Array.from({ length: extraRows }, (_, i) => ({
+    ...entries[0], id: `extra-${i}`, poNo: `PO-EXTRA-${i}`,
+  })));
   w.requestAnimationFrame = (fn) => w.setTimeout(fn, 1);
   w.cancelAnimationFrame = (id) => w.clearTimeout(id);
   w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -87,15 +90,25 @@ async function createSheetEnv({ deleteAllowed }) {
     if (url.endsWith('/review/entries')) return { ok: true, json: async () => ({ items: copy(reviewEntries), columns }) };
     if (url.endsWith('/entries')) return { ok: true, json: async () => ({ items: copy(entries), columns }) };
     if (url.endsWith('/notifications')) return { ok: true, json: async () => ({ items: [] }) };
-    if (url.endsWith('/entries/delete')) {
-      const ids = new Set(body.entries.map((e) => e.id));
-      entries = entries.filter((e) => !ids.has(e.id));
-      return { ok: true, json: async () => ({ results: body.entries.map((e) => ({ id: e.id, ok: true })), succeeded: ids.size, failed: 0 }) };
+    if (url.endsWith('/save')) {
+      const row = entries.find((entry) => entry.id === url.split('/').at(-2));
+      if (waitForSave) await waitForSave;
+      Object.assign(row, body, { revision: row.revision + 1 });
+      return { ok: true, json: async () => copy(row) };
     }
-    if (url.endsWith('/review/delete')) {
-      const ids = new Set(body.entries.map((e) => e.id));
-      reviewEntries = reviewEntries.filter((e) => !ids.has(e.id));
-      return { ok: true, json: async () => ({ results: body.entries.map((e) => ({ id: e.id, ok: true })), succeeded: ids.size, failed: 0 }) };
+    if (url.endsWith('/delete')) {
+      const isWorkbench = url.endsWith('/entries/delete');
+      const items = isWorkbench ? entries : reviewEntries;
+      const failure = deleteFailure?.(body, items);
+      if (failure) return { ok: false, status: failure, json: async () => ({ detail: '历史库归档尚未确认' }) };
+      const results = body.entries.map(({ id, revision }) => {
+        const row = items.find((entry) => entry.id === id);
+        return row?.revision === revision ? { id, ok: true } : { id, ok: false, status: 409, message: '记录已更新' };
+      });
+      const ids = new Set(results.filter((r) => r.ok).map((r) => r.id));
+      if (isWorkbench) entries = entries.filter((e) => !ids.has(e.id));
+      else reviewEntries = reviewEntries.filter((e) => !ids.has(e.id));
+      return { ok: true, json: async () => ({ results, succeeded: ids.size, failed: results.length - ids.size }) };
     }
     return { ok: true, json: async () => ({}) };
   };
@@ -130,7 +143,7 @@ test('ordinary user sees zero delete UI in workbench and review center', async (
   }
 });
 
-test('QC_test can delete blank drafts in workbench, pending items in review, and sees revoke-first guard on approved tab', async () => {
+test('QC_test can directly delete blank drafts, pending items and approved items using the shared selection', async () => {
   const env = await createSheetEnv({ deleteAllowed: true });
   try {
     // Workbench shows frozen delete checkbox column + bottom-left delete button.
@@ -146,10 +159,14 @@ test('QC_test can delete blank drafts in workbench, pending items in review, and
     assert.equal(env.w.getComputedStyle(delBtn).marginRight, 'auto');
     assert.equal(env.w.getComputedStyle(submitBtn.parentNode).justifyContent, 'flex-end');
 
-    // Check a BLANK draft row -> enables delete button while submit stays disabled!
+    // Editing focus alone does not select a row.
+    env.d.querySelector('[data-remark="wb-blank"]').click();
+    assert.equal(delBtn.disabled, true);
+
+    // Clicking the non-editable area of a blank row selects it for deletion.
     const blankCheck = env.d.querySelector('[data-delete-check="wb-blank"]');
-    blankCheck.checked = true;
-    blankCheck.dispatchEvent(new env.w.Event('change'));
+    env.d.querySelector('[data-entry="wb-blank"] [data-column=poNo]').click();
+    assert.equal(blankCheck.checked, true);
     assert.equal(delBtn.disabled, false);
     assert.equal(delBtn.textContent, '删除所选记录（1）');
     assert.equal(submitBtn.disabled, true);
@@ -175,12 +192,10 @@ test('QC_test can delete blank drafts in workbench, pending items in review, and
     await env.w.QcInspectionSheet.loadReview('pending');
     const revDelBtn = env.d.getElementById('qis-review-delete');
     assert.ok(revDelBtn && !revDelBtn.hidden && revDelBtn.disabled);
-    const guide = env.d.querySelector('.qis-approved-delete-guide');
-    assert.ok(guide && guide.hidden);
-
     const pendCheck = env.d.querySelector('[data-delete-check="rev-pending-1"]');
-    pendCheck.checked = true;
-    pendCheck.dispatchEvent(new env.w.Event('change'));
+    pendCheck.closest('label').click();
+    assert.equal(pendCheck.checked, true);
+    assert.equal(env.d.getElementById('qis-review-batch').disabled, false);
     assert.equal(revDelBtn.disabled, false);
     assert.equal(revDelBtn.textContent, '删除所选（1）');
     revDelBtn.click();
@@ -191,14 +206,185 @@ test('QC_test can delete blank drafts in workbench, pending items in review, and
     assert.ok(env.calls.some((c) => c.url?.endsWith('/review/delete')));
     assert.equal(env.d.getElementById('reviewCountPending').textContent, '0');
 
-    // Review center -> approved tab hides delete button and shows amber revoke-first guidance.
+    // Approved uses the original reversal checkbox and a separately worded delete dialog.
     await env.w.QcInspectionSheet.loadReview('approved');
-    assert.equal(env.d.getElementById('qis-review-delete').hidden, true);
-    assert.equal(env.d.querySelector('.qis-approved-delete-guide').hidden, false);
-    assert.match(env.d.querySelector('.qis-approved-delete-guide').textContent, /反审核/);
+    assert.equal(env.d.querySelector('.qis-approved-delete-guide'), null);
+    env.d.querySelector('[data-review-check="rev-approved-1"]').click();
+    assert.equal(env.d.getElementById('qis-review-batch').disabled, false);
+    assert.equal(revDelBtn.disabled, false);
+    revDelBtn.click();
+    const approved = env.d.querySelector('dialog[open]');
+    assert.match(approved.getAttribute('aria-label'), /删除已审核/);
+    assert.match(approved.textContent, /验货汇总.*日、周、月、年报表/);
+    approved.querySelector('[data-execute]').click();
+    await tick(20);
+    assert.deepEqual(env.calls.find((c) => c.url?.endsWith('/review/approved/delete')).body.entries, [{ id: 'rev-approved-1', revision: 4 }]);
+    assert.equal(env.d.querySelector('[data-entry="rev-approved-1"]'), null);
   } finally {
     env.dom.window.close();
   }
+});
+
+function dragRows(env, host, entries) {
+  const rows = entries.map((id) => host.querySelector(`[data-entry="${id}"]`));
+  host.getBoundingClientRect = () => ({ top: 0, bottom: 700 });
+  rows.forEach((row, i) => { row.getBoundingClientRect = () => ({ top: 100 + i * 60, bottom: 160 + i * 60 }); });
+  const pointer = (type, y) => new env.w.PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'mouse', button: 0, clientY: y });
+  rows[0].querySelector('[data-column=poNo]').dispatchEvent(pointer('pointerdown', 110));
+  const end = 110 + (rows.length - 1) * 60;
+  env.w.dispatchEvent(pointer('pointermove', end));
+  env.w.dispatchEvent(pointer('pointerup', end));
+}
+
+test('drag and full-cell checkboxes share the same selection in workbench and pending review', async (t) => {
+  const env = await createSheetEnv({ deleteAllowed: true });
+  t.after(() => env.dom.window.close());
+  const host = env.d.getElementById('recordsTableWrap');
+  const ids = [...host.querySelectorAll('[data-entry]')].map(row => row.dataset.entry);
+  dragRows(env, host, ids);
+  assert.equal(env.d.getElementById('qis-record-delete').textContent, '删除所选记录（2）');
+  assert.equal(env.d.getElementById('qis-record-batch').textContent, '提交审核（1）');
+  assert.equal(env.d.getElementById('qis-record-delete-all').checked, true);
+  env.d.querySelector('[data-delete-check="wb-blank"]').closest('label').click();
+  assert.equal(env.d.getElementById('qis-record-delete-all').indeterminate, true);
+  assert.equal(env.d.getElementById('qis-record-delete').textContent, '删除所选记录（1）');
+
+  await env.w.QcInspectionSheet.loadReview('pending');
+  dragRows(env, env.d.getElementById('reviewTableWrap'), ['rev-pending-1']);
+  assert.equal(env.d.getElementById('qis-pending-delete-all').checked, true);
+  assert.equal(env.d.getElementById('qis-review-delete').disabled, false);
+  assert.equal(env.d.getElementById('qis-review-batch').disabled, false);
+});
+
+test('delete cancels a debounced edit and waits for an in-flight save revision', async (t) => {
+  let releaseSave;
+  const waitForSave = new Promise((resolve) => { releaseSave = resolve; });
+  const env = await createSheetEnv({ deleteAllowed: true, waitForSave });
+  t.after(() => env.dom.window.close());
+  const result = env.d.querySelector('[data-result="wb-filled"]');
+  result.value = 'FAIL';
+  result.dispatchEvent(new env.w.Event('change', { bubbles: true }));
+  assert.ok(env.calls.some((call) => call.url?.endsWith('/wb-filled/save')));
+  const remark = env.d.querySelector('[data-remark="wb-blank"]');
+  remark.value = '未落盘';
+  remark.dispatchEvent(new env.w.Event('input', { bubbles: true }));
+  env.d.getElementById('qis-record-delete-all').closest('label').click();
+  env.d.getElementById('qis-record-delete').click();
+  env.d.querySelector('dialog[open] [data-execute]').click();
+  await tick(40);
+  assert.ok(!env.calls.some((call) => call.url?.endsWith('/delete')));
+  releaseSave();
+  await tick(60);
+  const req = env.calls.find((call) => call.url?.endsWith('/delete')).body;
+  assert.deepEqual(Object.fromEntries(req.entries.map((e) => [e.id, e.revision])), { 'wb-blank': 1, 'wb-filled': 3 });
+  assert.ok(!env.calls.some((call) => call.url?.endsWith('/wb-blank/save')));
+  assert.equal(env.d.querySelector('dialog[open]'), null);
+});
+
+test('full-cell select-all splits more than 500 records and retries a failed batch with the same key', async (t) => {
+  let requests = 0;
+  const env = await createSheetEnv({ deleteAllowed: true, extraRows: 500, deleteFailure: () => (++requests === 2 ? 503 : null) });
+  t.after(() => env.dom.window.close());
+  env.d.getElementById('qis-record-delete-all').closest('label').click();
+  env.d.getElementById('qis-record-delete').click();
+  const confirm = env.d.querySelector('dialog[open] [data-execute]');
+  confirm.click();
+  await tick(30);
+  assert.equal(confirm.textContent, '重试当前批次');
+  assert.match(env.d.querySelector('dialog[open] [data-feedback]').textContent, /已确认删除 200 条/);
+  confirm.click();
+  await tick(30);
+  const batches = env.calls.filter((call) => call.url?.endsWith('/delete')).map((call) => call.body);
+  assert.deepEqual(batches.map((batch) => batch.entries.length), [200, 200, 200, 102]);
+  assert.deepEqual(batches[1], batches[2]);
+  assert.equal(new Set(batches.map((batch) => batch.requestKey)).size, 3);
+  assert.equal(env.d.querySelector('#recordsTableWrap [data-entry]'), null);
+});
+
+test('a partial revision conflict requires refreshing and confirming only the remaining row', async (t) => {
+  let changed = false;
+  const env = await createSheetEnv({ deleteAllowed: true, deleteFailure: (_, rows) => {
+    if (changed) return;
+    changed = true;
+    const latest = rows.find((row) => row.id === 'wb-filled');
+    Object.assign(latest, { revision: 3, result: 'FAIL' });
+  } });
+  t.after(() => env.dom.window.close());
+  env.d.getElementById('qis-record-delete-all').click();
+  env.d.getElementById('qis-record-delete').click();
+  const dialog = env.d.querySelector('dialog[open]');
+  const confirm = dialog.querySelector('[data-execute]');
+  confirm.click();
+  await tick(20);
+  assert.equal(confirm.textContent, '刷新版本');
+  confirm.click();
+  await tick(20);
+  assert.equal(confirm.textContent, '确认删除 1 条');
+  assert.match(dialog.querySelector('.qis-delete-list').textContent, /PO-FILLED.*FAIL/);
+  confirm.click();
+  await tick(20);
+  const [first, retry] = env.calls.filter((call) => call.url?.endsWith('/delete')).map((call) => call.body);
+  assert.notEqual(first.requestKey, retry.requestKey);
+  assert.deepEqual(retry.entries, [{ id: 'wb-filled', revision: 3 }]);
+  assert.equal(env.d.querySelector('dialog[open]'), null);
+});
+
+test('leaving a delete dialog after zero successes shows the row conflict and preserves its draft', async (t) => {
+  const env = await createSheetEnv({ deleteAllowed: true, deleteFailure: (_, rows) => {
+    rows.find((row) => row.id === 'wb-filled').revision++;
+  } });
+  t.after(() => env.dom.window.close());
+  const row = env.d.querySelector('[data-entry="wb-filled"]');
+  const remark = row.querySelector('[data-remark]');
+  remark.value = '尚未保存的输入';
+  remark.dispatchEvent(new env.w.Event('input', { bubbles: true }));
+  row.querySelector('[data-delete-check]').click();
+  env.d.getElementById('qis-record-delete').click();
+  const dialog = env.d.querySelector('dialog[open]');
+  dialog.querySelector('[data-execute]').click();
+  await tick(20);
+  assert.match(dialog.querySelector('[data-feedback]').textContent, /已删除 0 \/ 1 条/);
+  dialog.querySelector('[data-cancel]').click();
+
+  assert.ok(row.isConnected);
+  assert.equal(remark.value, '尚未保存的输入');
+  const status = row.querySelector('[data-save-status]');
+  assert.equal(status.closest('.qis-save-feedback').hidden, false);
+  assert.match(status.textContent, /记录已更新/);
+  const retry = row.querySelector('[data-retry]');
+  assert.equal(retry.hidden, false);
+  assert.equal(retry.textContent, '核对版本并重试');
+});
+
+test('a row that left the workbench can keep its draft or explicitly discard it in conflict recovery', async (t) => {
+  const env = await createSheetEnv({ deleteAllowed: true, deleteFailure: (_, rows) => {
+    rows.splice(rows.findIndex((row) => row.id === 'wb-filled'), 1);
+  } });
+  t.after(() => env.dom.window.close());
+  const row = env.d.querySelector('[data-entry="wb-filled"]');
+  const remark = row.querySelector('[data-remark]');
+  remark.value = '另一个会话提交前的输入';
+  remark.dispatchEvent(new env.w.Event('input', { bubbles: true }));
+  row.querySelector('[data-delete-check]').click();
+  env.d.getElementById('qis-record-delete').click();
+  const dialog = env.d.querySelector('dialog[open]');
+  dialog.querySelector('[data-execute]').click();
+  await tick(20);
+  dialog.querySelector('[data-cancel]').click();
+
+  let confirmation;
+  env.w.confirm = (message) => { confirmation = message; return false; };
+  row.querySelector('[data-retry]').click();
+  await tick(20);
+  assert.match(confirmation, /已移出当前列表/);
+  assert.match(confirmation, /另一个会话提交前的输入/);
+  assert.equal(env.w.QcInspectionSheet.navigationState().dirty, true);
+
+  env.w.confirm = () => true;
+  row.querySelector('[data-retry]').click();
+  await tick(20);
+  assert.equal(env.d.querySelector('[data-entry="wb-filled"]'), null);
+  assert.equal(env.w.QcInspectionSheet.navigationState().dirty, false);
 });
 
 async function createSummaryEnv({ deleteAllowed }) {

@@ -59,6 +59,19 @@ def test_read_receipt_accepts_legacy_pending_without_details(db):
    assert sheet.unpack(conn, sheet.get(conn, factory, eid))['reviewState'] == 'pending'
   assert sheet.mark_review_read(factory, 'alice', {'entryIds': [eid], 'revisions': {eid: revision}}) == {'read': {eid: revision}}
 
+
+def test_read_receipt_accepts_a_legacy_mirror_that_became_pending():
+    factory = 'huaxing'
+    legacy = {'id': 71, 'status': 'rejected', 'orderNo': 'LEGACY'}
+    original, = sheet.sync(factory, sheet.candidates(factory, [legacy], [], []))['items']
+    assert original['flowVersion'] == 2
+    legacy['status'] = 'pending'
+    pending, = sheet.sync(factory, sheet.candidates(factory, [legacy], [], []))['items']
+    assert pending['id'] == original['id'] and pending['reviewState'] == 'pending'
+    versions = {pending['id']: pending['revision']}
+    assert sheet.mark_review_read(factory, 'alice', {'entryIds': [pending['id']], 'revisions': versions}) == {'read': versions}
+
+
 def test_full_self_review_revoke_reconfirm_photos_and_history(db):
  r=save(item(db));r=photo(photo(r,'red'),'blue');beforephotos=deepcopy(r['photos'])
  r=sheet.submit('huaxing',r['id'],{'revision':r['revision']},ACTOR)

@@ -41,8 +41,12 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE TABLE IF NOT EXISTS photo_annotations (
  photo_id TEXT PRIMARY KEY REFERENCES photos(id), version INTEGER NOT NULL, annotations TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS changes (
- id INTEGER PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), revision INTEGER NOT NULL,
- action TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL, snapshot TEXT NOT NULL);
+  id INTEGER PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), revision INTEGER NOT NULL,
+  action TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL, snapshot TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS legacy_delete_queue (
+  entry_id TEXT PRIMARY KEY REFERENCES entries(id), factory TEXT NOT NULL,
+  legacy_id INTEGER NOT NULL, version TEXT NOT NULL, actor TEXT NOT NULL,
+  generation TEXT, status TEXT NOT NULL DEFAULT 'pending');
 CREATE TABLE IF NOT EXISTS exports (
  id TEXT PRIMARY KEY, factory TEXT NOT NULL, actor TEXT NOT NULL, expires INTEGER NOT NULL, content BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS review_reads (
@@ -128,6 +132,10 @@ def migrate_review(conn):
     for key,ddl in {'location':"TEXT NOT NULL DEFAULT ''",'diff':"TEXT NOT NULL DEFAULT '{}'",'request_key':"TEXT NOT NULL DEFAULT ''",'notification_seen_by':"TEXT NOT NULL DEFAULT '{}'"}.items():
         if key not in present:conn.execute('ALTER TABLE changes ADD COLUMN '+key+' '+ddl)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS inspection_request_keys ON changes(entry_id,request_key) WHERE request_key<>''")
+    present = {r['name'] for r in conn.execute('PRAGMA table_info(legacy_delete_queue)')}
+    for key, ddl in {'generation': 'TEXT', 'status': "TEXT NOT NULL DEFAULT 'pending'"}.items():
+        if key not in present:
+            conn.execute('ALTER TABLE legacy_delete_queue ADD COLUMN ' + key + ' ' + ddl)
     conn.commit()
 
 
@@ -166,18 +174,35 @@ def legacy_fields(factory, record, examples):
     return base
 
 
-def candidates(factory, records, tasks, sources, examples=(), references=()):
+def legacy_token(value):
+    return value if isinstance(value, str) and re.fullmatch(r'[a-f0-9]{32}', value) else None
+
+
+def later_legacy_generation(starts, legacy_id, stamp):
+    return bool(stamp and starts.get(str(legacy_id), '') > stamp)
+
+
+def candidates(factory, records, tasks, sources, examples=(), references=(), legacy_versions=None,
+               legacy_generations=None, generation_starts=None):
     """Use explicit source IDs. Distinct batches and duplicate SKUs remain independent."""
     example_map = {r['id']:r for r in examples}
     source_map = {r['id']:r for r in sources}
-    linked = {t['legacyId'] for t in tasks if t.get('legacyId') is not None}
+    versions = legacy_versions or {}
+    generations = legacy_generations or {}
+    starts = generation_starts or {}
+    linked = {t['legacyId'] for t in tasks if t.get('legacyId') is not None
+              and not later_legacy_generation(starts, t['legacyId'], t.get('createdAt'))}
     result = []
     for record in records:
         if record['id'] in linked:
             continue
         base = legacy_fields(factory, record, example_map)
         base['legacyId'] = record['id']
-        base['legacyReviewState']=record.get('status','')
+        base['legacyReviewState']=scalar(record.get('status')).strip() or 'approved'
+        if version := legacy_token(versions.get(str(record['id']))):
+            base['_legacyVersion'] = version
+        if generation := legacy_token(generations.get(str(record['id']))):
+            base['_legacyGeneration'] = generation
         base['legacySubmittedAt']=record.get('submittedAt','')
         base['legacyConfirmedAt']=record.get('reviewAt','')
         base['referenceData']=record['id'] in references
@@ -187,8 +212,14 @@ def candidates(factory, records, tasks, sources, examples=(), references=()):
         source = source_map.get(task['sourceId'], task['source'])
         base = base_fields(source)
         if task.get('legacyId') is not None:
-            base = legacy_fields(factory, task.get('legacyOriginal') or {}, example_map)
-            base['legacyId'] = task['legacyId']
+            legacy_id, original = task['legacyId'], task.get('legacyOriginal') or {}
+            base = legacy_fields(factory, original, example_map)
+            base['legacyId'] = legacy_id
+            # A historical workflow snapshot alone cannot identify identical same-ID replacements.
+            if legacy_id not in linked:
+                base['_legacyGeneration'] = ''
+            elif generation := legacy_token(generations.get(str(legacy_id))):
+                base['_legacyGeneration'] = generation
         else:
             base['quantity'] = task.get('plannedQuantity') if task.get('plannedQuantity') is not None else base['quantity']
             if not base['dateFrom']:
@@ -283,6 +314,19 @@ def review_read_versions(factory, actor_id):
                                  (factory, actor_id)))
 
 
+def review_classification(base, state, flow_version, submitted_at):
+    # Older standalone mirrors may have a flow-v2 row with no local review state.
+    standalone = type(base.get('legacyId')) is int and not base.get('workflowId') and not state and not submitted_at
+    legacy_state = base.get('legacyReviewState')
+    if standalone:
+        legacy_state = scalar(legacy_state).strip() or 'approved'
+    if not (standalone or not flow_version):
+        return state, False
+    if legacy_state in {'pending', 'returned'}:
+        state = 'pending'
+    return state, bool(submitted_at or legacy_state == 'approved')
+
+
 def mark_review_read(factory, actor_id, body):
     ids, versions = body.get('entryIds'), body.get('revisions')
     if (set(body) != {'entryIds', 'revisions'} or not isinstance(ids, list) or not 1 <= len(ids) <= 500
@@ -294,13 +338,16 @@ def mark_review_read(factory, actor_id, body):
     saved = {}
     with store(True) as conn:
         placeholders = ','.join('?' for _ in ids)
-        for row in conn.execute(f"""SELECT e.id,e.revision FROM entries e
+        for row in conn.execute(f"""SELECT e.id,e.revision,e.base,d.review_state,d.flow_version,d.submitted_at
+            FROM entries e
             LEFT JOIN entry_details d ON d.entry_id=e.id
             WHERE e.factory=? AND COALESCE(d.deleted_at,'')=''
-              AND (d.review_state='pending' OR (COALESCE(d.flow_version,0)=0
-                   AND json_extract(e.base,'$.legacyReviewState') IN ('pending','returned')))
               AND e.id IN ({placeholders})""", (factory, *ids)):
-            if versions[row['id']] == row['revision']:
+            if versions[row['id']] != row['revision']:
+                continue
+            state, _ = review_classification(json.loads(row['base']), row['review_state'] or '',
+                                             row['flow_version'], row['submitted_at'])
+            if state == 'pending':
                 saved[row['id']] = row['revision']
         conn.executemany("""INSERT INTO review_reads VALUES(?,?,?,?,?)
             ON CONFLICT(factory,actor_id,entry_id) DO UPDATE SET revision=excluded.revision,read_at=excluded.read_at""",
@@ -320,6 +367,8 @@ def unpack(conn, row, include_photos=True):
             photos.append(item)
     extension=conn.execute('SELECT * FROM entry_details WHERE entry_id=?',(row['id'],)).fetchone()
     base=json.loads(row['base'])
+    base.pop('_legacyVersion', None)
+    base.pop('_legacyGeneration', None)
     base.update(improvement=extension['improvement'] if extension else '',submittedAt=extension['submitted_at'] if extension else '')
     base.update(flowVersion=extension['flow_version'] if extension else 0,
         reviewState=extension['review_state'] if extension else '',
@@ -329,8 +378,8 @@ def unpack(conn, row, include_photos=True):
     if extension and extension['inspection_problem'] is not None:base['inspectionProblem']=extension['inspection_problem']
     for key, (column, _) in REVIEW_FIELDS.items():
         if extension and extension[column] is not None:base[key]=extension[column]
-    base['legacyCompleted']=bool(not base['flowVersion'] and (base['submittedAt'] or base.get('legacyReviewState')=='approved'))
-    if not base['flowVersion'] and base.get('legacyReviewState') in {'pending','returned'}:base['reviewState']='pending'
+    base['reviewState'], base['legacyCompleted'] = review_classification(
+        base, base['reviewState'], base['flowVersion'], base['submittedAt'])
     if extension and extension['submitted_snapshot']:
         base['submittedBy']=json.loads(extension['submitted_snapshot']).get('submittedBy','')
     reversal=conn.execute("SELECT * FROM changes WHERE entry_id=? AND action='revoke' ORDER BY id DESC LIMIT 1",(row['id'],)).fetchone()
@@ -359,16 +408,101 @@ def unpack(conn, row, include_photos=True):
             'updatedAt':row['updated_at'], 'photos':photos}
 
 
-def sync(factory, rows, copy_photos=True):
+def legacy_isolation(conn, factory, generations, generation_starts):
+    """Pin the first authoritative observation for tombstones created without an identity."""
+    conn.execute("""
+        INSERT OR IGNORE INTO legacy_delete_queue(entry_id,factory,legacy_id,version,actor,generation,status)
+        SELECT e.id,e.factory,json_extract(e.base,'$.legacyId'),'',
+               coalesce(json_extract(d.last_actor,'$.id'),''),
+               json_extract(e.base,'$._legacyGeneration'),'retained'
+        FROM entries e JOIN entry_details d ON d.entry_id=e.id
+        WHERE e.factory=? AND d.deleted_at<>'' AND json_type(e.base,'$.legacyId')='integer'
+    """, (factory,))
+    pending = conn.execute("""SELECT entry_id,legacy_id FROM legacy_delete_queue
+        WHERE factory=? AND generation IS NULL""", (factory,)).fetchall()
+    for item in pending:
+        legacy_id = str(item['legacy_id'])
+        # A row inserted after Node began tracking generations is not an untracked original.
+        generation = '' if generation_starts.get(legacy_id) else legacy_token(generations.get(legacy_id)) or ''
+        conn.execute('UPDATE legacy_delete_queue SET generation=? WHERE entry_id=?', (generation, item['entry_id']))
+    return {(r['legacy_id'], r['generation']) for r in conn.execute(
+        'SELECT legacy_id,generation FROM legacy_delete_queue WHERE factory=? AND generation IS NOT NULL', (factory,),
+    )}
+
+
+def link_legacy_record(factory, body, actor, record, reference, generations, generation_starts):
+    legacy_id = str(record['id'])
+    starts = generation_starts or {}
+    generation = legacy_token((generations or {}).get(legacy_id))
+    # Link and bind the existing mirror in the same attached transaction as sheet deletion uses.
+    with store(True, archive_workflow=True) as conn:
+        if generation:
+            isolated = (record['id'], generation) in legacy_isolation(conn, factory, generations, starts)
+        else:
+            isolated = conn.execute("""SELECT 1 FROM entries e JOIN entry_details d ON e.id=d.entry_id
+                WHERE e.factory=? AND d.deleted_at<>'' AND json_extract(e.base,'$.legacyId')=?""",
+                (factory, record['id'])).fetchone()
+        if isolated:
+            raise HTTPException(409, '该历史原件已从 QC 撤出并保留待核对')
+        mirrors = []
+        for row in conn.execute("""SELECT e.id,e.base,d.submitted_at,d.review_state
+            FROM entries e LEFT JOIN entry_details d ON d.entry_id=e.id
+            WHERE e.factory=? AND coalesce(d.deleted_at,'')='' AND json_extract(e.base,'$.legacyId')=?""",
+            (factory, record['id'])):
+            base = json.loads(row['base'])
+            known_generation = base.get('_legacyGeneration')
+            matches_generation = (known_generation == generation if known_generation is not None
+                                  else not starts.get(legacy_id))
+            if not matches_generation or base.get('workflowId'):
+                continue
+            if row['submitted_at'] or row['review_state'] in {'pending', 'approved'}:
+                raise HTTPException(409, '该记录已进入审核中心，请在审核中心处理')
+            mirrors.append((row['id'], base))
+        if len(mirrors) > 1:
+            raise HTTPException(409, '该记录有多个验货表关联，请刷新核对')
+        task = wf.create_entry(factory, body, actor, record, reference, connection=conn)
+        for entry_id, base in mirrors:
+            base['workflowId'] = task['id']
+            if generation:
+                base['_legacyGeneration'] = generation
+            conn.execute('UPDATE entries SET base=?,revision=revision+1 WHERE id=?', (wf.dump(base), entry_id))
+        return task
+
+
+def sync(factory, rows, copy_photos=True, legacy_generations=None, generation_starts=None):
     ids = [];photo_warnings=set()
+    starts = generation_starts or {}
     with store(True) as conn:
         deleted_ids={r[0] for r in conn.execute("SELECT e.id FROM entries e JOIN entry_details d ON d.entry_id=e.id WHERE e.factory=? AND d.deleted_at<>''",(factory,))}
+        isolated = legacy_isolation(conn, factory, legacy_generations, starts) if legacy_generations is not None and deleted_ids else set()
         source_counts={}
         for _,base,_,_,_ in rows:
             if base.get('sourceId'):source_counts[base['sourceId']]=source_counts.get(base['sourceId'],0)+1
         for key,base,result,remark,attachments in rows:
-            entry_id = sha256((factory+'\0'+key).encode()).hexdigest()[:32]
+            generation = base.get('_legacyGeneration')
+            numeric_legacy_key = key.startswith('legacy:') and type(base.get('legacyId')) is int
+            if numeric_legacy_key and (base['legacyId'], generation) in isolated:
+                continue
             previous = conn.execute('SELECT * FROM entries WHERE factory=? AND source_key=?',(factory,key)).fetchone()
+            old_base = json.loads(previous['base']) if previous else {}
+            if numeric_legacy_key and previous and generation:
+                previous_generation = old_base.get('_legacyGeneration')
+                if previous_generation is None and starts.get(str(base['legacyId'])):
+                    previous_generation = old_base['_legacyGeneration'] = ''
+                    if previous['id'] not in deleted_ids:
+                        conn.execute('UPDATE entries SET base=? WHERE id=?', (wf.dump(old_base), previous['id']))
+                if previous['id'] in deleted_ids or (previous_generation is not None and previous_generation != generation):
+                    key += ':' + generation
+                    previous = conn.execute('SELECT * FROM entries WHERE factory=? AND source_key=?',(factory,key)).fetchone()
+                    old_base = json.loads(previous['base']) if previous else {}
+            if (numeric_legacy_key and generation == '' and base.get('workflowId')
+                    and old_base.get('workflowId') != base['workflowId']
+                    and old_base.get('_legacyGeneration')):
+                # A late-mirrored workflow cannot claim a Node replacement that already owns the numeric key.
+                key = 'workflow:' + base['workflowId']
+                previous = conn.execute('SELECT * FROM entries WHERE factory=? AND source_key=?', (factory, key)).fetchone()
+                old_base = json.loads(previous['base']) if previous else {}
+            entry_id = sha256((factory+'\0'+key).encode()).hexdigest()[:32]
             # A scheduled source becoming its first workflow keeps the same business identity.
             # Subsequent batches remain independent; never join on customer/PO/SKU.
             if not previous and base.get('workflowId'):
@@ -379,6 +513,7 @@ def sync(factory, rows, copy_photos=True):
                     else:base['lineageConflict']='原排期已拆为多个批次，无法自动归属先前填写的验货记录'
                 if len(linked)==1:
                     previous=linked[0]
+                    old_base=json.loads(previous['base'])
                     if previous['id'] not in deleted_ids:
                         conn.execute('UPDATE entries SET source_key=? WHERE id=?',(key,previous['id']))
                 elif len(linked)>1:base['lineageConflict']='同一流程关联了多个验货记录，需要核对'
@@ -386,13 +521,26 @@ def sync(factory, rows, copy_photos=True):
             if entry_id in deleted_ids:
                 continue  # Tombstoned deletions never resurrect during source refresh.
             ids.append(entry_id)
+            if numeric_legacy_key and old_base.get('workflowId') and not base.get('workflowId'):
+                # A list may have read its sources before link_legacy_record committed this binding.
+                continue
             if previous and conn.execute("SELECT 1 FROM entry_details WHERE entry_id=? AND submitted_at<>''",(entry_id,)).fetchone():
-                continue  # Submitted fields/photos are frozen; source status refresh must not bump revision.
+                # Generation identifies what to hide; it never authorizes Node removal.
+                if '_legacyGeneration' not in old_base and '_legacyGeneration' in base:
+                    old_base['_legacyGeneration'] = base['_legacyGeneration']
+                    # The approved projection still refers to the same business revision.
+                    conn.execute('UPDATE entries SET base=? WHERE id=?', (wf.dump(old_base),entry_id))
+                continue  # Submitted fields/photos stay frozen.
             base['historicalResult'] = result if result not in (None,'',*RESULTS) else ''
             base['sourceResult']=result or ''
             base['resultOverride']=False
             if previous:
-                old_base=json.loads(previous['base'])
+                if old_base.get('_legacyVersion'):
+                    base['_legacyVersion'] = old_base['_legacyVersion']
+                else:
+                    base.pop('_legacyVersion', None)
+                if '_legacyGeneration' in old_base:
+                    base['_legacyGeneration'] = old_base['_legacyGeneration']
                 if 'resultOverride' in old_base:base['resultOverride']=old_base['resultOverride']
                 else:
                     # Old entries already have immutable save receipts; photo/remark-only saves do not change judgment.
@@ -837,9 +985,25 @@ def return_to_inspection(factory, entry_id, body, actor, sources=None):
         return {'item':item,'eventId':event['id'],'replayed':False}
 
 
+def record_legacy_delete(conn, row, snapshot, actor_id, *, verified):
+    legacy_id = snapshot.get('legacyId')
+    if type(legacy_id) is not int:
+        return None
+    base = json.loads(row['base'])
+    version = legacy_token(base.get('_legacyVersion')) if verified else None
+    generation = '' if base.get('_legacyGeneration') == '' else legacy_token(base.get('_legacyGeneration'))
+    conn.execute("""
+        INSERT OR IGNORE INTO legacy_delete_queue(entry_id,factory,legacy_id,version,actor,generation,status)
+        VALUES (?,?,?,?,?,?,?)
+    """, (row['id'], row['factory'], legacy_id, version or '', actor_id, generation,
+          'pending' if version else 'retained'))
+    return conn.execute('SELECT status FROM legacy_delete_queue WHERE entry_id=?', (row['id'],)).fetchone()[0]
+
+
 def delete_batch(factory, scope, body, actor):
-    """Soft-delete workbench or pending-review inspection entries with full audit trail."""
-    if (scope not in {'workbench', 'pending'} or set(body) - {'entries', 'requestKey', 'reason'}
+    """Soft-delete inspection entries and withdraw their projections with an audit trail."""
+    locations = {'workbench': '验货台', 'pending': '审核中心 · 待审核', 'approved': '审核中心 · 已审核'}
+    if (scope not in locations or set(body) - {'entries', 'requestKey', 'reason'}
             or not isinstance(body.get('entries'), list) or not 1 <= len(body['entries']) <= 500
             or not re.fullmatch(r'[a-f0-9-]{16,64}', str(body.get('requestKey', '')))):
         raise HTTPException(422, '删除范围或请求编号不正确')
@@ -852,7 +1016,7 @@ def delete_batch(factory, scope, body, actor):
     if not isinstance(reason, str) or len(reason) > 2000 or any(ord(c) < 32 and c not in '\n\r\t' for c in reason):
         raise HTTPException(422, '删除说明最多2000字且不能包含非法控制字符')
     reason = reason.strip()
-    location = '验货台' if scope == 'workbench' else '审核中心 · 待审核'
+    location = locations[scope]
     results = []
     with store(True, review=True, archive_workflow=True) as conn:
         for wanted in entries:
@@ -872,11 +1036,12 @@ def delete_batch(factory, scope, body, actor):
                             or previous.get('scope') != scope):
                         raise HTTPException(409, '同一请求编号不能用于不同操作')
                     snap = json.loads(receipt['snapshot'])
-                    wf.archive_deleted_task(conn, factory, snap.get('workflowId'), actor, reason)
+                    legacy_archive = record_legacy_delete(conn, row, snap, actor['id'], verified=False)
                     results.append({
                         'id': row['id'], 'ok': True, 'replayed': True,
                         'workflowId': snap.get('workflowId') or '',
                         'legacyId': snap.get('legacyId'),
+                        'legacyArchive': legacy_archive,
                         'customer': snap.get('customer', ''),
                         'poNo': snap.get('poNo', ''),
                         'productNo': snap.get('productNo', ''),
@@ -887,16 +1052,15 @@ def delete_batch(factory, scope, body, actor):
                     raise HTTPException(404, '验货任务不存在或已删除')
                 before = unpack(conn, row)
                 revision(row, wanted)
+                was_approved = before['reviewState'] == 'approved' or before['legacyCompleted']
                 if scope == 'workbench':
                     if not workbench_items([before]):
-                        if before['reviewState'] == 'approved' or before['legacyCompleted']:
-                            raise HTTPException(409, '已审核记录请先在审核中心反审核退回待审核，再执行删除')
                         raise HTTPException(409, '该记录已进入审核中心，请在审核中心处理')
-                else:
-                    if before['reviewState'] == 'approved' or before['legacyCompleted']:
-                        raise HTTPException(409, '已审核记录请先执行反审核退回待审核，再执行删除')
-                    if before['reviewState'] != 'pending':
-                        raise HTTPException(409, '记录状态已变化，不再属于待审核队列，请刷新后重试')
+                elif scope == 'pending' and (before['reviewState'] != 'pending' or was_approved):
+                    raise HTTPException(409, '记录状态已变化，不再属于待审核队列，请刷新后重试')
+                elif scope == 'approved' and not was_approved:
+                    raise HTTPException(409, '记录状态已变化，不再属于已审核列表，请刷新后重试')
+                legacy_archive = record_legacy_delete(conn, row, before, actor['id'], verified=True)
                 stamp = wf.now()
                 wf.archive_deleted_task(conn, factory, before.get('workflowId'), actor, reason)
                 conn.execute('INSERT OR IGNORE INTO entry_details(entry_id) VALUES(?)', (row['id'],))
@@ -913,8 +1077,11 @@ def delete_batch(factory, scope, body, actor):
                     'reason': reason,
                     'expectedRevision': wanted['revision'],
                     'previousReviewState': before['reviewState'],
+                    'wasApproved': was_approved,
                     'scope': scope,
                 }
+                if legacy_archive:
+                    diff['legacyArchive'] = legacy_archive
                 conn.execute(
                     'INSERT INTO changes(entry_id,revision,action,actor,created_at,snapshot,location,diff,request_key) VALUES(?,?,?,?,?,?,?,?,?)',
                     (row['id'], new_revision, 'delete', wf.dump(actor), stamp, wf.dump(before), location, wf.dump(diff), body['requestKey']),
@@ -932,6 +1099,7 @@ def delete_batch(factory, scope, body, actor):
                     'id': row['id'], 'ok': True, 'replayed': False,
                     'workflowId': before.get('workflowId') or '',
                     'legacyId': before.get('legacyId'),
+                    'legacyArchive': legacy_archive,
                     'customer': before.get('customer', ''),
                     'poNo': before.get('poNo', ''),
                     'productNo': before.get('productNo', ''),
@@ -942,6 +1110,33 @@ def delete_batch(factory, scope, body, actor):
                 conn.execute('RELEASE delete_item')
                 results.append({'id': wanted['id'], 'ok': False, 'status': error.status_code, 'message': error.detail})
     return {'results': results, 'succeeded': sum(r['ok'] for r in results), 'failed': sum(not r['ok'] for r in results)}
+
+
+def pending_legacy_deletes(factory, entry_ids=None):
+    if not database_path().is_file():
+        return []
+    query = "SELECT entry_id,legacy_id,version,actor FROM legacy_delete_queue WHERE factory=? AND status='pending'"
+    params = [factory]
+    if entry_ids is not None:
+        query += ' AND entry_id IN (' + ','.join('?' for _ in entry_ids) + ')'
+        params.extend(entry_ids)
+    with store() as conn:
+        return [dict(row) for row in conn.execute(query + ' ORDER BY rowid LIMIT 500', params)]
+
+
+def acknowledge_legacy_deletes(factory, outcomes):
+    with store(True) as conn:
+        conn.executemany("UPDATE legacy_delete_queue SET status=? WHERE factory=? AND entry_id=? AND status='pending'",
+                         ((status, factory, entry_id) for entry_id, status in outcomes))
+
+
+def legacy_delete_statuses(factory, entry_ids):
+    placeholders = ','.join('?' for _ in entry_ids)
+    with store() as conn:
+        return dict(conn.execute(
+            f'SELECT entry_id,status FROM legacy_delete_queue WHERE factory=? AND entry_id IN ({placeholders})',
+            (factory, *entry_ids),
+        ).fetchall())
 
 
 def submitted_legacy_ids(factory):

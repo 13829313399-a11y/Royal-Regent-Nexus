@@ -75,7 +75,7 @@ P2b 原岗位验收件未找到，保留[独立验收说明](../business/huakang
 
 周报模板以[清单](../../backend/app/templates/qc-weekly/templates.json)和[加载服务](../../backend/app/services/qc_weekly_templates.py)核对。验货审核、退回与附件规则见[业务要求](../business/QC验货运营中心业务需求.md)和[运行契约](../business/qc-legacy-runtime-contract.md)。
 
-QC 记录删除与历史导入批次撤回统一受独立权限 `qc_inspection:record_delete` 管控（仅限专用账号 `QC_test` 的六厂区 `qc_record_admin` 明确绑定，系统管理员与普通 QC 岗位不含该权限且界面保持无删除入口）。验货台与审核中心待审核支持带审计快照的软删除且不修改业务部客排期订单；已审核与审核同步汇总记录须先反审核退回待审核后再删除；已被历史记录引用的不良描述受保护仅允许停用。
+QC 记录删除与历史导入批次撤回统一受独立权限 `qc_inspection:record_delete` 管控（仅限专用账号 `QC_test` 的六厂区 `qc_record_admin` 明确绑定，系统管理员与普通 QC 岗位不含该权限且界面保持无删除入口）。验货台、待审核和已审核均支持直接软删除（含空白草稿和历史已完成记录），保留删除审计快照。已审核记录自汇总与报表同步撤出，源自客排期的被删除任务可重新推送，业务部原始订单保持原样。历史库仅归档绑定版本相符的原件；无法核验时撤出 QC、保留原件待核，区分同编号后续恢复的新记录。已被历史记录引用的不良描述受保护，仅允许停用。
 
 [qc-department-integration.md](../business/qc-department-integration.md) · [qc_department.py](../../backend/app/api/qc_department.py) · [test_qc_weekly_template_manifest.py](../../backend/tests/test_qc_weekly_template_manifest.py)
 

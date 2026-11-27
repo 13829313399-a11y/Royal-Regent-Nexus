@@ -106,24 +106,29 @@ function measureHeader(doc: Document, element: HTMLIFrameElement) {
       width: `${sheet.clientWidth}px`,
       height: `${Math.max(0, end.getBoundingClientRect().bottom - rowBox.top)}px`,
     })
-    const cells = Array.from(row.cells).map(th => {
+    const cells = Array.from(row.cells).flatMap(th => {
       const style = doc.defaultView!.getComputedStyle(th)
+      if (style.display === 'none') return []
       const box = th.getBoundingClientRect()
-      const frozen = th.dataset.column === 'customer' || th.dataset.column === 'poNo'
+      const selectionColumn = th.dataset.column === 'deleteSelect'
+      const frozen = selectionColumn || th.dataset.column === 'customer' || th.dataset.column === 'poNo'
       const dateSort = sheet.id === 'recordsTableWrap' ? th.querySelector<HTMLButtonElement>('.qis-date-sort') : null
-      return { sortTitle: dateSort?.title || '', text: th.textContent || '', column: th.dataset.column || '', style: {
+      const checkbox = th.querySelector<HTMLInputElement>('#qis-record-delete-all,#qis-pending-delete-all')
+      return [{ checkbox: checkbox && {
+        id: checkbox.id, checked: checkbox.checked, mixed: checkbox.indeterminate, disabled: checkbox.disabled,
+      }, sortTitle: dateSort?.title || '', text: th.textContent || '', column: th.dataset.column || '', style: {
         width: `${box.width}px`, height: `${box.height}px`,
         fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight,
         lineHeight: style.lineHeight, letterSpacing: style.letterSpacing, textAlign: style.textAlign,
         padding: style.padding, color: style.color, background: style.backgroundColor,
         borderRight: style.borderRight, borderBottom: style.borderBottom,
-        position: frozen ? 'sticky' : 'relative', left: frozen ? style.left : 'auto',
-        zIndex: frozen ? '2' : '1',
-      } }
+        position: frozen ? 'sticky' : 'relative', left: selectionColumn ? '0px' : frozen ? style.left : 'auto',
+        zIndex: selectionColumn ? '3' : frozen ? '2' : '1',
+      } }]
     })
     const signature = JSON.stringify(cells)
     if (signature !== mirror.signature) {
-      // Keep the original accessible control in the iframe; the date label forwards pointer clicks.
+      // Keep the accessible controls in the iframe; mirrors forward pointer clicks.
       mirror.strip.replaceChildren(...cells.map(cell => {
         const label = document.createElement('span')
         label.textContent = cell.text
@@ -134,6 +139,19 @@ function measureHeader(doc: Document, element: HTMLIFrameElement) {
           label.title = cell.sortTitle
           label.style.padding = '10px 8px'
           label.onclick = () => sheet.querySelector<HTMLButtonElement>('.qis-date-sort')?.click()
+        }
+        const selection = cell.checkbox
+        if (selection) {
+          const box = document.createElement('input')
+          box.type = 'checkbox'
+          box.tabIndex = -1
+          box.checked = selection.checked
+          box.indeterminate = selection.mixed
+          box.disabled = selection.disabled
+          label.title = '全选当前筛选记录'
+          label.className = 'qc-select-all-mirror'
+          label.append(box)
+          label.onclick = () => doc.getElementById(selection.id)?.click()
         }
         return label
       }))
@@ -149,6 +167,7 @@ function measureHeader(doc: Document, element: HTMLIFrameElement) {
 function disconnectLayout() {
   frameResize?.disconnect()
   frameChanges?.disconnect()
+  layoutDocument?.removeEventListener('change', scheduleViewport)
   layoutDocument = undefined
   clearHeader()
 }
@@ -206,7 +225,8 @@ function connectLayout() {
     frameChanges = new MutationObserver(scheduleViewport)
     frameChanges.observe(doc.documentElement, { attributes: true, attributeFilter: ['class'] })
     // Also catch same-height row/header replacements, review tab changes and overlays.
-    frameChanges.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'open', 'hidden'] })
+    frameChanges.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'open', 'hidden', 'disabled'] })
+    doc.addEventListener('change', scheduleViewport)
   }
   scheduleViewport()
 }
@@ -415,9 +435,12 @@ watch(frame, scheduleViewport, { flush: 'post' })
 .qc-table-header-layer :deep(.qc-table-header-bounds) { position:absolute; }
 .qc-table-header-layer :deep(.qc-table-header-sticky) { position:sticky; top:0; }
 .qc-table-header-layer :deep(.qc-table-header-strip) { display:flex; overflow:hidden; }
-.qc-table-header-layer :deep(.qc-table-header-strip span) { display:block; flex:none; box-sizing:border-box; white-space:nowrap; }
+.qc-table-header-layer :deep(.qc-table-header-strip span) { display:block; flex:none; box-sizing:border-box; white-space:nowrap; overflow:hidden; }
 .qc-table-header-layer :deep(.qc-date-sort-mirror) { pointer-events:auto; cursor:pointer; }
 .qc-table-header-layer :deep(.qc-date-sort-mirror:hover) { background:#e1ebe5!important; }
+.qc-table-header-layer :deep(.qc-table-header-strip .qc-select-all-mirror) { display:grid; place-items:center; pointer-events:auto; cursor:pointer; }
+.qc-table-header-layer :deep(.qc-select-all-mirror:has(input:disabled)) { cursor:default; }
+.qc-table-header-layer :deep(.qc-select-all-mirror input) { appearance:auto; accent-color:#b42318; width:15px; height:15px; pointer-events:none; }
 .qc-host-factory { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .qc-host-factory select { min-height: 36px; max-width: 180px; border: 1px solid var(--input); border-radius: 10px; padding: 4px 10px; background: var(--card, white); font: inherit; }
 /* Scoped QC frame chrome; Nexus theme and authorization/factory bridge are unchanged. */
