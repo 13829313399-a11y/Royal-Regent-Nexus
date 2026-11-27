@@ -51,3 +51,26 @@ test('week, month and year use the same grouped fields and adjacent evidence',as
   assert.equal(cells[13].textContent,'左侧');
  }
  }finally{p.dom.window.close();}});
+
+test('direct report thumbnail and viewer use the same approved revision',async()=>{
+ const p=page();try{
+  const original=p.w.fetch;
+  let revision;
+  p.w.fetch=async(...args)=>{
+   const response=await original(...args),data=await response.json();
+   Object.assign(data.tables.issues[0],{revision,photos:[{id:'p&1',name:'验货照片'}]});
+   return {ok:true,json:async()=>data};
+  };
+  for(const [version,src] of [
+   [0,'api/report-workbook/photo?entry=all&revision=0&photo=p%261'],
+   [undefined,'api/inspection-sheet/entries/all/photos/p%261'],
+  ]){
+   revision=version;
+   await p.w.QcIssueReports.open('weekly','2026-11-09');
+   const button=p.d.querySelector('.qir-photo');
+   assert.equal(button.querySelector('img').getAttribute('src'),src);
+   button.click();
+   assert.equal(p.d.querySelector('.qmt-photo-dialog img').getAttribute('src'),src);
+  }
+ }finally{p.dom.window.close();}
+});

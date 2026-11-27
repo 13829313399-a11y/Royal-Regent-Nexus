@@ -31,6 +31,24 @@ test('four independent layouts, month query, photos and return through 月',asyn
  assert.ok(p.w.QcMonthlyTemplates.returnToReport());assert.equal(p.d.getElementById('monthlyReportBody').hidden,false);
  }finally{p.dom.window.close();}
 });
+test('monthly direct photo dialog and thumbnail use the approved revision when present',async()=>{
+ const p=page();try{
+  p.w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  for(const [revision,src] of [
+   [17,`api/report-workbook/photo?entry=${entry}&revision=17&photo=photo1`],
+   [undefined,`api/inspection-sheet/entries/${entry}/photos/photo1`],
+  ]){
+   p.data.tables.issues[0].revision=revision;
+   await p.w.QcMonthlyTemplates.open('issues');
+   const button=p.d.querySelector('.qmt-photo');
+   assert.equal(button.querySelector('img').getAttribute('src'),src);
+   button.click();
+   const dialog=p.d.querySelector('.qmt-photo-dialog');
+   assert.equal(dialog.querySelector('img').getAttribute('src'),src);
+   dialog.remove();
+  }
+ }finally{p.dom.window.close();}
+});
 test('blank editing, autosave, switching and saved values on reload',async()=>{
  const p=page();try{await p.w.QcMonthlyTemplates.open('all');p.edit(field,'00123').dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await p.w.QcMonthlyTemplates.flush();assert.equal(p.w.QcMonthlyTemplates.navigationState().dirty,false);
  for(const k of ['caixing','issues','customers']){await p.w.QcMonthlyTemplates.open(k);assert.equal(p.d.querySelector('[data-field="'+field+'"]').textContent,'00123');}

@@ -17,7 +17,7 @@ import xlrd
 
 from app.services import qc_inspection_sheet as journal, qc_photo_assets, qc_workflow as wf
 from app.services.qc_inspection_print import HEADERS as LEGACY_HEADERS, export_photo
-from app.services.qc_inspection_schedule_excel import ORDER_FIELDS
+from app.services.qc_inspection_schedule_excel import ORDER_FIELDS, photo_group_digest, photo_source_proofs
 
 MAX_BYTES = 35 * 1024 * 1024
 MAX_ROWS = 500
@@ -132,7 +132,7 @@ def read_xls(content):
         book.release_resources()
 
 
-def read_xlsx(content):
+def read_xlsx(content, factory):
     with ZipFile(BytesIO(content)) as archive:
         members = archive.infolist()
         if (len(members) > 2000 or sum(item.file_size for item in members) > 80 * 1024 * 1024
@@ -173,17 +173,21 @@ def read_xlsx(content):
                 raise HTTPException(422, f'第 {n} 行最多支持 50 张照片')
             raw = image._data()
             photos[n].append((raw, qc_photo_assets.inspect(raw)))
-        return rows, photos
+        return rows, photos, photo_source_proofs(book, factory)
     finally:
         book.close()
 
 
-def parse(content):
+def parse(content, *, factory=None):
     if not content or len(content) > MAX_BYTES:
         raise HTTPException(422, '请选择 35 MB 以内的 Excel 文件')
     legacy = content.startswith(bytes.fromhex('d0cf11e0a1b11ae1'))
     try:
-        rows, photos = read_xls(content) if legacy else read_xlsx(content)
+        if legacy:
+            rows, photos = read_xls(content)
+            proofs = {}
+        else:
+            rows, photos, proofs = read_xlsx(content, factory)
     except HTTPException:
         raise
     except Exception as error:
@@ -232,7 +236,13 @@ def parse(content):
         except (ValueError, HTTPException, OverflowError) as error:
             message = error.detail if isinstance(error, HTTPException) else str(error)
             raise HTTPException(422, f'第 {n} 行：{message}') from error
-        result.append({'line': n, 'fields': fields, 'photos': photos.pop(n, [])})
+        row_photos = photos.pop(n, [])
+        row = {'line': n, 'fields': fields, 'photos': row_photos}
+        if proofs and row_photos:
+            rendered = photo_group_digest(meta['sha256'] for _, meta in row_photos)
+            if sources := proofs.get(rendered):
+                row['verifiedPhotoSources'] = sources
+        result.append(row)
     if photos:
         raise HTTPException(422, f'第 {min(photos)} 行的照片没有对应验货记录')
     if not 1 <= len(result) <= MAX_ROWS:
@@ -285,19 +295,38 @@ def stored_candidates(conn, factory, wanted, legacy):
     return result
 
 
-def photos_match(conn, entry_id, expected):
+def photos_match(conn, entry_id, expected, verified_sources=()):
     photos = list(conn.execute('SELECT id,digest FROM photos WHERE entry_id=? AND removed=0', (entry_id,)))
     if len(photos) != len(expected):
         return False
-    if tuple(sorted(photo['digest'] for photo in photos)) == expected:
+    digests = tuple(sorted(photo['digest'] for photo in photos))
+    if digests == expected or (verified_sources and photo_group_digest(digests) in verified_sources):
         return True
     # A workbench re-export embeds rendered JPEGs, not the uploaded original.
     # Compare exact bytes of that known rendition too; never compare by count alone.
     try:
-        exported = (sha256(export_photo(qc_photo_assets.read(conn, photo, 'preview')[0])).hexdigest()
-                    for photo in conn.execute('SELECT * FROM photos WHERE entry_id=? AND removed=0', (entry_id,)))
-        return tuple(sorted(exported)) == expected
-    except (HTTPException, OSError, ValueError):
+        plain, annotated = {}, {}
+        photos_sql = qc_photo_assets.entry_photos_sql(conn)
+        for photo in conn.execute(photos_sql, (entry_id,)):
+            raw, _ = qc_photo_assets.read(conn, photo, 'preview')
+            plain[photo['id']] = sha256(export_photo(raw)).hexdigest()
+            marks = qc_photo_assets.decode_annotations(photo['annotations'])
+            if marks:
+                annotated[photo['id']] = marks
+        if tuple(sorted(plain.values())) == expected:
+            return True
+        if annotated:
+            for photo in conn.execute(photos_sql, (entry_id,)):
+                if marks := annotated.get(photo['id']):
+                    raw, _ = qc_photo_assets.read(conn, photo, 'preview')
+                    plain[photo['id']] = sha256(export_photo(raw, marks)).hexdigest()
+            return tuple(sorted(plain.values())) == expected
+        return False
+    except HTTPException as error:
+        if error.status_code == 429:
+            raise
+        return False
+    except (OSError, ValueError):
         return False
 
 
@@ -308,7 +337,9 @@ def duplicate_lines(conn, factory, rows, legacy):
     duplicates, seen = set(), set()
     for row, signature in zip(rows, signatures):
         fields, photos = signature
-        if signature in seen or any(photos_match(conn, entry_id, photos) for entry_id in candidates.get(fields, ())):
+        verified_sources = row.get('verifiedPhotoSources', ())
+        if signature in seen or any(photos_match(conn, entry_id, photos, verified_sources)
+                                    for entry_id in candidates.get(fields, ())):
             duplicates.add(row['line'])
         seen.add(signature)
     return duplicates
@@ -333,7 +364,7 @@ def workbook(factory, actor, content, confirmed_digest=None):
     digest = sha256(content).hexdigest()
     if confirmed_digest is not None and confirmed_digest != digest:
         raise HTTPException(409, '文件已变化，请重新核对预览')
-    name, rows = parse(content)
+    name, rows = parse(content, factory=factory)
     batch = 'excel:' + digest
     legacy = name == LEGACY_SHEET
     if confirmed_digest is None:

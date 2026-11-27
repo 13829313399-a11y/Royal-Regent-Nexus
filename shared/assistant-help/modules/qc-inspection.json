@@ -51,7 +51,7 @@
         "description": "报告首页右上角可打开完整工作簿。单击选格，双击或按 F2 编辑；浅绿空格可补录，标题、计算格和审核原值只读。Shift 加方向键扩选，Windows 用 Ctrl+C / Ctrl+V、Mac 用 ⌘C / ⌘V 复制粘贴选区内容。Ctrl+D 或拖右下角只填同列、同类空白补录格；一次粘贴或填充可整体撤销、重做。填写只暂存在当前标签页，Windows 用 Ctrl+S、Mac 用 ⌘S 主动保存；有草稿时关闭可选保存、不保存或取消。引擎异常时显示「简洁预览」，补录和 Excel 导出仍可用。",
         "anchor_id": "qc-inspection.overview",
         "precondition": "当前工作簿有可补录单元格，且账号具备录入权限",
-        "completion": "导出前确认保存补录。没有系统保存窗口时，浏览器直接下载已校验的 Excel，可在下载记录中查看。"
+        "completion": "导出前确认保存补录。没有系统保存窗口时，浏览器直接下载已校验的 Excel，可在下载记录中查看。报告预览和 Excel 显示审核确认时冻结的照片标注；验货台打印及排期表显示所选记录已保存的标注。原图下载保留原图。"
       }
     ],
     "source_refs": [
@@ -123,17 +123,17 @@
       {
         "path": "backend/app/services/qc_monthly_templates.py",
         "symbol": "def query",
-        "sha256": "ee92c5f666d05a78a17fd5247fb2f63a7d02b0058a9825ab1d70f7ff73b562ad"
+        "sha256": "df0ed174869ea8b7850d45572224729570d769bfb4151ed9451fea175a36b7a7"
       },
       {
         "path": "backend/app/services/qc_monthly_excel.py",
         "symbol": "def render",
-        "sha256": "1bd353c5f59be9efa4f78ffe6dc26b0cb8170b85cb02c5867c5c0d077e6e8c37"
+        "sha256": "7d01996a303d6f04d52c72dd8dba29965d16a2f019adf0eca4d61a0e06f9b8e1"
       },
       {
         "path": "services/qc-department/qc-monthly-templates.js",
         "symbol": "QcMonthlyTemplates",
-        "sha256": "ff7870ea350084e3d56dc24bb1bd2f413bac2b760436e1e4fe6d007b3450f883"
+        "sha256": "178b054593d3067aa8e9c498820612b64c20f79786b08b989e8cb4b9afc9c834"
       },
       {
         "path": "backend/app/services/qc_dossier_read.py",
@@ -148,7 +148,7 @@
       {
         "path": "backend/app/services/qc_photo_assets.py",
         "symbol": "def save",
-        "sha256": "968a9bf632654d9837fe70d113e039368e0354983b1bbffc2a1a10c2deeea38b"
+        "sha256": "c79dc5ec9bba53e885407f97fdba77b14830d8152d4992e64ad28fe3c7abb106"
       },
       {
         "path": "backend/app/services/qc_issue_reports.py",
@@ -163,7 +163,7 @@
       {
         "path": "services/qc-department/qc-issue-reports.js",
         "symbol": "QcIssueReports",
-        "sha256": "d6572c02f2a1138cc1d4e5690e5560011fed7cb97de5783f1ce060a1dc07e81d"
+        "sha256": "061bafac7f7431d9dc3d65a761364d1bc5f87a36c55279fc1782ff3d778d32ca"
       },
       {
         "path": "backend/app/api/qc_mobile.py",
